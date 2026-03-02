@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>梅奥视频分镜生成器</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="config-panel" id="configPanel">
+        <div class="panel-top">
+          <h1>梅奥视频分镜生成器</h1>
+          <div class="header-actions">
+            <button id="settingsBtn" class="ghost-btn">设置</button>
+            <button id="collapseBtn" class="ghost-btn">收起</button>
+          </div>
+        </div>
+
+        <form id="configForm" class="form-grid">
+          <label>
+            产品图（最多10张）
+            <input type="file" id="productImages" accept="image/jpeg,image/png,image/webp" multiple required />
+            <small>支持的格式：JPEG、PNG、WEBP；最大文件大小：30MB；最大文件数：10。</small>
+          </label>
+
+          <label>
+            产品信息
+            <textarea id="productInfo" required></textarea>
+          </label>
+
+          <label>
+            脚本逻辑
+            <select id="scriptPreset">
+              <option value="custom">自定义逻辑</option>
+              <option value="high-conversion">高转化电商短视频（预设）</option>
+            </select>
+            <textarea id="scriptLogic" required></textarea>
+          </label>
+
+          <div class="inline-grid">
+            <label>视频比例
+              <select id="aspectRatio">
+                <option value="9:16" selected>9:16</option>
+                <option value="16:9">16:9</option>
+                <option value="1:1">1:1</option>
+                <option value="4:5">4:5</option>
+                <option value="3:4">3:4</option>
+              </select>
+            </label>
+            <label>视频时长
+              <select id="duration">
+                <option value="5">5秒</option>
+                <option value="10" selected>10秒</option>
+                <option value="15">15秒</option>
+                <option value="30">30秒</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="inline-grid">
+            <label>演员类型
+              <select id="actorType">
+                <option value="不出现真实人脸">不出现真实人脸</option>
+                <option value="3D数字人">3D数字人</option>
+              </select>
+            </label>
+            <label>生成项目数量
+              <input type="number" id="projectCount" min="1" max="6" value="1" />
+            </label>
+          </div>
+
+          <div class="inline-grid">
+            <label>国家
+              <input type="text" id="country" value="中国" />
+            </label>
+            <label>语言
+              <input type="text" id="language" value="中文" />
+            </label>
+          </div>
+
+          <button class="primary-btn" type="submit">生成项目方案</button>
+        </form>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace-header">
+          <button id="expandBtn" class="ghost-btn hidden">展开配置</button>
+          <p>项目工作区</p>
+        </header>
+        <section id="projectContainer" class="project-container">
+          <div class="empty">请先配置并生成项目。</div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="settingsDialog">
+      <form method="dialog" class="settings-form">
+        <h3>API 设置</h3>
+        <label>Kie API Key <input id="apiKey" type="password" autocomplete="off" /></label>
+        <label>Gemini 模型 <input id="llmModel" type="text" value="gemini-3-flash" /></label>
+        <label>生图模型 <input id="imageModel" type="text" value="nano-banana-2" /></label>
+        <label><input type="checkbox" id="enableImageApi" checked />启用真实生图API</label>
+        <menu>
+          <button value="cancel" class="ghost-btn">取消</button>
+          <button value="default" class="primary-btn">保存</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <dialog id="imagePreviewDialog">
+      <div class="image-preview-wrap">
+        <button id="previewPrev" class="ghost-btn">← 上一张</button>
+        <img id="previewImage" alt="放大预览" />
+        <button id="previewNext" class="ghost-btn">下一张 →</button>
+      </div>
+      <button id="previewClose" class="ghost-btn">关闭</button>
+    </dialog>
+
+    <template id="projectTemplate">
+      <article class="project-card">
+        <details open>
+          <summary>
+            <span class="project-title"></span>
+            <span class="status-pill">方案生成中</span>
+          </summary>
+          <div class="project-body">
+            <div class="prompt-list"></div>
+            <div class="action-row">
+              <button class="primary-btn gen-btn" type="button">生成分镜图</button>
+              <button class="ghost-btn retry-btn" type="button">重试超时任务</button>
+              <button class="ghost-btn download-btn" type="button" disabled>打包下载</button>
+              <span class="progress-text">0/0</span>
+            </div>
+            <div class="result-grid">
+              <div><h4>商品白底图</h4><img class="product-shot" /></div>
+              <div><h4>拼合分镜图</h4><img class="board-collage" /></div>
+            </div>
+            <pre class="script-output"></pre>
+          </div>
+        </details>
+      </article>
+    </template>
+
+    <script type="module" src="main.js"></script>
+  </body>
+</html>
