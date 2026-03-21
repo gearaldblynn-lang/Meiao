@@ -13,7 +13,7 @@ const Header: React.FC<Props> = ({ activeModule }) => {
     [AppModule.BUYER_SHOW]: '买家秀 · 真人质感模拟',
     [AppModule.RETOUCH]: '产品精修 · 商业级画质提升',
     [AppModule.PHOTOGRAPHY]: '产品摄影图 · AI场景构筑',
-    [AppModule.VIDEO]: '短视频模块 · 重构中',
+    [AppModule.VIDEO]: '短视频分镜 · 脚本到画面工作流',
     [AppModule.SETTINGS]: '系统设置 · API 管理',
   };
 

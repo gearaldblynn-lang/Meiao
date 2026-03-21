@@ -1,10 +1,15 @@
 
-import { GlobalApiConfig, ModuleConfig, KieAiResult, AspectRatio, VideoConfig } from "../types";
+import { GlobalApiConfig, ModuleConfig, KieAiResult, AspectRatio, VideoConfig, SourceImageContext } from "../types";
 
 /**
  * 动态构建专业电商翻译与优化 Prompt
  */
-const buildKieAiPrompt = (config: ModuleConfig, isRatioMatch: boolean, isRemoveText: boolean = false): string => {
+const buildKieAiPrompt = (
+  config: ModuleConfig,
+  isRatioMatch: boolean,
+  isRemoveText: boolean = false,
+  sourceImageContext?: SourceImageContext
+): string => {
   const targetLang = config.targetLanguage === 'CUSTOM' ? config.customLanguage : config.targetLanguage;
   const skipTranslation = config.targetLanguage === 'KEEP_ORIGINAL';
 
@@ -22,6 +27,10 @@ const buildKieAiPrompt = (config: ModuleConfig, isRatioMatch: boolean, isRemoveT
       prompt += `严格保留图像内所有原始文本文案不变。`;
     } else {
       prompt += `严格将图像内所有文本文案文字翻译成${targetLang}，保持文案翻译对应以及准确。`;
+    }
+
+    if (isRatioMatch && sourceImageContext) {
+      prompt += `输出画布需自然保持与原图一致的纵横比例，原图尺寸为${sourceImageContext.width}x${sourceImageContext.height}px，比例约为${sourceImageContext.ratioLabel}，禁止先按方图构图再拉伸。`;
     }
 
     prompt += `严格输出高清商业工作室品质。`;
@@ -290,10 +299,11 @@ export const processWithKieAi = async (
   isRatioMatch: boolean,
   signal: AbortSignal,
   customPrompt?: string,
-  isRemoveText: boolean = false
+  isRemoveText: boolean = false,
+  sourceImageContext?: SourceImageContext
 ): Promise<KieAiResult> => {
   try {
-    const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText);
+    const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext);
     const inputImages = Array.isArray(imageUrls) ? imageUrls : [imageUrls];
     
     const createResponse = await fetch(`https://api.kie.ai/api/v1/jobs/createTask`, {
