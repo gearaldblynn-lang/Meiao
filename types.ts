@@ -71,6 +71,12 @@ export interface ModuleConfig {
   maxFileSize: number;
 }
 
+export interface SourceImageContext {
+  width: number;
+  height: number;
+  ratioLabel: string;
+}
+
 export interface TranslationPersistentState {
   main: {
     files: FileItem[];
@@ -172,6 +178,71 @@ export interface VideoPersistentState {
   
   isAnalyzing: boolean;
   isGenerating: boolean;
+  storyboard: VideoStoryboardState;
+}
+
+export interface VideoStoryboardConfig {
+  productImages: File[];
+  uploadedProductUrls: string[];
+  productInfo: string;
+  scriptLogic: string;
+  scriptPreset: 'custom' | 'ecommerce';
+  aspectRatio: AspectRatio.SQUARE | AspectRatio.P_3_4 | AspectRatio.L_4_3 | AspectRatio.P_4_5 | AspectRatio.P_9_16 | AspectRatio.L_16_9;
+  duration: '5s' | '10s' | '15s' | '30s';
+  shotCount: 3 | 4 | 6 | 8 | 9 | 12;
+  actorType: 'no_real_face' | 'real_person' | '3d_digital_human' | 'cartoon_character';
+  projectCount: number;
+  scenes: string[];
+  countryLanguage: string;
+  generateWhiteBg: boolean;
+  model: KieAiModel;
+  quality: GenerationQuality;
+}
+
+export interface VideoStoryboardShot {
+  id: string;
+  description: string;
+  scriptContent: string;
+  prompt: string;
+  imageUrl?: string;
+  taskId?: string;
+  status: 'pending' | 'generating' | 'completed' | 'failed';
+  error?: string;
+}
+
+export interface VideoStoryboardProject {
+  id: string;
+  name: string;
+  config: VideoStoryboardConfig;
+  status: 'pending' | 'scripting' | 'imaging' | 'completed' | 'failed';
+  script: string;
+  shots: VideoStoryboardShot[];
+  boards: VideoStoryboardBoard[];
+  whiteBgImageUrl?: string;
+  whiteBgTaskId?: string;
+  whiteBgStatus?: 'pending' | 'generating' | 'completed' | 'failed';
+  createdAt: number;
+  sceneDescription?: string;
+  error?: string;
+}
+
+export interface VideoStoryboardBoard {
+  id: string;
+  title: string;
+  shotIds: string[];
+  scriptText: string;
+  prompt: string;
+  imageUrl?: string;
+  taskId?: string;
+  status: 'pending' | 'generating' | 'completed' | 'failed';
+  error?: string;
+  previousBoardImageUrl?: string;
+}
+
+export interface VideoStoryboardState {
+  config: VideoStoryboardConfig;
+  projects: VideoStoryboardProject[];
+  downloadingProjectId: string | null;
 }
 
 export interface OneClickConfig {

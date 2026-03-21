@@ -22,6 +22,12 @@ const FileProcessor: React.FC<Props> = ({
   activeModule, subMode, apiConfig, config, 
   files, onFilesChange, isProcessing, onProcessingChange 
 }) => {
+  const formatRatioLabel = (width: number, height: number) => {
+    const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+    const divisor = gcd(width, height);
+    return `${width / divisor}:${height / divisor}`;
+  };
+
   const [selectedItem, setSelectedItem] = useState<FileItem | null>(null);
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -120,7 +126,20 @@ const FileProcessor: React.FC<Props> = ({
         if (controller.signal.aborted) throw new Error("INTERRUPTED");
         
         updateSingleFile(fileId, { status: 'processing', progress: 30 });
-        res = await processWithKieAi(cosUrl, apiConfig, effectiveConfig, isRatioMatch, controller.signal, undefined, isRemoveTextMode);
+        res = await processWithKieAi(
+          cosUrl,
+          apiConfig,
+          effectiveConfig,
+          isRatioMatch,
+          controller.signal,
+          undefined,
+          isRemoveTextMode,
+          isDetailMode ? {
+            width: dimensions.width,
+            height: dimensions.height,
+            ratioLabel: formatRatioLabel(dimensions.width, dimensions.height)
+          } : undefined
+        );
       }
 
       if (controller.signal.aborted || res.status === 'interrupted') throw new Error("INTERRUPTED");

@@ -168,6 +168,27 @@ export const createDefaultVideoState = (): VideoPersistentState => ({
   veoReferenceImages: [],
   isAnalyzing: false,
   isGenerating: false,
+  storyboard: {
+    config: {
+      productImages: [],
+      uploadedProductUrls: [],
+      productInfo: '',
+      scriptLogic: '',
+      scriptPreset: 'custom',
+      aspectRatio: AspectRatio.P_9_16,
+      duration: '15s',
+      shotCount: 9,
+      actorType: 'no_real_face',
+      projectCount: 1,
+      scenes: [''],
+      countryLanguage: '中国/中文',
+      generateWhiteBg: false,
+      model: 'nano-banana-pro',
+      quality: '2k',
+    },
+    projects: [],
+    downloadingProjectId: null,
+  },
 });
 
 const cleanState = (obj: unknown): unknown => {
