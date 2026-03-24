@@ -233,5 +233,9 @@ export const loadPersistedAppState = (): Partial<PersistedAppState> => {
 };
 
 export const savePersistedAppState = (state: PersistedAppState) => {
-  localStorage.setItem(PERSISTENCE_KEY, JSON.stringify(cleanState(state)));
+  try {
+    localStorage.setItem(PERSISTENCE_KEY, JSON.stringify(cleanState(state)));
+  } catch (error) {
+    console.error('Failed to save state to localStorage', error);
+  }
 };

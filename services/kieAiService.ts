@@ -30,7 +30,11 @@ const buildKieAiPrompt = (
     }
 
     if (isRatioMatch && sourceImageContext) {
-      prompt += `输出画布需自然保持与原图一致的纵横比例，原图尺寸为${sourceImageContext.width}x${sourceImageContext.height}px，比例约为${sourceImageContext.ratioLabel}，禁止先按方图构图再拉伸。`;
+      prompt += `输出画布需自然保持与原图一致的纵横比例，比例约为${sourceImageContext.ratioLabel}。`;
+      const originalRatio = sourceImageContext.height === 0 ? 1 : sourceImageContext.width / sourceImageContext.height;
+      if (Math.abs(originalRatio - 1) > 0.08) {
+        prompt += `原图非1:1方图时严禁生成1:1方图。`;
+      }
     }
 
     prompt += `严格输出高清商业工作室品质。`;
