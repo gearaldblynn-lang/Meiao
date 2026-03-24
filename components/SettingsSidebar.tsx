@@ -13,6 +13,7 @@ interface Props {
 
 const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onChange, disabled }) => {
   const isDetailMode = activeModule === AppModule.TRANSLATION && subMode === TranslationSubMode.DETAIL;
+  const isMainTranslationMode = activeModule === AppModule.TRANSLATION && subMode === TranslationSubMode.MAIN;
   const isRemoveTextMode = activeModule === AppModule.TRANSLATION && subMode === TranslationSubMode.REMOVE_TEXT;
   const [isCustomLanguage, setIsCustomLanguage] = useState(config.targetLanguage === 'CUSTOM');
 
@@ -41,6 +42,9 @@ const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onCha
     { label: '9:16', value: AspectRatio.P_9_16, icon: 'fa-mobile-alt' },
     { label: '16:9', value: AspectRatio.L_16_9, icon: 'fa-tv' },
   ];
+  const visibleRatioList = isMainTranslationMode
+    ? ratioList.filter((item) => item.value !== AspectRatio.AUTO)
+    : ratioList;
 
   return (
     <div className="w-80 bg-white border-r border-gray-200 h-full flex flex-col shrink-0 overflow-hidden relative shadow-sm">
@@ -113,7 +117,7 @@ const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onCha
                 <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">画面构图比例</label>
               </div>
               <div className="grid grid-cols-5 gap-2">
-                {ratioList.map((item) => (
+                {visibleRatioList.map((item) => (
                   <button
                     key={item.value}
                     type="button"
