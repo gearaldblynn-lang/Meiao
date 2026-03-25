@@ -4,6 +4,7 @@ import { AspectRatio, OneClickConfig, OneClickSubMode, GenerationQuality, StyleS
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
 import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
+import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
 
 interface Props {
   subMode?: OneClickSubMode;
@@ -218,13 +219,26 @@ const ConfigSidebar: React.FC<Props> = ({
   const ratios = [
     { label: '自动建议', value: AspectRatio.AUTO },
     { label: '1:1', value: AspectRatio.SQUARE },
+    { label: '1:4', value: AspectRatio.P_1_4 },
+    { label: '1:8', value: AspectRatio.P_1_8 },
+    { label: '2:3', value: AspectRatio.P_2_3 },
+    { label: '3:2', value: AspectRatio.L_3_2 },
     { label: '3:4', value: AspectRatio.P_3_4 },
+    { label: '4:1', value: AspectRatio.L_4_1 },
     { label: '4:3', value: AspectRatio.L_4_3 },
+    { label: '4:5', value: AspectRatio.P_4_5 },
+    { label: '5:4', value: AspectRatio.L_5_4 },
+    { label: '8:1', value: AspectRatio.L_8_1 },
     { label: '9:16', value: AspectRatio.P_9_16 },
     { label: '16:9', value: AspectRatio.L_16_9 },
+    { label: '21:9', value: AspectRatio.L_21_9 },
   ];
-
-  const filteredRatios = isDetail ? ratios : ratios.filter(r => r.value !== AspectRatio.AUTO);
+  const supportedRatios = getSupportedAspectRatiosForModel(config.model);
+  const filteredRatios = ratios.filter((ratio) => {
+    if (!supportedRatios.includes(ratio.value)) return false;
+    if (!isDetail && ratio.value === AspectRatio.AUTO) return false;
+    return true;
+  });
 
   return (
     <div className="w-[380px] bg-white h-full border-r border-slate-200 flex flex-col shrink-0 overflow-hidden relative z-30">
@@ -503,11 +517,18 @@ const ConfigSidebar: React.FC<Props> = ({
                     {MODEL_OPTIONS.map(m => (
                       <button 
                         key={m} 
-                        onClick={() => onChange({
-                          ...config, 
-                          model: m,
-                          quality: getDefaultQualityForModel(m)
-                        })} 
+                        onClick={() =>
+                          onChange({
+                            ...config,
+                            model: m,
+                            quality: getDefaultQualityForModel(m),
+                            aspectRatio: getSafeAspectRatioForModel(
+                              m,
+                              config.aspectRatio || (isDetail ? AspectRatio.AUTO : AspectRatio.SQUARE),
+                              isDetail ? AspectRatio.AUTO : AspectRatio.SQUARE
+                            ),
+                          })
+                        }
                         className={`flex-1 py-1.5 text-[9px] font-black rounded-lg transition-all ${config.model === m ? 'bg-white text-rose-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}
                       >
                         {getModelDisplayName(m)}

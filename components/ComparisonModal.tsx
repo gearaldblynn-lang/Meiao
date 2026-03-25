@@ -15,21 +15,21 @@ const ComparisonModal: React.FC<Props> = ({ item, config, onClose }) => {
   const [resultUrl, setResultUrl] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    if (!item.resultBlob) return;
-    
-    const oUrl = safeCreateObjectURL(item.file);
-    const rUrl = safeCreateObjectURL(item.resultBlob);
-    
-    setOriginalUrl(oUrl);
-    setResultUrl(rUrl);
+    const originalObjectUrl = item.file ? safeCreateObjectURL(item.file) : undefined;
+    const processedObjectUrl = item.resultBlob ? safeCreateObjectURL(item.resultBlob) : undefined;
+    const nextOriginalUrl = item.sourcePreviewUrl || originalObjectUrl;
+    const nextResultUrl = item.resultUrl || processedObjectUrl;
+
+    setOriginalUrl(nextOriginalUrl);
+    setResultUrl(nextResultUrl);
 
     return () => {
-      if (oUrl) URL.revokeObjectURL(oUrl);
-      if (rUrl) URL.revokeObjectURL(rUrl);
+      if (originalObjectUrl) URL.revokeObjectURL(originalObjectUrl);
+      if (processedObjectUrl) URL.revokeObjectURL(processedObjectUrl);
     };
   }, [item]);
 
-  if (!item.resultBlob || !originalUrl || !resultUrl) return null;
+  if (!originalUrl || !resultUrl) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/90 backdrop-blur-sm p-4 animate-in fade-in duration-200">

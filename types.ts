@@ -6,7 +6,8 @@ export enum AppModule {
   RETOUCH = 'retouch',
   PHOTOGRAPHY = 'photography',
   VIDEO = 'video',
-  SETTINGS = 'settings'
+  SETTINGS = 'settings',
+  ACCOUNT = 'account'
 }
 
 export enum TranslationSubMode {
@@ -34,12 +35,16 @@ export enum VideoSubMode {
 export enum AspectRatio {
   AUTO = 'auto',
   SQUARE = '1:1',
+  P_1_4 = '1:4',
+  P_1_8 = '1:8',
   P_2_3 = '2:3',
   L_3_2 = '3:2',
   P_3_4 = '3:4',
+  L_4_1 = '4:1',
   L_4_3 = '4:3',
   P_4_5 = '4:5',
   L_5_4 = '5:4',
+  L_8_1 = '8:1',
   P_9_16 = '9:16',
   L_16_9 = '16:9',
   L_21_9 = '21:9',
@@ -56,6 +61,18 @@ export interface GlobalApiConfig {
   rhWebappId: string;
   rhApiKey: string;
   rhQuickCreateCode: string;
+}
+
+export type UserRole = 'admin' | 'staff';
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  displayName: string;
+  role: UserRole;
+  status: 'active' | 'disabled';
+  createdAt: number;
+  lastLoginAt: number | null;
 }
 
 export interface ModuleConfig {
@@ -328,11 +345,14 @@ export interface BuyerShowPersistentState {
 
 export interface FileItem {
   id: string;
-  file: File;
+  file: File | null;
   relativePath: string;
   status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error' | 'interrupted';
   progress: number;
   resultBlob?: Blob;
+  resultUrl?: string;
+  sourcePreviewUrl?: string;
+  matchedAspectRatio?: string;
   error?: string;
   taskId?: string;
 }

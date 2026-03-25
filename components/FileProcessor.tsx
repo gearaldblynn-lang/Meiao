@@ -4,7 +4,7 @@ import { FileItem, ModuleConfig, GlobalApiConfig, AspectRatio, AppModule, Transl
 import { safeCreateObjectURL } from '../utils/urlUtils';
 import { uploadToCos } from '../services/tencentCosService';
 import { processWithKieAi, recoverKieAiTask } from '../services/kieAiService';
-import { resizeImage, createZipAndDownload, getImageDimensions } from '../utils/imageUtils';
+import { resizeImage, createZipAndDownload, getImageDimensions, fileToDataUrl } from '../utils/imageUtils';
 import ComparisonModal from './ComparisonModal';
 
 interface Props {
@@ -22,11 +22,76 @@ const FileProcessor: React.FC<Props> = ({
   activeModule, subMode, apiConfig, config, 
   files, onFilesChange, isProcessing, onProcessingChange 
 }) => {
+  const nanoBanana2Ratios: AspectRatio[] = [
+    AspectRatio.SQUARE,
+    AspectRatio.P_1_4,
+    AspectRatio.P_1_8,
+    AspectRatio.P_2_3,
+    AspectRatio.L_3_2,
+    AspectRatio.P_3_4,
+    AspectRatio.L_4_1,
+    AspectRatio.L_4_3,
+    AspectRatio.P_4_5,
+    AspectRatio.L_5_4,
+    AspectRatio.L_8_1,
+    AspectRatio.P_9_16,
+    AspectRatio.L_16_9,
+    AspectRatio.L_21_9,
+  ];
+  const nanoBananaProRatios: AspectRatio[] = [
+    AspectRatio.SQUARE,
+    AspectRatio.P_2_3,
+    AspectRatio.L_3_2,
+    AspectRatio.P_3_4,
+    AspectRatio.L_4_3,
+    AspectRatio.P_4_5,
+    AspectRatio.L_5_4,
+    AspectRatio.P_9_16,
+    AspectRatio.L_16_9,
+    AspectRatio.L_21_9,
+  ];
+
   const formatRatioLabel = (width: number, height: number) => {
     const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
     const divisor = gcd(width, height);
     return `${width / divisor}:${height / divisor}`;
   };
+
+  const getClosestSupportedAspectRatio = (width: number, height: number, model: string): AspectRatio => {
+    if (!width || !height) return AspectRatio.P_3_4;
+
+    const supportedRatios = model === 'nano-banana-pro' ? nanoBananaProRatios : nanoBanana2Ratios;
+    const sourceRatio = width / height;
+    let closestRatio = supportedRatios[0];
+    let closestDelta = Infinity;
+
+    supportedRatios.forEach((ratio) => {
+      const [ratioWidth, ratioHeight] = ratio.split(':').map(Number);
+      const ratioValue = ratioWidth / ratioHeight;
+      const delta = Math.abs(sourceRatio - ratioValue);
+      if (delta < closestDelta) {
+        closestDelta = delta;
+        closestRatio = ratio;
+      }
+    });
+
+    return closestRatio;
+  };
+
+  const buildUniqueUploadName = (item: FileItem): string => {
+    const originalName = item.file?.name || item.relativePath.split(/[\\/]/).pop() || 'image.png';
+    const extensionIndex = originalName.lastIndexOf('.');
+    const extension = extensionIndex >= 0 ? originalName.slice(extensionIndex) : '';
+    const baseName = extensionIndex >= 0 ? originalName.slice(0, extensionIndex) : originalName;
+    const folderFingerprint = item.relativePath
+      .replace(/[\\/]/g, '__')
+      .replace(/[^a-zA-Z0-9_\-.]/g, '_')
+      .slice(0, 80);
+
+    return `${folderFingerprint}__${item.id}__${baseName}${extension || '.png'}`;
+  };
+
+  const normalizeZipPath = (relativePath: string): string => relativePath.replace(/\\/g, '/');
 
   const [selectedItem, setSelectedItem] = useState<FileItem | null>(null);
   const [alertMessage, setAlertMessage] = useState<string | null>(null);
@@ -64,11 +129,13 @@ const FileProcessor: React.FC<Props> = ({
       }
 
       const relativePath = (f as any).webkitRelativePath || f.name;
+      const sourcePreviewUrl = await fileToDataUrl(f);
 
       validItems.push({
         id: Math.random().toString(36).substr(2, 9),
         file: f,
         relativePath: relativePath,
+        sourcePreviewUrl,
         status: 'pending',
         progress: 0
       });
@@ -99,6 +166,14 @@ const FileProcessor: React.FC<Props> = ({
   const executeFileTask = async (fileId: string, mode: 'full' | 'recover' = 'full') => {
     const fileItem = filesRef.current.find(f => f.id === fileId);
     if (!fileItem) return;
+    if (mode === 'full' && !fileItem.file) {
+      updateSingleFile(fileId, {
+        status: 'error',
+        error: '原始文件已失效，请重新导入后再生成。',
+        progress: 0,
+      });
+      return;
+    }
 
     if (controllersRef.current[fileId]) {
       controllersRef.current[fileId].abort();
@@ -114,15 +189,24 @@ const FileProcessor: React.FC<Props> = ({
       });
 
       let res: KieAiResult;
-      const dimensions = await getImageDimensions(fileItem.file);
-      const effectiveConfig = isDetailMode ? { ...config, aspectRatio: AspectRatio.AUTO } : config;
-      const isRatioMatch = effectiveConfig.aspectRatio === AspectRatio.AUTO;
+      const dimensions = await getImageDimensions(fileItem.file!);
+      const matchedDetailRatio = isDetailMode
+        ? getClosestSupportedAspectRatio(dimensions.width, dimensions.height, config.model)
+        : null;
+      const effectiveConfig = isDetailMode
+        ? { ...config, aspectRatio: matchedDetailRatio as AspectRatio }
+        : config;
+      const isRatioMatch = !isDetailMode && effectiveConfig.aspectRatio === AspectRatio.AUTO;
+
+      if (matchedDetailRatio) {
+        updateSingleFile(fileId, { matchedAspectRatio: matchedDetailRatio });
+      }
 
       if (mode === 'recover' && fileItem.taskId) {
         updateSingleFile(fileId, { progress: 20, error: '正在尝试获取图片结果...' });
         res = await recoverKieAiTask(fileItem.taskId, apiConfig, controller.signal);
       } else {
-        const cosUrl = await uploadToCos(fileItem.file, apiConfig);
+        const cosUrl = await uploadToCos(fileItem.file!, apiConfig, buildUniqueUploadName(fileItem));
         if (controller.signal.aborted) throw new Error("INTERRUPTED");
         
         updateSingleFile(fileId, { status: 'processing', progress: 30 });
@@ -150,21 +234,32 @@ const FileProcessor: React.FC<Props> = ({
         const response = await fetch(res.imageUrl, { signal: controller.signal });
         if (!response.ok) throw new Error("获取生成图片失败");
         const blob = await response.blob();
+        const generatedDimensions = await getImageDimensions(blob);
 
         let targetW = dimensions.width;
         let targetH = dimensions.height;
 
         if (config.resolutionMode === 'custom') {
-          targetW = config.targetWidth;
           if (isDetailMode || isRemoveTextMode) {
-            targetH = Math.round(config.targetWidth / dimensions.ratio);
+            const resizeWidth = Math.max(1, config.targetWidth || generatedDimensions.width || dimensions.width);
+            const generatedRatio = generatedDimensions.ratio || dimensions.ratio || 1;
+            targetW = Math.min(resizeWidth, generatedDimensions.width || resizeWidth);
+            targetH = Math.max(1, Math.round(targetW / generatedRatio));
           } else {
+            targetW = config.targetWidth;
             targetH = config.targetHeight;
           }
         }
 
         const finalBlob = await resizeImage(blob, targetW, targetH, config.maxFileSize);
-        updateSingleFile(fileId, { status: 'completed', progress: 100, resultBlob: finalBlob, taskId: res.taskId });
+        updateSingleFile(fileId, {
+          status: 'completed',
+          progress: 100,
+          resultBlob: finalBlob,
+          resultUrl: res.imageUrl,
+          matchedAspectRatio: matchedDetailRatio || effectiveConfig.aspectRatio,
+          taskId: res.taskId,
+        });
       } else {
         throw new Error(res.message || (res.status === 'task_not_found' ? '任务已失效或不存在' : '处理异常'));
       }
@@ -187,7 +282,7 @@ const FileProcessor: React.FC<Props> = ({
       if (!isProcessing) onProcessingChange(true);
 
       executeFileTask(taskFileId).finally(() => {
-        activeJobsRef.current--;
+        activeJobsRef.current = Math.max(0, activeJobsRef.current - 1);
         if (activeJobsRef.current === 0 && pendingQueueRef.current.length === 0) {
           onProcessingChange(false);
           setIsSubmitting(false);
@@ -221,6 +316,33 @@ const FileProcessor: React.FC<Props> = ({
     runScheduler();
   };
 
+  const interruptAllTasks = () => {
+    const runningIds = Object.keys(controllersRef.current);
+    runningIds.forEach((id) => {
+      controllersRef.current[id]?.abort();
+    });
+
+    const queuedIds = [...pendingQueueRef.current];
+    pendingQueueRef.current = [];
+
+    onFilesChange(prev => {
+      const currentList = Array.isArray(prev) ? prev : filesRef.current;
+      return currentList.map(file => {
+        if (runningIds.includes(file.id) || queuedIds.includes(file.id)) {
+          return {
+            ...file,
+            status: 'interrupted',
+            error: '已手动全部暂停',
+            progress: 0,
+          };
+        }
+        return file;
+      });
+    });
+    setIsSubmitting(false);
+    onProcessingChange(false);
+  };
+
   const interruptTask = (id: string) => {
     if (controllersRef.current[id]) {
       controllersRef.current[id].abort();
@@ -231,7 +353,7 @@ const FileProcessor: React.FC<Props> = ({
   const handleRetrySingle = (id: string) => {
     if (isSubmitting) return;
     updateSingleFile(id, { 
-      status: 'pending', progress: 0, error: undefined, resultBlob: undefined 
+      status: 'pending', progress: 0, error: undefined, resultBlob: undefined, resultUrl: undefined 
     });
     setIsSubmitting(true);
     setTimeout(() => {
@@ -251,25 +373,44 @@ const FileProcessor: React.FC<Props> = ({
   };
 
   const downloadSingle = (item: FileItem) => {
-    if (!item.resultBlob) return;
-    const url = safeCreateObjectURL(item.resultBlob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = item.file.name;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    const directBlob = item.resultBlob;
+    const downloadName = item.relativePath.split('/').pop() || 'translation_result.png';
+
+    if (directBlob) {
+      const url = safeCreateObjectURL(directBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = downloadName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      return;
+    }
+
+    if (item.resultUrl) {
+      const link = document.createElement('a');
+      link.href = item.resultUrl;
+      link.download = downloadName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
   };
 
   const downloadAll = async () => {
-    const completed = files.filter(f => f.status === 'completed' && f.resultBlob instanceof Blob);
+    const completed = files.filter(f => f.status === 'completed' && (f.resultBlob instanceof Blob || f.resultUrl));
     if (completed.length === 0) return;
-    const zipData = completed.map(f => ({ 
-      blob: f.resultBlob!, 
-      path: f.file.name 
-    }));
     try {
+      const zipData = await Promise.all(completed.map(async (f) => {
+        if (f.resultBlob instanceof Blob) {
+          return { blob: f.resultBlob, path: normalizeZipPath(f.relativePath || 'translation_result.png') };
+        }
+
+        const response = await fetch(f.resultUrl!);
+        const blob = await response.blob();
+        return { blob, path: normalizeZipPath(f.relativePath || 'translation_result.png') };
+      }));
       await createZipAndDownload(zipData, `translation_export_${Date.now()}`);
     } catch (err) {
       setAlertMessage("导出失败，请检查浏览器权限。");
@@ -310,6 +451,13 @@ const FileProcessor: React.FC<Props> = ({
               <span className="flex items-center gap-2"><i className="fas fa-spinner fa-spin"></i> 处理中...</span>
             ) : '启动出海翻译'}
           </button>
+          <button
+            onClick={interruptAllTasks}
+            disabled={!isProcessing && !isSubmitting && pendingQueueRef.current.length === 0}
+            className="px-6 py-2.5 bg-rose-600 text-white font-black text-xs rounded-xl hover:bg-rose-700 shadow-lg shadow-rose-100 disabled:opacity-50 transition-all uppercase tracking-widest"
+          >
+            全部暂停
+          </button>
           <button onClick={downloadAll} disabled={isProcessing || !files.some(f => f.status === 'completed')} className="px-6 py-2.5 bg-emerald-600 text-white font-black text-xs rounded-xl hover:bg-emerald-700 shadow-lg shadow-emerald-100 disabled:opacity-50 transition-all uppercase tracking-widest">打包导出</button>
         </div>
       </div>
@@ -332,14 +480,20 @@ const FileProcessor: React.FC<Props> = ({
                     <td className="px-8 py-4">
                       <div className="flex items-center justify-center gap-3">
                         <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden ring-1 ring-slate-200 shrink-0">
-                          {item.file && <img src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" />}
+                          {item.sourcePreviewUrl ? (
+                            <img src={item.sourcePreviewUrl} className="w-full h-full object-cover" />
+                          ) : item.file ? (
+                            <img src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" />
+                          ) : null}
                         </div>
                         <div className="w-2 h-0.5 bg-slate-200"></div>
                         <div 
                           className={`w-12 h-12 rounded-xl overflow-hidden ring-1 shrink-0 ${item.status === 'completed' ? 'bg-white ring-indigo-200 cursor-pointer hover:ring-indigo-500' : 'bg-slate-50 ring-slate-100'}`}
                           onClick={() => item.status === 'completed' && setSelectedItem(item)}
                         >
-                          {item.resultBlob ? (
+                          {item.resultUrl ? (
+                            <img src={item.resultUrl} className="w-full h-full object-cover shadow-sm" />
+                          ) : item.resultBlob ? (
                             <img src={safeCreateObjectURL(item.resultBlob)} className="w-full h-full object-cover shadow-sm" />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center">
@@ -353,6 +507,11 @@ const FileProcessor: React.FC<Props> = ({
                       <div className="text-xs font-bold text-slate-700 truncate" title={item.relativePath}>
                         <i className="fas fa-file-alt text-slate-400 mr-2"></i>{item.relativePath}
                       </div>
+                      {isDetailMode && item.matchedAspectRatio ? (
+                        <div className="text-[10px] text-indigo-500 font-black mt-1">
+                          匹配比例：{item.matchedAspectRatio}
+                        </div>
+                      ) : null}
                       {item.error && <div className="text-[10px] text-rose-500 font-bold mt-1 leading-tight">{item.error}</div>}
                       {item.status === 'processing' && item.progress < 100 && (
                         <div className="w-full h-1 bg-slate-100 rounded-full mt-2 overflow-hidden">

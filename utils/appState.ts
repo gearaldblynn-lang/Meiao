@@ -203,6 +203,46 @@ const cleanState = (obj: unknown): unknown => {
   return cleaned;
 };
 
+const normalizeFileItemList = (items: unknown): unknown => {
+  if (!Array.isArray(items)) return items;
+
+  return items.map((item) => {
+    if (!item || typeof item !== 'object') return item;
+    const typedItem = item as Record<string, unknown>;
+    const normalized: Record<string, unknown> = { ...typedItem };
+
+    if (!(typedItem.file instanceof File)) {
+      normalized.file = null;
+    }
+
+    if (!(typedItem.resultBlob instanceof Blob)) {
+      normalized.resultBlob = undefined;
+    }
+
+    return normalized;
+  });
+};
+
+export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppState>): Partial<PersistedAppState> => ({
+  ...saved,
+  translationMemory: saved.translationMemory
+    ? {
+        main: {
+          ...saved.translationMemory.main,
+          files: normalizeFileItemList(saved.translationMemory.main?.files) as any,
+        },
+        detail: {
+          ...saved.translationMemory.detail,
+          files: normalizeFileItemList(saved.translationMemory.detail?.files) as any,
+        },
+        removeText: {
+          ...saved.translationMemory.removeText,
+          files: normalizeFileItemList(saved.translationMemory.removeText?.files) as any,
+        },
+      }
+    : undefined,
+});
+
 const resetRuntimeFlags = (saved: Partial<PersistedAppState>): Partial<PersistedAppState> => ({
   ...saved,
   translationMemory: saved.translationMemory
@@ -225,7 +265,7 @@ export const loadPersistedAppState = (): Partial<PersistedAppState> => {
     const saved = localStorage.getItem(PERSISTENCE_KEY);
     if (!saved) return {};
 
-    return resetRuntimeFlags(JSON.parse(saved));
+    return resetRuntimeFlags(normalizeLoadedPersistedAppState(JSON.parse(saved)));
   } catch (error) {
     console.error('Failed to load state from localStorage', error);
     return {};
@@ -239,3 +279,18 @@ export const savePersistedAppState = (state: PersistedAppState) => {
     console.error('Failed to save state to localStorage', error);
   }
 };
+
+export const sanitizePersistedAppState = (state: PersistedAppState): PersistedAppState => {
+  return cleanState(state) as PersistedAppState;
+};
+
+export const buildPersistedAppState = (saved?: Partial<PersistedAppState>): PersistedAppState => ({
+  activeModule: saved?.activeModule || AppModule.ONE_CLICK,
+  apiConfig: saved?.apiConfig || createDefaultApiConfig(),
+  moduleConfig: saved?.moduleConfig || createDefaultModuleConfig(),
+  translationMemory: saved?.translationMemory || createDefaultTranslationState(),
+  oneClickMemory: saved?.oneClickMemory || createDefaultOneClickState(),
+  retouchMemory: saved?.retouchMemory || createDefaultRetouchState(),
+  buyerShowMemory: saved?.buyerShowMemory || createDefaultBuyerShowState(),
+  videoMemory: saved?.videoMemory || createDefaultVideoState(),
+});
