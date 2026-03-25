@@ -103,6 +103,8 @@ interface SetItemProps {
   isExpanded: boolean;
   onToggleExpand: (id: string) => void;
   onCopyText: (text: string) => void;
+  onCancelSet: (setId: string) => void;
+  onDeleteSet: (setId: string) => void;
   // Pass down task handlers
   onRegenerate: (task: BuyerShowTask, setId: string, index: number) => void;
   onRecover: (task: BuyerShowTask, setId: string) => void;
@@ -112,10 +114,11 @@ interface SetItemProps {
 }
 
 // Memoized Set Item to prevent re-rendering when other sets update
-const BuyerShowSetItem = memo(({ set, isExpanded, onToggleExpand, onCopyText, onRegenerate, onRecover, onDownload, onPreview, onGenerateRemaining }: SetItemProps) => {
+const BuyerShowSetItem = memo(({ set, isExpanded, onToggleExpand, onCopyText, onCancelSet, onDeleteSet, onRegenerate, onRecover, onDownload, onPreview, onGenerateRemaining }: SetItemProps) => {
   const isFirstCompleted = set.tasks[0]?.status === 'completed';
   const hasRemainingErrors = set.tasks.slice(1).some(t => t.status === 'error' || t.status === 'pending');
   const isGeneratingRemaining = set.tasks.slice(1).some(t => t.status === 'generating');
+  const isSetGenerating = set.tasks.some(task => task.status === 'generating') || set.status === 'generating';
 
   return (
     <div className={`bg-white rounded-[32px] border shadow-xl overflow-hidden mb-8 transition-all duration-300 ${isExpanded ? 'border-amber-200 ring-4 ring-amber-50' : 'border-slate-100 hover:border-amber-200'}`}>
@@ -130,6 +133,26 @@ const BuyerShowSetItem = memo(({ set, isExpanded, onToggleExpand, onCopyText, on
           {set.status === 'generating' && <span className="text-xs font-bold text-amber-600 animate-pulse">流水线作业中...</span>}
         </div>
         <div className="flex items-center gap-4">
+          {isExpanded && isSetGenerating && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onCancelSet(set.id); }}
+              className="text-[10px] font-black text-white bg-rose-600 px-3 py-1.5 rounded-lg shadow-sm hover:bg-rose-700 transition-all flex items-center gap-1"
+            >
+              <i className="fas fa-stop"></i>
+              中断项目
+            </button>
+          )}
+
+          {isExpanded && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onDeleteSet(set.id); }}
+              className="text-[10px] font-black text-rose-600 bg-white px-3 py-1.5 rounded-lg shadow-sm hover:bg-rose-50 transition-all border border-rose-200 flex items-center gap-1"
+            >
+              <i className="fas fa-trash"></i>
+              删除项目
+            </button>
+          )}
+
           {/* Show "Generate Remaining" button if first is done but others failed/pending */}
           {isFirstCompleted && hasRemainingErrors && isExpanded && (
              <button 
@@ -191,10 +214,82 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [expandedSetId, setExpandedSetId] = useState<string | null>(null);
   const inflightIdsRef = useRef<Set<string>>(new Set());
+  const generationAbortControllersRef = useRef<Set<AbortController>>(new Set());
+  const setAbortControllersRef = useRef<Map<string, Set<AbortController>>>(new Map());
+  const currentPlanAbortControllerRef = useRef<AbortController | null>(null);
   
   // Use callback to stabilize handlers
   const updateState = useCallback((updates: Partial<BuyerShowPersistentState>) => {
     onStateChange(prev => ({ ...prev, ...updates }));
+  }, [onStateChange]);
+
+  const ensureUploadedAssets = useCallback(async (state: BuyerShowPersistentState) => {
+    const productUrls = await Promise.all(
+      state.productImages.map(async (img, i) => {
+        if (state.uploadedProductUrls?.[i]) return state.uploadedProductUrls[i];
+        return uploadToCos(img, apiConfig);
+      })
+    );
+
+    let refUrl = state.uploadedReferenceUrl || null;
+    if (state.referenceImage && !refUrl) {
+      refUrl = await uploadToCos(state.referenceImage, apiConfig);
+    }
+
+    onStateChange(prev => ({
+      ...prev,
+      uploadedProductUrls: productUrls,
+      uploadedReferenceUrl: refUrl,
+    }));
+
+    return { productUrls, refUrl };
+  }, [apiConfig, onStateChange]);
+
+  const createTrackedAbortController = useCallback((setId?: string) => {
+    const controller = new AbortController();
+    generationAbortControllersRef.current.add(controller);
+    if (setId) {
+      const setControllers = setAbortControllersRef.current.get(setId) || new Set<AbortController>();
+      setControllers.add(controller);
+      setAbortControllersRef.current.set(setId, setControllers);
+    }
+    controller.signal.addEventListener('abort', () => {
+      generationAbortControllersRef.current.delete(controller);
+      if (setId) {
+        const setControllers = setAbortControllersRef.current.get(setId);
+        if (setControllers) {
+          setControllers.delete(controller);
+          if (setControllers.size === 0) {
+            setAbortControllersRef.current.delete(setId);
+          }
+        }
+      }
+    }, { once: true });
+    return controller;
+  }, []);
+
+  const cancelWorkflow = useCallback(() => {
+    currentPlanAbortControllerRef.current?.abort();
+    currentPlanAbortControllerRef.current = null;
+
+    generationAbortControllersRef.current.forEach(controller => controller.abort());
+    generationAbortControllersRef.current.clear();
+    setAbortControllersRef.current.clear();
+
+    onStateChange(prev => ({
+      ...prev,
+      isAnalyzing: false,
+      isGenerating: false,
+      sets: prev.sets.map(set => ({
+        ...set,
+        status: set.tasks.some(task => task.status === 'completed') ? 'completed' : 'pending',
+        tasks: set.tasks.map(task => (
+          task.status === 'generating'
+            ? { ...task, status: 'error', error: '已手动中断' }
+            : task
+        ))
+      }))
+    }));
   }, [onStateChange]);
 
   useEffect(() => {
@@ -214,7 +309,58 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         }
       });
     }
+    return () => {
+      currentPlanAbortControllerRef.current?.abort();
+      generationAbortControllersRef.current.forEach(controller => controller.abort());
+      generationAbortControllersRef.current.clear();
+      setAbortControllersRef.current.clear();
+    };
   }, []); // 仅在组件挂载时执行一次
+
+  const cancelSetGeneration = useCallback((setId: string) => {
+    const targetControllers = setAbortControllersRef.current.get(setId);
+    if (targetControllers) {
+      targetControllers.forEach(controller => controller.abort());
+      setAbortControllersRef.current.delete(setId);
+    }
+
+    onStateChange(prev => {
+      const nextSets = prev.sets.map(set => (
+        set.id === setId
+          ? {
+              ...set,
+              status: set.tasks.some(task => task.status === 'completed') ? 'completed' : 'pending',
+              tasks: set.tasks.map(task => (
+                task.status === 'generating'
+                  ? { ...task, status: 'error', error: '已手动中断' }
+                  : task
+              ))
+            }
+          : set
+      ));
+
+      return {
+        ...prev,
+        sets: nextSets,
+        isGenerating: nextSets.some(set => set.tasks.some(task => task.status === 'generating')),
+      };
+    });
+  }, [onStateChange]);
+
+  const deleteSet = useCallback((setId: string) => {
+    cancelSetGeneration(setId);
+    onStateChange(prev => {
+      const nextSets = prev.sets.filter(set => set.id !== setId);
+      return {
+        ...prev,
+        sets: nextSets,
+        tasks: nextSets[0]?.tasks || [],
+        evaluationText: nextSets[0]?.evaluationText || '',
+        isGenerating: nextSets.some(set => set.tasks.some(task => task.status === 'generating')),
+      };
+    });
+    setExpandedSetId(prev => (prev === setId ? null : prev));
+  }, [cancelSetGeneration, onStateChange]);
 
   const handleStartWorkflow = async () => {
     if (isAnalyzing || isGenerating || productImages.length === 0) return;
@@ -235,16 +381,14 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     });
 
     try {
-      const productUrls = await Promise.all(productImages.map(async (img, i) => {
-        if (persistentState.uploadedProductUrls?.[i]) return persistentState.uploadedProductUrls[i];
-        return await uploadToCos(img, apiConfig);
-      }));
-      let refUrl = persistentState.uploadedReferenceUrl || null;
-      if (referenceImage && !refUrl) refUrl = await uploadToCos(referenceImage, apiConfig);
+      const { productUrls, refUrl } = await ensureUploadedAssets(persistentState);
+      const planAbortController = new AbortController();
+      currentPlanAbortControllerRef.current = planAbortController;
       
       const plans = await Promise.all(
-        Array.from({ length: count }).map((_, idx) => generateBuyerShowPrompts(productUrls, refUrl, persistentState, apiConfig, idx))
+        Array.from({ length: count }).map((_, idx) => generateBuyerShowPrompts(productUrls, refUrl, persistentState, apiConfig, idx, planAbortController.signal))
       );
+      currentPlanAbortControllerRef.current = null;
 
       plans.forEach((res, index) => {
         if (res.status === 'error' || res.tasks.length === 0) return;
@@ -291,6 +435,11 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
       newSets.forEach((set) => runSetGeneration(set, productUrls, refUrl));
 
     } catch (err: any) {
+      currentPlanAbortControllerRef.current = null;
+      if (err?.name === 'AbortError') {
+        updateState({ isAnalyzing: false, isGenerating: false });
+        return;
+      }
       alert("策划失败: " + err.message);
       updateState({ isAnalyzing: false, isGenerating: false });
     }
@@ -314,7 +463,9 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     try {
         const firstTask = tasks[0];
         updateSetTaskStatus(firstTask.id, 'generating');
-        const firstRes = await triggerNewKieTask(firstTask.prompt, productUrls, globalRefUrl, true);
+        const firstController = createTrackedAbortController(setId);
+        const firstRes = await triggerNewKieTask(firstTask.prompt, productUrls, globalRefUrl, true, firstController.signal);
+        generationAbortControllersRef.current.delete(firstController);
         
         if (firstRes.status === 'success' && firstRes.imageUrl) {
             updateSetTaskStatus(firstTask.id, 'completed', firstRes.imageUrl, undefined, firstRes.taskId);
@@ -326,14 +477,19 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                 await Promise.all(remainingTasks.map(async (task) => {
                     updateSetTaskStatus(task.id, 'generating');
                     try {
-                        const res = await triggerNewKieTask(task.prompt, productUrls, referenceForOthers, false);
+                        const taskController = createTrackedAbortController(setId);
+                        const res = await triggerNewKieTask(task.prompt, productUrls, referenceForOthers, false, taskController.signal);
+                        generationAbortControllersRef.current.delete(taskController);
                         if (res.status === 'success') updateSetTaskStatus(task.id, 'completed', res.imageUrl, undefined, res.taskId);
+                        else if (res.status === 'interrupted') updateSetTaskStatus(task.id, 'error', undefined, '已手动中断', res.taskId);
                         else updateSetTaskStatus(task.id, 'error', undefined, res.message, res.taskId);
                     } catch (e: any) {
                         updateSetTaskStatus(task.id, 'error', undefined, e.message);
                     }
                 }));
             }
+        } else if (firstRes.status === 'interrupted') {
+            updateSetTaskStatus(firstTask.id, 'error', undefined, '已手动中断', firstRes.taskId);
         } else {
             // 首图失败，强制标记所有后续图片为失败，并更新 Set 状态
             updateSetTaskStatus(firstTask.id, 'error', undefined, firstRes.message || '基准图生成失败', firstRes.taskId);
@@ -384,11 +540,13 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     }));
 
     try {
-        const productUrls = await Promise.all(currentState.productImages.map(img => uploadToCos(img, apiConfig)));
+        const { productUrls } = await ensureUploadedAssets(currentState);
         
         await Promise.all(tasksToRun.map(async (task) => {
             try {
-                const res = await triggerNewKieTask(task.prompt, productUrls, referenceForOthers, false);
+                const taskController = createTrackedAbortController(setId);
+                const res = await triggerNewKieTask(task.prompt, productUrls, referenceForOthers, false, taskController.signal);
+                generationAbortControllersRef.current.delete(taskController);
                 
                 onStateChange(prev => ({
                     ...prev,
@@ -399,7 +557,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                             status: res.status === 'success' ? 'completed' : 'error', 
                             resultUrl: res.imageUrl,
                             taskId: res.taskId,
-                            error: res.message
+                            error: res.status === 'interrupted' ? '已手动中断' : res.message
                         } : t)
                     } : s)
                 }));
@@ -416,7 +574,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     } catch (e: any) {
         alert("启动后续任务失败: " + e.message);
     }
-  }, [apiConfig, onStateChange]);
+  }, [createTrackedAbortController, ensureUploadedAssets, onStateChange]);
 
   const triggerNewKieTask = async (prompt: string, productUrls: string[], refUrl: string | null, isFirstImage: boolean, signal?: AbortSignal) => {
     const isModelMode = persistentState.includeModel;
@@ -583,7 +741,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     }));
 
     try {
-        const productUrls = await Promise.all(currentState.productImages.map(img => uploadToCos(img, apiConfig)));
+        const { productUrls, refUrl } = await ensureUploadedAssets(currentState);
         let refUrlToUse = null;
         
         // Logic to find reference
@@ -591,19 +749,19 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         const isFirstImage = taskIndex === 0;
 
         if (isFirstImage) {
-            if (currentState.referenceImage) {
-                refUrlToUse = await uploadToCos(currentState.referenceImage, apiConfig);
-            }
+            refUrlToUse = refUrl;
         } else {
             const firstTask = currentSet?.tasks[0];
             if (firstTask?.status === 'completed' && firstTask.resultUrl) {
                 refUrlToUse = firstTask.resultUrl;
-            } else if (currentState.referenceImage) {
-                refUrlToUse = await uploadToCos(currentState.referenceImage, apiConfig);
+            } else {
+                refUrlToUse = refUrl;
             }
         }
 
-        const res = await triggerNewKieTask(task.prompt, productUrls, refUrlToUse, isFirstImage);
+        const taskController = createTrackedAbortController(setId);
+        const res = await triggerNewKieTask(task.prompt, productUrls, refUrlToUse, isFirstImage, taskController.signal);
+        generationAbortControllersRef.current.delete(taskController);
 
         onStateChange(prev => ({
             ...prev,
@@ -614,7 +772,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                     status: res.status === 'success' ? 'completed' : 'error', 
                     resultUrl: res.imageUrl,
                     taskId: res.taskId,
-                    error: res.message
+                    error: res.status === 'interrupted' ? '已手动中断' : res.message
                 } : t)
             } : s)
         }));
@@ -627,7 +785,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
             } : s)
         }));
     }
-  }, [apiConfig, onStateChange]); // Stable dependencies
+  }, [createTrackedAbortController, ensureUploadedAssets, onStateChange]); // Stable dependencies
 
   const handleToggleExpand = useCallback((id: string) => {
     setExpandedSetId(prev => prev === id ? null : id);
@@ -657,6 +815,15 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                 <div><h2 className="text-xl font-black text-slate-800 tracking-tight">买家秀生成流水线</h2><div className="flex items-center gap-2 mt-1"><span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-[9px] font-black rounded uppercase tracking-tighter">Social Influence V3</span><span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{persistentState.includeModel ? 'Model Benchmark Mode' : 'Pure Still Life Mode'}</span></div></div>
               </div>
               <div className="flex gap-3">
+                {(isAnalyzing || isGenerating) && (
+                  <button
+                    onClick={cancelWorkflow}
+                    className="px-6 py-2.5 bg-rose-600 text-white font-black text-xs rounded-xl hover:bg-rose-700 shadow-xl shadow-rose-100 transition-all uppercase tracking-widest flex items-center gap-2"
+                  >
+                    <i className="fas fa-stop"></i>
+                    中断生成
+                  </button>
+                )}
                 {sets && sets.some(s => s.status === 'completed') && (
                   <button onClick={handleBatchDownload} disabled={isBatchDownloading} className="px-8 py-2.5 bg-emerald-600 text-white font-black text-xs rounded-xl hover:bg-emerald-700 shadow-xl shadow-emerald-100 transition-all uppercase tracking-widest flex items-center gap-2">{isBatchDownloading ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-file-zipper"></i>}{isBatchDownloading ? '打包下载中...' : '打包下载全部成果'}</button>
                 )}
@@ -673,6 +840,8 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                             isExpanded={set.id === expandedSetId}
                             onToggleExpand={handleToggleExpand}
                             onCopyText={handleCopyText}
+                            onCancelSet={cancelSetGeneration}
+                            onDeleteSet={deleteSet}
                             onRegenerate={handleRegenerateTaskOptimized}
                             onRecover={handleRecoverTask}
                             onDownload={handleDownloadSingle}

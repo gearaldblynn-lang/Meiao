@@ -52,7 +52,12 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange }) =>
         >
           <i className="fas fa-cog"></i>
         </button>
-        <button className="w-12 h-12 rounded-full text-slate-600 hover:bg-white/5 flex items-center justify-center transition-all">
+        <button
+          onClick={() => onModuleChange(AppModule.ACCOUNT)}
+          className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${
+            activeModule === AppModule.ACCOUNT ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 hover:bg-white/5'
+          }`}
+        >
           <i className="fas fa-user-circle"></i>
         </button>
       </div>

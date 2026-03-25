@@ -22,6 +22,7 @@ const buildKieAiPrompt = (
   } else {
     // 2. 翻译模式 (移除 Prompt 中的比例描述，由参数控制)
     let prompt = `任务：专业级对图像中的文案进行翻译。注意点：仅允许保留产品/包装表面的字符不变（存在产品情况下）。请勿更改图像主体内容以及主题。`;
+    prompt += `优化画面中的影响画面效果的半透明污点瑕疵，保持画面整洁。`;
     
     if (skipTranslation) {
       prompt += `严格保留图像内所有原始文本文案不变。`;
@@ -37,7 +38,7 @@ const buildKieAiPrompt = (
       }
     }
 
-    prompt += `严格输出高清商业工作室品质。`;
+    prompt += `严格输出高清商业工作室品质。制作要求完全以该次任务需求为准。`;
     return prompt;
   }
 };

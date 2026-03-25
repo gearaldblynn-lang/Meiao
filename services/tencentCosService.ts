@@ -51,7 +51,11 @@ const extractUrlFromResponse = (result: any): string | null => {
  * 上传文件到 Kie.ai 临时存储
  * (保留函数名 uploadToCos 以兼容现有调用逻辑，实际上使用 Kie API)
  */
-export const uploadToCos = async (file: File, apiConfig: GlobalApiConfig): Promise<string> => {
+export const uploadToCos = async (
+  file: File,
+  apiConfig: GlobalApiConfig,
+  customFileName?: string
+): Promise<string> => {
   if (!file) {
     throw new Error("文件对象为空");
   }
@@ -63,8 +67,9 @@ export const uploadToCos = async (file: File, apiConfig: GlobalApiConfig): Promi
   try {
     const formData = new FormData();
     formData.append('file', file);
-    if (file.name) {
-      formData.append('fileName', file.name);
+    const uploadFileName = customFileName || file.name;
+    if (uploadFileName) {
+      formData.append('fileName', uploadFileName);
     }
     formData.append('uploadPath', 'mayo-storage'); 
 
@@ -109,7 +114,7 @@ export const uploadToCos = async (file: File, apiConfig: GlobalApiConfig): Promi
           body: JSON.stringify({
             base64Data: dataUri,
             uploadPath: 'mayo-storage',
-            fileName: file.name
+            fileName: customFileName || file.name
           })
         });
 

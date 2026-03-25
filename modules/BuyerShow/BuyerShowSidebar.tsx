@@ -41,31 +41,6 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
   }, [referenceImage, uploadedReferenceUrl, apiConfig, onUpdate]);
 
   useEffect(() => {
-    const uploadProducts = async () => {
-      const newUrls = [...uploadedProductUrls];
-      let changed = false;
-      
-      for (let i = 0; i < productImages.length; i++) {
-        const file = productImages[i];
-        if (file && !newUrls[i]) {
-          try {
-            const url = await uploadToCos(file, apiConfig);
-            newUrls[i] = url;
-            changed = true;
-          } catch (e) {
-            console.error("Product image upload failed", e);
-          }
-        }
-      }
-      
-      if (changed) {
-        onUpdate({ uploadedProductUrls: newUrls });
-      }
-    };
-    uploadProducts();
-  }, [productImages, uploadedProductUrls, apiConfig, onUpdate]);
-
-  useEffect(() => {
     // 确保 setCount 有默认值
     if (!state.setCount) onUpdate({ setCount: 1 });
   }, []);
@@ -74,7 +49,10 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
 
   const handleProductUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      onUpdate({ productImages: [...state.productImages, ...Array.from(e.target.files)].slice(0, 8) });
+      onUpdate({
+        productImages: [...state.productImages, ...Array.from(e.target.files)].slice(0, 8),
+        uploadedProductUrls: [],
+      });
       if (productInputRef.current) productInputRef.current.value = '';
     }
   };
@@ -143,11 +121,6 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                             }
                           }}
                         />
-                        {!uploadedProductUrls[i] && (
-                          <div className="absolute inset-0 bg-white/60 flex items-center justify-center">
-                            <i className="fas fa-spinner fa-spin text-amber-500 text-xs"></i>
-                          </div>
-                        )}
                       </div>
                     ) : (uploadedProductUrls[i] ? (
                       <img src={uploadedProductUrls[i]} className="w-full h-full object-cover" />

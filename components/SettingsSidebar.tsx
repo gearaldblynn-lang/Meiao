@@ -2,6 +2,7 @@
 import React, { useState } from 'react';
 import { AspectRatio, ModuleConfig, GenerationQuality, AppModule, TranslationSubMode } from '../types';
 import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../utils/modelQuality';
+import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../utils/modelAspectRatio';
 
 interface Props {
   activeModule: AppModule;
@@ -33,18 +34,26 @@ const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onCha
   const ratioList = [
     { label: '自动', value: AspectRatio.AUTO, icon: 'fa-compress' },
     { label: '1:1', value: AspectRatio.SQUARE, icon: 'fa-square' },
+    { label: '1:4', value: AspectRatio.P_1_4, icon: 'fa-portrait' },
+    { label: '1:8', value: AspectRatio.P_1_8, icon: 'fa-portrait' },
     { label: '2:3', value: AspectRatio.P_2_3, icon: 'fa-portrait' },
     { label: '3:2', value: AspectRatio.L_3_2, icon: 'fa-image' },
     { label: '3:4', value: AspectRatio.P_3_4, icon: 'fa-portrait' },
+    { label: '4:1', value: AspectRatio.L_4_1, icon: 'fa-image' },
     { label: '4:3', value: AspectRatio.L_4_3, icon: 'fa-image' },
     { label: '4:5', value: AspectRatio.P_4_5, icon: 'fa-portrait' },
     { label: '5:4', value: AspectRatio.L_5_4, icon: 'fa-image' },
+    { label: '8:1', value: AspectRatio.L_8_1, icon: 'fa-image' },
     { label: '9:16', value: AspectRatio.P_9_16, icon: 'fa-mobile-alt' },
     { label: '16:9', value: AspectRatio.L_16_9, icon: 'fa-tv' },
+    { label: '21:9', value: AspectRatio.L_21_9, icon: 'fa-tv' },
   ];
-  const visibleRatioList = isMainTranslationMode
-    ? ratioList.filter((item) => item.value !== AspectRatio.AUTO)
-    : ratioList;
+  const supportedRatios = getSupportedAspectRatiosForModel(config.model);
+  const visibleRatioList = ratioList.filter((item) => {
+    if (!supportedRatios.includes(item.value)) return false;
+    if (isMainTranslationMode && item.value === AspectRatio.AUTO) return false;
+    return true;
+  });
 
   return (
     <div className="w-80 bg-white border-r border-gray-200 h-full flex flex-col shrink-0 overflow-hidden relative shadow-sm">
@@ -140,13 +149,24 @@ const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onCha
           <section className="space-y-3 p-5 bg-slate-100 rounded-3xl border border-slate-200">
             <label className="text-[10px] font-bold uppercase tracking-[0.2em] block mb-2 text-slate-600">选择生图模型</label>
             <div className="flex gap-2">
-              {MODEL_OPTIONS.map((m) => (
-                <button
-                  key={m}
-                  onClick={() => onChange({...config, model: m, quality: getDefaultQualityForModel(m)})}
-                  className={`flex-1 py-2 text-[10px] font-bold rounded-xl border transition-all ${
-                    config.model === m ? 'bg-indigo-600 border-indigo-500 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:border-indigo-300'
-                  }`}
+                {MODEL_OPTIONS.map((m) => (
+                  <button
+                    key={m}
+                    onClick={() =>
+                      onChange({
+                        ...config,
+                        model: m,
+                        quality: getDefaultQualityForModel(m),
+                        aspectRatio: getSafeAspectRatioForModel(
+                          m,
+                          config.aspectRatio,
+                          isMainTranslationMode ? AspectRatio.SQUARE : AspectRatio.AUTO
+                        ),
+                      })
+                    }
+                    className={`flex-1 py-2 text-[10px] font-bold rounded-xl border transition-all ${
+                      config.model === m ? 'bg-indigo-600 border-indigo-500 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:border-indigo-300'
+                    }`}
                 >
                   {getModelDisplayName(m)}
                 </button>
