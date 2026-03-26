@@ -290,16 +290,23 @@ const readBody = async (req) => {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 };
 
-const serveStaticFile = (res, filePath) => {
+const serveStaticFile = (req, res, filePath) => {
   const ext = path.extname(filePath).toLowerCase();
   const contentType = STATIC_CONTENT_TYPES[ext] || 'application/octet-stream';
   const body = readFileSync(filePath);
-  res.writeHead(200, { 'Content-Type': contentType });
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': Buffer.byteLength(body),
+  });
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
   res.end(body);
 };
 
 const tryServeFrontend = (req, res, url) => {
-  if (req.method !== 'GET') return false;
+  if (req.method !== 'GET' && req.method !== 'HEAD') return false;
   if (url.pathname.startsWith('/api/')) return false;
   if (!existsSync(distDir)) return false;
 
@@ -314,13 +321,13 @@ const tryServeFrontend = (req, res, url) => {
   }
 
   if (existsSync(targetPath)) {
-    serveStaticFile(res, targetPath);
+    serveStaticFile(req, res, targetPath);
     return true;
   }
 
   const fallbackPath = path.join(distDir, 'index.html');
   if (existsSync(fallbackPath)) {
-    serveStaticFile(res, fallbackPath);
+    serveStaticFile(req, res, fallbackPath);
     return true;
   }
 

@@ -6,11 +6,7 @@
 
 ## 首次部署
 ```bash
-cd /www/wwwroot
-git clone https://github.com/gearaldblynn-lang/Meiao.git meiao-internal
-cd /www/wwwroot/meiao-internal
-npm install
-npm run build
+mkdir -p /www/wwwroot/meiao-internal
 ```
 
 ## 环境变量
@@ -36,16 +32,23 @@ pm2 start ecosystem.config.cjs
 pm2 save
 ```
 
+## 本地一键部署
+在本地项目目录执行：
+```bash
+chmod +x ./scripts/deploy_tencent.sh
+./scripts/deploy_tencent.sh
+```
+
+如果密钥路径或服务器地址变化，可以临时指定：
+```bash
+MEIAO_SSH_KEY=~/.ssh/MEIAO.pem \
+MEIAO_SERVER_HOST=111.229.66.247 \
+./scripts/deploy_tencent.sh
+```
+
 ## 更新版本
 ```bash
-cd /www/wwwroot/meiao-internal
-git pull origin main
-npm install
-npm run build
-set -a
-source .env.server
-set +a
-pm2 restart meiao-internal --update-env
+./scripts/deploy_tencent.sh
 ```
 
 ## 访问
