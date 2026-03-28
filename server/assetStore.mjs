@@ -32,9 +32,14 @@ export const sanitizeAssetName = (value) => {
   return `${safeBase}${safeExt}`;
 };
 
-export const buildAssetPublicPath = (assetId) => `/api/assets/file/${encodeURIComponent(String(assetId || ''))}`;
+export const buildAssetPublicPath = (assetId, originalName = '') => {
+  const assetPath = `/api/assets/file/${encodeURIComponent(String(assetId || ''))}`;
+  const safeName = sanitizeAssetName(originalName || '');
+  return safeName ? `${assetPath}/${encodeURIComponent(safeName)}` : assetPath;
+};
 
-export const buildAssetPublicUrl = (publicBaseUrl, assetId) => `${normalizeBaseUrl(publicBaseUrl)}${buildAssetPublicPath(assetId)}`;
+export const buildAssetPublicUrl = (publicBaseUrl, assetId, originalName = '') =>
+  `${normalizeBaseUrl(publicBaseUrl)}${buildAssetPublicPath(assetId, originalName)}`;
 
 export const getPublicBaseUrl = (env = {}, requestLike = null) => {
   const explicit = normalizeBaseUrl(env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || '');
@@ -271,7 +276,7 @@ export const persistAssetBuffer = async ({
     provider: String(provider || 'internal').slice(0, 40),
     providerSourceUrl: String(providerSourceUrl || ''),
     jobId: String(jobId || ''),
-    publicUrl: buildAssetPublicUrl(publicBaseUrl, id),
+    publicUrl: buildAssetPublicUrl(publicBaseUrl, id, safeName),
     createdAt,
     updatedAt: createdAt,
     lastAccessedAt: createdAt,

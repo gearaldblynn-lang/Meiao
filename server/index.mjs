@@ -159,6 +159,7 @@ const defaultTranslationConfigs = {
 };
 
 const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
+const ASSET_FILE_ROUTE_REGEX = /^\/api\/assets\/file\/([^/]+)(?:\/[^/]+)?$/;
 const ASSET_CLEANUP_INTERVAL_MS = 1000 * 60 * 30;
 
 const isLocalHostValue = (value) => /(^|\/\/)(127\.0\.0\.1|localhost)(:|$)/i.test(String(value || ''));
@@ -1396,8 +1397,9 @@ const requireDbAdmin = async (req, res) => {
 const handleMysqlRequest = async (req, res, url) => {
   const userDetailMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
 
-  if (req.method === 'GET' && url.pathname.startsWith('/api/assets/file/')) {
-    const assetId = decodeURIComponent(url.pathname.slice('/api/assets/file/'.length));
+  const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
+  if (req.method === 'GET' && assetRouteMatch) {
+    const assetId = decodeURIComponent(assetRouteMatch[1]);
     await serveStoredAsset(req, res, assetId);
     return;
   }
@@ -2001,8 +2003,9 @@ const handleLocalRequest = async (req, res, url) => {
   let store = readLocalStore();
   const userDetailMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
 
-  if (req.method === 'GET' && url.pathname.startsWith('/api/assets/file/')) {
-    const assetId = decodeURIComponent(url.pathname.slice('/api/assets/file/'.length));
+  const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
+  if (req.method === 'GET' && assetRouteMatch) {
+    const assetId = decodeURIComponent(assetRouteMatch[1]);
     await serveStoredAsset(req, res, assetId);
     return;
   }
