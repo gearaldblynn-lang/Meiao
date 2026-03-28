@@ -294,7 +294,8 @@ const FileProcessor: React.FC<Props> = ({
             width: dimensions.width,
             height: dimensions.height,
             ratioLabel: formatRatioLabel(dimensions.width, dimensions.height)
-          } : undefined
+          } : undefined,
+          (subMode || TranslationSubMode.MAIN) as 'main' | 'detail' | 'remove_text'
         );
         void logActionSuccess({
           module: 'translation',

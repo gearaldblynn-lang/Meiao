@@ -65,7 +65,8 @@ const buildKieAiPrompt = (
   config: ModuleConfig,
   isRatioMatch: boolean,
   isRemoveText: boolean = false,
-  sourceImageContext?: SourceImageContext
+  sourceImageContext?: SourceImageContext,
+  subMode: 'main' | 'detail' | 'remove_text' = 'main'
 ): string => {
   const targetLang = config.targetLanguage === 'CUSTOM' ? config.customLanguage : config.targetLanguage;
   const skipTranslation = config.targetLanguage === 'KEEP_ORIGINAL';
@@ -86,7 +87,7 @@ const buildKieAiPrompt = (
     prompt += `严格将图像内所有文本文案文字翻译成${targetLang}，保持文案翻译对应以及准确。`;
   }
 
-  if (isRatioMatch && sourceImageContext) {
+  if (isRatioMatch && sourceImageContext && subMode === 'main') {
     prompt += `输出画布需自然保持与原图一致的纵横比例，比例约为${sourceImageContext.ratioLabel}。`;
     const originalRatio = sourceImageContext.height === 0 ? 1 : sourceImageContext.width / sourceImageContext.height;
     if (Math.abs(originalRatio - 1) > 0.08) {
@@ -222,7 +223,8 @@ export const processWithKieAi = async (
   signal: AbortSignal,
   customPrompt?: string,
   isRemoveText: boolean = false,
-  sourceImageContext?: SourceImageContext
+  sourceImageContext?: SourceImageContext,
+  subMode: 'main' | 'detail' | 'remove_text' = 'main'
 ): Promise<KieAiResult> => {
   logKieEvent('create_image_task', '开始创建图像任务', 'started', '', {
     imageCount: Array.isArray(imageUrls) ? imageUrls.length : 1,
@@ -230,7 +232,7 @@ export const processWithKieAi = async (
     aspectRatio: moduleConfig.aspectRatio,
     quality: moduleConfig.quality,
   });
-  const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext);
+  const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode);
   const module = getActiveModuleContext() || 'unknown';
   const { job } = await createInternalJob({
     module,
@@ -257,3 +259,5 @@ export const processWithKieAi = async (
   );
   return result;
 };
+
+export const __testOnly_buildKieAiPrompt = buildKieAiPrompt;
