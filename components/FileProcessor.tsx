@@ -260,6 +260,7 @@ const FileProcessor: React.FC<Props> = ({
       const { effectiveConfig, isRatioMatch } = deriveTranslationExecutionPlan({
         config,
         subMode: subMode || TranslationSubMode.MAIN,
+        sourceDimensions: dimensions,
       });
 
       if (mode === 'recover' && fileItem.taskId) {
