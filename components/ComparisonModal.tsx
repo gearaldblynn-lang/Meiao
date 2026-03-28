@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 // Fixed: Replaced ProcessingConfig with exported ModuleConfig
 import { FileItem, ModuleConfig } from '../types';
 import { safeCreateObjectURL } from '../utils/urlUtils';
+import { getClientSafeAssetUrl } from '../modules/Translation/translationAssetUtils.mjs';
 
 interface Props {
   item: FileItem;
@@ -17,8 +18,12 @@ const ComparisonModal: React.FC<Props> = ({ item, config, onClose }) => {
   useEffect(() => {
     const originalObjectUrl = item.file ? safeCreateObjectURL(item.file) : undefined;
     const processedObjectUrl = item.resultBlob ? safeCreateObjectURL(item.resultBlob) : undefined;
-    const nextOriginalUrl = item.sourcePreviewUrl || originalObjectUrl;
-    const nextResultUrl = item.resultUrl || processedObjectUrl;
+    const nextOriginalUrl = item.sourcePreviewUrl
+      ? getClientSafeAssetUrl(item.sourcePreviewUrl)
+      : item.sourceUrl
+        ? getClientSafeAssetUrl(item.sourceUrl)
+        : originalObjectUrl;
+    const nextResultUrl = item.resultUrl ? getClientSafeAssetUrl(item.resultUrl) : processedObjectUrl;
 
     setOriginalUrl(nextOriginalUrl);
     setResultUrl(nextResultUrl);
