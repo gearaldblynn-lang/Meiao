@@ -10,6 +10,18 @@ export const deriveTranslationExecutionPlan = ({ config, subMode }) => {
   };
 };
 
+export const getStoredSourceDimensions = (fileItem) => {
+  const width = Number(fileItem?.originalWidth || 0);
+  const height = Number(fileItem?.originalHeight || 0);
+  if (!width || !height) return null;
+
+  return {
+    width,
+    height,
+    ratio: width / height,
+  };
+};
+
 export const deriveTranslationExportSize = ({
   config,
   subMode,

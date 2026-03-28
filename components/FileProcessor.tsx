@@ -5,11 +5,11 @@ import { releaseObjectURLs, safeCreateObjectURL } from '../utils/urlUtils';
 import { normalizeFetchedImageBlob } from '../utils/imageBlobUtils.mjs';
 import { uploadToCos } from '../services/tencentCosService';
 import { processWithKieAi, recoverKieAiTask } from '../services/kieAiService';
-import { resizeImage, createZipAndDownload, getImageDimensions, fileToDataUrl } from '../utils/imageUtils';
+import { resizeImage, createZipAndDownload, getImageDimensions, getImageDimensionsFromUrl, fileToDataUrl } from '../utils/imageUtils';
 import ComparisonModal from './ComparisonModal';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../services/loggingService';
 import { shouldValidateTranslationAspectRatio } from '../modules/Translation/translationConfigUtils.mjs';
-import { deriveTranslationExecutionPlan, deriveTranslationExportSize } from '../modules/Translation/translationProcessingUtils.mjs';
+import { deriveTranslationExecutionPlan, deriveTranslationExportSize, getStoredSourceDimensions } from '../modules/Translation/translationProcessingUtils.mjs';
 
 interface Props {
   activeModule: AppModule;
@@ -132,10 +132,11 @@ const FileProcessor: React.FC<Props> = ({
 
     for (const f of selectedFiles) {
       if (!f.type.startsWith('image/')) continue;
+      let sourceDimensions: { width: number; height: number; ratio: number } | null = null;
       
       if (isDetailMode) {
-        const dims = await getImageDimensions(f);
-        if (dims.height > dims.width * 4) {
+        sourceDimensions = await getImageDimensions(f);
+        if (sourceDimensions.height > sourceDimensions.width * 4) {
           hasViolation = true;
           continue; 
         }
@@ -148,6 +149,8 @@ const FileProcessor: React.FC<Props> = ({
         id: Math.random().toString(36).substr(2, 9),
         file: f,
         relativePath: relativePath,
+        originalWidth: sourceDimensions?.width || undefined,
+        originalHeight: sourceDimensions?.height || undefined,
         sourcePreviewUrl,
         status: 'pending',
         progress: 0
@@ -245,7 +248,13 @@ const FileProcessor: React.FC<Props> = ({
       });
 
       let res: KieAiResult;
-      const dimensions = await getImageDimensions(fileItem.file!);
+      const dimensions =
+        getStoredSourceDimensions(fileItem) ||
+        (fileItem.file
+          ? await getImageDimensions(fileItem.file)
+          : fileItem.sourcePreviewUrl
+            ? await getImageDimensionsFromUrl(fileItem.sourcePreviewUrl)
+            : { width: 0, height: 0, ratio: 1 });
       const { effectiveConfig, isRatioMatch } = deriveTranslationExecutionPlan({
         config,
         subMode: subMode || TranslationSubMode.MAIN,
