@@ -5,6 +5,7 @@ import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
 import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
 import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
+import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
 
 interface Props {
   state: BuyerShowPersistentState;
@@ -76,7 +77,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
       footer={
         <PrimaryActionButton
           onClick={onStart}
-          disabled={isProcessing || state.productImages.length === 0}
+          disabled={isProcessing || !hasAvailableAssetSources(state.productImages, state.uploadedProductUrls)}
           icon={isProcessing ? 'fa-spinner fa-spin' : 'fa-magic'}
           label={isProcessing ? '全案流水线执行中...' : '启动全案买家秀生成'}
         />

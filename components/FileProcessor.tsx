@@ -149,6 +149,7 @@ const FileProcessor: React.FC<Props> = ({
       validItems.push({
         id: Math.random().toString(36).substr(2, 9),
         file: f,
+        fileName: f.name,
         relativePath: relativePath,
         originalWidth: sourceDimensions?.width || undefined,
         originalHeight: sourceDimensions?.height || undefined,

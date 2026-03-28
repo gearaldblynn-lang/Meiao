@@ -17,6 +17,7 @@ import {
   getLegacyTranslationModuleConfig,
   migrateLegacyTranslationConfigs,
 } from '../modules/Translation/translationConfigUtils.mjs';
+import { hasReusableTaskAsset } from './cloudAssetState.mjs';
 
 export const PERSISTENCE_KEY = 'AIGC_APP_STATE_V1';
 
@@ -175,7 +176,9 @@ export const createDefaultVideoState = (): VideoPersistentState => ({
     logicInfo: '',
   },
   productImages: [],
+  uploadedProductUrls: [],
   referenceVideoFile: null,
+  uploadedReferenceVideoUrl: '',
   tasks: [],
   veoProjects: [],
   veoReferenceImages: [],
@@ -255,11 +258,19 @@ const normalizeRetouchTasks = (tasks: unknown) => {
 
   return tasks.filter((task) => {
     if (!task || typeof task !== 'object') return false;
-    return (task as Record<string, unknown>).file instanceof File;
+    return hasReusableTaskAsset(task as Record<string, unknown>);
   }).map((task) => {
     const typedTask = task as Record<string, unknown>;
     return {
       ...typedTask,
+      file: typedTask.file instanceof File ? typedTask.file : null,
+      fileName: typeof typedTask.fileName === 'string'
+        ? typedTask.fileName
+        : typedTask.file instanceof File
+          ? typedTask.file.name
+          : typeof typedTask.relativePath === 'string'
+            ? typedTask.relativePath
+            : '',
       resultBlob: typedTask.resultBlob instanceof Blob ? typedTask.resultBlob : undefined,
     };
   });
@@ -321,7 +332,11 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
       ? {
           ...saved.videoMemory,
           productImages: normalizeFileArray(saved.videoMemory.productImages),
+          uploadedProductUrls: normalizeStringArray(saved.videoMemory.uploadedProductUrls),
           referenceVideoFile: normalizeNullableFile(saved.videoMemory.referenceVideoFile),
+          uploadedReferenceVideoUrl: typeof saved.videoMemory.uploadedReferenceVideoUrl === 'string'
+            ? saved.videoMemory.uploadedReferenceVideoUrl
+            : '',
           veoReferenceImages: normalizeStringArray(saved.videoMemory.veoReferenceImages),
           storyboard: saved.videoMemory.storyboard
             ? {

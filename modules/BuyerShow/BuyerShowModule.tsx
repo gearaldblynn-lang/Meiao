@@ -7,6 +7,7 @@ import { uploadToCos } from '../../services/tencentCosService';
 import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { createZipAndDownload } from '../../utils/imageUtils';
 import { logInternalAction, logActionStart, logActionSuccess, logActionFailure, logActionInterrupted } from '../../services/loggingService';
+import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
 
 // --- Sub Components for Performance Optimization ---
 
@@ -406,7 +407,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
   const handleStartWorkflow = async () => {
     if (inflightIdsRef.current.has('__workflow__')) return;
     const latestState = stateRef.current;
-    if (latestState.isAnalyzing || latestState.isGenerating || latestState.productImages.length === 0) return;
+    if (latestState.isAnalyzing || latestState.isGenerating || !hasAvailableAssetSources(latestState.productImages, latestState.uploadedProductUrls)) return;
     inflightIdsRef.current.add('__workflow__');
 
     currentPlanAbortControllerRef.current?.abort();

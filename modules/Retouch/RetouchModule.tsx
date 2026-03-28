@@ -9,6 +9,8 @@ import { createZipAndDownload, resizeImage, getImageDimensions } from '../../uti
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
 import { releaseObjectURLs, safeCreateObjectURL } from '../../utils/urlUtils';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
+import { getTaskDisplayName } from '../../utils/cloudAssetState.mjs';
+import { persistGeneratedAsset } from '../../services/persistedAssetClient';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -32,6 +34,8 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
+
+  const getRetouchTaskName = (task: RetouchTask) => getTaskDisplayName(task, 'retouch.png');
 
   const updateTaskStatus = (taskId: string, updates: Partial<RetouchTask>) => {
     onStateChange(prev => ({
@@ -65,7 +69,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
         meta: {
           ...baseMeta,
           taskId: task.id,
-          fileName: task.file.name,
+          fileName: getRetouchTaskName(task),
           relativePath: task.relativePath,
           kieTaskId: task.taskId,
         },
@@ -108,11 +112,17 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
 
             if (w > 0 && h > 0) {
               const resizedBlob = await resizeImage(blob, w, h);
-              finalUrl = safeCreateObjectURL(resizedBlob);
+              finalUrl = await persistGeneratedAsset(resizedBlob, 'retouch', getRetouchTaskName(task));
             }
           } catch (e) {
             console.warn("Resizing failed, using original AI output", e);
           }
+        }
+
+        if (!finalUrl || finalUrl.startsWith('blob:')) {
+          const response = await fetch(finalUrl || res.imageUrl, { signal: controller.signal });
+          const persistedBlob = await normalizeFetchedImageBlob(await response.blob(), finalUrl || res.imageUrl);
+          finalUrl = await persistGeneratedAsset(persistedBlob, 'retouch', getRetouchTaskName(task));
         }
 
         updateTaskStatus(task.id, { status: 'completed', resultUrl: finalUrl, taskId: res.taskId, progress: 100, error: undefined });
@@ -123,7 +133,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
           meta: {
             ...baseMeta,
             taskId: task.id,
-            fileName: task.file.name,
+            fileName: getRetouchTaskName(task),
             relativePath: task.relativePath,
             kieTaskId: res.taskId,
           },
@@ -150,7 +160,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
           meta: {
             ...baseMeta,
             taskId: task.id,
-            fileName: task.file.name,
+            fileName: getRetouchTaskName(task),
             relativePath: task.relativePath,
             kieTaskId: task.taskId,
           },
@@ -164,7 +174,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
           meta: {
             ...baseMeta,
             taskId: task.id,
-            fileName: task.file.name,
+            fileName: getRetouchTaskName(task),
             relativePath: task.relativePath,
             kieTaskId: task.taskId,
           },
@@ -178,7 +188,10 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
 
   const triggerNewRetouchTask = async (task: RetouchTask, signal: AbortSignal) => {
     updateTaskStatus(task.id, { error: '正在上传素材至云端...' });
-    const sourceUrl = await uploadToCos(task.file, apiConfig);
+    const sourceUrl = task.sourceUrl || (task.file ? await uploadToCos(task.file, apiConfig) : '');
+    if (!sourceUrl) {
+      throw new Error('原始文件已失效，请重新导入后再生成。');
+    }
     updateTaskStatus(task.id, { sourceUrl });
     let refUrl = persistentState.uploadedReferenceUrl || null;
     if (referenceImage && !refUrl) {
@@ -236,7 +249,8 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
   };
 
   const startBatch = async () => {
-    if (startBatchLockRef.current || pendingFiles.length === 0) return;
+    const hasQueuedTasks = tasksRef.current.some((task) => task.status === 'pending' && !inflightIdsRef.current.has(task.id));
+    if (startBatchLockRef.current || (pendingFiles.length === 0 && !hasQueuedTasks)) return;
     startBatchLockRef.current = true;
     void logActionStart({
       module: 'retouch',
@@ -244,24 +258,27 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
       message: '启动批量产品精修',
       meta: {
         ...baseMeta,
-        count: pendingFiles.length,
+        count: pendingFiles.length || tasksRef.current.filter((task) => task.status === 'pending').length,
       },
     });
 
     const newTasksFromPending: RetouchTask[] = pendingFiles.map(f => ({
       id: Math.random().toString(36).substr(2, 9),
       file: f,
+      fileName: f.name,
       relativePath: f.name,
       status: 'pending',
       progress: 0,
       mode: mode
     }));
 
-    onStateChange(prev => ({
-      ...prev,
-      tasks: [...prev.tasks, ...newTasksFromPending],
-      pendingFiles: []
-    }));
+    if (newTasksFromPending.length > 0) {
+      onStateChange(prev => ({
+        ...prev,
+        tasks: [...prev.tasks, ...newTasksFromPending],
+        pendingFiles: []
+      }));
+    }
 
     setTimeout(() => runWorkerCycle(), 50);
     setTimeout(() => {
@@ -314,7 +331,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
       meta: {
         ...baseMeta,
         taskId: task.id,
-        fileName: task.file.name,
+        fileName: getRetouchTaskName(task),
       },
     });
     try {
@@ -326,7 +343,8 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
       
       const link = document.createElement('a');
       link.href = blobUrl;
-      const fileName = task.file.name.includes('.') ? task.file.name : `${task.file.name}.png`;
+      const baseFileName = getRetouchTaskName(task);
+      const fileName = baseFileName.includes('.') ? baseFileName : `${baseFileName}.png`;
       link.download = `retouched_${fileName}`;
       
       // 必须 append 到 body 触发
@@ -343,7 +361,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
       // 备选方案：仍尝试使用 download 属性，但不设置 target="_blank" 以防新开页面
       const link = document.createElement('a');
       link.href = task.resultUrl;
-      link.download = `retouched_${task.file.name}`;
+      link.download = `retouched_${getRetouchTaskName(task)}`;
       link.click();
     }
   };
@@ -367,7 +385,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
         completedTasks.map(async (task) => {
           const resp = await fetch(task.resultUrl!);
           const blob = await resp.blob();
-          return { blob, path: `retouched_${task.file.name}` };
+          return { blob, path: `retouched_${getRetouchTaskName(task)}` };
         })
       );
       await createZipAndDownload(zipFiles, `mayo_retouch_batch_${Date.now()}`);
@@ -407,7 +425,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
       meta: {
         ...baseMeta,
         taskId: task.id,
-        fileName: task.file.name,
+        fileName: getRetouchTaskName(task),
       },
     });
     try {
@@ -498,7 +516,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
             {tasks.map((task) => (
               <div key={task.id} className="bg-white rounded-[32px] border border-slate-100 shadow-xl overflow-hidden flex flex-col group transition-all duration-500 hover:ring-2 hover:ring-emerald-500">
                 <div className="p-4 border-b border-slate-50 flex items-center justify-between bg-slate-50/50">
-                  <span className="text-[10px] font-black text-slate-400 truncate max-w-[140px] uppercase tracking-wider">{task.file.name}</span>
+                  <span className="text-[10px] font-black text-slate-400 truncate max-w-[140px] uppercase tracking-wider">{getRetouchTaskName(task)}</span>
                   <div className="flex gap-2">
                     {task.status === 'completed' && (
                        <button onClick={() => handleExportToBgSub(task)} className="w-7 h-7 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center hover:bg-indigo-500 hover:text-white transition-all" title="一键抠图"><i className="fas fa-scissors text-[10px]"></i></button>
@@ -515,7 +533,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
                     </div>
                   ) : (
                     <>
-                      {(task.sourceUrl || safeCreateObjectURL(task.file)) && <img src={task.sourceUrl || safeCreateObjectURL(task.file)} className="w-full h-full object-cover opacity-60 grayscale" />}
+                      {(task.sourceUrl || (task.file ? safeCreateObjectURL(task.file) : '')) && <img src={task.sourceUrl || safeCreateObjectURL(task.file!)} className="w-full h-full object-cover opacity-60 grayscale" />}
                       {(task.status === 'processing' || task.status === 'uploading') && (
                         <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm flex flex-col items-center justify-center text-white p-6">
                            <div className="w-16 h-16 relative mb-4">
@@ -566,7 +584,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
                <div className="flex-1 flex flex-col p-6 relative">
                   <span className="absolute top-10 left-10 z-10 px-4 py-1.5 bg-slate-800/80 backdrop-blur text-white text-[10px] font-black rounded-full uppercase tracking-widest">Original / 原图</span>
                   <div className="flex-1 flex items-center justify-center overflow-hidden rounded-3xl bg-white border border-slate-200 shadow-inner">
-                    {(selectedTask.sourceUrl || safeCreateObjectURL(selectedTask.file)) && <img src={selectedTask.sourceUrl || safeCreateObjectURL(selectedTask.file)} className="max-w-full max-h-full object-contain" />}
+                    {(selectedTask.sourceUrl || (selectedTask.file ? safeCreateObjectURL(selectedTask.file) : '')) && <img src={selectedTask.sourceUrl || safeCreateObjectURL(selectedTask.file!)} className="max-w-full max-h-full object-contain" />}
                   </div>
                </div>
                <div className="flex-1 flex flex-col p-6 relative">

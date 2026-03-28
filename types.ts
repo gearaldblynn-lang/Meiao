@@ -242,7 +242,9 @@ export interface VideoPersistentState {
   subMode: VideoSubMode;
   config: VideoConfig;
   productImages: File[];
+  uploadedProductUrls?: string[];
   referenceVideoFile: File | null;
+  uploadedReferenceVideoUrl?: string | null;
   tasks: VideoTask[]; // Legacy / Sora tasks
   
   // Veo Specific Storage
@@ -357,6 +359,7 @@ export interface BuyerShowTask {
   status: 'pending' | 'generating' | 'completed' | 'error' | 'interrupted';
   resultUrl?: string;
   error?: string;
+  fileName?: string;
 }
 
 export interface BuyerShowSet {
@@ -402,6 +405,7 @@ export interface BuyerShowPersistentState {
 export interface FileItem {
   id: string;
   file: File | null;
+  fileName?: string;
   relativePath: string;
   originalWidth?: number;
   originalHeight?: number;
@@ -419,7 +423,8 @@ export interface FileItem {
 export interface RetouchTask {
   id: string;
   taskId?: string; 
-  file: File;
+  file: File | null;
+  fileName?: string;
   relativePath: string;
   status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error' | 'interrupted';
   progress: number;

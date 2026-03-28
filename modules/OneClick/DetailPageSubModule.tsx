@@ -12,6 +12,7 @@ import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService'
 import { resizeImage, createZipAndDownload, getImageDimensions } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
+import { persistGeneratedAsset } from '../../services/persistedAssetClient';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -444,7 +445,7 @@ const DetailPageSubModule: React.FC<Props> = ({
         }
 
         const finalBlob = await resizeImage(blob, targetW, targetH, config.maxFileSize);
-        const finalUrl = safeCreateObjectURL(finalBlob);
+        const finalUrl = await persistGeneratedAsset(finalBlob, 'one_click', `${targetScheme.uiTitle || schemeId}.png`);
         
         updateSingleScreen(schemeId, { status: 'completed', resultUrl: finalUrl, taskId: res.taskId });
         void logActionSuccess({
@@ -556,7 +557,7 @@ const DetailPageSubModule: React.FC<Props> = ({
     const selectedSchemes = schemesRef.current.filter(s => s.selected && s.status !== 'generating' && !inflightIdsRef.current.has(s.id));
     if (selectedSchemes.length === 0) return;
 
-    if (productImages.length === 0) {
+    if (productImages.length === 0 && uploadedProductUrls.length === 0) {
         alert("请先在左侧上传产品图片");
         return;
     }
