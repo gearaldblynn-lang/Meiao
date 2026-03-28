@@ -5,9 +5,12 @@ import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
 import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
+import { PopoverSelect, PrimaryActionButton, SegmentedTabs, SidebarShell } from '../../components/ui/workspacePrimitives';
 
 interface Props {
   subMode?: OneClickSubMode;
+  currentSubMode?: OneClickSubMode;
+  onSubModeChange?: (mode: OneClickSubMode) => void;
   config: OneClickConfig;
   onChange: (config: OneClickConfig) => void;
   productImages: File[];
@@ -26,7 +29,9 @@ interface Props {
 }
 
 const ConfigSidebar: React.FC<Props> = ({ 
-  subMode = OneClickSubMode.MAIN_IMAGE, 
+  subMode = OneClickSubMode.MAIN_IMAGE,
+  currentSubMode,
+  onSubModeChange,
   config, 
   onChange, 
   productImages, 
@@ -47,13 +52,12 @@ const ConfigSidebar: React.FC<Props> = ({
   const styleInputRef = useRef<HTMLInputElement>(null);
   const isDetail = subMode === OneClickSubMode.DETAIL_PAGE;
   
-  const [expandedSections, setExpandedSections] = useState<string[]>(['assets', 'marketing', 'platform', 'specs']);
+  const [expandedSections, setExpandedSections] = useState<string[]>(['platform', 'specs']);
   const [assetTab, setAssetTab] = useState<'product' | 'style'>('product');
 
   const [isUploadingProduct, setIsUploadingProduct] = useState<boolean[]>([]);
   const [isUploadingStyle, setIsUploadingStyle] = useState(false);
   const [isCustomPlatform, setIsCustomPlatform] = useState(config.platform === 'CUSTOM');
-
   // 自动上传产品图
   useEffect(() => {
     const uploadFiles = async () => {
@@ -103,6 +107,7 @@ const ConfigSidebar: React.FC<Props> = ({
     
     uploadStyle();
   }, [styleImage, apiConfig]);
+
   const [isCustomLanguage, setIsCustomLanguage] = useState(false);
 
   // 解析比例字符串为数值
@@ -195,7 +200,7 @@ const ConfigSidebar: React.FC<Props> = ({
   };
 
   const toggleSection = (id: string) => {
-    setExpandedSections(prev => prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]);
+    setExpandedSections((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]));
   };
 
   const platformPresets = {
@@ -239,55 +244,73 @@ const ConfigSidebar: React.FC<Props> = ({
     if (!isDetail && ratio.value === AspectRatio.AUTO) return false;
     return true;
   });
+  const effectiveSubMode = currentSubMode || subMode;
 
   return (
-    <div className="w-[380px] bg-white h-full border-r border-slate-200 flex flex-col shrink-0 overflow-hidden relative z-30">
-      <header className="p-5 border-b border-slate-100 flex-none bg-white">
-        <div className="flex items-start justify-between gap-3 mb-1">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-1.5 h-5 bg-rose-600 rounded-full"></div>
-            <h2 className="text-lg font-black text-slate-800 tracking-tight">{isDetail ? '详情页体系化设计' : '主图大师配置'}</h2>
-          </div>
-          <div className="shrink-0 flex flex-col gap-2">
-            {onClearConfig && (
-              <div className="relative group">
-                <button
-                  onClick={onClearConfig}
-                  disabled={disabled}
-                  className="w-9 h-9 rounded-xl border border-slate-200 bg-slate-50 text-slate-500 hover:bg-slate-100 hover:text-rose-600 transition-all disabled:opacity-50 flex items-center justify-center"
-                >
-                  <i className="fas fa-trash-alt text-xs"></i>
-                </button>
-                <div className="absolute right-11 top-1/2 -translate-y-1/2 whitespace-nowrap px-3 py-2 bg-slate-900 text-white text-[10px] font-bold rounded-lg shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity">
-                  清空当前页配置信息
-                </div>
+    <SidebarShell
+      accentClass="bg-rose-600"
+      title={isDetail ? '详情设置' : '主图设置'}
+      subtitle={isDetail ? '详情模式' : '主图模式'}
+      headerContent={onSubModeChange ? (
+        <SegmentedTabs
+          value={effectiveSubMode}
+          onChange={(next) => onSubModeChange(next as OneClickSubMode)}
+          accentClass="bg-rose-600 text-white"
+          items={[
+            { value: OneClickSubMode.MAIN_IMAGE, label: '主图', icon: 'fa-image' },
+            { value: OneClickSubMode.DETAIL_PAGE, label: '详情', icon: 'fa-layer-group' },
+          ]}
+        />
+      ) : undefined}
+      actions={
+        <div className="flex shrink-0 items-center gap-2">
+          {onSyncConfig ? (
+            <div className="relative group">
+              <button
+                onClick={onSyncConfig}
+                disabled={disabled}
+                className="flex h-11 w-11 items-center justify-center rounded-2xl border border-rose-100 bg-rose-50 text-rose-600 transition-all hover:bg-rose-100 disabled:opacity-50"
+              >
+                <i className="fas fa-right-left text-xs"></i>
+              </button>
+              <div className="absolute right-0 top-14 whitespace-nowrap rounded-lg bg-slate-900 px-3 py-2 text-[10px] font-bold text-white shadow-lg opacity-0 pointer-events-none transition-opacity group-hover:opacity-100">
+                {isDetail ? '同步主图配置信息' : '同步详情配置信息'}
               </div>
-            )}
-            {onSyncConfig && (
-              <div className="relative group">
-                <button
-                  onClick={onSyncConfig}
-                  disabled={disabled}
-                  className="w-9 h-9 rounded-xl border border-rose-100 bg-rose-50 text-rose-600 hover:bg-rose-100 transition-all disabled:opacity-50 flex items-center justify-center"
-                >
-                  <i className="fas fa-right-left text-xs"></i>
-                </button>
-                <div className="absolute right-11 top-1/2 -translate-y-1/2 whitespace-nowrap px-3 py-2 bg-slate-900 text-white text-[10px] font-bold rounded-lg shadow-lg opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity">
-                  {isDetail ? '同步主图配置信息' : '同步详情配置信息'}
-                </div>
+            </div>
+          ) : null}
+          {onClearConfig ? (
+            <div className="relative group">
+              <button
+                onClick={onClearConfig}
+                disabled={disabled}
+                className="flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-500 transition-all hover:bg-slate-100 hover:text-rose-600 disabled:opacity-50"
+              >
+                <i className="fas fa-trash-alt text-xs"></i>
+              </button>
+              <div className="absolute right-0 top-14 whitespace-nowrap rounded-lg bg-slate-900 px-3 py-2 text-[10px] font-bold text-white shadow-lg opacity-0 pointer-events-none transition-opacity group-hover:opacity-100">
+                清空当前页配置信息
               </div>
-            )}
-          </div>
+            </div>
+          ) : null}
         </div>
-        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-[0.15em]">Systematic Design Engine</p>
-      </header>
-
-      <div className="flex-1 min-h-0 overflow-y-auto sidebar-scroll bg-slate-50/30">
-        <div className="p-4 space-y-4 pb-12">
-          
+      }
+      footer={
+        <PrimaryActionButton
+          onClick={onStart}
+          disabled={disabled || productImages.length === 0}
+          icon={disabled ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'}
+          label={disabled
+            ? (isDetail ? '正在生成详情方案...' : '正在生成主图方案...')
+            : (isDetail ? '开始生成详情方案' : '开始生成主图方案')
+          }
+        />
+      }
+    >
           <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-            <button onClick={() => toggleSection('assets')} className="w-full px-4 py-3 flex items-center justify-between text-slate-600 hover:bg-slate-50 transition-colors">
-              <div className="flex items-center gap-3"><i className="fas fa-images text-[10px] text-rose-500"></i><span className="text-[11px] font-bold uppercase tracking-wider">设计素材与参考</span></div>
+            <button onClick={() => toggleSection('assets')} className="flex w-full items-center justify-between bg-white px-4 py-4 text-left text-slate-600 transition-colors hover:bg-slate-50">
+              <div>
+                <span className="text-sm font-bold text-slate-700">设计素材与参考</span>
+              </div>
               <i className={`fas fa-chevron-down text-[10px] transition-transform ${expandedSections.includes('assets') ? '' : '-rotate-90'}`}></i>
             </button>
             {expandedSections.includes('assets') && (
@@ -301,7 +324,7 @@ const ConfigSidebar: React.FC<Props> = ({
                     <div onClick={() => productInputRef.current?.click()} className="group cursor-pointer border-2 border-dashed border-slate-200 rounded-[20px] p-5 hover:border-rose-300 hover:bg-rose-50/30 transition-all text-center">
                       <i className="far fa-image text-slate-300 text-lg group-hover:text-rose-400 mb-2 block"></i>
                       <p className="text-xs font-black text-slate-600">上传产品原始图</p>
-                      <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-tighter">JPG/PNG/WEBP | 限 8 张</p>
+                      <p className="mt-1 text-[10px] text-slate-400">JPG、PNG、WEBP，最多 8 张</p>
                       <input type="file" multiple ref={productInputRef} onChange={(e) => {
                         if (e.target.files) {
                            const newFiles = (Array.from(e.target.files) as File[]).filter(f => f.size <= 10 * 1024 * 1024);
@@ -414,8 +437,8 @@ const ConfigSidebar: React.FC<Props> = ({
                         }
                       }} className="hidden" accept="image/*" />
                     </div>
-                    <div className="space-y-1 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">全案风格强度</span>
+                    <div className="space-y-1 rounded-xl border border-slate-100 bg-slate-50 p-3">
+                      <span className="ml-1 text-xs font-medium text-slate-400">风格强度</span>
                       <div className="flex bg-white/60 p-1 rounded-lg">
                         {(['low', 'medium', 'high'] as StyleStrength[]).map(s => (
                           <button key={s} onClick={() => onChange({...config, styleStrength: s})} className={`flex-1 py-1 text-[9px] font-black rounded-md transition-all ${config.styleStrength === s ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400'}`}>{s === 'low' ? '低' : s === 'medium' ? '中' : '高'}</button>
@@ -429,18 +452,20 @@ const ConfigSidebar: React.FC<Props> = ({
           </div>
 
           <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-            <button onClick={() => toggleSection('marketing')} className="w-full px-4 py-3 flex items-center justify-between text-slate-600 hover:bg-slate-50 transition-colors">
-              <div className="flex items-center gap-3"><i className="fas fa-pen-nib text-[10px] text-rose-500"></i><span className="text-[11px] font-bold uppercase tracking-wider">产品营销与叙事</span></div>
+            <button onClick={() => toggleSection('marketing')} className="flex w-full items-center justify-between bg-white px-4 py-4 text-left text-slate-600 transition-colors hover:bg-slate-50">
+              <div>
+                <span className="text-sm font-bold text-slate-700">产品营销与叙事</span>
+              </div>
               <i className={`fas fa-chevron-down text-[10px] transition-transform ${expandedSections.includes('marketing') ? '' : '-rotate-90'}`}></i>
             </button>
             {expandedSections.includes('marketing') && (
               <div className="px-4 pb-4 space-y-4">
                 <div className="space-y-1">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">产品核心特征</span>
+                  <span className="ml-1 text-xs font-medium text-slate-400">产品核心特征</span>
                   <textarea value={config.description} onChange={(e) => onChange({...config, description: e.target.value})} placeholder="输入产品名称、核心卖点，用于AI生成文案..." className="w-full h-24 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:bg-white resize-none shadow-inner" />
                 </div>
                 <div className="space-y-1">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">自定义叙事逻辑 (可选)</span>
+                  <span className="ml-1 text-xs font-medium text-slate-400">自定义叙事逻辑</span>
                   <textarea value={config.planningLogic} onChange={(e) => onChange({...config, planningLogic: e.target.value})} placeholder="例如：可以输入自己做整套策划的逻辑，也可以建议AI使用某个逻辑模型，比如B=mat等" className="w-full h-24 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:bg-white resize-none shadow-inner" />
                 </div>
               </div>
@@ -448,8 +473,10 @@ const ConfigSidebar: React.FC<Props> = ({
           </div>
 
           <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-            <button onClick={() => toggleSection('platform')} className="w-full px-4 py-3 flex items-center justify-between text-slate-600 hover:bg-slate-50 transition-colors">
-              <div className="flex items-center gap-3"><i className="fas fa-store text-[10px] text-rose-500"></i><span className="text-[11px] font-bold uppercase tracking-wider">投放平台适配</span></div>
+            <button onClick={() => toggleSection('platform')} className="flex w-full items-center justify-between bg-white px-4 py-4 text-left text-slate-600 transition-colors hover:bg-slate-50">
+              <div>
+                <span className="text-sm font-bold text-slate-700">投放平台适配</span>
+              </div>
               <i className={`fas fa-chevron-down text-[10px] transition-transform ${expandedSections.includes('platform') ? '' : '-rotate-90'}`}></i>
             </button>
             {expandedSections.includes('platform') && (
@@ -458,61 +485,82 @@ const ConfigSidebar: React.FC<Props> = ({
                   <button onClick={() => onChange({...config, platformType: 'domestic', language: '中文'})} className={`flex-1 py-1 text-[10px] font-bold rounded-lg transition-all ${config.platformType === 'domestic' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400'}`}>国内 (移动端为主)</button>
                   <button onClick={() => onChange({...config, platformType: 'crossborder'})} className={`flex-1 py-1 text-[10px] font-bold rounded-lg transition-all ${config.platformType === 'crossborder' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400'}`}>跨境 (全球适配)</button>
                 </div>
-                <div className="space-y-1">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">目标平台</span>
-                  {isCustomPlatform ? (
-                    <div className="flex gap-2">
-                      <input 
-                        type="text" 
-                        autoFocus
-                        value={config.platform} 
-                        onChange={(e) => onChange({ ...config, platform: e.target.value })} 
-                        className="flex-1 bg-slate-50 border border-rose-300 rounded-xl px-3 py-2 text-xs font-bold outline-none"
-                        placeholder="请输入..."
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <span className="ml-1 text-xs font-medium text-slate-400">目标平台</span>
+                    {isCustomPlatform ? (
+                      <div className="flex gap-2">
+                        <input 
+                          type="text" 
+                          autoFocus
+                          value={config.platform} 
+                          onChange={(e) => onChange({ ...config, platform: e.target.value })} 
+                          className="min-w-0 flex-1 rounded-2xl border border-rose-300 bg-slate-50 px-3 py-2 text-xs font-bold outline-none"
+                          placeholder="请输入..."
+                        />
+                        <button onClick={() => setIsCustomPlatform(false)} className="rounded-2xl bg-slate-100 px-3 text-[10px] font-bold text-slate-400">返回</button>
+                      </div>
+                    ) : (
+                      <PopoverSelect
+                        value={config.platform as string}
+                        onChange={(next) => handlePlatformSelect(next)}
+                        options={[
+                          ...platformPresets[config.platformType].map((platform) => ({
+                            value: platform,
+                            label: platform,
+                          })),
+                          { value: 'CUSTOM', label: '+ 自定义' },
+                        ]}
+                        buttonClassName="h-10 rounded-2xl px-4 text-xs"
                       />
-                      <button onClick={() => setIsCustomPlatform(false)} className="px-3 bg-slate-100 rounded-xl text-[10px] font-bold text-slate-400">返回</button>
-                    </div>
-                  ) : (
-                    <select value={config.platform} onChange={(e) => handlePlatformSelect(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:bg-white focus:ring-1 focus:ring-rose-500 transition-all appearance-none">
-                      {platformPresets[config.platformType].map(p => <option key={p} value={p}>{p}</option>)}
-                      <option value="CUSTOM">+ 自定义</option>
-                    </select>
-                  )}
-                </div>
-                <div className="space-y-1">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">目标文案语言</span>
-                  {isCustomLanguage ? (
-                    <div className="flex gap-2">
-                      <input 
-                        type="text" 
-                        autoFocus
-                        value={config.language} 
-                        onChange={(e) => onChange({ ...config, language: e.target.value })} 
-                        className="flex-1 bg-slate-50 border border-rose-300 rounded-xl px-3 py-2 text-xs font-bold outline-none"
-                        placeholder="请输入..."
+                    )}
+                  </div>
+                  <div className="space-y-1">
+                    <span className="ml-1 text-xs font-medium text-slate-400">目标文案语言</span>
+                    {isCustomLanguage ? (
+                      <div className="flex gap-2">
+                        <input 
+                          type="text" 
+                          autoFocus
+                          value={config.language} 
+                          onChange={(e) => onChange({ ...config, language: e.target.value })} 
+                          className="min-w-0 flex-1 rounded-2xl border border-rose-300 bg-slate-50 px-3 py-2 text-xs font-bold outline-none"
+                          placeholder="请输入..."
+                        />
+                        <button onClick={() => setIsCustomLanguage(false)} className="rounded-2xl bg-slate-100 px-3 text-[10px] font-bold text-slate-400">返回</button>
+                      </div>
+                    ) : (
+                      <PopoverSelect
+                        disabled={config.platformType === 'domestic'}
+                        value={config.language as string}
+                        onChange={(next) => handleLanguageSelect(next)}
+                        options={[
+                          ...langPresets.map((language) => ({
+                            value: language.value,
+                            label: language.label,
+                          })),
+                          { value: 'CUSTOM', label: '+ 自定义' },
+                        ]}
+                        buttonClassName="h-10 rounded-2xl px-4 text-xs"
                       />
-                      <button onClick={() => setIsCustomLanguage(false)} className="px-3 bg-slate-100 rounded-xl text-[10px] font-bold text-slate-400">返回</button>
-                    </div>
-                  ) : (
-                    <select disabled={config.platformType === 'domestic'} value={config.language} onChange={(e) => handleLanguageSelect(e.target.value)} className={`w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none transition-all appearance-none ${config.platformType === 'domestic' ? 'opacity-50' : 'focus:bg-white focus:ring-1 focus:ring-rose-500'}`}>
-                      {langPresets.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
-                      <option value="CUSTOM">+ 自定义</option>
-                    </select>
-                  )}
+                    )}
+                  </div>
                 </div>
               </div>
             )}
           </div>
 
           <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-            <button onClick={() => toggleSection('specs')} className="w-full px-4 py-3 flex items-center justify-between text-slate-600 hover:bg-slate-50 transition-colors">
-              <div className="flex items-center gap-3"><i className="fas fa-sliders-h text-[10px] text-rose-500"></i><span className="text-[11px] font-bold uppercase tracking-wider">画面规格控制</span></div>
+            <button onClick={() => toggleSection('specs')} className="flex w-full items-center justify-between bg-white px-4 py-4 text-left text-slate-600 transition-colors hover:bg-slate-50">
+              <div>
+                <span className="text-sm font-bold text-slate-700">画面规格控制</span>
+              </div>
               <i className={`fas fa-chevron-down text-[10px] transition-transform ${expandedSections.includes('specs') ? '' : '-rotate-90'}`}></i>
             </button>
             {expandedSections.includes('specs') && (
               <div className="px-4 pb-4 space-y-4">
                 <div className="space-y-1 pt-2 border-t border-slate-100">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">生图模型选择</span>
+                  <span className="ml-1 text-xs font-medium text-slate-400">生图模型</span>
                   <div className="flex bg-slate-100 p-1 rounded-xl">
                     {MODEL_OPTIONS.map(m => (
                       <button 
@@ -538,7 +586,7 @@ const ConfigSidebar: React.FC<Props> = ({
                 </div>
 
                 <div className="space-y-1">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">渲染质量</span>
+                  <span className="ml-1 text-xs font-medium text-slate-400">渲染质量</span>
                   <div className="grid grid-cols-3 gap-2">
                     {QUALITY_OPTIONS.map(q => (
                       <button
@@ -554,14 +602,20 @@ const ConfigSidebar: React.FC<Props> = ({
 
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
-                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">策划屏数</span>
-                    <input type="number" min="1" max="15" value={config.count} onChange={(e) => onChange({...config, count: parseInt(e.target.value) || 1})} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:bg-white" />
+                    <span className="ml-1 text-xs font-medium text-slate-400">策划屏数</span>
+                    <input type="number" min="1" max="15" value={config.count} onChange={(e) => onChange({...config, count: parseInt(e.target.value) || 1})} className="h-10 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-xs font-semibold text-slate-700 outline-none focus:bg-white" />
                   </div>
                   <div className="space-y-1">
-                    <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">全局画面比例</span>
-                    <select value={config.aspectRatio} onChange={(e) => handleRatioChange(e.target.value as any)} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:bg-white appearance-none">
-                      {filteredRatios.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
-                    </select>
+                    <span className="ml-1 text-xs font-medium text-slate-400">全局画面比例</span>
+                    <PopoverSelect
+                      value={config.aspectRatio}
+                      onChange={(next) => handleRatioChange(next as AspectRatio)}
+                      options={filteredRatios.map((ratio) => ({
+                        value: ratio.value,
+                        label: ratio.label,
+                      }))}
+                      buttonClassName="h-10 rounded-2xl px-4 text-xs"
+                    />
                   </div>
                 </div>
                 <div className="space-y-2 pt-2 border-t border-slate-100">
@@ -571,7 +625,7 @@ const ConfigSidebar: React.FC<Props> = ({
                   </div>
                   {config.resolutionMode === 'custom' && (
                     <div className="space-y-1">
-                       <span className="text-[8px] font-bold text-slate-400 uppercase ml-1">输出宽度 (px)</span>
+                       <span className="ml-1 text-xs font-medium text-slate-400">输出宽度 (px)</span>
                        <input type="number" value={config.targetWidth || ''} onChange={(e) => {
                          const newW = parseInt(e.target.value) || 0;
                          onChange({...config, targetWidth: newW, targetHeight: 0});
@@ -581,7 +635,7 @@ const ConfigSidebar: React.FC<Props> = ({
 
                   <div className="space-y-2 pt-2 mt-2 border-t border-slate-50">
                     <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">体积限制 (MB)</label>
+                      <label className="text-xs font-medium text-slate-400">体积限制 (MB)</label>
                       <span className="text-[10px] font-black text-rose-600">{(config.maxFileSize || 2.0).toFixed(1)} MB</span>
                     </div>
                     <input 
@@ -598,19 +652,7 @@ const ConfigSidebar: React.FC<Props> = ({
               </div>
             )}
           </div>
-        </div>
-      </div>
-
-      <footer className="p-5 border-t border-slate-100 bg-white flex-none shadow-[0_-4px_10px_rgba(0,0,0,0.02)]">
-        <button onClick={onStart} disabled={disabled || productImages.length === 0} className="w-full py-4 bg-slate-900 text-white font-black rounded-xl shadow-lg hover:bg-slate-800 disabled:bg-slate-100 transition-all flex items-center justify-center gap-3 active:scale-[0.98]">
-          {disabled ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-wand-magic-sparkles text-rose-400"></i>}
-          {disabled 
-            ? (isDetail ? '正在规划详情全案...' : '正在规划主图全案...') 
-            : (isDetail ? '开启大师级详情页策划' : '开启大师级主图策划')
-          }
-        </button>
-      </footer>
-    </div>
+    </SidebarShell>
   );
 };
 

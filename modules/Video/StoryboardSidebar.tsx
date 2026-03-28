@@ -1,6 +1,7 @@
 import React from 'react';
 import { AspectRatio, VideoStoryboardConfig } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
+import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
 
 interface Props {
   config: VideoStoryboardConfig;
@@ -127,15 +128,27 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
     });
   };
 
-  return (
-    <aside className="w-[390px] bg-white border-r border-slate-100 shrink-0 h-full overflow-y-auto">
-      <div className="px-6 py-5 border-b border-slate-100 sticky top-0 bg-white z-10">
-        <p className="text-[10px] font-black uppercase tracking-[0.24em] text-rose-500">Video Storyboard</p>
-        <h2 className="mt-2 text-lg font-black text-slate-900">短视频分镜配置</h2>
-        <p className="mt-1 text-xs font-bold text-slate-400">先出分镜脚本，再一次性生成整张分镜板。</p>
-      </div>
+  const handleSelectChange = (name: string, value: string) => {
+    handleFieldChange({
+      target: { name, value },
+    } as React.ChangeEvent<HTMLSelectElement>);
+  };
 
-      <div className="p-6 space-y-6">
+  return (
+    <SidebarShell
+      widthClassName="w-[390px]"
+      accentClass="bg-rose-500"
+      title="短视频分镜配置"
+      subtitle="分镜板模式"
+      footer={
+        <PrimaryActionButton
+          onClick={onGenerate}
+          disabled={disabled || config.productImages.length === 0}
+          icon={disabled ? 'fa-spinner fa-spin' : 'fa-play-circle'}
+          label={disabled ? '生成中...' : '生成短视频分镜板'}
+        />
+      }
+    >
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <label className="text-xs font-black uppercase tracking-widest text-slate-400">产品素材</label>
@@ -157,13 +170,14 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
             ))}
 
             {config.productImages.length < 8 && (
-              <label className={`relative border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50 hover:border-rose-300 hover:bg-rose-50 transition-colors cursor-pointer flex flex-col items-center justify-center text-center ${config.productImages.length === 0 ? 'col-span-4 aspect-[2.6/1]' : 'aspect-square'}`}>
+              <label className={`relative ${config.productImages.length === 0 ? 'col-span-4' : ''}`}>
                 <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} disabled={disabled} />
-                <i className={`fas fa-cloud-upload-alt text-slate-400 ${config.productImages.length === 0 ? 'text-2xl mb-2' : 'text-lg mb-1'}`}></i>
-                <span className="text-xs font-black text-slate-500">{config.productImages.length === 0 ? '上传产品图片素材' : '继续添加'}</span>
-                {config.productImages.length === 0 && (
-                  <span className="mt-2 text-[10px] font-bold text-slate-400">支持 JPG / PNG / WEBP，最多 8 张</span>
-                )}
+                <UploadSurface
+                  icon="fa-cloud-upload-alt"
+                  accentTextClass="text-rose-500"
+                  title={config.productImages.length === 0 ? '上传产品图片素材' : '继续添加产品图片'}
+                  hint="支持 JPG / PNG / WEBP，最多 8 张。"
+                />
               </label>
             )}
           </div>
@@ -184,16 +198,16 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
 
         <section className="space-y-2">
           <label className="text-xs font-black uppercase tracking-widest text-slate-400">脚本逻辑</label>
-          <select
-            name="scriptPreset"
+          <PopoverSelect
             value={config.scriptPreset}
-            onChange={handleFieldChange}
+            onChange={(next) => handleSelectChange('scriptPreset', next)}
             disabled={disabled}
-            className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 outline-none text-sm font-bold text-slate-700"
-          >
-            <option value="custom">自定义逻辑</option>
-            <option value="ecommerce">高转化电商逻辑</option>
-          </select>
+            options={[
+              { value: 'custom', label: '自定义逻辑' },
+              { value: 'ecommerce', label: '高转化电商逻辑' },
+            ]}
+            buttonClassName="h-10 rounded-2xl px-4 text-xs"
+          />
           <textarea
             name="scriptLogic"
             value={config.scriptLogic}
@@ -208,101 +222,94 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
         <section className="grid grid-cols-2 gap-3">
           <div className="space-y-2">
             <label className="text-xs font-black uppercase tracking-widest text-slate-400">目标国家/语言</label>
-            <select
-              name="countryLanguage"
+            <PopoverSelect
               value={config.countryLanguage}
-              onChange={handleFieldChange}
+              onChange={(next) => handleSelectChange('countryLanguage', next)}
               disabled={disabled}
-              className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 outline-none text-sm font-bold text-slate-700"
-            >
-              {COUNTRY_PRESETS.map((item) => (
-                <option key={item} value={item}>{item}</option>
-              ))}
-            </select>
+              options={COUNTRY_PRESETS.map((item) => ({ value: item, label: item }))}
+              buttonClassName="h-10 rounded-2xl px-4 text-xs"
+            />
           </div>
 
           <div className="space-y-2">
             <label className="text-xs font-black uppercase tracking-widest text-slate-400">演员类型</label>
-            <select
-              name="actorType"
+            <PopoverSelect
               value={config.actorType}
-              onChange={handleFieldChange}
+              onChange={(next) => handleSelectChange('actorType', next)}
               disabled={disabled}
-              className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 outline-none text-sm font-bold text-slate-700"
-            >
-              <option value="no_real_face">不出现真实人脸</option>
-              <option value="real_person">真实人物</option>
-              <option value="3d_digital_human">3D 数字人</option>
-              <option value="cartoon_character">卡通角色</option>
-            </select>
+              options={[
+                { value: 'no_real_face', label: '不出现真实人脸' },
+                { value: 'real_person', label: '真实人物' },
+                { value: '3d_digital_human', label: '3D 数字人' },
+                { value: 'cartoon_character', label: '卡通角色' },
+              ]}
+              buttonClassName="h-10 rounded-2xl px-4 text-xs"
+            />
           </div>
 
           <div className="space-y-2">
             <label className="text-xs font-black uppercase tracking-widest text-slate-400">视频比例</label>
-            <select
-              name="aspectRatio"
+            <PopoverSelect
               value={config.aspectRatio}
-              onChange={handleFieldChange}
+              onChange={(next) => handleSelectChange('aspectRatio', next)}
               disabled={disabled}
-              className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 outline-none text-sm font-bold text-slate-700"
-            >
-              <option value={AspectRatio.P_9_16}>9:16 竖屏</option>
-              <option value={AspectRatio.L_16_9}>16:9 横屏</option>
-              <option value={AspectRatio.P_3_4}>3:4 竖屏</option>
-              <option value={AspectRatio.L_4_3}>4:3 横屏</option>
-              <option value={AspectRatio.SQUARE}>1:1 方图</option>
-              <option value={AspectRatio.P_4_5}>4:5 纵向</option>
-            </select>
+              options={[
+                { value: AspectRatio.P_9_16, label: '9:16 竖屏' },
+                { value: AspectRatio.L_16_9, label: '16:9 横屏' },
+                { value: AspectRatio.P_3_4, label: '3:4 竖屏' },
+                { value: AspectRatio.L_4_3, label: '4:3 横屏' },
+                { value: AspectRatio.SQUARE, label: '1:1 方图' },
+                { value: AspectRatio.P_4_5, label: '4:5 纵向' },
+              ]}
+              buttonClassName="h-10 rounded-2xl px-4 text-xs"
+            />
           </div>
 
           <div className="space-y-2">
             <label className="text-xs font-black uppercase tracking-widest text-slate-400">视频时长</label>
-            <select
-              name="duration"
+            <PopoverSelect
               value={config.duration}
-              onChange={handleFieldChange}
+              onChange={(next) => handleSelectChange('duration', next)}
               disabled={disabled}
-              className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 outline-none text-sm font-bold text-slate-700"
-            >
-              <option value="5s">5 秒</option>
-              <option value="10s">10 秒</option>
-              <option value="15s">15 秒</option>
-              <option value="30s">30 秒</option>
-            </select>
+              options={[
+                { value: '5s', label: '5 秒' },
+                { value: '10s', label: '10 秒' },
+                { value: '15s', label: '15 秒' },
+                { value: '30s', label: '30 秒' },
+              ]}
+              buttonClassName="h-10 rounded-2xl px-4 text-xs"
+            />
           </div>
 
           <div className="space-y-2">
             <label className="text-xs font-black uppercase tracking-widest text-slate-400">分镜镜头数</label>
-            <select
-              name="shotCount"
-              value={config.shotCount}
-              onChange={handleFieldChange}
+            <PopoverSelect
+              value={String(config.shotCount)}
+              onChange={(next) => handleSelectChange('shotCount', next)}
               disabled={disabled}
-              className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 outline-none text-sm font-bold text-slate-700"
-            >
-              {shotCountOptions.map((option) => (
-                <option key={option.value} value={option.value} disabled={option.disabled}>
-                  {option.label}{option.disabled ? '（15秒不可选）' : ''}
-                </option>
-              ))}
-            </select>
+              options={shotCountOptions.filter((option) => !option.disabled).map((option) => ({
+                value: String(option.value),
+                label: option.label,
+              }))}
+              buttonClassName="h-10 rounded-2xl px-4 text-xs"
+            />
           </div>
 
           <div className="space-y-2">
             <label className="text-xs font-black uppercase tracking-widest text-slate-400">生成数量</label>
-            <select
-              name="projectCount"
-              value={config.projectCount}
-              onChange={handleFieldChange}
+            <PopoverSelect
+              value={String(config.projectCount)}
+              onChange={(next) => handleSelectChange('projectCount', next)}
               disabled={disabled}
-              className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 outline-none text-sm font-bold text-slate-700"
-            >
-              <option value="1">1 个方案</option>
-              <option value="2">2 个方案</option>
-              <option value="3">3 个方案</option>
-              <option value="4">4 个方案</option>
-              <option value="5">5 个方案</option>
-            </select>
+              options={[
+                { value: '1', label: '1 个方案' },
+                { value: '2', label: '2 个方案' },
+                { value: '3', label: '3 个方案' },
+                { value: '4', label: '4 个方案' },
+                { value: '5', label: '5 个方案' },
+              ]}
+              buttonClassName="h-10 rounded-2xl px-4 text-xs"
+            />
           </div>
         </section>
 
@@ -337,20 +344,7 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
             <p className="text-[11px] font-bold text-slate-400">仅首个方案生成一张白底产品图</p>
           </div>
         </label>
-      </div>
-
-      <div className="p-6 border-t border-slate-100 sticky bottom-0 bg-white">
-        <button
-          type="button"
-          onClick={onGenerate}
-          disabled={disabled || config.productImages.length === 0}
-          className="w-full px-5 py-4 rounded-2xl bg-slate-900 text-white text-sm font-black hover:bg-slate-800 disabled:opacity-50 transition-all flex items-center justify-center gap-3"
-        >
-          <i className={`fas ${disabled ? 'fa-spinner fa-spin' : 'fa-play-circle'} text-base`}></i>
-          {disabled ? '生成中...' : '生成短视频分镜板'}
-        </button>
-      </div>
-    </aside>
+    </SidebarShell>
   );
 };
 

@@ -1,123 +1,130 @@
-
-import React from 'react';
-import { AuthUser, GlobalApiConfig } from '../../types';
+import React, { useEffect, useState } from 'react';
+import { AuthUser, GlobalApiConfig, SystemPublicConfig } from '../../types';
+import { fetchSystemConfig } from '../../services/internalApi';
+import { getEffectiveConcurrency } from '../Account/accountManagementUtils.mjs';
+import { InfoPill, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 
 interface Props {
   apiConfig: GlobalApiConfig;
   onApiConfigChange: (config: GlobalApiConfig) => void;
   currentUser?: AuthUser | null;
   internalMode?: boolean;
+  isActive?: boolean;
 }
 
-const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, currentUser = null, internalMode = false }) => {
-  const canEditApiConfig = !internalMode || currentUser?.role === 'admin';
+const ProviderCard: React.FC<{ title: string; configured: boolean; description: string }> = ({ title, configured, description }) => (
+  <section className="space-y-4 bg-slate-50 p-6 rounded-3xl border border-slate-100">
+    <div className="flex items-center justify-between">
+      <div>
+        <h3 className="text-lg font-black text-slate-800">{title}</h3>
+        <p className="text-xs text-slate-400 mt-1">{description}</p>
+      </div>
+      <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${configured ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+        {configured ? '已配置' : '未配置'}
+      </span>
+    </div>
+    <p className="text-sm leading-7 text-slate-600">
+      密钥已全部收回服务端环境变量，前端不再保存或展示真实值。
+    </p>
+  </section>
+);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value, type } = e.target;
-    const finalValue = type === 'number' ? parseInt(value, 10) : value;
-    onApiConfigChange({ ...apiConfig, [name]: finalValue });
-  };
+const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, currentUser = null, internalMode = false, isActive = false }) => {
+  const [systemConfig, setSystemConfig] = useState<SystemPublicConfig | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    onApiConfigChange({ ...apiConfig, kieApiKey: '', arkApiKey: '' });
+  }, []);
+
+  useEffect(() => {
+    if (!internalMode || !isActive) return;
+    let disposed = false;
+
+    const load = async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const result = await fetchSystemConfig();
+        if (!disposed) {
+          setSystemConfig(result.config);
+          const effectiveConcurrency = getEffectiveConcurrency(
+            result.config.queue.maxConcurrency,
+            currentUser?.jobConcurrency
+          );
+          onApiConfigChange({
+            ...apiConfig,
+            kieApiKey: '',
+            arkApiKey: '',
+            concurrency: effectiveConcurrency,
+          });
+        }
+      } catch (loadError: any) {
+        if (!disposed) {
+          setError(loadError.message || '系统配置读取失败');
+        }
+      } finally {
+        if (!disposed) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void load();
+
+    return () => {
+      disposed = true;
+    };
+  }, [internalMode, isActive, currentUser?.id, currentUser?.jobConcurrency]);
 
   return (
-    <div className="h-full bg-white p-12 overflow-y-auto">
-      <div className="max-w-4xl mx-auto">
-        <header className="mb-12">
-          <h2 className="text-3xl font-black text-slate-900 mb-2">梅奥AI · 核心基础设施</h2>
-          <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">Infrastructure Management Console</p>
+    <div className="h-full overflow-y-auto px-6 pb-6 pt-5">
+      <div className="max-w-5xl mx-auto">
+        <header className="mb-8 rounded-[32px] border border-slate-200/80 bg-white/90 px-8 py-8 shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
+          <p className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">Infrastructure & Queue Status</p>
+          <h2 className="mt-3 text-3xl font-black text-slate-900">梅奥 AI · 系统配置</h2>
+          <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-500">这里只显示系统状态、环境是否齐全和当前队列信息，不再展示任何真实密钥。管理员看得到运行情况，员工只看到与自己使用相关的公开信息。</p>
         </header>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
-          {/* Volcengine Ark / Doubao Section */}
-          <section className="space-y-6">
-            <div className="flex items-center gap-4 mb-4">
-              <div className="w-12 h-12 bg-rose-600 text-white rounded-2xl flex items-center justify-center shadow-lg">
-                <i className="fas fa-brain text-xl"></i>
-              </div>
-              <div>
-                <h3 className="text-lg font-black text-slate-800">火山引擎 (豆包)</h3>
-                <p className="text-xs text-slate-400">负责商品视觉语义分析</p>
-              </div>
-            </div>
-            
-            <div className="space-y-4 bg-slate-50 p-6 rounded-3xl border border-slate-100">
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Ark API Key (Bearer)</label>
-                <input
-                  type="password"
-                  name="arkApiKey"
-                  value={apiConfig.arkApiKey}
-                  onChange={handleChange}
-                  disabled={!canEditApiConfig}
-                  className="w-full bg-white border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-rose-500 outline-none shadow-sm font-mono"
-                  placeholder="ad4fa376-..."
-                />
-              </div>
-              <div className="p-3 bg-rose-50 rounded-xl">
-                 <p className="text-[10px] text-rose-600 font-bold">
-                    <i className="fas fa-shield-alt mr-1"></i>
-                    基于 Doubao-Seed-2.0-lite 提供精准内容理解。
-                 </p>
-              </div>
-            </div>
-          </section>
-
-          {/* Kie.ai Section */}
-          <section className="space-y-6">
-            <div className="flex items-center gap-4 mb-4">
-              <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center shadow-lg">
-                <i className="fas fa-bolt text-xl"></i>
-              </div>
-              <div>
-                <h3 className="text-lg font-black text-slate-800">Kie.ai 引擎中心</h3>
-                <p className="text-xs text-slate-400">渲染生成 & 免费云存储</p>
-              </div>
-            </div>
-            
-            <div className="space-y-4 bg-slate-50 p-6 rounded-3xl border border-slate-100">
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-slate-500 uppercase ml-1">Kie.ai API Key</label>
-                <input
-                  type="password"
-                  name="kieApiKey"
-                  value={apiConfig.kieApiKey}
-                  onChange={handleChange}
-                  disabled={!canEditApiConfig}
-                  className="w-full bg-white border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm font-mono"
-                  placeholder="26526246..."
-                />
-              </div>
-              <div className="space-y-1">
-                  <label className="text-[10px] font-black text-slate-500 uppercase ml-1">并发执行数</label>
-                  <input
-                    type="number"
-                    name="concurrency"
-                  min="1"
-                  max="50"
-                  value={apiConfig.concurrency}
-                  onChange={handleChange}
-                  disabled={!canEditApiConfig}
-                  className="w-full bg-white border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm"
-                />
-              </div>
-              <div className="p-3 bg-indigo-50 rounded-xl">
-                 <p className="text-[10px] text-indigo-600 font-bold">
-                    <i className="fas fa-cloud-upload-alt mr-1"></i>
-                    已启用 Kie 免费图床 (文件有效期3天)。
-                 </p>
-              </div>
-            </div>
-          </section>
-        </div>
-
         {internalMode ? (
-          <div className="mt-10 rounded-3xl border border-amber-200 bg-amber-50 px-6 py-5">
-            <p className="text-sm font-black text-amber-900">内部版说明</p>
-            <p className="mt-2 text-sm leading-7 text-amber-800">
-              这一版已经加上登录和账号管理，但外部模型调用还没有完全收回到服务器端。
-              所以它已经适合公司内部起步联调，不适合直接公开给外部人员使用。
+          <>
+            <WorkspaceShellCard className="mb-8 bg-slate-50/90 px-6 py-5">
+              <p className="text-sm font-black text-slate-900">当前模式</p>
+              <p className="mt-2 text-sm leading-7 text-slate-600">
+                已切换为内部服务端托管模式。第三方 API Key 与模型调用全部由服务器接管，当前登录身份为 {currentUser?.role === 'admin' ? '管理员' : '员工'}。
+              </p>
+            </WorkspaceShellCard>
+
+            {error ? (
+              <div className="mb-8 rounded-3xl border border-rose-200 bg-rose-50 px-6 py-5 text-sm font-bold text-rose-700">
+                {error}
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <ProviderCard title="Kie 引擎" configured={Boolean(systemConfig?.providers.kie.configured)} description="图片生成、视频生成、分镜脚本对话" />
+              <ProviderCard title="Ark 分析" configured={Boolean(systemConfig?.providers.ark.configured)} description="策划、分析、脚本生成" />
+            </div>
+
+            <div className="mt-8 grid md:grid-cols-3 gap-4">
+              <InfoPill label="可用并发" value={loading ? '...' : String(getEffectiveConcurrency(systemConfig?.queue.maxConcurrency, currentUser?.jobConcurrency))} />
+              <InfoPill label="待执行任务" value={loading ? '...' : String(systemConfig?.queue.queuedCount ?? '-')} />
+              <InfoPill label="执行中任务" value={loading ? '...' : String(systemConfig?.queue.runningCount ?? '-')} />
+            </div>
+
+            <p className="mt-4 text-xs font-bold text-slate-400">
+              当前只保留一个并发值，按账号并发上限直接展示和执行。
             </p>
-          </div>
-        ) : null}
+          </>
+        ) : (
+          <WorkspaceShellCard className="bg-amber-50 px-6 py-5 border-amber-200">
+            <p className="text-sm font-black text-amber-900">本地模式说明</p>
+            <p className="mt-2 text-sm leading-7 text-amber-800">
+              本地模式仅用于单机调试。完整的服务端任务队列、密钥托管和多人能力需要 MySQL 内部版环境。
+            </p>
+          </WorkspaceShellCard>
+        )}
       </div>
     </div>
   );

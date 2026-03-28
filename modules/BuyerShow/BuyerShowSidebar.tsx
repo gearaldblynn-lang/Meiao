@@ -4,6 +4,7 @@ import { BuyerShowPersistentState, AspectRatio, GenerationQuality } from '../../
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
 import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
+import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
 
 interface Props {
   state: BuyerShowPersistentState;
@@ -68,34 +69,35 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
   };
 
   return (
-    <div className="w-[380px] bg-white border-r border-slate-200 h-full flex flex-col shrink-0 overflow-hidden relative z-30 shadow-sm">
-      <header className="p-6 border-b border-slate-100 bg-amber-50/30 flex-none">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="w-1.5 h-5 bg-amber-500 rounded-full shadow-sm"></div>
-          <h2 className="text-lg font-black text-slate-800 tracking-tight">买家秀全案配置</h2>
-        </div>
-        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-[0.2em]">Social Proof Engine V3</p>
-      </header>
-
-      <div className="flex-1 min-h-0 overflow-y-auto sidebar-scroll bg-white">
-        <div className="p-5 space-y-6 pb-24">
+    <SidebarShell
+      accentClass="bg-amber-500"
+      title="买家秀全案配置"
+      subtitle="买家秀模式"
+      footer={
+        <PrimaryActionButton
+          onClick={onStart}
+          disabled={isProcessing || state.productImages.length === 0}
+          icon={isProcessing ? 'fa-spinner fa-spin' : 'fa-magic'}
+          label={isProcessing ? '全案流水线执行中...' : '启动全案买家秀生成'}
+        />
+      }
+    >
           <section className="space-y-4">
             <div className="flex items-center gap-2 text-[11px] font-bold text-slate-500 uppercase tracking-widest">
               <i className="fas fa-camera text-amber-500"></i>
               <span>导入产品素材库</span>
             </div>
 
-            <div 
+            <UploadSurface
               onClick={() => productInputRef.current?.click()}
-              className="group cursor-pointer border-2 border-dashed border-slate-200 rounded-[24px] p-6 hover:border-amber-300 hover:bg-amber-50/30 transition-all text-center"
+              icon="fa-image"
+              accentTextClass="text-amber-500"
+              title="上传产品白底或实拍图"
+              hint="建议 3-8 张，保持主体清晰、角度多样，便于后续自动出套图。"
+              meta="JPG / PNG · 单图 10MB"
             >
-              <div className="w-12 h-12 bg-slate-50 rounded-2xl flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
-                <i className="far fa-image text-slate-300 text-xl group-hover:text-amber-400"></i>
-              </div>
-              <p className="text-sm font-black text-slate-600 mb-1">上传产品白底或实拍图</p>
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">JPG/PNG | 10MB/张 | 建议 3-8 张</p>
               <input type="file" multiple ref={productInputRef} onChange={handleProductUpload} className="hidden" accept="image/*" />
-            </div>
+            </UploadSurface>
 
             {productImages.length > 0 && (
               <div className="grid grid-cols-4 gap-2 p-2 bg-slate-50 rounded-2xl border border-slate-100">
@@ -231,11 +233,16 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
             <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                 <span className="text-[9px] font-bold text-slate-400 uppercase ml-1 tracking-widest">画面比例</span>
-                <select value={state.aspectRatio} onChange={(e) => onUpdate({ aspectRatio: e.target.value as AspectRatio })} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none transition-all focus:bg-white appearance-none">
-                    <option value={AspectRatio.SQUARE}>1:1 社交方图</option>
-                    <option value={AspectRatio.P_3_4}>3:4 标准竖图</option>
-                    <option value={AspectRatio.P_9_16}>9:16 短视频比例</option>
-                </select>
+                <PopoverSelect
+                  value={state.aspectRatio}
+                  onChange={(next) => onUpdate({ aspectRatio: next as AspectRatio })}
+                  options={[
+                    { value: AspectRatio.SQUARE, label: '1:1 社交方图' },
+                    { value: AspectRatio.P_3_4, label: '3:4 标准竖图' },
+                    { value: AspectRatio.P_9_16, label: '9:16 短视频比例' },
+                  ]}
+                  buttonClassName="h-10 rounded-2xl px-4 text-xs"
+                />
                 </div>
                 <div className="space-y-1">
                 <span className="text-[9px] font-bold text-slate-400 uppercase ml-1 tracking-widest">渲染引擎质量</span>
@@ -271,10 +278,15 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                       <button onClick={() => handleCountrySelect('美国')} className="px-3 bg-slate-100 rounded-xl text-[10px] font-bold text-slate-400">返回</button>
                     </div>
                   ) : (
-                    <select value={state.targetCountry} onChange={(e) => handleCountrySelect(e.target.value)} className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-2 focus:ring-amber-500 transition-all appearance-none shadow-sm">
-                       {countries.map(c => <option key={c} value={c}>{c}</option>)}
-                       <option value="CUSTOM">+ 自定义</option>
-                    </select>
+                    <PopoverSelect
+                      value={state.targetCountry}
+                      onChange={(next) => handleCountrySelect(next)}
+                      options={[
+                        ...countries.map((country) => ({ value: country, label: country })),
+                        { value: 'CUSTOM', label: '+ 自定义' },
+                      ]}
+                      buttonClassName="h-10 rounded-2xl px-4 text-xs"
+                    />
                   )}
                </div>
                <div className="space-y-1">
@@ -303,20 +315,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
             <div className="w-1 h-1 bg-slate-300 rounded-full mb-1"></div>
             <div className="w-1 h-1 bg-slate-300 rounded-full"></div>
           </div>
-        </div>
-      </div>
-
-      <footer className="p-5 border-t border-slate-100 bg-white flex-none shadow-[0_-4px_10px_rgba(0,0,0,0.02)]">
-        <button 
-          onClick={onStart}
-          disabled={isProcessing || state.productImages.length === 0}
-          className="w-full py-4 bg-slate-900 text-white font-black rounded-xl shadow-lg hover:bg-slate-800 disabled:bg-slate-100 transition-all flex items-center justify-center gap-3 active:scale-[0.98]"
-        >
-          {isProcessing ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-magic text-amber-400"></i>}
-          {isProcessing ? '全案流水线执行中...' : '启动全案买家秀生成'}
-        </button>
-      </footer>
-    </div>
+    </SidebarShell>
   );
 };
 

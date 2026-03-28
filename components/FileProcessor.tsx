@@ -1,11 +1,15 @@
 
 import React, { useRef, useState, useEffect } from 'react';
 import { FileItem, ModuleConfig, GlobalApiConfig, AspectRatio, AppModule, TranslationSubMode, KieAiResult } from '../types';
-import { safeCreateObjectURL } from '../utils/urlUtils';
+import { releaseObjectURLs, safeCreateObjectURL } from '../utils/urlUtils';
+import { normalizeFetchedImageBlob } from '../utils/imageBlobUtils.mjs';
 import { uploadToCos } from '../services/tencentCosService';
 import { processWithKieAi, recoverKieAiTask } from '../services/kieAiService';
 import { resizeImage, createZipAndDownload, getImageDimensions, fileToDataUrl } from '../utils/imageUtils';
 import ComparisonModal from './ComparisonModal';
+import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../services/loggingService';
+import { shouldValidateTranslationAspectRatio } from '../modules/Translation/translationConfigUtils.mjs';
+import { deriveTranslationExecutionPlan, deriveTranslationExportSize } from '../modules/Translation/translationProcessingUtils.mjs';
 
 interface Props {
   activeModule: AppModule;
@@ -16,11 +20,12 @@ interface Props {
   onFilesChange: (files: FileItem[] | ((prev: FileItem[]) => FileItem[])) => void;
   isProcessing: boolean;
   onProcessingChange: (processing: boolean) => void;
+  startSignal?: number;
 }
 
 const FileProcessor: React.FC<Props> = ({ 
   activeModule, subMode, apiConfig, config, 
-  files, onFilesChange, isProcessing, onProcessingChange 
+  files, onFilesChange, isProcessing, onProcessingChange, startSignal = 0
 }) => {
   const nanoBanana2Ratios: AspectRatio[] = [
     AspectRatio.SQUARE,
@@ -100,12 +105,20 @@ const FileProcessor: React.FC<Props> = ({
   const controllersRef = useRef<Record<string, AbortController>>({});
   const activeJobsRef = useRef(0);
   const pendingQueueRef = useRef<string[]>([]);
+  const submissionLockRef = useRef(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
 
   const isDetailMode = activeModule === AppModule.TRANSLATION && subMode === TranslationSubMode.DETAIL;
   const isRemoveTextMode = activeModule === AppModule.TRANSLATION && subMode === TranslationSubMode.REMOVE_TEXT;
+  const translationModeLabel = isDetailMode ? '详情出海' : isRemoveTextMode ? '去除文案' : '主图出海';
+  const baseMeta = {
+    subMode: subMode || 'main',
+    model: config.model,
+    quality: config.quality,
+    aspectRatio: config.aspectRatio,
+  };
 
   const filesRef = useRef(files);
   filesRef.current = files;
@@ -146,15 +159,46 @@ const FileProcessor: React.FC<Props> = ({
     }
 
     onFilesChange(prev => Array.isArray(prev) ? [...prev, ...validItems] : [...files, ...validItems]);
+    void logActionSuccess({
+      module: 'translation',
+      action: ((selectedFiles[0] as any)?.webkitRelativePath ? 'import_folder' : 'import_files'),
+      message: `导入${(selectedFiles[0] as any)?.webkitRelativePath ? '文件夹' : '图片'}成功`,
+      meta: {
+        ...baseMeta,
+        count: validItems.length,
+      },
+    });
     if (fileInputRef.current) fileInputRef.current.value = '';
     if (folderInputRef.current) folderInputRef.current.value = '';
   };
 
   const clearFiles = () => {
     if (isProcessing) return;
+    releaseObjectURLs(files.flatMap((item) => [item.file, item.resultBlob]));
+    void logActionSuccess({
+      module: 'translation',
+      action: 'clear_files',
+      message: `清空${translationModeLabel}队列`,
+      meta: {
+        ...baseMeta,
+        count: files.length,
+      },
+    });
     onFilesChange([]);
     controllersRef.current = {};
   };
+
+  useEffect(() => {
+    return () => {
+      releaseObjectURLs(filesRef.current.flatMap((item) => [item.file, item.resultBlob]));
+    };
+  }, []);
+
+  useEffect(() => {
+    if (startSignal > 0) {
+      startProcessing();
+    }
+  }, [startSignal]);
 
   const updateSingleFile = (id: string, updates: Partial<FileItem>) => {
     onFilesChange(prev => {
@@ -182,6 +226,18 @@ const FileProcessor: React.FC<Props> = ({
     controllersRef.current[fileId] = controller;
 
     try {
+      const taskStartedAt = Date.now();
+      void logActionStart({
+        module: 'translation',
+        action: mode === 'recover' ? 'recover_single' : 'process_single',
+        message: `${translationModeLabel}开始处理单张文件`,
+        meta: {
+          ...baseMeta,
+          fileName: fileItem.file?.name || fileItem.relativePath,
+          relativePath: fileItem.relativePath,
+          taskId: fileItem.taskId,
+        },
+      });
       updateSingleFile(fileId, { 
         status: mode === 'recover' ? 'processing' : 'uploading', 
         progress: 10, 
@@ -190,26 +246,33 @@ const FileProcessor: React.FC<Props> = ({
 
       let res: KieAiResult;
       const dimensions = await getImageDimensions(fileItem.file!);
-      const matchedDetailRatio = isDetailMode
-        ? getClosestSupportedAspectRatio(dimensions.width, dimensions.height, config.model)
-        : null;
-      const effectiveConfig = isDetailMode
-        ? { ...config, aspectRatio: matchedDetailRatio as AspectRatio }
-        : config;
-      const isRatioMatch = !isDetailMode && effectiveConfig.aspectRatio === AspectRatio.AUTO;
-
-      if (matchedDetailRatio) {
-        updateSingleFile(fileId, { matchedAspectRatio: matchedDetailRatio });
-      }
+      const { effectiveConfig, isRatioMatch } = deriveTranslationExecutionPlan({
+        config,
+        subMode: subMode || TranslationSubMode.MAIN,
+      });
 
       if (mode === 'recover' && fileItem.taskId) {
         updateSingleFile(fileId, { progress: 20, error: '正在尝试获取图片结果...' });
         res = await recoverKieAiTask(fileItem.taskId, apiConfig, controller.signal);
       } else {
-        const cosUrl = await uploadToCos(fileItem.file!, apiConfig, buildUniqueUploadName(fileItem));
+        const uploadStartedAt = Date.now();
+        const cosUrl = await uploadToCos(
+          fileItem.file!,
+          apiConfig,
+          buildUniqueUploadName(fileItem),
+          {
+            fileId,
+            relativePath: fileItem.relativePath,
+            originalFileName: fileItem.file?.name || fileItem.relativePath,
+            subMode: subMode || TranslationSubMode.MAIN,
+            taskStartedAt,
+            uploadStartedAt,
+          }
+        );
         if (controller.signal.aborted) throw new Error("INTERRUPTED");
-        
+
         updateSingleFile(fileId, { status: 'processing', progress: 30 });
+        const providerSubmitStartedAt = Date.now();
         res = await processWithKieAi(
           cosUrl,
           apiConfig,
@@ -224,6 +287,23 @@ const FileProcessor: React.FC<Props> = ({
             ratioLabel: formatRatioLabel(dimensions.width, dimensions.height)
           } : undefined
         );
+        void logActionSuccess({
+          module: 'translation',
+          action: 'provider_submitted',
+          message: `${translationModeLabel}已提交生成任务`,
+          meta: {
+            ...baseMeta,
+            fileName: fileItem.file?.name || fileItem.relativePath,
+            relativePath: fileItem.relativePath,
+            taskId: res.taskId,
+            provider: 'kie',
+            providerTaskId: res.taskId,
+            providerSubmittedAt: Date.now(),
+            providerSubmitStartedAt,
+            providerSubmitDurationMs: Date.now() - providerSubmitStartedAt,
+            taskStartedAt,
+          },
+        });
       }
 
       if (controller.signal.aborted || res.status === 'interrupted') throw new Error("INTERRUPTED");
@@ -233,23 +313,14 @@ const FileProcessor: React.FC<Props> = ({
         
         const response = await fetch(res.imageUrl, { signal: controller.signal });
         if (!response.ok) throw new Error("获取生成图片失败");
-        const blob = await response.blob();
+        const blob = await normalizeFetchedImageBlob(await response.blob(), res.imageUrl);
         const generatedDimensions = await getImageDimensions(blob);
-
-        let targetW = dimensions.width;
-        let targetH = dimensions.height;
-
-        if (config.resolutionMode === 'custom') {
-          if (isDetailMode || isRemoveTextMode) {
-            const resizeWidth = Math.max(1, config.targetWidth || generatedDimensions.width || dimensions.width);
-            const generatedRatio = generatedDimensions.ratio || dimensions.ratio || 1;
-            targetW = Math.min(resizeWidth, generatedDimensions.width || resizeWidth);
-            targetH = Math.max(1, Math.round(targetW / generatedRatio));
-          } else {
-            targetW = config.targetWidth;
-            targetH = config.targetHeight;
-          }
-        }
+        const { targetWidth: targetW, targetHeight: targetH } = deriveTranslationExportSize({
+          config,
+          subMode: subMode || TranslationSubMode.MAIN,
+          sourceDimensions: dimensions,
+          generatedDimensions,
+        });
 
         const finalBlob = await resizeImage(blob, targetW, targetH, config.maxFileSize);
         updateSingleFile(fileId, {
@@ -257,8 +328,22 @@ const FileProcessor: React.FC<Props> = ({
           progress: 100,
           resultBlob: finalBlob,
           resultUrl: res.imageUrl,
-          matchedAspectRatio: matchedDetailRatio || effectiveConfig.aspectRatio,
+          matchedAspectRatio: effectiveConfig.aspectRatio,
           taskId: res.taskId,
+          error: undefined,
+        });
+        void logActionSuccess({
+          module: 'translation',
+          action: mode === 'recover' ? 'recover_single' : 'process_single',
+          message: `${translationModeLabel}单张处理成功`,
+          meta: {
+            ...baseMeta,
+            fileName: fileItem.file?.name || fileItem.relativePath,
+            relativePath: fileItem.relativePath,
+            matchedAspectRatio: effectiveConfig.aspectRatio,
+            taskId: res.taskId,
+            totalDurationMs: Date.now() - taskStartedAt,
+          },
         });
       } else {
         throw new Error(res.message || (res.status === 'task_not_found' ? '任务已失效或不存在' : '处理异常'));
@@ -270,6 +355,34 @@ const FileProcessor: React.FC<Props> = ({
         error: isInterrupt ? '已中断' : (err.message || '未知错误'), 
         progress: 0 
       });
+      if (isInterrupt) {
+        void logActionInterrupted({
+          module: 'translation',
+          action: mode === 'recover' ? 'recover_single' : 'process_single',
+          message: `${translationModeLabel}单张处理已中断`,
+          detail: err.message || '已手动中断',
+          meta: {
+            ...baseMeta,
+            fileName: fileItem.file?.name || fileItem.relativePath,
+            relativePath: fileItem.relativePath,
+            taskId: fileItem.taskId,
+          },
+        });
+      } else {
+        void logActionFailure({
+          module: 'translation',
+          action: mode === 'recover' ? 'recover_single' : 'process_single',
+          message: `${translationModeLabel}单张处理失败`,
+          detail: err.message || '未知错误',
+          meta: {
+            ...baseMeta,
+            fileName: fileItem.file?.name || fileItem.relativePath,
+            relativePath: fileItem.relativePath,
+            taskId: fileItem.taskId,
+            matchedAspectRatio: fileItem.matchedAspectRatio,
+          },
+        });
+      }
     } finally {
       delete controllersRef.current[fileId];
     }
@@ -284,6 +397,7 @@ const FileProcessor: React.FC<Props> = ({
       executeFileTask(taskFileId).finally(() => {
         activeJobsRef.current = Math.max(0, activeJobsRef.current - 1);
         if (activeJobsRef.current === 0 && pendingQueueRef.current.length === 0) {
+          submissionLockRef.current = false;
           onProcessingChange(false);
           setIsSubmitting(false);
         }
@@ -293,9 +407,9 @@ const FileProcessor: React.FC<Props> = ({
   };
 
   const startProcessing = () => {
-    if (isProcessing || isSubmitting || files.length === 0) return;
+    if (submissionLockRef.current || isProcessing || isSubmitting || files.length === 0) return;
     
-    if (activeModule === AppModule.TRANSLATION && config.resolutionMode === 'custom' && config.aspectRatio !== AspectRatio.AUTO) {
+    if (activeModule === AppModule.TRANSLATION && shouldValidateTranslationAspectRatio(config, subMode || TranslationSubMode.MAIN)) {
         const [w, h] = config.aspectRatio.split(':').map(Number);
         const ratio = w / h;
         const currentRatio = config.targetWidth / config.targetHeight;
@@ -309,8 +423,18 @@ const FileProcessor: React.FC<Props> = ({
     const targetIds = files
       .filter(f => f.status === 'pending' || f.status === 'error' || f.status === 'interrupted')
       .map(f => f.id);
-    
+
     if (targetIds.length === 0) return;
+    submissionLockRef.current = true;
+    void logActionStart({
+      module: 'translation',
+      action: 'batch_start',
+      message: `启动${translationModeLabel}批量任务`,
+      meta: {
+        ...baseMeta,
+        count: targetIds.length,
+      },
+    });
     setIsSubmitting(true);
     pendingQueueRef.current = targetIds;
     runScheduler();
@@ -339,6 +463,17 @@ const FileProcessor: React.FC<Props> = ({
         return file;
       });
     });
+    void logActionInterrupted({
+      module: 'translation',
+      action: 'interrupt_all',
+      message: `全部暂停${translationModeLabel}任务`,
+      meta: {
+        ...baseMeta,
+        runningCount: runningIds.length,
+        queuedCount: queuedIds.length,
+      },
+    });
+    submissionLockRef.current = false;
     setIsSubmitting(false);
     onProcessingChange(false);
   };
@@ -347,14 +482,39 @@ const FileProcessor: React.FC<Props> = ({
     if (controllersRef.current[id]) {
       controllersRef.current[id].abort();
       updateSingleFile(id, { status: 'interrupted', error: '已手动中断', progress: 0 });
+      const item = filesRef.current.find((file) => file.id === id);
+      void logActionInterrupted({
+        module: 'translation',
+        action: 'interrupt_single',
+        message: `${translationModeLabel}单张任务已中断`,
+        meta: {
+          ...baseMeta,
+          fileName: item?.file?.name || item?.relativePath,
+          relativePath: item?.relativePath,
+          taskId: item?.taskId,
+        },
+      });
     }
   };
 
   const handleRetrySingle = (id: string) => {
     if (isSubmitting) return;
+    const item = filesRef.current.find((file) => file.id === id);
+    void logActionStart({
+      module: 'translation',
+      action: 'retry_single',
+      message: `${translationModeLabel}重新生成单张文件`,
+      meta: {
+        ...baseMeta,
+        fileName: item?.file?.name || item?.relativePath,
+        relativePath: item?.relativePath,
+        taskId: item?.taskId,
+      },
+    });
     updateSingleFile(id, { 
       status: 'pending', progress: 0, error: undefined, resultBlob: undefined, resultUrl: undefined 
     });
+    submissionLockRef.current = true;
     setIsSubmitting(true);
     setTimeout(() => {
       if (!isProcessing) {
@@ -368,11 +528,34 @@ const FileProcessor: React.FC<Props> = ({
 
   const handleRecoverSingle = (id: string) => {
     if (isProcessing) return;
+    const item = filesRef.current.find((file) => file.id === id);
+    void logActionStart({
+      module: 'translation',
+      action: 'recover_single_click',
+      message: `${translationModeLabel}尝试找回结果`,
+      meta: {
+        ...baseMeta,
+        fileName: item?.file?.name || item?.relativePath,
+        relativePath: item?.relativePath,
+        taskId: item?.taskId,
+      },
+    });
     onProcessingChange(true);
     executeFileTask(id, 'recover').finally(() => onProcessingChange(false));
   };
 
   const downloadSingle = (item: FileItem) => {
+    void logActionSuccess({
+      module: 'translation',
+      action: 'download_single',
+      message: `${translationModeLabel}导出单张结果`,
+      meta: {
+        ...baseMeta,
+        fileName: item.file?.name || item.relativePath,
+        relativePath: item.relativePath,
+        taskId: item.taskId,
+      },
+    });
     const directBlob = item.resultBlob;
     const downloadName = item.relativePath.split('/').pop() || 'translation_result.png';
 
@@ -401,6 +584,15 @@ const FileProcessor: React.FC<Props> = ({
   const downloadAll = async () => {
     const completed = files.filter(f => f.status === 'completed' && (f.resultBlob instanceof Blob || f.resultUrl));
     if (completed.length === 0) return;
+    void logActionStart({
+      module: 'translation',
+      action: 'download_batch',
+      message: `${translationModeLabel}开始批量导出`,
+      meta: {
+        ...baseMeta,
+        count: completed.length,
+      },
+    });
     try {
       const zipData = await Promise.all(completed.map(async (f) => {
         if (f.resultBlob instanceof Blob) {
@@ -412,13 +604,32 @@ const FileProcessor: React.FC<Props> = ({
         return { blob, path: normalizeZipPath(f.relativePath || 'translation_result.png') };
       }));
       await createZipAndDownload(zipData, `translation_export_${Date.now()}`);
+      void logActionSuccess({
+        module: 'translation',
+        action: 'download_batch',
+        message: `${translationModeLabel}批量导出成功`,
+        meta: {
+          ...baseMeta,
+          count: completed.length,
+        },
+      });
     } catch (err) {
       setAlertMessage("导出失败，请检查浏览器权限。");
+      void logActionFailure({
+        module: 'translation',
+        action: 'download_batch',
+        message: `${translationModeLabel}批量导出失败`,
+        detail: err instanceof Error ? err.message : '导出失败',
+        meta: {
+          ...baseMeta,
+          count: completed.length,
+        },
+      });
     }
   };
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-slate-50 relative overflow-hidden">
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[linear-gradient(180deg,#f8fbff_0%,#f8fafc_100%)]">
       {alertMessage && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-3xl p-8 max-w-sm shadow-2xl border border-rose-100 text-center animate-in zoom-in duration-200">
@@ -432,38 +643,30 @@ const FileProcessor: React.FC<Props> = ({
         </div>
       )}
 
-      <div className="bg-white px-8 py-4 border-b border-slate-200 flex items-center justify-between shadow-sm z-10 shrink-0">
-        <div className="flex gap-3">
-          <button onClick={() => fileInputRef.current?.click()} disabled={isProcessing} className="px-4 py-2 bg-slate-100 text-slate-700 font-bold text-sm rounded-xl hover:bg-slate-200 transition-all border border-slate-200"><i className="fas fa-file-image mr-2 text-slate-400"></i>导入图片</button>
-          <button onClick={() => folderInputRef.current?.click()} disabled={isProcessing} className="px-4 py-2 bg-slate-100 text-slate-700 font-bold text-sm rounded-xl hover:bg-slate-200 transition-all border border-slate-200"><i className="fas fa-folder-open mr-2 text-slate-400"></i>导入文件夹</button>
-          <button onClick={clearFiles} disabled={isProcessing || files.length === 0} className="px-4 py-2 bg-white text-rose-500 font-bold text-sm rounded-xl hover:bg-rose-50 transition-all border border-rose-100">清空</button>
+      <div className="z-10 mx-6 mt-5 shrink-0 rounded-[28px] border border-slate-200/80 bg-white/90 px-6 py-4 shadow-[0_18px_50px_rgba(15,23,42,0.06)] backdrop-blur-sm">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <button onClick={() => fileInputRef.current?.click()} disabled={isProcessing} className="rounded-2xl border border-slate-200 bg-slate-100 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-200"><i className="fas fa-file-image mr-2 text-slate-400"></i>导入图片</button>
+            <button onClick={() => folderInputRef.current?.click()} disabled={isProcessing} className="rounded-2xl border border-slate-200 bg-slate-100 px-4 py-2.5 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-200"><i className="fas fa-folder-open mr-2 text-slate-400"></i>导入文件夹</button>
+            <button onClick={clearFiles} disabled={isProcessing || files.length === 0} className="rounded-2xl border border-rose-100 bg-white px-4 py-2.5 text-sm font-semibold text-rose-500 transition-all hover:bg-rose-50">清空当前列表</button>
+          </div>
           <input type="file" ref={fileInputRef} multiple accept="image/*" onChange={handleFileSelect} className="hidden" />
           <input type="file" ref={folderInputRef} {...({ webkitdirectory: "" } as any)} onChange={handleFileSelect} className="hidden" />
-        </div>
-        
-        <div className="flex items-center gap-4">
-          <button 
-            onClick={startProcessing} 
-            disabled={isProcessing || isSubmitting || files.length === 0 || !files.some(f => f.status === 'pending' || f.status === 'error' || f.status === 'interrupted')} 
-            className="px-6 py-2.5 bg-indigo-600 text-white font-black text-xs rounded-xl hover:bg-indigo-700 shadow-lg shadow-indigo-100 disabled:bg-slate-300 transition-all uppercase tracking-widest min-w-[140px]"
-          >
-            {isProcessing || isSubmitting ? (
-              <span className="flex items-center gap-2"><i className="fas fa-spinner fa-spin"></i> 处理中...</span>
-            ) : '启动出海翻译'}
-          </button>
-          <button
-            onClick={interruptAllTasks}
-            disabled={!isProcessing && !isSubmitting && pendingQueueRef.current.length === 0}
-            className="px-6 py-2.5 bg-rose-600 text-white font-black text-xs rounded-xl hover:bg-rose-700 shadow-lg shadow-rose-100 disabled:opacity-50 transition-all uppercase tracking-widest"
-          >
-            全部暂停
-          </button>
-          <button onClick={downloadAll} disabled={isProcessing || !files.some(f => f.status === 'completed')} className="px-6 py-2.5 bg-emerald-600 text-white font-black text-xs rounded-xl hover:bg-emerald-700 shadow-lg shadow-emerald-100 disabled:opacity-50 transition-all uppercase tracking-widest">打包导出</button>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={interruptAllTasks}
+              disabled={!isProcessing && !isSubmitting && pendingQueueRef.current.length === 0}
+              className="rounded-2xl bg-rose-600 px-5 py-2.5 text-xs font-semibold tracking-[0.16em] text-white shadow-[0_14px_30px_rgba(225,29,72,0.18)] transition-all hover:bg-rose-700 disabled:opacity-50"
+            >
+              全部暂停
+            </button>
+            <button onClick={downloadAll} disabled={isProcessing || !files.some(f => f.status === 'completed')} className="rounded-2xl bg-emerald-600 px-5 py-2.5 text-xs font-semibold tracking-[0.16em] text-white shadow-[0_14px_30px_rgba(5,150,105,0.18)] transition-all hover:bg-emerald-700 disabled:opacity-50">打包导出</button>
+          </div>
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden flex flex-col p-8 pt-6 min-h-0">
-        <div className="flex-1 bg-white rounded-[32px] shadow-sm border border-slate-100 overflow-hidden flex flex-col min-h-0">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-6 pt-5">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[32px] border border-slate-200/80 bg-white shadow-[0_20px_60px_rgba(15,23,42,0.06)]">
           <div className="flex-1 overflow-y-auto scrollbar-hide relative min-h-0">
             <table className="w-full text-left table-fixed border-collapse">
               <thead className="bg-slate-50/90 border-b border-slate-100 sticky top-0 z-10 backdrop-blur-md">
@@ -557,8 +760,7 @@ const FileProcessor: React.FC<Props> = ({
             {files.length === 0 && (
               <div className="flex-1 flex flex-col items-center justify-center p-24 text-center bg-slate-50/20 h-full">
                  <div className="w-20 h-20 bg-white rounded-3xl shadow-xl flex items-center justify-center mb-6 border border-slate-100 text-slate-200"><i className="fas fa-cloud-upload-alt text-3xl"></i></div>
-                 <h4 className="text-slate-400 font-black text-sm uppercase tracking-widest">等待导入任务</h4>
-                 <p className="text-slate-300 text-[11px] mt-2">点击上方“导入图片”开始处理您的出海资源</p>
+                 <h4 className="text-slate-400 font-semibold text-sm">导入图片开始处理</h4>
               </div>
             )}
           </div>

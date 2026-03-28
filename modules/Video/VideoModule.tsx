@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import {
   GlobalApiConfig,
   VideoPersistentState,
@@ -19,6 +19,8 @@ import { processWithKieAi } from '../../services/kieAiService';
 import { createZipAndDownload } from '../../utils/imageUtils';
 import StoryboardSidebar from './StoryboardSidebar';
 import StoryboardWorkspace from './StoryboardWorkspace';
+import { logActionFailure, logActionStart, logActionSuccess } from '../../services/loggingService';
+import { releaseObjectURLs } from '../../utils/urlUtils';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -43,8 +45,15 @@ const fetchBlob = async (url: string) => {
 
 const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChange }) => {
   const { addToast } = useToast();
+  const storyboardSubmitLockRef = useRef(false);
   const defaultStoryboard = createDefaultVideoState().storyboard;
   const storyboard = persistentState.storyboard || defaultStoryboard;
+  const storyboardMeta = {
+    subMode: 'storyboard',
+    model: storyboard.config.model,
+    quality: storyboard.config.quality,
+    aspectRatio: storyboard.config.aspectRatio,
+  };
 
   const setVideoState = (updater: (prev: VideoPersistentState) => VideoPersistentState) => {
     onStateChange(updater);
@@ -105,10 +114,30 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
   };
 
   const generateWhiteBgForProject = async (projectId: string, config: VideoStoryboardConfig) => {
+    void logActionStart({
+      module: 'video',
+      action: 'generate_white_bg',
+      message: '开始生成白底图',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+      },
+    });
     updateProject(projectId, (project) => ({ ...project, whiteBgStatus: 'generating' }));
     const result = await generateStoryboardWhiteBgImage(config, config.uploadedProductUrls, apiConfig);
 
     if (result.status !== 'success') {
+      void logActionFailure({
+        module: 'video',
+        action: 'generate_white_bg',
+        message: '白底图生成失败',
+        detail: result.message,
+        meta: {
+          ...storyboardMeta,
+          projectId,
+          taskId: result.taskId,
+        },
+      });
       updateProject(projectId, (project) => ({
         ...project,
         whiteBgStatus: 'failed',
@@ -123,6 +152,16 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       whiteBgImageUrl: result.imageUrl,
       whiteBgTaskId: result.taskId,
     }));
+    void logActionSuccess({
+      module: 'video',
+      action: 'generate_white_bg',
+      message: '白底图生成成功',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+        taskId: result.taskId,
+      },
+    });
     return true;
   };
 
@@ -133,6 +172,16 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     shots: VideoStoryboardProject['shots'],
     previousBoardImageUrl?: string
   ) => {
+    void logActionStart({
+      module: 'video',
+      action: 'generate_board',
+      message: '开始生成分镜板',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+        boardId: board.id,
+      },
+    });
     updateBoard(projectId, board.id, {
       status: 'generating',
       error: undefined,
@@ -166,6 +215,18 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       );
 
       if (result.status !== 'success') {
+        void logActionFailure({
+          module: 'video',
+          action: 'generate_board',
+          message: '分镜板生成失败',
+          detail: result.message,
+          meta: {
+            ...storyboardMeta,
+            projectId,
+            boardId: board.id,
+            taskId: result.taskId,
+          },
+        });
         updateBoard(projectId, board.id, { status: 'failed', error: result.message || '分镜板生成失败', taskId: result.taskId });
         return false;
       }
@@ -175,6 +236,17 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
         imageUrl: result.imageUrl,
         taskId: result.taskId,
         previousBoardImageUrl,
+      });
+      void logActionSuccess({
+        module: 'video',
+        action: 'generate_board',
+        message: '分镜板生成成功',
+        meta: {
+          ...storyboardMeta,
+          projectId,
+          boardId: board.id,
+          taskId: result.taskId,
+        },
       });
       return result.imageUrl;
     }
@@ -189,6 +261,18 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     );
 
     if (generated.result.status !== 'success') {
+      void logActionFailure({
+        module: 'video',
+        action: 'generate_board',
+        message: '分镜板生成失败',
+        detail: generated.result.message,
+        meta: {
+          ...storyboardMeta,
+          projectId,
+          boardId: board.id,
+          taskId: generated.result.taskId,
+        },
+      });
       updateBoard(projectId, board.id, {
         status: 'failed',
         error: generated.result.message || '分镜板生成失败',
@@ -206,6 +290,17 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       prompt: generated.prompt,
       previousBoardImageUrl,
     });
+    void logActionSuccess({
+      module: 'video',
+      action: 'generate_board',
+      message: '分镜板生成成功',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+        boardId: board.id,
+        taskId: generated.result.taskId,
+      },
+    });
     return generated.result.imageUrl;
   };
 
@@ -216,6 +311,16 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     includeWhiteBg: boolean
   ) => {
     try {
+      void logActionStart({
+        module: 'video',
+        action: 'generate_storyboard_project',
+        message: '开始生成短视频分镜项目',
+        meta: {
+          ...storyboardMeta,
+          projectId,
+          includeWhiteBg,
+        },
+      });
       updateProject(projectId, (project) => ({
         ...project,
         status: 'scripting',
@@ -225,6 +330,17 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       }));
 
       const { script, shots, boards } = await generateStoryboardScript(config, config.uploadedProductUrls, sceneDescription, apiConfig);
+      void logActionSuccess({
+        module: 'video',
+        action: 'generate_storyboard_script',
+        message: '分镜脚本生成成功',
+        meta: {
+          ...storyboardMeta,
+          projectId,
+          boardCount: boards.length,
+          shotCount: shots.length,
+        },
+      });
       updateProject(projectId, (project) => ({
         ...project,
         script,
@@ -249,7 +365,26 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       }
 
       finalizeProjectStatus(projectId);
+      void logActionSuccess({
+        module: 'video',
+        action: 'generate_storyboard_project',
+        message: '短视频分镜项目生成完成',
+        meta: {
+          ...storyboardMeta,
+          projectId,
+        },
+      });
     } catch (error: any) {
+      void logActionFailure({
+        module: 'video',
+        action: 'generate_storyboard_project',
+        message: '短视频分镜项目生成失败',
+        detail: error.message,
+        meta: {
+          ...storyboardMeta,
+          projectId,
+        },
+      });
       updateProject(projectId, (project) => ({
         ...project,
         status: 'failed',
@@ -260,9 +395,19 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
   };
 
   const handleGenerateWithConfig = async (baseConfig: VideoStoryboardConfig) => {
-    if (persistentState.isGenerating) return;
+    if (storyboardSubmitLockRef.current || persistentState.isGenerating) return;
+    storyboardSubmitLockRef.current = true;
 
     try {
+      void logActionStart({
+        module: 'video',
+        action: 'generate_storyboard_batch',
+        message: '开始批量生成分镜项目',
+        meta: {
+          ...storyboardMeta,
+          projectCount: baseConfig.projectCount,
+        },
+      });
       setVideoState((prev) => ({ ...prev, isGenerating: true }));
       const uploadedProductUrls = await ensureUploadedProductUrls(baseConfig);
       const runtimeConfig: VideoStoryboardConfig = {
@@ -306,9 +451,26 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       }
 
       addToast(`已完成 ${nextProjects.length} 个视频分镜方案`, 'success');
+      void logActionSuccess({
+        module: 'video',
+        action: 'generate_storyboard_batch',
+        message: '批量生成分镜项目完成',
+        meta: {
+          ...storyboardMeta,
+          projectCount: nextProjects.length,
+        },
+      });
     } catch (error: any) {
+      void logActionFailure({
+        module: 'video',
+        action: 'generate_storyboard_batch',
+        message: '批量生成分镜项目失败',
+        detail: error.message,
+        meta: storyboardMeta,
+      });
       addToast(error.message || '生成失败', 'error');
     } finally {
+      storyboardSubmitLockRef.current = false;
       setVideoState((prev) => ({ ...prev, isGenerating: false }));
     }
   };
@@ -320,12 +482,30 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
   const handleRetryProject = async (projectId: string) => {
     const project = storyboard.projects.find((item) => item.id === projectId);
     if (!project) return;
+    void logActionStart({
+      module: 'video',
+      action: 'retry_project',
+      message: '重试整个分镜项目',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+      },
+    });
     await processProject(projectId, project.config, project.sceneDescription || '', !!project.config.generateWhiteBg);
   };
 
   const handleRetryFailedBoards = async (projectId: string) => {
     const project = storyboard.projects.find((item) => item.id === projectId);
     if (!project) return;
+    void logActionStart({
+      module: 'video',
+      action: 'retry_failed_boards',
+      message: '重试失败分镜板',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+      },
+    });
 
     updateProject(projectId, (current) => ({ ...current, status: 'imaging', error: undefined }));
     let previousBoardImageUrl: string | undefined;
@@ -355,6 +535,16 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     const previousBoardImageUrl = boardIndex > 0 ? project.boards[boardIndex - 1].imageUrl : undefined;
     const board = project.boards[boardIndex];
     if (!board) return;
+    void logActionStart({
+      module: 'video',
+      action: 'regenerate_board',
+      message: '重新生成单张分镜板',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+        boardId,
+      },
+    });
     await generateBoardFromData(projectId, board, project.config, project.shots, previousBoardImageUrl);
     finalizeProjectStatus(projectId);
   };
@@ -367,21 +557,65 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       return;
     }
 
+    void logActionStart({
+      module: 'video',
+      action: 'refetch_board',
+      message: '找回分镜板结果',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+        boardId,
+        taskId: board.taskId,
+      },
+    });
     updateBoard(projectId, boardId, { status: 'generating', error: undefined });
     const result = await refetchStoryboardImage(board.taskId, apiConfig);
     if (result.status !== 'success') {
+      void logActionFailure({
+        module: 'video',
+        action: 'refetch_board',
+        message: '找回分镜板结果失败',
+        detail: result.message,
+        meta: {
+          ...storyboardMeta,
+          projectId,
+          boardId,
+          taskId: board.taskId,
+        },
+      });
       updateBoard(projectId, boardId, { status: 'failed', error: result.message || '找回失败' });
       addToast(result.message || '找回失败', 'error');
       return;
     }
 
     updateBoard(projectId, boardId, { status: 'completed', imageUrl: result.imageUrl, error: undefined });
+    void logActionSuccess({
+      module: 'video',
+      action: 'refetch_board',
+      message: '找回分镜板结果成功',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+        boardId,
+        taskId: board.taskId,
+      },
+    });
     finalizeProjectStatus(projectId);
   };
 
   const handleCreateNewSchemes = async (projectId: string, count: number, scenes: string[]) => {
     const project = storyboard.projects.find((item) => item.id === projectId);
     if (!project) return;
+    void logActionStart({
+      module: 'video',
+      action: 'create_new_schemes',
+      message: '基于当前项目创建新方案',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+        count,
+      },
+    });
     await handleGenerateWithConfig({
       ...cloneStoryboardConfig(project.config),
       projectCount: count,
@@ -391,6 +625,15 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
 
   const handleDownloadProject = async (project: VideoStoryboardProject) => {
     try {
+      void logActionStart({
+        module: 'video',
+        action: 'download_project',
+        message: '开始下载单个分镜项目',
+        meta: {
+          ...storyboardMeta,
+          projectId: project.id,
+        },
+      });
       setVideoState((prev) => {
         const currentStoryboard = prev.storyboard || defaultStoryboard;
         return {
@@ -425,7 +668,27 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       }
 
       await createZipAndDownload(files, `${project.name}_${Date.now()}`);
+      void logActionSuccess({
+        module: 'video',
+        action: 'download_project',
+        message: '下载单个分镜项目成功',
+        meta: {
+          ...storyboardMeta,
+          projectId: project.id,
+          fileCount: files.length,
+        },
+      });
     } catch (error: any) {
+      void logActionFailure({
+        module: 'video',
+        action: 'download_project',
+        message: '下载单个分镜项目失败',
+        detail: error.message,
+        meta: {
+          ...storyboardMeta,
+          projectId: project.id,
+        },
+      });
       addToast(error.message || '打包下载失败', 'error');
     } finally {
       setVideoState((prev) => {
@@ -449,6 +712,15 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     }
 
     try {
+      void logActionStart({
+        module: 'video',
+        action: 'download_all_projects',
+        message: '开始批量下载全部分镜项目',
+        meta: {
+          ...storyboardMeta,
+          projectCount: completedProjects.length,
+        },
+      });
       const files: { blob: Blob; path: string }[] = [];
       for (const project of completedProjects) {
         files.push({
@@ -473,12 +745,41 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       }
 
       await createZipAndDownload(files, `video_storyboards_${Date.now()}`);
+      void logActionSuccess({
+        module: 'video',
+        action: 'download_all_projects',
+        message: '批量下载全部分镜项目成功',
+        meta: {
+          ...storyboardMeta,
+          projectCount: completedProjects.length,
+          fileCount: files.length,
+        },
+      });
     } catch (error: any) {
+      void logActionFailure({
+        module: 'video',
+        action: 'download_all_projects',
+        message: '批量下载全部分镜项目失败',
+        detail: error.message,
+        meta: {
+          ...storyboardMeta,
+          projectCount: completedProjects.length,
+        },
+      });
       addToast(error.message || '批量下载失败', 'error');
     }
   };
 
   const handleDeleteProject = (projectId: string) => {
+    void logActionSuccess({
+      module: 'video',
+      action: 'delete_project',
+      message: '删除分镜项目',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+      },
+    });
     setVideoState((prev) => {
       const currentStoryboard = prev.storyboard || defaultStoryboard;
       return {
@@ -495,6 +796,16 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
   };
 
   const handleClearAllProjects = () => {
+    releaseObjectURLs(storyboard.config.productImages);
+    void logActionSuccess({
+      module: 'video',
+      action: 'clear_all_projects',
+      message: '清空全部分镜项目',
+      meta: {
+        ...storyboardMeta,
+        projectCount: storyboard.projects.length,
+      },
+    });
     setVideoState((prev) => {
       const currentStoryboard = prev.storyboard || defaultStoryboard;
       return {

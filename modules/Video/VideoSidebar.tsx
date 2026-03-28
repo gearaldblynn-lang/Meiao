@@ -2,6 +2,7 @@
 import React, { useRef, useMemo } from 'react';
 import { VideoPersistentState, VideoConfig, SceneItem } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
+import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
 
 interface Props {
   state: VideoPersistentState;
@@ -67,16 +68,18 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
   const isRenderDisabled = isProcessing || state.productImages.length === 0 || (state.config.promptMode === 'ai' && !state.config.scenes.length) || isDurationMismatch || isEditorIncomplete;
 
   return (
-    <div className="w-[380px] bg-white border-r border-slate-200 h-full flex flex-col shrink-0 overflow-hidden relative z-30 shadow-sm">
-      <div className="p-6 border-b border-slate-100 bg-purple-50/30 flex-none">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="w-1.5 h-5 bg-purple-600 rounded-full shadow-sm"></div>
-          <h2 className="text-lg font-black text-slate-800 tracking-tight">短视频生成配置</h2>
-        </div>
-        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-[0.2em]">Sora 2 Pro Storyboard Factory</p>
-      </div>
-
-      <div className="flex-1 min-h-0 overflow-y-auto sidebar-scroll p-5 space-y-6">
+    <SidebarShell
+      accentClass="bg-fuchsia-600"
+      title="短视频生成配置"
+      subtitle={state.config.promptMode === 'manual' ? '分镜编辑模式' : '自动策划模式'}
+      footer={
+        <PrimaryActionButton
+          onClick={onStart}
+          disabled={isRenderDisabled}
+          label={isProcessing ? '渲染引擎预热中...' : state.config.promptMode === 'ai' ? '请先策划分镜脚本' : isDurationMismatch ? '分镜时长不匹配' : isEditorIncomplete ? '分镜描述未完成' : '开始极速渲染视频'}
+        />
+      }
+    >
         {isDurationMismatch && (
           <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl animate-in fade-in slide-in-from-top-2 duration-300">
             <div className="flex items-start gap-3">
@@ -94,7 +97,7 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
             <i className="fas fa-images text-purple-500"></i>
             <span>产品主体 (仅限1张)</span>
           </div>
-          <div onClick={() => imageInputRef.current?.click()} className="group cursor-pointer border-2 border-dashed border-slate-200 rounded-[24px] p-6 hover:border-purple-300 transition-all text-center">
+          <div onClick={() => imageInputRef.current?.click()} className="cursor-pointer">
             {state.productImages.length > 0 ? (
               <div className="relative aspect-video rounded-xl overflow-hidden shadow-inner ring-1 ring-slate-100">
                 {state.productImages[0] ? (
@@ -110,13 +113,13 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
                 </div>
               </div>
             ) : (
-              <>
-                <div className="w-10 h-10 bg-slate-50 rounded-2xl flex items-center justify-center mx-auto mb-3 transition-transform group-hover:scale-110">
-                  <i className="far fa-image text-slate-300 text-lg group-hover:text-purple-400"></i>
-                </div>
-                <p className="text-xs font-black text-slate-600 mb-1">点击上传产品主图</p>
-                <p className="text-[9px] font-bold text-slate-400 mt-1 uppercase tracking-tighter">JPG/PNG/WEBP | MAX 10MB</p>
-              </>
+              <UploadSurface
+                icon="fa-image"
+                accentTextClass="text-fuchsia-500"
+                title="点击上传产品主图"
+                hint="用于生成分镜脚本、镜头草图和后续视频画面。"
+                meta="JPG / PNG / WEBP · 最大 10MB"
+              />
             )}
             <input type="file" ref={imageInputRef} onChange={handleImageUpload} className="hidden" accept="image/*" />
           </div>
@@ -134,10 +137,15 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
              </div>
              <div className="space-y-1">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">画布比例</span>
-                <select value={state.config.aspectRatio} onChange={(e) => updateConfig({ aspectRatio: e.target.value as any })} className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-purple-500">
-                   <option value="landscape">横屏 16:9</option>
-                   <option value="portrait">竖屏 9:16</option>
-                </select>
+                <PopoverSelect
+                  value={state.config.aspectRatio}
+                  onChange={(next) => updateConfig({ aspectRatio: next as any })}
+                  options={[
+                    { value: 'landscape', label: '横屏 16:9' },
+                    { value: 'portrait', label: '竖屏 9:16' },
+                  ]}
+                  buttonClassName="h-10 rounded-2xl px-4 text-xs"
+                />
              </div>
           </div>
           <div className="flex bg-slate-100 p-1 rounded-xl">
@@ -164,13 +172,12 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
                       <button onClick={() => updateConfig({ targetCountry: '美国', customCountry: '' })} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-300 hover:text-purple-600"><i className="fas fa-rotate-left text-[10px]"></i></button>
                     </div>
                   ) : (
-                    <select 
-                      value={state.config.targetCountry} 
-                      onChange={(e) => updateConfig({ targetCountry: e.target.value, customCountry: e.target.value === '自定义' ? '' : undefined })} 
-                      className="w-full bg-slate-100 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-purple-500 appearance-none"
-                    >
-                      {countries.map(c => <option key={c} value={c}>{c}</option>)}
-                    </select>
+                    <PopoverSelect
+                      value={state.config.targetCountry}
+                      onChange={(next) => updateConfig({ targetCountry: next, customCountry: next === '自定义' ? '' : undefined })}
+                      options={countries.map((country) => ({ value: country, label: country }))}
+                      buttonClassName="h-10 rounded-2xl px-4 text-xs"
+                    />
                   )}
                 </div>
               </div>
@@ -219,14 +226,7 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
               </div>
            </section>
         )}
-      </div>
-
-      <div className="p-5 border-t border-slate-100 bg-white flex-none">
-        <button onClick={onStart} disabled={isRenderDisabled} className="w-full py-4 bg-slate-900 text-white font-black rounded-2xl shadow-xl hover:bg-slate-800 disabled:bg-slate-100 disabled:text-slate-300">
-          {isProcessing ? '渲染引擎预热中...' : state.config.promptMode === 'ai' ? '请先策划分镜脚本' : isDurationMismatch ? '分镜时长不匹配' : isEditorIncomplete ? '分镜描述未完成' : '开始极速渲染视频'}
-        </button>
-      </div>
-    </div>
+    </SidebarShell>
   );
 };
 

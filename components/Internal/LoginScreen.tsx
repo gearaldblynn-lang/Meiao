@@ -7,74 +7,111 @@ interface Props {
 }
 
 const LoginScreen: React.FC<Props> = ({ isSubmitting, error, onLogin }) => {
-  const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('Meiao123456');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    await onLogin(username, password);
+    await onLogin(username.trim(), password);
   };
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(244,63,94,0.18),_transparent_30%),linear-gradient(135deg,#fff7ed_0%,#f8fafc_45%,#eef2ff_100%)] flex items-center justify-center px-6 py-10">
-      <div className="w-full max-w-5xl grid lg:grid-cols-[1.2fr_0.8fr] bg-white/90 backdrop-blur rounded-[36px] shadow-2xl overflow-hidden border border-white/70">
-        <section className="p-10 lg:p-14 bg-slate-950 text-white">
-          <p className="text-[11px] tracking-[0.28em] uppercase font-black text-rose-300">Meiao Internal V1</p>
-          <h1 className="mt-5 text-4xl font-black leading-tight">公司内部协作版已经接入登录层</h1>
-          <p className="mt-5 text-sm leading-7 text-slate-300 font-medium">
-            这一版先把多人登录和每人独立保存打通。你们后续在云上部署后，员工登录进去就能看到自己的工作内容，不会再和别人混在一起。
-          </p>
-          <div className="mt-8 grid sm:grid-cols-2 gap-4">
-            <div className="rounded-3xl bg-white/5 border border-white/10 p-5">
-              <p className="text-xs font-black text-white">当前默认管理员</p>
-              <p className="mt-3 text-sm text-slate-300 leading-7">用户名默认是 `admin`，密码默认是 `Meiao123456`。后面上云前建议立刻改掉。</p>
-            </div>
-            <div className="rounded-3xl bg-white/5 border border-white/10 p-5">
-              <p className="text-xs font-black text-white">这一步的意义</p>
-              <p className="mt-3 text-sm text-slate-300 leading-7">先把“谁在用”和“谁的数据归谁”搭好，后面再继续接数据库、上云、收 API Key。</p>
-            </div>
+    <div className="min-h-screen overflow-hidden bg-[#f5f5f7]">
+      <div className="relative min-h-screen">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.9),_transparent_34%),radial-gradient(circle_at_bottom_left,_rgba(148,163,184,0.16),_transparent_28%),linear-gradient(180deg,#f8f8fa_0%,#eef1f5_100%)]" />
+        <div className="absolute left-1/2 top-[-18%] h-[32rem] w-[32rem] -translate-x-1/2 rounded-full bg-white/80 blur-3xl" />
+
+        <div className="relative z-10 mx-auto flex min-h-screen max-w-6xl items-center justify-center px-6 py-10">
+          <div className="grid w-full max-w-5xl gap-8 lg:grid-cols-[1.08fr_0.92fr]">
+            <section className="flex flex-col justify-between rounded-[40px] border border-white/70 bg-white/55 p-8 shadow-[0_30px_90px_rgba(15,23,42,0.08)] backdrop-blur-2xl lg:p-10">
+              <div>
+                <div className="inline-flex items-center rounded-full border border-black/5 bg-white/80 px-4 py-1.5 text-[11px] font-semibold tracking-[0.24em] text-slate-500">
+                  MEIAO OFFICIAL
+                </div>
+                <h1 className="mt-8 text-[40px] font-semibold leading-[1.06] tracking-[-0.04em] text-slate-950 lg:text-[52px]">
+                  登录 MEIAO
+                  <br />
+                  内部工作台
+                </h1>
+                <p className="mt-5 max-w-xl text-[15px] leading-7 text-slate-500">
+                  极简、稳定、清晰。登录后继续使用你的项目、任务与工作台数据。
+                </p>
+              </div>
+
+              <div className="mt-10 grid gap-4 sm:grid-cols-2">
+                <div className="rounded-[28px] border border-white/80 bg-white/72 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+                  <p className="text-sm font-semibold text-slate-900">专属工作数据</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-500">
+                    每个账号登录后进入自己的工作空间，任务、记录与配置彼此隔离。
+                  </p>
+                </div>
+                <div className="rounded-[28px] border border-white/80 bg-white/72 p-5 shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+                  <p className="text-sm font-semibold text-slate-900">正式版登录入口</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-500">
+                    页面不再预填默认账号信息，适合作为本地与云端统一使用的正式登录页。
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section className="rounded-[40px] border border-white/80 bg-white/78 p-8 shadow-[0_35px_100px_rgba(15,23,42,0.1)] backdrop-blur-2xl lg:p-10">
+              <div className="mx-auto flex max-w-md flex-col">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-semibold tracking-[0.22em] text-slate-400">SIGN IN</p>
+                    <h2 className="mt-3 text-[32px] font-semibold tracking-[-0.04em] text-slate-950">欢迎回来</h2>
+                  </div>
+                  <div className="flex h-14 w-14 items-center justify-center rounded-[22px] border border-white/70 bg-white/85 shadow-[0_18px_40px_rgba(15,23,42,0.08)]">
+                    <span className="text-base font-semibold tracking-[0.24em] text-slate-900">M</span>
+                  </div>
+                </div>
+
+                <form onSubmit={handleSubmit} className="mt-10 space-y-5">
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-slate-600">账号</label>
+                    <input
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value)}
+                      placeholder="请输入账号"
+                      autoComplete="username"
+                      className="h-13 w-full rounded-[22px] border border-slate-200/80 bg-white/92 px-4 text-[15px] font-medium text-slate-900 outline-none transition focus:border-slate-300 focus:bg-white focus:ring-4 focus:ring-slate-200/60"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-sm font-medium text-slate-600">密码</label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(event) => setPassword(event.target.value)}
+                      placeholder="请输入密码"
+                      autoComplete="current-password"
+                      className="h-13 w-full rounded-[22px] border border-slate-200/80 bg-white/92 px-4 text-[15px] font-medium text-slate-900 outline-none transition focus:border-slate-300 focus:bg-white focus:ring-4 focus:ring-slate-200/60"
+                    />
+                  </div>
+
+                  {error ? (
+                    <div className="rounded-[22px] border border-rose-200 bg-rose-50/90 px-4 py-3 text-sm font-medium text-rose-600">
+                      {error}
+                    </div>
+                  ) : null}
+
+                  <button
+                    type="submit"
+                    disabled={isSubmitting}
+                    className="mt-2 flex h-14 w-full items-center justify-center rounded-[24px] bg-slate-950 text-[15px] font-semibold text-white shadow-[0_18px_36px_rgba(15,23,42,0.2)] transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isSubmitting ? '登录中...' : '进入系统'}
+                  </button>
+                </form>
+
+                <div className="mt-8 rounded-[24px] border border-white/80 bg-white/78 px-5 py-4 text-sm leading-6 text-slate-500 shadow-[0_16px_36px_rgba(15,23,42,0.05)]">
+                  若需注册账号请联系：将离
+                </div>
+              </div>
+            </section>
           </div>
-        </section>
-
-        <section className="p-10 lg:p-14 flex items-center">
-          <form onSubmit={handleSubmit} className="w-full">
-            <p className="text-[11px] font-black tracking-[0.28em] uppercase text-slate-400">登录系统</p>
-            <h2 className="mt-4 text-3xl font-black text-slate-900">进入内部工作台</h2>
-            <div className="mt-8 space-y-5">
-              <div>
-                <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">用户名</label>
-                <input
-                  value={username}
-                  onChange={(event) => setUsername(event.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-rose-400"
-                />
-              </div>
-              <div>
-                <label className="block text-[11px] font-black uppercase tracking-[0.22em] text-slate-500 mb-2">密码</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-800 outline-none focus:ring-2 focus:ring-rose-400"
-                />
-              </div>
-            </div>
-
-            {error ? (
-              <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-600">
-                {error}
-              </div>
-            ) : null}
-
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="mt-6 w-full rounded-2xl bg-slate-950 text-white py-3.5 text-sm font-black hover:bg-slate-800 transition-colors disabled:opacity-60"
-            >
-              {isSubmitting ? '登录中...' : '进入系统'}
-            </button>
-          </form>
-        </section>
+        </div>
       </div>
     </div>
   );

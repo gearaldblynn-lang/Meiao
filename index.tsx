@@ -3,6 +3,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { PERSISTENCE_KEY } from './utils/appState';
+import { releaseAllObjectURLs } from './utils/urlUtils';
 
 interface ErrorBoundaryProps {
   children?: React.ReactNode;
@@ -34,6 +35,7 @@ class RootErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundar
 
   handleReset = () => {
     try {
+      releaseAllObjectURLs();
       localStorage.removeItem(PERSISTENCE_KEY);
     } catch (error) {
       console.error('Failed to clear persisted state:', error);

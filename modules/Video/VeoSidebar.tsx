@@ -3,6 +3,7 @@ import React, { useRef, useState } from 'react';
 import { VideoPersistentState, VideoConfig } from '../../types';
 import { useToast } from '../../components/ToastSystem';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
+import { PopoverSelect, PrimaryActionButton, SidebarShell } from '../../components/ui/workspacePrimitives';
 
 interface Props {
   state: VideoPersistentState;
@@ -44,16 +45,20 @@ const VeoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcessing })
   };
 
   return (
-    <div className="w-[380px] bg-white border-r border-slate-200 h-full flex flex-col shrink-0 overflow-hidden relative z-30 shadow-sm">
-      <header className="p-6 border-b border-slate-100 bg-indigo-50/30 flex-none">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="w-1.5 h-5 bg-indigo-600 rounded-full shadow-sm"></div>
-          <h2 className="text-lg font-black text-slate-800 tracking-tight">AI 智慧剧本配置</h2>
-        </div>
-        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-[0.2em]">Veo 3.1 & Doubao Engine</p>
-      </header>
-
-      <div className="flex-1 min-h-0 overflow-y-auto sidebar-scroll p-5 space-y-6">
+    <SidebarShell
+      widthClassName="w-[380px]"
+      accentClass="bg-indigo-600"
+      title="AI 智慧剧本配置"
+      subtitle="Veo 模式"
+      footer={
+        <PrimaryActionButton
+          onClick={onStart}
+          disabled={isProcessing || state.productImages.length === 0}
+          icon={isProcessing ? 'fa-spinner fa-spin' : 'fa-magic'}
+          label={isProcessing ? 'AI 正在策划剧本...' : '生成智慧剧本开启创作'}
+        />
+      }
+    >
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-[11px] font-black text-slate-500 uppercase tracking-widest">
@@ -103,43 +108,44 @@ const VeoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcessing })
           <div className="grid grid-cols-2 gap-3">
              <div className="space-y-1">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">视频比例</span>
-                <select 
+                <PopoverSelect
                   value={state.config.aspectRatio || 'portrait'} 
-                  onChange={(e) => updateConfig({ aspectRatio: e.target.value as any })} 
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500 appearance-none"
-                >
-                   <option value="portrait">竖屏 9:16 (默认)</option>
-                   <option value="landscape">横屏 16:9</option>
-                </select>
+                  onChange={(next) => updateConfig({ aspectRatio: next as any })}
+                  options={[
+                    { value: 'portrait', label: '竖屏 9:16' },
+                    { value: 'landscape', label: '横屏 16:9' },
+                  ]}
+                  buttonClassName="h-10 rounded-2xl px-4 text-xs"
+                />
              </div>
              <div className="space-y-1">
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">目标时长</span>
-                <select 
+                <PopoverSelect
                   value={state.config.duration || '16'} 
-                  onChange={(e) => updateConfig({ duration: e.target.value as any })} 
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500 appearance-none"
-                >
-                  <option value="8">8秒 (1个分镜)</option>
-                  <option value="16">16秒 (2个分镜)</option>
-                  <option value="24">24秒 (3个分镜)</option>
-                  <option value="32">32秒 (4个分镜)</option>
-                  <option value="40">40秒 (5个分镜)</option>
-                  <option value="48">48秒 (6个分镜)</option>
-                  <option value="56">56秒 (7个分镜)</option>
-                  <option value="60">60秒 (约8个分镜)</option>
-                </select>
+                  onChange={(next) => updateConfig({ duration: next as any })}
+                  options={[
+                    { value: '8', label: '8秒 (1个分镜)' },
+                    { value: '16', label: '16秒 (2个分镜)' },
+                    { value: '24', label: '24秒 (3个分镜)' },
+                    { value: '32', label: '32秒 (4个分镜)' },
+                    { value: '40', label: '40秒 (5个分镜)' },
+                    { value: '48', label: '48秒 (6个分镜)' },
+                    { value: '56', label: '56秒 (7个分镜)' },
+                    { value: '60', label: '60秒 (约8个分镜)' },
+                  ]}
+                  buttonClassName="h-10 rounded-2xl px-4 text-xs"
+                />
              </div>
           </div>
 
           <div className="space-y-1">
              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">生成份数 (独立方案)</span>
-             <select 
+             <PopoverSelect
                value={state.config.videoCount || 1} 
-               onChange={(e) => updateConfig({ videoCount: Number(e.target.value) })} 
-               className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-indigo-500 appearance-none"
-             >
-                {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n} 套方案</option>)}
-             </select>
+               onChange={(next) => updateConfig({ videoCount: Number(next) })}
+               options={[1, 2, 3, 4, 5].map((count) => ({ value: String(count), label: `${count} 套方案` }))}
+               buttonClassName="h-10 rounded-2xl px-4 text-xs"
+             />
           </div>
 
           <div className="space-y-1">
@@ -174,19 +180,7 @@ const VeoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcessing })
             />
           </div>
         </section>
-      </div>
-
-      <div className="p-5 border-t border-slate-100 bg-white flex-none shadow-[0_-4px_10px_rgba(0,0,0,0.02)]">
-        <button 
-          onClick={onStart} 
-          disabled={isProcessing || state.productImages.length === 0} 
-          className="w-full py-4 bg-indigo-600 text-white font-black rounded-xl shadow-lg hover:bg-indigo-700 disabled:bg-slate-100 disabled:text-slate-300 transition-all flex items-center justify-center gap-3"
-        >
-          {isProcessing ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-magic text-indigo-200"></i>}
-          {isProcessing ? 'AI 正在策划剧本...' : '生成智慧剧本开启创作'}
-        </button>
-      </div>
-    </div>
+    </SidebarShell>
   );
 };
 

@@ -1,4 +1,11 @@
 
+import {
+  createTrackedObjectUrl,
+  revokeAllTrackedObjectUrls,
+  revokeTrackedObjectUrl,
+  revokeTrackedObjectUrls,
+} from './objectUrlRegistry.mjs';
+
 /**
  * Safely creates a URL for a Blob or File object.
  * Returns undefined if the object is invalid or not a Blob/File.
@@ -10,7 +17,7 @@ export const safeCreateObjectURL = (obj: any): string | undefined => {
   // Note: After restoration from localStorage, these might be plain objects {}
   if (obj instanceof Blob || obj instanceof File) {
     try {
-      return URL.createObjectURL(obj);
+      return createTrackedObjectUrl(obj) || undefined;
     } catch (e) {
       console.error('Failed to create object URL', e);
       return undefined;
@@ -21,4 +28,16 @@ export const safeCreateObjectURL = (obj: any): string | undefined => {
   if (typeof obj === 'string') return obj;
   
   return undefined;
+};
+
+export const releaseObjectURL = (obj: unknown) => {
+  revokeTrackedObjectUrl(obj);
+};
+
+export const releaseObjectURLs = (items: Array<unknown>) => {
+  revokeTrackedObjectUrls(items);
+};
+
+export const releaseAllObjectURLs = () => {
+  revokeAllTrackedObjectUrls();
 };
