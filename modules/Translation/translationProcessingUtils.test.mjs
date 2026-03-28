@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { deriveTranslationExecutionPlan, deriveTranslationExportSize, getStoredSourceDimensions } from './translationProcessingUtils.mjs';
 
@@ -105,4 +106,66 @@ test('getStoredSourceDimensions restores persisted original image dimensions for
 test('getStoredSourceDimensions returns null when persisted source dimensions are incomplete', () => {
   assert.equal(getStoredSourceDimensions({ originalWidth: 0, originalHeight: 2000 }), null);
   assert.equal(getStoredSourceDimensions({ originalWidth: 1000 }), null);
+});
+
+test('kieAi prompt gates source ratio constraint to main mode only', () => {
+  const source = readFileSync(new URL('../../services/kieAiService.ts', import.meta.url), 'utf8');
+
+  assert.match(
+    source,
+    /if\s*\(\s*isRatioMatch\s*&&\s*sourceImageContext\s*&&\s*subMode\s*===\s*['"]main['"]\s*\)/,
+    'source ratio prompt block should only run for main mode'
+  );
+});
+
+test('remove text custom export uses configured width and proportional height', () => {
+  const size = deriveTranslationExportSize({
+    config: {
+      resolutionMode: 'custom',
+      targetWidth: 900,
+      targetHeight: 0,
+    },
+    subMode: 'remove_text',
+    sourceDimensions: {
+      width: 1000,
+      height: 2000,
+      ratio: 0.5,
+    },
+    generatedDimensions: {
+      width: 1024,
+      height: 1024,
+      ratio: 1,
+    },
+  });
+
+  assert.deepEqual(size, {
+    targetWidth: 900,
+    targetHeight: 1800,
+  });
+});
+
+test('remove text original export matches source dimensions', () => {
+  const size = deriveTranslationExportSize({
+    config: {
+      resolutionMode: 'original',
+      targetWidth: 0,
+      targetHeight: 0,
+    },
+    subMode: 'remove_text',
+    sourceDimensions: {
+      width: 1000,
+      height: 2000,
+      ratio: 0.5,
+    },
+    generatedDimensions: {
+      width: 1024,
+      height: 1024,
+      ratio: 1,
+    },
+  });
+
+  assert.deepEqual(size, {
+    targetWidth: 1000,
+    targetHeight: 2000,
+  });
 });
