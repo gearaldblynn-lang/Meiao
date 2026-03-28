@@ -6,6 +6,7 @@ import { generateBuyerShowPrompts } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
 import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { createZipAndDownload } from '../../utils/imageUtils';
+import { logInternalAction, logActionStart, logActionSuccess, logActionFailure, logActionInterrupted } from '../../services/loggingService';
 
 // --- Sub Components for Performance Optimization ---
 
@@ -217,6 +218,22 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
   const generationAbortControllersRef = useRef<Set<AbortController>>(new Set());
   const setAbortControllersRef = useRef<Map<string, Set<AbortController>>>(new Map());
   const currentPlanAbortControllerRef = useRef<AbortController | null>(null);
+
+  const hasActiveGeneration = useCallback((setsToCheck: BuyerShowSet[]) => {
+    return setsToCheck.some(set => set.tasks.some(task => task.status === 'generating'));
+  }, []);
+
+  const writeLog = useCallback((payload: {
+    level: 'info' | 'error';
+    module: string;
+    action: string;
+    message: string;
+    detail?: string;
+    status: 'success' | 'failed' | 'started' | 'interrupted';
+    meta?: Record<string, unknown>;
+  }) => {
+    void logInternalAction(payload);
+  }, []);
   
   // Use callback to stabilize handlers
   const updateState = useCallback((updates: Partial<BuyerShowPersistentState>) => {
@@ -290,6 +307,14 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         ))
       }))
     }));
+    void logActionInterrupted({
+      module: 'buyer_show',
+      action: 'interrupt_workflow',
+      message: '手动中断买家秀整套流程',
+      meta: {
+        setCount: stateRef.current.sets.length,
+      },
+    });
   }, [onStateChange]);
 
   useEffect(() => {
@@ -345,6 +370,14 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         isGenerating: nextSets.some(set => set.tasks.some(task => task.status === 'generating')),
       };
     });
+    void logActionInterrupted({
+      module: 'buyer_show',
+      action: 'interrupt_set',
+      message: '手动中断买家秀方案',
+      meta: {
+        setId,
+      },
+    });
   }, [onStateChange]);
 
   const deleteSet = useCallback((setId: string) => {
@@ -360,17 +393,35 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
       };
     });
     setExpandedSetId(prev => (prev === setId ? null : prev));
+    void logActionSuccess({
+      module: 'buyer_show',
+      action: 'delete_set',
+      message: '删除买家秀方案',
+      meta: {
+        setId,
+      },
+    });
   }, [cancelSetGeneration, onStateChange]);
 
   const handleStartWorkflow = async () => {
-    if (isAnalyzing || isGenerating || productImages.length === 0) return;
+    if (inflightIdsRef.current.has('__workflow__')) return;
+    const latestState = stateRef.current;
+    if (latestState.isAnalyzing || latestState.isGenerating || latestState.productImages.length === 0) return;
+    inflightIdsRef.current.add('__workflow__');
+
+    currentPlanAbortControllerRef.current?.abort();
+    currentPlanAbortControllerRef.current = null;
+    generationAbortControllersRef.current.forEach(controller => controller.abort());
+    generationAbortControllersRef.current.clear();
+    setAbortControllersRef.current.clear();
+    inflightIdsRef.current.clear();
     
     // 初始化多套方案
     const newSets: BuyerShowSet[] = [];
-    const count = persistentState.setCount || 1;
+    const count = latestState.setCount || 1;
     
     onStateChange({ 
-        ...persistentState, 
+        ...latestState, 
         isAnalyzing: true, 
         sets: [], 
         pureEvaluations: [],
@@ -381,20 +432,39 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     });
 
     try {
-      const { productUrls, refUrl } = await ensureUploadedAssets(persistentState);
+      writeLog({
+        level: 'info',
+        module: 'buyer_show',
+        action: 'plan_start',
+        message: `开始执行买家秀策划，共 ${count} 套方案`,
+        status: 'started',
+        meta: {
+          setCount: count,
+          imageCount: latestState.imageCount,
+          hasReferenceImage: Boolean(latestState.referenceImage || latestState.uploadedReferenceUrl),
+          includeModel: latestState.includeModel,
+        },
+      });
+
+      const { productUrls, refUrl } = await ensureUploadedAssets(latestState);
       const planAbortController = new AbortController();
       currentPlanAbortControllerRef.current = planAbortController;
       
-      const plans = await Promise.all(
-        Array.from({ length: count }).map((_, idx) => generateBuyerShowPrompts(productUrls, refUrl, persistentState, apiConfig, idx, planAbortController.signal))
-      );
+      const plans = [];
+      for (let idx = 0; idx < count; idx += 1) {
+        const planResult = await generateBuyerShowPrompts(productUrls, refUrl, latestState, apiConfig, idx, planAbortController.signal);
+        if (planAbortController.signal.aborted) {
+          throw new DOMException('Aborted', 'AbortError');
+        }
+        plans.push(planResult);
+      }
       currentPlanAbortControllerRef.current = null;
 
       plans.forEach((res, index) => {
         if (res.status === 'error' || res.tasks.length === 0) return;
 
         let sortedPlans = [...res.tasks];
-        if (persistentState.includeModel) {
+        if (latestState.includeModel) {
           const firstFaceIndex = sortedPlans.findIndex(p => p.hasFace);
           if (firstFaceIndex > 0) {
             const facePlan = sortedPlans.splice(firstFaceIndex, 1)[0];
@@ -421,6 +491,18 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
       if (newSets.length === 0) throw new Error("AI 策划方案生成失败，请重试。");
 
+      writeLog({
+        level: 'info',
+        module: 'buyer_show',
+        action: 'plan_success',
+        message: `买家秀策划成功，已生成 ${newSets.length} 套方案`,
+        status: 'success',
+        meta: {
+          setCount: newSets.length,
+          imageCount: latestState.imageCount,
+        },
+      });
+
       setExpandedSetId(newSets[0].id);
 
       onStateChange(prev => ({ 
@@ -437,11 +519,32 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     } catch (err: any) {
       currentPlanAbortControllerRef.current = null;
       if (err?.name === 'AbortError') {
+        writeLog({
+          level: 'info',
+          module: 'buyer_show',
+          action: 'plan_interrupt',
+          message: '买家秀策划被手动中断',
+          status: 'interrupted',
+        });
         updateState({ isAnalyzing: false, isGenerating: false });
         return;
       }
+      writeLog({
+        level: 'error',
+        module: 'buyer_show',
+        action: 'plan_failed',
+        message: '买家秀策划失败',
+        detail: err?.message || '未知错误',
+        status: 'failed',
+        meta: {
+          setCount: count,
+          imageCount: latestState.imageCount,
+        },
+      });
       alert("策划失败: " + err.message);
       updateState({ isAnalyzing: false, isGenerating: false });
+    } finally {
+      inflightIdsRef.current.delete('__workflow__');
     }
   };
 
@@ -503,12 +606,30 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
         onStateChange(prev => ({
             ...prev,
-            sets: prev.sets.map(s => s.id === setId ? { ...s, status: firstRes.status === 'success' ? 'completed' : 'pending' } : s), // 如果首图失败，Set 保持 pending 或 error 状态
-            isGenerating: prev.sets.some(s => s.id !== setId && (s.status === 'generating' || s.status === 'pending'))
+            sets: prev.sets.map(s => s.id === setId ? { ...s, status: firstRes.status === 'success' ? 'completed' : 'pending' } : s),
+            isGenerating: hasActiveGeneration(
+              prev.sets.map(s => s.id === setId ? { ...s, status: firstRes.status === 'success' ? 'completed' : 'pending' } : s)
+            )
         }));
 
     } catch (e) {
         console.error("Set generation failed", e);
+        writeLog({
+            level: 'error',
+            module: 'buyer_show',
+            action: 'set_generation_failed',
+            message: `买家秀方案 ${set.index} 生成失败`,
+            detail: e instanceof Error ? e.message : '未知错误',
+            status: 'failed',
+            meta: {
+              setId,
+              setIndex: set.index,
+            },
+        });
+        onStateChange(prev => ({
+            ...prev,
+            isGenerating: hasActiveGeneration(prev.sets)
+        }));
     }
   };
 
@@ -530,6 +651,15 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     const tasksToRun = currentSet.tasks.slice(1).filter(t => t.status !== 'completed' && t.status !== 'generating');
 
     if (tasksToRun.length === 0) return;
+    void logActionStart({
+      module: 'buyer_show',
+      action: 'generate_remaining',
+      message: '开始生成后续套图',
+      meta: {
+        setId,
+        count: tasksToRun.length,
+      },
+    });
 
     onStateChange(prev => ({
         ...prev,
@@ -571,7 +701,26 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                 }));
             }
         }));
+        void logActionSuccess({
+          module: 'buyer_show',
+          action: 'generate_remaining',
+          message: '后续套图生成完成',
+          meta: {
+            setId,
+            count: tasksToRun.length,
+          },
+        });
     } catch (e: any) {
+        void logActionFailure({
+          module: 'buyer_show',
+          action: 'generate_remaining',
+          message: '后续套图生成失败',
+          detail: e.message,
+          meta: {
+            setId,
+            count: tasksToRun.length,
+          },
+        });
         alert("启动后续任务失败: " + e.message);
     }
   }, [createTrackedAbortController, ensureUploadedAssets, onStateChange]);
@@ -630,6 +779,15 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
   const handleDownloadSingle = useCallback(async (task: BuyerShowTask, index: number) => {
     if (!task.resultUrl) return;
+    void logActionSuccess({
+      module: 'buyer_show',
+      action: 'download_single',
+      message: '下载买家秀单图',
+      meta: {
+        taskId: task.id,
+        index: index + 1,
+      },
+    });
     try {
       const resp = await fetch(task.resultUrl);
       const blob = await resp.blob();
@@ -642,6 +800,14 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
   const handleBatchDownload = async () => {
     setIsBatchDownloading(true);
+    void logActionStart({
+      module: 'buyer_show',
+      action: 'download_batch',
+      message: '开始打包下载买家秀结果',
+      meta: {
+        setCount: persistentState.sets.length,
+      },
+    });
     try {
       const files: { blob: Blob; path: string }[] = [];
       const completedSets = persistentState.sets.filter(s => s.status === 'completed' || s.tasks.some(t => t.status === 'completed'));
@@ -665,11 +831,40 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
           }
       }
       await createZipAndDownload(files, `mayo_buyershow_${Date.now()}`);
-    } catch (err: any) { alert(`打包下载失败: ${err.message}`); } finally { setIsBatchDownloading(false); }
+      void logActionSuccess({
+        module: 'buyer_show',
+        action: 'download_batch',
+        message: '打包下载买家秀结果成功',
+        meta: {
+          fileCount: files.length,
+        },
+      });
+    } catch (err: any) {
+      void logActionFailure({
+        module: 'buyer_show',
+        action: 'download_batch',
+        message: '打包下载买家秀结果失败',
+        detail: err.message,
+        meta: {
+          setCount: persistentState.sets.length,
+        },
+      });
+      alert(`打包下载失败: ${err.message}`);
+    } finally { setIsBatchDownloading(false); }
   };
 
   const handleRecoverTask = useCallback(async (task: BuyerShowTask, setId: string) => {
     if (!task.taskId) return;
+    void logActionStart({
+      module: 'buyer_show',
+      action: 'recover_single',
+      message: '尝试找回买家秀单图结果',
+      meta: {
+        setId,
+        taskId: task.id,
+        kieTaskId: task.taskId,
+      },
+    });
     inflightIdsRef.current.add(task.id);
     onStateChange(prev => ({
         ...prev,
@@ -693,7 +888,29 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                 } : t)
             } : s)
         }));
+        void logActionSuccess({
+          module: 'buyer_show',
+          action: 'recover_single',
+          message: res.status === 'success' ? '找回买家秀单图成功' : '找回买家秀单图失败',
+          meta: {
+            setId,
+            taskId: task.id,
+            kieTaskId: res.taskId,
+          },
+        });
     } catch (e: any) {
+        writeLog({
+            level: 'error',
+            module: 'buyer_show',
+            action: 'task_regenerate_failed',
+            message: `买家秀单图重试失败`,
+            detail: e.message || '未知错误',
+            status: 'failed',
+            meta: {
+              setId,
+              taskId: task.id,
+            },
+        });
         onStateChange(prev => ({
             ...prev,
             sets: prev.sets.map(s => s.id === setId ? {
@@ -731,6 +948,16 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
   const handleRegenerateTaskOptimized = useCallback(async (task: BuyerShowTask, setId: string, taskIndex: number) => {
     const currentState = stateRef.current;
+    void logActionStart({
+      module: 'buyer_show',
+      action: 'retry_single',
+      message: '重新生成买家秀单图',
+      meta: {
+        setId,
+        taskId: task.id,
+        index: taskIndex + 1,
+      },
+    });
     
     onStateChange(prev => ({
         ...prev,
@@ -776,7 +1003,28 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                 } : t)
             } : s)
         }));
+        void logActionSuccess({
+          module: 'buyer_show',
+          action: 'retry_single',
+          message: res.status === 'success' ? '重新生成买家秀单图成功' : '重新生成买家秀单图失败',
+          meta: {
+            setId,
+            taskId: task.id,
+            kieTaskId: res.taskId,
+          },
+        });
     } catch (e: any) {
+        void logActionFailure({
+          module: 'buyer_show',
+          action: 'retry_single',
+          message: '重新生成买家秀单图失败',
+          detail: e.message,
+          meta: {
+            setId,
+            taskId: task.id,
+            index: taskIndex + 1,
+          },
+        });
         onStateChange(prev => ({
             ...prev,
             sets: prev.sets.map(s => s.id === setId ? {
@@ -785,7 +1033,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
             } : s)
         }));
     }
-  }, [createTrackedAbortController, ensureUploadedAssets, onStateChange]); // Stable dependencies
+  }, [createTrackedAbortController, ensureUploadedAssets, onStateChange, writeLog]); // Stable dependencies
 
   const handleToggleExpand = useCallback((id: string) => {
     setExpandedSetId(prev => prev === id ? null : id);
@@ -793,6 +1041,14 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
   const handleCopyText = useCallback((text: string) => {
     navigator.clipboard.writeText(text);
+    void logActionSuccess({
+      module: 'buyer_show',
+      action: 'copy_text',
+      message: '复制买家秀文案',
+      meta: {
+        textLength: text.length,
+      },
+    });
     alert("已复制");
   }, []);
 
@@ -809,23 +1065,24 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
         <main className="flex-1 overflow-y-auto p-8 bg-slate-50 relative scrollbar-hide">
           <div className="max-w-7xl mx-auto space-y-8 pb-20">
-            <div className="flex items-center justify-between bg-white px-8 py-5 rounded-[32px] border border-slate-100 shadow-xl sticky top-0 z-20 backdrop-blur-md bg-white/90">
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-amber-50 rounded-2xl flex items-center justify-center"><i className="fas fa-users-viewfinder text-amber-600 text-xl"></i></div>
-                <div><h2 className="text-xl font-black text-slate-800 tracking-tight">买家秀生成流水线</h2><div className="flex items-center gap-2 mt-1"><span className="px-2 py-0.5 bg-amber-100 text-amber-700 text-[9px] font-black rounded uppercase tracking-tighter">Social Influence V3</span><span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">{persistentState.includeModel ? 'Model Benchmark Mode' : 'Pure Still Life Mode'}</span></div></div>
+            <div className="flex items-center justify-between bg-white px-6 py-4 rounded-[32px] border border-slate-100 shadow-xl sticky top-0 z-20 backdrop-blur-md bg-white/90">
+              <div className="flex items-center gap-2">
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
+                  {persistentState.includeModel ? '含模特模式' : '静物模式'}
+                </span>
               </div>
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3">
                 {(isAnalyzing || isGenerating) && (
                   <button
                     onClick={cancelWorkflow}
-                    className="px-6 py-2.5 bg-rose-600 text-white font-black text-xs rounded-xl hover:bg-rose-700 shadow-xl shadow-rose-100 transition-all uppercase tracking-widest flex items-center gap-2"
+                    className="px-5 py-2.5 bg-rose-600 text-white font-semibold text-xs rounded-xl hover:bg-rose-700 shadow-xl shadow-rose-100 transition-all tracking-[0.16em] flex items-center gap-2"
                   >
                     <i className="fas fa-stop"></i>
                     中断生成
                   </button>
                 )}
                 {sets && sets.some(s => s.status === 'completed') && (
-                  <button onClick={handleBatchDownload} disabled={isBatchDownloading} className="px-8 py-2.5 bg-emerald-600 text-white font-black text-xs rounded-xl hover:bg-emerald-700 shadow-xl shadow-emerald-100 transition-all uppercase tracking-widest flex items-center gap-2">{isBatchDownloading ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-file-zipper"></i>}{isBatchDownloading ? '打包下载中...' : '打包下载全部成果'}</button>
+                  <button onClick={handleBatchDownload} disabled={isBatchDownloading} className="px-5 py-2.5 bg-emerald-600 text-white font-semibold text-xs rounded-xl hover:bg-emerald-700 shadow-xl shadow-emerald-100 transition-all tracking-[0.16em] flex items-center gap-2">{isBatchDownloading ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-file-zipper"></i>}{isBatchDownloading ? '打包下载中...' : '打包下载'}</button>
                 )}
               </div>
             </div>
@@ -856,11 +1113,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                             <i className="fas fa-users-viewfinder text-5xl text-amber-500 relative z-10"></i>
                             <div className="absolute inset-0 bg-amber-500/10 blur-3xl rounded-full scale-150 -z-10 group-hover:scale-125 transition-transform duration-1000"></div>
                         </div>
-                        <h2 className="text-3xl font-black text-slate-800 mb-4 tracking-tight">全自动买家秀工厂</h2>
-                        <p className="text-slate-500 max-w-sm font-bold text-sm leading-relaxed px-6 italic mb-2">
-                            {persistentState.includeModel ? '“自动锚定首图模特，后续图片智能继承形象，一键生成连贯的真人买家秀。”' : '“专注于产品静物细节与使用场景，完全排除人物干扰，极速并行出图。”'}
-                        </p>
-                        <p className="text-xs font-black text-amber-600 uppercase tracking-widest bg-amber-50 px-3 py-1 rounded-full">无需人工干预 · 自动化流水线</p>
+                        <h2 className="text-2xl font-semibold text-slate-700 tracking-tight">开始生成买家秀</h2>
                     </div>
                 )}
             </div>

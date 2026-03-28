@@ -48,52 +48,87 @@ export const resizeImage = async (
   height: number,
   maxSizeMB?: number
 ): Promise<Blob> => {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.src = safeCreateObjectURL(blob);
-    img.onload = async () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = Number(width);
-      canvas.height = Number(height);
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return reject(new Error('Canvas context error'));
+  const canvas = document.createElement('canvas');
+  canvas.width = Number(width);
+  canvas.height = Number(height);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas context error');
 
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, width, height);
-      
-      const targetBytes = maxSizeMB ? maxSizeMB * 1024 * 1024 : Infinity;
-      
-      // 迭代压缩质量
-      let quality = 0.95;
-      let finalBlob: Blob | null = null;
-      
-      const compress = (q: number): Promise<Blob | null> => {
-        return new Promise((res) => canvas.toBlob(res, 'image/jpeg', q));
-      };
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
 
-      finalBlob = await compress(quality);
+  let decodedWithBitmap = false;
+  let imageLoadError: unknown = null;
 
-      if (maxSizeMB && finalBlob && finalBlob.size > targetBytes) {
-        // 如果初始质量超过限制，开始迭代降低质量
-        const steps = [0.85, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25];
-        for (const step of steps) {
-          const b = await compress(step);
-          if (b && b.size <= targetBytes) {
-            finalBlob = b;
-            break;
-          }
-          finalBlob = b; // 即使最后还是大，也保留最后一次的结果
-        }
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(blob);
+      try {
+        ctx.drawImage(bitmap, 0, 0, width, height);
+        decodedWithBitmap = true;
+      } finally {
+        bitmap.close?.();
       }
-      
-      if (finalBlob) resolve(finalBlob);
-      else reject(new Error('Canvas compression failed'));
-      
-      URL.revokeObjectURL(img.src);
-    };
-    img.onerror = () => reject(new Error('Image load failed during resizing'));
-  });
+    } catch (error) {
+      imageLoadError = error;
+    }
+  }
+
+  if (!decodedWithBitmap) {
+    await new Promise<void>((resolve, reject) => {
+      const img = new Image();
+      const objectUrl = safeCreateObjectURL(blob);
+
+      if (!objectUrl) {
+        reject(new Error('Image object url creation failed'));
+        return;
+      }
+
+      img.onload = () => {
+        try {
+          ctx.drawImage(img, 0, 0, width, height);
+          resolve();
+        } catch (error) {
+          reject(error);
+        } finally {
+          URL.revokeObjectURL(objectUrl);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        reject(imageLoadError instanceof Error ? imageLoadError : new Error('Image load failed during resizing'));
+      };
+      img.src = objectUrl;
+    });
+  }
+  
+  const targetBytes = maxSizeMB ? maxSizeMB * 1024 * 1024 : Infinity;
+  
+  // 迭代压缩质量
+  let quality = 0.95;
+  let finalBlob: Blob | null = null;
+  
+  const compress = (q: number): Promise<Blob | null> => {
+    return new Promise((res) => canvas.toBlob(res, 'image/jpeg', q));
+  };
+
+  finalBlob = await compress(quality);
+
+  if (maxSizeMB && finalBlob && finalBlob.size > targetBytes) {
+    // 如果初始质量超过限制，开始迭代降低质量
+    const steps = [0.85, 0.75, 0.65, 0.55, 0.45, 0.35, 0.25];
+    for (const step of steps) {
+      const b = await compress(step);
+      if (b && b.size <= targetBytes) {
+        finalBlob = b;
+        break;
+      }
+      finalBlob = b; // 即使最后还是大，也保留最后一次的结果
+    }
+  }
+  
+  if (finalBlob) return finalBlob;
+  throw new Error('Canvas compression failed');
 };
 
 /**

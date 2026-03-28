@@ -6,7 +6,9 @@ import { analyzeRetouchTask } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
 import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { createZipAndDownload, resizeImage, getImageDimensions } from '../../utils/imageUtils';
-import { safeCreateObjectURL } from '../../utils/urlUtils';
+import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
+import { releaseObjectURLs, safeCreateObjectURL } from '../../utils/urlUtils';
+import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -19,10 +21,12 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
   const [isProcessing, setIsProcessing] = useState(false);
   const [isBatchDownloading, setIsBatchDownloading] = useState(false);
   const [selectedTask, setSelectedTask] = useState<RetouchTask | null>(null);
+  const baseMeta = { mode, model, quality, aspectRatio };
   
   const controllersRef = useRef<Record<string, AbortController>>({});
   const activeWorkersRef = useRef(0);
   const inflightIdsRef = useRef<Set<string>>(new Set());
+  const startBatchLockRef = useRef(false);
   
   const tasksRef = useRef(tasks);
   useEffect(() => {
@@ -37,6 +41,15 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
   };
 
   const handleAddFiles = (files: File[]) => {
+    void logActionSuccess({
+      module: 'retouch',
+      action: 'add_files',
+      message: '添加产品精修文件',
+      meta: {
+        ...baseMeta,
+        count: files.length,
+      },
+    });
     onStateChange(prev => ({ ...prev, pendingFiles: [...prev.pendingFiles, ...files] }));
   };
 
@@ -45,6 +58,18 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
     controllersRef.current[task.id] = controller;
 
     try {
+      void logActionStart({
+        module: 'retouch',
+        action: task.taskId ? 'recover_single' : 'generate_single',
+        message: task.taskId ? '开始找回精修结果' : '开始生成精修结果',
+        meta: {
+          ...baseMeta,
+          taskId: task.id,
+          fileName: task.file.name,
+          relativePath: task.relativePath,
+          kieTaskId: task.taskId,
+        },
+      });
       updateTaskStatus(task.id, { status: 'uploading', progress: 5, error: undefined });
 
       let res: KieAiResult;
@@ -68,7 +93,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
           try {
             updateTaskStatus(task.id, { error: '正在重采样尺寸...' });
             const response = await fetch(res.imageUrl, { signal: controller.signal });
-            const blob = await response.blob();
+            const blob = await normalizeFetchedImageBlob(await response.blob(), res.imageUrl);
             
             let w = targetWidth;
             let h = targetHeight;
@@ -91,6 +116,18 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
         }
 
         updateTaskStatus(task.id, { status: 'completed', resultUrl: finalUrl, taskId: res.taskId, progress: 100, error: undefined });
+        void logActionSuccess({
+          module: 'retouch',
+          action: task.taskId ? 'recover_single' : 'generate_single',
+          message: task.taskId ? '找回精修结果成功' : '精修结果生成成功',
+          meta: {
+            ...baseMeta,
+            taskId: task.id,
+            fileName: task.file.name,
+            relativePath: task.relativePath,
+            kieTaskId: res.taskId,
+          },
+        });
       } else if (res.status === 'interrupted') {
         throw new Error("INTERRUPTED");
       } else {
@@ -104,6 +141,35 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
         error: isInterrupt ? undefined : err.message, 
         progress: 0 
       });
+      if (isInterrupt) {
+        void logActionInterrupted({
+          module: 'retouch',
+          action: task.taskId ? 'recover_single' : 'generate_single',
+          message: task.taskId ? '找回精修结果已中断' : '精修结果生成已中断',
+          detail: err.message,
+          meta: {
+            ...baseMeta,
+            taskId: task.id,
+            fileName: task.file.name,
+            relativePath: task.relativePath,
+            kieTaskId: task.taskId,
+          },
+        });
+      } else {
+        void logActionFailure({
+          module: 'retouch',
+          action: task.taskId ? 'recover_single' : 'generate_single',
+          message: task.taskId ? '找回精修结果失败' : '精修结果生成失败',
+          detail: err.message,
+          meta: {
+            ...baseMeta,
+            taskId: task.id,
+            fileName: task.file.name,
+            relativePath: task.relativePath,
+            kieTaskId: task.taskId,
+          },
+        });
+      }
     } finally {
       delete controllersRef.current[task.id];
       inflightIdsRef.current.delete(task.id);
@@ -170,7 +236,17 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
   };
 
   const startBatch = async () => {
-    if (pendingFiles.length === 0) return;
+    if (startBatchLockRef.current || pendingFiles.length === 0) return;
+    startBatchLockRef.current = true;
+    void logActionStart({
+      module: 'retouch',
+      action: 'batch_start',
+      message: '启动批量产品精修',
+      meta: {
+        ...baseMeta,
+        count: pendingFiles.length,
+      },
+    });
 
     const newTasksFromPending: RetouchTask[] = pendingFiles.map(f => ({
       id: Math.random().toString(36).substr(2, 9),
@@ -188,6 +264,9 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
     }));
 
     setTimeout(() => runWorkerCycle(), 50);
+    setTimeout(() => {
+      startBatchLockRef.current = false;
+    }, 0);
   };
 
   const runWorkerCycle = async () => {
@@ -228,6 +307,16 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
 
   const handleDownloadSingle = async (task: RetouchTask) => {
     if (!task.resultUrl) return;
+    void logActionSuccess({
+      module: 'retouch',
+      action: 'download_single',
+      message: '下载单张精修结果',
+      meta: {
+        ...baseMeta,
+        taskId: task.id,
+        fileName: task.file.name,
+      },
+    });
     try {
       // 强制流式下载逻辑
       const response = await fetch(task.resultUrl, { mode: 'cors', cache: 'no-cache' });
@@ -264,6 +353,15 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
     if (completedTasks.length === 0) return;
 
     setIsBatchDownloading(true);
+    void logActionStart({
+      module: 'retouch',
+      action: 'download_batch',
+      message: '开始批量下载精修结果',
+      meta: {
+        ...baseMeta,
+        count: completedTasks.length,
+      },
+    });
     try {
       const zipFiles = await Promise.all(
         completedTasks.map(async (task) => {
@@ -273,7 +371,26 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
         })
       );
       await createZipAndDownload(zipFiles, `mayo_retouch_batch_${Date.now()}`);
+      void logActionSuccess({
+        module: 'retouch',
+        action: 'download_batch',
+        message: '批量下载精修结果成功',
+        meta: {
+          ...baseMeta,
+          count: completedTasks.length,
+        },
+      });
     } catch (err) {
+      void logActionFailure({
+        module: 'retouch',
+        action: 'download_batch',
+        message: '批量下载精修结果失败',
+        detail: err instanceof Error ? err.message : '下载失败',
+        meta: {
+          ...baseMeta,
+          count: completedTasks.length,
+        },
+      });
       console.error("Batch download error:", err);
       alert("打包下载失败，请重试");
     } finally {
@@ -283,6 +400,16 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
 
   const handleExportToBgSub = async (task: RetouchTask) => {
     if (!task.resultUrl) return;
+    void logActionSuccess({
+      module: 'retouch',
+      action: 'copy_result_link',
+      message: '复制精修结果链接',
+      meta: {
+        ...baseMeta,
+        taskId: task.id,
+        fileName: task.file.name,
+      },
+    });
     try {
       await navigator.clipboard.writeText(task.resultUrl);
       alert("精修图片链接已复制！跳转后 Ctrl+V 即可。");
@@ -297,7 +424,22 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
       <RetouchSidebar 
         onAddFiles={handleAddFiles}
         pendingFiles={pendingFiles}
-        onClearPending={() => onStateChange(prev => ({ ...prev, pendingFiles: [] }))}
+        onClearPending={() => {
+          releaseObjectURLs([
+            ...pendingFiles,
+            referenceImage,
+          ]);
+          void logActionSuccess({
+            module: 'retouch',
+            action: 'clear_pending',
+            message: '清空待处理精修队列',
+            meta: {
+              ...baseMeta,
+              count: pendingFiles.length,
+            },
+          });
+          onStateChange(prev => ({ ...prev, pendingFiles: [] }));
+        }}
         referenceImage={referenceImage}
         uploadedReferenceUrl={persistentState.uploadedReferenceUrl}
         setReferenceImage={(img) => onStateChange(prev => ({ ...prev, referenceImage: img }))}
@@ -324,23 +466,29 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
 
       <main className="flex-1 overflow-y-auto p-8 bg-slate-50 scrollbar-hide relative">
         <div className="max-w-6xl mx-auto space-y-8">
-          <div className="flex items-center justify-between bg-white px-8 py-5 rounded-[32px] border border-slate-100 shadow-xl sticky top-0 z-20 backdrop-blur-md bg-white/90">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-emerald-50 rounded-2xl flex items-center justify-center"><i className="fas fa-wand-sparkles text-emerald-600 text-xl"></i></div>
-              <div>
-                <h2 className="text-xl font-black text-slate-800 tracking-tight">商业精修流水线</h2>
-                <div className="flex items-center gap-2 mt-1">
-                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[9px] font-black rounded uppercase tracking-tighter">Pro Engine V2</span>
-                  <span className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">Master Workflow</span>
-                </div>
-              </div>
+          <div className="flex items-center justify-between bg-white px-6 py-4 rounded-[32px] border border-slate-100 shadow-xl sticky top-0 z-20 backdrop-blur-md bg-white/90">
+            <div className="flex items-center gap-2">
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-600">
+                精修结果
+              </span>
             </div>
-            <div className="flex gap-3">
-              <button onClick={() => onStateChange(prev => ({ ...prev, tasks: [] }))} className="px-6 py-2.5 bg-slate-100 text-slate-500 font-black text-xs rounded-xl hover:bg-slate-200 transition-all border border-slate-200">清空记录</button>
-              <button onClick={handleBatchDownload} disabled={isBatchDownloading || !tasks.some(t => t.status === 'completed')} className="px-6 py-2.5 bg-emerald-600 text-white font-black text-xs rounded-xl hover:bg-emerald-700 shadow-xl disabled:bg-slate-200 transition-all uppercase tracking-widest">
+            <div className="flex flex-wrap gap-3">
+              <button onClick={() => {
+                void logActionSuccess({
+                  module: 'retouch',
+                  action: 'clear_records',
+                  message: '清空精修记录',
+                  meta: {
+                    ...baseMeta,
+                    count: tasks.length,
+                  },
+                });
+                onStateChange(prev => ({ ...prev, tasks: [] }));
+              }} className="px-5 py-2.5 bg-slate-100 text-slate-500 font-semibold text-xs rounded-xl hover:bg-slate-200 transition-all border border-slate-200">清空记录</button>
+              <button onClick={handleBatchDownload} disabled={isBatchDownloading || !tasks.some(t => t.status === 'completed')} className="px-5 py-2.5 bg-emerald-600 text-white font-semibold text-xs rounded-xl hover:bg-emerald-700 shadow-xl disabled:bg-slate-200 transition-all tracking-[0.16em]">
                 {isBatchDownloading ? '正在打包...' : '批量下载结果'}
               </button>
-              <button onClick={startBatch} disabled={pendingFiles.length === 0 || isProcessing} className="px-8 py-2.5 bg-slate-900 text-white font-black text-xs rounded-xl hover:bg-slate-800 shadow-xl disabled:bg-slate-100 transition-all uppercase tracking-widest">
+              <button onClick={startBatch} disabled={pendingFiles.length === 0 || isProcessing} className="px-5 py-2.5 bg-slate-900 text-white font-semibold text-xs rounded-xl hover:bg-slate-800 shadow-xl disabled:bg-slate-100 transition-all tracking-[0.16em]">
                 {isProcessing ? '正在提交队列...' : '启动渲染任务'}
               </button>
             </div>

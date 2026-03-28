@@ -1,19 +1,21 @@
 
 import React, { useState } from 'react';
-import { GlobalApiConfig, ModuleConfig, AppModule, TranslationSubMode, TranslationPersistentState, FileItem } from '../../types';
+import { GlobalApiConfig, TranslationModuleConfigs, AppModule, TranslationSubMode, TranslationPersistentState, FileItem } from '../../types';
 import SettingsSidebar from '../../components/SettingsSidebar';
 import FileProcessor from '../../components/FileProcessor';
+import { getTranslationConfigForSubMode, updateTranslationConfigForSubMode } from './translationConfigUtils.mjs';
 
 interface Props {
   apiConfig: GlobalApiConfig;
-  moduleConfig: ModuleConfig;
-  onModuleConfigChange: (config: ModuleConfig) => void;
+  translationConfigs: TranslationModuleConfigs;
+  onTranslationConfigsChange: (configs: TranslationModuleConfigs) => void;
   persistentState: TranslationPersistentState;
   onStateChange: React.Dispatch<React.SetStateAction<TranslationPersistentState>>;
 }
 
-const TranslationModule: React.FC<Props> = ({ apiConfig, moduleConfig, onModuleConfigChange, persistentState, onStateChange }) => {
+const TranslationModule: React.FC<Props> = ({ apiConfig, translationConfigs, onTranslationConfigsChange, persistentState, onStateChange }) => {
   const [subMode, setSubMode] = useState<TranslationSubMode>(TranslationSubMode.MAIN);
+  const [startSignal, setStartSignal] = useState(0);
 
   const getMemoryKey = (mode: TranslationSubMode) => {
     switch(mode) {
@@ -26,6 +28,11 @@ const TranslationModule: React.FC<Props> = ({ apiConfig, moduleConfig, onModuleC
 
   const key = getMemoryKey(subMode);
   const currentData = persistentState[key];
+  const currentConfig = getTranslationConfigForSubMode(translationConfigs, subMode);
+  const startDisabled =
+    currentData.isProcessing ||
+    currentData.files.length === 0 ||
+    !currentData.files.some((file) => file.status === 'pending' || file.status === 'error' || file.status === 'interrupted');
 
   const handleFilesChange = (newFilesOrFn: FileItem[] | ((prev: FileItem[]) => FileItem[])) => {
     onStateChange(prev => {
@@ -46,48 +53,28 @@ const TranslationModule: React.FC<Props> = ({ apiConfig, moduleConfig, onModuleC
   };
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
-      <div className="bg-white border-b border-slate-100 px-8 py-2 flex items-center gap-8 shrink-0 z-10">
-        <button 
-          onClick={() => setSubMode(TranslationSubMode.MAIN)}
-          className={`flex items-center gap-2 py-2 border-b-2 transition-all ${subMode === TranslationSubMode.MAIN ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-        >
-          <i className="fas fa-image text-sm"></i>
-          <span className="text-sm font-black">主图出海</span>
-        </button>
-        <button 
-          onClick={() => setSubMode(TranslationSubMode.DETAIL)}
-          className={`flex items-center gap-2 py-2 border-b-2 transition-all ${subMode === TranslationSubMode.DETAIL ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-        >
-          <i className="fas fa-list text-sm"></i>
-          <span className="text-sm font-black">详情出海</span>
-        </button>
-        <button 
-          onClick={() => setSubMode(TranslationSubMode.REMOVE_TEXT)}
-          className={`flex items-center gap-2 py-2 border-b-2 transition-all ${subMode === TranslationSubMode.REMOVE_TEXT ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-        >
-          <i className="fas fa-eraser text-sm"></i>
-          <span className="text-sm font-black">去除文案</span>
-        </button>
-      </div>
-
-      <div className="flex-1 flex min-h-0 overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden px-6 pb-6 pt-5">
+      <div className="flex-1 flex min-h-0 overflow-hidden rounded-[32px] border border-white/70 shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
         <SettingsSidebar 
           activeModule={AppModule.TRANSLATION}
           subMode={subMode}
-          config={moduleConfig} 
-          onChange={onModuleConfigChange} 
-          disabled={currentData.isProcessing} 
+          config={currentConfig}
+          onChange={(nextConfig) => onTranslationConfigsChange(updateTranslationConfigForSubMode(translationConfigs, subMode, nextConfig))}
+          disabled={currentData.isProcessing}
+          onModeChange={setSubMode}
+          onStart={() => setStartSignal((value) => value + 1)}
+          startDisabled={startDisabled}
         />
         <FileProcessor 
           activeModule={AppModule.TRANSLATION}
           subMode={subMode}
           apiConfig={apiConfig}
-          config={moduleConfig} 
+          config={currentConfig}
           files={currentData.files}
           onFilesChange={handleFilesChange}
           isProcessing={currentData.isProcessing}
-          onProcessingChange={handleProcessingChange} 
+          onProcessingChange={handleProcessingChange}
+          startSignal={startSignal}
         />
       </div>
     </div>

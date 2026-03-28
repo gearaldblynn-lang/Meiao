@@ -5,11 +5,13 @@ import { motion } from 'framer-motion';
 import { GlobalApiConfig, AspectRatio, OneClickConfig, MainImageScheme, OneClickSubMode, OneClickPersistentState, KieAiResult } from '../../types';
 import ConfigSidebar from './ConfigSidebar';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
+import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
 import { generateMarketingSchemes } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
 import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { resizeImage, createZipAndDownload, getImageDimensions } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
+import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -18,9 +20,20 @@ interface Props {
   onProcessingChange: (processing: boolean) => void;
   onSyncConfig?: () => void;
   onClearConfig?: () => void;
+  currentSubMode?: OneClickSubMode;
+  onSubModeChange?: (mode: OneClickSubMode) => void;
 }
 
-const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onProcessingChange, onSyncConfig, onClearConfig }) => {
+const DetailPageSubModule: React.FC<Props> = ({
+  apiConfig,
+  state,
+  onUpdate,
+  onProcessingChange,
+  onSyncConfig,
+  onClearConfig,
+  currentSubMode,
+  onSubModeChange,
+}) => {
   const { productImages, styleImage, schemes, config, lastStyleUrl, uploadedProductUrls } = state;
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -31,12 +44,19 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
   
   const inflightIdsRef = useRef<Set<string>>(new Set());
   const isSubmittingAnalysisRef = useRef(false);
+  const isSubmittingGenerationRef = useRef(false);
   const screenControllersRef = useRef<Record<string, AbortController>>({});
   const globalAbortRef = useRef<AbortController | null>(null);
 
   const selectedCount = schemes.filter(s => s.selected).length;
   const completedCount = schemes.filter(s => s.status === 'completed' && s.resultUrl).length;
   const isAllSelected = schemes.length > 0 && selectedCount === schemes.length;
+  const baseMeta = {
+    subMode: 'detail_page',
+    model: config.model,
+    quality: config.quality,
+    aspectRatio: config.aspectRatio,
+  };
 
   const schemesRef = useRef(schemes);
   schemesRef.current = schemes;
@@ -79,11 +99,31 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
 
   const toggleSelectAll = () => { 
     if (isAnalyzing) return;
+    void logActionSuccess({
+      module: 'one_click',
+      action: isAllSelected ? 'deselect_all_detail' : 'select_all_detail',
+      message: isAllSelected ? '取消全选详情方案' : '全选详情方案',
+      meta: {
+        ...baseMeta,
+        count: schemes.length,
+      },
+    });
     onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => ({ ...s, selected: !isAllSelected })) })); 
   };
   
   const toggleSelectScheme = (id: string) => { 
     if (isAnalyzing) return;
+    const scheme = schemesRef.current.find((item) => item.id === id);
+    void logActionSuccess({
+      module: 'one_click',
+      action: scheme?.selected ? 'deselect_single_detail' : 'select_single_detail',
+      message: scheme?.selected ? '取消选择详情方案' : '选择详情方案',
+      meta: {
+        ...baseMeta,
+        schemeId: id,
+        title: scheme?.uiTitle,
+      },
+    });
     onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === id ? { ...s, selected: !s.selected } : s) })); 
   };
 
@@ -108,6 +148,16 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
     
     isSubmittingAnalysisRef.current = true;
     setIsAnalyzing(true);
+    void logActionStart({
+      module: 'one_click',
+      action: 'plan_detail_start',
+      message: '开始详情策划',
+      meta: {
+        ...baseMeta,
+        productImageCount: productImages.length || uploadedProductUrls.length,
+        hasStyleImage: Boolean(styleImage || lastStyleUrl),
+      },
+    });
     
     try {
       onUpdate({ schemes: [] }); 
@@ -162,10 +212,43 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
           };
         });
         onUpdate({ schemes: initialSchemes });
+        void logActionSuccess({
+          module: 'one_click',
+          action: 'plan_detail_start',
+          message: '详情策划成功',
+          meta: {
+            ...baseMeta,
+            count: initialSchemes.length,
+          },
+        });
       } else { 
+        void logActionFailure({
+          module: 'one_click',
+          action: 'plan_detail_start',
+          message: '详情策划失败',
+          detail: res.message,
+          meta: baseMeta,
+        });
         alert("视觉全案策划失败: " + res.message); 
       }
     } catch (e: any) { 
+      if (e.name === 'AbortError' || e.message === 'ABORTED') {
+        void logActionInterrupted({
+          module: 'one_click',
+          action: 'plan_detail_start',
+          message: '详情策划已中断',
+          detail: e.message,
+          meta: baseMeta,
+        });
+      } else {
+        void logActionFailure({
+          module: 'one_click',
+          action: 'plan_detail_start',
+          message: '详情策划失败',
+          detail: e.message,
+          meta: baseMeta,
+        });
+      }
       if (e.name === 'AbortError' || e.message === 'ABORTED') {
         alert("策划分析超时或已取消，请检查网络或重试。");
       } else {
@@ -199,6 +282,15 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
       schemes: [],
       uploadedProductUrls: []
     }));
+    void logActionSuccess({
+      module: 'one_click',
+      action: 'clear_detail_project',
+      message: '清空详情项目',
+      meta: {
+        ...baseMeta,
+        count: schemesRef.current.length,
+      },
+    });
     inflightIdsRef.current.clear();
     setIsCollapsed(false);
     addToast('项目已清空', 'success');
@@ -214,12 +306,30 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
       ...prev,
       schemes: prev.schemes.filter(s => s.id !== id)
     }));
+    void logActionSuccess({
+      module: 'one_click',
+      action: 'delete_detail_scheme',
+      message: '删除详情方案',
+      meta: {
+        ...baseMeta,
+        schemeId: id,
+      },
+    });
     inflightIdsRef.current.delete(id);
     addToast('分屏已删除', 'success');
   };
 
   const handleRedoScreen = async (id: string) => {
     if (inflightIdsRef.current.has(id)) return;
+    void logActionStart({
+      module: 'one_click',
+      action: 'redo_detail_scheme',
+      message: '重新生成详情方案',
+      meta: {
+        ...baseMeta,
+        schemeId: id,
+      },
+    });
     
     // 立即反馈
     updateSingleScreen(id, { status: 'generating', error: '正在准备素材...' });
@@ -237,6 +347,15 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
 
   const handleRecoverScreen = async (id: string) => {
     if (inflightIdsRef.current.has(id)) return;
+    void logActionStart({
+      module: 'one_click',
+      action: 'recover_detail_click',
+      message: '点击找回详情结果',
+      meta: {
+        ...baseMeta,
+        schemeId: id,
+      },
+    });
     
     // 立即反馈
     updateSingleScreen(id, { status: 'generating', error: '正在同步云端结果...' });
@@ -261,6 +380,15 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
       status: 'error', 
       error: '已手动中断，可点击同步获取结果' 
     });
+    void logActionInterrupted({
+      module: 'one_click',
+      action: 'interrupt_detail_scheme',
+      message: '手动中断详情方案生成',
+      meta: {
+        ...baseMeta,
+        schemeId: id,
+      },
+    });
   };
 
   const generateSingleScreen = async (schemeId: string, productUrls: string[], styleUrl: string | null, mode: 'full' | 'recover' = 'full') => {
@@ -274,6 +402,17 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
       let res: KieAiResult;
       const targetScheme = schemesRef.current.find(s => s.id === schemeId);
       if (!targetScheme) return;
+      void logActionStart({
+        module: 'one_click',
+        action: mode === 'recover' ? 'recover_detail_scheme' : 'generate_detail_scheme',
+        message: mode === 'recover' ? '开始找回详情结果' : '开始生成详情方案',
+        meta: {
+          ...baseMeta,
+          schemeId,
+          title: targetScheme.uiTitle,
+          taskId: targetScheme.taskId,
+        },
+      });
 
       if (mode === 'recover' && targetScheme.taskId) {
         updateSingleScreen(schemeId, { error: '正在同步云端任务状态...' });
@@ -293,7 +432,7 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
 
       if (res.status === 'success') {
         const imgResp = await fetch(res.imageUrl, { signal: controller.signal });
-        const blob = await imgResp.blob();
+        const blob = await normalizeFetchedImageBlob(await imgResp.blob(), res.imageUrl);
         const dims = await getImageDimensions(blob);
 
         let targetW = dims.width;
@@ -308,6 +447,18 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
         const finalUrl = safeCreateObjectURL(finalBlob);
         
         updateSingleScreen(schemeId, { status: 'completed', resultUrl: finalUrl, taskId: res.taskId });
+        void logActionSuccess({
+          module: 'one_click',
+          action: mode === 'recover' ? 'recover_detail_scheme' : 'generate_detail_scheme',
+          message: mode === 'recover' ? '找回详情结果成功' : '详情方案生成成功',
+          meta: {
+            ...baseMeta,
+            schemeId,
+            title: targetScheme.uiTitle,
+            taskId: res.taskId,
+            usedAspectRatio: targetScheme.extractedRatio || config.aspectRatio,
+          },
+        });
       } else if (res.status === 'task_not_found') {
         throw new Error("任务已过期或不存在，请重新生成");
       } else { 
@@ -319,6 +470,34 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
         status: isManual ? 'interrupted' : 'error', 
         error: isManual ? '渲染已中断' : err.message 
       });
+      const targetScheme = schemesRef.current.find(s => s.id === schemeId);
+      if (isManual) {
+        void logActionInterrupted({
+          module: 'one_click',
+          action: mode === 'recover' ? 'recover_detail_scheme' : 'generate_detail_scheme',
+          message: mode === 'recover' ? '找回详情结果已中断' : '详情方案生成已中断',
+          detail: err.message,
+          meta: {
+            ...baseMeta,
+            schemeId,
+            title: targetScheme?.uiTitle,
+            taskId: targetScheme?.taskId,
+          },
+        });
+      } else {
+        void logActionFailure({
+          module: 'one_click',
+          action: mode === 'recover' ? 'recover_detail_scheme' : 'generate_detail_scheme',
+          message: mode === 'recover' ? '找回详情结果失败' : '详情方案生成失败',
+          detail: err.message,
+          meta: {
+            ...baseMeta,
+            schemeId,
+            title: targetScheme?.uiTitle,
+            taskId: targetScheme?.taskId,
+          },
+        });
+      }
     } finally { 
       delete screenControllersRef.current[schemeId]; 
       inflightIdsRef.current.delete(schemeId);
@@ -373,7 +552,7 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
   };
 
   const handleStartGeneration = async () => {
-    if (isGenerating || isAnalyzing) return;
+    if (isSubmittingGenerationRef.current || isGenerating || isAnalyzing) return;
     const selectedSchemes = schemesRef.current.filter(s => s.selected && s.status !== 'generating' && !inflightIdsRef.current.has(s.id));
     if (selectedSchemes.length === 0) return;
 
@@ -382,7 +561,17 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
         return;
     }
 
+    isSubmittingGenerationRef.current = true;
     setIsGenerating(true);
+    void logActionStart({
+      module: 'one_click',
+      action: 'generate_detail_batch',
+      message: '开始批量生成详情',
+      meta: {
+        ...baseMeta,
+        count: selectedSchemes.length,
+      },
+    });
     
     const targetIds = selectedSchemes.map(s => s.id);
     onUpdate(prev => ({
@@ -397,7 +586,26 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
       selectedSchemes.forEach(s => inflightIdsRef.current.add(s.id));
 
       await Promise.all(selectedSchemes.map(s => generateSingleScreen(s.id, productUrls, lastStyleUrl)));
+      void logActionSuccess({
+        module: 'one_click',
+        action: 'generate_detail_batch',
+        message: '批量生成详情完成',
+        meta: {
+          ...baseMeta,
+          count: selectedSchemes.length,
+        },
+      });
     } catch (e: any) { 
+      void logActionFailure({
+        module: 'one_click',
+        action: 'generate_detail_batch',
+        message: '批量生成详情失败',
+        detail: e.message,
+        meta: {
+          ...baseMeta,
+          count: selectedSchemes.length,
+        },
+      });
       console.error(e); 
       onUpdate(prev => ({
         ...prev,
@@ -405,6 +613,7 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
       }));
       alert("批量生成启动失败: " + e.message);
     } finally { 
+      isSubmittingGenerationRef.current = false;
       setIsGenerating(false); 
     }
   };
@@ -414,6 +623,15 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
     const completedSchemes = schemes.filter(s => s.status === 'completed' && s.resultUrl);
     if (completedSchemes.length === 0) return;
     setIsDownloading(true);
+    void logActionStart({
+      module: 'one_click',
+      action: 'download_detail_batch',
+      message: '开始批量导出详情',
+      meta: {
+        ...baseMeta,
+        count: completedSchemes.length,
+      },
+    });
     try {
       const zipFiles = await Promise.all(completedSchemes.map(async (s, i) => {
         const resp = await fetch(s.resultUrl!);
@@ -421,7 +639,26 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
         return { blob, path: `detail_screen_${i + 1}.png` };
       }));
       await createZipAndDownload(zipFiles, `mayo_detail_export_${Date.now()}`);
+      void logActionSuccess({
+        module: 'one_click',
+        action: 'download_detail_batch',
+        message: '批量导出详情成功',
+        meta: {
+          ...baseMeta,
+          count: completedSchemes.length,
+        },
+      });
     } catch (err) { 
+      void logActionFailure({
+        module: 'one_click',
+        action: 'download_detail_batch',
+        message: '批量导出详情失败',
+        detail: err instanceof Error ? err.message : '导出失败',
+        meta: {
+          ...baseMeta,
+          count: completedSchemes.length,
+        },
+      });
       alert("批量导出失败"); 
     } finally { 
       setIsDownloading(false); 
@@ -432,6 +669,8 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
     <div className="flex-1 flex overflow-hidden bg-slate-50">
       <ConfigSidebar 
         subMode={OneClickSubMode.DETAIL_PAGE} 
+        currentSubMode={currentSubMode}
+        onSubModeChange={onSubModeChange}
         config={config} 
         onChange={(cfg) => onUpdate({ config: cfg })} 
         productImages={productImages} 
@@ -456,18 +695,37 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
       />
       
       <main className="flex-1 overflow-hidden relative flex flex-col">
+        <div className="mx-8 mb-6 mt-8 shrink-0 rounded-[28px] border border-slate-200 bg-white px-6 py-5 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+          <div className="flex items-center justify-between gap-6">
+            <div className="flex items-center gap-4">
+              <div className="flex h-14 w-14 items-center justify-center rounded-[22px] bg-rose-50 text-rose-600 shadow-[0_12px_24px_rgba(225,29,72,0.10)]">
+                <i className="fas fa-layer-group text-lg"></i>
+              </div>
+              <div>
+                <h2 className="text-2xl font-black tracking-tight text-slate-900">详情工作台</h2>
+              </div>
+            </div>
+            <div className="rounded-2xl bg-slate-50 px-4 py-3 text-right">
+              <div className="text-xs font-medium text-slate-400">当前模式</div>
+              <div className="mt-1 text-sm font-bold text-slate-700">详情</div>
+            </div>
+          </div>
+        </div>
         {schemes.length > 0 ? (
           <div className="flex-1 flex flex-col min-h-0">
-            <div className="bg-white/95 backdrop-blur-sm px-6 py-3 border-b border-slate-200 flex items-center justify-between z-20 shadow-sm shrink-0">
+            <div className="z-20 flex shrink-0 items-center justify-between border-b border-slate-200 bg-white/95 px-6 py-3 shadow-sm backdrop-blur-sm">
                 <div className="flex items-center gap-4">
                     <div onClick={toggleSelectAll} className={`flex items-center gap-2 cursor-pointer group ${isAnalyzing ? 'opacity-50 pointer-events-none' : ''}`}>
                         <div className={`w-5 h-5 rounded flex items-center justify-center transition-all border-2 ${isAllSelected ? 'bg-rose-600 border-rose-600' : 'bg-white border-slate-300 group-hover:border-rose-400'}`}>
                            {isAllSelected && <i className="fas fa-check text-white text-[10px]"></i>}
                         </div>
-                        <span className="text-xs font-bold text-slate-600">全选</span>
+                        <span className="text-sm font-medium text-slate-600">全选</span>
                     </div>
                     <div className="h-4 w-px bg-slate-200"></div>
-                    <h3 className="text-sm font-black text-slate-800 tracking-tight uppercase">Sequence Editor Console <span className="text-rose-600 ml-1">({selectedCount}/{schemes.length})</span></h3>
+                    <div>
+                      <h3 className="text-base font-black text-slate-800">详情方案 <span className="ml-1 text-rose-600">({selectedCount}/{schemes.length})</span></h3>
+                      <p className="text-xs text-slate-400">查看、调整并生成当前详情方案。</p>
+                    </div>
                 </div>
                 <div className="flex items-center gap-2">
                     <div className="flex items-center bg-slate-100 rounded-xl p-1 gap-1">
@@ -493,12 +751,12 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
                     <div className="h-6 w-px bg-slate-200 mx-1"></div>
 
                     {completedCount > 0 && (
-                      <button onClick={handleBatchDownload} disabled={isDownloading} className="px-4 py-2 bg-emerald-600 text-white font-black text-[10px] rounded-xl hover:bg-emerald-700 shadow-md transition-all uppercase tracking-widest">
-                        {isDownloading ? '打包中...' : `导出结果 ZIP (${completedCount})`}
+                      <button onClick={handleBatchDownload} disabled={isDownloading} className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-all hover:bg-emerald-700">
+                        {isDownloading ? '导出中...' : `导出结果 (${completedCount})`}
                       </button>
                     )}
-                    <button onClick={handleStartGeneration} disabled={selectedCount === 0 || isAnalyzing || isGenerating} className="px-6 py-2 bg-rose-600 text-white font-black text-[10px] rounded-xl hover:bg-rose-700 shadow-lg transition-all uppercase tracking-widest disabled:bg-slate-300">
-                      {isGenerating ? '渲染中...' : '启动最终合成作业'}
+                    <button onClick={handleStartGeneration} disabled={selectedCount === 0 || isAnalyzing || isGenerating} className="rounded-xl bg-rose-600 px-5 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700 disabled:bg-slate-300">
+                      {isGenerating ? '生成中...' : '开始生成'}
                     </button>
                 </div>
             </div>
@@ -517,7 +775,6 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
                 <div className="max-w-7xl mx-auto flex flex-col">
                     {schemes.map((scheme, idx) => (
                         <div key={scheme.id} className={`flex transition-colors group ${scheme.selected ? 'bg-white' : 'bg-slate-50/30'}`}>
-                            {/* 左侧：专业策划案编辑器 */}
                             <div className="w-[45%] p-8 flex flex-col border-r border-slate-100 bg-white">
                                 <div className="flex items-center justify-between mb-4 shrink-0">
                                     <div className="flex items-center gap-3">
@@ -534,14 +791,14 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
                                                    </span>
                                                 )}
                                             </div>
-                                            <span className="text-[9px] font-bold text-slate-400 uppercase tracking-[0.2em] italic">Typography Logic Editor</span>
+                                            <span className="text-xs text-slate-400">可直接修改方案内容</span>
                                         </div>
                                     </div>
                                     <div className="flex gap-4">
                                         <button 
                                           disabled={scheme.status === 'generating'} 
                                           onClick={() => deleteScreen(scheme.id)} 
-                                          className="text-[10px] font-black text-slate-400 hover:text-red-600 uppercase transition-colors"
+                                          className="text-xs font-medium text-slate-400 transition-colors hover:text-red-600"
                                         >
                                           删除
                                         </button>
@@ -563,12 +820,12 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
                                               onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === scheme.id ? { ...s, editedContent: cleanedLines.join('\n').trim() } : s) }));
                                             }
                                           }} 
-                                          className="text-[10px] font-black text-slate-400 hover:text-rose-600 uppercase transition-colors"
+                                          className="text-xs font-medium text-slate-400 transition-colors hover:text-rose-600"
                                           title={scheme.taskId ? "根据任务 ID 重新获取云端结果" : "重置文案为初始状态"}
                                         >
                                           还原方案
                                         </button>
-                                        <button disabled={scheme.status === 'generating'} onClick={() => handleRedoScreen(scheme.id)} className="text-[10px] font-black text-rose-600 hover:text-rose-700 uppercase transition-colors">
+                                        <button disabled={scheme.status === 'generating'} onClick={() => handleRedoScreen(scheme.id)} className="text-xs font-medium text-rose-600 transition-colors hover:text-rose-700">
                                             {scheme.resultUrl ? '重新生成' : '生成该图'}
                                         </button>
                                     </div>
@@ -583,25 +840,24 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
                                     />
                                 </div>
                                 <div className="mt-4 flex items-center justify-between opacity-60">
-                                    <span className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                                    <span className="text-xs text-slate-400">
                                         <i className="fas fa-expand-arrows-alt mr-1"></i>
                                         渲染参数: {scheme.editedContent.match(/(?:-|\s|^)画面比例[：:]\s*([0-9]+:[0-9]+)/)?.[1] || scheme.extractedRatio || '3:4'}
                                     </span>
-                                    {scheme.status === 'completed' && <span className="text-[9px] font-black text-emerald-500 uppercase tracking-tighter"><i className="fas fa-check-circle mr-1"></i> 对齐渲染就绪</span>}
+                                    {scheme.status === 'completed' && <span className="text-xs font-medium text-emerald-500"><i className="fas fa-check-circle mr-1"></i>已生成</span>}
                                 </div>
                             </div>
 
-                            {/* 右侧：视觉渲染预览区 */}
                             <div className="flex-1 bg-slate-900 flex items-center justify-center relative overflow-hidden min-h-[500px]">
                                 {scheme.status === 'generating' ? (
                                     <div className="flex flex-col items-center justify-center text-center p-12">
                                         <div className="w-12 h-12 border-2 border-white/10 border-t-rose-500 rounded-full animate-spin mb-4"></div>
-                                        <p className="text-[10px] font-black uppercase text-rose-500 tracking-[0.2em] animate-pulse">正在执行流水线作业 #{idx+1}...</p>
-                                        <p className="text-[9px] font-bold text-slate-500 mt-3 uppercase tracking-wider animate-pulse opacity-60">复杂图像处理，等待时间略长</p>
+                                        <p className="text-sm font-semibold text-rose-500 animate-pulse">正在生成第 {idx + 1} 张</p>
+                                        <p className="mt-3 text-xs text-slate-500 animate-pulse opacity-70">图像处理需要一些时间，请稍候。</p>
                                         {scheme.error && <p className="text-[9px] text-slate-500 mt-2 font-medium">{scheme.error}</p>}
                                         <button 
                                           onClick={() => handleInterruptScreen(scheme.id)} 
-                                          className="mt-6 px-5 py-2 bg-white/10 text-white/60 text-[9px] font-black rounded-xl hover:bg-white/20 hover:text-white transition-all uppercase tracking-widest border border-white/5"
+                                          className="mt-6 rounded-xl border border-white/5 bg-white/10 px-5 py-2 text-xs font-medium text-white/70 transition-all hover:bg-white/20 hover:text-white"
                                         >
                                           中断并稍后同步
                                         </button>
@@ -611,7 +867,7 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
                                         <div className="w-14 h-14 bg-rose-500/10 rounded-full flex items-center justify-center mb-4">
                                             <i className={`fas ${scheme.status === 'error' ? 'fa-exclamation-triangle' : 'fa-stop-circle'} text-rose-500 text-2xl`}></i>
                                         </div>
-                                        <h4 className="text-rose-500 font-black text-sm uppercase tracking-widest mb-2">
+                                        <h4 className="mb-2 text-sm font-black text-rose-500">
                                             {scheme.status === 'error' ? '渲染任务失败' : '渲染已中断'}
                                         </h4>
                                         <p className="text-[10px] text-slate-400 font-medium max-w-[280px] mb-6 leading-relaxed">
@@ -622,23 +878,23 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
                                           <div className="flex gap-3">
                                             <button 
                                                 onClick={() => handleRecoverScreen(scheme.id)} 
-                                                className="px-5 py-2.5 bg-indigo-600 text-white font-black text-[10px] rounded-xl hover:bg-indigo-700 shadow-lg uppercase tracking-widest transition-all active:scale-95"
+                                                className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:bg-indigo-700"
                                             >
                                                 稍后获取结果
                                             </button>
                                             <button 
                                                 onClick={() => handleRedoScreen(scheme.id)} 
-                                                className="px-5 py-2.5 bg-rose-600 text-white font-black text-[10px] rounded-xl hover:bg-rose-700 shadow-lg uppercase tracking-widest transition-all active:scale-95"
+                                                className="rounded-xl bg-rose-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:bg-rose-700"
                                             >
-                                                重新尝试生成
+                                                重新生成
                                             </button>
                                           </div>
                                         ) : (
                                           <button 
                                               onClick={() => handleRedoScreen(scheme.id)} 
-                                              className="px-8 py-2.5 bg-rose-600 text-white font-black text-[10px] rounded-xl hover:bg-rose-700 shadow-lg uppercase tracking-widest transition-all active:scale-95"
+                                              className="rounded-xl bg-rose-600 px-8 py-2.5 text-sm font-medium text-white transition-all hover:bg-rose-700"
                                           >
-                                              重新尝试生成
+                                              重新生成
                                           </button>
                                         )}
                                     </div>
@@ -647,7 +903,7 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
                                         {imageErrors[scheme.id] && scheme.resultUrl.startsWith('blob:') ? (
                                           <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900/50 text-slate-400 p-12 text-center">
                                             <i className="far fa-file-image text-4xl mb-4 opacity-20"></i>
-                                            <p className="text-[10px] font-black uppercase tracking-[0.2em]">预览已失效</p>
+                                            <p className="text-sm font-medium">预览已失效</p>
                                             <p className="text-[9px] mt-2 opacity-40">请点击下方按钮重新生成或找回</p>
                                           </div>
                                         ) : (
@@ -671,22 +927,12 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
                                 ) : (
                                     <div className="flex flex-col items-center justify-center opacity-20 text-center p-12">
                                         <i className="fas fa-wand-magic-sparkles text-white text-5xl mb-4"></i>
-                                        <p className="text-[10px] font-black uppercase text-white tracking-[0.4em]">Standby for Visual Logic</p>
+                                        <p className="text-sm text-white">等待生成</p>
                                     </div>
                                 )}
                             </div>
                         </div>
                     ))}
-                    
-                    {/* 底部装饰长卷感 */}
-                    <div className="bg-slate-900 py-20 text-center flex flex-col items-center">
-                        <div className="flex items-center justify-center gap-6 mb-4">
-                            <div className="h-px w-20 bg-slate-800"></div>
-                            <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.5em] italic">Continuous Narrative Flow End</span>
-                            <div className="h-px w-20 bg-slate-800"></div>
-                        </div>
-                        <p className="text-[9px] text-slate-600 font-bold tracking-widest uppercase">Designed by Mayo AI Lab · High-Conversion Logic Sequence</p>
-                    </div>
                 </div>
               </div>
             </motion.div>
@@ -695,10 +941,11 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
           <div className="h-full flex flex-col items-center justify-center text-center py-20 bg-white">
             <div className="w-32 h-32 bg-slate-50 rounded-[48px] shadow-2xl flex items-center justify-center mb-10 border border-slate-100 relative group overflow-hidden">
                 <div className="absolute inset-0 bg-rose-500/5 blur-3xl rounded-full scale-150 -z-10 group-hover:bg-rose-500/15 transition-all"></div>
-                <i className="fas fa-layer-group text-5xl text-rose-500 relative z-10"></i>
+                <div className="relative z-10 flex h-20 w-20 items-center justify-center rounded-[30px] bg-rose-50 text-rose-600">
+                  <i className="fas fa-layer-group text-4xl"></i>
+                </div>
             </div>
-            <h2 className="text-3xl font-black text-slate-800 mb-4 tracking-tight uppercase tracking-tighter">AI 详情长卷全案策划器</h2>
-            <p className="text-slate-500 max-w-sm font-bold text-sm leading-relaxed px-6 italic">“上传您的产品图，豆包 AI 将为您生成逻辑严密的详情叙事方案。系统已强制实行物理参数级比例控制，每一屏都严格对齐。”</p>
+            <h2 className="mb-4 text-3xl font-black text-slate-800 tracking-tight">详情工作台</h2>
           </div>
         )}
 
@@ -706,8 +953,8 @@ const DetailPageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPr
           <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-md z-[110] flex items-center justify-center">
             <div className="bg-white p-12 rounded-[48px] shadow-2xl flex flex-col items-center text-center animate-in zoom-in duration-300">
               <div className="w-24 h-24 bg-rose-50 rounded-full flex items-center justify-center mb-8 animate-pulse border-2 border-rose-100"><i className="fas fa-brain text-5xl text-rose-600"></i></div>
-              <h3 className="text-2xl font-black text-slate-800 mb-2 tracking-tight">全案叙事规划中...</h3>
-              <p className="text-slate-400 text-[11px] font-bold uppercase tracking-[0.2em] leading-relaxed">Doubao AI is crafting your brand sequence</p>
+              <h3 className="mb-2 text-2xl font-black text-slate-800 tracking-tight">正在生成详情方案...</h3>
+              <p className="text-sm text-slate-400">请稍候，系统正在整理并生成当前详情方案。</p>
             </div>
           </div>
         )}

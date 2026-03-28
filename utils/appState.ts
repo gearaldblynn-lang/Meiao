@@ -7,10 +7,16 @@ import {
   ModuleConfig,
   OneClickPersistentState,
   RetouchPersistentState,
+  TranslationModuleConfigs,
   TranslationPersistentState,
   VideoPersistentState,
   VideoSubMode,
 } from '../types';
+import {
+  createDefaultTranslationConfigs,
+  getLegacyTranslationModuleConfig,
+  migrateLegacyTranslationConfigs,
+} from '../modules/Translation/translationConfigUtils.mjs';
 
 export const PERSISTENCE_KEY = 'AIGC_APP_STATE_V1';
 
@@ -18,6 +24,7 @@ export interface PersistedAppState {
   activeModule: AppModule;
   apiConfig: GlobalApiConfig;
   moduleConfig: ModuleConfig;
+  translationConfigs: TranslationModuleConfigs;
   translationMemory: TranslationPersistentState;
   oneClickMemory: OneClickPersistentState;
   retouchMemory: RetouchPersistentState;
@@ -26,12 +33,15 @@ export interface PersistedAppState {
 }
 
 export const createDefaultApiConfig = (): GlobalApiConfig => ({
-  kieApiKey: '265262466b15cd45e574dc0dd846a8fc',
+  kieApiKey: '',
   concurrency: 5,
-  arkApiKey: 'ad4fa376-91ef-4ba4-b8f4-84a9fa272439',
-  rhWebappId: '',
-  rhApiKey: '',
-  rhQuickCreateCode: '',
+  arkApiKey: '',
+});
+
+const sanitizeApiConfig = (config?: Partial<GlobalApiConfig>): GlobalApiConfig => ({
+  kieApiKey: '',
+  concurrency: typeof config?.concurrency === 'number' && config.concurrency > 0 ? config.concurrency : 5,
+  arkApiKey: '',
 });
 
 export const createDefaultModuleConfig = (): ModuleConfig => ({
@@ -52,6 +62,9 @@ export const createDefaultTranslationState = (): TranslationPersistentState => (
   detail: { files: [], isProcessing: false },
   removeText: { files: [], isProcessing: false },
 });
+
+export const createDefaultTranslationConfigState = (): TranslationModuleConfigs =>
+  createDefaultTranslationConfigs() as TranslationModuleConfigs;
 
 export const createDefaultOneClickState = (): OneClickPersistentState => ({
   mainImage: {
@@ -223,25 +236,106 @@ const normalizeFileItemList = (items: unknown): unknown => {
   });
 };
 
-export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppState>): Partial<PersistedAppState> => ({
-  ...saved,
-  translationMemory: saved.translationMemory
-    ? {
-        main: {
-          ...saved.translationMemory.main,
-          files: normalizeFileItemList(saved.translationMemory.main?.files) as any,
-        },
-        detail: {
-          ...saved.translationMemory.detail,
-          files: normalizeFileItemList(saved.translationMemory.detail?.files) as any,
-        },
-        removeText: {
-          ...saved.translationMemory.removeText,
-          files: normalizeFileItemList(saved.translationMemory.removeText?.files) as any,
-        },
-      }
-    : undefined,
-});
+const normalizeFileArray = (items: unknown): File[] => {
+  if (!Array.isArray(items)) return [];
+  return items.filter((item): item is File => item instanceof File);
+};
+
+const normalizeNullableFile = (item: unknown): File | null => {
+  return item instanceof File ? item : null;
+};
+
+const normalizeStringArray = (items: unknown): string[] => {
+  if (!Array.isArray(items)) return [];
+  return items.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+};
+
+const normalizeRetouchTasks = (tasks: unknown) => {
+  if (!Array.isArray(tasks)) return [];
+
+  return tasks.filter((task) => {
+    if (!task || typeof task !== 'object') return false;
+    return (task as Record<string, unknown>).file instanceof File;
+  }).map((task) => {
+    const typedTask = task as Record<string, unknown>;
+    return {
+      ...typedTask,
+      resultBlob: typedTask.resultBlob instanceof Blob ? typedTask.resultBlob : undefined,
+    };
+  });
+};
+
+export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppState>): Partial<PersistedAppState> => {
+  const translationConfigs = migrateLegacyTranslationConfigs(saved.moduleConfig, saved.translationConfigs);
+
+  return {
+    ...saved,
+    translationConfigs,
+    moduleConfig: getLegacyTranslationModuleConfig(translationConfigs),
+    translationMemory: saved.translationMemory
+      ? {
+          main: {
+            ...saved.translationMemory.main,
+            files: normalizeFileItemList(saved.translationMemory.main?.files) as any,
+          },
+          detail: {
+            ...saved.translationMemory.detail,
+            files: normalizeFileItemList(saved.translationMemory.detail?.files) as any,
+          },
+          removeText: {
+            ...saved.translationMemory.removeText,
+            files: normalizeFileItemList(saved.translationMemory.removeText?.files) as any,
+          },
+        }
+      : undefined,
+    oneClickMemory: saved.oneClickMemory
+      ? {
+          mainImage: {
+            ...saved.oneClickMemory.mainImage,
+            productImages: normalizeFileArray(saved.oneClickMemory.mainImage?.productImages),
+            styleImage: normalizeNullableFile(saved.oneClickMemory.mainImage?.styleImage),
+          },
+          detailPage: {
+            ...saved.oneClickMemory.detailPage,
+            productImages: normalizeFileArray(saved.oneClickMemory.detailPage?.productImages),
+            styleImage: normalizeNullableFile(saved.oneClickMemory.detailPage?.styleImage),
+          },
+        }
+      : undefined,
+    retouchMemory: saved.retouchMemory
+      ? {
+          ...saved.retouchMemory,
+          pendingFiles: normalizeFileArray(saved.retouchMemory.pendingFiles),
+          referenceImage: normalizeNullableFile(saved.retouchMemory.referenceImage),
+          tasks: normalizeRetouchTasks(saved.retouchMemory.tasks) as any,
+        }
+      : undefined,
+    buyerShowMemory: saved.buyerShowMemory
+      ? {
+          ...saved.buyerShowMemory,
+          productImages: normalizeFileArray(saved.buyerShowMemory.productImages),
+          referenceImage: normalizeNullableFile(saved.buyerShowMemory.referenceImage),
+        }
+      : undefined,
+    videoMemory: saved.videoMemory
+      ? {
+          ...saved.videoMemory,
+          productImages: normalizeFileArray(saved.videoMemory.productImages),
+          referenceVideoFile: normalizeNullableFile(saved.videoMemory.referenceVideoFile),
+          veoReferenceImages: normalizeStringArray(saved.videoMemory.veoReferenceImages),
+          storyboard: saved.videoMemory.storyboard
+            ? {
+                ...saved.videoMemory.storyboard,
+                config: {
+                  ...saved.videoMemory.storyboard.config,
+                  productImages: normalizeFileArray(saved.videoMemory.storyboard.config?.productImages),
+                },
+              }
+            : saved.videoMemory.storyboard,
+        }
+      : undefined,
+  };
+};
 
 const resetRuntimeFlags = (saved: Partial<PersistedAppState>): Partial<PersistedAppState> => ({
   ...saved,
@@ -281,16 +375,24 @@ export const savePersistedAppState = (state: PersistedAppState) => {
 };
 
 export const sanitizePersistedAppState = (state: PersistedAppState): PersistedAppState => {
-  return cleanState(state) as PersistedAppState;
+  return {
+    ...(cleanState(state) as PersistedAppState),
+    apiConfig: sanitizeApiConfig(state.apiConfig),
+  };
 };
 
-export const buildPersistedAppState = (saved?: Partial<PersistedAppState>): PersistedAppState => ({
-  activeModule: saved?.activeModule || AppModule.ONE_CLICK,
-  apiConfig: saved?.apiConfig || createDefaultApiConfig(),
-  moduleConfig: saved?.moduleConfig || createDefaultModuleConfig(),
-  translationMemory: saved?.translationMemory || createDefaultTranslationState(),
-  oneClickMemory: saved?.oneClickMemory || createDefaultOneClickState(),
-  retouchMemory: saved?.retouchMemory || createDefaultRetouchState(),
-  buyerShowMemory: saved?.buyerShowMemory || createDefaultBuyerShowState(),
-  videoMemory: saved?.videoMemory || createDefaultVideoState(),
-});
+export const buildPersistedAppState = (saved?: Partial<PersistedAppState>): PersistedAppState => {
+  const translationConfigs = migrateLegacyTranslationConfigs(saved?.moduleConfig, saved?.translationConfigs) || createDefaultTranslationConfigState();
+
+  return {
+    activeModule: saved?.activeModule || AppModule.ONE_CLICK,
+    apiConfig: sanitizeApiConfig(saved?.apiConfig),
+    moduleConfig: getLegacyTranslationModuleConfig(translationConfigs) || createDefaultModuleConfig(),
+    translationConfigs,
+    translationMemory: saved?.translationMemory || createDefaultTranslationState(),
+    oneClickMemory: saved?.oneClickMemory || createDefaultOneClickState(),
+    retouchMemory: saved?.retouchMemory || createDefaultRetouchState(),
+    buyerShowMemory: saved?.buyerShowMemory || createDefaultBuyerShowState(),
+    videoMemory: saved?.videoMemory || createDefaultVideoState(),
+  };
+};

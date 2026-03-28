@@ -5,6 +5,8 @@ import MainImageSubModule from './MainImageSubModule';
 import DetailPageSubModule from './DetailPageSubModule';
 import { useToast } from '../../components/ToastSystem';
 import { createDefaultOneClickState } from '../../utils/appState';
+import { logActionSuccess } from '../../services/loggingService';
+import { releaseObjectURLs } from '../../utils/urlUtils';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -100,6 +102,15 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
       ...prev,
       detailPage: syncSharedFields(prev.mainImage, prev.detailPage),
     }));
+    void logActionSuccess({
+      module: 'one_click',
+      action: 'sync_from_detail',
+      message: '同步主图配置信息到详情页',
+      meta: {
+        source: 'main_image',
+        target: 'detail_page',
+      },
+    });
     addToast('已将主图的公共配置同步到详情', 'success');
   };
 
@@ -108,10 +119,23 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
       ...prev,
       mainImage: syncSharedFieldsToMain(prev.detailPage, prev.mainImage),
     }));
+    void logActionSuccess({
+      module: 'one_click',
+      action: 'sync_from_main',
+      message: '同步详情配置信息到主图页',
+      meta: {
+        source: 'detail_page',
+        target: 'main_image',
+      },
+    });
     addToast('已将详情的公共配置同步到主图', 'success');
   };
 
   const handleClearMainConfig = () => {
+    releaseObjectURLs([
+      ...persistentState.mainImage.productImages,
+      persistentState.mainImage.styleImage,
+    ]);
     onStateChange(prev => ({
       ...prev,
       mainImage: {
@@ -119,10 +143,22 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
         schemes: [],
       }
     }));
+    void logActionSuccess({
+      module: 'one_click',
+      action: 'clear_main_config',
+      message: '清空主图配置信息',
+      meta: {
+        target: 'main_image',
+      },
+    });
     addToast('已清空主图配置信息', 'success');
   };
 
   const handleClearDetailConfig = () => {
+    releaseObjectURLs([
+      ...persistentState.detailPage.productImages,
+      persistentState.detailPage.styleImage,
+    ]);
     onStateChange(prev => ({
       ...prev,
       detailPage: {
@@ -130,30 +166,20 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
         schemes: [],
       }
     }));
+    void logActionSuccess({
+      module: 'one_click',
+      action: 'clear_detail_config',
+      message: '清空详情配置信息',
+      meta: {
+        target: 'detail_page',
+      },
+    });
     addToast('已清空详情配置信息', 'success');
   };
 
   return (
-    <div className="h-full w-full flex flex-col overflow-hidden bg-slate-50">
-      {/* Module Tabs */}
-      <div className="bg-white border-b border-slate-100 px-8 py-2 flex items-center gap-8 shrink-0 z-10 shadow-sm">
-        <button 
-          onClick={() => setSubMode(OneClickSubMode.MAIN_IMAGE)}
-          className={`flex items-center gap-2 py-2 border-b-2 transition-all ${subMode === OneClickSubMode.MAIN_IMAGE ? 'border-rose-600 text-rose-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-        >
-          <i className="fas fa-magic text-sm"></i>
-          <span className="text-sm font-black">一键主图生成</span>
-        </button>
-        <button 
-          onClick={() => setSubMode(OneClickSubMode.DETAIL_PAGE)}
-          className={`flex items-center gap-2 py-2 border-b-2 transition-all ${subMode === OneClickSubMode.DETAIL_PAGE ? 'border-rose-600 text-rose-600' : 'border-transparent text-slate-400 hover:text-slate-600'}`}
-        >
-          <i className="fas fa-layer-group text-sm"></i>
-          <span className="text-sm font-black">一键详情生成</span>
-        </button>
-      </div>
-
-      <div className="flex-1 min-h-0 flex overflow-hidden relative">
+    <div className="flex h-full w-full flex-col overflow-hidden px-6 pb-6 pt-5">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-[32px] border border-white/70 shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
         <div className={`h-full w-full flex overflow-hidden ${subMode === OneClickSubMode.MAIN_IMAGE ? '' : 'hidden'}`}>
           <MainImageSubModule 
             apiConfig={apiConfig} 
@@ -161,7 +187,9 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
             onUpdate={updateMainImageState}
             onSyncConfig={handleSyncToMain}
             onClearConfig={handleClearMainConfig}
-            onProcessingChange={setIsProcessing} 
+            onProcessingChange={setIsProcessing}
+            currentSubMode={subMode}
+            onSubModeChange={setSubMode}
           />
         </div>
         <div className={`h-full w-full flex overflow-hidden ${subMode === OneClickSubMode.DETAIL_PAGE ? '' : 'hidden'}`}>
@@ -172,6 +200,8 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
             onSyncConfig={handleSyncToDetail}
             onClearConfig={handleClearDetailConfig}
             onProcessingChange={setIsProcessing}
+            currentSubMode={subMode}
+            onSubModeChange={setSubMode}
           />
         </div>
       </div>

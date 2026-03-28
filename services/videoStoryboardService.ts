@@ -6,6 +6,7 @@ import {
   VideoStoryboardConfig,
   VideoStoryboardShot,
 } from '../types';
+import { createInternalJob, waitForInternalJob } from './internalApi';
 import { processWithKieAi, recoverKieAiTask } from './kieAiService';
 
 const ACTOR_LABELS: Record<VideoStoryboardConfig['actorType'], string> = {
@@ -159,13 +160,11 @@ export const generateStoryboardScript = async (
     });
   });
 
-  const response = await fetch('https://api.kie.ai/gpt-5-2/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiConfig.kieApiKey}`,
-    },
-    body: JSON.stringify({
+  const { job } = await createInternalJob({
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    payload: {
       messages: [
         {
           role: 'system',
@@ -176,20 +175,17 @@ export const generateStoryboardScript = async (
           content: userContent,
         },
       ],
-      stream: false,
-    }),
+      kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
+    },
+    maxRetries: 1,
   });
 
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data?.error || data?.msg || `分镜脚本生成失败 (${response.status})`);
+  const finalJob = await waitForInternalJob(job.id);
+  if (finalJob.status !== 'succeeded') {
+    throw new Error(finalJob.errorMessage || '分镜脚本生成失败');
   }
 
-  const content =
-    data?.choices?.[0]?.message?.content ||
-    data?.content ||
-    data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-    '';
+  const content = String(finalJob.result?.content || '');
 
   if (!content) throw new Error('分镜脚本返回为空');
 

@@ -426,9 +426,7 @@ const StoryboardWorkspace: React.FC<Props> = ({
       <div className="px-8 py-6 max-w-[1680px] mx-auto">
         <div className="flex items-center justify-between gap-6 mb-6">
           <div>
-            <p className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">Workspace</p>
-            <h2 className="mt-2 text-2xl font-black text-slate-900">短视频分镜工作区</h2>
-            <p className="mt-1 text-sm font-bold text-slate-400">每个方案会先出脚本，再生成 1 张或 2 张整板分镜图。</p>
+            <h2 className="text-2xl font-black text-slate-900">分镜工作台</h2>
           </div>
           {projects.length > 0 && (
             <div className="flex items-center gap-3">

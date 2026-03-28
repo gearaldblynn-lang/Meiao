@@ -1,11 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { GoogleGenAI } from "@google/genai";
 import { GlobalApiConfig, VideoPersistentState, VideoTask, KieAiResult, VideoSubMode } from '../../types';
 import VideoSidebar from './VideoSidebar';
 import { uploadToCos } from '../../services/tencentCosService';
-import { createSoraVideoTask, recoverKieAiTask } from '../../services/kieAiService';
+import { createSoraVideoTask, recoverKieAiTask, submitVeoVideoTask, pollVeoTaskStatus } from '../../services/kieAiService';
 import { generateVideoScript } from '../../services/arkService';
-import { safeCreateObjectURL } from '../../utils/urlUtils';
+import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -18,9 +17,15 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   const { productImages, referenceVideoFile, tasks, config, isAnalyzing, isGenerating, subMode } = state;
   const controllerRef = useRef<AbortController | null>(null);
   const inflightIdsRef = useRef<Set<string>>(new Set());
+  const submitLockRef = useRef(false);
   
   const [fakeProgress, setFakeProgress] = useState(0);
   const [videoErrors, setVideoErrors] = useState<Record<string, boolean>>({});
+  const baseMeta = {
+    subMode,
+    duration: config.duration,
+    aspectRatio: config.aspectRatio,
+  };
   
   useEffect(() => {
     // 强制重置分析和生成状态，防止刷新后状态锁定
@@ -71,6 +76,15 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
 
   const handlePlanScript = async () => {
     if (isAnalyzing || isGenerating || productImages.length === 0) return;
+    void logActionStart({
+      module: 'video',
+      action: 'plan_script',
+      message: '开始策划短视频脚本',
+      meta: {
+        ...baseMeta,
+        imageCount: productImages.length,
+      },
+    });
     onUpdate({ isAnalyzing: true });
     onProcessingChange(true);
     try {
@@ -84,17 +98,48 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
       if (controller.signal.aborted) throw new Error("INTERRUPTED");
       const res = await generateVideoScript(imageUrls, refVideoUrl, config, apiConfig, controller.signal);
       if (res.status === 'success') {
+        void logActionSuccess({
+          module: 'video',
+          action: 'plan_script',
+          message: '短视频脚本策划成功',
+          meta: {
+            ...baseMeta,
+            sceneCount: res.scenes.length,
+          },
+        });
         onUpdate({ 
           config: { ...config, scenes: res.scenes, promptMode: 'manual' }, 
           isAnalyzing: false 
         });
       } else {
+        void logActionFailure({
+          module: 'video',
+          action: 'plan_script',
+          message: '短视频脚本策划失败',
+          detail: res.message,
+          meta: baseMeta,
+        });
         throw new Error(res.message);
       }
     } catch (err: any) {
       if (err.message !== 'INTERRUPTED') {
+        void logActionFailure({
+          module: 'video',
+          action: 'plan_script',
+          message: '短视频脚本策划失败',
+          detail: err.message,
+          meta: baseMeta,
+        });
         alert("脚本策划失败: " + err.message);
         onUpdate({ isAnalyzing: false });
+      } else {
+        void logActionInterrupted({
+          module: 'video',
+          action: 'plan_script',
+          message: '短视频脚本策划已中断',
+          detail: err.message,
+          meta: baseMeta,
+        });
       }
     } finally {
       onProcessingChange(false);
@@ -103,12 +148,22 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   };
 
   const handleStartGeneration = async () => {
-    if (isGenerating || isAnalyzing || productImages.length === 0) return;
+    if (submitLockRef.current || isGenerating || isAnalyzing || productImages.length === 0) return;
     if (subMode === VideoSubMode.LONG_VIDEO && config.scenes.length === 0) {
       alert("请先策划分镜脚本");
       return;
     }
 
+    submitLockRef.current = true;
+    void logActionStart({
+      module: 'video',
+      action: 'start_video_task',
+      message: '启动短视频生成任务',
+      meta: {
+        ...baseMeta,
+        engine: subMode === VideoSubMode.VEO ? 'veo' : 'sora',
+      },
+    });
     onUpdate({ isGenerating: true });
     onProcessingChange(true);
 
@@ -131,10 +186,26 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
 
     } catch (err: any) {
       if (err.message !== 'INTERRUPTED') {
+        void logActionFailure({
+          module: 'video',
+          action: 'start_video_task',
+          message: '短视频生成任务启动失败',
+          detail: err.message,
+          meta: baseMeta,
+        });
         alert("任务启动失败: " + err.message);
         onUpdate({ isGenerating: false });
+      } else {
+        void logActionInterrupted({
+          module: 'video',
+          action: 'start_video_task',
+          message: '短视频生成任务已中断',
+          detail: err.message,
+          meta: baseMeta,
+        });
       }
     } finally {
+      submitLockRef.current = false;
       onProcessingChange(false);
       controllerRef.current = null;
     }
@@ -144,6 +215,16 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
     const imageUrls = await Promise.all(productImages.map(img => uploadToCos(img, apiConfig)));
     const res = await createSoraVideoTask(imageUrls, config, apiConfig, signal);
     if (res.status === 'success') {
+      void logActionSuccess({
+        module: 'video',
+        action: 'start_video_task',
+        message: 'Sora 视频生成成功',
+        meta: {
+          ...baseMeta,
+          taskId,
+          kieTaskId: res.taskId,
+        },
+      });
       onUpdate({ 
         tasks: state.tasks.map(t => t.id === taskId ? { ...t, status: 'completed', resultUrl: res.videoUrl, taskId: res.taskId } : t),
         isGenerating: false 
@@ -154,53 +235,49 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   };
 
   const executeVeoGeneration = async (taskId: string, signal: AbortSignal) => {
-    // Veo 模式：直接利用 Gemini 3.1 Veo 引擎
-    const aistudio = (window as any).aistudio;
-    if (aistudio && !(await aistudio.hasSelectedApiKey())) {
-      await aistudio.openSelectKey();
-    }
-
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-    const imageBytes = await new Promise<string>((resolve) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve((reader.result as string).split(',')[1]);
-      reader.readAsDataURL(productImages[0]);
-    });
-
-    const prompt = config.script || `Commercial advertisement for this product. Cinematic lighting, high speed motion. Resolution: ${config.aspectRatio === 'landscape' ? '1080p' : '720p'}.`;
-
-    let operation = await ai.models.generateVideos({
-      model: 'veo-3.1-fast-generate-preview',
-      prompt: prompt,
-      image: { imageBytes: imageBytes, mimeType: productImages[0].type },
-      config: {
-        numberOfVideos: 1,
-        resolution: config.aspectRatio === 'landscape' ? '1080p' : '720p',
-        aspectRatio: config.aspectRatio === 'landscape' ? '16:9' : '9:16'
-      }
-    });
-
-    while (!operation.done) {
-      if (signal.aborted) throw new Error("INTERRUPTED");
-      await new Promise(resolve => setTimeout(resolve, 8000));
-      operation = await ai.operations.getVideosOperation({ operation: operation });
-    }
-
-    const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-    if (!downloadLink) throw new Error("Veo 引擎未返回结果");
-
-    const finalRes = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
-    const videoBlob = await finalRes.blob();
-    const videoUrl = safeCreateObjectURL(videoBlob);
+    const imageUrls = await Promise.all(productImages.map(img => uploadToCos(img, apiConfig)));
+    const veoJobId = await submitVeoVideoTask(
+      {
+        description: config.script || 'Commercial advertisement for this product.',
+        spokenContent: config.script || 'Commercial advertisement for this product.',
+        bgm: 'Cinematic commercial music',
+      },
+      config.aspectRatio === 'landscape' ? '16:9' : '9:16',
+      imageUrls.slice(0, 1),
+      undefined,
+      apiConfig,
+      signal
+    );
+    const videoUrl = await pollVeoTaskStatus(veoJobId, apiConfig, signal);
 
     onUpdate({ 
-      tasks: state.tasks.map(t => t.id === taskId ? { ...t, status: 'completed', resultUrl: videoUrl, taskId: operation.name } : t),
+      tasks: state.tasks.map(t => t.id === taskId ? { ...t, status: 'completed', resultUrl: videoUrl, taskId: veoJobId } : t),
       isGenerating: false 
+    });
+    void logActionSuccess({
+      module: 'video',
+      action: 'start_video_task',
+      message: 'Veo 视频生成成功',
+      meta: {
+        ...baseMeta,
+        taskId,
+        veoTaskId: veoJobId,
+      },
     });
   };
 
   const handleRecover = async (task: VideoTask) => {
     if (!task.taskId) return;
+    void logActionStart({
+      module: 'video',
+      action: 'recover_video_task',
+      message: '开始找回视频结果',
+      meta: {
+        ...baseMeta,
+        taskId: task.id,
+        kieTaskId: task.taskId,
+      },
+    });
     inflightIdsRef.current.add(task.id);
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -208,28 +285,60 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
     onProcessingChange(true);
     try {
       if (subMode === VideoSubMode.VEO) {
-        // Veo 恢复逻辑
-        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-        let operation: any = { name: task.taskId, done: false };
-        while (!operation.done) {
-          if (controller.signal.aborted) throw new Error("INTERRUPTED");
-          operation = await ai.operations.getVideosOperation({ operation: operation as any });
-          if (!operation.done) await new Promise(r => setTimeout(r, 8000));
-        }
-        const uri = (operation as any).response?.generatedVideos?.[0]?.video?.uri;
-        const res = await fetch(`${uri}&key=${process.env.API_KEY}`);
-        
-        const blob = await res.blob();
-        onUpdate({ tasks: tasks.map(t => t.id === task.id ? { ...t, status: 'completed', resultUrl: safeCreateObjectURL(blob) } : t), isGenerating: false });
+        const videoUrl = await pollVeoTaskStatus(task.taskId, apiConfig, controller.signal);
+        onUpdate({ tasks: tasks.map(t => t.id === task.id ? { ...t, status: 'completed', resultUrl: videoUrl } : t), isGenerating: false });
+        void logActionSuccess({
+          module: 'video',
+          action: 'recover_video_task',
+          message: '找回 Veo 视频结果成功',
+          meta: {
+            ...baseMeta,
+            taskId: task.id,
+            veoTaskId: task.taskId,
+          },
+        });
       } else {
         const res = await recoverKieAiTask(task.taskId, apiConfig, controller.signal, true);
         if (res.status === 'success') {
+          void logActionSuccess({
+            module: 'video',
+            action: 'recover_video_task',
+            message: '找回视频结果成功',
+            meta: {
+              ...baseMeta,
+              taskId: task.id,
+              kieTaskId: res.taskId,
+            },
+          });
           onUpdate({ tasks: tasks.map(t => t.id === task.id ? { ...t, status: 'completed', resultUrl: res.videoUrl } : t), isGenerating: false });
         } else throw new Error(res.message);
       }
     } catch (err: any) {
       if (err.message !== 'INTERRUPTED') {
+        void logActionFailure({
+          module: 'video',
+          action: 'recover_video_task',
+          message: '找回视频结果失败',
+          detail: err.message,
+          meta: {
+            ...baseMeta,
+            taskId: task.id,
+            kieTaskId: task.taskId,
+          },
+        });
         onUpdate({ tasks: tasks.map(t => t.id === task.id ? { ...t, status: 'error', error: err.message } : t), isGenerating: false });
+      } else {
+        void logActionInterrupted({
+          module: 'video',
+          action: 'recover_video_task',
+          message: '找回视频结果已中断',
+          detail: err.message,
+          meta: {
+            ...baseMeta,
+            taskId: task.id,
+            kieTaskId: task.taskId,
+          },
+        });
       }
     } finally {
       onProcessingChange(false);
@@ -257,7 +366,18 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
               </div>
             </div>
             <div className="flex gap-3">
-              <button onClick={() => onUpdate({ tasks: [] })} className="px-6 py-2.5 bg-slate-100 text-slate-500 font-black text-xs rounded-xl hover:bg-slate-200 transition-all border border-slate-200 uppercase tracking-widest">清空记录</button>
+              <button onClick={() => {
+                void logActionSuccess({
+                  module: 'video',
+                  action: 'clear_video_records',
+                  message: '清空短视频记录',
+                  meta: {
+                    ...baseMeta,
+                    count: tasks.length,
+                  },
+                });
+                onUpdate({ tasks: [] });
+              }} className="px-6 py-2.5 bg-slate-100 text-slate-500 font-black text-xs rounded-xl hover:bg-slate-200 transition-all border border-slate-200 uppercase tracking-widest">清空记录</button>
               <button onClick={handleStartGeneration} disabled={isGenerating || isAnalyzing || productImages.length === 0 || (subMode === VideoSubMode.LONG_VIDEO && config.scenes.length === 0)} className="px-8 py-2.5 bg-slate-900 text-white font-black text-xs rounded-xl hover:bg-slate-800 shadow-xl disabled:bg-slate-200 transition-all uppercase tracking-widest">
                 {isGenerating ? '正在执行渲染指令...' : '启动最终合成任务'}
               </button>
@@ -272,7 +392,18 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
                     <span className="w-8 h-8 bg-slate-900 text-white rounded-xl flex items-center justify-center text-[10px] font-black tracking-tighter italic">#{tasks.length - idx}</span>
                     <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{subMode === VideoSubMode.VEO ? 'Veo AI Production' : 'Sora 2 Production'}</span>
                   </div>
-                  <button onClick={() => onUpdate({ tasks: tasks.filter(t => t.id !== task.id) })} className="w-8 h-8 text-slate-300 hover:text-rose-500 transition-colors"><i className="fas fa-trash-alt text-xs"></i></button>
+                  <button onClick={() => {
+                    void logActionSuccess({
+                      module: 'video',
+                      action: 'delete_video_record',
+                      message: '删除短视频记录',
+                      meta: {
+                        ...baseMeta,
+                        taskId: task.id,
+                      },
+                    });
+                    onUpdate({ tasks: tasks.filter(t => t.id !== task.id) });
+                  }} className="w-8 h-8 text-slate-300 hover:text-rose-500 transition-colors"><i className="fas fa-trash-alt text-xs"></i></button>
                 </div>
                 <div className="relative aspect-video bg-slate-900 overflow-hidden">
                    {task.status === 'completed' && task.resultUrl ? (
@@ -342,7 +473,18 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
                          <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest">{new Date(task.createTime).toLocaleTimeString()}</span>
                       </div>
                       {task.status === 'completed' && (
-                        <button onClick={() => { const a = document.createElement('a'); a.href = task.resultUrl!; a.download = `video_export_${task.id}.mp4`; a.click(); }} className="text-[10px] font-black text-slate-900 hover:text-purple-600 uppercase flex items-center gap-2 transition-colors">
+                        <button onClick={() => {
+                          void logActionSuccess({
+                            module: 'video',
+                            action: 'download_video',
+                            message: '下载短视频结果',
+                            meta: {
+                              ...baseMeta,
+                              taskId: task.id,
+                            },
+                          });
+                          const a = document.createElement('a'); a.href = task.resultUrl!; a.download = `video_export_${task.id}.mp4`; a.click();
+                        }} className="text-[10px] font-black text-slate-900 hover:text-purple-600 uppercase flex items-center gap-2 transition-colors">
                           <i className="fas fa-cloud-download-alt text-lg"></i> 保存到本地
                         </button>
                       )}

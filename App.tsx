@@ -20,15 +20,22 @@ import {
   savePersistedAppState,
 } from './utils/appState';
 import {
+  clearCurrentUserContext,
   clearSessionToken,
   fetchCurrentUser,
   fetchRemoteAppState,
+  fetchSystemConfig,
   loginInternalUser,
   logoutInternalUser,
   probeInternalApi,
   saveRemoteAppState,
+  storeActiveModuleContext,
+  storeCurrentUserContext,
   storeSessionToken,
 } from './services/internalApi';
+import { logActionSuccess } from './services/loggingService';
+import { getEffectiveConcurrency } from './modules/Account/accountManagementUtils.mjs';
+import { getLegacyTranslationModuleConfig } from './modules/Translation/translationConfigUtils.mjs';
 
 type AppMode = 'checking' | 'local' | 'internal';
 type AuthStatus = 'checking' | 'logged_out' | 'logged_in';
@@ -39,6 +46,7 @@ interface WorkspaceProps {
   currentUser?: AuthUser | null;
   internalMode?: boolean;
   onLogout?: () => void;
+  onCurrentUserChange?: (user: AuthUser) => void;
 }
 
 const LoadingScreen: React.FC<{ text: string }> = ({ text }) => (
@@ -57,12 +65,13 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
   currentUser = null,
   internalMode = false,
   onLogout,
+  onCurrentUserChange,
 }) => {
   const baseState = useMemo(() => buildPersistedAppState(initialState), [initialState]);
 
   const [activeModule, setActiveModule] = useState<AppModule>(baseState.activeModule);
   const [apiConfig, setApiConfig] = useState(baseState.apiConfig);
-  const [moduleConfig, setModuleConfig] = useState(baseState.moduleConfig);
+  const [translationConfigs, setTranslationConfigs] = useState(baseState.translationConfigs);
   const [translationMemory, setTranslationMemory] = useState(baseState.translationMemory);
   const [oneClickMemory, setOneClickMemory] = useState(baseState.oneClickMemory);
   const [retouchMemory, setRetouchMemory] = useState(baseState.retouchMemory);
@@ -75,12 +84,49 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
   }, []);
 
   useEffect(() => {
+    if (internalMode) {
+      storeActiveModuleContext(activeModule);
+    }
+  }, [activeModule, internalMode]);
+
+  useEffect(() => {
+    if (!internalMode || !currentUser) return;
+    let disposed = false;
+
+    const syncServerConcurrency = async () => {
+      try {
+        const result = await fetchSystemConfig();
+        if (disposed) return;
+        const effectiveConcurrency = getEffectiveConcurrency(
+          result.config.queue.maxConcurrency,
+          currentUser.jobConcurrency
+        );
+        setApiConfig((prev) => ({
+          ...prev,
+          kieApiKey: '',
+          arkApiKey: '',
+          concurrency: effectiveConcurrency,
+        }));
+      } catch (error) {
+        console.error('Failed to sync server concurrency', error);
+      }
+    };
+
+    void syncServerConcurrency();
+
+    return () => {
+      disposed = true;
+    };
+  }, [internalMode, currentUser?.id, currentUser?.jobConcurrency]);
+
+  useEffect(() => {
     if (!hydrated) return;
 
     const snapshot: PersistedAppState = {
       activeModule,
       apiConfig,
-      moduleConfig,
+      moduleConfig: getLegacyTranslationModuleConfig(translationConfigs),
+      translationConfigs,
       translationMemory,
       oneClickMemory,
       retouchMemory,
@@ -105,7 +151,7 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
   }, [
     activeModule,
     apiConfig,
-    moduleConfig,
+    translationConfigs,
     translationMemory,
     oneClickMemory,
     retouchMemory,
@@ -117,22 +163,23 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
 
   return (
     <ToastProvider>
-      <div className="flex h-screen bg-slate-50 overflow-hidden font-sans select-none">
+      <div className="flex h-screen overflow-hidden bg-[radial-gradient(circle_at_top,#f8fbff_0%,#eef4ff_20%,#f8fafc_52%,#edf2f7_100%)] font-sans text-slate-900 select-none">
         <SidebarNavigation activeModule={activeModule} onModuleChange={setActiveModule} />
         <div className="flex-1 flex flex-col min-w-0 h-full relative overflow-hidden">
           <Header activeModule={activeModule} currentUser={currentUser} internalMode={internalMode} onLogout={onLogout} />
 
-          <main className="flex-1 relative overflow-hidden h-full">
+          <main className="relative flex-1 overflow-hidden h-full">
             <div className={`h-full overflow-hidden ${activeModule === AppModule.SETTINGS ? '' : 'hidden'}`}>
               <GlobalApiSettings
                 apiConfig={apiConfig}
                 onApiConfigChange={setApiConfig}
                 currentUser={currentUser}
                 internalMode={internalMode}
+                isActive={activeModule === AppModule.SETTINGS}
               />
             </div>
             <div className={`h-full overflow-hidden ${activeModule === AppModule.TRANSLATION ? '' : 'hidden'}`}>
-              <TranslationModule apiConfig={apiConfig} moduleConfig={moduleConfig} onModuleConfigChange={setModuleConfig} persistentState={translationMemory} onStateChange={setTranslationMemory} />
+              <TranslationModule apiConfig={apiConfig} translationConfigs={translationConfigs} onTranslationConfigsChange={setTranslationConfigs} persistentState={translationMemory} onStateChange={setTranslationMemory} />
             </div>
             <div className={`h-full overflow-hidden ${activeModule === AppModule.ONE_CLICK ? '' : 'hidden'}`}>
               <OneClickModule apiConfig={apiConfig} persistentState={oneClickMemory} onStateChange={setOneClickMemory} />
@@ -147,7 +194,7 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
               <VideoModule apiConfig={apiConfig} persistentState={videoMemory} onStateChange={setVideoMemory} />
             </div>
             <div className={`h-full overflow-hidden ${activeModule === AppModule.ACCOUNT ? '' : 'hidden'}`}>
-              <AccountManagement currentUser={currentUser} internalMode={internalMode} />
+              <AccountManagement currentUser={currentUser} internalMode={internalMode} onCurrentUserChange={onCurrentUserChange} />
             </div>
           </main>
         </div>
@@ -172,6 +219,7 @@ const App: React.FC = () => {
       const internalApiReady = await probeInternalApi();
       if (!internalApiReady) {
         if (!disposed) {
+          clearCurrentUserContext();
           setAppMode('local');
           setAuthStatus('logged_out');
         }
@@ -185,11 +233,13 @@ const App: React.FC = () => {
         const me = await fetchCurrentUser();
         const stateResult = await fetchRemoteAppState();
         if (disposed) return;
+        storeCurrentUserContext(me.user);
         setCurrentUser(me.user);
         setRemoteState(normalizeLoadedPersistedAppState(stateResult.state));
         setAuthStatus('logged_in');
       } catch {
         clearSessionToken();
+        clearCurrentUserContext();
         if (!disposed) {
           setAuthStatus('logged_out');
         }
@@ -209,6 +259,7 @@ const App: React.FC = () => {
     try {
       const loginResult = await loginInternalUser(username, password);
       storeSessionToken(loginResult.token);
+      storeCurrentUserContext(loginResult.user);
       const stateResult = await fetchRemoteAppState();
       setCurrentUser(loginResult.user);
       setRemoteState(normalizeLoadedPersistedAppState(stateResult.state));
@@ -222,11 +273,17 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
     try {
+      void logActionSuccess({
+        module: 'account',
+        action: 'logout_click',
+        message: '点击退出登录',
+      });
       await logoutInternalUser();
     } catch (error) {
       console.error('Failed to logout', error);
     } finally {
       clearSessionToken();
+      clearCurrentUserContext();
       setCurrentUser(null);
       setRemoteState(null);
       setAuthStatus('logged_out');
@@ -257,6 +314,10 @@ const App: React.FC = () => {
       currentUser={currentUser}
       internalMode
       onLogout={handleLogout}
+      onCurrentUserChange={(user) => {
+        storeCurrentUserContext(user);
+        setCurrentUser(user);
+      }}
     />
   );
 };

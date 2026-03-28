@@ -58,9 +58,43 @@ export interface GlobalApiConfig {
   kieApiKey: string;
   concurrency: number;
   arkApiKey: string;
-  rhWebappId: string;
-  rhApiKey: string;
-  rhQuickCreateCode: string;
+}
+
+export interface InternalJob {
+  id: string;
+  userId: string;
+  module: string;
+  taskType: string;
+  provider: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'retry_waiting';
+  priority: number;
+  payload: Record<string, unknown>;
+  providerTaskId: string;
+  result: Record<string, unknown> | null;
+  errorCode: string;
+  errorMessage: string;
+  retryCount: number;
+  maxRetries: number;
+  createdAt: number;
+  updatedAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  cancelRequestedAt: number | null;
+}
+
+export interface SystemPublicConfig {
+  queue: {
+    maxConcurrency: number;
+    queuedCount: number;
+    runningCount: number;
+  };
+  cors: {
+    allowedOrigins: string[];
+  };
+  providers: {
+    ark: { configured: boolean };
+    kie: { configured: boolean };
+  };
 }
 
 export type UserRole = 'admin' | 'staff';
@@ -71,8 +105,24 @@ export interface AuthUser {
   displayName: string;
   role: UserRole;
   status: 'active' | 'disabled';
+  jobConcurrency: number;
   createdAt: number;
   lastLoginAt: number | null;
+}
+
+export interface InternalLogEntry {
+  id: string;
+  createdAt: number;
+  level: 'info' | 'error';
+  module: string;
+  action: string;
+  message: string;
+  detail?: string;
+  status: 'success' | 'failed' | 'started' | 'interrupted';
+  userId: string;
+  username: string;
+  displayName: string;
+  meta?: Record<string, unknown>;
 }
 
 export interface ModuleConfig {
@@ -86,6 +136,12 @@ export interface ModuleConfig {
   targetWidth: number;
   targetHeight: number;
   maxFileSize: number;
+}
+
+export interface TranslationModuleConfigs {
+  main: ModuleConfig;
+  detail: ModuleConfig;
+  removeText: ModuleConfig;
 }
 
 export interface SourceImageContext {
@@ -445,16 +501,4 @@ export interface VisualDirectionResult {
   directions: string[];
   status: 'success' | 'error';
   message?: string;
-}
-
-export interface GeminiProcessResult {
-  status: 'success' | 'error' | 'interrupted';
-  message?: string;
-  base64Image: string;
-}
-
-export interface RunningHubResult {
-  status: 'success' | 'error' | 'interrupted';
-  message?: string;
-  imageUrl: string;
 }

@@ -364,8 +364,7 @@ const VeoWorkspace: React.FC<Props> = ({
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center text-indigo-600"><i className="fas fa-video"></i></div>
           <div>
-            <h2 className="text-lg font-black text-slate-800 tracking-tight">Veo 智慧工作台</h2>
-            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">MULTI-PROJECT MANAGEMENT</p>
+            <h2 className="text-lg font-black text-slate-800 tracking-tight">Veo 工作台</h2>
           </div>
         </div>
         <div className="flex gap-3">

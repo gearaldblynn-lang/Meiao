@@ -3,6 +3,7 @@ import React, { useState } from 'react';
 import { AspectRatio, ModuleConfig, GenerationQuality, AppModule, TranslationSubMode } from '../types';
 import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../utils/modelAspectRatio';
+import { PopoverSelect, PrimaryActionButton, SectionCard, SegmentedTabs, SidebarShell } from './ui/workspacePrimitives';
 
 interface Props {
   activeModule: AppModule;
@@ -10,13 +11,38 @@ interface Props {
   config: ModuleConfig;
   onChange: (config: ModuleConfig) => void;
   disabled?: boolean;
+  onModeChange?: (mode: TranslationSubMode) => void;
+  onStart?: () => void;
+  startDisabled?: boolean;
 }
 
-const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onChange, disabled }) => {
+const SettingsSidebar: React.FC<Props> = ({
+  activeModule,
+  subMode,
+  config,
+  onChange,
+  disabled,
+  onModeChange,
+  onStart,
+  startDisabled,
+}) => {
   const isDetailMode = activeModule === AppModule.TRANSLATION && subMode === TranslationSubMode.DETAIL;
   const isMainTranslationMode = activeModule === AppModule.TRANSLATION && subMode === TranslationSubMode.MAIN;
   const isRemoveTextMode = activeModule === AppModule.TRANSLATION && subMode === TranslationSubMode.REMOVE_TEXT;
   const [isCustomLanguage, setIsCustomLanguage] = useState(config.targetLanguage === 'CUSTOM');
+  const languageOptions = [
+    { value: 'English', label: '英语' },
+    { value: 'Japanese', label: '日语' },
+    { value: 'German', label: '德语' },
+    { value: 'French', label: '法语' },
+    { value: 'Spanish', label: '西班牙语' },
+    { value: 'Korean', label: '韩语' },
+    { value: 'Russian', label: '俄语' },
+    { value: 'Vietnamese', label: '越南语' },
+    { value: 'Thai', label: '泰语' },
+    { value: 'Italian', label: '意大利语' },
+    { value: 'CUSTOM', label: '+ 自定义' },
+  ];
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value, type } = e.target;
@@ -56,23 +82,34 @@ const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onCha
   });
 
   return (
-    <div className="w-80 bg-white border-r border-gray-200 h-full flex flex-col shrink-0 overflow-hidden relative shadow-sm">
-      <header className="p-6 border-b border-slate-50 flex-none bg-white">
-        <h2 className="text-xl font-black text-slate-800 mb-1 tracking-tight">
-          {isDetailMode ? '详情参数' : isRemoveTextMode ? '擦除参数' : '主图参数'}
-        </h2>
-        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-[0.15em]">Parameters Control</p>
-      </header>
-
-      {/* 滚动区域 */}
-      <div className="flex-1 min-h-0 overflow-y-auto sidebar-scroll">
-        <div className="p-6 space-y-6 pb-20">
+    <SidebarShell
+      widthClassName="w-[360px]"
+      accentClass="bg-indigo-600"
+      title={isDetailMode ? '详情参数' : isRemoveTextMode ? '擦除参数' : '主图参数'}
+      subtitle={isRemoveTextMode ? '去文案模式' : isDetailMode ? '详情模式' : '主图模式'}
+      headerContent={activeModule === AppModule.TRANSLATION && subMode && onModeChange ? (
+        <SegmentedTabs
+          value={subMode}
+          onChange={(next) => onModeChange(next as TranslationSubMode)}
+          accentClass="bg-indigo-600 text-white"
+          items={[
+            { value: TranslationSubMode.MAIN, label: '主图出海' },
+            { value: TranslationSubMode.DETAIL, label: '详情出海' },
+            { value: TranslationSubMode.REMOVE_TEXT, label: '去除文案' },
+          ]}
+        />
+      ) : undefined}
+      footer={onStart ? (
+        <PrimaryActionButton
+          onClick={onStart}
+          disabled={Boolean(startDisabled)}
+          icon={disabled ? 'fa-spinner fa-spin' : 'fa-globe'}
+          label={disabled ? '处理中...' : isRemoveTextMode ? '开始去除文案' : isDetailMode ? '开始详情出海' : '开始主图出海'}
+        />
+      ) : undefined}
+    >
           {!isRemoveTextMode && (
-            <section className="space-y-3">
-              <div className="flex items-center gap-2">
-                <div className="w-1 h-3 bg-indigo-600 rounded-full"></div>
-                <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">目标市场语言</label>
-              </div>
+            <SectionCard title="目标市场语言">
               {isCustomLanguage ? (
                 <div className="flex gap-2">
                   <input
@@ -90,63 +127,46 @@ const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onCha
                       setIsCustomLanguage(false);
                       onChange({ ...config, targetLanguage: 'English' });
                     }} 
-                    className="px-3 bg-slate-100 rounded-xl text-[10px] font-bold text-slate-400"
+                    className="px-3 bg-slate-100 rounded-xl text-[10px] font-bold text-slate-500"
                   >
                     返回
                   </button>
                 </div>
               ) : (
-                <select
-                  name="targetLanguage"
+                <PopoverSelect
                   value={config.targetLanguage}
-                  onChange={handleChange}
+                  onChange={(next) => {
+                    if (next === 'CUSTOM') {
+                      setIsCustomLanguage(true);
+                      onChange({ ...config, targetLanguage: 'CUSTOM' });
+                      return;
+                    }
+                    setIsCustomLanguage(false);
+                    onChange({ ...config, targetLanguage: next });
+                  }}
                   disabled={disabled}
-                  className="w-full border border-slate-100 rounded-xl px-4 py-2.5 text-sm bg-slate-50 focus:bg-white focus:ring-2 focus:ring-indigo-500 outline-none"
-                >
-                  <option value="English">英语 - English</option>
-                  <option value="Japanese">日语 - 日本語</option>
-                  <option value="German">德语 - Deutsch</option>
-                  <option value="French">法语 - Français</option>
-                  <option value="Spanish">西班牙语 - Español</option>
-                  <option value="Korean">韩语 - 한국어</option>
-                  <option value="Russian">俄语 - Русский</option>
-                  <option value="Vietnamese">越南语 - Tiếng Việt</option>
-                  <option value="Thai">泰语 - ไทย</option>
-                  <option value="Italian">意大利语 - Italiano</option>
-                  <option value="CUSTOM">+ 自定义</option>
-                </select>
+                  options={languageOptions}
+                  buttonClassName="h-10 rounded-2xl px-4 text-xs"
+                />
               )}
-            </section>
+            </SectionCard>
           )}
 
           {!isDetailMode && (
-            <section className="space-y-3">
-              <div className="flex items-center gap-2">
-                <div className="w-1 h-3 bg-indigo-600 rounded-full"></div>
-                <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">画面构图比例</label>
-              </div>
-              <div className="grid grid-cols-5 gap-2">
-                {visibleRatioList.map((item) => (
-                  <button
-                    key={item.value}
-                    type="button"
-                    onClick={() => onChange({ ...config, aspectRatio: item.value })}
-                    disabled={disabled}
-                    className={`py-2 flex flex-col items-center justify-center gap-1 rounded-lg border transition-all ${
-                      config.aspectRatio === item.value
-                        ? 'bg-indigo-600 border-indigo-600 text-white shadow-md'
-                        : 'bg-white border-slate-100 text-slate-400 hover:border-indigo-300'
-                    }`}
-                  >
-                    <i className={`fas ${item.icon} text-[10px]`}></i>
-                    <span className="text-[9px] font-bold">{item.label}</span>
-                  </button>
-                ))}
-              </div>
-            </section>
+            <SectionCard title="画面构图比例">
+              <PopoverSelect
+                value={config.aspectRatio}
+                onChange={(next) => onChange({ ...config, aspectRatio: next as AspectRatio })}
+                options={visibleRatioList.map((item) => ({
+                  value: item.value,
+                  label: item.label,
+                }))}
+                buttonClassName="h-10 rounded-2xl px-4 text-xs"
+              />
+            </SectionCard>
           )}
 
-          <section className="space-y-3 p-5 bg-slate-100 rounded-3xl border border-slate-200">
+          <SectionCard title="选择生图模型">
             <label className="text-[10px] font-bold uppercase tracking-[0.2em] block mb-2 text-slate-600">选择生图模型</label>
             <div className="flex gap-2">
                 {MODEL_OPTIONS.map((m) => (
@@ -172,9 +192,9 @@ const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onCha
                 </button>
               ))}
             </div>
-          </section>
+          </SectionCard>
 
-          <section className="space-y-3 p-5 bg-slate-100 rounded-3xl border border-slate-200">
+          <SectionCard title="渲染引擎质量">
             <label className="text-[10px] font-bold uppercase tracking-[0.2em] block mb-2 text-slate-600">渲染引擎质量</label>
             <div className="flex gap-2">
               {QUALITY_OPTIONS.map((q) => (
@@ -189,9 +209,9 @@ const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onCha
                 </button>
               ))}
             </div>
-          </section>
+          </SectionCard>
 
-          <section className="space-y-4 p-5 bg-indigo-50 rounded-3xl border border-indigo-100">
+          <SectionCard title="导出尺寸设置" className="border-indigo-100 bg-indigo-50/70">
             <div className="flex items-center justify-between mb-2">
               <label className="text-[10px] font-bold text-indigo-900 uppercase tracking-[0.2em]">
                 导出尺寸设置
@@ -227,10 +247,8 @@ const SettingsSidebar: React.FC<Props> = ({ activeModule, subMode, config, onCha
                />
                <p className="text-[9px] text-indigo-400 font-medium italic">限制生成后图片的占用空间，不改变分辨率</p>
             </div>
-          </section>
-        </div>
-      </div>
-    </div>
+          </SectionCard>
+    </SidebarShell>
   );
 };
 

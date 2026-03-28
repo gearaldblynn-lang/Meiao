@@ -5,11 +5,13 @@ import { motion } from 'framer-motion';
 import { GlobalApiConfig, AspectRatio, OneClickConfig, MainImageScheme, OneClickSubMode, OneClickPersistentState, KieAiResult } from '../../types';
 import ConfigSidebar from './ConfigSidebar';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
+import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
 import { generateMarketingSchemes } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
 import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { resizeImage, createZipAndDownload, getImageDimensions } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
+import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -18,9 +20,20 @@ interface Props {
   onProcessingChange: (processing: boolean) => void;
   onSyncConfig?: () => void;
   onClearConfig?: () => void;
+  currentSubMode?: OneClickSubMode;
+  onSubModeChange?: (mode: OneClickSubMode) => void;
 }
 
-const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onProcessingChange, onSyncConfig, onClearConfig }) => {
+const MainImageSubModule: React.FC<Props> = ({
+  apiConfig,
+  state,
+  onUpdate,
+  onProcessingChange,
+  onSyncConfig,
+  onClearConfig,
+  currentSubMode,
+  onSubModeChange,
+}) => {
   const { productImages, styleImage, schemes, config, lastStyleUrl, uploadedProductUrls } = state;
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -30,6 +43,7 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   
   const inflightIdsRef = useRef<Set<string>>(new Set());
   const isSubmittingAnalysisRef = useRef(false);
+  const isSubmittingGenerationRef = useRef(false);
   const taskControllersRef = useRef<Record<string, AbortController>>({});
   const globalAbortRef = useRef<AbortController | null>(null);
   const { addToast } = useToast();
@@ -37,6 +51,12 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   const selectedCount = schemes.filter(s => s.selected).length;
   const completedCount = schemes.filter(s => s.status === 'completed' && s.resultUrl).length;
   const isAllSelected = schemes.length > 0 && selectedCount === schemes.length;
+  const baseMeta = {
+    subMode: 'main_image',
+    model: config.model,
+    quality: config.quality,
+    aspectRatio: config.aspectRatio,
+  };
 
   const schemesRef = useRef(schemes);
   schemesRef.current = schemes;
@@ -79,11 +99,31 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
 
   const toggleSelectAll = () => { 
     if (isAnalyzing) return;
+    void logActionSuccess({
+      module: 'one_click',
+      action: isAllSelected ? 'deselect_all_main' : 'select_all_main',
+      message: isAllSelected ? '取消全选主图方案' : '全选主图方案',
+      meta: {
+        ...baseMeta,
+        count: schemes.length,
+      },
+    });
     onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => ({ ...s, selected: !isAllSelected })) })); 
   };
   
   const toggleSelectScheme = (id: string) => { 
     if (isAnalyzing) return;
+    const scheme = schemesRef.current.find((item) => item.id === id);
+    void logActionSuccess({
+      module: 'one_click',
+      action: scheme?.selected ? 'deselect_single_main' : 'select_single_main',
+      message: scheme?.selected ? '取消选择主图方案' : '选择主图方案',
+      meta: {
+        ...baseMeta,
+        schemeId: id,
+        title: scheme?.uiTitle,
+      },
+    });
     onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === id ? { ...s, selected: !s.selected } : s) })); 
   };
 
@@ -108,6 +148,16 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
     
     isSubmittingAnalysisRef.current = true;
     setIsAnalyzing(true);
+    void logActionStart({
+      module: 'one_click',
+      action: 'plan_main_start',
+      message: '开始主图策划',
+      meta: {
+        ...baseMeta,
+        productImageCount: productImages.length || uploadedProductUrls.length,
+        hasStyleImage: Boolean(styleImage || lastStyleUrl),
+      },
+    });
     addToast("正在进行全案视觉策划...", 'info');
     
     try {
@@ -164,11 +214,44 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
           };
         });
         onUpdate({ schemes: initialSchemes });
+        void logActionSuccess({
+          module: 'one_click',
+          action: 'plan_main_start',
+          message: '主图策划成功',
+          meta: {
+            ...baseMeta,
+            count: initialSchemes.length,
+          },
+        });
         addToast("策划方案已生成，请检查并启动渲染。", 'success');
       } else { 
+        void logActionFailure({
+          module: 'one_click',
+          action: 'plan_main_start',
+          message: '主图策划失败',
+          detail: res.message,
+          meta: baseMeta,
+        });
         addToast("视觉策划失败: " + res.message, 'error'); 
       }
     } catch (e: any) { 
+      if (e.name === 'AbortError' || e.message === 'ABORTED') {
+        void logActionInterrupted({
+          module: 'one_click',
+          action: 'plan_main_start',
+          message: '主图策划已中断',
+          detail: e.message,
+          meta: baseMeta,
+        });
+      } else {
+        void logActionFailure({
+          module: 'one_click',
+          action: 'plan_main_start',
+          message: '主图策划失败',
+          detail: e.message,
+          meta: baseMeta,
+        });
+      }
       if (e.name === 'AbortError' || e.message === 'ABORTED') {
         addToast("策划分析超时或已取消，请检查网络或重试。", 'error');
       } else {
@@ -202,6 +285,15 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
       schemes: [],
       uploadedProductUrls: []
     }));
+    void logActionSuccess({
+      module: 'one_click',
+      action: 'clear_main_project',
+      message: '清空主图项目',
+      meta: {
+        ...baseMeta,
+        count: schemesRef.current.length,
+      },
+    });
     inflightIdsRef.current.clear();
     setIsCollapsed(false);
     addToast('项目已清空', 'success');
@@ -217,6 +309,15 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
       ...prev,
       schemes: prev.schemes.filter(s => s.id !== id)
     }));
+    void logActionSuccess({
+      module: 'one_click',
+      action: 'delete_main_scheme',
+      message: '删除主图方案',
+      meta: {
+        ...baseMeta,
+        schemeId: id,
+      },
+    });
     inflightIdsRef.current.delete(id);
     addToast('方案已删除', 'success');
   };
@@ -233,6 +334,17 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
       let res: KieAiResult;
       const targetScheme = schemesRef.current.find(s => s.id === schemeId);
       if (!targetScheme) return;
+      void logActionStart({
+        module: 'one_click',
+        action: mode === 'recover' ? 'recover_main_scheme' : 'generate_main_scheme',
+        message: mode === 'recover' ? '开始找回主图结果' : '开始生成主图方案',
+        meta: {
+          ...baseMeta,
+          schemeId,
+          title: targetScheme.uiTitle,
+          taskId: targetScheme.taskId,
+        },
+      });
 
       if (mode === 'recover' && targetScheme.taskId) {
         updateSingleScheme(schemeId, { error: '正在重连云端任务...' });
@@ -252,7 +364,7 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
 
       if (res.status === 'success') {
         const imgResp = await fetch(res.imageUrl, { signal: controller.signal });
-        const blob = await imgResp.blob();
+        const blob = await normalizeFetchedImageBlob(await imgResp.blob(), res.imageUrl);
         const dims = await getImageDimensions(blob);
 
         let targetW = dims.width;
@@ -267,6 +379,17 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
         const resultUrl = safeCreateObjectURL(finalBlob);
         
         updateSingleScheme(schemeId, { status: 'completed', resultUrl, taskId: res.taskId });
+        void logActionSuccess({
+          module: 'one_click',
+          action: mode === 'recover' ? 'recover_main_scheme' : 'generate_main_scheme',
+          message: mode === 'recover' ? '找回主图结果成功' : '主图方案生成成功',
+          meta: {
+            ...baseMeta,
+            schemeId,
+            title: targetScheme.uiTitle,
+            taskId: res.taskId,
+          },
+        });
       } else if (res.status === 'task_not_found') {
         throw new Error("任务已过期或不存在，请重新生成");
       } else { 
@@ -278,6 +401,34 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
         status: isManual ? 'interrupted' : 'error', 
         error: isManual ? '已手动中断' : err.message 
       });
+      const targetScheme = schemesRef.current.find(s => s.id === schemeId);
+      if (isManual) {
+        void logActionInterrupted({
+          module: 'one_click',
+          action: mode === 'recover' ? 'recover_main_scheme' : 'generate_main_scheme',
+          message: mode === 'recover' ? '找回主图结果已中断' : '主图方案生成已中断',
+          detail: err.message,
+          meta: {
+            ...baseMeta,
+            schemeId,
+            title: targetScheme?.uiTitle,
+            taskId: targetScheme?.taskId,
+          },
+        });
+      } else {
+        void logActionFailure({
+          module: 'one_click',
+          action: mode === 'recover' ? 'recover_main_scheme' : 'generate_main_scheme',
+          message: mode === 'recover' ? '找回主图结果失败' : '主图方案生成失败',
+          detail: err.message,
+          meta: {
+            ...baseMeta,
+            schemeId,
+            title: targetScheme?.uiTitle,
+            taskId: targetScheme?.taskId,
+          },
+        });
+      }
     } finally { 
       delete taskControllersRef.current[schemeId]; 
       inflightIdsRef.current.delete(schemeId);
@@ -328,7 +479,7 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   };
 
   const handleStartGeneration = async () => {
-    if (isGenerating || isAnalyzing) return;
+    if (isSubmittingGenerationRef.current || isGenerating || isAnalyzing) return;
     const selectedSchemes = schemesRef.current.filter(s => s.selected && s.status !== 'generating' && !inflightIdsRef.current.has(s.id));
     if (selectedSchemes.length === 0) return;
     
@@ -337,7 +488,17 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
         return;
     }
 
+    isSubmittingGenerationRef.current = true;
     setIsGenerating(true);
+    void logActionStart({
+      module: 'one_click',
+      action: 'generate_main_batch',
+      message: '开始批量生成主图',
+      meta: {
+        ...baseMeta,
+        count: selectedSchemes.length,
+      },
+    });
     addToast("开始批量生成任务...", 'info');
     
     const targetIds = selectedSchemes.map(s => s.id);
@@ -353,8 +514,27 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
       selectedSchemes.forEach(s => inflightIdsRef.current.add(s.id));
       
       await Promise.all(selectedSchemes.map(s => generateSingleImage(s.id, productUrls, lastStyleUrl)));
+      void logActionSuccess({
+        module: 'one_click',
+        action: 'generate_main_batch',
+        message: '批量生成主图完成',
+        meta: {
+          ...baseMeta,
+          count: selectedSchemes.length,
+        },
+      });
       addToast("批量生成完成", 'success');
     } catch (e: any) { 
+      void logActionFailure({
+        module: 'one_click',
+        action: 'generate_main_batch',
+        message: '批量生成主图失败',
+        detail: e.message,
+        meta: {
+          ...baseMeta,
+          count: selectedSchemes.length,
+        },
+      });
       console.error("Batch error:", e);
       onUpdate(prev => ({
         ...prev,
@@ -362,12 +542,22 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
       }));
       addToast("批量生成启动失败: " + e.message, 'error');
     } finally { 
+      isSubmittingGenerationRef.current = false;
       setIsGenerating(false); 
     }
   };
 
   const handleRecoverSingle = async (schemeId: string) => {
     if (inflightIdsRef.current.has(schemeId)) return;
+    void logActionStart({
+      module: 'one_click',
+      action: 'recover_main_click',
+      message: '点击找回主图结果',
+      meta: {
+        ...baseMeta,
+        schemeId,
+      },
+    });
     
     updateSingleScheme(schemeId, { status: 'generating', error: '正在同步云端结果...' });
     
@@ -387,6 +577,15 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
     const completedSchemes = schemes.filter(s => s.status === 'completed' && s.resultUrl);
     if (completedSchemes.length === 0) return;
     setIsDownloading(true);
+    void logActionStart({
+      module: 'one_click',
+      action: 'download_main_batch',
+      message: '开始批量导出主图',
+      meta: {
+        ...baseMeta,
+        count: completedSchemes.length,
+      },
+    });
     addToast("开始打包下载...", 'info');
     try {
       const zipFiles = await Promise.all(completedSchemes.map(async (s, i) => {
@@ -395,8 +594,27 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
         return { blob, path: `main_image_${i + 1}.png` };
       }));
       await createZipAndDownload(zipFiles, `mayo_main_batch_${Date.now()}`);
+      void logActionSuccess({
+        module: 'one_click',
+        action: 'download_main_batch',
+        message: '批量导出主图成功',
+        meta: {
+          ...baseMeta,
+          count: completedSchemes.length,
+        },
+      });
       addToast("下载完成", 'success');
     } catch (err) { 
+      void logActionFailure({
+        module: 'one_click',
+        action: 'download_main_batch',
+        message: '批量导出主图失败',
+        detail: err instanceof Error ? err.message : '导出失败',
+        meta: {
+          ...baseMeta,
+          count: completedSchemes.length,
+        },
+      });
       addToast("下载失败", 'error'); 
     } finally { 
       setIsDownloading(false); 
@@ -405,6 +623,15 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
 
   const handleRedoSingle = async (schemeId: string) => {
     if (inflightIdsRef.current.has(schemeId) || isAnalyzing) return;
+    void logActionStart({
+      module: 'one_click',
+      action: 'redo_main_scheme',
+      message: '重新生成主图方案',
+      meta: {
+        ...baseMeta,
+        schemeId,
+      },
+    });
     
     updateSingleScheme(schemeId, { status: 'generating', error: '正在准备素材...' });
     
@@ -429,6 +656,15 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
       status: 'error', 
       error: '已手动中断，可点击同步获取结果' 
     });
+    void logActionInterrupted({
+      module: 'one_click',
+      action: 'interrupt_main_scheme',
+      message: '手动中断主图方案生成',
+      meta: {
+        ...baseMeta,
+        schemeId: id,
+      },
+    });
     addToast("已中断生成任务", 'info');
   };
 
@@ -440,6 +676,9 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   return (
     <div className="h-full w-full flex overflow-hidden bg-slate-50">
       <ConfigSidebar 
+        subMode={OneClickSubMode.MAIN_IMAGE}
+        currentSubMode={currentSubMode}
+        onSubModeChange={onSubModeChange}
         config={config} 
         onChange={(cfg) => onUpdate({ config: cfg })} 
         productImages={productImages} 
@@ -460,25 +699,40 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
         onSyncConfig={onSyncConfig}
         onClearConfig={onClearConfig}
         disabled={isAnalyzing || isGenerating || schemes.some(s => s.status === 'generating')} 
-        onStart={handleStartAnalysis} 
+        onStart={handleStartAnalysis}
       />
       
       <main className="flex-1 overflow-y-auto p-8 relative scrollbar-hide">
+        <div className="mx-auto mb-6 max-w-5xl rounded-[28px] border border-slate-200 bg-white px-6 py-5 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
+          <div className="flex items-center justify-between gap-6">
+            <div className="flex items-center gap-4">
+              <div className="flex h-14 w-14 items-center justify-center rounded-[22px] bg-rose-50 text-rose-600 shadow-[0_12px_24px_rgba(225,29,72,0.10)]">
+                <i className="fas fa-image text-lg"></i>
+              </div>
+              <div>
+                <h2 className="text-2xl font-black tracking-tight text-slate-900">主图工作台</h2>
+              </div>
+            </div>
+            <div className="rounded-2xl bg-slate-50 px-4 py-3 text-right">
+              <div className="text-xs font-medium text-slate-400">当前模式</div>
+              <div className="mt-1 text-sm font-bold text-slate-700">主图</div>
+            </div>
+          </div>
+        </div>
         {schemes.length > 0 ? (
           <div className="max-w-5xl mx-auto space-y-6 pb-20">
-            {/* 项目头部控制条 */}
-            <div className="flex items-center justify-between bg-white/95 backdrop-blur-sm p-4 rounded-2xl border border-slate-200 shadow-xl sticky top-0 z-20">
+            <div className="sticky top-0 z-20 flex items-center justify-between rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-[0_12px_32px_rgba(15,23,42,0.08)] backdrop-blur-sm">
                 <div className="flex items-center gap-4">
                     <div onClick={toggleSelectAll} className={`flex items-center gap-2 cursor-pointer group ${isAnalyzing ? 'opacity-50 pointer-events-none' : ''}`}>
                         <div className={`w-5 h-5 rounded flex items-center justify-center transition-all border-2 ${isAllSelected ? 'bg-rose-600 border-rose-600' : 'bg-white border-slate-300 group-hover:border-rose-400'}`}>
                            {isAllSelected && <i className="fas fa-check text-white text-[10px]"></i>}
                         </div>
-                        <span className="text-xs font-bold text-slate-600">全选</span>
+                        <span className="text-sm font-medium text-slate-600">全选</span>
                     </div>
                     <div className="h-6 w-px bg-slate-200"></div>
                     <div>
-                        <h3 className="text-base font-black text-slate-800 tracking-tight">视觉主图全案设计 <span className="text-rose-600 ml-1">({selectedCount}/{schemes.length})</span></h3>
-                        <p className="text-[9px] text-slate-400 font-bold tracking-widest uppercase">Sync Multi-Screen Strategy</p>
+                        <h3 className="text-base font-black text-slate-800">主图方案 <span className="ml-1 text-rose-600">({selectedCount}/{schemes.length})</span></h3>
+                        <p className="text-xs text-slate-400">查看、编辑并生成当前主图方案。</p>
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -505,12 +759,12 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
                     <div className="h-6 w-px bg-slate-200 mx-1"></div>
 
                     {completedCount > 0 && !isGenerating && !isAnalyzing && (
-                      <button onClick={handleBatchDownload} disabled={isDownloading} className="px-4 py-2 bg-emerald-600 text-white font-black text-[10px] rounded-xl hover:bg-emerald-700 shadow-lg disabled:bg-slate-300 transition-all uppercase tracking-widest">
-                        {isDownloading ? '打包中...' : `导出成果 (${completedCount})`}
+                      <button onClick={handleBatchDownload} disabled={isDownloading} className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-bold text-white transition-all hover:bg-emerald-700 disabled:bg-slate-300">
+                        {isDownloading ? '导出中...' : `导出结果 (${completedCount})`}
                       </button>
                     )}
-                    <button onClick={handleStartGeneration} disabled={selectedCount === 0 || isAnalyzing || isGenerating} className="px-6 py-2 bg-rose-600 text-white font-black text-[10px] rounded-xl hover:bg-rose-700 shadow-lg shadow-rose-100 transition-all uppercase tracking-widest disabled:bg-slate-300">
-                      {isGenerating ? '渲染中...' : '启动整套生成'}
+                    <button onClick={handleStartGeneration} disabled={selectedCount === 0 || isAnalyzing || isGenerating} className="rounded-xl bg-rose-600 px-5 py-2 text-sm font-bold text-white transition-all hover:bg-rose-700 disabled:bg-slate-300">
+                      {isGenerating ? '生成中...' : '开始生成'}
                     </button>
                 </div>
             </div>
@@ -545,10 +799,10 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
                         </div>
                       </div>
                       <div className="flex gap-4 mr-10">
-                         <button 
-                            disabled={scheme.status === 'generating' || isAnalyzing} 
+                         <button
+                            disabled={scheme.status === 'generating' || isAnalyzing}
                             onClick={() => deleteScheme(scheme.id)}
-                            className="text-[10px] font-bold text-slate-400 hover:text-red-600 uppercase disabled:opacity-30 transition-colors"
+                            className="text-xs font-medium text-slate-400 transition-colors hover:text-red-600 disabled:opacity-30"
                          >
                              删除
                          </button>
@@ -568,11 +822,11 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
                                     onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === scheme.id ? { ...s, editedContent: cleanedLines.join('\n').trim() } : s) }));
                                 }
                             }}
-                            className="text-[10px] font-bold text-slate-400 hover:text-rose-600 uppercase disabled:opacity-30 transition-colors"
+                            className="text-xs font-medium text-slate-400 transition-colors hover:text-rose-600 disabled:opacity-30"
                          >
                              还原方案
                          </button>
-                         <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="text-[10px] font-bold text-rose-600 hover:text-rose-800 uppercase disabled:opacity-30 transition-colors">
+                         <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="text-xs font-medium text-rose-600 transition-colors hover:text-rose-800 disabled:opacity-30">
                             {scheme.resultUrl ? '重新生成' : '生成该图'}
                          </button>
                       </div>
@@ -583,12 +837,12 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
                     {scheme.status === 'generating' ? (
                       <div className="text-center">
                         <div className="w-12 h-12 border-4 border-rose-100 border-t-rose-600 rounded-full animate-spin mb-3 mx-auto"></div>
-                        <p className="text-[10px] font-bold text-rose-600 animate-pulse uppercase">Rendering...</p>
-                        <p className="text-[9px] font-bold text-slate-500 mt-2 uppercase tracking-wider animate-pulse opacity-60">复杂图像处理，等待时间略长</p>
-                        {scheme.error && <p className="text-[8px] font-bold text-slate-400 mt-2 uppercase">{scheme.error}</p>}
+                        <p className="text-sm font-semibold text-rose-600 animate-pulse">正在生成</p>
+                        <p className="mt-2 text-xs text-slate-500 animate-pulse opacity-70">图像处理通常需要一些时间，请稍候。</p>
+                        {scheme.error && <p className="mt-2 text-xs text-slate-400">{scheme.error}</p>}
                         <button 
                           onClick={() => handleInterruptSingle(scheme.id)} 
-                          className="mt-4 px-4 py-1.5 bg-slate-200 text-slate-600 text-[9px] font-black rounded-lg hover:bg-slate-300 transition-all uppercase tracking-widest"
+                          className="mt-4 rounded-lg bg-slate-200 px-4 py-2 text-xs font-medium text-slate-600 transition-all hover:bg-slate-300"
                         >
                           中断并稍后同步
                         </button>
@@ -621,20 +875,20 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
                     ) : scheme.status === 'error' ? (
                       <div className="text-center p-8 bg-rose-50 rounded-[32px] border border-rose-100 w-full">
                          <i className="fas fa-exclamation-triangle text-rose-500 text-2xl mb-3"></i>
-                         <p className="text-[10px] font-bold text-rose-600 uppercase mb-4 leading-relaxed px-4">{scheme.error || '渲染失败'}</p>
+                         <p className="mb-4 px-4 text-sm font-medium leading-relaxed text-rose-600">{scheme.error || '生成失败'}</p>
                          {scheme.error && scheme.error.includes('超时') ? (
                             <div className="flex flex-col gap-2">
-                                <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRecoverSingle(scheme.id)} className="px-6 py-2 bg-indigo-600 text-white text-[10px] font-black rounded-xl hover:bg-indigo-700 shadow-lg uppercase transition-all">稍后获取结果</button>
-                                <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="px-6 py-2 bg-rose-600 text-white text-[10px] font-black rounded-xl hover:bg-rose-700 shadow-lg uppercase transition-all">重新尝试生成</button>
+                                <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRecoverSingle(scheme.id)} className="rounded-xl bg-indigo-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-indigo-700">稍后获取结果</button>
+                                <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="rounded-xl bg-rose-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700">重新生成</button>
                             </div>
                          ) : (
-                            <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="px-6 py-2 bg-rose-600 text-white text-[10px] font-black rounded-xl hover:bg-rose-700 shadow-lg uppercase transition-all">尝试重新生成</button>
+                            <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="rounded-xl bg-rose-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700">重新生成</button>
                          )}
                       </div>
                     ) : (
                       <div className="text-center opacity-30 flex flex-col items-center gap-4">
                         <i className="fas fa-magic text-2xl text-slate-300"></i>
-                        <p className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Ready for Production</p>
+                        <p className="text-sm text-slate-400">等待生成</p>
                       </div>
                     )}
                   </div>
@@ -645,9 +899,12 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
           </div>
         ) : (
           <div className="h-full flex flex-col items-center justify-center text-center animate-in fade-in zoom-in duration-500">
-            <div className="w-32 h-32 bg-white rounded-[48px] shadow-2xl flex items-center justify-center mb-10 border border-slate-100"><i className="fas fa-sparkles text-5xl text-rose-500"></i></div>
-            <h2 className="text-3xl font-black text-slate-800 mb-4 tracking-tight">AI 视觉主图全案系列</h2>
-            <p className="text-slate-500 max-w-sm font-bold text-sm leading-relaxed px-6">配置参数并点击侧边栏开启设计，系统将为您策划整套风格高度统一的营销主图。</p>
+            <div className="mb-10 flex h-32 w-32 items-center justify-center rounded-[48px] border border-slate-100 bg-white shadow-2xl">
+              <div className="flex h-20 w-20 items-center justify-center rounded-[30px] bg-rose-50 text-rose-600">
+                <i className="fas fa-image text-4xl"></i>
+              </div>
+            </div>
+            <h2 className="mb-4 text-3xl font-black text-slate-800 tracking-tight">主图工作台</h2>
           </div>
         )}
 
@@ -655,8 +912,8 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[110] flex items-center justify-center">
             <div className="bg-white p-10 rounded-[40px] shadow-2xl flex flex-col items-center text-center animate-in zoom-in duration-300">
               <div className="w-20 h-20 bg-rose-50 rounded-full flex items-center justify-center mb-6 animate-pulse border border-rose-100"><i className="fas fa-brain text-4xl text-rose-600"></i></div>
-              <h3 className="text-xl font-black text-slate-800 mb-2">正在进行全案视觉策划...</h3>
-              <p className="text-slate-400 text-xs font-bold uppercase tracking-widest leading-relaxed">Doubao AI is crafting a coherent series of marketing visuals</p>
+              <h3 className="mb-2 text-xl font-black text-slate-800">正在生成主图方案...</h3>
+              <p className="text-sm text-slate-400">请稍候，系统正在整理并生成当前主图方案。</p>
             </div>
           </div>
         )}
@@ -675,8 +932,8 @@ const MainImageSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
               
               <button onClick={nextPreview} disabled={currentPreviewIndex === completedResults.length - 1} className={`absolute right-4 w-14 h-14 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20 transition-all ${currentPreviewIndex === completedResults.length - 1 ? 'opacity-20 cursor-not-allowed' : 'opacity-100'}`}><i className="fas fa-chevron-right text-xl"></i></button>
 
-              <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-black/40 backdrop-blur-md px-6 py-2 rounded-full text-white text-xs font-black uppercase tracking-widest border border-white/10">
-                Scheme {currentPreviewIndex + 1} / {completedResults.length}
+              <div className="absolute bottom-8 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-black/40 px-6 py-2 text-xs font-medium text-white backdrop-blur-md">
+                {currentPreviewIndex + 1} / {completedResults.length}
               </div>
             </div>
           </div>

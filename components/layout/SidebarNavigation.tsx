@@ -1,6 +1,6 @@
-
 import React from 'react';
 import { AppModule } from '../../types';
+import { MODULE_META } from './moduleMeta';
 
 interface Props {
   activeModule: AppModule;
@@ -8,58 +8,73 @@ interface Props {
 }
 
 const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange }) => {
-  const menuItems = [
-    { id: AppModule.ONE_CLICK, icon: 'fa-magic', label: '一键主详', color: 'bg-rose-600' },
-    { id: AppModule.TRANSLATION, icon: 'fa-globe', label: '出海翻译', color: 'bg-indigo-600' },
-    { id: AppModule.BUYER_SHOW, icon: 'fa-users', label: '买家秀', color: 'bg-amber-500' },
-    { id: AppModule.RETOUCH, icon: 'fa-wand-magic-sparkles', label: '产品精修', color: 'bg-emerald-500' },
-    { id: AppModule.PHOTOGRAPHY, icon: 'fa-camera-retro', label: '摄影图', color: 'bg-cyan-500' },
-    { id: AppModule.VIDEO, icon: 'fa-play-circle', label: '短视频', color: 'bg-purple-500' },
+  const businessItems = [
+    AppModule.ONE_CLICK,
+    AppModule.TRANSLATION,
+    AppModule.BUYER_SHOW,
+    AppModule.RETOUCH,
+    AppModule.PHOTOGRAPHY,
+    AppModule.VIDEO,
   ];
+  const systemItems = [AppModule.SETTINGS, AppModule.ACCOUNT];
+  const iconOnly = 'apple-minimal';
+
+  const renderNavButton = (item: AppModule, tone: 'business' | 'system') => {
+    const meta = MODULE_META[item];
+    const active = activeModule === item;
+    const isReserved = item === AppModule.PHOTOGRAPHY;
+
+    return (
+      <button
+        key={item}
+        type="button"
+        onClick={() => !isReserved && onModuleChange(item)}
+        disabled={isReserved}
+        title={meta.label}
+        className={`group flex w-full flex-col items-center justify-center gap-2 rounded-[22px] px-2 py-3 text-center transition-all ${
+          active
+            ? 'bg-white/10 text-white shadow-[0_18px_36px_rgba(15,23,42,0.22)]'
+            : isReserved
+              ? 'text-slate-600'
+              : 'text-slate-400 hover:bg-white/6 hover:text-slate-100'
+        }`}
+      >
+        <div
+          className={`flex h-11 w-11 items-center justify-center rounded-[18px] transition-all ${
+            active
+              ? tone === 'system'
+                ? 'bg-white text-slate-900'
+                : `${meta.accentClass} text-white`
+              : tone === 'system'
+                ? 'bg-white/8 text-slate-300 group-hover:bg-white/12'
+                : 'bg-white/6 text-slate-300 group-hover:bg-white/10'
+          }`}
+        >
+          <i className={`fas ${meta.icon} text-sm`}></i>
+        </div>
+        <span className="text-[11px] font-bold tracking-tight">{meta.label}</span>
+      </button>
+    );
+  };
 
   return (
-    <div className="w-20 bg-slate-900 flex flex-col items-center py-6 shrink-0 z-50">
-      <div className="w-12 h-12 bg-white rounded-2xl flex items-center justify-center mb-10 shadow-lg shadow-white/10 cursor-pointer hover:scale-105 transition-transform" onClick={() => onModuleChange(AppModule.ONE_CLICK)}>
-        <span className="text-slate-900 font-black text-xl italic">M</span>
-      </div>
-      
-      <div className="flex flex-col gap-4">
-        {menuItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => onModuleChange(item.id)}
-            className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all group relative ${
-              activeModule === item.id 
-                ? `${item.color} text-white shadow-xl` 
-                : 'text-slate-500 hover:text-slate-300 hover:bg-white/5'
-            }`}
-          >
-            <i className={`fas ${item.icon} text-lg`}></i>
-            <span className="text-[9px] font-bold">{item.label}</span>
-            {activeModule === item.id && (
-              <div className="absolute left-[-10px] w-1.5 h-6 bg-white rounded-r-full"></div>
-            )}
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-auto flex flex-col gap-4">
-        <button 
-          onClick={() => onModuleChange(AppModule.SETTINGS)}
-          className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${
-            activeModule === AppModule.SETTINGS ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 hover:bg-white/5'
-          }`}
-        >
-          <i className="fas fa-cog"></i>
-        </button>
+    <div className="z-50 w-[104px] shrink-0 border-r border-slate-200/70 bg-[linear-gradient(180deg,#0a1220_0%,#121c2b_100%)] px-3 py-4">
+      <div className="flex h-full flex-col items-center">
         <button
-          onClick={() => onModuleChange(AppModule.ACCOUNT)}
-          className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${
-            activeModule === AppModule.ACCOUNT ? 'bg-indigo-600 text-white shadow-lg' : 'text-slate-600 hover:bg-white/5'
-          }`}
+          type="button"
+          className="mb-5 flex h-14 w-14 items-center justify-center rounded-[22px] bg-white shadow-[0_16px_34px_rgba(255,255,255,0.16)] transition-transform hover:scale-[1.02]"
+          onClick={() => onModuleChange(AppModule.ONE_CLICK)}
         >
-          <i className="fas fa-user-circle"></i>
+          <span className="text-xl font-black italic text-slate-950">M</span>
         </button>
+
+        <div className="flex w-full flex-col gap-1.5">
+          {businessItems.map((item) => renderNavButton(item, 'business'))}
+        </div>
+
+        <div className="mt-auto flex w-full flex-col gap-1.5 pt-4">
+          {systemItems.map((item) => renderNavButton(item, 'system'))}
+        </div>
       </div>
     </div>
   );

@@ -5,6 +5,7 @@ import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
 import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
+import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
 
 interface Props {
   onAddFiles: (files: File[]) => void;
@@ -94,38 +95,36 @@ const RetouchSidebar: React.FC<Props> = ({
   const canStart = !isProcessing && (pendingFiles.length > 0 || hasTasks);
 
   return (
-    <div className="w-[360px] bg-white border-r border-slate-200 h-full flex flex-col shrink-0 overflow-hidden relative shadow-sm z-30">
-      <header className="p-6 border-b border-slate-100 flex-none bg-white">
-        <div className="flex items-center gap-2 mb-1">
-          <div className="w-1.5 h-5 bg-emerald-600 rounded-full"></div>
-          <h2 className="text-lg font-black text-slate-800 tracking-tight">精修大师配置</h2>
-        </div>
-        <p className="text-[9px] text-slate-400 font-bold uppercase tracking-[0.2em]">Retouching Engine</p>
-      </header>
-
-      <div className="flex-1 min-h-0 overflow-y-auto sidebar-scroll">
-        <div className="p-5 space-y-6 pb-20">
+    <SidebarShell
+      widthClassName="w-[360px]"
+      accentClass="bg-emerald-600"
+      title="精修大师配置"
+      subtitle={mode === 'white_bg' ? '白底模式' : '精修模式'}
+      footer={
+        <PrimaryActionButton
+          onClick={onStart}
+          disabled={!canStart}
+          icon={isProcessing ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'}
+          label={isProcessing ? '处理中...' : '启动大师级精修'}
+        />
+      }
+    >
           <section className="space-y-4">
             <div className="flex items-center gap-2 text-[11px] font-black text-slate-500 uppercase tracking-widest">
               <i className="fas fa-images text-emerald-500"></i>
               <span>导入待修原图</span>
             </div>
 
-            <div 
+            <UploadSurface
               onClick={() => fileInputRef.current?.click()}
-              className="group cursor-pointer border-2 border-dashed border-slate-200 rounded-[24px] p-6 hover:border-emerald-300 hover:bg-emerald-50/30 transition-all text-center"
+              icon="fa-image"
+              accentTextClass="text-emerald-500"
+              title="点击上传原图或拖拽到此处"
+              hint="支持批量添加待修原图，适合统一精修或白底重建。"
+              meta="JPG / PNG / WEBP · 单图 10MB"
             >
-              <div className="w-12 h-12 bg-slate-50 rounded-2xl flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform">
-                <i className="far fa-image text-slate-300 text-xl group-hover:text-emerald-400"></i>
-              </div>
-              <p className="text-sm font-black text-slate-600 mb-2">点击上传原图或拖拽到此处</p>
-              <div className="space-y-1">
-                <p className="text-[11px] font-bold text-slate-400">支持格式：JPG, PNG, WEBP</p>
-                <p className="text-[11px] font-bold text-slate-400">单图限制：10MB</p>
-              </div>
-              <div className="mt-4 px-6 py-2 bg-emerald-600 text-white text-[11px] font-black rounded-xl inline-block shadow-lg">批量选择图片</div>
               <input type="file" multiple ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*" />
-            </div>
+            </UploadSurface>
 
             {pendingFiles.length > 0 && (
               <div className="grid grid-cols-5 gap-2 p-2 bg-slate-50 rounded-2xl border border-slate-100">
@@ -223,11 +222,15 @@ const RetouchSidebar: React.FC<Props> = ({
 
             <div className="space-y-2">
               <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">画面比例</span>
-              <div className="grid grid-cols-3 gap-2">
-                {visibleRatios.map(r => (
-                  <button key={r.value} onClick={() => setAspectRatio(r.value)} className={`py-1.5 text-[9px] font-black rounded-lg border transition-all ${aspectRatio === r.value ? 'bg-emerald-50 border-emerald-600 text-emerald-600' : 'bg-white border-slate-200 text-slate-400 hover:border-emerald-300'}`}>{r.label}</button>
-                ))}
-              </div>
+              <PopoverSelect
+                value={aspectRatio}
+                onChange={(next) => setAspectRatio(next as AspectRatio)}
+                options={visibleRatios.map((ratio) => ({
+                  value: ratio.value,
+                  label: ratio.label,
+                }))}
+                buttonClassName="h-10 rounded-2xl px-4 text-xs"
+              />
             </div>
 
             <div className="space-y-2">
@@ -260,20 +263,7 @@ const RetouchSidebar: React.FC<Props> = ({
               )}
             </div>
           </section>
-        </div>
-      </div>
-
-      <footer className="p-5 border-t border-slate-100 bg-white flex-none shadow-[0_-4px_20px_rgba(0,0,0,0.03)]">
-        <button 
-          onClick={onStart}
-          disabled={!canStart}
-          className="w-full py-4 bg-slate-900 text-white font-black rounded-xl shadow-lg hover:bg-slate-800 disabled:bg-slate-100 transition-all flex items-center justify-center gap-3"
-        >
-          {isProcessing ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-wand-magic-sparkles text-emerald-400"></i>}
-          {isProcessing ? '处理中...' : '启动大师级精修'}
-        </button>
-      </footer>
-    </div>
+    </SidebarShell>
   );
 };
 
