@@ -23,6 +23,23 @@ export const fileToDataUrl = (file: File | Blob): Promise<string> => {
   });
 };
 
+export const getImageDimensionsFromUrl = (url: string): Promise<{ width: number, height: number, ratio: number }> => {
+  return new Promise((resolve) => {
+    if (!url) {
+      resolve({ width: 0, height: 0, ratio: 1 });
+      return;
+    }
+
+    const img = new Image();
+    img.onload = () => {
+      const { width, height } = img;
+      resolve({ width, height, ratio: height ? width / height : 1 });
+    };
+    img.onerror = () => resolve({ width: 0, height: 0, ratio: 1 });
+    img.src = url;
+  });
+};
+
 /**
  * 获取原始图片尺寸和比例值
  */

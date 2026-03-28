@@ -403,6 +403,8 @@ export interface FileItem {
   id: string;
   file: File | null;
   relativePath: string;
+  originalWidth?: number;
+  originalHeight?: number;
   status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error' | 'interrupted';
   progress: number;
   resultBlob?: Blob;

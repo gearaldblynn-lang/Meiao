@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { deriveTranslationExecutionPlan, deriveTranslationExportSize } from './translationProcessingUtils.mjs';
+import { deriveTranslationExecutionPlan, deriveTranslationExportSize, getStoredSourceDimensions } from './translationProcessingUtils.mjs';
 
 test('deriveTranslationExecutionPlan keeps detail mode on auto ratio like legacy flow', () => {
   const config = {
@@ -87,4 +87,22 @@ test('deriveTranslationExportSize keeps main mode custom width and height exactl
     targetWidth: 800,
     targetHeight: 1200,
   });
+});
+
+test('getStoredSourceDimensions restores persisted original image dimensions for cloud recovery flow', () => {
+  const dimensions = getStoredSourceDimensions({
+    originalWidth: 1000,
+    originalHeight: 2000,
+  });
+
+  assert.deepEqual(dimensions, {
+    width: 1000,
+    height: 2000,
+    ratio: 0.5,
+  });
+});
+
+test('getStoredSourceDimensions returns null when persisted source dimensions are incomplete', () => {
+  assert.equal(getStoredSourceDimensions({ originalWidth: 0, originalHeight: 2000 }), null);
+  assert.equal(getStoredSourceDimensions({ originalWidth: 1000 }), null);
 });
