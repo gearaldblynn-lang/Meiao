@@ -19,6 +19,10 @@ MEIAO_DB_PORT=3307
 MEIAO_DB_USER=root
 MEIAO_DB_PASSWORD=请替换成你的真实密码
 MEIAO_DB_NAME=meiao_internal
+MEIAO_PUBLIC_BASE_URL=http://111.229.66.247:3100
+MEIAO_JOB_MAX_CONCURRENCY=3
+KIE_API_KEY=请替换成你的真实 KIE Key
+ARK_API_KEY=请替换成你的真实 ARK Key
 EOF
 ```
 
@@ -58,3 +62,5 @@ MEIAO_SERVER_HOST=111.229.66.247 \
 ## 说明
 - 生产模式下，`server/index.mjs` 会直接托管 `dist` 前端页面。
 - API 和前端页面都走同一个服务，不需要再单独跑 `vite dev`。
+- `MEIAO_PUBLIC_BASE_URL` 配置后，上传素材和生成结果会优先保存到云服务器本地持久化资源目录，并通过内部稳定 URL 恢复与下载。
+- 资源默认保留 3 天，服务启动后会自动执行定时清理。

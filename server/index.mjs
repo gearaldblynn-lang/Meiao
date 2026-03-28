@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { createReadStream, mkdirSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadServerEnvFile } from './envLoader.mjs';
@@ -19,6 +19,20 @@ import {
 } from './localJobStore.mjs';
 import { executeProviderJob } from './providerGateway.mjs';
 import { buildPublicSystemConfig, getWorkerConcurrencyLimit, normalizeAllowedOrigins } from './jobRuntime.mjs';
+import {
+  buildAssetPublicPath,
+  ensureAssetSchema,
+  getPublicBaseUrl,
+  getStoredAssetById,
+  listStoredAssets,
+  markStoredAssetAccessed,
+  markStoredAssetDeleted,
+  persistAssetBuffer,
+  persistRemoteAsset,
+  resolveStoredAssetPath,
+  selectExpiredAssetsForCleanup,
+  deleteStoredAssetFile,
+} from './assetStore.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -82,6 +96,7 @@ let mysqlPool = null;
 let jobWorker = null;
 let localJobWorker = null;
 let localStoreCache = null;
+let assetCleanupTimer = null;
 
 const defaultApiConfig = {
   kieApiKey: '',
@@ -141,6 +156,58 @@ const defaultTranslationConfigs = {
     targetHeight: 0,
     maxFileSize: 2.0,
   },
+};
+
+const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
+const ASSET_CLEANUP_INTERVAL_MS = 1000 * 60 * 30;
+
+const isLocalHostValue = (value) => /(^|\/\/)(127\.0\.0\.1|localhost)(:|$)/i.test(String(value || ''));
+
+const getPersistentAssetBaseUrl = (req = null) => {
+  const explicit = getPublicBaseUrl(process.env, null);
+  if (explicit) return explicit;
+
+  const inferred = getPublicBaseUrl({}, req);
+  if (!inferred || isLocalHostValue(inferred)) return '';
+  return inferred;
+};
+
+const isManagedAssetUrl = (value) => typeof value === 'string' && value.includes(MANAGED_ASSET_PATH_SEGMENT);
+
+const collectManagedAssetUrls = (value, bucket = new Set()) => {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectManagedAssetUrls(item, bucket));
+    return bucket;
+  }
+  if (!value || typeof value !== 'object') {
+    if (isManagedAssetUrl(value)) {
+      bucket.add(value);
+    }
+    return bucket;
+  }
+
+  Object.values(value).forEach((child) => collectManagedAssetUrls(child, bucket));
+  return bucket;
+};
+
+const scrubUnavailableManagedAssetUrls = (value, validAssetUrls) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => scrubUnavailableManagedAssetUrls(item, validAssetUrls)).filter((item) => item !== undefined);
+  }
+
+  if (!value || typeof value !== 'object') {
+    if (isManagedAssetUrl(value) && !validAssetUrls.has(value)) {
+      return undefined;
+    }
+    return value;
+  }
+
+  const next = {};
+  for (const [key, child] of Object.entries(value)) {
+    const cleaned = scrubUnavailableManagedAssetUrls(child, validAssetUrls);
+    next[key] = cleaned === undefined ? (NULLABLE_TRACKED_FIELDS.has(key) ? null : Array.isArray(child) ? [] : undefined) : cleaned;
+  }
+  return next;
 };
 
 const sanitizePathPart = (value) => value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'anonymous';
@@ -532,6 +599,16 @@ const writeLocalStore = (store) => {
   writeFileSync(storePath, JSON.stringify(normalizedStore, null, 2), 'utf8');
 };
 
+const scrubLocalStatesForDeletedAssets = (validAssetUrls) => {
+  const store = readLocalStore();
+  Object.keys(store.appStates || {}).forEach((userId) => {
+    store.appStates[userId] = prepareStateForStorage(
+      scrubUnavailableManagedAssetUrls(store.appStates[userId] || createDefaultState(), validAssetUrls)
+    );
+  });
+  writeLocalStore(store);
+};
+
 const buildLogActor = ({ id = 'system', username = 'system', displayName = '' } = {}) => ({
   id,
   username,
@@ -784,6 +861,7 @@ const ensureMysqlSchema = async () => {
   `);
 
   await ensureJobsSchema(pool);
+  await ensureAssetSchema(pool);
 
   const [rows] = await pool.query('SELECT id FROM users LIMIT 1');
   if (Array.isArray(rows) && rows.length === 0) {
@@ -909,6 +987,130 @@ const saveDbAppState = async (userId, state) => {
      ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)`,
     [userId, JSON.stringify(preparedState), Date.now()]
   );
+};
+
+const scrubDbStatesForDeletedAssets = async (validAssetUrls) => {
+  const pool = await getMysqlPool();
+  const [rows] = await pool.query('SELECT user_id, state_json FROM app_states');
+  for (const row of rows) {
+    const parsedState = JSON.parse(row.state_json || '{}');
+    const nextState = scrubUnavailableManagedAssetUrls(parsedState, validAssetUrls);
+    await pool.query(
+      'UPDATE app_states SET state_json = ?, updated_at = ? WHERE user_id = ?',
+      [JSON.stringify(prepareStateForStorage(nextState)), Date.now(), row.user_id]
+    );
+  }
+};
+
+const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, fileName, mimeType, fileBuffer, width = 0, height = 0 }) => {
+  const publicBaseUrl = getPersistentAssetBaseUrl(req);
+  if (!publicBaseUrl) {
+    return null;
+  }
+
+  const pool = shouldUseMysql ? await getMysqlPool() : null;
+  return persistAssetBuffer({
+    pool,
+    publicBaseUrl,
+    userId: user.id,
+    module: moduleName,
+    assetType: 'source',
+    originalName: fileName,
+    mimeType,
+    fileBuffer,
+    width,
+    height,
+    provider: 'internal',
+  });
+};
+
+const persistJobOutputAssetsIfEnabled = async (job, output) => {
+  const publicBaseUrl = getPersistentAssetBaseUrl();
+  if (!publicBaseUrl || !output?.result || !job?.userId) {
+    return output;
+  }
+
+  const pool = shouldUseMysql ? await getMysqlPool() : null;
+  const result = { ...(output.result || {}) };
+  const persistRemoteField = async (fieldName, assetType, fallbackName) => {
+    const sourceUrl = result[fieldName];
+    if (typeof sourceUrl !== 'string' || !/^https?:\/\//i.test(sourceUrl) || isManagedAssetUrl(sourceUrl)) {
+      return;
+    }
+
+    const persisted = await persistRemoteAsset({
+      pool,
+      publicBaseUrl,
+      userId: job.userId,
+      module: job.module,
+      assetType,
+      remoteUrl: sourceUrl,
+      originalName: fallbackName,
+      provider: job.provider,
+      jobId: job.id,
+    });
+    result[fieldName] = persisted.publicUrl;
+    result[`${fieldName}AssetId`] = persisted.id;
+    result[`${fieldName}RemoteUrl`] = sourceUrl;
+  };
+
+  await persistRemoteField('imageUrl', 'result', `${job.taskType || 'result'}.png`);
+  await persistRemoteField('videoUrl', 'video', `${job.taskType || 'result'}.mp4`);
+  await persistRemoteField('fileUrl', 'result', `${job.taskType || 'result'}.bin`);
+
+  return {
+    ...output,
+    result,
+  };
+};
+
+const serveStoredAsset = async (req, res, assetId) => {
+  const pool = shouldUseMysql ? await getMysqlPool() : null;
+  const asset = await getStoredAssetById(pool, assetId);
+  if (!asset || asset.deletedAt) {
+    json(res, 404, { message: '资源不存在或已删除。' });
+    return;
+  }
+
+  const fullPath = resolveStoredAssetPath(asset);
+  if (!fullPath || !existsSync(fullPath)) {
+    await markStoredAssetDeleted(pool, asset.id, Date.now());
+    json(res, 404, { message: '资源文件不存在。' });
+    return;
+  }
+
+  await markStoredAssetAccessed(pool, asset.id, Date.now());
+  const stats = statSync(fullPath);
+  res.writeHead(200, {
+    'Content-Type': asset.mimeType || 'application/octet-stream',
+    'Content-Length': stats.size,
+    'Cache-Control': 'private, max-age=86400',
+    ...(res.__corsHeaders || {}),
+  });
+  createReadStream(fullPath).pipe(res);
+};
+
+const cleanupExpiredStoredAssets = async () => {
+  const pool = shouldUseMysql ? await getMysqlPool() : null;
+  const allAssets = await listStoredAssets(pool);
+  const expiredAssets = selectExpiredAssetsForCleanup(
+    allAssets.map((asset) => ({ ...asset, isReferenced: false })),
+    Date.now()
+  );
+  if (expiredAssets.length === 0) return;
+
+  for (const asset of expiredAssets) {
+    await deleteStoredAssetFile(asset.storageKey);
+    await markStoredAssetDeleted(pool, asset.id, Date.now());
+  }
+
+  const remainingAssets = await listStoredAssets(pool);
+  const validAssetUrls = new Set(remainingAssets.filter((asset) => !asset.deletedAt).map((asset) => asset.publicUrl));
+  if (shouldUseMysql) {
+    await scrubDbStatesForDeletedAssets(validAssetUrls);
+  } else {
+    scrubLocalStatesForDeletedAssets(validAssetUrls);
+  }
 };
 
 const createDbSession = async (userId) => {
@@ -1193,6 +1395,12 @@ const requireDbAdmin = async (req, res) => {
 
 const handleMysqlRequest = async (req, res, url) => {
   const userDetailMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
+
+  if (req.method === 'GET' && url.pathname.startsWith('/api/assets/file/')) {
+    const assetId = decodeURIComponent(url.pathname.slice('/api/assets/file/'.length));
+    await serveStoredAsset(req, res, assetId);
+    return;
+  }
 
   if (url.pathname === '/api/auth/login' && req.method === 'POST') {
     const body = await readBody(req);
@@ -1529,6 +1737,31 @@ const handleMysqlRequest = async (req, res, url) => {
       return;
     }
 
+    const persisted = await persistUploadedAssetIfEnabled({
+      req,
+      user,
+      moduleName: String(body.module || 'system').slice(0, 60),
+      fileName: originalFileName,
+      mimeType,
+      fileBuffer: Buffer.from(base64Data, 'base64'),
+    });
+    if (persisted) {
+      await createDbLog({
+        user,
+        level: 'info',
+        module: String(body.module || 'system').slice(0, 60),
+        action: 'asset_persisted',
+        message: `素材上传成功：${originalFileName}`,
+        status: 'success',
+        meta: {
+          assetId: persisted.id,
+          fileUrl: persisted.publicUrl,
+        },
+      });
+      json(res, 200, { fileUrl: persisted.publicUrl, assetId: persisted.id });
+      return;
+    }
+
     const pool = await getMysqlPool();
     const uploadPath = `mayo-storage/${sanitizePathPart(user.id)}`;
     const uploadJob = await createJobRecord(pool, user, {
@@ -1574,11 +1807,37 @@ const handleMysqlRequest = async (req, res, url) => {
       return;
     }
 
+    const fileBuffer = Buffer.from(await file.arrayBuffer());
+    const persisted = await persistUploadedAssetIfEnabled({
+      req,
+      user,
+      moduleName,
+      fileName: file.name || 'upload.bin',
+      mimeType: file.type || 'application/octet-stream',
+      fileBuffer,
+    });
+    if (persisted) {
+      await createDbLog({
+        user,
+        level: 'info',
+        module: moduleName,
+        action: 'asset_persisted',
+        message: `素材上传成功：${file.name || 'upload.bin'}`,
+        status: 'success',
+        meta: {
+          assetId: persisted.id,
+          fileUrl: persisted.publicUrl,
+        },
+      });
+      json(res, 200, { fileUrl: persisted.publicUrl, assetId: persisted.id });
+      return;
+    }
+
     const uploadPath = `mayo-storage/${sanitizePathPart(user.id)}`;
     const result = await executeProviderJob({
       taskType: 'upload_asset',
       payload: {
-        fileBuffer: Buffer.from(await file.arrayBuffer()),
+        fileBuffer,
         mimeType: file.type || 'application/octet-stream',
         fileName: `${sanitizePathPart(user.username || user.id)}_${Date.now()}_${sanitizePathPart(file.name || 'upload.bin')}`,
         uploadPath,
@@ -1741,6 +2000,12 @@ const handleMysqlRequest = async (req, res, url) => {
 const handleLocalRequest = async (req, res, url) => {
   let store = readLocalStore();
   const userDetailMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
+
+  if (req.method === 'GET' && url.pathname.startsWith('/api/assets/file/')) {
+    const assetId = decodeURIComponent(url.pathname.slice('/api/assets/file/'.length));
+    await serveStoredAsset(req, res, assetId);
+    return;
+  }
 
   if (url.pathname === '/api/auth/login' && req.method === 'POST') {
     const body = await readBody(req);
@@ -2081,6 +2346,32 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
 
+    const persisted = await persistUploadedAssetIfEnabled({
+      req,
+      user,
+      moduleName: String(body.module || 'system').slice(0, 60),
+      fileName: originalFileName,
+      mimeType,
+      fileBuffer: Buffer.from(base64Data, 'base64'),
+    });
+    if (persisted) {
+      appendLocalLog(store, {
+        user,
+        level: 'info',
+        module: String(body.module || 'system').slice(0, 60),
+        action: 'asset_persisted',
+        message: `素材上传成功：${originalFileName}`,
+        status: 'success',
+        meta: {
+          assetId: persisted.id,
+          fileUrl: persisted.publicUrl,
+        },
+      });
+      writeLocalStore(store);
+      json(res, 200, { fileUrl: persisted.publicUrl, assetId: persisted.id });
+      return;
+    }
+
     const uploadPath = `mayo-storage/${sanitizePathPart(user.id)}`;
     const uploadJob = createLocalJobRecord(store, user, {
       module: String(body.module || 'system').slice(0, 60),
@@ -2131,11 +2422,38 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
 
+    const fileBuffer = Buffer.from(await file.arrayBuffer());
+    const persisted = await persistUploadedAssetIfEnabled({
+      req,
+      user,
+      moduleName,
+      fileName: file.name || 'upload.bin',
+      mimeType: file.type || 'application/octet-stream',
+      fileBuffer,
+    });
+    if (persisted) {
+      appendLocalLog(store, {
+        user,
+        level: 'info',
+        module: moduleName,
+        action: 'asset_persisted',
+        message: `素材上传成功：${file.name || 'upload.bin'}`,
+        status: 'success',
+        meta: {
+          assetId: persisted.id,
+          fileUrl: persisted.publicUrl,
+        },
+      });
+      writeLocalStore(store);
+      json(res, 200, { fileUrl: persisted.publicUrl, assetId: persisted.id });
+      return;
+    }
+
     const uploadPath = `mayo-storage/${sanitizePathPart(user.id)}`;
     const result = await executeProviderJob({
       taskType: 'upload_asset',
       payload: {
-        fileBuffer: Buffer.from(await file.arrayBuffer()),
+        fileBuffer,
         mimeType: file.type || 'application/octet-stream',
         fileName: `${sanitizePathPart(user.username || user.id)}_${Date.now()}_${sanitizePathPart(file.name || 'upload.bin')}`,
         uploadPath,
@@ -2360,7 +2678,10 @@ const bootstrap = async () => {
     await ensureMysqlSchema();
     jobWorker = createJobWorker({
       getPool: getMysqlPool,
-      executeJob: async (job, signal) => executeProviderJob(job, process.env, signal),
+      executeJob: async (job, signal) => {
+        const output = await executeProviderJob(job, process.env, signal);
+        return persistJobOutputAssetsIfEnabled(job, output);
+      },
       getMaxConcurrency: getDbWorkerConcurrency,
       createLog: createDbLog,
       findUserById: findDbUserById,
@@ -2373,7 +2694,10 @@ const bootstrap = async () => {
     localJobWorker = createLocalJobWorker({
       readStore: readLocalStore,
       writeStore: writeLocalStore,
-      executeJob: async (job, signal) => executeProviderJob(job, process.env, signal),
+      executeJob: async (job, signal) => {
+        const output = await executeProviderJob(job, process.env, signal);
+        return persistJobOutputAssetsIfEnabled(job, output);
+      },
       getMaxConcurrency: getLocalWorkerConcurrency,
       createLog: (payload) => {
         const store = readLocalStore();
@@ -2388,6 +2712,17 @@ const bootstrap = async () => {
 
   console.log('Default admin username:', process.env.MEIAO_ADMIN_USERNAME || 'admin');
   console.log('Default admin password:', process.env.MEIAO_ADMIN_PASSWORD || 'Meiao123456');
+
+  if (!assetCleanupTimer) {
+    assetCleanupTimer = setInterval(() => {
+      void cleanupExpiredStoredAssets().catch((error) => {
+        console.error('asset cleanup failed', error);
+      });
+    }, ASSET_CLEANUP_INTERVAL_MS);
+    void cleanupExpiredStoredAssets().catch((error) => {
+      console.error('asset cleanup failed', error);
+    });
+  }
 
   server.listen(PORT);
 };
