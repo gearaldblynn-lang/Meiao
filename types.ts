@@ -405,6 +405,7 @@ export interface FileItem {
   relativePath: string;
   originalWidth?: number;
   originalHeight?: number;
+  sourceUrl?: string;
   status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error' | 'interrupted';
   progress: number;
   resultBlob?: Blob;

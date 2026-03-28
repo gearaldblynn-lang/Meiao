@@ -10,6 +10,7 @@ import ComparisonModal from './ComparisonModal';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../services/loggingService';
 import { shouldValidateTranslationAspectRatio } from '../modules/Translation/translationConfigUtils.mjs';
 import { deriveTranslationExecutionPlan, deriveTranslationExportSize, getStoredSourceDimensions } from '../modules/Translation/translationProcessingUtils.mjs';
+import { getClientSafeAssetUrl, getExecutionSourceUrl } from '../modules/Translation/translationAssetUtils.mjs';
 
 interface Props {
   activeModule: AppModule;
@@ -213,7 +214,7 @@ const FileProcessor: React.FC<Props> = ({
   const executeFileTask = async (fileId: string, mode: 'full' | 'recover' = 'full') => {
     const fileItem = filesRef.current.find(f => f.id === fileId);
     if (!fileItem) return;
-    if (mode === 'full' && !fileItem.file) {
+    if (mode === 'full' && !fileItem.file && !getExecutionSourceUrl(fileItem)) {
       updateSingleFile(fileId, {
         status: 'error',
         error: '原始文件已失效，请重新导入后再生成。',
@@ -265,19 +266,26 @@ const FileProcessor: React.FC<Props> = ({
         res = await recoverKieAiTask(fileItem.taskId, apiConfig, controller.signal);
       } else {
         const uploadStartedAt = Date.now();
-        const cosUrl = await uploadToCos(
-          fileItem.file!,
-          apiConfig,
-          buildUniqueUploadName(fileItem),
-          {
-            fileId,
-            relativePath: fileItem.relativePath,
-            originalFileName: fileItem.file?.name || fileItem.relativePath,
-            subMode: subMode || TranslationSubMode.MAIN,
-            taskStartedAt,
-            uploadStartedAt,
-          }
-        );
+        let cosUrl = getExecutionSourceUrl(fileItem);
+        if (fileItem.file) {
+          cosUrl = await uploadToCos(
+            fileItem.file,
+            apiConfig,
+            buildUniqueUploadName(fileItem),
+            {
+              fileId,
+              relativePath: fileItem.relativePath,
+              originalFileName: fileItem.file?.name || fileItem.relativePath,
+              subMode: subMode || TranslationSubMode.MAIN,
+              taskStartedAt,
+              uploadStartedAt,
+            }
+          );
+          updateSingleFile(fileId, { sourceUrl: cosUrl });
+        }
+        if (!cosUrl) {
+          throw new Error('原始文件已失效，请重新导入后再生成。');
+        }
         if (controller.signal.aborted) throw new Error("INTERRUPTED");
 
         updateSingleFile(fileId, { status: 'processing', progress: 30 });
@@ -555,7 +563,8 @@ const FileProcessor: React.FC<Props> = ({
   };
 
   const downloadSingle = (item: FileItem) => {
-    void logActionSuccess({
+    void (async () => {
+      void logActionSuccess({
       module: 'translation',
       action: 'download_single',
       message: `${translationModeLabel}导出单张结果`,
@@ -565,30 +574,48 @@ const FileProcessor: React.FC<Props> = ({
         relativePath: item.relativePath,
         taskId: item.taskId,
       },
-    });
-    const directBlob = item.resultBlob;
-    const downloadName = item.relativePath.split('/').pop() || 'translation_result.png';
+      });
+      const directBlob = item.resultBlob;
+      const downloadName = item.relativePath.split('/').pop() || 'translation_result.png';
 
-    if (directBlob) {
-      const url = safeCreateObjectURL(directBlob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = downloadName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      return;
-    }
+      const triggerBlobDownload = (blob: Blob) => {
+        const url = safeCreateObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = downloadName;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      };
 
-    if (item.resultUrl) {
-      const link = document.createElement('a');
-      link.href = item.resultUrl;
-      link.download = downloadName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-    }
+      try {
+        if (directBlob) {
+          triggerBlobDownload(directBlob);
+          return;
+        }
+
+        if (item.resultUrl) {
+          const response = await fetch(getClientSafeAssetUrl(item.resultUrl));
+          if (!response.ok) throw new Error('下载结果图片失败');
+          triggerBlobDownload(await response.blob());
+        }
+      } catch (err) {
+        setAlertMessage('下载失败，请稍后重试。');
+        void logActionFailure({
+          module: 'translation',
+          action: 'download_single',
+          message: `${translationModeLabel}导出单张失败`,
+          detail: err instanceof Error ? err.message : '下载失败',
+          meta: {
+            ...baseMeta,
+            fileName: item.file?.name || item.relativePath,
+            relativePath: item.relativePath,
+            taskId: item.taskId,
+          },
+        });
+      }
+    })();
   };
 
   const downloadAll = async () => {
@@ -609,7 +636,7 @@ const FileProcessor: React.FC<Props> = ({
           return { blob: f.resultBlob, path: normalizeZipPath(f.relativePath || 'translation_result.png') };
         }
 
-        const response = await fetch(f.resultUrl!);
+        const response = await fetch(getClientSafeAssetUrl(f.resultUrl!));
         const blob = await response.blob();
         return { blob, path: normalizeZipPath(f.relativePath || 'translation_result.png') };
       }));
@@ -693,8 +720,8 @@ const FileProcessor: React.FC<Props> = ({
                     <td className="px-8 py-4">
                       <div className="flex items-center justify-center gap-3">
                         <div className="w-12 h-12 rounded-xl bg-slate-100 overflow-hidden ring-1 ring-slate-200 shrink-0">
-                          {item.sourcePreviewUrl ? (
-                            <img src={item.sourcePreviewUrl} className="w-full h-full object-cover" />
+                          {item.sourcePreviewUrl || item.sourceUrl ? (
+                            <img src={getClientSafeAssetUrl(item.sourcePreviewUrl || item.sourceUrl)} className="w-full h-full object-cover" />
                           ) : item.file ? (
                             <img src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" />
                           ) : null}
@@ -705,7 +732,7 @@ const FileProcessor: React.FC<Props> = ({
                           onClick={() => item.status === 'completed' && setSelectedItem(item)}
                         >
                           {item.resultUrl ? (
-                            <img src={item.resultUrl} className="w-full h-full object-cover shadow-sm" />
+                            <img src={getClientSafeAssetUrl(item.resultUrl)} className="w-full h-full object-cover shadow-sm" />
                           ) : item.resultBlob ? (
                             <img src={safeCreateObjectURL(item.resultBlob)} className="w-full h-full object-cover shadow-sm" />
                           ) : (
