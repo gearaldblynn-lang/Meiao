@@ -1119,7 +1119,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                 )}
             </div>
 
-            {isAnalyzing && (<div className="fixed inset-0 bg-slate-900/50 backdrop-blur-md z-[100] flex items-center justify-center"><div className="bg-white p-12 rounded-[40px] shadow-2xl text-center"><div className="w-24 h-24 bg-amber-50 rounded-full flex items-center justify-center mb-6 animate-bounce mx-auto"><i className="fas fa-brain text-4xl text-amber-500"></i></div><h3 className="text-xl font-black text-slate-800 mb-2">正在深度策划方案...</h3><p className="text-slate-400 text-xs font-bold uppercase tracking-widest animate-pulse">Doubao AI is crafting {persistentState.setCount} unique sets</p></div></div>)}
+            {isAnalyzing && (<div className="absolute inset-0 bg-white/76 backdrop-blur-sm z-30 flex items-center justify-center rounded-[28px]"><div className="bg-white p-12 rounded-[40px] shadow-2xl text-center"><div className="w-24 h-24 bg-amber-50 rounded-full flex items-center justify-center mb-6 animate-bounce mx-auto"><i className="fas fa-brain text-4xl text-amber-500"></i></div><h3 className="text-xl font-black text-slate-800 mb-2">正在深度策划方案...</h3><p className="text-slate-400 text-xs font-bold uppercase tracking-widest animate-pulse">Doubao AI is crafting {persistentState.setCount} unique sets</p></div></div>)}
           </div>
         </main>
       </div>

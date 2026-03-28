@@ -951,7 +951,7 @@ const DetailPageSubModule: React.FC<Props> = ({
         )}
 
         {isAnalyzing && (
-          <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-md z-[110] flex items-center justify-center">
+          <div className="absolute inset-0 bg-white/76 backdrop-blur-sm z-30 flex items-center justify-center rounded-[28px]">
             <div className="bg-white p-12 rounded-[48px] shadow-2xl flex flex-col items-center text-center animate-in zoom-in duration-300">
               <div className="w-24 h-24 bg-rose-50 rounded-full flex items-center justify-center mb-8 animate-pulse border-2 border-rose-100"><i className="fas fa-brain text-5xl text-rose-600"></i></div>
               <h3 className="mb-2 text-2xl font-black text-slate-800 tracking-tight">正在生成详情方案...</h3>

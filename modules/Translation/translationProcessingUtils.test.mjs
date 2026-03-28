@@ -4,21 +4,73 @@ import { readFileSync } from 'node:fs';
 
 import { deriveTranslationExecutionPlan, deriveTranslationExportSize, getStoredSourceDimensions } from './translationProcessingUtils.mjs';
 
-test('deriveTranslationExecutionPlan keeps detail mode on auto ratio like legacy flow', () => {
+test('deriveTranslationExecutionPlan maps detail auto ratio to the closest provider-supported ratio', () => {
   const config = {
-    aspectRatio: '1:1',
+    aspectRatio: 'auto',
     resolutionMode: 'custom',
     targetWidth: 750,
     targetHeight: 0,
+    model: 'nano-banana-2',
   };
 
   const plan = deriveTranslationExecutionPlan({
     config,
     subMode: 'detail',
+    sourceDimensions: {
+      width: 1250,
+      height: 2240,
+      ratio: 1250 / 2240,
+    },
   });
 
-  assert.equal(plan.effectiveConfig.aspectRatio, 'auto');
-  assert.equal(plan.isRatioMatch, true);
+  assert.equal(plan.effectiveConfig.aspectRatio, '9:16');
+  assert.equal(plan.isRatioMatch, false);
+});
+
+test('deriveTranslationExecutionPlan keeps remove text fixed ratio exactly as configured', () => {
+  const config = {
+    aspectRatio: '3:4',
+    resolutionMode: 'custom',
+    targetWidth: 900,
+    targetHeight: 0,
+    model: 'nano-banana-2',
+  };
+
+  const plan = deriveTranslationExecutionPlan({
+    config,
+    subMode: 'remove_text',
+    sourceDimensions: {
+      width: 1250,
+      height: 2240,
+      ratio: 1250 / 2240,
+    },
+  });
+
+  assert.equal(plan.effectiveConfig.aspectRatio, '3:4');
+  assert.equal(plan.isRatioMatch, false);
+});
+
+test('deriveTranslationExecutionPlan maps remove text auto ratio like detail mode', () => {
+  const config = {
+    aspectRatio: 'auto',
+    resolutionMode: 'custom',
+    targetWidth: 900,
+    targetHeight: 0,
+    model: 'nano-banana-pro',
+  };
+
+  const plan = deriveTranslationExecutionPlan({
+    config,
+    subMode: 'remove_text',
+    sourceDimensions: {
+      width: 1250,
+      height: 2240,
+      ratio: 1250 / 2240,
+    },
+  });
+
+  assert.equal(plan.effectiveConfig.aspectRatio, '9:16');
+  assert.equal(plan.isRatioMatch, false);
 });
 
 test('deriveTranslationExecutionPlan keeps main mode explicit ratio validation behavior', () => {
