@@ -3,6 +3,7 @@ import React, { useRef, useMemo } from 'react';
 import { VideoPersistentState, VideoConfig, SceneItem } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
+import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
 
 interface Props {
   state: VideoPersistentState;
@@ -30,19 +31,20 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
         alert("图片大小不能超过 10MB，请压缩后上传。");
         return;
       }
-      onUpdate({ productImages: [file] });
+      onUpdate({ productImages: [file], uploadedProductUrls: [] });
       if (imageInputRef.current) imageInputRef.current.value = '';
     }
   };
 
   const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      onUpdate({ referenceVideoFile: e.target.files[0] });
+      onUpdate({ referenceVideoFile: e.target.files[0], uploadedReferenceVideoUrl: '' });
       if (videoInputRef.current) videoInputRef.current.value = '';
     }
   };
 
   const totalTargetSec = parseInt(state.config.duration);
+  const hasProductAssets = hasAvailableAssetSources(state.productImages, state.uploadedProductUrls);
   const currentTotalSec = useMemo(() => {
     return state.config.scenes.reduce((sum, s) => sum + (s.duration || 0), 0);
   }, [state.config.scenes]);
@@ -65,7 +67,7 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
     updateConfig({ scenes: state.config.scenes.filter((_, i) => i !== index) });
   };
 
-  const isRenderDisabled = isProcessing || state.productImages.length === 0 || (state.config.promptMode === 'ai' && !state.config.scenes.length) || isDurationMismatch || isEditorIncomplete;
+  const isRenderDisabled = isProcessing || !hasProductAssets || (state.config.promptMode === 'ai' && !state.config.scenes.length) || isDurationMismatch || isEditorIncomplete;
 
   return (
     <SidebarShell
@@ -98,10 +100,12 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
             <span>产品主体 (仅限1张)</span>
           </div>
           <div onClick={() => imageInputRef.current?.click()} className="cursor-pointer">
-            {state.productImages.length > 0 ? (
+            {hasProductAssets ? (
               <div className="relative aspect-video rounded-xl overflow-hidden shadow-inner ring-1 ring-slate-100">
                 {state.productImages[0] ? (
                   <img src={safeCreateObjectURL(state.productImages[0])} className="w-full h-full object-cover" />
+                ) : state.uploadedProductUrls?.[0] ? (
+                  <img src={state.uploadedProductUrls[0]} className="w-full h-full object-cover" />
                 ) : (
                   <div className="w-full h-full flex flex-col items-center justify-center bg-slate-50 text-slate-300">
                     <i className="far fa-file-image text-lg mb-1"></i>
@@ -184,11 +188,11 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
               <div className="space-y-1">
                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">参考视频 (节奏学习)</span>
                  <div onClick={() => videoInputRef.current?.click()} className="group cursor-pointer border-2 border-dashed border-slate-200 rounded-2xl p-4 hover:border-purple-300 bg-slate-50/50">
-                    {state.referenceVideoFile ? (
+                    {state.referenceVideoFile || state.uploadedReferenceVideoUrl ? (
                       <div className="flex items-center gap-3 px-2">
                         <i className="fas fa-video text-purple-500"></i>
-                        <span className="text-[10px] font-bold text-slate-600 truncate flex-1">{state.referenceVideoFile.name}</span>
-                        <button onClick={(e) => { e.stopPropagation(); onUpdate({ referenceVideoFile: null }); }} className="text-slate-300 hover:text-rose-500"><i className="fas fa-times-circle"></i></button>
+                        <span className="text-[10px] font-bold text-slate-600 truncate flex-1">{state.referenceVideoFile?.name || '已保存参考视频'}</span>
+                        <button onClick={(e) => { e.stopPropagation(); onUpdate({ referenceVideoFile: null, uploadedReferenceVideoUrl: '' }); }} className="text-slate-300 hover:text-rose-500"><i className="fas fa-times-circle"></i></button>
                       </div>
                     ) : (
                       <div className="flex flex-col items-center gap-1 py-1"><i className="fas fa-clapperboard text-slate-300 text-sm"></i><span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">点击上传参考视频</span></div>
@@ -204,7 +208,7 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
                 <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">视频简单要求</span>
                 <textarea value={state.config.requirements} onChange={(e) => updateConfig({ requirements: e.target.value })} placeholder="如：动感快节奏、柔美光影等..." className="w-full h-24 bg-slate-50 border border-slate-200 rounded-2xl p-3 text-xs outline-none focus:bg-white resize-none shadow-inner" />
               </div>
-              <button onClick={onPlan} disabled={isProcessing || !state.productImages.length} className="w-full py-4 bg-purple-600 text-white font-black text-xs rounded-xl shadow-lg hover:bg-purple-700 disabled:bg-slate-200">AI 策划分镜脚本</button>
+              <button onClick={onPlan} disabled={isProcessing || !hasProductAssets} className="w-full py-4 bg-purple-600 text-white font-black text-xs rounded-xl shadow-lg hover:bg-purple-700 disabled:bg-slate-200">AI 策划分镜脚本</button>
            </section>
         ) : (
            <section className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">

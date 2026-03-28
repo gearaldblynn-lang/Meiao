@@ -5,6 +5,7 @@ import { uploadToCos } from '../../services/tencentCosService';
 import { createSoraVideoTask, recoverKieAiTask, submitVeoVideoTask, pollVeoTaskStatus } from '../../services/kieAiService';
 import { generateVideoScript } from '../../services/arkService';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
+import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -25,6 +26,34 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
     subMode,
     duration: config.duration,
     aspectRatio: config.aspectRatio,
+  };
+
+  const getOrUploadProductUrls = async () => {
+    if (productImages.length === 0 && state.uploadedProductUrls?.length) {
+      return state.uploadedProductUrls;
+    }
+
+    if (productImages.length > 0 && state.uploadedProductUrls?.length === productImages.length) {
+      return state.uploadedProductUrls;
+    }
+
+    const imageUrls = await Promise.all(productImages.map((img) => uploadToCos(img, apiConfig)));
+    onUpdate({ uploadedProductUrls: imageUrls });
+    return imageUrls;
+  };
+
+  const getOrUploadReferenceVideoUrl = async () => {
+    if (!referenceVideoFile) {
+      return state.uploadedReferenceVideoUrl || null;
+    }
+
+    if (state.uploadedReferenceVideoUrl) {
+      return state.uploadedReferenceVideoUrl;
+    }
+
+    const url = await uploadToCos(referenceVideoFile, apiConfig);
+    onUpdate({ uploadedReferenceVideoUrl: url });
+    return url;
   };
   
   useEffect(() => {
@@ -75,7 +104,7 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   }, [isGenerating, subMode]);
 
   const handlePlanScript = async () => {
-    if (isAnalyzing || isGenerating || productImages.length === 0) return;
+    if (isAnalyzing || isGenerating || !hasAvailableAssetSources(productImages, state.uploadedProductUrls)) return;
     void logActionStart({
       module: 'video',
       action: 'plan_script',
@@ -90,11 +119,8 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
     try {
       const controller = new AbortController();
       controllerRef.current = controller;
-      const imageUrls = await Promise.all(productImages.map(img => uploadToCos(img, apiConfig)));
-      let refVideoUrl = null;
-      if (referenceVideoFile) {
-        refVideoUrl = await uploadToCos(referenceVideoFile, apiConfig);
-      }
+      const imageUrls = await getOrUploadProductUrls();
+      const refVideoUrl = await getOrUploadReferenceVideoUrl();
       if (controller.signal.aborted) throw new Error("INTERRUPTED");
       const res = await generateVideoScript(imageUrls, refVideoUrl, config, apiConfig, controller.signal);
       if (res.status === 'success') {
@@ -148,7 +174,7 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   };
 
   const handleStartGeneration = async () => {
-    if (submitLockRef.current || isGenerating || isAnalyzing || productImages.length === 0) return;
+    if (submitLockRef.current || isGenerating || isAnalyzing || !hasAvailableAssetSources(productImages, state.uploadedProductUrls)) return;
     if (subMode === VideoSubMode.LONG_VIDEO && config.scenes.length === 0) {
       alert("请先策划分镜脚本");
       return;
@@ -212,7 +238,7 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   };
 
   const executeSoraGeneration = async (taskId: string, signal: AbortSignal) => {
-    const imageUrls = await Promise.all(productImages.map(img => uploadToCos(img, apiConfig)));
+    const imageUrls = await getOrUploadProductUrls();
     const res = await createSoraVideoTask(imageUrls, config, apiConfig, signal);
     if (res.status === 'success') {
       void logActionSuccess({
@@ -235,7 +261,7 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
   };
 
   const executeVeoGeneration = async (taskId: string, signal: AbortSignal) => {
-    const imageUrls = await Promise.all(productImages.map(img => uploadToCos(img, apiConfig)));
+    const imageUrls = await getOrUploadProductUrls();
     const veoJobId = await submitVeoVideoTask(
       {
         description: config.script || 'Commercial advertisement for this product.',

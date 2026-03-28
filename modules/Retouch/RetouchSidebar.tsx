@@ -69,6 +69,7 @@ const RetouchSidebar: React.FC<Props> = ({
   const handleRefChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       setReferenceImage(e.target.files[0]);
+      if (onUploadedReferenceUrlChange) onUploadedReferenceUrlChange(null);
       if (refInputRef.current) refInputRef.current.value = '';
     }
   };
