@@ -16,8 +16,11 @@ test('sanitizeAssetName keeps extension and removes unsafe chars', () => {
 });
 
 test('buildAssetPublicUrl returns internal absolute asset route', () => {
-  assert.equal(buildAssetPublicPath('asset_123'), '/api/assets/file/asset_123');
-  assert.equal(buildAssetPublicUrl('https://meiao.example.com', 'asset_123'), 'https://meiao.example.com/api/assets/file/asset_123');
+  assert.equal(buildAssetPublicPath('asset_123', 'poster.jpg'), '/api/assets/file/asset_123/poster.jpg');
+  assert.equal(
+    buildAssetPublicUrl('https://meiao.example.com', 'asset_123', 'poster.jpg'),
+    'https://meiao.example.com/api/assets/file/asset_123/poster.jpg'
+  );
 });
 
 test('getPublicBaseUrl normalizes explicit public base url', () => {
