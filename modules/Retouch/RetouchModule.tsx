@@ -442,6 +442,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
       <RetouchSidebar 
         onAddFiles={handleAddFiles}
         pendingFiles={pendingFiles}
+        tasks={tasks}
         onClearPending={() => {
           releaseObjectURLs([
             ...pendingFiles,

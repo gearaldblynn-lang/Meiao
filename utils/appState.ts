@@ -305,11 +305,19 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
             ...saved.oneClickMemory.mainImage,
             productImages: normalizeFileArray(saved.oneClickMemory.mainImage?.productImages),
             styleImage: normalizeNullableFile(saved.oneClickMemory.mainImage?.styleImage),
+            uploadedProductUrls: normalizeStringArray(saved.oneClickMemory.mainImage?.uploadedProductUrls),
+            lastStyleUrl: typeof saved.oneClickMemory.mainImage?.lastStyleUrl === 'string'
+              ? saved.oneClickMemory.mainImage.lastStyleUrl
+              : null,
           },
           detailPage: {
             ...saved.oneClickMemory.detailPage,
             productImages: normalizeFileArray(saved.oneClickMemory.detailPage?.productImages),
             styleImage: normalizeNullableFile(saved.oneClickMemory.detailPage?.styleImage),
+            uploadedProductUrls: normalizeStringArray(saved.oneClickMemory.detailPage?.uploadedProductUrls),
+            lastStyleUrl: typeof saved.oneClickMemory.detailPage?.lastStyleUrl === 'string'
+              ? saved.oneClickMemory.detailPage.lastStyleUrl
+              : null,
           },
         }
       : undefined,
@@ -318,6 +326,9 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
           ...saved.retouchMemory,
           pendingFiles: normalizeFileArray(saved.retouchMemory.pendingFiles),
           referenceImage: normalizeNullableFile(saved.retouchMemory.referenceImage),
+          uploadedReferenceUrl: typeof saved.retouchMemory.uploadedReferenceUrl === 'string'
+            ? saved.retouchMemory.uploadedReferenceUrl
+            : null,
           tasks: normalizeRetouchTasks(saved.retouchMemory.tasks) as any,
         }
       : undefined,
@@ -326,6 +337,10 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
           ...saved.buyerShowMemory,
           productImages: normalizeFileArray(saved.buyerShowMemory.productImages),
           referenceImage: normalizeNullableFile(saved.buyerShowMemory.referenceImage),
+          uploadedProductUrls: normalizeStringArray(saved.buyerShowMemory.uploadedProductUrls),
+          uploadedReferenceUrl: typeof saved.buyerShowMemory.uploadedReferenceUrl === 'string'
+            ? saved.buyerShowMemory.uploadedReferenceUrl
+            : null,
         }
       : undefined,
     videoMemory: saved.videoMemory
@@ -344,6 +359,7 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
                 config: {
                   ...saved.videoMemory.storyboard.config,
                   productImages: normalizeFileArray(saved.videoMemory.storyboard.config?.productImages),
+                  uploadedProductUrls: normalizeStringArray(saved.videoMemory.storyboard.config?.uploadedProductUrls),
                 },
               }
             : saved.videoMemory.storyboard,

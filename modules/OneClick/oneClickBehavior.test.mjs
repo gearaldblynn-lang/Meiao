@@ -18,8 +18,11 @@ test('one click analysis overlay is scoped inside module workspace instead of fu
   assert.doesNotMatch(detailSource, /\{isAnalyzing && \(\s*<div className="fixed inset-0/);
 });
 
+test('buyer show analysis overlay is scoped inside module workspace instead of full-screen fixed layer', () => {
+  assert.doesNotMatch(buyerShowSource, /\{isAnalyzing && \(\s*<div className="fixed inset-0/);
+});
+
 test('buyer show workspace offers per-project download action in set header', () => {
   assert.match(buyerShowSource, /onDownloadSet/);
   assert.match(buyerShowSource, /下载项目/);
 });
-

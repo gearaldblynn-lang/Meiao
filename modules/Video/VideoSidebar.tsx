@@ -26,11 +26,6 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      // 增加 10MB 大小限制校验
-      if (file.size > 10 * 1024 * 1024) {
-        alert("图片大小不能超过 10MB，请压缩后上传。");
-        return;
-      }
       onUpdate({ productImages: [file], uploadedProductUrls: [] });
       if (imageInputRef.current) imageInputRef.current.value = '';
     }
@@ -122,7 +117,7 @@ const VideoSidebar: React.FC<Props> = ({ state, onUpdate, onStart, onPlan, isPro
                 accentTextClass="text-fuchsia-500"
                 title="点击上传产品主图"
                 hint="用于生成分镜脚本、镜头草图和后续视频画面。"
-                meta="JPG / PNG / WEBP · 最大 10MB"
+                meta="JPG / PNG / WEBP · 超 3MB 自动压缩"
               />
             )}
             <input type="file" ref={imageInputRef} onChange={handleImageUpload} className="hidden" accept="image/*" />
