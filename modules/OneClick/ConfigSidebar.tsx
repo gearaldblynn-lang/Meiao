@@ -324,10 +324,10 @@ const ConfigSidebar: React.FC<Props> = ({
                     <div onClick={() => productInputRef.current?.click()} className="group cursor-pointer border-2 border-dashed border-slate-200 rounded-[20px] p-5 hover:border-rose-300 hover:bg-rose-50/30 transition-all text-center">
                       <i className="far fa-image text-slate-300 text-lg group-hover:text-rose-400 mb-2 block"></i>
                       <p className="text-xs font-black text-slate-600">上传产品原始图</p>
-                      <p className="mt-1 text-[10px] text-slate-400">JPG、PNG、WEBP，最多 8 张</p>
+                      <p className="mt-1 text-[10px] text-slate-400">JPG、PNG、WEBP，最多 8 张，超 3MB 自动压缩</p>
                       <input type="file" multiple ref={productInputRef} onChange={(e) => {
                         if (e.target.files) {
-                           const newFiles = (Array.from(e.target.files) as File[]).filter(f => f.size <= 10 * 1024 * 1024);
+                           const newFiles = Array.from(e.target.files) as File[];
                            setProductImages([...productImages, ...newFiles].slice(0, 8));
                         }
                       }} className="hidden" accept="image/*" />
@@ -432,7 +432,6 @@ const ConfigSidebar: React.FC<Props> = ({
                       ))}
                       <input type="file" ref={styleInputRef} onChange={(e) => {
                         if (e.target.files && e.target.files[0]) {
-                          if (e.target.files[0].size > 10 * 1024 * 1024) return alert("参考图不能超过 10MB");
                           setStyleImage(e.target.files[0]);
                         }
                       }} className="hidden" accept="image/*" />

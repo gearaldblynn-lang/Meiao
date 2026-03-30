@@ -48,6 +48,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
   }, []);
 
   const countries = ['中国', '美国', '英国', '日本', '德国', '法国', '西班牙', '韩国', '越南', '泰国', '意大利'];
+  const previewProductItems = productImages.length > 0 ? productImages : uploadedProductUrls;
 
   const handleProductUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -95,16 +96,19 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
               accentTextClass="text-amber-500"
               title="上传产品白底或实拍图"
               hint="建议 3-8 张，保持主体清晰、角度多样，便于后续自动出套图。"
-              meta="JPG / PNG · 单图 10MB"
+              meta="JPG / PNG · 超 3MB 自动压缩"
             >
               <input type="file" multiple ref={productInputRef} onChange={handleProductUpload} className="hidden" accept="image/*" />
             </UploadSurface>
 
-            {productImages.length > 0 && (
+            {(productImages.length > 0 || uploadedProductUrls.length > 0) && (
               <div className="grid grid-cols-4 gap-2 p-2 bg-slate-50 rounded-2xl border border-slate-100">
-                {productImages.map((f, i) => (
+                {(productImages.length > 0 ? productImages : uploadedProductUrls).map((f, i) => {
+                  const previewUrl = typeof previewProductItems[i] === 'string' ? previewProductItems[i] : uploadedProductUrls[i];
+
+                  return (
                   <div key={i} className="aspect-square bg-white rounded-lg border border-slate-200 overflow-hidden relative group shadow-sm">
-                    {f ? (
+                    {f instanceof File ? (
                       <div className="w-full h-full relative">
                         <img 
                           src={safeCreateObjectURL(f)} 
@@ -125,14 +129,14 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                           }}
                         />
                       </div>
-                    ) : (uploadedProductUrls[i] ? (
-                      <img src={uploadedProductUrls[i]} className="w-full h-full object-cover" />
+                    ) : previewUrl ? (
+                      <img src={previewUrl} className="w-full h-full object-cover" />
                     ) : (
                       <div className="w-full h-full flex flex-col items-center justify-center bg-slate-50 text-slate-300">
                         <i className="far fa-file-image text-lg mb-1"></i>
                         <span className="text-[8px] font-bold">文件已失效</span>
                       </div>
-                    ))}
+                    )}
                     <button onClick={(e) => { 
                       e.stopPropagation(); 
                       const nextImgs = productImages.filter((_, idx) => idx !== i);
@@ -140,7 +144,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                       onUpdate({ productImages: nextImgs, uploadedProductUrls: nextUrls }); 
                     }} className="absolute inset-0 bg-rose-500/80 text-white opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"><i className="fas fa-trash text-[10px]"></i></button>
                   </div>
-                ))}
+                )})}
               </div>
             )}
           </section>

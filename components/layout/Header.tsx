@@ -1,8 +1,9 @@
 
-import React from 'react';
+import React, { useState } from 'react';
 import { AppModule, AuthUser } from '../../types';
 import { useToast } from '../ToastSystem';
 import { getModuleMeta } from './moduleMeta';
+import HelpGuideModal from '../HelpGuideModal';
 
 interface Props {
   activeModule: AppModule;
@@ -14,6 +15,7 @@ interface Props {
 const Header: React.FC<Props> = ({ activeModule, currentUser = null, internalMode = false, onLogout }) => {
   const meta = getModuleMeta(activeModule);
   const { unreadCount, toggleCenter } = useToast();
+  const [showHelp, setShowHelp] = useState(false);
 
   return (
     <header className="shrink-0 border-b border-slate-200/80 bg-white/85 px-8 py-4 backdrop-blur-xl z-40">
@@ -67,7 +69,12 @@ const Header: React.FC<Props> = ({ activeModule, currentUser = null, internalMod
               </span>
             ) : null}
           </button>
-          <button className="flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition-all hover:border-slate-300 hover:text-slate-900" title="使用帮助">
+          <button
+            type="button"
+            onClick={() => setShowHelp(true)}
+            className="flex h-11 w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition-all hover:border-slate-300 hover:text-slate-900"
+            title="使用帮助"
+          >
             <i className="fas fa-question-circle text-sm"></i>
           </button>
           {internalMode && onLogout ? (
@@ -80,6 +87,7 @@ const Header: React.FC<Props> = ({ activeModule, currentUser = null, internalMod
           ) : null}
         </div>
       </div>
+      {showHelp && <HelpGuideModal onClose={() => setShowHelp(false)} />}
     </header>
   );
 };

@@ -241,15 +241,55 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     onStateChange(prev => ({ ...prev, ...updates }));
   }, [onStateChange]);
 
+  const verifyManagedAssetUrl = useCallback(async (url: string) => {
+    const trimmedUrl = String(url || '').trim();
+    if (!trimmedUrl) return '';
+
+    const normalizedUrl = trimmedUrl.replace(':3100/api/assets/file/', '/api/assets/file/');
+    if (!normalizedUrl.includes('/api/assets/file/')) {
+      return normalizedUrl;
+    }
+
+    try {
+      const response = await fetch(normalizedUrl, { method: 'GET', cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return normalizedUrl;
+    } catch {
+      throw new Error('旧素材记录已失效，请重新导入产品图后再试。');
+    }
+  }, []);
+
   const ensureUploadedAssets = useCallback(async (state: BuyerShowPersistentState) => {
-    const productUrls = await Promise.all(
-      state.productImages.map(async (img, i) => {
-        if (state.uploadedProductUrls?.[i]) return state.uploadedProductUrls[i];
-        return uploadToCos(img, apiConfig);
-      })
-    );
+    let productUrls: string[] = [];
+    if (state.productImages.length > 0) {
+      productUrls = await Promise.all(
+        state.productImages.map(async (img, i) => {
+          if (state.uploadedProductUrls?.[i]) {
+            try {
+              return await verifyManagedAssetUrl(state.uploadedProductUrls[i]);
+            } catch (error) {
+              if (!img) {
+                throw error;
+              }
+            }
+          }
+          return uploadToCos(img, apiConfig);
+        })
+      );
+    } else if (state.uploadedProductUrls?.length) {
+      productUrls = await Promise.all(
+        state.uploadedProductUrls
+          .filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+          .map((url) => verifyManagedAssetUrl(url))
+      );
+    }
 
     let refUrl = state.uploadedReferenceUrl || null;
+    if (refUrl) {
+      refUrl = await verifyManagedAssetUrl(refUrl);
+    }
     if (state.referenceImage && !refUrl) {
       refUrl = await uploadToCos(state.referenceImage, apiConfig);
     }
@@ -261,7 +301,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     }));
 
     return { productUrls, refUrl };
-  }, [apiConfig, onStateChange]);
+  }, [apiConfig, onStateChange, verifyManagedAssetUrl]);
 
   const createTrackedAbortController = useCallback((setId?: string) => {
     const controller = new AbortController();

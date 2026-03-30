@@ -2,6 +2,8 @@
 import JSZip from 'jszip';
 import { safeCreateObjectURL } from './urlUtils';
 
+const DEFAULT_UPLOAD_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
+
 export const fileToBase64 = (file: File | Blob): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -44,15 +46,39 @@ export const getImageDimensionsFromUrl = (url: string): Promise<{ width: number,
  * 获取原始图片尺寸和比例值
  */
 export const getImageDimensions = (file: File | Blob): Promise<{ width: number, height: number, ratio: number }> => {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
+    if (typeof createImageBitmap === 'function') {
+      try {
+        const bitmap = await createImageBitmap(file);
+        try {
+          const { width, height } = bitmap;
+          resolve({ width, height, ratio: height ? width / height : 1 });
+          return;
+        } finally {
+          bitmap.close?.();
+        }
+      } catch {
+        // Fall back to HTMLImageElement decoding below.
+      }
+    }
+
+    const objectUrl = safeCreateObjectURL(file);
+    if (!objectUrl) {
+      resolve({ width: 0, height: 0, ratio: 1 });
+      return;
+    }
+
     const img = new Image();
-    img.src = safeCreateObjectURL(file);
     img.onload = () => {
       const { width, height } = img;
-      resolve({ width, height, ratio: width / height });
-      URL.revokeObjectURL(img.src);
+      resolve({ width, height, ratio: height ? width / height : 1 });
+      URL.revokeObjectURL(objectUrl);
     };
-    img.onerror = () => resolve({ width: 0, height: 0, ratio: 1 });
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve({ width: 0, height: 0, ratio: 1 });
+    };
+    img.src = objectUrl;
   });
 };
 
@@ -146,6 +172,176 @@ export const resizeImage = async (
   
   if (finalBlob) return finalBlob;
   throw new Error('Canvas compression failed');
+};
+
+const replaceFileExtension = (fileName: string, nextExtension: string) => {
+  const normalizedExtension = nextExtension.startsWith('.') ? nextExtension : `.${nextExtension}`;
+  const dotIndex = fileName.lastIndexOf('.');
+  if (dotIndex <= 0) {
+    return `${fileName}${normalizedExtension}`;
+  }
+  return `${fileName.slice(0, dotIndex)}${normalizedExtension}`;
+};
+
+const getExtensionForMimeType = (mimeType: string) => {
+  switch (mimeType) {
+    case 'image/jpeg':
+      return 'jpg';
+    case 'image/png':
+      return 'png';
+    case 'image/webp':
+      return 'webp';
+    default:
+      return 'jpg';
+  }
+};
+
+const renderImageBlob = async (
+  source: File,
+  width: number,
+  height: number,
+  mimeType: string,
+  quality?: number
+): Promise<Blob> => {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Canvas context error');
+  }
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  let decodedWithBitmap = false;
+  let imageLoadError: unknown = null;
+
+  try {
+    if (typeof createImageBitmap === 'function') {
+      try {
+        const bitmap = await createImageBitmap(source);
+        try {
+          ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+          decodedWithBitmap = true;
+        } finally {
+          bitmap.close?.();
+        }
+      } catch (error) {
+        imageLoadError = error;
+      }
+    }
+
+    if (!decodedWithBitmap) {
+      const sourceUrl = safeCreateObjectURL(source);
+      if (!sourceUrl) {
+        throw new Error('Image object url creation failed');
+      }
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const img = new Image();
+          img.onload = () => {
+            try {
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              resolve();
+            } catch (error) {
+              reject(error);
+            }
+          };
+          img.onerror = () => reject(imageLoadError instanceof Error ? imageLoadError : new Error('Image load failed during upload compression'));
+          img.src = sourceUrl;
+        });
+      } finally {
+        URL.revokeObjectURL(sourceUrl);
+      }
+    }
+  } catch (error) {
+    throw error instanceof Error ? error : new Error('Image load failed during upload compression');
+  }
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) {
+        reject(new Error('Canvas compression failed'));
+        return;
+      }
+      resolve(blob);
+    }, mimeType, quality);
+  });
+};
+
+export const prepareImageForUpload = async (
+  file: File,
+  maxBytes = DEFAULT_UPLOAD_IMAGE_MAX_BYTES
+): Promise<File> => {
+  if (!file.type.startsWith('image/') || file.size <= maxBytes) {
+    return file;
+  }
+
+  const { width, height } = await getImageDimensions(file);
+  if (!width || !height) {
+    throw new Error('图片解析失败，无法在上传前完成压缩。');
+  }
+
+  const mimeCandidates = file.type === 'image/png'
+    ? ['image/jpeg', 'image/webp', 'image/png']
+    : file.type === 'image/webp'
+      ? ['image/webp', 'image/jpeg']
+      : ['image/jpeg', 'image/webp'];
+  const scaleSteps = [1, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.32, 0.24, 0.18];
+  const qualitySteps = [0.92, 0.84, 0.76, 0.68, 0.6, 0.52, 0.44, 0.36, 0.28, 0.22, 0.18];
+
+  let bestBlob: Blob | null = null;
+  let bestMimeType = file.type;
+
+  for (const scale of scaleSteps) {
+    const targetWidth = Math.max(1, Math.round(width * scale));
+    const targetHeight = Math.max(1, Math.round(height * scale));
+
+    for (const mimeType of mimeCandidates) {
+      if (mimeType === 'image/png') {
+        const pngBlob = await renderImageBlob(file, targetWidth, targetHeight, mimeType);
+        if (!bestBlob || pngBlob.size < bestBlob.size) {
+          bestBlob = pngBlob;
+          bestMimeType = mimeType;
+        }
+        if (pngBlob.size <= maxBytes) {
+          return new File(
+            [pngBlob],
+            replaceFileExtension(file.name, getExtensionForMimeType(mimeType)),
+            { type: mimeType, lastModified: file.lastModified }
+          );
+        }
+        continue;
+      }
+
+      for (const quality of qualitySteps) {
+        const blob = await renderImageBlob(file, targetWidth, targetHeight, mimeType, quality);
+        if (!bestBlob || blob.size < bestBlob.size) {
+          bestBlob = blob;
+          bestMimeType = mimeType;
+        }
+        if (blob.size <= maxBytes) {
+          return new File(
+            [blob],
+            replaceFileExtension(file.name, getExtensionForMimeType(mimeType)),
+            { type: mimeType, lastModified: file.lastModified }
+          );
+        }
+      }
+    }
+  }
+
+  if (bestBlob && bestBlob.size <= maxBytes) {
+    return new File(
+      [bestBlob],
+      replaceFileExtension(file.name, getExtensionForMimeType(bestMimeType)),
+      { type: bestMimeType, lastModified: file.lastModified }
+    );
+  }
+
+  throw new Error('图片压缩后仍超过 3MB，请压缩尺寸后重试。');
 };
 
 /**

@@ -1,6 +1,6 @@
 
 import React, { useRef, useState, useEffect } from 'react';
-import { AspectRatio, GenerationQuality, RetouchPersistentState } from '../../types';
+import { AspectRatio, GenerationQuality, RetouchPersistentState, RetouchTask } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
 import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
@@ -10,6 +10,7 @@ import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from 
 interface Props {
   onAddFiles: (files: File[]) => void;
   pendingFiles: File[];
+  tasks: RetouchTask[];
   onClearPending: () => void;
   referenceImage: File | null;
   uploadedReferenceUrl?: string | null;
@@ -36,7 +37,7 @@ interface Props {
 }
 
 const RetouchSidebar: React.FC<Props> = ({ 
-  onAddFiles, pendingFiles, onClearPending, referenceImage, uploadedReferenceUrl, setReferenceImage, onUploadedReferenceUrlChange, apiConfig, mode, setMode, aspectRatio, setAspectRatio, quality, setQuality, model, setModel, resolutionMode, setResolutionMode, targetWidth, setTargetWidth, targetHeight, setTargetHeight, onStart, isProcessing, hasTasks 
+  onAddFiles, pendingFiles, tasks, onClearPending, referenceImage, uploadedReferenceUrl, setReferenceImage, onUploadedReferenceUrlChange, apiConfig, mode, setMode, aspectRatio, setAspectRatio, quality, setQuality, model, setModel, resolutionMode, setResolutionMode, targetWidth, setTargetWidth, targetHeight, setTargetHeight, onStart, isProcessing, hasTasks 
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const refInputRef = useRef<HTMLInputElement>(null);
@@ -92,6 +93,9 @@ const RetouchSidebar: React.FC<Props> = ({
     { label: '21:9', value: AspectRatio.L_21_9 },
   ];
   const visibleRatios = ratios.filter((ratio) => getSupportedAspectRatiosForModel(model).includes(ratio.value));
+  const uploadedSourcePreviewUrls = tasks
+    .map((task) => task.sourceUrl)
+    .filter((task): task is string => typeof task === 'string' && task.trim().length > 0);
 
   const canStart = !isProcessing && (pendingFiles.length > 0 || hasTasks);
 
@@ -122,16 +126,24 @@ const RetouchSidebar: React.FC<Props> = ({
               accentTextClass="text-emerald-500"
               title="点击上传原图或拖拽到此处"
               hint="支持批量添加待修原图，适合统一精修或白底重建。"
-              meta="JPG / PNG / WEBP · 单图 10MB"
+              meta="JPG / PNG / WEBP · 超 3MB 自动压缩"
             >
               <input type="file" multiple ref={fileInputRef} onChange={handleFileChange} className="hidden" accept="image/*" />
             </UploadSurface>
 
-            {pendingFiles.length > 0 && (
+            {(pendingFiles.length > 0 || uploadedSourcePreviewUrls.length > 0) && (
               <div className="grid grid-cols-5 gap-2 p-2 bg-slate-50 rounded-2xl border border-slate-100">
-                  {pendingFiles.map((f, i) => (
+                  {(pendingFiles.length > 0 ? pendingFiles : uploadedSourcePreviewUrls).map((f, i) => (
                     <div key={i} className="aspect-square bg-white rounded-lg border border-slate-200 overflow-hidden">
-                      {f && <img src={safeCreateObjectURL(f)} className="w-full h-full object-cover" />}
+                      {f instanceof File ? (
+                        <img src={safeCreateObjectURL(f)} className="w-full h-full object-cover" />
+                      ) : (
+                        <img
+                          src={f}
+                          className="w-full h-full object-cover"
+                          alt="uploaded source preview"
+                        />
+                      )}
                     </div>
                   ))}
               </div>

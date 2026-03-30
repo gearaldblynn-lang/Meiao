@@ -37,7 +37,10 @@ tar \
       cp '$REMOTE_APP_DIR/.env.server' '$REMOTE_TMP_DIR/.env.server'
     fi
 
-    find '$REMOTE_APP_DIR' -mindepth 1 -maxdepth 1 ! -name '.env.server' -exec rm -rf {} +
+    find '$REMOTE_APP_DIR' -mindepth 1 -maxdepth 1 ! -name '.env.server' ! -name 'server' -exec rm -rf {} +
+    if [ -d '$REMOTE_APP_DIR/server' ]; then
+      find '$REMOTE_APP_DIR/server' -mindepth 1 -maxdepth 1 ! -name 'data' -exec rm -rf {} +
+    fi
     cp -R \"$REMOTE_TMP_DIR\"/. \"$REMOTE_APP_DIR\"/
     rm -rf '$REMOTE_TMP_DIR'
 
@@ -67,4 +70,5 @@ tar \
   "
 
 echo "部署完成。"
-echo "访问地址：http://${SERVER_HOST}:3100"
+echo "访问地址：http://${SERVER_HOST}"
+echo "备用地址：http://${SERVER_HOST}:3100"

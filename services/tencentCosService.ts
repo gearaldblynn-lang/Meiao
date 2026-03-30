@@ -1,5 +1,5 @@
 import { GlobalApiConfig } from '../types';
-import { fileToBase64 } from '../utils/imageUtils';
+import { fileToBase64, prepareImageForUpload } from '../utils/imageUtils';
 import { getActiveModuleContext, getCurrentUserContext, safeCreateInternalLog, uploadInternalAsset, uploadInternalAssetStream } from './internalApi';
 
 const sanitizePathPart = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'anonymous';
@@ -26,8 +26,24 @@ export const uploadToCos = async (
     throw new Error('文件对象为空');
   }
 
+  let preparedFile: File;
+  try {
+    preparedFile = await prepareImageForUpload(file);
+  } catch (compressionError: any) {
+    throw new Error(`文件「${file.name}」上传前压缩失败：${compressionError.message}`);
+  }
+  const uploadFile = preparedFile;
   const activeModule = getActiveModuleContext() || 'unknown';
-  const uploadFileName = buildUniqueFileName(file, customFileName);
+  const uploadFileName = buildUniqueFileName(uploadFile, customFileName);
+  const compressionMeta = preparedFile === file
+    ? {}
+    : {
+        originalFileName: file.name,
+        originalFileSize: file.size,
+        uploadFileName: uploadFile.name,
+        uploadFileSize: uploadFile.size,
+        uploadWasCompressed: true,
+      };
 
   const uploadStartedAt = Date.now();
   void safeCreateInternalLog({
@@ -38,9 +54,10 @@ export const uploadToCos = async (
     status: 'started',
     meta: {
       fileName: uploadFileName,
-      fileSize: file.size,
+      fileSize: uploadFile.size,
       uploadMethod: 'stream',
       uploadStartedAt,
+      ...compressionMeta,
       ...logMeta,
     },
   });
@@ -51,7 +68,7 @@ export const uploadToCos = async (
     try {
       result = await uploadInternalAssetStream({
         module: activeModule,
-        file,
+        file: preparedFile,
         fileName: uploadFileName,
       });
     } catch (streamError: any) {
@@ -65,17 +82,18 @@ export const uploadToCos = async (
         status: 'started',
         meta: {
           fileName: uploadFileName,
-          fileSize: file.size,
+          fileSize: uploadFile.size,
           uploadMethod,
           uploadStartedAt,
+          ...compressionMeta,
           ...logMeta,
         },
       });
-      const base64Data = await fileToBase64(file);
+      const base64Data = await fileToBase64(uploadFile);
       result = await uploadInternalAsset({
         module: activeModule,
         fileName: uploadFileName,
-        mimeType: file.type || 'application/octet-stream',
+        mimeType: uploadFile.type || 'application/octet-stream',
         base64Data,
       });
     }
@@ -89,11 +107,12 @@ export const uploadToCos = async (
       meta: {
         fileUrl: result.fileUrl,
         fileName: uploadFileName,
-        fileSize: file.size,
+        fileSize: uploadFile.size,
         uploadMethod,
         uploadStartedAt,
         uploadFinishedAt: Date.now(),
         uploadDurationMs: Date.now() - uploadStartedAt,
+        ...compressionMeta,
         ...logMeta,
       },
     });
@@ -109,10 +128,11 @@ export const uploadToCos = async (
       status: 'failed',
       meta: {
         fileName: uploadFileName,
-        fileSize: file.size,
+        fileSize: uploadFile.size,
         uploadStartedAt,
         uploadFinishedAt: Date.now(),
         uploadDurationMs: Date.now() - uploadStartedAt,
+        ...compressionMeta,
         ...logMeta,
       },
     });

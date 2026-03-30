@@ -131,3 +131,75 @@ test('normalizeLoadedPersistedAppState strips serialized null file references fr
   assert.deepEqual(normalized.videoMemory.veoReferenceImages, []);
   assert.deepEqual(normalized.videoMemory.storyboard.config.productImages, []);
 });
+
+test('normalizeLoadedPersistedAppState preserves remote asset urls for refresh recovery', () => {
+  const normalized = normalizeLoadedPersistedAppState({
+    oneClickMemory: {
+      mainImage: {
+        productImages: [],
+        styleImage: null,
+        schemes: [],
+        config: {},
+        lastStyleUrl: 'https://example.com/style-main.png',
+        uploadedProductUrls: ['https://example.com/main-a.png'],
+        directions: [],
+      },
+      detailPage: {
+        productImages: [],
+        styleImage: null,
+        schemes: [],
+        config: {},
+        lastStyleUrl: 'https://example.com/style-detail.png',
+        uploadedProductUrls: ['https://example.com/detail-a.png'],
+        directions: [],
+      },
+    },
+    retouchMemory: {
+      tasks: [],
+      pendingFiles: [],
+      referenceImage: null,
+      uploadedReferenceUrl: 'https://example.com/retouch-ref.png',
+      mode: 'white_bg',
+      aspectRatio: 'auto',
+      quality: '1k',
+      model: 'nano-banana-2',
+      resolutionMode: 'original',
+      targetWidth: 0,
+      targetHeight: 0,
+    },
+    buyerShowMemory: {
+      productImages: [],
+      uploadedProductUrls: ['https://example.com/buyer-a.png'],
+      referenceImage: null,
+      uploadedReferenceUrl: 'https://example.com/buyer-ref.png',
+      targetCountry: '美国',
+      customCountry: '',
+      includeModel: true,
+      aspectRatio: '3:4',
+      quality: '1k',
+      model: 'nano-banana-2',
+      imageCount: 3,
+      setCount: 1,
+      sets: [],
+      tasks: [],
+      evaluationText: '',
+      pureEvaluations: [],
+      firstImageConfirmed: false,
+      isAnalyzing: false,
+      isGenerating: false,
+      subMode: 'integrated',
+      referenceStrength: 'medium',
+      productName: '',
+      productFeatures: '',
+      userRequirement: '',
+    },
+  });
+
+  assert.deepEqual(normalized.oneClickMemory.mainImage.uploadedProductUrls, ['https://example.com/main-a.png']);
+  assert.equal(normalized.oneClickMemory.mainImage.lastStyleUrl, 'https://example.com/style-main.png');
+  assert.deepEqual(normalized.oneClickMemory.detailPage.uploadedProductUrls, ['https://example.com/detail-a.png']);
+  assert.equal(normalized.oneClickMemory.detailPage.lastStyleUrl, 'https://example.com/style-detail.png');
+  assert.equal(normalized.retouchMemory.uploadedReferenceUrl, 'https://example.com/retouch-ref.png');
+  assert.deepEqual(normalized.buyerShowMemory.uploadedProductUrls, ['https://example.com/buyer-a.png']);
+  assert.equal(normalized.buyerShowMemory.uploadedReferenceUrl, 'https://example.com/buyer-ref.png');
+});
