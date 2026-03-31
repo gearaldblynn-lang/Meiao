@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AppModule } from '../types';
 import { MODULE_META } from './layout/moduleMeta';
 
@@ -28,6 +29,7 @@ const HELP_CONTENT: Record<string, GuideEntry> = {
     steps: [
       '在左侧上传产品图片（支持多张），可选上传风格参考图',
       '填写产品描述，选择目标平台（淘宝、京东、拼多多等）和语言',
+      '如有具体制作需求，可在「自定义叙事逻辑」中详细填写',
       '配置画质、风格强度、分辨率模式等高级参数',
       '点击「生成」按钮，等待 AI 生成方案',
       '在右侧预览生成的方案，支持下载单张或批量下载',
@@ -37,6 +39,7 @@ const HELP_CONTENT: Record<string, GuideEntry> = {
       '产品图片越清晰，生成效果越好',
       '风格参考图可以帮助 AI 理解你想要的视觉风格',
       '主图和详情页的公共配置可以一键同步，避免重复设置',
+      '生图模型选择：Nano Banana 2 速度最快；1K 和 2K 价格相同建议直接选 2K；Nano Banana Pro 效果最好但生成时间和成本较高',
       '生成过程中可以随时取消',
     ],
   },
@@ -73,6 +76,7 @@ const HELP_CONTENT: Record<string, GuideEntry> = {
       '提供模特参考图可以让生成的人物更贴合品牌调性',
       '产品描述越详细，场景还原越真实',
       '每个任务会生成一组图片，可以从中挑选最满意的',
+      '生图模型选择：Nano Banana 2 速度最快；1K/2K 同价建议选 2K；Pro 效果最好但较贵',
       '失败的任务支持重新生成或恢复',
     ],
   },
@@ -91,6 +95,7 @@ const HELP_CONTENT: Record<string, GuideEntry> = {
       '白底图模式适合电商平台的标准产品展示',
       '原背景模式会保留场景，仅提升画质',
       '支持批量处理，可同时精修多张图片',
+      '生图模型选择：Nano Banana 2 速度最快；1K/2K 同价建议选 2K；Pro 效果最好但较贵',
       '精修后的图片支持单张下载或批量打包',
     ],
   },
@@ -112,6 +117,7 @@ const HELP_CONTENT: Record<string, GuideEntry> = {
       '上传产品图片，填写产品描述和场景说明',
       '配置视频时长、画面比例等参数',
       '可选添加白底产品图作为素材',
+      '填写每个方案的场景描述（多个方案可填写不同内容，生成结果各自独立）',
       '点击「生成」，AI 自动编写脚本并拆分分镜',
       '脚本生成后，为每个分镜生成对应的画面',
       '预览完整的分镜方案，可单独重新生成某个分镜',
@@ -119,6 +125,7 @@ const HELP_CONTENT: Record<string, GuideEntry> = {
     tips: [
       '产品描述越详细，脚本质量越高',
       '场景说明可以指定视频的整体风格和调性',
+      '同时生成多个方案时，每个方案的场景描述内容互相独立',
       '每个分镜画面可以单独重新生成，直到满意为止',
       '支持多个项目同时管理',
     ],
@@ -130,9 +137,9 @@ const HelpGuideModal: React.FC<Props> = ({ onClose }) => {
   const meta = MODULE_META[activeTab];
   const content = HELP_CONTENT[activeTab];
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/90 backdrop-blur-sm p-4"
+      className="fixed inset-0 z-[999] flex items-center justify-center bg-slate-900/90 backdrop-blur-sm p-4"
       onClick={onClose}
     >
       <div
@@ -241,7 +248,8 @@ const HelpGuideModal: React.FC<Props> = ({ onClose }) => {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };
 

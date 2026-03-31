@@ -60,6 +60,7 @@ const requestArkResponse = async (
       model: ARK_MODEL,
       inputContent,
       arkClientConfigPresent: Boolean(apiConfig.arkApiKey),
+      requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     },
     maxRetries: 2,
   });

@@ -150,6 +150,7 @@ export const createSoraVideoTask = async (
       imageUrls,
       videoConfig,
       kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
+      requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     },
     maxRetries: 2,
   });
@@ -184,6 +185,7 @@ export const submitVeoVideoTask = async (
       imageUrls,
       previousTaskId,
       kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
+      requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     },
     maxRetries: 2,
   });
@@ -234,6 +236,7 @@ export const processWithKieAi = async (
   });
   const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode);
   const module = getActiveModuleContext() || 'unknown';
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const { job } = await createInternalJob({
     module,
     taskType: 'kie_image',
@@ -245,6 +248,7 @@ export const processWithKieAi = async (
       aspectRatio: moduleConfig.aspectRatio === AspectRatio.AUTO ? 'auto' : moduleConfig.aspectRatio,
       resolution: moduleConfig.quality.toUpperCase(),
       kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
+      requestId,
     },
     maxRetries: 2,
   });

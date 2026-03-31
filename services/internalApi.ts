@@ -203,6 +203,38 @@ export const deleteInternalLogs = async (payload?: Partial<{
   });
 };
 
+export const fetchUsageStats = async (filters?: Partial<{
+  startDate: string;
+  endDate: string;
+  userId: string;
+  module: string;
+}>) => {
+  const params = new URLSearchParams();
+  if (filters?.startDate) params.set('startDate', filters.startDate);
+  if (filters?.endDate) params.set('endDate', filters.endDate);
+  if (filters?.userId && filters.userId !== 'all') params.set('userId', filters.userId);
+  if (filters?.module && filters.module !== 'all') params.set('module', filters.module);
+  const query = params.toString();
+  return request<{
+    rows: Array<{
+      statDate: string;
+      userId: string;
+      username: string;
+      displayName: string;
+      module: string;
+      successCount: number;
+      failedCount: number;
+      interruptedCount: number;
+    }>;
+  }>(`/api/stats/usage${query ? `?${query}` : ''}`);
+};
+
+export const backfillUsageStats = async () => {
+  return request<{ ok: boolean; upserted: number }>('/api/stats/backfill', {
+    method: 'POST',
+  });
+};
+
 export const fetchSystemConfig = async () => {
   return request<{ config: SystemPublicConfig }>('/api/system/config');
 };
