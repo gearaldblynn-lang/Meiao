@@ -1687,7 +1687,7 @@ const handleMysqlRequest = async (req, res, url) => {
         `INSERT INTO usage_daily (stat_date, user_id, username, display_name, module, ${field})
          VALUES (?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE ${field} = ${field} + VALUES(${field})`,
-        [row.d, row.user_id, row.display_name, row.module, Number(row.cnt)]
+        [row.d, row.user_id, row.username, row.display_name, row.module, Number(row.cnt)]
       );
       upserted++;
     }
