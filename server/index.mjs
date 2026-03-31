@@ -1251,9 +1251,15 @@ const purgeExpiredDbLogs = async () => {
 
 const USAGE_MODULES = new Set(['one_click', 'translation', 'buyer_show', 'retouch', 'video']);
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'interrupted']);
+const USAGE_ACTIONS = new Set([
+  'generate_main_scheme', 'generate_detail_scheme',
+  'generate_single',
+  'generate_board', 'regenerate_board',
+  'create_image_task',
+]);
 
 const incrementDbUsageStat = async (pool, log) => {
-  if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status)) {
+  if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status) || !USAGE_ACTIONS.has(log.action)) {
     return;
   }
 
@@ -1388,7 +1394,7 @@ const getDbJobByIdForUser = async (user, jobId) => {
 };
 
 const incrementLocalUsageStat = (store, log) => {
-  if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status)) {
+  if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status) || !USAGE_ACTIONS.has(log.action)) {
     return;
   }
 
@@ -1671,12 +1677,14 @@ const handleMysqlRequest = async (req, res, url) => {
     const admin = await requireDbAdmin(req, res);
     if (!admin) return;
     const pool = await getMysqlPool();
+    await pool.query('DELETE FROM usage_daily WHERE 1=1');
     const [logRows] = await pool.query(
       `SELECT DATE(FROM_UNIXTIME(created_at / 1000)) AS d,
        user_id, username, display_name, module, status, COUNT(*) AS cnt
        FROM internal_logs
        WHERE module IN ('one_click','translation','buyer_show','retouch','video')
        AND status IN ('success','failed','interrupted')
+       AND action IN ('generate_main_scheme','generate_detail_scheme','generate_single','generate_board','regenerate_board','create_image_task')
        GROUP BY d, user_id, username, display_name, module, status`
     );
     let upserted = 0;
@@ -2327,7 +2335,7 @@ const handleLocalRequest = async (req, res, url) => {
     if (!admin) return;
     const logsByKey = {};
     for (const log of store.logs || []) {
-      if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status)) continue;
+      if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status) || !USAGE_ACTIONS.has(log.action)) continue;
       const statDate = new Date(log.createdAt).toISOString().split('T')[0];
       const key = `${statDate}|${log.userId}|${log.module}`;
       if (!logsByKey[key]) {

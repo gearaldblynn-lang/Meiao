@@ -73,17 +73,18 @@ const UsageStatsPanel: React.FC = () => {
   };
 
   const overview = rows.reduce((acc, r) => {
-    acc.total += r.successCount + r.failedCount + r.interruptedCount;
     acc.success += r.successCount;
     acc.failed += r.failedCount;
+    acc.interrupted += r.interruptedCount;
     return acc;
-  }, { total: 0, success: 0, failed: 0 });
-  const rate = overview.total > 0 ? ((overview.success / overview.total) * 100).toFixed(1) + '%' : '--';
+  }, { success: 0, failed: 0, interrupted: 0 });
+  const totalFinished = overview.success + overview.failed;
+  const rate = totalFinished > 0 ? ((overview.success / totalFinished) * 100).toFixed(1) + '%' : '--';
 
   const byUser = Object.values(
     rows.reduce((acc: any, r) => {
       if (!acc[r.userId]) acc[r.userId] = { userId: r.userId, displayName: r.displayName, total: 0, success: 0, failed: 0 };
-      acc[r.userId].total += r.successCount + r.failedCount + r.interruptedCount;
+      acc[r.userId].total += r.successCount + r.failedCount;
       acc[r.userId].success += r.successCount;
       acc[r.userId].failed += r.failedCount;
       return acc;
@@ -93,7 +94,7 @@ const UsageStatsPanel: React.FC = () => {
   const byModule = Object.values(
     rows.reduce((acc: any, r) => {
       if (!acc[r.module]) acc[r.module] = { module: r.module, total: 0, success: 0, failed: 0 };
-      acc[r.module].total += r.successCount + r.failedCount + r.interruptedCount;
+      acc[r.module].total += r.successCount + r.failedCount;
       acc[r.module].success += r.successCount;
       acc[r.module].failed += r.failedCount;
       return acc;
@@ -173,8 +174,8 @@ const UsageStatsPanel: React.FC = () => {
           {/* 总览卡片 */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <div className="rounded-2xl border border-slate-200 bg-slate-900 px-5 py-4 text-white">
-              <p className="text-[10px] font-black uppercase tracking-wider opacity-60">总任务数</p>
-              <p className="mt-2 text-3xl font-black">{overview.total}</p>
+              <p className="text-[10px] font-black uppercase tracking-wider opacity-60">生图总量</p>
+              <p className="mt-2 text-3xl font-black">{totalFinished}</p>
             </div>
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4">
               <p className="text-[10px] font-black uppercase tracking-wider text-emerald-600">成功</p>
