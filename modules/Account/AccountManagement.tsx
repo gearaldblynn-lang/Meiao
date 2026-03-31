@@ -5,6 +5,7 @@ import { deleteInternalLogs, fetchInternalLogs } from '../../services/internalAp
 import { ACTION_LABELS, MODULE_LABELS, STATUS_LABELS } from '../../services/loggingService';
 import { buildLogCsv, filterLogs } from './accountManagementUtils.mjs';
 import { SegmentedTabs, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
+import UsageStatsPanel from './UsageStatsPanel';
 
 interface Props {
   currentUser?: AuthUser | null;
@@ -14,8 +15,10 @@ interface Props {
 
 const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode = false, onCurrentUserChange }) => {
   const isAdmin = Boolean(internalMode && currentUser?.role === 'admin');
-  const [activeTab, setActiveTab] = useState<'users' | 'logs'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'logs' | 'stats'>('users');
+  const [allLogs, setAllLogs] = useState<InternalLogEntry[]>([]);
   const [logs, setLogs] = useState<InternalLogEntry[]>([]);
+  const [logsQueried, setLogsQueried] = useState(false);
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [logsError, setLogsError] = useState('');
   const [logsMessage, setLogsMessage] = useState('');
@@ -47,6 +50,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
         endAt: toTimestamp(endTimeFilter, 'end'),
       });
       setLogs(result.logs);
+      setLogsQueried(true);
     } catch (error: any) {
       setLogsError(error.message || '运行日志读取失败');
     } finally {
@@ -54,9 +58,16 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     }
   };
 
+  // 预加载全量日志用于填充筛选选项（不展示数据）
   useEffect(() => {
-    void loadLogs();
-  }, [isAdmin, moduleFilter, userFilter, statusFilter, startTimeFilter, endTimeFilter]);
+    if (!isAdmin) return;
+    void (async () => {
+      try {
+        const allResult = await fetchInternalLogs({});
+        setAllLogs(allResult.logs);
+      } catch { /* 静默失败 */ }
+    })();
+  }, [isAdmin]);
 
   const formatTime = (value: number) => {
     try {
@@ -128,10 +139,10 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     }, {})
   ) as Array<[string, InternalLogEntry[]]>;
 
-  const moduleOptions = Array.from(new Set(logs.map((log) => log.module))).filter(Boolean) as string[];
+  const moduleOptions = Array.from(new Set(allLogs.map((log) => log.module))).filter(Boolean) as string[];
   const userOptions = Array.from(
     new Map<string, { id: string; label: string }>(
-      logs.map((log) => [log.userId, { id: log.userId, label: log.displayName || log.username }])
+      allLogs.map((log) => [log.userId, { id: log.userId, label: log.displayName || log.username }])
     ).values()
   );
 
@@ -209,6 +220,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                 items={[
                   { value: 'users', label: '账号管理', icon: 'fa-user-shield' },
                   { value: 'logs', label: '运行日志', icon: 'fa-clipboard-list' },
+                  { value: 'stats', label: '用量统计', icon: 'fa-chart-bar' },
                 ]}
               />
             </div>
@@ -234,7 +246,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={handleExportLogs} className="px-4 py-2 rounded-xl text-xs font-black bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors">
+                    <button onClick={handleExportLogs} disabled={filteredLogs.length === 0} className="px-4 py-2 rounded-xl text-xs font-black bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors disabled:opacity-60">
                       导出当前结果
                     </button>
                     <button
@@ -244,8 +256,8 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                     >
                       {deletingLogs ? '清理中...' : '清理当前结果'}
                     </button>
-                    <button onClick={() => void loadLogs()} className="px-4 py-2 rounded-xl text-xs font-black bg-white text-slate-600 border border-slate-200 hover:bg-slate-100 transition-colors">
-                      刷新
+                    <button onClick={() => void loadLogs()} disabled={loadingLogs} className="px-4 py-2 rounded-xl text-xs font-black bg-indigo-600 text-white hover:bg-indigo-700 transition-colors disabled:opacity-60">
+                      {loadingLogs ? '查询中...' : '查询日志'}
                     </button>
                   </div>
                 </div>
@@ -314,6 +326,8 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
 
                   {loadingLogs ? (
                     <div className="px-6 py-5 text-sm font-bold text-slate-400">正在读取运行日志...</div>
+                  ) : !logsQueried ? (
+                    <div className="px-6 py-8 text-sm font-bold text-slate-400 text-center">请选择筛选条件后点击「查询日志」</div>
                   ) : filteredLogs.length === 0 ? (
                     <div className="px-6 py-5 text-sm font-bold text-slate-400">当前筛选条件下没有日志</div>
                   ) : (
@@ -373,6 +387,10 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                   )}
                 </div>
               </section>
+            ) : null}
+
+            {activeTab === 'stats' ? (
+              <UsageStatsPanel />
             ) : null}
           </>
         ) : null}

@@ -583,6 +583,7 @@ const normalizeLocalStoreShape = (store) => {
   store.jobs = reconcileRestartedLocalJobs(Array.isArray(store.jobs) ? store.jobs : []);
   store.sessions = Array.isArray(store.sessions) ? store.sessions : [];
   store.appStates = store.appStates && typeof store.appStates === 'object' ? store.appStates : {};
+  store.usageDaily = Array.isArray(store.usageDaily) ? store.usageDaily : [];
   return store;
 };
 
@@ -858,6 +859,22 @@ const ensureMysqlSchema = async () => {
       INDEX idx_internal_logs_created_at (created_at),
       INDEX idx_internal_logs_user_id (user_id),
       INDEX idx_internal_logs_module (module)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS usage_daily (
+      stat_date DATE NOT NULL,
+      user_id VARCHAR(24) NOT NULL,
+      username VARCHAR(100) NOT NULL,
+      display_name VARCHAR(100) NOT NULL,
+      module VARCHAR(60) NOT NULL,
+      success_count INT DEFAULT 0,
+      failed_count INT DEFAULT 0,
+      interrupted_count INT DEFAULT 0,
+      PRIMARY KEY (stat_date, user_id, module),
+      INDEX idx_usage_daily_date (stat_date),
+      INDEX idx_usage_daily_user (user_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
 
@@ -1232,6 +1249,25 @@ const purgeExpiredDbLogs = async () => {
   await pool.query('DELETE FROM internal_logs WHERE created_at < ?', [getLogRetentionCutoff()]);
 };
 
+const USAGE_MODULES = new Set(['one_click', 'translation', 'buyer_show', 'retouch', 'video']);
+const TERMINAL_STATUSES = new Set(['success', 'failed', 'interrupted']);
+
+const incrementDbUsageStat = async (pool, log) => {
+  if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status)) {
+    return;
+  }
+
+  const statDate = new Date(log.createdAt).toISOString().split('T')[0];
+  const field = log.status === 'success' ? 'success_count' : log.status === 'failed' ? 'failed_count' : 'interrupted_count';
+
+  await pool.query(
+    `INSERT INTO usage_daily (stat_date, user_id, username, display_name, module, ${field})
+     VALUES (?, ?, ?, ?, ?, 1)
+     ON DUPLICATE KEY UPDATE ${field} = ${field} + 1`,
+    [statDate, log.userId, log.username, log.displayName, log.module]
+  );
+};
+
 const createDbLog = async (payload) => {
   const pool = await getMysqlPool();
   await purgeExpiredDbLogs();
@@ -1255,6 +1291,7 @@ const createDbLog = async (payload) => {
       log.meta ? JSON.stringify(log.meta) : null,
     ]
   );
+  await incrementDbUsageStat(pool, log);
   return log;
 };
 
@@ -1350,9 +1387,31 @@ const getDbJobByIdForUser = async (user, jobId) => {
   return job;
 };
 
+const incrementLocalUsageStat = (store, log) => {
+  if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status)) {
+    return;
+  }
+
+  if (!Array.isArray(store.usageDaily)) {
+    store.usageDaily = [];
+  }
+
+  const statDate = new Date(log.createdAt).toISOString().split('T')[0];
+  let row = store.usageDaily.find((r) => r.statDate === statDate && r.userId === log.userId && r.module === log.module);
+  if (!row) {
+    row = { statDate, userId: log.userId, username: log.username, displayName: log.displayName, module: log.module, successCount: 0, failedCount: 0, interruptedCount: 0 };
+    store.usageDaily.push(row);
+  }
+
+  if (log.status === 'success') row.successCount++;
+  else if (log.status === 'failed') row.failedCount++;
+  else if (log.status === 'interrupted') row.interruptedCount++;
+};
+
 const appendLocalLog = (store, payload) => {
   const log = createLogEntry(payload);
   store.logs = normalizeLogs([log, ...(store.logs || [])]);
+  incrementLocalUsageStat(store, log);
   return log;
 };
 
@@ -1574,6 +1633,65 @@ const handleMysqlRequest = async (req, res, url) => {
       meta: body.meta && typeof body.meta === 'object' ? body.meta : null,
     });
     json(res, 201, { ok: true, log });
+    return;
+  }
+
+  if (url.pathname === '/api/stats/usage' && req.method === 'GET') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const pool = await getMysqlPool();
+    const clauses = [];
+    const values = [];
+    const startDate = url.searchParams.get('startDate');
+    const endDate = url.searchParams.get('endDate');
+    const userId = normalizeLogFilterValue(url.searchParams.get('userId'));
+    const mod = normalizeLogFilterValue(url.searchParams.get('module'));
+    if (startDate) { clauses.push('stat_date >= ?'); values.push(startDate); }
+    if (endDate) { clauses.push('stat_date <= ?'); values.push(endDate); }
+    if (userId) { clauses.push('user_id = ?'); values.push(userId); }
+    if (mod) { clauses.push('module = ?'); values.push(mod); }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const [rows] = await pool.query(
+      `SELECT stat_date, user_id, username, display_name, module,
+       success_count, failed_count, interrupted_count
+       FROM usage_daily ${where} ORDER BY stat_date ASC`, values
+    );
+    json(res, 200, {
+      rows: rows.map((r) => ({
+        statDate: typeof r.stat_date === 'string' ? r.stat_date : new Date(r.stat_date).toISOString().split('T')[0],
+        userId: r.user_id, username: r.username, displayName: r.display_name, module: r.module,
+        successCount: Number(r.success_count), failedCount: Number(r.failed_count),
+        interruptedCount: Number(r.interrupted_count),
+      })),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/stats/backfill' && req.method === 'POST') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const pool = await getMysqlPool();
+    const [logRows] = await pool.query(
+      `SELECT DATE(FROM_UNIXTIME(created_at / 1000)) AS d,
+       user_id, username, display_name, module, status, COUNT(*) AS cnt
+       FROM internal_logs
+       WHERE module IN ('one_click','translation','buyer_show','retouch','video')
+       AND status IN ('success','failed','interrupted')
+       GROUP BY d, user_id, username, display_name, module, status`
+    );
+    let upserted = 0;
+    for (const row of logRows) {
+      const field = row.status === 'success' ? 'success_count'
+        : row.status === 'failed' ? 'failed_count' : 'interrupted_count';
+      await pool.query(
+        `INSERT INTO usage_daily (stat_date, user_id, username, display_name, module, ${field})
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE ${field} = ${field} + VALUES(${field})`,
+        [row.d, row.user_id, row.display_name, row.module, Number(row.cnt)]
+      );
+      upserted++;
+    }
+    json(res, 200, { ok: true, upserted });
     return;
   }
 
@@ -2185,6 +2303,44 @@ const handleLocalRequest = async (req, res, url) => {
     });
     writeLocalStore(store);
     json(res, 201, { ok: true, log });
+    return;
+  }
+
+  if (url.pathname === '/api/stats/usage' && req.method === 'GET') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const startDate = url.searchParams.get('startDate');
+    const endDate = url.searchParams.get('endDate');
+    const userId = normalizeLogFilterValue(url.searchParams.get('userId'));
+    const mod = normalizeLogFilterValue(url.searchParams.get('module'));
+    let filtered = store.usageDaily || [];
+    if (startDate) filtered = filtered.filter((r) => r.statDate >= startDate);
+    if (endDate) filtered = filtered.filter((r) => r.statDate <= endDate);
+    if (userId) filtered = filtered.filter((r) => r.userId === userId);
+    if (mod) filtered = filtered.filter((r) => r.module === mod);
+    json(res, 200, { rows: filtered.sort((a, b) => a.statDate.localeCompare(b.statDate)) });
+    return;
+  }
+
+  if (url.pathname === '/api/stats/backfill' && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const logsByKey = {};
+    for (const log of store.logs || []) {
+      if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status)) continue;
+      const statDate = new Date(log.createdAt).toISOString().split('T')[0];
+      const key = `${statDate}|${log.userId}|${log.module}`;
+      if (!logsByKey[key]) {
+        logsByKey[key] = { statDate, userId: log.userId, username: log.username,
+          displayName: log.displayName, module: log.module, successCount: 0, failedCount: 0, interruptedCount: 0 };
+      }
+      if (log.status === 'success') logsByKey[key].successCount++;
+      else if (log.status === 'failed') logsByKey[key].failedCount++;
+      else if (log.status === 'interrupted') logsByKey[key].interruptedCount++;
+    }
+    store.usageDaily = Object.values(logsByKey);
+    writeLocalStore(store);
+    json(res, 200, { ok: true, upserted: store.usageDaily.length });
     return;
   }
 

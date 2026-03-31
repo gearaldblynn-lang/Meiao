@@ -176,6 +176,7 @@ export const generateStoryboardScript = async (
         },
       ],
       kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
+      requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     },
     maxRetries: 1,
   });
