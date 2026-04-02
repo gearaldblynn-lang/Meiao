@@ -77,8 +77,12 @@ const buildScriptRequestPrompt = (config: VideoStoryboardConfig, sceneDescriptio
           : '如涉及人物，优先使用卡通角色，保持角色形象统一。';
   const durationRule =
     config.duration === '30s'
-      ? '整套分镜必须按时间顺序排列，前半段对应前 15 秒，后半段对应后 15 秒；如果镜头数为奇数，则前 15 秒镜头更少，后 15 秒镜头更多。'
+      ? '整套分镜必须按时间顺序排列，前半段对应前 15 秒，后半段对应前 15 秒；如果镜头数为奇数，则前 15 秒镜头更少，后 15 秒镜头更多。'
       : '整套分镜必须按时间顺序排列。';
+
+  const sceneInstruction = sceneDescription && sceneDescription.trim()
+    ? `【重要】场景描述：${sceneDescription}\n所有分镜必须严格遵循此场景描述，不得偏离。每个分镜的画面、动作、环境都必须与此场景描述高度一致。`
+    : '未指定固定场景，可按产品调性合理设计。';
 
   return `
 角色：专业电商短视频分镜导演。
@@ -90,7 +94,8 @@ const buildScriptRequestPrompt = (config: VideoStoryboardConfig, sceneDescriptio
 - 演员类型：${ACTOR_LABELS[config.actorType]}
 - 演员限制：${actorInstruction}
 - 目标国家/语言：${config.countryLanguage}
-- 场景描述：${sceneDescription || '未指定固定场景，可按产品调性合理设计'}
+
+${sceneInstruction}
 
 硬性要求：
 1. 只输出 JSON 数组，不要 markdown，不要解释。

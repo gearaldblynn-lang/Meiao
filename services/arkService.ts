@@ -1,5 +1,5 @@
 
-import { GlobalApiConfig, ArkAnalysisResult, OneClickConfig, ArkSchemeResult, OneClickSubMode, VisualDirectionResult, ArkBuyerShowResult, BuyerShowPersistentState, ArkPureEvaluationResult, VideoConfig, SceneItem, AspectRatio, VeoScriptSegment } from "../types";
+import { GlobalApiConfig, ArkAnalysisResult, OneClickConfig, ArkSchemeResult, OneClickSubMode, VisualDirectionResult, ArkBuyerShowResult, BuyerShowPersistentState, ArkPureEvaluationResult, VideoConfig, SceneItem, AspectRatio, VeoScriptSegment, SkuConfig } from "../types";
 import { cancelInternalJob, createInternalJob, getActiveModuleContext, safeCreateInternalLog, waitForInternalJob } from "./internalApi";
 
 const ARK_MODEL = 'doubao-seed-2-0-lite-260215';
@@ -287,6 +287,131 @@ ${copyLayoutTemplate}
 };
 
 /**
+ * 策划 SKU 组合展示图方案
+ */
+export const generateSkuSchemes = async (
+  productUrls: string[],
+  giftUrls: string[],
+  styleUrl: string | null,
+  config: SkuConfig,
+  apiConfig: GlobalApiConfig,
+  signal?: AbortSignal
+): Promise<ArkSchemeResult> => {
+  try {
+    logArkEvent('sku_plan', '开始策划SKU方案', 'started', '', {
+      count: config.combinations.length,
+    });
+
+    const validCombos = config.combinations.filter(c => c.skuCopyText.trim());
+    const ratioInstruction = `必须填入：${config.aspectRatio || '1:1'}`;
+
+    const systemPrompt = `你是一位顶级电商视觉总监，专精 SKU 组合展示图策划。
+
+【硬性要求】
+1. 每个 SKU 方案必须用 [SCHEME_START] 和 [SCHEME_END] 单独包裹。
+2. 全套 SKU 视觉风格必须统一（色调、光影、构图逻辑一致）。
+3. 严禁编造未提供的赠品、促销信息。
+4. 第一张 SKU 作为视觉基准，后续必须保持一致风格。
+5. 不要机械罗列商品，以美观专业的电商展示图为目标。
+6. 传入的图片已标注角色（商品主体图/赠品图/风格参考图），策划时严格区分。
+7. 画面描述中提及商品时必须同时标注身份和名称，格式：【主体商品】名称 或 【赠品】名称，禁止只写名称或只写身份。
+8. 当产品规格与SKU数量存在换算关系时（如一盒15条，SKU标45条），必须正确理解换算，展示数量不得出错（如应展示3盒而非45盒）。
+9. 文案排版中的SKU文案必须完整书写，不得省略或缩写。
+10. 主标题来源规则：有产品信息时根据产品信息提炼主标题；无产品信息时直接使用SKU文案作为主标题。`;
+
+    const assetSummary = [
+      `- 商品主体图: ${productUrls.length}张`,
+      giftUrls.length > 0 ? `- 赠品图: ${giftUrls.length}张` : null,
+      styleUrl ? `- 风格参考图: 1张` : null,
+    ].filter(Boolean).join('\n');
+
+    const comboList = validCombos.map((c, i) =>
+      `SKU ${i + 1}: ${c.skuCopyText}`
+    ).join('\n');
+
+    const hasProductInfo = !!(config.productInfo && config.productInfo.trim());
+
+    const userPrompt = `为以下 SKU 组合策划展示图方案。
+
+【产品信息】
+${hasProductInfo ? config.productInfo : '未填写（请直接使用SKU文案作为主标题）'}
+
+【SKU 组合列表】
+${comboList}
+
+【素材清单】
+${assetSummary}
+${styleUrl ? `\n风格参考图：${styleUrl}。仅提炼其配色、光影、材质与氛围作为整套视觉基调。` : ''}
+
+单个 SKU 方案输出字段：
+- SKU标识：[如：SKU一 - 基础套装]
+- 设计意图：一句话说明该 SKU 的视觉策略
+- 画面描述：描述商品时必须同时标注身份和名称（如"画面中央放置【主体商品】XX面膜3盒，右下角点缀【赠品】化妆棉1包"），包含排列方式、构图逻辑、光影氛围
+- 文案排版（严格按以下固定格式逐行输出，根据SKU文案内容拆分填入）：
+  主标题(字体大小, 字体字重, 位置, 字体颜色):"文案内容"
+  副标题(字体大小, 字体字重, 位置, 字体颜色):"文案内容"
+  促销文案(字体大小, 字体字重, 位置, 字体颜色):"文案内容"
+- 画面比例：[${ratioInstruction}]
+
+要求：画面构图要有层次感，主次分明，合理推断每个 SKU 应展示的商品和赠品数量。请开始策划。`;
+
+    const inputContent: any[] = [];
+    inputContent.push({ type: "text", text: `${systemPrompt}\n\n${userPrompt}` });
+    productUrls.forEach((url, i) => {
+      inputContent.push({ type: "text", text: `[商品主体图${i + 1}]` });
+      inputContent.push({ type: "image_url", image_url: { url } });
+    });
+    giftUrls.forEach((url, i) => {
+      inputContent.push({ type: "text", text: `[赠品图${i + 1}]` });
+      inputContent.push({ type: "image_url", image_url: { url } });
+    });
+    if (styleUrl) {
+      inputContent.push({ type: "text", text: `[风格参考图 — 仅参考视觉风格，不要使用其中的商品]` });
+      inputContent.push({ type: "image_url", image_url: { url: styleUrl } });
+    }
+
+    const timeoutController = new AbortController();
+    const timeoutId = setTimeout(() => timeoutController.abort(), 60000);
+
+    try {
+      const content = await requestArkResponse(inputContent, apiConfig, signal || timeoutController.signal);
+      let schemes: string[] = [];
+      const tagRegex = /\[SCHEME_START\]([\s\S]*?)\[SCHEME_END\]/g;
+      let match;
+      while ((match = tagRegex.exec(content)) !== null) {
+        if (match[1].trim()) schemes.push(match[1].trim());
+      }
+
+      if (schemes.length === 0) {
+        const splitRegex = /(?=\n-?\s*(?:SKU\s*\d+|SKU[一二三四五六七八九十]|第\d+个))/i;
+        const parts = content.split(splitRegex).filter(p => p.trim().length > 20);
+        if (parts.length <= 1 && content.length > 100) {
+          schemes = [content];
+        } else {
+          schemes = parts;
+        }
+      }
+
+      if (schemes.length === 0) {
+        throw new Error("AI 返回的内容格式不正确，无法解析为有效的SKU策划方案。");
+      }
+
+      logArkEvent('sku_plan', 'SKU方案策划成功', 'success', '', {
+        count: schemes.length,
+      });
+      return { status: 'success', schemes: schemes.slice(0, validCombos.length) };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } catch (error: any) {
+    logArkEvent('sku_plan', 'SKU方案策划失败', 'failed', error.message, {
+      count: config.combinations.length,
+    });
+    return { status: 'error', schemes: [], message: error.message };
+  }
+};
+
+/**
  * 策划买家秀拍摄方案
  */
 export const generateBuyerShowPrompts = async (
@@ -338,8 +463,8 @@ export const generateBuyerShowPrompts = async (
     }`;
 
     // 合并产品信息
-    const productInfo = state.productName 
-        ? `${state.productName}\nDetails & Scenarios: ${state.productFeatures}` 
+    const productInfo = state.productName
+        ? `${state.productName}\nDetails & Scenarios: ${state.productFeatures}`
         : state.productFeatures;
 
     // 核心差异化逻辑：根据 setIndex 强制发散场景
@@ -349,20 +474,29 @@ export const generateBuyerShowPrompts = async (
     else if (setIndex === 2) divergenceInstruction = "Focus on **Office/Workplace/Study** setting (e.g., Desk setup, Meeting room). Clean, professional but casual vibe.";
     else divergenceInstruction = "Create a **Unique & Creative** setting different from typical home/outdoor scenes. Maybe travel, gym, or artistic background.";
 
-    const refInstruction = referenceUrl 
-      ? `IMPORTANT: A reference image is provided. **Analyze the style/environment of the reference image** and incorporate its vibe (e.g. lighting, color palette) into your prompts, BUT adapt it to the specific divergence theme: ${divergenceInstruction}`
+    const refInstruction = referenceUrl
+      ? `CRITICAL VISUAL ATMOSPHERE REFERENCE (严格参照):
+A reference image is provided. You MUST strictly follow these 4 dimensions:
+1. **Style**: Strictly match the overall visual style of the reference (e.g., ins风, 日系, 韩系, 欧美风). Do NOT deviate.
+2. **Color Tone**: Strictly match the color temperature and color tendency (warm/cool/neutral, saturation level).
+3. **Scene**: Create scenes that are SIMILAR in type but NOT identical (e.g., if reference is a café, use a different café or similar cozy space). Adapt to divergence theme: ${divergenceInstruction}
+4. **Model Appearance**: If the reference contains a person, the model's temperament, style, and age range MUST closely match the reference.
+PROHIBITION: Do NOT copy the exact composition of the reference. Maintain the same visual tone while creating fresh angles.`
       : `Creative Direction: ${divergenceInstruction}`;
 
-    const userPrompt = `Product Info: ${productInfo}
-    ${refInstruction}
-    
-    Requirement:
-    1. Scenarios must feel 100% authentic to local users in ${state.targetCountry}.
-    2. **Diversity & Logic**: The set of ${state.imageCount} images must tell a complete story.
-    ${modelPrompt}
-    4. Generate exactly ${state.imageCount} tasks.
-    
-    Generate the JSON response. Ensure valid JSON format.`;
+    const userPrompt = `**MANDATORY PRODUCT CORE INFO (以下产品核心信息是策划的唯一依据，严禁编造或偏离):**
+Product Name & Selling Points: ${productInfo}
+All task prompts MUST revolve around these selling points and usage scenarios. Do NOT invent features or scenarios not mentioned above.
+
+${refInstruction}
+
+Requirement:
+1. Scenarios must feel 100% authentic to local users in ${state.targetCountry}.
+2. **Diversity & Logic**: The set of ${state.imageCount} images must tell a complete story.
+${modelPrompt}
+4. Generate exactly ${state.imageCount} tasks.
+
+Generate the JSON response. Ensure valid JSON format.`;
 
     const inputContent: any[] = [];
     inputContent.push({ type: "text", text: `${systemPrompt}\n\n${userPrompt}` });

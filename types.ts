@@ -18,7 +18,8 @@ export enum TranslationSubMode {
 
 export enum OneClickSubMode {
   MAIN_IMAGE = 'main_image',
-  DETAIL_PAGE = 'detail_page'
+  DETAIL_PAGE = 'detail_page',
+  SKU = 'sku',
 }
 
 export enum BuyerShowSubMode {
@@ -261,10 +262,10 @@ export interface VideoStoryboardConfig {
   uploadedProductUrls: string[];
   productInfo: string;
   scriptLogic: string;
-  scriptPreset: 'custom' | 'ecommerce';
+  scriptPreset: 'custom' | 'ecommerce' | 'viral';
   aspectRatio: AspectRatio.SQUARE | AspectRatio.P_3_4 | AspectRatio.L_4_3 | AspectRatio.P_4_5 | AspectRatio.P_9_16 | AspectRatio.L_16_9;
   duration: '5s' | '10s' | '15s' | '30s';
-  shotCount: 3 | 4 | 6 | 8 | 9 | 12;
+  shotCount: 1 | 3 | 4 | 6 | 8 | 9 | 12;
   actorType: 'no_real_face' | 'real_person' | '3d_digital_human' | 'cartoon_character';
   projectCount: number;
   scenes: string[];
@@ -272,6 +273,7 @@ export interface VideoStoryboardConfig {
   generateWhiteBg: boolean;
   model: KieAiModel;
   quality: GenerationQuality;
+  generationMode: 'single_image' | 'multi_image';
 }
 
 export interface VideoStoryboardShot {
@@ -444,7 +446,7 @@ export interface OneClickPersistentState {
     schemes: MainImageScheme[];
     config: OneClickConfig;
     lastStyleUrl: string | null;
-    uploadedProductUrls: string[]; 
+    uploadedProductUrls: string[];
     directions: string[];
   };
   detailPage: {
@@ -453,9 +455,10 @@ export interface OneClickPersistentState {
     schemes: MainImageScheme[];
     config: OneClickConfig;
     lastStyleUrl: string | null;
-    uploadedProductUrls: string[]; 
+    uploadedProductUrls: string[];
     directions: string[];
   };
+  sku: SkuPersistentSubState;
 }
 
 export interface RetouchPersistentState {
@@ -509,4 +512,60 @@ export interface VisualDirectionResult {
   directions: string[];
   status: 'success' | 'error';
   message?: string;
+}
+
+// ── SKU 相关类型 ──
+
+export type SkuImageRole = 'product' | 'gift' | 'style_ref';
+
+export interface SkuImageItem {
+  id: string;
+  file: File | null;
+  role: SkuImageRole;
+  giftIndex?: number;
+  uploadedUrl: string | null;
+}
+
+export interface SkuCombinationRule {
+  id: string;
+  sceneDescription: string;
+  skuCopyText: string;
+}
+
+export interface SkuConfig {
+  productInfo: string;
+  language: string;
+  count: number;
+  combinations: SkuCombinationRule[];
+  aspectRatio?: AspectRatio;
+  quality: GenerationQuality;
+  model: KieAiModel;
+  styleStrength: StyleStrength;
+  resolutionMode: 'original' | 'custom';
+  targetWidth?: number;
+  targetHeight?: number;
+  maxFileSize: number;
+}
+
+export interface SkuScheme {
+  id: string;
+  taskId?: string;
+  combinationId: string;
+  uiTitle: string;
+  originalContent: string;
+  editedContent: string;
+  extractedRatio: string;
+  selected: boolean;
+  status: 'pending' | 'generating' | 'completed' | 'error' | 'interrupted';
+  resultUrl?: string;
+  error?: string;
+}
+
+export interface SkuPersistentSubState {
+  images: SkuImageItem[];
+  schemes: SkuScheme[];
+  config: SkuConfig;
+  firstSkuResultUrl: string | null;
+  uploadedProductUrls: string[];
+  lastStyleUrl: string | null;
 }

@@ -245,28 +245,63 @@ const ProjectCard: React.FC<{
             <section>
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h4 className="text-sm font-black text-slate-900">分镜板结果</h4>
+                  <h4 className="text-sm font-black text-slate-900">
+                    {project.config.generationMode === 'multi_image' ? '分镜结果' : '分镜板结果'}
+                  </h4>
                 </div>
-                <span className="text-xs font-black text-slate-400">{project.boards.length} 张</span>
+                <span className="text-xs font-black text-slate-400">
+                  {project.config.generationMode === 'multi_image' ? `${project.shots.length} 个分镜` : `${project.boards.length} 张`}
+                </span>
               </div>
 
-              {project.boards.length > 0 ? (
-                <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
-                  {project.boards.map((board) => (
-                    <BoardCard
-                      key={board.id}
-                      board={board}
-                      onOpen={() => setActiveBoardId(board.id)}
-                      onRegenerate={() => onRegenerateBoard(project.id, board.id)}
-                      onRefetch={() => onRefetchBoard(project.id, board.id)}
-                    />
-                  ))}
-                </div>
+              {project.config.generationMode === 'multi_image' ? (
+                project.shots.length > 0 ? (
+                  <div className="grid grid-cols-2 2xl:grid-cols-3 gap-4">
+                    {project.shots.map((shot, index) => (
+                      <div key={shot.id} className="rounded-[28px] border border-slate-200 bg-white overflow-hidden shadow-sm">
+                        <div className="px-4 py-3 border-b border-slate-100">
+                          <p className="text-xs font-black text-slate-900">分镜 {index + 1}</p>
+                        </div>
+                        <div className="bg-slate-50 min-h-[200px] flex items-center justify-center p-3">
+                          {shot.imageUrl ? (
+                            <img src={shot.imageUrl} alt={`shot-${index + 1}`} className="max-w-full max-h-[240px] rounded-[16px] shadow-md" />
+                          ) : (
+                            <div className="text-center text-slate-400">
+                              <i className={`fas ${shot.status === 'generating' ? 'fa-spinner fa-spin' : shot.status === 'failed' ? 'fa-circle-exclamation' : 'fa-image'} text-2xl mb-2`}></i>
+                              <p className="text-xs font-black">
+                                {shot.status === 'generating' ? '生成中...' : shot.status === 'failed' ? '生成失败' : '等待生成'}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-[28px] border border-dashed border-slate-200 bg-slate-50 h-[320px] flex flex-col items-center justify-center text-slate-400">
+                    <i className="fas fa-film text-2xl mb-3"></i>
+                    <p className="text-sm font-black">等待分镜生成</p>
+                  </div>
+                )
               ) : (
-                <div className="rounded-[28px] border border-dashed border-slate-200 bg-slate-50 h-[320px] flex flex-col items-center justify-center text-slate-400">
-                  <i className="fas fa-film text-2xl mb-3"></i>
-                  <p className="text-sm font-black">等待分镜板生成</p>
-                </div>
+                project.boards.length > 0 ? (
+                  <div className="grid grid-cols-1 2xl:grid-cols-2 gap-4">
+                    {project.boards.map((board) => (
+                      <BoardCard
+                        key={board.id}
+                        board={board}
+                        onOpen={() => setActiveBoardId(board.id)}
+                        onRegenerate={() => onRegenerateBoard(project.id, board.id)}
+                        onRefetch={() => onRefetchBoard(project.id, board.id)}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded-[28px] border border-dashed border-slate-200 bg-slate-50 h-[320px] flex flex-col items-center justify-center text-slate-400">
+                    <i className="fas fa-film text-2xl mb-3"></i>
+                    <p className="text-sm font-black">等待分镜板生成</p>
+                  </div>
+                )
               )}
             </section>
           </div>
