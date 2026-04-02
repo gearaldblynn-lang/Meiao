@@ -1,8 +1,8 @@
-
 import React, { useState } from 'react';
 import { GlobalApiConfig, OneClickSubMode, OneClickPersistentState } from '../../types';
 import MainImageSubModule from './MainImageSubModule';
 import DetailPageSubModule from './DetailPageSubModule';
+import SkuSubModule from './SkuSubModule';
 import { useToast } from '../../components/ToastSystem';
 import { createDefaultOneClickState } from '../../utils/appState';
 import { logActionSuccess } from '../../services/loggingService';
@@ -177,6 +177,28 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
     addToast('已清空详情配置信息', 'success');
   };
 
+  const updateSkuState = (updates: Partial<OneClickPersistentState['sku']> | ((prev: OneClickPersistentState['sku']) => OneClickPersistentState['sku'])) => {
+    onStateChange(prev => {
+      const current = prev.sku;
+      const finalUpdates = typeof updates === 'function' ? updates(current) : updates;
+      return { ...prev, sku: { ...current, ...finalUpdates } };
+    });
+  };
+
+  const handleClearSkuConfig = () => {
+    onStateChange(prev => ({
+      ...prev,
+      sku: { ...defaultOneClickState.sku, schemes: [] },
+    }));
+    void logActionSuccess({
+      module: 'one_click',
+      action: 'clear_sku_config',
+      message: '清空SKU配置信息',
+      meta: { target: 'sku' },
+    });
+    addToast('已清空SKU配置信息', 'success');
+  };
+
   return (
     <div className="flex h-full w-full flex-col overflow-hidden px-6 pb-6 pt-5">
       <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-[32px] border border-white/70 shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
@@ -199,6 +221,17 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
             onUpdate={updateDetailPageState}
             onSyncConfig={handleSyncToDetail}
             onClearConfig={handleClearDetailConfig}
+            onProcessingChange={setIsProcessing}
+            currentSubMode={subMode}
+            onSubModeChange={setSubMode}
+          />
+        </div>
+        <div className={`h-full w-full flex overflow-hidden ${subMode === OneClickSubMode.SKU ? '' : 'hidden'}`}>
+          <SkuSubModule
+            apiConfig={apiConfig}
+            state={persistentState.sku}
+            onUpdate={updateSkuState}
+            onClearConfig={handleClearSkuConfig}
             onProcessingChange={setIsProcessing}
             currentSubMode={subMode}
             onSubModeChange={setSubMode}

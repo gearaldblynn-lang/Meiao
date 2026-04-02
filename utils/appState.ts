@@ -114,6 +114,27 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
     uploadedProductUrls: [],
     directions: [],
   },
+  sku: {
+    images: [],
+    schemes: [],
+    config: {
+      productInfo: '',
+      language: '中文',
+      count: 1,
+      combinations: [{ id: 'combo_1', sceneDescription: '', skuCopyText: '' }],
+      aspectRatio: AspectRatio.SQUARE,
+      quality: '1k',
+      model: 'nano-banana-2',
+      styleStrength: 'medium',
+      resolutionMode: 'custom',
+      targetWidth: 800,
+      targetHeight: 800,
+      maxFileSize: 2.0,
+    },
+    firstSkuResultUrl: null,
+    uploadedProductUrls: [],
+    lastStyleUrl: null,
+  },
 });
 
 export const createDefaultRetouchState = (): RetouchPersistentState => ({
@@ -201,6 +222,7 @@ export const createDefaultVideoState = (): VideoPersistentState => ({
       generateWhiteBg: false,
       model: 'nano-banana-pro',
       quality: '2k',
+      generationMode: 'single_image',
     },
     projects: [],
     downloadingProjectId: null,
@@ -317,6 +339,24 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
             uploadedProductUrls: normalizeStringArray(saved.oneClickMemory.detailPage?.uploadedProductUrls),
             lastStyleUrl: typeof saved.oneClickMemory.detailPage?.lastStyleUrl === 'string'
               ? saved.oneClickMemory.detailPage.lastStyleUrl
+              : null,
+          },
+          sku: {
+            ...(saved.oneClickMemory.sku || createDefaultOneClickState().sku),
+            images: Array.isArray(saved.oneClickMemory.sku?.images)
+              ? saved.oneClickMemory.sku.images.map((img: any) => ({
+                  ...img,
+                  file: img.file instanceof File ? img.file : null,
+                }))
+              : [],
+            firstSkuResultUrl: typeof saved.oneClickMemory.sku?.firstSkuResultUrl === 'string'
+              ? saved.oneClickMemory.sku.firstSkuResultUrl
+              : null,
+            uploadedProductUrls: Array.isArray(saved.oneClickMemory.sku?.uploadedProductUrls)
+              ? saved.oneClickMemory.sku.uploadedProductUrls.filter((u: any) => typeof u === 'string')
+              : [],
+            lastStyleUrl: typeof saved.oneClickMemory.sku?.lastStyleUrl === 'string'
+              ? saved.oneClickMemory.sku.lastStyleUrl
               : null,
           },
         }

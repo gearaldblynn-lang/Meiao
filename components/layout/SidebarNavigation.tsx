@@ -17,7 +17,6 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange }) =>
     AppModule.VIDEO,
   ];
   const systemItems = [AppModule.SETTINGS, AppModule.ACCOUNT];
-  const iconOnly = 'apple-minimal';
 
   const renderNavButton = (item: AppModule, tone: 'business' | 'system') => {
     const meta = MODULE_META[item];
@@ -31,7 +30,7 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange }) =>
         onClick={() => !isReserved && onModuleChange(item)}
         disabled={isReserved}
         title={meta.label}
-        className={`group flex w-full flex-col items-center justify-center gap-2 rounded-[22px] px-2 py-3 text-center transition-all ${
+        className={`group flex w-full flex-col items-center justify-center gap-1 rounded-[18px] px-1 py-2 text-center transition-all ${
           active
             ? 'bg-white/10 text-white shadow-[0_18px_36px_rgba(15,23,42,0.22)]'
             : isReserved
@@ -40,7 +39,7 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange }) =>
         }`}
       >
         <div
-          className={`flex h-11 w-11 items-center justify-center rounded-[18px] transition-all ${
+          className={`flex h-9 w-9 items-center justify-center rounded-[14px] transition-all ${
             active
               ? tone === 'system'
                 ? 'bg-white text-slate-900'
@@ -50,29 +49,39 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange }) =>
                 : 'bg-white/6 text-slate-300 group-hover:bg-white/10'
           }`}
         >
-          <i className={`fas ${meta.icon} text-sm`}></i>
+          <i className={`fas ${meta.icon} text-xs`}></i>
         </div>
-        <span className="text-[11px] font-bold tracking-tight">{meta.label}</span>
+        <span className="text-[10px] font-bold tracking-tight leading-tight">{meta.label}</span>
       </button>
     );
   };
 
   return (
-    <div className="z-50 w-[104px] shrink-0 border-r border-slate-200/70 bg-[linear-gradient(180deg,#0a1220_0%,#121c2b_100%)] px-3 py-4">
+    <div className="sidebar-nav z-50 shrink-0 border-r border-slate-200/70 bg-[linear-gradient(180deg,#0a1220_0%,#121c2b_100%)] px-2 py-3 overflow-y-auto">
+      <style>{`
+        .sidebar-nav { width: 104px; }
+        .sidebar-nav .nav-grid { display: flex; flex-direction: column; gap: 4px; }
+        .sidebar-nav .sys-grid { display: flex; flex-direction: column; gap: 4px; }
+        @media (max-height: 760px) {
+          .sidebar-nav { width: 180px; }
+          .sidebar-nav .nav-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+          .sidebar-nav .sys-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+        }
+      `}</style>
       <div className="flex h-full flex-col items-center">
         <button
           type="button"
-          className="mb-5 flex h-14 w-14 items-center justify-center rounded-[22px] bg-white shadow-[0_16px_34px_rgba(255,255,255,0.16)] transition-transform hover:scale-[1.02]"
+          className="mb-4 flex h-12 w-12 items-center justify-center rounded-[18px] bg-white shadow-[0_16px_34px_rgba(255,255,255,0.16)] transition-transform hover:scale-[1.02]"
           onClick={() => onModuleChange(AppModule.ONE_CLICK)}
         >
-          <span className="text-xl font-black italic text-slate-950">M</span>
+          <span className="text-lg font-black italic text-slate-950">M</span>
         </button>
 
-        <div className="flex w-full flex-col gap-1.5">
+        <div className="nav-grid w-full">
           {businessItems.map((item) => renderNavButton(item, 'business'))}
         </div>
 
-        <div className="mt-auto flex w-full flex-col gap-1.5 pt-4">
+        <div className="sys-grid mt-auto w-full pt-3">
           {systemItems.map((item) => renderNavButton(item, 'system'))}
         </div>
       </div>

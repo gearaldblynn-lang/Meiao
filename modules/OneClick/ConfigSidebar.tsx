@@ -259,6 +259,7 @@ const ConfigSidebar: React.FC<Props> = ({
           items={[
             { value: OneClickSubMode.MAIN_IMAGE, label: '主图', icon: 'fa-image' },
             { value: OneClickSubMode.DETAIL_PAGE, label: '详情', icon: 'fa-layer-group' },
+            { value: OneClickSubMode.SKU, label: 'SKU', icon: 'fa-tags' },
           ]}
         />
       ) : undefined}

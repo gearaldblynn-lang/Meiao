@@ -5,6 +5,7 @@ import {
   VideoStoryboardBoard,
   VideoStoryboardConfig,
   VideoStoryboardProject,
+  VideoStoryboardShot,
 } from '../../types';
 import { createDefaultVideoState } from '../../utils/appState';
 import { useToast } from '../../components/ToastSystem';
@@ -104,11 +105,13 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     updateProject(projectId, (project) => {
       const hasBoardFailure = project.boards.some((board) => board.status === 'failed');
       const hasPendingWork = project.boards.some((board) => board.status === 'pending' || board.status === 'generating');
+      const hasShotFailure = project.shots.some((shot) => shot.status === 'failed');
+      const hasPendingShots = project.shots.some((shot) => shot.status === 'pending' || shot.status === 'generating');
       const whiteBgFailed = project.config.generateWhiteBg && project.whiteBgStatus === 'failed';
       const whiteBgPending = project.config.generateWhiteBg && project.whiteBgStatus === 'generating';
 
-      if (hasPendingWork || whiteBgPending) return { ...project, status: 'imaging' };
-      if (hasBoardFailure || whiteBgFailed) return { ...project, status: 'failed', error: '部分分镜板生成失败' };
+      if (hasPendingWork || hasPendingShots || whiteBgPending) return { ...project, status: 'imaging' };
+      if (hasBoardFailure || hasShotFailure || whiteBgFailed) return { ...project, status: 'failed', error: '部分分镜生成失败' };
       return { ...project, status: 'completed', error: undefined };
     });
   };
@@ -304,6 +307,90 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     return generated.result.imageUrl;
   };
 
+  const generateShotImage = async (
+    projectId: string,
+    shot: VideoStoryboardShot,
+    config: VideoStoryboardConfig
+  ) => {
+    void logActionStart({
+      module: 'video',
+      action: 'generate_shot_image',
+      message: '开始生成单个分镜图片',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+        shotId: shot.id,
+      },
+    });
+
+    updateProject(projectId, (project) => ({
+      ...project,
+      shots: project.shots.map((s) => (s.id === shot.id ? { ...s, status: 'generating' as const, error: undefined } : s)),
+    }));
+
+    const result = await processWithKieAi(
+      config.uploadedProductUrls,
+      apiConfig,
+      {
+        targetLanguage: 'KEEP_ORIGINAL',
+        customLanguage: '',
+        removeWatermark: false,
+        aspectRatio: config.aspectRatio,
+        quality: config.quality,
+        model: config.model,
+        resolutionMode: 'original',
+        targetWidth: 0,
+        targetHeight: 0,
+        maxFileSize: 2,
+      },
+      false,
+      new AbortController().signal,
+      shot.prompt,
+      false
+    );
+
+    if (result.status !== 'success') {
+      void logActionFailure({
+        module: 'video',
+        action: 'generate_shot_image',
+        message: '单个分镜图片生成失败',
+        detail: result.message,
+        meta: {
+          ...storyboardMeta,
+          projectId,
+          shotId: shot.id,
+          taskId: result.taskId,
+        },
+      });
+      updateProject(projectId, (project) => ({
+        ...project,
+        shots: project.shots.map((s) =>
+          s.id === shot.id ? { ...s, status: 'failed' as const, error: result.message || '生成失败', taskId: result.taskId } : s
+        ),
+      }));
+      return false;
+    }
+
+    updateProject(projectId, (project) => ({
+      ...project,
+      shots: project.shots.map((s) =>
+        s.id === shot.id ? { ...s, status: 'completed' as const, imageUrl: result.imageUrl, taskId: result.taskId } : s
+      ),
+    }));
+    void logActionSuccess({
+      module: 'video',
+      action: 'generate_shot_image',
+      message: '单个分镜图片生成成功',
+      meta: {
+        ...storyboardMeta,
+        projectId,
+        shotId: shot.id,
+        taskId: result.taskId,
+      },
+    });
+    return true;
+  };
+
   const processProject = async (
     projectId: string,
     config: VideoStoryboardConfig,
@@ -350,13 +437,19 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
         whiteBgStatus: includeWhiteBg ? 'pending' : undefined,
       }));
 
-      let previousBoardImageUrl: string | undefined;
-      for (const board of boards) {
-        const boardImageUrl = await generateBoardFromData(projectId, board, config, shots, previousBoardImageUrl);
-        if (typeof boardImageUrl === 'string') {
-          previousBoardImageUrl = boardImageUrl;
-        } else {
-          previousBoardImageUrl = undefined;
+      if (config.generationMode === 'multi_image') {
+        for (const shot of shots) {
+          await generateShotImage(projectId, shot, config);
+        }
+      } else {
+        let previousBoardImageUrl: string | undefined;
+        for (const board of boards) {
+          const boardImageUrl = await generateBoardFromData(projectId, board, config, shots, previousBoardImageUrl);
+          if (typeof boardImageUrl === 'string') {
+            previousBoardImageUrl = boardImageUrl;
+          } else {
+            previousBoardImageUrl = undefined;
+          }
         }
       }
 

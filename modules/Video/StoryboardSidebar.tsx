@@ -12,10 +12,34 @@ interface Props {
 
 const SCRIPT_PRESETS: Record<string, string> = {
   custom: '',
-  ecommerce: `高转化电商短视频逻辑：先抓注意力，再建立信任，再放大卖点，最后促成行动。
-1. 开场快速抛出视觉钩子。
-2. 中段清楚展示卖点、使用感受与差异化细节。
-3. 尾段做记忆点收束与转化引导。`,
+  ecommerce: `高转化电商短视频逻辑："吸引-建立信任-激发欲望-促成成交"的行为诱导逻辑。
+
+第一阶段：视觉钩子 (Hook)
+强吸引：1.5秒内抓住注意力。采用动态递入或特写冲击，配合核心卖点的视觉化呈现。
+整体建立 (The Scene)：交代空间背景，通过中景画面建立品牌调性。
+
+第二阶段：核心价值 (Value)
+卖点展示：基础属性（展示产品的物理属性）/ 差异化（放大竞争对手没有的优势）/ 细节强化（显微镜视角，通过极微距展示建立"高端、高品质"的心理暗示）。
+
+第三阶段：体验沉浸 (Experience)
+使用强化（预见使用场景）/ 互动强化（模拟用户自己的视角情感共鸣）。
+
+第四阶段：临门一脚 (Action)
+信任总结（理性背书，消除用户最后的顾虑）/ 强收尾（产品最终全景展示，配合引导下单的口播，完成从流量到销量的闭环）。`,
+  viral: `爆款短视频带货逻辑：核心公式：强停留 → 强展示 → 强转化。
+
+一阶段：开头强钩子，要么视觉炸，要么情绪炸。
+暴力吸睛型：极限测试、夸张演示（紧身衣拎水桶、手机从三楼摔下）。
+悬念型：制造事故感、反常识（"我手机刚从三楼掉下去了……"）。
+争议开场型：打破刻板印象（"有人说这就是智商税……"）。
+好奇留口型：引发疑问（"99%的人都忽略了这个"）。
+关系调侃型：情感触发（"你对象看到这条会转你吗？"）。
+
+二阶段：场景锚定核心价值。
+立刻交代清楚：这是什么产品，在什么场景用。内容里要埋"轻微冒犯感"或"带情绪的判断"——调侃行为，调侃场景，调侃"旧方法"，调侃"嘴硬不信的人"。
+
+三阶段：加"社交传播理由"或者"评论入口"的收尾。
+评论入口：争议/战队/关系/情绪，让用户忍不住评论转发。`,
 };
 
 const COUNTRY_PRESETS = [
@@ -47,15 +71,35 @@ const FilePreview: React.FC<{ file: File; alt: string }> = ({ file, alt }) => {
   return <img src={src} alt={alt} className="w-full h-full object-cover" />;
 };
 
+const MULTI_IMAGE_SHOT_MAP: Record<string, VideoStoryboardConfig['shotCount']> = {
+  '5s': 3,
+  '10s': 6,
+  '15s': 9,
+  '30s': 12,
+};
+
+const getSingleImageMaxShots = (duration: string): number => {
+  switch (duration) {
+    case '5s': return 3;
+    case '10s': return 6;
+    default: return 12;
+  }
+};
+
 const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGenerate }) => {
-  const shotCountOptions: Array<{ value: VideoStoryboardConfig['shotCount']; label: string; disabled?: boolean }> = [
+  const maxShots = getSingleImageMaxShots(config.duration);
+  const allShotOptions: Array<{ value: VideoStoryboardConfig['shotCount']; label: string }> = [
+    { value: 1, label: '1 格' },
     { value: 3, label: '3 格' },
     { value: 4, label: '4 格' },
     { value: 6, label: '6 格' },
     { value: 8, label: '8 格' },
     { value: 9, label: '9 格' },
-    { value: 12, label: '12 格', disabled: config.duration === '15s' },
+    { value: 12, label: '12 格' },
   ];
+  const shotCountOptions = config.generationMode === 'single_image'
+    ? allShotOptions.filter((o) => o.value <= maxShots)
+    : allShotOptions;
 
   const handleFieldChange = (
     event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>
@@ -66,20 +110,33 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
       if (name === 'duration') {
         const nextDuration = value as VideoStoryboardConfig['duration'];
         let nextShotCount = prev.shotCount;
-        if (nextDuration === '15s' && prev.shotCount === 12) nextShotCount = 9;
-        if (nextDuration === '30s') nextShotCount = 12;
-        return {
-          ...prev,
-          duration: nextDuration,
-          shotCount: nextShotCount,
-        };
+        if (prev.generationMode === 'multi_image') {
+          nextShotCount = MULTI_IMAGE_SHOT_MAP[nextDuration] ?? prev.shotCount;
+        } else {
+          const max = getSingleImageMaxShots(nextDuration);
+          if (prev.shotCount > max) nextShotCount = max as VideoStoryboardConfig['shotCount'];
+        }
+        return { ...prev, duration: nextDuration, shotCount: nextShotCount };
+      }
+
+      if (name === 'generationMode') {
+        const nextMode = value as VideoStoryboardConfig['generationMode'];
+        let nextShotCount = prev.shotCount;
+        if (nextMode === 'multi_image') {
+          nextShotCount = MULTI_IMAGE_SHOT_MAP[prev.duration] ?? prev.shotCount;
+        } else {
+          const max = getSingleImageMaxShots(prev.duration);
+          if (prev.shotCount > max) nextShotCount = max as VideoStoryboardConfig['shotCount'];
+        }
+        return { ...prev, generationMode: nextMode, shotCount: nextShotCount };
       }
 
       if (name === 'scriptPreset') {
+        const preset = value as VideoStoryboardConfig['scriptPreset'];
         return {
           ...prev,
-          scriptPreset: value as VideoStoryboardConfig['scriptPreset'],
-          scriptLogic: value === 'ecommerce' ? SCRIPT_PRESETS.ecommerce : prev.scriptLogic,
+          scriptPreset: preset,
+          scriptLogic: preset !== 'custom' ? SCRIPT_PRESETS[preset] : prev.scriptLogic,
         };
       }
 
@@ -173,7 +230,7 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
               <label className={`relative ${config.productImages.length === 0 ? 'col-span-4' : ''}`}>
                 <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} disabled={disabled} />
                 <UploadSurface
-                  icon="fa-cloud-upload-alt"
+                  icon="fa-image"
                   accentTextClass="text-rose-500"
                   title={config.productImages.length === 0 ? '上传产品图片素材' : '继续添加产品图片'}
                   hint="支持 JPG / PNG / WEBP，最多 8 张。"
@@ -205,6 +262,7 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
             options={[
               { value: 'custom', label: '自定义逻辑' },
               { value: 'ecommerce', label: '高转化电商逻辑' },
+              { value: 'viral', label: '爆款短视频带货逻辑' },
             ]}
             buttonClassName="h-10 rounded-2xl px-4 text-xs"
           />
@@ -217,6 +275,48 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
             className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-rose-300 outline-none text-sm font-bold text-slate-700 resize-none"
             placeholder="描述这条视频的节奏、镜头方向、卖点结构和整体调性。"
           />
+        </section>
+
+        <section className="space-y-3">
+          <label className="text-xs font-black uppercase tracking-widest text-slate-400">生成模式</label>
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => handleSelectChange('generationMode', 'single_image')}
+              disabled={disabled}
+              className={`relative px-4 py-4 rounded-2xl border-2 transition-all text-left ${
+                config.generationMode === 'single_image'
+                  ? 'border-rose-500 bg-rose-50'
+                  : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+              }`}
+            >
+              <div className="flex items-start gap-2 mb-2">
+                <i className={`fas fa-image text-lg ${config.generationMode === 'single_image' ? 'text-rose-500' : 'text-slate-400'}`}></i>
+                <div className="flex-1">
+                  <p className="text-sm font-black text-slate-800">一图直出</p>
+                  <p className="text-[10px] font-bold text-slate-500 mt-1">更省钱，多分镜间一致性更佳</p>
+                </div>
+              </div>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSelectChange('generationMode', 'multi_image')}
+              disabled={disabled}
+              className={`relative px-4 py-4 rounded-2xl border-2 transition-all text-left ${
+                config.generationMode === 'multi_image'
+                  ? 'border-rose-500 bg-rose-50'
+                  : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+              }`}
+            >
+              <div className="flex items-start gap-2 mb-2">
+                <i className={`fas fa-images text-lg ${config.generationMode === 'multi_image' ? 'text-rose-500' : 'text-slate-400'}`}></i>
+                <div className="flex-1">
+                  <p className="text-sm font-black text-slate-800">多张拼合</p>
+                  <p className="text-[10px] font-bold text-slate-500 mt-1">贵一些，但单个分镜不满意可再编辑</p>
+                </div>
+              </div>
+            </button>
+          </div>
         </section>
 
         <section className="grid grid-cols-2 gap-3">
@@ -279,6 +379,9 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
               ]}
               buttonClassName="h-10 rounded-2xl px-4 text-xs"
             />
+            {config.generationMode === 'multi_image' && (
+              <p className="text-[10px] font-bold text-slate-400 mt-1">多张拼合模式下，时长与镜头数联动</p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -286,13 +389,19 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
             <PopoverSelect
               value={String(config.shotCount)}
               onChange={(next) => handleSelectChange('shotCount', next)}
-              disabled={disabled}
-              options={shotCountOptions.filter((option) => !option.disabled).map((option) => ({
+              disabled={disabled || config.generationMode === 'multi_image'}
+              options={shotCountOptions.map((option) => ({
                 value: String(option.value),
                 label: option.label,
               }))}
               buttonClassName="h-10 rounded-2xl px-4 text-xs"
             />
+            {config.generationMode === 'multi_image' && (
+              <p className="text-[10px] font-bold text-slate-400 mt-1">多张拼合模式下，镜头数由时长决定</p>
+            )}
+            {config.generationMode === 'single_image' && (config.duration === '5s' || config.duration === '10s') && (
+              <p className="text-[10px] font-bold text-slate-400 mt-1">{config.duration === '5s' ? '5秒最多3格' : '10秒最多6格'}</p>
+            )}
           </div>
 
           <div className="space-y-2">

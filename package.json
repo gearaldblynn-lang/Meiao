@@ -1,7 +1,7 @@
 {
   "name": "copy-of-梅奥-调整2.12a",
   "private": true,
-  "version": "260331A",
+  "version": "260402A",
   "type": "module",
   "scripts": {
     "dev": "vite",
