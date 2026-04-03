@@ -110,6 +110,47 @@ test('executeProviderJob tolerates a longer kie recordInfo warmup window before 
   }
 });
 
+test('executeProviderJob reuses the existing providerTaskId for retrying kie image jobs instead of creating a new task', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url) => {
+    requests.push(String(url));
+    return createJsonResponse({
+      code: 200,
+      data: {
+        state: 'success',
+        resultJson: JSON.stringify({ resultUrls: ['https://example.com/recovered-result.png'] }),
+      },
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        providerTaskId: 'kie-existing-task',
+        payload: {
+          prompt: 'test',
+          imageUrls: ['https://example.com/source.png'],
+          model: 'nano-banana-2',
+          aspectRatio: '1:1',
+          resolution: '1K',
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.providerTaskId, 'kie-existing-task');
+    assert.equal(result.result.imageUrl, 'https://example.com/recovered-result.png');
+    assert.equal(requests.length, 1);
+    assert.match(requests[0], /recordInfo\?taskId=kie-existing-task/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('uploadAssetViaKieStream prefers stream upload and returns file url', async () => {
   const originalFetch = global.fetch;
   const requests = [];

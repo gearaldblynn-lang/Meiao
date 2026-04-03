@@ -9,20 +9,25 @@ test('buyer show validates stale uploaded asset urls before sending them to ark'
   assert.match(source, /旧素材记录已失效，请重新导入产品图后再试/);
 });
 
-test('buyer show generation prompt forbids copying identity traits from the atmosphere reference person', () => {
+test('buyer show generation prompt keeps a lightweight target-market model rule', () => {
   assert.match(
     source,
-    /must fit the local market identity of \$\{persistentState\.targetCountry\}/,
-    'buyer show generation prompt should require target-market-fitting model identity'
+    /VISUAL REFERENCE PRIORITY: High\. The provided reference image \(last input\) determines the environment style and lighting vibe\./,
+    'buyer show generation prompt should preserve the original first-image reference wording'
   );
   assert.match(
     source,
-    /Do NOT copy the reference person's ethnicity, nationality, or skin tone/,
-    'buyer show generation prompt should forbid copying reference person identity traits'
+    /SCENE & CHARACTER CONSISTENCY: The provided reference image establishes the reality of this set\./,
+    'buyer show generation prompt should preserve the original follow-up consistency wording'
   );
   assert.match(
     source,
-    /same generated person, not the original reference person/,
-    'follow-up buyer show generations should stay consistent with the first generated model rather than the uploaded reference person'
+    /If a person is shown, they should look like a local user from \$\{persistentState\.targetCountry\}/,
+    'buyer show generation prompt should require a lightweight target-market model rule'
+  );
+  assert.doesNotMatch(
+    source,
+    /use them only for clothing direction, pose energy, and camera language|must fit the local market identity of \$\{persistentState\.targetCountry\}/,
+    'buyer show generation prompt should not keep the heavy nationality guidance'
   );
 });

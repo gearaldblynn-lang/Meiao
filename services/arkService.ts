@@ -429,22 +429,7 @@ export const generateBuyerShowPrompts = async (
     });
     // 动态调整 System Prompt 逻辑
     const modelPrompt = state.includeModel
-      ? `3. **Include Model Strategy**: The set must include human presence suitable for ${state.targetCountry}. The FIRST task MUST be a benchmark shot. Subsequent shots must maintain consistency.
-   **MODEL APPEARANCE DESCRIPTION (模特外貌描述 — 极其重要)**:
-   Model appearance must be determined by the target market first.
-   Every task prompt with hasFace=true MUST describe a person who looks native and locally believable for the ${state.targetCountry} market.
-   If the reference image contains a person/model, Do NOT copy or inherit the reference person's ethnicity, nationality, or skin tone.
-   Reference people may only inform clothing direction, pose energy, and camera language.
-   After applying the target-market identity rule above, include ALL of the following appearance details:
-   - **Ethnicity & Skin Tone** (e.g., East Asian with fair skin, Southeast Asian with warm tan skin)
-   - **Gender & Approximate Age** (e.g., young woman in her early 20s)
-   - **Hair** (color, length, style — e.g., long straight black hair, short wavy brown hair with bangs)
-   - **Face Shape & Features** (e.g., oval face, soft features, defined jawline)
-   - **Body Type** (e.g., slim, average build, petite)
-   - **Clothing Style** (e.g., casual white t-shirt and jeans, cozy oversized sweater)
-   - **Overall Vibe/Temperament** (e.g., gentle and approachable, cool and confident)
-   These descriptions MUST appear directly in the "prompt" field text so the image generation model can reproduce a visually consistent person. Do NOT rely on the reference image alone — write it out explicitly.
-   If the reference image has NO person, describe an ideal model that fits the product and ${state.targetCountry} market.`
+      ? `3. **Include Model Strategy**: The set must include human presence suitable for ${state.targetCountry}. The FIRST task MUST be a benchmark shot. Subsequent shots must maintain consistency. If hasFace=true, the person should look like a local user from ${state.targetCountry}.`
       : `3. **STILL LIFE Strategy**: **NO HUMAN FACES/BODIES.** Focus on product details and scenes. Hands are allowed if necessary for usage demonstration.`;
 
     const systemPrompt = `You are an expert in generating authentic e-commerce Buyer Reviews (UGC).
@@ -469,7 +454,7 @@ export const generateBuyerShowPrompts = async (
     {
       "tasks": [
         { 
-          "prompt": "Visual description in English for Image AI. MUST include detailed model appearance description (ethnicity, skin tone, hair, age, clothing, vibe) if hasFace=true. Keywords: aesthetic iPhone shot, clean background, natural light.",
+          "prompt": "Visual description in English for Image AI. Keywords: aesthetic iPhone shot, clean background, natural light. If hasFace=true, the person should look like a local user from the target market.",
           "style": "中文简短描述(例如: '午后阳光下的整洁桌面', '温馨的卧室一角', '手持细节展示'). 必须使用中文.",
           "hasFace": boolean (true ONLY if a human face is clearly visible)
         }
@@ -495,12 +480,8 @@ A reference image is provided. You MUST strictly follow these 4 dimensions:
 1. **Style**: Strictly match the overall visual style of the reference (e.g., ins风, 日系, 韩系, 欧美风). Do NOT deviate.
 2. **Color Tone**: Strictly match the color temperature and color tendency (warm/cool/neutral, saturation level).
 3. **Scene**: Create scenes that are SIMILAR in type but NOT identical (e.g., if reference is a café, use a different café or similar cozy space). Adapt to divergence theme: ${divergenceInstruction}
-4. **Model Appearance (模特外貌 — 必须写入prompt)**: If the reference contains a person, Do NOT copy or inherit the reference person's ethnicity, nationality, or skin tone. Model identity must still fit ${state.targetCountry} first. Reference people may only inform clothing direction, pose energy, and camera language. You MUST write the final target-market-fitting appearance details into each task's "prompt" field where hasFace=true.
-PROHIBITION: Do NOT copy the exact composition of the reference. Maintain the same visual tone while creating fresh angles.
-
-GENERATION SEQUENCE AWARENESS (生成序列感知):
-- Task 1 (首图/Establishing Shot): Will use the uploaded atmosphere reference image during generation. This prompt should focus on ESTABLISHING the visual atmosphere, environment, and overall mood. Set the tone for the entire set.
-- Tasks 2+ (后续图/Continuation Shots): Will use the FIRST generated image as a consistency reference during generation. These prompts should focus on EXTENDING different angles, poses, and compositions while naturally implying continuity with the first shot's established scene and style.`
+4. **Model Appearance**: If the reference contains a person, the model's temperament, style, and age range MUST closely match the reference. If hasFace=true, the person should look like a local user from ${state.targetCountry}.
+PROHIBITION: Do NOT copy the exact composition of the reference. Maintain the same visual tone while creating fresh angles.`
       : `Creative Direction: ${divergenceInstruction}`;
 
     const userPrompt = `**MANDATORY PRODUCT CORE INFO (以下产品核心信息是策划的唯一依据，严禁编造或偏离):**
