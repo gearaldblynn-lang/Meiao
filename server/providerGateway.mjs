@@ -645,6 +645,18 @@ export const executeProviderJob = async (job, env, signal) => {
     case 'ark_response':
       return runArkResponseJob(job.payload, env, signal);
     case 'kie_image':
+      if (job.providerTaskId) {
+        return runKieRecoverJob(
+          {
+            ...job.payload,
+            providerTaskId: job.providerTaskId,
+            taskId: job.providerTaskId,
+            isVideo: false,
+          },
+          env,
+          signal
+        );
+      }
       return runKieImageJob(job.payload, env, signal);
     case 'kie_recover':
       return runKieRecoverJob(job.payload, env, signal);
