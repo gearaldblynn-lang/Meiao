@@ -21,6 +21,7 @@ import { generateSkuSchemes } from '../../services/arkService';
 import {
   logActionFailure, logActionInterrupted, logActionStart, logActionSuccess,
 } from '../../services/loggingService';
+import { buildSkuGenerationAssets } from './skuGenerationUtils.mjs';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -161,6 +162,7 @@ const SkuSubModule: React.FC<Props> = ({
           const cleanedLines = text.split('\n').filter(line => {
             const l = line.trim();
             if (/^(?:[-#*>\s]*)(?:SKU\s*标识)/.test(l)) return false;
+            if (/^(?:[-#*>\s]*)设计意图/.test(l)) return false;
             if (/^(?:[-#*>\s]*)画面比例/.test(l)) return false;
             return true;
           });
@@ -195,44 +197,50 @@ const SkuSubModule: React.FC<Props> = ({
   };
 
   // --- Build prompt from edited content ---
-  const buildSkuPrompt = (scheme: SkuScheme, isFirst: boolean, currentImages: typeof images) => {
+  const buildSkuPrompt = (scheme: SkuScheme, isFirst: boolean, currentImages: typeof images, effectiveFirstSkuResultUrl?: string | null) => {
+    const resolvedFirstUrl = effectiveFirstSkuResultUrl ?? state.firstSkuResultUrl;
     const productImgs = currentImages.filter(i => i.role === 'product' && i.uploadedUrl);
     const giftImgs = currentImages.filter(i => i.role === 'gift' && i.uploadedUrl).sort((a, b) => (a.giftIndex || 0) - (b.giftIndex || 0));
-    const styleRef = currentImages.find(i => i.role === 'style_ref' && i.uploadedUrl);
+    const { styleRefUrl } = buildSkuGenerationAssets({
+      currentImages,
+      firstSkuResultUrl: resolvedFirstUrl,
+      isFirst,
+    });
 
     let manifest = '【素材清单 — 请严格区分每张图的类型】\n';
     productImgs.forEach((img, i) => { manifest += `- 商品主体图${i + 1}: ${img.uploadedUrl}\n`; });
     giftImgs.forEach(img => { manifest += `- 赠品${img.giftIndex}: ${img.uploadedUrl}\n`; });
-
-    let styleRefUrl: string | null = null;
-    if (!isFirst && state.firstSkuResultUrl) {
-      styleRefUrl = state.firstSkuResultUrl;
+    if (!isFirst && resolvedFirstUrl) {
       manifest += `- SKU风格基准（第一张生成结果，后续必须严格保持一致风格）: ${styleRefUrl}\n`;
-    } else if (styleRef) {
-      styleRefUrl = styleRef.uploadedUrl;
+    } else if (styleRefUrl) {
       manifest += `- SKU风格参考图: ${styleRefUrl}\n`;
     }
 
-    let prompt = '*严格保持产品/赠品的一致性*\nSTRICT PRODUCT CONSISTENCY: Strictly keep all products and gifts fully consistent with the source reference images. Do not alter any product or gift appearance, size, structure, label, or packaging.\n\n';
+    let prompt = '【严格保持产品与赠品一致性】请严格保持所有商品与赠品和参考图一致，不得改变外观、尺寸关系、结构、标签或包装。\n\n';
     prompt += manifest + '\n';
     prompt += `【产品信息】\n${config.productInfo || '未填写'}\n\n`;
     prompt += `【SKU 展示方案】\n${scheme.editedContent}\n`;
 
     if (styleRefUrl) {
-      prompt += `\nStyle Reference: ${styleRefUrl}. `;
-      if (!isFirst && state.firstSkuResultUrl) {
-        prompt += 'Strictly maintain the same visual style, layout pattern, lighting, and color scheme. ';
+      prompt += `\n风格参考图：${styleRefUrl}。`;
+      if (!isFirst && resolvedFirstUrl) {
+        prompt += '严格按照该风格参考图一致的排版、字体风格、文字摆放、色调和整体设计风格制作。';
       } else {
-        prompt += 'Mimic its style, lighting, and mood. Do not use the product from the style reference. ';
+        prompt += '重点参考它的排版、字体风格、文字摆放、色调、光影和整体氛围，但不要使用参考图中的商品本身。';
       }
     }
-    prompt += `\n生图文案语言："${config.language || '中文'}"`;
-    prompt += '\nQUALITY: High-end commercial studio photography.';
+    prompt += `\n生图文案语言：”${config.language || '中文'}”`;
+    prompt += `\n文案文字必须为”${config.language || '中文'}”`;
+    prompt += `\n禁止生成英文或其他非目标文案语言的文案文字。`;
+    prompt += `\n主体商品必须最显眼，赠品只能作为辅助点缀，不能喧宾夺主。`;
+    prompt += `\n赠品可以比真实比例更小，但必须保持正面陈列。`;
+    prompt += `\n主体商品和赠品都必须正面、稳定、正常陈列，禁止躺放、斜放、倾倒。`;
+    prompt += '\n画面质量：高端商业摄影棚拍质感。';
     return prompt;
   };
 
   // --- Single SKU generation ---
-  const generateSingleSku = async (schemeId: string, isFirst: boolean, currentImages: typeof images, mode: 'full' | 'recover' = 'full') => {
+  const generateSingleSku = async (schemeId: string, isFirst: boolean, currentImages: typeof images, mode: 'full' | 'recover' = 'full', overrideFirstSkuResultUrl?: string | null) => {
     if (taskControllersRef.current[schemeId]) taskControllersRef.current[schemeId].abort();
     const controller = new AbortController();
     taskControllersRef.current[schemeId] = controller;
@@ -248,11 +256,16 @@ const SkuSubModule: React.FC<Props> = ({
         updateSingleScheme(schemeId, { error: '正在重连云端任务...' });
         res = await recoverKieAiTask(targetScheme.taskId, apiConfig, controller.signal);
       } else {
-        const prompt = buildSkuPrompt(targetScheme, isFirst, currentImages);
-        const productUrls = currentImages.filter(i => i.role === 'product' && i.uploadedUrl).map(i => i.uploadedUrl!);
+        const resolvedFirstUrl = overrideFirstSkuResultUrl ?? state.firstSkuResultUrl;
+        const prompt = buildSkuPrompt(targetScheme, isFirst, currentImages, resolvedFirstUrl);
+        const { imageUrls } = buildSkuGenerationAssets({
+          currentImages,
+          firstSkuResultUrl: resolvedFirstUrl,
+          isFirst,
+        });
         const strictRatio = config.aspectRatio || AspectRatio.SQUARE;
         res = await processWithKieAi(
-          productUrls, apiConfig,
+          imageUrls, apiConfig,
           { ...config, aspectRatio: strictRatio as any, maxFileSize: config.maxFileSize || 2.0 } as any,
           false, controller.signal, prompt
         );
@@ -314,17 +327,33 @@ const SkuSubModule: React.FC<Props> = ({
       const uploaded = (await ensureAllUploaded()) || images;
       const currentImages = uploaded.length > 0 ? uploaded : images;
       onUpdate({ firstSkuResultUrl: null });
+      let localFirstSkuResultUrl: string | null = null;
 
       for (let i = 0; i < selected.length; i++) {
         const isFirst = i === 0;
         inflightIdsRef.current.add(selected[i].id);
-        const ok = await generateSingleSku(selected[i].id, isFirst, currentImages);
+        const ok = await generateSingleSku(selected[i].id, isFirst, currentImages, 'full', localFirstSkuResultUrl);
         if (isFirst) {
           if (ok) {
             const latest = schemesRef.current.find(s => s.id === selected[0].id);
-            if (latest?.resultUrl) onUpdate({ firstSkuResultUrl: latest.resultUrl });
+            if (latest?.resultUrl) {
+              localFirstSkuResultUrl = latest.resultUrl;
+              onUpdate({ firstSkuResultUrl: latest.resultUrl });
+            }
           } else {
             addToast('第一张 SKU 生成失败，后续任务已暂停', 'error');
+            // 首图失败：将剩余的 generating 状态重置为 error
+            const remainingIds = selected.slice(1).map(s => s.id);
+            if (remainingIds.length > 0) {
+              onUpdate(prev => ({
+                ...prev,
+                schemes: prev.schemes.map(s =>
+                  remainingIds.includes(s.id) && s.status === 'generating'
+                    ? { ...s, status: 'error' as const, error: '首图生成失败，已暂停' }
+                    : s
+                ),
+              }));
+            }
             break;
           }
         }
@@ -378,7 +407,7 @@ const SkuSubModule: React.FC<Props> = ({
   };
 
   const deleteProject = () => {
-    Object.values(taskControllersRef.current).forEach(c => c.abort());
+    Object.values(taskControllersRef.current).forEach((controller: AbortController) => controller.abort());
     taskControllersRef.current = {};
     onUpdate(prev => ({ ...prev, schemes: [] }));
     inflightIdsRef.current.clear();
@@ -513,7 +542,7 @@ const SkuSubModule: React.FC<Props> = ({
                         <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => deleteScheme(scheme.id)} className="text-xs font-medium text-slate-400 transition-colors hover:text-red-600 disabled:opacity-30">删除</button>
                         <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => {
                           if (scheme.taskId) { handleRecoverSingle(scheme.id); } else {
-                            const cleanedLines = scheme.originalContent.split('\n').filter(line => { const l = line.trim(); if (/^(?:[-#*>\s]*)(?:SKU\s*标识)/.test(l)) return false; if (/^(?:[-#*>\s]*)画面比例/.test(l)) return false; return true; });
+                            const cleanedLines = scheme.originalContent.split('\n').filter(line => { const l = line.trim(); if (/^(?:[-#*>\s]*)(?:SKU\s*标识)/.test(l)) return false; if (/^(?:[-#*>\s]*)设计意图/.test(l)) return false; if (/^(?:[-#*>\s]*)画面比例/.test(l)) return false; return true; });
                             onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === scheme.id ? { ...s, editedContent: cleanedLines.join('\n').trim() } : s) }));
                           }
                         }} className="text-xs font-medium text-slate-400 transition-colors hover:text-rose-600 disabled:opacity-30">还原方案</button>

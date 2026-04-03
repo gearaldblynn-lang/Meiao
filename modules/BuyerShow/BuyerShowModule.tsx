@@ -742,6 +742,15 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                 }));
             }
         }));
+        // 所有并行任务完成后，检查 set 是否全部完成
+        onStateChange(prev => ({
+            ...prev,
+            sets: prev.sets.map(s => {
+                if (s.id !== setId) return s;
+                const allCompleted = s.tasks.every(t => t.status === 'completed');
+                return allCompleted ? { ...s, status: 'completed' as const } : s;
+            })
+        }));
         void logActionSuccess({
           module: 'buyer_show',
           action: 'generate_remaining',
@@ -774,19 +783,27 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     let refDescription = "";
     if (refUrl) {
       if (isFirstImage) {
-         refDescription = `VISUAL REFERENCE PRIORITY: High. The provided reference image (last input) determines the environment style and lighting vibe. Adapt the product into a similar **clean and aesthetic** environment with perfect lighting match.`;
+         refDescription = `VISUAL ATMOSPHERE STYLE REFERENCE (视觉氛围风格参考图):
+Reference Image URL: ${refUrl}
+This image is the VISUAL ATMOSPHERE reference only — match its overall style and color tone.
+Adapt the product into a similar **clean and aesthetic** environment with perfect lighting match.
+If it contains a person, use them only for clothing direction, pose energy, and camera language.
+Do NOT copy the reference person's ethnicity, nationality, or skin tone.
+PROHIBITION: Do NOT generate an identical scene, person, or composition as the reference. Create a SIMILAR atmosphere with DIFFERENT specific content and angles.`;
       } else {
-         refDescription = `SCENE & CHARACTER CONSISTENCY: The provided reference image establishes the reality of this set. 
-         1. **MAINTAIN**: The same person (if present), the same specific room/location, and the same lighting conditions.
-         2. **EXTEND & DIVERGE**: This is a new shot in the same session. Change the camera angle, pose, or focus distance based on the new prompt. Do NOT simply clone the reference composition. Create a coherent story sequence.`;
+         refDescription = `CONSISTENCY REFERENCE (一致性参考图):
+Reference Image URL: ${refUrl}
+This image is the FIRST generated photo of this set — use it as the consistency anchor.
+1. **MAINTAIN**: Same person (if present), same scene style, same color tone, same overall aesthetic.
+2. **EXTEND**: Different camera angle, different pose, different composition. Create a coherent continuation of the same shooting session, NOT a copy.`;
       }
     }
 
     let baseRequirement = "";
     if (isModelMode) {
         baseRequirement = isFirstImage 
-          ? `AUTHENTIC LIFESTYLE SNAPSHOT (BENCHMARK): A real user in ${persistentState.targetCountry} posing naturally in a nice, clean setting. Casual "influencer" style. ${refDescription}` 
-          : `VISUAL CONSISTENCY & VARIATION: ${refDescription}`;
+          ? `AUTHENTIC LIFESTYLE SNAPSHOT (BENCHMARK): A real user whose appearance must fit the local market identity of ${persistentState.targetCountry}, posing naturally in a nice, clean setting. Casual "influencer" style. ${refDescription}` 
+          : `VISUAL CONSISTENCY & VARIATION: Maintain the same generated person, not the original reference person. ${refDescription}`;
     } else {
         baseRequirement = `HIGH QUALITY STILL LIFE: Focus on product in a real-world setting. NO FACES. The product must look like it is physically sitting in the scene, not pasted. ${refDescription}`;
     }
@@ -1033,16 +1050,18 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
         onStateChange(prev => ({
             ...prev,
-            sets: prev.sets.map(s => s.id === setId ? {
-                ...s,
-                tasks: s.tasks.map(t => t.id === task.id ? { 
-                    ...t, 
-                    status: res.status === 'success' ? 'completed' : 'error', 
+            sets: prev.sets.map(s => {
+                if (s.id !== setId) return s;
+                const updatedTasks = s.tasks.map(t => t.id === task.id ? {
+                    ...t,
+                    status: res.status === 'success' ? 'completed' as const : 'error' as const,
                     resultUrl: res.imageUrl,
                     taskId: res.taskId,
                     error: res.status === 'interrupted' ? '已手动中断' : res.message
-                } : t)
-            } : s)
+                } : t);
+                const allCompleted = updatedTasks.every(t => t.status === 'completed');
+                return { ...s, tasks: updatedTasks, status: allCompleted ? 'completed' as const : s.status };
+            })
         }));
         void logActionSuccess({
           module: 'buyer_show',
@@ -1122,7 +1141,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                     中断生成
                   </button>
                 )}
-                {sets && sets.some(s => s.status === 'completed') && (
+                {sets && sets.some(s => s.status === 'completed' || s.tasks.some(t => t.status === 'completed')) && (
                   <button onClick={handleBatchDownload} disabled={isBatchDownloading} className="px-5 py-2.5 bg-emerald-600 text-white font-semibold text-xs rounded-xl hover:bg-emerald-700 shadow-xl shadow-emerald-100 transition-all tracking-[0.16em] flex items-center gap-2">{isBatchDownloading ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-file-zipper"></i>}{isBatchDownloading ? '打包下载中...' : '打包下载'}</button>
                 )}
               </div>
