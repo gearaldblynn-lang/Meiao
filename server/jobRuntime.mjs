@@ -5,6 +5,65 @@ const RETRYABLE_ERROR_CODES = new Set([
   'provider_timeout',
 ]);
 
+const AGENT_MODEL_CATALOG = {
+  chat: [
+    {
+      id: 'doubao-seed-1-6-flash-250615',
+      label: '豆包 Seed 1.6 Flash',
+      provider: 'ark',
+      supportsImageInput: true,
+      supportsFileInput: true,
+      supportsWebSearch: false,
+      supportsReasoningLevel: false,
+      reasoningLevels: [],
+    },
+    {
+      id: 'doubao-seed-1-6-thinking-250715',
+      label: '豆包 Seed 1.6 Thinking',
+      provider: 'ark',
+      supportsImageInput: true,
+      supportsFileInput: true,
+      supportsWebSearch: false,
+      supportsReasoningLevel: true,
+      reasoningLevels: ['low', 'medium', 'high'],
+    },
+    {
+      id: 'doubao-seed-2-0-lite-260215',
+      label: '豆包 Seed 2.0 Lite',
+      provider: 'ark',
+      supportsImageInput: true,
+      supportsFileInput: true,
+      supportsWebSearch: false,
+      supportsReasoningLevel: false,
+      reasoningLevels: [],
+    },
+  ],
+  image: [
+    {
+      id: 'nano-banana-2',
+      label: 'Nano Banana 2',
+      provider: 'kie',
+      supportsMultiImageInput: true,
+      supportsImageEdit: true,
+      maxInputImages: 10,
+      defaultSize: 'auto',
+      supportedSizes: ['auto', '1:1', '3:4', '4:3', '4:5', '9:16', '16:9'],
+      supportsTransparentBackground: false,
+    },
+    {
+      id: 'nano-banana-pro',
+      label: 'Nano Banana Pro',
+      provider: 'kie',
+      supportsMultiImageInput: true,
+      supportsImageEdit: true,
+      maxInputImages: 10,
+      defaultSize: 'auto',
+      supportedSizes: ['auto', '1:1', '3:4', '4:3', '4:5', '9:16', '16:9'],
+      supportsTransparentBackground: false,
+    },
+  ],
+};
+
 const toSafePositiveInteger = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -54,6 +113,20 @@ export const getNextJobFailureState = ({ retryCount = 0, maxRetries = 0, errorCo
 
 export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) => {
   const allowedOrigins = normalizeAllowedOrigins(env.MEIAO_ALLOWED_ORIGINS);
+  const chatCatalog = AGENT_MODEL_CATALOG.chat.map((item) => ({ ...item }));
+  const configuredAnalysisModel = String(overrides?.systemSettings?.analysisModel || '').trim();
+  const effectiveAnalysisModel = chatCatalog.some((item) => item.id === configuredAnalysisModel)
+    ? configuredAnalysisModel
+    : String(
+        env.MEIAO_AGENT_ANALYSIS_MODEL ||
+        env.MEIAO_PLANNING_ANALYSIS_MODEL ||
+        env.MEIAO_DEFAULT_ANALYSIS_MODEL ||
+        env.MEIAO_DEFAULT_CHAT_MODEL ||
+        env.ARK_MODEL ||
+        env.KIE_CHAT_MODEL ||
+        chatCatalog[0]?.id ||
+        ''
+      ).trim();
 
   return {
     queue: {
@@ -71,6 +144,14 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       kie: {
         configured: Boolean(env.KIE_API_KEY),
       },
+    },
+    systemSettings: {
+      analysisModel: configuredAnalysisModel,
+      effectiveAnalysisModel,
+    },
+    agentModels: {
+      chat: chatCatalog,
+      image: AGENT_MODEL_CATALOG.image.map((item) => ({ ...item })),
     },
   };
 };

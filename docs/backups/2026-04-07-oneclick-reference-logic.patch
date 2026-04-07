@@ -1,0 +1,325 @@
+diff --git a/modules/OneClick/DetailPageSubModule.tsx b/modules/OneClick/DetailPageSubModule.tsx
+index aeb70e5..d1e3186 100644
+--- a/modules/OneClick/DetailPageSubModule.tsx
++++ b/modules/OneClick/DetailPageSubModule.tsx
+@@ -541,6 +541,7 @@ const DetailPageSubModule: React.FC<Props> = ({
+ 
+     // 增加生图文案语言固定指令
+     finalPrompt += `\n\n生图文案语言：“${config.language || 'English'}”`;
++    finalPrompt += `\n文案文字必须为“${config.language || 'English'}”`;
+ 
+     return await processWithKieAi(
+       inputImages, 
+diff --git a/modules/OneClick/MainImageSubModule.tsx b/modules/OneClick/MainImageSubModule.tsx
+index 07cd779..4fcca0e 100644
+--- a/modules/OneClick/MainImageSubModule.tsx
++++ b/modules/OneClick/MainImageSubModule.tsx
+@@ -468,6 +468,7 @@ const MainImageSubModule: React.FC<Props> = ({
+ 
+     // 增加生图文案语言固定指令
+     finalPrompt += `\n\n生图文案语言：“${config.language || 'English'}”`;
++    finalPrompt += `\n文案文字必须为“${config.language || 'English'}”`;
+ 
+     return await processWithKieAi(
+       inputImages, 
+diff --git a/modules/OneClick/SkuSubModule.tsx b/modules/OneClick/SkuSubModule.tsx
+index 0c7ec87..b6df612 100644
+--- a/modules/OneClick/SkuSubModule.tsx
++++ b/modules/OneClick/SkuSubModule.tsx
+@@ -224,9 +224,9 @@ const SkuSubModule: React.FC<Props> = ({
+     if (styleRefUrl) {
+       prompt += `\n风格参考图：${styleRefUrl}。`;
+       if (!isFirst && resolvedFirstUrl) {
+-        prompt += '严格按照该风格参考图一致的排版、字体风格、文字摆放、色调和整体设计风格制作。';
++        prompt += '严格按照该风格参考图一致的排版、字体风格、文字摆放、色调和整体设计风格制作。该图仅作为风格基准，不得替换、改写或混入主体商品本身。';
+       } else {
+-        prompt += '重点参考它的排版、字体风格、文字摆放、色调、光影和整体氛围，但不要使用参考图中的商品本身。';
++        prompt += '重点参考它的排版、字体风格、文字摆放、色调、光影和整体氛围，但不要使用参考图中的商品本身。该图只提供视觉风格参考，不属于本次需要还原的商品主体。';
+       }
+     }
+     prompt += `\n生图文案语言：”${config.language || '中文'}”`;
+@@ -258,14 +258,14 @@ const SkuSubModule: React.FC<Props> = ({
+       } else {
+         const resolvedFirstUrl = overrideFirstSkuResultUrl ?? state.firstSkuResultUrl;
+         const prompt = buildSkuPrompt(targetScheme, isFirst, currentImages, resolvedFirstUrl);
+-        const { imageUrls } = buildSkuGenerationAssets({
++        const { generationImageUrls } = buildSkuGenerationAssets({
+           currentImages,
+           firstSkuResultUrl: resolvedFirstUrl,
+           isFirst,
+         });
+         const strictRatio = config.aspectRatio || AspectRatio.SQUARE;
+         res = await processWithKieAi(
+-          imageUrls, apiConfig,
++          generationImageUrls, apiConfig,
+           { ...config, aspectRatio: strictRatio as any, maxFileSize: config.maxFileSize || 2.0 } as any,
+           false, controller.signal, prompt
+         );
+diff --git a/modules/OneClick/skuGenerationUtils.mjs b/modules/OneClick/skuGenerationUtils.mjs
+index 5c7ea40..d6985e2 100644
+--- a/modules/OneClick/skuGenerationUtils.mjs
++++ b/modules/OneClick/skuGenerationUtils.mjs
+@@ -11,11 +11,13 @@ export const buildSkuGenerationAssets = ({ currentImages, firstSkuResultUrl, isF
+   const uploadedStyleRefUrl = currentImages.find((item) => item.role === 'style_ref' && item.uploadedUrl)?.uploadedUrl || null;
+   const styleRefUrl = !isFirst && firstSkuResultUrl ? firstSkuResultUrl : uploadedStyleRefUrl;
+   const imageUrls = [...productUrls, ...giftUrls, ...(styleRefUrl ? [styleRefUrl] : [])];
++  const generationImageUrls = [...productUrls, ...giftUrls];
+ 
+   return {
+     productUrls,
+     giftUrls,
+     styleRefUrl,
+     imageUrls,
++    generationImageUrls,
+   };
+ };
+diff --git a/types.ts b/types.ts
+index f6e6481..2b0b20c 100644
+--- a/types.ts
++++ b/types.ts
+@@ -1,5 +1,6 @@
+ 
+ export enum AppModule {
++  AGENT_CENTER = 'agent_center',
+   ONE_CLICK = 'one_click',
+   TRANSLATION = 'translation',
+   BUYER_SHOW = 'buyer_show',
+@@ -96,6 +97,33 @@ export interface SystemPublicConfig {
+     ark: { configured: boolean };
+     kie: { configured: boolean };
+   };
++  systemSettings: {
++    analysisModel: string;
++    effectiveAnalysisModel: string;
++  };
++  agentModels: {
++    chat: Array<{
++      id: string;
++      label: string;
++      provider: 'ark' | 'kie';
++      supportsImageInput: boolean;
++      supportsFileInput: boolean;
++      supportsWebSearch: boolean;
++      supportsReasoningLevel: boolean;
++      reasoningLevels: string[];
++    }>;
++    image: Array<{
++      id: string;
++      label: string;
++      provider: 'ark' | 'kie';
++      supportsMultiImageInput: boolean;
++      supportsImageEdit: boolean;
++      maxInputImages: number;
++      defaultSize: string;
++      supportedSizes: string[];
++      supportsTransparentBackground: boolean;
++    }>;
++  };
+ }
+ 
+ export type UserRole = 'admin' | 'staff';
+@@ -105,6 +133,9 @@ export interface AuthUser {
+   username: string;
+   displayName: string;
+   role: UserRole;
++  avatarUrl?: string | null;
++  avatarPreset?: string | null;
++  isSuperAdmin?: boolean;
+   status: 'active' | 'disabled';
+   jobConcurrency: number;
+   createdAt: number;
+@@ -126,6 +157,194 @@ export interface InternalLogEntry {
+   meta?: Record<string, unknown>;
+ }
+ 
++export interface AgentModelPolicy {
++  defaultModel: string;
++  cheapModel: string;
++  advancedModel: string;
++  multimodalModel: string;
++  imageGenerationEnabled?: boolean;
++}
++
++export interface AgentContextPolicy {
++  maxHistoryRounds: number;
++  summaryTriggerThreshold: number;
++  maxSummaryChars: number;
++}
++
++export interface AgentRetrievalPolicy {
++  enabled: boolean;
++  topK: number;
++  maxChunks: number;
++  similarityThreshold: number;
++  sourcePriority: string[];
++  maxContextChars: number;
++  fallbackMode: string;
++}
++
++export interface AgentToolPolicy {
++  supportsImageInput: boolean;
++  supportsFileInput: boolean;
++}
++
++export interface AgentReplyStyleRules {
++  tone: string;
++  citeKnowledge: boolean;
++  noAnswerFallback: string;
++}
++
++export interface AgentVersion {
++  id: string;
++  agentId: string;
++  versionNo: number;
++  versionName: string;
++  allowedChatModels: string[];
++  defaultChatModel?: string | null;
++  isPublished: boolean;
++  systemPrompt: string;
++  replyStyleRules: AgentReplyStyleRules;
++  modelPolicy: AgentModelPolicy;
++  contextPolicy: AgentContextPolicy;
++  retrievalPolicy: AgentRetrievalPolicy;
++  toolPolicy: AgentToolPolicy;
++  validationStatus: 'pending' | 'success' | 'failed';
++  validationSummary?: Record<string, unknown> | null;
++  createdBy: string;
++  createdAt: number;
++  knowledgeBaseIds: string[];
++}
++
++export interface AgentSummary {
++  id: string;
++  name: string;
++  description: string;
++  department: string;
++  iconUrl?: string | null;
++  avatarPreset?: string | null;
++  ownerUserId: string;
++  ownerDisplayName: string;
++  visibilityScope: string;
++  status: 'draft' | 'published' | 'archived';
++  currentVersionId?: string | null;
++  currentVersionNo?: number | null;
++  defaultModel?: string;
++  allowedChatModels?: string[];
++  defaultChatModel?: string | null;
++  imageGenerationEnabled?: boolean;
++  imageModel?: string | null;
++  imageMaxInputCount?: number;
++  knowledgeBaseCount: number;
++  usageCount7d: number;
++  createdAt: number;
++  updatedAt: number;
++}
++
++export interface KnowledgeBaseSummary {
++  id: string;
++  name: string;
++  description: string;
++  department: string;
++  ownerUserId: string;
++  ownerDisplayName: string;
++  status: 'active' | 'archived';
++  documentCount: number;
++  boundAgentCount: number;
++  createdAt: number;
++  updatedAt: number;
++}
++
++export interface KnowledgeDocumentSummary {
++  id: string;
++  knowledgeBaseId: string;
++  title: string;
++  sourceType: 'upload' | 'manual';
++  chunkStrategy: 'general' | 'rule' | 'sop' | 'faq' | 'case';
++  rawText: string;
++  normalizationEnabled: boolean;
++  normalizedText: string;
++  normalizedStatus: 'idle' | 'processing' | 'success' | 'failed';
++  normalizationError?: string;
++  chunkSource: 'raw' | 'normalized';
++  parseStatus: 'pending' | 'parsed' | 'failed';
++  chunkCount: number;
++  createdBy: string;
++  createdAt: number;
++  updatedAt: number;
++}
++
++export interface AgentChatSession {
++  id: string;
++  userId: string;
++  agentId: string;
++  agentVersionId: string;
++  title: string;
++  status: 'active' | 'archived';
++  summary?: string;
++  selectedModel: string;
++  reasoningLevel?: string | null;
++  webSearchEnabled: boolean;
++  lastImageMode?: boolean;
++  createdAt: number;
++  updatedAt: number;
++}
++
++export interface AgentImageReference {
++  index: number;
++  label: string;
++  name: string;
++  url?: string;
++  mimeType?: string;
++  source: 'current_upload' | 'history_attachment' | 'previous_result';
++  role?: string;
++}
++
++export interface AgentImageGenerationPlan {
++  requestMode: 'image_generation';
++  taskType: 'new_image' | 'edit_image';
++  selectedImageModel: string;
++  inputImageUrls: string[];
++  imageReferences: AgentImageReference[];
++  size: string;
++  transparentBackground: boolean;
++  prompt: string;
++  reasoningSummary: string;
++}
++
++export interface AgentChatMessage {
++  id: string;
++  sessionId: string;
++  userId: string;
++  role: 'system' | 'user' | 'assistant' | 'tool';
++  content: string;
++  attachments?: Array<{ name: string; url?: string; assetId?: string; mimeType?: string; kind?: 'image' | 'file' }> | null;
++  metadata?: (Record<string, unknown> & {
++    requestMode?: 'chat' | 'image_generation';
++    imagePlan?: AgentImageGenerationPlan | null;
++    imageResultUrls?: string[] | null;
++    retrievalSummary?: Array<{
++      documentTitle?: string;
++      sourceType?: string;
++      preview?: string;
++    }> | null;
++  }) | null;
++  createdAt: number;
++}
++
++export interface AgentUsageRow {
++  id: string;
++  userId: string;
++  username: string;
++  displayName: string;
++  agentId: string;
++  agentName: string;
++  selectedModel: string;
++  usedRetrieval: boolean;
++  totalTokens: number;
++  estimatedCost: number;
++  latencyMs: number;
++  status: string;
++  createdAt: number;
++}
++
+ export interface ModuleConfig {
+   targetLanguage: string;
+   customLanguage: string;

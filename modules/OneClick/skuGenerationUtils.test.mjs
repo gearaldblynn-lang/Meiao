@@ -24,6 +24,11 @@ test('buildSkuGenerationAssets includes product, gift, and uploaded style refere
     'https://img.test/gift-b.png',
     'https://img.test/style.png',
   ]);
+  assert.deepEqual(assets.generationImageUrls, [
+    'https://img.test/product-a.png',
+    'https://img.test/gift-a.png',
+    'https://img.test/gift-b.png',
+  ]);
 });
 
 test('buildSkuGenerationAssets switches to first generated sku url as the only style reference after the first sku', () => {
@@ -42,6 +47,10 @@ test('buildSkuGenerationAssets switches to first generated sku url as the only s
     'https://img.test/product-a.png',
     'https://img.test/gift-a.png',
     'https://img.test/sku-1-result.png',
+  ]);
+  assert.deepEqual(assets.generationImageUrls, [
+    'https://img.test/product-a.png',
+    'https://img.test/gift-a.png',
   ]);
   assert.ok(!assets.imageUrls.includes('https://img.test/original-style.png'));
 });

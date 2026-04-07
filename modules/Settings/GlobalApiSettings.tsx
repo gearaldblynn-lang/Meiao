@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AuthUser, GlobalApiConfig, SystemPublicConfig } from '../../types';
-import { fetchSystemConfig } from '../../services/internalApi';
+import { fetchSystemConfig, updateSystemConfig } from '../../services/internalApi';
 import { getEffectiveConcurrency } from '../Account/accountManagementUtils.mjs';
 import { InfoPill, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 
@@ -33,6 +33,9 @@ const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, curr
   const [systemConfig, setSystemConfig] = useState<SystemPublicConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [analysisModel, setAnalysisModel] = useState('');
+  const [savingAnalysisModel, setSavingAnalysisModel] = useState(false);
+  const [analysisModelMessage, setAnalysisModelMessage] = useState('');
 
   useEffect(() => {
     onApiConfigChange({ ...apiConfig, kieApiKey: '', arkApiKey: '' });
@@ -49,6 +52,7 @@ const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, curr
         const result = await fetchSystemConfig();
         if (!disposed) {
           setSystemConfig(result.config);
+          setAnalysisModel(result.config.systemSettings.analysisModel || '');
           const effectiveConcurrency = getEffectiveConcurrency(
             result.config.queue.maxConcurrency,
             currentUser?.jobConcurrency
@@ -78,20 +82,49 @@ const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, curr
     };
   }, [internalMode, isActive, currentUser?.id, currentUser?.jobConcurrency]);
 
+  const canManageSystemSettings = Boolean(currentUser?.role === 'admin');
+
+  const handleSaveAnalysisModel = async () => {
+    if (!canManageSystemSettings) return;
+    setSavingAnalysisModel(true);
+    setAnalysisModelMessage('');
+    try {
+      const result = await updateSystemConfig({ analysisModel });
+      setSystemConfig(result.config);
+      setAnalysisModel(result.config.systemSettings.analysisModel || '');
+      setAnalysisModelMessage('策划分析模型已保存。');
+    } catch (saveError: any) {
+      setAnalysisModelMessage(saveError.message || '保存失败');
+    } finally {
+      setSavingAnalysisModel(false);
+    }
+  };
+
   return (
     <div className="h-full overflow-y-auto px-6 pb-6 pt-5">
       <div className="max-w-5xl mx-auto">
-        <header className="mb-8 rounded-[32px] border border-slate-200/80 bg-white/90 px-8 py-8 shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
-          <p className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">Infrastructure & Queue Status</p>
-          <h2 className="mt-3 text-3xl font-black text-slate-900">梅奥 AI · 系统配置</h2>
-          <p className="mt-3 max-w-3xl text-sm leading-7 text-slate-500">这里只显示系统状态、环境是否齐全和当前队列信息，不再展示任何真实密钥。管理员看得到运行情况，员工只看到与自己使用相关的公开信息。</p>
+        <header className="mb-6 rounded-[24px] border border-slate-200/80 bg-white/90 px-6 py-5 shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-[20px] font-black text-slate-900">系统设置</h2>
+              <p className="mt-1 text-[12px] font-medium text-slate-500">环境状态、引擎配置与队列信息。</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-500">
+                {internalMode ? '内部模式' : '本地模式'}
+              </span>
+              <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-500">
+                {currentUser?.role === 'admin' ? '管理员' : '员工'}
+              </span>
+            </div>
+          </div>
         </header>
 
         {internalMode ? (
           <>
-            <WorkspaceShellCard className="mb-8 bg-slate-50/90 px-6 py-5">
-              <p className="text-sm font-black text-slate-900">当前模式</p>
-              <p className="mt-2 text-sm leading-7 text-slate-600">
+            <WorkspaceShellCard className="mb-6 bg-slate-50/90 px-5 py-4">
+              <p className="text-[14px] font-black text-slate-900">当前模式</p>
+              <p className="mt-2 text-[13px] leading-6 text-slate-600">
                 已切换为内部服务端托管模式。第三方 API Key 与模型调用全部由服务器接管，当前登录身份为 {currentUser?.role === 'admin' ? '管理员' : '员工'}。
               </p>
             </WorkspaceShellCard>
@@ -112,6 +145,49 @@ const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, curr
               <InfoPill label="待执行任务" value={loading ? '...' : String(systemConfig?.queue.queuedCount ?? '-')} />
               <InfoPill label="执行中任务" value={loading ? '...' : String(systemConfig?.queue.runningCount ?? '-')} />
             </div>
+
+            <WorkspaceShellCard className="mt-8 bg-white/92 px-5 py-5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <p className="text-[15px] font-black text-slate-900">策划分析模型</p>
+                  <p className="mt-1 text-[12px] leading-6 text-slate-500">
+                    用于 AI 规范整理、生图需求分析等服务端分析类动作。留空时按系统自动选择当前默认分析模型。
+                  </p>
+                </div>
+                <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-500">
+                  当前生效：{systemConfig?.systemSettings.effectiveAnalysisModel || '自动'}
+                </span>
+              </div>
+              <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center">
+                <select
+                  value={analysisModel}
+                  onChange={(event) => setAnalysisModel(event.target.value)}
+                  disabled={!canManageSystemSettings || loading || savingAnalysisModel}
+                  className="min-w-0 flex-1 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-[14px] font-medium text-slate-700 outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <option value="">自动选择默认分析模型</option>
+                  {(systemConfig?.agentModels.chat || []).map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.label}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handleSaveAnalysisModel}
+                  disabled={!canManageSystemSettings || savingAnalysisModel || loading}
+                  className="rounded-2xl bg-slate-900 px-4 py-3 text-[13px] font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingAnalysisModel ? '保存中...' : '保存设置'}
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-3 text-[12px]">
+                <span className="text-slate-400">
+                  {canManageSystemSettings ? '管理员可修改，全局生效。' : '仅管理员可修改，员工只读。'}
+                </span>
+                {analysisModelMessage ? <span className="font-medium text-slate-600">{analysisModelMessage}</span> : null}
+              </div>
+            </WorkspaceShellCard>
 
             <p className="mt-4 text-xs font-bold text-slate-400">
               当前只保留一个并发值，按账号并发上限直接展示和执行。

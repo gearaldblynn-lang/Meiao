@@ -1,5 +1,6 @@
 
 export enum AppModule {
+  AGENT_CENTER = 'agent_center',
   ONE_CLICK = 'one_click',
   TRANSLATION = 'translation',
   BUYER_SHOW = 'buyer_show',
@@ -96,6 +97,33 @@ export interface SystemPublicConfig {
     ark: { configured: boolean };
     kie: { configured: boolean };
   };
+  systemSettings: {
+    analysisModel: string;
+    effectiveAnalysisModel: string;
+  };
+  agentModels: {
+    chat: Array<{
+      id: string;
+      label: string;
+      provider: 'ark' | 'kie';
+      supportsImageInput: boolean;
+      supportsFileInput: boolean;
+      supportsWebSearch: boolean;
+      supportsReasoningLevel: boolean;
+      reasoningLevels: string[];
+    }>;
+    image: Array<{
+      id: string;
+      label: string;
+      provider: 'ark' | 'kie';
+      supportsMultiImageInput: boolean;
+      supportsImageEdit: boolean;
+      maxInputImages: number;
+      defaultSize: string;
+      supportedSizes: string[];
+      supportsTransparentBackground: boolean;
+    }>;
+  };
 }
 
 export type UserRole = 'admin' | 'staff';
@@ -105,6 +133,9 @@ export interface AuthUser {
   username: string;
   displayName: string;
   role: UserRole;
+  avatarUrl?: string | null;
+  avatarPreset?: string | null;
+  isSuperAdmin?: boolean;
   status: 'active' | 'disabled';
   jobConcurrency: number;
   createdAt: number;
@@ -124,6 +155,194 @@ export interface InternalLogEntry {
   username: string;
   displayName: string;
   meta?: Record<string, unknown>;
+}
+
+export interface AgentModelPolicy {
+  defaultModel: string;
+  cheapModel: string;
+  advancedModel: string;
+  multimodalModel: string;
+  imageGenerationEnabled?: boolean;
+}
+
+export interface AgentContextPolicy {
+  maxHistoryRounds: number;
+  summaryTriggerThreshold: number;
+  maxSummaryChars: number;
+}
+
+export interface AgentRetrievalPolicy {
+  enabled: boolean;
+  topK: number;
+  maxChunks: number;
+  similarityThreshold: number;
+  sourcePriority: string[];
+  maxContextChars: number;
+  fallbackMode: string;
+}
+
+export interface AgentToolPolicy {
+  supportsImageInput: boolean;
+  supportsFileInput: boolean;
+}
+
+export interface AgentReplyStyleRules {
+  tone: string;
+  citeKnowledge: boolean;
+  noAnswerFallback: string;
+}
+
+export interface AgentVersion {
+  id: string;
+  agentId: string;
+  versionNo: number;
+  versionName: string;
+  allowedChatModels: string[];
+  defaultChatModel?: string | null;
+  isPublished: boolean;
+  systemPrompt: string;
+  replyStyleRules: AgentReplyStyleRules;
+  modelPolicy: AgentModelPolicy;
+  contextPolicy: AgentContextPolicy;
+  retrievalPolicy: AgentRetrievalPolicy;
+  toolPolicy: AgentToolPolicy;
+  validationStatus: 'pending' | 'success' | 'failed';
+  validationSummary?: Record<string, unknown> | null;
+  createdBy: string;
+  createdAt: number;
+  knowledgeBaseIds: string[];
+}
+
+export interface AgentSummary {
+  id: string;
+  name: string;
+  description: string;
+  department: string;
+  iconUrl?: string | null;
+  avatarPreset?: string | null;
+  ownerUserId: string;
+  ownerDisplayName: string;
+  visibilityScope: string;
+  status: 'draft' | 'published' | 'archived';
+  currentVersionId?: string | null;
+  currentVersionNo?: number | null;
+  defaultModel?: string;
+  allowedChatModels?: string[];
+  defaultChatModel?: string | null;
+  imageGenerationEnabled?: boolean;
+  imageModel?: string | null;
+  imageMaxInputCount?: number;
+  knowledgeBaseCount: number;
+  usageCount7d: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KnowledgeBaseSummary {
+  id: string;
+  name: string;
+  description: string;
+  department: string;
+  ownerUserId: string;
+  ownerDisplayName: string;
+  status: 'active' | 'archived';
+  documentCount: number;
+  boundAgentCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KnowledgeDocumentSummary {
+  id: string;
+  knowledgeBaseId: string;
+  title: string;
+  sourceType: 'upload' | 'manual';
+  chunkStrategy: 'general' | 'rule' | 'sop' | 'faq' | 'case';
+  rawText: string;
+  normalizationEnabled: boolean;
+  normalizedText: string;
+  normalizedStatus: 'idle' | 'processing' | 'success' | 'failed';
+  normalizationError?: string;
+  chunkSource: 'raw' | 'normalized';
+  parseStatus: 'pending' | 'parsed' | 'failed';
+  chunkCount: number;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AgentChatSession {
+  id: string;
+  userId: string;
+  agentId: string;
+  agentVersionId: string;
+  title: string;
+  status: 'active' | 'archived';
+  summary?: string;
+  selectedModel: string;
+  reasoningLevel?: string | null;
+  webSearchEnabled: boolean;
+  lastImageMode?: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AgentImageReference {
+  index: number;
+  label: string;
+  name: string;
+  url?: string;
+  mimeType?: string;
+  source: 'current_upload' | 'history_attachment' | 'previous_result';
+  role?: string;
+}
+
+export interface AgentImageGenerationPlan {
+  requestMode: 'image_generation';
+  taskType: 'new_image' | 'edit_image';
+  selectedImageModel: string;
+  inputImageUrls: string[];
+  imageReferences: AgentImageReference[];
+  size: string;
+  transparentBackground: boolean;
+  prompt: string;
+  reasoningSummary: string;
+}
+
+export interface AgentChatMessage {
+  id: string;
+  sessionId: string;
+  userId: string;
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  attachments?: Array<{ name: string; url?: string; assetId?: string; mimeType?: string; kind?: 'image' | 'file' }> | null;
+  metadata?: (Record<string, unknown> & {
+    requestMode?: 'chat' | 'image_generation';
+    imagePlan?: AgentImageGenerationPlan | null;
+    imageResultUrls?: string[] | null;
+    retrievalSummary?: Array<{
+      documentTitle?: string;
+      sourceType?: string;
+      preview?: string;
+    }> | null;
+  }) | null;
+  createdAt: number;
+}
+
+export interface AgentUsageRow {
+  id: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  agentId: string;
+  agentName: string;
+  selectedModel: string;
+  usedRetrieval: boolean;
+  totalTokens: number;
+  estimatedCost: number;
+  latencyMs: number;
+  status: string;
+  createdAt: number;
 }
 
 export interface ModuleConfig {
@@ -339,6 +558,28 @@ export interface OneClickConfig {
   maxFileSize: number;
 }
 
+export type OneClickReferenceDimension = 'visual_style' | 'typography' | 'color_palette' | 'layout' | 'copy_content';
+
+export interface OneClickReferenceItem {
+  id: string;
+  file: File | null;
+  uploadedUrl: string | null;
+}
+
+export interface OneClickReferenceAnalysis {
+  status: 'idle' | 'analyzing' | 'success' | 'error';
+  summary: string;
+  error?: string;
+  analyzedAt?: number | null;
+}
+
+export interface OneClickReferenceState {
+  designReferences: OneClickReferenceItem[];
+  uploadedDesignReferenceUrls: string[];
+  referenceDimensions: OneClickReferenceDimension[];
+  referenceAnalysis: OneClickReferenceAnalysis;
+}
+
 export interface MainImageScheme {
   id: string;
   taskId?: string; 
@@ -440,7 +681,7 @@ export interface RetouchTask {
 }
 
 export interface OneClickPersistentState {
-  mainImage: {
+  mainImage: OneClickReferenceState & {
     productImages: File[];
     styleImage: File | null;
     schemes: MainImageScheme[];
@@ -449,7 +690,7 @@ export interface OneClickPersistentState {
     uploadedProductUrls: string[];
     directions: string[];
   };
-  detailPage: {
+  detailPage: OneClickReferenceState & {
     productImages: File[];
     styleImage: File | null;
     schemes: MainImageScheme[];
@@ -458,7 +699,7 @@ export interface OneClickPersistentState {
     uploadedProductUrls: string[];
     directions: string[];
   };
-  sku: SkuPersistentSubState;
+  sku: SkuPersistentSubState & OneClickReferenceState;
 }
 
 export interface RetouchPersistentState {

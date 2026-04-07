@@ -26,3 +26,28 @@ test('prepareImageForUpload must not silently keep oversized originals', () => {
     'upload compression should try createImageBitmap for more robust decoding'
   );
 });
+
+test('download helper fetches remote files into a blob before saving with an explicit extension', () => {
+  const source = readFileSync(new URL('./imageUtils.ts', import.meta.url), 'utf8');
+
+  assert.match(
+    source,
+    /export const downloadRemoteFile = async \(/,
+    'image utils should expose a shared remote download helper'
+  );
+  assert.match(
+    source,
+    /const response = await fetch\(url, \{ mode: 'cors', cache: 'no-cache' \}\);/,
+    'remote download helper should fetch the asset first instead of relying on cross-origin anchor naming'
+  );
+  assert.match(
+    source,
+    /const blobUrl = safeCreateObjectURL\(blob\);/,
+    'remote download helper should save via a local blob url'
+  );
+  assert.match(
+    source,
+    /link\.download = ensureDownloadFileName\(fileName, blob\.type, url\);/,
+    'remote download helper should enforce a real file extension on the saved name'
+  );
+});

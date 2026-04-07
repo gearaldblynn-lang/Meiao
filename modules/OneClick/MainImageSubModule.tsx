@@ -6,10 +6,10 @@ import { GlobalApiConfig, AspectRatio, OneClickConfig, MainImageScheme, OneClick
 import ConfigSidebar from './ConfigSidebar';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
-import { generateMarketingSchemes } from '../../services/arkService';
+import { analyzeOneClickReferenceSet, generateMarketingSchemes } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
 import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
-import { resizeImage, createZipAndDownload, getImageDimensions } from '../../utils/imageUtils';
+import { resizeImage, createZipAndDownload, downloadRemoteFile, getImageDimensions } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
@@ -35,8 +35,9 @@ const MainImageSubModule: React.FC<Props> = ({
   currentSubMode,
   onSubModeChange,
 }) => {
-  const { productImages, styleImage, schemes, config, lastStyleUrl, uploadedProductUrls } = state;
+  const { productImages, styleImage, designReferences, uploadedDesignReferenceUrls, referenceDimensions, referenceAnalysis, schemes, config, lastStyleUrl, uploadedProductUrls } = state;
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isAnalyzingReference, setIsAnalyzingReference] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [previewId, setPreviewId] = useState<string | null>(null);
@@ -142,6 +143,72 @@ const MainImageSubModule: React.FC<Props> = ({
     return urls;
   };
 
+  const getOrUploadReferenceUrls = async () => {
+    if (designReferences.length === 0 && uploadedDesignReferenceUrls.length > 0) {
+      return uploadedDesignReferenceUrls;
+    }
+    if (uploadedDesignReferenceUrls.length === designReferences.length && designReferences.length > 0 && uploadedDesignReferenceUrls.every(Boolean)) {
+      return uploadedDesignReferenceUrls;
+    }
+    const nextItems = [...designReferences];
+    const urls = await Promise.all(nextItems.map(async (item, index) => {
+      if (item.uploadedUrl) return item.uploadedUrl;
+      if (!item.file) return uploadedDesignReferenceUrls[index] || '';
+      const url = await uploadToCos(item.file, apiConfig);
+      nextItems[index] = { ...nextItems[index], uploadedUrl: url };
+      return url;
+    }));
+    const normalizedUrls = urls.filter(Boolean);
+    onUpdate({
+      designReferences: nextItems,
+      uploadedDesignReferenceUrls: normalizedUrls,
+      lastStyleUrl: normalizedUrls[0] || null,
+    });
+    return normalizedUrls;
+  };
+
+  const handleAnalyzeReference = async () => {
+    if (isAnalyzingReference || designReferences.length === 0 || referenceDimensions.length === 0) return;
+    setIsAnalyzingReference(true);
+    try {
+      const referenceUrls = await getOrUploadReferenceUrls();
+      const result = await analyzeOneClickReferenceSet(referenceUrls, referenceDimensions, OneClickSubMode.MAIN_IMAGE, apiConfig);
+      if (result.status === 'success') {
+        onUpdate({
+          uploadedDesignReferenceUrls: referenceUrls,
+          referenceAnalysis: {
+            status: 'success',
+            summary: result.description,
+            analyzedAt: Date.now(),
+          },
+        });
+        addToast('设计参考分析完成', 'success');
+      } else {
+        onUpdate({
+          referenceAnalysis: {
+            status: 'error',
+            summary: '',
+            error: result.message || '设计参考分析失败',
+            analyzedAt: null,
+          },
+        });
+        addToast(`设计参考分析失败: ${result.message}`, 'error');
+      }
+    } catch (error: any) {
+      onUpdate({
+        referenceAnalysis: {
+          status: 'error',
+          summary: '',
+          error: error.message,
+          analyzedAt: null,
+        },
+      });
+      addToast(`设计参考分析失败: ${error.message}`, 'error');
+    } finally {
+      setIsAnalyzingReference(false);
+    }
+  };
+
   const handleStartAnalysis = async () => {
     const hasGeneratingTask = schemesRef.current.some(s => s.status === 'generating');
     // 允许在只有上传 URL 的情况下启动分析（支持刷新后直接点击）
@@ -156,7 +223,7 @@ const MainImageSubModule: React.FC<Props> = ({
       meta: {
         ...baseMeta,
         productImageCount: productImages.length || uploadedProductUrls.length,
-        hasStyleImage: Boolean(styleImage || lastStyleUrl),
+        hasStyleImage: Boolean(designReferences.length || styleImage || lastStyleUrl),
       },
     });
     addToast("正在进行全案视觉策划...", 'info');
@@ -167,19 +234,28 @@ const MainImageSubModule: React.FC<Props> = ({
       
       const productUrls = await getOrUploadProductUrls();
       
-      let styleUrl = lastStyleUrl;
-      // 仅当样式图存在且未上传时才上传
-      if (styleImage && !styleUrl) { 
-        styleUrl = await uploadToCos(styleImage, apiConfig); 
-        onUpdate({ lastStyleUrl: styleUrl }); 
-      } else if (!styleImage) {
-        onUpdate({ lastStyleUrl: null });
-        styleUrl = null;
+      let referenceSummary = referenceAnalysis.summary;
+      if (!referenceSummary && designReferences.length > 0 && referenceDimensions.length > 0) {
+        const referenceUrls = await getOrUploadReferenceUrls();
+        const referenceResult = await analyzeOneClickReferenceSet(referenceUrls, referenceDimensions, OneClickSubMode.MAIN_IMAGE, apiConfig, globalAbortRef.current.signal);
+        if (referenceResult.status === 'success') {
+          referenceSummary = referenceResult.description;
+          onUpdate({
+            uploadedDesignReferenceUrls: referenceUrls,
+            referenceAnalysis: {
+              status: 'success',
+              summary: referenceResult.description,
+              analyzedAt: Date.now(),
+            },
+          });
+        } else {
+          throw new Error(referenceResult.message || '设计参考分析失败');
+        }
       }
 
       if (globalAbortRef.current.signal.aborted) throw new Error("ABORTED");
 
-      const res = await generateMarketingSchemes(productUrls, styleUrl, config, apiConfig, OneClickSubMode.MAIN_IMAGE, null, globalAbortRef.current.signal);
+      const res = await generateMarketingSchemes(productUrls, null, config, apiConfig, OneClickSubMode.MAIN_IMAGE, null, globalAbortRef.current.signal, referenceSummary);
       
       if (res.status === 'success') {
         const initialSchemes: MainImageScheme[] = res.schemes.map((text, idx) => {
@@ -323,7 +399,7 @@ const MainImageSubModule: React.FC<Props> = ({
     addToast('方案已删除', 'success');
   };
 
-  const generateSingleImage = async (schemeId: string, productUrls: string[], styleUrl: string | null, mode: 'full' | 'recover' = 'full') => {
+  const generateSingleImage = async (schemeId: string, productUrls: string[], referenceSummary: string | null, mode: 'full' | 'recover' = 'full') => {
     if (taskControllersRef.current[schemeId]) { taskControllersRef.current[schemeId].abort(); }
     const controller = new AbortController();
     taskControllersRef.current[schemeId] = controller;
@@ -351,7 +427,7 @@ const MainImageSubModule: React.FC<Props> = ({
         updateSingleScheme(schemeId, { error: '正在重连云端任务...' });
         res = await recoverKieAiTask(targetScheme.taskId, apiConfig, controller.signal);
       } else { 
-        res = await triggerNewKieTask(targetScheme, productUrls, styleUrl, controller.signal); 
+        res = await triggerNewKieTask(targetScheme, productUrls, referenceSummary, controller.signal); 
       }
 
       // 关键修正：只要拿到 taskId，立即存入持久化状态，防止刷新丢失
@@ -436,7 +512,7 @@ const MainImageSubModule: React.FC<Props> = ({
     }
   };
 
-  const triggerNewKieTask = async (scheme: MainImageScheme, productUrls: string[], styleUrl: string | null, signal: AbortSignal) => {
+  const triggerNewKieTask = async (scheme: MainImageScheme, productUrls: string[], referenceSummary: string | null, signal: AbortSignal) => {
     // 【核心变更】：一键主图模式下，强制使用全局配置的比例，忽略文本中的比例提取。
     // 确保生图比例绝对服从用户设定，而非 AI 幻觉。
     const strictRatio = config.aspectRatio || AspectRatio.SQUARE;
@@ -453,21 +529,16 @@ const MainImageSubModule: React.FC<Props> = ({
     // 仅使用产品图作为 image_input，不包含风格参考图
     const inputImages = [...productUrls];
     
-    if (styleUrl) {
-      // 用户特殊要求：明确指定参考图仅作风格参考，禁止出现参考图中的产品
-      const refDisclaimer = `Reference Image URL: ${styleUrl}. This image is for style reference only. Mimic its style, lighting, and mood, but do not use the product from the style reference. Strictly keep the generated product consistent with the source product images.`;
-
-      if (config.styleStrength === 'high') {
-         finalPrompt = `STRICT PRODUCT CONSISTENCY: ${refDisclaimer} Reference style and composition while strictly keeping the product consistent with the source images.`;
-      } else {
-         finalPrompt += `\n${refDisclaimer}`;
-         if (config.styleStrength === 'low') finalPrompt += `\nReference mood only.`;
-         else if (config.styleStrength === 'medium') finalPrompt += `\nStrictly reference layout & lighting.`;
-      }
+    if (referenceSummary) {
+      finalPrompt += `\n【设计参考分析结论】\n${referenceSummary}`;
+      if (config.styleStrength === 'low') finalPrompt += `\n只弱参考上述结论中的氛围与色调。`;
+      else if (config.styleStrength === 'medium') finalPrompt += `\n严格参考上述结论中的版式、光影与色调。`;
+      else finalPrompt += `\n高强度执行上述参考结论，但主体商品仍必须完全保持产品素材一致。`;
     }
 
     // 增加生图文案语言固定指令
     finalPrompt += `\n\n生图文案语言：“${config.language || 'English'}”`;
+    finalPrompt += `\n文案文字必须为“${config.language || 'English'}”`;
 
     return await processWithKieAi(
       inputImages, 
@@ -514,7 +585,7 @@ const MainImageSubModule: React.FC<Props> = ({
       
       selectedSchemes.forEach(s => inflightIdsRef.current.add(s.id));
       
-      await Promise.all(selectedSchemes.map(s => generateSingleImage(s.id, productUrls, lastStyleUrl)));
+      await Promise.all(selectedSchemes.map(s => generateSingleImage(s.id, productUrls, referenceAnalysis.summary || null)));
       void logActionSuccess({
         module: 'one_click',
         action: 'generate_main_batch',
@@ -565,7 +636,7 @@ const MainImageSubModule: React.FC<Props> = ({
     inflightIdsRef.current.add(schemeId);
     try {
       const productUrls = await getOrUploadProductUrls();
-      await generateSingleImage(schemeId, productUrls, lastStyleUrl, 'recover');
+      await generateSingleImage(schemeId, productUrls, referenceAnalysis.summary || null, 'recover');
     } catch (e: any) {
       inflightIdsRef.current.delete(schemeId);
       updateSingleScheme(schemeId, { status: 'error', error: '同步失败: ' + e.message });
@@ -639,7 +710,7 @@ const MainImageSubModule: React.FC<Props> = ({
     inflightIdsRef.current.add(schemeId);
     try {
       const productUrls = await getOrUploadProductUrls();
-      await generateSingleImage(schemeId, productUrls, lastStyleUrl);
+      await generateSingleImage(schemeId, productUrls, referenceAnalysis.summary || null);
     } catch (e: any) {
       inflightIdsRef.current.delete(schemeId);
       updateSingleScheme(schemeId, { status: 'error', error: '启动失败' });
@@ -692,6 +763,23 @@ const MainImageSubModule: React.FC<Props> = ({
             ...prev, 
             styleImage: typeof img === 'function' ? img(prev.styleImage) : img
         }))} 
+        designReferences={designReferences}
+        onDesignReferencesChange={(items) => onUpdate({ designReferences: items })}
+        uploadedDesignReferenceUrls={uploadedDesignReferenceUrls}
+        onUploadedDesignReferenceUrlsChange={(urls) => onUpdate({ uploadedDesignReferenceUrls: urls, lastStyleUrl: urls[0] || null })}
+        referenceDimensions={referenceDimensions}
+        onReferenceDimensionsChange={(dimensions) => onUpdate({ referenceDimensions: dimensions })}
+        referenceAnalysis={referenceAnalysis}
+        onReferenceAnalysisReset={() => onUpdate({
+          referenceAnalysis: {
+            status: 'idle',
+            summary: '',
+            error: '',
+            analyzedAt: null,
+          },
+        })}
+        onAnalyzeReference={handleAnalyzeReference}
+        analyzingReference={isAnalyzingReference}
         uploadedProductUrls={uploadedProductUrls}
         uploadedStyleUrl={lastStyleUrl}
         onUploadedProductUrlsChange={(urls) => onUpdate({ uploadedProductUrls: urls })}
@@ -870,7 +958,7 @@ const MainImageSubModule: React.FC<Props> = ({
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover/preview:opacity-100 transition-opacity flex items-center justify-center gap-3">
                            <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="w-10 h-10 bg-white rounded-full flex items-center justify-center text-slate-900 disabled:opacity-50" title="重新生成"><i className="fas fa-redo"></i></button>
                            <button onClick={() => setPreviewId(scheme.id)} className="w-10 h-10 bg-white rounded-full flex items-center justify-center text-slate-900" title="全屏查看"><i className="fas fa-expand"></i></button>
-                           <button onClick={() => { const a = document.createElement('a'); a.href = scheme.resultUrl!; a.download = `main_${idx+1}.png`; a.click(); }} className="w-10 h-10 bg-rose-600 rounded-full flex items-center justify-center text-white" title="下载"><i className="fas fa-download"></i></button>
+                           <button onClick={() => { void downloadRemoteFile(scheme.resultUrl!, `main_${idx+1}.png`); }} className="w-10 h-10 bg-rose-600 rounded-full flex items-center justify-center text-white" title="下载"><i className="fas fa-download"></i></button>
                         </div>
                       </div>
                     ) : scheme.status === 'error' ? (

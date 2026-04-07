@@ -1,4 +1,16 @@
-import { AuthUser, InternalJob, InternalLogEntry, SystemPublicConfig } from '../types';
+import {
+  AgentChatMessage,
+  AgentChatSession,
+  AgentSummary,
+  AgentUsageRow,
+  AgentVersion,
+  AuthUser,
+  InternalJob,
+  InternalLogEntry,
+  KnowledgeBaseSummary,
+  KnowledgeDocumentSummary,
+  SystemPublicConfig,
+} from '../types';
 import { PersistedAppState } from '../utils/appState';
 
 const SESSION_TOKEN_KEY = 'MEIAO_INTERNAL_SESSION_TOKEN';
@@ -21,11 +33,11 @@ export const clearSessionToken = () => {
   localStorage.removeItem(SESSION_TOKEN_KEY);
 };
 
-export const storeCurrentUserContext = (user: Pick<AuthUser, 'id' | 'username' | 'role'>) => {
+export const storeCurrentUserContext = (user: Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset'>) => {
   localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(user));
 };
 
-export const getCurrentUserContext = (): Pick<AuthUser, 'id' | 'username' | 'role'> | null => {
+export const getCurrentUserContext = (): Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset'> | null => {
   try {
     const raw = localStorage.getItem(CURRENT_USER_KEY);
     if (!raw) return null;
@@ -64,6 +76,7 @@ const request = async <T>(path: string, init?: RequestInit): Promise<T> => {
   }
   const response = await fetch(path, {
     ...init,
+    cache: 'no-store',
     headers,
   });
 
@@ -92,6 +105,17 @@ export const loginInternalUser = async (username: string, password: string) => {
 
 export const fetchCurrentUser = async () => {
   return request<{ user: AuthUser }>('/api/auth/me');
+};
+
+export const updateCurrentUserProfile = async (payload: Partial<{
+  displayName: string;
+  avatarUrl: string | null;
+  avatarPreset: string | null;
+}>) => {
+  return request<{ user: AuthUser }>('/api/auth/me', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
 };
 
 export const logoutInternalUser = async () => {
@@ -179,6 +203,8 @@ export const fetchInternalLogs = async (filters?: Partial<{
   status: string;
   startAt: number;
   endAt: number;
+  page: number;
+  pageSize: number;
 }>) => {
   const params = new URLSearchParams();
   if (filters?.module && filters.module !== 'all') params.set('module', filters.module);
@@ -186,8 +212,17 @@ export const fetchInternalLogs = async (filters?: Partial<{
   if (filters?.status && filters.status !== 'all') params.set('status', filters.status);
   if (filters?.startAt) params.set('startAt', String(filters.startAt));
   if (filters?.endAt) params.set('endAt', String(filters.endAt));
+  if (filters?.page) params.set('page', String(filters.page));
+  if (filters?.pageSize) params.set('pageSize', String(filters.pageSize));
   const query = params.toString();
-  return request<{ logs: InternalLogEntry[] }>(`/api/logs${query ? `?${query}` : ''}`);
+  return request<{ logs: InternalLogEntry[]; total: number; page: number; pageSize: number }>(`/api/logs${query ? `?${query}` : ''}`);
+};
+
+export const fetchInternalLogMeta = async () => {
+  return request<{
+    modules: string[];
+    users: Array<{ id: string; label: string }>;
+  }>('/api/logs/meta');
 };
 
 export const deleteInternalLogs = async (payload?: Partial<{
@@ -237,6 +272,264 @@ export const backfillUsageStats = async () => {
 
 export const fetchSystemConfig = async () => {
   return request<{ config: SystemPublicConfig }>('/api/system/config');
+};
+
+export const updateSystemConfig = async (payload: {
+  analysisModel?: string;
+}) => {
+  return request<{ config: SystemPublicConfig }>('/api/system/config', {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const fetchAgentSummaries = async () => {
+  return request<{ agents: AgentSummary[] }>('/api/agents');
+};
+
+export const createAgent = async (payload: {
+  name: string;
+  description: string;
+  department: string;
+  iconUrl?: string | null;
+  avatarPreset?: string | null;
+  systemPrompt: string;
+  allowedChatModels?: string[];
+  defaultChatModel?: string | null;
+  replyStyleRules?: Record<string, unknown>;
+  modelPolicy?: Record<string, unknown>;
+  contextPolicy?: Record<string, unknown>;
+  retrievalPolicy?: Record<string, unknown>;
+  toolPolicy?: Record<string, unknown>;
+  knowledgeBaseIds?: string[];
+}) => {
+  return request<{ agent: AgentSummary; version: AgentVersion }>('/api/agents', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const fetchAgentDetail = async (agentId: string) => {
+  return request<{ agent: AgentSummary; versions: AgentVersion[] }>(`/api/agents/${encodeURIComponent(agentId)}`);
+};
+
+export const updateAgent = async (agentId: string, payload: Partial<{
+  name: string;
+  description: string;
+  department: string;
+  iconUrl: string | null;
+  avatarPreset: string | null;
+  status: 'draft' | 'published' | 'archived';
+}>) => {
+  return request<{ agent: AgentSummary }>(`/api/agents/${encodeURIComponent(agentId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const archiveAgent = async (agentId: string) => {
+  return request<{ ok: boolean; deletedAgentId: string; message: string }>(`/api/agents/${encodeURIComponent(agentId)}`, {
+    method: 'DELETE',
+  });
+};
+
+export const deleteAgentVersion = async (versionId: string) => {
+  return request<{ ok: boolean; deletedVersionId: string; message: string }>(`/api/agent-versions/${encodeURIComponent(versionId)}`, {
+    method: 'DELETE',
+  });
+};
+
+export const createAgentDraft = async (agentId: string) => {
+  return request<{ version: AgentVersion }>(`/api/agents/${encodeURIComponent(agentId)}/draft`, {
+    method: 'POST',
+  });
+};
+
+export const publishAgent = async (agentId: string, versionId?: string) => {
+  return request<{ agent: AgentSummary }>(`/api/agents/${encodeURIComponent(agentId)}/publish`, {
+    method: 'POST',
+    body: JSON.stringify(versionId ? { versionId } : {}),
+  });
+};
+
+export const rollbackAgent = async (agentId: string, versionId: string) => {
+  return request<{ agent: AgentSummary }>(`/api/agents/${encodeURIComponent(agentId)}/rollback`, {
+    method: 'POST',
+    body: JSON.stringify({ versionId }),
+  });
+};
+
+export const updateAgentVersion = async (versionId: string, payload: Partial<{
+  versionName: string;
+  systemPrompt: string;
+  allowedChatModels: string[];
+  defaultChatModel: string | null;
+  replyStyleRules: Record<string, unknown>;
+  modelPolicy: Record<string, unknown>;
+  contextPolicy: Record<string, unknown>;
+  retrievalPolicy: Record<string, unknown>;
+  toolPolicy: Record<string, unknown>;
+  knowledgeBaseIds: string[];
+}>) => {
+  return request<{ version: AgentVersion }>(`/api/agent-versions/${encodeURIComponent(versionId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const validateAgentVersion = async (versionId: string, message: string) => {
+  return request<{ version: AgentVersion; result: Record<string, unknown> }>(`/api/agent-versions/${encodeURIComponent(versionId)}/validate`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
+};
+
+export const fetchKnowledgeBases = async () => {
+  return request<{ knowledgeBases: KnowledgeBaseSummary[] }>('/api/knowledge-bases');
+};
+
+export const createKnowledgeBase = async (payload: {
+  name: string;
+  description: string;
+  department: string;
+}) => {
+  return request<{ knowledgeBase: KnowledgeBaseSummary }>('/api/knowledge-bases', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const fetchKnowledgeBaseDetail = async (knowledgeBaseId: string) => {
+  return request<{ knowledgeBase: KnowledgeBaseSummary; documents: KnowledgeDocumentSummary[] }>(`/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`);
+};
+
+export const updateKnowledgeBase = async (knowledgeBaseId: string, payload: Partial<{
+  name: string;
+  description: string;
+  department: string;
+  status: 'active' | 'archived';
+}>) => {
+  return request<{ knowledgeBase: KnowledgeBaseSummary }>(`/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const deleteKnowledgeBase = async (knowledgeBaseId: string) => {
+  return request<{ ok: boolean; deletedKnowledgeBaseId: string; message: string }>(`/api/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, {
+    method: 'DELETE',
+  });
+};
+
+export const fetchKnowledgeDocuments = async (knowledgeBaseId: string) => {
+  const params = new URLSearchParams({ knowledgeBaseId });
+  return request<{ documents: KnowledgeDocumentSummary[] }>(`/api/knowledge-documents?${params.toString()}`);
+};
+
+export const createKnowledgeDocument = async (payload: {
+  knowledgeBaseId: string;
+  title: string;
+  sourceType: 'upload' | 'manual';
+  chunkStrategy?: 'general' | 'rule' | 'sop' | 'faq' | 'case';
+  rawText: string;
+  normalizationEnabled?: boolean;
+}) => {
+  return request<{ document: KnowledgeDocumentSummary }>('/api/knowledge-documents', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const updateKnowledgeDocument = async (documentId: string, payload: Partial<{
+  title: string;
+  sourceType: 'upload' | 'manual';
+  chunkStrategy: 'general' | 'rule' | 'sop' | 'faq' | 'case';
+  rawText: string;
+  normalizationEnabled: boolean;
+}>) => {
+  return request<{ document: KnowledgeDocumentSummary }>(`/api/knowledge-documents/${encodeURIComponent(documentId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const deleteKnowledgeDocument = async (documentId: string) => {
+  return request<{ ok: boolean; deletedCount: number }>(`/api/knowledge-documents/${encodeURIComponent(documentId)}`, {
+    method: 'DELETE',
+  });
+};
+
+export const fetchChatAgents = async () => {
+  return request<{ agents: AgentSummary[] }>('/api/chat/agents');
+};
+
+export const fetchChatSessions = async (agentId = '') => {
+  const params = new URLSearchParams();
+  if (agentId) params.set('agentId', agentId);
+  return request<{ sessions: AgentChatSession[] }>(`/api/chat/sessions${params.toString() ? `?${params.toString()}` : ''}`);
+};
+
+export const createChatSession = async (agentId: string) => {
+  return request<{ session: AgentChatSession }>('/api/chat/sessions', {
+    method: 'POST',
+    body: JSON.stringify({ agentId }),
+  });
+};
+
+export const updateChatSession = async (sessionId: string, payload: Partial<{
+  selectedModel: string;
+  reasoningLevel: string | null;
+  webSearchEnabled: boolean;
+  lastImageMode: boolean;
+}>) => {
+  return request<{ session: AgentChatSession }>(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+};
+
+export const deleteChatSession = async (sessionId: string) => {
+  return request<{ ok: boolean; deletedSessionId: string }>(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+};
+
+export const deleteUserAgentHistory = async (agentId: string) => {
+  return request<{ ok: boolean; deletedSessionCount: number; deletedMessageCount: number; deletedUsageCount: number }>(
+    `/api/chat/agents/${encodeURIComponent(agentId)}/history`,
+    { method: 'DELETE' }
+  );
+};
+
+export const fetchChatMessages = async (sessionId: string) => {
+  return request<{ messages: AgentChatMessage[] }>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`);
+};
+
+export const sendChatMessage = async (sessionId: string, payload: {
+  content: string;
+  attachments?: Array<{ name: string; url?: string; assetId?: string; mimeType?: string; kind?: 'image' | 'file' }>;
+  selectedModel?: string;
+  reasoningLevel?: string | null;
+  webSearchEnabled?: boolean;
+  requestMode?: 'chat' | 'image_generation';
+}, options?: { signal?: AbortSignal }) => {
+  return request<{
+    userMessage: AgentChatMessage;
+    assistantMessage: AgentChatMessage;
+    usage: Record<string, unknown>;
+  }>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    signal: options?.signal,
+  });
+};
+
+export const fetchAgentUsage = async () => {
+  return request<{ rows: AgentUsageRow[] }>('/api/agent-usage');
+};
+
+export const fetchAgentUsageSummary = async () => {
+  return request<{ summary: { totalCalls: number; successCount: number; failedCount: number; activeUsers: number; totalEstimatedCost: number } }>('/api/agent-usage/summary');
 };
 
 export const uploadInternalAsset = async (payload: {

@@ -11,11 +11,13 @@ export const buildSkuGenerationAssets = ({ currentImages, firstSkuResultUrl, isF
   const uploadedStyleRefUrl = currentImages.find((item) => item.role === 'style_ref' && item.uploadedUrl)?.uploadedUrl || null;
   const styleRefUrl = !isFirst && firstSkuResultUrl ? firstSkuResultUrl : uploadedStyleRefUrl;
   const imageUrls = [...productUrls, ...giftUrls, ...(styleRefUrl ? [styleRefUrl] : [])];
+  const generationImageUrls = [...productUrls, ...giftUrls];
 
   return {
     productUrls,
     giftUrls,
     styleRefUrl,
     imageUrls,
+    generationImageUrls,
   };
 };

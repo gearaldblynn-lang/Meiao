@@ -3,12 +3,14 @@ import React, { useState } from 'react';
 interface Props {
   isSubmitting: boolean;
   error: string;
+  defaultUsername?: string;
+  defaultPassword?: string;
   onLogin: (username: string, password: string) => Promise<void>;
 }
 
-const LoginScreen: React.FC<Props> = ({ isSubmitting, error, onLogin }) => {
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+const LoginScreen: React.FC<Props> = ({ isSubmitting, error, defaultUsername = '', defaultPassword = '', onLogin }) => {
+  const [username, setUsername] = useState(defaultUsername);
+  const [password, setPassword] = useState(defaultPassword);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();

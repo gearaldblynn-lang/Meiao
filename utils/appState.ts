@@ -71,6 +71,14 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
   mainImage: {
     productImages: [],
     styleImage: null,
+    designReferences: [],
+    uploadedDesignReferenceUrls: [],
+    referenceDimensions: ['visual_style', 'color_palette', 'layout'],
+    referenceAnalysis: {
+      status: 'idle',
+      summary: '',
+      analyzedAt: null,
+    },
     schemes: [],
     config: {
       description: '',
@@ -94,6 +102,14 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
   detailPage: {
     productImages: [],
     styleImage: null,
+    designReferences: [],
+    uploadedDesignReferenceUrls: [],
+    referenceDimensions: ['visual_style', 'color_palette', 'layout'],
+    referenceAnalysis: {
+      status: 'idle',
+      summary: '',
+      analyzedAt: null,
+    },
     schemes: [],
     config: {
       description: '',
@@ -116,6 +132,14 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
   },
   sku: {
     images: [],
+    designReferences: [],
+    uploadedDesignReferenceUrls: [],
+    referenceDimensions: ['visual_style', 'typography', 'color_palette', 'layout'],
+    referenceAnalysis: {
+      status: 'idle',
+      summary: '',
+      analyzedAt: null,
+    },
     schemes: [],
     config: {
       productInfo: '',
@@ -327,6 +351,21 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
             ...saved.oneClickMemory.mainImage,
             productImages: normalizeFileArray(saved.oneClickMemory.mainImage?.productImages),
             styleImage: normalizeNullableFile(saved.oneClickMemory.mainImage?.styleImage),
+            designReferences: Array.isArray(saved.oneClickMemory.mainImage?.designReferences)
+              ? saved.oneClickMemory.mainImage.designReferences.map((item: any) => ({
+                  ...item,
+                  file: item?.file instanceof File ? item.file : null,
+                  uploadedUrl: typeof item?.uploadedUrl === 'string' ? item.uploadedUrl : null,
+                }))
+              : [],
+            uploadedDesignReferenceUrls: normalizeStringArray(saved.oneClickMemory.mainImage?.uploadedDesignReferenceUrls),
+            referenceDimensions: Array.isArray(saved.oneClickMemory.mainImage?.referenceDimensions)
+              ? saved.oneClickMemory.mainImage.referenceDimensions.filter((item: any) => typeof item === 'string')
+              : createDefaultOneClickState().mainImage.referenceDimensions,
+            referenceAnalysis: {
+              ...createDefaultOneClickState().mainImage.referenceAnalysis,
+              ...(saved.oneClickMemory.mainImage?.referenceAnalysis || {}),
+            },
             uploadedProductUrls: normalizeStringArray(saved.oneClickMemory.mainImage?.uploadedProductUrls),
             lastStyleUrl: typeof saved.oneClickMemory.mainImage?.lastStyleUrl === 'string'
               ? saved.oneClickMemory.mainImage.lastStyleUrl
@@ -336,6 +375,21 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
             ...saved.oneClickMemory.detailPage,
             productImages: normalizeFileArray(saved.oneClickMemory.detailPage?.productImages),
             styleImage: normalizeNullableFile(saved.oneClickMemory.detailPage?.styleImage),
+            designReferences: Array.isArray(saved.oneClickMemory.detailPage?.designReferences)
+              ? saved.oneClickMemory.detailPage.designReferences.map((item: any) => ({
+                  ...item,
+                  file: item?.file instanceof File ? item.file : null,
+                  uploadedUrl: typeof item?.uploadedUrl === 'string' ? item.uploadedUrl : null,
+                }))
+              : [],
+            uploadedDesignReferenceUrls: normalizeStringArray(saved.oneClickMemory.detailPage?.uploadedDesignReferenceUrls),
+            referenceDimensions: Array.isArray(saved.oneClickMemory.detailPage?.referenceDimensions)
+              ? saved.oneClickMemory.detailPage.referenceDimensions.filter((item: any) => typeof item === 'string')
+              : createDefaultOneClickState().detailPage.referenceDimensions,
+            referenceAnalysis: {
+              ...createDefaultOneClickState().detailPage.referenceAnalysis,
+              ...(saved.oneClickMemory.detailPage?.referenceAnalysis || {}),
+            },
             uploadedProductUrls: normalizeStringArray(saved.oneClickMemory.detailPage?.uploadedProductUrls),
             lastStyleUrl: typeof saved.oneClickMemory.detailPage?.lastStyleUrl === 'string'
               ? saved.oneClickMemory.detailPage.lastStyleUrl
@@ -349,6 +403,21 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
                   file: img.file instanceof File ? img.file : null,
                 }))
               : [],
+            designReferences: Array.isArray(saved.oneClickMemory.sku?.designReferences)
+              ? saved.oneClickMemory.sku.designReferences.map((item: any) => ({
+                  ...item,
+                  file: item?.file instanceof File ? item.file : null,
+                  uploadedUrl: typeof item?.uploadedUrl === 'string' ? item.uploadedUrl : null,
+                }))
+              : [],
+            uploadedDesignReferenceUrls: normalizeStringArray(saved.oneClickMemory.sku?.uploadedDesignReferenceUrls),
+            referenceDimensions: Array.isArray(saved.oneClickMemory.sku?.referenceDimensions)
+              ? saved.oneClickMemory.sku.referenceDimensions.filter((item: any) => typeof item === 'string')
+              : createDefaultOneClickState().sku.referenceDimensions,
+            referenceAnalysis: {
+              ...createDefaultOneClickState().sku.referenceAnalysis,
+              ...(saved.oneClickMemory.sku?.referenceAnalysis || {}),
+            },
             firstSkuResultUrl: typeof saved.oneClickMemory.sku?.firstSkuResultUrl === 'string'
               ? saved.oneClickMemory.sku.firstSkuResultUrl
               : null,

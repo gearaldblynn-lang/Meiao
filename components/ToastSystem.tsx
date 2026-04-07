@@ -41,7 +41,11 @@ export const useToast = () => {
   return context;
 };
 
-export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const ToastProvider: React.FC<{
+  children: React.ReactNode;
+  appVersion: string;
+  onOpenReleaseNotes: () => void;
+}> = ({ children, appVersion, onOpenReleaseNotes }) => {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [notifications, setNotifications] = useState<ToastItem[]>([]);
   const [isCenterOpen, setIsCenterOpen] = useState(false);
@@ -161,6 +165,23 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
               </div>
             </div>
             <div className="max-h-[60vh] space-y-3 overflow-y-auto px-4 py-4">
+              <div className="rounded-2xl border border-cyan-100 bg-cyan-50/80 px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-black text-slate-900">本次更新</p>
+                    <p className="mt-1 text-[12px] leading-6 text-slate-600">
+                      当前版本 {appVersion}，已收录本轮智能体中心、一键主详与下载修复内容。
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onOpenReleaseNotes}
+                    className="shrink-0 rounded-xl bg-white px-3 py-2 text-[11px] font-black text-cyan-700 shadow-sm transition hover:bg-cyan-100"
+                  >
+                    查看更新
+                  </button>
+                </div>
+              </div>
               {notifications.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-5 py-8 text-center">
                   <p className="text-sm font-black text-slate-600">还没有通知</p>

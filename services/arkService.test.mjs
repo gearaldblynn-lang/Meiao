@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const arkServiceSource = readFileSync(new URL('./arkService.ts', import.meta.url), 'utf8');
 const skuSubModuleSource = readFileSync(new URL('../modules/OneClick/SkuSubModule.tsx', import.meta.url), 'utf8');
+const retouchModuleSource = readFileSync(new URL('../modules/Retouch/RetouchModule.tsx', import.meta.url), 'utf8');
 
 test('marketing scheme copy layout template only treats title as required and allows flexible extra copy lines', () => {
   assert.match(
@@ -107,6 +108,120 @@ test('sku planning prompt uses style reference for layout typography and placeme
   );
 });
 
+test('sku planning prompt prioritizes combo copy and forbids inventing extra copy lines', () => {
+  assert.match(
+    arkServiceSource,
+    /文案排版必须优先使用【SKU 组合列表】里当前 SKU 对应的文案内容进行排版制作/,
+    'sku planning should anchor copy layout to the configured sku combo text'
+  );
+  assert.match(
+    arkServiceSource,
+    /禁止擅自新增未在【SKU 组合列表】或【产品信息】中出现的新文案/,
+    'sku planning should forbid invented copy beyond provided sources'
+  );
+  assert.match(
+    arkServiceSource,
+    /禁止把同一卖点换一种说法重复写多次，避免文案堆积和语义重复/,
+    'sku planning should explicitly prevent repetitive copy stacking'
+  );
+  assert.match(
+    arkServiceSource,
+    /除主标题可基于产品信息做精炼提炼外，其他文案都必须有明确依据/,
+    'sku planning should only allow limited title refinement from product info'
+  );
+});
+
+test('one click reference analysis prompt supports grouped dimensions and outputs reusable summary', () => {
+  assert.match(
+    arkServiceSource,
+    /export const analyzeOneClickReferenceSet = async/,
+    'one click flow should expose a dedicated grouped reference analysis step'
+  );
+  assert.match(
+    arkServiceSource,
+    /scene:\s*OneClickSubMode/,
+    'reference analysis should accept the current one-click scene'
+  );
+  assert.match(
+    arkServiceSource,
+    /请只分析用户勾选的参考维度/,
+    'reference analysis should only cover the selected dimensions'
+  );
+  assert.match(
+    arkServiceSource,
+    /若勾选了文案内容，只提炼可复用的宣传表达方向/,
+    'reference analysis should treat copy content as reusable messaging guidance'
+  );
+  assert.match(
+    arkServiceSource,
+    /不要分析这是什么产品、卖什么功能、适合什么人群/,
+    'reference analysis should stay on design language and avoid product identification'
+  );
+  assert.match(
+    arkServiceSource,
+    /主图模式：重点总结主图框内的主体摆放、文案区摆放、信息层级与首屏吸睛方式/,
+    'main image reference analysis should focus on hero frame composition'
+  );
+  assert.match(
+    arkServiceSource,
+    /详情模式：重点总结整套详情的风格统一方式、版式节奏、模块排布与长图阅读层级/,
+    'detail reference analysis should focus on detail-page rhythm and layout'
+  );
+  assert.match(
+    arkServiceSource,
+    /SKU模式：重点总结SKU排版结构、组合呈现方式、不同SKU之间如何保持统一又有区分/,
+    'sku reference analysis should focus on sku structure and presentation'
+  );
+  assert.match(
+    arkServiceSource,
+    /只输出用户实际勾选的维度对应栏目，没勾选的维度不要输出/,
+    'reference analysis should only output the selected dimension sections'
+  );
+  assert.match(
+    arkServiceSource,
+    /如果用户勾选了“视觉风格”，输出：- 视觉风格：xxx（主要描述视觉形式，设计风格，设计偏向）/,
+    'reference analysis should conditionally output the visual-style section'
+  );
+  assert.match(
+    arkServiceSource,
+    /如果用户勾选了“字体”，输出：- 字体：主要描述不同的字体的选用，字体的大小，字重，字体间配色，营造的调性/,
+    'reference analysis should conditionally output the typography section'
+  );
+  assert.match(
+    arkServiceSource,
+    /如果用户勾选了“色调”，输出：- 色调：主要描述整体的色调搭配，色彩倾向，背景，点缀，辅助色等等/,
+    'reference analysis should conditionally output the color section'
+  );
+  assert.match(
+    arkServiceSource,
+    /如果用户勾选了“排版”，输出：- 排版：版式设计，构图设计内容，组合等等/,
+    'reference analysis should conditionally output the layout section'
+  );
+  assert.match(
+    arkServiceSource,
+    /如果用户勾选了“文案内容”，输出：- 文案内容：摘选一些直接抄的文案卖点（一般只有跟产品是同样的产品的时候才会选择）/,
+    'reference analysis should conditionally output the copy-content section'
+  );
+  assert.match(
+    arkServiceSource,
+    /三个模块的策划输出内容需要参考以上的设计风格进行制作并输出结果/,
+    'planning should explicitly treat the analysis result as the direct design reference'
+  );
+  assert.match(
+    arkServiceSource,
+    /【参考分析结论】/,
+    'planning prompts should consume the structured reference analysis result'
+  );
+});
+
+test('sku planning prompt includes an explicit visual style field', () => {
+  assert.match(
+    arkServiceSource,
+    /- 画面风格：xxx/,
+    'sku planning should output an explicit visual style line'
+  );
+});
+
 test('sku image prompt appends the target copy language hard constraint', () => {
   assert.match(
     skuSubModuleSource,
@@ -153,15 +268,61 @@ test('sku image prompt switches to first generated sku as strict style reference
   );
 });
 
-test('sku generation sends the complete asset url set into kie image tasks instead of product images only', () => {
+test('sku generation keeps style references out of direct image inputs while still assembling the full asset set', () => {
   assert.match(
     skuSubModuleSource,
-    /const\s+\{\s*imageUrls\s*\}\s*=\s*buildSkuGenerationAssets\(/,
-    'sku generation should assemble all uploaded asset urls before calling kie'
+    /const\s+\{\s*generationImageUrls\s*\}\s*=\s*buildSkuGenerationAssets\(/,
+    'sku generation should derive a dedicated generation input list'
   );
   assert.match(
     skuSubModuleSource,
+    /processWithKieAi\(\s*generationImageUrls,\s*apiConfig,/,
+    'sku generation should pass only product and gift images into kie'
+  );
+  assert.doesNotMatch(
+    skuSubModuleSource,
     /processWithKieAi\(\s*imageUrls,\s*apiConfig,/,
-    'sku generation should pass the complete image url set into kie'
+    'sku generation should not pass style reference images into kie as direct inputs'
+  );
+});
+
+test('original retouch analysis must preserve the original scene instead of repainting a new composition', () => {
+  assert.match(
+    arkServiceSource,
+    /【目标：原图精修模式】/,
+    'retouch analysis should keep a dedicated original-image retouch mode'
+  );
+  assert.match(
+    arkServiceSource,
+    /必须以原图现有画面为基础做精修优化，不得脱离原图重新设计一张新画面/,
+    'original retouch mode should explicitly forbid repainting a disconnected new scene'
+  );
+  assert.match(
+    arkServiceSource,
+    /禁止随意替换原图的主体、场景、拍摄角度、构图关系和主要陈列方式/,
+    'original retouch mode should preserve the original subject and composition'
+  );
+  assert.match(
+    arkServiceSource,
+    /若无明确要求，不得新增不存在的背景、道具、装饰元素或额外产品/,
+    'original retouch mode should not hallucinate extra props or backgrounds'
+  );
+});
+
+test('retouch generation prompt keeps original-mode outputs tied to the uploaded source image', () => {
+  assert.match(
+    retouchModuleSource,
+    /mode === 'original'/,
+    'retouch module should branch original-mode strict rules explicitly'
+  );
+  assert.match(
+    retouchModuleSource,
+    /原图精修必须严格基于待精修图当前画面做优化/,
+    'retouch generation should restate that original mode is an optimization pass over the uploaded source'
+  );
+  assert.match(
+    retouchModuleSource,
+    /禁止把原图精修做成重新换背景、换场景、换产品摆法、换镜头角度的大幅重绘/,
+    'retouch generation should forbid large repaint-style deviations in original mode'
   );
 });

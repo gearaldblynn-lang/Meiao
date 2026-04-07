@@ -135,6 +135,7 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
     releaseObjectURLs([
       ...persistentState.mainImage.productImages,
       persistentState.mainImage.styleImage,
+      ...persistentState.mainImage.designReferences.map((item) => item.file),
     ]);
     onStateChange(prev => ({
       ...prev,
@@ -158,6 +159,7 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
     releaseObjectURLs([
       ...persistentState.detailPage.productImages,
       persistentState.detailPage.styleImage,
+      ...persistentState.detailPage.designReferences.map((item) => item.file),
     ]);
     onStateChange(prev => ({
       ...prev,
