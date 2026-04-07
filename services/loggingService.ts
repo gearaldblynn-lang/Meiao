@@ -1,6 +1,7 @@
 import { safeCreateInternalLog, getActiveModuleContext } from './internalApi';
 
 export const MODULE_LABELS: Record<string, string> = {
+  agent_center: '智能体中心',
   one_click: '一键主详',
   translation: '出海翻译',
   buyer_show: '买家秀',
@@ -103,6 +104,8 @@ export const ACTION_LABELS: Record<string, string> = {
   copy_result_link: '复制结果链接',
   clear_pending: '清空待处理队列',
   clear_records: '清空记录',
+  agent_chat: '智能体对话',
+  agent_validate: '智能体验证',
 
   plan_script: '脚本策划',
   start_video_task: '启动视频任务',

@@ -1,33 +1,58 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AuthUser, InternalLogEntry } from '../../types';
 import UserAdminPanel from '../../components/Internal/UserAdminPanel';
-import { deleteInternalLogs, fetchInternalLogs } from '../../services/internalApi';
+import { deleteInternalLogs, fetchInternalLogMeta, fetchInternalLogs } from '../../services/internalApi';
 import { ACTION_LABELS, MODULE_LABELS, STATUS_LABELS } from '../../services/loggingService';
-import { buildLogCsv, filterLogs } from './accountManagementUtils.mjs';
+import { buildLogCsv } from './accountManagementUtils.mjs';
+import { buildLogFilterOptions } from './logQueryUtils.mjs';
 import { SegmentedTabs, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 import UsageStatsPanel from './UsageStatsPanel';
+import ProfileSettingsCard from './ProfileSettingsCard';
 
 interface Props {
   currentUser?: AuthUser | null;
   internalMode?: boolean;
   onCurrentUserChange?: (user: AuthUser) => void;
+  entryMode?: 'default' | 'profile' | 'manage';
 }
 
-const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode = false, onCurrentUserChange }) => {
+type LogQueryFilters = Partial<{
+  module: string;
+  userId: string;
+  status: string;
+  startAt: number;
+  endAt: number;
+}>;
+
+const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode = false, onCurrentUserChange, entryMode = 'default' }) => {
   const isAdmin = Boolean(internalMode && currentUser?.role === 'admin');
   const [activeTab, setActiveTab] = useState<'users' | 'logs' | 'stats'>('users');
-  const [allLogs, setAllLogs] = useState<InternalLogEntry[]>([]);
+  const [profilePanelOpen, setProfilePanelOpen] = useState(false);
   const [logs, setLogs] = useState<InternalLogEntry[]>([]);
+  const [logsTotal, setLogsTotal] = useState(0);
   const [logsQueried, setLogsQueried] = useState(false);
   const [loadingLogs, setLoadingLogs] = useState(false);
   const [logsError, setLogsError] = useState('');
   const [logsMessage, setLogsMessage] = useState('');
   const [deletingLogs, setDeletingLogs] = useState(false);
+  const [logMeta, setLogMeta] = useState<{ modules: string[]; users: Array<{ id: string; label: string }> }>({ modules: [], users: [] });
   const [moduleFilter, setModuleFilter] = useState('all');
   const [userFilter, setUserFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [startTimeFilter, setStartTimeFilter] = useState('');
   const [endTimeFilter, setEndTimeFilter] = useState('');
+  const [logsPage, setLogsPage] = useState(1);
+  const [lastLogQueryFilters, setLastLogQueryFilters] = useState<LogQueryFilters | null>(null);
+  const LOGS_PAGE_SIZE = 10;
+
+  useEffect(() => {
+    if (entryMode === 'profile') {
+      setProfilePanelOpen(true);
+    }
+    if (entryMode === 'manage' && isAdmin) {
+      setActiveTab('users');
+    }
+  }, [entryMode, isAdmin]);
 
   const toTimestamp = (value: string, boundary: 'start' | 'end') => {
     if (!value) return undefined;
@@ -37,19 +62,28 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     return parsed + 59_999;
   };
 
-  const loadLogs = async () => {
+  const buildLogQueryFilters = (): LogQueryFilters => ({
+    module: moduleFilter,
+    userId: userFilter,
+    status: statusFilter,
+    startAt: toTimestamp(startTimeFilter, 'start'),
+    endAt: toTimestamp(endTimeFilter, 'end'),
+  });
+
+  const loadLogs = async (page = logsPage, queryFilters = buildLogQueryFilters()) => {
     if (!isAdmin) return;
     setLoadingLogs(true);
     setLogsError('');
     try {
       const result = await fetchInternalLogs({
-        module: moduleFilter,
-        userId: userFilter,
-        status: statusFilter,
-        startAt: toTimestamp(startTimeFilter, 'start'),
-        endAt: toTimestamp(endTimeFilter, 'end'),
+        ...queryFilters,
+        page,
+        pageSize: LOGS_PAGE_SIZE,
       });
       setLogs(result.logs);
+      setLogsTotal(result.total);
+      setLogsPage(result.page);
+      setLastLogQueryFilters(queryFilters);
       setLogsQueried(true);
     } catch (error: any) {
       setLogsError(error.message || '运行日志读取失败');
@@ -58,13 +92,12 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     }
   };
 
-  // 预加载全量日志用于填充筛选选项（不展示数据）
   useEffect(() => {
     if (!isAdmin) return;
     void (async () => {
       try {
-        const allResult = await fetchInternalLogs({});
-        setAllLogs(allResult.logs);
+        const meta = await fetchInternalLogMeta();
+        setLogMeta(meta);
       } catch { /* 静默失败 */ }
     })();
   }, [isAdmin]);
@@ -122,16 +155,10 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
       }));
   };
 
-  const filteredLogs = useMemo(() => filterLogs(logs, {
-    module: moduleFilter,
-    userId: userFilter,
-    status: statusFilter,
-    startAt: toTimestamp(startTimeFilter, 'start'),
-    endAt: toTimestamp(endTimeFilter, 'end'),
-  }), [logs, moduleFilter, userFilter, statusFilter, startTimeFilter, endTimeFilter]);
+  const logsPageCount = Math.max(1, Math.ceil(logsTotal / LOGS_PAGE_SIZE));
 
   const groupedLogEntries = Object.entries(
-    filteredLogs.reduce<Record<string, InternalLogEntry[]>>((acc, log) => {
+    logs.reduce<Record<string, InternalLogEntry[]>>((acc, log) => {
       const dayKey = formatDay(log.createdAt);
       if (!acc[dayKey]) acc[dayKey] = [];
       acc[dayKey].push(log);
@@ -139,16 +166,13 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     }, {})
   ) as Array<[string, InternalLogEntry[]]>;
 
-  const moduleOptions = Array.from(new Set(allLogs.map((log) => log.module))).filter(Boolean) as string[];
-  const userOptions = Array.from(
-    new Map<string, { id: string; label: string }>(
-      allLogs.map((log) => [log.userId, { id: log.userId, label: log.displayName || log.username }])
-    ).values()
-  );
+  const fallbackOptions = useMemo(() => buildLogFilterOptions(logs), [logs]);
+  const moduleOptions = logMeta.modules.length > 0 ? logMeta.modules : fallbackOptions.modules;
+  const userOptions = logMeta.users.length > 0 ? logMeta.users : fallbackOptions.users;
 
   const handleExportLogs = () => {
-    if (filteredLogs.length === 0) return;
-    const csv = buildLogCsv(filteredLogs);
+    if (logs.length === 0) return;
+    const csv = buildLogCsv(logs);
     const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -158,27 +182,21 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-    setLogsMessage(`已导出 ${filteredLogs.length} 条日志。`);
+    setLogsMessage(`已导出当前页 ${logs.length} 条日志。`);
     setLogsError('');
   };
 
   const handleDeleteLogs = async () => {
-    if (filteredLogs.length === 0) return;
-    const confirmed = window.confirm(`确认清理当前筛选结果中的 ${filteredLogs.length} 条日志吗？`);
+    if (logsTotal === 0 || !lastLogQueryFilters) return;
+    const confirmed = window.confirm(`确认清理当前查询结果中的 ${logsTotal} 条日志吗？此操作不会影响其他未命中的日志数据。`);
     if (!confirmed) return;
 
     setDeletingLogs(true);
     setLogsError('');
     setLogsMessage('');
     try {
-      const result = await deleteInternalLogs({
-        module: moduleFilter,
-        userId: userFilter,
-        status: statusFilter,
-        startAt: toTimestamp(startTimeFilter, 'start'),
-        endAt: toTimestamp(endTimeFilter, 'end'),
-      });
-      await loadLogs();
+      const result = await deleteInternalLogs(lastLogQueryFilters);
+      await loadLogs(1, lastLogQueryFilters);
       setLogsMessage(`已清理 ${result.deletedCount} 条日志。`);
     } catch (error: any) {
       setLogsError(error.message || '清理日志失败');
@@ -187,33 +205,74 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     }
   };
 
+  const currentUserLabel = currentUser?.displayName || currentUser?.username || '未登录';
+
   return (
     <div className="h-full overflow-y-auto px-6 pb-6 pt-5">
       <div className="mx-auto max-w-6xl">
-        <header className="mb-8 rounded-[32px] border border-slate-200/80 bg-white/90 px-8 py-8 shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
-          <h2 className="text-3xl font-black text-slate-900">账号管理工作台</h2>
+        <header className="mb-5 rounded-[24px] border border-white/75 bg-white/84 px-4 py-3.5 shadow-[0_18px_44px_rgba(15,23,42,0.06)] backdrop-blur-xl">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[15px] bg-slate-900 text-white shadow-[0_12px_24px_rgba(15,23,42,0.14)]">
+                <i className="fas fa-user-shield text-sm" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="truncate text-[20px] font-black tracking-[-0.03em] text-slate-900">账号管理</h2>
+                <p className="mt-0.5 text-[12px] font-medium text-slate-500">账号、日志、用量统一查看</p>
+              </div>
+            </div>
+            {currentUser ? (
+              <div className="flex items-center gap-3 rounded-[18px] border border-slate-200/80 bg-white/82 px-3 py-2 shadow-[0_10px_24px_rgba(148,163,184,0.08)]">
+                <ProfileSettingsCard
+                  currentUser={currentUser}
+                  onUserChange={onCurrentUserChange}
+                  compactOnly
+                />
+                <div className="min-w-0">
+                  <p className="truncate text-[13px] font-black text-slate-900">{currentUserLabel}</p>
+                  <p className="mt-0.5 text-[11px] font-medium text-slate-500">
+                    {currentUser?.role === 'admin' ? '管理员' : '员工'} · 并发 {currentUser?.jobConcurrency ?? '-'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setProfilePanelOpen(true)}
+                  className="rounded-[15px] border border-slate-200/80 bg-white px-3 py-1.5 text-[12px] font-black text-slate-700"
+                >
+                  编辑资料
+                </button>
+              </div>
+            ) : null}
+          </div>
         </header>
 
-        <WorkspaceShellCard className="bg-slate-50/90 px-8 py-7">
-          <div className="flex items-start gap-4">
-            <div className="w-14 h-14 rounded-2xl bg-slate-900 text-white flex items-center justify-center shadow-lg">
-              <i className="fas fa-user-shield text-xl"></i>
-            </div>
-            <div className="flex-1">
-              <h3 className="text-lg font-black text-slate-800">当前登录账号</h3>
-              <p className="mt-2 text-sm text-slate-600 leading-7">
-                {currentUser?.displayName || currentUser?.username || '未登录'} · {currentUser?.role === 'admin' ? '管理员' : '员工'} · 账号并发 {currentUser?.jobConcurrency ?? '-'}
-              </p>
-              <p className="mt-1 text-sm text-slate-400">
-                {internalMode ? '把账号和运行日志分开管理，页面会更短也更适合多人日常使用。' : '当前为本地模式，账号管理仅在内部版启用。'}
-              </p>
+        {profilePanelOpen ? (
+          <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/20 px-6">
+            <div className="w-full max-w-4xl rounded-[28px] border border-white/80 bg-white/92 p-5 shadow-[0_30px_80px_rgba(15,23,42,0.14)] backdrop-blur-2xl">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-[18px] font-black text-slate-900">个人资料</h3>
+                  <p className="mt-1 text-[12px] font-medium text-slate-500">这里只在需要时打开，不再常驻占据页面。</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setProfilePanelOpen(false)}
+                  className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-200/80 bg-white text-slate-500"
+                  aria-label="关闭个人资料"
+                >
+                  <i className="fas fa-xmark text-sm" />
+                </button>
+              </div>
+              {currentUser ? (
+                <ProfileSettingsCard currentUser={currentUser} onUserChange={onCurrentUserChange} />
+              ) : null}
             </div>
           </div>
-        </WorkspaceShellCard>
+        ) : null}
 
         {isAdmin ? (
           <>
-            <div className="mt-8">
+            <div className="mt-4">
               <SegmentedTabs
                 value={activeTab}
                 onChange={setActiveTab}
@@ -234,40 +293,40 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
             ) : null}
 
             {activeTab === 'logs' ? (
-              <section className="mt-8">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-4">
-                    <div className="w-12 h-12 bg-slate-900 text-white rounded-2xl flex items-center justify-center shadow-lg">
-                      <i className="fas fa-clipboard-list text-xl"></i>
+              <section className="mt-6">
+                <div className="mb-3 flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-[16px] bg-slate-900 text-white shadow-[0_10px_22px_rgba(15,23,42,0.12)]">
+                      <i className="fas fa-clipboard-list text-base"></i>
                     </div>
                     <div>
-                      <h3 className="text-lg font-black text-slate-800">运行日志</h3>
-                      <p className="text-xs text-slate-400">按筛选结果导出或清理，更适合真实排障使用。</p>
+                      <h3 className="text-[18px] font-black text-slate-800">运行日志</h3>
+                      <p className="text-[12px] text-slate-400">单页 10 条，优先短列表和清晰筛选。</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={handleExportLogs} disabled={filteredLogs.length === 0} className="px-4 py-2 rounded-xl text-xs font-black bg-slate-100 text-slate-700 hover:bg-slate-200 transition-colors disabled:opacity-60">
-                      导出当前结果
+                    <button onClick={handleExportLogs} disabled={logs.length === 0} className="rounded-[16px] bg-slate-100 px-3.5 py-2 text-[12px] font-black text-slate-700 hover:bg-slate-200 transition-colors disabled:opacity-60">
+                      导出当前页
                     </button>
                     <button
                       onClick={() => void handleDeleteLogs()}
-                      disabled={deletingLogs || filteredLogs.length === 0}
-                      className="px-4 py-2 rounded-xl text-xs font-black bg-rose-50 text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-60"
+                      disabled={deletingLogs || logsTotal === 0 || !lastLogQueryFilters}
+                      className="rounded-[16px] bg-rose-50 px-3.5 py-2 text-[12px] font-black text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-60"
                     >
                       {deletingLogs ? '清理中...' : '清理当前结果'}
                     </button>
-                    <button onClick={() => void loadLogs()} disabled={loadingLogs} className="px-4 py-2 rounded-xl text-xs font-black bg-indigo-600 text-white hover:bg-indigo-700 transition-colors disabled:opacity-60">
+                    <button onClick={() => void loadLogs(1)} disabled={loadingLogs} className="rounded-[16px] bg-indigo-600 px-3.5 py-2 text-[12px] font-black text-white hover:bg-indigo-700 transition-colors disabled:opacity-60">
                       {loadingLogs ? '查询中...' : '查询日志'}
                     </button>
                   </div>
                 </div>
 
-                <div className="bg-white border border-slate-200 rounded-3xl overflow-hidden">
-                  <div className="px-6 py-5 border-b border-slate-100 bg-slate-50">
-                    <div className="grid md:grid-cols-5 gap-3">
+                <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white">
+                  <div className="border-b border-slate-100 bg-slate-50 px-5 py-4">
+                    <div className="grid gap-3 xl:grid-cols-[1.1fr_1.1fr_1fr_1fr_1fr_auto]">
                       <div>
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">按功能筛选</label>
-                        <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)} className="mt-1 w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-700 outline-none">
+                        <label className="ml-1 text-[10px] font-black uppercase text-slate-500">按功能筛选</label>
+                        <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)} className="mt-1 w-full rounded-[16px] border border-slate-200 bg-white px-3 py-2.5 text-[12px] font-bold text-slate-700 outline-none">
                           <option value="all">全部功能</option>
                           {moduleOptions.map((moduleId) => (
                             <option key={moduleId} value={moduleId}>{getModuleLabel(moduleId)}</option>
@@ -275,8 +334,8 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                         </select>
                       </div>
                       <div>
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">按人员筛选</label>
-                        <select value={userFilter} onChange={(event) => setUserFilter(event.target.value)} className="mt-1 w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-700 outline-none">
+                        <label className="ml-1 text-[10px] font-black uppercase text-slate-500">按人员筛选</label>
+                        <select value={userFilter} onChange={(event) => setUserFilter(event.target.value)} className="mt-1 w-full rounded-[16px] border border-slate-200 bg-white px-3 py-2.5 text-[12px] font-bold text-slate-700 outline-none">
                           <option value="all">全部人员</option>
                           {userOptions.map((user) => (
                             <option key={user.id} value={user.id}>{user.label}</option>
@@ -284,26 +343,26 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                         </select>
                       </div>
                       <div>
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">开始时间</label>
+                        <label className="ml-1 text-[10px] font-black uppercase text-slate-500">开始时间</label>
                         <input
                           type="datetime-local"
                           value={startTimeFilter}
                           onChange={(event) => setStartTimeFilter(event.target.value)}
-                          className="mt-1 w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-700 outline-none"
+                          className="mt-1 w-full rounded-[16px] border border-slate-200 bg-white px-3 py-2.5 text-[12px] font-bold text-slate-700 outline-none"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">结束时间</label>
+                        <label className="ml-1 text-[10px] font-black uppercase text-slate-500">结束时间</label>
                         <input
                           type="datetime-local"
                           value={endTimeFilter}
                           onChange={(event) => setEndTimeFilter(event.target.value)}
-                          className="mt-1 w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-700 outline-none"
+                          className="mt-1 w-full rounded-[16px] border border-slate-200 bg-white px-3 py-2.5 text-[12px] font-bold text-slate-700 outline-none"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-black text-slate-500 uppercase ml-1">按结果筛选</label>
-                        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="mt-1 w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-700 outline-none">
+                        <label className="ml-1 text-[10px] font-black uppercase text-slate-500">按结果筛选</label>
+                        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="mt-1 w-full rounded-[16px] border border-slate-200 bg-white px-3 py-2.5 text-[12px] font-bold text-slate-700 outline-none">
                           <option value="all">全部结果</option>
                           <option value="started">进行中</option>
                           <option value="success">成功</option>
@@ -311,12 +370,14 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                           <option value="interrupted">中断</option>
                         </select>
                       </div>
-                      <div className="rounded-2xl bg-white border border-slate-200 px-4 py-3 flex items-center justify-between">
+                      <div className="flex items-end">
+                        <div className="flex w-full items-center justify-between rounded-[18px] border border-slate-200 bg-white px-4 py-3">
                         <div>
-                          <p className="text-[10px] font-black text-slate-500 uppercase">当前结果数</p>
-                          <p className="mt-1 text-lg font-black text-slate-800">{filteredLogs.length}</p>
+                            <p className="text-[10px] font-black uppercase text-slate-500">当前结果数</p>
+                            <p className="mt-1 text-[18px] font-black text-slate-800">{logsTotal}</p>
+                          </div>
+                          <i className="fas fa-filter text-slate-300 text-lg"></i>
                         </div>
-                        <i className="fas fa-filter text-slate-300 text-xl"></i>
                       </div>
                     </div>
                   </div>
@@ -328,39 +389,60 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                     <div className="px-6 py-5 text-sm font-bold text-slate-400">正在读取运行日志...</div>
                   ) : !logsQueried ? (
                     <div className="px-6 py-8 text-sm font-bold text-slate-400 text-center">请选择筛选条件后点击「查询日志」</div>
-                  ) : filteredLogs.length === 0 ? (
+                  ) : logs.length === 0 ? (
                     <div className="px-6 py-5 text-sm font-bold text-slate-400">当前筛选条件下没有日志</div>
                   ) : (
                     <div className="divide-y divide-slate-100">
                       {groupedLogEntries.map(([day, dayLogs]) => (
                         <div key={day}>
-                          <div className="px-6 py-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
-                            <p className="text-sm font-black text-slate-700">{day}</p>
-                            <p className="text-xs font-bold text-slate-400">{dayLogs.length} 条</p>
+                          <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-5 py-3">
+                            <p className="text-[13px] font-black text-slate-700">{day}</p>
+                            <p className="text-[11px] font-bold text-slate-400">{dayLogs.length} 条</p>
                           </div>
                           <div className="divide-y divide-slate-100">
                             {dayLogs.map((log) => {
                               const metaSummary = getMetaSummary(log.meta);
                               return (
-                                <div key={log.id} className="px-6 py-5">
-                                  <div className="flex items-start justify-between gap-4">
-                                    <div className="min-w-0">
-                                      <div className="flex items-center gap-2 flex-wrap">
-                                        <span className={`px-2 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${log.level === 'error' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
+                                <details key={log.id} className="group px-5 py-4">
+                                  <summary className="flex cursor-pointer list-none items-start justify-between gap-4">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <span className={`rounded-full px-2 py-1 text-[10px] font-black uppercase tracking-widest ${log.level === 'error' ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-600'}`}>
                                           {log.level === 'error' ? '错误' : '记录'}
                                         </span>
-                                        <span className={`px-2 py-1 rounded-full text-[10px] font-black uppercase tracking-widest ${getStatusBadgeClass(log.status)}`}>
+                                        <span className={`rounded-full px-2 py-1 text-[10px] font-black uppercase tracking-widest ${getStatusBadgeClass(log.status)}`}>
                                           {getStatusLabel(log.status)}
                                         </span>
                                         <span className="text-[11px] font-black text-slate-500">{getModuleLabel(log.module)}</span>
                                         <span className="text-[11px] text-slate-400">·</span>
                                         <span className="text-[11px] font-bold text-slate-500">{getActionLabel(log.action)}</span>
                                       </div>
-                                      <p className="mt-3 text-sm font-black text-slate-800 break-words">{log.message}</p>
+                                      <p className="mt-2 text-[13px] font-black text-slate-800 break-words">{log.message}</p>
                                       {metaSummary.length > 0 ? (
-                                        <div className="mt-3 flex flex-wrap gap-2">
+                                        <div className="mt-2 flex flex-wrap gap-2">
+                                          {metaSummary.slice(0, 3).map((item) => (
+                                            <span key={item.key} className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-bold text-slate-500">
+                                              {item.label}：{item.value}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                    <div className="shrink-0 text-right">
+                                      <p className="text-[12px] font-black text-slate-600">{log.displayName || log.username}</p>
+                                      <p className="mt-1 text-[11px] text-slate-400">{formatTime(log.createdAt)}</p>
+                                      <span className="mt-2 inline-flex items-center gap-1 text-[11px] font-bold text-slate-400 group-open:text-slate-600">
+                                        <i className="fas fa-chevron-down text-[10px] transition group-open:rotate-180" />
+                                        详情
+                                      </span>
+                                    </div>
+                                  </summary>
+                                  {log.detail || metaSummary.length > 3 ? (
+                                    <div className="mt-3 border-t border-slate-100 pt-3">
+                                      {metaSummary.length > 0 ? (
+                                        <div className="flex flex-wrap gap-2">
                                           {metaSummary.map((item) => (
-                                            <span key={item.key} className="px-2.5 py-1 rounded-full bg-slate-50 border border-slate-200 text-[11px] font-bold text-slate-500">
+                                            <span key={item.key} className="rounded-full bg-slate-50 border border-slate-200 px-2.5 py-1 text-[11px] font-bold text-slate-500">
                                               {item.label}：{item.value}
                                             </span>
                                           ))}
@@ -372,17 +454,32 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                                         </pre>
                                       ) : null}
                                     </div>
-                                    <div className="text-right shrink-0">
-                                      <p className="text-xs font-black text-slate-600">{log.displayName || log.username}</p>
-                                      <p className="text-[11px] text-slate-400 mt-1">{formatTime(log.createdAt)}</p>
-                                    </div>
-                                  </div>
-                                </div>
+                                  ) : null}
+                                </details>
                               );
                             })}
                           </div>
                         </div>
                       ))}
+                      <div className="flex items-center justify-between bg-slate-50 px-5 py-4">
+                        <p className="text-[12px] font-bold text-slate-500">第 {logsPage} / {logsPageCount} 页，共 {logsTotal} 条</p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => void loadLogs(logsPage - 1)}
+                            disabled={loadingLogs || logsPage <= 1}
+                            className="rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-[12px] font-black text-slate-700 disabled:opacity-40"
+                          >
+                            上一页
+                          </button>
+                          <button
+                            onClick={() => void loadLogs(logsPage + 1)}
+                            disabled={loadingLogs || logsPage >= logsPageCount}
+                            className="rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-[12px] font-black text-slate-700 disabled:opacity-40"
+                          >
+                            下一页
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -393,6 +490,12 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
               <UsageStatsPanel />
             ) : null}
           </>
+        ) : currentUser ? (
+          <div className="mt-6">
+            <WorkspaceShellCard className="border border-white/75 bg-white/84 px-5 py-5 shadow-[0_18px_44px_rgba(148,163,184,0.08)] backdrop-blur-xl">
+              <p className="text-[14px] font-medium text-slate-500">当前账号不是管理员，仅可维护个人资料。</p>
+            </WorkspaceShellCard>
+          </div>
         ) : null}
       </div>
     </div>

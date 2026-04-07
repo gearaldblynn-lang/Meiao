@@ -1,0 +1,145 @@
+<h2>智能体工作区方案</h2>
+<p class="subtitle">目标：所有管理相关功能都收进智能体中心，但不堆成一屏，用工作区切换保证成熟的后台体验。</p>
+
+<div class="mockup">
+  <div class="mockup-header">整体结构</div>
+  <div class="mockup-body">
+    <style>
+      .shell { display:grid; grid-template-columns: 220px 1fr 320px; gap:16px; min-height:640px; }
+      .pane { border:1px solid #d7deea; border-radius:20px; background:#fff; padding:16px; }
+      .nav-item { padding:12px 14px; border-radius:14px; margin-bottom:8px; font-weight:700; }
+      .nav-item.active { background:#e9f5ff; color:#0f5f9a; border:1px solid #b9def6; }
+      .nav-item.muted { background:#f7f9fc; color:#526072; }
+      .title { font-size:18px; font-weight:800; margin-bottom:12px; }
+      .sub { font-size:12px; color:#6b7280; margin-bottom:12px; }
+      .list-card { border:1px solid #dde4ee; border-radius:16px; padding:12px; margin-bottom:10px; background:#fbfcfe; }
+      .list-card.active { border-color:#84c9f3; background:#eef8ff; }
+      .grid-two { display:grid; grid-template-columns: 1fr 1fr; gap:12px; margin-bottom:12px; }
+      .field { border:1px solid #dde4ee; border-radius:14px; padding:10px 12px; background:#fff; min-height:44px; }
+      .panel { border:1px solid #dde4ee; border-radius:16px; padding:12px; background:#f8fbfd; margin-bottom:12px; }
+      .step { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:14px; background:#fff; border:1px solid #dde4ee; margin-bottom:8px; }
+      .dot { width:24px; height:24px; border-radius:999px; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:800; }
+      .done { background:#dff7e8; color:#0d7a3a; }
+      .current { background:#e8f3ff; color:#0b63a5; }
+      .todo { background:#f1f5f9; color:#64748b; }
+      .btn-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+      .btn { padding:10px 12px; border-radius:12px; font-weight:800; font-size:12px; border:1px solid #d9e1eb; background:#fff; }
+      .btn.primary { background:#111827; color:#fff; border-color:#111827; }
+      .btn.success { background:#0f8b53; color:#fff; border-color:#0f8b53; }
+      .badge { display:inline-block; padding:4px 8px; border-radius:999px; font-size:11px; font-weight:800; margin-right:6px; }
+      .badge.blue { background:#e8f3ff; color:#0b63a5; }
+      .badge.green { background:#dff7e8; color:#0d7a3a; }
+      .badge.orange { background:#fff0d8; color:#9a5b00; }
+      .flow { margin-top:10px; padding:12px; border:1px dashed #c7d3df; border-radius:14px; background:#fff; }
+    </style>
+
+    <div class="shell">
+      <div class="pane">
+        <div class="title">工作区导航</div>
+        <div class="nav-item active">智能体总览</div>
+        <div class="nav-item muted">配置编辑</div>
+        <div class="nav-item muted">知识库绑定</div>
+        <div class="nav-item muted">测试验证</div>
+        <div class="nav-item muted">发布与回滚</div>
+        <div class="nav-item muted">调用统计</div>
+        <div class="flow">
+          <div style="font-weight:800;margin-bottom:6px;">交互原则</div>
+          <div style="font-size:12px;color:#526072;line-height:1.7;">
+            左侧是页面切换，不是功能堆叠。<br/>
+            每一步都能返回上一步。<br/>
+            智能体始终保持上下文，不会切页后丢选中对象。
+          </div>
+        </div>
+      </div>
+
+      <div class="pane">
+        <div class="title">智能体总览</div>
+        <div class="sub">上方保留搜索、部门筛选、状态筛选。中间永远是当前选中智能体的主信息。</div>
+
+        <div class="grid-two">
+          <div class="field">搜索智能体 / 按部门筛选 / 按状态筛选</div>
+          <div class="field">当前对象：电商运营助手 · 市场部</div>
+        </div>
+
+        <div class="list-card active">
+          <div style="font-weight:800;">电商运营助手</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px;">已发布 V3 · 草稿 V4 · 今日更新</div>
+        </div>
+        <div class="list-card">
+          <div style="font-weight:800;">客服 SOP 助手</div>
+          <div style="font-size:12px;color:#64748b;margin-top:4px;">已发布 V2 · 无草稿</div>
+        </div>
+
+        <div class="panel">
+          <div style="font-weight:800;margin-bottom:8px;">主信息区</div>
+          <div class="grid-two">
+            <div class="field">名称 / 部门 / 负责人</div>
+            <div class="field">当前发布版 / 当前草稿版 / 验证状态</div>
+          </div>
+          <div class="field" style="min-height:88px;">智能体说明、适用场景、当前风险提示</div>
+        </div>
+
+        <div class="panel">
+          <div style="font-weight:800;margin-bottom:8px;">快捷入口</div>
+          <div class="btn-row">
+            <div class="btn">进入配置编辑</div>
+            <div class="btn">进入知识库绑定</div>
+            <div class="btn">进入测试验证</div>
+            <div class="btn">进入发布与回滚</div>
+            <div class="btn">查看调用统计</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pane">
+        <div class="title">状态与操作</div>
+        <div class="panel">
+          <div style="font-weight:800;margin-bottom:8px;">版本状态</div>
+          <div style="margin-bottom:8px;">
+            <span class="badge blue">发布版 V3</span>
+            <span class="badge orange">草稿版 V4</span>
+          </div>
+          <div style="font-size:12px;color:#526072;">草稿 V4 尚未发布，但已绑定 2 个知识库，等待测试验证。</div>
+        </div>
+
+        <div class="panel">
+          <div style="font-weight:800;margin-bottom:8px;">固定流程</div>
+          <div class="step"><span class="dot done">1</span><span>编辑草稿</span></div>
+          <div class="step"><span class="dot current">2</span><span>测试验证</span></div>
+          <div class="step"><span class="dot todo">3</span><span>发布版本</span></div>
+          <div class="step"><span class="dot todo">4</span><span>回滚备份</span></div>
+        </div>
+
+        <div class="panel">
+          <div style="font-weight:800;margin-bottom:8px;">主操作</div>
+          <div class="btn-row">
+            <div class="btn primary">新建智能体</div>
+            <div class="btn">新建草稿</div>
+            <div class="btn">保存修改</div>
+            <div class="btn">去验证</div>
+            <div class="btn success">发布</div>
+            <div class="btn">回滚</div>
+            <div class="btn">归档</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="workspace-single-center" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>保留单一智能体工作区</h3>
+      <p>所有管理能力都在同一入口内切换，符合你刚才的要求。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="workspace-step-first" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>更强调流程导向</h3>
+      <p>把“编辑 → 知识库 → 测试 → 发布”做成更强的步骤导航。</p>
+    </div>
+  </div>
+</div>

@@ -218,12 +218,17 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
     let strictStandards = `【严格执行标准】：\n`;
     strictStandards += `1. 主体保真与防锐化：严禁改变品牌 Logo、标签文字内容。严禁对产品/包装上的文字和标识进行过度锐化，必须保证包装上的所有文字清晰无误、不产生畸变、重影 or 笔画断裂。\n`;
     strictStandards += `2. 风格精准重塑：必须严格执行上述指令中定义的渲染风格，禁止模糊化执行，确保光影氛围与材质表达高度商业化。\n`;
+    if (mode === 'original') {
+      strictStandards += `3. 原图连续性：原图精修必须严格基于待精修图当前画面做优化，只允许做质感、光影、透视、瑕疵、色彩和局部细节修正。\n`;
+      strictStandards += `4. 禁止重绘：禁止把原图精修做成重新换背景、换场景、换产品摆法、换镜头角度的大幅重绘。\n`;
+      strictStandards += `5. 内容克制：若无明确指令，不得新增原图中不存在的产品、道具、装饰元素或额外视觉主体。\n`;
+    }
 
     if (mode === 'white_bg') {
       strictStandards += `3. 构图占比优化：若原图中产品主体占比过小，必须将产品主体放大至占满画面约 80%-90% 的空间，以提高商品画面占比，增强视觉重心。\n`;
     }
     
-    strictStandards += `4. 比例自适应：适配 ${aspectRatio} 比例构图。`;
+    strictStandards += `${mode === 'original' ? '6' : '4'}. 比例自适应：适配 ${aspectRatio} 比例构图。`;
 
     finalPrompt += strictStandards;
 

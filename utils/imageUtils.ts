@@ -183,6 +183,19 @@ const replaceFileExtension = (fileName: string, nextExtension: string) => {
   return `${fileName.slice(0, dotIndex)}${normalizedExtension}`;
 };
 
+const getExtensionFromUrl = (url: string) => {
+  try {
+    const normalized = new URL(url, window.location.origin);
+    const pathname = normalized.pathname || '';
+    const match = pathname.match(/\.([a-zA-Z0-9]+)$/);
+    return match?.[1]?.toLowerCase() || '';
+  } catch {
+    const cleanUrl = url.split('?')[0].split('#')[0];
+    const match = cleanUrl.match(/\.([a-zA-Z0-9]+)$/);
+    return match?.[1]?.toLowerCase() || '';
+  }
+};
+
 const getExtensionForMimeType = (mimeType: string) => {
   switch (mimeType) {
     case 'image/jpeg':
@@ -193,6 +206,44 @@ const getExtensionForMimeType = (mimeType: string) => {
       return 'webp';
     default:
       return 'jpg';
+  }
+};
+
+const ensureDownloadFileName = (fileName: string, mimeType: string, url: string) => {
+  const normalizedName = (fileName || 'downloaded-image').trim();
+  if (/\.[a-zA-Z0-9]+$/.test(normalizedName)) {
+    return normalizedName;
+  }
+
+  const extensionFromMime = getExtensionForMimeType(mimeType);
+  const extensionFromUrl = getExtensionFromUrl(url);
+  const extension = extensionFromMime || extensionFromUrl || 'png';
+  return `${normalizedName}.${extension}`;
+};
+
+export const downloadRemoteFile = async (url: string, fileName: string) => {
+  const response = await fetch(url, { mode: 'cors', cache: 'no-cache' });
+  if (!response.ok) {
+    throw new Error(`下载失败: ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const blobUrl = safeCreateObjectURL(blob);
+  if (!blobUrl) {
+    throw new Error('下载失败: 无法创建本地文件链接');
+  }
+
+  try {
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = ensureDownloadFileName(fileName, blob.type, url);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  } finally {
+    setTimeout(() => {
+      URL.revokeObjectURL(blobUrl);
+    }, 100);
   }
 };
 

@@ -4,6 +4,7 @@ import {
   GenerationQuality,
   GlobalApiConfig,
   OneClickSubMode,
+  OneClickReferenceDimension,
   SkuConfig,
   SkuImageItem,
   SkuImageRole,
@@ -22,6 +23,8 @@ interface Props {
   apiConfig: GlobalApiConfig;
   disabled: boolean;
   onStart: () => void;
+  onAnalyzeReference: () => void;
+  analyzingReference?: boolean;
   onClearConfig?: () => void;
   currentSubMode?: OneClickSubMode;
   onSubModeChange?: (mode: OneClickSubMode) => void;
@@ -40,7 +43,7 @@ const LANG_PRESETS = [
   { label: '泰语/Thai', value: 'Thai' },
 ];
 
-type AssetTab = 'product' | 'gift' | 'style';
+type AssetTab = 'product' | 'gift' | 'reference';
 
 const ALL_RATIOS = [
   { label: '1:1', value: AspectRatio.SQUARE },
@@ -56,8 +59,10 @@ const ALL_RATIOS = [
 
 const SkuSidebar: React.FC<Props> = ({
   state, onUpdate, onUpdateConfig, apiConfig, disabled, onStart, onClearConfig,
+  onAnalyzeReference, analyzingReference = false,
   currentSubMode, onSubModeChange,
 }) => {
+  void onAnalyzeReference;
   const { images, config } = state;
   const productInputRef = useRef<HTMLInputElement>(null);
   const giftInputRef = useRef<HTMLInputElement>(null);
@@ -68,11 +73,29 @@ const SkuSidebar: React.FC<Props> = ({
 
   const productImages = images.filter((i) => i.role === 'product');
   const giftImages = images.filter((i) => i.role === 'gift').sort((a, b) => (a.giftIndex || 0) - (b.giftIndex || 0));
-  const styleImage = images.find((i) => i.role === 'style_ref') || null;
+  const designReferences = state.designReferences || [];
+  const referenceDimensions = state.referenceDimensions || [];
   const totalImages = images.length;
-  const canAddMore = totalImages < 7;
   const nextGiftIndex = Math.max(0, ...giftImages.map((i) => i.giftIndex || 0)) + 1;
   const hasProduct = productImages.length > 0;
+  const referenceDimensionOptions: Array<{ key: OneClickReferenceDimension; label: string }> = [
+    { key: 'visual_style', label: '视觉风格' },
+    { key: 'typography', label: '字体' },
+    { key: 'color_palette', label: '色调' },
+    { key: 'layout', label: '排版' },
+    { key: 'copy_content', label: '文案内容' },
+  ];
+
+  const invalidateReferenceAnalysis = () => {
+    return {
+      referenceAnalysis: {
+        status: 'idle',
+        summary: '',
+        error: '',
+        analyzedAt: null,
+      },
+    } as any;
+  };
 
   // 自动上传未上传的图片
   useEffect(() => {
@@ -109,6 +132,29 @@ const SkuSidebar: React.FC<Props> = ({
   };
 
   const removeImage = (id: string) => onUpdate({ images: images.filter((i) => i.id !== id) });
+  const addReferenceFiles = (files: File[]) => {
+    const remaining = 8 - designReferences.length;
+    const next = files.slice(0, remaining).map((file) => ({
+      id: `sku_reference_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      file,
+      uploadedUrl: null,
+    }));
+    onUpdate({ designReferences: [...designReferences, ...next] as any, ...invalidateReferenceAnalysis() });
+  };
+  const removeReference = (id: string) => {
+    const next = designReferences.filter((item: any) => item.id !== id);
+    onUpdate({
+      designReferences: next as any,
+      uploadedDesignReferenceUrls: next.map((item: any) => item.uploadedUrl).filter(Boolean),
+      ...invalidateReferenceAnalysis(),
+    } as any);
+  };
+  const toggleReferenceDimension = (dimension: OneClickReferenceDimension) => {
+    const next = referenceDimensions.includes(dimension)
+      ? referenceDimensions.filter((item: OneClickReferenceDimension) => item !== dimension)
+      : [...referenceDimensions, dimension];
+    onUpdate({ referenceDimensions: next, ...invalidateReferenceAnalysis() } as any);
+  };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>, role: SkuImageRole, giftIdx?: number) => {
     const files = Array.from(e.target.files || []) as File[];
@@ -204,12 +250,14 @@ const SkuSidebar: React.FC<Props> = ({
         </button>
       ) : undefined}
       footer={
-        <PrimaryActionButton
-          onClick={onStart}
-          disabled={disabled || !hasProduct || config.combinations.length === 0}
-          icon={disabled ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'}
-          label={disabled ? '策划中...' : '生成方案'}
-        />
+        <div className="space-y-2">
+          <PrimaryActionButton
+            onClick={onStart}
+            disabled={disabled || !hasProduct || config.combinations.length === 0}
+            icon={disabled ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'}
+            label={disabled ? '策划中...' : '生成方案'}
+          />
+        </div>
       }
     >
       {/* 素材上传 */}
@@ -226,7 +274,7 @@ const SkuSidebar: React.FC<Props> = ({
             <div className="flex bg-slate-100 p-1 rounded-xl">
               <button onClick={() => setAssetTab('product')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'product' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400'}`}>商品主体 ({productImages.length})</button>
               <button onClick={() => setAssetTab('gift')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'gift' ? 'bg-white text-amber-600 shadow-sm' : 'text-slate-400'}`}>赠品 ({giftImages.length})</button>
-              <button onClick={() => setAssetTab('style')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'style' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>风格参考 ({styleImage ? 1 : 0})</button>
+              <button onClick={() => setAssetTab('reference')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'reference' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>设计参考 ({designReferences.length})</button>
             </div>
 
             {assetTab === 'product' && (
@@ -253,35 +301,60 @@ const SkuSidebar: React.FC<Props> = ({
               </div>
             )}
 
-            {assetTab === 'style' && (
+            {assetTab === 'reference' && (
               <div className="space-y-3">
-                {styleImage ? (
-                  <div className="h-28 relative rounded-xl border border-slate-100 overflow-hidden group">
-                    {styleImage.file ? (
-                      <div className="w-full h-full relative">
-                        <img src={safeCreateObjectURL(styleImage.file)} className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                        {!styleImage.uploadedUrl && (
-                          <div className="absolute inset-0 bg-white/60 flex items-center justify-center">
-                            <i className="fas fa-spinner fa-spin text-indigo-500 text-lg"></i>
-                          </div>
-                        )}
+                <div onClick={() => styleInputRef.current?.click()} className="group cursor-pointer border-2 border-dashed border-indigo-200 rounded-[20px] p-5 hover:border-indigo-300 hover:bg-indigo-50/30 transition-all text-center">
+                  <i className="fas fa-palette text-indigo-200 text-lg group-hover:text-indigo-400 mb-2 block"></i>
+                  <p className="text-xs font-black text-slate-600">上传设计参考图</p>
+                  <p className="mt-1 text-[10px] text-slate-400">最多 8 张，单张超 3MB 自动压缩</p>
+                  <input type="file" multiple ref={styleInputRef} onChange={(e) => {
+                    const files = Array.from(e.target.files || []) as File[];
+                    const imageFiles = files.filter((f) => f.type.startsWith('image/'));
+                    if (imageFiles.length > 0) addReferenceFiles(imageFiles);
+                    e.target.value = '';
+                  }} className="hidden" accept="image/*" />
+                </div>
+                {designReferences.length > 0 ? (
+                  <div className="grid grid-cols-4 gap-2">
+                    {designReferences.map((item: any, index: number) => (
+                      <div key={item.id} className="aspect-square relative rounded-lg border border-slate-100 overflow-hidden group">
+                        {item.file ? (
+                          <img src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : item.uploadedUrl ? (
+                          <img src={item.uploadedUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                        ) : null}
+                        <button onClick={() => removeReference(item.id)} className="absolute top-0 right-0 w-5 h-5 bg-rose-500 text-white rounded-bl-lg flex items-center justify-center opacity-0 group-hover:opacity-100">
+                          <i className="fas fa-times text-[10px]"></i>
+                        </button>
+                        <span className="absolute bottom-0 left-0 right-0 bg-black/50 text-white text-[8px] font-bold text-center py-0.5">参考{index + 1}</span>
                       </div>
-                    ) : styleImage.uploadedUrl ? (
-                      <img src={styleImage.uploadedUrl} className="h-full w-full object-cover" referrerPolicy="no-referrer" />
-                    ) : null}
-                    <button onClick={() => removeImage(styleImage.id)}
-                      className="absolute top-0 right-0 w-5 h-5 bg-rose-500 text-white rounded-bl-lg flex items-center justify-center opacity-0 group-hover:opacity-100">
-                      <i className="fas fa-times text-[10px]"></i>
-                    </button>
+                    ))}
                   </div>
-                ) : (
-                  <div onClick={() => styleInputRef.current?.click()} className="h-28 relative border-2 border-dashed border-indigo-200 rounded-xl flex items-center justify-center text-[11px] font-bold text-slate-400 overflow-hidden group hover:border-indigo-300 cursor-pointer bg-slate-50/50">
-                    <div className="text-center"><i className="fas fa-palette text-indigo-200 text-xl mb-2"></i><p>上传风格参考</p><p className="text-[9px] mt-1">控制色调与构图（最多1张）</p></div>
-                    <input type="file" ref={styleInputRef} onChange={(e) => handleFileInput(e, 'style_ref')} className="hidden" accept="image/*" />
+                ) : null}
+                <div className="space-y-2 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+                  <p className="text-[11px] font-black text-slate-700">这组图需要参考的维度</p>
+                  <div className="flex flex-wrap gap-2">
+                    {referenceDimensionOptions.map((option) => (
+                      <button key={option.key} type="button" onClick={() => toggleReferenceDimension(option.key)} className={`rounded-full px-3 py-1.5 text-[10px] font-bold transition ${referenceDimensions.includes(option.key) ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'bg-white/60 text-slate-500 ring-1 ring-slate-200'}`}>
+                        {option.label}
+                      </button>
+                    ))}
                   </div>
-                )}
+                </div>
+                {analyzingReference ? (
+                  <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-[11px] text-indigo-700">
+                    正在自动分析设计参考，生成方案时会优先使用参考结论。
+                  </div>
+                ) : null}
+                {state.referenceAnalysis?.summary ? (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <p className="text-[11px] font-black text-slate-700">参考分析结论</p>
+                    <p className="mt-2 whitespace-pre-wrap text-[11px] leading-5 text-slate-600">{state.referenceAnalysis.summary}</p>
+                  </div>
+                ) : null}
               </div>
             )}
+
           </div>
         )}
       </div>

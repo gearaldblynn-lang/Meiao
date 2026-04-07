@@ -5,10 +5,12 @@ import { MODULE_META } from './moduleMeta';
 interface Props {
   activeModule: AppModule;
   onModuleChange: (module: AppModule) => void;
+  showSystemEntries?: boolean;
 }
 
-const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange }) => {
+const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange, showSystemEntries = true }) => {
   const businessItems = [
+    AppModule.AGENT_CENTER,
     AppModule.ONE_CLICK,
     AppModule.TRANSLATION,
     AppModule.BUYER_SHOW,
@@ -30,6 +32,8 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange }) =>
         onClick={() => !isReserved && onModuleChange(item)}
         disabled={isReserved}
         title={meta.label}
+        data-icon-only="true"
+        data-iconOnly="true"
         className={`group flex w-full flex-col items-center justify-center gap-1 rounded-[18px] px-1 py-2 text-center transition-all ${
           active
             ? 'bg-white/10 text-white shadow-[0_18px_36px_rgba(15,23,42,0.22)]'
@@ -81,9 +85,11 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange }) =>
           {businessItems.map((item) => renderNavButton(item, 'business'))}
         </div>
 
-        <div className="sys-grid mt-auto w-full pt-3">
-          {systemItems.map((item) => renderNavButton(item, 'system'))}
-        </div>
+        {showSystemEntries ? (
+          <div className="sys-grid mt-auto w-full pt-3">
+            {systemItems.map((item) => renderNavButton(item, 'system'))}
+          </div>
+        ) : <div className="mt-auto" />}
       </div>
     </div>
   );

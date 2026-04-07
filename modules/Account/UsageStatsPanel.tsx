@@ -1,34 +1,74 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { MODULE_LABELS } from '../../services/loggingService';
-import { fetchUsageStats, backfillUsageStats } from '../../services/internalApi';
+import { backfillUsageStats, fetchUsageStats } from '../../services/internalApi';
 
-const USAGE_MODULE_IDS = ['one_click', 'translation', 'buyer_show', 'retouch', 'video'];
+const USAGE_MODULE_IDS = ['agent_center', 'one_click', 'translation', 'buyer_show', 'retouch', 'video'];
+
+type UsageRow = {
+  statDate: string;
+  userId: string;
+  username: string;
+  displayName: string;
+  module: string;
+  successCount: number;
+  failedCount: number;
+  interruptedCount: number;
+};
+
+type UsageByUserRow = {
+  userId: string;
+  displayName: string;
+  total: number;
+  success: number;
+  failed: number;
+  interrupted: number;
+};
+
+type UsageByModuleRow = {
+  module: string;
+  total: number;
+  success: number;
+  failed: number;
+  interrupted: number;
+};
 
 const UsageStatsPanel: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  const [rows, setRows] = useState<any[]>([]);
+  const [rows, setRows] = useState<UsageRow[]>([]);
   const [moduleFilter, setModuleFilter] = useState('all');
   const [userFilter, setUserFilter] = useState('all');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-
   const [knownUsers, setKnownUsers] = useState<Array<{ id: string; label: string }>>([]);
 
-  // 预加载用户列表
   useEffect(() => {
     void (async () => {
       try {
         const allResult = await fetchUsageStats({});
         const userMap = new Map<string, string>();
-        for (const r of allResult.rows) {
-          if (!userMap.has(r.userId)) userMap.set(r.userId, r.displayName || r.username);
+        for (const row of allResult.rows) {
+          if (!userMap.has(row.userId)) {
+            userMap.set(row.userId, row.displayName || row.username);
+          }
         }
         setKnownUsers(Array.from(userMap.entries()).map(([id, label]) => ({ id, label })));
-      } catch { /* 静默 */ }
+      } catch {
+        // 静默预载失败，避免影响主流程
+      }
     })();
   }, []);
+
+  const refreshKnownUsers = (nextRows: UsageRow[]) => {
+    const userMap = new Map<string, string>();
+    for (const row of [...rows, ...nextRows]) {
+      if (!userMap.has(row.userId)) {
+        userMap.set(row.userId, row.displayName || row.username);
+      }
+    }
+    setKnownUsers(Array.from(userMap.entries()).map(([id, label]) => ({ id, label })));
+  };
 
   const handleQuery = async () => {
     setLoading(true);
@@ -42,13 +82,7 @@ const UsageStatsPanel: React.FC = () => {
         module: moduleFilter,
       });
       setRows(result.rows);
-      // 查询后也更新用户列表
-      const userMap = new Map<string, string>();
-      for (const r of result.rows) {
-        if (!userMap.has(r.userId)) userMap.set(r.userId, r.displayName || r.username);
-      }
-      const newUsers = Array.from(userMap.entries()).map(([id, label]) => ({ id, label }));
-      if (newUsers.length > knownUsers.length) setKnownUsers(newUsers);
+      refreshKnownUsers(result.rows);
       setMessage(`查询到 ${result.rows.length} 条统计记录`);
     } catch (err: any) {
       setError(err.message || '查询失败');
@@ -72,226 +106,259 @@ const UsageStatsPanel: React.FC = () => {
     }
   };
 
-  const overview = rows.reduce((acc, r) => {
-    acc.success += r.successCount;
-    acc.failed += r.failedCount;
-    acc.interrupted += r.interruptedCount;
+  const overview = useMemo(() => rows.reduce((acc, row) => {
+    acc.success += row.successCount;
+    acc.failed += row.failedCount;
+    acc.interrupted += row.interruptedCount;
     return acc;
-  }, { success: 0, failed: 0, interrupted: 0 });
+  }, { success: 0, failed: 0, interrupted: 0 }), [rows]);
+
   const totalFinished = overview.success + overview.failed;
-  const rate = totalFinished > 0 ? ((overview.success / totalFinished) * 100).toFixed(1) + '%' : '--';
+  const successRate = totalFinished > 0 ? `${((overview.success / totalFinished) * 100).toFixed(1)}%` : '--';
 
-  const byUser = Object.values(
-    rows.reduce((acc: any, r) => {
-      if (!acc[r.userId]) acc[r.userId] = { userId: r.userId, displayName: r.displayName, total: 0, success: 0, failed: 0 };
-      acc[r.userId].total += r.successCount + r.failedCount;
-      acc[r.userId].success += r.successCount;
-      acc[r.userId].failed += r.failedCount;
+  const byUser = useMemo<UsageByUserRow[]>(() => (Object.values(
+    rows.reduce<Record<string, UsageByUserRow>>((acc, row) => {
+      if (!acc[row.userId]) {
+        acc[row.userId] = {
+          userId: row.userId,
+          displayName: row.displayName || row.username,
+          total: 0,
+          success: 0,
+          failed: 0,
+          interrupted: 0,
+        };
+      }
+      acc[row.userId].total += row.successCount + row.failedCount;
+      acc[row.userId].success += row.successCount;
+      acc[row.userId].failed += row.failedCount;
+      acc[row.userId].interrupted += row.interruptedCount;
       return acc;
     }, {})
-  ).sort((a: any, b: any) => b.total - a.total);
+  ) as UsageByUserRow[]).sort((a, b) => b.total - a.total), [rows]);
 
-  const byModule = Object.values(
-    rows.reduce((acc: any, r) => {
-      if (!acc[r.module]) acc[r.module] = { module: r.module, total: 0, success: 0, failed: 0 };
-      acc[r.module].total += r.successCount + r.failedCount;
-      acc[r.module].success += r.successCount;
-      acc[r.module].failed += r.failedCount;
+  const byModule = useMemo<UsageByModuleRow[]>(() => (Object.values(
+    rows.reduce<Record<string, UsageByModuleRow>>((acc, row) => {
+      if (!acc[row.module]) {
+        acc[row.module] = { module: row.module, total: 0, success: 0, failed: 0, interrupted: 0 };
+      }
+      acc[row.module].total += row.successCount + row.failedCount;
+      acc[row.module].success += row.successCount;
+      acc[row.module].failed += row.failedCount;
+      acc[row.module].interrupted += row.interruptedCount;
       return acc;
     }, {})
-  ).sort((a: any, b: any) => b.total - a.total);
+  ) as UsageByModuleRow[]).sort((a, b) => b.total - a.total), [rows]);
 
-  const byDate = Object.values(
-    rows.reduce((acc: any, r) => {
-      if (!acc[r.statDate]) acc[r.statDate] = { date: r.statDate, success: 0, failed: 0 };
-      acc[r.statDate].success += r.successCount;
-      acc[r.statDate].failed += r.failedCount;
-      return acc;
-    }, {})
-  ).sort((a: any, b: any) => a.date.localeCompare(b.date)) as Array<{ date: string; success: number; failed: number }>;
-  const maxDaily = Math.max(1, ...byDate.map((d) => d.success + d.failed));
+  const summaryCards = [
+    { label: '总调用量', value: totalFinished, tone: 'text-slate-900', desc: '成功 + 失败' },
+    { label: '成功', value: overview.success, tone: 'text-emerald-600', desc: '已完成请求' },
+    { label: '失败', value: overview.failed, tone: 'text-rose-600', desc: '执行失败请求' },
+    { label: '成功率', value: successRate, tone: 'text-sky-600', desc: '按成功 / 完成计算' },
+  ];
 
   const getModuleLabel = (id: string) => MODULE_LABELS[id] || id;
 
+  const maxUserTotal = Math.max(1, ...byUser.map((item) => item.total));
+  const maxModuleTotal = Math.max(1, ...byModule.map((item) => item.total));
+
   return (
     <section className="mt-8">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 bg-indigo-600 text-white rounded-2xl flex items-center justify-center shadow-lg">
-            <i className="fas fa-chart-bar text-xl"></i>
+      <div className="rounded-[28px] border border-white/75 bg-white/84 p-5 shadow-[0_18px_44px_rgba(15,23,42,0.06)] backdrop-blur-xl">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] bg-slate-900 text-white shadow-[0_12px_24px_rgba(15,23,42,0.12)]">
+                <i className="fas fa-chart-pie text-sm" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="truncate text-[19px] font-black tracking-[-0.03em] text-slate-900">用量统计</h3>
+                <p className="mt-0.5 text-[12px] font-medium text-slate-500">按日期、人员、功能查看调用情况。</p>
+              </div>
+            </div>
           </div>
-          <div>
-            <h3 className="text-lg font-black text-slate-800">用量统计</h3>
-            <p className="text-xs text-slate-400">永久记录，按日期/人员/模块聚合</p>
-          </div>
+          <button
+            type="button"
+            onClick={handleBackfill}
+            disabled={loading}
+            className="rounded-[16px] border border-amber-200/80 bg-amber-50/90 px-3.5 py-2 text-[12px] font-black text-amber-700 transition hover:bg-amber-100 disabled:opacity-60"
+          >
+            补录历史数据
+          </button>
         </div>
-        <button onClick={handleBackfill} disabled={loading} className="px-4 py-2 rounded-xl text-xs font-black bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-colors disabled:opacity-60">
-          补录历史数据
-        </button>
-      </div>
 
-      {/* 筛选栏 */}
-      <div className="bg-white border border-slate-200 rounded-3xl overflow-hidden mb-6">
-        <div className="px-6 py-5 bg-slate-50">
-          <div className="grid md:grid-cols-5 gap-3">
-            <div>
-              <label className="text-[10px] font-black text-slate-500 uppercase ml-1">开始日期</label>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="mt-1 w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-700 outline-none" />
-            </div>
-            <div>
-              <label className="text-[10px] font-black text-slate-500 uppercase ml-1">结束日期</label>
-              <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="mt-1 w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-700 outline-none" />
-            </div>
-            <div>
-              <label className="text-[10px] font-black text-slate-500 uppercase ml-1">按人员筛选</label>
-              <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} className="mt-1 w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-700 outline-none">
+        <div className="mt-5 rounded-[24px] border border-slate-200/80 bg-slate-50/80 p-3.5">
+          <div className="grid gap-3 md:grid-cols-5">
+            <label className="space-y-1">
+              <span className="ml-1 text-[11px] font-semibold text-slate-500">开始日期</span>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(event) => setStartDate(event.target.value)}
+                className="w-full rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-[12px] font-medium text-slate-700 outline-none transition focus:border-slate-300"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="ml-1 text-[11px] font-semibold text-slate-500">结束日期</span>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(event) => setEndDate(event.target.value)}
+                className="w-full rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-[12px] font-medium text-slate-700 outline-none transition focus:border-slate-300"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="ml-1 text-[11px] font-semibold text-slate-500">人员</span>
+              <select
+                value={userFilter}
+                onChange={(event) => setUserFilter(event.target.value)}
+                className="w-full rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-[12px] font-medium text-slate-700 outline-none transition focus:border-slate-300"
+              >
                 <option value="all">全部人员</option>
-                {knownUsers.map((u) => <option key={u.id} value={u.id}>{u.label}</option>)}
+                {knownUsers.map((user) => (
+                  <option key={user.id} value={user.id}>{user.label}</option>
+                ))}
               </select>
-            </div>
-            <div>
-              <label className="text-[10px] font-black text-slate-500 uppercase ml-1">按功能筛选</label>
-              <select value={moduleFilter} onChange={(e) => setModuleFilter(e.target.value)} className="mt-1 w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs font-bold text-slate-700 outline-none">
+            </label>
+            <label className="space-y-1">
+              <span className="ml-1 text-[11px] font-semibold text-slate-500">功能</span>
+              <select
+                value={moduleFilter}
+                onChange={(event) => setModuleFilter(event.target.value)}
+                className="w-full rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-[12px] font-medium text-slate-700 outline-none transition focus:border-slate-300"
+              >
                 <option value="all">全部功能</option>
-                {USAGE_MODULE_IDS.map((m) => <option key={m} value={m}>{getModuleLabel(m)}</option>)}
+                {USAGE_MODULE_IDS.map((moduleId) => (
+                  <option key={moduleId} value={moduleId}>{getModuleLabel(moduleId)}</option>
+                ))}
               </select>
-            </div>
+            </label>
             <div className="flex items-end">
-              <button onClick={handleQuery} disabled={loading} className="w-full px-4 py-2.5 rounded-xl text-xs font-black bg-indigo-600 text-white hover:bg-indigo-700 transition-colors disabled:opacity-60">
+              <button
+                type="button"
+                onClick={handleQuery}
+                disabled={loading}
+                className="w-full rounded-[16px] bg-slate-900 px-3.5 py-2.5 text-[12px] font-black text-white transition hover:bg-slate-800 disabled:opacity-60"
+              >
                 {loading ? '查询中...' : '查询统计'}
               </button>
             </div>
           </div>
+
+          {error ? (
+            <div className="mt-3 rounded-[16px] border border-rose-100 bg-rose-50 px-3.5 py-2 text-[12px] font-medium text-rose-600">
+              {error}
+            </div>
+          ) : null}
+          {message ? (
+            <div className="mt-3 rounded-[16px] border border-emerald-100 bg-emerald-50 px-3.5 py-2 text-[12px] font-medium text-emerald-700">
+              {message}
+            </div>
+          ) : null}
         </div>
-        {error && <div className="px-6 py-4 text-sm font-bold text-rose-600 bg-rose-50 border-t border-rose-100">{error}</div>}
-        {message && <div className="px-6 py-4 text-sm font-bold text-emerald-700 bg-emerald-50 border-t border-emerald-100">{message}</div>}
+
+        {rows.length === 0 ? (
+          <div className="flex min-h-[180px] items-center justify-center text-[13px] font-medium text-slate-400">
+            请选择筛选条件后点击“查询统计”
+          </div>
+        ) : (
+          <div className="mt-5 space-y-5">
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h4 className="text-[14px] font-black text-slate-900">用量概览</h4>
+                <p className="text-[11px] font-medium text-slate-400">只保留关键结果，避免页面过重。</p>
+              </div>
+              <div className="grid gap-3 md:grid-cols-4">
+                {summaryCards.map((item) => (
+                  <div
+                    key={item.label}
+                    className="rounded-[20px] border border-slate-200/80 bg-white/92 px-4 py-3 shadow-[0_10px_24px_rgba(148,163,184,0.08)]"
+                  >
+                    <p className="text-[11px] font-semibold text-slate-500">{item.label}</p>
+                    <p className={`mt-1 text-[24px] font-black tracking-[-0.03em] ${item.tone}`}>{item.value}</p>
+                    <p className="mt-1 text-[11px] font-medium text-slate-400">{item.desc}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <section className="rounded-[24px] border border-slate-200/80 bg-white/90 p-4 shadow-[0_10px_24px_rgba(148,163,184,0.08)]">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-[14px] font-black text-slate-900">人员用量</h4>
+                    <p className="mt-0.5 text-[11px] font-medium text-slate-400">按当前查询结果排序。</p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-500">
+                    {byUser.length} 人
+                  </span>
+                </div>
+                {byUser.length === 0 ? (
+                  <div className="rounded-[18px] bg-slate-50 px-4 py-6 text-[12px] text-slate-400">暂无数据</div>
+                ) : (
+                  <div className="space-y-2">
+                    {byUser.map((user) => (
+                      <div key={user.userId} className="rounded-[18px] border border-slate-100 bg-slate-50/70 px-3.5 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-[13px] font-black text-slate-800">{user.displayName}</p>
+                            <p className="mt-0.5 text-[11px] font-medium text-slate-400">
+                              成功 {user.success} · 失败 {user.failed}
+                            </p>
+                          </div>
+                          <span className="shrink-0 text-[16px] font-black tracking-[-0.03em] text-slate-900">{user.total}</span>
+                        </div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200/80">
+                          <div
+                            className="h-full rounded-full bg-slate-900"
+                            style={{ width: `${(user.total / maxUserTotal) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              <section className="rounded-[24px] border border-slate-200/80 bg-white/90 p-4 shadow-[0_10px_24px_rgba(148,163,184,0.08)]">
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-[14px] font-black text-slate-900">功能用量</h4>
+                    <p className="mt-0.5 text-[11px] font-medium text-slate-400">智能体已并入统一统计。</p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-500">
+                    {byModule.length} 项
+                  </span>
+                </div>
+                {byModule.length === 0 ? (
+                  <div className="rounded-[18px] bg-slate-50 px-4 py-6 text-[12px] text-slate-400">暂无数据</div>
+                ) : (
+                  <div className="space-y-2">
+                    {byModule.map((moduleItem) => (
+                      <div key={moduleItem.module} className="rounded-[18px] border border-slate-100 bg-slate-50/70 px-3.5 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-[13px] font-black text-slate-800">{getModuleLabel(moduleItem.module)}</p>
+                            <p className="mt-0.5 text-[11px] font-medium text-slate-400">
+                              成功 {moduleItem.success} · 失败 {moduleItem.failed}
+                            </p>
+                          </div>
+                          <span className="shrink-0 text-[16px] font-black tracking-[-0.03em] text-slate-900">{moduleItem.total}</span>
+                        </div>
+                        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200/80">
+                          <div
+                            className="h-full rounded-full bg-sky-500"
+                            style={{ width: `${(moduleItem.total / maxModuleTotal) * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            </div>
+          </div>
+        )}
       </div>
-
-      {rows.length === 0 ? (
-        <div className="text-center py-12 text-sm text-slate-400">请选择筛选条件后点击「查询统计」</div>
-      ) : (
-        <>
-          {/* 总览卡片 */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-            <div className="rounded-2xl border border-slate-200 bg-slate-900 px-5 py-4 text-white">
-              <p className="text-[10px] font-black uppercase tracking-wider opacity-60">生图总量</p>
-              <p className="mt-2 text-3xl font-black">{totalFinished}</p>
-            </div>
-            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-4">
-              <p className="text-[10px] font-black uppercase tracking-wider text-emerald-600">成功</p>
-              <p className="mt-2 text-3xl font-black text-emerald-700">{overview.success}</p>
-            </div>
-            <div className="rounded-2xl border border-rose-200 bg-rose-50 px-5 py-4">
-              <p className="text-[10px] font-black uppercase tracking-wider text-rose-600">失败</p>
-              <p className="mt-2 text-3xl font-black text-rose-700">{overview.failed}</p>
-            </div>
-            <div className="rounded-2xl border border-indigo-200 bg-indigo-50 px-5 py-4">
-              <p className="text-[10px] font-black uppercase tracking-wider text-indigo-600">成功率</p>
-              <p className="mt-2 text-3xl font-black text-indigo-700">{rate}</p>
-            </div>
-          </div>
-
-          {/* 日趋势柱状图 */}
-          {byDate.length > 0 && (
-            <div className="bg-white border border-slate-200 rounded-3xl overflow-hidden mb-6">
-              <div className="px-6 py-4 bg-slate-50 border-b border-slate-100">
-                <h4 className="text-sm font-black text-slate-700"><i className="fas fa-chart-line mr-2 text-slate-400"></i>每日趋势</h4>
-              </div>
-              <div className="px-6 py-5">
-                <div className="flex items-end gap-1 h-40" style={{ minWidth: byDate.length * 28 }}>
-                  {byDate.map((d) => {
-                    const total = d.success + d.failed;
-                    const successH = (d.success / maxDaily) * 100;
-                    const failedH = (d.failed / maxDaily) * 100;
-                    return (
-                      <div key={d.date} className="flex-1 min-w-[20px] max-w-[48px] flex flex-col items-center gap-0.5 group relative">
-                        <div className="absolute -top-8 left-1/2 -translate-x-1/2 hidden group-hover:block bg-slate-800 text-white text-[10px] font-bold px-2 py-1 rounded-lg whitespace-nowrap z-10">
-                          {d.date.slice(5)} · {total}次
-                        </div>
-                        <div className="w-full flex flex-col justify-end" style={{ height: '100%' }}>
-                          {failedH > 0 && <div className="w-full bg-rose-400 rounded-t" style={{ height: `${failedH}%`, minHeight: failedH > 0 ? 2 : 0 }}></div>}
-                          {successH > 0 && <div className={`w-full bg-emerald-400 ${failedH > 0 ? '' : 'rounded-t'} rounded-b`} style={{ height: `${successH}%`, minHeight: successH > 0 ? 2 : 0 }}></div>}
-                        </div>
-                        <span className="text-[9px] text-slate-400 mt-1 truncate w-full text-center">{d.date.slice(5)}</span>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="flex items-center gap-4 mt-3 justify-end">
-                  <span className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500"><span className="w-2.5 h-2.5 rounded bg-emerald-400"></span>成功</span>
-                  <span className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500"><span className="w-2.5 h-2.5 rounded bg-rose-400"></span>失败</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* 人员用量 + 模块用量 */}
-          <div className="grid md:grid-cols-2 gap-6">
-            <div className="bg-white border border-slate-200 rounded-3xl overflow-hidden">
-              <div className="px-6 py-4 bg-slate-50 border-b border-slate-100">
-                <h4 className="text-sm font-black text-slate-700"><i className="fas fa-users mr-2 text-slate-400"></i>人员用量</h4>
-              </div>
-              {byUser.length === 0 ? (
-                <div className="px-6 py-5 text-sm text-slate-400">暂无数据</div>
-              ) : (
-                <div className="divide-y divide-slate-100">
-                  <div className="grid grid-cols-5 px-6 py-3 text-[10px] font-black text-slate-500 uppercase">
-                    <span className="col-span-2">人员</span><span>总数</span><span>成功</span><span>失败</span>
-                  </div>
-                  {byUser.map((u: any) => {
-                    const maxUserTotal = Math.max(1, ...(byUser as any[]).map((x: any) => x.total));
-                    const barW = (u.total / maxUserTotal) * 100;
-                    return (
-                      <div key={u.userId} className="px-6 py-3">
-                        <div className="grid grid-cols-5 text-sm items-center">
-                          <span className="col-span-2 font-bold text-slate-700 truncate">{u.displayName}</span>
-                          <span className="font-black text-slate-800">{u.total}</span>
-                          <span className="font-bold text-emerald-600">{u.success}</span>
-                          <span className="font-bold text-rose-600">{u.failed}</span>
-                        </div>
-                        <div className="mt-1.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-indigo-400 rounded-full transition-all" style={{ width: `${barW}%` }}></div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-            <div className="bg-white border border-slate-200 rounded-3xl overflow-hidden">
-              <div className="px-6 py-4 bg-slate-50 border-b border-slate-100">
-                <h4 className="text-sm font-black text-slate-700"><i className="fas fa-th-large mr-2 text-slate-400"></i>模块用量</h4>
-              </div>
-              {byModule.length === 0 ? (
-                <div className="px-6 py-5 text-sm text-slate-400">暂无数据</div>
-              ) : (
-                <div className="divide-y divide-slate-100">
-                  <div className="grid grid-cols-4 px-6 py-3 text-[10px] font-black text-slate-500 uppercase">
-                    <span>模块</span><span>总数</span><span>成功</span><span>失败</span>
-                  </div>
-                  {byModule.map((m: any) => {
-                    const maxModTotal = Math.max(1, ...(byModule as any[]).map((x: any) => x.total));
-                    const barW = (m.total / maxModTotal) * 100;
-                    return (
-                      <div key={m.module} className="px-6 py-3">
-                        <div className="grid grid-cols-4 text-sm items-center">
-                          <span className="font-bold text-slate-700">{getModuleLabel(m.module)}</span>
-                          <span className="font-black text-slate-800">{m.total}</span>
-                          <span className="font-bold text-emerald-600">{m.success}</span>
-                          <span className="font-bold text-rose-600">{m.failed}</span>
-                        </div>
-                        <div className="mt-1.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                          <div className="h-full bg-fuchsia-400 rounded-full transition-all" style={{ width: `${barW}%` }}></div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        </>
-      )}
     </section>
   );
 };

@@ -35,6 +35,19 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
     ark: { configured: false },
     kie: { configured: true },
   });
+  assert.deepEqual(config.agentModels.chat.map((item) => item.id), [
+    'doubao-seed-1-6-flash-250615',
+    'doubao-seed-1-6-thinking-250715',
+    'doubao-seed-2-0-lite-260215',
+  ]);
+  assert.equal(config.agentModels.chat[0].supportsFileInput, true);
+  assert.equal(config.agentModels.chat[0].supportsImageInput, true);
+  assert.equal(config.agentModels.chat[1].supportsReasoningLevel, true);
+  assert.deepEqual(config.agentModels.chat[1].reasoningLevels, ['low', 'medium', 'high']);
+  assert.deepEqual(config.agentModels.image.map((item) => item.id), [
+    'nano-banana-2',
+    'nano-banana-pro',
+  ]);
   assert.equal(JSON.stringify(config).includes('secret'), false);
 });
 

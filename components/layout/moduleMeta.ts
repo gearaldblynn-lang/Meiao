@@ -11,6 +11,15 @@ export interface ModulePresentationMeta {
 }
 
 export const MODULE_META: Record<AppModule, ModulePresentationMeta> = {
+  [AppModule.AGENT_CENTER]: {
+    title: '智能体中心',
+    subtitle: '部门专家与内部问答平台',
+    accentClass: 'bg-cyan-600',
+    accentTextClass: 'text-cyan-700',
+    accentSoftClass: 'bg-cyan-50',
+    icon: 'fa-robot',
+    label: '智能体',
+  },
   [AppModule.ONE_CLICK]: {
     title: '一键主详',
     subtitle: '全链路视觉生成',

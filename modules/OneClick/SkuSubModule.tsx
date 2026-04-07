@@ -17,7 +17,7 @@ import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
 import { resizeImage, getImageDimensions, createZipAndDownload } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
-import { generateSkuSchemes } from '../../services/arkService';
+import { analyzeOneClickReferenceSet, generateSkuSchemes } from '../../services/arkService';
 import {
   logActionFailure, logActionInterrupted, logActionStart, logActionSuccess,
 } from '../../services/loggingService';
@@ -41,8 +41,9 @@ const SkuSubModule: React.FC<Props> = ({
   apiConfig, state, onUpdate, onProcessingChange, onClearConfig,
   currentSubMode, onSubModeChange,
 }) => {
-  const { images, schemes, config } = state;
+  const { images, designReferences, uploadedDesignReferenceUrls, referenceDimensions, referenceAnalysis, schemes, config } = state;
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isAnalyzingReference, setIsAnalyzingReference] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -117,6 +118,72 @@ const SkuSubModule: React.FC<Props> = ({
     return updated;
   };
 
+  const getOrUploadReferenceUrls = async () => {
+    if (designReferences.length === 0 && uploadedDesignReferenceUrls.length > 0) {
+      return uploadedDesignReferenceUrls;
+    }
+    if (uploadedDesignReferenceUrls.length === designReferences.length && designReferences.length > 0 && uploadedDesignReferenceUrls.every(Boolean)) {
+      return uploadedDesignReferenceUrls;
+    }
+    const nextItems = [...designReferences];
+    const urls = await Promise.all(nextItems.map(async (item, index) => {
+      if (item.uploadedUrl) return item.uploadedUrl;
+      if (!item.file) return uploadedDesignReferenceUrls[index] || '';
+      const url = await uploadToCos(item.file, apiConfig);
+      nextItems[index] = { ...nextItems[index], uploadedUrl: url };
+      return url;
+    }));
+    const normalizedUrls = urls.filter(Boolean);
+    onUpdate({
+      designReferences: nextItems,
+      uploadedDesignReferenceUrls: normalizedUrls,
+      lastStyleUrl: normalizedUrls[0] || null,
+    });
+    return normalizedUrls;
+  };
+
+  const handleAnalyzeReference = async () => {
+    if (isAnalyzingReference || designReferences.length === 0 || referenceDimensions.length === 0) return;
+    setIsAnalyzingReference(true);
+    try {
+      const referenceUrls = await getOrUploadReferenceUrls();
+      const result = await analyzeOneClickReferenceSet(referenceUrls, referenceDimensions, OneClickSubMode.SKU, apiConfig);
+      if (result.status === 'success') {
+        onUpdate({
+          uploadedDesignReferenceUrls: referenceUrls,
+          referenceAnalysis: {
+            status: 'success',
+            summary: result.description,
+            analyzedAt: Date.now(),
+          },
+        });
+        addToast('设计参考分析完成', 'success');
+      } else {
+        onUpdate({
+          referenceAnalysis: {
+            status: 'error',
+            summary: '',
+            error: result.message || '设计参考分析失败',
+            analyzedAt: null,
+          },
+        });
+        addToast(`设计参考分析失败: ${result.message}`, 'error');
+      }
+    } catch (error: any) {
+      onUpdate({
+        referenceAnalysis: {
+          status: 'error',
+          summary: '',
+          error: error.message,
+          analyzedAt: null,
+        },
+      });
+      addToast(`设计参考分析失败: ${error.message}`, 'error');
+    } finally {
+      setIsAnalyzingReference(false);
+    }
+  };
+
   const getProductAndGiftUrls = (currentImages: typeof images) => {
     const productUrls = currentImages.filter(i => i.role === 'product' && i.uploadedUrl).map(i => i.uploadedUrl!);
     const giftUrls = currentImages.filter(i => i.role === 'gift' && i.uploadedUrl).map(i => i.uploadedUrl!);
@@ -142,10 +209,28 @@ const SkuSubModule: React.FC<Props> = ({
       globalAbortRef.current = new AbortController();
       const uploaded = (await ensureAllUploaded()) || images;
       const { productUrls, giftUrls, styleUrl } = getProductAndGiftUrls(uploaded);
+      let referenceSummary = referenceAnalysis.summary;
+      if (!referenceSummary && designReferences.length > 0 && referenceDimensions.length > 0) {
+        const referenceUrls = await getOrUploadReferenceUrls();
+        const referenceResult = await analyzeOneClickReferenceSet(referenceUrls, referenceDimensions, OneClickSubMode.SKU, apiConfig, globalAbortRef.current.signal);
+        if (referenceResult.status === 'success') {
+          referenceSummary = referenceResult.description;
+          onUpdate({
+            uploadedDesignReferenceUrls: referenceUrls,
+            referenceAnalysis: {
+              status: 'success',
+              summary: referenceResult.description,
+              analyzedAt: Date.now(),
+            },
+          });
+        } else {
+          throw new Error(referenceResult.message || '设计参考分析失败');
+        }
+      }
 
       if (globalAbortRef.current.signal.aborted) throw new Error('ABORTED');
 
-      const res = await generateSkuSchemes(productUrls, giftUrls, styleUrl, config, apiConfig, globalAbortRef.current.signal);
+      const res = await generateSkuSchemes(productUrls, giftUrls, styleUrl, config, apiConfig, globalAbortRef.current.signal, referenceSummary);
 
       if (res.status === 'success') {
         const combos = config.combinations.filter(c => c.skuCopyText.trim());
@@ -197,7 +282,7 @@ const SkuSubModule: React.FC<Props> = ({
   };
 
   // --- Build prompt from edited content ---
-  const buildSkuPrompt = (scheme: SkuScheme, isFirst: boolean, currentImages: typeof images, effectiveFirstSkuResultUrl?: string | null) => {
+  const buildSkuPrompt = (scheme: SkuScheme, isFirst: boolean, currentImages: typeof images, effectiveFirstSkuResultUrl?: string | null, referenceSummary?: string | null) => {
     const resolvedFirstUrl = effectiveFirstSkuResultUrl ?? state.firstSkuResultUrl;
     const productImgs = currentImages.filter(i => i.role === 'product' && i.uploadedUrl);
     const giftImgs = currentImages.filter(i => i.role === 'gift' && i.uploadedUrl).sort((a, b) => (a.giftIndex || 0) - (b.giftIndex || 0));
@@ -221,13 +306,11 @@ const SkuSubModule: React.FC<Props> = ({
     prompt += `【产品信息】\n${config.productInfo || '未填写'}\n\n`;
     prompt += `【SKU 展示方案】\n${scheme.editedContent}\n`;
 
-    if (styleRefUrl) {
-      prompt += `\n风格参考图：${styleRefUrl}。`;
-      if (!isFirst && resolvedFirstUrl) {
-        prompt += '严格按照该风格参考图一致的排版、字体风格、文字摆放、色调和整体设计风格制作。';
-      } else {
-        prompt += '重点参考它的排版、字体风格、文字摆放、色调、光影和整体氛围，但不要使用参考图中的商品本身。';
-      }
+    if (!isFirst && styleRefUrl && resolvedFirstUrl) {
+      prompt += `\n风格参考图：${styleRefUrl}。严格按照该风格参考图一致的排版、字体风格、文字摆放、色调和整体设计风格制作。该图仅作为风格基准，不得替换、改写或混入主体商品本身。`;
+    } else if (referenceSummary) {
+      prompt += `\n【设计参考分析结论】\n${referenceSummary}`;
+      prompt += '\n第一张SKU要按照以上参考结论完成版式、字体、色调与文案风格，不得把设计参考图里的商品替换进来。';
     }
     prompt += `\n生图文案语言：”${config.language || '中文'}”`;
     prompt += `\n文案文字必须为”${config.language || '中文'}”`;
@@ -257,15 +340,15 @@ const SkuSubModule: React.FC<Props> = ({
         res = await recoverKieAiTask(targetScheme.taskId, apiConfig, controller.signal);
       } else {
         const resolvedFirstUrl = overrideFirstSkuResultUrl ?? state.firstSkuResultUrl;
-        const prompt = buildSkuPrompt(targetScheme, isFirst, currentImages, resolvedFirstUrl);
-        const { imageUrls } = buildSkuGenerationAssets({
+        const prompt = buildSkuPrompt(targetScheme, isFirst, currentImages, resolvedFirstUrl, referenceAnalysis.summary || null);
+        const { generationImageUrls } = buildSkuGenerationAssets({
           currentImages,
           firstSkuResultUrl: resolvedFirstUrl,
           isFirst,
         });
         const strictRatio = config.aspectRatio || AspectRatio.SQUARE;
         res = await processWithKieAi(
-          imageUrls, apiConfig,
+          generationImageUrls, apiConfig,
           { ...config, aspectRatio: strictRatio as any, maxFileSize: config.maxFileSize || 2.0 } as any,
           false, controller.signal, prompt
         );
@@ -458,6 +541,8 @@ const SkuSubModule: React.FC<Props> = ({
         apiConfig={apiConfig}
         disabled={isAnalyzing || isGenerating || schemes.some(s => s.status === 'generating')}
         onStart={handleStartAnalysis}
+        onAnalyzeReference={handleAnalyzeReference}
+        analyzingReference={isAnalyzingReference}
         onClearConfig={onClearConfig}
         currentSubMode={currentSubMode}
         onSubModeChange={onSubModeChange}
