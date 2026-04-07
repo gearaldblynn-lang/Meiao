@@ -1165,6 +1165,12 @@ const ensureMysqlSchema = async () => {
   const pool = await getMysqlPool();
   if (!pool) return;
 
+  const ensureMysqlColumn = async (pool, tableName, columnName, definition) => {
+    const [rows] = await pool.query(`SHOW COLUMNS FROM \`${tableName}\` LIKE ?`, [columnName]);
+    if (Array.isArray(rows) && rows.length > 0) return;
+    await pool.query(`ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${definition}`);
+  };
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
       id VARCHAR(24) PRIMARY KEY,
@@ -1186,8 +1192,8 @@ const ensureMysqlSchema = async () => {
   if (!Array.isArray(jobConcurrencyColumns) || jobConcurrencyColumns.length === 0) {
     await pool.query('ALTER TABLE users ADD COLUMN job_concurrency INT NOT NULL DEFAULT 5 AFTER status');
   }
-  await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(1024) NULL');
-  await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_preset VARCHAR(40) NULL');
+  await ensureMysqlColumn(pool, 'users', 'avatar_url', 'VARCHAR(1024) NULL');
+  await ensureMysqlColumn(pool, 'users', 'avatar_preset', 'VARCHAR(40) NULL');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sessions (
@@ -1262,8 +1268,8 @@ const ensureMysqlSchema = async () => {
       INDEX idx_agents_status (status)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
-  await pool.query('ALTER TABLE agents ADD COLUMN IF NOT EXISTS icon_url VARCHAR(1024) NULL');
-  await pool.query('ALTER TABLE agents ADD COLUMN IF NOT EXISTS avatar_preset VARCHAR(40) NULL');
+  await ensureMysqlColumn(pool, 'agents', 'icon_url', 'VARCHAR(1024) NULL');
+  await ensureMysqlColumn(pool, 'agents', 'avatar_preset', 'VARCHAR(40) NULL');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agent_versions (
@@ -1288,9 +1294,9 @@ const ensureMysqlSchema = async () => {
       INDEX idx_agent_versions_published (is_published)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
-  await pool.query(`ALTER TABLE agent_versions ADD COLUMN IF NOT EXISTS version_name VARCHAR(160) NOT NULL DEFAULT 'V1'`);
-  await pool.query('ALTER TABLE agent_versions ADD COLUMN IF NOT EXISTS allowed_chat_models_json LONGTEXT NULL');
-  await pool.query('ALTER TABLE agent_versions ADD COLUMN IF NOT EXISTS default_chat_model VARCHAR(80) NULL');
+  await ensureMysqlColumn(pool, 'agent_versions', 'version_name', `VARCHAR(160) NOT NULL DEFAULT 'V1'`);
+  await ensureMysqlColumn(pool, 'agent_versions', 'allowed_chat_models_json', 'LONGTEXT NULL');
+  await ensureMysqlColumn(pool, 'agent_versions', 'default_chat_model', 'VARCHAR(80) NULL');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agent_version_knowledge_bases (
@@ -1340,12 +1346,12 @@ const ensureMysqlSchema = async () => {
       INDEX idx_knowledge_documents_base_id (knowledge_base_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
-  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS chunk_strategy VARCHAR(20) NOT NULL DEFAULT 'general'");
-  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS normalization_enabled TINYINT(1) NOT NULL DEFAULT 0");
-  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS normalization_error TEXT NULL");
-  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS normalized_text LONGTEXT NULL");
-  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS normalized_status VARCHAR(20) NOT NULL DEFAULT 'idle'");
-  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS chunk_source VARCHAR(20) NOT NULL DEFAULT 'raw'");
+  await ensureMysqlColumn(pool, 'knowledge_documents', 'chunk_strategy', "VARCHAR(20) NOT NULL DEFAULT 'general'");
+  await ensureMysqlColumn(pool, 'knowledge_documents', 'normalization_enabled', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await ensureMysqlColumn(pool, 'knowledge_documents', 'normalization_error', 'TEXT NULL');
+  await ensureMysqlColumn(pool, 'knowledge_documents', 'normalized_text', 'LONGTEXT NULL');
+  await ensureMysqlColumn(pool, 'knowledge_documents', 'normalized_status', "VARCHAR(20) NOT NULL DEFAULT 'idle'");
+  await ensureMysqlColumn(pool, 'knowledge_documents', 'chunk_source', "VARCHAR(20) NOT NULL DEFAULT 'raw'");
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS system_settings (
@@ -1390,10 +1396,10 @@ const ensureMysqlSchema = async () => {
       INDEX idx_chat_sessions_agent_id (agent_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
-  await pool.query('ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS selected_model VARCHAR(80) NOT NULL DEFAULT ""');
-  await pool.query('ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS reasoning_level VARCHAR(40) NULL');
-  await pool.query('ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS web_search_enabled TINYINT(1) NOT NULL DEFAULT 0');
-  await pool.query('ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS last_image_mode TINYINT(1) NOT NULL DEFAULT 0');
+  await ensureMysqlColumn(pool, 'chat_sessions', 'selected_model', 'VARCHAR(80) NOT NULL DEFAULT ""');
+  await ensureMysqlColumn(pool, 'chat_sessions', 'reasoning_level', 'VARCHAR(40) NULL');
+  await ensureMysqlColumn(pool, 'chat_sessions', 'web_search_enabled', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await ensureMysqlColumn(pool, 'chat_sessions', 'last_image_mode', 'TINYINT(1) NOT NULL DEFAULT 0');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS chat_messages (
