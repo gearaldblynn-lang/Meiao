@@ -43,14 +43,16 @@ test('agent center persists agent icon fields for preset and uploaded avatars', 
 
 test('agent center persists editable version names in mysql and local modes', () => {
   assert.match(source, /version_name VARCHAR\(160\) NOT NULL/);
-  assert.match(source, /ALTER TABLE agent_versions ADD COLUMN IF NOT EXISTS version_name VARCHAR\(160\) NOT NULL DEFAULT 'V1'/);
+  assert.match(source, /const ensureMysqlColumn = async \(pool, tableName, columnName, definition\) =>/);
+  assert.match(source, /SHOW COLUMNS FROM/);
+  assert.match(source, /ADD COLUMN/);
   assert.match(source, /versionName:/);
   assert.match(source, /payload\.versionName/);
 });
 
 test('agent chat source persists user avatars, chat session options, and model restrictions', () => {
   assert.match(source, /avatar_url VARCHAR\(1024\) NULL/);
-  assert.match(source, /ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR\(1024\) NULL/);
+  assert.match(source, /ensureMysqlColumn\(pool, 'users', 'avatar_url', 'VARCHAR\(1024\) NULL'\)/);
   assert.match(source, /selected_model VARCHAR\(80\) NOT NULL/);
   assert.match(source, /reasoning_level VARCHAR\(40\) NULL/);
   assert.match(source, /web_search_enabled TINYINT\(1\) NOT NULL DEFAULT 0/);
@@ -80,7 +82,7 @@ test('agent chat source validates model ability before accepting attachments or 
 
 test('agent chat source persists image-mode session preference in mysql and local modes', () => {
   assert.match(source, /last_image_mode TINYINT\(1\) NOT NULL DEFAULT 0/);
-  assert.match(source, /ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS last_image_mode TINYINT\(1\) NOT NULL DEFAULT 0/);
+  assert.match(source, /ensureMysqlColumn\(pool, 'chat_sessions', 'last_image_mode', 'TINYINT\(1\) NOT NULL DEFAULT 0'\)/);
   assert.match(source, /lastImageMode: Boolean\(row\.last_image_mode\)/);
   assert.match(source, /lastImageMode: Boolean\(rows\[0\]\.last_image_mode\)/);
   assert.match(source, /lastImageMode: false,/);
