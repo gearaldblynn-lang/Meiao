@@ -327,7 +327,12 @@ const SkuSubModule: React.FC<Props> = ({
     if (taskControllersRef.current[schemeId]) taskControllersRef.current[schemeId].abort();
     const controller = new AbortController();
     taskControllersRef.current[schemeId] = controller;
-    updateSingleScheme(schemeId, { status: 'generating', error: undefined });
+    updateSingleScheme(
+      schemeId,
+      mode === 'recover'
+        ? { status: 'generating', error: undefined }
+        : { status: 'generating', error: undefined, taskId: undefined, resultUrl: undefined }
+    );
 
     const targetScheme = schemesRef.current.find(s => s.id === schemeId);
     if (!targetScheme) return false;
@@ -467,7 +472,7 @@ const SkuSubModule: React.FC<Props> = ({
 
   const handleRedoSingle = async (schemeId: string) => {
     if (inflightIdsRef.current.has(schemeId) || isAnalyzing) return;
-    updateSingleScheme(schemeId, { status: 'generating', error: '正在准备素材...' });
+    updateSingleScheme(schemeId, { status: 'generating', error: '正在准备素材...', taskId: undefined, resultUrl: undefined });
     inflightIdsRef.current.add(schemeId);
     try {
       const uploaded = (await ensureAllUploaded()) || images;

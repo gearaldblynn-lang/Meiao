@@ -417,7 +417,12 @@ const MainImageSubModule: React.FC<Props> = ({
     taskControllersRef.current[schemeId] = controller;
     
     // 生成中状态再次确认（清除上传提示）
-    updateSingleScheme(schemeId, { status: 'generating', error: undefined });
+    updateSingleScheme(
+      schemeId,
+      mode === 'recover'
+        ? { status: 'generating', error: undefined }
+        : { status: 'generating', error: undefined, taskId: undefined, resultUrl: undefined }
+    );
     
     try {
       let res: KieAiResult;
@@ -723,7 +728,7 @@ const MainImageSubModule: React.FC<Props> = ({
       },
     });
     
-    updateSingleScheme(schemeId, { status: 'generating', error: '正在准备素材...' });
+    updateSingleScheme(schemeId, { status: 'generating', error: '正在准备素材...', taskId: undefined, resultUrl: undefined });
     
     inflightIdsRef.current.add(schemeId);
     try {

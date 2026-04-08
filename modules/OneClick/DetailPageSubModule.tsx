@@ -421,7 +421,7 @@ const DetailPageSubModule: React.FC<Props> = ({
     });
     
     // 立即反馈
-    updateSingleScreen(id, { status: 'generating', error: '正在准备素材...' });
+    updateSingleScreen(id, { status: 'generating', error: '正在准备素材...', taskId: undefined, resultUrl: undefined });
     
     inflightIdsRef.current.add(id);
     try {
@@ -485,7 +485,12 @@ const DetailPageSubModule: React.FC<Props> = ({
     const controller = new AbortController();
     screenControllersRef.current[schemeId] = controller;
     
-    updateSingleScreen(schemeId, { status: 'generating', error: undefined });
+    updateSingleScreen(
+      schemeId,
+      mode === 'recover'
+        ? { status: 'generating', error: undefined }
+        : { status: 'generating', error: undefined, taskId: undefined, resultUrl: undefined }
+    );
     
     try {
       let res: KieAiResult;

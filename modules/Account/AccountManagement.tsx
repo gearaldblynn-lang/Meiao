@@ -170,20 +170,44 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   const moduleOptions = logMeta.modules.length > 0 ? logMeta.modules : fallbackOptions.modules;
   const userOptions = logMeta.users.length > 0 ? logMeta.users : fallbackOptions.users;
 
-  const handleExportLogs = () => {
-    if (logs.length === 0) return;
-    const csv = buildLogCsv(logs);
-    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `meiao-logs-${Date.now()}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-    setLogsMessage(`已导出当前页 ${logs.length} 条日志。`);
-    setLogsError('');
+  const handleExportLogs = async () => {
+    if (!isAdmin) return;
+    const exportFilters = lastLogQueryFilters || buildLogQueryFilters();
+    const totalToExport = logsTotal > 0 ? logsTotal : logs.length;
+    if (totalToExport === 0) return;
+
+    try {
+      const exportPageSize = 200;
+      const exportedLogs: InternalLogEntry[] = [];
+      let exportPage = 1;
+
+      while (exportedLogs.length < totalToExport) {
+        const result = await fetchInternalLogs({
+          ...exportFilters,
+          page: exportPage,
+          pageSize: exportPageSize,
+        });
+        exportedLogs.push(...result.logs);
+        if (result.logs.length === 0 || exportedLogs.length >= result.total) break;
+        exportPage += 1;
+      }
+
+      const csv = buildLogCsv(exportedLogs);
+      const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `meiao-logs-${Date.now()}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setLogsMessage(`已导出筛选结果 ${exportedLogs.length} 条日志。`);
+      setLogsError('');
+    } catch (error: any) {
+      setLogsError(error.message || '导出日志失败');
+      setLogsMessage('');
+    }
   };
 
   const handleDeleteLogs = async () => {
