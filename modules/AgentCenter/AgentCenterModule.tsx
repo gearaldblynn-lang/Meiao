@@ -22,6 +22,8 @@ interface Props {
   internalMode?: boolean;
 }
 
+const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
 const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode = false }) => {
   const [workspaceMode, setWorkspaceMode] = useState<'factory' | 'plaza'>('plaza');
   const [chatAgents, setChatAgents] = useState<AgentSummary[]>([]);
@@ -205,6 +207,24 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     }
   };
 
+  const syncCompletedMessageAfterTimeout = async (sessionId: string, clientRequestId: string) => {
+    const deadline = Date.now() + 150_000;
+    while (Date.now() < deadline) {
+      const result = await fetchChatMessages(sessionId);
+      const userMessage = result.messages.find((item) => item.role === 'user' && item.metadata?.clientRequestId === clientRequestId);
+      const assistantMessage = result.messages.find((item) => item.role === 'assistant' && item.metadata?.clientRequestId === clientRequestId);
+      if (userMessage && assistantMessage) {
+        return {
+          messages: result.messages,
+          userMessage,
+          assistantMessage,
+        };
+      }
+      await wait(3000);
+    }
+    return null;
+  };
+
   const handleCreateSession = (agentId: string) => runAction(async () => {
     const result = await createChatSession(agentId);
     setSelectedAgentId(agentId);
@@ -253,6 +273,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     if (sendingMessage || !selectedSessionId || (!messageDraft.trim() && attachments.length === 0)) return;
     const content = messageDraft.trim();
     const requestMode = imageModeEnabled ? 'image_generation' : 'chat';
+    const clientRequestId = `chatreq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const attachmentPayload = attachments.map((item) => ({
       name: item.name,
       kind: item.kind,
@@ -267,7 +288,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
       content,
       attachments: attachmentPayload,
       createdAt: Date.now(),
-      metadata: { pending: true },
+      metadata: { pending: true, clientRequestId },
     };
     const optimisticAssistantMessage: AgentChatMessage = {
       id: `pending-assistant-${Date.now()}`,
@@ -281,6 +302,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         pending: true,
         progress: true,
         requestMode,
+        clientRequestId,
         progressStage: requestMode === 'image_generation' ? 'analyzing' : 'thinking',
       },
     };
@@ -311,6 +333,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
           reasoningLevel,
           webSearchEnabled,
           requestMode,
+          clientRequestId,
         }, {
           signal: controller.signal,
         });
@@ -322,6 +345,30 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         await loadChat(selectedAgentId, selectedSessionId);
       } catch (error: any) {
         const pendingRestore = pendingRestoreRef.current;
+        const shouldSyncCompletedResult = requestMode === 'image_generation'
+          && (error?.code === 'timeout' || error?.code === 'network_error');
+        if (shouldSyncCompletedResult) {
+          setStatusMessage('后台仍在处理中，正在同步最新结果');
+          setMessages((prev) => prev.map((item) => (
+            item.id === (pendingRestore?.assistantMessageId || optimisticAssistantMessage.id)
+              ? {
+                  ...item,
+                  content: '后台仍在处理中，正在同步最新结果',
+                  metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage: 'syncing', clientRequestId },
+                }
+              : item
+          )));
+          try {
+            const synced = await syncCompletedMessageAfterTimeout(selectedSessionId, clientRequestId);
+            if (synced) {
+              setMessages(synced.messages);
+              setStatusMessage('已同步后台生成结果');
+              return;
+            }
+          } catch {
+            // ignore and fall through to restore draft
+          }
+        }
         setMessages((prev) => prev.filter((item) => item.id !== (pendingRestore?.userMessageId || optimisticUserMessage.id) && item.id !== (pendingRestore?.assistantMessageId || optimisticAssistantMessage.id)));
         if (pendingRestore) {
           setMessageDraft(pendingRestore.draft);

@@ -548,6 +548,27 @@ const createLogEntry = ({ user, level = 'info', module = 'system', action = 'unk
   meta: meta && typeof meta === 'object' ? meta : null,
 });
 
+const buildAgentRuntimeLogMeta = ({ agent, version, result = null, requestMode = '', sessionId = null, clientRequestId = '', error = null }) => ({
+  agentId: agent?.id || '',
+  agentName: agent?.name || '',
+  versionId: version?.id || '',
+  versionName: version?.versionName || '',
+  sessionId: result?.sessionId || sessionId || null,
+  clientRequestId: result?.clientRequestId || clientRequestId || null,
+  requestType: result?.requestType || requestMode || (result?.sessionId ? 'chat' : 'validation'),
+  selectedModel: result?.selectedModel || version?.modelPolicy?.defaultModel || '',
+  totalTokens: Number(result?.totalTokens || 0),
+  estimatedCost: Number(result?.estimatedCost || 0),
+  latencyMs: Number(result?.latencyMs || 0),
+  usedRetrieval: Boolean(result?.usedRetrieval),
+  retrievalSummary: result?.retrievalSummary || [],
+  imagePlan: result?.imagePlan || null,
+  imageResultCount: Array.isArray(result?.imageResultUrls) ? result.imageResultUrls.length : 0,
+  imageResultUrls: result?.imageResultUrls || [],
+  errorCode: result?.errorCode || error?.code || '',
+  errorMessage: error?.message || '',
+});
+
 const getLogRetentionCutoff = () => Date.now() - LOG_RETENTION_MS;
 
 const AGENT_VISIBILITY_SCOPE = 'internal';
@@ -3037,18 +3058,7 @@ const createDbAgentUsageLog = async (user, agent, version, result, status, error
     message: `${result?.requestType === 'image_generation' ? '智能体生图' : result?.sessionId ? '智能体对话' : '智能体验证'}：${agent.name}`,
     detail: errorMessage || '',
     status: status === 'success' ? 'success' : 'failed',
-    meta: {
-      agentId: agent.id,
-      agentName: agent.name,
-      versionId: version.id,
-      versionName: version.versionName,
-      selectedModel: result?.selectedModel || version.modelPolicy.defaultModel,
-      requestType: result?.requestType || (result?.sessionId ? 'chat' : 'validation'),
-      totalTokens: Number(result?.totalTokens || 0),
-      estimatedCost: Number(result?.estimatedCost || 0),
-      latencyMs: Number(result?.latencyMs || 0),
-      usedRetrieval: Boolean(result?.usedRetrieval),
-    },
+    meta: buildAgentRuntimeLogMeta({ agent, version, result, error: errorMessage ? { message: errorMessage } : null }),
   });
 };
 
@@ -3106,6 +3116,7 @@ const deleteDbUserAgentHistory = async (user, agentId) => {
 const createDbChatReply = async (user, sessionId, payload) => {
   const content = String(payload?.content || '').trim();
   const requestMode = payload?.requestMode === 'image_generation' ? 'image_generation' : 'chat';
+  const clientRequestId = String(payload?.clientRequestId || createEntityId()).trim() || createEntityId();
   const session = await getDbChatSessionById(user, sessionId);
   if (!session) return null;
   const version = await getDbAgentVersionById(session.agentVersionId);
@@ -3138,7 +3149,7 @@ const createDbChatReply = async (user, sessionId, payload) => {
   await pool.query(
     `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [userMessageId, sessionId, user.id, 'user', content, JSON.stringify(attachments), JSON.stringify({ selectedModel, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode }), now]
+    [userMessageId, sessionId, user.id, 'user', content, JSON.stringify(attachments), JSON.stringify({ selectedModel, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, clientRequestId }), now]
   );
   const history = await listDbChatMessages(user, sessionId);
   const summaryNeeded = history.filter((item) => item.role !== 'system').length > Number(version.contextPolicy.summaryTriggerThreshold || 10);
@@ -3189,7 +3200,7 @@ const createDbChatReply = async (user, sessionId, payload) => {
   await pool.query(
     `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [assistantMessageId, sessionId, user.id, 'assistant', result.content, JSON.stringify(assistantAttachments), JSON.stringify({ selectedModel: result.selectedModel, usedRetrieval: result.usedRetrieval, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] }), Date.now()]
+    [assistantMessageId, sessionId, user.id, 'assistant', result.content, JSON.stringify(assistantAttachments), JSON.stringify({ selectedModel: result.selectedModel, usedRetrieval: result.usedRetrieval, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] }), Date.now()]
   );
   await pool.query(
     'UPDATE chat_sessions SET title = ?, summary = ?, selected_model = ?, reasoning_level = ?, web_search_enabled = ?, last_image_mode = ?, updated_at = ? WHERE id = ?',
@@ -3204,7 +3215,7 @@ const createDbChatReply = async (user, sessionId, payload) => {
       role: 'user',
       content,
       attachments,
-      metadata: { selectedModel, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode },
+      metadata: { selectedModel, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, clientRequestId },
       createdAt: now,
     },
     assistantMessage: {
@@ -3214,7 +3225,7 @@ const createDbChatReply = async (user, sessionId, payload) => {
       role: 'assistant',
       content: result.content,
       attachments: assistantAttachments,
-      metadata: { selectedModel: result.selectedModel, usedRetrieval: result.usedRetrieval, requestMode, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
+      metadata: { selectedModel: result.selectedModel, usedRetrieval: result.usedRetrieval, requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
       createdAt: Date.now(),
     },
     usage: result,
@@ -4063,6 +4074,8 @@ const buildImageGenerationAnalysisMessages = ({ agent, version, userMessage, ima
         '如果用户说“把图1的xx换到图2”“参考图3色调”，必须在 imageReferences、inputImageUrls 和 reasoningSummary 里明确对应关系。',
         '如果用户没有明确指定使用哪张图，你要根据当前需求自动判断最合适的参考图，并在 reasoningSummary 里说明最终采用了哪些图。',
         '你必须结合最近几轮对话来理解“继续调整”“按上一版修改”“保持刚才风格”这类指代，不要只看当前一句话。',
+        '比例规则：默认 size 必须为 auto。只有用户明确指定了目标比例，或者明确表达“当前比例不对、需要改成长图/横图/方图”等比例修正诉求时，才允许修改 size。',
+        '如果用户没有提比例，就算你能从图片里看出比例，也不要擅自把 size 改成 1:1、4:5、16:9 等固定比例。',
         editPreferenceHints?.preferPreviousResultAsPrimary
           ? '当前场景是继续调整上一张生成图，并参考本轮新上传图的版式/风格。你必须优先把最近一张历史生成图作为主编辑对象，把本轮新上传图作为版式/风格参考。不得因为上传了新的参考图，就直接把新图当成新的主体内容来源，除非用户明确要求替换主体。'
           : '',
@@ -4080,6 +4093,10 @@ const buildImageGenerationAnalysisMessages = ({ agent, version, userMessage, ima
     },
   ];
 };
+
+const detectExplicitAspectRatioInstruction = (text = '') => /(?:^|[^\d])(1:1|3:4|4:3|4:5|9:16|16:9)(?:$|[^\d])|正方形|方图|竖图|横图|长图|比例改成|做成.*比例|尺寸改成/.test(String(text || ''));
+
+const hasAspectRatioCorrectionIntent = (text = '') => /比例.*(不对|不太对|不合适|有问题|改一下|调整一下)|尺寸.*(不对|不太对|不合适|有问题)|改比例|调比例/.test(String(text || ''));
 
 const buildImageConversationResult = async ({ user, agent, version, priorMessages, currentMessage, sessionId = null, selectedModelOverride = '', attachments = [], systemSettings = {}, knowledgeChunks = [], conversationSummary = '' }) => {
   const imageCapability = getImageModelCapability(version?.modelPolicy?.multimodalModel);
@@ -4154,9 +4171,14 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     : '';
   const finalPrompt = `${promptPrefix}${String(parsed.prompt || currentMessage).trim()}`.trim();
   const requestedAspectRatio = String(parsed.size || '').trim();
-  const normalizedAspectRatio = (imageCapability.supportedSizes || []).includes(requestedAspectRatio)
-    ? requestedAspectRatio
-    : (imageCapability.defaultSize || 'auto');
+  const hasExplicitAspectRatioInstruction = detectExplicitAspectRatioInstruction(currentMessage);
+  const shouldKeepAutoAspectRatio = !hasExplicitAspectRatioInstruction && !hasAspectRatioCorrectionIntent(currentMessage);
+  const normalizedAspectRatio = shouldKeepAutoAspectRatio
+    ? 'auto'
+    : (imageCapability.supportedSizes || []).includes(requestedAspectRatio)
+      ? requestedAspectRatio
+      : (imageCapability.defaultSize || 'auto');
+  const normalizedResolution = String(imageCapability.defaultResolution || '1K').trim() || '1K';
   const imageOutput = await executeProviderJob({
     taskType: 'kie_image',
     payload: {
@@ -4164,7 +4186,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
       prompt: finalPrompt,
       model: selectedImageModel,
       aspectRatio: normalizedAspectRatio,
-      resolution: '2K',
+      resolution: normalizedResolution,
     },
   }, process.env, new AbortController().signal);
   const imageUrl = String(imageOutput?.result?.imageUrl || '').trim();
@@ -4203,6 +4225,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
       inputImageUrls: preferredInputImageUrls,
       imageReferences: normalizedRefs,
       size: normalizedAspectRatio,
+      resolution: normalizedResolution,
       transparentBackground: Boolean(parsed.transparentBackground && imageCapability.supportsTransparentBackground),
       prompt: finalPrompt,
       reasoningSummary: String(parsed.reasoningSummary || ''),
@@ -4547,8 +4570,9 @@ const handleMysqlRequest = async (req, res, url) => {
     const admin = await requireDbAdmin(req, res);
     if (!admin) return;
     const body = await readBody(req);
+    const versionId = decodeURIComponent(agentVersionValidateMatch[1]);
     try {
-      const result = await validateDbAgentVersion(admin, decodeURIComponent(agentVersionValidateMatch[1]), body?.message);
+      const result = await validateDbAgentVersion(admin, versionId, body?.message);
       if (!result) {
         json(res, 404, { message: '版本不存在或无权限。' });
         return;
@@ -4557,6 +4581,25 @@ const handleMysqlRequest = async (req, res, url) => {
       await createDbAgentUsageLog(admin, agent, result.version, result.result, 'success');
       json(res, 200, result);
     } catch (error) {
+      const version = await getDbAgentVersionById(versionId);
+      const agent = version ? await getDbAgentById(version.agentId) : null;
+      if (version && agent) {
+        await createDbLog({
+          user: admin,
+          level: 'error',
+          module: 'agent_center',
+          action: 'agent_validate',
+          message: `智能体验证失败：${agent.name}`,
+          detail: error?.message || '智能体验证失败。',
+          status: 'failed',
+          meta: buildAgentRuntimeLogMeta({
+            agent,
+            version,
+            requestMode: 'validation',
+            error,
+          }),
+        }).catch(() => null);
+      }
       json(res, 500, { message: error?.message || '智能体验证失败。' });
     }
     return;
@@ -4740,6 +4783,29 @@ const handleMysqlRequest = async (req, res, url) => {
       }
       json(res, 201, result);
     } catch (error) {
+      const sessionId = decodeURIComponent(chatSessionMessagesMatch[1]);
+      const session = await getDbChatSessionById(user, sessionId);
+      const version = session ? await getDbAgentVersionById(session.agentVersionId) : null;
+      const agent = session ? await getDbAgentById(session.agentId) : null;
+      if (session && version && agent) {
+        await createDbLog({
+          user,
+          level: 'error',
+          module: 'agent_center',
+          action: body?.requestMode === 'image_generation' ? 'create_image_task' : 'agent_chat',
+          message: `${body?.requestMode === 'image_generation' ? '智能体生图失败' : '智能体对话失败'}：${agent.name}`,
+          detail: error?.message || '聊天回复失败。',
+          status: 'failed',
+          meta: buildAgentRuntimeLogMeta({
+            agent,
+            version,
+            requestMode: body?.requestMode === 'image_generation' ? 'image_generation' : 'chat',
+            sessionId,
+            clientRequestId: String(body?.clientRequestId || '').trim(),
+            error,
+          }),
+        }).catch(() => null);
+      }
       json(res, 500, { message: error?.message || '聊天回复失败。' });
     }
     return;
@@ -5684,21 +5750,27 @@ const handleLocalRequest = async (req, res, url) => {
         action: 'agent_validate',
         message: `智能体验证：${agent.name}`,
         status: 'success',
-        meta: {
-          agentId: agent.id,
-          agentName: agent.name,
-          versionId: version.id,
-          versionName: version.versionName,
-          selectedModel: result.selectedModel,
-          totalTokens: result.totalTokens,
-          estimatedCost: result.estimatedCost,
-          latencyMs: result.latencyMs,
-          usedRetrieval: result.usedRetrieval,
-        },
+        meta: buildAgentRuntimeLogMeta({ agent, version, result, requestMode: 'validation' }),
       });
       writeLocalStore(store);
       json(res, 200, { version: getLocalAgentVersionById(store, version.id), result: rawVersion.validationSummary });
     } catch (error) {
+      appendLocalLog(store, {
+        user: admin,
+        level: 'error',
+        module: 'agent_center',
+        action: 'agent_validate',
+        message: `智能体验证失败：${agent.name}`,
+        detail: error?.message || '智能体验证失败。',
+        status: 'failed',
+        meta: buildAgentRuntimeLogMeta({
+          agent,
+          version,
+          requestMode: 'validation',
+          error,
+        }),
+      });
+      writeLocalStore(store);
       json(res, 500, { message: error?.message || '智能体验证失败。' });
     }
     return;
@@ -5999,6 +6071,7 @@ const handleLocalRequest = async (req, res, url) => {
     }
     const content = String(body?.content || '').trim();
     const requestMode = body?.requestMode === 'image_generation' ? 'image_generation' : 'chat';
+    const clientRequestId = String(body?.clientRequestId || createEntityId()).trim() || createEntityId();
     const selectedModel = resolveChatSessionModel(version, body?.selectedModel || session.selectedModel);
     const capability = getChatModelCapability(selectedModel);
     const attachments = Array.isArray(body?.attachments) ? body.attachments.map((item) => ({
@@ -6025,7 +6098,7 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
     const now = Date.now();
-    const userMessage = { id: createEntityId(), sessionId, userId: user.id, role: 'user', content, attachments, metadata: { selectedModel, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode }, createdAt: now };
+    const userMessage = { id: createEntityId(), sessionId, userId: user.id, role: 'user', content, attachments, metadata: { selectedModel, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode, clientRequestId }, createdAt: now };
     store.chatMessages.push(userMessage);
     const history = (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
     const systemSettings = getLocalSystemSettings(store);
@@ -6079,7 +6152,7 @@ const handleLocalRequest = async (req, res, url) => {
         role: 'assistant',
         content: result.content,
         attachments: assistantAttachments,
-        metadata: { selectedModel: result.selectedModel, usedRetrieval: result.usedRetrieval, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
+        metadata: { selectedModel: result.selectedModel, usedRetrieval: result.usedRetrieval, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
         createdAt: Date.now(),
       };
       store.chatMessages.push(assistantMessage);
@@ -6121,22 +6194,29 @@ const handleLocalRequest = async (req, res, url) => {
         action: requestMode === 'image_generation' ? 'create_image_task' : 'agent_chat',
         message: `${requestMode === 'image_generation' ? '智能体生图' : '智能体对话'}：${agent.name}`,
         status: 'success',
-        meta: {
-          agentId: agent.id,
-          agentName: agent.name,
-          versionId: version.id,
-          versionName: version.versionName,
-          requestType: result.requestType || requestMode,
-          selectedModel: result.selectedModel,
-          totalTokens: result.totalTokens,
-          estimatedCost: result.estimatedCost,
-          latencyMs: result.latencyMs,
-          usedRetrieval: result.usedRetrieval,
-        },
+        meta: buildAgentRuntimeLogMeta({ agent, version, result: { ...result, clientRequestId }, requestMode, sessionId, clientRequestId }),
       });
       writeLocalStore(store);
       json(res, 201, { userMessage, assistantMessage, usage: result });
     } catch (error) {
+      appendLocalLog(store, {
+        user,
+        level: 'error',
+        module: 'agent_center',
+        action: requestMode === 'image_generation' ? 'create_image_task' : 'agent_chat',
+        message: `${requestMode === 'image_generation' ? '智能体生图失败' : '智能体对话失败'}：${agent.name}`,
+        detail: error?.message || '聊天回复失败。',
+        status: 'failed',
+        meta: buildAgentRuntimeLogMeta({
+          agent,
+          version,
+          requestMode,
+          sessionId,
+          clientRequestId,
+          error,
+        }),
+      });
+      writeLocalStore(store);
       json(res, 500, { message: error?.message || '聊天回复失败。' });
     }
     return;

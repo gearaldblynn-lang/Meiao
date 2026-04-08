@@ -302,6 +302,7 @@ export interface AgentImageGenerationPlan {
   inputImageUrls: string[];
   imageReferences: AgentImageReference[];
   size: string;
+  resolution?: string;
   transparentBackground: boolean;
   prompt: string;
   reasoningSummary: string;

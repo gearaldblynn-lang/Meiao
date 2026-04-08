@@ -120,6 +120,7 @@ const ChatConversationPane: React.FC<Props> = ({
   const [showGallery, setShowGallery] = useState(false);
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
   const [expandedSummaries, setExpandedSummaries] = useState<Record<string, boolean>>({});
+  const [expandedReferenceRules, setExpandedReferenceRules] = useState<Record<string, boolean>>({});
   const galleryImages = useMemo(() => (
     messages.flatMap((message) => (
       isImageGenerationMessage(message) && Array.isArray(message.attachments)
@@ -202,12 +203,20 @@ const ChatConversationPane: React.FC<Props> = ({
     }));
   };
 
+  const toggleReferenceRules = (messageId: string) => {
+    setExpandedReferenceRules((current) => ({
+      ...current,
+      [messageId]: !current[messageId],
+    }));
+  };
+
   const renderImageGenerationMessage = (message: AgentChatMessage) => {
     const isPending = Boolean(message.metadata?.pending);
     const summaryExpanded = Boolean(expandedSummaries[message.id]);
     const retrievalSummary = Array.isArray(message.metadata?.retrievalSummary)
       ? message.metadata.retrievalSummary.filter((item) => item && (item.documentTitle || item.preview))
       : [];
+    const referenceRulesExpanded = Boolean(expandedReferenceRules[message.id]);
     const { resultCount, referenceText } = getImageGenerationSummary(message);
     const imageAttachments = Array.isArray(message.attachments)
       ? message.attachments.filter((item) => item.kind === 'image' && item.url)
@@ -340,15 +349,28 @@ const ChatConversationPane: React.FC<Props> = ({
         ) : null}
         {retrievalSummary.length > 0 ? (
           <div className="rounded-[16px] border border-emerald-100 bg-emerald-50/70 px-3.5 py-3">
-            <p className="text-[12px] font-black text-emerald-800">本次参考规则</p>
-            <div className="mt-2 space-y-2">
-              {retrievalSummary.map((item, index) => (
-                <div key={`${message.id}-rule-${index}`} className="rounded-[12px] bg-white/78 px-3 py-2">
-                  <p className="text-[11px] font-black text-slate-700">{item.documentTitle || `规则${index + 1}`}</p>
-                  <p className="mt-1 text-[11px] leading-5 text-slate-600">{item.preview || '已命中相关规则'}</p>
-                </div>
-              ))}
-            </div>
+            <button
+              type="button"
+              onClick={() => toggleReferenceRules(message.id)}
+              className="flex w-full items-center justify-between gap-3 text-left"
+              aria-expanded={referenceRulesExpanded}
+            >
+              <p className="text-[12px] font-black text-emerald-800">本次参考规则</p>
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700">
+                {referenceRulesExpanded ? '收起' : '展开'}
+                <i className={`fas fa-chevron-${referenceRulesExpanded ? 'up' : 'down'} text-[10px]`} />
+              </span>
+            </button>
+            {referenceRulesExpanded ? (
+              <div className="mt-2 space-y-2">
+                {retrievalSummary.map((item, index) => (
+                  <div key={`${message.id}-rule-${index}`} className="rounded-[12px] bg-white/78 px-3 py-2">
+                    <p className="text-[11px] font-black text-slate-700">{item.documentTitle || `规则${index + 1}`}</p>
+                    <p className="mt-1 text-[11px] leading-5 text-slate-600">{item.preview || '已命中相关规则'}</p>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
         <p className="text-[12px] leading-6 text-slate-500">可继续直接描述你要修改的地方，我会基于上一张结果继续调整。</p>

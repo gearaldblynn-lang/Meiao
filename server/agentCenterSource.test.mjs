@@ -108,10 +108,36 @@ test('agent chat source records image generation usage and local image replies',
   assert.match(source, /if \(requestMode === 'image_generation' && attachments\.some\(\(item\) => item\.kind !== 'image'\)\)/);
   assert.match(source, /const result = requestMode === 'image_generation'/);
   assert.match(source, /buildImageConversationResult\(/);
-  assert.match(source, /const normalizedAspectRatio = \(imageCapability\.supportedSizes \|\| \[\]\)\.includes\(requestedAspectRatio\)/);
   assert.match(source, /imageCapability\.defaultSize \|\| 'auto'/);
+  assert.match(source, /const hasExplicitAspectRatioInstruction = detectExplicitAspectRatioInstruction\(currentMessage\);/);
+  assert.match(source, /const shouldKeepAutoAspectRatio = !hasExplicitAspectRatioInstruction && !hasAspectRatioCorrectionIntent\(currentMessage\);/);
+  assert.match(source, /const normalizedAspectRatio = shouldKeepAutoAspectRatio/);
+  assert.match(source, /const normalizedResolution = String\(imageCapability\.defaultResolution \|\| '1K'\)\.trim\(\) \|\| '1K';/);
   assert.match(source, /requestType: result\.requestType \|\| requestMode/);
   assert.match(source, /action: requestMode === 'image_generation' \? 'create_image_task' : 'agent_chat'/);
   assert.match(source, /imagePlan: result\.imagePlan \|\| null/);
   assert.match(source, /imageResultUrls: result\.imageResultUrls \|\| null/);
+});
+
+test('agent chat source persists client request ids so timed-out image chats can sync completed results', () => {
+  assert.match(source, /const clientRequestId = String\(payload\?\.clientRequestId \|\| createEntityId\(\)\)\.trim\(\) \|\| createEntityId\(\);/);
+  assert.match(source, /const clientRequestId = String\(body\?\.clientRequestId \|\| createEntityId\(\)\)\.trim\(\) \|\| createEntityId\(\);/);
+  assert.match(source, /clientRequestId,/);
+  assert.match(source, /metadata: \{ selectedModel, reasoningLevel: payload\?\.reasoningLevel \|\| null, webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\), requestMode, clientRequestId \}/);
+  assert.match(source, /metadata: \{ selectedModel: result\.selectedModel, usedRetrieval: result\.usedRetrieval, requestMode, clientRequestId, imagePlan: result\.imagePlan \|\| null, imageResultUrls: result\.imageResultUrls \|\| null, retrievalSummary: result\.retrievalSummary \|\| \[\] \}/);
+});
+
+test('agent chat source writes detailed runtime logs for both success and failure paths', () => {
+  assert.match(source, /const buildAgentRuntimeLogMeta = \(\{ agent, version, result = null, requestMode = '', sessionId = null, clientRequestId = '', error = null \}\) => \(\{/);
+  assert.match(source, /sessionId: result\?\.sessionId \|\| sessionId \|\| null/);
+  assert.match(source, /clientRequestId: result\?\.clientRequestId \|\| clientRequestId \|\| null/);
+  assert.match(source, /imageResultCount: Array\.isArray\(result\?\.imageResultUrls\) \? result\.imageResultUrls\.length : 0/);
+  assert.match(source, /retrievalSummary: result\?\.retrievalSummary \|\| \[\]/);
+  assert.match(source, /imagePlan: result\?\.imagePlan \|\| null/);
+  assert.match(source, /errorCode: result\?\.errorCode \|\| error\?\.code \|\| ''/);
+  assert.match(source, /await createDbLog\(\{/);
+  assert.match(source, /status: 'failed'/);
+  assert.match(source, /message: `\$\{requestMode === 'image_generation' \? '智能体生图失败' : '智能体对话失败'\}：\$\{agent\.name\}`/);
+  assert.match(source, /detail: error\?\.message \|\| '聊天回复失败。'/);
+  assert.match(source, /errorMessage: error\?\.message \|\| ''/);
 });
