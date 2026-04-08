@@ -4,6 +4,7 @@ const KIE_VEO_BASE_URL = 'https://api.kie.ai/api/v1/veo';
 const KIE_CHAT_URL = 'https://api.kie.ai/gpt-5-2/v1/chat/completions';
 const KIE_RESPONSES_URL = 'https://api.kie.ai/codex/v1/responses';
 const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
+const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 const KIE_RESPONSES_MODEL_ALIASES = {
   'gpt-5-4-openai-resp': 'gpt-5-4',
   'gpt-5-4': 'gpt-5-4',
@@ -73,6 +74,117 @@ const buildProviderInputMessages = (messages = [], mapper) =>
     role: message?.role || 'user',
     content: mapper(normalizeMessageContentItems(message?.content)),
   }));
+
+const isManagedAssetUrl = (value) =>
+  typeof value === 'string' && value.includes(MANAGED_ASSET_PATH_SEGMENT);
+
+const extractFileNameFromUrl = (value, fallback = 'upload.bin') => {
+  try {
+    const url = new URL(String(value || ''));
+    const pathname = decodeURIComponent(url.pathname || '');
+    const segments = pathname.split('/').filter(Boolean);
+    const candidate = segments[segments.length - 1] || '';
+    return candidate || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const inferMimeTypeFromName = (value, fallback = 'application/octet-stream') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized.endsWith('.png')) return 'image/png';
+  if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) return 'image/jpeg';
+  if (normalized.endsWith('.webp')) return 'image/webp';
+  if (normalized.endsWith('.gif')) return 'image/gif';
+  if (normalized.endsWith('.bmp')) return 'image/bmp';
+  if (normalized.endsWith('.svg')) return 'image/svg+xml';
+  if (normalized.endsWith('.pdf')) return 'application/pdf';
+  if (normalized.endsWith('.txt')) return 'text/plain';
+  if (normalized.endsWith('.md')) return 'text/markdown';
+  if (normalized.endsWith('.json')) return 'application/json';
+  return fallback;
+};
+
+const downloadManagedAsset = async (assetUrl, signal) => {
+  const response = await fetch(assetUrl, {
+    method: 'GET',
+    signal,
+  });
+  if (!response.ok) {
+    throw createProviderError('provider_bad_request', `内部素材下载失败：HTTP ${response.status}`);
+  }
+
+  const fileName = extractFileNameFromUrl(assetUrl);
+  const mimeTypeHeader = response.headers?.get?.('content-type') || '';
+  const mimeType = String(mimeTypeHeader || '').split(';')[0].trim() || inferMimeTypeFromName(fileName);
+  const fileBuffer = Buffer.from(await response.arrayBuffer());
+  return {
+    fileName,
+    mimeType,
+    fileBuffer,
+  };
+};
+
+const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal) => {
+  if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
+  const downloaded = await downloadManagedAsset(assetUrl, signal);
+  const uploaded = await uploadAssetViaKieStream({
+    ...downloaded,
+    uploadPath: 'mayo-storage/internal',
+  }, env);
+  return String(uploaded?.result?.fileUrl || '').trim();
+};
+
+const resolveProviderMediaUrl = async (value, env, signal) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return '';
+  if (!isManagedAssetUrl(normalized)) return normalized;
+  return convertManagedAssetUrlToKieFileUrl(normalized, env, signal);
+};
+
+const resolveProviderMessageItem = async (item, env, signal) => {
+  if (!item || typeof item !== 'object') return item;
+
+  if (item.type === 'input_file') {
+    const fileUrl = await resolveProviderMediaUrl(item.file_url || item.url || '', env, signal);
+    return {
+      ...item,
+      file_url: fileUrl,
+      url: fileUrl,
+    };
+  }
+
+  if (item.type === 'image_url' || item.type === 'input_image') {
+    const rawUrl = item.image_url?.url || item.image_url || item.url || '';
+    const resolvedUrl = await resolveProviderMediaUrl(rawUrl, env, signal);
+    if (item.image_url && typeof item.image_url === 'object') {
+      return {
+        ...item,
+        image_url: {
+          ...item.image_url,
+          url: resolvedUrl,
+        },
+        url: resolvedUrl,
+      };
+    }
+    return {
+      ...item,
+      image_url: resolvedUrl,
+      url: resolvedUrl,
+    };
+  }
+
+  return item;
+};
+
+const resolveProviderMessages = async (messages = [], env, signal) => Promise.all(
+  (Array.isArray(messages) ? messages : []).map(async (message) => ({
+    ...message,
+    content: await Promise.all(
+      normalizeMessageContentItems(message?.content).map((item) => resolveProviderMessageItem(item, env, signal))
+    ),
+  }))
+);
 
 const buildKieResponsesContent = (items) =>
   items.map((item) => {
@@ -522,6 +634,7 @@ export const uploadAssetViaKieStream = async (payload, env) => {
 const runKieResponsesJob = async (payload, env, signal) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal);
 
   const response = await fetch(KIE_RESPONSES_URL, {
     method: 'POST',
@@ -531,7 +644,7 @@ const runKieResponsesJob = async (payload, env, signal) => {
     },
     body: JSON.stringify({
       model: resolveKieResponsesModel(payload.model || 'gpt-5-4'),
-      input: buildProviderInputMessages(payload.messages, buildKieResponsesContent),
+      input: buildProviderInputMessages(preparedMessages, buildKieResponsesContent),
       stream: false,
       ...(payload.reasoningLevel ? { reasoning: { effort: String(payload.reasoningLevel) } } : {}),
       ...(payload.webSearchEnabled ? { tools: [{ type: 'web_search' }] } : {}),
@@ -555,6 +668,9 @@ const runKieResponsesJob = async (payload, env, signal) => {
 const runKieImageJob = async (payload, env, signal) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
+  const imageUrls = await Promise.all(
+    (Array.isArray(payload.imageUrls) ? payload.imageUrls : []).map((item) => resolveProviderMediaUrl(item, env, signal))
+  );
 
   const response = await fetch(KIE_CREATE_TASK_URL, {
     method: 'POST',
@@ -566,7 +682,7 @@ const runKieImageJob = async (payload, env, signal) => {
       model: payload.model || 'nano-banana-2',
       input: {
         prompt: payload.prompt,
-        image_input: payload.imageUrls,
+        image_input: imageUrls,
         aspect_ratio: payload.aspectRatio || 'auto',
         resolution: payload.resolution || '1K',
         output_format: 'png',
@@ -611,7 +727,9 @@ const runKieVideoJob = async (payload, env, signal) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
 
-  const targetImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls.slice(0, 1) : [];
+  const targetImageUrls = await Promise.all(
+    (Array.isArray(payload.imageUrls) ? payload.imageUrls.slice(0, 1) : []).map((item) => resolveProviderMediaUrl(item, env, signal))
+  );
   const input = {
     n_frames: Number.parseInt(String(payload.videoConfig?.duration || '15'), 10),
     image_urls: targetImageUrls,
@@ -680,8 +798,9 @@ const runKieVeoJob = async (payload, env, signal) => {
       prompt: fullPrompt,
     };
   } else if (Array.isArray(payload.imageUrls) && payload.imageUrls.length > 0) {
+    const imageUrls = await Promise.all(payload.imageUrls.map((item) => resolveProviderMediaUrl(item, env, signal)));
     requestPayload.generationType = 'REFERENCE_2_VIDEO';
-    requestPayload.imageUrls = payload.imageUrls;
+    requestPayload.imageUrls = imageUrls;
   } else {
     requestPayload.generationType = 'TEXT_2_VIDEO';
   }
@@ -731,9 +850,10 @@ const runKieChatJob = async (payload, env, signal) => {
   const model = String(payload.model || 'gpt-5-2').trim() || 'gpt-5-2';
   const endpoint = resolveKieChatEndpoint(model);
   const isGeminiModel = isKieGeminiChatModel(model);
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal);
   const messages = isGeminiModel
-    ? buildProviderInputMessages(payload.messages, buildKieChatContent)
-    : payload.messages;
+    ? buildProviderInputMessages(preparedMessages, buildKieChatContent)
+    : preparedMessages;
 
   const response = await fetch(endpoint, {
     method: 'POST',
