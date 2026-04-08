@@ -310,6 +310,42 @@ test('executeProviderJob routes gemini 3.1 pro through kie chat endpoint with go
   }
 });
 
+test('executeProviderJob extracts text when kie chat returns structured content parts', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () =>
+    createJsonResponse({
+      choices: [
+        {
+          message: {
+            content: [
+              { type: 'reasoning', text: '内部思考' },
+              { type: 'text', text: '这是最终结果' },
+            ],
+          },
+        },
+      ],
+    });
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gemini-3.1-pro-openai',
+          messages: [{ role: 'user', content: '帮我总结' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, '这是最终结果');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob routes gemini 3 flash through kie chat endpoint with low reasoning effort', async () => {
   const originalFetch = global.fetch;
   const requests = [];

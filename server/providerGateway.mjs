@@ -141,6 +141,44 @@ const extractTextResponse = (data) => {
   throw createProviderError('provider_bad_response', 'AI 未返回可解析的文本内容');
 };
 
+const extractChatMessageText = (value) => {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    const text = value
+      .map((item) => {
+        if (typeof item === 'string') return item.trim();
+        if (item?.type === 'text' && typeof item.text === 'string') return item.text.trim();
+        if (item?.type && item.type !== 'text') return '';
+        if (typeof item?.text === 'string' && item.text.trim()) return item.text.trim();
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+
+    if (text) return text;
+  }
+
+  if (value && typeof value === 'object') {
+    if (typeof value.text === 'string' && value.text.trim()) {
+      return value.text.trim();
+    }
+    if (Array.isArray(value.parts)) {
+      const text = value.parts
+        .map((part) => (typeof part?.text === 'string' ? part.text.trim() : ''))
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+      if (text) return text;
+    }
+  }
+
+  return '';
+};
+
 const resolveChatTransport = (model) => {
   const normalizedModel = String(model || '').trim();
   if (normalizedModel in KIE_RESPONSES_MODEL_ALIASES) return 'kie_responses';
@@ -702,9 +740,9 @@ const runKieChatJob = async (payload, env, signal) => {
 
   const data = await response.json().catch(() => ({}));
   const content =
-    data?.choices?.[0]?.message?.content ||
-    data?.content ||
-    data?.candidates?.[0]?.content?.parts?.[0]?.text ||
+    extractChatMessageText(data?.choices?.[0]?.message?.content) ||
+    extractChatMessageText(data?.content) ||
+    extractChatMessageText(data?.candidates?.[0]?.content) ||
     '';
 
   if (!content) {
