@@ -22,7 +22,6 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
       MEIAO_JOB_MAX_CONCURRENCY: '7',
       MEIAO_ALLOWED_ORIGINS: 'https://meiao.internal',
       KIE_API_KEY: 'kie-secret',
-      ARK_API_KEY: '',
     },
     { queued: 3, running: 2 }
   );
@@ -32,18 +31,29 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.equal(config.queue.runningCount, 2);
   assert.deepEqual(config.cors.allowedOrigins, ['https://meiao.internal']);
   assert.deepEqual(config.providers, {
-    ark: { configured: false },
     kie: { configured: true },
   });
   assert.deepEqual(config.agentModels.chat.map((item) => item.id), [
-    'doubao-seed-1-6-flash-250615',
-    'doubao-seed-1-6-thinking-250715',
-    'doubao-seed-2-0-lite-260215',
+    'gpt-5-4-openai-resp',
+    'gemini-3.1-pro-openai',
+    'gemini-3-flash-openai',
   ]);
   assert.equal(config.agentModels.chat[0].supportsFileInput, true);
   assert.equal(config.agentModels.chat[0].supportsImageInput, true);
+  assert.equal(config.agentModels.chat[0].supportsReasoningLevel, true);
+  assert.deepEqual(config.agentModels.chat[0].reasoningLevels, ['minimal', 'low', 'medium', 'high', 'xhigh']);
+  assert.equal(config.agentModels.chat[1].provider, 'kie');
+  assert.equal(config.agentModels.chat[1].supportsFileInput, true);
+  assert.equal(config.agentModels.chat[1].supportsImageInput, true);
+  assert.equal(config.agentModels.chat[1].supportsWebSearch, true);
   assert.equal(config.agentModels.chat[1].supportsReasoningLevel, true);
-  assert.deepEqual(config.agentModels.chat[1].reasoningLevels, ['low', 'medium', 'high']);
+  assert.deepEqual(config.agentModels.chat[1].reasoningLevels, ['low', 'high']);
+  assert.equal(config.agentModels.chat[2].provider, 'kie');
+  assert.equal(config.agentModels.chat[2].supportsFileInput, true);
+  assert.equal(config.agentModels.chat[2].supportsImageInput, true);
+  assert.equal(config.agentModels.chat[2].supportsWebSearch, true);
+  assert.equal(config.agentModels.chat[2].supportsReasoningLevel, true);
+  assert.deepEqual(config.agentModels.chat[2].reasoningLevels, ['low', 'high']);
   assert.deepEqual(config.agentModels.image.map((item) => item.id), [
     'nano-banana-2',
     'nano-banana-pro',

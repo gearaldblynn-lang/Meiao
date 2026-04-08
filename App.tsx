@@ -163,7 +163,6 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
         setApiConfig((prev) => ({
           ...prev,
           kieApiKey: '',
-          arkApiKey: '',
           concurrency: effectiveConcurrency,
         }));
       } catch (error) {

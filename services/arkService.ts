@@ -1,65 +1,55 @@
 
 import { GlobalApiConfig, ArkAnalysisResult, OneClickConfig, ArkSchemeResult, OneClickSubMode, VisualDirectionResult, ArkBuyerShowResult, BuyerShowPersistentState, ArkPureEvaluationResult, VideoConfig, SceneItem, AspectRatio, VeoScriptSegment, SkuConfig, OneClickReferenceDimension } from "../types";
-import { cancelInternalJob, createInternalJob, getActiveModuleContext, safeCreateInternalLog, waitForInternalJob } from "./internalApi";
+import { cancelInternalJob, createInternalJob, fetchSystemConfig, getActiveModuleContext, safeCreateInternalLog, waitForInternalJob } from "./internalApi";
 
-const ARK_MODEL = 'doubao-seed-2-0-lite-260215';
+const estimatePromptTokens = (items: Array<{ type: string; text?: string }>) =>
+  items.reduce((sum, item) => sum + Math.ceil((item.text || '').length / 4), 0);
 
-type ArkResponseContentItem = {
-  type?: string;
-  text?: string;
+let cachedAnalysisModel = '';
+let cachedAnalysisModelAt = 0;
+const ANALYSIS_MODEL_CACHE_TTL_MS = 30_000;
+
+const resolveAnalysisModel = async () => {
+  if (cachedAnalysisModel && Date.now() - cachedAnalysisModelAt < ANALYSIS_MODEL_CACHE_TTL_MS) {
+    return cachedAnalysisModel;
+  }
+
+  const result = await fetchSystemConfig();
+  const nextModel = String(
+    result.config.systemSettings.effectiveAnalysisModel ||
+    result.config.agentModels.chat?.[0]?.id ||
+    'gpt-5-4-openai-resp'
+  ).trim();
+
+  cachedAnalysisModel = nextModel;
+  cachedAnalysisModelAt = Date.now();
+  return nextModel;
 };
 
-const buildArkInputContent = (items: Array<{ type: "text" | "image_url"; text?: string; image_url?: { url: string } }>) =>
-  items.map(item => {
-    if (item.type === 'text') {
-      return { type: 'input_text', text: item.text || '' };
-    }
-
-    return { type: 'input_image', image_url: item.image_url?.url || '' };
-  });
-
-const extractArkText = (data: any): string => {
-  if (typeof data?.output_text === 'string' && data.output_text.trim()) {
-    return data.output_text.trim();
-  }
-
-  if (Array.isArray(data?.output)) {
-    for (const outputItem of data.output) {
-      const content = outputItem?.content;
-      if (!Array.isArray(content)) continue;
-
-      const text = (content as ArkResponseContentItem[])
-        .filter(item => item?.type?.includes('text') && typeof item.text === 'string')
-        .map(item => item.text!.trim())
-        .filter(Boolean)
-        .join('\n')
-        .trim();
-
-      if (text) return text;
-    }
-  }
-
-  if (Array.isArray(data?.choices) && data.choices[0]?.message?.content) {
-    return String(data.choices[0].message.content).trim();
-  }
-
-  throw new Error("AI 未返回可解析的文本内容");
-};
-
-const requestArkResponse = async (
+const requestAnalysisResponse = async (
   inputContent: Array<{ type: "text" | "image_url"; text?: string; image_url?: { url: string } }>,
-  apiConfig: GlobalApiConfig,
+  _apiConfig: GlobalApiConfig,
   signal?: AbortSignal
 ) => {
   const module = getActiveModuleContext() || 'unknown';
+  const startedAt = Date.now();
+  const model = await resolveAnalysisModel();
   const { job } = await createInternalJob({
     module,
-    taskType: 'ark_response',
-    provider: 'ark',
+    taskType: 'kie_chat',
+    provider: 'kie',
     payload: {
-      model: ARK_MODEL,
-      inputContent,
-      arkClientConfigPresent: Boolean(apiConfig.arkApiKey),
+      model,
+      messages: [
+        {
+          role: 'user',
+          content: inputContent.map((item) =>
+            item.type === 'text'
+              ? { type: 'text', text: item.text || '' }
+              : { type: 'image_url', image_url: { url: item.image_url?.url || '' } }
+          ),
+        },
+      ],
       requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     },
     maxRetries: 2,
@@ -68,9 +58,29 @@ const requestArkResponse = async (
   try {
     const finalJob = await waitForInternalJob(job.id, signal);
     if (finalJob.status !== 'succeeded') {
-      throw new Error(finalJob.errorMessage || 'Ark 请求失败');
+      throw new Error(finalJob.errorMessage || 'AI 分析请求失败');
     }
-    return String(finalJob.result?.text || '');
+    const content = String(finalJob.result?.content || finalJob.result?.text || '');
+    const promptTokens = estimatePromptTokens(inputContent as any[]);
+    const completionTokens = Math.ceil(content.length / 4);
+    const estimatedCost = ((promptTokens + completionTokens) * 0.000002).toFixed(6);
+    void safeCreateInternalLog({
+      level: 'info',
+      module,
+      action: 'analysis_token_usage',
+      message: `分析调用完成`,
+      status: 'success',
+      meta: {
+        model,
+        promptTokens,
+        completionTokens,
+        totalTokens: promptTokens + completionTokens,
+        estimatedCost: Number(estimatedCost),
+        latencyMs: Date.now() - startedAt,
+        jobId: job.id,
+      },
+    });
+    return content;
   } catch (error: any) {
     if (error.message === 'INTERRUPTED') {
       void cancelInternalJob(job.id).catch(() => null);
@@ -105,7 +115,8 @@ export const analyzeOneClickReferenceSet = async (
   dimensions: OneClickReferenceDimension[],
   scene: OneClickSubMode,
   apiConfig: GlobalApiConfig,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  logoUrl?: string | null
 ): Promise<ArkAnalysisResult> => {
   try {
     const dimensionText = (Array.isArray(dimensions) && dimensions.length > 0
@@ -140,15 +151,22 @@ ${sceneInstruction}
 1. 只总结被勾选的维度。
 2. 如果某个维度在这组图里不稳定，要明确写出“不建议强绑定”。
 3. 未勾选的维度不要输出。
-4. 结论必须可直接进入后续策划，不要空泛。`;
+4. 结论必须可直接进入后续策划，不要空泛。
+5. 如果同一维度在这组图中风格高度统一，要总结出更具体的共性特征。
+6. 如果同一维度在这组图中差异较大，要提炼更抽象、更上位的大致共性。
+7. 例如统一时可写到字体类别、常见字重、字号区间、气质倾向；例如差异较大时可写成现代无衬线、字重大、字号偏大、爆点醒目这类抽象共性。`;
 
     const inputContent: any[] = [{ type: "text", text: userPrompt }];
     referenceUrls.filter(Boolean).forEach((url, index) => {
       inputContent.push({ type: "text", text: `[设计参考图${index + 1}]` });
       inputContent.push({ type: "image_url", image_url: { url } });
     });
+    if (logoUrl) {
+      inputContent.push({ type: "text", text: `[品牌logo图] ${logoUrl} 是品牌logo图，仅用于识别我方品牌，不要把其他品牌logo当作我方品牌元素。` });
+      inputContent.push({ type: "image_url", image_url: { url: logoUrl } });
+    }
 
-    const content = await requestArkResponse(inputContent, apiConfig, signal);
+    const content = await requestAnalysisResponse(inputContent, apiConfig, signal);
     return { status: 'success', description: content.trim() };
   } catch (error: any) {
     return { status: 'error', description: '', message: error.message };
@@ -190,7 +208,7 @@ export const analyzeRetouchTask = async (
       inputContent.push({ type: "image_url", image_url: { url: referenceUrl } });
     }
 
-    const content = await requestArkResponse(inputContent, apiConfig, signal);
+    const content = await requestAnalysisResponse(inputContent, apiConfig, signal);
     logArkEvent('retouch_analysis', '精修分析完成', 'success', '', { mode });
     return { status: 'success', description: content };
   } catch (error: any) {
@@ -210,7 +228,8 @@ export const generateMarketingSchemes = async (
   subMode: OneClickSubMode,
   directionPreference: string | null,
   signal?: AbortSignal,
-  referenceAnalysisSummary?: string | null
+  referenceAnalysisSummary?: string | null,
+  logoUrl?: string | null
 ): Promise<ArkSchemeResult> => {
   try {
     const isDetail = subMode === OneClickSubMode.DETAIL_PAGE;
@@ -281,6 +300,7 @@ export const generateMarketingSchemes = async (
 目标语言：${targetLang}
 ${config.planningLogic ? `自定义叙事逻辑：${config.planningLogic}` : ""}
 ${referenceAnalysisSummary ? `【参考分析结论】\n${referenceAnalysisSummary}` : styleUrl ? `风格参考图：${styleUrl}。仅提炼其配色、光影、材质与氛围作为整套视觉基调。` : ""}
+${logoUrl ? `品牌logo图：${logoUrl}。该图仅用于识别和还原我方品牌logo，不得把产品素材图或设计参考图中的其他品牌logo带入最终画面。若产品素材中出现竞品logo或他牌标识，最终生成图必须去除或替换为品牌logo图对应的我方logo。` : "若产品素材中出现竞品logo或他牌标识，最终方案与生成图都必须去除这些非我方品牌标识，禁止直接沿用。"}
 
 单屏输出字段：
 - 屏序/类型：${isDetail ? '[如：第1屏-Hero首屏]' : '[如：主图1-核心卖点展示]'}
@@ -298,19 +318,25 @@ ${copyLayoutTemplate}
     inputContent.push({ type: "text", text: `${systemPrompt}\n\n${userPrompt}` });
     
     // 将产品图作为输入
-    productUrls.forEach(url => {
+    productUrls.forEach((url, index) => {
+      inputContent.push({ type: "text", text: `[产品素材图${index + 1}]` });
       inputContent.push({ type: "image_url", image_url: { url } });
     });
     // 将风格参考图作为输入
     if (styleUrl) {
+      inputContent.push({ type: "text", text: `[设计参考图]` });
       inputContent.push({ type: "image_url", image_url: { url: styleUrl } });
+    }
+    if (logoUrl) {
+      inputContent.push({ type: "text", text: `[品牌logo图] ${logoUrl} 是品牌logo图` });
+      inputContent.push({ type: "image_url", image_url: { url: logoUrl } });
     }
 
     const timeoutController = new AbortController();
     const timeoutId = setTimeout(() => timeoutController.abort(), 60000); // 60s timeout
 
     try {
-      const content = await requestArkResponse(inputContent, apiConfig, signal || timeoutController.signal);
+      const content = await requestAnalysisResponse(inputContent, apiConfig, signal || timeoutController.signal);
       let schemes: string[] = [];
       const tagRegex = /\[SCHEME_START\]([\s\S]*?)\[SCHEME_END\]/g;
       let match;
@@ -443,7 +469,7 @@ ${referenceAnalysisSummary ? `\n【参考分析结论】\n${referenceAnalysisSum
     const timeoutId = setTimeout(() => timeoutController.abort(), 60000);
 
     try {
-      const content = await requestArkResponse(inputContent, apiConfig, signal || timeoutController.signal);
+      const content = await requestAnalysisResponse(inputContent, apiConfig, signal || timeoutController.signal);
       let schemes: string[] = [];
       const tagRegex = /\[SCHEME_START\]([\s\S]*?)\[SCHEME_END\]/g;
       let match;
@@ -583,7 +609,7 @@ Generate the JSON response. Ensure valid JSON format.`;
     const timeoutId = setTimeout(() => timeoutController.abort(), 60000);
 
     try {
-      let content = await requestArkResponse(inputContent, apiConfig, signal || timeoutController.signal);
+      let content = await requestAnalysisResponse(inputContent, apiConfig, signal || timeoutController.signal);
       content = content.replace(/```json/g, '').replace(/```/g, '').trim();
       
       const firstBrace = content.indexOf('{');
@@ -592,10 +618,15 @@ Generate the JSON response. Ensure valid JSON format.`;
         content = content.substring(firstBrace, lastBrace + 1);
       }
 
-      const result = JSON.parse(content);
-      
+      let result: any;
+      try {
+        result = JSON.parse(content);
+      } catch {
+        throw new Error('AI 返回内容格式异常，无法解析为 JSON');
+      }
+
       return {
-        tasks: result.tasks || [],
+        tasks: Array.isArray(result.tasks) ? result.tasks : [],
         evaluation: result.evaluation || '',
         status: 'success'
       };
@@ -640,7 +671,7 @@ export const generatePureEvaluations = async (
     const inputContent: any[] = [];
     inputContent.push({ type: "text", text: `${systemPrompt}\n\n${userPrompt}` });
 
-    let content = await requestArkResponse(inputContent, apiConfig, signal);
+    let content = await requestAnalysisResponse(inputContent, apiConfig, signal);
     content = content.replace(/```json/g, '').replace(/```/g, '').trim();
     let evaluations = [];
     try {
@@ -729,14 +760,19 @@ ${logicPromptPart}
       inputContent.push({ type: "image_url", image_url: { url } });
     });
 
-    const rawText = await requestArkResponse(inputContent, apiConfig, signal);
+    const rawText = await requestAnalysisResponse(inputContent, apiConfig, signal);
     if (rawText) {
         let rawContent = rawText.trim();
         if (rawContent.includes('```')) {
           rawContent = rawContent.replace(/```json/g, '').replace(/```/g, '').trim();
         }
     
-        const parsed = JSON.parse(rawContent);
+        let parsed: any;
+        try {
+          parsed = JSON.parse(rawContent);
+        } catch {
+          throw new Error('AI 返回的视频脚本格式异常，无法解析');
+        }
         const voiceTag = parsed.voice_tag || "(25岁活力女声)";
         
         const cleanSpoken = (text: string) => {
@@ -823,7 +859,7 @@ export const generateVideoScript = async (
       inputContent.push({ type: "image_url", image_url: { url } });
     });
 
-    let content = await requestArkResponse(inputContent, apiConfig, signal);
+    let content = await requestAnalysisResponse(inputContent, apiConfig, signal);
     content = content.replace(/```json/g, '').replace(/```/g, '').trim();
     
     const firstBrace = content.indexOf('{');
@@ -832,7 +868,12 @@ export const generateVideoScript = async (
       content = content.substring(firstBrace, lastBrace + 1);
     }
 
-    const result = JSON.parse(content);
+    let result: any;
+    try {
+      result = JSON.parse(content);
+    } catch {
+      throw new Error('AI 返回的分镜脚本格式异常，无法解析');
+    }
     logArkEvent('video_scene_plan', '视频分镜脚本生成成功', 'success', '', {
       sceneCount: (result.scenes || []).length,
       duration: config.duration,

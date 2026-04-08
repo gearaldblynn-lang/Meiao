@@ -63,12 +63,13 @@ const TRACKED_URL_FIELDS = new Set([
   'sourceUrl',
   'uploadedReferenceUrl',
   'lastStyleUrl',
+  'uploadedLogoUrl',
   'imageUrl',
   'whiteBgImageUrl',
   'previousBoardImageUrl',
 ]);
 const TRACKED_URL_ARRAY_FIELDS = new Set(['uploadedProductUrls', 'veoReferenceImages']);
-const NULLABLE_TRACKED_FIELDS = new Set(['uploadedReferenceUrl', 'lastStyleUrl', 'whiteBgImageUrl']);
+const NULLABLE_TRACKED_FIELDS = new Set(['uploadedReferenceUrl', 'lastStyleUrl', 'uploadedLogoUrl', 'whiteBgImageUrl']);
 
 const STATIC_CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -113,7 +114,6 @@ let assetCleanupTimer = null;
 const defaultApiConfig = {
   kieApiKey: '',
   concurrency: 5,
-  arkApiKey: '',
 };
 
 const DEFAULT_JOB_CONCURRENCY = 5;
@@ -238,6 +238,8 @@ const createDefaultState = () => ({
   oneClickMemory: {
     mainImage: {
       productImages: [],
+      logoImage: null,
+      uploadedLogoUrl: null,
       styleImage: null,
       schemes: [],
       config: {
@@ -261,6 +263,8 @@ const createDefaultState = () => ({
     },
     detailPage: {
       productImages: [],
+      logoImage: null,
+      uploadedLogoUrl: null,
       styleImage: null,
       schemes: [],
       config: {
@@ -612,7 +616,6 @@ const resolveConfiguredAnalysisModel = (systemSettings = {}, ...preferredModels)
     process.env?.MEIAO_PLANNING_ANALYSIS_MODEL,
     process.env?.MEIAO_DEFAULT_ANALYSIS_MODEL,
     process.env?.MEIAO_DEFAULT_CHAT_MODEL,
-    process.env?.ARK_MODEL,
     process.env?.KIE_CHAT_MODEL,
     ...preferredModels
   );
@@ -2693,25 +2696,83 @@ const listDbKnowledgeChunksForVersion = async (version) => {
   }));
 };
 
-const runAgentConversation = async ({ user, agent, version, priorMessages, currentMessage, sessionId = null, selectedModelOverride = '' }) => {
+const buildChatMessageContent = (text, attachments = []) => {
+  const content = [{ type: 'text', text: String(text || '') }];
+  (Array.isArray(attachments) ? attachments : []).forEach((item) => {
+    if (!item?.url) return;
+    if (item.kind === 'image') {
+      content.push({
+        type: 'image_url',
+        image_url: { url: String(item.url) },
+      });
+      return;
+    }
+    content.push({
+      type: 'input_file',
+      file_url: String(item.url),
+      filename: String(item.name || '附件'),
+    });
+  });
+  return content;
+};
+
+const runAgentConversation = async ({
+  user,
+  agent,
+  version,
+  priorMessages,
+  currentMessage,
+  sessionId = null,
+  selectedModelOverride = '',
+  attachments = [],
+  reasoningLevel = null,
+  webSearchEnabled = false,
+}) => {
   const shouldRetrieve = shouldUseKnowledgeRetrieval(currentMessage, version.retrievalPolicy, version.knowledgeBaseIds);
   const candidateChunks = shouldRetrieve ? await listDbKnowledgeChunksForVersion(version) : [];
   const knowledgeChunks = shouldRetrieve ? searchKnowledgeChunks(candidateChunks, currentMessage, version.retrievalPolicy) : [];
-  const recentMessages = (Array.isArray(priorMessages) ? priorMessages : [])
-    .slice(-Number(version.contextPolicy.maxHistoryRounds || 6) * 2)
-    .map((message) => ({ role: message.role, content: message.content }));
+  const allPrior = Array.isArray(priorMessages) ? priorMessages : [];
+  const maxRounds = Number(version.contextPolicy.maxHistoryRounds || 6);
+  const summaryThreshold = Number(version.contextPolicy.summaryTriggerThreshold || 10);
+  const recentCount = maxRounds * 2;
+  let summary = '';
+  let recentSlice = allPrior;
+  if (allPrior.length > summaryThreshold * 2) {
+    const olderMessages = allPrior.slice(0, -recentCount);
+    summary = buildConversationSummary(olderMessages, Number(version.contextPolicy.maxSummaryChars || 1200));
+    recentSlice = allPrior.slice(-recentCount);
+  } else {
+    recentSlice = allPrior.slice(-recentCount);
+  }
+  const recentMessages = recentSlice.map((message) => ({
+    role: message.role,
+    content: Array.isArray(message.attachments) && message.attachments.length > 0
+      ? buildChatMessageContent(message.content, message.attachments)
+      : message.content,
+  }));
   const messages = buildAgentPromptMessages({
     systemPrompt: version.systemPrompt,
-    summary: '',
+    summary,
     recentMessages,
     knowledgeChunks,
     userMessage: currentMessage,
   });
+  if (messages.length > 0) {
+    messages[messages.length - 1] = {
+      ...messages[messages.length - 1],
+      content: buildChatMessageContent(currentMessage, attachments),
+    };
+  }
   const selectedModel = String(selectedModelOverride || (knowledgeChunks.length > 0 ? version.modelPolicy.defaultModel : version.modelPolicy.cheapModel) || '').trim();
   const startedAt = Date.now();
   const output = await executeProviderJob({
     taskType: 'kie_chat',
-    payload: { messages, model: selectedModel },
+    payload: {
+      messages,
+      model: selectedModel,
+      reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
+      webSearchEnabled: Boolean(webSearchEnabled),
+    },
   }, process.env, new AbortController().signal);
   const content = String(output?.result?.content || '').trim();
   const promptTokens = messages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
@@ -3113,6 +3174,9 @@ const createDbChatReply = async (user, sessionId, payload) => {
         currentMessage: content,
         sessionId,
         selectedModelOverride: selectedModel,
+        attachments,
+        reasoningLevel: payload?.reasoningLevel || null,
+        webSearchEnabled: Boolean(payload?.webSearchEnabled),
       });
   const assistantMessageId = createEntityId();
   const assistantAttachments = Array.isArray(result.imageResultUrls) && result.imageResultUrls.length > 0
@@ -3780,23 +3844,65 @@ const deleteLocalKnowledgeDocument = (store, user, documentId) => {
 const listLocalKnowledgeChunksForVersion = (store, version) =>
   (store.knowledgeChunks || []).filter((item) => cleanKnowledgeBaseIds(version?.knowledgeBaseIds).includes(item.knowledgeBaseId));
 
-const runLocalAgentConversation = async ({ store, user, agent, version, priorMessages, currentMessage, sessionId = null, selectedModelOverride = '' }) => {
+const runLocalAgentConversation = async ({
+  store,
+  user,
+  agent,
+  version,
+  priorMessages,
+  currentMessage,
+  sessionId = null,
+  selectedModelOverride = '',
+  attachments = [],
+  reasoningLevel = null,
+  webSearchEnabled = false,
+}) => {
   const shouldRetrieve = shouldUseKnowledgeRetrieval(currentMessage, version.retrievalPolicy, version.knowledgeBaseIds);
   const candidateChunks = shouldRetrieve ? listLocalKnowledgeChunksForVersion(store, version) : [];
   const knowledgeChunks = shouldRetrieve ? searchKnowledgeChunks(candidateChunks, currentMessage, version.retrievalPolicy) : [];
-  const recentMessages = (Array.isArray(priorMessages) ? priorMessages : [])
-    .slice(-Number(version.contextPolicy.maxHistoryRounds || 6) * 2)
-    .map((message) => ({ role: message.role, content: message.content }));
+  const allPrior = Array.isArray(priorMessages) ? priorMessages : [];
+  const maxRounds = Number(version.contextPolicy.maxHistoryRounds || 6);
+  const summaryThreshold = Number(version.contextPolicy.summaryTriggerThreshold || 10);
+  const recentCount = maxRounds * 2;
+  let summary = '';
+  let recentSlice = allPrior;
+  if (allPrior.length > summaryThreshold * 2) {
+    const olderMessages = allPrior.slice(0, -recentCount);
+    summary = buildConversationSummary(olderMessages, Number(version.contextPolicy.maxSummaryChars || 1200));
+    recentSlice = allPrior.slice(-recentCount);
+  } else {
+    recentSlice = allPrior.slice(-recentCount);
+  }
+  const recentMessages = recentSlice.map((message) => ({
+    role: message.role,
+    content: Array.isArray(message.attachments) && message.attachments.length > 0
+      ? buildChatMessageContent(message.content, message.attachments)
+      : message.content,
+  }));
   const messages = buildAgentPromptMessages({
     systemPrompt: version.systemPrompt,
-    summary: '',
+    summary,
     recentMessages,
     knowledgeChunks,
     userMessage: currentMessage,
   });
+  if (messages.length > 0) {
+    messages[messages.length - 1] = {
+      ...messages[messages.length - 1],
+      content: buildChatMessageContent(currentMessage, attachments),
+    };
+  }
   const selectedModel = String(selectedModelOverride || (knowledgeChunks.length > 0 ? version.modelPolicy.defaultModel : version.modelPolicy.cheapModel) || '').trim();
   const startedAt = Date.now();
-  const output = await executeProviderJob({ taskType: 'kie_chat', payload: { messages, model: selectedModel } }, process.env, new AbortController().signal);
+  const output = await executeProviderJob({
+    taskType: 'kie_chat',
+    payload: {
+      messages,
+      model: selectedModel,
+      reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
+      webSearchEnabled: Boolean(webSearchEnabled),
+    },
+  }, process.env, new AbortController().signal);
   const content = String(output?.result?.content || '').trim();
   const promptTokens = messages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
   const completionTokens = estimateTokenCount(content);
@@ -5946,7 +6052,19 @@ const handleLocalRequest = async (req, res, url) => {
             knowledgeChunks: imageKnowledgeChunks,
             conversationSummary: session.summary || '',
           })
-        : await runLocalAgentConversation({ store, user, agent, version, priorMessages: history, currentMessage: content, sessionId, selectedModelOverride: selectedModel });
+        : await runLocalAgentConversation({
+            store,
+            user,
+            agent,
+            version,
+            priorMessages: history,
+            currentMessage: content,
+            sessionId,
+            selectedModelOverride: selectedModel,
+            attachments,
+            reasoningLevel: body?.reasoningLevel || null,
+            webSearchEnabled: Boolean(body?.webSearchEnabled),
+          });
       const assistantAttachments = Array.isArray(result.imageResultUrls) && result.imageResultUrls.length > 0
         ? result.imageResultUrls.map((url, index) => ({
             name: `生成结果${index + 1}`,

@@ -525,7 +525,7 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
                     <div className={`absolute inset-0 ${subMode === VideoSubMode.VEO ? 'bg-indigo-500/10' : 'bg-purple-500/10'} blur-3xl rounded-full scale-150 -z-10 animate-pulse`}></div>
                  </div>
                  <h2 className="text-3xl font-black text-slate-800 mb-4 tracking-tight">{subMode === VideoSubMode.VEO ? 'Veo 智能导演 · 极速出片' : '短视频一键生成 · 数字化片场'}</h2>
-                 <p className="text-slate-500 max-w-sm font-bold text-sm leading-relaxed px-6 italic">{subMode === VideoSubMode.VEO ? '“基于 Google Veo 3.1 引擎，上传图片即可实现极速视频渲染，支持 1080p/720p 自动化创作”' : '“上传一张产品图，豆包 AI 自动导演分镜，Sora 2 引擎提供电影级视觉呈现”'}</p>
+                 <p className="text-slate-500 max-w-sm font-bold text-sm leading-relaxed px-6 italic">{subMode === VideoSubMode.VEO ? '“基于 Google Veo 3.1 引擎，上传图片即可实现极速视频渲染，支持 1080p/720p 自动化创作”' : '“上传一张产品图，AI 自动导演分镜，Sora 2 引擎提供电影级视觉呈现”'}</p>
               </div>
             )}
             {isAnalyzing && (

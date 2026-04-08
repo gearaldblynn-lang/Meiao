@@ -8,34 +8,34 @@ const RETRYABLE_ERROR_CODES = new Set([
 const AGENT_MODEL_CATALOG = {
   chat: [
     {
-      id: 'doubao-seed-1-6-flash-250615',
-      label: '豆包 Seed 1.6 Flash',
-      provider: 'ark',
+      id: 'gpt-5-4-openai-resp',
+      label: 'GPT-5.4',
+      provider: 'kie',
       supportsImageInput: true,
       supportsFileInput: true,
-      supportsWebSearch: false,
-      supportsReasoningLevel: false,
-      reasoningLevels: [],
-    },
-    {
-      id: 'doubao-seed-1-6-thinking-250715',
-      label: '豆包 Seed 1.6 Thinking',
-      provider: 'ark',
-      supportsImageInput: true,
-      supportsFileInput: true,
-      supportsWebSearch: false,
+      supportsWebSearch: true,
       supportsReasoningLevel: true,
-      reasoningLevels: ['low', 'medium', 'high'],
+      reasoningLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'],
     },
     {
-      id: 'doubao-seed-2-0-lite-260215',
-      label: '豆包 Seed 2.0 Lite',
-      provider: 'ark',
+      id: 'gemini-3.1-pro-openai',
+      label: 'Gemini 3.1 Pro',
+      provider: 'kie',
       supportsImageInput: true,
       supportsFileInput: true,
-      supportsWebSearch: false,
-      supportsReasoningLevel: false,
-      reasoningLevels: [],
+      supportsWebSearch: true,
+      supportsReasoningLevel: true,
+      reasoningLevels: ['low', 'high'],
+    },
+    {
+      id: 'gemini-3-flash-openai',
+      label: 'Gemini 3 Flash',
+      provider: 'kie',
+      supportsImageInput: true,
+      supportsFileInput: true,
+      supportsWebSearch: true,
+      supportsReasoningLevel: true,
+      reasoningLevels: ['low', 'high'],
     },
   ],
   image: [
@@ -122,7 +122,6 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
         env.MEIAO_PLANNING_ANALYSIS_MODEL ||
         env.MEIAO_DEFAULT_ANALYSIS_MODEL ||
         env.MEIAO_DEFAULT_CHAT_MODEL ||
-        env.ARK_MODEL ||
         env.KIE_CHAT_MODEL ||
         chatCatalog[0]?.id ||
         ''
@@ -138,9 +137,6 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       allowedOrigins,
     },
     providers: {
-      ark: {
-        configured: Boolean(env.ARK_API_KEY),
-      },
       kie: {
         configured: Boolean(env.KIE_API_KEY),
       },

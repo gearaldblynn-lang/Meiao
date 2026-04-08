@@ -55,9 +55,36 @@ const emptyDocumentForm = {
   normalizationEnabled: false,
 };
 const fallbackChatModels = [
-  { id: 'doubao-seed-1-6-flash-250615', label: '豆包 Seed 1.6 Flash' },
-  { id: 'doubao-seed-1-6-thinking-250715', label: '豆包 Seed 1.6 Thinking' },
-  { id: 'doubao-seed-2-0-lite-260215', label: '豆包 Seed 2.0 Lite' },
+  {
+    id: 'gpt-5-4-openai-resp',
+    label: 'GPT-5.4',
+    provider: 'kie' as const,
+    supportsImageInput: true,
+    supportsFileInput: true,
+    supportsWebSearch: true,
+    supportsReasoningLevel: true,
+    reasoningLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+  },
+  {
+    id: 'gemini-3.1-pro-openai',
+    label: 'Gemini 3.1 Pro',
+    provider: 'kie' as const,
+    supportsImageInput: true,
+    supportsFileInput: true,
+    supportsWebSearch: true,
+    supportsReasoningLevel: true,
+    reasoningLevels: ['low', 'high'],
+  },
+  {
+    id: 'gemini-3-flash-openai',
+    label: 'Gemini 3 Flash',
+    provider: 'kie' as const,
+    supportsImageInput: true,
+    supportsFileInput: true,
+    supportsWebSearch: true,
+    supportsReasoningLevel: true,
+    reasoningLevels: ['low', 'high'],
+  },
 ];
 const fallbackImageModels = [
   { id: 'nano-banana-2', label: 'Nano Banana 2' },
@@ -88,9 +115,9 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
     avatarPreset: 'aurora',
     systemPrompt: '',
     selectedKnowledgeBaseIds: [] as string[],
-    allowedChatModels: ['doubao-seed-1-6-flash-250615', 'doubao-seed-1-6-thinking-250715'],
-    defaultChatModel: 'doubao-seed-1-6-thinking-250715',
-    cheapModel: 'doubao-seed-1-6-flash-250615',
+    allowedChatModels: ['gpt-5-4-openai-resp', 'gemini-3-flash-openai'],
+    defaultChatModel: 'gpt-5-4-openai-resp',
+    cheapModel: 'gemini-3-flash-openai',
     enableImageGeneration: false,
     imageModel: 'nano-banana-2',
     topK: 3,
@@ -103,6 +130,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
   const [knowledgeBaseForm, setKnowledgeBaseForm] = useState(emptyKnowledgeBaseForm);
   const [documentForm, setDocumentForm] = useState(emptyDocumentForm);
   const [editingDocumentId, setEditingDocumentId] = useState('');
+  const [isDocumentSubmitting, setIsDocumentSubmitting] = useState(false);
   const [availableChatModels, setAvailableChatModels] = useState(fallbackChatModels);
   const [availableImageModels, setAvailableImageModels] = useState(fallbackImageModels);
   const [dangerConfirm, setDangerConfirm] = useState<DangerConfirmState | null>(null);
@@ -432,39 +460,47 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
 
   const handleCreateDocument = () => runAction(async () => {
     if (!selectedKnowledgeBase) return;
-    if (editingDocumentId) {
-      const result = await updateKnowledgeDocument(editingDocumentId, {
+    if (isDocumentSubmitting) return;
+    setIsDocumentSubmitting(true);
+    try {
+      if (editingDocumentId) {
+        onStatusMessage('正在保存并重新切片...');
+        const result = await updateKnowledgeDocument(editingDocumentId, {
+          title: documentForm.title,
+          rawText: documentForm.rawText,
+          sourceType: documentForm.sourceType,
+          chunkStrategy: documentForm.chunkStrategy,
+          normalizationEnabled: documentForm.normalizationEnabled,
+        });
+        setEditingDocumentId('');
+        setDocumentForm(emptyDocumentForm);
+        onStatusMessage(
+          result.document.normalizationEnabled && result.document.normalizedStatus === 'failed'
+            ? `文档已保存并重新切片，AI 规范整理失败，已回退原文。${result.document.normalizationError ? `原因：${result.document.normalizationError}` : ''}`
+            : '文档已保存并重新切片。'
+        );
+        await loadKnowledgeBases(selectedKnowledgeBase.id);
+        return;
+      }
+      onStatusMessage('正在入库并切片...');
+      const result = await createKnowledgeDocument({
+        knowledgeBaseId: selectedKnowledgeBase.id,
         title: documentForm.title,
         rawText: documentForm.rawText,
         sourceType: documentForm.sourceType,
         chunkStrategy: documentForm.chunkStrategy,
         normalizationEnabled: documentForm.normalizationEnabled,
       });
-      setEditingDocumentId('');
       setDocumentForm(emptyDocumentForm);
       onStatusMessage(
         result.document.normalizationEnabled && result.document.normalizedStatus === 'failed'
-          ? `文档已保存并重新切片，AI 规范整理失败，已回退原文。${result.document.normalizationError ? `原因：${result.document.normalizationError}` : ''}`
-          : '文档已保存并重新切片。'
+          ? `文档已入库并完成切片，AI 规范整理失败，已回退原文。${result.document.normalizationError ? `原因：${result.document.normalizationError}` : ''}`
+          : '文档已入库并完成切片。'
       );
       await loadKnowledgeBases(selectedKnowledgeBase.id);
-      return;
+    } finally {
+      setIsDocumentSubmitting(false);
     }
-    const result = await createKnowledgeDocument({
-      knowledgeBaseId: selectedKnowledgeBase.id,
-      title: documentForm.title,
-      rawText: documentForm.rawText,
-      sourceType: documentForm.sourceType,
-      chunkStrategy: documentForm.chunkStrategy,
-      normalizationEnabled: documentForm.normalizationEnabled,
-    });
-    setDocumentForm(emptyDocumentForm);
-    onStatusMessage(
-      result.document.normalizationEnabled && result.document.normalizedStatus === 'failed'
-        ? `文档已入库并完成切片，AI 规范整理失败，已回退原文。${result.document.normalizationError ? `原因：${result.document.normalizationError}` : ''}`
-        : '文档已入库并完成切片。'
-    );
-    await loadKnowledgeBases(selectedKnowledgeBase.id);
   });
 
   const handleEditDocument = (documentId: string) => {
@@ -708,6 +744,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
           form={knowledgeBaseForm}
           documentForm={documentForm}
           editingDocumentId={editingDocumentId}
+          isDocumentSubmitting={isDocumentSubmitting}
           onBack={handleKnowledgeBack}
           onFormChange={(field, value) => setKnowledgeBaseForm((prev) => ({ ...prev, [field]: value }))}
           onDocumentFormChange={(field, value) => setDocumentForm((prev) => ({ ...prev, [field]: value }))}

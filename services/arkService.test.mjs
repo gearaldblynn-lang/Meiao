@@ -6,6 +6,34 @@ const arkServiceSource = readFileSync(new URL('./arkService.ts', import.meta.url
 const skuSubModuleSource = readFileSync(new URL('../modules/OneClick/SkuSubModule.tsx', import.meta.url), 'utf8');
 const retouchModuleSource = readFileSync(new URL('../modules/Retouch/RetouchModule.tsx', import.meta.url), 'utf8');
 
+test('analysis service no longer routes planning through ark or doubao', () => {
+  assert.doesNotMatch(
+    arkServiceSource,
+    /taskType:\s*'ark_response'/,
+    'planning analysis should no longer enqueue ark response jobs'
+  );
+  assert.doesNotMatch(
+    arkServiceSource,
+    /provider:\s*'ark'/,
+    'planning analysis should no longer use ark provider'
+  );
+  assert.doesNotMatch(
+    arkServiceSource,
+    /doubao-seed-/,
+    'planning analysis should no longer hardcode doubao models'
+  );
+  assert.match(
+    arkServiceSource,
+    /taskType:\s*'kie_chat'/,
+    'planning analysis should route through kie chat jobs'
+  );
+  assert.match(
+    arkServiceSource,
+    /provider:\s*'kie'/,
+    'planning analysis should use kie provider'
+  );
+});
+
 test('marketing scheme copy layout template only treats title as required and allows flexible extra copy lines', () => {
   assert.match(
     arkServiceSource,
@@ -204,6 +232,26 @@ test('one click reference analysis prompt supports grouped dimensions and output
   );
   assert.match(
     arkServiceSource,
+    /如果同一维度在这组图中风格高度统一，要总结出更具体的共性特征/,
+    'reference analysis should ask for concrete common traits when the references are consistent'
+  );
+  assert.match(
+    arkServiceSource,
+    /如果同一维度在这组图中差异较大，要提炼更抽象、更上位的大致共性/,
+    'reference analysis should ask for abstract common traits when the references vary a lot'
+  );
+  assert.match(
+    arkServiceSource,
+    /例如统一时可写到字体类别、常见字重、字号区间、气质倾向/,
+    'reference analysis should guide detailed output for highly consistent references'
+  );
+  assert.match(
+    arkServiceSource,
+    /例如差异较大时可写成现代无衬线、字重大、字号偏大、爆点醒目这类抽象共性/,
+    'reference analysis should guide abstract output for varied references'
+  );
+  assert.match(
+    arkServiceSource,
     /三个模块的策划输出内容需要参考以上的设计风格进行制作并输出结果/,
     'planning should explicitly treat the analysis result as the direct design reference'
   );
@@ -211,6 +259,24 @@ test('one click reference analysis prompt supports grouped dimensions and output
     arkServiceSource,
     /【参考分析结论】/,
     'planning prompts should consume the structured reference analysis result'
+  );
+});
+
+test('marketing prompts identify brand logo assets and forbid competitor logos from leaking into results', () => {
+  assert.match(
+    arkServiceSource,
+    /品牌logo图：\$\{logoUrl\}。该图仅用于识别和还原我方品牌logo，不得把产品素材图或设计参考图中的其他品牌logo带入最终画面/,
+    'marketing prompts should identify the brand logo asset and ban competitor logos'
+  );
+  assert.match(
+    arkServiceSource,
+    /\[品牌logo图\]/,
+    'marketing inputs should label the logo asset explicitly'
+  );
+  assert.match(
+    arkServiceSource,
+    /若产品素材中出现竞品logo或他牌标识，最终生成图必须去除或替换为品牌logo图对应的我方logo/,
+    'marketing prompts should explicitly override competitor logos in source images'
   );
 });
 
