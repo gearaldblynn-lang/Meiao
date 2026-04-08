@@ -565,6 +565,13 @@ const buildAgentRuntimeLogMeta = ({ agent, version, result = null, requestMode =
   imagePlan: result?.imagePlan || null,
   imageResultCount: Array.isArray(result?.imageResultUrls) ? result.imageResultUrls.length : 0,
   imageResultUrls: result?.imageResultUrls || [],
+  providerTaskId: result?.providerTaskId || error?.providerTaskId || '',
+  providerStage: result?.providerStage || error?.providerStage || '',
+  providerStatus: result?.providerStatus || error?.providerStatus || '',
+  providerMessage: result?.providerMessage || error?.providerMessage || '',
+  inputImageCount: Number(result?.imagePlan?.inputImageUrls?.length || error?.inputImageCount || 0),
+  inputImageUrls: result?.imagePlan?.inputImageUrls || error?.inputImageUrls || [],
+  usedImageReferenceUrls: result?.imagePlan?.imageReferences?.map?.((item) => item?.url).filter(Boolean) || error?.usedImageReferenceUrls || [],
   errorCode: result?.errorCode || error?.code || '',
   errorMessage: error?.message || '',
 });
@@ -4029,6 +4036,111 @@ const buildImagePromptReferenceText = (imageReferences = [], preferredInputImage
   return `输入图顺序说明（必须严格按下列顺序理解）\n${lines.join('\n')}`;
 };
 
+const extractExplicitImageReferenceIndexes = (text = '') => {
+  const source = String(text || '');
+  const matches = source.matchAll(/图\s*([1-9]\d*)/g);
+  const indexes = [];
+  const seen = new Set();
+  for (const match of matches) {
+    const value = Number(match?.[1] || 0);
+    if (!Number.isInteger(value) || value <= 0 || seen.has(value)) continue;
+    seen.add(value);
+    indexes.push(value);
+  }
+  return indexes;
+};
+
+const extractDirectionalImageReferenceIndexes = ({ text = '', imageReferences = [] }) => {
+  const refs = Array.isArray(imageReferences) ? imageReferences : [];
+  const normalizedText = String(text || '');
+  const indexes = [];
+  const seen = new Set();
+  const pushIndex = (value) => {
+    const numericValue = Number(value || 0);
+    if (!Number.isInteger(numericValue) || numericValue <= 0 || seen.has(numericValue)) return;
+    seen.add(numericValue);
+    indexes.push(numericValue);
+  };
+  const currentUploads = refs.filter((item) => item?.source === 'current_upload');
+  const previousResults = refs.filter((item) => item?.source === 'previous_result');
+
+  const currentUploadMatches = Array.from(String(text || '').matchAll(/(?:刚上传|上传的|本轮上传的).*?第\s*([1-9]\d*)\s*张/g));
+  currentUploadMatches.forEach((match) => {
+    const order = Number(match?.[1] || 0);
+    const matchedReference = currentUploads[order - 1];
+    if (matchedReference?.index) pushIndex(matchedReference.index);
+  });
+
+  const previousResultMatches = Array.from(String(text || '').matchAll(/第\s*([1-9]\d*)\s*张(?:生成图|结果图|出图)/g));
+  previousResultMatches.forEach((match) => {
+    const order = Number(match?.[1] || 0);
+    const matchedReference = previousResults[order - 1];
+    if (matchedReference?.index) pushIndex(matchedReference.index);
+  });
+
+  if (/上一张|上一版|最近一张|刚才那张|刚才那版|上次生成|上一张生成图/.test(normalizedText)) {
+    const latestPreviousResult = previousResults.at(-1);
+    if (latestPreviousResult?.index) pushIndex(latestPreviousResult.index);
+  }
+
+  if (/刚上传的图|刚上传图片|最新上传|本轮上传图/.test(normalizedText)) {
+    const latestCurrentUpload = currentUploads.at(-1);
+    if (latestCurrentUpload?.index) pushIndex(latestCurrentUpload.index);
+  }
+
+  return indexes;
+};
+
+const selectRelevantImageReferences = ({ imageReferences = [], userMessage = '', maxInputImages = 1, editPreferenceHints = null }) => {
+  const refs = Array.isArray(imageReferences) ? imageReferences : [];
+  const limit = Math.max(1, Number(maxInputImages || 1));
+  if (refs.length <= limit) return refs.slice(0, limit);
+
+  const explicitIndexes = extractExplicitImageReferenceIndexes(userMessage);
+  const directionalIndexes = extractDirectionalImageReferenceIndexes({ text: userMessage, imageReferences: refs });
+  const requestedIndexes = Array.from(new Set([...explicitIndexes, ...directionalIndexes]));
+  const selected = [];
+  const selectedUrls = new Set();
+  const pushReference = (item) => {
+    const url = String(item?.url || '').trim();
+    if (!url || selectedUrls.has(url) || selected.length >= limit) return;
+    selectedUrls.add(url);
+    selected.push(item);
+  };
+
+  const refByIndex = new Map(refs.map((item) => [Number(item?.index || 0), item]));
+  requestedIndexes.forEach((index) => pushReference(refByIndex.get(index)));
+
+  const currentUploads = refs.filter((item) => item?.source === 'current_upload');
+  const previousResults = refs.filter((item) => item?.source === 'previous_result');
+  const historyAttachments = refs.filter((item) => item?.source === 'history_attachment');
+  const fallbackCandidates = editPreferenceHints?.preferPreviousResultAsPrimary
+    ? [
+      ...previousResults.slice(-1),
+      ...currentUploads,
+      ...historyAttachments.slice(-1),
+    ]
+    : [
+      ...currentUploads,
+      ...previousResults.slice(-1),
+      ...historyAttachments.slice(-1),
+    ];
+
+  fallbackCandidates.forEach((item) => pushReference(item));
+
+  if (selected.length === 0) {
+    fallbackCandidates.forEach((item) => pushReference(item));
+  }
+
+  return selected
+    .slice(0, limit)
+    .map((item, index) => ({
+      ...item,
+      index: index + 1,
+      label: `图${index + 1}`,
+    }));
+};
+
 const buildImageConversationTextContext = (priorMessages = [], maxRounds = 6, summary = '') => {
   const scopedMessages = (Array.isArray(priorMessages) ? priorMessages : [])
     .filter((message) => message?.role === 'user' || message?.role === 'assistant')
@@ -4113,6 +4225,16 @@ const detectExplicitAspectRatioInstruction = (text = '') => /(?:^|[^\d])(1:1|3:4
 
 const hasAspectRatioCorrectionIntent = (text = '') => /比例.*(不对|不太对|不合适|有问题|改一下|调整一下)|尺寸.*(不对|不太对|不合适|有问题)|改比例|调比例/.test(String(text || ''));
 
+const enrichRuntimeError = (error, extras = {}) => {
+  if (!error || typeof error !== 'object' || !extras || typeof extras !== 'object') return error;
+  Object.entries(extras).forEach(([key, value]) => {
+    if ((error[key] === undefined || error[key] === null || error[key] === '') && value !== undefined) {
+      error[key] = value;
+    }
+  });
+  return error;
+};
+
 const buildImageConversationResult = async ({ user, agent, version, priorMessages, currentMessage, sessionId = null, selectedModelOverride = '', attachments = [], systemSettings = {}, knowledgeChunks = [], conversationSummary = '' }) => {
   const imageCapability = getImageModelCapability(version?.modelPolicy?.multimodalModel);
   const selectedImageModel = String(version?.modelPolicy?.multimodalModel || '').trim();
@@ -4133,11 +4255,17 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     userMessage: currentMessage,
     imageReferences,
   });
+  const relevantImageReferences = selectRelevantImageReferences({
+    imageReferences,
+    userMessage: currentMessage,
+    maxInputImages: Number(imageCapability.maxInputImages || 1),
+    editPreferenceHints,
+  });
   const analysisMessages = buildImageGenerationAnalysisMessages({
     agent,
     version,
     userMessage: currentMessage,
-    imageReferences,
+    imageReferences: relevantImageReferences,
     selectedImageModel,
     maxInputImages: Number(imageCapability.maxInputImages || 1),
     knowledgeChunks,
@@ -4153,10 +4281,23 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     version.modelPolicy.cheapModel
   );
   const startedAt = Date.now();
-  const analysisOutput = await executeProviderJob({ taskType: 'kie_chat', payload: { messages: analysisMessages, model: analysisModel } }, process.env, new AbortController().signal);
+  let analysisOutput;
+  try {
+    analysisOutput = await executeProviderJob({ taskType: 'kie_chat', payload: { messages: analysisMessages, model: analysisModel } }, process.env, new AbortController().signal);
+  } catch (error) {
+    throw enrichRuntimeError(error, {
+      providerStage: error?.providerStage || 'analysis',
+      providerStatus: error?.providerStatus || 'failed',
+      providerMessage: error?.providerMessage || error?.message || '生图分析失败',
+      selectedModel: analysisModel,
+      inputImageCount: Number(relevantImageReferences.length || 0),
+      inputImageUrls: relevantImageReferences.map((item) => item.url).filter(Boolean),
+      usedImageReferenceUrls: relevantImageReferences.map((item) => item.url).filter(Boolean),
+    });
+  }
   const analysisContent = String(analysisOutput?.result?.content || '').trim();
   const parsed = extractJsonObject(analysisContent) || {};
-  const normalizedRefs = imageReferences.map((item) => ({
+  const normalizedRefs = relevantImageReferences.map((item) => ({
     index: item.index,
     label: item.label,
     name: item.name,
@@ -4186,6 +4327,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     : '';
   const promptReferenceText = buildImagePromptReferenceText(normalizedRefs, preferredInputImageUrls);
   const finalPrompt = `${promptPrefix}${promptReferenceText}\n${String(parsed.prompt || currentMessage).trim()}`.trim();
+  const usedImageReferences = preferredInputImageUrls.map((url) => normalizedRefs.find((item) => item.url === url)).filter(Boolean);
   const requestedAspectRatio = String(parsed.size || '').trim();
   const hasExplicitAspectRatioInstruction = detectExplicitAspectRatioInstruction(currentMessage);
   const shouldKeepAutoAspectRatio = !hasExplicitAspectRatioInstruction && !hasAspectRatioCorrectionIntent(currentMessage);
@@ -4195,16 +4337,29 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
       ? requestedAspectRatio
       : (imageCapability.defaultSize || 'auto');
   const normalizedResolution = String(imageCapability.defaultResolution || '1K').trim() || '1K';
-  const imageOutput = await executeProviderJob({
-    taskType: 'kie_image',
-    payload: {
-      imageUrls: preferredInputImageUrls,
-      prompt: finalPrompt,
-      model: selectedImageModel,
-      aspectRatio: normalizedAspectRatio,
-      resolution: normalizedResolution,
-    },
-  }, process.env, new AbortController().signal);
+  let imageOutput;
+  try {
+    imageOutput = await executeProviderJob({
+      taskType: 'kie_image',
+      payload: {
+        imageUrls: preferredInputImageUrls,
+        prompt: finalPrompt,
+        model: selectedImageModel,
+        aspectRatio: normalizedAspectRatio,
+        resolution: normalizedResolution,
+      },
+    }, process.env, new AbortController().signal);
+  } catch (error) {
+    throw enrichRuntimeError(error, {
+      providerStage: error?.providerStage || 'image_generation',
+      providerStatus: error?.providerStatus || 'failed',
+      providerMessage: error?.providerMessage || error?.message || '图像生成失败',
+      selectedModel: selectedImageModel,
+      inputImageCount: Number(preferredInputImageUrls.length || 0),
+      inputImageUrls: preferredInputImageUrls,
+      usedImageReferenceUrls: usedImageReferences.map((item) => item?.url).filter(Boolean),
+    });
+  }
   const imageUrl = String(imageOutput?.result?.imageUrl || '').trim();
   const promptTokens = analysisMessages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
   const completionTokens = estimateTokenCount(analysisContent);
@@ -4234,12 +4389,16 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     userId: user.id,
     agentId: agent.id,
     requestType: 'image_generation',
+    providerTaskId: String(imageOutput?.providerTaskId || '').trim(),
+    providerStage: String(imageOutput?.providerStage || 'completed').trim(),
+    providerStatus: String(imageOutput?.providerStatus || 'success').trim(),
+    providerMessage: '',
     imagePlan: {
       requestMode: 'image_generation',
       taskType: String(parsed.taskType || (inputImageUrls.length > 0 ? 'edit_image' : 'new_image')),
       selectedImageModel,
       inputImageUrls: preferredInputImageUrls,
-      imageReferences: normalizedRefs,
+      imageReferences: usedImageReferences,
       size: normalizedAspectRatio,
       resolution: normalizedResolution,
       transparentBackground: Boolean(parsed.transparentBackground && imageCapability.supportsTransparentBackground),

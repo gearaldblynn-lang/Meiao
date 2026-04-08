@@ -350,8 +350,23 @@ test('agent chat client keeps image generation requests alive longer and can syn
   assert.match(api, /timeoutMs: payload\.requestMode === 'image_generation' \? 240_000 : 60_000/);
   assert.match(agentCenter, /clientRequestId/);
   assert.match(agentCenter, /syncCompletedMessageAfterTimeout/);
+  assert.match(agentCenter, /const deadline = Date\.now\(\) \+ 210_000/);
   assert.match(agentCenter, /metadata\?\.clientRequestId/);
+  assert.match(agentCenter, /fallbackAssistantMessage/);
+  assert.match(agentCenter, /!item\.metadata\?\.pending/);
   assert.match(agentCenter, /后台仍在处理中，正在同步最新结果/);
+});
+
+test('account logs surface direct readable failure tags for agent and provider issues', () => {
+  const account = read('../modules/Account/AccountManagement.tsx');
+  const utils = read('../modules/Account/accountManagementUtils.mjs');
+
+  assert.match(account, /deriveLogFailureReason/);
+  assert.match(account, /failureReason/);
+  assert.match(utils, /return '分析失败'/);
+  assert.match(utils, /return '创建任务失败'/);
+  assert.match(utils, /return '轮询超时'/);
+  assert.match(utils, /return '上游服务异常'/);
 });
 
 test('agent chat image replies keep result summaries and reference rules collapsed by default', () => {
@@ -604,6 +619,19 @@ test('agent center module wires chat capability controls and session deletion in
   assert.match(module, /progressStage/);
   assert.doesNotMatch(module, /lockWorkspaceScroll = lockChatPageScroll \|\| \(canManage && workspaceMode === 'factory'\)/);
   assert.match(module, /lockWorkspaceScroll = lockChatPageScroll/);
+});
+
+test('agent center keeps current composer draft and attachments when toggling session chat modes', () => {
+  const module = read('../modules/AgentCenter/AgentCenterModule.tsx');
+
+  assert.match(module, /setMessageDraft\(''\);/);
+  assert.match(module, /setAttachments\(\[\]\);/);
+  assert.match(module, /selectedSession\.lastImageMode/);
+  assert.doesNotMatch(
+    module,
+    /if \(!selectedSession\) \{[\s\S]*setAttachments\(\[\]\);[\s\S]*return;[\s\S]*\}[\s\S]*setSelectedModel\(nextModel\);[\s\S]*setReasoningLevel\(selectedSession\.reasoningLevel \|\| null\);[\s\S]*setWebSearchEnabled\(Boolean\(selectedSession\.webSearchEnabled\)\);[\s\S]*setAttachments\(\[\]\);[\s\S]*setImageModeEnabled\(Boolean\(selectedSession\.lastImageMode\)\);/,
+    'switching image mode through session sync should not clear current draft attachments'
+  );
 });
 
 test('account management exposes current user profile avatar settings', () => {

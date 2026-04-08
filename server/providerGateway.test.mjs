@@ -346,6 +346,8 @@ test('executeProviderJob uploads managed asset image urls to kie before creating
     );
 
     assert.equal(result.providerTaskId, 'kie-task-managed-asset');
+    const assetRequest = requests.find((item) => item.url.includes('/api/assets/file/'));
+    assert.match(assetRequest.url, /^http:\/\/127\.0\.0\.1:3100\/api\/assets\/file\//);
     const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
     const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
     assert.deepEqual(createTaskBody.input.image_input, ['https://kie.example.com/uploaded-source.jpg']);
@@ -406,6 +408,8 @@ test('executeProviderJob uploads managed asset attachments before calling gpt-5.
     );
 
     assert.equal(result.result.content, 'ok');
+    const assetRequest = requests.find((item) => item.url.includes('/api/assets/file/'));
+    assert.match(assetRequest.url, /^http:\/\/127\.0\.0\.1:3100\/api\/assets\/file\//);
     const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
     const responseBody = JSON.parse(String(responseRequest.init.body));
     assert.equal(responseBody.input[1].content[1].file_url, 'https://kie.example.com/uploaded-doc.pdf');

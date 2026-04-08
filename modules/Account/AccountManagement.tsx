@@ -3,7 +3,7 @@ import { AuthUser, InternalLogEntry } from '../../types';
 import UserAdminPanel from '../../components/Internal/UserAdminPanel';
 import { deleteInternalLogs, fetchInternalLogMeta, fetchInternalLogs } from '../../services/internalApi';
 import { ACTION_LABELS, MODULE_LABELS, STATUS_LABELS } from '../../services/loggingService';
-import { buildLogCsv } from './accountManagementUtils.mjs';
+import { buildLogCsv, deriveLogFailureReason } from './accountManagementUtils.mjs';
 import { buildLogFilterOptions } from './logQueryUtils.mjs';
 import { SegmentedTabs, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 import UsageStatsPanel from './UsageStatsPanel';
@@ -431,6 +431,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                           <div className="divide-y divide-slate-100">
                             {dayLogs.map((log) => {
                               const metaSummary = getMetaSummary(log.meta);
+                              const failureReason = deriveLogFailureReason(log);
                               return (
                                 <details key={log.id} className="group px-5 py-4">
                                   <summary className="flex cursor-pointer list-none items-start justify-between gap-4">
@@ -442,6 +443,11 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                                         <span className={`rounded-full px-2 py-1 text-[10px] font-black uppercase tracking-widest ${getStatusBadgeClass(log.status)}`}>
                                           {getStatusLabel(log.status)}
                                         </span>
+                                        {failureReason ? (
+                                          <span className="rounded-full bg-amber-50 px-2 py-1 text-[10px] font-black uppercase tracking-widest text-amber-700">
+                                            {failureReason}
+                                          </span>
+                                        ) : null}
                                         <span className="text-[11px] font-black text-slate-500">{getModuleLabel(log.module)}</span>
                                         <span className="text-[11px] text-slate-400">·</span>
                                         <span className="text-[11px] font-bold text-slate-500">{getActionLabel(log.action)}</span>
