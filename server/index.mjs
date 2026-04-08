@@ -556,7 +556,7 @@ const buildAgentRuntimeLogMeta = ({ agent, version, result = null, requestMode =
   sessionId: result?.sessionId || sessionId || null,
   clientRequestId: result?.clientRequestId || clientRequestId || null,
   requestType: result?.requestType || requestMode || (result?.sessionId ? 'chat' : 'validation'),
-  selectedModel: result?.selectedModel || version?.modelPolicy?.defaultModel || '',
+  selectedModel: result?.selectedModel || (requestMode === 'image_generation' ? version?.modelPolicy?.multimodalModel : version?.modelPolicy?.defaultModel) || '',
   totalTokens: Number(result?.totalTokens || 0),
   estimatedCost: Number(result?.estimatedCost || 0),
   latencyMs: Number(result?.latencyMs || 0),
@@ -4014,6 +4014,21 @@ const buildConversationImageCatalog = (attachments = [], priorMessages = [], max
   }));
 };
 
+const buildImagePromptReferenceText = (imageReferences = [], preferredInputImageUrls = []) => {
+  const refs = Array.isArray(imageReferences) ? imageReferences : [];
+  const preferredUrls = Array.isArray(preferredInputImageUrls)
+    ? preferredInputImageUrls.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  if (preferredUrls.length === 0) return '';
+  const lines = preferredUrls.map((url, index) => {
+    const matchedRef = refs.find((item) => String(item?.url || '').trim() === url);
+    const labelSuffix = matchedRef?.name ? `，说明=${matchedRef.name}` : '';
+    const roleSuffix = matchedRef?.role ? `，角色=${matchedRef.role}` : '';
+    return `图${index + 1}：URL=${url}${labelSuffix}${roleSuffix}`;
+  });
+  return `输入图顺序说明（必须严格按下列顺序理解）\n${lines.join('\n')}`;
+};
+
 const buildImageConversationTextContext = (priorMessages = [], maxRounds = 6, summary = '') => {
   const scopedMessages = (Array.isArray(priorMessages) ? priorMessages : [])
     .filter((message) => message?.role === 'user' || message?.role === 'assistant')
@@ -4169,7 +4184,8 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
   const promptPrefix = editPreferenceHints.preferPreviousResultAsPrimary
     ? '以最近一张历史生成图为主编辑对象，保留主体内容连续性；其余输入图仅作为版式、排版、风格参考，不替换主体商品。\n'
     : '';
-  const finalPrompt = `${promptPrefix}${String(parsed.prompt || currentMessage).trim()}`.trim();
+  const promptReferenceText = buildImagePromptReferenceText(normalizedRefs, preferredInputImageUrls);
+  const finalPrompt = `${promptPrefix}${promptReferenceText}\n${String(parsed.prompt || currentMessage).trim()}`.trim();
   const requestedAspectRatio = String(parsed.size || '').trim();
   const hasExplicitAspectRatioInstruction = detectExplicitAspectRatioInstruction(currentMessage);
   const shouldKeepAutoAspectRatio = !hasExplicitAspectRatioInstruction && !hasAspectRatioCorrectionIntent(currentMessage);
