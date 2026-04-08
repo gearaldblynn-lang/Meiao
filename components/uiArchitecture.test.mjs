@@ -343,6 +343,26 @@ test('system settings expose a global analysis model selector for server-side pl
   assert.match(api, /\/api\/system\/config/);
 });
 
+test('agent chat client keeps image generation requests alive longer and can sync completed results after timeout', () => {
+  const api = read('../services/internalApi.ts');
+  const agentCenter = read('../modules/AgentCenter/AgentCenterModule.tsx');
+
+  assert.match(api, /timeoutMs: payload\.requestMode === 'image_generation' \? 240_000 : 60_000/);
+  assert.match(agentCenter, /clientRequestId/);
+  assert.match(agentCenter, /syncCompletedMessageAfterTimeout/);
+  assert.match(agentCenter, /metadata\?\.clientRequestId/);
+  assert.match(agentCenter, /后台仍在处理中，正在同步最新结果/);
+});
+
+test('agent chat image replies keep result summaries and reference rules collapsed by default', () => {
+  const chatPane = read('../modules/AgentCenter/ChatConversationPane.tsx');
+
+  assert.match(chatPane, /const \[expandedReferenceRules, setExpandedReferenceRules\] = useState<Record<string, boolean>>\(\{\}\);/);
+  assert.match(chatPane, /aria-expanded=\{referenceRulesExpanded\}/);
+  assert.match(chatPane, /referenceRulesExpanded \? '收起' : '展开'/);
+  assert.match(chatPane, /本次参考规则/);
+});
+
 test('agent center supports preset avatars and uploaded icon images in management views', () => {
   const manager = read('../modules/AgentCenter/AgentCenterManager.tsx');
   const wizard = read('../modules/AgentCenter/AgentWizardView.tsx');

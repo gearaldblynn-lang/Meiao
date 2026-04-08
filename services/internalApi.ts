@@ -643,6 +643,7 @@ export const sendChatMessage = async (sessionId: string, payload: {
   reasoningLevel?: string | null;
   webSearchEnabled?: boolean;
   requestMode?: 'chat' | 'image_generation';
+  clientRequestId?: string;
 }, options?: { signal?: AbortSignal }) => {
   return request<{
     userMessage: AgentChatMessage;
@@ -652,7 +653,7 @@ export const sendChatMessage = async (sessionId: string, payload: {
     method: 'POST',
     body: JSON.stringify(payload),
     signal: options?.signal,
-    timeoutMs: 60_000,
+    timeoutMs: payload.requestMode === 'image_generation' ? 240_000 : 60_000,
     dedupe: false,
   });
 };

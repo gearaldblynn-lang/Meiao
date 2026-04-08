@@ -40,7 +40,7 @@ export const filterLogs = (logs, filters = {}) => {
 
 export const buildLogCsv = (logs) => {
   const rows = [
-    ['时间', '功能', '动作', '状态', '级别', '人员', '用户名', '消息', '详情', '内部任务ID', '外部任务ID', '引擎', '重试次数', '错误码', '文件名', '相对路径', '上传方式', '排队耗时(ms)', '运行耗时(ms)', '元数据'],
+    ['时间', '功能', '动作', '状态', '级别', '人员', '用户名', '消息', '详情', '内部任务ID', '外部任务ID', '引擎', '重试次数', '错误码', '错误信息', '会话ID', '请求ID', '请求类型', '智能体', '版本', '模型', '是否检索', '结果图数量', '文件名', '相对路径', '上传方式', '排队耗时(ms)', '运行耗时(ms)', '元数据'],
     ...(Array.isArray(logs) ? logs : []).map((log) => [
       new Date(Number(log.createdAt || 0)).toISOString(),
       log.module || '',
@@ -56,6 +56,15 @@ export const buildLogCsv = (logs) => {
       log.meta?.provider || '',
       log.meta?.retryCount ?? '',
       log.meta?.errorCode || '',
+      log.meta?.errorMessage || '',
+      log.meta?.sessionId || '',
+      log.meta?.clientRequestId || '',
+      log.meta?.requestType || '',
+      log.meta?.agentName || '',
+      log.meta?.versionName || '',
+      log.meta?.selectedModel || '',
+      log.meta?.usedRetrieval ?? '',
+      log.meta?.imageResultCount ?? '',
       log.meta?.fileName || '',
       log.meta?.relativePath || '',
       log.meta?.uploadMethod || '',

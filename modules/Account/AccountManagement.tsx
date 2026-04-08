@@ -139,7 +139,12 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
       { key: 'jobId', label: '内部任务' },
       { key: 'providerTaskId', label: '外部任务' },
       { key: 'provider', label: '引擎' },
+      { key: 'agentName', label: '智能体' },
+      { key: 'requestType', label: '请求类型' },
+      { key: 'selectedModel', label: '模型' },
+      { key: 'sessionId', label: '会话' },
       { key: 'retryCount', label: '重试' },
+      { key: 'errorCode', label: '错误码' },
       { key: 'fileName', label: '文件' },
       { key: 'count', label: '数量' },
       { key: 'targetUsername', label: '目标账号' },
@@ -172,7 +177,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
 
   const handleExportLogs = async () => {
     if (!isAdmin) return;
-    const exportFilters = lastLogQueryFilters || buildLogQueryFilters();
+    const exportFilters = buildLogQueryFilters();
     const totalToExport = logsTotal > 0 ? logsTotal : logs.length;
     if (totalToExport === 0) return;
 
@@ -329,8 +334,8 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={handleExportLogs} disabled={logs.length === 0} className="rounded-[16px] bg-slate-100 px-3.5 py-2 text-[12px] font-black text-slate-700 hover:bg-slate-200 transition-colors disabled:opacity-60">
-                      导出当前页
+                    <button onClick={handleExportLogs} disabled={logsTotal === 0} className="rounded-[16px] bg-slate-100 px-3.5 py-2 text-[12px] font-black text-slate-700 hover:bg-slate-200 transition-colors disabled:opacity-60">
+                      导出筛选结果
                     </button>
                     <button
                       onClick={() => void handleDeleteLogs()}
