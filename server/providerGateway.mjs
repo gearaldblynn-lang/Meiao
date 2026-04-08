@@ -4,6 +4,7 @@ const KIE_VEO_BASE_URL = 'https://api.kie.ai/api/v1/veo';
 const KIE_CHAT_URL = 'https://api.kie.ai/gpt-5-2/v1/chat/completions';
 const KIE_RESPONSES_URL = 'https://api.kie.ai/codex/v1/responses';
 const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
+const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 30_000;
 const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 const KIE_RESPONSES_MODEL_ALIASES = {
   'gpt-5-4-openai-resp': 'gpt-5-4',
@@ -416,13 +417,29 @@ const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false) => {
       throw createProviderError('request_cancelled', '任务已取消');
     }
 
-    const response = await fetch(`${KIE_RECORD_INFO_URL}?taskId=${encodeURIComponent(taskId)}`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${kieApiKey}`,
-      },
-      signal,
-    });
+    let response;
+    try {
+      response = await fetch(`${KIE_RECORD_INFO_URL}?taskId=${encodeURIComponent(taskId)}`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${kieApiKey}`,
+        },
+        signal,
+      });
+    } catch (error) {
+      if (signal?.aborted) {
+        throw createProviderError('request_cancelled', '任务已取消');
+      }
+      const isTransientFetchError = error instanceof TypeError || /fetch failed/i.test(String(error?.message || ''));
+      if (isTransientFetchError && Date.now() - startedAt < KIE_TRANSIENT_FETCH_ERROR_GRACE_MS) {
+        await wait(4000, signal);
+        continue;
+      }
+      throw attachProviderTaskId(
+        createProviderError('provider_network_error', error?.message || 'Kie 任务查询失败'),
+        taskId
+      );
+    }
 
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {

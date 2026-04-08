@@ -151,6 +151,59 @@ test('executeProviderJob reuses the existing providerTaskId for retrying kie ima
   }
 });
 
+test('executeProviderJob tolerates transient fetch errors while polling kie image jobs after task creation', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  let callCount = 0;
+
+  global.fetch = async (url) => {
+    callCount += 1;
+    if (callCount === 1) {
+      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-network-jitter' } });
+    }
+    if (callCount === 2) {
+      throw new TypeError('fetch failed');
+    }
+    return createJsonResponse({
+      code: 200,
+      data: {
+        state: 'success',
+        resultJson: JSON.stringify({ resultUrls: ['https://example.com/network-jitter-result.png'] }),
+      },
+    });
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'test',
+          imageUrls: ['https://example.com/source.png'],
+          model: 'nano-banana-2',
+          aspectRatio: 'auto',
+          resolution: '1K',
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.providerTaskId, 'kie-task-network-jitter');
+    assert.equal(result.result.imageUrl, 'https://example.com/network-jitter-result.png');
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
 test('uploadAssetViaKieStream prefers stream upload and returns file url', async () => {
   const originalFetch = global.fetch;
   const requests = [];

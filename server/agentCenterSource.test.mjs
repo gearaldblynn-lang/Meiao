@@ -141,3 +141,12 @@ test('agent chat source writes detailed runtime logs for both success and failur
   assert.match(source, /detail: error\?\.message \|\| '聊天回复失败。'/);
   assert.match(source, /errorMessage: error\?\.message \|\| ''/);
 });
+
+test('agent image conversation prompt includes deterministic image order mapping with urls and falls back to image model on failures', () => {
+  assert.match(source, /const buildImagePromptReferenceText = \(imageReferences = \[\], preferredInputImageUrls = \[\]\) =>/);
+  assert.match(source, /输入图顺序说明（必须严格按下列顺序理解）/);
+  assert.match(source, /图\$\{index \+ 1\}：URL=\$\{url\}/);
+  assert.match(source, /const promptReferenceText = buildImagePromptReferenceText\(normalizedRefs, preferredInputImageUrls\);/);
+  assert.match(source, /const finalPrompt = `\$\{promptPrefix\}\$\{promptReferenceText\}\\n\$\{String\(parsed\.prompt \|\| currentMessage\)\.trim\(\)\}`\.trim\(\);/);
+  assert.match(source, /requestMode === 'image_generation' \? version\?\.modelPolicy\?\.multimodalModel : version\?\.modelPolicy\?\.defaultModel/);
+});
