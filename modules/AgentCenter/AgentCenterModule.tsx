@@ -190,9 +190,8 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     setSelectedModel(nextModel);
     setReasoningLevel(selectedSession.reasoningLevel || null);
     setWebSearchEnabled(Boolean(selectedSession.webSearchEnabled));
-    setAttachments([]);
     setImageModeEnabled(Boolean(selectedSession.lastImageMode));
-  }, [selectedSession?.id, selectedSession?.selectedModel, selectedSession?.reasoningLevel, selectedSession?.webSearchEnabled, availableChatModels, selectedAgent?.defaultChatModel]);
+  }, [selectedSession?.id, selectedSession?.selectedModel, selectedSession?.reasoningLevel, selectedSession?.webSearchEnabled, selectedSession?.lastImageMode, availableChatModels, selectedAgent?.defaultChatModel]);
 
   const runAction = async (action: () => Promise<void>) => {
     setLoading(true);
@@ -208,17 +207,26 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   };
 
   const syncCompletedMessageAfterTimeout = async (sessionId: string, clientRequestId: string) => {
-    const deadline = Date.now() + 150_000;
+    const deadline = Date.now() + 210_000;
     while (Date.now() < deadline) {
-      const result = await fetchChatMessages(sessionId);
-      const userMessage = result.messages.find((item) => item.role === 'user' && item.metadata?.clientRequestId === clientRequestId);
-      const assistantMessage = result.messages.find((item) => item.role === 'assistant' && item.metadata?.clientRequestId === clientRequestId);
-      if (userMessage && assistantMessage) {
-        return {
-          messages: result.messages,
-          userMessage,
-          assistantMessage,
-        };
+      try {
+        const result = await fetchChatMessages(sessionId);
+        const userMessage = result.messages.find((item) => item.role === 'user' && item.metadata?.clientRequestId === clientRequestId);
+        const assistantMessage = result.messages.find((item) => item.role === 'assistant' && item.metadata?.clientRequestId === clientRequestId);
+        const fallbackAssistantMessage = userMessage
+          ? result.messages
+              .filter((item) => item.role === 'assistant' && !item.metadata?.pending && Number(item.createdAt || 0) >= Number(userMessage.createdAt || 0))
+              .slice(-1)[0]
+          : null;
+        if (userMessage && (assistantMessage || fallbackAssistantMessage)) {
+          return {
+            messages: result.messages,
+            userMessage,
+            assistantMessage: assistantMessage || fallbackAssistantMessage,
+          };
+        }
+      } catch {
+        // ignore transient sync errors and keep polling until deadline
       }
       await wait(3000);
     }

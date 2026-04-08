@@ -37,6 +37,7 @@ const wait = (ms, signal) =>
 const createProviderError = (code, message, extras = null) => {
   const error = new Error(message);
   error.code = code;
+  error.providerMessage = message;
   if (extras && typeof extras === 'object') {
     Object.assign(error, extras);
   }
@@ -79,6 +80,17 @@ const buildProviderInputMessages = (messages = [], mapper) =>
 const isManagedAssetUrl = (value) =>
   typeof value === 'string' && value.includes(MANAGED_ASSET_PATH_SEGMENT);
 
+const normalizeManagedAssetDownloadUrl = (value) => {
+  const normalized = String(value || '').trim();
+  if (!isManagedAssetUrl(normalized)) return normalized;
+  try {
+    const url = new URL(normalized);
+    return `http://127.0.0.1:3100${url.pathname || ''}${url.search || ''}`;
+  } catch {
+    return normalized;
+  }
+};
+
 const extractFileNameFromUrl = (value, fallback = 'upload.bin') => {
   try {
     const url = new URL(String(value || ''));
@@ -107,7 +119,7 @@ const inferMimeTypeFromName = (value, fallback = 'application/octet-stream') => 
 };
 
 const downloadManagedAsset = async (assetUrl, signal) => {
-  const response = await fetch(assetUrl, {
+  const response = await fetch(normalizeManagedAssetDownloadUrl(assetUrl), {
     method: 'GET',
     signal,
   });
@@ -411,10 +423,11 @@ const mapHttpError = async (response, defaultMessage) => {
 const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false) => {
   const maxRetries = isVideo ? 180 : 90;
   const startedAt = Date.now();
+  let lastKnownState = '';
 
   for (let i = 0; i < maxRetries; i += 1) {
     if (signal?.aborted) {
-      throw createProviderError('request_cancelled', '任务已取消');
+      throw createProviderError('request_cancelled', '任务已取消', { providerTaskId: taskId, providerStage: 'polling', providerStatus: lastKnownState || 'cancelled' });
     }
 
     let response;
@@ -428,7 +441,7 @@ const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false) => {
       });
     } catch (error) {
       if (signal?.aborted) {
-        throw createProviderError('request_cancelled', '任务已取消');
+        throw createProviderError('request_cancelled', '任务已取消', { providerTaskId: taskId, providerStage: 'polling', providerStatus: lastKnownState || 'cancelled' });
       }
       const isTransientFetchError = error instanceof TypeError || /fetch failed/i.test(String(error?.message || ''));
       if (isTransientFetchError && Date.now() - startedAt < KIE_TRANSIENT_FETCH_ERROR_GRACE_MS) {
@@ -436,7 +449,7 @@ const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false) => {
         continue;
       }
       throw attachProviderTaskId(
-        createProviderError('provider_network_error', error?.message || 'Kie 任务查询失败'),
+        createProviderError('provider_network_error', error?.message || 'Kie 任务查询失败', { providerStage: 'polling', providerStatus: lastKnownState || 'network_error' }),
         taskId
       );
     }
@@ -451,26 +464,29 @@ const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false) => {
           await wait(4000, signal);
           continue;
         }
-        throw createProviderError('task_not_found', result?.msg || '任务不存在或已过期', { providerTaskId: taskId });
+        throw createProviderError('task_not_found', result?.msg || '任务不存在或已过期', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'not_found' });
       }
       if (response.status === 429) {
-        throw createProviderError('provider_rate_limited', result?.msg || 'Kie 请求过于频繁');
+        throw createProviderError('provider_rate_limited', result?.msg || 'Kie 请求过于频繁', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'rate_limited' });
       }
       if (response.status >= 500) {
-        throw createProviderError('provider_internal_error', result?.msg || 'Kie 服务异常');
+        throw createProviderError('provider_internal_error', result?.msg || 'Kie 服务异常', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'server_error' });
       }
     }
 
     if (result?.code === 200) {
       const state = result.data?.state;
+      lastKnownState = String(state || '').trim() || lastKnownState;
       if (state === 'success') {
         const resultJson = JSON.parse(result.data.resultJson || '{}');
         const url = Array.isArray(resultJson.resultUrls) ? resultJson.resultUrls[0] : '';
         if (!url) {
-          throw createProviderError('provider_bad_response', 'Kie 返回成功但没有结果链接');
+          throw createProviderError('provider_bad_response', 'Kie 返回成功但没有结果链接', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'success_without_result' });
         }
         return {
           providerTaskId: taskId,
+          providerStage: 'completed',
+          providerStatus: 'success',
           result: {
             imageUrl: url,
             videoUrl: isVideo ? url : undefined,
@@ -480,24 +496,24 @@ const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false) => {
         };
       }
       if (state === 'fail') {
-        throw createProviderError('provider_bad_request', result.data?.failMsg || 'Kie 任务失败', { providerTaskId: taskId });
+        throw createProviderError('provider_bad_request', result.data?.failMsg || 'Kie 任务失败', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'failed' });
       }
     } else if (result?.code === 404) {
       if (Date.now() - startedAt < KIE_TRANSIENT_NOT_FOUND_GRACE_MS) {
         await wait(4000, signal);
         continue;
       }
-      throw createProviderError('task_not_found', result?.msg || '任务不存在或已过期', { providerTaskId: taskId });
+      throw createProviderError('task_not_found', result?.msg || '任务不存在或已过期', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'not_found' });
     } else if (result?.code === 401 || result?.code === 403) {
-      throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 鉴权失败');
+      throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 鉴权失败', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'auth_invalid' });
     } else if (result?.code >= 500) {
-      throw createProviderError('provider_internal_error', result?.msg || 'Kie 服务异常');
+      throw createProviderError('provider_internal_error', result?.msg || 'Kie 服务异常', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'server_error' });
     }
 
     await wait(4000, signal);
   }
 
-  throw createProviderError('provider_timeout', isVideo ? '视频合成超时' : '图像任务超时');
+  throw createProviderError('provider_timeout', isVideo ? '视频合成超时' : '图像任务超时', { providerTaskId: taskId, providerStage: 'polling', providerStatus: lastKnownState || 'timeout' });
 };
 
 const pollKieVeoTask = async (taskId, kieApiKey, signal) => {
@@ -711,19 +727,25 @@ const runKieImageJob = async (payload, env, signal) => {
   const result = await response.json().catch(() => ({}));
   if (!response.ok || result?.code !== 200 || !result?.data?.taskId) {
     if (response.status === 401 || response.status === 403 || result?.code === 401 || result?.code === 403) {
-      throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 图像任务鉴权失败');
+      throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 图像任务鉴权失败', { providerStage: 'create_task', providerStatus: 'auth_invalid' });
     }
     if (response.status === 429) {
-      throw createProviderError('provider_rate_limited', result?.msg || 'Kie 图像任务请求过于频繁');
+      throw createProviderError('provider_rate_limited', result?.msg || 'Kie 图像任务请求过于频繁', { providerStage: 'create_task', providerStatus: 'rate_limited' });
     }
     if (response.status >= 500 || result?.code >= 500) {
-      throw createProviderError('provider_internal_error', result?.msg || 'Kie 图像任务服务异常');
+      throw createProviderError('provider_internal_error', result?.msg || 'Kie 图像任务服务异常', { providerStage: 'create_task', providerStatus: 'server_error' });
     }
-    throw createProviderError('provider_bad_request', result?.msg || 'Kie 图像任务创建失败');
+    throw createProviderError('provider_bad_request', result?.msg || 'Kie 图像任务创建失败', { providerStage: 'create_task', providerStatus: 'bad_request' });
   }
 
   try {
-    return await pollKieTask(result.data.taskId, kieApiKey, signal, false);
+    const imageResult = await pollKieTask(result.data.taskId, kieApiKey, signal, false);
+    return {
+      ...imageResult,
+      providerTaskId: imageResult.providerTaskId || result.data.taskId,
+      providerStage: imageResult.providerStage || 'completed',
+      providerStatus: imageResult.providerStatus || 'success',
+    };
   } catch (error) {
     throw attachProviderTaskId(error, result.data.taskId);
   }

@@ -132,6 +132,13 @@ test('agent chat source writes detailed runtime logs for both success and failur
   assert.match(source, /sessionId: result\?\.sessionId \|\| sessionId \|\| null/);
   assert.match(source, /clientRequestId: result\?\.clientRequestId \|\| clientRequestId \|\| null/);
   assert.match(source, /imageResultCount: Array\.isArray\(result\?\.imageResultUrls\) \? result\.imageResultUrls\.length : 0/);
+  assert.match(source, /providerTaskId: result\?\.providerTaskId \|\| error\?\.providerTaskId \|\| ''/);
+  assert.match(source, /providerStage: result\?\.providerStage \|\| error\?\.providerStage \|\| ''/);
+  assert.match(source, /providerStatus: result\?\.providerStatus \|\| error\?\.providerStatus \|\| ''/);
+  assert.match(source, /providerMessage: result\?\.providerMessage \|\| error\?\.providerMessage \|\| ''/);
+  assert.match(source, /inputImageCount: Number\(result\?\.imagePlan\?\.inputImageUrls\?\.length \|\| error\?\.inputImageCount \|\| 0\)/);
+  assert.match(source, /inputImageUrls: result\?\.imagePlan\?\.inputImageUrls \|\| error\?\.inputImageUrls \|\| \[\]/);
+  assert.match(source, /usedImageReferenceUrls: result\?\.imagePlan\?\.imageReferences\?\.map\?\.\(\(item\) => item\?\.url\)\.filter\(Boolean\) \|\| error\?\.usedImageReferenceUrls \|\| \[\]/);
   assert.match(source, /retrievalSummary: result\?\.retrievalSummary \|\| \[\]/);
   assert.match(source, /imagePlan: result\?\.imagePlan \|\| null/);
   assert.match(source, /errorCode: result\?\.errorCode \|\| error\?\.code \|\| ''/);
@@ -144,9 +151,26 @@ test('agent chat source writes detailed runtime logs for both success and failur
 
 test('agent image conversation prompt includes deterministic image order mapping with urls and falls back to image model on failures', () => {
   assert.match(source, /const buildImagePromptReferenceText = \(imageReferences = \[\], preferredInputImageUrls = \[\]\) =>/);
+  assert.match(source, /const extractExplicitImageReferenceIndexes = \(text = ''\) =>/);
+  assert.match(source, /const extractDirectionalImageReferenceIndexes = \(\{ text = '', imageReferences = \[\] \}\) =>/);
+  assert.match(source, /const selectRelevantImageReferences = \(\{ imageReferences = \[\], userMessage = '', maxInputImages = 1, editPreferenceHints = null \}\) =>/);
+  assert.match(source, /const explicitIndexes = extractExplicitImageReferenceIndexes\(userMessage\);/);
+  assert.match(source, /const directionalIndexes = extractDirectionalImageReferenceIndexes\(\{ text: userMessage, imageReferences: refs \}\);/);
+  assert.match(source, /const requestedIndexes = Array\.from\(new Set\(\[\.\.\.explicitIndexes, \.\.\.directionalIndexes\]\)\);/);
+  assert.match(source, /const currentUploadMatches = Array\.from\(String\(text \|\| ''\)\.matchAll\(/);
+  assert.match(source, /const previousResultMatches = Array\.from\(String\(text \|\| ''\)\.matchAll\(/);
+  assert.match(source, /if \(\/上一张|上一版|最近一张|刚才那张|刚才那版|上次生成|上一张生成图\/\.test\(normalizedText\)\)/);
+  assert.match(source, /const fallbackCandidates = editPreferenceHints\?\.preferPreviousResultAsPrimary/);
+  assert.match(source, /historyAttachments\.slice\(-1\)/);
+  assert.match(source, /fallbackCandidates\.forEach\(\(item\) => pushReference\(item\)\);/);
+  assert.match(source, /const relevantImageReferences = selectRelevantImageReferences\(\{/);
+  assert.match(source, /imageReferences,\s+userMessage: currentMessage,\s+maxInputImages: Number\(imageCapability.maxInputImages \|\| 1\),\s+editPreferenceHints,/);
+  assert.match(source, /const normalizedRefs = relevantImageReferences\.map\(\(item\) => \(\{/);
+  assert.match(source, /const usedImageReferences = preferredInputImageUrls\.map\(\(url\) => normalizedRefs\.find\(\(item\) => item\.url === url\)\)\.filter\(Boolean\);/);
   assert.match(source, /输入图顺序说明（必须严格按下列顺序理解）/);
   assert.match(source, /图\$\{index \+ 1\}：URL=\$\{url\}/);
   assert.match(source, /const promptReferenceText = buildImagePromptReferenceText\(normalizedRefs, preferredInputImageUrls\);/);
   assert.match(source, /const finalPrompt = `\$\{promptPrefix\}\$\{promptReferenceText\}\\n\$\{String\(parsed\.prompt \|\| currentMessage\)\.trim\(\)\}`\.trim\(\);/);
+  assert.match(source, /imageReferences: usedImageReferences,/);
   assert.match(source, /requestMode === 'image_generation' \? version\?\.modelPolicy\?\.multimodalModel : version\?\.modelPolicy\?\.defaultModel/);
 });
