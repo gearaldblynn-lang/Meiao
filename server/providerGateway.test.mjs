@@ -346,6 +346,41 @@ test('executeProviderJob extracts text when kie chat returns structured content 
   }
 });
 
+test('executeProviderJob extracts text when kie chat response is wrapped under data', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () =>
+    createJsonResponse({
+      data: {
+        choices: [
+          {
+            message: {
+              content: '包装后的结果文本',
+            },
+          },
+        ],
+      },
+    });
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          messages: [{ role: 'user', content: '帮我总结' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, '包装后的结果文本');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob routes gemini 3 flash through kie chat endpoint with low reasoning effort', async () => {
   const originalFetch = global.fetch;
   const requests = [];

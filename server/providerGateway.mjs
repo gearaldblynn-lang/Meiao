@@ -113,70 +113,87 @@ const buildKieChatContent = (items) =>
     };
   });
 
-const extractTextResponse = (data) => {
-  if (typeof data?.output_text === 'string' && data.output_text.trim()) {
-    return data.output_text.trim();
+const appendUniqueText = (bucket, value) => {
+  const text = String(value || '').trim();
+  if (!text || bucket.includes(text)) return;
+  bucket.push(text);
+};
+
+const METADATA_KEYS = new Set([
+  'role',
+  'type',
+  'id',
+  'object',
+  'model',
+  'finish_reason',
+  'index',
+  'created',
+  'usage',
+  'credits_consumed',
+]);
+
+const collectTextCandidates = (value, bucket, depth = 0, parentKey = '') => {
+  if (!value || depth > 6) return;
+
+  if (typeof value === 'string') {
+    if (METADATA_KEYS.has(parentKey)) return;
+    appendUniqueText(bucket, value);
+    return;
   }
 
-  if (Array.isArray(data?.output)) {
-    for (const outputItem of data.output) {
-      const content = outputItem?.content;
-      if (!Array.isArray(content)) continue;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectTextCandidates(item, bucket, depth + 1, parentKey));
+    return;
+  }
 
-      const text = content
-        .filter((item) => item?.type?.includes('text') && typeof item.text === 'string')
-        .map((item) => item.text.trim())
-        .filter(Boolean)
-        .join('\n')
-        .trim();
+  if (typeof value !== 'object') return;
 
-      if (text) return text;
+  const itemType = String(value.type || '').trim().toLowerCase();
+  const isExplicitReasoningBlock = itemType === 'reasoning' || itemType === 'thought' || itemType === 'thinking';
+  if (isExplicitReasoningBlock) return;
+
+  if (typeof value.output_text === 'string') {
+    appendUniqueText(bucket, value.output_text);
+  }
+
+  if (typeof value.text === 'string' && (!value.type || String(value.type).includes('text'))) {
+    appendUniqueText(bucket, value.text);
+  }
+
+  if (typeof value.content === 'string') {
+    appendUniqueText(bucket, value.content);
+  }
+
+  if (typeof value.value === 'string' && (!value.type || String(value.type).includes('text'))) {
+    appendUniqueText(bucket, value.value);
+  }
+
+  const priorityKeys = ['data', 'result', 'response', 'message', 'messages', 'choices', 'output', 'content', 'parts', 'candidates'];
+  priorityKeys.forEach((key) => {
+    if (key in value) {
+      collectTextCandidates(value[key], bucket, depth + 1, key);
     }
-  }
+  });
 
-  if (Array.isArray(data?.choices) && data.choices[0]?.message?.content) {
-    return String(data.choices[0].message.content).trim();
-  }
+  Object.entries(value).forEach(([key, child]) => {
+    if (priorityKeys.includes(key)) return;
+    if (key === 'reasoning' || key === 'reasoning_content' || key === 'thought' || key === 'thoughts') return;
+    collectTextCandidates(child, bucket, depth + 1, key);
+  });
+};
 
+const extractTextResponse = (data) => {
+  const candidates = [];
+  collectTextCandidates(data, candidates);
+  const text = candidates.join('\n').trim();
+  if (text) return text;
   throw createProviderError('provider_bad_response', 'AI 未返回可解析的文本内容');
 };
 
 const extractChatMessageText = (value) => {
-  if (typeof value === 'string') {
-    return value.trim();
-  }
-
-  if (Array.isArray(value)) {
-    const text = value
-      .map((item) => {
-        if (typeof item === 'string') return item.trim();
-        if (item?.type === 'text' && typeof item.text === 'string') return item.text.trim();
-        if (item?.type && item.type !== 'text') return '';
-        if (typeof item?.text === 'string' && item.text.trim()) return item.text.trim();
-        return '';
-      })
-      .filter(Boolean)
-      .join('\n')
-      .trim();
-
-    if (text) return text;
-  }
-
-  if (value && typeof value === 'object') {
-    if (typeof value.text === 'string' && value.text.trim()) {
-      return value.text.trim();
-    }
-    if (Array.isArray(value.parts)) {
-      const text = value.parts
-        .map((part) => (typeof part?.text === 'string' ? part.text.trim() : ''))
-        .filter(Boolean)
-        .join('\n')
-        .trim();
-      if (text) return text;
-    }
-  }
-
-  return '';
+  const candidates = [];
+  collectTextCandidates(value, candidates);
+  return candidates.join('\n').trim();
 };
 
 const resolveChatTransport = (model) => {
@@ -743,6 +760,7 @@ const runKieChatJob = async (payload, env, signal) => {
     extractChatMessageText(data?.choices?.[0]?.message?.content) ||
     extractChatMessageText(data?.content) ||
     extractChatMessageText(data?.candidates?.[0]?.content) ||
+    extractChatMessageText(data) ||
     '';
 
   if (!content) {
