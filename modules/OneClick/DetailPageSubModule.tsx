@@ -35,7 +35,7 @@ const DetailPageSubModule: React.FC<Props> = ({
   currentSubMode,
   onSubModeChange,
 }) => {
-  const { productImages, styleImage, designReferences, uploadedDesignReferenceUrls, referenceDimensions, referenceAnalysis, schemes, config, lastStyleUrl, uploadedProductUrls } = state;
+  const { productImages, logoImage, uploadedLogoUrl, styleImage, designReferences, uploadedDesignReferenceUrls, referenceDimensions, referenceAnalysis, schemes, config, lastStyleUrl, uploadedProductUrls } = state;
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isAnalyzingReference, setIsAnalyzingReference] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -143,6 +143,15 @@ const DetailPageSubModule: React.FC<Props> = ({
     return urls;
   };
 
+  const getOrUploadLogoUrl = async () => {
+    if (!logoImage && uploadedLogoUrl) return uploadedLogoUrl;
+    if (!logoImage) return null;
+    if (uploadedLogoUrl) return uploadedLogoUrl;
+    const url = await uploadToCos(logoImage, apiConfig);
+    onUpdate({ uploadedLogoUrl: url });
+    return url;
+  };
+
   const getOrUploadReferenceUrls = async () => {
     if (designReferences.length === 0 && uploadedDesignReferenceUrls.length > 0) {
       return uploadedDesignReferenceUrls;
@@ -172,7 +181,8 @@ const DetailPageSubModule: React.FC<Props> = ({
     setIsAnalyzingReference(true);
     try {
       const referenceUrls = await getOrUploadReferenceUrls();
-      const result = await analyzeOneClickReferenceSet(referenceUrls, referenceDimensions, OneClickSubMode.DETAIL_PAGE, apiConfig);
+      const logoUrl = await getOrUploadLogoUrl();
+      const result = await analyzeOneClickReferenceSet(referenceUrls, referenceDimensions, OneClickSubMode.DETAIL_PAGE, apiConfig, undefined, logoUrl);
       if (result.status === 'success') {
         onUpdate({
           uploadedDesignReferenceUrls: referenceUrls,
@@ -236,7 +246,8 @@ const DetailPageSubModule: React.FC<Props> = ({
       let referenceSummary = referenceAnalysis.summary;
       if (!referenceSummary && designReferences.length > 0 && referenceDimensions.length > 0) {
         const referenceUrls = await getOrUploadReferenceUrls();
-        const referenceResult = await analyzeOneClickReferenceSet(referenceUrls, referenceDimensions, OneClickSubMode.DETAIL_PAGE, apiConfig, globalAbortRef.current.signal);
+        const logoUrl = await getOrUploadLogoUrl();
+        const referenceResult = await analyzeOneClickReferenceSet(referenceUrls, referenceDimensions, OneClickSubMode.DETAIL_PAGE, apiConfig, globalAbortRef.current.signal, logoUrl);
         if (referenceResult.status === 'success') {
           referenceSummary = referenceResult.description;
           onUpdate({
@@ -254,7 +265,8 @@ const DetailPageSubModule: React.FC<Props> = ({
 
       if (globalAbortRef.current.signal.aborted) throw new Error("ABORTED");
 
-      const res = await generateMarketingSchemes(productUrls, null, config, apiConfig, OneClickSubMode.DETAIL_PAGE, null, globalAbortRef.current.signal, referenceSummary);
+      const logoUrl = await getOrUploadLogoUrl();
+      const res = await generateMarketingSchemes(productUrls, null, config, apiConfig, OneClickSubMode.DETAIL_PAGE, null, globalAbortRef.current.signal, referenceSummary, logoUrl);
       
       if (res.status === 'success') {
         const initialSchemes: MainImageScheme[] = res.schemes.map((text, idx) => {
@@ -600,13 +612,19 @@ const DetailPageSubModule: React.FC<Props> = ({
     let finalPrompt = `STRICT PRODUCT CONSISTENCY: Strictly keep the product fully consistent with the source product reference images. Strictly do not change the product's appearance details, size, structure, label information, packaging information, or any visible product elements. SCENARIO & STYLE: ${cleanPrompt}. QUALITY: High-end commercial studio photography.`;
     
     // 仅使用产品图作为 image_input，不包含风格参考图
-    const inputImages = [...productUrls];
+    const logoUrl = await getOrUploadLogoUrl();
+    const inputImages = logoUrl ? [...productUrls, logoUrl] : [...productUrls];
     
     if (referenceSummary) {
       finalPrompt += `\n【设计参考分析结论】\n${referenceSummary}`;
       if (config.styleStrength === 'low') finalPrompt += `\n只弱参考上述结论中的氛围与色调。`;
       else if (config.styleStrength === 'medium') finalPrompt += `\n严格参考上述结论中的版式、光影与色调。`;
       else finalPrompt += `\n高强度执行上述参考结论，但主体商品仍必须完全保持产品素材一致。`;
+    }
+    finalPrompt += `\n若产品素材中出现竞品logo或他牌标识，最终生成图必须去除这些非我方品牌标识，禁止直接沿用。`;
+    if (logoUrl) {
+      finalPrompt += `\n品牌logo图：${logoUrl}。该图仅用于识别和还原我方品牌logo，不得把产品素材图或设计参考图中的其他品牌logo带入最终画面。若产品素材中出现竞品logo或他牌标识，最终生成图必须去除或替换为品牌logo图对应的我方logo。`;
+      finalPrompt += `\n注意：${logoUrl} 是品牌logo图。`;
     }
 
     // 增加生图文案语言固定指令
@@ -750,6 +768,8 @@ const DetailPageSubModule: React.FC<Props> = ({
             ...prev, 
             productImages: typeof imgs === 'function' ? imgs(prev.productImages) : imgs
         }))} 
+        logoImage={logoImage}
+        setLogoImage={(img) => onUpdate({ logoImage: img })}
         styleImage={styleImage} 
         setStyleImage={(img) => onUpdate(prev => ({ 
             ...prev, 
@@ -773,8 +793,10 @@ const DetailPageSubModule: React.FC<Props> = ({
         onAnalyzeReference={handleAnalyzeReference}
         analyzingReference={isAnalyzingReference}
         uploadedProductUrls={uploadedProductUrls}
+        uploadedLogoUrl={uploadedLogoUrl}
         uploadedStyleUrl={lastStyleUrl}
         onUploadedProductUrlsChange={(urls) => onUpdate({ uploadedProductUrls: urls })}
+        onUploadedLogoUrlChange={(url) => onUpdate({ uploadedLogoUrl: url })}
         onUploadedStyleUrlChange={(url) => onUpdate({ lastStyleUrl: url })}
         apiConfig={apiConfig}
         onSyncConfig={onSyncConfig}

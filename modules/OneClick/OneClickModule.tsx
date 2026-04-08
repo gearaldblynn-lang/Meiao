@@ -62,7 +62,9 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
   const syncSharedFields = (source: OneClickPersistentState['mainImage'], target: OneClickPersistentState['detailPage']) => ({
     ...target,
     productImages: pickSyncValue(source.productImages, target.productImages),
+    logoImage: pickSyncValue(source.logoImage, target.logoImage),
     uploadedProductUrls: pickSyncValue(source.uploadedProductUrls, target.uploadedProductUrls),
+    uploadedLogoUrl: pickSyncValue(source.uploadedLogoUrl, target.uploadedLogoUrl),
     config: {
       ...target.config,
       description: pickSyncValue(source.config.description, target.config.description),
@@ -81,7 +83,9 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
   const syncSharedFieldsToMain = (source: OneClickPersistentState['detailPage'], target: OneClickPersistentState['mainImage']) => ({
     ...target,
     productImages: pickSyncValue(source.productImages, target.productImages),
+    logoImage: pickSyncValue(source.logoImage, target.logoImage),
     uploadedProductUrls: pickSyncValue(source.uploadedProductUrls, target.uploadedProductUrls),
+    uploadedLogoUrl: pickSyncValue(source.uploadedLogoUrl, target.uploadedLogoUrl),
     config: {
       ...target.config,
       description: pickSyncValue(source.config.description, target.config.description),
@@ -132,8 +136,10 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
   };
 
   const handleClearMainConfig = () => {
+    if (!window.confirm('确定要清空主图的所有配置和方案吗？此操作不可撤销。')) return;
     releaseObjectURLs([
       ...persistentState.mainImage.productImages,
+      persistentState.mainImage.logoImage,
       persistentState.mainImage.styleImage,
       ...persistentState.mainImage.designReferences.map((item) => item.file),
     ]);
@@ -156,8 +162,10 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
   };
 
   const handleClearDetailConfig = () => {
+    if (!window.confirm('确定要清空详情的所有配置和方案吗？此操作不可撤销。')) return;
     releaseObjectURLs([
       ...persistentState.detailPage.productImages,
+      persistentState.detailPage.logoImage,
       persistentState.detailPage.styleImage,
       ...persistentState.detailPage.designReferences.map((item) => item.file),
     ]);
@@ -188,6 +196,7 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
   };
 
   const handleClearSkuConfig = () => {
+    if (!window.confirm('确定要清空SKU的所有配置和方案吗？此操作不可撤销。')) return;
     onStateChange(prev => ({
       ...prev,
       sku: { ...defaultOneClickState.sku, schemes: [] },

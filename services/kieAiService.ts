@@ -15,9 +15,17 @@ const logKieEvent = (action: string, message: string, status: 'started' | 'succe
   });
 };
 
-const waitForJobResult = async (jobId: string, signal?: AbortSignal): Promise<KieAiResult> => {
+const KIE_IMAGE_TIMEOUT: Record<string, number> = {
+  'nano-banana-2': 3 * 60_000,
+  'nano-banana-pro': 4 * 60_000,
+};
+const KIE_IMAGE_DEFAULT_TIMEOUT = 3 * 60_000;
+const KIE_VIDEO_TIMEOUT = 5 * 60_000;
+const KIE_RECOVER_TIMEOUT = 2 * 60_000;
+
+const waitForJobResult = async (jobId: string, signal?: AbortSignal, maxWaitMs = 0): Promise<KieAiResult> => {
   try {
-    const finalJob = await waitForInternalJob(jobId, signal);
+    const finalJob = await waitForInternalJob(jobId, signal, 2500, maxWaitMs);
     if (finalJob.status === 'succeeded') {
       return {
         imageUrl: String(finalJob.result?.imageUrl || ''),
@@ -120,7 +128,7 @@ export const recoverKieAiTask = async (
     maxRetries: 1,
   });
 
-  const result = await waitForJobResult(job.id, signal);
+  const result = await waitForJobResult(job.id, signal, KIE_RECOVER_TIMEOUT);
   logKieEvent(
     'recover_task',
     result.status === 'success' ? '任务结果找回成功' : result.status === 'interrupted' ? '任务结果找回已中断' : '任务结果找回失败',
@@ -155,7 +163,7 @@ export const createSoraVideoTask = async (
     maxRetries: 2,
   });
 
-  const result = await waitForJobResult(job.id, signal);
+  const result = await waitForJobResult(job.id, signal, KIE_VIDEO_TIMEOUT);
   logKieEvent(
     'create_video_task',
     result.status === 'success' ? '视频任务完成' : result.status === 'interrupted' ? '视频任务已中断' : '视频任务失败',
@@ -253,7 +261,8 @@ export const processWithKieAi = async (
     maxRetries: 2,
   });
 
-  const result = await waitForJobResult(job.id, signal);
+  const imageTimeout = KIE_IMAGE_TIMEOUT[moduleConfig.model] || KIE_IMAGE_DEFAULT_TIMEOUT;
+  const result = await waitForJobResult(job.id, signal, imageTimeout);
   logKieEvent(
     'create_image_task',
     result.status === 'success' ? '图像任务完成' : result.status === 'interrupted' ? '图像任务已中断' : '图像任务失败',

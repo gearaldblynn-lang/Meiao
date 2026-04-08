@@ -15,6 +15,7 @@ interface Props {
     normalizationEnabled: boolean;
   };
   editingDocumentId: string;
+  isDocumentSubmitting: boolean;
   onBack: () => void;
   onFormChange: (field: 'name' | 'description' | 'department', value: string) => void;
   onDocumentFormChange: (
@@ -39,6 +40,7 @@ const KnowledgeBaseEditorView: React.FC<Props> = ({
   form,
   documentForm,
   editingDocumentId,
+  isDocumentSubmitting,
   onBack,
   onFormChange,
   onDocumentFormChange,
@@ -54,6 +56,8 @@ const KnowledgeBaseEditorView: React.FC<Props> = ({
   const [showChunkGuide, setShowChunkGuide] = useState(false);
   const [showNormalizationGuide, setShowNormalizationGuide] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showDeleteDocumentConfirm, setShowDeleteDocumentConfirm] = useState(false);
+  const [pendingDeleteDocument, setPendingDeleteDocument] = useState<KnowledgeDocumentSummary | null>(null);
 
   return (
     <>
@@ -142,7 +146,16 @@ const KnowledgeBaseEditorView: React.FC<Props> = ({
                     </div>
                     <div className="flex items-center gap-2">
                       <button onClick={() => onEditDocument(document.id)} className="rounded-[14px] border border-slate-200 px-3 py-2 text-[12px] font-black text-slate-700">编辑</button>
-                      <button onClick={() => onDeleteDocument(document.id)} className="rounded-[14px] border border-rose-200 px-3 py-2 text-[12px] font-black text-rose-700">删除</button>
+                      <button
+                        onClick={() => {
+                          setPendingDeleteDocument(document);
+                          setShowDeleteDocumentConfirm(true);
+                        }}
+                        disabled={isDocumentSubmitting}
+                        className="rounded-[14px] border border-rose-200 px-3 py-2 text-[12px] font-black text-rose-700 disabled:opacity-50"
+                      >
+                        删除
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -211,8 +224,8 @@ const KnowledgeBaseEditorView: React.FC<Props> = ({
                 <input type="file" accept=".txt,.md,.csv,.json" className="hidden" onChange={onUploadTextFile} />
               </label>
               <textarea value={documentForm.rawText} onChange={(event) => onDocumentFormChange('rawText', event.target.value)} placeholder="手动粘贴 SOP / FAQ / 规则内容" className="min-h-[240px] w-full rounded-[18px] border border-slate-200 bg-white px-4 py-3 text-[14px] font-medium text-slate-700 outline-none" />
-              <button onClick={onCreateDocument} disabled={!knowledgeBase} className="w-full rounded-[18px] bg-slate-900 px-4 py-3 text-[14px] font-black text-white disabled:opacity-50">
-                {editingDocumentId ? '保存并重新切片' : '入库并切片'}
+              <button onClick={onCreateDocument} disabled={!knowledgeBase || isDocumentSubmitting} className="w-full rounded-[18px] bg-slate-900 px-4 py-3 text-[14px] font-black text-white disabled:opacity-50">
+                {isDocumentSubmitting ? (editingDocumentId ? '正在保存并重新切片...' : '正在入库并切片...') : (editingDocumentId ? '保存并重新切片' : '入库并切片')}
               </button>
             </div>
           </WorkspaceShellCard>
@@ -356,6 +369,56 @@ const KnowledgeBaseEditorView: React.FC<Props> = ({
                 onClick={() => {
                   setShowDeleteConfirm(false);
                   onDeleteKnowledgeBase();
+                }}
+                className="rounded-[16px] bg-rose-500 px-4 py-2 text-[13px] font-black text-white"
+              >
+                确认删除
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {showDeleteDocumentConfirm ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/24 px-6">
+          <div className="w-full max-w-md rounded-[24px] border border-white/80 bg-white p-5 shadow-[0_30px_80px_rgba(15,23,42,0.18)]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-[20px] font-black text-slate-950">确认删除文档</h3>
+                <p className="mt-2 text-[13px] font-medium leading-6 text-slate-600">
+                  文档删除后不可恢复，相关切片也会一并删除。{pendingDeleteDocument ? `当前文档：${pendingDeleteDocument.title}` : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDeleteDocumentConfirm(false);
+                  setPendingDeleteDocument(null);
+                }}
+                className="flex h-8 w-8 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500"
+                aria-label="关闭文档删除确认"
+              >
+                <i className="fas fa-xmark text-sm" />
+              </button>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDeleteDocumentConfirm(false);
+                  setPendingDeleteDocument(null);
+                }}
+                className="rounded-[16px] border border-slate-200 bg-white px-4 py-2 text-[13px] font-black text-slate-600"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!pendingDeleteDocument) return;
+                  onDeleteDocument(pendingDeleteDocument.id);
+                  setShowDeleteDocumentConfirm(false);
+                  setPendingDeleteDocument(null);
                 }}
                 className="rounded-[16px] bg-rose-500 px-4 py-2 text-[13px] font-black text-white"
               >
