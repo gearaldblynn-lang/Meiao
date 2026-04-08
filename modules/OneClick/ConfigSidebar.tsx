@@ -5,6 +5,7 @@ import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
 import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
+import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
 import { PopoverSelect, PrimaryActionButton, SegmentedTabs, SidebarShell } from '../../components/ui/workspacePrimitives';
 
 interface Props {
@@ -89,7 +90,10 @@ const ConfigSidebar: React.FC<Props> = ({
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const [isUploadingStyle, setIsUploadingStyle] = useState(false);
   const [isCustomPlatform, setIsCustomPlatform] = useState(config.platform === 'CUSTOM');
-  const getProductAssetLimitRemaining = () => Math.max(0, 8 - productImages.length - (logoImage ? 1 : 0));
+  const productAssetCount = productImages.length || uploadedProductUrls.length;
+  const hasProductAssets = hasAvailableAssetSources(productImages, uploadedProductUrls);
+  const hasLogoAsset = Boolean(logoImage || uploadedLogoUrl);
+  const getProductAssetLimitRemaining = () => Math.max(0, 8 - productAssetCount - (hasLogoAsset ? 1 : 0));
 
   // 自动上传产品图
   useEffect(() => {
@@ -428,7 +432,7 @@ const ConfigSidebar: React.FC<Props> = ({
         <div className="space-y-2">
           <PrimaryActionButton
             onClick={onStart}
-            disabled={disabled || productImages.length === 0}
+            disabled={disabled || !hasProductAssets}
             icon={disabled ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'}
             label={disabled
               ? (isDetail ? '正在生成详情方案...' : '正在生成主图方案...')
@@ -448,7 +452,7 @@ const ConfigSidebar: React.FC<Props> = ({
             {expandedSections.includes('assets') && (
               <div className="px-4 pb-4 space-y-3">
                 <div className="flex bg-slate-100 p-1 rounded-xl">
-                  <button onClick={() => setAssetTab('product')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'product' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400'}`}>产品素材 ({productImages.length})</button>
+                  <button onClick={() => setAssetTab('product')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'product' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400'}`}>产品素材 ({productImages.length || uploadedProductUrls.length})</button>
                   <button onClick={() => setAssetTab('reference')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'reference' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>设计参考 ({designReferences.length})</button>
                 </div>
                 {assetTab === 'product' ? (

@@ -26,3 +26,8 @@ test('buyer show workspace offers per-project download action in set header', ()
   assert.match(buyerShowSource, /onDownloadSet/);
   assert.match(buyerShowSource, /下载项目/);
 });
+
+test('one click redo flow clears stale task id before starting a brand new generation task', () => {
+  assert.match(mainSource, /handleRedoSingle[\s\S]*updateSingleScheme\(schemeId, \{ status: 'generating', error: '正在准备素材\.\.\.', taskId: undefined, resultUrl: undefined \}\)/);
+  assert.match(detailSource, /updateSingleScreen\(id, \{ status: 'generating', error: '正在准备素材\.\.\.', taskId: undefined, resultUrl: undefined \}\)/);
+});

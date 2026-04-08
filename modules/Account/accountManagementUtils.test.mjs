@@ -94,3 +94,15 @@ test('shouldRefreshCurrentUser returns true only for current user updates', () =
   assert.equal(shouldRefreshCurrentUser('user-1', 'user-2'), false);
   assert.equal(shouldRefreshCurrentUser('', 'user-2'), false);
 });
+
+test('buildLogCsv can export multiple filtered pages together instead of only the visible page', () => {
+  const csv = buildLogCsv([
+    createLog({ id: 'log-1', message: '第一页' }),
+    createLog({ id: 'log-2', message: '第二页', createdAt: 1710000001000 }),
+    createLog({ id: 'log-3', message: '第三页', createdAt: 1710000002000 }),
+  ]);
+
+  assert.match(csv, /第一页/);
+  assert.match(csv, /第二页/);
+  assert.match(csv, /第三页/);
+});

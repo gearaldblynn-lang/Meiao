@@ -1,5 +1,5 @@
 import { GlobalApiConfig, ModuleConfig, KieAiResult, AspectRatio, VideoConfig, SourceImageContext } from '../types';
-import { cancelInternalJob, createInternalJob, getActiveModuleContext, retryInternalJob, safeCreateInternalLog, waitForInternalJob } from './internalApi';
+import { cancelInternalJob, createInternalJob, fetchInternalJob, getActiveModuleContext, retryInternalJob, safeCreateInternalLog, waitForInternalJob } from './internalApi';
 import { getUserVisibleTaskId } from './kieTaskUtils.mjs';
 
 const logKieEvent = (action: string, message: string, status: 'started' | 'success' | 'failed' | 'interrupted', detail = '', meta: Record<string, unknown> | null = null) => {
@@ -16,12 +16,12 @@ const logKieEvent = (action: string, message: string, status: 'started' | 'succe
 };
 
 const KIE_IMAGE_TIMEOUT: Record<string, number> = {
-  'nano-banana-2': 3 * 60_000,
-  'nano-banana-pro': 4 * 60_000,
+  'nano-banana-2': 6 * 60_000,
+  'nano-banana-pro': 6 * 60_000,
 };
-const KIE_IMAGE_DEFAULT_TIMEOUT = 3 * 60_000;
+const KIE_IMAGE_DEFAULT_TIMEOUT = 6 * 60_000;
 const KIE_VIDEO_TIMEOUT = 5 * 60_000;
-const KIE_RECOVER_TIMEOUT = 2 * 60_000;
+const KIE_RECOVER_TIMEOUT = 4 * 60_000;
 
 const waitForJobResult = async (jobId: string, signal?: AbortSignal, maxWaitMs = 0): Promise<KieAiResult> => {
   try {
@@ -64,6 +64,15 @@ const waitForJobResult = async (jobId: string, signal?: AbortSignal, maxWaitMs =
     if (error.message === 'INTERRUPTED') {
       void cancelInternalJob(jobId).catch(() => null);
       return { imageUrl: '', status: 'interrupted', message: '任务已取消' };
+    }
+    if (error.code === 'job_timeout') {
+      const timeoutJob = await fetchInternalJob(jobId).catch(() => null);
+      return {
+        imageUrl: '',
+        taskId: getUserVisibleTaskId(timeoutJob?.job),
+        status: 'error',
+        message: error.message || '任务执行超时',
+      };
     }
     return { imageUrl: '', status: 'error', message: error.message || '任务执行失败' };
   }
