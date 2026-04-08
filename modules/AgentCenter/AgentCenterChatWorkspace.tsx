@@ -55,7 +55,6 @@ const glassPanelClassName =
 const formatModelLabel = (modelId?: string | null) => {
   if (!modelId) return '-';
   return modelId
-    .replace(/^doubao-/i, '豆包 ')
     .replace(/^nano-banana-/i, 'Nano Banana ')
     .replace(/-/g, ' ')
     .replace(/\s+/g, ' ')

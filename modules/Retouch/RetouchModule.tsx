@@ -199,7 +199,7 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
     }
     if (signal.aborted) throw new Error("INTERRUPTED");
 
-    updateTaskStatus(task.id, { error: '豆包AI正在执行视觉精修分析...' });
+    updateTaskStatus(task.id, { error: 'AI 正在执行视觉精修分析...' });
     const analysis = await analyzeRetouchTask(sourceUrl, mode, apiConfig, refUrl, signal);
     if (analysis.status === 'error') throw new Error(analysis.message);
     

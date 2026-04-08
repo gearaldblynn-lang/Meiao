@@ -59,7 +59,6 @@ export type KieAiModel = 'nano-banana-2' | 'nano-banana-pro';
 export interface GlobalApiConfig {
   kieApiKey: string;
   concurrency: number;
-  arkApiKey: string;
 }
 
 export interface InternalJob {
@@ -94,7 +93,6 @@ export interface SystemPublicConfig {
     allowedOrigins: string[];
   };
   providers: {
-    ark: { configured: boolean };
     kie: { configured: boolean };
   };
   systemSettings: {
@@ -105,7 +103,7 @@ export interface SystemPublicConfig {
     chat: Array<{
       id: string;
       label: string;
-      provider: 'ark' | 'kie';
+      provider: 'kie';
       supportsImageInput: boolean;
       supportsFileInput: boolean;
       supportsWebSearch: boolean;
@@ -115,7 +113,7 @@ export interface SystemPublicConfig {
     image: Array<{
       id: string;
       label: string;
-      provider: 'ark' | 'kie';
+      provider: 'kie';
       supportsMultiImageInput: boolean;
       supportsImageEdit: boolean;
       maxInputImages: number;
@@ -683,6 +681,8 @@ export interface RetouchTask {
 export interface OneClickPersistentState {
   mainImage: OneClickReferenceState & {
     productImages: File[];
+    logoImage: File | null;
+    uploadedLogoUrl: string | null;
     styleImage: File | null;
     schemes: MainImageScheme[];
     config: OneClickConfig;
@@ -692,6 +692,8 @@ export interface OneClickPersistentState {
   };
   detailPage: OneClickReferenceState & {
     productImages: File[];
+    logoImage: File | null;
+    uploadedLogoUrl: string | null;
     styleImage: File | null;
     schemes: MainImageScheme[];
     config: OneClickConfig;

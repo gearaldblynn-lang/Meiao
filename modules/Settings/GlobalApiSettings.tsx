@@ -38,7 +38,7 @@ const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, curr
   const [analysisModelMessage, setAnalysisModelMessage] = useState('');
 
   useEffect(() => {
-    onApiConfigChange({ ...apiConfig, kieApiKey: '', arkApiKey: '' });
+    onApiConfigChange({ ...apiConfig, kieApiKey: '' });
   }, []);
 
   useEffect(() => {
@@ -60,7 +60,6 @@ const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, curr
           onApiConfigChange({
             ...apiConfig,
             kieApiKey: '',
-            arkApiKey: '',
             concurrency: effectiveConcurrency,
           });
         }
@@ -135,9 +134,8 @@ const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, curr
               </div>
             ) : null}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 gap-6">
               <ProviderCard title="Kie 引擎" configured={Boolean(systemConfig?.providers.kie.configured)} description="图片生成、视频生成、分镜脚本对话" />
-              <ProviderCard title="Ark 分析" configured={Boolean(systemConfig?.providers.ark.configured)} description="策划、分析、脚本生成" />
             </div>
 
             <div className="mt-8 grid md:grid-cols-3 gap-4">

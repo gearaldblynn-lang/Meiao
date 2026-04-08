@@ -19,8 +19,9 @@ test('normalizeAgentConfig fills in missing policy defaults', () => {
   const config = normalizeAgentConfig({ systemPrompt: '  expert  ' });
 
   assert.equal(config.systemPrompt, 'expert');
-  assert.equal(config.modelPolicy.defaultModel, 'doubao-seed-1-6-thinking-250715');
-  assert.equal(config.modelPolicy.cheapModel, 'doubao-seed-1-6-flash-250615');
+  assert.equal(config.modelPolicy.defaultModel, 'gpt-5-4-openai-resp');
+  assert.equal(config.modelPolicy.cheapModel, 'gemini-3-flash-openai');
+  assert.equal(config.modelPolicy.advancedModel, 'gemini-3.1-pro-openai');
   assert.equal(config.modelPolicy.multimodalModel, 'nano-banana-2');
   assert.equal(config.modelPolicy.imageGenerationEnabled, false);
   assert.equal(config.retrievalPolicy.topK, 3);

@@ -1,7 +1,7 @@
 const DEFAULT_MODEL_POLICY = {
-  defaultModel: 'doubao-seed-1-6-thinking-250715',
-  cheapModel: 'doubao-seed-1-6-flash-250615',
-  advancedModel: 'doubao-seed-1-6-thinking-250715',
+  defaultModel: 'gpt-5-4-openai-resp',
+  cheapModel: 'gemini-3-flash-openai',
+  advancedModel: 'gemini-3.1-pro-openai',
   multimodalModel: 'nano-banana-2',
   imageGenerationEnabled: false,
 };

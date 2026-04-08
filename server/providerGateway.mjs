@@ -1,9 +1,18 @@
-const ARK_RESPONSES_URL = 'https://ark.cn-beijing.volces.com/api/v3/responses';
 const KIE_CREATE_TASK_URL = 'https://api.kie.ai/api/v1/jobs/createTask';
 const KIE_RECORD_INFO_URL = 'https://api.kie.ai/api/v1/jobs/recordInfo';
 const KIE_VEO_BASE_URL = 'https://api.kie.ai/api/v1/veo';
 const KIE_CHAT_URL = 'https://api.kie.ai/gpt-5-2/v1/chat/completions';
+const KIE_RESPONSES_URL = 'https://api.kie.ai/codex/v1/responses';
 const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
+const KIE_RESPONSES_MODEL_ALIASES = {
+  'gpt-5-4-openai-resp': 'gpt-5-4',
+  'gpt-5-4': 'gpt-5-4',
+};
+const KIE_CHAT_MODEL_ENDPOINTS = {
+  'gpt-5-2': KIE_CHAT_URL,
+  'gemini-3.1-pro-openai': 'https://api.kie.ai/gemini-3.1-pro/v1/chat/completions',
+  'gemini-3-flash-openai': 'https://api.kie.ai/gemini-3-flash/v1/chat/completions',
+};
 
 const wait = (ms, signal) =>
   new Promise((resolve, reject) => {
@@ -42,7 +51,6 @@ const attachProviderTaskId = (error, providerTaskId) => {
 const getEnvValue = (env, ...keys) => keys.map((key) => env[key]).find(Boolean) || '';
 
 const getProviderEnv = (env) => ({
-  arkApiKey: getEnvValue(env, 'ARK_API_KEY', 'MEIAO_ARK_API_KEY'),
   kieApiKey: getEnvValue(env, 'KIE_API_KEY', 'MEIAO_KIE_API_KEY'),
 });
 
@@ -52,16 +60,60 @@ const ensureProviderKey = (value, label) => {
   }
 };
 
-const buildArkInputContent = (items) =>
+const normalizeMessageContentItems = (content) => {
+  if (typeof content === 'string') {
+    return [{ type: 'text', text: content }];
+  }
+  if (!Array.isArray(content)) return [];
+  return content;
+};
+
+const buildProviderInputMessages = (messages = [], mapper) =>
+  (Array.isArray(messages) ? messages : []).map((message) => ({
+    role: message?.role || 'user',
+    content: mapper(normalizeMessageContentItems(message?.content)),
+  }));
+
+const buildKieResponsesContent = (items) =>
   items.map((item) => {
-    if (item.type === 'text') {
+    if (item.type === 'text' || item.type === 'input_text') {
       return { type: 'input_text', text: item.text || '' };
     }
-
-    return { type: 'input_image', image_url: item.image_url?.url || '' };
+    if (item.type === 'input_file') {
+      return {
+        type: 'input_file',
+        file_url: item.file_url || item.url || '',
+        filename: item.filename || item.name || undefined,
+      };
+    }
+    return {
+      type: 'input_image',
+      image_url: item.image_url?.url || item.image_url || item.url || '',
+    };
   });
 
-const extractArkText = (data) => {
+const buildKieChatContent = (items) =>
+  items.map((item) => {
+    if (item.type === 'text' || item.type === 'input_text') {
+      return { type: 'text', text: item.text || '' };
+    }
+    if (item.type === 'input_file') {
+      return {
+        type: 'image_url',
+        image_url: {
+          url: item.file_url || item.url || '',
+        },
+      };
+    }
+    return {
+      type: 'image_url',
+      image_url: {
+        url: item.image_url?.url || item.image_url || item.url || '',
+      },
+    };
+  });
+
+const extractTextResponse = (data) => {
   if (typeof data?.output_text === 'string' && data.output_text.trim()) {
     return data.output_text.trim();
   }
@@ -88,6 +140,21 @@ const extractArkText = (data) => {
 
   throw createProviderError('provider_bad_response', 'AI 未返回可解析的文本内容');
 };
+
+const resolveChatTransport = (model) => {
+  const normalizedModel = String(model || '').trim();
+  if (normalizedModel in KIE_RESPONSES_MODEL_ALIASES) return 'kie_responses';
+  if (normalizedModel.startsWith('doubao-')) return 'unsupported';
+  return 'kie_chat_completions';
+};
+
+const resolveKieResponsesModel = (model) =>
+  KIE_RESPONSES_MODEL_ALIASES[String(model || '').trim()] || String(model || '').trim();
+
+const resolveKieChatEndpoint = (model) =>
+  KIE_CHAT_MODEL_ENDPOINTS[String(model || '').trim()] || KIE_CHAT_URL;
+
+const isKieGeminiChatModel = (model) => /^gemini-/i.test(String(model || '').trim());
 
 const extractUrlFromResponse = (result) => {
   if (!result) return null;
@@ -397,36 +464,35 @@ export const uploadAssetViaKieStream = async (payload, env) => {
   };
 };
 
-const runArkResponseJob = async (payload, env, signal) => {
-  const { arkApiKey } = getProviderEnv(env);
-  ensureProviderKey(arkApiKey, 'Ark API Key');
+const runKieResponsesJob = async (payload, env, signal) => {
+  const { kieApiKey } = getProviderEnv(env);
+  ensureProviderKey(kieApiKey, 'Kie API Key');
 
-  const response = await fetch(ARK_RESPONSES_URL, {
+  const response = await fetch(KIE_RESPONSES_URL, {
     method: 'POST',
     headers: {
+      Authorization: `Bearer ${kieApiKey}`,
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${arkApiKey}`,
     },
     body: JSON.stringify({
-      model: payload.model || 'doubao-seed-2-0-lite-260215',
-      input: [
-        {
-          role: 'user',
-          content: buildArkInputContent(payload.inputContent || []),
-        },
-      ],
+      model: resolveKieResponsesModel(payload.model || 'gpt-5-4'),
+      input: buildProviderInputMessages(payload.messages, buildKieResponsesContent),
+      stream: false,
+      ...(payload.reasoningLevel ? { reasoning: { effort: String(payload.reasoningLevel) } } : {}),
+      ...(payload.webSearchEnabled ? { tools: [{ type: 'web_search' }] } : {}),
     }),
     signal,
   });
 
   if (!response.ok) {
-    await mapHttpError(response, 'Ark 请求失败');
+    await mapHttpError(response, 'Kie Responses 请求失败');
   }
 
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
+  const content = extractTextResponse(data);
   return {
     result: {
-      text: extractArkText(data),
+      content,
     },
   };
 };
@@ -597,18 +663,35 @@ const runKieVeoJob = async (payload, env, signal) => {
 };
 
 const runKieChatJob = async (payload, env, signal) => {
+  const transport = resolveChatTransport(payload.model);
+  if (transport === 'unsupported') {
+    throw createProviderError('provider_bad_request', `不支持的聊天模型：${String(payload.model || '').trim() || '未知模型'}`);
+  }
+  if (transport === 'kie_responses') {
+    return runKieResponsesJob(payload, env, signal);
+  }
+
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
+  const model = String(payload.model || 'gpt-5-2').trim() || 'gpt-5-2';
+  const endpoint = resolveKieChatEndpoint(model);
+  const isGeminiModel = isKieGeminiChatModel(model);
+  const messages = isGeminiModel
+    ? buildProviderInputMessages(payload.messages, buildKieChatContent)
+    : payload.messages;
 
-  const response = await fetch(KIE_CHAT_URL, {
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${kieApiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      messages: payload.messages,
+      model,
+      messages,
       stream: false,
+      ...(isGeminiModel && payload.webSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+      ...(isGeminiModel && payload.reasoningLevel ? { include_thoughts: true, reasoning_effort: String(payload.reasoningLevel) } : {}),
     }),
     signal,
   });
@@ -642,8 +725,6 @@ export const executeProviderJob = async (job, env, signal) => {
         return uploadAssetViaKieStream(job.payload, env);
       }
       return uploadAssetViaKie(job.payload, env);
-    case 'ark_response':
-      return runArkResponseJob(job.payload, env, signal);
     case 'kie_image':
       if (job.providerTaskId) {
         return runKieRecoverJob(
@@ -674,7 +755,6 @@ export const executeProviderJob = async (job, env, signal) => {
 export const getProviderConfigStatus = (env) => {
   const providerEnv = getProviderEnv(env);
   return {
-    ark: Boolean(providerEnv.arkApiKey),
     kie: Boolean(providerEnv.kieApiKey),
   };
 };

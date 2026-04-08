@@ -36,13 +36,11 @@ export interface PersistedAppState {
 export const createDefaultApiConfig = (): GlobalApiConfig => ({
   kieApiKey: '',
   concurrency: 5,
-  arkApiKey: '',
 });
 
 const sanitizeApiConfig = (config?: Partial<GlobalApiConfig>): GlobalApiConfig => ({
   kieApiKey: '',
   concurrency: typeof config?.concurrency === 'number' && config.concurrency > 0 ? config.concurrency : 5,
-  arkApiKey: '',
 });
 
 export const createDefaultModuleConfig = (): ModuleConfig => ({
@@ -70,6 +68,8 @@ export const createDefaultTranslationConfigState = (): TranslationModuleConfigs 
 export const createDefaultOneClickState = (): OneClickPersistentState => ({
   mainImage: {
     productImages: [],
+    logoImage: null,
+    uploadedLogoUrl: null,
     styleImage: null,
     designReferences: [],
     uploadedDesignReferenceUrls: [],
@@ -101,6 +101,8 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
   },
   detailPage: {
     productImages: [],
+    logoImage: null,
+    uploadedLogoUrl: null,
     styleImage: null,
     designReferences: [],
     uploadedDesignReferenceUrls: [],
@@ -350,6 +352,7 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
           mainImage: {
             ...saved.oneClickMemory.mainImage,
             productImages: normalizeFileArray(saved.oneClickMemory.mainImage?.productImages),
+            logoImage: normalizeNullableFile(saved.oneClickMemory.mainImage?.logoImage),
             styleImage: normalizeNullableFile(saved.oneClickMemory.mainImage?.styleImage),
             designReferences: Array.isArray(saved.oneClickMemory.mainImage?.designReferences)
               ? saved.oneClickMemory.mainImage.designReferences.map((item: any) => ({
@@ -367,6 +370,9 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
               ...(saved.oneClickMemory.mainImage?.referenceAnalysis || {}),
             },
             uploadedProductUrls: normalizeStringArray(saved.oneClickMemory.mainImage?.uploadedProductUrls),
+            uploadedLogoUrl: typeof saved.oneClickMemory.mainImage?.uploadedLogoUrl === 'string'
+              ? saved.oneClickMemory.mainImage.uploadedLogoUrl
+              : null,
             lastStyleUrl: typeof saved.oneClickMemory.mainImage?.lastStyleUrl === 'string'
               ? saved.oneClickMemory.mainImage.lastStyleUrl
               : null,
@@ -374,6 +380,7 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
           detailPage: {
             ...saved.oneClickMemory.detailPage,
             productImages: normalizeFileArray(saved.oneClickMemory.detailPage?.productImages),
+            logoImage: normalizeNullableFile(saved.oneClickMemory.detailPage?.logoImage),
             styleImage: normalizeNullableFile(saved.oneClickMemory.detailPage?.styleImage),
             designReferences: Array.isArray(saved.oneClickMemory.detailPage?.designReferences)
               ? saved.oneClickMemory.detailPage.designReferences.map((item: any) => ({
@@ -391,6 +398,9 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
               ...(saved.oneClickMemory.detailPage?.referenceAnalysis || {}),
             },
             uploadedProductUrls: normalizeStringArray(saved.oneClickMemory.detailPage?.uploadedProductUrls),
+            uploadedLogoUrl: typeof saved.oneClickMemory.detailPage?.uploadedLogoUrl === 'string'
+              ? saved.oneClickMemory.detailPage.uploadedLogoUrl
+              : null,
             lastStyleUrl: typeof saved.oneClickMemory.detailPage?.lastStyleUrl === 'string'
               ? saved.oneClickMemory.detailPage.lastStyleUrl
               : null,
