@@ -80,6 +80,17 @@ test('agent chat source validates model ability before accepting attachments or 
   assert.match(source, /当前模型不支持联网/);
 });
 
+test('agent chat source forwards multimodal attachments and model options into provider execution in both modes', () => {
+  assert.match(source, /const buildChatMessageContent = \(text, attachments = \[\]\) =>/);
+  assert.match(source, /type: 'image_url'/);
+  assert.match(source, /type: 'input_file'/);
+  assert.match(source, /content: buildChatMessageContent\(currentMessage, attachments\)/);
+  assert.match(source, /reasoningLevel: reasoningLevel \? String\(reasoningLevel\) : null/);
+  assert.match(source, /webSearchEnabled: Boolean\(webSearchEnabled\)/);
+  assert.match(source, /attachments,\s+reasoningLevel: payload\?\.reasoningLevel \|\| null,\s+webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\)/);
+  assert.match(source, /attachments,\s+reasoningLevel: body\?\.reasoningLevel \|\| null,\s+webSearchEnabled: Boolean\(body\?\.webSearchEnabled\)/);
+});
+
 test('agent chat source persists image-mode session preference in mysql and local modes', () => {
   assert.match(source, /last_image_mode TINYINT\(1\) NOT NULL DEFAULT 0/);
   assert.match(source, /ensureMysqlColumn\(pool, 'chat_sessions', 'last_image_mode', 'TINYINT\(1\) NOT NULL DEFAULT 0'\)/);

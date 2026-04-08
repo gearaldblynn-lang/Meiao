@@ -6,8 +6,26 @@ import {
   VideoStoryboardConfig,
   VideoStoryboardShot,
 } from '../types';
-import { createInternalJob, waitForInternalJob } from './internalApi';
+import { createInternalJob, waitForInternalJob, safeCreateInternalLog } from './internalApi';
 import { processWithKieAi, recoverKieAiTask } from './kieAiService';
+
+const logStoryboardEvent = (
+  action: string,
+  message: string,
+  status: 'started' | 'success' | 'failed',
+  detail = '',
+  meta: Record<string, unknown> | null = null,
+) => {
+  void safeCreateInternalLog({
+    level: status === 'failed' ? 'error' : 'info',
+    module: 'video',
+    action,
+    message,
+    detail,
+    status,
+    meta: meta || undefined,
+  });
+};
 
 const ACTOR_LABELS: Record<VideoStoryboardConfig['actorType'], string> = {
   no_real_face: 'No Real Face',
@@ -155,6 +173,11 @@ export const generateStoryboardScript = async (
   sceneDescription: string,
   apiConfig: GlobalApiConfig
 ): Promise<{ script: string; shots: VideoStoryboardShot[]; boards: VideoStoryboardBoard[] }> => {
+  logStoryboardEvent('storyboard_script', '开始生成分镜脚本', 'started', '', {
+    shotCount: config.shotCount,
+    duration: config.duration,
+    imageCount: imageUrls.length,
+  });
   const prompt = buildScriptRequestPrompt(config, sceneDescription);
   const userContent: any[] = [{ type: 'text', text: prompt }];
 
@@ -199,6 +222,7 @@ export const generateStoryboardScript = async (
   try {
     parsed = JSON.parse(extractJsonArray(content));
   } catch {
+    logStoryboardEvent('storyboard_script', '分镜脚本解析失败', 'failed', content.slice(0, 200));
     throw new Error('分镜脚本解析失败');
   }
 
@@ -228,6 +252,11 @@ export const generateStoryboardScript = async (
     prompt: '',
     status: 'pending',
   }));
+
+  logStoryboardEvent('storyboard_script', '分镜脚本生成成功', 'success', '', {
+    shotCount: shots.length,
+    boardCount: boards.length,
+  });
 
   return {
     script: boards.length === 1
@@ -308,6 +337,10 @@ export const generateStoryboardBoardImage = async (
   apiConfig: GlobalApiConfig,
   previousBoardImageUrl?: string
 ) => {
+  logStoryboardEvent('storyboard_board_image', `开始生成分镜板图像: ${board.title}`, 'started', '', {
+    boardId: board.id,
+    shotCount: board.shotIds.length,
+  });
   const prompt = buildBoardPrompt(board, shots, config, previousBoardImageUrl);
   const inputImages = previousBoardImageUrl ? [...imageUrls, previousBoardImageUrl] : imageUrls;
 
@@ -330,6 +363,9 @@ export const generateStoryboardWhiteBgImage = async (
   imageUrls: string[],
   apiConfig: GlobalApiConfig
 ) => {
+  logStoryboardEvent('storyboard_white_bg', '开始生成白底图', 'started', '', {
+    imageCount: imageUrls.length,
+  });
   return await processWithKieAi(
     imageUrls,
     apiConfig,

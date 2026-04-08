@@ -93,8 +93,8 @@ const ChatComposer: React.FC<Props> = ({
     if (imageModeEnabled) return 'image/*';
     const accepts: string[] = [];
     if (selectedModelOption?.supportsImageInput) accepts.push('image/*');
-    if (selectedModelOption?.supportsFileInput) accepts.push('.pdf', '.doc', '.docx', '.txt', '.md', '.csv', '.xls', '.xlsx', '.pptx');
-    return accepts.join(',') || 'image/*,.pdf,.doc,.docx,.txt,.md,.csv,.xls,.xlsx,.pptx';
+    if (selectedModelOption?.supportsFileInput) accepts.push('.pdf', '.doc', '.docx', '.txt', '.md', '.csv', '.xls', '.xlsx', '.ppt', '.pptx', '.json', '.xml');
+    return accepts.join(',') || 'image/*,.pdf,.doc,.docx,.txt,.md,.csv,.xls,.xlsx,.ppt,.pptx,.json,.xml';
   }, [imageModeEnabled, selectedModelOption?.supportsFileInput, selectedModelOption?.supportsImageInput]);
 
   const numberedAttachments = attachments.map((attachment, index) => ({

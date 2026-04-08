@@ -59,6 +59,9 @@ test('one click sidebars split design references from product assets and support
 
   assert.match(configSidebar, /设计参考/);
   assert.match(configSidebar, /产品素材/);
+  assert.match(configSidebar, /品牌Logo/);
+  assert.match(configSidebar, /logoImage/);
+  assert.match(configSidebar, /产品素材与品牌Logo共用最多 8 张上限/);
   assert.match(configSidebar, /这组图需要参考的维度/);
   assert.match(configSidebar, /referenceDimensions/);
   assert.match(configSidebar, /referenceAnalysis/);
@@ -230,9 +233,14 @@ test('agent center management is split into flybook-style list detail and wizard
   assert.match(knowledgeEditor, /fa-circle-question/);
   assert.match(knowledgeEditor, /onDeleteKnowledgeBase/);
   assert.match(knowledgeEditor, /editingDocumentId/);
+  assert.match(knowledgeEditor, /showDeleteDocumentConfirm/);
+  assert.match(knowledgeEditor, /isDocumentSubmitting/);
   assert.match(knowledgeEditor, /onEditDocument/);
   assert.match(knowledgeEditor, /onCancelDocumentEdit/);
   assert.match(knowledgeEditor, /保存并重新切片/);
+  assert.match(knowledgeEditor, /正在保存并重新切片/);
+  assert.match(knowledgeEditor, /正在入库并切片/);
+  assert.match(knowledgeEditor, /disabled=\{!knowledgeBase \|\| isDocumentSubmitting\}/);
   assert.match(knowledgeEditor, /入库前先做 AI 规范整理/);
   assert.match(knowledgeEditor, /适合规则、SOP、提示词规范类文档/);
   assert.match(knowledgeEditor, /切片策略/);
@@ -244,9 +252,14 @@ test('agent center management is split into flybook-style list detail and wizard
   assert.match(knowledgeEditor, /原文切片/);
   assert.match(knowledgeEditor, /失败原因：/);
   assert.match(knowledgeEditor, /确认删除后不可恢复/);
+  assert.match(knowledgeEditor, /确认删除文档/);
+  assert.match(knowledgeEditor, /文档删除后不可恢复/);
   assert.doesNotMatch(knowledgeEditor, />\s*使用说明\s*</);
   assert.match(manager, /updateKnowledgeDocument/);
   assert.match(manager, /editingDocumentId/);
+  assert.match(manager, /isDocumentSubmitting/);
+  assert.match(manager, /setIsDocumentSubmitting\(true\)/);
+  assert.match(manager, /setIsDocumentSubmitting\(false\)/);
   assert.match(manager, /normalizationEnabled/);
   assert.match(manager, /chunkStrategy/);
   const agentUtils = read('../modules/AgentCenter/agentCenterUtils.mjs');
@@ -289,6 +302,7 @@ test('agent management landing uses a flybook-style workbench instead of a dense
 
 test('agent wizard uses selectable model catalogs instead of free-text model inputs', () => {
   const wizard = read('../modules/AgentCenter/AgentWizardView.tsx');
+  const manager = read('../modules/AgentCenter/AgentCenterManager.tsx');
 
   assert.match(wizard, /availableChatModels/);
   assert.match(wizard, /availableImageModels/);
@@ -307,6 +321,11 @@ test('agent wizard uses selectable model catalogs instead of free-text model inp
   assert.match(wizard, /defaultChatOptions/);
   assert.match(wizard, /检索参考数量说明/);
   assert.match(wizard, /fa-circle-question/);
+  assert.match(manager, /gpt-5-4-openai-resp/);
+  assert.match(manager, /gemini-3\.1-pro-openai/);
+  assert.match(manager, /gemini-3-flash-openai/);
+  assert.match(manager, /supportsWebSearch: true/);
+  assert.match(manager, /supportsReasoningLevel: true/);
   assert.doesNotMatch(wizard, /placeholder="默认模型"/);
   assert.doesNotMatch(wizard, /placeholder="简单问题模型"/);
 });
@@ -318,6 +337,7 @@ test('system settings expose a global analysis model selector for server-side pl
   assert.match(settings, /策划分析模型/);
   assert.match(settings, /当前生效：/);
   assert.match(settings, /自动选择默认分析模型/);
+  assert.match(settings, /systemConfig\?\.agentModels\.chat/);
   assert.match(settings, /updateSystemConfig/);
   assert.match(api, /export const updateSystemConfig = async/);
   assert.match(api, /\/api\/system\/config/);

@@ -15,6 +15,8 @@ interface Props {
   onChange: (config: OneClickConfig) => void;
   productImages: File[];
   setProductImages: React.Dispatch<React.SetStateAction<File[]>>;
+  logoImage: File | null;
+  setLogoImage: (file: File | null) => void;
   styleImage: File | null;
   setStyleImage: React.Dispatch<React.SetStateAction<File | null>>;
   designReferences: OneClickReferenceItem[];
@@ -28,8 +30,10 @@ interface Props {
   onAnalyzeReference: () => void;
   analyzingReference?: boolean;
   uploadedProductUrls?: string[];
+  uploadedLogoUrl?: string | null;
   uploadedStyleUrl?: string | null;
   onUploadedProductUrlsChange?: (urls: string[]) => void;
+  onUploadedLogoUrlChange?: (url: string | null) => void;
   onUploadedStyleUrlChange?: (url: string | null) => void;
   apiConfig: GlobalApiConfig;
   disabled?: boolean;
@@ -46,6 +50,8 @@ const ConfigSidebar: React.FC<Props> = ({
   onChange, 
   productImages, 
   setProductImages, 
+  logoImage,
+  setLogoImage,
   styleImage, 
   setStyleImage, 
   designReferences,
@@ -59,8 +65,10 @@ const ConfigSidebar: React.FC<Props> = ({
   onAnalyzeReference,
   analyzingReference = false,
   uploadedProductUrls = [],
+  uploadedLogoUrl = null,
   uploadedStyleUrl = null,
   onUploadedProductUrlsChange,
+  onUploadedLogoUrlChange,
   onUploadedStyleUrlChange,
   apiConfig,
   disabled, 
@@ -70,6 +78,7 @@ const ConfigSidebar: React.FC<Props> = ({
 }) => {
   void onAnalyzeReference;
   const productInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const styleInputRef = useRef<HTMLInputElement>(null);
   const isDetail = subMode === OneClickSubMode.DETAIL_PAGE;
   
@@ -77,8 +86,11 @@ const ConfigSidebar: React.FC<Props> = ({
   const [assetTab, setAssetTab] = useState<'product' | 'reference'>('product');
 
   const [isUploadingProduct, setIsUploadingProduct] = useState<boolean[]>([]);
+  const [isUploadingLogo, setIsUploadingLogo] = useState(false);
   const [isUploadingStyle, setIsUploadingStyle] = useState(false);
   const [isCustomPlatform, setIsCustomPlatform] = useState(config.platform === 'CUSTOM');
+  const getProductAssetLimitRemaining = () => Math.max(0, 8 - productImages.length - (logoImage ? 1 : 0));
+
   // 自动上传产品图
   useEffect(() => {
     const uploadFiles = async () => {
@@ -107,6 +119,23 @@ const ConfigSidebar: React.FC<Props> = ({
       uploadFiles();
     }
   }, [productImages, apiConfig]);
+
+  useEffect(() => {
+    const uploadLogo = async () => {
+      if (!logoImage || uploadedLogoUrl || !onUploadedLogoUrlChange) return;
+      setIsUploadingLogo(true);
+      try {
+        const url = await uploadToCos(logoImage, apiConfig);
+        onUploadedLogoUrlChange(url);
+      } catch (err) {
+        console.error('Failed to upload logo image', err);
+      } finally {
+        setIsUploadingLogo(false);
+      }
+    };
+
+    uploadLogo();
+  }, [logoImage, uploadedLogoUrl, apiConfig, onUploadedLogoUrlChange]);
 
   // 自动上传设计参考图
   useEffect(() => {
@@ -306,6 +335,12 @@ const ConfigSidebar: React.FC<Props> = ({
     onDesignReferencesChange([...designReferences, ...next]);
   };
 
+  const replaceLogoFile = (file: File | null) => {
+    invalidateReferenceAnalysis();
+    setLogoImage(file);
+    onUploadedLogoUrlChange?.(null);
+  };
+
   const removeReferenceFile = (id: string) => {
     const nextItems = designReferences.filter((item) => item.id !== id);
     invalidateReferenceAnalysis();
@@ -421,13 +456,67 @@ const ConfigSidebar: React.FC<Props> = ({
                     <div onClick={() => productInputRef.current?.click()} className="group cursor-pointer border-2 border-dashed border-slate-200 rounded-[20px] p-5 hover:border-rose-300 hover:bg-rose-50/30 transition-all text-center">
                       <i className="far fa-image text-slate-300 text-lg group-hover:text-rose-400 mb-2 block"></i>
                       <p className="text-xs font-black text-slate-600">上传产品原始图</p>
-                      <p className="mt-1 text-[10px] text-slate-400">JPG、PNG、WEBP，最多 8 张，超 3MB 自动压缩</p>
+                      <p className="mt-1 text-[10px] text-slate-400">JPG、PNG、WEBP，产品素材与品牌Logo共用最多 8 张上限，超 3MB 自动压缩</p>
                       <input type="file" multiple ref={productInputRef} onChange={(e) => {
                         if (e.target.files) {
                            const newFiles = Array.from(e.target.files) as File[];
-                           setProductImages([...productImages, ...newFiles].slice(0, 8));
+                           setProductImages([...productImages, ...newFiles].slice(0, productImages.length + getProductAssetLimitRemaining()));
                         }
                       }} className="hidden" accept="image/*" />
+                    </div>
+                    <div className="rounded-[20px] border border-slate-200 bg-slate-50/60 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-black text-slate-600">品牌Logo</p>
+                          <p className="mt-1 text-[10px] text-slate-400">仅 1 张，与产品素材共用 8 张上限</p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => logoInputRef.current?.click()}
+                          disabled={disabled || (!logoImage && getProductAssetLimitRemaining() <= 0)}
+                          className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-bold text-slate-600 transition hover:border-rose-200 hover:text-rose-600 disabled:opacity-50"
+                        >
+                          {logoImage || uploadedLogoUrl ? '更换Logo' : '上传Logo'}
+                        </button>
+                        <input
+                          type="file"
+                          ref={logoInputRef}
+                          onChange={(e) => {
+                            const file = (e.target.files && e.target.files[0]) || null;
+                            if (file) replaceLogoFile(file);
+                            e.target.value = '';
+                          }}
+                          className="hidden"
+                          accept="image/*"
+                        />
+                      </div>
+                      {logoImage || uploadedLogoUrl ? (
+                        <div className="mt-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3">
+                          <div className="relative h-14 w-14 overflow-hidden rounded-xl border border-slate-100 bg-slate-50">
+                            {logoImage ? (
+                              <img src={safeCreateObjectURL(logoImage)} className="h-full w-full object-contain p-1" referrerPolicy="no-referrer" />
+                            ) : uploadedLogoUrl ? (
+                              <img src={uploadedLogoUrl} className="h-full w-full object-contain p-1" referrerPolicy="no-referrer" />
+                            ) : null}
+                            {(isUploadingLogo || (logoImage && !uploadedLogoUrl)) ? (
+                              <div className="absolute inset-0 flex items-center justify-center bg-white/70">
+                                <i className="fas fa-spinner fa-spin text-[10px] text-rose-500"></i>
+                              </div>
+                            ) : null}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <p className="text-[11px] font-black text-slate-700">品牌Logo</p>
+                            <p className="mt-1 truncate text-[10px] text-slate-400">{logoImage?.name || '已上传品牌Logo'}</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => replaceLogoFile(null)}
+                            className="flex h-8 w-8 items-center justify-center rounded-xl border border-rose-100 bg-rose-50 text-rose-500 transition hover:bg-rose-100"
+                          >
+                            <i className="fas fa-times text-[10px]"></i>
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                     { (productImages.length > 0 || uploadedProductUrls.length > 0) && (
                       <div className="grid grid-cols-4 gap-2">
@@ -478,6 +567,7 @@ const ConfigSidebar: React.FC<Props> = ({
                                 if (onUploadedProductUrlsChange) {
                                   onUploadedProductUrlsChange(uploadedProductUrls.filter((_, idx) => idx !== i));
                                 }
+                                invalidateReferenceAnalysis();
                               }} className="absolute top-0 right-0 w-5 h-5 bg-rose-500 text-white rounded-bl-lg flex items-center justify-center opacity-0 group-hover:opacity-100"><i className="fas fa-times text-[10px]"></i></button>
                             </div>
                           );
