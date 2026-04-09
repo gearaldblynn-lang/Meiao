@@ -803,7 +803,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         baseRequirement = `HIGH QUALITY STILL LIFE: Focus on product in a real-world setting. NO FACES. The product must look like it is physically sitting in the scene, not pasted. ${refDescription}`;
     }
     
-    const productPreservation = `STRICT PRODUCT INTEGRITY: The product MUST maintain its exact physical form, details, and labels from source images, while receiving accurate lighting and shadows from the environment.`;
+    const productPreservation = `STRICT PRODUCT INTEGRITY: Strictly keep the product fully consistent with the source product reference images. Strictly do not change the product's appearance details, size, structure, label information, packaging information, packaging layout, brand marks, color blocking, or any visible product elements. Do not redesign, rewrite, simplify, replace, or newly invent the package artwork or brand presentation. The exact pack shape, material feel, graphic layout, text hierarchy, logo area, and front-of-pack design must stay faithful to the uploaded product images while receiving accurate lighting and shadows from the environment.`;
     const finalPrompt = `${realismPrompt}\n${baseRequirement}\n${productPreservation}\n\nSHOT-SPECIFIC REQUIREMENT: You must execute this exact new shot objective and make the frame visibly different from the benchmark while keeping the same session continuity.\nScenario: ${prompt}`;
     
     const inputs = [...productUrls];
