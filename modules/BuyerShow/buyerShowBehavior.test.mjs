@@ -53,3 +53,16 @@ test('buyer show logs retain final prompt and input image urls for task debuggin
   assert.match(source, /referenceUrl: refUrl \|\| ''/);
   assert.match(source, /isFirstImage,/);
 });
+
+test('buyer show prompt hard-locks packaging identity instead of allowing redesigned packs', () => {
+  assert.match(
+    source,
+    /Strictly do not change the product's appearance details, size, structure, label information, packaging information, packaging layout, brand marks, color blocking, or any visible product elements\./,
+    'buyer show prompt should explicitly lock packaging identity fields'
+  );
+  assert.match(
+    source,
+    /Do not redesign, rewrite, simplify, replace, or newly invent the package artwork or brand presentation\./,
+    'buyer show prompt should forbid newly invented packaging artwork'
+  );
+});
