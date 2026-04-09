@@ -7,6 +7,58 @@ import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_
 import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
 import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
 
+const PRESET_COUNTS = [3, 5, 8, 10];
+
+const ImageCountPicker: React.FC<{ value: number; onChange: (n: number) => void }> = ({ value, onChange }) => {
+  const [open, setOpen] = useState(false);
+  const [menuStyle, setMenuStyle] = useState<React.CSSProperties | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const rect = inputRef.current?.getBoundingClientRect();
+    if (rect) setMenuStyle({ position: 'fixed', top: rect.bottom + 4, left: rect.left, width: rect.width, zIndex: 90 });
+    const handler = (e: MouseEvent) => {
+      if (!inputRef.current?.contains(e.target as Node) && !menuRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  return (
+    <div className="space-y-1">
+      <span className="text-[9px] font-bold text-slate-400 uppercase ml-1 tracking-widest">方案每套图数</span>
+      <div className="relative">
+        <input
+          ref={inputRef}
+          type="number" min={1} max={99}
+          value={value}
+          onFocus={() => setOpen(true)}
+          onChange={(e) => { const n = parseInt(e.target.value, 10); if (n >= 1 && n <= 99) onChange(n); }}
+          className="h-10 w-full rounded-2xl border border-slate-200/80 bg-white px-4 text-xs font-black text-slate-700 shadow-sm outline-none focus:border-amber-400 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        />
+        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10px] text-slate-400">张</span>
+      </div>
+      {open && menuStyle && (
+        <div ref={menuRef} style={menuStyle} className="overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_12px_32px_rgba(15,23,42,0.12)]">
+          {PRESET_COUNTS.map((n) => (
+            <button
+              key={n} type="button"
+              onMouseDown={(e) => { e.preventDefault(); onChange(n); setOpen(false); }}
+              className={`flex w-full items-center justify-between px-4 py-2.5 text-xs font-black transition hover:bg-slate-50 ${value === n ? 'text-amber-600' : 'text-slate-700'}`}
+            >
+              {n} 张
+              {value === n && <i className="fas fa-check text-[10px] text-amber-500" />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+
 interface Props {
   state: BuyerShowPersistentState;
   onUpdate: (updates: Partial<BuyerShowPersistentState>) => void;
@@ -294,14 +346,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                     />
                   )}
                </div>
-               <div className="space-y-1">
-                  <span className="text-[9px] font-bold text-slate-400 uppercase ml-1 tracking-widest">方案每套图数</span>
-                  <div className="flex bg-slate-100 p-1 rounded-xl gap-1">
-                     {[3, 5, 8].map(n => (
-                        <button key={n} onClick={() => onUpdate({ imageCount: n })} className={`flex-1 py-1 text-[10px] font-black rounded-lg transition-all ${state.imageCount === n ? 'bg-white text-amber-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}>{n}张</button>
-                     ))}
-                  </div>
-               </div>
+               <ImageCountPicker value={state.imageCount} onChange={(n) => onUpdate({ imageCount: n })} />
             </div>
             
             <div className="space-y-1">
