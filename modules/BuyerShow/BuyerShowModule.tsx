@@ -783,11 +783,14 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     let refDescription = "";
     if (refUrl) {
       if (isFirstImage) {
-         refDescription = `VISUAL REFERENCE PRIORITY: High. The provided reference image (last input) determines the environment style and lighting vibe. Adapt the product into a similar **clean and aesthetic** environment with perfect lighting match.`;
+         refDescription = `VISUAL REFERENCE PRIORITY: High. Visual atmosphere reference image (URL=${refUrl}) determines the environment style and lighting vibe. Adapt the product into a similar **clean and aesthetic** environment with perfect lighting match.`;
       } else {
-         refDescription = `SCENE & CHARACTER CONSISTENCY: The provided reference image establishes the reality of this set. 
-         1. **MAINTAIN**: The same person (if present), the same specific room/location, and the same lighting conditions.
-         2. **EXTEND & DIVERGE**: This is a new shot in the same session. Change the camera angle, pose, or focus distance based on the new prompt. Do NOT simply clone the reference composition. Create a coherent story sequence.`;
+         refDescription = `SCENE & CHARACTER CONSISTENCY: Reference benchmark image (URL=${refUrl}) establishes the reality of this set.
+         Reference benchmark image (URL=${refUrl}) is the first generated image from this same buyer-show set.
+         Treat that benchmark image as the single source of truth for person identity, room layout, props, lighting, and camera reality.
+         1. **MAINTAIN EXACT CONTINUITY**: Keep the same person (if present), the same specific room/location, the same tableware/props/background objects, and the same lighting conditions unless the new prompt explicitly asks for a change.
+         2. **DO NOT RESET THE SESSION**: Do not invent a new room, new person, or unrelated setup. This must feel like the next shot from the same real-life session.
+         3. **FORCE SHOT DIFFERENTIATION**: This new shot MUST stay in the same session continuity but clearly differ in composition, framing, action focus, and product storytelling purpose. Do NOT simply clone the benchmark composition.`;
       }
     }
 
@@ -801,10 +804,24 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     }
     
     const productPreservation = `STRICT PRODUCT INTEGRITY: The product MUST maintain its exact physical form, details, and labels from source images, while receiving accurate lighting and shadows from the environment.`;
-    const finalPrompt = `${realismPrompt}\n${baseRequirement}\n${productPreservation}\n\nScenario: ${prompt}`;
+    const finalPrompt = `${realismPrompt}\n${baseRequirement}\n${productPreservation}\n\nSHOT-SPECIFIC REQUIREMENT: You must execute this exact new shot objective and make the frame visibly different from the benchmark while keeping the same session continuity.\nScenario: ${prompt}`;
     
     const inputs = [...productUrls];
     if (refUrl) inputs.push(refUrl);
+
+    writeLog({
+      level: 'info',
+      module: 'buyer_show',
+      action: 'create_image_task',
+      message: '组装买家秀图像任务',
+      status: 'started',
+      meta: {
+        isFirstImage,
+        referenceUrl: refUrl || '',
+        inputImageUrls: inputs,
+        finalPrompt,
+      },
+    });
 
     return await processWithKieAi(
       inputs, 
