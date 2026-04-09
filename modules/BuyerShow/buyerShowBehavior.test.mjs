@@ -12,13 +12,28 @@ test('buyer show validates stale uploaded asset urls before sending them to ark'
 test('buyer show generation prompt keeps a lightweight target-market model rule', () => {
   assert.match(
     source,
-    /VISUAL REFERENCE PRIORITY: High\. The provided reference image \(last input\) determines the environment style and lighting vibe\./,
+    /VISUAL REFERENCE PRIORITY: High\. Visual atmosphere reference image \(URL=\$\{refUrl\}\) determines the environment style and lighting vibe\./,
     'buyer show generation prompt should preserve the original first-image reference wording'
   );
   assert.match(
     source,
-    /SCENE & CHARACTER CONSISTENCY: The provided reference image establishes the reality of this set\./,
+    /SCENE & CHARACTER CONSISTENCY: Reference benchmark image \(URL=\$\{refUrl\}\) establishes the reality of this set\./,
     'buyer show generation prompt should preserve the original follow-up consistency wording'
+  );
+  assert.match(
+    source,
+    /Reference benchmark image \(URL=\$\{refUrl\}\) is the first generated image from this same buyer-show set\./,
+    'follow-up buyer show prompt should explicitly mark the benchmark image url'
+  );
+  assert.match(
+    source,
+    /Treat that benchmark image as the single source of truth for person identity, room layout, props, lighting, and camera reality\./,
+    'follow-up buyer show prompt should force benchmark-image continuity'
+  );
+  assert.match(
+    source,
+    /This new shot MUST stay in the same session continuity but clearly differ in composition, framing, action focus, and product storytelling purpose\./,
+    'follow-up buyer show prompt should force visible shot differentiation instead of near-duplicates'
   );
   assert.match(
     source,
@@ -30,4 +45,11 @@ test('buyer show generation prompt keeps a lightweight target-market model rule'
     /use them only for clothing direction, pose energy, and camera language|must fit the local market identity of \$\{persistentState\.targetCountry\}/,
     'buyer show generation prompt should not keep the heavy nationality guidance'
   );
+});
+
+test('buyer show logs retain final prompt and input image urls for task debugging', () => {
+  assert.match(source, /inputImageUrls: inputs/);
+  assert.match(source, /finalPrompt,/);
+  assert.match(source, /referenceUrl: refUrl \|\| ''/);
+  assert.match(source, /isFirstImage,/);
 });
