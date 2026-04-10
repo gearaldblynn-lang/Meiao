@@ -485,7 +485,7 @@ export const createJobWorker = ({
                 status: error?.code === 'request_cancelled' ? 'interrupted' : 'failed',
                 meta: {
                   jobId: latestJob.id,
-                  providerTaskId: latestJob.providerTaskId || '',
+                  providerTaskId: error?.providerTaskId || latestJob.providerTaskId || '',
                   provider: latestJob.provider,
                   retryCount: failure.retryCount,
                   errorCode: error?.code || 'provider_internal_error',

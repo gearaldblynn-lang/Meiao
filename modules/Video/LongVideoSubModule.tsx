@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { GlobalApiConfig, VideoPersistentState, VideoTask, KieAiResult, VideoSubMode } from '../../types';
 import VideoSidebar from './VideoSidebar';
 import { uploadToCos } from '../../services/tencentCosService';
-import { createSoraVideoTask, recoverKieAiTask, submitVeoVideoTask, pollVeoTaskStatus } from '../../services/kieAiService';
+import { createSoraVideoTask, isRecoverableKieTaskResult, recoverKieAiTask, submitVeoVideoTask, pollVeoTaskStatus } from '../../services/kieAiService';
 import { generateVideoScript } from '../../services/arkService';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
@@ -64,7 +64,7 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
     // 自动恢复刷新前正在生成的任务
     if (tasks && Array.isArray(tasks)) {
       tasks.forEach(t => {
-        if (t.status === 'generating' && t.taskId && !inflightIdsRef.current.has(t.id)) {
+        if ((t.status === 'generating' || (t.status === 'error' && isRecoverableKieTaskResult(t.taskId, t.error))) && t.taskId && !inflightIdsRef.current.has(t.id)) {
           inflightIdsRef.current.add(t.id);
           handleRecover(t);
         }

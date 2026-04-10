@@ -4,7 +4,7 @@ import { GlobalApiConfig, RetouchTask, RetouchPersistentState, AspectRatio, KieA
 import RetouchSidebar from './RetouchSidebar';
 import { analyzeRetouchTask } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
-import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
+import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { createZipAndDownload, resizeImage, getImageDimensions } from '../../utils/imageUtils';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
 import { releaseObjectURLs, safeCreateObjectURL } from '../../utils/urlUtils';
@@ -34,6 +34,22 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
   useEffect(() => {
     tasksRef.current = tasks;
   }, [tasks]);
+
+  useEffect(() => {
+    setIsProcessing(false);
+    tasks.forEach((task) => {
+      if (
+        task.taskId &&
+        (task.status === 'uploading' ||
+          task.status === 'processing' ||
+          (task.status === 'error' && isRecoverableKieTaskResult(task.taskId, task.error))) &&
+        !inflightIdsRef.current.has(task.id)
+      ) {
+        inflightIdsRef.current.add(task.id);
+        void processTask(task);
+      }
+    });
+  }, []);
 
   const getRetouchTaskName = (task: RetouchTask) => getTaskDisplayName(task, 'retouch.png');
 

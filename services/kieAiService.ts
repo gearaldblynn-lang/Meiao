@@ -22,8 +22,51 @@ const KIE_IMAGE_TIMEOUT: Record<string, number> = {
 const KIE_IMAGE_DEFAULT_TIMEOUT = 6 * 60_000;
 const KIE_VIDEO_TIMEOUT = 5 * 60_000;
 const KIE_RECOVER_TIMEOUT = 4 * 60_000;
+const KIE_AUTO_RECOVER_ERROR_CODES = new Set(['provider_internal_error', 'provider_network_error', 'provider_timeout']);
+const KIE_RECOVERABLE_MESSAGE_PATTERN = /fetch failed|network|timeout|超时|服务异常|网络异常/i;
 
-const waitForJobResult = async (jobId: string, signal?: AbortSignal, maxWaitMs = 0): Promise<KieAiResult> => {
+export const isRecoverableKieTaskResult = (taskId?: string, errorMessage?: string, errorCode?: string) => {
+  if (!String(taskId || '').trim()) return false;
+  if (errorCode && KIE_AUTO_RECOVER_ERROR_CODES.has(String(errorCode))) return true;
+  return KIE_RECOVERABLE_MESSAGE_PATTERN.test(String(errorMessage || ''));
+};
+
+const shouldAutoRecoverKieJob = (job: any) => {
+  if (!job || job.taskType === 'kie_recover') return false;
+  if (!['kie_image', 'kie_video'].includes(String(job.taskType || ''))) return false;
+  return isRecoverableKieTaskResult(job.providerTaskId, job.errorMessage, job.errorCode);
+};
+
+const recoverKieProviderTask = async (
+  taskId: string,
+  signal?: AbortSignal,
+  isVideo: boolean = false,
+  kieClientConfigPresent: boolean = false
+): Promise<KieAiResult> => {
+  const module = getActiveModuleContext() || 'unknown';
+  const { job } = await createInternalJob({
+    module,
+    taskType: 'kie_recover',
+    provider: 'kie',
+    payload: {
+      taskId,
+      providerTaskId: taskId,
+      isVideo,
+      kieClientConfigPresent,
+    },
+    maxRetries: 1,
+  });
+
+  return await waitForJobResult(job.id, signal, KIE_RECOVER_TIMEOUT, false, kieClientConfigPresent);
+};
+
+const waitForJobResult = async (
+  jobId: string,
+  signal?: AbortSignal,
+  maxWaitMs = 0,
+  allowAutoRecover = true,
+  kieClientConfigPresent = false
+): Promise<KieAiResult> => {
   try {
     const finalJob = await waitForInternalJob(jobId, signal, 2500, maxWaitMs);
     if (finalJob.status === 'succeeded') {
@@ -54,6 +97,10 @@ const waitForJobResult = async (jobId: string, signal?: AbortSignal, maxWaitMs =
       };
     }
 
+    if (allowAutoRecover && shouldAutoRecoverKieJob(finalJob)) {
+      return recoverKieProviderTask(finalJob.providerTaskId, signal, finalJob.taskType === 'kie_video', kieClientConfigPresent);
+    }
+
     return {
       imageUrl: '',
       taskId: getUserVisibleTaskId(finalJob),
@@ -67,6 +114,9 @@ const waitForJobResult = async (jobId: string, signal?: AbortSignal, maxWaitMs =
     }
     if (error.code === 'job_timeout') {
       const timeoutJob = await fetchInternalJob(jobId).catch(() => null);
+      if (allowAutoRecover && shouldAutoRecoverKieJob(timeoutJob?.job)) {
+        return recoverKieProviderTask(timeoutJob.job.providerTaskId, signal, timeoutJob.job.taskType === 'kie_video', kieClientConfigPresent);
+      }
       return {
         imageUrl: '',
         taskId: getUserVisibleTaskId(timeoutJob?.job),
@@ -123,21 +173,7 @@ export const recoverKieAiTask = async (
   isVideo: boolean = false
 ): Promise<KieAiResult> => {
   logKieEvent('recover_task', '开始找回任务结果', 'started', '', { taskId, isVideo });
-  const module = getActiveModuleContext() || 'unknown';
-  const { job } = await createInternalJob({
-    module,
-    taskType: 'kie_recover',
-    provider: 'kie',
-    payload: {
-      taskId,
-      providerTaskId: taskId,
-      isVideo,
-      kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
-    },
-    maxRetries: 1,
-  });
-
-  const result = await waitForJobResult(job.id, signal, KIE_RECOVER_TIMEOUT);
+  const result = await recoverKieProviderTask(taskId, signal, isVideo, Boolean(apiConfig.kieApiKey));
   logKieEvent(
     'recover_task',
     result.status === 'success' ? '任务结果找回成功' : result.status === 'interrupted' ? '任务结果找回已中断' : '任务结果找回失败',
@@ -172,7 +208,7 @@ export const createSoraVideoTask = async (
     maxRetries: 2,
   });
 
-  const result = await waitForJobResult(job.id, signal, KIE_VIDEO_TIMEOUT);
+  const result = await waitForJobResult(job.id, signal, KIE_VIDEO_TIMEOUT, true, Boolean(apiConfig.kieApiKey));
   logKieEvent(
     'create_video_task',
     result.status === 'success' ? '视频任务完成' : result.status === 'interrupted' ? '视频任务已中断' : '视频任务失败',
@@ -271,7 +307,7 @@ export const processWithKieAi = async (
   });
 
   const imageTimeout = KIE_IMAGE_TIMEOUT[moduleConfig.model] || KIE_IMAGE_DEFAULT_TIMEOUT;
-  const result = await waitForJobResult(job.id, signal, imageTimeout);
+  const result = await waitForJobResult(job.id, signal, imageTimeout, true, Boolean(apiConfig.kieApiKey));
   logKieEvent(
     'create_image_task',
     result.status === 'success' ? '图像任务完成' : result.status === 'interrupted' ? '图像任务已中断' : '图像任务失败',

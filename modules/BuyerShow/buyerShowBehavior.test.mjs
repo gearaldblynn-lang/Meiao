@@ -76,3 +76,12 @@ test('buyer show prompt hard-locks packaging identity instead of allowing redesi
     'buyer show prompt should explicitly require natural scene integration'
   );
 });
+
+test('buyer show auto-recovers refresh-persisted recoverable kie errors with existing task ids', () => {
+  assert.match(source, /isRecoverableKieTaskResult/);
+  assert.match(
+    source,
+    /\(task\.status === 'generating' \|\| \(task\.status === 'error' && isRecoverableKieTaskResult\(task\.taskId, task\.error\)\)\)/,
+    'buyer show should resume recoverable error tasks on refresh'
+  );
+});
