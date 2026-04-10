@@ -4,7 +4,7 @@ import BuyerShowSidebar from '../../modules/BuyerShow/BuyerShowSidebar';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { generateBuyerShowPrompts } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
-import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
+import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { createZipAndDownload } from '../../utils/imageUtils';
 import { logInternalAction, logActionStart, logActionSuccess, logActionFailure, logActionInterrupted } from '../../services/loggingService';
 import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
@@ -367,7 +367,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
       sets.forEach(set => {
         if (set.tasks && Array.isArray(set.tasks)) {
           set.tasks.forEach(task => {
-            if (task.status === 'generating' && task.taskId && !inflightIdsRef.current.has(task.id)) {
+            if ((task.status === 'generating' || (task.status === 'error' && isRecoverableKieTaskResult(task.taskId, task.error))) && task.taskId && !inflightIdsRef.current.has(task.id)) {
                inflightIdsRef.current.add(task.id);
                handleRecoverTask(task, set.id);
             }

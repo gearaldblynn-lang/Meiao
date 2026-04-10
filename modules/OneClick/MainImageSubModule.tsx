@@ -8,7 +8,7 @@ import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
 import { analyzeOneClickReferenceSet, generateMarketingSchemes } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
-import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
+import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { resizeImage, createZipAndDownload, downloadRemoteFile, getImageDimensions } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
@@ -77,7 +77,7 @@ const MainImageSubModule: React.FC<Props> = ({
     // 自动恢复刷新前正在生成的任务
     if (schemes && Array.isArray(schemes)) {
       schemes.forEach(s => {
-        if (s.status === 'generating' && s.taskId && !inflightIdsRef.current.has(s.id)) {
+        if ((s.status === 'generating' || (s.status === 'error' && isRecoverableKieTaskResult(s.taskId, s.error))) && s.taskId && !inflightIdsRef.current.has(s.id)) {
           handleRecoverSingle(s.id);
         }
       });

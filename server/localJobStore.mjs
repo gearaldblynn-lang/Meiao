@@ -344,7 +344,7 @@ export const createLocalJobWorker = ({
                 status: error?.code === 'request_cancelled' ? 'interrupted' : 'failed',
                 meta: {
                   jobId: failedJob.id,
-                  providerTaskId: failedJob.providerTaskId || '',
+                  providerTaskId: error?.providerTaskId || failedJob.providerTaskId || '',
                   provider: failedJob.provider,
                   retryCount: failedJob.retryCount,
                   errorCode: failedJob.errorCode,

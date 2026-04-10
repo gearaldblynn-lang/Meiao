@@ -12,7 +12,7 @@ import {
 } from '../../types';
 import SkuSidebar from './SkuSidebar';
 import { uploadToCos } from '../../services/tencentCosService';
-import { processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
+import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
 import { resizeImage, getImageDimensions, createZipAndDownload } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
@@ -76,7 +76,7 @@ const SkuSubModule: React.FC<Props> = ({
     onProcessingChange(false);
     if (schemes && Array.isArray(schemes)) {
       schemes.forEach(s => {
-        if (s.status === 'generating' && s.taskId && !inflightIdsRef.current.has(s.id)) {
+        if ((s.status === 'generating' || (s.status === 'error' && isRecoverableKieTaskResult(s.taskId, s.error))) && s.taskId && !inflightIdsRef.current.has(s.id)) {
           handleRecoverSingle(s.id);
         }
       });

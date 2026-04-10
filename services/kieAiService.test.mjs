@@ -33,3 +33,18 @@ test('kieAiService gives image generation a longer timeout budget for slow cloud
   assert.match(kieAiSource, /const KIE_IMAGE_DEFAULT_TIMEOUT = 6 \* 60_000/);
   assert.match(kieAiSource, /const KIE_RECOVER_TIMEOUT = 4 \* 60_000/);
 });
+
+test('kieAiService auto-recovers recoverable kie polling failures when provider task id is available', () => {
+  assert.match(
+    kieAiSource,
+    /const KIE_AUTO_RECOVER_ERROR_CODES = new Set\(\['provider_internal_error', 'provider_network_error', 'provider_timeout'\]\)/,
+  );
+  assert.match(
+    kieAiSource,
+    /const shouldAutoRecoverKieJob = \(job: any\) => \{/,
+  );
+  assert.match(
+    kieAiSource,
+    /if \(allowAutoRecover && shouldAutoRecoverKieJob\(finalJob\)\) \{\s*return recoverKieProviderTask\(finalJob\.providerTaskId, signal, finalJob\.taskType === 'kie_video', kieClientConfigPresent\);/s,
+  );
+});
