@@ -29,8 +29,9 @@ import AgentDetailView from './AgentDetailView';
 import AgentWizardView from './AgentWizardView';
 import KnowledgeBaseListView from './KnowledgeBaseListView';
 import KnowledgeBaseEditorView from './KnowledgeBaseEditorView';
+import AgentStudioWorkspace from './AgentStudioWorkspace';
 
-type ManagerPage = 'agent_list' | 'agent_detail' | 'agent_wizard' | 'knowledge_list' | 'knowledge_editor';
+type ManagerPage = 'agent_list' | 'agent_detail' | 'agent_wizard' | 'knowledge_list' | 'knowledge_editor' | 'agent_studio';
 
 interface Props {
   onStatusMessage: (value: string) => void;
@@ -90,18 +91,31 @@ const fallbackImageModels = [
   { id: 'nano-banana-2', label: 'Nano Banana 2' },
   { id: 'nano-banana-pro', label: 'Nano Banana Pro' },
 ];
+const AGENT_CENTER_MANAGER_STATE_KEY = 'MEIAO_AGENT_CENTER_MANAGER_STATE';
+
+const readManagerState = () => {
+  try {
+    const raw = sessionStorage.getItem(AGENT_CENTER_MANAGER_STATE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+};
 
 const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, onLoadingChange, onAgentCatalogChanged }) => {
-  const [managerSection, setManagerSection] = useState<'agents' | 'knowledge'>('agents');
-  const [page, setPage] = useState<ManagerPage>('agent_list');
-  const [knowledgeReturnPage, setKnowledgeReturnPage] = useState<ManagerPage>('knowledge_list');
-  const [detailTab, setDetailTab] = useState<'config' | 'knowledge' | 'test' | 'versions'>('config');
+  const initialManagerState = readManagerState();
+  const [managerSection, setManagerSection] = useState<'agents' | 'knowledge'>(initialManagerState.managerSection === 'knowledge' ? 'knowledge' : 'agents');
+  const [page, setPage] = useState<ManagerPage>((initialManagerState.page as ManagerPage) || 'agent_list');
+  const [knowledgeReturnPage, setKnowledgeReturnPage] = useState<ManagerPage>((initialManagerState.knowledgeReturnPage as ManagerPage) || 'knowledge_list');
+  const [detailTab, setDetailTab] = useState<'config' | 'knowledge' | 'test' | 'versions'>(
+    ['config', 'knowledge', 'test', 'versions'].includes(initialManagerState.detailTab) ? initialManagerState.detailTab : 'config'
+  );
   const [agents, setAgents] = useState<AgentSummary[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState('');
+  const [selectedAgentId, setSelectedAgentId] = useState(String(initialManagerState.selectedAgentId || ''));
   const [versions, setVersions] = useState<AgentVersion[]>([]);
-  const [selectedVersionId, setSelectedVersionId] = useState('');
+  const [selectedVersionId, setSelectedVersionId] = useState(String(initialManagerState.selectedVersionId || ''));
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseSummary[]>([]);
-  const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState('');
+  const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState(String(initialManagerState.selectedKnowledgeBaseId || ''));
   const [documents, setDocuments] = useState<KnowledgeDocumentSummary[]>([]);
   const [validationMessage, setValidationMessage] = useState('请用一句话说明这个智能体能做什么。');
   const [validationResult, setValidationResult] = useState<Record<string, unknown> | null>(null);
@@ -209,6 +223,22 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       .catch((error: any) => onErrorMessage(error.message || '智能体中心初始化失败'))
       .finally(() => onLoadingChange(false));
   }, []);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(AGENT_CENTER_MANAGER_STATE_KEY, JSON.stringify({
+        managerSection,
+        page,
+        knowledgeReturnPage,
+        detailTab,
+        selectedAgentId,
+        selectedVersionId,
+        selectedKnowledgeBaseId,
+      }));
+    } catch {
+      // ignore storage errors
+    }
+  }, [managerSection, page, knowledgeReturnPage, detailTab, selectedAgentId, selectedVersionId, selectedKnowledgeBaseId]);
 
   useEffect(() => {
     if (!selectedKnowledgeBase) {
@@ -437,6 +467,21 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
     await loadAgents(selectedAgentId);
   });
 
+  const openStudio = () => runAction(async () => {
+    if (!selectedAgent) return;
+    const detail = await fetchAgentDetail(selectedAgent.id);
+    let draft = (detail.versions || []).find((v: AgentVersion) => !v.isPublished);
+    if (!draft) {
+      const result = await createAgentDraft(selectedAgent.id);
+      draft = result.version;
+    }
+    await loadAgents(selectedAgent.id);
+    if (draft) {
+      setSelectedVersionId(draft.id);
+      setPage('agent_studio');
+    }
+  });
+
   const handleSaveKnowledgeBase = () => runAction(async () => {
     if (selectedKnowledgeBase) {
       await updateKnowledgeBase(selectedKnowledgeBase.id, knowledgeBaseForm);
@@ -583,19 +628,19 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
   };
 
   const renderSectionTabs = () => (
-    <div className="mb-6 flex flex-wrap gap-3">
+    <div className="absolute right-0 top-0 z-10 inline-flex rounded-[18px] border border-slate-200/80 bg-white/90 p-1 shadow-[0_12px_30px_rgba(15,23,42,0.06)]">
       <button
         onClick={() => {
           setManagerSection('agents');
           setPage('agent_list');
         }}
-        className={`rounded-2xl px-4 py-3 text-sm font-black ${managerSection === 'agents' ? 'bg-slate-900 text-white' : 'border border-slate-200 bg-white text-slate-700'}`}
+        className={`rounded-[14px] px-3 py-1.5 text-[12px] font-black transition ${managerSection === 'agents' ? 'bg-slate-900 text-white' : 'text-slate-700'}`}
       >
         智能体
       </button>
       <button
         onClick={() => openKnowledgeList('knowledge_list')}
-        className={`rounded-2xl px-4 py-3 text-sm font-black ${managerSection === 'knowledge' ? 'bg-slate-900 text-white' : 'border border-slate-200 bg-white text-slate-700'}`}
+        className={`rounded-[14px] px-3 py-1.5 text-[12px] font-black transition ${managerSection === 'knowledge' ? 'bg-slate-900 text-white' : 'text-slate-700'}`}
       >
         知识库
       </button>
@@ -636,10 +681,28 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
   );
 
   const wrapPage = (content: React.ReactNode) => (
-    <div className="h-full min-h-0 overflow-y-auto pr-1">
+    <div className="relative h-full min-h-0 overflow-y-auto pr-1 pt-12">
       {content}
     </div>
   );
+
+  if (page === 'agent_studio' && selectedAgent && draftVersion) {
+    return wrapPage(
+      <>
+        {renderSectionTabs()}
+        <AgentStudioWorkspace
+          agent={selectedAgent}
+          draftVersion={draftVersion}
+          availableChatModels={availableChatModels}
+          onBack={() => setPage('agent_detail')}
+          onVersionUpdated={(_v) => void loadAgents(selectedAgentId)}
+          onStatusMessage={onStatusMessage}
+          onErrorMessage={onErrorMessage}
+        />
+        {renderDangerConfirm()}
+      </>
+    );
+  }
 
   if (page === 'agent_wizard') {
     return wrapPage(
@@ -728,6 +791,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
           onKnowledgeBaseEditor={() => openKnowledgeList('agent_detail')}
           onValidationMessageChange={setValidationMessage}
           onValidate={handleValidate}
+          onOpenStudio={openStudio}
         />
         {renderDangerConfirm()}
       </>

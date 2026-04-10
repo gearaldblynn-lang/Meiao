@@ -236,6 +236,81 @@ test('uploadAssetViaKieStream prefers stream upload and returns file url', async
   }
 });
 
+test('uploadAssetViaKie falls back for relative managed assets when stream upload auth is rejected', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).startsWith('http://127.0.0.1:3100/api/assets/file/')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/png' }),
+        arrayBuffer: async () => new TextEncoder().encode('asset-binary').buffer,
+        json: async () => ({}),
+      };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({ msg: 'stream auth denied' }, 401);
+    }
+    if (String(url).includes('/file-base64-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://kie.example.com/uploaded-from-base64.png' },
+      });
+    }
+    if (String(url).includes('/createTask')) {
+      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-base64-fallback' } });
+    }
+    if (String(url).includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://example.com/base64-fallback-result.png'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'test',
+          imageUrls: ['/api/assets/file/asset-fallback/source.png'],
+          model: 'nano-banana-2',
+          aspectRatio: '1:1',
+          resolution: '1K',
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.providerTaskId, 'kie-task-base64-fallback');
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 1);
+    const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
+    const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
+    assert.deepEqual(createTaskBody.input.image_input, ['https://kie.example.com/uploaded-from-base64.png']);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
 test('executeProviderJob routes gpt-5-4 kie chat through responses api with reasoning and web search', async () => {
   const originalFetch = global.fetch;
   const requests = [];
@@ -276,17 +351,19 @@ test('executeProviderJob routes gpt-5-4 kie chat through responses api with reas
     assert.match(requests[0].url, /\/codex\/v1\/responses$/);
     const body = JSON.parse(String(requests[0].init.body));
     assert.equal(body.model, 'gpt-5-4');
+    assert.equal(body.instructions, '你是助手');
     assert.equal(body.reasoning.effort, 'low');
     assert.equal(body.tools[0].type, 'web_search');
-    assert.equal(body.input[1].content[0].type, 'input_text');
-    assert.equal(body.input[1].content[1].type, 'input_image');
-    assert.equal(body.input[1].content[2].type, 'input_file');
+    assert.equal(body.input.length, 1);
+    assert.equal(body.input[0].content[0].type, 'input_text');
+    assert.equal(body.input[0].content[1].type, 'input_image');
+    assert.equal(body.input[0].content[2].type, 'input_file');
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-test('executeProviderJob uploads managed asset image urls to kie before creating image task', async () => {
+test('executeProviderJob keeps cloud managed asset image urls for kie image tasks instead of reuploading them', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
@@ -294,21 +371,6 @@ test('executeProviderJob uploads managed asset image urls to kie before creating
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
-    if (String(url).includes('/api/assets/file/')) {
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'image/jpeg' }),
-        arrayBuffer: async () => new TextEncoder().encode('asset-binary').buffer,
-        json: async () => ({}),
-      };
-    }
-    if (String(url).includes('/file-stream-upload')) {
-      return createJsonResponse({
-        code: 200,
-        data: { fileUrl: 'https://kie.example.com/uploaded-source.jpg' },
-      });
-    }
     if (String(url).includes('/createTask')) {
       return createJsonResponse({ code: 200, data: { taskId: 'kie-task-managed-asset' } });
     }
@@ -346,11 +408,11 @@ test('executeProviderJob uploads managed asset image urls to kie before creating
     );
 
     assert.equal(result.providerTaskId, 'kie-task-managed-asset');
-    const assetRequest = requests.find((item) => item.url.includes('/api/assets/file/'));
-    assert.match(assetRequest.url, /^http:\/\/127\.0\.0\.1:3100\/api\/assets\/file\//);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
     const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
     const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
-    assert.deepEqual(createTaskBody.input.image_input, ['https://kie.example.com/uploaded-source.jpg']);
+    assert.deepEqual(createTaskBody.input.image_input, ['http://111.229.66.247/api/assets/file/asset-1/source.jpg']);
   } finally {
     global.fetch = originalFetch;
     global.setTimeout = originalSetTimeout;
@@ -358,7 +420,79 @@ test('executeProviderJob uploads managed asset image urls to kie before creating
   }
 });
 
-test('executeProviderJob uploads managed asset attachments before calling gpt-5.4 responses api', async () => {
+test('executeProviderJob can download relative managed asset paths before uploading them to kie', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).startsWith('http://127.0.0.1:3100/api/assets/file/')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/png' }),
+        arrayBuffer: async () => new TextEncoder().encode('asset-binary').buffer,
+        json: async () => ({}),
+      };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://kie.example.com/uploaded-relative.png' },
+      });
+    }
+    if (String(url).includes('/createTask')) {
+      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-relative-asset' } });
+    }
+    if (String(url).includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://example.com/relative-result.png'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'test',
+          imageUrls: ['/api/assets/file/asset-relative/source.png'],
+          model: 'nano-banana-2',
+          aspectRatio: '1:1',
+          resolution: '1K',
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.providerTaskId, 'kie-task-relative-asset');
+    const assetRequest = requests.find((item) => item.url.includes('/api/assets/file/'));
+    assert.equal(assetRequest.url, 'http://127.0.0.1:3100/api/assets/file/asset-relative/source.png');
+    const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
+    const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
+    assert.deepEqual(createTaskBody.input.image_input, ['https://kie.example.com/uploaded-relative.png']);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('executeProviderJob sends managed file attachments to gpt-5.4 responses as raw file_data', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
@@ -372,12 +506,6 @@ test('executeProviderJob uploads managed asset attachments before calling gpt-5.
         arrayBuffer: async () => new TextEncoder().encode('pdf-binary').buffer,
         json: async () => ({}),
       };
-    }
-    if (String(url).includes('/file-stream-upload')) {
-      return createJsonResponse({
-        code: 200,
-        data: { fileUrl: 'https://kie.example.com/uploaded-doc.pdf' },
-      });
     }
     if (String(url).includes('/codex/v1/responses')) {
       return createJsonResponse({ output_text: 'ok' });
@@ -410,9 +538,69 @@ test('executeProviderJob uploads managed asset attachments before calling gpt-5.
     assert.equal(result.result.content, 'ok');
     const assetRequest = requests.find((item) => item.url.includes('/api/assets/file/'));
     assert.match(assetRequest.url, /^http:\/\/127\.0\.0\.1:3100\/api\/assets\/file\//);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 0);
     const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
     const responseBody = JSON.parse(String(responseRequest.init.body));
-    assert.equal(responseBody.input[1].content[1].file_url, 'https://kie.example.com/uploaded-doc.pdf');
+    assert.equal(responseBody.input[0].content[1].type, 'input_file');
+    assert.equal(responseBody.input[0].content[1].filename, 'source.pdf');
+    assert.match(responseBody.input[0].content[1].file_data, /^data:application\/pdf;base64,/);
+    assert.equal(responseBody.input[0].content[1].file_url, undefined);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob inlines managed asset images as data urls for gpt-5.4 responses api', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/png' }),
+        arrayBuffer: async () => new TextEncoder().encode('png-binary').buffer,
+        json: async () => ({}),
+      };
+    }
+    if (String(url).includes('/codex/v1/responses')) {
+      return createJsonResponse({ output_text: 'ok' });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gpt-5-4-openai-resp',
+          messages: [
+            { role: 'system', content: '你是助手' },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '分析这张图' },
+                { type: 'image_url', image_url: { url: 'http://111.229.66.247/api/assets/file/img-1/source.png' } },
+              ],
+            },
+          ],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'ok');
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 0);
+    const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
+    const responseBody = JSON.parse(String(responseRequest.init.body));
+    assert.match(responseBody.input[0].content[1].image_url, /^data:image\/png;base64,/);
   } finally {
     global.fetch = originalFetch;
   }
@@ -561,6 +749,99 @@ test('executeProviderJob extracts text when kie chat response is wrapped under d
     );
 
     assert.equal(result.result.content, '包装后的结果文本');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob ignores echoed input payload when kie responses returns final output text', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () =>
+    createJsonResponse({
+      id: 'resp_123',
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [
+            { type: 'output_text', text: '工作室测试链路正常' },
+          ],
+        },
+      ],
+      input: [
+        {
+          role: 'system',
+          content: [{ type: 'input_text', text: '你是一个智能体配置助手' }],
+        },
+        {
+          role: 'user',
+          content: [{ type: 'input_text', text: '请直接回复工作室测试链路正常' }],
+        },
+      ],
+    });
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gpt-5-4-openai-resp',
+          messages: [{ role: 'user', content: '请直接回复工作室测试链路正常' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, '工作室测试链路正常');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob falls back to a stable chat model when gpt-5.4 responses returns empty output', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/codex/v1/responses')) {
+      return createJsonResponse({
+        id: 'resp_empty',
+        model: 'gpt-5.4',
+        status: 'completed',
+        output: [],
+      });
+    }
+    return createJsonResponse({
+      choices: [
+        {
+          message: {
+            content: '工作室测试链路正常',
+          },
+        },
+      ],
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gpt-5-4-openai-resp',
+          messages: [{ role: 'user', content: '请只回复工作室测试链路正常' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, '工作室测试链路正常');
+    assert.equal(result.result.modelUsed, 'gemini-3.1-pro-openai');
+    assert.match(requests[0].url, /\/codex\/v1\/responses$/);
+    assert.match(requests[1].url, /\/gemini-3\.1-pro\/v1\/chat\/completions$/);
   } finally {
     global.fetch = originalFetch;
   }

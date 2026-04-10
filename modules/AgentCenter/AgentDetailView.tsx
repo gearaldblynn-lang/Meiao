@@ -27,6 +27,7 @@ interface Props {
   onKnowledgeBaseEditor: () => void;
   onValidationMessageChange: (value: string) => void;
   onValidate: () => void;
+  onOpenStudio?: () => void;
 }
 
 const formatVersionMeta = (version: AgentVersion | null) => {
@@ -62,6 +63,7 @@ const AgentDetailView: React.FC<Props> = ({
   onKnowledgeBaseEditor,
   onValidationMessageChange,
   onValidate,
+  onOpenStudio,
 }) => {
   const selectedVersion = versions.find((item) => item.id === selectedVersionId) || versions[0] || null;
   const publishedVersion = versions.find((item) => item.isPublished) || null;
@@ -109,6 +111,9 @@ const AgentDetailView: React.FC<Props> = ({
           </div>
 
           <div className="flex flex-wrap justify-start gap-2 xl:justify-end">
+            {onOpenStudio && (
+              <button type="button" onClick={onOpenStudio} className="rounded-[18px] bg-[linear-gradient(135deg,#06b6d4,#0891b2)] px-3.5 py-2 text-[13px] font-black text-white shadow-[0_10px_24px_rgba(6,182,212,0.22)]">智能体工作室</button>
+            )}
             <button onClick={onEditDraft} className="rounded-[18px] border border-white/75 bg-white/70 px-3.5 py-2 text-[13px] font-black text-slate-700 shadow-[0_8px_20px_rgba(148,163,184,0.12)] backdrop-blur-xl">编辑草稿</button>
             <button onClick={onCreateDraft} className="rounded-[18px] border border-white/75 bg-white/70 px-3.5 py-2 text-[13px] font-black text-slate-700 shadow-[0_8px_20px_rgba(148,163,184,0.12)] backdrop-blur-xl">新建草稿</button>
             <button

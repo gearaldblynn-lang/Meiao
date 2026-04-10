@@ -270,8 +270,26 @@ export const searchKnowledgeChunks = (chunks, query, policy = DEFAULT_RETRIEVAL_
   return limited;
 };
 
+const describeRichContentForText = (value) => {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return String(value || '');
+  return value.map((item) => {
+    if (!item || typeof item !== 'object') return '';
+    if (item.type === 'text' || item.type === 'input_text') {
+      return String(item.text || '').trim();
+    }
+    if (item.type === 'image_url' || item.type === 'input_image') {
+      return `[图片${item?.image_url?.url || item?.image_url || item?.url ? `: ${item?.image_url?.url || item?.image_url || item?.url}` : ''}]`;
+    }
+    if (item.type === 'input_file') {
+      return `[文件: ${item.filename || item.name || item.file_url || item.url || '附件'}]`;
+    }
+    return '';
+  }).filter(Boolean).join('\n');
+};
+
 export const estimateTokenCount = (value) => {
-  const text = String(value || '').trim();
+  const text = describeRichContentForText(value).trim();
   if (!text) return 0;
   return Math.max(1, Math.ceil(text.length / 4));
 };
@@ -282,10 +300,24 @@ export const buildAgentPromptMessages = ({
   recentMessages = [],
   knowledgeChunks = [],
   userMessage = '',
+  hasKnowledgeBase = false,
 }) => {
   const messages = [];
   if (systemPrompt.trim()) {
     messages.push({ role: 'system', content: systemPrompt.trim() });
+  }
+  if (hasKnowledgeBase) {
+    messages.push({
+      role: 'system',
+      content: `你可以通过以下指令查询知识库，获取回答所需的信息：
+[SEARCH: 关键词]
+
+使用规则：
+- 当你需要查询规则、流程、案例等知识时，先输出 [SEARCH: 关键词]，等待检索结果后再继续
+- 可以多次使用，每次针对不同的子问题
+- 关键词要精准，例如：[SEARCH: 退款申请流程] 而非 [SEARCH: 退款]
+- 信息足够时直接输出最终答案，不要再使用 SEARCH 指令`,
+    });
   }
   if (summary.trim()) {
     messages.push({ role: 'system', content: `会话摘要：\n${summary.trim()}` });
@@ -301,16 +333,16 @@ export const buildAgentPromptMessages = ({
   }
   recentMessages.forEach((message) => {
     if (!message?.role || !message?.content) return;
-    messages.push({ role: message.role, content: String(message.content) });
+    messages.push({ role: message.role, content: message.content });
   });
-  messages.push({ role: 'user', content: String(userMessage || '') });
+  messages.push({ role: 'user', content: userMessage });
   return messages;
 };
 
 export const buildConversationSummary = (messages, maxChars = DEFAULT_CONTEXT_POLICY.maxSummaryChars) => {
   const source = (Array.isArray(messages) ? messages : [])
     .slice(-12)
-    .map((message) => `${message.role === 'assistant' ? '助手' : '用户'}：${String(message.content || '').trim()}`)
+    .map((message) => `${message.role === 'assistant' ? '助手' : '用户'}：${describeRichContentForText(message.content).trim()}`)
     .filter(Boolean)
     .join('\n');
 
@@ -321,3 +353,17 @@ export const estimateCostByTokens = (promptTokens, completionTokens) => {
   const total = Number(promptTokens || 0) + Number(completionTokens || 0);
   return Number((total * 0.000002).toFixed(6));
 };
+
+export const parseAgentToolCalls = (text) => {
+  const calls = [];
+  const regex = /\[SEARCH:\s*([^\]]+)\]/g;
+  let match;
+  while ((match = regex.exec(String(text || ''))) !== null) {
+    const query = match[1].trim();
+    if (query) calls.push({ type: 'search', query });
+  }
+  return calls;
+};
+
+export const stripAgentToolCalls = (text) =>
+  String(text || '').replace(/\[SEARCH:\s*[^\]]+\]/g, '').trim();

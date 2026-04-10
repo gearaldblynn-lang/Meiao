@@ -12,7 +12,9 @@ import {
   estimateTokenCount,
   normalizeKnowledgeChunkStrategy,
   normalizeAgentConfig,
+  parseAgentToolCalls,
   searchKnowledgeChunks,
+  stripAgentToolCalls,
 } from '../modules/AgentCenter/agentCenterUtils.mjs';
 import { buildLogFilterOptions, normalizeLogPagination } from '../modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
@@ -181,7 +183,9 @@ const getPersistentAssetBaseUrl = (req = null) => {
   if (explicit) return explicit;
 
   const inferred = getPublicBaseUrl({}, req);
-  if (!inferred || isLocalHostValue(inferred)) return '';
+  if (!inferred) return '';
+  if (!shouldUseMysql) return inferred;
+  if (isLocalHostValue(inferred)) return '';
   return inferred;
 };
 
@@ -625,9 +629,20 @@ const normalizeVersionName = (value, versionNo, timestamp = Date.now()) => {
   if (trimmed === 'V1' && Number(versionNo || 1) !== 1) return fallbackName.slice(0, 160);
   return trimmed.slice(0, 160);
 };
-const getChatModelCatalog = () => buildPublicSystemConfig(process.env).agentModels.chat || [];
+const getChatModelCatalog = (publicBaseUrl = '') =>
+  buildPublicSystemConfig(process.env, {}, publicBaseUrl ? { publicBaseUrl } : {}).agentModels.chat || [];
 const getImageModelCatalog = () => buildPublicSystemConfig(process.env).agentModels.image || [];
-const getChatModelCapability = (modelId) => getChatModelCatalog().find((item) => item.id === modelId) || null;
+const getChatModelCapability = (modelId, publicBaseUrl = '') => getChatModelCatalog(publicBaseUrl).find((item) => item.id === modelId) || null;
+
+const getAttachmentCapabilityError = ({ capability, attachments = [], requestMode = 'chat', modelLabel = '当前模型' }) => {
+  if (requestMode !== 'image_generation' && attachments.some((item) => item?.kind === 'image') && !capability?.supportsImageInput) {
+    return `${modelLabel}当前环境下不支持图片输入`;
+  }
+  if (requestMode !== 'image_generation' && attachments.some((item) => item?.kind !== 'image') && !capability?.supportsFileInput) {
+    return `${modelLabel}当前环境下不支持文件输入`;
+  }
+  return '';
+};
 const getImageModelCapability = (modelId) => getImageModelCatalog().find((item) => item.id === modelId) || null;
 const resolveDefaultAnalysisChatModel = (...preferredModels) => {
   const available = getChatModelCatalog().map((item) => item.id);
@@ -1658,10 +1673,6 @@ const scrubDbStatesForDeletedAssets = async (validAssetUrls) => {
 
 const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, fileName, mimeType, fileBuffer, width = 0, height = 0 }) => {
   const publicBaseUrl = getPersistentAssetBaseUrl(req);
-  if (!publicBaseUrl) {
-    return null;
-  }
-
   const pool = shouldUseMysql ? await getMysqlPool() : null;
   return persistAssetBuffer({
     pool,
@@ -1708,14 +1719,64 @@ const persistJobOutputAssetsIfEnabled = async (job, output) => {
     result[`${fieldName}RemoteUrl`] = sourceUrl;
   };
 
+  const persistRemoteArrayField = async (fieldName, assetType, fallbackNameBuilder) => {
+    const sourceUrls = Array.isArray(output[fieldName]) ? output[fieldName] : [];
+    if (sourceUrls.length === 0) return;
+    const persistedUrls = [];
+    for (let index = 0; index < sourceUrls.length; index += 1) {
+      const sourceUrl = String(sourceUrls[index] || '').trim();
+      if (!/^https?:\/\//i.test(sourceUrl)) continue;
+      if (isManagedAssetUrl(sourceUrl)) {
+        persistedUrls.push(sourceUrl);
+        continue;
+      }
+      const persisted = await persistRemoteAsset({
+        pool,
+        publicBaseUrl,
+        userId: job.userId,
+        module: job.module,
+        assetType,
+        remoteUrl: sourceUrl,
+        originalName: fallbackNameBuilder(index),
+        provider: job.provider,
+        jobId: job.id,
+      });
+      persistedUrls.push(persisted.publicUrl);
+    }
+    output[fieldName] = persistedUrls;
+  };
+
   await persistRemoteField('imageUrl', 'result', `${job.taskType || 'result'}.png`);
   await persistRemoteField('videoUrl', 'video', `${job.taskType || 'result'}.mp4`);
   await persistRemoteField('fileUrl', 'result', `${job.taskType || 'result'}.bin`);
+  await persistRemoteArrayField('imageResultUrls', 'result', (index) => `${job.taskType || 'result'}_${index + 1}.png`);
+  await persistRemoteArrayField('resultUrls', 'result', (index) => `${job.taskType || 'result'}_${index + 1}.png`);
 
   return {
     ...output,
     result,
   };
+};
+
+const persistRuntimeRemoteAssetIfEnabled = async ({ userId, moduleName, assetType = 'result', remoteUrl, originalName = 'result.png', provider = 'kie', jobId = '' }) => {
+  const publicBaseUrl = getPersistentAssetBaseUrl();
+  const normalizedUrl = String(remoteUrl || '').trim();
+  if (!publicBaseUrl || !userId || !/^https?:\/\//i.test(normalizedUrl) || isManagedAssetUrl(normalizedUrl)) {
+    return normalizedUrl;
+  }
+  const pool = shouldUseMysql ? await getMysqlPool() : null;
+  const persisted = await persistRemoteAsset({
+    pool,
+    publicBaseUrl,
+    userId,
+    module: moduleName,
+    assetType,
+    remoteUrl: normalizedUrl,
+    originalName,
+    provider,
+    jobId,
+  });
+  return persisted.publicUrl;
 };
 
 const serveStoredAsset = async (req, res, assetId) => {
@@ -2724,6 +2785,45 @@ const listDbKnowledgeChunksForVersion = async (version) => {
   }));
 };
 
+const TEXT_READABLE_MIME_TYPES = new Set([
+  'text/plain', 'text/markdown', 'text/csv', 'text/html', 'text/xml',
+  'application/json', 'application/xml', 'application/csv',
+]);
+const TEXT_READABLE_EXTENSIONS = new Set([
+  '.txt', '.md', '.csv', '.json', '.xml', '.html', '.htm', '.log', '.yaml', '.yml', '.toml', '.ini', '.conf',
+]);
+const MAX_INLINE_FILE_CHARS = 80_000;
+
+const extractLocalAssetIdFromUrl = (url) => {
+  if (!url || typeof url !== 'string') return null;
+  try {
+    const pathname = url.startsWith('http') ? new URL(url).pathname : url;
+    const m = pathname.match(/\/api\/assets\/file\/([a-f0-9]+)/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+};
+
+const tryReadLocalAssetText = async (pool, assetUrl) => {
+  const assetId = extractLocalAssetIdFromUrl(assetUrl);
+  if (!assetId) return null;
+  const asset = await getStoredAssetById(pool, assetId);
+  if (!asset || asset.deletedAt) return null;
+  const fullPath = resolveStoredAssetPath(asset);
+  if (!fullPath || !existsSync(fullPath)) return null;
+  const ext = path.extname(asset.originalName || '').toLowerCase();
+  const mime = (asset.mimeType || '').split(';')[0].trim().toLowerCase();
+  const isText = TEXT_READABLE_MIME_TYPES.has(mime) || TEXT_READABLE_EXTENSIONS.has(ext);
+  if (!isText) return null;
+  try {
+    const raw = readFileSync(fullPath, 'utf8');
+    return raw.slice(0, MAX_INLINE_FILE_CHARS);
+  } catch {
+    return null;
+  }
+};
+
 const buildChatMessageContent = (text, attachments = []) => {
   const content = [{ type: 'text', text: String(text || '') }];
   (Array.isArray(attachments) ? attachments : []).forEach((item) => {
@@ -2744,6 +2844,76 @@ const buildChatMessageContent = (text, attachments = []) => {
   return content;
 };
 
+const runAgenticRetrievalLoop = async ({
+  initialMessages,
+  currentMessage,
+  selectedModel,
+  reasoningLevel,
+  webSearchEnabled,
+  candidateChunks,
+  retrievalPolicy,
+  maxExtraRounds = 3,
+  onProgress = null,
+}) => {
+  const messages = [...initialMessages];
+  const allUsedChunks = [];
+
+  const initialChunks = searchKnowledgeChunks(candidateChunks, currentMessage, retrievalPolicy);
+  if (initialChunks.length > 0) {
+    allUsedChunks.push(...initialChunks);
+    const block = initialChunks
+      .map((chunk, i) => `资料${i + 1}（${chunk.documentTitle || chunk.sourceType || '知识片段'}）：${chunk.content}`)
+      .join('\n\n');
+    messages.splice(messages.length - 1, 0, {
+      role: 'system',
+      content: `以下是初步检索到的相关知识库内容：\n${block}`,
+    });
+    const docTitles = [...new Set(initialChunks.map((c) => c.documentTitle || c.sourceType || '知识片段').filter(Boolean))];
+    onProgress?.({ stage: 'retrieved', round: 0, queries: [], chunkCount: initialChunks.length, docTitles });
+  }
+
+  let extraRounds = 0;
+  while (extraRounds <= maxExtraRounds) {
+    onProgress?.({ stage: 'thinking', round: extraRounds + 1 });
+    const output = await executeProviderJob({
+      taskType: 'kie_chat',
+      payload: { messages, model: selectedModel, reasoningLevel, webSearchEnabled },
+    }, process.env, new AbortController().signal);
+
+    const rawContent = String(output?.result?.content || '').trim();
+    const toolCalls = parseAgentToolCalls(rawContent);
+
+    if (!toolCalls.length || extraRounds === maxExtraRounds) {
+      return { content: stripAgentToolCalls(rawContent), allUsedChunks };
+    }
+
+    messages.push({ role: 'assistant', content: rawContent });
+
+    const queries = toolCalls.map((c) => c.query);
+    let roundNewChunkCount = 0;
+    const roundDocTitles = [];
+    for (const call of toolCalls) {
+      const chunks = searchKnowledgeChunks(candidateChunks, call.query, retrievalPolicy);
+      const newChunks = chunks.filter((c) => !allUsedChunks.some((u) => u.id === c.id));
+      allUsedChunks.push(...newChunks);
+      roundNewChunkCount += newChunks.length;
+      for (const c of newChunks) {
+        const t = c.documentTitle || c.sourceType || '知识片段';
+        if (t && !roundDocTitles.includes(t)) roundDocTitles.push(t);
+      }
+      const resultContent = newChunks.length > 0
+        ? `[SEARCH: ${call.query}] 检索结果：\n` + newChunks.map((c, i) => `资料${i + 1}（${c.documentTitle || c.sourceType}）：${c.content}`).join('\n\n')
+        : `[SEARCH: ${call.query}] 未找到相关内容。`;
+      messages.push({ role: 'user', content: resultContent });
+    }
+    onProgress?.({ stage: 'retrieved', round: extraRounds + 1, queries, chunkCount: roundNewChunkCount, docTitles: roundDocTitles });
+
+    extraRounds += 1;
+  }
+
+  return { content: '', allUsedChunks };
+};
+
 const runAgentConversation = async ({
   user,
   agent,
@@ -2755,10 +2925,11 @@ const runAgentConversation = async ({
   attachments = [],
   reasoningLevel = null,
   webSearchEnabled = false,
+  onProgress = null,
 }) => {
   const shouldRetrieve = shouldUseKnowledgeRetrieval(currentMessage, version.retrievalPolicy, version.knowledgeBaseIds);
-  const candidateChunks = shouldRetrieve ? await listDbKnowledgeChunksForVersion(version) : [];
-  const knowledgeChunks = shouldRetrieve ? searchKnowledgeChunks(candidateChunks, currentMessage, version.retrievalPolicy) : [];
+  const hasKnowledgeBase = Array.isArray(version.knowledgeBaseIds) && version.knowledgeBaseIds.length > 0 && Boolean(version.retrievalPolicy?.enabled);
+  const candidateChunks = (shouldRetrieve || hasKnowledgeBase) ? await listDbKnowledgeChunksForVersion(version) : [];
   const allPrior = Array.isArray(priorMessages) ? priorMessages : [];
   const maxRounds = Number(version.contextPolicy.maxHistoryRounds || 6);
   const summaryThreshold = Number(version.contextPolicy.summaryTriggerThreshold || 10);
@@ -2782,8 +2953,9 @@ const runAgentConversation = async ({
     systemPrompt: version.systemPrompt,
     summary,
     recentMessages,
-    knowledgeChunks,
+    knowledgeChunks: [],
     userMessage: currentMessage,
+    hasKnowledgeBase,
   });
   if (messages.length > 0) {
     messages[messages.length - 1] = {
@@ -2791,18 +2963,36 @@ const runAgentConversation = async ({
       content: buildChatMessageContent(currentMessage, attachments),
     };
   }
-  const selectedModel = String(selectedModelOverride || (knowledgeChunks.length > 0 ? version.modelPolicy.defaultModel : version.modelPolicy.cheapModel) || '').trim();
+  const selectedModel = String(selectedModelOverride || (hasKnowledgeBase ? version.modelPolicy.defaultModel : version.modelPolicy.cheapModel) || '').trim();
   const startedAt = Date.now();
-  const output = await executeProviderJob({
-    taskType: 'kie_chat',
-    payload: {
-      messages,
-      model: selectedModel,
+  let content;
+  let usedChunks = [];
+  if (hasKnowledgeBase) {
+    const agenticResult = await runAgenticRetrievalLoop({
+      initialMessages: messages,
+      currentMessage,
+      selectedModel,
       reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
       webSearchEnabled: Boolean(webSearchEnabled),
-    },
-  }, process.env, new AbortController().signal);
-  const content = String(output?.result?.content || '').trim();
+      candidateChunks,
+      retrievalPolicy: version.retrievalPolicy,
+      onProgress,
+    });
+    content = agenticResult.content;
+    usedChunks = agenticResult.allUsedChunks;
+  } else {
+    onProgress?.({ stage: 'thinking', round: 1 });
+    const output = await executeProviderJob({
+      taskType: 'kie_chat',
+      payload: {
+        messages,
+        model: selectedModel,
+        reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
+        webSearchEnabled: Boolean(webSearchEnabled),
+      },
+    }, process.env, new AbortController().signal);
+    content = String(output?.result?.content || '').trim();
+  }
   const promptTokens = messages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
   const completionTokens = estimateTokenCount(content);
   const latencyMs = Date.now() - startedAt;
@@ -2810,14 +3000,14 @@ const runAgentConversation = async ({
   return {
     content,
     selectedModel,
-    usedRetrieval: knowledgeChunks.length > 0,
-    knowledgeChunks,
+    usedRetrieval: usedChunks.length > 0,
+    knowledgeChunks: usedChunks,
     promptTokens,
     completionTokens,
     totalTokens: promptTokens + completionTokens,
     latencyMs,
     estimatedCost,
-    retrievalSummary: knowledgeChunks.map((chunk) => ({
+    retrievalSummary: usedChunks.map((chunk) => ({
       documentTitle: chunk.documentTitle,
       sourceType: chunk.sourceType,
       preview: String(chunk.content || '').slice(0, 120),
@@ -3074,8 +3264,9 @@ const createDbChatSessionOptions = async (user, sessionId, payload) => {
   if (!session) return null;
   const version = await getDbAgentVersionById(session.agentVersionId);
   if (!version) return null;
+  const publicBaseUrl = getPersistentAssetBaseUrl();
   const selectedModel = resolveChatSessionModel(version, payload?.selectedModel || session.selectedModel);
-  const capability = getChatModelCapability(selectedModel);
+  const capability = getChatModelCapability(selectedModel, publicBaseUrl);
   const nextReasoningLevel = capability?.supportsReasoningLevel ? (payload?.reasoningLevel ? String(payload.reasoningLevel) : null) : null;
   const nextWebSearchEnabled = capability?.supportsWebSearch ? Boolean(payload?.webSearchEnabled) : false;
   const nextLastImageMode = Boolean(payload?.lastImageMode);
@@ -3120,7 +3311,15 @@ const deleteDbUserAgentHistory = async (user, agentId) => {
   };
 };
 
-const createDbChatReply = async (user, sessionId, payload) => {
+// 进度状态 Map，key = clientRequestId，value = 最新进度事件，5分钟后自动清理
+const chatProgressMap = new Map();
+const setChatProgress = (clientRequestId, progress) => {
+  if (!clientRequestId) return;
+  chatProgressMap.set(clientRequestId, { ...progress, ts: Date.now() });
+  setTimeout(() => chatProgressMap.delete(clientRequestId), 5 * 60 * 1000);
+};
+
+const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => {
   const content = String(payload?.content || '').trim();
   const requestMode = payload?.requestMode === 'image_generation' ? 'image_generation' : 'chat';
   const clientRequestId = String(payload?.clientRequestId || createEntityId()).trim() || createEntityId();
@@ -3129,8 +3328,9 @@ const createDbChatReply = async (user, sessionId, payload) => {
   const version = await getDbAgentVersionById(session.agentVersionId);
   const agent = await getDbAgentById(session.agentId);
   if (!version || !agent) return null;
+  const publicBaseUrl = getPersistentAssetBaseUrl();
   const selectedModel = resolveChatSessionModel(version, payload?.selectedModel || session.selectedModel);
-  const capability = getChatModelCapability(selectedModel);
+  const capability = getChatModelCapability(selectedModel, publicBaseUrl);
   const attachments = Array.isArray(payload?.attachments) ? payload.attachments.map((item) => ({
     name: String(item?.name || '').trim() || '附件',
     url: item?.url ? String(item.url) : undefined,
@@ -3141,12 +3341,8 @@ const createDbChatReply = async (user, sessionId, payload) => {
   if (requestMode === 'image_generation' && attachments.some((item) => item.kind !== 'image')) {
     throw new Error('生图模式暂只支持上传图片');
   }
-  if (requestMode !== 'image_generation' && attachments.some((item) => item.kind === 'image') && !capability?.supportsImageInput) {
-    throw new Error('当前模型不支持图片输入');
-  }
-  if (requestMode !== 'image_generation' && attachments.some((item) => item.kind !== 'image') && !capability?.supportsFileInput) {
-    throw new Error('当前模型不支持文件输入');
-  }
+  const capabilityError = getAttachmentCapabilityError({ capability, attachments, requestMode, modelLabel: `模型 ${selectedModel} ` });
+  if (capabilityError) throw new Error(capabilityError);
   if (requestMode !== 'image_generation' && payload?.webSearchEnabled && !capability?.supportsWebSearch) {
     throw new Error('当前模型不支持联网');
   }
@@ -3195,6 +3391,10 @@ const createDbChatReply = async (user, sessionId, payload) => {
         attachments,
         reasoningLevel: payload?.reasoningLevel || null,
         webSearchEnabled: Boolean(payload?.webSearchEnabled),
+        onProgress: (progress) => {
+          setChatProgress(clientRequestId, progress);
+          if (sendEvent) sendEvent('progress', progress);
+        },
       });
   const assistantMessageId = createEntityId();
   const assistantAttachments = Array.isArray(result.imageResultUrls) && result.imageResultUrls.length > 0
@@ -3876,8 +4076,8 @@ const runLocalAgentConversation = async ({
   webSearchEnabled = false,
 }) => {
   const shouldRetrieve = shouldUseKnowledgeRetrieval(currentMessage, version.retrievalPolicy, version.knowledgeBaseIds);
-  const candidateChunks = shouldRetrieve ? listLocalKnowledgeChunksForVersion(store, version) : [];
-  const knowledgeChunks = shouldRetrieve ? searchKnowledgeChunks(candidateChunks, currentMessage, version.retrievalPolicy) : [];
+  const hasKnowledgeBase = Array.isArray(version.knowledgeBaseIds) && version.knowledgeBaseIds.length > 0 && Boolean(version.retrievalPolicy?.enabled);
+  const candidateChunks = (shouldRetrieve || hasKnowledgeBase) ? listLocalKnowledgeChunksForVersion(store, version) : [];
   const allPrior = Array.isArray(priorMessages) ? priorMessages : [];
   const maxRounds = Number(version.contextPolicy.maxHistoryRounds || 6);
   const summaryThreshold = Number(version.contextPolicy.summaryTriggerThreshold || 10);
@@ -3901,8 +4101,9 @@ const runLocalAgentConversation = async ({
     systemPrompt: version.systemPrompt,
     summary,
     recentMessages,
-    knowledgeChunks,
+    knowledgeChunks: [],
     userMessage: currentMessage,
+    hasKnowledgeBase,
   });
   if (messages.length > 0) {
     messages[messages.length - 1] = {
@@ -3910,26 +4111,43 @@ const runLocalAgentConversation = async ({
       content: buildChatMessageContent(currentMessage, attachments),
     };
   }
-  const selectedModel = String(selectedModelOverride || (knowledgeChunks.length > 0 ? version.modelPolicy.defaultModel : version.modelPolicy.cheapModel) || '').trim();
+  const selectedModel = String(selectedModelOverride || (hasKnowledgeBase ? version.modelPolicy.defaultModel : version.modelPolicy.cheapModel) || '').trim();
   const startedAt = Date.now();
-  const output = await executeProviderJob({
-    taskType: 'kie_chat',
-    payload: {
-      messages,
-      model: selectedModel,
+  let content;
+  let usedChunks = [];
+  if (hasKnowledgeBase) {
+    const agenticResult = await runAgenticRetrievalLoop({
+      initialMessages: messages,
+      currentMessage,
+      selectedModel,
       reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
       webSearchEnabled: Boolean(webSearchEnabled),
-    },
-  }, process.env, new AbortController().signal);
-  const content = String(output?.result?.content || '').trim();
+      candidateChunks,
+      retrievalPolicy: version.retrievalPolicy,
+    });
+    content = agenticResult.content;
+    usedChunks = agenticResult.allUsedChunks;
+  } else {
+    onProgress?.({ stage: 'thinking', round: 1 });
+    const output = await executeProviderJob({
+      taskType: 'kie_chat',
+      payload: {
+        messages,
+        model: selectedModel,
+        reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
+        webSearchEnabled: Boolean(webSearchEnabled),
+      },
+    }, process.env, new AbortController().signal);
+    content = String(output?.result?.content || '').trim();
+  }
   const promptTokens = messages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
   const completionTokens = estimateTokenCount(content);
   return {
     content,
     selectedModel,
-    usedRetrieval: knowledgeChunks.length > 0,
-    knowledgeChunks,
-    retrievalSummary: knowledgeChunks.map((chunk) => ({ documentTitle: chunk.documentTitle, sourceType: chunk.sourceType, preview: String(chunk.content || '').slice(0, 120) })),
+    usedRetrieval: usedChunks.length > 0,
+    knowledgeChunks: usedChunks,
+    retrievalSummary: usedChunks.map((chunk) => ({ documentTitle: chunk.documentTitle, sourceType: chunk.sourceType, preview: String(chunk.content || '').slice(0, 120) })),
     promptTokens,
     completionTokens,
     totalTokens: promptTokens + completionTokens,
@@ -4361,6 +4579,15 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     });
   }
   const imageUrl = String(imageOutput?.result?.imageUrl || '').trim();
+  const persistedImageUrl = await persistRuntimeRemoteAssetIfEnabled({
+    userId: user.id,
+    moduleName: 'agent_center',
+    assetType: 'result',
+    remoteUrl: imageUrl,
+    originalName: `${selectedImageModel || 'image_result'}.png`,
+    provider: 'kie',
+    jobId: String(imageOutput?.providerTaskId || '').trim(),
+  });
   const promptTokens = analysisMessages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
   const completionTokens = estimateTokenCount(analysisContent);
   const content = [
@@ -4405,7 +4632,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
       prompt: finalPrompt,
       reasoningSummary: String(parsed.reasoningSummary || ''),
     },
-    imageResultUrls: imageUrl ? [imageUrl] : [],
+    imageResultUrls: persistedImageUrl ? [persistedImageUrl] : [],
   };
 };
 
@@ -4448,6 +4675,503 @@ const requireDbAdmin = async (req, res) => {
   return user;
 };
 
+// ── Studio Helper Functions ──
+
+const STUDIO_CONFIG_ASSISTANT_PROMPT = ({ agentName, systemPrompt, knowledgeNames, manageableKnowledgeBases, manageableKnowledgeDocuments }) => `你是一个智能体训练工作台助手。用户正在训练名为"${agentName}"的智能体草稿版本。
+
+你的职责不是直接执行修改，而是：
+1. 先理解用户要优化什么
+2. 给出明确建议
+3. 在回复末尾输出结构化“待确认改动”
+
+建议阶段不要直接宣称“我已经修改完成”或“已经写入知识库”。你只能说“建议如下，可确认后应用”。
+
+当前系统提示词：
+---
+${systemPrompt || '（空）'}
+---
+
+${knowledgeNames.length > 0 ? `当前已绑定知识库：${knowledgeNames.join('、')}` : '当前未绑定知识库。'}
+
+你可操作的知识库：
+${manageableKnowledgeBases.length > 0
+    ? manageableKnowledgeBases.map((item) => `- ${item.name}（id=${item.id}）`).join('\n')
+    : '- 暂无可管理知识库'}
+
+你可引用的已有知识库文档：
+${manageableKnowledgeDocuments.length > 0
+    ? manageableKnowledgeDocuments.map((item) => `- ${item.title}（documentId=${item.id}，knowledgeBaseId=${item.knowledgeBaseId}）`).join('\n')
+    : '- 暂无已有知识库文档'}
+
+用户会用自然语言提出训练需求，可能包括：
+- 调整系统提示词
+- 调整模型策略
+- 调整检索策略
+- 调整绑定知识库
+- 新增、修改、删除知识库文档
+
+回复要求：
+1. 先用自然语言说明你理解到的问题、建议怎么改
+2. 如果存在可执行改动，在末尾输出：
+<CONFIG_CHANGES>[JSON数组]</CONFIG_CHANGES>
+3. 如果只是答疑，不要输出 CONFIG_CHANGES
+
+支持的 field：
+- systemPrompt：更新系统提示词
+- knowledgeBaseIds：调整当前智能体绑定的知识库
+- modelPolicy：调整默认模型、简单问题模型、高级模型、多模态模型或生图开关
+- retrievalPolicy：调整检索开关、参考数量、片段上限、上下文上限等策略
+- knowledgeDocument：新增、修改或删除知识库文档
+
+JSON 数组中每项格式示例：
+[
+  {
+    "field": "systemPrompt",
+    "action": "update",
+    "label": "更新系统提示词",
+    "after": "完整的新提示词"
+  },
+  {
+    "field": "knowledgeBaseIds",
+    "action": "update",
+    "label": "绑定课程知识库",
+    "knowledgeBaseIds": ["kb_xxx"]
+  },
+  {
+    "field": "modelPolicy",
+    "action": "update",
+    "label": "调整模型策略",
+    "modelPolicy": {
+      "defaultModel": "gpt-5-4-openai-resp",
+      "cheapModel": "gemini-3-flash-openai",
+      "advancedModel": "gemini-3.1-pro-openai",
+      "multimodalModel": "nano-banana-2",
+      "imageGenerationEnabled": false,
+      "allowedChatModels": ["gpt-5-4-openai-resp", "gemini-3-flash-openai"],
+      "defaultChatModel": "gpt-5-4-openai-resp"
+    }
+  },
+  {
+    "field": "retrievalPolicy",
+    "action": "update",
+    "label": "调整检索策略",
+    "retrievalPolicy": {
+      "enabled": true,
+      "topK": 3,
+      "maxChunks": 5,
+      "maxContextChars": 2400
+    }
+  },
+  {
+    "field": "knowledgeDocument",
+    "action": "add",
+    "label": "新增课程介绍文档",
+    "knowledgeDocument": {
+      "knowledgeBaseId": "kb_xxx",
+      "title": "课程介绍",
+      "rawText": "整理后的完整文档正文",
+      "sourceType": "manual",
+      "chunkStrategy": "balanced",
+      "normalizationEnabled": true
+    }
+  }
+]
+
+规则：
+- 删除知识库文档时必须提供 documentId
+- 修改知识库文档时优先提供 documentId；没有 documentId 不要伪造
+- 新增知识库文档时必须提供 knowledgeBaseId、title、rawText
+- 不要输出不可执行的空字段
+- 如果附件里有可用资料，可以据此整理出建议写入知识库的 rawText，但仍然只是建议，等待确认后才会真正应用`;
+
+const normalizeStudioKnowledgeDocumentChange = (value = {}) => {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    knowledgeBaseId: typeof value.knowledgeBaseId === 'string' ? value.knowledgeBaseId.trim() : undefined,
+    documentId: typeof value.documentId === 'string' ? value.documentId.trim() : undefined,
+    title: typeof value.title === 'string' ? value.title.trim() : undefined,
+    rawText: typeof value.rawText === 'string' ? value.rawText.trim() : undefined,
+    sourceType: value.sourceType === undefined ? undefined : normalizeSourceType(value.sourceType),
+    chunkStrategy: value.chunkStrategy === undefined ? undefined : normalizeKnowledgeChunkStrategyValue(value.chunkStrategy),
+    normalizationEnabled: value.normalizationEnabled === undefined ? undefined : Boolean(value.normalizationEnabled),
+  };
+};
+
+const normalizeStudioConfigDiff = (input) => {
+  if (!input || typeof input !== 'object') return null;
+  const field = ['systemPrompt', 'knowledgeDocument', 'modelPolicy', 'retrievalPolicy', 'knowledgeBaseIds'].includes(String(input.field || '').trim())
+    ? String(input.field).trim()
+    : '';
+  const action = ['update', 'add', 'remove'].includes(String(input.action || '').trim())
+    ? String(input.action).trim()
+    : 'update';
+  if (!field) return null;
+
+  const diff = {
+    id: typeof input.id === 'string' && input.id.trim() ? input.id.trim() : createEntityId(),
+    field,
+    action,
+    label: String(input.label || '待确认改动').trim() || '待确认改动',
+    before: typeof input.before === 'string' ? input.before.trim() : '',
+    after: typeof input.after === 'string' ? input.after.trim() : '',
+    documentId: typeof input.documentId === 'string' ? input.documentId.trim() : undefined,
+    documentTitle: typeof input.documentTitle === 'string' ? input.documentTitle.trim() : undefined,
+    knowledgeBaseId: typeof input.knowledgeBaseId === 'string' ? input.knowledgeBaseId.trim() : undefined,
+    knowledgeBaseIds: Array.isArray(input.knowledgeBaseIds) ? cleanKnowledgeBaseIds(input.knowledgeBaseIds) : [],
+    modelPolicy: input.modelPolicy && typeof input.modelPolicy === 'object' ? {
+      defaultModel: typeof input.modelPolicy.defaultModel === 'string' ? input.modelPolicy.defaultModel.trim() : undefined,
+      cheapModel: typeof input.modelPolicy.cheapModel === 'string' ? input.modelPolicy.cheapModel.trim() : undefined,
+      advancedModel: typeof input.modelPolicy.advancedModel === 'string' ? input.modelPolicy.advancedModel.trim() : undefined,
+      multimodalModel: typeof input.modelPolicy.multimodalModel === 'string' ? input.modelPolicy.multimodalModel.trim() : undefined,
+      imageGenerationEnabled: input.modelPolicy.imageGenerationEnabled === undefined ? undefined : Boolean(input.modelPolicy.imageGenerationEnabled),
+      allowedChatModels: Array.isArray(input.modelPolicy.allowedChatModels)
+        ? sanitizeAllowedChatModels(input.modelPolicy.allowedChatModels)
+        : undefined,
+      defaultChatModel: typeof input.modelPolicy.defaultChatModel === 'string' ? input.modelPolicy.defaultChatModel.trim() : undefined,
+    } : undefined,
+    retrievalPolicy: input.retrievalPolicy && typeof input.retrievalPolicy === 'object' ? {
+      enabled: input.retrievalPolicy.enabled === undefined ? undefined : Boolean(input.retrievalPolicy.enabled),
+      topK: input.retrievalPolicy.topK === undefined ? undefined : Number(input.retrievalPolicy.topK),
+      maxChunks: input.retrievalPolicy.maxChunks === undefined ? undefined : Number(input.retrievalPolicy.maxChunks),
+      similarityThreshold: input.retrievalPolicy.similarityThreshold === undefined ? undefined : Number(input.retrievalPolicy.similarityThreshold),
+      maxContextChars: input.retrievalPolicy.maxContextChars === undefined ? undefined : Number(input.retrievalPolicy.maxContextChars),
+    } : undefined,
+    knowledgeDocument: normalizeStudioKnowledgeDocumentChange(input.knowledgeDocument),
+    status: 'pending',
+  };
+
+  if (field === 'systemPrompt' && !diff.after) return null;
+  if (field === 'knowledgeBaseIds' && diff.knowledgeBaseIds.length === 0) return null;
+  if (field === 'modelPolicy' && !diff.modelPolicy) return null;
+  if (field === 'retrievalPolicy' && !diff.retrievalPolicy) return null;
+  if (field === 'knowledgeDocument') {
+    if (!diff.knowledgeDocument) return null;
+    if (action === 'remove' && !(diff.knowledgeDocument.documentId || diff.documentId)) return null;
+    if (action === 'add' && (!diff.knowledgeDocument.knowledgeBaseId || !diff.knowledgeDocument.title || !diff.knowledgeDocument.rawText)) return null;
+  }
+  return diff;
+};
+
+const parseConfigChanges = (text) => {
+  const match = text.match(/<CONFIG_CHANGES>([\s\S]*?)<\/CONFIG_CHANGES>/);
+  if (!match) return { cleanText: text, diffs: [] };
+  try {
+    const diffs = JSON.parse(match[1].trim());
+    const cleanText = text.replace(/<CONFIG_CHANGES>[\s\S]*?<\/CONFIG_CHANGES>/, '').trim();
+    return { cleanText, diffs: Array.isArray(diffs) ? diffs.map((item) => normalizeStudioConfigDiff(item)).filter(Boolean) : [] };
+  } catch {
+    return { cleanText: text, diffs: [] };
+  }
+};
+
+const buildStudioKnowledgeMaps = (knowledgeBases = [], knowledgeDocuments = []) => ({
+  knowledgeBaseMap: new Map((knowledgeBases || []).map((item) => [item.id, item])),
+  knowledgeDocumentMap: new Map((knowledgeDocuments || []).map((item) => [item.id, item])),
+});
+
+const buildStudioDbKnowledgeContext = async (user) => {
+  const manageableKnowledgeBases = await listDbKnowledgeBases(user);
+  const manageableKnowledgeDocuments = [];
+  for (const kb of manageableKnowledgeBases) {
+    const docs = await listDbKnowledgeDocuments(user, kb.id);
+    docs.forEach((doc) => manageableKnowledgeDocuments.push({
+      id: doc.id,
+      title: doc.title,
+      knowledgeBaseId: doc.knowledgeBaseId,
+    }));
+  }
+  return { manageableKnowledgeBases, manageableKnowledgeDocuments };
+};
+
+const buildStudioLocalKnowledgeContext = (store, user) => {
+  const manageableKnowledgeBases = listLocalKnowledgeBases(store, user);
+  const manageableKnowledgeDocuments = manageableKnowledgeBases.flatMap((kb) =>
+    listLocalKnowledgeDocuments(store, user, kb.id).map((doc) => ({
+      id: doc.id,
+      title: doc.title,
+      knowledgeBaseId: doc.knowledgeBaseId,
+    }))
+  );
+  return { manageableKnowledgeBases, manageableKnowledgeDocuments };
+};
+
+const resolveStudioKnowledgeBaseTargetId = (change, updatedVersion, manageableKnowledgeBaseMap) => {
+  const explicitId = String(
+    change?.knowledgeBaseId ||
+    change?.knowledgeDocument?.knowledgeBaseId ||
+    ''
+  ).trim();
+  if (explicitId && manageableKnowledgeBaseMap.has(explicitId)) return explicitId;
+  const boundIds = cleanKnowledgeBaseIds(updatedVersion?.knowledgeBaseIds);
+  if (boundIds.length === 1 && manageableKnowledgeBaseMap.has(boundIds[0])) return boundIds[0];
+  return '';
+};
+
+const applyStudioVersionChangePayload = (updatedVersion, change) => {
+  if (change.field === 'systemPrompt') {
+    return { systemPrompt: change.after };
+  }
+  if (change.field === 'knowledgeBaseIds') {
+    return { knowledgeBaseIds: change.knowledgeBaseIds };
+  }
+  if (change.field === 'modelPolicy') {
+    const nextModelPolicy = {
+      ...(updatedVersion?.modelPolicy || {}),
+      ...(change.modelPolicy || {}),
+    };
+    const nextAllowedChatModels = Array.isArray(change?.modelPolicy?.allowedChatModels) && change.modelPolicy.allowedChatModels.length > 0
+      ? change.modelPolicy.allowedChatModels
+      : updatedVersion.allowedChatModels;
+    return {
+      modelPolicy: nextModelPolicy,
+      allowedChatModels: nextAllowedChatModels,
+      defaultChatModel: change?.modelPolicy?.defaultChatModel || updatedVersion.defaultChatModel,
+    };
+  }
+  if (change.field === 'retrievalPolicy') {
+    return {
+      retrievalPolicy: {
+        ...(updatedVersion?.retrievalPolicy || {}),
+        ...(change.retrievalPolicy || {}),
+      },
+    };
+  }
+  return null;
+};
+
+const applyStudioTrainingChanges = async (user, versionId, payload) => {
+  const version = await getDbAgentVersionById(versionId);
+  if (!version || version.isPublished) return null;
+  const agent = await getDbAgentById(version.agentId);
+  if (!agent || !canManageOwnedResource(user, agent.ownerUserId)) return null;
+  const { manageableKnowledgeBases, manageableKnowledgeDocuments } = await buildStudioDbKnowledgeContext(user);
+  const { knowledgeBaseMap, knowledgeDocumentMap } = buildStudioKnowledgeMaps(manageableKnowledgeBases, manageableKnowledgeDocuments);
+  const requestedChanges = Array.isArray(payload?.changes) ? payload.changes.map((item) => normalizeStudioConfigDiff(item)).filter(Boolean) : [];
+  let updatedVersion = version;
+  const appliedChanges = [];
+  for (const change of requestedChanges) {
+    const versionPayload = applyStudioVersionChangePayload(updatedVersion, change);
+    if (versionPayload) {
+      updatedVersion = await updateDbAgentVersion(user, versionId, versionPayload) || updatedVersion;
+      appliedChanges.push({ ...change, status: 'applied' });
+      continue;
+    }
+    if (change.field === 'knowledgeDocument' && change.knowledgeDocument) {
+      const targetKnowledgeBaseId = resolveStudioKnowledgeBaseTargetId(change, updatedVersion, knowledgeBaseMap);
+      if (change.action === 'add') {
+        const created = await createDbKnowledgeDocument(user, {
+          knowledgeBaseId: targetKnowledgeBaseId,
+          title: change.knowledgeDocument.title,
+          rawText: change.knowledgeDocument.rawText,
+          sourceType: change.knowledgeDocument.sourceType || 'manual',
+          chunkStrategy: change.knowledgeDocument.chunkStrategy || 'balanced',
+          normalizationEnabled: change.knowledgeDocument.normalizationEnabled !== false,
+        });
+        if (created) {
+          appliedChanges.push({
+            ...change,
+            documentId: created.id,
+            documentTitle: created.title,
+            knowledgeBaseId: created.knowledgeBaseId,
+            status: 'applied',
+          });
+          updatedVersion = await updateDbAgentVersion(user, versionId, { knowledgeBaseIds: updatedVersion.knowledgeBaseIds }) || updatedVersion;
+        }
+      } else if (change.action === 'update') {
+        const targetDocumentId = change.knowledgeDocument.documentId || change.documentId;
+        if (targetDocumentId && knowledgeDocumentMap.has(targetDocumentId)) {
+          const updatedDocument = await updateDbKnowledgeDocument(user, targetDocumentId, {
+            title: change.knowledgeDocument.title,
+            rawText: change.knowledgeDocument.rawText,
+            sourceType: change.knowledgeDocument.sourceType,
+            chunkStrategy: change.knowledgeDocument.chunkStrategy,
+            normalizationEnabled: change.knowledgeDocument.normalizationEnabled,
+          });
+          if (updatedDocument) {
+            appliedChanges.push({
+              ...change,
+              documentId: updatedDocument.id,
+              documentTitle: updatedDocument.title,
+              knowledgeBaseId: updatedDocument.knowledgeBaseId,
+              status: 'applied',
+            });
+            updatedVersion = await updateDbAgentVersion(user, versionId, { knowledgeBaseIds: updatedVersion.knowledgeBaseIds }) || updatedVersion;
+          }
+        }
+      } else if (change.action === 'remove') {
+        const targetDocumentId = change.knowledgeDocument.documentId || change.documentId;
+        if (targetDocumentId && knowledgeDocumentMap.has(targetDocumentId)) {
+          const deletedCount = await deleteDbKnowledgeDocument(user, targetDocumentId);
+          if (deletedCount > 0) {
+            appliedChanges.push({ ...change, documentId: targetDocumentId, status: 'applied' });
+            updatedVersion = await updateDbAgentVersion(user, versionId, { knowledgeBaseIds: updatedVersion.knowledgeBaseIds }) || updatedVersion;
+          }
+        }
+      }
+    }
+  }
+  return { appliedChanges, updatedVersion };
+};
+
+const applyLocalStudioTrainingChanges = (store, user, versionId, payload) => {
+  const version = getLocalAgentVersionById(store, versionId);
+  if (!version || version.isPublished) return null;
+  const agent = getLocalAgentById(store, version.agentId);
+  if (!agent || !canManageOwnedResource(user, agent.ownerUserId)) return null;
+  const { manageableKnowledgeBases, manageableKnowledgeDocuments } = buildStudioLocalKnowledgeContext(store, user);
+  const { knowledgeBaseMap, knowledgeDocumentMap } = buildStudioKnowledgeMaps(manageableKnowledgeBases, manageableKnowledgeDocuments);
+  const requestedChanges = Array.isArray(payload?.changes) ? payload.changes.map((item) => normalizeStudioConfigDiff(item)).filter(Boolean) : [];
+  let updatedVersion = version;
+  const appliedChanges = [];
+  for (const change of requestedChanges) {
+    const versionPayload = applyStudioVersionChangePayload(updatedVersion, change);
+    if (versionPayload) {
+      updatedVersion = updateLocalAgentVersion(store, user, versionId, versionPayload) || updatedVersion;
+      appliedChanges.push({ ...change, status: 'applied' });
+      continue;
+    }
+    if (change.field === 'knowledgeDocument' && change.knowledgeDocument) {
+      const targetKnowledgeBaseId = resolveStudioKnowledgeBaseTargetId(change, updatedVersion, knowledgeBaseMap);
+      if (change.action === 'add') {
+        const created = createLocalKnowledgeDocument(store, user, {
+          knowledgeBaseId: targetKnowledgeBaseId,
+          title: change.knowledgeDocument.title,
+          rawText: change.knowledgeDocument.rawText,
+          sourceType: change.knowledgeDocument.sourceType || 'manual',
+          chunkStrategy: change.knowledgeDocument.chunkStrategy || 'balanced',
+          normalizationEnabled: change.knowledgeDocument.normalizationEnabled !== false,
+        });
+        if (created) {
+          appliedChanges.push({
+            ...change,
+            documentId: created.id,
+            documentTitle: created.title,
+            knowledgeBaseId: created.knowledgeBaseId,
+            status: 'applied',
+          });
+          updatedVersion = updateLocalAgentVersion(store, user, versionId, { knowledgeBaseIds: updatedVersion.knowledgeBaseIds }) || updatedVersion;
+        }
+      } else if (change.action === 'update') {
+        const targetDocumentId = change.knowledgeDocument.documentId || change.documentId;
+        if (targetDocumentId && knowledgeDocumentMap.has(targetDocumentId)) {
+          const updatedDocument = updateLocalKnowledgeDocument(store, user, targetDocumentId, {
+            title: change.knowledgeDocument.title,
+            rawText: change.knowledgeDocument.rawText,
+            sourceType: change.knowledgeDocument.sourceType,
+            chunkStrategy: change.knowledgeDocument.chunkStrategy,
+            normalizationEnabled: change.knowledgeDocument.normalizationEnabled,
+          });
+          if (updatedDocument) {
+            appliedChanges.push({
+              ...change,
+              documentId: updatedDocument.id,
+              documentTitle: updatedDocument.title,
+              knowledgeBaseId: updatedDocument.knowledgeBaseId,
+              status: 'applied',
+            });
+            updatedVersion = updateLocalAgentVersion(store, user, versionId, { knowledgeBaseIds: updatedVersion.knowledgeBaseIds }) || updatedVersion;
+          }
+        }
+      } else if (change.action === 'remove') {
+        const targetDocumentId = change.knowledgeDocument.documentId || change.documentId;
+        if (targetDocumentId && knowledgeDocumentMap.has(targetDocumentId)) {
+          const deletedCount = deleteLocalKnowledgeDocument(store, user, targetDocumentId);
+          if (deletedCount > 0) {
+            appliedChanges.push({ ...change, documentId: targetDocumentId, status: 'applied' });
+            updatedVersion = updateLocalAgentVersion(store, user, versionId, { knowledgeBaseIds: updatedVersion.knowledgeBaseIds }) || updatedVersion;
+          }
+        }
+      }
+    }
+  }
+  return { appliedChanges, updatedVersion };
+};
+
+const handleStudioTrainingMessage = async (user, versionId, payload) => {
+  const version = await getDbAgentVersionById(versionId);
+  if (!version || version.isPublished) return null;
+  const agent = await getDbAgentById(version.agentId);
+  if (!agent || !canManageOwnedResource(user, agent.ownerUserId)) return null;
+  const content = String(payload?.content || '').trim();
+  if (!content) throw new Error('消息内容不能为空。');
+  const history = Array.isArray(payload?.history) ? payload.history : [];
+  const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
+  const publicBaseUrl = getPersistentAssetBaseUrl();
+  const selectedModel = resolveChatSessionModel(version, payload?.selectedModel || version.defaultChatModel || version.modelPolicy?.defaultModel || '');
+  const capability = getChatModelCapability(selectedModel, publicBaseUrl);
+  const capabilityError = getAttachmentCapabilityError({ capability, attachments, requestMode: 'chat', modelLabel: `模型 ${selectedModel} ` });
+  if (capabilityError) throw new Error(capabilityError);
+  if (payload?.webSearchEnabled && !capability?.supportsWebSearch) {
+    throw new Error('当前模型不支持联网');
+  }
+  const kbIds = Array.isArray(version.knowledgeBaseIds) ? version.knowledgeBaseIds : [];
+  const knowledgeNames = [];
+  for (const kbId of kbIds) {
+    const kb = await getDbKnowledgeBaseById(kbId);
+    if (kb) knowledgeNames.push(kb.name);
+  }
+  const { manageableKnowledgeBases, manageableKnowledgeDocuments } = await buildStudioDbKnowledgeContext(user);
+  const systemPrompt = STUDIO_CONFIG_ASSISTANT_PROMPT({
+    agentName: agent.name,
+    systemPrompt: version.systemPrompt,
+    knowledgeNames,
+    manageableKnowledgeBases,
+    manageableKnowledgeDocuments,
+  });
+  const priorMessages = history.map((m) => ({
+    id: '',
+    sessionId: '',
+    userId: '',
+    role: m.role,
+    content: m.content,
+    attachments: Array.isArray(m?.attachments) ? m.attachments.map((item) => ({
+      name: String(item?.name || '').trim() || '附件',
+      url: item?.url ? String(item.url) : undefined,
+      mimeType: item?.mimeType ? String(item.mimeType) : undefined,
+      kind: item?.kind === 'image' ? 'image' : 'file',
+    })) : [],
+    createdAt: 0,
+  }));
+  const result = await runAgentConversation({
+    user, agent, version: { ...version, systemPrompt },
+    priorMessages,
+    currentMessage: content,
+    attachments,
+    selectedModelOverride: selectedModel,
+    reasoningLevel: payload?.reasoningLevel || null,
+    webSearchEnabled: Boolean(payload?.webSearchEnabled),
+  });
+  const rawReply = String(result?.content || '').trim();
+  const { cleanText, diffs } = parseConfigChanges(rawReply);
+  return { reply: cleanText, configDiffs: diffs, updatedVersion: version };
+};
+
+const createStudioTestSession = async (user, payload) => {
+  const agentId = String(payload?.agentId || '').trim();
+  const versionId = String(payload?.versionId || '').trim();
+  if (!agentId || !versionId) return null;
+  const agent = await getDbAgentById(agentId);
+  if (!agent) return null;
+  const version = await getDbAgentVersionById(versionId);
+  if (!version || version.agentId !== agentId || version.isPublished) return null;
+  if (!canManageOwnedResource(user, agent.ownerUserId)) return null;
+  const selectedModel = resolveChatSessionModel(version);
+  const pool = await getMysqlPool();
+  const sessionId = createEntityId();
+  const now = Date.now();
+  await pool.query(
+    `INSERT INTO chat_sessions (id, user_id, agent_id, agent_version_id, title, status, summary, selected_model, reasoning_level, web_search_enabled, last_image_mode, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [sessionId, user.id, agentId, versionId, '工作室测试', 'active', null, selectedModel || '', null, 0, 0, now, now]
+  );
+  return {
+    id: sessionId, userId: user.id, agentId, agentVersionId: versionId,
+    title: '工作室测试', status: 'active', summary: '',
+    selectedModel: selectedModel || '', reasoningLevel: null,
+    webSearchEnabled: false, lastImageMode: false, createdAt: now, updatedAt: now,
+  };
+};
+
 const handleMysqlRequest = async (req, res, url) => {
   const userDetailMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
   const agentDetailMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
@@ -4463,6 +5187,8 @@ const handleMysqlRequest = async (req, res, url) => {
   const chatAgentHistoryMatch = url.pathname.match(/^\/api\/chat\/agents\/([^/]+)\/history$/);
   const chatSessionDetailMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)$/);
   const chatSessionMessagesMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/messages$/);
+  const studioTrainingMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/message$/);
+  const studioTrainingApplyMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/apply$/);
 
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
   if (req.method === 'GET' && assetRouteMatch) {
@@ -4950,15 +5676,15 @@ const handleMysqlRequest = async (req, res, url) => {
     const user = await requireDbUser(req, res);
     if (!user) return;
     const body = await readBody(req);
+    const sessionId = decodeURIComponent(chatSessionMessagesMatch[1]);
     try {
-      const result = await createDbChatReply(user, decodeURIComponent(chatSessionMessagesMatch[1]), body || {});
+      const result = await createDbChatReply(user, sessionId, body || {});
       if (!result) {
         json(res, 404, { message: '会话不存在或无权限。' });
         return;
       }
       json(res, 201, result);
     } catch (error) {
-      const sessionId = decodeURIComponent(chatSessionMessagesMatch[1]);
       const session = await getDbChatSessionById(user, sessionId);
       const version = session ? await getDbAgentVersionById(session.agentVersionId) : null;
       const agent = session ? await getDbAgentById(session.agentId) : null;
@@ -4982,6 +5708,61 @@ const handleMysqlRequest = async (req, res, url) => {
         }).catch(() => null);
       }
       json(res, 500, { message: error?.message || '聊天回复失败。' });
+    }
+    return;
+  }
+
+  // ── Studio: Training Channel ──
+  if (studioTrainingMatch && req.method === 'POST') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const versionId = decodeURIComponent(studioTrainingMatch[1]);
+    const body = await readBody(req);
+    try {
+      const result = await handleStudioTrainingMessage(admin, versionId, body || {});
+      if (!result) {
+        json(res, 404, { message: '版本不存在、非草稿或无权限。' });
+        return;
+      }
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 500, { message: error?.message || '训练消息处理失败。' });
+    }
+    return;
+  }
+
+  if (studioTrainingApplyMatch && req.method === 'POST') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const versionId = decodeURIComponent(studioTrainingApplyMatch[1]);
+    const body = await readBody(req);
+    try {
+      const result = await applyStudioTrainingChanges(admin, versionId, body || {});
+      if (!result) {
+        json(res, 404, { message: '版本不存在、非草稿或无权限。' });
+        return;
+      }
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 500, { message: error?.message || '训练改动应用失败。' });
+    }
+    return;
+  }
+
+  // ── Studio: Create Test Session ──
+  if (url.pathname === '/api/studio/test/sessions' && req.method === 'POST') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const body = await readBody(req);
+    try {
+      const session = await createStudioTestSession(admin, body || {});
+      if (!session) {
+        json(res, 404, { message: '智能体或版本不存在，或非草稿版本。' });
+        return;
+      }
+      json(res, 201, { session });
+    } catch (error) {
+      json(res, 500, { message: error?.message || '创建测试会话失败。' });
     }
     return;
   }
@@ -5296,6 +6077,7 @@ const handleMysqlRequest = async (req, res, url) => {
       config: buildPublicSystemConfig(process.env, queueStats, {
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings,
+        publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
     return;
@@ -5316,6 +6098,7 @@ const handleMysqlRequest = async (req, res, url) => {
       config: buildPublicSystemConfig(process.env, queueStats, {
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings: nextSettings,
+        publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
     return;
@@ -5609,6 +6392,8 @@ const handleLocalRequest = async (req, res, url) => {
   const chatAgentHistoryMatch = url.pathname.match(/^\/api\/chat\/agents\/([^/]+)\/history$/);
   const chatSessionDetailMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)$/);
   const chatSessionMessagesMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/messages$/);
+  const studioTrainingMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/message$/);
+  const studioTrainingApplyMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/apply$/);
 
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
   if (req.method === 'GET' && assetRouteMatch) {
@@ -6187,8 +6972,9 @@ const handleLocalRequest = async (req, res, url) => {
     }
     const body = await readBody(req);
     const version = getLocalAgentVersionById(store, session.agentVersionId);
+    const publicBaseUrl = getPersistentAssetBaseUrl(req);
     const selectedModel = resolveChatSessionModel(version, body?.selectedModel || session.selectedModel);
-    const capability = getChatModelCapability(selectedModel);
+    const capability = getChatModelCapability(selectedModel, publicBaseUrl);
     session.selectedModel = selectedModel || '';
     session.reasoningLevel = capability?.supportsReasoningLevel && body?.reasoningLevel ? String(body.reasoningLevel) : null;
     session.webSearchEnabled = capability?.supportsWebSearch ? Boolean(body?.webSearchEnabled) : false;
@@ -6247,8 +7033,9 @@ const handleLocalRequest = async (req, res, url) => {
     const content = String(body?.content || '').trim();
     const requestMode = body?.requestMode === 'image_generation' ? 'image_generation' : 'chat';
     const clientRequestId = String(body?.clientRequestId || createEntityId()).trim() || createEntityId();
+    const publicBaseUrl = getPersistentAssetBaseUrl(req);
     const selectedModel = resolveChatSessionModel(version, body?.selectedModel || session.selectedModel);
-    const capability = getChatModelCapability(selectedModel);
+    const capability = getChatModelCapability(selectedModel, publicBaseUrl);
     const attachments = Array.isArray(body?.attachments) ? body.attachments.map((item) => ({
       name: String(item?.name || '').trim() || '附件',
       url: item?.url ? String(item.url) : undefined,
@@ -6260,12 +7047,9 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 400, { message: '生图模式暂只支持上传图片' });
       return;
     }
-    if (requestMode !== 'image_generation' && attachments.some((item) => item.kind === 'image') && !capability?.supportsImageInput) {
-      json(res, 400, { message: '当前模型不支持图片输入' });
-      return;
-    }
-    if (requestMode !== 'image_generation' && attachments.some((item) => item.kind !== 'image') && !capability?.supportsFileInput) {
-      json(res, 400, { message: '当前模型不支持文件输入' });
+    const capabilityError = getAttachmentCapabilityError({ capability, attachments, requestMode, modelLabel: `模型 ${selectedModel} ` });
+    if (capabilityError) {
+      json(res, 400, { message: capabilityError });
       return;
     }
     if (requestMode !== 'image_generation' && body?.webSearchEnabled && !capability?.supportsWebSearch) {
@@ -6394,6 +7178,158 @@ const handleLocalRequest = async (req, res, url) => {
       writeLocalStore(store);
       json(res, 500, { message: error?.message || '聊天回复失败。' });
     }
+    return;
+  }
+
+  // ── Studio: Training Channel (Local JSON mode) ──
+  if (studioTrainingMatch && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const versionId = decodeURIComponent(studioTrainingMatch[1]);
+    const body = await readBody(req);
+    let agentName = '未知智能体';
+    let selectedModel = '';
+    let attachments = [];
+    try {
+      const version = getLocalAgentVersionById(store, versionId);
+      if (!version || version.isPublished) {
+        json(res, 404, { message: '版本不存在、非草稿或无权限。' });
+        return;
+      }
+      const agent = getLocalAgentById(store, version.agentId);
+      if (!agent || !canManageOwnedResource(admin, agent.ownerUserId)) {
+        json(res, 404, { message: '版本不存在、非草稿或无权限。' });
+        return;
+      }
+      agentName = agent.name;
+      const content = String(body?.content || '').trim();
+      if (!content && !(Array.isArray(body?.attachments) && body.attachments.length > 0)) {
+        json(res, 400, { message: '消息内容不能为空。' }); return;
+      }
+      const history = Array.isArray(body?.history) ? body.history : [];
+      attachments = Array.isArray(body?.attachments) ? body.attachments : [];
+      const publicBaseUrl = getPersistentAssetBaseUrl(req);
+      selectedModel = resolveChatSessionModel(version, body?.selectedModel || version.defaultChatModel || version.modelPolicy?.defaultModel || '');
+      const capability = getChatModelCapability(selectedModel, publicBaseUrl);
+
+      const capabilityError = getAttachmentCapabilityError({ capability, attachments, requestMode: 'chat', modelLabel: `模型 ${selectedModel} ` });
+      if (capabilityError) {
+        json(res, 400, { message: capabilityError });
+        return;
+      }
+      if (body?.webSearchEnabled && !capability?.supportsWebSearch) {
+        json(res, 400, { message: '当前模型不支持联网' });
+        return;
+      }
+      const kbIds = Array.isArray(version.knowledgeBaseIds) ? version.knowledgeBaseIds : [];
+      const knowledgeNames = kbIds.map((id) => {
+        const kb = (store.knowledgeBases || []).find((k) => k.id === id);
+        return kb ? kb.name : '';
+      }).filter(Boolean);
+      const { manageableKnowledgeBases, manageableKnowledgeDocuments } = buildStudioLocalKnowledgeContext(store, admin);
+      const sysPrompt = STUDIO_CONFIG_ASSISTANT_PROMPT({
+        agentName: agent.name,
+        systemPrompt: version.systemPrompt,
+        knowledgeNames,
+        manageableKnowledgeBases,
+        manageableKnowledgeDocuments,
+      });
+      const priorMessages = history.map((m) => ({
+        id: '',
+        sessionId: '',
+        userId: '',
+        role: m.role,
+        content: m.content,
+        attachments: Array.isArray(m?.attachments) ? m.attachments.map((item) => ({
+          name: String(item?.name || '').trim() || '附件',
+          url: item?.url ? String(item.url) : undefined,
+          mimeType: item?.mimeType ? String(item.mimeType) : undefined,
+          kind: item?.kind === 'image' ? 'image' : 'file',
+        })) : [],
+        createdAt: 0,
+      }));
+      const result = await runLocalAgentConversation({
+        store,
+        user: admin,
+        agent,
+        version: { ...version, systemPrompt: sysPrompt },
+        priorMessages,
+        currentMessage: content,
+        attachments,
+        selectedModelOverride: selectedModel,
+        reasoningLevel: body?.reasoningLevel || null,
+        webSearchEnabled: Boolean(body?.webSearchEnabled),
+      });
+      const rawReply = String(result?.content || '').trim();
+      const { cleanText, diffs } = parseConfigChanges(rawReply);
+      json(res, 200, { reply: cleanText, configDiffs: diffs, updatedVersion: version });
+    } catch (error) {
+      appendLocalLog(store, {
+        user: admin,
+        level: 'error',
+        module: 'agent_studio',
+        action: 'training_message',
+        message: `工作室训练失败：${agentName}`,
+        detail: error?.message || '训练消息处理失败。',
+        status: 'failed',
+        meta: {
+          versionId,
+          selectedModel,
+          attachmentKinds: attachments.map((item) => item?.kind === 'image' ? 'image' : 'file'),
+          errorCode: error?.code || '',
+          providerStage: error?.providerStage || '',
+          providerStatus: error?.providerStatus || '',
+          providerMessage: error?.providerMessage || '',
+        },
+      });
+      writeLocalStore(store);
+      json(res, 500, { message: error?.message || '训练消息处理失败。' });
+    }
+    return;
+  }
+
+  if (studioTrainingApplyMatch && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const versionId = decodeURIComponent(studioTrainingApplyMatch[1]);
+    const body = await readBody(req);
+    try {
+      const result = applyLocalStudioTrainingChanges(store, admin, versionId, body || {});
+      if (!result) {
+        json(res, 404, { message: '版本不存在、非草稿或无权限。' });
+        return;
+      }
+      writeLocalStore(store);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 500, { message: error?.message || '训练改动应用失败。' });
+    }
+    return;
+  }
+
+  // ── Studio: Create Test Session (Local JSON mode) ──
+  if (url.pathname === '/api/studio/test/sessions' && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const body = await readBody(req);
+    const agentId = String(body?.agentId || '').trim();
+    const versionId = String(body?.versionId || '').trim();
+    const agent = getLocalAgentById(store, agentId);
+    const version = getLocalAgentVersionById(store, versionId);
+    if (!agent || !version || version.agentId !== agentId || version.isPublished || !canManageOwnedResource(admin, agent.ownerUserId)) {
+      json(res, 404, { message: '智能体或版本不存在，或非草稿版本。' });
+      return;
+    }
+    const session = {
+      id: createEntityId(), userId: admin.id, agentId, agentVersionId: versionId,
+      title: '工作室测试', status: 'active', summary: '',
+      selectedModel: resolveChatSessionModel(version),
+      reasoningLevel: null, webSearchEnabled: false, lastImageMode: false,
+      createdAt: Date.now(), updatedAt: Date.now(),
+    };
+    store.chatSessions.push(session);
+    writeLocalStore(store);
+    json(res, 201, { session });
     return;
   }
 
@@ -6682,6 +7618,7 @@ const handleLocalRequest = async (req, res, url) => {
       config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), {
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings,
+        publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
     return;
@@ -6700,6 +7637,7 @@ const handleLocalRequest = async (req, res, url) => {
       config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), {
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings: nextSettings,
+        publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
     return;
@@ -7021,6 +7959,14 @@ const server = createServer(async (req, res) => {
   try {
     if (url.pathname === '/api/health' && req.method === 'GET') {
       json(res, 200, { ok: true, mode: shouldUseMysql ? 'internal-mysql-v1' : 'internal-v1' });
+      return;
+    }
+
+    const chatProgressRouteMatch = url.pathname.match(/^\/api\/chat\/progress\/([^/]+)$/);
+    if (chatProgressRouteMatch && req.method === 'GET') {
+      const clientRequestId = decodeURIComponent(chatProgressRouteMatch[1]);
+      const progress = chatProgressMap.get(clientRequestId) || null;
+      json(res, 200, { progress });
       return;
     }
 
