@@ -65,4 +65,14 @@ test('buyer show prompt hard-locks packaging identity instead of allowing redesi
     /Do not redesign, rewrite, simplify, replace, or newly invent the package artwork or brand presentation\./,
     'buyer show prompt should forbid newly invented packaging artwork'
   );
+  assert.match(
+    source,
+    /PACKAGING CONSISTENCY FIRST: Keep the packaging identity exactly consistent with the uploaded product images\./,
+    'buyer show prompt should prioritize packaging consistency with a short explicit rule'
+  );
+  assert.match(
+    source,
+    /REAL SCENE INTEGRATION: The product must feel naturally photographed inside the scene with correct contact, perspective, scale, shadows, and occlusion\./,
+    'buyer show prompt should explicitly require natural scene integration'
+  );
 });
