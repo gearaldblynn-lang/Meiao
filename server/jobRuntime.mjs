@@ -11,6 +11,7 @@ const AGENT_MODEL_CATALOG = {
       id: 'gpt-5-4-openai-resp',
       label: 'GPT-5.4',
       provider: 'kie',
+      mediaTransport: 'inline_data',
       supportsImageInput: true,
       supportsFileInput: true,
       supportsWebSearch: true,
@@ -21,6 +22,7 @@ const AGENT_MODEL_CATALOG = {
       id: 'gemini-3.1-pro-openai',
       label: 'Gemini 3.1 Pro',
       provider: 'kie',
+      mediaTransport: 'public_url',
       supportsImageInput: true,
       supportsFileInput: true,
       supportsWebSearch: true,
@@ -31,6 +33,7 @@ const AGENT_MODEL_CATALOG = {
       id: 'gemini-3-flash-openai',
       label: 'Gemini 3 Flash',
       provider: 'kie',
+      mediaTransport: 'public_url',
       supportsImageInput: true,
       supportsFileInput: true,
       supportsWebSearch: true,
@@ -69,6 +72,35 @@ const AGENT_MODEL_CATALOG = {
 const toSafePositiveInteger = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const normalizeBaseUrl = (value) => String(value || '').trim().replace(/\/+$/, '');
+
+const isExternallyReachableBaseUrl = (value) => {
+  const normalized = normalizeBaseUrl(value);
+  if (!normalized) return false;
+  return !/(^https?:\/\/)?(127\.0\.0\.1|localhost)(:|\/|$)/i.test(normalized);
+};
+
+const resolvePublicBaseUrl = (env = {}, overrides = {}) => {
+  const explicitOverride = normalizeBaseUrl(overrides?.publicBaseUrl || '');
+  if (explicitOverride) return explicitOverride;
+  return normalizeBaseUrl(env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || '');
+};
+
+const applyRuntimeMediaCapabilities = (catalog = [], env = {}, overrides = {}) => {
+  const publicBaseUrl = resolvePublicBaseUrl(env, overrides);
+  const externallyReachable = isExternallyReachableBaseUrl(publicBaseUrl);
+  return catalog.map((item) => {
+    if (item.mediaTransport !== 'public_url') {
+      return { ...item };
+    }
+    return {
+      ...item,
+      supportsImageInput: externallyReachable ? item.supportsImageInput : false,
+      supportsFileInput: externallyReachable ? item.supportsFileInput : false,
+    };
+  });
 };
 
 export const getWorkerConcurrencyLimit = (configuredMax, users = []) => {
@@ -115,7 +147,7 @@ export const getNextJobFailureState = ({ retryCount = 0, maxRetries = 0, errorCo
 
 export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) => {
   const allowedOrigins = normalizeAllowedOrigins(env.MEIAO_ALLOWED_ORIGINS);
-  const chatCatalog = AGENT_MODEL_CATALOG.chat.map((item) => ({ ...item }));
+  const chatCatalog = applyRuntimeMediaCapabilities(AGENT_MODEL_CATALOG.chat, env, overrides);
   const configuredAnalysisModel = String(overrides?.systemSettings?.analysisModel || '').trim();
   const effectiveAnalysisModel = chatCatalog.some((item) => item.id === configuredAnalysisModel)
     ? configuredAnalysisModel

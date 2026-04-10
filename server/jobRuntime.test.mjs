@@ -22,6 +22,7 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
       MEIAO_JOB_MAX_CONCURRENCY: '7',
       MEIAO_ALLOWED_ORIGINS: 'https://meiao.internal',
       KIE_API_KEY: 'kie-secret',
+      MEIAO_PUBLIC_BASE_URL: 'https://meiao.internal',
     },
     { queued: 3, running: 2 }
   );
@@ -59,6 +60,26 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
     'nano-banana-pro',
   ]);
   assert.equal(JSON.stringify(config).includes('secret'), false);
+});
+
+test('buildPublicSystemConfig disables public-url media models when no external asset base is available', () => {
+  const config = buildPublicSystemConfig(
+    {
+      KIE_API_KEY: 'kie-secret',
+    },
+    { queued: 0, running: 0 }
+  );
+
+  const gpt54 = config.agentModels.chat.find((item) => item.id === 'gpt-5-4-openai-resp');
+  const geminiPro = config.agentModels.chat.find((item) => item.id === 'gemini-3.1-pro-openai');
+  const geminiFlash = config.agentModels.chat.find((item) => item.id === 'gemini-3-flash-openai');
+
+  assert.equal(gpt54?.supportsFileInput, true);
+  assert.equal(gpt54?.supportsImageInput, true);
+  assert.equal(geminiPro?.supportsFileInput, false);
+  assert.equal(geminiPro?.supportsImageInput, false);
+  assert.equal(geminiFlash?.supportsFileInput, false);
+  assert.equal(geminiFlash?.supportsImageInput, false);
 });
 
 test('getWorkerConcurrencyLimit follows active account concurrency instead of capping by lower env value', () => {

@@ -805,6 +805,69 @@ export interface SkuScheme {
   error?: string;
 }
 
+// ── 智能体工作室类型 ──
+
+export type StudioChannel = 'training' | 'testing';
+
+export interface StudioKnowledgeDocumentChange {
+  knowledgeBaseId?: string;
+  documentId?: string;
+  title?: string;
+  rawText?: string;
+  sourceType?: 'manual' | 'upload';
+  chunkStrategy?: string;
+  normalizationEnabled?: boolean;
+}
+
+export interface StudioModelPolicyChange {
+  defaultModel?: string;
+  cheapModel?: string;
+  advancedModel?: string;
+  multimodalModel?: string;
+  imageGenerationEnabled?: boolean;
+  allowedChatModels?: string[];
+  defaultChatModel?: string;
+}
+
+export interface StudioRetrievalPolicyChange {
+  enabled?: boolean;
+  topK?: number;
+  maxChunks?: number;
+  similarityThreshold?: number;
+  maxContextChars?: number;
+}
+
+export interface StudioConfigDiff {
+  id: string;
+  field: 'systemPrompt' | 'knowledgeDocument' | 'modelPolicy' | 'retrievalPolicy' | 'knowledgeBaseIds';
+  action: 'update' | 'add' | 'remove';
+  label: string;
+  before?: string;
+  after?: string;
+  documentId?: string;
+  documentTitle?: string;
+  knowledgeBaseId?: string;
+  knowledgeBaseIds?: string[];
+  modelPolicy?: StudioModelPolicyChange;
+  retrievalPolicy?: StudioRetrievalPolicyChange;
+  knowledgeDocument?: StudioKnowledgeDocumentChange;
+  status?: 'pending' | 'applied' | 'ignored';
+}
+
+export interface StudioTrainingMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  attachments?: Array<{ name: string; url?: string; assetId?: string; mimeType?: string; kind?: 'image' | 'file' }> | null;
+  selectedModel?: string | null;
+  reasoningLevel?: string | null;
+  webSearchEnabled?: boolean;
+  configDiffs?: StudioConfigDiff[];
+  createdAt: number;
+}
+
+// ── SKU 相关类型 ──
+
 export interface SkuPersistentSubState {
   images: SkuImageItem[];
   schemes: SkuScheme[];

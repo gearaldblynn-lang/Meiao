@@ -9,6 +9,7 @@ import {
   InternalLogEntry,
   KnowledgeBaseSummary,
   KnowledgeDocumentSummary,
+  StudioConfigDiff,
   SystemPublicConfig,
 } from '../types';
 import { PersistedAppState } from '../utils/appState';
@@ -636,6 +637,14 @@ export const fetchChatMessages = async (sessionId: string) => {
   return request<{ messages: AgentChatMessage[] }>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`);
 };
 
+export type ChatProgressEvent = {
+  stage: 'thinking' | 'retrieved';
+  round: number;
+  queries?: string[];
+  chunkCount?: number;
+  docTitles?: string[];
+};
+
 export const sendChatMessage = async (sessionId: string, payload: {
   content: string;
   attachments?: Array<{ name: string; url?: string; assetId?: string; mimeType?: string; kind?: 'image' | 'file' }>;
@@ -644,18 +653,39 @@ export const sendChatMessage = async (sessionId: string, payload: {
   webSearchEnabled?: boolean;
   requestMode?: 'chat' | 'image_generation';
   clientRequestId?: string;
-}, options?: { signal?: AbortSignal }) => {
-  return request<{
-    userMessage: AgentChatMessage;
-    assistantMessage: AgentChatMessage;
-    usage: Record<string, unknown>;
-  }>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-    signal: options?.signal,
-    timeoutMs: payload.requestMode === 'image_generation' ? 240_000 : 60_000,
-    dedupe: false,
-  });
+}, options?: {
+  signal?: AbortSignal;
+  onProgress?: (event: ChatProgressEvent) => void;
+}) => {
+  const clientRequestId = payload.clientRequestId;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  if (clientRequestId && options?.onProgress) {
+    pollTimer = setInterval(async () => {
+      try {
+        const data = await request<{ progress: ChatProgressEvent | null }>(
+          `/api/chat/progress/${encodeURIComponent(clientRequestId)}`,
+        );
+        if (data.progress) options.onProgress!(data.progress);
+      } catch { /* ignore poll errors */ }
+    }, 800);
+  }
+
+  try {
+    return await request<{
+      userMessage: AgentChatMessage;
+      assistantMessage: AgentChatMessage;
+      usage: Record<string, unknown>;
+    }>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      signal: options?.signal,
+      timeoutMs: payload.requestMode === 'image_generation' ? 240_000 : 120_000,
+      dedupe: false,
+    });
+  } finally {
+    if (pollTimer !== null) clearInterval(pollTimer);
+  }
 };
 
 export const fetchAgentUsage = async () => {
@@ -786,4 +816,51 @@ export const waitForInternalJob = async (
       signal?.addEventListener?.('abort', onAbort);
     });
   }
+};
+
+// ── Studio API ──
+
+export const sendStudioTrainingMessage = async (versionId: string, payload: {
+  content: string;
+  history: Array<{
+    role: string;
+    content: string;
+    attachments?: Array<{ name: string; url?: string; mimeType?: string; kind?: 'image' | 'file' }>;
+  }>;
+  attachments?: Array<{ name: string; url?: string; mimeType?: string; kind?: 'image' | 'file' }>;
+  selectedModel?: string;
+  reasoningLevel?: string | null;
+  webSearchEnabled?: boolean;
+}) => {
+  return request<{
+    reply: string;
+    configDiffs: StudioConfigDiff[];
+    updatedVersion?: AgentVersion;
+  }>(`/api/studio/training/${encodeURIComponent(versionId)}/message`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 120_000,
+    dedupe: false,
+  });
+};
+
+export const applyStudioTrainingChanges = async (versionId: string, payload: {
+  changes: StudioConfigDiff[];
+}) => {
+  return request<{
+    appliedChanges: StudioConfigDiff[];
+    updatedVersion: AgentVersion;
+  }>(`/api/studio/training/${encodeURIComponent(versionId)}/apply`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 60_000,
+    dedupe: false,
+  });
+};
+
+export const createStudioTestSession = async (agentId: string, versionId: string) => {
+  return request<{ session: AgentChatSession }>('/api/studio/test/sessions', {
+    method: 'POST',
+    body: JSON.stringify({ agentId, versionId }),
+  });
 };

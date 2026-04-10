@@ -9,6 +9,7 @@ import {
   fetchChatSessions,
   fetchSystemConfig,
   sendChatMessage,
+  type ChatProgressEvent,
   updateChatSession,
 } from '../../services/internalApi';
 import { WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
@@ -23,13 +24,24 @@ interface Props {
 }
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+const AGENT_CENTER_UI_STATE_KEY = 'MEIAO_AGENT_CENTER_UI_STATE';
+
+const readAgentCenterUiState = () => {
+  try {
+    const raw = sessionStorage.getItem(AGENT_CENTER_UI_STATE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+};
 
 const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode = false }) => {
-  const [workspaceMode, setWorkspaceMode] = useState<'factory' | 'plaza'>('plaza');
+  const initialUiState = readAgentCenterUiState();
+  const [workspaceMode, setWorkspaceMode] = useState<'factory' | 'plaza'>(initialUiState.workspaceMode === 'factory' ? 'factory' : 'plaza');
   const [chatAgents, setChatAgents] = useState<AgentSummary[]>([]);
   const [sessions, setSessions] = useState<AgentChatSession[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState('');
-  const [selectedSessionId, setSelectedSessionId] = useState('');
+  const [selectedAgentId, setSelectedAgentId] = useState(String(initialUiState.selectedAgentId || ''));
+  const [selectedSessionId, setSelectedSessionId] = useState(String(initialUiState.selectedSessionId || ''));
   const [messages, setMessages] = useState<AgentChatMessage[]>([]);
   const [messageDraft, setMessageDraft] = useState('');
   const [chatModels, setChatModels] = useState<SystemPublicConfig['agentModels']['chat']>([]);
@@ -41,8 +53,8 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   const [sendingMessage, setSendingMessage] = useState(false);
   const [sendingRequestMode, setSendingRequestMode] = useState<'chat' | 'image_generation' | null>(null);
   const [pendingAssistantMessageId, setPendingAssistantMessageId] = useState('');
-  const [workspacePage, setWorkspacePage] = useState<'plaza' | 'chat'>('plaza');
-  const [sessionsCollapsed, setSessionsCollapsed] = useState(false);
+  const [workspacePage, setWorkspacePage] = useState<'plaza' | 'chat'>(initialUiState.workspacePage === 'chat' ? 'chat' : 'plaza');
+  const [sessionsCollapsed, setSessionsCollapsed] = useState(Boolean(initialUiState.sessionsCollapsed));
   const [statusMessage, setStatusMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [loading, setLoading] = useState(false);
@@ -117,6 +129,20 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
       .catch((error: any) => setErrorMessage(error.message || '智能体中心初始化失败'))
       .finally(() => setLoading(false));
   }, [canAccessAgentCenter]);
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(AGENT_CENTER_UI_STATE_KEY, JSON.stringify({
+        workspaceMode,
+        workspacePage,
+        selectedAgentId,
+        selectedSessionId,
+        sessionsCollapsed,
+      }));
+    } catch {
+      // ignore storage errors
+    }
+  }, [workspaceMode, workspacePage, selectedAgentId, selectedSessionId, sessionsCollapsed]);
 
   useEffect(() => {
     if (!canAccessAgentCenter || workspaceMode !== 'plaza') return;
@@ -344,6 +370,31 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
           clientRequestId,
         }, {
           signal: controller.signal,
+          onProgress: (event: ChatProgressEvent) => {
+            setMessages((prev) => prev.map((item) => {
+              if (item.id !== optimisticAssistantMessage.id) return item;
+              let content: string;
+              let progressStage: string;
+              if (event.stage === 'thinking') {
+                content = event.round <= 1 ? '正在思考...' : `第 ${event.round} 轮深度思考中...`;
+                progressStage = 'thinking';
+              } else {
+                const docs = (event.docTitles || []).slice(0, 3);
+                if (event.round === 0) {
+                  content = docs.length > 0
+                    ? `已读取：${docs.join('、')}${(event.docTitles || []).length > 3 ? ` 等 ${(event.docTitles || []).length} 份资料` : ''}`
+                    : `已检索到 ${event.chunkCount || 0} 条相关内容`;
+                } else {
+                  const queryStr = (event.queries || []).slice(0, 2).join('、');
+                  content = docs.length > 0
+                    ? `检索「${queryStr}」→ ${docs.join('、')}`
+                    : `检索「${queryStr}」未找到新内容`;
+                }
+                progressStage = 'replying';
+              }
+              return { ...item, content, metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage } };
+            }));
+          },
         });
         setMessages((prev) => [
           ...prev.filter((item) => item.id !== optimisticUserMessage.id && item.id !== optimisticAssistantMessage.id),
@@ -425,20 +476,14 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   return (
     <div className={`h-full min-h-0 px-4 pb-4 pt-4 lg:px-5 ${lockWorkspaceScroll ? 'overflow-hidden' : 'overflow-y-auto'}`}>
       <div className="flex h-full min-h-0 w-full flex-col">
-        <header className="mb-4 flex-none rounded-[32px] border border-slate-200/80 bg-white/90 px-8 py-7 shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="text-3xl font-black text-slate-900">智能体中心</h2>
-              <p className="mt-3 text-sm font-bold text-slate-500">
-                当前登录：{currentUser?.displayName || currentUser?.username || '未登录'}{currentUser?.isSuperAdmin ? ' · 总管理员' : currentUser?.role === 'admin' ? ' · 部门管理员' : ' · 内部成员'}
-              </p>
-            </div>
+        <header className="mb-3 flex-none rounded-[28px] border border-slate-200/80 bg-white/88 px-4 py-3 shadow-[0_16px_36px_rgba(15,23,42,0.05)]">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             {canManage ? (
-              <div className="inline-flex rounded-[20px] border border-slate-200/80 bg-white/86 p-1">
+              <div className="inline-flex rounded-[18px] border border-slate-200/80 bg-white/86 p-1">
                 <button
                   type="button"
                   onClick={() => setWorkspaceMode('factory')}
-                  className={`rounded-[16px] px-4 py-2.5 text-sm font-black transition ${
+                  className={`rounded-[14px] px-3.5 py-2 text-[13px] font-black transition ${
                     workspaceMode === 'factory' ? 'bg-slate-900 text-white' : 'text-slate-600'
                   }`}
                 >
@@ -447,12 +492,27 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
                 <button
                   type="button"
                   onClick={() => setWorkspaceMode('plaza')}
-                  className={`rounded-[16px] px-4 py-2.5 text-sm font-black transition ${
+                  className={`rounded-[14px] px-3.5 py-2 text-[13px] font-black transition ${
                     workspaceMode === 'plaza' ? 'bg-slate-900 text-white' : 'text-slate-600'
                   }`}
                 >
                   智能体广场
                 </button>
+              </div>
+            ) : (
+              <div className="inline-flex items-center gap-2 rounded-[18px] border border-slate-200/80 bg-white/88 px-3 py-2 text-[12px] font-semibold text-slate-500">
+                <i className="fas fa-robot text-[11px] text-slate-400" />
+                <span>内部智能体工作台</span>
+              </div>
+            )}
+
+            {canManage ? (
+              <div className="inline-flex items-center gap-2 rounded-[18px] border border-slate-200/80 bg-white/88 px-3 py-2 text-[12px] font-semibold text-slate-500">
+                <span>资源</span>
+                <span className="text-slate-300">·</span>
+                <span>智能体</span>
+                <span className="text-slate-300">/</span>
+                <span>知识库</span>
               </div>
             ) : null}
           </div>

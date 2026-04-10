@@ -72,11 +72,12 @@ test('agent chat source exposes current-user profile updates and session patch d
 
 test('agent chat source validates model ability before accepting attachments or web search', () => {
   assert.match(source, /getChatModelCapability/);
+  assert.match(source, /getAttachmentCapabilityError/);
   assert.match(source, /supportsImageInput/);
   assert.match(source, /supportsFileInput/);
   assert.match(source, /supportsWebSearch/);
-  assert.match(source, /当前模型不支持图片输入/);
-  assert.match(source, /当前模型不支持文件输入/);
+  assert.match(source, /当前环境下不支持图片输入/);
+  assert.match(source, /当前环境下不支持文件输入/);
   assert.match(source, /当前模型不支持联网/);
 });
 
@@ -173,4 +174,68 @@ test('agent image conversation prompt includes deterministic image order mapping
   assert.match(source, /const finalPrompt = `\$\{promptPrefix\}\$\{promptReferenceText\}\\n\$\{String\(parsed\.prompt \|\| currentMessage\)\.trim\(\)\}`\.trim\(\);/);
   assert.match(source, /imageReferences: usedImageReferences,/);
   assert.match(source, /requestMode === 'image_generation' \? version\?\.modelPolicy\?\.multimodalModel : version\?\.modelPolicy\?\.defaultModel/);
+});
+
+test('agent studio source exposes draft-only training and testing endpoints in mysql and local modes', () => {
+  assert.match(source, /const STUDIO_CONFIG_ASSISTANT_PROMPT = \(\{ agentName, systemPrompt, knowledgeNames, manageableKnowledgeBases, manageableKnowledgeDocuments \}\) =>/);
+  assert.match(source, /const parseConfigChanges = \(text\) =>/);
+  assert.match(source, /const handleStudioTrainingMessage = async \(user, versionId, payload\) =>/);
+  assert.match(source, /const applyStudioTrainingChanges = async \(user, versionId, payload\) =>/);
+  assert.match(source, /const createStudioTestSession = async \(user, payload\) =>/);
+  assert.match(source, /const studioTrainingMatch = url\.pathname\.match\(/);
+  assert.match(source, /const studioTrainingApplyMatch = url\.pathname\.match\(/);
+  assert.match(source, /if \(studioTrainingApplyMatch && req\.method === 'POST'\)/);
+  assert.match(source, /url\.pathname === '\/api\/studio\/test\/sessions' && req\.method === 'POST'/);
+  assert.match(source, /工作室测试/);
+  assert.match(source, /if \(!agent \|\| !canManageOwnedResource\(admin, agent\.ownerUserId\)\)/);
+  assert.match(source, /if \(!agent \|\| !version \|\| version\.agentId !== agentId \|\| version\.isPublished \|\| !canManageOwnedResource\(admin, agent\.ownerUserId\)\)/);
+  assert.match(source, /- knowledgeDocument：新增、修改或删除知识库文档/);
+  assert.match(source, /- knowledgeBaseIds：调整当前智能体绑定的知识库/);
+  assert.match(source, /- modelPolicy：调整默认模型、简单问题模型、高级模型、多模态模型或生图开关/);
+  assert.match(source, /- retrievalPolicy：调整检索开关、参考数量、片段上限、上下文上限等策略/);
+  assert.match(source, /建议阶段不要直接宣称“我已经修改完成”/);
+});
+
+test('agent studio training source forwards unified composer attachments and model options into provider execution', () => {
+  assert.match(source, /const attachments = Array\.isArray\(payload\?\.attachments\) \? payload\.attachments : \[\];/);
+  assert.match(source, /const selectedModel = resolveChatSessionModel\(version, payload\?\.selectedModel \|\| version\.defaultChatModel \|\| version\.modelPolicy\?\.defaultModel \|\| ''\);/);
+  assert.match(source, /const capabilityError = getAttachmentCapabilityError\(\{ capability, attachments, requestMode: 'chat', modelLabel: `模型 \$\{selectedModel\} ` \}\);/);
+  assert.match(source, /if \(payload\?\.webSearchEnabled && !capability\?\.supportsWebSearch\) \{/);
+  assert.match(source, /attachments,\s+selectedModelOverride: selectedModel,\s+reasoningLevel: payload\?\.reasoningLevel \|\| null,\s+webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\)/);
+  assert.match(source, /const attachments = Array\.isArray\(body\?\.attachments\) \? body\.attachments : \[\];/);
+  assert.match(source, /const selectedModel = resolveChatSessionModel\(version, body\?\.selectedModel \|\| version\.defaultChatModel \|\| version\.modelPolicy\?\.defaultModel \|\| ''\);/);
+  assert.match(source, /const capabilityError = getAttachmentCapabilityError\(\{ capability, attachments, requestMode: 'chat', modelLabel: `模型 \$\{selectedModel\} ` \}\);/);
+  assert.match(source, /if \(body\?\.webSearchEnabled && !capability\?\.supportsWebSearch\) \{/);
+  assert.match(source, /attachments,\s+selectedModelOverride: selectedModel,\s+reasoningLevel: body\?\.reasoningLevel \|\| null,\s+webSearchEnabled: Boolean\(body\?\.webSearchEnabled\)/);
+  assert.match(source, /const result = await runLocalAgentConversation\(\{/);
+  assert.match(source, /appendLocalLog\(store, \{/);
+  assert.match(source, /message: `工作室训练失败：\$\{agentName\}`/);
+  assert.match(source, /selectedModel,/);
+  assert.match(source, /attachmentKinds: attachments\.map\(\(item\) => item\?\.kind === 'image' \? 'image' : 'file'\)/);
+  assert.match(source, /providerStage: error\?\.providerStage \|\| ''/);
+  assert.match(source, /providerStatus: error\?\.providerStatus \|\| ''/);
+});
+
+test('local studio upload source keeps localhost managed asset persistence enabled in local json mode', () => {
+  assert.match(source, /const getPersistentAssetBaseUrl = \(req = null\) => \{/);
+  assert.match(source, /if \(!inferred\) return '';/);
+  assert.match(source, /if \(!shouldUseMysql\) return inferred;/);
+  assert.match(source, /if \(isLocalHostValue\(inferred\)\) return '';/);
+});
+
+test('managed asset uploads do not fall back to third-party auth just because public base url is empty', () => {
+  assert.match(source, /const persistUploadedAssetIfEnabled = async \(\{ req, user, moduleName, fileName, mimeType, fileBuffer, width = 0, height = 0 \}\) => \{/);
+  assert.doesNotMatch(
+    source,
+    /const persistUploadedAssetIfEnabled = async \(\{ req, user, moduleName, fileName, mimeType, fileBuffer, width = 0, height = 0 \}\) => \{\s+const publicBaseUrl = getPersistentAssetBaseUrl\(req\);\s+if \(!publicBaseUrl\) \{\s+return null;\s+\}/
+  );
+});
+
+test('cloud output asset persistence also rewrites generated image arrays and direct image chat results to managed urls', () => {
+  assert.match(source, /const persistRuntimeRemoteAssetIfEnabled = async \(\{ userId, moduleName, assetType = 'result', remoteUrl, originalName = 'result\.png', provider = 'kie', jobId = '' \}\) => \{/);
+  assert.match(source, /const persistRemoteArrayField = async \(fieldName, assetType, fallbackNameBuilder\) => \{/);
+  assert.match(source, /await persistRemoteArrayField\('imageResultUrls', 'result'/);
+  assert.match(source, /await persistRemoteArrayField\('resultUrls', 'result'/);
+  assert.match(source, /const persistedImageUrl = await persistRuntimeRemoteAssetIfEnabled\(\{/);
+  assert.match(source, /imageResultUrls: persistedImageUrl \? \[persistedImageUrl\] : \[\],/);
 });

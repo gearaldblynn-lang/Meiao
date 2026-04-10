@@ -261,16 +261,20 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
   return (
     <ToastProvider appVersion={APP_RELEASE_VERSION} onOpenReleaseNotes={openReleaseNotes}>
       <div className="flex h-screen overflow-hidden bg-[radial-gradient(circle_at_top,#f8fbff_0%,#eef4ff_20%,#f8fafc_52%,#edf2f7_100%)] font-sans text-slate-900 select-none">
-        <SidebarNavigation activeModule={activeModule} onModuleChange={handleModuleChange} showSystemEntries={!internalMode} />
+        <SidebarNavigation
+          activeModule={activeModule}
+          onModuleChange={handleModuleChange}
+          showSystemEntries={!internalMode}
+          currentUser={currentUser}
+          internalMode={internalMode}
+          releaseTag={APP_RELEASE_VERSION}
+          serviceStatusLabel={internalMode ? '服务正常' : '单机本地模式'}
+          onOpenReleaseNotes={openReleaseNotes}
+          onLogout={onLogout}
+        />
         <div className="flex-1 flex flex-col min-w-0 h-full relative overflow-hidden">
           <Header
             activeModule={activeModule}
-            releaseTag={APP_RELEASE_VERSION}
-            currentUser={currentUser}
-            internalMode={internalMode}
-            onLogout={onLogout}
-            onNavigateModule={handleModuleChange}
-            onOpenReleaseNotes={openReleaseNotes}
             onBack={handleBackFromSystemPage}
           />
 

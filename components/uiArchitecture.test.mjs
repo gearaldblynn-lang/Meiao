@@ -133,9 +133,10 @@ test('app workspace lazy loads major modules to avoid one giant startup bundle',
   assert.match(viteConfig, /manualChunks/);
 });
 
-test('release notes are surfaced from the header and notification center with first-open tracking', () => {
+test('release notes are surfaced from the sidebar user hub and notification center with first-open tracking', () => {
   const app = read('../App.tsx');
   const header = read('./layout/Header.tsx');
+  const sidebar = read('./layout/SidebarNavigation.tsx');
   const toastSystem = read('./ToastSystem.tsx');
   const packageJson = read('../package.json');
   const releaseNotes = read('../config/releaseNotes.ts');
@@ -149,9 +150,13 @@ test('release notes are surfaced from the header and notification center with fi
   assert.match(app, /showReleaseNotes/);
   assert.match(app, /openReleaseNotes/);
   assert.match(app, /ReleaseNotesModal/);
-  assert.match(header, /releaseTag/);
-  assert.match(header, /onOpenReleaseNotes/);
-  assert.match(header, /title=\{`查看本次更新 \$\{releaseTag\}`\}/);
+  assert.doesNotMatch(header, /releaseTag/);
+  assert.doesNotMatch(header, /onOpenReleaseNotes/);
+  assert.match(sidebar, /releaseTag: string/);
+  assert.match(sidebar, /onOpenReleaseNotes\?: \(\) => void/);
+  assert.match(sidebar, /serviceStatusLabel: string/);
+  assert.match(sidebar, /toggleCenter/);
+  assert.match(sidebar, /查看本次更新/);
   assert.match(toastSystem, /appVersion: string/);
   assert.match(toastSystem, /onOpenReleaseNotes: \(\) => void/);
   assert.match(toastSystem, /本次更新/);
@@ -424,6 +429,81 @@ test('agent detail view supports version naming and publish reminder with glass-
   assert.doesNotMatch(detail, /disabled=\{!draftVersion \|\| draftVersion\.validationStatus !== 'success'\}/);
 });
 
+test('agent center manager exposes the studio workspace from agent detail', () => {
+  const manager = read('../modules/AgentCenter/AgentCenterManager.tsx');
+  const detail = read('../modules/AgentCenter/AgentDetailView.tsx');
+  const studio = read('../modules/AgentCenter/AgentStudioWorkspace.tsx');
+  const module = read('../modules/AgentCenter/AgentCenterModule.tsx');
+
+  assert.match(manager, /AgentStudioWorkspace/);
+  assert.match(manager, /page === 'agent_studio'/);
+  assert.match(manager, /onOpenStudio=\{openStudio\}/);
+  assert.match(detail, /智能体工作室/);
+  assert.match(studio, /channel === 'training'/);
+  assert.match(studio, /channel === 'testing'/);
+  assert.match(studio, /sessionStorage/);
+  assert.match(module, /MEIAO_AGENT_CENTER_UI_STATE/);
+  assert.match(manager, /MEIAO_AGENT_CENTER_MANAGER_STATE/);
+});
+
+test('agent studio testing cleans up temporary sessions instead of accumulating leftovers', () => {
+  const testingPane = read('../modules/AgentCenter/AgentStudioTestingPane.tsx');
+
+  assert.match(testingPane, /useEffect\(\(\) => \{/);
+  assert.match(testingPane, /return \(\) => \{/);
+  assert.match(testingPane, /deleteChatSession\(sessionId\)/);
+});
+
+test('agent studio training persists draft conversation state across workspace reopen', () => {
+  const trainingPane = read('../modules/AgentCenter/AgentStudioTrainingPane.tsx');
+
+  assert.match(trainingPane, /MEIAO_AGENT_STUDIO_TRAINING_STATE/);
+  assert.match(trainingPane, /sessionStorage/);
+  assert.match(trainingPane, /messages/);
+  assert.match(trainingPane, /attachments/);
+  assert.match(trainingPane, /selectedModel/);
+  assert.match(trainingPane, /reasoningLevel/);
+  assert.match(trainingPane, /webSearchEnabled/);
+});
+
+test('agent studio testing reuses the unified chat conversation stack and model capability controls', () => {
+  const workspace = read('../modules/AgentCenter/AgentStudioWorkspace.tsx');
+  const testingPane = read('../modules/AgentCenter/AgentStudioTestingPane.tsx');
+  const conversationPane = read('../modules/AgentCenter/ChatConversationPane.tsx');
+
+  assert.match(workspace, /availableChatModels=/);
+  assert.match(testingPane, /import ChatConversationPane from '.\/ChatConversationPane';/);
+  assert.match(testingPane, /updateChatSession/);
+  assert.match(testingPane, /const selectableChatModels = useMemo/);
+  assert.match(testingPane, /chatModels=\{selectableChatModels\}/);
+  assert.match(testingPane, /selectedModel=/);
+  assert.match(testingPane, /reasoningLevel=/);
+  assert.match(testingPane, /webSearchEnabled=/);
+  assert.match(testingPane, /attachments=/);
+  assert.match(testingPane, /onImageModeToggle=/);
+  assert.match(testingPane, /hideSessionHeader=\{true\}/);
+  assert.match(conversationPane, /hideSessionHeader\?: boolean/);
+  assert.match(conversationPane, /!hideSessionHeader/);
+});
+
+test('agent studio training also reuses the unified chat composer capability controls', () => {
+  const workspace = read('../modules/AgentCenter/AgentStudioWorkspace.tsx');
+  const trainingPane = read('../modules/AgentCenter/AgentStudioTrainingPane.tsx');
+
+  assert.match(workspace, /availableChatModels=\{availableChatModels\}/);
+  assert.match(trainingPane, /import ChatComposer, \{ ComposerAttachment \} from '.\/ChatComposer';/);
+  assert.match(trainingPane, /availableChatModels: SystemPublicConfig\['agentModels'\]\['chat'\];/);
+  assert.match(trainingPane, /const selectableChatModels = useMemo/);
+  assert.match(trainingPane, /selectedModel/);
+  assert.match(trainingPane, /reasoningLevel/);
+  assert.match(trainingPane, /webSearchEnabled/);
+  assert.match(trainingPane, /attachments/);
+  assert.match(trainingPane, /chatModels=\{selectableChatModels\}/);
+  assert.match(trainingPane, /清空对话/);
+  assert.match(trainingPane, /text-rose-600/);
+  assert.match(trainingPane, /border-rose-200/);
+});
+
 test('secondary modules use the unified sidebar shell and shared popover selects', () => {
   const settingsSidebar = read('./SettingsSidebar.tsx');
   const retouchSidebar = read('../modules/Retouch/RetouchSidebar.tsx');
@@ -501,6 +581,10 @@ test('chat composer uses a unified attachment entry and compact capability icons
   assert.match(composer, /absolute bottom-3 left-3/);
   assert.match(composer, /application\/x-meiao-chat-image/);
   assert.match(composer, /onDrop=\{handleDrop\}/);
+  assert.match(composer, /handlePaste/);
+  assert.match(composer, /clipboardData\.items/);
+  assert.match(composer, /item\.type\.startsWith\('image\/'\)/);
+  assert.match(composer, /onPaste=\{handlePaste\}/);
   assert.match(composer, /松开即可放入当前输入框/);
   assert.match(composer, /sending/);
   assert.match(composer, /onInterruptSend/);
@@ -539,6 +623,8 @@ test('chat conversation pane uses compact header tags and refined message layout
   assert.match(conversationPane, /group-hover:opacity-100/);
   assert.match(conversationPane, /isImageGenerationMessage\(message\) && Array\.isArray\(message\.attachments\)/);
   assert.match(conversationPane, /downloadRemoteFile/);
+  assert.match(conversationPane, /select-text/);
+  assert.doesNotMatch(conversationPane, /select-none/);
   assert.match(conversationPane, /结果总结/);
   assert.match(conversationPane, /expandedSummaries/);
   assert.match(conversationPane, /toggleSummary/);
@@ -576,6 +662,16 @@ test('chat conversation pane uses compact header tags and refined message layout
   assert.match(agentCenterModule, /需求分析中/);
   assert.match(agentCenterModule, /图像生成中/);
   assert.doesNotMatch(agentCenterModule, /处理中\.\.\./);
+});
+
+test('studio panes forward uploaded attachments into training and testing payloads', () => {
+  const trainingPane = read('../modules/AgentCenter/AgentStudioTrainingPane.tsx');
+  const testingPane = read('../modules/AgentCenter/AgentStudioTestingPane.tsx');
+
+  assert.match(trainingPane, /const attachmentPayload = attachments\.map/);
+  assert.match(trainingPane, /attachments: attachmentPayload/);
+  assert.match(testingPane, /const attachmentPayload = attachments\.map/);
+  assert.match(testingPane, /attachments: attachmentPayload/);
 });
 
 test('agent center module wires chat capability controls and session deletion into the workspace', () => {
@@ -653,12 +749,6 @@ test('account management exposes current user profile avatar settings', () => {
   assert.match(profile, /updateCurrentUserProfile/);
   assert.match(usage, /用量概览/);
   assert.doesNotMatch(usage, /每日趋势/);
-  assert.match(header, /UserAvatar/);
-  assert.match(header, /个人资料/);
-  assert.match(header, /系统设置/);
-  assert.match(header, /退出登录/);
-  assert.match(header, /账号管理/);
-  assert.match(header, /onNavigateModule/);
   assert.match(header, /onBack/);
   assert.match(header, /返回上一页/);
   assert.match(app, /systemPageSourceModule/);
@@ -667,6 +757,63 @@ test('account management exposes current user profile avatar settings', () => {
   assert.match(app, /setSystemPageSourceModule\(getSafePrimaryModule\(activeModule\)\)/);
   assert.match(app, /setActiveModule\(getSafePrimaryModule\(systemPageSourceModule\)\)/);
   assert.match(sidebar, /showSystemEntries/);
+  assert.match(sidebar, /UserAvatar/);
+  assert.match(sidebar, /个人资料/);
+  assert.match(sidebar, /系统设置/);
+  assert.match(sidebar, /退出登录/);
+  assert.match(sidebar, /账号管理/);
+  assert.match(sidebar, /onLogout/);
   assert.match(userAvatar, /findAgentAvatarPreset/);
   assert.match(userAvatar, /avatarPreset/);
+});
+
+test('global shell moves release status and account tools into the sidebar user hub while shrinking the header', () => {
+  const header = read('./layout/Header.tsx');
+  const sidebar = read('./layout/SidebarNavigation.tsx');
+  const app = read('../App.tsx');
+
+  assert.doesNotMatch(header, /meta\.title/);
+  assert.doesNotMatch(header, /toggleCenter/);
+  assert.doesNotMatch(header, /onOpenReleaseNotes/);
+  assert.doesNotMatch(header, /UserAvatar/);
+  assert.match(header, /showBack/);
+  assert.match(sidebar, /releaseTag: string/);
+  assert.match(sidebar, /serviceStatusLabel: string/);
+  assert.match(sidebar, /toggleCenter/);
+  assert.match(sidebar, /onOpenReleaseNotes/);
+  assert.match(sidebar, /onLogout/);
+  assert.match(app, /releaseTag=\{APP_RELEASE_VERSION\}/);
+  assert.match(app, /serviceStatusLabel=\{internalMode \? '服务正常' : '单机本地模式'\}/);
+});
+
+test('compact shell removes leftover top placeholder height and keeps the sidebar user hub centered and unclipped', () => {
+  const header = read('./layout/Header.tsx');
+  const sidebar = read('./layout/SidebarNavigation.tsx');
+  const manager = read('../modules/AgentCenter/AgentCenterManager.tsx');
+
+  assert.doesNotMatch(header, /当前登录：/);
+  assert.doesNotMatch(header, /min-h-10/);
+  assert.doesNotMatch(header, /<div className="h-10" \/>/);
+  assert.match(sidebar, /overflow-visible/);
+  assert.match(sidebar, /items-center justify-center rounded-\[18px\]/);
+  assert.match(sidebar, /left-\[calc\(100%\+12px\)\]/);
+  assert.match(sidebar, /bg-white\/95/);
+  assert.match(sidebar, /text-slate-900/);
+  assert.doesNotMatch(sidebar, /<p className="truncate text-\[11px\] font-black">\{currentUser\.username\}<\/p>/);
+  assert.match(manager, /const renderSectionTabs = \(\) => \(/);
+  assert.match(manager, /absolute right-0 top-0 z-10/);
+  assert.doesNotMatch(manager, /mb-6 flex flex-wrap gap-3/);
+});
+
+test('agent center removes the oversized landing header and keeps compact workspace switches', () => {
+  const module = read('../modules/AgentCenter/AgentCenterModule.tsx');
+  const studio = read('../modules/AgentCenter/AgentStudioWorkspace.tsx');
+
+  assert.doesNotMatch(module, /<h2 className="text-3xl font-black text-slate-900">智能体中心<\/h2>/);
+  assert.doesNotMatch(module, /当前登录：/);
+  assert.match(module, /智能体工厂/);
+  assert.match(module, /智能体广场/);
+  assert.match(module, /智能体/);
+  assert.match(module, /知识库/);
+  assert.doesNotMatch(studio, /px-5 py-4/);
 });

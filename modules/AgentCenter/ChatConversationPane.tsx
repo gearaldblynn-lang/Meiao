@@ -29,6 +29,7 @@ interface Props {
   imageMaxInputCount: number;
   onImageModeToggle: () => void;
   sending?: boolean;
+  hideSessionHeader?: boolean;
 }
 
 const metaTagClassName =
@@ -57,9 +58,9 @@ const getProgressStageLabel = (message: AgentChatMessage) => {
   if (stage === 'planning') return '正在整理生图参数与提示词';
   if (stage === 'generating') return '正在生成图片';
   if (stage === 'finalizing') return '正在整理结果';
-  if (stage === 'thinking') return '正在思考';
-  if (stage === 'replying') return '正在组织回复';
-  return message.metadata?.requestMode === 'image_generation' ? '处理中' : '思考中';
+  if (stage === 'thinking') return '调用模型中';
+  if (stage === 'replying') return '知识库检索完成，整理回复中';
+  return message.metadata?.requestMode === 'image_generation' ? '处理中' : '调用模型中';
 };
 
 const getImageGenerationSummary = (message: AgentChatMessage) => {
@@ -84,7 +85,7 @@ const getProgressBadgeText = (message: AgentChatMessage) => {
   if (stage === 'generating') return '图像生成中';
   if (stage === 'finalizing') return '结果整理中';
   if (stage === 'thinking') return '思考中';
-  if (stage === 'replying') return '组织回复中';
+  if (stage === 'replying') return '检索知识库';
   return message.metadata?.requestMode === 'image_generation' ? '处理中' : '思考中';
 };
 
@@ -112,6 +113,7 @@ const ChatConversationPane: React.FC<Props> = ({
   imageMaxInputCount,
   onImageModeToggle,
   sending = false,
+  hideSessionHeader = false,
 }) => {
   const focusedSessionTitle = selectedSession?.title || '新会话';
   const selectedModelOption = chatModels.find((item) => item.id === selectedModel) || chatModels[0];
@@ -343,7 +345,7 @@ const ChatConversationPane: React.FC<Props> = ({
               </span>
             </button>
             {summaryExpanded ? (
-              <p className="mt-1.5 whitespace-pre-wrap text-[12px] leading-6 text-slate-600">{message.content}</p>
+              <p className="mt-1.5 select-text whitespace-pre-wrap text-[12px] leading-6 text-slate-600">{message.content}</p>
             ) : null}
           </div>
         ) : null}
@@ -366,7 +368,7 @@ const ChatConversationPane: React.FC<Props> = ({
                 {retrievalSummary.map((item, index) => (
                   <div key={`${message.id}-rule-${index}`} className="rounded-[12px] bg-white/78 px-3 py-2">
                     <p className="text-[11px] font-black text-slate-700">{item.documentTitle || `规则${index + 1}`}</p>
-                    <p className="mt-1 text-[11px] leading-5 text-slate-600">{item.preview || '已命中相关规则'}</p>
+                    <p className="mt-1 select-text text-[11px] leading-5 text-slate-600">{item.preview || '已命中相关规则'}</p>
                   </div>
                 ))}
               </div>
@@ -380,49 +382,51 @@ const ChatConversationPane: React.FC<Props> = ({
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3 rounded-[30px] border border-white/75 bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(246,248,252,0.9))] p-3 shadow-[0_18px_46px_rgba(15,23,42,0.08)] backdrop-blur-xl lg:p-4">
-      <div className="rounded-[22px] border border-slate-200/80 bg-white/92 px-4 py-3 shadow-[0_6px_20px_rgba(15,23,42,0.04)]">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex min-w-0 items-center gap-3">
-            <AgentAvatar
-              name={selectedAgent?.name || '智能体'}
-              iconUrl={selectedAgent?.iconUrl || undefined}
-              avatarPreset={selectedAgent?.avatarPreset || undefined}
-              className="h-11 w-11 rounded-[15px] text-sm shadow-[0_8px_18px_rgba(56,189,248,0.14)]"
-            />
-            <div className="min-w-0">
-              <p className="text-[15px] font-black tracking-[-0.02em] text-slate-950">{selectedAgent?.name || '智能体'}</p>
-              <p className="mt-0.5 text-[12px] font-medium leading-5 text-slate-500">当前会话 · {focusedSessionTitle}</p>
+      {!hideSessionHeader ? (
+        <div className="rounded-[22px] border border-slate-200/80 bg-white/92 px-4 py-3 shadow-[0_6px_20px_rgba(15,23,42,0.04)]">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <AgentAvatar
+                name={selectedAgent?.name || '智能体'}
+                iconUrl={selectedAgent?.iconUrl || undefined}
+                avatarPreset={selectedAgent?.avatarPreset || undefined}
+                className="h-11 w-11 rounded-[15px] text-sm shadow-[0_8px_18px_rgba(56,189,248,0.14)]"
+              />
+              <div className="min-w-0">
+                <p className="text-[15px] font-black tracking-[-0.02em] text-slate-950">{selectedAgent?.name || '智能体'}</p>
+                <p className="mt-0.5 text-[12px] font-medium leading-5 text-slate-500">当前会话 · {focusedSessionTitle}</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <span className={metaTagClassName} style={{ letterSpacing: '0.08em' }}>
+                {selectedModelOption?.label || '默认模型'}
+              </span>
+              {galleryImages.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setShowGallery(true)}
+                  className={`${metaTagClassName} transition hover:border-slate-300 hover:text-slate-700`}
+                >
+                  本次会话图库
+                </button>
+              ) : null}
+              <span className={metaTagClassName}>附件 {attachments.length} 个</span>
+              {imageModeAvailable ? (
+                <span className={`${metaTagClassName} ${imageModeEnabled ? 'text-cyan-700' : ''}`}>
+                  {imageModeEnabled ? '生图模式' : '对话模式'}
+                </span>
+              ) : null}
+              {selectedModelOption?.supportsWebSearch && webSearchEnabled ? (
+                <span className={`${metaTagClassName} text-emerald-600`}>联网</span>
+              ) : null}
+              {selectedModelOption?.supportsReasoningLevel && reasoningLevel ? (
+                <span className={metaTagClassName}>思考 {reasoningLevel}</span>
+              ) : null}
             </div>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={metaTagClassName} style={{ letterSpacing: '0.08em' }}>
-              {selectedModelOption?.label || '默认模型'}
-            </span>
-            {galleryImages.length > 0 ? (
-              <button
-                type="button"
-                onClick={() => setShowGallery(true)}
-                className={`${metaTagClassName} transition hover:border-slate-300 hover:text-slate-700`}
-              >
-                本次会话图库
-              </button>
-            ) : null}
-            <span className={metaTagClassName}>附件 {attachments.length} 个</span>
-            {imageModeAvailable ? (
-              <span className={`${metaTagClassName} ${imageModeEnabled ? 'text-cyan-700' : ''}`}>
-                {imageModeEnabled ? '生图模式' : '对话模式'}
-              </span>
-            ) : null}
-            {selectedModelOption?.supportsWebSearch && webSearchEnabled ? (
-              <span className={`${metaTagClassName} text-emerald-600`}>联网</span>
-            ) : null}
-            {selectedModelOption?.supportsReasoningLevel && reasoningLevel ? (
-              <span className={metaTagClassName}>思考 {reasoningLevel}</span>
-            ) : null}
-          </div>
         </div>
-      </div>
+      ) : null}
 
       <div ref={messageScrollRef} className="min-h-0 flex-1 overflow-y-auto rounded-[22px] border border-slate-200/75 bg-white/84 px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.9)]">
         {messages.length === 0 ? (
@@ -472,7 +476,7 @@ const ChatConversationPane: React.FC<Props> = ({
                             <p className="mt-0.5 text-[11px] font-medium text-slate-500">{getProgressStageLabel(message)}</p>
                           </div>
                         </div>
-                      ) : <p className="whitespace-pre-wrap break-words">{message.content}</p>}
+                      ) : <p className="select-text whitespace-pre-wrap break-words">{message.content}</p>}
                       {!imageGenerationMessage && message.attachments?.length ? (
                         <div className="mt-3 flex flex-wrap gap-2">
                           {message.attachments.map((attachment, index) => {
@@ -530,7 +534,7 @@ const ChatConversationPane: React.FC<Props> = ({
                                   isUser ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600'
                                 }`}
                               >
-                                {attachment.name}
+                                <span className="select-text">{attachment.name}</span>
                               </span>
                             );
                           })}

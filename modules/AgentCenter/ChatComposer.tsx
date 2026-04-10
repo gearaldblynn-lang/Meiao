@@ -38,7 +38,7 @@ const buildAttachmentId = (kind: 'image' | 'file', name: string) =>
 const CHAT_REUSE_IMAGE_MIME = 'application/x-meiao-chat-image';
 
 const iconButtonClassName = (active: boolean, available: boolean) =>
-  `group relative flex h-9 w-9 items-center justify-center rounded-full border transition ${
+  `group relative flex h-8 w-8 items-center justify-center rounded-full border transition ${
     available
       ? active
         ? 'border-cyan-300/90 bg-cyan-50 text-cyan-700'
@@ -148,6 +148,18 @@ const ChatComposer: React.FC<Props> = ({
     event.target.value = '';
   };
 
+  const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (disabled || sending || uploading || !supportsAnyAttachment) return;
+    const clipboardItems = Array.from(event.clipboardData.items || []) as DataTransferItem[];
+    const clipboardFiles = clipboardItems
+      .filter((item) => item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    if (!clipboardFiles.length) return;
+    event.preventDefault();
+    await handleFilesUpload(clipboardFiles);
+  };
+
   const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -176,9 +188,9 @@ const ChatComposer: React.FC<Props> = ({
   };
 
   return (
-    <div className="rounded-[22px] border border-slate-200/85 bg-white/96 p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
+    <div className="rounded-[20px] border border-slate-200/85 bg-white/96 px-3 py-2.5 shadow-[0_8px_20px_rgba(15,23,42,0.04)]">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="min-w-[200px] rounded-full border border-slate-200/85 bg-slate-50/70 px-3 py-1.5">
+        <div className="min-w-[190px] rounded-full border border-slate-200/85 bg-slate-50/70 px-3 py-1.5">
           <select
             value={selectedModel}
             onChange={(event) => onModelChange(event.target.value)}
@@ -267,7 +279,7 @@ const ChatComposer: React.FC<Props> = ({
       </div>
 
       <div
-        className={`relative mt-2.5 rounded-[24px] transition ${dragActive ? 'bg-cyan-50/70 ring-2 ring-cyan-200/80' : ''}`}
+        className={`relative mt-2 rounded-[20px] transition ${dragActive ? 'bg-cyan-50/70 ring-2 ring-cyan-200/80' : ''}`}
         onDragOver={(event) => {
           event.preventDefault();
           event.dataTransfer.dropEffect = 'copy';
@@ -285,11 +297,11 @@ const ChatComposer: React.FC<Props> = ({
         onDrop={handleDrop}
       >
         {attachments.length > 0 ? (
-          <div className="absolute bottom-3 left-3 right-20 z-10 flex max-h-[76px] flex-wrap gap-2 overflow-y-auto pr-1">
+          <div className="absolute bottom-3 left-3 right-16 z-10 flex max-h-[70px] flex-wrap gap-2 overflow-y-auto pr-1">
             {numberedAttachments.map((attachment) => (
               <div
                 key={attachment.id}
-                className="flex h-12 max-w-[210px] items-center gap-2 overflow-hidden rounded-2xl border border-slate-200/90 bg-white/96 px-2 py-1.5 shadow-[0_8px_20px_rgba(15,23,42,0.06)]"
+                className="flex h-11 max-w-[210px] items-center gap-2 overflow-hidden rounded-2xl border border-slate-200/90 bg-white/96 px-2 py-1.5 shadow-[0_8px_18px_rgba(15,23,42,0.06)]"
               >
                 {attachment.kind === 'image' && attachment.url ? (
                   <img src={attachment.url} alt={attachment.name} className="h-8 w-8 rounded-xl object-cover" />
@@ -317,10 +329,11 @@ const ChatComposer: React.FC<Props> = ({
         <textarea
           value={messageDraft}
           onChange={(event) => onMessageDraftChange(event.target.value)}
+          onPaste={handlePaste}
           placeholder={sending ? '消息发送中，请稍候' : imageModeEnabled ? '输入生图需求，引用图片时请直接说图1、图2、图3...' : '输入问题、需求或上传附件后发送'}
           disabled={disabled || sending}
-          className={`min-h-[96px] w-full resize-none rounded-[20px] border border-slate-200/85 bg-slate-50/45 px-4 py-3 pr-16 text-[13px] leading-6 text-slate-800 outline-none transition focus:border-cyan-300 ${
-            attachments.length > 0 ? 'pb-20' : ''
+          className={`min-h-[84px] w-full resize-none rounded-[18px] border border-slate-200/85 bg-slate-50/45 px-4 py-3 pr-14 text-[13px] leading-6 text-slate-800 outline-none transition focus:border-cyan-300 ${
+            attachments.length > 0 ? 'pb-[4.5rem]' : ''
           }`}
         />
 
@@ -334,7 +347,7 @@ const ChatComposer: React.FC<Props> = ({
           <button
             type="button"
             onClick={onInterruptSend}
-            className="absolute bottom-3 right-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-rose-500 text-[13px] font-semibold text-white transition hover:bg-rose-600"
+            className="absolute bottom-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-rose-500 text-[13px] font-semibold text-white transition hover:bg-rose-600"
             aria-label="中断发送"
             title="中断发送"
           >
@@ -345,7 +358,7 @@ const ChatComposer: React.FC<Props> = ({
             type="button"
             onClick={onSendMessage}
             disabled={!canSend}
-            className="absolute bottom-3 right-3 inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-800 text-[13px] font-semibold text-white transition hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-45"
+            className="absolute bottom-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-800 text-[13px] font-semibold text-white transition hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-45"
           >
             <i className="fas fa-arrow-up text-[12px]" />
           </button>
