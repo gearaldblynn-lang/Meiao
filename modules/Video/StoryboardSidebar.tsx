@@ -227,6 +227,18 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
             <span className="text-[10px] font-bold text-slate-400">{Math.max(config.productImages.length, config.uploadedProductUrls.length)}/8</span>
           </div>
 
+          {Math.max(config.productImages.length, config.uploadedProductUrls.length) < 8 && (
+            <label className="relative block">
+              <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} disabled={disabled} />
+              <UploadSurface
+                icon="fa-image"
+                accentTextClass="text-rose-500"
+                title={Math.max(config.productImages.length, config.uploadedProductUrls.length) === 0 ? '上传产品图片素材' : '继续添加产品图片'}
+                hint="支持 JPG / PNG / WEBP，最多 8 张。"
+              />
+            </label>
+          )}
+
           {Math.max(config.productImages.length, config.uploadedProductUrls.length) > 0 && (
             <div className="grid grid-cols-4 gap-2">
               {Array.from({ length: Math.max(config.productImages.length, config.uploadedProductUrls.length) }).map((_, index) => {
@@ -251,18 +263,6 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
                 );
               })}
             </div>
-          )}
-
-          {Math.max(config.productImages.length, config.uploadedProductUrls.length) < 8 && (
-            <label className="relative block">
-              <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} disabled={disabled} />
-              <UploadSurface
-                icon="fa-image"
-                accentTextClass="text-rose-500"
-                title={Math.max(config.productImages.length, config.uploadedProductUrls.length) === 0 ? '上传产品图片素材' : '继续添加产品图片'}
-                hint="支持 JPG / PNG / WEBP，最多 8 张。"
-              />
-            </label>
           )}
         </section>
 
