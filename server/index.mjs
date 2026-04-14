@@ -1262,6 +1262,98 @@ const handleVideoDiagnosisProbeRequest = async (req, res) => {
   json(res, 200, result);
 };
 
+const buildVideoDiagnosisAnalysisPrompt = (diagData, platform) => {
+  const d = diagData;
+  const platformName = platform === 'douyin' ? '抖音' : 'TikTok';
+  return [
+    `你是一位资深的${platformName}平台算法与运营专家，请根据以下视频的后台数据，输出一份专业的限流/流量诊断报告。`,
+    '',
+    '## 视频数据',
+    '```json',
+    JSON.stringify(d, null, 2),
+    '```',
+    '',
+    '## 输出要求',
+    '请严格按照以下 JSON 格式输出，不要输出任何其他内容：',
+    '```json',
+    JSON.stringify({
+      summary: '一句话总结视频当前流量状态和主要问题',
+      overallRisk: 'low|medium|high',
+      sections: [
+        {
+          id: 'account_authority',
+          title: '账号权重与活跃度',
+          level: 'normal|warning|danger',
+          findings: ['具体发现1', '具体发现2'],
+          suggestion: '针对性建议',
+        },
+      ],
+      topActions: ['最优先操作1', '最优先操作2', '最优先操作3'],
+    }, null, 2),
+    '```',
+    '',
+    '## sections 必须包含以下维度（按需判断 level）：',
+    '1. account_authority - 账号权重与活跃度（follower_count、following_count、total_favorited）',
+    '2. content_originality - 内容原创性（content_original_type、aigc、music 重复性）',
+    '3. platform_review - 平台审核状态（review_status、is_prohibited、private_status）',
+    '4. commercial_signals - 商业化信号（has_promote_entry、commerce_info、is_ads）',
+    '5. engagement_quality - 互动质量（play/digg/comment/share 比例分析）',
+    '6. environment_signals - 环境与地区信号（region、desc_language 匹配度）',
+    '',
+    '每个 findings 数组里的内容要引用具体字段值作为证据，不要泛泛而谈。',
+  ].join('\n');
+};
+
+const handleVideoDiagnosisAnalyzeRequest = async (req, res) => {
+  const body = await readBody(req);
+  const diagData = body?.diagData;
+  const platform = String(body?.platform || 'tiktok').toLowerCase();
+  const model = String(body?.model || '').trim();
+
+  if (!diagData || typeof diagData !== 'object') {
+    json(res, 400, { message: '缺少 diagData', code: 'missing_diag_data' });
+    return;
+  }
+  if (!model) {
+    json(res, 400, { message: '缺少 model', code: 'missing_model' });
+    return;
+  }
+
+  const prompt = buildVideoDiagnosisAnalysisPrompt(diagData, platform);
+  const messages = [{ role: 'user', content: prompt }];
+
+  let output;
+  try {
+    output = await executeProviderJob(
+      { taskType: 'kie_chat', payload: { messages, model } },
+      process.env,
+      new AbortController().signal
+    );
+  } catch (error) {
+    json(res, 500, {
+      message: error?.providerMessage || error?.message || 'AI 分析失败',
+      code: error?.code || 'ai_error',
+    });
+    return;
+  }
+
+  const rawContent = String(output?.result?.content || '').trim();
+  // 尝试提取 JSON
+  const jsonMatch = rawContent.match(/```json\s*([\s\S]*?)```/) || rawContent.match(/(\{[\s\S]*\})/);
+  let parsed = null;
+  if (jsonMatch) {
+    try { parsed = JSON.parse(jsonMatch[1].trim()); } catch (_) {}
+  }
+  if (!parsed) {
+    try { parsed = JSON.parse(rawContent); } catch (_) {}
+  }
+
+  json(res, 200, {
+    analysis: parsed || { summary: rawContent, sections: [], topActions: [], overallRisk: 'unknown' },
+    rawContent,
+  });
+};
+
 const serveStaticFile = (req, res, filePath) => {
   const ext = path.extname(filePath).toLowerCase();
   const contentType = STATIC_CONTENT_TYPES[ext] || 'application/octet-stream';
@@ -5540,6 +5632,13 @@ const handleMysqlRequest = async (req, res, url) => {
     return;
   }
 
+  if (url.pathname === '/api/video-diagnosis/analyze' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    await handleVideoDiagnosisAnalyzeRequest(req, res);
+    return;
+  }
+
   if (url.pathname === '/api/auth/login' && req.method === 'POST') {
     const body = await readBody(req);
     const username = String(body.username || '').trim();
@@ -6751,6 +6850,13 @@ const handleLocalRequest = async (req, res, url) => {
     const user = localRequireUser(req, res, store);
     if (!user) return;
     await handleVideoDiagnosisProbeRequest(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/video-diagnosis/analyze' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    await handleVideoDiagnosisAnalyzeRequest(req, res);
     return;
   }
 

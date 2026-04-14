@@ -1,5 +1,5 @@
 import React from 'react';
-import { VideoDiagnosisAnalysisItem, VideoDiagnosisState, VideoSubMode } from '../../types';
+import { SystemPublicConfig, VideoDiagnosisAnalysisSection, VideoDiagnosisAnalysisItem, VideoDiagnosisState, VideoSubMode } from '../../types';
 import {
   PopoverSelect,
   PrimaryActionButton,
@@ -8,14 +8,16 @@ import {
   SidebarShell,
   WorkspaceShellCard,
 } from '../../components/ui/workspacePrimitives';
-import { formatEvidenceValue, summarizeProbeOutcome } from './videoDiagnosisUtils.mjs';
+import { summarizeProbeOutcome } from './videoDiagnosisUtils.mjs';
 
 interface Props {
   state: VideoDiagnosisState;
+  chatModels: SystemPublicConfig['agentModels']['chat'];
   subMode: VideoSubMode;
   onSubModeChange: (next: VideoSubMode) => void;
   onChange: (updates: Partial<VideoDiagnosisState>) => void;
   onProbe: () => void | Promise<void>;
+  onAnalyze: () => void | Promise<void>;
 }
 
 const ANALYSIS_ITEM_OPTIONS: Array<{ value: VideoDiagnosisAnalysisItem; label: string; hint: string }> = [
@@ -27,32 +29,56 @@ const ANALYSIS_ITEM_OPTIONS: Array<{ value: VideoDiagnosisAnalysisItem; label: s
   { value: 'risk_signals', label: '风险信号', hint: '可能的限流/违规/敏感提示' },
 ];
 
-const joinClasses = (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' ');
+const cx = (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' ');
 
-const safeJsonStringify = (value: unknown, space = 2) => {
-  const visited = new WeakSet<object>();
-  const replacer = (_key: string, next: any) => {
-    if (typeof next === 'bigint') return `${next.toString()}n`;
-    if (typeof next === 'object' && next !== null) {
-      if (visited.has(next)) return '[Circular]';
-      visited.add(next);
-    }
-    return next;
-  };
-
-  try {
-    const result = JSON.stringify(value, replacer, space);
-    return typeof result === 'string' ? result : '';
-  } catch (_err) {
-    try {
-      return String(value);
-    } catch (_err2) {
-      return '';
-    }
-  }
+const LEVEL_STYLES = {
+  normal: { bar: 'bg-emerald-500', badge: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: 'fa-circle-check text-emerald-500' },
+  warning: { bar: 'bg-amber-400', badge: 'bg-amber-50 text-amber-700 border-amber-200', icon: 'fa-triangle-exclamation text-amber-400' },
+  danger: { bar: 'bg-rose-500', badge: 'bg-rose-50 text-rose-700 border-rose-200', icon: 'fa-circle-xmark text-rose-500' },
 };
 
-const VideoDiagnosisPanel: React.FC<Props> = ({ state, subMode, onSubModeChange, onChange, onProbe }) => {
+const RISK_STYLES = {
+  low: { label: '低风险', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  medium: { label: '中风险', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+  high: { label: '高风险', cls: 'bg-rose-50 text-rose-700 border-rose-200' },
+  unknown: { label: '未知', cls: 'bg-slate-100 text-slate-500 border-slate-200' },
+};
+
+const DiagnosisSection: React.FC<{ section: VideoDiagnosisAnalysisSection }> = ({ section }) => {
+  const style = LEVEL_STYLES[section.level] || LEVEL_STYLES.normal;
+  return (
+    <div className="rounded-3xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+      <div className={`h-1 w-full ${style.bar}`} />
+      <div className="px-5 py-4">
+        <div className="flex items-center gap-2 mb-3">
+          <i className={`fas ${style.icon} text-sm`} />
+          <span className="text-[13px] font-black text-slate-800">{section.title}</span>
+          <span className={cx('ml-auto text-[10px] font-black px-2 py-0.5 rounded-full border', style.badge)}>
+            {section.level === 'normal' ? '正常' : section.level === 'warning' ? '注意' : '风险'}
+          </span>
+        </div>
+        {section.findings.length > 0 && (
+          <ul className="space-y-2 mb-3">
+            {section.findings.map((finding, i) => (
+              <li key={i} className="flex items-start gap-2 text-[12px] text-slate-600 leading-5">
+                <span className="mt-1 shrink-0 w-1.5 h-1.5 rounded-full bg-slate-300" />
+                {finding}
+              </li>
+            ))}
+          </ul>
+        )}
+        {section.suggestion && (
+          <div className="rounded-2xl bg-slate-50 border border-slate-100 px-4 py-3 text-[11px] font-semibold text-slate-600 leading-5">
+            <i className="fas fa-lightbulb text-amber-400 mr-1.5" />
+            {section.suggestion}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const VideoDiagnosisPanel: React.FC<Props> = ({ state, chatModels, subMode, onSubModeChange, onChange, onProbe, onAnalyze }) => {
   const safeUrl = state.url ?? '';
   const safePlatform = state.platform || 'tiktok';
   const safeAccessMode = state.accessMode || 'spider_api';
@@ -61,10 +87,12 @@ const VideoDiagnosisPanel: React.FC<Props> = ({ state, subMode, onSubModeChange,
   const isProbing = probeStatus === 'loading';
   const isSupportedAccessMode = safeAccessMode === 'spider_api';
   const canProbe = Boolean(safeUrl.trim()) && !isProbing && isSupportedAccessMode;
-
+  const hasProbeData = probeStatus === 'success' && state.probe?.normalized?.diag;
+  const aiStatus = state.aiAnalysis?.status || 'idle';
+  const isAnalyzing = aiStatus === 'loading';
+  const canAnalyze = Boolean(hasProbeData) && !isAnalyzing && Boolean(state.analysisModel);
   const probeSummary = summarizeProbeOutcome(state.probe);
-  const reportSummary = state.report?.summary?.trim() || '暂无诊断报告（先进行勘探）';
-  const rawPreview = state.probe?.raw ? safeJsonStringify(state.probe.raw, 2) : '';
+  const riskStyle = RISK_STYLES[state.aiAnalysis?.overallRisk || 'unknown'] || RISK_STYLES.unknown;
 
   return (
     <div className="flex h-full w-full overflow-hidden bg-slate-50">
@@ -86,206 +114,156 @@ const VideoDiagnosisPanel: React.FC<Props> = ({ state, subMode, onSubModeChange,
           />
         }
         footer={
-          <PrimaryActionButton
-            label={
-              !safeUrl.trim()
-                ? '请输入链接'
-                : !isSupportedAccessMode
-                  ? '仅支持 Spider API'
-                  : isProbing
-                    ? '勘探中...'
-                    : '开始勘探'
-            }
-            icon="fa-magnifying-glass"
-            disabled={!canProbe}
-            onClick={onProbe}
-          />
+          <div className="space-y-2">
+            <PrimaryActionButton
+              label={!safeUrl.trim() ? '请输入链接' : !isSupportedAccessMode ? '仅支持 Spider API' : isProbing ? '勘探中...' : '开始勘探'}
+              icon={isProbing ? 'fa-spinner fa-spin' : 'fa-magnifying-glass'}
+              disabled={!canProbe}
+              onClick={onProbe}
+            />
+            <button
+              type="button"
+              disabled={!canAnalyze}
+              onClick={onAnalyze}
+              className={cx(
+                'w-full h-11 rounded-2xl text-[13px] font-black transition-all flex items-center justify-center gap-2',
+                canAnalyze
+                  ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                  : 'bg-slate-100 text-slate-400 cursor-not-allowed'
+              )}
+            >
+              <i className={cx('fas', isAnalyzing ? 'fa-spinner fa-spin' : 'fa-brain')} />
+              {isAnalyzing ? 'AI 分析中...' : hasProbeData ? 'AI 深度分析' : '先完成勘探'}
+            </button>
+          </div>
         }
       >
-        <SectionCard
-          title="目标输入"
-          icon="fa-link"
-          accentTextClass="text-emerald-600"
-          description="选择平台，粘贴视频链接，开始字段勘探。"
-        >
+        <SectionCard title="目标输入" icon="fa-link" accentTextClass="text-emerald-600" description="选择平台，粘贴视频链接，开始字段勘探。">
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <div className="mb-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">平台</div>
                 <PopoverSelect
                   value={safePlatform}
-                  options={[
-                    { value: 'tiktok', label: 'TikTok' },
-                    { value: 'douyin', label: '抖音' },
-                  ]}
-                  onChange={(next) => onChange({ platform: next })}
+                  options={[{ value: 'tiktok', label: 'TikTok' }, { value: 'douyin', label: '抖音' }]}
+                  onChange={(next) => onChange({ platform: next as any })}
                 />
               </div>
               <div>
                 <div className="mb-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">接入方式</div>
                 <PopoverSelect
                   value={safeAccessMode}
-                  options={[
-                    { value: 'spider_api', label: 'Spider API' },
-                    { value: 'web_session', label: 'Web Session' },
-                  ]}
-                  onChange={(next) => onChange({ accessMode: next })}
+                  options={[{ value: 'spider_api', label: 'Spider API' }, { value: 'web_session', label: 'Web Session' }]}
+                  onChange={(next) => onChange({ accessMode: next as any })}
                 />
-                {!isSupportedAccessMode ? (
-                  <div className="mt-2 text-[11px] font-semibold text-rose-600">当前探测接口仅支持 Spider API。</div>
-                ) : null}
+                {!isSupportedAccessMode && <div className="mt-2 text-[11px] font-semibold text-rose-600">当前探测接口仅支持 Spider API。</div>}
               </div>
             </div>
-
             <div>
               <div className="mb-1 flex items-center justify-between gap-3">
                 <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">视频链接</div>
-                {safeUrl.trim() ? (
-                  <button
-                    type="button"
-                    onClick={() => onChange({ url: '' })}
-                    className="text-[10px] font-black text-slate-300 transition-colors hover:text-rose-500"
-                  >
-                    清空
-                  </button>
-                ) : null}
+                {safeUrl.trim() && (
+                  <button type="button" onClick={() => onChange({ url: '' })} className="text-[10px] font-black text-slate-300 hover:text-rose-500">清空</button>
+                )}
               </div>
               <textarea
                 value={safeUrl}
-                onChange={(event) => onChange({ url: event.target.value })}
+                onChange={(e) => onChange({ url: e.target.value })}
                 placeholder="粘贴 TikTok / 抖音 视频链接..."
-                className="h-28 w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold text-slate-700 shadow-inner outline-none transition-all focus:border-emerald-300 focus:bg-white"
+                className="h-24 w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold text-slate-700 shadow-inner outline-none transition-all focus:border-emerald-300 focus:bg-white"
               />
             </div>
           </div>
         </SectionCard>
 
-        <SectionCard
-          title="勘探范围"
-          icon="fa-layer-group"
-          accentTextClass="text-slate-700"
-          description="MVP 默认勾选三项，可按需调整。"
-        >
-          <div className="space-y-2">
-            {ANALYSIS_ITEM_OPTIONS.map((option) => {
-              const active = safeAnalysisItems.includes(option.value);
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => {
-                    const nextItems = active
-                      ? safeAnalysisItems.filter((item) => item !== option.value)
-                      : [...safeAnalysisItems, option.value];
-                    onChange({ analysisItems: nextItems });
-                  }}
-                  className={joinClasses(
-                    'flex w-full items-start justify-between gap-4 rounded-2xl border px-4 py-3 text-left transition-all',
-                    active
-                      ? 'border-emerald-200 bg-emerald-50/70 text-emerald-700'
-                      : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
-                  )}
-                >
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-black">{option.label}</div>
-                    <div className={joinClasses('mt-1 text-[11px] leading-5', active ? 'text-emerald-600/80' : 'text-slate-400')}>
-                      {option.hint}
-                    </div>
-                  </div>
-                  <div className={joinClasses('mt-0.5 shrink-0 text-[10px]', active ? 'text-emerald-600' : 'text-slate-300')}>
-                    <i className={joinClasses('fas', active ? 'fa-check-circle' : 'fa-circle')}></i>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+        <SectionCard title="AI 分析模型" icon="fa-brain" accentTextClass="text-emerald-600" description="勘探完成后，选择模型进行深度诊断。">
+          <PopoverSelect
+            value={state.analysisModel || ''}
+            options={chatModels.length > 0 ? chatModels.map((m) => ({ value: m.id, label: m.label })) : [{ value: '', label: '加载中...' }]}
+            onChange={(next) => onChange({ analysisModel: next })}
+            buttonClassName="h-10 rounded-2xl px-4 text-xs"
+          />
         </SectionCard>
 
-        <SectionCard title="当前状态" icon="fa-gauge" accentTextClass="text-slate-700">
-          <div className="space-y-2 text-xs text-slate-600">
-            <div className="flex items-center justify-between gap-3">
+        <SectionCard title="勘探状态" icon="fa-gauge" accentTextClass="text-slate-700">
+          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+            <div className="flex items-center justify-between gap-3 mb-1">
               <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Probe</span>
-              <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-700">
-                {probeStatus}
-              </span>
+              <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-700">{probeStatus}</span>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-              <div className="text-[11px] font-black text-slate-700">{probeSummary}</div>
-              {state.probe?.error ? <div className="mt-2 text-[11px] text-rose-600">{state.probe.error}</div> : null}
-              {Array.isArray(state.probe?.missingCriticalFields) && state.probe.missingCriticalFields.length ? (
-                <div className="mt-2 text-[11px] text-slate-500">
-                  缺失字段: <span className="font-semibold">{state.probe.missingCriticalFields.join(', ')}</span>
-                </div>
-              ) : null}
-            </div>
+            <div className="text-[11px] font-black text-slate-700">{probeSummary}</div>
+            {state.probe?.error && <div className="mt-1 text-[11px] text-rose-600">{state.probe.error}</div>}
           </div>
         </SectionCard>
       </SidebarShell>
 
-      <div className="min-w-0 flex-1 overflow-hidden p-6">
-        <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-6">
-          <WorkspaceShellCard className="flex min-h-0 flex-col overflow-hidden">
-            <div className="flex items-center justify-between gap-4 border-b border-slate-100 px-5 py-4">
-              <div className="min-w-0">
-                <div className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-600">勘探原始结果</div>
-                <div className="mt-1 text-[11px] text-slate-400">展示 `probe.raw` 的 JSON 预览（后续将接入更友好的字段面板）。</div>
-              </div>
-              <div className="shrink-0 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black text-slate-600">
-                {state.probe?.completedAt ? `完成于 ${new Date(state.probe.completedAt).toLocaleString()}` : '尚未完成'}
-              </div>
+      <div className="min-w-0 flex-1 overflow-auto p-6">
+        {aiStatus === 'idle' && (
+          <div className="flex h-full items-center justify-center">
+            <div className="text-center space-y-3">
+              <i className="fas fa-brain text-4xl text-slate-200" />
+              <p className="text-[13px] font-semibold text-slate-400">
+                {hasProbeData ? '点击「AI 深度分析」生成诊断报告' : '先输入视频链接并完成勘探'}
+              </p>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto bg-slate-950 p-5 text-slate-100">
-              {state.probe?.raw ? (
-                <pre className="whitespace-pre-wrap break-words text-[11px] leading-5">
-                  {rawPreview || '(无法序列化为 JSON)'}
-                </pre>
-              ) : (
-                <div className="flex h-full items-center justify-center text-[11px] font-semibold text-slate-400">
-                  暂无原始数据
-                </div>
-              )}
-            </div>
-          </WorkspaceShellCard>
+          </div>
+        )}
 
-          <WorkspaceShellCard className="flex min-h-0 flex-col overflow-hidden">
-            <div className="border-b border-slate-100 px-5 py-4">
-              <div className="text-[11px] font-black uppercase tracking-[0.18em] text-slate-600">诊断报告预览</div>
-              <div className="mt-1 text-[11px] text-slate-400">展示 `report.summary` 与少量证据样本（MVP）。</div>
+        {aiStatus === 'loading' && (
+          <div className="flex h-full items-center justify-center">
+            <div className="text-center space-y-3">
+              <i className="fas fa-spinner fa-spin text-3xl text-emerald-500" />
+              <p className="text-[13px] font-semibold text-slate-500">AI 正在分析视频数据...</p>
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-5">
-              <div className="rounded-3xl border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#f8fafc_100%)] p-5 shadow-sm">
-                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Summary</div>
-                <p className="mt-3 whitespace-pre-wrap text-sm font-semibold leading-6 text-slate-700">{reportSummary}</p>
-              </div>
+          </div>
+        )}
 
-              {Array.isArray(state.report?.evidence) && state.report.evidence.length ? (
-                <div className="mt-5 space-y-3">
-                  <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Evidence</div>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    {state.report.evidence.slice(0, 6).map((item, index) => (
-                      <div key={`${item.fieldPath}-${index}`} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="truncate text-xs font-black text-slate-800">{item.label}</div>
-                            <div className="mt-1 truncate text-[11px] font-semibold text-slate-400">{item.fieldPath}</div>
-                          </div>
-                          <div className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-[10px] font-black text-slate-700">
-                            {item.source}
-                          </div>
-                        </div>
-                        <div className="mt-3 rounded-2xl bg-slate-950 px-3 py-2 text-[11px] font-semibold text-slate-100">
-                          {formatEvidenceValue(item.value) || '(空)'}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : (
-                <div className="mt-5 text-[11px] font-semibold text-slate-400">暂无证据卡片</div>
-              )}
+        {aiStatus === 'error' && (
+          <div className="flex h-full items-center justify-center">
+            <div className="text-center space-y-3">
+              <i className="fas fa-circle-xmark text-3xl text-rose-400" />
+              <p className="text-[13px] font-semibold text-rose-500">{state.aiAnalysis?.error || 'AI 分析失败'}</p>
             </div>
-          </WorkspaceShellCard>
-        </div>
+          </div>
+        )}
+
+        {aiStatus === 'success' && state.aiAnalysis && (
+          <div className="space-y-5 max-w-3xl mx-auto">
+            <WorkspaceShellCard className="p-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400 mb-2">诊断总结</div>
+                  <p className="text-sm font-semibold leading-6 text-slate-700">{state.aiAnalysis.summary}</p>
+                </div>
+                <span className={cx('shrink-0 text-[11px] font-black px-3 py-1.5 rounded-full border', riskStyle.cls)}>
+                  {riskStyle.label}
+                </span>
+              </div>
+            </WorkspaceShellCard>
+
+            {state.aiAnalysis.sections.map((section) => (
+              <DiagnosisSection key={section.id} section={section} />
+            ))}
+
+            {state.aiAnalysis.topActions.length > 0 && (
+              <WorkspaceShellCard className="p-5">
+                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400 mb-3">优先操作建议</div>
+                <ol className="space-y-2">
+                  {state.aiAnalysis.topActions.map((action, i) => (
+                    <li key={i} className="flex items-start gap-3 text-[12px] text-slate-700 leading-5">
+                      <span className="shrink-0 w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-black flex items-center justify-center">{i + 1}</span>
+                      {action}
+                    </li>
+                  ))}
+                </ol>
+              </WorkspaceShellCard>
+            )}
+
+            <div className="text-center text-[10px] text-slate-300 pb-4">
+              {state.aiAnalysis.completedAt ? `分析完成于 ${new Date(state.aiAnalysis.completedAt).toLocaleString()}` : ''}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -82,13 +82,33 @@ export interface VideoDiagnosisReportResult {
   actions: VideoDiagnosisActionItem[];
 }
 
+export interface VideoDiagnosisAnalysisSection {
+  id: string;
+  title: string;
+  level: 'normal' | 'warning' | 'danger';
+  findings: string[];
+  suggestion: string;
+}
+
+export interface VideoDiagnosisAiAnalysis {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  summary: string;
+  overallRisk: 'low' | 'medium' | 'high' | 'unknown';
+  sections: VideoDiagnosisAnalysisSection[];
+  topActions: string[];
+  error: string;
+  completedAt: number | null;
+}
+
 export interface VideoDiagnosisState {
   platform: VideoDiagnosisPlatform;
   accessMode: VideoDiagnosisAccessMode;
   url: string;
   analysisItems: VideoDiagnosisAnalysisItem[];
+  analysisModel: string;
   probe: VideoDiagnosisProbeResult;
   report: VideoDiagnosisReportResult;
+  aiAnalysis: VideoDiagnosisAiAnalysis;
 }
 
 export enum AspectRatio {
