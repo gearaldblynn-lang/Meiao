@@ -165,7 +165,7 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
     onChange((prev) => ({
       ...prev,
       productImages: [...prev.productImages, ...imageFiles].slice(0, 8),
-      uploadedProductUrls: [],
+      uploadedProductUrls: [...prev.uploadedProductUrls].slice(0, prev.productImages.length + imageFiles.length).slice(0, 8),
     }));
 
     event.target.value = '';
@@ -174,8 +174,8 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
   const removeImage = (index: number) => {
     onChange((prev) => ({
       ...prev,
-      productImages: prev.productImages.filter((_, currentIndex) => currentIndex !== index),
-      uploadedProductUrls: [],
+      productImages: prev.productImages.filter((_, i) => i !== index),
+      uploadedProductUrls: prev.uploadedProductUrls.filter((_, i) => i !== index),
     }));
   };
 
@@ -215,7 +215,7 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
       footer={
         <PrimaryActionButton
           onClick={onGenerate}
-          disabled={disabled || config.productImages.length === 0}
+          disabled={disabled || (config.productImages.length === 0 && config.uploadedProductUrls.length === 0)}
           icon={disabled ? 'fa-spinner fa-spin' : 'fa-play-circle'}
           label={disabled ? '生成中...' : '生成短视频分镜板'}
         />
@@ -224,30 +224,39 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <label className="text-xs font-black uppercase tracking-widest text-slate-400">产品素材</label>
-            <span className="text-[10px] font-bold text-slate-400">{config.productImages.length}/8</span>
+            <span className="text-[10px] font-bold text-slate-400">{Math.max(config.productImages.length, config.uploadedProductUrls.length)}/8</span>
           </div>
 
           <div className="grid grid-cols-4 gap-3">
-            {config.productImages.map((image, index) => (
-              <div key={`${image.name}-${index}`} className="relative aspect-square rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 group">
-                <FilePreview file={image} alt={image.name} />
-                <button
-                  type="button"
-                  onClick={() => removeImage(index)}
-                  className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/60 text-white text-xs opacity-0 group-hover:opacity-100 transition-all"
-                >
-                  <i className="fas fa-times"></i>
-                </button>
-              </div>
-            ))}
+            {Array.from({ length: Math.max(config.productImages.length, config.uploadedProductUrls.length) }).map((_, index) => {
+              const file = config.productImages[index];
+              const url = config.uploadedProductUrls[index];
+              return (
+                <div key={`img-${index}`} className="relative aspect-square rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 group">
+                  {file
+                    ? <FilePreview file={file} alt={file.name} />
+                    : url
+                      ? <img src={url} alt={`产品图${index + 1}`} className="w-full h-full object-cover" />
+                      : <div className="w-full h-full bg-slate-100" />
+                  }
+                  <button
+                    type="button"
+                    onClick={() => removeImage(index)}
+                    className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/60 text-white text-xs opacity-0 group-hover:opacity-100 transition-all"
+                  >
+                    <i className="fas fa-times"></i>
+                  </button>
+                </div>
+              );
+            })}
 
-            {config.productImages.length < 8 && (
-              <label className={`relative ${config.productImages.length === 0 ? 'col-span-4' : ''}`}>
+            {Math.max(config.productImages.length, config.uploadedProductUrls.length) < 8 && (
+              <label className={`relative ${Math.max(config.productImages.length, config.uploadedProductUrls.length) === 0 ? 'col-span-4' : ''}`}>
                 <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} disabled={disabled} />
                 <UploadSurface
                   icon="fa-image"
                   accentTextClass="text-rose-500"
-                  title={config.productImages.length === 0 ? '上传产品图片素材' : '继续添加产品图片'}
+                  title={Math.max(config.productImages.length, config.uploadedProductUrls.length) === 0 ? '上传产品图片素材' : '继续添加产品图片'}
                   hint="支持 JPG / PNG / WEBP，最多 8 张。"
                 />
               </label>

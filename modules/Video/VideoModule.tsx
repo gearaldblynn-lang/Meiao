@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import {
   GlobalApiConfig,
   VideoPersistentState,
@@ -129,6 +129,24 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     }));
   };
 
+  // 自动上传产品图到 COS，保证刷新后 URL 仍可用
+  const autoUploadingRef = useRef(false);
+  useEffect(() => {
+    const images = storyboard.config.productImages;
+    const urls = storyboard.config.uploadedProductUrls;
+    // 已有足够 URL 或没有图片则跳过
+    if (images.length === 0 || (urls.length === images.length && urls.every(Boolean))) return;
+    if (autoUploadingRef.current) return;
+    if (!apiConfig.cosSecretId || !apiConfig.cosSecretKey) return;
+    autoUploadingRef.current = true;
+    Promise.all(images.map((file, i) => urls[i] ? Promise.resolve(urls[i]) : uploadToCos(file, apiConfig)))
+      .then((nextUrls) => {
+        setStoryboardConfig((prev) => ({ ...prev, uploadedProductUrls: nextUrls }));
+      })
+      .catch(() => {/* 静默失败，生成时会重试 */})
+      .finally(() => { autoUploadingRef.current = false; });
+  }, [storyboard.config.productImages.length]);
+
   const updateDiagnosisState = (
     updates: VideoDiagnosisPatch | ((prev: VideoDiagnosisState) => VideoDiagnosisPatch)
   ) => {
@@ -169,12 +187,16 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
   };
 
   const ensureUploadedProductUrls = async (config: VideoStoryboardConfig) => {
+    // 刷新后 productImages 为空但有已上传的 URL，直接复用
+    if (config.productImages.length === 0 && config.uploadedProductUrls.length > 0 && config.uploadedProductUrls.every(Boolean)) {
+      return config.uploadedProductUrls;
+    }
     if (config.productImages.length === 0) throw new Error('请先上传产品图');
     if (config.uploadedProductUrls.length === config.productImages.length && config.uploadedProductUrls.every(Boolean)) {
       return config.uploadedProductUrls;
     }
 
-    const urls = await Promise.all(config.productImages.map((file) => uploadToCos(file, apiConfig)));
+    const urls = await Promise.all(config.productImages.map((file, i) => config.uploadedProductUrls[i] || uploadToCos(file, apiConfig)));
     setStoryboardConfig((prev) => ({ ...prev, uploadedProductUrls: urls }));
     return urls;
   };
