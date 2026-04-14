@@ -504,6 +504,20 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
                   productImages: normalizeFileArray(saved.videoMemory.storyboard.config?.productImages),
                   uploadedProductUrls: normalizeStringArray(saved.videoMemory.storyboard.config?.uploadedProductUrls),
                 },
+                projects: Array.isArray(saved.videoMemory.storyboard.projects)
+                  ? saved.videoMemory.storyboard.projects.map((project: any) => project
+                    ? {
+                        ...project,
+                        config: project.config
+                          ? {
+                              ...project.config,
+                              productImages: normalizeFileArray(project.config.productImages),
+                              uploadedProductUrls: normalizeStringArray(project.config.uploadedProductUrls),
+                            }
+                          : project.config,
+                      }
+                    : project)
+                  : saved.videoMemory.storyboard.projects,
               }
             : saved.videoMemory.storyboard,
           diagnosis: saved.videoMemory.diagnosis || defaultVideoState.diagnosis,
