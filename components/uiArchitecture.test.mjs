@@ -335,6 +335,19 @@ test('agent wizard uses selectable model catalogs instead of free-text model inp
   assert.doesNotMatch(wizard, /placeholder="简单问题模型"/);
 });
 
+test('agent wizard exposes per-knowledge-base document checklists for version retrieval bindings', () => {
+  const wizard = read('../modules/AgentCenter/AgentWizardView.tsx');
+  const manager = read('../modules/AgentCenter/AgentCenterManager.tsx');
+
+  assert.match(wizard, /knowledgeDocumentBindings/);
+  assert.match(wizard, /enabledDocumentIds/);
+  assert.match(wizard, /全选/);
+  assert.match(wizard, /全不选/);
+  assert.match(wizard, /该知识库当前不会提供检索内容/);
+  assert.match(manager, /fetchKnowledgeDocuments/);
+  assert.match(manager, /knowledgeDocumentsByBase/);
+});
+
 test('system settings expose a global analysis model selector for server-side planning tasks', () => {
   const settings = read('../modules/Settings/GlobalApiSettings.tsx');
   const api = read('../services/internalApi.ts');
@@ -482,8 +495,13 @@ test('agent studio testing reuses the unified chat conversation stack and model 
   assert.match(testingPane, /attachments=/);
   assert.match(testingPane, /onImageModeToggle=/);
   assert.match(testingPane, /hideSessionHeader=\{true\}/);
+  assert.match(testingPane, /renderMessageActions=\{\(message\) =>/);
+  assert.match(testingPane, /onCorrection\(findUserQuestion\(message\.id\), message\.content\)/);
   assert.match(conversationPane, /hideSessionHeader\?: boolean/);
+  assert.match(conversationPane, /renderMessageActions\?: \(message: AgentChatMessage\) => ReactNode;/);
+  assert.match(conversationPane, /renderMessageActions \? renderMessageActions\(message\) : null/);
   assert.match(conversationPane, /!hideSessionHeader/);
+  assert.doesNotMatch(testingPane, /messages\.filter\(\(msg\) => msg\.role === 'assistant' && !msg\.metadata\?\.pending\)\.map/);
 });
 
 test('agent studio training also reuses the unified chat composer capability controls', () => {
@@ -816,4 +834,14 @@ test('agent center removes the oversized landing header and keeps compact worksp
   assert.match(module, /智能体/);
   assert.match(module, /知识库/);
   assert.doesNotMatch(studio, /px-5 py-4/);
+});
+
+test('studio correction handoff keeps the full failed question and answer context instead of truncating it', () => {
+  const studio = read('../modules/AgentCenter/AgentStudioWorkspace.tsx');
+
+  assert.match(studio, /const buildCorrectionContext = \(question: string, answer: string\) =>/);
+  assert.match(studio, /用户原问题：/);
+  assert.match(studio, /智能体当时回答：/);
+  assert.doesNotMatch(studio, /question\.slice\(0,\s*80\)/);
+  assert.doesNotMatch(studio, /answer\.slice\(0,\s*120\)/);
 });

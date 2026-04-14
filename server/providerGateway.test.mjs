@@ -492,7 +492,7 @@ test('executeProviderJob can download relative managed asset paths before upload
   }
 });
 
-test('executeProviderJob sends managed file attachments to gpt-5.4 responses as raw file_data', async () => {
+test('executeProviderJob sends managed file attachments to gpt-5.4 responses as uploaded file urls', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
@@ -506,6 +506,12 @@ test('executeProviderJob sends managed file attachments to gpt-5.4 responses as 
         arrayBuffer: async () => new TextEncoder().encode('pdf-binary').buffer,
         json: async () => ({}),
       };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://kie.example.com/uploaded-source.pdf' },
+      });
     }
     if (String(url).includes('/codex/v1/responses')) {
       return createJsonResponse({ output_text: 'ok' });
@@ -538,20 +544,20 @@ test('executeProviderJob sends managed file attachments to gpt-5.4 responses as 
     assert.equal(result.result.content, 'ok');
     const assetRequest = requests.find((item) => item.url.includes('/api/assets/file/'));
     assert.match(assetRequest.url, /^http:\/\/127\.0\.0\.1:3100\/api\/assets\/file\//);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 0);
     const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
     const responseBody = JSON.parse(String(responseRequest.init.body));
     assert.equal(responseBody.input[0].content[1].type, 'input_file');
     assert.equal(responseBody.input[0].content[1].filename, 'source.pdf');
-    assert.match(responseBody.input[0].content[1].file_data, /^data:application\/pdf;base64,/);
-    assert.equal(responseBody.input[0].content[1].file_url, undefined);
+    assert.equal(responseBody.input[0].content[1].file_url, 'https://kie.example.com/uploaded-source.pdf');
+    assert.equal(responseBody.input[0].content[1].file_data, undefined);
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-test('executeProviderJob inlines managed asset images as data urls for gpt-5.4 responses api', async () => {
+test('executeProviderJob uploads managed asset images for gpt-5.4 responses api instead of inlining data urls', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
@@ -565,6 +571,12 @@ test('executeProviderJob inlines managed asset images as data urls for gpt-5.4 r
         arrayBuffer: async () => new TextEncoder().encode('png-binary').buffer,
         json: async () => ({}),
       };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://kie.example.com/uploaded-image.png' },
+      });
     }
     if (String(url).includes('/codex/v1/responses')) {
       return createJsonResponse({ output_text: 'ok' });
@@ -596,11 +608,112 @@ test('executeProviderJob inlines managed asset images as data urls for gpt-5.4 r
 
     assert.equal(result.result.content, 'ok');
     assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 0);
     const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
     const responseBody = JSON.parse(String(responseRequest.init.body));
-    assert.match(responseBody.input[0].content[1].image_url, /^data:image\/png;base64,/);
+    assert.equal(responseBody.input[0].content[1].image_url, 'https://kie.example.com/uploaded-image.png');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob uploads inline data images for gpt-5.4 responses api instead of sending data urls directly', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  const inlineImage = 'data:image/jpeg;base64,aGVsbG8=';
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://kie.example.com/uploaded-inline-image.jpg' },
+      });
+    }
+    if (String(url).includes('/codex/v1/responses')) {
+      return createJsonResponse({ output_text: 'ok' });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gpt-5-4-openai-resp',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '分析这张图' },
+                { type: 'image_url', image_url: { url: inlineImage } },
+              ],
+            },
+          ],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'ok');
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
+    const responseBody = JSON.parse(String(responseRequest.init.body));
+    assert.equal(responseBody.input[0].content[1].image_url, 'https://kie.example.com/uploaded-inline-image.jpg');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob uploads inline data files for gpt-5.4 responses api instead of sending file_data directly', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  const inlineFile = 'data:text/plain;base64,aGVsbG8=';
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://kie.example.com/uploaded-inline-note.txt' },
+      });
+    }
+    if (String(url).includes('/codex/v1/responses')) {
+      return createJsonResponse({ output_text: 'ok' });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gpt-5-4-openai-resp',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '读取附件' },
+                { type: 'input_file', file_url: inlineFile, filename: 'note.txt' },
+              ],
+            },
+          ],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'ok');
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
+    const responseBody = JSON.parse(String(responseRequest.init.body));
+    assert.equal(responseBody.input[0].content[1].file_url, 'https://kie.example.com/uploaded-inline-note.txt');
+    assert.equal(responseBody.input[0].content[1].file_data, undefined);
   } finally {
     global.fetch = originalFetch;
   }
@@ -678,6 +791,75 @@ test('executeProviderJob routes gemini 3.1 pro through kie chat endpoint with go
     assert.deepEqual(body.tools[0].googleSearch, {});
     assert.equal(body.include_thoughts, true);
     assert.equal(body.reasoning_effort, 'high');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob uploads managed file attachments for gemini chat models as remote urls instead of raw data', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/pdf' }),
+        arrayBuffer: async () => new TextEncoder().encode('pdf-binary').buffer,
+        json: async () => ({}),
+      };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://kie.example.com/uploaded-gemini-source.pdf' },
+      });
+    }
+    if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
+      return createJsonResponse({
+        choices: [
+          {
+            message: {
+              content: 'gemini managed file ok',
+            },
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          messages: [
+            { role: 'system', content: '你是助手' },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '读取这个 pdf' },
+                { type: 'input_file', file_url: 'http://111.229.66.247/api/assets/file/file-2/source.pdf', filename: 'source.pdf' },
+              ],
+            },
+          ],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'gemini managed file ok');
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    const chatRequest = requests.find((item) => item.url.includes('/gemini-3-flash/v1/chat/completions'));
+    const chatBody = JSON.parse(String(chatRequest.init.body));
+    assert.equal(chatBody.messages[1].content[1].type, 'image_url');
+    assert.equal(chatBody.messages[1].content[1].image_url.url, 'https://kie.example.com/uploaded-gemini-source.pdf');
   } finally {
     global.fetch = originalFetch;
   }
@@ -800,7 +982,42 @@ test('executeProviderJob ignores echoed input payload when kie responses returns
   }
 });
 
-test('executeProviderJob falls back to a stable chat model when gpt-5.4 responses returns empty output', async () => {
+test('executeProviderJob does not silently fall back to implicit chat models when gpt-5.4 responses returns empty output', async () => {
+  const originalFetch = global.fetch;
+  let requestCount = 0;
+
+  global.fetch = async () => {
+    requestCount += 1;
+    return createJsonResponse({
+      id: 'resp_empty',
+      model: 'gpt-5.4',
+      status: 'completed',
+      output: [],
+    });
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gpt-5-4-openai-resp',
+            messages: [{ role: 'user', content: '请只回复工作室测试链路正常' }],
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      /返回为空/
+    );
+    assert.equal(requestCount, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob respects caller-provided fallback models when gpt-5.4 responses fails', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
@@ -808,17 +1025,16 @@ test('executeProviderJob falls back to a stable chat model when gpt-5.4 response
     requests.push({ url: String(url), init });
     if (String(url).includes('/codex/v1/responses')) {
       return createJsonResponse({
-        id: 'resp_empty',
-        model: 'gpt-5.4',
-        status: 'completed',
-        output: [],
-      });
+        id: 'resp_error',
+        code: 500,
+        msg: 'Server exception, please try again later.',
+      }, 500);
     }
     return createJsonResponse({
       choices: [
         {
           message: {
-            content: '工作室测试链路正常',
+            content: 'flash fallback result',
           },
         },
       ],
@@ -831,17 +1047,19 @@ test('executeProviderJob falls back to a stable chat model when gpt-5.4 response
         taskType: 'kie_chat',
         payload: {
           model: 'gpt-5-4-openai-resp',
-          messages: [{ role: 'user', content: '请只回复工作室测试链路正常' }],
+          fallbackModels: ['gemini-3-flash-openai'],
+          messages: [{ role: 'user', content: '请只回复 flash fallback result' }],
         },
       },
       { KIE_API_KEY: 'test-key' },
       new AbortController().signal
     );
 
-    assert.equal(result.result.content, '工作室测试链路正常');
-    assert.equal(result.result.modelUsed, 'gemini-3.1-pro-openai');
+    assert.equal(result.result.content, 'flash fallback result');
+    assert.equal(result.result.modelUsed, 'gemini-3-flash-openai');
     assert.match(requests[0].url, /\/codex\/v1\/responses$/);
-    assert.match(requests[1].url, /\/gemini-3\.1-pro\/v1\/chat\/completions$/);
+    assert.match(requests[1].url, /\/gemini-3-flash\/v1\/chat\/completions$/);
+    assert.equal(requests.length, 2);
   } finally {
     global.fetch = originalFetch;
   }

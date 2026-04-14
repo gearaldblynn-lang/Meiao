@@ -4,7 +4,7 @@ const KIE_VEO_BASE_URL = 'https://api.kie.ai/api/v1/veo';
 const KIE_CHAT_URL = 'https://api.kie.ai/gpt-5-2/v1/chat/completions';
 const KIE_RESPONSES_URL = 'https://api.kie.ai/codex/v1/responses';
 const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
-const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 30_000;
+const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 240_000;
 const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 const KIE_RESPONSES_MODEL_ALIASES = {
   'gpt-5-4-openai-resp': 'gpt-5-4',
@@ -15,9 +15,15 @@ const KIE_CHAT_MODEL_ENDPOINTS = {
   'gemini-3.1-pro-openai': 'https://api.kie.ai/gemini-3.1-pro/v1/chat/completions',
   'gemini-3-flash-openai': 'https://api.kie.ai/gemini-3-flash/v1/chat/completions',
 };
-const KIE_CHAT_FALLBACK_MODELS = {
-  'gpt-5-4-openai-resp': ['gemini-3.1-pro-openai', 'gemini-3-flash-openai'],
-  'gpt-5-4': ['gemini-3.1-pro-openai', 'gemini-3-flash-openai'],
+const PROVIDER_ATTACHMENT_STRATEGIES = {
+  kie_responses: {
+    image: 'input_image_url',
+    file: 'input_file_url',
+  },
+  kie_chat_completions: {
+    image: 'image_url',
+    file: 'image_url',
+  },
 };
 
 const wait = (ms, signal) =>
@@ -144,6 +150,44 @@ const inferMimeTypeFromName = (value, fallback = 'application/octet-stream') => 
   return fallback;
 };
 
+const inferExtensionFromMimeType = (value, fallback = 'bin') => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'image/png') return 'png';
+  if (normalized === 'image/jpeg') return 'jpg';
+  if (normalized === 'image/webp') return 'webp';
+  if (normalized === 'image/gif') return 'gif';
+  if (normalized === 'image/bmp') return 'bmp';
+  if (normalized === 'image/svg+xml') return 'svg';
+  if (normalized === 'application/pdf') return 'pdf';
+  if (normalized === 'text/plain') return 'txt';
+  if (normalized === 'text/markdown') return 'md';
+  if (normalized === 'application/json') return 'json';
+  return fallback;
+};
+
+const parseDataUrlPayload = (value) => {
+  const raw = String(value || '').trim();
+  const match = raw.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,([A-Za-z0-9+/=]+)$/i);
+  if (!match) return null;
+  return {
+    mimeType: String(match[1] || 'application/octet-stream').trim().toLowerCase() || 'application/octet-stream',
+    base64Data: match[2] || '',
+  };
+};
+
+const convertInlineDataUrlToKieFileUrl = async (value, env) => {
+  const parsed = parseDataUrlPayload(value);
+  if (!parsed) return String(value || '').trim();
+  const extension = inferExtensionFromMimeType(parsed.mimeType);
+  const uploaded = await uploadAssetViaKieStream({
+    fileBuffer: Buffer.from(parsed.base64Data, 'base64'),
+    mimeType: parsed.mimeType,
+    fileName: `inline-upload.${extension}`,
+    uploadPath: 'mayo-storage/internal',
+  }, env);
+  return String(uploaded?.result?.fileUrl || '').trim();
+};
+
 const downloadManagedAsset = async (assetUrl, signal) => {
   const response = await fetch(normalizeManagedAssetDownloadUrl(assetUrl), {
     method: 'GET',
@@ -163,9 +207,6 @@ const downloadManagedAsset = async (assetUrl, signal) => {
     fileBuffer,
   };
 };
-
-const buildDataUrlFromDownloadedAsset = ({ mimeType = 'application/octet-stream', fileBuffer }) =>
-  `data:${mimeType};base64,${Buffer.from(fileBuffer || '').toString('base64')}`;
 
 const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal) => {
   if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
@@ -189,12 +230,6 @@ const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal) => {
   return String(uploaded?.result?.fileUrl || '').trim();
 };
 
-const convertManagedAssetUrlToInlineDataUrl = async (assetUrl, signal) => {
-  if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
-  const downloaded = await downloadManagedAsset(assetUrl, signal);
-  return buildDataUrlFromDownloadedAsset(downloaded);
-};
-
 const resolveProviderGenerationMediaUrl = async (value, env, signal) => {
   const normalized = String(value || '').trim();
   if (!normalized) return '';
@@ -208,26 +243,33 @@ const resolveProviderGenerationMediaUrl = async (value, env, signal) => {
 const resolveProviderMediaUrl = async (value, env, signal) => {
   const normalized = String(value || '').trim();
   if (!normalized) return '';
+  if (normalized.startsWith('data:')) {
+    return convertInlineDataUrlToKieFileUrl(normalized, env);
+  }
   if (!isManagedAssetUrl(normalized)) return normalized;
   return convertManagedAssetUrlToKieFileUrl(normalized, env, signal);
 };
 
+const resolveAttachmentStrategy = (model, item) => {
+  const transport = resolveChatTransport(model);
+  const kind = item?.type === 'input_file' ? 'file' : 'image';
+  return PROVIDER_ATTACHMENT_STRATEGIES[transport]?.[kind] || 'url';
+};
+
 const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
   if (!item || typeof item !== 'object') return item;
+  const strategy = resolveAttachmentStrategy(options.model, item);
 
   if (item.type === 'input_file') {
     const rawUrl = item.file_url || item.url || '';
-    if (options.inlineManagedFilesAsData && isManagedAssetUrl(rawUrl)) {
-      const downloaded = await downloadManagedAsset(rawUrl, signal);
+    const fileUrl = await resolveProviderMediaUrl(rawUrl, env, signal);
+    if (strategy === 'input_file_url') {
       return {
         ...item,
-        filename: item.filename || item.name || downloaded.fileName || undefined,
-        file_data: buildDataUrlFromDownloadedAsset(downloaded),
-        file_url: undefined,
-        url: undefined,
+        file_url: fileUrl,
+        url: fileUrl,
       };
     }
-    const fileUrl = await resolveProviderMediaUrl(rawUrl, env, signal);
     return {
       ...item,
       file_url: fileUrl,
@@ -237,9 +279,7 @@ const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
 
   if (item.type === 'image_url' || item.type === 'input_image') {
     const rawUrl = item.image_url?.url || item.image_url || item.url || '';
-    const resolvedUrl = isManagedAssetUrl(rawUrl)
-      ? await convertManagedAssetUrlToInlineDataUrl(rawUrl, signal)
-      : await resolveProviderMediaUrl(rawUrl, env, signal);
+    const resolvedUrl = await resolveProviderMediaUrl(rawUrl, env, signal);
     if (item.image_url && typeof item.image_url === 'object') {
       return {
         ...item,
@@ -408,8 +448,29 @@ const resolveKieChatEndpoint = (model) =>
 
 const isKieGeminiChatModel = (model) => /^gemini-/i.test(String(model || '').trim());
 
-const getKieChatFallbackModels = (model) =>
-  KIE_CHAT_FALLBACK_MODELS[String(model || '').trim()] || [];
+const getKieChatFallbackModels = (model, preferredFallbackModels = []) => {
+  const configured = Array.isArray(preferredFallbackModels)
+    ? preferredFallbackModels.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  return Array.from(new Set(configured.filter((item) => item !== String(model || '').trim())));
+};
+
+// 各模型对 reasoningLevel 的支持情况：
+// - gpt-5-4 (Responses API): 支持 low / medium / high
+// - gemini 系列 (Chat API): 只支持 low / high，medium 映射为 high
+// - 其他 chat 模型: 不传 reasoningLevel
+const normalizeReasoningLevelForModel = (model, reasoningLevel) => {
+  if (!reasoningLevel) return null;
+  const m = String(model || '').trim();
+  const level = String(reasoningLevel).trim();
+  if (isKieGeminiChatModel(m)) {
+    // gemini 只支持 low / high
+    if (level === 'low') return 'low';
+    return 'high'; // medium / high / 其他 → high
+  }
+  // gpt-5-4 Responses API 支持 low / medium / high，直接透传
+  return level;
+};
 
 const extractUrlFromResponse = (result) => {
   if (!result) return null;
@@ -742,7 +803,7 @@ export const uploadAssetViaKieStream = async (payload, env) => {
 const runKieResponsesJob = async (payload, env, signal) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
-  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, {});
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model: payload.model });
   const instructions = extractResponsesInstructions(preparedMessages);
 
   const response = await fetch(KIE_RESPONSES_URL, {
@@ -756,7 +817,7 @@ const runKieResponsesJob = async (payload, env, signal) => {
       ...(instructions ? { instructions } : {}),
       input: buildResponsesInputMessages(preparedMessages, buildKieResponsesContent),
       stream: false,
-      ...(payload.reasoningLevel ? { reasoning: { effort: String(payload.reasoningLevel) } } : {}),
+      ...(payload.reasoningLevel ? { reasoning: { effort: normalizeReasoningLevelForModel(payload.model, payload.reasoningLevel) } } : {}),
       ...(payload.webSearchEnabled ? { tools: [{ type: 'web_search' }] } : {}),
     }),
     signal,
@@ -969,7 +1030,7 @@ const runKieChatJob = async (payload, env, signal) => {
     try {
       return await runKieResponsesJob(payload, env, signal);
     } catch (error) {
-      const fallbackModels = getKieChatFallbackModels(payload.model);
+      const fallbackModels = getKieChatFallbackModels(payload.model, payload.fallbackModels);
       const code = String(error?.code || '').trim();
       if (!fallbackModels.length || !['provider_bad_response', 'provider_internal_error', 'provider_network_error'].includes(code)) {
         throw error;
@@ -977,7 +1038,16 @@ const runKieChatJob = async (payload, env, signal) => {
       let lastError = error;
       for (const fallbackModel of fallbackModels) {
         try {
-          return await runKieChatJob({ ...payload, model: fallbackModel }, env, signal);
+          const fallbackResult = await runKieChatJob(
+            { ...payload, model: fallbackModel, reasoningLevel: normalizeReasoningLevelForModel(fallbackModel, payload.reasoningLevel) },
+            env,
+            signal
+          );
+          // 标记实际使用了 fallback 模型
+          if (fallbackResult?.result) {
+            fallbackResult.result.fallbackFrom = String(payload.model || '').trim();
+          }
+          return fallbackResult;
         } catch (fallbackError) {
           lastError = fallbackError;
         }
@@ -991,7 +1061,7 @@ const runKieChatJob = async (payload, env, signal) => {
   const model = String(payload.model || 'gpt-5-2').trim() || 'gpt-5-2';
   const endpoint = resolveKieChatEndpoint(model);
   const isGeminiModel = isKieGeminiChatModel(model);
-  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal);
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model });
   const messages = isGeminiModel
     ? buildProviderInputMessages(preparedMessages, buildKieChatContent)
     : preparedMessages;
@@ -1007,7 +1077,7 @@ const runKieChatJob = async (payload, env, signal) => {
       messages,
       stream: false,
       ...(isGeminiModel && payload.webSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-      ...(isGeminiModel && payload.reasoningLevel ? { include_thoughts: true, reasoning_effort: String(payload.reasoningLevel) } : {}),
+      ...(isGeminiModel && payload.reasoningLevel ? { include_thoughts: true, reasoning_effort: normalizeReasoningLevelForModel(model, payload.reasoningLevel) } : {}),
     }),
     signal,
   });

@@ -25,6 +25,51 @@ const DEFAULT_RETRIEVAL_POLICY = {
 const DEFAULT_TOOL_POLICY = {
   supportsImageInput: false,
   supportsFileInput: false,
+  linkedModuleInterfaces: [],
+};
+
+export const MODULE_INTERFACES = {
+  one_click_main: {
+    id: 'one_click_main',
+    label: '一键主图',
+    description: '策划完成后可直接发送到一键主图进行生成',
+    outputSpec: `
+## 功能接口：一键主图
+
+### 图片素材确认（策划前必做）
+
+如果对话中用户上传了图片，在输出策划结论前，你必须先向用户确认每张图片的用途分类：
+
+- 产品图：主体商品图，用于生成时保持产品一致性（可多张）
+- 品牌 logo：品牌标识图，用于在画面中还原 logo（仅一张）
+- 设计参考图：风格/版式/色调参考，用于指导生成方向（可多张）
+
+确认方式：列出每张图的缩略描述，询问用户"请确认各图用途"。用户确认后再继续策划。
+如果对话中没有图片，跳过此步骤。
+
+### 策划完成后的输出
+
+完成策划后，在回复末尾附上以下 JSON 块，格式严格不变：
+
+\`\`\`meiao-handoff
+{
+  "target": "one_click_main",
+  "payload": {
+    "description": "产品名称和核心卖点，100字以内",
+    "planningLogic": "完整策划逻辑，包括视觉方向、场景建议、氛围色调等",
+    "productImageUrls": ["用户确认为产品图的URL，没有则留空数组"],
+    "logoUrl": "用户确认为logo的URL，没有则留空字符串",
+    "designReferenceUrls": ["用户确认为设计参考图的URL，没有则留空数组"]
+  }
+}
+\`\`\`
+
+注意：
+- 图片 URL 直接使用对话附件中的原始 URL，不要修改
+- 未经用户确认用途的图片，不要填入任何图片字段
+- 此 JSON 块必须出现在回复末尾`,
+    payloadSchema: ['description', 'planningLogic', 'productImageUrls', 'logoUrl', 'designReferenceUrls'],
+  },
 };
 
 const DEFAULT_REPLY_STYLE_RULES = {
@@ -80,6 +125,21 @@ const normalizePositiveInteger = (value, fallback) => {
 
 const padDatePart = (value) => String(value).padStart(2, '0');
 
+export const normalizeKnowledgeDocumentBindings = (input) => (
+  Array.isArray(input)
+    ? input
+        .map((item) => ({
+          knowledgeBaseId: typeof item?.knowledgeBaseId === 'string' ? item.knowledgeBaseId.trim() : '',
+          enabledDocumentIds: Array.from(new Set(
+            (Array.isArray(item?.enabledDocumentIds) ? item.enabledDocumentIds : [])
+              .map((value) => String(value || '').trim())
+              .filter(Boolean)
+          )),
+        }))
+        .filter((item) => item.knowledgeBaseId)
+    : []
+);
+
 export const createDefaultVersionName = (versionNo, timestamp = Date.now()) => {
   const safeVersionNo = normalizePositiveInteger(versionNo, 1);
   const date = new Date(Number(timestamp || Date.now()));
@@ -104,6 +164,7 @@ export const resolveActiveAgentId = ({
 
 export const normalizeAgentConfig = (input = {}) => ({
   systemPrompt: typeof input.systemPrompt === 'string' ? input.systemPrompt.trim() : '',
+  knowledgeDocumentBindings: normalizeKnowledgeDocumentBindings(input.knowledgeDocumentBindings),
   replyStyleRules: {
     ...DEFAULT_REPLY_STYLE_RULES,
     ...(input.replyStyleRules && typeof input.replyStyleRules === 'object' ? input.replyStyleRules : {}),
@@ -126,6 +187,9 @@ export const normalizeAgentConfig = (input = {}) => ({
   toolPolicy: {
     ...DEFAULT_TOOL_POLICY,
     ...(input.toolPolicy && typeof input.toolPolicy === 'object' ? input.toolPolicy : {}),
+    linkedModuleInterfaces: Array.isArray(input?.toolPolicy?.linkedModuleInterfaces)
+      ? input.toolPolicy.linkedModuleInterfaces.filter((id) => id in MODULE_INTERFACES)
+      : [],
   },
 });
 

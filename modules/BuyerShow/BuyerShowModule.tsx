@@ -777,34 +777,33 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
   const triggerNewKieTask = async (prompt: string, productUrls: string[], refUrl: string | null, isFirstImage: boolean, signal?: AbortSignal) => {
     const isModelMode = persistentState.includeModel;
-    // 基础 Prompt - 调整为强调 iPhone 随手拍质感，但保持整洁，并强调环境融合与物理真实感
-    let realismPrompt = `High quality authentic iPhone photo, aesthetic social media snapshot. **Perfect environmental integration**, **physically accurate shadows and reflections**, **product naturally interacting with surfaces**. Clean and tidy daily life environment, natural lighting, clear details, realistic texture. NO messy background, NO trash, NO clutter, NO floating product, NO sticker effect.`;
-    
+
+    // ① 质感：随手拍 iPhone 快照，非精修非专业
+    const realismPrompt = `Real iPhone snapshot posted by an everyday user — casual, unretouched, no studio lighting, no professional composition. Slight lens distortion, imperfect framing, natural ambient light. The scene feels lived-in and genuine, not staged.`;
+
+    // ② 参考图
     let refDescription = "";
     if (refUrl) {
       if (isFirstImage) {
-         refDescription = `VISUAL REFERENCE PRIORITY: High. Visual atmosphere reference image (URL=${refUrl}) determines the environment style and lighting vibe. Adapt the product into a similar **clean and aesthetic** environment with perfect lighting match.`;
+        refDescription = ` Match the environment style, lighting mood, and color tone of the reference image (URL=${refUrl}). Do not copy its composition; place the product naturally in a similar setting.`;
       } else {
-         refDescription = `SCENE & CHARACTER CONSISTENCY: Reference benchmark image (URL=${refUrl}) establishes the reality of this set.
-         Reference benchmark image (URL=${refUrl}) is the first generated image from this same buyer-show set.
-         Treat that benchmark image as the single source of truth for person identity, room layout, props, lighting, and camera reality.
-         1. **MAINTAIN EXACT CONTINUITY**: Keep the same person (if present), the same specific room/location, the same tableware/props/background objects, and the same lighting conditions unless the new prompt explicitly asks for a change.
-         2. **DO NOT RESET THE SESSION**: Do not invent a new room, new person, or unrelated setup. This must feel like the next shot from the same real-life session.
-         3. **FORCE SHOT DIFFERENTIATION**: This new shot MUST stay in the same session continuity but clearly differ in composition, framing, action focus, and product storytelling purpose. Do NOT simply clone the benchmark composition.`;
+        refDescription = ` Continue the exact same real-life session as the reference image (URL=${refUrl}): same person (if present), same room, same props, same lighting. This is the next natural moment in that session.`;
       }
     }
 
+    // ③ 人物/静物模式
     let baseRequirement = "";
     if (isModelMode) {
-        baseRequirement = isFirstImage 
-          ? `AUTHENTIC LIFESTYLE SNAPSHOT (BENCHMARK): A real user in ${persistentState.targetCountry} posing naturally in a nice, clean setting. If a person is shown, they should look like a local user from ${persistentState.targetCountry}. Casual "influencer" style. ${refDescription}` 
-          : `VISUAL CONSISTENCY & VARIATION: ${refDescription}`;
+      baseRequirement = `People in the scene must look like real locals from ${persistentState.targetCountry} — natural and relaxed, not model-posed.${refDescription}`;
     } else {
-        baseRequirement = `HIGH QUALITY STILL LIFE: Focus on product in a real-world setting. NO FACES. The product must look like it is physically sitting in the scene, not pasted. ${refDescription}`;
+      baseRequirement = `No people. Product placed naturally in a real everyday environment.${refDescription}`;
     }
-    
-    const productPreservation = `PACKAGING CONSISTENCY FIRST: Keep the packaging identity exactly consistent with the uploaded product images. REAL SCENE INTEGRATION: The product must feel naturally photographed inside the scene with correct contact, perspective, scale, shadows, and occlusion. If the reference environment is not suitable, adjust the placement or camera angle instead of forcing a pasted-in look. STRICT PRODUCT INTEGRITY: Strictly keep the product fully consistent with the source product reference images. Strictly do not change the product's appearance details, size, structure, label information, packaging information, packaging layout, brand marks, color blocking, or any visible product elements. Do not redesign, rewrite, simplify, replace, or newly invent the package artwork or brand presentation. The exact pack shape, material feel, graphic layout, text hierarchy, logo area, and front-of-pack design must stay faithful to the uploaded product images while receiving accurate lighting and shadows from the environment.`;
-    const finalPrompt = `${realismPrompt}\n${baseRequirement}\n${productPreservation}\n\nSHOT-SPECIFIC REQUIREMENT: You must execute this exact new shot objective and make the frame visibly different from the benchmark while keeping the same session continuity.\nScenario: ${prompt}`;
+
+    // ④ 产品一致性 + 场景融合
+    const productPreservation = `The product must be identical to the uploaded reference images: same packaging design, brand marks, color blocking, label layout, logo, and structure — do not redesign, simplify, or reinvent any part. The product must appear at its true real-world physical size relative to the scene — if the reference shows a small snack bag, it should occupy the space a small snack bag would in real life, not be oversized or undersized. The product is physically present in the scene: resting on the surface with a real contact shadow, perspective matching the camera angle, lit by the ambient environment. Perspective distortion and environmental lighting on the packaging are physically correct — not changes to the product. The product is photographed in the scene, not composited onto it.`;
+
+    // ⑤ 场景指令
+    const finalPrompt = `${realismPrompt}\n${baseRequirement}\n${productPreservation}\n\n${isFirstImage ? 'SCENE' : 'NEXT SHOT'}: ${prompt}`;
     
     const inputs = [...productUrls];
     if (refUrl) inputs.push(refUrl);

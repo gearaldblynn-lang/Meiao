@@ -1,7 +1,9 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
   GlobalApiConfig,
   VideoPersistentState,
+  VideoDiagnosisState,
+  VideoSubMode,
   VideoStoryboardBoard,
   VideoStoryboardConfig,
   VideoStoryboardProject,
@@ -20,8 +22,10 @@ import { processWithKieAi } from '../../services/kieAiService';
 import { createZipAndDownload } from '../../utils/imageUtils';
 import StoryboardSidebar from './StoryboardSidebar';
 import StoryboardWorkspace from './StoryboardWorkspace';
+import VideoDiagnosisPanel from './VideoDiagnosisPanel';
 import { logActionFailure, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { releaseObjectURLs } from '../../utils/urlUtils';
+import { probeVideoDiagnosis } from '../../services/internalApi';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -44,11 +48,60 @@ const fetchBlob = async (url: string) => {
   return await response.blob();
 };
 
+type VideoDiagnosisPatch = Partial<Omit<VideoDiagnosisState, 'probe' | 'report'>> & {
+  probe?: Partial<VideoDiagnosisState['probe']>;
+  report?: Partial<VideoDiagnosisState['report']>;
+};
+
+const buildSafeDiagnosisState = (
+  value: Partial<VideoDiagnosisState> | null | undefined,
+  defaults: VideoDiagnosisState
+): VideoDiagnosisState => {
+  const analysisItemsCandidate = value?.analysisItems;
+  const resolvedAnalysisItems = Array.isArray(analysisItemsCandidate) ? analysisItemsCandidate : defaults.analysisItems;
+  const resolvedProbe = {
+    ...defaults.probe,
+    ...(value?.probe || {}),
+  };
+
+  const resolvedReport = {
+    ...defaults.report,
+    ...(value?.report || {}),
+  };
+
+  return {
+    ...defaults,
+    ...(value || {}),
+    analysisItems: resolvedAnalysisItems,
+    probe: {
+      ...resolvedProbe,
+      sources: Array.isArray(resolvedProbe.sources) ? resolvedProbe.sources : defaults.probe.sources,
+      fields: Array.isArray(resolvedProbe.fields) ? resolvedProbe.fields : defaults.probe.fields,
+      missingCriticalFields: Array.isArray(resolvedProbe.missingCriticalFields)
+        ? resolvedProbe.missingCriticalFields
+        : defaults.probe.missingCriticalFields,
+      error: typeof resolvedProbe.error === 'string' ? resolvedProbe.error : defaults.probe.error,
+      completedAt: typeof resolvedProbe.completedAt === 'number' ? resolvedProbe.completedAt : null,
+    },
+    report: {
+      ...resolvedReport,
+      summary: typeof resolvedReport.summary === 'string' ? resolvedReport.summary : defaults.report.summary,
+      evidence: Array.isArray(resolvedReport.evidence) ? resolvedReport.evidence : defaults.report.evidence,
+      inferences: Array.isArray(resolvedReport.inferences) ? resolvedReport.inferences : defaults.report.inferences,
+      actions: Array.isArray(resolvedReport.actions) ? resolvedReport.actions : defaults.report.actions,
+    },
+  };
+};
+
 const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChange }) => {
   const { addToast } = useToast();
   const storyboardSubmitLockRef = useRef(false);
-  const defaultStoryboard = createDefaultVideoState().storyboard;
+  const diagnosisProbeLockRef = useRef(false);
+  const defaultVideoState = createDefaultVideoState();
+  const defaultStoryboard = defaultVideoState.storyboard;
+  const defaultDiagnosis = defaultVideoState.diagnosis;
   const storyboard = persistentState.storyboard || defaultStoryboard;
+  const diagnosis = buildSafeDiagnosisState(persistentState.diagnosis, defaultDiagnosis);
   const storyboardMeta = {
     subMode: 'storyboard',
     model: storyboard.config.model,
@@ -56,8 +109,14 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     aspectRatio: storyboard.config.aspectRatio,
   };
 
+  const subMode = persistentState.subMode || VideoSubMode.STORYBOARD;
+
   const setVideoState = (updater: (prev: VideoPersistentState) => VideoPersistentState) => {
     onStateChange(updater);
+  };
+
+  const setSubMode = (next: VideoSubMode) => {
+    setVideoState((prev) => ({ ...prev, subMode: next }));
   };
 
   const setStoryboardConfig = (updater: (prev: VideoStoryboardConfig) => VideoStoryboardConfig) => {
@@ -68,6 +127,25 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
         config: updater((prev.storyboard || defaultStoryboard).config),
       },
     }));
+  };
+
+  const updateDiagnosisState = (
+    updates: VideoDiagnosisPatch | ((prev: VideoDiagnosisState) => VideoDiagnosisPatch)
+  ) => {
+    setVideoState((prev) => {
+      const current = buildSafeDiagnosisState(prev.diagnosis, defaultDiagnosis);
+      const nextUpdates = typeof updates === 'function' ? updates(current) : updates;
+      const { probe: probeUpdates, report: reportUpdates, ...rootUpdates } = nextUpdates;
+      return {
+        ...prev,
+        diagnosis: {
+          ...current,
+          ...rootUpdates,
+          probe: probeUpdates ? { ...current.probe, ...probeUpdates } : current.probe,
+          report: reportUpdates ? { ...current.report, ...reportUpdates } : current.report,
+        },
+      };
+    });
   };
 
   const updateProject = (projectId: string, updater: (project: VideoStoryboardProject) => VideoStoryboardProject) => {
@@ -913,28 +991,107 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     addToast('工作区项目已清空', 'success');
   };
 
+  const handleDiagnosisProbe = async () => {
+    if (diagnosisProbeLockRef.current) return;
+    if (!diagnosis.url?.trim()) {
+      addToast('请先输入视频链接', 'warning', { module: 'video' });
+      return;
+    }
+
+    diagnosisProbeLockRef.current = true;
+    const payload = {
+      platform: diagnosis.platform,
+      url: diagnosis.url,
+      analysisItems: diagnosis.analysisItems,
+      accessMode: diagnosis.accessMode,
+    };
+
+    updateDiagnosisState(() => ({
+      probe: {
+        ...defaultDiagnosis.probe,
+        status: 'loading',
+        error: '',
+        completedAt: null,
+      },
+      report: {
+        ...defaultDiagnosis.report,
+        status: 'idle',
+      },
+    }));
+
+    try {
+      const result = await probeVideoDiagnosis(payload);
+      updateDiagnosisState(() => ({
+        probe: result.probe,
+        report: result.report,
+      }));
+      if (result.probe?.status === 'error') {
+        addToast(result.probe.error || '视频诊断勘探失败', 'error', { module: 'video' });
+      } else {
+        addToast('视频诊断勘探完成', 'success', { module: 'video' });
+      }
+    } catch (error: any) {
+      const message = error instanceof Error ? error.message : '视频诊断勘探失败';
+      updateDiagnosisState(() => ({
+        probe: {
+          ...defaultDiagnosis.probe,
+          status: 'error',
+          error: message,
+          completedAt: Date.now(),
+        },
+        report: {
+          ...defaultDiagnosis.report,
+          status: 'idle',
+        },
+      }));
+      addToast(message, 'error', { module: 'video' });
+    } finally {
+      diagnosisProbeLockRef.current = false;
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      diagnosisProbeLockRef.current = false;
+    };
+  }, []);
+
   return (
-    <div className="h-full flex overflow-hidden bg-slate-50">
-      <StoryboardSidebar
-        config={storyboard.config}
-        disabled={persistentState.isGenerating}
-        onChange={setStoryboardConfig}
-        onGenerate={handleGenerate}
-      />
-      <StoryboardWorkspace
-        projects={storyboard.projects}
-        downloadingProjectId={storyboard.downloadingProjectId}
-        onDownloadAll={handleDownloadAll}
-        onClearAllProjects={handleClearAllProjects}
-        onDownloadProject={handleDownloadProject}
-        onDeleteProject={handleDeleteProject}
-        onRetryProject={handleRetryProject}
-        onRetryFailedBoards={handleRetryFailedBoards}
-        onCreateNewSchemes={handleCreateNewSchemes}
-        onRegenerateBoard={handleRegenerateBoard}
-        onRefetchBoard={handleRefetchBoard}
-        onUpdateBoard={updateBoard}
-      />
+    <div className="flex h-full overflow-hidden bg-slate-50">
+      {subMode === VideoSubMode.DIAGNOSIS ? (
+        <VideoDiagnosisPanel
+          state={diagnosis}
+          subMode={subMode}
+          onSubModeChange={setSubMode}
+          onChange={(updates) => updateDiagnosisState(updates)}
+          onProbe={handleDiagnosisProbe}
+        />
+      ) : (
+        <>
+          <StoryboardSidebar
+            config={storyboard.config}
+            disabled={persistentState.isGenerating}
+            subMode={subMode}
+            onSubModeChange={setSubMode}
+            onChange={setStoryboardConfig}
+            onGenerate={handleGenerate}
+          />
+          <StoryboardWorkspace
+            projects={storyboard.projects}
+            downloadingProjectId={storyboard.downloadingProjectId}
+            onDownloadAll={handleDownloadAll}
+            onClearAllProjects={handleClearAllProjects}
+            onDownloadProject={handleDownloadProject}
+            onDeleteProject={handleDeleteProject}
+            onRetryProject={handleRetryProject}
+            onRetryFailedBoards={handleRetryFailedBoards}
+            onCreateNewSchemes={handleCreateNewSchemes}
+            onRegenerateBoard={handleRegenerateBoard}
+            onRefetchBoard={handleRefetchBoard}
+            onUpdateBoard={updateBoard}
+          />
+        </>
+      )}
     </div>
   );
 };

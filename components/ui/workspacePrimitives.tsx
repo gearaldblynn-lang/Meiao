@@ -21,24 +21,37 @@ export const SidebarShell: React.FC<{
   footer?: React.ReactNode;
   actions?: React.ReactNode;
   widthClassName?: string;
+  titleClassName?: string;
+  subtitleClassName?: string;
   children: React.ReactNode;
-}> = ({ accentClass, title, subtitle, headerContent, footer, actions, widthClassName = 'w-[380px]', children }) => (
+}> = ({
+  accentClass,
+  title,
+  subtitle,
+  headerContent,
+  footer,
+  actions,
+  widthClassName = 'w-[380px]',
+  titleClassName,
+  subtitleClassName,
+  children,
+}) => (
   <aside className={joinClasses(widthClassName, 'h-full shrink-0 overflow-hidden border-r border-slate-200/80 bg-[linear-gradient(180deg,#ffffff_0%,#fbfdff_100%)]')}>
     <div className="flex h-full flex-col">
       <div className="border-b border-slate-200/70 px-6 py-5">
+        {headerContent ? <div className="mb-4">{headerContent}</div> : null}
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
             <div className="flex items-center gap-3">
               <div className={joinClasses('h-10 w-2 rounded-full', accentClass)}></div>
               <div className="min-w-0">
-                <h2 className="truncate text-lg font-black tracking-tight text-slate-900">{title}</h2>
-                <p className="mt-1 text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">{subtitle}</p>
+                <h2 className={joinClasses('truncate text-lg font-black tracking-tight text-slate-900', titleClassName)}>{title}</h2>
+                <p className={joinClasses('mt-1 text-[10px] font-black uppercase tracking-[0.28em] text-slate-400', subtitleClassName)}>{subtitle}</p>
               </div>
             </div>
           </div>
           {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
         </div>
-        {headerContent ? <div className="mt-4">{headerContent}</div> : null}
       </div>
 
       <div className="sidebar-scroll flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(248,250,252,0.95),_rgba(255,255,255,1))] px-5 py-5">

@@ -1,8 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import { KnowledgeBaseSummary } from '../../types';
+import { AgentKnowledgeDocumentBinding, KnowledgeBaseSummary, KnowledgeDocumentSummary } from '../../types';
 import { WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 import AgentAvatar from './AgentAvatar';
 import { AGENT_AVATAR_PRESETS } from './agentAvatarOptions';
+import { MODULE_INTERFACES } from './agentCenterUtils.mjs';
 
 interface WizardForm {
   name: string;
@@ -11,13 +12,16 @@ interface WizardForm {
   iconUrl: string;
   avatarPreset: string;
   systemPrompt: string;
+  openingRemarks: string;
   selectedKnowledgeBaseIds: string[];
+  knowledgeDocumentBindings: AgentKnowledgeDocumentBinding[];
   allowedChatModels: string[];
   defaultChatModel: string;
   cheapModel: string;
   enableImageGeneration: boolean;
   imageModel: string;
   topK: number;
+  linkedModuleInterfaces: string[];
 }
 
 interface Props {
@@ -25,6 +29,7 @@ interface Props {
   currentStep: number;
   form: WizardForm;
   knowledgeBases: KnowledgeBaseSummary[];
+  knowledgeDocumentsByBase: Record<string, KnowledgeDocumentSummary[]>;
   availableChatModels: Array<{ id: string; label: string }>;
   availableImageModels: Array<{ id: string; label: string; maxInputImages?: number }>;
   onBack: () => void;
@@ -43,6 +48,7 @@ const AgentWizardView: React.FC<Props> = ({
   currentStep,
   form,
   knowledgeBases,
+  knowledgeDocumentsByBase,
   availableChatModels,
   availableImageModels,
   onBack,
@@ -60,6 +66,12 @@ const AgentWizardView: React.FC<Props> = ({
     const current = form.department?.trim();
     return current && !DEPARTMENT_PRESETS.includes(current) ? [...DEPARTMENT_PRESETS, current] : DEPARTMENT_PRESETS;
   }, [form.department]);
+  const resolveEnabledDocumentIds = (knowledgeBaseId: string) => {
+    const documents = knowledgeDocumentsByBase[knowledgeBaseId] || [];
+    const binding = form.knowledgeDocumentBindings.find((item) => item.knowledgeBaseId === knowledgeBaseId);
+    if (!binding) return documents.map((item) => item.id);
+    return binding.enabledDocumentIds;
+  };
 
   return (
     <div className="mx-auto grid max-w-6xl gap-5 xl:grid-cols-[240px_minmax(0,1fr)]">
@@ -210,6 +222,18 @@ const AgentWizardView: React.FC<Props> = ({
           />
         ) : null}
 
+        {currentStep === 1 ? (
+          <div className="mt-3">
+            <p className="mb-1.5 text-xs font-semibold text-slate-500">开场白</p>
+            <textarea
+              value={form.openingRemarks}
+              onChange={(event) => onChange('openingRemarks', event.target.value)}
+              placeholder="新会话时自动发送，向用户介绍智能体功能和使用方法（留空则不发送）"
+              className="min-h-[120px] w-full rounded-2xl border border-slate-200 px-4 py-3 text-sm font-medium text-slate-700 outline-none"
+            />
+          </div>
+        ) : null}
+
         {currentStep === 2 ? (
           <div>
             <p className="text-sm font-medium text-slate-500">只绑定已有知识库，不在这里直接编辑知识库内容。</p>
@@ -252,6 +276,88 @@ const AgentWizardView: React.FC<Props> = ({
                 );
               })}
             </div>
+            {form.selectedKnowledgeBaseIds.length > 0 ? (
+              <div className="mt-6 space-y-4">
+                {form.selectedKnowledgeBaseIds.map((knowledgeBaseId) => {
+                  const knowledgeBase = knowledgeBases.find((item) => item.id === knowledgeBaseId);
+                  const documents = knowledgeDocumentsByBase[knowledgeBaseId] || [];
+                  const enabledDocumentIds = resolveEnabledDocumentIds(knowledgeBaseId);
+                  return (
+                    <div key={knowledgeBaseId} className="rounded-[22px] border border-slate-200 bg-white/90 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-black text-slate-900">{knowledgeBase?.name || '已绑定知识库'}</p>
+                          <p className="mt-1 text-[12px] font-medium text-slate-500">文档启用设置只影响当前智能体版本。</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => onChange(
+                              'knowledgeDocumentBindings',
+                              form.knowledgeDocumentBindings
+                                .filter((item) => item.knowledgeBaseId !== knowledgeBaseId)
+                                .concat([{ knowledgeBaseId, enabledDocumentIds: documents.map((item) => item.id) }])
+                            )}
+                            className="rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-[12px] font-black text-slate-700"
+                          >
+                            全选
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onChange(
+                              'knowledgeDocumentBindings',
+                              form.knowledgeDocumentBindings
+                                .filter((item) => item.knowledgeBaseId !== knowledgeBaseId)
+                                .concat([{ knowledgeBaseId, enabledDocumentIds: [] }])
+                            )}
+                            className="rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-[12px] font-black text-slate-700"
+                          >
+                            全不选
+                          </button>
+                        </div>
+                      </div>
+                      <div className="mt-4 space-y-2">
+                        {documents.map((document) => {
+                          const checked = enabledDocumentIds.includes(document.id);
+                          return (
+                            <label key={document.id} className="flex items-start gap-3 rounded-[18px] border border-slate-200 bg-slate-50 px-4 py-3">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(event) => {
+                                  const nextIds = event.target.checked
+                                    ? [...enabledDocumentIds, document.id]
+                                    : enabledDocumentIds.filter((id) => id !== document.id);
+                                  onChange(
+                                    'knowledgeDocumentBindings',
+                                    form.knowledgeDocumentBindings
+                                      .filter((item) => item.knowledgeBaseId !== knowledgeBaseId)
+                                      .concat([{ knowledgeBaseId, enabledDocumentIds: Array.from(new Set(nextIds)) }])
+                                  );
+                                }}
+                                className="mt-1"
+                              />
+                              <div className="min-w-0">
+                                <p className="text-sm font-black text-slate-900">{document.title}</p>
+                                <p className="mt-1 text-[11px] font-medium text-slate-500">
+                                  {document.chunkStrategy} · {document.chunkCount} 个片段
+                                </p>
+                              </div>
+                            </label>
+                          );
+                        })}
+                        {documents.length === 0 ? (
+                          <p className="text-[12px] font-medium text-slate-500">该知识库下暂无文档可供配置。</p>
+                        ) : null}
+                        {documents.length > 0 && enabledDocumentIds.length === 0 ? (
+                          <p className="text-[12px] font-medium text-amber-600">该知识库当前不会提供检索内容</p>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -404,6 +510,39 @@ const AgentWizardView: React.FC<Props> = ({
                 </div>
               </div>
             </div>
+            {/* 功能接口 */}
+            <div className="rounded-[26px] border border-slate-200/80 bg-slate-50/80 p-4">
+              <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">功能接口</p>
+              <p className="mt-1 text-[11px] font-medium text-slate-400">启用后，智能体将按接口规范输出策划内容，用户可一键发送到对应功能生成。</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {Object.values(MODULE_INTERFACES).map((iface) => {
+                  const active = form.linkedModuleInterfaces.includes(iface.id);
+                  return (
+                    <label
+                      key={iface.id}
+                      className={`flex cursor-pointer items-center gap-2 rounded-[16px] border px-3 py-2 text-[12px] font-black transition ${
+                        active ? 'border-violet-300 bg-violet-50 text-violet-700' : 'border-slate-200 bg-white text-slate-500'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={active}
+                        onChange={(e) => {
+                          const next = e.target.checked
+                            ? [...form.linkedModuleInterfaces, iface.id]
+                            : form.linkedModuleInterfaces.filter((id) => id !== iface.id);
+                          onChange('linkedModuleInterfaces', next);
+                        }}
+                        className="hidden"
+                      />
+                      <i className={`fas ${active ? 'fa-check-circle' : 'fa-circle'} text-[10px]`} />
+                      {iface.label}
+                      <span className="text-[10px] font-medium opacity-60">{iface.description}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         ) : null}
 
@@ -423,6 +562,11 @@ const AgentWizardView: React.FC<Props> = ({
               <p className="mt-1 text-sm font-medium text-slate-600">简单问题模型：{form.cheapModel || '-'}</p>
               <p className="mt-1 text-sm font-medium text-slate-600">默认生图模型：{form.imageModel || '-'}</p>
               <p className="mt-1 text-sm font-medium text-slate-600">已启用聊天模型：{form.allowedChatModels.length} 个</p>
+              <p className="mt-1 text-sm font-medium text-slate-600">
+                功能接口：{form.linkedModuleInterfaces.length > 0
+                  ? form.linkedModuleInterfaces.map((id) => MODULE_INTERFACES[id as keyof typeof MODULE_INTERFACES]?.label || id).join('、')
+                  : '未启用'}
+              </p>
             </div>
           </div>
         ) : null}

@@ -3,6 +3,8 @@ import { AgentChatMessage, AgentChatSession, AgentSummary, AgentVersion, SystemP
 import { createStudioTestSession, deleteChatSession, sendChatMessage, type ChatProgressEvent, updateChatSession } from '../../services/internalApi';
 import ChatConversationPane from './ChatConversationPane';
 import { ComposerAttachment } from './ChatComposer';
+import { MAX_FILES_PER_BATCH } from './folderZipUpload';
+import { resolveSessionReasoningLevel } from './chatReasoningDefaults.mjs';
 
 interface Props {
   agent: AgentSummary;
@@ -43,6 +45,16 @@ const AgentStudioTestingPane: React.FC<Props> = ({
     return filtered.length ? filtered : source;
   }, [availableChatModels, draftVersion.allowedChatModels]);
 
+  const resolveReasoningLevelForModel = (modelId: string, requestedReasoningLevel: string | null = null) => {
+    const capability = selectableChatModels.find((item) => item.id === modelId);
+    return capability?.supportsReasoningLevel
+      ? resolveSessionReasoningLevel({
+          reasoningLevels: capability.reasoningLevels || [],
+          requestedReasoningLevel,
+        })
+      : null;
+  };
+
   const cleanupSession = useCallback(async (sessionId: string | null) => {
     if (!sessionId) return;
     await deleteChatSession(sessionId).catch(() => null);
@@ -63,8 +75,9 @@ const AgentStudioTestingPane: React.FC<Props> = ({
       setFeedback({});
       setDraft('');
       setAttachments([]);
-      setSelectedModel(result.session.selectedModel || draftVersion.defaultChatModel || selectableChatModels[0]?.id || '');
-      setReasoningLevel(result.session.reasoningLevel || null);
+      const nextModel = result.session.selectedModel || draftVersion.defaultChatModel || selectableChatModels[0]?.id || '';
+      setSelectedModel(nextModel);
+      setReasoningLevel(resolveReasoningLevelForModel(nextModel, result.session.reasoningLevel || null));
       setWebSearchEnabled(Boolean(result.session.webSearchEnabled));
       setImageModeEnabled(Boolean(result.session.lastImageMode));
     } catch (err: any) {
@@ -89,8 +102,9 @@ const AgentStudioTestingPane: React.FC<Props> = ({
 
   useEffect(() => {
     if (!session) return;
-    setSelectedModel(session.selectedModel || draftVersion.defaultChatModel || selectableChatModels[0]?.id || '');
-    setReasoningLevel(session.reasoningLevel || null);
+    const nextModel = session.selectedModel || draftVersion.defaultChatModel || selectableChatModels[0]?.id || '';
+    setSelectedModel(nextModel);
+    setReasoningLevel(resolveReasoningLevelForModel(nextModel, session.reasoningLevel || null));
     setWebSearchEnabled(Boolean(session.webSearchEnabled));
     setImageModeEnabled(Boolean(session.lastImageMode));
   }, [draftVersion.defaultChatModel, selectableChatModels, session]);
@@ -239,6 +253,94 @@ const AgentStudioTestingPane: React.FC<Props> = ({
     sendAbortControllerRef.current.abort();
   };
 
+  const handleBatchSend = useCallback(async (
+    batches: ComposerAttachment[][],
+    meta: { totalFiles: number; skippedCount: number; skippedReasons: string[] },
+  ) => {
+    if (!session?.id || batches.length === 0) return;
+    const sessionId = session.id;
+    console.log('[BatchSend] start, sessionId:', sessionId, 'batches:', batches.length, 'first batch size:', batches[0]?.length, 'first attachment:', batches[0]?.[0]);
+    const controller = new AbortController();
+    sendAbortControllerRef.current = controller;
+    setSending(true);
+
+    try {
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        if (controller.signal.aborted) break;
+        const isLast = batchIndex === batches.length - 1;
+        const batchNum = batchIndex + 1;
+        const totalBatches = batches.length;
+        let batchContent: string;
+        if (totalBatches === 1) {
+          batchContent = `以下是上传的 ${meta.totalFiles} 个文件${meta.skippedCount > 0 ? `（另有 ${meta.skippedCount} 个文件因不支持或超大已跳过）` : ''}，请进行分析。`;
+        } else if (isLast) {
+          batchContent = `【第 ${batchNum}/${totalBatches} 批，最后一批】以下是最后一批文件。请在分析完这批内容后，综合前面所有批次的内容，给出完整的总结与分析结论。`;
+        } else {
+          batchContent = `【第 ${batchNum}/${totalBatches} 批】以下是第 ${batchNum} 批文件（共 ${totalBatches} 批，每批最多 ${MAX_FILES_PER_BATCH} 个），请先分析这批内容，后续还有更多批次。`;
+        }
+        const attachmentPayload = batches[batchIndex].map((item) => ({
+          name: item.name, kind: item.kind, url: item.url, mimeType: item.mimeType,
+        }));
+        const clientRequestId = `studio-test-batch-${batchIndex}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const optimisticUser: AgentChatMessage = {
+          id: `pending-user-batch-${batchIndex}-${Date.now()}`,
+          sessionId, userId: '', role: 'user',
+          content: batchContent, attachments: attachmentPayload,
+          createdAt: Date.now(), metadata: { pending: true, clientRequestId },
+        };
+        const optimisticAssistant: AgentChatMessage = {
+          id: `pending-assistant-batch-${batchIndex}-${Date.now()}`,
+          sessionId, userId: '', role: 'assistant',
+          content: '思考中', attachments: [],
+          createdAt: Date.now() + 1,
+          metadata: { pending: true, progress: true, requestMode: 'chat', clientRequestId, progressStage: 'thinking' },
+        };
+        setMessages((prev) => [...prev, optimisticUser, optimisticAssistant]);
+        try {
+          const result = await sendChatMessage(sessionId, {
+            content: batchContent, attachments: attachmentPayload,
+            selectedModel, reasoningLevel, webSearchEnabled,
+            requestMode: 'chat', clientRequestId,
+          }, {
+            signal: controller.signal,
+            onProgress: (event: ChatProgressEvent) => {
+              setMessages((prev) => prev.map((item) => {
+                if (item.id !== optimisticAssistant.id) return item;
+                let content: string;
+                let progressStage: string;
+                if (event.stage === 'thinking') {
+                  content = event.round <= 1 ? '正在思考...' : `第 ${event.round} 轮深度思考中...`;
+                  progressStage = 'thinking';
+                } else {
+                  const docs = (event.docTitles || []).slice(0, 3);
+                  content = docs.length > 0 ? `已读取：${docs.join('、')}` : `已检索到 ${event.chunkCount || 0} 条相关内容`;
+                  progressStage = 'replying';
+                }
+                return { ...item, content, metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage } };
+              }));
+            },
+          });
+          setMessages((prev) => [
+            ...prev.filter((item) => item.id !== optimisticUser.id && item.id !== optimisticAssistant.id),
+            result.userMessage, result.assistantMessage,
+          ]);
+        } catch (batchError: any) {
+          setMessages((prev) => prev.filter((item) => item.id !== optimisticUser.id && item.id !== optimisticAssistant.id));
+          console.error('[BatchSend] batch error:', batchError?.name, batchError?.code, batchError?.status, batchError?.message, batchError);
+          if (controller.signal.aborted || batchError?.name === 'AbortError' || batchError?.message === 'INTERRUPTED' || String(batchError?.message || '').includes('aborted')) {
+            onStatusMessage(`批量分析已中断（已完成 ${batchIndex}/${totalBatches} 批）`);
+          } else {
+            onErrorMessage(`第 ${batchNum} 批发送失败：${batchError?.message || '未知错误'}`);
+          }
+          return;
+        }
+      }
+    } finally {
+      sendAbortControllerRef.current = null;
+      setSending(false);
+    }
+  }, [session, selectedModel, reasoningLevel, webSearchEnabled, onStatusMessage, onErrorMessage]);
+
   const findUserQuestion = (msgId: string) => {
     const idx = messages.findIndex((m) => m.id === msgId);
     for (let i = idx - 1; i >= 0; i -= 1) {
@@ -277,8 +379,10 @@ const AgentStudioTestingPane: React.FC<Props> = ({
           chatModels={selectableChatModels}
           selectedModel={selectedModel}
           onModelChange={(value) => {
+            const nextReasoningLevel = resolveReasoningLevelForModel(value, null);
             setSelectedModel(value);
-            void syncSessionOptions({ selectedModel: value });
+            setReasoningLevel(nextReasoningLevel);
+            void syncSessionOptions({ selectedModel: value, reasoningLevel: nextReasoningLevel });
           }}
           reasoningLevel={reasoningLevel}
           onReasoningLevelChange={(value) => {
@@ -312,46 +416,45 @@ const AgentStudioTestingPane: React.FC<Props> = ({
           }}
           sending={sending || loading}
           hideSessionHeader={true}
+          renderMessageActions={(message) => {
+            if (message.role !== 'assistant' || message.metadata?.pending) return null;
+            return (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setFeedback((p) => ({ ...p, [message.id]: 'good' }))}
+                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                    feedback[message.id] === 'good'
+                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
+                      : 'border-slate-200/85 bg-white/90 text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  👍 符合预期
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFeedback((p) => ({ ...p, [message.id]: 'bad' }))}
+                  className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                    feedback[message.id] === 'bad'
+                      ? 'border-rose-300 bg-rose-50 text-rose-600'
+                      : 'border-slate-200/85 bg-white/90 text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  👎 不对
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onCorrection(findUserQuestion(message.id), message.content)}
+                  className="rounded-full border border-slate-200/85 bg-white/90 px-2.5 py-1 text-[10px] font-semibold text-slate-500 transition hover:text-slate-700"
+                >
+                  ✏️ 纠正
+                </button>
+              </div>
+            );
+          }}
+          onBatchSend={handleBatchSend}
         />
       </div>
-
-      {!loading ? (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {messages.filter((msg) => msg.role === 'assistant' && !msg.metadata?.pending).map((msg) => (
-            <React.Fragment key={`feedback-${msg.id}`}>
-              <button
-                type="button"
-                onClick={() => setFeedback((p) => ({ ...p, [msg.id]: 'good' }))}
-                className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
-                  feedback[msg.id] === 'good'
-                    ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
-                    : 'border-slate-200/85 bg-white/90 text-slate-500 hover:text-slate-700'
-                }`}
-              >
-                👍 符合预期
-              </button>
-              <button
-                type="button"
-                onClick={() => setFeedback((p) => ({ ...p, [msg.id]: 'bad' }))}
-                className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
-                  feedback[msg.id] === 'bad'
-                    ? 'border-rose-300 bg-rose-50 text-rose-600'
-                    : 'border-slate-200/85 bg-white/90 text-slate-500 hover:text-slate-700'
-                }`}
-              >
-                👎 不对
-              </button>
-              <button
-                type="button"
-                onClick={() => onCorrection(findUserQuestion(msg.id), msg.content)}
-                className="rounded-full border border-slate-200/85 bg-white/90 px-2.5 py-1 text-[10px] font-semibold text-slate-500 hover:text-slate-700 transition"
-              >
-                ✏️ 纠正
-              </button>
-            </React.Fragment>
-          ))}
-        </div>
-      ) : null}
     </div>
   );
 };

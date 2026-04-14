@@ -19,6 +19,21 @@ const pillBase = 'px-4 py-2 text-[12px] font-black rounded-[20px] transition cur
 const pillActive = 'bg-[#0f172a] text-white';
 const pillInactive = 'text-slate-400 hover:text-slate-600';
 const AGENT_STUDIO_CHANNEL_KEY = 'MEIAO_AGENT_STUDIO_CHANNEL';
+const buildCorrectionContext = (question: string, answer: string) => {
+  const normalizedQuestion = String(question || '').trim();
+  const normalizedAnswer = String(answer || '').trim();
+  return [
+    '测试中发现问题，请根据这次失败案例帮我调整智能体配置。',
+    '',
+    '用户原问题：',
+    normalizedQuestion || '(空)',
+    '',
+    '智能体当时回答：',
+    normalizedAnswer || '(空)',
+    '',
+    '这段回答不符合预期，请分析并给出应该如何修改。',
+  ].join('\n');
+};
 
 const AgentStudioWorkspace: React.FC<Props> = ({
   agent, draftVersion, availableChatModels, onBack, onVersionUpdated, onStatusMessage, onErrorMessage,
@@ -40,8 +55,7 @@ const AgentStudioWorkspace: React.FC<Props> = ({
   }, [onVersionUpdated]);
 
   const handleCorrection = useCallback((question: string, answer: string) => {
-    const ctx = `测试中发现问题：用户问"${question.slice(0, 80)}"，智能体回答不符合预期："${answer.slice(0, 120)}"。请帮我调整，应该`;
-    setCorrectionContext(ctx);
+    setCorrectionContext(buildCorrectionContext(question, answer));
     setChannel('training');
   }, []);
 

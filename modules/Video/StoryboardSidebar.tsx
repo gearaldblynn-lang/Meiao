@@ -1,11 +1,13 @@
 import React from 'react';
-import { AspectRatio, VideoStoryboardConfig } from '../../types';
+import { AspectRatio, VideoStoryboardConfig, VideoSubMode } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
-import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
+import { PopoverSelect, PrimaryActionButton, SegmentedTabs, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
 
 interface Props {
   config: VideoStoryboardConfig;
   disabled: boolean;
+  subMode: VideoSubMode;
+  onSubModeChange: (next: VideoSubMode) => void;
   onChange: (updater: (prev: VideoStoryboardConfig) => VideoStoryboardConfig) => void;
   onGenerate: () => void;
 }
@@ -86,7 +88,7 @@ const getSingleImageMaxShots = (duration: string): number => {
   }
 };
 
-const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGenerate }) => {
+const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubModeChange, onChange, onGenerate }) => {
   const maxShots = getSingleImageMaxShots(config.duration);
   const allShotOptions: Array<{ value: VideoStoryboardConfig['shotCount']; label: string }> = [
     { value: 1, label: '1 格' },
@@ -196,7 +198,20 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, onChange, onGene
       widthClassName="w-[390px]"
       accentClass="bg-rose-500"
       title="短视频分镜配置"
-      subtitle="分镜板模式"
+      subtitle="脚本分镜模式"
+      titleClassName="text-sm font-bold tracking-[0.02em] text-slate-500"
+      subtitleClassName="text-[11px] font-black tracking-[0.18em] text-slate-900"
+      headerContent={
+        <SegmentedTabs
+          items={[
+            { value: VideoSubMode.STORYBOARD, label: '脚本分镜', icon: 'fa-clapperboard' },
+            { value: VideoSubMode.DIAGNOSIS, label: '视频诊断', icon: 'fa-magnifying-glass' },
+          ]}
+          value={subMode}
+          onChange={onSubModeChange}
+          accentClass="bg-slate-950 text-white"
+        />
+      }
       footer={
         <PrimaryActionButton
           onClick={onGenerate}

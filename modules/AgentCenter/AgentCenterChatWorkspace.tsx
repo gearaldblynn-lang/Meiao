@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { AgentChatMessage, AgentChatSession, AgentSummary, AuthUser, SystemPublicConfig } from '../../types';
+import { AgentChatMessage, AgentChatSession, AgentSummary, AuthUser, ModuleInterfaceId, SystemPublicConfig } from '../../types';
 import AgentAvatar from './AgentAvatar';
 import ChatConversationPane from './ChatConversationPane';
 import { ComposerAttachment } from './ChatComposer';
@@ -40,6 +40,8 @@ interface Props {
   onSendMessage: () => void;
   onInterruptSend?: () => void;
   sendingMessage?: boolean;
+  onHandoff?: (target: ModuleInterfaceId, payload: Record<string, unknown>) => void;
+  onBatchSend?: (batches: ComposerAttachment[][], meta: { totalFiles: number; skippedCount: number; skippedReasons: string[] }) => Promise<void>;
 }
 
 interface ConfirmState {
@@ -96,6 +98,8 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
   onSendMessage,
   onInterruptSend,
   sendingMessage = false,
+  onHandoff,
+  onBatchSend,
 }) => {
   const [departmentFilter, setDepartmentFilter] = useState('all');
   const [recentDeleteMode, setRecentDeleteMode] = useState(false);
@@ -607,6 +611,8 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
                 imageMaxInputCount={imageMaxInputCount}
                 onImageModeToggle={onImageModeToggle}
                 onInterruptSend={onInterruptSend}
+                onHandoff={onHandoff}
+                onBatchSend={onBatchSend}
               />
             </div>
           </div>
