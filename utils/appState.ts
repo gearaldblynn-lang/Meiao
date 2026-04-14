@@ -232,6 +232,7 @@ export const createDefaultVideoState = (): VideoPersistentState => ({
     accessMode: 'spider_api',
     url: '',
     analysisItems: ['video_basic', 'video_metrics', 'author_profile'],
+    analysisModel: '',
     probe: {
       status: 'idle',
       sources: [],
@@ -248,6 +249,15 @@ export const createDefaultVideoState = (): VideoPersistentState => ({
       evidence: [],
       inferences: [],
       actions: [],
+    },
+    aiAnalysis: {
+      status: 'idle',
+      summary: '',
+      overallRisk: 'unknown',
+      sections: [],
+      topActions: [],
+      error: '',
+      completedAt: null,
     },
   },
   veoProjects: [],

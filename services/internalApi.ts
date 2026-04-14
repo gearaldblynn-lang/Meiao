@@ -291,6 +291,32 @@ export const probeVideoDiagnosis = async (payload: {
   });
 };
 
+export const analyzeVideoDiagnosis = async (payload: {
+  diagData: unknown;
+  platform: VideoDiagnosisPlatform;
+  model: string;
+}) => {
+  return request<{
+    analysis: {
+      summary: string;
+      overallRisk: 'low' | 'medium' | 'high' | 'unknown';
+      sections: Array<{
+        id: string;
+        title: string;
+        level: 'normal' | 'warning' | 'danger';
+        findings: string[];
+        suggestion: string;
+      }>;
+      topActions: string[];
+    };
+    rawContent: string;
+  }>('/api/video-diagnosis/analyze', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 120_000,
+  });
+};
+
 export const fetchInternalUsers = async () => {
   return request<{ users: AuthUser[] }>('/api/users');
 };

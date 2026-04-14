@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import {
   GlobalApiConfig,
+  SystemPublicConfig,
   VideoPersistentState,
   VideoDiagnosisState,
   VideoSubMode,
@@ -25,7 +26,7 @@ import StoryboardWorkspace from './StoryboardWorkspace';
 import VideoDiagnosisPanel from './VideoDiagnosisPanel';
 import { logActionFailure, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { releaseObjectURLs } from '../../utils/urlUtils';
-import { probeVideoDiagnosis } from '../../services/internalApi';
+import { probeVideoDiagnosis, analyzeVideoDiagnosis, fetchSystemConfig } from '../../services/internalApi';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -48,9 +49,10 @@ const fetchBlob = async (url: string) => {
   return await response.blob();
 };
 
-type VideoDiagnosisPatch = Partial<Omit<VideoDiagnosisState, 'probe' | 'report'>> & {
+type VideoDiagnosisPatch = Partial<Omit<VideoDiagnosisState, 'probe' | 'report' | 'aiAnalysis'>> & {
   probe?: Partial<VideoDiagnosisState['probe']>;
   report?: Partial<VideoDiagnosisState['report']>;
+  aiAnalysis?: Partial<VideoDiagnosisState['aiAnalysis']>;
 };
 
 const buildSafeDiagnosisState = (
@@ -69,10 +71,16 @@ const buildSafeDiagnosisState = (
     ...(value?.report || {}),
   };
 
+  const resolvedAiAnalysis = {
+    ...defaults.aiAnalysis,
+    ...(value?.aiAnalysis || {}),
+  };
+
   return {
     ...defaults,
     ...(value || {}),
     analysisItems: resolvedAnalysisItems,
+    analysisModel: typeof value?.analysisModel === 'string' ? value.analysisModel : defaults.analysisModel,
     probe: {
       ...resolvedProbe,
       sources: Array.isArray(resolvedProbe.sources) ? resolvedProbe.sources : defaults.probe.sources,
@@ -90,6 +98,12 @@ const buildSafeDiagnosisState = (
       inferences: Array.isArray(resolvedReport.inferences) ? resolvedReport.inferences : defaults.report.inferences,
       actions: Array.isArray(resolvedReport.actions) ? resolvedReport.actions : defaults.report.actions,
     },
+    aiAnalysis: {
+      ...resolvedAiAnalysis,
+      sections: Array.isArray(resolvedAiAnalysis.sections) ? resolvedAiAnalysis.sections : defaults.aiAnalysis.sections,
+      topActions: Array.isArray(resolvedAiAnalysis.topActions) ? resolvedAiAnalysis.topActions : defaults.aiAnalysis.topActions,
+      error: typeof resolvedAiAnalysis.error === 'string' ? resolvedAiAnalysis.error : defaults.aiAnalysis.error,
+    },
   };
 };
 
@@ -97,6 +111,7 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
   const { addToast } = useToast();
   const storyboardSubmitLockRef = useRef(false);
   const diagnosisProbeLockRef = useRef(false);
+  const [chatModels, setChatModels] = React.useState<SystemPublicConfig['agentModels']['chat']>([]);
   const defaultVideoState = createDefaultVideoState();
   const defaultStoryboard = defaultVideoState.storyboard;
   const defaultDiagnosis = defaultVideoState.diagnosis;
@@ -129,6 +144,13 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     }));
   };
 
+  // 加载可用聊天模型列表
+  useEffect(() => {
+    fetchSystemConfig().then((result) => {
+      setChatModels(result.config.agentModels?.chat || []);
+    }).catch(() => {});
+  }, []);
+
   // 自动上传产品图到 COS，保证刷新后 URL 仍可用
   const autoUploadingRef = useRef(false);
   useEffect(() => {
@@ -153,7 +175,7 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     setVideoState((prev) => {
       const current = buildSafeDiagnosisState(prev.diagnosis, defaultDiagnosis);
       const nextUpdates = typeof updates === 'function' ? updates(current) : updates;
-      const { probe: probeUpdates, report: reportUpdates, ...rootUpdates } = nextUpdates;
+      const { probe: probeUpdates, report: reportUpdates, aiAnalysis: aiAnalysisUpdates, ...rootUpdates } = nextUpdates;
       return {
         ...prev,
         diagnosis: {
@@ -161,6 +183,7 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
           ...rootUpdates,
           probe: probeUpdates ? { ...current.probe, ...probeUpdates } : current.probe,
           report: reportUpdates ? { ...current.report, ...reportUpdates } : current.report,
+          aiAnalysis: aiAnalysisUpdates ? { ...current.aiAnalysis, ...aiAnalysisUpdates } : current.aiAnalysis,
         },
       };
     });
@@ -1072,6 +1095,47 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     }
   };
 
+  const diagnosisAnalyzeLockRef = useRef(false);
+
+  const handleDiagnosisAnalyze = async () => {
+    if (diagnosisAnalyzeLockRef.current) return;
+    const diagData = diagnosis.probe?.normalized?.diag;
+    if (!diagData) {
+      addToast('请先完成勘探再进行 AI 分析', 'warning', { module: 'video' });
+      return;
+    }
+    const model = diagnosis.analysisModel;
+    if (!model) {
+      addToast('请先选择分析模型', 'warning', { module: 'video' });
+      return;
+    }
+
+    diagnosisAnalyzeLockRef.current = true;
+    updateDiagnosisState(() => ({
+      aiAnalysis: { ...defaultDiagnosis.aiAnalysis, status: 'loading', error: '', completedAt: null },
+    }));
+
+    try {
+      const result = await analyzeVideoDiagnosis({ diagData, platform: diagnosis.platform, model });
+      updateDiagnosisState(() => ({
+        aiAnalysis: {
+          ...result.analysis,
+          status: 'success',
+          error: '',
+          completedAt: Date.now(),
+        },
+      }));
+    } catch (error: any) {
+      const message = error instanceof Error ? error.message : 'AI 分析失败';
+      updateDiagnosisState(() => ({
+        aiAnalysis: { ...defaultDiagnosis.aiAnalysis, status: 'error', error: message, completedAt: Date.now() },
+      }));
+      addToast(message, 'error', { module: 'video' });
+    } finally {
+      diagnosisAnalyzeLockRef.current = false;
+    }
+  };
+
   useEffect(() => {
     return () => {
       diagnosisProbeLockRef.current = false;
@@ -1083,10 +1147,12 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       {subMode === VideoSubMode.DIAGNOSIS ? (
         <VideoDiagnosisPanel
           state={diagnosis}
+          chatModels={chatModels}
           subMode={subMode}
           onSubModeChange={setSubMode}
           onChange={(updates) => updateDiagnosisState(updates)}
           onProbe={handleDiagnosisProbe}
+          onAnalyze={handleDiagnosisAnalyze}
         />
       ) : (
         <>
