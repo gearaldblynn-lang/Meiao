@@ -186,13 +186,29 @@ const VideoDiagnosisPanel: React.FC<Props> = ({ state, chatModels, subMode, onSu
         </SectionCard>
 
         <SectionCard title="勘探状态" icon="fa-gauge" accentTextClass="text-slate-700">
-          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
-            <div className="flex items-center justify-between gap-3 mb-1">
-              <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Probe</span>
-              <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-700">{probeStatus}</span>
+          <div className="space-y-2">
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3">
+              <div className="flex items-center justify-between gap-3 mb-1">
+                <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">状态</span>
+                <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-700">{probeStatus}</span>
+              </div>
+              <div className="text-[11px] font-black text-slate-700">{probeSummary}</div>
+              {state.probe?.error && <div className="mt-1 text-[11px] text-rose-600">{state.probe.error}</div>}
             </div>
-            <div className="text-[11px] font-black text-slate-700">{probeSummary}</div>
-            {state.probe?.error && <div className="mt-1 text-[11px] text-rose-600">{state.probe.error}</div>}
+            {Array.isArray(state.probe?.sources) && state.probe.sources.length > 0 && (
+              <div className="space-y-1">
+                {state.probe.sources.map((src) => (
+                  <div key={src.key} className="flex items-center gap-2 px-1">
+                    <i className={cx('fas text-[10px]',
+                      src.status === 'success' ? 'fa-circle-check text-emerald-500' :
+                      src.status === 'error' ? 'fa-circle-xmark text-rose-400' :
+                      'fa-circle-minus text-slate-300'
+                    )} />
+                    <span className="text-[11px] text-slate-500">{src.summary}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </SectionCard>
       </SidebarShell>
