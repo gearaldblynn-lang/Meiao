@@ -227,41 +227,43 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
             <span className="text-[10px] font-bold text-slate-400">{Math.max(config.productImages.length, config.uploadedProductUrls.length)}/8</span>
           </div>
 
-          <div className="grid grid-cols-4 gap-3">
-            {Array.from({ length: Math.max(config.productImages.length, config.uploadedProductUrls.length) }).map((_, index) => {
-              const file = config.productImages[index];
-              const url = config.uploadedProductUrls[index];
-              return (
-                <div key={`img-${index}`} className="relative aspect-square rounded-2xl overflow-hidden border border-slate-200 bg-slate-50 group">
-                  {file
-                    ? <FilePreview file={file} alt={file.name} />
-                    : url
-                      ? <img src={url} alt={`产品图${index + 1}`} className="w-full h-full object-cover" />
-                      : <div className="w-full h-full bg-slate-100" />
-                  }
-                  <button
-                    type="button"
-                    onClick={() => removeImage(index)}
-                    className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/60 text-white text-xs opacity-0 group-hover:opacity-100 transition-all"
-                  >
-                    <i className="fas fa-times"></i>
-                  </button>
-                </div>
-              );
-            })}
+          {Math.max(config.productImages.length, config.uploadedProductUrls.length) > 0 && (
+            <div className="grid grid-cols-4 gap-2">
+              {Array.from({ length: Math.max(config.productImages.length, config.uploadedProductUrls.length) }).map((_, index) => {
+                const file = config.productImages[index];
+                const url = config.uploadedProductUrls[index];
+                return (
+                  <div key={`img-${index}`} className="relative aspect-square rounded-lg overflow-hidden border border-slate-100 bg-slate-50 group">
+                    {file
+                      ? <img src={safeCreateObjectURL(file)} alt={file.name} className="w-full h-full object-cover" />
+                      : url
+                        ? <img src={url} alt={`产品图${index + 1}`} className="w-full h-full object-cover" />
+                        : <div className="w-full h-full bg-slate-100" />
+                    }
+                    <button
+                      type="button"
+                      onClick={() => removeImage(index)}
+                      className="absolute top-0 right-0 w-5 h-5 bg-rose-500 text-white rounded-bl-lg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
+                    >
+                      <i className="fas fa-times text-[10px]"></i>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
 
-            {Math.max(config.productImages.length, config.uploadedProductUrls.length) < 8 && (
-              <label className="relative col-span-4">
-                <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} disabled={disabled} />
-                <UploadSurface
-                  icon="fa-image"
-                  accentTextClass="text-rose-500"
-                  title={Math.max(config.productImages.length, config.uploadedProductUrls.length) === 0 ? '上传产品图片素材' : '继续添加产品图片'}
-                  hint="支持 JPG / PNG / WEBP，最多 8 张。"
-                />
-              </label>
-            )}
-          </div>
+          {Math.max(config.productImages.length, config.uploadedProductUrls.length) < 8 && (
+            <label className="relative block">
+              <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} disabled={disabled} />
+              <UploadSurface
+                icon="fa-image"
+                accentTextClass="text-rose-500"
+                title={Math.max(config.productImages.length, config.uploadedProductUrls.length) === 0 ? '上传产品图片素材' : '继续添加产品图片'}
+                hint="支持 JPG / PNG / WEBP，最多 8 张。"
+              />
+            </label>
+          )}
         </section>
 
         <section className="space-y-2">
