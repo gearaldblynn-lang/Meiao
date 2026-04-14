@@ -251,7 +251,7 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
             })}
 
             {Math.max(config.productImages.length, config.uploadedProductUrls.length) < 8 && (
-              <label className={`relative ${Math.max(config.productImages.length, config.uploadedProductUrls.length) === 0 ? 'col-span-4' : ''}`}>
+              <label className="relative col-span-4">
                 <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} disabled={disabled} />
                 <UploadSurface
                   icon="fa-image"
