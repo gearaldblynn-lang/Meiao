@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AgentChatMessage, AgentChatSession, AgentSummary, AuthUser, SystemPublicConfig } from '../../types';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AgentChatMessage, AgentChatSession, AgentSummary, AuthUser, ModuleInterfaceId, SystemPublicConfig } from '../../types';
 import {
   createChatSession,
   deleteChatSession,
@@ -17,10 +17,13 @@ import AgentCenterManager from './AgentCenterManager';
 import AgentCenterChatWorkspace from './AgentCenterChatWorkspace';
 import { ComposerAttachment } from './ChatComposer';
 import { resolveActiveAgentId } from './agentCenterUtils.mjs';
+import { resolveSessionReasoningLevel } from './chatReasoningDefaults.mjs';
+import { MAX_FILES_PER_BATCH } from './folderZipUpload';
 
 interface Props {
   currentUser?: AuthUser | null;
   internalMode?: boolean;
+  onHandoff?: (target: ModuleInterfaceId, payload: Record<string, unknown>) => void;
 }
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
@@ -35,7 +38,7 @@ const readAgentCenterUiState = () => {
   }
 };
 
-const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode = false }) => {
+const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode = false, onHandoff }) => {
   const initialUiState = readAgentCenterUiState();
   const [workspaceMode, setWorkspaceMode] = useState<'factory' | 'plaza'>(initialUiState.workspaceMode === 'factory' ? 'factory' : 'plaza');
   const [chatAgents, setChatAgents] = useState<AgentSummary[]>([]);
@@ -60,6 +63,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   const [loading, setLoading] = useState(false);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
   const pendingRestoreRef = useRef<{ draft: string; attachments: ComposerAttachment[]; userMessageId: string; assistantMessageId: string } | null>(null);
+  const previousWorkspaceModeRef = useRef(workspaceMode);
   const canManage = Boolean(internalMode && currentUser?.role === 'admin');
   const canAccessAgentCenter = Boolean(internalMode && currentUser);
 
@@ -90,6 +94,16 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     const filtered = chatModels.filter((item) => allowed.has(item.id));
     return filtered.length > 0 ? filtered : chatModels;
   }, [chatModels, selectedAgent?.allowedChatModels]);
+
+  const resolveReasoningLevelForModel = (modelId: string, requestedReasoningLevel: string | null = null) => {
+    const capability = availableChatModels.find((item) => item.id === modelId);
+    return capability?.supportsReasoningLevel
+      ? resolveSessionReasoningLevel({
+          reasoningLevels: capability.reasoningLevels || [],
+          requestedReasoningLevel,
+        })
+      : null;
+  };
 
   const refreshChatCatalog = async () => {
     const agentResult = await fetchChatAgents();
@@ -150,6 +164,8 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   }, [canAccessAgentCenter, workspaceMode]);
 
   useEffect(() => {
+    if (previousWorkspaceModeRef.current === workspaceMode) return;
+    previousWorkspaceModeRef.current = workspaceMode;
     if (workspaceMode !== 'plaza') return;
     setWorkspacePage('plaza');
     setSelectedSessionId('');
@@ -202,7 +218,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     if (!selectedSession) {
       const fallbackModel = selectedAgent?.defaultChatModel || availableChatModels[0]?.id || '';
       setSelectedModel(fallbackModel);
-      setReasoningLevel(null);
+      setReasoningLevel(resolveReasoningLevelForModel(fallbackModel, null));
       setWebSearchEnabled(false);
       setAttachments([]);
       setImageModeEnabled(false);
@@ -214,7 +230,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
       || availableChatModels[0]?.id
       || '';
     setSelectedModel(nextModel);
-    setReasoningLevel(selectedSession.reasoningLevel || null);
+    setReasoningLevel(resolveReasoningLevelForModel(nextModel, selectedSession.reasoningLevel || null));
     setWebSearchEnabled(Boolean(selectedSession.webSearchEnabled));
     setImageModeEnabled(Boolean(selectedSession.lastImageMode));
   }, [selectedSession?.id, selectedSession?.selectedModel, selectedSession?.reasoningLevel, selectedSession?.webSearchEnabled, selectedSession?.lastImageMode, availableChatModels, selectedAgent?.defaultChatModel]);
@@ -264,6 +280,18 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     setSelectedAgentId(agentId);
     setWorkspacePage('chat');
     await loadChat(agentId, result.session.id);
+    if (result.openingRemarks?.trim()) {
+      setMessages([{
+        id: `opening-${result.session.id}`,
+        sessionId: result.session.id,
+        userId: '',
+        role: 'assistant',
+        content: result.openingRemarks.trim(),
+        attachments: [],
+        createdAt: Date.now(),
+        metadata: { isOpeningRemarks: true },
+      }]);
+    }
   });
 
   const handleEnterAgent = (agentId: string) => runAction(async () => {
@@ -279,6 +307,18 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     }
     const result = await createChatSession(agentId);
     await loadChat(agentId, result.session.id);
+    if (result.openingRemarks?.trim()) {
+      setMessages([{
+        id: `opening-${result.session.id}`,
+        sessionId: result.session.id,
+        userId: '',
+        role: 'assistant',
+        content: result.openingRemarks.trim(),
+        attachments: [],
+        createdAt: Date.now(),
+        metadata: { isOpeningRemarks: true },
+      }]);
+    }
   });
 
   const handleDeleteSession = (sessionId: string) => runAction(async () => {
@@ -457,6 +497,136 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     sendAbortControllerRef.current.abort();
   };
 
+  /**
+   * 批量发送调度：串行发送每批附件，等待每批模型回复后再发下一批。
+   * 最后一批附加综合总结请求。
+   * 整个过程中 sendingMessage 保持 true，用户可通过中断按钮终止。
+   */
+  const handleBatchSend = useCallback(async (
+    batches: ComposerAttachment[][],
+    meta: { totalFiles: number; skippedCount: number; skippedReasons: string[] },
+  ) => {
+    if (!selectedSessionId || batches.length === 0) return;
+
+    const controller = new AbortController();
+    sendAbortControllerRef.current = controller;
+    setSendingMessage(true);
+    setErrorMessage('');
+
+    try {
+      for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        if (controller.signal.aborted) break;
+
+        const isLast = batchIndex === batches.length - 1;
+        const batchAttachments = batches[batchIndex];
+        const batchNum = batchIndex + 1;
+        const totalBatches = batches.length;
+
+        // 构建每批的提示文本
+        let batchContent: string;
+        if (totalBatches === 1) {
+          // 只有一批，直接请求分析
+          batchContent = `以下是上传的 ${meta.totalFiles} 个文件${meta.skippedCount > 0 ? `（另有 ${meta.skippedCount} 个文件因不支持或超大已跳过）` : ''}，请进行分析。`;
+        } else if (isLast) {
+          // 最后一批，附加综合总结请求
+          batchContent = `【第 ${batchNum}/${totalBatches} 批，最后一批】以下是最后一批文件。请在分析完这批内容后，综合前面所有批次的内容，给出完整的总结与分析结论。`;
+        } else {
+          // 中间批次
+          batchContent = `【第 ${batchNum}/${totalBatches} 批】以下是第 ${batchNum} 批文件（共 ${totalBatches} 批，每批最多 ${MAX_FILES_PER_BATCH} 个），请先分析这批内容，后续还有更多批次。`;
+        }
+
+        const attachmentPayload = batchAttachments.map((item) => ({
+          name: item.name,
+          kind: item.kind,
+          url: item.url,
+          mimeType: item.mimeType,
+        }));
+
+        const clientRequestId = `batchreq-${batchIndex}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const optimisticUserMessage: AgentChatMessage = {
+          id: `pending-user-batch-${batchIndex}-${Date.now()}`,
+          sessionId: selectedSessionId,
+          userId: currentUser?.id || '',
+          role: 'user',
+          content: batchContent,
+          attachments: attachmentPayload,
+          createdAt: Date.now(),
+          metadata: { pending: true, clientRequestId },
+        };
+        const optimisticAssistantMessage: AgentChatMessage = {
+          id: `pending-assistant-batch-${batchIndex}-${Date.now()}`,
+          sessionId: selectedSessionId,
+          userId: currentUser?.id || '',
+          role: 'assistant',
+          content: '思考中',
+          attachments: [],
+          createdAt: Date.now() + 1,
+          metadata: { pending: true, progress: true, requestMode: 'chat', clientRequestId, progressStage: 'thinking' },
+        };
+
+        setPendingAssistantMessageId(optimisticAssistantMessage.id);
+        setMessages((prev) => [...prev, optimisticUserMessage, optimisticAssistantMessage]);
+
+        try {
+          const result = await sendChatMessage(selectedSessionId, {
+            content: batchContent,
+            attachments: attachmentPayload,
+            selectedModel,
+            reasoningLevel,
+            webSearchEnabled,
+            requestMode: 'chat',
+            clientRequestId,
+          }, {
+            signal: controller.signal,
+            onProgress: (event: ChatProgressEvent) => {
+              setMessages((prev) => prev.map((item) => {
+                if (item.id !== optimisticAssistantMessage.id) return item;
+                let content: string;
+                let progressStage: string;
+                if (event.stage === 'thinking') {
+                  content = event.round <= 1 ? '正在思考...' : `第 ${event.round} 轮深度思考中...`;
+                  progressStage = 'thinking';
+                } else {
+                  const docs = (event.docTitles || []).slice(0, 3);
+                  content = docs.length > 0
+                    ? `已读取：${docs.join('、')}`
+                    : `已检索到 ${event.chunkCount || 0} 条相关内容`;
+                  progressStage = 'replying';
+                }
+                return { ...item, content, metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage } };
+              }));
+            },
+          });
+
+          setMessages((prev) => [
+            ...prev.filter((item) => item.id !== optimisticUserMessage.id && item.id !== optimisticAssistantMessage.id),
+            result.userMessage,
+            result.assistantMessage,
+          ]);
+        } catch (batchError: any) {
+          // 移除乐观消息
+          setMessages((prev) => prev.filter(
+            (item) => item.id !== optimisticUserMessage.id && item.id !== optimisticAssistantMessage.id
+          ));
+          if (batchError?.name === 'AbortError' || batchError?.message === 'INTERRUPTED' || String(batchError?.message || '').includes('aborted')) {
+            setStatusMessage(`批量分析已中断（已完成 ${batchIndex}/${totalBatches} 批）`);
+          } else {
+            setErrorMessage(`第 ${batchNum} 批发送失败：${batchError?.message || '未知错误'}`);
+          }
+          return; // 中止后续批次
+        }
+      }
+
+      // 全部批次完成后刷新会话
+      await loadChat(selectedAgentId, selectedSessionId);
+    } finally {
+      sendAbortControllerRef.current = null;
+      setSendingMessage(false);
+      setPendingAssistantMessageId('');
+      setLoading(false);
+    }
+  }, [selectedSessionId, selectedModel, reasoningLevel, webSearchEnabled, currentUser, selectedAgentId]);
+
   if (!canAccessAgentCenter) {
     return (
       <div className="h-full overflow-y-auto px-6 pb-6 pt-5">
@@ -570,8 +740,10 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
               onDeleteAgentHistory={handleDeleteAgentHistory}
               onMessageDraftChange={setMessageDraft}
               onSelectedModelChange={(value) => {
+                const nextReasoningLevel = resolveReasoningLevelForModel(value, null);
                 setSelectedModel(value);
-                void syncSessionOptions({ selectedModel: value });
+                setReasoningLevel(nextReasoningLevel);
+                void syncSessionOptions({ selectedModel: value, reasoningLevel: nextReasoningLevel });
               }}
               onReasoningLevelChange={(value) => {
                 setReasoningLevel(value);
@@ -600,6 +772,8 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
               }}
               onSendMessage={handleSendMessage}
               onInterruptSend={handleInterruptSend}
+              onHandoff={onHandoff}
+              onBatchSend={handleBatchSend}
             />
           )}
         </div>

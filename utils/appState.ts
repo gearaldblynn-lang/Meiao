@@ -205,7 +205,7 @@ export const createDefaultBuyerShowState = (): BuyerShowPersistentState => ({
 });
 
 export const createDefaultVideoState = (): VideoPersistentState => ({
-  subMode: VideoSubMode.LONG_VIDEO,
+  subMode: VideoSubMode.STORYBOARD,
   config: {
     duration: '15',
     aspectRatio: 'landscape',
@@ -227,6 +227,29 @@ export const createDefaultVideoState = (): VideoPersistentState => ({
   referenceVideoFile: null,
   uploadedReferenceVideoUrl: '',
   tasks: [],
+  diagnosis: {
+    platform: 'tiktok',
+    accessMode: 'spider_api',
+    url: '',
+    analysisItems: ['video_basic', 'video_metrics', 'author_profile'],
+    probe: {
+      status: 'idle',
+      sources: [],
+      fields: [],
+      raw: null,
+      normalized: null,
+      missingCriticalFields: [],
+      error: '',
+      completedAt: null,
+    },
+    report: {
+      status: 'idle',
+      summary: '',
+      evidence: [],
+      inferences: [],
+      actions: [],
+    },
+  },
   veoProjects: [],
   veoReferenceImages: [],
   isAnalyzing: false,
@@ -326,6 +349,7 @@ const normalizeRetouchTasks = (tasks: unknown) => {
 
 export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppState>): Partial<PersistedAppState> => {
   const translationConfigs = migrateLegacyTranslationConfigs(saved.moduleConfig, saved.translationConfigs);
+  const defaultVideoState = createDefaultVideoState();
 
   return {
     ...saved,
@@ -482,6 +506,7 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
                 },
               }
             : saved.videoMemory.storyboard,
+          diagnosis: saved.videoMemory.diagnosis || defaultVideoState.diagnosis,
         }
       : undefined,
   };

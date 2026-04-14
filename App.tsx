@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useMemo, useState } from 'react';
-import { AppModule, AuthUser } from './types';
+import { AppModule, AuthUser, ModuleInterfaceId } from './types';
 import SidebarNavigation from './components/layout/SidebarNavigation';
 import Header from './components/layout/Header';
 import { ToastProvider } from './components/ToastSystem';
@@ -142,6 +142,36 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
     setActiveModule(module);
   };
 
+  const handleAgentHandoff = (target: ModuleInterfaceId, payload: Record<string, unknown>) => {
+    if (target === 'one_click_main') {
+      const toStringArray = (val: unknown): string[] => {
+        if (Array.isArray(val)) return val.filter((v): v is string => typeof v === 'string' && Boolean(v));
+        if (typeof val === 'string') { try { const p = JSON.parse(val); return Array.isArray(p) ? p.filter(Boolean) : []; } catch { return []; } }
+        return [];
+      };
+      const toString = (val: unknown): string =>
+        typeof val === 'string' && val !== 'null' ? val.trim() : '';
+      const productImageUrls = toStringArray(payload.productImageUrls);
+      const designReferenceUrls = toStringArray(payload.designReferenceUrls);
+      const logoUrl = toString(payload.logoUrl);
+      setOneClickMemory((prev) => ({
+        ...prev,
+        mainImage: {
+          ...prev.mainImage,
+          ...(productImageUrls.length > 0 ? { uploadedProductUrls: productImageUrls } : {}),
+          ...(logoUrl ? { uploadedLogoUrl: logoUrl } : {}),
+          ...(designReferenceUrls.length > 0 ? { uploadedDesignReferenceUrls: designReferenceUrls } : {}),
+          config: {
+            ...prev.mainImage.config,
+            ...(payload.description ? { description: String(payload.description) } : {}),
+            ...(payload.planningLogic ? { planningLogic: String(payload.planningLogic) } : {}),
+          },
+        },
+      }));
+      handleModuleChange(AppModule.ONE_CLICK);
+    }
+  };
+
   const handleBackFromSystemPage = () => {
     setActiveModule(getSafePrimaryModule(systemPageSourceModule));
     setLastPrimaryModule(getSafePrimaryModule(systemPageSourceModule));
@@ -222,7 +252,7 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
   const activeModuleView = (() => {
     switch (activeModule) {
       case AppModule.AGENT_CENTER:
-        return <AgentCenterModule currentUser={currentUser} internalMode={internalMode} />;
+        return <AgentCenterModule currentUser={currentUser} internalMode={internalMode} onHandoff={handleAgentHandoff} />;
       case AppModule.SETTINGS:
         return (
           <GlobalApiSettings

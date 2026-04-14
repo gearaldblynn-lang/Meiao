@@ -15,6 +15,7 @@ import {
   parseAgentToolCalls,
   searchKnowledgeChunks,
   stripAgentToolCalls,
+  MODULE_INTERFACES,
 } from '../modules/AgentCenter/agentCenterUtils.mjs';
 import { buildLogFilterOptions, normalizeLogPagination } from '../modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
@@ -47,6 +48,7 @@ import {
   selectExpiredAssetsForCleanup,
   deleteStoredAssetFile,
 } from './assetStore.mjs';
+import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -614,6 +616,28 @@ const getSuperAdminUsernames = () => {
 const isSuperAdminUser = (user) => Boolean(user?.role === 'admin' && user?.username && getSuperAdminUsernames().has(user.username));
 
 const cleanKnowledgeBaseIds = (value) => Array.from(new Set((Array.isArray(value) ? value : []).map((item) => String(item || '').trim()).filter(Boolean)));
+const cleanDocumentIds = (value) => Array.from(new Set((Array.isArray(value) ? value : []).map((item) => String(item || '').trim()).filter(Boolean)));
+const normalizeVersionKnowledgeDocumentBindings = (value, knowledgeBaseIds = []) => {
+  const allowedKnowledgeBaseIds = new Set(cleanKnowledgeBaseIds(knowledgeBaseIds));
+  return Array.isArray(value)
+    ? value
+        .map((item) => ({
+          knowledgeBaseId: typeof item?.knowledgeBaseId === 'string' ? item.knowledgeBaseId.trim() : '',
+          enabledDocumentIds: cleanDocumentIds(item?.enabledDocumentIds),
+        }))
+        .filter((item) => item.knowledgeBaseId && (!allowedKnowledgeBaseIds.size || allowedKnowledgeBaseIds.has(item.knowledgeBaseId)))
+    : [];
+};
+const resolveEnabledKnowledgeDocumentIds = (version, knowledgeBaseId, availableDocumentIds = []) => {
+  const normalizedBindings = normalizeVersionKnowledgeDocumentBindings(
+    version?.knowledgeDocumentBindings,
+    version?.knowledgeBaseIds || []
+  );
+  const binding = normalizedBindings.find((item) => item.knowledgeBaseId === knowledgeBaseId);
+  if (!binding) return new Set(availableDocumentIds);
+  const availableSet = new Set(cleanDocumentIds(availableDocumentIds));
+  return new Set(binding.enabledDocumentIds.filter((documentId) => availableSet.has(documentId)));
+};
 
 const normalizeAgentStatus = (value) => (['draft', 'published', 'archived'].includes(value) ? value : 'draft');
 const normalizeKnowledgeBaseStatus = (value) => (['active', 'archived'].includes(value) ? value : 'active');
@@ -714,6 +738,42 @@ const resolveChatSessionModel = (version, requestedModel = '') => {
   if (preferred && allowedModels.includes(preferred)) return preferred;
   return allowedModels[0] || preferred;
 };
+const resolveChatFallbackModels = (version, primaryModel = '') => {
+  const allowedModels = resolveAllowedChatModels(version);
+  const blocked = new Set([String(primaryModel || '').trim()].filter(Boolean));
+  const preferred = [
+    version?.modelPolicy?.cheapModel,
+    version?.modelPolicy?.advancedModel,
+    ...allowedModels,
+  ]
+    .map((item) => String(item || '').trim())
+    .filter((item) => item && !blocked.has(item) && allowedModels.includes(item));
+  return Array.from(new Set(preferred));
+};
+const isStudioTestChatSession = (session) => String(session?.title || '').trim() === '工作室测试' || Boolean(session?.is_studio);
+const resolvePreferredReasoningLevel = (reasoningLevels = []) => {
+  const normalized = Array.from(new Set(
+    (Array.isArray(reasoningLevels) ? reasoningLevels : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  ));
+  if (normalized.includes('medium')) return 'medium';
+  if (normalized.includes('low')) return 'low';
+  return normalized[0] || null;
+};
+const resolveSessionReasoningLevel = ({ capability = null, requestedReasoningLevel = null } = {}) => {
+  if (!capability?.supportsReasoningLevel) return null;
+  const normalized = Array.from(new Set(
+    (Array.isArray(capability.reasoningLevels) ? capability.reasoningLevels : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  ));
+  if (!normalized.length) return null;
+  const requested = String(requestedReasoningLevel || '').trim();
+  if (requested && normalized.includes(requested)) return requested;
+  const defaultReasoningLevel = resolvePreferredReasoningLevel(capability.reasoningLevels);
+  return defaultReasoningLevel && normalized.includes(defaultReasoningLevel) ? defaultReasoningLevel : normalized[0] || null;
+};
 
 const canManageOwnedResource = (user, ownerUserId) => Boolean(user?.role === 'admin' && (isSuperAdminUser(user) || ownerUserId === user.id));
 
@@ -786,6 +846,7 @@ const normalizeKnowledgeDocumentText = async (rawText, processEnv, systemSetting
 const normalizeAgentVersionRecord = (row, knowledgeBaseIds = []) => {
   const rawConfig = normalizeAgentConfig({
     systemPrompt: row.system_prompt,
+    knowledgeDocumentBindings: parseJsonField(row.knowledge_document_bindings_json, []),
     replyStyleRules: parseJsonField(row.reply_style_rules_json, {}),
     modelPolicy: parseJsonField(row.model_policy_json, {}),
     contextPolicy: parseJsonField(row.context_policy_json, {}),
@@ -824,6 +885,7 @@ const normalizeAgentVersionRecord = (row, knowledgeBaseIds = []) => {
     createdBy: row.created_by,
     createdAt: Number(row.created_at || Date.now()),
     knowledgeBaseIds: cleanKnowledgeBaseIds(knowledgeBaseIds),
+    knowledgeDocumentBindings: normalizeVersionKnowledgeDocumentBindings(rawConfig.knowledgeDocumentBindings, knowledgeBaseIds),
   };
 };
 
@@ -831,6 +893,7 @@ const buildAgentVersionInsertRecord = ({ agentId, versionNo, createdBy, source =
   const createdAt = Date.now();
   const rawConfig = normalizeAgentConfig({
     systemPrompt: source?.systemPrompt || '',
+    knowledgeDocumentBindings: source?.knowledgeDocumentBindings || [],
     replyStyleRules: source?.replyStyleRules || {},
     modelPolicy: source?.modelPolicy || {},
     contextPolicy: source?.contextPolicy || {},
@@ -857,6 +920,10 @@ const buildAgentVersionInsertRecord = ({ agentId, versionNo, createdBy, source =
       : config.modelPolicy.defaultModel || '',
     isPublished: 0,
     systemPrompt: config.systemPrompt,
+    knowledgeDocumentBindingsJson: stringifyJsonField(
+      normalizeVersionKnowledgeDocumentBindings(config.knowledgeDocumentBindings, source?.knowledgeBaseIds || []),
+      []
+    ),
     replyStyleRulesJson: stringifyJsonField(config.replyStyleRules),
     modelPolicyJson: stringifyJsonField(config.modelPolicy),
     contextPolicyJson: stringifyJsonField(config.contextPolicy),
@@ -968,6 +1035,7 @@ const normalizeLocalStoreShape = (store) => {
       item?.modelPolicy?.cheapModel,
     ]);
     const modelPolicy = sanitizeModelPolicy(item?.modelPolicy || {}, allowedChatModels);
+    const knowledgeBaseIds = listLocalVersionKnowledgeBaseIds(store, item?.id);
     const defaultChatModel = allowedChatModels.includes(String(item?.defaultChatModel || '').trim())
       ? String(item.defaultChatModel).trim()
       : modelPolicy.defaultModel;
@@ -976,6 +1044,7 @@ const normalizeLocalStoreShape = (store) => {
       allowedChatModels,
       defaultChatModel,
       modelPolicy,
+      knowledgeDocumentBindings: normalizeVersionKnowledgeDocumentBindings(item?.knowledgeDocumentBindings, knowledgeBaseIds),
     };
   });
   store.chatSessions = store.chatSessions.map((item) => {
@@ -1077,6 +1146,120 @@ const readMultipartFormData = async (req) => {
     duplex: 'half',
   });
   return request.formData();
+};
+
+const normalizeSpiderGatewayUrl = (value) => {
+  const trimmed = String(value || '').trim();
+  return trimmed.replace(/\/+$/u, '');
+};
+
+const getSpiderConfig = () => ({
+  apiKey: String(process.env.MEIAO_SPIDER_API_KEY || process.env.SPIDER_API_KEY || '').trim(),
+  gatewayUrl: normalizeSpiderGatewayUrl(process.env.MEIAO_SPIDER_GATEWAY_URL || process.env.SPIDER_GATEWAY_URL || ''),
+});
+
+const respondSpiderConfigMissing = (res, reason) => {
+  if (reason === 'gateway') {
+    json(res, 500, {
+      message: 'Spider 网关地址未配置，请设置 MEIAO_SPIDER_GATEWAY_URL 或 SPIDER_GATEWAY_URL。',
+      code: 'missing_spider_gateway',
+    });
+    return;
+  }
+  json(res, 500, {
+    message: 'Spider API key 未配置，请设置 MEIAO_SPIDER_API_KEY 或 SPIDER_API_KEY。',
+    code: 'missing_spider_api_key',
+  });
+};
+
+const buildSpiderUrl = (gatewayUrl, resourcePath) => {
+  const base = gatewayUrl.replace(/\/+$/u, '');
+  const suffix = resourcePath.startsWith('/') ? resourcePath : `/${resourcePath}`;
+  return `${base}${suffix}`;
+};
+
+const fetchSpiderJson = async ({ gatewayUrl, apiKey, path, payload }) => {
+  const target = buildSpiderUrl(gatewayUrl, path);
+  const response = await fetch(target, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      Authorization: `Bearer ${apiKey}`,
+      'x-api-key': apiKey,
+    },
+    body: JSON.stringify(payload || {}),
+  });
+
+  const bodyText = await response.text();
+  let responseData = {};
+  if (bodyText) {
+    try {
+      responseData = JSON.parse(bodyText);
+    } catch {
+      responseData = { raw: bodyText };
+    }
+  }
+
+  if (!response.ok) {
+    throw new Error(`Spider 请求失败（${response.status}）${JSON.stringify(responseData)}`);
+  }
+  return responseData;
+};
+
+const createSpiderFetch = ({ gatewayUrl, apiKey }) => async ({ platform, videoId, url, analysisItems }) => {
+  const normalizedItems = Array.isArray(analysisItems)
+    ? analysisItems.map((item) => String(item || ''))
+    : [];
+  const endpoint = platform === 'douyin'
+    ? '/v1/spider/douyin/video-info'
+    : '/v1/spider/tiktok/video-by-url-v2';
+  const payload = platform === 'douyin'
+    ? { aweme_id: videoId, share_url: url, analysis_items: normalizedItems }
+    : { share_url: url, aweme_id: videoId, analysis_items: normalizedItems };
+  return fetchSpiderJson({
+    gatewayUrl,
+    apiKey,
+    path: endpoint,
+    payload,
+  });
+};
+
+const handleVideoDiagnosisProbeRequest = async (req, res) => {
+  const spiderConfig = getSpiderConfig();
+  if (!spiderConfig.apiKey) {
+    respondSpiderConfigMissing(res, 'key');
+    return;
+  }
+  if (!spiderConfig.gatewayUrl) {
+    respondSpiderConfigMissing(res, 'gateway');
+    return;
+  }
+
+  const body = await readBody(req);
+  const accessMode = String(body?.accessMode || 'spider_api');
+  if (accessMode !== 'spider_api') {
+    json(res, 400, {
+      message: '当前仅支持 Spider API 模式。',
+      code: 'unsupported_access_mode',
+    });
+    return;
+  }
+
+  const platform = String(body?.platform || 'tiktok').toLowerCase();
+  const videoUrl = String(body?.url || '');
+  const analysisItems = Array.isArray(body?.analysisItems)
+    ? body.analysisItems
+    : [];
+
+  const videoDiagnosisProbeRunner = createVideoDiagnosisProbe({
+    spiderFetch: createSpiderFetch(spiderConfig),
+  });
+  const result = await videoDiagnosisProbeRunner({
+    platform,
+    url: videoUrl,
+    analysisItems,
+  });
+  json(res, 200, result);
 };
 
 const serveStaticFile = (req, res, filePath) => {
@@ -1332,6 +1515,7 @@ const ensureMysqlSchema = async () => {
       context_policy_json LONGTEXT NOT NULL,
       retrieval_policy_json LONGTEXT NOT NULL,
       tool_policy_json LONGTEXT NOT NULL,
+      knowledge_document_bindings_json LONGTEXT NULL,
       validation_status VARCHAR(20) NOT NULL,
       validation_summary_json LONGTEXT NULL,
       created_by VARCHAR(24) NOT NULL,
@@ -1343,6 +1527,7 @@ const ensureMysqlSchema = async () => {
   await ensureMysqlColumn(pool, 'agent_versions', 'version_name', `VARCHAR(160) NOT NULL DEFAULT 'V1'`);
   await ensureMysqlColumn(pool, 'agent_versions', 'allowed_chat_models_json', 'LONGTEXT NULL');
   await ensureMysqlColumn(pool, 'agent_versions', 'default_chat_model', 'VARCHAR(80) NULL');
+  await ensureMysqlColumn(pool, 'agent_versions', 'knowledge_document_bindings_json', 'LONGTEXT NULL');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agent_version_knowledge_bases (
@@ -1446,6 +1631,7 @@ const ensureMysqlSchema = async () => {
   await ensureMysqlColumn(pool, 'chat_sessions', 'reasoning_level', 'VARCHAR(40) NULL');
   await ensureMysqlColumn(pool, 'chat_sessions', 'web_search_enabled', 'TINYINT(1) NOT NULL DEFAULT 0');
   await ensureMysqlColumn(pool, 'chat_sessions', 'last_image_mode', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await ensureMysqlColumn(pool, 'chat_sessions', 'is_studio', 'TINYINT(1) NOT NULL DEFAULT 0');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS chat_messages (
@@ -1671,6 +1857,57 @@ const scrubDbStatesForDeletedAssets = async (validAssetUrls) => {
   }
 };
 
+const collectProtectedManagedAssetUrls = async ({ pool = null, store = null }) => {
+  const protectedUrls = new Set();
+  if (pool) {
+    const [userRows] = await pool.query("SELECT avatar_url FROM users WHERE avatar_url IS NOT NULL AND avatar_url <> ''");
+    const [agentRows] = await pool.query("SELECT icon_url FROM agents WHERE icon_url IS NOT NULL AND icon_url <> ''");
+    userRows.map((row) => row.avatar_url).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
+    agentRows.map((row) => row.icon_url).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
+    return protectedUrls;
+  }
+
+  const users = Array.isArray(store?.users) ? store.users : [];
+  const agents = Array.isArray(store?.agents) ? store.agents : [];
+  users.map((item) => item.avatarUrl).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
+  agents.map((item) => item.iconUrl).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
+  return protectedUrls;
+};
+
+const scrubDbProtectedManagedAssetRefs = async (validAssetUrls) => {
+  const pool = await getMysqlPool();
+  await pool.query(
+    `UPDATE users
+     SET avatar_url = NULL
+     WHERE avatar_url IS NOT NULL
+       AND avatar_url <> ''
+       AND avatar_url NOT IN (${Array.from(validAssetUrls).map(() => '?').join(',') || "''"})`,
+    Array.from(validAssetUrls)
+  );
+  await pool.query(
+    `UPDATE agents
+     SET icon_url = NULL
+     WHERE icon_url IS NOT NULL
+       AND icon_url <> ''
+       AND icon_url NOT IN (${Array.from(validAssetUrls).map(() => '?').join(',') || "''"})`,
+    Array.from(validAssetUrls)
+  );
+};
+
+const scrubLocalProtectedManagedAssetRefs = (store, validAssetUrls) => {
+  (store.users || []).forEach((user) => {
+    if (user.avatarUrl && !validAssetUrls.has(user.avatarUrl)) {
+      user.avatarUrl = '';
+    }
+  });
+  (store.agents || []).forEach((agent) => {
+    if (agent.iconUrl && !validAssetUrls.has(agent.iconUrl)) {
+      agent.iconUrl = '';
+    }
+  });
+  writeLocalStore(store);
+};
+
 const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, fileName, mimeType, fileBuffer, width = 0, height = 0 }) => {
   const publicBaseUrl = getPersistentAssetBaseUrl(req);
   const pool = shouldUseMysql ? await getMysqlPool() : null;
@@ -1808,8 +2045,9 @@ const serveStoredAsset = async (req, res, assetId) => {
 const cleanupExpiredStoredAssets = async () => {
   const pool = shouldUseMysql ? await getMysqlPool() : null;
   const allAssets = await listStoredAssets(pool);
+  const protectedAssetUrls = await collectProtectedManagedAssetUrls({ pool, store: shouldUseMysql ? null : readLocalStore() });
   const expiredAssets = selectExpiredAssetsForCleanup(
-    allAssets.map((asset) => ({ ...asset, isReferenced: false })),
+    allAssets.map((asset) => ({ ...asset, isReferenced: protectedAssetUrls.has(asset.publicUrl) })),
     Date.now()
   );
   if (expiredAssets.length === 0) return;
@@ -1823,8 +2061,10 @@ const cleanupExpiredStoredAssets = async () => {
   const validAssetUrls = new Set(remainingAssets.filter((asset) => !asset.deletedAt).map((asset) => asset.publicUrl));
   if (shouldUseMysql) {
     await scrubDbStatesForDeletedAssets(validAssetUrls);
+    await scrubDbProtectedManagedAssetRefs(validAssetUrls);
   } else {
     scrubLocalStatesForDeletedAssets(validAssetUrls);
+    scrubLocalProtectedManagedAssetRefs(readLocalStore(), validAssetUrls);
   }
 };
 
@@ -2264,6 +2504,7 @@ const createDbAgent = async (user, payload) => {
     createdBy: user.id,
     source: {
       systemPrompt: payload.systemPrompt || '',
+      knowledgeDocumentBindings: payload.knowledgeDocumentBindings || [],
       replyStyleRules: payload.replyStyleRules || {},
       modelPolicy: payload.modelPolicy || {},
       contextPolicy: payload.contextPolicy || {},
@@ -2295,9 +2536,9 @@ const createDbAgent = async (user, payload) => {
   await pool.query(
     `INSERT INTO agent_versions (
       id, agent_id, version_no, version_name, allowed_chat_models_json, default_chat_model, is_published, system_prompt, reply_style_rules_json, model_policy_json,
-      context_policy_json, retrieval_policy_json, tool_policy_json, validation_status, validation_summary_json,
+      context_policy_json, retrieval_policy_json, tool_policy_json, knowledge_document_bindings_json, validation_status, validation_summary_json,
       created_by, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       version.id,
       version.agentId,
@@ -2312,6 +2553,7 @@ const createDbAgent = async (user, payload) => {
       version.contextPolicyJson,
       version.retrievalPolicyJson,
       version.toolPolicyJson,
+      version.knowledgeDocumentBindingsJson,
       version.validationStatus,
       version.validationSummaryJson,
       version.createdBy,
@@ -2393,9 +2635,9 @@ const createDbAgentDraft = async (user, agentId) => {
   await pool.query(
     `INSERT INTO agent_versions (
       id, agent_id, version_no, version_name, allowed_chat_models_json, default_chat_model, is_published, system_prompt, reply_style_rules_json, model_policy_json,
-      context_policy_json, retrieval_policy_json, tool_policy_json, validation_status, validation_summary_json,
+      context_policy_json, retrieval_policy_json, tool_policy_json, knowledge_document_bindings_json, validation_status, validation_summary_json,
       created_by, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       nextVersion.id,
       nextVersion.agentId,
@@ -2410,6 +2652,7 @@ const createDbAgentDraft = async (user, agentId) => {
       nextVersion.contextPolicyJson,
       nextVersion.retrievalPolicyJson,
       nextVersion.toolPolicyJson,
+      nextVersion.knowledgeDocumentBindingsJson,
       nextVersion.validationStatus,
       nextVersion.validationSummaryJson,
       nextVersion.createdBy,
@@ -2428,6 +2671,7 @@ const updateDbAgentVersion = async (user, versionId, payload) => {
   if (!agent || !canManageOwnedResource(user, agent.ownerUserId) || version.isPublished) return null;
   const config = normalizeAgentConfig({
     systemPrompt: payload.systemPrompt ?? version.systemPrompt,
+    knowledgeDocumentBindings: payload.knowledgeDocumentBindings ?? version.knowledgeDocumentBindings,
     replyStyleRules: payload.replyStyleRules ?? version.replyStyleRules,
     modelPolicy: payload.modelPolicy ?? version.modelPolicy,
     contextPolicy: payload.contextPolicy ?? version.contextPolicy,
@@ -2441,7 +2685,7 @@ const updateDbAgentVersion = async (user, versionId, payload) => {
   await pool.query(
     `UPDATE agent_versions
      SET version_name = ?, allowed_chat_models_json = ?, default_chat_model = ?, system_prompt = ?, reply_style_rules_json = ?, model_policy_json = ?, context_policy_json = ?,
-         retrieval_policy_json = ?, tool_policy_json = ?, validation_status = ?, validation_summary_json = ?
+         retrieval_policy_json = ?, tool_policy_json = ?, knowledge_document_bindings_json = ?, validation_status = ?, validation_summary_json = ?
      WHERE id = ?`,
     [
       normalizeVersionName(payload.versionName, version.versionNo, version.createdAt),
@@ -2453,6 +2697,7 @@ const updateDbAgentVersion = async (user, versionId, payload) => {
       stringifyJsonField(config.contextPolicy),
       stringifyJsonField(config.retrievalPolicy),
       stringifyJsonField(config.toolPolicy),
+      stringifyJsonField(normalizeVersionKnowledgeDocumentBindings(config.knowledgeDocumentBindings, knowledgeBaseIds), []),
       'pending',
       null,
       versionId,
@@ -2581,7 +2826,7 @@ const listDbKnowledgeDocuments = async (user, knowledgeBaseId) => {
     'SELECT * FROM knowledge_documents WHERE knowledge_base_id = ? ORDER BY updated_at DESC',
     [knowledgeBaseId]
   );
-  return rows.map((row) => ({
+  return rows.filter((row) => !isStudioTestChatSession(row)).map((row) => ({
     id: row.id,
     knowledgeBaseId: row.knowledge_base_id,
     title: row.title,
@@ -2764,25 +3009,37 @@ const listDbKnowledgeChunksForVersion = async (version) => {
   const knowledgeBaseIds = cleanKnowledgeBaseIds(version?.knowledgeBaseIds);
   if (knowledgeBaseIds.length === 0) return [];
   const pool = await getMysqlPool();
-  const placeholders = knowledgeBaseIds.map(() => '?').join(', ');
-  const [rows] = await pool.query(
-    `SELECT kc.*, kd.title AS document_title
-     FROM knowledge_chunks kc
-     INNER JOIN knowledge_documents kd ON kd.id = kc.document_id
-     WHERE kc.knowledge_base_id IN (${placeholders})
-     ORDER BY kc.created_at DESC, kc.chunk_index ASC`,
-    knowledgeBaseIds
-  );
-  return rows.map((row) => ({
-    id: row.id,
-    documentId: row.document_id,
-    knowledgeBaseId: row.knowledge_base_id,
-    chunkIndex: Number(row.chunk_index || 0),
-    sourceType: row.source_type,
-    content: row.content,
-    tokenEstimate: Number(row.token_estimate || 0),
-    documentTitle: row.document_title,
-  }));
+  const chunks = [];
+  for (const knowledgeBaseId of knowledgeBaseIds) {
+    const [documents] = await pool.query(
+      'SELECT id FROM knowledge_documents WHERE knowledge_base_id = ?',
+      [knowledgeBaseId]
+    );
+    const availableDocumentIds = documents.map((row) => String(row.id || '').trim()).filter(Boolean);
+    const enabledDocumentIds = resolveEnabledKnowledgeDocumentIds(version, knowledgeBaseId, availableDocumentIds);
+    if (enabledDocumentIds.size === 0) continue;
+    const placeholders = Array.from(enabledDocumentIds).map(() => '?').join(', ');
+    const [rows] = await pool.query(
+      `SELECT kc.*, kd.title AS document_title
+       FROM knowledge_chunks kc
+       INNER JOIN knowledge_documents kd ON kd.id = kc.document_id
+       WHERE kc.knowledge_base_id = ?
+       AND kc.document_id IN (${placeholders})
+       ORDER BY kc.created_at DESC, kc.chunk_index ASC`,
+      [knowledgeBaseId, ...Array.from(enabledDocumentIds)]
+    );
+    chunks.push(...rows.map((row) => ({
+      id: row.id,
+      documentId: row.document_id,
+      knowledgeBaseId: row.knowledge_base_id,
+      chunkIndex: Number(row.chunk_index || 0),
+      sourceType: row.source_type,
+      content: row.content,
+      tokenEstimate: Number(row.token_estimate || 0),
+      documentTitle: row.document_title,
+    })));
+  }
+  return chunks;
 };
 
 const TEXT_READABLE_MIME_TYPES = new Set([
@@ -2842,6 +3099,23 @@ const buildChatMessageContent = (text, attachments = []) => {
     });
   });
   return content;
+};
+
+// 预处理附件：文本类文件读取内容内联到消息文本，避免用 input_file 传远程URL导致模型报错
+const inlineTextAttachments = async (pool, text, attachments = []) => {
+  if (!Array.isArray(attachments) || attachments.length === 0) return { text, attachments };
+  let inlinedText = text;
+  const remainingAttachments = [];
+  for (const item of attachments) {
+    if (item?.kind !== 'file' || !item?.url) { remainingAttachments.push(item); continue; }
+    const fileText = await tryReadLocalAssetText(pool, item.url);
+    if (fileText != null) {
+      inlinedText = `${inlinedText}\n\n【附件：${item.name || '文件'}】\n${fileText}`;
+    } else {
+      remainingAttachments.push(item);
+    }
+  }
+  return { text: inlinedText, attachments: remainingAttachments };
 };
 
 const runAgenticRetrievalLoop = async ({
@@ -2946,24 +3220,36 @@ const runAgentConversation = async ({
   const recentMessages = recentSlice.map((message) => ({
     role: message.role,
     content: Array.isArray(message.attachments) && message.attachments.length > 0
-      ? buildChatMessageContent(message.content, message.attachments)
+      ? buildChatMessageContent(message.content, message.attachments.filter((a) => a?.kind === 'image'))
       : message.content,
   }));
+  const linkedInterfaces = Array.isArray(version.toolPolicy?.linkedModuleInterfaces)
+    ? version.toolPolicy.linkedModuleInterfaces
+    : [];
+  const interfaceOutputSpecs = linkedInterfaces
+    .map((id) => MODULE_INTERFACES[id]?.outputSpec)
+    .filter(Boolean)
+    .join('\n\n');
+  const effectiveSystemPrompt = interfaceOutputSpecs
+    ? `${version.systemPrompt}\n\n${interfaceOutputSpecs}`.trim()
+    : version.systemPrompt;
+  const { text: inlinedMessage, attachments: remainingAttachments } = await inlineTextAttachments(pool, currentMessage, attachments);
   const messages = buildAgentPromptMessages({
-    systemPrompt: version.systemPrompt,
+    systemPrompt: effectiveSystemPrompt,
     summary,
     recentMessages,
     knowledgeChunks: [],
-    userMessage: currentMessage,
+    userMessage: inlinedMessage,
     hasKnowledgeBase,
   });
   if (messages.length > 0) {
     messages[messages.length - 1] = {
       ...messages[messages.length - 1],
-      content: buildChatMessageContent(currentMessage, attachments),
+      content: buildChatMessageContent(inlinedMessage, remainingAttachments),
     };
   }
   const selectedModel = String(selectedModelOverride || (hasKnowledgeBase ? version.modelPolicy.defaultModel : version.modelPolicy.cheapModel) || '').trim();
+  const fallbackModels = resolveChatFallbackModels(version, selectedModel);
   const startedAt = Date.now();
   let content;
   let usedChunks = [];
@@ -2987,6 +3273,7 @@ const runAgentConversation = async ({
       payload: {
         messages,
         model: selectedModel,
+        fallbackModels,
         reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
         webSearchEnabled: Boolean(webSearchEnabled),
       },
@@ -2997,9 +3284,12 @@ const runAgentConversation = async ({
   const completionTokens = estimateTokenCount(content);
   const latencyMs = Date.now() - startedAt;
   const estimatedCost = estimateCostByTokens(promptTokens, completionTokens);
+  const actualModel = String(output?.result?.modelUsed || selectedModel || '').trim() || selectedModel;
+  const fallbackFrom = output?.result?.fallbackFrom ? String(output.result.fallbackFrom) : null;
   return {
     content,
-    selectedModel,
+    selectedModel: actualModel,
+    fallbackFrom,
     usedRetrieval: usedChunks.length > 0,
     knowledgeChunks: usedChunks,
     promptTokens,
@@ -3120,13 +3410,15 @@ const createDbChatSession = async (user, agentId) => {
   if (!agent?.currentVersionId || agent.status !== 'published') return null;
   const version = await getDbAgentVersionById(agent.currentVersionId);
   const selectedModel = resolveChatSessionModel(version);
+  const capability = getChatModelCapability(selectedModel, getPersistentAssetBaseUrl());
+  const defaultReasoningLevel = resolveSessionReasoningLevel({ capability, requestedReasoningLevel: null });
   const pool = await getMysqlPool();
   const sessionId = createEntityId();
   const now = Date.now();
   await pool.query(
     `INSERT INTO chat_sessions (id, user_id, agent_id, agent_version_id, title, status, summary, selected_model, reasoning_level, web_search_enabled, last_image_mode, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [sessionId, user.id, agentId, agent.currentVersionId, '新会话', 'active', null, selectedModel || '', null, 0, 0, now, now]
+    [sessionId, user.id, agentId, agent.currentVersionId, '新会话', 'active', null, selectedModel || '', defaultReasoningLevel, 0, 0, now, now]
   );
   return {
     id: sessionId,
@@ -3137,7 +3429,7 @@ const createDbChatSession = async (user, agentId) => {
     status: 'active',
     summary: '',
     selectedModel: selectedModel || '',
-    reasoningLevel: null,
+    reasoningLevel: defaultReasoningLevel,
     webSearchEnabled: false,
     lastImageMode: false,
     createdAt: now,
@@ -3147,7 +3439,7 @@ const createDbChatSession = async (user, agentId) => {
 
 const listDbChatSessions = async (user, agentId = '') => {
   const pool = await getMysqlPool();
-  const clauses = ['user_id = ?'];
+  const clauses = ['user_id = ?', '(is_studio IS NULL OR is_studio = 0)'];
   const values = [user.id];
   if (agentId) {
     clauses.push('agent_id = ?');
@@ -3267,7 +3559,10 @@ const createDbChatSessionOptions = async (user, sessionId, payload) => {
   const publicBaseUrl = getPersistentAssetBaseUrl();
   const selectedModel = resolveChatSessionModel(version, payload?.selectedModel || session.selectedModel);
   const capability = getChatModelCapability(selectedModel, publicBaseUrl);
-  const nextReasoningLevel = capability?.supportsReasoningLevel ? (payload?.reasoningLevel ? String(payload.reasoningLevel) : null) : null;
+  const requestedReasoningLevel = Object.prototype.hasOwnProperty.call(payload || {}, 'reasoningLevel')
+    ? payload?.reasoningLevel
+    : session.reasoningLevel;
+  const nextReasoningLevel = resolveSessionReasoningLevel({ capability, requestedReasoningLevel });
   const nextWebSearchEnabled = capability?.supportsWebSearch ? Boolean(payload?.webSearchEnabled) : false;
   const nextLastImageMode = Boolean(payload?.lastImageMode);
   const pool = await getMysqlPool();
@@ -3432,7 +3727,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       role: 'assistant',
       content: result.content,
       attachments: assistantAttachments,
-      metadata: { selectedModel: result.selectedModel, usedRetrieval: result.usedRetrieval, requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
+      metadata: { selectedModel: result.selectedModel, fallbackFrom: result.fallbackFrom || null, usedRetrieval: result.usedRetrieval, requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
       createdAt: Date.now(),
     },
     usage: result,
@@ -3630,6 +3925,7 @@ const getLocalAgentVersionById = (store, versionId) => {
     context_policy_json: stringifyJsonField(row.contextPolicy),
     retrieval_policy_json: stringifyJsonField(row.retrievalPolicy),
     tool_policy_json: stringifyJsonField(row.toolPolicy),
+    knowledge_document_bindings_json: stringifyJsonField(row.knowledgeDocumentBindings || [], []),
     validation_status: row.validationStatus,
     validation_summary_json: row.validationSummary ? JSON.stringify(row.validationSummary) : null,
     created_by: row.createdBy,
@@ -3691,6 +3987,8 @@ const createLocalAgent = (store, user, payload) => {
     defaultChatModel: version.defaultChatModel || '',
     isPublished: false,
     systemPrompt: version.systemPrompt,
+    openingRemarks: String(payload.openingRemarks || '').slice(0, 2000) || null,
+    knowledgeDocumentBindings: normalizeVersionKnowledgeDocumentBindings(payload.knowledgeDocumentBindings || [], version.knowledgeBaseIds),
     replyStyleRules: parseJsonField(version.replyStyleRulesJson, {}),
     modelPolicy: parseJsonField(version.modelPolicyJson, {}),
     contextPolicy: parseJsonField(version.contextPolicyJson, {}),
@@ -3793,6 +4091,7 @@ const createLocalAgentDraft = (store, user, agentId) => {
     defaultChatModel: next.defaultChatModel || '',
     isPublished: false,
     systemPrompt: next.systemPrompt,
+    knowledgeDocumentBindings: parseJsonField(next.knowledgeDocumentBindingsJson, []),
     replyStyleRules: parseJsonField(next.replyStyleRulesJson, {}),
     modelPolicy: parseJsonField(next.modelPolicyJson, {}),
     contextPolicy: parseJsonField(next.contextPolicyJson, {}),
@@ -3816,6 +4115,7 @@ const updateLocalAgentVersion = (store, user, versionId, payload) => {
   const current = getLocalAgentVersionById(store, versionId);
   const config = normalizeAgentConfig({
     systemPrompt: payload.systemPrompt ?? current.systemPrompt,
+    knowledgeDocumentBindings: payload.knowledgeDocumentBindings ?? current.knowledgeDocumentBindings,
     replyStyleRules: payload.replyStyleRules ?? current.replyStyleRules,
     modelPolicy: payload.modelPolicy ?? current.modelPolicy,
     contextPolicy: payload.contextPolicy ?? current.contextPolicy,
@@ -3828,6 +4128,9 @@ const updateLocalAgentVersion = (store, user, versionId, payload) => {
   );
   const nextModelPolicy = sanitizeModelPolicy(config.modelPolicy, nextAllowedChatModels);
   row.systemPrompt = config.systemPrompt;
+  if (Object.prototype.hasOwnProperty.call(payload, 'openingRemarks')) {
+    row.openingRemarks = payload.openingRemarks ? String(payload.openingRemarks).slice(0, 2000) : null;
+  }
   row.versionName = normalizeVersionName(payload.versionName, current.versionNo, current.createdAt);
   row.allowedChatModels = nextAllowedChatModels;
   row.defaultChatModel = nextAllowedChatModels.includes(String(payload.defaultChatModel || '').trim())
@@ -3838,6 +4141,10 @@ const updateLocalAgentVersion = (store, user, versionId, payload) => {
   row.contextPolicy = config.contextPolicy;
   row.retrievalPolicy = config.retrievalPolicy;
   row.toolPolicy = config.toolPolicy;
+  row.knowledgeDocumentBindings = normalizeVersionKnowledgeDocumentBindings(
+    config.knowledgeDocumentBindings,
+    listLocalManageableKnowledgeBaseIds(store, user, payload.knowledgeBaseIds ?? current.knowledgeBaseIds)
+  );
   row.validationStatus = 'pending';
   row.validationSummary = null;
   syncLocalVersionKnowledgeBases(store, versionId, listLocalManageableKnowledgeBaseIds(store, user, payload.knowledgeBaseIds ?? current.knowledgeBaseIds));
@@ -4059,8 +4366,20 @@ const deleteLocalKnowledgeDocument = (store, user, documentId) => {
   return 1;
 };
 
-const listLocalKnowledgeChunksForVersion = (store, version) =>
-  (store.knowledgeChunks || []).filter((item) => cleanKnowledgeBaseIds(version?.knowledgeBaseIds).includes(item.knowledgeBaseId));
+const listLocalKnowledgeChunksForVersion = (store, version) => {
+  const knowledgeBaseIds = cleanKnowledgeBaseIds(version?.knowledgeBaseIds);
+  if (knowledgeBaseIds.length === 0) return [];
+  return knowledgeBaseIds.flatMap((knowledgeBaseId) => {
+    const availableDocumentIds = (store.knowledgeDocuments || [])
+      .filter((document) => document.knowledgeBaseId === knowledgeBaseId)
+      .map((document) => document.id);
+    const enabledDocumentIds = resolveEnabledKnowledgeDocumentIds(version, knowledgeBaseId, availableDocumentIds);
+    if (enabledDocumentIds.size === 0) return [];
+    return (store.knowledgeChunks || []).filter((chunk) =>
+      chunk.knowledgeBaseId === knowledgeBaseId && enabledDocumentIds.has(chunk.documentId)
+    );
+  });
+};
 
 const runLocalAgentConversation = async ({
   store,
@@ -4074,6 +4393,7 @@ const runLocalAgentConversation = async ({
   attachments = [],
   reasoningLevel = null,
   webSearchEnabled = false,
+  onProgress = null,
 }) => {
   const shouldRetrieve = shouldUseKnowledgeRetrieval(currentMessage, version.retrievalPolicy, version.knowledgeBaseIds);
   const hasKnowledgeBase = Array.isArray(version.knowledgeBaseIds) && version.knowledgeBaseIds.length > 0 && Boolean(version.retrievalPolicy?.enabled);
@@ -4094,24 +4414,26 @@ const runLocalAgentConversation = async ({
   const recentMessages = recentSlice.map((message) => ({
     role: message.role,
     content: Array.isArray(message.attachments) && message.attachments.length > 0
-      ? buildChatMessageContent(message.content, message.attachments)
+      ? buildChatMessageContent(message.content, message.attachments.filter((a) => a?.kind === 'image'))
       : message.content,
   }));
+  const { text: inlinedMessage, attachments: remainingAttachments } = await inlineTextAttachments(null, currentMessage, attachments);
   const messages = buildAgentPromptMessages({
     systemPrompt: version.systemPrompt,
     summary,
     recentMessages,
     knowledgeChunks: [],
-    userMessage: currentMessage,
+    userMessage: inlinedMessage,
     hasKnowledgeBase,
   });
   if (messages.length > 0) {
     messages[messages.length - 1] = {
       ...messages[messages.length - 1],
-      content: buildChatMessageContent(currentMessage, attachments),
+      content: buildChatMessageContent(inlinedMessage, remainingAttachments),
     };
   }
   const selectedModel = String(selectedModelOverride || (hasKnowledgeBase ? version.modelPolicy.defaultModel : version.modelPolicy.cheapModel) || '').trim();
+  const fallbackModels = resolveChatFallbackModels(version, selectedModel);
   const startedAt = Date.now();
   let content;
   let usedChunks = [];
@@ -4134,6 +4456,7 @@ const runLocalAgentConversation = async ({
       payload: {
         messages,
         model: selectedModel,
+        fallbackModels,
         reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
         webSearchEnabled: Boolean(webSearchEnabled),
       },
@@ -4718,6 +5041,7 @@ ${manageableKnowledgeDocuments.length > 0
 
 支持的 field：
 - systemPrompt：更新系统提示词
+- openingRemarks：更新开场白
 - knowledgeBaseIds：调整当前智能体绑定的知识库
 - modelPolicy：调整默认模型、简单问题模型、高级模型、多模态模型或生图开关
 - retrievalPolicy：调整检索开关、参考数量、片段上限、上下文上限等策略
@@ -4730,6 +5054,12 @@ JSON 数组中每项格式示例：
     "action": "update",
     "label": "更新系统提示词",
     "after": "完整的新提示词"
+  },
+  {
+    "field": "openingRemarks",
+    "action": "update",
+    "label": "更新开场白",
+    "after": "你好，我是你的课程顾问助理。"
   },
   {
     "field": "knowledgeBaseIds",
@@ -4799,7 +5129,7 @@ const normalizeStudioKnowledgeDocumentChange = (value = {}) => {
 
 const normalizeStudioConfigDiff = (input) => {
   if (!input || typeof input !== 'object') return null;
-  const field = ['systemPrompt', 'knowledgeDocument', 'modelPolicy', 'retrievalPolicy', 'knowledgeBaseIds'].includes(String(input.field || '').trim())
+  const field = ['systemPrompt', 'openingRemarks', 'knowledgeDocument', 'modelPolicy', 'retrievalPolicy', 'knowledgeBaseIds'].includes(String(input.field || '').trim())
     ? String(input.field).trim()
     : '';
   const action = ['update', 'add', 'remove'].includes(String(input.action || '').trim())
@@ -4841,6 +5171,7 @@ const normalizeStudioConfigDiff = (input) => {
   };
 
   if (field === 'systemPrompt' && !diff.after) return null;
+  if (field === 'openingRemarks' && !Object.prototype.hasOwnProperty.call(input, 'after')) return null;
   if (field === 'knowledgeBaseIds' && diff.knowledgeBaseIds.length === 0) return null;
   if (field === 'modelPolicy' && !diff.modelPolicy) return null;
   if (field === 'retrievalPolicy' && !diff.retrievalPolicy) return null;
@@ -4910,6 +5241,9 @@ const resolveStudioKnowledgeBaseTargetId = (change, updatedVersion, manageableKn
 const applyStudioVersionChangePayload = (updatedVersion, change) => {
   if (change.field === 'systemPrompt') {
     return { systemPrompt: change.after };
+  }
+  if (change.field === 'openingRemarks') {
+    return { openingRemarks: change.after || null };
   }
   if (change.field === 'knowledgeBaseIds') {
     return { knowledgeBaseIds: change.knowledgeBaseIds };
@@ -5156,18 +5490,20 @@ const createStudioTestSession = async (user, payload) => {
   if (!version || version.agentId !== agentId || version.isPublished) return null;
   if (!canManageOwnedResource(user, agent.ownerUserId)) return null;
   const selectedModel = resolveChatSessionModel(version);
+  const capability = getChatModelCapability(selectedModel, getPersistentAssetBaseUrl());
+  const defaultReasoningLevel = resolveSessionReasoningLevel({ capability, requestedReasoningLevel: null });
   const pool = await getMysqlPool();
   const sessionId = createEntityId();
   const now = Date.now();
   await pool.query(
-    `INSERT INTO chat_sessions (id, user_id, agent_id, agent_version_id, title, status, summary, selected_model, reasoning_level, web_search_enabled, last_image_mode, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [sessionId, user.id, agentId, versionId, '工作室测试', 'active', null, selectedModel || '', null, 0, 0, now, now]
+    `INSERT INTO chat_sessions (id, user_id, agent_id, agent_version_id, title, status, summary, selected_model, reasoning_level, web_search_enabled, last_image_mode, is_studio, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [sessionId, user.id, agentId, versionId, '工作室测试', 'active', null, selectedModel || '', defaultReasoningLevel, 0, 0, 1, now, now]
   );
   return {
     id: sessionId, userId: user.id, agentId, agentVersionId: versionId,
     title: '工作室测试', status: 'active', summary: '',
-    selectedModel: selectedModel || '', reasoningLevel: null,
+    selectedModel: selectedModel || '', reasoningLevel: defaultReasoningLevel,
     webSearchEnabled: false, lastImageMode: false, createdAt: now, updatedAt: now,
   };
 };
@@ -5194,6 +5530,13 @@ const handleMysqlRequest = async (req, res, url) => {
   if (req.method === 'GET' && assetRouteMatch) {
     const assetId = decodeURIComponent(assetRouteMatch[1]);
     await serveStoredAsset(req, res, assetId);
+    return;
+  }
+
+  if (url.pathname === '/api/video-diagnosis/probe' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    await handleVideoDiagnosisProbeRequest(req, res);
     return;
   }
 
@@ -5631,12 +5974,14 @@ const handleMysqlRequest = async (req, res, url) => {
     const user = await requireDbUser(req, res);
     if (!user) return;
     const body = await readBody(req);
-    const session = await createDbChatSession(user, String(body?.agentId || ''));
+    const agentId = String(body?.agentId || '');
+    const session = await createDbChatSession(user, agentId);
     if (!session) {
       json(res, 404, { message: '智能体不存在或尚未发布。' });
       return;
     }
-    json(res, 201, { session });
+    const versionForRemarks = session.agentVersionId ? await getDbAgentVersionById(session.agentVersionId).catch(() => null) : null;
+    json(res, 201, { session, openingRemarks: versionForRemarks?.openingRemarks || null });
     return;
   }
 
@@ -6402,6 +6747,13 @@ const handleLocalRequest = async (req, res, url) => {
     return;
   }
 
+  if (url.pathname === '/api/video-diagnosis/probe' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    await handleVideoDiagnosisProbeRequest(req, res);
+    return;
+  }
+
   if (url.pathname === '/api/auth/login' && req.method === 'POST') {
     const body = await readBody(req);
     const username = String(body.username || '').trim();
@@ -6918,7 +7270,7 @@ const handleLocalRequest = async (req, res, url) => {
     if (!user) return;
     const agentId = String(url.searchParams.get('agentId') || '');
     const sessions = (store.chatSessions || [])
-      .filter((item) => item.userId === user.id && (!agentId || item.agentId === agentId))
+      .filter((item) => item.userId === user.id && !isStudioTestChatSession(item) && (!agentId || item.agentId === agentId))
       .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
       .map((item) => ({
         ...item,
@@ -6940,6 +7292,9 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 404, { message: '智能体不存在或尚未发布。' });
       return;
     }
+    const version = getLocalAgentVersionById(store, agent.currentVersionId);
+    const selectedModel = resolveChatSessionModel(version);
+    const capability = getChatModelCapability(selectedModel, getPersistentAssetBaseUrl(req));
     const session = {
       id: createEntityId(),
       userId: user.id,
@@ -6948,8 +7303,8 @@ const handleLocalRequest = async (req, res, url) => {
       title: '新会话',
       status: 'active',
       summary: '',
-      selectedModel: resolveChatSessionModel(getLocalAgentVersionById(store, agent.currentVersionId)),
-      reasoningLevel: null,
+      selectedModel,
+      reasoningLevel: resolveSessionReasoningLevel({ capability, requestedReasoningLevel: null }),
       webSearchEnabled: false,
       lastImageMode: false,
       createdAt: Date.now(),
@@ -6957,7 +7312,7 @@ const handleLocalRequest = async (req, res, url) => {
     };
     store.chatSessions.push(session);
     writeLocalStore(store);
-    json(res, 201, { session });
+    json(res, 201, { session, openingRemarks: version?.openingRemarks || null });
     return;
   }
 
@@ -6975,8 +7330,11 @@ const handleLocalRequest = async (req, res, url) => {
     const publicBaseUrl = getPersistentAssetBaseUrl(req);
     const selectedModel = resolveChatSessionModel(version, body?.selectedModel || session.selectedModel);
     const capability = getChatModelCapability(selectedModel, publicBaseUrl);
+    const requestedReasoningLevel = Object.prototype.hasOwnProperty.call(body || {}, 'reasoningLevel')
+      ? body?.reasoningLevel
+      : session.reasoningLevel;
     session.selectedModel = selectedModel || '';
-    session.reasoningLevel = capability?.supportsReasoningLevel && body?.reasoningLevel ? String(body.reasoningLevel) : null;
+    session.reasoningLevel = resolveSessionReasoningLevel({ capability, requestedReasoningLevel });
     session.webSearchEnabled = capability?.supportsWebSearch ? Boolean(body?.webSearchEnabled) : false;
     session.lastImageMode = Boolean(body?.lastImageMode);
     session.updatedAt = Date.now();
@@ -7111,7 +7469,7 @@ const handleLocalRequest = async (req, res, url) => {
         role: 'assistant',
         content: result.content,
         attachments: assistantAttachments,
-        metadata: { selectedModel: result.selectedModel, usedRetrieval: result.usedRetrieval, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
+        metadata: { selectedModel: result.selectedModel, fallbackFrom: result.fallbackFrom || null, usedRetrieval: result.usedRetrieval, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
         createdAt: Date.now(),
       };
       store.chatMessages.push(assistantMessage);
@@ -7320,11 +7678,13 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 404, { message: '智能体或版本不存在，或非草稿版本。' });
       return;
     }
+    const selectedModel = resolveChatSessionModel(version);
+    const capability = getChatModelCapability(selectedModel, getPersistentAssetBaseUrl(req));
     const session = {
       id: createEntityId(), userId: admin.id, agentId, agentVersionId: versionId,
       title: '工作室测试', status: 'active', summary: '',
-      selectedModel: resolveChatSessionModel(version),
-      reasoningLevel: null, webSearchEnabled: false, lastImageMode: false,
+      selectedModel,
+      reasoningLevel: resolveSessionReasoningLevel({ capability, requestedReasoningLevel: null }), webSearchEnabled: false, lastImageMode: false,
       createdAt: Date.now(), updatedAt: Date.now(),
     };
     store.chatSessions.push(session);

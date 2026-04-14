@@ -31,7 +31,64 @@ export enum BuyerShowSubMode {
 export enum VideoSubMode {
   LONG_VIDEO = 'long_video',
   VEO = 'veo',
-  STORYBOARD = 'storyboard'
+  STORYBOARD = 'storyboard',
+  DIAGNOSIS = 'diagnosis'
+}
+
+export type VideoDiagnosisPlatform = 'tiktok' | 'douyin';
+export type VideoDiagnosisAccessMode = 'spider_api' | 'web_session';
+export type VideoDiagnosisAnalysisItem =
+  | 'video_basic'
+  | 'video_metrics'
+  | 'author_profile'
+  | 'comment_sample'
+  | 'recent_posts'
+  | 'risk_signals';
+
+export interface VideoDiagnosisEvidenceItem {
+  label: string;
+  source: string;
+  fieldPath: string;
+  value: string;
+}
+
+export interface VideoDiagnosisInferenceItem {
+  title: string;
+  level: 'info' | 'warning' | 'risk';
+  summary: string;
+}
+
+export interface VideoDiagnosisActionItem {
+  title: string;
+  detail: string;
+}
+
+export interface VideoDiagnosisProbeResult {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  sources: Array<{ key: string; status: 'success' | 'error' | 'skipped'; summary: string }>;
+  fields: string[];
+  raw: Record<string, unknown> | null;
+  normalized: Record<string, unknown> | null;
+  missingCriticalFields: string[];
+  error: string;
+  completedAt: number | null;
+}
+
+export interface VideoDiagnosisReportResult {
+  status: 'idle' | 'ready';
+  summary: string;
+  evidence: VideoDiagnosisEvidenceItem[];
+  inferences: VideoDiagnosisInferenceItem[];
+  actions: VideoDiagnosisActionItem[];
+}
+
+export interface VideoDiagnosisState {
+  platform: VideoDiagnosisPlatform;
+  accessMode: VideoDiagnosisAccessMode;
+  url: string;
+  analysisItems: VideoDiagnosisAnalysisItem[];
+  probe: VideoDiagnosisProbeResult;
+  report: VideoDiagnosisReportResult;
 }
 
 export enum AspectRatio {
@@ -179,15 +236,23 @@ export interface AgentRetrievalPolicy {
   fallbackMode: string;
 }
 
+export type ModuleInterfaceId = 'one_click_main';
+
 export interface AgentToolPolicy {
   supportsImageInput: boolean;
   supportsFileInput: boolean;
+  linkedModuleInterfaces: ModuleInterfaceId[];
 }
 
 export interface AgentReplyStyleRules {
   tone: string;
   citeKnowledge: boolean;
   noAnswerFallback: string;
+}
+
+export interface AgentKnowledgeDocumentBinding {
+  knowledgeBaseId: string;
+  enabledDocumentIds: string[];
 }
 
 export interface AgentVersion {
@@ -199,6 +264,7 @@ export interface AgentVersion {
   defaultChatModel?: string | null;
   isPublished: boolean;
   systemPrompt: string;
+  openingRemarks?: string | null;
   replyStyleRules: AgentReplyStyleRules;
   modelPolicy: AgentModelPolicy;
   contextPolicy: AgentContextPolicy;
@@ -209,6 +275,7 @@ export interface AgentVersion {
   createdBy: string;
   createdAt: number;
   knowledgeBaseIds: string[];
+  knowledgeDocumentBindings?: AgentKnowledgeDocumentBinding[];
 }
 
 export interface AgentSummary {
@@ -317,6 +384,8 @@ export interface AgentChatMessage {
   attachments?: Array<{ name: string; url?: string; assetId?: string; mimeType?: string; kind?: 'image' | 'file' }> | null;
   metadata?: (Record<string, unknown> & {
     requestMode?: 'chat' | 'image_generation';
+    selectedModel?: string;
+    fallbackFrom?: string | null;
     imagePlan?: AgentImageGenerationPlan | null;
     imageResultUrls?: string[] | null;
     retrievalSummary?: Array<{
@@ -465,6 +534,7 @@ export interface VideoPersistentState {
   referenceVideoFile: File | null;
   uploadedReferenceVideoUrl?: string | null;
   tasks: VideoTask[]; // Legacy / Sora tasks
+  diagnosis: VideoDiagnosisState;
   
   // Veo Specific Storage
   veoProjects: VeoProjectState[];
@@ -839,7 +909,7 @@ export interface StudioRetrievalPolicyChange {
 
 export interface StudioConfigDiff {
   id: string;
-  field: 'systemPrompt' | 'knowledgeDocument' | 'modelPolicy' | 'retrievalPolicy' | 'knowledgeBaseIds';
+  field: 'systemPrompt' | 'openingRemarks' | 'knowledgeDocument' | 'modelPolicy' | 'retrievalPolicy' | 'knowledgeBaseIds';
   action: 'update' | 'add' | 'remove';
   label: string;
   before?: string;

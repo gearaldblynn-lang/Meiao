@@ -1,6 +1,7 @@
 import {
   AgentChatMessage,
   AgentChatSession,
+  AgentKnowledgeDocumentBinding,
   AgentSummary,
   AgentUsageRow,
   AgentVersion,
@@ -11,6 +12,11 @@ import {
   KnowledgeDocumentSummary,
   StudioConfigDiff,
   SystemPublicConfig,
+  VideoDiagnosisAccessMode,
+  VideoDiagnosisAnalysisItem,
+  VideoDiagnosisPlatform,
+  VideoDiagnosisProbeResult,
+  VideoDiagnosisReportResult,
 } from '../types';
 import { PersistedAppState } from '../utils/appState';
 
@@ -195,7 +201,11 @@ const request = async <T>(
         return data as T;
       } catch (error: any) {
         if (error instanceof ApiError) throw error;
-        if (error?.name === 'AbortError') {
+        const isAbort = error?.name === 'AbortError' || error instanceof DOMException;
+        if (isAbort) {
+          // 如果外部 signal 已经 aborted，说明是手动中断，重新抛出原始错误，让调用方检测
+          if (init?.signal?.aborted) throw error;
+          // 否则是内部超时 abort
           throw new ApiError('请求超时，请稍后重试', 'timeout', 408);
         }
         if (isRetryable(method, 0, error) && attempt < maxAttempts - 1) {
@@ -262,6 +272,22 @@ export const saveRemoteAppState = async (state: PersistedAppState) => {
   return request<{ ok: boolean }>('/api/state', {
     method: 'PUT',
     body: JSON.stringify({ state }),
+  });
+};
+
+export const probeVideoDiagnosis = async (payload: {
+  platform: VideoDiagnosisPlatform;
+  url: string;
+  analysisItems: VideoDiagnosisAnalysisItem[];
+  accessMode: VideoDiagnosisAccessMode;
+}) => {
+  return request<{
+    probe: VideoDiagnosisProbeResult;
+    report: VideoDiagnosisReportResult;
+  }>('/api/video-diagnosis/probe', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 120_000,
   });
 };
 
@@ -426,6 +452,7 @@ export const createAgent = async (payload: {
   iconUrl?: string | null;
   avatarPreset?: string | null;
   systemPrompt: string;
+  openingRemarks?: string | null;
   allowedChatModels?: string[];
   defaultChatModel?: string | null;
   replyStyleRules?: Record<string, unknown>;
@@ -434,6 +461,7 @@ export const createAgent = async (payload: {
   retrievalPolicy?: Record<string, unknown>;
   toolPolicy?: Record<string, unknown>;
   knowledgeBaseIds?: string[];
+  knowledgeDocumentBindings?: AgentKnowledgeDocumentBinding[];
 }) => {
   return request<{ agent: AgentSummary; version: AgentVersion }>('/api/agents', {
     method: 'POST',
@@ -494,6 +522,7 @@ export const rollbackAgent = async (agentId: string, versionId: string) => {
 export const updateAgentVersion = async (versionId: string, payload: Partial<{
   versionName: string;
   systemPrompt: string;
+  openingRemarks: string | null;
   allowedChatModels: string[];
   defaultChatModel: string | null;
   replyStyleRules: Record<string, unknown>;
@@ -502,6 +531,7 @@ export const updateAgentVersion = async (versionId: string, payload: Partial<{
   retrievalPolicy: Record<string, unknown>;
   toolPolicy: Record<string, unknown>;
   knowledgeBaseIds: string[];
+  knowledgeDocumentBindings: AgentKnowledgeDocumentBinding[];
 }>) => {
   return request<{ version: AgentVersion }>(`/api/agent-versions/${encodeURIComponent(versionId)}`, {
     method: 'PATCH',
@@ -602,7 +632,7 @@ export const fetchChatSessions = async (agentId = '') => {
 };
 
 export const createChatSession = async (agentId: string) => {
-  return request<{ session: AgentChatSession }>('/api/chat/sessions', {
+  return request<{ session: AgentChatSession; openingRemarks?: string | null }>('/api/chat/sessions', {
     method: 'POST',
     body: JSON.stringify({ agentId }),
   });
@@ -680,7 +710,7 @@ export const sendChatMessage = async (sessionId: string, payload: {
       method: 'POST',
       body: JSON.stringify(payload),
       signal: options?.signal,
-      timeoutMs: payload.requestMode === 'image_generation' ? 240_000 : 120_000,
+      timeoutMs: payload.requestMode === 'image_generation' ? 300_000 : 240_000,
       dedupe: false,
     });
   } finally {
@@ -839,7 +869,7 @@ export const sendStudioTrainingMessage = async (versionId: string, payload: {
   }>(`/api/studio/training/${encodeURIComponent(versionId)}/message`, {
     method: 'POST',
     body: JSON.stringify(payload),
-    timeoutMs: 120_000,
+    timeoutMs: 240_000,
     dedupe: false,
   });
 };

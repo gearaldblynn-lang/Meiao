@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AgentSummary, AgentVersion, StudioConfigDiff, StudioTrainingMessage, SystemPublicConfig } from '../../types';
 import { applyStudioTrainingChanges, sendStudioTrainingMessage } from '../../services/internalApi';
 import { estimateTokenCount } from './agentCenterUtils.mjs';
 import AgentAvatar from './AgentAvatar';
-import ChatComposer, { ComposerAttachment } from './ChatComposer';
+import ChatComposer, { ComposerAttachment, BatchSendTask } from './ChatComposer';
+import { resolveSessionReasoningLevel } from './chatReasoningDefaults.mjs';
+import { MAX_FILES_PER_BATCH } from './folderZipUpload';
 
 interface Props {
   agent: AgentSummary;
@@ -21,6 +23,7 @@ const AGENT_STUDIO_TRAINING_STATE_KEY = 'MEIAO_AGENT_STUDIO_TRAINING_STATE';
 
 const summarizeDiff = (diff: StudioConfigDiff) => {
   if (diff.field === 'systemPrompt') return diff.after || '更新系统提示词';
+  if (diff.field === 'openingRemarks') return diff.after ? `开场白：${diff.after.slice(0, 40)}${diff.after.length > 40 ? '...' : ''}` : '清除开场白';
   if (diff.field === 'knowledgeBaseIds') return `绑定 ${diff.knowledgeBaseIds?.length || 0} 个知识库`;
   if (diff.field === 'modelPolicy') {
     const parts = [
@@ -130,6 +133,7 @@ const AgentStudioTrainingPane: React.FC<Props> = ({
   const [webSearchEnabled, setWebSearchEnabled] = useState(Boolean(initialStoredState?.webSearchEnabled));
   const [applyingIds, setApplyingIds] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const batchAbortRef = useRef<AbortController | null>(null);
 
   const selectableChatModels = useMemo(() => {
     const allowed = new Set((draftVersion.allowedChatModels || []).filter(Boolean));
@@ -138,6 +142,16 @@ const AgentStudioTrainingPane: React.FC<Props> = ({
     const filtered = source.filter((item) => allowed.has(item.id));
     return filtered.length ? filtered : source;
   }, [availableChatModels, draftVersion.allowedChatModels]);
+
+  const resolveReasoningLevelForModel = (modelId: string, requestedReasoningLevel: string | null = null) => {
+    const capability = selectableChatModels.find((item) => item.id === modelId);
+    return capability?.supportsReasoningLevel
+      ? resolveSessionReasoningLevel({
+          reasoningLevels: capability.reasoningLevels || [],
+          requestedReasoningLevel,
+        })
+      : null;
+  };
 
   useEffect(() => {
     if (correctionContext) {
@@ -153,9 +167,12 @@ const AgentStudioTrainingPane: React.FC<Props> = ({
   useEffect(() => {
     const nextModel = draftVersion.defaultChatModel || selectableChatModels[0]?.id || '';
     setSelectedModel((current) => (current && selectableChatModels.some((item) => item.id === current) ? current : nextModel));
-    setReasoningLevel((current) => current);
+    setReasoningLevel((current) => {
+      const currentModel = selectedModel && selectableChatModels.some((item) => item.id === selectedModel) ? selectedModel : nextModel;
+      return resolveReasoningLevelForModel(currentModel, current);
+    });
     setWebSearchEnabled((current) => current);
-  }, [draftVersion.defaultChatModel, selectableChatModels]);
+  }, [draftVersion.defaultChatModel, selectableChatModels, selectedModel]);
 
   useEffect(() => {
     try {
@@ -220,6 +237,81 @@ const AgentStudioTrainingPane: React.FC<Props> = ({
       mimeType: 'image/png',
     }]);
   };
+
+  const handleBatchSendReady = useCallback(async (task: BatchSendTask) => {
+    if (task.batches.length === 0) return;
+    const controller = new AbortController();
+    batchAbortRef.current = controller;
+    setSending(true);
+
+    // 构建当前对话历史（只读快照，不含本次批量消息）
+    const historySnapshot = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      attachments: Array.isArray(m.attachments)
+        ? m.attachments.map((a) => ({ name: a.name, kind: a.kind === 'image' ? 'image' : 'file', url: a.url, mimeType: a.mimeType }))
+        : [],
+    }));
+
+    try {
+      for (let batchIndex = 0; batchIndex < task.batches.length; batchIndex++) {
+        if (controller.signal.aborted) break;
+        const isLast = batchIndex === task.batches.length - 1;
+        const batchNum = batchIndex + 1;
+        const totalBatches = task.batches.length;
+        let batchContent: string;
+        if (totalBatches === 1) {
+          batchContent = `以下是上传的 ${task.totalFiles} 个文件${task.skippedCount > 0 ? `（另有 ${task.skippedCount} 个文件因不支持或超大已跳过）` : ''}，请进行分析。`;
+        } else if (isLast) {
+          batchContent = `【第 ${batchNum}/${totalBatches} 批，最后一批】以下是最后一批文件。请在分析完这批内容后，综合前面所有批次的内容，给出完整的总结与分析结论。`;
+        } else {
+          batchContent = `【第 ${batchNum}/${totalBatches} 批】以下是第 ${batchNum} 批文件（共 ${totalBatches} 批，每批最多 ${MAX_FILES_PER_BATCH} 个），请先分析这批内容，后续还有更多批次。`;
+        }
+        const attachmentPayload = task.batches[batchIndex].map((item) => ({
+          name: item.name, kind: item.kind, url: item.url, mimeType: item.mimeType,
+        }));
+        const userMsg: StudioTrainingMessage = {
+          id: `train-batch-u-${batchIndex}-${Date.now()}`,
+          role: 'user', content: batchContent, attachments: attachmentPayload,
+          selectedModel, reasoningLevel, webSearchEnabled, createdAt: Date.now(),
+        };
+        setMessages((prev) => [...prev, userMsg]);
+
+        try {
+          const history = [...historySnapshot, { role: 'user' as const, content: batchContent, attachments: attachmentPayload }];
+          const result = await sendStudioTrainingMessage(draftVersion.id, {
+            content: batchContent, history, attachments: attachmentPayload,
+            selectedModel, reasoningLevel, webSearchEnabled,
+          });
+          const assistantMsg: StudioTrainingMessage = {
+            id: `train-batch-a-${batchIndex}-${Date.now()}`,
+            role: 'assistant', content: result.reply,
+            configDiffs: (result.configDiffs as StudioConfigDiff[]).map((d) => ({ ...d, status: 'pending' })),
+            selectedModel, reasoningLevel, webSearchEnabled, createdAt: Date.now(),
+          };
+          setMessages((prev) => [...prev, assistantMsg]);
+          // 把本批消息追加到历史快照，供后续批次使用
+          historySnapshot.push(
+            { role: 'user', content: batchContent, attachments: attachmentPayload },
+            { role: 'assistant', content: result.reply, attachments: [] },
+          );
+          if (result.configDiffs?.length > 0) onStatusMessage(`第 ${batchNum} 批已生成 ${result.configDiffs.length} 条待确认改动`);
+        } catch (batchError: any) {
+          setMessages((prev) => prev.filter((m) => m.id !== userMsg.id));
+          console.error('[BatchTrain] batch error:', batchError?.name, batchError?.code, batchError?.status, batchError?.message, batchError);
+          if (controller.signal.aborted || batchError?.name === 'AbortError' || batchError?.message === 'INTERRUPTED' || String(batchError?.message || '').includes('aborted')) {
+            onStatusMessage(`批量训练已中断（已完成 ${batchIndex}/${totalBatches} 批）`);
+          } else {
+            onErrorMessage(`第 ${batchNum} 批发送失败：${batchError?.message || '未知错误'}`);
+          }
+          return;
+        }
+      }
+    } finally {
+      batchAbortRef.current = null;
+      setSending(false);
+    }
+  }, [messages, draftVersion.id, selectedModel, reasoningLevel, webSearchEnabled, onStatusMessage, onErrorMessage]);
 
   const handleSend = async () => {
     const content = draft.trim();
@@ -469,7 +561,10 @@ const AgentStudioTrainingPane: React.FC<Props> = ({
           sending={sending}
           chatModels={selectableChatModels}
           selectedModel={selectedModel}
-          onModelChange={setSelectedModel}
+          onModelChange={(value) => {
+            setSelectedModel(value);
+            setReasoningLevel(() => resolveReasoningLevelForModel(value, null));
+          }}
           reasoningLevel={reasoningLevel}
           onReasoningLevelChange={setReasoningLevel}
           webSearchEnabled={webSearchEnabled}
@@ -481,6 +576,7 @@ const AgentStudioTrainingPane: React.FC<Props> = ({
           imageModeAvailable={false}
           imageMaxInputCount={1}
           onImageModeToggle={() => {}}
+          onBatchSendReady={handleBatchSendReady}
         />
       </div>
     </div>

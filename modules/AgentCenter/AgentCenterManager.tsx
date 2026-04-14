@@ -9,6 +9,7 @@ import {
   createKnowledgeBase,
   createKnowledgeDocument,
   deleteKnowledgeDocument,
+  fetchKnowledgeDocuments,
   fetchAgentDetail,
   fetchAgentSummaries,
   fetchSystemConfig,
@@ -117,6 +118,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseSummary[]>([]);
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState(String(initialManagerState.selectedKnowledgeBaseId || ''));
   const [documents, setDocuments] = useState<KnowledgeDocumentSummary[]>([]);
+  const [knowledgeDocumentsByBase, setKnowledgeDocumentsByBase] = useState<Record<string, KnowledgeDocumentSummary[]>>({});
   const [validationMessage, setValidationMessage] = useState('请用一句话说明这个智能体能做什么。');
   const [validationResult, setValidationResult] = useState<Record<string, unknown> | null>(null);
   const [wizardMode, setWizardMode] = useState<'create' | 'edit'>('create');
@@ -128,13 +130,16 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
     iconUrl: '',
     avatarPreset: 'aurora',
     systemPrompt: '',
+    openingRemarks: '',
     selectedKnowledgeBaseIds: [] as string[],
+    knowledgeDocumentBindings: [] as { knowledgeBaseId: string; enabledDocumentIds: string[] }[],
     allowedChatModels: ['gpt-5-4-openai-resp', 'gemini-3-flash-openai'],
     defaultChatModel: 'gpt-5-4-openai-resp',
     cheapModel: 'gemini-3-flash-openai',
     enableImageGeneration: false,
     imageModel: 'nano-banana-2',
     topK: 3,
+    linkedModuleInterfaces: [] as string[],
   });
   const [knowledgeSearch, setKnowledgeSearch] = useState('');
   const [knowledgeDepartmentFilter, setKnowledgeDepartmentFilter] = useState('');
@@ -267,13 +272,16 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       iconUrl: '',
       avatarPreset: 'aurora',
       systemPrompt: '',
+      openingRemarks: '',
       selectedKnowledgeBaseIds: [],
+      knowledgeDocumentBindings: [],
       allowedChatModels: defaultAllowedChatModels,
       defaultChatModel,
       cheapModel,
       enableImageGeneration: false,
       imageModel: availableImageModels[0]?.id || 'nano-banana-2',
       topK: 3,
+      linkedModuleInterfaces: [],
     });
     setPage('agent_wizard');
   };
@@ -290,7 +298,9 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       iconUrl: selectedAgent.iconUrl || '',
       avatarPreset: selectedAgent.avatarPreset || 'aurora',
       systemPrompt: config.systemPrompt,
+      openingRemarks: editableVersion.openingRemarks || '',
       selectedKnowledgeBaseIds: editableVersion.knowledgeBaseIds || [],
+      knowledgeDocumentBindings: Array.isArray(editableVersion.knowledgeDocumentBindings) ? editableVersion.knowledgeDocumentBindings : [],
       allowedChatModels: editableVersion.allowedChatModels?.length
         ? editableVersion.allowedChatModels
         : [editableVersion.defaultChatModel || config.modelPolicy.defaultModel].filter(Boolean),
@@ -299,6 +309,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       enableImageGeneration: Boolean(config.modelPolicy.imageGenerationEnabled),
       imageModel: config.modelPolicy.multimodalModel || availableImageModels[0]?.id || 'nano-banana-2',
       topK: config.retrievalPolicy.topK,
+      linkedModuleInterfaces: Array.isArray(config.toolPolicy.linkedModuleInterfaces) ? config.toolPolicy.linkedModuleInterfaces : [],
     });
     setPage('agent_wizard');
   };
@@ -346,11 +357,10 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
         iconUrl: wizardForm.iconUrl || null,
         avatarPreset: wizardForm.avatarPreset || null,
         systemPrompt: wizardForm.systemPrompt,
+        openingRemarks: wizardForm.openingRemarks || null,
         knowledgeBaseIds: wizardForm.selectedKnowledgeBaseIds,
-        allowedChatModels,
-        defaultChatModel,
-        modelPolicy: { cheapModel, defaultModel: defaultChatModel, multimodalModel: imageModel, imageGenerationEnabled: Boolean(wizardForm.enableImageGeneration) },
-        retrievalPolicy: { topK: wizardForm.topK },
+        knowledgeDocumentBindings: wizardForm.knowledgeDocumentBindings,
+        toolPolicy: { linkedModuleInterfaces: wizardForm.linkedModuleInterfaces },
       });
       onStatusMessage(`已创建智能体：${result.agent.name}`);
       await loadAgents(result.agent.id);
@@ -367,11 +377,14 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
     });
     await updateAgentVersion(selectedVersion.id, {
       systemPrompt: wizardForm.systemPrompt,
+      openingRemarks: wizardForm.openingRemarks || null,
       knowledgeBaseIds: wizardForm.selectedKnowledgeBaseIds,
+      knowledgeDocumentBindings: wizardForm.knowledgeDocumentBindings,
       allowedChatModels,
       defaultChatModel,
       modelPolicy: { ...selectedVersion.modelPolicy, cheapModel, defaultModel: defaultChatModel, multimodalModel: imageModel, imageGenerationEnabled: Boolean(wizardForm.enableImageGeneration) },
       retrievalPolicy: { ...selectedVersion.retrievalPolicy, topK: wizardForm.topK },
+      toolPolicy: { ...selectedVersion.toolPolicy, linkedModuleInterfaces: wizardForm.linkedModuleInterfaces },
     });
     onStatusMessage('草稿已保存。');
     await loadAgents(selectedAgent.id);
@@ -576,6 +589,26 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
     await loadKnowledgeBases(selectedKnowledgeBaseId);
   });
 
+  useEffect(() => {
+    if (page !== 'agent_wizard' || wizardForm.selectedKnowledgeBaseIds.length === 0) return;
+    const missingIds = wizardForm.selectedKnowledgeBaseIds.filter((knowledgeBaseId) => !knowledgeDocumentsByBase[knowledgeBaseId]);
+    if (missingIds.length === 0) return;
+    void Promise.all(missingIds.map(async (knowledgeBaseId) => {
+      const result = await fetchKnowledgeDocuments(knowledgeBaseId);
+      return { knowledgeBaseId, documents: result.documents };
+    }))
+      .then((entries) => {
+        setKnowledgeDocumentsByBase((prev) => {
+          const next = { ...prev };
+          entries.forEach(({ knowledgeBaseId, documents: docs }) => {
+            next[knowledgeBaseId] = docs;
+          });
+          return next;
+        });
+      })
+      .catch((error: any) => onErrorMessage(error.message || '加载知识库文档失败'));
+  }, [knowledgeDocumentsByBase, onErrorMessage, page, wizardForm.selectedKnowledgeBaseIds]);
+
   const handleUploadTextFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -713,6 +746,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
           currentStep={wizardStep}
           form={wizardForm}
           knowledgeBases={knowledgeBases}
+          knowledgeDocumentsByBase={knowledgeDocumentsByBase}
           availableChatModels={availableChatModels}
           availableImageModels={availableImageModels}
           onBack={() => setPage(selectedAgent ? 'agent_detail' : 'agent_list')}
@@ -753,6 +787,12 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
               }
               if (field === 'cheapModel' && !next.allowedChatModels.includes(String(value || ''))) {
                 next.cheapModel = next.allowedChatModels[0] || next.defaultChatModel || '';
+              }
+              if (field === 'selectedKnowledgeBaseIds') {
+                const selectedKnowledgeBaseIds = Array.from(new Set((value as string[]).filter(Boolean)));
+                next.selectedKnowledgeBaseIds = selectedKnowledgeBaseIds;
+                next.knowledgeDocumentBindings = next.knowledgeDocumentBindings
+                  .filter((item) => selectedKnowledgeBaseIds.includes(item.knowledgeBaseId));
               }
               return next;
             });

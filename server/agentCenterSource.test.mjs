@@ -60,6 +60,20 @@ test('agent chat source persists user avatars, chat session options, and model r
   assert.match(source, /default_chat_model VARCHAR\(80\) NULL/);
 });
 
+test('agent version source persists knowledge document bindings in mysql and local modes', () => {
+  assert.match(source, /knowledge_document_bindings_json LONGTEXT NULL/);
+  assert.match(source, /ensureMysqlColumn\(pool, 'agent_versions', 'knowledge_document_bindings_json', 'LONGTEXT NULL'\)/);
+  assert.match(source, /knowledgeDocumentBindings:/);
+  assert.match(source, /payload\.knowledgeDocumentBindings/);
+});
+
+test('agent retrieval source filters chunks by enabled knowledge document ids', () => {
+  assert.match(source, /const resolveEnabledKnowledgeDocumentIds = \(version, knowledgeBaseId, availableDocumentIds = \[\]\) =>/);
+  assert.match(source, /if \(!binding\) return new Set\(availableDocumentIds\);/);
+  assert.match(source, /AND kc\.document_id IN/);
+  assert.match(source, /enabledDocumentIds\.has\(chunk\.documentId\)/);
+});
+
 test('agent chat source exposes current-user profile updates and session patch delete routes', () => {
   assert.match(source, /if \(url\.pathname === '\/api\/auth\/me' && req\.method === 'PATCH'\)/);
   assert.match(source, /if \(chatSessionDetailMatch && req\.method === 'PATCH'\)/);
@@ -191,6 +205,7 @@ test('agent studio source exposes draft-only training and testing endpoints in m
   assert.match(source, /if \(!agent \|\| !version \|\| version\.agentId !== agentId \|\| version\.isPublished \|\| !canManageOwnedResource\(admin, agent\.ownerUserId\)\)/);
   assert.match(source, /- knowledgeDocument：新增、修改或删除知识库文档/);
   assert.match(source, /- knowledgeBaseIds：调整当前智能体绑定的知识库/);
+  assert.match(source, /- openingRemarks：更新开场白/);
   assert.match(source, /- modelPolicy：调整默认模型、简单问题模型、高级模型、多模态模型或生图开关/);
   assert.match(source, /- retrievalPolicy：调整检索开关、参考数量、片段上限、上下文上限等策略/);
   assert.match(source, /建议阶段不要直接宣称“我已经修改完成”/);
@@ -214,6 +229,12 @@ test('agent studio training source forwards unified composer attachments and mod
   assert.match(source, /attachmentKinds: attachments\.map\(\(item\) => item\?\.kind === 'image' \? 'image' : 'file'\)/);
   assert.match(source, /providerStage: error\?\.providerStage \|\| ''/);
   assert.match(source, /providerStatus: error\?\.providerStatus \|\| ''/);
+});
+
+test('agent studio training source accepts and applies opening remarks changes', () => {
+  assert.match(source, /const field = \['systemPrompt', 'openingRemarks', 'knowledgeDocument', 'modelPolicy', 'retrievalPolicy', 'knowledgeBaseIds'\]/);
+  assert.match(source, /if \(field === 'openingRemarks' && !Object\.prototype\.hasOwnProperty\.call\(input, 'after'\)\) return null;/);
+  assert.match(source, /if \(change\.field === 'openingRemarks'\) \{\s*return \{ openingRemarks: change\.after \|\| null \};\s*\}/);
 });
 
 test('local studio upload source keeps localhost managed asset persistence enabled in local json mode', () => {

@@ -28,6 +28,19 @@ test('normalizeAgentConfig fills in missing policy defaults', () => {
   assert.equal(config.toolPolicy.supportsFileInput, false);
 });
 
+test('normalizeAgentConfig keeps version-level knowledge document bindings grouped by knowledge base', () => {
+  const config = normalizeAgentConfig({
+    knowledgeDocumentBindings: [
+      { knowledgeBaseId: 'kb_1', enabledDocumentIds: ['doc_1', 'doc_2', '', 'doc_1'] },
+      { knowledgeBaseId: ' ', enabledDocumentIds: ['doc_3'] },
+    ],
+  });
+
+  assert.deepEqual(config.knowledgeDocumentBindings, [
+    { knowledgeBaseId: 'kb_1', enabledDocumentIds: ['doc_1', 'doc_2'] },
+  ]);
+});
+
 test('chunkKnowledgeText splits long paragraphs into bounded chunks', () => {
   const longText = `第一段内容。\n\n${'A'.repeat(900)}`;
   const chunks = chunkKnowledgeText(longText, { maxChunkChars: 300 });

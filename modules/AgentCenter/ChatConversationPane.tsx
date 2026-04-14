@@ -1,9 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AgentChatMessage, AgentChatSession, AgentSummary, AuthUser, SystemPublicConfig } from '../../types';
+import React, { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { AgentChatMessage, AgentChatSession, AgentSummary, AuthUser, ModuleInterfaceId, SystemPublicConfig } from '../../types';
 import { downloadRemoteFile } from '../../utils/imageUtils';
 import AgentAvatar from './AgentAvatar';
 import UserAvatar from './UserAvatar';
-import ChatComposer, { ComposerAttachment } from './ChatComposer';
+import ChatComposer, { ComposerAttachment, BatchSendTask } from './ChatComposer';
+import { MODULE_INTERFACES } from './agentCenterUtils.mjs';
+import { MAX_FILES_PER_BATCH } from './folderZipUpload';
 
 interface Props {
   messages: AgentChatMessage[];
@@ -30,10 +32,38 @@ interface Props {
   onImageModeToggle: () => void;
   sending?: boolean;
   hideSessionHeader?: boolean;
+  onHandoff?: (target: ModuleInterfaceId, payload: Record<string, unknown>) => void;
+  renderMessageActions?: (message: AgentChatMessage) => ReactNode;
+  /**
+   * 批量发送调度：文件夹/ZIP 上传完成后，由 ChatConversationPane 负责串行发送每批消息。
+   * 调用方（AgentCenterChatWorkspace 或 Studio）需要传入实际的发送函数。
+   */
+  onBatchSend?: (batches: ComposerAttachment[][], meta: { totalFiles: number; skippedCount: number; skippedReasons: string[] }) => Promise<void>;
 }
 
 const metaTagClassName =
   'inline-flex items-center rounded-full border border-slate-200/85 bg-white/90 px-2.5 py-1 text-[10px] font-semibold text-slate-500';
+
+type HandoffBlock = {
+  target: ModuleInterfaceId;
+  payload: Record<string, unknown>;
+};
+
+const parseHandoffBlock = (content: string): HandoffBlock | null => {
+  const match = content.match(/```meiao-handoff\s*([\s\S]*?)```/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1].trim());
+    if (!parsed?.target || !parsed?.payload) return null;
+    if (!(parsed.target in MODULE_INTERFACES)) return null;
+    return { target: parsed.target as ModuleInterfaceId, payload: parsed.payload };
+  } catch {
+    return null;
+  }
+};
+
+const stripHandoffBlock = (content: string): string =>
+  content.replace(/```meiao-handoff[\s\S]*?```/g, '').trim();
 
 type GalleryImage = {
   id: string;
@@ -114,6 +144,9 @@ const ChatConversationPane: React.FC<Props> = ({
   onImageModeToggle,
   sending = false,
   hideSessionHeader = false,
+  onHandoff,
+  renderMessageActions,
+  onBatchSend,
 }) => {
   const focusedSessionTitle = selectedSession?.title || '新会话';
   const selectedModelOption = chatModels.find((item) => item.id === selectedModel) || chatModels[0];
@@ -123,8 +156,47 @@ const ChatConversationPane: React.FC<Props> = ({
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
   const [expandedSummaries, setExpandedSummaries] = useState<Record<string, boolean>>({});
   const [expandedReferenceRules, setExpandedReferenceRules] = useState<Record<string, boolean>>({});
-  const galleryImages = useMemo(() => (
-    messages.flatMap((message) => (
+
+  // 批量发送状态
+  const [batchSendState, setBatchSendState] = useState<{
+    totalBatches: number;
+    currentBatch: number;
+    totalFiles: number;
+    skippedCount: number;
+    error: string;
+  } | null>(null);
+  const batchSendAbortRef = useRef<boolean>(false);
+  /**
+   * 批量发送调度：串行发送每批，等待每批回复后再发下一批。
+   * 最后一批附加综合总结请求。
+   */
+  const handleBatchSendReady = async (task: BatchSendTask) => {
+    if (!onBatchSend || task.batches.length === 0) return;
+
+    batchSendAbortRef.current = false;
+    setBatchSendState({
+      totalBatches: task.batches.length,
+      currentBatch: 0,
+      totalFiles: task.totalFiles,
+      skippedCount: task.skippedCount,
+      error: '',
+    });
+
+    try {
+      await onBatchSend(task.batches, {
+        totalFiles: task.totalFiles,
+        skippedCount: task.skippedCount,
+        skippedReasons: task.skippedReasons,
+      });
+    } catch (err: any) {
+      setBatchSendState((prev) => prev ? { ...prev, error: err?.message || '批量发送失败' } : null);
+      return;
+    }
+
+    setBatchSendState(null);
+  };
+
+  const galleryImages = useMemo(() => (    messages.flatMap((message) => (
       isImageGenerationMessage(message) && Array.isArray(message.attachments)
         ? message.attachments
             .filter((attachment) => attachment.kind === 'image' && attachment.url)
@@ -476,7 +548,27 @@ const ChatConversationPane: React.FC<Props> = ({
                             <p className="mt-0.5 text-[11px] font-medium text-slate-500">{getProgressStageLabel(message)}</p>
                           </div>
                         </div>
-                      ) : <p className="select-text whitespace-pre-wrap break-words">{message.content}</p>}
+                      ) : (() => {
+                          const handoff = !message.metadata?.pending ? parseHandoffBlock(message.content) : null;
+                          const displayContent = handoff ? stripHandoffBlock(message.content) : message.content;
+                          return (
+                            <>
+                              <p className="select-text whitespace-pre-wrap break-words">{displayContent}</p>
+                              {handoff && onHandoff && (
+                                <div className="mt-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => onHandoff(handoff.target, handoff.payload)}
+                                    className="inline-flex items-center gap-2 rounded-[16px] border border-violet-300 bg-violet-50 px-3 py-2 text-[12px] font-black text-violet-700 transition hover:bg-violet-100"
+                                  >
+                                    <i className="fas fa-arrow-right text-[10px]" />
+                                    发送到{MODULE_INTERFACES[handoff.target]?.label}生成
+                                  </button>
+                                </div>
+                              )}
+                            </>
+                          );
+                        })()}
                       {!imageGenerationMessage && message.attachments?.length ? (
                         <div className="mt-3 flex flex-wrap gap-2">
                           {message.attachments.map((attachment, index) => {
@@ -541,6 +633,15 @@ const ChatConversationPane: React.FC<Props> = ({
                         </div>
                       ) : null}
                     </div>
+
+                    {!isUser && message.metadata?.fallbackFrom ? (
+                      <p className="mt-1 text-[11px] font-medium text-amber-500">
+                        <i className="fas fa-exclamation-triangle mr-1 text-[10px]" />
+                        {(chatModels.find((m) => m.id === message.metadata.fallbackFrom)?.label || message.metadata.fallbackFrom)} 暂时不可用，已自动切换到 {chatModels.find((m) => m.id === message.metadata.selectedModel)?.label || message.metadata.selectedModel} 回复
+                      </p>
+                    ) : null}
+
+                    {renderMessageActions ? renderMessageActions(message) : null}
 
                   </div>
 
@@ -739,6 +840,25 @@ const ChatConversationPane: React.FC<Props> = ({
       ) : null}
 
       <div className="flex-none bg-transparent">
+        {/* 批量发送进度提示 */}
+        {batchSendState ? (
+          <div className={`mb-2 rounded-[16px] border px-4 py-3 text-[12px] font-semibold ${
+            batchSendState.error
+              ? 'border-rose-200 bg-rose-50 text-rose-600'
+              : 'border-cyan-100 bg-cyan-50/80 text-cyan-700'
+          }`}>
+            {batchSendState.error ? (
+              <span>{batchSendState.error}</span>
+            ) : batchSendState.currentBatch < batchSendState.totalBatches ? (
+              <span>
+                批量分析进行中：第 {batchSendState.currentBatch + 1} / {batchSendState.totalBatches} 批
+                （共 {batchSendState.totalFiles} 个文件，每批最多 {MAX_FILES_PER_BATCH} 个）
+              </span>
+            ) : (
+              <span>所有批次已发送，等待模型完成最终总结...</span>
+            )}
+          </div>
+        ) : null}
         <ChatComposer
           messageDraft={messageDraft}
           onMessageDraftChange={onMessageDraftChange}
@@ -760,6 +880,7 @@ const ChatConversationPane: React.FC<Props> = ({
           imageModeAvailable={imageModeAvailable}
           imageMaxInputCount={imageMaxInputCount}
           onImageModeToggle={onImageModeToggle}
+          onBatchSendReady={onBatchSend ? handleBatchSendReady : undefined}
         />
       </div>
     </div>
