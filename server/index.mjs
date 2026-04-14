@@ -1206,22 +1206,51 @@ const fetchSpiderJson = async ({ gatewayUrl, apiKey, path, payload }) => {
   return responseData;
 };
 
-const createSpiderFetch = ({ gatewayUrl, apiKey }) => async ({ platform, videoId, url, analysisItems }) => {
-  const normalizedItems = Array.isArray(analysisItems)
-    ? analysisItems.map((item) => String(item || ''))
-    : [];
-  const endpoint = platform === 'douyin'
-    ? '/v1/spider/douyin/video-info'
-    : '/v1/spider/tiktok/video-by-url-v2';
-  const payload = platform === 'douyin'
-    ? { aweme_id: videoId, share_url: url, analysis_items: normalizedItems }
-    : { share_url: url, aweme_id: videoId, analysis_items: normalizedItems };
-  return fetchSpiderJson({
-    gatewayUrl,
-    apiKey,
-    path: endpoint,
-    payload,
-  });
+const createSpiderFetch = ({ gatewayUrl, apiKey }) => async ({ platform, source, videoId, url, uniqueId, secUid, musicId, analysisItems }) => {
+  const normalizedItems = Array.isArray(analysisItems) ? analysisItems.map((item) => String(item || '')) : [];
+
+  let endpoint, payload;
+
+  if (platform === 'tiktok') {
+    switch (source) {
+      case 'user_profile':
+        endpoint = '/v1/spider/tiktok/user-profile';
+        payload = { unique_id: uniqueId };
+        break;
+      case 'user_posts':
+        endpoint = '/v1/spider/tiktok/user-posts';
+        payload = { unique_id: uniqueId, count: 6 };
+        break;
+      case 'video_comments':
+        endpoint = '/v1/spider/tiktok/video-comments';
+        payload = { aweme_id: videoId, count: 20 };
+        break;
+      case 'music_detail':
+        endpoint = '/v1/spider/tiktok/music-detail';
+        payload = { music_id: musicId };
+        break;
+      default: // 'video'
+        endpoint = '/v1/spider/tiktok/video-by-url-v2';
+        payload = { share_url: url, aweme_id: videoId, analysis_items: normalizedItems };
+    }
+  } else {
+    // douyin
+    switch (source) {
+      case 'user_info':
+        endpoint = '/v1/spider/douyin/user-info';
+        payload = { sec_uid: secUid };
+        break;
+      case 'video_list':
+        endpoint = '/v1/spider/douyin/video-list';
+        payload = { sec_uid: secUid, count: 6 };
+        break;
+      default: // 'video'
+        endpoint = '/v1/spider/douyin/video-info';
+        payload = { aweme_id: videoId, share_url: url, analysis_items: normalizedItems };
+    }
+  }
+
+  return fetchSpiderJson({ gatewayUrl, apiKey, path: endpoint, payload });
 };
 
 const handleVideoDiagnosisProbeRequest = async (req, res) => {
@@ -1265,42 +1294,104 @@ const handleVideoDiagnosisProbeRequest = async (req, res) => {
 const buildVideoDiagnosisAnalysisPrompt = (diagData, platform) => {
   const d = diagData;
   const platformName = platform === 'douyin' ? '抖音' : 'TikTok';
+
+  // 把数据按维度分块，让 prompt 更清晰
+  const videoBlock = JSON.stringify(d.video || {}, null, 2);
+  const statsBlock = JSON.stringify(d.statistics || {}, null, 2);
+  const authorBlock = JSON.stringify(d.author || {}, null, 2);
+  const platformStatusBlock = JSON.stringify(d.platformStatus || {}, null, 2);
+  const originalityBlock = JSON.stringify(d.originality || {}, null, 2);
+  const commerceBlock = JSON.stringify(d.commerce || {}, null, 2);
+  const riskBlock = JSON.stringify(d.risk || {}, null, 2);
+  const recentPostsBlock = d.recentPosts ? JSON.stringify(d.recentPosts, null, 2) : '（未获取）';
+  const commentBlock = d.commentQuality ? JSON.stringify(d.commentQuality, null, 2) : '（未获取）';
+  const musicBlock = d.musicDetail ? JSON.stringify(d.musicDetail, null, 2) : '（未获取）';
+
+  const outputSchema = JSON.stringify({
+    summary: '一句话总结视频当前流量状态和主要问题',
+    overallRisk: 'low|medium|high',
+    sections: [
+      {
+        id: 'account_authority',
+        title: '账号权重与活跃度',
+        level: 'normal|warning|danger',
+        findings: ['引用具体字段值的发现，例如：follower_count=434365，账号有一定基础权重'],
+        suggestion: '针对性建议',
+      },
+    ],
+    topActions: ['最优先操作1', '最优先操作2', '最优先操作3'],
+  }, null, 2);
+
   return [
-    `你是一位资深的${platformName}平台算法与运营专家，请根据以下视频的后台数据，输出一份专业的限流/流量诊断报告。`,
+    `你是一位资深的${platformName}平台算法与运营专家。`,
+    `请根据以下视频的多维度后台数据，输出一份专业的限流/流量诊断报告。`,
+    `数据来源：视频详情 + 账号画像 + 近期作品趋势 + 评论质量 + 音乐信息（部分平台/视频可能未获取）。`,
     '',
-    '## 视频数据',
-    '```json',
-    JSON.stringify(d, null, 2),
-    '```',
+    '## 视频基础信息',
+    '```json', videoBlock, '```',
+    '',
+    '## 互动数据',
+    '```json', statsBlock, '```',
+    '',
+    '## 账号画像',
+    '```json', authorBlock, '```',
+    '',
+    '## 平台审核状态',
+    '```json', platformStatusBlock, '```',
+    '',
+    '## 原创性信号',
+    '```json', originalityBlock, '```',
+    '',
+    '## 商业化信号',
+    '```json', commerceBlock, '```',
+    '',
+    '## 风险标签',
+    '```json', riskBlock, '```',
+    '',
+    '## 近期作品趋势（近6条）',
+    '```json', recentPostsBlock, '```',
+    '',
+    '## 评论质量抽样',
+    '```json', commentBlock, '```',
+    '',
+    '## 音乐详情',
+    '```json', musicBlock, '```',
     '',
     '## 输出要求',
     '请严格按照以下 JSON 格式输出，不要输出任何其他内容：',
-    '```json',
-    JSON.stringify({
-      summary: '一句话总结视频当前流量状态和主要问题',
-      overallRisk: 'low|medium|high',
-      sections: [
-        {
-          id: 'account_authority',
-          title: '账号权重与活跃度',
-          level: 'normal|warning|danger',
-          findings: ['具体发现1', '具体发现2'],
-          suggestion: '针对性建议',
-        },
-      ],
-      topActions: ['最优先操作1', '最优先操作2', '最优先操作3'],
-    }, null, 2),
-    '```',
+    '```json', outputSchema, '```',
     '',
-    '## sections 必须包含以下维度（按需判断 level）：',
-    '1. account_authority - 账号权重与活跃度（follower_count、following_count、total_favorited）',
-    '2. content_originality - 内容原创性（content_original_type、aigc、music 重复性）',
-    '3. platform_review - 平台审核状态（review_status、is_prohibited、private_status）',
-    '4. commercial_signals - 商业化信号（has_promote_entry、commerce_info、is_ads）',
-    '5. engagement_quality - 互动质量（play/digg/comment/share 比例分析）',
-    '6. environment_signals - 环境与地区信号（region、desc_language 匹配度）',
+    '## sections 必须包含以下7个维度（每个都要分析，按实际情况判断 level）：',
+    '1. account_authority - 账号权重与活跃度',
+    '   分析：follower_count、total_favorited、aweme_count、with_commerce_entry',
+    '   重点：新账号/低权重账号流量天花板极低，需要先养号',
     '',
-    '每个 findings 数组里的内容要引用具体字段值作为证据，不要泛泛而谈。',
+    '2. content_originality - 内容原创性',
+    '   分析：content_original_type（0=非原创,1=原创）、aigc.created_by_ai、music.is_original、music.user_count（使用人数越多越安全）',
+    '   重点：is_original=false 是最致命的限流原因之一',
+    '',
+    '3. platform_review - 平台审核状态',
+    '   分析：review_status（0=通过）、is_prohibited、private_status（0=公开）、allow_comment、allow_share',
+    '   重点：即使状态正常也可能被软限流（隐性降权）',
+    '',
+    '4. commercial_signals - 商业化信号',
+    '   分析：has_promote_entry、is_ads、is_paid_content、commerce_info',
+    '   重点：过度商业化信号会触发算法降权',
+    '',
+    '5. engagement_quality - 互动质量与流量健康度',
+    '   分析：play/digg/comment/share 比例、近期作品播放趋势（avgPlayCount vs 本视频 playCount）、评论质量（withReplies 比例、avgDigg）',
+    '   重点：本视频播放量是否显著低于账号近期均值，是判断是否被限流的核心依据',
+    '',
+    '6. music_risk - 音乐风险',
+    '   分析：music.is_original、music.user_count（使用人数=1 说明是原声，user_count 极低可能是冷门音乐）、music.status',
+    '   重点：使用被限制的音乐会直接导致视频限流',
+    '',
+    '7. environment_signals - 环境与地区信号',
+    '   分析：video.region、video.descLanguage、author.region 三者是否匹配',
+    '   重点：region 与目标受众语言不匹配会导致推流方向错误',
+    '',
+    '每个 findings 必须引用具体字段名和字段值作为证据，不要泛泛而谈。',
+    'topActions 给出3-5条最优先的可执行操作，按优先级排序。',
   ].join('\n');
 };
 
