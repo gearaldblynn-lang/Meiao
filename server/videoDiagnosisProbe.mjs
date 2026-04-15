@@ -296,9 +296,7 @@ export const createVideoDiagnosisProbe = ({ spiderFetch }) => async ({ platform,
     ? extractTikTokVideoIdFromUrl(url)
     : extractDouyinVideoIdFromUrl(url);
 
-  if (!videoId) {
-    return createErrorResult({ message: '无法从链接中解析视频 ID', missingCriticalFields: ['video.id'] });
-  }
+  // videoId 可能为空（短链接），Spider API 的 share_url 字段本身支持短链接，继续执行
 
   let sources;
   try {
@@ -313,6 +311,11 @@ export const createVideoDiagnosisProbe = ({ spiderFetch }) => async ({ platform,
   }
 
   const { videoRaw, detail, profileRaw, recentPosts, comments, musicRaw } = sources;
+
+  if (!detail) {
+    return createErrorResult({ message: '视频不存在或链接无效，请检查链接后重试', missingCriticalFields: ['video.detail'] });
+  }
+
   const fields = flattenFieldPaths(videoRaw);
   const normalizedDiag = buildNormalizedDiagData({ detail, profileData: profileRaw, recentPosts, comments, musicData: musicRaw });
 
