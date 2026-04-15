@@ -14,6 +14,7 @@ import { useToast } from '../../components/ToastSystem';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
 import { normalizeCopyLayoutText } from './copyLayoutUtils.mjs';
+import { cancelInternalJob } from '../../services/internalApi';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -49,6 +50,7 @@ const MainImageSubModule: React.FC<Props> = ({
   const isSubmittingGenerationRef = useRef(false);
   const taskControllersRef = useRef<Record<string, AbortController>>({});
   const globalAbortRef = useRef<AbortController | null>(null);
+  const analysisJobIdRef = useRef<string>('');
   const { addToast } = useToast();
 
   const selectedCount = schemes.filter(s => s.selected).length;
@@ -242,6 +244,7 @@ const MainImageSubModule: React.FC<Props> = ({
     try {
       onUpdate({ schemes: [] }); 
       globalAbortRef.current = new AbortController();
+      analysisJobIdRef.current = '';
       
       const productUrls = await getOrUploadProductUrls();
       
@@ -268,7 +271,20 @@ const MainImageSubModule: React.FC<Props> = ({
       if (globalAbortRef.current.signal.aborted) throw new Error("ABORTED");
 
       const logoUrl = await getOrUploadLogoUrl();
-      const res = await generateMarketingSchemes(productUrls, null, config, apiConfig, OneClickSubMode.MAIN_IMAGE, null, globalAbortRef.current.signal, referenceSummary, logoUrl);
+      const res = await generateMarketingSchemes(
+        productUrls,
+        null,
+        config,
+        apiConfig,
+        OneClickSubMode.MAIN_IMAGE,
+        null,
+        globalAbortRef.current.signal,
+        referenceSummary,
+        logoUrl,
+        (jobId) => {
+          analysisJobIdRef.current = jobId;
+        }
+      );
       
       if (res.status === 'success') {
         const initialSchemes: MainImageScheme[] = res.schemes.map((text, idx) => {
@@ -352,7 +368,29 @@ const MainImageSubModule: React.FC<Props> = ({
     } finally { 
       setIsAnalyzing(false); 
       isSubmittingAnalysisRef.current = false;
+      analysisJobIdRef.current = '';
     }
+  };
+
+  const handleCancelAnalysis = async () => {
+    globalAbortRef.current?.abort();
+    if (analysisJobIdRef.current) {
+      try {
+        await cancelInternalJob(analysisJobIdRef.current);
+      } catch {
+        // best effort cancellation; local abort above already releases the UI
+      }
+    }
+    analysisJobIdRef.current = '';
+    setIsAnalyzing(false);
+    isSubmittingAnalysisRef.current = false;
+    void logActionInterrupted({
+      module: 'one_click',
+      action: 'plan_main_start',
+      message: '主图策划已手动取消',
+      meta: baseMeta,
+    });
+    addToast('已取消当前策划', 'info');
   };
 
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -371,6 +409,7 @@ const MainImageSubModule: React.FC<Props> = ({
     // 中断所有正在进行的任务
     Object.values(taskControllersRef.current).forEach((controller: AbortController) => controller.abort());
     taskControllersRef.current = {};
+    globalAbortRef.current?.abort();
     
     onUpdate(prev => ({
       ...prev,
@@ -1037,6 +1076,9 @@ const MainImageSubModule: React.FC<Props> = ({
               <div className="w-20 h-20 bg-rose-50 rounded-full flex items-center justify-center mb-6 animate-pulse border border-rose-100"><i className="fas fa-brain text-4xl text-rose-600"></i></div>
               <h3 className="mb-2 text-xl font-black text-slate-800">正在生成主图方案...</h3>
               <p className="text-sm text-slate-400">请稍候，系统正在整理并生成当前主图方案。</p>
+              <button onClick={() => { void handleCancelAnalysis(); }} className="mt-6 rounded-2xl bg-slate-900 px-5 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-700">
+                取消策划
+              </button>
             </div>
           </div>
         )}

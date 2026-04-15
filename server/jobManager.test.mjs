@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { findReusableJobSubmission, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
+import { findReusableJobSubmission, reconcileRestartedMysqlJobs, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
 
 const createJob = (id, userId, priority = 0, status = 'queued') => ({
   id,
@@ -124,4 +124,49 @@ test('findReusableJobSubmission ignores finished or stale jobs', () => {
   });
 
   assert.equal(matched, null);
+});
+
+test('reconcileRestartedMysqlJobs releases stale running jobs after a server restart', () => {
+  const reconciled = reconcileRestartedMysqlJobs([
+    {
+      id: 'job-running',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'running',
+      retryCount: 0,
+      maxRetries: 2,
+      errorCode: '',
+      errorMessage: '',
+      createdAt: 1000,
+      updatedAt: 2000,
+      startedAt: 1500,
+      finishedAt: null,
+    },
+    {
+      id: 'job-queued',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'queued',
+      retryCount: 0,
+      maxRetries: 2,
+      errorCode: '',
+      errorMessage: '',
+      createdAt: 1100,
+      updatedAt: 2100,
+      startedAt: null,
+      finishedAt: null,
+    },
+  ]);
+
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0].id, 'job-running');
+  assert.equal(reconciled[0].status, 'failed');
+  assert.equal(reconciled[0].startedAt, null);
+  assert.ok(reconciled[0].finishedAt > 0);
+  assert.equal(reconciled[0].errorCode, 'service_restarted');
+  assert.match(reconciled[0].errorMessage, /服务重启导致任务中断/);
 });

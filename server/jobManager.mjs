@@ -108,6 +108,21 @@ const mapJobRow = (row) => ({
   cancelRequestedAt: row.cancel_requested_at === null ? null : Number(row.cancel_requested_at),
 });
 
+export const reconcileRestartedMysqlJobs = (jobs, referenceTime = now()) => {
+  if (!Array.isArray(jobs)) return [];
+  return jobs
+    .filter((job) => String(job?.status || '') === 'running')
+    .map((job) => ({
+      ...job,
+      status: 'failed',
+      startedAt: null,
+      finishedAt: Number(referenceTime || now()),
+      updatedAt: Number(referenceTime || now()),
+      errorCode: 'service_restarted',
+      errorMessage: '服务重启导致任务中断，请按需重新发起或手动同步结果',
+    }));
+};
+
 export const ensureJobsSchema = async (pool) => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS internal_jobs (
@@ -256,6 +271,22 @@ export const getJobQueueStats = async (pool) => {
     }
   });
   return counts;
+};
+
+export const reconcileRestartedRunningJobs = async (pool) => {
+  const [rows] = await pool.query(`SELECT * FROM internal_jobs WHERE status = 'running'`);
+  const reconciled = reconcileRestartedMysqlJobs(rows.map(mapJobRow), now());
+  for (const job of reconciled) {
+    await updateJobFields(pool, job.id, {
+      status: job.status,
+      started_at: null,
+      finished_at: job.finishedAt,
+      updated_at: job.updatedAt,
+      error_code: job.errorCode,
+      error_message: job.errorMessage,
+    });
+  }
+  return reconciled;
 };
 
 const updateJobFields = async (pool, jobId, fields) => {

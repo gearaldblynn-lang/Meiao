@@ -6,6 +6,7 @@ const mainSource = readFileSync(new URL('./MainImageSubModule.tsx', import.meta.
 const detailSource = readFileSync(new URL('./DetailPageSubModule.tsx', import.meta.url), 'utf8');
 const buyerShowSource = readFileSync(new URL('../BuyerShow/BuyerShowModule.tsx', import.meta.url), 'utf8');
 const skuSource = readFileSync(new URL('./SkuSubModule.tsx', import.meta.url), 'utf8');
+const oneClickModuleSource = readFileSync(new URL('./OneClickModule.tsx', import.meta.url), 'utf8');
 
 test('one click generation prompt keeps strict product consistency guardrails', () => {
   assert.match(mainSource, /STRICT PRODUCT CONSISTENCY/);
@@ -49,4 +50,19 @@ test('one click planning and generation paths normalize legacy copy layout rows 
   assert.match(mainSource, /normalizeCopyLayoutText/);
   assert.match(detailSource, /normalizeCopyLayoutText/);
   assert.match(skuSource, /normalizeCopyLayoutText/);
+});
+
+test('main image planning flow exposes a real cancel path that aborts the active analysis job', () => {
+  assert.match(mainSource, /const handleCancelAnalysis = async \(\) =>/);
+  assert.match(mainSource, /globalAbortRef\.current\?\.abort\(\)/);
+  assert.match(mainSource, /analysisJobIdRef\.current/);
+  assert.match(mainSource, /await cancelInternalJob\(analysisJobIdRef\.current\)/);
+  assert.match(mainSource, /取消策划/);
+});
+
+test('one click workspace only mounts the active submodule to avoid hidden-module side effects', () => {
+  assert.match(oneClickModuleSource, /subMode === OneClickSubMode\.MAIN_IMAGE \? \(/);
+  assert.match(oneClickModuleSource, /subMode === OneClickSubMode\.DETAIL_PAGE \? \(/);
+  assert.match(oneClickModuleSource, /subMode === OneClickSubMode\.SKU \? \(/);
+  assert.doesNotMatch(oneClickModuleSource, /className=\{`h-full w-full flex overflow-hidden \$\{subMode === OneClickSubMode\.MAIN_IMAGE \? '' : 'hidden'\}`\}/);
 });
