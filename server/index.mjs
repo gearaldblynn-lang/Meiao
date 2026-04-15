@@ -1255,6 +1255,7 @@ const createSpiderFetch = ({ gatewayUrl, apiKey }) => async ({ platform, source,
 
 const handleVideoDiagnosisProbeRequest = async (req, res) => {
   const spiderConfig = getSpiderConfig();
+  console.log('[video-diagnosis/probe] apiKey:', spiderConfig.apiKey ? '已配置' : '未配置', 'gatewayUrl:', spiderConfig.gatewayUrl || '未配置');
   if (!spiderConfig.apiKey) {
     respondSpiderConfigMissing(res, 'key');
     return;
