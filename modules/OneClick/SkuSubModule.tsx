@@ -22,6 +22,7 @@ import {
   logActionFailure, logActionInterrupted, logActionStart, logActionSuccess,
 } from '../../services/loggingService';
 import { buildSkuGenerationAssets } from './skuGenerationUtils.mjs';
+import { normalizeCopyLayoutText } from './copyLayoutUtils.mjs';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -256,7 +257,7 @@ const SkuSubModule: React.FC<Props> = ({
             combinationId: combo?.id || '',
             uiTitle,
             originalContent: text,
-            editedContent: cleanedLines.join('\n').trim(),
+            editedContent: normalizeCopyLayoutText(cleanedLines.join('\n').trim()),
             extractedRatio: ratio,
             selected: true,
             status: 'pending' as const,
@@ -304,7 +305,7 @@ const SkuSubModule: React.FC<Props> = ({
     let prompt = '【严格保持产品与赠品一致性】请严格保持所有商品与赠品和参考图一致，不得改变外观、尺寸关系、结构、标签或包装。\n\n';
     prompt += manifest + '\n';
     prompt += `【产品信息】\n${config.productInfo || '未填写'}\n\n`;
-    prompt += `【SKU 展示方案】\n${scheme.editedContent}\n`;
+    prompt += `【SKU 展示方案】\n${normalizeCopyLayoutText(scheme.editedContent)}\n`;
 
     if (!isFirst && styleRefUrl && resolvedFirstUrl) {
       prompt += `\n风格参考图：${styleRefUrl}。严格按照该风格参考图一致的排版、字体风格、文字摆放、色调和整体设计风格制作。该图仅作为风格基准，不得替换、改写或混入主体商品本身。`;
@@ -314,6 +315,10 @@ const SkuSubModule: React.FC<Props> = ({
     }
     prompt += `\n生图文案语言：”${config.language || '中文'}”`;
     prompt += `\n文案文字必须为”${config.language || '中文'}”`;
+    prompt += `\n文案内容排版中，圆括号（或半角括号）内的内容全部是排版要求，绝对不能作为画面文字渲染。`;
+    prompt += `\n只有中文引号“”内的文字才是最终需要渲染到画面中的正文文案。`;
+    prompt += `\n字段名、角色名、括号内要求、冒号、说明文字都禁止渲染进画面。`;
+    prompt += `\n若某行格式为 角色名(要求):“正文文案”，你只能渲染中文引号里的“正文文案”，并严格按括号内要求排版。`;
     prompt += `\n禁止生成英文或其他非目标文案语言的文案文字。`;
     prompt += `\n主体商品必须最显眼，赠品只能作为辅助点缀，不能喧宾夺主。`;
     prompt += `\n赠品可以比真实比例更小，但必须保持正面陈列。`;

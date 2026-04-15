@@ -34,54 +34,59 @@ test('analysis service no longer routes planning through ark or doubao', () => {
   );
 });
 
-test('marketing scheme copy layout template only treats title as required and allows flexible extra copy lines', () => {
+test('marketing scheme copy layout template enforces role-based rows and forbids freeform layout prose', () => {
   assert.match(
     arkServiceSource,
-    /主标题\(字体大小,\s*字体以及字重,\s*位置,\s*颜色色号\):"xxx"/,
-    'marketing prompt should define the generic required title line'
+    /文案角色（可变）\(文案要求，例如：字号、字重、位置、颜色\):“这里仅填写最终要渲染的正文文案”/,
+    'marketing prompt should define the strict role-based copy row format'
   );
   assert.match(
     arkServiceSource,
-    /其他文案\(字体大小,\s*字体以及字重,\s*位置,\s*颜色色号\):"xxx"/,
-    'marketing prompt should define a reusable optional copy line'
+    /所有文案排版行都必须严格使用上述语法：角色名\(要求\):“正文文案”/,
+    'marketing prompt should require the exact role-requirement-body syntax'
   );
-  assert.doesNotMatch(
+  assert.match(
     arkServiceSource,
-    /必须严格按“主标题 \/ 副标题 \/ 场景文案”三行结构输出/,
-    'marketing prompt should no longer force subtitle and scene copy lines'
+    /禁止输出模板外解释、补充说明、示例分析、散文描述/,
+    'marketing prompt should forbid freeform explanatory copy layout prose'
   );
-  assert.doesNotMatch(
+  assert.match(
     arkServiceSource,
-    /若某屏不需要其中某项，也要明确写“无”/,
-    'marketing prompt should no longer require placeholder 无 lines'
+    /圆括号内是排版要求，不属于要渲染的正文文案；只有中文引号内的文字才是最终要出现在画面中的文案内容/,
+    'marketing prompt should teach downstream generation how to separate requirements from renderable text'
+  );
+  assert.match(
+    arkServiceSource,
+    /如果用户输入、卖点资料、参考文案里出现旧格式/,
+    'marketing prompt should force old user-provided copy rows to be rewritten into the standard template'
+  );
+  assert.match(
+    arkServiceSource,
+    /禁止输出以下非标准写法：•主文案：「正文」— 字体、字号、位置、颜色；「正文」— 要求；角色名：正文（要求）。/,
+    'marketing prompt should ban the old bullet-plus-font copy syntax explicitly'
   );
 });
 
-test('sku planning prompt keeps main title required but leaves other copy lines optional', () => {
+test('sku planning prompt uses the same strict role-based copy layout syntax', () => {
   assert.match(
     arkServiceSource,
-    /主标题\(32pt,\s*黑体bold,\s*顶部居中,\s*颜色色号\):"xxx"/,
-    'sku prompt should include the sample title line format'
-  );
-  assert.match(
-    arkServiceSource,
-    /其他文案\(字体大小,\s*字体以及字重,\s*位置,\s*颜色色号\):"xxx"/,
-    'sku prompt should allow optional extra copy lines in the same format'
+    /文案角色（可变）\(文案要求，例如：字号、字重、位置、颜色\):“这里仅填写最终要渲染的正文文案”/,
+    'sku prompt should reuse the same strict role-based copy row format'
   );
   assert.match(
     arkServiceSource,
-    /以上仅为格式示例，具体字体大小、字重、位置和颜色要按该SKU的实际设计来填写，不要机械固定照抄/,
-    'sku prompt should clarify that the copy layout is a format spec rather than fixed values'
+    /禁止在圆括号内填写任何会被当成正文渲染的内容；禁止把要求写进中文引号内/,
+    'sku prompt should prohibit mixing requirements into the renderable body text'
   );
-  assert.doesNotMatch(
+  assert.match(
     arkServiceSource,
-    /副标题\(字体大小,\s*字体字重,\s*位置,\s*字体颜色\):"文案内容"/,
-    'sku prompt should not hardcode subtitle as a mandatory row'
+    /文案角色名可以变化，例如主文案、副文案、卖点文案、标签、角标等，但语法结构不得变化/,
+    'sku prompt should allow variable role names while keeping the syntax fixed'
   );
-  assert.doesNotMatch(
+  assert.match(
     arkServiceSource,
-    /促销文案\(字体大小,\s*字体字重,\s*位置,\s*字体颜色\):"文案内容"/,
-    'sku prompt should not hardcode promo copy as a mandatory row'
+    /若上游输入或用户卖点文案是“•主文案：「正文」— 字体, 字号, 位置”这类旧格式，必须先转换成标准模板再输出/,
+    'sku prompt should also rewrite old user-provided layout syntax before returning the plan'
   );
 });
 

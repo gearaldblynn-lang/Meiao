@@ -13,6 +13,7 @@ import { resizeImage, createZipAndDownload, downloadRemoteFile, getImageDimensio
 import { useToast } from '../../components/ToastSystem';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
+import { normalizeCopyLayoutText } from './copyLayoutUtils.mjs';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -292,11 +293,13 @@ const MainImageSubModule: React.FC<Props> = ({
              return true;
           });
 
+          const normalizedEditedContent = normalizeCopyLayoutText(cleanedLines.join('\n').trim());
+
           return { 
             id: Math.random().toString(36).substr(2, 9), 
             uiTitle: uiTitle,
             originalContent: text, 
-            editedContent: cleanedLines.join('\n').trim(), 
+            editedContent: normalizedEditedContent, 
             extractedRatio: ratio,
             status: 'pending', 
             selected: true 
@@ -534,7 +537,7 @@ const MainImageSubModule: React.FC<Props> = ({
     // 确保生图比例绝对服从用户设定，而非 AI 幻觉。
     const strictRatio = config.aspectRatio || AspectRatio.SQUARE;
     
-    const cleanPrompt = scheme.editedContent
+    const cleanPrompt = normalizeCopyLayoutText(scheme.editedContent)
       .split('\n')
       .filter(line => !line.trim().match(/^(?:[-#*>\s]*)画面比例/))
       .filter(line => !line.trim().match(/^(?:[-#*>\s]*)(?:屏序\/类型|第\s*\d+\s*屏|主图\d+)/))
@@ -562,6 +565,10 @@ const MainImageSubModule: React.FC<Props> = ({
     // 增加生图文案语言固定指令
     finalPrompt += `\n\n生图文案语言：“${config.language || 'English'}”`;
     finalPrompt += `\n文案文字必须为“${config.language || 'English'}”`;
+    finalPrompt += `\n文案内容排版中，圆括号（或半角括号）内的内容全部是排版要求，绝对不能作为画面文字渲染。`;
+    finalPrompt += `\n只有中文引号“”内的文字才是最终需要渲染到画面中的正文文案。`;
+    finalPrompt += `\n字段名、角色名、括号内要求、冒号、说明文字都禁止渲染进画面。`;
+    finalPrompt += `\n若某行格式为 角色名(要求):“正文文案”，你只能渲染中文引号里的“正文文案”，并严格按括号内要求排版。`;
 
     return await processWithKieAi(
       inputImages, 

@@ -1280,15 +1280,20 @@ const handleVideoDiagnosisProbeRequest = async (req, res) => {
     ? body.analysisItems
     : [];
 
-  const videoDiagnosisProbeRunner = createVideoDiagnosisProbe({
-    spiderFetch: createSpiderFetch(spiderConfig),
-  });
-  const result = await videoDiagnosisProbeRunner({
-    platform,
-    url: videoUrl,
-    analysisItems,
-  });
-  json(res, 200, result);
+  try {
+    const videoDiagnosisProbeRunner = createVideoDiagnosisProbe({
+      spiderFetch: createSpiderFetch(spiderConfig),
+    });
+    const result = await videoDiagnosisProbeRunner({
+      platform,
+      url: videoUrl,
+      analysisItems,
+    });
+    json(res, 200, result);
+  } catch (err) {
+    console.error('[video-diagnosis/probe] 未捕获异常:', err);
+    json(res, 500, { message: err?.message || '视频诊断勘探失败', code: 'probe_error' });
+  }
 };
 
 const buildVideoDiagnosisAnalysisPrompt = (diagData, platform) => {

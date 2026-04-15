@@ -13,6 +13,7 @@ import { resizeImage, createZipAndDownload, downloadRemoteFile, getImageDimensio
 import { useToast } from '../../components/ToastSystem';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
+import { normalizeCopyLayoutText } from './copyLayoutUtils.mjs';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -288,7 +289,7 @@ const DetailPageSubModule: React.FC<Props> = ({
              return true;
           });
           
-          const cleanedText = cleanedLines.join('\n').trim();
+          const cleanedText = normalizeCopyLayoutText(cleanedLines.join('\n').trim());
 
           return { 
             id: Math.random().toString(36).substr(2, 9), 
@@ -602,7 +603,7 @@ const DetailPageSubModule: React.FC<Props> = ({
     const ratioInText = scheme.editedContent.match(/(?:-|\s|^)画面比例[：:]\s*([0-9]+:[0-9]+)/);
     const finalRatio = ratioInText ? ratioInText[1] : (scheme.extractedRatio || '3:4');
     
-    const cleanPrompt = scheme.editedContent
+    const cleanPrompt = normalizeCopyLayoutText(scheme.editedContent)
       .split('\n')
       .filter(line => {
         const l = line.trim();
@@ -635,6 +636,10 @@ const DetailPageSubModule: React.FC<Props> = ({
     // 增加生图文案语言固定指令
     finalPrompt += `\n\n生图文案语言：“${config.language || 'English'}”`;
     finalPrompt += `\n文案文字必须为“${config.language || 'English'}”`;
+    finalPrompt += `\n文案内容排版中，圆括号（或半角括号）内的内容全部是排版要求，绝对不能作为画面文字渲染。`;
+    finalPrompt += `\n只有中文引号“”内的文字才是最终需要渲染到画面中的正文文案。`;
+    finalPrompt += `\n字段名、角色名、括号内要求、冒号、说明文字都禁止渲染进画面。`;
+    finalPrompt += `\n若某行格式为 角色名(要求):“正文文案”，你只能渲染中文引号里的“正文文案”，并严格按括号内要求排版。`;
 
     return await processWithKieAi(
       inputImages, 
