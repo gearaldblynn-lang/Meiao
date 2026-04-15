@@ -6,7 +6,7 @@ import { getUserVisibleTaskId } from './kieTaskUtils.mjs';
 
 const kieAiSource = readFileSync(new URL('./kieAiService.ts', import.meta.url), 'utf8');
 
-test('getUserVisibleTaskId only exposes provider task id and never falls back to internal job id', () => {
+test('getUserVisibleTaskId falls back to the internal job id when the provider task id is not available yet', () => {
   assert.equal(
     getUserVisibleTaskId({
       id: 'internal-job-1',
@@ -20,13 +20,20 @@ test('getUserVisibleTaskId only exposes provider task id and never falls back to
       id: 'internal-job-2',
       providerTaskId: '',
     }),
-    ''
+    'internal-job-2'
   );
 });
 
-test('kieAiService preserves provider task id when wait timeout happens so recover can target the latest job', () => {
+test('kieAiService keeps a recoverable task id when wait timeout happens before provider task id is written back', () => {
   assert.match(kieAiSource, /const timeoutJob = await fetchInternalJob\(jobId\)\.catch\(\(\) => null\)/);
   assert.match(kieAiSource, /taskId: getUserVisibleTaskId\(timeoutJob\?\.job\)/);
+});
+
+test('kieAiService can resume waiting on an internal job id before falling back to provider recovery', () => {
+  assert.match(
+    kieAiSource,
+    /const existingJob = await fetchInternalJob\(taskId\)\.catch\(\(\) => null\);[\s\S]*if \(existingJob\?\.job\) \{[\s\S]*waitForJobResult\(existingJob\.job\.id, signal, KIE_RECOVER_TIMEOUT, false, Boolean\(apiConfig\.kieApiKey\)\);[\s\S]*\} else \{[\s\S]*recoverKieProviderTask\(taskId, signal, isVideo, Boolean\(apiConfig\.kieApiKey\)\);[\s\S]*\}/,
+  );
 });
 
 test('kieAiService gives image generation a longer timeout budget for slow cloud runs', () => {

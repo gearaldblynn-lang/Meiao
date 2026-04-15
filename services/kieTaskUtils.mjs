@@ -1,3 +1,3 @@
 export const getUserVisibleTaskId = (job) => {
-  return String(job?.providerTaskId || '');
+  return String(job?.providerTaskId || job?.id || '');
 };

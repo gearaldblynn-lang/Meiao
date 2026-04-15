@@ -173,7 +173,13 @@ export const recoverKieAiTask = async (
   isVideo: boolean = false
 ): Promise<KieAiResult> => {
   logKieEvent('recover_task', '开始找回任务结果', 'started', '', { taskId, isVideo });
-  const result = await recoverKieProviderTask(taskId, signal, isVideo, Boolean(apiConfig.kieApiKey));
+  const existingJob = await fetchInternalJob(taskId).catch(() => null);
+  let result: KieAiResult;
+  if (existingJob?.job) {
+    result = await waitForJobResult(existingJob.job.id, signal, KIE_RECOVER_TIMEOUT, false, Boolean(apiConfig.kieApiKey));
+  } else {
+    result = await recoverKieProviderTask(taskId, signal, isVideo, Boolean(apiConfig.kieApiKey));
+  }
   logKieEvent(
     'recover_task',
     result.status === 'success' ? '任务结果找回成功' : result.status === 'interrupted' ? '任务结果找回已中断' : '任务结果找回失败',
