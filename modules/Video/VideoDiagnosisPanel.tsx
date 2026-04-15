@@ -81,12 +81,10 @@ const DiagnosisSection: React.FC<{ section: VideoDiagnosisAnalysisSection }> = (
 const VideoDiagnosisPanel: React.FC<Props> = ({ state, chatModels, subMode, onSubModeChange, onChange, onProbe, onAnalyze }) => {
   const safeUrl = state.url ?? '';
   const safePlatform = state.platform || 'tiktok';
-  const safeAccessMode = state.accessMode || 'spider_api';
   const safeAnalysisItems = Array.isArray(state.analysisItems) ? state.analysisItems : [];
   const probeStatus = state.probe?.status || 'idle';
   const isProbing = probeStatus === 'loading';
-  const isSupportedAccessMode = safeAccessMode === 'spider_api';
-  const canProbe = Boolean(safeUrl.trim()) && !isProbing && isSupportedAccessMode;
+  const canProbe = Boolean(safeUrl.trim()) && !isProbing;
   const hasProbeData = probeStatus === 'success' && state.probe?.normalized?.diag;
   const aiStatus = state.aiAnalysis?.status || 'idle';
   const isAnalyzing = aiStatus === 'loading';
@@ -116,7 +114,7 @@ const VideoDiagnosisPanel: React.FC<Props> = ({ state, chatModels, subMode, onSu
         footer={
           <div className="space-y-2">
             <PrimaryActionButton
-              label={!safeUrl.trim() ? '请输入链接' : !isSupportedAccessMode ? '仅支持 Spider API' : isProbing ? '勘探中...' : '开始勘探'}
+              label={!safeUrl.trim() ? '请输入链接' : isProbing ? '勘探中...' : '开始勘探'}
               icon={isProbing ? 'fa-spinner fa-spin' : 'fa-magnifying-glass'}
               disabled={!canProbe}
               onClick={onProbe}
@@ -140,24 +138,13 @@ const VideoDiagnosisPanel: React.FC<Props> = ({ state, chatModels, subMode, onSu
       >
         <SectionCard title="目标输入" icon="fa-link" accentTextClass="text-emerald-600" description="选择平台，粘贴视频链接，开始字段勘探。">
           <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <div className="mb-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">平台</div>
-                <PopoverSelect
-                  value={safePlatform}
-                  options={[{ value: 'tiktok', label: 'TikTok' }, { value: 'douyin', label: '抖音' }]}
-                  onChange={(next) => onChange({ platform: next as any })}
-                />
-              </div>
-              <div>
-                <div className="mb-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">接入方式</div>
-                <PopoverSelect
-                  value={safeAccessMode}
-                  options={[{ value: 'spider_api', label: 'Spider API' }, { value: 'web_session', label: 'Web Session' }]}
-                  onChange={(next) => onChange({ accessMode: next as any })}
-                />
-                {!isSupportedAccessMode && <div className="mt-2 text-[11px] font-semibold text-rose-600">当前探测接口仅支持 Spider API。</div>}
-              </div>
+            <div>
+              <div className="mb-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">平台</div>
+              <PopoverSelect
+                value={safePlatform}
+                options={[{ value: 'tiktok', label: 'TikTok' }, { value: 'douyin', label: '抖音' }]}
+                onChange={(next) => onChange({ platform: next as any })}
+              />
             </div>
             <div>
               <div className="mb-1 flex items-center justify-between gap-3">
