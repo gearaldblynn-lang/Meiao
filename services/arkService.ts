@@ -29,7 +29,8 @@ const resolveAnalysisModel = async () => {
 const requestAnalysisResponse = async (
   inputContent: Array<{ type: "text" | "image_url"; text?: string; image_url?: { url: string } }>,
   _apiConfig: GlobalApiConfig,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onJobCreated?: (jobId: string) => void
 ) => {
   const module = getActiveModuleContext() || 'unknown';
   const startedAt = Date.now();
@@ -54,6 +55,7 @@ const requestAnalysisResponse = async (
     },
     maxRetries: 2,
   });
+  onJobCreated?.(job.id);
 
   try {
     const finalJob = await waitForInternalJob(job.id, signal);
@@ -229,7 +231,8 @@ export const generateMarketingSchemes = async (
   directionPreference: string | null,
   signal?: AbortSignal,
   referenceAnalysisSummary?: string | null,
-  logoUrl?: string | null
+  logoUrl?: string | null,
+  onJobCreated?: (jobId: string) => void
 ): Promise<ArkSchemeResult> => {
   try {
     const isDetail = subMode === OneClickSubMode.DETAIL_PAGE;
@@ -341,7 +344,7 @@ ${copyLayoutTemplate}
     const timeoutId = setTimeout(() => timeoutController.abort(), 60000); // 60s timeout
 
     try {
-      const content = await requestAnalysisResponse(inputContent, apiConfig, signal || timeoutController.signal);
+      const content = await requestAnalysisResponse(inputContent, apiConfig, signal || timeoutController.signal, onJobCreated);
       let schemes: string[] = [];
       const tagRegex = /\[SCHEME_START\]([\s\S]*?)\[SCHEME_END\]/g;
       let match;

@@ -19,7 +19,7 @@ import {
 } from '../modules/AgentCenter/agentCenterUtils.mjs';
 import { buildLogFilterOptions, normalizeLogPagination } from '../modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
-import { ensureJobsSchema, createJobRecord, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
 import {
   createLocalJobRecord,
   createLocalJobWorker,
@@ -1451,6 +1451,7 @@ const handleVideoDiagnosisAnalyzeRequest = async (req, res) => {
       new AbortController().signal
     );
   } catch (error) {
+    console.error('[video-diagnosis/analyze] AI调用失败:', error?.message, '| code:', error?.code, '| providerMessage:', error?.providerMessage);
     json(res, 500, {
       message: error?.providerMessage || error?.message || 'AI 分析失败',
       code: error?.code || 'ai_error',
@@ -8580,6 +8581,11 @@ const server = createServer(async (req, res) => {
 const bootstrap = async () => {
   if (shouldUseMysql) {
     await ensureMysqlSchema();
+    const pool = await getMysqlPool();
+    const reconciledJobs = await reconcileRestartedRunningJobs(pool);
+    if (reconciledJobs.length > 0) {
+      console.log(`Reconciled ${reconciledJobs.length} stale running jobs after restart.`);
+    }
     jobWorker = createJobWorker({
       getPool: getMysqlPool,
       executeJob: async (job, signal) => {

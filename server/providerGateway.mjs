@@ -9,6 +9,7 @@ const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 const KIE_RESPONSES_MODEL_ALIASES = {
   'gpt-5-4-openai-resp': 'gpt-5-4',
   'gpt-5-4': 'gpt-5-4',
+  'gpt-5.4': 'gpt-5-4',
 };
 const KIE_CHAT_MODEL_ENDPOINTS = {
   'gpt-5-2': KIE_CHAT_URL,

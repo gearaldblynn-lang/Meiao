@@ -213,7 +213,7 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
   return (
     <div className="flex h-full w-full flex-col overflow-hidden px-6 pb-6 pt-5">
       <div className="relative flex min-h-0 flex-1 overflow-hidden rounded-[32px] border border-white/70 shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
-        <div className={`h-full w-full flex overflow-hidden ${subMode === OneClickSubMode.MAIN_IMAGE ? '' : 'hidden'}`}>
+        {subMode === OneClickSubMode.MAIN_IMAGE ? (
           <MainImageSubModule 
             apiConfig={apiConfig} 
             state={persistentState.mainImage}
@@ -224,8 +224,8 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
             currentSubMode={subMode}
             onSubModeChange={setSubMode}
           />
-        </div>
-        <div className={`h-full w-full flex overflow-hidden ${subMode === OneClickSubMode.DETAIL_PAGE ? '' : 'hidden'}`}>
+        ) : null}
+        {subMode === OneClickSubMode.DETAIL_PAGE ? (
           <DetailPageSubModule
             apiConfig={apiConfig}
             state={persistentState.detailPage}
@@ -236,8 +236,8 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
             currentSubMode={subMode}
             onSubModeChange={setSubMode}
           />
-        </div>
-        <div className={`h-full w-full flex overflow-hidden ${subMode === OneClickSubMode.SKU ? '' : 'hidden'}`}>
+        ) : null}
+        {subMode === OneClickSubMode.SKU ? (
           <SkuSubModule
             apiConfig={apiConfig}
             state={persistentState.sku}
@@ -247,7 +247,7 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
             currentSubMode={subMode}
             onSubModeChange={setSubMode}
           />
-        </div>
+        ) : null}
       </div>
     </div>
   );
