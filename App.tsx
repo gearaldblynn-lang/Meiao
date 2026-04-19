@@ -290,7 +290,7 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
 
   return (
     <ToastProvider appVersion={APP_RELEASE_VERSION} onOpenReleaseNotes={openReleaseNotes}>
-      <div className="flex h-screen overflow-hidden bg-[radial-gradient(circle_at_top,#f8fbff_0%,#eef4ff_20%,#f8fafc_52%,#edf2f7_100%)] font-sans text-slate-900 select-none">
+      <div className="flex h-screen overflow-hidden bg-[radial-gradient(circle_at_top,#f8fbff_0%,#eef4ff_20%,#f8fafc_52%,#edf2f7_100%)] font-sans text-slate-900">
         <SidebarNavigation
           activeModule={activeModule}
           onModuleChange={handleModuleChange}
@@ -308,9 +308,9 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
             onBack={handleBackFromSystemPage}
           />
 
-          <main className="relative flex-1 overflow-hidden h-full">
+          <main className="relative flex-1 min-h-0">
             <Suspense fallback={<ModuleLoadingFallback />}>
-              <div className="h-full overflow-hidden">
+              <div className="h-full min-h-0">
                 {activeModuleView}
               </div>
             </Suspense>

@@ -845,3 +845,84 @@ test('studio correction handoff keeps the full failed question and answer contex
   assert.doesNotMatch(studio, /question\.slice\(0,\s*80\)/);
   assert.doesNotMatch(studio, /answer\.slice\(0,\s*120\)/);
 });
+
+test('workspace shell avoids global text selection lock and lets modules own scrolling', () => {
+  const app = read('../App.tsx');
+
+  assert.doesNotMatch(app, /select-none/);
+  assert.doesNotMatch(app, /<main className="relative flex-1 overflow-hidden h-full">/);
+});
+
+test('detail page replaces blocking browser alerts with guided toast feedback', () => {
+  const detailModule = read('../modules/OneClick/DetailPageSubModule.tsx');
+
+  assert.doesNotMatch(detailModule, /alert\(/);
+  assert.match(detailModule, /addToast\(/);
+});
+
+test('translation export failures tell the user what to do next', () => {
+  const fileProcessor = read('./FileProcessor.tsx');
+
+  assert.match(fileProcessor, /导出失败，当前结果已保留/);
+  assert.match(fileProcessor, /请稍后重试，或检查浏览器下载权限/);
+});
+
+test('translation workbench avoids extra outer scroll locks around the file processor', () => {
+  const translationModule = read('../modules/Translation/TranslationModule.tsx');
+  const fileProcessor = read('./FileProcessor.tsx');
+
+  assert.doesNotMatch(translationModule, /className="h-full flex flex-col overflow-hidden px-6 pb-6 pt-5"/);
+  assert.doesNotMatch(fileProcessor, /className="relative flex min-h-0 flex-1 flex-col overflow-hidden/);
+});
+
+test('one click module and account tools replace browser confirm dialogs with in-app confirmations', () => {
+  const oneClickModule = read('../modules/OneClick/OneClickModule.tsx');
+  const userAdminPanel = read('../components/Internal/UserAdminPanel.tsx');
+  const usageStats = read('../modules/Account/UsageStatsPanel.tsx');
+  const accountManagement = read('../modules/Account/AccountManagement.tsx');
+
+  assert.doesNotMatch(oneClickModule, /window\.confirm/);
+  assert.doesNotMatch(userAdminPanel, /window\.confirm/);
+  assert.doesNotMatch(usageStats, /window\.confirm/);
+  assert.doesNotMatch(accountManagement, /window\.confirm/);
+});
+
+test('one click main-image feedback keeps failures actionable instead of raw error prompts', () => {
+  const mainModule = read('../modules/OneClick/MainImageSubModule.tsx');
+
+  assert.match(mainModule, /当前参考图已保留/);
+  assert.match(mainModule, /请检查参考图和商品图后重试/);
+  assert.match(mainModule, /请先在左侧上传产品图片，再启动主图生成/);
+  assert.match(mainModule, /当前方案仍然保留/);
+  assert.match(mainModule, /可稍后点击同步获取结果/);
+});
+
+test('account filters use the shared popover select for long user lists', () => {
+  const usageStats = read('../modules/Account/UsageStatsPanel.tsx');
+  const accountManagement = read('../modules/Account/AccountManagement.tsx');
+
+  assert.match(usageStats, /<PopoverSelect/);
+  assert.match(accountManagement, /<PopoverSelect/);
+  assert.doesNotMatch(usageStats, /<select[\s\S]*value=\{userFilter\}/);
+  assert.doesNotMatch(usageStats, /<select[\s\S]*value=\{moduleFilter\}/);
+  assert.match(usageStats, /value=\{moduleFilter\}/);
+  assert.doesNotMatch(accountManagement, /<select value=\{userFilter\}/);
+  assert.doesNotMatch(accountManagement, /<select value=\{moduleFilter\}/);
+  assert.doesNotMatch(accountManagement, /<select value=\{statusFilter\}/);
+  assert.match(accountManagement, /value=\{moduleFilter\}/);
+  assert.match(accountManagement, /value=\{statusFilter\}/);
+});
+
+test('account management keeps long result lists usable with local scrolling and progressive disclosure', () => {
+  const usageStats = read('../modules/Account/UsageStatsPanel.tsx');
+  const accountManagement = read('../modules/Account/AccountManagement.tsx');
+  const userAdminPanel = read('../components/Internal/UserAdminPanel.tsx');
+
+  assert.match(userAdminPanel, /max-h-\[min\(560px,calc\(100vh-260px\)\)\] overflow-y-auto/);
+  assert.match(usageStats, /USAGE_LIST_PREVIEW_LIMIT/);
+  assert.match(usageStats, /visibleUserRows/);
+  assert.match(usageStats, /visibleModuleRows/);
+  assert.match(usageStats, /展开全部/);
+  assert.match(usageStats, /收起/);
+  assert.doesNotMatch(accountManagement, /overflow-hidden rounded-\[28px\] border border-slate-200 bg-white/);
+});

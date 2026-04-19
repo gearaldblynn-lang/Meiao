@@ -205,7 +205,7 @@ const MainImageSubModule: React.FC<Props> = ({
             analyzedAt: null,
           },
         });
-        addToast(`设计参考分析失败: ${result.message}`, 'error');
+        addToast(`设计参考分析没有完成，当前参考图已保留。请检查参考维度或稍后重试。${result.message ? ` 原因：${result.message}` : ''}`, 'error');
       }
     } catch (error: any) {
       onUpdate({
@@ -216,7 +216,7 @@ const MainImageSubModule: React.FC<Props> = ({
           analyzedAt: null,
         },
       });
-      addToast(`设计参考分析失败: ${error.message}`, 'error');
+      addToast(`设计参考分析没有完成，当前参考图已保留。请检查网络后重试。${error.message ? ` 原因：${error.message}` : ''}`, 'error');
     } finally {
       setIsAnalyzingReference(false);
     }
@@ -340,7 +340,7 @@ const MainImageSubModule: React.FC<Props> = ({
           detail: res.message,
           meta: baseMeta,
         });
-        addToast("视觉策划失败: " + res.message, 'error'); 
+        addToast(`视觉策划没有完成，当前素材输入已保留。请检查参考图和商品图后重试。${res.message ? ` 原因：${res.message}` : ''}`, 'error');
       }
     } catch (e: any) { 
       if (e.name === 'AbortError' || e.message === 'ABORTED') {
@@ -363,7 +363,7 @@ const MainImageSubModule: React.FC<Props> = ({
       if (e.name === 'AbortError' || e.message === 'ABORTED') {
         addToast("策划分析超时或已取消，请检查网络或重试。", 'error');
       } else {
-        addToast("系统分析异常: " + e.message, 'error'); 
+        addToast(`系统分析异常，当前素材输入已保留。请稍后重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
       }
     } finally { 
       setIsAnalyzing(false); 
@@ -625,7 +625,7 @@ const MainImageSubModule: React.FC<Props> = ({
     if (selectedSchemes.length === 0) return;
     
     if (productImages.length === 0 && uploadedProductUrls.length === 0) {
-        addToast("请先在左侧上传产品图片", 'warning');
+        addToast('请先在左侧上传产品图片，再启动主图生成。', 'warning');
         return;
     }
 
@@ -681,7 +681,7 @@ const MainImageSubModule: React.FC<Props> = ({
         ...prev,
         schemes: prev.schemes.map(s => targetIds.includes(s.id) ? { ...s, status: 'error', error: '素材准备失败' } : s)
       }));
-      addToast("批量生成启动失败: " + e.message, 'error');
+      addToast(`批量生成没有启动成功，已保留当前方案选择。请先检查素材状态，再重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
     } finally { 
       isSubmittingGenerationRef.current = false;
       setIsGenerating(false); 
@@ -709,7 +709,7 @@ const MainImageSubModule: React.FC<Props> = ({
     } catch (e: any) {
       inflightIdsRef.current.delete(schemeId);
       updateSingleScheme(schemeId, { status: 'error', error: '同步失败: ' + e.message });
-      addToast("恢复任务失败: " + e.message, 'error');
+      addToast(`同步云端结果失败，当前方案仍然保留。请稍后重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
     }
   };
 
@@ -756,7 +756,7 @@ const MainImageSubModule: React.FC<Props> = ({
           count: completedSchemes.length,
         },
       });
-      addToast("下载失败", 'error'); 
+      addToast('批量导出失败，当前结果仍然保留。请稍后重试，或检查浏览器下载权限。', 'error'); 
     } finally { 
       setIsDownloading(false); 
     }
@@ -782,8 +782,8 @@ const MainImageSubModule: React.FC<Props> = ({
       await generateSingleImage(schemeId, productUrls, referenceAnalysis.summary || null);
     } catch (e: any) {
       inflightIdsRef.current.delete(schemeId);
-      updateSingleScheme(schemeId, { status: 'error', error: '启动失败' });
-      addToast("启动任务失败: " + e.message, 'error');
+      updateSingleScheme(schemeId, { status: 'error', error: '启动失败，请检查素材后重试' });
+      addToast(`单张主图任务没有启动成功，当前方案仍然保留。请先检查素材上传状态，再重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
     }
   };
 
@@ -806,7 +806,7 @@ const MainImageSubModule: React.FC<Props> = ({
         schemeId: id,
       },
     });
-    addToast("已中断生成任务", 'info');
+    addToast('已中断当前生成任务，可稍后点击同步获取结果。', 'info');
   };
 
   const completedResults = schemes.filter(s => s.status === 'completed' && s.resultUrl);

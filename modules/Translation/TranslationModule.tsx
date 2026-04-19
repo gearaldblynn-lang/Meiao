@@ -53,8 +53,8 @@ const TranslationModule: React.FC<Props> = ({ apiConfig, translationConfigs, onT
   };
 
   return (
-    <div className="h-full flex flex-col overflow-hidden px-6 pb-6 pt-5">
-      <div className="flex-1 flex min-h-0 overflow-hidden rounded-[32px] border border-white/70 shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
+    <div className="h-full min-h-0 flex flex-col px-6 pb-6 pt-5">
+      <div className="flex-1 flex min-h-0 rounded-[32px] border border-white/70 shadow-[0_24px_70px_rgba(15,23,42,0.08)]">
         <SettingsSidebar 
           activeModule={AppModule.TRANSLATION}
           subMode={subMode}

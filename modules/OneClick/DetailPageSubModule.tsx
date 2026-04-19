@@ -319,7 +319,7 @@ const DetailPageSubModule: React.FC<Props> = ({
           detail: res.message,
           meta: baseMeta,
         });
-        alert("视觉全案策划失败: " + res.message); 
+        addToast(`视觉全案策划没有完成，已保留当前输入。请检查参考图或稍后重试。${res.message ? ` 原因：${res.message}` : ''}`, 'error');
       }
     } catch (e: any) { 
       if (e.name === 'AbortError' || e.message === 'ABORTED') {
@@ -340,9 +340,9 @@ const DetailPageSubModule: React.FC<Props> = ({
         });
       }
       if (e.name === 'AbortError' || e.message === 'ABORTED') {
-        alert("策划分析超时或已取消，请检查网络或重试。");
+        addToast('策划分析已中断或超时，当前输入内容已保留。请检查网络后重新发起。', 'warning');
       } else {
-        alert("系统分析异常: " + e.message); 
+        addToast(`系统分析异常，当前输入内容已保留。请稍后重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
       }
     } finally { 
       setIsAnalyzing(false); 
@@ -431,7 +431,7 @@ const DetailPageSubModule: React.FC<Props> = ({
     } catch (e: any) {
       inflightIdsRef.current.delete(id);
       updateSingleScreen(id, { status: 'error', error: '启动失败' });
-      alert("任务启动失败: " + e.message);
+      addToast(`详情任务没有成功启动，当前方案仍然保留。请先检查素材上传状态，再重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
     }
   };
 
@@ -657,7 +657,7 @@ const DetailPageSubModule: React.FC<Props> = ({
     if (selectedSchemes.length === 0) return;
 
     if (productImages.length === 0 && uploadedProductUrls.length === 0) {
-        alert("请先在左侧上传产品图片");
+        addToast('请先在左侧上传产品图片，再开始生成详情方案。', 'warning');
         return;
     }
 
@@ -711,7 +711,7 @@ const DetailPageSubModule: React.FC<Props> = ({
         ...prev,
         schemes: prev.schemes.map(s => targetIds.includes(s.id) ? { ...s, status: 'error', error: '素材上传失败' } : s)
       }));
-      alert("批量生成启动失败: " + e.message);
+      addToast(`批量生成没有启动成功，已保留当前方案选择。请先检查素材状态，再重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
     } finally { 
       isSubmittingGenerationRef.current = false;
       setIsGenerating(false); 
@@ -759,7 +759,7 @@ const DetailPageSubModule: React.FC<Props> = ({
           count: completedSchemes.length,
         },
       });
-      alert("批量导出失败"); 
+      addToast('批量导出失败，当前结果仍然保留。请稍后重试，或检查浏览器下载权限。', 'error');
     } finally { 
       setIsDownloading(false); 
     }
