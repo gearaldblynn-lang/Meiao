@@ -78,13 +78,26 @@ const DiagnosisSection: React.FC<{ section: VideoDiagnosisAnalysisSection }> = (
   );
 };
 
-const VideoDiagnosisPanel: React.FC<Props> = ({ state, chatModels, subMode, onSubModeChange, onChange, onProbe, onAnalyze }) => {
+const VideoDiagnosisPanel: React.FC<Props> = ({ state, chatModels, subMode, onSubModeChange, onChange, onProbe }) => {
   const safeUrl = state.url ?? '';
   const safePlatform = state.platform || 'tiktok';
   const safeAnalysisItems = Array.isArray(state.analysisItems) ? state.analysisItems : [];
   const probeStatus = state.probe?.status || 'idle';
   const isProbing = probeStatus === 'loading';
-  const canProbe = Boolean(safeUrl.trim()) && !isProbing;
+
+  const platformMismatch = (() => {
+    const url = safeUrl.trim();
+    if (!url) return null;
+    const isTikTok = /tiktok\.com|vm\.tiktok\.com/i.test(url);
+    const isDouyin = /douyin\.com|v\.douyin\.com/i.test(url);
+    const isXhs = /xiaohongshu\.com|xhslink\.com|xhs\.cn/i.test(url);
+    if (safePlatform === 'tiktok' && (isDouyin || isXhs)) return isDouyin ? '链接看起来是抖音，请切换平台' : '链接看起来是小红书，请切换平台';
+    if (safePlatform === 'douyin' && (isTikTok || isXhs)) return isTikTok ? '链接看起来是 TikTok，请切换平台' : '链接看起来是小红书，请切换平台';
+    if (safePlatform === 'xhs' && (isTikTok || isDouyin)) return isTikTok ? '链接看起来是 TikTok，请切换平台' : '链接看起来是抖音，请切换平台';
+    return null;
+  })();
+
+  const canProbe = Boolean(safeUrl.trim()) && !isProbing && !platformMismatch;
   const hasProbeData = probeStatus === 'success' && state.probe?.normalized?.diag;
   const aiStatus = state.aiAnalysis?.status || 'idle';
   const isAnalyzing = aiStatus === 'loading';
@@ -114,41 +127,33 @@ const VideoDiagnosisPanel: React.FC<Props> = ({ state, chatModels, subMode, onSu
         footer={
           <div className="space-y-2">
             <PrimaryActionButton
-              label={!safeUrl.trim() ? '请输入链接' : isProbing ? '勘探中...' : '开始勘探'}
-              icon={isProbing ? 'fa-spinner fa-spin' : 'fa-magnifying-glass'}
-              disabled={!canProbe}
+              label={
+                !safeUrl.trim() ? '请输入链接'
+                : platformMismatch ? '平台与链接不匹配'
+                : isProbing ? '勘探中...'
+                : isAnalyzing ? 'AI 分析中...'
+                : '一键勘探深度分析'
+              }
+              icon={isProbing || isAnalyzing ? 'fa-spinner fa-spin' : 'fa-magnifying-glass'}
+              disabled={!canProbe || isAnalyzing}
               onClick={onProbe}
             />
-            <button
-              type="button"
-              disabled={!canAnalyze}
-              onClick={onAnalyze}
-              className={cx(
-                'w-full h-11 rounded-2xl text-[13px] font-black transition-all flex items-center justify-center gap-2',
-                canAnalyze
-                  ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                  : 'bg-slate-100 text-slate-400 cursor-not-allowed'
-              )}
-            >
-              <i className={cx('fas', isAnalyzing ? 'fa-spinner fa-spin' : 'fa-brain')} />
-              {isAnalyzing ? 'AI 分析中...' : hasProbeData ? 'AI 深度分析' : '先完成勘探'}
-            </button>
           </div>
         }
       >
-        <SectionCard title="目标输入" icon="fa-link" accentTextClass="text-emerald-600" description="选择平台，粘贴视频链接，开始字段勘探。">
+        <SectionCard title="目标输入" icon="fa-link" accentTextClass="text-emerald-600" description="选择平台，粘贴视频/笔记链接，开始字段勘探。">
           <div className="space-y-3">
             <div>
               <div className="mb-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">平台</div>
               <PopoverSelect
                 value={safePlatform}
-                options={[{ value: 'tiktok', label: 'TikTok' }, { value: 'douyin', label: '抖音' }]}
+                options={[{ value: 'tiktok', label: 'TikTok' }, { value: 'douyin', label: '抖音' }, { value: 'xhs', label: '小红书' }]}
                 onChange={(next) => onChange({ platform: next as any })}
               />
             </div>
             <div>
               <div className="mb-1 flex items-center justify-between gap-3">
-                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">视频链接</div>
+                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{safePlatform === 'xhs' ? '笔记链接' : '视频链接'}</div>
                 {safeUrl.trim() && (
                   <button type="button" onClick={() => onChange({ url: '' })} className="text-[10px] font-black text-slate-300 hover:text-rose-500">清空</button>
                 )}
@@ -156,9 +161,15 @@ const VideoDiagnosisPanel: React.FC<Props> = ({ state, chatModels, subMode, onSu
               <textarea
                 value={safeUrl}
                 onChange={(e) => onChange({ url: e.target.value })}
-                placeholder="粘贴 TikTok / 抖音 视频链接..."
-                className="h-24 w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-semibold text-slate-700 shadow-inner outline-none transition-all focus:border-emerald-300 focus:bg-white"
+                placeholder={safePlatform === 'xhs' ? '粘贴小红书笔记链接或分享文本...' : '粘贴 TikTok / 抖音 视频链接...'}
+                className={cx('h-24 w-full resize-none rounded-2xl border px-4 py-3 text-xs font-semibold text-slate-700 shadow-inner outline-none transition-all focus:bg-white', platformMismatch ? 'border-rose-300 bg-rose-50 focus:border-rose-400' : 'border-slate-200 bg-slate-50 focus:border-emerald-300')}
               />
+              {platformMismatch && (
+                <div className="mt-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-rose-500">
+                  <i className="fas fa-triangle-exclamation" />
+                  {platformMismatch}
+                </div>
+              )}
             </div>
           </div>
         </SectionCard>
@@ -206,7 +217,7 @@ const VideoDiagnosisPanel: React.FC<Props> = ({ state, chatModels, subMode, onSu
             <div className="text-center space-y-3">
               <i className="fas fa-brain text-4xl text-slate-200" />
               <p className="text-[13px] font-semibold text-slate-400">
-                {hasProbeData ? '点击「AI 深度分析」生成诊断报告' : '先输入视频链接并完成勘探'}
+                {hasProbeData ? '点击「AI 深度分析」生成诊断报告' : `先输入${safePlatform === 'xhs' ? '笔记' : '视频'}链接并完成勘探`}
               </p>
             </div>
           </div>

@@ -1097,6 +1097,84 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
 
   const diagnosisAnalyzeLockRef = useRef(false);
 
+  const handleDiagnosisProbeAndAnalyze = async () => {
+    if (diagnosisProbeLockRef.current) return;
+    if (!diagnosis.url?.trim()) {
+      addToast('请先输入链接', 'warning', { module: 'video' });
+      return;
+    }
+    if (!diagnosis.analysisModel) {
+      addToast('请先选择分析模型', 'warning', { module: 'video' });
+      return;
+    }
+
+    // 第一步：勘探
+    diagnosisProbeLockRef.current = true;
+    const payload = {
+      platform: diagnosis.platform,
+      url: diagnosis.url,
+      analysisItems: diagnosis.analysisItems,
+      accessMode: diagnosis.accessMode,
+    };
+
+    void logActionStart({ module: 'video', action: 'diagnosis_probe', message: '开始视频诊断勘探', meta: { platform: diagnosis.platform, url: diagnosis.url } });
+
+    updateDiagnosisState(() => ({
+      probe: { ...defaultDiagnosis.probe, status: 'loading', error: '', completedAt: null },
+      report: { ...defaultDiagnosis.report, status: 'idle' },
+      aiAnalysis: { ...defaultDiagnosis.aiAnalysis, status: 'idle', error: '', completedAt: null },
+    }));
+
+    let probeResult;
+    try {
+      probeResult = await probeVideoDiagnosis(payload);
+      updateDiagnosisState(() => ({ probe: probeResult.probe, report: probeResult.report }));
+      if (probeResult.probe?.status === 'error') {
+        void logActionFailure({ module: 'video', action: 'diagnosis_probe', message: probeResult.probe.error || '勘探失败' });
+        addToast(probeResult.probe.error || '勘探失败', 'error', { module: 'video' });
+        return;
+      }
+      void logActionSuccess({ module: 'video', action: 'diagnosis_probe', message: '视频诊断勘探完成' });
+    } catch (error: any) {
+      const message = error instanceof Error ? error.message : '勘探失败';
+      void logActionFailure({ module: 'video', action: 'diagnosis_probe', message });
+      updateDiagnosisState(() => ({
+        probe: { ...defaultDiagnosis.probe, status: 'error', error: message, completedAt: Date.now() },
+      }));
+      addToast(message, 'error', { module: 'video' });
+      return;
+    } finally {
+      diagnosisProbeLockRef.current = false;
+    }
+
+    // 第二步：AI 分析
+    const diagData = probeResult.probe?.normalized?.diag;
+    if (!diagData) return;
+
+    diagnosisAnalyzeLockRef.current = true;
+    void logActionStart({ module: 'video', action: 'diagnosis_analyze', message: '开始视频诊断 AI 分析', meta: { platform: diagnosis.platform, model: diagnosis.analysisModel } });
+    updateDiagnosisState(() => ({
+      aiAnalysis: { ...defaultDiagnosis.aiAnalysis, status: 'loading', error: '', completedAt: null },
+    }));
+
+    try {
+      const result = await analyzeVideoDiagnosis({ diagData, platform: diagnosis.platform, model: diagnosis.analysisModel });
+      updateDiagnosisState(() => ({
+        aiAnalysis: { ...result.analysis, status: 'success', error: '', completedAt: Date.now() },
+      }));
+      void logActionSuccess({ module: 'video', action: 'diagnosis_analyze', message: '视频诊断 AI 分析完成', meta: { model: diagnosis.analysisModel } });
+    } catch (error: any) {
+      const message = error instanceof Error ? error.message : 'AI 分析失败';
+      void logActionFailure({ module: 'video', action: 'diagnosis_analyze', message });
+      updateDiagnosisState(() => ({
+        aiAnalysis: { ...defaultDiagnosis.aiAnalysis, status: 'error', error: message, completedAt: Date.now() },
+      }));
+      addToast(message, 'error', { module: 'video' });
+    } finally {
+      diagnosisAnalyzeLockRef.current = false;
+    }
+  };
+
   const handleDiagnosisAnalyze = async () => {
     if (diagnosisAnalyzeLockRef.current) return;
     const diagData = diagnosis.probe?.normalized?.diag;
@@ -1151,7 +1229,7 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
           subMode={subMode}
           onSubModeChange={setSubMode}
           onChange={(updates) => updateDiagnosisState(updates)}
-          onProbe={handleDiagnosisProbe}
+          onProbe={handleDiagnosisProbeAndAnalyze}
           onAnalyze={handleDiagnosisAnalyze}
         />
       ) : (
