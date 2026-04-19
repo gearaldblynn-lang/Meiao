@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { AuthUser } from '../../types';
+import ConfirmDialog from '../ConfirmDialog';
 import { createInternalUser, deleteInternalUser, fetchInternalUsers, updateInternalUser } from '../../services/internalApi';
 import { shouldRefreshCurrentUser } from '../../modules/Account/accountManagementUtils.mjs';
 
@@ -18,6 +19,7 @@ const UserAdminPanel: React.FC<Props> = ({ enabled, currentUserId = '', onCurren
   const [actionUserId, setActionUserId] = useState('');
   const [expandedUserId, setExpandedUserId] = useState('');
   const [resetPassword, setResetPassword] = useState('');
+  const [confirmDeleteUser, setConfirmDeleteUser] = useState<AuthUser | null>(null);
   const [form, setForm] = useState({
     username: '',
     displayName: '',
@@ -118,9 +120,13 @@ const UserAdminPanel: React.FC<Props> = ({ enabled, currentUserId = '', onCurren
   };
 
   const handleDeleteUser = async (user: AuthUser) => {
-    const confirmed = window.confirm(`确定删除账号 ${user.username} 吗？该账号的工作台数据也会一起删除。`);
-    if (!confirmed) return;
+    setConfirmDeleteUser(user);
+  };
 
+  const confirmDeleteSelectedUser = async () => {
+    const user = confirmDeleteUser;
+    if (!user) return;
+    setConfirmDeleteUser(null);
     setActionUserId(user.id);
     setError('');
     setSuccessMessage('');
@@ -248,7 +254,7 @@ const UserAdminPanel: React.FC<Props> = ({ enabled, currentUserId = '', onCurren
             </button>
           </div>
 
-          <div className="divide-y divide-slate-100">
+          <div className="max-h-[min(560px,calc(100vh-260px))] overflow-y-auto divide-y divide-slate-100">
             {loading ? (
               <div className="px-6 py-5 text-sm font-bold text-slate-400">正在读取账号列表...</div>
             ) : users.length === 0 ? (
@@ -345,6 +351,14 @@ const UserAdminPanel: React.FC<Props> = ({ enabled, currentUserId = '', onCurren
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        open={Boolean(confirmDeleteUser)}
+        title="确认删除账号"
+        message={confirmDeleteUser ? `确定删除账号 ${confirmDeleteUser.username} 吗？该账号的工作台数据也会一起删除。` : ''}
+        confirmLabel="确认删除账号"
+        onCancel={() => setConfirmDeleteUser(null)}
+        onConfirm={confirmDeleteSelectedUser}
+      />
     </section>
   );
 };

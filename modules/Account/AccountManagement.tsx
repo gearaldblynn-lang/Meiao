@@ -5,7 +5,8 @@ import { deleteInternalLogs, fetchInternalLogMeta, fetchInternalLogs } from '../
 import { ACTION_LABELS, MODULE_LABELS, STATUS_LABELS } from '../../services/loggingService';
 import { buildLogCsv, deriveLogFailureReason } from './accountManagementUtils.mjs';
 import { buildLogFilterOptions } from './logQueryUtils.mjs';
-import { SegmentedTabs, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
+import { PopoverSelect, SegmentedTabs, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import UsageStatsPanel from './UsageStatsPanel';
 import ProfileSettingsCard from './ProfileSettingsCard';
 
@@ -43,6 +44,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   const [endTimeFilter, setEndTimeFilter] = useState('');
   const [logsPage, setLogsPage] = useState(1);
   const [lastLogQueryFilters, setLastLogQueryFilters] = useState<LogQueryFilters | null>(null);
+  const [confirmDeleteLogsOpen, setConfirmDeleteLogsOpen] = useState(false);
   const LOGS_PAGE_SIZE = 10;
 
   useEffect(() => {
@@ -174,6 +176,21 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   const fallbackOptions = useMemo(() => buildLogFilterOptions(logs), [logs]);
   const moduleOptions = logMeta.modules.length > 0 ? logMeta.modules : fallbackOptions.modules;
   const userOptions = logMeta.users.length > 0 ? logMeta.users : fallbackOptions.users;
+  const moduleFilterOptions = useMemo(() => ([
+    { value: 'all', label: '全部功能' },
+    ...moduleOptions.map((moduleId) => ({ value: moduleId, label: getModuleLabel(moduleId) })),
+  ]), [moduleOptions]);
+  const userFilterOptions = useMemo(() => ([
+    { value: 'all', label: '全部人员' },
+    ...userOptions.map((user) => ({ value: user.id, label: user.label })),
+  ]), [userOptions]);
+  const statusFilterOptions = useMemo(() => ([
+    { value: 'all', label: '全部结果' },
+    { value: 'started', label: '进行中' },
+    { value: 'success', label: '成功' },
+    { value: 'failed', label: '失败' },
+    { value: 'interrupted', label: '中断' },
+  ]), []);
 
   const handleExportLogs = async () => {
     if (!isAdmin) return;
@@ -217,9 +234,12 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
 
   const handleDeleteLogs = async () => {
     if (logsTotal === 0 || !lastLogQueryFilters) return;
-    const confirmed = window.confirm(`确认清理当前查询结果中的 ${logsTotal} 条日志吗？此操作不会影响其他未命中的日志数据。`);
-    if (!confirmed) return;
+    setConfirmDeleteLogsOpen(true);
+  };
 
+  const confirmDeleteLogs = async () => {
+    if (logsTotal === 0 || !lastLogQueryFilters) return;
+    setConfirmDeleteLogsOpen(false);
     setDeletingLogs(true);
     setLogsError('');
     setLogsMessage('');
@@ -237,6 +257,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   const currentUserLabel = currentUser?.displayName || currentUser?.username || '未登录';
 
   return (
+    <>
     <div className="h-full overflow-y-auto px-6 pb-6 pt-5">
       <div className="mx-auto max-w-6xl">
         <header className="mb-5 rounded-[24px] border border-white/75 bg-white/84 px-4 py-3.5 shadow-[0_18px_44px_rgba(15,23,42,0.06)] backdrop-blur-xl">
@@ -350,26 +371,28 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                   </div>
                 </div>
 
-                <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white">
+                <div className="rounded-[28px] border border-slate-200 bg-white">
                   <div className="border-b border-slate-100 bg-slate-50 px-5 py-4">
                     <div className="grid gap-3 xl:grid-cols-[1.1fr_1.1fr_1fr_1fr_1fr_auto]">
                       <div>
                         <label className="ml-1 text-[10px] font-black uppercase text-slate-500">按功能筛选</label>
-                        <select value={moduleFilter} onChange={(event) => setModuleFilter(event.target.value)} className="mt-1 w-full rounded-[16px] border border-slate-200 bg-white px-3 py-2.5 text-[12px] font-bold text-slate-700 outline-none">
-                          <option value="all">全部功能</option>
-                          {moduleOptions.map((moduleId) => (
-                            <option key={moduleId} value={moduleId}>{getModuleLabel(moduleId)}</option>
-                          ))}
-                        </select>
+                        <PopoverSelect
+                          value={moduleFilter}
+                          onChange={setModuleFilter}
+                          options={moduleFilterOptions}
+                          className="mt-1"
+                          buttonClassName="h-[42px] rounded-[16px] bg-white px-3 py-2.5 text-[12px] font-bold"
+                        />
                       </div>
                       <div>
                         <label className="ml-1 text-[10px] font-black uppercase text-slate-500">按人员筛选</label>
-                        <select value={userFilter} onChange={(event) => setUserFilter(event.target.value)} className="mt-1 w-full rounded-[16px] border border-slate-200 bg-white px-3 py-2.5 text-[12px] font-bold text-slate-700 outline-none">
-                          <option value="all">全部人员</option>
-                          {userOptions.map((user) => (
-                            <option key={user.id} value={user.id}>{user.label}</option>
-                          ))}
-                        </select>
+                        <PopoverSelect
+                          value={userFilter}
+                          onChange={setUserFilter}
+                          options={userFilterOptions}
+                          className="mt-1"
+                          buttonClassName="h-[42px] rounded-[16px] bg-white px-3 py-2.5 text-[12px] font-bold"
+                        />
                       </div>
                       <div>
                         <label className="ml-1 text-[10px] font-black uppercase text-slate-500">开始时间</label>
@@ -391,13 +414,13 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                       </div>
                       <div>
                         <label className="ml-1 text-[10px] font-black uppercase text-slate-500">按结果筛选</label>
-                        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="mt-1 w-full rounded-[16px] border border-slate-200 bg-white px-3 py-2.5 text-[12px] font-bold text-slate-700 outline-none">
-                          <option value="all">全部结果</option>
-                          <option value="started">进行中</option>
-                          <option value="success">成功</option>
-                          <option value="failed">失败</option>
-                          <option value="interrupted">中断</option>
-                        </select>
+                        <PopoverSelect
+                          value={statusFilter}
+                          onChange={setStatusFilter}
+                          options={statusFilterOptions}
+                          className="mt-1"
+                          buttonClassName="h-[42px] rounded-[16px] bg-white px-3 py-2.5 text-[12px] font-bold"
+                        />
                       </div>
                       <div className="flex items-end">
                         <div className="flex w-full items-center justify-between rounded-[18px] border border-slate-200 bg-white px-4 py-3">
@@ -534,6 +557,15 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
         ) : null}
       </div>
     </div>
+    <ConfirmDialog
+      open={confirmDeleteLogsOpen}
+      title="确认清理日志"
+      message={`确认清理当前查询结果中的 ${logsTotal} 条日志吗？此操作不会影响其他未命中的日志数据。`}
+      confirmLabel="确认清理日志"
+      onCancel={() => setConfirmDeleteLogsOpen(false)}
+      onConfirm={confirmDeleteLogs}
+    />
+    </>
   );
 };
 

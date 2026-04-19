@@ -4,6 +4,7 @@ import MainImageSubModule from './MainImageSubModule';
 import DetailPageSubModule from './DetailPageSubModule';
 import SkuSubModule from './SkuSubModule';
 import { useToast } from '../../components/ToastSystem';
+import ConfirmDialog from '../../components/ConfirmDialog';
 import { createDefaultOneClickState } from '../../utils/appState';
 import { logActionSuccess } from '../../services/loggingService';
 import { releaseObjectURLs } from '../../utils/urlUtils';
@@ -17,6 +18,12 @@ interface Props {
 const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChange }) => {
   const [subMode, setSubMode] = useState<OneClickSubMode>(OneClickSubMode.MAIN_IMAGE);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [confirmState, setConfirmState] = useState<null | {
+    title: string;
+    message: string;
+    confirmLabel: string;
+    onConfirm: () => void;
+  }>(null);
   const { addToast } = useToast();
   const defaultOneClickState = createDefaultOneClickState();
 
@@ -136,55 +143,69 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
   };
 
   const handleClearMainConfig = () => {
-    if (!window.confirm('确定要清空主图的所有配置和方案吗？此操作不可撤销。')) return;
-    releaseObjectURLs([
-      ...persistentState.mainImage.productImages,
-      persistentState.mainImage.logoImage,
-      persistentState.mainImage.styleImage,
-      ...persistentState.mainImage.designReferences.map((item) => item.file),
-    ]);
-    onStateChange(prev => ({
-      ...prev,
-      mainImage: {
-        ...defaultOneClickState.mainImage,
-        schemes: [],
-      }
-    }));
-    void logActionSuccess({
-      module: 'one_click',
-      action: 'clear_main_config',
-      message: '清空主图配置信息',
-      meta: {
-        target: 'main_image',
+    setConfirmState({
+      title: '确认清空主图',
+      message: '确定要清空主图的所有配置和方案吗？此操作不可撤销。',
+      confirmLabel: '确认清空主图',
+      onConfirm: () => {
+        setConfirmState(null);
+        releaseObjectURLs([
+          ...persistentState.mainImage.productImages,
+          persistentState.mainImage.logoImage,
+          persistentState.mainImage.styleImage,
+          ...persistentState.mainImage.designReferences.map((item) => item.file),
+        ]);
+        onStateChange(prev => ({
+          ...prev,
+          mainImage: {
+            ...defaultOneClickState.mainImage,
+            schemes: [],
+          }
+        }));
+        void logActionSuccess({
+          module: 'one_click',
+          action: 'clear_main_config',
+          message: '清空主图配置信息',
+          meta: {
+            target: 'main_image',
+          },
+        });
+        addToast('已清空主图配置信息', 'success');
       },
     });
-    addToast('已清空主图配置信息', 'success');
   };
 
   const handleClearDetailConfig = () => {
-    if (!window.confirm('确定要清空详情的所有配置和方案吗？此操作不可撤销。')) return;
-    releaseObjectURLs([
-      ...persistentState.detailPage.productImages,
-      persistentState.detailPage.logoImage,
-      persistentState.detailPage.styleImage,
-      ...persistentState.detailPage.designReferences.map((item) => item.file),
-    ]);
-    onStateChange(prev => ({
-      ...prev,
-      detailPage: {
-        ...defaultOneClickState.detailPage,
-        schemes: [],
-      }
-    }));
-    void logActionSuccess({
-      module: 'one_click',
-      action: 'clear_detail_config',
-      message: '清空详情配置信息',
-      meta: {
-        target: 'detail_page',
+    setConfirmState({
+      title: '确认清空详情',
+      message: '确定要清空详情的所有配置和方案吗？此操作不可撤销。',
+      confirmLabel: '确认清空详情',
+      onConfirm: () => {
+        setConfirmState(null);
+        releaseObjectURLs([
+          ...persistentState.detailPage.productImages,
+          persistentState.detailPage.logoImage,
+          persistentState.detailPage.styleImage,
+          ...persistentState.detailPage.designReferences.map((item) => item.file),
+        ]);
+        onStateChange(prev => ({
+          ...prev,
+          detailPage: {
+            ...defaultOneClickState.detailPage,
+            schemes: [],
+          }
+        }));
+        void logActionSuccess({
+          module: 'one_click',
+          action: 'clear_detail_config',
+          message: '清空详情配置信息',
+          meta: {
+            target: 'detail_page',
+          },
+        });
+        addToast('已清空详情配置信息', 'success');
       },
     });
-    addToast('已清空详情配置信息', 'success');
   };
 
   const updateSkuState = (updates: Partial<OneClickPersistentState['sku']> | ((prev: OneClickPersistentState['sku']) => OneClickPersistentState['sku'])) => {
@@ -196,18 +217,25 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
   };
 
   const handleClearSkuConfig = () => {
-    if (!window.confirm('确定要清空SKU的所有配置和方案吗？此操作不可撤销。')) return;
-    onStateChange(prev => ({
-      ...prev,
-      sku: { ...defaultOneClickState.sku, schemes: [] },
-    }));
-    void logActionSuccess({
-      module: 'one_click',
-      action: 'clear_sku_config',
-      message: '清空SKU配置信息',
-      meta: { target: 'sku' },
+    setConfirmState({
+      title: '确认清空 SKU',
+      message: '确定要清空 SKU 的所有配置和方案吗？此操作不可撤销。',
+      confirmLabel: '确认清空 SKU',
+      onConfirm: () => {
+        setConfirmState(null);
+        onStateChange(prev => ({
+          ...prev,
+          sku: { ...defaultOneClickState.sku, schemes: [] },
+        }));
+        void logActionSuccess({
+          module: 'one_click',
+          action: 'clear_sku_config',
+          message: '清空SKU配置信息',
+          meta: { target: 'sku' },
+        });
+        addToast('已清空SKU配置信息', 'success');
+      },
     });
-    addToast('已清空SKU配置信息', 'success');
   };
 
   return (
@@ -249,6 +277,14 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
           />
         ) : null}
       </div>
+      <ConfirmDialog
+        open={Boolean(confirmState)}
+        title={confirmState?.title || ''}
+        message={confirmState?.message || ''}
+        confirmLabel={confirmState?.confirmLabel || '确认'}
+        onCancel={() => setConfirmState(null)}
+        onConfirm={() => confirmState?.onConfirm()}
+      />
     </div>
   );
 };

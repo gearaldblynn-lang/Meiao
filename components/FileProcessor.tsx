@@ -603,7 +603,7 @@ const FileProcessor: React.FC<Props> = ({
           triggerBlobDownload(await response.blob());
         }
       } catch (err) {
-        setAlertMessage('下载失败，请稍后重试。');
+        setAlertMessage('下载失败，当前结果已保留。请稍后重试，或检查浏览器下载权限。');
         void logActionFailure({
           module: 'translation',
           action: 'download_single',
@@ -653,7 +653,7 @@ const FileProcessor: React.FC<Props> = ({
         },
       });
     } catch (err) {
-      setAlertMessage("导出失败，请检查浏览器权限。");
+      setAlertMessage('导出失败，当前结果已保留。请稍后重试，或检查浏览器下载权限。');
       void logActionFailure({
         module: 'translation',
         action: 'download_batch',
@@ -668,7 +668,7 @@ const FileProcessor: React.FC<Props> = ({
   };
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[linear-gradient(180deg,#f8fbff_0%,#f8fafc_100%)]">
+    <div className="relative flex min-h-0 flex-1 flex-col bg-[linear-gradient(180deg,#f8fbff_0%,#f8fafc_100%)]">
       {alertMessage && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
           <div className="bg-white rounded-3xl p-8 max-w-sm shadow-2xl border border-rose-100 text-center animate-in zoom-in duration-200">
