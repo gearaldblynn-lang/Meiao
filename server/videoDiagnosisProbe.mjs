@@ -1,4 +1,4 @@
-const SUPPORTED_PLATFORMS = new Set(['tiktok', 'douyin']);
+const SUPPORTED_PLATFORMS = new Set(['tiktok', 'douyin', 'xhs']);
 const MAX_FLATTEN_DEPTH = 20;
 const MAX_FLATTEN_PATHS = 500;
 
@@ -287,9 +287,167 @@ const fetchDouyinAllSources = async (spiderFetch, { videoId, url }) => {
   return { videoRaw, detail, profileRaw, recentPosts, comments: [], musicRaw: null };
 };
 
+// 从 xhs-web/fetch-feed-notes-v3 响应中提取笔记详情
+const pickXhsNoteDetail = (raw) => {
+  // fetch-feed-notes-v3 返回: { data: { note: {...} }, success: true }
+  if (raw?.data?.note && typeof raw.data.note === 'object') return raw.data.note;
+  // 兼容其他结构
+  if (raw?.data?.note_info && typeof raw.data.note_info === 'object') return raw.data.note_info;
+  if (raw?.data && typeof raw.data === 'object' && (raw.data.noteId || raw.data.note_id)) return raw.data;
+  return null;
+};
+
+// 构建小红书标准化诊断数据（适配 fetch-feed-notes-v3 驼峰字段）
+const buildXhsNormalizedDiagData = ({ noteDetail, profileData, recentNotes, comments }) => {
+  if (!noteDetail) return null;
+
+  // fetch-feed-notes-v3 用驼峰：interactInfo.likedCount / commentCount / collectedCount / shareCount
+  const interact = noteDetail.interactInfo || noteDetail.interact_info || {};
+  const author = noteDetail.user || noteDetail.author || {};
+
+  const recentNotesStats = (() => {
+    const list = Array.isArray(recentNotes) ? recentNotes : [];
+    if (list.length === 0) return null;
+    // xhs/user-notes 用下划线：interact_info.liked_count
+    const likes = list.map(n => Number(n.interact_info?.liked_count || n.interactInfo?.likedCount || n.liked_count || 0));
+    const avgLike = Math.round(likes.reduce((a, b) => a + b, 0) / likes.length);
+    return { count: list.length, avgLikeCount: avgLike, maxLikeCount: Math.max(...likes), minLikeCount: Math.min(...likes) };
+  })();
+
+  const commentStats = (() => {
+    const list = Array.isArray(comments) ? comments : [];
+    if (list.length === 0) return null;
+    const sampleTexts = list.slice(0, 5).map(c => c.content || c.text || '').filter(Boolean);
+    return { total: list.length, sampleTexts };
+  })();
+
+  const profileStats = (() => {
+    // xhs/user-info 返回结构: { data: { data: { user_id, nickname, fans_count, ... } } }
+    const p = profileData?.data?.data || profileData?.data?.user || profileData?.data || null;
+    const src = p || author;
+    return {
+      nickname: src.nickname || src.name || '',
+      userId: src.user_id || src.userId || src.userid || '',
+      followerCount: src.fans_count || src.fans || src.follower_count || src.fansCount || 0,
+      followingCount: src.follow_count || src.follows || src.following_count || src.followsCount || 0,
+      likedCount: src.like_count || src.liked || src.liked_count || src.likedCount || 0,
+      noteCount: src.note_count || src.noteCount || 0,
+      description: src.description || src.desc || '',
+      fromIndependentFetch: Boolean(p),
+    };
+  })();
+
+  return {
+    note: {
+      noteId: noteDetail.noteId || noteDetail.note_id || '',
+      title: noteDetail.title || '',
+      desc: noteDetail.desc || noteDetail.description || '',
+      type: noteDetail.type || '',
+      createTime: noteDetail.time || noteDetail.create_time || noteDetail.lastUpdateTime || 0,
+      ipLocation: noteDetail.ipLocation || noteDetail.ip_location || '',
+      tagList: (noteDetail.tagList || noteDetail.tag_list || []).map(t => t.name || t).filter(Boolean),
+    },
+    statistics: {
+      likedCount: Number(interact.likedCount || interact.liked_count || 0),
+      commentCount: Number(interact.commentCount || interact.comment_count || 0),
+      collectCount: Number(interact.collectedCount || interact.collected_count || interact.collect_count || 0),
+      shareCount: Number(interact.shareCount || interact.share_count || 0),
+      viewCount: Number(interact.viewCount || interact.view_count || 0),
+    },
+    author: profileStats,
+    recentNotes: recentNotesStats,
+    commentQuality: commentStats,
+  };
+};
+
+// 小红书多接口并发抓取
+const fetchXhsAllSources = async (spiderFetch, { url }) => {
+  const noteRaw = await spiderFetch({ platform: 'xhs', source: 'note', url });
+  const noteDetail = pickXhsNoteDetail(noteRaw);
+  // fetch-feed-notes-v3 用驼峰 userId，xsecToken 在 user 字段里
+  const userId = noteDetail?.user?.userId || noteDetail?.user?.user_id || '';
+  const xsecToken = noteDetail?.user?.xsecToken || noteDetail?.user?.xsec_token || '';
+  const noteId = noteDetail?.noteId || noteDetail?.note_id || '';
+
+  const [profileRaw, postsRaw, commentsRaw] = await Promise.all([
+    userId ? safeCall(() => spiderFetch({ platform: 'xhs', source: 'user_info', userId, shareText: xsecToken })) : null,
+    userId ? safeCall(() => spiderFetch({ platform: 'xhs', source: 'user_posts', userId, shareText: xsecToken })) : null,
+    noteId ? safeCall(() => spiderFetch({ platform: 'xhs', source: 'note_comments', noteId })) : null,
+  ]);
+
+  // xhs/user-notes 数据在 data.data.notes
+  const recentNotes = postsRaw?.data?.data?.notes || postsRaw?.data?.notes || postsRaw?.data?.list || [];
+  // xhs-web/fetch-note-comments 数据在 data.comments
+  const comments = commentsRaw?.data?.comments || commentsRaw?.data?.list || [];
+
+  return { noteRaw, noteDetail, profileRaw, recentNotes, comments };
+};
+
 export const createVideoDiagnosisProbe = ({ spiderFetch }) => async ({ platform, url, analysisItems }) => {
   if (!SUPPORTED_PLATFORMS.has(platform)) {
     return createErrorResult({ message: `不支持的平台 ${platform}`, missingCriticalFields: ['platform'] });
+  }
+
+  // 小红书走独立流程
+  if (platform === 'xhs') {
+    let xhsSources;
+    try {
+      xhsSources = await fetchXhsAllSources(spiderFetch, { url });
+    } catch (error) {
+      return createErrorResult({
+        message: error instanceof Error ? error.message : '小红书数据抓取失败',
+        missingCriticalFields: ['note.detail'],
+      });
+    }
+
+    const { noteRaw, noteDetail, profileRaw, recentNotes, comments } = xhsSources;
+
+    if (!noteDetail) {
+      return createErrorResult({ message: '笔记不存在或链接无效，请检查链接后重试', missingCriticalFields: ['note.detail'] });
+    }
+
+    const fields = flattenFieldPaths(noteRaw);
+    const xhsDiag = buildXhsNormalizedDiagData({ noteDetail, profileData: profileRaw, recentNotes, comments });
+
+    const normalized = {
+      video: {
+        id: noteDetail.note_id || '',
+        desc: noteDetail.title || noteDetail.desc || '',
+        playCount: xhsDiag?.statistics?.viewCount ?? 0,
+        diggCount: xhsDiag?.statistics?.likedCount ?? 0,
+        commentCount: xhsDiag?.statistics?.commentCount ?? 0,
+      },
+      author: { nickname: xhsDiag?.author?.nickname || '' },
+      platformSignals: { hasDirectRiskField: false },
+      diag: xhsDiag,
+    };
+
+    const probeSources = [
+      { key: 'note', status: noteDetail ? 'success' : 'error', summary: noteDetail ? '已获取笔记详情' : '笔记详情获取失败' },
+      { key: 'author_profile', status: profileRaw ? 'success' : 'skipped', summary: profileRaw ? '已获取账号画像' : '账号画像未获取' },
+      { key: 'recent_notes', status: recentNotes.length > 0 ? 'success' : 'skipped', summary: recentNotes.length > 0 ? `已获取近期 ${recentNotes.length} 条笔记` : '近期笔记未获取' },
+      { key: 'comments', status: comments.length > 0 ? 'success' : 'skipped', summary: comments.length > 0 ? `已获取 ${comments.length} 条评论` : '评论未获取' },
+    ];
+
+    return {
+      probe: {
+        status: 'success',
+        sources: probeSources,
+        fields,
+        raw: { note: noteRaw },
+        normalized,
+        missingCriticalFields: ['platform.review_status'],
+        error: '',
+        completedAt: Date.now(),
+      },
+      report: {
+        status: 'ready',
+        summary: `小红书笔记已获取基础字段，点赞数为 ${xhsDiag?.statistics?.likedCount ?? 0}。`,
+        evidence: [{ label: '点赞数', source: 'xhs-web/fetch-feed-notes-v3', fieldPath: 'note.interactInfo.likedCount', value: String(xhsDiag?.statistics?.likedCount ?? 0) }],
+        inferences: [{ title: '平台风险字段不可用', level: 'warning', summary: '小红书平台不提供审核状态等风险字段，以下判断基于公开数据推断。' }],
+        actions: [{ title: '补充评论和近期笔记样本', detail: '优先检查评论样本与账号近期笔记，增强诊断可信度。' }],
+      },
+    };
   }
 
   const videoId = platform === 'tiktok'

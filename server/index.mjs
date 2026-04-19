@@ -1206,7 +1206,33 @@ const fetchSpiderJson = async ({ gatewayUrl, apiKey, path, payload }) => {
   return responseData;
 };
 
-const createSpiderFetch = ({ gatewayUrl, apiKey }) => async ({ platform, source, videoId, url, uniqueId, secUid, musicId, analysisItems }) => {
+const fetchSpiderFormData = async ({ gatewayUrl, apiKey, path, fields }) => {
+  const target = buildSpiderUrl(gatewayUrl, path);
+  const form = new URLSearchParams();
+  for (const [k, v] of Object.entries(fields || {})) {
+    if (v !== undefined && v !== null && v !== '') form.append(k, String(v));
+  }
+  const response = await fetch(target, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: `Bearer ${apiKey}`,
+      'x-api-key': apiKey,
+    },
+    body: form.toString(),
+  });
+  const bodyText = await response.text();
+  let responseData = {};
+  if (bodyText) {
+    try { responseData = JSON.parse(bodyText); } catch { responseData = { raw: bodyText }; }
+  }
+  if (!response.ok) {
+    throw new Error(`Spider 请求失败（${response.status}）${JSON.stringify(responseData)}`);
+  }
+  return responseData;
+};
+
+const createSpiderFetch = ({ gatewayUrl, apiKey }) => async ({ platform, source, videoId, url, uniqueId, secUid, musicId, analysisItems, noteId, userId, shareText }) => {
   const normalizedItems = Array.isArray(analysisItems) ? analysisItems.map((item) => String(item || '')) : [];
 
   let endpoint, payload;
@@ -1232,6 +1258,18 @@ const createSpiderFetch = ({ gatewayUrl, apiKey }) => async ({ platform, source,
       default: // 'video'
         endpoint = '/v1/spider/tiktok/video-by-url-v2';
         payload = { share_url: url, aweme_id: videoId, analysis_items: normalizedItems };
+    }
+  } else if (platform === 'xhs') {
+    // 小红书 — 全部用 formData
+    switch (source) {
+      case 'user_info':
+        return fetchSpiderFormData({ gatewayUrl, apiKey, path: '/v1/spider/xhs/user-info', fields: { user_id: userId, xsec_token: shareText } });
+      case 'user_posts':
+        return fetchSpiderFormData({ gatewayUrl, apiKey, path: '/v1/spider/xhs/user-notes', fields: { user_id: userId, xsec_token: shareText, num: 6 } });
+      case 'note_comments':
+        return fetchSpiderFormData({ gatewayUrl, apiKey, path: '/v1/spider/xhs-web/fetch-note-comments', fields: { note_id: noteId } });
+      default: // 'note'
+        return fetchSpiderFormData({ gatewayUrl, apiKey, path: '/v1/spider/xhs-web/fetch-feed-notes-v3', fields: { short_url: url } });
     }
   } else {
     // douyin
@@ -1299,7 +1337,112 @@ const handleVideoDiagnosisProbeRequest = async (req, res) => {
 
 const buildVideoDiagnosisAnalysisPrompt = (diagData, platform) => {
   const d = diagData;
-  const platformName = platform === 'douyin' ? '抖音' : 'TikTok';
+  const platformName = platform === 'douyin' ? '抖音' : platform === 'xhs' ? '小红书' : 'TikTok';
+
+  // 小红书使用独立的 prompt 结构
+  if (platform === 'xhs') {
+    const noteBlock = JSON.stringify(d.note || {}, null, 2);
+    const statsBlock = JSON.stringify(d.statistics || {}, null, 2);
+    const hasAuthor = d.author?.fromIndependentFetch;
+    const hasRecentNotes = Boolean(d.recentNotes);
+    const authorBlock = hasAuthor ? JSON.stringify(d.author, null, 2) : null;
+    const recentNotesBlock = hasRecentNotes ? JSON.stringify(d.recentNotes, null, 2) : null;
+    const commentBlock = d.commentQuality ? JSON.stringify(d.commentQuality, null, 2) : null;
+
+    const outputSchema = JSON.stringify({
+      summary: '一句话总结这条笔记的整体表现，包括亮点和主要问题',
+      overallRisk: 'low|medium|high',
+      sections: [
+        { id: 'account_authority', title: '账号权重与活跃度', level: 'normal|warning|danger', findings: ['具体发现1', '具体发现2'], suggestion: '改进建议' },
+        { id: 'content_performance', title: '内容表现与互动质量', level: 'normal|warning|danger', findings: [], suggestion: '' },
+        { id: 'content_originality', title: '内容原创性', level: 'normal|warning|danger', findings: [], suggestion: '' },
+        { id: 'commercial_signals', title: '商业化与变现能力', level: 'normal|warning|danger', findings: [], suggestion: '' },
+        { id: 'audience_targeting', title: '受众定向与话题策略', level: 'normal|warning|danger', findings: [], suggestion: '' },
+        { id: 'growth_potential', title: '成长潜力与优化空间', level: 'normal|warning|danger', findings: [], suggestion: '' },
+      ],
+      topActions: ['优先操作1', '优先操作2', '优先操作3'],
+    }, null, 2);
+
+    const lines = [
+      `你是一位专业的小红书内容诊断专家，请基于以下数据对这条小红书笔记进行深度分析。`,
+      '',
+      `## 笔记基础信息`,
+      '```json', noteBlock, '```',
+      '',
+      '## 互动数据',
+      '```json', statsBlock, '```',
+      '',
+    ];
+
+    if (authorBlock) {
+      lines.push('## 账号信息', '```json', authorBlock, '```', '');
+    } else {
+      lines.push('## 账号信息', '（数据未获取，account_authority 维度请输出"暂无相关数据"）', '');
+    }
+
+    if (recentNotesBlock) {
+      lines.push('## 近期笔记趋势', '```json', recentNotesBlock, '```', '');
+    } else {
+      lines.push('## 近期笔记趋势', '（数据未获取，content_performance 中的账号均值对比请跳过）', '');
+    }
+
+    if (commentBlock) {
+      lines.push('## 评论质量抽样', '```json', commentBlock, '```', '');
+    } else {
+      lines.push('## 评论质量抽样', '（数据未获取）', '');
+    }
+
+    lines.push(
+      '## 输出要求',
+      '请严格按照以下 JSON 格式输出，不要输出任何其他内容：',
+      '```json', outputSchema, '```',
+      '',
+      '## 分析原则',
+      '- 客观全面：好的地方明确指出，差的地方给出证据和改进建议',
+      '- level 判断：normal=表现正常或良好，warning=有改进空间，danger=存在明显问题',
+      '- findings 必须引用具体字段名和字段值，不要泛泛而谈',
+      '- 小红书没有平台审核状态字段，不要分析 platform_review 维度',
+      '- 如果某个维度的数据标注为"数据未获取"，findings 只写 ["暂无相关数据"]，suggestion 写 "暂无相关数据"，level 写 "normal"',
+      '',
+      '## sections 必须包含以下6个维度：',
+      '',
+      '1. account_authority - 账号权重与基础',
+      `   ${hasAuthor ? '分析：follower_count（粉丝量）、likedCount（总获赞）、noteCount（笔记数）' : '账号数据未获取，输出暂无相关数据'}`,
+      '   好的信号：粉丝多、获赞高、发布频率稳定',
+      '   差的信号：新账号/低权重/长期不活跃',
+      '',
+      '2. content_performance - 内容表现与互动质量',
+      '   分析：likedCount、commentCount、collectCount、shareCount、viewCount',
+      '   计算：点赞率(liked/view)、评论率(comment/view)、收藏率(collect/view)',
+      `   ${hasRecentNotes ? '对比：本笔记 likedCount vs 账号近期 avgLikeCount（是否高于/低于均值）' : '近期笔记数据未获取，跳过均值对比'}`,
+      '   好的信号：各项比率健康',
+      '   差的信号：互动率极低，可能被限流',
+      '',
+      '3. content_originality - 内容原创性',
+      '   分析：笔记类型（图文/视频）、标题和描述的原创程度',
+      '   好的信号：原创内容，有独特视角',
+      '   差的信号：内容同质化严重',
+      '',
+      '4. commercial_signals - 商业化与变现能力',
+      '   分析：内容是否有带货/推广属性，话题标签是否涉及品牌合作',
+      '   好的信号：内容自然，商业化程度适中',
+      '   差的信号：过度营销，影响用户体验',
+      '',
+      '5. audience_targeting - 受众定向与话题策略',
+      '   分析：笔记标题关键词、描述中的话题标签，是否精准定向目标受众',
+      '   好的信号：话题标签精准，与内容高度相关',
+      '   差的信号：话题标签泛化或与内容不匹配',
+      '',
+      '6. growth_potential - 成长潜力与优化空间',
+      '   综合以上所有有数据的维度，给出整体评估',
+      '   指出最大的优势是什么，最需要改进的1-2个点是什么',
+      '   给出具体可执行的优化建议',
+      '',
+      'topActions 给出3-5条最优先的可执行操作，按优先级排序。',
+    );
+
+    return lines.join('\n');
+  }
 
   const videoBlock = JSON.stringify(d.video || {}, null, 2);
   const statsBlock = JSON.stringify(d.statistics || {}, null, 2);

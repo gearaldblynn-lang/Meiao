@@ -35,7 +35,7 @@ export enum VideoSubMode {
   DIAGNOSIS = 'diagnosis'
 }
 
-export type VideoDiagnosisPlatform = 'tiktok' | 'douyin';
+export type VideoDiagnosisPlatform = 'tiktok' | 'douyin' | 'xhs';
 export type VideoDiagnosisAccessMode = 'spider_api' | 'web_session';
 export type VideoDiagnosisAnalysisItem =
   | 'video_basic'
