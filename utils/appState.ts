@@ -11,12 +11,14 @@ import {
   TranslationPersistentState,
   VideoPersistentState,
   VideoSubMode,
+  XhsCoverPersistentState,
 } from '../types';
 import {
   createDefaultTranslationConfigs,
   getLegacyTranslationModuleConfig,
   migrateLegacyTranslationConfigs,
 } from '../modules/Translation/translationConfigUtils.mjs';
+import { normalizeRestoredXhsCoverTasks } from '../modules/XhsCover/xhsCoverUtils.mjs';
 import { hasReusableTaskAsset } from './cloudAssetState.mjs';
 
 export const PERSISTENCE_KEY = 'AIGC_APP_STATE_V1';
@@ -31,6 +33,7 @@ export interface PersistedAppState {
   retouchMemory: RetouchPersistentState;
   buyerShowMemory: BuyerShowPersistentState;
   videoMemory: VideoPersistentState;
+  xhsCoverMemory: XhsCoverPersistentState;
 }
 
 export const createDefaultApiConfig = (): GlobalApiConfig => ({
@@ -288,6 +291,22 @@ export const createDefaultVideoState = (): VideoPersistentState => ({
   },
 });
 
+export const createDefaultXhsCoverState = (): XhsCoverPersistentState => ({
+  productImages: [],
+  uploadedProductUrls: [],
+  title: '',
+  subtitle: '',
+  selectedStyleIds: ['workplace_big_text', 'yellow_pink_banner', 'sticker_energy'],
+  fontStyle: 'variety',
+  aspectRatio: '3:4',
+  quality: '1k',
+  model: 'nano-banana-2',
+  decoration: '',
+  extraRequirement: '',
+  tasks: [],
+  isGenerating: false,
+});
+
 const cleanState = (obj: unknown): unknown => {
   if (obj === null || typeof obj !== 'object') return obj;
   if (obj instanceof File || obj instanceof Blob) return null;
@@ -533,6 +552,15 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
           diagnosis: saved.videoMemory.diagnosis || defaultVideoState.diagnosis,
         }
       : undefined,
+    xhsCoverMemory: saved.xhsCoverMemory
+      ? {
+          ...saved.xhsCoverMemory,
+          productImages: normalizeFileArray(saved.xhsCoverMemory.productImages),
+          uploadedProductUrls: normalizeStringArray(saved.xhsCoverMemory.uploadedProductUrls),
+          tasks: normalizeRestoredXhsCoverTasks(saved.xhsCoverMemory.tasks),
+          isGenerating: false,
+        }
+      : undefined,
   };
 };
 
@@ -593,5 +621,6 @@ export const buildPersistedAppState = (saved?: Partial<PersistedAppState>): Pers
     retouchMemory: saved?.retouchMemory || createDefaultRetouchState(),
     buyerShowMemory: saved?.buyerShowMemory || createDefaultBuyerShowState(),
     videoMemory: saved?.videoMemory || createDefaultVideoState(),
+    xhsCoverMemory: saved?.xhsCoverMemory || createDefaultXhsCoverState(),
   };
 };
