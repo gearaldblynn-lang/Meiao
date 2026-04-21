@@ -27,6 +27,14 @@ test('persisted app state normalization keeps remote asset urls for refresh reco
   assert.match(appStateSource, /uploadedProductUrls: normalizeStringArray\(saved\.videoMemory\.storyboard\.config\?\.uploadedProductUrls\)/);
 });
 
+test('persisted app state normalization preserves xhs cover tasks and resets only runtime generation flag', () => {
+  assert.match(appStateSource, /tasks: normalizeRestoredXhsCoverTasks\(saved\.xhsCoverMemory\.tasks\)/);
+  assert.match(
+    appStateSource,
+    /xhsCoverMemory: saved\.xhsCoverMemory[\s\S]*?uploadedProductUrls: normalizeStringArray\(saved\.xhsCoverMemory\.uploadedProductUrls\),[\s\S]*?tasks: normalizeRestoredXhsCoverTasks\(saved\.xhsCoverMemory\.tasks\),[\s\S]*?isGenerating: false,/
+  );
+});
+
 test('one click config sidebar keeps product asset count and start availability after refresh from uploaded urls', () => {
   assert.match(oneClickConfigSidebar, /hasAvailableAssetSources\(productImages, uploadedProductUrls\)/);
   assert.match(oneClickConfigSidebar, /产品素材 \(\{productImages\.length \|\| uploadedProductUrls\.length\}\)/);
