@@ -104,6 +104,7 @@ const ProjectCard: React.FC<{
   const [expanded, setExpanded] = useState(true);
   const [activeBoardId, setActiveBoardId] = useState<string | null>(null);
   const [editingPrompt, setEditingPrompt] = useState('');
+  const [editingScriptText, setEditingScriptText] = useState('');
   const [showNewScheme, setShowNewScheme] = useState(false);
   const [schemeCount, setSchemeCount] = useState(1);
   const [schemeScenes, setSchemeScenes] = useState<string[]>(['']);
@@ -113,6 +114,10 @@ const ProjectCard: React.FC<{
 
   useEffect(() => {
     if (activeBoard) setEditingPrompt(activeBoard.prompt);
+  }, [activeBoard?.id]);
+
+  useEffect(() => {
+    if (activeBoard) setEditingScriptText(activeBoard.scriptText);
   }, [activeBoard?.id]);
 
   const submitNewSchemes = () => {
@@ -138,7 +143,9 @@ const ProjectCard: React.FC<{
                 </span>
               </div>
               <p className="mt-1 text-xs font-bold text-slate-400">
-                {project.config.duration} / {project.config.shotCount} 镜头 / {project.config.aspectRatio} / {project.sceneDescription || '未指定场景'}
+                {project.config.videoGenerationMode === 'viral_split'
+                  ? `爆款裂变 / ${project.config.viralVariationStrength === 'custom' ? (project.config.viralCustomVariationStrength || '自定义') : `${project.config.viralVariationStrength}%`} / ${project.config.aspectRatio}`
+                  : `${project.config.duration} / ${project.config.shotCount} 镜头 / ${project.config.aspectRatio} / ${project.sceneDescription || '未指定场景'}`}
               </p>
             </div>
           </div>
@@ -189,7 +196,7 @@ const ProjectCard: React.FC<{
               <section>
                 <div className="flex items-center gap-2 mb-3">
                   <i className="fas fa-scroll text-rose-500"></i>
-                  <h4 className="text-sm font-black text-slate-900">分镜脚本</h4>
+                  <h4 className="text-sm font-black text-slate-900">可编辑脚本</h4>
                 </div>
                 <div className="space-y-3">
                   {project.boards.length > 0 ? project.boards.map((board) => (
@@ -197,13 +204,25 @@ const ProjectCard: React.FC<{
                       <div className="px-4 py-3 border-b border-slate-200 bg-white">
                         <p className="text-xs font-black text-slate-800">{board.title}</p>
                       </div>
-                      <div className="p-4 max-h-[260px] overflow-y-auto whitespace-pre-wrap text-[12px] leading-6 font-bold text-slate-600">
-                        {board.scriptText || '正在生成脚本...'}
+                      <div className="p-4 space-y-3">
+                        <textarea
+                          value={board.scriptText || ''}
+                          onChange={(event) => onUpdateBoard(project.id, board.id, { scriptText: event.target.value })}
+                          rows={8}
+                          className="w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-[12px] font-bold leading-6 text-slate-600 outline-none focus:border-rose-300"
+                          placeholder="正在生成脚本..."
+                        />
                       </div>
                     </div>
                   )) : (
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 max-h-[440px] overflow-y-auto whitespace-pre-wrap text-[12px] leading-6 font-bold text-slate-600">
-                      {project.script || '正在生成脚本...'}
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <textarea
+                        value={project.script || ''}
+                        readOnly
+                        rows={12}
+                        className="w-full resize-none rounded-2xl border border-slate-200 bg-white px-4 py-3 text-[12px] font-bold leading-6 text-slate-600 outline-none"
+                        placeholder="正在生成脚本..."
+                      />
                     </div>
                   )}
                 </div>
@@ -222,6 +241,18 @@ const ProjectCard: React.FC<{
                   ))}
                 </div>
               </section>
+
+              {project.config.videoGenerationMode === 'viral_split' && (
+                <section>
+                  <div className="flex items-center gap-2 mb-3">
+                    <i className="fas fa-video text-amber-600"></i>
+                    <h4 className="text-sm font-black text-slate-900">参考爆款视频</h4>
+                  </div>
+                  <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-[12px] font-bold text-slate-600">
+                    {project.config.referenceVideoFile?.name || project.config.uploadedReferenceVideoUrl || '已预留参考视频占位'}
+                  </div>
+                </section>
+              )}
 
               {project.config.generateWhiteBg && (
                 <section>
@@ -246,7 +277,7 @@ const ProjectCard: React.FC<{
               <div className="flex items-center justify-between mb-4">
                 <div>
                   <h4 className="text-sm font-black text-slate-900">
-                    {project.config.generationMode === 'multi_image' ? '分镜结果' : '分镜板结果'}
+                    {project.config.generationMode === 'multi_image' ? '视频方案结果' : '一图直出结果'}
                   </h4>
                 </div>
                 <span className="text-xs font-black text-slate-400">
@@ -280,7 +311,7 @@ const ProjectCard: React.FC<{
                 ) : (
                   <div className="rounded-[28px] border border-dashed border-slate-200 bg-slate-50 h-[320px] flex flex-col items-center justify-center text-slate-400">
                     <i className="fas fa-film text-2xl mb-3"></i>
-                    <p className="text-sm font-black">等待分镜生成</p>
+                    <p className="text-sm font-black">等待视频方案生成</p>
                   </div>
                 )
               ) : (
@@ -299,7 +330,7 @@ const ProjectCard: React.FC<{
                 ) : (
                   <div className="rounded-[28px] border border-dashed border-slate-200 bg-slate-50 h-[320px] flex flex-col items-center justify-center text-slate-400">
                     <i className="fas fa-film text-2xl mb-3"></i>
-                    <p className="text-sm font-black">等待分镜板生成</p>
+                    <p className="text-sm font-black">等待一图直出结果</p>
                   </div>
                 )
               )}
@@ -341,7 +372,17 @@ const ProjectCard: React.FC<{
                 </div>
 
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">分镜板提示词</p>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">可编辑脚本</p>
+                  <textarea
+                    value={editingScriptText}
+                    onChange={(event) => setEditingScriptText(event.target.value)}
+                    rows={10}
+                    className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-rose-300 outline-none text-sm font-bold text-slate-700 resize-none"
+                  />
+                </div>
+
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">可编辑生图方案</p>
                   <textarea
                     value={editingPrompt}
                     onChange={(event) => setEditingPrompt(event.target.value)}
@@ -354,12 +395,12 @@ const ProjectCard: React.FC<{
                   <button
                     type="button"
                     onClick={() => {
-                      onUpdateBoard(project.id, activeBoard.id, { prompt: editingPrompt });
+                      onUpdateBoard(project.id, activeBoard.id, { prompt: editingPrompt, scriptText: editingScriptText });
                       onRegenerateBoard(project.id, activeBoard.id);
                     }}
                     className="flex-1 px-4 py-3 rounded-2xl bg-slate-900 text-white text-sm font-black hover:bg-slate-800 transition-colors"
                   >
-                    保存并重生
+                    保存并重生成
                   </button>
                   {activeBoard.taskId && (
                     <button
@@ -392,7 +433,7 @@ const ProjectCard: React.FC<{
 
             <div className="space-y-4">
               <div>
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">方案数量</label>
+                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">{project.config.videoGenerationMode === 'viral_split' ? '裂变数量' : '方案数量'}</label>
                 <select
                   value={schemeCount}
                   onChange={(event) => {
@@ -415,7 +456,7 @@ const ProjectCard: React.FC<{
                 </select>
               </div>
 
-              {schemeScenes.map((scene, index) => (
+              {project.config.videoGenerationMode !== 'viral_split' && schemeScenes.map((scene, index) => (
                 <div key={index}>
                   <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">方案 {index + 1} 场景</label>
                   <input
@@ -461,7 +502,7 @@ const StoryboardWorkspace: React.FC<Props> = ({
       <div className="px-8 py-6 max-w-[1680px] mx-auto">
         <div className="flex items-center justify-between gap-6 mb-6">
           <div>
-            <h2 className="text-2xl font-black text-slate-900">分镜工作台</h2>
+            <h2 className="text-2xl font-black text-slate-900">视频生成工作台</h2>
           </div>
           {projects.length > 0 && (
             <div className="flex items-center gap-3">
@@ -482,9 +523,9 @@ const StoryboardWorkspace: React.FC<Props> = ({
             <div className="w-20 h-20 rounded-[28px] bg-rose-50 flex items-center justify-center text-rose-500 mb-6">
               <i className="fas fa-clapperboard text-3xl"></i>
             </div>
-            <h3 className="text-xl font-black text-slate-900">还没有短视频分镜项目</h3>
+            <h3 className="text-xl font-black text-slate-900">还没有短视频生成项目</h3>
             <p className="mt-2 text-sm font-bold text-slate-400 max-w-xl">
-              左侧上传产品图并填写逻辑后，系统会先生成分镜脚本，再一次性输出整张分镜板。
+              左侧上传商品素材并配置原创生成或爆款裂变后，系统会先生成可编辑脚本，再输出一图直出结果。
             </p>
           </div>
         ) : (

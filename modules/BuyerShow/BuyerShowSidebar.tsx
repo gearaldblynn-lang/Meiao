@@ -3,9 +3,10 @@ import React, { useRef, useState, useEffect } from 'react';
 import { BuyerShowPersistentState, AspectRatio, GenerationQuality } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
-import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
+import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
 import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
 import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
+import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
 
 const PRESET_COUNTS = [3, 5, 8, 10];
 
@@ -117,6 +118,8 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
 
   const countries = ['中国', '美国', '英国', '日本', '德国', '法国', '西班牙', '韩国', '越南', '泰国', '意大利'];
   const previewProductItems = productImages.length > 0 ? productImages : uploadedProductUrls;
+  const modelCapabilities = getImageModelCapabilities(model);
+  const qualityOptions = getQualityOptionsForModel(model);
 
   const handleProductUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -301,6 +304,9 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                         </button>
                     ))}
                 </div>
+                {modelCapabilities.supportsLongGenerationWarning && (
+                  <p className="mt-2 text-[10px] font-bold text-amber-600">GPT Image 2 出图较慢，通常需要等待 300-500 秒。</p>
+                )}
             </div>
 
             <div className="grid grid-cols-2 gap-3">
@@ -317,10 +323,11 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                   buttonClassName="h-10 rounded-2xl px-4 text-xs"
                 />
                 </div>
+                {qualityOptions.length > 0 && (
                 <div className="space-y-1">
                 <span className="text-[9px] font-bold text-slate-400 uppercase ml-1 tracking-widest">渲染引擎质量</span>
                 <div className="grid grid-cols-3 gap-2">
-                  {QUALITY_OPTIONS.map(q => (
+                  {qualityOptions.map(q => (
                     <button
                       key={q.value}
                       onClick={() => onUpdate({ quality: q.value as GenerationQuality })}
@@ -331,6 +338,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                   ))}
                 </div>
                 </div>
+                )}
             </div>
           </section>
 

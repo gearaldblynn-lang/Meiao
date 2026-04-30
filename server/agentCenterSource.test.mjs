@@ -192,6 +192,11 @@ test('agent image conversation prompt includes deterministic image order mapping
 
 test('agent studio source exposes draft-only training and testing endpoints in mysql and local modes', () => {
   assert.match(source, /const STUDIO_CONFIG_ASSISTANT_PROMPT = \(\{ agentName, systemPrompt, knowledgeNames, manageableKnowledgeBases, manageableKnowledgeDocuments \}\) =>/);
+  assert.match(source, /R Role 角色/);
+  assert.match(source, /T Task 任务/);
+  assert.match(source, /C Constraint 约束/);
+  assert.match(source, /F Format 格式/);
+  assert.match(source, /E Example 示例/);
   assert.match(source, /const parseConfigChanges = \(text\) =>/);
   assert.match(source, /const handleStudioTrainingMessage = async \(user, versionId, payload\) =>/);
   assert.match(source, /const applyStudioTrainingChanges = async \(user, versionId, payload\) =>/);

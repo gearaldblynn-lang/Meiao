@@ -21,6 +21,12 @@ MEIAO_DB_PASSWORD=请替换成你的真实密码
 MEIAO_DB_NAME=meiao_internal
 MEIAO_PUBLIC_BASE_URL=http://111.229.66.247:3100
 MEIAO_JOB_MAX_CONCURRENCY=3
+MEIAO_ALLOWED_ORIGINS=http://111.229.66.247,http://111.229.66.247:3100
+MEIAO_ADMIN_USERNAME=admin
+MEIAO_ADMIN_PASSWORD=请替换成你的管理员密码
+MEIAO_SUPER_ADMIN_USERS=admin
+MEIAO_SPIDER_GATEWAY_URL=请替换成你的 Spider 网关地址
+MEIAO_SPIDER_API_KEY=请替换成你的 Spider Key
 KIE_API_KEY=请替换成你的真实 KIE Key
 ARK_API_KEY=请替换成你的真实 ARK Key
 EOF
@@ -63,4 +69,7 @@ MEIAO_SERVER_HOST=111.229.66.247 \
 - 生产模式下，`server/index.mjs` 会直接托管 `dist` 前端页面。
 - API 和前端页面都走同一个服务，不需要再单独跑 `vite dev`。
 - `MEIAO_PUBLIC_BASE_URL` 配置后，上传素材和生成结果会优先保存到云服务器本地持久化资源目录，并通过内部稳定 URL 恢复与下载。
+- `MEIAO_ALLOWED_ORIGINS` 用于限制允许访问内部 API 的前端来源。
+- `MEIAO_ADMIN_USERNAME`、`MEIAO_ADMIN_PASSWORD`、`MEIAO_SUPER_ADMIN_USERS` 用于首次管理员账号和超级管理员识别，生产环境必须替换默认值。
+- 视频诊断依赖 Spider 网关时，需要配置 `MEIAO_SPIDER_GATEWAY_URL` 和 `MEIAO_SPIDER_API_KEY`。
 - 资源默认保留 3 天，服务启动后会自动执行定时清理。

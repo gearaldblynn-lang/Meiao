@@ -1,12 +1,14 @@
 
 import React, { useRef, useState, useEffect } from 'react';
-import { AspectRatio, OneClickConfig, OneClickSubMode, GenerationQuality, StyleStrength, GlobalApiConfig, OneClickReferenceAnalysis, OneClickReferenceDimension, OneClickReferenceItem } from '../../types';
+import { AspectRatio, OneClickConfig, OneClickSubMode, GenerationQuality, StyleStrength, GlobalApiConfig, OneClickReferenceAnalysis, OneClickReferenceDimension, OneClickReferenceItem, OneClickReferencePreset, OneClickReferencePresetLibrary } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
-import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
+import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
 import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
+import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
 import { PopoverSelect, PrimaryActionButton, SegmentedTabs, SidebarShell } from '../../components/ui/workspacePrimitives';
+import ReferencePresetLibraryModal from './ReferencePresetLibraryModal';
 
 interface Props {
   subMode?: OneClickSubMode;
@@ -41,6 +43,13 @@ interface Props {
   onStart: () => void;
   onSyncConfig?: () => void;
   onClearConfig?: () => void;
+  referencePresets?: OneClickReferencePresetLibrary;
+  onSaveReferencePreset?: () => void;
+  onApplyReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onCreateReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onUpdateReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onDeleteReferencePreset?: (id: string) => void;
+  createEmptyReferencePreset?: () => OneClickReferencePreset;
 }
 
 const ConfigSidebar: React.FC<Props> = ({ 
@@ -75,16 +84,25 @@ const ConfigSidebar: React.FC<Props> = ({
   disabled, 
   onStart,
   onSyncConfig,
-  onClearConfig
+  onClearConfig,
+  referencePresets,
+  onSaveReferencePreset,
+  onApplyReferencePreset,
+  onCreateReferencePreset,
+  onUpdateReferencePreset,
+  onDeleteReferencePreset,
+  createEmptyReferencePreset,
 }) => {
   void onAnalyzeReference;
   const productInputRef = useRef<HTMLInputElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
   const styleInputRef = useRef<HTMLInputElement>(null);
+  const isFirstImage = subMode === OneClickSubMode.FIRST_IMAGE;
   const isDetail = subMode === OneClickSubMode.DETAIL_PAGE;
   
   const [expandedSections, setExpandedSections] = useState<string[]>(['platform', 'specs']);
   const [assetTab, setAssetTab] = useState<'product' | 'reference'>('product');
+  const [presetLibraryOpen, setPresetLibraryOpen] = useState(false);
 
   const [isUploadingProduct, setIsUploadingProduct] = useState<boolean[]>([]);
   const [isUploadingLogo, setIsUploadingLogo] = useState(false);
@@ -94,6 +112,8 @@ const ConfigSidebar: React.FC<Props> = ({
   const hasProductAssets = hasAvailableAssetSources(productImages, uploadedProductUrls);
   const hasLogoAsset = Boolean(logoImage || uploadedLogoUrl);
   const getProductAssetLimitRemaining = () => Math.max(0, 8 - productAssetCount - (hasLogoAsset ? 1 : 0));
+  const modelCapabilities = getImageModelCapabilities(config.model);
+  const qualityOptions = getQualityOptionsForModel(config.model);
 
   // 自动上传产品图
   useEffect(() => {
@@ -197,15 +217,16 @@ const ConfigSidebar: React.FC<Props> = ({
       ...config,
       quality: config.quality || '2k',
       styleStrength: config.styleStrength || 'medium',
-      count: isDetail ? (config.count || 7) : (config.count || 5),
+      count: isFirstImage ? (config.count || 1) : isDetail ? (config.count || 7) : (config.count || 5),
       aspectRatio: config.aspectRatio || defaultRatio,
+      firstImageColorMode: config.firstImageColorMode || 'product_adaptive',
       language: config.platformType === 'domestic' ? '中文' : (config.language || 'English'),
       resolutionMode: config.resolutionMode || 'custom',
       targetWidth: defaultW,
       targetHeight: defaultH,
       maxFileSize: config.maxFileSize || 2.0
     });
-  }, [isDetail, config.platformType]);
+  }, [isFirstImage, isDetail, config.platformType]);
 
   // 2. 比例联动计算逻辑
   const handleRatioChange = (newRatio: AspectRatio) => {
@@ -312,7 +333,6 @@ const ConfigSidebar: React.FC<Props> = ({
     { key: 'typography', label: '字体' },
     { key: 'color_palette', label: '色调' },
     { key: 'layout', label: '排版' },
-    { key: 'copy_content', label: '文案内容' },
   ];
 
   const invalidateReferenceAnalysis = () => {
@@ -329,8 +349,8 @@ const ConfigSidebar: React.FC<Props> = ({
   };
 
   const addReferenceFiles = (files: File[]) => {
-    const remaining = 8 - designReferences.length;
-    const next = files.slice(0, remaining).map((file) => ({
+    const selectedFiles = files.slice(0, 8 - designReferences.length);
+    const next = selectedFiles.map((file) => ({
       id: `reference_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       file,
       uploadedUrl: null,
@@ -382,14 +402,15 @@ const ConfigSidebar: React.FC<Props> = ({
   return (
     <SidebarShell
       accentClass="bg-rose-600"
-      title={isDetail ? '详情设置' : '主图设置'}
-      subtitle={isDetail ? '详情模式' : '主图模式'}
+      title={isFirstImage ? '首图设置' : isDetail ? '详情设置' : '主图设置'}
+      subtitle={isFirstImage ? '首图模式' : isDetail ? '详情模式' : '主图模式'}
       headerContent={onSubModeChange ? (
         <SegmentedTabs
           value={effectiveSubMode}
           onChange={(next) => onSubModeChange(next as OneClickSubMode)}
           accentClass="bg-rose-600 text-white"
           items={[
+            { value: OneClickSubMode.FIRST_IMAGE, label: '首图', icon: 'fa-star' },
             { value: OneClickSubMode.MAIN_IMAGE, label: '主图', icon: 'fa-image' },
             { value: OneClickSubMode.DETAIL_PAGE, label: '详情', icon: 'fa-layer-group' },
             { value: OneClickSubMode.SKU, label: 'SKU', icon: 'fa-tags' },
@@ -581,10 +602,23 @@ const ConfigSidebar: React.FC<Props> = ({
                   </div>
                 ) : assetTab === 'reference' ? (
                   <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-black text-slate-700">{isFirstImage ? '首图参考图' : '设计参考'}</p>
+                      <div className="flex items-center gap-2">
+                        {isFirstImage && designReferences.length > 0 ? (
+                          <button type="button" onClick={onSaveReferencePreset} className="rounded-xl border border-indigo-100 bg-white px-3 py-2 text-[10px] font-black text-indigo-600 hover:bg-indigo-50">
+                            保存为预设
+                          </button>
+                        ) : null}
+                        <button type="button" onClick={() => setPresetLibraryOpen(true)} className="rounded-xl border border-indigo-100 bg-white px-3 py-2 text-[10px] font-black text-indigo-600 hover:bg-indigo-50">
+                          预设库
+                        </button>
+                      </div>
+                    </div>
                     <div onClick={() => styleInputRef.current?.click()} className="group cursor-pointer border-2 border-dashed border-indigo-200 rounded-[20px] p-5 hover:border-indigo-300 hover:bg-indigo-50/30 transition-all text-center">
                       <i className="fas fa-palette text-indigo-200 text-lg group-hover:text-indigo-400 mb-2 block"></i>
-                      <p className="text-xs font-black text-slate-600">上传设计参考图</p>
-                      <p className="mt-1 text-[10px] text-slate-400">最多 8 张，单张超 3MB 自动压缩</p>
+                      <p className="text-xs font-black text-slate-600">{isFirstImage ? '上传主图参考' : '上传设计参考图'}</p>
+                      <p className="mt-1 text-[10px] text-slate-400">{isFirstImage ? '支持多张上传' : '最多 8 张，单张超 3MB 自动压缩'}</p>
                       <input
                         type="file"
                         multiple
@@ -600,64 +634,65 @@ const ConfigSidebar: React.FC<Props> = ({
                       />
                     </div>
                     {designReferences.length > 0 ? renderReferenceGrid() : null}
-                    <div className="space-y-2 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
-                      <p className="text-[11px] font-black text-slate-700">这组图需要参考的维度</p>
-                      <div className="flex flex-wrap gap-2">
-                        {referenceDimensionOptions.map((option) => (
-                          <button
-                            key={option.key}
-                            type="button"
-                            onClick={() => toggleReferenceDimension(option.key)}
-                            className={`rounded-full px-3 py-1.5 text-[10px] font-bold transition ${referenceDimensions.includes(option.key) ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'bg-white/60 text-slate-500 ring-1 ring-slate-200'}`}
-                          >
-                            {option.label}
-                          </button>
-                        ))}
+                    {isFirstImage ? (
+                      <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-[11px] leading-5 text-indigo-700">
+                        首图裂变模式必须上传主图参考。系统会按主图参考数量逐张策划复刻裂变方案，并在保持参考图版式、视觉风格、卖点层级的前提下完成我方产品和卖点替换。
                       </div>
-                    </div>
-                    {analyzingReference ? (
-                      <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-[11px] text-indigo-700">
-                        正在自动分析设计参考，生成方案时会优先使用参考结论。
-                      </div>
-                    ) : null}
-                    {referenceAnalysis.summary ? (
-                      <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                        <div className="flex items-center justify-between">
-                          <p className="text-[11px] font-black text-slate-700">参考分析结论</p>
-                          <span className={`text-[10px] font-bold ${referenceAnalysis.status === 'success' ? 'text-emerald-600' : referenceAnalysis.status === 'error' ? 'text-rose-600' : 'text-slate-400'}`}>
-                            {referenceAnalysis.status === 'success' ? '已完成' : referenceAnalysis.status === 'error' ? '失败' : '未分析'}
-                          </span>
+                    ) : (
+                      <>
+                        <div className="space-y-2 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
+                          <p className="text-[11px] font-black text-slate-700">这组图需要参考的维度</p>
+                          <div className="flex flex-wrap gap-2">
+                            {referenceDimensionOptions.map((option) => (
+                              <button
+                                key={option.key}
+                                type="button"
+                                onClick={() => toggleReferenceDimension(option.key)}
+                                className={`rounded-full px-3 py-1.5 text-[10px] font-bold transition ${referenceDimensions.includes(option.key) ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'bg-white/60 text-slate-500 ring-1 ring-slate-200'}`}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                        <p className="whitespace-pre-wrap text-[11px] leading-5 text-slate-600">{referenceAnalysis.summary}</p>
-                      </div>
-                    ) : referenceAnalysis.error ? (
-                      <div className="rounded-xl border border-rose-100 bg-rose-50 p-3 text-[11px] text-rose-600">{referenceAnalysis.error}</div>
-                    ) : null}
+                        {analyzingReference ? (
+                          <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-[11px] text-indigo-700">
+                            正在自动分析设计参考，生成方案时会优先使用参考结论。
+                          </div>
+                        ) : null}
+                        {referenceAnalysis.summary ? (
+                          <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-[11px] font-black text-slate-700">参考分析结论</p>
+                              <div className="flex items-center gap-2">
+                                <button type="button" onClick={onSaveReferencePreset} className="rounded-lg bg-indigo-600 px-2 py-1 text-[10px] font-black text-white hover:bg-indigo-700">保存为预设</button>
+                                <span className={`text-[10px] font-bold ${referenceAnalysis.status === 'success' ? 'text-emerald-600' : referenceAnalysis.status === 'error' ? 'text-rose-600' : 'text-slate-400'}`}>
+                                  {referenceAnalysis.status === 'success' ? '已完成' : referenceAnalysis.status === 'error' ? '失败' : '未分析'}
+                                </span>
+                              </div>
+                            </div>
+                            <p className="whitespace-pre-wrap text-[11px] leading-5 text-slate-600">{referenceAnalysis.summary}</p>
+                          </div>
+                        ) : referenceAnalysis.error ? (
+                          <div className="rounded-xl border border-rose-100 bg-rose-50 p-3 text-[11px] text-rose-600">{referenceAnalysis.error}</div>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 ) : null}
               </div>
             )}
           </div>
 
-          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
-            <button onClick={() => toggleSection('marketing')} className="flex w-full items-center justify-between bg-white px-4 py-4 text-left text-slate-600 transition-colors hover:bg-slate-50">
-              <div>
-                <span className="text-sm font-bold text-slate-700">产品营销与叙事</span>
-              </div>
-              <i className={`fas fa-chevron-down text-[10px] transition-transform ${expandedSections.includes('marketing') ? '' : '-rotate-90'}`}></i>
-            </button>
-            {expandedSections.includes('marketing') && (
-              <div className="px-4 pb-4 space-y-4">
-                <div className="space-y-1">
-                  <span className="ml-1 text-xs font-medium text-slate-400">产品核心特征</span>
-                  <textarea value={config.description} onChange={(e) => onChange({...config, description: e.target.value})} placeholder="输入产品名称、核心卖点，用于AI生成文案..." className="w-full h-24 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:bg-white resize-none shadow-inner" />
-                </div>
-                <div className="space-y-1">
-                  <span className="ml-1 text-xs font-medium text-slate-400">自定义叙事逻辑</span>
-                  <textarea value={config.planningLogic} onChange={(e) => onChange({...config, planningLogic: e.target.value})} placeholder="例如：可以输入自己做整套策划的逻辑，也可以建议AI使用某个逻辑模型，比如B=mat等" className="w-full h-24 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:bg-white resize-none shadow-inner" />
-                </div>
-              </div>
-            )}
+          <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+            <div className="space-y-1">
+              <span className="ml-1 text-xs font-medium text-slate-400">{isFirstImage ? '产品信息及卖点' : '产品核心特征'}</span>
+              <textarea value={config.description} onChange={(e) => onChange({...config, description: e.target.value})} placeholder={isFirstImage ? '输入产品信息、核心卖点、辅助卖点；如未分级，AI 会先自动做卖点分级再映射到主图参考信息位。' : '输入产品名称、核心卖点，用于AI生成文案...'} className="w-full h-24 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:bg-white resize-none shadow-inner" />
+            </div>
+            {!isFirstImage ? <div className="mt-4 space-y-1">
+              <span className="ml-1 text-xs font-medium text-slate-400">自定义叙事逻辑</span>
+              <textarea value={config.planningLogic} onChange={(e) => onChange({...config, planningLogic: e.target.value})} placeholder="例如：可以输入自己做整套策划的逻辑，也可以建议AI使用某个逻辑模型，比如B=mat等" className="w-full h-24 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs outline-none focus:bg-white resize-none shadow-inner" />
+            </div> : null}
           </div>
 
           <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-sm">
@@ -771,12 +806,16 @@ const ConfigSidebar: React.FC<Props> = ({
                       </button>
                     ))}
                   </div>
+                  {modelCapabilities.supportsLongGenerationWarning && (
+                    <p className="mt-2 text-[10px] font-bold text-rose-600">GPT Image 2 出图较慢，通常需要等待 300-500 秒。</p>
+                  )}
                 </div>
 
+                {qualityOptions.length > 0 && (
                 <div className="space-y-1">
                   <span className="ml-1 text-xs font-medium text-slate-400">渲染质量</span>
                   <div className="grid grid-cols-3 gap-2">
-                    {QUALITY_OPTIONS.map(q => (
+                    {qualityOptions.map(q => (
                       <button
                         key={q.value}
                         onClick={() => onChange({ ...config, quality: q.value as GenerationQuality })}
@@ -787,12 +826,13 @@ const ConfigSidebar: React.FC<Props> = ({
                     ))}
                   </div>
                 </div>
+                )}
 
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
+                <div className="grid gap-3 grid-cols-2">
+                  {!isFirstImage ? <div className="space-y-1">
                     <span className="ml-1 text-xs font-medium text-slate-400">策划屏数</span>
                     <input type="number" min="1" max="15" value={config.count} onChange={(e) => onChange({...config, count: parseInt(e.target.value) || 1})} className="h-10 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-xs font-semibold text-slate-700 outline-none focus:bg-white" />
-                  </div>
+                  </div> : null}
                   <div className="space-y-1">
                     <span className="ml-1 text-xs font-medium text-slate-400">全局画面比例</span>
                     <PopoverSelect
@@ -805,7 +845,26 @@ const ConfigSidebar: React.FC<Props> = ({
                       buttonClassName="h-10 rounded-2xl px-4 text-xs"
                     />
                   </div>
+                  {isFirstImage ? (
+                    <div className="space-y-1">
+                      <span className="ml-1 text-xs font-medium text-slate-400">首图配色</span>
+                      <PopoverSelect
+                        value={config.firstImageColorMode === 'reference_locked' ? 'reference_locked' : 'product_adaptive'}
+                        onChange={(next) => onChange({ ...config, firstImageColorMode: next as 'product_adaptive' | 'reference_locked' })}
+                        options={[
+                          { value: 'product_adaptive', label: '商品自适应' },
+                          { value: 'reference_locked', label: '参考图基准' },
+                        ]}
+                        buttonClassName="h-10 rounded-2xl px-4 text-xs"
+                      />
+                    </div>
+                  ) : null}
                 </div>
+                {isFirstImage ? (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+                    裂变数量由主图参考图数量自动决定，这里不再单独设置策划屏数。
+                  </div>
+                ) : null}
                 <div className="space-y-2 pt-2 border-t border-slate-100">
                   <div className="flex bg-slate-100 p-1 rounded-xl mb-3 shadow-inner">
                     <button onClick={() => onChange({...config, resolutionMode: 'original'})} className={`flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all ${config.resolutionMode === 'original' ? 'bg-white text-rose-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}>AI 自适应尺寸</button>
@@ -840,6 +899,34 @@ const ConfigSidebar: React.FC<Props> = ({
               </div>
             )}
           </div>
+      <ReferencePresetLibraryModal
+        open={presetLibraryOpen}
+        title={isFirstImage ? '首图参考预设库' : '设计参考预设库'}
+        subMode={subMode}
+        presets={referencePresets?.presets || []}
+        onClose={() => setPresetLibraryOpen(false)}
+        onApply={(preset) => {
+          onApplyReferencePreset?.(preset);
+          setPresetLibraryOpen(false);
+        }}
+        onSaveCurrent={onSaveReferencePreset}
+        onCreate={(preset) => onCreateReferencePreset?.(preset)}
+        onUpdate={(preset) => onUpdateReferencePreset?.(preset)}
+        onDelete={(id) => onDeleteReferencePreset?.(id)}
+        createEmptyPreset={() => createEmptyReferencePreset?.() || {
+          id: `preset_${Date.now()}`,
+          name: '',
+          subMode,
+          coverImageUrl: '',
+          referenceImageUrls: [],
+          summary: '',
+          detail: '',
+          referenceDimensions: [],
+          tags: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }}
+      />
     </SidebarShell>
   );
 };

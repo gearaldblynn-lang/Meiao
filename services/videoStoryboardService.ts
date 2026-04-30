@@ -5,9 +5,10 @@ import {
   VideoStoryboardBoard,
   VideoStoryboardConfig,
   VideoStoryboardShot,
-} from '../types';
+} from '../types.ts';
 import { createInternalJob, waitForInternalJob, safeCreateInternalLog } from './internalApi';
 import { processWithKieAi, recoverKieAiTask } from './kieAiService';
+import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../utils/gptImage2.mjs';
 
 const logStoryboardEvent = (
   action: string,
@@ -101,12 +102,22 @@ const buildScriptRequestPrompt = (config: VideoStoryboardConfig, sceneDescriptio
   const sceneInstruction = sceneDescription && sceneDescription.trim()
     ? `【重要】场景描述：${sceneDescription}\n所有分镜必须严格遵循此场景描述，不得偏离。每个分镜的画面、动作、环境都必须与此场景描述高度一致。`
     : '未指定固定场景，可按产品调性合理设计。';
+  const viralInstruction = config.videoGenerationMode === 'viral_split'
+    ? `\n爆款裂变要求：
+- 当前模式：爆款裂变。
+- 参考爆款视频：${config.uploadedReferenceVideoUrl || '已上传占位，分析逻辑后续接入'}。
+- 裂变修改幅度：${config.viralVariationStrength === 'custom' ? (config.viralCustomVariationStrength || '自定义') : `${config.viralVariationStrength}%`}。
+- 不需要遵循用户单独填写的脚本逻辑，请直接按爆款视频的节奏、卖点组织和市场语言做商品替换式裂变。`
+    : '';
 
   return `
-角色：专业电商短视频分镜导演。
-任务：基于参考产品图，为一个 ${config.duration} 的视频生成 ${config.shotCount} 个连续分镜。
+R Role 角色
+专业电商短视频分镜导演。
 
-背景信息：
+T Task 任务
+基于参考产品图，为一个 ${config.duration} 的视频生成 ${config.shotCount} 个连续分镜。
+
+C Constraint 约束
 - 产品信息：${config.productInfo || '未补充'}
 - 脚本逻辑：${config.scriptLogic || '未补充'}
 - 演员类型：${ACTOR_LABELS[config.actorType]}
@@ -114,6 +125,7 @@ const buildScriptRequestPrompt = (config: VideoStoryboardConfig, sceneDescriptio
 - 目标国家/语言：${config.countryLanguage}
 
 ${sceneInstruction}
+${viralInstruction}
 
 硬性要求：
 1. 只输出 JSON 数组，不要 markdown，不要解释。
@@ -133,6 +145,24 @@ ${sceneInstruction}
 11. 所有分镜必须符合电商广告逻辑，画面清楚、卖点明确、时间线连续。
 12. ${durationRule}
 13. 最终这些分镜将被排入单张分镜板中，请确保各分镜描述风格统一，便于一次性生成整板画面。
+
+F Format 格式
+[
+  {
+    "description": "静态分镜画面描述",
+    "prompt": "单格分镜板提示词",
+    "script": "分镜1（时长）\\n画面：...\\n动作：...\\n口播：..."
+  }
+]
+
+E Example 示例
+[
+  {
+    "description": "产品置于干净台面，侧光突出材质。",
+    "prompt": "clean product on tabletop, soft side light, commercial frame",
+    "script": "分镜1（2秒）\\n画面：产品位于桌面中央。\\n动作：镜头轻推近。\\n口播：..."
+  }
+] 
   `.trim();
 };
 
@@ -307,8 +337,13 @@ const buildBoardPrompt = (
         : '';
 
   return `
-任务：将以下 ${panelCount} 个连续分镜一次性做成单张分镜板。
-要求：
+R Role 角色
+你是商业视频分镜板设计助手。
+
+T Task 任务
+将以下 ${panelCount} 个连续分镜一次性做成单张分镜板。
+
+C Constraint 约束
 1. 输出单张完整分镜板，不是单独一格一格分开生成。
 2. 分镜板内所有格子的产品必须严格与参考产品图一致，整体光影、色彩、风格、画面精度保持统一。
 3. 所有分镜格必须是统一尺寸、统一比例，禁止某些格子忽高忽低、忽宽忽窄。
@@ -323,6 +358,12 @@ const buildBoardPrompt = (
 12. 每格都要明显不同，但仍属于同一支视频的连续内容。
 13. ${actorLine}
 14. ${referenceLine || '无需参考上一张分镜板。'}
+
+F Format 格式
+直接输出单张完整分镜板图像。
+
+E Example 示例
+${grid.cols} 列 × ${grid.rows} 行宫格，按从左到右、从上到下顺序排布。
 
 分镜内容：
 ${panelLines}
@@ -349,7 +390,7 @@ export const generateStoryboardBoardImage = async (
     result: await processWithKieAi(
       inputImages,
       apiConfig,
-      createImageModuleConfig(config.aspectRatio, 'nano-banana-pro', '2k'),
+      createImageModuleConfig(config.aspectRatio, 'gpt-image-2', GPT_IMAGE_2_DEFAULT_QUALITY),
       false,
       new AbortController().signal,
       prompt,

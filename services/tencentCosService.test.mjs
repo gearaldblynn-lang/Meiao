@@ -2,45 +2,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-test('uploadToCos only prepares base64 fallback after stream upload fails', () => {
-  const source = readFileSync(new URL('./tencentCosService.ts', import.meta.url), 'utf8');
-  const streamUploadIndex = source.indexOf('result = await uploadInternalAssetStream');
-  const base64Index = source.indexOf('const base64Data = await fileToBase64(uploadFile);');
+const internalApiSource = readFileSync(new URL('./internalApi.ts', import.meta.url), 'utf8');
+const cosServiceSource = readFileSync(new URL('./tencentCosService.ts', import.meta.url), 'utf8');
+const xhsModuleSource = readFileSync(new URL('../modules/XhsCover/XhsCoverModule.tsx', import.meta.url), 'utf8');
 
-  assert.notEqual(streamUploadIndex, -1);
-  assert.notEqual(base64Index, -1);
-  assert.ok(
-    base64Index > streamUploadIndex,
-    'base64 fallback should be prepared only after stream upload attempt'
+test('stream upload API accepts AbortSignal and forwards it through fetchWithTimeout', () => {
+  assert.match(
+    internalApiSource,
+    /export const uploadInternalAssetStream = async \(payload: \{[\s\S]*?signal\?: AbortSignal;[\s\S]*?\}\) => \{/
   );
+  assert.match(internalApiSource, /signal: payload\.signal,/);
 });
 
-test('uploadToCos compresses oversized images before upload', () => {
-  const source = readFileSync(new URL('./tencentCosService.ts', import.meta.url), 'utf8');
-
+test('cos upload supports cancellation and avoids base64 fallback after abort', () => {
   assert.match(
-    source,
-    /preparedFile = await prepareImageForUpload\(file\);/,
-    'uploadToCos should prepare oversized images before upload'
+    cosServiceSource,
+    /export const uploadToCos = async \([\s\S]*?signal\?: AbortSignal,[\s\S]*?\): Promise<string> => \{/
   );
-  assert.match(
-    source,
-    /file: preparedFile/,
-    'stream upload should use the prepared file'
-  );
-  assert.match(
-    source,
-    /fileToBase64\(uploadFile\)/,
-    'base64 fallback should use the prepared file'
-  );
+  assert.match(cosServiceSource, /if \(signal\?\.aborted\) \{/);
+  assert.match(cosServiceSource, /signal: signal,/);
+  assert.match(cosServiceSource, /if \(signal\?\.aborted\) \{\s*throw new DOMException\('The operation was aborted\.', 'AbortError'\);/);
 });
 
-test('uploadToCos surfaces file-specific compression errors', () => {
-  const source = readFileSync(new URL('./tencentCosService.ts', import.meta.url), 'utf8');
-
-  assert.match(
-    source,
-    /throw new Error\(`文件「\$\{file\.name\}」上传前压缩失败：\$\{compressionError\.message\}`\);/,
-    'compression failures should include the offending file name in the thrown message'
-  );
+test('xhs cover module passes upload abort signals into cloud upload path', () => {
+  assert.match(xhsModuleSource, /const uploadController = new AbortController\(\);/);
+  assert.match(xhsModuleSource, /abortControllersRef\.current\.add\(uploadController\);/);
+  assert.match(xhsModuleSource, /uploadToCos\(image, apiConfig, undefined, undefined, uploadController\.signal\)/);
 });

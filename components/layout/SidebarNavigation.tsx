@@ -36,6 +36,7 @@ const SidebarNavigation: React.FC<Props> = ({
     AppModule.RETOUCH,
     AppModule.PHOTOGRAPHY,
     AppModule.VIDEO,
+    AppModule.XHS_COVER,
   ];
   const systemItems = [AppModule.SETTINGS, AppModule.ACCOUNT];
   const { unreadCount, toggleCenter } = useToast();

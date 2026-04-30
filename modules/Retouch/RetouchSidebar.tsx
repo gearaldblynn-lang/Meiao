@@ -1,10 +1,11 @@
 
 import React, { useRef, useState, useEffect } from 'react';
-import { AspectRatio, GenerationQuality, RetouchPersistentState, RetouchTask } from '../../types';
+import { AspectRatio, GenerationQuality, KieAiModel, RetouchPersistentState, RetouchTask } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
-import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
+import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
+import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
 import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
 
 interface Props {
@@ -23,8 +24,8 @@ interface Props {
   setAspectRatio: (ratio: AspectRatio) => void;
   quality: GenerationQuality;
   setQuality: (quality: GenerationQuality) => void;
-  model: 'nano-banana-2' | 'nano-banana-pro';
-  setModel: (model: 'nano-banana-2' | 'nano-banana-pro') => void;
+  model: KieAiModel;
+  setModel: (model: KieAiModel) => void;
   resolutionMode: 'original' | 'custom';
   setResolutionMode: (mode: 'original' | 'custom') => void;
   targetWidth: number;
@@ -93,6 +94,8 @@ const RetouchSidebar: React.FC<Props> = ({
     { label: '21:9', value: AspectRatio.L_21_9 },
   ];
   const visibleRatios = ratios.filter((ratio) => getSupportedAspectRatiosForModel(model).includes(ratio.value));
+  const modelCapabilities = getImageModelCapabilities(model);
+  const qualityOptions = getQualityOptionsForModel(model);
   const uploadedSourcePreviewUrls = tasks
     .map((task) => task.sourceUrl)
     .filter((task): task is string => typeof task === 'string' && task.trim().length > 0);
@@ -231,6 +234,9 @@ const RetouchSidebar: React.FC<Props> = ({
                   </button>
                 ))}
               </div>
+              {modelCapabilities.supportsLongGenerationWarning && (
+                <p className="mt-2 text-[10px] font-bold text-emerald-600">GPT Image 2 出图较慢，通常需要等待 300-500 秒。</p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -246,14 +252,16 @@ const RetouchSidebar: React.FC<Props> = ({
               />
             </div>
 
+            {qualityOptions.length > 0 && (
             <div className="space-y-2">
               <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">渲染品质</span>
               <div className="grid grid-cols-3 gap-2">
-                {QUALITY_OPTIONS.map(q => (
+                {qualityOptions.map(q => (
                   <button key={q.value} onClick={() => setQuality(q.value)} className={`py-1.5 text-[9px] font-black rounded-lg border transition-all ${quality === q.value ? 'bg-emerald-600 border-emerald-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:border-emerald-300'}`}>{q.label}</button>
                 ))}
               </div>
             </div>
+            )}
 
             {/* 自定义分辨率设置 */}
             <div className="space-y-4 pt-4 border-t border-slate-100">

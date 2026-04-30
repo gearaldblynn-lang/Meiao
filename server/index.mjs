@@ -33,10 +33,12 @@ import {
   requestLocalRetryJob,
 } from './localJobStore.mjs';
 import { executeProviderJob } from './providerGateway.mjs';
-import { buildPublicSystemConfig, getWorkerConcurrencyLimit, normalizeAllowedOrigins } from './jobRuntime.mjs';
+import { buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins } from './jobRuntime.mjs';
+import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../utils/gptImage2.mjs';
 import {
   buildAssetPublicPath,
   ensureAssetSchema,
+  extractStoredAssetIdFromPublicUrl,
   getPublicBaseUrl,
   getStoredAssetById,
   listStoredAssets,
@@ -110,6 +112,7 @@ const shouldUseMysql = Boolean(
 
 let mysql = null;
 let mysqlPool = null;
+let mysqlPoolHealthCheckPromise = null;
 let jobWorker = null;
 let localJobWorker = null;
 let localStoreCache = null;
@@ -372,8 +375,8 @@ const createDefaultState = () => ({
         scenes: [''],
         countryLanguage: '中国/中文',
         generateWhiteBg: false,
-        model: 'nano-banana-pro',
-        quality: '2k',
+        model: 'gpt-image-2',
+        quality: GPT_IMAGE_2_DEFAULT_QUALITY,
       },
       projects: [],
       downloadingProjectId: null,
@@ -787,12 +790,25 @@ const shouldUseKnowledgeRetrieval = (message, retrievalPolicy, knowledgeBaseIds)
 };
 
 const buildKnowledgeNormalizationPrompt = (rawText) => ([
+  'R Role 角色',
   '你是一名知识库整理助手。',
-  '你的任务是把用户提供的规则、SOP 或规范性文档整理成更适合检索的结构化文本。',
-  '必须保留原意，不得凭空新增规则，不得删掉关键限制。',
-  '优先整理成短标题 + 规则说明 + 条目列表的形式，让每条规则尽量独立完整。',
-  '如果原文本身已经结构清晰，也只做轻量整理，不要过度改写。',
-  '只输出整理后的正文，不要解释，不要加代码块，不要加前言。',
+  '',
+  'T Task 任务',
+  '把用户提供的规则、SOP 或规范性文档整理成更适合检索的结构化文本。',
+  '',
+  'C Constraint 约束',
+  '1. 必须保留原意，不得凭空新增规则，不得删掉关键限制。',
+  '2. 优先整理成短标题 + 规则说明 + 条目列表，让每条规则尽量独立完整。',
+  '3. 如果原文本身已经结构清晰，只做轻量整理，不要过度改写。',
+  '4. 只输出整理后的正文，不要解释，不要加代码块，不要加前言。',
+  '',
+  'F Format 格式',
+  '直接输出整理后的正文。',
+  '',
+  'E Example 示例',
+  '标题',
+  '- 规则1：说明',
+  '- 规则2：说明',
   '',
   '待整理原文：',
   String(rawText || '').trim(),
@@ -1364,7 +1380,25 @@ const buildVideoDiagnosisAnalysisPrompt = (diagData, platform) => {
     }, null, 2);
 
     const lines = [
-      `你是一位专业的小红书内容诊断专家，请基于以下数据对这条小红书笔记进行深度分析。`,
+      'R Role 角色',
+      '你是一位专业的小红书内容诊断专家。',
+      '',
+      'T Task 任务',
+      '请基于以下数据对这条小红书笔记进行深度分析。',
+      '',
+      'C Constraint 约束',
+      '1. 客观全面：好的地方明确指出，差的地方给出证据和改进建议。',
+      '2. level 判断：normal=表现正常或良好，warning=有改进空间，danger=存在明显问题。',
+      '3. findings 必须引用具体字段名和字段值，不要泛泛而谈。',
+      '4. 小红书没有平台审核状态字段，不要分析 platform_review 维度。',
+      '5. 如果某个维度的数据标注为"数据未获取"，findings 只写 ["暂无相关数据"]，suggestion 写 "暂无相关数据"，level 写 "normal"。',
+      '',
+      'F Format 格式',
+      '请严格按照给定 JSON 格式输出，不要输出任何其他内容。',
+      '```json', outputSchema, '```',
+      '',
+      'E Example 示例',
+      '{"summary":"一句话总结","overallRisk":"medium","sections":[{"id":"account_authority","title":"账号权重与活跃度","level":"warning","findings":["follower_count=1200"],"suggestion":"保持稳定更新"}],"topActions":["操作1","操作2","操作3"]}',
       '',
       `## 笔记基础信息`,
       '```json', noteBlock, '```',
@@ -1393,17 +1427,6 @@ const buildVideoDiagnosisAnalysisPrompt = (diagData, platform) => {
     }
 
     lines.push(
-      '## 输出要求',
-      '请严格按照以下 JSON 格式输出，不要输出任何其他内容：',
-      '```json', outputSchema, '```',
-      '',
-      '## 分析原则',
-      '- 客观全面：好的地方明确指出，差的地方给出证据和改进建议',
-      '- level 判断：normal=表现正常或良好，warning=有改进空间，danger=存在明显问题',
-      '- findings 必须引用具体字段名和字段值，不要泛泛而谈',
-      '- 小红书没有平台审核状态字段，不要分析 platform_review 维度',
-      '- 如果某个维度的数据标注为"数据未获取"，findings 只写 ["暂无相关数据"]，suggestion 写 "暂无相关数据"，level 写 "normal"',
-      '',
       '## sections 必须包含以下6个维度：',
       '',
       '1. account_authority - 账号权重与基础',
@@ -1471,10 +1494,26 @@ const buildVideoDiagnosisAnalysisPrompt = (diagData, platform) => {
   }, null, 2);
 
   return [
+    'R Role 角色',
     `你是一位资深的${platformName}平台算法与运营专家。`,
-    `请根据以下视频的多维度后台数据，输出一份全面的视频诊断分析报告。`,
-    `这不只是限流诊断——你需要全面评估这条视频：哪里做得好、哪里有问题、哪里有提升空间。`,
-    `数据来源：视频详情 + 账号画像 + 近期作品趋势 + 评论质量 + 音乐信息（部分平台/视频可能未获取）。`,
+    '',
+    'T Task 任务',
+    '根据以下视频的多维度后台数据，输出一份全面的视频诊断分析报告。',
+    '这不只是限流诊断，你需要全面评估这条视频：哪里做得好、哪里有问题、哪里有提升空间。',
+    '',
+    'C Constraint 约束',
+    '1. 数据来源：视频详情 + 账号画像 + 近期作品趋势 + 评论质量 + 音乐信息（部分平台/视频可能未获取）。',
+    '2. 客观全面：好的地方明确指出，差的地方给出证据和改进建议。',
+    '3. level 判断：normal=表现正常或良好，warning=有改进空间，danger=存在明显问题。',
+    '4. findings 必须引用具体字段名和字段值，不要泛泛而谈。',
+    '',
+    'F Format 格式',
+    '请严格按照以下 JSON 格式输出，不要输出任何其他内容：',
+    '```json', outputSchema, '```',
+    '',
+    'E Example 示例',
+    '{"summary":"一句话总结","overallRisk":"low","sections":[{"id":"account_authority","title":"账号权重与活跃度","level":"normal","findings":["follower_count=434365"],"suggestion":"保持更新频率"}],"topActions":["操作1","操作2","操作3"]}',
+    '',
     '',
     '## 视频基础信息',
     '```json', videoBlock, '```',
@@ -1505,15 +1544,6 @@ const buildVideoDiagnosisAnalysisPrompt = (diagData, platform) => {
     '',
     '## 音乐详情',
     '```json', musicBlock, '```',
-    '',
-    '## 输出要求',
-    '请严格按照以下 JSON 格式输出，不要输出任何其他内容：',
-    '```json', outputSchema, '```',
-    '',
-    '## 分析原则',
-    '- 客观全面：好的地方明确指出，差的地方给出证据和改进建议',
-    '- level 判断：normal=表现正常或良好，warning=有改进空间，danger=存在明显问题',
-    '- findings 必须引用具体字段名和字段值，不要泛泛而谈',
     '',
     '## sections 必须包含以下8个维度：',
     '',
@@ -1726,13 +1756,12 @@ const getTokenFromRequest = (req) => {
 
 const getMysqlPool = async () => {
   if (!shouldUseMysql) return null;
-  if (mysqlPool) return mysqlPool;
 
   if (!mysql) {
     mysql = await import('mysql2/promise');
   }
 
-  mysqlPool = mysql.createPool({
+  const createPool = () => mysql.createPool({
     host: dbConfig.host,
     port: dbConfig.port,
     user: dbConfig.user,
@@ -1744,6 +1773,38 @@ const getMysqlPool = async () => {
     charset: 'utf8mb4',
   });
 
+  const resetPool = async () => {
+    const stalePool = mysqlPool;
+    mysqlPool = null;
+    mysqlPoolHealthCheckPromise = null;
+    if (stalePool?.end) {
+      await stalePool.end().catch(() => null);
+    }
+  };
+
+  if (!mysqlPool) {
+    mysqlPool = createPool();
+  }
+
+  if (!mysqlPoolHealthCheckPromise) {
+    mysqlPoolHealthCheckPromise = (async () => {
+      try {
+        await mysqlPool.query('SELECT 1');
+      } catch (error) {
+        if (isTransientMysqlConnectionError(error)) {
+          await resetPool();
+          mysqlPool = createPool();
+          await mysqlPool.query('SELECT 1');
+          return;
+        }
+        throw error;
+      }
+    })().finally(() => {
+      mysqlPoolHealthCheckPromise = null;
+    });
+  }
+
+  await mysqlPoolHealthCheckPromise;
   return mysqlPool;
 };
 
@@ -2214,13 +2275,39 @@ const scrubDbStatesForDeletedAssets = async (validAssetUrls) => {
   }
 };
 
+const collectOneClickReferencePresetAssetUrls = (state) => {
+  const urls = [];
+  const presets = state?.oneClickMemory?.referencePresets || {};
+  const unifiedPresets = Array.isArray(presets.presets) ? presets.presets : [];
+  unifiedPresets.forEach((item) => {
+    if (typeof item?.coverImageUrl === 'string' && item.coverImageUrl.trim()) {
+      urls.push(item.coverImageUrl.trim());
+    }
+    if (Array.isArray(item?.referenceImageUrls)) {
+      item.referenceImageUrls.forEach((url) => {
+        if (typeof url === 'string' && url.trim()) urls.push(url.trim());
+      });
+    }
+  });
+  return urls;
+};
+
 const collectProtectedManagedAssetUrls = async ({ pool = null, store = null }) => {
   const protectedUrls = new Set();
   if (pool) {
     const [userRows] = await pool.query("SELECT avatar_url FROM users WHERE avatar_url IS NOT NULL AND avatar_url <> ''");
     const [agentRows] = await pool.query("SELECT icon_url FROM agents WHERE icon_url IS NOT NULL AND icon_url <> ''");
+    const [stateRows] = await pool.query('SELECT state_json FROM app_states');
     userRows.map((row) => row.avatar_url).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
     agentRows.map((row) => row.icon_url).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
+    stateRows.forEach((row) => {
+      try {
+        const state = typeof row.state_json === 'string' ? JSON.parse(row.state_json || '{}') : row.state_json;
+        collectOneClickReferencePresetAssetUrls(state).forEach((url) => protectedUrls.add(String(url)));
+      } catch {
+        // Ignore malformed state rows during cleanup; invalid rows are handled by normal state loading.
+      }
+    });
     return protectedUrls;
   }
 
@@ -2228,6 +2315,9 @@ const collectProtectedManagedAssetUrls = async ({ pool = null, store = null }) =
   const agents = Array.isArray(store?.agents) ? store.agents : [];
   users.map((item) => item.avatarUrl).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
   agents.map((item) => item.iconUrl).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
+  Object.values(store?.appStates || {}).forEach((state) => {
+    collectOneClickReferencePresetAssetUrls(state).forEach((url) => protectedUrls.add(String(url)));
+  });
   return protectedUrls;
 };
 
@@ -2397,6 +2487,26 @@ const serveStoredAsset = async (req, res, assetId) => {
     ...(res.__corsHeaders || {}),
   });
   createReadStream(fullPath).pipe(res);
+};
+
+const deleteStoredAssetForUser = async ({ user, fileUrl }) => {
+  const assetId = extractStoredAssetIdFromPublicUrl(fileUrl);
+  if (!assetId) {
+    throw new Error('无效的素材地址');
+  }
+
+  const pool = shouldUseMysql ? await getMysqlPool() : null;
+  const asset = await getStoredAssetById(pool, assetId);
+  if (!asset || asset.deletedAt) {
+    return { deleted: false, assetId };
+  }
+  if (asset.userId !== user.id && user.role !== 'admin') {
+    throw new Error('没有权限删除该素材');
+  }
+
+  await deleteStoredAssetFile(asset.storageKey);
+  await markStoredAssetDeleted(pool, asset.id, Date.now());
+  return { deleted: true, assetId };
 };
 
 const cleanupExpiredStoredAssets = async () => {
@@ -5337,7 +5447,16 @@ const listLocalVisibleAgentUsageRows = (store, admin) => {
 };
 
 const requireDbUser = async (req, res) => {
-  const user = await getDbSessionUser(req);
+  let user = null;
+  try {
+    user = await getDbSessionUser(req);
+  } catch (error) {
+    if (isTransientMysqlConnectionError(error)) {
+      json(res, 503, { message: '数据库连接暂时不可用，请稍后重试。' });
+      return null;
+    }
+    throw error;
+  }
   if (!user) {
     json(res, 401, { message: '登录状态已失效，请重新登录。' });
     return null;
@@ -5357,44 +5476,28 @@ const requireDbAdmin = async (req, res) => {
 
 // ── Studio Helper Functions ──
 
-const STUDIO_CONFIG_ASSISTANT_PROMPT = ({ agentName, systemPrompt, knowledgeNames, manageableKnowledgeBases, manageableKnowledgeDocuments }) => `你是一个智能体训练工作台助手。用户正在训练名为"${agentName}"的智能体草稿版本。
+const STUDIO_CONFIG_ASSISTANT_PROMPT = ({ agentName, systemPrompt, knowledgeNames, manageableKnowledgeBases, manageableKnowledgeDocuments }) => `R Role 角色
+你是智能体训练工作台助手。用户正在训练名为"${agentName}"的智能体草稿版本。
 
-你的职责不是直接执行修改，而是：
-1. 先理解用户要优化什么
-2. 给出明确建议
-3. 在回复末尾输出结构化“待确认改动”
+T Task 任务
+1. 先理解用户要优化什么。
+2. 给出明确建议。
+3. 如存在可执行改动，在回复末尾输出结构化“待确认改动”。
 
-建议阶段不要直接宣称“我已经修改完成”或“已经写入知识库”。你只能说“建议如下，可确认后应用”。
+C Constraint 约束
+1. 你不能直接执行修改，只能给出建议和待确认改动。
+2. 建议阶段不要直接宣称“我已经修改完成”或“已经写入知识库”。你只能说“建议如下，可确认后应用”。
+3. 如果只是答疑，不要输出 CONFIG_CHANGES。
+4. 删除知识库文档时必须提供 documentId。
+5. 修改知识库文档时优先提供 documentId；没有 documentId 不要伪造。
+6. 新增知识库文档时必须提供 knowledgeBaseId、title、rawText。
+7. 不要输出不可执行的空字段。
+8. 如果附件里有可用资料，可以据此整理出建议写入知识库的 rawText，但仍然只是建议，等待确认后才会真正应用。
 
-当前系统提示词：
----
-${systemPrompt || '（空）'}
----
-
-${knowledgeNames.length > 0 ? `当前已绑定知识库：${knowledgeNames.join('、')}` : '当前未绑定知识库。'}
-
-你可操作的知识库：
-${manageableKnowledgeBases.length > 0
-    ? manageableKnowledgeBases.map((item) => `- ${item.name}（id=${item.id}）`).join('\n')
-    : '- 暂无可管理知识库'}
-
-你可引用的已有知识库文档：
-${manageableKnowledgeDocuments.length > 0
-    ? manageableKnowledgeDocuments.map((item) => `- ${item.title}（documentId=${item.id}，knowledgeBaseId=${item.knowledgeBaseId}）`).join('\n')
-    : '- 暂无已有知识库文档'}
-
-用户会用自然语言提出训练需求，可能包括：
-- 调整系统提示词
-- 调整模型策略
-- 调整检索策略
-- 调整绑定知识库
-- 新增、修改、删除知识库文档
-
-回复要求：
-1. 先用自然语言说明你理解到的问题、建议怎么改
+F Format 格式
+1. 先用自然语言说明你理解到的问题、建议怎么改。
 2. 如果存在可执行改动，在末尾输出：
 <CONFIG_CHANGES>[JSON数组]</CONFIG_CHANGES>
-3. 如果只是答疑，不要输出 CONFIG_CHANGES
 
 支持的 field：
 - systemPrompt：更新系统提示词
@@ -5404,6 +5507,7 @@ ${manageableKnowledgeDocuments.length > 0
 - retrievalPolicy：调整检索开关、参考数量、片段上限、上下文上限等策略
 - knowledgeDocument：新增、修改或删除知识库文档
 
+E Example 示例
 JSON 数组中每项格式示例：
 [
   {
@@ -5464,12 +5568,29 @@ JSON 数组中每项格式示例：
   }
 ]
 
-规则：
-- 删除知识库文档时必须提供 documentId
-- 修改知识库文档时优先提供 documentId；没有 documentId 不要伪造
-- 新增知识库文档时必须提供 knowledgeBaseId、title、rawText
-- 不要输出不可执行的空字段
-- 如果附件里有可用资料，可以据此整理出建议写入知识库的 rawText，但仍然只是建议，等待确认后才会真正应用`;
+当前系统提示词：
+---
+${systemPrompt || '（空）'}
+---
+
+${knowledgeNames.length > 0 ? `当前已绑定知识库：${knowledgeNames.join('、')}` : '当前未绑定知识库。'}
+
+你可操作的知识库：
+${manageableKnowledgeBases.length > 0
+    ? manageableKnowledgeBases.map((item) => `- ${item.name}（id=${item.id}）`).join('\n')
+    : '- 暂无可管理知识库'}
+
+你可引用的已有知识库文档：
+${manageableKnowledgeDocuments.length > 0
+    ? manageableKnowledgeDocuments.map((item) => `- ${item.title}（documentId=${item.id}，knowledgeBaseId=${item.knowledgeBaseId}）`).join('\n')
+    : '- 暂无已有知识库文档'}
+
+用户会用自然语言提出训练需求，可能包括：
+- 调整系统提示词
+- 调整模型策略
+- 调整检索策略
+- 调整绑定知识库
+- 新增、修改、删除知识库文档`;
 
 const normalizeStudioKnowledgeDocumentChange = (value = {}) => {
   if (!value || typeof value !== 'object') return null;
@@ -6944,6 +7065,31 @@ const handleMysqlRequest = async (req, res, url) => {
       },
     });
     json(res, 200, { fileUrl: result?.result?.fileUrl || '' });
+    return;
+  }
+
+  if (url.pathname === '/api/assets/by-url' && req.method === 'DELETE') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    try {
+      const result = await deleteStoredAssetForUser({ user, fileUrl: body?.fileUrl });
+      await createDbLog({
+        user,
+        level: 'info',
+        module: 'xhs_cover',
+        action: 'delete_project',
+        message: result.deleted ? '删除小红书封面素材成功' : '小红书封面素材已不存在',
+        status: 'success',
+        meta: {
+          assetId: result.assetId,
+          fileUrl: body?.fileUrl || '',
+        },
+      });
+      json(res, 200, { ok: true });
+    } catch (error) {
+      json(res, 400, { message: error instanceof Error ? error.message : '删除素材失败' });
+    }
     return;
   }
 
@@ -8514,6 +8660,32 @@ const handleLocalRequest = async (req, res, url) => {
     });
     writeLocalStore(store);
     json(res, 200, { fileUrl: result?.result?.fileUrl || '' });
+    return;
+  }
+
+  if (url.pathname === '/api/assets/by-url' && req.method === 'DELETE') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    try {
+      const result = await deleteStoredAssetForUser({ user, fileUrl: body?.fileUrl });
+      appendLocalLog(store, {
+        user,
+        level: 'info',
+        module: 'xhs_cover',
+        action: 'delete_project',
+        message: result.deleted ? '删除小红书封面素材成功' : '小红书封面素材已不存在',
+        status: 'success',
+        meta: {
+          assetId: result.assetId,
+          fileUrl: body?.fileUrl || '',
+        },
+      });
+      writeLocalStore(store);
+      json(res, 200, { ok: true });
+    } catch (error) {
+      json(res, 400, { message: error instanceof Error ? error.message : '删除素材失败' });
+    }
     return;
   }
 

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const arkServiceSource = readFileSync(new URL('./arkService.ts', import.meta.url), 'utf8');
 const skuSubModuleSource = readFileSync(new URL('../modules/OneClick/SkuSubModule.tsx', import.meta.url), 'utf8');
+const promptUtilsSource = readFileSync(new URL('../modules/OneClick/generationPromptUtils.ts', import.meta.url), 'utf8');
 const retouchModuleSource = readFileSync(new URL('../modules/Retouch/RetouchModule.tsx', import.meta.url), 'utf8');
 
 test('analysis service no longer routes planning through ark or doubao', () => {
@@ -34,59 +35,217 @@ test('analysis service no longer routes planning through ark or doubao', () => {
   );
 });
 
-test('marketing scheme copy layout template enforces role-based rows and forbids freeform layout prose', () => {
+test('marketing scheme prompt uses RTCFE structure and the new copy layout format', () => {
   assert.match(
     arkServiceSource,
-    /文案角色（可变）\(文案要求，例如：字号、字重、位置、颜色\):“这里仅填写最终要渲染的正文文案”/,
-    'marketing prompt should define the strict role-based copy row format'
+    /R Role 角色/,
+    'marketing planning prompt should declare the RTCFE role section'
   );
   assert.match(
     arkServiceSource,
-    /所有文案排版行都必须严格使用上述语法：角色名\(要求\):“正文文案”/,
-    'marketing prompt should require the exact role-requirement-body syntax'
+    /T Task 任务/,
+    'marketing planning prompt should declare the RTCFE task section'
   );
   assert.match(
     arkServiceSource,
-    /禁止输出模板外解释、补充说明、示例分析、散文描述/,
-    'marketing prompt should forbid freeform explanatory copy layout prose'
+    /C Constraint 约束/,
+    'marketing planning prompt should declare the RTCFE constraint section'
   );
   assert.match(
     arkServiceSource,
-    /圆括号内是排版要求，不属于要渲染的正文文案；只有中文引号内的文字才是最终要出现在画面中的文案内容/,
-    'marketing prompt should teach downstream generation how to separate requirements from renderable text'
+    /F Format 格式/,
+    'marketing planning prompt should declare the RTCFE format section'
   );
   assert.match(
     arkServiceSource,
-    /如果用户输入、卖点资料、参考文案里出现旧格式/,
-    'marketing prompt should force old user-provided copy rows to be rewritten into the standard template'
+    /E Example 示例/,
+    'marketing planning prompt should declare the RTCFE example section'
   );
   assert.match(
     arkServiceSource,
-    /禁止输出以下非标准写法：•主文案：「正文」— 字体、字号、位置、颜色；「正文」— 要求；角色名：正文（要求）。/,
-    'marketing prompt should ban the old bullet-plus-font copy syntax explicitly'
+    /主标题（字体，字号字重，位置，颜色色值）：“xxx”/,
+    'marketing prompt should define the new main-title copy row format'
+  );
+  assert.match(
+    arkServiceSource,
+    /其他内容（字体，字号字重，位置，颜色色值）：“xxx”/,
+    'marketing prompt should define the new generic copy row format'
+  );
+  assert.match(
+    arkServiceSource,
+    /主标题（宋体，28pt Bold，画面顶部居中，#3d3d3d）：“全屋持久留香”/,
+    'marketing prompt should embed the canonical copy layout example'
+  );
+  assert.match(
+    arkServiceSource,
+    /圆括号内必须依次填写字体、字号字重、位置、颜色色值/,
+    'marketing prompt should explain the exact meaning of the parenthesized requirements'
+  );
+  assert.match(
+    arkServiceSource,
+    /字段名、冒号、说明文字、示例标签都不得出现在最终画面中/,
+    'marketing prompt should forbid rendering labels or explanatory text into the final image'
+  );
+  assert.match(
+    arkServiceSource,
+    /不得输出旧格式或自由格式/,
+    'marketing prompt should explicitly ban legacy and freeform copy layouts'
+  );
+  assert.match(
+    arkServiceSource,
+    /文案内容排版必须严格按输出规范和示例输出/,
+    'marketing prompt should force the returned copy layout to follow the exact format and example'
+  );
+  assert.match(
+    arkServiceSource,
+    /首图模式下只允许输出 1 个首图方案；即使你想到多个方向，也只能保留当前最优方案输出/,
+    'first-image planning should explicitly forbid expanding into a full multi-image set'
+  );
+  assert.match(
+    arkServiceSource,
+    /你是顶级电商视觉总监，负责为【\$\{platform\}】输出高转化的\$\{planningSeriesLabel\}。/,
+    'marketing planning should distinguish first-image planning from full main-image planning'
+  );
+  assert.match(
+    arkServiceSource,
+    /isFirstImage \? '\[如：首图-核心视觉\]' : '\[如：主图1-核心卖点展示\]'/,
+    'first-image planning should use a dedicated first-image screen label in the output format'
   );
 });
 
-test('sku planning prompt uses the same strict role-based copy layout syntax', () => {
+test('first image replication planning analyzes product selling points against each uploaded reference and outputs one scheme per reference', () => {
+  const firstImageReplicationBlockMatch = arkServiceSource.match(
+    /export const generateFirstImageReplicationSchemes = async[\s\S]*?return { status: 'success', schemes };/,
+  );
+  const firstImageReplicationBlock = firstImageReplicationBlockMatch?.[0] || '';
+
   assert.match(
     arkServiceSource,
-    /文案角色（可变）\(文案要求，例如：字号、字重、位置、颜色\):“这里仅填写最终要渲染的正文文案”/,
-    'sku prompt should reuse the same strict role-based copy row format'
+    /export const generateFirstImageReplicationSchemes = async/,
+    'first image should use a dedicated replication-planning function'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /复刻主图参考（图片URL）：\$\{referenceUrl\}/,
+    'replication planning should explicitly label each uploaded reference url'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /count: validReferenceUrls\.length/,
+    'replication workflow should be driven by uploaded reference-image count rather than manual count input'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /必须去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案/,
+    'replication planning should explicitly remove all reference-logo, brand, platform, and original-copy traces'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /商品替换必须严格基于上传商品素材/,
+    'replication planning should keep all product substitution grounded in uploaded product assets'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /商品替换必须严格基于上传商品素材，禁止虚构不存在的商品形态、结构、包装、配件或展示角度/,
+    'first-image replication planning should explicitly ban inventing nonexistent product forms, accessories, or display angles and require product consistency'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /- 设计意图：xxx（完全基于参考图内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，需要将参考图自适应调整为要求比例）/,
+    'first-image replication planning should lock the design-intent field to direct reference editing'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /文案替换时必须逐一对照参考图原有每个文案位的内容长度与信息密度，替换后的文案字数必须尽量接近原位字数承载能力/,
+    'first-image replication planning should enforce per-slot copy replacement against the original reference copy length'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /必要时做等义压缩和短句化处理/,
+    'first-image replication planning should allow concise optimization of copy to fit the replicated layout'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /禁止某一文案位明显超字数/,
+    'first-image replication planning should explicitly ban oversized copy that would hurt layout quality'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /去除后原位置不得留空，必须优先替换为我方品牌 logo、店铺名或与版式匹配的通用信息；若未上传品牌 logo，则改为通用文字信息，并按参考图原有设计逻辑完成补位，不得新增无关元素或虚构信息/,
+    'first-image replication planning should refill removed-brand areas with our logo, store name, or generic fallback text without inventing unrelated content'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /未单独上传品牌logo图时，禁止把产品素材图上出现的logo或参考图logo直接当作我方画面品牌识别信息使用/,
+    'first-image replication planning should forbid using source or reference logos as our brand identity when no logo asset is uploaded'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /去除后原位置不得留空，必须优先替换为我方品牌 logo、店铺名或与版式匹配的通用信息/,
+    'first-image replication planning should refill removed brand areas with our logo, store name, or generic fallback text'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /产品与包装展示以素材图实际内容为准；画面描述不要过度细写包装细节形态，只写需要放置的商品或配件内容及摆放关系，包装细节、标签信息和外观一律由上传素材图决定/,
+    'first-image replication planning should keep packaging driven by source assets and avoid over-describing packaging details in the scene description'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /设计意图只写“完全基于参考图内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，则自适应调整为要求比例”/,
+    'first-image replication planning should keep design intent concise and locked to reference-edit scope'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /- 画面描述：xxx（只写文案更改与字数适配、logo等去除后的调整、商品适应替换、摆放内容与关系、配色保持参考图基准或根据商品自适应；不要细写包装细节形态；文案替换必须体现与原文案位近似字数；若为商品自适应，必须写明商品更适合的配色判断，以及参考图配色如何随之调整）/,
+    'first-image replication planning should narrow the scene-description field to direct reference-edit actions'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /必须先判断上传商品本身更适合的配色方向，并以商品属性配色方案为主，对参考图原有配色做适配性修改；配色调整后的主色、辅助色、背景色或材质色变化必须明确写进画面描述/,
+    'first-image replication planning should require explicit product-driven color judgment in adaptive color mode'
+  );
+  assert.doesNotMatch(
+    firstImageReplicationBlock,
+    /首图裂变1-复刻主图参考1[\s\S]*文案内容排版/,
+    'first-image replication planning should no longer output a copy-layout block'
+  );
+  assert.doesNotMatch(
+    firstImageReplicationBlock,
+    /- 卖点映射：按“参考图主信息位 -> 我方主卖点；参考图次信息位 -> 我方次卖点；参考图辅助信息位 -> 我方补充信息”的形式直接写清楚/,
+    'first-image replication planning should no longer output a separate selling-point mapping field'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /const schemes = await Promise\.all\(validReferenceUrls\.map\(async \(referenceUrl, index\) =>/,
+    'first-image replication planning should analyze multiple references in parallel instead of serially waiting one-by-one'
+  );
+  assert.doesNotMatch(
+    firstImageReplicationBlock,
+    /const schemes: string\[\] = \[\];[\s\S]*for \(let index = 0; index < validReferenceUrls\.length; index \+= 1\)/,
+    'first-image replication planning should no longer use a serial for-loop over references'
+  );
+});
+
+test('sku planning prompt uses RTCFE structure and the new copy layout format', () => {
+  assert.match(
+    arkServiceSource,
+    /R Role 角色[\s\S]*SKU 组合展示图策划视觉总监/,
+    'sku planning prompt should declare the RTCFE role section'
   );
   assert.match(
     arkServiceSource,
-    /禁止在圆括号内填写任何会被当成正文渲染的内容；禁止把要求写进中文引号内/,
-    'sku prompt should prohibit mixing requirements into the renderable body text'
+    /F Format 格式[\s\S]*主标题（字体，字号字重，位置，颜色色值）：“xxx”/,
+    'sku planning prompt should encode the new copy layout format in its format section'
   );
   assert.match(
     arkServiceSource,
-    /文案角色名可以变化，例如主文案、副文案、卖点文案、标签、角标等，但语法结构不得变化/,
-    'sku prompt should allow variable role names while keeping the syntax fixed'
+    /点缀（潇洒手写体，16pt Medium，右上角,?#ff6600.*）：“love potion”/,
+    'sku planning prompt should carry the canonical copy layout example'
   );
   assert.match(
     arkServiceSource,
-    /若上游输入或用户卖点文案是“•主文案：「正文」— 字体, 字号, 位置”这类旧格式，必须先转换成标准模板再输出/,
-    'sku prompt should also rewrite old user-provided layout syntax before returning the plan'
+    /文案内容排版必须严格按输出规范和示例输出/,
+    'sku planning prompt should require the returned copy layout to follow the exact format and example'
   );
 });
 
@@ -138,6 +297,24 @@ test('sku planning prompt uses style reference for layout typography and placeme
     arkServiceSource,
     /风格参考图：\$\{styleUrl\}。除配色、光影、材质与氛围外，还要重点参考其排版、字体风格、文字摆放、版式层级/,
     'sku planning prompt should treat uploaded style refs as layout and typography guidance too'
+  );
+});
+
+test('sku reference images are direct style inputs instead of reference-analysis summaries', () => {
+  assert.doesNotMatch(
+    skuSubModuleSource,
+    /analyzeOneClickReferenceSet/,
+    'sku flow should not analyze uploaded reference images before planning'
+  );
+  assert.doesNotMatch(
+    skuSubModuleSource,
+    /referenceAnalysis\.summary/,
+    'sku flow should not depend on a stored reference-analysis summary'
+  );
+  assert.match(
+    skuSubModuleSource,
+    /generateSkuSchemes\(productUrls,\s*giftUrls,\s*styleUrl,\s*config,\s*apiConfig,\s*globalAbortRef\.current\.signal\)/,
+    'sku planning should pass the uploaded style reference image directly to scheme planning'
   );
 });
 
@@ -296,13 +473,13 @@ test('sku planning prompt includes an explicit visual style field', () => {
 test('sku image prompt appends the target copy language hard constraint', () => {
   assert.match(
     skuSubModuleSource,
-    /文案文字必须为[“”"]\$\{config\.language \|\| '中文'\}[“”"]/,
+    /appendOneClickCopyGuardrails\(prompt, config\.language \|\| '中文'\)/,
     'sku generation prompt should explicitly require generated text to use the target copy language'
   );
   assert.match(
-    skuSubModuleSource,
-    /禁止生成英文或其他非目标文案语言的文案文字/,
-    'sku generation prompt should explicitly ban non-target-language text'
+    promptUtilsSource,
+    /画面文案语言：\$\{targetLanguage\}，逐字渲染当前方案中的文案内容，禁止翻译或替换语言/,
+    'sku generation prompt should keep the non-target-language ban in the shared copy guardrail layer'
   );
   assert.match(
     skuSubModuleSource,

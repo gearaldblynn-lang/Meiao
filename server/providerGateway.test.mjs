@@ -204,6 +204,318 @@ test('executeProviderJob tolerates transient fetch errors while polling kie imag
   }
 });
 
+test('executeProviderJob routes GPT Image 2 image input through image-to-image payload without unsupported fields', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/createTask')) {
+      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-gpt-image-2-edit' } });
+    }
+    if (String(url).includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://example.com/gpt-image-2-edit.png'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'make a clean studio shot',
+          imageUrls: ['https://example.com/input-1.png'],
+          model: 'gpt-image-2',
+          aspectRatio: '3:4',
+          resolution: '2K',
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.providerTaskId, 'kie-task-gpt-image-2-edit');
+    assert.equal(result.result.imageUrl, 'https://example.com/gpt-image-2-edit.png');
+    const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
+    const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
+    assert.equal(createTaskBody.model, 'gpt-image-2-image-to-image');
+    assert.deepEqual(createTaskBody.input.input_urls, ['https://example.com/input-1.png']);
+    assert.equal(createTaskBody.input.aspect_ratio, '3:4');
+    assert.equal(createTaskBody.input.resolution, '2K');
+    assert.equal(createTaskBody.input.image_input, undefined);
+    assert.equal(createTaskBody.input.output_format, undefined);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('executeProviderJob routes GPT Image 2 prompt-only jobs through text-to-image payload', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/createTask')) {
+      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-gpt-image-2-text' } });
+    }
+    if (String(url).includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://example.com/gpt-image-2-text.png'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'generate a product poster',
+          imageUrls: [],
+          model: 'gpt-image-2',
+          aspectRatio: '16:9',
+          resolution: '4K',
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
+    const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
+    assert.equal(createTaskBody.model, 'gpt-image-2-text-to-image');
+    assert.equal(createTaskBody.input.aspect_ratio, '16:9');
+    assert.equal(createTaskBody.input.resolution, '4K');
+    assert.equal(createTaskBody.input.input_urls, undefined);
+    assert.equal(createTaskBody.input.output_format, undefined);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('executeProviderJob downgrades GPT Image 2 auto ratio requests to 1K', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/createTask')) {
+      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-gpt-image-2-auto-1k' } });
+    }
+    if (String(url).includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://example.com/gpt-image-2-auto-1k.png'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'generate a product poster',
+          imageUrls: [],
+          model: 'gpt-image-2',
+          aspectRatio: 'auto',
+          resolution: '4K',
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
+    const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
+    assert.equal(createTaskBody.input.aspect_ratio, 'auto');
+    assert.equal(createTaskBody.input.resolution, '1K');
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('executeProviderJob downgrades GPT Image 2 1:1 requests away from 4K', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/createTask')) {
+      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-gpt-image-2-square-2k' } });
+    }
+    if (String(url).includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://example.com/gpt-image-2-square-2k.png'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'generate a square product poster',
+          imageUrls: ['https://example.com/input-1.png'],
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          resolution: '4K',
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
+    const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
+    assert.equal(createTaskBody.input.aspect_ratio, '1:1');
+    assert.equal(createTaskBody.input.resolution, '2K');
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('executeProviderJob rejects GPT Image 2 requests with more than 16 input images', async () => {
+  await assert.rejects(
+    () => executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'test',
+          imageUrls: Array.from({ length: 17 }, (_, index) => `https://example.com/input-${index}.png`),
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    ),
+    /最多支持 16 张输入图/
+  );
+});
+
+test('executeProviderJob maps KIE createTask code 402 to provider_credit_insufficient', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () => createJsonResponse({
+    code: 402,
+    msg: 'Credits insufficient : Your current balance isn’t enough to run this request. Please top up to continue.',
+    data: null,
+  });
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_image',
+          payload: {
+            prompt: 'test',
+            imageUrls: ['https://example.com/source.png'],
+            model: 'nano-banana-2',
+            aspectRatio: '1:1',
+            resolution: '1K',
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_credit_insufficient'
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob maps KIE createTask code 433 to provider_request_limit', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () => createJsonResponse({
+    code: 433,
+    msg: 'Sub-key Usage Exceeds Limit',
+    data: null,
+  });
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_image',
+          payload: {
+            prompt: 'test',
+            imageUrls: ['https://example.com/source.png'],
+            model: 'nano-banana-2',
+            aspectRatio: '1:1',
+            resolution: '1K',
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_request_limit'
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('uploadAssetViaKieStream prefers stream upload and returns file url', async () => {
   const originalFetch = global.fetch;
   const requests = [];

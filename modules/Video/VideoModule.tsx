@@ -40,8 +40,15 @@ const cloneStoryboardConfig = (config: VideoStoryboardConfig): VideoStoryboardCo
   ...config,
   productImages: [...config.productImages],
   uploadedProductUrls: [...config.uploadedProductUrls],
+  referenceVideoFile: config.referenceVideoFile,
   scenes: [...config.scenes],
 });
+
+const composeProjectScript = (boards: VideoStoryboardBoard[]) => {
+  if (boards.length === 0) return '';
+  if (boards.length === 1) return boards[0].scriptText;
+  return boards.map((board) => `${board.title}\n${board.scriptText}`).join('\n\n====================\n\n');
+};
 
 const fetchBlob = async (url: string) => {
   const response = await fetch(url);
@@ -169,6 +176,21 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       .finally(() => { autoUploadingRef.current = false; });
   }, [storyboard.config.productImages.length]);
 
+  const autoUploadingReferenceVideoRef = useRef(false);
+  useEffect(() => {
+    const referenceVideoFile = storyboard.config.referenceVideoFile;
+    if (!referenceVideoFile || storyboard.config.uploadedReferenceVideoUrl) return;
+    if (autoUploadingReferenceVideoRef.current) return;
+    if (!apiConfig.cosSecretId || !apiConfig.cosSecretKey) return;
+    autoUploadingReferenceVideoRef.current = true;
+    uploadToCos(referenceVideoFile, apiConfig)
+      .then((uploadedReferenceVideoUrl) => {
+        setStoryboardConfig((prev) => ({ ...prev, uploadedReferenceVideoUrl }));
+      })
+      .catch(() => {})
+      .finally(() => { autoUploadingReferenceVideoRef.current = false; });
+  }, [storyboard.config.referenceVideoFile, storyboard.config.uploadedReferenceVideoUrl]);
+
   const updateDiagnosisState = (
     updates: VideoDiagnosisPatch | ((prev: VideoDiagnosisState) => VideoDiagnosisPatch)
   ) => {
@@ -203,10 +225,14 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
   };
 
   const updateBoard = (projectId: string, boardId: string, updates: Partial<VideoStoryboardBoard>) => {
-    updateProject(projectId, (project) => ({
-      ...project,
-      boards: project.boards.map((board) => (board.id === boardId ? { ...board, ...updates } : board)),
-    }));
+    updateProject(projectId, (project) => {
+      const boards = project.boards.map((board) => (board.id === boardId ? { ...board, ...updates } : board));
+      return {
+        ...project,
+        boards,
+        script: composeProjectScript(boards),
+      };
+    });
   };
 
   const ensureUploadedProductUrls = async (config: VideoStoryboardConfig) => {
@@ -222,6 +248,15 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
     const urls = await Promise.all(config.productImages.map((file, i) => config.uploadedProductUrls[i] || uploadToCos(file, apiConfig)));
     setStoryboardConfig((prev) => ({ ...prev, uploadedProductUrls: urls }));
     return urls;
+  };
+
+  const ensureUploadedReferenceVideoUrl = async (config: VideoStoryboardConfig) => {
+    if (config.videoGenerationMode !== 'viral_split') return '';
+    if (config.uploadedReferenceVideoUrl) return config.uploadedReferenceVideoUrl;
+    if (!config.referenceVideoFile) throw new Error('请先上传参考爆款视频');
+    const uploadedReferenceVideoUrl = await uploadToCos(config.referenceVideoFile, apiConfig);
+    setStoryboardConfig((prev) => ({ ...prev, uploadedReferenceVideoUrl }));
+    return uploadedReferenceVideoUrl;
   };
 
   const finalizeProjectStatus = (projectId: string) => {
@@ -328,7 +363,7 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
           removeWatermark: false,
           aspectRatio: config.aspectRatio,
           quality: '2k',
-          model: 'nano-banana-pro',
+          model: 'gpt-image-2',
           resolutionMode: 'original',
           targetWidth: 0,
           targetHeight: 0,
@@ -543,7 +578,7 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
       void logActionSuccess({
         module: 'video',
         action: 'generate_storyboard_script',
-        message: '分镜脚本生成成功',
+        message: '视频脚本生成成功',
         meta: {
           ...storyboardMeta,
           projectId,
@@ -621,28 +656,32 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
         message: '开始批量生成分镜项目',
         meta: {
           ...storyboardMeta,
-          projectCount: baseConfig.projectCount,
+          projectCount: baseConfig.videoGenerationMode === 'viral_split' ? baseConfig.viralVariationCount : baseConfig.projectCount,
         },
       });
       setVideoState((prev) => ({ ...prev, isGenerating: true }));
       const uploadedProductUrls = await ensureUploadedProductUrls(baseConfig);
+      const uploadedReferenceVideoUrl = await ensureUploadedReferenceVideoUrl(baseConfig);
+      const projectCount = baseConfig.videoGenerationMode === 'viral_split' ? baseConfig.viralVariationCount : baseConfig.projectCount;
       const runtimeConfig: VideoStoryboardConfig = {
         ...cloneStoryboardConfig(baseConfig),
         uploadedProductUrls,
-        model: 'nano-banana-pro',
+        uploadedReferenceVideoUrl,
+        model: 'gpt-image-2',
         quality: '2k',
+        generationMode: baseConfig.videoGenerationMode === 'viral_split' ? 'single_image' : baseConfig.generationMode,
       };
       const existingCount = storyboard.projects.length;
-      const nextProjects: VideoStoryboardProject[] = Array.from({ length: runtimeConfig.projectCount }, (_, index) => ({
+      const nextProjects: VideoStoryboardProject[] = Array.from({ length: projectCount }, (_, index) => ({
         id: createProjectId(),
-        name: `视频方案 ${existingCount + index + 1}`,
+        name: `${runtimeConfig.videoGenerationMode === 'viral_split' ? '裂变方案' : '原创方案'} ${existingCount + index + 1}`,
         config: runtimeConfig,
         status: 'pending',
         script: '',
         shots: [],
         boards: [],
         createdAt: Date.now(),
-        sceneDescription: runtimeConfig.scenes[index] || '',
+        sceneDescription: runtimeConfig.videoGenerationMode === 'viral_split' ? '' : (runtimeConfig.scenes[index] || ''),
       }));
 
       setVideoState((prev) => {
@@ -661,12 +700,12 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
         await processProject(
           nextProjects[index].id,
           runtimeConfig,
-          runtimeConfig.scenes[index] || '',
-          runtimeConfig.generateWhiteBg && index === 0
+          runtimeConfig.videoGenerationMode === 'viral_split' ? '' : (runtimeConfig.scenes[index] || ''),
+          runtimeConfig.videoGenerationMode === 'viral_split' ? false : (runtimeConfig.generateWhiteBg && index === 0)
         );
       }
 
-      addToast(`已完成 ${nextProjects.length} 个视频分镜方案`, 'success');
+      addToast(`已完成 ${nextProjects.length} 个视频方案`, 'success');
       void logActionSuccess({
         module: 'video',
         action: 'generate_storyboard_batch',

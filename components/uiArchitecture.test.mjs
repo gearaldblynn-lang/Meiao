@@ -20,6 +20,24 @@ test('translation file processor no longer renders the main start button in the 
   assert.match(fileProcessor, /主图出海/);
 });
 
+test('help guide modal reads module help content from shared config and covers all top-level modules', () => {
+  const modal = read('./HelpGuideModal.tsx');
+  const guideConfig = read('../config/helpGuide.ts');
+
+  assert.match(modal, /from '\.\.\/config\/helpGuide'/);
+  assert.doesNotMatch(modal, /const HELP_CONTENT: Record<string, GuideEntry>/);
+  assert.match(guideConfig, /AppModule\.AGENT_CENTER/);
+  assert.match(guideConfig, /AppModule\.ONE_CLICK/);
+  assert.match(guideConfig, /AppModule\.TRANSLATION/);
+  assert.match(guideConfig, /AppModule\.BUYER_SHOW/);
+  assert.match(guideConfig, /AppModule\.RETOUCH/);
+  assert.match(guideConfig, /AppModule\.PHOTOGRAPHY/);
+  assert.match(guideConfig, /AppModule\.VIDEO/);
+  assert.match(guideConfig, /AppModule\.XHS_COVER/);
+  assert.match(guideConfig, /AppModule\.SETTINGS/);
+  assert.match(guideConfig, /AppModule\.ACCOUNT/);
+});
+
 test('one click module keeps submode switching out of the workspace header', () => {
   const oneClickModule = read('../modules/OneClick/OneClickModule.tsx');
   const oneClickSidebar = read('../modules/OneClick/ConfigSidebar.tsx');
@@ -66,19 +84,16 @@ test('one click sidebars split design references from product assets and support
   assert.match(configSidebar, /referenceDimensions/);
   assert.match(configSidebar, /referenceAnalysis/);
   assert.match(skuSidebar, /设计参考/);
-  assert.match(skuSidebar, /文案内容/);
+  assert.doesNotMatch(skuSidebar, /文案内容/);
   assert.match(mainModule, /analyzeOneClickReferenceSet/);
   assert.match(detailModule, /analyzeOneClickReferenceSet/);
-  assert.match(skuModule, /analyzeOneClickReferenceSet/);
   assert.match(mainModule, /OneClickSubMode\.MAIN_IMAGE/);
   assert.match(detailModule, /OneClickSubMode\.DETAIL_PAGE/);
   assert.match(skuModule, /OneClickSubMode\.SKU/);
   assert.match(mainModule, /referenceAnalysis\.summary/);
   assert.match(detailModule, /referenceAnalysis\.summary/);
-  assert.match(skuModule, /referenceAnalysis\.summary/);
   assert.match(mainModule, /if \(!referenceSummary && designReferences\.length > 0 && referenceDimensions\.length > 0\)/);
   assert.match(detailModule, /if \(!referenceSummary && designReferences\.length > 0 && referenceDimensions\.length > 0\)/);
-  assert.match(skuModule, /if \(!referenceSummary && designReferences\.length > 0 && referenceDimensions\.length > 0\)/);
   assert.match(configSidebar, /useState<'product' \| 'reference'>\('product'\)/);
   assert.match(configSidebar, /button onClick=\{\(\) => setAssetTab\('product'\)\}/);
   assert.match(configSidebar, /button onClick=\{\(\) => setAssetTab\('reference'\)\}/);
@@ -88,7 +103,9 @@ test('one click sidebars split design references from product assets and support
   assert.match(skuSidebar, /button onClick=\{\(\) => setAssetTab\('product'\)\}/);
   assert.match(skuSidebar, /button onClick=\{\(\) => setAssetTab\('gift'\)\}/);
   assert.match(skuSidebar, /button onClick=\{\(\) => setAssetTab\('reference'\)\}/);
-  assert.match(skuSidebar, /const invalidateReferenceAnalysis =/);
+  assert.match(skuSidebar, /role === 'style_ref'/);
+  assert.match(skuModule, /styleUrl/);
+  assert.match(skuModule, /generateSkuSchemes\(productUrls, giftUrls, styleUrl/);
 });
 
 test('single image downloads use the shared remote download helper so filenames keep image extensions', () => {
@@ -133,6 +150,24 @@ test('app workspace lazy loads major modules to avoid one giant startup bundle',
   assert.match(viteConfig, /manualChunks/);
 });
 
+test('video storyboard workspace upgrades to video generation modes and editable outputs', () => {
+  const sidebar = read('../modules/Video/StoryboardSidebar.tsx');
+  const workspace = read('../modules/Video/StoryboardWorkspace.tsx');
+  const moduleMeta = read('./layout/moduleMeta.ts');
+
+  assert.match(sidebar, /原创生成/);
+  assert.match(sidebar, /爆款裂变/);
+  assert.match(sidebar, /参考爆款视频/);
+  assert.match(sidebar, /裂变数量/);
+  assert.match(sidebar, /裂变修改幅度/);
+  assert.match(sidebar, /videoGenerationMode/);
+  assert.match(workspace, /视频生成工作台/);
+  assert.match(workspace, /可编辑脚本/);
+  assert.match(workspace, /可编辑生图方案/);
+  assert.match(workspace, /保存并重生成/);
+  assert.match(moduleMeta, /短视频生成/);
+});
+
 test('release notes are surfaced from the sidebar user hub and notification center with first-open tracking', () => {
   const app = read('../App.tsx');
   const header = read('./layout/Header.tsx');
@@ -141,9 +176,12 @@ test('release notes are surfaced from the sidebar user hub and notification cent
   const packageJson = read('../package.json');
   const releaseNotes = read('../config/releaseNotes.ts');
 
-  assert.match(packageJson, /"version": "260407A"/);
-  assert.match(releaseNotes, /export const APP_RELEASE_VERSION = 'V260407A'/);
-  assert.match(releaseNotes, /首次打开/);
+  assert.match(packageJson, /"version": "260430A"/);
+  assert.match(releaseNotes, /export const APP_RELEASE_VERSION = 'V260430A'/);
+  assert.match(releaseNotes, /首图改为严格参考图改稿链路/);
+  assert.match(releaseNotes, /商品自适应/);
+  assert.match(releaseNotes, /多项目工作台/);
+  assert.match(releaseNotes, /项目删除增加二次确认/);
   assert.match(app, /RELEASE_NOTES_STORAGE_KEY/);
   assert.match(app, /localStorage\.getItem\(RELEASE_NOTES_STORAGE_KEY\)/);
   assert.match(app, /localStorage\.setItem\(RELEASE_NOTES_STORAGE_KEY, APP_RELEASE_VERSION\)/);
@@ -365,7 +403,7 @@ test('agent chat client keeps image generation requests alive longer and can syn
   const api = read('../services/internalApi.ts');
   const agentCenter = read('../modules/AgentCenter/AgentCenterModule.tsx');
 
-  assert.match(api, /timeoutMs: payload\.requestMode === 'image_generation' \? 240_000 : 60_000/);
+  assert.match(api, /timeoutMs: payload\.requestMode === 'image_generation' \? 300_000 : 240_000/);
   assert.match(agentCenter, /clientRequestId/);
   assert.match(agentCenter, /syncCompletedMessageAfterTimeout/);
   assert.match(agentCenter, /const deadline = Date\.now\(\) \+ 210_000/);
@@ -509,7 +547,7 @@ test('agent studio training also reuses the unified chat composer capability con
   const trainingPane = read('../modules/AgentCenter/AgentStudioTrainingPane.tsx');
 
   assert.match(workspace, /availableChatModels=\{availableChatModels\}/);
-  assert.match(trainingPane, /import ChatComposer, \{ ComposerAttachment \} from '.\/ChatComposer';/);
+  assert.match(trainingPane, /import ChatComposer, \{ ComposerAttachment, BatchSendTask \} from '.\/ChatComposer';/);
   assert.match(trainingPane, /availableChatModels: SystemPublicConfig\['agentModels'\]\['chat'\];/);
   assert.match(trainingPane, /const selectableChatModels = useMemo/);
   assert.match(trainingPane, /selectedModel/);

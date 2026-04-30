@@ -751,8 +751,8 @@ refUrl = 本套第1张已生成成功的结果图
 当前买家秀生图走的是 `kieAiService.ts` 的统一超时：
 
 - `nano-banana-2`: 6 分钟
-- `nano-banana-pro`: 6 分钟
-- 默认也是 6 分钟
+- `gpt-image-2`: 11 分钟
+- 默认模型 `nano-banana-2` 仍是 6 分钟
 
 ### 10.2 画面比例
 

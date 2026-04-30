@@ -38,6 +38,7 @@ const OneClickModule = lazy(() => import('./modules/OneClick/OneClickModule'));
 const RetouchModule = lazy(() => import('./modules/Retouch/RetouchModule'));
 const BuyerShowModule = lazy(() => import('./modules/BuyerShow/BuyerShowModule'));
 const VideoModule = lazy(() => import('./modules/Video/VideoModule'));
+const XhsCoverModule = lazy(() => import('./modules/XhsCover/XhsCoverModule'));
 const GlobalApiSettings = lazy(() => import('./modules/Settings/GlobalApiSettings'));
 const AccountManagement = lazy(() => import('./modules/Account/AccountManagement'));
 
@@ -99,6 +100,7 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
   const [retouchMemory, setRetouchMemory] = useState(baseState.retouchMemory);
   const [buyerShowMemory, setBuyerShowMemory] = useState(baseState.buyerShowMemory);
   const [videoMemory, setVideoMemory] = useState(baseState.videoMemory);
+  const [xhsCoverMemory, setXhsCoverMemory] = useState(baseState.xhsCoverMemory);
   const [hydrated, setHydrated] = useState(false);
   const [showReleaseNotes, setShowReleaseNotes] = useState(false);
 
@@ -220,6 +222,7 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
       retouchMemory,
       buyerShowMemory,
       videoMemory,
+      xhsCoverMemory,
     };
 
     if (persistMode === 'local') {
@@ -245,6 +248,7 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
     retouchMemory,
     buyerShowMemory,
     videoMemory,
+    xhsCoverMemory,
     hydrated,
     persistMode,
   ]);
@@ -273,6 +277,8 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
         return <BuyerShowModule apiConfig={apiConfig} persistentState={buyerShowMemory} onStateChange={setBuyerShowMemory} />;
       case AppModule.VIDEO:
         return <VideoModule apiConfig={apiConfig} persistentState={videoMemory} onStateChange={setVideoMemory} />;
+      case AppModule.XHS_COVER:
+        return <XhsCoverModule apiConfig={apiConfig} persistentState={xhsCoverMemory} onStateChange={setXhsCoverMemory} />;
       case AppModule.ACCOUNT:
         return (
           <AccountManagement

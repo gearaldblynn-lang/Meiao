@@ -2,7 +2,7 @@
 
 ## 1. 项目真实位置
 - 当前主工作目录：
-  `/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO——260324a`
+  `/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本`
 
 ## 2. 标准版本流程
 - 这个项目当前不是 GitHub 自动部署。
@@ -62,7 +62,9 @@
 - 如果发现“云端比 GitHub 新”，优先补齐 GitHub 备份，而不是假设线上出了问题。
 
 ## 8. 新会话接手时必读文件
+- `AGENTS.md`
 - `项目交接上下文.md`
+- `docs/project-overview.md`
 - `docs/tencent-cloud-deploy.md`
 - `docs/release-and-handoff.md`
 - `services/loggingService.ts`
@@ -81,3 +83,16 @@
 - 只记录长期有效的项目事实。
 - 如果发布流程、GitHub 仓库、服务器地址、PM2 名称有变化，要直接更新本文件。
 - 如果某次版本已经推 GitHub 但还没上云，或已经上云但还没推 GitHub，建议在提交说明或交接说明里明确写出。
+
+## 11. 当前发布状态
+- 当前待发布版本：
+  `V260430A`
+- 当前本地 Git 提交：
+  `724a7ae feat: sync one-click replication and workspace updates`
+- 本次发布重点：
+  - 首图参考图改为真实输入图参与云端生图，不再只通过 prompt 文本描述。
+  - 首图配色新增“商品自适应 / 参考图基准”，商品自适应以商品属性配色为主。
+  - 首图品牌位、包装一致性、文案位近似字数、项目删除二次确认等规则已同步进策划和生图链路。
+- 状态说明：
+  - Git 提交已生成。
+  - GitHub 推送与腾讯云部署由本次发布流程继续完成。

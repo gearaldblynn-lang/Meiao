@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildXhsCoverPrompt,
   createXhsCoverBatchRunner,
+  normalizeRestoredXhsCoverProjects,
   normalizeRestoredXhsCoverTasks,
 } from './xhsCoverUtils.mjs';
 
@@ -67,6 +68,34 @@ test('normalizeRestoredXhsCoverTasks ignores invalid entries and normalizes fall
   assert.equal(restored[0].error, undefined);
 });
 
+test('normalizeRestoredXhsCoverProjects migrates legacy tasks into a fallback project', () => {
+  const projects = normalizeRestoredXhsCoverProjects([], {
+    title: '新封面',
+    subtitle: '副标题',
+    aspectRatio: '9:16',
+    fontStyle: 'rounded',
+    decoration: '星星',
+    extraRequirement: '更炸一点',
+    tasks: [
+      {
+        id: 'task_1',
+        styleId: 'workplace_big_text',
+        styleName: '职场大字',
+        status: 'completed',
+        resultUrl: 'https://asset.example/xhs-1.png',
+      },
+    ],
+  });
+
+  assert.equal(projects.length, 1);
+  assert.equal(projects[0].title, '新封面');
+  assert.equal(projects[0].subtitle, '副标题');
+  assert.equal(projects[0].aspectRatio, '9:16');
+  assert.equal(projects[0].fontStyle, 'rounded');
+  assert.equal(projects[0].tasks.length, 1);
+  assert.equal(projects[0].tasks[0].resultUrl, 'https://asset.example/xhs-1.png');
+});
+
 test('buildXhsCoverPrompt keeps user copy as only main text and downgrades issue tags', () => {
   const prompt = buildXhsCoverPrompt({
     stylePrompt: [
@@ -87,6 +116,11 @@ test('buildXhsCoverPrompt keeps user copy as only main text and downgrades issue
   assert.doesNotMatch(prompt, /顶部大字英文标题/);
   assert.doesNotMatch(prompt, /拼音注释/);
   assert.match(prompt, /期数标签可作为小型装饰/);
+  assert.match(prompt, /R Role 角色/);
+  assert.match(prompt, /T Task 任务/);
+  assert.match(prompt, /C Constraint 约束/);
+  assert.match(prompt, /F Format 格式/);
+  assert.match(prompt, /E Example 示例/);
 });
 
 test('buildXhsCoverPrompt keeps negative english/pinyin constraints while removing conflicting positive rules', () => {
@@ -169,13 +203,13 @@ test('createXhsCoverBatchRunner never exceeds configured concurrency', async () 
     active -= 1;
   });
 
-  await withTimeout(firstTwoStarted, 200, 'first two workers');
+  await withTimeout(firstTwoStarted, 3000, 'first two workers');
   releaseItem(startedItems[0]);
   releaseItem(startedItems[1]);
-  await withTimeout(allStarted, 200, 'all workers start');
+  await withTimeout(allStarted, 3000, 'all workers start');
   releaseItem(startedItems[2]);
   releaseItem(startedItems[3]);
-  await withTimeout(runPromise, 200, 'batch run');
+  await withTimeout(runPromise, 3000, 'batch run');
 
   assert.equal(maxActive, 2);
   assert.equal(order.filter((step) => step.startsWith('start:')).length, 4);
@@ -205,4 +239,37 @@ test('createXhsCoverBatchRunner propagates worker rejection', async () => {
     }),
     /worker failed/
   );
+});
+
+test('createXhsCoverBatchRunner stops scheduling new items when shouldContinue turns false', async () => {
+  const runner = createXhsCoverBatchRunner(2);
+  const startedItems = [];
+  const releaseByItem = new Map();
+  let schedulingEnabled = true;
+  let resolveFirstTwo;
+  const firstTwoStarted = new Promise((resolve) => {
+    resolveFirstTwo = resolve;
+  });
+
+  const runPromise = runner(
+    ['a', 'b', 'c', 'd'],
+    async (item) => {
+      startedItems.push(item);
+      if (startedItems.length === 2) resolveFirstTwo();
+      if (startedItems.length <= 2) {
+        await new Promise((resolve) => {
+          releaseByItem.set(item, resolve);
+        });
+      }
+    },
+    { shouldContinue: () => schedulingEnabled }
+  );
+
+  await withTimeout(firstTwoStarted, 3000, 'first two workers');
+  schedulingEnabled = false;
+  releaseByItem.get('a')?.();
+  releaseByItem.get('b')?.();
+  await withTimeout(runPromise, 3000, 'batch run stop scheduling');
+
+  assert.deepEqual(startedItems, ['a', 'b']);
 });

@@ -28,20 +28,11 @@ const SCRIPT_PRESETS: Record<string, string> = {
 
 第四阶段：临门一脚 (Action)
 信任总结（理性背书，消除用户最后的顾虑）/ 强收尾（产品最终全景展示，配合引导下单的口播，完成从流量到销量的闭环）。`,
-  viral: `爆款短视频带货逻辑：核心公式：强停留 → 强展示 → 强转化。
+  viral: `爆款短视频带货逻辑：核心公式：强停留 -> 强展示 -> 强转化。
 
 一阶段：开头强钩子，要么视觉炸，要么情绪炸。
-暴力吸睛型：极限测试、夸张演示（紧身衣拎水桶、手机从三楼摔下）。
-悬念型：制造事故感、反常识（"我手机刚从三楼掉下去了……"）。
-争议开场型：打破刻板印象（"有人说这就是智商税……"）。
-好奇留口型：引发疑问（"99%的人都忽略了这个"）。
-关系调侃型：情感触发（"你对象看到这条会转你吗？"）。
-
 二阶段：场景锚定核心价值。
-立刻交代清楚：这是什么产品，在什么场景用。内容里要埋"轻微冒犯感"或"带情绪的判断"——调侃行为，调侃场景，调侃"旧方法"，调侃"嘴硬不信的人"。
-
-三阶段：加"社交传播理由"或者"评论入口"的收尾。
-评论入口：争议/战队/关系/情绪，让用户忍不住评论转发。`,
+三阶段：用强对比或评论入口收尾，拉高传播动机。`,
 };
 
 const COUNTRY_PRESETS = [
@@ -61,18 +52,6 @@ const COUNTRY_PRESETS = [
   '阿拉伯/阿拉伯文',
 ];
 
-const FilePreview: React.FC<{ file: File; alt: string }> = ({ file, alt }) => {
-  const [src, setSrc] = React.useState('');
-
-  React.useEffect(() => {
-    const nextSrc = safeCreateObjectURL(file);
-    setSrc(nextSrc);
-    return () => URL.revokeObjectURL(nextSrc);
-  }, [file]);
-
-  return <img src={src} alt={alt} className="w-full h-full object-cover" />;
-};
-
 const MULTI_IMAGE_SHOT_MAP: Record<string, VideoStoryboardConfig['shotCount']> = {
   '5s': 3,
   '10s': 6,
@@ -89,7 +68,12 @@ const getSingleImageMaxShots = (duration: string): number => {
 };
 
 const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubModeChange, onChange, onGenerate }) => {
+  const videoInputRef = React.useRef<HTMLInputElement>(null);
   const maxShots = getSingleImageMaxShots(config.duration);
+  const isViralMode = config.videoGenerationMode === 'viral_split';
+  const hasProductAssets = Math.max(config.productImages.length, config.uploadedProductUrls.length) > 0;
+  const hasReferenceVideo = Boolean(config.referenceVideoFile || config.uploadedReferenceVideoUrl);
+  const canGenerate = hasProductAssets && (!isViralMode || hasReferenceVideo);
   const allShotOptions: Array<{ value: VideoStoryboardConfig['shotCount']; label: string }> = [
     { value: 1, label: '1 格' },
     { value: 3, label: '3 格' },
@@ -133,6 +117,17 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
         return { ...prev, generationMode: nextMode, shotCount: nextShotCount };
       }
 
+      if (name === 'videoGenerationMode') {
+        const nextMode = value as VideoStoryboardConfig['videoGenerationMode'];
+        return {
+          ...prev,
+          videoGenerationMode: nextMode,
+          generationMode: 'single_image',
+          referenceVideoFile: nextMode === 'viral_split' ? prev.referenceVideoFile : null,
+          uploadedReferenceVideoUrl: nextMode === 'viral_split' ? prev.uploadedReferenceVideoUrl : '',
+        };
+      }
+
       if (name === 'scriptPreset') {
         const preset = value as VideoStoryboardConfig['scriptPreset'];
         return {
@@ -153,7 +148,11 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
         return { ...prev, projectCount: nextCount, scenes: nextScenes };
       }
 
-      return { ...prev, [name]: ['projectCount'].includes(name) ? Number(value) : value };
+      if (name === 'viralVariationCount') {
+        return { ...prev, viralVariationCount: Math.max(1, Number(value) || 1) };
+      }
+
+      return { ...prev, [name]: value };
     });
   };
 
@@ -171,11 +170,30 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
     event.target.value = '';
   };
 
+  const handleReferenceVideoUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    onChange((prev) => ({
+      ...prev,
+      referenceVideoFile: file,
+      uploadedReferenceVideoUrl: '',
+    }));
+    event.target.value = '';
+  };
+
   const removeImage = (index: number) => {
     onChange((prev) => ({
       ...prev,
       productImages: prev.productImages.filter((_, i) => i !== index),
       uploadedProductUrls: prev.uploadedProductUrls.filter((_, i) => i !== index),
+    }));
+  };
+
+  const removeReferenceVideo = () => {
+    onChange((prev) => ({
+      ...prev,
+      referenceVideoFile: null,
+      uploadedReferenceVideoUrl: '',
     }));
   };
 
@@ -197,14 +215,14 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
     <SidebarShell
       widthClassName="w-[390px]"
       accentClass="bg-rose-500"
-      title="短视频分镜配置"
-      subtitle="脚本分镜模式"
+      title="短视频生成配置"
+      subtitle={isViralMode ? '爆款裂变模式' : '原创生成模式'}
       titleClassName="text-sm font-bold tracking-[0.02em] text-slate-500"
       subtitleClassName="text-[11px] font-black tracking-[0.18em] text-slate-900"
       headerContent={
         <SegmentedTabs
           items={[
-            { value: VideoSubMode.STORYBOARD, label: '脚本分镜', icon: 'fa-clapperboard' },
+            { value: VideoSubMode.STORYBOARD, label: '视频生成', icon: 'fa-clapperboard' },
             { value: VideoSubMode.DIAGNOSIS, label: '视频诊断', icon: 'fa-magnifying-glass' },
           ]}
           value={subMode}
@@ -215,148 +233,213 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
       footer={
         <PrimaryActionButton
           onClick={onGenerate}
-          disabled={disabled || (config.productImages.length === 0 && config.uploadedProductUrls.length === 0)}
+          disabled={disabled || !canGenerate}
           icon={disabled ? 'fa-spinner fa-spin' : 'fa-play-circle'}
-          label={disabled ? '生成中...' : '生成短视频分镜板'}
+          label={
+            disabled
+              ? '生成中...'
+              : !hasProductAssets
+                ? '请先上传商品素材'
+                : isViralMode && !hasReferenceVideo
+                  ? '请先上传参考爆款视频'
+                  : '生成视频方案'
+          }
         />
       }
     >
+      <section className="space-y-3">
+        <label className="text-xs font-black uppercase tracking-widest text-slate-400">生成模式</label>
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => handleSelectChange('videoGenerationMode', 'original')}
+            disabled={disabled}
+            className={`rounded-2xl border-2 px-4 py-4 text-left transition-all ${
+              !isViralMode ? 'border-rose-500 bg-rose-50' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+            }`}
+          >
+            <p className="text-sm font-black text-slate-800">原创生成</p>
+            <p className="mt-1 text-[10px] font-bold text-slate-500">沿用当前脚本分镜工作流</p>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSelectChange('videoGenerationMode', 'viral_split')}
+            disabled={disabled}
+            className={`rounded-2xl border-2 px-4 py-4 text-left transition-all ${
+              isViralMode ? 'border-rose-500 bg-rose-50' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+            }`}
+          >
+            <p className="text-sm font-black text-slate-800">爆款裂变</p>
+            <p className="mt-1 text-[10px] font-bold text-slate-500">参考爆款视频生成裂变方案</p>
+          </button>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-black uppercase tracking-widest text-slate-400">商品素材</label>
+          <span className="text-[10px] font-bold text-slate-400">{Math.max(config.productImages.length, config.uploadedProductUrls.length)}/8</span>
+        </div>
+
+        {Math.max(config.productImages.length, config.uploadedProductUrls.length) < 8 && (
+          <label className="relative block">
+            <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} disabled={disabled} />
+            <UploadSurface
+              icon="fa-image"
+              accentTextClass="text-rose-500"
+              title={Math.max(config.productImages.length, config.uploadedProductUrls.length) === 0 ? '上传商品图片素材' : '继续添加商品图片'}
+              hint="支持 JPG / PNG / WEBP，最多 8 张。"
+            />
+          </label>
+        )}
+
+        {Math.max(config.productImages.length, config.uploadedProductUrls.length) > 0 && (
+          <div className="grid grid-cols-4 gap-2">
+            {Array.from({ length: Math.max(config.productImages.length, config.uploadedProductUrls.length) }).map((_, index) => {
+              const file = config.productImages[index];
+              const url = config.uploadedProductUrls[index];
+              return (
+                <div key={`img-${index}`} className="relative aspect-square rounded-lg overflow-hidden border border-slate-100 bg-slate-50 group">
+                  {file
+                    ? <img src={safeCreateObjectURL(file)} alt={file.name} className="h-full w-full object-cover" />
+                    : url
+                      ? <img src={url} alt={`产品图${index + 1}`} className="h-full w-full object-cover" />
+                      : <div className="h-full w-full bg-slate-100" />
+                  }
+                  <button
+                    type="button"
+                    onClick={() => removeImage(index)}
+                    className="absolute top-0 right-0 flex h-5 w-5 items-center justify-center rounded-bl-lg bg-rose-500 text-white opacity-0 transition-all group-hover:opacity-100"
+                  >
+                    <i className="fas fa-times text-[10px]"></i>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {isViralMode && (
         <section className="space-y-3">
           <div className="flex items-center justify-between">
-            <label className="text-xs font-black uppercase tracking-widest text-slate-400">产品素材</label>
-            <span className="text-[10px] font-bold text-slate-400">{Math.max(config.productImages.length, config.uploadedProductUrls.length)}/8</span>
+            <label className="text-xs font-black uppercase tracking-widest text-slate-400">参考爆款视频</label>
+            <span className="text-[10px] font-bold text-amber-600">必填</span>
           </div>
-
-          {Math.max(config.productImages.length, config.uploadedProductUrls.length) < 8 && (
-            <label className="relative block">
-              <input type="file" accept="image/png,image/jpeg,image/webp" multiple className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} disabled={disabled} />
-              <UploadSurface
-                icon="fa-image"
-                accentTextClass="text-rose-500"
-                title={Math.max(config.productImages.length, config.uploadedProductUrls.length) === 0 ? '上传产品图片素材' : '继续添加产品图片'}
-                hint="支持 JPG / PNG / WEBP，最多 8 张。"
-              />
-            </label>
-          )}
-
-          {Math.max(config.productImages.length, config.uploadedProductUrls.length) > 0 && (
-            <div className="grid grid-cols-4 gap-2">
-              {Array.from({ length: Math.max(config.productImages.length, config.uploadedProductUrls.length) }).map((_, index) => {
-                const file = config.productImages[index];
-                const url = config.uploadedProductUrls[index];
-                return (
-                  <div key={`img-${index}`} className="relative aspect-square rounded-lg overflow-hidden border border-slate-100 bg-slate-50 group">
-                    {file
-                      ? <img src={safeCreateObjectURL(file)} alt={file.name} className="w-full h-full object-cover" />
-                      : url
-                        ? <img src={url} alt={`产品图${index + 1}`} className="w-full h-full object-cover" />
-                        : <div className="w-full h-full bg-slate-100" />
-                    }
-                    <button
-                      type="button"
-                      onClick={() => removeImage(index)}
-                      className="absolute top-0 right-0 w-5 h-5 bg-rose-500 text-white rounded-bl-lg flex items-center justify-center opacity-0 group-hover:opacity-100 transition-all"
-                    >
-                      <i className="fas fa-times text-[10px]"></i>
-                    </button>
-                  </div>
-                );
-              })}
+          <input ref={videoInputRef} type="file" accept="video/*" className="hidden" onChange={handleReferenceVideoUpload} />
+          {hasReferenceVideo ? (
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-amber-100 text-amber-700">
+                  <i className="fas fa-video"></i>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-black text-slate-800">{config.referenceVideoFile?.name || '已保存参考爆款视频'}</p>
+                  <p className="mt-1 text-[10px] font-bold text-slate-500">第一版仅做上传占位和引用字段预留</p>
+                </div>
+                <button type="button" onClick={() => videoInputRef.current?.click()} className="text-xs font-black text-slate-600 hover:text-slate-900">
+                  更换
+                </button>
+                <button type="button" onClick={removeReferenceVideo} className="text-xs font-black text-rose-600 hover:text-rose-700">
+                  删除
+                </button>
+              </div>
             </div>
+          ) : (
+            <button type="button" onClick={() => videoInputRef.current?.click()} className="w-full text-left">
+              <UploadSurface
+                icon="fa-clapperboard"
+                accentTextClass="text-amber-600"
+                title="上传参考爆款视频"
+                hint="第一版仅做上传、展示和必填校验，后续再接视频分析。"
+              />
+            </button>
           )}
         </section>
+      )}
 
-        <section className="space-y-2">
-          <label className="text-xs font-black uppercase tracking-widest text-slate-400">产品信息</label>
-          <textarea
-            name="productInfo"
-            value={config.productInfo}
-            onChange={handleFieldChange}
-            disabled={disabled}
-            rows={4}
-            className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-rose-300 outline-none text-sm font-bold text-slate-700 resize-none"
-            placeholder="填写产品参数、核心卖点、受众、价格带等"
-          />
-        </section>
+      <section className="space-y-2">
+        <label className="text-xs font-black uppercase tracking-widest text-slate-400">产品信息</label>
+        <textarea
+          name="productInfo"
+          value={config.productInfo}
+          onChange={handleFieldChange}
+          disabled={disabled}
+          rows={4}
+          className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-rose-300 focus:bg-white"
+          placeholder="填写产品参数、核心卖点、受众、价格带等"
+        />
+      </section>
 
-        <section className="space-y-2">
-          <label className="text-xs font-black uppercase tracking-widest text-slate-400">脚本逻辑</label>
-          <PopoverSelect
-            value={config.scriptPreset}
-            onChange={(next) => handleSelectChange('scriptPreset', next)}
-            disabled={disabled}
-            options={[
-              { value: 'custom', label: '自定义逻辑' },
-              { value: 'ecommerce', label: '高转化电商逻辑' },
-              { value: 'viral', label: '爆款短视频带货逻辑' },
-            ]}
-            buttonClassName="h-10 rounded-2xl px-4 text-xs"
-          />
-          <textarea
-            name="scriptLogic"
-            value={config.scriptLogic}
-            onChange={handleFieldChange}
-            disabled={disabled}
-            rows={6}
-            className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-rose-300 outline-none text-sm font-bold text-slate-700 resize-none"
-            placeholder="描述这条视频的节奏、镜头方向、卖点结构和整体调性。"
-          />
-        </section>
-
-        <section className="space-y-3">
-          <label className="text-xs font-black uppercase tracking-widest text-slate-400">生成模式</label>
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => handleSelectChange('generationMode', 'single_image')}
-              disabled={disabled}
-              className={`relative px-4 py-4 rounded-2xl border-2 transition-all text-left ${
-                config.generationMode === 'single_image'
-                  ? 'border-rose-500 bg-rose-50'
-                  : 'border-slate-200 bg-slate-50 hover:border-slate-300'
-              }`}
-            >
-              <div className="flex items-start gap-2 mb-2">
-                <i className={`fas fa-image text-lg ${config.generationMode === 'single_image' ? 'text-rose-500' : 'text-slate-400'}`}></i>
-                <div className="flex-1">
-                  <p className="text-sm font-black text-slate-800">一图直出</p>
-                  <p className="text-[10px] font-bold text-slate-500 mt-1">更省钱，多分镜间一致性更佳</p>
-                </div>
-              </div>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleSelectChange('generationMode', 'multi_image')}
-              disabled={disabled}
-              className={`relative px-4 py-4 rounded-2xl border-2 transition-all text-left ${
-                config.generationMode === 'multi_image'
-                  ? 'border-rose-500 bg-rose-50'
-                  : 'border-slate-200 bg-slate-50 hover:border-slate-300'
-              }`}
-            >
-              <div className="flex items-start gap-2 mb-2">
-                <i className={`fas fa-images text-lg ${config.generationMode === 'multi_image' ? 'text-rose-500' : 'text-slate-400'}`}></i>
-                <div className="flex-1">
-                  <p className="text-sm font-black text-slate-800">多张拼合</p>
-                  <p className="text-[10px] font-bold text-slate-500 mt-1">贵一些，但单个分镜不满意可再编辑</p>
-                </div>
-              </div>
-            </button>
-          </div>
-        </section>
-
-        <section className="grid grid-cols-2 gap-3">
-          <div className="space-y-2">
-            <label className="text-xs font-black uppercase tracking-widest text-slate-400">目标国家/语言</label>
+      {!isViralMode && (
+        <>
+          <section className="space-y-2">
+            <label className="text-xs font-black uppercase tracking-widest text-slate-400">脚本逻辑</label>
             <PopoverSelect
-              value={config.countryLanguage}
-              onChange={(next) => handleSelectChange('countryLanguage', next)}
+              value={config.scriptPreset}
+              onChange={(next) => handleSelectChange('scriptPreset', next)}
               disabled={disabled}
-              options={COUNTRY_PRESETS.map((item) => ({ value: item, label: item }))}
+              options={[
+                { value: 'custom', label: '自定义逻辑' },
+                { value: 'ecommerce', label: '高转化电商逻辑' },
+                { value: 'viral', label: '爆款短视频带货逻辑' },
+              ]}
               buttonClassName="h-10 rounded-2xl px-4 text-xs"
             />
-          </div>
+            <textarea
+              name="scriptLogic"
+              value={config.scriptLogic}
+              onChange={handleFieldChange}
+              disabled={disabled}
+              rows={6}
+              className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-rose-300 focus:bg-white"
+              placeholder="描述这条视频的节奏、镜头方向、卖点结构和整体调性。"
+            />
+          </section>
 
+          <section className="space-y-3">
+            <label className="text-xs font-black uppercase tracking-widest text-slate-400">生成模式</label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => handleSelectChange('generationMode', 'single_image')}
+                disabled={disabled}
+                className={`rounded-2xl border-2 px-4 py-4 text-left transition-all ${
+                  config.generationMode === 'single_image' ? 'border-rose-500 bg-rose-50' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                }`}
+              >
+                <p className="text-sm font-black text-slate-800">一图直出</p>
+                <p className="mt-1 text-[10px] font-bold text-slate-500">更省钱，多分镜间一致性更佳</p>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSelectChange('generationMode', 'multi_image')}
+                disabled={disabled}
+                className={`rounded-2xl border-2 px-4 py-4 text-left transition-all ${
+                  config.generationMode === 'multi_image' ? 'border-rose-500 bg-rose-50' : 'border-slate-200 bg-slate-50 hover:border-slate-300'
+                }`}
+              >
+                <p className="text-sm font-black text-slate-800">多张拼合</p>
+                <p className="mt-1 text-[10px] font-bold text-slate-500">贵一些，但单个分镜不满意可再编辑</p>
+              </button>
+            </div>
+          </section>
+        </>
+      )}
+
+      <section className="grid grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <label className="text-xs font-black uppercase tracking-widest text-slate-400">目标国家/语言</label>
+          <PopoverSelect
+            value={config.countryLanguage}
+            onChange={(next) => handleSelectChange('countryLanguage', next)}
+            disabled={disabled}
+            options={COUNTRY_PRESETS.map((item) => ({ value: item, label: item }))}
+            buttonClassName="h-10 rounded-2xl px-4 text-xs"
+          />
+        </div>
+
+        {!isViralMode && (
           <div className="space-y-2">
             <label className="text-xs font-black uppercase tracking-widest text-slate-400">演员类型</label>
             <PopoverSelect
@@ -372,64 +455,105 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
               buttonClassName="h-10 rounded-2xl px-4 text-xs"
             />
           </div>
+        )}
 
-          <div className="space-y-2">
-            <label className="text-xs font-black uppercase tracking-widest text-slate-400">视频比例</label>
-            <PopoverSelect
-              value={config.aspectRatio}
-              onChange={(next) => handleSelectChange('aspectRatio', next)}
-              disabled={disabled}
-              options={[
-                { value: AspectRatio.P_9_16, label: '9:16 竖屏' },
-                { value: AspectRatio.L_16_9, label: '16:9 横屏' },
-                { value: AspectRatio.P_3_4, label: '3:4 竖屏' },
-                { value: AspectRatio.L_4_3, label: '4:3 横屏' },
-                { value: AspectRatio.SQUARE, label: '1:1 方图' },
-                { value: AspectRatio.P_4_5, label: '4:5 纵向' },
-              ]}
-              buttonClassName="h-10 rounded-2xl px-4 text-xs"
-            />
-          </div>
+        <div className="space-y-2">
+          <label className="text-xs font-black uppercase tracking-widest text-slate-400">视频比例</label>
+          <PopoverSelect
+            value={config.aspectRatio}
+            onChange={(next) => handleSelectChange('aspectRatio', next)}
+            disabled={disabled}
+            options={[
+              { value: AspectRatio.P_9_16, label: '9:16 竖屏' },
+              { value: AspectRatio.L_16_9, label: '16:9 横屏' },
+              { value: AspectRatio.P_3_4, label: '3:4 竖屏' },
+              { value: AspectRatio.L_4_3, label: '4:3 横屏' },
+              { value: AspectRatio.SQUARE, label: '1:1 方图' },
+              { value: AspectRatio.P_4_5, label: '4:5 纵向' },
+            ]}
+            buttonClassName="h-10 rounded-2xl px-4 text-xs"
+          />
+        </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-black uppercase tracking-widest text-slate-400">视频时长</label>
-            <PopoverSelect
-              value={config.duration}
-              onChange={(next) => handleSelectChange('duration', next)}
-              disabled={disabled}
-              options={[
-                { value: '5s', label: '5 秒' },
-                { value: '10s', label: '10 秒' },
-                { value: '15s', label: '15 秒' },
-                { value: '30s', label: '30 秒' },
-              ]}
-              buttonClassName="h-10 rounded-2xl px-4 text-xs"
-            />
-            {config.generationMode === 'multi_image' && (
-              <p className="text-[10px] font-bold text-slate-400 mt-1">多张拼合模式下，时长与镜头数联动</p>
-            )}
-          </div>
+        {!isViralMode && (
+          <>
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-widest text-slate-400">视频时长</label>
+              <PopoverSelect
+                value={config.duration}
+                onChange={(next) => handleSelectChange('duration', next)}
+                disabled={disabled}
+                options={[
+                  { value: '5s', label: '5 秒' },
+                  { value: '10s', label: '10 秒' },
+                  { value: '15s', label: '15 秒' },
+                  { value: '30s', label: '30 秒' },
+                ]}
+                buttonClassName="h-10 rounded-2xl px-4 text-xs"
+              />
+            </div>
 
-          <div className="space-y-2">
-            <label className="text-xs font-black uppercase tracking-widest text-slate-400">分镜镜头数</label>
-            <PopoverSelect
-              value={String(config.shotCount)}
-              onChange={(next) => handleSelectChange('shotCount', next)}
-              disabled={disabled || config.generationMode === 'multi_image'}
-              options={shotCountOptions.map((option) => ({
-                value: String(option.value),
-                label: option.label,
-              }))}
-              buttonClassName="h-10 rounded-2xl px-4 text-xs"
-            />
-            {config.generationMode === 'multi_image' && (
-              <p className="text-[10px] font-bold text-slate-400 mt-1">多张拼合模式下，镜头数由时长决定</p>
-            )}
-            {config.generationMode === 'single_image' && (config.duration === '5s' || config.duration === '10s') && (
-              <p className="text-[10px] font-bold text-slate-400 mt-1">{config.duration === '5s' ? '5秒最多3格' : '10秒最多6格'}</p>
-            )}
-          </div>
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-widest text-slate-400">分镜镜头数</label>
+              <PopoverSelect
+                value={String(config.shotCount)}
+                onChange={(next) => handleSelectChange('shotCount', next)}
+                disabled={disabled || config.generationMode === 'multi_image'}
+                options={shotCountOptions.map((option) => ({
+                  value: String(option.value),
+                  label: option.label,
+                }))}
+                buttonClassName="h-10 rounded-2xl px-4 text-xs"
+              />
+            </div>
+          </>
+        )}
 
+        {isViralMode ? (
+          <>
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-widest text-slate-400">裂变数量</label>
+              <PopoverSelect
+                value={String(config.viralVariationCount)}
+                onChange={(next) => handleSelectChange('viralVariationCount', next)}
+                disabled={disabled}
+                options={[
+                  { value: '1', label: '1 个裂变方案' },
+                  { value: '2', label: '2 个裂变方案' },
+                  { value: '3', label: '3 个裂变方案' },
+                  { value: '4', label: '4 个裂变方案' },
+                  { value: '5', label: '5 个裂变方案' },
+                ]}
+                buttonClassName="h-10 rounded-2xl px-4 text-xs"
+              />
+            </div>
+            <div className="space-y-2">
+              <label className="text-xs font-black uppercase tracking-widest text-slate-400">裂变修改幅度</label>
+              <PopoverSelect
+                value={config.viralVariationStrength}
+                onChange={(next) => handleSelectChange('viralVariationStrength', next)}
+                disabled={disabled}
+                options={[
+                  { value: '5', label: '5%' },
+                  { value: '10', label: '10%' },
+                  { value: '20', label: '20%' },
+                  { value: 'custom', label: '自定义' },
+                ]}
+                buttonClassName="h-10 rounded-2xl px-4 text-xs"
+              />
+              {config.viralVariationStrength === 'custom' && (
+                <input
+                  name="viralCustomVariationStrength"
+                  value={config.viralCustomVariationStrength}
+                  onChange={handleFieldChange}
+                  disabled={disabled}
+                  className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-rose-300 focus:bg-white"
+                  placeholder="输入自定义幅度，例如 15%"
+                />
+              )}
+            </div>
+          </>
+        ) : (
           <div className="space-y-2">
             <label className="text-xs font-black uppercase tracking-widest text-slate-400">生成数量</label>
             <PopoverSelect
@@ -446,39 +570,44 @@ const StoryboardSidebar: React.FC<Props> = ({ config, disabled, subMode, onSubMo
               buttonClassName="h-10 rounded-2xl px-4 text-xs"
             />
           </div>
-        </section>
+        )}
+      </section>
 
-        <section className="space-y-3">
-          <label className="text-xs font-black uppercase tracking-widest text-slate-400">每个方案的场景描述</label>
-          <div className="space-y-3">
-            {config.scenes.map((scene, index) => (
-              <div key={index} className="space-y-2">
-                <label className="text-[11px] font-black text-slate-500">方案 {index + 1}</label>
-                <input
-                  value={scene}
-                  onChange={(event) => updateScene(index, event.target.value)}
-                  disabled={disabled}
-                  className="w-full px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 focus:bg-white focus:border-rose-300 outline-none text-sm font-bold text-slate-700"
-                  placeholder="例如：厨房台面演示、办公室通勤、居家收纳场景"
-                />
-              </div>
-            ))}
-          </div>
-        </section>
+      {!isViralMode && (
+        <>
+          <section className="space-y-3">
+            <label className="text-xs font-black uppercase tracking-widest text-slate-400">每个方案的场景描述</label>
+            <div className="space-y-3">
+              {config.scenes.map((scene, index) => (
+                <div key={index} className="space-y-2">
+                  <label className="text-[11px] font-black text-slate-500">方案 {index + 1}</label>
+                  <input
+                    value={scene}
+                    onChange={(event) => updateScene(index, event.target.value)}
+                    disabled={disabled}
+                    className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700 outline-none focus:border-rose-300 focus:bg-white"
+                    placeholder="例如：厨房台面演示、办公室通勤、居家收纳场景"
+                  />
+                </div>
+              ))}
+            </div>
+          </section>
 
-        <label className="flex items-center gap-3 px-4 py-3 rounded-2xl border border-slate-200 bg-slate-50 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={config.generateWhiteBg}
-            onChange={(event) => onChange((prev) => ({ ...prev, generateWhiteBg: event.target.checked }))}
-            disabled={disabled}
-            className="w-4 h-4 accent-rose-500"
-          />
-          <div>
-            <p className="text-sm font-black text-slate-800">同步生成白底图</p>
-            <p className="text-[11px] font-bold text-slate-400">仅首个方案生成一张白底产品图</p>
-          </div>
-        </label>
+          <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <input
+              type="checkbox"
+              checked={config.generateWhiteBg}
+              onChange={(event) => onChange((prev) => ({ ...prev, generateWhiteBg: event.target.checked }))}
+              disabled={disabled}
+              className="h-4 w-4 accent-rose-500"
+            />
+            <div>
+              <p className="text-sm font-black text-slate-800">同步生成白底图</p>
+              <p className="text-[11px] font-bold text-slate-400">仅首个方案生成一张白底产品图</p>
+            </div>
+          </label>
+        </>
+      )}
     </SidebarShell>
   );
 };

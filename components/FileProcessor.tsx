@@ -44,19 +44,6 @@ const FileProcessor: React.FC<Props> = ({
     AspectRatio.L_16_9,
     AspectRatio.L_21_9,
   ];
-  const nanoBananaProRatios: AspectRatio[] = [
-    AspectRatio.SQUARE,
-    AspectRatio.P_2_3,
-    AspectRatio.L_3_2,
-    AspectRatio.P_3_4,
-    AspectRatio.L_4_3,
-    AspectRatio.P_4_5,
-    AspectRatio.L_5_4,
-    AspectRatio.P_9_16,
-    AspectRatio.L_16_9,
-    AspectRatio.L_21_9,
-  ];
-
   const formatRatioLabel = (width: number, height: number) => {
     const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
     const divisor = gcd(width, height);
@@ -66,7 +53,7 @@ const FileProcessor: React.FC<Props> = ({
   const getClosestSupportedAspectRatio = (width: number, height: number, model: string): AspectRatio => {
     if (!width || !height) return AspectRatio.P_3_4;
 
-    const supportedRatios = model === 'nano-banana-pro' ? nanoBananaProRatios : nanoBanana2Ratios;
+    const supportedRatios = nanoBanana2Ratios;
     const sourceRatio = width / height;
     let closestRatio = supportedRatios[0];
     let closestDelta = Infinity;

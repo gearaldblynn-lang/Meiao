@@ -789,6 +789,15 @@ export const uploadInternalAssetStream = async (payload: {
   return data as { fileUrl: string };
 };
 
+export const deleteInternalAssetByUrl = async (fileUrl: string) => {
+  return request<{ ok: boolean }>('/api/assets/by-url', {
+    method: 'DELETE',
+    body: JSON.stringify({ fileUrl }),
+    timeoutMs: 120_000,
+    dedupe: false,
+  });
+};
+
 export const createInternalJob = async (payload: {
   module: string;
   taskType: string;

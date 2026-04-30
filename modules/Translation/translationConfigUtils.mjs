@@ -1,3 +1,5 @@
+import { normalizeImageModel } from '../../utils/modelCapabilities.mjs';
+
 const createBaseConfig = () => ({
   targetLanguage: 'English',
   customLanguage: '',
@@ -37,6 +39,7 @@ const sanitizeConfig = (config, fallback) => {
   return {
     ...fallback,
     ...config,
+    model: normalizeImageModel(config.model, fallback.model),
   };
 };
 

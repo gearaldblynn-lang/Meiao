@@ -5,6 +5,7 @@ import {
   ASSET_RETENTION_MS,
   buildAssetPublicPath,
   buildAssetPublicUrl,
+  extractStoredAssetIdFromPublicUrl,
   getPublicBaseUrl,
   sanitizeAssetName,
   shouldRetainAssetRecord,
@@ -21,6 +22,12 @@ test('buildAssetPublicUrl returns internal absolute asset route', () => {
     buildAssetPublicUrl('https://meiao.example.com', 'asset_123', 'poster.jpg'),
     'https://meiao.example.com/api/assets/file/asset_123/poster.jpg'
   );
+});
+
+test('extractStoredAssetIdFromPublicUrl reads managed asset ids from relative and absolute urls', () => {
+  assert.equal(extractStoredAssetIdFromPublicUrl('/api/assets/file/asset_123/poster.jpg'), 'asset_123');
+  assert.equal(extractStoredAssetIdFromPublicUrl('https://meiao.example.com/api/assets/file/asset_456/poster.jpg'), 'asset_456');
+  assert.equal(extractStoredAssetIdFromPublicUrl('https://example.com/not-managed/poster.jpg'), '');
 });
 
 test('getPublicBaseUrl normalizes explicit public base url', () => {
