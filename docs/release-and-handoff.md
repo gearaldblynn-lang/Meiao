@@ -88,11 +88,12 @@
 - 当前待发布版本：
   `V260430A`
 - 当前本地 Git 提交：
-  `724a7ae feat: sync one-click replication and workspace updates`
+  `6a71e21 feat: sync one-click replication and workspace updates`
 - 本次发布重点：
   - 首图参考图改为真实输入图参与云端生图，不再只通过 prompt 文本描述。
   - 首图配色新增“商品自适应 / 参考图基准”，商品自适应以商品属性配色为主。
   - 首图品牌位、包装一致性、文案位近似字数、项目删除二次确认等规则已同步进策划和生图链路。
 - 状态说明：
-  - Git 提交已生成。
-  - GitHub 推送与腾讯云部署由本次发布流程继续完成。
+  - 本地验证已完成：定向测试、`npm run lint`、`npm run build` 均通过。
+  - 腾讯云已完成部署，`http://111.229.66.247/api/health` 与 `http://111.229.66.247:3100/api/health` 均返回 `{"ok":true,"mode":"internal-mysql-v1"}`。
+  - GitHub 备份暂未完成：当前机器通过 HTTPS 推送时出现 TLS 连接失败，通过 SSH 推送时出现 `Permission denied (publickey)`，需要补齐可用的 GitHub 网络或 SSH 凭据后再执行 `git push origin main`。
