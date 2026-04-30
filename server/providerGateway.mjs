@@ -1,3 +1,5 @@
+import { GPT_IMAGE_2_DEFAULT_RESOLUTION, normalizeGptImage2Resolution } from '../utils/gptImage2.mjs';
+
 const KIE_CREATE_TASK_URL = 'https://api.kie.ai/api/v1/jobs/createTask';
 const KIE_RECORD_INFO_URL = 'https://api.kie.ai/api/v1/jobs/recordInfo';
 const KIE_VEO_BASE_URL = 'https://api.kie.ai/api/v1/veo';
@@ -10,6 +12,15 @@ const KIE_RESPONSES_MODEL_ALIASES = {
   'gpt-5-4-openai-resp': 'gpt-5-4',
   'gpt-5-4': 'gpt-5-4',
   'gpt-5.4': 'gpt-5-4',
+};
+const KIE_IMAGE_MODEL_ALIASES = {
+  'gpt-image-2': {
+    text: 'gpt-image-2-text-to-image',
+    image: 'gpt-image-2-image-to-image',
+    maxInputImages: 16,
+    pollRetries: 150,
+    supportedAspectRatios: ['auto', '1:1', '9:16', '16:9', '4:3', '3:4'],
+  },
 };
 const KIE_CHAT_MODEL_ENDPOINTS = {
   'gpt-5-2': KIE_CHAT_URL,
@@ -53,6 +64,46 @@ const createProviderError = (code, message, extras = null) => {
     Object.assign(error, extras);
   }
   return error;
+};
+
+const normalizeKieTaskCreationError = (responseStatus, result = {}, defaultMessage) => {
+  const code = Number(result?.code || 0);
+  const message = String(result?.msg || defaultMessage || '').trim();
+
+  if (responseStatus === 401 || responseStatus === 403 || code === 401 || code === 403) {
+    return createProviderError('provider_auth_invalid', message || 'Kie 图像任务鉴权失败', {
+      providerStage: 'create_task',
+      providerStatus: 'auth_invalid',
+    });
+  }
+  if (responseStatus === 429 || code === 429) {
+    return createProviderError('provider_rate_limited', message || 'Kie 图像任务请求过于频繁', {
+      providerStage: 'create_task',
+      providerStatus: 'rate_limited',
+    });
+  }
+  if (code === 402 || /credits insufficient/i.test(message)) {
+    return createProviderError('provider_credit_insufficient', message || 'Kie 余额不足', {
+      providerStage: 'create_task',
+      providerStatus: 'credit_insufficient',
+    });
+  }
+  if (code === 433 || /sub-?key|exceeds limit|request limit/i.test(message)) {
+    return createProviderError('provider_request_limit', message || 'Kie 额度受限', {
+      providerStage: 'create_task',
+      providerStatus: 'request_limit',
+    });
+  }
+  if (responseStatus >= 500 || code >= 500) {
+    return createProviderError('provider_internal_error', message || 'Kie 图像任务服务异常', {
+      providerStage: 'create_task',
+      providerStatus: 'server_error',
+    });
+  }
+  return createProviderError('provider_bad_request', message || 'Kie 图像任务创建失败', {
+    providerStage: 'create_task',
+    providerStatus: 'bad_request',
+  });
 };
 
 const attachProviderTaskId = (error, providerTaskId) => {
@@ -164,6 +215,19 @@ const inferExtensionFromMimeType = (value, fallback = 'bin') => {
   if (normalized === 'text/markdown') return 'md';
   if (normalized === 'application/json') return 'json';
   return fallback;
+};
+
+const buildKieAspectRatioPromptHint = (aspectRatio) => {
+  const normalized = String(aspectRatio || '').trim();
+  if (!normalized || normalized === 'auto') return '';
+  return `最终画面按 ${normalized} 比例构图生成。`;
+};
+
+const augmentImagePromptForModel = (model, prompt, aspectRatio, mode = 'text') => {
+  const normalizedPrompt = String(prompt || '').trim();
+  if (model !== 'gpt-image-2') return normalizedPrompt;
+  if (mode === 'image') return normalizedPrompt;
+  return normalizedPrompt;
 };
 
 const parseDataUrlPayload = (value) => {
@@ -557,8 +621,8 @@ const mapHttpError = async (response, defaultMessage) => {
   throw createProviderError('provider_network_error', data?.error?.message || data?.message || defaultMessage);
 };
 
-const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false) => {
-  const maxRetries = isVideo ? 180 : 90;
+const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false, model = '') => {
+  const maxRetries = isVideo ? 180 : (KIE_IMAGE_MODEL_ALIASES[model]?.pollRetries || 90);
   const startedAt = Date.now();
   let lastKnownState = '';
 
@@ -851,6 +915,47 @@ const runKieImageJob = async (payload, env, signal) => {
   const imageUrls = await Promise.all(
     (Array.isArray(payload.imageUrls) ? payload.imageUrls : []).map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
   );
+  const gptImageAlias = KIE_IMAGE_MODEL_ALIASES[payload.model];
+  const isGptImageEdit = Boolean(gptImageAlias && imageUrls.length > 0);
+  const prompt = augmentImagePromptForModel(payload.model, payload.prompt, payload.aspectRatio, isGptImageEdit ? 'image' : 'text');
+  const normalizedAspectRatio = String(payload.aspectRatio || 'auto').trim() || 'auto';
+  const normalizedResolution = gptImageAlias
+    ? normalizeGptImage2Resolution(normalizedAspectRatio, payload.resolution || GPT_IMAGE_2_DEFAULT_RESOLUTION)
+    : String(payload.resolution || '1K').trim().toUpperCase();
+  if (gptImageAlias && imageUrls.length > gptImageAlias.maxInputImages) {
+    throw createProviderError('provider_bad_request', `GPT Image 2 最多支持 ${gptImageAlias.maxInputImages} 张输入图`);
+  }
+
+  const requestBody = gptImageAlias
+    ? {
+        model: imageUrls.length > 0 ? gptImageAlias.image : gptImageAlias.text,
+        input: imageUrls.length > 0
+          ? {
+              prompt,
+              input_urls: imageUrls,
+              ...((gptImageAlias.supportedAspectRatios || []).includes(String(payload.aspectRatio || 'auto'))
+                ? { aspect_ratio: normalizedAspectRatio }
+                : {}),
+              resolution: normalizedResolution,
+            }
+          : {
+              prompt,
+              ...((gptImageAlias.supportedAspectRatios || []).includes(String(payload.aspectRatio || 'auto'))
+                ? { aspect_ratio: normalizedAspectRatio }
+                : {}),
+              resolution: normalizedResolution,
+            },
+      }
+    : {
+        model: payload.model || 'nano-banana-2',
+        input: {
+          prompt,
+          image_input: imageUrls,
+          aspect_ratio: payload.aspectRatio || 'auto',
+          resolution: payload.resolution || GPT_IMAGE_2_DEFAULT_RESOLUTION,
+          output_format: 'png',
+        },
+      };
 
   const response = await fetch(KIE_CREATE_TASK_URL, {
     method: 'POST',
@@ -858,35 +963,17 @@ const runKieImageJob = async (payload, env, signal) => {
       Authorization: `Bearer ${kieApiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: payload.model || 'nano-banana-2',
-      input: {
-        prompt: payload.prompt,
-        image_input: imageUrls,
-        aspect_ratio: payload.aspectRatio || 'auto',
-        resolution: payload.resolution || '1K',
-        output_format: 'png',
-      },
-    }),
+    body: JSON.stringify(requestBody),
     signal,
   });
 
   const result = await response.json().catch(() => ({}));
   if (!response.ok || result?.code !== 200 || !result?.data?.taskId) {
-    if (response.status === 401 || response.status === 403 || result?.code === 401 || result?.code === 403) {
-      throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 图像任务鉴权失败', { providerStage: 'create_task', providerStatus: 'auth_invalid' });
-    }
-    if (response.status === 429) {
-      throw createProviderError('provider_rate_limited', result?.msg || 'Kie 图像任务请求过于频繁', { providerStage: 'create_task', providerStatus: 'rate_limited' });
-    }
-    if (response.status >= 500 || result?.code >= 500) {
-      throw createProviderError('provider_internal_error', result?.msg || 'Kie 图像任务服务异常', { providerStage: 'create_task', providerStatus: 'server_error' });
-    }
-    throw createProviderError('provider_bad_request', result?.msg || 'Kie 图像任务创建失败', { providerStage: 'create_task', providerStatus: 'bad_request' });
+    throw normalizeKieTaskCreationError(response.status, result, 'Kie 图像任务创建失败');
   }
 
   try {
-    const imageResult = await pollKieTask(result.data.taskId, kieApiKey, signal, false);
+    const imageResult = await pollKieTask(result.data.taskId, kieApiKey, signal, false, payload.model);
     return {
       ...imageResult,
       providerTaskId: imageResult.providerTaskId || result.data.taskId,

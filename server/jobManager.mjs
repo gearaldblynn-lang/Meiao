@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { getNextJobFailureState } from './jobRuntime.mjs';
+import { getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
 
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
@@ -535,6 +535,11 @@ export const createJobWorker = ({
           }
         })();
       }
+    } catch (error) {
+      if (!isTransientMysqlConnectionError(error)) {
+        throw error;
+      }
+      console.error('MySQL connection lost during job worker loop, will retry on next tick.', error);
     } finally {
       draining = false;
     }

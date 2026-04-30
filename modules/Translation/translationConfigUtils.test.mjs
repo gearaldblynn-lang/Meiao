@@ -49,12 +49,12 @@ test('migrateLegacyTranslationConfigs keeps old config for main and derives deta
   }));
 
   assert.equal(migrated.main.targetLanguage, 'Korean');
-  assert.equal(migrated.main.model, 'nano-banana-pro');
+  assert.equal(migrated.main.model, 'gpt-image-2');
   assert.equal(migrated.main.targetWidth, 800);
   assert.equal(migrated.main.targetHeight, 800);
 
   assert.equal(migrated.detail.targetLanguage, 'Korean');
-  assert.equal(migrated.detail.model, 'nano-banana-pro');
+  assert.equal(migrated.detail.model, 'gpt-image-2');
   assert.equal(migrated.detail.targetWidth, 750);
   assert.equal(migrated.detail.targetHeight, 0);
   assert.equal(migrated.detail.aspectRatio, 'auto');

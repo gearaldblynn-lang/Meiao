@@ -134,4 +134,16 @@ test('deriveLogFailureReason returns direct readable labels for provider failure
     detail: 'fetch failed',
     meta: { providerStage: 'polling', providerStatus: 'network_error', errorCode: 'provider_network_error' },
   })), '网络异常');
+
+  assert.equal(deriveLogFailureReason(createLog({
+    status: 'failed',
+    detail: 'Credits insufficient',
+    meta: { providerStage: 'create_task', providerStatus: 'credit_insufficient', errorCode: 'provider_credit_insufficient' },
+  })), '余额不足');
+
+  assert.equal(deriveLogFailureReason(createLog({
+    status: 'failed',
+    detail: 'Sub-key Usage Exceeds Limit',
+    meta: { providerStage: 'create_task', providerStatus: 'request_limit', errorCode: 'provider_request_limit' },
+  })), '额度受限');
 });

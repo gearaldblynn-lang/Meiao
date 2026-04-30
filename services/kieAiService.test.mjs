@@ -55,3 +55,24 @@ test('kieAiService auto-recovers recoverable kie polling failures when provider 
     /if \(allowAutoRecover && shouldAutoRecoverKieJob\(finalJob\)\) \{\s*return recoverKieProviderTask\(finalJob\.providerTaskId, signal, finalJob\.taskType === 'kie_video', kieClientConfigPresent\);/s,
   );
 });
+
+test('kieAiService only treats timeout-like failures as recoverable when provider task id exists', () => {
+  assert.match(
+    kieAiSource,
+    /export const isRecoverableKieTaskResult = \(taskId\?: string, errorMessage\?: string, errorCode\?: string\) => \{\s*if \(!String\(taskId \|\| ''\)\.trim\(\)\) return false;/s,
+  );
+});
+
+test('kieAiService explicitly excludes credit and request-limit failures from auto recovery', () => {
+  assert.match(
+    kieAiSource,
+    /const KIE_NON_RECOVERABLE_ERROR_CODES = new Set\(\[[\s\S]*'provider_credit_insufficient'[\s\S]*'provider_request_limit'[\s\S]*'provider_bad_request'[\s\S]*\]\)/,
+  );
+});
+
+test('kieAiService exposes a shared recharge prompt for KIE credit failures', () => {
+  assert.match(
+    kieAiSource,
+    /export const getUserFacingKieErrorMessage = \(result:[\s\S]*if \(errorCode === 'provider_credit_insufficient'\) \{\s*return '当前 KIE 账户余额不足，相关生图功能暂不可用，请充值后重试。';/s,
+  );
+});

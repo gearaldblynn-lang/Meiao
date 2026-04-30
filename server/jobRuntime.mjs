@@ -5,6 +5,14 @@ const RETRYABLE_ERROR_CODES = new Set([
   'provider_timeout',
 ]);
 
+const TRANSIENT_MYSQL_CONNECTION_ERROR_CODES = new Set([
+  'PROTOCOL_CONNECTION_LOST',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EPIPE',
+]);
+
 const AGENT_MODEL_CATALOG = {
   chat: [
     {
@@ -55,14 +63,14 @@ const AGENT_MODEL_CATALOG = {
       supportsTransparentBackground: false,
     },
     {
-      id: 'nano-banana-pro',
-      label: 'Nano Banana Pro',
+      id: 'gpt-image-2',
+      label: 'GPT Image 2',
       provider: 'kie',
       supportsMultiImageInput: true,
       supportsImageEdit: true,
-      maxInputImages: 10,
+      maxInputImages: 16,
       defaultSize: 'auto',
-      defaultResolution: '2K',
+      defaultResolution: '',
       supportedSizes: ['auto', '1:1', '3:4', '4:3', '4:5', '9:16', '16:9'],
       supportsTransparentBackground: false,
     },
@@ -129,6 +137,9 @@ export const normalizeAllowedOrigins = (value) => {
 };
 
 export const isRetryableErrorCode = (errorCode) => RETRYABLE_ERROR_CODES.has(String(errorCode || ''));
+
+export const isTransientMysqlConnectionError = (error) =>
+  TRANSIENT_MYSQL_CONNECTION_ERROR_CODES.has(String(error?.code || ''));
 
 export const getNextJobFailureState = ({ retryCount = 0, maxRetries = 0, errorCode = '' }) => {
   if (!isRetryableErrorCode(errorCode)) {

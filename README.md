@@ -6,6 +6,21 @@
 
 当前项目本地默认开发入口是 `http://localhost:3000`。
 
+## 项目定位
+
+梅奥 AI 是面向公司内部多人使用的电商视觉工具，不是公网 SaaS。当前代码采用 React + Vite 前端、Node.js 内部 API 服务，第三方模型调用、素材上传、任务队列、账号、日志和系统配置都通过 `server/index.mjs` 收口。
+
+当前主要模块：
+- 智能体中心
+- 一键主详：首图、主图、详情、SKU
+- 出海翻译
+- 买家秀
+- 产品精修
+- 短视频生成
+- 小红书封面
+- 系统设置
+- 账号管理与运行日志
+
 ## 本地启动
 
 前置条件：已安装 Node.js，并已在项目目录执行过 `npm install`。
@@ -60,3 +75,27 @@ npm run dev
    检查 `http://127.0.0.1:3100/api/health` 是否正常。
 3. 启动时报端口占用
    先释放被占用的 `3000` 或 `3100`，再重新运行 `npm run local`。
+
+## 常用验证
+
+```bash
+npm run acceptance
+npm run lint
+npm run build
+```
+
+针对服务端任务队列、素材和 provider 网关的重点回归，可以按需执行：
+
+```bash
+node --test server/jobRuntime.test.mjs
+node --test server/providerGateway.test.mjs
+node --test server/assetStore.test.mjs
+```
+
+## 关键文档
+
+- `AGENTS.md`：AI 接手本项目时必须先读的项目约定。
+- `项目交接上下文.md`：长期协作偏好、产品定位、日志和版本规则。
+- `docs/project-overview.md`：当前架构、模块、API、环境变量和验证入口速查。
+- `docs/release-and-handoff.md`：发布、GitHub 备份和腾讯云接手说明。
+- `docs/tencent-cloud-deploy.md`：腾讯云内部版部署 runbook。

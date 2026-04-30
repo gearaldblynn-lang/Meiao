@@ -112,6 +112,24 @@ const REFERENCE_DIMENSION_LABELS: Record<OneClickReferenceDimension, string> = {
   copy_content: '文案内容',
 };
 
+const RTCFE_COPY_LAYOUT_FORMAT_BLOCK = `-文案内容排版：
+主标题（字体，字号字重，位置，颜色色值）：“xxx”
+其他内容（字体，字号字重，位置，颜色色值）：“xxx”
+...`;
+
+const RTCFE_COPY_LAYOUT_EXAMPLE_BLOCK = `-文案内容排版：
+主标题（宋体，28pt Bold，画面顶部居中，#3d3d3d）：“全屋持久留香”
+副标题（黑体，16pt Light，主标题下方居中，#000000）：“法式沙龙调香，持续散香”
+点缀（潇洒手写体，16pt Medium，右上角，#ff6600）：“love potion”`;
+
+const RTCFE_COPY_LAYOUT_CONSTRAINTS = [
+  '文案内容排版必须严格按输出规范和示例输出。',
+  '圆括号内必须依次填写字体、字号字重、位置、颜色色值。',
+  '只有中文引号“”内的文字才是最终需要渲染到画面中的正文文案。',
+  '字段名、冒号、说明文字、示例标签都不得出现在最终画面中。',
+  '不得输出旧格式或自由格式。',
+].join('\n');
+
 export const analyzeOneClickReferenceSet = async (
   referenceUrls: string[],
   dimensions: OneClickReferenceDimension[],
@@ -132,14 +150,26 @@ export const analyzeOneClickReferenceSet = async (
         ? '详情模式：重点总结整套详情的风格统一方式、版式节奏、模块排布与长图阅读层级。更关注风格延续、信息分段方式、文案区和图像区的排版逻辑。'
         : 'SKU模式：重点总结SKU排版结构、组合呈现方式、不同SKU之间如何保持统一又有区分。更关注SKU组合的呈现框架、文案区结构和商品/赠品的排布方式。';
 
-    const userPrompt = `请分析这组设计参考图，并输出后续策划可直接复用的参考结论。
+    const userPrompt = `R Role 角色
+你是电商视觉参考分析师。
 
-请只分析用户勾选的参考维度：${dimensionText}。
-若勾选了文案内容，只提炼可复用的宣传表达方向、语气、卖点组织方式，不要照抄具体品牌名、商品名或不可复用的专属文案。
-不要分析这是什么产品、卖什么功能、适合什么人群，只分析设计语言、版式规则、视觉表达方式。
-${sceneInstruction}
+T Task 任务
+分析这组设计参考图，并输出后续策划可直接复用的参考结论。
 
-输出格式：
+C Constraint 约束
+1. 请只分析用户勾选的参考维度：${dimensionText}。
+2. 若勾选了文案内容，只提炼可复用的宣传表达方向、语气、卖点组织方式，不要照抄具体品牌名、商品名或不可复用的专属文案。
+3. 不要分析这是什么产品、卖什么功能、适合什么人群，只分析设计语言、版式规则、视觉表达方式。
+4. ${sceneInstruction}
+5. 只总结被勾选的维度；未勾选的维度不要输出。
+6. 如果某个维度在这组图里不稳定，要明确写出“不建议强绑定”。
+7. 结论必须可直接进入后续策划，不要空泛；统一时总结具体共性，差异大时提炼抽象共性。
+8. 如果同一维度在这组图中风格高度统一，要总结出更具体的共性特征。
+9. 如果同一维度在这组图中差异较大，要提炼更抽象、更上位的大致共性。
+10. 例如统一时可写到字体类别、常见字重、字号区间、气质倾向；例如差异较大时可写成现代无衬线、字重大、字号偏大、爆点醒目这类抽象共性。
+11. 以上内容作为方案策划内容的设计参考，三个模块的策划输出内容需要参考以上的设计风格进行制作并输出结果。
+
+F Format 格式
 只输出用户实际勾选的维度对应栏目，没勾选的维度不要输出。
 如果用户勾选了“视觉风格”，输出：- 视觉风格：xxx（主要描述视觉形式，设计风格，设计偏向）
 如果用户勾选了“字体”，输出：- 字体：主要描述不同的字体的选用，字体的大小，字重，字体间配色，营造的调性
@@ -147,16 +177,9 @@ ${sceneInstruction}
 如果用户勾选了“排版”，输出：- 排版：版式设计，构图设计内容，组合等等
 如果用户勾选了“文案内容”，输出：- 文案内容：摘选一些直接抄的文案卖点（一般只有跟产品是同样的产品的时候才会选择）
 
-以上内容作为方案策划内容的设计参考，三个模块的策划输出内容需要参考以上的设计风格进行制作并输出结果。
-
-要求：
-1. 只总结被勾选的维度。
-2. 如果某个维度在这组图里不稳定，要明确写出“不建议强绑定”。
-3. 未勾选的维度不要输出。
-4. 结论必须可直接进入后续策划，不要空泛。
-5. 如果同一维度在这组图中风格高度统一，要总结出更具体的共性特征。
-6. 如果同一维度在这组图中差异较大，要提炼更抽象、更上位的大致共性。
-7. 例如统一时可写到字体类别、常见字重、字号区间、气质倾向；例如差异较大时可写成现代无衬线、字重大、字号偏大、爆点醒目这类抽象共性。`;
+E Example 示例
+- 视觉风格：高饱和撞色、强对比、首屏爆点明确
+- 排版：主体居中偏大，标题区上置，卖点区右下角补充`;
 
     const inputContent: any[] = [{ type: "text", text: userPrompt }];
     referenceUrls.filter(Boolean).forEach((url, index) => {
@@ -188,14 +211,25 @@ export const analyzeRetouchTask = async (
   try {
     logArkEvent('retouch_analysis', '开始分析精修任务', 'started', '', { mode });
     const isWhiteBg = mode === 'white_bg';
-    const systemPrompt = `你是一位世界顶级的商业摄影修图师 and 视觉总监。你的任务是分析原始图，并给出专业的精修指令。
-    【精修核心原则】：
-    1. 主体保真：严禁改变品牌 Logo、标签文字内容。
-    2. 原图连续性：原图精修必须以原图现有画面为基础做优化，不得脱离原图重新设计一张新画面。
-    3. 构图连续性：禁止随意替换原图的主体、场景、拍摄角度、构图关系和主要陈列方式。
-    4. 内容克制：若无明确要求，不得新增不存在的背景、道具、装饰元素或额外产品。
-    5. 风格匹配：根据品类自动匹配（食品类追求食欲感，护肤品追求清透感）。
-    6. 商业重塑：优化光影对比，使产品在视觉上符合高端商业大片的质感。`;
+    const systemPrompt = `R Role 角色
+你是一位世界顶级的商业摄影修图师 and 视觉总监。
+
+T Task 任务
+分析原始图，并给出专业的精修指令。
+
+C Constraint 约束
+1. 主体保真：严禁改变品牌 Logo、标签文字内容。
+2. 原图连续性：原图精修必须以原图现有画面为基础做优化，不得脱离原图重新设计一张新画面。
+3. 构图连续性：禁止随意替换原图的主体、场景、拍摄角度、构图关系和主要陈列方式。
+4. 内容克制：若无明确要求，不得新增不存在的背景、道具、装饰元素或额外产品。
+5. 风格匹配：根据品类自动匹配（食品类追求食欲感，护肤品追求清透感）。
+6. 商业重塑：优化光影对比，使产品在视觉上符合高端商业大片的质感。
+
+F Format 格式
+输出简洁专业的英文精修指令。
+
+E Example 示例
+[渲染风格定义] clean premium studio lighting`;
 
     const modeSpecificPrompt = isWhiteBg 
       ? `【目标：纯净白底精修模式】请输出如下英文指令：[主体白底精修]、[渲染风格定义]、[主体构图矫正]、[主体光影重塑]、[质感细节还原]、[色彩微调]。`
@@ -236,30 +270,18 @@ export const generateMarketingSchemes = async (
 ): Promise<ArkSchemeResult> => {
   try {
     const isDetail = subMode === OneClickSubMode.DETAIL_PAGE;
-    logArkEvent('marketing_plan', `开始策划${isDetail ? '详情页' : '主图'}方案`, 'started', '', {
+    const isFirstImage = subMode === OneClickSubMode.FIRST_IMAGE;
+    const planningLabel = isDetail ? '详情页' : isFirstImage ? '首图' : '主图';
+    const planningTaskLabel = isDetail ? '详情页长卷方案' : isFirstImage ? '首图方案' : '全套主图方案';
+    const planningSeriesLabel = isDetail ? '详情页全案' : isFirstImage ? '单屏首图' : '主图系列';
+
+    logArkEvent('marketing_plan', `开始策划${planningLabel}方案`, 'started', '', {
       count: config.count,
       subMode,
     });
     const targetLang = config.language;
     const platform = config.platform;
     const isCrossBorder = config.platformType === 'crossborder';
-    const copyLayoutTemplate = `文案内容排版格式模板：
-- 文案内容排版:
-文案角色（可变）(文案要求，例如：字号、字重、位置、颜色):“这里仅填写最终要渲染的正文文案”
-文案角色（可变）(文案要求，例如：字号、字重、位置、颜色):“这里仅填写最终要渲染的正文文案”
-...
-
-硬性格式要求：
-1. 所有文案排版行都必须严格使用上述语法：角色名(要求):“正文文案”
-2. 文案角色名可以变化，例如主文案、副文案、卖点文案、标签、角标等，但语法结构不得变化。
-3. 禁止输出模板外解释、补充说明、示例分析、散文描述。
-4. 圆括号内是排版要求，不属于要渲染的正文文案；只有中文引号内的文字才是最终要出现在画面中的文案内容。
-5. 禁止在圆括号内填写任何会被当成正文渲染的内容；禁止把要求写进中文引号内。
-6. 不得把文案信息混入“画面描述”栏位。
-7. 如果用户输入、卖点资料、参考文案里出现旧格式，例如：•主文案：「冷冻后更好吃」— 钉钉进步体，大，上方居中，深棕色，必须先重写成标准格式，不得原样保留。
-8. 禁止输出以下非标准写法：•主文案：「正文」— 字体、字号、位置、颜色；「正文」— 要求；角色名：正文（要求）。
-9. 字体名称属于要求信息，不得直接写进最终正文文案；若用户提供了字体名，只能转译为字重、大小、位置、颜色等排版要求。`;
-    
     // 逻辑还原：处理 "Auto" 比例
     // 详情页模式：允许 Auto，传递智能适配指令给 AI
     // 主图模式：UI已屏蔽Auto，但作为防守逻辑回退到 1:1
@@ -284,6 +306,12 @@ export const generateMarketingSchemes = async (
          1. **智能比例适配**：根据每一屏的展示任务决定比例。首屏、大场景氛围图、模特场景图可用 3:4 或 9:16；卖点拆解、细节特写、参数展示、对比展示可用 1:1 或 4:3。**严禁整套都默认写成 9:16**，也**严禁输出 auto**。
          2. **内容服从产品调性**：画面内容必须贴合产品品类、价格带、使用场景与品牌气质，不能空泛堆场景。
          3. **移动端优先**：主体清晰，信息层级明确，手机端浏览时一眼能看懂。`
+      : isFirstImage
+        ? `【首图策划规则】：
+           1. **只输出单屏首图**：当前任务只需要 1 个首图方案，禁止扩写成整套主图、多张主图或多个备选屏。
+           2. **首屏点击力优先**：画面必须服务首图点击率，第一眼突出主体、核心卖点和品牌气质。
+           3. **移动端优先**：主体清晰放大，信息层级明确，确保手机端缩略图和首屏都能一眼识别重点。
+           4. **国家文化审美适配**：目标语言/地区为【${targetLang}】，请确保画面风格符合该地区的本土化审美。`
       : `【主图策略：平台/设备/文化深度适配】：
          1. **全局强制比例约束**：本案用户指定全局画面比例为【${effectiveMainRatio}】。你必须基于此比例进行构图策划（例如若为 3:4 则设计竖向构图，1:1 则设计正方形构图），并在每一屏方案的[-画面比例]栏位严格回填“${effectiveMainRatio}”。
          2. **平台算法匹配**：
@@ -294,33 +322,45 @@ export const generateMarketingSchemes = async (
          4. **国家文化审美适配**：
             - 目标语言/地区为【${targetLang}】，请确保画面风格符合该地区的本土化审美。`;
 
-    const systemPrompt = `你是一位顶级电商视觉总监，负责为【${platform}】输出高转化的${isDetail ? '详情页全案' : '主图系列'}。
+    const systemPrompt = `R Role 角色
+你是顶级电商视觉总监，负责为【${platform}】输出高转化的${planningSeriesLabel}。
 
-    【硬性要求】
-    1. 每一屏必须用 [SCHEME_START] 和 [SCHEME_END] 单独包裹，不能混屏。
-    2. 全套视觉必须统一，不能一屏一个风格。
-    3. 禁止编造促销活动、价格、赠品等未提供信息。
-    4. 文案排版要简洁明确，写清内容、字重字号、颜色和位置。
-    5. ${platformLogicPrompt}`;
+T Task 任务
+为【${platform}】策划 ${config.count} 屏【${planningTaskLabel}】，每屏都要给出完整可执行的视觉方案。
 
-    const userPrompt = `为【${platform}】策划 ${config.count} 屏【${isDetail ? '详情页长卷方案' : '全套主图方案'}】。
-产品描述：${config.description}
-目标语言：${targetLang}
-${config.planningLogic ? `自定义叙事逻辑：${config.planningLogic}` : ""}
-${referenceAnalysisSummary ? `【参考分析结论】\n${referenceAnalysisSummary}` : styleUrl ? `风格参考图：${styleUrl}。仅提炼其配色、光影、材质与氛围作为整套视觉基调。` : ""}
-${logoUrl ? `品牌logo图：${logoUrl}。该图仅用于识别和还原我方品牌logo，不得把产品素材图或设计参考图中的其他品牌logo带入最终画面。若产品素材中出现竞品logo或他牌标识，最终生成图必须去除或替换为品牌logo图对应的我方logo。` : "若产品素材中出现竞品logo或他牌标识，最终方案与生成图都必须去除这些非我方品牌标识，禁止直接沿用。"}
+C Constraint 约束
+1. 每一屏必须用 [SCHEME_START] 和 [SCHEME_END] 单独包裹，不能混屏。
+2. 全套视觉必须统一，不能一屏一个风格。
+3. 禁止编造促销活动、价格、赠品等未提供信息。
+4. 描述简练、精准，内容必须服务产品卖点与产品调性。
+5. ${platformLogicPrompt}
+6. ${isFirstImage ? '首图模式下只允许输出 1 个首图方案；即使你想到多个方向，也只能保留当前最优方案输出。' : '按用户要求输出对应屏数，不得擅自增加屏数或补充额外方案。'}
+7. ${RTCFE_COPY_LAYOUT_CONSTRAINTS}
+8. 不得把文案信息混入“画面描述”栏位；若上游输入是旧格式，必须先改写成标准格式再输出。
+9. ${logoUrl ? '品牌logo图仅用于识别和还原我方品牌logo，不得带入任何竞品logo或他牌标识。' : '若产品素材中出现竞品logo或他牌标识，最终方案与生成图都必须去除这些非我方品牌标识。'}
 
-单屏输出字段：
-- 屏序/类型：${isDetail ? '[如：第1屏-Hero首屏]' : '[如：主图1-核心卖点展示]'}
+F Format 格式
+每屏必须严格按以下字段顺序输出：
+[SCHEME_START]
+- 屏序/类型：${isDetail ? '[如：第1屏-Hero首屏]' : isFirstImage ? '[如：首图-核心视觉]' : '[如：主图1-核心卖点展示]'}
 - 设计意图：一句话说明
 - 画面风格：简明描述整体调性
 - 画面描述：聚焦主体、场景、构图与卖点表达
-- 文案内容排版：严格按 角色名(要求):“正文文案” 输出
+${RTCFE_COPY_LAYOUT_FORMAT_BLOCK}
 - 画面比例：[${ratioPromptInstruction}]
+[SCHEME_END]
 
-${copyLayoutTemplate}
+E Example 示例
+${RTCFE_COPY_LAYOUT_EXAMPLE_BLOCK}
+点缀（潇洒手写体，16pt Medium，右上角,#ff6600）：“love potion”`;
 
-要求：描述简练、精准，避免重复表达；内容必须服务产品卖点与产品调性。文案内容排版不得自由发挥格式，不得输出模板之外的解释文本。若上游输入给出的文案格式不标准，你必须主动改写成标准模板后再输出。请开始策划。`;
+    const userPrompt = `产品描述：${config.description}
+目标语言：${targetLang}
+${config.planningLogic ? `自定义叙事逻辑：${config.planningLogic}` : ""}
+${referenceAnalysisSummary ? `【参考分析结论】\n${referenceAnalysisSummary}` : styleUrl ? `风格参考图：${styleUrl}。仅提炼其配色、光影、材质与氛围作为整套视觉基调。` : ""}
+${logoUrl ? `品牌logo图：${logoUrl}。该图仅用于识别和还原我方品牌logo，不得把产品素材图或设计参考图中的其他品牌logo带入最终画面。若产品素材中出现竞品logo或他牌标识，最终生成图必须去除或替换为品牌logo图对应的我方logo。` : ""}
+
+请开始策划。`;
 
     const inputContent: any[] = [];
     inputContent.push({ type: "text", text: `${systemPrompt}\n\n${userPrompt}` });
@@ -370,7 +410,7 @@ ${copyLayoutTemplate}
         throw new Error("AI 返回的内容格式不正确，无法解析为有效的策划方案。内容预览: " + content.substring(0, 100) + "...");
       }
       
-      logArkEvent('marketing_plan', `${isDetail ? '详情页' : '主图'}方案策划成功`, 'success', '', {
+      logArkEvent('marketing_plan', `${planningLabel}方案策划成功`, 'success', '', {
         count: schemes.slice(0, config.count).length,
         subMode,
       });
@@ -379,9 +419,116 @@ ${copyLayoutTemplate}
       clearTimeout(timeoutId);
     }
   } catch (error: any) {
-    logArkEvent('marketing_plan', `${subMode === OneClickSubMode.DETAIL_PAGE ? '详情页' : '主图'}方案策划失败`, 'failed', error.message, {
+    const failureLabel = subMode === OneClickSubMode.DETAIL_PAGE ? '详情页' : subMode === OneClickSubMode.FIRST_IMAGE ? '首图' : '主图';
+    logArkEvent('marketing_plan', `${failureLabel}方案策划失败`, 'failed', error.message, {
       count: config.count,
       subMode,
+    });
+    return { status: 'error', schemes: [], message: error.message };
+  }
+};
+
+export const generateFirstImageReplicationSchemes = async (
+  productUrls: string[],
+  referenceUrls: string[],
+  config: OneClickConfig,
+  apiConfig: GlobalApiConfig,
+  signal?: AbortSignal,
+  logoUrl?: string | null,
+): Promise<ArkSchemeResult> => {
+  try {
+    const targetLang = config.language;
+    const platform = config.platform;
+    const firstImageColorMode = config.firstImageColorMode === 'reference_locked' ? 'reference_locked' : 'product_adaptive';
+    const ratioInstruction = config.aspectRatio === AspectRatio.AUTO
+      ? '必须填入：1:1'
+      : `必须填入：${config.aspectRatio || AspectRatio.SQUARE}`;
+    const validReferenceUrls = referenceUrls.filter(Boolean);
+
+    if (validReferenceUrls.length === 0) {
+      return { status: 'error', schemes: [], message: '首图裂变模式必须至少上传 1 张主图参考。' };
+    }
+
+    logArkEvent('first_image_replication_plan', '开始策划首图裂变方案', 'started', '', {
+      count: validReferenceUrls.length,
+      subMode: OneClickSubMode.FIRST_IMAGE,
+    });
+
+    const schemes = await Promise.all(validReferenceUrls.map(async (referenceUrl, index) => {
+      if (signal?.aborted) throw new Error('ABORTED');
+
+      const systemPrompt = `R Role 角色
+你是顶级电商爆款主图裂变策划总监，专门负责在既有爆款主图参考基础上做高还原、高适配的主图复刻裂变。
+
+T Task 任务
+基于产品素材、产品信息及卖点、目标平台与当前这张复刻主图参考，输出 1 套可直接进入生图的首图复刻裂变方案。
+
+C Constraint 约束
+1. 当前任务不是自由创意主图，而是“基于参考图的复刻裂变”。
+2. 你必须分析当前这张复刻主图参考中的关键修改位，包括：商品主体位置、辅助元素位置、文案位置、logo位置、信息层级、版式结构与页面节奏。
+3. 你必须完全基于参考图内容做修改调整，在保持参考图视觉效果、版式设计、页面结构和设计细节的前提下，把参考图中的商品、文案、logo与无关品牌信息替换成我们的内容；允许做的只是“参考图改稿”，不是“另起一张”。
+4. 若本次出图比例与参考图原始比例不一致，必须在保持参考图原有视觉效果和版式关系的前提下，自适应调整为要求比例，不得因此改成另一种构图逻辑。
+5. 文案替换时必须逐一对照参考图原有每个文案位的内容长度与信息密度，替换后的文案字数必须尽量接近原位字数承载能力；必要时做等义压缩和短句化处理，禁止某一文案位明显超字数，避免改完后版面拥挤、信息失衡或观感变差。
+6. 必须去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案。去除后原位置不得留空，必须优先替换为我方品牌 logo、店铺名或与版式匹配的通用信息；若未上传品牌 logo，则改为通用文字信息，并按参考图原有设计逻辑完成补位，不得新增无关元素或虚构信息。未单独上传品牌logo图时，禁止把产品素材图上出现的logo或参考图logo直接当作我方画面品牌识别信息使用。
+7. 商品替换必须严格基于上传商品素材，禁止虚构不存在的商品形态、结构、包装、配件或展示角度。必须严格保留产品及包装本身的一致性，产品与包装展示以素材图实际内容为准；画面描述不要过度细写包装细节形态，只写需要放置的商品或配件内容及摆放关系，包装细节、标签信息和外观一律由上传素材图决定。${logoUrl ? '品牌logo图仅用于识别和还原我方品牌logo，不得带入任何竞品logo或他牌标识。' : '若产品素材中没有品牌logo图，不得凭空编造新品牌logo，也不得把素材图logo直接提取成我方独立品牌元素。'}
+8. 首图配色规则：${firstImageColorMode === 'reference_locked' ? '必须以参考图配色为基准，不主动改动参考图原有配色方案。' : '必须先判断上传商品本身更适合的配色方向，并以商品属性配色方案为主，对参考图原有配色做适配性修改；配色调整后的主色、辅助色、背景色或材质色变化必须明确写进画面描述，不能只笼统写“自适应调整”。'}
+9. 设计意图只写“完全基于参考图内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，则自适应调整为要求比例”，不要展开别的内容。
+10. 画面描述只写以下几类信息：文案更改与字数适配、logo与品牌信息去除后的调整、商品替换方式、配色是否保持参考图基准或根据商品自适应调整。
+
+F Format 格式
+只输出 1 个方案，并严格使用以下字段顺序：
+[SCHEME_START]
+- 屏序/类型：[如：首图裂变1-复刻主图参考1]
+- 参考图标识：[如：复刻主图参考1]
+- 设计意图：xxx（完全基于参考图内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，需要将参考图自适应调整为要求比例）
+- 画面描述：xxx（只写文案更改与字数适配、logo等去除后的调整、商品适应替换、摆放内容与关系、配色保持参考图基准或根据商品自适应；不要细写包装细节形态；文案替换必须体现与原文案位近似字数；若为商品自适应，必须写明商品更适合的配色判断，以及参考图配色如何随之调整）
+- 画面比例：[${ratioInstruction}]
+[SCHEME_END]
+
+E Example 示例
+[SCHEME_START]
+- 屏序/类型：首图裂变1-复刻主图参考1
+- 参考图标识：复刻主图参考1
+- 设计意图：完全基于参考图内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，需要将参考图自适应调整为要求比例
+- 画面描述：主标题位置改为我方文案并按原字数承载能力缩短表达，其他卖点位也逐一按参考图原文案位的近似字数做替换；参考图中的品牌logo、店铺标识和平台文案全部去除，并优先替换为我方品牌logo、店铺名或通用信息，按原版式关系补足信息密度；画面中放置我方主体商品及需要展示的核心配件，并保持与参考图一致的主体展示角度和摆放关系；包装细节与标签信息不在画面描述中展开，统一以上传素材图实际内容为准；${firstImageColorMode === 'reference_locked' ? '整体配色保持参考图基准不变，仅替换商品与文案。' : '先判断我方商品更适合的主配色方向，并以该商品属性配色为主重新组织参考图画面的主色、辅助色和背景色，使参考图原有配色随商品属性做适配性调整。'}
+- 画面比例：[${ratioInstruction}]
+[SCHEME_END]`;
+
+      const userPrompt = `产品信息及卖点：${config.description}
+目标平台：${platform}
+目标语言：${targetLang}
+复刻主图参考（图片URL）：${referenceUrl}
+请先分析产品与卖点，再分析这张复刻主图参考，最后在保持参考图视觉结构的前提下给出卖点替换后的复刻裂变方案。`;
+
+      const inputContent: any[] = [{ type: 'text', text: `${systemPrompt}\n\n${userPrompt}` }];
+      productUrls.forEach((url, productIndex) => {
+        inputContent.push({ type: 'text', text: `[产品素材图${productIndex + 1}]` });
+        inputContent.push({ type: 'image_url', image_url: { url } });
+      });
+      inputContent.push({ type: 'text', text: `[复刻主图参考${index + 1}] ${referenceUrl} 是复刻主图参考，必须基于这张图做主图裂变。` });
+      inputContent.push({ type: 'image_url', image_url: { url: referenceUrl } });
+      if (logoUrl) {
+        inputContent.push({ type: 'text', text: `[品牌logo图] ${logoUrl} 是品牌logo图。` });
+        inputContent.push({ type: 'image_url', image_url: { url: logoUrl } });
+      }
+
+      const content = await requestAnalysisResponse(inputContent, apiConfig, signal);
+      const tagMatch = content.match(/\[SCHEME_START\]([\s\S]*?)\[SCHEME_END\]/);
+      const scheme = tagMatch?.[1]?.trim() || content.trim();
+      if (!scheme) {
+        throw new Error(`复刻主图参考${index + 1} 未返回有效方案。`);
+      }
+      return scheme;
+    }));
+
+    logArkEvent('first_image_replication_plan', '首图裂变策划成功', 'success', '', {
+      count: schemes.length,
+      subMode: OneClickSubMode.FIRST_IMAGE,
+    });
+    return { status: 'success', schemes };
+  } catch (error: any) {
+    logArkEvent('first_image_replication_plan', '首图裂变策划失败', 'failed', error.message, {
+      subMode: OneClickSubMode.FIRST_IMAGE,
     });
     return { status: 'error', schemes: [], message: error.message };
   }
@@ -407,19 +554,39 @@ export const generateSkuSchemes = async (
     const validCombos = config.combinations.filter(c => c.skuCopyText.trim());
     const ratioInstruction = `必须填入：${config.aspectRatio || '1:1'}`;
 
-    const systemPrompt = `你是一位顶级电商视觉总监，专精 SKU 组合展示图策划。
+    const systemPrompt = `R Role 角色
+你是 SKU 组合展示图策划视觉总监，专精高转化电商 SKU 组合展示图策划。
 
-【硬性要求】
+T Task 任务
+基于商品主体图、赠品图、SKU 文案、产品信息与风格参考图，为每个 SKU 输出一套完整展示图方案。
+
+C Constraint 约束
 1. 每个 SKU 方案必须用 [SCHEME_START] 和 [SCHEME_END] 单独包裹。
-2. 全套 SKU 视觉风格必须统一（色调、光影、构图逻辑一致）。
-3. 严禁编造未提供的赠品、促销信息。
-4. 第一张 SKU 作为视觉基准，后续必须保持一致风格。
-5. 不要机械罗列商品，以美观专业的电商展示图为目标。
-6. 传入的图片已标注角色（商品主体图/赠品图/风格参考图），策划时严格区分。
-7. 画面描述中提及商品时必须同时标注身份和名称，格式：【主体商品】名称 或 【赠品】名称，禁止只写名称或只写身份。
-8. 当产品规格与SKU数量存在换算关系时（如一盒15条，SKU标45条），必须正确理解换算，展示数量不得出错（如应展示3盒而非45盒）。
-9. 文案排版中的SKU文案必须完整书写，不得省略或缩写。
-10. 主标题来源规则：有产品信息时根据产品信息提炼主标题；无产品信息时直接使用SKU文案作为主标题。`;
+2. 全套 SKU 视觉风格必须统一（色调、光影、构图逻辑一致），第一张 SKU 作为视觉基准，后续必须保持一致风格。
+3. 严禁编造未提供的赠品、促销信息；传入的图片已标注角色（商品主体图/赠品图/风格参考图），策划时严格区分。
+4. 画面描述中提及商品时必须同时标注身份和名称，格式：【主体商品】名称 或 【赠品】名称，禁止只写名称或只写身份。
+5. 当产品规格与SKU数量存在换算关系时，必须正确理解换算，展示数量不得出错。
+6. 不要机械罗列商品，以美观专业的电商展示图为目标。
+7. ${RTCFE_COPY_LAYOUT_CONSTRAINTS}
+8. 文案排版中的SKU文案必须完整书写，不得省略或缩写；文案内容排版必须优先使用【SKU 组合列表】里当前 SKU 对应的文案内容进行排版制作。
+9. 禁止擅自新增未在【SKU 组合列表】或【产品信息】中出现的新文案；禁止把同一卖点换一种说法重复写多次，避免文案堆积和语义重复。
+10. 除主标题可基于产品信息做精炼提炼外，其他文案都必须有明确依据；有产品信息时根据产品信息提炼主标题，无产品信息时直接使用SKU文案作为主标题。
+
+F Format 格式
+每个 SKU 方案必须严格按以下字段顺序输出：
+[SCHEME_START]
+- SKU标识：[如：SKU一 - 基础套装]
+- 画面风格：xxx
+- 画面描述：描述商品时必须同时标注身份和名称（如"画面中央放置【主体商品】XX面膜3盒，右下角点缀【赠品】化妆棉1包"），包含排列方式、构图逻辑、光影氛围。禁止使用“沿用SKU1的排版”“跟第一张SKU一样”“与上一张一致”这类引用式描述，必须直接写完整的画面描述、排版方式、字体风格、文字摆放和配色要求。商品必须采用正面、稳定、正常陈列的展示角度，禁止躺着放、斜着放、倾倒放置
+-文案内容排版：
+主标题（字体，字号字重，位置，颜色色值）：“xxx”
+其他内容（字体，字号字重，位置，颜色色值）：“xxx”
+...
+- 画面比例：[${ratioInstruction}]
+[SCHEME_END]
+
+E Example 示例
+${RTCFE_COPY_LAYOUT_EXAMPLE_BLOCK}`;
 
     const assetSummary = [
       `- 商品主体图: ${productUrls.length}张`,
@@ -449,13 +616,9 @@ ${referenceAnalysisSummary ? `\n【参考分析结论】\n${referenceAnalysisSum
 - SKU标识：[如：SKU一 - 基础套装]
 - 画面风格：xxx
 - 画面描述：描述商品时必须同时标注身份和名称（如"画面中央放置【主体商品】XX面膜3盒，右下角点缀【赠品】化妆棉1包"），包含排列方式、构图逻辑、光影氛围。禁止使用“沿用SKU1的排版”“跟第一张SKU一样”“与上一张一致”这类引用式描述，必须直接写完整的画面描述、排版方式、字体风格、文字摆放和配色要求。商品必须采用正面、稳定、正常陈列的展示角度，禁止躺着放、斜着放、倾倒放置
-- 文案排版（严格按以下规范输出）：
-  文案角色（可变）(文案要求，例如：字号、字重、位置、颜色):“这里仅填写最终要渲染的正文文案”
-  文案角色（可变）(文案要求，例如：字号、字重、位置、颜色):“这里仅填写最终要渲染的正文文案”
-  ...
 - 画面比例：[${ratioInstruction}]
 
-要求：画面构图要有层次感，主次分明，合理推断每个 SKU 应展示的商品和赠品数量。赠品摆放不能喧宾夺主，主体商品必须最显眼、视觉占比最大。赠品可以按视觉美观适当缩小展示，不必严格还原真实大小。主体商品与赠品都必须正面、稳定、正常陈列。文案排版中的文案文字必须全部使用目标文案语言。文案排版必须优先使用【SKU 组合列表】里当前 SKU 对应的文案内容进行排版制作。禁止擅自新增未在【SKU 组合列表】或【产品信息】中出现的新文案。禁止把同一卖点换一种说法重复写多次，避免文案堆积和语义重复。除主标题可基于产品信息做精炼提炼外，其他文案都必须有明确依据。若提供了风格参考图，所有SKU方案都必须按照该参考图的排版、字体气质、文字摆放、色调与设计风格来策划。所有文案排版行都必须严格使用 角色名(要求):“正文文案” 语法。圆括号内仅是要求，只有中文引号内才是正文；禁止输出模板外解释文本。若上游输入或用户卖点文案是“•主文案：「正文」— 字体, 字号, 位置”这类旧格式，必须先转换成标准模板再输出。请开始策划。`;
+要求：画面构图要有层次感，主次分明，合理推断每个 SKU 应展示的商品和赠品数量。赠品摆放不能喧宾夺主，主体商品必须最显眼、视觉占比最大。赠品可以按视觉美观适当缩小展示，不必严格还原真实大小。主体商品与赠品都必须正面、稳定、正常陈列。文案排版中的文案文字必须全部使用目标文案语言。文案排版必须优先使用【SKU 组合列表】里当前 SKU 对应的文案内容进行排版制作。禁止擅自新增未在【SKU 组合列表】或【产品信息】中出现的新文案。禁止把同一卖点换一种说法重复写多次，避免文案堆积和语义重复。除主标题可基于产品信息做精炼提炼外，其他文案都必须有明确依据。若提供了风格参考图，所有SKU方案都必须按照该参考图的排版、字体气质、文字摆放、色调与设计风格来策划。请开始策划。`;
 
     const inputContent: any[] = [];
     inputContent.push({ type: "text", text: `${systemPrompt}\n\n${userPrompt}` });
@@ -534,35 +697,44 @@ export const generateBuyerShowPrompts = async (
       ? `3. **Include Model Strategy**: The set must include human presence suitable for ${state.targetCountry}. The FIRST task MUST be a benchmark shot. Subsequent shots must maintain consistency. If hasFace=true, the person should look like a local user from ${state.targetCountry}.`
       : `3. **STILL LIFE Strategy**: **NO HUMAN FACES/BODIES.** Focus on product details and scenes. Hands are allowed if necessary for usage demonstration.`;
 
-    const systemPrompt = `You are an expert in generating authentic e-commerce Buyer Reviews (UGC).
-    Target Market: ${state.targetCountry}.
-    Task: Create ${state.imageCount} realistic buyer show photo concepts (JSON) + one review.
-    
-    VISUAL STYLE: **Authentic, Aesthetic & Clean Daily Life (iPhone Style)**.
-    - **Core Concept**: "Casual/Spontaneous" means natural and relaxed, **NOT** dirty, messy, or chaotic.
-    - **Environment**: Must be **CLEAN**, tidy, and visually pleasing (e.g., organized desk, cozy bedroom, bright cafe, neat shelf). **STRICTLY FORBID** messy rooms, trash, stained surfaces, or bad/dark lighting.
-    - **Angle**: Natural user angles. Can be slightly handheld/dynamic, but ensure the product is clearly visible.
-    - **Lighting**: Bright natural light or warm aesthetic indoor light. Avoid dark, gloomy, or flash-glare styles unless specified as artistic.
-    - **Vibe**: Aspirational but attainable. Like a high-quality post on Xiaohongshu or Instagram.
-    
-    PLANNING LOGIC (Coherent Story):
-    The ${state.imageCount} images must form a logical set covering multiple aspects:
-    1. **Context**: Show the product in a NICE, CLEAN real-life environment.
-    2. **Detail**: Close-up of texture/material.
-    3. **Usage/Interaction**: How it is used.
-    
-    Output Format: JSON ONLY.
-    Structure:
+    const systemPrompt = `R Role 角色
+You are an expert in generating authentic e-commerce Buyer Reviews (UGC) for ${state.targetCountry}.
+
+T Task 任务
+Create ${state.imageCount} realistic buyer-show photo concepts in JSON, plus one native-language review.
+
+C Constraint 约束
+1. Visual style must be authentic, aesthetic, clean daily life (iPhone style).
+2. "Casual/Spontaneous" means natural and relaxed, not dirty, messy, chaotic, dark, or low-quality.
+3. Environment must be clean, tidy, and visually pleasing; forbid trash, stained surfaces, and bad lighting.
+4. The ${state.imageCount} images must form a coherent set covering context, detail, and usage/interaction.
+5. ${modelPrompt}
+6. If hasFace=true, the person should look like a local user from ${state.targetCountry}.
+
+F Format 格式
+Output JSON only:
+{
+  "tasks": [
     {
-      "tasks": [
-        { 
-          "prompt": "Visual description in English for Image AI. Keywords: aesthetic iPhone shot, clean background, natural light. If hasFace=true, the person should look like a local user from the target market.",
-          "style": "中文简短描述(例如: '午后阳光下的整洁桌面', '温馨的卧室一角', '手持细节展示'). 必须使用中文.",
-          "hasFace": boolean (true ONLY if a human face is clearly visible)
-        }
-      ],
-      "evaluation": "A single, authentic, enthusiastic review text in the native language of ${state.targetCountry}."
-    }`;
+      "prompt": "Visual description in English for Image AI.",
+      "style": "中文简短描述，必须使用中文。",
+      "hasFace": true
+    }
+  ],
+  "evaluation": "Native-language review"
+}
+
+E Example 示例
+{
+  "tasks": [
+    {
+      "prompt": "A clean iPhone-style product shot on a tidy desk with natural window light.",
+      "style": "午后阳光下的整洁桌面",
+      "hasFace": false
+    }
+  ],
+  "evaluation": "..."
+}`;
 
     // 合并产品信息
     const productInfo = state.productName
@@ -663,7 +835,22 @@ export const generatePureEvaluations = async (
       targetCountry: state.targetCountry,
     });
     const count = 5;
-    const systemPrompt = `You are a local customer in ${state.targetCountry}. Write ${count} distinct, authentic product reviews for an e-commerce site.`;
+    const systemPrompt = `R Role 角色
+You are a local customer in ${state.targetCountry}.
+
+T Task 任务
+Write ${count} distinct, authentic product reviews for an e-commerce site.
+
+C Constraint 约束
+1. Reviews must sound natural and local.
+2. Only use the provided product information.
+3. Output JSON array of strings only.
+
+F Format 格式
+["Review 1...", "Review 2..."]
+
+E Example 示例
+["Great texture and easy to use.", "Looks even better in person."]`;
     
     const productInfo = state.productName 
         ? `${state.productName}\nFeatures: ${state.productFeatures}` 
@@ -715,26 +902,22 @@ export const generateVeoScript = async (
   const totalDuration = parseInt(config.duration);
   const segmentCount = Math.max(1, Math.floor(totalDuration / 8));
 
-  const systemPrompt = `你是一个拥有 10 年经验的短视频导演，擅长极简视觉和精准口播。
-任务：基于参考图和卖点规划一套高一致性的视频剧本。
+  const systemPrompt = `R Role 角色
+你是一个拥有 10 年经验的短视频导演，擅长极简视觉和精准口播。
 
-[视觉开场规范]（极重要）：
-1. **全主体整合**：第一个 8 秒分镜（INITIAL）的视觉描述必须整合并包含 [所有提供的参考图] 中的核心主体元素（如产品全貌、细节特质、使用环境）。
-2. **视觉锚点**：确保开场即建立品牌/产品的视觉基准，让观众一眼识别出参考图中的核心信息。
+T Task 任务
+基于参考图和卖点规划一套高一致性的视频剧本。
 
-[音色一致性规范]：
-1. **全局唯一音色**：你必须先选定一个确定的【音色特质描述】（如：25岁活力女声）。
-2. **标签复用**：所有分镜的 "spokenContent" 必须以该音色标签开头，格式：(音色描述)：文案内容。
+C Constraint 约束
+1. 第一个 8 秒分镜（INITIAL）的视觉描述必须整合并包含所有提供的参考图中的核心主体元素。
+2. 开场必须建立清晰的品牌/产品视觉锚点。
+3. 你必须先选定一个全局唯一音色；所有分镜的 spokenContent 都必须以该音色标签开头，格式：(音色描述)：文案内容。
+4. 严禁编造具体折扣、库存状态或价格，除非用户明确提供。
+5. 每个分镜仅 8 秒。中文/日文每段文案严禁超过 35 字；英文/西语严禁超过 20 个单词。
+6. 文案必须能在 7 秒内自然读完，预留 1 秒转场呼吸。
 
-[口播内容与时长适配规范]（严格执行）：
-1. **严禁编造**：绝对禁止编造具体的折扣（如 20% off）、库存状态（如 limited stock）或价格，除非用户在“核心卖点”中明确提供。
-2. **字数严格压缩**：每个分镜仅 8 秒，为保证语速自然且有呼吸感，请严格控制文案长度。
-   - **中文/日文**：每个分镜文案【严禁超过 35 字】。
-   - **英文/西语**：每个分镜文案【严禁超过 20 个单词】。
-3. **目标**：文案必须能在 7 秒内悠闲读完，预留 1 秒转场呼吸。
-
-[返回格式]:
-必须返回符合 [目标语言] 的纯 JSON 格式：
+F Format 格式
+必须返回符合目标语言的纯 JSON：
 {
   "voice_tag": "选定的唯一音色描述（如：25岁活力女声）",
   "segments": [
@@ -743,6 +926,19 @@ export const generateVeoScript = async (
       "description": "整合了所有参考图主体的镜头运动细节描述（严禁提及字幕、文字）",
       "spokenContent": "(音色描述)：精炼、真实、适配 8 秒时长的文案",
       "bgm": "音乐风格"
+    }
+  ]
+}
+
+E Example 示例
+{
+  "voice_tag": "25岁活力女声",
+  "segments": [
+    {
+      "title": "分镜1(0-8s) - 全主体呈现",
+      "description": "镜头掠过产品全貌后停在核心细节，暖色高光勾勒质感。",
+      "spokenContent": "(25岁活力女声)：开场一句就点出核心卖点。",
+      "bgm": "轻快时尚电子"
     }
   ]
 }`;
@@ -830,24 +1026,38 @@ export const generateVideoScript = async (
     const totalDuration = parseInt(config.duration);
     const sceneCount = Math.max(1, Math.floor(totalDuration / 5));
 
-    const systemPrompt = `你是一位世界顶级的电商视频导演和视觉策划专家。
-    任务：为一款产品策划一段时长为 ${totalDuration} 秒的短视频分镜脚本。
-    
-    【策划核心原则】：
-    1. 视觉冲击力：开场 3 秒必须抓住眼球。
-    2. 卖点聚焦：根据用户提供的“产品卖点”进行视觉化呈现。
-    3. 节奏感：分镜切换自然，符合商业大片节奏。
-    
-    【输出格式】：
-    必须返回纯 JSON 格式：
+    const systemPrompt = `R Role 角色
+你是一位世界顶级的电商视频导演和视觉策划专家。
+
+T Task 任务
+为一款产品策划一段时长为 ${totalDuration} 秒的短视频分镜脚本。
+
+C Constraint 约束
+1. 开场 3 秒必须抓住眼球。
+2. 分镜必须围绕用户提供的产品卖点做视觉化呈现。
+3. 分镜切换自然，符合商业大片节奏。
+4. Scene 只写画面、镜头运动、光影氛围、产品动态，严禁提及文字或字幕。
+5. 只输出 JSON，不要解释。
+
+F Format 格式
+{
+  "scenes": [
     {
-      "scenes": [
-        {
-          "Scene": "详细的画面描述，包含镜头运动、光影氛围、产品动态。严禁提及文字/字幕。",
-          "duration": 5
-        }
-      ]
-    }`;
+      "Scene": "详细的画面描述，包含镜头运动、光影氛围、产品动态。严禁提及文字/字幕。",
+      "duration": 5
+    }
+  ]
+}
+
+E Example 示例
+{
+  "scenes": [
+    {
+      "Scene": "镜头从产品包装缓慢推进到核心细节，暖色光线扫过表面质感。",
+      "duration": 5
+    }
+  ]
+}`;
 
     const userPrompt = `
     产品卖点：${config.sellingPoints}

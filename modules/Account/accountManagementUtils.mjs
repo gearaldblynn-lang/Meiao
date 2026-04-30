@@ -47,6 +47,9 @@ export const deriveLogFailureReason = (log) => {
   const message = String(meta.providerMessage || meta.errorMessage || detail || '').trim();
 
   if ((providerStage === 'analysis') || errorCode === 'analysis_failed') return '分析失败';
+  if (providerStatus === 'credit_insufficient' || errorCode === 'provider_credit_insufficient') return '余额不足';
+  if (providerStatus === 'request_limit' || errorCode === 'provider_request_limit') return '额度受限';
+  if (providerStatus === 'recoverable_pending_result') return '结果待同步';
   if (providerStage === 'create_task') return '创建任务失败';
   if (providerStage === 'polling' && (providerStatus === 'timeout' || errorCode === 'provider_timeout')) return '轮询超时';
   if (providerStatus === 'rate_limited' || errorCode === 'provider_rate_limited') return '请求过频';
@@ -56,6 +59,8 @@ export const deriveLogFailureReason = (log) => {
   if (providerStatus === 'network_error' || errorCode === 'provider_network_error') return '网络异常';
   if (errorCode === 'provider_bad_request') return '参数不合法';
   if (/超时/.test(message)) return '轮询超时';
+  if (/credits insufficient|余额不足/i.test(message)) return '余额不足';
+  if (/sub-?key|exceeds limit|额度|433/i.test(message)) return '额度受限';
   if (/鉴权|未配置|key/i.test(message)) return '鉴权失败';
   if (/频繁|限流|429/.test(message)) return '请求过频';
   if (/不存在|过期/.test(message)) return '任务不存在';

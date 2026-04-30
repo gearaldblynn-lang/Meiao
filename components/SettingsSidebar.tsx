@@ -1,8 +1,9 @@
 
 import React, { useState } from 'react';
 import { AspectRatio, ModuleConfig, GenerationQuality, AppModule, TranslationSubMode } from '../types';
-import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../utils/modelQuality';
+import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../utils/modelAspectRatio';
+import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
 import { PopoverSelect, PrimaryActionButton, SectionCard, SegmentedTabs, SidebarShell } from './ui/workspacePrimitives';
 
 interface Props {
@@ -75,6 +76,8 @@ const SettingsSidebar: React.FC<Props> = ({
     { label: '21:9', value: AspectRatio.L_21_9, icon: 'fa-tv' },
   ];
   const supportedRatios = getSupportedAspectRatiosForModel(config.model);
+  const modelCapabilities = getImageModelCapabilities(config.model);
+  const qualityOptions = getQualityOptionsForModel(config.model);
   const visibleRatioList = ratioList.filter((item) => {
     if (!supportedRatios.includes(item.value)) return false;
     if (isMainTranslationMode && item.value === AspectRatio.AUTO) return false;
@@ -192,12 +195,16 @@ const SettingsSidebar: React.FC<Props> = ({
                 </button>
               ))}
             </div>
+            {modelCapabilities.supportsLongGenerationWarning && (
+              <p className="mt-2 text-[10px] font-bold text-amber-600">GPT Image 2 生成较慢，通常需要 300-500 秒，请耐心等待。</p>
+            )}
           </SectionCard>
 
+          {qualityOptions.length > 0 && (
           <SectionCard title="渲染引擎质量">
             <label className="text-[10px] font-bold uppercase tracking-[0.2em] block mb-2 text-slate-600">渲染引擎质量</label>
             <div className="flex gap-2">
-              {QUALITY_OPTIONS.map((q) => (
+              {qualityOptions.map((q) => (
                 <button
                   key={q.value}
                   onClick={() => onChange({...config, quality: q.value as GenerationQuality})}
@@ -210,6 +217,7 @@ const SettingsSidebar: React.FC<Props> = ({
               ))}
             </div>
           </SectionCard>
+          )}
 
           <SectionCard title="导出尺寸设置" className="border-indigo-100 bg-indigo-50/70">
             <div className="flex items-center justify-between mb-2">

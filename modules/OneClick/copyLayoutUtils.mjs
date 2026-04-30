@@ -1,16 +1,7 @@
-const FONT_TOKEN_PATTERN = /(字体|字库|font|钉钉|阿里巴巴|优设|普惠体|进步体|标题黑|宋体|黑体|楷体|仿宋|圆体|隶书|行书|魏碑)/i;
-const WEIGHT_TOKEN_PATTERN = /^(加粗|粗体|特粗|中粗|中黑|常规|标准|细体|纤细|轻体|轻薄|bold|regular|medium|semibold|light)$/i;
 const STANDARD_COPY_LINE_PATTERN = /^\s*[•\-\*]?\s*([^:：("“”「」]+?)\s*[（(]\s*([^()（）]*)\s*[）)]\s*[:：]\s*[“"「](.+?)[”"」]\s*$/;
 const LEGACY_COPY_LINE_PATTERN = /^\s*[•\-\*]?\s*([^:："“”「」]+?)\s*[:：]\s*[“"「](.+?)[”"」]\s*(?:[—\-–]|[:：])\s*(.+?)\s*$/;
 
 const normalizeQuoteBody = (value = '') => value.replace(/\s+/g, ' ').trim();
-
-const isFontToken = (token = '') => {
-  const normalized = token.replace(/\s+/g, '');
-  if (!normalized) return false;
-  if (WEIGHT_TOKEN_PATTERN.test(normalized)) return false;
-  return FONT_TOKEN_PATTERN.test(normalized);
-};
 
 const normalizeRequirementTokens = (raw = '') => {
   const tokens = raw
@@ -18,7 +9,6 @@ const normalizeRequirementTokens = (raw = '') => {
     .split(/[，,、/]/)
     .map((token) => token.trim())
     .filter(Boolean)
-    .filter((token) => !isFontToken(token));
 
   return Array.from(new Set(tokens));
 };

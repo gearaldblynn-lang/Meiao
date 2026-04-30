@@ -7,6 +7,7 @@ export enum AppModule {
   RETOUCH = 'retouch',
   PHOTOGRAPHY = 'photography',
   VIDEO = 'video',
+  XHS_COVER = 'xhs_cover',
   SETTINGS = 'settings',
   ACCOUNT = 'account'
 }
@@ -18,6 +19,7 @@ export enum TranslationSubMode {
 }
 
 export enum OneClickSubMode {
+  FIRST_IMAGE = 'first_image',
   MAIN_IMAGE = 'main_image',
   DETAIL_PAGE = 'detail_page',
   SKU = 'sku',
@@ -131,7 +133,7 @@ export enum AspectRatio {
 
 export type GenerationQuality = '1k' | '2k' | '4k';
 export type StyleStrength = 'low' | 'medium' | 'high';
-export type KieAiModel = 'nano-banana-2' | 'nano-banana-pro';
+export type KieAiModel = 'nano-banana-2' | 'gpt-image-2';
 
 export interface GlobalApiConfig {
   kieApiKey: string;
@@ -569,8 +571,15 @@ export interface VideoStoryboardConfig {
   productImages: File[];
   uploadedProductUrls: string[];
   productInfo: string;
+  videoGenerationMode: 'original' | 'viral_split';
   scriptLogic: string;
   scriptPreset: 'custom' | 'ecommerce' | 'viral';
+  referenceVideoFile: File | null;
+  uploadedReferenceVideoUrl: string;
+  viralVariationCount: number;
+  viralVariationStrength: '5' | '10' | '20' | 'custom';
+  viralCustomVariationStrength: string;
+  reservedVideoApiProvider: string;
   aspectRatio: AspectRatio.SQUARE | AspectRatio.P_3_4 | AspectRatio.L_4_3 | AspectRatio.P_4_5 | AspectRatio.P_9_16 | AspectRatio.L_16_9;
   duration: '5s' | '10s' | '15s' | '30s';
   shotCount: 1 | 3 | 4 | 6 | 8 | 9 | 12;
@@ -638,6 +647,7 @@ export interface OneClickConfig {
   language: string;
   count: number;
   aspectRatio?: AspectRatio;
+  firstImageColorMode?: 'product_adaptive' | 'reference_locked';
   quality: GenerationQuality;
   model: KieAiModel;
   styleStrength: StyleStrength;
@@ -669,18 +679,64 @@ export interface OneClickReferenceState {
   referenceAnalysis: OneClickReferenceAnalysis;
 }
 
+export interface OneClickReferencePreset {
+  id: string;
+  name: string;
+  subMode: OneClickSubMode;
+  coverImageUrl: string;
+  referenceImageUrls: string[];
+  summary: string;
+  detail: string;
+  referenceDimensions: OneClickReferenceDimension[];
+  tags: string[];
+  assetId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface OneClickReferencePresetLibrary {
+  presets: OneClickReferencePreset[];
+}
+
 export interface MainImageScheme {
   id: string;
   taskId?: string; 
   uiTitle?: string; 
   originalContent: string;
   editedContent: string;
+  sourceReferenceUrl?: string;
+  sourceReferenceLabel?: string;
+  variationMode?: 'scene' | 'palette' | 'custom';
+  variationInstruction?: string;
+  sourceResultUrl?: string;
   status: 'pending' | 'generating' | 'completed' | 'error' | 'interrupted';
   selected: boolean; 
   resultUrl?: string;
   error?: string;
   extractedRatio?: string; 
 }
+
+export interface OneClickWorkspaceProjectMeta {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  isDraft?: boolean;
+}
+
+export interface OneClickWorkspaceState extends OneClickReferenceState {
+  productImages: File[];
+  logoImage: File | null;
+  uploadedLogoUrl: string | null;
+  styleImage: File | null;
+  schemes: MainImageScheme[];
+  config: OneClickConfig;
+  lastStyleUrl: string | null;
+  uploadedProductUrls: string[];
+  directions: string[];
+}
+
+export interface OneClickWorkspaceProject extends OneClickWorkspaceProjectMeta, OneClickWorkspaceState {}
 
 export interface BuyerShowTask {
   id: string;
@@ -770,29 +826,23 @@ export interface RetouchTask {
 }
 
 export interface OneClickPersistentState {
-  mainImage: OneClickReferenceState & {
-    productImages: File[];
-    logoImage: File | null;
-    uploadedLogoUrl: string | null;
-    styleImage: File | null;
-    schemes: MainImageScheme[];
-    config: OneClickConfig;
-    lastStyleUrl: string | null;
-    uploadedProductUrls: string[];
-    directions: string[];
+  referencePresets: OneClickReferencePresetLibrary;
+  firstImage: OneClickWorkspaceState & {
+    projects: OneClickWorkspaceProject[];
+    activeProjectId: string | null;
   };
-  detailPage: OneClickReferenceState & {
-    productImages: File[];
-    logoImage: File | null;
-    uploadedLogoUrl: string | null;
-    styleImage: File | null;
-    schemes: MainImageScheme[];
-    config: OneClickConfig;
-    lastStyleUrl: string | null;
-    uploadedProductUrls: string[];
-    directions: string[];
+  mainImage: OneClickWorkspaceState & {
+    projects: OneClickWorkspaceProject[];
+    activeProjectId: string | null;
   };
-  sku: SkuPersistentSubState & OneClickReferenceState;
+  detailPage: OneClickWorkspaceState & {
+    projects: OneClickWorkspaceProject[];
+    activeProjectId: string | null;
+  };
+  sku: SkuPersistentSubState & OneClickReferenceState & {
+    projects: SkuWorkspaceProject[];
+    activeProjectId: string | null;
+  };
 }
 
 export interface RetouchPersistentState {
@@ -815,6 +865,7 @@ export interface KieAiResult {
   taskId?: string; 
   status: 'success' | 'error' | 'interrupted' | 'task_not_found';
   message?: string;
+  errorCode?: string;
 }
 
 export interface ArkAnalysisResult {
@@ -965,4 +1016,63 @@ export interface SkuPersistentSubState {
   firstSkuResultUrl: string | null;
   uploadedProductUrls: string[];
   lastStyleUrl: string | null;
+}
+
+export interface SkuWorkspaceProject extends OneClickWorkspaceProjectMeta, SkuPersistentSubState, OneClickReferenceState {}
+
+// ── 小红书封面类型 ──
+
+export type XhsCoverAspectRatio = '3:4' | '1:1' | '9:16';
+
+export type XhsCoverFontStyle = 'variety' | 'songti' | 'rounded' | 'handwriting' | 'calligraphy';
+
+export interface XhsCoverStyle {
+  id: string;
+  name: string;
+  prompt: string;
+  previewEmoji: string;
+  previewImage: string;
+  category: string;
+}
+
+export interface XhsCoverTask {
+  id: string;
+  taskId?: string;
+  styleId: string;
+  styleName: string;
+  status: 'pending' | 'generating' | 'completed' | 'error';
+  resultUrl?: string;
+  error?: string;
+}
+
+export interface XhsCoverProject {
+  id: string;
+  name: string;
+  title: string;
+  subtitle: string;
+  aspectRatio: XhsCoverAspectRatio;
+  fontStyle: XhsCoverFontStyle;
+  decoration: string;
+  extraRequirement: string;
+  createdAt: number;
+  updatedAt: number;
+  tasks: XhsCoverTask[];
+}
+
+export interface XhsCoverPersistentState {
+  productImages: File[];
+  uploadedProductUrls?: string[];
+  title: string;
+  subtitle: string;
+  selectedStyleIds: string[];
+  fontStyle: XhsCoverFontStyle;
+  aspectRatio: XhsCoverAspectRatio;
+  quality: GenerationQuality;
+  model: KieAiModel;
+  decoration: string;
+  extraRequirement: string;
+  projects: XhsCoverProject[];
+  activeProjectId: string | null;
+  tasks: XhsCoverTask[];
+  isGenerating: boolean;
 }

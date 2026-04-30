@@ -6,6 +6,7 @@ import {
   getWorkerConcurrencyLimit,
   getNextJobFailureState,
   isRetryableErrorCode,
+  isTransientMysqlConnectionError,
   normalizeAllowedOrigins,
 } from './jobRuntime.mjs';
 
@@ -57,7 +58,7 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.deepEqual(config.agentModels.chat[2].reasoningLevels, ['low', 'high']);
   assert.deepEqual(config.agentModels.image.map((item) => item.id), [
     'nano-banana-2',
-    'nano-banana-pro',
+    'gpt-image-2',
   ]);
   assert.equal(JSON.stringify(config).includes('secret'), false);
 });
@@ -148,4 +149,12 @@ test('getNextJobFailureState returns failed when retry budget is exhausted', () 
       status: 'failed',
     }
   );
+});
+
+test('isTransientMysqlConnectionError detects broken mysql pool connections', () => {
+  assert.equal(isTransientMysqlConnectionError({ code: 'PROTOCOL_CONNECTION_LOST' }), true);
+  assert.equal(isTransientMysqlConnectionError({ code: 'ECONNREFUSED' }), true);
+  assert.equal(isTransientMysqlConnectionError({ code: 'ETIMEDOUT' }), true);
+  assert.equal(isTransientMysqlConnectionError({ code: 'ER_BAD_DB_ERROR' }), false);
+  assert.equal(isTransientMysqlConnectionError(new Error('ordinary failure')), false);
 });

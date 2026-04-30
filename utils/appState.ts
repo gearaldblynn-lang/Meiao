@@ -1,4 +1,4 @@
-import {
+import type {
   AppModule,
   AspectRatio,
   BuyerShowPersistentState,
@@ -6,22 +6,45 @@ import {
   GlobalApiConfig,
   ModuleConfig,
   OneClickPersistentState,
+  OneClickReferenceDimension,
+  OneClickReferencePresetLibrary,
   RetouchPersistentState,
   TranslationModuleConfigs,
   TranslationPersistentState,
   VideoPersistentState,
   VideoSubMode,
   XhsCoverPersistentState,
-} from '../types';
+} from '../types.ts';
 import {
   createDefaultTranslationConfigs,
   getLegacyTranslationModuleConfig,
   migrateLegacyTranslationConfigs,
 } from '../modules/Translation/translationConfigUtils.mjs';
-import { normalizeRestoredXhsCoverTasks } from '../modules/XhsCover/xhsCoverUtils.mjs';
+import { normalizeRestoredXhsCoverProjects, normalizeRestoredXhsCoverTasks } from '../modules/XhsCover/xhsCoverUtils.mjs';
 import { hasReusableTaskAsset } from './cloudAssetState.mjs';
+import { GPT_IMAGE_2_DEFAULT_QUALITY } from './gptImage2.mjs';
+import { normalizeImageModel } from './modelCapabilities.mjs';
 
 export const PERSISTENCE_KEY = 'AIGC_APP_STATE_V1';
+const DEFAULT_ACTIVE_MODULE = 'one_click' as AppModule;
+const ASPECT_RATIO_AUTO = 'auto' as AspectRatio;
+const ASPECT_RATIO_SQUARE = '1:1' as AspectRatio;
+const ASPECT_RATIO_3_4 = '3:4' as AspectRatio;
+const ASPECT_RATIO_9_16 = '9:16' as AspectRatio;
+const BUYER_SHOW_SUBMODE_INTEGRATED = 'integrated' as BuyerShowSubMode;
+const VIDEO_SUBMODE_STORYBOARD = 'storyboard' as VideoSubMode;
+type OneClickSubModeValue = 'first_image' | 'main_image' | 'detail_page' | 'sku';
+const ONE_CLICK_SUBMODE_FIRST_IMAGE = 'first_image' as OneClickSubModeValue;
+const ONE_CLICK_SUBMODE_MAIN_IMAGE = 'main_image' as OneClickSubModeValue;
+const ONE_CLICK_SUBMODE_DETAIL_PAGE = 'detail_page' as OneClickSubModeValue;
+const ONE_CLICK_SUBMODE_SKU = 'sku' as OneClickSubModeValue;
+const VALID_ONE_CLICK_REFERENCE_DIMENSIONS = new Set<OneClickReferenceDimension>([
+  'visual_style',
+  'typography',
+  'color_palette',
+  'layout',
+  'copy_content',
+]);
 
 export interface PersistedAppState {
   activeModule: AppModule;
@@ -50,7 +73,7 @@ export const createDefaultModuleConfig = (): ModuleConfig => ({
   targetLanguage: 'English',
   customLanguage: '',
   removeWatermark: true,
-  aspectRatio: AspectRatio.AUTO,
+  aspectRatio: ASPECT_RATIO_AUTO,
   quality: '1k',
   model: 'nano-banana-2',
   resolutionMode: 'custom',
@@ -69,6 +92,45 @@ export const createDefaultTranslationConfigState = (): TranslationModuleConfigs 
   createDefaultTranslationConfigs() as TranslationModuleConfigs;
 
 export const createDefaultOneClickState = (): OneClickPersistentState => ({
+  referencePresets: {
+    presets: [],
+  },
+  firstImage: {
+    productImages: [],
+    logoImage: null,
+    uploadedLogoUrl: null,
+    styleImage: null,
+    designReferences: [],
+    uploadedDesignReferenceUrls: [],
+    referenceDimensions: ['visual_style', 'color_palette', 'layout'],
+    referenceAnalysis: {
+      status: 'idle',
+      summary: '',
+      analyzedAt: null,
+    },
+    schemes: [],
+    config: {
+      description: '',
+      platformType: 'domestic',
+      platform: '淘宝',
+      language: '中文',
+      count: 1,
+      aspectRatio: ASPECT_RATIO_SQUARE,
+      firstImageColorMode: 'product_adaptive',
+      quality: '1k',
+      model: 'nano-banana-2',
+      styleStrength: 'medium',
+      resolutionMode: 'custom',
+      targetWidth: 800,
+      targetHeight: 800,
+      maxFileSize: 2.0,
+    },
+    lastStyleUrl: null,
+    uploadedProductUrls: [],
+    directions: [],
+    projects: [],
+    activeProjectId: null,
+  },
   mainImage: {
     productImages: [],
     logoImage: null,
@@ -89,7 +151,7 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
       platform: '淘宝',
       language: '中文',
       count: 3,
-      aspectRatio: AspectRatio.SQUARE,
+      aspectRatio: ASPECT_RATIO_SQUARE,
       quality: '1k',
       model: 'nano-banana-2',
       styleStrength: 'medium',
@@ -101,6 +163,8 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
     lastStyleUrl: null,
     uploadedProductUrls: [],
     directions: [],
+    projects: [],
+    activeProjectId: null,
   },
   detailPage: {
     productImages: [],
@@ -122,7 +186,7 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
       platform: '淘宝',
       language: '中文',
       count: 7,
-      aspectRatio: AspectRatio.AUTO,
+      aspectRatio: ASPECT_RATIO_AUTO,
       quality: '1k',
       model: 'nano-banana-2',
       styleStrength: 'medium',
@@ -134,6 +198,8 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
     lastStyleUrl: null,
     uploadedProductUrls: [],
     directions: [],
+    projects: [],
+    activeProjectId: null,
   },
   sku: {
     images: [],
@@ -151,7 +217,7 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
       language: '中文',
       count: 1,
       combinations: [{ id: 'combo_1', sceneDescription: '', skuCopyText: '' }],
-      aspectRatio: AspectRatio.SQUARE,
+      aspectRatio: ASPECT_RATIO_SQUARE,
       quality: '1k',
       model: 'nano-banana-2',
       styleStrength: 'medium',
@@ -163,8 +229,119 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
     firstSkuResultUrl: null,
     uploadedProductUrls: [],
     lastStyleUrl: null,
+    projects: [],
+    activeProjectId: null,
   },
 });
+
+const normalizeTimestamp = (value: unknown, fallback: number): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
+const normalizeReferenceDimensions = (items: unknown): OneClickReferenceDimension[] =>
+  Array.isArray(items)
+    ? items.filter((item): item is OneClickReferenceDimension =>
+        typeof item === 'string' && VALID_ONE_CLICK_REFERENCE_DIMENSIONS.has(item as OneClickReferenceDimension)
+      )
+    : [];
+
+const normalizeReferencePresets = (source: unknown): OneClickReferencePresetLibrary => {
+  const now = Date.now();
+  const raw = source && typeof source === 'object' ? source as any : {};
+
+  const normalizePresetBase = (item: any, fallbackName: string, fallbackSubMode: OneClickSubModeValue) => {
+    const createdAt = normalizeTimestamp(item?.createdAt, now);
+    const referenceImageUrls = Array.isArray(item?.referenceImageUrls)
+      ? item.referenceImageUrls.filter((value: unknown): value is string => typeof value === 'string' && !!value.trim()).map((value: string) => value.trim())
+      : [];
+    const coverImageUrl = typeof item?.coverImageUrl === 'string' && item.coverImageUrl.trim()
+      ? item.coverImageUrl.trim()
+      : referenceImageUrls[0] || '';
+    const summary = typeof item?.summary === 'string' && item.summary.trim()
+      ? item.summary.trim()
+      : typeof item?.detail === 'string' && item.detail.trim()
+        ? item.detail.trim()
+        : fallbackName;
+    const detail = typeof item?.detail === 'string' && item.detail.trim()
+      ? item.detail.trim()
+      : summary;
+    const subMode = item?.subMode === ONE_CLICK_SUBMODE_FIRST_IMAGE
+      || item?.subMode === ONE_CLICK_SUBMODE_MAIN_IMAGE
+      || item?.subMode === ONE_CLICK_SUBMODE_DETAIL_PAGE
+      || item?.subMode === ONE_CLICK_SUBMODE_SKU
+      ? item.subMode
+      : fallbackSubMode;
+
+    return typeof item?.id === 'string' && item.id.trim()
+      ? {
+          id: item.id.trim(),
+          name: typeof item?.name === 'string' && item.name.trim() ? item.name.trim() : fallbackName,
+          subMode,
+          coverImageUrl,
+          referenceImageUrls,
+          summary,
+          detail,
+          referenceDimensions: normalizeReferenceDimensions(item?.referenceDimensions),
+          tags: Array.isArray(item?.tags)
+            ? item.tags.filter((value: unknown): value is string => typeof value === 'string' && !!value.trim()).map((value: string) => value.trim())
+            : [],
+          ...(typeof item?.assetId === 'string' && item.assetId.trim() ? { assetId: item.assetId.trim() } : {}),
+          createdAt,
+          updatedAt: normalizeTimestamp(item?.updatedAt, createdAt),
+        }
+      : null;
+  };
+
+  const unifiedPresets = Array.isArray(raw.presets)
+    ? raw.presets
+        .map((item: any) => normalizePresetBase(item, '未命名预设', ONE_CLICK_SUBMODE_MAIN_IMAGE))
+        .filter(Boolean)
+    : null;
+
+  if (unifiedPresets) {
+    return { presets: unifiedPresets };
+  }
+
+  const textPresets = Array.isArray(raw.textPresets)
+    ? raw.textPresets
+        .filter((item: any) => typeof item?.id === 'string' && item.id.trim() && typeof item?.summary === 'string' && item.summary.trim())
+        .map((item: any) => normalizePresetBase({
+          ...item,
+          subMode: item.sourceSubMode === ONE_CLICK_SUBMODE_DETAIL_PAGE ? ONE_CLICK_SUBMODE_DETAIL_PAGE : ONE_CLICK_SUBMODE_MAIN_IMAGE,
+          coverImageUrl: '',
+          referenceImageUrls: [],
+          summary: item.summary,
+          detail: item.summary,
+          referenceDimensions: item.referenceDimensions,
+        }, '未命名文字预设', ONE_CLICK_SUBMODE_MAIN_IMAGE))
+        .filter(Boolean)
+    : [];
+
+  const normalizeImagePresets = (items: unknown, sourceSubMode: typeof ONE_CLICK_SUBMODE_FIRST_IMAGE | typeof ONE_CLICK_SUBMODE_SKU) =>
+    Array.isArray(items)
+      ? items
+          .filter((item: any) => typeof item?.id === 'string' && item.id.trim() && typeof item?.imageUrl === 'string' && item.imageUrl.trim())
+          .map((item: any) => {
+            const fallbackName = sourceSubMode === ONE_CLICK_SUBMODE_FIRST_IMAGE ? '未命名首图参考' : '未命名SKU参考';
+            return normalizePresetBase({
+              ...item,
+              subMode: sourceSubMode,
+              coverImageUrl: item.imageUrl,
+              referenceImageUrls: [item.imageUrl],
+              summary: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : fallbackName,
+              detail: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : fallbackName,
+            }, fallbackName, sourceSubMode);
+          })
+          .filter(Boolean)
+      : [];
+
+  return {
+    presets: [
+      ...textPresets,
+      ...normalizeImagePresets(raw.firstImageImagePresets, ONE_CLICK_SUBMODE_FIRST_IMAGE),
+      ...normalizeImagePresets(raw.skuImagePresets, ONE_CLICK_SUBMODE_SKU),
+    ],
+  };
+};
 
 export const createDefaultRetouchState = (): RetouchPersistentState => ({
   tasks: [],
@@ -172,7 +349,7 @@ export const createDefaultRetouchState = (): RetouchPersistentState => ({
   referenceImage: null,
   uploadedReferenceUrl: null,
   mode: 'white_bg',
-  aspectRatio: AspectRatio.AUTO,
+  aspectRatio: ASPECT_RATIO_AUTO,
   quality: '1k',
   model: 'nano-banana-2',
   resolutionMode: 'original',
@@ -181,7 +358,7 @@ export const createDefaultRetouchState = (): RetouchPersistentState => ({
 });
 
 export const createDefaultBuyerShowState = (): BuyerShowPersistentState => ({
-  subMode: BuyerShowSubMode.INTEGRATED,
+  subMode: BUYER_SHOW_SUBMODE_INTEGRATED,
   productImages: [],
   uploadedProductUrls: [],
   referenceImage: null,
@@ -193,7 +370,7 @@ export const createDefaultBuyerShowState = (): BuyerShowPersistentState => ({
   targetCountry: '美国',
   customCountry: '',
   includeModel: true,
-  aspectRatio: AspectRatio.P_3_4,
+  aspectRatio: ASPECT_RATIO_3_4,
   quality: '1k',
   model: 'nano-banana-2',
   imageCount: 3,
@@ -208,7 +385,7 @@ export const createDefaultBuyerShowState = (): BuyerShowPersistentState => ({
 });
 
 export const createDefaultVideoState = (): VideoPersistentState => ({
-  subMode: VideoSubMode.STORYBOARD,
+  subMode: VIDEO_SUBMODE_STORYBOARD,
   config: {
     duration: '15',
     aspectRatio: 'landscape',
@@ -272,9 +449,16 @@ export const createDefaultVideoState = (): VideoPersistentState => ({
       productImages: [],
       uploadedProductUrls: [],
       productInfo: '',
+      videoGenerationMode: 'original',
       scriptLogic: '',
       scriptPreset: 'custom',
-      aspectRatio: AspectRatio.P_9_16,
+      referenceVideoFile: null,
+      uploadedReferenceVideoUrl: '',
+      viralVariationCount: 3,
+      viralVariationStrength: '10',
+      viralCustomVariationStrength: '',
+      reservedVideoApiProvider: '',
+      aspectRatio: ASPECT_RATIO_9_16 as VideoPersistentState['storyboard']['config']['aspectRatio'],
       duration: '15s',
       shotCount: 9,
       actorType: 'no_real_face',
@@ -282,8 +466,8 @@ export const createDefaultVideoState = (): VideoPersistentState => ({
       scenes: [''],
       countryLanguage: '中国/中文',
       generateWhiteBg: false,
-      model: 'nano-banana-pro',
-      quality: '2k',
+      model: 'gpt-image-2',
+      quality: GPT_IMAGE_2_DEFAULT_QUALITY,
       generationMode: 'single_image',
     },
     projects: [],
@@ -303,6 +487,8 @@ export const createDefaultXhsCoverState = (): XhsCoverPersistentState => ({
   model: 'nano-banana-2',
   decoration: '',
   extraRequirement: '',
+  projects: [],
+  activeProjectId: null,
   tasks: [],
   isGenerating: false,
 });
@@ -353,6 +539,131 @@ const normalizeStringArray = (items: unknown): string[] => {
   return items.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 };
 
+const normalizeOneClickReferenceItems = (items: unknown) => {
+  if (!Array.isArray(items)) return [];
+  return items.map((item: any) => ({
+    ...item,
+    file: item?.file instanceof File ? item.file : null,
+    uploadedUrl: typeof item?.uploadedUrl === 'string' ? item.uploadedUrl : null,
+  }));
+};
+
+const normalizeOneClickProjectMeta = (project: any, fallbackName: string, index: number) => {
+  const createdAt = normalizeTimestamp(project?.createdAt, Date.now());
+  return {
+    id: typeof project?.id === 'string' && project.id.trim() ? project.id : `${fallbackName}_${createdAt}_${index}`,
+    name: typeof project?.name === 'string' && project.name.trim() ? project.name : `${fallbackName}项目 ${index + 1}`,
+    createdAt,
+    updatedAt: normalizeTimestamp(project?.updatedAt, createdAt),
+    isDraft: project?.isDraft === true,
+  };
+};
+
+const normalizeOneClickWorkspaceProjects = (
+  projects: unknown,
+  defaults: OneClickPersistentState['firstImage'],
+  fallbackName: string,
+) => {
+  if (!Array.isArray(projects)) return [];
+  return projects.map((project: any, index) => ({
+    ...defaults,
+    ...normalizeOneClickProjectMeta(project, fallbackName, index),
+    ...project,
+    config: normalizeModelField((project?.config || defaults.config) as any),
+    productImages: normalizeFileArray(project?.productImages),
+    logoImage: normalizeNullableFile(project?.logoImage),
+    styleImage: normalizeNullableFile(project?.styleImage),
+    designReferences: normalizeOneClickReferenceItems(project?.designReferences),
+    uploadedDesignReferenceUrls: normalizeStringArray(project?.uploadedDesignReferenceUrls),
+    referenceDimensions: Array.isArray(project?.referenceDimensions)
+      ? project.referenceDimensions.filter((item: any) => typeof item === 'string')
+      : defaults.referenceDimensions,
+    referenceAnalysis: {
+      ...defaults.referenceAnalysis,
+      ...(project?.referenceAnalysis || {}),
+    },
+    schemes: Array.isArray(project?.schemes) ? project.schemes.map((scheme: any) => ({ ...scheme })) : [],
+    uploadedProductUrls: normalizeStringArray(project?.uploadedProductUrls),
+    uploadedLogoUrl: typeof project?.uploadedLogoUrl === 'string' ? project.uploadedLogoUrl : null,
+    lastStyleUrl: typeof project?.lastStyleUrl === 'string' ? project.lastStyleUrl : null,
+    directions: Array.isArray(project?.directions) ? project.directions.filter((item: any) => typeof item === 'string') : [],
+  }));
+};
+
+const normalizeSkuWorkspaceProjects = (
+  projects: unknown,
+  defaults: OneClickPersistentState['sku'],
+) => {
+  if (!Array.isArray(projects)) return [];
+  return projects.map((project: any, index) => ({
+    ...defaults,
+    ...normalizeOneClickProjectMeta(project, 'SKU', index),
+    ...project,
+    config: {
+      ...defaults.config,
+      ...normalizeModelField((project?.config || defaults.config) as any),
+      ...(project?.config || {}),
+      combinations: Array.isArray(project?.config?.combinations)
+        ? project.config.combinations.map((item: any) => ({ ...item }))
+        : defaults.config.combinations,
+    },
+    images: Array.isArray(project?.images)
+      ? project.images.map((img: any) => ({
+          ...img,
+          file: img?.file instanceof File ? img.file : null,
+        }))
+      : [],
+    designReferences: normalizeOneClickReferenceItems(project?.designReferences),
+    uploadedDesignReferenceUrls: normalizeStringArray(project?.uploadedDesignReferenceUrls),
+    referenceDimensions: Array.isArray(project?.referenceDimensions)
+      ? project.referenceDimensions.filter((item: any) => typeof item === 'string')
+      : defaults.referenceDimensions,
+    referenceAnalysis: {
+      ...defaults.referenceAnalysis,
+      ...(project?.referenceAnalysis || {}),
+    },
+    schemes: Array.isArray(project?.schemes) ? project.schemes.map((scheme: any) => ({ ...scheme })) : [],
+    firstSkuResultUrl: typeof project?.firstSkuResultUrl === 'string' ? project.firstSkuResultUrl : null,
+    uploadedProductUrls: normalizeStringArray(project?.uploadedProductUrls),
+    lastStyleUrl: typeof project?.lastStyleUrl === 'string' ? project.lastStyleUrl : null,
+  }));
+};
+
+const normalizeVideoStoryboardConfig = (
+  config: any,
+  defaults: VideoPersistentState['storyboard']['config']
+): VideoPersistentState['storyboard']['config'] => ({
+  ...defaults,
+  ...normalizeModelField(config as any),
+  ...(config || {}),
+  productImages: normalizeFileArray(config?.productImages),
+  uploadedProductUrls: normalizeStringArray(config?.uploadedProductUrls),
+  referenceVideoFile: normalizeNullableFile(config?.referenceVideoFile),
+  uploadedReferenceVideoUrl: typeof config?.uploadedReferenceVideoUrl === 'string' ? config.uploadedReferenceVideoUrl : '',
+  videoGenerationMode: config?.videoGenerationMode === 'viral_split' ? 'viral_split' : 'original',
+  viralVariationCount: Number.isFinite(config?.viralVariationCount) ? Math.max(1, Number(config.viralVariationCount)) : defaults.viralVariationCount,
+  viralVariationStrength: config?.viralVariationStrength === '5'
+    || config?.viralVariationStrength === '10'
+    || config?.viralVariationStrength === '20'
+    || config?.viralVariationStrength === 'custom'
+    ? config.viralVariationStrength
+    : defaults.viralVariationStrength,
+  viralCustomVariationStrength: typeof config?.viralCustomVariationStrength === 'string'
+    ? config.viralCustomVariationStrength
+    : defaults.viralCustomVariationStrength,
+  reservedVideoApiProvider: typeof config?.reservedVideoApiProvider === 'string'
+    ? config.reservedVideoApiProvider
+    : defaults.reservedVideoApiProvider,
+});
+
+const normalizeModelField = <T extends Record<string, unknown> | undefined>(value: T): T => {
+  if (!value || typeof value !== 'object' || !('model' in value)) return value;
+  return {
+    ...value,
+    model: normalizeImageModel(String(value.model || '')),
+  };
+};
+
 const normalizeRetouchTasks = (tasks: unknown) => {
   if (!Array.isArray(tasks)) return [];
 
@@ -378,12 +689,17 @@ const normalizeRetouchTasks = (tasks: unknown) => {
 
 export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppState>): Partial<PersistedAppState> => {
   const translationConfigs = migrateLegacyTranslationConfigs(saved.moduleConfig, saved.translationConfigs);
+  const defaultOneClickState = createDefaultOneClickState();
   const defaultVideoState = createDefaultVideoState();
+  const normalizeOneClickActiveProjectId = (activeProjectId: unknown, projects: Array<{ id: string }>) =>
+    typeof activeProjectId === 'string' && projects.some((project) => project.id === activeProjectId)
+      ? activeProjectId
+      : null;
 
   return {
     ...saved,
     translationConfigs,
-    moduleConfig: getLegacyTranslationModuleConfig(translationConfigs),
+    moduleConfig: normalizeModelField(getLegacyTranslationModuleConfig(translationConfigs)),
     translationMemory: saved.translationMemory
       ? {
           main: {
@@ -402,100 +718,133 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
       : undefined,
     oneClickMemory: saved.oneClickMemory
       ? {
-          mainImage: {
-            ...saved.oneClickMemory.mainImage,
-            productImages: normalizeFileArray(saved.oneClickMemory.mainImage?.productImages),
-            logoImage: normalizeNullableFile(saved.oneClickMemory.mainImage?.logoImage),
-            styleImage: normalizeNullableFile(saved.oneClickMemory.mainImage?.styleImage),
-            designReferences: Array.isArray(saved.oneClickMemory.mainImage?.designReferences)
-              ? saved.oneClickMemory.mainImage.designReferences.map((item: any) => ({
-                  ...item,
-                  file: item?.file instanceof File ? item.file : null,
-                  uploadedUrl: typeof item?.uploadedUrl === 'string' ? item.uploadedUrl : null,
-                }))
-              : [],
-            uploadedDesignReferenceUrls: normalizeStringArray(saved.oneClickMemory.mainImage?.uploadedDesignReferenceUrls),
-            referenceDimensions: Array.isArray(saved.oneClickMemory.mainImage?.referenceDimensions)
-              ? saved.oneClickMemory.mainImage.referenceDimensions.filter((item: any) => typeof item === 'string')
-              : createDefaultOneClickState().mainImage.referenceDimensions,
-            referenceAnalysis: {
-              ...createDefaultOneClickState().mainImage.referenceAnalysis,
-              ...(saved.oneClickMemory.mainImage?.referenceAnalysis || {}),
-            },
-            uploadedProductUrls: normalizeStringArray(saved.oneClickMemory.mainImage?.uploadedProductUrls),
-            uploadedLogoUrl: typeof saved.oneClickMemory.mainImage?.uploadedLogoUrl === 'string'
-              ? saved.oneClickMemory.mainImage.uploadedLogoUrl
-              : null,
-            lastStyleUrl: typeof saved.oneClickMemory.mainImage?.lastStyleUrl === 'string'
-              ? saved.oneClickMemory.mainImage.lastStyleUrl
-              : null,
-          },
-          detailPage: {
-            ...saved.oneClickMemory.detailPage,
-            productImages: normalizeFileArray(saved.oneClickMemory.detailPage?.productImages),
-            logoImage: normalizeNullableFile(saved.oneClickMemory.detailPage?.logoImage),
-            styleImage: normalizeNullableFile(saved.oneClickMemory.detailPage?.styleImage),
-            designReferences: Array.isArray(saved.oneClickMemory.detailPage?.designReferences)
-              ? saved.oneClickMemory.detailPage.designReferences.map((item: any) => ({
-                  ...item,
-                  file: item?.file instanceof File ? item.file : null,
-                  uploadedUrl: typeof item?.uploadedUrl === 'string' ? item.uploadedUrl : null,
-                }))
-              : [],
-            uploadedDesignReferenceUrls: normalizeStringArray(saved.oneClickMemory.detailPage?.uploadedDesignReferenceUrls),
-            referenceDimensions: Array.isArray(saved.oneClickMemory.detailPage?.referenceDimensions)
-              ? saved.oneClickMemory.detailPage.referenceDimensions.filter((item: any) => typeof item === 'string')
-              : createDefaultOneClickState().detailPage.referenceDimensions,
-            referenceAnalysis: {
-              ...createDefaultOneClickState().detailPage.referenceAnalysis,
-              ...(saved.oneClickMemory.detailPage?.referenceAnalysis || {}),
-            },
-            uploadedProductUrls: normalizeStringArray(saved.oneClickMemory.detailPage?.uploadedProductUrls),
-            uploadedLogoUrl: typeof saved.oneClickMemory.detailPage?.uploadedLogoUrl === 'string'
-              ? saved.oneClickMemory.detailPage.uploadedLogoUrl
-              : null,
-            lastStyleUrl: typeof saved.oneClickMemory.detailPage?.lastStyleUrl === 'string'
-              ? saved.oneClickMemory.detailPage.lastStyleUrl
-              : null,
-          },
-          sku: {
-            ...(saved.oneClickMemory.sku || createDefaultOneClickState().sku),
-            images: Array.isArray(saved.oneClickMemory.sku?.images)
-              ? saved.oneClickMemory.sku.images.map((img: any) => ({
-                  ...img,
-                  file: img.file instanceof File ? img.file : null,
-                }))
-              : [],
-            designReferences: Array.isArray(saved.oneClickMemory.sku?.designReferences)
-              ? saved.oneClickMemory.sku.designReferences.map((item: any) => ({
-                  ...item,
-                  file: item?.file instanceof File ? item.file : null,
-                  uploadedUrl: typeof item?.uploadedUrl === 'string' ? item.uploadedUrl : null,
-                }))
-              : [],
-            uploadedDesignReferenceUrls: normalizeStringArray(saved.oneClickMemory.sku?.uploadedDesignReferenceUrls),
-            referenceDimensions: Array.isArray(saved.oneClickMemory.sku?.referenceDimensions)
-              ? saved.oneClickMemory.sku.referenceDimensions.filter((item: any) => typeof item === 'string')
-              : createDefaultOneClickState().sku.referenceDimensions,
-            referenceAnalysis: {
-              ...createDefaultOneClickState().sku.referenceAnalysis,
-              ...(saved.oneClickMemory.sku?.referenceAnalysis || {}),
-            },
-            firstSkuResultUrl: typeof saved.oneClickMemory.sku?.firstSkuResultUrl === 'string'
-              ? saved.oneClickMemory.sku.firstSkuResultUrl
-              : null,
-            uploadedProductUrls: Array.isArray(saved.oneClickMemory.sku?.uploadedProductUrls)
-              ? saved.oneClickMemory.sku.uploadedProductUrls.filter((u: any) => typeof u === 'string')
-              : [],
-            lastStyleUrl: typeof saved.oneClickMemory.sku?.lastStyleUrl === 'string'
-              ? saved.oneClickMemory.sku.lastStyleUrl
-              : null,
-          },
+          referencePresets: normalizeReferencePresets(saved.oneClickMemory.referencePresets),
+          firstImage: (() => {
+            const source = saved.oneClickMemory?.firstImage || defaultOneClickState.firstImage;
+            const projects = normalizeOneClickWorkspaceProjects(source.projects, defaultOneClickState.firstImage, '首图');
+            return {
+              ...source,
+              config: {
+                ...normalizeModelField(source.config as any),
+                firstImageColorMode: source.config?.firstImageColorMode === 'reference_locked' ? 'reference_locked' : 'product_adaptive',
+              },
+              productImages: normalizeFileArray(source.productImages),
+              logoImage: normalizeNullableFile(source.logoImage),
+              styleImage: normalizeNullableFile(source.styleImage),
+              designReferences: normalizeOneClickReferenceItems(source.designReferences),
+              uploadedDesignReferenceUrls: normalizeStringArray(source.uploadedDesignReferenceUrls),
+              referenceDimensions: Array.isArray(source.referenceDimensions)
+                ? source.referenceDimensions.filter((item: any) => typeof item === 'string')
+                : defaultOneClickState.firstImage.referenceDimensions,
+              referenceAnalysis: {
+                ...defaultOneClickState.firstImage.referenceAnalysis,
+                ...(source.referenceAnalysis || {}),
+              },
+              schemes: Array.isArray(source.schemes) ? source.schemes.map((scheme: any) => ({ ...scheme })) : [],
+              uploadedProductUrls: normalizeStringArray(source.uploadedProductUrls),
+              uploadedLogoUrl: typeof source.uploadedLogoUrl === 'string'
+                ? source.uploadedLogoUrl
+                : null,
+              lastStyleUrl: typeof source.lastStyleUrl === 'string'
+                ? source.lastStyleUrl
+                : null,
+              projects,
+              activeProjectId: normalizeOneClickActiveProjectId(source.activeProjectId, projects),
+            };
+          })(),
+          mainImage: (() => {
+            const source = saved.oneClickMemory.mainImage || defaultOneClickState.mainImage;
+            const projects = normalizeOneClickWorkspaceProjects(source.projects, defaultOneClickState.mainImage, '主图');
+            return {
+              ...source,
+              config: normalizeModelField(source.config as any),
+              productImages: normalizeFileArray(source.productImages),
+              logoImage: normalizeNullableFile(source.logoImage),
+              styleImage: normalizeNullableFile(source.styleImage),
+              designReferences: normalizeOneClickReferenceItems(source.designReferences),
+              uploadedDesignReferenceUrls: normalizeStringArray(source.uploadedDesignReferenceUrls),
+              referenceDimensions: Array.isArray(source.referenceDimensions)
+                ? source.referenceDimensions.filter((item: any) => typeof item === 'string')
+                : defaultOneClickState.mainImage.referenceDimensions,
+              referenceAnalysis: {
+                ...defaultOneClickState.mainImage.referenceAnalysis,
+                ...(source.referenceAnalysis || {}),
+              },
+              schemes: Array.isArray(source.schemes) ? source.schemes.map((scheme: any) => ({ ...scheme })) : [],
+              uploadedProductUrls: normalizeStringArray(source.uploadedProductUrls),
+              uploadedLogoUrl: typeof source.uploadedLogoUrl === 'string' ? source.uploadedLogoUrl : null,
+              lastStyleUrl: typeof source.lastStyleUrl === 'string' ? source.lastStyleUrl : null,
+              projects,
+              activeProjectId: normalizeOneClickActiveProjectId(source.activeProjectId, projects),
+            };
+          })(),
+          detailPage: (() => {
+            const source = saved.oneClickMemory.detailPage || defaultOneClickState.detailPage;
+            const projects = normalizeOneClickWorkspaceProjects(source.projects, defaultOneClickState.detailPage, '详情');
+            return {
+              ...source,
+              config: normalizeModelField(source.config as any),
+              productImages: normalizeFileArray(source.productImages),
+              logoImage: normalizeNullableFile(source.logoImage),
+              styleImage: normalizeNullableFile(source.styleImage),
+              designReferences: normalizeOneClickReferenceItems(source.designReferences),
+              uploadedDesignReferenceUrls: normalizeStringArray(source.uploadedDesignReferenceUrls),
+              referenceDimensions: Array.isArray(source.referenceDimensions)
+                ? source.referenceDimensions.filter((item: any) => typeof item === 'string')
+                : defaultOneClickState.detailPage.referenceDimensions,
+              referenceAnalysis: {
+                ...defaultOneClickState.detailPage.referenceAnalysis,
+                ...(source.referenceAnalysis || {}),
+              },
+              schemes: Array.isArray(source.schemes) ? source.schemes.map((scheme: any) => ({ ...scheme })) : [],
+              uploadedProductUrls: normalizeStringArray(source.uploadedProductUrls),
+              uploadedLogoUrl: typeof source.uploadedLogoUrl === 'string' ? source.uploadedLogoUrl : null,
+              lastStyleUrl: typeof source.lastStyleUrl === 'string' ? source.lastStyleUrl : null,
+              projects,
+              activeProjectId: normalizeOneClickActiveProjectId(source.activeProjectId, projects),
+            };
+          })(),
+          sku: (() => {
+            const source = saved.oneClickMemory.sku || defaultOneClickState.sku;
+            const projects = normalizeSkuWorkspaceProjects(source.projects, defaultOneClickState.sku);
+            return {
+              ...source,
+              config: {
+                ...defaultOneClickState.sku.config,
+                ...normalizeModelField((source.config || defaultOneClickState.sku.config) as any),
+                ...(source.config || {}),
+                combinations: Array.isArray(source.config?.combinations)
+                  ? source.config.combinations.map((item: any) => ({ ...item }))
+                  : defaultOneClickState.sku.config.combinations,
+              },
+              images: Array.isArray(source.images)
+                ? source.images.map((img: any) => ({
+                    ...img,
+                    file: img.file instanceof File ? img.file : null,
+                  }))
+                : [],
+              designReferences: normalizeOneClickReferenceItems(source.designReferences),
+              uploadedDesignReferenceUrls: normalizeStringArray(source.uploadedDesignReferenceUrls),
+              referenceDimensions: Array.isArray(source.referenceDimensions)
+                ? source.referenceDimensions.filter((item: any) => typeof item === 'string')
+                : defaultOneClickState.sku.referenceDimensions,
+              referenceAnalysis: {
+                ...defaultOneClickState.sku.referenceAnalysis,
+                ...(source.referenceAnalysis || {}),
+              },
+              schemes: Array.isArray(source.schemes) ? source.schemes.map((scheme: any) => ({ ...scheme })) : [],
+              firstSkuResultUrl: typeof source.firstSkuResultUrl === 'string' ? source.firstSkuResultUrl : null,
+              uploadedProductUrls: normalizeStringArray(source.uploadedProductUrls),
+              lastStyleUrl: typeof source.lastStyleUrl === 'string' ? source.lastStyleUrl : null,
+              projects,
+              activeProjectId: normalizeOneClickActiveProjectId(source.activeProjectId, projects),
+            };
+          })(),
         }
       : undefined,
     retouchMemory: saved.retouchMemory
       ? {
-          ...saved.retouchMemory,
+          ...normalizeModelField(saved.retouchMemory as any),
           pendingFiles: normalizeFileArray(saved.retouchMemory.pendingFiles),
           referenceImage: normalizeNullableFile(saved.retouchMemory.referenceImage),
           uploadedReferenceUrl: typeof saved.retouchMemory.uploadedReferenceUrl === 'string'
@@ -506,7 +855,7 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
       : undefined,
     buyerShowMemory: saved.buyerShowMemory
       ? {
-          ...saved.buyerShowMemory,
+          ...normalizeModelField(saved.buyerShowMemory as any),
           productImages: normalizeFileArray(saved.buyerShowMemory.productImages),
           referenceImage: normalizeNullableFile(saved.buyerShowMemory.referenceImage),
           uploadedProductUrls: normalizeStringArray(saved.buyerShowMemory.uploadedProductUrls),
@@ -528,21 +877,13 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
           storyboard: saved.videoMemory.storyboard
             ? {
                 ...saved.videoMemory.storyboard,
-                config: {
-                  ...saved.videoMemory.storyboard.config,
-                  productImages: normalizeFileArray(saved.videoMemory.storyboard.config?.productImages),
-                  uploadedProductUrls: normalizeStringArray(saved.videoMemory.storyboard.config?.uploadedProductUrls),
-                },
+                config: normalizeVideoStoryboardConfig(saved.videoMemory.storyboard.config, defaultVideoState.storyboard.config),
                 projects: Array.isArray(saved.videoMemory.storyboard.projects)
                   ? saved.videoMemory.storyboard.projects.map((project: any) => project
                     ? {
                         ...project,
                         config: project.config
-                          ? {
-                              ...project.config,
-                              productImages: normalizeFileArray(project.config.productImages),
-                              uploadedProductUrls: normalizeStringArray(project.config.uploadedProductUrls),
-                            }
+                          ? normalizeVideoStoryboardConfig(project.config, defaultVideoState.storyboard.config)
                           : project.config,
                       }
                     : project)
@@ -553,13 +894,23 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
         }
       : undefined,
     xhsCoverMemory: saved.xhsCoverMemory
-      ? {
-          ...saved.xhsCoverMemory,
-          productImages: normalizeFileArray(saved.xhsCoverMemory.productImages),
-          uploadedProductUrls: normalizeStringArray(saved.xhsCoverMemory.uploadedProductUrls),
-          tasks: normalizeRestoredXhsCoverTasks(saved.xhsCoverMemory.tasks),
-          isGenerating: false,
-        }
+      ? (() => {
+          const projects = normalizeRestoredXhsCoverProjects(saved.xhsCoverMemory.projects, saved.xhsCoverMemory as any);
+          const activeProjectId = typeof saved.xhsCoverMemory.activeProjectId === 'string'
+            && projects.some((project) => project.id === saved.xhsCoverMemory.activeProjectId)
+            ? saved.xhsCoverMemory.activeProjectId
+            : (projects[0]?.id || null);
+          const activeProject = projects.find((project) => project.id === activeProjectId) || null;
+          return {
+            ...normalizeModelField(saved.xhsCoverMemory as any),
+            productImages: normalizeFileArray(saved.xhsCoverMemory.productImages),
+            uploadedProductUrls: normalizeStringArray(saved.xhsCoverMemory.uploadedProductUrls),
+            projects,
+            activeProjectId,
+            tasks: activeProject?.tasks || normalizeRestoredXhsCoverTasks(saved.xhsCoverMemory.tasks),
+            isGenerating: false,
+          };
+        })()
       : undefined,
   };
 };
@@ -612,7 +963,7 @@ export const buildPersistedAppState = (saved?: Partial<PersistedAppState>): Pers
   const translationConfigs = migrateLegacyTranslationConfigs(saved?.moduleConfig, saved?.translationConfigs) || createDefaultTranslationConfigState();
 
   return {
-    activeModule: saved?.activeModule || AppModule.ONE_CLICK,
+    activeModule: saved?.activeModule || DEFAULT_ACTIVE_MODULE,
     apiConfig: sanitizeApiConfig(saved?.apiConfig),
     moduleConfig: getLegacyTranslationModuleConfig(translationConfigs) || createDefaultModuleConfig(),
     translationConfigs,

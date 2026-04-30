@@ -41,6 +41,22 @@ export const buildAssetPublicPath = (assetId, originalName = '') => {
 export const buildAssetPublicUrl = (publicBaseUrl, assetId, originalName = '') =>
   `${normalizeBaseUrl(publicBaseUrl)}${buildAssetPublicPath(assetId, originalName)}`;
 
+export const extractStoredAssetIdFromPublicUrl = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return '';
+  const pathValue = normalized.startsWith('http')
+    ? (() => {
+        try {
+          return new URL(normalized).pathname || '';
+        } catch {
+          return '';
+        }
+      })()
+    : normalized;
+  const match = pathValue.match(/\/api\/assets\/file\/([^/]+)/);
+  return match ? decodeURIComponent(match[1]) : '';
+};
+
 export const getPublicBaseUrl = (env = {}, requestLike = null) => {
   const explicit = normalizeBaseUrl(env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || '');
   if (explicit) return explicit;

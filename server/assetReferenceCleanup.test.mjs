@@ -8,8 +8,12 @@ test('asset cleanup treats current user avatars and agent icons as managed-asset
   assert.match(source, /const collectProtectedManagedAssetUrls = async \(\{ pool = null, store = null \}\) => \{/);
   assert.match(source, /users\.map\(\(item\) => item\.avatarUrl\)/);
   assert.match(source, /agents\.map\(\(item\) => item\.iconUrl\)/);
+  assert.match(source, /collectOneClickReferencePresetAssetUrls/);
+  assert.match(source, /presets\.presets/);
+  assert.match(source, /referenceImageUrls/);
   assert.match(source, /SELECT avatar_url FROM users WHERE avatar_url IS NOT NULL AND avatar_url <> ''/);
   assert.match(source, /SELECT icon_url FROM agents WHERE icon_url IS NOT NULL AND icon_url <> ''/);
+  assert.match(source, /SELECT state_json FROM app_states/);
 });
 
 test('asset cleanup marks protected managed assets as referenced before expiry filtering', () => {

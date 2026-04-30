@@ -4,7 +4,8 @@ import {
   GenerationQuality,
   GlobalApiConfig,
   OneClickSubMode,
-  OneClickReferenceDimension,
+  OneClickReferencePreset,
+  OneClickReferencePresetLibrary,
   SkuConfig,
   SkuImageItem,
   SkuImageRole,
@@ -12,9 +13,11 @@ import {
 } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
-import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, QUALITY_OPTIONS } from '../../utils/modelQuality';
+import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
+import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
 import { PopoverSelect, PrimaryActionButton, SegmentedTabs, SidebarShell } from '../../components/ui/workspacePrimitives';
+import ReferencePresetLibraryModal from './ReferencePresetLibraryModal';
 
 interface Props {
   state: SkuPersistentSubState;
@@ -23,11 +26,16 @@ interface Props {
   apiConfig: GlobalApiConfig;
   disabled: boolean;
   onStart: () => void;
-  onAnalyzeReference: () => void;
-  analyzingReference?: boolean;
   onClearConfig?: () => void;
   currentSubMode?: OneClickSubMode;
   onSubModeChange?: (mode: OneClickSubMode) => void;
+  referencePresets?: OneClickReferencePresetLibrary;
+  onSaveReferencePreset?: () => void;
+  onApplyReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onCreateReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onUpdateReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onDeleteReferencePreset?: (id: string) => void;
+  createEmptyReferencePreset?: () => OneClickReferencePreset;
 }
 
 const LANG_PRESETS = [
@@ -59,43 +67,24 @@ const ALL_RATIOS = [
 
 const SkuSidebar: React.FC<Props> = ({
   state, onUpdate, onUpdateConfig, apiConfig, disabled, onStart, onClearConfig,
-  onAnalyzeReference, analyzingReference = false,
   currentSubMode, onSubModeChange,
+  referencePresets, onSaveReferencePreset, onApplyReferencePreset, onCreateReferencePreset, onUpdateReferencePreset, onDeleteReferencePreset, createEmptyReferencePreset,
 }) => {
-  void onAnalyzeReference;
   const { images, config } = state;
   const productInputRef = useRef<HTMLInputElement>(null);
   const giftInputRef = useRef<HTMLInputElement>(null);
   const styleInputRef = useRef<HTMLInputElement>(null);
   const [assetTab, setAssetTab] = useState<AssetTab>('product');
+  const [presetLibraryOpen, setPresetLibraryOpen] = useState(false);
   const [isCustomLanguage, setIsCustomLanguage] = useState(false);
   const [expandedSections, setExpandedSections] = useState<string[]>(['assets', 'combos', 'specs']);
 
   const productImages = images.filter((i) => i.role === 'product');
   const giftImages = images.filter((i) => i.role === 'gift').sort((a, b) => (a.giftIndex || 0) - (b.giftIndex || 0));
-  const designReferences = state.designReferences || [];
-  const referenceDimensions = state.referenceDimensions || [];
+  const styleReference = images.find((i) => i.role === 'style_ref') || null;
   const totalImages = images.length;
   const nextGiftIndex = Math.max(0, ...giftImages.map((i) => i.giftIndex || 0)) + 1;
   const hasProduct = productImages.length > 0;
-  const referenceDimensionOptions: Array<{ key: OneClickReferenceDimension; label: string }> = [
-    { key: 'visual_style', label: '视觉风格' },
-    { key: 'typography', label: '字体' },
-    { key: 'color_palette', label: '色调' },
-    { key: 'layout', label: '排版' },
-    { key: 'copy_content', label: '文案内容' },
-  ];
-
-  const invalidateReferenceAnalysis = () => {
-    return {
-      referenceAnalysis: {
-        status: 'idle',
-        summary: '',
-        error: '',
-        analyzedAt: null,
-      },
-    } as any;
-  };
 
   // 自动上传未上传的图片
   useEffect(() => {
@@ -132,28 +121,24 @@ const SkuSidebar: React.FC<Props> = ({
   };
 
   const removeImage = (id: string) => onUpdate({ images: images.filter((i) => i.id !== id) });
-  const addReferenceFiles = (files: File[]) => {
-    const remaining = 8 - designReferences.length;
-    const next = files.slice(0, remaining).map((file) => ({
-      id: `sku_reference_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+  const setStyleReferenceFile = (file: File) => {
+    const nextStyleReference: SkuImageItem = {
+      id: `sku_style_ref_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       file,
+      role: 'style_ref',
       uploadedUrl: null,
-    }));
-    onUpdate({ designReferences: [...designReferences, ...next] as any, ...invalidateReferenceAnalysis() });
-  };
-  const removeReference = (id: string) => {
-    const next = designReferences.filter((item: any) => item.id !== id);
+    };
     onUpdate({
-      designReferences: next as any,
-      uploadedDesignReferenceUrls: next.map((item: any) => item.uploadedUrl).filter(Boolean),
-      ...invalidateReferenceAnalysis(),
+      images: [...images.filter((item) => item.role !== 'style_ref'), nextStyleReference],
+      designReferences: [],
+      uploadedDesignReferenceUrls: [],
+      referenceAnalysis: {
+        status: 'idle',
+        summary: '',
+        error: '',
+        analyzedAt: null,
+      },
     } as any);
-  };
-  const toggleReferenceDimension = (dimension: OneClickReferenceDimension) => {
-    const next = referenceDimensions.includes(dimension)
-      ? referenceDimensions.filter((item: OneClickReferenceDimension) => item !== dimension)
-      : [...referenceDimensions, dimension];
-    onUpdate({ referenceDimensions: next, ...invalidateReferenceAnalysis() } as any);
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>, role: SkuImageRole, giftIdx?: number) => {
@@ -193,6 +178,8 @@ const SkuSidebar: React.FC<Props> = ({
 
   const supportedRatios = getSupportedAspectRatiosForModel(config.model);
   const filteredRatios = ALL_RATIOS.filter((r) => supportedRatios.includes(r.value));
+  const modelCapabilities = getImageModelCapabilities(config.model);
+  const qualityOptions = getQualityOptionsForModel(config.model);
   const effectiveSubMode = currentSubMode || OneClickSubMode.SKU;
 
   // --- 图片缩略图渲染 ---
@@ -237,6 +224,7 @@ const SkuSidebar: React.FC<Props> = ({
           onChange={(next) => onSubModeChange!(next as OneClickSubMode)}
           accentClass="bg-rose-600 text-white"
           items={[
+            { value: OneClickSubMode.FIRST_IMAGE, label: '首图', icon: 'fa-star' },
             { value: OneClickSubMode.MAIN_IMAGE, label: '主图', icon: 'fa-image' },
             { value: OneClickSubMode.DETAIL_PAGE, label: '详情', icon: 'fa-layer-group' },
             { value: OneClickSubMode.SKU, label: 'SKU', icon: 'fa-tags' },
@@ -274,7 +262,7 @@ const SkuSidebar: React.FC<Props> = ({
             <div className="flex bg-slate-100 p-1 rounded-xl">
               <button onClick={() => setAssetTab('product')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'product' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-400'}`}>商品主体 ({productImages.length})</button>
               <button onClick={() => setAssetTab('gift')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'gift' ? 'bg-white text-amber-600 shadow-sm' : 'text-slate-400'}`}>赠品 ({giftImages.length})</button>
-              <button onClick={() => setAssetTab('reference')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'reference' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>设计参考 ({designReferences.length})</button>
+              <button onClick={() => setAssetTab('reference')} className={`flex-1 py-1.5 text-[10px] font-bold rounded-lg transition-all ${assetTab === 'reference' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400'}`}>设计参考 ({styleReference ? 1 : 0})</button>
             </div>
 
             {assetTab === 'product' && (
@@ -303,54 +291,35 @@ const SkuSidebar: React.FC<Props> = ({
 
             {assetTab === 'reference' && (
               <div className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-black text-slate-700">SKU 参考图</p>
+                  <button type="button" onClick={() => setPresetLibraryOpen(true)} className="rounded-xl border border-indigo-100 bg-white px-3 py-2 text-[10px] font-black text-indigo-600 hover:bg-indigo-50">
+                    预设库
+                  </button>
+                </div>
                 <div onClick={() => styleInputRef.current?.click()} className="group cursor-pointer border-2 border-dashed border-indigo-200 rounded-[20px] p-5 hover:border-indigo-300 hover:bg-indigo-50/30 transition-all text-center">
                   <i className="fas fa-palette text-indigo-200 text-lg group-hover:text-indigo-400 mb-2 block"></i>
                   <p className="text-xs font-black text-slate-600">上传设计参考图</p>
-                  <p className="mt-1 text-[10px] text-slate-400">最多 8 张，单张超 3MB 自动压缩</p>
-                  <input type="file" multiple ref={styleInputRef} onChange={(e) => {
+                  <p className="mt-1 text-[10px] text-slate-400">仅 1 张，直接作为 SKU 风格与版式参考</p>
+                  <input type="file" ref={styleInputRef} onChange={(e) => {
                     const files = Array.from(e.target.files || []) as File[];
                     const imageFiles = files.filter((f) => f.type.startsWith('image/'));
-                    if (imageFiles.length > 0) addReferenceFiles(imageFiles);
+                    if (imageFiles[0]) setStyleReferenceFile(imageFiles[0]);
                     e.target.value = '';
                   }} className="hidden" accept="image/*" />
                 </div>
-                {designReferences.length > 0 ? (
+                {styleReference ? (
                   <div className="grid grid-cols-4 gap-2">
-                    {designReferences.map((item: any, index: number) => (
-                      <div key={item.id} className="aspect-square relative rounded-lg border border-slate-100 overflow-hidden group">
-                        {item.file ? (
-                          <img src={safeCreateObjectURL(item.file)} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        ) : item.uploadedUrl ? (
-                          <img src={item.uploadedUrl} className="w-full h-full object-cover" referrerPolicy="no-referrer" />
-                        ) : null}
-                        <button onClick={() => removeReference(item.id)} className="absolute top-0 right-0 w-5 h-5 bg-rose-500 text-white rounded-bl-lg flex items-center justify-center opacity-0 group-hover:opacity-100">
-                          <i className="fas fa-times text-[10px]"></i>
-                        </button>
-                        <span className="absolute bottom-0 left-0 right-0 bg-black/50 text-white text-[8px] font-bold text-center py-0.5">参考{index + 1}</span>
-                      </div>
-                    ))}
+                    {renderImageGrid([styleReference], '风格参考')}
                   </div>
                 ) : null}
-                <div className="space-y-2 rounded-xl border border-indigo-100 bg-indigo-50/60 p-3">
-                  <p className="text-[11px] font-black text-slate-700">这组图需要参考的维度</p>
-                  <div className="flex flex-wrap gap-2">
-                    {referenceDimensionOptions.map((option) => (
-                      <button key={option.key} type="button" onClick={() => toggleReferenceDimension(option.key)} className={`rounded-full px-3 py-1.5 text-[10px] font-bold transition ${referenceDimensions.includes(option.key) ? 'bg-white text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'bg-white/60 text-slate-500 ring-1 ring-slate-200'}`}>
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
+                <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-[11px] leading-5 text-indigo-700">
+                  SKU 设计参考不会额外分析成文字结论；生成方案时会把这张图直接作为风格、版式和视觉层级参考。第二张 SKU 起仍优先沿用第一张 SKU 生成结果作为风格基准。
                 </div>
-                {analyzingReference ? (
-                  <div className="rounded-xl border border-indigo-100 bg-indigo-50 p-3 text-[11px] text-indigo-700">
-                    正在自动分析设计参考，生成方案时会优先使用参考结论。
-                  </div>
-                ) : null}
-                {state.referenceAnalysis?.summary ? (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                    <p className="text-[11px] font-black text-slate-700">参考分析结论</p>
-                    <p className="mt-2 whitespace-pre-wrap text-[11px] leading-5 text-slate-600">{state.referenceAnalysis.summary}</p>
-                  </div>
+                {styleReference?.uploadedUrl ? (
+                  <button type="button" onClick={onSaveReferencePreset} className="w-full rounded-xl bg-indigo-600 px-3 py-2 text-xs font-black text-white hover:bg-indigo-700">
+                    保存参考预设
+                  </button>
                 ) : null}
               </div>
             )}
@@ -460,13 +429,16 @@ const SkuSidebar: React.FC<Props> = ({
                   </button>
                 ))}
               </div>
+              {modelCapabilities.supportsLongGenerationWarning && (
+                <p className="mt-2 text-[10px] font-bold text-rose-600">GPT Image 2 出图较慢，通常需要等待 300-500 秒。</p>
+              )}
             </div>
 
-            {/* 渲染质量 */}
+            {qualityOptions.length > 0 && (
             <div className="space-y-1">
               <span className="ml-1 text-xs font-medium text-slate-400">渲染质量</span>
               <div className="grid grid-cols-3 gap-2">
-                {QUALITY_OPTIONS.map((q) => (
+                {qualityOptions.map((q) => (
                   <button key={q.value} onClick={() => onUpdateConfig((prev) => ({ ...prev, quality: q.value as GenerationQuality }))}
                     className={`py-1.5 text-[9px] font-black rounded-lg border transition-all ${config.quality === q.value ? 'bg-rose-600 border-rose-600 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:border-rose-300'}`}>
                     {q.label}
@@ -474,6 +446,7 @@ const SkuSidebar: React.FC<Props> = ({
                 ))}
               </div>
             </div>
+            )}
 
             {/* 画面比例 */}
             <div className="space-y-1">
@@ -517,6 +490,34 @@ const SkuSidebar: React.FC<Props> = ({
           </div>
         )}
       </div>
+      <ReferencePresetLibraryModal
+        open={presetLibraryOpen}
+        title="SKU 参考预设库"
+        subMode={OneClickSubMode.SKU}
+        presets={referencePresets?.presets || []}
+        onClose={() => setPresetLibraryOpen(false)}
+        onApply={(preset) => {
+          onApplyReferencePreset?.(preset);
+          setPresetLibraryOpen(false);
+        }}
+        onSaveCurrent={onSaveReferencePreset}
+        onCreate={(preset) => onCreateReferencePreset?.(preset)}
+        onUpdate={(preset) => onUpdateReferencePreset?.(preset)}
+        onDelete={(id) => onDeleteReferencePreset?.(id)}
+        createEmptyPreset={() => createEmptyReferencePreset?.() || {
+          id: `preset_${Date.now()}`,
+          name: '',
+          subMode: OneClickSubMode.SKU,
+          coverImageUrl: '',
+          referenceImageUrls: [],
+          summary: '',
+          detail: '',
+          referenceDimensions: [],
+          tags: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }}
+      />
     </SidebarShell>
   );
 };

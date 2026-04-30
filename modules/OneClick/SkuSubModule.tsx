@@ -6,8 +6,10 @@ import {
   GlobalApiConfig,
   KieAiResult,
   OneClickSubMode,
+  OneClickPersistentState,
+  OneClickReferencePreset,
+  OneClickReferencePresetLibrary,
   SkuConfig,
-  SkuPersistentSubState,
   SkuScheme,
 } from '../../types';
 import SkuSidebar from './SkuSidebar';
@@ -17,7 +19,7 @@ import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
 import { resizeImage, getImageDimensions, createZipAndDownload } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
-import { analyzeOneClickReferenceSet, generateSkuSchemes } from '../../services/arkService';
+import { generateSkuSchemes } from '../../services/arkService';
 import {
   logActionFailure, logActionInterrupted, logActionStart, logActionSuccess,
 } from '../../services/loggingService';
@@ -27,25 +29,36 @@ import { appendOneClickCopyGuardrails } from './generationPromptUtils';
 
 interface Props {
   apiConfig: GlobalApiConfig;
-  state: SkuPersistentSubState;
+  state: OneClickPersistentState['sku'];
   onUpdate: (
     updates:
-      | Partial<SkuPersistentSubState>
-      | ((prev: SkuPersistentSubState) => SkuPersistentSubState)
+      | Partial<OneClickPersistentState['sku']>
+      | ((prev: OneClickPersistentState['sku']) => OneClickPersistentState['sku'])
   ) => void;
   onProcessingChange: (processing: boolean) => void;
   onClearConfig?: () => void;
   currentSubMode?: OneClickSubMode;
   onSubModeChange?: (mode: OneClickSubMode) => void;
+  referencePresets: OneClickReferencePresetLibrary;
+  onSaveReferencePreset: () => void;
+  onCreateReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onUpdateReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onApplyReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onDeleteReferencePreset: (id: string) => void;
+  onPrepareFreshProject?: () => void;
+  onSelectProject?: (projectId: string) => void;
+  onDeleteActiveProject?: () => void;
+  onDeleteProject?: (projectId: string) => void;
 }
 
 const SkuSubModule: React.FC<Props> = ({
   apiConfig, state, onUpdate, onProcessingChange, onClearConfig,
   currentSubMode, onSubModeChange,
+  referencePresets, onSaveReferencePreset, onCreateReferencePreset, onUpdateReferencePreset, onApplyReferencePreset, onDeleteReferencePreset,
+  onPrepareFreshProject, onSelectProject, onDeleteActiveProject, onDeleteProject,
 }) => {
-  const { images, designReferences, uploadedDesignReferenceUrls, referenceDimensions, referenceAnalysis, schemes, config } = state;
+  const { images, schemes, config, projects, activeProjectId } = state;
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [isAnalyzingReference, setIsAnalyzingReference] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -76,6 +89,23 @@ const SkuSubModule: React.FC<Props> = ({
     setIsAnalyzing(false);
     setIsGenerating(false);
     onProcessingChange(false);
+    const activeProject = projects.find(project => project.id === activeProjectId);
+    if (activeProject?.isDraft && schemes.length === 0 && projects.length > 1) {
+      onDeleteActiveProject?.();
+      addToast('已清理刷新中断留下的空草稿项目', 'info');
+      return;
+    }
+    const staleGeneratingIds = schemes.filter(s => s.status === 'generating' && !s.taskId).map(s => s.id);
+    if (staleGeneratingIds.length > 0) {
+      onUpdate(prev => ({
+        ...prev,
+        schemes: prev.schemes.map(s => (
+          staleGeneratingIds.includes(s.id)
+            ? { ...s, status: 'error', error: '页面刷新过早，当前任务无法自动找回，请重新生成' }
+            : s
+        )),
+      }));
+    }
     if (schemes && Array.isArray(schemes)) {
       schemes.forEach(s => {
         if ((s.status === 'generating' || (s.status === 'error' && isRecoverableKieTaskResult(s.taskId, s.error))) && s.taskId && !inflightIdsRef.current.has(s.id)) {
@@ -120,72 +150,6 @@ const SkuSubModule: React.FC<Props> = ({
     return updated;
   };
 
-  const getOrUploadReferenceUrls = async () => {
-    if (designReferences.length === 0 && uploadedDesignReferenceUrls.length > 0) {
-      return uploadedDesignReferenceUrls;
-    }
-    if (uploadedDesignReferenceUrls.length === designReferences.length && designReferences.length > 0 && uploadedDesignReferenceUrls.every(Boolean)) {
-      return uploadedDesignReferenceUrls;
-    }
-    const nextItems = [...designReferences];
-    const urls = await Promise.all(nextItems.map(async (item, index) => {
-      if (item.uploadedUrl) return item.uploadedUrl;
-      if (!item.file) return uploadedDesignReferenceUrls[index] || '';
-      const url = await uploadToCos(item.file, apiConfig);
-      nextItems[index] = { ...nextItems[index], uploadedUrl: url };
-      return url;
-    }));
-    const normalizedUrls = urls.filter(Boolean);
-    onUpdate({
-      designReferences: nextItems,
-      uploadedDesignReferenceUrls: normalizedUrls,
-      lastStyleUrl: normalizedUrls[0] || null,
-    });
-    return normalizedUrls;
-  };
-
-  const handleAnalyzeReference = async () => {
-    if (isAnalyzingReference || designReferences.length === 0 || referenceDimensions.length === 0) return;
-    setIsAnalyzingReference(true);
-    try {
-      const referenceUrls = await getOrUploadReferenceUrls();
-      const result = await analyzeOneClickReferenceSet(referenceUrls, referenceDimensions, OneClickSubMode.SKU, apiConfig);
-      if (result.status === 'success') {
-        onUpdate({
-          uploadedDesignReferenceUrls: referenceUrls,
-          referenceAnalysis: {
-            status: 'success',
-            summary: result.description,
-            analyzedAt: Date.now(),
-          },
-        });
-        addToast('设计参考分析完成', 'success');
-      } else {
-        onUpdate({
-          referenceAnalysis: {
-            status: 'error',
-            summary: '',
-            error: result.message || '设计参考分析失败',
-            analyzedAt: null,
-          },
-        });
-        addToast(`设计参考分析失败: ${result.message}`, 'error');
-      }
-    } catch (error: any) {
-      onUpdate({
-        referenceAnalysis: {
-          status: 'error',
-          summary: '',
-          error: error.message,
-          analyzedAt: null,
-        },
-      });
-      addToast(`设计参考分析失败: ${error.message}`, 'error');
-    } finally {
-      setIsAnalyzingReference(false);
-    }
-  };
-
   const getProductAndGiftUrls = (currentImages: typeof images) => {
     const productUrls = currentImages.filter(i => i.role === 'product' && i.uploadedUrl).map(i => i.uploadedUrl!);
     const giftUrls = currentImages.filter(i => i.role === 'gift' && i.uploadedUrl).map(i => i.uploadedUrl!);
@@ -200,6 +164,9 @@ const SkuSubModule: React.FC<Props> = ({
     if (isSubmittingAnalysisRef.current || isAnalyzing || isGenerating || hasGenerating || productImgs.length === 0) return;
     const validCombos = config.combinations.filter(c => c.skuCopyText.trim());
     if (validCombos.length === 0) { addToast('请至少填写一个 SKU 文案', 'warning'); return; }
+    if (schemesRef.current.length > 0) {
+      onPrepareFreshProject?.();
+    }
 
     isSubmittingAnalysisRef.current = true;
     setIsAnalyzing(true);
@@ -211,28 +178,10 @@ const SkuSubModule: React.FC<Props> = ({
       globalAbortRef.current = new AbortController();
       const uploaded = (await ensureAllUploaded()) || images;
       const { productUrls, giftUrls, styleUrl } = getProductAndGiftUrls(uploaded);
-      let referenceSummary = referenceAnalysis.summary;
-      if (!referenceSummary && designReferences.length > 0 && referenceDimensions.length > 0) {
-        const referenceUrls = await getOrUploadReferenceUrls();
-        const referenceResult = await analyzeOneClickReferenceSet(referenceUrls, referenceDimensions, OneClickSubMode.SKU, apiConfig, globalAbortRef.current.signal);
-        if (referenceResult.status === 'success') {
-          referenceSummary = referenceResult.description;
-          onUpdate({
-            uploadedDesignReferenceUrls: referenceUrls,
-            referenceAnalysis: {
-              status: 'success',
-              summary: referenceResult.description,
-              analyzedAt: Date.now(),
-            },
-          });
-        } else {
-          throw new Error(referenceResult.message || '设计参考分析失败');
-        }
-      }
 
       if (globalAbortRef.current.signal.aborted) throw new Error('ABORTED');
 
-      const res = await generateSkuSchemes(productUrls, giftUrls, styleUrl, config, apiConfig, globalAbortRef.current.signal, referenceSummary);
+      const res = await generateSkuSchemes(productUrls, giftUrls, styleUrl, config, apiConfig, globalAbortRef.current.signal);
 
       if (res.status === 'success') {
         const combos = config.combinations.filter(c => c.skuCopyText.trim());
@@ -307,7 +256,7 @@ const SkuSubModule: React.FC<Props> = ({
     prompt += manifest + '\n';
     prompt += `【产品信息】\n${config.productInfo || '未填写'}\n\n`;
     const schemeContent = scheme.editedContent
-      .replace(/【设计参考分析结论】[\s\S]*?(?=\n【|\n-\s*画面风格|$)/g, '')
+      .replace(/【(?:设计)?参考分析结论】[\s\S]*?(?=\n【|\n-\s*画面风格|$)/g, '')
       .replace(/【参考分析结论】[\s\S]*?(?=\n【|\n-\s*画面风格|$)/g, '')
       .trim();
     prompt += `【SKU 展示方案】\n${normalizeCopyLayoutText(schemeContent)}\n`;
@@ -498,9 +447,14 @@ const SkuSubModule: React.FC<Props> = ({
   const deleteProject = () => {
     Object.values(taskControllersRef.current).forEach((controller: AbortController) => controller.abort());
     taskControllersRef.current = {};
-    onUpdate(prev => ({ ...prev, schemes: [] }));
     inflightIdsRef.current.clear();
     setIsCollapsed(false);
+    if (activeProjectId) {
+      onDeleteActiveProject?.();
+      addToast('项目已删除', 'success');
+      return;
+    }
+    onUpdate(prev => ({ ...prev, schemes: [] }));
     addToast('项目已清空', 'success');
   };
 
@@ -547,11 +501,28 @@ const SkuSubModule: React.FC<Props> = ({
         apiConfig={apiConfig}
         disabled={isAnalyzing || isGenerating || schemes.some(s => s.status === 'generating')}
         onStart={handleStartAnalysis}
-        onAnalyzeReference={handleAnalyzeReference}
-        analyzingReference={isAnalyzingReference}
         onClearConfig={onClearConfig}
         currentSubMode={currentSubMode}
         onSubModeChange={onSubModeChange}
+        referencePresets={referencePresets}
+        onSaveReferencePreset={onSaveReferencePreset}
+        onApplyReferencePreset={onApplyReferencePreset}
+        onCreateReferencePreset={onCreateReferencePreset}
+        onUpdateReferencePreset={onUpdateReferencePreset}
+        onDeleteReferencePreset={onDeleteReferencePreset}
+        createEmptyReferencePreset={() => ({
+          id: `preset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          name: '',
+          subMode: OneClickSubMode.SKU,
+          coverImageUrl: '',
+          referenceImageUrls: [],
+          summary: '',
+          detail: '',
+          referenceDimensions: [],
+          tags: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })}
       />
       <main className="flex-1 overflow-y-auto p-8 relative scrollbar-hide bg-[linear-gradient(180deg,#f8fafc_0%,#f1f5f9_100%)]">
         {/* Header */}
@@ -571,6 +542,51 @@ const SkuSubModule: React.FC<Props> = ({
             </div>
           </div>
         </div>
+        {projects.length > 0 ? (
+          <div className="mx-auto mb-6 max-w-5xl space-y-3">
+            {projects.map((project) => {
+              const isActive = project.id === activeProjectId;
+              return (
+                <div
+                  key={project.id}
+                  className={`rounded-2xl border px-4 py-4 transition-all ${isActive ? 'border-slate-900 bg-slate-900 text-white shadow-[0_16px_40px_rgba(15,23,42,0.18)]' : 'border-slate-200 bg-white text-slate-700 shadow-[0_8px_24px_rgba(15,23,42,0.06)]'}`}
+                >
+                  <div className="flex items-center justify-between gap-4">
+                    <button
+                      type="button"
+                      onClick={() => onSelectProject?.(project.id)}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    >
+                      <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${isActive ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                        <i className={`fas ${isActive ? 'fa-chevron-down' : 'fa-chevron-right'} text-xs`}></i>
+                      </span>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-black">{project.name}</div>
+                        <div className={`mt-1 text-xs ${isActive ? 'text-slate-300' : 'text-slate-400'}`}>
+                          {project.schemes.length > 0 ? `方案 ${project.schemes.length} 个` : '空项目'}
+                        </div>
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-2">
+                      {isActive ? <span className="rounded-full bg-white/15 px-3 py-1 text-[11px] font-bold">当前项目</span> : null}
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDeleteProject?.(project.id);
+                        }}
+                        className={`flex h-9 w-9 items-center justify-center rounded-xl transition-all ${isActive ? 'hover:bg-white/10 text-white' : 'hover:bg-slate-100 text-rose-500'}`}
+                        title="删除项目"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
 
         {schemes.length > 0 ? (
           <div className="max-w-5xl mx-auto space-y-6 pb-20">
@@ -591,6 +607,9 @@ const SkuSubModule: React.FC<Props> = ({
               </div>
               <div className="flex items-center gap-2">
                 <div className="flex items-center bg-slate-100 rounded-xl p-1 gap-1">
+                  <button onClick={onSaveReferencePreset} className="h-8 rounded-lg px-3 text-[10px] font-black text-indigo-600 transition-all hover:bg-white hover:shadow-sm" title="保存参考预设">
+                    保存参考预设
+                  </button>
                   <button onClick={() => setIsCollapsed(!isCollapsed)} className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white hover:shadow-sm text-slate-500 transition-all" title={isCollapsed ? '展开' : '收起'}>
                     <i className={`fas fa-chevron-${isCollapsed ? 'down' : 'up'} text-xs`}></i>
                   </button>
@@ -643,7 +662,10 @@ const SkuSubModule: React.FC<Props> = ({
                       </div>
                     </div>
                     {/* Editable content */}
-                    <textarea value={scheme.editedContent} onChange={(e) => onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === scheme.id ? { ...s, editedContent: e.target.value } : s) }))} disabled={scheme.status === 'generating' || isAnalyzing} className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 text-xs font-medium text-slate-700 h-40 resize-none outline-none focus:ring-1 focus:ring-rose-500 shadow-inner transition-all scrollbar-hide" />
+                    <textarea value={scheme.editedContent} onChange={(e) => {
+                      schemesRef.current = schemesRef.current.map(s => s.id === scheme.id ? { ...s, editedContent: e.target.value } : s);
+                      onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === scheme.id ? { ...s, editedContent: e.target.value } : s) }));
+                    }} disabled={scheme.status === 'generating' || isAnalyzing} className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 text-xs font-medium text-slate-700 h-40 resize-none outline-none focus:ring-1 focus:ring-rose-500 shadow-inner transition-all scrollbar-hide" />
                   </div>
                   {/* Result area */}
                   <div className={`flex-1 p-6 flex items-center justify-center relative transition-opacity duration-300 ${scheme.selected ? 'bg-slate-50 opacity-100' : 'bg-slate-100/50 opacity-40'}`}>

@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { GlobalApiConfig, AspectRatio, OneClickConfig, MainImageScheme, OneClickSubMode, OneClickPersistentState, KieAiResult } from '../../types';
+import { GlobalApiConfig, AspectRatio, OneClickConfig, MainImageScheme, OneClickSubMode, OneClickPersistentState, KieAiResult, OneClickReferencePreset, OneClickReferencePresetLibrary } from '../../types';
 import ConfigSidebar from './ConfigSidebar';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
@@ -14,6 +14,7 @@ import { useToast } from '../../components/ToastSystem';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
 import { normalizeCopyLayoutText } from './copyLayoutUtils.mjs';
+import { buildOneClickImagePrompt } from './generationPromptUtils';
 import { cancelInternalJob } from '../../services/internalApi';
 
 interface Props {
@@ -25,6 +26,16 @@ interface Props {
   onClearConfig?: () => void;
   currentSubMode?: OneClickSubMode;
   onSubModeChange?: (mode: OneClickSubMode) => void;
+  referencePresets: OneClickReferencePresetLibrary;
+  onSaveReferencePreset: () => void;
+  onCreateReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onUpdateReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onApplyReferencePreset?: (preset: OneClickReferencePreset) => void;
+  onDeleteReferencePreset: (id: string) => void;
+  onPrepareFreshProject?: () => void;
+  onSelectProject?: (projectId: string) => void;
+  onDeleteActiveProject?: () => void;
+  onDeleteProject?: (projectId: string) => void;
 }
 
 const MainImageSubModule: React.FC<Props> = ({
@@ -36,8 +47,18 @@ const MainImageSubModule: React.FC<Props> = ({
   onClearConfig,
   currentSubMode,
   onSubModeChange,
+  referencePresets,
+  onSaveReferencePreset,
+  onCreateReferencePreset,
+  onUpdateReferencePreset,
+  onApplyReferencePreset,
+  onDeleteReferencePreset,
+  onPrepareFreshProject,
+  onSelectProject,
+  onDeleteActiveProject,
+  onDeleteProject,
 }) => {
-  const { productImages, logoImage, uploadedLogoUrl, styleImage, designReferences, uploadedDesignReferenceUrls, referenceDimensions, referenceAnalysis, schemes, config, lastStyleUrl, uploadedProductUrls } = state;
+  const { productImages, logoImage, uploadedLogoUrl, styleImage, designReferences, uploadedDesignReferenceUrls, referenceDimensions, referenceAnalysis, schemes, config, lastStyleUrl, uploadedProductUrls, projects, activeProjectId } = state;
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isAnalyzingReference, setIsAnalyzingReference] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -76,6 +97,25 @@ const MainImageSubModule: React.FC<Props> = ({
     setIsAnalyzing(false);
     setIsGenerating(false);
     onProcessingChange(false);
+
+    const activeProject = projects.find(project => project.id === activeProjectId);
+    if (activeProject?.isDraft && schemes.length === 0 && projects.length > 1) {
+      onDeleteActiveProject?.();
+      addToast('已清理刷新中断留下的空草稿项目', 'info');
+      return;
+    }
+
+    const staleGeneratingIds = schemes.filter(s => s.status === 'generating' && !s.taskId).map(s => s.id);
+    if (staleGeneratingIds.length > 0) {
+      onUpdate(prev => ({
+        ...prev,
+        schemes: prev.schemes.map(s => (
+          staleGeneratingIds.includes(s.id)
+            ? { ...s, status: 'error', error: '页面刷新过早，当前任务无法自动找回，请重新生成' }
+            : s
+        )),
+      }));
+    }
 
     // 自动恢复刷新前正在生成的任务
     if (schemes && Array.isArray(schemes)) {
@@ -226,6 +266,9 @@ const MainImageSubModule: React.FC<Props> = ({
     const hasGeneratingTask = schemesRef.current.some(s => s.status === 'generating');
     // 允许在只有上传 URL 的情况下启动分析（支持刷新后直接点击）
     if (isSubmittingAnalysisRef.current || isAnalyzing || isGenerating || hasGeneratingTask || (productImages.length === 0 && uploadedProductUrls.length === 0)) return;
+    if (schemesRef.current.length > 0) {
+      onPrepareFreshProject?.();
+    }
     
     isSubmittingAnalysisRef.current = true;
     setIsAnalyzing(true);
@@ -406,6 +449,10 @@ const MainImageSubModule: React.FC<Props> = ({
   };
 
   const deleteProject = () => {
+    if (activeProjectId) {
+      onDeleteActiveProject?.();
+      return;
+    }
     // 中断所有正在进行的任务
     Object.values(taskControllersRef.current).forEach((controller: AbortController) => controller.abort());
     taskControllersRef.current = {};
@@ -453,7 +500,7 @@ const MainImageSubModule: React.FC<Props> = ({
     addToast('方案已删除', 'success');
   };
 
-  const generateSingleImage = async (schemeId: string, productUrls: string[], referenceSummary: string | null, mode: 'full' | 'recover' = 'full') => {
+  const generateSingleImage = async (schemeId: string, productUrls: string[], mode: 'full' | 'recover' = 'full') => {
     if (taskControllersRef.current[schemeId]) { taskControllersRef.current[schemeId].abort(); }
     const controller = new AbortController();
     taskControllersRef.current[schemeId] = controller;
@@ -486,7 +533,7 @@ const MainImageSubModule: React.FC<Props> = ({
         updateSingleScheme(schemeId, { error: '正在重连云端任务...' });
         res = await recoverKieAiTask(targetScheme.taskId, apiConfig, controller.signal);
       } else { 
-        res = await triggerNewKieTask(targetScheme, productUrls, referenceSummary, controller.signal); 
+        res = await triggerNewKieTask(targetScheme, productUrls, controller.signal); 
       }
 
       // 关键修正：只要拿到 taskId，立即存入持久化状态，防止刷新丢失
@@ -571,7 +618,7 @@ const MainImageSubModule: React.FC<Props> = ({
     }
   };
 
-  const triggerNewKieTask = async (scheme: MainImageScheme, productUrls: string[], referenceSummary: string | null, signal: AbortSignal) => {
+  const triggerNewKieTask = async (scheme: MainImageScheme, productUrls: string[], signal: AbortSignal) => {
     // 【核心变更】：一键主图模式下，强制使用全局配置的比例，忽略文本中的比例提取。
     // 确保生图比例绝对服从用户设定，而非 AI 幻觉。
     const strictRatio = config.aspectRatio || AspectRatio.SQUARE;
@@ -583,31 +630,13 @@ const MainImageSubModule: React.FC<Props> = ({
       .join('\n')
       .trim();
 
-    let finalPrompt = `STRICT PRODUCT CONSISTENCY: Strictly keep the product fully consistent with the source product reference images. Strictly do not change the product's appearance details, size, structure, label information, packaging information, or any visible product elements. SCENARIO & STYLE: ${cleanPrompt}. QUALITY: High-end commercial studio photography.`;
-    
-    // 仅使用产品图作为 image_input，不包含风格参考图
     const logoUrl = await getOrUploadLogoUrl();
     const inputImages = logoUrl ? [...productUrls, logoUrl] : [...productUrls];
-    
-    if (referenceSummary) {
-      finalPrompt += `\n【设计参考分析结论】\n${referenceSummary}`;
-      if (config.styleStrength === 'low') finalPrompt += `\n只弱参考上述结论中的氛围与色调。`;
-      else if (config.styleStrength === 'medium') finalPrompt += `\n严格参考上述结论中的版式、光影与色调。`;
-      else finalPrompt += `\n高强度执行上述参考结论，但主体商品仍必须完全保持产品素材一致。`;
-    }
-    finalPrompt += `\n若产品素材中出现竞品logo或他牌标识，最终生成图必须去除这些非我方品牌标识，禁止直接沿用。`;
-    if (logoUrl) {
-      finalPrompt += `\n品牌logo图：${logoUrl}。该图仅用于识别和还原我方品牌logo，不得把产品素材图或设计参考图中的其他品牌logo带入最终画面。若产品素材中出现竞品logo或他牌标识，最终生成图必须去除或替换为品牌logo图对应的我方logo。`;
-      finalPrompt += `\n注意：${logoUrl} 是品牌logo图。`;
-    }
-
-    // 增加生图文案语言固定指令
-    finalPrompt += `\n\n生图文案语言：“${config.language || 'English'}”`;
-    finalPrompt += `\n文案文字必须为“${config.language || 'English'}”`;
-    finalPrompt += `\n文案内容排版中，圆括号（或半角括号）内的内容全部是排版要求，绝对不能作为画面文字渲染。`;
-    finalPrompt += `\n只有中文引号“”内的文字才是最终需要渲染到画面中的正文文案。`;
-    finalPrompt += `\n字段名、角色名、括号内要求、冒号、说明文字都禁止渲染进画面。`;
-    finalPrompt += `\n若某行格式为 角色名(要求):“正文文案”，你只能渲染中文引号里的“正文文案”，并严格按括号内要求排版。`;
+    const finalPrompt = buildOneClickImagePrompt({
+      schemeContent: cleanPrompt,
+      language: config.language,
+      logoUrl,
+    });
 
     return await processWithKieAi(
       inputImages, 
@@ -654,7 +683,7 @@ const MainImageSubModule: React.FC<Props> = ({
       
       selectedSchemes.forEach(s => inflightIdsRef.current.add(s.id));
       
-      await Promise.all(selectedSchemes.map(s => generateSingleImage(s.id, productUrls, referenceAnalysis.summary || null)));
+      await Promise.all(selectedSchemes.map(s => generateSingleImage(s.id, productUrls)));
       void logActionSuccess({
         module: 'one_click',
         action: 'generate_main_batch',
@@ -705,7 +734,7 @@ const MainImageSubModule: React.FC<Props> = ({
     inflightIdsRef.current.add(schemeId);
     try {
       const productUrls = await getOrUploadProductUrls();
-      await generateSingleImage(schemeId, productUrls, referenceAnalysis.summary || null, 'recover');
+      await generateSingleImage(schemeId, productUrls, 'recover');
     } catch (e: any) {
       inflightIdsRef.current.delete(schemeId);
       updateSingleScheme(schemeId, { status: 'error', error: '同步失败: ' + e.message });
@@ -779,7 +808,7 @@ const MainImageSubModule: React.FC<Props> = ({
     inflightIdsRef.current.add(schemeId);
     try {
       const productUrls = await getOrUploadProductUrls();
-      await generateSingleImage(schemeId, productUrls, referenceAnalysis.summary || null);
+      await generateSingleImage(schemeId, productUrls);
     } catch (e: any) {
       inflightIdsRef.current.delete(schemeId);
       updateSingleScheme(schemeId, { status: 'error', error: '启动失败，请检查素材后重试' });
@@ -861,7 +890,26 @@ const MainImageSubModule: React.FC<Props> = ({
         onSyncConfig={onSyncConfig}
         onClearConfig={onClearConfig}
         disabled={isAnalyzing || isGenerating || schemes.some(s => s.status === 'generating')} 
-        onStart={handleStartAnalysis}
+        onStart={handleStartAnalysis} 
+        referencePresets={referencePresets}
+        onSaveReferencePreset={onSaveReferencePreset}
+        onApplyReferencePreset={onApplyReferencePreset}
+        onCreateReferencePreset={onCreateReferencePreset}
+        onUpdateReferencePreset={onUpdateReferencePreset}
+        onDeleteReferencePreset={onDeleteReferencePreset}
+        createEmptyReferencePreset={() => ({
+          id: `preset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          name: '',
+          subMode: OneClickSubMode.MAIN_IMAGE,
+          coverImageUrl: '',
+          referenceImageUrls: [],
+          summary: '',
+          detail: '',
+          referenceDimensions: [],
+          tags: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        })}
       />
       
       <main className="flex-1 overflow-y-auto p-8 relative scrollbar-hide">
@@ -881,6 +929,51 @@ const MainImageSubModule: React.FC<Props> = ({
             </div>
           </div>
         </div>
+        {projects.length > 0 ? (
+          <div className="mx-auto mb-6 max-w-5xl space-y-3">
+            {projects.map((project) => {
+              const isActive = project.id === activeProjectId;
+              return (
+                <div
+                  key={project.id}
+                  className={`rounded-2xl border px-4 py-4 transition-all ${isActive ? 'border-slate-900 bg-slate-900 text-white shadow-[0_16px_40px_rgba(15,23,42,0.18)]' : 'border-slate-200 bg-white text-slate-700 shadow-[0_8px_24px_rgba(15,23,42,0.06)]'}`}
+                >
+                  <div className="flex items-center justify-between gap-4">
+                    <button
+                      type="button"
+                      onClick={() => onSelectProject?.(project.id)}
+                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                    >
+                      <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${isActive ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                        <i className={`fas ${isActive ? 'fa-chevron-down' : 'fa-chevron-right'} text-xs`}></i>
+                      </span>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-black">{project.name}</div>
+                        <div className={`mt-1 text-xs ${isActive ? 'text-slate-300' : 'text-slate-400'}`}>
+                          {project.schemes.length > 0 ? `方案 ${project.schemes.length} 个` : '空项目'}
+                        </div>
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-2">
+                      {isActive ? <span className="rounded-full bg-white/15 px-3 py-1 text-[11px] font-bold">当前项目</span> : null}
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onDeleteProject?.(project.id);
+                        }}
+                        className={`flex h-9 w-9 items-center justify-center rounded-xl transition-all ${isActive ? 'hover:bg-white/10 text-white' : 'hover:bg-slate-100 text-rose-500'}`}
+                        title="删除项目"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
         {schemes.length > 0 ? (
           <div className="max-w-5xl mx-auto space-y-6 pb-20">
             <div className="sticky top-0 z-20 flex items-center justify-between rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-[0_12px_32px_rgba(15,23,42,0.08)] backdrop-blur-sm">
@@ -993,7 +1086,10 @@ const MainImageSubModule: React.FC<Props> = ({
                          </button>
                       </div>
                     </div>
-                    <textarea value={scheme.editedContent} onChange={(e) => onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === scheme.id ? { ...s, editedContent: e.target.value } : s) }))} disabled={scheme.status === 'generating' || isAnalyzing} className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 text-xs font-medium text-slate-700 h-40 resize-none outline-none focus:ring-1 focus:ring-rose-500 shadow-inner transition-all scrollbar-hide" />
+                    <textarea value={scheme.editedContent} onChange={(e) => {
+                      schemesRef.current = schemesRef.current.map(s => s.id === scheme.id ? { ...s, editedContent: e.target.value } : s);
+                      onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === scheme.id ? { ...s, editedContent: e.target.value } : s) }));
+                    }} disabled={scheme.status === 'generating' || isAnalyzing} className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 text-xs font-medium text-slate-700 h-40 resize-none outline-none focus:ring-1 focus:ring-rose-500 shadow-inner transition-all scrollbar-hide" />
                   </div>
                   <div className={`flex-1 p-6 flex items-center justify-center relative transition-opacity duration-300 ${scheme.selected ? 'bg-slate-50 opacity-100' : 'bg-slate-100/50 opacity-40'}`}>
                     {scheme.status === 'generating' ? (
