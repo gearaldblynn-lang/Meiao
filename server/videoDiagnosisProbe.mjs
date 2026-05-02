@@ -182,7 +182,7 @@ export const buildNormalizedDiagData = ({ detail, profileData, recentPosts, comm
     platformStatus: {
       isProhibited: status.is_prohibited ?? null,
       privateStatus: status.private_status ?? null,
-      reviewStatus: reviewResult.review_status ?? null,
+      reviewStatus: reviewResult.review_status ?? detail.review_status ?? null,
       inReviewing: status.in_reviewing ?? null,
       isDelete: status.is_delete ?? null,
       allowComment: status.allow_comment ?? null,
@@ -230,7 +230,7 @@ export const buildNormalizedDiagData = ({ detail, profileData, recentPosts, comm
 
 export const buildDiagnosisReport = ({ platform, normalized, missingCriticalFields }) => {
   const missing = Array.isArray(missingCriticalFields) ? missingCriticalFields : [];
-  const playCount = Number(normalized?.statistics?.playCount ?? 0);
+  const playCount = Number(normalized?.statistics?.playCount ?? normalized?.video?.playCount ?? 0);
   const evidence = [
     {
       label: '播放量',
@@ -251,17 +251,22 @@ export const buildDiagnosisReport = ({ platform, normalized, missingCriticalFiel
 };
 
 // TikTok 多接口并发抓取
-const fetchTikTokAllSources = async (spiderFetch, { videoId, url }) => {
+const fetchTikTokAllSources = async (spiderFetch, { videoId, url, analysisItems = [] }) => {
   const videoRaw = await spiderFetch({ platform: 'tiktok', source: 'video', videoId, url });
   const detail = pickVideoDetail(videoRaw);
   const uniqueId = detail?.author?.unique_id || '';
   const musicMid = (detail?.added_sound_music_info?.mid || detail?.music?.mid || '');
+  const requested = new Set(Array.isArray(analysisItems) ? analysisItems : []);
+  const wantsAuthor = requested.has('author_profile');
+  const wantsMetrics = requested.has('video_metrics');
+  const wantsComments = requested.has('comment_quality');
+  const wantsMusic = requested.has('music');
 
   const [profileRaw, postsRaw, commentsRaw, musicRaw] = await Promise.all([
-    uniqueId ? safeCall(() => spiderFetch({ platform: 'tiktok', source: 'user_profile', uniqueId })) : null,
-    uniqueId ? safeCall(() => spiderFetch({ platform: 'tiktok', source: 'user_posts', uniqueId })) : null,
-    safeCall(() => spiderFetch({ platform: 'tiktok', source: 'video_comments', videoId })),
-    musicMid ? safeCall(() => spiderFetch({ platform: 'tiktok', source: 'music_detail', musicId: musicMid })) : null,
+    wantsAuthor && uniqueId ? safeCall(() => spiderFetch({ platform: 'tiktok', source: 'user_profile', uniqueId })) : null,
+    wantsMetrics && uniqueId ? safeCall(() => spiderFetch({ platform: 'tiktok', source: 'user_posts', uniqueId })) : null,
+    wantsComments && videoId ? safeCall(() => spiderFetch({ platform: 'tiktok', source: 'video_comments', videoId })) : null,
+    wantsMusic && musicMid ? safeCall(() => spiderFetch({ platform: 'tiktok', source: 'music_detail', musicId: musicMid })) : null,
   ]);
 
   const recentPosts = postsRaw?.data?.aweme_list || [];
@@ -454,12 +459,14 @@ export const createVideoDiagnosisProbe = ({ spiderFetch }) => async ({ platform,
     ? extractTikTokVideoIdFromUrl(url)
     : extractDouyinVideoIdFromUrl(url);
 
-  // videoId 可能为空（短链接），Spider API 的 share_url 字段本身支持短链接，继续执行
+  if (!videoId && /\/@[^/]+\/?$/i.test(String(url || ''))) {
+    return createErrorResult({ message: '视频链接缺少 video id，请粘贴具体视频链接', missingCriticalFields: ['video.id'] });
+  }
 
   let sources;
   try {
     sources = platform === 'tiktok'
-      ? await fetchTikTokAllSources(spiderFetch, { videoId, url })
+      ? await fetchTikTokAllSources(spiderFetch, { videoId, url, analysisItems })
       : await fetchDouyinAllSources(spiderFetch, { videoId, url });
   } catch (error) {
     return createErrorResult({
@@ -479,7 +486,7 @@ export const createVideoDiagnosisProbe = ({ spiderFetch }) => async ({ platform,
 
   const normalized = {
     video: {
-      id: videoId,
+      id: videoId || String(detail?.aweme_id || ''),
       desc: detail?.desc ?? '',
       playCount: normalizedDiag?.statistics?.playCount ?? 0,
       diggCount: normalizedDiag?.statistics?.diggCount ?? 0,

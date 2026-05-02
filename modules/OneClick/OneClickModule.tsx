@@ -198,7 +198,7 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
       const presets = createReferencePresetsFromFirstImageState({
         namePrefix: '首图主图参考预设',
         state: persistentState.firstImage,
-      });
+      }) as OneClickReferencePreset[];
       if (presets.length === 0) {
         addToast('当前没有可保存的主图参考，请先上传主图参考。', 'warning');
         return;
@@ -223,7 +223,7 @@ const OneClickModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
       subMode: targetSubMode,
       name: defaultName,
       state: sourceState,
-    });
+    }) as OneClickReferencePreset;
 
     if (!preset.referenceImageUrls.length) {
       addToast('当前没有可保存的参考图，请先补充参考图。', 'warning');

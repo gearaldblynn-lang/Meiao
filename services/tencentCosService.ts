@@ -20,10 +20,14 @@ export const uploadToCos = async (
   file: File,
   _apiConfig: GlobalApiConfig,
   customFileName?: string,
-  logMeta?: Record<string, unknown>
+  logMeta?: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<string> => {
   if (!file) {
     throw new Error('文件对象为空');
+  }
+  if (signal?.aborted) {
+    throw new DOMException('The operation was aborted.', 'AbortError');
   }
 
   let preparedFile: File;
@@ -70,8 +74,12 @@ export const uploadToCos = async (
         module: activeModule,
         file: preparedFile,
         fileName: uploadFileName,
+        signal: signal,
       });
     } catch (streamError: any) {
+      if (signal?.aborted) {
+        throw new DOMException('The operation was aborted.', 'AbortError');
+      }
       uploadMethod = 'base64';
       void safeCreateInternalLog({
         level: 'info',
@@ -90,6 +98,9 @@ export const uploadToCos = async (
         },
       });
       const base64Data = await fileToBase64(uploadFile);
+      if (signal?.aborted) {
+        throw new DOMException('The operation was aborted.', 'AbortError');
+      }
       result = await uploadInternalAsset({
         module: activeModule,
         fileName: uploadFileName,

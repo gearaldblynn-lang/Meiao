@@ -99,7 +99,8 @@ test('agent chat source forwards multimodal attachments and model options into p
   assert.match(source, /const buildChatMessageContent = \(text, attachments = \[\]\) =>/);
   assert.match(source, /type: 'image_url'/);
   assert.match(source, /type: 'input_file'/);
-  assert.match(source, /content: buildChatMessageContent\(currentMessage, attachments\)/);
+  assert.match(source, /const \{ text: inlinedMessage, attachments: remainingAttachments \} = await inlineTextAttachments\(pool, currentMessage, attachments\)/);
+  assert.match(source, /content: buildChatMessageContent\(inlinedMessage, remainingAttachments\)/);
   assert.match(source, /reasoningLevel: reasoningLevel \? String\(reasoningLevel\) : null/);
   assert.match(source, /webSearchEnabled: Boolean\(webSearchEnabled\)/);
   assert.match(source, /attachments,\s+reasoningLevel: payload\?\.reasoningLevel \|\| null,\s+webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\)/);
@@ -139,7 +140,7 @@ test('agent chat source persists client request ids so timed-out image chats can
   assert.match(source, /const clientRequestId = String\(body\?\.clientRequestId \|\| createEntityId\(\)\)\.trim\(\) \|\| createEntityId\(\);/);
   assert.match(source, /clientRequestId,/);
   assert.match(source, /metadata: \{ selectedModel, reasoningLevel: payload\?\.reasoningLevel \|\| null, webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\), requestMode, clientRequestId \}/);
-  assert.match(source, /metadata: \{ selectedModel: result\.selectedModel, usedRetrieval: result\.usedRetrieval, requestMode, clientRequestId, imagePlan: result\.imagePlan \|\| null, imageResultUrls: result\.imageResultUrls \|\| null, retrievalSummary: result\.retrievalSummary \|\| \[\] \}/);
+  assert.match(source, /metadata: \{ selectedModel: result\.selectedModel, fallbackFrom: result\.fallbackFrom \|\| null, usedRetrieval: result\.usedRetrieval, requestMode, clientRequestId, imagePlan: result\.imagePlan \|\| null, imageResultUrls: result\.imageResultUrls \|\| null, retrievalSummary: result\.retrievalSummary \|\| \[\] \}/);
 });
 
 test('agent chat source writes detailed runtime logs for both success and failure paths', () => {
@@ -222,8 +223,9 @@ test('agent studio training source forwards unified composer attachments and mod
   assert.match(source, /const capabilityError = getAttachmentCapabilityError\(\{ capability, attachments, requestMode: 'chat', modelLabel: `模型 \$\{selectedModel\} ` \}\);/);
   assert.match(source, /if \(payload\?\.webSearchEnabled && !capability\?\.supportsWebSearch\) \{/);
   assert.match(source, /attachments,\s+selectedModelOverride: selectedModel,\s+reasoningLevel: payload\?\.reasoningLevel \|\| null,\s+webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\)/);
-  assert.match(source, /const attachments = Array\.isArray\(body\?\.attachments\) \? body\.attachments : \[\];/);
-  assert.match(source, /const selectedModel = resolveChatSessionModel\(version, body\?\.selectedModel \|\| version\.defaultChatModel \|\| version\.modelPolicy\?\.defaultModel \|\| ''\);/);
+  assert.match(source, /let attachments = \[\];/);
+  assert.match(source, /attachments = Array\.isArray\(body\?\.attachments\) \? body\.attachments : \[\];/);
+  assert.match(source, /selectedModel = resolveChatSessionModel\(version, body\?\.selectedModel \|\| version\.defaultChatModel \|\| version\.modelPolicy\?\.defaultModel \|\| ''\);/);
   assert.match(source, /const capabilityError = getAttachmentCapabilityError\(\{ capability, attachments, requestMode: 'chat', modelLabel: `模型 \$\{selectedModel\} ` \}\);/);
   assert.match(source, /if \(body\?\.webSearchEnabled && !capability\?\.supportsWebSearch\) \{/);
   assert.match(source, /attachments,\s+selectedModelOverride: selectedModel,\s+reasoningLevel: body\?\.reasoningLevel \|\| null,\s+webSearchEnabled: Boolean\(body\?\.webSearchEnabled\)/);

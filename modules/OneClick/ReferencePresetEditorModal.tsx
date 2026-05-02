@@ -15,6 +15,11 @@ const SUBMODE_LABELS: Record<OneClickSubMode, string> = {
   [OneClickSubMode.SKU]: 'SKU',
 };
 
+const buildContentType = (subMode: OneClickSubMode) =>
+  subMode === OneClickSubMode.FIRST_IMAGE || subMode === OneClickSubMode.SKU
+    ? 'images_only'
+    : 'images_with_analysis';
+
 interface Props {
   open: boolean;
   mode: 'create' | 'edit';
@@ -40,6 +45,21 @@ const ReferencePresetEditorModal: React.FC<Props> = ({ open, mode, initialValue,
 
   const setField = <K extends keyof OneClickReferencePreset>(key: K, value: OneClickReferencePreset[K]) => {
     setDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
+  };
+
+  const handleSubModeChange = (value: OneClickSubMode) => {
+    const nextContentType = buildContentType(value);
+    setDraft((prev) => (
+      prev
+        ? {
+            ...prev,
+            subMode: value,
+            contentType: nextContentType,
+            summary: nextContentType === 'images_with_analysis' ? prev.summary : '',
+            detail: nextContentType === 'images_with_analysis' ? prev.detail : '',
+          }
+        : prev
+    ));
   };
 
   const addImage = () => {
@@ -71,7 +91,7 @@ const ReferencePresetEditorModal: React.FC<Props> = ({ open, mode, initialValue,
     setTagInput('');
   };
 
-  const canSubmit = draft.name.trim() && draft.summary.trim() && imageList.length > 0;
+  const canSubmit = draft.name.trim() && imageList.length > 0 && (draft.contentType === 'images_only' || draft.summary.trim());
 
   return (
     <div className="fixed inset-0 z-[95] flex items-center justify-center bg-slate-950/55 p-6">
@@ -95,21 +115,29 @@ const ReferencePresetEditorModal: React.FC<Props> = ({ open, mode, initialValue,
               </label>
               <label className="space-y-2">
                 <span className="text-xs font-bold text-slate-500">适用子功能</span>
-                <select value={draft.subMode} onChange={(e) => setField('subMode', e.target.value as OneClickSubMode)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-rose-500/20">
+                <select value={draft.subMode} onChange={(e) => handleSubModeChange(e.target.value as OneClickSubMode)} className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-rose-500/20">
                   {Object.entries(SUBMODE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                 </select>
               </label>
             </div>
 
-            <label className="space-y-2">
-              <span className="text-xs font-bold text-slate-500">摘要</span>
-              <textarea value={draft.summary} onChange={(e) => setField('summary', e.target.value)} rows={3} className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-rose-500/20" />
-            </label>
+            {draft.contentType === 'images_with_analysis' ? (
+              <>
+                <label className="space-y-2">
+                  <span className="text-xs font-bold text-slate-500">分析摘要</span>
+                  <textarea value={draft.summary} onChange={(e) => setField('summary', e.target.value)} rows={3} className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-rose-500/20" />
+                </label>
 
-            <label className="space-y-2">
-              <span className="text-xs font-bold text-slate-500">完整说明</span>
-              <textarea value={draft.detail} onChange={(e) => setField('detail', e.target.value)} rows={8} className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-rose-500/20" />
-            </label>
+                <label className="space-y-2">
+                  <span className="text-xs font-bold text-slate-500">分析结果</span>
+                  <textarea value={draft.detail} onChange={(e) => setField('detail', e.target.value)} rows={8} className="w-full rounded-2xl border border-slate-200 px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-rose-500/20" />
+                </label>
+              </>
+            ) : (
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-[11px] leading-5 text-slate-500">
+                当前子功能预设只保存参考图，不录入卖点信息或分析正文。
+              </div>
+            )}
 
             <div className="space-y-2">
               <span className="text-xs font-bold text-slate-500">参考图 URL</span>
@@ -173,11 +201,15 @@ const ReferencePresetEditorModal: React.FC<Props> = ({ open, mode, initialValue,
         </div>
 
         <div className="flex items-center justify-between border-t border-slate-100 px-6 py-4">
-          <p className="text-[11px] text-slate-400">名称、摘要、至少一张参考图为必填。</p>
+          <p className="text-[11px] text-slate-400">{draft.contentType === 'images_with_analysis' ? '名称、分析摘要、至少一张参考图为必填。' : '名称与至少一张参考图为必填。'}</p>
           <div className="flex gap-2">
             <button onClick={onClose} className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-black text-slate-600">取消</button>
             <button
-              onClick={() => canSubmit && onSubmit({ ...draft, detail: draft.detail.trim() || draft.summary.trim() })}
+              onClick={() => canSubmit && onSubmit({
+                ...draft,
+                summary: draft.contentType === 'images_with_analysis' ? draft.summary.trim() : '',
+                detail: draft.contentType === 'images_with_analysis' ? (draft.detail.trim() || draft.summary.trim()) : '',
+              })}
               disabled={!canSubmit}
               className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300"
             >

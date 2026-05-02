@@ -18,9 +18,20 @@ const buildReferenceItems = (urls, prefix) =>
     uploadedUrl: url,
   }));
 
+const buildPresetContentType = (subMode) =>
+  subMode === OneClickSubMode.FIRST_IMAGE || subMode === OneClickSubMode.SKU
+    ? 'images_only'
+    : 'images_with_analysis';
+
+const buildAnalysisText = (subMode, fallbackName, summary) =>
+  buildPresetContentType(subMode) === 'images_with_analysis'
+    ? (summary || fallbackName)
+    : '';
+
 export const createReferencePresetFromState = ({ subMode, name, state }) => {
   const now = Date.now();
   const fallbackName = name?.trim() || '未命名预设';
+  const contentType = buildPresetContentType(subMode);
 
   if (subMode === OneClickSubMode.SKU) {
     const styleRef = state.images.find((item) => item.role === 'style_ref' && item.uploadedUrl);
@@ -29,10 +40,11 @@ export const createReferencePresetFromState = ({ subMode, name, state }) => {
       id: createId(),
       name: fallbackName,
       subMode,
+      contentType,
       coverImageUrl: imageUrl,
       referenceImageUrls: imageUrl ? [imageUrl] : [],
-      summary: state.referenceAnalysis?.summary?.trim() || fallbackName,
-      detail: state.referenceAnalysis?.summary?.trim() || fallbackName,
+      summary: '',
+      detail: '',
       referenceDimensions: Array.isArray(state.referenceDimensions) ? state.referenceDimensions : [],
       tags: [],
       createdAt: now,
@@ -44,16 +56,17 @@ export const createReferencePresetFromState = ({ subMode, name, state }) => {
     ...(state.uploadedDesignReferenceUrls || []),
     state.lastStyleUrl || '',
   ]);
-  const summary = state.referenceAnalysis?.summary?.trim() || fallbackName;
+  const analysisText = buildAnalysisText(subMode, fallbackName, state.referenceAnalysis?.summary?.trim() || '');
 
   return {
     id: createId(),
     name: fallbackName,
     subMode,
+    contentType,
     coverImageUrl: referenceImageUrls[0] || '',
     referenceImageUrls,
-    summary,
-    detail: summary,
+    summary: analysisText,
+    detail: analysisText,
     referenceDimensions: Array.isArray(state.referenceDimensions) ? state.referenceDimensions : [],
     tags: [],
     createdAt: now,
@@ -63,17 +76,17 @@ export const createReferencePresetFromState = ({ subMode, name, state }) => {
 
 export const createReferencePresetsFromFirstImageState = ({ namePrefix, state }) => {
   const urls = normalizeUrls(state.uploadedDesignReferenceUrls || []);
-  const summary = state.referenceAnalysis?.summary?.trim() || (state.config?.description?.trim() || '首图主图参考预设');
   const now = Date.now();
 
   return urls.map((url, index) => ({
     id: createId(),
     name: `${namePrefix || '首图主图参考预设'} ${index + 1}`,
     subMode: OneClickSubMode.FIRST_IMAGE,
+    contentType: buildPresetContentType(OneClickSubMode.FIRST_IMAGE),
     coverImageUrl: url,
     referenceImageUrls: [url],
-    summary,
-    detail: summary,
+    summary: '',
+    detail: '',
     referenceDimensions: Array.isArray(state.referenceDimensions) ? state.referenceDimensions : [],
     tags: [],
     createdAt: now + index,
@@ -117,10 +130,11 @@ export const filterReferencePresets = (presets, { subMode, query }) => {
 };
 
 export const applyReferencePresetToState = (preset, currentState) => {
-  const referenceAnalysis = preset.summary
+  const shouldRestoreAnalysis = preset.contentType === 'images_with_analysis';
+  const referenceAnalysis = shouldRestoreAnalysis
     ? {
         status: 'success',
-        summary: preset.summary,
+        summary: shouldRestoreAnalysis ? preset.summary : '',
         error: '',
         analyzedAt: Date.now(),
       }

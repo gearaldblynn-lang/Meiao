@@ -508,6 +508,7 @@ const SkuSidebar: React.FC<Props> = ({
           id: `preset_${Date.now()}`,
           name: '',
           subMode: OneClickSubMode.SKU,
+          contentType: 'images_only',
           coverImageUrl: '',
           referenceImageUrls: [],
           summary: '',

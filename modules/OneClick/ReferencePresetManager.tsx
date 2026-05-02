@@ -9,6 +9,9 @@ const SUBMODE_LABELS: Record<OneClickSubMode, string> = {
   [OneClickSubMode.SKU]: 'SKU',
 };
 
+const getPresetContentLabel = (preset: OneClickReferencePreset) =>
+  preset.contentType === 'images_only' ? '仅保存参考图' : '图片 + 分析结果';
+
 interface Props {
   open: boolean;
   title: string;
@@ -69,10 +72,11 @@ const ReferencePresetManager: React.FC<Props> = ({
       id: `merged_first_image_${Date.now()}`,
       name: picked.map((item) => item.name).join(' / '),
       subMode: OneClickSubMode.FIRST_IMAGE,
+      contentType: 'images_only',
       coverImageUrl: picked[0].coverImageUrl,
       referenceImageUrls: Array.from(new Set(picked.flatMap((item) => item.referenceImageUrls.filter(Boolean)))),
-      summary: picked.map((item) => item.summary).filter(Boolean).join('\n\n'),
-      detail: picked.map((item) => item.detail).filter(Boolean).join('\n\n'),
+      summary: '',
+      detail: '',
       referenceDimensions: Array.from(new Set(picked.flatMap((item) => item.referenceDimensions))),
       tags: Array.from(new Set(picked.flatMap((item) => item.tags))),
       createdAt: Date.now(),
@@ -105,7 +109,7 @@ const ReferencePresetManager: React.FC<Props> = ({
                 </span>
               ))}
               <div className="ml-auto flex gap-2">
-                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称或摘要" className="w-56 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-rose-500/20" />
+                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称、参考图或分析结果" className="w-56 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-rose-500/20" />
                 <button type="button" onClick={onCreate} className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-black text-white">新增预设</button>
                 {onSaveCurrent ? <button type="button" onClick={onSaveCurrent} className="rounded-xl bg-indigo-600 px-4 py-2 text-xs font-black text-white">保存当前</button> : null}
                 {activeSubMode === OneClickSubMode.FIRST_IMAGE ? <button type="button" onClick={handleApplySelected} disabled={selectedIds.length === 0} className="rounded-xl bg-rose-600 px-4 py-2 text-xs font-black text-white disabled:cursor-not-allowed disabled:bg-slate-300">应用已选 {selectedIds.length > 0 ? `(${selectedIds.length})` : ''}</button> : null}
@@ -115,7 +119,7 @@ const ReferencePresetManager: React.FC<Props> = ({
             {visiblePresets.length === 0 ? (
               <div className="flex h-64 flex-col items-center justify-center rounded-[24px] border border-dashed border-slate-200 bg-slate-50 text-center">
                 <p className="text-sm font-black text-slate-500">当前分类还没有预设</p>
-                <p className="mt-2 text-[11px] text-slate-400">可以从当前分析结果保存，或手动新增一套图文预设。</p>
+                <p className="mt-2 text-[11px] text-slate-400">可以从当前参考内容保存，或手动新增一套预设。</p>
               </div>
             ) : (
               <div className="grid grid-cols-3 gap-4">
@@ -141,7 +145,8 @@ const ReferencePresetManager: React.FC<Props> = ({
                           <span className="shrink-0 rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500 ring-1 ring-slate-200">{SUBMODE_LABELS[preset.subMode]}</span>
                         </div>
                       </div>
-                      <p className="line-clamp-3 min-h-[54px] whitespace-pre-wrap text-[11px] leading-5 text-slate-500">{preset.summary}</p>
+                      <p className="rounded-xl bg-slate-50 px-2.5 py-2 text-[10px] font-bold text-slate-500">{getPresetContentLabel(preset)}</p>
+                      <p className="line-clamp-3 min-h-[54px] whitespace-pre-wrap text-[11px] leading-5 text-slate-500">{preset.summary || '该预设仅保存参考图，不录入卖点信息。'}</p>
                       <div className="flex flex-wrap gap-1">
                         {preset.referenceDimensions.slice(0, 3).map((dimension) => (
                           <span key={dimension} className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-slate-400 ring-1 ring-slate-200">{dimension}</span>
@@ -171,9 +176,18 @@ const ReferencePresetManager: React.FC<Props> = ({
                     <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500 ring-1 ring-slate-200">{SUBMODE_LABELS[selectedPreset.subMode]}</span>
                   </div>
                   <p className="mt-2 text-[10px] text-slate-400">{formatTime(selectedPreset.updatedAt)}</p>
-                  <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-3 text-[11px] leading-5 text-slate-600 whitespace-pre-wrap">
-                    {selectedPreset.detail}
+                  <div className="mt-3 rounded-xl bg-white px-3 py-2 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">
+                    {getPresetContentLabel(selectedPreset)}
                   </div>
+                  {selectedPreset.contentType === 'images_with_analysis' ? (
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-3 text-[11px] leading-5 text-slate-600 whitespace-pre-wrap">
+                      {selectedPreset.detail}
+                    </div>
+                  ) : (
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-3 text-[11px] leading-5 text-slate-500">
+                      该预设只保存参考图，不录入卖点信息或分析正文。
+                    </div>
+                  )}
                   {selectedPreset.referenceImageUrls.length > 1 ? (
                     <div className="mt-4 grid grid-cols-3 gap-2">
                       {selectedPreset.referenceImageUrls.map((url) => (

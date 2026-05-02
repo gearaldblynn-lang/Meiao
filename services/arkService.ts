@@ -454,7 +454,7 @@ export const generateFirstImageReplicationSchemes = async (
       subMode: OneClickSubMode.FIRST_IMAGE,
     });
 
-    const schemes = await Promise.all(validReferenceUrls.map(async (referenceUrl, index) => {
+    const settledResults = await Promise.allSettled(validReferenceUrls.map(async (referenceUrl, index) => {
       if (signal?.aborted) throw new Error('ABORTED');
 
       const systemPrompt = `R Role 角色
@@ -464,16 +464,23 @@ T Task 任务
 基于产品素材、产品信息及卖点、目标平台与当前这张复刻主图参考，输出 1 套可直接进入生图的首图复刻裂变方案。
 
 C Constraint 约束
-1. 当前任务不是自由创意主图，而是“基于参考图的复刻裂变”。
-2. 你必须分析当前这张复刻主图参考中的关键修改位，包括：商品主体位置、辅助元素位置、文案位置、logo位置、信息层级、版式结构与页面节奏。
-3. 你必须完全基于参考图内容做修改调整，在保持参考图视觉效果、版式设计、页面结构和设计细节的前提下，把参考图中的商品、文案、logo与无关品牌信息替换成我们的内容；允许做的只是“参考图改稿”，不是“另起一张”。
-4. 若本次出图比例与参考图原始比例不一致，必须在保持参考图原有视觉效果和版式关系的前提下，自适应调整为要求比例，不得因此改成另一种构图逻辑。
-5. 文案替换时必须逐一对照参考图原有每个文案位的内容长度与信息密度，替换后的文案字数必须尽量接近原位字数承载能力；必要时做等义压缩和短句化处理，禁止某一文案位明显超字数，避免改完后版面拥挤、信息失衡或观感变差。
-6. 必须去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案。去除后原位置不得留空，必须优先替换为我方品牌 logo、店铺名或与版式匹配的通用信息；若未上传品牌 logo，则改为通用文字信息，并按参考图原有设计逻辑完成补位，不得新增无关元素或虚构信息。未单独上传品牌logo图时，禁止把产品素材图上出现的logo或参考图logo直接当作我方画面品牌识别信息使用。
-7. 商品替换必须严格基于上传商品素材，禁止虚构不存在的商品形态、结构、包装、配件或展示角度。必须严格保留产品及包装本身的一致性，产品与包装展示以素材图实际内容为准；画面描述不要过度细写包装细节形态，只写需要放置的商品或配件内容及摆放关系，包装细节、标签信息和外观一律由上传素材图决定。${logoUrl ? '品牌logo图仅用于识别和还原我方品牌logo，不得带入任何竞品logo或他牌标识。' : '若产品素材中没有品牌logo图，不得凭空编造新品牌logo，也不得把素材图logo直接提取成我方独立品牌元素。'}
+【图片角色】
+1. 复刻主图参考图是唯一版式、风格、信息层级参考；产品素材图只用于识别我方商品；品牌logo图只用于识别和还原我方品牌。${logoUrl ? '' : '若未上传品牌logo图，不得凭空编造新品牌logo，也不得把素材图logo直接提取成我方独立品牌元素。'}
+
+【策划优先级】
+2. 当前任务不是自由创意主图，而是“基于参考图的复刻裂变”；允许做的只是“参考图改稿”，不是“另起一张”。
+3. 先逐项识别参考图真实画面中的主色、背景、顶部区域、标题区、卖点区、商品区、底部区域，再写替换方案；不得根据产品类目或卖点自行新增参考图中不存在的横幅、卡片、角标、促销条、排名牌或颜色体系。
+4. 保持参考图视觉效果、版式设计、页面结构和设计细节；若出图比例不同，只做等比例关系下的自适应，不得改成另一种构图逻辑。
+
+【替换规则】
+5. 必须去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案；去除后原位置不得留空，必须优先替换为我方品牌 logo、店铺名或与版式匹配的通用信息。
+6. 文案替换时必须逐一对照参考图原有每个文案位的内容长度与信息密度，替换后的文案字数必须尽量接近原位字数承载能力；必要时做等义压缩和短句化处理，禁止某一文案位明显超字数。
+7. 商品替换必须严格基于上传商品素材，禁止虚构不存在的商品形态、结构、包装、配件或展示角度；产品与包装展示以素材图实际内容为准，画面描述只写商品或配件内容及摆放关系，不细写包装细节形态。
 8. 首图配色规则：${firstImageColorMode === 'reference_locked' ? '必须以参考图配色为基准，不主动改动参考图原有配色方案。' : '必须先判断上传商品本身更适合的配色方向，并以商品属性配色方案为主，对参考图原有配色做适配性修改；配色调整后的主色、辅助色、背景色或材质色变化必须明确写进画面描述，不能只笼统写“自适应调整”。'}
-9. 设计意图只写“完全基于参考图内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，则自适应调整为要求比例”，不要展开别的内容。
-10. 画面描述只写以下几类信息：文案更改与字数适配、logo与品牌信息去除后的调整、商品替换方式、配色是否保持参考图基准或根据商品自适应调整。
+
+【输出内容】
+9. 设计意图只写“完全基于参考图内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，则自适应调整为要求比例”。
+10. 画面描述只写：文案更改与字数适配、logo与品牌信息去除后的调整、商品替换方式、配色是否保持参考图基准或根据商品自适应调整。
 
 F Format 格式
 只输出 1 个方案，并严格使用以下字段顺序：
@@ -502,13 +509,13 @@ E Example 示例
 
       const inputContent: any[] = [{ type: 'text', text: `${systemPrompt}\n\n${userPrompt}` }];
       productUrls.forEach((url, productIndex) => {
-        inputContent.push({ type: 'text', text: `[产品素材图${productIndex + 1}]` });
+        inputContent.push({ type: 'text', text: `[产品素材图${productIndex + 1}] 图片URL：${url}。仅用于识别我方商品外观、包装、配件与真实结构，不是版式参考。` });
         inputContent.push({ type: 'image_url', image_url: { url } });
       });
-      inputContent.push({ type: 'text', text: `[复刻主图参考${index + 1}] ${referenceUrl} 是复刻主图参考，必须基于这张图做主图裂变。` });
+      inputContent.push({ type: 'text', text: `[复刻主图参考${index + 1}] 图片URL：${referenceUrl}。这是唯一版式、风格、信息层级参考，必须基于这张图做主图裂变。` });
       inputContent.push({ type: 'image_url', image_url: { url: referenceUrl } });
       if (logoUrl) {
-        inputContent.push({ type: 'text', text: `[品牌logo图] ${logoUrl} 是品牌logo图。` });
+        inputContent.push({ type: 'text', text: `[品牌logo图] 图片URL：${logoUrl}。仅用于识别和还原我方品牌标识，不是版式参考。` });
         inputContent.push({ type: 'image_url', image_url: { url: logoUrl } });
       }
 
@@ -518,14 +525,30 @@ E Example 示例
       if (!scheme) {
         throw new Error(`复刻主图参考${index + 1} 未返回有效方案。`);
       }
-      return scheme;
+      return { referenceUrl, scheme, status: 'success' as const };
     }));
+
+    const perReferenceResults = settledResults.map((result, index) => (
+      result.status === 'fulfilled'
+        ? result.value
+        : {
+            referenceUrl: validReferenceUrls[index],
+            scheme: '',
+            status: 'error' as const,
+            message: result.reason?.message || `复刻主图参考${index + 1} 策划失败`,
+          }
+    ));
+    const schemes = perReferenceResults.filter((item) => item.status === 'success').map((item) => item.scheme);
+    const hasSuccess = schemes.length > 0;
+    const failureCount = perReferenceResults.filter((item) => item.status === 'error').length;
+    const message = failureCount > 0 ? `共 ${validReferenceUrls.length} 张参考图，其中 ${failureCount} 张策划失败。` : undefined;
 
     logArkEvent('first_image_replication_plan', '首图裂变策划成功', 'success', '', {
       count: schemes.length,
+      failedCount: failureCount,
       subMode: OneClickSubMode.FIRST_IMAGE,
     });
-    return { status: 'success', schemes };
+    return { status: hasSuccess ? 'success' : 'error', schemes, perReferenceResults, message };
   } catch (error: any) {
     logArkEvent('first_image_replication_plan', '首图裂变策划失败', 'failed', error.message, {
       subMode: OneClickSubMode.FIRST_IMAGE,

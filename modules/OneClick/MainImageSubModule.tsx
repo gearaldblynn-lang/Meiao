@@ -901,6 +901,7 @@ const MainImageSubModule: React.FC<Props> = ({
           id: `preset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           name: '',
           subMode: OneClickSubMode.MAIN_IMAGE,
+          contentType: 'images_with_analysis',
           coverImageUrl: '',
           referenceImageUrls: [],
           summary: '',

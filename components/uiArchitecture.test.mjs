@@ -201,15 +201,16 @@ test('release notes are surfaced from the sidebar user hub and notification cent
   assert.match(toastSystem, /查看更新/);
 });
 
-test('login screen only prefills local default credentials for localhost testing', () => {
+test('login screen never prefills default credentials', () => {
   const app = read('../App.tsx');
   const loginScreen = read('../components/Internal/LoginScreen.tsx');
 
   assert.match(app, /isLocalPreviewHost/);
-  assert.match(app, /defaultUsername=\{isLocalPreviewHost \? '将离' : ''\}/);
-  assert.match(app, /defaultPassword=\{isLocalPreviewHost \? '411422' : ''\}/);
+  assert.doesNotMatch(app, /defaultUsername=/);
+  assert.doesNotMatch(app, /defaultPassword=/);
   assert.match(loginScreen, /defaultUsername\?: string/);
   assert.match(loginScreen, /defaultPassword\?: string/);
+  assert.match(loginScreen, /useState\(''\)/);
 });
 
 test('agent center keeps chat available to staff while reserving management tabs for admins', () => {
