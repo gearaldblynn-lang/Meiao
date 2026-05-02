@@ -320,7 +320,13 @@ const XhsCoverModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
           if (runToken !== runTokenRef.current || stopSchedulingRef.current) {
             return;
           }
-          imageUrls.push(await uploadToCos(image, apiConfig));
+          const uploadController = new AbortController();
+          abortControllersRef.current.add(uploadController);
+          try {
+            imageUrls.push(await uploadToCos(image, apiConfig, undefined, undefined, uploadController.signal));
+          } finally {
+            abortControllersRef.current.delete(uploadController);
+          }
         }
         if (runToken !== runTokenRef.current || stopSchedulingRef.current) {
           return;

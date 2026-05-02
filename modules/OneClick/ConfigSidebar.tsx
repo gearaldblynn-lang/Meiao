@@ -917,6 +917,7 @@ const ConfigSidebar: React.FC<Props> = ({
           id: `preset_${Date.now()}`,
           name: '',
           subMode,
+          contentType: isFirstImage ? 'images_only' : 'images_with_analysis',
           coverImageUrl: '',
           referenceImageUrls: [],
           summary: '',

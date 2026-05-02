@@ -429,8 +429,6 @@ const App: React.FC = () => {
       <LoginScreen
         isSubmitting={loginSubmitting}
         error={loginError}
-        defaultUsername={isLocalPreviewHost ? '将离' : ''}
-        defaultPassword={isLocalPreviewHost ? '411422' : ''}
         onLogin={handleLogin}
       />
     );

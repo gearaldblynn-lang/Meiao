@@ -785,22 +785,22 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     let refDescription = "";
     if (refUrl) {
       if (isFirstImage) {
-        refDescription = ` Match the environment style, lighting mood, and color tone of the reference image (URL=${refUrl}). Do not copy its composition; place the product naturally in a similar setting.`;
+        refDescription = ` VISUAL REFERENCE PRIORITY: High. Visual atmosphere reference image (URL=${refUrl}) determines the environment style and lighting vibe. Do not copy its composition; place the product naturally in a similar setting.`;
       } else {
-        refDescription = ` Continue the exact same real-life session as the reference image (URL=${refUrl}): same person (if present), same room, same props, same lighting. This is the next natural moment in that session.`;
+        refDescription = ` SCENE & CHARACTER CONSISTENCY: Reference benchmark image (URL=${refUrl}) establishes the reality of this set. Reference benchmark image (URL=${refUrl}) is the first generated image from this same buyer-show set. Treat that benchmark image as the single source of truth for person identity, room layout, props, lighting, and camera reality. This new shot MUST stay in the same session continuity but clearly differ in composition, framing, action focus, and product storytelling purpose.`;
       }
     }
 
     // ③ 人物/静物模式
     let baseRequirement = "";
     if (isModelMode) {
-      baseRequirement = `People in the scene must look like real locals from ${persistentState.targetCountry} — natural and relaxed, not model-posed.${refDescription}`;
+      baseRequirement = `People in the scene must look like real locals from ${persistentState.targetCountry} — natural and relaxed, not model-posed. If a person is shown, they should look like a local user from ${persistentState.targetCountry}.${refDescription}`;
     } else {
       baseRequirement = `No people. Product placed naturally in a real everyday environment.${refDescription}`;
     }
 
     // ④ 产品一致性 + 场景融合
-    const productPreservation = `The product must be identical to the uploaded reference images: same packaging design, brand marks, color blocking, label layout, logo, and structure — do not redesign, simplify, or reinvent any part. The product must appear at its true real-world physical size relative to the scene — if the reference shows a small snack bag, it should occupy the space a small snack bag would in real life, not be oversized or undersized. The product is physically present in the scene: resting on the surface with a real contact shadow, perspective matching the camera angle, lit by the ambient environment. Perspective distortion and environmental lighting on the packaging are physically correct — not changes to the product. The product is photographed in the scene, not composited onto it.`;
+    const productPreservation = `PACKAGING CONSISTENCY FIRST: Keep the packaging identity exactly consistent with the uploaded product images. Strictly do not change the product's appearance details, size, structure, label information, packaging information, packaging layout, brand marks, color blocking, or any visible product elements. Do not redesign, rewrite, simplify, replace, or newly invent the package artwork or brand presentation. The product must appear at its true real-world physical size relative to the scene — if the reference shows a small snack bag, it should occupy the space a small snack bag would in real life, not be oversized or undersized. REAL SCENE INTEGRATION: The product must feel naturally photographed inside the scene with correct contact, perspective, scale, shadows, and occlusion. Perspective distortion and environmental lighting on the packaging are physically correct — not changes to the product. The product is photographed in the scene, not composited onto it.`;
 
     // ⑤ 场景指令
     const finalPrompt = `${realismPrompt}\n${baseRequirement}\n${productPreservation}\n\n${isFirstImage ? 'SCENE' : 'NEXT SHOT'}: ${prompt}`;

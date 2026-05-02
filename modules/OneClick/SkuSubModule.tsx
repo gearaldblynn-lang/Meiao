@@ -247,9 +247,9 @@ const SkuSubModule: React.FC<Props> = ({
     productImgs.forEach((img, i) => { manifest += `- 商品主体图${i + 1}: ${img.uploadedUrl}\n`; });
     giftImgs.forEach(img => { manifest += `- 赠品${img.giftIndex}: ${img.uploadedUrl}\n`; });
     if (!isFirst && resolvedFirstUrl) {
-      manifest += `- SKU风格基准（第一张生成结果，后续必须严格保持一致风格）: ${styleRefUrl}\n`;
+      manifest += `- SKU风格基准图（图片URL）：${styleRefUrl}。这是第一张 SKU 的生成结果，后续 SKU 必须按这张图的排版、字体风格、文字摆放、色调和整体设计风格继续生成。\n`;
     } else if (styleRefUrl) {
-      manifest += `- SKU风格参考图: ${styleRefUrl}\n`;
+      manifest += `- SKU风格参考图（图片URL）：${styleRefUrl}。第一张 SKU 必须按该参考图的整体风格、版式结构、信息层级、视觉节奏和设计细节生成。\n`;
     }
 
     let prompt = '【严格保持产品与赠品一致性】请严格保持所有商品与赠品和参考图一致，不得改变外观、尺寸关系、结构、标签或包装。\n\n';
@@ -261,8 +261,10 @@ const SkuSubModule: React.FC<Props> = ({
       .trim();
     prompt += `【SKU 展示方案】\n${normalizeCopyLayoutText(schemeContent)}\n`;
 
-    if (!isFirst && styleRefUrl && resolvedFirstUrl) {
-      prompt += `\n风格参考图：${styleRefUrl}。严格按照该风格参考图一致的排版、字体风格、文字摆放、色调和整体设计风格制作。该图仅作为风格基准，不得替换、改写或混入主体商品本身。`;
+    if (styleRefUrl) {
+      prompt += isFirst
+        ? `\nSKU风格参考图（图片URL）：${styleRefUrl}。第一张 SKU 必须直接按该参考图的整体风格、版式结构、信息层级、视觉节奏和设计细节制作。该图仅作为风格与版式参考，不得替换、改写或混入主体商品本身。`
+        : `\nSKU风格基准图（图片URL）：${styleRefUrl}。这是第一张 SKU 的生成结果，后续 SKU 必须按这张图一致的排版、字体风格、文字摆放、色调和整体设计风格制作。该图仅作为风格基准，不得替换、改写或混入主体商品本身。`;
     }
     prompt = appendOneClickCopyGuardrails(prompt, config.language || '中文');
     prompt += `\n主体商品必须最显眼，赠品只能作为辅助点缀，不能喧宾夺主。`;
@@ -514,6 +516,7 @@ const SkuSubModule: React.FC<Props> = ({
           id: `preset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           name: '',
           subMode: OneClickSubMode.SKU,
+          contentType: 'images_only',
           coverImageUrl: '',
           referenceImageUrls: [],
           summary: '',

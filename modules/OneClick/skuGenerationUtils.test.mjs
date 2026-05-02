@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { buildSkuGenerationAssets } from './skuGenerationUtils.mjs';
 
-test('buildSkuGenerationAssets includes product, gift, and uploaded style reference urls for the first sku', () => {
+test('buildSkuGenerationAssets sends product, gift, and uploaded style reference urls for the first sku', () => {
   const assets = buildSkuGenerationAssets({
     currentImages: [
       { role: 'product', uploadedUrl: 'https://img.test/product-a.png' },
@@ -28,10 +28,11 @@ test('buildSkuGenerationAssets includes product, gift, and uploaded style refere
     'https://img.test/product-a.png',
     'https://img.test/gift-a.png',
     'https://img.test/gift-b.png',
+    'https://img.test/style.png',
   ]);
 });
 
-test('buildSkuGenerationAssets switches to first generated sku url as the only style reference after the first sku', () => {
+test('buildSkuGenerationAssets sends first generated sku url as the only style reference after the first sku', () => {
   const assets = buildSkuGenerationAssets({
     currentImages: [
       { role: 'product', uploadedUrl: 'https://img.test/product-a.png' },
@@ -51,6 +52,8 @@ test('buildSkuGenerationAssets switches to first generated sku url as the only s
   assert.deepEqual(assets.generationImageUrls, [
     'https://img.test/product-a.png',
     'https://img.test/gift-a.png',
+    'https://img.test/sku-1-result.png',
   ]);
   assert.ok(!assets.imageUrls.includes('https://img.test/original-style.png'));
+  assert.ok(!assets.generationImageUrls.includes('https://img.test/original-style.png'));
 });

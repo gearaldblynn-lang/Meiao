@@ -225,6 +225,51 @@ const FirstImageSubModule: React.FC<Props> = ({
     return normalizedUrls;
   };
 
+  const buildSchemeFromPlanningText = (
+    text: string,
+    referenceUrl: string | undefined,
+    referenceIndex: number,
+    id = Math.random().toString(36).substr(2, 9),
+  ): MainImageScheme => {
+    // 仅用于UI显示，不用于实际生成逻辑（生成强制使用 config.aspectRatio）
+    const ratioMatch = text.match(/(?:-|\s|^)画面比例[：:]\s*([0-9]+:[0-9]+)/);
+    const ratio = ratioMatch ? ratioMatch[1] : (config.aspectRatio || '1:1');
+    
+    let uiTitle = `主图参考 ${referenceIndex + 1}：复刻裂变`;
+    const lines = text.split('\n');
+    
+    const titleLine = lines.find(l => /^(?:[-#*>\s]*)(?:屏序\/类型|第\s*\d+\s*屏|首图\d+|首图裂变\d+)/.test(l.trim()));
+    if (titleLine) {
+       const cleanLine = titleLine.trim().replace(/^(?:[-#*>\s]*)(?:屏序\/类型[：:]?)?/, '').trim();
+       uiTitle = cleanLine.replace(/^(?:首图\d+|首图裂变\d+|第\d+屏)\s*[-:]?\s*/, '').trim();
+       uiTitle = `主图参考 ${referenceIndex + 1}：${uiTitle}`;
+    }
+
+    const cleanedLines = lines.filter(line => {
+       const l = line.trim();
+       if (/^(?:[-#*>\s]*)(?:屏序\/类型|第\s*\d+\s*屏|首图\d+|首图裂变\d+)/.test(l)) return false;
+       if (/^(?:[-#*>\s]*)画面比例/.test(l)) return false;
+       return true;
+    });
+
+    const normalizedEditedContent = normalizeCopyLayoutText(cleanedLines.join('\n').trim());
+
+    return { 
+      id, 
+      uiTitle,
+      originalContent: text, 
+      editedContent: normalizedEditedContent, 
+      sourceReferenceUrl: referenceUrl,
+      sourceReferenceLabel: `复刻主图参考${referenceIndex + 1}`,
+      extractedRatio: ratio,
+      status: 'pending', 
+      selected: true,
+      error: undefined,
+      taskId: undefined,
+      resultUrl: undefined,
+    };
+  };
+
   const handleAnalyzeReference = async () => {
     if (isAnalyzingReference || designReferences.length === 0 || referenceDimensions.length === 0) return;
     setIsAnalyzingReference(true);
@@ -316,54 +361,46 @@ const FirstImageSubModule: React.FC<Props> = ({
         logoUrl,
       );
       
-      if (res.status === 'success') {
-        const initialSchemes: MainImageScheme[] = res.schemes.map((text, idx) => {
-          // 仅用于UI显示，不用于实际生成逻辑（生成强制使用 config.aspectRatio）
-          const ratioMatch = text.match(/(?:-|\s|^)画面比例[：:]\s*([0-9]+:[0-9]+)/);
-          const ratio = ratioMatch ? ratioMatch[1] : (config.aspectRatio || '1:1');
-          
-          let uiTitle = `主图参考 ${idx + 1}：复刻裂变`;
-          const lines = text.split('\n');
-          
-          const titleLine = lines.find(l => /^(?:[-#*>\s]*)(?:屏序\/类型|第\s*\d+\s*屏|首图\d+|首图裂变\d+)/.test(l.trim()));
-          if (titleLine) {
-             const cleanLine = titleLine.trim().replace(/^(?:[-#*>\s]*)(?:屏序\/类型[：:]?)?/, '').trim();
-             uiTitle = cleanLine.replace(/^(?:首图\d+|首图裂变\d+|第\d+屏)\s*[-:]?\s*/, '').trim();
-             uiTitle = `主图参考 ${idx + 1}：${uiTitle}`;
+      if (res.status === 'success' && res.perReferenceResults?.length) {
+        const initialSchemes: MainImageScheme[] = res.perReferenceResults.map((item, idx) => {
+          if (item.status === 'error') {
+            return {
+              id: Math.random().toString(36).substr(2, 9),
+              uiTitle: `主图参考 ${idx + 1}：策划失败`,
+              originalContent: '',
+              editedContent: '',
+              sourceReferenceUrl: item.referenceUrl || referenceUrls[idx] || undefined,
+              sourceReferenceLabel: `复刻主图参考${idx + 1}`,
+              extractedRatio: config.aspectRatio || '1:1',
+              status: 'error',
+              error: item.message || '当前参考图策划失败',
+              selected: false,
+            };
           }
-
-          const cleanedLines = lines.filter(line => {
-             const l = line.trim();
-             if (/^(?:[-#*>\s]*)(?:屏序\/类型|第\s*\d+\s*屏|首图\d+|首图裂变\d+)/.test(l)) return false;
-             if (/^(?:[-#*>\s]*)画面比例/.test(l)) return false;
-             return true;
-          });
-
-          const normalizedEditedContent = normalizeCopyLayoutText(cleanedLines.join('\n').trim());
-
-          return { 
-            id: Math.random().toString(36).substr(2, 9), 
-            uiTitle: uiTitle,
-            originalContent: text, 
-            editedContent: normalizedEditedContent, 
-            sourceReferenceUrl: referenceUrls[idx] || undefined,
-            sourceReferenceLabel: `复刻主图参考${idx + 1}`,
-            extractedRatio: ratio,
-            status: 'pending', 
-            selected: true 
-          };
+          return buildSchemeFromPlanningText(
+            item.scheme,
+            item.referenceUrl || referenceUrls[idx] || undefined,
+            idx,
+          );
         });
         onUpdate({ schemes: initialSchemes });
+        const successCount = initialSchemes.filter(item => item.status !== 'error').length;
+        const failureCount = initialSchemes.length - successCount;
         void logActionSuccess({
           module: 'one_click',
           action: 'plan_first_image_start',
           message: '首图策划成功',
           meta: {
             ...baseMeta,
-            count: initialSchemes.length,
+            count: successCount,
+            failedCount: failureCount,
           },
         });
-        addToast("首图裂变策划已生成，请检查每张参考图对应的方案后启动渲染。", 'success');
+        if (failureCount > 0) {
+          addToast(`首图裂变策划已部分完成，成功 ${successCount} 张，失败 ${failureCount} 张。失败项已单独保留。`, 'warning');
+        } else {
+          addToast("首图裂变策划已生成，请检查每张参考图对应的方案后启动渲染。", 'success');
+        }
       } else { 
         void logActionFailure({
           module: 'one_click',
@@ -814,6 +851,97 @@ const FirstImageSubModule: React.FC<Props> = ({
     }
   };
 
+  const handleRetryPlanning = async (schemeId: string) => {
+    if (inflightIdsRef.current.has(schemeId) || isAnalyzing || isGenerating) return;
+    const targetScheme = schemesRef.current.find(s => s.id === schemeId);
+    if (!targetScheme) return;
+    if (!targetScheme.sourceReferenceUrl) {
+      updateSingleScheme(schemeId, { status: 'error', error: '缺少原始参考图链接，无法重新策划' });
+      addToast('缺少原始参考图链接，无法重新策划。请重新上传参考图后再试。', 'error');
+      return;
+    }
+
+    inflightIdsRef.current.add(schemeId);
+    updateSingleScheme(schemeId, {
+      status: 'generating',
+      error: '当前参考图正在重新策划...',
+      taskId: undefined,
+      resultUrl: undefined,
+    });
+    void logActionStart({
+      module: 'one_click',
+      action: 'retry_first_image_planning',
+      message: '重新策划失败的首图参考',
+      meta: {
+        ...baseMeta,
+        schemeId,
+        referenceUrl: targetScheme.sourceReferenceUrl,
+      },
+    });
+
+    try {
+      const productUrls = await getOrUploadProductUrls();
+      const logoUrl = await getOrUploadLogoUrl();
+      const res = await generateFirstImageReplicationSchemes(
+        productUrls,
+        [targetScheme.sourceReferenceUrl],
+        config,
+        apiConfig,
+        undefined,
+        logoUrl,
+      );
+      const plannedText = res.perReferenceResults?.[0]?.status === 'success'
+        ? res.perReferenceResults[0].scheme
+        : res.schemes?.[0];
+
+      if (res.status !== 'success' || !plannedText) {
+        throw new Error(res.perReferenceResults?.[0]?.message || res.message || '当前参考图重新策划失败');
+      }
+
+      const referenceIndex = Math.max(0, schemesRef.current.findIndex(s => s.id === schemeId));
+      const nextScheme = {
+        ...buildSchemeFromPlanningText(plannedText, targetScheme.sourceReferenceUrl, referenceIndex, schemeId),
+        sourceReferenceLabel: targetScheme.sourceReferenceLabel || `复刻主图参考${referenceIndex + 1}`,
+      };
+      schemesRef.current = schemesRef.current.map(s => s.id === schemeId ? nextScheme : s);
+      onUpdate(prev => ({
+        ...prev,
+        schemes: prev.schemes.map(s => s.id === schemeId ? nextScheme : s),
+      }));
+      void logActionSuccess({
+        module: 'one_click',
+        action: 'retry_first_image_planning',
+        message: '失败首图参考重新策划成功',
+        meta: {
+          ...baseMeta,
+          schemeId,
+          referenceUrl: targetScheme.sourceReferenceUrl,
+        },
+      });
+      addToast('当前参考图已重新策划完成', 'success');
+    } catch (e: any) {
+      updateSingleScheme(schemeId, {
+        status: 'error',
+        error: e.message || '当前参考图重新策划失败',
+        selected: false,
+      });
+      void logActionFailure({
+        module: 'one_click',
+        action: 'retry_first_image_planning',
+        message: '失败首图参考重新策划失败',
+        detail: e.message,
+        meta: {
+          ...baseMeta,
+          schemeId,
+          referenceUrl: targetScheme.sourceReferenceUrl,
+        },
+      });
+      addToast(`当前参考图重新策划失败，失败卡片已保留。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
+    } finally {
+      inflightIdsRef.current.delete(schemeId);
+    }
+  };
+
   const getVariantLabel = (mode: 'scene' | 'palette' | 'custom') => (
     mode === 'scene' ? '换场景' : mode === 'palette' ? '换配色' : '自定义'
   );
@@ -960,6 +1088,7 @@ const FirstImageSubModule: React.FC<Props> = ({
           id: `preset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           name: '',
           subMode: OneClickSubMode.FIRST_IMAGE,
+          contentType: 'images_only',
           coverImageUrl: '',
           referenceImageUrls: [],
           summary: '',
@@ -1101,7 +1230,9 @@ const FirstImageSubModule: React.FC<Props> = ({
               className="overflow-hidden"
             >
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {schemes.map((scheme, idx) => (
+                {schemes.map((scheme, idx) => {
+                  const isPlanningFailure = scheme.status === 'error' && !scheme.editedContent.trim() && !!scheme.sourceReferenceUrl;
+                  return (
                 <div key={scheme.id} className={`bg-white rounded-2xl border transition-all overflow-hidden flex flex-col min-h-[500px] group/card ${scheme.selected ? 'border-rose-500 shadow-2xl' : 'border-slate-100 shadow-lg'}`}>
                   <div className="p-6 border-b border-slate-50 flex flex-col gap-3 relative">
                     <div onClick={() => scheme.status !== 'generating' && !isAnalyzing && toggleSelectScheme(scheme.id)} className={`absolute top-6 right-6 w-5 h-5 rounded border-2 cursor-pointer flex items-center justify-center transition-all z-10 ${scheme.selected ? 'bg-rose-600 border-rose-600 text-white' : 'bg-white border-slate-300 text-transparent hover:border-rose-400'} ${scheme.status === 'generating' || isAnalyzing ? 'opacity-50 pointer-events-none' : ''}`}>
@@ -1147,8 +1278,12 @@ const FirstImageSubModule: React.FC<Props> = ({
                          >
                              还原方案
                          </button>
-                         <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="text-xs font-medium text-rose-600 transition-colors hover:text-rose-800 disabled:opacity-30">
-                            {scheme.resultUrl ? '重新生成' : '生成该图'}
+                         <button
+                            disabled={scheme.status === 'generating' || isAnalyzing}
+                            onClick={() => isPlanningFailure ? handleRetryPlanning(scheme.id) : handleRedoSingle(scheme.id)}
+                            className="text-xs font-medium text-rose-600 transition-colors hover:text-rose-800 disabled:opacity-30"
+                         >
+                            {isPlanningFailure ? '重新策划' : (scheme.resultUrl ? '重新生成' : '生成该图')}
                          </button>
                       </div>
                     </div>
@@ -1240,10 +1375,10 @@ const FirstImageSubModule: React.FC<Props> = ({
                          {scheme.error && scheme.error.includes('超时') ? (
                             <div className="flex flex-col gap-2">
                                 <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRecoverSingle(scheme.id)} className="rounded-xl bg-indigo-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-indigo-700">稍后获取结果</button>
-                                <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="rounded-xl bg-rose-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700">重新生成</button>
+                                <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => isPlanningFailure ? handleRetryPlanning(scheme.id) : handleRedoSingle(scheme.id)} className="rounded-xl bg-rose-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700">{isPlanningFailure ? '重新策划' : '重新生成'}</button>
                             </div>
                          ) : (
-                            <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="rounded-xl bg-rose-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700">重新生成</button>
+                            <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => isPlanningFailure ? handleRetryPlanning(scheme.id) : handleRedoSingle(scheme.id)} className="rounded-xl bg-rose-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700">{isPlanningFailure ? '重新策划' : '重新生成'}</button>
                          )}
                       </div>
                     ) : (
@@ -1254,7 +1389,8 @@ const FirstImageSubModule: React.FC<Props> = ({
                     )}
                   </div>
                 </div>
-              ))}
+                  );
+                })}
               </div>
             </motion.div>
           </div>

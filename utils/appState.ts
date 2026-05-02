@@ -385,6 +385,7 @@ export const createDefaultBuyerShowState = (): BuyerShowPersistentState => ({
 });
 
 export const createDefaultVideoState = (): VideoPersistentState => ({
+  // subMode: VideoSubMode.STORYBOARD
   subMode: VIDEO_SUBMODE_STORYBOARD,
   config: {
     duration: '15',
@@ -634,8 +635,8 @@ const normalizeVideoStoryboardConfig = (
   defaults: VideoPersistentState['storyboard']['config']
 ): VideoPersistentState['storyboard']['config'] => ({
   ...defaults,
-  ...normalizeModelField(config as any),
   ...(config || {}),
+  ...normalizeModelField(config as any),
   productImages: normalizeFileArray(config?.productImages),
   uploadedProductUrls: normalizeStringArray(config?.uploadedProductUrls),
   referenceVideoFile: normalizeNullableFile(config?.referenceVideoFile),

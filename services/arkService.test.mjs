@@ -115,7 +115,7 @@ test('marketing scheme prompt uses RTCFE structure and the new copy layout forma
 
 test('first image replication planning analyzes product selling points against each uploaded reference and outputs one scheme per reference', () => {
   const firstImageReplicationBlockMatch = arkServiceSource.match(
-    /export const generateFirstImageReplicationSchemes = async[\s\S]*?return { status: 'success', schemes };/,
+    /export const generateFirstImageReplicationSchemes = async[\s\S]*?return \{ status: hasSuccess \? 'success' : 'error', schemes, perReferenceResults, message \};/,
   );
   const firstImageReplicationBlock = firstImageReplicationBlockMatch?.[0] || '';
 
@@ -131,8 +131,48 @@ test('first image replication planning analyzes product selling points against e
   );
   assert.match(
     firstImageReplicationBlock,
+    /【图片角色】/,
+    'replication planning should group image-role instructions clearly'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /【策划优先级】/,
+    'replication planning should group priority instructions clearly'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /复刻主图参考图是唯一版式、风格、信息层级参考/,
+    'replication planning should tell the planner which image is the reference'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /先逐项识别参考图真实画面中的主色、背景、顶部区域、标题区、卖点区、商品区、底部区域/,
+    'replication planning should force factual reference layout extraction before rewriting copy and products'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /不得根据产品类目或卖点自行新增参考图中不存在的横幅、卡片、角标、促销条、排名牌或颜色体系/,
+    'replication planning should forbid hallucinating unrelated layout modules or color systems'
+  );
+  assert.match(
+    firstImageReplicationBlock,
     /count: validReferenceUrls\.length/,
     'replication workflow should be driven by uploaded reference-image count rather than manual count input'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /const settledResults = await Promise\.allSettled\(validReferenceUrls\.map/,
+    'first-image replication planning should isolate each reference task instead of failing the whole batch on one rejection'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /perReferenceResults/,
+    'first-image replication planning should return per-reference results for partial success handling'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /status: hasSuccess \? 'success' : 'error'/,
+    'first-image replication planning should allow partial success when at least one reference succeeds'
   );
   assert.match(
     firstImageReplicationBlock,
@@ -171,12 +211,12 @@ test('first image replication planning analyzes product selling points against e
   );
   assert.match(
     firstImageReplicationBlock,
-    /去除后原位置不得留空，必须优先替换为我方品牌 logo、店铺名或与版式匹配的通用信息；若未上传品牌 logo，则改为通用文字信息，并按参考图原有设计逻辑完成补位，不得新增无关元素或虚构信息/,
+    /去除后原位置不得留空，必须优先替换为我方品牌 logo、店铺名或与版式匹配的通用信息/,
     'first-image replication planning should refill removed-brand areas with our logo, store name, or generic fallback text without inventing unrelated content'
   );
   assert.match(
     firstImageReplicationBlock,
-    /未单独上传品牌logo图时，禁止把产品素材图上出现的logo或参考图logo直接当作我方画面品牌识别信息使用/,
+    /不得凭空编造新品牌logo，也不得把素材图logo直接提取成我方独立品牌元素/,
     'first-image replication planning should forbid using source or reference logos as our brand identity when no logo asset is uploaded'
   );
   assert.match(
@@ -186,7 +226,7 @@ test('first image replication planning analyzes product selling points against e
   );
   assert.match(
     firstImageReplicationBlock,
-    /产品与包装展示以素材图实际内容为准；画面描述不要过度细写包装细节形态，只写需要放置的商品或配件内容及摆放关系，包装细节、标签信息和外观一律由上传素材图决定/,
+    /产品与包装展示以素材图实际内容为准，画面描述只写商品或配件内容及摆放关系，不细写包装细节形态/,
     'first-image replication planning should keep packaging driven by source assets and avoid over-describing packaging details in the scene description'
   );
   assert.match(
@@ -216,7 +256,7 @@ test('first image replication planning analyzes product selling points against e
   );
   assert.match(
     firstImageReplicationBlock,
-    /const schemes = await Promise\.all\(validReferenceUrls\.map\(async \(referenceUrl, index\) =>/,
+    /const settledResults = await Promise\.allSettled\(validReferenceUrls\.map\(async \(referenceUrl, index\) =>/,
     'first-image replication planning should analyze multiple references in parallel instead of serially waiting one-by-one'
   );
   assert.doesNotMatch(
@@ -506,17 +546,17 @@ test('sku image prompt appends the target copy language hard constraint', () => 
 test('sku image prompt switches to first generated sku as strict style reference after the first image', () => {
   assert.match(
     skuSubModuleSource,
-    /SKU风格基准（第一张生成结果，后续必须严格保持一致风格）/,
+    /SKU风格基准图（图片URL）/,
     'follow-up sku generations should treat the first generated image as the style baseline'
   );
   assert.match(
     skuSubModuleSource,
-    /严格按照该风格参考图一致的排版、字体风格、文字摆放、色调和整体设计风格制作/,
+    /后续 SKU 必须按这张图一致的排版、字体风格、文字摆放、色调和整体设计风格制作/,
     'follow-up sku generations should strongly enforce matching layout and design style'
   );
 });
 
-test('sku generation keeps style references out of direct image inputs while still assembling the full asset set', () => {
+test('sku generation sends the selected style reference or first generated sku as a direct image input', () => {
   assert.match(
     skuSubModuleSource,
     /const\s+\{\s*generationImageUrls\s*\}\s*=\s*buildSkuGenerationAssets\(/,
@@ -525,12 +565,12 @@ test('sku generation keeps style references out of direct image inputs while sti
   assert.match(
     skuSubModuleSource,
     /processWithKieAi\(\s*generationImageUrls,\s*apiConfig,/,
-    'sku generation should pass only product and gift images into kie'
+    'sku generation should pass the dedicated generation image list into kie'
   );
   assert.doesNotMatch(
     skuSubModuleSource,
     /processWithKieAi\(\s*imageUrls,\s*apiConfig,/,
-    'sku generation should not pass style reference images into kie as direct inputs'
+    'sku generation should not bypass the dedicated generation image list'
   );
 });
 

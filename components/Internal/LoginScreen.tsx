@@ -8,9 +8,9 @@ interface Props {
   onLogin: (username: string, password: string) => Promise<void>;
 }
 
-const LoginScreen: React.FC<Props> = ({ isSubmitting, error, defaultUsername = '', defaultPassword = '', onLogin }) => {
-  const [username, setUsername] = useState(defaultUsername);
-  const [password, setPassword] = useState(defaultPassword);
+const LoginScreen: React.FC<Props> = ({ isSubmitting, error, onLogin }) => {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();

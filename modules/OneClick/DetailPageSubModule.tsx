@@ -851,6 +851,7 @@ const DetailPageSubModule: React.FC<Props> = ({
           id: `preset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           name: '',
           subMode: OneClickSubMode.DETAIL_PAGE,
+          contentType: 'images_with_analysis',
           coverImageUrl: '',
           referenceImageUrls: [],
           summary: '',

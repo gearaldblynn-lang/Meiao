@@ -769,6 +769,7 @@ export const uploadInternalAssetStream = async (payload: {
   module: string;
   file: File;
   fileName?: string;
+  signal?: AbortSignal;
 }) => {
   const token = getSessionToken();
   const formData = new FormData();
@@ -779,6 +780,7 @@ export const uploadInternalAssetStream = async (payload: {
     method: 'POST',
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     body: formData,
+    signal: payload.signal,
     timeoutMs: 120_000,
   });
 

@@ -683,6 +683,7 @@ export interface OneClickReferencePreset {
   id: string;
   name: string;
   subMode: OneClickSubMode;
+  contentType: 'images_only' | 'images_with_analysis';
   coverImageUrl: string;
   referenceImageUrls: string[];
   summary: string;
@@ -891,6 +892,12 @@ export interface ArkSchemeResult {
   schemes: string[];
   status: 'success' | 'error';
   message?: string;
+  perReferenceResults?: Array<{
+    referenceUrl: string;
+    scheme: string;
+    status: 'success' | 'error';
+    message?: string;
+  }>;
 }
 
 export interface VisualDirectionResult {

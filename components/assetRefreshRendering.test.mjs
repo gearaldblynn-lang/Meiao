@@ -18,20 +18,20 @@ test('retouch sidebar keeps pending preview visible after refresh from remote ta
 });
 
 test('persisted app state normalization keeps remote asset urls for refresh recovery', () => {
-  assert.match(appStateSource, /uploadedProductUrls: normalizeStringArray\(saved\.oneClickMemory\.mainImage\?\.uploadedProductUrls\)/);
-  assert.match(appStateSource, /lastStyleUrl: typeof saved\.oneClickMemory\.mainImage\?\.lastStyleUrl === 'string'/);
-  assert.match(appStateSource, /uploadedProductUrls: normalizeStringArray\(saved\.oneClickMemory\.detailPage\?\.uploadedProductUrls\)/);
-  assert.match(appStateSource, /lastStyleUrl: typeof saved\.oneClickMemory\.detailPage\?\.lastStyleUrl === 'string'/);
+  assert.match(appStateSource, /const source = saved\.oneClickMemory\.mainImage \|\| defaultOneClickState\.mainImage/);
+  assert.match(appStateSource, /uploadedProductUrls: normalizeStringArray\(source\.uploadedProductUrls\)/);
+  assert.match(appStateSource, /lastStyleUrl: typeof source\.lastStyleUrl === 'string' \? source\.lastStyleUrl : null/);
+  assert.match(appStateSource, /const source = saved\.oneClickMemory\.detailPage \|\| defaultOneClickState\.detailPage/);
   assert.match(appStateSource, /uploadedProductUrls: normalizeStringArray\(saved\.buyerShowMemory\.uploadedProductUrls\)/);
   assert.match(appStateSource, /uploadedReferenceUrl: typeof saved\.buyerShowMemory\.uploadedReferenceUrl === 'string'/);
-  assert.match(appStateSource, /uploadedProductUrls: normalizeStringArray\(saved\.videoMemory\.storyboard\.config\?\.uploadedProductUrls\)/);
+  assert.match(appStateSource, /uploadedProductUrls: normalizeStringArray\(config\?\.uploadedProductUrls\)/);
 });
 
 test('persisted app state normalization preserves xhs cover tasks and resets only runtime generation flag', () => {
-  assert.match(appStateSource, /tasks: normalizeRestoredXhsCoverTasks\(saved\.xhsCoverMemory\.tasks\)/);
+  assert.match(appStateSource, /activeProject\?\.tasks \|\| normalizeRestoredXhsCoverTasks\(saved\.xhsCoverMemory\.tasks\)/);
   assert.match(
     appStateSource,
-    /xhsCoverMemory: saved\.xhsCoverMemory[\s\S]*?uploadedProductUrls: normalizeStringArray\(saved\.xhsCoverMemory\.uploadedProductUrls\),[\s\S]*?tasks: normalizeRestoredXhsCoverTasks\(saved\.xhsCoverMemory\.tasks\),[\s\S]*?isGenerating: false,/
+    /xhsCoverMemory: saved\.xhsCoverMemory[\s\S]*?uploadedProductUrls: normalizeStringArray\(saved\.xhsCoverMemory\.uploadedProductUrls\),[\s\S]*?tasks: activeProject\?\.tasks \|\| normalizeRestoredXhsCoverTasks\(saved\.xhsCoverMemory\.tasks\),[\s\S]*?isGenerating: false,/
   );
 });
 
