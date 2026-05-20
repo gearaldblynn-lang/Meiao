@@ -459,7 +459,8 @@ test('shell generation paths upload local draft assets before provider submissio
   assert.match(handleGenerateBody, /\.\.\.generationMaterials,\s+product:/);
   assert.match(handleGenerateBody, /materials: generationMaterials/);
   assert.match(oneClickImageBody, /const preparedGenerationMaterials = await ensureMaterialRemoteUrls\(generationMaterials, AppModuleObj\.ONE_CLICK\);/);
-  assert.match(oneClickImageBody, /materials: preparedGenerationMaterials/);
+  assert.match(oneClickImageBody, /const planMaterials = buildVariantMaterials\(preparedGenerationMaterials, plan, sceneSubFeature\);/);
+  assert.match(oneClickImageBody, /materials: planMaterials/);
 });
 
 test('material preview bar opens uploaded videos in a playable modal', () => {
@@ -521,16 +522,22 @@ test('viral storyboard prompts preserve the required segmented prompt and voiceo
 test('one click confirm-plan flow generates the selected scheme once instead of duplicating the config count', () => {
   const app = read('../ShellMigratedApp.tsx');
   const confirmPlanBody = app.match(/const handleConfirmPlan = useCallback\([\s\S]*?\n  \}, \[[\s\S]*?\]\);/)?.[0] || '';
-  const generationBody = app.match(/const runOneClickPlanGeneration = useCallback\([\s\S]*?\n  \}, \[currentParams, filteredMaterials, activeSubFeature, addToast, hydrateShellJobs, apiConfig\.workspacePreferences, apiConfig\.concurrency, persistProjectToSharedState, publicBaseUrl, logShellError, ensureMaterialRemoteUrls\]\);/)?.[0] || '';
+  const generationBody = app.match(/const runOneClickPlanGeneration = useCallback\([\s\S]*?\n  \}, \[currentParams, filteredMaterials, activeSubFeature, addToast, hydrateShellJobs, apiConfig\.workspacePreferences, apiConfig\.concurrency, persistProjectToSharedState, publicBaseUrl, logShellError, ensureMaterialRemoteUrls, buildVariantMaterials\]\);/)?.[0] || '';
 
   assert.match(confirmPlanBody, /const selectedPlans = Array\.isArray\(planOrPlans\) \? planOrPlans : \[planOrPlans\]/);
   assert.match(confirmPlanBody, /await runOneClickPlanGeneration\(project, selectedPlans\)/);
   assert.match(generationBody, /const sceneSubFeature = project\.subFeature \|\| activeSubFeature/);
   assert.match(generationBody, /const batchCount = selectedPlans\.length/);
-  assert.match(generationBody, /const workerCount = Math\.max\(1, Math\.min\(Number\(apiConfig\.concurrency \|\| 1\) \|\| 1, batchCount\)\)/);
+  assert.match(generationBody, /const requiresFirstBenchmark = sceneSubFeature === 'sku' && Boolean\(firstBenchmarkPlanId\)/);
+  assert.match(generationBody, /const firstBenchmarkSelectedIndex = requiresFirstBenchmark && !firstBenchmarkResultUrl/);
+  assert.match(generationBody, /await runPlanAtIndex\(firstBenchmarkSelectedIndex\)/);
+  assert.match(generationBody, /const plan = requiresFirstBenchmark && basePlan\.id !== firstBenchmarkPlanId && firstBenchmarkResultUrl && !basePlan\.sourceResultUrl/);
+  assert.match(generationBody, /const planMaterials = buildVariantMaterials\(preparedGenerationMaterials, plan, sceneSubFeature\)/);
+  assert.match(generationBody, /materials: planMaterials/);
+  assert.match(generationBody, /firstBenchmarkResultUrl = resolvePublicAssetUrl\(result\.imageUrl, publicBaseUrl\) \|\| result\.imageUrl/);
+  assert.match(generationBody, /const workerCount = Math\.max\(1, Math\.min\(Number\(apiConfig\.concurrency \|\| 1\) \|\| 1, indexes\.length\)\)/);
   assert.match(generationBody, /Promise\.all\(Array\.from\(\{ length: workerCount \}, \(\) => runWorker\(\)\)\)/);
   assert.match(generationBody, /const runPlanAtIndex = async \(index: number\) =>/);
-  assert.match(generationBody, /const plan = selectedPlans\[index\]/);
   assert.match(generationBody, /createPlanJobCreatedHandler\(plan, index, batchPrompt\)/);
   assert.match(generationBody, /const generationBackendJobIdByPlanId = new Map<string, string>\(\)/);
   assert.match(generationBody, /shellProjectId: projectId/);
@@ -558,6 +565,8 @@ test('one click shell planning dialog exposes old-style selected batch generatio
   assert.match(projectCard, /\.\.\.\(project\.selectedPlanId \? \[project\.selectedPlanId\] : \[\]\)/);
   assert.match(projectCard, /hasGeneratingResult\s*\n\s*\|\| hasMissingSelectedPlanResult/);
   assert.match(projectCard, /const pendingPlans = project\.plans\.filter\(\(plan\) => !completedPlanIds\.has\(plan\.id\) && !activePlanIds\.has\(plan\.id\)\)/);
+  assert.match(projectCard, /const firstBenchmarkPlanId = project\.module === 'one_click' && project\.subFeature === 'sku'/);
+  assert.match(projectCard, /activePlanIds\.has\(firstBenchmarkPlanId\)/);
   assert.match(projectCard, /onConfirmPlan\(project\.id, pendingPlans\)/);
   assert.doesNotMatch(projectCard, /const selectedPlans = project\.plans\.filter\(\(plan\) => plan\.selected\)/);
   assert.match(planEditor, /onConfirm\(plan\)/);

@@ -556,6 +556,13 @@ const ProjectCard: React.FC<Props> = ({
         .map((result) => result.planId)
         .filter((planId): planId is string => Boolean(planId))
     );
+    const firstBenchmarkPlanId = project.module === 'one_click' && project.subFeature === 'sku'
+      ? project.plans[0]?.id
+      : '';
+    if (firstBenchmarkPlanId && !completedPlanIds.has(firstBenchmarkPlanId) && activePlanIds.has(firstBenchmarkPlanId)) {
+      addToast('第一张 SKU 基准图正在生成，后续方案会在首张完成后再生成', 'info');
+      return;
+    }
     const pendingPlans = project.plans.filter((plan) => !completedPlanIds.has(plan.id) && !activePlanIds.has(plan.id));
     if (pendingPlans.length === 0) {
       addToast('当前项目没有待生成方案', 'info');
