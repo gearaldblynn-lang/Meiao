@@ -5,6 +5,7 @@ import {
   ASSET_RETENTION_MS,
   buildAssetPublicPath,
   buildAssetPublicUrl,
+  ensureAssetSchema,
   extractStoredAssetIdFromPublicUrl,
   getPublicBaseUrl,
   sanitizeAssetName,
@@ -42,4 +43,22 @@ test('shouldRetainAssetRecord keeps referenced or unexpired assets', () => {
   assert.equal(shouldRetainAssetRecord({ expiresAt: now - 1, isReferenced: false }, now), false);
   assert.equal(shouldRetainAssetRecord({ expiresAt: now + ASSET_RETENTION_MS, isReferenced: false }, now), true);
   assert.equal(shouldRetainAssetRecord({ expiresAt: now - 1, isReferenced: true }, now), true);
+});
+
+test('ensureAssetSchema accepts provider task ids longer than local entity ids', async () => {
+  const queries = [];
+  const pool = {
+    query: async (sql) => {
+      queries.push(String(sql));
+      return [[]];
+    },
+  };
+
+  await ensureAssetSchema(pool);
+
+  assert.match(queries[0], /job_id VARCHAR\(120\) NULL/);
+  assert.ok(
+    queries.some((sql) => /ALTER TABLE stored_assets MODIFY COLUMN job_id VARCHAR\(120\) NULL/.test(sql)),
+    'existing stored_assets.job_id column should be widened during startup migration'
+  );
 });

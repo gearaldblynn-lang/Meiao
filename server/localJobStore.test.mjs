@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 
 import {
   createLocalJobRecord,
+  deleteLocalJobRecord,
   getLocalJobById,
   getLocalJobQueueStats,
   listLocalJobsForUser,
+  markLocalJobCompleted,
   markLocalJobFailed,
   normalizeLocalJobs,
   reconcileRestartedLocalJobs,
@@ -64,6 +66,18 @@ test('listLocalJobsForUser returns latest jobs first and respects limit', () => 
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].id, second.id);
   assert.notEqual(jobs[0].id, first.id);
+});
+
+test('deleteLocalJobRecord removes a job from the local store', () => {
+  const store = createStore();
+  const user = createUser();
+  const job = createLocalJobRecord(store, user, { module: 'one_click', taskType: 'kie_image', provider: 'kie', payload: {} });
+
+  const deleted = deleteLocalJobRecord(store, job.id);
+
+  assert.equal(deleted.id, job.id);
+  assert.equal(getLocalJobById(store, job.id), null);
+  assert.deepEqual(listLocalJobsForUser(store, user.id), []);
 });
 
 test('requestLocalCancelJob cancels queued jobs immediately', () => {
@@ -175,4 +189,42 @@ test('markLocalJobFailed keeps providerTaskId for later recovery', () => {
   });
 
   assert.equal(failed.providerTaskId, 'kie-task-123');
+});
+
+test('local job retry can preserve failed provider task id and then store successful retry task id', () => {
+  const store = createStore();
+  const user = createUser();
+  const job = createLocalJobRecord(store, user, {
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    payload: { model: 'gemini-3-flash-openai' },
+    maxRetries: 1,
+  });
+  job.status = 'running';
+
+  const retryWaiting = markLocalJobFailed(store, job.id, {
+    code: 'provider_internal_error',
+    message: 'Gemini chat (OpenAI format) responseCode error: 504',
+    providerTaskId: '4222457f0143802a0a57e5da7e6e1512',
+  });
+
+  assert.equal(retryWaiting.status, 'retry_waiting');
+  assert.equal(retryWaiting.retryCount, 1);
+  assert.equal(retryWaiting.providerTaskId, '4222457f0143802a0a57e5da7e6e1512');
+  assert.match(retryWaiting.errorMessage, /responseCode error: 504/);
+  assert.equal(retryWaiting.finishedAt, null);
+
+  const claimedAgain = takeNextLocalExecutableJobs(store, 1);
+  assert.equal(claimedAgain[0].id, job.id);
+  const completed = markLocalJobCompleted(store, job.id, {
+    providerTaskId: '9d8caba0dc63f6167a7d2a6084b5a44d',
+    result: { content: 'retry success' },
+  });
+
+  assert.equal(completed.status, 'succeeded');
+  assert.equal(completed.providerTaskId, '9d8caba0dc63f6167a7d2a6084b5a44d');
+  assert.deepEqual(completed.result, { content: 'retry success' });
+  assert.equal(completed.errorCode, '');
+  assert.equal(completed.errorMessage, '');
 });

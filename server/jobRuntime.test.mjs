@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildJobFailureLogFields,
   buildPublicSystemConfig,
   getWorkerConcurrencyLimit,
   getNextJobFailureState,
@@ -35,11 +36,19 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.deepEqual(config.providers, {
     kie: { configured: true },
   });
+  assert.equal(config.publicBaseUrl, 'https://meiao.internal');
   assert.deepEqual(config.agentModels.chat.map((item) => item.id), [
     'gpt-5-4-openai-resp',
+    'claude-sonnet-4-6',
     'gemini-3.1-pro-openai',
     'gemini-3-flash-openai',
   ]);
+  assert.deepEqual(
+    config.agentModels.chat
+      .map((item) => item.id)
+      .filter((id) => id.startsWith('gemini-3-flash')),
+    ['gemini-3-flash-openai']
+  );
   assert.equal(config.agentModels.chat[0].supportsFileInput, true);
   assert.equal(config.agentModels.chat[0].supportsImageInput, true);
   assert.equal(config.agentModels.chat[0].supportsReasoningLevel, true);
@@ -47,20 +56,43 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.equal(config.agentModels.chat[1].provider, 'kie');
   assert.equal(config.agentModels.chat[1].supportsFileInput, true);
   assert.equal(config.agentModels.chat[1].supportsImageInput, true);
-  assert.equal(config.agentModels.chat[1].supportsWebSearch, true);
+  assert.equal(config.agentModels.chat[1].supportsWebSearch, false);
   assert.equal(config.agentModels.chat[1].supportsReasoningLevel, true);
-  assert.deepEqual(config.agentModels.chat[1].reasoningLevels, ['low', 'high']);
+  assert.deepEqual(config.agentModels.chat[1].reasoningLevels, ['low']);
   assert.equal(config.agentModels.chat[2].provider, 'kie');
   assert.equal(config.agentModels.chat[2].supportsFileInput, true);
   assert.equal(config.agentModels.chat[2].supportsImageInput, true);
   assert.equal(config.agentModels.chat[2].supportsWebSearch, true);
   assert.equal(config.agentModels.chat[2].supportsReasoningLevel, true);
   assert.deepEqual(config.agentModels.chat[2].reasoningLevels, ['low', 'high']);
+  assert.equal(config.agentModels.chat[3].provider, 'kie');
+  assert.equal(config.agentModels.chat[3].supportsFileInput, true);
+  assert.equal(config.agentModels.chat[3].supportsImageInput, true);
+  assert.equal(config.agentModels.chat[3].supportsWebSearch, true);
+  assert.equal(config.agentModels.chat[3].supportsReasoningLevel, true);
+  assert.deepEqual(config.agentModels.chat[3].reasoningLevels, ['low', 'high']);
   assert.deepEqual(config.agentModels.image.map((item) => item.id), [
-    'nano-banana-2',
     'gpt-image-2',
+    'nano-banana-2',
   ]);
+  assert.equal(config.systemSettings.videoAnalysisModel, '');
+  assert.equal(config.systemSettings.effectiveVideoAnalysisModel, 'gemini-3-flash-openai');
+  assert.equal(config.systemSettings.videoAnalysisReasoningLevel, 'high');
   assert.equal(JSON.stringify(config).includes('secret'), false);
+});
+
+test('buildPublicSystemConfig keeps video analysis model independent from planning analysis model', () => {
+  const config = buildPublicSystemConfig(
+    { KIE_API_KEY: 'kie-secret', MEIAO_DEFAULT_ANALYSIS_MODEL: 'gpt-5-4-openai-resp' },
+    { queued: 0, running: 0 },
+    { systemSettings: { analysisModel: 'gemini-3-flash-openai', videoAnalysisModel: 'gemini-3.1-pro-openai' } },
+  );
+
+  assert.equal(config.systemSettings.analysisModel, 'gemini-3-flash-openai');
+  assert.equal(config.systemSettings.effectiveAnalysisModel, 'gemini-3-flash-openai');
+  assert.equal(config.systemSettings.videoAnalysisModel, 'gemini-3.1-pro-openai');
+  assert.equal(config.systemSettings.effectiveVideoAnalysisModel, 'gemini-3.1-pro-openai');
+  assert.equal(config.systemSettings.videoAnalysisReasoningLevel, 'high');
 });
 
 test('buildPublicSystemConfig disables public-url media models when no external asset base is available', () => {
@@ -72,11 +104,33 @@ test('buildPublicSystemConfig disables public-url media models when no external 
   );
 
   const gpt54 = config.agentModels.chat.find((item) => item.id === 'gpt-5-4-openai-resp');
+  const claude = config.agentModels.chat.find((item) => item.id === 'claude-sonnet-4-6');
   const geminiPro = config.agentModels.chat.find((item) => item.id === 'gemini-3.1-pro-openai');
   const geminiFlash = config.agentModels.chat.find((item) => item.id === 'gemini-3-flash-openai');
 
   assert.equal(gpt54?.supportsFileInput, true);
   assert.equal(gpt54?.supportsImageInput, true);
+  assert.equal(claude?.supportsFileInput, true);
+  assert.equal(claude?.supportsImageInput, true);
+  assert.equal(geminiPro?.supportsFileInput, false);
+  assert.equal(geminiPro?.supportsImageInput, false);
+  assert.equal(geminiFlash?.supportsFileInput, false);
+  assert.equal(geminiFlash?.supportsImageInput, false);
+});
+
+test('buildPublicSystemConfig disables public-url media models for private network asset bases', () => {
+  const config = buildPublicSystemConfig(
+    {
+      KIE_API_KEY: 'kie-secret',
+      MEIAO_PUBLIC_BASE_URL: 'http://192.168.1.8:3100',
+    },
+    { queued: 0, running: 0 }
+  );
+
+  const geminiPro = config.agentModels.chat.find((item) => item.id === 'gemini-3.1-pro-openai');
+  const geminiFlash = config.agentModels.chat.find((item) => item.id === 'gemini-3-flash-openai');
+
+  assert.equal(config.publicBaseUrl, 'http://192.168.1.8:3100');
   assert.equal(geminiPro?.supportsFileInput, false);
   assert.equal(geminiPro?.supportsImageInput, false);
   assert.equal(geminiFlash?.supportsFileInput, false);
@@ -146,6 +200,38 @@ test('getNextJobFailureState returns failed when retry budget is exhausted', () 
     }),
     {
       retryCount: 2,
+      status: 'failed',
+    }
+  );
+});
+
+test('buildJobFailureLogFields reports retryable intermediate failures as running retry state', () => {
+  assert.deepEqual(
+    buildJobFailureLogFields({
+      jobStatus: 'retry_waiting',
+      taskType: 'kie_chat',
+      errorCode: 'provider_internal_error',
+    }),
+    {
+      level: 'info',
+      action: 'job_retry_waiting',
+      message: 'kie_chat 任务重试中',
+      status: 'started',
+    }
+  );
+});
+
+test('buildJobFailureLogFields reports final failures as failed state', () => {
+  assert.deepEqual(
+    buildJobFailureLogFields({
+      jobStatus: 'failed',
+      taskType: 'kie_chat',
+      errorCode: 'provider_bad_request',
+    }),
+    {
+      level: 'error',
+      action: 'job_failed',
+      message: 'kie_chat 任务失败',
       status: 'failed',
     }
   );

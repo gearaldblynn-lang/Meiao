@@ -138,6 +138,7 @@ export type KieAiModel = 'nano-banana-2' | 'gpt-image-2';
 export interface GlobalApiConfig {
   kieApiKey: string;
   concurrency: number;
+  publicBaseUrl?: string;
 }
 
 export interface InternalJob {
@@ -177,7 +178,11 @@ export interface SystemPublicConfig {
   systemSettings: {
     analysisModel: string;
     effectiveAnalysisModel: string;
+    videoAnalysisModel?: string;
+    effectiveVideoAnalysisModel?: string;
+    videoAnalysisReasoningLevel?: string;
   };
+  publicBaseUrl?: string;
   agentModels: {
     chat: Array<{
       id: string;
@@ -492,7 +497,7 @@ export interface VideoConfig {
   referenceVideoUrl?: string;
   targetCountry: string;
   customCountry?: string;
-  
+
   // Veo Specific
   videoCount: number;
   targetLanguage: string;
@@ -502,7 +507,7 @@ export interface VideoConfig {
 
 export interface VideoTask {
   id: string;
-  taskId?: string; 
+  taskId?: string;
   status: 'pending' | 'generating' | 'completed' | 'error' | 'interrupted';
   resultUrl?: string;
   error?: string;
@@ -523,7 +528,7 @@ export interface VeoScriptSegment {
 
 export interface VeoVariant {
   id: string;
-  taskId: string; 
+  taskId: string;
   uri: string;
   blobUrl: string;
   createdAt: number;
@@ -557,11 +562,11 @@ export interface VideoPersistentState {
   uploadedReferenceVideoUrl?: string | null;
   tasks: VideoTask[]; // Legacy / Sora tasks
   diagnosis: VideoDiagnosisState;
-  
+
   // Veo Specific Storage
   veoProjects: VeoProjectState[];
   veoReferenceImages: string[];
-  
+
   isAnalyzing: boolean;
   isGenerating: boolean;
   storyboard: VideoStoryboardState;
@@ -641,7 +646,7 @@ export interface VideoStoryboardState {
 
 export interface OneClickConfig {
   description: string;
-  planningLogic?: string; 
+  planningLogic?: string;
   platformType: 'domestic' | 'crossborder';
   platform: string;
   language: string;
@@ -701,20 +706,21 @@ export interface OneClickReferencePresetLibrary {
 
 export interface MainImageScheme {
   id: string;
-  taskId?: string; 
-  uiTitle?: string; 
+  taskId?: string;
+  uiTitle?: string;
   originalContent: string;
   editedContent: string;
   sourceReferenceUrl?: string;
   sourceReferenceLabel?: string;
+  planningFailed?: boolean;
   variationMode?: 'scene' | 'palette' | 'custom';
   variationInstruction?: string;
   sourceResultUrl?: string;
   status: 'pending' | 'generating' | 'completed' | 'error' | 'interrupted';
-  selected: boolean; 
+  selected: boolean;
   resultUrl?: string;
   error?: string;
-  extractedRatio?: string; 
+  extractedRatio?: string;
 }
 
 export interface OneClickWorkspaceProjectMeta {
@@ -741,7 +747,7 @@ export interface OneClickWorkspaceProject extends OneClickWorkspaceProjectMeta, 
 
 export interface BuyerShowTask {
   id: string;
-  taskId?: string; 
+  taskId?: string;
   prompt: string;
   styleDescription: string;
   hasFace: boolean;
@@ -776,7 +782,7 @@ export interface BuyerShowPersistentState {
   quality: GenerationQuality;
   model: KieAiModel;
   imageCount: number;
-  
+
   // 多套方案支持
   setCount: number;
   sets: BuyerShowSet[];
@@ -784,7 +790,7 @@ export interface BuyerShowPersistentState {
   // 兼容旧字段（UI主要读取 sets，这两个字段作为当前选中或Legacy展示）
   tasks: BuyerShowTask[];
   evaluationText: string;
-  
+
   pureEvaluations: string[];
   firstImageConfirmed: boolean;
   isAnalyzing: boolean;
@@ -811,7 +817,7 @@ export interface FileItem {
 
 export interface RetouchTask {
   id: string;
-  taskId?: string; 
+  taskId?: string;
   file: File | null;
   fileName?: string;
   relativePath: string;
@@ -863,7 +869,7 @@ export interface RetouchPersistentState {
 export interface KieAiResult {
   imageUrl: string;
   videoUrl?: string;
-  taskId?: string; 
+  taskId?: string;
   status: 'success' | 'error' | 'interrupted' | 'task_not_found';
   message?: string;
   errorCode?: string;

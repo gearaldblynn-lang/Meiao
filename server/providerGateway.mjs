@@ -1,17 +1,32 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { GPT_IMAGE_2_DEFAULT_RESOLUTION, normalizeGptImage2Resolution } from '../utils/gptImage2.mjs';
+import { queryDreaminaVideoTask, submitDreaminaVideoTask } from './dreaminaVideoCli.mjs';
 
 const KIE_CREATE_TASK_URL = 'https://api.kie.ai/api/v1/jobs/createTask';
 const KIE_RECORD_INFO_URL = 'https://api.kie.ai/api/v1/jobs/recordInfo';
 const KIE_VEO_BASE_URL = 'https://api.kie.ai/api/v1/veo';
 const KIE_CHAT_URL = 'https://api.kie.ai/gpt-5-2/v1/chat/completions';
 const KIE_RESPONSES_URL = 'https://api.kie.ai/codex/v1/responses';
+const KIE_CLAUDE_MESSAGES_URL = 'https://api.kie.ai/claude/v1/messages';
+const KIE_GEMINI_FLASH_URL = 'https://api.kie.ai/gemini-3-flash/v1/chat/completions';
 const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
 const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 240_000;
+const KIE_HTTP_REQUEST_TIMEOUT_MS = 60_000;
+const DREAMINA_VIDEO_POLL_RETRIES = 180;
+const DREAMINA_VIDEO_POLL_INTERVAL_MS = 5_000;
+const MAX_PROVIDER_REMOTE_MEDIA_BYTES = 1024 * 1024 * 1024;
 const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 const KIE_RESPONSES_MODEL_ALIASES = {
   'gpt-5-4-openai-resp': 'gpt-5-4',
   'gpt-5-4': 'gpt-5-4',
   'gpt-5.4': 'gpt-5-4',
+};
+const KIE_CLAUDE_MODEL_ALIASES = {
+  'claude-sonnet-4-6': 'claude-sonnet-4-6',
+  'claude-sonnet-4-6-v1messages': 'claude-sonnet-4-6',
 };
 const KIE_IMAGE_MODEL_ALIASES = {
   'gpt-image-2': {
@@ -25,7 +40,6 @@ const KIE_IMAGE_MODEL_ALIASES = {
 const KIE_CHAT_MODEL_ENDPOINTS = {
   'gpt-5-2': KIE_CHAT_URL,
   'gemini-3.1-pro-openai': 'https://api.kie.ai/gemini-3.1-pro/v1/chat/completions',
-  'gemini-3-flash-openai': 'https://api.kie.ai/gemini-3-flash/v1/chat/completions',
 };
 const PROVIDER_ATTACHMENT_STRATEGIES = {
   kie_responses: {
@@ -36,6 +50,16 @@ const PROVIDER_ATTACHMENT_STRATEGIES = {
     image: 'image_url',
     file: 'image_url',
   },
+  kie_claude_messages: {
+    image: 'url',
+    file: 'url',
+  },
+};
+
+let dreaminaVideoRunnerForTest = null;
+
+export const __testOnly_setDreaminaVideoRunner = (runner) => {
+  dreaminaVideoRunnerForTest = typeof runner === 'function' ? runner : null;
 };
 
 const wait = (ms, signal) =>
@@ -113,6 +137,46 @@ const attachProviderTaskId = (error, providerTaskId) => {
   return error;
 };
 
+const fetchKieWithTimeout = async (url, init = {}, timeoutMessage = 'Kie 请求超时') => {
+  const controller = new AbortController();
+  const upstreamSignal = init.signal;
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, KIE_HTTP_REQUEST_TIMEOUT_MS);
+
+  const onAbort = () => controller.abort(upstreamSignal?.reason);
+  if (upstreamSignal) {
+    if (upstreamSignal.aborted) {
+      controller.abort(upstreamSignal.reason);
+    } else {
+      upstreamSignal.addEventListener('abort', onAbort, { once: true });
+    }
+  }
+
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (upstreamSignal?.aborted) {
+      throw createProviderError('request_cancelled', '任务已取消');
+    }
+    if (timedOut || error?.name === 'AbortError') {
+      throw createProviderError('provider_timeout', timeoutMessage, {
+        providerStage: 'http_request',
+        providerStatus: 'timeout',
+      });
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    upstreamSignal?.removeEventListener?.('abort', onAbort);
+  }
+};
+
 const getEnvValue = (env, ...keys) => keys.map((key) => env[key]).find(Boolean) || '';
 
 const getProviderEnv = (env) => ({
@@ -158,6 +222,15 @@ const buildResponsesInputMessages = (messages = [], mapper) =>
 const isManagedAssetUrl = (value) =>
   typeof value === 'string' && value.includes(MANAGED_ASSET_PATH_SEGMENT);
 
+const normalizeProviderMediaReference = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const markdownTarget = raw.match(/^\[[^\]]*]\(([^)\s]+)\)$/);
+  if (markdownTarget?.[1]) return markdownTarget[1].trim();
+  const absoluteUrl = raw.match(/https?:\/\/[^\s"'<>，。；、）)\]】]+/i);
+  return absoluteUrl?.[0]?.trim() || raw;
+};
+
 const isLocalHostValue = (value) =>
   /(^|\/\/)(127\.0\.0\.1|localhost)(:|$)/i.test(String(value || ''));
 
@@ -195,6 +268,9 @@ const inferMimeTypeFromName = (value, fallback = 'application/octet-stream') => 
   if (normalized.endsWith('.gif')) return 'image/gif';
   if (normalized.endsWith('.bmp')) return 'image/bmp';
   if (normalized.endsWith('.svg')) return 'image/svg+xml';
+  if (normalized.endsWith('.mp4') || normalized.endsWith('.m4v')) return 'video/mp4';
+  if (normalized.endsWith('.mov')) return 'video/quicktime';
+  if (normalized.endsWith('.webm')) return 'video/webm';
   if (normalized.endsWith('.pdf')) return 'application/pdf';
   if (normalized.endsWith('.txt')) return 'text/plain';
   if (normalized.endsWith('.md')) return 'text/markdown';
@@ -210,11 +286,53 @@ const inferExtensionFromMimeType = (value, fallback = 'bin') => {
   if (normalized === 'image/gif') return 'gif';
   if (normalized === 'image/bmp') return 'bmp';
   if (normalized === 'image/svg+xml') return 'svg';
+  if (normalized === 'video/mp4') return 'mp4';
+  if (normalized === 'video/quicktime') return 'mov';
+  if (normalized === 'video/webm') return 'webm';
   if (normalized === 'application/pdf') return 'pdf';
   if (normalized === 'text/plain') return 'txt';
   if (normalized === 'text/markdown') return 'md';
   if (normalized === 'application/json') return 'json';
   return fallback;
+};
+
+const detectMimeTypeFromBuffer = (buffer) => {
+  const bytes = buffer instanceof Uint8Array ? buffer : Buffer.from(buffer || '');
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) return 'image/png';
+  if (
+    bytes.length >= 12 &&
+    bytes[0] === 0x52 &&
+    bytes[1] === 0x49 &&
+    bytes[2] === 0x46 &&
+    bytes[3] === 0x46 &&
+    bytes[8] === 0x57 &&
+    bytes[9] === 0x45 &&
+    bytes[10] === 0x42 &&
+    bytes[11] === 0x50
+  ) return 'image/webp';
+  if (bytes.length >= 6) {
+    const signature = Buffer.from(bytes.slice(0, 6)).toString('ascii');
+    if (signature === 'GIF87a' || signature === 'GIF89a') return 'image/gif';
+  }
+  return '';
+};
+
+const ensureProviderFileNameWithExtension = (fileName, mimeType) => {
+  const normalizedName = String(fileName || '').trim() || 'upload';
+  if (/\.[a-z0-9]{2,5}$/i.test(normalizedName)) return normalizedName;
+  const extension = inferExtensionFromMimeType(mimeType, '');
+  return extension ? `${normalizedName}.${extension}` : normalizedName;
 };
 
 const buildKieAspectRatioPromptHint = (aspectRatio) => {
@@ -295,8 +413,203 @@ const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal) => {
   return String(uploaded?.result?.fileUrl || '').trim();
 };
 
-const resolveProviderGenerationMediaUrl = async (value, env, signal) => {
+const isOpenRouterChatFileUrl = (value) => {
+  try {
+    const url = new URL(String(value || ''));
+    return /^tempfileb\.aiquickdraw\.com$/i.test(url.hostname || '')
+      && /^\/kieai\/openrouter-chat\//i.test(url.pathname || '');
+  } catch {
+    return false;
+  }
+};
+
+const isRedpandaOpenRouterChatFileUrl = (value) => {
+  try {
+    const url = new URL(String(value || ''));
+    return /^tempfile\.redpandaai\.co$/i.test(url.hostname || '')
+      && /\/openrouter-chat\//i.test(url.pathname || '');
+  } catch {
+    return false;
+  }
+};
+
+const isVideoMediaUrl = (value) => {
+  const normalized = String(value || '').split('?')[0].toLowerCase();
+  return /\.(mp4|m4v|mov|webm)$/i.test(normalized);
+};
+
+const isPrivateIpv4Hostname = (hostname) => {
+  const parts = String(hostname || '').split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts;
+  return a === 10
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 169 && b === 254)
+    || a === 127
+    || a === 0;
+};
+
+const assertRemoteProviderMediaUrlAllowed = (mediaUrl) => {
+  let parsed;
+  try {
+    parsed = new URL(String(mediaUrl || '').trim());
+  } catch {
+    throw createProviderError('provider_bad_request', '远程素材 URL 无效');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw createProviderError('provider_bad_request', '远程素材仅支持 HTTP/HTTPS 地址');
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  const ipVersion = isIP(hostname);
+  const isBlockedHost = hostname === 'localhost'
+    || hostname.endsWith('.localhost')
+    || hostname.endsWith('.local')
+    || (ipVersion === 4 && isPrivateIpv4Hostname(hostname))
+    || (ipVersion === 6 && (
+      hostname === '::1'
+      || hostname.startsWith('fc')
+      || hostname.startsWith('fd')
+      || hostname.startsWith('fe80:')
+    ));
+  if (isBlockedHost) {
+    throw createProviderError('provider_bad_request', '远程素材地址不可指向本机或内网地址');
+  }
+};
+
+const readRemoteMediaBufferWithLimit = async (response, label = '远程素材') => {
+  const contentLength = Number(response.headers?.get?.('content-length') || 0);
+  if (Number.isFinite(contentLength) && contentLength > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
+    throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 1024MB`);
+  }
+
+  if (!response.body?.getReader) {
+    const fallbackBuffer = Buffer.from(await response.arrayBuffer());
+    if (fallbackBuffer.length > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
+      throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 1024MB`);
+    }
+    return fallbackBuffer;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = Buffer.from(value);
+    total += chunk.length;
+    if (total > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
+      await reader.cancel().catch(() => null);
+      throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 1024MB`);
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total);
+};
+
+const downloadRemoteMediaUrl = async (mediaUrl, signal) => {
+  if (isManagedAssetUrl(mediaUrl)) return downloadManagedAsset(mediaUrl, signal);
+  assertRemoteProviderMediaUrlAllowed(mediaUrl);
+  const response = await fetch(mediaUrl, {
+    method: 'GET',
+    signal,
+  });
+  if (!response.ok) {
+    throw createProviderError('provider_bad_request', `远程视频素材下载失败：HTTP ${response.status}`);
+  }
+  const fileName = extractFileNameFromUrl(mediaUrl, `video-${Date.now()}.mp4`);
+  const mimeTypeHeader = response.headers?.get?.('content-type') || '';
+  const mimeType = String(mimeTypeHeader || '').split(';')[0].trim() || inferMimeTypeFromName(fileName, 'video/mp4');
+  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '远程视频素材');
+  return {
+    fileName,
+    mimeType,
+    fileBuffer,
+  };
+};
+
+const downloadRemoteProviderMediaUrl = async (mediaUrl, signal) => {
+  if (isManagedAssetUrl(mediaUrl)) return downloadManagedAsset(mediaUrl, signal);
+  assertRemoteProviderMediaUrlAllowed(mediaUrl);
+  const response = await fetch(mediaUrl, {
+    method: 'GET',
+    signal,
+  });
+  if (!response.ok) {
+    throw createProviderError('provider_bad_request', `远程素材下载失败：HTTP ${response.status}`);
+  }
+  const rawFileName = extractFileNameFromUrl(mediaUrl, `media-${Date.now()}.bin`);
+  const mimeTypeHeader = response.headers?.get?.('content-type') || '';
+  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '远程素材');
+  const inferredFromName = inferMimeTypeFromName(rawFileName, '');
+  const inferredFromBuffer = detectMimeTypeFromBuffer(fileBuffer);
+  const headerMimeType = String(mimeTypeHeader || '').split(';')[0].trim();
+  const mimeType = inferredFromBuffer || inferredFromName || headerMimeType || 'application/octet-stream';
+  return {
+    fileName: ensureProviderFileNameWithExtension(rawFileName, mimeType),
+    mimeType,
+    fileBuffer,
+  };
+};
+
+const shouldUploadGeminiMediaUrlForStableMime = (value) => {
   const normalized = String(value || '').trim();
+  if (!normalized || isVideoMediaUrl(normalized) || isManagedAssetUrl(normalized)) return false;
+  if (!/^https?:\/\//i.test(normalized)) return false;
+  const pathname = (() => {
+    try {
+      return new URL(normalized).pathname || '';
+    } catch {
+      return normalized.split('?')[0] || '';
+    }
+  })();
+  if (/\.(png|jpe?g|webp|gif|bmp|svg|pdf|txt|md|json)$/i.test(pathname)) return false;
+  if (/tempfile\.redpandaai\.co|tempfileb\.aiquickdraw\.com/i.test(normalized)) return true;
+  return false;
+};
+
+const convertGeminiMediaToStableKieUrl = async (mediaUrl, env, signal) => {
+  const downloaded = await downloadRemoteProviderMediaUrl(mediaUrl, signal);
+  const uploaded = await uploadAssetViaKieStream({
+    ...downloaded,
+    uploadPath: 'mayo-storage/internal',
+  }, env);
+  return String(uploaded?.result?.fileUrl || '').trim();
+};
+
+const shouldUploadGeminiVideoUrlToOpenRouterChat = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized || !isVideoMediaUrl(normalized)) return false;
+  if (isOpenRouterChatFileUrl(normalized)) return false;
+  return true;
+};
+
+const convertGeminiVideoToOpenRouterChatUrl = async (mediaUrl, env, signal) => {
+  const normalized = String(mediaUrl || '').trim();
+  if (!shouldUploadGeminiVideoUrlToOpenRouterChat(normalized)) return normalized;
+  const downloaded = await downloadRemoteMediaUrl(normalized, signal);
+  const uploaded = await uploadAssetViaKieStream({
+    ...downloaded,
+    uploadPath: 'openrouter-chat',
+  }, env);
+  return String(uploaded?.result?.fileUrl || '').trim();
+};
+
+const resolveProviderGeminiChatMediaUrl = async (value, env, signal) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return '';
+  if (isVideoMediaUrl(normalized)) {
+    return convertGeminiVideoToOpenRouterChatUrl(normalized, env, signal);
+  }
+  if (shouldUploadGeminiMediaUrlForStableMime(normalized)) {
+    return convertGeminiMediaToStableKieUrl(normalized, env, signal);
+  }
+  return resolveProviderMediaUrl(normalized, env, signal);
+};
+
+const resolveProviderGenerationMediaUrl = async (value, env, signal) => {
+  const normalized = normalizeProviderMediaReference(value);
   if (!normalized) return '';
   if (!isManagedAssetUrl(normalized)) return normalized;
   if (/^https?:\/\//i.test(normalized) && !isLocalHostValue(normalized)) {
@@ -306,13 +619,44 @@ const resolveProviderGenerationMediaUrl = async (value, env, signal) => {
 };
 
 const resolveProviderMediaUrl = async (value, env, signal) => {
-  const normalized = String(value || '').trim();
+  const normalized = normalizeProviderMediaReference(value);
   if (!normalized) return '';
   if (normalized.startsWith('data:')) {
     return convertInlineDataUrlToKieFileUrl(normalized, env);
   }
   if (!isManagedAssetUrl(normalized)) return normalized;
   return convertManagedAssetUrlToKieFileUrl(normalized, env, signal);
+};
+
+const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const extractTextMediaUrls = (text = '') => {
+  const source = String(text || '');
+  const urls = new Set();
+  const absoluteMatches = source.match(/https?:\/\/[^\s"'<>，。；、）)\]】]+/gi) || [];
+  absoluteMatches.forEach((url) => {
+    const normalized = String(url || '').trim();
+    if (normalized) urls.add(normalized);
+  });
+  const relativeMatches = source.matchAll(/(^|[\s"'(<（[【：])((?:\/api\/assets\/file\/[^\s"'<>，。；、）)\]】]+))/gi);
+  for (const match of relativeMatches) {
+    const normalized = String(match?.[2] || '').trim();
+    if (normalized) urls.add(normalized);
+  }
+  return Array.from(urls);
+};
+
+const rewriteProviderTextMediaUrls = async (text, resolveMediaUrl) => {
+  const source = String(text || '');
+  const urls = extractTextMediaUrls(source);
+  if (urls.length === 0) return source;
+  let rewritten = source;
+  for (const rawUrl of urls) {
+    const resolvedUrl = await resolveMediaUrl(rawUrl);
+    if (!resolvedUrl || resolvedUrl === rawUrl) continue;
+    rewritten = rewritten.replace(new RegExp(escapeRegExp(rawUrl), 'g'), resolvedUrl);
+  }
+  return rewritten;
 };
 
 const resolveAttachmentStrategy = (model, item) => {
@@ -324,10 +668,18 @@ const resolveAttachmentStrategy = (model, item) => {
 const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
   if (!item || typeof item !== 'object') return item;
   const strategy = resolveAttachmentStrategy(options.model, item);
+  const resolveMediaUrl = options.resolveMediaUrl || ((url) => resolveProviderMediaUrl(url, env, signal));
+
+  if (item.type === 'text' || item.type === 'input_text') {
+    return {
+      ...item,
+      text: await rewriteProviderTextMediaUrls(item.text || '', resolveMediaUrl),
+    };
+  }
 
   if (item.type === 'input_file') {
     const rawUrl = item.file_url || item.url || '';
-    const fileUrl = await resolveProviderMediaUrl(rawUrl, env, signal);
+    const fileUrl = await resolveMediaUrl(rawUrl);
     if (strategy === 'input_file_url') {
       return {
         ...item,
@@ -344,7 +696,7 @@ const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
 
   if (item.type === 'image_url' || item.type === 'input_image') {
     const rawUrl = item.image_url?.url || item.image_url || item.url || '';
-    const resolvedUrl = await resolveProviderMediaUrl(rawUrl, env, signal);
+    const resolvedUrl = await resolveMediaUrl(rawUrl);
     if (item.image_url && typeof item.image_url === 'object') {
       return {
         ...item,
@@ -362,16 +714,62 @@ const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
     };
   }
 
+  if (item.type === 'image') {
+    const rawUrl = item.source?.url || item.url || '';
+    const resolvedUrl = await resolveMediaUrl(rawUrl);
+    return {
+      ...item,
+      source: {
+        ...(item.source && typeof item.source === 'object' ? item.source : { type: 'url' }),
+        type: 'url',
+        url: resolvedUrl,
+      },
+      url: resolvedUrl,
+    };
+  }
+
+  if (item.type === 'document') {
+    const rawUrl = item.source?.url || item.file_url || item.url || '';
+    const resolvedUrl = await resolveMediaUrl(rawUrl);
+    return {
+      ...item,
+      source: {
+        ...(item.source && typeof item.source === 'object' ? item.source : { type: 'url' }),
+        type: 'url',
+        url: resolvedUrl,
+      },
+      file_url: resolvedUrl,
+      url: resolvedUrl,
+    };
+  }
+
   return item;
 };
 
 const resolveProviderMessages = async (messages = [], env, signal, options = {}) => Promise.all(
-  (Array.isArray(messages) ? messages : []).map(async (message) => ({
-    ...message,
-    content: await Promise.all(
-      normalizeMessageContentItems(message?.content).map((item) => resolveProviderMessageItem(item, env, signal, options))
-    ),
-  }))
+  (Array.isArray(messages) ? messages : []).map(async (message) => {
+    const resolvedMediaUrlByRawUrl = new Map();
+    const providerMediaResolver = isKieGeminiChatModel(options.model)
+      ? resolveProviderGeminiChatMediaUrl
+      : resolveProviderMediaUrl;
+    const resolveMediaUrl = async (url) => {
+      const rawUrl = String(url || '').trim();
+      if (!rawUrl) return '';
+      if (!resolvedMediaUrlByRawUrl.has(rawUrl)) {
+        resolvedMediaUrlByRawUrl.set(rawUrl, providerMediaResolver(rawUrl, env, signal));
+      }
+      return resolvedMediaUrlByRawUrl.get(rawUrl);
+    };
+    return {
+      ...message,
+      content: await Promise.all(
+        normalizeMessageContentItems(message?.content).map((item) => resolveProviderMessageItem(item, env, signal, {
+          ...options,
+          resolveMediaUrl,
+        }))
+      ),
+    };
+  })
 );
 
 const buildKieResponsesContent = (items) =>
@@ -412,6 +810,133 @@ const buildKieChatContent = (items) =>
       },
     };
   });
+
+const buildGeminiFlashContent = (items) =>
+  items.map((item) => {
+    if (item.type === 'text' || item.type === 'input_text') {
+      return { type: 'text', text: item.text || '' };
+    }
+    if (item.type === 'image_url' || item.type === 'input_image') {
+      return {
+        type: 'image_url',
+        image_url: {
+          url: item.image_url?.url || item.image_url || item.url || '',
+        },
+      };
+    }
+    if (item.type === 'input_file' || item.type === 'document' || item.type === 'image') {
+      return {
+        type: 'image_url',
+        image_url: {
+          url: item.file_url || item.source?.url || item.image_url?.url || item.image_url || item.url || '',
+        },
+      };
+    }
+    return {
+      type: 'image_url',
+      image_url: {
+        url: item.image_url?.url || item.image_url || item.url || item.file_url || item.source?.url || '',
+      },
+    };
+  });
+
+const normalizeGeminiFlashTool = (tool) => {
+  if (!tool || typeof tool !== 'object') return null;
+  if (tool.type === 'function' && tool.function && typeof tool.function === 'object') {
+    const nextFunction = {
+      ...tool.function,
+      name: String(tool.function.name || '').trim(),
+    };
+    if (!nextFunction.name) return null;
+    if (!nextFunction.parameters) {
+      nextFunction.parameters = { type: 'object', properties: {} };
+    }
+    return {
+      type: 'function',
+      function: nextFunction,
+    };
+  }
+
+  const name = String(tool.name || '').trim();
+  if (!name) return null;
+  return {
+    type: 'function',
+    function: {
+      name,
+      ...(tool.description ? { description: String(tool.description).trim() } : {}),
+      parameters: tool.input_schema || tool.parameters || { type: 'object', properties: {} },
+    },
+  };
+};
+
+const buildGeminiFlashTools = (payload = {}) => {
+  const tools = [];
+  if (payload.webSearchEnabled) {
+    tools.push({
+      type: 'function',
+      function: {
+        name: 'googleSearch',
+        description: 'Google Search grounding',
+        parameters: { type: 'object', properties: {} },
+      },
+    });
+  }
+  if (Array.isArray(payload.tools)) {
+    for (const tool of payload.tools) {
+      const normalized = normalizeGeminiFlashTool(tool);
+      if (normalized) tools.push(normalized);
+    }
+  }
+  return tools.length > 0 ? tools : undefined;
+};
+
+const buildKieClaudeContent = (items) =>
+  items.map((item) => {
+    if (item.type === 'text' || item.type === 'input_text') {
+      return { type: 'text', text: item.text || '' };
+    }
+    if (item.type === 'image') {
+      return {
+        type: 'image',
+        source: {
+          type: 'url',
+          url: item.source?.url || item.url || '',
+        },
+      };
+    }
+    if (item.type === 'document') {
+      return {
+        type: 'document',
+        source: {
+          type: 'url',
+          url: item.source?.url || item.file_url || item.url || '',
+        },
+        ...(item.title || item.filename || item.name ? { title: item.title || item.filename || item.name } : {}),
+      };
+    }
+    if (item.type === 'input_file') {
+      return {
+        type: 'document',
+        source: {
+          type: 'url',
+          url: item.file_url || item.url || '',
+        },
+        ...(item.filename || item.name ? { title: item.filename || item.name } : {}),
+      };
+    }
+    return {
+      type: 'image',
+      source: {
+        type: 'url',
+        url: item.image_url?.url || item.image_url || item.url || '',
+      },
+    };
+  });
+
+const KIE_CLAUDE_NO_TOOL_PROMPT = {
+  type: 'text',
+  text: '禁止调用任何工具、skills、文件读取、mcp servers 或函数调用。只输出纯文本结果，不要返回 tool_use 或其他工具块。',
+};
 
 const appendUniqueText = (bucket, value) => {
   const text = String(value || '').trim();
@@ -498,9 +1023,82 @@ const extractChatMessageText = (value) => {
   return candidates.join('\n').trim();
 };
 
-const resolveChatTransport = (model) => {
+const extractProviderTaskIdFromResponse = (data) => {
+  const nested = data && typeof data === 'object' && data.data && typeof data.data === 'object' ? data.data : {};
+  const explicitId = String(
+    nested.taskId ||
+    nested.task_id ||
+    nested.providerTaskId ||
+    nested.provider_task_id ||
+    nested.id ||
+    data?.taskId ||
+    data?.task_id ||
+    data?.providerTaskId ||
+    data?.provider_task_id ||
+    ''
+  ).trim();
+  if (explicitId) return explicitId;
+  const fallbackId = String(data?.id || '').trim();
+  return /^chatcmpl-/i.test(fallbackId) ? '' : fallbackId;
+};
+
+const normalizeProviderCreditsConsumed = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
+const extractProviderUsageMeta = (data = {}) => {
+  const root = data && typeof data === 'object' ? data : {};
+  const nested = root.data && typeof root.data === 'object' ? root.data : {};
+  return {
+    creditsConsumed: normalizeProviderCreditsConsumed(
+      root.creditsConsumed ??
+      root.credits_consumed ??
+      root.creditsConsumedTotal ??
+      nested.creditsConsumed ??
+      nested.credits_consumed ??
+      nested.creditsConsumedTotal
+    ),
+    usage: root.usage || nested.usage || null,
+  };
+};
+
+const isProviderErrorText = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return [
+    /file mime type is not supported/i,
+    /image download failed/i,
+    /http 404:\s*not found/i,
+    /please convert or change the file/i,
+    /server is currently being maintained/i,
+  ].some((pattern) => pattern.test(text));
+};
+
+const providerErrorCodeFromText = (value) =>
+  /server is currently being maintained/i.test(String(value || ''))
+    ? 'provider_internal_error'
+    : 'provider_bad_request';
+
+const hasToolUseContentBlock = (value) => {
+  if (!value) return false;
+  if (Array.isArray(value)) return value.some((item) => hasToolUseContentBlock(item));
+  if (typeof value !== 'object') return false;
+  if (String(value.type || '').trim() === 'tool_use') return true;
+  if (Array.isArray(value.content) && hasToolUseContentBlock(value.content)) return true;
+  return false;
+};
+
+const normalizeKieChatModel = (model) => {
   const normalizedModel = String(model || '').trim();
+  return KIE_CLAUDE_MODEL_ALIASES[normalizedModel] || normalizedModel;
+};
+
+const resolveChatTransport = (model) => {
+  const normalizedModel = normalizeKieChatModel(model);
   if (normalizedModel in KIE_RESPONSES_MODEL_ALIASES) return 'kie_responses';
+  if (normalizedModel === 'claude-sonnet-4-6') return 'kie_claude_messages';
+  if (/-thinking$/i.test(normalizedModel)) return 'unsupported';
   if (normalizedModel.startsWith('doubao-')) return 'unsupported';
   return 'kie_chat_completions';
 };
@@ -512,6 +1110,9 @@ const resolveKieChatEndpoint = (model) =>
   KIE_CHAT_MODEL_ENDPOINTS[String(model || '').trim()] || KIE_CHAT_URL;
 
 const isKieGeminiChatModel = (model) => /^gemini-/i.test(String(model || '').trim());
+const isKieGeminiFlashOpenAiModel = (model) => String(model || '').trim() === 'gemini-3-flash-openai';
+
+const isKieClaudeChatModel = (model) => normalizeKieChatModel(model) === 'claude-sonnet-4-6';
 
 const getKieChatFallbackModels = (model, preferredFallbackModels = []) => {
   const configured = Array.isArray(preferredFallbackModels)
@@ -520,14 +1121,50 @@ const getKieChatFallbackModels = (model, preferredFallbackModels = []) => {
   return Array.from(new Set(configured.filter((item) => item !== String(model || '').trim())));
 };
 
+const KIE_CHAT_FALLBACK_ERROR_CODES = new Set([
+  'provider_bad_response',
+  'provider_internal_error',
+  'provider_network_error',
+  'provider_timeout',
+]);
+
+const shouldFallbackKieChatError = (error) => KIE_CHAT_FALLBACK_ERROR_CODES.has(String(error?.code || '').trim());
+
+const runKieChatFallbackModels = async (payload, env, signal, originalError) => {
+  const fallbackModels = getKieChatFallbackModels(payload.model, payload.fallbackModels);
+  if (!fallbackModels.length || !shouldFallbackKieChatError(originalError)) {
+    throw originalError;
+  }
+  let lastError = originalError;
+  for (const fallbackModel of fallbackModels) {
+    try {
+      const fallbackResult = await runKieChatJob(
+        { ...payload, model: fallbackModel, reasoningLevel: normalizeReasoningLevelForModel(fallbackModel, payload.reasoningLevel) },
+        env,
+        signal
+      );
+      if (fallbackResult?.result) {
+        fallbackResult.result.fallbackFrom = String(payload.model || '').trim();
+      }
+      return fallbackResult;
+    } catch (fallbackError) {
+      lastError = fallbackError;
+    }
+  }
+  throw lastError;
+};
+
 // 各模型对 reasoningLevel 的支持情况：
 // - gpt-5-4 (Responses API): 支持 low / medium / high
 // - gemini 系列 (Chat API): 只支持 low / high，medium 映射为 high
 // - 其他 chat 模型: 不传 reasoningLevel
 const normalizeReasoningLevelForModel = (model, reasoningLevel) => {
   if (!reasoningLevel) return null;
-  const m = String(model || '').trim();
+  const m = normalizeKieChatModel(model);
   const level = String(reasoningLevel).trim();
+  if (isKieClaudeChatModel(m)) {
+    return level ? 'low' : null;
+  }
   if (isKieGeminiChatModel(m)) {
     // gemini 只支持 low / high
     if (level === 'low') return 'low';
@@ -606,19 +1243,36 @@ const findVideoUrlRecursively = (data) => {
 
 const mapHttpError = async (response, defaultMessage) => {
   const data = await response.json().catch(() => ({}));
+  const message = String(
+    data?.data?.failMsg ||
+    data?.failMsg ||
+    data?.error?.message ||
+    data?.message ||
+    data?.msg ||
+    defaultMessage ||
+    ''
+  ).trim() || defaultMessage;
+  const providerTaskId = extractProviderTaskIdFromResponse(data);
+  const extras = providerTaskId ? { providerTaskId } : null;
   if (response.status === 401 || response.status === 403) {
-    throw createProviderError('provider_auth_invalid', data?.error?.message || data?.message || defaultMessage);
+    throw createProviderError('provider_auth_invalid', message, extras);
   }
   if (response.status === 400 || response.status === 404) {
-    throw createProviderError('provider_bad_request', data?.error?.message || data?.message || defaultMessage);
+    throw createProviderError('provider_bad_request', message, extras);
   }
   if (response.status === 429) {
-    throw createProviderError('provider_rate_limited', data?.error?.message || data?.message || defaultMessage);
+    throw createProviderError('provider_rate_limited', message, extras);
   }
   if (response.status >= 500) {
-    throw createProviderError('provider_internal_error', data?.error?.message || data?.message || defaultMessage);
+    throw createProviderError('provider_internal_error', message, extras);
   }
-  throw createProviderError('provider_network_error', data?.error?.message || data?.message || defaultMessage);
+  throw createProviderError('provider_network_error', message, extras);
+};
+
+const notifyProviderTaskId = async (options, providerTaskId) => {
+  const value = String(providerTaskId || '').trim();
+  if (!value || typeof options?.onProviderTaskId !== 'function') return;
+  await options.onProviderTaskId(value);
 };
 
 const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false, model = '') => {
@@ -633,13 +1287,13 @@ const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false, model = '
 
     let response;
     try {
-      response = await fetch(`${KIE_RECORD_INFO_URL}?taskId=${encodeURIComponent(taskId)}`, {
+      response = await fetchKieWithTimeout(`${KIE_RECORD_INFO_URL}?taskId=${encodeURIComponent(taskId)}`, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${kieApiKey}`,
         },
         signal,
-      });
+      }, isVideo ? 'Kie 视频任务查询超时' : 'Kie 图像任务查询超时');
     } catch (error) {
       if (signal?.aborted) {
         throw createProviderError('request_cancelled', '任务已取消', { providerTaskId: taskId, providerStage: 'polling', providerStatus: lastKnownState || 'cancelled' });
@@ -684,8 +1338,10 @@ const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false, model = '
         if (!url) {
           throw createProviderError('provider_bad_response', 'Kie 返回成功但没有结果链接', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'success_without_result' });
         }
+        const usageMeta = extractProviderUsageMeta(result);
         return {
           providerTaskId: taskId,
+          ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
           providerStage: 'completed',
           providerStatus: 'success',
           result: {
@@ -693,6 +1349,10 @@ const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false, model = '
             videoUrl: isVideo ? url : undefined,
             taskId,
             status: 'success',
+            providerTaskId: taskId,
+            ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+            ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
+            providerModel: result.data?.model || model || '',
           },
         };
       }
@@ -901,23 +1561,39 @@ const runKieResponsesJob = async (payload, env, signal) => {
   if (!content) {
     throw createProviderError('provider_bad_response', 'Kie Responses 返回为空');
   }
+  const providerTaskId = extractProviderTaskIdFromResponse(data);
+  const usageMeta = extractProviderUsageMeta(data);
   return {
+    ...(providerTaskId ? { providerTaskId } : {}),
+    ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
     result: {
       content,
       modelUsed: String(payload.model || '').trim(),
+      providerTaskId,
+      ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+      ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
     },
   };
 };
 
-const runKieImageJob = async (payload, env, signal) => {
+const runKieImageJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
-  const imageUrls = await Promise.all(
-    (Array.isArray(payload.imageUrls) ? payload.imageUrls : []).map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
-  );
+  const rawImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
+  const resolvedGenerationUrlByRawUrl = new Map();
+  const resolveGenerationUrl = async (url) => {
+    const rawUrl = String(url || '').trim();
+    if (!rawUrl) return '';
+    if (!resolvedGenerationUrlByRawUrl.has(rawUrl)) {
+      resolvedGenerationUrlByRawUrl.set(rawUrl, resolveProviderGenerationMediaUrl(rawUrl, env, signal));
+    }
+    return resolvedGenerationUrlByRawUrl.get(rawUrl);
+  };
+  const imageUrls = await Promise.all(rawImageUrls.map((item) => resolveGenerationUrl(item)));
   const gptImageAlias = KIE_IMAGE_MODEL_ALIASES[payload.model];
   const isGptImageEdit = Boolean(gptImageAlias && imageUrls.length > 0);
-  const prompt = augmentImagePromptForModel(payload.model, payload.prompt, payload.aspectRatio, isGptImageEdit ? 'image' : 'text');
+  const promptWithResolvedMediaUrls = await rewriteProviderTextMediaUrls(payload.prompt || '', resolveGenerationUrl);
+  const prompt = augmentImagePromptForModel(payload.model, promptWithResolvedMediaUrls, payload.aspectRatio, isGptImageEdit ? 'image' : 'text');
   const normalizedAspectRatio = String(payload.aspectRatio || 'auto').trim() || 'auto';
   const normalizedResolution = gptImageAlias
     ? normalizeGptImage2Resolution(normalizedAspectRatio, payload.resolution || GPT_IMAGE_2_DEFAULT_RESOLUTION)
@@ -947,7 +1623,7 @@ const runKieImageJob = async (payload, env, signal) => {
             },
       }
     : {
-        model: payload.model || 'nano-banana-2',
+        model: payload.model || 'gpt-image-2',
         input: {
           prompt,
           image_input: imageUrls,
@@ -957,7 +1633,7 @@ const runKieImageJob = async (payload, env, signal) => {
         },
       };
 
-  const response = await fetch(KIE_CREATE_TASK_URL, {
+  const response = await fetchKieWithTimeout(KIE_CREATE_TASK_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${kieApiKey}`,
@@ -965,12 +1641,13 @@ const runKieImageJob = async (payload, env, signal) => {
     },
     body: JSON.stringify(requestBody),
     signal,
-  });
+  }, 'Kie 图像任务创建超时');
 
   const result = await response.json().catch(() => ({}));
   if (!response.ok || result?.code !== 200 || !result?.data?.taskId) {
     throw normalizeKieTaskCreationError(response.status, result, 'Kie 图像任务创建失败');
   }
+  await notifyProviderTaskId(options, result.data.taskId);
 
   try {
     const imageResult = await pollKieTask(result.data.taskId, kieApiKey, signal, false, payload.model);
@@ -985,6 +1662,319 @@ const runKieImageJob = async (payload, env, signal) => {
   }
 };
 
+const runKieClaudeMessagesJob = async (payload, env, signal) => {
+  const { kieApiKey } = getProviderEnv(env);
+  ensureProviderKey(kieApiKey, 'Kie API Key');
+  const model = normalizeKieChatModel(payload.model || 'claude-sonnet-4-6') || 'claude-sonnet-4-6';
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model });
+  const hasCallerTools = Array.isArray(payload.tools) && payload.tools.length > 0;
+  const requestMessages = hasCallerTools
+    ? preparedMessages
+    : preparedMessages.map((message, index) => (
+        index === 0
+          ? {
+              ...message,
+              content: [KIE_CLAUDE_NO_TOOL_PROMPT, ...(Array.isArray(message?.content) ? message.content : [])],
+            }
+          : message
+      ));
+  const messages = buildProviderInputMessages(
+    requestMessages.map((message) => ({
+      ...message,
+      role: String(message?.role || '').trim() === 'assistant' ? 'assistant' : 'user',
+    })),
+    buildKieClaudeContent
+  );
+  const baseRequestBody = {
+    model,
+    messages,
+    stream: false,
+    max_tokens: Number(payload.maxTokens || payload.max_tokens || 4096),
+    ...(payload.reasoningLevel ? { thinkingFlag: true } : {}),
+  };
+  const primaryRequestBody = hasCallerTools
+    ? { ...baseRequestBody, tools: payload.tools }
+    : { ...baseRequestBody, tools: [], tool_choice: { type: 'none' }, mcp_servers: [] };
+  const fallbackRequestBody = hasCallerTools
+    ? null
+    : { ...baseRequestBody, tools: [] };
+  const toolUseRetryRequestBody = hasCallerTools
+    ? null
+    : {
+        ...baseRequestBody,
+        tools: [],
+        tool_choice: { type: 'none' },
+        mcp_servers: [],
+        messages: [
+          ...messages,
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: '禁止调用任何工具、skills、文件读取或函数调用。只输出纯文本策划结果，不要返回 tool_use 或其他工具块。',
+              },
+            ],
+          },
+        ],
+      };
+
+  const sendClaudeRequest = async (requestBody) => fetch(KIE_CLAUDE_MESSAGES_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${kieApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+    signal,
+  });
+
+  let response = await sendClaudeRequest(primaryRequestBody);
+
+  if (!response.ok && response.status === 400 && fallbackRequestBody) {
+    response = await sendClaudeRequest(fallbackRequestBody);
+  }
+
+  if (response.ok) {
+    const data = await response.json().catch(() => ({}));
+    const toolUseDetected = String(data?.stop_reason || '').trim() === 'tool_use' || hasToolUseContentBlock(data?.content);
+    if (toolUseDetected && toolUseRetryRequestBody) {
+      const retryResponse = await sendClaudeRequest(toolUseRetryRequestBody);
+      if (!retryResponse.ok) {
+        response = retryResponse;
+      } else {
+        const retryData = await retryResponse.json().catch(() => ({}));
+        const retryContent = extractChatMessageText(retryData?.content) || extractChatMessageText(retryData) || '';
+        if (!retryContent) {
+          throw createProviderError('provider_bad_response', 'Kie Claude 返回为空');
+        }
+        if (String(retryData?.stop_reason || '').trim() === 'tool_use' || hasToolUseContentBlock(retryData?.content)) {
+          throw createProviderError('provider_bad_response', 'Kie Claude 返回了工具调用而不是文本策划结果');
+        }
+        return {
+          result: {
+            content: retryContent,
+            modelUsed: String(retryData?.model || model).trim() || model,
+          },
+        };
+      }
+    } else {
+      const content = extractChatMessageText(data?.content) || extractChatMessageText(data) || '';
+      if (!content) {
+        throw createProviderError('provider_bad_response', 'Kie Claude 返回为空');
+      }
+      if (toolUseDetected) {
+        throw createProviderError('provider_bad_response', 'Kie Claude 返回了工具调用而不是文本策划结果');
+      }
+      return {
+        result: {
+          content,
+          modelUsed: String(data?.model || model).trim() || model,
+        },
+      };
+    }
+  }
+
+  if (!response.ok) {
+    await mapHttpError(response, 'Kie Claude 请求失败');
+  }
+
+  const data = await response.json().catch(() => ({}));
+  const content = extractChatMessageText(data?.content) || extractChatMessageText(data) || '';
+  if (!content) {
+    throw createProviderError('provider_bad_response', 'Kie Claude 返回为空');
+  }
+  if (String(data?.stop_reason || '').trim() === 'tool_use' || hasToolUseContentBlock(data?.content)) {
+    throw createProviderError('provider_bad_response', 'Kie Claude 返回了工具调用而不是文本策划结果');
+  }
+
+  return {
+    result: {
+      content,
+      modelUsed: String(data?.model || model).trim() || model,
+    },
+  };
+};
+
+const extractChatStreamDeltaText = (event) => {
+  const root = event && typeof event === 'object' ? event : {};
+  const choices = Array.isArray(root.choices)
+    ? root.choices
+    : Array.isArray(root.data?.choices)
+      ? root.data.choices
+      : [];
+  const parts = [];
+  choices.forEach((choice) => {
+    const deltaText =
+      extractChatMessageText(choice?.delta?.content) ||
+      extractChatMessageText(choice?.message?.content) ||
+      extractChatMessageText(choice?.content) ||
+      '';
+    if (deltaText) parts.push(deltaText);
+  });
+  if (parts.length > 0) return parts.join('');
+  return extractChatMessageText(root?.delta?.content || root?.content || root?.data?.content || '');
+};
+
+const readProviderSseChatResponse = async (response, signal, options = {}) => {
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    throw createProviderError('provider_bad_response', 'Kie Gemini 3 Flash 流式响应不可读');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let providerTaskId = '';
+  let usageMeta = { creditsConsumed: undefined, usage: null };
+
+  const handleEvent = async (eventData) => {
+    const raw = String(eventData || '').trim();
+    if (!raw || raw === '[DONE]') return;
+    let event;
+    try {
+      event = JSON.parse(raw);
+    } catch {
+      return;
+    }
+
+    const nextProviderTaskId = extractProviderTaskIdFromResponse(event);
+    if (nextProviderTaskId && nextProviderTaskId !== providerTaskId) {
+      providerTaskId = nextProviderTaskId;
+      await notifyProviderTaskId(options, providerTaskId);
+    }
+
+    const deltaText = extractChatStreamDeltaText(event);
+    if (deltaText) content += deltaText;
+
+    const nextUsageMeta = extractProviderUsageMeta(event);
+    if (nextUsageMeta.creditsConsumed !== undefined || nextUsageMeta.usage) {
+      usageMeta = nextUsageMeta;
+    }
+  };
+
+  while (true) {
+    if (signal?.aborted) {
+      throw createProviderError('request_cancelled', '任务已取消', providerTaskId ? { providerTaskId } : null);
+    }
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const chunks = buffer.split(/\r?\n\r?\n/);
+    buffer = chunks.pop() || '';
+    for (const chunk of chunks) {
+      const dataLines = chunk
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.replace(/^data:\s*/, '').trim());
+      for (const dataLine of dataLines) {
+        await handleEvent(dataLine);
+      }
+    }
+  }
+
+  buffer += decoder.decode();
+  const remainingLines = buffer
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.replace(/^data:\s*/, '').trim());
+  for (const dataLine of remainingLines) {
+    await handleEvent(dataLine);
+  }
+
+  return {
+    content: content.trim(),
+    providerTaskId,
+    usageMeta,
+  };
+};
+
+const runKieGeminiFlashOpenAiJob = async (payload, env, signal, options = {}) => {
+  const { kieApiKey } = getProviderEnv(env);
+  ensureProviderKey(kieApiKey, 'Kie API Key');
+  const model = 'gemini-3-flash-openai';
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model });
+  const messages = buildProviderInputMessages(preparedMessages, buildGeminiFlashContent).map((message) => ({
+    role: String(message?.role || 'user').trim() || 'user',
+    content: Array.isArray(message?.content) ? message.content : [],
+  }));
+  const tools = buildGeminiFlashTools(payload);
+  const reasoningEffort = normalizeReasoningLevelForModel(model, payload.reasoningLevel);
+  const requestBody = {
+    messages,
+    stream: true,
+    include_thoughts: payload.includeThoughts === false ? false : true,
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+    ...(tools ? { tools } : {}),
+  };
+
+  const response = await fetch(KIE_GEMINI_FLASH_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${kieApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+    signal,
+  });
+
+  if (!response.ok) {
+    await mapHttpError(response, 'Kie Gemini 3 Flash 请求失败');
+  }
+
+  const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
+  if (contentType.includes('text/event-stream') && response.body) {
+    const streamResult = await readProviderSseChatResponse(response, signal, options);
+    if (!streamResult.content) {
+      throw createProviderError('provider_bad_response', 'Kie Gemini 3 Flash 返回为空');
+    }
+    if (isProviderErrorText(streamResult.content)) {
+      throw createProviderError(providerErrorCodeFromText(streamResult.content), streamResult.content);
+    }
+    return {
+      ...(streamResult.providerTaskId ? { providerTaskId: streamResult.providerTaskId } : {}),
+      ...(streamResult.usageMeta.creditsConsumed !== undefined ? { creditsConsumed: streamResult.usageMeta.creditsConsumed } : {}),
+      result: {
+        content: streamResult.content,
+        modelUsed: model,
+        providerTaskId: streamResult.providerTaskId,
+        ...(streamResult.usageMeta.creditsConsumed !== undefined ? { creditsConsumed: streamResult.usageMeta.creditsConsumed } : {}),
+        ...(streamResult.usageMeta.usage ? { usage: streamResult.usageMeta.usage } : {}),
+      },
+    };
+  }
+
+  const data = await response.json().catch(() => ({}));
+  const content =
+    extractChatMessageText(data?.choices?.[0]?.message?.content) ||
+    extractChatMessageText(data?.data?.choices?.[0]?.message?.content) ||
+    extractChatMessageText(data?.content) ||
+    extractChatMessageText(data) ||
+    '';
+
+  if (!content) {
+    throw createProviderError('provider_bad_response', 'Kie Gemini 3 Flash 返回为空');
+  }
+  if (isProviderErrorText(content)) {
+    throw createProviderError(providerErrorCodeFromText(content), content);
+  }
+
+  const providerTaskId = extractProviderTaskIdFromResponse(data);
+  await notifyProviderTaskId(options, providerTaskId);
+  const usageMeta = extractProviderUsageMeta(data);
+  return {
+    ...(providerTaskId ? { providerTaskId } : {}),
+    ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+    result: {
+      content,
+      modelUsed: model,
+      providerTaskId,
+      ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+      ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
+    },
+  };
+};
+
 const runKieRecoverJob = async (payload, env, signal) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
@@ -996,7 +1986,7 @@ const runKieRecoverJob = async (payload, env, signal) => {
   }
 };
 
-const runKieVideoJob = async (payload, env, signal) => {
+const runKieVideoJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
 
@@ -1018,7 +2008,7 @@ const runKieVideoJob = async (payload, env, signal) => {
     input.prompt = payload.videoConfig?.script || 'Professional commercial product advertisement, cinematic lighting.';
   }
 
-  const response = await fetch(KIE_CREATE_TASK_URL, {
+  const response = await fetchKieWithTimeout(KIE_CREATE_TASK_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${kieApiKey}`,
@@ -1029,7 +2019,7 @@ const runKieVideoJob = async (payload, env, signal) => {
       input,
     }),
     signal,
-  });
+  }, 'Kie 视频任务创建超时');
 
   const result = await response.json().catch(() => ({}));
   if (!response.ok || result?.code !== 200 || !result?.data?.taskId) {
@@ -1044,6 +2034,7 @@ const runKieVideoJob = async (payload, env, signal) => {
     }
     throw createProviderError('provider_bad_request', result?.msg || 'Kie 视频任务创建失败');
   }
+  await notifyProviderTaskId(options, result.data.taskId);
 
   try {
     return await pollKieTask(result.data.taskId, kieApiKey, signal, true);
@@ -1052,7 +2043,7 @@ const runKieVideoJob = async (payload, env, signal) => {
   }
 };
 
-const runKieVeoJob = async (payload, env, signal) => {
+const runKieVeoJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
 
@@ -1101,6 +2092,7 @@ const runKieVeoJob = async (payload, env, signal) => {
     }
     throw createProviderError('provider_bad_request', result?.msg || 'Kie Veo 任务创建失败');
   }
+  await notifyProviderTaskId(options, result.data.taskId);
 
   try {
     return await pollKieVeoTask(result.data.taskId, kieApiKey, signal);
@@ -1109,8 +2101,311 @@ const runKieVeoJob = async (payload, env, signal) => {
   }
 };
 
-const runKieChatJob = async (payload, env, signal) => {
+const normalizeArray = (value) => (Array.isArray(value) ? value : [value])
+  .map((item) => String(item || '').trim())
+  .filter(Boolean);
+
+const normalizeSeedanceVideoMode = (value) => {
+  const normalized = String(value || '').trim();
+  if (normalized === '首尾帧' || normalized === 'frames' || normalized === 'firstLastFrame') return 'frames2video';
+  if (normalized === 'image2video' || normalized === '全能参考' || normalized === 'multimodal' || normalized === 'ref2video') return 'multimodal2video';
+  if (['frames2video', 'multimodal2video'].includes(normalized)) return normalized;
+  return 'multimodal2video';
+};
+
+const normalizeSeedanceAspectRatio = (value) => {
+  const normalized = String(value || '').trim();
+  return ['1:1', '4:3', '3:4', '16:9', '9:16', '21:9', 'adaptive'].includes(normalized) ? normalized : '9:16';
+};
+
+const normalizeSeedanceResolution = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === '720p' ? '720p' : '480p';
+};
+
+const normalizeSeedanceDuration = (value) => {
+  const parsed = Number.parseInt(String(value || '').replace('秒', '').trim(), 10);
+  if (!Number.isFinite(parsed)) return 5;
+  return Math.max(4, Math.min(15, parsed));
+};
+
+const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
+  const { kieApiKey } = getProviderEnv(env);
+  ensureProviderKey(kieApiKey, 'Kie API Key');
+
+  const mode = normalizeSeedanceVideoMode(payload.mode || payload.subMode);
+  const imageUrls = await Promise.all(
+    normalizeArray(payload.imageUrls || payload.images || payload.imageUrl || payload.image)
+      .map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
+  );
+  const videoUrls = await Promise.all(
+    normalizeArray(payload.videoUrls || payload.videos || payload.videoUrl || payload.video)
+      .map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
+  );
+  const audioUrls = await Promise.all(
+    normalizeArray(payload.audioUrls || payload.audios || payload.audioUrl || payload.audio)
+      .map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
+  );
+
+  if (mode === 'frames2video' && imageUrls.length < 2) {
+    throw createProviderError('provider_bad_request', 'Seedance 首尾帧需要至少 2 张图片素材');
+  }
+  if (mode === 'multimodal2video' && imageUrls.length + videoUrls.length + audioUrls.length < 1) {
+    throw createProviderError('provider_bad_request', 'Seedance API 至少需要 1 个参考图片、视频或音频素材');
+  }
+
+  const input = {
+    prompt: String(payload.prompt || payload.script || payload.description || '').trim(),
+    duration: normalizeSeedanceDuration(payload.duration),
+    aspect_ratio: normalizeSeedanceAspectRatio(payload.aspectRatio || payload.ratio),
+    resolution: normalizeSeedanceResolution(payload.resolution || payload.videoResolution || payload.video_resolution),
+    generate_audio: Boolean(payload.generateAudio ?? payload.generate_audio ?? false),
+    nsfw_checker: false,
+  };
+
+  if (mode === 'frames2video') {
+    input.first_frame_url = imageUrls[0];
+    input.last_frame_url = imageUrls[1];
+  } else {
+    if (imageUrls.length > 0) input.reference_image_urls = imageUrls.slice(0, 9);
+    if (videoUrls.length > 0) input.reference_video_urls = videoUrls.slice(0, 3);
+    if (audioUrls.length > 0) input.reference_audio_urls = audioUrls.slice(0, 3);
+  }
+
+  const response = await fetchKieWithTimeout(KIE_CREATE_TASK_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${kieApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'bytedance/seedance-2-fast',
+      input,
+    }),
+    signal,
+  }, 'Kie Seedance 视频任务创建超时');
+
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || result?.code !== 200 || !result?.data?.taskId) {
+    throw normalizeKieTaskCreationError(response.status, result, 'Kie Seedance 视频任务创建失败');
+  }
+  await notifyProviderTaskId(options, result.data.taskId);
+
+  try {
+    const videoResult = await pollKieTask(result.data.taskId, kieApiKey, signal, true, 'bytedance/seedance-2-fast');
+    return {
+      ...videoResult,
+      providerTaskId: videoResult.providerTaskId || result.data.taskId,
+      providerStage: videoResult.providerStage || 'completed',
+      providerStatus: videoResult.providerStatus || 'success',
+    };
+  } catch (error) {
+    throw attachProviderTaskId(error, result.data.taskId);
+  }
+};
+
+const isVideoAssetUrl = (value) => /\.(mp4|mov|webm|m4v)(?:[?#].*)?$/i.test(String(value || ''));
+const isAudioAssetUrl = (value) => /\.(mp3|wav|m4a|aac|ogg)(?:[?#].*)?$/i.test(String(value || ''));
+
+const ensureFileNameWithExtension = (fileName, mimeType) => {
+  const normalized = String(fileName || 'dreamina-input.bin').trim() || 'dreamina-input.bin';
+  if (/\.[a-z0-9]{2,8}$/i.test(normalized)) return normalized;
+  return `${normalized}.${inferExtensionFromMimeType(mimeType, 'bin')}`;
+};
+
+const downloadProviderAssetToLocalFile = async (assetUrl, tempDir, env, signal, index = 0) => {
+  const resolvedUrl = await resolveProviderMediaUrl(assetUrl, env, signal);
+  if (!isManagedAssetUrl(resolvedUrl)) {
+    assertRemoteProviderMediaUrlAllowed(resolvedUrl);
+  }
+  const response = await fetch(normalizeManagedAssetDownloadUrl(resolvedUrl), { method: 'GET', signal });
+  if (!response.ok) {
+    throw createProviderError('provider_bad_request', `即梦素材下载失败：HTTP ${response.status}`);
+  }
+  const mimeType = String(response.headers?.get?.('content-type') || '').split(';')[0].trim() || inferMimeTypeFromName(resolvedUrl);
+  const fileName = ensureFileNameWithExtension(extractFileNameFromUrl(resolvedUrl, `dreamina-input-${index}.bin`), mimeType);
+  const filePath = path.join(tempDir, `${index}-${fileName.replace(/[^\w.-]+/g, '_')}`);
+  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '即梦素材');
+  await writeFile(filePath, fileBuffer);
+  return filePath;
+};
+
+const prepareDreaminaLocalInputs = async (payload, env, signal) => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'meiao-dreamina-'));
+  const cleanup = async () => rm(tempDir, { recursive: true, force: true }).catch(() => null);
+  const rawImageUrls = normalizeArray(payload.imageUrls || payload.images || payload.imageUrl || payload.image);
+  const rawVideoUrls = normalizeArray(payload.videoUrls || payload.videos || payload.videoUrl || payload.video);
+  const rawAudioUrls = normalizeArray(payload.audioUrls || payload.audios || payload.audioUrl || payload.audio);
+  const mixedUrls = normalizeArray(payload.mediaUrls || payload.references);
+  mixedUrls.forEach((url) => {
+    if (isAudioAssetUrl(url)) rawAudioUrls.push(url);
+    else if (isVideoAssetUrl(url)) rawVideoUrls.push(url);
+    else rawImageUrls.push(url);
+  });
+
+  try {
+    const imagePaths = await Promise.all(rawImageUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index)));
+    const videoPaths = await Promise.all(rawVideoUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index + imagePaths.length)));
+    const audioPaths = await Promise.all(rawAudioUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index + imagePaths.length + videoPaths.length)));
+    return { tempDir, cleanup, imagePaths, videoPaths, audioPaths };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+};
+
+const normalizeDreaminaVideoMode = (value) => {
+  const normalized = String(value || '').trim();
+  if (normalized === 'image2video' || normalized === '全能参考' || normalized === 'multimodal' || normalized === 'ref2video') return 'multimodal2video';
+  if (normalized === '首尾帧' || normalized === 'frames' || normalized === 'firstLastFrame') return 'frames2video';
+  if (normalized === '智能多帧' || normalized === '多帧成片' || normalized === 'multiframe') return 'multiframe2video';
+  if (['frames2video', 'multiframe2video', 'multimodal2video'].includes(normalized)) return normalized;
+  return 'multimodal2video';
+};
+
+const buildDreaminaVideoOptions = (payload, localInputs) => {
+  const mode = normalizeDreaminaVideoMode(payload.mode || payload.subMode);
+  const base = {
+    prompt: String(payload.prompt || payload.script || payload.description || '').trim(),
+    duration: payload.duration,
+    ratio: payload.ratio || payload.aspectRatio,
+    videoResolution: payload.videoResolution || payload.video_resolution,
+    modelVersion: payload.modelVersion || payload.model_version || 'seedance2.0fast',
+    transitionPrompts: payload.transitionPrompts || payload.transition_prompts,
+    transitionDurations: payload.transitionDurations || payload.transition_durations,
+    poll: 0,
+    session: payload.session,
+  };
+  if (mode === 'frames2video') {
+    return {
+      mode,
+      options: {
+        ...base,
+        first: localInputs.imagePaths[0],
+        last: localInputs.imagePaths[1],
+        images: localInputs.imagePaths.slice(0, 2),
+      },
+    };
+  }
+  if (mode === 'multiframe2video') {
+    return { mode, options: { ...base, images: localInputs.imagePaths } };
+  }
+  return {
+    mode,
+    options: {
+      ...base,
+      images: localInputs.imagePaths,
+      videos: localInputs.videoPaths,
+      audios: localInputs.audioPaths,
+    },
+  };
+};
+
+const assertDreaminaInputs = (mode, localInputs) => {
+  if (mode === 'frames2video' && localInputs.imagePaths.length < 2) {
+    throw createProviderError('provider_bad_request', '即梦首尾帧需要至少 2 张图片素材');
+  }
+  if (mode === 'multiframe2video' && localInputs.imagePaths.length < 2) {
+    throw createProviderError('provider_bad_request', '即梦智能多帧需要至少 2 张图片素材');
+  }
+  if (mode === 'multimodal2video' && localInputs.imagePaths.length + localInputs.videoPaths.length < 1) {
+    throw createProviderError('provider_bad_request', '即梦全能参考至少需要 1 个图片或视频素材');
+  }
+};
+
+const pollDreaminaVideoResult = async (submitId, env, signal) => {
+  for (let attempt = 0; attempt < DREAMINA_VIDEO_POLL_RETRIES; attempt += 1) {
+    if (signal?.aborted) {
+      throw createProviderError('request_cancelled', '任务已取消', { providerTaskId: submitId, providerStage: 'polling', providerStatus: 'cancelled' });
+    }
+    const result = await queryDreaminaVideoTask({ submitId, env });
+    if (result.status === 'success' && result.videoUrl) return result;
+    if (result.status === 'failed') {
+      throw createProviderError('provider_bad_request', result.failReason || '即梦视频任务失败', {
+        providerTaskId: submitId,
+        providerStage: 'polling',
+        providerStatus: 'failed',
+      });
+    }
+    await wait(DREAMINA_VIDEO_POLL_INTERVAL_MS, signal);
+  }
+  throw createProviderError('provider_timeout', '即梦视频任务超时', {
+    providerTaskId: submitId,
+    providerStage: 'polling',
+    providerStatus: 'timeout',
+  });
+};
+
+const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '') => {
+  if (dreaminaVideoRunnerForTest) {
+    return dreaminaVideoRunnerForTest({
+      ...payload,
+      mode: normalizeDreaminaVideoMode(payload.mode || payload.subMode),
+      imageUrls: normalizeArray(payload.imageUrls || payload.images || payload.imageUrl || payload.image),
+      videoUrls: normalizeArray(payload.videoUrls || payload.videos || payload.videoUrl || payload.video),
+      audioUrls: normalizeArray(payload.audioUrls || payload.audios || payload.audioUrl || payload.audio),
+      providerTaskId,
+    });
+  }
+
+  if (providerTaskId) {
+    const queried = await pollDreaminaVideoResult(providerTaskId, env, signal);
+    return {
+      providerTaskId,
+      providerStage: 'completed',
+      providerStatus: 'success',
+      result: {
+        videoUrl: queried.videoUrl,
+        mediaType: 'video',
+        taskId: providerTaskId,
+        status: 'success',
+      },
+    };
+  }
+
+  const localInputs = await prepareDreaminaLocalInputs(payload, env, signal);
+  try {
+    const { mode, options } = buildDreaminaVideoOptions(payload, localInputs);
+    assertDreaminaInputs(mode, localInputs);
+    const submitted = await submitDreaminaVideoTask(mode, { ...options, env });
+    const submitId = submitted.submitId;
+    if (!submitId && !submitted.videoUrl) {
+      throw createProviderError('provider_bad_response', submitted.rawOutput || '即梦未返回 submit_id');
+    }
+    if (submitted.status === 'failed') {
+      throw createProviderError('provider_bad_request', submitted.failReason || '即梦视频任务提交失败', {
+        providerTaskId: submitId,
+        providerStage: 'create_task',
+        providerStatus: 'failed',
+      });
+    }
+    const completed = submitted.videoUrl ? submitted : await pollDreaminaVideoResult(submitId, env, signal);
+    return {
+      providerTaskId: submitId,
+      providerStage: 'completed',
+      providerStatus: 'success',
+      result: {
+        videoUrl: completed.videoUrl,
+        mediaType: 'video',
+        taskId: submitId,
+        status: 'success',
+        rawOutput: completed.rawOutput,
+      },
+    };
+  } catch (error) {
+    const code = String(error?.code || '').trim();
+    if (code) throw error;
+    throw createProviderError('provider_internal_error', error?.message || '即梦视频任务执行失败');
+  } finally {
+    await localInputs.cleanup();
+  }
+};
+
+const runKieChatJob = async (payload, env, signal, options = {}) => {
   const transport = resolveChatTransport(payload.model);
+  if (isKieGeminiFlashOpenAiModel(payload.model)) {
+    return runKieGeminiFlashOpenAiJob(payload, env, signal, options);
+  }
   if (transport === 'unsupported') {
     throw createProviderError('provider_bad_request', `不支持的聊天模型：${String(payload.model || '').trim() || '未知模型'}`);
   }
@@ -1118,83 +2413,79 @@ const runKieChatJob = async (payload, env, signal) => {
     try {
       return await runKieResponsesJob(payload, env, signal);
     } catch (error) {
-      const fallbackModels = getKieChatFallbackModels(payload.model, payload.fallbackModels);
-      const code = String(error?.code || '').trim();
-      if (!fallbackModels.length || !['provider_bad_response', 'provider_internal_error', 'provider_network_error'].includes(code)) {
-        throw error;
-      }
-      let lastError = error;
-      for (const fallbackModel of fallbackModels) {
-        try {
-          const fallbackResult = await runKieChatJob(
-            { ...payload, model: fallbackModel, reasoningLevel: normalizeReasoningLevelForModel(fallbackModel, payload.reasoningLevel) },
-            env,
-            signal
-          );
-          // 标记实际使用了 fallback 模型
-          if (fallbackResult?.result) {
-            fallbackResult.result.fallbackFrom = String(payload.model || '').trim();
-          }
-          return fallbackResult;
-        } catch (fallbackError) {
-          lastError = fallbackError;
-        }
-      }
-      throw lastError;
+      return runKieChatFallbackModels(payload, env, signal, error);
     }
   }
-
-  const { kieApiKey } = getProviderEnv(env);
-  ensureProviderKey(kieApiKey, 'Kie API Key');
-  const model = String(payload.model || 'gpt-5-2').trim() || 'gpt-5-2';
-  const endpoint = resolveKieChatEndpoint(model);
-  const isGeminiModel = isKieGeminiChatModel(model);
-  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model });
-  const messages = isGeminiModel
-    ? buildProviderInputMessages(preparedMessages, buildKieChatContent)
-    : preparedMessages;
-
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${kieApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: false,
-      ...(isGeminiModel && payload.webSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
-      ...(isGeminiModel && payload.reasoningLevel ? { include_thoughts: true, reasoning_effort: normalizeReasoningLevelForModel(model, payload.reasoningLevel) } : {}),
-    }),
-    signal,
-  });
-
-  if (!response.ok) {
-    await mapHttpError(response, 'Kie 对话请求失败');
+  if (transport === 'kie_claude_messages') {
+    return runKieClaudeMessagesJob(payload, env, signal);
   }
 
-  const data = await response.json().catch(() => ({}));
-  const content =
-    extractChatMessageText(data?.choices?.[0]?.message?.content) ||
-    extractChatMessageText(data?.content) ||
-    extractChatMessageText(data?.candidates?.[0]?.content) ||
-    extractChatMessageText(data) ||
-    '';
+  try {
+    const { kieApiKey } = getProviderEnv(env);
+    ensureProviderKey(kieApiKey, 'Kie API Key');
+    const model = String(payload.model || 'gpt-5-2').trim() || 'gpt-5-2';
+    const endpoint = resolveKieChatEndpoint(model);
+    const isGeminiModel = isKieGeminiChatModel(model);
+    const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model });
+    const messages = isGeminiModel
+      ? buildProviderInputMessages(preparedMessages, buildKieChatContent)
+      : preparedMessages;
 
-  if (!content) {
-    throw createProviderError('provider_bad_response', 'Kie 对话返回为空');
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${kieApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: false,
+        ...(isGeminiModel && payload.webSearchEnabled ? { tools: [{ googleSearch: {} }] } : {}),
+        ...(isGeminiModel && payload.reasoningLevel ? { include_thoughts: true, reasoning_effort: normalizeReasoningLevelForModel(model, payload.reasoningLevel) } : {}),
+      }),
+      signal,
+    });
+
+    if (!response.ok) {
+      await mapHttpError(response, 'Kie 对话请求失败');
+    }
+
+    const data = await response.json().catch(() => ({}));
+    const content =
+      extractChatMessageText(data?.choices?.[0]?.message?.content) ||
+      extractChatMessageText(data?.content) ||
+      extractChatMessageText(data?.candidates?.[0]?.content) ||
+      extractChatMessageText(data) ||
+      '';
+
+    if (!content) {
+      throw createProviderError('provider_bad_response', 'Kie 对话返回为空');
+    }
+    if (isProviderErrorText(content)) {
+      throw createProviderError(providerErrorCodeFromText(content), content);
+    }
+
+    const providerTaskId = extractProviderTaskIdFromResponse(data);
+    await notifyProviderTaskId(options, providerTaskId);
+    const usageMeta = extractProviderUsageMeta(data);
+    return {
+      ...(providerTaskId ? { providerTaskId } : {}),
+      ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+      result: {
+        content,
+        modelUsed: model,
+        providerTaskId,
+        ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+        ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
+      },
+    };
+  } catch (error) {
+    return runKieChatFallbackModels(payload, env, signal, error);
   }
-
-  return {
-    result: {
-      content,
-      modelUsed: model,
-    },
-  };
 };
 
-export const executeProviderJob = async (job, env, signal) => {
+export const executeProviderJob = async (job, env, signal, options = {}) => {
   switch (job.taskType) {
     case 'upload_asset':
       if (job.payload?.fileBuffer) {
@@ -1214,15 +2505,19 @@ export const executeProviderJob = async (job, env, signal) => {
           signal
         );
       }
-      return runKieImageJob(job.payload, env, signal);
+      return runKieImageJob(job.payload, env, signal, options);
     case 'kie_recover':
       return runKieRecoverJob(job.payload, env, signal);
     case 'kie_video':
-      return runKieVideoJob(job.payload, env, signal);
+      return runKieVideoJob(job.payload, env, signal, options);
+    case 'kie_seedance_video':
+      return runKieSeedanceVideoJob(job.payload, env, signal, options);
     case 'kie_veo':
-      return runKieVeoJob(job.payload, env, signal);
+      return runKieVeoJob(job.payload, env, signal, options);
+    case 'dreamina_video':
+      return runDreaminaVideoJob(job.payload, env, signal, job.providerTaskId);
     case 'kie_chat':
-      return runKieChatJob(job.payload, env, signal);
+      return runKieChatJob(job.payload, env, signal, options);
     default:
       throw createProviderError('provider_bad_request', `不支持的任务类型：${job.taskType}`);
   }
@@ -1232,5 +2527,6 @@ export const getProviderConfigStatus = (env) => {
   const providerEnv = getProviderEnv(env);
   return {
     kie: Boolean(providerEnv.kieApiKey),
+    dreamina: true,
   };
 };

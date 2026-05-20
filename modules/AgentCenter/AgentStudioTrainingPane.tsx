@@ -4,6 +4,7 @@ import { applyStudioTrainingChanges, sendStudioTrainingMessage } from '../../ser
 import { estimateTokenCount } from './agentCenterUtils.mjs';
 import AgentAvatar from './AgentAvatar';
 import ChatComposer, { ComposerAttachment, BatchSendTask } from './ChatComposer';
+import { filterChatModelsByAllowlist } from './chatModelAllowlist';
 import { resolveSessionReasoningLevel } from './chatReasoningDefaults.mjs';
 import { MAX_FILES_PER_BATCH } from './folderZipUpload';
 
@@ -136,11 +137,7 @@ const AgentStudioTrainingPane: React.FC<Props> = ({
   const batchAbortRef = useRef<AbortController | null>(null);
 
   const selectableChatModels = useMemo(() => {
-    const allowed = new Set((draftVersion.allowedChatModels || []).filter(Boolean));
-    const source = Array.isArray(availableChatModels) ? availableChatModels : [];
-    if (!allowed.size) return source;
-    const filtered = source.filter((item) => allowed.has(item.id));
-    return filtered.length ? filtered : source;
+    return filterChatModelsByAllowlist(availableChatModels, draftVersion.allowedChatModels || []);
   }, [availableChatModels, draftVersion.allowedChatModels]);
 
   const resolveReasoningLevelForModel = (modelId: string, requestedReasoningLevel: string | null = null) => {

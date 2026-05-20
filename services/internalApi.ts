@@ -268,10 +268,13 @@ export const fetchRemoteAppState = async () => {
   return request<{ state: PersistedAppState }>('/api/state');
 };
 
-export const saveRemoteAppState = async (state: PersistedAppState) => {
+export const saveRemoteAppState = async (
+  state: Partial<PersistedAppState>,
+  options: { mode?: 'merge' | 'replace' } = {},
+) => {
   return request<{ ok: boolean }>('/api/state', {
     method: 'PUT',
-    body: JSON.stringify({ state }),
+    body: JSON.stringify({ state, mode: options.mode || 'merge' }),
   });
 };
 
@@ -853,6 +856,7 @@ export const waitForInternalJob = async (
   signal?: AbortSignal,
   intervalMs = 2500,
   maxWaitMs = 0,
+  onJobUpdate?: (job: InternalJob) => void,
 ): Promise<InternalJob> => {
   const deadline = maxWaitMs > 0 ? Date.now() + maxWaitMs : 0;
   while (true) {
@@ -864,6 +868,7 @@ export const waitForInternalJob = async (
     }
 
     const { job } = await fetchInternalJob(jobId);
+    onJobUpdate?.(job);
     if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
       return job;
     }

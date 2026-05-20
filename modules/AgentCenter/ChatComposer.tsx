@@ -81,7 +81,7 @@ const iconButtonClassName = (active: boolean, available: boolean) =>
   `group relative flex h-8 w-8 items-center justify-center rounded-full border transition ${
     available
       ? active
-        ? 'border-cyan-300/90 bg-cyan-50 text-cyan-700'
+        ? 'border-cyan-600 bg-cyan-600 text-white shadow-[0_0_0_3px_rgba(8,145,178,0.18)]'
         : 'border-slate-200/90 bg-white text-slate-500 hover:border-slate-300 hover:text-slate-900'
       : 'cursor-not-allowed border-slate-200/80 bg-slate-100 text-slate-300'
   }`;
@@ -398,6 +398,7 @@ const ChatComposer: React.FC<Props> = ({
           type="button"
           title={imageModeAvailable ? (imageModeEnabled ? '已进入生图模式，再点一次退出' : '进入生图模式') : '当前智能体未启用生图模型'}
           aria-label={imageModeAvailable ? (imageModeEnabled ? '退出生图模式' : '进入生图模式') : '当前智能体未启用生图模型'}
+          aria-pressed={imageModeEnabled}
           disabled={!imageModeAvailable || disabled || uploading || sending}
           onClick={onImageModeToggle}
           className={iconButtonClassName(imageModeEnabled, imageModeAvailable)}
@@ -409,6 +410,7 @@ const ChatComposer: React.FC<Props> = ({
           type="button"
           title={webHint}
           aria-label={webHint}
+          aria-pressed={webSearchEnabled}
           disabled={!selectedModelOption?.supportsWebSearch || disabled || uploading || sending}
           onClick={onWebSearchToggle}
           className={iconButtonClassName(webSearchEnabled, Boolean(selectedModelOption?.supportsWebSearch))}
@@ -421,6 +423,7 @@ const ChatComposer: React.FC<Props> = ({
             type="button"
             title={reasoningHint}
             aria-label={reasoningHint}
+            aria-pressed={Boolean(reasoningLevel)}
             disabled={!selectedModelOption?.supportsReasoningLevel || disabled || uploading || sending}
             onClick={() => {
               if (!selectedModelOption?.supportsReasoningLevel) return;

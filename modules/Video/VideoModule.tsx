@@ -154,7 +154,16 @@ const VideoModule: React.FC<Props> = ({ apiConfig, persistentState, onStateChang
   // 加载可用聊天模型列表
   useEffect(() => {
     fetchSystemConfig().then((result) => {
-      setChatModels(result.config.agentModels?.chat || []);
+      const models = result.config.agentModels?.chat || [];
+      setChatModels(models);
+      const effectiveAnalysisModel =
+        result.config.systemSettings?.effectiveVideoAnalysisModel ||
+        result.config.systemSettings?.effectiveAnalysisModel ||
+        models[0]?.id ||
+        '';
+      if (effectiveAnalysisModel) {
+        updateDiagnosisState((prev) => prev.analysisModel ? prev : { analysisModel: effectiveAnalysisModel });
+      }
     }).catch(() => {});
   }, []);
 

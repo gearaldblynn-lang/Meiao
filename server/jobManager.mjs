@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
+import { buildJobFailureLogFields, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
 
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
@@ -20,6 +20,11 @@ const serializeJsonValue = (value) => JSON.stringify(value ?? null);
 const toSafeJobConcurrency = (value, fallback = DEFAULT_JOB_CONCURRENCY) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const normalizeJobCreditsConsumed = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 };
 
 export const selectJobsWithinConcurrencyLimits = ({
@@ -114,12 +119,12 @@ export const reconcileRestartedMysqlJobs = (jobs, referenceTime = now()) => {
     .filter((job) => String(job?.status || '') === 'running')
     .map((job) => ({
       ...job,
-      status: 'failed',
+      status: 'retry_waiting',
       startedAt: null,
-      finishedAt: Number(referenceTime || now()),
+      finishedAt: null,
       updatedAt: Number(referenceTime || now()),
       errorCode: 'service_restarted',
-      errorMessage: '服务重启导致任务中断，请按需重新发起或手动同步结果',
+      errorMessage: '服务重启后任务已回收到待重试状态',
     }));
 };
 
@@ -241,6 +246,13 @@ export const findReusableJobRecord = async (pool, user, payload, dedupeWindowMs 
 export const getJobById = async (pool, jobId) => {
   const [rows] = await pool.query('SELECT * FROM internal_jobs WHERE id = ? LIMIT 1', [jobId]);
   return rows[0] ? mapJobRow(rows[0]) : null;
+};
+
+export const deleteJobById = async (pool, jobId) => {
+  const job = await getJobById(pool, jobId);
+  if (!job) return null;
+  await pool.query('DELETE FROM internal_jobs WHERE id = ?', [jobId]);
+  return job;
 };
 
 export const listJobsForUser = async (pool, userId, options = {}) => {
@@ -450,11 +462,23 @@ export const createJobWorker = ({
               controller.abort();
             }
 
-            const output = await executeJob(refreshedJob, controller.signal);
+            let notifiedProviderTaskId = String(refreshedJob.providerTaskId || '').trim();
+            const onProviderTaskId = async (providerTaskId) => {
+              const value = String(providerTaskId || '').trim();
+              if (!value || value === notifiedProviderTaskId) return;
+              notifiedProviderTaskId = value;
+              const updatedAt = now();
+              await updateJobFields(pool, refreshedJob.id, {
+                provider_task_id: value,
+                updated_at: updatedAt,
+              });
+            };
+
+            const output = await executeJob(refreshedJob, controller.signal, { onProviderTaskId });
             const finishedAt = now();
             await updateJobFields(pool, refreshedJob.id, {
               status: controller.signal.aborted ? 'cancelled' : 'succeeded',
-              provider_task_id: output?.providerTaskId || refreshedJob.providerTaskId || null,
+              provider_task_id: output?.providerTaskId || notifiedProviderTaskId || refreshedJob.providerTaskId || null,
               result_json: serializeJsonValue(output?.result || null),
               error_code: controller.signal.aborted ? 'request_cancelled' : null,
               error_message: controller.signal.aborted ? '任务已取消' : null,
@@ -472,10 +496,11 @@ export const createJobWorker = ({
                 status: controller.signal.aborted ? 'interrupted' : 'success',
                 meta: {
                   jobId: refreshedJob.id,
-                  providerTaskId: output?.providerTaskId || refreshedJob.providerTaskId || '',
+                  providerTaskId: output?.providerTaskId || notifiedProviderTaskId || refreshedJob.providerTaskId || '',
                   provider: refreshedJob.provider,
                   retryCount: refreshedJob.retryCount,
                   taskType: refreshedJob.taskType,
+                  creditsConsumed: normalizeJobCreditsConsumed(output?.result?.creditsConsumed ?? output?.creditsConsumed),
                   queueWaitMs: refreshedJob.startedAt && refreshedJob.createdAt ? Math.max(0, refreshedJob.startedAt - refreshedJob.createdAt) : 0,
                   runtimeMs: finishedAt - (refreshedJob.startedAt || finishedAt),
                   jobCreatedAt: refreshedJob.createdAt,
@@ -506,14 +531,19 @@ export const createJobWorker = ({
 
             const user = latestJob ? await findUserById(latestJob.userId) : null;
             if (user && createLog) {
+              const logFields = buildJobFailureLogFields({
+                jobStatus: failure.status,
+                taskType: latestJob.taskType,
+                errorCode: error?.code || 'provider_internal_error',
+              });
               await createLog({
                 user,
-                level: 'error',
+                level: error?.code === 'request_cancelled' ? 'info' : logFields.level,
                 module: latestJob.module,
-                action: failure.status === 'retry_waiting' ? 'job_retry_waiting' : 'job_failed',
-                message: failure.status === 'retry_waiting' ? `${latestJob.taskType} 任务等待重试` : `${latestJob.taskType} 任务失败`,
+                action: error?.code === 'request_cancelled' ? 'job_failed' : logFields.action,
+                message: error?.code === 'request_cancelled' ? `${latestJob.taskType} 任务失败` : logFields.message,
                 detail: String(error?.message || '任务执行失败').slice(0, 5000),
-                status: error?.code === 'request_cancelled' ? 'interrupted' : 'failed',
+                status: error?.code === 'request_cancelled' ? 'interrupted' : logFields.status,
                 meta: {
                   jobId: latestJob.id,
                   providerTaskId: error?.providerTaskId || latestJob.providerTaskId || '',

@@ -24,7 +24,7 @@ interface TaskItemProps {
 // Memoized Task Item to prevent re-rendering unchanged siblings
 const BuyerShowTaskItem = memo(({ task, index, setId, onRegenerate, onRecover, onDownload, onPreview }: TaskItemProps) => {
   const [hasError, setHasError] = useState(false);
-  
+
   useEffect(() => {
     setHasError(false);
   }, [task.resultUrl]);
@@ -35,7 +35,7 @@ const BuyerShowTaskItem = memo(({ task, index, setId, onRegenerate, onRecover, o
         <span className="w-6 h-6 bg-slate-900/80 backdrop-blur text-white rounded-lg flex items-center justify-center text-[10px] font-black">{index + 1}</span>
         {task.hasFace && <span className="px-2 py-1 bg-amber-500/90 text-white rounded-md text-[9px] font-bold shadow-sm">模特基准</span>}
       </div>
-      
+
       <div className="relative aspect-[3/4] bg-slate-50 overflow-hidden cursor-pointer group/overlay" onClick={() => task.resultUrl && onPreview(task.resultUrl)}>
         {task.status === 'completed' && task.resultUrl ? (
           <div className="relative w-full h-full group/img">
@@ -46,10 +46,10 @@ const BuyerShowTaskItem = memo(({ task, index, setId, onRegenerate, onRecover, o
                 <p className="text-[8px] mt-1">请重新生成或找回</p>
               </div>
             ) : (
-              <img 
-                src={task.resultUrl} 
-                className="w-full h-full object-cover transition-transform duration-700 group-hover/img:scale-105" 
-                alt="Generated result" 
+              <img
+                src={task.resultUrl}
+                className="w-full h-full object-cover transition-transform duration-700 group-hover/img:scale-105"
+                alt="Generated result"
                 key={task.resultUrl}
                 onError={() => {
                   if (task.resultUrl?.startsWith('blob:')) {
@@ -85,7 +85,7 @@ const BuyerShowTaskItem = memo(({ task, index, setId, onRegenerate, onRecover, o
           </div>
         )}
       </div>
-      
+
       <div className="p-4 flex-1 flex flex-col justify-between bg-white">
         <p className="text-[10px] font-medium text-slate-500 leading-snug line-clamp-2 mb-3 h-8" title={task.styleDescription}>{task.styleDescription}</p>
         <div className="flex gap-2">
@@ -124,7 +124,7 @@ const BuyerShowSetItem = memo(({ set, isExpanded, onToggleExpand, onCopyText, on
 
   return (
     <div className={`bg-white rounded-[32px] border shadow-xl overflow-hidden mb-8 transition-all duration-300 ${isExpanded ? 'border-amber-200 ring-4 ring-amber-50' : 'border-slate-100 hover:border-amber-200'}`}>
-      <div 
+      <div
         className="bg-amber-50/50 p-6 border-b border-amber-100 flex items-center justify-between cursor-pointer hover:bg-amber-50 transition-colors"
         onClick={() => onToggleExpand(set.id)}
       >
@@ -157,8 +157,8 @@ const BuyerShowSetItem = memo(({ set, isExpanded, onToggleExpand, onCopyText, on
 
           {/* Show "Generate Remaining" button if first is done but others failed/pending */}
           {isFirstCompleted && hasRemainingErrors && isExpanded && (
-             <button 
-                onClick={(e) => { e.stopPropagation(); onGenerateRemaining(set.id); }} 
+             <button
+                onClick={(e) => { e.stopPropagation(); onGenerateRemaining(set.id); }}
                 disabled={isGeneratingRemaining}
                 className="text-[10px] font-black text-white bg-emerald-500 px-3 py-1.5 rounded-lg shadow-sm hover:bg-emerald-600 transition-all disabled:bg-slate-300 flex items-center gap-1"
              >
@@ -173,7 +173,7 @@ const BuyerShowSetItem = memo(({ set, isExpanded, onToggleExpand, onCopyText, on
           <i className={`fas fa-chevron-down text-amber-400 transition-transform duration-300 ${isExpanded ? 'rotate-180' : ''}`}></i>
         </div>
       </div>
-      
+
       {isExpanded && (
         <div className="animate-in fade-in slide-in-from-top-2 duration-300">
           {set.evaluationText && (
@@ -184,9 +184,9 @@ const BuyerShowSetItem = memo(({ set, isExpanded, onToggleExpand, onCopyText, on
 
           <div className="p-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
             {set.tasks.map((task, idx) => (
-              <BuyerShowTaskItem 
-                key={task.id} 
-                task={task} 
+              <BuyerShowTaskItem
+                key={task.id}
+                task={task}
                 index={idx}
                 setId={set.id}
                 onRegenerate={onRegenerate}
@@ -235,7 +235,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
   }) => {
     void logInternalAction(payload);
   }, []);
-  
+
   // Use callback to stabilize handlers
   const updateState = useCallback((updates: Partial<BuyerShowPersistentState>) => {
     onStateChange(prev => ({ ...prev, ...updates }));
@@ -456,19 +456,14 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     generationAbortControllersRef.current.clear();
     setAbortControllersRef.current.clear();
     inflightIdsRef.current.clear();
-    
+
     // 初始化多套方案
     const newSets: BuyerShowSet[] = [];
     const count = latestState.setCount || 1;
-    
-    onStateChange({ 
-        ...latestState, 
-        isAnalyzing: true, 
-        sets: [], 
-        pureEvaluations: [],
-        tasks: [], 
-        evaluationText: '',
-        firstImageConfirmed: false,
+
+    onStateChange({
+        ...latestState,
+        isAnalyzing: true,
         isGenerating: false
     });
 
@@ -490,7 +485,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
       const { productUrls, refUrl } = await ensureUploadedAssets(latestState);
       const planAbortController = new AbortController();
       currentPlanAbortControllerRef.current = planAbortController;
-      
+
       const plans = [];
       for (let idx = 0; idx < count; idx += 1) {
         const planResult = await generateBuyerShowPrompts(productUrls, refUrl, latestState, apiConfig, idx, planAbortController.signal);
@@ -546,13 +541,13 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
       setExpandedSetId(newSets[0].id);
 
-      onStateChange(prev => ({ 
-        ...prev, 
-        sets: newSets,
+      onStateChange(prev => ({
+        ...prev,
+        sets: [...newSets, ...(prev.sets || [])],
         tasks: newSets[0].tasks,
         evaluationText: newSets[0].evaluationText,
-        isAnalyzing: false, 
-        isGenerating: true 
+        isAnalyzing: false,
+        isGenerating: true
       }));
 
       newSets.forEach((set) => runSetGeneration(set, productUrls, refUrl));
@@ -598,7 +593,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
             ...prev,
             sets: prev.sets.map(s => s.id === setId ? {
                 ...s,
-                status: 'generating', 
+                status: 'generating',
                 tasks: s.tasks.map(t => t.id === taskId ? { ...t, status, resultUrl, error, taskId: taskIdValue } : t)
             } : s)
         }));
@@ -610,12 +605,12 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         const firstController = createTrackedAbortController(setId);
         const firstRes = await triggerNewKieTask(firstTask.prompt, productUrls, globalRefUrl, true, firstController.signal);
         generationAbortControllersRef.current.delete(firstController);
-        
+
         if (firstRes.status === 'success' && firstRes.imageUrl) {
             updateSetTaskStatus(firstTask.id, 'completed', firstRes.imageUrl, undefined, firstRes.taskId);
-            
+
             const referenceForOthers = firstRes.imageUrl;
-            
+
             const remainingTasks = tasks.slice(1);
             if (remainingTasks.length > 0) {
                 await Promise.all(remainingTasks.map(async (task) => {
@@ -637,7 +632,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         } else {
             // 首图失败，强制标记所有后续图片为失败，并更新 Set 状态
             updateSetTaskStatus(firstTask.id, 'error', undefined, firstRes.message || '基准图生成失败', firstRes.taskId);
-            
+
             // 核心变更：当首图失败时，直接标记后续任务为 Error，不进行生成
             const remainingTasks = tasks.slice(1);
             remainingTasks.forEach(task => {
@@ -678,9 +673,9 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
   const handleGenerateRemainingOptimized = useCallback(async (setId: string) => {
     const currentState = stateRef.current;
     const currentSet = currentState.sets.find(s => s.id === setId);
-    
+
     if (!currentSet) return;
-    
+
     // 检查首图是否成功
     const firstTask = currentSet.tasks[0];
     if (firstTask.status !== 'completed' || !firstTask.resultUrl) {
@@ -712,20 +707,20 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
     try {
         const { productUrls } = await ensureUploadedAssets(currentState);
-        
+
         await Promise.all(tasksToRun.map(async (task) => {
             try {
                 const taskController = createTrackedAbortController(setId);
                 const res = await triggerNewKieTask(task.prompt, productUrls, referenceForOthers, false, taskController.signal);
                 generationAbortControllersRef.current.delete(taskController);
-                
+
                 onStateChange(prev => ({
                     ...prev,
                     sets: prev.sets.map(s => s.id === setId ? {
                         ...s,
-                        tasks: s.tasks.map(t => t.id === task.id ? { 
-                            ...t, 
-                            status: res.status === 'success' ? 'completed' : 'error', 
+                        tasks: s.tasks.map(t => t.id === task.id ? {
+                            ...t,
+                            status: res.status === 'success' ? 'completed' : 'error',
                             resultUrl: res.imageUrl,
                             taskId: res.taskId,
                             error: res.status === 'interrupted' ? '已手动中断' : res.message
@@ -804,7 +799,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
 
     // ⑤ 场景指令
     const finalPrompt = `${realismPrompt}\n${baseRequirement}\n${productPreservation}\n\n${isFirstImage ? 'SCENE' : 'NEXT SHOT'}: ${prompt}`;
-    
+
     const inputs = [...productUrls];
     if (refUrl) inputs.push(refUrl);
 
@@ -823,22 +818,22 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     });
 
     return await processWithKieAi(
-      inputs, 
-      apiConfig, 
-      { 
-        targetLanguage: 'zh', 
-        customLanguage: '', 
-        removeWatermark: true, 
-        aspectRatio: persistentState.aspectRatio, 
-        quality: persistentState.quality, 
+      inputs,
+      apiConfig,
+      {
+        targetLanguage: 'zh',
+        customLanguage: '',
+        removeWatermark: true,
+        aspectRatio: persistentState.aspectRatio,
+        quality: persistentState.quality,
         model: persistentState.model,
-        resolutionMode: 'original', 
-        targetWidth: 0, 
+        resolutionMode: 'original',
+        targetWidth: 0,
         targetHeight: 0,
         maxFileSize: 2.0
-      }, 
-      false, 
-      signal || new AbortController().signal, 
+      },
+      false,
+      signal || new AbortController().signal,
       finalPrompt
     );
   };
@@ -945,9 +940,9 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
             ...prev,
             sets: prev.sets.map(s => s.id === setId ? {
                 ...s,
-                tasks: s.tasks.map(t => t.id === task.id ? { 
-                    ...t, 
-                    status: res.status === 'success' ? 'completed' : 'error', 
+                tasks: s.tasks.map(t => t.id === task.id ? {
+                    ...t,
+                    status: res.status === 'success' ? 'completed' : 'error',
                     resultUrl: res.imageUrl,
                     taskId: res.taskId,
                     error: res.message
@@ -994,17 +989,17 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     // However, since handleRegenerate needs latest 'persistentState.productImages' which changes rarely during generation,
     // we can access it via a ref or by just letting this function recreate when persistentState changes.
     // For pure optimization, we should pass needed data as arguments or use a ref for the full state.
-    // Here we will use a workaround: The caller (TaskItem) doesn't know the images. 
+    // Here we will use a workaround: The caller (TaskItem) doesn't know the images.
     // We will assume productImages are available in the scope (closure).
     // BUT since 'handleRegenerateTask' is recreated when 'persistentState' changes, we are fine functionally.
     // The key is that TaskItems for OTHER sets won't re-render if we use React.memo and the prop (this function) didn't change?
     // Actually, if persistentState changes, this function reference changes, so ALL TaskItems re-render.
     // To truly fix this, we need to decouple the handler or use a Ref for state access.
-    
+
     // We will assume the heavy rendering is the issue and just isolating components helps enough even with prop updates.
     // To go further, we'd need a ref for state. Let's do that for maximum performance.
     // See stateRef below.
-    
+
     // Implementation is in the useEffect/Ref block below to access current state without triggering re-renders.
   }, []); // Placeholder, actual logic moved to component body with ref
 
@@ -1024,7 +1019,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         index: taskIndex + 1,
       },
     });
-    
+
     onStateChange(prev => ({
         ...prev,
         sets: prev.sets.map(s => s.id === setId ? {
@@ -1036,7 +1031,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     try {
         const { productUrls, refUrl } = await ensureUploadedAssets(currentState);
         let refUrlToUse = null;
-        
+
         // Logic to find reference
         const currentSet = currentState.sets.find(s => s.id === setId);
         const isFirstImage = taskIndex === 0;
@@ -1123,7 +1118,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        <BuyerShowSidebar 
+        <BuyerShowSidebar
           state={persistentState}
           onUpdate={updateState}
           onStart={handleStartWorkflow}
@@ -1159,7 +1154,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                 {sets && sets.length > 0 ? (
                     <div className="space-y-8">
                         {sets.map(set => (
-                          <BuyerShowSetItem 
+                          <BuyerShowSetItem
                             key={set.id}
                             set={set}
                             isExpanded={set.id === expandedSetId}

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Download, Maximize2, RotateCcw, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import {
   AspectRatio,
@@ -16,7 +16,7 @@ import SkuSidebar from './SkuSidebar';
 import { uploadToCos } from '../../services/tencentCosService';
 import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
-import { resizeImage, getImageDimensions, createZipAndDownload } from '../../utils/imageUtils';
+import { resizeImage, getImageDimensions, createZipAndDownload, downloadRemoteFile } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
 import { generateSkuSchemes } from '../../services/arkService';
@@ -26,6 +26,7 @@ import {
 import { buildSkuGenerationAssets } from './skuGenerationUtils.mjs';
 import { normalizeCopyLayoutText } from './copyLayoutUtils.mjs';
 import { appendOneClickCopyGuardrails } from './generationPromptUtils';
+import { resolvePublicAssetUrl } from '../../utils/modelAssetUrl.mjs';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -74,6 +75,7 @@ const SkuSubModule: React.FC<Props> = ({
   const taskControllersRef = useRef<Record<string, AbortController>>({});
   const globalAbortRef = useRef<AbortController | null>(null);
   const { addToast } = useToast();
+  const publicBaseUrl = apiConfig.publicBaseUrl || '';
 
   const selectedCount = schemes.filter(s => s.selected).length;
   const completedCount = schemes.filter(s => s.status === 'completed' && s.resultUrl).length;
@@ -136,14 +138,24 @@ const SkuSubModule: React.FC<Props> = ({
 
   // --- Upload helpers ---
   const ensureAllUploaded = async () => {
+    const normalize = (value: string) => resolvePublicAssetUrl(value, publicBaseUrl) || '';
     const needUpload = images.filter(i => i.file && !i.uploadedUrl);
-    if (needUpload.length === 0) return images;
+    if (needUpload.length === 0) {
+      return images.map((item) => {
+        if (!item.uploadedUrl) return item;
+        const normalizedUrl = normalize(item.uploadedUrl);
+        return normalizedUrl ? { ...item, uploadedUrl: normalizedUrl } : item;
+      });
+    }
     const updated = [...images];
     for (const item of needUpload) {
       const idx = updated.findIndex(u => u.id === item.id);
       if (idx >= 0 && item.file) {
         const url = await uploadToCos(item.file, apiConfig);
-        updated[idx] = { ...updated[idx], uploadedUrl: url };
+        const normalizedUrl = normalize(url);
+        if (normalizedUrl) {
+          updated[idx] = { ...updated[idx], uploadedUrl: normalizedUrl };
+        }
       }
     }
     onUpdate({ images: updated });
@@ -151,10 +163,11 @@ const SkuSubModule: React.FC<Props> = ({
   };
 
   const getProductAndGiftUrls = (currentImages: typeof images) => {
-    const productUrls = currentImages.filter(i => i.role === 'product' && i.uploadedUrl).map(i => i.uploadedUrl!);
-    const giftUrls = currentImages.filter(i => i.role === 'gift' && i.uploadedUrl).map(i => i.uploadedUrl!);
+    const normalize = (value: string) => resolvePublicAssetUrl(value, publicBaseUrl) || '';
+    const productUrls = currentImages.filter(i => i.role === 'product' && i.uploadedUrl).map(i => normalize(i.uploadedUrl!)).filter(Boolean);
+    const giftUrls = currentImages.filter(i => i.role === 'gift' && i.uploadedUrl).map(i => normalize(i.uploadedUrl!)).filter(Boolean);
     const styleRef = currentImages.find(i => i.role === 'style_ref' && i.uploadedUrl);
-    return { productUrls, giftUrls, styleUrl: styleRef?.uploadedUrl || null };
+    return { productUrls, giftUrls, styleUrl: styleRef?.uploadedUrl ? (normalize(styleRef.uploadedUrl) || null) : null };
   };
 
   // --- AI Analysis (生成方案) ---
@@ -164,17 +177,14 @@ const SkuSubModule: React.FC<Props> = ({
     if (isSubmittingAnalysisRef.current || isAnalyzing || isGenerating || hasGenerating || productImgs.length === 0) return;
     const validCombos = config.combinations.filter(c => c.skuCopyText.trim());
     if (validCombos.length === 0) { addToast('请至少填写一个 SKU 文案', 'warning'); return; }
-    if (schemesRef.current.length > 0) {
-      onPrepareFreshProject?.();
-    }
-
+    const shouldPrepareFreshProject = !activeProjectId || schemesRef.current.length > 0;
+    if (shouldPrepareFreshProject) onPrepareFreshProject?.();
     isSubmittingAnalysisRef.current = true;
     setIsAnalyzing(true);
     void logActionStart({ module: 'one_click', action: 'plan_sku_start', message: '开始SKU策划', meta: baseMeta });
     addToast('正在进行 SKU 视觉策划...', 'info');
 
     try {
-      onUpdate({ schemes: [] });
       globalAbortRef.current = new AbortController();
       const uploaded = (await ensureAllUploaded()) || images;
       const { productUrls, giftUrls, styleUrl } = getProductAndGiftUrls(uploaded);
@@ -241,15 +251,29 @@ const SkuSubModule: React.FC<Props> = ({
       currentImages,
       firstSkuResultUrl: resolvedFirstUrl,
       isFirst,
+      publicBaseUrl,
     });
+    const normalize = (value: string) => resolvePublicAssetUrl(value, publicBaseUrl) || '';
 
     let manifest = '【素材清单 — 请严格区分每张图的类型】\n';
-    productImgs.forEach((img, i) => { manifest += `- 商品主体图${i + 1}: ${img.uploadedUrl}\n`; });
-    giftImgs.forEach(img => { manifest += `- 赠品${img.giftIndex}: ${img.uploadedUrl}\n`; });
+    productImgs.forEach((img, i) => {
+      const url = normalize(img.uploadedUrl || '');
+      if (url) manifest += `- 商品主体图${i + 1}: ${url}\n`;
+    });
+    giftImgs.forEach(img => {
+      const url = normalize(img.uploadedUrl || '');
+      if (url) manifest += `- 赠品${img.giftIndex}: ${url}\n`;
+    });
     if (!isFirst && resolvedFirstUrl) {
-      manifest += `- SKU风格基准图（图片URL）：${styleRefUrl}。这是第一张 SKU 的生成结果，后续 SKU 必须按这张图的排版、字体风格、文字摆放、色调和整体设计风格继续生成。\n`;
+      const url = normalize(styleRefUrl || '');
+      if (url) {
+        manifest += `- SKU风格基准图（图片URL）：${url}。这是第一张 SKU 的生成结果，后续 SKU 必须按这张图的排版、字体风格、文字摆放、色调和整体设计风格继续生成。\n`;
+      }
     } else if (styleRefUrl) {
-      manifest += `- SKU风格参考图（图片URL）：${styleRefUrl}。第一张 SKU 必须按该参考图的整体风格、版式结构、信息层级、视觉节奏和设计细节生成。\n`;
+      const url = normalize(styleRefUrl || '');
+      if (url) {
+        manifest += `- SKU风格参考图（图片URL）：${url}。第一张 SKU 必须按该参考图的整体风格、版式结构、信息层级、视觉节奏和设计细节生成。\n`;
+      }
     }
 
     let prompt = '【严格保持产品与赠品一致性】请严格保持所有商品与赠品和参考图一致，不得改变外观、尺寸关系、结构、标签或包装。\n\n';
@@ -262,9 +286,10 @@ const SkuSubModule: React.FC<Props> = ({
     prompt += `【SKU 展示方案】\n${normalizeCopyLayoutText(schemeContent)}\n`;
 
     if (styleRefUrl) {
+      const url = normalize(styleRefUrl || '');
       prompt += isFirst
-        ? `\nSKU风格参考图（图片URL）：${styleRefUrl}。第一张 SKU 必须直接按该参考图的整体风格、版式结构、信息层级、视觉节奏和设计细节制作。该图仅作为风格与版式参考，不得替换、改写或混入主体商品本身。`
-        : `\nSKU风格基准图（图片URL）：${styleRefUrl}。这是第一张 SKU 的生成结果，后续 SKU 必须按这张图一致的排版、字体风格、文字摆放、色调和整体设计风格制作。该图仅作为风格基准，不得替换、改写或混入主体商品本身。`;
+        ? (url ? `\nSKU风格参考图（图片URL）：${url}。第一张 SKU 必须直接按该参考图的整体风格、版式结构、信息层级、视觉节奏和设计细节制作。该图仅作为风格与版式参考，不得替换、改写或混入主体商品本身。` : '')
+        : (url ? `\nSKU风格基准图（图片URL）：${url}。这是第一张 SKU 的生成结果，后续 SKU 必须按这张图一致的排版、字体风格、文字摆放、色调和整体设计风格制作。该图仅作为风格基准，不得替换、改写或混入主体商品本身。` : '');
     }
     prompt = appendOneClickCopyGuardrails(prompt, config.language || '中文');
     prompt += `\n主体商品必须最显眼，赠品只能作为辅助点缀，不能喧宾夺主。`;
@@ -302,6 +327,7 @@ const SkuSubModule: React.FC<Props> = ({
           currentImages,
           firstSkuResultUrl: resolvedFirstUrl,
           isFirst,
+          publicBaseUrl,
         });
         const strictRatio = config.aspectRatio || AspectRatio.SQUARE;
         res = await processWithKieAi(
@@ -660,7 +686,7 @@ const SkuSubModule: React.FC<Props> = ({
                           }
                         }} className="text-xs font-medium text-slate-400 transition-colors hover:text-rose-600 disabled:opacity-30">还原方案</button>
                         <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="text-xs font-medium text-rose-600 transition-colors hover:text-rose-800 disabled:opacity-30">
-                          {scheme.resultUrl ? '重新生成' : '生成该图'}
+                          {scheme.status === 'generating' ? '生成中...' : (scheme.resultUrl ? '重新生成' : '生成该图')}
                         </button>
                       </div>
                     </div>
@@ -669,6 +695,38 @@ const SkuSubModule: React.FC<Props> = ({
                       schemesRef.current = schemesRef.current.map(s => s.id === scheme.id ? { ...s, editedContent: e.target.value } : s);
                       onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === scheme.id ? { ...s, editedContent: e.target.value } : s) }));
                     }} disabled={scheme.status === 'generating' || isAnalyzing} className="w-full bg-slate-50 border border-slate-100 rounded-2xl p-4 text-xs font-medium text-slate-700 h-40 resize-none outline-none focus:ring-1 focus:ring-rose-500 shadow-inner transition-all scrollbar-hide" />
+                    {scheme.resultUrl ? (
+                      <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50/80 px-3 py-2">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400">已生成</span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleRedoSingle(scheme.id)}
+                            disabled={scheme.status === 'generating' || isAnalyzing}
+                            className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition-all hover:bg-white hover:text-rose-600 disabled:opacity-30"
+                            title="重新生成"
+                          >
+                            <RotateCcw size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { void downloadRemoteFile(scheme.resultUrl!, `sku_${idx + 1}.png`); }}
+                            className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition-all hover:bg-white hover:text-slate-900"
+                            title="下载结果"
+                          >
+                            <Download size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPreviewId(scheme.id)}
+                            className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition-all hover:bg-white hover:text-slate-900"
+                            title="查看大图"
+                          >
+                            <Maximize2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                   {/* Result area */}
                   <div className={`flex-1 p-6 flex items-center justify-center relative transition-opacity duration-300 ${scheme.selected ? 'bg-slate-50 opacity-100' : 'bg-slate-100/50 opacity-40'}`}>
@@ -683,7 +741,7 @@ const SkuSubModule: React.FC<Props> = ({
                       <div className="relative group/img w-full h-full flex items-center justify-center">
                         <img src={scheme.resultUrl} alt={scheme.uiTitle} className="max-w-full max-h-[320px] rounded-[20px] shadow-lg transition-transform duration-500 group-hover/img:scale-[1.02]" onError={() => { if (scheme.resultUrl?.startsWith('blob:')) setImageErrors(prev => ({ ...prev, [scheme.id]: true })); }} />
                         <div className="absolute inset-0 bg-black/40 rounded-[20px] opacity-0 group-hover/img:opacity-100 transition-opacity flex items-center justify-center gap-3">
-                          <button onClick={() => handleRedoSingle(scheme.id)} className="px-4 py-2 bg-white/20 hover:bg-white text-white hover:text-rose-600 backdrop-blur-md rounded-full text-xs font-bold transition-all"><i className="fas fa-redo mr-1"></i>重新生成</button>
+                          <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="px-4 py-2 bg-white/20 hover:bg-white text-white hover:text-rose-600 backdrop-blur-md rounded-full text-xs font-bold transition-all disabled:opacity-50"><i className="fas fa-redo mr-1"></i>{scheme.status === 'generating' ? '生成中...' : '重新生成'}</button>
                           <button onClick={() => setPreviewId(scheme.id)} className="px-4 py-2 bg-white/20 hover:bg-white text-white hover:text-slate-900 backdrop-blur-md rounded-full text-xs font-bold transition-all"><i className="fas fa-eye mr-1"></i>查看大图</button>
                         </div>
                       </div>
@@ -692,8 +750,8 @@ const SkuSubModule: React.FC<Props> = ({
                         <i className="fas fa-exclamation-triangle text-rose-400 text-2xl mb-2"></i>
                         <p className="text-xs font-bold text-rose-500">{scheme.error || '生成失败'}</p>
                         <div className="flex gap-2 mt-3 justify-center">
-                          {scheme.taskId && <button onClick={() => handleRecoverSingle(scheme.id)} className="px-3 py-1.5 bg-slate-100 text-slate-600 text-xs font-bold rounded-lg hover:bg-slate-200">找回结果</button>}
-                          <button onClick={() => handleRedoSingle(scheme.id)} className="px-3 py-1.5 bg-rose-50 text-rose-600 text-xs font-bold rounded-lg hover:bg-rose-100">重新生成</button>
+                          {scheme.taskId && <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRecoverSingle(scheme.id)} className="px-3 py-1.5 bg-slate-100 text-slate-600 text-xs font-bold rounded-lg hover:bg-slate-200 disabled:opacity-50">{scheme.status === 'generating' ? '生成中...' : '找回结果'}</button>}
+                          <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoSingle(scheme.id)} className="px-3 py-1.5 bg-rose-50 text-rose-600 text-xs font-bold rounded-lg hover:bg-rose-100 disabled:opacity-50">{scheme.status === 'generating' ? '生成中...' : '重新生成'}</button>
                         </div>
                       </div>
                     ) : (

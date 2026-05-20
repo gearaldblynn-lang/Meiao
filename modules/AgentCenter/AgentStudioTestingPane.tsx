@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AgentChatMessage, AgentChatSession, AgentSummary, AgentVersion, SystemPublicConfig } from '../../types';
-import { createStudioTestSession, deleteChatSession, sendChatMessage, type ChatProgressEvent, updateChatSession } from '../../services/internalApi';
+import { createStudioTestSession, deleteChatSession, fetchChatMessages, sendChatMessage, type ChatProgressEvent, updateChatSession } from '../../services/internalApi';
 import ChatConversationPane from './ChatConversationPane';
 import { ComposerAttachment } from './ChatComposer';
 import { MAX_FILES_PER_BATCH } from './folderZipUpload';
+import { filterChatModelsByAllowlist } from './chatModelAllowlist';
 import { resolveSessionReasoningLevel } from './chatReasoningDefaults.mjs';
 
 interface Props {
@@ -16,6 +17,14 @@ interface Props {
 }
 
 const glassPanel = 'rounded-[30px] border border-white/70 bg-white/72 shadow-[0_25px_55px_rgba(15,23,42,0.12)] backdrop-blur-xl';
+const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+const isUncertainSendFailure = (error: any) =>
+  !(
+    error?.name === 'AbortError'
+    || error?.message === 'INTERRUPTED'
+    || String(error?.message || '').includes('aborted')
+  )
+  && ['timeout', 'network_error', 'server_error'].includes(error?.code);
 
 const AgentStudioTestingPane: React.FC<Props> = ({
   agent, draftVersion, availableChatModels, onCorrection, onStatusMessage, onErrorMessage,
@@ -38,11 +47,7 @@ const AgentStudioTestingPane: React.FC<Props> = ({
   const imageModeAvailable = Boolean(draftVersion.modelPolicy?.imageGenerationEnabled && draftVersion.modelPolicy?.multimodalModel);
   const imageMaxInputCount = Number(agent.imageMaxInputCount || 1);
   const selectableChatModels = useMemo(() => {
-    const allowed = new Set((draftVersion.allowedChatModels || []).filter(Boolean));
-    const source = Array.isArray(availableChatModels) ? availableChatModels : [];
-    if (!allowed.size) return source;
-    const filtered = source.filter((item) => allowed.has(item.id));
-    return filtered.length ? filtered : source;
+    return filterChatModelsByAllowlist(availableChatModels, draftVersion.allowedChatModels || []);
   }, [availableChatModels, draftVersion.allowedChatModels]);
 
   const resolveReasoningLevelForModel = (modelId: string, requestedReasoningLevel: string | null = null) => {
@@ -113,6 +118,33 @@ const AgentStudioTestingPane: React.FC<Props> = ({
     if (!session?.id) return;
     const result = await updateChatSession(session.id, payload);
     setSession(result.session);
+  };
+
+  const syncCompletedMessageAfterTimeout = async (sessionId: string, clientRequestId: string) => {
+    const deadline = Date.now() + 210_000;
+    while (Date.now() < deadline) {
+      try {
+        const result = await fetchChatMessages(sessionId);
+        const userMessage = result.messages.find((item) => item.role === 'user' && item.metadata?.clientRequestId === clientRequestId);
+        const assistantMessage = result.messages.find((item) => item.role === 'assistant' && item.metadata?.clientRequestId === clientRequestId);
+        const fallbackAssistantMessage = userMessage
+          ? result.messages
+              .filter((item) => item.role === 'assistant' && !item.metadata?.pending && Number(item.createdAt || 0) >= Number(userMessage.createdAt || 0))
+              .slice(-1)[0]
+          : null;
+        if (userMessage && (assistantMessage || fallbackAssistantMessage)) {
+          return {
+            messages: result.messages,
+            userMessage,
+            assistantMessage: assistantMessage || fallbackAssistantMessage,
+          };
+        }
+      } catch {
+        // Keep polling while the server is finishing the same request.
+      }
+      await wait(3000);
+    }
+    return null;
   };
 
   const handleReset = async () => {
@@ -227,6 +259,29 @@ const AgentStudioTestingPane: React.FC<Props> = ({
         } : prev);
       } catch (error: any) {
         const pendingRestore = pendingRestoreRef.current;
+        const shouldSyncCompletedResult = isUncertainSendFailure(error);
+        if (shouldSyncCompletedResult) {
+          onStatusMessage('后台仍在处理中，正在同步最新结果');
+          setMessages((prev) => prev.map((item) => (
+            item.id === (pendingRestore?.assistantMessageId || optimisticAssistantMessage.id)
+              ? {
+                  ...item,
+                  content: '后台仍在处理中，正在同步最新结果',
+                  metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage: 'syncing', clientRequestId },
+                }
+              : item
+          )));
+          try {
+            const synced = await syncCompletedMessageAfterTimeout(session.id, clientRequestId);
+            if (synced) {
+              setMessages(synced.messages);
+              onStatusMessage('已同步后台测试回复');
+              return;
+            }
+          } catch {
+            // Fall through to normal restore.
+          }
+        }
         setMessages((prev) => prev.filter((item) => item.id !== (pendingRestore?.userMessageId || optimisticUserMessage.id) && item.id !== (pendingRestore?.assistantMessageId || optimisticAssistantMessage.id)));
         if (pendingRestore) {
           setDraft(pendingRestore.draft);
@@ -325,6 +380,28 @@ const AgentStudioTestingPane: React.FC<Props> = ({
             result.userMessage, result.assistantMessage,
           ]);
         } catch (batchError: any) {
+          if (isUncertainSendFailure(batchError)) {
+            onStatusMessage(`第 ${batchNum} 批后台仍在处理中，正在同步结果`);
+            setMessages((prev) => prev.map((item) => (
+              item.id === optimisticAssistant.id
+                ? {
+                    ...item,
+                    content: '后台仍在处理中，正在同步最新结果',
+                    metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage: 'syncing', clientRequestId },
+                  }
+                : item
+            )));
+            try {
+              const synced = await syncCompletedMessageAfterTimeout(sessionId, clientRequestId);
+              if (synced) {
+                setMessages(synced.messages);
+                onStatusMessage(`第 ${batchNum} 批结果已同步`);
+                continue;
+              }
+            } catch {
+              // Fall through to batch failure handling.
+            }
+          }
           setMessages((prev) => prev.filter((item) => item.id !== optimisticUser.id && item.id !== optimisticAssistant.id));
           console.error('[BatchSend] batch error:', batchError?.name, batchError?.code, batchError?.status, batchError?.message, batchError);
           if (controller.signal.aborted || batchError?.name === 'AbortError' || batchError?.message === 'INTERRUPTED' || String(batchError?.message || '').includes('aborted')) {

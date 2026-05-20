@@ -46,20 +46,33 @@ pm2 save
 在本地项目目录执行：
 ```bash
 chmod +x ./scripts/deploy_tencent.sh
-./scripts/deploy_tencent.sh
+MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh
 ```
+
+## 云上发布硬性门禁
+- 每次同步新内容到云上前，必须先完成代码审查；至少检查本次 diff、数据隔离、公网资源 URL、日志/统计保留、权限边界和核心任务链路。
+- 部署脚本默认会拦截未审查发布；只有确认审查完成后，才允许带 `MEIAO_CODE_REVIEW_CONFIRMED=1` 执行。
+- 不允许为了省时间绕过该门禁；紧急修复也必须先做最小范围代码审查并记录验证结果。
 
 如果密钥路径或服务器地址变化，可以临时指定：
 ```bash
 MEIAO_SSH_KEY=~/.ssh/MEIAO.pem \
 MEIAO_SERVER_HOST=111.229.66.247 \
+MEIAO_CODE_REVIEW_CONFIRMED=1 \
 ./scripts/deploy_tencent.sh
 ```
 
 ## 更新版本
 ```bash
-./scripts/deploy_tencent.sh
+MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh
 ```
+
+## 更新前数据巡检
+- 每次把 3001 壳前端能力同步到云上前，先按 `docs/cloud-update-data-cleanup.md` 做数据巡检和必要清理。
+- 重点检查 `app_states.state_json` 里的历史垃圾卡：默认 `idle` 视频诊断、空诊断项目卡、测试账号残留项目。
+- 记录发布前后的 `users`、`app_states`、`internal_logs`、`usage_daily` 数量；日志只保留 7 天，统计数据永久保留。
+- 不允许手动清空运行日志；账号删除会清理该账号业务数据，但必须保留 `usage_daily` 永久统计数据。
+- 部署后必须用两个不同账号交叉验证账号隔离，确认项目卡、素材条和输入框草稿不会复用上一账号状态。
 
 ## 访问
 - Node 服务端口：`3100`

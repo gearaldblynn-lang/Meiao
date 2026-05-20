@@ -6,6 +6,7 @@ import { GlobalApiConfig, AspectRatio, OneClickConfig, MainImageScheme, OneClick
 import ConfigSidebar from './ConfigSidebar';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
+import { resolvePublicAssetUrl } from '../../utils/modelAssetUrl.mjs';
 import { analyzeOneClickReferenceSet, generateFirstImageReplicationSchemes } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
 import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
@@ -71,7 +72,7 @@ const FirstImageSubModule: React.FC<Props> = ({
     title: string;
     instruction: string;
   } | null>(null);
-  
+
   const inflightIdsRef = useRef<Set<string>>(new Set());
   const isSubmittingAnalysisRef = useRef(false);
   const isSubmittingGenerationRef = useRef(false);
@@ -79,6 +80,7 @@ const FirstImageSubModule: React.FC<Props> = ({
   const globalAbortRef = useRef<AbortController | null>(null);
   const analysisJobIdRef = useRef<string>('');
   const { addToast } = useToast();
+  const publicBaseUrl = apiConfig.publicBaseUrl || '';
 
   const selectedCount = schemes.filter(s => s.selected).length;
   const completedCount = schemes.filter(s => s.status === 'completed' && s.resultUrl).length;
@@ -148,7 +150,7 @@ const FirstImageSubModule: React.FC<Props> = ({
     });
   }, [schemes]);
 
-  const toggleSelectAll = () => { 
+  const toggleSelectAll = () => {
     if (isAnalyzing) return;
     void logActionSuccess({
       module: 'one_click',
@@ -159,10 +161,10 @@ const FirstImageSubModule: React.FC<Props> = ({
         count: schemes.length,
       },
     });
-    onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => ({ ...s, selected: !isAllSelected })) })); 
+    onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => ({ ...s, selected: !isAllSelected })) }));
   };
-  
-  const toggleSelectScheme = (id: string) => { 
+
+  const toggleSelectScheme = (id: string) => {
     if (isAnalyzing) return;
     const scheme = schemesRef.current.find((item) => item.id === id);
     void logActionSuccess({
@@ -175,46 +177,52 @@ const FirstImageSubModule: React.FC<Props> = ({
         title: scheme?.uiTitle,
       },
     });
-    onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === id ? { ...s, selected: !s.selected } : s) })); 
+    onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === id ? { ...s, selected: !s.selected } : s) }));
   };
 
   const getOrUploadProductUrls = async () => {
     // 智能复用：如果本地图片为空但已有上传记录，说明是刷新后恢复的状态
+    const normalize = (value: string) => resolvePublicAssetUrl(value, publicBaseUrl) || '';
     if (productImages.length === 0 && uploadedProductUrls.length > 0) {
-      return uploadedProductUrls;
+      return uploadedProductUrls.map((url) => normalize(url)).filter(Boolean);
     }
     // 如果缓存中存在链接且数量与当前图片一致，直接使用
     if (uploadedProductUrls && uploadedProductUrls.length === productImages.length && productImages.length > 0) {
-      return uploadedProductUrls;
+      return uploadedProductUrls.map((url) => normalize(url)).filter(Boolean);
     }
     const urls = await Promise.all(productImages.map(img => uploadToCos(img, apiConfig)));
-    onUpdate({ uploadedProductUrls: urls });
-    return urls;
+    const normalizedUrls = urls.map((url) => normalize(url)).filter(Boolean);
+    onUpdate({ uploadedProductUrls: normalizedUrls });
+    return normalizedUrls;
   };
 
   const getOrUploadLogoUrl = async () => {
-    if (!logoImage && uploadedLogoUrl) return uploadedLogoUrl;
+    const normalize = (value: string) => resolvePublicAssetUrl(value, publicBaseUrl) || '';
+    if (!logoImage && uploadedLogoUrl) return normalize(uploadedLogoUrl) || null;
     if (!logoImage) return null;
-    if (uploadedLogoUrl) return uploadedLogoUrl;
+    if (uploadedLogoUrl) return normalize(uploadedLogoUrl) || null;
     const url = await uploadToCos(logoImage, apiConfig);
-    onUpdate({ uploadedLogoUrl: url });
-    return url;
+    const normalizedUrl = normalize(url);
+    onUpdate({ uploadedLogoUrl: normalizedUrl || null });
+    return normalizedUrl || null;
   };
 
   const getOrUploadReferenceUrls = async () => {
+    const normalize = (value: string) => resolvePublicAssetUrl(value, publicBaseUrl) || '';
     if (designReferences.length === 0 && uploadedDesignReferenceUrls.length > 0) {
-      return uploadedDesignReferenceUrls;
+      return uploadedDesignReferenceUrls.map((url) => normalize(url)).filter(Boolean);
     }
     if (uploadedDesignReferenceUrls.length === designReferences.length && designReferences.length > 0 && uploadedDesignReferenceUrls.every(Boolean)) {
-      return uploadedDesignReferenceUrls;
+      return uploadedDesignReferenceUrls.map((url) => normalize(url)).filter(Boolean);
     }
     const nextItems = [...designReferences];
     const urls = await Promise.all(nextItems.map(async (item, index) => {
-      if (item.uploadedUrl) return item.uploadedUrl;
-      if (!item.file) return uploadedDesignReferenceUrls[index] || '';
+      if (item.uploadedUrl) return normalize(item.uploadedUrl);
+      if (!item.file) return normalize(uploadedDesignReferenceUrls[index] || '');
       const url = await uploadToCos(item.file, apiConfig);
-      nextItems[index] = { ...nextItems[index], uploadedUrl: url };
-      return url;
+      const normalizedUrl = normalize(url);
+      nextItems[index] = { ...nextItems[index], uploadedUrl: normalizedUrl || undefined };
+      return normalizedUrl;
     }));
     const normalizedUrls = urls.filter(Boolean);
     onUpdate({
@@ -234,10 +242,10 @@ const FirstImageSubModule: React.FC<Props> = ({
     // 仅用于UI显示，不用于实际生成逻辑（生成强制使用 config.aspectRatio）
     const ratioMatch = text.match(/(?:-|\s|^)画面比例[：:]\s*([0-9]+:[0-9]+)/);
     const ratio = ratioMatch ? ratioMatch[1] : (config.aspectRatio || '1:1');
-    
+
     let uiTitle = `主图参考 ${referenceIndex + 1}：复刻裂变`;
     const lines = text.split('\n');
-    
+
     const titleLine = lines.find(l => /^(?:[-#*>\s]*)(?:屏序\/类型|第\s*\d+\s*屏|首图\d+|首图裂变\d+)/.test(l.trim()));
     if (titleLine) {
        const cleanLine = titleLine.trim().replace(/^(?:[-#*>\s]*)(?:屏序\/类型[：:]?)?/, '').trim();
@@ -254,15 +262,15 @@ const FirstImageSubModule: React.FC<Props> = ({
 
     const normalizedEditedContent = normalizeCopyLayoutText(cleanedLines.join('\n').trim());
 
-    return { 
-      id, 
+    return {
+      id,
       uiTitle,
-      originalContent: text, 
-      editedContent: normalizedEditedContent, 
+      originalContent: text,
+      editedContent: normalizedEditedContent,
       sourceReferenceUrl: referenceUrl,
       sourceReferenceLabel: `复刻主图参考${referenceIndex + 1}`,
       extractedRatio: ratio,
-      status: 'pending', 
+      status: 'pending',
       selected: true,
       error: undefined,
       taskId: undefined,
@@ -317,10 +325,8 @@ const FirstImageSubModule: React.FC<Props> = ({
     const hasGeneratingTask = schemesRef.current.some(s => s.status === 'generating');
     // 允许在只有上传 URL 的情况下启动分析（支持刷新后直接点击）
     if (isSubmittingAnalysisRef.current || isAnalyzing || isGenerating || hasGeneratingTask || (productImages.length === 0 && uploadedProductUrls.length === 0)) return;
-    if (schemesRef.current.length > 0) {
-      onPrepareFreshProject?.();
-    }
-    
+    const shouldPrepareFreshProject = !activeProjectId || schemesRef.current.length > 0;
+    if (shouldPrepareFreshProject) onPrepareFreshProject?.();
     isSubmittingAnalysisRef.current = true;
     setIsAnalyzing(true);
     void logActionStart({
@@ -334,12 +340,11 @@ const FirstImageSubModule: React.FC<Props> = ({
       },
     });
     addToast("正在进行首图裂变策划...", 'info');
-    
+
     try {
-      onUpdate({ schemes: [] }); 
       globalAbortRef.current = new AbortController();
       analysisJobIdRef.current = '';
-      
+
       const productUrls = await getOrUploadProductUrls();
       const referenceUrls = designReferences.length > 0 || uploadedDesignReferenceUrls.length > 0
         ? await getOrUploadReferenceUrls()
@@ -360,7 +365,7 @@ const FirstImageSubModule: React.FC<Props> = ({
         globalAbortRef.current.signal,
         logoUrl,
       );
-      
+
       if (res.status === 'success' && res.perReferenceResults?.length) {
         const initialSchemes: MainImageScheme[] = res.perReferenceResults.map((item, idx) => {
           if (item.status === 'error') {
@@ -374,6 +379,7 @@ const FirstImageSubModule: React.FC<Props> = ({
               extractedRatio: config.aspectRatio || '1:1',
               status: 'error',
               error: item.message || '当前参考图策划失败',
+              planningFailed: true,
               selected: false,
             };
           }
@@ -401,7 +407,7 @@ const FirstImageSubModule: React.FC<Props> = ({
         } else {
           addToast("首图裂变策划已生成，请检查每张参考图对应的方案后启动渲染。", 'success');
         }
-      } else { 
+      } else {
         void logActionFailure({
           module: 'one_click',
           action: 'plan_first_image_start',
@@ -411,7 +417,7 @@ const FirstImageSubModule: React.FC<Props> = ({
         });
         addToast(`首图裂变策划没有完成，当前素材输入已保留。请检查主图参考和商品图后重试。${res.message ? ` 原因：${res.message}` : ''}`, 'error');
       }
-    } catch (e: any) { 
+    } catch (e: any) {
       if (e.name === 'AbortError' || e.message === 'ABORTED') {
         void logActionInterrupted({
           module: 'one_click',
@@ -434,8 +440,8 @@ const FirstImageSubModule: React.FC<Props> = ({
       } else {
         addToast(`系统分析异常，当前素材输入已保留。请稍后重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
       }
-    } finally { 
-      setIsAnalyzing(false); 
+    } finally {
+      setIsAnalyzing(false);
       isSubmittingAnalysisRef.current = false;
       analysisJobIdRef.current = '';
     }
@@ -483,7 +489,7 @@ const FirstImageSubModule: React.FC<Props> = ({
     Object.values(taskControllersRef.current).forEach((controller: AbortController) => controller.abort());
     taskControllersRef.current = {};
     globalAbortRef.current?.abort();
-    
+
     onUpdate(prev => ({
       ...prev,
       schemes: [],
@@ -530,7 +536,7 @@ const FirstImageSubModule: React.FC<Props> = ({
     if (taskControllersRef.current[schemeId]) { taskControllersRef.current[schemeId].abort(); }
     const controller = new AbortController();
     taskControllersRef.current[schemeId] = controller;
-    
+
     // 生成中状态再次确认（清除上传提示）
     updateSingleScheme(
       schemeId,
@@ -538,7 +544,7 @@ const FirstImageSubModule: React.FC<Props> = ({
         ? { status: 'generating', error: undefined }
         : { status: 'generating', error: undefined, taskId: undefined, resultUrl: undefined }
     );
-    
+
     try {
       let res: KieAiResult;
       const targetScheme = schemesRef.current.find(s => s.id === schemeId);
@@ -558,8 +564,8 @@ const FirstImageSubModule: React.FC<Props> = ({
       if (mode === 'recover' && targetScheme.taskId) {
         updateSingleScheme(schemeId, { error: '正在重连云端任务...' });
         res = await recoverKieAiTask(targetScheme.taskId, apiConfig, controller.signal);
-      } else { 
-        res = await triggerNewKieTask(targetScheme, productUrls, controller.signal); 
+      } else {
+        res = await triggerNewKieTask(targetScheme, productUrls, controller.signal);
       }
 
       // 关键修正：只要拿到 taskId，立即存入持久化状态，防止刷新丢失
@@ -586,7 +592,7 @@ const FirstImageSubModule: React.FC<Props> = ({
 
         const finalBlob = await resizeImage(blob, targetW, targetH, config.maxFileSize);
         const resultUrl = await persistGeneratedAsset(finalBlob, 'one_click', `${targetScheme.uiTitle || schemeId}.png`);
-        
+
         updateSingleScheme(schemeId, { status: 'completed', resultUrl, taskId: res.taskId });
         void logActionSuccess({
           module: 'one_click',
@@ -601,14 +607,14 @@ const FirstImageSubModule: React.FC<Props> = ({
         });
       } else if (res.status === 'task_not_found') {
         throw new Error("任务已过期或不存在，请重新生成");
-      } else { 
-        throw new Error(res.message || '渲染失败'); 
+      } else {
+        throw new Error(res.message || '渲染失败');
       }
     } catch (err: any) {
       const isManual = err.name === 'AbortError' || err.message === 'INTERRUPTED';
-      updateSingleScheme(schemeId, { 
-        status: isManual ? 'interrupted' : 'error', 
-        error: isManual ? '已手动中断' : err.message 
+      updateSingleScheme(schemeId, {
+        status: isManual ? 'interrupted' : 'error',
+        error: isManual ? '已手动中断' : err.message
       });
       const targetScheme = schemesRef.current.find(s => s.id === schemeId);
       if (isManual) {
@@ -638,8 +644,8 @@ const FirstImageSubModule: React.FC<Props> = ({
           },
         });
       }
-    } finally { 
-      delete taskControllersRef.current[schemeId]; 
+    } finally {
+      delete taskControllersRef.current[schemeId];
       inflightIdsRef.current.delete(schemeId);
     }
   };
@@ -648,7 +654,7 @@ const FirstImageSubModule: React.FC<Props> = ({
     // 【核心变更】：一键首图模式下，强制使用全局配置的比例，忽略文本中的比例提取。
     // 确保生图比例绝对服从用户设定，而非 AI 幻觉。
     const strictRatio = config.aspectRatio || AspectRatio.SQUARE;
-    
+
     const cleanPrompt = normalizeCopyLayoutText(scheme.editedContent)
       .split('\n')
       .filter(line => !line.trim().match(/^(?:[-#*>\s]*)画面比例/))
@@ -666,19 +672,20 @@ const FirstImageSubModule: React.FC<Props> = ({
     const finalPrompt = buildOneClickImagePrompt({
       schemeContent: cleanPrompt,
       language: config.language,
+      platform: config.platform,
       logoUrl,
       replicationReferenceUrl: scheme.sourceReferenceUrl,
       previousResultUrl: scheme.sourceResultUrl,
       variationInstruction: scheme.variationInstruction,
-      includeCopyGuardrails: false,
+      publicBaseUrl,
     });
 
     return await processWithKieAi(
-      inputImages, 
-      apiConfig, 
-      { ...config, aspectRatio: strictRatio as any, maxFileSize: config.maxFileSize || 2.0 }, 
-      false, 
-      signal, 
+      inputImages,
+      apiConfig,
+      { ...config, aspectRatio: strictRatio as any, maxFileSize: config.maxFileSize || 2.0 },
+      false,
+      signal,
       finalPrompt
     );
   };
@@ -687,7 +694,7 @@ const FirstImageSubModule: React.FC<Props> = ({
     if (isSubmittingGenerationRef.current || isGenerating || isAnalyzing) return;
     const selectedSchemes = schemesRef.current.filter(s => s.selected && s.status !== 'generating' && !inflightIdsRef.current.has(s.id));
     if (selectedSchemes.length === 0) return;
-    
+
     if (productImages.length === 0 && uploadedProductUrls.length === 0) {
         addToast('请先在左侧上传产品图片，再启动首图生成。', 'warning');
         return;
@@ -705,7 +712,7 @@ const FirstImageSubModule: React.FC<Props> = ({
       },
     });
     addToast("开始批量生成任务...", 'info');
-    
+
     const targetIds = selectedSchemes.map(s => s.id);
     onUpdate(prev => ({
       ...prev,
@@ -715,9 +722,9 @@ const FirstImageSubModule: React.FC<Props> = ({
     try {
       // 极速复用：直接从状态中获取已上传的链接，跳过重复上传
       const productUrls = await getOrUploadProductUrls();
-      
+
       selectedSchemes.forEach(s => inflightIdsRef.current.add(s.id));
-      
+
       await Promise.all(selectedSchemes.map(s => generateSingleImage(s.id, productUrls)));
       void logActionSuccess({
         module: 'one_click',
@@ -729,7 +736,7 @@ const FirstImageSubModule: React.FC<Props> = ({
         },
       });
       addToast("批量生成完成", 'success');
-    } catch (e: any) { 
+    } catch (e: any) {
       void logActionFailure({
         module: 'one_click',
         action: 'generate_first_image_batch',
@@ -746,9 +753,9 @@ const FirstImageSubModule: React.FC<Props> = ({
         schemes: prev.schemes.map(s => targetIds.includes(s.id) ? { ...s, status: 'error', error: '素材准备失败' } : s)
       }));
       addToast(`批量生成没有启动成功，已保留当前方案选择。请先检查素材状态，再重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
-    } finally { 
+    } finally {
       isSubmittingGenerationRef.current = false;
-      setIsGenerating(false); 
+      setIsGenerating(false);
     }
   };
 
@@ -763,9 +770,9 @@ const FirstImageSubModule: React.FC<Props> = ({
         schemeId,
       },
     });
-    
+
     updateSingleScheme(schemeId, { status: 'generating', error: '正在同步云端结果...' });
-    
+
     inflightIdsRef.current.add(schemeId);
     try {
       const productUrls = await getOrUploadProductUrls();
@@ -809,7 +816,7 @@ const FirstImageSubModule: React.FC<Props> = ({
         },
       });
       addToast("下载完成", 'success');
-    } catch (err) { 
+    } catch (err) {
       void logActionFailure({
         module: 'one_click',
         action: 'download_first_image_batch',
@@ -820,9 +827,9 @@ const FirstImageSubModule: React.FC<Props> = ({
           count: completedSchemes.length,
         },
       });
-      addToast('批量导出失败，当前结果仍然保留。请稍后重试，或检查浏览器下载权限。', 'error'); 
-    } finally { 
-      setIsDownloading(false); 
+      addToast('批量导出失败，当前结果仍然保留。请稍后重试，或检查浏览器下载权限。', 'error');
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -837,9 +844,9 @@ const FirstImageSubModule: React.FC<Props> = ({
         schemeId,
       },
     });
-    
+
     updateSingleScheme(schemeId, { status: 'generating', error: '正在准备素材...', taskId: undefined, resultUrl: undefined });
-    
+
     inflightIdsRef.current.add(schemeId);
     try {
       const productUrls = await getOrUploadProductUrls();
@@ -1009,9 +1016,9 @@ const FirstImageSubModule: React.FC<Props> = ({
       delete taskControllersRef.current[id];
     }
     inflightIdsRef.current.delete(id);
-    updateSingleScheme(id, { 
-      status: 'error', 
-      error: '已手动中断，可点击同步获取结果' 
+    updateSingleScheme(id, {
+      status: 'error',
+      error: '已手动中断，可点击同步获取结果'
     });
     void logActionInterrupted({
       module: 'one_click',
@@ -1032,24 +1039,24 @@ const FirstImageSubModule: React.FC<Props> = ({
 
   return (
     <div className="h-full w-full flex overflow-hidden bg-slate-50">
-      <ConfigSidebar 
+      <ConfigSidebar
         subMode={OneClickSubMode.FIRST_IMAGE}
         currentSubMode={currentSubMode}
         onSubModeChange={onSubModeChange}
-        config={config} 
-        onChange={(cfg) => onUpdate({ config: cfg })} 
-        productImages={productImages} 
-        setProductImages={(imgs) => onUpdate(prev => ({ 
-            ...prev, 
+        config={config}
+        onChange={(cfg) => onUpdate({ config: cfg })}
+        productImages={productImages}
+        setProductImages={(imgs) => onUpdate(prev => ({
+            ...prev,
             productImages: typeof imgs === 'function' ? imgs(prev.productImages) : imgs
-        }))} 
+        }))}
         logoImage={logoImage}
         setLogoImage={(img) => onUpdate({ logoImage: img })}
-        styleImage={styleImage} 
-        setStyleImage={(img) => onUpdate(prev => ({ 
-            ...prev, 
+        styleImage={styleImage}
+        setStyleImage={(img) => onUpdate(prev => ({
+            ...prev,
             styleImage: typeof img === 'function' ? img(prev.styleImage) : img
-        }))} 
+        }))}
         designReferences={designReferences}
         onDesignReferencesChange={(items) => onUpdate({ designReferences: items })}
         uploadedDesignReferenceUrls={uploadedDesignReferenceUrls}
@@ -1076,8 +1083,8 @@ const FirstImageSubModule: React.FC<Props> = ({
         apiConfig={apiConfig}
         onSyncConfig={onSyncConfig}
         onClearConfig={onClearConfig}
-        disabled={isAnalyzing || isGenerating || schemes.some(s => s.status === 'generating')} 
-        onStart={handleStartAnalysis} 
+        disabled={isAnalyzing || isGenerating || schemes.some(s => s.status === 'generating')}
+        onStart={handleStartAnalysis}
         referencePresets={referencePresets}
         onSaveReferencePreset={onSaveReferencePreset}
         onApplyReferencePreset={onApplyReferencePreset}
@@ -1099,7 +1106,7 @@ const FirstImageSubModule: React.FC<Props> = ({
           updatedAt: Date.now(),
         })}
       />
-      
+
       <main className="flex-1 overflow-y-auto p-8 relative scrollbar-hide">
         <div className="mx-auto mb-6 max-w-5xl rounded-[28px] border border-slate-200 bg-white px-6 py-5 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
           <div className="flex items-center justify-between gap-6">
@@ -1188,7 +1195,7 @@ const FirstImageSubModule: React.FC<Props> = ({
                           保存参考预设
                         </button>
                         {/* 收起/展开按钮 */}
-                        <button 
+                        <button
                           onClick={() => setIsCollapsed(!isCollapsed)}
                           className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white hover:shadow-sm text-slate-500 transition-all"
                           title={isCollapsed ? "展开项目" : "收起项目"}
@@ -1197,7 +1204,7 @@ const FirstImageSubModule: React.FC<Props> = ({
                         </button>
 
                         {/* 删除整个项目按钮 */}
-                        <button 
+                        <button
                           onClick={deleteProject}
                           className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white hover:shadow-sm text-rose-500 transition-all"
                           title="删除整个项目"
@@ -1219,9 +1226,9 @@ const FirstImageSubModule: React.FC<Props> = ({
                 </div>
             </div>
 
-            <motion.div 
+            <motion.div
               initial={false}
-              animate={{ 
+              animate={{
                 height: isCollapsed ? 0 : 'auto',
                 opacity: isCollapsed ? 0 : 1,
                 scale: isCollapsed ? 0.98 : 1
@@ -1231,7 +1238,12 @@ const FirstImageSubModule: React.FC<Props> = ({
             >
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {schemes.map((scheme, idx) => {
-                  const isPlanningFailure = scheme.status === 'error' && !scheme.editedContent.trim() && !!scheme.sourceReferenceUrl;
+                  const isPlanningFailure = scheme.status === 'error' && !!scheme.sourceReferenceUrl && !scheme.taskId && !scheme.resultUrl && (
+                    scheme.planningFailed
+                    || (!scheme.editedContent.trim() && !scheme.originalContent.trim())
+                    || (scheme.uiTitle || '').includes('策划失败')
+                    || (scheme.error || '').includes('策划')
+                  );
                   return (
                 <div key={scheme.id} className={`bg-white rounded-2xl border transition-all overflow-hidden flex flex-col min-h-[500px] group/card ${scheme.selected ? 'border-rose-500 shadow-2xl' : 'border-slate-100 shadow-lg'}`}>
                   <div className="p-6 border-b border-slate-50 flex flex-col gap-3 relative">
@@ -1250,6 +1262,9 @@ const FirstImageSubModule: React.FC<Props> = ({
                             )}
                         </div>
                       </div>
+                      <span className={`rounded-full px-3 py-1 text-[10px] font-bold ${scheme.status === 'generating' ? 'bg-amber-50 text-amber-600' : scheme.resultUrl ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-500'}`}>
+                        {scheme.status === 'generating' ? '生成中' : scheme.resultUrl ? '已生成' : '待策划'}
+                      </span>
                       <div className="flex gap-4 mr-10">
                          <button
                             disabled={scheme.status === 'generating' || isAnalyzing}
@@ -1258,8 +1273,8 @@ const FirstImageSubModule: React.FC<Props> = ({
                          >
                              删除
                          </button>
-                         <button 
-                            disabled={scheme.status === 'generating' || isAnalyzing} 
+                         <button
+                            disabled={scheme.status === 'generating' || isAnalyzing}
                             onClick={() => {
                                 if (scheme.taskId) {
                                     handleRecoverSingle(scheme.id);
@@ -1283,7 +1298,7 @@ const FirstImageSubModule: React.FC<Props> = ({
                             onClick={() => isPlanningFailure ? handleRetryPlanning(scheme.id) : handleRedoSingle(scheme.id)}
                             className="text-xs font-medium text-rose-600 transition-colors hover:text-rose-800 disabled:opacity-30"
                          >
-                            {isPlanningFailure ? '重新策划' : (scheme.resultUrl ? '重新生成' : '生成该图')}
+                            {scheme.status === 'generating' ? '生成中...' : isPlanningFailure ? '重新策划' : (scheme.resultUrl ? '重新生成' : '生成该图')}
                          </button>
                       </div>
                     </div>
@@ -1299,8 +1314,8 @@ const FirstImageSubModule: React.FC<Props> = ({
                         <p className="text-sm font-semibold text-rose-600 animate-pulse">正在生成</p>
                         <p className="mt-2 text-xs text-slate-500 animate-pulse opacity-70">图像处理通常需要一些时间，请稍候。</p>
                         {scheme.error && <p className="mt-2 text-xs text-slate-400">{scheme.error}</p>}
-                        <button 
-                          onClick={() => handleInterruptSingle(scheme.id)} 
+                        <button
+                          onClick={() => handleInterruptSingle(scheme.id)}
                           className="mt-4 rounded-lg bg-slate-200 px-4 py-2 text-xs font-medium text-slate-600 transition-all hover:bg-slate-300"
                         >
                           中断并稍后同步
@@ -1315,10 +1330,10 @@ const FirstImageSubModule: React.FC<Props> = ({
                               <span className="text-[10px] font-bold">预览已失效，请重新生成</span>
                             </div>
                           ) : (
-                            <img 
-                              src={scheme.resultUrl} 
-                              className="w-full h-full object-cover transition-all duration-500 group-hover/preview:scale-105 brightness-[1.02] contrast-[1.02]" 
-                              key={scheme.resultUrl} 
+                            <img
+                              src={scheme.resultUrl}
+                              className="w-full h-full object-cover transition-all duration-500 group-hover/preview:scale-105 brightness-[1.02] contrast-[1.02]"
+                              key={scheme.resultUrl}
                               onError={() => {
                                 if (scheme.resultUrl?.startsWith('blob:')) {
                                   setImageErrors(prev => ({ ...prev, [scheme.id]: true }));
@@ -1375,10 +1390,10 @@ const FirstImageSubModule: React.FC<Props> = ({
                          {scheme.error && scheme.error.includes('超时') ? (
                             <div className="flex flex-col gap-2">
                                 <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRecoverSingle(scheme.id)} className="rounded-xl bg-indigo-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-indigo-700">稍后获取结果</button>
-                                <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => isPlanningFailure ? handleRetryPlanning(scheme.id) : handleRedoSingle(scheme.id)} className="rounded-xl bg-rose-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700">{isPlanningFailure ? '重新策划' : '重新生成'}</button>
+                                <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => isPlanningFailure ? handleRetryPlanning(scheme.id) : handleRedoSingle(scheme.id)} className="rounded-xl bg-rose-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700">{scheme.status === 'generating' ? '生成中...' : isPlanningFailure ? '重新策划' : '重新生成'}</button>
                             </div>
                          ) : (
-                            <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => isPlanningFailure ? handleRetryPlanning(scheme.id) : handleRedoSingle(scheme.id)} className="rounded-xl bg-rose-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700">{isPlanningFailure ? '重新策划' : '重新生成'}</button>
+                            <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => isPlanningFailure ? handleRetryPlanning(scheme.id) : handleRedoSingle(scheme.id)} className="rounded-xl bg-rose-600 px-6 py-2 text-sm font-medium text-white transition-all hover:bg-rose-700">{scheme.status === 'generating' ? '生成中...' : isPlanningFailure ? '重新策划' : '重新生成'}</button>
                          )}
                       </div>
                     ) : (
@@ -1422,14 +1437,14 @@ const FirstImageSubModule: React.FC<Props> = ({
           <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/95 backdrop-blur-md p-8 animate-in fade-in duration-300" onClick={() => setPreviewId(null)}>
             <div className="relative w-full h-full flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
               <button onClick={() => setPreviewId(null)} className="absolute top-4 right-4 text-white text-3xl hover:text-rose-50 z-10 transition-colors"><i className="fas fa-times"></i></button>
-              
+
               <button onClick={prevPreview} disabled={currentPreviewIndex === 0} className={`absolute left-4 w-14 h-14 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20 transition-all ${currentPreviewIndex === 0 ? 'opacity-20 cursor-not-allowed' : 'opacity-100'}`}><i className="fas fa-chevron-left text-xl"></i></button>
-              
-              <img 
-                src={completedResults[currentPreviewIndex]?.resultUrl} 
-                className="max-w-[85vw] max-h-[85vh] rounded-2xl shadow-2xl border-4 border-white/10 object-contain animate-in zoom-in duration-300" 
+
+              <img
+                src={completedResults[currentPreviewIndex]?.resultUrl}
+                className="max-w-[85vw] max-h-[85vh] rounded-2xl shadow-2xl border-4 border-white/10 object-contain animate-in zoom-in duration-300"
               />
-              
+
               <button onClick={nextPreview} disabled={currentPreviewIndex === completedResults.length - 1} className={`absolute right-4 w-14 h-14 rounded-full bg-white/10 text-white flex items-center justify-center hover:bg-white/20 transition-all ${currentPreviewIndex === completedResults.length - 1 ? 'opacity-20 cursor-not-allowed' : 'opacity-100'}`}><i className="fas fa-chevron-right text-xl"></i></button>
 
               <div className="absolute bottom-8 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-black/40 px-6 py-2 text-xs font-medium text-white backdrop-blur-md">

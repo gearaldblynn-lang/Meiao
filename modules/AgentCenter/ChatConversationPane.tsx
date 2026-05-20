@@ -65,6 +65,12 @@ const parseHandoffBlock = (content: string): HandoffBlock | null => {
 const stripHandoffBlock = (content: string): string =>
   content.replace(/```meiao-handoff[\s\S]*?```/g, '').trim();
 
+const stripConversationProtocolMarkers = (content: string): string =>
+  content
+    .replace(/(^|\n)\s*final_answer\s*(?=\n|$)/gi, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
 type GalleryImage = {
   id: string;
   url: string;
@@ -550,7 +556,7 @@ const ChatConversationPane: React.FC<Props> = ({
                         </div>
                       ) : (() => {
                           const handoff = !message.metadata?.pending ? parseHandoffBlock(message.content) : null;
-                          const displayContent = handoff ? stripHandoffBlock(message.content) : message.content;
+                          const displayContent = stripConversationProtocolMarkers(handoff ? stripHandoffBlock(message.content) : message.content);
                           return (
                             <>
                               <p className="select-text whitespace-pre-wrap break-words">{displayContent}</p>

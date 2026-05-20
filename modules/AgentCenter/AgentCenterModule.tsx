@@ -17,6 +17,7 @@ import AgentCenterManager from './AgentCenterManager';
 import AgentCenterChatWorkspace from './AgentCenterChatWorkspace';
 import { ComposerAttachment } from './ChatComposer';
 import { resolveActiveAgentId } from './agentCenterUtils.mjs';
+import { filterChatModelsByAllowlist } from './chatModelAllowlist';
 import { resolveSessionReasoningLevel } from './chatReasoningDefaults.mjs';
 import { MAX_FILES_PER_BATCH } from './folderZipUpload';
 
@@ -28,6 +29,13 @@ interface Props {
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const AGENT_CENTER_UI_STATE_KEY = 'MEIAO_AGENT_CENTER_UI_STATE';
+const isUncertainSendFailure = (error: any) =>
+  !(
+    error?.name === 'AbortError'
+    || error?.message === 'INTERRUPTED'
+    || String(error?.message || '').includes('aborted')
+  )
+  && ['timeout', 'network_error', 'server_error'].includes(error?.code);
 
 const readAgentCenterUiState = () => {
   try {
@@ -89,10 +97,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
       });
   }, [chatAgents, sessions]);
   const availableChatModels = useMemo(() => {
-    const allowed = new Set((selectedAgent?.allowedChatModels || []).filter(Boolean));
-    if (allowed.size === 0) return chatModels;
-    const filtered = chatModels.filter((item) => allowed.has(item.id));
-    return filtered.length > 0 ? filtered : chatModels;
+    return filterChatModelsByAllowlist(chatModels, selectedAgent?.allowedChatModels || []);
   }, [chatModels, selectedAgent?.allowedChatModels]);
 
   const resolveReasoningLevelForModel = (modelId: string, requestedReasoningLevel: string | null = null) => {
@@ -444,8 +449,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         await loadChat(selectedAgentId, selectedSessionId);
       } catch (error: any) {
         const pendingRestore = pendingRestoreRef.current;
-        const shouldSyncCompletedResult = requestMode === 'image_generation'
-          && (error?.code === 'timeout' || error?.code === 'network_error');
+        const shouldSyncCompletedResult = isUncertainSendFailure(error);
         if (shouldSyncCompletedResult) {
           setStatusMessage('后台仍在处理中，正在同步最新结果');
           setMessages((prev) => prev.map((item) => (

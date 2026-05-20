@@ -1,11 +1,12 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Download, Maximize2, RotateCcw, Trash2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { GlobalApiConfig, AspectRatio, OneClickConfig, MainImageScheme, OneClickSubMode, OneClickPersistentState, KieAiResult, OneClickReferencePreset, OneClickReferencePresetLibrary } from '../../types';
 import ConfigSidebar from './ConfigSidebar';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
+import { resolvePublicAssetUrl } from '../../utils/modelAssetUrl.mjs';
 import { analyzeOneClickReferenceSet, generateMarketingSchemes } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
 import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
@@ -65,6 +66,7 @@ const DetailPageSubModule: React.FC<Props> = ({
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [imageErrors, setImageErrors] = useState<Record<string, boolean>>({});
   const { addToast } = useToast();
+  const publicBaseUrl = apiConfig.publicBaseUrl || '';
 
   const inflightIdsRef = useRef<Set<string>>(new Set());
   const isSubmittingAnalysisRef = useRef(false);
@@ -140,7 +142,7 @@ const DetailPageSubModule: React.FC<Props> = ({
     });
   }, [schemes]);
 
-  const toggleSelectAll = () => { 
+  const toggleSelectAll = () => {
     if (isAnalyzing) return;
     void logActionSuccess({
       module: 'one_click',
@@ -151,10 +153,10 @@ const DetailPageSubModule: React.FC<Props> = ({
         count: schemes.length,
       },
     });
-    onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => ({ ...s, selected: !isAllSelected })) })); 
+    onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => ({ ...s, selected: !isAllSelected })) }));
   };
-  
-  const toggleSelectScheme = (id: string) => { 
+
+  const toggleSelectScheme = (id: string) => {
     if (isAnalyzing) return;
     const scheme = schemesRef.current.find((item) => item.id === id);
     void logActionSuccess({
@@ -167,46 +169,52 @@ const DetailPageSubModule: React.FC<Props> = ({
         title: scheme?.uiTitle,
       },
     });
-    onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === id ? { ...s, selected: !s.selected } : s) })); 
+    onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === id ? { ...s, selected: !s.selected } : s) }));
   };
 
   const getOrUploadProductUrls = async () => {
+    const normalize = (value: string) => resolvePublicAssetUrl(value, publicBaseUrl) || '';
     // 智能复用：如果本地图片为空但已有上传记录，说明是刷新后恢复的状态
     if (productImages.length === 0 && uploadedProductUrls.length > 0) {
-      return uploadedProductUrls;
+      return uploadedProductUrls.map((url) => normalize(url)).filter(Boolean);
     }
     // 如果缓存中存在链接且数量与当前图片一致，直接使用
     if (uploadedProductUrls && uploadedProductUrls.length === productImages.length && productImages.length > 0) {
-      return uploadedProductUrls;
+      return uploadedProductUrls.map((url) => normalize(url)).filter(Boolean);
     }
     const urls = await Promise.all(productImages.map(img => uploadToCos(img, apiConfig)));
-    onUpdate({ uploadedProductUrls: urls });
-    return urls;
+    const normalizedUrls = urls.map((url) => normalize(url)).filter(Boolean);
+    onUpdate({ uploadedProductUrls: normalizedUrls });
+    return normalizedUrls;
   };
 
   const getOrUploadLogoUrl = async () => {
-    if (!logoImage && uploadedLogoUrl) return uploadedLogoUrl;
+    const normalize = (value: string) => resolvePublicAssetUrl(value, publicBaseUrl) || '';
+    if (!logoImage && uploadedLogoUrl) return normalize(uploadedLogoUrl) || null;
     if (!logoImage) return null;
-    if (uploadedLogoUrl) return uploadedLogoUrl;
+    if (uploadedLogoUrl) return normalize(uploadedLogoUrl) || null;
     const url = await uploadToCos(logoImage, apiConfig);
-    onUpdate({ uploadedLogoUrl: url });
-    return url;
+    const normalizedUrl = normalize(url);
+    onUpdate({ uploadedLogoUrl: normalizedUrl || null });
+    return normalizedUrl || null;
   };
 
   const getOrUploadReferenceUrls = async () => {
+    const normalize = (value: string) => resolvePublicAssetUrl(value, publicBaseUrl) || '';
     if (designReferences.length === 0 && uploadedDesignReferenceUrls.length > 0) {
-      return uploadedDesignReferenceUrls;
+      return uploadedDesignReferenceUrls.map((url) => normalize(url)).filter(Boolean);
     }
     if (uploadedDesignReferenceUrls.length === designReferences.length && designReferences.length > 0 && uploadedDesignReferenceUrls.every(Boolean)) {
-      return uploadedDesignReferenceUrls;
+      return uploadedDesignReferenceUrls.map((url) => normalize(url)).filter(Boolean);
     }
     const nextItems = [...designReferences];
     const urls = await Promise.all(nextItems.map(async (item, index) => {
-      if (item.uploadedUrl) return item.uploadedUrl;
-      if (!item.file) return uploadedDesignReferenceUrls[index] || '';
+      if (item.uploadedUrl) return normalize(item.uploadedUrl);
+      if (!item.file) return normalize(uploadedDesignReferenceUrls[index] || '');
       const url = await uploadToCos(item.file, apiConfig);
-      nextItems[index] = { ...nextItems[index], uploadedUrl: url };
-      return url;
+      const normalizedUrl = normalize(url);
+      nextItems[index] = { ...nextItems[index], uploadedUrl: normalizedUrl || undefined };
+      return normalizedUrl;
     }));
     const normalizedUrls = urls.filter(Boolean);
     onUpdate({
@@ -264,10 +272,8 @@ const DetailPageSubModule: React.FC<Props> = ({
     const hasGeneratingTask = schemesRef.current.some(s => s.status === 'generating');
     // 允许在只有上传 URL 的情况下启动分析（支持刷新后直接点击）
     if (isSubmittingAnalysisRef.current || isAnalyzing || isGenerating || hasGeneratingTask || (productImages.length === 0 && uploadedProductUrls.length === 0)) return;
-    if (schemesRef.current.length > 0) {
-      onPrepareFreshProject?.();
-    }
-    
+    const shouldPrepareFreshProject = !activeProjectId || schemesRef.current.length > 0;
+    if (shouldPrepareFreshProject) onPrepareFreshProject?.();
     isSubmittingAnalysisRef.current = true;
     setIsAnalyzing(true);
     void logActionStart({
@@ -280,13 +286,12 @@ const DetailPageSubModule: React.FC<Props> = ({
         hasStyleImage: Boolean(designReferences.length || styleImage || lastStyleUrl),
       },
     });
-    
+
     try {
-      onUpdate({ schemes: [] }); 
       globalAbortRef.current = new AbortController();
-      
+
       const productUrls = await getOrUploadProductUrls();
-      
+
       let referenceSummary = referenceAnalysis.summary;
       if (!referenceSummary && designReferences.length > 0 && referenceDimensions.length > 0) {
         const referenceUrls = await getOrUploadReferenceUrls();
@@ -311,7 +316,7 @@ const DetailPageSubModule: React.FC<Props> = ({
 
       const logoUrl = await getOrUploadLogoUrl();
       const res = await generateMarketingSchemes(productUrls, null, config, apiConfig, OneClickSubMode.DETAIL_PAGE, null, globalAbortRef.current.signal, referenceSummary, logoUrl);
-      
+
       if (res.status === 'success') {
         const initialSchemes: MainImageScheme[] = res.schemes.map((text, idx) => {
           const ratioMatch = text.match(/(?:-|\s|^)画面比例[：:]\s*([0-9]+:[0-9]+)/);
@@ -319,7 +324,7 @@ const DetailPageSubModule: React.FC<Props> = ({
 
           let uiTitle = `第 ${idx + 1} 屏 - 策划方案`;
           const lines = text.split('\n');
-          
+
           const titleLine = lines.find(l => /^(?:[-#*>\s]*)(?:屏序\/类型|第\s*\d+\s*屏)/.test(l.trim()));
           if (titleLine) {
              uiTitle = titleLine.trim().replace(/^(?:[-#*>\s]*)(?:屏序\/类型[：:]?)?/, '').trim();
@@ -331,17 +336,17 @@ const DetailPageSubModule: React.FC<Props> = ({
              if (/^(?:[-#*>\s]*)画面比例/.test(l)) return false;
              return true;
           });
-          
+
           const cleanedText = normalizeCopyLayoutText(cleanedLines.join('\n').trim());
 
-          return { 
-            id: Math.random().toString(36).substr(2, 9), 
-            uiTitle: uiTitle, 
-            originalContent: text, 
-            editedContent: cleanedText, 
+          return {
+            id: Math.random().toString(36).substr(2, 9),
+            uiTitle: uiTitle,
+            originalContent: text,
+            editedContent: cleanedText,
             extractedRatio: ratio,
-            status: 'pending', 
-            selected: true 
+            status: 'pending',
+            selected: true
           };
         });
         onUpdate({ schemes: initialSchemes });
@@ -354,7 +359,7 @@ const DetailPageSubModule: React.FC<Props> = ({
             count: initialSchemes.length,
           },
         });
-      } else { 
+      } else {
         void logActionFailure({
           module: 'one_click',
           action: 'plan_detail_start',
@@ -364,7 +369,7 @@ const DetailPageSubModule: React.FC<Props> = ({
         });
         addToast(`视觉全案策划没有完成，已保留当前输入。请检查参考图或稍后重试。${res.message ? ` 原因：${res.message}` : ''}`, 'error');
       }
-    } catch (e: any) { 
+    } catch (e: any) {
       if (e.name === 'AbortError' || e.message === 'ABORTED') {
         void logActionInterrupted({
           module: 'one_click',
@@ -387,8 +392,8 @@ const DetailPageSubModule: React.FC<Props> = ({
       } else {
         addToast(`系统分析异常，当前输入内容已保留。请稍后重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
       }
-    } finally { 
-      setIsAnalyzing(false); 
+    } finally {
+      setIsAnalyzing(false);
       isSubmittingAnalysisRef.current = false;
     }
   };
@@ -413,7 +418,7 @@ const DetailPageSubModule: React.FC<Props> = ({
     // 中断所有正在进行的任务
     Object.values(screenControllersRef.current).forEach((controller: AbortController) => controller.abort());
     screenControllersRef.current = {};
-    
+
     onUpdate(prev => ({
       ...prev,
       schemes: [],
@@ -467,14 +472,14 @@ const DetailPageSubModule: React.FC<Props> = ({
         schemeId: id,
       },
     });
-    
+
     // 立即反馈
     updateSingleScreen(id, { status: 'generating', error: '正在准备素材...', taskId: undefined, resultUrl: undefined });
-    
+
     inflightIdsRef.current.add(id);
     try {
       const urls = await getOrUploadProductUrls();
-      await generateSingleScreen(id, urls, 'full'); 
+      await generateSingleScreen(id, urls, 'full');
     } catch (e: any) {
       inflightIdsRef.current.delete(id);
       updateSingleScreen(id, { status: 'error', error: '启动失败' });
@@ -493,10 +498,10 @@ const DetailPageSubModule: React.FC<Props> = ({
         schemeId: id,
       },
     });
-    
+
     // 立即反馈
     updateSingleScreen(id, { status: 'generating', error: '正在同步云端结果...' });
-    
+
     inflightIdsRef.current.add(id);
     try {
       const urls = await getOrUploadProductUrls();
@@ -513,9 +518,9 @@ const DetailPageSubModule: React.FC<Props> = ({
       delete screenControllersRef.current[id];
     }
     inflightIdsRef.current.delete(id);
-    updateSingleScreen(id, { 
-      status: 'error', 
-      error: '已手动中断，可点击同步获取结果' 
+    updateSingleScreen(id, {
+      status: 'error',
+      error: '已手动中断，可点击同步获取结果'
     });
     void logActionInterrupted({
       module: 'one_click',
@@ -532,14 +537,14 @@ const DetailPageSubModule: React.FC<Props> = ({
     if (screenControllersRef.current[schemeId]) { screenControllersRef.current[schemeId].abort(); }
     const controller = new AbortController();
     screenControllersRef.current[schemeId] = controller;
-    
+
     updateSingleScreen(
       schemeId,
       mode === 'recover'
         ? { status: 'generating', error: undefined }
         : { status: 'generating', error: undefined, taskId: undefined, resultUrl: undefined }
     );
-    
+
     try {
       let res: KieAiResult;
       const targetScheme = schemesRef.current.find(s => s.id === schemeId);
@@ -559,8 +564,8 @@ const DetailPageSubModule: React.FC<Props> = ({
       if (mode === 'recover' && targetScheme.taskId) {
         updateSingleScreen(schemeId, { error: '正在同步云端任务状态...' });
         res = await recoverKieAiTask(targetScheme.taskId, apiConfig, controller.signal);
-      } else { 
-        res = await triggerNewKieTask(targetScheme, productUrls, controller.signal); 
+      } else {
+        res = await triggerNewKieTask(targetScheme, productUrls, controller.signal);
       }
 
       // 关键修正：只要拿到 taskId，立即存入持久化状态，防止刷新丢失
@@ -587,7 +592,7 @@ const DetailPageSubModule: React.FC<Props> = ({
 
         const finalBlob = await resizeImage(blob, targetW, targetH, config.maxFileSize);
         const finalUrl = await persistGeneratedAsset(finalBlob, 'one_click', `${targetScheme.uiTitle || schemeId}.png`);
-        
+
         updateSingleScreen(schemeId, { status: 'completed', resultUrl: finalUrl, taskId: res.taskId });
         void logActionSuccess({
           module: 'one_click',
@@ -603,14 +608,14 @@ const DetailPageSubModule: React.FC<Props> = ({
         });
       } else if (res.status === 'task_not_found') {
         throw new Error("任务已过期或不存在，请重新生成");
-      } else { 
-        throw new Error(res.message || '引擎返回异常，渲染失败'); 
+      } else {
+        throw new Error(res.message || '引擎返回异常，渲染失败');
       }
     } catch (err: any) {
       const isManual = err.name === 'AbortError' || err.message === 'INTERRUPTED';
-      updateSingleScreen(schemeId, { 
-        status: isManual ? 'interrupted' : 'error', 
-        error: isManual ? '渲染已中断' : err.message 
+      updateSingleScreen(schemeId, {
+        status: isManual ? 'interrupted' : 'error',
+        error: isManual ? '渲染已中断' : err.message
       });
       const targetScheme = schemesRef.current.find(s => s.id === schemeId);
       if (isManual) {
@@ -640,8 +645,8 @@ const DetailPageSubModule: React.FC<Props> = ({
           },
         });
       }
-    } finally { 
-      delete screenControllersRef.current[schemeId]; 
+    } finally {
+      delete screenControllersRef.current[schemeId];
       inflightIdsRef.current.delete(schemeId);
     }
   };
@@ -649,7 +654,7 @@ const DetailPageSubModule: React.FC<Props> = ({
   const triggerNewKieTask = async (scheme: MainImageScheme, productUrls: string[], signal: AbortSignal) => {
     const ratioInText = scheme.editedContent.match(/(?:-|\s|^)画面比例[：:]\s*([0-9]+:[0-9]+)/);
     const finalRatio = ratioInText ? ratioInText[1] : (scheme.extractedRatio || '3:4');
-    
+
     const cleanPrompt = normalizeCopyLayoutText(scheme.editedContent)
       .split('\n')
       .filter(line => {
@@ -667,14 +672,15 @@ const DetailPageSubModule: React.FC<Props> = ({
       schemeContent: cleanPrompt,
       language: config.language,
       logoUrl,
+      publicBaseUrl,
     });
 
     return await processWithKieAi(
-      inputImages, 
-      apiConfig, 
-      { ...config, aspectRatio: finalRatio as any, targetHeight: 0, maxFileSize: config.maxFileSize || 2.0 }, 
-      false, 
-      signal, 
+      inputImages,
+      apiConfig,
+      { ...config, aspectRatio: finalRatio as any, targetHeight: 0, maxFileSize: config.maxFileSize || 2.0 },
+      false,
+      signal,
       finalPrompt
     );
   };
@@ -700,7 +706,7 @@ const DetailPageSubModule: React.FC<Props> = ({
         count: selectedSchemes.length,
       },
     });
-    
+
     const targetIds = selectedSchemes.map(s => s.id);
     onUpdate(prev => ({
       ...prev,
@@ -710,7 +716,7 @@ const DetailPageSubModule: React.FC<Props> = ({
     try {
       // 极速复用：直接从状态中获取已上传的链接，跳过重复上传
       const productUrls = await getOrUploadProductUrls();
-      
+
       selectedSchemes.forEach(s => inflightIdsRef.current.add(s.id));
 
       await Promise.all(selectedSchemes.map(s => generateSingleScreen(s.id, productUrls)));
@@ -723,7 +729,7 @@ const DetailPageSubModule: React.FC<Props> = ({
           count: selectedSchemes.length,
         },
       });
-    } catch (e: any) { 
+    } catch (e: any) {
       void logActionFailure({
         module: 'one_click',
         action: 'generate_detail_batch',
@@ -734,15 +740,15 @@ const DetailPageSubModule: React.FC<Props> = ({
           count: selectedSchemes.length,
         },
       });
-      console.error(e); 
+      console.error(e);
       onUpdate(prev => ({
         ...prev,
         schemes: prev.schemes.map(s => targetIds.includes(s.id) ? { ...s, status: 'error', error: '素材上传失败' } : s)
       }));
       addToast(`批量生成没有启动成功，已保留当前方案选择。请先检查素材状态，再重试。${e.message ? ` 原因：${e.message}` : ''}`, 'error');
-    } finally { 
+    } finally {
       isSubmittingGenerationRef.current = false;
-      setIsGenerating(false); 
+      setIsGenerating(false);
     }
   };
 
@@ -776,7 +782,7 @@ const DetailPageSubModule: React.FC<Props> = ({
           count: completedSchemes.length,
         },
       });
-    } catch (err) { 
+    } catch (err) {
       void logActionFailure({
         module: 'one_click',
         action: 'download_detail_batch',
@@ -788,31 +794,31 @@ const DetailPageSubModule: React.FC<Props> = ({
         },
       });
       addToast('批量导出失败，当前结果仍然保留。请稍后重试，或检查浏览器下载权限。', 'error');
-    } finally { 
-      setIsDownloading(false); 
+    } finally {
+      setIsDownloading(false);
     }
   };
 
   return (
     <div className="flex-1 flex overflow-hidden bg-slate-50">
-      <ConfigSidebar 
-        subMode={OneClickSubMode.DETAIL_PAGE} 
+      <ConfigSidebar
+        subMode={OneClickSubMode.DETAIL_PAGE}
         currentSubMode={currentSubMode}
         onSubModeChange={onSubModeChange}
-        config={config} 
-        onChange={(cfg) => onUpdate({ config: cfg })} 
-        productImages={productImages} 
-        setProductImages={(imgs) => onUpdate(prev => ({ 
-            ...prev, 
+        config={config}
+        onChange={(cfg) => onUpdate({ config: cfg })}
+        productImages={productImages}
+        setProductImages={(imgs) => onUpdate(prev => ({
+            ...prev,
             productImages: typeof imgs === 'function' ? imgs(prev.productImages) : imgs
-        }))} 
+        }))}
         logoImage={logoImage}
         setLogoImage={(img) => onUpdate({ logoImage: img })}
-        styleImage={styleImage} 
-        setStyleImage={(img) => onUpdate(prev => ({ 
-            ...prev, 
+        styleImage={styleImage}
+        setStyleImage={(img) => onUpdate(prev => ({
+            ...prev,
             styleImage: typeof img === 'function' ? img(prev.styleImage) : img
-        }))} 
+        }))}
         designReferences={designReferences}
         onDesignReferencesChange={(items) => onUpdate({ designReferences: items })}
         uploadedDesignReferenceUrls={uploadedDesignReferenceUrls}
@@ -839,8 +845,8 @@ const DetailPageSubModule: React.FC<Props> = ({
         apiConfig={apiConfig}
         onSyncConfig={onSyncConfig}
         onClearConfig={onClearConfig}
-        disabled={isAnalyzing || isGenerating || schemes.some(s => s.status === 'generating')} 
-        onStart={handleStartAnalysis} 
+        disabled={isAnalyzing || isGenerating || schemes.some(s => s.status === 'generating')}
+        onStart={handleStartAnalysis}
         referencePresets={referencePresets}
         onSaveReferencePreset={onSaveReferencePreset}
         onApplyReferencePreset={onApplyReferencePreset}
@@ -862,7 +868,7 @@ const DetailPageSubModule: React.FC<Props> = ({
           updatedAt: Date.now(),
         })}
       />
-      
+
       <main className="flex-1 overflow-hidden relative flex flex-col">
         <div className="mx-8 mb-6 mt-8 shrink-0 rounded-[28px] border border-slate-200 bg-white px-6 py-5 shadow-[0_12px_32px_rgba(15,23,42,0.06)]">
           <div className="flex items-center justify-between gap-6">
@@ -944,7 +950,7 @@ const DetailPageSubModule: React.FC<Props> = ({
                 <div className="flex items-center gap-2">
                     <div className="flex items-center bg-slate-100 rounded-xl p-1 gap-1">
                         {/* 收起/展开按钮 */}
-                        <button 
+                        <button
                           onClick={() => setIsCollapsed(!isCollapsed)}
                           className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white hover:shadow-sm text-slate-500 transition-all"
                           title={isCollapsed ? "展开项目" : "收起项目"}
@@ -953,7 +959,7 @@ const DetailPageSubModule: React.FC<Props> = ({
                         </button>
 
                         {/* 删除整个项目按钮 */}
-                        <button 
+                        <button
                           onClick={deleteProject}
                           className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-white hover:shadow-sm text-rose-500 transition-all"
                           title="删除整个项目"
@@ -975,9 +981,9 @@ const DetailPageSubModule: React.FC<Props> = ({
                 </div>
             </div>
 
-            <motion.div 
+            <motion.div
               initial={false}
-              animate={{ 
+              animate={{
                 height: isCollapsed ? 0 : 'auto',
                 opacity: isCollapsed ? 0 : 1,
                 scale: isCollapsed ? 0.99 : 1
@@ -1009,15 +1015,15 @@ const DetailPageSubModule: React.FC<Props> = ({
                                         </div>
                                     </div>
                                     <div className="flex gap-4">
-                                        <button 
-                                          disabled={scheme.status === 'generating'} 
-                                          onClick={() => deleteScreen(scheme.id)} 
+                                        <button
+                                          disabled={scheme.status === 'generating'}
+                                          onClick={() => deleteScreen(scheme.id)}
                                           className="text-xs font-medium text-slate-400 transition-colors hover:text-red-600"
                                         >
                                           删除
                                         </button>
-                                        <button 
-                                          disabled={scheme.status === 'generating'} 
+                                        <button
+                                          disabled={scheme.status === 'generating'}
                                           onClick={() => {
                                             if (scheme.taskId) {
                                               // 如果已有任务 ID，点击还原方案执行“恢复结果”逻辑
@@ -1033,29 +1039,61 @@ const DetailPageSubModule: React.FC<Props> = ({
                                               });
                                               onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === scheme.id ? { ...s, editedContent: cleanedLines.join('\n').trim() } : s) }));
                                             }
-                                          }} 
+                                          }}
                                           className="text-xs font-medium text-slate-400 transition-colors hover:text-rose-600"
                                           title={scheme.taskId ? "根据任务 ID 重新获取云端结果" : "重置文案为初始状态"}
                                         >
                                           还原方案
                                         </button>
-                                        <button disabled={scheme.status === 'generating'} onClick={() => handleRedoScreen(scheme.id)} className="text-xs font-medium text-rose-600 transition-colors hover:text-rose-700">
-                                            {scheme.resultUrl ? '重新生成' : '生成该图'}
+                                        <button disabled={scheme.status === 'generating' || isAnalyzing} onClick={() => handleRedoScreen(scheme.id)} className="text-xs font-medium text-rose-600 transition-colors hover:text-rose-700 disabled:opacity-30">
+                                            {scheme.status === 'generating' ? '生成中...' : (scheme.resultUrl ? '重新生成' : '生成该图')}
                                         </button>
                                     </div>
                                 </div>
                                 <div className="flex-1 min-h-[400px] relative">
-                                    <textarea 
-                                        value={scheme.editedContent} 
+                                    <textarea
+                                        value={scheme.editedContent}
                                         onChange={(e) => {
                                           schemesRef.current = schemesRef.current.map(s => s.id === scheme.id ? { ...s, editedContent: e.target.value } : s);
                                           onUpdate(prev => ({ ...prev, schemes: prev.schemes.map(s => s.id === scheme.id ? { ...s, editedContent: e.target.value } : s) }));
-                                        }} 
+                                        }}
                                         disabled={scheme.status === 'generating'}
                                         className="absolute inset-0 w-full h-full bg-slate-50 border border-slate-100 rounded-2xl p-5 text-[11px] font-medium text-slate-600 resize-none outline-none focus:ring-1 focus:ring-rose-500 shadow-inner transition-all scrollbar-hide leading-relaxed"
                                         placeholder="AI 策划加载中..."
                                     />
                                 </div>
+                                {scheme.resultUrl ? (
+                                  <div className="flex items-center justify-between rounded-2xl border border-slate-100 bg-slate-50/80 px-3 py-2">
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.24em] text-slate-400">已生成</span>
+                                    <div className="flex items-center gap-1.5">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleRedoScreen(scheme.id)}
+                                        disabled={scheme.status === 'generating' || isAnalyzing}
+                                        className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition-all hover:bg-white hover:text-rose-600 disabled:opacity-30"
+                                        title="重新生成"
+                                      >
+                                        <RotateCcw size={14} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => { void downloadRemoteFile(scheme.resultUrl!, `detail_${idx + 1}.png`); }}
+                                        className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition-all hover:bg-white hover:text-slate-900"
+                                        title="下载结果"
+                                      >
+                                        <Download size={14} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setPreviewId(scheme.id)}
+                                        className="flex h-8 w-8 items-center justify-center rounded-full text-slate-500 transition-all hover:bg-white hover:text-slate-900"
+                                        title="查看大图"
+                                      >
+                                        <Maximize2 size={14} />
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : null}
                                 <div className="mt-4 flex items-center justify-between opacity-60">
                                     <span className="text-xs text-slate-400">
                                         <i className="fas fa-expand-arrows-alt mr-1"></i>
@@ -1072,8 +1110,8 @@ const DetailPageSubModule: React.FC<Props> = ({
                                         <p className="text-sm font-semibold text-rose-500 animate-pulse">正在生成第 {idx + 1} 张</p>
                                         <p className="mt-3 text-xs text-slate-500 animate-pulse opacity-70">图像处理需要一些时间，请稍候。</p>
                                         {scheme.error && <p className="text-[9px] text-slate-500 mt-2 font-medium">{scheme.error}</p>}
-                                        <button 
-                                          onClick={() => handleInterruptScreen(scheme.id)} 
+                                        <button
+                                          onClick={() => handleInterruptScreen(scheme.id)}
                                           className="mt-6 rounded-xl border border-white/5 bg-white/10 px-5 py-2 text-xs font-medium text-white/70 transition-all hover:bg-white/20 hover:text-white"
                                         >
                                           中断并稍后同步
@@ -1090,28 +1128,31 @@ const DetailPageSubModule: React.FC<Props> = ({
                                         <p className="text-[10px] text-slate-400 font-medium max-w-[280px] mb-6 leading-relaxed">
                                             {scheme.error || '可能是由于网络抖动或 API 配额不足，请重试。'}
                                         </p>
-                                        
+
                                         {scheme.error && scheme.error.includes('超时') ? (
                                           <div className="flex gap-3">
-                                            <button 
-                                                onClick={() => handleRecoverScreen(scheme.id)} 
-                                                className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:bg-indigo-700"
+                                            <button
+                                                onClick={() => handleRecoverScreen(scheme.id)}
+                                                disabled={scheme.status === 'generating' || isAnalyzing}
+                                                className="rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:bg-indigo-700 disabled:opacity-50"
                                             >
-                                                稍后获取结果
+                                                {scheme.status === 'generating' ? '生成中...' : '稍后获取结果'}
                                             </button>
-                                            <button 
-                                                onClick={() => handleRedoScreen(scheme.id)} 
-                                                className="rounded-xl bg-rose-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:bg-rose-700"
+                                            <button
+                                                onClick={() => handleRedoScreen(scheme.id)}
+                                                disabled={scheme.status === 'generating' || isAnalyzing}
+                                                className="rounded-xl bg-rose-600 px-5 py-2.5 text-sm font-medium text-white transition-all hover:bg-rose-700 disabled:opacity-50"
                                             >
-                                                重新生成
+                                                {scheme.status === 'generating' ? '生成中...' : '重新生成'}
                                             </button>
                                           </div>
                                         ) : (
-                                          <button 
-                                              onClick={() => handleRedoScreen(scheme.id)} 
-                                              className="rounded-xl bg-rose-600 px-8 py-2.5 text-sm font-medium text-white transition-all hover:bg-rose-700"
+                                          <button
+                                              onClick={() => handleRedoScreen(scheme.id)}
+                                              disabled={scheme.status === 'generating' || isAnalyzing}
+                                              className="rounded-xl bg-rose-600 px-8 py-2.5 text-sm font-medium text-white transition-all hover:bg-rose-700 disabled:opacity-50"
                                           >
-                                              重新生成
+                                              {scheme.status === 'generating' ? '生成中...' : '重新生成'}
                                           </button>
                                         )}
                                     </div>
@@ -1124,10 +1165,10 @@ const DetailPageSubModule: React.FC<Props> = ({
                                             <p className="text-[9px] mt-2 opacity-40">请点击下方按钮重新生成或找回</p>
                                           </div>
                                         ) : (
-                                          <img 
-                                            src={scheme.resultUrl} 
-                                            className="w-full block shadow-xl border border-white/10 brightness-[1.02] contrast-[1.02]" 
-                                            alt={`Detail Screen ${idx+1}`} 
+                                          <img
+                                            src={scheme.resultUrl}
+                                            className="w-full block shadow-xl border border-white/10 brightness-[1.02] contrast-[1.02]"
+                                            alt={`Detail Screen ${idx+1}`}
                                             key={scheme.resultUrl}
                                             onError={() => {
                                               if (scheme.resultUrl?.startsWith('blob:')) {
@@ -1180,9 +1221,9 @@ const DetailPageSubModule: React.FC<Props> = ({
           <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/98 backdrop-blur-xl p-8 animate-in fade-in duration-300" onClick={() => setPreviewId(null)}>
             <div className="relative max-w-6xl max-h-full flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
               <button onClick={() => setPreviewId(null)} className="absolute -top-16 right-0 text-white/40 text-4xl hover:text-rose-500 transition-colors"><i className="fas fa-times"></i></button>
-              <img 
-                src={schemes.find(s => s.id === previewId)?.resultUrl} 
-                className="max-h-[85vh] rounded-2xl shadow-2xl border-2 border-white/5 object-contain animate-in zoom-in duration-300" 
+              <img
+                src={schemes.find(s => s.id === previewId)?.resultUrl}
+                className="max-h-[85vh] rounded-2xl shadow-2xl border-2 border-white/5 object-contain animate-in zoom-in duration-300"
                 alt="Sequence Preview"
               />
             </div>

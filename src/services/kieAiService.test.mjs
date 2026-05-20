@@ -1,0 +1,114 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+
+import { getUserVisibleTaskId } from './kieTaskUtils.mjs';
+
+const kieAiSource = readFileSync(new URL('./kieAiService.ts', import.meta.url), 'utf8');
+
+test('getUserVisibleTaskId falls back to the internal job id when the provider task id is not available yet', () => {
+  assert.equal(
+    getUserVisibleTaskId({
+      id: 'internal-job-1',
+      providerTaskId: 'provider-task-1',
+    }),
+    'provider-task-1'
+  );
+
+  assert.equal(
+    getUserVisibleTaskId({
+      id: 'internal-job-2',
+      providerTaskId: '',
+    }),
+    'internal-job-2'
+  );
+});
+
+test('kieAiService keeps a recoverable task id when wait timeout happens before provider task id is written back', () => {
+  assert.match(kieAiSource, /const timeoutJob = await fetchInternalJob\(jobId\)\.catch\(\(\) => null\)/);
+  assert.match(kieAiSource, /taskId: getUserVisibleTaskId\(timeoutJob\?\.job\)/);
+});
+
+test('kieAiService can resume waiting on an internal job id before falling back to provider recovery', () => {
+  assert.match(
+    kieAiSource,
+    /const existingJob = await fetchInternalJob\(taskId\)\.catch\(\(\) => null\);[\s\S]*if \(existingJob\?\.job\) \{[\s\S]*waitForJobResult\(existingJob\.job\.id, signal, KIE_RECOVER_TIMEOUT, false, Boolean\(apiConfig\.kieApiKey\)\);[\s\S]*\} else \{[\s\S]*recoverKieProviderTask\(taskId, signal, isVideo, Boolean\(apiConfig\.kieApiKey\)\);[\s\S]*\}/,
+  );
+});
+
+test('kieAiService gives image generation a longer timeout budget for slow cloud runs', () => {
+  assert.match(kieAiSource, /'gpt-image-2': 10 \* 60_000/);
+  assert.match(kieAiSource, /const KIE_IMAGE_DEFAULT_TIMEOUT = 10 \* 60_000/);
+  assert.match(kieAiSource, /const KIE_RECOVER_TIMEOUT = 4 \* 60_000/);
+});
+
+test('kieAiService auto-recovers recoverable kie polling failures when provider task id is available', () => {
+  assert.match(
+    kieAiSource,
+    /const KIE_AUTO_RECOVER_ERROR_CODES = new Set\(\[[\s\S]*'provider_internal_error'[\s\S]*'provider_network_error'[\s\S]*'provider_timeout'[\s\S]*'service_restarted'[\s\S]*'job_timeout'[\s\S]*\]\)/,
+  );
+  assert.match(
+    kieAiSource,
+    /const shouldAutoRecoverKieJob = \(job: any\) => \{/,
+  );
+  assert.match(
+    kieAiSource,
+    /if \(allowAutoRecover && shouldAutoRecoverKieJob\(finalJob\)\) \{\s*return recoverKieProviderTask\(finalJob\.providerTaskId, signal, finalJob\.taskType === 'kie_video', kieClientConfigPresent\);/s,
+  );
+});
+
+test('kieAiService treats restart-reconciled provider tasks as recoverable instead of final failures', () => {
+  assert.match(
+    kieAiSource,
+    /if \(errorCode && KIE_AUTO_RECOVER_ERROR_CODES\.has\(String\(errorCode\)\)\) return true;/,
+  );
+  assert.match(kieAiSource, /'service_restarted'/);
+  assert.match(kieAiSource, /'job_timeout'/);
+});
+
+test('kieAiService only treats timeout-like failures as recoverable when provider task id exists', () => {
+  assert.match(
+    kieAiSource,
+    /export const isRecoverableKieTaskResult = \(taskId\?: string, errorMessage\?: string, errorCode\?: string\) => \{\s*if \(!String\(taskId \|\| ''\)\.trim\(\)\) return false;/s,
+  );
+});
+
+test('kieAiService explicitly excludes credit and request-limit failures from auto recovery', () => {
+  assert.match(
+    kieAiSource,
+    /const KIE_NON_RECOVERABLE_ERROR_CODES = new Set\(\[[\s\S]*'provider_credit_insufficient'[\s\S]*'provider_request_limit'[\s\S]*'provider_bad_request'[\s\S]*\]\)/,
+  );
+});
+
+test('kieAiService exposes a shared recharge prompt for KIE credit failures', () => {
+  assert.match(
+    kieAiSource,
+    /export const getUserFacingKieErrorMessage = \(result:[\s\S]*if \(errorCode === 'provider_credit_insufficient'\) \{\s*return '当前 KIE 账户余额不足，相关生图功能暂不可用，请充值后重试。';/s,
+  );
+});
+
+test('kieAiService appends the GPT Image 2 cleanup suffix only for GPT Image 2 image tasks', () => {
+  assert.match(
+    kieAiSource,
+    /const finalPrompt = customPrompt \|\| buildKieAiPrompt\(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode\);[\s\S]*const promptWithCleanupSuffix = moduleConfig\.model === 'gpt-image-2'/s,
+  );
+  assert.match(
+    kieAiSource,
+    /const GPT_IMAGE_2_CLEANUP_SUFFIX = '要求：画面干净通透，材质完整自然，纹理平滑统一。禁止高频纹理，颜色过渡要平滑柔和，禁止过度锐化、色斑、噪点、破碎图案、伪影和畸变。';/,
+  );
+  assert.match(
+    kieAiSource,
+    /const promptWithCleanupSuffix = moduleConfig\.model === 'gpt-image-2'[\s\S]*\?\s*`\$\{finalPrompt\}\\n\\n\$\{GPT_IMAGE_2_CLEANUP_SUFFIX\}`[\s\S]*:\s*finalPrompt;/s,
+  );
+});
+
+test('kieAiService translation prompt preserves product and packaging text from translation', () => {
+  assert.match(
+    kieAiSource,
+    /专业级处理图像中的文案翻译，同时保持产品主体或包装和画面主题不变。/,
+  );
+  assert.match(
+    kieAiSource,
+    /仅保留产品\/包装表面的字符不变（存在产品情况下，禁止翻译原产品以及包装上的内容）。/,
+  );
+});

@@ -67,6 +67,7 @@
 - `项目交接上下文.md`
 - `docs/project-overview.md`
 - `docs/tencent-cloud-deploy.md`
+- `docs/cloud-update-data-cleanup.md`
 - `docs/release-and-handoff.md`
 - `services/loggingService.ts`
 - `modules/Account/AccountManagement.tsx`
@@ -79,6 +80,7 @@
 - 当前项目面向公司内部多人使用，不是公网 SaaS。
 - 已存在内部账号、用户隔离、日志系统。
 - 当前部署模式是“手动确认后发布”，不是持续自动交付。
+- 3001 壳前端同步到云上前，必须按 `docs/cloud-update-data-cleanup.md` 巡检并清理历史垃圾卡，尤其是默认 `idle` 视频诊断被误显示为项目卡、测试账号残留项目、切账号后的前端内存态残留。
 
 ## 10. 维护要求
 - 只记录长期有效的项目事实。
@@ -87,17 +89,20 @@
 
 ## 11. 当前发布状态
 - 当前待发布版本：
-  `V260430A`
-- 当前本地 Git 提交：
-  `69b1aa7 docs: record v260430a release status`
+  `V260516-frontend-shell-upgrade`
 - 当前本地版本目录：
   - `梅奥MEIAO-当前版本`
-  - `梅奥MEIAO-备份版本-260430A`
+  - `梅奥MEIAO-前端壳迁移版`
+  - `梅奥MEIAO-备份版本-前端升级前-20260516`
 - 本次发布重点：
-  - 首图参考图改为真实输入图参与云端生图，不再只通过 prompt 文本描述。
-  - 首图配色新增“商品自适应 / 参考图基准”，商品自适应以商品属性配色为主。
-  - 首图品牌位、包装一致性、文案位近似字数、项目删除二次确认等规则已同步进策划和生图链路。
+  - `梅奥MEIAO-当前版本` 已由原全栈当前版本复制而来，并同步 `梅奥MEIAO-前端壳迁移版` 的 3001 前端壳代码。
+  - `server/`、`scripts/deploy_tencent.sh`、`.env.server`、腾讯云部署文档和数据清理记录继续保留在当前版本内。
+  - `梅奥MEIAO-备份版本-前端升级前-20260516` 是本次前端升级前的完整回滚点。
+  - `梅奥MEIAO-前端壳迁移版` 继续保留，作为 3001 前端壳源备份。
+  - 旧 `梅奥MEIAO-备份版本-260430A` 已清理，不再作为有效备份。
 - 状态说明：
-  - 本地验证已完成：定向测试、`npm run lint`、`npm run build` 均通过。
-  - 腾讯云已完成部署，`http://111.229.66.247/api/health` 与 `http://111.229.66.247:3100/api/health` 均返回 `{"ok":true,"mode":"internal-mysql-v1"}`。
-  - GitHub 备份暂未完成：当前机器通过 HTTPS 推送时出现 TLS 连接失败，通过 SSH 推送时出现 `Permission denied (publickey)`，需要补齐可用的 GitHub 网络或 SSH 凭据后再执行 `git push origin main`。
+  - 本地验证已完成：`npm run build`、`npm run lint`、`node --test src/utils/appState.test.mjs src/modules/Video/videoDiagnosisUtils.test.mjs src/components/uiArchitecture.test.mjs` 均通过。
+  - 本地新依赖树已执行 `npm audit fix`，`npm audit --json` 返回 0 个漏洞。
+  - 云上现行 `260430A` 版本只读执行 `npm audit --json` 返回 0 个漏洞；云上仍是旧 3000 构建，尚未同步本次 3001 前端壳升级。
+  - 本地当前版本服务已重新启动：前端 `http://127.0.0.1:3000/`，后端 `http://127.0.0.1:3100/api/health` 返回 `{"ok":true,"mode":"internal-v1"}`。
+  - 腾讯云尚未执行本次前端升级发布；发布前必须先按 `docs/cloud-update-data-cleanup.md` 做数据巡检和垃圾卡清理。

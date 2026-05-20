@@ -37,7 +37,8 @@ test('kieAiService can resume waiting on an internal job id before falling back 
 });
 
 test('kieAiService gives image generation a longer timeout budget for slow cloud runs', () => {
-  assert.match(kieAiSource, /const KIE_IMAGE_DEFAULT_TIMEOUT = 6 \* 60_000/);
+  assert.match(kieAiSource, /'gpt-image-2': 10 \* 60_000/);
+  assert.match(kieAiSource, /const KIE_IMAGE_DEFAULT_TIMEOUT = 10 \* 60_000/);
   assert.match(kieAiSource, /const KIE_RECOVER_TIMEOUT = 4 \* 60_000/);
 });
 

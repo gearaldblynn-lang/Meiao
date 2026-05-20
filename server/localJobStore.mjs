@@ -1,11 +1,16 @@
 import { randomBytes } from 'node:crypto';
 
-import { getNextJobFailureState } from './jobRuntime.mjs';
+import { buildJobFailureLogFields, getNextJobFailureState } from './jobRuntime.mjs';
 import { findReusableJobSubmission, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
 
 const now = () => Date.now();
 
 const cloneValue = (value) => JSON.parse(JSON.stringify(value ?? null));
+
+const normalizeJobCreditsConsumed = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
 
 const normalizeJob = (job) => ({
   id: String(job?.id || ''),
@@ -28,6 +33,27 @@ const normalizeJob = (job) => ({
   finishedAt: job?.finishedAt === null || job?.finishedAt === undefined ? null : Number(job.finishedAt),
   cancelRequestedAt: job?.cancelRequestedAt === null || job?.cancelRequestedAt === undefined ? null : Number(job.cancelRequestedAt),
 });
+
+const compactLocalJobRecord = (job) => {
+  if (!job || job.taskType !== 'upload_asset') return job;
+  if (job.status === 'queued' || job.status === 'running' || job.status === 'retry_waiting') return job;
+
+  const payload = job.payload && typeof job.payload === 'object' ? job.payload : {};
+  const result = job.result && typeof job.result === 'object' ? job.result : null;
+
+  return normalizeJob({
+    ...job,
+    payload: {
+      fileName: String(payload.fileName || '').trim(),
+      mimeType: String(payload.mimeType || '').trim(),
+      uploadPath: String(payload.uploadPath || '').trim(),
+    },
+    result: result ? {
+      fileUrl: String(result.fileUrl || result.url || '').trim(),
+      status: String(result.status || '').trim(),
+    } : null,
+  });
+};
 
 export const reconcileRestartedLocalJobs = (jobs) => {
   if (!Array.isArray(jobs)) return [];
@@ -52,6 +78,7 @@ export const normalizeLocalJobs = (jobs) => {
   return jobs
     .filter((job) => job && typeof job === 'object')
     .map(normalizeJob)
+    .map(compactLocalJobRecord)
     .sort((a, b) => Number(b.createdAt) - Number(a.createdAt))
     .slice(0, 500);
 };
@@ -111,12 +138,21 @@ export const getLocalJobById = (store, jobId) => {
   return job ? normalizeJob(job) : null;
 };
 
+export const deleteLocalJobRecord = (store, jobId) => {
+  const index = findJobIndex(store, jobId);
+  if (index < 0) return null;
+  const [deleted] = store.jobs.splice(index, 1);
+  return deleted ? normalizeJob(deleted) : null;
+};
+
 export const listLocalJobsForUser = (store, userId, options = {}) => {
   const limit = Math.min(200, Math.max(1, Number(options.limit || 100)));
   return ensureStoreJobs(store)
     .filter((job) => job.userId === userId)
+    .filter((job) => job.taskType !== 'upload_asset')
     .slice(0, limit)
-    .map(normalizeJob);
+    .map(normalizeJob)
+    .map(compactLocalJobRecord);
 };
 
 export const getLocalJobQueueStats = (store) => {
@@ -236,6 +272,19 @@ export const markLocalJobCompleted = (store, jobId, output, aborted = false) => 
   return next;
 };
 
+export const updateLocalJobProviderTaskId = (store, jobId, providerTaskId) => {
+  const index = findJobIndex(store, jobId);
+  const value = String(providerTaskId || '').trim();
+  if (index < 0 || !value) return null;
+  const next = normalizeJob({
+    ...store.jobs[index],
+    providerTaskId: value,
+    updatedAt: now(),
+  });
+  store.jobs[index] = next;
+  return next;
+};
+
 export const markLocalJobFailed = (store, jobId, error) => {
   const index = findJobIndex(store, jobId);
   if (index < 0) return null;
@@ -299,7 +348,17 @@ export const createLocalJobWorker = ({
               controller.abort();
             }
 
-            const output = await executeJob(refreshedJob, controller.signal);
+            let notifiedProviderTaskId = String(refreshedJob.providerTaskId || '').trim();
+            const onProviderTaskId = async (providerTaskId) => {
+              const value = String(providerTaskId || '').trim();
+              if (!value || value === notifiedProviderTaskId) return;
+              notifiedProviderTaskId = value;
+              const providerStore = readStore();
+              updateLocalJobProviderTaskId(providerStore, refreshedJob.id, value);
+              writeStore(providerStore);
+            };
+
+            const output = await executeJob(refreshedJob, controller.signal, { onProviderTaskId });
             const completeStore = readStore();
             const finishedJob = markLocalJobCompleted(completeStore, refreshedJob.id, output, controller.signal.aborted);
             writeStore(completeStore);
@@ -319,6 +378,7 @@ export const createLocalJobWorker = ({
                   provider: finishedJob.provider,
                   retryCount: finishedJob.retryCount,
                   taskType: finishedJob.taskType,
+                  creditsConsumed: normalizeJobCreditsConsumed(finishedJob.result?.creditsConsumed),
                   queueWaitMs: finishedJob.startedAt && finishedJob.createdAt ? Math.max(0, finishedJob.startedAt - finishedJob.createdAt) : 0,
                   runtimeMs: finishedJob.startedAt && finishedJob.finishedAt ? Math.max(0, finishedJob.finishedAt - finishedJob.startedAt) : 0,
                   jobCreatedAt: finishedJob.createdAt,
@@ -334,14 +394,19 @@ export const createLocalJobWorker = ({
 
             const user = failedJob ? findUserById(failedJob.userId) : null;
             if (user && createLog && failedJob) {
+              const logFields = buildJobFailureLogFields({
+                jobStatus: failedJob.status,
+                taskType: failedJob.taskType,
+                errorCode: failedJob.errorCode,
+              });
               createLog({
                 user,
-                level: 'error',
+                level: error?.code === 'request_cancelled' ? 'info' : logFields.level,
                 module: failedJob.module,
-                action: failedJob.status === 'retry_waiting' ? 'job_retry_waiting' : 'job_failed',
-                message: failedJob.status === 'retry_waiting' ? `${failedJob.taskType} 任务等待重试` : `${failedJob.taskType} 任务失败`,
+                action: error?.code === 'request_cancelled' ? 'job_failed' : logFields.action,
+                message: error?.code === 'request_cancelled' ? `${failedJob.taskType} 任务失败` : logFields.message,
                 detail: failedJob.errorMessage,
-                status: error?.code === 'request_cancelled' ? 'interrupted' : 'failed',
+                status: error?.code === 'request_cancelled' ? 'interrupted' : logFields.status,
                 meta: {
                   jobId: failedJob.id,
                   providerTaskId: error?.providerTaskId || failedJob.providerTaskId || '',
