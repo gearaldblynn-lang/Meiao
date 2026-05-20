@@ -177,12 +177,23 @@ export interface SystemPublicConfig {
   };
   systemSettings: {
     analysisModel: string;
+    userAnalysisModel: string;
     effectiveAnalysisModel: string;
-    videoAnalysisModel?: string;
-    effectiveVideoAnalysisModel?: string;
-    videoAnalysisReasoningLevel?: string;
+    videoAnalysisModel: string;
+    effectiveVideoAnalysisModel: string;
+    videoAnalysisReasoningLevel: string;
   };
-  publicBaseUrl?: string;
+  videoAnalysisModels: Array<{
+    id: string;
+    label: string;
+    provider: 'kie';
+    supportsImageInput: boolean;
+    supportsFileInput: boolean;
+    supportsWebSearch: boolean;
+    supportsReasoningLevel: boolean;
+    reasoningLevels: string[];
+  }>;
+  publicBaseUrl: string;
   agentModels: {
     chat: Array<{
       id: string;
@@ -220,6 +231,10 @@ export interface AuthUser {
   isSuperAdmin?: boolean;
   status: 'active' | 'disabled';
   jobConcurrency: number;
+  analysisModel?: string;
+  featurePermissions?: {
+    videoGeneration?: boolean;
+  };
   createdAt: number;
   lastLoginAt: number | null;
 }

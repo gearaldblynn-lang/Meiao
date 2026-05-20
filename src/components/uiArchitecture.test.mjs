@@ -2059,6 +2059,25 @@ test('shell settings only lets admins modify concurrency while staff see it read
   assert.match(concurrencySection, /\{loadingSystemConfig \? '\.\.\.' : String\(effectiveConcurrency\)\}/);
 });
 
+test('shell settings lets staff choose planning model while admins can broadcast and video model stays gemini-only', () => {
+  const settings = read('../shell/modules/Settings/GlobalApiSettings.tsx');
+  const internalApi = read('../services/internalApi.ts');
+  const types = read('../types.ts');
+
+  assert.match(types, /userAnalysisModel: string/);
+  assert.match(types, /videoAnalysisModels:/);
+  assert.match(types, /analysisModel\?: string/);
+  assert.match(internalApi, /updateCurrentUserAnalysisModel/);
+  assert.match(internalApi, /broadcastSystemAnalysisModel/);
+  assert.match(settings, /setUserAnalysisModel\(result\.config\.systemSettings\.userAnalysisModel \|\| ''\)/);
+  assert.match(settings, /handleSaveUserAnalysisModel/);
+  assert.match(settings, /handleBroadcastAnalysisModel/);
+  assert.match(settings, /普通账号可选择自己的策划分析模型/);
+  assert.match(settings, /管理员可将全局策划分析模型覆盖到所有账号/);
+  assert.match(settings, /systemConfig\?\.videoAnalysisModels/);
+  assert.doesNotMatch(settings, /仅管理员可以修改分析模型/);
+});
+
 test('shell project lists do not parse the full persisted state once per rendered card', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const projectListView = read('../shell/components/ProjectListView.tsx');

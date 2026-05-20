@@ -95,6 +95,27 @@ test('buildPublicSystemConfig keeps video analysis model independent from planni
   assert.equal(config.systemSettings.videoAnalysisReasoningLevel, 'high');
 });
 
+test('buildPublicSystemConfig exposes user planning model and gemini-only video analysis models', () => {
+  const config = buildPublicSystemConfig(
+    { KIE_API_KEY: 'kie-secret', MEIAO_DEFAULT_ANALYSIS_MODEL: 'gpt-5-4-openai-resp' },
+    { queued: 0, running: 0 },
+    {
+      systemSettings: { analysisModel: 'claude-sonnet-4-6', videoAnalysisModel: 'gpt-5-4-openai-resp' },
+      userSettings: { analysisModel: 'gemini-3-flash-openai' },
+    },
+  );
+
+  assert.equal(config.systemSettings.analysisModel, 'claude-sonnet-4-6');
+  assert.equal(config.systemSettings.userAnalysisModel, 'gemini-3-flash-openai');
+  assert.equal(config.systemSettings.effectiveAnalysisModel, 'gemini-3-flash-openai');
+  assert.equal(config.systemSettings.videoAnalysisModel, '');
+  assert.equal(config.systemSettings.effectiveVideoAnalysisModel, 'gemini-3-flash-openai');
+  assert.deepEqual(config.videoAnalysisModels.map((item) => item.id), [
+    'gemini-3.1-pro-openai',
+    'gemini-3-flash-openai',
+  ]);
+});
+
 test('buildPublicSystemConfig disables public-url media models when no external asset base is available', () => {
   const config = buildPublicSystemConfig(
     {
