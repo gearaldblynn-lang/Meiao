@@ -544,12 +544,24 @@ const ProjectCard: React.FC<Props> = ({
   const handleStartSelectedPlans = () => {
     if (isConfirmPlanPending || isProjectActivelyGenerating) return;
     if (!onConfirmPlan || !Array.isArray(project.plans)) return;
-    const selectedPlans = project.plans.filter((plan) => plan.selected);
-    if (selectedPlans.length === 0) {
-      addToast('请先选择要生成的方案', 'warning');
+    const completedPlanIds = new Set(
+      project.results
+        .filter((result) => isCompletedMediaResult(result))
+        .map((result) => result.planId)
+        .filter((planId): planId is string => Boolean(planId))
+    );
+    const activePlanIds = new Set(
+      project.results
+        .filter((result) => result.status === 'generating')
+        .map((result) => result.planId)
+        .filter((planId): planId is string => Boolean(planId))
+    );
+    const pendingPlans = project.plans.filter((plan) => !completedPlanIds.has(plan.id) && !activePlanIds.has(plan.id));
+    if (pendingPlans.length === 0) {
+      addToast('当前项目没有待生成方案', 'info');
       return;
     }
-    onConfirmPlan(project.id, selectedPlans);
+    onConfirmPlan(project.id, pendingPlans);
   };
 
   const canDeleteProject = Boolean(onDeleteProject);
