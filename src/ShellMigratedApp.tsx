@@ -3500,6 +3500,9 @@ const AppContent: React.FC<{
     const effectiveRatio = String(generationParams.ratio || generationParams.aspectRatio || sceneConfig.ratio || '1:1');
     const batchCount = selectedPlans.length;
     const selectedPlanIds = selectedPlans.map((plan) => plan.id).filter(Boolean);
+    const orderedProjectPlans = Array.isArray(project.plans) && project.plans.length > 0 ? project.plans : selectedPlans;
+    const firstBenchmarkPlanId = orderedProjectPlans[0]?.id || '';
+    const requiresFirstBenchmark = sceneSubFeature === 'sku' && Boolean(firstBenchmarkPlanId);
     const totalTaskCount = Math.max(
       batchCount,
       Number(project.taskCount || 0) || 0,
@@ -3514,6 +3517,12 @@ const AppContent: React.FC<{
       || (hasMaterialInputs(storedContext?.materials as Record<string, Material[]>) ? storedContext?.materials as Record<string, Material[]> : undefined)
       || filteredMaterials;
     const startingResults = mergeProjectResults([]);
+    let firstBenchmarkResultUrl = requiresFirstBenchmark
+      ? resolvePublicAssetUrl(
+        (project.results || []).find((result) => result.planId === firstBenchmarkPlanId && result.status === 'completed' && Boolean(result.imageUrl))?.imageUrl || '',
+        publicBaseUrl,
+      ) || ''
+      : '';
 
     setProjects((prev) => prev.map((p) =>
       p.id === projectId
@@ -3613,7 +3622,6 @@ const AppContent: React.FC<{
     try {
       const { runShellImageGeneration } = await import('./adapters/shellWorkflow');
       const preparedGenerationMaterials = await ensureMaterialRemoteUrls(generationMaterials, AppModuleObj.ONE_CLICK);
-      let nextPlanIndex = 0;
       const updateTaskProgress = () => {
         const publishedResults = getPublishedResults();
         const completed = publishedResults.filter((item) => item.status === 'completed').length;
@@ -3631,7 +3639,10 @@ const AppContent: React.FC<{
         ));
       };
       const runPlanAtIndex = async (index: number) => {
-        const plan = selectedPlans[index];
+        const basePlan = selectedPlans[index];
+        const plan = requiresFirstBenchmark && basePlan.id !== firstBenchmarkPlanId && firstBenchmarkResultUrl && !basePlan.sourceResultUrl
+          ? { ...basePlan, sourceResultUrl: firstBenchmarkResultUrl }
+          : basePlan;
         const promptSummary = buildPlanPromptSummary(plan, sceneSubFeature);
         const batchPrompt = buildBatchPrompt(
           AppModuleObj.ONE_CLICK,
@@ -3641,6 +3652,7 @@ const AppContent: React.FC<{
           index,
           batchCount,
         );
+        const planMaterials = buildVariantMaterials(preparedGenerationMaterials, plan, sceneSubFeature);
         const result = await runShellImageGeneration({
           module: AppModuleObj.ONE_CLICK,
           subFeature: sceneSubFeature,
@@ -3652,7 +3664,7 @@ const AppContent: React.FC<{
             __batchIndex: String(index + 1),
             __batchCount: String(batchCount),
           },
-          materials: preparedGenerationMaterials,
+          materials: planMaterials,
           signal: controller.signal,
           onJobCreated: createPlanJobCreatedHandler(plan, index, batchPrompt),
           publicBaseUrl,
@@ -3748,24 +3760,48 @@ const AppContent: React.FC<{
           taskId: visibleTaskId,
           backendJobId: generationBackendJobIdByPlanId.get(plan.id),
         };
+        if (requiresFirstBenchmark && plan.id === firstBenchmarkPlanId) {
+          firstBenchmarkResultUrl = resolvePublicAssetUrl(result.imageUrl, publicBaseUrl) || result.imageUrl;
+        }
         publishPlanResults('generating');
         updateTaskProgress();
       };
-      const workerCount = Math.max(1, Math.min(Number(apiConfig.concurrency || 1) || 1, batchCount));
-      const runWorker = async () => {
-        while (nextPlanIndex < batchCount && !controller.signal.aborted && !firstGenerationError) {
-          const currentIndex = nextPlanIndex;
-          nextPlanIndex += 1;
-          try {
-            await runPlanAtIndex(currentIndex);
-          } catch (error) {
-            if (!firstGenerationError) {
-              firstGenerationError = error instanceof Error ? error : new Error(String(error || `${sceneConfig.label} 生成失败`));
+      const runConcurrentPlanIndexes = async (indexes: number[]) => {
+        if (indexes.length === 0) return;
+        let nextQueuedIndex = 0;
+        const workerCount = Math.max(1, Math.min(Number(apiConfig.concurrency || 1) || 1, indexes.length));
+        const runWorker = async () => {
+          while (nextQueuedIndex < indexes.length && !controller.signal.aborted && !firstGenerationError) {
+            const currentIndex = indexes[nextQueuedIndex];
+            nextQueuedIndex += 1;
+            try {
+              await runPlanAtIndex(currentIndex);
+            } catch (error) {
+              if (!firstGenerationError) {
+                firstGenerationError = error instanceof Error ? error : new Error(String(error || `${sceneConfig.label} 生成失败`));
+              }
             }
           }
-        }
+        };
+        await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
       };
-      await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+      const firstBenchmarkSelectedIndex = requiresFirstBenchmark && !firstBenchmarkResultUrl
+        ? selectedPlans.findIndex((plan) => plan.id === firstBenchmarkPlanId)
+        : -1;
+      let shouldWaitForFirstBenchmark = false;
+      if (firstBenchmarkSelectedIndex >= 0) {
+        await runPlanAtIndex(firstBenchmarkSelectedIndex);
+        if (!firstBenchmarkResultUrl) {
+          shouldWaitForFirstBenchmark = true;
+          addToast('第一张 SKU 基准图已提交，后续任务会在首张结果可用后再生成。', 'info');
+        }
+      }
+      const remainingPlanIndexes = selectedPlans
+        .map((_, index) => index)
+        .filter((index) => index !== firstBenchmarkSelectedIndex);
+      if (!shouldWaitForFirstBenchmark) {
+        await runConcurrentPlanIndexes(remainingPlanIndexes);
+      }
       if (firstGenerationError) throw firstGenerationError;
 
       const publishedResults = getPublishedResults();
@@ -3858,7 +3894,7 @@ const AppContent: React.FC<{
     } finally {
       delete taskControllersRef.current[taskId];
     }
-  }, [currentParams, filteredMaterials, activeSubFeature, addToast, hydrateShellJobs, apiConfig.workspacePreferences, apiConfig.concurrency, persistProjectToSharedState, publicBaseUrl, logShellError, ensureMaterialRemoteUrls]);
+  }, [currentParams, filteredMaterials, activeSubFeature, addToast, hydrateShellJobs, apiConfig.workspacePreferences, apiConfig.concurrency, persistProjectToSharedState, publicBaseUrl, logShellError, ensureMaterialRemoteUrls, buildVariantMaterials]);
 
   // ── OneClick: confirm plan → generate images ──
   const handleConfirmPlan = useCallback(async (projectId: string, planOrPlans: PlanItem | PlanItem[]) => {
