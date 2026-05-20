@@ -370,7 +370,7 @@ const SkuSubModule: React.FC<Props> = ({
     }
   };
 
-  // --- Batch generation (sequential: first as benchmark) ---
+  // --- Batch generation (first image as benchmark, remaining images concurrent) ---
   const handleStartGeneration = async () => {
     if (isSubmittingGenerationRef.current || isGenerating || isAnalyzing) return;
     const selected = schemesRef.current.filter(s => s.selected && s.status !== 'generating' && !inflightIdsRef.current.has(s.id));
@@ -394,35 +394,53 @@ const SkuSubModule: React.FC<Props> = ({
       const currentImages = uploaded.length > 0 ? uploaded : images;
       onUpdate({ firstSkuResultUrl: null });
       let localFirstSkuResultUrl: string | null = null;
+      const [firstScheme, ...remainingSchemes] = selected;
 
-      for (let i = 0; i < selected.length; i++) {
-        const isFirst = i === 0;
-        inflightIdsRef.current.add(selected[i].id);
-        const ok = await generateSingleSku(selected[i].id, isFirst, currentImages, 'full', localFirstSkuResultUrl);
-        if (isFirst) {
-          if (ok) {
-            const latest = schemesRef.current.find(s => s.id === selected[0].id);
-            if (latest?.resultUrl) {
-              localFirstSkuResultUrl = latest.resultUrl;
-              onUpdate({ firstSkuResultUrl: latest.resultUrl });
-            }
-          } else {
-            addToast('第一张 SKU 生成失败，后续任务已暂停', 'error');
-            // 首图失败：将剩余的 generating 状态重置为 error
-            const remainingIds = selected.slice(1).map(s => s.id);
-            if (remainingIds.length > 0) {
-              onUpdate(prev => ({
-                ...prev,
-                schemes: prev.schemes.map(s =>
-                  remainingIds.includes(s.id) && s.status === 'generating'
-                    ? { ...s, status: 'error' as const, error: '首图生成失败，已暂停' }
-                    : s
-                ),
-              }));
-            }
-            break;
-          }
+      const markRemainingPaused = (error: string) => {
+        const remainingIds = remainingSchemes.map(s => s.id);
+        if (remainingIds.length === 0) return;
+        onUpdate(prev => ({
+          ...prev,
+          schemes: prev.schemes.map(s =>
+            remainingIds.includes(s.id) && s.status === 'generating'
+              ? { ...s, status: 'error' as const, error }
+              : s
+          ),
+        }));
+      };
+
+      inflightIdsRef.current.add(firstScheme.id);
+      const firstOk = await generateSingleSku(firstScheme.id, true, currentImages, 'full', null);
+      if (!firstOk) {
+        addToast('第一张 SKU 生成失败，后续任务已暂停', 'error');
+        markRemainingPaused('首图生成失败，已暂停');
+        return;
+      }
+
+      const latest = schemesRef.current.find(s => s.id === firstScheme.id);
+      if (latest?.resultUrl) {
+        localFirstSkuResultUrl = latest.resultUrl;
+        onUpdate({ firstSkuResultUrl: latest.resultUrl });
+      } else {
+        addToast('第一张 SKU 结果缺少可用图片，后续任务已暂停', 'error');
+        markRemainingPaused('首图结果缺少可用图片，已暂停');
+        return;
+      }
+
+      let nextRemainingIndex = 0;
+      const workerCount = Math.max(1, Math.min(Number(apiConfig.concurrency || 1) || 1, remainingSchemes.length));
+      const runRemainingWorker = async () => {
+        while (nextRemainingIndex < remainingSchemes.length) {
+          const currentIndex = nextRemainingIndex;
+          nextRemainingIndex += 1;
+          const scheme = remainingSchemes[currentIndex];
+          inflightIdsRef.current.add(scheme.id);
+          await generateSingleSku(scheme.id, false, currentImages, 'full', localFirstSkuResultUrl);
         }
+      };
+
+      if (remainingSchemes.length > 0) {
+        await Promise.all(Array.from({ length: workerCount }, () => runRemainingWorker()));
       }
       void logActionSuccess({ module: 'one_click', action: 'generate_sku_batch', message: '批量生成SKU完成', meta: { ...baseMeta, count: selected.length } });
       addToast('SKU 生成完成', 'success');

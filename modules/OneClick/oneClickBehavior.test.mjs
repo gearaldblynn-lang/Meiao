@@ -98,6 +98,15 @@ test('one click single generation actions immediately reflect generating state a
   assert.match(skuSource, /if \(inflightIdsRef\.current\.has\(schemeId\) \|\| isAnalyzing\) return;/);
 });
 
+test('sku batch generation waits for the first benchmark image then runs remaining selected schemes concurrently', () => {
+  assert.match(skuSource, /const \[firstScheme, \.\.\.remainingSchemes\] = selected/);
+  assert.match(skuSource, /const firstOk = await generateSingleSku\(firstScheme\.id, true, currentImages, 'full', null\)/);
+  assert.match(skuSource, /const workerCount = Math\.max\(1, Math\.min\(Number\(apiConfig\.concurrency \|\| 1\) \|\| 1, remainingSchemes\.length\)\)/);
+  assert.match(skuSource, /await Promise\.all\(Array\.from\(\{ length: workerCount \}, \(\) => runRemainingWorker\(\)\)\)/);
+  assert.match(skuSource, /await generateSingleSku\(scheme\.id, false, currentImages, 'full', localFirstSkuResultUrl\)/);
+  assert.doesNotMatch(skuSource, /for \(let i = 0; i < selected\.length; i\+\+\)/);
+});
+
 test('one click planning and generation paths normalize legacy copy layout rows before rendering', () => {
   assert.match(mainSource, /normalizeCopyLayoutText/);
   assert.match(detailSource, /normalizeCopyLayoutText/);

@@ -245,11 +245,15 @@ const ProjectCard: React.FC<Props> = ({
   const imageResults = project.results.filter((result) => result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
   const isCompletedMediaResult = (result: GeneratedResult) => result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl);
   const hasGeneratingResult = project.results.some((result) => result.status === 'generating' && !isCompletedMediaResult(result));
-  const hasMissingSelectedPlanResult = hasPlans && visiblePlans.some((plan) => !project.results.some((result) => result.planId === plan.id && isCompletedMediaResult(result)));
+  const activePlanIds = new Set([
+    ...visiblePlans.map((plan) => plan.id),
+    ...(project.selectedPlanId ? [project.selectedPlanId] : []),
+  ]);
+  const hasMissingSelectedPlanResult = hasPlans && Array.from(activePlanIds).some((planId) => !project.results.some((result) => result.planId === planId && isCompletedMediaResult(result)));
   const projectProgressIncomplete = Number(project.completedCount || 0) < Number(project.taskCount || 0);
   const isProjectActivelyGenerating = project.status === 'generating' && (
     hasGeneratingResult
-    || (!hasPlans && hasMissingSelectedPlanResult)
+    || hasMissingSelectedPlanResult
     || (!hasPlans && projectProgressIncomplete)
   );
   const displayProjectStatus: Project['status'] = project.status === 'generating' && !isProjectActivelyGenerating

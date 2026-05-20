@@ -551,10 +551,12 @@ test('one click shell planning dialog exposes old-style selected batch generatio
   assert.match(workflow, /selected: true/);
   assert.match(planEditor, /const pendingSelectedPlanIds = plans/);
   assert.match(planEditor, /const activeGeneratingResult = \(results \|\| \[\]\)\.find\(\(result\) => result\.status === 'generating' && result\.planId\)/);
-  assert.match(planEditor, /const activeGeneratingPlanId = projectStatus === 'generating' \? \(activeGeneratingResult\?\.planId \|\| null\) : null/);
-  assert.doesNotMatch(planEditor, /selectedPlanId \|\| pendingSelectedPlanIds\[0\]/);
+  assert.match(planEditor, /const activeGeneratingPlanId = projectStatus === 'generating' \? \(activeGeneratingResult\?\.planId \|\| selectedPlanId \|\| pendingSelectedPlanIds\[0\] \|\| null\) : null/);
+  assert.match(planEditor, /const hasErrorResult = result\?\.status === 'error'/);
+  assert.match(planEditor, /hasErrorResult \? '生成失败' : isGenerating \? '生成中'/);
   assert.match(projectCard, /const hasGeneratingResult = project\.results\.some/);
-  assert.doesNotMatch(projectCard, /hasGeneratingResult\s*\n\s*\|\| hasMissingSelectedPlanResult/);
+  assert.match(projectCard, /\.\.\.\(project\.selectedPlanId \? \[project\.selectedPlanId\] : \[\]\)/);
+  assert.match(projectCard, /hasGeneratingResult\s*\n\s*\|\| hasMissingSelectedPlanResult/);
   assert.match(planEditor, /onConfirm\(plan\)/);
   assert.match(planEditor, /ConfirmDialog/);
   assert.match(planEditor, /pendingDeletePlan/);
