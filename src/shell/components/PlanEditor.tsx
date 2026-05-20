@@ -205,7 +205,7 @@ const PlanEditor: React.FC<Props> = ({
     .filter((plan) => plan.selected && !completedPlanIds.has(plan.id))
     .map((plan) => plan.id);
   const activeGeneratingResult = (results || []).find((result) => result.status === 'generating' && result.planId);
-  const activeGeneratingPlanId = projectStatus === 'generating' ? (activeGeneratingResult?.planId || null) : null;
+  const activeGeneratingPlanId = projectStatus === 'generating' ? (activeGeneratingResult?.planId || selectedPlanId || pendingSelectedPlanIds[0] || null) : null;
   const shouldShowPerPlanGenerating = Boolean(activeGeneratingPlanId);
   const isDetailProject = subFeature === 'detail_page' || subFeature === 'detail';
   const visiblePlanningTaskId = String(planningTaskId || '').trim();
@@ -242,12 +242,13 @@ const PlanEditor: React.FC<Props> = ({
     const schemeText = normalizeSchemeText(plan.schemeContent);
     const result = findResult(plan, index);
     const hasResult = Boolean(result && (result.imageUrl || result.videoUrl));
-    const isGenerating = !hasResult && activeGeneratingPlanId === plan.id;
+    const hasErrorResult = result?.status === 'error';
+    const isGenerating = !hasResult && !hasErrorResult && (result?.status === 'generating' || activeGeneratingPlanId === plan.id);
     const isQueued = !hasResult && shouldShowPerPlanGenerating && plan.selected && activeGeneratingPlanId !== plan.id;
-    const confirmLabel = hasResult ? '重生成' : '生成';
+    const confirmLabel = hasErrorResult ? '重试' : hasResult ? '重生成' : '生成';
     const isPromptExpanded = Boolean(expandedPromptIds[plan.id]);
     const isFissionEnabled = subFeature === 'first_image';
-    const statusLabel = hasResult ? '已出图' : isGenerating ? '生成中' : plan.selected ? '待生成' : '未选中';
+    const statusLabel = hasResult ? '已出图' : hasErrorResult ? '生成失败' : isGenerating ? '生成中' : plan.selected ? '待生成' : '未选中';
     const canOpenPreview = Boolean(result && result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
 
     return (
@@ -290,7 +291,10 @@ const PlanEditor: React.FC<Props> = ({
                 <div className="flex h-10 w-10 items-center justify-center rounded-full" style={{ background: 'var(--bg-surface)' }}>
                   <Square size={18} />
                 </div>
-                <span>{isGenerating ? '生成中' : isQueued ? '待生成' : '待生成图'}</span>
+                <span>{hasErrorResult ? '生成失败' : isGenerating ? '生成中' : isQueued ? '待生成' : '待生成图'}</span>
+                {hasErrorResult && result?.error ? (
+                  <span className="max-w-[82%] truncate" style={{ color: 'var(--error)' }}>{result.error}</span>
+                ) : null}
               </div>
             )}
           </div>
@@ -429,10 +433,11 @@ const PlanEditor: React.FC<Props> = ({
             const schemeText = normalizeSchemeText(plan.schemeContent);
             const result = findResult(plan, index);
             const hasResult = Boolean(result && (result.imageUrl || result.videoUrl));
-            const isGenerating = !hasResult && activeGeneratingPlanId === plan.id;
-            const confirmLabel = hasResult ? '重生成' : '生成';
+            const hasErrorResult = result?.status === 'error';
+            const isGenerating = !hasResult && !hasErrorResult && (result?.status === 'generating' || activeGeneratingPlanId === plan.id);
+            const confirmLabel = hasErrorResult ? '重试' : hasResult ? '重生成' : '生成';
             const isPromptExpanded = Boolean(expandedPromptIds[plan.id]);
-            const statusLabel = hasResult ? '已出图' : isGenerating ? '生成中' : plan.selected ? '待生成' : '未选中';
+            const statusLabel = hasResult ? '已出图' : hasErrorResult ? '生成失败' : isGenerating ? '生成中' : plan.selected ? '待生成' : '未选中';
             const planAspectRatio = getPlanAspectRatio(plan, result);
             const canOpenPreview = Boolean(result && result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
 
@@ -601,7 +606,10 @@ const PlanEditor: React.FC<Props> = ({
                       <div className="flex h-10 w-10 items-center justify-center rounded-full" style={{ background: 'var(--bg-surface)' }}>
                         <Square size={18} />
                       </div>
-                      <span>{isGenerating ? '生成中' : '待生成图'}</span>
+                      <span>{hasErrorResult ? '生成失败' : isGenerating ? '生成中' : '待生成图'}</span>
+                      {hasErrorResult && result?.error ? (
+                        <span className="max-w-[82%] truncate" style={{ color: 'var(--error)' }}>{result.error}</span>
+                      ) : null}
                       <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
                         {planAspectRatio.replace(' / ', ':')}
                       </span>
