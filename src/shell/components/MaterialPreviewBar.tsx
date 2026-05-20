@@ -218,35 +218,15 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial }) =>
         onNext={() => setLightboxIndex((i) => (i + 1) % allUrls.length)}
       />
 
-      {selectedVideo ? (
-        <div
-          className="fixed inset-0 z-[520] flex items-center justify-center px-6 py-10"
-          style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)' }}
-          onClick={() => setSelectedVideo(null)}
-        >
-          <button
-            type="button"
-            onClick={() => setSelectedVideo(null)}
-            className="absolute right-5 top-5 flex h-9 w-9 items-center justify-center rounded-[18px] transition-colors"
-            style={{ background: 'rgba(255,255,255,0.1)', color: '#fff' }}
-          >
-            <X size={18} />
-          </button>
-          <div className="flex max-h-[86vh] w-full max-w-4xl flex-col gap-3" onClick={(event) => event.stopPropagation()}>
-            <div className="truncate px-1 text-[12px] font-medium" style={{ color: 'rgba(255,255,255,0.82)' }}>
-              {selectedVideo.fileName}
-            </div>
-            <video
-              src={selectedVideo.url}
-              className="max-h-[80vh] w-full rounded-[18px] object-contain"
-              controls
-              playsInline
-              preload="metadata"
-              style={{ background: '#000', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
-            />
-          </div>
-        </div>
-      ) : null}
+      <ImageLightbox
+        open={Boolean(selectedVideo)}
+        images={[]}
+        items={selectedVideo ? [{ url: selectedVideo.url, type: 'video', title: selectedVideo.fileName }] : []}
+        currentIndex={0}
+        onClose={() => setSelectedVideo(null)}
+        onPrev={() => undefined}
+        onNext={() => undefined}
+      />
 
     </>
   );

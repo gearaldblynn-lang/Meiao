@@ -27,7 +27,7 @@ interface Props {
   onUpdatePlans?: (projectId: string, plans: any[]) => void;
   onRegeneratePlans?: (projectId: string) => void;
   onCancelTask?: (taskId: string) => void;
-  onImportStoryboardToGeneration?: (project: VideoStoryboardProject) => void;
+  onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number) => void;
   subFeatures?: SubFeatureOption[];
   activeSubFeature?: string;
   onSubFeatureChange?: (id: string) => void;

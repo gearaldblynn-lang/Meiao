@@ -70,6 +70,8 @@ const LOG_CLEANUP_INTERVAL_MS = 1000 * 60 * 60;
 const MAX_JSON_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_STATE_BODY_BYTES = 100 * 1024 * 1024;
 const MAX_MULTIPART_BODY_BYTES = 1024 * 1024 * 1024;
+const VIDEO_JOB_DEDUPE_WINDOW_MS = 1000 * 60 * 60;
+const VIDEO_JOB_TASK_TYPES = new Set(['dreamina_video', 'kie_seedance_video']);
 const INTERNAL_ASSET_REGISTRY_KEY = '__assetRegistry';
 const TRACKED_URL_FIELDS = new Set([
   'resultUrl',
@@ -82,6 +84,10 @@ const TRACKED_URL_FIELDS = new Set([
   'whiteBgImageUrl',
   'previousBoardImageUrl',
 ]);
+
+const getJobDedupeWindowMs = (taskType) => (
+  VIDEO_JOB_TASK_TYPES.has(String(taskType || '')) ? VIDEO_JOB_DEDUPE_WINDOW_MS : undefined
+);
 const TRACKED_URL_ARRAY_FIELDS = new Set(['uploadedProductUrls', 'veoReferenceImages']);
 const NULLABLE_TRACKED_FIELDS = new Set(['uploadedReferenceUrl', 'lastStyleUrl', 'uploadedLogoUrl', 'whiteBgImageUrl']);
 
@@ -2661,12 +2667,68 @@ const serveStoredAsset = async (req, res, assetId) => {
 
   await markStoredAssetAccessed(pool, asset.id, Date.now());
   const stats = statSync(fullPath);
-  res.writeHead(200, {
-    'Content-Type': asset.mimeType || 'application/octet-stream',
-    'Content-Length': stats.size,
+  const fileSize = stats.size;
+  const contentType = asset.mimeType || 'application/octet-stream';
+  const baseHeaders = {
+    'Content-Type': contentType,
+    'Accept-Ranges': 'bytes',
     'Cache-Control': 'private, max-age=86400',
     ...(res.__corsHeaders || {}),
+  };
+  const rangeHeader = String(req.headers.range || '').trim();
+
+  if (rangeHeader) {
+    const rangeMatch = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
+    let start = rangeMatch?.[1] ? Number(rangeMatch[1]) : NaN;
+    let end = rangeMatch?.[2] ? Number(rangeMatch[2]) : NaN;
+
+    if (!rangeMatch || fileSize <= 0 || (Number.isNaN(start) && Number.isNaN(end))) {
+      res.writeHead(416, {
+        ...baseHeaders,
+        'Content-Range': `bytes */${fileSize}`,
+      });
+      res.end();
+      return;
+    }
+
+    if (Number.isNaN(start)) {
+      const suffixLength = Math.max(0, end);
+      start = Math.max(0, fileSize - suffixLength);
+      end = fileSize - 1;
+    } else {
+      end = Number.isNaN(end) ? fileSize - 1 : Math.min(end, fileSize - 1);
+    }
+
+    if (start < 0 || start >= fileSize || end < start) {
+      res.writeHead(416, {
+        ...baseHeaders,
+        'Content-Range': `bytes */${fileSize}`,
+      });
+      res.end();
+      return;
+    }
+
+    res.writeHead(206, {
+      ...baseHeaders,
+      'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+      'Content-Length': end - start + 1,
+    });
+    if (req.method === 'HEAD') {
+      res.end();
+      return;
+    }
+    createReadStream(fullPath, { start, end }).pipe(res);
+    return;
+  }
+
+  res.writeHead(200, {
+    ...baseHeaders,
+    'Content-Length': fileSize,
   });
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
   createReadStream(fullPath).pipe(res);
 };
 
@@ -7578,7 +7640,7 @@ const handleMysqlRequest = async (req, res, url) => {
       priority: body.priority,
       maxRetries: body.maxRetries,
     };
-    const reusableJob = await findReusableJobRecord(pool, user, jobPayload);
+    const reusableJob = await findReusableJobRecord(pool, user, jobPayload, getJobDedupeWindowMs(jobPayload.taskType));
     if (reusableJob) {
       json(res, 200, { job: reusableJob, deduped: true });
       return;
@@ -9321,7 +9383,7 @@ const handleLocalRequest = async (req, res, url) => {
       priority: body.priority,
       maxRetries: body.maxRetries,
     };
-    const reusableJob = findReusableLocalJobRecord(store, user, jobPayload);
+    const reusableJob = findReusableLocalJobRecord(store, user, jobPayload, getJobDedupeWindowMs(jobPayload.taskType));
     if (reusableJob) {
       json(res, 200, { job: reusableJob, deduped: true });
       return;

@@ -349,12 +349,12 @@ const getDreaminaGenerationParams = (currentParams: Record<string, string>): Par
   };
   const resolutionParam: ParamItem = {
     key: 'videoResolution',
-    label: '480p',
+    label: '720p',
     title: '视频分辨率',
     icon: <Sparkles size={12} />,
     options: SEEDANCE_API_RESOLUTION_OPTIONS,
-    defaultValue: '480p',
-    recommendedValue: '480p',
+    defaultValue: '720p',
+    recommendedValue: '720p',
     recommendedLabel: '默认',
   };
 
@@ -531,7 +531,7 @@ const getDreaminaCreditHint = (params: Record<string, string>) => {
   const mode = normalizeDreaminaUiMode(params.dreaminaMode);
   const seconds = parseDreaminaSeconds(params.duration, mode === 'multiframe2video' ? 3 : 5);
   const accessMode = getSeedanceVideoAccessMode(mode, params.modelVersion);
-  const resolution = params.videoResolution === '720p' ? '720p' : '480p';
+  const resolution = params.videoResolution === '480p' ? '480p' : '720p';
   if (accessMode !== 'cli') {
     return `Seedance 2.0 Fast · ${seconds} 秒 · ${resolution}，提交前显示预计积分，完成后按 KIE 真实扣费记录。`;
   }
@@ -544,7 +544,7 @@ const getDreaminaCreditHint = (params: Record<string, string>) => {
 const estimateSeedanceFastBilling = ({
   accessMode = 'api',
   duration = '5秒',
-  resolution = '480p',
+  resolution = '720p',
   hasVideoInput = false,
 } = {}) => {
   if (accessMode === 'cli') return { billable: false, estimatedCredits: 0 };
@@ -854,6 +854,7 @@ interface Props {
   onPromptChange: (text: string) => void;
   onGenerate: () => void;
   isGenerating: boolean;
+  isSubmitLocked?: boolean;
   currentParams: Record<string, string>;
   onParamChange: (key: string, value: string) => void;
   materials: Record<string, Material[]>;
@@ -866,7 +867,7 @@ interface Props {
 }
 
 const BottomInputBar: React.FC<Props> = ({
-  module, activeSubFeature, promptText, onPromptChange, onGenerate, isGenerating: _isGenerating,
+  module, activeSubFeature, promptText, onPromptChange, onGenerate, isGenerating: _isGenerating, isSubmitLocked = false,
   currentParams, onParamChange, materials, oneClickReferencePresets, onUploadMaterial, onApplyPresetMaterials, onRemoveMaterial,
   systemConfig, generationDisabledReason = '',
 }) => {
@@ -920,7 +921,7 @@ const BottomInputBar: React.FC<Props> = ({
     ? estimateSeedanceFastBilling({
         accessMode: getSeedanceVideoAccessMode(normalizeDreaminaUiMode(currentParams.dreaminaMode), currentParams.modelVersion),
         duration: currentParams.duration || '5秒',
-        resolution: currentParams.videoResolution || '480p',
+        resolution: currentParams.videoResolution || '720p',
         hasVideoInput: (materials.referenceVideo || []).length > 0,
       })
     : { billable: false, estimatedCredits: 0 };
@@ -1592,7 +1593,7 @@ const BottomInputBar: React.FC<Props> = ({
                 rows={3}
                 className="w-full resize-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-[var(--text-tertiary)]"
                 style={{ color: 'var(--text-primary)', minHeight: 64 }}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onGenerate(); } }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!isSubmitLocked) onGenerate(); } }}
               />
             </div>
           )}
@@ -1922,7 +1923,7 @@ const BottomInputBar: React.FC<Props> = ({
               )}
               <button
                 onClick={onGenerate}
-                disabled={Boolean(disabledReason) || (!promptText.trim() && !canGenerateWithoutPrompt)}
+                disabled={isSubmitLocked || Boolean(disabledReason) || (!promptText.trim() && !canGenerateWithoutPrompt)}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-3xl text-[13px] font-semibold text-white transition-all disabled:opacity-30"
                 style={{ background: 'var(--accent)' }}
               >

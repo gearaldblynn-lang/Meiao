@@ -1083,6 +1083,54 @@ const mapJobs = (
         });
         return;
       }
+      const matchedTerminalProject = findPersistedPlanningProjectForJob(job, persistedProjects);
+      if (matchedTerminalProject && projectStatus === 'completed' && urls.length > 0) {
+        const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+        const nextJobResults: ShellGeneratedResult[] = urls.map((url, index) => ({
+          id: String(providerTaskId || `${job.id}-result-${index + 1}`),
+          planId: payloadPlanId || matchedTerminalProject.selectedPlanId || matchedTerminalProject.plans?.[index]?.id,
+          projectId: matchedTerminalProject.id,
+          imageUrl: url,
+          videoUrl: mediaType === 'video' ? url : undefined,
+          mediaType: mediaType === 'video' ? 'video' : 'image',
+          prompt,
+          model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+          aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
+          status: 'completed',
+          createdAt,
+          module,
+          subFeature: matchedTerminalProject.subFeature || subFeature,
+          taskId: String(providerTaskId || job.id || '').trim() || undefined,
+          backendJobId: job.id,
+          creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+        }));
+        const incomingKeys = new Set(nextJobResults.flatMap((result) => getGeneratedResultMergeKeys(result)));
+        const existingResults = (matchedTerminalProject.results || []).filter((result) => {
+          const keys = getGeneratedResultMergeKeys(result);
+          return !keys.some((key) => incomingKeys.has(key));
+        });
+        const mergedResults = [...existingResults, ...nextJobResults];
+        const completedCount = mergedResults.filter(hasCompletedMediaResult).length;
+        const taskCount = Math.max(
+          Number(matchedTerminalProject.taskCount || 0) || 0,
+          Number(job.payload?.batchCount || job.payload?.count || 0) || 0,
+          mergedResults.length,
+          1,
+        );
+        projects.push({
+          ...matchedTerminalProject,
+          status: completedCount >= taskCount ? 'completed' : 'generating',
+          completedAt: completedCount >= taskCount ? toDateLabel(job.finishedAt || job.updatedAt || job.createdAt) : matchedTerminalProject.completedAt,
+          results: mergedResults,
+          taskCount,
+          completedCount,
+          subFeature: matchedTerminalProject.subFeature || subFeature,
+          sourceType: matchedTerminalProject.sourceType || 'persisted',
+          backendJobId: job.id,
+          creditsConsumed: normalizeCreditsConsumed(matchedTerminalProject.creditsConsumed) || normalizeCreditsConsumed(job.result?.creditsConsumed),
+        });
+        return;
+      }
       if (isJobAlreadyPersisted(job, persistedJobKeys)) return;
       if (projectStatus === 'completed' && urls.length === 0) return;
       if (
@@ -1154,6 +1202,25 @@ const mapJobs = (
         return;
       }
       const activeProjectId = matchedProject?.id || projectId;
+      const activeResults: ShellGeneratedResult[] = (matchedProject?.results || []).length > 0
+        ? matchedProject?.results || []
+        : [{
+            id: `${job.id}-pending`,
+            projectId: activeProjectId,
+            imageUrl: '',
+            videoUrl: undefined,
+            mediaType: mediaType === 'video' ? 'video' : 'image',
+            prompt,
+            model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+            aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
+            status: 'generating',
+            createdAt,
+            module,
+            subFeature,
+            taskId: String(job.providerTaskId || job.result?.providerTaskId || job.id || '').trim() || undefined,
+            backendJobId: job.id,
+            error: job.status === 'queued' ? '任务已提交，等待执行' : '任务正在运行',
+          }];
       projects.push({
         ...(matchedProject || {}),
         id: activeProjectId,
@@ -1161,7 +1228,7 @@ const mapJobs = (
         module,
         status: projectStatus,
         createdAt: matchedProject?.createdAt || createdAt,
-        results: matchedProject?.results || [],
+        results: activeResults,
         taskCount: matchedProject?.taskCount || Number(job.payload?.batchCount || job.payload?.count || 1) || 1,
         completedCount: matchedProject?.completedCount || 0,
         subFeature: matchedProject?.subFeature || subFeature,

@@ -44,7 +44,7 @@ import { deleteShellDraftAsset, loadShellDraftAsset, pruneShellDraftAssets, rest
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
 import { getEffectiveConcurrency } from './modules/Account/accountManagementUtils.mjs';
 import { isRecoverableKieTaskResult } from './services/kieAiService';
-import { buildStoryboardGenerationImport } from './shell/modules/Video/storyboardImportUtils.mjs';
+import { buildStoryboardBoardGenerationImport } from './shell/modules/Video/storyboardImportUtils.mjs';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -133,6 +133,12 @@ const shouldRefreshVideoAssetUrl = (url?: string, hasLocalAsset = false) => {
   if (hasLocalAsset && host === 'tempfile.redpandaai.co' && path.includes('/openrouter-chat/')) return true;
   return !/\.(mp4|mov|webm|m4v)$/i.test(path);
 };
+
+const buildGenerationSubmitLockKey = (module: AppModule, subFeature?: string) => `${module}:${subFeature || 'default'}`;
+
+const shouldGuardGenerationSubmit = (module: AppModule, subFeature?: string) => (
+  module === AppModuleObj.VIDEO && (!subFeature || subFeature === 'generation')
+);
 
 const cloneMaterialSnapshot = (material: Material) => {
   const persistedUrl = material.remoteUrl || (isTransientMaterialUrl(material.url) ? '' : material.url);
@@ -262,6 +268,41 @@ const buildProjectRemotePatch = (
     patch.oneClickMemory = { [branchKey]: state.oneClickMemory[branchKey] } as Partial<PersistedAppState['oneClickMemory']> as PersistedAppState['oneClickMemory'];
   }
   return patch;
+};
+
+const getProjectCompletedMediaCount = (project?: Pick<Project, 'results'> | null) => (
+  (project?.results || []).filter((result) => (
+    result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl)
+  )).length
+);
+
+const getProjectErrorResultCount = (project?: Pick<Project, 'results'> | null) => (
+  (project?.results || []).filter((result) => result.status === 'error').length
+);
+
+const findPersistedShellProject = (state: Partial<PersistedAppState> | null | undefined, projectId: string) => (
+  (Array.isArray(state?.shellProjects) ? state?.shellProjects : [])
+    .find((project) => String(project?.id || '').trim() === projectId)
+);
+
+const shouldPersistSyncedProjectFromJobs = (
+  project: Project,
+  state: Partial<PersistedAppState> | null | undefined,
+) => {
+  const projectId = String(project?.id || '').trim();
+  if (!projectId) return false;
+  const persistedProject = findPersistedShellProject(state, projectId) as Project | undefined;
+  if (!persistedProject) return false;
+  const nextCompletedCount = getProjectCompletedMediaCount(project);
+  const persistedCompletedCount = getProjectCompletedMediaCount(persistedProject);
+  if (nextCompletedCount > persistedCompletedCount) return true;
+  if (project.status === 'completed' && persistedProject.status !== 'completed' && nextCompletedCount > 0) return true;
+  const nextErrorCount = getProjectErrorResultCount(project);
+  const persistedErrorCount = getProjectErrorResultCount(persistedProject);
+  if (nextErrorCount > persistedErrorCount) return true;
+  return project.status === 'error'
+    && (persistedProject.status === 'planning' || persistedProject.status === 'generating')
+    && nextErrorCount > 0;
 };
 
 const buildTranslationRemotePatch = (
@@ -1302,6 +1343,7 @@ const AppContent: React.FC<{
   const [activeModule, setActiveModule] = useState<AppModule>(initialModule);
   const [pageMode, setPageMode] = useState<ShellPageMode>(initialPageMode === 'landing' && savedShellUiState.pageMode ? savedShellUiState.pageMode : initialPageMode);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [generationSubmitLocks, setGenerationSubmitLocks] = useState<Record<string, boolean>>({});
   const [pendingActionKeys, setPendingActionKeys] = useState<Record<string, boolean>>({});
   const [activeSubFeatureByModule, setActiveSubFeatureByModule] = useState<Record<string, string>>(() => ({
     ...(savedShellUiState.activeSubFeatureByModule || {}),
@@ -1316,6 +1358,7 @@ const AppContent: React.FC<{
   const currentParams = inputStateByScope[activeScopeKey]?.params || {};
   const [videoMemory, setVideoMemoryState] = useState<VideoPersistentState | null>(null);
   const taskControllersRef = useRef<Record<string, AbortController>>({});
+  const generationSubmitLocksRef = useRef<Set<string>>(new Set());
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
   const { addToast } = useToast();
 
@@ -1335,6 +1378,27 @@ const AppContent: React.FC<{
       if (!prev[key]) return prev;
       const next = { ...prev };
       delete next[key];
+      return next;
+    });
+  }, []);
+
+  const beginGenerationSubmitLock = useCallback((lockKey: string) => {
+    if (generationSubmitLocksRef.current.has(lockKey)) {
+      addToast('当前短视频任务正在提交或生成中，请等待返回后再提交。', 'warning');
+      return false;
+    }
+    generationSubmitLocksRef.current.add(lockKey);
+    setGenerationSubmitLocks((prev) => ({ ...prev, [lockKey]: true }));
+    return true;
+  }, [addToast]);
+
+  const endGenerationSubmitLock = useCallback((lockKey: string) => {
+    if (!lockKey) return;
+    generationSubmitLocksRef.current.delete(lockKey);
+    setGenerationSubmitLocks((prev) => {
+      if (!prev[lockKey]) return prev;
+      const next = { ...prev };
+      delete next[lockKey];
       return next;
     });
   }, []);
@@ -1636,6 +1700,60 @@ const AppContent: React.FC<{
     return queuedWrite;
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
 
+  const persistSyncedProjectsToSharedState = useCallback((syncedProjects: Project[]) => {
+    const projectsToPersist = syncedProjects.filter((project) => String(project?.id || '').trim());
+    if (projectsToPersist.length === 0) return Promise.resolve(true);
+    const write = async () => {
+      const {
+        buildPersistedAppState,
+        savePersistedAppState,
+        sanitizePersistedAppState,
+        upsertOneClickProjectIntoPersistedState,
+        upsertShellProjectIntoPersistedState,
+      } = await loadShellPersistenceTools();
+      const persistedBase = await resolveSharedStateBaseForWrite();
+      let nextState = buildPersistedAppState(persistedBase);
+      const touchedOneClickBranches = new Set<string>();
+      projectsToPersist.forEach((project) => {
+        const branchKey = project.module === AppModuleObj.ONE_CLICK
+          ? ONE_CLICK_REMOTE_BRANCH_BY_SUBFEATURE[project.subFeature || '']
+          : undefined;
+        if (branchKey) touchedOneClickBranches.add(branchKey);
+        nextState = upsertShellProjectIntoPersistedState(
+          project.module === AppModuleObj.ONE_CLICK
+            ? upsertOneClickProjectIntoPersistedState(nextState, project)
+            : nextState,
+          project,
+        );
+      });
+      nextState = sanitizePersistedAppState(nextState);
+      latestSharedStateRef.current = nextState;
+      savePersistedAppState(nextState, shellLocalScopeUserId);
+      const patch: Partial<PersistedAppState> = {
+        shellProjects: Array.isArray(nextState.shellProjects) ? nextState.shellProjects : [],
+      };
+      if (touchedOneClickBranches.size > 0) {
+        patch.oneClickMemory = Object.fromEntries(
+          Array.from(touchedOneClickBranches).map((branchKey) => [
+            branchKey,
+            nextState.oneClickMemory?.[branchKey as keyof PersistedAppState['oneClickMemory']],
+          ]),
+        ) as Partial<PersistedAppState['oneClickMemory']> as PersistedAppState['oneClickMemory'];
+      }
+      try {
+        await saveRemoteAppState(patch);
+        return true;
+      } catch (error) {
+        console.warn('[MEIAO] failed to persist synced shell project jobs to remote storage', error);
+        return false;
+      }
+    };
+
+    const queuedWrite = sharedStateWriteQueueRef.current.then(write, write);
+    sharedStateWriteQueueRef.current = queuedWrite.then(() => undefined, () => undefined);
+    return queuedWrite;
+  }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
+
   const setVideoMemory: React.Dispatch<React.SetStateAction<VideoPersistentState>> = useCallback((updater) => {
     setVideoMemoryState((prev) => {
       const baseState = prev || createDefaultVideoState();
@@ -1880,6 +1998,11 @@ const AppContent: React.FC<{
           .filter(Boolean),
       );
       const snapshot = buildShellDataSnapshot(latestSharedStateRef.current || {}, fetchedJobs);
+      const syncedProjectsToPersist = (snapshot.projects as Project[])
+        .filter((project) => shouldPersistSyncedProjectFromJobs(project, latestSharedStateRef.current));
+      if (syncedProjectsToPersist.length > 0) {
+        void persistSyncedProjectsToSharedState(syncedProjectsToPersist);
+      }
       const runtimeSnapshot = pruneShellRuntimeSnapshotForDeletion(
         loadShellRuntimeSnapshot(shellLocalScopeUserId),
         getRuntimeDeletionDraft(undefined, shellLocalScopeUserId),
@@ -1943,7 +2066,7 @@ const AppContent: React.FC<{
       setTasks(mergeShellTasks(runtimeSnapshot.tasks, []));
     }
     traceStartup('hydrate-shell-jobs:end');
-  }, [getRuntimeDeletionDraft, shellLocalScopeUserId]);
+  }, [getRuntimeDeletionDraft, persistSyncedProjectsToSharedState, shellLocalScopeUserId]);
 
   const resetShellWorkspaceForUser = useCallback((userId?: string | null) => {
     const scopedUiState = readShellUiState(userId);
@@ -2148,6 +2271,33 @@ const AppContent: React.FC<{
     };
   }, [pageMode, hydrateShellJobs]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    if (pageMode !== 'module') return undefined;
+    const hasActiveBackendTask = tasks.some((task) => {
+      const status = String(task.status || '');
+      return Boolean(task.backendJobId || task.id)
+        && (status === 'pending' || status === 'generating');
+    });
+    const hasActiveBackendProject = projects.some((project) => {
+      const status = String(project.status || '');
+      if (status !== 'planning' && status !== 'generating') return false;
+      return Boolean(project.backendJobId)
+        || (project.results || []).some((result) => Boolean(result.backendJobId || result.taskId));
+    });
+    if (!hasActiveBackendTask && !hasActiveBackendProject) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      void hydrateShellJobs();
+    }, 0);
+    const intervalId = window.setInterval(() => {
+      void hydrateShellJobs();
+    }, 10_000);
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.clearInterval(intervalId);
+    };
+  }, [hydrateShellJobs, pageMode, projects, tasks]);
+
   const handleModuleChange = useCallback((m: AppModule | 'landing') => {
     if (m === 'landing') { setPageMode('landing'); return; }
     if (m === AppModuleObj.SETTINGS) { setPageMode('settings'); return; }
@@ -2235,8 +2385,8 @@ const AppContent: React.FC<{
     addToast(`已添加 ${items.length} 个参考预设`, 'success');
   }, [activeSubFeature, addToast]);
 
-  const handleImportStoryboardToGeneration = useCallback((project: VideoStoryboardProject) => {
-    const imported = buildStoryboardGenerationImport(project);
+  const handleImportStoryboardToGeneration = useCallback((project: VideoStoryboardProject, boardId?: string, boardIndex?: number) => {
+    const imported = buildStoryboardBoardGenerationImport(project, { boardId, boardIndex });
     const generationScopeKey = scopeKeyFor(AppModuleObj.VIDEO, 'generation');
     setActiveModule(AppModuleObj.VIDEO);
     setActiveSubFeatureByModule((prev) => ({ ...prev, [AppModuleObj.VIDEO]: 'generation' }));
@@ -2587,6 +2737,22 @@ const AppContent: React.FC<{
     }
     const targetModule = activeModule;
     const targetSubFeature = activeSubFeature;
+    const hasActiveGuardedVideoGeneration = shouldGuardGenerationSubmit(targetModule, targetSubFeature) && (
+      projects.some((project) => (
+        project.module === AppModuleObj.VIDEO
+        && (project.subFeature || 'generation') === 'generation'
+        && project.status === 'generating'
+      ))
+      || tasks.some((task) => (
+        task.module === AppModuleObj.VIDEO
+        && (task.subFeature || 'generation') === 'generation'
+        && (task.status === 'pending' || task.status === 'generating')
+      ))
+    );
+    if (hasActiveGuardedVideoGeneration) {
+      addToast('当前已有短视频生成任务未返回，请等待成功或报错后再提交。', 'warning');
+      return;
+    }
     if (isPendingShellSubFeature(targetModule, targetSubFeature)) {
       addToast('该子功能待制作，当前先迁移 3000 已有能力。', 'warning');
       return;
@@ -2616,20 +2782,28 @@ const AppContent: React.FC<{
       : allowEmptySkuPrompt
         ? skuProjectName || generationPrompt.trim() || 'SKU 组合'
         : generationPrompt.trim();
-    const projectName = projectNameSource.slice(0, 20) + (projectNameSource.length > 20 ? '...' : '');
-    let generationMaterials = filteredMaterials;
-    try {
-      generationMaterials = await ensureMaterialRemoteUrls(filteredMaterials, targetModule);
-    } catch (error) {
+	    const projectName = projectNameSource.slice(0, 20) + (projectNameSource.length > 20 ? '...' : '');
+	    let generationMaterials = filteredMaterials;
+	    const guardedSubmitLockKey = shouldGuardGenerationSubmit(targetModule, targetSubFeature)
+	      ? buildGenerationSubmitLockKey(targetModule, targetSubFeature)
+	      : '';
+	    const hasGuardedSubmitLock = Boolean(guardedSubmitLockKey);
+	    if (hasGuardedSubmitLock && !beginGenerationSubmitLock(guardedSubmitLockKey)) {
+	      return;
+	    }
+	    try {
+	      generationMaterials = await ensureMaterialRemoteUrls(filteredMaterials, targetModule);
+	    } catch (error) {
       const message = error instanceof Error ? error.message : '素材上传失败，请重新上传后重试。';
       logShellError('shell_generation_failed', error, {
         module: targetModule,
         subFeature: targetSubFeature,
         step: 'material_upload',
-      }, `${MODULE_NAMES[targetModule] || targetModule}素材上传失败`);
-      addToast(message, 'error');
-      return;
-    }
+	      }, `${MODULE_NAMES[targetModule] || targetModule}素材上传失败`);
+	      addToast(message, 'error');
+	      if (hasGuardedSubmitLock) endGenerationSubmitLock(guardedSubmitLockKey);
+	      return;
+	    }
     const generationContext = targetModule === AppModuleObj.ONE_CLICK || targetModule === AppModuleObj.TRANSLATION
       ? cloneGenerationContext(generationPrompt, generationParams, generationMaterials)
       : undefined;
@@ -2964,13 +3138,17 @@ const AppContent: React.FC<{
       void persistProjectToSharedState(planningProject);
       setIsGenerating(true);
       let planningProviderTaskId = '';
+      let activePlanningBackendJobId = '';
       const onJobCreated = (jobId: string, providerTaskId?: string) => {
         const providerId = String(providerTaskId || '').trim();
-        if (providerId) planningProviderTaskId = providerId;
+        const backendJobId = String(jobId || '').trim();
+        if (backendJobId) activePlanningBackendJobId = backendJobId;
+        const visiblePlanningTaskId = providerId || backendJobId;
+        if (visiblePlanningTaskId) planningProviderTaskId = visiblePlanningTaskId;
         const persistedPlanningProject = {
           ...planningProject,
-          backendJobId: jobId,
-          ...(providerId ? { planningTaskId: providerId } : {}),
+          backendJobId,
+          ...(visiblePlanningTaskId ? { planningTaskId: visiblePlanningTaskId } : {}),
         };
         setProjects((prev) => prev.map((project) => (
           project.id === projectId
@@ -2979,7 +3157,7 @@ const AppContent: React.FC<{
         )));
         setTasks((prev) => prev.map((task) => (
           task.id === taskId
-            ? { ...task, backendJobId: jobId, status: 'generating', progress: Math.max(task.progress || 0, 8) }
+            ? { ...task, backendJobId, status: 'generating', progress: Math.max(task.progress || 0, 8) }
             : task
         )));
         void persistProjectToSharedState(persistedPlanningProject);
@@ -3015,8 +3193,9 @@ const AppContent: React.FC<{
           completedCount: 0,
           subFeature: targetSubFeature,
           generationContext,
+          backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
           creditsConsumed: planResult.creditsConsumed,
-          planningTaskId: planResult.taskId || planningProviderTaskId,
+          planningTaskId: planResult.taskId || planningProviderTaskId || activePlanningBackendJobId,
         };
         setProjects((prev) => prev.map((p) =>
           p.id === projectId
@@ -3037,7 +3216,8 @@ const AppContent: React.FC<{
         const failedProject: Project = {
           ...planningProject,
           status: 'error',
-          planningTaskId: planningProviderTaskId,
+          backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
+          planningTaskId: planningProviderTaskId || activePlanningBackendJobId,
           results: [{
             id: `${taskId}-error`,
             imageUrl: '',
@@ -3088,7 +3268,7 @@ const AppContent: React.FC<{
       id: taskId,
       projectId,
       module: targetModule,
-      type: 'image',
+      type: targetModule === AppModuleObj.VIDEO ? 'video' : 'image',
       status: 'pending',
       title: projectName,
       progress: 0,
@@ -3101,13 +3281,40 @@ const AppContent: React.FC<{
     setIsGenerating(true);
 
     const controller = new AbortController();
-    taskControllersRef.current[taskId] = controller;
-    let batchResults: GeneratedResult[] = [];
-    let pendingSyncProject: Project | null = null;
-    const onJobCreated = (jobId: string) => {
-      setProjects((prev) => prev.map((project) => (
-        project.id === projectId
-          ? { ...project, backendJobId: jobId }
+	    taskControllersRef.current[taskId] = controller;
+	    let batchResults: GeneratedResult[] = [];
+	    let pendingSyncProject: Project | null = null;
+	    let activeBackendJobId = '';
+	    const onJobCreated = (jobId: string) => {
+	      activeBackendJobId = String(jobId || '').trim();
+	      const pendingVideoProject: Project | null = targetModule === AppModuleObj.VIDEO
+	        ? {
+	            ...newProject,
+	            backendJobId: activeBackendJobId,
+	            status: 'generating',
+	            results: [{
+	              id: `${taskId}-pending-video`,
+	              imageUrl: '',
+	              videoUrl: undefined,
+	              mediaType: 'video',
+	              prompt: generationPrompt,
+	              model: generationParams['modelVersion'] || generationParams['model'] || 'bytedance/seedance-2-fast',
+	              aspectRatio: generationParams['ratio'] || generationParams['aspectRatio'] || 'auto',
+	              status: 'generating',
+	              createdAt: newProject.createdAt,
+	              module: targetModule,
+	              subFeature: targetSubFeature,
+	              backendJobId: activeBackendJobId || undefined,
+	              error: '任务已提交云端，等待生成结果',
+	            }],
+	            completedCount: 0,
+	            taskCount: 1,
+	            error: '任务已提交云端，等待生成结果',
+	          }
+	        : null;
+	      setProjects((prev) => prev.map((project) => (
+	        project.id === projectId
+	          ? (pendingVideoProject || { ...project, backendJobId: jobId })
           : project
       )));
       setTasks((prev) => prev.map((task) => (
@@ -3115,6 +3322,9 @@ const AppContent: React.FC<{
           ? { ...task, backendJobId: jobId, status: 'generating', progress: Math.max(task.progress || 0, 8) }
           : task
       )));
+	      if (pendingVideoProject) {
+	        void persistProjectToSharedState(pendingVideoProject);
+	      }
     };
 
     try {
@@ -3126,7 +3336,7 @@ const AppContent: React.FC<{
             subFeature: targetSubFeature,
             prompt: generationPrompt,
             params: generationParams,
-            materials: filteredMaterials,
+            materials: generationMaterials,
             signal: controller.signal,
             onJobCreated,
             publicBaseUrl,
@@ -3134,37 +3344,73 @@ const AppContent: React.FC<{
         : null;
 
       let completedProject: Project;
-      if (targetModule === AppModuleObj.VIDEO) {
-        const mediaUrl = result?.videoUrl;
-        if (!result || result.status !== 'success' || !mediaUrl) {
-          throw new Error(result?.message || '任务执行失败');
-        }
+	      if (targetModule === AppModuleObj.VIDEO) {
+	        const mediaUrl = result?.videoUrl;
+	        if (!result || result.status !== 'success' || !mediaUrl) {
+	          if (result?.status === 'generating' && result?.taskId) {
+	            pendingSyncProject = {
+	              ...newProject,
+	              backendJobId: activeBackendJobId || newProject.backendJobId,
+	              status: 'generating',
+	              results: [{
+	                id: result.taskId || `${taskId}-pending-video`,
+	                imageUrl: '',
+	                videoUrl: undefined,
+	                mediaType: 'video',
+	                prompt: result.prompt || result.message || generationPrompt,
+	                model: generationParams['modelVersion'] || generationParams['model'] || 'bytedance/seedance-2-fast',
+	                aspectRatio: generationParams['ratio'] || generationParams['aspectRatio'] || 'auto',
+	                status: 'generating',
+	                createdAt: newProject.createdAt,
+	                module: targetModule,
+	                subFeature: targetSubFeature,
+	                taskId: result.taskId,
+	                backendJobId: activeBackendJobId || undefined,
+	                error: result.message || '任务已提交云端，结果待同步',
+	              }],
+	              completedCount: 0,
+	              taskCount: 1,
+	              error: result.message || '任务已提交云端，结果待同步',
+	            };
+	            setProjects((prev) => prev.map((p) => p.id === projectId ? pendingSyncProject! : p));
+	            setTasks((prev) => prev.map((t) => (
+	              t.id === taskId
+	                ? { ...t, status: 'generating', progress: Math.max(t.progress || 0, 8), completed: 0, total: 1 }
+	                : t
+	            )));
+	            completedProject = pendingSyncProject;
+	          } else {
+	            throw new Error(result?.message || '任务执行失败');
+	          }
+	        } else {
 
-        const newResult: GeneratedResult = {
-          id: result.taskId || Date.now().toString(),
-          imageUrl: mediaUrl,
-          videoUrl: mediaUrl,
-          mediaType: 'video',
-          prompt: result.prompt || generationPrompt,
-          model: generationParams['model'] || 'gpt-image-2',
-          aspectRatio: generationParams['ratio'] || 'auto',
-          status: 'completed',
-          createdAt: newProject.createdAt,
-          module: targetModule,
-          subFeature: targetSubFeature,
-          taskId: result.taskId,
-          creditsConsumed: result.creditsConsumed,
-        };
+	          const newResult: GeneratedResult = {
+	            id: result.taskId || Date.now().toString(),
+	            imageUrl: mediaUrl,
+	            videoUrl: mediaUrl,
+	            mediaType: 'video',
+	            prompt: result.prompt || generationPrompt,
+	            model: generationParams['model'] || 'gpt-image-2',
+	            aspectRatio: generationParams['ratio'] || 'auto',
+	            status: 'completed',
+	            createdAt: newProject.createdAt,
+	            module: targetModule,
+	            subFeature: targetSubFeature,
+	            taskId: result.taskId,
+	            creditsConsumed: result.creditsConsumed,
+	          };
 
-        completedProject = {
-          ...newProject,
-          status: 'completed',
-          completedAt: newResult.createdAt,
-          results: [newResult],
-          completedCount: 1,
-          creditsConsumed: result.creditsConsumed,
-        };
-      } else if (targetModule === AppModuleObj.BUYER_SHOW || targetModule === AppModuleObj.RETOUCH) {
+	          completedProject = {
+	            ...newProject,
+	            backendJobId: activeBackendJobId || newProject.backendJobId,
+	            status: 'completed',
+	            completedAt: newResult.createdAt,
+	            results: [newResult],
+	            completedCount: 1,
+	            creditsConsumed: result.creditsConsumed,
+	          };
+	        }
+	      } else if (targetModule === AppModuleObj.BUYER_SHOW || targetModule === AppModuleObj.RETOUCH) {
         const onSpecialItemCompleted = (item: any, completed: number, total: number) => {
           const nextResult: GeneratedResult = {
             id: item.taskId || `${taskId}-${completed - 1}`,
@@ -3439,11 +3685,12 @@ const AppContent: React.FC<{
       void persistProjectToSharedState(failedProject);
       setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, status: 'error', progress: 100 } : t));
       addToast(message, 'error');
-    } finally {
-      delete taskControllersRef.current[taskId];
-      setIsGenerating(false);
-    }
-  }, [promptText, activeModule, activeSubFeature, currentParams, filteredMaterials, addToast, hydrateShellData, setScopedPromptText, apiConfig, videoMemory, setVideoMemory, persistProjectToSharedState, publicBaseUrl, ensureMaterialRemoteUrls, currentUser, logShellError]);
+	    } finally {
+	      delete taskControllersRef.current[taskId];
+	      if (hasGuardedSubmitLock) endGenerationSubmitLock(guardedSubmitLockKey);
+	      setIsGenerating(false);
+	    }
+	  }, [promptText, activeModule, activeSubFeature, currentParams, filteredMaterials, projects, tasks, addToast, hydrateShellData, setScopedPromptText, apiConfig, videoMemory, setVideoMemory, persistProjectToSharedState, publicBaseUrl, ensureMaterialRemoteUrls, currentUser, logShellError, beginGenerationSubmitLock, endGenerationSubmitLock]);
 
   const createRemoteMaterial = useCallback((id: string, type: string, url: string, fileName: string, subFeature?: string): Material => ({
     id,
@@ -3454,25 +3701,25 @@ const AppContent: React.FC<{
     subFeature,
   }), []);
 
-  const buildVariantMaterials = useCallback((baseMaterials: Record<string, Material[]>, plan: PlanItem, subFeature: string) => {
+  const buildVariantMaterials = useCallback((
+    baseMaterialsOrPlan: Record<string, Material[]> | PlanItem,
+    planOrSubFeature: PlanItem | string,
+    maybeSubFeature?: string,
+  ) => {
+    const hasBaseMaterials = typeof planOrSubFeature !== 'string';
+    const baseMaterials = hasBaseMaterials ? baseMaterialsOrPlan as Record<string, Material[]> : {};
+    const plan = hasBaseMaterials ? planOrSubFeature as PlanItem : baseMaterialsOrPlan as PlanItem;
+    const subFeature = hasBaseMaterials ? String(maybeSubFeature || '') : String(planOrSubFeature || '');
     const next: Record<string, Material[]> = Object.fromEntries(
-      Object.entries(baseMaterials).map(([key, list]) => [key, [...list]])
+      Object.entries(baseMaterials || {}).map(([type, items]) => [type, Array.isArray(items) ? [...items] : []]),
     );
-    const ensureMaterial = (key: string, item: Material) => {
-      const list = next[key] || [];
-      const exists = list.some((current) => (current.remoteUrl || current.url) === (item.remoteUrl || item.url));
-      if (!exists) next[key] = [...list, item];
-    };
-    if (plan.sourceReferenceUrl) {
-      const normalizedReferenceUrl = resolvePublicAssetUrl(plan.sourceReferenceUrl, publicBaseUrl);
-      if (normalizedReferenceUrl) {
-        ensureMaterial('reference', createRemoteMaterial(`ref-${plan.id}`, 'reference', normalizedReferenceUrl, 'first-image-reference.png', subFeature));
-      }
-    }
     if (plan.sourceResultUrl) {
       const normalizedResultUrl = resolvePublicAssetUrl(plan.sourceResultUrl, publicBaseUrl);
       if (normalizedResultUrl) {
-        ensureMaterial('reference', createRemoteMaterial(`prev-${plan.id}`, 'reference', normalizedResultUrl, 'first-image-variant-base.png', subFeature));
+        next.reference = [
+          createRemoteMaterial(`prev-${plan.id}`, 'reference', normalizedResultUrl, 'first-image-variant-base.png', subFeature),
+          ...(next.reference || []),
+        ];
       }
     }
     return next;
@@ -4503,27 +4750,18 @@ const AppContent: React.FC<{
         addToast('当前裂变基准方案缺失，暂时无法继续裂变', 'warning');
         return;
       }
-      if (!matchedPlan.sourceReferenceUrl) {
-        addToast('当前结果缺少主图参考，暂时无法继续裂变', 'warning');
-        return;
-      }
-      const normalizedReferenceUrl = resolvePublicAssetUrl(matchedPlan.sourceReferenceUrl, publicBaseUrl);
-      if (!normalizedReferenceUrl) {
-        addToast('当前结果缺少可用于模型读取的主图参考地址，请重新上传后再试', 'warning');
-        return;
-      }
-
       const variantLabel = mode === 'scene' ? '换场景' : mode === 'palette' ? '换配色' : '自定义';
+      const fissionInstruction = instruction.trim();
       const variantPlan: PlanItem = {
         ...matchedPlan,
         id: `plan-variant-${Date.now()}`,
         title: `${matchedPlan.title || project.name} - ${variantLabel}`,
         selected: true,
-        sourceReferenceUrl: normalizedReferenceUrl,
+        sourceReferenceUrl: undefined,
         variationMode: mode,
-        variationInstruction: instruction.trim(),
+        variationInstruction: undefined,
         sourceResultUrl: resolvePublicAssetUrl(result.imageUrl, publicBaseUrl) || '',
-        schemeContent: matchedPlan.schemeContent || result.prompt,
+        schemeContent: fissionInstruction || `按${variantLabel}方向继续裂变这张生成图。`,
       };
       if (!variantPlan.sourceResultUrl) {
         addToast('当前结果缺少可用于模型读取的生成图地址，请重新生成后再试', 'warning');
@@ -4543,14 +4781,14 @@ const AppContent: React.FC<{
         subFeature: 'first_image',
         sourceType: 'persisted',
       };
-      const variantMaterials = buildVariantMaterials(filteredMaterials, variantPlan, 'first_image');
+      const variantMaterials = buildVariantMaterials(variantPlan, 'first_image');
       setProjects((prev) => [variantProject, ...prev]);
       await persistProjectToSharedState(variantProject);
       await runOneClickPlanGeneration(variantProject, [variantPlan], variantMaterials);
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, filteredMaterials, addToast, buildVariantMaterials, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, addToast, buildVariantMaterials, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, beginExclusiveAction, endExclusiveAction]);
 
   const handleRecoverResult = useCallback((projectId: string) => {
     void projectId;
@@ -4615,12 +4853,27 @@ const AppContent: React.FC<{
     activeSubFeature,
     getDefaultSubFeature: (module) => getDefaultSubFeature(module as AppModule),
   });
-  const filteredTasks = tasks.filter((t) => {
-    if (pageMode !== 'module') return false;
-    return t.module === activeModule && (t.subFeature || getDefaultSubFeature(t.module)) === activeSubFeature;
-  });
+	  const filteredTasks = tasks.filter((t) => {
+	    if (pageMode !== 'module') return false;
+	    return t.module === activeModule && (t.subFeature || getDefaultSubFeature(t.module)) === activeSubFeature;
+	  });
+	  const currentGenerationSubmitLockKey = buildGenerationSubmitLockKey(activeModule, activeSubFeature);
+	  const hasCurrentActiveGuardedVideoGeneration = shouldGuardGenerationSubmit(activeModule, activeSubFeature) && (
+	    filteredProjects.some((project) => (
+	      project.module === AppModuleObj.VIDEO
+	      && (project.subFeature || 'generation') === 'generation'
+	      && project.status === 'generating'
+	    ))
+	    || filteredTasks.some((task) => (
+	      task.module === AppModuleObj.VIDEO
+	      && (task.subFeature || 'generation') === 'generation'
+	      && (task.status === 'pending' || task.status === 'generating')
+	    ))
+	  );
+	  const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit(activeModule, activeSubFeature)
+	    && (Boolean(generationSubmitLocks[currentGenerationSubmitLockKey]) || hasCurrentActiveGuardedVideoGeneration);
 
-  const activeModuleView = (() => {
+	  const activeModuleView = (() => {
     switch (pageMode) {
       case 'landing': return <LandingPage onNavigate={handleNavigateFromLanding} />;
       case 'settings': return <GlobalApiSettings currentUser={currentUser} onCurrentUserChange={handleCurrentUserChange} />;
@@ -4790,9 +5043,10 @@ const AppContent: React.FC<{
                 activeSubFeature={activeSubFeature}
                 promptText={promptText}
                 onPromptChange={setScopedPromptText}
-                onGenerate={handleGenerate}
-                isGenerating={isGenerating}
-                currentParams={currentParams}
+	                onGenerate={handleGenerate}
+	                isGenerating={isGenerating}
+	                isSubmitLocked={isCurrentGenerationSubmitLocked}
+	                currentParams={currentParams}
                 onParamChange={handleParamChange}
                 materials={filteredMaterials}
                 oneClickReferencePresets={oneClickReferencePresets}

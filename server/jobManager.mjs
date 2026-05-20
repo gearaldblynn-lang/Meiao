@@ -17,6 +17,16 @@ const parseJsonValue = (value, fallback = null) => {
 
 const serializeJsonValue = (value) => JSON.stringify(value ?? null);
 
+const normalizeReusablePayload = (value) => {
+  if (Array.isArray(value)) return value.map(normalizeReusablePayload);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => key !== 'requestId')
+      .map(([key, entryValue]) => [key, normalizeReusablePayload(entryValue)])
+  );
+};
+
 const toSafeJobConcurrency = (value, fallback = DEFAULT_JOB_CONCURRENCY) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -71,7 +81,7 @@ export const findReusableJobSubmission = ({
 }) => {
   if (!Array.isArray(jobs) || jobs.length === 0) return null;
 
-  const serializedPayload = serializeJsonValue(payload && typeof payload === 'object' ? payload : {});
+  const serializedPayload = serializeJsonValue(normalizeReusablePayload(payload && typeof payload === 'object' ? payload : {}));
   const normalizedModule = String(module || 'system').slice(0, 60);
   const normalizedTaskType = String(taskType || 'unknown').slice(0, 80);
   const normalizedProvider = String(provider || 'internal').slice(0, 40);
@@ -84,7 +94,7 @@ export const findReusableJobSubmission = ({
       String(job?.provider || '') === normalizedProvider &&
       REUSABLE_JOB_STATUSES.has(String(job?.status || '')) &&
       Number(job?.createdAt || 0) >= createdAfter &&
-      serializeJsonValue(job?.payload && typeof job.payload === 'object' ? job.payload : {}) === serializedPayload
+      serializeJsonValue(normalizeReusablePayload(job?.payload && typeof job.payload === 'object' ? job.payload : {})) === serializedPayload
     ))
     .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
 

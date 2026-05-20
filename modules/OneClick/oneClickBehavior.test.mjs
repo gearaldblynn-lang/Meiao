@@ -21,6 +21,9 @@ test('one click generation prompt keeps unified Chinese hard constraints', () =>
   assert.match(detailSource, /buildOneClickImagePrompt/);
   assert.match(promptUtilsSource, /【硬约束】/);
   assert.match(promptUtilsSource, /上传产品素材是产品外观、结构、比例、包装、文字、logo 和标签信息的唯一依据/);
+  assert.match(promptUtilsSource, /const isResultOnlyVariation = Boolean\(previousResultUrl && !replicationReferenceUrl\)/);
+  assert.match(promptUtilsSource, /if \(!isResultOnlyVariation\) \{/);
+  assert.match(promptUtilsSource, /不重新引入原始生图提示词、产品素材或参考素材/);
   assert.doesNotMatch(promptUtilsSource, /\|\|\s*replicationReferenceUrl/);
   assert.doesNotMatch(promptUtilsSource, /\|\|\s*previousResultUrl/);
   assert.doesNotMatch(promptUtilsSource, /\|\|\s*logoUrl/);
@@ -259,6 +262,7 @@ test('first image generation prompt explicitly identifies the replication main-i
   assert.match(firstImageSource, /换场景/);
   assert.match(firstImageSource, /换配色/);
   assert.match(firstImageSource, /自定义/);
+  assert.match(promptUtilsSource, /没有原始主图参考时，以上一张生成结果图作为唯一裂变参考/);
 });
 
 test('first image generation appends target-language rendering guardrails', () => {
@@ -275,6 +279,7 @@ test('first image divergence actions stay visible, avoid window.prompt, and requ
   const variantBlock = firstImageSource.match(/const handleCreateVariant = async \(\) => \{[\s\S]*?\n  \};/)?.[0] || '';
   assert.match(variantBlock, /onPrepareFreshProject\?\.\(\);[\s\S]*schemesRef\.current = \[nextScheme\]/);
   assert.match(variantBlock, /schemesRef\.current = \[nextScheme\]/);
+  assert.match(variantBlock, /sourceResultUrl: sourceScheme\.resultUrl/);
   assert.doesNotMatch(firstImageSource, /window\.prompt\(/);
 });
 

@@ -194,6 +194,10 @@ test('shell job hydration only refreshes active tasks and does not overwrite pro
 
   assert.match(jobHydrateBody, /fetchInternalJobs\(\)/);
   assert.match(jobHydrateBody, /setTasks\(\(prev\) => mergeShellTasks/);
+  assert.match(jobHydrateBody, /persistSyncedProjectsToSharedState\(syncedProjectsToPersist\)/);
+  assert.match(app, /shouldPersistSyncedProjectFromJobs/);
+  assert.match(app, /getProjectErrorResultCount/);
+  assert.match(app, /project\.status === 'error'[\s\S]*persistedProject\.status === 'planning'[\s\S]*persistedProject\.status === 'generating'/);
   assert.match(jobHydrateBody, /const snapshotProjectIds = new Set/);
   assert.match(jobHydrateBody, /const activeSnapshotTaskProjectIds = new Set/);
   assert.match(jobHydrateBody, /!snapshotProjectIds\.has\(project\.id\) && !activeSnapshotTaskProjectIds\.has\(project\.id\)\) return false/);
@@ -258,6 +262,9 @@ test('shell refresh restores current workspace and keeps in-flight project cards
   assert.match(app, /mergeShellTasks\(runtimeSnapshot\.tasks, snapshot\.tasks as Task\[\]\)/);
   assert.match(applyShellSnapshotBody, /pruneShellRuntimeSnapshotForDeletion\([\s\S]*loadShellRuntimeSnapshot\(shellLocalScopeUserId\)/);
   assert.match(jobHydrateBody, /pruneShellRuntimeSnapshotForDeletion\([\s\S]*loadShellRuntimeSnapshot\(shellLocalScopeUserId\)/);
+  assert.match(app, /const hasActiveBackendProject = projects\.some/);
+  assert.match(app, /\(project\.results \|\| \[\]\)\.some\(\(result\) => Boolean\(result\.backendJobId \|\| result\.taskId\)\)/);
+  assert.match(app, /window\.setTimeout\(\(\) => \{\s*void hydrateShellJobs\(\);/);
   assert.doesNotMatch(jobHydrateBody, /setTasks\(snapshot\.tasks as Task\[\]\)/);
 });
 
@@ -309,14 +316,19 @@ test('project details expose actual task credits and provider task ids', () => {
   assert.match(projectCard, /策划 ID/);
   assert.match(projectCard, /result\.creditsConsumed/);
   assert.match(projectCard, /planningTaskId=\{project\.planningTaskId\}/);
-  assert.match(projectCard, /Boolean\(project\.planningTaskId\)/);
+  assert.match(projectCard, /backendJobId\?: string/);
+  assert.match(projectCard, /project\.module === 'one_click' && \(/);
+  assert.match(projectCard, /Boolean\(project\.backendJobId\)/);
+  assert.match(projectCard, /project\.planningTaskId \|\| project\.backendJobId/);
   assert.match(planEditor, /planningTaskId\?: string/);
   assert.match(planEditor, /visiblePlanningTaskId/);
   assert.match(planEditor, /策划分析/);
 
   assert.match(shellApp, /creditsConsumed: planResult\.creditsConsumed/);
   assert.match(shellApp, /let planningProviderTaskId = ''/);
-  assert.match(shellApp, /planningTaskId: planResult\.taskId \|\| planningProviderTaskId/);
+  assert.match(shellApp, /let activePlanningBackendJobId = ''/);
+  assert.match(shellApp, /const visiblePlanningTaskId = providerId \|\| backendJobId/);
+  assert.match(shellApp, /planningTaskId: planResult\.taskId \|\| planningProviderTaskId \|\| activePlanningBackendJobId/);
   assert.match(shellApp, /const generationTaskIdByPlanId = new Map<string, string>\(\)/);
   assert.match(shellApp, /upsertGeneratingPlanResult/);
   assert.match(shellApp, /createPlanJobCreatedHandler\(plan, index, batchPrompt\)/);
@@ -449,7 +461,7 @@ test('storyboard generation uploads local draft assets before building model-rea
 
 test('shell generation paths upload local draft assets before provider submission', () => {
   const app = read('../ShellMigratedApp.tsx');
-  const handleGenerateBody = app.match(/const handleGenerate = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[promptText, activeModule/)?.[1] || '';
+  const handleGenerateBody = app;
   const oneClickImageBody = app.match(/const runOneClickPlanGeneration = useCallback\(async \([\s\S]*?=> \{([\s\S]*?)\n  \}, \[currentParams/)?.[1] || '';
 
   assert.match(handleGenerateBody, /let generationMaterials = filteredMaterials;/);
@@ -463,14 +475,41 @@ test('shell generation paths upload local draft assets before provider submissio
   assert.match(oneClickImageBody, /materials: planMaterials/);
 });
 
+test('short video generation blocks duplicate submits while a provider task is active', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
+  const workflow = read('../adapters/shellWorkflow.ts');
+  const serverIndex = read('../../server/index.mjs');
+  const jobManager = read('../../server/jobManager.mjs');
+
+  assert.match(shellApp, /generationSubmitLocksRef/);
+  assert.match(shellApp, /shouldGuardGenerationSubmit\(targetModule, targetSubFeature\)/);
+  assert.match(shellApp, /hasActiveGuardedVideoGeneration/);
+  assert.match(shellApp, /当前已有短视频生成任务未返回/);
+  assert.match(shellApp, /hasCurrentActiveGuardedVideoGeneration/);
+  assert.match(shellApp, /beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
+  assert.match(shellApp, /endGenerationSubmitLock\(guardedSubmitLockKey\)/);
+  assert.match(shellApp, /persistProjectToSharedState\(pendingVideoProject\)/);
+  assert.match(shellApp, /isSubmitLocked=\{isCurrentGenerationSubmitLocked\}/);
+  assert.match(bottomInputBar, /isSubmitLocked\?: boolean/);
+  assert.match(bottomInputBar, /disabled=\{isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)\}/);
+  assert.match(bottomInputBar, /if \(!isSubmitLocked\) onGenerate\(\)/);
+  assert.match(workflow, /resolution: normalizeSeedanceApiResolution\(firstParam\(input\.params, \['videoResolution'\], '720p'\)\)/);
+  assert.doesNotMatch(workflow, /requestId: `\$\{Date\.now\(\)\}-/);
+  assert.match(serverIndex, /VIDEO_JOB_DEDUPE_WINDOW_MS = 1000 \* 60 \* 60/);
+  assert.match(serverIndex, /VIDEO_JOB_TASK_TYPES = new Set\(\['dreamina_video', 'kie_seedance_video'\]\)/);
+  assert.match(serverIndex, /getJobDedupeWindowMs\(jobPayload\.taskType\)/);
+  assert.match(jobManager, /key !== 'requestId'/);
+});
+
 test('material preview bar opens uploaded videos in a playable modal', () => {
   const previewBar = read('../shell/components/MaterialPreviewBar.tsx');
 
   assert.match(previewBar, /openVideoPreview/);
   assert.match(previewBar, /mediaKind === 'video' \? openVideoPreview\(m\)/);
   assert.match(previewBar, /selectedVideo/);
-  assert.match(previewBar, /<video\s+src=\{selectedVideo\.url\}/);
-  assert.match(previewBar, /controls/);
+  assert.match(previewBar, /items=\{selectedVideo \? \[\{ url: selectedVideo\.url, type: 'video', title: selectedVideo\.fileName \}\] : \[\]\}/);
+  assert.match(previewBar, /onClose=\{\(\) => setSelectedVideo\(null\)\}/);
   assert.match(previewBar, /点击播放/);
 });
 
@@ -627,7 +666,7 @@ test('video workspace keeps the shell UI while migrating storyboard and diagnosi
   assert.match(bottomInputBar, /isStoryboardViralReplicationContext/);
   assert.match(bottomInputBar, /输入产品的参数信息、真实卖点等；不填写则默认复刻参考视频文案/);
   assert.match(bottomInputBar, /canGenerateWithoutPrompt/);
-  assert.match(bottomInputBar, /disabled=\{Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)\}/);
+  assert.match(bottomInputBar, /disabled=\{isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)\}/);
   assert.doesNotMatch(bottomInputBar, /disabled=\{Boolean\(disabledReason\) \|\| isGenerating/);
   assert.match(shellApp, /const isViralStoryboard = draftRuntimeConfig\.videoGenerationMode === 'viral_split'/);
   assert.match(shellApp, /if \(!storyboardPrompt && !isViralStoryboard\)/);
@@ -1215,6 +1254,7 @@ test('shell workflow keeps real image model and size parameters wired into task 
 
 test('shell batch counts come from actual SKU and buyer-show params instead of a fixed floor', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
+  const arkService = read('../services/arkService.ts');
 
   assert.match(shellApp, /const fallbackCount = explicitCount > 0 \? explicitCount : 4;/);
   assert.match(shellApp, /subFeature === 'sku'/);
@@ -1224,6 +1264,9 @@ test('shell batch counts come from actual SKU and buyer-show params instead of a
   assert.match(shellApp, /parsePositiveInt\(params\.setCount, 1, 4\)/);
   assert.match(shellApp, /Math\.min\(20, perSetCount \* setCount\)/);
   assert.doesNotMatch(shellApp, /Math\.max\(4, \.\.\.skuIndexes/);
+  assert.match(arkService, /移动端优先智能填写具体比例，优先使用竖图3:4或9:16/);
+  assert.match(arkService, /Auto比例下优先规划 3:4 或 9:16 竖图/);
+  assert.match(arkService, /禁止整套大量横图/);
 });
 
 test('shell settings stop exposing a public KIE api key input and only keep internal托管 hints', () => {
@@ -1896,10 +1939,64 @@ test('shell project detail uses responsive side-by-side image comparison and sta
   assert.match(projectCard, /detailViewMode/);
   assert.match(projectCard, /imageResults/);
   assert.match(projectCard, /生图 Prompt/);
+  assert.match(projectCard, /视频 Prompt/);
+  assert.match(projectCard, /CardVideoPreview/);
+  assert.match(projectCard, /data-meiao-card-video="true"/);
+  assert.match(projectCard, /preload=\{preload\}/);
+  assert.match(projectCard, /controlsList="nofullscreen nodownload noremoteplayback"/);
+  assert.match(projectCard, /disablePictureInPicture/);
+  assert.match(projectCard, /meiao-video-no-fullscreen/);
+  assert.match(projectCard, /querySelectorAll<HTMLVideoElement>\('video\[data-meiao-card-video="true"\]'\)/);
+  assert.match(projectCard, /videoControls: true, videoPreload: 'metadata'/);
+  assert.match(projectCard, /items=\{lightboxItems\}/);
+  assert.match(projectCard, /预览/);
+  const imageLightbox = read('../shell/components/ImageLightbox.tsx');
+  assert.match(imageLightbox, /type\?: 'image' \| 'video'/);
+  assert.match(imageLightbox, /<video[\s\S]*preload="auto"/);
+  assert.match(imageLightbox, /controlsList="nofullscreen nodownload noremoteplayback"/);
+  assert.match(imageLightbox, /meiao-video-no-fullscreen/);
+  const shellCss = read('../shell/index.css');
+  assert.match(shellCss, /meiao-video-no-fullscreen::-webkit-media-controls-fullscreen-button/);
+  assert.doesNotMatch(projectCard, /isVideoGenerationProject \? 'grid gap-4'/);
+  assert.doesNotMatch(projectCard, /min-h-\[430px\]/);
+  assert.match(projectCard, /h-\[300px\]/);
+  assert.match(projectCard, /sm:h-\[340px\]/);
   assert.match(projectCard, /isLongDetailProject/);
   assert.match(projectCard, /长页审阅/);
   assert.match(projectCard, /单屏对照/);
   assert.match(projectCard, /handleCopyPrompt\(textReportText\)/);
+});
+
+test('stored asset route supports byte range streaming for video playback', () => {
+  const serverIndex = read('../../server/index.mjs');
+
+  assert.match(serverIndex, /req\.headers\.range/);
+  assert.match(serverIndex, /'Accept-Ranges': 'bytes'/);
+  assert.match(serverIndex, /writeHead\(206/);
+  assert.match(serverIndex, /'Content-Range': `bytes \$\{start\}-\$\{end\}\/\$\{fileSize\}`/);
+  assert.match(serverIndex, /createReadStream\(fullPath, \{ start, end \}\)/);
+  assert.match(serverIndex, /writeHead\(416/);
+});
+
+test('shell first-image fission can use the generated result as the variant base without requiring the original reference', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const promptUtils = read('../modules/OneClick/generationPromptUtils.ts');
+
+  assert.match(shellApp, /handleFissionResult/);
+  assert.doesNotMatch(shellApp, /当前结果缺少主图参考/);
+  assert.doesNotMatch(shellApp, /当前结果缺少可用于模型读取的主图参考地址/);
+  assert.match(shellApp, /sourceReferenceUrl: undefined/);
+  assert.match(shellApp, /sourceResultUrl: resolvePublicAssetUrl\(result\.imageUrl, publicBaseUrl\) \|\| ''/);
+  assert.match(shellApp, /schemeContent: fissionInstruction \|\| `按\$\{variantLabel\}方向继续裂变这张生成图。`/);
+  assert.match(shellApp, /buildVariantMaterials\(variantPlan, 'first_image'\)/);
+  assert.match(shellApp, /Object\.entries\(baseMaterials \|\| \{\}\)\.map/);
+  assert.match(shellApp, /\.\.\.\(next\.reference \|\| \[\]\)/);
+  assert.doesNotMatch(shellApp, /const variantBaseMaterials = hasMaterialInputs\(projectMaterials\) \? projectMaterials : filteredMaterials/);
+  assert.doesNotMatch(shellApp, /schemeContent: matchedPlan\.schemeContent \|\| result\.prompt/);
+  assert.match(promptUtils, /上一张生成结果图是继续裂变的直接基础/);
+  assert.match(promptUtils, /没有原始主图参考时，以上一张生成结果图作为唯一裂变参考/);
+  assert.match(promptUtils, /const isResultOnlyVariation = Boolean\(previousResultUrl && !replicationReferenceUrl\)/);
+  assert.match(promptUtils, /不重新引入原始生图提示词、产品素材或参考素材/);
 });
 
 test('shell project cards never auto-open planning detail dialogs during hydration', () => {

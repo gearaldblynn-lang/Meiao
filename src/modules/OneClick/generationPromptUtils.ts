@@ -42,7 +42,16 @@ export const buildOneClickImagePrompt = ({
   const imageRoleLines: string[] = [];
   const priorityLines: string[] = [];
   const replacementLines: string[] = [];
-  priorityLines.push('上传产品素材是产品外观、结构、比例、包装、文字、logo 和标签信息的唯一依据；产品包装上的文字、logo、品牌名和标签信息不得去除或改写。');
+  const isResultOnlyVariation = Boolean(previousResultUrl && !replicationReferenceUrl);
+  if (!isResultOnlyVariation) {
+    priorityLines.push('上传产品素材是产品外观、结构、比例、包装、文字、logo 和标签信息的唯一依据；产品包装上的文字、logo、品牌名和标签信息不得去除或改写。');
+  }
+
+  if (previousResultUrl) {
+    const safePreviousResultUrl = resolvePublicAssetUrl(previousResultUrl, publicBaseUrl);
+    imageRoleLines.push(safePreviousResultUrl ? `上一张生成结果图（图片URL）：${safePreviousResultUrl}` : '上一张生成结果图（图片URL）');
+    priorityLines.push('上一张生成结果图是继续裂变的直接基础，继承其产品主体、结构关系、卖点层级与版式骨架，只按当前裂变要求调整。');
+  }
 
   if (replicationReferenceUrl) {
     const safeReferenceUrl = resolvePublicAssetUrl(replicationReferenceUrl, publicBaseUrl);
@@ -53,13 +62,12 @@ export const buildOneClickImagePrompt = ({
     replacementLines.push(logoUrl
       ? '去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案；原位置用品牌logo图或通用信息补足。'
       : '去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案；未上传品牌 logo 时，品牌/店铺/logo/官方背书位统一写通用信息，不写官方自营/旗舰店或具体品牌名。');
-    if (previousResultUrl) {
-      const safePreviousResultUrl = resolvePublicAssetUrl(previousResultUrl, publicBaseUrl);
-      imageRoleLines.push(safePreviousResultUrl ? `上一张生成结果图（图片URL）：${safePreviousResultUrl}` : '上一张生成结果图（图片URL）');
-      priorityLines.push('上一张生成结果图是继续裂变的直接基础，继承其产品主体、结构关系、卖点层级与版式骨架，只按当前裂变要求调整。');
-    } else {
+    if (!previousResultUrl) {
       replacementLines.push('所有替换内容只能基于上传产品的真实信息与卖点，不得脱离产品事实自由编造。');
     }
+  } else if (previousResultUrl) {
+    priorityLines.push('没有原始主图参考时，以上一张生成结果图作为唯一裂变参考，不要求额外上传参考图。');
+    replacementLines.push('只根据上一张生成结果图和本次裂变修改要求进行局部或整体调整，不重新引入原始生图提示词、产品素材或参考素材。');
   } else {
     priorityLines.push('严格按照当前方案执行画面内容、主体摆放、卖点层级与文案排版，不得擅自改成另一种风格或结构。');
     replacementLines.push('所有延展信息都只能基于上传产品的真实信息与卖点，不得脱离产品事实自由编造。');
@@ -73,7 +81,7 @@ export const buildOneClickImagePrompt = ({
     const safeLogoUrl = resolvePublicAssetUrl(logoUrl, publicBaseUrl);
     imageRoleLines.push(safeLogoUrl ? `品牌logo图（图片URL）：${safeLogoUrl}` : '品牌logo图（图片URL）');
     replacementLines.push('品牌logo图仅用于识别和还原我方品牌标识；最终画面不得带入产品素材图或参考图中的竞品 logo、他牌标识或具体品牌/店铺名。');
-  } else {
+  } else if (!isResultOnlyVariation) {
     replacementLines.push('不得把产品素材图上的logo或参考图logo提取成我方独立品牌元素使用；若执行内容写了具体品牌/店铺/logo文字，改用通用信息。');
   }
 
