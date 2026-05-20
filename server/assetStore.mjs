@@ -150,7 +150,7 @@ export const ensureAssetSchema = async (pool) => {
       height INT NOT NULL DEFAULT 0,
       provider VARCHAR(40) NOT NULL DEFAULT 'internal',
       provider_source_url TEXT NULL,
-      job_id VARCHAR(24) NULL,
+      job_id VARCHAR(120) NULL,
       public_url TEXT NOT NULL,
       created_at BIGINT NOT NULL,
       updated_at BIGINT NOT NULL,
@@ -162,6 +162,7 @@ export const ensureAssetSchema = async (pool) => {
       INDEX idx_stored_assets_job_id (job_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
+  await pool.query('ALTER TABLE stored_assets MODIFY COLUMN job_id VARCHAR(120) NULL');
 };
 
 const createAssetRecord = async (pool, record) => {

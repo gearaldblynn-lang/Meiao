@@ -6,9 +6,10 @@ import {
   VideoStoryboardConfig,
   VideoStoryboardShot,
 } from '../types.ts';
-import { createInternalJob, waitForInternalJob, safeCreateInternalLog } from './internalApi';
+import { createInternalJob, fetchSystemConfig, waitForInternalJob, safeCreateInternalLog } from './internalApi';
 import { processWithKieAi, recoverKieAiTask } from './kieAiService';
 import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../utils/gptImage2.mjs';
+import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 
 const logStoryboardEvent = (
   action: string,
@@ -34,6 +35,38 @@ const ACTOR_LABELS: Record<VideoStoryboardConfig['actorType'], string> = {
   '3d_digital_human': '3D Digital Human',
   cartoon_character: 'Cartoon Character',
 };
+
+let cachedPublicBaseUrl = '';
+let cachedPublicBaseUrlAt = 0;
+const PUBLIC_BASE_URL_CACHE_TTL_MS = 30_000;
+
+const resolveRuntimePublicBaseUrl = async () => {
+  if (cachedPublicBaseUrl && Date.now() - cachedPublicBaseUrlAt < PUBLIC_BASE_URL_CACHE_TTL_MS) {
+    return cachedPublicBaseUrl;
+  }
+  const result = await fetchSystemConfig();
+  const nextBaseUrl = String(result.config.publicBaseUrl || '').trim();
+  cachedPublicBaseUrl = nextBaseUrl;
+  cachedPublicBaseUrlAt = Date.now();
+  return nextBaseUrl;
+};
+
+const requireModelAssetUrl = (value: string, publicBaseUrl: string, label: string) => {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    throw new Error(`${label} 没有可用于模型读取的公网地址，请重新上传后重试。`);
+  }
+  const safeUrl = resolvePublicAssetUrl(raw, publicBaseUrl);
+  if (!safeUrl) {
+    throw new Error(`${label} 没有可用于模型读取的公网地址，请重新上传后重试。`);
+  }
+  return safeUrl;
+};
+
+const requireModelAssetUrls = (values: string[], publicBaseUrl: string, label: string) =>
+  (Array.isArray(values) ? values : [])
+    .map((value, index) => requireModelAssetUrl(value, publicBaseUrl, `${label}${index + 1}`))
+    .filter(Boolean);
 
 const getSplitRanges = (config: VideoStoryboardConfig) => {
   if (config.duration !== '30s') {
@@ -83,7 +116,7 @@ const getPerShotTimingGuide = (config: VideoStoryboardConfig) => {
   };
 };
 
-const buildScriptRequestPrompt = (config: VideoStoryboardConfig, sceneDescription: string) => {
+const buildScriptRequestPrompt = (config: VideoStoryboardConfig, sceneDescription: string, referenceVideoUrl = '') => {
   const timingGuide = getPerShotTimingGuide(config);
   const isNoRealFace = config.actorType === 'no_real_face';
   const actorInstruction =
@@ -105,7 +138,7 @@ const buildScriptRequestPrompt = (config: VideoStoryboardConfig, sceneDescriptio
   const viralInstruction = config.videoGenerationMode === 'viral_split'
     ? `\n爆款裂变要求：
 - 当前模式：爆款裂变。
-- 参考爆款视频：${config.uploadedReferenceVideoUrl || '已上传占位，分析逻辑后续接入'}。
+- 参考爆款视频：${referenceVideoUrl || '已上传占位，分析逻辑后续接入'}。
 - 裂变修改幅度：${config.viralVariationStrength === 'custom' ? (config.viralCustomVariationStrength || '自定义') : `${config.viralVariationStrength}%`}。
 - 不需要遵循用户单独填写的脚本逻辑，请直接按爆款视频的节奏、卖点组织和市场语言做商品替换式裂变。`
     : '';
@@ -162,7 +195,7 @@ E Example 示例
     "prompt": "clean product on tabletop, soft side light, commercial frame",
     "script": "分镜1（2秒）\\n画面：产品位于桌面中央。\\n动作：镜头轻推近。\\n口播：..."
   }
-] 
+]
   `.trim();
 };
 
@@ -208,21 +241,32 @@ export const generateStoryboardScript = async (
     duration: config.duration,
     imageCount: imageUrls.length,
   });
-  const prompt = buildScriptRequestPrompt(config, sceneDescription);
+  const publicBaseUrl = await resolveRuntimePublicBaseUrl();
+  const safeImageUrls = requireModelAssetUrls(imageUrls, publicBaseUrl, '参考图');
+  const safeReferenceVideoUrl = config.uploadedReferenceVideoUrl ? requireModelAssetUrl(config.uploadedReferenceVideoUrl, publicBaseUrl, '参考视频') : '';
+  const prompt = buildScriptRequestPrompt(config, sceneDescription, safeReferenceVideoUrl);
   const userContent: any[] = [{ type: 'text', text: prompt }];
 
-  imageUrls.filter(Boolean).forEach((url) => {
+  safeImageUrls.forEach((url) => {
     userContent.push({
       type: 'image_url',
       image_url: { url },
     });
   });
+  const systemConfig = await fetchSystemConfig().catch(() => null);
+  const analysisModel = String(
+    systemConfig?.config?.systemSettings?.effectiveVideoAnalysisModel ||
+    systemConfig?.config?.systemSettings?.effectiveAnalysisModel ||
+    systemConfig?.config?.agentModels?.chat?.[0]?.id ||
+    ''
+  ).trim();
 
   const { job } = await createInternalJob({
     module: 'video',
     taskType: 'kie_chat',
     provider: 'kie',
     payload: {
+      ...(analysisModel ? { model: analysisModel } : {}),
       messages: [
         {
           role: 'system',
@@ -382,8 +426,11 @@ export const generateStoryboardBoardImage = async (
     boardId: board.id,
     shotCount: board.shotIds.length,
   });
-  const prompt = buildBoardPrompt(board, shots, config, previousBoardImageUrl);
-  const inputImages = previousBoardImageUrl ? [...imageUrls, previousBoardImageUrl] : imageUrls;
+  const publicBaseUrl = await resolveRuntimePublicBaseUrl();
+  const safeImageUrls = requireModelAssetUrls(imageUrls, publicBaseUrl, '参考图');
+  const safePreviousBoardImageUrl = previousBoardImageUrl ? requireModelAssetUrl(previousBoardImageUrl, publicBaseUrl, '上一张分镜板') : '';
+  const prompt = buildBoardPrompt(board, shots, config, safePreviousBoardImageUrl || undefined);
+  const inputImages = safePreviousBoardImageUrl ? [...safeImageUrls, safePreviousBoardImageUrl] : safeImageUrls;
 
   return {
     prompt,
@@ -407,8 +454,10 @@ export const generateStoryboardWhiteBgImage = async (
   logStoryboardEvent('storyboard_white_bg', '开始生成白底图', 'started', '', {
     imageCount: imageUrls.length,
   });
+  const publicBaseUrl = await resolveRuntimePublicBaseUrl();
+  const safeImageUrls = requireModelAssetUrls(imageUrls, publicBaseUrl, '参考图');
   return await processWithKieAi(
-    imageUrls,
+    safeImageUrls,
     apiConfig,
     createImageModuleConfig(AspectRatio.SQUARE, 'nano-banana-2', '1k'),
     false,

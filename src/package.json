@@ -1,0 +1,30 @@
+{
+  "name": "copy-of-梅奥-调整2.12a",
+  "private": true,
+  "version": "260430A",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "node server/index.mjs",
+    "local": "node scripts/local-dev.mjs",
+    "doctor": "node scripts/local-doctor.mjs",
+    "acceptance": "node scripts/acceptance-report.mjs",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "framer-motion": "^12.36.0",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.577.0",
+    "mysql2": "^3.20.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "typescript": "~5.8.2",
+    "vite": "^6.4.2"
+  }
+}

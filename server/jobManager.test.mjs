@@ -126,7 +126,7 @@ test('findReusableJobSubmission ignores finished or stale jobs', () => {
   assert.equal(matched, null);
 });
 
-test('reconcileRestartedMysqlJobs releases stale running jobs after a server restart', () => {
+test('reconcileRestartedMysqlJobs recovers stale running jobs after a server restart without marking them failed', () => {
   const reconciled = reconcileRestartedMysqlJobs([
     {
       id: 'job-running',
@@ -164,9 +164,9 @@ test('reconcileRestartedMysqlJobs releases stale running jobs after a server res
 
   assert.equal(reconciled.length, 1);
   assert.equal(reconciled[0].id, 'job-running');
-  assert.equal(reconciled[0].status, 'failed');
+  assert.equal(reconciled[0].status, 'retry_waiting');
   assert.equal(reconciled[0].startedAt, null);
-  assert.ok(reconciled[0].finishedAt > 0);
+  assert.equal(reconciled[0].finishedAt, null);
   assert.equal(reconciled[0].errorCode, 'service_restarted');
-  assert.match(reconciled[0].errorMessage, /服务重启导致任务中断/);
+  assert.match(reconciled[0].errorMessage, /服务重启后任务已回收到待重试状态/);
 });

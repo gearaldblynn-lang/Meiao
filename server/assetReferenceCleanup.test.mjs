@@ -9,6 +9,8 @@ test('asset cleanup treats current user avatars and agent icons as managed-asset
   assert.match(source, /users\.map\(\(item\) => item\.avatarUrl\)/);
   assert.match(source, /agents\.map\(\(item\) => item\.iconUrl\)/);
   assert.match(source, /collectOneClickReferencePresetAssetUrls/);
+  assert.match(source, /collectStateManagedAssetUrls/);
+  assert.match(source, /'uploadedUrl'/);
   assert.match(source, /presets\.presets/);
   assert.match(source, /referenceImageUrls/);
   assert.match(source, /SELECT avatar_url FROM users WHERE avatar_url IS NOT NULL AND avatar_url <> ''/);
@@ -18,5 +20,11 @@ test('asset cleanup treats current user avatars and agent icons as managed-asset
 
 test('asset cleanup marks protected managed assets as referenced before expiry filtering', () => {
   assert.match(source, /const protectedAssetUrls = await collectProtectedManagedAssetUrls\(/);
-  assert.match(source, /isReferenced: protectedAssetUrls\.has\(asset\.publicUrl\)/);
+  assert.match(source, /isReferenced: protectedAssetUrls\.has\(asset\.publicUrl\) \|\| protectedAssetUrls\.has\(asset\.id\)/);
+});
+
+test('state loading scrubs deleted managed sku image items before returning to client', () => {
+  assert.match(source, /scrubDbStateForUnavailableManagedAssets\(await getDbAppState\(user\.id\)\)/);
+  assert.match(source, /scrubLocalStateForUnavailableManagedAssets\(store\.appStates\[user\.id\]/);
+  assert.match(source, /value\.role === 'product' \|\| value\.role === 'gift' \|\| value\.role === 'style_ref'/);
 });

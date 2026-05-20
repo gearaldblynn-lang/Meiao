@@ -196,6 +196,7 @@ const AppWorkspace: React.FC<WorkspaceProps> = ({
           ...prev,
           kieApiKey: '',
           concurrency: effectiveConcurrency,
+          publicBaseUrl: result.config.publicBaseUrl || '',
         }));
       } catch (error) {
         console.error('Failed to sync server concurrency', error);

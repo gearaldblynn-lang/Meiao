@@ -154,6 +154,7 @@ test('video storyboard workspace upgrades to video generation modes and editable
   const sidebar = read('../modules/Video/StoryboardSidebar.tsx');
   const workspace = read('../modules/Video/StoryboardWorkspace.tsx');
   const moduleMeta = read('./layout/moduleMeta.ts');
+  const storyboardService = read('../services/videoStoryboardService.ts');
 
   assert.match(sidebar, /原创生成/);
   assert.match(sidebar, /爆款裂变/);
@@ -165,6 +166,8 @@ test('video storyboard workspace upgrades to video generation modes and editable
   assert.match(workspace, /可编辑脚本/);
   assert.match(workspace, /可编辑生图方案/);
   assert.match(workspace, /保存并重生成/);
+  assert.match(storyboardService, /fetchSystemConfig/);
+  assert.match(storyboardService, /effectiveVideoAnalysisModel/);
   assert.match(moduleMeta, /短视频生成/);
 });
 
@@ -176,12 +179,12 @@ test('release notes are surfaced from the sidebar user hub and notification cent
   const packageJson = read('../package.json');
   const releaseNotes = read('../config/releaseNotes.ts');
 
-  assert.match(packageJson, /"version": "260430A"/);
-  assert.match(releaseNotes, /export const APP_RELEASE_VERSION = 'V260430A'/);
-  assert.match(releaseNotes, /首图改为严格参考图改稿链路/);
-  assert.match(releaseNotes, /商品自适应/);
-  assert.match(releaseNotes, /多项目工作台/);
-  assert.match(releaseNotes, /项目删除增加二次确认/);
+  assert.match(packageJson, /"version": "260516-frontend-shell-upgrade"/);
+  assert.match(releaseNotes, /export const APP_RELEASE_VERSION = 'V260516A'/);
+  assert.match(releaseNotes, /3001 前端工作台同步到云端/);
+  assert.match(releaseNotes, /成功任务按 KIE 返回的真实积分记录/);
+  assert.match(releaseNotes, /按账号读取/);
+  assert.match(releaseNotes, /空诊断报告/);
   assert.match(app, /RELEASE_NOTES_STORAGE_KEY/);
   assert.match(app, /localStorage\.getItem\(RELEASE_NOTES_STORAGE_KEY\)/);
   assert.match(app, /localStorage\.setItem\(RELEASE_NOTES_STORAGE_KEY, APP_RELEASE_VERSION\)/);
@@ -390,14 +393,24 @@ test('agent wizard exposes per-knowledge-base document checklists for version re
 test('system settings expose a global analysis model selector for server-side planning tasks', () => {
   const settings = read('../modules/Settings/GlobalApiSettings.tsx');
   const api = read('../services/internalApi.ts');
+  const runtime = read('../server/jobRuntime.mjs');
 
   assert.match(settings, /策划分析模型/);
   assert.match(settings, /当前生效：/);
   assert.match(settings, /自动选择默认分析模型/);
   assert.match(settings, /systemConfig\?\.agentModels\.chat/);
+  assert.match(runtime, /id: 'claude-sonnet-4-6'/);
+  assert.match(runtime, /label: 'Claude Sonnet 4\.6'/);
   assert.match(settings, /updateSystemConfig/);
   assert.match(api, /export const updateSystemConfig = async/);
   assert.match(api, /\/api\/system\/config/);
+});
+
+test('video diagnosis defaults to the system effective video analysis model when available', () => {
+  const videoModule = read('../modules/Video/VideoModule.tsx');
+
+  assert.match(videoModule, /effectiveVideoAnalysisModel/);
+  assert.match(videoModule, /prev\.analysisModel \? prev : \{ analysisModel: effectiveAnalysisModel \}/);
 });
 
 test('agent chat client keeps image generation requests alive longer and can sync completed results after timeout', () => {
@@ -559,6 +572,14 @@ test('agent studio training also reuses the unified chat composer capability con
   assert.match(trainingPane, /清空对话/);
   assert.match(trainingPane, /text-rose-600/);
   assert.match(trainingPane, /border-rose-200/);
+});
+
+test('agent center fallback chat models include claude sonnet with multimodal attachment support', () => {
+  const manager = read('../modules/AgentCenter/AgentCenterManager.tsx');
+
+  assert.match(manager, /id: 'claude-sonnet-4-6'/);
+  assert.match(manager, /label: 'Claude Sonnet 4\.6'/);
+  assert.match(manager, /supportsImageInput: true,\s+supportsFileInput: true,\s+supportsWebSearch: false,\s+supportsReasoningLevel: true,\s+reasoningLevels: \['low'\]/);
 });
 
 test('secondary modules use the unified sidebar shell and shared popover selects', () => {
@@ -841,6 +862,15 @@ test('global shell moves release status and account tools into the sidebar user 
   assert.match(sidebar, /onLogout/);
   assert.match(app, /releaseTag=\{APP_RELEASE_VERSION\}/);
   assert.match(app, /serviceStatusLabel=\{internalMode \? '服务正常' : '单机本地模式'\}/);
+});
+
+test('sidebar keeps logout inside the account user hub instead of adding a second persistent action', () => {
+  const sidebar = read('./layout/SidebarNavigation.tsx');
+
+  assert.match(sidebar, /const handleLogoutClick = \(\) =>/);
+  assert.match(sidebar, /<span>退出登录<\/span>/);
+  assert.doesNotMatch(sidebar, /aria-label="退出登录"/);
+  assert.doesNotMatch(sidebar, /<span>退出<\/span>/);
 });
 
 test('compact shell removes leftover top placeholder height and keeps the sidebar user hub centered and unclipped', () => {

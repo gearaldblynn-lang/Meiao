@@ -10,6 +10,13 @@ SERVER_PORT="${MEIAO_SERVER_PORT:-22}"
 SSH_KEY_PATH="${MEIAO_SSH_KEY:-$HOME/.ssh/MEIAO.pem}"
 REMOTE_APP_DIR="${MEIAO_REMOTE_APP_DIR:-/www/wwwroot/meiao-internal}"
 REMOTE_TMP_DIR="/tmp/meiao-deploy-$$"
+REMOTE_OLD_ASSETS_DIR="/tmp/meiao-deploy-old-assets-$$"
+
+if [[ "${MEIAO_CODE_REVIEW_CONFIRMED:-}" != "1" ]]; then
+  echo "部署已拦截：同步云上前必须完成代码审查。"
+  echo "完成审查并确认风险后，使用：MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh"
+  exit 1
+fi
 
 if [[ ! -f "$SSH_KEY_PATH" ]]; then
   echo "找不到 SSH 密钥文件：$SSH_KEY_PATH"
@@ -20,8 +27,11 @@ fi
 
 echo "开始部署到 ${SERVER_USER}@${SERVER_HOST}:${REMOTE_APP_DIR}"
 
+export COPYFILE_DISABLE=1
+
 tar \
   --exclude='./.git' \
+  --exclude='./.worktrees' \
   --exclude='./node_modules' \
   --exclude='./dist' \
   --exclude='./server/data' \
@@ -32,6 +42,13 @@ tar \
     mkdir -p '$REMOTE_TMP_DIR'
     tar -xzf - -C '$REMOTE_TMP_DIR'
     mkdir -p '$REMOTE_APP_DIR'
+    OLD_ASSETS_DIR='$REMOTE_OLD_ASSETS_DIR'
+    rm -rf "\$OLD_ASSETS_DIR"
+
+    if [ -d '$REMOTE_APP_DIR/dist/assets' ]; then
+      mkdir -p "\$OLD_ASSETS_DIR"
+      cp -R '$REMOTE_APP_DIR/dist/assets'/. "\$OLD_ASSETS_DIR"/
+    fi
 
     if [ -f '$REMOTE_APP_DIR/.env.server' ]; then
       cp '$REMOTE_APP_DIR/.env.server' '$REMOTE_TMP_DIR/.env.server'
@@ -42,7 +59,6 @@ tar \
       find '$REMOTE_APP_DIR/server' -mindepth 1 -maxdepth 1 ! -name 'data' -exec rm -rf {} +
     fi
     cp -R \"$REMOTE_TMP_DIR\"/. \"$REMOTE_APP_DIR\"/
-    rm -rf '$REMOTE_TMP_DIR'
 
     cd '$REMOTE_APP_DIR'
     npm config delete disturl >/dev/null 2>&1 || true
@@ -50,6 +66,12 @@ tar \
     npm config set registry https://registry.npmjs.org/ >/dev/null 2>&1
     npm install
     npm run build
+
+    if [ -d "\$OLD_ASSETS_DIR" ]; then
+      mkdir -p dist/assets
+      cp -Rn "\$OLD_ASSETS_DIR"/. dist/assets/ 2>/dev/null || true
+    fi
+    rm -rf '$REMOTE_TMP_DIR' "\$OLD_ASSETS_DIR"
 
     if [ ! -f '.env.server' ]; then
       echo '服务器缺少 .env.server，请先创建后再重试。'

@@ -20,7 +20,10 @@ test('one click generation prompt keeps unified Chinese hard constraints', () =>
   assert.match(mainSource, /buildOneClickImagePrompt/);
   assert.match(detailSource, /buildOneClickImagePrompt/);
   assert.match(promptUtilsSource, /【硬约束】/);
-  assert.match(promptUtilsSource, /上传产品素材是产品外观、结构、比例、包装、标签信息的唯一依据/);
+  assert.match(promptUtilsSource, /上传产品素材是产品外观、结构、比例、包装、文字、logo 和标签信息的唯一依据/);
+  assert.doesNotMatch(promptUtilsSource, /\|\|\s*replicationReferenceUrl/);
+  assert.doesNotMatch(promptUtilsSource, /\|\|\s*previousResultUrl/);
+  assert.doesNotMatch(promptUtilsSource, /\|\|\s*logoUrl/);
 });
 
 test('one click analysis overlay is scoped inside module workspace instead of full-screen fixed layer', () => {
@@ -49,6 +52,7 @@ test('one click generation prompts explain that parentheses are requirements and
   assert.match(detailSource, /buildOneClickImagePrompt/);
   assert.match(skuSource, /appendOneClickCopyGuardrails/);
   assert.match(promptUtilsSource, /严格按照当前方案中已经写明的文案内容与排版指令进行渲染/);
+  assert.match(promptUtilsSource, /投放平台：\$\{targetPlatform\}/);
   assert.match(promptUtilsSource, /圆括号内的字体、字号字重、位置、颜色等内容仅作为排版指令理解/);
   assert.match(promptUtilsSource, /只有中文引号“”内的文字才是最终需要渲染到画面中的正文文案/);
   assert.match(promptUtilsSource, /字段名、冒号、说明文字都不得出现在最终画面中/);
@@ -64,6 +68,34 @@ test('one click generation keeps reference analysis in planning only instead of 
   assert.match(mainSource, /generateMarketingSchemes\(/);
   assert.match(detailSource, /generateMarketingSchemes\(/);
   assert.match(skuSource, /generateSkuSchemes\(/);
+});
+
+test('one click planning keeps existing scheme cards visible until new plans are ready', () => {
+  assert.doesNotMatch(mainSource, /onUpdate\(\{ schemes: \[\] \}\);/);
+  assert.doesNotMatch(firstImageSource, /onUpdate\(\{ schemes: \[\] \}\);/);
+  assert.doesNotMatch(detailSource, /onUpdate\(\{ schemes: \[\] \}\);/);
+  assert.doesNotMatch(skuSource, /onUpdate\(\{ schemes: \[\] \}\);/);
+});
+
+test('one click cards expose an explicit planning/generating/completed state label', () => {
+  assert.match(firstImageSource, /待策划/);
+  assert.match(firstImageSource, /生成中/);
+  assert.match(firstImageSource, /已生成/);
+});
+
+test('first image single generation action label immediately reflects generating state', () => {
+  assert.match(firstImageSource, /scheme\.status === 'generating' \? '生成中\.\.\.' : isPlanningFailure \? '重新策划' : \(scheme\.resultUrl \? '重新生成' : '生成该图'\)/);
+});
+
+test('one click single generation actions immediately reflect generating state across submodules', () => {
+  assert.match(mainSource, /scheme\.status === 'generating' \? '生成中\.\.\.' : \(scheme\.resultUrl \? '重新生成' : '生成该图'\)/);
+  assert.match(firstImageSource, /scheme\.status === 'generating' \? '生成中\.\.\.' : isPlanningFailure \? '重新策划' : \(scheme\.resultUrl \? '重新生成' : '生成该图'\)/);
+  assert.match(detailSource, /scheme\.status === 'generating' \? '生成中\.\.\.' : \(scheme\.resultUrl \? '重新生成' : '生成该图'\)/);
+  assert.match(skuSource, /scheme\.status === 'generating' \? '生成中\.\.\.' : \(scheme\.resultUrl \? '重新生成' : '生成该图'\)/);
+  assert.match(mainSource, /if \(inflightIdsRef\.current\.has\(schemeId\) \|\| isAnalyzing\) return;/);
+  assert.match(firstImageSource, /if \(inflightIdsRef\.current\.has\(schemeId\) \|\| isAnalyzing\) return;/);
+  assert.match(detailSource, /if \(inflightIdsRef\.current\.has\(id\)\) return;/);
+  assert.match(skuSource, /if \(inflightIdsRef\.current\.has\(schemeId\) \|\| isAnalyzing\) return;/);
 });
 
 test('one click planning and generation paths normalize legacy copy layout rows before rendering', () => {
@@ -131,22 +163,22 @@ test('one click workspace persists multiple projects instead of overwriting the 
   assert.match(typesSource, /projects: SkuWorkspaceProject\[\];/);
   assert.match(typesSource, /activeProjectId: string \| null;/);
   assert.match(typesSource, /isDraft\?: boolean;/);
-  assert.match(oneClickModuleSource, /onPrepareFreshProject=\{\(\) => prepareFreshMainLikeProject\('firstImage', '首图'\)\}/);
-  assert.match(oneClickModuleSource, /onPrepareFreshProject=\{\(\) => prepareFreshMainLikeProject\('mainImage', '主图'\)\}/);
-  assert.match(oneClickModuleSource, /onPrepareFreshProject=\{\(\) => prepareFreshMainLikeProject\('detailPage', '详情'\)\}/);
-  assert.match(oneClickModuleSource, /onPrepareFreshProject=\{\(\) => prepareFreshSkuProject\('SKU'\)\}/);
   assert.match(oneClickModuleSource, /const requestDeleteMainLikeProject = \(/);
   assert.match(oneClickModuleSource, /const requestDeleteSkuProject = \(projectId\?: string \| null\) =>/);
   assert.match(oneClickModuleSource, /onDeleteProject=\{\(projectId\) => requestDeleteMainLikeProject\('firstImage', '首图', projectId\)\}/);
   assert.match(oneClickModuleSource, /onDeleteProject=\{\(projectId\) => requestDeleteMainLikeProject\('mainImage', '主图', projectId\)\}/);
   assert.match(oneClickModuleSource, /onDeleteProject=\{\(projectId\) => requestDeleteMainLikeProject\('detailPage', '详情', projectId\)\}/);
   assert.match(oneClickModuleSource, /onDeleteProject=\{\(projectId\) => requestDeleteSkuProject\(projectId\)\}/);
-  assert.match(oneClickModuleSource, /isDraft: true/);
-  assert.match(oneClickModuleSource, /if \(!current\.activeProjectId && hasMainLikeContent\(current\) && nextProjects\.length === 0\)/);
-  assert.match(oneClickModuleSource, /if \(!current\.activeProjectId && hasSkuContent\(current\) && nextProjects\.length === 0\)/);
-  assert.match(skuSource, /if \(schemesRef\.current\.length > 0\) \{\s*onPrepareFreshProject\?\.\(\);\s*\}/);
   assert.match(skuSource, /if \(activeProjectId\) \{\s*onDeleteActiveProject\?\.\(\);/);
   assert.match(skuSource, /projects\.map\(\(project\) =>/);
+  assert.match(mainSource, /const shouldPrepareFreshProject = !activeProjectId \|\| schemesRef\.current\.length > 0;/);
+  assert.match(detailSource, /const shouldPrepareFreshProject = !activeProjectId \|\| schemesRef\.current\.length > 0;/);
+  assert.match(firstImageSource, /const shouldPrepareFreshProject = !activeProjectId \|\| schemesRef\.current\.length > 0;/);
+  assert.match(skuSource, /const shouldPrepareFreshProject = !activeProjectId \|\| schemesRef\.current\.length > 0;/);
+  assert.match(mainSource, /if \(shouldPrepareFreshProject\) onPrepareFreshProject\?\.\(\);[\s\S]*setIsAnalyzing\(true\);/);
+  assert.match(detailSource, /if \(shouldPrepareFreshProject\) onPrepareFreshProject\?\.\(\);[\s\S]*setIsAnalyzing\(true\);/);
+  assert.match(firstImageSource, /if \(shouldPrepareFreshProject\) onPrepareFreshProject\?\.\(\);[\s\S]*setIsAnalyzing\(true\);/);
+  assert.match(skuSource, /if \(shouldPrepareFreshProject\) onPrepareFreshProject\?\.\(\);[\s\S]*setIsAnalyzing\(true\);/);
 });
 
 test('one click workspace shows stacked project cards with direct delete actions instead of chip switching', () => {
@@ -198,22 +230,32 @@ test('first image generation prompt explicitly identifies the replication main-i
   assert.match(promptUtilsSource, /复刻主图参考图（图片URL）/);
   assert.match(promptUtilsSource, /必须直接复刻该参考图的整体风格、版式结构、信息层级、视觉节奏、设计细节，不得改成另一种风格/);
   assert.match(promptUtilsSource, /若执行内容中对参考图版式、颜色、结构或视觉元素的描述与复刻主图参考图真实画面不一致，必须以复刻主图参考图真实画面为准/);
+  assert.match(promptUtilsSource, /商品区的位置、角度、大小关系、层级、道具关系和背景以复刻主图参考原商品区为准/);
+  assert.match(promptUtilsSource, /产品素材只决定替换进去的商品本体/);
+  assert.match(promptUtilsSource, /产品包装上的文字、logo、品牌名和标签信息不得去除或改写/);
   assert.match(promptUtilsSource, /品牌logo图（图片URL）/);
   assert.match(promptUtilsSource, /复刻主图参考图是最高版式基准/);
   assert.doesNotMatch(promptUtilsSource, /色调关系/);
-  assert.match(promptUtilsSource, /原位置不得留空，替换为我方品牌 logo、店铺名或与版式匹配的通用信息/);
+  assert.match(promptUtilsSource, /未上传品牌 logo 时，品牌\/店铺\/logo\/官方背书位统一写通用信息/);
+  assert.match(promptUtilsSource, /不写官方自营\/旗舰店或具体品牌名/);
+  assert.match(promptUtilsSource, /若执行内容写了具体品牌\/店铺\/logo文字，改用通用信息/);
   assert.match(promptUtilsSource, /不得把产品素材图上的logo或参考图logo提取成我方独立品牌元素使用/);
+  assert.doesNotMatch(promptUtilsSource, /\|\|\s*replicationReferenceUrl/);
+  assert.doesNotMatch(promptUtilsSource, /\|\|\s*previousResultUrl/);
+  assert.doesNotMatch(promptUtilsSource, /\|\|\s*logoUrl/);
   assert.match(firstImageSource, /\.\.\.\(scheme\.sourceReferenceUrl \? \[scheme\.sourceReferenceUrl\] : \[\]\)/);
-  assert.match(firstImageSource, /includeCopyGuardrails: false/);
+  assert.match(firstImageSource, /platform: config\.platform/);
+  assert.doesNotMatch(firstImageSource, /includeCopyGuardrails: false/);
   assert.match(firstImageSource, /handleCreateVariant/);
   assert.match(firstImageSource, /换场景/);
   assert.match(firstImageSource, /换配色/);
   assert.match(firstImageSource, /自定义/);
 });
 
-test('first image generation no longer appends copy-layout rendering guardrails', () => {
+test('first image generation appends target-language rendering guardrails', () => {
   assert.match(promptUtilsSource, /includeCopyGuardrails = true/);
-  assert.match(firstImageSource, /includeCopyGuardrails: false/);
+  assert.match(firstImageSource, /platform: config\.platform/);
+  assert.doesNotMatch(firstImageSource, /includeCopyGuardrails: false/);
 });
 
 test('first image divergence actions stay visible, avoid window.prompt, and require explicit confirmation', () => {
@@ -221,7 +263,9 @@ test('first image divergence actions stay visible, avoid window.prompt, and requ
   assert.match(firstImageSource, /确认生成裂变图/);
   assert.match(firstImageSource, /variantConfirmState/);
   assert.match(firstImageSource, /继续裂变说明/);
-  assert.match(firstImageSource, /onPrepareFreshProject\?\.\(\);[\s\S]*schemesRef\.current = \[nextScheme\]/);
+  const variantBlock = firstImageSource.match(/const handleCreateVariant = async \(\) => \{[\s\S]*?\n  \};/)?.[0] || '';
+  assert.match(variantBlock, /onPrepareFreshProject\?\.\(\);[\s\S]*schemesRef\.current = \[nextScheme\]/);
+  assert.match(variantBlock, /schemesRef\.current = \[nextScheme\]/);
   assert.doesNotMatch(firstImageSource, /window\.prompt\(/);
 });
 
@@ -257,5 +301,6 @@ test('first image failed planning cards can retry planning for their own referen
   assert.match(firstImageSource, /generateFirstImageReplicationSchemes\(\s*productUrls,\s*\[targetScheme\.sourceReferenceUrl\]/);
   assert.match(firstImageSource, /当前参考图正在重新策划\.\.\./);
   assert.match(firstImageSource, /重新策划/);
-  assert.match(firstImageSource, /isPlanningFailure/);
+  assert.match(firstImageSource, /planningFailed: true/);
+  assert.match(firstImageSource, /scheme\.planningFailed/);
 });

@@ -1,8 +1,9 @@
 import { GlobalApiConfig, ModuleConfig, KieAiResult, AspectRatio, VideoConfig, SourceImageContext } from '../types.ts';
-import { cancelInternalJob, createInternalJob, fetchInternalJob, getActiveModuleContext, retryInternalJob, safeCreateInternalLog, waitForInternalJob } from './internalApi';
+import { cancelInternalJob, createInternalJob, fetchInternalJob, fetchSystemConfig, getActiveModuleContext, retryInternalJob, safeCreateInternalLog, waitForInternalJob } from './internalApi';
 import { getUserVisibleTaskId } from './kieTaskUtils.mjs';
 import { normalizeGptImage2Resolution } from '../utils/gptImage2.mjs';
 import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
+import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 
 const logKieEvent = (action: string, message: string, status: 'started' | 'success' | 'failed' | 'interrupted', detail = '', meta: Record<string, unknown> | null = null) => {
   const module = getActiveModuleContext() || 'unknown';
@@ -19,9 +20,9 @@ const logKieEvent = (action: string, message: string, status: 'started' | 'succe
 
 const KIE_IMAGE_TIMEOUT: Record<string, number> = {
   'nano-banana-2': 6 * 60_000,
-  'gpt-image-2': 11 * 60_000,
+  'gpt-image-2': 10 * 60_000,
 };
-const KIE_IMAGE_DEFAULT_TIMEOUT = 6 * 60_000;
+const KIE_IMAGE_DEFAULT_TIMEOUT = 10 * 60_000;
 const KIE_VIDEO_TIMEOUT = 5 * 60_000;
 const KIE_RECOVER_TIMEOUT = 4 * 60_000;
 const KIE_AUTO_RECOVER_ERROR_CODES = new Set(['provider_internal_error', 'provider_network_error', 'provider_timeout']);
@@ -33,6 +34,40 @@ const KIE_NON_RECOVERABLE_ERROR_CODES = new Set([
   'task_not_found',
 ]);
 const KIE_RECOVERABLE_MESSAGE_PATTERN = /fetch failed|network|timeout|超时|服务异常|网络异常/i;
+const PUBLIC_BASE_URL_CACHE_TTL_MS = 30_000;
+let cachedPublicBaseUrl = '';
+let cachedPublicBaseUrlAt = 0;
+
+const resolveRuntimePublicBaseUrl = async () => {
+  if (cachedPublicBaseUrl && Date.now() - cachedPublicBaseUrlAt < PUBLIC_BASE_URL_CACHE_TTL_MS) {
+    return cachedPublicBaseUrl;
+  }
+  const result = await fetchSystemConfig();
+  const nextBaseUrl = String(result.config.publicBaseUrl || '').trim();
+  cachedPublicBaseUrl = nextBaseUrl;
+  cachedPublicBaseUrlAt = Date.now();
+  return nextBaseUrl;
+};
+
+const requireModelAssetUrl = (value: string, publicBaseUrl: string, label: string) => {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    throw new Error(`${label} 没有可用于模型读取的公网地址，请重新上传后重试。`);
+  }
+  const safeUrl = resolvePublicAssetUrl(raw, publicBaseUrl);
+  if (!safeUrl) {
+    throw new Error(`${label} 没有可用于模型读取的公网地址，请重新上传后重试。`);
+  }
+  return safeUrl;
+};
+
+const normalizeModelAssetUrls = async (imageUrls: string | string[], label = '图片素材') => {
+  const publicBaseUrl = await resolveRuntimePublicBaseUrl();
+  return (Array.isArray(imageUrls) ? imageUrls : [imageUrls])
+    .filter((url) => String(url || '').trim())
+    .map((url, index) => requireModelAssetUrl(url, publicBaseUrl, `${label}${index + 1}`))
+    .filter(Boolean);
+};
 
 export const isRecoverableKieTaskResult = (taskId?: string, errorMessage?: string, errorCode?: string) => {
   if (!String(taskId || '').trim()) return false;
@@ -90,10 +125,21 @@ const waitForJobResult = async (
   signal?: AbortSignal,
   maxWaitMs = 0,
   allowAutoRecover = true,
-  kieClientConfigPresent = false
+  kieClientConfigPresent = false,
+  onProviderTaskId?: (providerTaskId: string) => void
 ): Promise<KieAiResult> => {
+  let notifiedProviderTaskId = '';
+  const notifyProviderTaskId = (providerTaskId: unknown) => {
+    const value = String(providerTaskId || '').trim();
+    if (!value || value === notifiedProviderTaskId) return;
+    notifiedProviderTaskId = value;
+    onProviderTaskId?.(value);
+  };
   try {
-    const finalJob = await waitForInternalJob(jobId, signal, 2500, maxWaitMs);
+    const finalJob = await waitForInternalJob(jobId, signal, 2500, maxWaitMs, (currentJob) => {
+      notifyProviderTaskId(currentJob.providerTaskId);
+    });
+    notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
     if (finalJob.status === 'succeeded') {
       return {
         imageUrl: String(finalJob.result?.imageUrl || ''),
@@ -101,6 +147,7 @@ const waitForJobResult = async (
         taskId: getUserVisibleTaskId(finalJob),
         status: 'success',
         message: '',
+        creditsConsumed: Number.isFinite(Number(finalJob.result?.creditsConsumed)) ? Number(finalJob.result?.creditsConsumed) : undefined,
       };
     }
 
@@ -276,8 +323,9 @@ export const createSoraVideoTask = async (
   apiConfig: GlobalApiConfig,
   signal: AbortSignal
 ): Promise<KieAiResult> => {
+  const safeImageUrls = await normalizeModelAssetUrls(imageUrls, '视频素材');
   logKieEvent('create_video_task', '开始创建视频任务', 'started', '', {
-    imageCount: imageUrls.length,
+    imageCount: safeImageUrls.length,
     duration: videoConfig.duration,
   });
   const module = getActiveModuleContext() || 'unknown';
@@ -286,7 +334,7 @@ export const createSoraVideoTask = async (
     taskType: 'kie_video',
     provider: 'kie',
     payload: {
-      imageUrls,
+      imageUrls: safeImageUrls,
       videoConfig,
       kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
       requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
@@ -313,6 +361,7 @@ export const submitVeoVideoTask = async (
   apiConfig: GlobalApiConfig,
   signal: AbortSignal
 ): Promise<string> => {
+  const safeImageUrls = await normalizeModelAssetUrls(imageUrls, '视频素材');
   const module = getActiveModuleContext() || 'unknown';
   const { job } = await createInternalJob({
     module,
@@ -321,7 +370,7 @@ export const submitVeoVideoTask = async (
     payload: {
       script,
       aspectRatio,
-      imageUrls,
+      imageUrls: safeImageUrls,
       previousTaskId,
       kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
       requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
@@ -367,8 +416,9 @@ export const processWithKieAi = async (
   sourceImageContext?: SourceImageContext,
   subMode: 'main' | 'detail' | 'remove_text' = 'main'
 ): Promise<KieAiResult> => {
+  const safeImageUrls = await normalizeModelAssetUrls(imageUrls, '图片素材');
   logKieEvent('create_image_task', '开始创建图像任务', 'started', '', {
-    imageCount: Array.isArray(imageUrls) ? imageUrls.length : 1,
+    imageCount: safeImageUrls.length,
     model: moduleConfig.model,
     aspectRatio: moduleConfig.aspectRatio,
     quality: moduleConfig.quality,
@@ -381,7 +431,7 @@ export const processWithKieAi = async (
     taskType: 'kie_image',
     provider: 'kie',
     payload: {
-      imageUrls: Array.isArray(imageUrls) ? imageUrls : [imageUrls],
+      imageUrls: safeImageUrls,
       prompt: finalPrompt,
       model: moduleConfig.model || 'nano-banana-2',
       aspectRatio: moduleConfig.aspectRatio === AspectRatio.AUTO ? 'auto' : moduleConfig.aspectRatio,
@@ -404,7 +454,7 @@ export const processWithKieAi = async (
     result.status === 'success' ? '图像任务完成' : result.status === 'interrupted' ? '图像任务已中断' : '图像任务失败',
     result.status === 'success' ? 'success' : result.status === 'interrupted' ? 'interrupted' : 'failed',
     result.message || '',
-    { taskId: result.taskId, model: moduleConfig.model }
+    { taskId: result.taskId, model: moduleConfig.model, creditsConsumed: result.creditsConsumed }
   );
   return result;
 };

@@ -31,6 +31,7 @@ import AgentWizardView from './AgentWizardView';
 import KnowledgeBaseListView from './KnowledgeBaseListView';
 import KnowledgeBaseEditorView from './KnowledgeBaseEditorView';
 import AgentStudioWorkspace from './AgentStudioWorkspace';
+import { resolveDefaultAllowedChatModels } from './chatModelAllowlist';
 
 type ManagerPage = 'agent_list' | 'agent_detail' | 'agent_wizard' | 'knowledge_list' | 'knowledge_editor' | 'agent_studio';
 
@@ -66,6 +67,16 @@ const fallbackChatModels = [
     supportsWebSearch: true,
     supportsReasoningLevel: true,
     reasoningLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+  },
+  {
+    id: 'claude-sonnet-4-6',
+    label: 'Claude Sonnet 4.6',
+    provider: 'kie' as const,
+    supportsImageInput: true,
+    supportsFileInput: true,
+    supportsWebSearch: false,
+    supportsReasoningLevel: true,
+    reasoningLevels: ['low'],
   },
   {
     id: 'gemini-3.1-pro-openai',
@@ -260,7 +271,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
   }, [selectedKnowledgeBase?.id]);
 
   const openCreateWizard = () => {
-    const defaultAllowedChatModels = availableChatModels.slice(0, Math.min(2, availableChatModels.length)).map((item) => item.id);
+    const defaultAllowedChatModels = resolveDefaultAllowedChatModels(availableChatModels);
     const defaultChatModel = defaultAllowedChatModels.find((id) => id.includes('thinking')) || defaultAllowedChatModels[0] || '';
     const cheapModel = defaultAllowedChatModels.find((id) => id.includes('flash') || id.includes('lite')) || defaultAllowedChatModels[0] || '';
     setWizardMode('create');

@@ -17,9 +17,27 @@
 - 优先做最小正确方案，避免临时补丁式堆叠。
 - 改功能时同步考虑日志、测试、用户隔离、版本管理和管理员排查信息。
 - 不要默认 GitHub 就是线上真实版本。判断顺序是本地工作目录、当前 Git 状态、腾讯云服务器目录、GitHub 备份。
+- 本项目主要应用在腾讯云线上环境；本地主要用于开发、测试、排障和备份。涉及线上行为时，先明确改动目标是“本地验证”还是“云上发布”，不要把本地通过误判为线上已生效。
+- 云上发布是硬门禁：任何对腾讯云的代码/前端/服务端同步前，必须先做代码审查，检查本次 diff、数据隔离、公网资源 URL、日志/统计保留、权限边界和核心任务链路。未完成审查不得运行部署；部署脚本要求显式设置 `MEIAO_CODE_REVIEW_CONFIRMED=1`。
+- GitHub 主要用于版本存储和备份，不作为默认 issue tracker 或线上真实状态来源。任务拆解、排障记录和阶段 PRD 优先写入本地 Markdown。
 - 工作树可能有大量未提交改动。不要还原、覆盖或清理用户已有改动，除非用户明确要求。
 - UI 和交互优先服务用户任务。不要为了技术结构牺牲可用性。
 - 所有 prompt 新增或重写必须遵守 `docs/prompt-rtcfe-migration-map.md` 中的 RTCFE 结构：R Role、T Task、C Constraint、F Format、E Example。改 prompt 时必须保留既有输出字段、解析锚点和历史约束，并同步补防回归测试。
+- 修复重复出现的问题时，必须先查 `docs/agents/repeated-issues.md`、相关测试和最近交接文档；修完后如果形成可复用经验，追加到 `docs/agents/repeated-issues.md`，避免同一类错误反复靠记忆重修。
+
+## Agent skills
+
+### Issue tracker
+
+本项目使用本地 Markdown 记录任务、PRD、排障和拆票，GitHub 只作为版本存储/备份。见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+本地 Markdown issue 使用默认五状态标签：`needs-triage`、`needs-info`、`ready-for-agent`、`ready-for-human`、`wontfix`。见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+本项目是单上下文项目：先读根目录 `CONTEXT.md`，再按需读 `docs/adr/` 和 `docs/agents/repeated-issues.md`。见 `docs/agents/domain.md`。
 
 ## 常用命令
 
@@ -56,6 +74,7 @@ node --test modules/XhsCover/xhsCoverBehavior.test.mjs
 ## 发布与部署
 
 - 本地发布脚本：`./scripts/deploy_tencent.sh`
+- 云上发布必须先完成代码审查，再使用：`MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh`
 - 腾讯云项目目录：`/www/wwwroot/meiao-internal`
 - PM2 进程名：`meiao-internal`
 - Node 服务端口：`3100`

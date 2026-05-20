@@ -44,6 +44,10 @@ const SidebarNavigation: React.FC<Props> = ({
   const [showHelp, setShowHelp] = useState(false);
 
   const closeUserHub = () => setUserHubOpen(false);
+  const handleLogoutClick = () => {
+    closeUserHub();
+    onLogout?.();
+  };
 
   const renderNavButton = (item: AppModule, tone: 'business' | 'system') => {
     const meta = MODULE_META[item];
@@ -223,10 +227,7 @@ const SidebarNavigation: React.FC<Props> = ({
                     <div className="my-2 h-px bg-slate-200/80" />
                     <button
                       type="button"
-                      onClick={() => {
-                        closeUserHub();
-                        onLogout?.();
-                      }}
+                      onClick={handleLogoutClick}
                       className="flex w-full items-center gap-3 rounded-[15px] px-3 py-2.5 text-left text-[13px] font-semibold text-rose-500 transition hover:bg-rose-50"
                     >
                       <i className="fas fa-right-from-bracket w-4" />

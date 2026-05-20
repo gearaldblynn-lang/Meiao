@@ -6,6 +6,8 @@ const arkServiceSource = readFileSync(new URL('./arkService.ts', import.meta.url
 const skuSubModuleSource = readFileSync(new URL('../modules/OneClick/SkuSubModule.tsx', import.meta.url), 'utf8');
 const promptUtilsSource = readFileSync(new URL('../modules/OneClick/generationPromptUtils.ts', import.meta.url), 'utf8');
 const retouchModuleSource = readFileSync(new URL('../modules/Retouch/RetouchModule.tsx', import.meta.url), 'utf8');
+const videoStoryboardServiceSource = readFileSync(new URL('./videoStoryboardService.ts', import.meta.url), 'utf8');
+const kieAiServiceSource = readFileSync(new URL('./kieAiService.ts', import.meta.url), 'utf8');
 
 test('analysis service no longer routes planning through ark or doubao', () => {
   assert.doesNotMatch(
@@ -32,6 +34,34 @@ test('analysis service no longer routes planning through ark or doubao', () => {
     arkServiceSource,
     /provider:\s*'kie'/,
     'planning analysis should use kie provider'
+  );
+});
+
+test('one-click reference analysis refuses to dispatch text-only prompts when reference images are missing', () => {
+  assert.match(
+    arkServiceSource,
+    /const validReferenceUrls = Array\.from\(new Set\(/,
+    'reference analysis should normalize and dedupe uploaded reference urls before building content'
+  );
+  assert.match(
+    arkServiceSource,
+    /if \(validReferenceUrls\.length === 0\) \{/,
+    'reference analysis should guard missing image urls before creating a chat job'
+  );
+  assert.match(
+    arkServiceSource,
+    /设计参考图尚未上传完成，请等待图片上传成功后再分析/,
+    'missing references should produce an actionable upload-state error'
+  );
+  assert.match(
+    arkServiceSource,
+    /const safeReferenceUrls = requireModelAssetUrls\(validReferenceUrls, publicBaseUrl, '设计参考图'\);/,
+    'reference analysis should rewrite validated urls into model-readable public urls before building image blocks'
+  );
+  assert.match(
+    arkServiceSource,
+    /safeReferenceUrls\.forEach\(\(url, index\) => \{/,
+    'reference analysis should build image blocks from the normalized public url list'
   );
 });
 
@@ -126,32 +156,22 @@ test('first image replication planning analyzes product selling points against e
   );
   assert.match(
     firstImageReplicationBlock,
-    /复刻主图参考（图片URL）：\$\{referenceUrl\}/,
-    'replication planning should explicitly label each uploaded reference url'
+    /复刻主图参考（图片URL）：\$\{safeReferenceUrl\}/,
+    'replication planning should explicitly label each uploaded reference with a normalized public url'
   );
   assert.match(
     firstImageReplicationBlock,
-    /【图片角色】/,
-    'replication planning should group image-role instructions clearly'
-  );
-  assert.match(
-    firstImageReplicationBlock,
-    /【策划优先级】/,
-    'replication planning should group priority instructions clearly'
-  );
-  assert.match(
-    firstImageReplicationBlock,
-    /复刻主图参考图是唯一版式、风格、信息层级参考/,
+    /图片角色必须严格区分：复刻主图参考\$\{index \+ 1\} 是唯一版式参考；产品素材图只用于识别商品本体外观、包装、配件和真实结构；品牌logo图只用于识别我方品牌，未上传时不得编造独立品牌logo/,
     'replication planning should tell the planner which image is the reference'
   );
   assert.match(
     firstImageReplicationBlock,
-    /先逐项识别参考图真实画面中的主色、背景、顶部区域、标题区、卖点区、商品区、底部区域/,
+    /请先抽取复刻主图参考\$\{index \+ 1\}的真实版式/,
     'replication planning should force factual reference layout extraction before rewriting copy and products'
   );
   assert.match(
     firstImageReplicationBlock,
-    /不得根据产品类目或卖点自行新增参考图中不存在的横幅、卡片、角标、促销条、排名牌或颜色体系/,
+    /不得新增参考图中没有的模块、角标、卡片或颜色体系/,
     'replication planning should forbid hallucinating unrelated layout modules or color systems'
   );
   assert.match(
@@ -176,72 +196,117 @@ test('first image replication planning analyzes product selling points against e
   );
   assert.match(
     firstImageReplicationBlock,
-    /必须去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案/,
+    /删除参考图原 logo、品牌名、店铺名、平台标识和原文案/,
     'replication planning should explicitly remove all reference-logo, brand, platform, and original-copy traces'
   );
   assert.match(
     firstImageReplicationBlock,
-    /商品替换必须严格基于上传商品素材/,
+    /商品本体必须保持与产品素材一致，禁止编造或改写包装形态、标签、颜色、配件/,
     'replication planning should keep all product substitution grounded in uploaded product assets'
   );
   assert.match(
     firstImageReplicationBlock,
-    /商品替换必须严格基于上传商品素材，禁止虚构不存在的商品形态、结构、包装、配件或展示角度/,
+    /版式、构图、背景、配色、海报\/页面文案位、信息层级和商品区关系只参考复刻主图参考\$\{index \+ 1\}/,
+    'replication planning should separate product assets from layout references'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /商品在画面中的位置、角度、大小关系、前后层级、道具关系和背景来自参考图原商品区/,
+    'replication planning should inherit product-region relationships from the reference image'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /请先抽取复刻主图参考\$\{index \+ 1\}的真实版式/,
+    'replication planning should explicitly order reference-layout extraction before product replacement'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /inputContent\.push\(\{ type: 'text', text: `\[复刻主图参考\$\{index \+ 1\}\][\s\S]*?inputContent\.push\(\{ type: 'image_url', image_url: \{ url: safeReferenceUrl \} \}\);[\s\S]*?safeProductUrls\.forEach/,
+    'replication planning should send the current reference image before product images so poster-like product assets do not become the layout anchor'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /文案替换只作用于参考图里的海报\/页面文案位/,
+    'replication planning should limit copy replacement to the reference poster copy slots'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /不得改写我方产品包装上的文字、logo、标签和外观/,
+    'replication planning should forbid rewriting product package copy or appearance'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /画面描述不要主动改写或重新命名产品包装上的文字、logo和标签，产品包装本体按产品素材原样保留/,
+    'replication planning should preserve product package text and logo while avoiding package rewrites'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /品牌隔离只作用于参考图里的海报\/页面品牌位、店铺位、logo位、平台标识位、官方背书位和原文案，不作用于我方产品包装本体/,
+    'brand isolation should only apply to poster/page brand slots, not product packaging'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /未上传品牌logo图时，海报\/页面品牌位统一写通用信息/,
+    'replication planning should use generic brand copy for all brand-like slots without an uploaded logo'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /不写官方自营\/旗舰店/,
+    'replication planning should not keep or infer official-store endorsement text without an uploaded logo'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /产品素材图中商品包装自带的文字、logo、品牌名、标签和外观必须按素材原样保留，不得删除、遮挡、改写或替换/,
+    'replication planning should explicitly preserve product package logo and label content'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /不新增独立品牌logo、店铺名或模型推断品牌/,
+    'replication planning should avoid adding independent brand marks without a brand logo asset'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /若策划描述与产品素材冲突，以产品素材为准/,
     'first-image replication planning should explicitly ban inventing nonexistent product forms, accessories, or display angles and require product consistency'
   );
   assert.match(
     firstImageReplicationBlock,
-    /- 设计意图：xxx（完全基于参考图内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，需要将参考图自适应调整为要求比例）/,
+    /- 设计意图：完全基于参考图内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，需要将参考图自适应调整为要求比例/,
     'first-image replication planning should lock the design-intent field to direct reference editing'
   );
   assert.match(
     firstImageReplicationBlock,
-    /文案替换时必须逐一对照参考图原有每个文案位的内容长度与信息密度，替换后的文案字数必须尽量接近原位字数承载能力/,
+    /文案替换只作用于参考图里的海报\/页面文案位，并对齐原文案位的字数和信息密度/,
     'first-image replication planning should enforce per-slot copy replacement against the original reference copy length'
   );
   assert.match(
     firstImageReplicationBlock,
-    /必要时做等义压缩和短句化处理/,
-    'first-image replication planning should allow concise optimization of copy to fit the replicated layout'
-  );
-  assert.match(
-    firstImageReplicationBlock,
-    /禁止某一文案位明显超字数/,
+    /禁止明显超字数/,
     'first-image replication planning should explicitly ban oversized copy that would hurt layout quality'
   );
   assert.match(
     firstImageReplicationBlock,
-    /去除后原位置不得留空，必须优先替换为我方品牌 logo、店铺名或与版式匹配的通用信息/,
+    /原位置\$\{safeLogoUrl \? '用品牌logo图或通用信息补足' : '用通用信息补足'\}/,
     'first-image replication planning should refill removed-brand areas with our logo, store name, or generic fallback text without inventing unrelated content'
   );
   assert.match(
     firstImageReplicationBlock,
-    /不得凭空编造新品牌logo，也不得把素材图logo直接提取成我方独立品牌元素/,
-    'first-image replication planning should forbid using source or reference logos as our brand identity when no logo asset is uploaded'
-  );
-  assert.match(
-    firstImageReplicationBlock,
-    /去除后原位置不得留空，必须优先替换为我方品牌 logo、店铺名或与版式匹配的通用信息/,
-    'first-image replication planning should refill removed brand areas with our logo, store name, or generic fallback text'
-  );
-  assert.match(
-    firstImageReplicationBlock,
-    /产品与包装展示以素材图实际内容为准，画面描述只写商品或配件内容及摆放关系，不细写包装细节形态/,
+    /商品本体必须保持与产品素材一致，禁止编造或改写包装形态、标签、颜色、配件/,
     'first-image replication planning should keep packaging driven by source assets and avoid over-describing packaging details in the scene description'
   );
   assert.match(
     firstImageReplicationBlock,
-    /设计意图只写“完全基于参考图内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，则自适应调整为要求比例”/,
+    /F Format 格式/,
     'first-image replication planning should keep design intent concise and locked to reference-edit scope'
   );
   assert.match(
     firstImageReplicationBlock,
-    /- 画面描述：xxx（只写文案更改与字数适配、logo等去除后的调整、商品适应替换、摆放内容与关系、配色保持参考图基准或根据商品自适应；不要细写包装细节形态；文案替换必须体现与原文案位近似字数；若为商品自适应，必须写明商品更适合的配色判断，以及参考图配色如何随之调整）/,
+    /- 画面描述：按参考图原版式写清海报\/页面文案替换、参考图标识处理、商品本体替换和配色处理；画面描述不要主动改写或重新命名产品包装上的文字、logo和标签，产品包装本体按产品素材原样保留/,
     'first-image replication planning should narrow the scene-description field to direct reference-edit actions'
   );
   assert.match(
     firstImageReplicationBlock,
-    /必须先判断上传商品本身更适合的配色方向，并以商品属性配色方案为主，对参考图原有配色做适配性修改；配色调整后的主色、辅助色、背景色或材质色变化必须明确写进画面描述/,
+    /在参考图结构内按商品属性轻量适配，并写明主色、辅助色和背景色如何调整/,
     'first-image replication planning should require explicit product-driven color judgment in adaptive color mode'
   );
   assert.doesNotMatch(
@@ -335,7 +400,7 @@ test('sku planning prompt removes design intent output and requires complete vis
 test('sku planning prompt uses style reference for layout typography and placement strategy', () => {
   assert.match(
     arkServiceSource,
-    /风格参考图：\$\{styleUrl\}。除配色、光影、材质与氛围外，还要重点参考其排版、字体风格、文字摆放、版式层级/,
+    /风格参考图：\$\{safeStyleUrl\}。除配色、光影、材质与氛围外，还要重点参考其排版、字体风格、文字摆放、版式层级/,
     'sku planning prompt should treat uploaded style refs as layout and typography guidance too'
   );
 });
@@ -487,7 +552,7 @@ test('one click reference analysis prompt supports grouped dimensions and output
 test('marketing prompts identify brand logo assets and forbid competitor logos from leaking into results', () => {
   assert.match(
     arkServiceSource,
-    /品牌logo图：\$\{logoUrl\}。该图仅用于识别和还原我方品牌logo，不得把产品素材图或设计参考图中的其他品牌logo带入最终画面/,
+    /品牌logo图：\$\{safeLogoUrl\}。该图仅用于识别和还原我方品牌logo，不得把产品素材图或设计参考图中的其他品牌logo带入最终画面/,
     'marketing prompts should identify the brand logo asset and ban competitor logos'
   );
   assert.match(
@@ -612,5 +677,43 @@ test('retouch generation prompt keeps original-mode outputs tied to the uploaded
     retouchModuleSource,
     /禁止把原图精修做成重新换背景、换场景、换产品摆法、换镜头角度的大幅重绘/,
     'retouch generation should forbid large repaint-style deviations in original mode'
+  );
+});
+
+test('task prompt writing normalizes asset urls to public readable urls before model submission', () => {
+  assert.match(
+    arkServiceSource,
+    /const safeProductUrls = requireModelAssetUrls\(productUrls, publicBaseUrl, '产品素材图'\);/,
+    'marketing planning should normalize product urls before prompt text and image payloads'
+  );
+  assert.match(
+    arkServiceSource,
+    /const safeStyleUrl = styleUrl \? requireModelAssetUrl\(styleUrl, publicBaseUrl, '风格参考图'\) : '';/,
+    'marketing planning should normalize style urls before prompt text and image payloads'
+  );
+  assert.match(
+    arkServiceSource,
+    /const safeLogoUrl = logoUrl \? requireModelAssetUrl\(logoUrl, publicBaseUrl, '品牌logo图'\) : '';/,
+    'marketing planning should normalize logo urls before prompt text and image payloads'
+  );
+  assert.match(
+    arkServiceSource,
+    /const safeReferenceUrl = referenceUrl \? requireModelAssetUrl\(referenceUrl, publicBaseUrl, '参考图'\) : '';/,
+    'buyer-show planning should normalize reference urls before prompt text and image payloads'
+  );
+  assert.match(
+    arkServiceSource,
+    /const safeReferenceVideoUrl = referenceVideoUrl \? requireModelAssetUrl\(referenceVideoUrl, publicBaseUrl, '参考视频'\) : '';/,
+    'video planning should normalize reference video urls before prompt text'
+  );
+  assert.match(
+    videoStoryboardServiceSource,
+    /const safeImageUrls = requireModelAssetUrls\(imageUrls, publicBaseUrl, '参考图'\);/,
+    'video storyboard script generation should normalize image urls before writing model input'
+  );
+  assert.match(
+    kieAiServiceSource,
+    /const safeImageUrls = await normalizeModelAssetUrls\(imageUrls, '图片素材'\);/,
+    'kie image/video submission should normalize model-bound asset urls before creating jobs'
   );
 });

@@ -95,10 +95,21 @@ test('agent chat source validates model ability before accepting attachments or 
   assert.match(source, /当前模型不支持联网/);
 });
 
+test('agent chat source expands legacy default model allowlists to include newly added claude', () => {
+  assert.match(source, /const LEGACY_DEFAULT_ALLOWED_CHAT_MODELS = new Set\(\['gpt-5-4-openai-resp', 'gemini-3-flash-openai'\]\);/);
+  assert.match(source, /const EXPANDED_LEGACY_CHAT_MODELS = \['claude-sonnet-4-6'\];/);
+  assert.match(source, /return expandLegacyAllowedChatModels\(sanitizeAllowedChatModels\(configured,/);
+});
+
+test('agent chat source preserves provider modelUsed metadata for direct conversations', () => {
+  assert.match(source, /let output = null;[\s\S]*output = await executeProviderJob\(\{[\s\S]*model: selectedModel,[\s\S]*const actualModel = String\(output\?\.result\?\.modelUsed \|\| selectedModel/);
+});
+
 test('agent chat source forwards multimodal attachments and model options into provider execution in both modes', () => {
   assert.match(source, /const buildChatMessageContent = \(text, attachments = \[\]\) =>/);
   assert.match(source, /type: 'image_url'/);
   assert.match(source, /type: 'input_file'/);
+  assert.match(source, /const runAgentConversation = async \([\s\S]*?const pool = await getMysqlPool\(\);[\s\S]*?const \{ text: inlinedMessage, attachments: remainingAttachments \} = await inlineTextAttachments\(pool, currentMessage, attachments\)/);
   assert.match(source, /const \{ text: inlinedMessage, attachments: remainingAttachments \} = await inlineTextAttachments\(pool, currentMessage, attachments\)/);
   assert.match(source, /content: buildChatMessageContent\(inlinedMessage, remainingAttachments\)/);
   assert.match(source, /reasoningLevel: reasoningLevel \? String\(reasoningLevel\) : null/);
@@ -139,8 +150,10 @@ test('agent chat source persists client request ids so timed-out image chats can
   assert.match(source, /const clientRequestId = String\(payload\?\.clientRequestId \|\| createEntityId\(\)\)\.trim\(\) \|\| createEntityId\(\);/);
   assert.match(source, /const clientRequestId = String\(body\?\.clientRequestId \|\| createEntityId\(\)\)\.trim\(\) \|\| createEntityId\(\);/);
   assert.match(source, /clientRequestId,/);
-  assert.match(source, /metadata: \{ selectedModel, reasoningLevel: payload\?\.reasoningLevel \|\| null, webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\), requestMode, clientRequestId \}/);
-  assert.match(source, /metadata: \{ selectedModel: result\.selectedModel, fallbackFrom: result\.fallbackFrom \|\| null, usedRetrieval: result\.usedRetrieval, requestMode, clientRequestId, imagePlan: result\.imagePlan \|\| null, imageResultUrls: result\.imageResultUrls \|\| null, retrievalSummary: result\.retrievalSummary \|\| \[\] \}/);
+  assert.match(source, /const userMetadata = \{ selectedModel, reasoningLevel: payload\?\.reasoningLevel \|\| null, webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\), requestMode, clientRequestId \};/);
+  assert.match(source, /const assistantMetadata = \{ selectedModel: result\.selectedModel, fallbackFrom: result\.fallbackFrom \|\| null, usedRetrieval: result\.usedRetrieval, reasoningLevel: payload\?\.reasoningLevel \|\| null, webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\), requestMode, clientRequestId, imagePlan: result\.imagePlan \|\| null, imageResultUrls: result\.imageResultUrls \|\| null, retrievalSummary: result\.retrievalSummary \|\| \[\] \};/);
+  assert.match(source, /metadata: userMetadata/);
+  assert.match(source, /metadata: assistantMetadata/);
 });
 
 test('agent chat source writes detailed runtime logs for both success and failure paths', () => {
@@ -166,6 +179,11 @@ test('agent chat source writes detailed runtime logs for both success and failur
 });
 
 test('agent image conversation prompt includes deterministic image order mapping with urls and falls back to image model on failures', () => {
+  assert.match(source, /const normalizeAgentImageUrl = \(value\) =>/);
+  assert.match(source, /const markdownTarget = raw\.match/);
+  assert.match(source, /const url = normalizeAgentImageUrl\(item\?\.url\);/);
+  assert.match(source, /message\.metadata\.imageResultUrls\.map\(\(item\) => normalizeAgentImageUrl\(item\)\)\.filter\(Boolean\)/);
+  assert.match(source, /\.map\(\(item\) => normalizeAgentImageUrl\(item\)\)/);
   assert.match(source, /const buildImagePromptReferenceText = \(imageReferences = \[\], preferredInputImageUrls = \[\]\) =>/);
   assert.match(source, /const extractExplicitImageReferenceIndexes = \(text = ''\) =>/);
   assert.match(source, /const extractDirectionalImageReferenceIndexes = \(\{ text = '', imageReferences = \[\] \}\) =>/);

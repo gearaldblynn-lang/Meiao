@@ -19,10 +19,11 @@ import {
 } from '../modules/AgentCenter/agentCenterUtils.mjs';
 import { buildLogFilterOptions, normalizeLogPagination } from '../modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
-import { ensureJobsSchema, createJobRecord, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
 import {
   createLocalJobRecord,
   createLocalJobWorker,
+  deleteLocalJobRecord,
   findReusableLocalJobRecord,
   getLocalJobById,
   getLocalJobQueueStats,
@@ -33,8 +34,10 @@ import {
   requestLocalRetryJob,
 } from './localJobStore.mjs';
 import { executeProviderJob } from './providerGateway.mjs';
+import { compactAppStateForStorage, mergeAppStateForStorage } from './appStateMerge.mjs';
 import { buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins } from './jobRuntime.mjs';
 import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../utils/gptImage2.mjs';
+import { isExternallyReachableBaseUrl } from '../utils/publicNetworkUrl.mjs';
 import {
   buildAssetPublicPath,
   ensureAssetSchema,
@@ -51,6 +54,7 @@ import {
   deleteStoredAssetFile,
 } from './assetStore.mjs';
 import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
+import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLogin } from './dreaminaCli.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -62,12 +66,16 @@ const PORT = Number(process.env.PORT || 3100);
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const ASSET_RETENTION_MS = 1000 * 60 * 60 * 24 * 3;
 const LOG_RETENTION_MS = 1000 * 60 * 60 * 24 * 7;
+const LOG_CLEANUP_INTERVAL_MS = 1000 * 60 * 60;
 const MAX_JSON_BODY_BYTES = 25 * 1024 * 1024;
+const MAX_STATE_BODY_BYTES = 100 * 1024 * 1024;
+const MAX_MULTIPART_BODY_BYTES = 1024 * 1024 * 1024;
 const INTERNAL_ASSET_REGISTRY_KEY = '__assetRegistry';
 const TRACKED_URL_FIELDS = new Set([
   'resultUrl',
   'sourceUrl',
   'uploadedReferenceUrl',
+  'uploadedUrl',
   'lastStyleUrl',
   'uploadedLogoUrl',
   'imageUrl',
@@ -117,6 +125,7 @@ let jobWorker = null;
 let localJobWorker = null;
 let localStoreCache = null;
 let assetCleanupTimer = null;
+let logCleanupTimer = null;
 
 const defaultApiConfig = {
   kieApiKey: '',
@@ -124,6 +133,9 @@ const defaultApiConfig = {
 };
 
 const DEFAULT_JOB_CONCURRENCY = 5;
+const DEFAULT_FEATURE_PERMISSIONS = Object.freeze({
+  videoGeneration: false,
+});
 
 const defaultModuleConfig = {
   targetLanguage: 'English',
@@ -131,7 +143,7 @@ const defaultModuleConfig = {
   removeWatermark: true,
   aspectRatio: 'auto',
   quality: '1k',
-  model: 'nano-banana-2',
+  model: 'gpt-image-2',
   resolutionMode: 'custom',
   targetWidth: 1200,
   targetHeight: 1200,
@@ -145,7 +157,7 @@ const defaultTranslationConfigs = {
     removeWatermark: true,
     aspectRatio: '1:1',
     quality: '1k',
-    model: 'nano-banana-2',
+    model: 'gpt-image-2',
     resolutionMode: 'custom',
     targetWidth: 800,
     targetHeight: 800,
@@ -157,7 +169,7 @@ const defaultTranslationConfigs = {
     removeWatermark: true,
     aspectRatio: 'auto',
     quality: '1k',
-    model: 'nano-banana-2',
+    model: 'gpt-image-2',
     resolutionMode: 'custom',
     targetWidth: 750,
     targetHeight: 0,
@@ -169,7 +181,7 @@ const defaultTranslationConfigs = {
     removeWatermark: true,
     aspectRatio: 'auto',
     quality: '1k',
-    model: 'nano-banana-2',
+    model: 'gpt-image-2',
     resolutionMode: 'custom',
     targetWidth: 1200,
     targetHeight: 0,
@@ -196,6 +208,13 @@ const getPersistentAssetBaseUrl = (req = null) => {
 
 const isManagedAssetUrl = (value) => typeof value === 'string' && value.includes(MANAGED_ASSET_PATH_SEGMENT);
 
+const isAvailableManagedAssetUrl = (value, validAssetUrls) => {
+  if (!isManagedAssetUrl(value)) return true;
+  if (validAssetUrls.has(value)) return true;
+  const assetId = extractStoredAssetIdFromPublicUrl(value);
+  return Boolean(assetId && validAssetUrls.has(assetId));
+};
+
 const collectManagedAssetUrls = (value, bucket = new Set()) => {
   if (Array.isArray(value)) {
     value.forEach((item) => collectManagedAssetUrls(item, bucket));
@@ -218,21 +237,45 @@ const scrubUnavailableManagedAssetUrls = (value, validAssetUrls) => {
   }
 
   if (!value || typeof value !== 'object') {
-    if (isManagedAssetUrl(value) && !validAssetUrls.has(value)) {
+    if (isManagedAssetUrl(value) && !isAvailableManagedAssetUrl(value, validAssetUrls)) {
       return undefined;
     }
     return value;
   }
 
   const next = {};
+  const hadUnavailableUploadedUrl =
+    isManagedAssetUrl(value.uploadedUrl) &&
+    !isAvailableManagedAssetUrl(value.uploadedUrl, validAssetUrls);
   for (const [key, child] of Object.entries(value)) {
     const cleaned = scrubUnavailableManagedAssetUrls(child, validAssetUrls);
     next[key] = cleaned === undefined ? (NULLABLE_TRACKED_FIELDS.has(key) ? null : Array.isArray(child) ? [] : undefined) : cleaned;
   }
+  if (hadUnavailableUploadedUrl && (value.role === 'product' || value.role === 'gift' || value.role === 'style_ref')) {
+    return undefined;
+  }
   return next;
 };
 
+const buildValidManagedAssetReferences = (assets = []) => {
+  const refs = new Set();
+  for (const asset of assets || []) {
+    if (!asset || asset.deletedAt) continue;
+    if (asset.publicUrl) refs.add(asset.publicUrl);
+    if (asset.id) refs.add(String(asset.id));
+  }
+  return refs;
+};
+
 const sanitizePathPart = (value) => value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'anonymous';
+const sanitizeUploadFileName = (value) => {
+  const raw = String(value || 'upload.bin').trim() || 'upload.bin';
+  const ext = path.extname(raw).slice(0, 16);
+  const base = path.basename(raw, ext) || 'upload';
+  const safeBase = base.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80) || 'upload';
+  const safeExt = ext.replace(/[^.a-zA-Z0-9]/g, '').slice(0, 16);
+  return `${safeBase}${safeExt}`;
+};
 
 const createDefaultState = () => ({
   activeModule: 'one_click',
@@ -259,7 +302,7 @@ const createDefaultState = () => ({
         count: 3,
         aspectRatio: '1:1',
         quality: '1k',
-        model: 'nano-banana-2',
+        model: 'gpt-image-2',
         styleStrength: 'medium',
         resolutionMode: 'custom',
         targetWidth: 800,
@@ -284,7 +327,7 @@ const createDefaultState = () => ({
         count: 7,
         aspectRatio: 'auto',
         quality: '1k',
-        model: 'nano-banana-2',
+        model: 'gpt-image-2',
         styleStrength: 'medium',
         resolutionMode: 'custom',
         targetWidth: 750,
@@ -304,7 +347,7 @@ const createDefaultState = () => ({
     mode: 'white_bg',
     aspectRatio: 'auto',
     quality: '1k',
-    model: 'nano-banana-2',
+    model: 'gpt-image-2',
     resolutionMode: 'original',
     targetWidth: 0,
     targetHeight: 0,
@@ -324,7 +367,7 @@ const createDefaultState = () => ({
     includeModel: true,
     aspectRatio: '3:4',
     quality: '1k',
-    model: 'nano-banana-2',
+    model: 'gpt-image-2',
     imageCount: 3,
     setCount: 1,
     sets: [],
@@ -386,13 +429,16 @@ const createDefaultState = () => ({
 
 const createDefaultSystemSettings = () => ({
   analysisModel: '',
+  videoAnalysisModel: '',
 });
 
 const normalizeSystemSettings = (value = {}) => {
   const analysisModel = String(value?.analysisModel || '').trim();
+  const videoAnalysisModel = String(value?.videoAnalysisModel || '').trim();
   const available = new Set(getChatModelCatalog().map((item) => item.id));
   return {
     analysisModel: analysisModel && available.has(analysisModel) ? analysisModel : '',
+    videoAnalysisModel: videoAnalysisModel && available.has(videoAnalysisModel) ? videoAnalysisModel : '',
   };
 };
 
@@ -472,7 +518,7 @@ const clearExpiredAssetsFromState = (value, registryMap, fieldName) => {
 };
 
 const prepareStateForStorage = (state) => {
-  const rawState = cloneJsonValue(state || createDefaultState());
+  const rawState = compactAppStateForStorage(cloneJsonValue(state || createDefaultState()));
   const existingRegistry = normalizeAssetRegistry(rawState[INTERNAL_ASSET_REGISTRY_KEY]);
   delete rawState[INTERNAL_ASSET_REGISTRY_KEY];
 
@@ -516,15 +562,36 @@ const normalizeJobConcurrency = (value, fallback = DEFAULT_JOB_CONCURRENCY) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const normalizeFeaturePermissions = (value = DEFAULT_FEATURE_PERMISSIONS) => {
+  let permissions = value;
+  if (typeof permissions === 'string') {
+    try {
+      permissions = JSON.parse(permissions);
+    } catch {
+      permissions = {};
+    }
+  }
+  if (!permissions || typeof permissions !== 'object') permissions = {};
+  return {
+    videoGeneration: Boolean(permissions.videoGeneration),
+  };
+};
+
+const serializeFeaturePermissions = (value) => JSON.stringify(normalizeFeaturePermissions(value));
+
+const canUseVideoGenerationFeature = (user) =>
+  user?.role === 'admin' || normalizeFeaturePermissions(user?.featurePermissions).videoGeneration;
+
 const normalizeStoredUser = (user) => ({
   ...user,
   displayName: String(user?.displayName || user?.username || ''),
   avatarUrl: user?.avatarUrl ? String(user.avatarUrl) : '',
   avatarPreset: user?.avatarPreset ? String(user.avatarPreset) : 'aurora',
   jobConcurrency: normalizeJobConcurrency(user?.jobConcurrency, DEFAULT_JOB_CONCURRENCY),
+  featurePermissions: normalizeFeaturePermissions(user?.featurePermissions),
 });
 
-const createUser = ({ username, password, role = 'staff', displayName = '', jobConcurrency = DEFAULT_JOB_CONCURRENCY }) => {
+const createUser = ({ username, password, role = 'staff', displayName = '', jobConcurrency = DEFAULT_JOB_CONCURRENCY, featurePermissions = DEFAULT_FEATURE_PERMISSIONS }) => {
   const passwordRecord = createPasswordRecord(password);
   return {
     id: randomBytes(12).toString('hex'),
@@ -539,6 +606,7 @@ const createUser = ({ username, password, role = 'staff', displayName = '', jobC
     createdAt: Date.now(),
     lastLoginAt: null,
     jobConcurrency: normalizeJobConcurrency(jobConcurrency, DEFAULT_JOB_CONCURRENCY),
+    featurePermissions: normalizeFeaturePermissions(featurePermissions),
   };
 };
 
@@ -689,6 +757,13 @@ const resolveConfiguredAnalysisModel = (systemSettings = {}, ...preferredModels)
     process.env?.KIE_CHAT_MODEL,
     ...preferredModels
   );
+const resolveConfiguredVideoAnalysisModel = (systemSettings = {}, ...preferredModels) =>
+  resolveDefaultAnalysisChatModel(
+    systemSettings?.videoAnalysisModel,
+    process.env?.MEIAO_VIDEO_ANALYSIS_MODEL,
+    'gemini-3-flash-openai',
+    ...preferredModels
+  );
 const sanitizeAllowedChatModels = (configured, fallbacks = []) => {
   const available = new Set(getChatModelCatalog().map((item) => item.id));
   const preferred = [...(Array.isArray(configured) ? configured : []), ...fallbacks]
@@ -698,11 +773,21 @@ const sanitizeAllowedChatModels = (configured, fallbacks = []) => {
   if (unique.length > 0) return unique;
   return getChatModelCatalog()[0]?.id ? [getChatModelCatalog()[0].id] : [];
 };
+const LEGACY_DEFAULT_ALLOWED_CHAT_MODELS = new Set(['gpt-5-4-openai-resp', 'gemini-3-flash-openai']);
+const EXPANDED_LEGACY_CHAT_MODELS = ['claude-sonnet-4-6'];
+const expandLegacyAllowedChatModels = (allowedModels = []) => {
+  const unique = Array.from(new Set((Array.isArray(allowedModels) ? allowedModels : []).map((item) => String(item || '').trim()).filter(Boolean)));
+  const isLegacyDefaultAllowed = unique.length === LEGACY_DEFAULT_ALLOWED_CHAT_MODELS.size
+    && Array.from(LEGACY_DEFAULT_ALLOWED_CHAT_MODELS).every((id) => unique.includes(id));
+  if (!isLegacyDefaultAllowed) return unique;
+  const available = new Set(getChatModelCatalog().map((item) => item.id));
+  return Array.from(new Set([...unique, ...EXPANDED_LEGACY_CHAT_MODELS.filter((id) => available.has(id))]));
+};
 const resolveImageModel = (requestedModel = '') => {
   const available = getImageModelCatalog().map((item) => item.id);
   const preferred = String(requestedModel || '').trim();
   if (preferred && available.includes(preferred)) return preferred;
-  return available[0] || 'nano-banana-2';
+  return available[0] || 'gpt-image-2';
 };
 const sanitizeModelPolicy = (modelPolicy = {}, allowedChatModels = []) => {
   const safeAllowedChatModels = sanitizeAllowedChatModels(allowedChatModels, [
@@ -733,7 +818,7 @@ const resolveAllowedChatModels = (version) => {
   const configured = Array.isArray(version?.allowedChatModels) && version.allowedChatModels.length > 0
     ? version.allowedChatModels
     : [version?.defaultChatModel || version?.modelPolicy?.defaultModel || version?.modelPolicy?.cheapModel].filter(Boolean);
-  return sanitizeAllowedChatModels(configured, [version?.defaultChatModel, version?.modelPolicy?.defaultModel, version?.modelPolicy?.cheapModel]);
+  return expandLegacyAllowedChatModels(sanitizeAllowedChatModels(configured, [version?.defaultChatModel, version?.modelPolicy?.defaultModel, version?.modelPolicy?.cheapModel]));
 };
 const resolveChatSessionModel = (version, requestedModel = '') => {
   const allowedModels = resolveAllowedChatModels(version);
@@ -961,8 +1046,7 @@ const pruneLogsByRetention = (logs) => {
 
 const normalizeLogs = (logs) => {
   return pruneLogsByRetention(logs)
-    .sort((a, b) => Number(b.createdAt) - Number(a.createdAt))
-    .slice(0, 500);
+    .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
 };
 
 const normalizeLogFilterValue = (value) => {
@@ -1135,12 +1219,13 @@ const json = (res, statusCode, payload) => {
   res.end(JSON.stringify(payload));
 };
 
-const readBody = async (req) => {
+const readBody = async (req, options = {}) => {
+  const maxBytes = Number.isFinite(options.maxBytes) ? options.maxBytes : MAX_JSON_BODY_BYTES;
   const chunks = [];
   let totalBytes = 0;
   for await (const chunk of req) {
     totalBytes += chunk.length;
-    if (totalBytes > MAX_JSON_BODY_BYTES) {
+    if (totalBytes > maxBytes) {
       throw new Error('REQUEST_BODY_TOO_LARGE');
     }
     chunks.push(chunk);
@@ -1151,8 +1236,8 @@ const readBody = async (req) => {
 
 const readMultipartFormData = async (req) => {
   const contentLength = Number.parseInt(String(req.headers['content-length'] || '0'), 10);
-  if (Number.isFinite(contentLength) && contentLength > MAX_JSON_BODY_BYTES) {
-    throw new Error('REQUEST_BODY_TOO_LARGE');
+  if (Number.isFinite(contentLength) && contentLength > MAX_MULTIPART_BODY_BYTES) {
+    throw new Error('REQUEST_MULTIPART_BODY_TOO_LARGE');
   }
 
   const request = new Request('http://127.0.0.1/internal-upload', {
@@ -1653,9 +1738,17 @@ const serveStaticFile = (req, res, filePath) => {
   const ext = path.extname(filePath).toLowerCase();
   const contentType = STATIC_CONTENT_TYPES[ext] || 'application/octet-stream';
   const body = readFileSync(filePath);
+  const relativePath = path.relative(distDir, filePath).replace(/\\/g, '/');
+  const isHtmlEntry = ext === '.html';
+  const isHashedAsset = relativePath.startsWith('assets/') && /\-[A-Za-z0-9_-]{6,}\./.test(path.basename(filePath));
   res.writeHead(200, {
     'Content-Type': contentType,
     'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': isHtmlEntry
+      ? 'no-store, no-cache, must-revalidate'
+      : isHashedAsset
+        ? 'public, max-age=31536000, immutable'
+        : 'no-cache',
   });
   if (req.method === 'HEAD') {
     res.end();
@@ -1684,6 +1777,15 @@ const tryServeFrontend = (req, res, url) => {
     return true;
   }
 
+  if (relativePath.startsWith('assets/')) {
+    res.writeHead(404, {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+    });
+    res.end('Asset not found');
+    return true;
+  }
+
   const fallbackPath = path.join(distDir, 'index.html');
   if (existsSync(fallbackPath)) {
     serveStaticFile(req, res, fallbackPath);
@@ -1705,6 +1807,7 @@ const cleanUser = (user) => ({
   createdAt: user.createdAt,
   lastLoginAt: user.lastLoginAt,
   jobConcurrency: normalizeJobConcurrency(user.jobConcurrency, DEFAULT_JOB_CONCURRENCY),
+  featurePermissions: normalizeFeaturePermissions(user.featurePermissions),
 });
 
 const localCreateSession = (store, userId) => {
@@ -1773,9 +1876,10 @@ const getMysqlPool = async () => {
     charset: 'utf8mb4',
   });
 
-  const resetPool = async () => {
-    const stalePool = mysqlPool;
-    mysqlPool = null;
+  const resetPool = async (stalePool = mysqlPool) => {
+    if (mysqlPool === stalePool) {
+      mysqlPool = null;
+    }
     mysqlPoolHealthCheckPromise = null;
     if (stalePool?.end) {
       await stalePool.end().catch(() => null);
@@ -1787,13 +1891,16 @@ const getMysqlPool = async () => {
   }
 
   if (!mysqlPoolHealthCheckPromise) {
+    const poolForHealthCheck = mysqlPool;
     mysqlPoolHealthCheckPromise = (async () => {
       try {
-        await mysqlPool.query('SELECT 1');
+        await poolForHealthCheck.query('SELECT 1');
       } catch (error) {
         if (isTransientMysqlConnectionError(error)) {
-          await resetPool();
-          mysqlPool = createPool();
+          await resetPool(poolForHealthCheck);
+          if (!mysqlPool) {
+            mysqlPool = createPool();
+          }
           await mysqlPool.query('SELECT 1');
           return;
         }
@@ -1805,6 +1912,9 @@ const getMysqlPool = async () => {
   }
 
   await mysqlPoolHealthCheckPromise;
+  if (!mysqlPool) {
+    mysqlPool = createPool();
+  }
   return mysqlPool;
 };
 
@@ -1828,6 +1938,7 @@ const ensureMysqlSchema = async () => {
       role VARCHAR(20) NOT NULL,
       status VARCHAR(20) NOT NULL,
       job_concurrency INT NOT NULL DEFAULT 5,
+      feature_permissions_json LONGTEXT NULL,
       password_hash VARCHAR(128) NOT NULL,
       salt VARCHAR(64) NOT NULL,
       created_at BIGINT NOT NULL,
@@ -1841,6 +1952,7 @@ const ensureMysqlSchema = async () => {
   }
   await ensureMysqlColumn(pool, 'users', 'avatar_url', 'VARCHAR(1024) NULL');
   await ensureMysqlColumn(pool, 'users', 'avatar_preset', 'VARCHAR(40) NULL');
+  await ensureMysqlColumn(pool, 'users', 'feature_permissions_json', 'LONGTEXT NULL');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sessions (
@@ -1891,11 +2003,13 @@ const ensureMysqlSchema = async () => {
       success_count INT DEFAULT 0,
       failed_count INT DEFAULT 0,
       interrupted_count INT DEFAULT 0,
+      credits_consumed DECIMAL(12,2) DEFAULT 0,
       PRIMARY KEY (stat_date, user_id, module),
       INDEX idx_usage_daily_date (stat_date),
       INDEX idx_usage_daily_user (user_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
+  await ensureMysqlColumn(pool, 'usage_daily', 'credits_consumed', 'DECIMAL(12,2) DEFAULT 0');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agents (
@@ -2141,6 +2255,7 @@ const mapDbUser = (row) => ({
   role: row.role,
   status: row.status,
   jobConcurrency: normalizeJobConcurrency(row.job_concurrency, DEFAULT_JOB_CONCURRENCY),
+  featurePermissions: normalizeFeaturePermissions(row.feature_permissions_json),
   passwordHash: row.password_hash,
   salt: row.salt,
   createdAt: Number(row.created_at),
@@ -2161,6 +2276,15 @@ const findDbUserById = async (userId) => {
   const [rows] = await pool.query(
     'SELECT * FROM users WHERE id = ? AND status = ? LIMIT 1',
     [userId, 'active']
+  );
+  return rows[0] ? mapDbUser(rows[0]) : null;
+};
+
+const findAnyDbUserById = async (userId) => {
+  const pool = await getMysqlPool();
+  const [rows] = await pool.query(
+    'SELECT * FROM users WHERE id = ? LIMIT 1',
+    [userId]
   );
   return rows[0] ? mapDbUser(rows[0]) : null;
 };
@@ -2275,6 +2399,19 @@ const scrubDbStatesForDeletedAssets = async (validAssetUrls) => {
   }
 };
 
+const scrubDbStateForUnavailableManagedAssets = async (state) => {
+  const pool = await getMysqlPool();
+  const assets = await listStoredAssets(pool);
+  return prepareStateForStorage(scrubUnavailableManagedAssetUrls(state || createDefaultState(), buildValidManagedAssetReferences(assets)));
+};
+
+const scrubLocalStateForUnavailableManagedAssets = async (state) => {
+  const assets = await listStoredAssets(null);
+  return prepareStateForStorage(
+    scrubUnavailableManagedAssetUrls(state || createDefaultState(), buildValidManagedAssetReferences(assets))
+  );
+};
+
 const collectOneClickReferencePresetAssetUrls = (state) => {
   const urls = [];
   const presets = state?.oneClickMemory?.referencePresets || {};
@@ -2292,6 +2429,13 @@ const collectOneClickReferencePresetAssetUrls = (state) => {
   return urls;
 };
 
+const collectStateManagedAssetUrls = (state, bucket) => {
+  collectTrackedAssetUrls(state, undefined, bucket);
+  collectOneClickReferencePresetAssetUrls(state).forEach((url) => {
+    if (isRemoteAssetUrl(url)) bucket.add(url);
+  });
+};
+
 const collectProtectedManagedAssetUrls = async ({ pool = null, store = null }) => {
   const protectedUrls = new Set();
   if (pool) {
@@ -2303,7 +2447,7 @@ const collectProtectedManagedAssetUrls = async ({ pool = null, store = null }) =
     stateRows.forEach((row) => {
       try {
         const state = typeof row.state_json === 'string' ? JSON.parse(row.state_json || '{}') : row.state_json;
-        collectOneClickReferencePresetAssetUrls(state).forEach((url) => protectedUrls.add(String(url)));
+        collectStateManagedAssetUrls(state, protectedUrls);
       } catch {
         // Ignore malformed state rows during cleanup; invalid rows are handled by normal state loading.
       }
@@ -2316,7 +2460,7 @@ const collectProtectedManagedAssetUrls = async ({ pool = null, store = null }) =
   users.map((item) => item.avatarUrl).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
   agents.map((item) => item.iconUrl).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
   Object.values(store?.appStates || {}).forEach((state) => {
-    collectOneClickReferencePresetAssetUrls(state).forEach((url) => protectedUrls.add(String(url)));
+    collectStateManagedAssetUrls(state, protectedUrls);
   });
   return protectedUrls;
 };
@@ -2357,6 +2501,9 @@ const scrubLocalProtectedManagedAssetRefs = (store, validAssetUrls) => {
 
 const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, fileName, mimeType, fileBuffer, width = 0, height = 0 }) => {
   const publicBaseUrl = getPersistentAssetBaseUrl(req);
+  if (!isExternallyReachableBaseUrl(publicBaseUrl)) {
+    return null;
+  }
   const pool = shouldUseMysql ? await getMysqlPool() : null;
   return persistAssetBuffer({
     pool,
@@ -2445,22 +2592,33 @@ const persistJobOutputAssetsIfEnabled = async (job, output) => {
 const persistRuntimeRemoteAssetIfEnabled = async ({ userId, moduleName, assetType = 'result', remoteUrl, originalName = 'result.png', provider = 'kie', jobId = '' }) => {
   const publicBaseUrl = getPersistentAssetBaseUrl();
   const normalizedUrl = String(remoteUrl || '').trim();
-  if (!publicBaseUrl || !userId || !/^https?:\/\//i.test(normalizedUrl) || isManagedAssetUrl(normalizedUrl)) {
+  if (!isExternallyReachableBaseUrl(publicBaseUrl) || !userId || !/^https?:\/\//i.test(normalizedUrl) || isManagedAssetUrl(normalizedUrl)) {
     return normalizedUrl;
   }
   const pool = shouldUseMysql ? await getMysqlPool() : null;
-  const persisted = await persistRemoteAsset({
-    pool,
-    publicBaseUrl,
-    userId,
-    module: moduleName,
-    assetType,
-    remoteUrl: normalizedUrl,
-    originalName,
-    provider,
-    jobId,
-  });
-  return persisted.publicUrl;
+  try {
+    const persisted = await persistRemoteAsset({
+      pool,
+      publicBaseUrl,
+      userId,
+      module: moduleName,
+      assetType,
+      remoteUrl: normalizedUrl,
+      originalName,
+      provider,
+      jobId,
+    });
+    return persisted.publicUrl;
+  } catch (error) {
+    console.warn('[asset-store] runtime remote asset persistence failed', {
+      moduleName,
+      assetType,
+      provider,
+      jobId,
+      message: error?.message || String(error || ''),
+    });
+    return normalizedUrl;
+  }
 };
 
 const serveStoredAsset = async (req, res, assetId) => {
@@ -2514,7 +2672,7 @@ const cleanupExpiredStoredAssets = async () => {
   const allAssets = await listStoredAssets(pool);
   const protectedAssetUrls = await collectProtectedManagedAssetUrls({ pool, store: shouldUseMysql ? null : readLocalStore() });
   const expiredAssets = selectExpiredAssetsForCleanup(
-    allAssets.map((asset) => ({ ...asset, isReferenced: protectedAssetUrls.has(asset.publicUrl) })),
+    allAssets.map((asset) => ({ ...asset, isReferenced: protectedAssetUrls.has(asset.publicUrl) || protectedAssetUrls.has(asset.id) })),
     Date.now()
   );
   if (expiredAssets.length === 0) return;
@@ -2525,7 +2683,7 @@ const cleanupExpiredStoredAssets = async () => {
   }
 
   const remainingAssets = await listStoredAssets(pool);
-  const validAssetUrls = new Set(remainingAssets.filter((asset) => !asset.deletedAt).map((asset) => asset.publicUrl));
+  const validAssetUrls = buildValidManagedAssetReferences(remainingAssets);
   if (shouldUseMysql) {
     await scrubDbStatesForDeletedAssets(validAssetUrls);
     await scrubDbProtectedManagedAssetRefs(validAssetUrls);
@@ -2574,12 +2732,12 @@ const getDbSessionUser = async (req) => {
   return rows[0] ? mapDbUser(rows[0]) : null;
 };
 
-const createDbUser = async ({ username, password, role = 'staff', displayName = '', jobConcurrency = DEFAULT_JOB_CONCURRENCY }) => {
+const createDbUser = async ({ username, password, role = 'staff', displayName = '', jobConcurrency = DEFAULT_JOB_CONCURRENCY, featurePermissions = DEFAULT_FEATURE_PERMISSIONS }) => {
   const pool = await getMysqlPool();
-  const newUser = createUser({ username, password, role, displayName, jobConcurrency });
+  const newUser = createUser({ username, password, role, displayName, jobConcurrency, featurePermissions });
   await pool.query(
-    `INSERT INTO users (id, username, display_name, avatar_url, avatar_preset, role, status, job_concurrency, password_hash, salt, created_at, last_login_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO users (id, username, display_name, avatar_url, avatar_preset, role, status, job_concurrency, feature_permissions_json, password_hash, salt, created_at, last_login_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newUser.id,
       newUser.username,
@@ -2589,6 +2747,7 @@ const createDbUser = async ({ username, password, role = 'staff', displayName = 
       newUser.role,
       newUser.status,
       newUser.jobConcurrency,
+      serializeFeaturePermissions(newUser.featurePermissions),
       newUser.passwordHash,
       newUser.salt,
       newUser.createdAt,
@@ -2634,6 +2793,10 @@ const updateDbUser = async (userId, updates) => {
     fields.push('job_concurrency = ?');
     values.push(normalizeJobConcurrency(updates.jobConcurrency, DEFAULT_JOB_CONCURRENCY));
   }
+  if (updates.featurePermissions !== undefined) {
+    fields.push('feature_permissions_json = ?');
+    values.push(serializeFeaturePermissions(updates.featurePermissions));
+  }
   if (typeof updates.password === 'string' && updates.password) {
     const passwordRecord = createPasswordRecord(updates.password);
     fields.push('password_hash = ?');
@@ -2643,19 +2806,77 @@ const updateDbUser = async (userId, updates) => {
   }
 
   if (fields.length === 0) {
-    return await findDbUserById(userId);
+    return await findAnyDbUserById(userId);
   }
 
   values.push(userId);
   await pool.query(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, values);
-  return await findDbUserById(userId);
+  return await findAnyDbUserById(userId);
 };
 
 const deleteDbUser = async (userId) => {
   const pool = await getMysqlPool();
-  await pool.query('DELETE FROM sessions WHERE user_id = ?', [userId]);
-  await pool.query('DELETE FROM app_states WHERE user_id = ?', [userId]);
-  await pool.query('DELETE FROM users WHERE id = ?', [userId]);
+  const connection = await pool.getConnection();
+  const toPlaceholders = (items) => items.map(() => '?').join(', ');
+  let assetStorageKeys = [];
+  try {
+    await connection.beginTransaction();
+
+    const [assetRows] = await connection.query('SELECT storage_key FROM stored_assets WHERE user_id = ?', [userId]);
+    assetStorageKeys = (assetRows || []).map((row) => row.storage_key).filter(Boolean);
+
+    const [agentRows] = await connection.query('SELECT id FROM agents WHERE owner_user_id = ?', [userId]);
+    const agentIds = (agentRows || []).map((row) => row.id).filter(Boolean);
+    if (agentIds.length > 0) {
+      const agentPlaceholders = toPlaceholders(agentIds);
+      const [versionRows] = await connection.query(
+        `SELECT id FROM agent_versions WHERE agent_id IN (${agentPlaceholders})`,
+        agentIds
+      );
+      const versionIds = (versionRows || []).map((row) => row.id).filter(Boolean);
+      if (versionIds.length > 0) {
+        await connection.query(`DELETE FROM agent_version_knowledge_bases WHERE agent_version_id IN (${toPlaceholders(versionIds)})`, versionIds);
+      }
+      await connection.query(`DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE agent_id IN (${agentPlaceholders}))`, agentIds);
+      await connection.query(`DELETE FROM chat_sessions WHERE agent_id IN (${agentPlaceholders})`, agentIds);
+      await connection.query(`DELETE FROM agent_usage_logs WHERE agent_id IN (${agentPlaceholders})`, agentIds);
+      await connection.query(`DELETE FROM agent_versions WHERE agent_id IN (${agentPlaceholders})`, agentIds);
+      await connection.query(`DELETE FROM agents WHERE id IN (${agentPlaceholders})`, agentIds);
+    }
+
+    const [knowledgeBaseRows] = await connection.query('SELECT id FROM knowledge_bases WHERE owner_user_id = ?', [userId]);
+    const knowledgeBaseIds = (knowledgeBaseRows || []).map((row) => row.id).filter(Boolean);
+    if (knowledgeBaseIds.length > 0) {
+      const kbPlaceholders = toPlaceholders(knowledgeBaseIds);
+      await connection.query(`DELETE FROM knowledge_chunks WHERE knowledge_base_id IN (${kbPlaceholders})`, knowledgeBaseIds);
+      await connection.query(`DELETE FROM knowledge_documents WHERE knowledge_base_id IN (${kbPlaceholders})`, knowledgeBaseIds);
+      await connection.query(`DELETE FROM agent_version_knowledge_bases WHERE knowledge_base_id IN (${kbPlaceholders})`, knowledgeBaseIds);
+      await connection.query(`DELETE FROM knowledge_bases WHERE id IN (${kbPlaceholders})`, knowledgeBaseIds);
+    }
+
+    await connection.query('DELETE FROM chat_messages WHERE user_id = ?', [userId]);
+    await connection.query('DELETE FROM chat_sessions WHERE user_id = ?', [userId]);
+    await connection.query('DELETE FROM agent_usage_logs WHERE user_id = ?', [userId]);
+    await connection.query('DELETE FROM internal_jobs WHERE user_id = ?', [userId]);
+    await connection.query('DELETE FROM stored_assets WHERE user_id = ?', [userId]);
+    await connection.query('DELETE FROM sessions WHERE user_id = ?', [userId]);
+    await connection.query('DELETE FROM app_states WHERE user_id = ?', [userId]);
+    await connection.query('DELETE FROM internal_logs WHERE user_id = ?', [userId]);
+    await connection.query('DELETE FROM users WHERE id = ?', [userId]);
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+
+  await Promise.all(assetStorageKeys.map((storageKey) =>
+    deleteStoredAssetFile(storageKey).catch((error) => {
+      console.error('delete user asset file failed', storageKey, error);
+    })
+  ));
 };
 
 const countDbAdmins = async () => {
@@ -2669,30 +2890,62 @@ const purgeExpiredDbLogs = async () => {
   await pool.query('DELETE FROM internal_logs WHERE created_at < ?', [getLogRetentionCutoff()]);
 };
 
-const USAGE_MODULES = new Set(['agent_center', 'one_click', 'translation', 'buyer_show', 'retouch', 'video']);
+const cleanupExpiredLogs = async () => {
+  if (shouldUseMysql) {
+    await purgeExpiredDbLogs();
+    return;
+  }
+  const store = readLocalStore();
+  store.logs = normalizeLogs(store.logs);
+  writeLocalStore(store);
+};
+
+const USAGE_MODULES = new Set(['agent_center', 'one_click', 'translation', 'buyer_show', 'retouch', 'video', 'xhs_cover']);
 const TERMINAL_STATUSES = new Set(['success', 'failed', 'interrupted']);
 const USAGE_ACTIONS = new Set([
   'agent_chat',
   'agent_validate',
+  'analysis_token_usage',
   'generate_main_scheme', 'generate_detail_scheme',
   'generate_single',
   'generate_board', 'regenerate_board',
   'create_image_task',
 ]);
+const USAGE_JOB_COMPLETED_TASK_TYPES = new Set(['dreamina_video', 'kie_seedance_video', 'kie_video', 'kie_veo']);
+
+const shouldTrackUsageStatLog = (log = {}) => {
+  if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status)) {
+    return false;
+  }
+  if (USAGE_ACTIONS.has(log.action)) {
+    return true;
+  }
+  if (log.action === 'job_completed') {
+    return USAGE_JOB_COMPLETED_TASK_TYPES.has(String(log.meta?.taskType || ''));
+  }
+  return false;
+};
+
+const extractUsageCreditsConsumed = (log = {}) => {
+  if (log.status !== 'success') return 0;
+  const parsed = Number(log.meta?.creditsConsumed);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
 
 const incrementDbUsageStat = async (pool, log) => {
-  if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status) || !USAGE_ACTIONS.has(log.action)) {
+  if (!shouldTrackUsageStatLog(log)) {
     return;
   }
 
   const statDate = new Date(log.createdAt).toISOString().split('T')[0];
   const field = log.status === 'success' ? 'success_count' : log.status === 'failed' ? 'failed_count' : 'interrupted_count';
+  const creditsConsumed = extractUsageCreditsConsumed(log);
 
   await pool.query(
-    `INSERT INTO usage_daily (stat_date, user_id, username, display_name, module, ${field})
-     VALUES (?, ?, ?, ?, ?, 1)
-     ON DUPLICATE KEY UPDATE ${field} = ${field} + 1`,
-    [statDate, log.userId, log.username, log.displayName, log.module]
+    `INSERT INTO usage_daily (stat_date, user_id, username, display_name, module, ${field}, credits_consumed)
+     VALUES (?, ?, ?, ?, ?, 1, ?)
+     ON DUPLICATE KEY UPDATE ${field} = ${field} + 1, credits_consumed = credits_consumed + VALUES(credits_consumed)`,
+    [statDate, log.userId, log.username, log.displayName, log.module, creditsConsumed]
   );
 };
 
@@ -3700,6 +3953,7 @@ const runAgentConversation = async ({
   const effectiveSystemPrompt = interfaceOutputSpecs
     ? `${version.systemPrompt}\n\n${interfaceOutputSpecs}`.trim()
     : version.systemPrompt;
+  const pool = await getMysqlPool();
   const { text: inlinedMessage, attachments: remainingAttachments } = await inlineTextAttachments(pool, currentMessage, attachments);
   const messages = buildAgentPromptMessages({
     systemPrompt: effectiveSystemPrompt,
@@ -3720,6 +3974,7 @@ const runAgentConversation = async ({
   const startedAt = Date.now();
   let content;
   let usedChunks = [];
+  let output = null;
   if (hasKnowledgeBase) {
     const agenticResult = await runAgenticRetrievalLoop({
       initialMessages: messages,
@@ -3731,11 +3986,11 @@ const runAgentConversation = async ({
       retrievalPolicy: version.retrievalPolicy,
       onProgress,
     });
-    content = agenticResult.content;
+    content = sanitizeAgentAssistantContent(agenticResult.content);
     usedChunks = agenticResult.allUsedChunks;
   } else {
     onProgress?.({ stage: 'thinking', round: 1 });
-    const output = await executeProviderJob({
+    output = await executeProviderJob({
       taskType: 'kie_chat',
       payload: {
         messages,
@@ -3745,7 +4000,7 @@ const runAgentConversation = async ({
         webSearchEnabled: Boolean(webSearchEnabled),
       },
     }, process.env, new AbortController().signal);
-    content = String(output?.result?.content || '').trim();
+    content = sanitizeAgentAssistantContent(output?.result?.content);
   }
   const promptTokens = messages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
   const completionTokens = estimateTokenCount(content);
@@ -3954,6 +4209,17 @@ const getDbChatSessionById = async (user, sessionId) => {
   };
 };
 
+const mapDbChatMessageRow = (row) => ({
+  id: row.id,
+  sessionId: row.session_id,
+  userId: row.user_id,
+  role: row.role,
+  content: row.content,
+  attachments: parseJsonField(row.attachments_json, null),
+  metadata: parseJsonField(row.metadata_json, null),
+  createdAt: Number(row.created_at),
+});
+
 const listDbChatMessages = async (user, sessionId) => {
   const session = await getDbChatSessionById(user, sessionId);
   if (!session) return [];
@@ -3962,16 +4228,36 @@ const listDbChatMessages = async (user, sessionId) => {
     'SELECT * FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY created_at ASC',
     [sessionId, user.id]
   );
-  return rows.map((row) => ({
-    id: row.id,
-    sessionId: row.session_id,
-    userId: row.user_id,
-    role: row.role,
-    content: row.content,
-    attachments: parseJsonField(row.attachments_json, null),
-    metadata: parseJsonField(row.metadata_json, null),
-    createdAt: Number(row.created_at),
-  }));
+  return rows.map(mapDbChatMessageRow);
+};
+
+const findDbChatExchangeByClientRequestId = async (user, sessionId, clientRequestId) => {
+  const normalizedRequestId = String(clientRequestId || '').trim();
+  if (!normalizedRequestId) return null;
+  const pool = await getMysqlPool();
+  const [rows] = await pool.query(
+    `SELECT * FROM chat_messages
+     WHERE session_id = ?
+       AND user_id = ?
+       AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.clientRequestId')) = ?
+     ORDER BY created_at ASC`,
+    [sessionId, user.id, normalizedRequestId]
+  );
+  const messages = rows.map(mapDbChatMessageRow);
+  const userMessage = messages.find((message) => message.role === 'user') || null;
+  const assistantMessage = messages.find((message) => message.role === 'assistant') || null;
+  if (!userMessage || !assistantMessage) return null;
+  return {
+    userMessage,
+    assistantMessage,
+    usage: {
+      idempotent: true,
+      clientRequestId: normalizedRequestId,
+      selectedModel: assistantMessage.metadata?.selectedModel || userMessage.metadata?.selectedModel || '',
+      requestType: assistantMessage.metadata?.requestMode || userMessage.metadata?.requestMode || 'chat',
+      sessionId,
+    },
+  };
 };
 
 const createDbAgentUsageLog = async (user, agent, version, result, status, errorMessage = '') => {
@@ -4081,12 +4367,27 @@ const setChatProgress = (clientRequestId, progress) => {
   setTimeout(() => chatProgressMap.delete(clientRequestId), 5 * 60 * 1000);
 };
 
+const activeDbChatReplyRequests = new Map();
+const activeLocalChatReplyRequests = new Map();
+const buildChatRequestKey = (sessionId, clientRequestId) => `${sessionId || ''}:${clientRequestId || ''}`;
+const sanitizeAgentAssistantContent = (content) =>
+  String(content || '')
+    .replace(/(^|\n)\s*final_answer\s*(?=\n|$)/gi, '$1')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
 const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => {
   const content = String(payload?.content || '').trim();
   const requestMode = payload?.requestMode === 'image_generation' ? 'image_generation' : 'chat';
   const clientRequestId = String(payload?.clientRequestId || createEntityId()).trim() || createEntityId();
   const session = await getDbChatSessionById(user, sessionId);
   if (!session) return null;
+  const existingExchange = await findDbChatExchangeByClientRequestId(user, sessionId, clientRequestId);
+  if (existingExchange) return existingExchange;
+  const activeKey = buildChatRequestKey(sessionId, clientRequestId);
+  if (activeDbChatReplyRequests.has(activeKey)) return activeDbChatReplyRequests.get(activeKey);
+
+  const promise = (async () => {
   const version = await getDbAgentVersionById(session.agentVersionId);
   const agent = await getDbAgentById(session.agentId);
   if (!version || !agent) return null;
@@ -4111,11 +4412,6 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   const pool = await getMysqlPool();
   const now = Date.now();
   const userMessageId = createEntityId();
-  await pool.query(
-    `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [userMessageId, sessionId, user.id, 'user', content, JSON.stringify(attachments), JSON.stringify({ selectedModel, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, clientRequestId }), now]
-  );
   const history = await listDbChatMessages(user, sessionId);
   const summaryNeeded = history.filter((item) => item.role !== 'system').length > Number(version.contextPolicy.summaryTriggerThreshold || 10);
   const summary = summaryNeeded ? buildConversationSummary(history, Number(version.contextPolicy.maxSummaryChars || 1200)) : (session.summary || '');
@@ -4166,16 +4462,41 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         kind: 'image',
       }))
     : null;
-  await pool.query(
-    `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [assistantMessageId, sessionId, user.id, 'assistant', result.content, JSON.stringify(assistantAttachments), JSON.stringify({ selectedModel: result.selectedModel, usedRetrieval: result.usedRetrieval, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] }), Date.now()]
-  );
-  await pool.query(
-    'UPDATE chat_sessions SET title = ?, summary = ?, selected_model = ?, reasoning_level = ?, web_search_enabled = ?, last_image_mode = ?, updated_at = ? WHERE id = ?',
-    [session.title === '新会话' ? content.slice(0, 24) : session.title, summary, selectedModel || '', payload?.reasoningLevel ? String(payload.reasoningLevel) : null, requestMode === 'image_generation' ? 0 : payload?.webSearchEnabled ? 1 : 0, requestMode === 'image_generation' ? 1 : 0, Date.now(), sessionId]
-  );
-  await createDbAgentUsageLog(user, agent, version, result, 'success');
+  const assistantCreatedAt = Date.now();
+  const userMetadata = { selectedModel, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, clientRequestId };
+  const assistantMetadata = { selectedModel: result.selectedModel, fallbackFrom: result.fallbackFrom || null, usedRetrieval: result.usedRetrieval, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] };
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    await connection.query(
+      `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userMessageId, sessionId, user.id, 'user', content, JSON.stringify(attachments), JSON.stringify(userMetadata), now]
+    );
+    await connection.query(
+      `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [assistantMessageId, sessionId, user.id, 'assistant', result.content, JSON.stringify(assistantAttachments), JSON.stringify(assistantMetadata), assistantCreatedAt]
+    );
+    await connection.query(
+      'UPDATE chat_sessions SET title = ?, summary = ?, selected_model = ?, reasoning_level = ?, web_search_enabled = ?, last_image_mode = ?, updated_at = ? WHERE id = ?',
+      [session.title === '新会话' ? content.slice(0, 24) : session.title, summary, selectedModel || '', payload?.reasoningLevel ? String(payload.reasoningLevel) : null, requestMode === 'image_generation' ? 0 : payload?.webSearchEnabled ? 1 : 0, requestMode === 'image_generation' ? 1 : 0, Date.now(), sessionId]
+    );
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+  result.clientRequestId = clientRequestId;
+  void createDbAgentUsageLog(user, agent, version, result, 'success').catch((error) => {
+    console.warn('[agent-chat] usage log write failed', {
+      sessionId,
+      clientRequestId,
+      message: error?.message || String(error || ''),
+    });
+  });
   return {
     userMessage: {
       id: userMessageId,
@@ -4184,7 +4505,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       role: 'user',
       content,
       attachments,
-      metadata: { selectedModel, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, clientRequestId },
+      metadata: userMetadata,
       createdAt: now,
     },
     assistantMessage: {
@@ -4194,11 +4515,19 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       role: 'assistant',
       content: result.content,
       attachments: assistantAttachments,
-      metadata: { selectedModel: result.selectedModel, fallbackFrom: result.fallbackFrom || null, usedRetrieval: result.usedRetrieval, requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
-      createdAt: Date.now(),
+      metadata: assistantMetadata,
+      createdAt: assistantCreatedAt,
     },
     usage: result,
   };
+  })();
+
+  activeDbChatReplyRequests.set(activeKey, promise);
+  try {
+    return await promise;
+  } finally {
+    activeDbChatReplyRequests.delete(activeKey);
+  }
 };
 
 const listDbAgentUsage = async (user) => {
@@ -4279,7 +4608,7 @@ const getDbJobByIdForUser = async (user, jobId) => {
 };
 
 const incrementLocalUsageStat = (store, log) => {
-  if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status) || !USAGE_ACTIONS.has(log.action)) {
+  if (!shouldTrackUsageStatLog(log)) {
     return;
   }
 
@@ -4290,13 +4619,14 @@ const incrementLocalUsageStat = (store, log) => {
   const statDate = new Date(log.createdAt).toISOString().split('T')[0];
   let row = store.usageDaily.find((r) => r.statDate === statDate && r.userId === log.userId && r.module === log.module);
   if (!row) {
-    row = { statDate, userId: log.userId, username: log.username, displayName: log.displayName, module: log.module, successCount: 0, failedCount: 0, interruptedCount: 0 };
+    row = { statDate, userId: log.userId, username: log.username, displayName: log.displayName, module: log.module, successCount: 0, failedCount: 0, interruptedCount: 0, creditsConsumed: 0 };
     store.usageDaily.push(row);
   }
 
   if (log.status === 'success') row.successCount++;
   else if (log.status === 'failed') row.failedCount++;
   else if (log.status === 'interrupted') row.interruptedCount++;
+  row.creditsConsumed = Number(row.creditsConsumed || 0) + extractUsageCreditsConsumed(log);
 };
 
 const appendLocalLog = (store, payload) => {
@@ -4904,6 +5234,7 @@ const runLocalAgentConversation = async ({
   const startedAt = Date.now();
   let content;
   let usedChunks = [];
+  let output = null;
   if (hasKnowledgeBase) {
     const agenticResult = await runAgenticRetrievalLoop({
       initialMessages: messages,
@@ -4914,11 +5245,11 @@ const runLocalAgentConversation = async ({
       candidateChunks,
       retrievalPolicy: version.retrievalPolicy,
     });
-    content = agenticResult.content;
+    content = sanitizeAgentAssistantContent(agenticResult.content);
     usedChunks = agenticResult.allUsedChunks;
   } else {
     onProgress?.({ stage: 'thinking', round: 1 });
-    const output = await executeProviderJob({
+    output = await executeProviderJob({
       taskType: 'kie_chat',
       payload: {
         messages,
@@ -4928,7 +5259,7 @@ const runLocalAgentConversation = async ({
         webSearchEnabled: Boolean(webSearchEnabled),
       },
     }, process.env, new AbortController().signal);
-    content = String(output?.result?.content || '').trim();
+    content = sanitizeAgentAssistantContent(output?.result?.content);
   }
   const promptTokens = messages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
   const completionTokens = estimateTokenCount(content);
@@ -4964,11 +5295,20 @@ const extractJsonObject = (value) => {
   }
 };
 
+const normalizeAgentImageUrl = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const markdownTarget = raw.match(/^\[[^\]]*]\(([^)\s]+)\)$/);
+  if (markdownTarget?.[1]) return markdownTarget[1].trim();
+  const absoluteUrl = raw.match(/https?:\/\/[^\s"'<>，。；、）)\]】]+/i);
+  return absoluteUrl?.[0]?.trim() || raw;
+};
+
 const buildConversationImageCatalog = (attachments = [], priorMessages = [], maxReferenceImages = 10) => {
   const catalog = [];
   const seenUrls = new Set();
   const pushImage = (item) => {
-    const url = String(item?.url || '').trim();
+    const url = normalizeAgentImageUrl(item?.url);
     if (!url || seenUrls.has(url)) return;
     seenUrls.add(url);
     catalog.push({
@@ -5003,7 +5343,7 @@ const buildConversationImageCatalog = (attachments = [], priorMessages = [], max
         }));
     }
     const resultUrls = Array.isArray(message?.metadata?.imageResultUrls)
-      ? message.metadata.imageResultUrls.map((item) => String(item || '').trim()).filter(Boolean)
+      ? message.metadata.imageResultUrls.map((item) => normalizeAgentImageUrl(item)).filter(Boolean)
       : [];
     resultUrls.forEach((url, index) => pushImage({
       name: `历史生成图${index + 1}`,
@@ -5319,7 +5659,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
   const inputImageUrls = Array.from(
     new Set(
       (Array.isArray(parsed.inputImageUrls) ? parsed.inputImageUrls : normalizedRefs.map((item) => item.url))
-        .map((item) => String(item || '').trim())
+        .map((item) => normalizeAgentImageUrl(item))
         .filter(Boolean)
     )
   ).slice(0, Number(imageCapability.maxInputImages || 1));
@@ -5536,7 +5876,7 @@ JSON 数组中每项格式示例：
       "defaultModel": "gpt-5-4-openai-resp",
       "cheapModel": "gemini-3-flash-openai",
       "advancedModel": "gemini-3.1-pro-openai",
-      "multimodalModel": "nano-banana-2",
+      "multimodalModel": "gpt-image-2",
       "imageGenerationEnabled": false,
       "allowedChatModels": ["gpt-5-4-openai-resp", "gemini-3-flash-openai"],
       "defaultChatModel": "gpt-5-4-openai-resp"
@@ -6123,6 +6463,7 @@ const handleMysqlRequest = async (req, res, url) => {
     const password = String(body.password || '');
     const role = body.role === 'admin' ? 'admin' : 'staff';
     const jobConcurrency = normalizeJobConcurrency(body.jobConcurrency, DEFAULT_JOB_CONCURRENCY);
+    const featurePermissions = normalizeFeaturePermissions(body.featurePermissions);
 
     if (!username || !password) {
       json(res, 400, { message: '用户名和密码不能为空。' });
@@ -6135,7 +6476,7 @@ const handleMysqlRequest = async (req, res, url) => {
       return;
     }
 
-    const newUser = await createDbUser({ username, password, role, displayName, jobConcurrency });
+    const newUser = await createDbUser({ username, password, role, displayName, jobConcurrency, featurePermissions });
     await createDbLog({
       user: admin,
       level: 'info',
@@ -6149,6 +6490,7 @@ const handleMysqlRequest = async (req, res, url) => {
         targetDisplayName: newUser.displayName,
         targetRole: newUser.role,
         targetJobConcurrency: newUser.jobConcurrency,
+        targetFeaturePermissions: newUser.featurePermissions,
       },
     });
     json(res, 201, { user: cleanUser(newUser) });
@@ -6638,25 +6980,7 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/logs' && req.method === 'DELETE') {
     const admin = await requireDbAdmin(req, res);
     if (!admin) return;
-    const body = await readBody(req);
-    const deletedCount = await deleteDbLogs(body || {});
-    await createDbLog({
-      user: admin,
-      level: 'info',
-      module: 'account',
-      action: 'clear_records',
-      message: `清理运行日志 ${deletedCount} 条`,
-      status: 'success',
-      meta: {
-        deletedCount,
-        module: normalizeLogFilterValue(body?.module),
-        userId: normalizeLogFilterValue(body?.userId),
-        status: normalizeLogFilterValue(body?.status),
-        startAt: normalizeLogFilterTimestamp(body?.startAt),
-        endAt: normalizeLogFilterTimestamp(body?.endAt),
-      },
-    });
-    json(res, 200, { ok: true, deletedCount });
+    json(res, 403, { message: '运行日志仅按 7 天保留策略自动清理，禁止手动清理。' });
     return;
   }
 
@@ -6679,14 +7003,15 @@ const handleMysqlRequest = async (req, res, url) => {
   }
 
   if (url.pathname === '/api/stats/usage' && req.method === 'GET') {
-    const admin = await requireDbAdmin(req, res);
-    if (!admin) return;
+    const viewer = await requireDbUser(req, res);
+    if (!viewer) return;
     const pool = await getMysqlPool();
     const clauses = [];
     const values = [];
     const startDate = url.searchParams.get('startDate');
     const endDate = url.searchParams.get('endDate');
-    const userId = normalizeLogFilterValue(url.searchParams.get('userId'));
+    const requestedUserId = normalizeLogFilterValue(url.searchParams.get('userId'));
+    const userId = viewer.role === 'admin' ? requestedUserId : viewer.id;
     const mod = normalizeLogFilterValue(url.searchParams.get('module'));
     if (startDate) { clauses.push('stat_date >= ?'); values.push(startDate); }
     if (endDate) { clauses.push('stat_date <= ?'); values.push(endDate); }
@@ -6695,7 +7020,7 @@ const handleMysqlRequest = async (req, res, url) => {
     const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
     const [rows] = await pool.query(
       `SELECT stat_date, user_id, username, display_name, module,
-       success_count, failed_count, interrupted_count
+       success_count, failed_count, interrupted_count, credits_consumed
        FROM usage_daily ${where} ORDER BY stat_date ASC`, values
     );
     let resultRows = rows.map((r) => ({
@@ -6703,17 +7028,21 @@ const handleMysqlRequest = async (req, res, url) => {
       userId: r.user_id, username: r.username, displayName: r.display_name, module: r.module,
       successCount: Number(r.success_count), failedCount: Number(r.failed_count),
       interruptedCount: Number(r.interrupted_count),
+      creditsConsumed: Number(r.credits_consumed || 0),
     }));
     if (!mod || mod === 'agent_center') {
       const usageClauses = [];
       const usageValues = [];
-      if (!isSuperAdminUser(admin)) {
+      if (viewer.role !== 'admin') {
+        usageClauses.push('l.user_id = ?');
+        usageValues.push(viewer.id);
+      } else if (!isSuperAdminUser(viewer)) {
         usageClauses.push('a.owner_user_id = ?');
-        usageValues.push(admin.id);
+        usageValues.push(viewer.id);
       }
       if (startDate) { usageClauses.push('DATE(FROM_UNIXTIME(l.created_at / 1000)) >= ?'); usageValues.push(startDate); }
       if (endDate) { usageClauses.push('DATE(FROM_UNIXTIME(l.created_at / 1000)) <= ?'); usageValues.push(endDate); }
-      if (userId) { usageClauses.push('l.user_id = ?'); usageValues.push(userId); }
+      if (userId && viewer.role === 'admin') { usageClauses.push('l.user_id = ?'); usageValues.push(userId); }
       const usageWhere = usageClauses.length > 0 ? `WHERE ${usageClauses.join(' AND ')}` : '';
       const [agentUsageRows] = await pool.query(
         `SELECT l.user_id, l.username, l.display_name, l.status, l.created_at
@@ -6732,25 +7061,44 @@ const handleMysqlRequest = async (req, res, url) => {
     const admin = await requireDbAdmin(req, res);
     if (!admin) return;
     const pool = await getMysqlPool();
-    await pool.query('DELETE FROM usage_daily WHERE 1=1');
     const [logRows] = await pool.query(
       `SELECT DATE(FROM_UNIXTIME(created_at / 1000)) AS d,
-       user_id, username, display_name, module, status, COUNT(*) AS cnt
+       user_id, username, display_name, module, status, COUNT(*) AS cnt,
+       SUM(CASE WHEN status = 'success' THEN COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.creditsConsumed')) AS DECIMAL(12,2)), 0) ELSE 0 END) AS credits
        FROM internal_logs
-       WHERE module IN ('agent_center','one_click','translation','buyer_show','retouch','video')
+       WHERE module IN ('agent_center','one_click','translation','buyer_show','retouch','video','xhs_cover')
        AND status IN ('success','failed','interrupted')
-       AND action IN ('agent_chat','agent_validate','generate_main_scheme','generate_detail_scheme','generate_single','generate_board','regenerate_board','create_image_task')
+       AND (
+         action IN ('agent_chat','agent_validate','analysis_token_usage','generate_main_scheme','generate_detail_scheme','generate_single','generate_board','regenerate_board','create_image_task')
+         OR (
+           action = 'job_completed'
+           AND JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.taskType')) IN ('dreamina_video','kie_seedance_video','kie_video','kie_veo')
+         )
+       )
        GROUP BY d, user_id, username, display_name, module, status`
     );
+    const toStatDate = (value) => value instanceof Date ? value.toISOString().slice(0, 10) : String(value || '').slice(0, 10);
+    const recomputeDates = Array.from(new Set(logRows.map((row) => toStatDate(row.d)).filter(Boolean)));
+    if (recomputeDates.length > 0) {
+      const datePlaceholders = recomputeDates.map(() => '?').join(', ');
+      await pool.query(
+        `DELETE FROM usage_daily
+         WHERE stat_date IN (${datePlaceholders})
+         AND module IN ('agent_center','one_click','translation','buyer_show','retouch','video','xhs_cover')`,
+        recomputeDates
+      );
+    }
     let upserted = 0;
     for (const row of logRows) {
+      const statDate = toStatDate(row.d);
+      if (!statDate) continue;
       const field = row.status === 'success' ? 'success_count'
         : row.status === 'failed' ? 'failed_count' : 'interrupted_count';
       await pool.query(
-        `INSERT INTO usage_daily (stat_date, user_id, username, display_name, module, ${field})
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE ${field} = ${field} + VALUES(${field})`,
-        [row.d, row.user_id, row.username, row.display_name, row.module, Number(row.cnt)]
+        `INSERT INTO usage_daily (stat_date, user_id, username, display_name, module, ${field}, credits_consumed)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE ${field} = ${field} + VALUES(${field}), credits_consumed = credits_consumed + VALUES(credits_consumed)`,
+        [statDate, row.user_id, row.username, row.display_name, row.module, Number(row.cnt), Number(row.credits || 0)]
       );
       upserted++;
     }
@@ -6763,7 +7111,7 @@ const handleMysqlRequest = async (req, res, url) => {
     if (!admin) return;
 
     const targetUserId = decodeURIComponent(userDetailMatch[1]);
-    const targetUser = await findDbUserById(targetUserId);
+    const targetUser = await findAnyDbUserById(targetUserId);
     if (!targetUser) {
       json(res, 404, { message: '账号不存在。' });
       return;
@@ -6775,6 +7123,7 @@ const handleMysqlRequest = async (req, res, url) => {
     const nextPassword = typeof body.password === 'string' ? String(body.password) : '';
     const nextDisplayName = typeof body.displayName === 'string' ? String(body.displayName) : undefined;
     const nextJobConcurrency = body.jobConcurrency === undefined ? undefined : normalizeJobConcurrency(body.jobConcurrency, DEFAULT_JOB_CONCURRENCY);
+    const nextFeaturePermissions = body.featurePermissions === undefined ? undefined : normalizeFeaturePermissions(body.featurePermissions);
     const previousStatus = targetUser.status;
 
     if (targetUser.id === admin.id && nextStatus === 'disabled') {
@@ -6795,6 +7144,7 @@ const handleMysqlRequest = async (req, res, url) => {
       role: nextRole,
       status: nextStatus,
       jobConcurrency: nextJobConcurrency,
+      featurePermissions: nextFeaturePermissions,
       password: nextPassword,
       usernameFallback: targetUser.displayName || targetUser.username,
     });
@@ -6843,7 +7193,7 @@ const handleMysqlRequest = async (req, res, url) => {
     if (!admin) return;
 
     const targetUserId = decodeURIComponent(userDetailMatch[1]);
-    const targetUser = await findDbUserById(targetUserId);
+    const targetUser = await findAnyDbUserById(targetUserId);
     if (!targetUser) {
       json(res, 404, { message: '账号不存在。' });
       return;
@@ -6868,11 +7218,12 @@ const handleMysqlRequest = async (req, res, url) => {
       level: 'info',
       module: 'account',
       action: 'user_deleted',
-      message: `删除账号：${targetUser.username}`,
+      message: `删除账号并清理账号数据：${targetUser.username}`,
       status: 'success',
       meta: {
         targetUserId: targetUser.id,
         targetUsername: targetUser.username,
+        usageStatsPreserved: true,
       },
     });
     json(res, 200, { ok: true });
@@ -6882,7 +7233,7 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/state' && req.method === 'GET') {
     const user = await requireDbUser(req, res);
     if (!user) return;
-    const state = await getDbAppState(user.id);
+    const state = await scrubDbStateForUnavailableManagedAssets(await getDbAppState(user.id));
     await saveDbAppState(user.id, state);
     json(res, 200, { state: prepareStateForClient(state) });
     return;
@@ -6891,8 +7242,12 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/state' && req.method === 'PUT') {
     const user = await requireDbUser(req, res);
     if (!user) return;
-    const body = await readBody(req);
-    await saveDbAppState(user.id, body.state || createDefaultState());
+    const body = await readBody(req, { maxBytes: MAX_STATE_BODY_BYTES });
+    const incomingState = body.state || createDefaultState();
+    const nextState = body.mode === 'replace'
+      ? incomingState
+      : mergeAppStateForStorage(await getDbAppState(user.id), incomingState);
+    await saveDbAppState(user.id, nextState);
     json(res, 200, { ok: true });
     return;
   }
@@ -6921,6 +7276,7 @@ const handleMysqlRequest = async (req, res, url) => {
     const nextSettings = await saveDbSystemSettings({
       ...currentSettings,
       analysisModel: body?.analysisModel,
+      videoAnalysisModel: body?.videoAnalysisModel,
     });
     const pool = await getMysqlPool();
     const queueStats = await getJobQueueStats(pool);
@@ -6931,6 +7287,44 @@ const handleMysqlRequest = async (req, res, url) => {
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
+    return;
+  }
+
+  if (url.pathname === '/api/dreamina/status' && req.method === 'GET') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    json(res, 200, { status: await getDreaminaStatus(process.env) });
+    return;
+  }
+
+  if (url.pathname === '/api/dreamina/login' && req.method === 'POST') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const login = await startDreaminaLogin(process.env);
+    json(res, 200, { login });
+    return;
+  }
+
+  if (url.pathname === '/api/dreamina/login/check' && req.method === 'POST') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const body = await readBody(req);
+    const login = await checkDreaminaLogin({
+      deviceCode: body?.deviceCode,
+      poll: body?.poll,
+      env: process.env,
+    });
+    const status = await getDreaminaStatus(process.env);
+    json(res, 200, { login, status });
+    return;
+  }
+
+  if (url.pathname === '/api/dreamina/logout' && req.method === 'POST') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const result = await logoutDreamina(process.env);
+    const status = await getDreaminaStatus(process.env);
+    json(res, 200, { ok: true, result, status });
     return;
   }
 
@@ -6980,7 +7374,7 @@ const handleMysqlRequest = async (req, res, url) => {
       payload: {
         base64Data,
         mimeType,
-        fileName: `${sanitizePathPart(user.username || user.id)}_${Date.now()}_${sanitizePathPart(originalFileName)}`,
+        fileName: `${sanitizePathPart(user.username || user.id)}_${Date.now()}_${sanitizeUploadFileName(originalFileName)}`,
         uploadPath,
       },
       maxRetries: 1,
@@ -7048,7 +7442,7 @@ const handleMysqlRequest = async (req, res, url) => {
       payload: {
         fileBuffer,
         mimeType: file.type || 'application/octet-stream',
-        fileName: `${sanitizePathPart(user.username || user.id)}_${Date.now()}_${sanitizePathPart(file.name || 'upload.bin')}`,
+        fileName: `${sanitizePathPart(user.username || user.id)}_${Date.now()}_${sanitizeUploadFileName(file.name || 'upload.bin')}`,
         uploadPath,
       },
     }, process.env, new AbortController().signal);
@@ -7099,6 +7493,10 @@ const handleMysqlRequest = async (req, res, url) => {
     const body = await readBody(req);
     if (!body?.taskType || !body?.provider) {
       json(res, 400, { message: '任务类型和 provider 不能为空。' });
+      return;
+    }
+    if (['dreamina_video', 'kie_seedance_video'].includes(body.taskType) && !canUseVideoGenerationFeature(user)) {
+      json(res, 403, { message: '短视频生成暂未对当前账号开放，请联系管理员开通。' });
       return;
     }
 
@@ -7156,6 +7554,36 @@ const handleMysqlRequest = async (req, res, url) => {
       return;
     }
     json(res, 200, { job });
+    return;
+  }
+
+  if (jobDetailMatch && req.method === 'DELETE') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const jobId = decodeURIComponent(jobDetailMatch[1]);
+    const pool = await getMysqlPool();
+    const job = await getDbJobByIdForUser(user, jobId);
+    if (!job) {
+      json(res, 404, { message: '任务不存在。' });
+      return;
+    }
+    await deleteJobById(pool, job.id);
+    jobWorker?.cancelActiveJob(job.id);
+    await createDbLog({
+      user,
+      level: 'info',
+      module: job.module,
+      action: 'job_deleted',
+      message: `删除任务：${job.id}`,
+      status: 'success',
+      meta: {
+        jobId: job.id,
+        providerTaskId: job.providerTaskId || '',
+        provider: job.provider,
+        taskType: job.taskType,
+      },
+    });
+    json(res, 200, { ok: true });
     return;
   }
 
@@ -7315,7 +7743,6 @@ const handleLocalRequest = async (req, res, url) => {
   if (url.pathname === '/api/auth/me' && req.method === 'GET') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
-    writeLocalStore(store);
     json(res, 200, { user: cleanUser(user) });
     return;
   }
@@ -7369,6 +7796,7 @@ const handleLocalRequest = async (req, res, url) => {
     const password = String(body.password || '');
     const role = body.role === 'admin' ? 'admin' : 'staff';
     const jobConcurrency = normalizeJobConcurrency(body.jobConcurrency, DEFAULT_JOB_CONCURRENCY);
+    const featurePermissions = normalizeFeaturePermissions(body.featurePermissions);
 
     if (!username || !password) {
       json(res, 400, { message: '用户名和密码不能为空。' });
@@ -7380,7 +7808,7 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
 
-    const newUser = createUser({ username, password, role, displayName, jobConcurrency });
+    const newUser = createUser({ username, password, role, displayName, jobConcurrency, featurePermissions });
     store.users.push(newUser);
     store.appStates[newUser.id] = createDefaultState();
     appendLocalLog(store, {
@@ -7396,6 +7824,7 @@ const handleLocalRequest = async (req, res, url) => {
         targetDisplayName: newUser.displayName,
         targetRole: newUser.role,
         targetJobConcurrency: newUser.jobConcurrency,
+        targetFeaturePermissions: newUser.featurePermissions,
       },
     });
     writeLocalStore(store);
@@ -7931,9 +8360,34 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 400, { message: '当前模型不支持联网' });
       return;
     }
+    const existingMessages = (store.chatMessages || [])
+      .filter((item) => item.sessionId === sessionId && item.userId === user.id && item.metadata?.clientRequestId === clientRequestId)
+      .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+    const existingUserMessage = existingMessages.find((item) => item.role === 'user') || null;
+    const existingAssistantMessage = existingMessages.find((item) => item.role === 'assistant') || null;
+    if (existingUserMessage && existingAssistantMessage) {
+      json(res, 201, {
+        userMessage: existingUserMessage,
+        assistantMessage: existingAssistantMessage,
+        usage: {
+          idempotent: true,
+          clientRequestId,
+          selectedModel: existingAssistantMessage.metadata?.selectedModel || existingUserMessage.metadata?.selectedModel || selectedModel,
+          requestType: existingAssistantMessage.metadata?.requestMode || existingUserMessage.metadata?.requestMode || requestMode,
+          sessionId,
+        },
+      });
+      return;
+    }
+    const activeKey = buildChatRequestKey(sessionId, clientRequestId);
+    if (activeLocalChatReplyRequests.has(activeKey)) {
+      const response = await activeLocalChatReplyRequests.get(activeKey);
+      json(res, response.status, response.body);
+      return;
+    }
+    const promise = (async () => {
     const now = Date.now();
     const userMessage = { id: createEntityId(), sessionId, userId: user.id, role: 'user', content, attachments, metadata: { selectedModel, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode, clientRequestId }, createdAt: now };
-    store.chatMessages.push(userMessage);
     const history = (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
     const systemSettings = getLocalSystemSettings(store);
     const imageKnowledgeChunks = requestMode === 'image_generation' && version.retrievalPolicy?.enabled
@@ -7970,8 +8424,9 @@ const handleLocalRequest = async (req, res, url) => {
             selectedModelOverride: selectedModel,
             attachments,
             reasoningLevel: body?.reasoningLevel || null,
-            webSearchEnabled: Boolean(body?.webSearchEnabled),
-          });
+          webSearchEnabled: Boolean(body?.webSearchEnabled),
+        });
+      result.clientRequestId = clientRequestId;
       const assistantAttachments = Array.isArray(result.imageResultUrls) && result.imageResultUrls.length > 0
         ? result.imageResultUrls.map((url, index) => ({
             name: `生成结果${index + 1}`,
@@ -7989,6 +8444,7 @@ const handleLocalRequest = async (req, res, url) => {
         metadata: { selectedModel: result.selectedModel, fallbackFrom: result.fallbackFrom || null, usedRetrieval: result.usedRetrieval, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
         createdAt: Date.now(),
       };
+      store.chatMessages.push(userMessage);
       store.chatMessages.push(assistantMessage);
       session.title = session.title === '新会话' ? content.slice(0, 24) : session.title;
       session.selectedModel = selectedModel || '';
@@ -8031,7 +8487,7 @@ const handleLocalRequest = async (req, res, url) => {
         meta: buildAgentRuntimeLogMeta({ agent, version, result: { ...result, clientRequestId }, requestMode, sessionId, clientRequestId }),
       });
       writeLocalStore(store);
-      json(res, 201, { userMessage, assistantMessage, usage: result });
+      return { status: 201, body: { userMessage, assistantMessage, usage: result } };
     } catch (error) {
       appendLocalLog(store, {
         user,
@@ -8051,7 +8507,15 @@ const handleLocalRequest = async (req, res, url) => {
         }),
       });
       writeLocalStore(store);
-      json(res, 500, { message: error?.message || '聊天回复失败。' });
+      return { status: 500, body: { message: error?.message || '聊天回复失败。' } };
+    }
+    })();
+    activeLocalChatReplyRequests.set(activeKey, promise);
+    try {
+      const response = await promise;
+      json(res, response.status, response.body);
+    } finally {
+      activeLocalChatReplyRequests.delete(activeKey);
     }
     return;
   }
@@ -8259,26 +8723,7 @@ const handleLocalRequest = async (req, res, url) => {
   if (url.pathname === '/api/logs' && req.method === 'DELETE') {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
-    const body = await readBody(req);
-    const deletedCount = deleteLocalLogs(store, body || {});
-    appendLocalLog(store, {
-      user: admin,
-      level: 'info',
-      module: 'account',
-      action: 'clear_records',
-      message: `清理运行日志 ${deletedCount} 条`,
-      status: 'success',
-      meta: {
-        deletedCount,
-        module: normalizeLogFilterValue(body?.module),
-        userId: normalizeLogFilterValue(body?.userId),
-        status: normalizeLogFilterValue(body?.status),
-        startAt: normalizeLogFilterTimestamp(body?.startAt),
-        endAt: normalizeLogFilterTimestamp(body?.endAt),
-      },
-    });
-    writeLocalStore(store);
-    json(res, 200, { ok: true, deletedCount });
+    json(res, 403, { message: '运行日志仅按 7 天保留策略自动清理，禁止手动清理。' });
     return;
   }
 
@@ -8302,11 +8747,12 @@ const handleLocalRequest = async (req, res, url) => {
   }
 
   if (url.pathname === '/api/stats/usage' && req.method === 'GET') {
-    const admin = localRequireAdmin(req, res, store);
-    if (!admin) return;
+    const viewer = localRequireUser(req, res, store);
+    if (!viewer) return;
     const startDate = url.searchParams.get('startDate');
     const endDate = url.searchParams.get('endDate');
-    const userId = normalizeLogFilterValue(url.searchParams.get('userId'));
+    const requestedUserId = normalizeLogFilterValue(url.searchParams.get('userId'));
+    const userId = viewer.role === 'admin' ? requestedUserId : viewer.id;
     const mod = normalizeLogFilterValue(url.searchParams.get('module'));
     let filtered = store.usageDaily || [];
     if (startDate) filtered = filtered.filter((r) => r.statDate >= startDate);
@@ -8315,10 +8761,12 @@ const handleLocalRequest = async (req, res, url) => {
     if (mod) filtered = filtered.filter((r) => r.module === mod);
     let resultRows = [...filtered];
     if (!mod || mod === 'agent_center') {
-      let agentRows = listLocalVisibleAgentUsageRows(store, admin);
+      let agentRows = viewer.role === 'admin'
+        ? listLocalVisibleAgentUsageRows(store, viewer)
+        : (store.agentUsageLogs || []).filter((row) => row.userId === viewer.id);
       if (startDate) agentRows = agentRows.filter((r) => new Date(r.createdAt).toISOString().split('T')[0] >= startDate);
       if (endDate) agentRows = agentRows.filter((r) => new Date(r.createdAt).toISOString().split('T')[0] <= endDate);
-      if (userId) agentRows = agentRows.filter((r) => r.userId === userId);
+      if (userId && viewer.role === 'admin') agentRows = agentRows.filter((r) => r.userId === userId);
       resultRows = [...resultRows, ...aggregateAgentUsageStatsRows(agentRows)];
     }
     json(res, 200, { rows: resultRows.sort((a, b) => a.statDate.localeCompare(b.statDate)) });
@@ -8330,20 +8778,26 @@ const handleLocalRequest = async (req, res, url) => {
     if (!admin) return;
     const logsByKey = {};
     for (const log of store.logs || []) {
-      if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status) || !USAGE_ACTIONS.has(log.action)) continue;
+      if (!shouldTrackUsageStatLog(log)) continue;
       const statDate = new Date(log.createdAt).toISOString().split('T')[0];
       const key = `${statDate}|${log.userId}|${log.module}`;
       if (!logsByKey[key]) {
         logsByKey[key] = { statDate, userId: log.userId, username: log.username,
-          displayName: log.displayName, module: log.module, successCount: 0, failedCount: 0, interruptedCount: 0 };
+          displayName: log.displayName, module: log.module, successCount: 0, failedCount: 0, interruptedCount: 0, creditsConsumed: 0 };
       }
       if (log.status === 'success') logsByKey[key].successCount++;
       else if (log.status === 'failed') logsByKey[key].failedCount++;
       else if (log.status === 'interrupted') logsByKey[key].interruptedCount++;
+      logsByKey[key].creditsConsumed += extractUsageCreditsConsumed(log);
     }
-    store.usageDaily = Object.values(logsByKey);
+    const recomputeRows = Object.values(logsByKey);
+    const recomputeDates = new Set(recomputeRows.map((row) => row.statDate));
+    store.usageDaily = [
+      ...(store.usageDaily || []).filter((row) => !recomputeDates.has(row.statDate) || !USAGE_MODULES.has(row.module)),
+      ...recomputeRows,
+    ];
     writeLocalStore(store);
-    json(res, 200, { ok: true, upserted: store.usageDaily.length });
+    json(res, 200, { ok: true, upserted: recomputeRows.length });
     return;
   }
 
@@ -8364,6 +8818,7 @@ const handleLocalRequest = async (req, res, url) => {
     const nextPassword = typeof body.password === 'string' ? String(body.password) : '';
     const nextDisplayName = typeof body.displayName === 'string' ? String(body.displayName) : undefined;
     const nextJobConcurrency = body.jobConcurrency === undefined ? undefined : normalizeJobConcurrency(body.jobConcurrency, DEFAULT_JOB_CONCURRENCY);
+    const nextFeaturePermissions = body.featurePermissions === undefined ? undefined : normalizeFeaturePermissions(body.featurePermissions);
     const previousStatus = targetUser.status;
 
     if (targetUser.id === admin.id && nextStatus === 'disabled') {
@@ -8381,6 +8836,7 @@ const handleLocalRequest = async (req, res, url) => {
     if (nextRole) targetUser.role = nextRole;
     if (nextStatus) targetUser.status = nextStatus;
     if (nextJobConcurrency !== undefined) targetUser.jobConcurrency = nextJobConcurrency;
+    if (nextFeaturePermissions !== undefined) targetUser.featurePermissions = normalizeFeaturePermissions(nextFeaturePermissions);
     if (nextPassword) {
       const passwordRecord = createPasswordRecord(nextPassword);
       targetUser.passwordHash = passwordRecord.hash;
@@ -8448,19 +8904,37 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
 
-    store.users = store.users.filter(item => item.id !== targetUser.id);
+    const deletedAgentIds = new Set((store.agents || []).filter((item) => item.ownerUserId === targetUser.id).map((item) => item.id));
+    const deletedVersionIds = new Set((store.agentVersions || []).filter((item) => deletedAgentIds.has(item.agentId) || item.createdBy === targetUser.id).map((item) => item.id));
+    const deletedKnowledgeBaseIds = new Set((store.knowledgeBases || []).filter((item) => item.ownerUserId === targetUser.id).map((item) => item.id));
+    const deletedChatSessionIds = new Set((store.chatSessions || [])
+      .filter((item) => item.userId === targetUser.id || deletedAgentIds.has(item.agentId))
+      .map((item) => item.id));
+
     store.sessions = store.sessions.filter(session => session.userId !== targetUser.id);
+    store.jobs = (store.jobs || []).filter((job) => job.userId !== targetUser.id);
+    store.logs = normalizeLogs((store.logs || []).filter((log) => log.userId !== targetUser.id));
+    store.chatMessages = (store.chatMessages || []).filter((item) => item.userId !== targetUser.id && !deletedChatSessionIds.has(item.sessionId));
+    store.chatSessions = (store.chatSessions || []).filter((item) => item.userId !== targetUser.id && !deletedAgentIds.has(item.agentId));
+    store.agentUsageLogs = (store.agentUsageLogs || []).filter((item) => item.userId !== targetUser.id && !deletedAgentIds.has(item.agentId));
+    store.agentVersions = (store.agentVersions || []).filter((item) => !deletedVersionIds.has(item.id) && !deletedAgentIds.has(item.agentId));
+    store.agents = (store.agents || []).filter((item) => item.ownerUserId !== targetUser.id);
+    store.knowledgeChunks = (store.knowledgeChunks || []).filter((item) => !deletedKnowledgeBaseIds.has(item.knowledgeBaseId));
+    store.knowledgeDocuments = (store.knowledgeDocuments || []).filter((item) => !deletedKnowledgeBaseIds.has(item.knowledgeBaseId));
+    store.knowledgeBases = (store.knowledgeBases || []).filter((item) => item.ownerUserId !== targetUser.id);
+    store.users = store.users.filter(item => item.id !== targetUser.id);
     delete store.appStates[targetUser.id];
     appendLocalLog(store, {
       user: admin,
       level: 'info',
       module: 'account',
       action: 'user_deleted',
-      message: `删除账号：${targetUser.username}`,
+      message: `删除账号并清理账号数据：${targetUser.username}`,
       status: 'success',
       meta: {
         targetUserId: targetUser.id,
         targetUsername: targetUser.username,
+        usageStatsPreserved: true,
       },
     });
     writeLocalStore(store);
@@ -8471,7 +8945,7 @@ const handleLocalRequest = async (req, res, url) => {
   if (url.pathname === '/api/state' && req.method === 'GET') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
-    store.appStates[user.id] = prepareStateForStorage(store.appStates[user.id] || createDefaultState());
+    store.appStates[user.id] = await scrubLocalStateForUnavailableManagedAssets(store.appStates[user.id] || createDefaultState());
     writeLocalStore(store);
     json(res, 200, { state: prepareStateForClient(store.appStates[user.id]) });
     return;
@@ -8480,8 +8954,13 @@ const handleLocalRequest = async (req, res, url) => {
   if (url.pathname === '/api/state' && req.method === 'PUT') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
-    const body = await readBody(req);
-    store.appStates[user.id] = prepareStateForStorage(body.state || createDefaultState());
+    const body = await readBody(req, { maxBytes: MAX_STATE_BODY_BYTES });
+    const incomingState = body.state || createDefaultState();
+    store.appStates[user.id] = prepareStateForStorage(
+      body.mode === 'replace'
+        ? incomingState
+        : mergeAppStateForStorage(store.appStates[user.id] || createDefaultState(), incomingState)
+    );
     writeLocalStore(store);
     json(res, 200, { ok: true });
     return;
@@ -8508,6 +8987,7 @@ const handleLocalRequest = async (req, res, url) => {
     const nextSettings = saveLocalSystemSettings(store, {
       ...getLocalSystemSettings(store),
       analysisModel: body?.analysisModel,
+      videoAnalysisModel: body?.videoAnalysisModel,
     });
     writeLocalStore(store);
     json(res, 200, {
@@ -8517,6 +8997,44 @@ const handleLocalRequest = async (req, res, url) => {
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
+    return;
+  }
+
+  if (url.pathname === '/api/dreamina/status' && req.method === 'GET') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    json(res, 200, { status: await getDreaminaStatus(process.env) });
+    return;
+  }
+
+  if (url.pathname === '/api/dreamina/login' && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const login = await startDreaminaLogin(process.env);
+    json(res, 200, { login });
+    return;
+  }
+
+  if (url.pathname === '/api/dreamina/login/check' && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const body = await readBody(req);
+    const login = await checkDreaminaLogin({
+      deviceCode: body?.deviceCode,
+      poll: body?.poll,
+      env: process.env,
+    });
+    const status = await getDreaminaStatus(process.env);
+    json(res, 200, { login, status });
+    return;
+  }
+
+  if (url.pathname === '/api/dreamina/logout' && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const result = await logoutDreamina(process.env);
+    const status = await getDreaminaStatus(process.env);
+    json(res, 200, { ok: true, result, status });
     return;
   }
 
@@ -8566,7 +9084,7 @@ const handleLocalRequest = async (req, res, url) => {
       payload: {
         base64Data,
         mimeType,
-        fileName: `${sanitizePathPart(user.username || user.id)}_${Date.now()}_${sanitizePathPart(originalFileName)}`,
+        fileName: `${sanitizePathPart(user.username || user.id)}_${Date.now()}_${sanitizeUploadFileName(originalFileName)}`,
         uploadPath,
       },
       maxRetries: 1,
@@ -8641,7 +9159,7 @@ const handleLocalRequest = async (req, res, url) => {
       payload: {
         fileBuffer,
         mimeType: file.type || 'application/octet-stream',
-        fileName: `${sanitizePathPart(user.username || user.id)}_${Date.now()}_${sanitizePathPart(file.name || 'upload.bin')}`,
+        fileName: `${sanitizePathPart(user.username || user.id)}_${Date.now()}_${sanitizeUploadFileName(file.name || 'upload.bin')}`,
         uploadPath,
       },
     }, process.env, new AbortController().signal);
@@ -8695,6 +9213,10 @@ const handleLocalRequest = async (req, res, url) => {
     const body = await readBody(req);
     if (!body?.taskType || !body?.provider) {
       json(res, 400, { message: '任务类型和 provider 不能为空。' });
+      return;
+    }
+    if (['dreamina_video', 'kie_seedance_video'].includes(body.taskType) && !canUseVideoGenerationFeature(user)) {
+      json(res, 403, { message: '短视频生成暂未对当前账号开放，请联系管理员开通。' });
       return;
     }
 
@@ -8751,6 +9273,36 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
     json(res, 200, { job });
+    return;
+  }
+
+  if (jobDetailMatch && req.method === 'DELETE') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const jobId = decodeURIComponent(jobDetailMatch[1]);
+    const job = getLocalJobByIdForUser(user, jobId);
+    if (!job) {
+      json(res, 404, { message: '任务不存在。' });
+      return;
+    }
+    deleteLocalJobRecord(store, job.id);
+    appendLocalLog(store, {
+      user,
+      level: 'info',
+      module: job.module,
+      action: 'job_deleted',
+      message: `删除任务：${job.id}`,
+      status: 'success',
+      meta: {
+        jobId: job.id,
+        providerTaskId: job.providerTaskId || '',
+        provider: job.provider,
+        taskType: job.taskType,
+      },
+    });
+    writeLocalStore(store);
+    localJobWorker?.cancelActiveJob(job.id);
+    json(res, 200, { ok: true });
     return;
   }
 
@@ -8885,6 +9437,10 @@ const server = createServer(async (req, res) => {
     await handleLocalRequest(req, res, url);
   } catch (error) {
     console.error(error);
+    if (error.message === 'REQUEST_MULTIPART_BODY_TOO_LARGE') {
+      json(res, 413, { message: '上传素材过大，当前最大支持 1024MB。' });
+      return;
+    }
     if (error.message === 'REQUEST_BODY_TOO_LARGE') {
       json(res, 413, { message: '请求内容过大，请压缩后重试。' });
       return;
@@ -8903,8 +9459,8 @@ const bootstrap = async () => {
     }
     jobWorker = createJobWorker({
       getPool: getMysqlPool,
-      executeJob: async (job, signal) => {
-        const output = await executeProviderJob(job, process.env, signal);
+      executeJob: async (job, signal, options) => {
+        const output = await executeProviderJob(job, process.env, signal, options);
         return persistJobOutputAssetsIfEnabled(job, output);
       },
       getMaxConcurrency: getDbWorkerConcurrency,
@@ -8919,8 +9475,8 @@ const bootstrap = async () => {
     localJobWorker = createLocalJobWorker({
       readStore: readLocalStore,
       writeStore: writeLocalStore,
-      executeJob: async (job, signal) => {
-        const output = await executeProviderJob(job, process.env, signal);
+      executeJob: async (job, signal, options) => {
+        const output = await executeProviderJob(job, process.env, signal, options);
         return persistJobOutputAssetsIfEnabled(job, output);
       },
       getMaxConcurrency: getLocalWorkerConcurrency,
@@ -8935,8 +9491,7 @@ const bootstrap = async () => {
     console.log(`Meiao internal server listening on http://0.0.0.0:${PORT} (Local JSON mode)`);
   }
 
-  console.log('Default admin username:', process.env.MEIAO_ADMIN_USERNAME || 'admin');
-  console.log('Default admin password:', process.env.MEIAO_ADMIN_PASSWORD || 'Meiao123456');
+  console.log('Default admin bootstrap user:', process.env.MEIAO_ADMIN_USERNAME || 'admin');
 
   if (!assetCleanupTimer) {
     assetCleanupTimer = setInterval(() => {
@@ -8946,6 +9501,17 @@ const bootstrap = async () => {
     }, ASSET_CLEANUP_INTERVAL_MS);
     void cleanupExpiredStoredAssets().catch((error) => {
       console.error('asset cleanup failed', error);
+    });
+  }
+
+  if (!logCleanupTimer) {
+    logCleanupTimer = setInterval(() => {
+      void cleanupExpiredLogs().catch((error) => {
+        console.error('log cleanup failed', error);
+      });
+    }, LOG_CLEANUP_INTERVAL_MS);
+    void cleanupExpiredLogs().catch((error) => {
+      console.error('log cleanup failed', error);
     });
   }
 

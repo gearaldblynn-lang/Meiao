@@ -1,3 +1,5 @@
+import { isExternallyReachableBaseUrl, normalizeBaseUrl } from '../utils/publicNetworkUrl.mjs';
+
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',
   'provider_network_error',
@@ -27,6 +29,16 @@ const AGENT_MODEL_CATALOG = {
       reasoningLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'],
     },
     {
+      id: 'claude-sonnet-4-6',
+      label: 'Claude Sonnet 4.6',
+      provider: 'kie',
+      supportsImageInput: true,
+      supportsFileInput: true,
+      supportsWebSearch: false,
+      supportsReasoningLevel: true,
+      reasoningLevels: ['low'],
+    },
+    {
       id: 'gemini-3.1-pro-openai',
       label: 'Gemini 3.1 Pro',
       provider: 'kie',
@@ -51,18 +63,6 @@ const AGENT_MODEL_CATALOG = {
   ],
   image: [
     {
-      id: 'nano-banana-2',
-      label: 'Nano Banana 2',
-      provider: 'kie',
-      supportsMultiImageInput: true,
-      supportsImageEdit: true,
-      maxInputImages: 10,
-      defaultSize: 'auto',
-      defaultResolution: '1K',
-      supportedSizes: ['auto', '1:1', '3:4', '4:3', '4:5', '9:16', '16:9'],
-      supportsTransparentBackground: false,
-    },
-    {
       id: 'gpt-image-2',
       label: 'GPT Image 2',
       provider: 'kie',
@@ -74,20 +74,24 @@ const AGENT_MODEL_CATALOG = {
       supportedSizes: ['auto', '1:1', '3:4', '4:3', '4:5', '9:16', '16:9'],
       supportsTransparentBackground: false,
     },
+    {
+      id: 'nano-banana-2',
+      label: 'Nano Banana 2',
+      provider: 'kie',
+      supportsMultiImageInput: true,
+      supportsImageEdit: true,
+      maxInputImages: 10,
+      defaultSize: 'auto',
+      defaultResolution: '1K',
+      supportedSizes: ['auto', '1:1', '3:4', '4:3', '4:5', '9:16', '16:9'],
+      supportsTransparentBackground: false,
+    },
   ],
 };
 
 const toSafePositiveInteger = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-};
-
-const normalizeBaseUrl = (value) => String(value || '').trim().replace(/\/+$/, '');
-
-const isExternallyReachableBaseUrl = (value) => {
-  const normalized = normalizeBaseUrl(value);
-  if (!normalized) return false;
-  return !/(^https?:\/\/)?(127\.0\.0\.1|localhost)(:|\/|$)/i.test(normalized);
 };
 
 const resolvePublicBaseUrl = (env = {}, overrides = {}) => {
@@ -156,10 +160,30 @@ export const getNextJobFailureState = ({ retryCount = 0, maxRetries = 0, errorCo
   };
 };
 
+export const buildJobFailureLogFields = ({ jobStatus = '', taskType = '' }) => {
+  const taskLabel = String(taskType || 'unknown').trim() || 'unknown';
+  if (jobStatus === 'retry_waiting') {
+    return {
+      level: 'info',
+      action: 'job_retry_waiting',
+      message: `${taskLabel} 任务重试中`,
+      status: 'started',
+    };
+  }
+  return {
+    level: 'error',
+    action: 'job_failed',
+    message: `${taskLabel} 任务失败`,
+    status: 'failed',
+  };
+};
+
 export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) => {
   const allowedOrigins = normalizeAllowedOrigins(env.MEIAO_ALLOWED_ORIGINS);
+  const publicBaseUrl = normalizeBaseUrl(overrides?.publicBaseUrl || env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || '');
   const chatCatalog = applyRuntimeMediaCapabilities(AGENT_MODEL_CATALOG.chat, env, overrides);
   const configuredAnalysisModel = String(overrides?.systemSettings?.analysisModel || '').trim();
+  const configuredVideoAnalysisModel = String(overrides?.systemSettings?.videoAnalysisModel || '').trim();
   const effectiveAnalysisModel = chatCatalog.some((item) => item.id === configuredAnalysisModel)
     ? configuredAnalysisModel
     : String(
@@ -171,6 +195,15 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
         chatCatalog[0]?.id ||
         ''
       ).trim();
+  const envVideoAnalysisModel = String(env.MEIAO_VIDEO_ANALYSIS_MODEL || '').trim();
+  const defaultVideoAnalysisModel = chatCatalog.some((item) => item.id === 'gemini-3-flash-openai')
+    ? 'gemini-3-flash-openai'
+    : chatCatalog[0]?.id || '';
+  const effectiveVideoAnalysisModel = chatCatalog.some((item) => item.id === configuredVideoAnalysisModel)
+    ? configuredVideoAnalysisModel
+    : chatCatalog.some((item) => item.id === envVideoAnalysisModel)
+      ? envVideoAnalysisModel
+      : defaultVideoAnalysisModel;
 
   return {
     queue: {
@@ -189,7 +222,11 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
     systemSettings: {
       analysisModel: configuredAnalysisModel,
       effectiveAnalysisModel,
+      videoAnalysisModel: configuredVideoAnalysisModel,
+      effectiveVideoAnalysisModel,
+      videoAnalysisReasoningLevel: 'high',
     },
+    publicBaseUrl,
     agentModels: {
       chat: chatCatalog,
       image: AGENT_MODEL_CATALOG.image.map((item) => ({ ...item })),

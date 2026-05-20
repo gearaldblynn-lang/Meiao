@@ -7,6 +7,7 @@ export const MODULE_LABELS: Record<string, string> = {
   buyer_show: '买家秀',
   retouch: '产品精修',
   video: '短视频',
+  xhs_cover: '小红书封面',
   settings: '设置',
   account: '账号管理',
   system: '系统',

@@ -9,7 +9,7 @@ import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
 import { buildXhsCoverPrompt, createXhsCoverBatchRunner } from './xhsCoverUtils.mjs';
-import { deleteInternalAssetByUrl } from '../../services/internalApi';
+import { deleteInternalAssetByUrl, storeActiveModuleContext } from '../../services/internalApi';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -309,6 +309,7 @@ const XhsCoverModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCh
       isGenerating: true,
     }));
     stopSchedulingRef.current = false;
+    storeActiveModuleContext('xhs_cover');
 
     void logActionStart({ module: 'xhs_cover', action: 'generate', message: `开始生成小红书封面，${selectedStyleIds.length} 种风格` });
 
