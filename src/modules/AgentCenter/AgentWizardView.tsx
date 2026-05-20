@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AgentKnowledgeDocumentBinding, KnowledgeBaseSummary, KnowledgeDocumentSummary } from '../../types';
-import { WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
+import { PopoverSelect, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 import AgentAvatar from './AgentAvatar';
 import { AGENT_AVATAR_PRESETS } from './agentAvatarOptions';
 import { MODULE_INTERFACES } from './agentCenterUtils.mjs';
@@ -137,6 +137,10 @@ const AgentWizardView: React.FC<Props> = ({
     const current = form.department?.trim();
     return current && !DEPARTMENT_PRESETS.includes(current) ? [...DEPARTMENT_PRESETS, current] : DEPARTMENT_PRESETS;
   }, [form.department]);
+  const departmentSelectOptions = departmentOptions.map((item) => ({ value: item, label: item }));
+  const cheapChatSelectOptions = cheapChatOptions.map((item) => ({ value: item.id, label: item.label }));
+  const defaultChatSelectOptions = defaultChatOptions.map((item) => ({ value: item.id, label: item.label }));
+  const imageModelSelectOptions = availableImageModels.map((item) => ({ value: item.id, label: item.label }));
   const resolveEnabledDocumentIds = (knowledgeBaseId: string) => {
     const documents = knowledgeDocumentsByBase[knowledgeBaseId] || [];
     const binding = form.knowledgeDocumentBindings.find((item) => item.knowledgeBaseId === knowledgeBaseId);
@@ -289,17 +293,12 @@ const AgentWizardView: React.FC<Props> = ({
                   </label>
                   <label className="block">
                     <FieldLabel title="所属部门" />
-                    <select
+                    <PopoverSelect
                       value={form.department || '通用'}
-                      onChange={(event) => onChange('department', event.target.value)}
-                      className={inputClassName}
-                    >
-                      {departmentOptions.map((item) => (
-                        <option key={item} value={item}>
-                          {item}
-                        </option>
-                      ))}
-                    </select>
+                      options={departmentSelectOptions}
+                      onChange={(next) => onChange('department', next)}
+                      buttonClassName="h-[46px] rounded-[16px] border-slate-200/80 bg-white/92 px-4 text-[13px] font-medium text-slate-700"
+                    />
                   </label>
                   <div className="md:col-span-2">
                     <FieldLabel title="自定义部门" detail="输入后点添加，会立即作为当前部门使用。" />
@@ -583,48 +582,33 @@ const AgentWizardView: React.FC<Props> = ({
 
                 <label className="block">
                   <FieldLabel title="简单问题模型" />
-                  <select
+                  <PopoverSelect
                     value={form.cheapModel}
-                    onChange={(event) => onChange('cheapModel', event.target.value)}
-                    className={inputClassName}
-                  >
-                    {cheapChatOptions.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={cheapChatSelectOptions}
+                    onChange={(next) => onChange('cheapModel', next)}
+                    buttonClassName="h-[46px] rounded-[16px] border-slate-200/80 bg-white/92 px-4 text-[13px] font-medium text-slate-700"
+                  />
                 </label>
 
                 <label className="block">
                   <FieldLabel title="默认聊天模型" />
-                  <select
+                  <PopoverSelect
                     value={form.defaultChatModel}
-                    onChange={(event) => onChange('defaultChatModel', event.target.value)}
-                    className={inputClassName}
-                  >
-                    {defaultChatOptions.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
+                    options={defaultChatSelectOptions}
+                    onChange={(next) => onChange('defaultChatModel', next)}
+                    buttonClassName="h-[46px] rounded-[16px] border-slate-200/80 bg-white/92 px-4 text-[13px] font-medium text-slate-700"
+                  />
                 </label>
 
                 <label className="block">
                   <FieldLabel title="默认生图模型" detail={form.enableImageGeneration ? `当前模型最多支持输入 ${availableImageModels.find((item) => item.id === form.imageModel)?.maxInputImages || '-'} 张图。` : '启用生图模型后生效。'} />
-                  <select
+                  <PopoverSelect
                     value={form.imageModel}
-                    onChange={(event) => onChange('imageModel', event.target.value)}
+                    options={imageModelSelectOptions}
+                    onChange={(next) => onChange('imageModel', next)}
                     disabled={!form.enableImageGeneration}
-                    className={inputClassName}
-                  >
-                    {availableImageModels.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
+                    buttonClassName="h-[46px] rounded-[16px] border-slate-200/80 bg-white/92 px-4 text-[13px] font-medium text-slate-700"
+                  />
                 </label>
 
                 <div className={subPanelClassName}>
