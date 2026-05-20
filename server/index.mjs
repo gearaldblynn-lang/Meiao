@@ -436,9 +436,10 @@ const normalizeSystemSettings = (value = {}) => {
   const analysisModel = String(value?.analysisModel || '').trim();
   const videoAnalysisModel = String(value?.videoAnalysisModel || '').trim();
   const available = new Set(getChatModelCatalog().map((item) => item.id));
+  const videoAvailable = new Set(getChatModelCatalog().filter((item) => String(item.id || '').toLowerCase().startsWith('gemini')).map((item) => item.id));
   return {
     analysisModel: analysisModel && available.has(analysisModel) ? analysisModel : '',
-    videoAnalysisModel: videoAnalysisModel && available.has(videoAnalysisModel) ? videoAnalysisModel : '',
+    videoAnalysisModel: videoAnalysisModel && videoAvailable.has(videoAnalysisModel) ? videoAnalysisModel : '',
   };
 };
 
@@ -579,6 +580,12 @@ const normalizeFeaturePermissions = (value = DEFAULT_FEATURE_PERMISSIONS) => {
 
 const serializeFeaturePermissions = (value) => JSON.stringify(normalizeFeaturePermissions(value));
 
+const normalizeUserAnalysisModel = (value = '') => {
+  const modelId = String(value || '').trim();
+  if (!modelId) return '';
+  return getChatModelCatalog().some((item) => item.id === modelId) ? modelId : '';
+};
+
 const canUseVideoGenerationFeature = (user) =>
   user?.role === 'admin' || normalizeFeaturePermissions(user?.featurePermissions).videoGeneration;
 
@@ -589,6 +596,7 @@ const normalizeStoredUser = (user) => ({
   avatarPreset: user?.avatarPreset ? String(user.avatarPreset) : 'aurora',
   jobConcurrency: normalizeJobConcurrency(user?.jobConcurrency, DEFAULT_JOB_CONCURRENCY),
   featurePermissions: normalizeFeaturePermissions(user?.featurePermissions),
+  analysisModel: normalizeUserAnalysisModel(user?.analysisModel),
 });
 
 const createUser = ({ username, password, role = 'staff', displayName = '', jobConcurrency = DEFAULT_JOB_CONCURRENCY, featurePermissions = DEFAULT_FEATURE_PERMISSIONS }) => {
@@ -607,6 +615,7 @@ const createUser = ({ username, password, role = 'staff', displayName = '', jobC
     lastLoginAt: null,
     jobConcurrency: normalizeJobConcurrency(jobConcurrency, DEFAULT_JOB_CONCURRENCY),
     featurePermissions: normalizeFeaturePermissions(featurePermissions),
+    analysisModel: '',
   };
 };
 
@@ -1808,6 +1817,7 @@ const cleanUser = (user) => ({
   lastLoginAt: user.lastLoginAt,
   jobConcurrency: normalizeJobConcurrency(user.jobConcurrency, DEFAULT_JOB_CONCURRENCY),
   featurePermissions: normalizeFeaturePermissions(user.featurePermissions),
+  analysisModel: normalizeUserAnalysisModel(user.analysisModel),
 });
 
 const localCreateSession = (store, userId) => {
@@ -1939,6 +1949,7 @@ const ensureMysqlSchema = async () => {
       status VARCHAR(20) NOT NULL,
       job_concurrency INT NOT NULL DEFAULT 5,
       feature_permissions_json LONGTEXT NULL,
+      analysis_model VARCHAR(120) NULL,
       password_hash VARCHAR(128) NOT NULL,
       salt VARCHAR(64) NOT NULL,
       created_at BIGINT NOT NULL,
@@ -1953,6 +1964,7 @@ const ensureMysqlSchema = async () => {
   await ensureMysqlColumn(pool, 'users', 'avatar_url', 'VARCHAR(1024) NULL');
   await ensureMysqlColumn(pool, 'users', 'avatar_preset', 'VARCHAR(40) NULL');
   await ensureMysqlColumn(pool, 'users', 'feature_permissions_json', 'LONGTEXT NULL');
+  await ensureMysqlColumn(pool, 'users', 'analysis_model', 'VARCHAR(120) NULL');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sessions (
@@ -2221,8 +2233,8 @@ const ensureMysqlSchema = async () => {
     });
 
     await pool.query(
-      `INSERT INTO users (id, username, display_name, avatar_url, avatar_preset, role, status, job_concurrency, password_hash, salt, created_at, last_login_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO users (id, username, display_name, avatar_url, avatar_preset, role, status, job_concurrency, feature_permissions_json, analysis_model, password_hash, salt, created_at, last_login_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         admin.id,
         admin.username,
@@ -2232,6 +2244,8 @@ const ensureMysqlSchema = async () => {
         admin.role,
         admin.status,
         admin.jobConcurrency,
+        serializeFeaturePermissions(admin.featurePermissions),
+        normalizeUserAnalysisModel(admin.analysisModel),
         admin.passwordHash,
         admin.salt,
         admin.createdAt,
@@ -2256,6 +2270,7 @@ const mapDbUser = (row) => ({
   status: row.status,
   jobConcurrency: normalizeJobConcurrency(row.job_concurrency, DEFAULT_JOB_CONCURRENCY),
   featurePermissions: normalizeFeaturePermissions(row.feature_permissions_json),
+  analysisModel: normalizeUserAnalysisModel(row.analysis_model),
   passwordHash: row.password_hash,
   salt: row.salt,
   createdAt: Number(row.created_at),
@@ -2384,6 +2399,14 @@ const getLocalSystemSettings = (store) => normalizeSystemSettings(store?.systemS
 const saveLocalSystemSettings = (store, settings) => {
   store.systemSettings = normalizeSystemSettings(settings);
   return store.systemSettings;
+};
+
+const getUserScopedSystemSettings = (systemSettings, user) => {
+  const normalized = normalizeSystemSettings(systemSettings);
+  return {
+    ...normalized,
+    analysisModel: normalizeUserAnalysisModel(user?.analysisModel) || normalized.analysisModel,
+  };
 };
 
 const scrubDbStatesForDeletedAssets = async (validAssetUrls) => {
@@ -2736,8 +2759,8 @@ const createDbUser = async ({ username, password, role = 'staff', displayName = 
   const pool = await getMysqlPool();
   const newUser = createUser({ username, password, role, displayName, jobConcurrency, featurePermissions });
   await pool.query(
-    `INSERT INTO users (id, username, display_name, avatar_url, avatar_preset, role, status, job_concurrency, feature_permissions_json, password_hash, salt, created_at, last_login_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO users (id, username, display_name, avatar_url, avatar_preset, role, status, job_concurrency, feature_permissions_json, analysis_model, password_hash, salt, created_at, last_login_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newUser.id,
       newUser.username,
@@ -2748,6 +2771,7 @@ const createDbUser = async ({ username, password, role = 'staff', displayName = 
       newUser.status,
       newUser.jobConcurrency,
       serializeFeaturePermissions(newUser.featurePermissions),
+      normalizeUserAnalysisModel(newUser.analysisModel),
       newUser.passwordHash,
       newUser.salt,
       newUser.createdAt,
@@ -2797,6 +2821,10 @@ const updateDbUser = async (userId, updates) => {
     fields.push('feature_permissions_json = ?');
     values.push(serializeFeaturePermissions(updates.featurePermissions));
   }
+  if (updates.analysisModel !== undefined) {
+    fields.push('analysis_model = ?');
+    values.push(normalizeUserAnalysisModel(updates.analysisModel) || null);
+  }
   if (typeof updates.password === 'string' && updates.password) {
     const passwordRecord = createPasswordRecord(updates.password);
     fields.push('password_hash = ?');
@@ -2812,6 +2840,22 @@ const updateDbUser = async (userId, updates) => {
   values.push(userId);
   await pool.query(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, values);
   return await findAnyDbUserById(userId);
+};
+
+const updateDbAllUsersAnalysisModel = async (analysisModel) => {
+  const pool = await getMysqlPool();
+  const normalized = normalizeUserAnalysisModel(analysisModel);
+  await pool.query('UPDATE users SET analysis_model = ?', [normalized || null]);
+  return normalized;
+};
+
+const updateLocalAllUsersAnalysisModel = (store, analysisModel) => {
+  const normalized = normalizeUserAnalysisModel(analysisModel);
+  store.users = (store.users || []).map((user) => ({
+    ...user,
+    analysisModel: normalized,
+  }));
+  return normalized;
 };
 
 const deleteDbUser = async (userId) => {
@@ -3575,7 +3619,7 @@ const createDbKnowledgeDocument = async (user, payload) => {
   const normalizationEnabled = Boolean(payload.normalizationEnabled);
   const systemSettings = await getDbSystemSettings();
   const normalizationResult = normalizationEnabled
-    ? await normalizeKnowledgeDocumentText(rawText, process.env, systemSettings)
+    ? await normalizeKnowledgeDocumentText(rawText, process.env, getUserScopedSystemSettings(systemSettings, user))
     : { normalizedText: '', normalizedStatus: 'idle', chunkSource: 'raw', normalizationError: '' };
   const chunkText = normalizationResult.chunkSource === 'normalized' ? normalizationResult.normalizedText : rawText;
   const chunks = chunkKnowledgeText(chunkText, { strategy: chunkStrategy });
@@ -3653,7 +3697,7 @@ const updateDbKnowledgeDocument = async (user, documentId, payload) => {
   const normalizationEnabled = payload.normalizationEnabled === undefined ? Boolean(existing.normalization_enabled) : Boolean(payload.normalizationEnabled);
   const systemSettings = await getDbSystemSettings();
   const normalizationResult = normalizationEnabled
-    ? await normalizeKnowledgeDocumentText(rawText, process.env, systemSettings)
+    ? await normalizeKnowledgeDocumentText(rawText, process.env, getUserScopedSystemSettings(systemSettings, user))
     : { normalizedText: '', normalizedStatus: 'idle', chunkSource: 'raw', normalizationError: '' };
   const chunkText = normalizationResult.chunkSource === 'normalized' ? normalizationResult.normalizedText : rawText;
   const chunks = chunkKnowledgeText(chunkText, { strategy: chunkStrategy });
@@ -4415,7 +4459,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   const history = await listDbChatMessages(user, sessionId);
   const summaryNeeded = history.filter((item) => item.role !== 'system').length > Number(version.contextPolicy.summaryTriggerThreshold || 10);
   const summary = summaryNeeded ? buildConversationSummary(history, Number(version.contextPolicy.maxSummaryChars || 1200)) : (session.summary || '');
-  const systemSettings = await getDbSystemSettings();
+  const systemSettings = getUserScopedSystemSettings(await getDbSystemSettings(), user);
   const imageKnowledgeChunks = requestMode === 'image_generation' && version.retrievalPolicy?.enabled
     ? searchKnowledgeChunks(await listDbKnowledgeChunksForVersion(version), content, {
         ...version.retrievalPolicy,
@@ -6419,6 +6463,7 @@ const handleMysqlRequest = async (req, res, url) => {
       displayName: typeof body?.displayName === 'string' ? String(body.displayName) : undefined,
       avatarUrl: body?.avatarUrl === null ? null : typeof body?.avatarUrl === 'string' ? String(body.avatarUrl) : undefined,
       avatarPreset: body?.avatarPreset === null ? null : typeof body?.avatarPreset === 'string' ? String(body.avatarPreset) : undefined,
+      analysisModel: body?.analysisModel === undefined ? undefined : normalizeUserAnalysisModel(body.analysisModel),
       usernameFallback: user.displayName || user.username,
     });
     json(res, 200, { user: cleanUser(updatedUser || user) });
@@ -7124,6 +7169,7 @@ const handleMysqlRequest = async (req, res, url) => {
     const nextDisplayName = typeof body.displayName === 'string' ? String(body.displayName) : undefined;
     const nextJobConcurrency = body.jobConcurrency === undefined ? undefined : normalizeJobConcurrency(body.jobConcurrency, DEFAULT_JOB_CONCURRENCY);
     const nextFeaturePermissions = body.featurePermissions === undefined ? undefined : normalizeFeaturePermissions(body.featurePermissions);
+    const nextAnalysisModel = body.analysisModel === undefined ? undefined : normalizeUserAnalysisModel(body.analysisModel);
     const previousStatus = targetUser.status;
 
     if (targetUser.id === admin.id && nextStatus === 'disabled') {
@@ -7145,6 +7191,7 @@ const handleMysqlRequest = async (req, res, url) => {
       status: nextStatus,
       jobConcurrency: nextJobConcurrency,
       featurePermissions: nextFeaturePermissions,
+      analysisModel: nextAnalysisModel,
       password: nextPassword,
       usernameFallback: targetUser.displayName || targetUser.username,
     });
@@ -7262,6 +7309,7 @@ const handleMysqlRequest = async (req, res, url) => {
       config: buildPublicSystemConfig(process.env, queueStats, {
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings,
+        userSettings: { analysisModel: user.analysisModel },
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -7284,6 +7332,27 @@ const handleMysqlRequest = async (req, res, url) => {
       config: buildPublicSystemConfig(process.env, queueStats, {
         maxConcurrency: await getDbWorkerConcurrency(),
         systemSettings: nextSettings,
+        userSettings: { analysisModel: admin.analysisModel },
+        publicBaseUrl: getPersistentAssetBaseUrl(req),
+      }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/system/analysis-model/broadcast' && req.method === 'POST') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const currentSettings = await getDbSystemSettings();
+    const analysisModel = await updateDbAllUsersAnalysisModel(currentSettings.analysisModel);
+    const pool = await getMysqlPool();
+    const queueStats = await getJobQueueStats(pool);
+    json(res, 200, {
+      ok: true,
+      analysisModel,
+      config: buildPublicSystemConfig(process.env, queueStats, {
+        maxConcurrency: await getDbWorkerConcurrency(),
+        systemSettings: currentSettings,
+        userSettings: { analysisModel },
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -7756,6 +7825,7 @@ const handleLocalRequest = async (req, res, url) => {
     else if (typeof body?.avatarUrl === 'string') user.avatarUrl = String(body.avatarUrl).trim().slice(0, 1024);
     if (body?.avatarPreset === null) user.avatarPreset = 'aurora';
     else if (typeof body?.avatarPreset === 'string') user.avatarPreset = String(body.avatarPreset).trim().slice(0, 40) || 'aurora';
+    if (body?.analysisModel !== undefined) user.analysisModel = normalizeUserAnalysisModel(body.analysisModel);
     writeLocalStore(store);
     json(res, 200, { user: cleanUser(user) });
     return;
@@ -8389,7 +8459,7 @@ const handleLocalRequest = async (req, res, url) => {
     const now = Date.now();
     const userMessage = { id: createEntityId(), sessionId, userId: user.id, role: 'user', content, attachments, metadata: { selectedModel, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode, clientRequestId }, createdAt: now };
     const history = (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
-    const systemSettings = getLocalSystemSettings(store);
+    const systemSettings = getUserScopedSystemSettings(getLocalSystemSettings(store), user);
     const imageKnowledgeChunks = requestMode === 'image_generation' && version.retrievalPolicy?.enabled
       ? searchKnowledgeChunks(listLocalKnowledgeChunksForVersion(store, version), content, {
           ...version.retrievalPolicy,
@@ -8819,6 +8889,7 @@ const handleLocalRequest = async (req, res, url) => {
     const nextDisplayName = typeof body.displayName === 'string' ? String(body.displayName) : undefined;
     const nextJobConcurrency = body.jobConcurrency === undefined ? undefined : normalizeJobConcurrency(body.jobConcurrency, DEFAULT_JOB_CONCURRENCY);
     const nextFeaturePermissions = body.featurePermissions === undefined ? undefined : normalizeFeaturePermissions(body.featurePermissions);
+    const nextAnalysisModel = body.analysisModel === undefined ? undefined : normalizeUserAnalysisModel(body.analysisModel);
     const previousStatus = targetUser.status;
 
     if (targetUser.id === admin.id && nextStatus === 'disabled') {
@@ -8837,6 +8908,7 @@ const handleLocalRequest = async (req, res, url) => {
     if (nextStatus) targetUser.status = nextStatus;
     if (nextJobConcurrency !== undefined) targetUser.jobConcurrency = nextJobConcurrency;
     if (nextFeaturePermissions !== undefined) targetUser.featurePermissions = normalizeFeaturePermissions(nextFeaturePermissions);
+    if (nextAnalysisModel !== undefined) targetUser.analysisModel = nextAnalysisModel;
     if (nextPassword) {
       const passwordRecord = createPasswordRecord(nextPassword);
       targetUser.passwordHash = passwordRecord.hash;
@@ -8974,6 +9046,7 @@ const handleLocalRequest = async (req, res, url) => {
       config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), {
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings,
+        userSettings: { analysisModel: user.analysisModel },
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
@@ -8994,6 +9067,26 @@ const handleLocalRequest = async (req, res, url) => {
       config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), {
         maxConcurrency: getLocalWorkerConcurrency(),
         systemSettings: nextSettings,
+        userSettings: { analysisModel: admin.analysisModel },
+        publicBaseUrl: getPersistentAssetBaseUrl(req),
+      }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/system/analysis-model/broadcast' && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const currentSettings = getLocalSystemSettings(store);
+    const analysisModel = updateLocalAllUsersAnalysisModel(store, currentSettings.analysisModel);
+    writeLocalStore(store);
+    json(res, 200, {
+      ok: true,
+      analysisModel,
+      config: buildPublicSystemConfig(process.env, getLocalJobQueueStats(store), {
+        maxConcurrency: getLocalWorkerConcurrency(),
+        systemSettings: currentSettings,
+        userSettings: { analysisModel },
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });

@@ -42,11 +42,11 @@ export const clearSessionToken = () => {
   localStorage.removeItem(SESSION_TOKEN_KEY);
 };
 
-export const storeCurrentUserContext = (user: Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset' | 'featurePermissions'>) => {
+export const storeCurrentUserContext = (user: Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset' | 'featurePermissions' | 'analysisModel'>) => {
   localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(user));
 };
 
-export const getCurrentUserContext = (): Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset' | 'featurePermissions'> | null => {
+export const getCurrentUserContext = (): Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset' | 'featurePermissions' | 'analysisModel'> | null => {
   try {
     const raw = localStorage.getItem(CURRENT_USER_KEY);
     if (!raw) return null;
@@ -474,6 +474,19 @@ export const updateSystemConfig = async (payload: {
   return request<{ config: SystemPublicConfig }>('/api/system/config', {
     method: 'PATCH',
     body: JSON.stringify(payload),
+  });
+};
+
+export const updateCurrentUserAnalysisModel = async (analysisModel: string) => {
+  return request<{ user: AuthUser }>('/api/auth/me', {
+    method: 'PATCH',
+    body: JSON.stringify({ analysisModel }),
+  });
+};
+
+export const broadcastSystemAnalysisModel = async () => {
+  return request<{ ok: boolean; analysisModel: string; config: SystemPublicConfig }>('/api/system/analysis-model/broadcast', {
+    method: 'POST',
   });
 };
 

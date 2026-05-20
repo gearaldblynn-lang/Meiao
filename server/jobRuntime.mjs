@@ -89,6 +89,8 @@ const AGENT_MODEL_CATALOG = {
   ],
 };
 
+const isGeminiModelId = (modelId) => String(modelId || '').toLowerCase().startsWith('gemini');
+
 const toSafePositiveInteger = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -182,28 +184,37 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
   const allowedOrigins = normalizeAllowedOrigins(env.MEIAO_ALLOWED_ORIGINS);
   const publicBaseUrl = normalizeBaseUrl(overrides?.publicBaseUrl || env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || '');
   const chatCatalog = applyRuntimeMediaCapabilities(AGENT_MODEL_CATALOG.chat, env, overrides);
+  const videoAnalysisModels = chatCatalog.filter((item) => isGeminiModelId(item.id));
   const configuredAnalysisModel = String(overrides?.systemSettings?.analysisModel || '').trim();
+  const configuredUserAnalysisModel = String(overrides?.userSettings?.analysisModel || '').trim();
   const configuredVideoAnalysisModel = String(overrides?.systemSettings?.videoAnalysisModel || '').trim();
-  const effectiveAnalysisModel = chatCatalog.some((item) => item.id === configuredAnalysisModel)
+  const validConfiguredAnalysisModel = chatCatalog.some((item) => item.id === configuredAnalysisModel)
     ? configuredAnalysisModel
-    : String(
-        env.MEIAO_AGENT_ANALYSIS_MODEL ||
-        env.MEIAO_PLANNING_ANALYSIS_MODEL ||
-        env.MEIAO_DEFAULT_ANALYSIS_MODEL ||
-        env.MEIAO_DEFAULT_CHAT_MODEL ||
-        env.KIE_CHAT_MODEL ||
-        chatCatalog[0]?.id ||
-        ''
-      ).trim();
+    : '';
+  const validConfiguredUserAnalysisModel = chatCatalog.some((item) => item.id === configuredUserAnalysisModel)
+    ? configuredUserAnalysisModel
+    : '';
+  const defaultAnalysisModel = String(
+    env.MEIAO_AGENT_ANALYSIS_MODEL ||
+    env.MEIAO_PLANNING_ANALYSIS_MODEL ||
+    env.MEIAO_DEFAULT_ANALYSIS_MODEL ||
+    env.MEIAO_DEFAULT_CHAT_MODEL ||
+    env.KIE_CHAT_MODEL ||
+    chatCatalog[0]?.id ||
+    ''
+  ).trim();
+  const effectiveAnalysisModel = validConfiguredUserAnalysisModel || validConfiguredAnalysisModel || defaultAnalysisModel;
   const envVideoAnalysisModel = String(env.MEIAO_VIDEO_ANALYSIS_MODEL || '').trim();
-  const defaultVideoAnalysisModel = chatCatalog.some((item) => item.id === 'gemini-3-flash-openai')
+  const defaultVideoAnalysisModel = videoAnalysisModels.some((item) => item.id === 'gemini-3-flash-openai')
     ? 'gemini-3-flash-openai'
-    : chatCatalog[0]?.id || '';
-  const effectiveVideoAnalysisModel = chatCatalog.some((item) => item.id === configuredVideoAnalysisModel)
+    : videoAnalysisModels[0]?.id || '';
+  const validConfiguredVideoAnalysisModel = videoAnalysisModels.some((item) => item.id === configuredVideoAnalysisModel)
     ? configuredVideoAnalysisModel
-    : chatCatalog.some((item) => item.id === envVideoAnalysisModel)
+    : '';
+  const effectiveVideoAnalysisModel = validConfiguredVideoAnalysisModel
+    || (videoAnalysisModels.some((item) => item.id === envVideoAnalysisModel)
       ? envVideoAnalysisModel
-      : defaultVideoAnalysisModel;
+      : defaultVideoAnalysisModel);
 
   return {
     queue: {
@@ -220,12 +231,14 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       },
     },
     systemSettings: {
-      analysisModel: configuredAnalysisModel,
+      analysisModel: validConfiguredAnalysisModel,
+      userAnalysisModel: validConfiguredUserAnalysisModel,
       effectiveAnalysisModel,
-      videoAnalysisModel: configuredVideoAnalysisModel,
+      videoAnalysisModel: validConfiguredVideoAnalysisModel,
       effectiveVideoAnalysisModel,
       videoAnalysisReasoningLevel: 'high',
     },
+    videoAnalysisModels: videoAnalysisModels.map((item) => ({ ...item })),
     publicBaseUrl,
     agentModels: {
       chat: chatCatalog,

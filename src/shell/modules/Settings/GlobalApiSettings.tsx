@@ -2,11 +2,13 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, CheckCircle2, Cpu, KeyRound, Link2, LogIn, LogOut, Moon, RefreshCcw, Server, Shield } from 'lucide-react';
 import { createDefaultWorkspacePreferences, loadPersistedAppState, savePersistedAppState, buildPersistedAppState } from '../../../utils/appState';
 import {
+  broadcastSystemAnalysisModel,
   checkDreaminaLogin,
   fetchDreaminaStatus,
   fetchSystemConfig,
   logoutDreamina,
   startDreaminaLogin,
+  updateCurrentUserAnalysisModel,
   updateSystemConfig,
 } from '../../../services/internalApi';
 import { getEffectiveConcurrency } from '../../../modules/Account/accountManagementUtils.mjs';
@@ -31,7 +33,10 @@ const Toggle: React.FC<{ label: string; desc: string; checked: boolean; onChange
   </div>
 );
 
-const GlobalApiSettings: React.FC<{ currentUser?: AuthUser | null }> = ({ currentUser = null }) => {
+const GlobalApiSettings: React.FC<{
+  currentUser?: AuthUser | null;
+  onCurrentUserChange?: (user: AuthUser) => void;
+}> = ({ currentUser = null, onCurrentUserChange }) => {
   const persisted = useMemo(() => buildPersistedAppState(loadPersistedAppState()), []);
   const [concurrency, setConcurrency] = useState(persisted.apiConfig.concurrency);
   const [preferences, setPreferences] = useState<WorkspacePreferences>(
@@ -41,8 +46,11 @@ const GlobalApiSettings: React.FC<{ currentUser?: AuthUser | null }> = ({ curren
   const [loadingSystemConfig, setLoadingSystemConfig] = useState(false);
   const [systemConfigError, setSystemConfigError] = useState('');
   const [analysisModel, setAnalysisModel] = useState('');
+  const [userAnalysisModel, setUserAnalysisModel] = useState('');
   const [videoAnalysisModel, setVideoAnalysisModel] = useState('');
   const [savingAnalysisModel, setSavingAnalysisModel] = useState(false);
+  const [savingUserAnalysisModel, setSavingUserAnalysisModel] = useState(false);
+  const [broadcastingAnalysisModel, setBroadcastingAnalysisModel] = useState(false);
   const [analysisModelMessage, setAnalysisModelMessage] = useState('');
   const [saved, setSaved] = useState(false);
   const [dreaminaStatus, setDreaminaStatus] = useState<DreaminaStatus | null>(null);
@@ -61,6 +69,7 @@ const GlobalApiSettings: React.FC<{ currentUser?: AuthUser | null }> = ({ curren
         if (disposed) return;
         setSystemConfig(result.config);
         setAnalysisModel(result.config.systemSettings.analysisModel || '');
+        setUserAnalysisModel(result.config.systemSettings.userAnalysisModel || '');
         setVideoAnalysisModel(result.config.systemSettings.videoAnalysisModel || '');
       })
       .catch((error) => {
@@ -148,6 +157,22 @@ const GlobalApiSettings: React.FC<{ currentUser?: AuthUser | null }> = ({ curren
     { key: 'showGenerationProgress', label: '显示生成进度条', desc: '在卡片上显示实时生成进度' },
   ] as const), []);
 
+  const chatModelOptions = useMemo(() => [
+    { value: '', label: '自动选择默认分析模型' },
+    ...(systemConfig?.agentModels.chat || []).map((model) => ({
+      value: model.id,
+      label: model.label,
+    })),
+  ], [systemConfig?.agentModels.chat]);
+
+  const videoAnalysisModelOptions = useMemo(() => [
+    { value: '', label: '默认 Gemini 3 Flash（High）' },
+    ...(systemConfig?.videoAnalysisModels || []).map((model) => ({
+      value: model.id,
+      label: model.label,
+    })),
+  ], [systemConfig?.videoAnalysisModels]);
+
   const handleSave = () => {
     const nextState = {
       ...persisted,
@@ -165,7 +190,7 @@ const GlobalApiSettings: React.FC<{ currentUser?: AuthUser | null }> = ({ curren
 
   const handleSaveAnalysisModel = async () => {
     if (!canManageSystemSettings) {
-      setAnalysisModelMessage('仅管理员可以修改分析模型。');
+      setAnalysisModelMessage('当前账号没有全局设置权限。');
       return;
     }
     setSavingAnalysisModel(true);
@@ -174,12 +199,53 @@ const GlobalApiSettings: React.FC<{ currentUser?: AuthUser | null }> = ({ curren
       const result = await updateSystemConfig({ analysisModel, videoAnalysisModel });
       setSystemConfig(result.config);
       setAnalysisModel(result.config.systemSettings.analysisModel || '');
+      setUserAnalysisModel(result.config.systemSettings.userAnalysisModel || '');
       setVideoAnalysisModel(result.config.systemSettings.videoAnalysisModel || '');
-      setAnalysisModelMessage('已保存分析模型。');
+      setAnalysisModelMessage('已保存全局模型设置。');
     } catch (error) {
       setAnalysisModelMessage(error instanceof Error ? error.message : '保存失败');
     } finally {
       setSavingAnalysisModel(false);
+    }
+  };
+
+  const handleSaveUserAnalysisModel = async () => {
+    setSavingUserAnalysisModel(true);
+    setAnalysisModelMessage('');
+    try {
+      const result = await updateCurrentUserAnalysisModel(userAnalysisModel);
+      onCurrentUserChange?.(result.user);
+      const configResult = await fetchSystemConfig();
+      setSystemConfig(configResult.config);
+      setAnalysisModel(configResult.config.systemSettings.analysisModel || '');
+      setUserAnalysisModel(configResult.config.systemSettings.userAnalysisModel || '');
+      setVideoAnalysisModel(configResult.config.systemSettings.videoAnalysisModel || '');
+      setAnalysisModelMessage('已保存我的策划分析模型。');
+    } catch (error) {
+      setAnalysisModelMessage(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setSavingUserAnalysisModel(false);
+    }
+  };
+
+  const handleBroadcastAnalysisModel = async () => {
+    if (!canManageSystemSettings) {
+      setAnalysisModelMessage('当前账号没有全局设置权限。');
+      return;
+    }
+    setBroadcastingAnalysisModel(true);
+    setAnalysisModelMessage('');
+    try {
+      const result = await broadcastSystemAnalysisModel();
+      setSystemConfig(result.config);
+      setAnalysisModel(result.config.systemSettings.analysisModel || '');
+      setUserAnalysisModel(result.config.systemSettings.userAnalysisModel || '');
+      setVideoAnalysisModel(result.config.systemSettings.videoAnalysisModel || '');
+      setAnalysisModelMessage('已将全局策划分析模型覆盖到所有账号。');
+    } catch (error) {
+      setAnalysisModelMessage(error instanceof Error ? error.message : '覆盖失败');
+    } finally {
+      setBroadcastingAnalysisModel(false);
     }
   };
 
@@ -438,64 +504,98 @@ const GlobalApiSettings: React.FC<{ currentUser?: AuthUser | null }> = ({ curren
                 <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>服务端策划、知识整理等文本/图片分析共用</p>
               </div>
             </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              <div>
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>策划分析模型</p>
-                  <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>当前生效：{systemConfig?.systemSettings.effectiveAnalysisModel || '自动'}</span>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <div className="rounded-2xl border p-4" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)' }}>
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>我的策划分析模型</p>
+                    <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>普通账号可选择自己的策划分析模型</p>
+                  </div>
+                  <span className="shrink-0 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                    生效：{systemConfig?.systemSettings.effectiveAnalysisModel || '自动'}
+                  </span>
                 </div>
+                <PopoverSelect
+                  value={userAnalysisModel}
+                  onChange={setUserAnalysisModel}
+                  disabled={loadingSystemConfig || savingUserAnalysisModel}
+                  className="min-w-0"
+                  buttonClassName="h-12 rounded-[22px] px-4 text-[13px]"
+                  options={chatModelOptions}
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleSaveUserAnalysisModel()}
+                  disabled={loadingSystemConfig || savingUserAnalysisModel}
+                  className="mt-3 w-full rounded-2xl bg-slate-900 px-4 py-3 text-[13px] font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingUserAnalysisModel ? '保存中...' : '保存我的模型'}
+                </button>
+              </div>
+
+              <div className="rounded-2xl border p-4" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)' }}>
+                <div className="mb-3 flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>全局策划模型</p>
+                    <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>管理员可将全局策划分析模型覆盖到所有账号</p>
+                  </div>
+                  <span className="shrink-0 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                    默认：{systemConfig?.systemSettings.analysisModel || '自动'}
+                  </span>
+                </div>
+                <PopoverSelect
+                  value={analysisModel}
+                  onChange={setAnalysisModel}
+                  disabled={!canManageSystemSettings || loadingSystemConfig || savingAnalysisModel || broadcastingAnalysisModel}
+                  className="min-w-0"
+                  buttonClassName="h-12 rounded-[22px] px-4 text-[13px]"
+                  options={chatModelOptions}
+                />
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveAnalysisModel()}
+                    disabled={!canManageSystemSettings || loadingSystemConfig || savingAnalysisModel || broadcastingAnalysisModel}
+                    className="rounded-2xl bg-slate-900 px-4 py-3 text-[13px] font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {savingAnalysisModel ? '保存中...' : '保存全局'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleBroadcastAnalysisModel()}
+                    disabled={!canManageSystemSettings || loadingSystemConfig || savingAnalysisModel || broadcastingAnalysisModel}
+                    className="rounded-2xl border px-4 py-3 text-[13px] font-black disabled:cursor-not-allowed disabled:opacity-60"
+                    style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)', color: 'var(--text-primary)' }}
+                  >
+                    {broadcastingAnalysisModel ? '覆盖中...' : '覆盖所有账号'}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl border p-4" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)' }}>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>视频分析模型</p>
+                <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                  生效：{systemConfig?.systemSettings.effectiveVideoAnalysisModel || 'gemini-3-flash-openai'} · High
+                </span>
+              </div>
               <PopoverSelect
-                value={analysisModel}
-                onChange={setAnalysisModel}
+                value={videoAnalysisModel}
+                onChange={setVideoAnalysisModel}
                 disabled={!canManageSystemSettings || loadingSystemConfig || savingAnalysisModel}
                 className="min-w-0"
                 buttonClassName="h-12 rounded-[22px] px-4 text-[13px]"
-                options={[
-                  { value: '', label: '自动选择默认分析模型' },
-                  ...(systemConfig?.agentModels.chat || []).map((model) => ({
-                    value: model.id,
-                    label: model.label,
-                  })),
-                ]}
+                options={videoAnalysisModelOptions}
               />
-              </div>
-              <div>
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>视频分析模型</p>
-                  <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>当前生效：{systemConfig?.systemSettings.effectiveVideoAnalysisModel || 'gemini-3-flash-openai'} · High</span>
-                </div>
-                <PopoverSelect
-                  value={videoAnalysisModel}
-                  onChange={setVideoAnalysisModel}
-                  disabled={!canManageSystemSettings || loadingSystemConfig || savingAnalysisModel}
-                  className="min-w-0"
-                  buttonClassName="h-12 rounded-[22px] px-4 text-[13px]"
-                  options={[
-                    { value: '', label: '默认 Gemini 3 Flash（High）' },
-                    ...(systemConfig?.agentModels.chat || []).map((model) => ({
-                      value: model.id,
-                      label: model.label,
-                    })),
-                  ]}
-                />
-              </div>
-            </div>
-            <div className="mt-3 flex flex-col gap-3 md:flex-row md:items-center">
-              <p className="min-w-0 flex-1 text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>
-                视频分析模型专用于爆款视频拆解、上传视频分析等需要读取视频素材的流程，默认使用 Gemini 3 Flash，思考强度固定 High。
+              <p className="mt-3 text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>
+                视频分析模型仅开放 Gemini 系列，专用于爆款视频拆解、上传视频分析等需要读取视频素材的流程。
               </p>
-              <button
-                type="button"
-                onClick={() => void handleSaveAnalysisModel()}
-                disabled={!canManageSystemSettings || loadingSystemConfig || savingAnalysisModel}
-                className="rounded-2xl bg-slate-900 px-4 py-3 text-[13px] font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {savingAnalysisModel ? '保存中...' : '保存设置'}
-              </button>
             </div>
+
             <div className="mt-3 flex flex-wrap items-center gap-3 text-[12px]">
               <span className="text-slate-400">
-                {canManageSystemSettings ? '管理员可修改，全局生效。' : '仅管理员可修改，当前仅展示。'}
+                {canManageSystemSettings ? '管理员可管理全局设置。' : '当前账号可保存自己的策划模型，视频分析由管理员统一设置。'}
               </span>
               {analysisModelMessage ? <span className="font-medium text-slate-600">{analysisModelMessage}</span> : null}
             </div>

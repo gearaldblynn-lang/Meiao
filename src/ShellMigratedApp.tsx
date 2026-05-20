@@ -1188,7 +1188,7 @@ const buildVideoStoryboardConfig = (
 };
 
 const buildAuthUserFromContext = (
-  user: Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset' | 'featurePermissions'> | AuthUser | null,
+  user: Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset' | 'featurePermissions' | 'analysisModel'> | AuthUser | null,
 ): AuthUser | null => {
   if (!user) return null;
   return {
@@ -4623,7 +4623,7 @@ const AppContent: React.FC<{
   const activeModuleView = (() => {
     switch (pageMode) {
       case 'landing': return <LandingPage onNavigate={handleNavigateFromLanding} />;
-      case 'settings': return <GlobalApiSettings currentUser={currentUser} />;
+      case 'settings': return <GlobalApiSettings currentUser={currentUser} onCurrentUserChange={handleCurrentUserChange} />;
       case 'account': return <AccountManagement
         currentUser={currentUser}
         internalMode={Boolean(currentUser)}

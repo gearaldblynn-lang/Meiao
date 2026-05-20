@@ -61,7 +61,8 @@ const resolveVideoAnalysisModel = async () => {
   }
   const result = await fetchSystemConfig();
   const configured = String(result.config.systemSettings.effectiveVideoAnalysisModel || '').trim();
-  const availableModels = result.config.agentModels.chat || [];
+  const availableModels = (result.config.videoAnalysisModels || result.config.agentModels.chat || [])
+    .filter((item) => String(item.id || '').toLowerCase().startsWith('gemini'));
   const fallback = availableModels.some((item) => item.id === 'gemini-3-flash-openai')
     ? 'gemini-3-flash-openai'
     : availableModels[0]?.id || 'gemini-3-flash-openai';
