@@ -1,9 +1,16 @@
 import React, { useEffect } from 'react';
 import { Download, X, ChevronLeft, ChevronRight } from 'lucide-react';
 
+export interface LightboxMediaItem {
+  url: string;
+  type?: 'image' | 'video';
+  title?: string;
+}
+
 interface Props {
   open: boolean;
   images: string[];
+  items?: LightboxMediaItem[];
   currentIndex: number;
   onClose: () => void;
   onPrev: () => void;
@@ -11,7 +18,7 @@ interface Props {
   onDownloadCurrent?: () => void;
 }
 
-const ImageLightbox: React.FC<Props> = ({ open, images, currentIndex, onClose, onPrev, onNext, onDownloadCurrent }) => {
+const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onClose, onPrev, onNext, onDownloadCurrent }) => {
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -23,7 +30,13 @@ const ImageLightbox: React.FC<Props> = ({ open, images, currentIndex, onClose, o
     return () => document.removeEventListener('keydown', handler);
   }, [open, onClose, onPrev, onNext]);
 
-  if (!open || images.length === 0) return null;
+  const mediaItems = items?.length
+    ? items
+    : images.map((url) => ({ url, type: 'image' as const }));
+  const currentItem = mediaItems[currentIndex];
+
+  if (!open || mediaItems.length === 0 || !currentItem) return null;
+  const isVideo = currentItem.type === 'video';
 
   return (
     <div
@@ -61,11 +74,11 @@ const ImageLightbox: React.FC<Props> = ({ open, images, currentIndex, onClose, o
 
       {/* Counter */}
       <div className="absolute left-1/2 top-5 -translate-x-1/2 rounded-full px-3 py-1.5 text-[11px] font-medium" style={{ background: 'rgba(255,255,255,0.1)', color: '#fff' }}>
-        {currentIndex + 1} / {images.length}
+        {currentIndex + 1} / {mediaItems.length}
       </div>
 
       {/* Prev */}
-      {images.length > 1 && (
+      {mediaItems.length > 1 && (
         <button
           onClick={(e) => { e.stopPropagation(); onPrev(); }}
           className="absolute left-5 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-[18px] transition-colors"
@@ -77,17 +90,38 @@ const ImageLightbox: React.FC<Props> = ({ open, images, currentIndex, onClose, o
         </button>
       )}
 
-      {/* Image */}
-      <img
-        src={images[currentIndex]}
-        alt=""
-        className="max-h-[80vh] max-w-[84vw] rounded-[22px] object-contain"
-        style={{ boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
-        onClick={(e) => e.stopPropagation()}
-      />
+      {isVideo ? (
+        <div className="flex max-h-[86vh] w-full max-w-5xl flex-col gap-3" onClick={(e) => e.stopPropagation()}>
+          {currentItem.title ? (
+            <div className="truncate px-1 text-[12px] font-medium" style={{ color: 'rgba(255,255,255,0.82)' }}>
+              {currentItem.title}
+            </div>
+          ) : null}
+          <video
+            key={currentItem.url}
+            src={currentItem.url}
+            className="meiao-video-no-fullscreen max-h-[80vh] w-full rounded-[18px] object-contain"
+            controls
+            controlsList="nofullscreen nodownload noremoteplayback"
+            disablePictureInPicture
+            autoPlay
+            playsInline
+            preload="auto"
+            style={{ background: '#000', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
+          />
+        </div>
+      ) : (
+        <img
+          src={currentItem.url}
+          alt=""
+          className="max-h-[80vh] max-w-[84vw] rounded-[22px] object-contain"
+          style={{ boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
+          onClick={(e) => e.stopPropagation()}
+        />
+      )}
 
       {/* Next */}
-      {images.length > 1 && (
+      {mediaItems.length > 1 && (
         <button
           onClick={(e) => { e.stopPropagation(); onNext(); }}
           className="absolute right-5 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-[18px] transition-colors"

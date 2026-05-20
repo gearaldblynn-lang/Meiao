@@ -371,7 +371,7 @@ export const generateMarketingSchemes = async (
 
     if (config.aspectRatio === AspectRatio.AUTO) {
         if (isDetail) {
-             ratioPromptInstruction = "按单屏内容与展示场景智能填写具体比例(如1:1、3:4、4:3、9:16)，严禁整套默认都写成9:16";
+             ratioPromptInstruction = "移动端优先智能填写具体比例，优先使用竖图3:4或9:16；仅在参数、对比、横向流程图等确实需要横向信息展开时才使用1:1或4:3，严禁输出auto";
         } else {
              ratioPromptInstruction = "必须填入：1:1";
              effectiveMainRatio = AspectRatio.SQUARE;
@@ -384,7 +384,7 @@ export const generateMarketingSchemes = async (
     // 构建平台与文化适配的 Prompt 模块
     const platformLogicPrompt = isDetail
       ? `【详情页策划规则】：
-         1. **智能比例适配**：根据每一屏的展示任务决定比例。首屏、大场景氛围图、模特场景图可用 3:4 或 9:16；卖点拆解、细节特写、参数展示、对比展示可用 1:1 或 4:3。**严禁整套都默认写成 9:16**，也**严禁输出 auto**。
+         1. **移动端优先比例适配**：详情页默认面向手机端浏览，Auto比例下优先规划 3:4 或 9:16 竖图；首屏、大场景氛围图、模特场景图、卖点展示图应优先使用 3:4 或 9:16。只有参数展示、对比展示、横向流程图等确实需要横向展开时，才允许使用 1:1 或 4:3。**严禁输出 auto**，也禁止整套大量横图。
          2. **内容服从产品调性**：画面内容必须贴合产品品类、价格带、使用场景与品牌气质，不能空泛堆场景。
          3. **移动端优先**：主体清晰，信息层级明确，手机端浏览时一眼能看懂。`
       : isFirstImage

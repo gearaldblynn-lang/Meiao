@@ -97,6 +97,10 @@
 }
 
 @layer components {
+  .meiao-video-no-fullscreen::-webkit-media-controls-fullscreen-button {
+    display: none;
+  }
+
   .surface {
     background: var(--bg-surface);
     border: 1px solid var(--border-subtle);

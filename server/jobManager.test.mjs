@@ -91,6 +91,41 @@ test('findReusableJobSubmission reuses the newest matching active job in the ded
   assert.equal(matched?.id, 'job-new');
 });
 
+test('findReusableJobSubmission ignores volatile requestId fields when matching active jobs', () => {
+  const matched = findReusableJobSubmission({
+    jobs: [
+      {
+        id: 'job-video',
+        userId: 'user-a',
+        module: 'video',
+        taskType: 'kie_seedance_video',
+        provider: 'kie',
+        status: 'running',
+        payload: {
+          requestId: 'old-random-id',
+          prompt: 'same prompt',
+          imageUrls: ['same-url'],
+          nested: { requestId: 'old-nested-id', duration: '12' },
+        },
+        createdAt: 2000,
+      },
+    ],
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    payload: {
+      requestId: 'new-random-id',
+      prompt: 'same prompt',
+      imageUrls: ['same-url'],
+      nested: { requestId: 'new-nested-id', duration: '12' },
+    },
+    createdAfter: 1000,
+  });
+
+  assert.equal(matched?.id, 'job-video');
+});
+
 test('findReusableJobSubmission ignores finished or stale jobs', () => {
   const matched = findReusableJobSubmission({
     jobs: [

@@ -4,7 +4,7 @@ import type { GeneratedResult } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, VideoStoryboardProject } from '../../types';
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
 import ConfirmDialog from './ConfirmDialog';
-import ImageLightbox from './ImageLightbox';
+import ImageLightbox, { type LightboxMediaItem } from './ImageLightbox';
 import PlanEditor, { type PlanItem } from './PlanEditor';
 import { useToast } from './ToastSystem';
 
@@ -22,6 +22,7 @@ export interface Project {
   completedCount: number;
   subFeature?: string;
   sourceType?: 'persisted' | 'job';
+  backendJobId?: string;
   planningTaskId?: string;
   generationContext?: OneClickGenerationContext;
   storyboardProjectStatus?: VideoStoryboardProject['status'];
@@ -43,7 +44,7 @@ interface Props {
   onDeletePlan?: (projectId: string, planId: string) => void;
   onRegeneratePlans?: (projectId: string) => void;
   onCancelTask?: (taskIdOrProjectId: string) => void;
-  onImportStoryboardToGeneration?: (project: VideoStoryboardProject) => void;
+  onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number) => void;
   pendingActionKeys?: Record<string, boolean>;
   compact?: boolean;
   showGenerationProgress?: boolean;
@@ -80,10 +81,45 @@ const normalizeSchemeText = (scheme?: string) =>
     .replace(/\[SCHEME_END\]/g, '')
     .trim();
 
-const renderMedia = (result: GeneratedResult, className: string) => {
+const CardVideoPreview: React.FC<{
+  src: string;
+  className: string;
+  controls?: boolean;
+  preload?: 'none' | 'metadata' | 'auto';
+}> = ({ src, className, controls = false, preload = 'metadata' }) => {
+  return (
+    <video
+      data-meiao-card-video="true"
+      src={src}
+      className={`${className} meiao-video-no-fullscreen`}
+      controls={controls}
+      controlsList="nofullscreen nodownload noremoteplayback"
+      disablePictureInPicture
+      muted
+      playsInline
+      preload={preload}
+      onPlay={(event) => {
+        document.querySelectorAll<HTMLVideoElement>('video[data-meiao-card-video="true"]').forEach((video) => {
+          if (video !== event.currentTarget && !video.paused) {
+            video.pause();
+          }
+        });
+      }}
+    />
+  );
+};
+
+const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto' }) => {
   if (result.mediaType === 'video' || result.videoUrl) {
     const src = result.videoUrl || result.imageUrl;
-    return src ? <video src={src} className={className} controls muted playsInline preload="metadata" /> : (
+    return src ? (
+      <CardVideoPreview
+        src={src}
+        className={className}
+        controls={options?.videoControls ?? false}
+        preload={options?.videoPreload || 'metadata'}
+      />
+    ) : (
       <div className={`flex items-center justify-center text-[12px] ${className}`} style={{ color: 'var(--text-tertiary)' }}>视频结果待同步</div>
     );
   }
@@ -157,7 +193,10 @@ const getProjectCreditsConsumed = (project: Project) => {
     sum + (result.status === 'completed' ? normalizeCreditsConsumed(result.creditsConsumed) : 0)
   ), 0);
   const hasPlanningUsage = Boolean(project.planningTaskId)
-    || (project.module === 'one_click' && Array.isArray(project.plans) && project.plans.length > 0);
+    || (project.module === 'one_click' && (
+      Boolean(project.backendJobId)
+      || (Array.isArray(project.plans) && project.plans.length > 0)
+    ));
   const projectCredits = hasPlanningUsage ? rawProjectCredits : 0;
   const directTaskCredits = hasPlanningUsage ? resultCredits : (resultCredits || rawProjectCredits);
   return {
@@ -243,6 +282,12 @@ const ProjectCard: React.FC<Props> = ({
   const selectedPlanCount = visiblePlans.length;
   const allPlansSelected = Array.isArray(project.plans) && project.plans.length > 0 && visiblePlans.length === project.plans.length;
   const imageResults = project.results.filter((result) => result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
+  const previewableResults = project.results.filter((result) => result.imageUrl || result.videoUrl);
+  const lightboxItems: LightboxMediaItem[] = previewableResults.map((result, index) => ({
+    url: result.videoUrl || result.imageUrl || '',
+    type: result.mediaType === 'video' || result.videoUrl ? 'video' : 'image',
+    title: result.fileName || result.taskId || `${project.name || '结果'} #${index + 1}`,
+  }));
   const isCompletedMediaResult = (result: GeneratedResult) => result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl);
   const hasGeneratingResult = project.results.some((result) => result.status === 'generating' && !isCompletedMediaResult(result));
   const activePlanIds = new Set([
@@ -272,7 +317,8 @@ const ProjectCard: React.FC<Props> = ({
   const isConfirmPlanPending = isPendingAction(`confirm-plan:${project.id}`);
   const isStoryboardImagePending = isPendingAction(`storyboard-image:${project.id}`);
   const isLongDetailProject = !isTranslationProject && (project.subFeature === 'detail_page' || project.subFeature === 'detail');
-  const allImageUrls = imageResults.map((r) => r.imageUrl);
+  const isVideoGenerationProject = project.module === 'video' && project.subFeature === 'generation';
+  const allImageUrls = lightboxItems.map((item) => item.url);
   const isDiagnosisReport = project.module === 'video' && project.subFeature === 'diagnosis';
   const isStoryboardProject = project.module === 'video' && project.subFeature === 'storyboard';
   const isStoryboardAwaitingImageConfirmation = isStoryboardProject && project.storyboardProjectStatus === 'awaiting_image_confirmation';
@@ -337,7 +383,7 @@ const ProjectCard: React.FC<Props> = ({
   const getTranslationPathLabel = (result: GeneratedResult) =>
     String(result.relativePath || result.fileName || result.id || '未命名文件').trim();
   const renderPlanningTaskId = (className = '') => {
-    const planningTaskId = String(project.planningTaskId || '').trim();
+    const planningTaskId = String(project.planningTaskId || project.backendJobId || '').trim();
     if (!planningTaskId) return null;
     return (
       renderTaskIdChip(planningTaskId, '策划 ID', `text-[10px] ${className}`)
@@ -397,7 +443,9 @@ const ProjectCard: React.FC<Props> = ({
   };
 
   const openImage = (resultId: string) => {
-    if (project.module === 'translation') {
+    const targetResult = project.results.find((result) => result.id === resultId);
+    const isVideoResult = Boolean(targetResult && (targetResult.mediaType === 'video' || targetResult.videoUrl));
+    if (project.module === 'translation' && !isVideoResult) {
       const idx = translationResults.findIndex((result) => result.id === resultId);
       if (idx >= 0) {
         setTranslationCompareIndex(idx);
@@ -405,7 +453,7 @@ const ProjectCard: React.FC<Props> = ({
       }
       return;
     }
-    const idx = imageResults.findIndex((result) => result.id === resultId);
+    const idx = previewableResults.findIndex((result) => result.id === resultId);
     if (idx >= 0) {
       setLightboxIndex(idx);
       setLightboxOpen(true);
@@ -1035,7 +1083,8 @@ const ProjectCard: React.FC<Props> = ({
                                     addToast('当前分镜项目数据不完整，无法导入', 'warning');
                                     return;
                                   }
-                                  onImportStoryboardToGeneration(project.storyboardSourceProject);
+                                  const boardIndex = Number.isFinite(result.storyboardBoardIndex) ? Number(result.storyboardBoardIndex) : index;
+                                  onImportStoryboardToGeneration(project.storyboardSourceProject, result.id, boardIndex);
                                 }}
                               />
                               {onRegenerate ? (
@@ -1407,6 +1456,7 @@ const ProjectCard: React.FC<Props> = ({
                     ) : (
                       <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-3">
                         {project.results.map((result, index) => {
+                          const isVideoResult = result.mediaType === 'video' || Boolean(result.videoUrl) || isVideoGenerationProject;
                           const canOpenImage = isTranslationProject
                             ? Boolean(result.sourceUrl || result.sourcePreviewUrl || result.imageUrl)
                             : Boolean(result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
@@ -1419,6 +1469,59 @@ const ProjectCard: React.FC<Props> = ({
                           if (result.aspectRatio && result.aspectRatio !== 'auto') resultMeta.push(result.aspectRatio);
                           if (result.createdAt) resultMeta.push(result.createdAt);
                           const regeneratePending = isRegeneratePending(result.id);
+                          const mediaPanel = isTranslationProject ? (
+                            <div className="grid h-[210px] w-full grid-cols-2 overflow-hidden">
+                              <div className="relative border-r" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 70%, transparent)', background: 'var(--bg-base)' }}>
+                                {result.sourcePreviewUrl || result.sourceUrl ? (
+                                  <img
+                                    src={result.sourcePreviewUrl || result.sourceUrl}
+                                    alt={`${result.fileName || 'source'} original`}
+                                    className="h-full w-full object-contain"
+                                    loading="lazy"
+                                    decoding="async"
+                                  />
+                                ) : (
+                                  <div className="flex h-full items-center justify-center text-[11px]" style={{ color: 'var(--text-tertiary)' }}>原图待恢复</div>
+                                )}
+                                <div className="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-[10px] font-medium text-white">原图</div>
+                              </div>
+                              <div className="relative" style={{ background: 'var(--bg-base)' }}>
+                                {renderMedia(result, 'h-full w-full object-contain')}
+                                <div className="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-[10px] font-medium text-white">结果</div>
+                              </div>
+                            </div>
+                          ) : isVideoResult ? (
+                            <div className="relative flex h-[300px] w-full items-center justify-center overflow-hidden bg-black sm:h-[340px]">
+                              {hasResult ? (
+                                renderMedia(result, 'h-full w-full object-contain', { videoControls: true, videoPreload: 'metadata' })
+                              ) : (
+                                <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-[12px]" style={{ color: 'rgba(255,255,255,0.74)' }}>
+                                  <Film size={20} />
+                                  <span>{isGeneratingResult ? '视频生成中' : '视频结果待同步'}</span>
+                                </div>
+                              )}
+                              <div className="absolute left-3 top-3 rounded-full bg-black/55 px-2 py-1 text-[10px] font-medium text-white">#{index + 1}</div>
+                              {hasResult ? (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openImage(result.id);
+                                  }}
+                                  className="absolute right-3 top-3 flex items-center gap-1 rounded-full bg-black/55 px-2.5 py-1 text-[10px] font-medium text-white"
+                                  title="放大预览"
+                                >
+                                  <Maximize2 size={11} />
+                                  预览
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <div className="relative">
+                              {renderMedia(result, 'h-[210px] w-full object-contain')}
+                              <div className="absolute left-3 top-3 rounded-full bg-black/45 px-2 py-1 text-[10px] font-medium text-white">#{index + 1}</div>
+                            </div>
+                          );
                           return (
                             <article
                               key={result.id}
@@ -1427,41 +1530,21 @@ const ProjectCard: React.FC<Props> = ({
                                 background: 'var(--bg-elevated)',
                               }}
                             >
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (canOpenImage) openImage(result.id);
-                                }}
-                                className="block w-full"
-                              >
-                                {isTranslationProject ? (
-                                  <div className="grid h-[210px] w-full grid-cols-2 overflow-hidden">
-                                    <div className="relative border-r" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 70%, transparent)', background: 'var(--bg-base)' }}>
-                                      {result.sourcePreviewUrl || result.sourceUrl ? (
-                                        <img
-                                          src={result.sourcePreviewUrl || result.sourceUrl}
-                                          alt={`${result.fileName || 'source'} original`}
-                                          className="h-full w-full object-contain"
-                                          loading="lazy"
-                                          decoding="async"
-                                        />
-                                      ) : (
-                                        <div className="flex h-full items-center justify-center text-[11px]" style={{ color: 'var(--text-tertiary)' }}>原图待恢复</div>
-                                      )}
-                                      <div className="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-[10px] font-medium text-white">原图</div>
-                                    </div>
-                                    <div className="relative" style={{ background: 'var(--bg-base)' }}>
-                                      {renderMedia(result, 'h-full w-full object-contain')}
-                                      <div className="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-[10px] font-medium text-white">结果</div>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="relative">
-                                    {renderMedia(result, 'h-[210px] w-full object-contain')}
-                                    <div className="absolute left-3 top-3 rounded-full bg-black/45 px-2 py-1 text-[10px] font-medium text-white">#{index + 1}</div>
-                                  </div>
-                                )}
-                              </button>
+                              {isVideoResult ? (
+                                <div className="block w-full">
+                                  {mediaPanel}
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (canOpenImage) openImage(result.id);
+                                  }}
+                                  className="block w-full"
+                                >
+                                  {mediaPanel}
+                                </button>
+                              )}
                                 <div className="flex flex-1 flex-col gap-2 border-t p-2.5" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 70%, transparent)' }}>
                                   {resultMeta.length > 0 ? (
                                     <div className="flex flex-wrap gap-1.5 text-[10px]">
@@ -1480,7 +1563,7 @@ const ProjectCard: React.FC<Props> = ({
                                     className="flex w-full items-center justify-between px-2.5 py-1.75 pr-10 text-left text-[11px] font-semibold"
                                     style={{ color: 'var(--text-secondary)' }}
                                   >
-                                    <span>生图 Prompt</span>
+                                    <span>{isVideoResult ? '视频 Prompt' : '生图 Prompt'}</span>
                                     <span style={{ color: 'var(--accent)' }}>{promptExpanded ? '收起' : '展开'}</span>
                                   </button>
                                   {renderPromptCopyButton(displayedPrompt)}
@@ -1574,9 +1657,10 @@ const ProjectCard: React.FC<Props> = ({
       <ImageLightbox
         open={lightboxOpen}
         images={allImageUrls}
+        items={lightboxItems}
         currentIndex={lightboxIndex}
         onDownloadCurrent={() => {
-          const currentResult = imageResults[lightboxIndex];
+          const currentResult = previewableResults[lightboxIndex];
           if (currentResult) {
             void handleDownloadSingle(currentResult, lightboxIndex);
           }

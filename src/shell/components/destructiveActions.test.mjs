@@ -90,6 +90,6 @@ test('task action buttons use an exclusive pending key to prevent duplicate subm
   assert.match(projectCardSource, /pendingActionKeys\?: Record<string, boolean>/);
   assert.match(projectCardSource, /const getRegenerateActionKey = \(resultId: string\) => `regenerate:\$\{project\.id\}:\$\{resultId\}`/);
   assert.match(projectCardSource, /disabled=\{regeneratePending \|\| isGeneratingResult\}/);
-  assert.match(projectCardSource, /disabled=\{isConfirmPlanPending \|\| project\.status === 'generating'\}/);
+  assert.match(projectCardSource, /disabled=\{isConfirmPlanPending \|\| isProjectActivelyGenerating\}/);
   assert.match(projectCardSource, /disabled=\{isStoryboardImagePending\}/);
 });

@@ -621,6 +621,212 @@ test('shell data adapter accumulates multiple one-click image jobs for the same 
   assert.equal(project?.results.find((result) => result.planId === 'plan-3')?.status, 'error');
 });
 
+test('shell data adapter completes delayed one-click detail jobs after the initial concurrency window', () => {
+  const plans = Array.from({ length: 8 }).map((_, index) => ({
+    id: `detail-plan-${index + 1}`,
+    title: `详情第${index + 1}屏`,
+    sellingPoints: [],
+    sceneDescription: `详情第${index + 1}屏`,
+    styleDirection: '',
+    colorPalette: '',
+    composition: '',
+    textLayout: '',
+    selected: true,
+    schemeContent: `详情第${index + 1}屏`,
+  }));
+  const baseProject = {
+    id: 'detail-delayed-project',
+    name: '详情八张批量',
+    module: 'one_click',
+    status: 'generating',
+    createdAt: '05-20',
+    plans,
+    selectedPlanId: plans[0].id,
+    taskCount: 8,
+    completedCount: 4,
+    subFeature: 'detail_page',
+    results: plans.map((plan, index) => ({
+      id: `provider-detail-${index + 1}`,
+      planId: plan.id,
+      imageUrl: index < 4 ? `/old-detail-${index + 1}.png` : '',
+      prompt: plan.schemeContent,
+      model: 'gpt-image-2',
+      aspectRatio: 'auto',
+      status: index < 4 ? 'completed' : 'generating',
+      createdAt: '05-20',
+      module: 'one_click',
+      subFeature: 'detail_page',
+      taskId: `provider-detail-${index + 1}`,
+      backendJobId: `job-detail-${index + 1}`,
+    })),
+  };
+  const jobs = plans.map((plan, index) => ({
+    id: `job-detail-${index + 1}`,
+    module: 'one_click',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: `provider-detail-${index + 1}`,
+    payload: {
+      prompt: `提示词 ${index + 1}`,
+      shellProjectId: 'detail-delayed-project',
+      shellPlanId: plan.id,
+      subFeature: 'detail_page',
+      batchIndex: index + 1,
+      batchCount: 8,
+    },
+    result: {
+      imageUrl: `/new-detail-${index + 1}.png`,
+      providerTaskId: `provider-detail-${index + 1}`,
+      creditsConsumed: 3,
+    },
+    createdAt: 2000 + index,
+    updatedAt: 3000 + index,
+    finishedAt: 3000 + index,
+  }));
+
+  const snapshot = buildShellDataSnapshot({ shellProjects: [baseProject] }, jobs);
+  const project = snapshot.projects.find((item) => item.id === 'detail-delayed-project');
+
+  assert.equal(project?.status, 'completed');
+  assert.equal(project?.taskCount, 8);
+  assert.equal(project?.completedCount, 8);
+  assert.equal(project?.results.length, 8);
+  assert.equal(project?.results.find((result) => result.planId === 'detail-plan-8')?.imageUrl, '/new-detail-8.png');
+});
+
+test('shell data adapter completes delayed terminal jobs for every generated project module', () => {
+  const modules = [
+    ['translation', 'main', 'kie_image', 'imageUrl', '/translation-final.png'],
+    ['retouch', 'original', 'kie_image', 'imageUrl', '/retouch-final.png'],
+    ['buyer_show', 'image', 'kie_image', 'imageUrl', '/buyer-show-final.png'],
+    ['xhs_cover', 'cover', 'kie_image', 'imageUrl', '/xhs-cover-final.png'],
+    ['video', 'generation', 'kie_video', 'videoUrl', '/video-final.mp4'],
+  ];
+  const shellProjects = modules.map(([module, subFeature]) => ({
+    id: `${module}-project`,
+    name: `${module} 项目`,
+    module,
+    status: 'generating',
+    createdAt: '05-20',
+    subFeature,
+    taskCount: 1,
+    completedCount: 0,
+    results: [{
+      id: `${module}-provider-task`,
+      projectId: `${module}-project`,
+      imageUrl: '',
+      prompt: `${module} prompt`,
+      model: 'kie',
+      aspectRatio: 'auto',
+      status: 'generating',
+      createdAt: '05-20',
+      module,
+      subFeature,
+      taskId: `${module}-provider-task`,
+      backendJobId: `${module}-job`,
+    }],
+  }));
+  const jobs = modules.map(([module, subFeature, taskType, urlKey, url]) => ({
+    id: `${module}-job`,
+    module,
+    taskType,
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: `${module}-provider-task`,
+    payload: {
+      prompt: `${module} prompt`,
+      shellProjectId: `${module}-project`,
+      subFeature,
+      batchCount: 1,
+    },
+    result: {
+      [urlKey]: url,
+      providerTaskId: `${module}-provider-task`,
+      creditsConsumed: 3,
+    },
+    createdAt: 2000,
+    updatedAt: 3000,
+    finishedAt: 3000,
+  }));
+
+  const snapshot = buildShellDataSnapshot({ shellProjects }, jobs);
+
+  modules.forEach(([module, , , urlKey, url]) => {
+    const project = snapshot.projects.find((item) => item.id === `${module}-project`);
+    assert.equal(project?.status, 'completed', module);
+    assert.equal(project?.taskCount, 1, module);
+    assert.equal(project?.completedCount, 1, module);
+    assert.equal(project?.results.length, 1, module);
+    assert.equal(urlKey === 'videoUrl' ? project?.results[0]?.videoUrl : project?.results[0]?.imageUrl, url, module);
+  });
+});
+
+test('shell data adapter marks terminal failed backend jobs on existing project cards across modules', () => {
+  const modules = [
+    ['one_click', 'main_image', 'kie_image'],
+    ['translation', 'main', 'kie_image'],
+    ['retouch', 'original', 'kie_image'],
+    ['buyer_show', 'image', 'kie_image'],
+    ['xhs_cover', 'cover', 'kie_image'],
+    ['video', 'generation', 'kie_video'],
+  ];
+  const shellProjects = modules.map(([module, subFeature]) => ({
+    id: `${module}-failed-project`,
+    name: `${module} 失败项目`,
+    module,
+    status: 'generating',
+    createdAt: '05-20',
+    subFeature,
+    taskCount: 1,
+    completedCount: 0,
+    results: [{
+      id: `${module}-failed-provider-task`,
+      projectId: `${module}-failed-project`,
+      imageUrl: '',
+      prompt: `${module} prompt`,
+      model: 'kie',
+      aspectRatio: 'auto',
+      status: 'generating',
+      createdAt: '05-20',
+      module,
+      subFeature,
+      taskId: `${module}-failed-provider-task`,
+      backendJobId: `${module}-failed-job`,
+    }],
+  }));
+  const jobs = modules.map(([module, subFeature, taskType]) => ({
+    id: `${module}-failed-job`,
+    module,
+    taskType,
+    provider: 'kie',
+    status: 'failed',
+    providerTaskId: `${module}-failed-provider-task`,
+    payload: {
+      prompt: `${module} prompt`,
+      shellProjectId: `${module}-failed-project`,
+      subFeature,
+      batchCount: 1,
+    },
+    result: null,
+    errorMessage: `${module} backend failed`,
+    createdAt: 2000,
+    updatedAt: 3000,
+    finishedAt: 3000,
+  }));
+
+  const snapshot = buildShellDataSnapshot({ shellProjects }, jobs);
+
+  modules.forEach(([module]) => {
+    const project = snapshot.projects.find((item) => item.id === `${module}-failed-project`);
+    assert.equal(project?.status, 'error', module);
+    assert.equal(project?.completedCount, 0, module);
+    assert.equal(project?.results.length, 1, module);
+    assert.equal(project?.results[0]?.status, 'error', module);
+    assert.match(project?.results[0]?.error || project?.results[0]?.prompt || '', /backend failed/, module);
+  });
+});
+
 test('shell data adapter reconnects legacy one-click image jobs by exact scheme content only', () => {
   const schemeContent = '设计意图：完全基于参考图内容修改调整，把原强首图骨架改成信任收口图。';
   const snapshot = buildShellDataSnapshot({
@@ -1183,5 +1389,157 @@ test('shell data adapter ignores untracked legacy one-click image jobs even when
   ]);
 
   assert.equal(snapshot.projects.length, 0);
+  assert.equal(snapshot.tasks.length, 0);
+});
+
+test('shell data adapter keeps active video project cards after refresh while backend job is running', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [
+      {
+        id: 'video-project-active',
+        name: '短视频任务',
+        module: 'video',
+        status: 'generating',
+        createdAt: '05-20',
+        results: [],
+        taskCount: 1,
+        completedCount: 0,
+        subFeature: 'generation',
+        backendJobId: 'job-video-active',
+      },
+    ],
+  }, [
+    {
+      id: 'job-video-active',
+      module: 'video',
+      taskType: 'kie_seedance_video',
+      provider: 'kie',
+      status: 'running',
+      payload: {
+        prompt: '视频脚本',
+        subFeature: 'generation',
+        aspectRatio: '9:16',
+        resolution: '720p',
+      },
+      createdAt: Date.now(),
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'video-project-active');
+  assert.ok(project);
+  assert.equal(project.status, 'generating');
+  assert.equal(project.backendJobId, 'job-video-active');
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].mediaType, 'video');
+  assert.equal(project.results[0].status, 'generating');
+  assert.equal(project.results[0].backendJobId, 'job-video-active');
+  assert.equal(project.results[0].prompt, '视频脚本');
+  const task = snapshot.tasks.find((item) => item.id === 'job-video-active');
+  assert.ok(task);
+  assert.equal(task.projectId, 'video-project-active');
+  assert.equal(task.type, 'video');
+  assert.equal(task.status, 'generating');
+});
+
+test('shell data adapter keeps active non-video project cards after refresh while backend job is running', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [
+      {
+        id: 'main-image-active',
+        name: '主图任务',
+        module: 'one_click',
+        status: 'generating',
+        createdAt: '05-20',
+        results: [],
+        taskCount: 1,
+        completedCount: 0,
+        subFeature: 'main_image',
+        backendJobId: 'job-main-active',
+      },
+    ],
+  }, [
+    {
+      id: 'job-main-active',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'queued',
+      payload: {
+        prompt: '主图生成脚本',
+        subFeature: 'main_image',
+        shellProjectId: 'main-image-active',
+        aspectRatio: '1:1',
+      },
+      createdAt: Date.now(),
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'main-image-active');
+  assert.ok(project);
+  assert.equal(project.status, 'generating');
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].mediaType, 'image');
+  assert.equal(project.results[0].status, 'generating');
+  assert.equal(project.results[0].backendJobId, 'job-main-active');
+  const task = snapshot.tasks.find((item) => item.id === 'job-main-active');
+  assert.ok(task);
+  assert.equal(task.projectId, 'main-image-active');
+  assert.equal(task.type, 'image');
+  assert.equal(task.status, 'pending');
+});
+
+test('shell data adapter merges completed backend video results into the original project card', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [
+      {
+        id: 'video-project-completed',
+        name: '短视频任务',
+        module: 'video',
+        status: 'generating',
+        createdAt: '05-20',
+        results: [{
+          id: 'job-video-completed-pending',
+          imageUrl: '',
+          mediaType: 'video',
+          prompt: '视频脚本',
+          model: 'bytedance/seedance-2-fast',
+          aspectRatio: '9:16',
+          status: 'generating',
+          createdAt: '05-20',
+          module: 'video',
+          subFeature: 'generation',
+          backendJobId: 'job-video-completed',
+        }],
+        taskCount: 1,
+        completedCount: 0,
+        subFeature: 'generation',
+        backendJobId: 'job-video-completed',
+      },
+    ],
+  }, [
+    {
+      id: 'job-video-completed',
+      module: 'video',
+      taskType: 'kie_seedance_video',
+      provider: 'kie',
+      status: 'succeeded',
+      payload: { prompt: '视频脚本', subFeature: 'generation', aspectRatio: '9:16' },
+      result: {
+        videoUrl: '/generated-video.mp4',
+        creditsConsumed: 186,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'video-project-completed');
+  assert.ok(project);
+  assert.equal(project.status, 'completed');
+  assert.equal(project.completedCount, 1);
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].videoUrl, '/generated-video.mp4');
+  assert.equal(project.results[0].mediaType, 'video');
+  assert.equal(project.results[0].status, 'completed');
   assert.equal(snapshot.tasks.length, 0);
 });

@@ -12,7 +12,7 @@ interface Props {
   onDeleteProject: (projectId: string) => void;
   onRegenerateResult?: (projectId: string, resultId: string, instruction?: string) => void;
   onConfirmStoryboardImaging?: (projectId: string) => void;
-  onImportStoryboardToGeneration?: (project: VideoStoryboardProject) => void;
+  onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
   onCancelTask: (taskId: string) => void;
   subFeatures?: SubFeatureOption[];

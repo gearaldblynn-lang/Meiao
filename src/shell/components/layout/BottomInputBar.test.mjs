@@ -222,11 +222,12 @@ test('shell generation button displays image credit estimate above submit action
   assert.match(generateButtonBlock, /text-center/);
 });
 
-test('shell generation button is not locked by other running tasks', () => {
+test('shell generation button uses an explicit submit lock instead of global running tasks', () => {
   const bottomInputBar = source();
   const generateButtonBlock = bottomInputBar.match(/<button\s*\n\s*onClick=\{onGenerate\}[\s\S]*?<span>\{generateLabel\}<\/span>/)?.[0] || '';
 
-  assert.match(generateButtonBlock, /disabled=\{Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)\}/);
+  assert.match(generateButtonBlock, /disabled=\{isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)\}/);
+  assert.match(bottomInputBar, /if \(!isSubmitLocked\) onGenerate\(\)/);
   assert.doesNotMatch(generateButtonBlock, /disabled=\{[^}]*isGenerating/);
   assert.doesNotMatch(generateButtonBlock, /生成中/);
 });
@@ -255,6 +256,8 @@ test('video generation exposes api and cli seedance fast paths with api credit e
   assert.match(bottomInputBar, /videoResolution/);
   assert.match(bottomInputBar, /480p/);
   assert.match(bottomInputBar, /720p/);
+  assert.match(bottomInputBar, /defaultValue: '720p'/);
+  assert.match(bottomInputBar, /recommendedValue: '720p'/);
   assert.match(bottomInputBar, /estimateSeedanceFastBilling/);
   assert.match(bottomInputBar, /9 \* seconds/);
   assert.match(bottomInputBar, /15\.5 \* seconds/);

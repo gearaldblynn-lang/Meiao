@@ -1025,10 +1025,9 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
           audioUrls: mode === 'multimodal2video' ? audioUrls : [],
           duration,
           aspectRatio: firstParam(input.params, ['ratio', 'aspectRatio'], '9:16'),
-          resolution: normalizeSeedanceApiResolution(firstParam(input.params, ['videoResolution'], '480p')),
+          resolution: normalizeSeedanceApiResolution(firstParam(input.params, ['videoResolution'], '720p')),
           generateAudio: false,
           model: 'bytedance/seedance-2-fast',
-          requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
           subFeature: input.subFeature,
         }
       : {
@@ -1042,7 +1041,6 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
           duration,
           ratio: firstParam(input.params, ['ratio', 'aspectRatio'], '9:16'),
           modelVersion: 'seedance2.0fast_vip',
-          requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
           subFeature: input.subFeature,
         },
     maxRetries: 1,
@@ -1086,8 +1084,9 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
     }
     return {
       imageUrl: '',
-      status: 'error',
-      message: error?.message || '即梦视频任务失败',
+      status: 'generating',
+      taskId: job.providerTaskId || job.id,
+      message: error?.message || '任务已提交云端，结果待同步',
       prompt: input.prompt.trim(),
     };
   }
