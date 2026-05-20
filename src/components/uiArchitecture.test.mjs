@@ -557,6 +557,9 @@ test('one click shell planning dialog exposes old-style selected batch generatio
   assert.match(projectCard, /const hasGeneratingResult = project\.results\.some/);
   assert.match(projectCard, /\.\.\.\(project\.selectedPlanId \? \[project\.selectedPlanId\] : \[\]\)/);
   assert.match(projectCard, /hasGeneratingResult\s*\n\s*\|\| hasMissingSelectedPlanResult/);
+  assert.match(projectCard, /const pendingPlans = project\.plans\.filter\(\(plan\) => !completedPlanIds\.has\(plan\.id\) && !activePlanIds\.has\(plan\.id\)\)/);
+  assert.match(projectCard, /onConfirmPlan\(project\.id, pendingPlans\)/);
+  assert.doesNotMatch(projectCard, /const selectedPlans = project\.plans\.filter\(\(plan\) => plan\.selected\)/);
   assert.match(planEditor, /onConfirm\(plan\)/);
   assert.match(planEditor, /ConfirmDialog/);
   assert.match(planEditor, /pendingDeletePlan/);
