@@ -19,6 +19,7 @@ import {
 } from '../../../modules/Retouch/retouchSizingUtils.mjs';
 import PresetLibrary, { type Preset } from '../PresetLibrary';
 import { estimateImageBilling, getImageModelCreditCost } from '../../../utils/imageBilling.mjs';
+import { isImeComposing } from '../../../utils/ime';
 
 /* ── Module-specific toolbar params ── */
 interface ParamItem {
@@ -814,8 +815,9 @@ const CompactSelect: React.FC<{
                 value={customValue}
                 onChange={(event) => setCustomValue(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') commitCustom();
-                  if (event.key === 'Escape') setCustomInputs(false);
+                  if (isImeComposing(event)) return;
+                  if ('Enter' === event.key) commitCustom();
+                  if ('Escape' === event.key) setCustomInputs(false);
                 }}
                 placeholder="请输入自定义"
                 className="input-field w-full rounded-2xl px-3 py-2 text-[12px]"
@@ -1455,7 +1457,11 @@ const BottomInputBar: React.FC<Props> = ({
                             inputMode="numeric"
                             value={skuCountDraft}
                             onChange={(event) => setSkuCountDraft(event.target.value.replace(/[^\d]/g, ''))}
-                            onKeyDown={(event) => { if (event.key === 'Enter') commitSkuCountDraft(); if (event.key === 'Escape') setSkuCountOpen(false); }}
+                            onKeyDown={(event) => {
+                              if (isImeComposing(event)) return;
+                              if ('Enter' === event.key) commitSkuCountDraft();
+                              if ('Escape' === event.key) setSkuCountOpen(false);
+                            }}
                             onBlur={commitSkuCountDraft}
                             className="input-field h-9 min-w-0 rounded-2xl text-[12px]"
                             placeholder="自定义"
@@ -1653,7 +1659,11 @@ const BottomInputBar: React.FC<Props> = ({
                 rows={3}
                 className="w-full resize-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-[var(--text-tertiary)]"
                 style={{ color: 'var(--text-primary)', minHeight: 64 }}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!isGenerateDisabled) onGenerate(); } }}
+                onKeyDown={(e) => {
+                  if ('Enter' !== e.key || e.shiftKey || isImeComposing(e)) return;
+                  e.preventDefault();
+                  if (!isGenerateDisabled) onGenerate();
+                }}
               />
             </div>
           )}

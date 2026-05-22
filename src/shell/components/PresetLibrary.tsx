@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { X, Plus, Bookmark, Check, Trash2, Search, Pencil } from 'lucide-react';
 import type { OneClickReferencePreset } from '../../types';
+import { isImeComposing } from '../../utils/ime';
 import ConfirmDialog from './ConfirmDialog';
 
 export interface Preset {
@@ -311,7 +312,11 @@ const PresetLibrary: React.FC<Props> = ({ open, onClose, onApply, lockedKind, on
                             value={editName}
                             onChange={(e) => setEditName(e.target.value)}
                             className="input-field text-[12px] py-1 px-2 rounded-xl flex-1"
-                            onKeyDown={(e) => { if (e.key === 'Enter') handleEditSave(); if (e.key === 'Escape') setEditingId(null); }}
+                            onKeyDown={(e) => {
+                              if (isImeComposing(e)) return;
+                              if ('Enter' === e.key) handleEditSave();
+                              if ('Escape' === e.key) setEditingId(null);
+                            }}
                             autoFocus
                           />
                           <button onClick={handleEditSave} className="w-6 h-6 rounded-lg flex items-center justify-center" style={{ color: 'var(--success)' }}>
