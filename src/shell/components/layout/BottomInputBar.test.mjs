@@ -207,7 +207,7 @@ test('xhs cover preset preview assets from the old frontend are available in the
 
 test('shell generation button displays image credit estimate above submit action', () => {
   const bottomInputBar = source();
-  const generateButtonBlock = bottomInputBar.match(/\{billingEstimate\.billable[\s\S]*?<button[\s\S]*?<span>\{generateLabel\}<\/span>/)?.[0] || '';
+  const generateButtonBlock = bottomInputBar.match(/\{billingEstimate\.billable[\s\S]*?<button[\s\S]*?<span>\{submitLabel\}<\/span>/)?.[0] || '';
 
   assert.match(bottomInputBar, /estimateImageBilling/);
   assert.match(bottomInputBar, /billingEstimate/);
@@ -224,12 +224,15 @@ test('shell generation button displays image credit estimate above submit action
 
 test('shell generation button uses an explicit submit lock instead of global running tasks', () => {
   const bottomInputBar = source();
-  const generateButtonBlock = bottomInputBar.match(/<button\s*\n\s*onClick=\{onGenerate\}[\s\S]*?<span>\{generateLabel\}<\/span>/)?.[0] || '';
+  const generateButtonBlock = bottomInputBar.match(/<button\s*\n\s*onClick=\{onGenerate\}[\s\S]*?<span>\{submitLabel\}<\/span>/)?.[0] || '';
 
-  assert.match(generateButtonBlock, /disabled=\{isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)\}/);
-  assert.match(bottomInputBar, /if \(!isSubmitLocked\) onGenerate\(\)/);
+  assert.match(bottomInputBar, /const isGenerateDisabled = isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)/);
+  assert.match(bottomInputBar, /const isSubmitBusy = isSubmitLocked/);
+  assert.match(bottomInputBar, /submitLabel = isSubmitBusy \? '任务处理中\.\.\.' : generateLabel/);
+  assert.match(generateButtonBlock, /disabled=\{isGenerateDisabled\}/);
+  assert.match(bottomInputBar, /if \(!isGenerateDisabled\) onGenerate\(\)/);
+  assert.match(generateButtonBlock, /Loader2/);
   assert.doesNotMatch(generateButtonBlock, /disabled=\{[^}]*isGenerating/);
-  assert.doesNotMatch(generateButtonBlock, /生成中/);
 });
 
 test('resolution dropdown shows per-image credit cost for image models', () => {

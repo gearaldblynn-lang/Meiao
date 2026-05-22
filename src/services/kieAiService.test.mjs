@@ -26,7 +26,8 @@ test('getUserVisibleTaskId falls back to the internal job id when the provider t
 
 test('kieAiService keeps a recoverable task id when wait timeout happens before provider task id is written back', () => {
   assert.match(kieAiSource, /const timeoutJob = await fetchInternalJob\(jobId\)\.catch\(\(\) => null\)/);
-  assert.match(kieAiSource, /taskId: getUserVisibleTaskId\(timeoutJob\?\.job\)/);
+  assert.match(kieAiSource, /const fallbackTaskId = notifiedProviderTaskId \|\| getUserVisibleTaskId\(timeoutJob\?\.job\)/);
+  assert.match(kieAiSource, /taskId: fallbackTaskId/);
 });
 
 test('kieAiService can resume waiting on an internal job id before falling back to provider recovery', () => {
@@ -73,6 +74,19 @@ test('kieAiService only treats timeout-like failures as recoverable when provide
   );
 });
 
+test('kieAiService preserves the notified provider task id when polling throws a transient error', () => {
+  assert.match(kieAiSource, /const fallbackTaskId = notifiedProviderTaskId \|\| getUserVisibleTaskId\(timeoutJob\?\.job\)/);
+  assert.match(kieAiSource, /taskId: fallbackTaskId/);
+  assert.match(kieAiSource, /taskId: notifiedProviderTaskId/);
+});
+
+test('kieAiService keeps submitted provider tasks generating on frontend polling exceptions', () => {
+  assert.match(
+    kieAiSource,
+    /if \(notifiedProviderTaskId\) \{[\s\S]*taskId: notifiedProviderTaskId[\s\S]*status: 'generating'[\s\S]*任务已提交云端，结果待同步/s,
+  );
+});
+
 test('kieAiService explicitly excludes credit and request-limit failures from auto recovery', () => {
   assert.match(
     kieAiSource,
@@ -100,6 +114,12 @@ test('kieAiService appends the GPT Image 2 cleanup suffix only for GPT Image 2 i
     kieAiSource,
     /const promptWithCleanupSuffix = moduleConfig\.model === 'gpt-image-2'[\s\S]*\?\s*`\$\{finalPrompt\}\\n\\n\$\{GPT_IMAGE_2_CLEANUP_SUFFIX\}`[\s\S]*:\s*finalPrompt;/s,
   );
+});
+
+test('kieAiService de-duplicates normalized model input image urls before submitting', () => {
+  assert.match(kieAiSource, /const seen = new Set<string>\(\);/);
+  assert.match(kieAiSource, /if \(seen\.has\(url\)\) return false;/);
+  assert.match(kieAiSource, /seen\.add\(url\);/);
 });
 
 test('kieAiService translation prompt preserves product and packaging text from translation', () => {

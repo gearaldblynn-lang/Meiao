@@ -1,4 +1,4 @@
-import { isExternallyReachableBaseUrl, normalizeBaseUrl } from '../utils/publicNetworkUrl.mjs';
+import { isExternallyReachableBaseUrl, normalizeBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',

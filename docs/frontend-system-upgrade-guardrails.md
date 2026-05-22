@@ -77,16 +77,16 @@ git worktree remove .worktrees/frontend-system-upgrade
 
 以下区域默认视为受保护资产。除非用户明确要求，不因前端升级而改业务语义。
 
-- `services/arkService.ts`
-- `services/kieAiService.ts`
-- `modules/OneClick/generationPromptUtils.ts`
-- `modules/OneClick/copyLayoutUtils.mjs`
+- `src/services/arkService.ts`
+- `src/services/kieAiService.ts`
+- `src/modules/OneClick/generationPromptUtils.ts`
+- `src/modules/OneClick/copyLayoutUtils.mjs`
 - `server/providerGateway.mjs`
 - `server/index.mjs` 中的 prompt、任务、账号、日志、状态接口
-- `utils/appState.ts` 中的持久化字段和迁移逻辑
-- `services/internalApi.ts` 中的 API 路径、超时、请求去重和鉴权逻辑
-- `services/loggingService.ts` 中已有日志动作含义
-- `types.ts` 中已有状态、任务、模块和配置字段
+- `src/utils/appState.ts` 中的持久化字段和迁移逻辑
+- `src/services/internalApi.ts` 中的 API 路径、超时、请求去重和鉴权逻辑
+- `src/services/loggingService.ts` 中已有日志动作含义
+- `src/types.ts` 中已有状态、任务、模块和配置字段
 
 如果确实需要触碰这些文件，必须先说明原因，并补对应测试或人工验收项。
 
@@ -113,9 +113,9 @@ git worktree remove .worktrees/frontend-system-upgrade
 
 优先升级这些呈现层区域：
 
-- 全局工作台壳层：`App.tsx`
-- 导航和模块入口：`components/layout/*`
-- 通用工作台组件：`components/ui/workspacePrimitives.tsx`
+- 全局工作台壳层：`src/ShellMigratedApp.tsx`
+- 导航和模块入口：`src/shell/components/layout/*`
+- 通用工作台组件：`src/components/ui/workspacePrimitives.tsx`
 - 弹窗、确认框、Toast、帮助、更新说明
 - 各模块的页面布局、卡片、表格、按钮、输入框、上传区、状态展示
 - 视觉层 className、布局结构、信息分组、空状态、加载状态、错误状态
@@ -233,15 +233,15 @@ npm install
 重点回归：
 
 ```bash
-node --test components/uiArchitecture.test.mjs
-node --test components/workspacePrimitives.test.mjs
-node --test modules/OneClick/oneClickBehavior.test.mjs
-node --test modules/OneClick/oneClickRecoveryBehavior.test.mjs
-node --test services/arkService.test.mjs
-node --test services/kieAiService.test.mjs
-node --test modules/BuyerShow/buyerShowBehavior.test.mjs
-node --test modules/XhsCover/xhsCoverBehavior.test.mjs
-node --test modules/Account/accountManagementBehavior.test.mjs
+node --test src/components/uiArchitecture.test.mjs
+node --test src/components/workspacePrimitives.test.mjs
+node --test src/modules/OneClick/oneClickBehavior.test.mjs
+node --test src/modules/OneClick/oneClickRecoveryBehavior.test.mjs
+node --test src/services/arkService.test.mjs
+node --test src/services/kieAiService.test.mjs
+node --test src/modules/BuyerShow/buyerShowBehavior.test.mjs
+node --test src/modules/XhsCover/xhsCoverUtils.test.mjs
+node --test src/modules/Account/accountManagementBehavior.test.mjs
 node --test server/jobRuntime.test.mjs
 node --test server/providerGateway.test.mjs
 ```

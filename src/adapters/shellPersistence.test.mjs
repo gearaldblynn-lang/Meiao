@@ -5,7 +5,7 @@ import { buildShellDataSnapshot } from './shellDataAdapter.ts';
 import { upsertOneClickProjectIntoPersistedState, upsertShellProjectIntoPersistedState, upsertTranslationFilesIntoPersistedState } from './shellPersistence.ts';
 import { buildPersistedAppState } from '../utils/appState.ts';
 
-test('completed backend media jobs hydrate completed project cards without active queue tasks', () => {
+test('orphan completed backend media jobs do not hydrate ghost project cards', () => {
   const snapshot = buildShellDataSnapshot(buildPersistedAppState(), [{
     id: 'completed-image-job',
     userId: 'user-1',
@@ -38,14 +38,7 @@ test('completed backend media jobs hydrate completed project cards without activ
   }]);
 
   assert.equal(snapshot.tasks.length, 0);
-  assert.equal(snapshot.projects.length, 1);
-  assert.equal(snapshot.projects[0].id, 'job-completed-image-job');
-  assert.equal(snapshot.projects[0].status, 'completed');
-  assert.equal(snapshot.projects[0].subFeature, 'first_image');
-  assert.equal(snapshot.projects[0].backendJobId, 'completed-image-job');
-  assert.equal(snapshot.projects[0].results[0].imageUrl, 'https://example.com/result.png');
-  assert.equal(snapshot.projects[0].results[0].taskId, 'provider-task-1');
-  assert.equal(snapshot.projects[0].results[0].creditsConsumed, 3);
+  assert.equal(snapshot.projects.length, 0);
 });
 
 test('shell data hydration treats providerTaskId as the visible kie task id', () => {

@@ -197,7 +197,7 @@ test('createVideoDiagnosisProbe preserves zero counters from spiderFetch', async
 
 test('video diagnosis route and client helper are wired', () => {
   const serverSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
-  const apiSource = readFileSync(new URL('../services/internalApi.ts', import.meta.url), 'utf8');
+  const apiSource = readFileSync(new URL('../src/services/internalApi.ts', import.meta.url), 'utf8');
 
   const mysqlRouteRegex = /const handleMysqlRequest = async \(req, res, url\) =>[\s\S]*?if \(url.pathname === '\/api\/video-diagnosis\/probe' && req.method === 'POST'\)[\s\S]*?const user = await requireDbUser\(req, res\);[\s\S]*?await handleVideoDiagnosisProbeRequest\(req, res\);/;
   const localRouteRegex = /const handleLocalRequest = async \(req, res, url\) =>[\s\S]*?if \(url.pathname === '\/api\/video-diagnosis\/probe' && req.method === 'POST'\)[\s\S]*?const user = localRequireUser\(req, res, store\);[\s\S]*?await handleVideoDiagnosisProbeRequest\(req, res\);/;

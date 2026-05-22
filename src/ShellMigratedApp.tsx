@@ -42,9 +42,14 @@ import { countCompletedProjectResults, mergeGeneratedPlanResults } from './utils
 import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion } from './utils/shellRuntimePrune.mjs';
 import { deleteShellDraftAsset, loadShellDraftAsset, pruneShellDraftAssets, restoreShellDraftAssetUrls, saveShellDraftAsset } from './utils/shellDraftAssetStore';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
+import {
+  getRetouchCustomSizeRatioWarning,
+  getSafeRetouchAspectRatioForModel,
+} from './modules/Retouch/retouchSizingUtils.mjs';
 import { getEffectiveConcurrency } from './modules/Account/accountManagementUtils.mjs';
-import { isRecoverableKieTaskResult } from './services/kieAiService';
+import { isRecoverableKieTaskResult, recoverKieAiTask } from './services/kieAiService';
 import { buildStoryboardBoardGenerationImport } from './shell/modules/Video/storyboardImportUtils.mjs';
+import { resolveShellSkuCount } from './adapters/shellSkuCount';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -136,8 +141,13 @@ const shouldRefreshVideoAssetUrl = (url?: string, hasLocalAsset = false) => {
 
 const buildGenerationSubmitLockKey = (module: AppModule, subFeature?: string) => `${module}:${subFeature || 'default'}`;
 
-const shouldGuardGenerationSubmit = (module: AppModule, subFeature?: string) => (
-  module === AppModuleObj.VIDEO && (!subFeature || subFeature === 'generation')
+const shouldGuardGenerationSubmit = (module: AppModule, _subFeature?: string) => (
+  module === AppModuleObj.ONE_CLICK
+  || module === AppModuleObj.TRANSLATION
+  || module === AppModuleObj.BUYER_SHOW
+  || module === AppModuleObj.RETOUCH
+  || module === AppModuleObj.VIDEO
+  || module === AppModuleObj.XHS_COVER
 );
 
 const cloneMaterialSnapshot = (material: Material) => {
@@ -180,6 +190,7 @@ const hasMaterialInputs = (materials?: Record<string, Material[]>) =>
 const isRecoverableShellWorkflowResult = (result: unknown) => {
   const record = result as { status?: string; taskId?: string; message?: string; errorCode?: string } | null;
   if (!record || typeof record !== 'object') return false;
+  if (String(record.status || '') === 'generating') return Boolean(String(record.taskId || '').trim());
   if (String(record.status || '') !== 'error') return false;
   return isRecoverableKieTaskResult(record.taskId, record.message, record.errorCode);
 };
@@ -198,6 +209,7 @@ export interface PlanItem {
   sourceReferenceUrl?: string;
   variationMode?: 'scene' | 'palette' | 'custom';
   variationInstruction?: string;
+  editInstruction?: string;
   sourceResultUrl?: string;
 }
 
@@ -218,6 +230,7 @@ export interface Project {
   backendJobId?: string;
   planningTaskId?: string;
   generationContext?: OneClickGenerationContext;
+  directGeneration?: boolean;
   storyboardProjectStatus?: VideoStoryboardProject['status'];
   storyboardSourceProject?: VideoStoryboardProject;
   creditsConsumed?: number;
@@ -323,6 +336,7 @@ type ShellUiState = {
   pageMode: ShellPageMode;
   activeModule: AppModule;
   activeSubFeatureByModule: Record<string, string>;
+  sidebarCollapsed: boolean;
 };
 
 type ShellRuntimeSnapshot = {
@@ -458,6 +472,7 @@ const readShellUiState = (userId?: string | null): Partial<ShellUiState> => {
     activeSubFeatureByModule: saved.activeSubFeatureByModule && typeof saved.activeSubFeatureByModule === 'object'
       ? saved.activeSubFeatureByModule
       : undefined,
+    sidebarCollapsed: typeof saved.sidebarCollapsed === 'boolean' ? saved.sidebarCollapsed : undefined,
   };
 };
 
@@ -513,6 +528,7 @@ const compactRuntimeProject = (project: Project): Project => ({
   backendJobId: project.backendJobId,
   planningTaskId: project.planningTaskId,
   creditsConsumed: project.creditsConsumed,
+  directGeneration: project.directGeneration,
   error: trimRuntimeText(project.error),
 });
 
@@ -916,6 +932,7 @@ const normalizeParamsForGeneration = (
   params: Record<string, string>,
 ) => {
   if (module === AppModuleObj.TRANSLATION) return normalizeTranslationParamsForGeneration(subFeature, params);
+  if (module === AppModuleObj.RETOUCH) return normalizeRetouchParamsForGeneration(params);
   if (module !== AppModuleObj.ONE_CLICK) return params;
   const requestedSizeMode = String(params.resolutionMode || params.sizeMode || '').trim();
   const resolutionMode = requestedSizeMode.includes('原图') || requestedSizeMode.includes('AI 自适应') || requestedSizeMode === 'original'
@@ -933,13 +950,30 @@ const normalizeParamsForGeneration = (
     maxSize: params.maxSize || params.maxFileSize || '2',
   };
   if (subFeature !== 'sku') return oneClickParams;
-  const skuIndexes = Object.entries(params)
-    .filter(([key, value]) => /^skuCopyText_\d+$/.test(key) && value.trim())
-    .map(([key]) => Number(key.replace('skuCopyText_', '')) + 1);
-  const explicitCount = Number(params.count || 0) || 0;
-  const fallbackCount = explicitCount > 0 ? explicitCount : 4;
-  const skuCount = Math.max(fallbackCount, ...skuIndexes, 1);
-  return { ...oneClickParams, count: String(Math.min(20, skuCount)) };
+  return { ...oneClickParams, count: String(resolveShellSkuCount(params)) };
+};
+
+const normalizeRetouchParamsForGeneration = (
+  params: Record<string, string>,
+) => {
+  const requestedSizeMode = String(params.sizeMode || params.resolutionMode || '').trim();
+  const resolutionMode = requestedSizeMode.includes('自定义') || requestedSizeMode.includes('固定') || requestedSizeMode === 'custom'
+    ? 'custom'
+    : 'original';
+  const ratio = getSafeRetouchAspectRatioForModel(params.model || 'GPT Image 2', params.ratio || params.aspectRatio || 'auto');
+  return {
+    ...params,
+    ratio,
+    aspectRatio: ratio,
+    resolutionMode,
+    sizeMode: resolutionMode === 'original' ? 'AI 自适应尺寸' : '自定义',
+    targetWidth: params.targetWidth || params.width || '800',
+    width: params.width || params.targetWidth || '800',
+    targetHeight: params.targetHeight || params.height || '800',
+    height: params.height || params.targetHeight || '800',
+    maxFileSize: params.maxFileSize || params.maxSize || '2',
+    maxSize: params.maxSize || params.maxFileSize || '2',
+  };
 };
 
 const TRANSLATION_PARAM_DEFAULTS: Record<string, { ratio: string; targetWidth: string; targetHeight: string }> = {
@@ -1051,7 +1085,7 @@ const resolveBatchCount = (module: AppModule, subFeature: string, params: Record
   if (module === AppModuleObj.ONE_CLICK) {
     if (subFeature === 'first_image') return 1;
     if (subFeature === 'sku') {
-      return parsePositiveInt(params.count, 4, 20);
+      return resolveShellSkuCount(params);
     }
     if (subFeature === 'main_image') return parsePositiveInt(params.count, 5, 20);
     if (subFeature === 'detail_page') return parsePositiveInt(params.count, 7, 20);
@@ -1342,6 +1376,7 @@ const AppContent: React.FC<{
   })() as ShellPageMode;
   const [activeModule, setActiveModule] = useState<AppModule>(initialModule);
   const [pageMode, setPageMode] = useState<ShellPageMode>(initialPageMode === 'landing' && savedShellUiState.pageMode ? savedShellUiState.pageMode : initialPageMode);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(savedShellUiState.sidebarCollapsed === true ? true : false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationSubmitLocks, setGenerationSubmitLocks] = useState<Record<string, boolean>>({});
   const [pendingActionKeys, setPendingActionKeys] = useState<Record<string, boolean>>({});
@@ -1384,7 +1419,7 @@ const AppContent: React.FC<{
 
   const beginGenerationSubmitLock = useCallback((lockKey: string) => {
     if (generationSubmitLocksRef.current.has(lockKey)) {
-      addToast('当前短视频任务正在提交或生成中，请等待返回后再提交。', 'warning');
+      addToast('当前任务正在提交或生成中，请等待返回后再提交。', 'warning');
       return false;
     }
     generationSubmitLocksRef.current.add(lockKey);
@@ -1844,8 +1879,9 @@ const AppContent: React.FC<{
       pageMode,
       activeModule,
       activeSubFeatureByModule,
+      sidebarCollapsed,
     }, shellLocalScopeUserId);
-  }, [pageMode, activeModule, activeSubFeatureByModule, shellLocalScopeUserId]);
+  }, [pageMode, activeModule, activeSubFeatureByModule, sidebarCollapsed, shellLocalScopeUserId]);
 
   useEffect(() => {
     const prunedRuntimeSnapshot = pruneShellRuntimeSnapshotForDeletion(
@@ -2459,15 +2495,37 @@ const AppContent: React.FC<{
 
   // ── Generate (standard modules) ──
   const handleGenerate = useCallback(async () => {
-    if (activeModule === AppModuleObj.VIDEO && activeSubFeature === 'generation' && !canUseVideoGenerationFeature(currentUser)) {
+    const targetModule = activeModule;
+    const targetSubFeature = activeSubFeature;
+    const guardedSubmitLockKey = shouldGuardGenerationSubmit(targetModule, targetSubFeature)
+      ? buildGenerationSubmitLockKey(targetModule, targetSubFeature)
+      : '';
+    const hasGuardedSubmitLock = Boolean(guardedSubmitLockKey);
+    const beginGuardedSubmit = () => !hasGuardedSubmitLock || beginGenerationSubmitLock(guardedSubmitLockKey);
+    const endGuardedSubmit = () => {
+      if (hasGuardedSubmitLock) endGenerationSubmitLock(guardedSubmitLockKey);
+    };
+    let guardedSubmitReleased = false;
+    const releaseGuardedSubmit = () => {
+      if (guardedSubmitReleased) return;
+      guardedSubmitReleased = true;
+      endGuardedSubmit();
+    };
+
+    if (targetModule === AppModuleObj.VIDEO && targetSubFeature === 'generation' && !canUseVideoGenerationFeature(currentUser)) {
       addToast('短视频生成暂未对当前账号开放，请联系管理员开通。', 'warning');
       return;
     }
+    if (isPendingShellSubFeature(targetModule, targetSubFeature)) {
+      addToast('该子功能待制作，当前先迁移 3000 已有能力。', 'warning');
+      return;
+    }
 
-    if (activeModule === AppModuleObj.VIDEO && activeSubFeature === 'storyboard') {
+    if (targetModule === AppModuleObj.VIDEO && targetSubFeature === 'storyboard') {
       const storyboardPrompt = promptText.trim();
       let pendingStoryboardProjectIds: string[] = [];
       let storyboardFailureStep = '分镜任务准备';
+      if (!beginGuardedSubmit()) return;
       setIsGenerating(true);
       try {
         const baseStoryboard = (videoMemory || createDefaultVideoState()).storyboard;
@@ -2507,6 +2565,7 @@ const AppContent: React.FC<{
             },
           };
         });
+        releaseGuardedSubmit();
         storyboardFailureStep = '素材上传';
         const storyboardMaterials = await ensureMaterialRemoteUrls(filteredMaterials, AppModuleObj.VIDEO);
         const runtimeConfig = buildVideoStoryboardConfig(baseStoryboard.config, storyboardPrompt, currentParams, storyboardMaterials);
@@ -2656,10 +2715,11 @@ const AppContent: React.FC<{
       } finally {
         setIsGenerating(false);
         setVideoMemory((prev) => ({ ...prev, isGenerating: false }));
+        releaseGuardedSubmit();
       }
     }
 
-    if (activeModule === AppModuleObj.VIDEO && activeSubFeature === 'diagnosis') {
+    if (targetModule === AppModuleObj.VIDEO && targetSubFeature === 'diagnosis') {
       const url = promptText.trim();
       if (!url) { addToast('请输入视频链接', 'warning'); return; }
       const diagnosisModels = systemConfig?.agentModels?.chat || [];
@@ -2671,6 +2731,7 @@ const AppContent: React.FC<{
         ? requestedAnalysisModel
         : fallbackAnalysisModel;
       if (!analysisModel) { addToast('请先选择分析模型', 'warning'); return; }
+      if (!beginGuardedSubmit()) return;
       setIsGenerating(true);
       try {
         setVideoMemory((prev) => ({
@@ -2684,6 +2745,7 @@ const AppContent: React.FC<{
             aiAnalysis: { ...prev.diagnosis.aiAnalysis, status: 'idle', error: '', completedAt: null },
           },
         }));
+        releaseGuardedSubmit();
         const diagnosisPlatform = toVideoDiagnosisPlatform(currentParams.platform);
         const probeResult = await probeVideoDiagnosis({
           platform: diagnosisPlatform,
@@ -2729,33 +2791,12 @@ const AppContent: React.FC<{
       } finally {
         setIsGenerating(false);
         setVideoMemory((prev) => ({ ...prev, isGenerating: false }));
+        releaseGuardedSubmit();
       }
     }
 
     if (apiConfig.workspacePreferences?.playSoundAfterGeneration) {
       void primeCompletionSound();
-    }
-    const targetModule = activeModule;
-    const targetSubFeature = activeSubFeature;
-    const hasActiveGuardedVideoGeneration = shouldGuardGenerationSubmit(targetModule, targetSubFeature) && (
-      projects.some((project) => (
-        project.module === AppModuleObj.VIDEO
-        && (project.subFeature || 'generation') === 'generation'
-        && project.status === 'generating'
-      ))
-      || tasks.some((task) => (
-        task.module === AppModuleObj.VIDEO
-        && (task.subFeature || 'generation') === 'generation'
-        && (task.status === 'pending' || task.status === 'generating')
-      ))
-    );
-    if (hasActiveGuardedVideoGeneration) {
-      addToast('当前已有短视频生成任务未返回，请等待成功或报错后再提交。', 'warning');
-      return;
-    }
-    if (isPendingShellSubFeature(targetModule, targetSubFeature)) {
-      addToast('该子功能待制作，当前先迁移 3000 已有能力。', 'warning');
-      return;
     }
     const generationPrompt = targetModule === AppModuleObj.TRANSLATION ? '' : promptText;
     const allowEmptySkuPrompt = targetModule === AppModuleObj.ONE_CLICK && targetSubFeature === 'sku';
@@ -2767,6 +2808,19 @@ const AppContent: React.FC<{
       skuCopyText_0?: string;
       [key: string]: string | undefined;
     };
+    if (targetModule === AppModuleObj.RETOUCH) {
+      const retouchSizeWarning = getRetouchCustomSizeRatioWarning({
+        aspectRatio: generationParams.ratio || generationParams.aspectRatio,
+        resolutionMode: generationParams.resolutionMode,
+        sizeMode: generationParams.sizeMode,
+        width: generationParams.width || generationParams.targetWidth,
+        height: generationParams.height || generationParams.targetHeight,
+      });
+      if (retouchSizeWarning) {
+        addToast(retouchSizeWarning, 'warning');
+        return;
+      }
+    }
     generationParams.__workspacePreferences = JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences());
     const batchCount = resolveBatchCount(targetModule, targetSubFeature, generationParams);
     const skuProjectName = String(
@@ -2784,11 +2838,7 @@ const AppContent: React.FC<{
         : generationPrompt.trim();
 	    const projectName = projectNameSource.slice(0, 20) + (projectNameSource.length > 20 ? '...' : '');
 	    let generationMaterials = filteredMaterials;
-	    const guardedSubmitLockKey = shouldGuardGenerationSubmit(targetModule, targetSubFeature)
-	      ? buildGenerationSubmitLockKey(targetModule, targetSubFeature)
-	      : '';
-	    const hasGuardedSubmitLock = Boolean(guardedSubmitLockKey);
-	    if (hasGuardedSubmitLock && !beginGenerationSubmitLock(guardedSubmitLockKey)) {
+	    if (!beginGuardedSubmit()) {
 	      return;
 	    }
 	    try {
@@ -2801,7 +2851,7 @@ const AppContent: React.FC<{
         step: 'material_upload',
 	      }, `${MODULE_NAMES[targetModule] || targetModule}素材上传失败`);
 	      addToast(message, 'error');
-	      if (hasGuardedSubmitLock) endGenerationSubmitLock(guardedSubmitLockKey);
+	      releaseGuardedSubmit();
 	      return;
 	    }
     const generationContext = targetModule === AppModuleObj.ONE_CLICK || targetModule === AppModuleObj.TRANSLATION
@@ -2818,6 +2868,7 @@ const AppContent: React.FC<{
         .filter((item): item is Material & { sourceUrl: string } => Boolean(item));
       if (translationSourceMaterials.length === 0) {
         addToast('请先上传产品素材', 'warning');
+        releaseGuardedSubmit();
         return;
       }
 
@@ -3024,6 +3075,7 @@ const AppContent: React.FC<{
                   taskId: jobId,
                 };
                 syncTranslationProject(translationFileItems);
+                releaseGuardedSubmit();
               },
               publicBaseUrl,
             });
@@ -3091,6 +3143,7 @@ const AppContent: React.FC<{
       void persistTranslationFilesToSharedState(targetSubFeature, translationFileItems);
       void persistProjectToSharedState(completedProject);
       setIsGenerating(false);
+      releaseGuardedSubmit();
 
       if (successCount > 0) {
         addToast(successCount === totalCount
@@ -3143,12 +3196,11 @@ const AppContent: React.FC<{
         const providerId = String(providerTaskId || '').trim();
         const backendJobId = String(jobId || '').trim();
         if (backendJobId) activePlanningBackendJobId = backendJobId;
-        const visiblePlanningTaskId = providerId || backendJobId;
-        if (visiblePlanningTaskId) planningProviderTaskId = visiblePlanningTaskId;
+        if (providerId) planningProviderTaskId = providerId;
         const persistedPlanningProject = {
           ...planningProject,
           backendJobId,
-          ...(visiblePlanningTaskId ? { planningTaskId: visiblePlanningTaskId } : {}),
+          ...(providerId ? { planningTaskId: providerId } : {}),
         };
         setProjects((prev) => prev.map((project) => (
           project.id === projectId
@@ -3161,6 +3213,7 @@ const AppContent: React.FC<{
             : task
         )));
         void persistProjectToSharedState(persistedPlanningProject);
+        releaseGuardedSubmit();
       };
 
       try {
@@ -3195,7 +3248,7 @@ const AppContent: React.FC<{
           generationContext,
           backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
           creditsConsumed: planResult.creditsConsumed,
-          planningTaskId: planResult.taskId || planningProviderTaskId || activePlanningBackendJobId,
+          planningTaskId: planResult.taskId || planningProviderTaskId || undefined,
         };
         setProjects((prev) => prev.map((p) =>
           p.id === projectId
@@ -3217,7 +3270,7 @@ const AppContent: React.FC<{
           ...planningProject,
           status: 'error',
           backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
-          planningTaskId: planningProviderTaskId || activePlanningBackendJobId,
+          planningTaskId: planningProviderTaskId || undefined,
           results: [{
             id: `${taskId}-error`,
             imageUrl: '',
@@ -3242,6 +3295,7 @@ const AppContent: React.FC<{
         addToast(message, 'error');
       } finally {
         delete taskControllersRef.current[taskId];
+        releaseGuardedSubmit();
         setIsGenerating(false);
       }
       return;
@@ -3285,8 +3339,10 @@ const AppContent: React.FC<{
 	    let batchResults: GeneratedResult[] = [];
 	    let pendingSyncProject: Project | null = null;
 	    let activeBackendJobId = '';
-	    const onJobCreated = (jobId: string) => {
+	    let activeProviderTaskId = '';
+	    const onJobCreated = (jobId: string, providerTaskId?: string) => {
 	      activeBackendJobId = String(jobId || '').trim();
+	      if (providerTaskId) activeProviderTaskId = String(providerTaskId || '').trim();
 	      const pendingVideoProject: Project | null = targetModule === AppModuleObj.VIDEO
 	        ? {
 	            ...newProject,
@@ -3325,6 +3381,7 @@ const AppContent: React.FC<{
 	      if (pendingVideoProject) {
 	        void persistProjectToSharedState(pendingVideoProject);
 	      }
+	      releaseGuardedSubmit();
     };
 
     try {
@@ -3412,14 +3469,15 @@ const AppContent: React.FC<{
 	        }
 	      } else if (targetModule === AppModuleObj.BUYER_SHOW || targetModule === AppModuleObj.RETOUCH) {
         const onSpecialItemCompleted = (item: any, completed: number, total: number) => {
+          const itemStatus: GeneratedResult['status'] = item.status || (item.imageUrl ? 'completed' : 'generating');
           const nextResult: GeneratedResult = {
             id: item.taskId || `${taskId}-${completed - 1}`,
-            imageUrl: item.imageUrl,
-            mediaType: 'image',
+            imageUrl: item.imageUrl || '',
+            mediaType: 'image' as const,
             prompt: item.prompt || generationPrompt,
             model: item.model || generationParams['model'] || 'gpt-image-2',
             aspectRatio: item.aspectRatio || generationParams['ratio'] || 'auto',
-            status: 'completed',
+            status: itemStatus,
             createdAt: newProject.createdAt,
             module: targetModule,
             subFeature: targetSubFeature,
@@ -3427,16 +3485,31 @@ const AppContent: React.FC<{
             taskId: item.taskId,
             sourceUrl: item.sourceUrl,
             fileName: item.fileName,
+            error: item.error || item.message,
           };
           batchResults = [...batchResults, nextResult];
+          const completedItemCount = batchResults.filter((result) => result.status === 'completed').length;
+          const processedItemCount = batchResults.filter((result) => result.status === 'completed' || result.status === 'generating' || result.status === 'error').length;
           setTasks((prev) => prev.map((t) =>
             t.id === taskId
-              ? { ...t, progress: Math.round((completed / total) * 100), completed, total }
+              ? {
+                  ...t,
+                  status: batchResults.some((result) => result.status === 'generating') ? 'generating' : t.status,
+                  progress: Math.round((processedItemCount / total) * 100),
+                  completed: completedItemCount,
+                  total,
+                }
               : t
           ));
           setProjects((prev) => prev.map((p) =>
             p.id === projectId
-              ? { ...p, results: [...batchResults], completedCount: completed, taskCount: total }
+              ? {
+                  ...p,
+                  status: batchResults.some((result) => result.status === 'generating') ? 'generating' : p.status,
+                  results: [...batchResults],
+                  completedCount: completedItemCount,
+                  taskCount: total,
+                }
               : p
           ));
         };
@@ -3462,33 +3535,41 @@ const AppContent: React.FC<{
               publicBaseUrl,
             }, onSpecialItemCompleted);
 
+        const specialWorkflowResults: GeneratedResult[] = batchResults.length > 0 ? batchResults : specialResult.results.map((item, index) => ({
+          id: item.taskId || `${taskId}-${index}`,
+          imageUrl: item.imageUrl || '',
+          mediaType: 'image' as const,
+          prompt: item.prompt || generationPrompt,
+          model: item.model || generationParams['model'] || 'gpt-image-2',
+          aspectRatio: item.aspectRatio || generationParams['ratio'] || 'auto',
+          status: (item.status || (item.imageUrl ? 'completed' : 'generating')) as GeneratedResult['status'],
+          createdAt: newProject.createdAt,
+          module: targetModule,
+          subFeature: targetSubFeature,
+          creditsConsumed: item.creditsConsumed,
+          taskId: item.taskId,
+          sourceUrl: item.sourceUrl,
+          fileName: item.fileName,
+          error: item.error || item.message,
+        }));
+        const hasSpecialGenerating = specialWorkflowResults.some((item) => item.status === 'generating');
+        const hasSpecialError = specialWorkflowResults.some((item) => item.status === 'error');
         completedProject = {
           ...newProject,
-          status: 'completed',
-          completedAt: newProject.createdAt,
-          results: batchResults.length > 0 ? batchResults : specialResult.results.map((item, index) => ({
-            id: item.taskId || `${taskId}-${index}`,
-            imageUrl: item.imageUrl,
-            mediaType: 'image',
-            prompt: item.prompt || generationPrompt,
-            model: item.model || generationParams['model'] || 'gpt-image-2',
-            aspectRatio: item.aspectRatio || generationParams['ratio'] || 'auto',
-            status: 'completed',
-            createdAt: newProject.createdAt,
-            module: targetModule,
-            subFeature: targetSubFeature,
-            creditsConsumed: item.creditsConsumed,
-            taskId: item.taskId,
-            sourceUrl: item.sourceUrl,
-            fileName: item.fileName,
-          })),
-          taskCount: Math.max(batchResults.length, specialResult.results.length),
-          completedCount: Math.max(batchResults.length, specialResult.results.length),
+          status: hasSpecialGenerating ? 'generating' : hasSpecialError ? 'error' : 'completed',
+          completedAt: hasSpecialGenerating ? undefined : newProject.createdAt,
+          results: specialWorkflowResults,
+          taskCount: Math.max(specialWorkflowResults.length, specialResult.results.length),
+          completedCount: specialWorkflowResults.filter((item) => item.status === 'completed').length,
           creditsConsumed: specialResult.creditsConsumed,
         };
+        if (hasSpecialGenerating) {
+          pendingSyncProject = completedProject;
+        }
       } else {
         batchResults = [];
         for (let index = 0; index < batchCount; index += 1) {
+          activeProviderTaskId = '';
           const batchPrompt = buildBatchPrompt(
             targetModule,
             targetSubFeature,
@@ -3516,20 +3597,24 @@ const AppContent: React.FC<{
             },
           });
           if (itemResult.status !== 'success' || !itemResult.imageUrl) {
-            if (isRecoverableShellWorkflowResult(itemResult)) {
+            const recoverableItemResult = {
+              ...itemResult,
+              taskId: itemResult.taskId || activeProviderTaskId,
+            };
+            if (isRecoverableShellWorkflowResult(recoverableItemResult)) {
               const pendingResult: GeneratedResult = {
-                id: itemResult.taskId || `${taskId}-pending-${index}`,
+                id: recoverableItemResult.taskId || `${taskId}-pending-${index}`,
                 imageUrl: '',
                 mediaType: 'image',
-                prompt: itemResult.message || batchPrompt,
+                prompt: recoverableItemResult.message || batchPrompt,
                 model: generationParams['model'] || 'gpt-image-2',
                 aspectRatio: generationParams['ratio'] || 'auto',
                 status: 'generating',
                 createdAt: newProject.createdAt,
                 module: targetModule,
                 subFeature: targetSubFeature,
-                taskId: itemResult.taskId,
-                error: itemResult.message || '结果待同步',
+                taskId: recoverableItemResult.taskId,
+                error: recoverableItemResult.message || '结果待同步',
               };
               batchResults = [...batchResults, pendingResult];
               pendingSyncProject = {
@@ -3538,7 +3623,7 @@ const AppContent: React.FC<{
                 results: [...batchResults],
                 completedCount: batchResults.filter((item) => item.status === 'completed').length,
                 taskCount: batchCount,
-                error: itemResult.message || '结果待同步',
+                error: recoverableItemResult.message || '结果待同步',
               };
               setProjects((prev) => prev.map((p) => p.id === projectId ? pendingSyncProject! : p));
               setTasks((prev) => prev.map((t) => (
@@ -3687,7 +3772,7 @@ const AppContent: React.FC<{
       addToast(message, 'error');
 	    } finally {
 	      delete taskControllersRef.current[taskId];
-	      if (hasGuardedSubmitLock) endGenerationSubmitLock(guardedSubmitLockKey);
+	      releaseGuardedSubmit();
 	      setIsGenerating(false);
 	    }
 	  }, [promptText, activeModule, activeSubFeature, currentParams, filteredMaterials, projects, tasks, addToast, hydrateShellData, setScopedPromptText, apiConfig, videoMemory, setVideoMemory, persistProjectToSharedState, publicBaseUrl, ensureMaterialRemoteUrls, currentUser, logShellError, beginGenerationSubmitLock, endGenerationSubmitLock]);
@@ -3713,7 +3798,7 @@ const AppContent: React.FC<{
     const next: Record<string, Material[]> = Object.fromEntries(
       Object.entries(baseMaterials || {}).map(([type, items]) => [type, Array.isArray(items) ? [...items] : []]),
     );
-    if (plan.sourceResultUrl) {
+    if (plan.sourceResultUrl && !plan.editInstruction?.trim() && !plan.variationInstruction?.trim()) {
       const normalizedResultUrl = resolvePublicAssetUrl(plan.sourceResultUrl, publicBaseUrl);
       if (normalizedResultUrl) {
         next.reference = [
@@ -3750,13 +3835,7 @@ const AppContent: React.FC<{
     const orderedProjectPlans = Array.isArray(project.plans) && project.plans.length > 0 ? project.plans : selectedPlans;
     const firstBenchmarkPlanId = orderedProjectPlans[0]?.id || '';
     const requiresFirstBenchmark = sceneSubFeature === 'sku' && Boolean(firstBenchmarkPlanId);
-    const totalTaskCount = Math.max(
-      batchCount,
-      Number(project.taskCount || 0) || 0,
-      Array.isArray(project.plans) ? project.plans.length : 0,
-      Array.isArray(project.results) ? project.results.length : 0,
-      1,
-    );
+    const totalTaskCount = batchCount;
     const mergeProjectResults = (nextResults: GeneratedResult[]) => (
       mergeGeneratedPlanResults(project.results || [], nextResults, selectedPlanIds) as GeneratedResult[]
     );
@@ -3935,16 +4014,21 @@ const AppContent: React.FC<{
             sourceResultUrl: plan.sourceResultUrl ? resolvePublicAssetUrl(plan.sourceResultUrl, publicBaseUrl) : undefined,
             variationInstruction: plan.variationInstruction,
             variationMode: plan.variationMode,
+            editInstruction: plan.editInstruction,
           },
         });
         if (result.status !== 'success' || !result.imageUrl) {
           const visibleTaskId = result.taskId || generationTaskIdByPlanId.get(plan.id);
-          if (isRecoverableShellWorkflowResult(result)) {
+          const recoverablePlanResult = {
+            ...result,
+            taskId: result.taskId || generationTaskIdByPlanId.get(plan.id),
+          };
+          if (isRecoverableShellWorkflowResult(recoverablePlanResult)) {
             const pendingResult: GeneratedResult = {
               id: visibleTaskId || `${taskId}-pending-${index}`,
               planId: plan.id,
               imageUrl: '',
-              prompt: result.message || promptSummary || batchPrompt,
+              prompt: recoverablePlanResult.message || promptSummary || batchPrompt,
               model: generationParams['model'] || 'gpt-image-2',
               aspectRatio: effectiveRatio,
               status: 'generating',
@@ -3953,10 +4037,10 @@ const AppContent: React.FC<{
               subFeature: sceneSubFeature,
               taskId: visibleTaskId,
               backendJobId: generationBackendJobIdByPlanId.get(plan.id),
-              error: result.message || '结果待同步',
+              error: recoverablePlanResult.message || '结果待同步',
             };
             resultsByIndex[index] = pendingResult;
-            const mergedPendingResults = publishPlanResults('generating', result.message || '结果待同步');
+            const mergedPendingResults = publishPlanResults('generating', recoverablePlanResult.message || '结果待同步');
             pendingSyncProject = {
               ...project,
               status: 'generating',
@@ -3966,7 +4050,7 @@ const AppContent: React.FC<{
               subFeature: sceneSubFeature,
               creditsConsumed: project.creditsConsumed,
               planningTaskId: project.planningTaskId,
-              error: result.message || '结果待同步',
+              error: recoverablePlanResult.message || '结果待同步',
             };
             updateTaskProgress();
             return;
@@ -4705,19 +4789,169 @@ const AppContent: React.FC<{
         return;
       }
       const result = project.results.find((item) => item.id === resultId);
-      if (result?.prompt) {
-        setActiveModule(project.module);
-        setActiveSubFeatureByModule((prev) => ({ ...prev, [project.module]: project.subFeature || getDefaultSubFeature(project.module) }));
-        const scopeKey = scopeKeyFor(project.module, project.subFeature || getDefaultSubFeature(project.module));
-        setInputStateByScope((prev) => ({
-          ...prev,
-          [scopeKey]: {
-            promptText: result.prompt,
-            params: { ...(prev[scopeKey]?.params || {}), model: result.model, ratio: result.aspectRatio },
-          },
-        }));
-        addToast('已把旧 prompt 回填到底部输入区，可调整后重新生成', 'info');
+      if (!result) return;
+      if (result.mediaType === 'video' || result.videoUrl || project.module === AppModuleObj.VIDEO) {
+        addToast('视频结果暂不支持单张重生成，请重新提交视频生成任务', 'info');
+        return;
       }
+      const subFeature = project.subFeature || getDefaultSubFeature(project.module);
+      const storedContext = project.generationContext;
+      const retryParams = normalizeParamsForGeneration(project.module, subFeature, {
+        ...(storedContext?.params || currentParams),
+        ratio: result.aspectRatio || storedContext?.params?.ratio || currentParams.ratio,
+        aspectRatio: result.aspectRatio || storedContext?.params?.aspectRatio || currentParams.aspectRatio,
+        model: result.model || storedContext?.params?.model || currentParams.model,
+      }) as Record<string, string> & { [key: string]: string | undefined };
+      const sourceUrl = resolvePublicAssetUrl(result.sourceUrl || result.sourcePreviewUrl || '', publicBaseUrl);
+      const contextMaterials = hasMaterialInputs(storedContext?.materials as Record<string, Material[]>)
+        ? storedContext?.materials as Record<string, Material[]>
+        : {};
+      const retryMaterials = hasMaterialInputs(contextMaterials)
+        ? contextMaterials
+        : sourceUrl
+          ? {
+              product: [
+                createRemoteMaterial(
+                  `${result.id}-retry-source`,
+                  'product',
+                  sourceUrl,
+                  result.fileName || 'retry-source.png',
+                  subFeature,
+                ),
+              ],
+            }
+          : {};
+      if (!hasMaterialInputs(retryMaterials)) {
+        addToast('当前结果缺少可用于重生成的素材，请重新上传素材后提交', 'warning');
+        return;
+      }
+      const retryPrompt = result.prompt || storedContext?.prompt || project.name;
+      const controller = new AbortController();
+      taskControllersRef.current[retryTaskId] = controller;
+      let latestRegeneratedProject = project;
+      const updateProjectWithRegeneratedResult = (nextResult: GeneratedResult) => {
+        const nextResults = latestRegeneratedProject.results.map((current) => current.id === result.id ? nextResult : current);
+        const hasGenerating = nextResults.some((current) => current.status === 'generating');
+        const hasError = nextResults.some((current) => current.status === 'error');
+        latestRegeneratedProject = {
+          ...latestRegeneratedProject,
+          status: hasGenerating ? 'generating' : hasError ? 'error' : 'completed',
+          error: hasGenerating ? undefined : latestRegeneratedProject.error,
+          results: nextResults,
+          completedCount: nextResults.filter((current) => current.status === 'completed' && (current.imageUrl || current.videoUrl)).length,
+        };
+        setProjects((prev) => prev.map((item) => item.id === project.id ? latestRegeneratedProject : item));
+        return latestRegeneratedProject;
+      };
+
+      const pendingResult: GeneratedResult = {
+        ...result,
+        imageUrl: '',
+        videoUrl: undefined,
+        mediaType: 'image',
+        prompt: retryPrompt,
+        status: 'generating',
+        taskId: undefined,
+        backendJobId: undefined,
+        error: undefined,
+      };
+      const pendingProject = updateProjectWithRegeneratedResult(pendingResult);
+      setTasks((prev) => [{
+        id: retryTaskId,
+        projectId: project.id,
+        module: project.module,
+        type: 'image',
+        status: 'generating',
+        title: `重生成: ${project.name}`,
+        progress: 12,
+        createdAt: project.createdAt,
+        total: 1,
+        completed: 0,
+        subFeature,
+      }, ...prev]);
+      await persistProjectToSharedState(pendingProject);
+      addToast('已提交重生成任务', 'success');
+
+      const { runShellImageGeneration } = await import('./adapters/shellWorkflow');
+      const preparedMaterials = await ensureMaterialRemoteUrls(retryMaterials, project.module);
+      let activeRegenerationProviderTaskId = '';
+      const generation = await runShellImageGeneration({
+        module: project.module,
+        subFeature,
+        prompt: retryPrompt,
+        params: {
+          ...retryParams,
+          ratio: result.aspectRatio || retryParams.ratio || retryParams.aspectRatio || 'auto',
+          aspectRatio: result.aspectRatio || retryParams.aspectRatio || retryParams.ratio || 'auto',
+          __workspacePreferences: JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences()),
+          __retryResultId: result.id,
+        },
+        materials: preparedMaterials,
+        signal: controller.signal,
+        onJobCreated: (jobId, providerTaskId) => {
+          setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+            ...task,
+            backendJobId: jobId,
+            status: 'generating',
+            progress: Math.max(task.progress || 0, 18),
+          } : task));
+          if (providerTaskId) {
+            activeRegenerationProviderTaskId = providerTaskId;
+            const providerPendingProject = updateProjectWithRegeneratedResult({
+              ...pendingResult,
+              taskId: providerTaskId,
+              backendJobId: jobId,
+            });
+            void persistProjectToSharedState(providerPendingProject);
+          }
+        },
+        publicBaseUrl,
+        taskMetadata: {
+          shellPurpose: 'result_regeneration',
+          shellProjectId: project.id,
+          shellProjectName: project.name,
+          shellResultId: result.id,
+          shellPlanId: result.planId,
+          subFeature,
+          sourceFileName: result.fileName || result.id,
+        },
+      });
+      if (generation.status !== 'success' || !generation.imageUrl) {
+        const recoverableGeneration = {
+          ...generation,
+          taskId: generation.taskId || activeRegenerationProviderTaskId,
+        };
+        if (isRecoverableShellWorkflowResult(recoverableGeneration)) {
+          const syncPendingProject = updateProjectWithRegeneratedResult({
+            ...pendingResult,
+            taskId: recoverableGeneration.taskId,
+            error: recoverableGeneration.message || '任务已提交云端，结果待同步',
+          });
+          await persistProjectToSharedState(syncPendingProject);
+          addToast('重生成任务已提交云端，结果待同步', 'info');
+          window.setTimeout(() => void hydrateShellJobs(), 800);
+          return;
+        }
+        throw new Error(generation.message || '重生成失败');
+      }
+      const completedResult: GeneratedResult = {
+        ...result,
+        imageUrl: generation.imageUrl,
+        videoUrl: undefined,
+        mediaType: 'image',
+        prompt: generation.prompt || retryPrompt,
+        model: result.model || String(retryParams.model || 'GPT Image 2'),
+        aspectRatio: result.aspectRatio || String(retryParams.ratio || retryParams.aspectRatio || 'auto'),
+        status: 'completed',
+        taskId: generation.taskId,
+        creditsConsumed: generation.creditsConsumed,
+        error: undefined,
+      };
+      const completedProject = updateProjectWithRegeneratedResult(completedResult);
+      setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+      delete taskControllersRef.current[retryTaskId];
+      await persistProjectToSharedState(completedProject);
+      addToast('重生成已完成', 'success');
       } catch (error) {
         addToast(error instanceof Error ? error.message : '重新生成失败', 'error');
         setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
@@ -4726,7 +4960,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig.workspacePreferences, persistTranslationFilesToSharedState, handleStoryboardRegenerateResult, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig.workspacePreferences, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, beginExclusiveAction, endExclusiveAction]);
 
   const handleFissionResult = useCallback(async (
     projectId: string,
@@ -4752,6 +4986,13 @@ const AppContent: React.FC<{
       }
       const variantLabel = mode === 'scene' ? '换场景' : mode === 'palette' ? '换配色' : '自定义';
       const fissionInstruction = instruction.trim();
+      const storedContext = project.generationContext;
+      const fissionParams = {
+        ...(storedContext?.params || currentParams),
+        model: storedContext?.params?.model || result.model || currentParams.model || 'GPT Image 2',
+        ratio: storedContext?.params?.ratio || result.aspectRatio || currentParams.ratio,
+        aspectRatio: storedContext?.params?.aspectRatio || result.aspectRatio || currentParams.aspectRatio,
+      };
       const variantPlan: PlanItem = {
         ...matchedPlan,
         id: `plan-variant-${Date.now()}`,
@@ -4759,7 +5000,7 @@ const AppContent: React.FC<{
         selected: true,
         sourceReferenceUrl: undefined,
         variationMode: mode,
-        variationInstruction: undefined,
+        variationInstruction: fissionInstruction || `按${variantLabel}方向继续裂变这张生成图。`,
         sourceResultUrl: resolvePublicAssetUrl(result.imageUrl, publicBaseUrl) || '',
         schemeContent: fissionInstruction || `按${variantLabel}方向继续裂变这张生成图。`,
       };
@@ -4780,22 +5021,249 @@ const AppContent: React.FC<{
         completedCount: 0,
         subFeature: 'first_image',
         sourceType: 'persisted',
+        directGeneration: true,
       };
-      const variantMaterials = buildVariantMaterials(variantPlan, 'first_image');
+      const baseMaterials = hasMaterialInputs(storedContext?.materials as Record<string, Material[]>)
+        ? storedContext?.materials as Record<string, Material[]>
+        : filteredMaterials;
+      const variantMaterials = buildVariantMaterials(baseMaterials, variantPlan, 'first_image');
+      variantProject.generationContext = cloneGenerationContext(variantPlan.schemeContent || fissionInstruction, fissionParams, variantMaterials);
       setProjects((prev) => [variantProject, ...prev]);
       await persistProjectToSharedState(variantProject);
       await runOneClickPlanGeneration(variantProject, [variantPlan], variantMaterials);
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, addToast, buildVariantMaterials, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, addToast, currentParams, filteredMaterials, buildVariantMaterials, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, beginExclusiveAction, endExclusiveAction]);
 
-  const handleRecoverResult = useCallback((projectId: string) => {
-    void projectId;
-    void hydrateShellData();
-    void hydrateShellJobs();
-    addToast('已重新同步后端任务与持久化状态', 'info');
-  }, [hydrateShellData, hydrateShellJobs, addToast]);
+  const handleEditResult = useCallback(async (
+    projectId: string,
+    resultId: string,
+    instruction: string,
+    files: File[] = [],
+  ) => {
+    const actionKey = `edit:${projectId}:${resultId}`;
+    if (!beginExclusiveAction(actionKey, '修改任务已提交，请等待当前任务完成')) return;
+    try {
+      const project = projects.find((p) => p.id === projectId);
+      if (!project || project.module !== AppModuleObj.ONE_CLICK) return;
+      const resultIndex = project.results.findIndex((item) => item.id === resultId);
+      const result = resultIndex >= 0 ? project.results[resultIndex] : null;
+      if (!result?.imageUrl || result.mediaType === 'video' || result.videoUrl) {
+        addToast('当前结果图还未完成，暂时不能修改', 'warning');
+        return;
+      }
+      const finalInstruction = instruction.trim();
+      if (!finalInstruction) {
+        addToast('请先填写修改说明', 'warning');
+        return;
+      }
+      const sourceResultUrl = resolvePublicAssetUrl(result.imageUrl, publicBaseUrl) || '';
+      if (!sourceResultUrl) {
+        addToast('当前结果缺少可用于模型读取的生成图地址，请重新生成后再试', 'warning');
+        return;
+      }
+
+      const storedContext = project.generationContext;
+      const contextMaterials = hasMaterialInputs(storedContext?.materials as Record<string, Material[]>)
+        ? storedContext?.materials as Record<string, Material[]>
+        : filteredMaterials;
+      const uploadedSupplementMaterials = await Promise.all(files.map(async (file, index) => {
+        const uploaded = await uploadInternalAssetStream({
+          module: AppModuleObj.ONE_CLICK,
+          file,
+          fileName: file.name,
+        });
+        if (!uploaded.fileUrl) {
+          throw new Error(`${file.name || '补充参考图'} 上传失败，请重试。`);
+        }
+        return createRemoteMaterial(
+          `edit-supplement-${Date.now()}-${index}`,
+          'reference',
+          uploaded.fileUrl,
+          file.name || `supplement-${index + 1}.png`,
+          project.subFeature || activeSubFeature || 'first_image',
+        );
+      }));
+      const generationParams = {
+        ...(storedContext?.params || currentParams),
+        model: storedContext?.params?.model || result.model || currentParams.model || 'GPT Image 2',
+        ratio: storedContext?.params?.ratio || result.aspectRatio || currentParams.ratio,
+        aspectRatio: storedContext?.params?.aspectRatio || result.aspectRatio || currentParams.aspectRatio,
+      };
+      const editMaterials: Record<string, Material[]> = {
+        product: [...(contextMaterials.product || [])],
+        gift: [...(contextMaterials.gift || [])],
+        logo: [...(contextMaterials.logo || [])],
+        reference: uploadedSupplementMaterials,
+      };
+      const matchedPlan = project.plans?.find((plan) => plan.id === result.planId) || project.plans?.[resultIndex];
+      const editPlan: PlanItem = {
+        ...(matchedPlan || {
+          id: `plan-edit-base-${Date.now()}`,
+          title: project.name,
+          sellingPoints: [],
+          sceneDescription: '',
+          styleDirection: '',
+          colorPalette: '',
+          composition: '',
+          textLayout: '',
+          selected: true,
+        }),
+        id: `plan-edit-${Date.now()}`,
+        title: `${matchedPlan?.title || project.name} - 修改`,
+        selected: true,
+        sourceReferenceUrl: undefined,
+        variationMode: undefined,
+        variationInstruction: undefined,
+        editInstruction: finalInstruction,
+        sourceResultUrl,
+        schemeContent: finalInstruction,
+      };
+      const editProject: Project = {
+        id: `project-edit-${Date.now()}`,
+        name: `${project.name} · 修改`,
+        module: AppModuleObj.ONE_CLICK,
+        status: 'planning',
+        createdAt: new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-'),
+        results: [],
+        plans: [editPlan],
+        selectedPlanId: editPlan.id,
+        taskCount: 1,
+        completedCount: 0,
+        subFeature: project.subFeature || activeSubFeature || 'first_image',
+        sourceType: 'persisted',
+        directGeneration: true,
+        generationContext: cloneGenerationContext(finalInstruction, generationParams, editMaterials),
+      };
+      setProjects((prev) => [editProject, ...prev]);
+      await persistProjectToSharedState(editProject);
+      await runOneClickPlanGeneration(editProject, [editPlan], editMaterials);
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : '修改任务提交失败', 'error');
+    } finally {
+      endExclusiveAction(actionKey);
+    }
+  }, [projects, addToast, activeSubFeature, currentParams, filteredMaterials, createRemoteMaterial, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, beginExclusiveAction, endExclusiveAction]);
+
+  const handleRecoverResult = useCallback(async (projectId: string, resultId?: string) => {
+    const project = projects.find((item) => item.id === projectId);
+    const targetResult = resultId
+      ? project?.results.find((item) => item.id === resultId)
+      : project?.results.find((item) => item.taskId || item.backendJobId);
+    const recoverTaskId = String(targetResult?.taskId || targetResult?.backendJobId || '').trim();
+    if (!project || !targetResult || !recoverTaskId) {
+      void hydrateShellData();
+      void hydrateShellJobs();
+      addToast('已重新同步后端任务与持久化状态', 'info');
+      return;
+    }
+
+    const controller = new AbortController();
+    const recoverControllerId = `recover-${projectId}-${targetResult.id}-${Date.now()}`;
+    taskControllersRef.current[recoverControllerId] = controller;
+    const isVideoRecover = Boolean(project.module === AppModuleObj.VIDEO || targetResult.mediaType === 'video' || targetResult.videoUrl);
+    const mergeRecoveredResult = (nextResult: GeneratedResult): Project => {
+      const nextResults = project.results.map((item) => item.id === targetResult.id ? nextResult : item);
+      const hasGenerating = nextResults.some((item) => item.status === 'generating');
+      const hasError = nextResults.some((item) => item.status === 'error');
+      const nextStatus: Project['status'] = hasGenerating ? 'generating' : hasError ? 'error' : 'completed';
+      return {
+        ...project,
+        status: nextStatus,
+        error: hasGenerating ? undefined : project.error,
+        results: nextResults,
+        completedCount: nextResults.filter((item) => item.status === 'completed' && (item.imageUrl || item.videoUrl)).length,
+      };
+    };
+
+    const waitingProject = mergeRecoveredResult({
+      ...targetResult,
+      status: 'generating',
+      taskId: targetResult.taskId || recoverTaskId,
+      backendJobId: targetResult.backendJobId,
+      error: '正在按 KIE 任务 ID 找回结果',
+    });
+    setProjects((prev) => prev.map((item) => item.id === projectId ? waitingProject : item));
+    setTasks((prev) => [{
+      id: recoverControllerId,
+      projectId,
+      module: project.module,
+      type: isVideoRecover ? 'video' : 'image',
+      status: 'generating',
+      title: `找回: ${project.name}`,
+      progress: 12,
+      createdAt: project.createdAt,
+      total: 1,
+      completed: 0,
+      subFeature: project.subFeature,
+      backendJobId: targetResult.backendJobId,
+    }, ...prev]);
+    await persistProjectToSharedState(waitingProject);
+    addToast('已按 KIE 任务 ID 开始找回结果', 'info');
+
+    try {
+      const recovery = await recoverKieAiTask(recoverTaskId, apiConfig, controller.signal, isVideoRecover);
+      if (recovery.status === 'success' && (recovery.imageUrl || recovery.videoUrl)) {
+        const recoveredResult: GeneratedResult = {
+          ...targetResult,
+          imageUrl: recovery.imageUrl || recovery.videoUrl || targetResult.imageUrl,
+          videoUrl: isVideoRecover ? (recovery.videoUrl || recovery.imageUrl || targetResult.videoUrl) : targetResult.videoUrl,
+          mediaType: isVideoRecover ? 'video' : 'image',
+          status: 'completed',
+          taskId: recovery.taskId || recoverTaskId,
+          creditsConsumed: recovery.creditsConsumed ?? targetResult.creditsConsumed,
+          error: undefined,
+        };
+        const recoveredProject = mergeRecoveredResult(recoveredResult);
+        setProjects((prev) => prev.map((item) => item.id === projectId ? recoveredProject : item));
+        setTasks((prev) => prev.filter((task) => task.id !== recoverControllerId));
+        await persistProjectToSharedState(recoveredProject);
+        addToast('结果已找回', 'success');
+        return;
+      }
+
+      if (isRecoverableShellWorkflowResult(recovery)) {
+        const pendingResult: GeneratedResult = {
+          ...targetResult,
+          status: 'generating',
+          taskId: recovery.taskId || recoverTaskId,
+          error: recovery.message || '任务已提交云端，结果待同步',
+        };
+        const pendingProject = mergeRecoveredResult(pendingResult);
+        setProjects((prev) => prev.map((item) => item.id === projectId ? pendingProject : item));
+        await persistProjectToSharedState(pendingProject);
+        addToast('任务仍在云端生成，已保持待同步状态', 'info');
+        window.setTimeout(() => void hydrateShellJobs(), 800);
+        return;
+      }
+
+      const failedResult: GeneratedResult = {
+        ...targetResult,
+        status: 'error',
+        taskId: recovery.taskId || recoverTaskId,
+        error: recovery.message || 'KIE 返回任务失败',
+      };
+      const failedProject = mergeRecoveredResult(failedResult);
+      setProjects((prev) => prev.map((item) => item.id === projectId ? failedProject : item));
+      await persistProjectToSharedState(failedProject);
+      addToast(recovery.message || 'KIE 返回任务失败', 'error');
+    } catch (error) {
+      const pendingResult: GeneratedResult = {
+        ...targetResult,
+        status: 'generating',
+        taskId: recoverTaskId,
+        error: error instanceof Error ? error.message : '找回请求中断，任务仍可稍后继续找回',
+      };
+      const pendingProject = mergeRecoveredResult(pendingResult);
+      setProjects((prev) => prev.map((item) => item.id === projectId ? pendingProject : item));
+      await persistProjectToSharedState(pendingProject);
+      addToast('找回请求暂未完成，已保留 KIE 任务 ID 可继续同步', 'warning');
+    } finally {
+      setTasks((prev) => prev.filter((task) => task.id !== recoverControllerId));
+      delete taskControllersRef.current[recoverControllerId];
+    }
+  }, [projects, hydrateShellData, hydrateShellJobs, addToast, apiConfig, persistProjectToSharedState]);
 
   const handleCancelTask = useCallback((taskIdOrProjectId: string) => {
     const matchingTasks = tasks.filter((task) => (
@@ -4858,20 +5326,8 @@ const AppContent: React.FC<{
 	    return t.module === activeModule && (t.subFeature || getDefaultSubFeature(t.module)) === activeSubFeature;
 	  });
 	  const currentGenerationSubmitLockKey = buildGenerationSubmitLockKey(activeModule, activeSubFeature);
-	  const hasCurrentActiveGuardedVideoGeneration = shouldGuardGenerationSubmit(activeModule, activeSubFeature) && (
-	    filteredProjects.some((project) => (
-	      project.module === AppModuleObj.VIDEO
-	      && (project.subFeature || 'generation') === 'generation'
-	      && project.status === 'generating'
-	    ))
-	    || filteredTasks.some((task) => (
-	      task.module === AppModuleObj.VIDEO
-	      && (task.subFeature || 'generation') === 'generation'
-	      && (task.status === 'pending' || task.status === 'generating')
-	    ))
-	  );
 	  const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit(activeModule, activeSubFeature)
-	    && (Boolean(generationSubmitLocks[currentGenerationSubmitLockKey]) || hasCurrentActiveGuardedVideoGeneration);
+	    && Boolean(generationSubmitLocks[currentGenerationSubmitLockKey]);
 
 	  const activeModuleView = (() => {
     switch (pageMode) {
@@ -4924,6 +5380,7 @@ const AppContent: React.FC<{
           onDeletePlan={handleDeletePlan}
           onRegenerateResult={handleRegenerateResult}
           onFissionResult={handleFissionResult}
+          onEditResult={handleEditResult}
           onRecoverResult={handleRecoverResult}
           onCancelTask={handleCancelTask}
           pendingActionKeys={pendingActionKeys}
@@ -5024,6 +5481,8 @@ const AppContent: React.FC<{
           onModuleChange={handleModuleChange}
           theme={theme}
           onToggleTheme={toggleTheme}
+          collapsed={sidebarCollapsed}
+          onToggleCollapsed={() => setSidebarCollapsed((prev) => !prev)}
         />
         <div className="flex flex-1 flex-col min-w-0">
           <main className="flex-1 overflow-y-auto min-h-0">

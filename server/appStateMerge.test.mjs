@@ -47,6 +47,155 @@ test('mergeAppStateForStorage lets incoming project updates win without duplicat
   assert.equal(merged.shellProjects[0].results[0].imageUrl, '/new.png');
 });
 
+test('mergeAppStateForStorage deep-merges one-click planning project snapshots without dropping plans', () => {
+  const existingPlans = Array.from({ length: 5 }, (_, index) => ({
+    id: `plan-${index + 1}`,
+    title: `方案 ${index + 1}`,
+    schemeContent: `旧方案 ${index + 1}`,
+    selected: true,
+  }));
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'proj-plan-5',
+      module: 'one_click',
+      subFeature: 'first_image',
+      status: 'planning',
+      taskCount: 5,
+      completedCount: 0,
+      planningTaskId: 'kie-a,kie-b,kie-c,kie-d,kie-e',
+      plans: existingPlans,
+      results: [],
+    }],
+  }, {
+    shellProjects: [{
+      id: 'proj-plan-5',
+      module: 'one_click',
+      subFeature: 'first_image',
+      status: 'planning',
+      taskCount: 1,
+      completedCount: 0,
+      planningTaskId: 'kie-a',
+      plans: [{
+        id: 'plan-1',
+        title: '方案 1 新标题',
+        schemeContent: '新方案 1',
+        selected: false,
+      }],
+      results: [],
+    }],
+  });
+
+  assert.equal(merged.shellProjects.length, 1);
+  assert.equal(merged.shellProjects[0].plans.length, 5);
+  assert.equal(merged.shellProjects[0].plans[0].title, '方案 1 新标题');
+  assert.equal(merged.shellProjects[0].plans[0].selected, false);
+  assert.deepEqual(merged.shellProjects[0].plans.map((plan) => plan.id), ['plan-1', 'plan-2', 'plan-3', 'plan-4', 'plan-5']);
+  assert.equal(merged.shellProjects[0].taskCount, 5);
+  assert.equal(merged.shellProjects[0].planningTaskId, 'kie-a,kie-b,kie-c,kie-d,kie-e');
+});
+
+test('mergeAppStateForStorage deep-merges one-click branch projects and schemes', () => {
+  const existingProjects = [{
+    id: 'proj-branch-5',
+    taskCount: 5,
+    plans: Array.from({ length: 5 }, (_, index) => ({
+      id: `branch-plan-${index + 1}`,
+      title: `分支方案 ${index + 1}`,
+    })),
+    schemes: Array.from({ length: 5 }, (_, index) => ({
+      id: `scheme-${index + 1}`,
+      taskId: `kie-${index + 1}`,
+      resultUrl: `/scheme-${index + 1}.png`,
+    })),
+  }];
+  const merged = mergeAppStateForStorage({
+    oneClickMemory: {
+      firstImage: {
+        projects: existingProjects,
+      },
+    },
+  }, {
+    oneClickMemory: {
+      firstImage: {
+        projects: [{
+          id: 'proj-branch-5',
+          taskCount: 1,
+          plans: [{ id: 'branch-plan-1', title: '分支方案 1 新标题' }],
+          schemes: [{ id: 'scheme-1', taskId: 'kie-1', resultUrl: '/scheme-1-new.png' }],
+        }],
+      },
+    },
+  });
+
+  const project = merged.oneClickMemory.firstImage.projects[0];
+  assert.equal(project.plans.length, 5);
+  assert.equal(project.schemes.length, 5);
+  assert.equal(project.plans[0].title, '分支方案 1 新标题');
+  assert.equal(project.schemes[0].resultUrl, '/scheme-1-new.png');
+  assert.equal(project.taskCount, 5);
+});
+
+test('mergeAppStateForStorage keeps sibling results that share a project id', () => {
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'project-with-many-results',
+      taskCount: 2,
+      completedCount: 1,
+      results: [
+        { id: 'result-a', projectId: 'project-with-many-results', taskId: 'provider-a', imageUrl: '/a.png' },
+      ],
+    }],
+  }, {
+    shellProjects: [{
+      id: 'project-with-many-results',
+      taskCount: 2,
+      completedCount: 2,
+      results: [
+        { id: 'result-b', projectId: 'project-with-many-results', taskId: 'provider-b', imageUrl: '/b.png' },
+      ],
+    }],
+  });
+
+  assert.deepEqual(
+    merged.shellProjects[0].results.map((result) => result.id),
+    ['result-b', 'result-a'],
+  );
+  assert.equal(merged.shellProjects[0].completedCount, 2);
+});
+
+test('mergeAppStateForStorage does not collapse non-project sibling items by project id', () => {
+  const merged = mergeAppStateForStorage({
+    translationMemory: {
+      main: {
+        files: [
+          { id: 'file-a', projectId: 'translation-batch-1', resultUrl: '/a.png' },
+        ],
+      },
+    },
+    retouchMemory: {
+      tasks: [
+        { id: 'retouch-task-a', projectId: 'retouch-project-1', resultUrl: '/a.png' },
+      ],
+    },
+  }, {
+    translationMemory: {
+      main: {
+        files: [
+          { id: 'file-b', projectId: 'translation-batch-1', resultUrl: '/b.png' },
+        ],
+      },
+    },
+    retouchMemory: {
+      tasks: [
+        { id: 'retouch-task-b', projectId: 'retouch-project-1', resultUrl: '/b.png' },
+      ],
+    },
+  });
+
+  assert.deepEqual(merged.translationMemory.main.files.map((file) => file.id), ['file-b', 'file-a']);
+  assert.deepEqual(merged.retouchMemory.tasks.map((task) => task.id), ['retouch-task-b', 'retouch-task-a']);
+});
+
 test('mergeAppStateForStorage preserves translation files across concurrent branch writes', () => {
   const merged = mergeAppStateForStorage({
     translationMemory: {

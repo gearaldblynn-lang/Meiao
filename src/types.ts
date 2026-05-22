@@ -936,7 +936,7 @@ export interface KieAiResult {
   imageUrl: string;
   videoUrl?: string;
   taskId?: string;
-  status: 'success' | 'error' | 'interrupted' | 'task_not_found';
+  status: 'success' | 'error' | 'generating' | 'interrupted' | 'task_not_found';
   message?: string;
   errorCode?: string;
   creditsConsumed?: number;

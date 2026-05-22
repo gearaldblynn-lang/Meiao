@@ -58,6 +58,7 @@ export interface ShellProjectData {
     sourceReferenceUrl?: string;
     variationMode?: 'scene' | 'palette' | 'custom';
     variationInstruction?: string;
+    editInstruction?: string;
     sourceResultUrl?: string;
   }>;
   selectedPlanId?: string;
@@ -66,6 +67,7 @@ export interface ShellProjectData {
     params: Record<string, string>;
     materials: Record<string, ShellMaterialData[]>;
   };
+  directGeneration?: boolean;
 }
 
 export interface ShellTaskData {
@@ -242,15 +244,22 @@ const getVisibleTaskId = (item: any) => String(
   || ''
 ).trim() || undefined;
 
+const isPlanningGeneratedPlanId = (value: unknown) => /^[a-f0-9]{24}-plan-\d+$/i.test(String(value || '').trim());
+
+const splitIdentityText = (value: unknown) =>
+  String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
 const collectPersistedProjectJobKeys = (projects: ShellProjectData[] = []) => {
   const keys = new Set<string>();
   projects.forEach((project) => {
     const projectId = String(project?.id || '').trim();
     const backendJobId = String(project?.backendJobId || '').trim();
-    const planningTaskId = String(project?.planningTaskId || '').trim();
     if (projectId) keys.add(`project:${projectId}`);
     if (backendJobId) keys.add(`job:${backendJobId}`);
-    if (planningTaskId) keys.add(`provider:${planningTaskId}`);
+    splitIdentityText(project?.planningTaskId).forEach((planningTaskId) => keys.add(`provider:${planningTaskId}`));
     (Array.isArray(project?.results) ? project.results : []).forEach((result: any) => {
       const resultId = String(result?.id || '').trim();
       const visibleTaskId = getVisibleTaskId(result);
@@ -288,7 +297,7 @@ const findPersistedPlanningProjectForJob = (job: InternalJob, projects: ShellPro
     const projectIds = [
       project?.id,
       project?.backendJobId,
-      project?.planningTaskId,
+      ...splitIdentityText(project?.planningTaskId),
       ...(Array.isArray(project?.results) ? project.results.flatMap((result: any) => [
         result?.backendJobId,
         result?.taskId,
@@ -555,6 +564,7 @@ const projectFromItems = (
   generationContext?: ShellProjectData['generationContext'],
   creditsConsumed?: unknown,
   planningTaskId?: unknown,
+  directGeneration?: unknown,
 ): ShellProjectData | null => {
   if (!items.length) return null;
   const createdAt = toDateLabel(createdAtValue);
@@ -584,6 +594,7 @@ const projectFromItems = (
     generationContext,
     creditsConsumed: normalizeCreditsConsumed(creditsConsumed) || normalizeCreditsConsumed(totalResultCredits),
     planningTaskId: String(planningTaskId || '').trim() || undefined,
+    directGeneration: directGeneration === true,
   };
 };
 
@@ -600,10 +611,11 @@ const projectListFromItems = (
   generationContext?: ShellProjectData['generationContext'],
   creditsConsumed?: unknown,
   planningTaskId?: unknown,
+  directGeneration?: unknown,
 ): ShellProjectData[] => {
   if (!items.length) return [];
   if (module !== MODULE_VALUES.ONE_CLICK) {
-    const project = projectFromItems(id, name, module, createdAtValue, items, subFeature, fallbackPrompt, plans, selectedPlanId, generationContext, creditsConsumed, planningTaskId);
+    const project = projectFromItems(id, name, module, createdAtValue, items, subFeature, fallbackPrompt, plans, selectedPlanId, generationContext, creditsConsumed, planningTaskId, directGeneration);
     return project ? [project] : [];
   }
 
@@ -636,7 +648,7 @@ const projectListFromItems = (
         : undefined;
       const groupSelectedPlanId = groupPlans?.find((plan) => plan.id === selectedPlanId)?.id
         || groupPlans?.find((plan) => plan.selected)?.id;
-      return projectFromItems(projectId, projectName, module, createdAtValue, groupItems, groupSubFeature, fallbackPrompt, groupPlans, groupSelectedPlanId, generationContext, creditsConsumed, planningTaskId);
+      return projectFromItems(projectId, projectName, module, createdAtValue, groupItems, groupSubFeature, fallbackPrompt, groupPlans, groupSelectedPlanId, generationContext, creditsConsumed, planningTaskId, directGeneration);
     })
     .filter((project): project is ShellProjectData => Boolean(project));
 };
@@ -771,6 +783,7 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
       sourceType: 'persisted',
       creditsConsumed: normalizeCreditsConsumed(project.creditsConsumed),
       planningTaskId: String(project.planningTaskId || '').trim() || undefined,
+      directGeneration: project.directGeneration === true,
     });
   });
 
@@ -811,6 +824,7 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         project?.generationContext || buildGenerationContextFromBranch(branch, subFeature),
         project?.creditsConsumed,
         project?.planningTaskId,
+        project?.directGeneration,
       );
       if (mapped.length) projects.push(...mapped);
     });
@@ -943,6 +957,19 @@ const mapJobs = (
         const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
         if (!matchedProject) return;
         if ((matchedProject.results || []).length > 0 || Number(matchedProject.completedCount || 0) > 0) return;
+        if ((matchedProject.plans || []).length > 0) {
+          const planningTaskId = String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim();
+          projects.push({
+            ...matchedProject,
+            status: 'planning',
+            backendJobId: job.id,
+            creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || matchedProject.creditsConsumed,
+            planningTaskId: mergeIdentityTextList(matchedProject.planningTaskId, planningTaskId),
+            taskCount: Math.max(Number(matchedProject.taskCount || 0) || 0, matchedProject.plans?.length || 0, 1),
+            completedCount: 0,
+          });
+          return;
+        }
         const planningText = String((job.result as any)?.content || (job.result as any)?.text || '').trim();
         const plans = parseOneClickPlanningText(planningText, job.id);
         if (plans.length === 0) return;
@@ -962,7 +989,7 @@ const mapJobs = (
           sourceType: matchedProject.sourceType || 'persisted',
           backendJobId: job.id,
           creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed),
-          planningTaskId: job.providerTaskId || (job.result as any)?.providerTaskId || job.id,
+          planningTaskId: String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || undefined,
           plans,
           selectedPlanId: plans.find((plan) => plan.selected)?.id || plans[0]?.id,
         });
@@ -991,7 +1018,7 @@ const mapJobs = (
             createdAt,
             module,
             subFeature: matchedProject.subFeature || subFeature,
-            taskId: String(job.providerTaskId || job.result?.providerTaskId || job.id || '').trim() || undefined,
+            taskId: String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
             backendJobId: job.id,
             creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
             error: errorMessage,
@@ -1017,10 +1044,11 @@ const mapJobs = (
           const resultJobId = String(result.backendJobId || '').trim();
           const resultTaskId = String(result.taskId || result.id || '').trim();
           const resultPlanId = String(result.planId || '').trim();
+          const hasConcreteJobIdentity = Boolean(job.id || providerTaskId);
           const matches = Boolean(
             (resultJobId && resultJobId === job.id)
             || (providerTaskId && resultTaskId === providerTaskId)
-            || (payloadPlanId && resultPlanId === payloadPlanId && (result.imageUrl || result.videoUrl || result.status === 'error'))
+            || (!hasConcreteJobIdentity && payloadPlanId && resultPlanId === payloadPlanId && (result.imageUrl || result.videoUrl || result.status === 'error'))
           );
           return matches && Boolean(result.imageUrl || result.videoUrl || result.status === 'error');
         });
@@ -1039,24 +1067,17 @@ const mapJobs = (
               createdAt,
               module,
               subFeature: matchedProject.subFeature || subFeature,
-              taskId: String(job.providerTaskId || job.result?.providerTaskId || job.id || '').trim() || undefined,
+              taskId: String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
               backendJobId: job.id,
               creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
             }))
           : [];
-        const incomingKeys = new Set(nextJobResults.flatMap((result) => [
-          result.planId ? `plan:${result.planId}` : '',
-          result.taskId ? `task:${result.taskId}` : '',
-          result.backendJobId ? `job:${result.backendJobId}` : '',
-          result.id ? `id:${result.id}` : '',
-        ].filter(Boolean)));
+        const incomingKeys = new Set(nextJobResults.flatMap((result) => getGeneratedResultMergeKeys(result)));
         const existingResults = (matchedProject.results || []).filter((result) => {
-          const keys = [
-            result.planId ? `plan:${result.planId}` : '',
-            result.taskId ? `task:${result.taskId}` : '',
-            result.backendJobId ? `job:${result.backendJobId}` : '',
-            result.id ? `id:${result.id}` : '',
-          ].filter(Boolean);
+          if ((matchedProject.subFeature || subFeature) !== 'first_image' && payloadPlanId && String(result.planId || '').trim() === payloadPlanId) {
+            return false;
+          }
+          const keys = getGeneratedResultMergeKeys(result);
           return !keys.some((key) => incomingKeys.has(key));
         });
         const mergedResults = [...existingResults, ...nextJobResults];
@@ -1100,7 +1121,7 @@ const mapJobs = (
           createdAt,
           module,
           subFeature: matchedTerminalProject.subFeature || subFeature,
-          taskId: String(providerTaskId || job.id || '').trim() || undefined,
+          taskId: String(providerTaskId || '').trim() || undefined,
           backendJobId: job.id,
           creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
         }));
@@ -1149,7 +1170,7 @@ const mapJobs = (
             result: job.result,
             model: job.payload?.model || job.result?.model || job.provider,
             aspectRatio: job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio,
-            taskId: job.providerTaskId || job.result?.providerTaskId || job.id,
+            taskId: job.providerTaskId || job.result?.providerTaskId,
             backendJobId: job.id,
             creditsConsumed: job.result?.creditsConsumed,
             subFeature,
@@ -1162,7 +1183,7 @@ const mapJobs = (
             result: job.result,
             model: job.payload?.model || job.result?.model || job.provider,
             aspectRatio: job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio,
-            taskId: job.providerTaskId || job.result?.providerTaskId || job.id,
+            taskId: job.providerTaskId || job.result?.providerTaskId,
             backendJobId: job.id,
             error: job.errorMessage || job.errorCode || '任务失败',
             subFeature,
@@ -1217,7 +1238,7 @@ const mapJobs = (
             createdAt,
             module,
             subFeature,
-            taskId: String(job.providerTaskId || job.result?.providerTaskId || job.id || '').trim() || undefined,
+            taskId: String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
             backendJobId: job.id,
             error: job.status === 'queued' ? '任务已提交，等待执行' : '任务正在运行',
           }];
@@ -1273,7 +1294,7 @@ const filterDeletedProjects = (
     const projectIds = [
       project.id,
       project.backendJobId,
-      project.planningTaskId,
+      ...splitIdentityText(project.planningTaskId),
       project.id.startsWith('job-') ? project.id.slice(4) : '',
     ].map((value) => String(value || '').trim()).filter(Boolean);
     if (projectIds.some((id) => deletedProjectIds.has(id) || deletedJobIds.has(id))) return [];
@@ -1304,12 +1325,80 @@ const shouldReplaceProjectSnapshot = (existing: ShellProjectData | undefined, ne
 const hasCompletedMediaResult = (result: ShellGeneratedResult) =>
   result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl);
 
-const getGeneratedResultMergeKeys = (result: ShellGeneratedResult) => [
-  result.planId ? `plan:${result.planId}` : '',
-  result.taskId ? `task:${result.taskId}` : '',
-  result.backendJobId ? `job:${result.backendJobId}` : '',
-  result.id ? `id:${result.id}` : '',
-].filter(Boolean);
+const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectData => {
+  if (project.module !== MODULE_VALUES.ONE_CLICK) return project;
+  const plans = Array.isArray(project.plans) ? project.plans : [];
+  const hasClientPlanIds = plans.some((plan) => {
+    const id = String(plan?.id || '').trim();
+    return id && !isPlanningGeneratedPlanId(id);
+  });
+  const filteredPlans = hasClientPlanIds
+    ? plans.filter((plan) => !isPlanningGeneratedPlanId(plan?.id))
+    : plans;
+  const droppedPlanIds = new Set(
+    plans
+      .filter((plan) => !filteredPlans.some((kept) => String(kept?.id || '') === String(plan?.id || '')))
+      .map((plan) => String(plan?.id || '').trim())
+      .filter(Boolean),
+  );
+
+  let results = (project.results || []).filter((result) => {
+    const planId = String(result?.planId || '').trim();
+    return !planId || !droppedPlanIds.has(planId);
+  });
+
+  if ((project.subFeature || '') !== 'first_image') {
+    const scopedResults: ShellGeneratedResult[] = [];
+    const indexByPlanId = new Map<string, number>();
+    results.forEach((result) => {
+      const planId = String(result?.planId || '').trim();
+      if (!planId) {
+        scopedResults.push(result);
+        return;
+      }
+      const existingIndex = indexByPlanId.get(planId);
+      if (typeof existingIndex === 'number') {
+        scopedResults[existingIndex] = result;
+        return;
+      }
+      indexByPlanId.set(planId, scopedResults.length);
+      scopedResults.push(result);
+    });
+    results = scopedResults;
+  }
+
+  const completedCount = results.filter(hasCompletedMediaResult).length;
+  const planCount = filteredPlans.length;
+  const taskCount = planCount > 0
+    ? ((project.subFeature || '') === 'first_image'
+      ? Math.max(Number(project.taskCount || 0) || 0, results.length, planCount, 1)
+      : planCount)
+    : Math.max(Number(project.taskCount || 0) || 0, results.length, 1);
+  const selectedPlanId = filteredPlans.some((plan) => String(plan?.id || '') === String(project.selectedPlanId || ''))
+    ? project.selectedPlanId
+    : filteredPlans.find((plan) => plan.selected)?.id || filteredPlans[0]?.id || project.selectedPlanId;
+
+  return {
+    ...project,
+    plans: filteredPlans.length > 0 ? filteredPlans : project.plans,
+    selectedPlanId,
+    results,
+    taskCount,
+    completedCount,
+  };
+};
+
+const getGeneratedResultMergeKeys = (result: ShellGeneratedResult) => {
+  const concreteKeys = [
+    result.taskId ? `task:${result.taskId}` : '',
+    result.backendJobId ? `job:${result.backendJobId}` : '',
+    result.id ? `id:${result.id}` : '',
+  ].filter(Boolean);
+  if (concreteKeys.length > 0) return concreteKeys;
+  return [
+    result.planId ? `plan:${result.planId}` : '',
+  ].filter(Boolean);
+};
 
 const shouldReplaceGeneratedResult = (existing: ShellGeneratedResult, next: ShellGeneratedResult) => {
   const existingCompleted = hasCompletedMediaResult(existing);
@@ -1346,13 +1435,49 @@ const mergeProjectResultsByIdentity = (
   return results;
 };
 
+const mergeProjectPlansById = (
+  existingPlans: ShellProjectData['plans'] = [],
+  nextPlans: ShellProjectData['plans'] = [],
+) => {
+  const plans: NonNullable<ShellProjectData['plans']> = [];
+  const indexById = new Map<string, number>();
+  const upsert = (plan: NonNullable<ShellProjectData['plans']>[number]) => {
+    if (!plan) return;
+    const id = String(plan.id || '').trim();
+    if (!id) {
+      plans.push(plan);
+      return;
+    }
+    const existingIndex = indexById.get(id);
+    if (typeof existingIndex === 'number') {
+      plans[existingIndex] = { ...plans[existingIndex], ...plan };
+      return;
+    }
+    indexById.set(id, plans.length);
+    plans.push(plan);
+  };
+  (existingPlans || []).forEach(upsert);
+  (nextPlans || []).forEach(upsert);
+  return plans.length > 0 ? plans : undefined;
+};
+
+const mergeIdentityTextList = (...values: Array<string | undefined>) => {
+  const merged = Array.from(new Set(
+    values
+      .flatMap((value) => splitIdentityText(value)),
+  ));
+  return merged.length > 0 ? merged.join(', ') : undefined;
+};
+
 const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData): ShellProjectData => {
   if (!shouldReplaceProjectSnapshot(existing, next)) return existing;
   const results = mergeProjectResultsByIdentity(existing.results || [], next.results || []);
+  const plans = mergeProjectPlansById(existing.plans, next.plans);
   const completedCount = results.filter(hasCompletedMediaResult).length;
   const taskCount = Math.max(
     Number(existing.taskCount || 0) || 0,
     Number(next.taskCount || 0) || 0,
+    plans?.length || 0,
     results.length,
     1,
   );
@@ -1370,9 +1495,12 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
     ...next,
     status,
     results,
+    plans,
     taskCount,
     completedCount,
     completedAt: completedCount >= taskCount ? (next.completedAt || existing.completedAt) : existing.completedAt,
+    planningTaskId: mergeIdentityTextList(existing.planningTaskId, next.planningTaskId),
+    directGeneration: existing.directGeneration || next.directGeneration,
   };
 };
 
@@ -1392,7 +1520,7 @@ export const buildShellDataSnapshot = (
     }
     byId.set(project.id, mergeProjectSnapshot(existing, project));
   });
-  const projects = Array.from(byId.values());
+  const projects = Array.from(byId.values()).map(normalizeOneClickProjectCard);
   return {
     projects,
     tasks: jobData.tasks,

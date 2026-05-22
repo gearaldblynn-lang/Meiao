@@ -20,6 +20,7 @@ import { extractShellSchemeField } from './shellSchemeFields';
 import { getImageDimensions, resizeImage } from '../utils/imageUtils';
 import { normalizeFetchedImageBlob } from '../utils/imageBlobUtils.mjs';
 import { persistGeneratedAsset } from '../services/persistedAssetClient';
+import { resolveShellSkuCount } from './shellSkuCount';
 
 export { extractShellSchemeField } from './shellSchemeFields';
 
@@ -73,6 +74,9 @@ export interface ShellWorkflowImageResult {
   fileName?: string;
   sourceUrl?: string;
   error?: string;
+  status?: 'completed' | 'generating' | 'error';
+  message?: string;
+  errorCode?: string;
 }
 
 const MODULE_LABELS: Record<string, string> = {
@@ -267,10 +271,7 @@ const buildOneClickConfig = (input: ShellGenerateInput): OneClickConfig => {
 
 const buildSkuConfig = (input: ShellGenerateInput): SkuConfig => {
   const moduleConfig = buildShellModuleConfig(input);
-  const explicitIndexes = Object.entries(input.params)
-    .filter(([key, value]) => /^skuCopyText_\d+$/.test(key) && String(value || '').trim())
-    .map(([key]) => Number(key.replace('skuCopyText_', '')));
-  const count = Math.max(toPositiveInt(firstParam(input.params, ['count'], '4'), 4), ...explicitIndexes.map((index) => index + 1), 1);
+  const count = resolveShellSkuCount(input.params);
   const combinations = Array.from({ length: Math.min(count, 20) }).map((_, index) => {
     const skuCopyText = String(input.params[`skuCopyText_${index}`] || '').trim();
     return {
@@ -592,7 +593,35 @@ export const uploadShellMaterial = async (
 
 export const runShellImageGeneration = async (input: ShellGenerateInput) => {
   const allMaterials = buildOrderedMaterialsForGeneration(input);
-  const imageUrls = allMaterials.map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
+  const materialImageUrls = allMaterials.map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
+  const productImageUrls = (input.materials.product || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
+  const giftImageUrls = (input.materials.gift || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
+  const logoImageUrls = (input.materials.logo || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
+  const consistencyImageUrls = [...productImageUrls, ...giftImageUrls, ...logoImageUrls];
+  const supplementalImageUrls = (input.materials.reference || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
+  const variationSourceResultUrl = typeof input.taskMetadata?.sourceResultUrl === 'string'
+    ? resolvePublicAssetUrl(input.taskMetadata.sourceResultUrl, input.publicBaseUrl || '')
+    : '';
+  const editSourceResultUrl = typeof input.taskMetadata?.sourceResultUrl === 'string'
+    ? resolvePublicAssetUrl(input.taskMetadata.sourceResultUrl, input.publicBaseUrl || '')
+    : '';
+  const isOneClickResultEdit = Boolean(
+    input.module === AppModule.ONE_CLICK
+    && editSourceResultUrl
+    && typeof input.taskMetadata?.editInstruction === 'string'
+    && input.taskMetadata.editInstruction.trim()
+  );
+  const isOneClickContinuationVariation = Boolean(
+    input.module === AppModule.ONE_CLICK
+    && variationSourceResultUrl
+    && typeof input.taskMetadata?.variationInstruction === 'string'
+    && input.taskMetadata.variationInstruction.trim()
+  );
+  const imageUrls = isOneClickResultEdit
+    ? [...consistencyImageUrls, editSourceResultUrl, ...supplementalImageUrls]
+    : isOneClickContinuationVariation
+      ? [variationSourceResultUrl, ...materialImageUrls]
+      : materialImageUrls;
   if (imageUrls.length === 0) {
     throw new Error('请先上传产品图或参考素材，再提交生成任务。');
   }
@@ -615,6 +644,9 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
         replicationReferenceUrl: typeof input.taskMetadata?.sourceReferenceUrl === 'string' ? input.taskMetadata.sourceReferenceUrl : null,
         previousResultUrl: typeof input.taskMetadata?.sourceResultUrl === 'string' ? input.taskMetadata.sourceResultUrl : null,
         variationInstruction: typeof input.taskMetadata?.variationInstruction === 'string' ? input.taskMetadata.variationInstruction : null,
+        editInstruction: typeof input.taskMetadata?.editInstruction === 'string' ? input.taskMetadata.editInstruction : null,
+        supplementalReferenceUrls: supplementalImageUrls,
+        hasProductReferences: (input.materials.product || []).length > 0,
         includeCopyGuardrails: true,
       })
     : [
@@ -806,6 +838,23 @@ export const runShellBuyerShowWorkflow = async (
         prompt,
       );
       if (generation.status !== 'success' || !generation.imageUrl) {
+        if (generation.taskId) {
+          const pendingItem: ShellWorkflowImageResult = {
+            imageUrl: '',
+            prompt,
+            taskId: generation.taskId,
+            model: getImageResultModelLabel(config),
+            aspectRatio: config.aspectRatio,
+            fileName: `方案${setIndex + 1}-图${taskIndex + 1}`,
+            status: generation.status === 'generating' ? 'generating' : 'error',
+            error: generation.message || `买家秀第 ${setIndex + 1} 套第 ${taskIndex + 1} 张生成失败`,
+            message: generation.message,
+            errorCode: generation.errorCode,
+          };
+          results.push(pendingItem);
+          onItemCompleted?.(pendingItem, results.length, total);
+          if (generation.status === 'generating') break;
+        }
         throw new Error(generation.message || `买家秀第 ${setIndex + 1} 套第 ${taskIndex + 1} 张生成失败`);
       }
       if (isFirstImage) setBenchmarkUrl = generation.imageUrl;
@@ -822,6 +871,7 @@ export const runShellBuyerShowWorkflow = async (
         model: getImageResultModelLabel(config),
         aspectRatio: config.aspectRatio,
         fileName: `方案${setIndex + 1}-图${taskIndex + 1}`,
+        status: 'completed',
       };
       results.push(item);
       onItemCompleted?.(item, results.length, total);
@@ -945,6 +995,24 @@ export const runShellRetouchWorkflow = async (
       prompt,
     );
     if (generation.status !== 'success' || !generation.imageUrl) {
+      if (generation.taskId) {
+        const pendingItem: ShellWorkflowImageResult = {
+          imageUrl: '',
+          prompt,
+          taskId: generation.taskId,
+          model: getImageResultModelLabel(config),
+          aspectRatio: config.aspectRatio,
+          fileName: material?.fileName || `精修图片 ${index + 1}`,
+          sourceUrl,
+          status: generation.status === 'generating' ? 'generating' : 'error',
+          error: generation.message || `第 ${index + 1} 张精修失败`,
+          message: generation.message,
+          errorCode: generation.errorCode,
+        };
+        results.push(pendingItem);
+        onItemCompleted?.(pendingItem, index + 1, sourceUrls.length);
+        continue;
+      }
       throw new Error(generation.message || `第 ${index + 1} 张精修失败`);
     }
     const finalUrl = await maybeResizeAndPersistRetouchResult(
@@ -962,6 +1030,7 @@ export const runShellRetouchWorkflow = async (
       aspectRatio: config.aspectRatio,
       fileName: material?.fileName || `精修图片 ${index + 1}`,
       sourceUrl,
+      status: 'completed',
     };
     results.push(item);
     onItemCompleted?.(item, index + 1, sourceUrls.length);

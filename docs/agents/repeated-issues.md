@@ -20,6 +20,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-05-21 - Shell duplicate submit before visible feedback
+
+- Symptom: 用户点击底部提交后短时间没有明显反馈，连续点击会创建多个生成任务卡片；已在白底精修/产品精修入口复现，同类问题会影响所有未纳入提交锁的底部生成入口。
+- Environment: local development / cloud production frontend shell
+- Root cause: 新版底部提交锁只覆盖 `video:generation`，白底精修等生成入口在素材上传和 job 创建前没有同步 ref 锁；后端 job 去重只能复用已创建的 active job，挡不住前端先创建多个独立项目占位。
+- Fix: `shouldGuardGenerationSubmit` 覆盖所有可运行底部生成模块：`one_click`、`translation`、`buyer_show`、`retouch`、`video`、`xhs_cover`；`handleGenerate` 使用同步 ref 短锁保护“点击到任务卡/后端 job 创建确认”这段临界区，收到 `onJobCreated` 或已创建可见任务后立即释放提交按钮，不能用活跃任务状态把整个生成周期串行锁死。
+- Regression check: `node --test src/shell/components/destructiveActions.test.mjs src/components/uiArchitecture.test.mjs`
+- Files/tests: `src/ShellMigratedApp.tsx`, `src/shell/components/destructiveActions.test.mjs`, `src/components/uiArchitecture.test.mjs`
+- Avoid next time: 新增任务入口时先确认“点击到可见项目卡片出现前”的同步锁，不要只依赖 React 状态、按钮 disabled 或后端 job dedupe。
+
 ### Cloud, local, and GitHub are different sources of truth
 
 - Symptom: A change appears fixed locally or exists on GitHub, but cloud behavior is unchanged.

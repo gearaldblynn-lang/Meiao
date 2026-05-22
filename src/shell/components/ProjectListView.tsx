@@ -22,6 +22,7 @@ interface Props {
   onRegenerateResult?: (projectId: string, resultId: string, instruction?: string) => void;
   onConfirmStoryboardImaging?: (projectId: string) => void;
   onFissionResult?: (projectId: string, resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
+  onEditResult?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
   onConfirmPlan?: (projectId: string, plan: any) => void;
   onUpdatePlans?: (projectId: string, plans: any[]) => void;
@@ -38,7 +39,7 @@ interface Props {
 
 const ProjectListView: React.FC<Props> = ({
   projects, tasks, title, description, emptyIcon, emptyTitle, emptySubtitle,
-  onDeleteResult, onDeleteProject, onDeletePlan, onRegenerateResult, onFissionResult, onRecoverResult, onCancelTask,
+  onDeleteResult, onDeleteProject, onDeletePlan, onRegenerateResult, onFissionResult, onEditResult, onRecoverResult, onCancelTask,
   onConfirmPlan, onUpdatePlans, onRegeneratePlans, onConfirmStoryboardImaging, onImportStoryboardToGeneration,
   subFeatures, activeSubFeature, onSubFeatureChange,
   beforeProjects,
@@ -253,6 +254,7 @@ const ProjectListView: React.FC<Props> = ({
                 onRegenerate={(rid, instruction) => onRegenerateResult?.(project.id, rid, instruction)}
                 onConfirmStoryboardImaging={onConfirmStoryboardImaging}
                 onFission={(rid, mode, instruction) => onFissionResult?.(project.id, rid, mode, instruction)}
+                onEdit={(rid, instruction, files) => onEditResult?.(project.id, rid, instruction, files)}
                 onRecover={(rid) => onRecoverResult?.(project.id, rid)}
                 onConfirmPlan={onConfirmPlan}
                 onUpdatePlans={onUpdatePlans}

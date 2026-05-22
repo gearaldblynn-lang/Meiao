@@ -99,8 +99,14 @@ const requireModelAssetUrl = (value: string, publicBaseUrl: string, label: strin
 
 const normalizeModelAssetUrls = async (imageUrls: string | string[], label = '素材') => {
   const publicBaseUrl = await resolveRuntimePublicBaseUrl();
+  const seen = new Set<string>();
   return (Array.isArray(imageUrls) ? imageUrls : [imageUrls])
     .map((url, index) => requireModelAssetUrl(url, publicBaseUrl, `${label}${index + 1}`))
+    .filter((url) => {
+      if (seen.has(url)) return false;
+      seen.add(url);
+      return true;
+    })
     .filter(Boolean);
 };
 
@@ -205,24 +211,45 @@ const waitForJobResult = async (
       if (allowAutoRecover && shouldAutoRecoverKieJob(timeoutJob?.job)) {
         return recoverKieProviderTask(timeoutJob.job.providerTaskId, signal, timeoutJob.job.taskType === 'kie_video', kieClientConfigPresent);
       }
+      const fallbackTaskId = notifiedProviderTaskId || getUserVisibleTaskId(timeoutJob?.job);
+      if (fallbackTaskId) {
+        return {
+          imageUrl: '',
+          taskId: fallbackTaskId,
+          status: 'generating',
+          message: '任务已提交云端，结果待同步',
+          errorCode: String(timeoutJob?.job?.errorCode || error?.code || '').trim(),
+        };
+      }
       return {
         imageUrl: '',
-        taskId: getUserVisibleTaskId(timeoutJob?.job),
+        taskId: fallbackTaskId,
         status: 'error',
         message: getUserFacingKieErrorMessage({
           status: 'error',
-          taskId: getUserVisibleTaskId(timeoutJob?.job),
+          taskId: fallbackTaskId,
           message: error.message || '任务执行超时',
           errorCode: String(timeoutJob?.job?.errorCode || error?.code || '').trim(),
         }),
         errorCode: String(timeoutJob?.job?.errorCode || error?.code || '').trim(),
       };
     }
+    if (notifiedProviderTaskId) {
+      return {
+        imageUrl: '',
+        taskId: notifiedProviderTaskId,
+        status: 'generating',
+        message: '任务已提交云端，结果待同步',
+        errorCode: String(error?.code || '').trim(),
+      };
+    }
     return {
       imageUrl: '',
+      taskId: notifiedProviderTaskId,
       status: 'error',
       message: getUserFacingKieErrorMessage({
         status: 'error',
+        taskId: notifiedProviderTaskId,
         message: error.message || '任务执行失败',
         errorCode: String(error?.code || '').trim(),
       }),

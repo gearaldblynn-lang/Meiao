@@ -43,6 +43,19 @@ test('mergeGeneratedPlanResults removes stale selected results while a page is r
   assert.deepEqual(merged.map((result) => result.planId), ['p1', 'p2']);
 });
 
+test('mergeGeneratedPlanResults keeps multiple provider tasks generated from the same selected plan', () => {
+  const existing = [makeResult('p1'), makeResult('p2')];
+  const generated = [
+    { ...makeResult('p1'), id: 'kie-task-a', taskId: 'kie-task-a', imageUrl: 'https://example.com/a.png' },
+    { ...makeResult('p1'), id: 'kie-task-b', taskId: 'kie-task-b', imageUrl: 'https://example.com/b.png' },
+  ];
+
+  const merged = mergeGeneratedPlanResults(existing, generated, ['p1']);
+
+  assert.deepEqual(merged.map((result) => result.id), ['kie-task-a', 'kie-task-b', 'result-p2']);
+  assert.deepEqual(merged.filter((result) => result.planId === 'p1').map((result) => result.taskId), ['kie-task-a', 'kie-task-b']);
+});
+
 test('countCompletedProjectResults requires a completed media URL', () => {
   const results = [
     makeResult('p1'),

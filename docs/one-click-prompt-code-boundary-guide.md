@@ -5,13 +5,13 @@
 本文档用于统一一键主详链路里的三类规则，避免后续把本该写在 Prompt 里的要求、写到代码里，或者把本该由代码保证的行为、错误地塞进 Prompt。
 
 适用范围：
-- 首图：`modules/OneClick/FirstImageSubModule.tsx`
-- 主图：`modules/OneClick/MainImageSubModule.tsx`
-- 详情：`modules/OneClick/DetailPageSubModule.tsx`
-- SKU：`modules/OneClick/SkuSubModule.tsx`
-- 策划模型：`services/arkService.ts`
-- 生图文案护栏：`modules/OneClick/generationPromptUtils.ts`
-- 工作台状态：`modules/OneClick/OneClickModule.tsx`、`utils/appState.ts`
+- 首图：`src/modules/OneClick/FirstImageSubModule.tsx`
+- 主图：`src/modules/OneClick/MainImageSubModule.tsx`
+- 详情：`src/modules/OneClick/DetailPageSubModule.tsx`
+- SKU：`src/modules/OneClick/SkuSubModule.tsx`
+- 策划模型：`src/services/arkService.ts`
+- 生图文案护栏：`src/modules/OneClick/generationPromptUtils.ts`
+- 工作台状态：`src/modules/OneClick/OneClickModule.tsx`、`src/utils/appState.ts`
 
 ---
 
@@ -66,7 +66,7 @@
 ### 2.1 策划模型 Prompt 负责什么
 
 文件入口：
-- `services/arkService.ts`
+- `src/services/arkService.ts`
 - `generateMarketingSchemes`
 - `generateFirstImageReplicationSchemes`
 - `generateSkuSchemes`
@@ -90,11 +90,11 @@
 ### 2.2 生图模型 Prompt 负责什么
 
 文件入口：
-- `modules/OneClick/FirstImageSubModule.tsx`
-- `modules/OneClick/MainImageSubModule.tsx`
-- `modules/OneClick/DetailPageSubModule.tsx`
-- `modules/OneClick/SkuSubModule.tsx`
-- `modules/OneClick/generationPromptUtils.ts`
+- `src/modules/OneClick/FirstImageSubModule.tsx`
+- `src/modules/OneClick/MainImageSubModule.tsx`
+- `src/modules/OneClick/DetailPageSubModule.tsx`
+- `src/modules/OneClick/SkuSubModule.tsx`
+- `src/modules/OneClick/generationPromptUtils.ts`
 
 生图 Prompt 主责：
 - 严格保持产品一致性
@@ -114,8 +114,8 @@
 ### 2.3 代码层主责什么
 
 文件入口：
-- `modules/OneClick/OneClickModule.tsx`
-- `utils/appState.ts`
+- `src/modules/OneClick/OneClickModule.tsx`
+- `src/utils/appState.ts`
 - 四个子模块文件
 
 代码规则主责：
@@ -138,7 +138,7 @@
 ### 3.1 生图文案护栏是统一代码注入
 
 文件：
-- [generationPromptUtils.ts](/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本/modules/OneClick/generationPromptUtils.ts:1)
+- [generationPromptUtils.ts](/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本/src/modules/OneClick/generationPromptUtils.ts:1)
 
 当前统一注入内容：
 - 目标文案语言
@@ -154,8 +154,8 @@
 ### 3.2 工作台多项目是状态模型规则
 
 文件：
-- [OneClickModule.tsx](/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本/modules/OneClick/OneClickModule.tsx:1)
-- [appState.ts](/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本/utils/appState.ts:79)
+- [OneClickModule.tsx](/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本/src/modules/OneClick/OneClickModule.tsx:1)
+- [appState.ts](/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本/src/utils/appState.ts:79)
 
 当前规则：
 - 四个子功能都支持 `projects` + `activeProjectId`
@@ -170,7 +170,7 @@
 ### 3.3 首图继续裂变新开项目是工作台行为规则
 
 文件：
-- [FirstImageSubModule.tsx](/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本/modules/OneClick/FirstImageSubModule.tsx:825)
+- [FirstImageSubModule.tsx](/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本/src/modules/OneClick/FirstImageSubModule.tsx:825)
 
 当前规则：
 - 继续裂变前先分叉新项目

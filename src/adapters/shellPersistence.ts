@@ -51,6 +51,7 @@ type ShellProject = {
     sourceReferenceUrl?: string;
     variationMode?: 'scene' | 'palette' | 'custom';
     variationInstruction?: string;
+    editInstruction?: string;
     sourceResultUrl?: string;
   }>;
   selectedPlanId?: string;
@@ -72,6 +73,7 @@ type ShellProject = {
   backendJobId?: string;
   creditsConsumed?: number;
   planningTaskId?: string;
+  directGeneration?: boolean;
 };
 
 type ShellTranslationFile = {
@@ -261,6 +263,7 @@ export const upsertOneClickProjectIntoPersistedState = (
     generationContext: project.generationContext,
     creditsConsumed: project.creditsConsumed,
     planningTaskId: project.planningTaskId,
+    directGeneration: project.directGeneration,
   };
   const nextProjects = [
     ...(Array.isArray(branch.projects) ? branch.projects.filter((item) => item?.id !== project.id) : []),

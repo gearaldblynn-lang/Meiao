@@ -23,10 +23,84 @@ interface BuildOneClickImagePromptOptions {
   replicationReferenceUrl?: string | null;
   previousResultUrl?: string | null;
   variationInstruction?: string | null;
+  editInstruction?: string | null;
+  supplementalReferenceUrls?: string[];
+  hasProductReferences?: boolean;
   platform?: string | null;
   includeCopyGuardrails?: boolean;
   publicBaseUrl?: string;
 }
+
+const buildOneClickVariationPrompt = ({
+  previousResultUrl,
+  variationInstruction,
+  hasProductReferences,
+  publicBaseUrl,
+}: Pick<BuildOneClickImagePromptOptions, 'previousResultUrl' | 'variationInstruction' | 'hasProductReferences' | 'publicBaseUrl'>) => {
+  const safePreviousResultUrl = resolvePublicAssetUrl(previousResultUrl || '', publicBaseUrl || '');
+  const instruction = String(variationInstruction || '').trim();
+  const productReferenceLine = hasProductReferences
+    ? '随 input_urls 一起上传的原商品素材图，用于保持产品外观、包装结构、标签文字、logo、材质、颜色和比例一致。'
+    : '如 input_urls 中存在原商品素材图，仅用于保持产品外观、包装结构、标签文字、logo、材质、颜色和比例一致。';
+
+  return [
+    '【裂变基准图】',
+    safePreviousResultUrl || '上一张生成结果图',
+    '',
+    '【原素材参考图】',
+    productReferenceLine,
+    '',
+    '【任务需求】',
+    instruction || '按当前选择的裂变方向修改画面。',
+    '',
+    '【约束规范】',
+    '- 以裂变基准图为直接修改基础，保持其画面结构、构图、排版骨架、卖点信息、信息层级和文案位置不变。',
+    '- 保持产品与原素材参考图一致，不修改产品主体、包装、标签、logo、材质、真实颜色、比例和细节。',
+    '- 换场景、换配色或氛围调整只作用于背景、边框、装饰、光影和非产品视觉元素，不作用于产品本身。',
+    '- 若自定义任务明确要求修改某个卖点、文案或局部信息，只修改对应内容，其他结构和信息保持不变。',
+  ].filter(Boolean).join('\n');
+};
+
+export const buildOneClickResultEditPrompt = ({
+  previousResultUrl,
+  editInstruction,
+  supplementalReferenceUrls = [],
+  hasProductReferences,
+  publicBaseUrl,
+}: Pick<BuildOneClickImagePromptOptions, 'previousResultUrl' | 'editInstruction' | 'supplementalReferenceUrls' | 'hasProductReferences' | 'publicBaseUrl'>) => {
+  const safePreviousResultUrl = resolvePublicAssetUrl(previousResultUrl || '', publicBaseUrl || '');
+  const instruction = String(editInstruction || '').trim();
+  const safeSupplementUrls = supplementalReferenceUrls
+    .map((url) => resolvePublicAssetUrl(url || '', publicBaseUrl || ''))
+    .filter(Boolean);
+  const productReferenceLine = hasProductReferences
+    ? '随 input_urls 一起上传的原素材商品图，用于保持产品外观、包装结构、标签文字、logo、材质、真实颜色、比例和细节一致。'
+    : '如 input_urls 中存在原素材商品图，用于保持产品外观、包装结构、标签文字、logo、材质、真实颜色、比例和细节一致。';
+  const supplementalReferenceLine = safeSupplementUrls.length > 0
+    ? safeSupplementUrls.map((url, index) => `补充参考图${index + 1}：${url}`).join('\n')
+    : '未上传补充参考图时，仅根据修改基准图、原素材商品图和任务需求生成新结果。';
+
+  return [
+    '【修改基准图】',
+    safePreviousResultUrl || '需修改的生成图',
+    '',
+    '【原素材商品图】',
+    productReferenceLine,
+    '',
+    '【补充参考图】',
+    supplementalReferenceLine,
+    '',
+    '【任务需求】',
+    instruction || '按用户输入要求修改当前生成图。',
+    '',
+    '【约束规范】',
+    '- 生成新结果，保留原图；不要覆盖、替换或删除原来的生成结果。',
+    '- 以修改基准图为直接编辑基础，保持其画面结构、构图、排版骨架、卖点信息、信息层级和文案位置不变。',
+    '- 产品一致性默认以原素材商品图为准，保持产品主体、包装、标签、logo、材质、真实颜色、比例和细节不变。',
+    '- 若任务需求明确说明补充参考图是新的产品、包装、局部替换或新增元素参考，则对应部分以补充参考图为准；未被任务点名的产品部分仍以原素材商品图为准。',
+    '- 修改只作用于任务需求点名的局部、场景、配色、装饰、光影、道具或信息；没有点名的产品主体、卖点层级和版式关系保持不变。',
+  ].filter(Boolean).join('\n');
+};
 
 export const buildOneClickImagePrompt = ({
   schemeContent,
@@ -35,10 +109,32 @@ export const buildOneClickImagePrompt = ({
   replicationReferenceUrl,
   previousResultUrl,
   variationInstruction,
+  editInstruction,
+  supplementalReferenceUrls,
+  hasProductReferences = false,
   platform,
   includeCopyGuardrails = true,
   publicBaseUrl = '',
 }: BuildOneClickImagePromptOptions) => {
+  if (previousResultUrl && editInstruction?.trim()) {
+    return buildOneClickResultEditPrompt({
+      previousResultUrl,
+      editInstruction,
+      supplementalReferenceUrls,
+      hasProductReferences,
+      publicBaseUrl,
+    });
+  }
+
+  if (previousResultUrl && variationInstruction?.trim()) {
+    return buildOneClickVariationPrompt({
+      previousResultUrl,
+      variationInstruction,
+      hasProductReferences,
+      publicBaseUrl,
+    });
+  }
+
   const imageRoleLines: string[] = [];
   const priorityLines: string[] = [];
   const replacementLines: string[] = [];

@@ -93,3 +93,29 @@ test('task action buttons use an exclusive pending key to prevent duplicate subm
   assert.match(projectCardSource, /disabled=\{isConfirmPlanPending \|\| isProjectActivelyGenerating\}/);
   assert.match(projectCardSource, /disabled=\{isStoryboardImagePending\}/);
 });
+
+test('all runnable bottom generation submits are guarded before visible project cards exist', () => {
+  const shellSource = read('../../ShellMigratedApp.tsx');
+  const submitGuardBlock = shellSource.match(/const shouldGuardGenerationSubmit = [\s\S]*?\n\);/)?.[0] || '';
+  const handleGeneratePrefix = shellSource.match(/const handleGenerate = useCallback\(async \(\) => \{[\s\S]*?if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'storyboard'\)/)?.[0] || '';
+  const oneClickBranch = shellSource.match(/if \(targetModule === AppModuleObj\.ONE_CLICK\) \{[\s\S]*?\n    \}\n\n    \/\/ Create project/)?.[0] || '';
+  const genericProjectBranch = shellSource.match(/\/\/ Create project[\s\S]*?const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n    \};/)?.[0] || '';
+  const translationBranch = shellSource.match(/if \(targetModule === AppModuleObj\.TRANSLATION\) \{[\s\S]*?\n      return;\n    \}\n\n    if \(targetModule === AppModuleObj\.ONE_CLICK\)/)?.[0] || '';
+
+  assert.match(submitGuardBlock, /module === AppModuleObj\.ONE_CLICK/);
+  assert.match(submitGuardBlock, /module === AppModuleObj\.TRANSLATION/);
+  assert.match(submitGuardBlock, /module === AppModuleObj\.BUYER_SHOW/);
+  assert.match(submitGuardBlock, /module === AppModuleObj\.RETOUCH/);
+  assert.match(submitGuardBlock, /module === AppModuleObj\.VIDEO/);
+  assert.match(submitGuardBlock, /module === AppModuleObj\.XHS_COVER/);
+  assert.doesNotMatch(shellSource, /hasActiveGuardedGeneration/);
+  assert.doesNotMatch(shellSource, /hasCurrentActiveGuardedGeneration/);
+  assert.doesNotMatch(shellSource, /hasCurrentActiveGuardedVideoGeneration/);
+  assert.match(handleGeneratePrefix, /const beginGuardedSubmit = \(\) => !hasGuardedSubmitLock \|\| beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
+  assert.match(handleGeneratePrefix, /const releaseGuardedSubmit = \(\) => \{/);
+  assert.match(shellSource, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\)/);
+  assert.match(translationBranch, /onJobCreated: \(jobId: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
+  assert.match(oneClickBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
+  assert.match(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
+  assert.match(oneClickBranch, /finally \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*setIsGenerating\(false\);[\s\S]*\}/);
+});
