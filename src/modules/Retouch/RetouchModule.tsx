@@ -5,7 +5,7 @@ import RetouchSidebar from './RetouchSidebar';
 import { analyzeRetouchTask } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
 import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
-import { createZipAndDownload, resizeImage, getImageDimensions } from '../../utils/imageUtils';
+import { downloadRemoteFilesAsZip, resizeImage, getImageDimensions } from '../../utils/imageUtils';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
 import { releaseObjectURLs, safeCreateObjectURL } from '../../utils/urlUtils';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
@@ -402,14 +402,10 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
       },
     });
     try {
-      const zipFiles = await Promise.all(
-        completedTasks.map(async (task) => {
-          const resp = await fetch(task.resultUrl!);
-          const blob = await resp.blob();
-          return { blob, path: `retouched_${getRetouchTaskName(task)}` };
-        })
+      await downloadRemoteFilesAsZip(
+        completedTasks.map((task) => ({ url: task.resultUrl!, path: `retouched_${getRetouchTaskName(task)}` })),
+        `mayo_retouch_batch_${Date.now()}`,
       );
-      await createZipAndDownload(zipFiles, `mayo_retouch_batch_${Date.now()}`);
       void logActionSuccess({
         module: 'retouch',
         action: 'download_batch',

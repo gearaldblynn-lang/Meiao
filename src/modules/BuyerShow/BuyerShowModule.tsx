@@ -5,7 +5,7 @@ import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { generateBuyerShowPrompts } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
 import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
-import { createZipAndDownload } from '../../utils/imageUtils';
+import { createZipAndDownload, resolveFilesForZipDownload } from '../../utils/imageUtils';
 import { logInternalAction, logActionStart, logActionSuccess, logActionFailure, logActionInterrupted } from '../../services/loggingService';
 import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
 import { playWorkspaceCompletionSound, primeWorkspaceCompletionSound } from '../../utils/workspacePreferenceEffects';
@@ -893,6 +893,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     });
     try {
       const files: { blob: Blob; path: string }[] = [];
+      const remoteFiles: { url: string; path: string }[] = [];
       const completedSets = persistentState.sets.filter(s => s.status === 'completed' || s.tasks.some(t => t.status === 'completed'));
       if (completedSets.length === 0) throw new Error("无可用方案");
 
@@ -904,15 +905,11 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
           const completedTasks = set.tasks.filter(t => t.status === 'completed' && t.resultUrl);
           for (let i = 0; i < completedTasks.length; i++) {
               const task = completedTasks[i];
-              try {
-                  const response = await fetch(task.resultUrl!, { mode: 'cors', cache: 'no-cache' });
-                  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                  const blob = await response.blob();
-                  const fileName = `图${i+1}_${task.hasFace ? '含模特' : '细节'}.png`;
-                  files.push({ blob, path: `${setFolder}/${fileName}` });
-              } catch (e) { console.error(e); }
+              const fileName = `图${i+1}_${task.hasFace ? '含模特' : '细节'}.png`;
+              remoteFiles.push({ url: task.resultUrl!, path: `${setFolder}/${fileName}` });
           }
       }
+      files.push(...await resolveFilesForZipDownload(remoteFiles, { skipFailed: true }));
       await createZipAndDownload(files, `mayo_buyershow_${Date.now()}`);
       void logActionSuccess({
         module: 'buyer_show',

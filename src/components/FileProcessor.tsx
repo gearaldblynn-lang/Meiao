@@ -5,7 +5,7 @@ import { releaseObjectURLs, safeCreateObjectURL } from '../utils/urlUtils';
 import { normalizeFetchedImageBlob } from '../utils/imageBlobUtils.mjs';
 import { uploadToCos } from '../services/tencentCosService';
 import { processWithKieAi, recoverKieAiTask } from '../services/kieAiService';
-import { resizeImage, createZipAndDownload, getImageDimensions, getImageDimensionsFromUrl, fileToDataUrl } from '../utils/imageUtils';
+import { resizeImage, createZipAndDownload, resolveFilesForZipDownload, getImageDimensions, getImageDimensionsFromUrl, fileToDataUrl } from '../utils/imageUtils';
 import ComparisonModal from './ComparisonModal';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../services/loggingService';
 import { shouldValidateTranslationAspectRatio } from '../modules/Translation/translationConfigUtils.mjs';
@@ -622,15 +622,11 @@ const FileProcessor: React.FC<Props> = ({
       },
     });
     try {
-      const zipData = await Promise.all(completed.map(async (f) => {
-        if (f.resultBlob instanceof Blob) {
-          return { blob: f.resultBlob, path: normalizeZipPath(f.relativePath || 'translation_result.png') };
-        }
-
-        const response = await fetch(getClientSafeAssetUrl(f.resultUrl!));
-        const blob = await response.blob();
-        return { blob, path: normalizeZipPath(f.relativePath || 'translation_result.png') };
-      }));
+      const zipData = await resolveFilesForZipDownload(completed.map((f) => (
+        f.resultBlob instanceof Blob
+          ? { blob: f.resultBlob, path: normalizeZipPath(f.relativePath || 'translation_result.png') }
+          : { url: getClientSafeAssetUrl(f.resultUrl!), path: normalizeZipPath(f.relativePath || 'translation_result.png') }
+      )));
       await createZipAndDownload(zipData, `translation_export_${Date.now()}`);
       void logActionSuccess({
         module: 'translation',
