@@ -16,8 +16,8 @@ import {
   searchKnowledgeChunks,
   stripAgentToolCalls,
   MODULE_INTERFACES,
-} from '../modules/AgentCenter/agentCenterUtils.mjs';
-import { buildLogFilterOptions, normalizeLogPagination } from '../modules/Account/logQueryUtils.mjs';
+} from '../src/modules/AgentCenter/agentCenterUtils.mjs';
+import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
 import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
 import {
@@ -36,8 +36,8 @@ import {
 import { executeProviderJob } from './providerGateway.mjs';
 import { compactAppStateForStorage, mergeAppStateForStorage } from './appStateMerge.mjs';
 import { buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins } from './jobRuntime.mjs';
-import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../utils/gptImage2.mjs';
-import { isExternallyReachableBaseUrl } from '../utils/publicNetworkUrl.mjs';
+import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../src/utils/gptImage2.mjs';
+import { isExternallyReachableBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import {
   buildAssetPublicPath,
   ensureAssetSchema,

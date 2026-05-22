@@ -198,22 +198,22 @@ node --test scripts/acceptance-report.test.mjs
 执行：
 
 ```bash
-rg -n 'api\.kie\.ai|ark\.cn-beijing\.volces\.com|runninghub\.cn|kieai\.redpandaai\.co|import\.meta\.env|VITE_[A-Z0-9_]*KEY' services modules utils vite.config.ts types.ts App.tsx index.tsx server
+rg -n 'api\.kie\.ai|ark\.cn-beijing\.volces\.com|runninghub\.cn|kieai\.redpandaai\.co|import\.meta\.env|VITE_[A-Z0-9_]*KEY' services modules utils vite.config.ts src/types.ts App.tsx index.tsx server
 ```
 
 结果摘要：
 
 - 第三方域名命中仅出现在 `server/providerGateway.mjs`
-- 前端 `services/`、`modules/`、`utils/` 未发现第三方域名直连
+- 前端 `src/services/`、`src/modules/`、`src/utils/` 未发现第三方域名直连
 - 未发现前端 `import.meta.env` 或 `VITE_*KEY` 形式的真实密钥注入
 
 补充核对：
 
-- `services/internalApi.ts` 已统一调用 `/api/*`
-- `services/kieAiService.ts`、`services/arkService.ts`、`services/runningHubService.ts` 已改为内部任务提交 / 查询模式
-- `modules/Settings/GlobalApiSettings.tsx` 已改为只读系统状态页
-- `utils/appState.ts` 已将 `kieApiKey`、`arkApiKey`、`rhApiKey` 等持久化字段清空
-- `modules/Account/AccountManagement.tsx` 已显示 `jobId`、`providerTaskId`、`provider`、`retryCount`
+- `src/services/internalApi.ts` 已统一调用 `/api/*`
+- `src/services/kieAiService.ts`、`src/services/arkService.ts`、`src/services/runningHubService.ts` 已改为内部任务提交 / 查询模式
+- `src/modules/Settings/GlobalApiSettings.tsx` 已改为只读系统状态页
+- `src/utils/appState.ts` 已将 `kieApiKey`、`arkApiKey`、`rhApiKey` 等持久化字段清空
+- `src/modules/Account/AccountManagement.tsx` 已显示 `jobId`、`providerTaskId`、`provider`、`retryCount`
 - `server/index.mjs` 已接入 `/api/jobs`、`/api/jobs/:id`、`/api/jobs/:id/cancel`、`/api/jobs/:id/retry`、`/api/jobs/recover`、`/api/system/config`、`/api/assets/upload`
 
 结论：

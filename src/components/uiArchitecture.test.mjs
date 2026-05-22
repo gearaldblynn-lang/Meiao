@@ -123,6 +123,16 @@ test('sidebar navigation separates business and system groups with readable labe
   assert.match(sidebar, /AppModuleObj\.AGENT_CENTER/);
   assert.match(sidebar, /const MAIN: NavDef\[] = \[/);
   assert.match(sidebar, /const BOTTOM: NavDef\[] = \[/);
+  assert.match(sidebar, /collapsed: boolean/);
+  assert.match(sidebar, /onToggleCollapsed: \(\) => void/);
+  assert.match(sidebar, /data-sidebar-collapsed=\{collapsed \? 'true' : 'false'\}/);
+  assert.match(sidebar, /展开侧栏/);
+  assert.match(sidebar, /收起侧栏/);
+  assert.match(sidebar, /出海翻译/);
+  assert.match(sidebar, /产品精修/);
+  assert.match(sidebar, /视频生成/);
+  assert.match(sidebar, /设置中心/);
+  assert.match(sidebar, /账户管理/);
 });
 
 test('app workspace mounts the agent center as a top-level module', () => {
@@ -136,7 +146,7 @@ test('app workspace mounts the agent center as a top-level module', () => {
 
 test('app workspace lazy loads major modules to avoid one giant startup bundle', () => {
   const app = read('../ShellMigratedApp.tsx');
-  const viteConfig = read('../vite.config.ts');
+  const viteConfig = read('../../vite.config.ts');
 
   assert.match(app, /React,\s*\{\s*Suspense,/);
   assert.match(app, /lazy\(\(\) => import\('\.\/shell\/modules\/AgentCenter\/AgentCenterModule'\)\)/);
@@ -214,7 +224,7 @@ test('shell hydration restores data without auto navigating away from landing', 
   assert.doesNotMatch(applyShellSnapshotBody, /setPageMode\('module'\)/);
 });
 
-test('video generation is gated as a subfeature without locking storyboard or diagnosis', () => {
+test('video generation permission is gated only on the generation subfeature', () => {
   const app = read('../ShellMigratedApp.tsx');
   const types = read('../types.ts');
   const internalApi = read('../services/internalApi.ts');
@@ -229,8 +239,8 @@ test('video generation is gated as a subfeature without locking storyboard or di
   assert.match(accountManagement, /videoGeneration/);
   assert.match(app, /canUseVideoGenerationFeature/);
   assert.match(app, /getModuleSubFeatures\(AppModuleObj\.VIDEO, currentUser\)/);
-  assert.match(app, /activeModule === AppModuleObj\.VIDEO && activeSubFeature === 'generation'/);
-  assert.doesNotMatch(app, /targetModule === AppModuleObj\.VIDEO && activeSubFeature === 'storyboard' && !canUseVideoGenerationFeature/);
+  assert.match(app, /targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'generation'/);
+  assert.doesNotMatch(app, /targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'storyboard' && !canUseVideoGenerationFeature/);
   assert.match(bottomInputBar, /generationDisabledReason/);
   assert.match(subFeatureTabs, /item\.description \|\| '待制作'/);
 });
@@ -313,22 +323,30 @@ test('project details expose actual task credits and provider task ids', () => {
   assert.match(projectCard, /总积分消耗/);
   assert.match(projectCard, /本次消耗/);
   assert.match(projectCard, /任务 ID/);
-  assert.match(projectCard, /策划 ID/);
+  assert.match(projectCard, /策划任务 ID/);
+  assert.match(projectCard, /copyTextToClipboard/);
+  assert.match(projectCard, /document\.execCommand\('copy'\)/);
+  assert.match(projectCard, /splitTaskIds\(project\.planningTaskId\)/);
   assert.match(projectCard, /result\.creditsConsumed/);
   assert.match(projectCard, /planningTaskId=\{project\.planningTaskId\}/);
   assert.match(projectCard, /backendJobId\?: string/);
+  assert.match(projectCard, /directGeneration\?: boolean/);
+  assert.match(projectCard, /const hasPlanningUsage = !project\.directGeneration &&/);
   assert.match(projectCard, /project\.module === 'one_click' && \(/);
   assert.match(projectCard, /Boolean\(project\.backendJobId\)/);
-  assert.match(projectCard, /project\.planningTaskId \|\| project\.backendJobId/);
+  assert.doesNotMatch(projectCard, /project\.planningTaskId \|\| project\.backendJobId/);
   assert.match(planEditor, /planningTaskId\?: string/);
-  assert.match(planEditor, /visiblePlanningTaskId/);
+  assert.match(planEditor, /planningTaskIds = splitTaskIds\(planningTaskId\)/);
+  assert.match(planEditor, /setPlanningIdsExpanded/);
+  assert.match(planEditor, /策划任务 ID/);
+  assert.match(planEditor, /生图任务 ID/);
   assert.match(planEditor, /策划分析/);
 
   assert.match(shellApp, /creditsConsumed: planResult\.creditsConsumed/);
   assert.match(shellApp, /let planningProviderTaskId = ''/);
   assert.match(shellApp, /let activePlanningBackendJobId = ''/);
-  assert.match(shellApp, /const visiblePlanningTaskId = providerId \|\| backendJobId/);
-  assert.match(shellApp, /planningTaskId: planResult\.taskId \|\| planningProviderTaskId \|\| activePlanningBackendJobId/);
+  assert.doesNotMatch(shellApp, /providerId \|\| backendJobId/);
+  assert.match(shellApp, /planningTaskId: planResult\.taskId \|\| planningProviderTaskId \|\| undefined/);
   assert.match(shellApp, /const generationTaskIdByPlanId = new Map<string, string>\(\)/);
   assert.match(shellApp, /upsertGeneratingPlanResult/);
   assert.match(shellApp, /createPlanJobCreatedHandler\(plan, index, batchPrompt\)/);
@@ -355,6 +373,17 @@ test('project details expose actual task credits and provider task ids', () => {
   assert.match(videoModule, /planningTaskId: project\.planningTaskId/);
   assert.match(videoModule, /creditsConsumed: project\.creditsConsumed/);
   assert.match(videoModule, /creditsConsumed: board\.creditsConsumed/);
+});
+
+test('one click planning cards preview multiple plans instead of only the first plan', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+
+  assert.match(projectCard, /const planPreviewItems = \(project\.plans \|\| \[\]\)\.slice/);
+  assert.match(projectCard, /已生成 \{project\.plans\?\.length \|\| 0\} 个策划/);
+  assert.match(projectCard, /planPreviewItems\.map/);
+  assert.match(projectCard, /打开查看全部/);
+  assert.doesNotMatch(projectCard, /project\.plans\?\.\[0\]\?\.title/);
+  assert.doesNotMatch(projectCard, /project\.plans\?\.\[0\]\?\.schemeContent/);
 });
 
 test('shell runtime snapshot drops stale local-only video generation placeholders', () => {
@@ -406,13 +435,45 @@ test('shell startup bounds browser-local state before parsing and logs storage d
 test('shell image generation keeps recoverable KIE tasks as pending sync instead of failed history', () => {
   const app = read('../ShellMigratedApp.tsx');
 
-  assert.match(app, /import \{ isRecoverableKieTaskResult \} from '\.\/services\/kieAiService';/);
+  assert.match(app, /import \{ isRecoverableKieTaskResult, recoverKieAiTask \} from '\.\/services\/kieAiService';/);
   assert.match(app, /const isRecoverableShellWorkflowResult = \(result: unknown\) =>/);
   assert.match(app, /isRecoverableKieTaskResult\(record\.taskId, record\.message, record\.errorCode\)/);
   assert.match(app, /let pendingSyncProject: Project \| null = null;/);
+  assert.match(app, /let activeProviderTaskId = '';/);
+  assert.match(app, /const recoverableItemResult = \{[\s\S]*\.\.\.itemResult,[\s\S]*taskId: itemResult\.taskId \|\| activeProviderTaskId,[\s\S]*\}/);
+  assert.match(app, /const recoverablePlanResult = \{[\s\S]*\.\.\.result,[\s\S]*taskId: result\.taskId \|\| generationTaskIdByPlanId\.get\(plan\.id\),[\s\S]*\}/);
+  assert.match(app, /if \(isRecoverableShellWorkflowResult\(recoverableItemResult\)\) \{/);
+  assert.match(app, /if \(isRecoverableShellWorkflowResult\(recoverablePlanResult\)\) \{/);
   assert.match(app, /status: 'generating'/);
   assert.match(app, /结果待同步/);
   assert.match(app, /pendingSyncProject \? '任务已提交云端，结果待同步，可稍后点击同步。'/);
+});
+
+test('plan editor keeps recover enabled for failed cards with KIE task ids', () => {
+  const planEditor = read('../shell/components/PlanEditor.tsx');
+
+  assert.match(planEditor, /const canRecoverResult = Boolean\(result\?\.id && onRecoverResult && \(hasResult \|\| result\?\.taskId\)\)/);
+  assert.doesNotMatch(planEditor, /label="找回"[\s\S]{0,180}disabled=\{!hasResult\}/);
+});
+
+test('shell recover polls a single result by KIE task id instead of only refreshing state', () => {
+  const app = read('../ShellMigratedApp.tsx');
+
+  assert.match(app, /const handleRecoverResult = useCallback\(async \(projectId: string, resultId\?: string\)/);
+  assert.match(app, /const recoverTaskId = String\(targetResult\?\.taskId \|\| targetResult\?\.backendJobId \|\| ''\)\.trim\(\)/);
+  assert.match(app, /await recoverKieAiTask\(recoverTaskId, apiConfig, controller\.signal, isVideoRecover\)/);
+  assert.match(app, /status: 'completed'/);
+  assert.match(app, /await persistProjectToSharedState\(recoveredProject\)/);
+});
+
+test('retouch workflow keeps submitted KIE items pending instead of throwing frontend failures', () => {
+  const workflow = read('../adapters/shellWorkflow.ts');
+  const app = read('../ShellMigratedApp.tsx');
+
+  assert.match(workflow, /if \(generation\.status !== 'success' \|\| !generation\.imageUrl\) \{[\s\S]*if \(generation\.taskId\) \{[\s\S]*status: generation\.status === 'generating' \? 'generating' : 'error'[\s\S]*onItemCompleted\?\.\(pendingItem/s);
+  assert.match(app, /const itemStatus(?:: GeneratedResult\['status'\])? = item\.status \|\| \(item\.imageUrl \? 'completed' : 'generating'\)/);
+  assert.match(app, /const hasSpecialGenerating = specialWorkflowResults\.some\(\(item\) => item\.status === 'generating'\)/);
+  assert.match(app, /if \(hasSpecialGenerating\) \{[\s\S]*pendingSyncProject = completedProject;[\s\S]*\}/);
 });
 
 test('shell material refresh stores large local files in IndexedDB instead of draft JSON', () => {
@@ -438,7 +499,7 @@ test('shell material refresh stores large local files in IndexedDB instead of dr
 
 test('storyboard generation uploads local draft assets before building model-readable URLs', () => {
   const app = read('../ShellMigratedApp.tsx');
-  const storyboardGenerateBody = app.match(/if \(activeModule === AppModuleObj\.VIDEO && activeSubFeature === 'storyboard'\) \{([\s\S]*?)\n    \}\n\n    if \(activeModule === AppModuleObj\.VIDEO && activeSubFeature === 'diagnosis'\)/)?.[1] || '';
+  const storyboardGenerateBody = app.match(/if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'storyboard'\) \{([\s\S]*?)\n    \}\n\n    if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'diagnosis'\)/)?.[1] || '';
 
   assert.match(app, /ensureMaterialRemoteUrls/);
   assert.match(app, /loadShellDraftAsset/);
@@ -475,7 +536,7 @@ test('shell generation paths upload local draft assets before provider submissio
   assert.match(oneClickImageBody, /materials: planMaterials/);
 });
 
-test('short video generation blocks duplicate submits while a provider task is active', () => {
+test('guarded generation blocks duplicate submits only during submit handoff', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
   const workflow = read('../adapters/shellWorkflow.ts');
@@ -484,16 +545,20 @@ test('short video generation blocks duplicate submits while a provider task is a
 
   assert.match(shellApp, /generationSubmitLocksRef/);
   assert.match(shellApp, /shouldGuardGenerationSubmit\(targetModule, targetSubFeature\)/);
-  assert.match(shellApp, /hasActiveGuardedVideoGeneration/);
-  assert.match(shellApp, /当前已有短视频生成任务未返回/);
-  assert.match(shellApp, /hasCurrentActiveGuardedVideoGeneration/);
+  assert.match(shellApp, /module === AppModuleObj\.ONE_CLICK/);
+  assert.doesNotMatch(shellApp, /hasActiveGuardedGeneration/);
+  assert.doesNotMatch(shellApp, /当前已有任务未返回/);
+  assert.doesNotMatch(shellApp, /hasCurrentActiveGuardedGeneration/);
   assert.match(shellApp, /beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(shellApp, /endGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(shellApp, /persistProjectToSharedState\(pendingVideoProject\)/);
   assert.match(shellApp, /isSubmitLocked=\{isCurrentGenerationSubmitLocked\}/);
   assert.match(bottomInputBar, /isSubmitLocked\?: boolean/);
-  assert.match(bottomInputBar, /disabled=\{isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)\}/);
-  assert.match(bottomInputBar, /if \(!isSubmitLocked\) onGenerate\(\)/);
+  assert.match(bottomInputBar, /const isGenerateDisabled = isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)/);
+  assert.match(bottomInputBar, /const isSubmitBusy = isSubmitLocked/);
+  assert.match(bottomInputBar, /submitLabel = isSubmitBusy \? '任务处理中\.\.\.' : generateLabel/);
+  assert.match(bottomInputBar, /if \(!isGenerateDisabled\) onGenerate\(\)/);
+  assert.match(bottomInputBar, /disabled=\{isGenerateDisabled\}/);
   assert.match(workflow, /resolution: normalizeSeedanceApiResolution\(firstParam\(input\.params, \['videoResolution'\], '720p'\)\)/);
   assert.doesNotMatch(workflow, /requestId: `\$\{Date\.now\(\)\}-/);
   assert.match(serverIndex, /VIDEO_JOB_DEDUPE_WINDOW_MS = 1000 \* 60 \* 60/);
@@ -582,7 +647,7 @@ test('one click confirm-plan flow generates the selected scheme once instead of 
   assert.match(generationBody, /shellProjectId: projectId/);
   assert.match(generationBody, /shellPlanId: plan\.id/);
   assert.match(generationBody, /backendJobId: generationBackendJobIdByPlanId\.get\(plan\.id\)/);
-  assert.match(generationBody, /const totalTaskCount = Math\.max\(/);
+  assert.match(generationBody, /const totalTaskCount = batchCount/);
   assert.match(generationBody, /taskCount: totalTaskCount/);
   assert.match(generationBody, /mergeGeneratedPlanResults\(project\.results \|\| \[\], nextResults, selectedPlanIds\)/);
   assert.doesNotMatch(generationBody, /resolveBatchCount\(AppModuleObj\.ONE_CLICK, sceneSubFeature, currentParams\)/);
@@ -601,9 +666,7 @@ test('one click shell planning dialog exposes old-style selected batch generatio
   assert.match(planEditor, /const hasErrorResult = result\?\.status === 'error'/);
   assert.match(planEditor, /hasErrorResult \? '生成失败' : isGenerating \? '生成中'/);
   assert.match(projectCard, /const hasGeneratingResult = project\.results\.some/);
-  assert.match(projectCard, /\.\.\.\(project\.selectedPlanId \? \[project\.selectedPlanId\] : \[\]\)/);
-  assert.match(projectCard, /hasGeneratingResult\s*\n\s*\|\| hasMissingSelectedPlanResult/);
-  assert.match(projectCard, /const pendingPlans = project\.plans\.filter\(\(plan\) => !completedPlanIds\.has\(plan\.id\) && !activePlanIds\.has\(plan\.id\)\)/);
+  assert.match(projectCard, /const pendingPlans = project\.plans\.filter\(\(plan\) => plan\.selected && !completedPlanIds\.has\(plan\.id\) && !activePlanIds\.has\(plan\.id\)\)/);
   assert.match(projectCard, /const firstBenchmarkPlanId = project\.module === 'one_click' && project\.subFeature === 'sku'/);
   assert.match(projectCard, /activePlanIds\.has\(firstBenchmarkPlanId\)/);
   assert.match(projectCard, /onConfirmPlan\(project\.id, pendingPlans\)/);
@@ -630,6 +693,22 @@ test('one click shell submissions route through real planning before image gener
   assert.doesNotMatch(oneClickModule, /if \(planningProject && planningProject\.plans\)/);
   assert.match(projectCard, /PlanEditor/);
   assert.match(projectCard, /onConfirmPlan\?\.\(project\.id, plan\)/);
+});
+
+test('project result regeneration submits a real per-result image task instead of only refilling the composer', () => {
+  const app = read('../ShellMigratedApp.tsx');
+  const regenerateBody = app.match(/const handleRegenerateResult = useCallback\(async \(projectId: string, resultId: string, revisionInstruction = ''\) => \{([\s\S]*?)\n  \}, \[projects, addToast/)?.[1] || '';
+
+  assert.match(regenerateBody, /const updateProjectWithRegeneratedResult = \(nextResult: GeneratedResult\) =>/);
+  assert.match(regenerateBody, /status: 'generating'/);
+  assert.match(regenerateBody, /title: `重生成: \$\{project\.name\}`/);
+  assert.match(regenerateBody, /runShellImageGeneration/);
+  assert.match(regenerateBody, /module: project\.module/);
+  assert.match(regenerateBody, /__retryResultId: result\.id/);
+  assert.match(regenerateBody, /await persistProjectToSharedState\(pendingProject\)/);
+  assert.match(regenerateBody, /await persistProjectToSharedState\(completedProject\)/);
+  assert.match(regenerateBody, /addToast\('已提交重生成任务'/);
+  assert.doesNotMatch(regenerateBody, /已把旧 prompt 回填到底部输入区，可调整后重新生成/);
 });
 
 test('video workspace keeps the shell UI while migrating storyboard and diagnosis logic', () => {
@@ -666,7 +745,7 @@ test('video workspace keeps the shell UI while migrating storyboard and diagnosi
   assert.match(bottomInputBar, /isStoryboardViralReplicationContext/);
   assert.match(bottomInputBar, /输入产品的参数信息、真实卖点等；不填写则默认复刻参考视频文案/);
   assert.match(bottomInputBar, /canGenerateWithoutPrompt/);
-  assert.match(bottomInputBar, /disabled=\{isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)\}/);
+  assert.match(bottomInputBar, /disabled=\{isGenerateDisabled\}/);
   assert.doesNotMatch(bottomInputBar, /disabled=\{Boolean\(disabledReason\) \|\| isGenerating/);
   assert.match(shellApp, /const isViralStoryboard = draftRuntimeConfig\.videoGenerationMode === 'viral_split'/);
   assert.match(shellApp, /if \(!storyboardPrompt && !isViralStoryboard\)/);
@@ -849,8 +928,12 @@ test('login screen keeps typing lightweight by avoiding per-keystroke page reren
 
 test('project cards do not let stale generating status lock completed detail projects', () => {
   const projectCard = read('../shell/components/ProjectCard.tsx');
+  const activeGeneratingBody = projectCard.match(/const isProjectActivelyGenerating = project\.status === 'generating' && \(([\s\S]*?)\n  \);/)?.[1] || '';
 
   assert.match(projectCard, /const isProjectActivelyGenerating = project\.status === 'generating' && \(/);
+  assert.match(activeGeneratingBody, /hasGeneratingResult/);
+  assert.match(activeGeneratingBody, /!hasPlans && projectProgressIncomplete/);
+  assert.doesNotMatch(activeGeneratingBody, /hasMissingSelectedPlanResult/);
   assert.match(projectCard, /const displayProjectStatus: Project\['status'\] = project\.status === 'generating' && !isProjectActivelyGenerating/);
   assert.match(projectCard, /projectStatus=\{displayProjectStatus\}/);
   assert.doesNotMatch(projectCard, /disabled=\{isConfirmPlanPending \|\| project\.status === 'generating'\}/);
@@ -1256,7 +1339,8 @@ test('shell batch counts come from actual SKU and buyer-show params instead of a
   const shellApp = read('../ShellMigratedApp.tsx');
   const arkService = read('../services/arkService.ts');
 
-  assert.match(shellApp, /const fallbackCount = explicitCount > 0 \? explicitCount : 4;/);
+  assert.match(shellApp, /resolveShellSkuCount\(params\)/);
+  assert.match(shellApp, /return \{ \.\.\.oneClickParams, count: String\(resolveShellSkuCount\(params\)\) \}/);
   assert.match(shellApp, /subFeature === 'sku'/);
   assert.match(shellApp, /subFeature === 'main_image'/);
   assert.match(shellApp, /subFeature === 'detail_page'/);
@@ -1758,14 +1842,27 @@ test('account management exposes current user profile avatar settings', () => {
   assert.match(userAvatar, /avatarPreset/);
 });
 
-test('migrated shell keeps a compact sidebar rail with landing entry and theme toggle', () => {
+test('migrated shell keeps a collapsible sidebar with landing entry and theme toggle', () => {
   const sidebar = read('../shell/components/layout/SidebarNavigation.tsx');
+  const app = read('../ShellMigratedApp.tsx');
 
   assert.match(sidebar, /onModuleChange: \(m: AppModule \| 'landing'\) => void/);
   assert.match(sidebar, /title="首页"/);
   assert.match(sidebar, /Hexagon/);
   assert.match(sidebar, /onToggleTheme/);
   assert.match(sidebar, /theme === 'dark' \? <Sun size=\{18\} \/> : <Moon size=\{18\} \/>/);
+  assert.match(sidebar, /collapsed \? 'var\(--sidebar-width\)' : 160/);
+  assert.match(sidebar, /after:bg-\[image:var\(--sidebar-divider\)\]/);
+  assert.match(sidebar, /--sidebar-divider/);
+  assert.match(sidebar, /!collapsed && <span className="min-w-0 truncate text-\[13px\] font-semibold">\{item\.label\}<\/span>/);
+  assert.match(sidebar, /collapsed && \(/);
+  assert.match(sidebar, /aria-expanded=\{!collapsed\}/);
+  assert.match(app, /sidebarCollapsed: boolean/);
+  assert.match(app, /sidebarCollapsed: typeof saved\.sidebarCollapsed === 'boolean' \? saved\.sidebarCollapsed : undefined/);
+  assert.match(app, /const \[sidebarCollapsed, setSidebarCollapsed\] = useState<boolean>/);
+  assert.match(app, /sidebarCollapsed,\s*\n\s*\}, shellLocalScopeUserId\)/);
+  assert.match(app, /collapsed=\{sidebarCollapsed\}/);
+  assert.match(app, /onToggleCollapsed=\{\(\) => setSidebarCollapsed\(\(prev\) => !prev\)\}/);
 });
 
 test('migrated shell exposes logout from the account management header', () => {
@@ -1808,9 +1905,15 @@ test('compact shell removes leftover top placeholder height and keeps the sideba
   const sidebar = read('../shell/components/layout/SidebarNavigation.tsx');
   const manager = read('../modules/AgentCenter/AgentCenterManager.tsx');
 
-  assert.match(sidebar, /h-full flex flex-col items-center shrink-0 py-3 gap-1/);
+  assert.match(sidebar, /h-full flex flex-col shrink-0 py-3 gap-1 px-2/);
   assert.match(sidebar, /title="首页"/);
-  assert.match(sidebar, /w-\[44px\] h-\[44px\] rounded-2xl/);
+  assert.match(sidebar, /h-\[44px\] w-full items-center rounded-2xl/);
+  assert.match(sidebar, /collapsed \? 'justify-center px-0' : 'justify-start gap-3 px-3'/);
+  assert.match(sidebar, /flex h-6 w-6 shrink-0 items-center justify-center/);
+  assert.match(sidebar, /absolute right-\[-16px\] top-\[72px\] z-20 flex h-8 w-4/);
+  assert.match(sidebar, /borderTopRightRadius: 6/);
+  assert.match(sidebar, /borderBottomRightRadius: 6/);
+  assert.match(sidebar, /collapsed \? 'justify-center' : 'justify-start'/);
   assert.match(manager, /const renderSectionTabs = \(\) => \(/);
   assert.match(manager, /absolute right-0 top-0 z-10/);
   assert.doesNotMatch(manager, /mb-6 flex flex-wrap gap-3/);
@@ -1988,7 +2091,7 @@ test('shell first-image fission can use the generated result as the variant base
   assert.match(shellApp, /sourceReferenceUrl: undefined/);
   assert.match(shellApp, /sourceResultUrl: resolvePublicAssetUrl\(result\.imageUrl, publicBaseUrl\) \|\| ''/);
   assert.match(shellApp, /schemeContent: fissionInstruction \|\| `按\$\{variantLabel\}方向继续裂变这张生成图。`/);
-  assert.match(shellApp, /buildVariantMaterials\(variantPlan, 'first_image'\)/);
+  assert.match(shellApp, /buildVariantMaterials\(baseMaterials, variantPlan, 'first_image'\)/);
   assert.match(shellApp, /Object\.entries\(baseMaterials \|\| \{\}\)\.map/);
   assert.match(shellApp, /\.\.\.\(next\.reference \|\| \[\]\)/);
   assert.doesNotMatch(shellApp, /const variantBaseMaterials = hasMaterialInputs\(projectMaterials\) \? projectMaterials : filteredMaterials/);
@@ -2231,4 +2334,43 @@ test('project card preview prefers completed media over failed or pending placeh
 
   assert.match(projectCard, /const previewResult = project\.results\.find\(\(result\) => isCompletedMediaResult\(result\)\) \|\| project\.results\[0\];/);
   assert.match(projectCard, /renderMedia\(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-\[1\.03\]'\)/);
+});
+
+test('one click completed result edit supports supplement image upload and keeps original result instead of replacing it', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const projectListView = read('../shell/components/ProjectListView.tsx');
+  const oneClickShellModule = read('../shell/modules/OneClick/OneClickModule.tsx');
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(projectCard, /onEdit\?: \(resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(projectCard, /editDialog/);
+  assert.match(projectCard, /补充参考图/);
+  assert.match(projectCard, /type="file"/);
+  assert.match(projectCard, /onEdit\(editDialog\.resultId, finalInstruction, editDialog\.files\)/);
+  assert.match(projectListView, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(oneClickShellModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(shellApp, /const handleEditResult = useCallback/);
+  assert.match(shellApp, /id: `project-edit-\$\{Date\.now\(\)\}`/);
+  assert.match(shellApp, /directGeneration: true/);
+  assert.match(shellApp, /model: storedContext\?\.params\?\.model \|\| result\.model \|\| currentParams\.model \|\| 'GPT Image 2'/);
+  assert.match(shellApp, /editInstruction: finalInstruction/);
+  assert.match(shellApp, /runOneClickPlanGeneration\(editProject, \[editPlan\], editMaterials\)/);
+});
+
+test('one click fission and edit are direct image-generation projects without planning credits and keep source model params', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const shellPersistence = read('../adapters/shellPersistence.ts');
+  const shellDataAdapter = read('../adapters/shellDataAdapter.ts');
+
+  assert.match(projectCard, /!project\.directGeneration && \(Boolean\(project\.planningTaskId\)/);
+  assert.match(shellApp, /variationInstruction: fissionInstruction \|\| `按\$\{variantLabel\}方向继续裂变这张生成图。`/);
+  assert.match(shellApp, /variantProject\.generationContext = cloneGenerationContext\(variantPlan\.schemeContent \|\| fissionInstruction, fissionParams, variantMaterials\)/);
+  assert.match(shellApp, /const variantMaterials = buildVariantMaterials\(baseMaterials, variantPlan, 'first_image'\)/);
+  assert.match(shellApp, /if \(plan\.sourceResultUrl && !plan\.editInstruction\?\.trim\(\) && !plan\.variationInstruction\?\.trim\(\)\)/);
+  assert.match(shellApp, /directGeneration: true/);
+  assert.match(shellPersistence, /directGeneration\?: boolean/);
+  assert.match(shellPersistence, /directGeneration: project\.directGeneration/);
+  assert.match(shellDataAdapter, /directGeneration\?: boolean/);
+  assert.match(shellDataAdapter, /directGeneration: directGeneration === true/);
 });

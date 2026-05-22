@@ -77,7 +77,8 @@ export const compactAppStateForStorage = (state = {}) => {
   return next;
 };
 
-const collectItemKeys = (item) => {
+const collectItemKeys = (item, options = {}) => {
+  const { includeProjectId = false, includeNestedResults = true } = options;
   const keys = new Set();
   const add = (prefix, value) => {
     const normalized = compactKey(value);
@@ -86,8 +87,10 @@ const collectItemKeys = (item) => {
   add('id', item?.id);
   add('job', item?.backendJobId);
   add('provider', item?.providerTaskId || item?.taskId || item?.kieTaskId);
-  add('project', item?.projectId);
-  if (Array.isArray(item?.results)) {
+  if (includeProjectId) {
+    add('project', item?.projectId);
+  }
+  if (includeNestedResults && Array.isArray(item?.results)) {
     item.results.forEach((result) => {
       add('result', result?.id);
       add('provider', result?.providerTaskId || result?.taskId || result?.kieTaskId);
@@ -254,10 +257,103 @@ export const mergeArrayByStableKeys = (existingItems = [], incomingItems = []) =
   return merged;
 };
 
+const splitIdentityText = (value) => String(value || '')
+  .split(/[,\s]+/)
+  .map((item) => item.trim())
+  .filter(Boolean);
+
+const mergeIdentityText = (...values) => {
+  const merged = Array.from(new Set(values.flatMap(splitIdentityText)));
+  return merged.join(',');
+};
+
+const maxNumber = (...values) => Math.max(
+  0,
+  ...values.map((value) => Number(value || 0)).filter((value) => Number.isFinite(value)),
+);
+
+const hasOwnArray = (object, key) => Object.hasOwn(object || {}, key) && Array.isArray(object?.[key]);
+
+const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
+  const mergedResults = mergeArrayByStableKeys(existingItem?.results, incomingItem?.results);
+  const mergedPlans = mergeArrayByStableKeys(existingItem?.plans, incomingItem?.plans);
+  const mergedSchemes = mergeArrayByStableKeys(existingItem?.schemes, incomingItem?.schemes);
+  const taskCount = maxNumber(
+    existingItem?.taskCount,
+    incomingItem?.taskCount,
+    mergedResults.length,
+    mergedPlans.length,
+    mergedSchemes.length,
+  );
+  const completedCount = maxNumber(existingItem?.completedCount, incomingItem?.completedCount);
+  const planningTaskId = mergeIdentityText(existingItem?.planningTaskId, incomingItem?.planningTaskId);
+  const providerTaskId = incomingItem?.providerTaskId || existingItem?.providerTaskId;
+  const taskId = incomingItem?.taskId || existingItem?.taskId;
+  const kieTaskId = incomingItem?.kieTaskId || existingItem?.kieTaskId;
+  return {
+    ...(existingItem || {}),
+    ...(incomingItem || {}),
+    ...(
+      hasOwnArray(existingItem, 'results') || hasOwnArray(incomingItem, 'results')
+        ? { results: mergedResults }
+        : {}
+    ),
+    ...(
+      hasOwnArray(existingItem, 'plans') || hasOwnArray(incomingItem, 'plans')
+        ? { plans: mergedPlans }
+        : {}
+    ),
+    ...(
+      hasOwnArray(existingItem, 'schemes') || hasOwnArray(incomingItem, 'schemes')
+        ? { schemes: mergedSchemes }
+        : {}
+    ),
+    ...(taskCount > 0 ? { taskCount } : {}),
+    ...(completedCount > 0 ? { completedCount } : {}),
+    ...(planningTaskId ? { planningTaskId } : {}),
+    ...(providerTaskId ? { providerTaskId } : {}),
+    ...(taskId ? { taskId } : {}),
+    ...(kieTaskId ? { kieTaskId } : {}),
+  };
+};
+
+export const mergeProjectArrayByStableKeys = (existingItems = [], incomingItems = []) => {
+  const existing = Array.isArray(existingItems) ? existingItems.filter(Boolean) : [];
+  const incoming = Array.isArray(incomingItems) ? incomingItems.filter(Boolean) : [];
+  const keyToIndex = new Map();
+  const merged = [];
+
+  const registerKeys = (item, index) => {
+    collectItemKeys(item, { includeProjectId: true }).forEach((key) => keyToIndex.set(key, index));
+  };
+
+  const push = (item, source) => {
+    const keys = collectItemKeys(item, { includeProjectId: true });
+    const duplicateIndex = Array.from(keys)
+      .map((key) => keyToIndex.get(key))
+      .find((index) => typeof index === 'number');
+    if (typeof duplicateIndex === 'number') {
+      const current = merged[duplicateIndex];
+      merged[duplicateIndex] = source === 'existing'
+        ? mergeProjectLikeItem(item, current)
+        : mergeProjectLikeItem(current, item);
+      registerKeys(merged[duplicateIndex], duplicateIndex);
+      return;
+    }
+    const index = merged.length;
+    merged.push(item);
+    registerKeys(item, index);
+  };
+
+  incoming.forEach((item) => push(item, 'incoming'));
+  existing.forEach((item) => push(item, 'existing'));
+  return merged;
+};
+
 const mergeBranchProjects = (existingBranch = {}, incomingBranch = {}) => ({
   ...existingBranch,
   ...incomingBranch,
-  projects: mergeArrayByStableKeys(existingBranch?.projects, incomingBranch?.projects),
+  projects: mergeProjectArrayByStableKeys(existingBranch?.projects, incomingBranch?.projects),
 });
 
 const mergeTranslationBranch = (existingBranch = {}, incomingBranch = {}) => ({
@@ -270,11 +366,11 @@ const mergeVideoMemory = (existingMemory = {}, incomingMemory = {}) => ({
   ...existingMemory,
   ...incomingMemory,
   tasks: mergeArrayByStableKeys(existingMemory?.tasks, incomingMemory?.tasks),
-  veoProjects: mergeArrayByStableKeys(existingMemory?.veoProjects, incomingMemory?.veoProjects),
+  veoProjects: mergeProjectArrayByStableKeys(existingMemory?.veoProjects, incomingMemory?.veoProjects),
   storyboard: {
     ...(existingMemory?.storyboard || {}),
     ...(incomingMemory?.storyboard || {}),
-    projects: mergeArrayByStableKeys(existingMemory?.storyboard?.projects, incomingMemory?.storyboard?.projects),
+    projects: mergeProjectArrayByStableKeys(existingMemory?.storyboard?.projects, incomingMemory?.storyboard?.projects),
   },
 });
 
@@ -288,7 +384,7 @@ export const mergeAppStateForStorage = (existingState = {}, incomingState = {}) 
   };
   next.shellDraft = mergedDraft;
 
-  next.shellProjects = mergeArrayByStableKeys(existing.shellProjects, incoming.shellProjects);
+  next.shellProjects = mergeProjectArrayByStableKeys(existing.shellProjects, incoming.shellProjects);
 
   next.oneClickMemory = {
     ...(existing.oneClickMemory || {}),
@@ -324,7 +420,7 @@ export const mergeAppStateForStorage = (existingState = {}, incomingState = {}) 
   next.buyerShowMemory = {
     ...(existing.buyerShowMemory || {}),
     ...(incoming.buyerShowMemory || {}),
-    sets: mergeArrayByStableKeys(existing.buyerShowMemory?.sets, incoming.buyerShowMemory?.sets),
+    sets: mergeProjectArrayByStableKeys(existing.buyerShowMemory?.sets, incoming.buyerShowMemory?.sets),
     tasks: mergeArrayByStableKeys(existing.buyerShowMemory?.tasks, incoming.buyerShowMemory?.tasks),
   };
 
@@ -333,7 +429,7 @@ export const mergeAppStateForStorage = (existingState = {}, incomingState = {}) 
   next.xhsCoverMemory = {
     ...(existing.xhsCoverMemory || {}),
     ...(incoming.xhsCoverMemory || {}),
-    projects: mergeArrayByStableKeys(existing.xhsCoverMemory?.projects, incoming.xhsCoverMemory?.projects),
+    projects: mergeProjectArrayByStableKeys(existing.xhsCoverMemory?.projects, incoming.xhsCoverMemory?.projects),
     tasks: mergeArrayByStableKeys(existing.xhsCoverMemory?.tasks, incoming.xhsCoverMemory?.tasks),
   };
 

@@ -950,7 +950,8 @@ test('shell data adapter restores completed one-click planning jobs only into pe
   assert.equal(project?.plans?.length, 1);
   assert.equal(project?.plans?.[0]?.title, '首图裂变1-复刻主图参考1');
   assert.equal(project?.creditsConsumed, 0.47);
-  assert.equal(project?.planningTaskId, 'planning-chat-job');
+  assert.equal(project?.backendJobId, 'planning-chat-job');
+  assert.equal(project?.planningTaskId, undefined);
   assert.equal(snapshot.tasks.length, 0);
 });
 
@@ -1038,6 +1039,129 @@ test('shell data adapter reconnects completed planning jobs by payload project i
   assert.equal(project?.backendJobId, 'planning-job-created-after-placeholder');
   assert.equal(project?.plans?.[0]?.title, '首图裂变1-复刻主图参考1');
   assert.equal(snapshot.projects.some((item) => item.id === 'job-planning-job-created-after-placeholder'), false);
+});
+
+test('shell data adapter keeps multiple first-image planning provider tasks on one project', () => {
+  const baseProject = {
+    id: 'first-planning-project',
+    name: '多参考图首图裂变',
+    module: 'one_click',
+    status: 'generating',
+    createdAt: '05-20',
+    results: [],
+    taskCount: 2,
+    completedCount: 0,
+    subFeature: 'first_image',
+  };
+  const makePlanningJob = (id, providerTaskId, refIndex) => ({
+    id,
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId,
+    payload: {
+      model: 'gemini-3-flash-openai',
+      shellProjectId: 'first-planning-project',
+      shellPlanningPurpose: 'one_click_planning',
+      shellReferenceIndex: refIndex,
+    },
+    result: {
+      content: `[SCHEME_START]
+- 屏序/类型：首图裂变${refIndex}-复刻主图参考${refIndex}
+- 参考图标识：复刻主图参考${refIndex}
+- 设计意图：保留第 ${refIndex} 张参考图结构
+- 画面描述：第 ${refIndex} 张参考图生成方案
+- 画面比例：1:1
+[SCHEME_END]`,
+      providerTaskId,
+      creditsConsumed: 0.34,
+    },
+    createdAt: 1000 + refIndex,
+    updatedAt: 2000 + refIndex,
+  });
+
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [baseProject],
+  }, [
+    makePlanningJob('planning-job-a', 'kie-plan-a', 1),
+    makePlanningJob('planning-job-b', 'kie-plan-b', 2),
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'first-planning-project');
+  assert.equal(project?.status, 'planning');
+  assert.equal(project?.plans?.length, 2);
+  assert.deepEqual(project?.plans?.map((plan) => plan.id), ['planning-job-a-plan-1', 'planning-job-b-plan-1']);
+  assert.deepEqual(project?.plans?.map((plan) => plan.title), ['首图裂变1-复刻主图参考1', '首图裂变2-复刻主图参考2']);
+  assert.equal(project?.planningTaskId, 'kie-plan-a, kie-plan-b');
+  assert.equal(project?.taskCount, 2);
+  assert.equal(snapshot.projects.some((item) => item.id === 'job-planning-job-b'), false);
+});
+
+test('shell data adapter keeps multiple completed image provider tasks for one plan', () => {
+  const baseProject = {
+    id: 'first-image-project-with-two-results',
+    name: '同一方案多图结果',
+    module: 'one_click',
+    status: 'generating',
+    createdAt: '05-20',
+    results: [],
+    taskCount: 2,
+    completedCount: 0,
+    subFeature: 'first_image',
+    selectedPlanId: 'plan-a',
+    plans: [{
+      id: 'plan-a',
+      title: '首图裂变方案',
+      sellingPoints: ['卖点'],
+      sceneDescription: '场景',
+      styleDirection: '风格',
+      colorPalette: '配色',
+      composition: '构图',
+      textLayout: '排版',
+      selected: true,
+      schemeContent: '首图裂变方案',
+    }],
+  };
+  const makeImageJob = (id, providerTaskId, imageUrl) => ({
+    id,
+    module: 'one_click',
+    taskType: 'image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId,
+    payload: {
+      prompt: '首图裂变方案',
+      shellProjectId: 'first-image-project-with-two-results',
+      shellPlanId: 'plan-a',
+      batchCount: 2,
+      aspectRatio: '1:1',
+      model: 'gpt-image-2',
+    },
+    result: {
+      imageUrl,
+      providerTaskId,
+      creditsConsumed: 3,
+    },
+    createdAt: 3000,
+    updatedAt: 4000,
+  });
+
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [baseProject],
+  }, [
+    makeImageJob('image-job-a', 'kie-img-a', 'https://example.com/a.png'),
+    makeImageJob('image-job-b', 'kie-img-b', 'https://example.com/b.png'),
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'first-image-project-with-two-results');
+  assert.equal(project?.status, 'completed');
+  assert.equal(project?.results.length, 2);
+  assert.deepEqual(project?.results.map((result) => result.taskId), ['kie-img-a', 'kie-img-b']);
+  assert.deepEqual(project?.results.map((result) => result.planId), ['plan-a', 'plan-a']);
+  assert.deepEqual(project?.results.map((result) => result.imageUrl), ['https://example.com/a.png', 'https://example.com/b.png']);
+  assert.equal(project?.completedCount, 2);
+  assert.equal(project?.taskCount, 2);
 });
 
 test('shell data adapter does not restore jobs hidden by deletion tombstones', () => {
@@ -1542,4 +1666,157 @@ test('shell data adapter merges completed backend video results into the origina
   assert.equal(project.results[0].mediaType, 'video');
   assert.equal(project.results[0].status, 'completed');
   assert.equal(snapshot.tasks.length, 0);
+});
+
+test('shell data adapter does not append parsed planning plans onto an existing one-click plan project', () => {
+  const plans = Array.from({ length: 4 }).map((_, index) => ({
+    id: `client-plan-${index + 1}`,
+    title: `主图${index + 1}`,
+    sellingPoints: [],
+    sceneDescription: `客户端方案 ${index + 1}`,
+    styleDirection: '',
+    colorPalette: '',
+    composition: '',
+    textLayout: '',
+    selected: true,
+    schemeContent: `客户端方案 ${index + 1}`,
+  }));
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'main-project-with-plans',
+      name: '主图四张',
+      module: 'one_click',
+      status: 'planning',
+      createdAt: '05-21',
+      results: [],
+      plans,
+      selectedPlanId: plans[0].id,
+      taskCount: 4,
+      completedCount: 0,
+      subFeature: 'main_image',
+    }],
+  }, [
+    {
+      id: 'abcdefabcdefabcdefabcdef',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'kie-planning-provider',
+      payload: {
+        shellProjectId: 'main-project-with-plans',
+        subFeature: 'main_image',
+      },
+      result: {
+        content: `[SCHEME_START]
+- 屏序/类型：主图1
+- 设计意图：不应该重新扩容
+- 画面描述：服务端重新解析出的方案 1
+[SCHEME_END]
+[SCHEME_START]
+- 屏序/类型：主图2
+- 设计意图：不应该重新扩容
+- 画面描述：服务端重新解析出的方案 2
+[SCHEME_END]
+[SCHEME_START]
+- 屏序/类型：主图3
+- 设计意图：不应该重新扩容
+- 画面描述：服务端重新解析出的方案 3
+[SCHEME_END]
+[SCHEME_START]
+- 屏序/类型：主图4
+- 设计意图：不应该重新扩容
+- 画面描述：服务端重新解析出的方案 4
+[SCHEME_END]`,
+        creditsConsumed: 0.33,
+      },
+      createdAt: 2000,
+      updatedAt: 3000,
+      finishedAt: 3000,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'main-project-with-plans');
+  assert.ok(project);
+  assert.equal(project.plans?.length, 4);
+  assert.deepEqual(project.plans?.map((plan) => plan.id), plans.map((plan) => plan.id));
+  assert.equal(project.taskCount, 4);
+  assert.equal(project.planningTaskId, 'kie-planning-provider');
+  assert.equal(project.plans?.some((plan) => plan.id.startsWith('abcdefabcdefabcdefabcdef-plan-')), false);
+});
+
+test('shell data adapter replaces same-plan one-click main-image results instead of growing task count', () => {
+  const plans = ['plan-1', 'plan-2', 'plan-3', 'plan-4'].map((id) => ({
+    id,
+    title: id,
+    sellingPoints: [],
+    sceneDescription: id,
+    styleDirection: '',
+    colorPalette: '',
+    composition: '',
+    textLayout: '',
+    selected: true,
+    schemeContent: id,
+  }));
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'main-project-retry',
+      name: '主图四张',
+      module: 'one_click',
+      status: 'generating',
+      createdAt: '05-21',
+      plans,
+      selectedPlanId: 'plan-1',
+      taskCount: 4,
+      completedCount: 1,
+      subFeature: 'main_image',
+      results: [{
+        id: 'old-provider-plan-1',
+        planId: 'plan-1',
+        imageUrl: '/old-plan-1.png',
+        prompt: '旧提示词 plan-1',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'completed',
+        createdAt: '05-21',
+        module: 'one_click',
+        subFeature: 'main_image',
+        taskId: 'old-provider-plan-1',
+        backendJobId: 'old-job-plan-1',
+      }],
+    }],
+  }, [
+    {
+      id: 'new-job-plan-1',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'new-provider-plan-1',
+      payload: {
+        prompt: '新提示词 plan-1',
+        shellProjectId: 'main-project-retry',
+        shellPlanId: 'plan-1',
+        subFeature: 'main_image',
+        batchIndex: 1,
+        batchCount: 4,
+      },
+      result: {
+        imageUrl: '/new-plan-1.png',
+        providerTaskId: 'new-provider-plan-1',
+      },
+      createdAt: 3000,
+      updatedAt: 4000,
+      finishedAt: 4000,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'main-project-retry');
+  assert.ok(project);
+  assert.equal(project.taskCount, 4);
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].planId, 'plan-1');
+  assert.equal(project.results[0].taskId, 'new-provider-plan-1');
+  assert.equal(project.results[0].imageUrl, '/new-plan-1.png');
+  assert.equal(project.results[0].prompt, '新提示词 plan-1');
 });

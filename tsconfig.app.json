@@ -36,8 +36,6 @@
   },
   "include": ["src"],
   "exclude": [
-    "src/App.tsx",
-    "src/vite.config.ts",
     "src/shell/App.tsx",
     "src/components",
     "src/modules",

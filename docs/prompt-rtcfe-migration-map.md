@@ -83,24 +83,24 @@ E Example 示例
 
 | 编号 | 模块 | 文件 | 函数或位置 | 类型 | 是否迁移 |
 |---|---|---|---|---|---|
-| P01 | 一键主详 | `services/arkService.ts` | `analyzeOneClickReferenceSet` | 参考图分析 prompt | 待确认 |
-| P02 | 产品精修 | `services/arkService.ts` | `analyzeRetouchTask` | 精修分析 prompt | 待确认 |
-| P03 | 一键主图/详情 | `services/arkService.ts` | `generateMarketingSchemes` | 主图/详情策划 prompt | 待确认 |
-| P04 | 一键 SKU | `services/arkService.ts` | `generateSkuSchemes` | SKU 策划 prompt | 待确认 |
-| P05 | 买家秀 | `services/arkService.ts` | `generateBuyerShowPrompts` | 买家秀策划 JSON prompt | 待确认 |
-| P06 | 买家秀 | `services/arkService.ts` | `generatePureEvaluations` | 买家评价文案 prompt | 待确认 |
-| P07 | 短视频 | `services/arkService.ts` | `generateVideoScript` | 视频分镜 JSON prompt | 待确认 |
-| P08 | 出海翻译 | `services/kieAiService.ts` | `buildKieAiPrompt` | 翻译/去文案图像 prompt | 待确认 |
-| P09 | 一键首图 | `modules/OneClick/FirstImageSubModule.tsx` | `triggerNewKieTask` | 首图生图 prompt | 待确认 |
-| P10 | 一键主图 | `modules/OneClick/MainImageSubModule.tsx` | `triggerNewKieTask` | 主图生图 prompt | 待确认 |
-| P11 | 一键详情 | `modules/OneClick/DetailPageSubModule.tsx` | `triggerNewKieTask` | 详情单屏生图 prompt | 待确认 |
-| P12 | 一键 SKU | `modules/OneClick/SkuSubModule.tsx` | `buildSkuPrompt` | SKU 生图 prompt | 待确认 |
-| P13 | 一键文案 | `modules/OneClick/generationPromptUtils.ts` | `appendOneClickCopyGuardrails` | 文案渲染护栏 | 待确认 |
-| P14 | 买家秀 | `modules/BuyerShow/BuyerShowModule.tsx` | `triggerNewKieTask` | 买家秀生图 prompt | 待确认 |
-| P15 | 产品精修 | `modules/Retouch/RetouchModule.tsx` | `finalPrompt` 组装 | 精修生图 prompt | 待确认 |
-| P16 | 视频分镜 | `services/videoStoryboardService.ts` | `buildScriptRequestPrompt` | 分镜脚本 JSON prompt | 待确认 |
-| P17 | 视频分镜 | `services/videoStoryboardService.ts` | `buildBoardPrompt` | 分镜板生图 prompt | 待确认 |
-| P18 | 小红书封面 | `modules/XhsCover/xhsCoverUtils.mjs` | `buildXhsCoverPrompt` | 封面生图 prompt | 待确认 |
+| P01 | 一键主详 | `src/services/arkService.ts` | `analyzeOneClickReferenceSet` | 参考图分析 prompt | 待确认 |
+| P02 | 产品精修 | `src/services/arkService.ts` | `analyzeRetouchTask` | 精修分析 prompt | 待确认 |
+| P03 | 一键主图/详情 | `src/services/arkService.ts` | `generateMarketingSchemes` | 主图/详情策划 prompt | 待确认 |
+| P04 | 一键 SKU | `src/services/arkService.ts` | `generateSkuSchemes` | SKU 策划 prompt | 待确认 |
+| P05 | 买家秀 | `src/services/arkService.ts` | `generateBuyerShowPrompts` | 买家秀策划 JSON prompt | 待确认 |
+| P06 | 买家秀 | `src/services/arkService.ts` | `generatePureEvaluations` | 买家评价文案 prompt | 待确认 |
+| P07 | 短视频 | `src/services/arkService.ts` | `generateVideoScript` | 视频分镜 JSON prompt | 待确认 |
+| P08 | 出海翻译 | `src/services/kieAiService.ts` | `buildKieAiPrompt` | 翻译/去文案图像 prompt | 待确认 |
+| P09 | 一键首图 | `src/modules/OneClick/FirstImageSubModule.tsx` | `triggerNewKieTask` | 首图生图 prompt | 待确认 |
+| P10 | 一键主图 | `src/modules/OneClick/MainImageSubModule.tsx` | `triggerNewKieTask` | 主图生图 prompt | 待确认 |
+| P11 | 一键详情 | `src/modules/OneClick/DetailPageSubModule.tsx` | `triggerNewKieTask` | 详情单屏生图 prompt | 待确认 |
+| P12 | 一键 SKU | `src/modules/OneClick/SkuSubModule.tsx` | `buildSkuPrompt` | SKU 生图 prompt | 待确认 |
+| P13 | 一键文案 | `src/modules/OneClick/generationPromptUtils.ts` | `appendOneClickCopyGuardrails` | 文案渲染护栏 | 待确认 |
+| P14 | 买家秀 | `src/modules/BuyerShow/BuyerShowModule.tsx` | `triggerNewKieTask` | 买家秀生图 prompt | 待确认 |
+| P15 | 产品精修 | `src/modules/Retouch/RetouchModule.tsx` | `finalPrompt` 组装 | 精修生图 prompt | 待确认 |
+| P16 | 视频分镜 | `src/services/videoStoryboardService.ts` | `buildScriptRequestPrompt` | 分镜脚本 JSON prompt | 待确认 |
+| P17 | 视频分镜 | `src/services/videoStoryboardService.ts` | `buildBoardPrompt` | 分镜板生图 prompt | 待确认 |
+| P18 | 小红书封面 | `src/modules/XhsCover/xhsCoverUtils.mjs` | `buildXhsCoverPrompt` | 封面生图 prompt | 待确认 |
 | P19 | 智能体知识库 | `server/index.mjs` | `buildKnowledgeNormalizationPrompt` | 知识整理 prompt | 待确认 |
 | P20 | 视频诊断 | `server/index.mjs` | `buildVideoDiagnosisAnalysisPrompt` | 内容诊断 JSON prompt | 待确认 |
 | P21 | 智能体生图 | `server/index.mjs` | `buildImageGenerationAnalysisMessages` | 生图参数分析 prompt | 待确认 |
@@ -114,7 +114,7 @@ E Example 示例
 
 ### P01 一键参考图分析
 
-- 文件：`services/arkService.ts`
+- 文件：`src/services/arkService.ts`
 - 位置：`analyzeOneClickReferenceSet`
 - 当前用途：分析设计参考图，只输出用户勾选维度对应栏目。
 - 当前输出结构：按维度输出 `- 视觉风格：`、`- 字体：`、`- 色调：`、`- 排版：`、`- 文案内容：`。
@@ -134,7 +134,7 @@ E Example 示例
 
 ### P02 产品精修分析
 
-- 文件：`services/arkService.ts`
+- 文件：`src/services/arkService.ts`
 - 位置：`analyzeRetouchTask`
 - 当前用途：根据原图和可选参考图输出专业精修指令。
 - 当前输出结构：英文精修指令，按模式包含 `[主体白底精修]` 或 `[画面内容调整]` 等模块。
@@ -154,7 +154,7 @@ E Example 示例
 
 ### P03 一键主图/详情策划
 
-- 文件：`services/arkService.ts`
+- 文件：`src/services/arkService.ts`
 - 位置：`generateMarketingSchemes`
 - 当前用途：为主图或详情页输出多屏营销策划方案。
 - 当前解析锚点：每屏必须由 `[SCHEME_START]` 和 `[SCHEME_END]` 包裹。
@@ -206,7 +206,7 @@ E Example 示例
 
 ### P04 一键 SKU 策划
 
-- 文件：`services/arkService.ts`
+- 文件：`src/services/arkService.ts`
 - 位置：`generateSkuSchemes`
 - 当前用途：为多个 SKU 组合策划展示图方案。
 - 当前解析锚点：每个 SKU 方案必须由 `[SCHEME_START]` 和 `[SCHEME_END]` 包裹。
@@ -253,7 +253,7 @@ E Example 示例
 
 ### P05 买家秀策划
 
-- 文件：`services/arkService.ts`
+- 文件：`src/services/arkService.ts`
 - 位置：`generateBuyerShowPrompts`
 - 当前用途：生成一套买家秀图片任务 JSON 和一条评价。
 - 当前输出结构：JSON only。
@@ -289,7 +289,7 @@ E Example 示例
 
 ### P06 买家评价文案
 
-- 文件：`services/arkService.ts`
+- 文件：`src/services/arkService.ts`
 - 位置：`generatePureEvaluations`
 - 当前用途：生成 5 条本地化买家评价。
 - 当前输出结构：JSON array of strings。
@@ -304,7 +304,7 @@ E Example 示例
 
 ### P07 视频分镜脚本
 
-- 文件：`services/arkService.ts`
+- 文件：`src/services/arkService.ts`
 - 位置：`generateVideoScript`
 - 当前用途：策划产品短视频分镜脚本。
 - 当前输出结构：
@@ -332,7 +332,7 @@ E Example 示例
 
 ### P08 出海翻译与去文案
 
-- 文件：`services/kieAiService.ts`
+- 文件：`src/services/kieAiService.ts`
 - 位置：`buildKieAiPrompt`
 - 当前用途：为翻译、保留原文、去文案生成图像处理 prompt。
 - 当前模式：
@@ -353,9 +353,9 @@ E Example 示例
 ### P09/P10/P11 首图、主图、详情生图
 
 - 文件：
-  - `modules/OneClick/FirstImageSubModule.tsx`
-  - `modules/OneClick/MainImageSubModule.tsx`
-  - `modules/OneClick/DetailPageSubModule.tsx`
+  - `src/modules/OneClick/FirstImageSubModule.tsx`
+  - `src/modules/OneClick/MainImageSubModule.tsx`
+  - `src/modules/OneClick/DetailPageSubModule.tsx`
 - 位置：各自 `triggerNewKieTask`
 - 当前用途：把已编辑策划方案转成最终生图 prompt。
 - 当前共同结构：
@@ -399,7 +399,7 @@ E Example 示例
 
 ### P12 SKU 生图
 
-- 文件：`modules/OneClick/SkuSubModule.tsx`
+- 文件：`src/modules/OneClick/SkuSubModule.tsx`
 - 位置：`buildSkuPrompt`
 - 当前用途：把 SKU 展示方案转成最终生图 prompt。
 - 当前输入结构：
@@ -440,7 +440,7 @@ E Example 示例
 
 ### P13 一键文案渲染护栏
 
-- 文件：`modules/OneClick/generationPromptUtils.ts`
+- 文件：`src/modules/OneClick/generationPromptUtils.ts`
 - 位置：`appendOneClickCopyGuardrails`
 - 当前用途：给一键主详和 SKU 生图 prompt 追加统一文案规则。
 - 当前规则：
@@ -458,7 +458,7 @@ E Example 示例
 
 ### P14 买家秀生图
 
-- 文件：`modules/BuyerShow/BuyerShowModule.tsx`
+- 文件：`src/modules/BuyerShow/BuyerShowModule.tsx`
 - 位置：`triggerNewKieTask`
 - 当前用途：把买家秀 task prompt 转成最终图像生成 prompt。
 - 当前结构：
@@ -482,7 +482,7 @@ E Example 示例
 
 ### P15 产品精修生图
 
-- 文件：`modules/Retouch/RetouchModule.tsx`
+- 文件：`src/modules/Retouch/RetouchModule.tsx`
 - 位置：`finalPrompt` 组装。
 - 当前用途：把分析得到的精修指令和严格标准组合成图像生成 prompt。
 - 当前结构：
@@ -501,7 +501,7 @@ E Example 示例
 
 ### P16 视频分镜脚本生成
 
-- 文件：`services/videoStoryboardService.ts`
+- 文件：`src/services/videoStoryboardService.ts`
 - 位置：`buildScriptRequestPrompt`
 - 当前用途：生成连续分镜 JSON 数组。
 - 当前输出结构：只输出 JSON 数组，每个对象必须包含 `description`、`prompt`、`script`。
@@ -526,7 +526,7 @@ E Example 示例
 
 ### P17 分镜板生图
 
-- 文件：`services/videoStoryboardService.ts`
+- 文件：`src/services/videoStoryboardService.ts`
 - 位置：`buildBoardPrompt`
 - 当前用途：把多个连续分镜一次性生成单张分镜板。
 - 关键约束：
@@ -544,7 +544,7 @@ E Example 示例
 
 ### P18 小红书封面
 
-- 文件：`modules/XhsCover/xhsCoverUtils.mjs`
+- 文件：`src/modules/XhsCover/xhsCoverUtils.mjs`
 - 位置：`buildXhsCoverPrompt`
 - 当前用途：组合风格 prompt、标题、副标题、字体、装饰和额外要求。
 - 关键约束：

@@ -24,7 +24,7 @@
 - 系统设置：系统状态、队列和配置可见性。
 - 账号管理：内部账号、运行日志、统计和日志导出。
 
-`AppModule.PHOTOGRAPHY` 目前是预留入口，侧边栏会显示为即将开放，`App.tsx` 尚未接入对应业务页面。
+`AppModule.PHOTOGRAPHY` 目前是预留入口，侧边栏会显示为即将开放，`src/ShellMigratedApp.tsx` 尚未接入对应业务页面。
 
 ## 3. 本地运行
 
@@ -143,11 +143,11 @@ npm run build
 node --test server/jobRuntime.test.mjs
 node --test server/providerGateway.test.mjs
 node --test server/assetStore.test.mjs
-node --test services/kieAiService.test.mjs
-node --test services/arkService.test.mjs
-node --test modules/Account/accountManagementUtils.test.mjs
-node --test modules/OneClick/oneClickBehavior.test.mjs
-node --test modules/XhsCover/xhsCoverBehavior.test.mjs
+node --test src/services/kieAiService.test.mjs
+node --test src/services/arkService.test.mjs
+node --test src/modules/Account/accountManagementUtils.test.mjs
+node --test src/modules/OneClick/oneClickBehavior.test.mjs
+node --test src/modules/XhsCover/xhsCoverUtils.test.mjs
 ```
 
 正式发布前还需要人工验证浏览器 Network：

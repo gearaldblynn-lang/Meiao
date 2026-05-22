@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Copy, Download, RotateCcw, Sparkles, Square, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Copy, Download, FileText, RotateCcw, Sparkles, Square, Trash2 } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import ConfirmDialog from './ConfirmDialog';
 
@@ -17,6 +17,7 @@ export interface PlanItem {
   sourceReferenceUrl?: string;
   variationMode?: 'scene' | 'palette' | 'custom';
   variationInstruction?: string;
+  editInstruction?: string;
   sourceResultUrl?: string;
 }
 
@@ -35,6 +36,7 @@ interface Props {
   onRecoverResult?: (resultId: string) => void;
   onRequestDeleteResult?: (resultId: string) => void;
   onDeletePlan?: (planId: string) => void;
+  onEditResult?: (resultId: string) => void;
   onFissionResult?: (resultId: string) => void;
   onCopyTaskId?: (taskId: string) => void;
   onCancelGeneration?: () => void;
@@ -89,17 +91,23 @@ const formatCreditsConsumed = (value: number) => {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
 };
 
-const renderTaskIdChip = (taskId: string, onCopyTaskId?: (taskId: string) => void) => (
+const splitTaskIds = (value?: string) =>
+  String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const renderTaskIdChip = (taskId: string, onCopyTaskId?: (taskId: string) => void, label = '任务 ID') => (
   <span className="inline-grid min-w-0 max-w-full grid-cols-[auto_minmax(0,1fr)_16px] items-center gap-1 font-mono leading-4" style={{ color: 'var(--text-tertiary)' }} title={taskId}>
-    <span className="shrink-0 font-sans">任务 ID</span>
+    <span className="shrink-0 font-sans">{label}</span>
     <span className="min-w-0 truncate">{taskId}</span>
     <span
       role="button"
       tabIndex={0}
-      aria-label="复制任务 ID"
+      aria-label={`复制${label}`}
       className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full transition-colors"
       style={{ background: 'var(--bg-surface)', color: 'var(--text-tertiary)' }}
-      title="复制完整任务 ID"
+      title={`复制完整${label}`}
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -129,7 +137,7 @@ const renderResultUsageMeta = (result?: GeneratedResult | null, onCopyTaskId?: (
         </span>
       ) : null}
       {result.taskId ? (
-        renderTaskIdChip(result.taskId, onCopyTaskId)
+        renderTaskIdChip(result.taskId, onCopyTaskId, '生图任务 ID')
       ) : null}
     </div>
   );
@@ -190,12 +198,14 @@ const PlanEditor: React.FC<Props> = ({
   onRecoverResult,
   onRequestDeleteResult,
   onDeletePlan,
+  onEditResult,
   onFissionResult,
   onCopyTaskId,
   onCancelGeneration,
 }) => {
   const [expandedPromptIds, setExpandedPromptIds] = useState<Record<string, boolean>>({});
   const [pendingDeletePlan, setPendingDeletePlan] = useState<{ id: string; title: string } | null>(null);
+  const [planningIdsExpanded, setPlanningIdsExpanded] = useState(false);
   const completedPlanIds = new Set(
     (results || [])
       .map((result) => result.planId)
@@ -208,7 +218,7 @@ const PlanEditor: React.FC<Props> = ({
   const activeGeneratingPlanId = projectStatus === 'generating' ? (activeGeneratingResult?.planId || selectedPlanId || pendingSelectedPlanIds[0] || null) : null;
   const shouldShowPerPlanGenerating = Boolean(activeGeneratingPlanId);
   const isDetailProject = subFeature === 'detail_page' || subFeature === 'detail';
-  const visiblePlanningTaskId = String(planningTaskId || '').trim();
+  const planningTaskIds = splitTaskIds(planningTaskId);
 
   const handleSchemeContentChange = (id: string, nextContent: string) => {
     onChange(plans.map((p) => (p.id === id ? { ...p, schemeContent: nextContent } : p)));
@@ -230,17 +240,39 @@ const PlanEditor: React.FC<Props> = ({
     </button>
   );
 
-  const findResult = (plan: PlanItem, index: number) => {
-    if (!results || results.length === 0) return null;
-    const byPlanId = results.find((result) => result.planId === plan.id);
-    if (byPlanId) return byPlanId;
+  const findResultsForPlan = (plan: PlanItem, index: number) => {
+    if (!results || results.length === 0) return [];
+    const byPlanId = results.filter((result) => result.planId === plan.id);
+    if (byPlanId.length > 0) return byPlanId;
     const hasMappedResults = results.some((result) => Boolean(result.planId));
-    return hasMappedResults ? null : (results[index] || null);
+    return hasMappedResults ? [] : (results[index] ? [results[index]] : []);
   };
 
-  const renderGridPlanCard = (plan: PlanItem, index: number) => {
+  const findResult = (plan: PlanItem, index: number) => findResultsForPlan(plan, index)?.[0] || null;
+
+  const gridPlanRows = plans.flatMap((plan, index) => {
+    const matchedResults = findResultsForPlan(plan, index) || [];
+    if (matchedResults.length === 0) {
+      return [{ plan, index, result: null as GeneratedResult | null, resultOrdinal: 0, resultCount: 1 }];
+    }
+    return matchedResults.map((result, resultOrdinal) => ({
+      plan,
+      index,
+      result,
+      resultOrdinal,
+      resultCount: matchedResults.length,
+    }));
+  });
+
+  const renderGridPlanCard = (
+    plan: PlanItem,
+    index: number,
+    resultOverride?: GeneratedResult | null,
+    resultOrdinal = 0,
+    resultCount = 1,
+  ) => {
     const schemeText = normalizeSchemeText(plan.schemeContent);
-    const result = findResult(plan, index);
+    const result = resultOverride === undefined ? findResult(plan, index) : resultOverride;
     const hasResult = Boolean(result && (result.imageUrl || result.videoUrl));
     const hasErrorResult = result?.status === 'error';
     const isGenerating = !hasResult && !hasErrorResult && (result?.status === 'generating' || activeGeneratingPlanId === plan.id);
@@ -250,10 +282,11 @@ const PlanEditor: React.FC<Props> = ({
     const isFissionEnabled = subFeature === 'first_image';
     const statusLabel = hasResult ? '已出图' : hasErrorResult ? '生成失败' : isGenerating ? '生成中' : plan.selected ? '待生成' : '未选中';
     const canOpenPreview = Boolean(result && result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
+    const canRecoverResult = Boolean(result?.id && onRecoverResult && (hasResult || result?.taskId));
 
     return (
       <article
-        key={plan.id}
+        key={`${plan.id}:${result?.id || resultOrdinal}`}
         className="flex min-h-0 flex-col overflow-hidden rounded-2xl border"
         style={{
           borderColor: plan.selected ? 'var(--accent)' : 'var(--border-subtle)',
@@ -282,8 +315,13 @@ const PlanEditor: React.FC<Props> = ({
                     </span>
                   ) : null}
                   <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: 'rgba(15,23,42,0.44)', color: '#fff' }}>
-                    #{index + 1}
-                  </span>
+                      #{index + 1}
+                    </span>
+                    {resultCount > 1 ? (
+                      <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: 'rgba(15,23,42,0.44)', color: '#fff' }}>
+                        结果 {resultOrdinal + 1}/{resultCount}
+                      </span>
+                    ) : null}
                 </div>
               </>
             ) : (
@@ -359,8 +397,8 @@ const PlanEditor: React.FC<Props> = ({
               <ActionButton
                 icon={<Sparkles size={12} />}
                 label="修改"
-                onClick={() => {}}
-                disabled
+                onClick={() => result?.id && onEditResult?.(result.id)}
+                disabled={!result?.id || !onEditResult}
               />
             ) : (
               <ActionButton
@@ -374,7 +412,7 @@ const PlanEditor: React.FC<Props> = ({
               icon={<RotateCcw size={12} />}
               label="找回"
               onClick={() => result?.id && onRecoverResult?.(result.id)}
-              disabled={!hasResult}
+              disabled={!canRecoverResult}
             />
             <ActionButton
               icon={<Sparkles size={12} />}
@@ -421,10 +459,48 @@ const PlanEditor: React.FC<Props> = ({
 
   return (
     <div className="w-full">
-      {visiblePlanningTaskId ? (
+      {planningTaskIds.length > 0 ? (
         <div className="mb-3 flex flex-wrap items-center gap-2 rounded-[18px] border px-3 py-2 text-[10px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
           <span className="font-semibold" style={{ color: 'var(--text-secondary)' }}>策划分析</span>
-          {renderTaskIdChip(visiblePlanningTaskId, onCopyTaskId)}
+          {planningTaskIds.length > 1 ? (
+            <div className="relative">
+              <button
+                type="button"
+                className="inline-flex max-w-full items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold transition-colors"
+                style={{ background: 'var(--bg-surface)', color: 'var(--text-tertiary)' }}
+                title="查看多个策划任务 ID"
+                aria-expanded={planningIdsExpanded}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  setPlanningIdsExpanded((prev) => !prev);
+                }}
+              >
+                <FileText size={12} />
+                <span>策划任务 ID</span>
+                <span className="rounded-full px-1.5 py-0.5 text-[9px]" style={{ background: 'var(--bg-elevated)', color: 'var(--accent)' }}>{planningTaskIds.length}</span>
+                {planningIdsExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+              {planningIdsExpanded ? (
+                <div
+                  className="absolute left-0 top-full z-30 mt-2 flex w-[min(340px,calc(100vw-48px))] flex-col gap-2 rounded-[16px] border p-2 shadow-lg"
+                  style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="px-1 text-[10px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>
+                    共 {planningTaskIds.length} 个策划任务 ID
+                  </div>
+                  {planningTaskIds.map((taskId, index) => (
+                    <div key={`${taskId}-${index}`} className="min-w-0 rounded-[12px] px-2 py-1" style={{ background: 'var(--bg-surface)' }}>
+                      {renderTaskIdChip(taskId, onCopyTaskId, `策划任务 ID ${index + 1}`)}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            renderTaskIdChip(planningTaskIds[0], onCopyTaskId, '策划任务 ID')
+          )}
         </div>
       ) : null}
       {isDetailProject ? (
@@ -440,6 +516,7 @@ const PlanEditor: React.FC<Props> = ({
             const statusLabel = hasResult ? '已出图' : hasErrorResult ? '生成失败' : isGenerating ? '生成中' : plan.selected ? '待生成' : '未选中';
             const planAspectRatio = getPlanAspectRatio(plan, result);
             const canOpenPreview = Boolean(result && result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
+            const canRecoverResult = Boolean(result?.id && onRecoverResult && (hasResult || result?.taskId));
 
             return (
               <section
@@ -533,8 +610,8 @@ const PlanEditor: React.FC<Props> = ({
                       <ActionButton
                         icon={<Sparkles size={12} />}
                         label="修改"
-                        onClick={() => {}}
-                        disabled
+                        onClick={() => result?.id && onEditResult?.(result.id)}
+                        disabled={!result?.id || !onEditResult}
                       />
                     ) : (
                       <ActionButton
@@ -548,7 +625,7 @@ const PlanEditor: React.FC<Props> = ({
                       icon={<RotateCcw size={12} />}
                       label="找回"
                       onClick={() => result?.id && onRecoverResult?.(result.id)}
-                      disabled={!hasResult}
+                      disabled={!canRecoverResult}
                     />
                     <ActionButton
                       icon={<Sparkles size={12} />}
@@ -622,7 +699,7 @@ const PlanEditor: React.FC<Props> = ({
         </div>
       ) : (
         <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-3">
-          {plans.map(renderGridPlanCard)}
+          {gridPlanRows.map((row) => renderGridPlanCard(row.plan, row.index, row.result, row.resultOrdinal, row.resultCount))}
         </div>
       )}
 

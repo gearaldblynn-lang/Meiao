@@ -5,13 +5,18 @@ import type { OneClickReferencePreset } from '../../../types';
 import {
   Send, ImagePlus, X, ChevronDown, Check, SlidersHorizontal,
   Wand2, Globe, Users, Sparkles, Play, Layers, Palette, Type,
-  BoxSelect, Monitor, Folder, Search, Clapperboard, Plus,
+  BoxSelect, Monitor, Folder, Search, Clapperboard, Plus, Loader2,
 } from 'lucide-react';
 import UploadTypeSelector, { type MaterialType } from '../UploadTypeSelector';
 import MaterialPreviewBar from '../MaterialPreviewBar';
 import type { Material } from '../../../ShellMigratedApp';
 import { XHS_COVER_STYLES, XHS_STYLE_CATEGORIES } from '../../../modules/XhsCover/xhsCoverStyles';
 import { deriveLinkedTranslationSize } from '../../../modules/Translation/translationProcessingUtils.mjs';
+import {
+  getRetouchCustomSizeRatioWarning,
+  getRetouchSupportedAspectRatiosForModel,
+  getSafeRetouchAspectRatioForModel,
+} from '../../../modules/Retouch/retouchSizingUtils.mjs';
 import PresetLibrary, { type Preset } from '../PresetLibrary';
 import { estimateImageBilling, getImageModelCreditCost } from '../../../utils/imageBilling.mjs';
 
@@ -133,6 +138,30 @@ const QUICK_PARAMS: Record<string, ParamItem[]> = {
   ],
 };
 
+const RETOUCH_RATIO_LABELS: Record<string, string> = {
+  auto: 'AI 自适应尺寸',
+};
+
+const getRetouchQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
+  const supportedRatios = getRetouchSupportedAspectRatiosForModel(currentParams.model || 'GPT Image 2');
+  return [
+    QUICK_PARAMS[AppModuleObj.RETOUCH][0],
+    {
+      key: 'ratio',
+      label: RETOUCH_RATIO_LABELS[supportedRatios[0]] || supportedRatios[0] || 'AI 自适应尺寸',
+      title: '出图比例',
+      icon: <BoxSelect size={12} />,
+      options: supportedRatios.map((ratio) => ({ value: ratio, label: RETOUCH_RATIO_LABELS[ratio] || ratio })),
+      defaultValue: 'auto',
+      recommendedValue: '1:1',
+      recommendedLabel: '推荐',
+      secondaryRecommendedValue: '3:4',
+      secondaryRecommendedLabel: '推荐',
+    },
+    ...QUICK_PARAMS[AppModuleObj.RETOUCH].slice(1),
+  ];
+};
+
 const getDiagnosisModelOptions = (systemConfig?: SystemPublicConfig | null): Array<{ value: string; label: string }> => {
   const available = systemConfig?.agentModels?.chat || [];
   if (available.length > 0) return available.map((item) => ({ value: item.id, label: item.label }));
@@ -157,9 +186,9 @@ const EXTENDED_PARAMS: Record<string, Array<{
   ],
   [AppModuleObj.RETOUCH]: [
     { section: '尺寸', params: [
-      { key: 'sizeMode', label: '输出尺寸', type: 'select', options: ['默认(AI)', '自定义'], defaultValue: '自定义' },
+      { key: 'sizeMode', label: '输出尺寸', type: 'select', options: ['AI 自适应尺寸', '自定义'], defaultValue: 'AI 自适应尺寸' },
       { key: 'width',    label: '宽度(px)', type: 'number', defaultValue: '800' },
-      { key: 'height',   label: '高度(px)', type: 'number', defaultValue: '1200' },
+      { key: 'height',   label: '高度(px)', type: 'number', defaultValue: '800' },
     ]},
   ],
   [AppModuleObj.XHS_COVER]: [
@@ -464,6 +493,7 @@ const getQuickParamsForModule = (
 ): ParamItem[] => {
   if (module === AppModuleObj.TRANSLATION) return getTranslationQuickParams(activeSubFeature);
   if (module === AppModuleObj.VIDEO) return getVideoQuickParams(activeSubFeature, systemConfig, currentParams);
+  if (module === AppModuleObj.RETOUCH) return getRetouchQuickParams(currentParams);
   if (module !== AppModuleObj.ONE_CLICK) return QUICK_PARAMS[module] || [];
   const mode = currentParams.mode || '首图';
   if (mode === '首图') return getOneClickBaseParams(mode);
@@ -901,9 +931,21 @@ const BottomInputBar: React.FC<Props> = ({
   const isBuyerShow = module === AppModuleObj.BUYER_SHOW;
   const isPendingSubFeature = isPendingShellSubFeature(module, activeSubFeature);
   const disabledReason = generationDisabledReason || (isPendingSubFeature ? '该子功能待制作' : '');
+  const retouchSizeWarning = module === AppModuleObj.RETOUCH
+    ? getRetouchCustomSizeRatioWarning({
+      aspectRatio: currentParams.ratio || currentParams.aspectRatio || 'auto',
+      sizeMode: currentParams.sizeMode,
+      resolutionMode: currentParams.resolutionMode,
+      width: currentParams.width || currentParams.targetWidth || '800',
+      height: currentParams.height || currentParams.targetHeight || '800',
+    })
+    : '';
   const isDreaminaVideoGeneration = module === AppModuleObj.VIDEO && (!activeSubFeature || activeSubFeature === 'generation');
   const isStoryboardViralReplicationContext = module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard' && isStoryboardViralReplicationMode(currentParams.videoMode);
   const canGenerateWithoutPrompt = isSkuPromptMode || isTranslation || module === AppModuleObj.RETOUCH || isStoryboardViralReplicationContext;
+  const isGenerateDisabled = isSubmitLocked || Boolean(disabledReason) || (!promptText.trim() && !canGenerateWithoutPrompt);
+  const isSubmitBusy = isSubmitLocked;
+  const submitLabel = isSubmitBusy ? '任务处理中...' : generateLabel;
   const showPromptInput = module !== AppModuleObj.TRANSLATION;
   const contextMaterialTypes = getMaterialTypesForContext(module, currentParams, activeSubFeature);
   const buyerShowSetCount = isBuyerShow ? getBuyerShowSetCount(currentParams) : 1;
@@ -963,6 +1005,24 @@ const BottomInputBar: React.FC<Props> = ({
         const recommendedShotCount = getRecommendedStoryboardShotCount(value);
         onParamChange('shotCount', recommendedShotCount);
       }
+      return;
+    }
+
+    if (module === AppModuleObj.RETOUCH) {
+      if (key === 'model') {
+        const safeRatio = getSafeRetouchAspectRatioForModel(value, currentParams.ratio || currentParams.aspectRatio || 'auto');
+        onParamChange('model', value);
+        onParamChange('ratio', safeRatio);
+        onParamChange('aspectRatio', safeRatio);
+        return;
+      }
+      if (key === 'ratio' || key === 'aspectRatio') {
+        const safeRatio = getSafeRetouchAspectRatioForModel(currentParams.model || 'GPT Image 2', value);
+        onParamChange('ratio', safeRatio);
+        onParamChange('aspectRatio', safeRatio);
+        return;
+      }
+      onParamChange(key, value);
       return;
     }
 
@@ -1593,7 +1653,7 @@ const BottomInputBar: React.FC<Props> = ({
                 rows={3}
                 className="w-full resize-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-[var(--text-tertiary)]"
                 style={{ color: 'var(--text-primary)', minHeight: 64 }}
-                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!isSubmitLocked) onGenerate(); } }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (!isGenerateDisabled) onGenerate(); } }}
               />
             </div>
           )}
@@ -1916,6 +1976,11 @@ const BottomInputBar: React.FC<Props> = ({
                   {disabledReason}
                 </p>
               )}
+              {retouchSizeWarning && (
+                <p className="max-w-[220px] text-center text-[10px] font-semibold leading-4" style={{ color: 'var(--warning, #d97706)' }}>
+                  {retouchSizeWarning}
+                </p>
+              )}
               {billingEstimate.billable && billingEstimate.estimatedCredits > 0 && (
                 <p className="whitespace-nowrap text-center text-[10px] font-semibold tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
                   预计消耗 {billingEstimate.estimatedCredits} 积分
@@ -1923,12 +1988,12 @@ const BottomInputBar: React.FC<Props> = ({
               )}
               <button
                 onClick={onGenerate}
-                disabled={isSubmitLocked || Boolean(disabledReason) || (!promptText.trim() && !canGenerateWithoutPrompt)}
+                disabled={isGenerateDisabled}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-3xl text-[13px] font-semibold text-white transition-all disabled:opacity-30"
                 style={{ background: 'var(--accent)' }}
               >
-                <Send size={14} />
-                <span>{generateLabel}</span>
+                {isSubmitBusy ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+                <span>{submitLabel}</span>
               </button>
             </div>
           </div>

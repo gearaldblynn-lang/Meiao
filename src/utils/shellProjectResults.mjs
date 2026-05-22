@@ -18,7 +18,9 @@ export const mergeGeneratedPlanResults = (existingResults = [], generatedResults
   generatedResults.forEach((result) => {
     const planId = String(result?.planId || '').trim();
     if (planId) {
-      generatedByPlanId.set(planId, result);
+      const bucket = generatedByPlanId.get(planId) || [];
+      bucket.push(result);
+      generatedByPlanId.set(planId, bucket);
     } else if (result) {
       generatedWithoutPlanId.push(result);
     }
@@ -29,9 +31,9 @@ export const mergeGeneratedPlanResults = (existingResults = [], generatedResults
   existingResults.forEach((result) => {
     const planId = String(result?.planId || '').trim();
     if (planId && selectedIds.has(planId)) {
-      const replacement = generatedByPlanId.get(planId);
-      if (replacement) {
-        merged.push(replacement);
+      const replacements = generatedByPlanId.get(planId) || [];
+      if (replacements.length > 0 && !consumedPlanIds.has(planId)) {
+        merged.push(...replacements);
         consumedPlanIds.add(planId);
       }
       return;
@@ -42,9 +44,9 @@ export const mergeGeneratedPlanResults = (existingResults = [], generatedResults
   selectedPlanIds.forEach((planIdValue) => {
     const planId = String(planIdValue || '').trim();
     if (!planId || consumedPlanIds.has(planId)) return;
-    const generated = generatedByPlanId.get(planId);
-    if (generated) {
-      merged.push(generated);
+    const generated = generatedByPlanId.get(planId) || [];
+    if (generated.length > 0) {
+      merged.push(...generated);
       consumedPlanIds.add(planId);
     }
   });

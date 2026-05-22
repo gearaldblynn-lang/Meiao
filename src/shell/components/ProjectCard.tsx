@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { CheckSquare2, ChevronLeft, ChevronRight, Copy, Download, FileText, Film, ImagePlus, Maximize2, Package, Palette, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { CheckSquare2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Download, FileText, Film, ImagePlus, Maximize2, Package, Palette, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, VideoStoryboardProject } from '../../types';
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
@@ -25,6 +25,7 @@ export interface Project {
   backendJobId?: string;
   planningTaskId?: string;
   generationContext?: OneClickGenerationContext;
+  directGeneration?: boolean;
   storyboardProjectStatus?: VideoStoryboardProject['status'];
   storyboardSourceProject?: VideoStoryboardProject;
   creditsConsumed?: number;
@@ -38,6 +39,7 @@ interface Props {
   onRegenerate?: (resultId: string, instruction?: string) => void;
   onConfirmStoryboardImaging?: (projectId: string) => void;
   onFission?: (resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
+  onEdit?: (resultId: string, instruction: string, files: File[]) => void;
   onRecover?: (resultId: string) => void;
   onConfirmPlan?: (projectId: string, plan: PlanItem | PlanItem[]) => void;
   onUpdatePlans?: (projectId: string, plans: PlanItem[]) => void;
@@ -187,16 +189,45 @@ const formatCreditsConsumed = (value: number) => {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
 };
 
+const splitTaskIds = (value?: string) =>
+  String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const copyTextToClipboard = async (value: string) => {
+  const text = String(value || '');
+  if (!text) return false;
+  if (navigator.clipboard?.writeText) {
+    const copied = await navigator.clipboard.writeText(text).then(() => true).catch(() => false);
+    if (copied) return true;
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', 'true');
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  try {
+    document.body.appendChild(textarea);
+    textarea.select();
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+  }
+};
+
 const getProjectCreditsConsumed = (project: Project) => {
   const rawProjectCredits = normalizeCreditsConsumed(project.creditsConsumed);
   const resultCredits = project.results.reduce((sum, result) => (
     sum + (result.status === 'completed' ? normalizeCreditsConsumed(result.creditsConsumed) : 0)
   ), 0);
-  const hasPlanningUsage = Boolean(project.planningTaskId)
+  const hasPlanningUsage = !project.directGeneration && (Boolean(project.planningTaskId)
     || (project.module === 'one_click' && (
       Boolean(project.backendJobId)
       || (Array.isArray(project.plans) && project.plans.length > 0)
-    ));
+    )));
   const projectCredits = hasPlanningUsage ? rawProjectCredits : 0;
   const directTaskCredits = hasPlanningUsage ? resultCredits : (resultCredits || rawProjectCredits);
   return {
@@ -250,7 +281,7 @@ const ResultActionButton: React.FC<{
 };
 
 const ProjectCard: React.FC<Props> = ({
-  project, onDeleteResult, onDeleteProject, onRegenerate, onConfirmStoryboardImaging, onFission, onRecover, onConfirmPlan, onUpdatePlans, onDeletePlan, onRegeneratePlans, onCancelTask, onImportStoryboardToGeneration, pendingActionKeys, compact = false, showGenerationProgress = true,
+  project, onDeleteResult, onDeleteProject, onRegenerate, onConfirmStoryboardImaging, onFission, onEdit, onRecover, onConfirmPlan, onUpdatePlans, onDeletePlan, onRegeneratePlans, onCancelTask, onImportStoryboardToGeneration, pendingActionKeys, compact = false, showGenerationProgress = true,
 }) => {
   const [detailOpen, setDetailOpen] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -261,6 +292,7 @@ const ProjectCard: React.FC<Props> = ({
     project.subFeature === 'detail_page' || project.subFeature === 'detail' ? 'stack' : 'single',
   );
   const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
+  const [planningIdsExpanded, setPlanningIdsExpanded] = useState(false);
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(false);
   const [confirmDeleteResult, setConfirmDeleteResult] = useState<string | null>(null);
   const [fissionDialog, setFissionDialog] = useState<{
@@ -268,6 +300,12 @@ const ProjectCard: React.FC<Props> = ({
     title: string;
     mode: 'scene' | 'palette' | 'custom';
     instruction: string;
+  } | null>(null);
+  const [editDialog, setEditDialog] = useState<{
+    resultId: string;
+    title: string;
+    instruction: string;
+    files: File[];
   } | null>(null);
   const [storyboardRevisionDialog, setStoryboardRevisionDialog] = useState<{
     resultId: string;
@@ -279,6 +317,7 @@ const ProjectCard: React.FC<Props> = ({
   const hasResults = project.results.length > 0;
   const hasPlans = Array.isArray(project.plans) && project.plans.length > 0;
   const visiblePlans = (project.plans || []).filter((plan) => plan.selected);
+  const planPreviewItems = (project.plans || []).slice(0, compact ? 2 : 3);
   const selectedPlanCount = visiblePlans.length;
   const allPlansSelected = Array.isArray(project.plans) && project.plans.length > 0 && visiblePlans.length === project.plans.length;
   const imageResults = project.results.filter((result) => result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
@@ -290,15 +329,9 @@ const ProjectCard: React.FC<Props> = ({
   }));
   const isCompletedMediaResult = (result: GeneratedResult) => result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl);
   const hasGeneratingResult = project.results.some((result) => result.status === 'generating' && !isCompletedMediaResult(result));
-  const activePlanIds = new Set([
-    ...visiblePlans.map((plan) => plan.id),
-    ...(project.selectedPlanId ? [project.selectedPlanId] : []),
-  ]);
-  const hasMissingSelectedPlanResult = hasPlans && Array.from(activePlanIds).some((planId) => !project.results.some((result) => result.planId === planId && isCompletedMediaResult(result)));
   const projectProgressIncomplete = Number(project.completedCount || 0) < Number(project.taskCount || 0);
   const isProjectActivelyGenerating = project.status === 'generating' && (
     hasGeneratingResult
-    || hasMissingSelectedPlanResult
     || (!hasPlans && projectProgressIncomplete)
   );
   const displayProjectStatus: Project['status'] = project.status === 'generating' && !isProjectActivelyGenerating
@@ -312,8 +345,10 @@ const ProjectCard: React.FC<Props> = ({
   const isPendingAction = (key: string) => Boolean(pendingActionKeys?.[key]);
   const getRegenerateActionKey = (resultId: string) => `regenerate:${project.id}:${resultId}`;
   const getFissionActionKey = (resultId: string) => `fission:${project.id}:${resultId}`;
+  const getEditActionKey = (resultId: string) => `edit:${project.id}:${resultId}`;
   const isRegeneratePending = (resultId: string) => isPendingAction(getRegenerateActionKey(resultId));
   const isFissionPending = (resultId: string) => isPendingAction(getFissionActionKey(resultId));
+  const isEditPending = (resultId: string) => isPendingAction(getEditActionKey(resultId));
   const isConfirmPlanPending = isPendingAction(`confirm-plan:${project.id}`);
   const isStoryboardImagePending = isPendingAction(`storyboard-image:${project.id}`);
   const isLongDetailProject = !isTranslationProject && (project.subFeature === 'detail_page' || project.subFeature === 'detail');
@@ -338,8 +373,8 @@ const ProjectCard: React.FC<Props> = ({
     event?.stopPropagation();
     const value = String(taskId || '').trim();
     if (!value) return;
-    await navigator.clipboard.writeText(value).catch(() => null);
-    addToast('任务 ID 已复制', 'success');
+    const copied = await copyTextToClipboard(value);
+    addToast(copied ? '任务 ID 已复制' : '复制失败，请手动选中 ID 复制', copied ? 'success' : 'warning');
   };
   const renderTaskIdChip = (taskId: string, label = '任务 ID', className = '') => (
     <span className={`inline-grid min-w-0 max-w-full grid-cols-[auto_minmax(0,1fr)_16px] items-center gap-1 font-mono leading-4 ${className}`} style={{ color: 'var(--text-tertiary)' }} title={taskId}>
@@ -373,7 +408,7 @@ const ProjectCard: React.FC<Props> = ({
           </span>
         )}
         {result.taskId && (
-          renderTaskIdChip(result.taskId)
+          renderTaskIdChip(result.taskId, '生图任务 ID')
         )}
       </div>
     );
@@ -383,10 +418,47 @@ const ProjectCard: React.FC<Props> = ({
   const getTranslationPathLabel = (result: GeneratedResult) =>
     String(result.relativePath || result.fileName || result.id || '未命名文件').trim();
   const renderPlanningTaskId = (className = '') => {
-    const planningTaskId = String(project.planningTaskId || project.backendJobId || '').trim();
-    if (!planningTaskId) return null;
+    const planningTaskIds = splitTaskIds(project.planningTaskId);
+    if (planningTaskIds.length === 0) return null;
+    if (planningTaskIds.length === 1) {
+      return renderTaskIdChip(planningTaskIds[0], '策划任务 ID', `text-[10px] ${className}`);
+    }
     return (
-      renderTaskIdChip(planningTaskId, '策划 ID', `text-[10px] ${className}`)
+      <div className={`relative inline-flex min-w-0 text-[10px] ${className}`}>
+        <button
+          type="button"
+          className="inline-flex max-w-full items-center gap-1 rounded-full px-2 py-1 font-semibold transition-colors"
+          style={{ background: 'var(--bg-surface)', color: 'var(--text-tertiary)' }}
+          title="查看多个策划任务 ID"
+          aria-expanded={planningIdsExpanded}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setPlanningIdsExpanded((prev) => !prev);
+          }}
+        >
+          <FileText size={12} />
+          <span>策划任务 ID</span>
+          <span className="rounded-full px-1.5 py-0.5 text-[9px]" style={{ background: 'var(--bg-elevated)', color: 'var(--accent)' }}>{planningTaskIds.length}</span>
+          {planningIdsExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </button>
+        {planningIdsExpanded ? (
+          <div
+            className="absolute left-0 top-full z-30 mt-2 flex w-[min(340px,calc(100vw-48px))] flex-col gap-2 rounded-[16px] border p-2 shadow-lg"
+            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="px-1 text-[10px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>
+              共 {planningTaskIds.length} 个策划任务 ID
+            </div>
+            {planningTaskIds.map((taskId, index) => (
+              <div key={`${taskId}-${index}`} className="min-w-0 rounded-[12px] px-2 py-1" style={{ background: 'var(--bg-surface)' }}>
+                {renderTaskIdChip(taskId, `策划任务 ID ${index + 1}`)}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
     );
   };
   const getTranslationStatusMeta = (result: GeneratedResult) => {
@@ -398,6 +470,14 @@ const ProjectCard: React.FC<Props> = ({
     if (!result || !Array.isArray(project.plans)) return null;
     return project.plans.find((plan) => plan.id === result.planId) || project.plans[index] || null;
   };
+  const canEditImageResult = (result?: GeneratedResult | null) => Boolean(
+    onEdit
+    && project.module === 'one_click'
+    && result?.status === 'completed'
+    && result.imageUrl
+    && result.mediaType !== 'video'
+    && !result.videoUrl,
+  );
 
   const getFissionLabel = (mode: 'scene' | 'palette' | 'custom') =>
     mode === 'scene' ? '换场景' : mode === 'palette' ? '换配色' : '自定义';
@@ -418,6 +498,15 @@ const ProjectCard: React.FC<Props> = ({
     });
   };
 
+  const openEditDialog = (resultId: string, title: string) => {
+    setEditDialog({
+      resultId,
+      title,
+      instruction: '',
+      files: [],
+    });
+  };
+
   const handleConfirmFission = () => {
     if (!fissionDialog || !onFission) return;
     if (isFissionPending(fissionDialog.resultId)) return;
@@ -428,6 +517,18 @@ const ProjectCard: React.FC<Props> = ({
     }
     onFission(fissionDialog.resultId, fissionDialog.mode, finalInstruction);
     setFissionDialog(null);
+  };
+
+  const handleConfirmEdit = () => {
+    if (!editDialog || !onEdit) return;
+    if (isEditPending(editDialog.resultId)) return;
+    const finalInstruction = editDialog.instruction.trim();
+    if (!finalInstruction) {
+      addToast('请先填写修改说明', 'warning');
+      return;
+    }
+    onEdit(editDialog.resultId, finalInstruction, editDialog.files);
+    setEditDialog(null);
   };
 
   const handleConfirmStoryboardRevision = () => {
@@ -478,26 +579,7 @@ const ProjectCard: React.FC<Props> = ({
 
   const handleCopyPrompt = async (prompt: string) => {
     const value = String(prompt || '');
-    let copied = false;
-    if (navigator.clipboard?.writeText) {
-      copied = await navigator.clipboard.writeText(value).then(() => true).catch(() => false);
-    }
-    if (!copied) {
-      const textarea = document.createElement('textarea');
-      textarea.value = value;
-      textarea.setAttribute('readonly', 'true');
-      textarea.style.position = 'fixed';
-      textarea.style.left = '-9999px';
-      try {
-        document.body.appendChild(textarea);
-        textarea.select();
-        copied = document.execCommand('copy');
-      } catch {
-        copied = false;
-      } finally {
-        textarea.remove();
-      }
-    }
+    const copied = await copyTextToClipboard(value);
     addToast(copied ? 'Prompt 已复制' : '复制失败，请手动选中文本复制', copied ? 'success' : 'warning');
   };
 
@@ -611,7 +693,7 @@ const ProjectCard: React.FC<Props> = ({
       addToast('第一张 SKU 基准图正在生成，后续方案会在首张完成后再生成', 'info');
       return;
     }
-    const pendingPlans = project.plans.filter((plan) => !completedPlanIds.has(plan.id) && !activePlanIds.has(plan.id));
+    const pendingPlans = project.plans.filter((plan) => plan.selected && !completedPlanIds.has(plan.id) && !activePlanIds.has(plan.id));
     if (pendingPlans.length === 0) {
       addToast('当前项目没有待生成方案', 'info');
       return;
@@ -662,10 +744,10 @@ const ProjectCard: React.FC<Props> = ({
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>
                       <Sparkles size={15} style={{ color: 'var(--accent)' }} />
-                      <span>{isProjectActivelyGenerating ? '生成进行中' : '方案预览'}</span>
+                      <span>{isProjectActivelyGenerating ? '生成进行中' : '策划预览'}</span>
                     </div>
                     <p className="mt-1 line-clamp-2 text-[12px] leading-6" style={{ color: 'var(--text-secondary)' }}>
-                      {project.plans?.[0]?.title || '方案已生成，点击查看并进入生图'}
+                      已生成 {project.plans?.length || 0} 个策划，点击查看完整列表并确认生图
                     </p>
                   </div>
                   <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: 'var(--bg-surface)', color: 'var(--text-tertiary)' }}>
@@ -673,12 +755,21 @@ const ProjectCard: React.FC<Props> = ({
                   </span>
                 </div>
                 {renderPlanningTaskId('mt-2')}
-                <p className="mt-4 line-clamp-5 whitespace-pre-wrap rounded-[18px] bg-[var(--bg-surface)] px-3 py-2.5 text-[12px] leading-6" style={{ color: 'var(--text-secondary)' }}>
-                  {normalizeSchemeText(project.plans?.[0]?.schemeContent)
-                    || project.plans?.[0]?.sceneDescription
-                    || project.plans?.[0]?.styleDirection
-                    || '点击进入查看并生成'}
-                </p>
+                <div className="mt-4 flex min-h-0 flex-col gap-1.5 rounded-[18px] bg-[var(--bg-surface)] px-3 py-2.5 text-[12px] leading-5" style={{ color: 'var(--text-secondary)' }}>
+                  {planPreviewItems.map((plan, index) => (
+                    <div key={plan.id || `${index}`} className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2">
+                      <span className="font-semibold tabular-nums" style={{ color: 'var(--accent)' }}>#{index + 1}</span>
+                      <span className="line-clamp-1">
+                        {plan.title || normalizeSchemeText(plan.schemeContent) || plan.sceneDescription || plan.styleDirection || '未命名策划'}
+                      </span>
+                    </div>
+                  ))}
+                  {(project.plans?.length || 0) > planPreviewItems.length ? (
+                    <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                      还有 {(project.plans?.length || 0) - planPreviewItems.length} 个策划，打开查看全部
+                    </span>
+                  ) : null}
+                </div>
                 <span className="text-[11px]" style={{ color: 'var(--accent)' }}>{isProjectActivelyGenerating ? '查看生成进度' : '打开确认生图'}</span>
               </div>
             ) : (
@@ -913,6 +1004,14 @@ const ProjectCard: React.FC<Props> = ({
                   onRecoverResult={(resultId) => onRecover?.(resultId)}
                   onRequestDeleteResult={(resultId) => setConfirmDeleteResult(resultId)}
                   onDeletePlan={(planId) => onDeletePlan?.(project.id, planId)}
+                  onEditResult={(resultId) => {
+                    if (isEditPending(resultId)) return;
+                    const targetResult = project.results.find((item) => item.id === resultId);
+                    if (!canEditImageResult(targetResult)) return;
+                    const targetIndex = project.results.findIndex((item) => item.id === resultId);
+                    const targetPlan = findPlanByResult(targetResult, Math.max(targetIndex, 0));
+                    openEditDialog(resultId, targetPlan?.title || project.name);
+                  }}
                   onFissionResult={(resultId) => {
                     if (isFissionPending(resultId)) return;
                     const targetResult = project.results.find((item) => item.id === resultId);
@@ -1358,8 +1457,8 @@ const ProjectCard: React.FC<Props> = ({
                                     <ResultActionButton
                                       icon={<Sparkles size={12} />}
                                       label="修改"
-                                      onClick={() => {}}
-                                      disabled
+                                      onClick={() => openEditDialog(result.id, matchedPlan?.title || project.name)}
+                                      disabled={!canEditImageResult(result) || isEditPending(result.id)}
                                     />
                                   ) : (
                                     <ResultActionButton
@@ -1589,8 +1688,8 @@ const ProjectCard: React.FC<Props> = ({
                                       <ResultActionButton
                                         icon={<Sparkles size={12} />}
                                         label="修改"
-                                        onClick={() => {}}
-                                        disabled
+                                        onClick={() => openEditDialog(result.id, matchedPlan?.title || project.name)}
+                                        disabled={!canEditImageResult(result) || isEditPending(result.id)}
                                       />
                                     ) : (
                                       <ResultActionButton
@@ -1885,6 +1984,105 @@ const ProjectCard: React.FC<Props> = ({
                 style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
               >
                 {isRegeneratePending(storyboardRevisionDialog.resultId) ? '提交中' : '确认修改'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {editDialog ? (
+        <div
+          className="fixed inset-0 z-[340] flex items-center justify-center p-5"
+          style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(10px)' }}
+          onClick={() => setEditDialog(null)}
+        >
+          <div
+            className="w-full max-w-[540px] overflow-hidden rounded-[28px] border"
+            style={{ background: 'var(--bg-base)', borderColor: 'var(--border-subtle)', boxShadow: 'var(--shadow-elevated)' }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="border-b px-6 py-5" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <h3 className="text-[16px] font-semibold" style={{ color: 'var(--text-primary)' }}>修改生成图</h3>
+                  <p className="mt-1 truncate text-[12px]" style={{ color: 'var(--text-tertiary)' }}>
+                    {editDialog.title}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditDialog(null)}
+                  className="flex h-8 w-8 items-center justify-center rounded-full"
+                  style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+            <div className="space-y-4 px-6 py-5">
+              <div>
+                <label className="mb-2 block text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>修改说明</label>
+                <textarea
+                  value={editDialog.instruction}
+                  onChange={(event) => setEditDialog((prev) => prev ? { ...prev, instruction: event.target.value } : prev)}
+                  placeholder="例如：把背景换成浴室场景 / 参考补充图替换瓶身贴纸 / 只调整框体为蜜桃配色，产品本身不变"
+                  className="h-32 w-full resize-none rounded-[18px] border px-4 py-3 text-[13px] leading-6 outline-none"
+                  style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                />
+              </div>
+              <div>
+                <label className="mb-2 block text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>补充参考图</label>
+                <label
+                  className="flex min-h-12 cursor-pointer items-center justify-between gap-3 rounded-[18px] border px-4 py-3 text-[12px] transition-colors"
+                  style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                >
+                  <span className="min-w-0 truncate">
+                    {editDialog.files.length > 0 ? `${editDialog.files.length} 张补充图已选择` : '上传新的局部、包装、元素或场景参考图（可选）'}
+                  </span>
+                  <ImagePlus size={16} />
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    className="hidden"
+                    onChange={(event) => {
+                      const files = Array.from(event.target.files || []);
+                      setEditDialog((prev) => prev ? { ...prev, files } : prev);
+                      event.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+                {editDialog.files.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {editDialog.files.map((file, index) => (
+                      <span key={`${file.name}-${index}`} className="max-w-[180px] truncate rounded-full px-2.5 py-1 text-[11px]" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
+                        {file.name}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <p className="text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>
+                会生成一张新结果并保留原图；产品一致性默认以原素材商品图为准，若修改说明明确指定补充图为替换或新增依据，则对应部分以补充图为准。
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t px-6 py-4" style={{ borderColor: 'var(--border-subtle)' }}>
+              <button
+                type="button"
+                onClick={() => setEditDialog(null)}
+                className="rounded-[14px] px-4 py-2 text-[12px] font-medium"
+                style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmEdit}
+                disabled={isEditPending(editDialog.resultId)}
+                className="rounded-[14px] px-4 py-2 text-[12px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+              >
+                {isEditPending(editDialog.resultId) ? '提交中' : '确认修改'}
               </button>
             </div>
           </div>

@@ -6,6 +6,7 @@ import { uploadToCos } from '../../services/tencentCosService';
 import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
 import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
+import { getRetouchCustomSizeRatioWarning } from './retouchSizingUtils.mjs';
 import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
 
 interface Props {
@@ -77,13 +78,13 @@ const RetouchSidebar: React.FC<Props> = ({
   };
 
   const ratios = [
-    { label: '智能比例', value: AspectRatio.AUTO },
-    { label: '1:1', value: AspectRatio.SQUARE },
+    { label: 'AI 自适应尺寸', value: AspectRatio.AUTO },
+    { label: '1:1（推荐）', value: AspectRatio.SQUARE },
     { label: '1:4', value: AspectRatio.P_1_4 },
     { label: '1:8', value: AspectRatio.P_1_8 },
     { label: '2:3', value: AspectRatio.P_2_3 },
     { label: '3:2', value: AspectRatio.L_3_2 },
-    { label: '3:4', value: AspectRatio.P_3_4 },
+    { label: '3:4（推荐）', value: AspectRatio.P_3_4 },
     { label: '4:1', value: AspectRatio.L_4_1 },
     { label: '4:3', value: AspectRatio.L_4_3 },
     { label: '4:5', value: AspectRatio.P_4_5 },
@@ -99,8 +100,21 @@ const RetouchSidebar: React.FC<Props> = ({
   const uploadedSourcePreviewUrls = tasks
     .map((task) => task.sourceUrl)
     .filter((task): task is string => typeof task === 'string' && task.trim().length > 0);
+  const customSizeWarning = getRetouchCustomSizeRatioWarning({
+    aspectRatio,
+    resolutionMode,
+    width: targetWidth,
+    height: targetHeight,
+  });
 
   const canStart = !isProcessing && (pendingFiles.length > 0 || hasTasks);
+  const handleStart = () => {
+    if (customSizeWarning) {
+      alert(customSizeWarning);
+      return;
+    }
+    onStart();
+  };
 
   return (
     <SidebarShell
@@ -110,7 +124,7 @@ const RetouchSidebar: React.FC<Props> = ({
       subtitle={mode === 'white_bg' ? '白底模式' : '精修模式'}
       footer={
         <PrimaryActionButton
-          onClick={onStart}
+          onClick={handleStart}
           disabled={!canStart}
           icon={isProcessing ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles'}
           label={isProcessing ? '处理中...' : '启动大师级精修'}
@@ -267,7 +281,7 @@ const RetouchSidebar: React.FC<Props> = ({
             <div className="space-y-4 pt-4 border-t border-slate-100">
               <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">输出尺寸设置</span>
               <div className="flex bg-slate-100 p-1 rounded-xl">
-                <button onClick={() => setResolutionMode('original')} className={`flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all ${resolutionMode === 'original' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`}>默认 (AI)</button>
+                <button onClick={() => setResolutionMode('original')} className={`flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all ${resolutionMode === 'original' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`}>AI 自适应尺寸</button>
                 <button onClick={() => setResolutionMode('custom')} className={`flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all ${resolutionMode === 'custom' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-400'}`}>自定义</button>
               </div>
               {resolutionMode === 'custom' && (
@@ -281,6 +295,11 @@ const RetouchSidebar: React.FC<Props> = ({
                     <input type="number" value={targetHeight || ''} onChange={(e) => setTargetHeight(parseInt(e.target.value) || 0)} placeholder="自动" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-700 outline-none focus:bg-white focus:ring-1 focus:ring-emerald-500 shadow-sm" />
                   </div>
                 </div>
+              )}
+              {customSizeWarning && (
+                <p className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-bold leading-4 text-amber-700">
+                  {customSizeWarning}
+                </p>
               )}
             </div>
           </section>

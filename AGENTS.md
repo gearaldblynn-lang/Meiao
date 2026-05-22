@@ -55,21 +55,21 @@ npm run build
 node --test server/jobRuntime.test.mjs
 node --test server/providerGateway.test.mjs
 node --test server/assetStore.test.mjs
-node --test modules/OneClick/oneClickBehavior.test.mjs
-node --test modules/XhsCover/xhsCoverBehavior.test.mjs
+node --test src/modules/OneClick/oneClickBehavior.test.mjs
+node --test src/modules/XhsCover/xhsCoverUtils.test.mjs
 ```
 
 ## 代码地图
 
-- `App.tsx`：模块路由与顶层状态接线。
-- `components/layout/moduleMeta.ts`：侧边栏模块名称、图标、色彩和文案。
-- `types.ts`：跨模块状态、任务、模型、账号和日志类型。
+- `src/main.tsx`、`src/ShellMigratedApp.tsx`：前端入口、模块路由和新壳顶层状态接线。
+- `src/shell/components/layout/SidebarNavigation.tsx`：侧边栏模块导航、系统入口和折叠状态。
+- `src/types.ts`：跨模块状态、任务、模型、账号和日志类型。
 - `server/index.mjs`：内部 API、账号、日志、状态、素材、任务和静态资源托管。
 - `server/jobRuntime.mjs`、`server/jobManager.mjs`：任务运行时和队列。
 - `server/providerGateway.mjs`：KIE、Veo、Responses、GPT Image 等 provider 收口。
-- `services/internalApi.ts`：前端访问内部 API 的统一客户端。
-- `services/loggingService.ts`：业务日志标签和字段映射。
-- `modules/Account/AccountManagement.tsx`：账号管理、运行日志和统计。
+- `src/services/internalApi.ts`：前端访问内部 API 的统一客户端。
+- `src/services/loggingService.ts`：业务日志标签和字段映射。
+- `src/shell/modules/Account/AccountManagement.tsx`：新壳账号管理、运行日志和统计。
 
 ## 发布与部署
 

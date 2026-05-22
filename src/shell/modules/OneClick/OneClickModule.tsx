@@ -15,6 +15,7 @@ interface Props {
   onDeletePlan?: (projectId: string, planId: string) => void;
   onRegenerateResult?: (projectId: string, resultId: string, instruction?: string) => void;
   onFissionResult?: (projectId: string, resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
+  onEditResult?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
   onCancelTask: (taskId: string) => void;
   subFeatures?: SubFeatureOption[];
@@ -27,7 +28,7 @@ interface Props {
 const OneClickModule: React.FC<Props> = ({
   projects, tasks,
   onConfirmPlan, onUpdatePlans, onRegeneratePlans,
-  onDeleteResult, onDeleteProject, onRegenerateResult, onFissionResult, onRecoverResult, onCancelTask,
+  onDeleteResult, onDeleteProject, onRegenerateResult, onFissionResult, onEditResult, onRecoverResult, onCancelTask,
   onDeletePlan,
   subFeatures, activeSubFeature, onSubFeatureChange, pendingActionKeys, showGenerationProgress = true,
 }) => {
@@ -45,6 +46,7 @@ const OneClickModule: React.FC<Props> = ({
       onDeletePlan={onDeletePlan}
       onRegenerateResult={onRegenerateResult}
       onFissionResult={onFissionResult}
+      onEditResult={onEditResult}
       onRecoverResult={onRecoverResult}
       onCancelTask={onCancelTask}
       onConfirmPlan={onConfirmPlan}

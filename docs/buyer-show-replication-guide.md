@@ -16,35 +16,35 @@
 ## 2. 关键文件
 
 前端主模块：
-- `modules/BuyerShow/BuyerShowModule.tsx`
+- `src/modules/BuyerShow/BuyerShowModule.tsx`
 
 前端配置面板：
-- `modules/BuyerShow/BuyerShowSidebar.tsx`
+- `src/modules/BuyerShow/BuyerShowSidebar.tsx`
 
 策划模型服务：
-- `services/arkService.ts`
+- `src/services/arkService.ts`
   - `generateBuyerShowPrompts`
   - `generatePureEvaluations`
 
 生图服务封装：
-- `services/kieAiService.ts`
+- `src/services/kieAiService.ts`
   - `processWithKieAi`
   - `recoverKieAiTask`
 
 素材上传：
-- `services/tencentCosService.ts`
+- `src/services/tencentCosService.ts`
   - `uploadToCos`
 
 类型定义：
-- `types.ts`
+- `src/types.ts`
   - `BuyerShowPersistentState`
   - `BuyerShowSet`
   - `BuyerShowTask`
   - `ArkBuyerShowResult`
 
 回归测试：
-- `services/buyerShowPromptPriority.test.mjs`
-- `modules/BuyerShow/buyerShowBehavior.test.mjs`
+- `src/services/buyerShowPromptPriority.test.mjs`
+- `src/modules/BuyerShow/buyerShowBehavior.test.mjs`
 
 ## 3. 数据结构
 
@@ -206,7 +206,7 @@
 
 ### 6.1 入口
 
-`services/arkService.ts`
+`src/services/arkService.ts`
 
 函数：
 - `generateBuyerShowPrompts(productUrls, referenceUrl, state, apiConfig, setIndex, signal)`

@@ -69,8 +69,8 @@
 - `docs/tencent-cloud-deploy.md`
 - `docs/cloud-update-data-cleanup.md`
 - `docs/release-and-handoff.md`
-- `services/loggingService.ts`
-- `modules/Account/AccountManagement.tsx`
+- `src/services/loggingService.ts`
+- `src/modules/Account/AccountManagement.tsx`
 
 ## 8.1 接手时必须先继承的交互原则
 - 所有新需求、改版、Bug 修复、管理后台、CLI、对话式交互、系统反馈，都先遵守 `项目交接上下文.md` 里的“全项目交互设计原则”。

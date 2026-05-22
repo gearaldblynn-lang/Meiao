@@ -665,20 +665,28 @@ const FirstImageSubModule: React.FC<Props> = ({
       .trim();
 
     const logoUrl = await getOrUploadLogoUrl();
-    const inputImages = [
-      ...productUrls,
-      ...(scheme.sourceReferenceUrl ? [scheme.sourceReferenceUrl] : []),
-      ...(scheme.sourceResultUrl ? [scheme.sourceResultUrl] : []),
-      ...(logoUrl ? [logoUrl] : []),
-    ];
+    const isContinueVariation = Boolean(scheme.sourceResultUrl && scheme.variationInstruction?.trim());
+    const inputImages = isContinueVariation
+      ? [
+          scheme.sourceResultUrl!,
+          ...productUrls,
+          ...(logoUrl ? [logoUrl] : []),
+        ]
+      : [
+          ...productUrls,
+          ...(scheme.sourceReferenceUrl ? [scheme.sourceReferenceUrl] : []),
+          ...(scheme.sourceResultUrl ? [scheme.sourceResultUrl] : []),
+          ...(logoUrl ? [logoUrl] : []),
+        ];
     const finalPrompt = buildOneClickImagePrompt({
       schemeContent: cleanPrompt,
       language: config.language,
       platform: config.platform,
       logoUrl,
-      replicationReferenceUrl: scheme.sourceReferenceUrl,
+      replicationReferenceUrl: isContinueVariation ? null : scheme.sourceReferenceUrl,
       previousResultUrl: scheme.sourceResultUrl,
       variationInstruction: scheme.variationInstruction,
+      hasProductReferences: productUrls.length > 0,
       publicBaseUrl,
     });
 

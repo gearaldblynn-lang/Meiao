@@ -1,4 +1,4 @@
-import { isExternallyReachableBaseUrl, isLocalOrPrivateHostname } from '../../utils/publicNetworkUrl.mjs';
+import { isExternallyReachableBaseUrl, isLocalOrPrivateHostname } from './publicNetworkUrl.mjs';
 
 const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 
