@@ -7,6 +7,7 @@ import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQuali
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
 import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
 import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
+import { isImeComposing } from '../../utils/ime';
 import { PopoverSelect, PrimaryActionButton, SegmentedTabs, SidebarShell } from '../../components/ui/workspacePrimitives';
 import ReferencePresetLibraryModal from './ReferencePresetLibraryModal';
 
@@ -851,7 +852,11 @@ const ConfigSidebar: React.FC<Props> = ({
                       value={countDraft}
                       onChange={(e) => setCountDraft(e.target.value.replace(/[^\d]/g, ''))}
                       onBlur={commitCountDraft}
-                      onKeyDown={(e) => { if (e.key === 'Enter') commitCountDraft(); if (e.key === 'Escape') setCountDraft(String(config.count || 1)); }}
+                      onKeyDown={(e) => {
+                        if (isImeComposing(e)) return;
+                        if ('Enter' === e.key) commitCountDraft();
+                        if ('Escape' === e.key) setCountDraft(String(config.count || 1));
+                      }}
                       className="h-10 w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 text-xs font-semibold text-slate-700 outline-none focus:bg-white"
                     />
                   </div> : null}
@@ -905,8 +910,9 @@ const ConfigSidebar: React.FC<Props> = ({
                          onChange={(e) => setTargetWidthDraft(e.target.value.replace(/[^\d]/g, ''))}
                          onBlur={commitTargetWidthDraft}
                          onKeyDown={(e) => {
-                           if (e.key === 'Enter') commitTargetWidthDraft();
-                           if (e.key === 'Escape') setTargetWidthDraft(config.targetWidth ? String(config.targetWidth) : '');
+                           if (isImeComposing(e)) return;
+                           if ('Enter' === e.key) commitTargetWidthDraft();
+                           if ('Escape' === e.key) setTargetWidthDraft(config.targetWidth ? String(config.targetWidth) : '');
                          }}
                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-black text-slate-700 outline-none focus:ring-2 focus:ring-rose-500/20"
                        />

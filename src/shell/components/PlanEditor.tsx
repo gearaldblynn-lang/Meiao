@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Copy, Download, FileText, RotateCcw, Sparkles, Square, Trash2 } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
+import { isImeComposing } from '../../utils/ime';
 import ConfirmDialog from './ConfirmDialog';
 
 export interface PlanItem {
@@ -44,11 +45,55 @@ interface Props {
   onCancelGeneration?: () => void;
 }
 
-const normalizeSchemeText = (scheme?: string) =>
+const stripSchemeMarkers = (scheme?: string) =>
   String(scheme || '')
     .replace(/\[SCHEME_START\]/g, '')
-    .replace(/\[SCHEME_END\]/g, '')
-    .trim();
+    .replace(/\[SCHEME_END\]/g, '');
+
+const normalizeSchemeText = (scheme?: string) => stripSchemeMarkers(scheme).trim();
+
+const PlanPromptTextarea: React.FC<{
+  value: string;
+  onChange: (value: string) => void;
+  rows: number;
+  className: string;
+  style: React.CSSProperties;
+}> = ({ value, onChange, rows, className, style }) => {
+  const externalValue = stripSchemeMarkers(value);
+  const [draft, setDraft] = useState(externalValue);
+  const composingRef = useRef(false);
+
+  useEffect(() => {
+    if (!composingRef.current) {
+      setDraft(externalValue);
+    }
+  }, [externalValue]);
+
+  return (
+    <textarea
+      value={draft}
+      onCompositionStart={() => {
+        composingRef.current = true;
+      }}
+      onCompositionEnd={(event) => {
+        composingRef.current = false;
+        const next = event.currentTarget.value;
+        setDraft(next);
+        onChange(next);
+      }}
+      onChange={(event) => {
+        const next = event.target.value;
+        setDraft(next);
+        if (!composingRef.current && !isImeComposing(event)) {
+          onChange(next);
+        }
+      }}
+      rows={rows}
+      className={className}
+      style={style}
+    />
+  );
+};
 
 const renderMedia = (result?: GeneratedResult, className = '') => {
   if (!result) {
@@ -376,9 +421,9 @@ const PlanEditor: React.FC<Props> = ({
               <span style={{ color: 'var(--accent)' }}>{isPromptExpanded ? '收起' : '展开'}</span>
             </button>
             {renderPromptCopyButton(schemeText)}
-            <textarea
-              value={schemeText}
-              onChange={(e) => handleSchemeContentChange(plan.id, e.target.value)}
+            <PlanPromptTextarea
+              value={plan.schemeContent || ''}
+              onChange={(nextContent) => handleSchemeContentChange(plan.id, nextContent)}
               rows={isPromptExpanded ? 10 : 4}
               className={`w-full resize-none bg-transparent px-2.5 pb-2 pr-9 pt-1 text-[12px] leading-6 outline-none scrollbar-hide ${isPromptExpanded ? 'min-h-[210px]' : 'min-h-[88px]'}`}
               style={{ color: 'var(--text-secondary)' }}
@@ -590,9 +635,9 @@ const PlanEditor: React.FC<Props> = ({
                       </div>
                     </div>
                     {renderPromptCopyButton(schemeText)}
-                    <textarea
-                      value={schemeText}
-                      onChange={(e) => handleSchemeContentChange(plan.id, e.target.value)}
+                    <PlanPromptTextarea
+                      value={plan.schemeContent || ''}
+                      onChange={(nextContent) => handleSchemeContentChange(plan.id, nextContent)}
                       rows={isPromptExpanded ? 12 : 5}
                       className={`w-full flex-1 resize-none bg-transparent px-3 py-2 pr-9 text-[12px] leading-6 outline-none scrollbar-hide ${isPromptExpanded ? 'min-h-[250px]' : 'min-h-[110px]'}`}
                       style={{ color: 'var(--text-secondary)' }}

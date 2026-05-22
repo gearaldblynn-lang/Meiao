@@ -2375,6 +2375,38 @@ test('one click result edit and fission show immediate feedback before long asyn
   assert.match(shellApp, /setProjects\(\(prev\) => \[editProject, \.\.\.prev\]\);[\s\S]{0,1200}const uploadedSupplementMaterials = await Promise\.all/);
 });
 
+test('plan prompt editor preserves IME composition and does not normalize while typing', () => {
+  const source = read('../shell/components/PlanEditor.tsx');
+
+  assert.match(source, /import \{ isImeComposing \} from '..\/..\/utils\/ime'/);
+  assert.match(source, /const stripSchemeMarkers = \(scheme\?: string\) =>/);
+  assert.match(source, /const PlanPromptTextarea: React\.FC/);
+  assert.match(source, /const composingRef = useRef\(false\)/);
+  assert.match(source, /onCompositionStart=\{\(\) => \{/);
+  assert.match(source, /onCompositionEnd=\{\(event\) => \{/);
+  assert.match(source, /value=\{draft\}/);
+  assert.match(source, /if \(!composingRef\.current && !isImeComposing\(event\)\) \{/);
+  assert.doesNotMatch(source, /<textarea[\s\S]{0,220}value=\{schemeText\}[\s\S]{0,220}handleSchemeContentChange/);
+});
+
+test('text input enter shortcuts ignore active IME composition', () => {
+  const ime = read('../utils/ime.ts');
+  const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
+  const presetLibrary = read('../shell/components/PresetLibrary.tsx');
+  const skuSidebar = read('../modules/OneClick/SkuSidebar.tsx');
+  const configSidebar = read('../modules/OneClick/ConfigSidebar.tsx');
+
+  assert.match(ime, /export const isImeComposing =/);
+  assert.match(ime, /nativeEvent\.isComposing/);
+  assert.match(ime, /nativeEvent\.keyCode === 229/);
+
+  for (const source of [bottomInputBar, presetLibrary, skuSidebar, configSidebar]) {
+    assert.match(source, /isImeComposing/);
+    assert.doesNotMatch(source, /if \(e\.key === 'Enter'\)/);
+    assert.doesNotMatch(source, /if \(event\.key === 'Enter'\)/);
+  }
+});
+
 test('one click fission and edit are direct image-generation projects without planning credits and keep source model params', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const projectCard = read('../shell/components/ProjectCard.tsx');
