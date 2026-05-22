@@ -38,6 +38,8 @@ interface Props {
   onDeletePlan?: (planId: string) => void;
   onEditResult?: (resultId: string) => void;
   onFissionResult?: (resultId: string) => void;
+  isEditResultPending?: (resultId: string) => boolean;
+  isFissionResultPending?: (resultId: string) => boolean;
   onCopyTaskId?: (taskId: string) => void;
   onCancelGeneration?: () => void;
 }
@@ -200,6 +202,8 @@ const PlanEditor: React.FC<Props> = ({
   onDeletePlan,
   onEditResult,
   onFissionResult,
+  isEditResultPending,
+  isFissionResultPending,
   onCopyTaskId,
   onCancelGeneration,
 }) => {
@@ -283,6 +287,8 @@ const PlanEditor: React.FC<Props> = ({
     const statusLabel = hasResult ? '已出图' : hasErrorResult ? '生成失败' : isGenerating ? '生成中' : plan.selected ? '待生成' : '未选中';
     const canOpenPreview = Boolean(result && result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
     const canRecoverResult = Boolean(result?.id && onRecoverResult && (hasResult || result?.taskId));
+    const isEditPending = Boolean(result?.id && isEditResultPending?.(result.id));
+    const isFissionPending = Boolean(result?.id && isFissionResultPending?.(result.id));
 
     return (
       <article
@@ -396,9 +402,9 @@ const PlanEditor: React.FC<Props> = ({
             ) : hasResult ? (
               <ActionButton
                 icon={<Sparkles size={12} />}
-                label="修改"
+                label={isEditPending ? '提交中' : '修改'}
                 onClick={() => result?.id && onEditResult?.(result.id)}
-                disabled={!result?.id || !onEditResult}
+                disabled={!result?.id || !onEditResult || isEditPending}
               />
             ) : (
               <ActionButton
@@ -428,10 +434,10 @@ const PlanEditor: React.FC<Props> = ({
               {isFissionEnabled ? (
                 <ActionButton
                   icon={<Sparkles size={12} />}
-                  label="裂变"
+                  label={isFissionPending ? '提交中' : '裂变'}
                   tone="primary"
                   onClick={() => result?.id && onFissionResult?.(result.id)}
-                  disabled={!hasResult}
+                  disabled={!hasResult || isFissionPending}
                 />
               ) : null}
               {onRequestDeleteResult ? (
@@ -517,6 +523,7 @@ const PlanEditor: React.FC<Props> = ({
             const planAspectRatio = getPlanAspectRatio(plan, result);
             const canOpenPreview = Boolean(result && result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
             const canRecoverResult = Boolean(result?.id && onRecoverResult && (hasResult || result?.taskId));
+            const isEditPending = Boolean(result?.id && isEditResultPending?.(result.id));
 
             return (
               <section
@@ -609,9 +616,9 @@ const PlanEditor: React.FC<Props> = ({
                     ) : hasResult ? (
                       <ActionButton
                         icon={<Sparkles size={12} />}
-                        label="修改"
+                        label={isEditPending ? '提交中' : '修改'}
                         onClick={() => result?.id && onEditResult?.(result.id)}
-                        disabled={!result?.id || !onEditResult}
+                        disabled={!result?.id || !onEditResult || isEditPending}
                       />
                     ) : (
                       <ActionButton

@@ -2841,6 +2841,7 @@ const AppContent: React.FC<{
 	    if (!beginGuardedSubmit()) {
 	      return;
 	    }
+    addToast('任务已提交，正在准备素材', 'info');
 	    try {
 	      generationMaterials = await ensureMaterialRemoteUrls(filteredMaterials, targetModule);
 	    } catch (error) {
@@ -5029,6 +5030,7 @@ const AppContent: React.FC<{
       const variantMaterials = buildVariantMaterials(baseMaterials, variantPlan, 'first_image');
       variantProject.generationContext = cloneGenerationContext(variantPlan.schemeContent || fissionInstruction, fissionParams, variantMaterials);
       setProjects((prev) => [variantProject, ...prev]);
+      addToast('裂变任务已提交，正在创建新任务卡', 'info');
       await persistProjectToSharedState(variantProject);
       await runOneClickPlanGeneration(variantProject, [variantPlan], variantMaterials);
     } finally {
@@ -5044,6 +5046,7 @@ const AppContent: React.FC<{
   ) => {
     const actionKey = `edit:${projectId}:${resultId}`;
     if (!beginExclusiveAction(actionKey, '修改任务已提交，请等待当前任务完成')) return;
+    let createdEditProjectId = '';
     try {
       const project = projects.find((p) => p.id === projectId);
       if (!project || project.module !== AppModuleObj.ONE_CLICK) return;
@@ -5068,34 +5071,17 @@ const AppContent: React.FC<{
       const contextMaterials = hasMaterialInputs(storedContext?.materials as Record<string, Material[]>)
         ? storedContext?.materials as Record<string, Material[]>
         : filteredMaterials;
-      const uploadedSupplementMaterials = await Promise.all(files.map(async (file, index) => {
-        const uploaded = await uploadInternalAssetStream({
-          module: AppModuleObj.ONE_CLICK,
-          file,
-          fileName: file.name,
-        });
-        if (!uploaded.fileUrl) {
-          throw new Error(`${file.name || '补充参考图'} 上传失败，请重试。`);
-        }
-        return createRemoteMaterial(
-          `edit-supplement-${Date.now()}-${index}`,
-          'reference',
-          uploaded.fileUrl,
-          file.name || `supplement-${index + 1}.png`,
-          project.subFeature || activeSubFeature || 'first_image',
-        );
-      }));
       const generationParams = {
         ...(storedContext?.params || currentParams),
         model: storedContext?.params?.model || result.model || currentParams.model || 'GPT Image 2',
         ratio: storedContext?.params?.ratio || result.aspectRatio || currentParams.ratio,
         aspectRatio: storedContext?.params?.aspectRatio || result.aspectRatio || currentParams.aspectRatio,
       };
-      const editMaterials: Record<string, Material[]> = {
+      const initialEditMaterials: Record<string, Material[]> = {
         product: [...(contextMaterials.product || [])],
         gift: [...(contextMaterials.gift || [])],
         logo: [...(contextMaterials.logo || [])],
-        reference: uploadedSupplementMaterials,
+        reference: [],
       };
       const matchedPlan = project.plans?.find((plan) => plan.id === result.planId) || project.plans?.[resultIndex];
       const editPlan: PlanItem = {
@@ -5134,13 +5120,51 @@ const AppContent: React.FC<{
         subFeature: project.subFeature || activeSubFeature || 'first_image',
         sourceType: 'persisted',
         directGeneration: true,
+        generationContext: cloneGenerationContext(finalInstruction, generationParams, initialEditMaterials),
+      };
+      createdEditProjectId = editProject.id;
+      setProjects((prev) => [editProject, ...prev]);
+      addToast('修改任务已提交，正在准备素材', 'info');
+      await persistProjectToSharedState(editProject);
+
+      const uploadedSupplementMaterials = await Promise.all(files.map(async (file, index) => {
+        const uploaded = await uploadInternalAssetStream({
+          module: AppModuleObj.ONE_CLICK,
+          file,
+          fileName: file.name,
+        });
+        if (!uploaded.fileUrl) {
+          throw new Error(`${file.name || '补充参考图'} 上传失败，请重试。`);
+        }
+        return createRemoteMaterial(
+          `edit-supplement-${Date.now()}-${index}`,
+          'reference',
+          uploaded.fileUrl,
+          file.name || `supplement-${index + 1}.png`,
+          project.subFeature || activeSubFeature || 'first_image',
+        );
+      }));
+      const editMaterials: Record<string, Material[]> = {
+        ...initialEditMaterials,
+        reference: uploadedSupplementMaterials,
+      };
+      const readyEditProject: Project = {
+        ...editProject,
         generationContext: cloneGenerationContext(finalInstruction, generationParams, editMaterials),
       };
-      setProjects((prev) => [editProject, ...prev]);
-      await persistProjectToSharedState(editProject);
-      await runOneClickPlanGeneration(editProject, [editPlan], editMaterials);
+      setProjects((prev) => prev.map((item) => item.id === readyEditProject.id ? readyEditProject : item));
+      await persistProjectToSharedState(readyEditProject);
+      await runOneClickPlanGeneration(readyEditProject, [editPlan], editMaterials);
     } catch (error) {
-      addToast(error instanceof Error ? error.message : '修改任务提交失败', 'error');
+      const message = error instanceof Error ? error.message : '修改任务提交失败';
+      if (createdEditProjectId) {
+        setProjects((prev) => prev.map((item) => (
+          item.id === createdEditProjectId
+            ? { ...item, status: 'error', error: message }
+            : item
+        )));
+      }
+      addToast(message, 'error');
     } finally {
       endExclusiveAction(actionKey);
     }

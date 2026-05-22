@@ -2354,7 +2354,25 @@ test('one click completed result edit supports supplement image upload and keeps
   assert.match(shellApp, /directGeneration: true/);
   assert.match(shellApp, /model: storedContext\?\.params\?\.model \|\| result\.model \|\| currentParams\.model \|\| 'GPT Image 2'/);
   assert.match(shellApp, /editInstruction: finalInstruction/);
-  assert.match(shellApp, /runOneClickPlanGeneration\(editProject, \[editPlan\], editMaterials\)/);
+  assert.match(shellApp, /runOneClickPlanGeneration\(readyEditProject, \[editPlan\], editMaterials\)/);
+});
+
+test('one click result edit and fission show immediate feedback before long async work', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const planEditor = read('../shell/components/PlanEditor.tsx');
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(projectCard, /onFission\(fissionDialog\.resultId, fissionDialog\.mode, finalInstruction\);\s*setFissionDialog\(null\);\s*setDetailOpen\(false\);/);
+  assert.match(projectCard, /onEdit\(editDialog\.resultId, finalInstruction, editDialog\.files\);\s*setEditDialog\(null\);\s*setDetailOpen\(false\);/);
+  assert.match(projectCard, /isEditResultPending=\{isEditPending\}/);
+  assert.match(projectCard, /isFissionResultPending=\{isFissionPending\}/);
+  assert.match(planEditor, /isEditResultPending\?: \(resultId: string\) => boolean/);
+  assert.match(planEditor, /isFissionResultPending\?: \(resultId: string\) => boolean/);
+  assert.match(planEditor, /label=\{isEditPending \? '提交中' : '修改'\}/);
+  assert.match(planEditor, /label=\{isFissionPending \? '提交中' : '裂变'\}/);
+  assert.match(shellApp, /addToast\('裂变任务已提交，正在创建新任务卡', 'info'\)/);
+  assert.match(shellApp, /addToast\('修改任务已提交，正在准备素材', 'info'\)/);
+  assert.match(shellApp, /setProjects\(\(prev\) => \[editProject, \.\.\.prev\]\);[\s\S]{0,1200}const uploadedSupplementMaterials = await Promise\.all/);
 });
 
 test('one click fission and edit are direct image-generation projects without planning credits and keep source model params', () => {
