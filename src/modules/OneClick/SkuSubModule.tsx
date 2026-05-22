@@ -16,7 +16,7 @@ import SkuSidebar from './SkuSidebar';
 import { uploadToCos } from '../../services/tencentCosService';
 import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
-import { resizeImage, getImageDimensions, createZipAndDownload, downloadRemoteFile } from '../../utils/imageUtils';
+import { resizeImage, getImageDimensions, downloadRemoteFilesAsZip, downloadRemoteFile } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
 import { generateSkuSchemes } from '../../services/arkService';
@@ -523,12 +523,10 @@ const SkuSubModule: React.FC<Props> = ({
     setIsDownloading(true);
     addToast('开始打包下载...', 'info');
     try {
-      const zipFiles = await Promise.all(completed.map(async (s, i) => {
-        const resp = await fetch(s.resultUrl!);
-        const blob = await resp.blob();
-        return { blob, path: `sku_${i + 1}.png` };
-      }));
-      await createZipAndDownload(zipFiles, `mayo_sku_batch_${Date.now()}`);
+      await downloadRemoteFilesAsZip(
+        completed.map((s, i) => ({ url: s.resultUrl!, path: `sku_${i + 1}.png` })),
+        `mayo_sku_batch_${Date.now()}`,
+      );
       addToast('下载完成', 'success');
     } catch (err) {
       addToast('下载失败', 'error');

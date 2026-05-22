@@ -10,7 +10,7 @@ import { resolvePublicAssetUrl } from '../../utils/modelAssetUrl.mjs';
 import { analyzeOneClickReferenceSet, generateMarketingSchemes } from '../../services/arkService';
 import { uploadToCos } from '../../services/tencentCosService';
 import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
-import { resizeImage, createZipAndDownload, downloadRemoteFile, getImageDimensions } from '../../utils/imageUtils';
+import { resizeImage, downloadRemoteFile, downloadRemoteFilesAsZip, getImageDimensions } from '../../utils/imageUtils';
 import { useToast } from '../../components/ToastSystem';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
@@ -774,12 +774,10 @@ const DetailPageSubModule: React.FC<Props> = ({
       },
     });
     try {
-      const zipFiles = await Promise.all(completedSchemes.map(async (s, i) => {
-        const resp = await fetch(s.resultUrl!);
-        const blob = await resp.blob();
-        return { blob, path: `detail_screen_${i + 1}.png` };
-      }));
-      await createZipAndDownload(zipFiles, `mayo_detail_export_${Date.now()}`);
+      await downloadRemoteFilesAsZip(
+        completedSchemes.map((s, i) => ({ url: s.resultUrl!, path: `detail_screen_${i + 1}.png` })),
+        `mayo_detail_export_${Date.now()}`,
+      );
       void logActionSuccess({
         module: 'one_click',
         action: 'download_detail_batch',

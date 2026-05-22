@@ -96,3 +96,48 @@ test('download helper falls back to direct anchor when remote CORS blocks blob f
     'fallback should still open/download the asset instead of surfacing Failed to fetch'
   );
 });
+
+test('zip downloads store already-compressed media and stream entries instead of recompressing images', () => {
+  const source = readFileSync(new URL('./imageUtils.ts', import.meta.url), 'utf8');
+
+  assert.match(
+    source,
+    /COMPRESSED_MEDIA_EXTENSION_PATTERN/,
+    'zip helper should identify image, video, and other already-compressed assets'
+  );
+  assert.match(
+    source,
+    /zip\.file\(f\.path, f\.blob, \{ compression: getZipEntryCompression\(f\) \}\);/,
+    'zip helper should choose compression per file instead of globally deflating every image'
+  );
+  assert.match(
+    source,
+    /compression: 'STORE'/,
+    'media-heavy zip generation should default to storing files without expensive recompression'
+  );
+  assert.match(
+    source,
+    /streamFiles: true/,
+    'zip generation should stream entries to reduce packaging memory pressure'
+  );
+});
+
+test('batch remote zip downloads use a bounded concurrency resolver', () => {
+  const source = readFileSync(new URL('./imageUtils.ts', import.meta.url), 'utf8');
+  const fileProcessor = readFileSync(new URL('../components/FileProcessor.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /const ZIP_REMOTE_FETCH_CONCURRENCY = 6;/);
+  assert.match(source, /const runWithConcurrency = async/);
+  assert.match(source, /export const resolveFilesForZipDownload = async/);
+  assert.match(source, /const zipFiles = await resolveFilesForZipDownload\(files\);/);
+  assert.match(
+    fileProcessor,
+    /resolveFilesForZipDownload\(completed\.map/,
+    'translation batch exports should use the shared bounded resolver instead of unbounded fetch Promise.all'
+  );
+  assert.doesNotMatch(
+    fileProcessor,
+    /const zipData = await Promise\.all\(completed\.map/,
+    'translation exports should not fetch hundreds of completed files at unlimited concurrency'
+  );
+});

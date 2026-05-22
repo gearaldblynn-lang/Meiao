@@ -250,6 +250,37 @@ export interface ImageDownloadTransform {
   maxFileSize?: number;
 }
 
+type ZipCompressionMode = 'STORE' | 'DEFLATE';
+
+export interface ZipDownloadSource {
+  blob?: Blob;
+  url?: string;
+  path: string;
+  transform?: ImageDownloadTransform;
+}
+
+const ZIP_REMOTE_FETCH_CONCURRENCY = 6;
+
+const runWithConcurrency = async <T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> => {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }));
+
+  return results;
+};
+
 const hasImageDownloadTransform = (transform?: ImageDownloadTransform) =>
   Boolean(transform && ((Number(transform.targetWidth) || 0) > 0 || (Number(transform.targetHeight) || 0) > 0));
 
@@ -320,14 +351,40 @@ export const downloadRemoteFile = async (url: string, fileName: string, transfor
 };
 
 export const downloadRemoteFilesAsZip = async (files: { url: string, path: string, transform?: ImageDownloadTransform }[], zipName: string) => {
-  const zipFiles = await Promise.all(files.map(async (file) => {
-    const { blob, transformed } = await resolveRemoteFileBlobForDownload(file.url, file.transform);
-    return {
-      blob,
-      path: getFileNameForBlob(file.path, blob, file.url, transformed),
-    };
-  }));
+  const zipFiles = await resolveFilesForZipDownload(files);
   await createZipAndDownload(zipFiles, zipName);
+};
+
+export const resolveFilesForZipDownload = async (
+  files: ZipDownloadSource[],
+  options: { concurrency?: number; skipFailed?: boolean } = {},
+) => {
+  const resolved = await runWithConcurrency(
+    files,
+    options.concurrency || ZIP_REMOTE_FETCH_CONCURRENCY,
+    async (file) => {
+      try {
+        if (file.blob instanceof Blob) {
+          return { blob: file.blob, path: file.path };
+        }
+        if (!file.url) {
+          throw new Error('下载失败: 结果地址为空');
+        }
+        const { blob, transformed } = await resolveRemoteFileBlobForDownload(file.url, file.transform);
+        return {
+          blob,
+          path: getFileNameForBlob(file.path, blob, file.url, transformed),
+        };
+      } catch (error) {
+        if (options.skipFailed) {
+          console.warn('[MEIAO] skip failed zip entry', file.path, error);
+          return null;
+        }
+        throw error;
+      }
+    },
+  );
+  return resolved.filter(Boolean);
 };
 
 const renderImageBlob = async (
@@ -518,15 +575,33 @@ export const stitchImagesVertically = async (blobs: Blob[]): Promise<Blob> => {
   });
 };
 
+const COMPRESSED_MEDIA_EXTENSION_PATTERN = /\.(?:png|jpe?g|webp|gif|bmp|avif|heic|mp4|mov|webm|m4v|zip|pdf)$/i;
+
+const getZipEntryCompression = (file: { blob: Blob, path: string }): ZipCompressionMode => {
+  const mimeType = String(file.blob?.type || '').toLowerCase();
+  if (
+    mimeType.startsWith('image/')
+    || mimeType.startsWith('video/')
+    || mimeType.startsWith('audio/')
+    || mimeType === 'application/pdf'
+    || mimeType === 'application/zip'
+    || COMPRESSED_MEDIA_EXTENSION_PATTERN.test(file.path || '')
+  ) {
+    return 'STORE';
+  }
+  return 'DEFLATE';
+};
+
 export const createZipAndDownload = async (files: { blob: Blob, path: string }[], zipName: string) => {
   const zip = new JSZip();
   files.forEach(f => {
-    zip.file(f.path, f.blob);
+    zip.file(f.path, f.blob, { compression: getZipEntryCompression(f) });
   });
   const content = await zip.generateAsync({
     type: 'blob',
-    compression: "DEFLATE",
-    compressionOptions: { level: 6 }
+    compression: 'STORE',
+    compressionOptions: { level: 1 },
+    streamFiles: true,
   });
   const url = safeCreateObjectURL(content);
   const link = document.createElement('a');
