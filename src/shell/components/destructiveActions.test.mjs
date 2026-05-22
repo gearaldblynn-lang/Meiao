@@ -53,6 +53,24 @@ test('plan editor confirms deleting planning cards while keeping result deletion
   assert.match(source, /onRequestDeleteResult\?\.\(result\.id\)/);
 });
 
+test('project list supports confirmed batch deletion of selected project cards', () => {
+  const source = read('./ProjectListView.tsx');
+
+  assert.match(source, /import ConfirmDialog from '\.\/ConfirmDialog'/);
+  assert.match(source, /const \[batchSelectMode, setBatchSelectMode\] = useState\(false\)/);
+  assert.match(source, /const \[selectedProjectIds, setSelectedProjectIds\] = useState<Set<string>>\(\(\) => new Set\(\)\)/);
+  assert.match(source, /const \[batchDeleteConfirmOpen, setBatchDeleteConfirmOpen\] = useState\(false\)/);
+  assert.match(source, /const selectableProjectIds = useMemo\(\(\) => orderedProjects\.map\(\(project\) => project\.id\), \[orderedProjects\]\)/);
+  assert.match(source, /selectedProjectIds\.forEach\(\(projectId\) => onDeleteProject\(projectId\)\)/);
+  assert.match(source, /title="批量删除项目"/);
+  assert.match(source, /message=\{`确定要删除已选的 \$\{selectedProjectIds\.size\} 个项目吗/);
+  assert.match(source, /confirmText="批量删除"/);
+  assert.match(source, /全选当前筛选结果/);
+  assert.match(source, /批量选择/);
+  assert.match(source, /aria-label=\{`\$\{selected \? '取消选择' : '选择'\}\$\{project\.name\}`\}/);
+  assert.match(source, /onClick=\{\(event\) => \{[\s\S]*event\.stopPropagation\(\);[\s\S]*toggleProjectSelection\(project\.id\);[\s\S]*\}\}/);
+});
+
 test('prompt copy controls live inside prompt panels while generating cards expose interrupt action', () => {
   const projectCardSource = read('./ProjectCard.tsx');
   const planEditorSource = read('./PlanEditor.tsx');
