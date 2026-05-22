@@ -517,6 +517,7 @@ const ProjectCard: React.FC<Props> = ({
     }
     onFission(fissionDialog.resultId, fissionDialog.mode, finalInstruction);
     setFissionDialog(null);
+    setDetailOpen(false);
   };
 
   const handleConfirmEdit = () => {
@@ -529,6 +530,7 @@ const ProjectCard: React.FC<Props> = ({
     }
     onEdit(editDialog.resultId, finalInstruction, editDialog.files);
     setEditDialog(null);
+    setDetailOpen(false);
   };
 
   const handleConfirmStoryboardRevision = () => {
@@ -1019,6 +1021,8 @@ const ProjectCard: React.FC<Props> = ({
                     const targetPlan = findPlanByResult(targetResult, Math.max(targetIndex, 0));
                     openFissionDialog(resultId, targetPlan?.title || project.name);
                   }}
+                  isEditResultPending={isEditPending}
+                  isFissionResultPending={isFissionPending}
                 />
               ) : project.results.length === 0 ? (
                 <div
@@ -1456,7 +1460,7 @@ const ProjectCard: React.FC<Props> = ({
                                   ) : hasResult ? (
                                     <ResultActionButton
                                       icon={<Sparkles size={12} />}
-                                      label="修改"
+                                      label={isEditPending(result.id) ? '提交中' : '修改'}
                                       onClick={() => openEditDialog(result.id, matchedPlan?.title || project.name)}
                                       disabled={!canEditImageResult(result) || isEditPending(result.id)}
                                     />
@@ -1687,7 +1691,7 @@ const ProjectCard: React.FC<Props> = ({
                                     ) : hasResult ? (
                                       <ResultActionButton
                                         icon={<Sparkles size={12} />}
-                                        label="修改"
+                                        label={isEditPending(result.id) ? '提交中' : '修改'}
                                         onClick={() => openEditDialog(result.id, matchedPlan?.title || project.name)}
                                         disabled={!canEditImageResult(result) || isEditPending(result.id)}
                                       />

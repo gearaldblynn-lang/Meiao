@@ -59,19 +59,19 @@ test('prompt copy controls live inside prompt panels while generating cards expo
 
   assert.match(projectCardSource, /aria-label="复制 Prompt"/);
   assert.match(projectCardSource, /label="中断"/);
-  assert.match(projectCardSource, /label="修改"/);
+  assert.match(projectCardSource, /label=\{isEditPending\(result\.id\) \? '提交中' : '修改'\}/);
   assert.match(projectCardSource, /disabled/);
   assert.match(projectCardSource, /onCancelTask\?\.\(project\.id\)/);
-  assert.match(projectCardSource, /hasResult \? \([\s\S]*label="修改"[\s\S]*\) : \([\s\S]*label="中断"[\s\S]*disabled/);
+  assert.match(projectCardSource, /hasResult \? \([\s\S]*label=\{isEditPending\(result\.id\) \? '提交中' : '修改'\}[\s\S]*\) : \([\s\S]*label="中断"[\s\S]*disabled/);
   assert.doesNotMatch(projectCardSource, /label="Prompt"/);
   assert.doesNotMatch(projectCardSource, /label="中断"[\s\S]{0,180}\) : <div \/>/);
 
   assert.match(planEditorSource, /aria-label="复制 Prompt"/);
   assert.match(planEditorSource, /onCancelGeneration/);
   assert.match(planEditorSource, /label="中断"/);
-  assert.match(planEditorSource, /label="修改"/);
+  assert.match(planEditorSource, /label=\{isEditPending \? '提交中' : '修改'\}/);
   assert.match(planEditorSource, /disabled/);
-  assert.match(planEditorSource, /hasResult \? \([\s\S]*label="修改"[\s\S]*\) : \([\s\S]*label="中断"[\s\S]*disabled/);
+  assert.match(planEditorSource, /hasResult \? \([\s\S]*label=\{isEditPending \? '提交中' : '修改'\}[\s\S]*\) : \([\s\S]*label="中断"[\s\S]*disabled/);
   assert.doesNotMatch(planEditorSource, /label="Prompt"/);
   assert.doesNotMatch(planEditorSource, /label="中断"[\s\S]{0,180}\) : <div \/>/);
 });
@@ -114,6 +114,7 @@ test('all runnable bottom generation submits are guarded before visible project 
   assert.match(handleGeneratePrefix, /const beginGuardedSubmit = \(\) => !hasGuardedSubmitLock \|\| beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(handleGeneratePrefix, /const releaseGuardedSubmit = \(\) => \{/);
   assert.match(shellSource, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\)/);
+  assert.match(shellSource, /if \(!beginGuardedSubmit\(\)\) \{\s*return;\s*\}\s*addToast\('任务已提交，正在准备素材', 'info'\);\s*try \{\s*generationMaterials = await ensureMaterialRemoteUrls/);
   assert.match(translationBranch, /onJobCreated: \(jobId: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
   assert.match(oneClickBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
   assert.match(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
