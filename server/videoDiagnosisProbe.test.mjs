@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   flattenFieldPaths,
   extractTikTokVideoIdFromUrl,
+  extractDouyinVideoIdFromUrl,
   buildDiagnosisReport,
   createVideoDiagnosisProbe,
 } from './videoDiagnosisProbe.mjs';
@@ -12,6 +13,21 @@ test('extractTikTokVideoIdFromUrl parses share url', () => {
   assert.equal(
     extractTikTokVideoIdFromUrl('https://www.tiktok.com/@demo/video/7388888888888888888'),
     '7388888888888888888'
+  );
+});
+
+test('extractDouyinVideoIdFromUrl parses common Douyin url formats', () => {
+  assert.equal(
+    extractDouyinVideoIdFromUrl('https://www.douyin.com/video/7451234567890123456'),
+    '7451234567890123456'
+  );
+  assert.equal(
+    extractDouyinVideoIdFromUrl('https://www.douyin.com/discover?modal_id=7451234567890123456'),
+    '7451234567890123456'
+  );
+  assert.equal(
+    extractDouyinVideoIdFromUrl('aweme_id=7451234567890123456'),
+    '7451234567890123456'
   );
 });
 
@@ -114,6 +130,61 @@ test('createVideoDiagnosisProbe reads TikTok aweme_details payloads returned by 
   assert.match(result.report.summary, /1234/);
 });
 
+test('createVideoDiagnosisProbe resolves Douyin short links before calling spider', async () => {
+  const calls = [];
+  const spiderFetch = async (payload) => {
+    calls.push(payload);
+    return {
+      data: {
+        aweme_id: '7451234567890123456',
+        desc: 'douyin demo',
+        statistics: { play_count: 88, digg_count: 3, comment_count: 1 },
+        author: { nickname: 'douyin tester' },
+      },
+    };
+  };
+  const probeRunner = createVideoDiagnosisProbe({
+    spiderFetch,
+    resolveUrl: async (candidateUrl) => {
+      assert.equal(candidateUrl, 'https://v.douyin.com/abc123/');
+      return 'https://www.douyin.com/video/7451234567890123456';
+    },
+  });
+
+  const result = await probeRunner({
+    platform: 'douyin',
+    url: '复制打开抖音，看看这个视频 https://v.douyin.com/abc123/ 更多内容',
+    analysisItems: [],
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].platform, 'douyin');
+  assert.equal(calls[0].videoId, '7451234567890123456');
+  assert.equal(result.probe.status, 'success');
+  assert.equal(result.probe.normalized.video.id, '7451234567890123456');
+});
+
+test('createVideoDiagnosisProbe does not call Spider when Douyin id is unavailable', async () => {
+  const spiderFetch = async () => {
+    throw new Error('should not call spider without aweme id');
+  };
+  const probeRunner = createVideoDiagnosisProbe({
+    spiderFetch,
+    resolveUrl: async () => '',
+  });
+
+  const result = await probeRunner({
+    platform: 'douyin',
+    url: 'https://v.douyin.com/no-id/',
+    analysisItems: [],
+  });
+
+  assert.equal(result.probe.status, 'error');
+  assert.equal(result.report.status, 'idle');
+  assert.ok(result.probe.missingCriticalFields.includes('video.id'));
+  assert.match(result.probe.error, /抖音视频 ID|aweme_id/);
+});
+
 test('createVideoDiagnosisProbe returns structured error for invalid URL', async () => {
   const spiderFetch = async () => {
     throw new Error('should not be called');
@@ -207,4 +278,5 @@ test('video diagnosis route and client helper are wired', () => {
   assert.match(serverSource, localRouteRegex);
   assert.match(apiSource, apiRequestRegex);
   assert.ok(apiSource.includes("timeoutMs: 120_000"));
+  assert.ok(serverSource.includes('payload = { aweme_id: videoId, AwemeID: videoId, share_url: url, analysis_items: normalizedItems };'));
 });

@@ -29,7 +29,64 @@ export const extractTikTokVideoIdFromUrl = (url) => {
 };
 
 export const extractDouyinVideoIdFromUrl = (url) => {
-  return String(url || '').match(/\/video\/(\d+)/)?.[1] ?? '';
+  const text = String(url || '');
+  const patterns = [
+    /\/video\/(\d{8,})/i,
+    /\/share\/video\/(\d{8,})/i,
+    /[?&](?:modal_id|aweme_id|awemeId)=(\d{8,})/i,
+    /(?:modal_id|aweme_id|awemeId)["':=\s]+(\d{8,})/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return '';
+};
+
+const extractFirstHttpUrl = (value) => {
+  const match = String(value || '').match(/https?:\/\/[^\s"'<>]+/i);
+  return match?.[0]?.replace(/[，。；;、)）\]}]+$/g, '') ?? '';
+};
+
+const isDouyinShortUrl = (url) => /https?:\/\/v\.douyin\.com\//i.test(String(url || ''));
+
+const defaultResolveUrl = async (url) => {
+  if (!url || typeof fetch !== 'function') return '';
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36',
+      },
+    });
+    return response.url || '';
+  } catch {
+    return '';
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const resolveDouyinInput = async (input, resolveUrl = defaultResolveUrl) => {
+  const rawInput = String(input || '').trim();
+  const directVideoId = extractDouyinVideoIdFromUrl(rawInput);
+  if (directVideoId) return { url: rawInput, videoId: directVideoId };
+
+  const candidateUrl = extractFirstHttpUrl(rawInput);
+  if (!candidateUrl || !isDouyinShortUrl(candidateUrl)) {
+    return { url: rawInput, videoId: '' };
+  }
+
+  const resolvedUrl = await resolveUrl(candidateUrl);
+  const resolvedVideoId = extractDouyinVideoIdFromUrl(resolvedUrl);
+  return {
+    url: resolvedUrl || candidateUrl,
+    videoId: resolvedVideoId,
+  };
 };
 
 export const flattenFieldPaths = (value, prefix = '', result = [], context = null, depth = 0) => {
@@ -388,7 +445,7 @@ const fetchXhsAllSources = async (spiderFetch, { url }) => {
   return { noteRaw, noteDetail, profileRaw, recentNotes, comments };
 };
 
-export const createVideoDiagnosisProbe = ({ spiderFetch }) => async ({ platform, url, analysisItems }) => {
+export const createVideoDiagnosisProbe = ({ spiderFetch, resolveUrl }) => async ({ platform, url, analysisItems }) => {
   if (!SUPPORTED_PLATFORMS.has(platform)) {
     return createErrorResult({ message: `不支持的平台 ${platform}`, missingCriticalFields: ['platform'] });
   }
@@ -455,19 +512,33 @@ export const createVideoDiagnosisProbe = ({ spiderFetch }) => async ({ platform,
     };
   }
 
-  const videoId = platform === 'tiktok'
-    ? extractTikTokVideoIdFromUrl(url)
-    : extractDouyinVideoIdFromUrl(url);
+  let normalizedUrl = String(url || '');
+  let videoId = '';
+
+  if (platform === 'tiktok') {
+    videoId = extractTikTokVideoIdFromUrl(normalizedUrl);
+  } else {
+    const resolved = await resolveDouyinInput(normalizedUrl, resolveUrl);
+    normalizedUrl = resolved.url || normalizedUrl;
+    videoId = resolved.videoId;
+  }
 
   if (!videoId && /\/@[^/]+\/?$/i.test(String(url || ''))) {
     return createErrorResult({ message: '视频链接缺少 video id，请粘贴具体视频链接', missingCriticalFields: ['video.id'] });
   }
 
+  if (!videoId && platform === 'douyin') {
+    return createErrorResult({
+      message: '未能解析抖音视频 ID（aweme_id），请粘贴抖音视频详情页链接或完整分享链接后重试',
+      missingCriticalFields: ['video.id'],
+    });
+  }
+
   let sources;
   try {
     sources = platform === 'tiktok'
-      ? await fetchTikTokAllSources(spiderFetch, { videoId, url, analysisItems })
-      : await fetchDouyinAllSources(spiderFetch, { videoId, url });
+      ? await fetchTikTokAllSources(spiderFetch, { videoId, url: normalizedUrl, analysisItems })
+      : await fetchDouyinAllSources(spiderFetch, { videoId, url: normalizedUrl });
   } catch (error) {
     return createErrorResult({
       message: error instanceof Error ? error.message : '抓取数据失败',
