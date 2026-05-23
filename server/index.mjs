@@ -1400,7 +1400,7 @@ const createSpiderFetch = ({ gatewayUrl, apiKey }) => async ({ platform, source,
         break;
       default: // 'video'
         endpoint = '/v1/spider/douyin/video-info';
-        payload = { aweme_id: videoId, share_url: url, analysis_items: normalizedItems };
+        payload = { aweme_id: videoId, AwemeID: videoId, share_url: url, analysis_items: normalizedItems };
     }
   }
 
