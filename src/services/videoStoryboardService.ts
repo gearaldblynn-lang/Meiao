@@ -139,11 +139,17 @@ const formatUrlList = (urls: string[], label: string) =>
     ? urls.map((url, index) => `${label}${index + 1}：${url}`).join('\n')
     : `${label}：未提供`;
 
+const getSceneReferenceUrls = (config: VideoStoryboardConfig) =>
+  Array.isArray(config.sceneReferenceUrls)
+    ? config.sceneReferenceUrls.map((url) => String(url || '').trim()).filter(Boolean)
+    : [];
+
 const buildScriptRequestPrompt = (
   config: VideoStoryboardConfig,
   sceneDescription: string,
   productImageUrls: string[] = [],
-  referenceVideoUrl = ''
+  referenceVideoUrl = '',
+  sceneReferenceUrls: string[] = [],
 ) => {
   if (config.videoGenerationMode === 'viral_split') {
     return `
@@ -226,6 +232,9 @@ ${formatUrlList(productImageUrls, '商品参考图公网URL')}
   const sceneInstruction = sceneDescription && sceneDescription.trim()
     ? `【重要】场景描述：${sceneDescription}\n所有分镜必须严格遵循此场景描述，不得偏离。每个分镜的画面、动作、环境都必须与此场景描述高度一致。`
     : '未指定固定场景，可按产品调性合理设计。';
+  const sceneReferenceInstruction = sceneReferenceUrls.length > 0
+    ? `\n场景/风格参考图：\n${formatUrlList(sceneReferenceUrls, '场景参考图公网URL')}\n使用方式：这些图片只作为拍摄环境、光线、道具、景深、机位和风格参考；不得把场景参考图中的非商品物体误当成商品，不得改变商品参考图中的产品外观。`
+    : '';
   const viralInstruction = config.videoGenerationMode === 'viral_split'
     ? `\n爆款裂变要求：
 - 当前模式：爆款裂变。
@@ -249,6 +258,7 @@ C Constraint 约束
 - 目标国家/语言：${config.countryLanguage}
 
 ${sceneInstruction}
+${sceneReferenceInstruction}
 ${viralInstruction}
 
 硬性要求：
@@ -533,9 +543,12 @@ export const generateStoryboardScript = async (
   const safeImageUrls = imageUrls.filter(Boolean).map((url, index) =>
     requireModelAssetUrl(url, publicBaseUrl, `参考图${index + 1}`)
   );
-  const prompt = buildScriptRequestPrompt(config, sceneDescription, safeImageUrls, safeReferenceVideoUrl);
+  const safeSceneReferenceUrls = getSceneReferenceUrls(config).map((url, index) =>
+    requireModelAssetUrl(url, publicBaseUrl, `场景参考图${index + 1}`)
+  );
+  const prompt = buildScriptRequestPrompt(config, sceneDescription, safeImageUrls, safeReferenceVideoUrl, safeSceneReferenceUrls);
   const userContent: any[] = [{ type: 'text', text: prompt }];
-  const videoAnalysisModel = safeReferenceVideoUrl ? await resolveVideoAnalysisModel() : '';
+  const videoAnalysisModel = await resolveVideoAnalysisModel();
 
   if (safeReferenceVideoUrl) {
     userContent.push({ type: 'text', text: `[爆款复刻视频URL] ${safeReferenceVideoUrl}` });
@@ -553,12 +566,20 @@ export const generateStoryboardScript = async (
     });
   });
 
+  safeSceneReferenceUrls.forEach((safeUrl) => {
+    userContent.push({
+      type: 'image_url',
+      image_url: { url: safeUrl },
+    });
+  });
+
   const { job } = await createInternalJob({
     module: 'video',
     taskType: 'kie_chat',
     provider: 'kie',
     payload: {
-      ...(videoAnalysisModel ? { model: videoAnalysisModel, reasoningLevel: 'high' } : {}),
+      model: videoAnalysisModel,
+      reasoningLevel: 'high',
       messages: [
         {
           role: 'system',
@@ -682,6 +703,7 @@ const buildBoardPrompt = (
   previousBoardImageUrl?: string,
   revisionInstruction?: string,
   productImageUrls: string[] = [],
+  sceneReferenceUrls: string[] = [],
 ) => {
   const boardShots = shots.filter((shot) => board.shotIds.includes(shot.id));
   const panelCount = boardShots.length;
@@ -715,6 +737,10 @@ const buildBoardPrompt = (
         ? '如出现人物，仅允许不露脸的局部真实人物表达。'
         : '';
 
+  const sceneReferenceLine = sceneReferenceUrls.length > 0
+    ? `场景/风格参考图：\n${formatUrlList(sceneReferenceUrls, '场景参考图公网URL')}\n这些图片只用于参考环境、光线、道具、景深、机位和整体风格；产品外观仍以参考产品图为唯一来源。`
+    : '';
+
   return `
 R Role 角色
 你是商业视频分镜板设计助手。
@@ -738,6 +764,7 @@ C Constraint 约束
 13. ${actorLine}
 14. ${referenceLine || '无需参考上一张分镜板。'}
 15. ${revisionLine || '无额外修改要求。'}
+16. ${sceneReferenceLine || '无额外场景参考图。'}
 
 F Format 格式
 直接输出单张完整分镜板图像。
@@ -767,13 +794,17 @@ export const generateStoryboardBoardImage = async (
   const safeImageUrls = imageUrls.filter(Boolean).map((url, index) =>
     requireModelAssetUrl(url, publicBaseUrl, `参考图${index + 1}`)
   );
+  const safeSceneReferenceUrls = getSceneReferenceUrls(config).map((url, index) =>
+    requireModelAssetUrl(url, publicBaseUrl, `场景参考图${index + 1}`)
+  );
   const safePreviousBoardImageUrl = previousBoardImageUrl ? requireModelAssetUrl(previousBoardImageUrl, publicBaseUrl, '上一张分镜板') : '';
   const safeCurrentBoardImageUrl = revisionInstruction?.trim() && board.imageUrl
     ? requireModelAssetUrl(board.imageUrl, publicBaseUrl, '当前分镜板')
     : '';
-  const prompt = buildBoardPrompt(board, shots, config, safePreviousBoardImageUrl || undefined, revisionInstruction, safeImageUrls);
+  const prompt = buildBoardPrompt(board, shots, config, safePreviousBoardImageUrl || undefined, revisionInstruction, safeImageUrls, safeSceneReferenceUrls);
   const inputImages = [
     ...safeImageUrls,
+    ...safeSceneReferenceUrls,
     ...(safePreviousBoardImageUrl ? [safePreviousBoardImageUrl] : []),
     ...(safeCurrentBoardImageUrl ? [safeCurrentBoardImageUrl] : []),
   ];

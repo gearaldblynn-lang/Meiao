@@ -331,6 +331,37 @@ const findPersistedPlanningProjectForJob = (job: InternalJob, projects: ShellPro
   }
 };
 
+const extractTimestampFromProjectId = (value: unknown) => {
+  const matches = String(value || '').match(/\d{13}/g) || [];
+  const timestamps = matches
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item) && item > 1_600_000_000_000);
+  return timestamps[0] || 0;
+};
+
+const findPersistedStoryboardPlanningProjectForJob = (job: InternalJob, projects: ShellProjectData[] = []) => {
+  const directMatch = findPersistedPlanningProjectForJob(job, projects);
+  if (directMatch?.module === MODULE_VALUES.VIDEO && directMatch.subFeature === 'storyboard') return directMatch;
+
+  const jobCreatedAt = Number(job?.createdAt || job?.updatedAt || job?.finishedAt || 0);
+  if (!Number.isFinite(jobCreatedAt) || jobCreatedAt <= 0) return undefined;
+  const jobTaskId = String(job?.providerTaskId || (job?.result as any)?.providerTaskId || '').trim();
+  const candidates = projects
+    .filter((project) => {
+      if (project.module !== MODULE_VALUES.VIDEO || project.subFeature !== 'storyboard') return false;
+      if (jobTaskId && splitIdentityText(project.planningTaskId).includes(jobTaskId)) return true;
+      const projectTimestamp = extractTimestampFromProjectId(project.id);
+      if (!projectTimestamp) return false;
+      return Math.abs(jobCreatedAt - projectTimestamp) <= 10 * 60 * 1000;
+    })
+    .map((project) => ({
+      project,
+      distance: Math.abs(jobCreatedAt - extractTimestampFromProjectId(project.id)),
+    }))
+    .sort((a, b) => a.distance - b.distance);
+  return candidates[0]?.project;
+};
+
 const getPrompt = (item: any, fallback: string, module?: AppModule) => {
   if (module === MODULE_VALUES.ONE_CLICK) {
     return String(
@@ -894,7 +925,20 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
   const storyboardProjects = Array.isArray(video?.storyboard?.projects) ? video.storyboard.projects : [];
   storyboardProjects.forEach((project: any, index: number) => {
     const items = [...(Array.isArray(project?.shots) ? project.shots : []), ...(Array.isArray(project?.boards) ? project.boards : [])];
-    const mapped = projectFromItems(String(project?.id || `storyboard-${index}`), String(project?.name || `分镜项目 ${index + 1}`), MODULE_VALUES.VIDEO, project?.createdAt || Date.now(), items, 'storyboard');
+    const mapped = projectFromItems(
+      String(project?.id || `storyboard-${index}`),
+      String(project?.name || `分镜项目 ${index + 1}`),
+      MODULE_VALUES.VIDEO,
+      project?.createdAt || Date.now(),
+      items,
+      'storyboard',
+      '',
+      undefined,
+      undefined,
+      undefined,
+      project?.creditsConsumed,
+      project?.planningTaskId,
+    );
     if (mapped) projects.push(mapped);
   });
 
@@ -992,6 +1036,23 @@ const mapJobs = (
           planningTaskId: String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || undefined,
           plans,
           selectedPlanId: plans.find((plan) => plan.selected)?.id || plans[0]?.id,
+        });
+        return;
+      }
+      if (
+        projectStatus === 'completed'
+        && module === MODULE_VALUES.VIDEO
+        && String(job.taskType || '') === 'kie_chat'
+        && urls.length === 0
+      ) {
+        const matchedProject = findPersistedStoryboardPlanningProjectForJob(job, persistedProjects);
+        if (!matchedProject) return;
+        const planningTaskId = String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim();
+        projects.push({
+          ...matchedProject,
+          backendJobId: job.id,
+          creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || matchedProject.creditsConsumed,
+          planningTaskId: mergeIdentityTextList(matchedProject.planningTaskId, planningTaskId),
         });
         return;
       }

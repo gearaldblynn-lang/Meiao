@@ -326,6 +326,8 @@ test('project details expose actual task credits and provider task ids', () => {
   assert.match(projectCard, /策划任务 ID/);
   assert.match(projectCard, /copyTextToClipboard/);
   assert.match(projectCard, /document\.execCommand\('copy'\)/);
+  assert.doesNotMatch(projectCard, /planningTaskIdFallback/);
+  assert.doesNotMatch(projectCard, /isStoryboardProject \? project\.id : ''/);
   assert.match(projectCard, /splitTaskIds\(project\.planningTaskId\)/);
   assert.match(projectCard, /result\.creditsConsumed/);
   assert.match(projectCard, /planningTaskId=\{project\.planningTaskId\}/);
@@ -2414,6 +2416,7 @@ test('one click fission and edit are direct image-generation projects without pl
   const shellDataAdapter = read('../adapters/shellDataAdapter.ts');
 
   assert.match(projectCard, /!project\.directGeneration && \(Boolean\(project\.planningTaskId\)/);
+  assert.match(projectCard, /project\.module === 'video'[\s\S]*project\.subFeature === 'storyboard'[\s\S]*rawProjectCredits > 0/);
   assert.match(shellApp, /variationInstruction: fissionInstruction \|\| `按\$\{variantLabel\}方向继续裂变这张生成图。`/);
   assert.match(shellApp, /variantProject\.generationContext = cloneGenerationContext\(variantPlan\.schemeContent \|\| fissionInstruction, fissionParams, variantMaterials\)/);
   assert.match(shellApp, /const variantMaterials = buildVariantMaterials\(baseMaterials, variantPlan, 'first_image'\)/);

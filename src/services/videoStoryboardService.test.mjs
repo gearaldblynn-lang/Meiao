@@ -45,3 +45,20 @@ test('normalized viral storyboard prompt emits descriptive placeholders instead 
   assert.doesNotMatch(normalizerBody, /商品：保持与商品参考图完全一致，不展开描述包装细节/);
   assert.doesNotMatch(normalizerBody, /环境\/场景：从爆款视频拆解具体场景/);
 });
+
+test('original storyboard chain keeps scene references separate from product references', () => {
+  assert.match(source, /const getSceneReferenceUrls = \(config: VideoStoryboardConfig\)/);
+  assert.match(source, /场景\/风格参考图/);
+  assert.match(source, /这些图片只作为拍摄环境、光线、道具、景深、机位和风格参考/);
+  assert.match(source, /不得把场景参考图中的非商品物体误当成商品/);
+  assert.match(source, /safeSceneReferenceUrls\.forEach/);
+  assert.match(source, /const inputImages = \[\s*\.\.\.safeImageUrls,\s*\.\.\.safeSceneReferenceUrls,/s);
+});
+
+test('original storyboard script generation explicitly uses the video analysis model', () => {
+  assert.match(source, /const videoAnalysisModel = await resolveVideoAnalysisModel\(\);/);
+  assert.doesNotMatch(source, /const videoAnalysisModel = safeReferenceVideoUrl \? await resolveVideoAnalysisModel\(\) : '';/);
+  assert.match(source, /model: videoAnalysisModel,\s*reasoningLevel: 'high'/);
+  assert.match(source, /const taskId = String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| ''\)\.trim\(\) \|\| undefined;/);
+  assert.doesNotMatch(source, /const taskId = String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| job\.id/);
+});

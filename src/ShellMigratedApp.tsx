@@ -1229,6 +1229,9 @@ const buildVideoStoryboardConfig = (
   const productUrls = (materials.product || [])
     .map((item) => item.remoteUrl || item.url)
     .filter(Boolean);
+  const sceneReferenceUrls = (materials.scene || [])
+    .map((item) => item.remoteUrl || item.url)
+    .filter(Boolean);
   const referenceVideoUrl = (materials.referenceVideo || [])[0]?.remoteUrl || (materials.referenceVideo || [])[0]?.url || '';
   const duration = parseStoryboardDuration(params.duration, base.duration);
   const mode = isVideoStoryboardViralReplicationMode(params.videoMode) ? 'viral_split' : 'original';
@@ -1236,6 +1239,7 @@ const buildVideoStoryboardConfig = (
     ...base,
     productImages: [],
     uploadedProductUrls: productUrls,
+    sceneReferenceUrls,
     productInfo: prompt,
     videoGenerationMode: mode,
     scriptLogic: params.scriptLogic || prompt,
