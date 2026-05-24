@@ -1075,6 +1075,20 @@ const getTranslationProjectStatus = (files: TranslationBatchFile[]): Project['st
 const getTranslationCompletedCount = (files: TranslationBatchFile[]) =>
   files.filter((item) => item.status === 'completed' && Boolean(item.resultUrl)).length;
 
+const formatShortProjectNamePrefix = (date = new Date()) => {
+  const month = date.getMonth() + 1;
+  const day = date.getDate();
+  return `${month}月${day}日项目`;
+};
+
+const getNextShortProjectNameNumber = (projects: Project[], prefix: string) => (
+  projects.reduce((max, project) => {
+    const match = String(project.name || '').match(new RegExp(`^${prefix}(\\d+)$`));
+    const value = match ? Number(match[1]) : 0;
+    return Number.isFinite(value) ? Math.max(max, value) : max;
+  }, 0) + 1
+);
+
 const parsePositiveInt = (value: string | undefined, fallback = 1, max = 20) => {
   const parsed = parseInt(String(value || '').replace(/[^\d]/g, ''), 10);
   if (!Number.isFinite(parsed) || parsed < 1) return Math.max(1, Math.min(max, fallback));
@@ -1613,6 +1627,8 @@ const AppContent: React.FC<{
 
   // ── Projects (batch results) ──
   const [projects, setProjects] = useState<Project[]>(() => initialRuntimeSnapshot.projects);
+  const projectsRef = useRef<Project[]>(initialRuntimeSnapshot.projects);
+  const projectNameCounterRef = useRef<Record<string, number>>({});
 
   // ── Tasks (in-progress) ──
   const [tasks, setTasks] = useState<Task[]>(() => initialRuntimeSnapshot.tasks);
@@ -1631,6 +1647,20 @@ const AppContent: React.FC<{
       ? crypto.randomUUID()
       : `session-${Date.now()}-${Math.random().toString(16).slice(2)}`,
   );
+
+  useEffect(() => {
+    projectsRef.current = projects;
+  }, [projects]);
+
+  const reserveShortProjectName = useCallback(() => {
+    const prefix = formatShortProjectNamePrefix();
+    const nextNumber = Math.max(
+      getNextShortProjectNameNumber(projectsRef.current, prefix),
+      (projectNameCounterRef.current[prefix] || 0) + 1,
+    );
+    projectNameCounterRef.current[prefix] = nextNumber;
+    return `${prefix}${nextNumber}`;
+  }, []);
 
   const getRuntimeDeletionDraft = useCallback((remoteDraft?: unknown, userId?: string | null) => {
     return mergeShellRuntimeDeletionDrafts(
@@ -2827,20 +2857,9 @@ const AppContent: React.FC<{
     }
     generationParams.__workspacePreferences = JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences());
     const batchCount = resolveBatchCount(targetModule, targetSubFeature, generationParams);
-    const skuProjectName = String(
-      Object.entries(generationParams)
-        .find(([key, value]) => /^skuCopyText_\d+$/.test(key) && String(value || '').trim())?.[1]
-      || generationParams.skuCopyText_0
-      || ''
-    ).trim();
     const translationSubFeatureLabel = MODULE_SUB_FEATURES[targetModule]
       ?.find((item) => item.id === targetSubFeature)?.label;
-    const projectNameSource = targetModule === AppModuleObj.TRANSLATION
-      ? translationSubFeatureLabel || MODULE_NAMES[targetModule]
-      : allowEmptySkuPrompt
-        ? skuProjectName || generationPrompt.trim() || 'SKU 组合'
-        : generationPrompt.trim();
-	    const projectName = projectNameSource.slice(0, 20) + (projectNameSource.length > 20 ? '...' : '');
+	    const projectName = reserveShortProjectName();
 	    let generationMaterials = filteredMaterials;
 	    if (!beginGuardedSubmit()) {
 	      return;
@@ -3780,7 +3799,7 @@ const AppContent: React.FC<{
 	      releaseGuardedSubmit();
 	      setIsGenerating(false);
 	    }
-	  }, [promptText, activeModule, activeSubFeature, currentParams, filteredMaterials, projects, tasks, addToast, hydrateShellData, setScopedPromptText, apiConfig, videoMemory, setVideoMemory, persistProjectToSharedState, publicBaseUrl, ensureMaterialRemoteUrls, currentUser, logShellError, beginGenerationSubmitLock, endGenerationSubmitLock]);
+	  }, [promptText, activeModule, activeSubFeature, currentParams, filteredMaterials, projects, tasks, addToast, hydrateShellData, setScopedPromptText, apiConfig, videoMemory, setVideoMemory, persistProjectToSharedState, publicBaseUrl, ensureMaterialRemoteUrls, currentUser, logShellError, beginGenerationSubmitLock, endGenerationSubmitLock, reserveShortProjectName]);
 
   const createRemoteMaterial = useCallback((id: string, type: string, url: string, fileName: string, subFeature?: string): Material => ({
     id,
@@ -3840,14 +3859,17 @@ const AppContent: React.FC<{
     const orderedProjectPlans = Array.isArray(project.plans) && project.plans.length > 0 ? project.plans : selectedPlans;
     const firstBenchmarkPlanId = orderedProjectPlans[0]?.id || '';
     const requiresFirstBenchmark = sceneSubFeature === 'sku' && Boolean(firstBenchmarkPlanId);
-    const totalTaskCount = batchCount;
-    const mergeProjectResults = (nextResults: GeneratedResult[]) => (
-      mergeGeneratedPlanResults(project.results || [], nextResults, selectedPlanIds) as GeneratedResult[]
+    const totalTaskCount = Math.max(Number(project.taskCount || 0), orderedProjectPlans.length, batchCount);
+    const getLatestProject = () => projectsRef.current.find((item) => item.id === projectId) || project;
+    const mergeProjectResults = (baseResults: GeneratedResult[], nextResults: GeneratedResult[]) => (
+      mergeGeneratedPlanResults(baseResults || [], nextResults, selectedPlanIds) as GeneratedResult[]
+    );
+    const mergeLatestProjectResults = (nextResults: GeneratedResult[]) => (
+      mergeProjectResults(getLatestProject().results || project.results || [], nextResults)
     );
     const generationMaterials = materialsOverride
       || (hasMaterialInputs(storedContext?.materials as Record<string, Material[]>) ? storedContext?.materials as Record<string, Material[]> : undefined)
       || filteredMaterials;
-    const startingResults = mergeProjectResults([]);
     let firstBenchmarkResultUrl = requiresFirstBenchmark
       ? resolvePublicAssetUrl(
         (project.results || []).find((result) => result.planId === firstBenchmarkPlanId && result.status === 'completed' && Boolean(result.imageUrl))?.imageUrl || '',
@@ -3855,19 +3877,23 @@ const AppContent: React.FC<{
       ) || ''
       : '';
 
-    setProjects((prev) => prev.map((p) =>
-      p.id === projectId
-        ? {
-            ...p,
-            status: 'generating',
-            selectedPlanId: selectedPlans[0]?.id,
-            subFeature: sceneSubFeature,
-            taskCount: totalTaskCount,
-            completedCount: countCompletedProjectResults(startingResults),
-            results: startingResults,
-          }
-        : p
-    ));
+    setProjects((prev) => {
+      const next: Project[] = prev.map((p): Project => {
+        if (p.id !== projectId) return p;
+        const mergedStartingResults = mergeProjectResults(p.results || [], []);
+        return {
+          ...p,
+          status: 'generating' as const,
+          selectedPlanId: selectedPlans[0]?.id,
+          subFeature: sceneSubFeature,
+          taskCount: totalTaskCount,
+          completedCount: countCompletedProjectResults(mergedStartingResults),
+          results: mergedStartingResults,
+        };
+      });
+      projectsRef.current = next;
+      return next;
+    });
 
     const taskId = 'task-img-' + Date.now();
     setTasks((prev) => [{
@@ -3893,19 +3919,23 @@ const AppContent: React.FC<{
     let firstGenerationError: Error | null = null;
     const getPublishedResults = () => resultsByIndex.filter((item): item is GeneratedResult => Boolean(item));
     const publishPlanResults = (status: Project['status'] = 'generating', error?: string) => {
-      const mergedResults = mergeProjectResults(getPublishedResults());
-      setProjects((prev) => prev.map((p) =>
-        p.id === projectId
-          ? {
-              ...p,
-              status,
-              results: mergedResults,
-              taskCount: totalTaskCount,
-              completedCount: countCompletedProjectResults(mergedResults),
-              ...(error ? { error } : {}),
-            }
-          : p
-      ));
+      let mergedResults = mergeLatestProjectResults(getPublishedResults());
+      setProjects((prev) => {
+        const next = prev.map((p) => {
+          if (p.id !== projectId) return p;
+          mergedResults = mergeProjectResults(p.results || [], getPublishedResults());
+          return {
+            ...p,
+            status,
+            results: mergedResults,
+            taskCount: totalTaskCount,
+            completedCount: countCompletedProjectResults(mergedResults),
+            ...(error ? { error } : {}),
+          };
+        });
+        projectsRef.current = next;
+        return next;
+      });
       return mergedResults;
     };
     const upsertGeneratingPlanResult = (plan: PlanItem, index: number, providerTaskId: string, prompt: string) => {
@@ -3935,11 +3965,15 @@ const AppContent: React.FC<{
       if (jobId) {
         generationBackendJobIdByPlanId.set(plan.id, jobId);
       }
-      setProjects((prev) => prev.map((item) => (
-        item.id === projectId
-          ? { ...item, backendJobId: jobId }
-          : item
-      )));
+      setProjects((prev) => {
+        const next = prev.map((item) => (
+          item.id === projectId
+            ? { ...item, backendJobId: jobId }
+            : item
+        ));
+        projectsRef.current = next;
+        return next;
+      });
       setTasks((prev) => prev.map((task) => (
         task.id === taskId
           ? { ...task, backendJobId: jobId, status: 'generating', progress: Math.max(task.progress || 0, 8) }
@@ -4141,9 +4175,10 @@ const AppContent: React.FC<{
       if (firstGenerationError) throw firstGenerationError;
 
       const publishedResults = getPublishedResults();
-      const mergedCompletedResults = mergeProjectResults(publishedResults);
+      const latestProject = getLatestProject();
+      const mergedCompletedResults = mergeProjectResults(latestProject.results || project.results || [], publishedResults);
       const completedProject: Project = pendingSyncProject || {
-        ...project,
+        ...latestProject,
         status: 'completed',
         completedAt: project.createdAt,
         results: mergedCompletedResults,
@@ -4160,12 +4195,27 @@ const AppContent: React.FC<{
           completedCount: countCompletedProjectResults(mergedCompletedResults),
         };
       }
-      setProjects((prev) => prev.map((p) =>
-        p.id === projectId
-          ? (pendingSyncProject || completedProject)
-          : p
-      ));
-      const synced = await persistProjectToSharedState(pendingSyncProject || completedProject);
+      let projectToPersist = pendingSyncProject || completedProject;
+      setProjects((prev) => {
+        const next = prev.map((p) => {
+          if (p.id !== projectId) return p;
+          const currentMergedResults = mergeProjectResults(p.results || [], publishedResults);
+          const hasActiveSibling = currentMergedResults.some((result) => result.status === 'generating');
+          projectToPersist = {
+            ...p,
+            ...(pendingSyncProject || completedProject),
+            status: pendingSyncProject || hasActiveSibling ? 'generating' : 'completed',
+            completedAt: pendingSyncProject || hasActiveSibling ? undefined : project.createdAt,
+            results: currentMergedResults,
+            taskCount: totalTaskCount,
+            completedCount: countCompletedProjectResults(currentMergedResults),
+          };
+          return projectToPersist;
+        });
+        projectsRef.current = next;
+        return next;
+      });
+      const synced = await persistProjectToSharedState(projectToPersist);
       if (pendingSyncProject) {
         setTasks((prev) => prev.map((t) => (
           t.id === taskId
@@ -4190,7 +4240,7 @@ const AppContent: React.FC<{
     } catch (error) {
       const message = error instanceof Error ? error.message : '批量出图失败';
       const publishedResults = getPublishedResults();
-      const mergedFailedResults = mergeProjectResults(publishedResults);
+      const mergedFailedResults = mergeLatestProjectResults(publishedResults);
       logShellError('one_click_image_generation_failed', error, {
         projectId,
         taskId,
@@ -4198,12 +4248,13 @@ const AppContent: React.FC<{
         batchCount,
         completedCount: publishedResults.filter((item) => item.status === 'completed').length,
       }, '一键主详出图失败');
-      const failedProject: Project = {
-        ...project,
+      const failedProjectBase = getLatestProject();
+      let failedProject: Project = {
+        ...failedProjectBase,
         status: 'error',
         taskCount: totalTaskCount,
         completedCount: countCompletedProjectResults(mergedFailedResults),
-        results: publishedResults.length > 0 ? mergedFailedResults : mergeProjectResults([{
+        results: publishedResults.length > 0 ? mergedFailedResults : mergeProjectResults(failedProjectBase.results || project.results || [], [{
           id: `${taskId}-error`,
           planId: selectedPlans[0]?.id,
           imageUrl: '',
@@ -4219,11 +4270,35 @@ const AppContent: React.FC<{
         creditsConsumed: project.creditsConsumed,
         planningTaskId: project.planningTaskId,
       };
-      setProjects((prev) => prev.map((p) =>
-        p.id === projectId
-          ? failedProject
-          : p
-      ));
+      setProjects((prev) => {
+        const next = prev.map((p) => {
+          if (p.id !== projectId) return p;
+          const currentMergedResults = publishedResults.length > 0
+            ? mergeProjectResults(p.results || [], publishedResults)
+            : mergeProjectResults(p.results || [], [{
+                id: `${taskId}-error`,
+                planId: selectedPlans[0]?.id,
+                imageUrl: '',
+                prompt: message,
+                model: generationParams['model'] || 'gpt-image-2',
+                aspectRatio: effectiveRatio,
+                status: 'error',
+                createdAt: project.createdAt,
+                module: AppModuleObj.ONE_CLICK,
+                subFeature: sceneSubFeature,
+              }]);
+          failedProject = {
+            ...p,
+            ...failedProject,
+            status: currentMergedResults.some((result) => result.status === 'generating') ? 'generating' : 'error',
+            results: currentMergedResults,
+            completedCount: countCompletedProjectResults(currentMergedResults),
+          };
+          return failedProject;
+        });
+        projectsRef.current = next;
+        return next;
+      });
       void persistProjectToSharedState(failedProject);
       setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, status: 'error', progress: 100 } : t));
       addToast(message, 'error');
@@ -4234,12 +4309,13 @@ const AppContent: React.FC<{
 
   // ── OneClick: confirm plan → generate images ──
   const handleConfirmPlan = useCallback(async (projectId: string, planOrPlans: PlanItem | PlanItem[]) => {
-    const actionKey = `confirm-plan:${projectId}`;
+    const selectedPlans = Array.isArray(planOrPlans) ? planOrPlans : [planOrPlans];
+    const planActionKey = selectedPlans.map((plan) => plan.id).filter(Boolean).join('|') || 'unknown';
+    const actionKey = `confirm-plan:${projectId}:${planActionKey}`;
     if (!beginExclusiveAction(actionKey, '生图任务已提交，请等待当前任务完成')) return;
     try {
       const project = projects.find((p) => p.id === projectId);
       if (!project) return;
-      const selectedPlans = Array.isArray(planOrPlans) ? planOrPlans : [planOrPlans];
       await runOneClickPlanGeneration(project, selectedPlans);
     } finally {
       endExclusiveAction(actionKey);

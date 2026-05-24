@@ -41,6 +41,7 @@ interface Props {
   onFissionResult?: (resultId: string) => void;
   isEditResultPending?: (resultId: string) => boolean;
   isFissionResultPending?: (resultId: string) => boolean;
+  isConfirmPlanPending?: (planId: string) => boolean;
   onCopyTaskId?: (taskId: string) => void;
   onCancelGeneration?: () => void;
 }
@@ -234,7 +235,6 @@ const PlanEditor: React.FC<Props> = ({
   plans,
   results,
   projectStatus = 'planning',
-  selectedPlanId,
   subFeature,
   planningTaskId,
   onChange,
@@ -249,22 +249,15 @@ const PlanEditor: React.FC<Props> = ({
   onFissionResult,
   isEditResultPending,
   isFissionResultPending,
+  isConfirmPlanPending,
   onCopyTaskId,
   onCancelGeneration,
 }) => {
   const [expandedPromptIds, setExpandedPromptIds] = useState<Record<string, boolean>>({});
   const [pendingDeletePlan, setPendingDeletePlan] = useState<{ id: string; title: string } | null>(null);
   const [planningIdsExpanded, setPlanningIdsExpanded] = useState(false);
-  const completedPlanIds = new Set(
-    (results || [])
-      .map((result) => result.planId)
-      .filter((planId): planId is string => Boolean(planId))
-  );
-  const pendingSelectedPlanIds = plans
-    .filter((plan) => plan.selected && !completedPlanIds.has(plan.id))
-    .map((plan) => plan.id);
   const activeGeneratingResult = (results || []).find((result) => result.status === 'generating' && result.planId);
-  const activeGeneratingPlanId = projectStatus === 'generating' ? (activeGeneratingResult?.planId || selectedPlanId || pendingSelectedPlanIds[0] || null) : null;
+  const activeGeneratingPlanId = projectStatus === 'generating' ? (activeGeneratingResult?.planId || null) : null;
   const shouldShowPerPlanGenerating = Boolean(activeGeneratingPlanId);
   const isDetailProject = subFeature === 'detail_page' || subFeature === 'detail';
   const planningTaskIds = splitTaskIds(planningTaskId);
@@ -324,7 +317,8 @@ const PlanEditor: React.FC<Props> = ({
     const result = resultOverride === undefined ? findResult(plan, index) : resultOverride;
     const hasResult = Boolean(result && (result.imageUrl || result.videoUrl));
     const hasErrorResult = result?.status === 'error';
-    const isGenerating = !hasResult && !hasErrorResult && (result?.status === 'generating' || activeGeneratingPlanId === plan.id);
+    const isPlanSubmitPending = Boolean(isConfirmPlanPending?.(plan.id));
+    const isGenerating = !hasResult && !hasErrorResult && (isPlanSubmitPending || result?.status === 'generating' || activeGeneratingPlanId === plan.id);
     const isQueued = !hasResult && shouldShowPerPlanGenerating && plan.selected && activeGeneratingPlanId !== plan.id;
     const confirmLabel = hasErrorResult ? '重试' : hasResult ? '重生成' : '生成';
     const isPromptExpanded = Boolean(expandedPromptIds[plan.id]);
@@ -467,7 +461,7 @@ const PlanEditor: React.FC<Props> = ({
             />
             <ActionButton
               icon={<Sparkles size={12} />}
-              label={isGenerating ? '生成中' : confirmLabel}
+              label={isPlanSubmitPending ? '提交中' : isGenerating ? '生成中' : confirmLabel}
               tone="primary"
               onClick={() => onConfirm(plan)}
               disabled={isGenerating}
@@ -561,7 +555,8 @@ const PlanEditor: React.FC<Props> = ({
             const result = findResult(plan, index);
             const hasResult = Boolean(result && (result.imageUrl || result.videoUrl));
             const hasErrorResult = result?.status === 'error';
-            const isGenerating = !hasResult && !hasErrorResult && (result?.status === 'generating' || activeGeneratingPlanId === plan.id);
+            const isPlanSubmitPending = Boolean(isConfirmPlanPending?.(plan.id));
+            const isGenerating = !hasResult && !hasErrorResult && (isPlanSubmitPending || result?.status === 'generating' || activeGeneratingPlanId === plan.id);
             const confirmLabel = hasErrorResult ? '重试' : hasResult ? '重生成' : '生成';
             const isPromptExpanded = Boolean(expandedPromptIds[plan.id]);
             const statusLabel = hasResult ? '已出图' : hasErrorResult ? '生成失败' : isGenerating ? '生成中' : plan.selected ? '待生成' : '未选中';
@@ -681,7 +676,7 @@ const PlanEditor: React.FC<Props> = ({
                     />
                     <ActionButton
                       icon={<Sparkles size={12} />}
-                      label={isGenerating ? '生成中' : confirmLabel}
+                      label={isPlanSubmitPending ? '提交中' : isGenerating ? '生成中' : confirmLabel}
                       tone="primary"
                       onClick={() => onConfirm(plan)}
                       disabled={isGenerating}

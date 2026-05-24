@@ -649,9 +649,10 @@ test('one click confirm-plan flow generates the selected scheme once instead of 
   assert.match(generationBody, /shellProjectId: projectId/);
   assert.match(generationBody, /shellPlanId: plan\.id/);
   assert.match(generationBody, /backendJobId: generationBackendJobIdByPlanId\.get\(plan\.id\)/);
-  assert.match(generationBody, /const totalTaskCount = batchCount/);
+  assert.match(generationBody, /const totalTaskCount = Math\.max\(Number\(project\.taskCount \|\| 0\), orderedProjectPlans\.length, batchCount\)/);
   assert.match(generationBody, /taskCount: totalTaskCount/);
-  assert.match(generationBody, /mergeGeneratedPlanResults\(project\.results \|\| \[\], nextResults, selectedPlanIds\)/);
+  assert.match(generationBody, /mergeGeneratedPlanResults\(baseResults \|\| \[\], nextResults, selectedPlanIds\)/);
+  assert.match(generationBody, /projectsRef\.current = next/);
   assert.doesNotMatch(generationBody, /resolveBatchCount\(AppModuleObj\.ONE_CLICK, sceneSubFeature, currentParams\)/);
   assert.doesNotMatch(generationBody, /for \(let index = 0; index < batchCount; index \+= 1\)/);
 });
@@ -662,13 +663,13 @@ test('one click shell planning dialog exposes old-style selected batch generatio
   const projectCard = read('../shell/components/ProjectCard.tsx');
 
   assert.match(workflow, /selected: true/);
-  assert.match(planEditor, /const pendingSelectedPlanIds = plans/);
   assert.match(planEditor, /const activeGeneratingResult = \(results \|\| \[\]\)\.find\(\(result\) => result\.status === 'generating' && result\.planId\)/);
-  assert.match(planEditor, /const activeGeneratingPlanId = projectStatus === 'generating' \? \(activeGeneratingResult\?\.planId \|\| selectedPlanId \|\| pendingSelectedPlanIds\[0\] \|\| null\) : null/);
+  assert.match(planEditor, /const activeGeneratingPlanId = projectStatus === 'generating' \? \(activeGeneratingResult\?\.planId \|\| null\) : null/);
+  assert.match(planEditor, /const isPlanSubmitPending = Boolean\(isConfirmPlanPending\?\.\(plan\.id\)\)/);
   assert.match(planEditor, /const hasErrorResult = result\?\.status === 'error'/);
   assert.match(planEditor, /hasErrorResult \? '生成失败' : isGenerating \? '生成中'/);
   assert.match(projectCard, /const hasGeneratingResult = project\.results\.some/);
-  assert.match(projectCard, /const pendingPlans = project\.plans\.filter\(\(plan\) => plan\.selected && !completedPlanIds\.has\(plan\.id\) && !activePlanIds\.has\(plan\.id\)\)/);
+  assert.match(projectCard, /const pendingPlans = project\.plans\.filter\(\(plan\) => \([\s\S]*plan\.selected[\s\S]*!completedPlanIds\.has\(plan\.id\)[\s\S]*!activePlanIds\.has\(plan\.id\)[\s\S]*!isPlanConfirmPending\(plan\.id\)/);
   assert.match(projectCard, /const firstBenchmarkPlanId = project\.module === 'one_click' && project\.subFeature === 'sku'/);
   assert.match(projectCard, /activePlanIds\.has\(firstBenchmarkPlanId\)/);
   assert.match(projectCard, /onConfirmPlan\(project\.id, pendingPlans\)/);
@@ -940,6 +941,32 @@ test('project cards do not let stale generating status lock completed detail pro
   assert.match(projectCard, /projectStatus=\{displayProjectStatus\}/);
   assert.doesNotMatch(projectCard, /disabled=\{isConfirmPlanPending \|\| project\.status === 'generating'\}/);
   assert.doesNotMatch(projectCard, /if \(isConfirmPlanPending \|\| project\.status === 'generating'\) return;/);
+});
+
+test('project cards keep pending result actions independent while sibling results generate', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const planEditor = read('../shell/components/PlanEditor.tsx');
+
+  assert.doesNotMatch(projectCard, /if \(isConfirmPlanPending \|\| isProjectActivelyGenerating\) return;/);
+  assert.doesNotMatch(projectCard, /disabled=\{isConfirmPlanPending \|\| isProjectActivelyGenerating\}/);
+  assert.doesNotMatch(projectCard, /const isGeneratingResult = !hasResult && \(isProjectActivelyGenerating \|\| result\.status === 'generating'\)/);
+  assert.doesNotMatch(projectCard, /const isGeneratingResult = !hasResult && \(result\.status === 'generating' \|\| isProjectActivelyGenerating\)/);
+  assert.match(projectCard, /const getConfirmPlanActionKey = \(planId: string\) => `confirm-plan:\$\{project\.id\}:\$\{planId\}`/);
+  assert.match(projectCard, /const isPlanConfirmPending = \(planId: string\) => isPendingAction\(getConfirmPlanActionKey\(planId\)\)/);
+  assert.match(projectCard, /const isGeneratingResult = isResultActivelyGenerating\(result\)/);
+  assert.match(planEditor, /isConfirmPlanPending\?: \(planId: string\) => boolean/);
+  assert.match(planEditor, /const activeGeneratingPlanId = projectStatus === 'generating' \? \(activeGeneratingResult\?\.planId \|\| null\) : null/);
+  assert.doesNotMatch(planEditor, /activeGeneratingResult\?\.planId \|\| selectedPlanId \|\| pendingSelectedPlanIds\[0\]/);
+});
+
+test('generated project cards use short date sequence names instead of prompt text', () => {
+  const app = read('../ShellMigratedApp.tsx');
+
+  assert.match(app, /const formatShortProjectNamePrefix = \(date = new Date\(\)\) => \{/);
+  assert.match(app, /return `\$\{month\}月\$\{day\}日项目`/);
+  assert.match(app, /const reserveShortProjectName = useCallback\(\(\) => \{/);
+  assert.match(app, /const projectName = reserveShortProjectName\(\)/);
+  assert.doesNotMatch(app, /projectNameSource\.slice\(0, 20\)/);
 });
 
 test('browser tab title uses the concise MEIAO AI workspace name', () => {
