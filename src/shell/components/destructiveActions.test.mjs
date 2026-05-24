@@ -102,13 +102,16 @@ test('task action buttons use an exclusive pending key to prevent duplicate subm
   assert.match(shellSource, /const pendingActionKeysRef = useRef<Set<string>>\(new Set\(\)\)/);
   assert.match(shellSource, /const beginExclusiveAction = useCallback/);
   assert.match(shellSource, /`regenerate:\$\{projectId\}:\$\{resultId\}`/);
-  assert.match(shellSource, /`confirm-plan:\$\{projectId\}`/);
+  assert.match(shellSource, /const planActionKey = selectedPlans\.map\(\(plan\) => plan\.id\)\.filter\(Boolean\)\.join\('\|'\) \|\| 'unknown'/);
+  assert.match(shellSource, /const actionKey = `confirm-plan:\$\{projectId\}:\$\{planActionKey\}`/);
+  assert.doesNotMatch(shellSource, /const actionKey = `confirm-plan:\$\{projectId\}`/);
   assert.match(shellSource, /`storyboard-image:\$\{projectId\}`/);
 
   assert.match(projectCardSource, /pendingActionKeys\?: Record<string, boolean>/);
   assert.match(projectCardSource, /const getRegenerateActionKey = \(resultId: string\) => `regenerate:\$\{project\.id\}:\$\{resultId\}`/);
   assert.match(projectCardSource, /disabled=\{regeneratePending \|\| isGeneratingResult\}/);
-  assert.match(projectCardSource, /disabled=\{isConfirmPlanPending \|\| isProjectActivelyGenerating\}/);
+  assert.match(projectCardSource, /const getConfirmPlanActionKey = \(planId: string\) => `confirm-plan:\$\{project\.id\}:\$\{planId\}`/);
+  assert.match(projectCardSource, /isConfirmPlanPending=\{isPlanConfirmPending\}/);
   assert.match(projectCardSource, /disabled=\{isStoryboardImagePending\}/);
 });
 

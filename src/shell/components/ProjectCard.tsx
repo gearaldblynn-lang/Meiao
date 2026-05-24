@@ -338,6 +338,7 @@ const ProjectCard: React.FC<Props> = ({
     hasGeneratingResult
     || (!hasPlans && projectProgressIncomplete)
   );
+  const isResultActivelyGenerating = (result: GeneratedResult) => result.status === 'generating' && !isCompletedMediaResult(result);
   const displayProjectStatus: Project['status'] = project.status === 'generating' && !isProjectActivelyGenerating
     ? (hasResults ? 'completed' : 'planning')
     : project.status;
@@ -350,10 +351,17 @@ const ProjectCard: React.FC<Props> = ({
   const getRegenerateActionKey = (resultId: string) => `regenerate:${project.id}:${resultId}`;
   const getFissionActionKey = (resultId: string) => `fission:${project.id}:${resultId}`;
   const getEditActionKey = (resultId: string) => `edit:${project.id}:${resultId}`;
+  const getConfirmPlanActionKey = (planId: string) => `confirm-plan:${project.id}:${planId}`;
   const isRegeneratePending = (resultId: string) => isPendingAction(getRegenerateActionKey(resultId));
   const isFissionPending = (resultId: string) => isPendingAction(getFissionActionKey(resultId));
   const isEditPending = (resultId: string) => isPendingAction(getEditActionKey(resultId));
-  const isConfirmPlanPending = isPendingAction(`confirm-plan:${project.id}`);
+  const confirmPlanActionPrefix = `confirm-plan:${project.id}:`;
+  const isPlanConfirmPending = (planId: string) => isPendingAction(getConfirmPlanActionKey(planId))
+    || Object.keys(pendingActionKeys || {}).some((key) => (
+      key.startsWith(confirmPlanActionPrefix)
+      && key.slice(confirmPlanActionPrefix.length).split('|').includes(planId)
+    ));
+  const isConfirmPlanPending = Object.keys(pendingActionKeys || {}).some((key) => key.startsWith(confirmPlanActionPrefix));
   const isStoryboardImagePending = isPendingAction(`storyboard-image:${project.id}`);
   const isLongDetailProject = !isTranslationProject && (project.subFeature === 'detail_page' || project.subFeature === 'detail');
   const isVideoGenerationProject = project.module === 'video' && project.subFeature === 'generation';
@@ -678,7 +686,6 @@ const ProjectCard: React.FC<Props> = ({
   };
 
   const handleStartSelectedPlans = () => {
-    if (isConfirmPlanPending || isProjectActivelyGenerating) return;
     if (!onConfirmPlan || !Array.isArray(project.plans)) return;
     const completedPlanIds = new Set(
       project.results
@@ -699,9 +706,14 @@ const ProjectCard: React.FC<Props> = ({
       addToast('第一张 SKU 基准图正在生成，后续方案会在首张完成后再生成', 'info');
       return;
     }
-    const pendingPlans = project.plans.filter((plan) => plan.selected && !completedPlanIds.has(plan.id) && !activePlanIds.has(plan.id));
+    const pendingPlans = project.plans.filter((plan) => (
+      plan.selected
+      && !completedPlanIds.has(plan.id)
+      && !activePlanIds.has(plan.id)
+      && !isPlanConfirmPending(plan.id)
+    ));
     if (pendingPlans.length === 0) {
-      addToast('当前项目没有待生成方案', 'info');
+      addToast(isConfirmPlanPending ? '已选方案正在提交，请等待任务卡出现' : '当前项目没有待生成方案', 'info');
       return;
     }
     onConfirmPlan(project.id, pendingPlans);
@@ -865,12 +877,12 @@ const ProjectCard: React.FC<Props> = ({
                       <button
                         type="button"
                         onClick={handleStartSelectedPlans}
-                        disabled={isConfirmPlanPending || isProjectActivelyGenerating}
+                        disabled={isConfirmPlanPending && selectedPlanCount === 0}
                         className="flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
                         style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
                       >
                         <Sparkles size={13} />
-                        {isConfirmPlanPending || isProjectActivelyGenerating ? '提交中' : '开始生成'}
+                        {isConfirmPlanPending ? '提交中' : '开始生成'}
                       </button>
                       {!isTextReport && (
                         <button onClick={handleDownloadAll} disabled={isPackaging || !hasResults} className="flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] font-medium disabled:opacity-40" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
@@ -999,9 +1011,10 @@ const ProjectCard: React.FC<Props> = ({
                   planningTaskId={project.planningTaskId}
                   onChange={(plans) => onUpdatePlans?.(project.id, plans)}
                   onConfirm={(plan) => {
-                    if (isConfirmPlanPending || isProjectActivelyGenerating) return;
+                    if (!Array.isArray(plan) && isPlanConfirmPending(plan.id)) return;
                     onConfirmPlan?.(project.id, plan);
                   }}
+                  isConfirmPlanPending={isPlanConfirmPending}
                   onCopyPrompt={(prompt) => handleCopyPrompt(prompt)}
                   onCancelGeneration={() => onCancelTask?.(project.id)}
                   onCopyTaskId={(taskId) => void handleCopyTaskId(taskId)}
@@ -1062,7 +1075,7 @@ const ProjectCard: React.FC<Props> = ({
                   <div className="grid gap-3 xl:grid-cols-2">
                     {project.results.map((result, index) => {
                       const canOpenImage = Boolean(result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
-                      const isGeneratingResult = result.status === 'generating' || (!result.imageUrl && isProjectActivelyGenerating);
+                      const isGeneratingResult = isResultActivelyGenerating(result);
                       const promptExpanded = Boolean(expandedPrompts[result.id]);
                       const scriptExpanded = Boolean(expandedPrompts[`${result.id}:script`]);
                       const displayedPrompt = normalizeSchemeText(result.prompt || '无 prompt 记录');
@@ -1389,7 +1402,7 @@ const ProjectCard: React.FC<Props> = ({
                         <div className="flex flex-col gap-4">
                           {project.results.map((result, index) => {
                             const hasResult = Boolean(result.imageUrl || result.videoUrl);
-                            const isGeneratingResult = !hasResult && (isProjectActivelyGenerating || result.status === 'generating');
+                            const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
                             const promptExpanded = Boolean(expandedPrompts[result.id]);
                             const matchedPlan = findPlanByResult(result, index);
                             const displayedPrompt = normalizeSchemeText(matchedPlan?.schemeContent || result.prompt || '无 prompt 记录');
@@ -1525,7 +1538,7 @@ const ProjectCard: React.FC<Props> = ({
                           <div className="flex flex-col">
                             {project.results.map((result, index) => {
                               const hasResult = Boolean(result.imageUrl || result.videoUrl);
-                              const isGeneratingResult = !hasResult && (isProjectActivelyGenerating || result.status === 'generating');
+                              const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
                               const canOpenImage = Boolean(result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
                               return (
                                 <button
@@ -1571,7 +1584,7 @@ const ProjectCard: React.FC<Props> = ({
                           const matchedPlan = findPlanByResult(result, index);
                           const displayedPrompt = normalizeSchemeText(matchedPlan?.schemeContent || result.prompt || '无 prompt 记录');
                           const hasResult = Boolean(result.imageUrl || result.videoUrl);
-                          const isGeneratingResult = !hasResult && (result.status === 'generating' || isProjectActivelyGenerating);
+                          const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
                           const resultMeta: string[] = [];
                           if (result.aspectRatio && result.aspectRatio !== 'auto') resultMeta.push(result.aspectRatio);
                           if (result.createdAt) resultMeta.push(result.createdAt);
