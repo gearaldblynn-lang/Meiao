@@ -268,3 +268,11 @@ test('video generation exposes api and cli seedance fast paths with api credit e
   assert.match(bottomInputBar, /33 \* seconds/);
   assert.match(bottomInputBar, /预计消耗/);
 });
+
+test('video storyboard original mode passes scene reference uploads into storyboard config', () => {
+  const shellSource = readFileSync(new URL('../../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
+  const builderBody = shellSource.match(/const buildVideoStoryboardConfig = \([\s\S]*?\n\};/)?.[0] || '';
+
+  assert.match(builderBody, /const sceneReferenceUrls = \(materials\.scene \|\| \[\]\)/);
+  assert.match(builderBody, /sceneReferenceUrls,/);
+});

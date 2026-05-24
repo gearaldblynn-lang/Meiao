@@ -618,6 +618,7 @@ export interface VideoPersistentState {
 export interface VideoStoryboardConfig {
   productImages: File[];
   uploadedProductUrls: string[];
+  sceneReferenceUrls?: string[];
   productInfo: string;
   videoGenerationMode: 'original' | 'viral_split';
   scriptLogic: string;

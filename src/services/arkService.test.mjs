@@ -43,6 +43,12 @@ test('analysis service no longer routes planning through ark or doubao', () => {
     /creditsConsumed: finalJob\.result\?\.creditsConsumed/,
     'analysis token usage logs should keep actual credits returned by KIE'
   );
+  assert.match(
+    arkServiceSource,
+    /taskId: String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| ''\)\.trim\(\) \|\| undefined/,
+    'planning analysis should expose only the KIE provider task id'
+  );
+  assert.doesNotMatch(arkServiceSource, /taskId: String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| job\.id/);
 });
 
 test('marketing scheme prompt uses RTCFE structure and the new copy layout format', () => {

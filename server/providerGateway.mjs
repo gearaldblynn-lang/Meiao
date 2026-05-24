@@ -1071,12 +1071,13 @@ const isProviderErrorText = (value) => {
     /image download failed/i,
     /http 404:\s*not found/i,
     /please convert or change the file/i,
+    /server exception,\s*please try again later/i,
     /server is currently being maintained/i,
   ].some((pattern) => pattern.test(text));
 };
 
 const providerErrorCodeFromText = (value) =>
-  /server is currently being maintained/i.test(String(value || ''))
+  /server is currently being maintained|server exception,\s*please try again later/i.test(String(value || ''))
     ? 'provider_internal_error'
     : 'provider_bad_request';
 
@@ -2402,6 +2403,10 @@ const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '') =>
 };
 
 const runKieChatJob = async (payload, env, signal, options = {}) => {
+  const requestedModel = String(payload.model || '').trim();
+  if (!requestedModel) {
+    throw createProviderError('provider_bad_request', '缺少聊天模型，请检查功能是否已接入统一模型设置。');
+  }
   const transport = resolveChatTransport(payload.model);
   if (isKieGeminiFlashOpenAiModel(payload.model)) {
     return runKieGeminiFlashOpenAiJob(payload, env, signal, options);

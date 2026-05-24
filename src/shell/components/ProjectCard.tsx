@@ -223,7 +223,11 @@ const getProjectCreditsConsumed = (project: Project) => {
   const resultCredits = project.results.reduce((sum, result) => (
     sum + (result.status === 'completed' ? normalizeCreditsConsumed(result.creditsConsumed) : 0)
   ), 0);
+  const hasStoryboardPlanningUsage = project.module === 'video'
+    && project.subFeature === 'storyboard'
+    && rawProjectCredits > 0;
   const hasPlanningUsage = !project.directGeneration && (Boolean(project.planningTaskId)
+    || hasStoryboardPlanningUsage
     || (project.module === 'one_click' && (
       Boolean(project.backendJobId)
       || (Array.isArray(project.plans) && project.plans.length > 0)

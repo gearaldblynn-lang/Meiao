@@ -1389,6 +1389,23 @@ test('executeProviderJob rejects removed gemini thinking aliases', async () => {
   );
 });
 
+test('executeProviderJob rejects kie chat requests without an explicit model', async () => {
+  await assert.rejects(
+    () => executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          messages: [{ role: 'user', content: 'hello' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    ),
+    (error) => error?.code === 'provider_bad_request'
+      && /缺少聊天模型/.test(error.message)
+  );
+});
+
 test('executeProviderJob routes gemini 3.1 pro through kie chat endpoint with google search and reasoning effort', async () => {
   const originalFetch = global.fetch;
   const requests = [];
@@ -2158,6 +2175,41 @@ test('executeProviderJob treats provider maintenance text in gemini flash respon
       ),
       (error) => error?.code === 'provider_internal_error'
         && /server is currently being maintained/i.test(error.message)
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob treats provider server exception text as a provider failure', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () =>
+    createJsonResponse({
+      choices: [
+        {
+          message: {
+            content: 'Server exception, please try again later',
+          },
+        },
+      ],
+    });
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gemini-3-flash-openai',
+            messages: [{ role: 'user', content: '读取图片' }],
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_internal_error'
+        && /server exception/i.test(error.message)
     );
   } finally {
     global.fetch = originalFetch;

@@ -304,6 +304,86 @@ test('shell data adapter restores one-click planning credits from saved projects
   assert.equal(project?.planningTaskId, 'planning-kie-chat-id');
 });
 
+test('shell data adapter restores storyboard planning credits and task id from saved projects', () => {
+  const snapshot = buildShellDataSnapshot({
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: 'storyboard-planning-credits-project',
+          name: '分镜策划积分项目',
+          createdAt: 1779442347056,
+          creditsConsumed: 0.2,
+          planningTaskId: 'storyboard-planning-job-id',
+          shots: [{
+            id: 'shot-1',
+            description: '商品特写',
+            prompt: 'Close up product shot',
+            scriptContent: '商品特写',
+          }],
+          boards: [{
+            id: 'board-1',
+            title: '分段一',
+            shotIds: ['shot-1'],
+            status: 'completed',
+            imageUrl: '/storyboard-board.png',
+            prompt: '分镜板',
+            taskId: 'storyboard-image-task-id',
+            creditsConsumed: 3,
+          }],
+        }],
+      },
+    },
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'storyboard-planning-credits-project');
+  assert.equal(project?.creditsConsumed, 0.2);
+  assert.equal(project?.planningTaskId, 'storyboard-planning-job-id');
+  assert.equal(project?.results[0]?.taskId, 'storyboard-image-task-id');
+  assert.equal(project?.results[0]?.creditsConsumed, 3);
+});
+
+test('shell data adapter backfills storyboard planning ids from completed KIE chat jobs', () => {
+  const projectCreatedAt = 1779442347056;
+  const snapshot = buildShellDataSnapshot({
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: `video_${projectCreatedAt}_0_cuz4`,
+          name: '分镜方案 8',
+          createdAt: projectCreatedAt,
+          creditsConsumed: 0.2,
+          boards: [{
+            id: 'board-1',
+            status: 'completed',
+            imageUrl: '/storyboard-board.png',
+            taskId: 'storyboard-image-task-id',
+            creditsConsumed: 3,
+          }],
+        }],
+      },
+    },
+  }, [{
+    id: 'storyboard-planning-backend-job',
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    payload: { model: 'gemini-3-flash-openai' },
+    result: {
+      content: '[{"description":"商品特写","prompt":"product","script":"分镜1"}]',
+      providerTaskId: '',
+      creditsConsumed: 0.2,
+    },
+    createdAt: projectCreatedAt + 128,
+    updatedAt: projectCreatedAt + 1000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === `video_${projectCreatedAt}_0_cuz4`);
+  assert.equal(project?.planningTaskId, undefined);
+  assert.equal(project?.creditsConsumed, 0.2);
+  assert.equal(project?.results.length, 1);
+});
+
 test('shell data adapter drops idle persisted items that have no result, error, running state, or plans', () => {
   const snapshot = buildShellDataSnapshot({
     translationMemory: {

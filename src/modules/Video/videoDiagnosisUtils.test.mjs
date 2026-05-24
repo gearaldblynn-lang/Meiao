@@ -38,6 +38,21 @@ test('summarizeProbeOutcome returns a friendly probe summary', () => {
   );
 });
 
+test('summarizeProbeOutcome includes normalized metrics when available', () => {
+  assert.equal(
+    summarizeProbeOutcome({
+      sources: [{ key: 'video', status: 'success', summary: '已获取视频详情' }],
+      missingCriticalFields: [],
+      normalized: {
+        diag: {
+          statistics: { playCount: 98765, diggCount: 4321, commentCount: 210 },
+        },
+      },
+    }),
+    '已完成 1 个数据源勘探，缺失 0 个关键字段，播放量 98,765，点赞 4,321，评论 210'
+  );
+});
+
 test('summarizeProbeOutcome handles missing and invalid shapes', () => {
   assert.equal(summarizeProbeOutcome(undefined), '已完成 0 个数据源勘探，缺失 0 个关键字段');
   assert.equal(summarizeProbeOutcome(null), '已完成 0 个数据源勘探，缺失 0 个关键字段');
@@ -93,6 +108,41 @@ test('buildDiagnosisReportText includes ai analysis sections and report evidence
   assert.match(text, /重做封面标题/);
   assert.match(text, /数据勘探摘要/);
   assert.match(text, /播放量：12000/);
+});
+
+test('buildDiagnosisReportText prefers normalized probe data over stale report summary', () => {
+  const text = buildDiagnosisReportText({
+    probe: {
+      status: 'success',
+      normalized: {
+        diag: {
+          video: { desc: '真实视频标题' },
+          statistics: {
+            playCount: 98765,
+            diggCount: 4321,
+            commentCount: 210,
+            shareCount: 98,
+            collectCount: 76,
+          },
+          author: { nickname: '真实作者' },
+        },
+      },
+    },
+    report: {
+      summary: '当前视频已获取基础字段，播放量为 0。',
+      evidence: [{ label: '播放量', value: '0' }],
+      inferences: [],
+      actions: [],
+    },
+  });
+
+  assert.match(text, /数据勘探摘要/);
+  assert.match(text, /播放量 98,765/);
+  assert.match(text, /点赞 4,321/);
+  assert.match(text, /评论 210/);
+  assert.match(text, /作者：真实作者/);
+  assert.doesNotMatch(text, /播放量为 0/);
+  assert.doesNotMatch(text, /播放量：0/);
 });
 
 test('buildDiagnosisReportText stays empty for idle default diagnosis state', () => {
