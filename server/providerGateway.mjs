@@ -17,7 +17,8 @@ const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 240_000;
 const KIE_HTTP_REQUEST_TIMEOUT_MS = 60_000;
 const DREAMINA_VIDEO_POLL_RETRIES = 180;
 const DREAMINA_VIDEO_POLL_INTERVAL_MS = 5_000;
-const MAX_PROVIDER_REMOTE_MEDIA_BYTES = 1024 * 1024 * 1024;
+const MAX_PROVIDER_REMOTE_MEDIA_MB = 256;
+const MAX_PROVIDER_REMOTE_MEDIA_BYTES = MAX_PROVIDER_REMOTE_MEDIA_MB * 1024 * 1024;
 const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 const KIE_RESPONSES_MODEL_ALIASES = {
   'gpt-5-4-openai-resp': 'gpt-5-4',
@@ -480,13 +481,13 @@ const assertRemoteProviderMediaUrlAllowed = (mediaUrl) => {
 const readRemoteMediaBufferWithLimit = async (response, label = '远程素材') => {
   const contentLength = Number(response.headers?.get?.('content-length') || 0);
   if (Number.isFinite(contentLength) && contentLength > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
-    throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 1024MB`);
+    throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 ${MAX_PROVIDER_REMOTE_MEDIA_MB}MB`);
   }
 
   if (!response.body?.getReader) {
     const fallbackBuffer = Buffer.from(await response.arrayBuffer());
     if (fallbackBuffer.length > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
-      throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 1024MB`);
+      throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 ${MAX_PROVIDER_REMOTE_MEDIA_MB}MB`);
     }
     return fallbackBuffer;
   }
@@ -501,7 +502,7 @@ const readRemoteMediaBufferWithLimit = async (response, label = '远程素材') 
     total += chunk.length;
     if (total > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
       await reader.cancel().catch(() => null);
-      throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 1024MB`);
+      throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 ${MAX_PROVIDER_REMOTE_MEDIA_MB}MB`);
     }
     chunks.push(chunk);
   }

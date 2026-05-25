@@ -704,6 +704,7 @@ const buildBoardPrompt = (
   revisionInstruction?: string,
   productImageUrls: string[] = [],
   sceneReferenceUrls: string[] = [],
+  supplementReferenceUrls: string[] = [],
 ) => {
   const boardShots = shots.filter((shot) => board.shotIds.includes(shot.id));
   const panelCount = boardShots.length;
@@ -717,11 +718,15 @@ const buildBoardPrompt = (
   const revisionLine = revisionInstruction?.trim()
     ? `修改要求：请基于当前已生成分镜板和商品参考图重新生成，并严格按以下意见调整，生成后覆盖原图位置：${revisionInstruction.trim()}`
     : '';
+  const supplementReferenceLine = supplementReferenceUrls.length > 0
+    ? `补充参考图：\n${formatUrlList(supplementReferenceUrls, '补充参考图公网URL')}\n这些图片仅用于用户修改说明明确点名的局部、包装、元素或场景参考；未点名的产品主体、卖点层级、版式关系和分镜连续性仍以当前分镜板与商品参考图为准。`
+    : '';
   if (config.videoGenerationMode === 'viral_split' && board.prompt?.trim()) {
     return [
       '【生成输入素材公网URL】',
       formatUrlList(productImageUrls, '商品参考图公网URL'),
       previousBoardImageUrl ? `上一张宫格分镜图公网URL：${previousBoardImageUrl}` : '',
+      supplementReferenceLine,
       '【使用方式】商品参考图作为商品一致性参考；上一张宫格图用于第二段及后续分段的视觉连续性。',
       board.prompt.trim(),
       previousBoardImageUrl
@@ -765,6 +770,7 @@ C Constraint 约束
 14. ${referenceLine || '无需参考上一张分镜板。'}
 15. ${revisionLine || '无额外修改要求。'}
 16. ${sceneReferenceLine || '无额外场景参考图。'}
+17. ${supplementReferenceLine || '无额外补充参考图。'}
 
 F Format 格式
 直接输出单张完整分镜板图像。
@@ -784,7 +790,8 @@ export const generateStoryboardBoardImage = async (
   imageUrls: string[],
   apiConfig: GlobalApiConfig,
   previousBoardImageUrl?: string,
-  revisionInstruction?: string
+  revisionInstruction?: string,
+  supplementReferenceUrls: string[] = []
 ) => {
   logStoryboardEvent('storyboard_board_image', `开始生成分镜板图像: ${board.title}`, 'started', '', {
     boardId: board.id,
@@ -797,14 +804,27 @@ export const generateStoryboardBoardImage = async (
   const safeSceneReferenceUrls = getSceneReferenceUrls(config).map((url, index) =>
     requireModelAssetUrl(url, publicBaseUrl, `场景参考图${index + 1}`)
   );
+  const safeSupplementReferenceUrls = supplementReferenceUrls.filter(Boolean).map((url, index) =>
+    requireModelAssetUrl(url, publicBaseUrl, `补充参考图${index + 1}`)
+  );
   const safePreviousBoardImageUrl = previousBoardImageUrl ? requireModelAssetUrl(previousBoardImageUrl, publicBaseUrl, '上一张分镜板') : '';
   const safeCurrentBoardImageUrl = revisionInstruction?.trim() && board.imageUrl
     ? requireModelAssetUrl(board.imageUrl, publicBaseUrl, '当前分镜板')
     : '';
-  const prompt = buildBoardPrompt(board, shots, config, safePreviousBoardImageUrl || undefined, revisionInstruction, safeImageUrls, safeSceneReferenceUrls);
+  const prompt = buildBoardPrompt(
+    board,
+    shots,
+    config,
+    safePreviousBoardImageUrl || undefined,
+    revisionInstruction,
+    safeImageUrls,
+    safeSceneReferenceUrls,
+    safeSupplementReferenceUrls
+  );
   const inputImages = [
     ...safeImageUrls,
     ...safeSceneReferenceUrls,
+    ...safeSupplementReferenceUrls,
     ...(safePreviousBoardImageUrl ? [safePreviousBoardImageUrl] : []),
     ...(safeCurrentBoardImageUrl ? [safeCurrentBoardImageUrl] : []),
   ];

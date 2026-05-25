@@ -4,6 +4,14 @@
 - 项目目录：`/www/wwwroot/meiao-internal`
 - 服务端环境文件：`/www/wwwroot/meiao-internal/.env.server`
 
+## 备案域名
+- 备案域名：`http://meiaoyuntai.com`
+- 备案备用域名：`http://www.meiaoyuntai.com`
+- 备案网站名称：`杭州梅奥`
+- ICP 备案号：`浙ICP备2026015528号-1`
+- 备案号只在首页底部展示，并链接到工信部备案官网首页：`https://beian.miit.gov.cn/`
+- 前端入口标题固定为 `杭州梅奥AI工作台`，当前由 `index.html` 维护。
+
 ## 首次部署
 ```bash
 mkdir -p /www/wwwroot/meiao-internal

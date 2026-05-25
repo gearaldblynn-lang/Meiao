@@ -119,6 +119,56 @@ test('prunePersistedAppStateForDeletion removes generic shell project cards', ()
   assert.equal(project, undefined);
 });
 
+test('prunePersistedAppStateForDeletion removes pending result cards by backend job id', () => {
+  const state = buildPersistedAppState({
+    shellProjects: [{
+      id: 'one-click-project',
+      name: '一键生成项目',
+      module: 'one_click',
+      status: 'generating',
+      createdAt: '05-25',
+      results: [
+        {
+          id: 'provider-result-a',
+          backendJobId: 'backend-job-a',
+          imageUrl: '',
+          prompt: '结果待同步',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          status: 'generating',
+          createdAt: '05-25',
+          module: 'one_click',
+        },
+        {
+          id: 'kept-result',
+          backendJobId: 'backend-job-b',
+          imageUrl: '/kept.png',
+          prompt: '保留',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          status: 'completed',
+          createdAt: '05-25',
+          module: 'one_click',
+        },
+      ],
+      taskCount: 2,
+      completedCount: 1,
+      subFeature: 'main_image',
+    }],
+  });
+
+  const pruned = prunePersistedAppStateForDeletion(state, {
+    projectId: 'one-click-project',
+    resultId: 'task-img-123-pending-0',
+    jobIds: ['backend-job-a'],
+  });
+  const snapshot = buildShellDataSnapshot(pruned, []);
+  const project = snapshot.projects.find((item) => item.id === 'one-click-project');
+
+  assert.ok(project);
+  assert.deepEqual(project.results.map((result) => result.id), ['kept-result']);
+});
+
 test('pruneKnownLegacyGarbageFromPersistedState removes the polluted local translation card only', () => {
   const state = buildPersistedAppState({
     shellProjects: [

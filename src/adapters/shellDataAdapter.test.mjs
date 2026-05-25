@@ -1375,6 +1375,71 @@ test('shell data adapter hides persisted projects and results covered by deletio
   assert.deepEqual(partial?.results.map((result) => result.id), ['kept-result']);
 });
 
+test('shell data adapter does not resurrect deleted pending results from completed backend jobs', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellDraft: {
+      deletedJobIds: ['deleted-backend-job'],
+      inputStateByScope: {},
+      materials: {},
+      updatedAt: Date.now(),
+    },
+    shellProjects: [
+      {
+        id: 'project-with-deleted-pending-result',
+        name: '删除中的项目',
+        module: 'one_click',
+        status: 'generating',
+        subFeature: 'first_image',
+        createdAt: '05-18',
+        results: [
+          {
+            id: 'task-provider-pending-0',
+            imageUrl: '',
+            prompt: '用户已删除的方案',
+            model: 'gpt-image-2',
+            aspectRatio: '1:1',
+            status: 'generating',
+            createdAt: '05-18',
+            module: 'one_click',
+            backendJobId: 'deleted-backend-job',
+          },
+          {
+            id: 'kept-result',
+            imageUrl: '/kept.png',
+            prompt: '保留方案',
+            model: 'gpt-image-2',
+            aspectRatio: '1:1',
+            status: 'completed',
+            createdAt: '05-18',
+            module: 'one_click',
+            backendJobId: 'kept-backend-job',
+          },
+        ],
+        taskCount: 2,
+        completedCount: 1,
+      },
+    ],
+  }, [
+    {
+      id: 'deleted-backend-job',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'provider-finished-after-delete',
+      payload: { prompt: '用户已删除的方案', projectId: 'project-with-deleted-pending-result', subFeature: 'first_image' },
+      result: { imageUrl: '/deleted-finished.png', providerTaskId: 'provider-finished-after-delete' },
+      createdAt: Date.now(),
+      finishedAt: Date.now(),
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'project-with-deleted-pending-result');
+  assert.deepEqual(project?.results.map((result) => result.id), ['kept-result']);
+  assert.equal(snapshot.projects.some((item) => item.id === 'job-deleted-backend-job'), false);
+  assert.equal(snapshot.tasks.some((task) => task.id === 'deleted-backend-job'), false);
+});
+
 test('shell data adapter does not duplicate terminal backend jobs already stored as project cards', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [

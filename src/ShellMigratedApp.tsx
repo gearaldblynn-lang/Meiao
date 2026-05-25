@@ -103,6 +103,15 @@ export interface GeneratedResult {
   storyboardBoardIndex?: number;
   storyboardBoardCount?: number;
   storyboardProjectStatus?: VideoStoryboardProject['status'];
+  storyboardImageVersions?: Array<{
+    id: string;
+    imageUrl: string;
+    prompt?: string;
+    taskId?: string;
+    creditsConsumed?: number;
+    revisionInstruction?: string;
+    createdAt: number;
+  }>;
 }
 
 export interface Material {
@@ -2478,8 +2487,8 @@ const AppContent: React.FC<{
     addToast(`已添加 ${items.length} 个参考预设`, 'success');
   }, [activeSubFeature, addToast]);
 
-  const handleImportStoryboardToGeneration = useCallback((project: VideoStoryboardProject, boardId?: string, boardIndex?: number) => {
-    const imported = buildStoryboardBoardGenerationImport(project, { boardId, boardIndex });
+  const handleImportStoryboardToGeneration = useCallback((project: VideoStoryboardProject, boardId?: string, boardIndex?: number, imageUrl?: string) => {
+    const imported = buildStoryboardBoardGenerationImport(project, { boardId, boardIndex, imageUrl });
     const generationScopeKey = scopeKeyFor(AppModuleObj.VIDEO, 'generation');
     setActiveModule(AppModuleObj.VIDEO);
     setActiveSubFeatureByModule((prev) => ({ ...prev, [AppModuleObj.VIDEO]: 'generation' }));
@@ -4413,16 +4422,25 @@ const AppContent: React.FC<{
   // ── Delete ──
   const handleDeleteResult = useCallback((projectId: string, resultId: string) => {
     const project = projects.find((p) => p.id === projectId);
+    const result = project?.results.find((item) => item.id === resultId);
+    const resultJobIds = Array.from(new Set([
+      result?.backendJobId,
+      result?.taskId,
+      result?.id?.startsWith('job-') ? result.id.slice(4) : '',
+      resultId.startsWith('job-') ? resultId.slice(4) : '',
+      project?.sourceType === 'job' ? resultId : '',
+    ].map((jobId) => String(jobId || '').trim()).filter(Boolean)));
     if (project?.sourceType === 'job') {
-      void deleteInternalJob(resultId)
+      const jobIdsToDelete = resultJobIds.length > 0 ? resultJobIds : [resultId];
+      void Promise.allSettled(jobIdsToDelete.map((jobId) => deleteInternalJob(jobId)))
         .then(async () => {
           setProjects((prev) => prev.map((p) =>
             p.id === projectId
               ? { ...p, results: p.results.filter((r) => r.id !== resultId) }
               : p
           ).filter((p) => p.results.length > 0 || p.id !== projectId));
-          setTasks((prev) => prev.filter((t) => t.id !== resultId && t.projectId !== projectId));
-          const synced = await persistDeletionToSharedState({ projectId, resultId });
+          setTasks((prev) => prev.filter((t) => t.id !== resultId && t.projectId !== projectId && !jobIdsToDelete.includes(t.backendJobId || '') && !jobIdsToDelete.includes(t.id)));
+          const synced = await persistDeletionToSharedState({ projectId, resultId, jobIds: resultJobIds });
           addToast(synced ? '历史任务已删除' : '已删除当前任务，但远端历史同步失败', synced ? 'info' : 'warning');
         })
         .catch((error) => addToast(error instanceof Error ? error.message : '删除任务失败', 'error'));
@@ -4433,8 +4451,8 @@ const AppContent: React.FC<{
         ? { ...p, results: p.results.filter((r) => r.id !== resultId) }
         : p
     ).filter((p) => p.results.length > 0 || p.id !== projectId));
-    setTasks((prev) => prev.filter((t) => t.id !== resultId && t.projectId !== projectId));
-    void persistDeletionToSharedState({ projectId, resultId })
+    setTasks((prev) => prev.filter((t) => t.id !== resultId && t.projectId !== projectId && !resultJobIds.includes(t.backendJobId || '') && !resultJobIds.includes(t.id)));
+    void persistDeletionToSharedState({ projectId, resultId, jobIds: resultJobIds })
       .then((synced) => {
         if (!synced) {
           addToast('已在当前页面删除，但远端历史同步失败', 'warning');
@@ -5188,6 +5206,174 @@ const AppContent: React.FC<{
     }
   }, [projects, addToast, currentParams, filteredMaterials, buildVariantMaterials, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, beginExclusiveAction, endExclusiveAction]);
 
+  const handleStoryboardEditResult = useCallback(async (
+    projectId: string,
+    resultId: string,
+    instruction: string,
+    files: File[] = [],
+  ) => {
+    const baseVideoMemory = videoMemory || createDefaultVideoState();
+    const baseStoryboard = baseVideoMemory.storyboard;
+    const project = baseStoryboard.projects.find((item) => item.id === projectId);
+    if (!project) return false;
+    const boardIndex = project.boards.findIndex((item) => item.id === resultId);
+    const board = boardIndex >= 0 ? project.boards[boardIndex] : null;
+    if (!board) return false;
+    const finalInstruction = instruction.trim();
+    if (!finalInstruction) {
+      addToast('请先填写修改说明', 'warning');
+      return true;
+    }
+    if (!board.imageUrl) {
+      addToast('当前分镜图还未完成，暂时不能修改', 'warning');
+      return true;
+    }
+    const productUrls = (project.config.uploadedProductUrls || []).filter(Boolean);
+    if (productUrls.length === 0) {
+      addToast('商品素材缺失，无法修改分镜图', 'warning');
+      return true;
+    }
+
+    const previousBoardImageUrl = boardIndex > 0
+      ? project.boards[boardIndex - 1]?.imageUrl || board.previousBoardImageUrl
+      : undefined;
+    const currentVersion = {
+      id: `${board.id}:version:${Date.now()}`,
+      imageUrl: board.imageUrl,
+      prompt: board.prompt,
+      taskId: board.taskId,
+      creditsConsumed: board.creditsConsumed,
+      revisionInstruction: board.revisionInstruction,
+      createdAt: Date.now(),
+    };
+    const existingVersions = (Array.isArray(board.imageVersions) ? board.imageVersions : [])
+      .filter((item) => item?.imageUrl);
+    const hasCurrentVersion = existingVersions.some((item) => item.imageUrl === board.imageUrl);
+    const nextVersions = hasCurrentVersion ? existingVersions : [...existingVersions, currentVersion];
+
+    setVideoMemory((prev) => {
+      const currentStoryboard = (prev || baseVideoMemory).storyboard || baseStoryboard;
+      return {
+        ...(prev || baseVideoMemory),
+        storyboard: {
+          ...currentStoryboard,
+          projects: (currentStoryboard.projects || []).map((item) => item.id === projectId ? {
+            ...item,
+            status: 'imaging',
+            boards: item.boards.map((currentBoard) => currentBoard.id === resultId ? {
+              ...currentBoard,
+              status: 'generating',
+              error: undefined,
+              previousBoardImageUrl,
+              revisionInstruction: finalInstruction,
+              imageVersions: nextVersions,
+            } : currentBoard),
+          } : item),
+        },
+      };
+    });
+    addToast('分镜图修改任务已提交，正在准备素材', 'info');
+
+    try {
+      const uploadedSupplementUrls = await Promise.all(files.map(async (file) => {
+        const uploaded = await uploadInternalAssetStream({
+          module: AppModuleObj.VIDEO,
+          file,
+          fileName: file.name,
+        });
+        if (!uploaded.fileUrl) {
+          throw new Error(`${file.name || '补充参考图'} 上传失败，请重试。`);
+        }
+        return uploaded.fileUrl;
+      }));
+      const { generateStoryboardBoardImage } = await import('./services/videoStoryboardService');
+      const generated = await generateStoryboardBoardImage(
+        { ...board, revisionInstruction: finalInstruction },
+        project.shots,
+        project.config,
+        productUrls,
+        apiConfig,
+        previousBoardImageUrl,
+        finalInstruction,
+        uploadedSupplementUrls,
+      );
+      if (generated.result.status !== 'success' || !generated.result.imageUrl) {
+        throw new Error(generated.result.message || '分镜图修改失败');
+      }
+      const completedVersion = {
+        id: `${board.id}:version:${Date.now()}`,
+        imageUrl: generated.result.imageUrl,
+        prompt: generated.prompt,
+        taskId: generated.result.taskId,
+        creditsConsumed: generated.result.creditsConsumed,
+        revisionInstruction: finalInstruction,
+        createdAt: Date.now(),
+      };
+      setVideoMemory((prev) => {
+        const currentStoryboard = (prev || baseVideoMemory).storyboard || baseStoryboard;
+        return {
+          ...(prev || baseVideoMemory),
+          storyboard: {
+            ...currentStoryboard,
+            projects: (currentStoryboard.projects || []).map((item) => {
+              if (item.id !== projectId) return item;
+              const completedBoards = item.boards.map((currentBoard) => currentBoard.id === resultId ? {
+                ...currentBoard,
+                status: 'completed' as const,
+                imageUrl: generated.result.imageUrl,
+                prompt: generated.prompt,
+                taskId: generated.result.taskId,
+                creditsConsumed: generated.result.creditsConsumed,
+                error: undefined,
+                previousBoardImageUrl,
+                revisionInstruction: finalInstruction,
+                imageVersions: [...nextVersions, completedVersion],
+              } : currentBoard);
+              return {
+                ...item,
+                status: completedBoards.some((currentBoard) => currentBoard.status === 'failed')
+                  ? 'failed'
+                  : completedBoards.some((currentBoard) => currentBoard.status === 'generating')
+                    ? 'imaging'
+                    : 'completed',
+                boards: completedBoards,
+              };
+            }),
+          },
+        };
+      });
+      addToast('分镜图修改已完成', 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '分镜图修改失败';
+      setVideoMemory((prev) => {
+        const currentStoryboard = (prev || baseVideoMemory).storyboard || baseStoryboard;
+        return {
+          ...(prev || baseVideoMemory),
+          storyboard: {
+            ...currentStoryboard,
+            projects: (currentStoryboard.projects || []).map((item) => item.id === projectId ? {
+              ...item,
+              status: 'failed',
+              error: message,
+              boards: item.boards.map((currentBoard) => currentBoard.id === resultId ? {
+                ...currentBoard,
+                status: 'failed' as const,
+                error: message,
+                imageVersions: nextVersions,
+              } : currentBoard),
+            } : item),
+          },
+        };
+      });
+      logShellError('storyboard_board_edit_failed', error, {
+        projectId,
+        resultId,
+      }, '分镜图修改失败');
+      addToast(message, 'error');
+    }
+    return true;
+  }, [videoMemory, addToast, apiConfig, logShellError, setVideoMemory]);
+
   const handleEditResult = useCallback(async (
     projectId: string,
     resultId: string,
@@ -5198,6 +5384,7 @@ const AppContent: React.FC<{
     if (!beginExclusiveAction(actionKey, '修改任务已提交，请等待当前任务完成')) return;
     let createdEditProjectId = '';
     try {
+      if (await handleStoryboardEditResult(projectId, resultId, instruction, files)) return;
       const project = projects.find((p) => p.id === projectId);
       if (!project || project.module !== AppModuleObj.ONE_CLICK) return;
       const resultIndex = project.results.findIndex((item) => item.id === resultId);
@@ -5318,7 +5505,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, addToast, activeSubFeature, currentParams, filteredMaterials, createRemoteMaterial, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, addToast, activeSubFeature, currentParams, filteredMaterials, createRemoteMaterial, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, handleStoryboardEditResult, beginExclusiveAction, endExclusiveAction]);
 
   const handleRecoverResult = useCallback(async (projectId: string, resultId?: string) => {
     const project = projects.find((item) => item.id === projectId);
@@ -5618,6 +5805,7 @@ const AppContent: React.FC<{
           onDeleteResult={handleDeleteResult}
           onDeleteProject={handleDeleteProject}
           onRegenerateResult={handleRegenerateResult}
+          onEditResult={handleEditResult}
           onConfirmStoryboardImaging={handleConfirmStoryboardImaging}
           onImportStoryboardToGeneration={handleImportStoryboardToGeneration}
           onRecoverResult={handleRecoverResult}

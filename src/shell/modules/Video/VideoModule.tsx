@@ -11,8 +11,9 @@ interface Props {
   onDeleteResult: (projectId: string, resultId: string) => void;
   onDeleteProject: (projectId: string) => void;
   onRegenerateResult?: (projectId: string, resultId: string, instruction?: string) => void;
+  onEditResult?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
   onConfirmStoryboardImaging?: (projectId: string) => void;
-  onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number) => void;
+  onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number, imageUrl?: string) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
   onCancelTask: (taskId: string) => void;
   subFeatures?: SubFeatureOption[];
@@ -26,27 +27,46 @@ interface Props {
 
 const formatDate = (time: number) => new Date(time).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-');
 
-const toStoryboardCards = (items: VideoStoryboardProject[]): Project[] => items.map((project) => {
-  const boards = project.boards;
-  const results: GeneratedResult[] = boards.map((board, index) => ({
-    id: board.id,
-    imageUrl: board.imageUrl || '',
-    prompt: board.prompt || board.scriptText || project.script,
-    model: project.config.model,
-    aspectRatio: project.config.aspectRatio,
-    status: board.status === 'failed' ? 'error' : board.status === 'generating' ? 'generating' : 'completed',
-    createdAt: formatDate(project.createdAt),
-    module: 'video' as Project['module'],
-    subFeature: 'storyboard',
-    error: board.error,
+const getStoryboardImageVersions = (board: VideoStoryboardProject['boards'][number]) => {
+  const versions = Array.isArray(board.imageVersions) ? board.imageVersions.filter((item) => item?.imageUrl) : [];
+  if (versions.length > 0) return versions;
+  if (!board.imageUrl) return [];
+  return [{
+    id: `${board.id}:current`,
+    imageUrl: board.imageUrl,
+    prompt: board.prompt,
     taskId: board.taskId,
     creditsConsumed: board.creditsConsumed,
-    dynamicScriptPrompt: board.dynamicScriptPrompt || board.scriptText,
-    storyboardBoardTitle: board.title,
-    storyboardBoardIndex: index,
-    storyboardBoardCount: project.boards.length,
-    storyboardProjectStatus: project.status,
-  }));
+    revisionInstruction: board.revisionInstruction,
+    createdAt: Date.now(),
+  }];
+};
+
+const toStoryboardCards = (items: VideoStoryboardProject[]): Project[] => items.map((project) => {
+  const boards = project.boards;
+  const results: GeneratedResult[] = boards.map((board, index) => {
+    const storyboardImageVersions = getStoryboardImageVersions(board);
+    return {
+      id: board.id,
+      imageUrl: board.imageUrl || storyboardImageVersions[storyboardImageVersions.length - 1]?.imageUrl || '',
+      prompt: board.prompt || storyboardImageVersions[storyboardImageVersions.length - 1]?.prompt || board.scriptText || project.script,
+      model: project.config.model,
+      aspectRatio: project.config.aspectRatio,
+      status: board.status === 'failed' ? 'error' : board.status === 'generating' ? 'generating' : 'completed',
+      createdAt: formatDate(project.createdAt),
+      module: 'video' as Project['module'],
+      subFeature: 'storyboard',
+      error: board.error,
+      taskId: board.taskId,
+      creditsConsumed: board.creditsConsumed,
+      dynamicScriptPrompt: board.dynamicScriptPrompt || board.scriptText,
+      storyboardBoardTitle: board.title,
+      storyboardBoardIndex: index,
+      storyboardBoardCount: project.boards.length,
+      storyboardProjectStatus: project.status,
+      storyboardImageVersions,
+    };
+  });
   const status: Project['status'] =
     project.status === 'completed' ? 'completed'
       : project.status === 'failed' ? 'error'
@@ -113,6 +133,7 @@ const VideoModule: React.FC<Props> = ({
   onDeleteResult,
   onDeleteProject,
   onRegenerateResult,
+  onEditResult,
   onConfirmStoryboardImaging,
   onImportStoryboardToGeneration,
   onRecoverResult,
@@ -171,6 +192,7 @@ const VideoModule: React.FC<Props> = ({
       onDeleteResult={onDeleteResult}
       onDeleteProject={handleProjectDelete}
       onRegenerateResult={onRegenerateResult}
+      onEditResult={onEditResult}
       onConfirmStoryboardImaging={onConfirmStoryboardImaging}
       onImportStoryboardToGeneration={onImportStoryboardToGeneration}
       onRecoverResult={onRecoverResult}

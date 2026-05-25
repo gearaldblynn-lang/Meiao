@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { CheckSquare2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Download, FileText, Film, ImagePlus, Maximize2, Package, Palette, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, VideoStoryboardProject } from '../../types';
@@ -46,7 +46,7 @@ interface Props {
   onDeletePlan?: (projectId: string, planId: string) => void;
   onRegeneratePlans?: (projectId: string) => void;
   onCancelTask?: (taskIdOrProjectId: string) => void;
-  onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number) => void;
+  onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number, imageUrl?: string) => void;
   pendingActionKeys?: Record<string, boolean>;
   compact?: boolean;
   showGenerationProgress?: boolean;
@@ -316,6 +316,8 @@ const ProjectCard: React.FC<Props> = ({
     title: string;
     instruction: string;
   } | null>(null);
+  const [storyboardVersionIndexes, setStoryboardVersionIndexes] = useState<Record<string, number>>({});
+  const storyboardVersionLengthsRef = useRef<Record<string, number>>({});
   const [isPackaging, setIsPackaging] = useState(false);
   const { addToast } = useToast();
   const hasResults = project.results.length > 0;
@@ -324,8 +326,20 @@ const ProjectCard: React.FC<Props> = ({
   const planPreviewItems = (project.plans || []).slice(0, compact ? 2 : 3);
   const selectedPlanCount = visiblePlans.length;
   const allPlansSelected = Array.isArray(project.plans) && project.plans.length > 0 && visiblePlans.length === project.plans.length;
-  const imageResults = project.results.filter((result) => result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
-  const previewableResults = project.results.filter((result) => result.imageUrl || result.videoUrl);
+  const isStoryboardProject = project.module === 'video' && project.subFeature === 'storyboard';
+  const getCurrentStoryboardDisplayUrl = (result: GeneratedResult) => {
+    if (!isStoryboardProject) return result.imageUrl;
+    const versions = (result.storyboardImageVersions || []).filter((item) => item.imageUrl);
+    if (versions.length === 0) return result.imageUrl;
+    const selectedIndex = Math.min(
+      Math.max(storyboardVersionIndexes[result.id] ?? versions.length - 1, 0),
+      versions.length - 1
+    );
+    return versions[selectedIndex]?.imageUrl || result.imageUrl;
+  };
+  const previewableResults = project.results
+    .map((result) => isStoryboardProject ? { ...result, imageUrl: getCurrentStoryboardDisplayUrl(result) || '' } : result)
+    .filter((result) => result.imageUrl || result.videoUrl);
   const lightboxItems: LightboxMediaItem[] = previewableResults.map((result, index) => ({
     url: result.videoUrl || result.imageUrl || '',
     type: result.mediaType === 'video' || result.videoUrl ? 'video' : 'image',
@@ -367,7 +381,6 @@ const ProjectCard: React.FC<Props> = ({
   const isVideoGenerationProject = project.module === 'video' && project.subFeature === 'generation';
   const allImageUrls = lightboxItems.map((item) => item.url);
   const isDiagnosisReport = project.module === 'video' && project.subFeature === 'diagnosis';
-  const isStoryboardProject = project.module === 'video' && project.subFeature === 'storyboard';
   const isStoryboardAwaitingImageConfirmation = isStoryboardProject && project.storyboardProjectStatus === 'awaiting_image_confirmation';
   const isCopyTextReport = project.module === 'buyer_show' && project.subFeature === 'copy';
   const isTextReport = isDiagnosisReport || isCopyTextReport;
@@ -484,7 +497,10 @@ const ProjectCard: React.FC<Props> = ({
   };
   const canEditImageResult = (result?: GeneratedResult | null) => Boolean(
     onEdit
-    && project.module === 'one_click'
+    && (
+      project.module === 'one_click'
+      || (project.module === 'video' && project.subFeature === 'storyboard')
+    )
     && result?.status === 'completed'
     && result.imageUrl
     && result.mediaType !== 'video'
@@ -578,6 +594,27 @@ const ProjectCard: React.FC<Props> = ({
   useEffect(() => {
     setDetailViewMode(isLongDetailProject ? 'stack' : 'single');
   }, [isLongDetailProject, project.id]);
+
+  useEffect(() => {
+    if (!isStoryboardProject) return;
+    const nextLengths = Object.fromEntries(project.results.map((result) => [
+      result.id,
+      result.storyboardImageVersions?.filter((item) => item.imageUrl).length || (result.imageUrl ? 1 : 0),
+    ]));
+    setStoryboardVersionIndexes((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      Object.entries(nextLengths).forEach(([resultId, length]) => {
+        const previousLength = storyboardVersionLengthsRef.current[resultId] || 0;
+        if (length > previousLength && length > 0) {
+          next[resultId] = length - 1;
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+    storyboardVersionLengthsRef.current = nextLengths;
+  }, [isStoryboardProject, project.results]);
 
   useEffect(() => {
     if (!detailOpen || lightboxOpen) return;
@@ -1074,11 +1111,36 @@ const ProjectCard: React.FC<Props> = ({
                   </div>
                   <div className="grid gap-3 xl:grid-cols-2">
                     {project.results.map((result, index) => {
-                      const canOpenImage = Boolean(result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
                       const isGeneratingResult = isResultActivelyGenerating(result);
+                      const versionItems = (result.storyboardImageVersions?.length
+                        ? result.storyboardImageVersions
+                        : result.imageUrl
+                          ? [{
+                              id: `${result.id}:current`,
+                              imageUrl: result.imageUrl,
+                              prompt: result.prompt,
+                              taskId: result.taskId,
+                              creditsConsumed: result.creditsConsumed,
+                              createdAt: Date.now(),
+                            }]
+                          : []
+                      ).filter((item) => item.imageUrl);
+                      const rawVersionIndex = storyboardVersionIndexes[result.id] ?? Math.max(versionItems.length - 1, 0);
+                      const selectedVersionIndex = versionItems.length > 0
+                        ? Math.min(Math.max(rawVersionIndex, 0), versionItems.length - 1)
+                        : 0;
+                      const selectedVersion = versionItems[selectedVersionIndex];
+                      const displayResult: GeneratedResult = selectedVersion ? {
+                        ...result,
+                        imageUrl: selectedVersion.imageUrl,
+                        prompt: selectedVersion.prompt || result.prompt,
+                        taskId: selectedVersion.taskId || result.taskId,
+                        creditsConsumed: selectedVersion.creditsConsumed ?? result.creditsConsumed,
+                      } : result;
+                      const canOpenImage = Boolean(displayResult.imageUrl && displayResult.mediaType !== 'video' && !displayResult.videoUrl);
                       const promptExpanded = Boolean(expandedPrompts[result.id]);
                       const scriptExpanded = Boolean(expandedPrompts[`${result.id}:script`]);
-                      const displayedPrompt = normalizeSchemeText(result.prompt || '无 prompt 记录');
+                      const displayedPrompt = normalizeSchemeText(displayResult.prompt || '无 prompt 记录');
                       const dynamicScriptPrompt = result.dynamicScriptPrompt || '暂无动态视频脚本提示词';
                       const boardIndex = Number.isFinite(result.storyboardBoardIndex) ? Number(result.storyboardBoardIndex) : index;
                       const boardCount = result.storyboardBoardCount || project.results.length;
@@ -1101,28 +1163,33 @@ const ProjectCard: React.FC<Props> = ({
                               </div>
                               <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
                                 {result.aspectRatio || 'auto'} · {result.model || 'GPT Image 2'}
+                                {versionItems.length > 1 ? ` · 版本 ${selectedVersionIndex + 1}/${versionItems.length}` : ''}
                               </p>
-                              {renderResultUsageMeta(result)}
+                              {renderResultUsageMeta(displayResult)}
                             </div>
                             <div className="flex items-center gap-1.5">
                               <ResultActionButton
                                 icon={<ChevronLeft size={12} />}
                                 label="上一张"
+                                disabled={versionItems.length <= 1}
                                 onClick={() => {
-                                  if (imageResults.length > 0) {
-                                    setLightboxIndex((boardIndex - 1 + imageResults.length) % imageResults.length);
-                                    setLightboxOpen(true);
-                                  }
+                                  if (versionItems.length <= 1) return;
+                                  setStoryboardVersionIndexes((prev) => ({
+                                    ...prev,
+                                    [result.id]: (selectedVersionIndex - 1 + versionItems.length) % versionItems.length,
+                                  }));
                                 }}
                               />
                               <ResultActionButton
                                 icon={<ChevronRight size={12} />}
                                 label="下一张"
+                                disabled={versionItems.length <= 1}
                                 onClick={() => {
-                                  if (imageResults.length > 0) {
-                                    setLightboxIndex((boardIndex + 1) % imageResults.length);
-                                    setLightboxOpen(true);
-                                  }
+                                  if (versionItems.length <= 1) return;
+                                  setStoryboardVersionIndexes((prev) => ({
+                                    ...prev,
+                                    [result.id]: (selectedVersionIndex + 1) % versionItems.length,
+                                  }));
                                 }}
                               />
                             </div>
@@ -1136,8 +1203,8 @@ const ProjectCard: React.FC<Props> = ({
                             className="flex h-[260px] w-full items-center justify-center"
                             style={{ background: 'var(--bg-base)' }}
                           >
-                            {result.imageUrl ? (
-                              renderMedia(result, 'h-full w-full object-contain')
+                            {displayResult.imageUrl ? (
+                              renderMedia(displayResult, 'h-full w-full object-contain')
                             ) : (
                               <div className="flex flex-col items-center gap-2 text-[11px]" style={{ color: result.status === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}>
                                 <ImagePlus size={18} />
@@ -1191,7 +1258,7 @@ const ProjectCard: React.FC<Props> = ({
                               <ResultActionButton
                                 icon={<Download size={12} />}
                                 label="下载"
-                                onClick={() => handleDownloadSingle(result, index)}
+                                onClick={() => handleDownloadSingle(displayResult, index)}
                               />
                               <ResultActionButton
                                 icon={<Film size={12} />}
@@ -1204,7 +1271,7 @@ const ProjectCard: React.FC<Props> = ({
                                     return;
                                   }
                                   const boardIndex = Number.isFinite(result.storyboardBoardIndex) ? Number(result.storyboardBoardIndex) : index;
-                                  onImportStoryboardToGeneration(project.storyboardSourceProject, result.id, boardIndex);
+                                  onImportStoryboardToGeneration(project.storyboardSourceProject, result.id, boardIndex, displayResult.imageUrl);
                                 }}
                               />
                               {onRegenerate ? (
@@ -1219,19 +1286,15 @@ const ProjectCard: React.FC<Props> = ({
                                   }}
                                 />
                               ) : <div />}
-                              {onRegenerate ? (
+                              {onEdit ? (
                                 <ResultActionButton
                                   icon={<Sparkles size={12} />}
-                                  label={isStoryboardAwaitingImageConfirmation ? '待确认' : regeneratePending ? '提交中' : '修改'}
+                                  label={isStoryboardAwaitingImageConfirmation ? '待确认' : isEditPending(result.id) ? '提交中' : '修改'}
                                   tone="primary"
-                                  disabled={isStoryboardAwaitingImageConfirmation || regeneratePending || isGeneratingResult}
+                                  disabled={isStoryboardAwaitingImageConfirmation || !canEditImageResult(result) || isEditPending(result.id) || isGeneratingResult}
                                   onClick={() => {
-                                    if (isStoryboardAwaitingImageConfirmation || regeneratePending || isGeneratingResult) return;
-                                    setStoryboardRevisionDialog({
-                                      resultId: result.id,
-                                      title: result.storyboardBoardTitle || `分段 ${index + 1}`,
-                                      instruction: '',
-                                    });
+                                    if (isStoryboardAwaitingImageConfirmation || !canEditImageResult(result) || isEditPending(result.id) || isGeneratingResult) return;
+                                    openEditDialog(result.id, result.storyboardBoardTitle || `分段 ${index + 1}`);
                                   }}
                                 />
                               ) : <div />}

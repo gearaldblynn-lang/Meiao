@@ -180,7 +180,7 @@ export const buildStoryboardBoardGenerationImport = (project = {}, ref = {}) => 
   const durationSeconds = normalizeSupportedDurationSeconds(rawDurationSeconds);
   const ratio = normalizeStoryboardRatio(project?.config?.aspectRatio);
   const productUrls = dedupeUrls(project?.config?.uploadedProductUrls || []);
-  const storyboardUrl = cleanText(board?.imageUrl);
+  const storyboardUrl = cleanText(ref.imageUrl || board?.imageUrl);
 
   return {
     prompt,

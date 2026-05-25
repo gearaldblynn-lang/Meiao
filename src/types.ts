@@ -681,6 +681,17 @@ export interface VideoStoryboardBoard {
   error?: string;
   previousBoardImageUrl?: string;
   revisionInstruction?: string;
+  imageVersions?: VideoStoryboardImageVersion[];
+}
+
+export interface VideoStoryboardImageVersion {
+  id: string;
+  imageUrl: string;
+  prompt?: string;
+  taskId?: string;
+  creditsConsumed?: number;
+  revisionInstruction?: string;
+  createdAt: number;
 }
 
 export interface VideoStoryboardState {

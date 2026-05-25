@@ -56,3 +56,29 @@ test('merges remote and local deletion tombstones for runtime pruning', () => {
     },
   );
 });
+
+test('prunes pending runtime results by backend job tombstone', () => {
+  const snapshot = {
+    projects: [
+      {
+        id: 'project-with-pending-result',
+        name: '待同步项目',
+        results: [
+          { id: 'task-img-pending-0', backendJobId: 'backend-job-a', status: 'generating' },
+          { id: 'kept-result', backendJobId: 'backend-job-b', status: 'completed' },
+        ],
+      },
+    ],
+    tasks: [],
+    updatedAt: 456,
+  };
+
+  const pruned = pruneShellRuntimeSnapshotForDeletion(snapshot, {
+    deletedJobIds: ['backend-job-a'],
+    deletedProjectIds: [],
+    deletedResultIds: [],
+  });
+
+  assert.deepEqual(pruned.projects[0].results.map((result) => result.id), ['kept-result']);
+  assert.equal(pruned.updatedAt, 456);
+});
