@@ -2437,6 +2437,22 @@ test('video storyboard result edit stays in the same card with version history a
   assert.match(videoStoryboardService, /补充参考图公网URL/);
 });
 
+test('video storyboard recovery polls KIE task id and writes back to the same board', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(projectCard, /const canRecoverStoryboardResult = \(result\?: GeneratedResult \| null\) => Boolean\(/);
+  assert.match(projectCard, /project\.module === 'video'[\s\S]*project\.subFeature === 'storyboard'[\s\S]*result\?\.taskId/);
+  assert.match(projectCard, /label="找回"[\s\S]*onRecover\?\.\(result\.id\)/);
+  assert.match(shellApp, /const handleStoryboardRecoverResult = useCallback\(async \(projectId: string, resultId\?: string\)/);
+  assert.match(shellApp, /const recoverTaskId = String\(board\?\.taskId \|\| ''\)\.trim\(\)/);
+  assert.match(shellApp, /await recoverKieAiTask\(recoverTaskId, apiConfig, controller\.signal, false\)/);
+  assert.match(shellApp, /const nextBoards = item\.boards\.map\(\(currentBoard\) => currentBoard\.id === board\.id/);
+  assert.match(shellApp, /imageUrl: recovery\.imageUrl \|\| currentBoard\.imageUrl/);
+  assert.match(shellApp, /taskId: recovery\.taskId \|\| recoverTaskId/);
+  assert.match(shellApp, /if \(await handleStoryboardRecoverResult\(projectId, resultId\)\) return;/);
+});
+
 test('one click result edit and fission show immediate feedback before long async work', () => {
   const projectCard = read('../shell/components/ProjectCard.tsx');
   const planEditor = read('../shell/components/PlanEditor.tsx');

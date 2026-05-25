@@ -1,7 +1,7 @@
 import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useRef } from 'react';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import LoginScreen from './shell/components/Internal/LoginScreen';
@@ -5507,7 +5507,119 @@ const AppContent: React.FC<{
     }
   }, [projects, addToast, activeSubFeature, currentParams, filteredMaterials, createRemoteMaterial, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, handleStoryboardEditResult, beginExclusiveAction, endExclusiveAction]);
 
+  const handleStoryboardRecoverResult = useCallback(async (projectId: string, resultId?: string) => {
+    const baseVideoMemory = videoMemory || createDefaultVideoState();
+    const baseStoryboard = baseVideoMemory.storyboard;
+    const project = baseStoryboard.projects.find((item) => item.id === projectId);
+    if (!project) return false;
+    const board = resultId
+      ? project.boards.find((item) => item.id === resultId)
+      : project.boards.find((item) => item.taskId);
+    const recoverTaskId = String(board?.taskId || '').trim();
+    if (!board || !recoverTaskId) {
+      void hydrateShellData();
+      void hydrateShellJobs();
+      addToast('当前分镜缺少 KIE 任务 ID，已重新同步后端任务与持久化状态', 'info');
+      return true;
+    }
+
+    const controller = new AbortController();
+    const recoverControllerId = `recover-storyboard-${projectId}-${board.id}-${Date.now()}`;
+    taskControllersRef.current[recoverControllerId] = controller;
+
+    const applyBoardRecoveryState = (
+      boardUpdater: (currentBoard: VideoStoryboardBoard) => VideoStoryboardBoard,
+      fallbackProjectStatus: VideoStoryboardProject['status'],
+    ) => {
+      setVideoMemory((prev) => {
+        const currentVideoMemory = prev || baseVideoMemory;
+        const currentStoryboard = currentVideoMemory.storyboard || baseStoryboard;
+        return {
+          ...currentVideoMemory,
+          storyboard: {
+            ...currentStoryboard,
+            projects: (currentStoryboard.projects || []).map((item) => {
+              if (item.id !== projectId) return item;
+              const nextBoards = item.boards.map((currentBoard) => currentBoard.id === board.id
+                ? boardUpdater(currentBoard)
+                : currentBoard);
+              const nextProjectStatus: VideoStoryboardProject['status'] = nextBoards.some((currentBoard) => currentBoard.status === 'generating')
+                ? 'imaging'
+                : nextBoards.some((currentBoard) => currentBoard.status === 'failed')
+                  ? 'failed'
+                  : nextBoards.every((currentBoard) => currentBoard.status === 'completed')
+                    ? 'completed'
+                    : fallbackProjectStatus;
+              return {
+                ...item,
+                status: nextProjectStatus,
+                error: nextProjectStatus === 'failed' ? item.error : undefined,
+                boards: nextBoards,
+              };
+            }),
+          },
+        };
+      });
+    };
+
+    applyBoardRecoveryState((currentBoard) => ({
+      ...currentBoard,
+      status: 'generating',
+      taskId: currentBoard.taskId || recoverTaskId,
+      error: '正在按 KIE 任务 ID 找回结果',
+    }), 'imaging');
+    addToast('已按 KIE 任务 ID 开始找回分镜图', 'info');
+
+    try {
+      const recovery = await recoverKieAiTask(recoverTaskId, apiConfig, controller.signal, false);
+      if (recovery.status === 'success' && recovery.imageUrl) {
+        applyBoardRecoveryState((currentBoard) => ({
+          ...currentBoard,
+          status: 'completed',
+          imageUrl: recovery.imageUrl || currentBoard.imageUrl,
+          taskId: recovery.taskId || recoverTaskId,
+          creditsConsumed: recovery.creditsConsumed ?? currentBoard.creditsConsumed,
+          error: undefined,
+        }), 'imaging');
+        addToast('分镜图已找回', 'success');
+        return true;
+      }
+
+      if (isRecoverableShellWorkflowResult(recovery)) {
+        applyBoardRecoveryState((currentBoard) => ({
+          ...currentBoard,
+          status: 'generating',
+          taskId: recovery.taskId || recoverTaskId,
+          error: recovery.message || '任务已提交云端，结果待同步',
+        }), 'imaging');
+        addToast('分镜图仍在云端生成，已保持待同步状态', 'info');
+        window.setTimeout(() => void hydrateShellJobs(), 800);
+        return true;
+      }
+
+      applyBoardRecoveryState((currentBoard) => ({
+        ...currentBoard,
+        status: 'failed',
+        taskId: recovery.taskId || recoverTaskId,
+        error: recovery.message || 'KIE 返回任务失败',
+      }), 'failed');
+      addToast(recovery.message || 'KIE 返回任务失败', 'error');
+    } catch (error) {
+      applyBoardRecoveryState((currentBoard) => ({
+        ...currentBoard,
+        status: 'generating',
+        taskId: recoverTaskId,
+        error: error instanceof Error ? error.message : '找回请求中断，任务仍可稍后继续找回',
+      }), 'imaging');
+      addToast('找回请求暂未完成，已保留 KIE 任务 ID 可继续同步', 'warning');
+    } finally {
+      delete taskControllersRef.current[recoverControllerId];
+    }
+    return true;
+  }, [videoMemory, hydrateShellData, hydrateShellJobs, addToast, apiConfig, setVideoMemory]);
+
   const handleRecoverResult = useCallback(async (projectId: string, resultId?: string) => {
+    if (await handleStoryboardRecoverResult(projectId, resultId)) return;
     const project = projects.find((item) => item.id === projectId);
     const targetResult = resultId
       ? project?.results.find((item) => item.id === resultId)
@@ -5624,7 +5736,7 @@ const AppContent: React.FC<{
       setTasks((prev) => prev.filter((task) => task.id !== recoverControllerId));
       delete taskControllersRef.current[recoverControllerId];
     }
-  }, [projects, hydrateShellData, hydrateShellJobs, addToast, apiConfig, persistProjectToSharedState]);
+  }, [handleStoryboardRecoverResult, projects, hydrateShellData, hydrateShellJobs, addToast, apiConfig, persistProjectToSharedState]);
 
   const handleCancelTask = useCallback((taskIdOrProjectId: string) => {
     const matchingTasks = tasks.filter((task) => (
