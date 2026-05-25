@@ -48,6 +48,11 @@ test('analysis service no longer routes planning through ark or doubao', () => {
     /taskId: String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| ''\)\.trim\(\) \|\| undefined/,
     'planning analysis should expose only the KIE provider task id'
   );
+  assert.match(
+    arkServiceSource,
+    /if \(!finalJob \|\| typeof finalJob !== 'object'\) \{[\s\S]*AI 分析任务状态同步失败/,
+    'planning analysis should not read providerTaskId from a missing job state'
+  );
   assert.doesNotMatch(arkServiceSource, /taskId: String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| job\.id/);
 });
 

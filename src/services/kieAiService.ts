@@ -40,7 +40,7 @@ const KIE_NON_RECOVERABLE_ERROR_CODES = new Set([
   'provider_bad_request',
   'task_not_found',
 ]);
-const KIE_RECOVERABLE_MESSAGE_PATTERN = /fetch failed|network|timeout|超时|服务异常|网络异常/i;
+const KIE_RECOVERABLE_MESSAGE_PATTERN = /fetch failed|network|timeout|超时|服务异常|网络异常|网络连接失败/i;
 const PUBLIC_BASE_URL_CACHE_TTL_MS = 30_000;
 let cachedPublicBaseUrl = '';
 let cachedPublicBaseUrlAt = 0;
@@ -150,8 +150,11 @@ const waitForJobResult = async (
   };
   try {
     const finalJob = await waitForInternalJob(jobId, signal, 2500, maxWaitMs, (currentJob) => {
-      notifyProviderTaskId(currentJob.providerTaskId);
+      notifyProviderTaskId(currentJob?.providerTaskId);
     });
+    if (!finalJob || typeof finalJob !== 'object') {
+      throw Object.assign(new Error('任务状态同步失败'), { code: 'job_state_missing' });
+    }
     notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
     if (finalJob.status === 'succeeded') {
       return {
@@ -498,10 +501,17 @@ export const processWithKieAi = async (
 
   const imageTimeout = KIE_IMAGE_TIMEOUT[moduleConfig.model] || KIE_IMAGE_DEFAULT_TIMEOUT;
   const result = await waitForJobResult(job.id, signal, imageTimeout, true, Boolean(apiConfig.kieApiKey), notifyProviderTaskId);
+  const logStatus = result.status === 'success'
+    ? 'success'
+    : result.status === 'interrupted'
+      ? 'interrupted'
+      : result.status === 'generating'
+        ? 'started'
+        : 'failed';
   logKieEvent(
     'create_image_task',
-    result.status === 'success' ? '图像任务完成' : result.status === 'interrupted' ? '图像任务已中断' : '图像任务失败',
-    result.status === 'success' ? 'success' : result.status === 'interrupted' ? 'interrupted' : 'failed',
+    result.status === 'success' ? '图像任务完成' : result.status === 'interrupted' ? '图像任务已中断' : result.status === 'generating' ? '图像任务已提交云端' : '图像任务失败',
+    logStatus,
     result.message || '',
     { taskId: result.taskId, model: moduleConfig.model, creditsConsumed: result.creditsConsumed }
   );

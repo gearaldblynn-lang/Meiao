@@ -622,6 +622,29 @@ const normalizePlanSchemeContent = (scheme: string) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+const INVALID_PLAN_CONTENT_PATTERNS = [
+  'Cannot read properties of undefined',
+  'providerTaskId',
+  '网络连接失败，请检查网络后重试',
+  'AI 分析请求失败',
+  'SKU方案策划失败',
+  '策划失败',
+  '任务状态同步失败',
+];
+
+const isInvalidPlanContentForGeneration = (plan: PlanItem) => {
+  const content = normalizePlanSchemeContent(plan.schemeContent || [
+    plan.title,
+    plan.sceneDescription,
+    plan.styleDirection,
+    plan.colorPalette,
+    plan.composition,
+    plan.textLayout,
+  ].filter(Boolean).join('\n')).replace(/\s+/g, ' ');
+  if (!content) return false;
+  return INVALID_PLAN_CONTENT_PATTERNS.some((pattern) => content.includes(pattern));
+};
+
 const buildPlanPromptSummary = (plan: PlanItem, subFeature: string) => {
   const scheme = normalizePlanSchemeContent(plan.schemeContent || '');
   if (scheme) return scheme;
@@ -3285,11 +3308,38 @@ const AppContent: React.FC<{
         addToast(`策划已完成，共 ${planResult.plans.length} 个方案`, 'success');
       } catch (error) {
         const message = error instanceof Error ? error.message : '策划失败';
+        const planningRecoverable = isRecoverableKieTaskResult(
+          planningProviderTaskId || activePlanningBackendJobId,
+          message,
+          error instanceof Error ? (error as Error & { code?: string }).code : undefined,
+        );
         logShellError('one_click_planning_failed', error, {
           projectId,
           taskId,
           subFeature: targetSubFeature,
         }, '一键主详策划失败');
+        if (planningRecoverable) {
+          const pendingPlanningProject: Project = {
+            ...planningProject,
+            status: 'planning',
+            backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
+            planningTaskId: planningProviderTaskId || undefined,
+            error: '任务已提交云端，结果待同步',
+          };
+          setProjects((prev) => prev.map((p) =>
+            p.id === projectId
+              ? pendingPlanningProject
+              : p
+          ));
+          void persistProjectToSharedState(pendingPlanningProject);
+          setTasks((prev) => prev.map((t) => t.id === taskId
+            ? { ...t, backendJobId: activePlanningBackendJobId || t.backendJobId, status: 'generating', progress: Math.max(t.progress || 0, 8) }
+            : t
+          ));
+          addToast('策划任务已提交云端，结果待同步，可稍后点击同步。', 'info');
+          window.setTimeout(() => void hydrateShellJobs(), 800);
+          return;
+        }
         const failedProject: Project = {
           ...planningProject,
           status: 'error',
@@ -3843,6 +3893,10 @@ const AppContent: React.FC<{
       addToast('请先选择要生成的策划方案', 'warning');
       return;
     }
+    if (selectedPlans.some((plan) => isInvalidPlanContentForGeneration(plan))) {
+      addToast('当前策划结果无效，请重新策划后再生图。', 'error');
+      return;
+    }
     if (apiConfig.workspacePreferences?.playSoundAfterGeneration) {
       void primeCompletionSound();
     }
@@ -3918,6 +3972,32 @@ const AppContent: React.FC<{
     let pendingSyncProject: Project | null = null;
     let firstGenerationError: Error | null = null;
     const getPublishedResults = () => resultsByIndex.filter((item): item is GeneratedResult => Boolean(item));
+    const buildMissingPlanResult = (plan: PlanItem, index: number, message: string): GeneratedResult => {
+      const visibleTaskId = generationTaskIdByPlanId.get(plan.id);
+      const backendJobId = generationBackendJobIdByPlanId.get(plan.id);
+      const isSubmitted = Boolean(visibleTaskId || backendJobId);
+      const promptSummary = buildPlanPromptSummary(plan, sceneSubFeature);
+      return {
+        id: visibleTaskId || `${taskId}-error-${index}`,
+        planId: plan.id,
+        imageUrl: '',
+        prompt: isSubmitted ? promptSummary : message,
+        model: generationParams['model'] || 'gpt-image-2',
+        aspectRatio: effectiveRatio,
+        status: isSubmitted ? 'generating' : 'error',
+        createdAt: project.createdAt,
+        module: AppModuleObj.ONE_CLICK,
+        subFeature: sceneSubFeature,
+        taskId: visibleTaskId,
+        backendJobId,
+        error: isSubmitted ? '任务已提交云端，结果待同步' : message,
+      };
+    };
+    const collectPlanResultsForFailure = (message: string) => {
+      const publishedResults = getPublishedResults();
+      const publishedByPlanId = new Map(publishedResults.map((result) => [result.planId || '', result]));
+      return selectedPlans.map((plan, index) => publishedByPlanId.get(plan.id) || buildMissingPlanResult(plan, index, message));
+    };
     const publishPlanResults = (status: Project['status'] = 'generating', error?: string) => {
       let mergedResults = mergeLatestProjectResults(getPublishedResults());
       setProjects((prev) => {
@@ -4240,7 +4320,9 @@ const AppContent: React.FC<{
     } catch (error) {
       const message = error instanceof Error ? error.message : '批量出图失败';
       const publishedResults = getPublishedResults();
-      const mergedFailedResults = mergeLatestProjectResults(publishedResults);
+      const failedPlanResults = collectPlanResultsForFailure(message);
+      const mergedFailedResults = mergeLatestProjectResults(failedPlanResults);
+      const hasPendingSubmittedResult = mergedFailedResults.some((result) => result.status === 'generating');
       logShellError('one_click_image_generation_failed', error, {
         projectId,
         taskId,
@@ -4254,18 +4336,7 @@ const AppContent: React.FC<{
         status: 'error',
         taskCount: totalTaskCount,
         completedCount: countCompletedProjectResults(mergedFailedResults),
-        results: publishedResults.length > 0 ? mergedFailedResults : mergeProjectResults(failedProjectBase.results || project.results || [], [{
-          id: `${taskId}-error`,
-          planId: selectedPlans[0]?.id,
-          imageUrl: '',
-          prompt: message,
-          model: generationParams['model'] || 'gpt-image-2',
-          aspectRatio: effectiveRatio,
-          status: 'error',
-          createdAt: project.createdAt,
-          module: AppModuleObj.ONE_CLICK,
-          subFeature: sceneSubFeature,
-        }]),
+        results: mergedFailedResults,
         subFeature: sceneSubFeature,
         creditsConsumed: project.creditsConsumed,
         planningTaskId: project.planningTaskId,
@@ -4273,20 +4344,7 @@ const AppContent: React.FC<{
       setProjects((prev) => {
         const next = prev.map((p) => {
           if (p.id !== projectId) return p;
-          const currentMergedResults = publishedResults.length > 0
-            ? mergeProjectResults(p.results || [], publishedResults)
-            : mergeProjectResults(p.results || [], [{
-                id: `${taskId}-error`,
-                planId: selectedPlans[0]?.id,
-                imageUrl: '',
-                prompt: message,
-                model: generationParams['model'] || 'gpt-image-2',
-                aspectRatio: effectiveRatio,
-                status: 'error',
-                createdAt: project.createdAt,
-                module: AppModuleObj.ONE_CLICK,
-                subFeature: sceneSubFeature,
-              }]);
+          const currentMergedResults = mergeProjectResults(p.results || [], failedPlanResults);
           failedProject = {
             ...p,
             ...failedProject,
@@ -4300,8 +4358,20 @@ const AppContent: React.FC<{
         return next;
       });
       void persistProjectToSharedState(failedProject);
-      setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, status: 'error', progress: 100 } : t));
-      addToast(message, 'error');
+      setTasks((prev) => prev.map((t) => t.id === taskId
+        ? {
+            ...t,
+            status: hasPendingSubmittedResult ? 'generating' : 'error',
+            progress: hasPendingSubmittedResult ? Math.max(t.progress || 0, Math.round((publishedResults.length / batchCount) * 100)) : 100,
+            completed: publishedResults.filter((item) => item.status === 'completed').length,
+            total: batchCount,
+          }
+        : t
+      ));
+      addToast(hasPendingSubmittedResult ? '部分任务已提交云端，结果待同步，可稍后点击同步。' : message, hasPendingSubmittedResult ? 'info' : 'error');
+      if (hasPendingSubmittedResult) {
+        window.setTimeout(() => void hydrateShellJobs(), 800);
+      }
     } finally {
       delete taskControllersRef.current[taskId];
     }
