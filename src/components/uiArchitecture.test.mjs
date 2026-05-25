@@ -157,6 +157,32 @@ test('app workspace lazy loads major modules to avoid one giant startup bundle',
   assert.match(viteConfig, /manualChunks/);
 });
 
+test('one click generation refuses to turn planning error text into image prompts', () => {
+  const app = read('../ShellMigratedApp.tsx');
+
+  assert.match(app, /const INVALID_PLAN_CONTENT_PATTERNS = \[/);
+  assert.match(app, /Cannot read properties of undefined/);
+  assert.match(app, /网络连接失败，请检查网络后重试/);
+  assert.match(app, /isInvalidPlanContentForGeneration/);
+  assert.match(app, /当前策划结果无效，请重新策划后再生图。/);
+});
+
+test('one click batch generation keeps every selected plan visible when one item fails', () => {
+  const app = read('../ShellMigratedApp.tsx');
+
+  assert.match(app, /const collectPlanResultsForFailure = \(message: string\) => \{/);
+  assert.match(app, /return selectedPlans\.map\(\(plan, index\) => publishedByPlanId\.get\(plan\.id\) \|\| buildMissingPlanResult\(plan, index, message\)\)/);
+  assert.match(app, /部分任务已提交云端，结果待同步，可稍后点击同步。/);
+});
+
+test('one click planning remains syncable after recoverable cloud submission failures', () => {
+  const app = read('../ShellMigratedApp.tsx');
+
+  assert.match(app, /const planningRecoverable = isRecoverableKieTaskResult\(/);
+  assert.match(app, /status: 'planning'/);
+  assert.match(app, /策划任务已提交云端，结果待同步，可稍后点击同步。/);
+});
+
 test('cloud deploy keeps old hashed assets and missing chunks do not fall back to html', () => {
   const server = read('../../server/index.mjs');
   const deployScript = read('../../scripts/deploy_tencent.sh');

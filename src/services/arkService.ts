@@ -117,8 +117,11 @@ const requestAnalysisResponseDetailed = async (
 
   try {
     const finalJob = await waitForInternalJob(job.id, signal, 2500, 0, (currentJob) => {
-      notifyProviderTaskId(currentJob.providerTaskId);
+      notifyProviderTaskId(currentJob?.providerTaskId);
     });
+    if (!finalJob || typeof finalJob !== 'object') {
+      throw new Error('AI 分析任务状态同步失败，请稍后在任务列表中同步任务结果');
+    }
     notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
     if (finalJob.status !== 'succeeded') {
       throw new Error(finalJob.errorMessage || 'AI 分析请求失败');

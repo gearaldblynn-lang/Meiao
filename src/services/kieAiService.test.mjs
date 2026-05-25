@@ -65,6 +65,7 @@ test('kieAiService treats restart-reconciled provider tasks as recoverable inste
   );
   assert.match(kieAiSource, /'service_restarted'/);
   assert.match(kieAiSource, /'job_timeout'/);
+  assert.match(kieAiSource, /网络连接失败/);
 });
 
 test('kieAiService only treats timeout-like failures as recoverable when provider task id exists', () => {
@@ -85,6 +86,11 @@ test('kieAiService keeps submitted provider tasks generating on frontend polling
     kieAiSource,
     /if \(notifiedProviderTaskId\) \{[\s\S]*taskId: notifiedProviderTaskId[\s\S]*status: 'generating'[\s\S]*任务已提交云端，结果待同步/s,
   );
+});
+
+test('kieAiService does not log cloud-submitted image tasks as failed while they are still syncing', () => {
+  assert.match(kieAiSource, /const logStatus = result\.status === 'success'[\s\S]*result\.status === 'generating'[\s\S]*\? 'started'/);
+  assert.match(kieAiSource, /result\.status === 'generating' \? '图像任务已提交云端' : '图像任务失败'/);
 });
 
 test('kieAiService explicitly excludes credit and request-limit failures from auto recovery', () => {
