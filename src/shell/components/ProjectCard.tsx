@@ -506,6 +506,13 @@ const ProjectCard: React.FC<Props> = ({
     && result.mediaType !== 'video'
     && !result.videoUrl,
   );
+  const canRecoverStoryboardResult = (result?: GeneratedResult | null) => Boolean(
+    onRecover
+    && project.module === 'video'
+    && project.subFeature === 'storyboard'
+    && result?.taskId
+    && !isStoryboardAwaitingImageConfirmation
+  );
 
   const getFissionLabel = (mode: 'scene' | 'palette' | 'custom') =>
     mode === 'scene' ? '换场景' : mode === 'palette' ? '换配色' : '自定义';
@@ -1254,7 +1261,7 @@ const ProjectCard: React.FC<Props> = ({
                               />
                             </div>
 
-                            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                            <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-5">
                               <ResultActionButton
                                 icon={<Download size={12} />}
                                 label="下载"
@@ -1274,6 +1281,17 @@ const ProjectCard: React.FC<Props> = ({
                                   onImportStoryboardToGeneration(project.storyboardSourceProject, result.id, boardIndex, displayResult.imageUrl);
                                 }}
                               />
+                              {onRecover ? (
+                                <ResultActionButton
+                                  icon={<RotateCcw size={12} />}
+                                  label="找回"
+                                  disabled={!canRecoverStoryboardResult(result)}
+                                  onClick={() => {
+                                    if (!canRecoverStoryboardResult(result)) return;
+                                    onRecover?.(result.id);
+                                  }}
+                                />
+                              ) : <div />}
                               {onRegenerate ? (
                                 <ResultActionButton
                                   icon={<RefreshCw size={12} />}
