@@ -22,6 +22,9 @@ const collectTaskIds = (task = {}) => [
 const collectResultIds = (result = {}) => [
   result.id,
   result.taskId,
+  result.backendJobId,
+  result.providerTaskId,
+  result.kieTaskId,
   result.projectId,
   result.planId,
 ].map((value) => String(value || '').trim()).filter(Boolean);

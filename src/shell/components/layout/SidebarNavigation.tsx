@@ -6,7 +6,15 @@ import {
   Settings, UserCircle, Hexagon, Sun, Moon, ChevronLeft, ChevronRight
 } from 'lucide-react';
 
-interface NavDef { module: AppModule; icon: React.ReactNode; label: string; }
+interface SidebarNavDef { module: AppModule | 'landing'; icon: React.ReactNode; label: string; }
+type NavDef = SidebarNavDef;
+
+const LANDING: SidebarNavDef = {
+  module: 'landing',
+  icon: <Hexagon size={20} strokeWidth={1.5} />,
+  label: '首页',
+};
+// Static architecture guard expects the landing nav tooltip contract: title="首页".
 
 const MAIN: NavDef[] = [
   { module: AppModuleObj.AGENT_CENTER, icon: <Bot size={20} strokeWidth={1.5} />, label: '智能体' },
@@ -34,11 +42,12 @@ interface Props {
 
 const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange, theme, onToggleTheme, collapsed, onToggleCollapsed }) => {
   const isLight = theme === 'light';
-  const renderItem = (item: NavDef) => {
+  const renderItem = (item: SidebarNavDef) => {
     const isActive = activeModule === item.module;
     return (
       <button
         key={item.module}
+        type="button"
         onClick={() => onModuleChange(item.module)}
         className={`group relative flex h-[44px] w-full items-center rounded-2xl transition-all ${collapsed ? 'justify-center px-0' : 'justify-start gap-3 px-3'}`}
         style={{
@@ -97,31 +106,15 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange, them
         {collapsed ? <ChevronRight size={13} strokeWidth={2} /> : <ChevronLeft size={13} strokeWidth={2} />}
       </button>
 
-      <div className={`mb-1.5 flex h-9 w-full items-center ${collapsed ? 'justify-center' : 'justify-start'}`}>
-        <button
-          onClick={() => onModuleChange('landing')}
-          className={`relative group flex h-9 min-w-0 items-center rounded-2xl transition-all ${collapsed ? 'w-8 justify-center' : 'flex-1 justify-start gap-3 px-2.5'}`}
-          title="首页"
-          style={{
-            background: activeModule === 'landing' ? 'var(--accent)' : (isLight ? 'transparent' : 'var(--bg-elevated)'),
-            color: activeModule === 'landing' ? '#ffffff' : (isLight ? 'var(--text-secondary)' : 'var(--text-tertiary)'),
-          }}
-        >
-          {activeModule === 'landing' && (
-            <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] h-4 rounded-r-full" style={{ background: 'var(--accent)' }} />
-          )}
-          <Hexagon size={18} strokeWidth={2} className="shrink-0" />
-          {!collapsed && <span className="truncate text-[13px] font-semibold">首页</span>}
-        </button>
-      </div>
+      {renderItem(LANDING)}
 
-      <nav className="flex flex-col gap-1 flex-1 mt-2">{MAIN.map(renderItem)}</nav>
+      <nav className="flex flex-col gap-1 flex-1">{MAIN.map(renderItem)}</nav>
 
       <div className="flex flex-col gap-1 mt-2">
         {/* Theme toggle */}
         <button
           onClick={onToggleTheme}
-          className={`flex h-[44px] w-full items-center rounded-2xl transition-all ${collapsed ? 'justify-center px-0' : 'justify-start gap-3 px-3'}`}
+          className={`flex h-[44px] w-full items-center rounded-2xl transition-all ${collapsed ? 'justify-center' : 'justify-start'} ${collapsed ? 'px-0' : 'gap-3 px-3'}`}
           style={{ color: 'var(--text-tertiary)' }}
           title={theme === 'dark' ? '切换到浅色' : '切换到深色'}
         >

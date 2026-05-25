@@ -1641,6 +1641,59 @@ test('executeProviderJob rejects private-network remote video urls before gemini
   }
 });
 
+test('executeProviderJob rejects oversized remote video urls before kie upload', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/oversized-reference.mp4')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({
+          'content-type': 'video/mp4',
+          'content-length': String(300 * 1024 * 1024),
+        }),
+        arrayBuffer: async () => {
+          throw new Error('oversized media should be rejected before download');
+        },
+        json: async () => ({}),
+      };
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const oversizedVideoUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/abc/oversized-reference.mp4';
+    await assert.rejects(
+      executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gemini-3.1-pro-openai',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: `读取这个视频 ${oversizedVideoUrl}` },
+                  { type: 'input_file', file_url: oversizedVideoUrl, filename: 'oversized-reference.mp4' },
+                ],
+              },
+            ],
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      /远程视频素材过大，当前最大支持 256MB/
+    );
+    assert.equal(requests.some((item) => item.url.includes('/file-stream-upload')), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob uploads stable image_url video payloads for gemini flash openai requests', async () => {
   const originalFetch = global.fetch;
   const requests = [];

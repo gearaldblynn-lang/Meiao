@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, Bot, Hexagon, LockKeyhole, Moon, Sparkles, Sun, UserRound, Wand2, Zap } from 'lucide-react';
+import IcpFilingFooter from '../../../components/IcpFilingFooter';
 
 interface Props {
   isSubmitting: boolean;
@@ -34,7 +35,7 @@ const LoginScreen: React.FC<Props> = ({ isSubmitting, error, theme, onToggleThem
   };
 
   return (
-    <main className="login-stage min-h-screen w-full overflow-hidden">
+    <main className="login-stage relative min-h-screen w-full overflow-hidden">
       <div className="login-bg-base" />
       <div className="login-bg-grid" />
       <div className="login-glow login-glow-a" />
@@ -173,6 +174,9 @@ const LoginScreen: React.FC<Props> = ({ isSubmitting, error, theme, onToggleThem
             </form>
           </div>
         </section>
+      </div>
+      <div className="absolute inset-x-0 bottom-4 z-20 px-5">
+        <IcpFilingFooter />
       </div>
     </main>
   );

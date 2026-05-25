@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { safeCreateInternalLog, getActiveModuleContext } from './internalApi';
 
 export const MODULE_LABELS: Record<string, string> = {
@@ -71,6 +70,10 @@ export const ACTION_LABELS: Record<string, string> = {
   sync_from_main: '同步详情配置到主图',
   clear_main_config: '清空主图配置',
   clear_detail_config: '清空详情配置',
+  select_all_first_image: '全选首图方案',
+  deselect_all_first_image: '取消全选首图方案',
+  select_single_first_image: '选择首图方案',
+  deselect_single_first_image: '取消选择首图方案',
   select_all_main: '全选主图方案',
   deselect_all_main: '取消全选主图方案',
   select_single_main: '选择主图方案',
@@ -81,6 +84,7 @@ export const ACTION_LABELS: Record<string, string> = {
   deselect_single_detail: '取消选择详情方案',
   plan_main_start: '主图策划',
   plan_detail_start: '详情策划',
+  plan_sku_start: 'SKU策划',
   generate_main_batch: '批量生成主图',
   generate_detail_batch: '批量生成详情',
   generate_main_scheme: '生成主图方案',

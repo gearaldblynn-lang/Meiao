@@ -3,6 +3,7 @@ import type { PersistedAppState } from './appState.ts';
 export interface PersistedDeletionTarget {
   projectId: string;
   resultId?: string;
+  jobIds?: string[];
 }
 
 interface TargetSets {
@@ -20,11 +21,12 @@ const makeIdSet = (values: Array<string | undefined | null>) => new Set(
 const makeTargetSets = (target: PersistedDeletionTarget): TargetSets => {
   const projectIds = makeIdSet([target.projectId]);
   const resultIds = makeIdSet([target.resultId]);
+  const jobIds = makeIdSet(target.jobIds || []);
   const isResultDelete = resultIds.size > 0;
   return {
     deleteProjectIds: isResultDelete ? new Set<string>() : projectIds,
-    nestedIds: isResultDelete ? resultIds : projectIds,
-    allIds: new Set([...projectIds, ...resultIds]),
+    nestedIds: isResultDelete ? new Set([...resultIds, ...jobIds]) : new Set([...projectIds, ...jobIds]),
+    allIds: new Set([...projectIds, ...resultIds, ...jobIds]),
   };
 };
 
@@ -33,6 +35,9 @@ const matchesTarget = (entry: any, ids: Set<string>) => {
   const candidateIds = [
     entry.id,
     entry.taskId,
+    entry.backendJobId,
+    entry.providerTaskId,
+    entry.kieTaskId,
     entry.projectId,
     entry.whiteBgTaskId,
     entry.lastTaskId,

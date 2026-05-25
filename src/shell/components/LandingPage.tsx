@@ -6,6 +6,7 @@ import {
 import type { AppModule } from '../types';
 import { AppModuleObj } from '../types';
 import { ThemeContext } from '../context/ThemeContext';
+import IcpFilingFooter from '../../components/IcpFilingFooter';
 
 /* ─── Module Card Data ─── */
 const FEATURES: Array<{
@@ -179,7 +180,7 @@ const LandingPage: React.FC<Props> = ({ onNavigate }) => {
       <AnimatedBackground />
 
       {/* Content */}
-      <div className="relative z-10 flex flex-col items-center px-6 py-10">
+      <div className="relative z-10 flex min-h-full flex-1 flex-col items-center px-6 pt-10 pb-8">
         {/* Hero */}
         <div className="text-center max-w-xl mx-auto mb-3" style={{ animation: 'fade-in-up 0.6s ease both' }}>
           <div
@@ -269,6 +270,10 @@ const LandingPage: React.FC<Props> = ({ onNavigate }) => {
             </div>
             <ArrowRight size={18} className="shrink-0 transition-transform group-hover:translate-x-1" style={{ color: 'var(--text-tertiary)' }} />
           </button>
+        </div>
+
+        <div className="mt-auto w-full pt-12">
+          <IcpFilingFooter />
         </div>
       </div>
 

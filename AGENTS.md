@@ -11,6 +11,9 @@
 - 推荐本地排查命令：`npm run doctor`
 - Git 远端：`https://github.com/gearaldblynn-lang/Meiao.git`
 - 默认分支：`main`
+- 云上备案域名：`http://meiaoyuntai.com` 和 `http://www.meiaoyuntai.com`
+- 备案网站名称：`杭州梅奥`
+- ICP 备案号：`浙ICP备2026015528号-1`，只在首页底部展示并链接到 `https://beian.miit.gov.cn/`
 
 ## 工作原则
 

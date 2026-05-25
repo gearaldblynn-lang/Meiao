@@ -133,6 +133,18 @@ test('buildStoryboardBoardGenerationImport imports only the clicked storyboard b
   assert.ok(!payload.materials.some((item) => item.url.includes('/board-1/')));
 });
 
+test('buildStoryboardBoardGenerationImport uses the currently viewed storyboard version when provided', () => {
+  const currentVersionUrl = 'http://111.229.66.247/api/assets/file/board-2/version-2.png';
+  const payload = buildStoryboardBoardGenerationImport(sampleProject, {
+    boardId: 'board-2',
+    boardIndex: 1,
+    imageUrl: currentVersionUrl,
+  });
+
+  assert.equal(payload.materials.find((item) => item.type === 'scene')?.url, currentVersionUrl);
+  assert.ok(!payload.materials.some((item) => item.url.includes('/board-2/storyboard.png')));
+});
+
 test('buildStoryboardBoardGenerationImport derives duration from the clicked board timeline span', () => {
   const payload = buildStoryboardBoardGenerationImport({
     ...sampleProject,
@@ -205,10 +217,10 @@ test('storyboard cards expose script copy and import-to-generation wiring', () =
   assert.match(projectCardSource, /renderPromptCopyButton\(dynamicScriptPrompt, '复制脚本'\)/);
   assert.match(projectCardSource, /label="导入至生成"/);
   assert.doesNotMatch(projectCardSource, /label="复制脚本"/);
-  assert.match(projectCardSource, /onImportStoryboardToGeneration\(project\.storyboardSourceProject, result\.id, boardIndex\)/);
+  assert.match(projectCardSource, /onImportStoryboardToGeneration\(project\.storyboardSourceProject, result\.id, boardIndex, displayResult\.imageUrl\)/);
   assert.match(projectListSource, /onImportStoryboardToGeneration=\{onImportStoryboardToGeneration\}/);
   assert.match(videoModuleSource, /storyboardSourceProject: project/);
-  assert.match(shellSource, /buildStoryboardBoardGenerationImport\(project, \{ boardId, boardIndex \}\)/);
+  assert.match(shellSource, /buildStoryboardBoardGenerationImport\(project, \{ boardId, boardIndex, imageUrl \}\)/);
   assert.match(shellSource, /const generationMaterialTypesToReplace = new Set\(\['product', 'scene', 'referenceVideo', 'audio'/);
   assert.match(shellSource, /material\.subFeature && material\.subFeature !== 'generation'/);
   assert.match(shellSource, /setActiveSubFeatureByModule\(\(prev\) => \(\{ \.\.\.prev, \[AppModuleObj\.VIDEO\]: 'generation' \}\)\)/);

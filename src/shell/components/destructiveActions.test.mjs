@@ -141,3 +141,13 @@ test('all runnable bottom generation submits are guarded before visible project 
   assert.match(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
   assert.match(oneClickBranch, /finally \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*setIsGenerating\(false\);[\s\S]*\}/);
 });
+
+test('shell result deletion records backend job tombstones for pending results', () => {
+  const shellSource = read('../../ShellMigratedApp.tsx');
+  const deleteResultBlock = shellSource.match(/const handleDeleteResult = useCallback\([\s\S]*?\n  \}, \[projects, addToast, persistDeletionToSharedState\]\);/)?.[0] || '';
+
+  assert.match(deleteResultBlock, /const result = project\?\.results\.find\(\(item\) => item\.id === resultId\)/);
+  assert.match(deleteResultBlock, /const resultJobIds = Array\.from\(new Set\(/);
+  assert.match(deleteResultBlock, /result\?\.backendJobId/);
+  assert.match(deleteResultBlock, /persistDeletionToSharedState\(\{ projectId, resultId, jobIds: resultJobIds \}\)/);
+});

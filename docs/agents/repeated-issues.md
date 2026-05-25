@@ -20,6 +20,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-05-25 - Pending card deletion must tombstone backend jobs
+
+- Symptom: 用户删除前端“生成中/待同步”的结果卡后，刷新或 `/api/jobs` 轮询又把同一个后端任务完成结果恢复出来；表现为任务卡脏读、前端任务消失/复活、后端 API 仍正常完成但前端状态不稳定。
+- Environment: local development / cloud production frontend shell
+- Root cause: 删除结果卡时只记录了前端临时 `resultId`，没有把 `backendJobId` / provider task id 一起写入 tombstone；后端任务完成后可能以不同的 provider result id 合并回项目，绕过了只按 result id 的删除过滤。
+- Fix: 结果删除时从当前 project/result 收集 backend/provider job ids 并传给 `persistDeletionToSharedState`；持久化 app state、runtime snapshot 和 shell hydration 都按 backend/provider job id 过滤项目/结果/任务。
+- Regression check: `node --test src/utils/persistedDeletion.test.mjs src/utils/shellRuntimePrune.test.mjs src/adapters/shellDataAdapter.test.mjs src/shell/components/destructiveActions.test.mjs`
+- Files/tests: `src/ShellMigratedApp.tsx`, `src/utils/persistedDeletion.ts`, `src/utils/shellRuntimePrune.mjs`, `src/adapters/shellDataAdapter.test.mjs`, `src/shell/components/destructiveActions.test.mjs`, `src/utils/persistedDeletion.test.mjs`, `src/utils/shellRuntimePrune.test.mjs`
+- Avoid next time: 新增任务卡删除/清理入口时，删除键不能只用 UI id；必须同时记录 backend job id、provider task id 和对应 result id，并验证“后端稍后完成”不会重新水合已删除卡片。
+
 ## 2026-05-21 - Shell duplicate submit before visible feedback
 
 - Symptom: 用户点击底部提交后短时间没有明显反馈，连续点击会创建多个生成任务卡片；已在白底精修/产品精修入口复现，同类问题会影响所有未纳入提交锁的底部生成入口。

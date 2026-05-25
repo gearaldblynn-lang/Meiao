@@ -995,10 +995,10 @@ test('generated project cards use short date sequence names instead of prompt te
   assert.doesNotMatch(app, /projectNameSource\.slice\(0, 20\)/);
 });
 
-test('browser tab title uses the concise MEIAO AI workspace name', () => {
+test('browser tab title uses the current cloud filing workspace name', () => {
   const html = read('../../index.html');
 
-  assert.match(html, /<title>MEIAO AI 工作台<\/title>/);
+  assert.match(html, /<title>杭州梅奥AI工作台<\/title>/);
   assert.doesNotMatch(html, /跨境电商/);
   assert.doesNotMatch(html, /内容创作工作台/);
 });
@@ -2095,7 +2095,7 @@ test('shell project detail uses responsive side-by-side image comparison and sta
   assert.match(projectCard, /长页审阅/);
   assert.match(projectCard, /project\.subFeature === 'detail_page'/);
   assert.match(projectCard, /detailViewMode/);
-  assert.match(projectCard, /imageResults/);
+  assert.match(projectCard, /previewableResults/);
   assert.match(projectCard, /生图 Prompt/);
   assert.match(projectCard, /视频 Prompt/);
   assert.match(projectCard, /CardVideoPreview/);
@@ -2410,6 +2410,31 @@ test('one click completed result edit supports supplement image upload and keeps
   assert.match(shellApp, /model: storedContext\?\.params\?\.model \|\| result\.model \|\| currentParams\.model \|\| 'GPT Image 2'/);
   assert.match(shellApp, /editInstruction: finalInstruction/);
   assert.match(shellApp, /runOneClickPlanGeneration\(readyEditProject, \[editPlan\], editMaterials\)/);
+});
+
+test('video storyboard result edit stays in the same card with version history and supplement uploads', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const videoShellModule = read('../shell/modules/Video/VideoModule.tsx');
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const videoStoryboardService = read('../services/videoStoryboardService.ts');
+  const importUtils = read('../shell/modules/Video/storyboardImportUtils.mjs');
+
+  assert.match(projectCard, /project\.module === 'video'[\s\S]*project\.subFeature === 'storyboard'[\s\S]*onEdit/);
+  assert.match(projectCard, /openEditDialog\(result\.id, result\.storyboardBoardTitle \|\| `分段 \$\{index \+ 1\}`\)/);
+  assert.match(projectCard, /storyboardVersionIndexes/);
+  assert.match(projectCard, /result\.storyboardImageVersions/);
+  assert.match(projectCard, /setStoryboardVersionIndexes/);
+  assert.match(projectCard, /onImportStoryboardToGeneration\(project\.storyboardSourceProject, result\.id, boardIndex, displayResult\.imageUrl\)/);
+  assert.match(videoShellModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(videoShellModule, /onEditResult=\{onEditResult\}/);
+  assert.match(shellApp, /handleStoryboardEditResult/);
+  assert.match(shellApp, /uploadInternalAssetStream\(\{[\s\S]*module: AppModuleObj\.VIDEO/);
+  assert.match(shellApp, /imageVersions: nextVersions/);
+  assert.match(shellApp, /status: 'generating'/);
+  assert.match(shellApp, /generateStoryboardBoardImage\([\s\S]*uploadedSupplementUrls/);
+  assert.match(importUtils, /const storyboardUrl = cleanText\(ref\.imageUrl \|\| board\?\.imageUrl\)/);
+  assert.match(videoStoryboardService, /supplementReferenceUrls: string\[\] = \[\]/);
+  assert.match(videoStoryboardService, /补充参考图公网URL/);
 });
 
 test('one click result edit and fission show immediate feedback before long async work', () => {
