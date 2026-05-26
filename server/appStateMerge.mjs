@@ -322,8 +322,11 @@ const hasOnlyStalePlanningFailureResults = (item = {}) => {
 };
 
 const hasCompletedMediaItem = (item = {}) => (
-  ['completed', 'succeeded', 'success'].includes(String(item?.status || ''))
-  && Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl)
+  Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl)
+  && (
+    !compactKey(item?.status)
+    || ['completed', 'succeeded', 'success'].includes(String(item?.status || ''))
+  )
 );
 
 const isDirectVideoGenerationProject = (item = {}) => (
@@ -354,10 +357,10 @@ const pruneSupersededNoMediaItems = (items = []) => {
   });
 };
 
-const normalizeOneClickProjectLikeItem = (item = {}, options = {}) => {
-  if (!options.forceOneClick && String(item?.module || '') !== 'one_click') return item;
+const normalizeProjectLikeItem = (item = {}, options = {}) => {
+  const isOneClickProject = options.forceOneClick || String(item?.module || '') === 'one_click';
   const originalPlans = Array.isArray(item?.plans) ? item.plans : [];
-  const hasClientPlanIds = originalPlans.some((plan) => {
+  const hasClientPlanIds = isOneClickProject && originalPlans.some((plan) => {
     const id = compactKey(plan?.id);
     return id && !isPlanningGeneratedPlanId(id);
   });
@@ -388,7 +391,9 @@ const normalizeOneClickProjectLikeItem = (item = {}, options = {}) => {
   )).length;
   const taskCount = planCount > 0
     ? maxNumber(planCount, completedMediaCount, activeOrFailedCount, 1)
-    : maxNumber(item?.taskCount, stateItems.length, 1);
+    : completedMediaCount > 0
+      ? maxNumber(completedMediaCount, activeOrFailedCount, 1)
+      : maxNumber(item?.taskCount, stateItems.length, 1);
   const hasGenerating = stateItems.some((entry) => ['generating', 'pending', 'queued'].includes(String(entry?.status || '')));
   const hasError = stateItems.some((entry) => ['error', 'failed'].includes(String(entry?.status || '')));
   const status = completedMediaCount >= taskCount
@@ -404,7 +409,7 @@ const normalizeOneClickProjectLikeItem = (item = {}, options = {}) => {
     ...(Array.isArray(item?.results) ? { results } : {}),
     ...(Array.isArray(item?.schemes) ? { schemes } : {}),
     taskCount,
-    completedCount: completedMediaCount,
+    completedCount: stateItems.length > 0 ? completedMediaCount : Number(item?.completedCount || 0) || 0,
     status,
   };
   if (status === 'completed' && completedMediaCount > 0) {
@@ -482,8 +487,8 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
     ...(taskId ? { taskId } : {}),
     ...(kieTaskId ? { kieTaskId } : {}),
   };
-  if (!preserveRecoveredPlanning) return normalizeOneClickProjectLikeItem(clearResolvedProjectErrorFields(mergedItem));
-  return normalizeOneClickProjectLikeItem({
+  if (!preserveRecoveredPlanning) return normalizeProjectLikeItem(clearResolvedProjectErrorFields(mergedItem));
+  return normalizeProjectLikeItem({
     ...mergedItem,
     status: existingItem.status,
     results: [],
@@ -521,12 +526,12 @@ export const mergeProjectArrayByStableKeys = (existingItems = [], incomingItems 
 
   incoming.forEach((item) => push(item, 'incoming'));
   existing.forEach((item) => push(item, 'existing'));
-  return merged;
+  return merged.map((item) => normalizeProjectLikeItem(item));
 };
 
 const mergeBranchProjects = (existingBranch = {}, incomingBranch = {}) => {
   const projects = mergeProjectArrayByStableKeys(existingBranch?.projects, incomingBranch?.projects)
-    .map((project) => normalizeOneClickProjectLikeItem(project, { forceOneClick: true }));
+    .map((project) => normalizeProjectLikeItem(project, { forceOneClick: true }));
   return {
     ...existingBranch,
     ...incomingBranch,

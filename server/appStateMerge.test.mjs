@@ -620,6 +620,110 @@ test('mergeAppStateForStorage normalizes polluted one-click branch schemes', () 
   assert.deepEqual(project.schemes.map((scheme) => scheme.resultUrl), completedSchemes.map((scheme) => scheme.resultUrl));
 });
 
+test('mergeAppStateForStorage normalizes stale placeholders for every project module', () => {
+  const staleProject = (module, subFeature, id) => ({
+    id,
+    module,
+    subFeature,
+    status: 'error',
+    taskCount: 4,
+    completedCount: 1,
+    error: '网络连接失败，请检查网络后重试',
+    results: [
+      {
+        id: `${id}-provider`,
+        planId: `${id}-slot`,
+        imageUrl: module === 'video' ? '' : `/${id}.png`,
+        videoUrl: module === 'video' ? `/${id}.mp4` : '',
+        status: 'completed',
+        taskId: `${id}-provider`,
+        backendJobId: `${id}-job`,
+      },
+      {
+        id: `${id}-network-error`,
+        planId: `${id}-slot`,
+        imageUrl: '',
+        videoUrl: '',
+        status: 'error',
+        error: '网络连接失败，请检查网络后重试',
+      },
+      {
+        id: `${id}-pending-placeholder`,
+        planId: `${id}-slot`,
+        imageUrl: '',
+        videoUrl: '',
+        status: 'generating',
+      },
+    ],
+  });
+  const completedProject = (module, subFeature, id) => ({
+    id,
+    module,
+    subFeature,
+    status: 'completed',
+    taskCount: 1,
+    completedCount: 1,
+    results: [staleProject(module, subFeature, id).results[0]],
+  });
+
+  const merged = mergeAppStateForStorage({
+    shellProjects: [
+      staleProject('retouch', 'white_bg', 'retouch-project'),
+      staleProject('buyer_show', 'image', 'buyer-show-project'),
+      staleProject('xhs_cover', 'cover', 'xhs-project'),
+      staleProject('video', 'generation', 'video-project'),
+    ],
+    buyerShowMemory: {
+      sets: [staleProject('buyer_show', 'image', 'buyer-show-set')],
+    },
+    xhsCoverMemory: {
+      projects: [staleProject('xhs_cover', 'cover', 'xhs-memory-project')],
+    },
+    videoMemory: {
+      veoProjects: [staleProject('video', 'generation', 'video-memory-project')],
+      storyboard: {
+        projects: [staleProject('video', 'storyboard', 'storyboard-project')],
+      },
+    },
+  }, {
+    shellProjects: [
+      completedProject('retouch', 'white_bg', 'retouch-project'),
+      completedProject('buyer_show', 'image', 'buyer-show-project'),
+      completedProject('xhs_cover', 'cover', 'xhs-project'),
+      completedProject('video', 'generation', 'video-project'),
+    ],
+    buyerShowMemory: {
+      sets: [completedProject('buyer_show', 'image', 'buyer-show-set')],
+    },
+    xhsCoverMemory: {
+      projects: [completedProject('xhs_cover', 'cover', 'xhs-memory-project')],
+    },
+    videoMemory: {
+      veoProjects: [completedProject('video', 'generation', 'video-memory-project')],
+      storyboard: {
+        projects: [completedProject('video', 'storyboard', 'storyboard-project')],
+      },
+    },
+  });
+
+  const allProjects = [
+    ...merged.shellProjects,
+    ...merged.buyerShowMemory.sets,
+    ...merged.xhsCoverMemory.projects,
+    ...merged.videoMemory.veoProjects,
+    ...merged.videoMemory.storyboard.projects,
+  ];
+  assert.equal(allProjects.length, 8);
+  allProjects.forEach((project) => {
+    assert.equal(project.status, 'completed', project.id);
+    assert.equal(project.taskCount, 1, project.id);
+    assert.equal(project.completedCount, 1, project.id);
+    assert.equal(project.error, undefined, project.id);
+    assert.equal(project.results.length, 1, project.id);
+    assert.equal(project.results[0].status, 'completed', project.id);
+  });
+});
+
 test('compactAppStateForStorage removes recursively nested one-click project history', () => {
   const compacted = compactAppStateForStorage({
     oneClickMemory: {
