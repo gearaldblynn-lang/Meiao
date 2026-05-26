@@ -215,3 +215,13 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Data repair: 已备份并修复多桑账号项目3/4，备份文件 `/www/backup/meiao-state-repair/duosang-planning-2026-05-26T03-01-57-986Z.json`。
 - Follow-up repair: 旧浏览器覆盖后再次备份并修复，备份文件 `/www/backup/meiao-state-repair/duosang-planning-second-2026-05-26T03-09-26-281Z.json`。
 - Avoid next time: 对 text-only planning job，前端轮询失败只能代表“同步失败”，不能代表“策划失败”。任何成功的 backend planning job 都必须能按 `shellProjectId`/`backendJobId` 回填 plans，即使前端此前已写入 stale error placeholder；服务端状态合并层也要防止旧浏览器本地快照反向覆盖云端恢复结果。
+
+## 2026-05-26 - SKU planning backfill must survive replace-mode state writes
+
+- Symptom: 多桑账号“5月26日项目6”SKU 策划后台 `kie_chat` 已输出 2 条 `[SCHEME_START]`，但前端生成后只显示 1 张图，项目计数为 `1/1`。
+- Environment: Tencent Cloud production, one-click SKU planning + image generation.
+- Root cause: 第一张 SKU 出图成功后，项目已有 completed result，前端 hydration 早退，不再用成功的 text-only planning job 回填缺失的第 2 条 plan；同时 `/api/state` 的 `mode: replace` 写入会绕过服务端深度合并，把云端已修复的 `plans: 2` 又覆盖回旧的 `plans: 0/taskCount: 1`。
+- Fix: `shellDataAdapter` 对已存在部分出图结果的 completed `kie_chat` job 继续解析并回填全部 plans，所有解析出的 SKU plans 默认 selected；项目状态根据“是否还有 selected plan 没有 terminal result”回到 planning。`server/index.mjs` 不再让 replace-mode 直接覆盖 `/api/state`，统一走 `mergeAppStateForStorage`；`mergeArrayByStableKeys` 对重复 scheme/result 保留 incoming 的同时补齐 existing 的 `planId` 等身份字段。
+- Regression check: `node --test server/appStateMerge.test.mjs src/adapters/shellDataAdapter.test.mjs src/services/arkService.test.mjs src/adapters/shellPersistence.test.mjs src/adapters/shellRuntimeMerge.test.mjs src/modules/OneClick/oneClickRecoveryBehavior.test.mjs src/components/uiArchitecture.test.mjs`; `npm run build`.
+- Data repair: 已备份并修复多桑项目6，最终备份文件 `/www/backup/meiao-state-repair/duosang-sku-project6-2026-05-26T04-01-25-682Z.json`；恢复后 shell 项目为 `taskCount: 2/completedCount: 1/planCount: 2`，SKU 分支为 2 条 scheme：第 1 条 completed、第 2 条 planning。
+- Avoid next time: 不能用“已有一个 completed result”判断 planning job 不需要回填；SKU/批量策划的 text job 是任务总数来源。所有全量保存路径即使叫 replace，也必须保护云端已恢复的 backend-bound plans/results，删除应依赖 tombstone，而不是直接信任旧浏览器快照。
