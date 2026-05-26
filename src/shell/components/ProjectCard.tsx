@@ -3,6 +3,7 @@ import { CheckSquare2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, 
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, VideoStoryboardProject } from '../../types';
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
+import { copyTextToClipboard } from '../../utils/clipboard.mjs';
 import ConfirmDialog from './ConfirmDialog';
 import ImageLightbox, { type LightboxMediaItem } from './ImageLightbox';
 import PlanEditor, { type PlanItem } from './PlanEditor';
@@ -194,29 +195,6 @@ const splitTaskIds = (value?: string) =>
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
-
-const copyTextToClipboard = async (value: string) => {
-  const text = String(value || '');
-  if (!text) return false;
-  if (navigator.clipboard?.writeText) {
-    const copied = await navigator.clipboard.writeText(text).then(() => true).catch(() => false);
-    if (copied) return true;
-  }
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  textarea.setAttribute('readonly', 'true');
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  try {
-    document.body.appendChild(textarea);
-    textarea.select();
-    return document.execCommand('copy');
-  } catch {
-    return false;
-  } finally {
-    textarea.remove();
-  }
-};
 
 const getProjectCreditsConsumed = (project: Project) => {
   const rawProjectCredits = normalizeCreditsConsumed(project.creditsConsumed);
@@ -705,9 +683,9 @@ const ProjectCard: React.FC<Props> = ({
       addToast('当前精修结果还没有可导出的图片', 'warning');
       return;
     }
-    await navigator.clipboard.writeText(result.imageUrl).catch(() => null);
+    const copied = await copyTextToClipboard(result.imageUrl);
     window.open('https://zh.bgsub.com/webapp/', '_blank');
-    addToast('精修图片链接已复制，可在抠图页面粘贴使用', 'success');
+    addToast(copied ? '精修图片链接已复制，可在抠图页面粘贴使用' : '已打开抠图页面，请手动复制图片链接', copied ? 'success' : 'warning');
   };
 
   const handleRetryFailedTranslation = () => {

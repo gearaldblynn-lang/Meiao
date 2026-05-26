@@ -8,6 +8,7 @@ import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '
 import { createZipAndDownload, resolveFilesForZipDownload } from '../../utils/imageUtils';
 import { logInternalAction, logActionStart, logActionSuccess, logActionFailure, logActionInterrupted } from '../../services/loggingService';
 import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
+import { copyTextToClipboard } from '../../utils/clipboard.mjs';
 import { playWorkspaceCompletionSound, primeWorkspaceCompletionSound } from '../../utils/workspacePreferenceEffects';
 
 // --- Sub Components for Performance Optimization ---
@@ -1129,17 +1130,21 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     setExpandedSetId(prev => prev === id ? null : id);
   }, []);
 
-  const handleCopyText = useCallback((text: string) => {
-    navigator.clipboard.writeText(text);
-    void logActionSuccess({
-      module: 'buyer_show',
-      action: 'copy_text',
-      message: '复制买家秀文案',
-      meta: {
-        textLength: text.length,
-      },
-    });
-    alert("已复制");
+  const handleCopyText = useCallback(async (text: string) => {
+    const copied = await copyTextToClipboard(text);
+    if (copied) {
+      void logActionSuccess({
+        module: 'buyer_show',
+        action: 'copy_text',
+        message: '复制买家秀文案',
+        meta: {
+          textLength: text.length,
+        },
+      });
+      alert("已复制");
+      return;
+    }
+    alert("复制失败，请手动复制文案");
   }, []);
 
   return (

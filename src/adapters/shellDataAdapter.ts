@@ -957,6 +957,18 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
   return snapshot;
 };
 
+const isStalePlanningFailureResult = (result?: Partial<ShellGeneratedResult>) => {
+  if (!result || result.status !== 'error') return false;
+  if (result.imageUrl || result.videoUrl || result.backendJobId || result.taskId) return false;
+  const message = String(result.error || result.prompt || '').trim();
+  return /策划失败|未返回可用方案|任务已提交云端|结果待同步/.test(message);
+};
+
+const hasOnlyStalePlanningFailureResults = (project?: Partial<ShellProjectData>) => {
+  const results = Array.isArray(project?.results) ? project.results : [];
+  return results.length > 0 && results.every((result) => isStalePlanningFailureResult(result));
+};
+
 const mapJobs = (
   jobs: InternalJob[] = [],
   persistedProjects: ShellProjectData[] = [],
@@ -1000,7 +1012,8 @@ const mapJobs = (
       ) {
         const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
         if (!matchedProject) return;
-        if ((matchedProject.results || []).length > 0 || Number(matchedProject.completedCount || 0) > 0) return;
+        if ((matchedProject.results || []).length > 0 && !hasOnlyStalePlanningFailureResults(matchedProject)) return;
+        if (Number(matchedProject.completedCount || 0) > 0) return;
         if ((matchedProject.plans || []).length > 0) {
           const planningTaskId = String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim();
           projects.push({
@@ -1378,7 +1391,25 @@ const shouldReplaceProjectSnapshot = (existing: ShellProjectData | undefined, ne
   if (!existing) return true;
   const existingHasResults = (existing.results || []).some((result) => result.imageUrl || result.videoUrl || result.status === 'error');
   const nextHasResults = (next.results || []).some((result) => result.imageUrl || result.videoUrl || result.status === 'error');
-  if (existingHasResults && !nextHasResults && (next.status === 'planning' || next.status === 'generating')) return false;
+  if (
+    nextHasResults
+    && hasOnlyStalePlanningFailureResults(next)
+    && existing.status === 'planning'
+    && (existing.plans || []).length > 0
+    && (
+      !String(next.backendJobId || '').trim()
+      || String(existing.backendJobId || '') === String(next.backendJobId || '')
+    )
+  ) {
+    return false;
+  }
+  if (existingHasResults && !nextHasResults && (next.status === 'planning' || next.status === 'generating')) {
+    const restoresCompletedPlanning = next.status === 'planning'
+      && (next.plans || []).length > 0
+      && hasOnlyStalePlanningFailureResults(existing)
+      && String(existing.backendJobId || '') === String(next.backendJobId || '');
+    if (!restoresCompletedPlanning) return false;
+  }
   if (existing.status === 'completed' && next.status === 'planning') return false;
   return true;
 };
@@ -1408,32 +1439,10 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
     return !planId || !droppedPlanIds.has(planId);
   });
 
-  if ((project.subFeature || '') !== 'first_image') {
-    const scopedResults: ShellGeneratedResult[] = [];
-    const indexByPlanId = new Map<string, number>();
-    results.forEach((result) => {
-      const planId = String(result?.planId || '').trim();
-      if (!planId) {
-        scopedResults.push(result);
-        return;
-      }
-      const existingIndex = indexByPlanId.get(planId);
-      if (typeof existingIndex === 'number') {
-        scopedResults[existingIndex] = result;
-        return;
-      }
-      indexByPlanId.set(planId, scopedResults.length);
-      scopedResults.push(result);
-    });
-    results = scopedResults;
-  }
-
   const completedCount = results.filter(hasCompletedMediaResult).length;
   const planCount = filteredPlans.length;
   const taskCount = planCount > 0
-    ? ((project.subFeature || '') === 'first_image'
-      ? Math.max(Number(project.taskCount || 0) || 0, results.length, planCount, 1)
-      : planCount)
+    ? Math.max(Number(project.taskCount || 0) || 0, results.length, planCount, 1)
     : Math.max(Number(project.taskCount || 0) || 0, results.length, 1);
   const selectedPlanId = filteredPlans.some((plan) => String(plan?.id || '') === String(project.selectedPlanId || ''))
     ? project.selectedPlanId
@@ -1475,7 +1484,29 @@ const mergeProjectResultsByIdentity = (
 ) => {
   const results: ShellGeneratedResult[] = [];
   const keyToIndex = new Map<string, number>();
+  const rebuildIndex = () => {
+    keyToIndex.clear();
+    results.forEach((item, index) => {
+      getGeneratedResultMergeKeys(item).forEach((key) => keyToIndex.set(key, index));
+    });
+  };
+  const removeStalePlanPlaceholders = (result: ShellGeneratedResult) => {
+    if (!hasCompletedMediaResult(result)) return;
+    const planId = String(result?.planId || '').trim();
+    if (!planId) return;
+    for (let index = results.length - 1; index >= 0; index -= 1) {
+      const existing = results[index];
+      const existingPlanId = String(existing?.planId || '').trim();
+      const hasConcreteBackendIdentity = Boolean(String(existing?.taskId || existing?.backendJobId || '').trim());
+      const hasMedia = Boolean(existing?.imageUrl || existing?.videoUrl);
+      if (existingPlanId === planId && !hasConcreteBackendIdentity && !hasMedia) {
+        results.splice(index, 1);
+      }
+    }
+    rebuildIndex();
+  };
   const upsert = (result: ShellGeneratedResult) => {
+    removeStalePlanPlaceholders(result);
     const keys = getGeneratedResultMergeKeys(result);
     const matchedIndex = keys
       .map((key) => keyToIndex.get(key))
@@ -1532,8 +1563,14 @@ const mergeIdentityTextList = (...values: Array<string | undefined>) => {
 
 const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData): ShellProjectData => {
   if (!shouldReplaceProjectSnapshot(existing, next)) return existing;
-  const results = mergeProjectResultsByIdentity(existing.results || [], next.results || []);
   const plans = mergeProjectPlansById(existing.plans, next.plans);
+  const replacesStalePlanningFailure = next.status === 'planning'
+    && (plans || []).length > 0
+    && hasOnlyStalePlanningFailureResults(existing)
+    && (next.results || []).length === 0;
+  const results = replacesStalePlanningFailure
+    ? []
+    : mergeProjectResultsByIdentity(existing.results || [], next.results || []);
   const completedCount = results.filter(hasCompletedMediaResult).length;
   const taskCount = Math.max(
     Number(existing.taskCount || 0) || 0,

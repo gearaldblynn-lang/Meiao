@@ -33,14 +33,27 @@ export const persistGeneratedAsset = async (
     });
     return response.fileUrl;
   } catch (error: any) {
+    const errorDetail = error?.message || error?.code || String(error || '');
     void safeCreateInternalLog({
       level: 'error',
       module,
       action: 'persist_asset',
       message: '资产持久化失败',
-      detail: error?.message || '',
+      detail: errorDetail,
       status: 'failed',
-      meta: { fileName, sizeBytes: blob.size },
+      meta: {
+        fileName,
+        sizeBytes: blob.size,
+        originalMimeType: blob.type || '',
+        uploadFileName: uploadFile.name || fileName,
+        uploadMimeType: uploadFile.type || '',
+        uploadSizeBytes: uploadFile.size || 0,
+        errorName: error?.name || '',
+        errorCode: error?.code || '',
+        errorStatus: error?.status || null,
+        errorMessage: errorDetail,
+        latencyMs: Date.now() - startedAt,
+      },
     });
     throw error;
   }

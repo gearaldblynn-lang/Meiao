@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   buildJobFailureLogFields,
+  buildJobRuntimeLogMeta,
   buildPublicSystemConfig,
   getWorkerConcurrencyLimit,
   getNextJobFailureState,
@@ -226,6 +227,20 @@ test('getNextJobFailureState returns failed when retry budget is exhausted', () 
   );
 });
 
+test('getNextJobFailureState does not retry transient failures when retry budget is zero', () => {
+  assert.deepEqual(
+    getNextJobFailureState({
+      retryCount: 0,
+      maxRetries: 0,
+      errorCode: 'provider_timeout',
+    }),
+    {
+      retryCount: 0,
+      status: 'failed',
+    }
+  );
+});
+
 test('buildJobFailureLogFields reports retryable intermediate failures as running retry state', () => {
   assert.deepEqual(
     buildJobFailureLogFields({
@@ -258,10 +273,90 @@ test('buildJobFailureLogFields reports final failures as failed state', () => {
   );
 });
 
+test('buildJobRuntimeLogMeta exposes provider and shell binding fields for diagnosis', () => {
+  const meta = buildJobRuntimeLogMeta({
+    job: {
+      id: 'job-1',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      providerTaskId: 'provider-old',
+      retryCount: 1,
+      maxRetries: 2,
+      createdAt: 1000,
+      startedAt: 2500,
+      payload: {
+        subFeature: 'main_image',
+        shellPurpose: 'one_click_image_generation',
+        shellProjectId: 'project-1',
+        shellProjectName: '主图项目',
+        shellPlanId: 'plan-1',
+        batchIndex: 2,
+        batchCount: 4,
+        requestId: 'request-1',
+      },
+    },
+    result: {
+      providerTaskId: 'provider-new',
+      providerStage: 'completed',
+      providerStatus: 'success',
+      creditsConsumed: 0.25,
+      result: {
+        imageUrl: 'https://example.com/result.png',
+      },
+    },
+    finishedAt: 5000,
+  });
+
+  assert.equal(meta.jobId, 'job-1');
+  assert.equal(meta.providerTaskId, 'provider-new');
+  assert.equal(meta.provider, 'kie');
+  assert.equal(meta.taskType, 'kie_image');
+  assert.equal(meta.module, 'one_click');
+  assert.equal(meta.subFeature, 'main_image');
+  assert.equal(meta.shellPurpose, 'one_click_image_generation');
+  assert.equal(meta.shellProjectId, 'project-1');
+  assert.equal(meta.shellProjectName, '主图项目');
+  assert.equal(meta.shellPlanId, 'plan-1');
+  assert.equal(meta.batchIndex, 2);
+  assert.equal(meta.batchCount, 4);
+  assert.equal(meta.requestId, 'request-1');
+  assert.equal(meta.providerStage, 'completed');
+  assert.equal(meta.providerStatus, 'success');
+  assert.equal(meta.resultUrlCount, 1);
+  assert.equal(meta.creditsConsumed, 0.25);
+  assert.equal(meta.queueWaitMs, 1500);
+  assert.equal(meta.runtimeMs, 2500);
+  assert.equal(JSON.stringify(meta).includes('https://example.com/result.png'), false);
+});
+
+test('buildJobRuntimeLogMeta estimates runtime from createdAt when recovered jobs lost startedAt', () => {
+  const meta = buildJobRuntimeLogMeta({
+    job: {
+      id: 'job-recovered',
+      taskType: 'kie_image',
+      provider: 'kie',
+      createdAt: 1000,
+      startedAt: null,
+      payload: {},
+    },
+    result: {
+      providerTaskId: 'provider-recovered',
+      result: { imageUrl: 'https://example.com/recovered.png' },
+    },
+    finishedAt: 7000,
+  });
+
+  assert.equal(meta.jobStartedAt, 1000);
+  assert.equal(meta.queueWaitMs, 0);
+  assert.equal(meta.runtimeMs, 6000);
+});
+
 test('isTransientMysqlConnectionError detects broken mysql pool connections', () => {
   assert.equal(isTransientMysqlConnectionError({ code: 'PROTOCOL_CONNECTION_LOST' }), true);
   assert.equal(isTransientMysqlConnectionError({ code: 'ECONNREFUSED' }), true);
   assert.equal(isTransientMysqlConnectionError({ code: 'ETIMEDOUT' }), true);
+  assert.equal(isTransientMysqlConnectionError(new Error('Pool is closed.')), true);
   assert.equal(isTransientMysqlConnectionError({ code: 'ER_BAD_DB_ERROR' }), false);
   assert.equal(isTransientMysqlConnectionError(new Error('ordinary failure')), false);
 });

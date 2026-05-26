@@ -274,8 +274,32 @@ const maxNumber = (...values) => Math.max(
 
 const hasOwnArray = (object, key) => Object.hasOwn(object || {}, key) && Array.isArray(object?.[key]);
 
+const isStalePlanningFailureResult = (result = {}) => {
+  if (!result || result.status !== 'error') return false;
+  if (result.imageUrl || result.videoUrl || result.backendJobId || result.taskId || result.providerTaskId) return false;
+  const message = String(result.error || result.prompt || '').trim();
+  return /策划失败|未返回可用方案|任务已提交云端|结果待同步/.test(message);
+};
+
+const hasOnlyStalePlanningFailureResults = (item = {}) => {
+  const results = Array.isArray(item?.results) ? item.results : [];
+  return results.length > 0 && results.every((result) => isStalePlanningFailureResult(result));
+};
+
+const shouldPreserveRecoveredPlanning = (existingItem = {}, incomingItem = {}) => {
+  const existingPlans = Array.isArray(existingItem?.plans) ? existingItem.plans : [];
+  if (existingItem?.status !== 'planning' || existingPlans.length === 0) return false;
+  if (!hasOnlyStalePlanningFailureResults(incomingItem)) return false;
+  const existingJobId = compactKey(existingItem?.backendJobId);
+  const incomingJobId = compactKey(incomingItem?.backendJobId);
+  return !incomingJobId || Boolean(existingJobId && existingJobId === incomingJobId);
+};
+
 const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
-  const mergedResults = mergeArrayByStableKeys(existingItem?.results, incomingItem?.results);
+  const preserveRecoveredPlanning = shouldPreserveRecoveredPlanning(existingItem, incomingItem);
+  const mergedResults = preserveRecoveredPlanning
+    ? []
+    : mergeArrayByStableKeys(existingItem?.results, incomingItem?.results);
   const mergedPlans = mergeArrayByStableKeys(existingItem?.plans, incomingItem?.plans);
   const mergedSchemes = mergeArrayByStableKeys(existingItem?.schemes, incomingItem?.schemes);
   const taskCount = maxNumber(
@@ -290,7 +314,7 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
   const providerTaskId = incomingItem?.providerTaskId || existingItem?.providerTaskId;
   const taskId = incomingItem?.taskId || existingItem?.taskId;
   const kieTaskId = incomingItem?.kieTaskId || existingItem?.kieTaskId;
-  return {
+  const mergedItem = {
     ...(existingItem || {}),
     ...(incomingItem || {}),
     ...(
@@ -314,6 +338,13 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
     ...(providerTaskId ? { providerTaskId } : {}),
     ...(taskId ? { taskId } : {}),
     ...(kieTaskId ? { kieTaskId } : {}),
+  };
+  if (!preserveRecoveredPlanning) return mergedItem;
+  return {
+    ...mergedItem,
+    status: existingItem.status,
+    results: [],
+    completedCount: Number(existingItem.completedCount || 0) || 0,
   };
 };
 

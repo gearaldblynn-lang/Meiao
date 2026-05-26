@@ -275,6 +275,49 @@ test('executeProviderJob reuses the existing providerTaskId for retrying kie ima
   }
 });
 
+test('executeProviderJob reuses the existing providerTaskId for retrying seedance video jobs instead of creating a new task', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url) => {
+    requests.push(String(url));
+    return createJsonResponse({
+      code: 200,
+      data: {
+        state: 'success',
+        resultJson: JSON.stringify({ resultUrls: ['https://example.com/recovered-video.mp4'] }),
+        creditsConsumed: 495,
+      },
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_seedance_video',
+        providerTaskId: 'seedance-existing-task',
+        payload: {
+          mode: 'frames2video',
+          prompt: 'test video',
+          imageUrls: ['https://example.com/start.png', 'https://example.com/end.png'],
+          duration: 5,
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.providerTaskId, 'seedance-existing-task');
+    assert.equal(result.result.videoUrl, 'https://example.com/recovered-video.mp4');
+    assert.equal(result.result.creditsConsumed, 495);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0], /recordInfo\?taskId=seedance-existing-task/);
+    assert.doesNotMatch(requests[0], /createTask/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob tolerates transient fetch errors while polling kie image jobs after task creation', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
@@ -615,9 +658,36 @@ test('executeProviderJob downgrades GPT Image 2 1:1 requests away from 4K', asyn
   }
 });
 
-test('executeProviderJob rejects GPT Image 2 requests with more than 16 input images', async () => {
-  await assert.rejects(
-    () => executeProviderJob(
+test('executeProviderJob trims GPT Image 2 requests to the supported 16 input images', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/createTask')) {
+      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-gpt-image-2-trimmed' } });
+    }
+    if (String(url).includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://example.com/trimmed.png'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    await executeProviderJob(
       {
         taskType: 'kie_image',
         payload: {
@@ -629,9 +699,86 @@ test('executeProviderJob rejects GPT Image 2 requests with more than 16 input im
       },
       { KIE_API_KEY: 'test-key' },
       new AbortController().signal
-    ),
-    /最多支持 16 张输入图/
-  );
+    );
+
+    const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
+    const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
+    assert.equal(createTaskBody.input.input_urls.length, 16);
+    assert.equal(createTaskBody.input.input_urls.at(0), 'https://example.com/input-0.png');
+    assert.equal(createTaskBody.input.input_urls.at(-1), 'https://example.com/input-15.png');
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('executeProviderJob rejects archive files before submitting image generation', async () => {
+  const originalFetch = global.fetch;
+  let requestCount = 0;
+  global.fetch = async () => {
+    requestCount += 1;
+    return createJsonResponse({});
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_image',
+          payload: {
+            model: 'gpt-image-2',
+            imageUrls: ['https://example.com/source.zip'],
+            prompt: 'generate a product image',
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => {
+        assert.equal(error.code, 'provider_bad_request');
+        assert.match(error.message, /不支持.*zip/);
+        return true;
+      }
+    );
+    assert.equal(requestCount, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob rejects archive urls embedded in image prompts before provider submission', async () => {
+  const originalFetch = global.fetch;
+  let requestCount = 0;
+  global.fetch = async () => {
+    requestCount += 1;
+    return createJsonResponse({});
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_image',
+          payload: {
+            model: 'gpt-image-2',
+            imageUrls: ['https://example.com/source.png'],
+            prompt: 'The image URL<https://example.com/source.zip> 不支持的文件格式',
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => {
+        assert.equal(error.code, 'provider_bad_request');
+        assert.match(error.message, /不支持.*zip/);
+        return true;
+      }
+    );
+    assert.equal(requestCount, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test('executeProviderJob maps KIE createTask code 402 to provider_credit_insufficient', async () => {

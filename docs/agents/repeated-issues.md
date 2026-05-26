@@ -20,6 +20,106 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-05-26 - Asset persistence failures must log actionable detail
+
+- Symptom: 云上日志只出现 `资产持久化失败`，meta 只有文件名和大小，没有可判断原因的 detail。
+- Environment: cloud production frontend shell / local development
+- Root cause: `persistGeneratedAsset` 的失败日志只记录 `error.message` 和极少 meta；部分上传失败会被错误归一化成空 detail，导致看板无法区分网络、鉴权、文件名、mime、数据库或存储服务问题。
+- Fix: 失败日志统一写入 `errorDetail`，并补充 error name/code/status、原始/上传 mime、上传文件名、上传大小和耗时。
+- Regression check: `node --test src/services/persistedAssetClient.test.mjs`
+- Files/tests: `src/services/persistedAssetClient.ts`, `src/services/persistedAssetClient.test.mjs`
+- Avoid next time: 诊断日志不能只写“失败”；必须带足够定位边界的字段，至少包括错误码、状态、输入文件名/mime/大小和耗时。
+
+## 2026-05-26 - Archive files must be blocked before image generation
+
+- Symptom: 云上日志出现 `File type not supported`，样本里 `.zip` 被带入 `kie_image` 图像生成链路。
+- Environment: cloud production provider gateway / local development
+- Root cause: 图像生成后端只转发 `imageUrls` 和 prompt 中的媒体 URL，没有前置拦截 zip/rar/7z/tar/gz/tgz 这类压缩包素材；供应商收到后才返回不支持文件类型。
+- Fix: `runKieImageJob` 在提交 KIE 前检查 `imageUrls` 和 prompt 中提取出的 URL，发现压缩包扩展名直接返回 `provider_bad_request`，提示先解压并上传图片。
+- Regression check: `node --test server/providerGateway.test.mjs`
+- Files/tests: `server/providerGateway.mjs`, `server/providerGateway.test.mjs`
+- Avoid next time: 供应商明确不支持的素材类型要在本地边界拦截；不要让用户等到 provider 创建任务后才失败。
+
+## 2026-05-25 - Malformed URL paths must not crash static routing
+
+- Symptom: PM2 云上日志出现 `URIError: URI malformed`。
+- Environment: cloud production frontend static serving / local development
+- Root cause: `tryServeFrontend` 对 `url.pathname` 直接调用 `decodeURIComponent`；畸形 `%` 编码路径会让 Node 抛 `URIError`，进入 PM2 error log。
+- Fix: 新增 `safeDecodePathname`，畸形路径返回 `400 Malformed path`，不再抛出未捕获异常。
+- Regression check: `node --test src/components/uiArchitecture.test.mjs`
+- Files/tests: `server/index.mjs`, `src/components/uiArchitecture.test.mjs`
+- Avoid next time: 所有来自 URL path/query 的 decode 都必须包在安全解析函数里；外部请求可能携带畸形编码，不能让它进入应用异常日志。
+
+## 2026-05-25 - Provider task ids must fit local asset job id columns
+
+- Symptom: 云上日志出现 `智能体生图失败：对话改图 Data too long for column 'job_id' at row 1`，错误码 `ER_DATA_TOO_LONG`。
+- Environment: cloud production agent center / local development
+- Root cause: 智能体生图结果持久化到 `stored_assets` 时，把 provider task id 直接作为 `job_id` 写入；部分供应商返回值可能超过 `stored_assets.job_id VARCHAR(120)`，导致资产持久化失败，并进一步让业务失败日志记录数据库异常而不是原始生成结果。
+- Fix: 写入 stored asset 的 job id 先经过 `normalizeStoredAssetJobId`，统一 trim 并限制到 120 字符。
+- Regression check: `node --test server/agentCenterSource.test.mjs`
+- Files/tests: `server/index.mjs`, `server/agentCenterSource.test.mjs`
+- Avoid next time: 外部 provider id、URL、message 等字段写入本地固定长度列前必须按列能力规范化；不要假设供应商 id 会符合本地数据库字段长度。
+
+## 2026-05-25 - Agent retrieval chat must carry fallback models
+
+- Symptom: 云上日志出现 `智能体对话失败：对话改图 Kie Responses 返回为空`，错误码为 `provider_bad_response`，集中在带知识库/检索的智能体对话路径。
+- Environment: cloud production agent center / local development
+- Root cause: 普通智能体聊天会计算并传入 `fallbackModels`，但 `runAgenticRetrievalLoop` 内部再次调用 `executeProviderJob` 时没有把备用模型传下去；GPT-5.4 Responses 返回空内容时，provider gateway 没有可用的显式 fallback，只能直接失败。
+- Fix: `runAgenticRetrievalLoop` 接收 `fallbackModels` 并传给 provider payload；两个智能体入口在进入检索循环时都传入同一份 `resolveChatFallbackModels` 结果。
+- Regression check: `node --test server/agentCenterSource.test.mjs`
+- Files/tests: `server/index.mjs`, `server/agentCenterSource.test.mjs`
+- Avoid next time: 新增“循环式/代理式”模型调用路径时，不能只传主模型；要同步传递 model options、fallback models、reasoning、web search 和附件能力，否则普通聊天修复不会覆盖检索/工具循环路径。
+
+## 2026-05-25 - Image provider input limits should degrade before job failure
+
+- Symptom: 云上日志出现 `GPT Image 2 最多支持 16 张输入图`，同一次一键主详批量出图可连续产生多条 `provider_bad_request` 和前端失败日志。
+- Environment: cloud production backend provider gateway / local development
+- Root cause: provider gateway 对 GPT Image 2 输入图数量超过 16 张直接抛错；一键主详在产品图、参考图、历史结果图、Logo 组合后可能超过模型上限，导致任务创建后立刻失败。
+- Fix: GPT Image 2 请求在提交 provider 前按模型能力保留前 16 张输入图，继续执行有效请求。
+- Regression check: `node --test server/providerGateway.test.mjs`
+- Files/tests: `server/providerGateway.mjs`, `server/providerGateway.test.mjs`
+- Avoid next time: provider 模型能力限制要尽量在进入 provider 前裁剪、降级或给用户前置提示；不要把可恢复的参数超限变成云上任务失败日志。
+
+## 2026-05-25 - Static frontend routes must not read directories as files
+
+- Symptom: PM2 云上日志出现 `Error: EISDIR: illegal operation on a directory, read`，堆栈指向 `serveStaticFile` -> `tryServeFrontend`。
+- Environment: cloud production frontend static serving / local development
+- Root cause: `tryServeFrontend` 只判断 `existsSync(targetPath)`，路径存在就调用 `serveStaticFile`；当请求命中 `dist` 下的目录路径时，`readFileSync` 会尝试读取目录并抛出 EISDIR。
+- Fix: 静态文件读取前增加 `statSync(targetPath).isFile()` 检查；目录路径不再进入 `serveStaticFile`，非 assets 目录走 SPA fallback，assets 目录按缺失资源 404。
+- Regression check: `node --test src/components/uiArchitecture.test.mjs`
+- Files/tests: `server/index.mjs`, `src/components/uiArchitecture.test.mjs`
+- Avoid next time: 所有静态资源服务逻辑都不能只用 `existsSync` 判断可读文件；必须区分 file/directory，特别是 SPA fallback 和 assets 404 分支。
+
+## 2026-05-25 - MySQL pool closures are transient infrastructure failures
+
+- Symptom: PM2 云上日志出现 `Error: Pool is closed.`、`Connection lost: The server closed the connection.`，并伴随 `Reconciled N stale running jobs after restart.`。
+- Environment: cloud production backend worker / local development
+- Root cause: 连接池关闭、数据库断连或进程重启会让 worker 的查询抛出无业务含义的 MySQL 瞬时错误；如果只按 error code 判断，`Pool is closed.` 这种 message-only 错误会被漏掉。
+- Fix: `isTransientMysqlConnectionError` 同时识别断连错误码和 `Pool is closed` / `Connection lost` / `server closed the connection` 文案；stale running job 继续回收到 `retry_waiting`，避免重启后直接变成最终失败。
+- Regression check: `node --test server/jobRuntime.test.mjs`
+- Files/tests: `server/jobRuntime.mjs`, `server/jobRuntime.test.mjs`, `server/jobManager.mjs`
+- Avoid next time: worker 遇到数据库连接类错误时不要当供应商或任务逻辑失败处理；日志看板里若部署后仍高频出现，应重点查云上重启原因、MySQL idle timeout 和连接池生命周期，而不是只改业务流程。
+
+## 2026-05-25 - Clipboard API must be treated as optional
+
+- Symptom: 云上前端日志出现 `Cannot read properties of undefined (reading 'writeText')`，集中在复制提示词、复制文案、复制任务/图片链接等点击入口。
+- Environment: cloud production frontend shell / local development
+- Root cause: 多个业务组件直接调用 `navigator.clipboard.writeText`。部分浏览器、非安全上下文、权限受限环境或内嵌环境里 `navigator.clipboard` 可能不存在，点击后会变成前端异步错误。
+- Fix: 新增共享 `copyTextToClipboard`，先尝试 Clipboard API，失败或缺失时降级到 textarea + `execCommand('copy')`；业务源码禁止直接访问 `navigator.clipboard`。
+- Regression check: `node --test src/utils/clipboardFallback.test.mjs`
+- Files/tests: `src/utils/clipboard.mjs`, `src/utils/clipboardFallback.test.mjs`, `src/shell/components/ProjectCard.tsx`, `src/shell/components/ResultCard.tsx`, `src/modules/Retouch/RetouchModule.tsx`, `src/modules/BuyerShow/BuyerShowModule.tsx`
+- Avoid next time: 新增复制按钮时只调用共享 helper，不要在组件里裸调浏览器 Clipboard API；看板里再次出现 `writeText` 应按“已修复后复发”重点关注。
+
+## 2026-05-25 - Backend-completed tasks must replace stale frontend failure placeholders
+
+- Symptom: 前端项目卡显示失败或多个任务被压成单个，但 `/api/jobs` 后台任务已经成功并有真实 provider task id / 图片结果；管理员日志缺少项目、方案、批次等定位字段，排查需要反查多处数据。
+- Environment: local development / cloud production frontend shell
+- Root cause: 一键主详刷新水合时，非首图结果会按 `planId` 折叠，吞掉同一方案下不同 backend/provider 任务；后台成功结果和旧前端失败占位合并时，没有清掉“无 backend/provider 身份”的同 plan 失败占位，导致 `taskCount` 被抬高、项目继续显示 `error`。任务日志 meta 也只记录少量 job/provider 字段，不足以直接定位 shellProjectId、shellPlanId、subFeature 和批次。
+- Fix: `normalizeOneClickProjectCard` 不再按 `planId` 折叠真实结果，`taskCount` 至少覆盖结果数；`mergeProjectResultsByIdentity` 在后台成功结果进入时，只移除同 plan 且无 backend/provider 身份、无媒体 URL 的旧失败/生成占位；新增统一 `buildJobRuntimeLogMeta`，创建/完成/失败日志都带 job、provider、shell 项目/方案、子功能、批次、耗时、积分和结果 URL 数量。
+- Regression check: `node --test src/adapters/shellDataAdapter.test.mjs src/utils/shellProjectResults.test.mjs server/jobRuntime.test.mjs server/jobLoggingBehavior.test.mjs server/localJobStore.test.mjs server/jobManager.test.mjs`
+- Files/tests: `src/adapters/shellDataAdapter.ts`, `src/adapters/shellDataAdapter.test.mjs`, `server/jobRuntime.mjs`, `server/jobRuntime.test.mjs`, `server/jobManager.mjs`, `server/localJobStore.mjs`, `server/index.mjs`, `server/jobLoggingBehavior.test.mjs`
+- Avoid next time: 任务结果合并不能只看 `planId`；真实 backend/provider 身份优先。旧失败占位如果没有 backend/provider 身份，后台同 plan 成功结果应覆盖它而不是并存抬高 taskCount。新增任务日志必须统一走诊断 meta 构造器。
+
 ## 2026-05-25 - Pending card deletion must tombstone backend jobs
 
 - Symptom: 用户删除前端“生成中/待同步”的结果卡后，刷新或 `/api/jobs` 轮询又把同一个后端任务完成结果恢复出来；表现为任务卡脏读、前端任务消失/复活、后端 API 仍正常完成但前端状态不稳定。
@@ -103,3 +203,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Symptom: A fix reaches cloud without a fresh review of diff, data isolation, URL handling, logs/statistics, permissions, or task-chain impact.
 - Root cause: Deployment was treated as a mechanical copy step instead of a guarded production release.
 - Avoid next time: Do not deploy unless code review is complete. Use the deploy script only with `MEIAO_CODE_REVIEW_CONFIRMED=1`; the script intentionally blocks unconfirmed cloud releases.
+
+## 2026-05-26 - Completed planning jobs must recover stale planning-failure cards
+
+- Symptom: 多桑账号 2026-05-26 的“项目3/项目4”后台 `kie_chat` 策划 job 均已 `succeeded` 且 `result_json.content` 包含 `[SCHEME_START]... [SCHEME_END]`，但前端项目卡显示“共 1 张参考图，其中 1 张策划失败。”
+- Environment: Tencent Cloud production, one-click first-image planning.
+- Root cause: `waitForInternalJob` 轮询链路的瞬时查询失败被 `generateFirstImageReplicationSchemes` 包装成单参考图策划失败，丢掉了 backend job 已成功的信息；随后 shell hydration 又因为项目已有 error result 占位，拒绝用成功的 text-only `kie_chat` job 恢复 plans。
+- Browser overwrite: 旧浏览器本地 `AIGC_APP_STATE` 可能在刷新后再次 PUT 回 stale error card，直接手工修库会被旧本地状态覆盖。
+- Fix: `requestAnalysisResponseDetailed` 在非中断错误后用 `fetchInternalJob(job.id)` 做最终恢复查询；若 backend job 已成功，直接返回 content/credits/taskId，若仍在 running/queued/retry_waiting，则抛 `job_timeout` 让项目保持可同步状态。`shellDataAdapter` 允许成功的 planning job 替换无 backend 身份、无媒体 URL 的 stale 策划失败占位，并清空该占位 results。`mergeAppStateForStorage` 也必须保护“已有 plans 的 planning 项目”不被同 backendJobId 的旧策划失败占位覆盖。
+- Regression check: `node --test server/appStateMerge.test.mjs src/services/arkService.test.mjs src/adapters/shellDataAdapter.test.mjs src/adapters/shellPersistence.test.mjs src/adapters/shellRuntimeMerge.test.mjs src/modules/OneClick/oneClickRecoveryBehavior.test.mjs src/components/uiArchitecture.test.mjs`
+- Data repair: 已备份并修复多桑账号项目3/4，备份文件 `/www/backup/meiao-state-repair/duosang-planning-2026-05-26T03-01-57-986Z.json`。
+- Follow-up repair: 旧浏览器覆盖后再次备份并修复，备份文件 `/www/backup/meiao-state-repair/duosang-planning-second-2026-05-26T03-09-26-281Z.json`。
+- Avoid next time: 对 text-only planning job，前端轮询失败只能代表“同步失败”，不能代表“策划失败”。任何成功的 backend planning job 都必须能按 `shellProjectId`/`backendJobId` 回填 plans，即使前端此前已写入 stale error placeholder；服务端状态合并层也要防止旧浏览器本地快照反向覆盖云端恢复结果。

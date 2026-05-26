@@ -89,6 +89,67 @@ test('shell data adapter keeps persisted one-click projects inside their saved b
   assert.equal(branchProjects[0].results.length, 2);
 });
 
+test('shell data adapter keeps recovered planning shell project over stale one-click branch failure', () => {
+  const recoveredProject = {
+    id: 'proj-plan-recovered',
+    name: '5月26日项目4',
+    module: 'one_click',
+    status: 'planning',
+    createdAt: '05-26',
+    backendJobId: 'planning-job-a',
+    taskCount: 1,
+    completedCount: 0,
+    results: [],
+    plans: [{
+      id: 'planning-job-a-plan-1',
+      title: '首图裂变1-复刻主图参考1',
+      sellingPoints: ['首图裂变1-复刻主图参考1'],
+      sceneDescription: '已恢复的策划方案',
+      styleDirection: '',
+      colorPalette: '',
+      composition: '',
+      textLayout: '已恢复的策划方案',
+      selected: true,
+      schemeContent: '[SCHEME_START]\n- 参考图标识：首图裂变1-复刻主图参考1\n[SCHEME_END]',
+    }],
+    selectedPlanId: 'planning-job-a-plan-1',
+    subFeature: 'first_image',
+  };
+  const staleBranchProject = {
+    id: 'proj-plan-recovered',
+    name: '5月26日项目4',
+    status: 'error',
+    createdAt: '05-26',
+    updatedAt: 1779763628798,
+    backendJobId: 'planning-job-a',
+    taskCount: 1,
+    completedCount: 0,
+    plans: recoveredProject.plans,
+    selectedPlanId: 'planning-job-a-plan-1',
+    schemes: [{
+      id: 'task-proj-plan-recovered-error',
+      status: 'error',
+      prompt: '共 1 张参考图，其中 1 张策划失败。',
+      error: '共 1 张参考图，其中 1 张策划失败。',
+    }],
+  };
+
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [recoveredProject],
+    oneClickMemory: {
+      firstImage: { projects: [staleBranchProject] },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-plan-recovered');
+  assert.equal(project?.status, 'planning');
+  assert.equal(project?.results.length, 0);
+  assert.equal(project?.plans?.[0]?.title, '首图裂变1-复刻主图参考1');
+});
+
 test('shell data adapter maps persisted one-click scheme ids onto result plan ids', () => {
   const snapshot = buildShellDataSnapshot({
     oneClickMemory: {
@@ -1035,6 +1096,68 @@ test('shell data adapter restores completed one-click planning jobs only into pe
   assert.equal(snapshot.tasks.length, 0);
 });
 
+test('shell data adapter lets completed planning jobs replace stale planning failure placeholders', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'planning-failed-placeholder',
+      name: '5月26日项目3',
+      module: 'one_click',
+      status: 'error',
+      createdAt: '05-26',
+      results: [{
+        id: 'task-planning-failed-placeholder-error',
+        imageUrl: '',
+        prompt: '共 1 张参考图，其中 1 张策划失败。',
+        model: 'GPT Image 2',
+        aspectRatio: '1:1',
+        status: 'error',
+        createdAt: '05-26',
+        module: 'one_click',
+        subFeature: 'first_image',
+      }],
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      backendJobId: 'planning-chat-job-after-poll-error',
+    }],
+  }, [
+    {
+      id: 'planning-chat-job-after-poll-error',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      payload: {
+        model: 'gemini-3-flash-openai',
+        shellProjectId: 'planning-failed-placeholder',
+        shellPlanningPurpose: 'one_click_planning',
+        subFeature: 'first_image',
+      },
+      result: {
+        content: `[SCHEME_START]
+- 屏序/类型：首图裂变1-复刻主图参考1
+- 参考图标识：复刻主图参考1
+- 设计意图：后台已完成但前端轮询失败
+- 画面描述：恢复真实策划方案
+- 画面比例：1:1
+[SCHEME_END]`,
+        creditsConsumed: 0.21,
+      },
+      createdAt: 1779763306286,
+      updatedAt: 1779763394371,
+      finishedAt: 1779763394371,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'planning-failed-placeholder');
+  assert.equal(project?.status, 'planning');
+  assert.equal(project?.results?.length, 0);
+  assert.equal(project?.plans?.length, 1);
+  assert.equal(project?.plans?.[0]?.title, '首图裂变1-复刻主图参考1');
+  assert.equal(project?.creditsConsumed, 0.21);
+  assert.equal(project?.backendJobId, 'planning-chat-job-after-poll-error');
+});
+
 test('shell data adapter does not synthesize unpersisted completed planning jobs', () => {
   const planningResult = (title) => ({
     text: `[SCHEME_START]
@@ -1890,7 +2013,7 @@ test('shell data adapter does not append parsed planning plans onto an existing 
   assert.equal(project.plans?.some((plan) => plan.id.startsWith('abcdefabcdefabcdefabcdef-plan-')), false);
 });
 
-test('shell data adapter replaces same-plan one-click main-image results instead of growing task count', () => {
+test('shell data adapter preserves same-plan one-click main-image result history by backend task', () => {
   const plans = ['plan-1', 'plan-2', 'plan-3', 'plan-4'].map((id) => ({
     id,
     title: id,
@@ -1959,9 +2082,144 @@ test('shell data adapter replaces same-plan one-click main-image results instead
   const project = snapshot.projects.find((item) => item.id === 'main-project-retry');
   assert.ok(project);
   assert.equal(project.taskCount, 4);
-  assert.equal(project.results.length, 1);
-  assert.equal(project.results[0].planId, 'plan-1');
-  assert.equal(project.results[0].taskId, 'new-provider-plan-1');
-  assert.equal(project.results[0].imageUrl, '/new-plan-1.png');
-  assert.equal(project.results[0].prompt, '新提示词 plan-1');
+  assert.equal(project.results.length, 2);
+  assert.deepEqual(project.results.map((result) => result.taskId), ['old-provider-plan-1', 'new-provider-plan-1']);
+  assert.deepEqual(project.results.map((result) => result.imageUrl), ['/old-plan-1.png', '/new-plan-1.png']);
+});
+
+test('shell data adapter preserves distinct same-plan one-click task results after refresh', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'main-project-same-plan-tasks',
+      name: '主图同方案多任务',
+      module: 'one_click',
+      status: 'completed',
+      createdAt: '05-25',
+      selectedPlanId: 'plan-1',
+      taskCount: 2,
+      completedCount: 2,
+      subFeature: 'main_image',
+      plans: [{
+        id: 'plan-1',
+        title: '方案 1',
+        sellingPoints: [],
+        sceneDescription: '同一方案生成两个真实任务',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '',
+        selected: true,
+        schemeContent: '方案 1',
+      }],
+      results: [
+        {
+          id: 'provider-same-plan-a',
+          planId: 'plan-1',
+          imageUrl: '/same-plan-a.png',
+          prompt: '同方案任务 A',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          status: 'completed',
+          createdAt: '05-25',
+          module: 'one_click',
+          subFeature: 'main_image',
+          taskId: 'provider-same-plan-a',
+          backendJobId: 'job-same-plan-a',
+        },
+        {
+          id: 'provider-same-plan-b',
+          planId: 'plan-1',
+          imageUrl: '/same-plan-b.png',
+          prompt: '同方案任务 B',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          status: 'completed',
+          createdAt: '05-25',
+          module: 'one_click',
+          subFeature: 'main_image',
+          taskId: 'provider-same-plan-b',
+          backendJobId: 'job-same-plan-b',
+        },
+      ],
+    }],
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'main-project-same-plan-tasks');
+  assert.ok(project);
+  assert.equal(project.results.length, 2);
+  assert.deepEqual(project.results.map((result) => result.taskId), ['provider-same-plan-a', 'provider-same-plan-b']);
+  assert.equal(project.completedCount, 2);
+  assert.equal(project.taskCount, 2);
+});
+
+test('shell data adapter lets completed backend one-click jobs clear stale same-plan failure placeholders', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'main-project-recovers-error',
+      name: '主图失败后后台完成',
+      module: 'one_click',
+      status: 'error',
+      createdAt: '05-25',
+      selectedPlanId: 'plan-1',
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'main_image',
+      plans: [{
+        id: 'plan-1',
+        title: '方案 1',
+        sellingPoints: [],
+        sceneDescription: '后台稍后完成',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '',
+        selected: true,
+        schemeContent: '方案 1',
+      }],
+      results: [{
+        id: 'task-img-error-0',
+        planId: 'plan-1',
+        imageUrl: '',
+        prompt: '前端等待中断后误判失败',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'error',
+        createdAt: '05-25',
+        module: 'one_click',
+        subFeature: 'main_image',
+        error: '前端等待中断后误判失败',
+      }],
+    }],
+  }, [{
+    id: 'backend-job-late-success',
+    module: 'one_click',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'provider-late-success',
+    payload: {
+      prompt: '后台完成结果',
+      shellProjectId: 'main-project-recovers-error',
+      shellPlanId: 'plan-1',
+      subFeature: 'main_image',
+      batchIndex: 1,
+      batchCount: 1,
+    },
+    result: {
+      imageUrl: '/late-success.png',
+      providerTaskId: 'provider-late-success',
+    },
+    createdAt: 3000,
+    updatedAt: 4000,
+    finishedAt: 4000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'main-project-recovers-error');
+  assert.ok(project);
+  assert.equal(project.status, 'completed');
+  assert.equal(project.taskCount, 1);
+  assert.equal(project.completedCount, 1);
+  assert.deepEqual(project.results.map((result) => result.status), ['completed']);
+  assert.equal(project.results[0].taskId, 'provider-late-success');
+  assert.equal(project.results[0].imageUrl, '/late-success.png');
 });

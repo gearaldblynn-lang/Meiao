@@ -56,6 +56,33 @@ test('analysis service no longer routes planning through ark or doubao', () => {
   assert.doesNotMatch(arkServiceSource, /taskId: String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| job\.id/);
 });
 
+test('analysis service recovers completed KIE chat jobs after transient polling failures', () => {
+  const detailedBlock = arkServiceSource.match(
+    /const requestAnalysisResponseDetailed = async[\s\S]*?const requestAnalysisResponse = async/,
+  )?.[0] || '';
+
+  assert.match(
+    arkServiceSource,
+    /import \{[^}]*fetchInternalJob[^}]*\} from ['"]\.\/internalApi['"]/,
+    'analysis polling recovery should be able to read the final backend job by id'
+  );
+  assert.match(
+    detailedBlock,
+    /fetchInternalJob\(job\.id\)/,
+    'polling failures should trigger one final backend job lookup before failing the plan'
+  );
+  assert.match(
+    detailedBlock,
+    /recoveredJob\?\.status === 'succeeded'/,
+    'a completed backend planning job should be returned instead of treated as a failed reference'
+  );
+  assert.match(
+    arkServiceSource,
+    /code = 'job_timeout'/,
+    'still-running backend planning jobs should remain recoverable instead of becoming failed cards'
+  );
+});
+
 test('marketing scheme prompt uses RTCFE structure and the new copy layout format', () => {
   assert.match(
     arkServiceSource,

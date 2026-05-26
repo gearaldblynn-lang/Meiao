@@ -1,7 +1,7 @@
 // @ts-nocheck
 
 import { GlobalApiConfig, ArkAnalysisResult, OneClickConfig, ArkSchemeResult, OneClickSubMode, VisualDirectionResult, ArkBuyerShowResult, BuyerShowPersistentState, ArkPureEvaluationResult, VideoConfig, SceneItem, AspectRatio, VeoScriptSegment, SkuConfig, OneClickReferenceDimension } from "../types";
-import { cancelInternalJob, createInternalJob, fetchSystemConfig, getActiveModuleContext, safeCreateInternalLog, waitForInternalJob } from "./internalApi";
+import { cancelInternalJob, createInternalJob, fetchInternalJob, fetchSystemConfig, getActiveModuleContext, safeCreateInternalLog, waitForInternalJob } from "./internalApi";
 import { resolvePublicAssetUrl } from "../utils/modelAssetUrl.mjs";
 
 const estimatePromptTokens = (items: Array<{ type: string; text?: string }>) =>
@@ -65,6 +65,58 @@ const normalizeCreditsConsumed = (value: unknown) => {
 
 type AnalysisJobCreatedCallback = (jobId: string, providerTaskId?: string) => void;
 
+const isPendingAnalysisJobStatus = (status: unknown) =>
+  ['queued', 'running', 'retry_waiting'].includes(String(status || ''));
+
+const createRecoverableAnalysisSyncError = () => {
+  const error = new Error('AI 分析任务已提交云端，结果待同步，请稍后同步任务结果。') as Error & { code?: string };
+  error.code = 'job_timeout';
+  return error;
+};
+
+const buildAnalysisResponseFromJob = (
+  finalJob: any,
+  normalizedContent: Array<{ type: string; text?: string }>,
+  startedAt: number,
+  model: string,
+  module: string,
+  jobId: string,
+): { content: string; creditsConsumed?: number; taskId?: string } => {
+  if (!finalJob || typeof finalJob !== 'object') {
+    throw new Error('AI 分析任务状态同步失败，请稍后在任务列表中同步任务结果');
+  }
+  if (finalJob.status !== 'succeeded') {
+    throw new Error(finalJob.errorMessage || 'AI 分析请求失败');
+  }
+  const content = String(finalJob.result?.content || finalJob.result?.text || '');
+  const creditsConsumed = normalizeCreditsConsumed(finalJob.result?.creditsConsumed);
+  const promptTokens = estimatePromptTokens(normalizedContent);
+  const completionTokens = Math.ceil(content.length / 4);
+  const estimatedCost = ((promptTokens + completionTokens) * 0.000002).toFixed(6);
+  void safeCreateInternalLog({
+    level: 'info',
+    module,
+    action: 'analysis_token_usage',
+    message: `分析调用完成`,
+    status: 'success',
+    meta: {
+      model,
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+      estimatedCost: Number(estimatedCost),
+      creditsConsumed: finalJob.result?.creditsConsumed,
+      latencyMs: Date.now() - startedAt,
+      jobId,
+    },
+  });
+  return {
+    content,
+    creditsConsumed,
+    taskId: String(finalJob.providerTaskId || finalJob.result?.providerTaskId || '').trim() || undefined,
+  };
+};
+
 const requestAnalysisResponseDetailed = async (
   inputContent: Array<{ type: "text" | "image_url"; text?: string; image_url?: { url: string } }>,
   _apiConfig: GlobalApiConfig,
@@ -123,39 +175,30 @@ const requestAnalysisResponseDetailed = async (
       throw new Error('AI 分析任务状态同步失败，请稍后在任务列表中同步任务结果');
     }
     notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
-    if (finalJob.status !== 'succeeded') {
-      throw new Error(finalJob.errorMessage || 'AI 分析请求失败');
-    }
-    const content = String(finalJob.result?.content || finalJob.result?.text || '');
-    const creditsConsumed = normalizeCreditsConsumed(finalJob.result?.creditsConsumed);
-    const promptTokens = estimatePromptTokens(normalizedContent as any[]);
-    const completionTokens = Math.ceil(content.length / 4);
-    const estimatedCost = ((promptTokens + completionTokens) * 0.000002).toFixed(6);
-    void safeCreateInternalLog({
-      level: 'info',
-      module,
-      action: 'analysis_token_usage',
-      message: `分析调用完成`,
-      status: 'success',
-      meta: {
-        model,
-        promptTokens,
-        completionTokens,
-        totalTokens: promptTokens + completionTokens,
-        estimatedCost: Number(estimatedCost),
-        creditsConsumed: finalJob.result?.creditsConsumed,
-        latencyMs: Date.now() - startedAt,
-        jobId: job.id,
-      },
-    });
-    return {
-      content,
-      creditsConsumed,
-      taskId: String(finalJob.providerTaskId || finalJob.result?.providerTaskId || '').trim() || undefined,
-    };
+    return buildAnalysisResponseFromJob(finalJob, normalizedContent as any[], startedAt, model, module, job.id);
   } catch (error: any) {
     if (error.message === 'INTERRUPTED') {
       void cancelInternalJob(job.id).catch(() => null);
+      throw error;
+    }
+    const recoveredJob = await fetchInternalJob(job.id)
+      .then((response) => response.job)
+      .catch(() => null);
+    notifyProviderTaskId(recoveredJob?.providerTaskId || recoveredJob?.result?.providerTaskId);
+    if (recoveredJob?.status === 'succeeded') {
+      void safeCreateInternalLog({
+        level: 'info',
+        module,
+        action: 'analysis_job_recovered_after_poll_error',
+        message: '分析任务轮询异常后已从后台成功结果恢复',
+        status: 'success',
+        detail: error?.message || '',
+        meta: { jobId: job.id, errorCode: error?.code || '', providerTaskId: recoveredJob.providerTaskId || recoveredJob.result?.providerTaskId || '' },
+      });
+      return buildAnalysisResponseFromJob(recoveredJob, normalizedContent as any[], startedAt, model, module, job.id);
+    }
+    if (isPendingAnalysisJobStatus(recoveredJob?.status)) {
+      throw createRecoverableAnalysisSyncError();
     }
     throw error;
   }

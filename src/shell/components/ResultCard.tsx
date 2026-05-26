@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Download, RefreshCw, Copy, Check, Trash2, MoreHorizontal } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
+import { copyTextToClipboard } from '../../utils/clipboard.mjs';
 import ConfirmDialog from './ConfirmDialog';
 
 interface Props {
@@ -15,10 +16,12 @@ const ResultCard: React.FC<Props> = ({ result, onDelete, onRegenerate }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(result.prompt).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    const copiedText = await copyTextToClipboard(result.prompt);
+    if (copiedText) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   return (
