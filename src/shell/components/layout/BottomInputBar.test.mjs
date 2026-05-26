@@ -184,6 +184,17 @@ test('xhs cover shell input keeps title copy in the main prompt and moves decora
   assert.doesNotMatch(xhsModule, /输入标题和副标题/);
 });
 
+test('xhs cover default 3:4 ratio is submitted even when the user keeps the visible default', () => {
+  const shellApp = read('../../../ShellMigratedApp.tsx');
+  const workflow = read('../../../adapters/shellWorkflow.ts');
+
+  assert.match(shellApp, /if \(module === AppModuleObj\.XHS_COVER\) return normalizeXhsCoverParamsForGeneration\(params\);/);
+  assert.match(shellApp, /const normalizeXhsCoverParamsForGeneration = \(\s*params: Record<string, string>,\s*\) =>/);
+  assert.match(shellApp, /const ratio = params\.ratio \|\| params\.aspectRatio \|\| '3:4';/);
+  assert.match(shellApp, /aspectRatio: ratio/);
+  assert.match(workflow, /input\.module === AppModule\.XHS_COVER\s*\? AspectRatio\.P_3_4/);
+});
+
 test('xhs cover preset preview assets from the old frontend are available in the shell public assets', () => {
   const styles = read('../../../modules/XhsCover/xhsCoverStyles.ts');
   const workflow = read('../../../adapters/shellWorkflow.ts');
