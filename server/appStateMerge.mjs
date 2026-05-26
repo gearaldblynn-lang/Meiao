@@ -335,24 +335,27 @@ const isPlanningGeneratedPlanId = (value) => /^[a-f0-9]{24}-plan-\d+$/i.test(Str
 
 const itemHasMedia = (item = {}) => Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl);
 
-const pruneSupersededNoMediaFailures = (results = []) => {
+const getPlanIdentity = (item = {}) => compactKey(item?.planId || item?.id);
+
+const pruneSupersededNoMediaItems = (items = []) => {
   const completedPlanIds = new Set(
-    (Array.isArray(results) ? results : [])
+    (Array.isArray(items) ? items : [])
       .filter(hasCompletedMediaItem)
-      .map((result) => compactKey(result?.planId))
+      .map(getPlanIdentity)
       .filter(Boolean),
   );
-  if (completedPlanIds.size === 0) return Array.isArray(results) ? results : [];
-  return (Array.isArray(results) ? results : []).filter((result) => {
-    const planId = compactKey(result?.planId);
+  if (completedPlanIds.size === 0) return Array.isArray(items) ? items : [];
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    const planId = getPlanIdentity(item);
     if (!planId || !completedPlanIds.has(planId)) return true;
-    if (String(result?.status || '') !== 'error' || itemHasMedia(result)) return true;
-    return Boolean(compactKey(result?.taskId || result?.providerTaskId || result?.kieTaskId));
+    const status = String(item?.status || '');
+    if (!['error', 'failed', 'generating', 'pending', 'queued'].includes(status) || itemHasMedia(item)) return true;
+    return Boolean(compactKey(item?.taskId || item?.providerTaskId || item?.kieTaskId));
   });
 };
 
-const normalizeOneClickProjectLikeItem = (item = {}) => {
-  if (String(item?.module || '') !== 'one_click') return item;
+const normalizeOneClickProjectLikeItem = (item = {}, options = {}) => {
+  if (!options.forceOneClick && String(item?.module || '') !== 'one_click') return item;
   const originalPlans = Array.isArray(item?.plans) ? item.plans : [];
   const hasClientPlanIds = originalPlans.some((plan) => {
     const id = compactKey(plan?.id);
@@ -368,23 +371,26 @@ const normalizeOneClickProjectLikeItem = (item = {}) => {
       .filter(Boolean),
   );
   const originalResults = Array.isArray(item?.results) ? item.results : [];
-  const results = pruneSupersededNoMediaFailures(
-    originalResults.filter((result) => {
-      const planId = compactKey(result?.planId);
+  const filterDroppedPlans = (items = []) => (
+    (Array.isArray(items) ? items : []).filter((entry) => {
+      const planId = getPlanIdentity(entry);
       return !planId || !droppedPlanIds.has(planId);
-    }),
+    })
   );
-  const completedMediaCount = results.filter(hasCompletedMediaItem).length;
+  const results = pruneSupersededNoMediaItems(filterDroppedPlans(originalResults));
+  const schemes = pruneSupersededNoMediaItems(filterDroppedPlans(item?.schemes));
+  const stateItems = results.length > 0 ? results : schemes;
+  const completedMediaCount = stateItems.filter(hasCompletedMediaItem).length;
   const planCount = plans.length;
-  const activeOrFailedCount = results.filter((result) => (
-    String(result?.status || '') === 'generating'
-    || (String(result?.status || '') === 'error' && !itemHasMedia(result))
+  const activeOrFailedCount = stateItems.filter((entry) => (
+    ['generating', 'pending', 'queued'].includes(String(entry?.status || ''))
+    || (['error', 'failed'].includes(String(entry?.status || '')) && !itemHasMedia(entry))
   )).length;
   const taskCount = planCount > 0
     ? maxNumber(planCount, completedMediaCount, activeOrFailedCount, 1)
-    : maxNumber(item?.taskCount, results.length, 1);
-  const hasGenerating = results.some((result) => String(result?.status || '') === 'generating');
-  const hasError = results.some((result) => String(result?.status || '') === 'error');
+    : maxNumber(item?.taskCount, stateItems.length, 1);
+  const hasGenerating = stateItems.some((entry) => ['generating', 'pending', 'queued'].includes(String(entry?.status || '')));
+  const hasError = stateItems.some((entry) => ['error', 'failed'].includes(String(entry?.status || '')));
   const status = completedMediaCount >= taskCount
     ? 'completed'
     : hasGenerating
@@ -396,6 +402,7 @@ const normalizeOneClickProjectLikeItem = (item = {}) => {
     ...(item || {}),
     ...(Array.isArray(item?.plans) ? { plans } : {}),
     ...(Array.isArray(item?.results) ? { results } : {}),
+    ...(Array.isArray(item?.schemes) ? { schemes } : {}),
     taskCount,
     completedCount: completedMediaCount,
     status,
@@ -517,11 +524,15 @@ export const mergeProjectArrayByStableKeys = (existingItems = [], incomingItems 
   return merged;
 };
 
-const mergeBranchProjects = (existingBranch = {}, incomingBranch = {}) => ({
-  ...existingBranch,
-  ...incomingBranch,
-  projects: mergeProjectArrayByStableKeys(existingBranch?.projects, incomingBranch?.projects),
-});
+const mergeBranchProjects = (existingBranch = {}, incomingBranch = {}) => {
+  const projects = mergeProjectArrayByStableKeys(existingBranch?.projects, incomingBranch?.projects)
+    .map((project) => normalizeOneClickProjectLikeItem(project, { forceOneClick: true }));
+  return {
+    ...existingBranch,
+    ...incomingBranch,
+    projects,
+  };
+};
 
 const mergeTranslationBranch = (existingBranch = {}, incomingBranch = {}) => ({
   ...existingBranch,
