@@ -331,6 +331,82 @@ const isDirectVideoGenerationProject = (item = {}) => (
   && String(item?.subFeature || '') === 'generation'
 );
 
+const isPlanningGeneratedPlanId = (value) => /^[a-f0-9]{24}-plan-\d+$/i.test(String(value || '').trim());
+
+const itemHasMedia = (item = {}) => Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl);
+
+const pruneSupersededNoMediaFailures = (results = []) => {
+  const completedPlanIds = new Set(
+    (Array.isArray(results) ? results : [])
+      .filter(hasCompletedMediaItem)
+      .map((result) => compactKey(result?.planId))
+      .filter(Boolean),
+  );
+  if (completedPlanIds.size === 0) return Array.isArray(results) ? results : [];
+  return (Array.isArray(results) ? results : []).filter((result) => {
+    const planId = compactKey(result?.planId);
+    if (!planId || !completedPlanIds.has(planId)) return true;
+    if (String(result?.status || '') !== 'error' || itemHasMedia(result)) return true;
+    return Boolean(compactKey(result?.taskId || result?.providerTaskId || result?.kieTaskId));
+  });
+};
+
+const normalizeOneClickProjectLikeItem = (item = {}) => {
+  if (String(item?.module || '') !== 'one_click') return item;
+  const originalPlans = Array.isArray(item?.plans) ? item.plans : [];
+  const hasClientPlanIds = originalPlans.some((plan) => {
+    const id = compactKey(plan?.id);
+    return id && !isPlanningGeneratedPlanId(id);
+  });
+  const plans = hasClientPlanIds
+    ? originalPlans.filter((plan) => !isPlanningGeneratedPlanId(plan?.id))
+    : originalPlans;
+  const droppedPlanIds = new Set(
+    originalPlans
+      .filter((plan) => !plans.some((kept) => compactKey(kept?.id) === compactKey(plan?.id)))
+      .map((plan) => compactKey(plan?.id))
+      .filter(Boolean),
+  );
+  const originalResults = Array.isArray(item?.results) ? item.results : [];
+  const results = pruneSupersededNoMediaFailures(
+    originalResults.filter((result) => {
+      const planId = compactKey(result?.planId);
+      return !planId || !droppedPlanIds.has(planId);
+    }),
+  );
+  const completedMediaCount = results.filter(hasCompletedMediaItem).length;
+  const planCount = plans.length;
+  const activeOrFailedCount = results.filter((result) => (
+    String(result?.status || '') === 'generating'
+    || (String(result?.status || '') === 'error' && !itemHasMedia(result))
+  )).length;
+  const taskCount = planCount > 0
+    ? maxNumber(planCount, completedMediaCount, activeOrFailedCount, 1)
+    : maxNumber(item?.taskCount, results.length, 1);
+  const hasGenerating = results.some((result) => String(result?.status || '') === 'generating');
+  const hasError = results.some((result) => String(result?.status || '') === 'error');
+  const status = completedMediaCount >= taskCount
+    ? 'completed'
+    : hasGenerating
+      ? 'generating'
+      : hasError
+        ? 'error'
+        : item?.status;
+  const next = {
+    ...(item || {}),
+    ...(Array.isArray(item?.plans) ? { plans } : {}),
+    ...(Array.isArray(item?.results) ? { results } : {}),
+    taskCount,
+    completedCount: completedMediaCount,
+    status,
+  };
+  if (status === 'completed' && completedMediaCount > 0) {
+    delete next.error;
+    delete next.message;
+  }
+  return next;
+};
+
 const clearResolvedProjectErrorFields = (item = {}) => {
   const completedMediaCount = (Array.isArray(item?.results) ? item.results : []).filter(hasCompletedMediaItem).length;
   if (String(item?.status || '') !== 'completed' || completedMediaCount === 0) return item;
@@ -399,13 +475,13 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
     ...(taskId ? { taskId } : {}),
     ...(kieTaskId ? { kieTaskId } : {}),
   };
-  if (!preserveRecoveredPlanning) return clearResolvedProjectErrorFields(mergedItem);
-  return {
+  if (!preserveRecoveredPlanning) return normalizeOneClickProjectLikeItem(clearResolvedProjectErrorFields(mergedItem));
+  return normalizeOneClickProjectLikeItem({
     ...mergedItem,
     status: existingItem.status,
     results: [],
     completedCount: Number(existingItem.completedCount || 0) || 0,
-  };
+  });
 };
 
 export const mergeProjectArrayByStableKeys = (existingItems = [], incomingItems = []) => {
