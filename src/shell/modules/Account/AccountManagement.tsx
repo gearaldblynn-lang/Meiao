@@ -331,8 +331,25 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     try {
       const startAt = logFilters.startAt ? new Date(logFilters.startAt).getTime() : undefined;
       const endAt = logFilters.endAt ? new Date(logFilters.endAt).getTime() + 59_999 : undefined;
-      const result = await fetchInternalLogs({ ...logFilters, startAt, endAt, page: 1, pageSize: Math.max(200, logsTotal) });
-      const blob = new Blob([`\uFEFF${buildLogCsv(result.logs)}`], { type: 'text/csv;charset=utf-8;' });
+      const totalToExport = logsTotal;
+      const exportPageSize = 200;
+      const exportedLogs: InternalLogEntry[] = [];
+      let exportPage = 1;
+
+      while (exportedLogs.length < totalToExport) {
+        const result = await fetchInternalLogs({
+          ...logFilters,
+          startAt,
+          endAt,
+          page: exportPage,
+          pageSize: exportPageSize,
+        });
+        exportedLogs.push(...result.logs);
+        if (result.logs.length === 0 || exportedLogs.length >= result.total) break;
+        exportPage += 1;
+      }
+
+      const blob = new Blob([`\uFEFF${buildLogCsv(exportedLogs)}`], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -341,7 +358,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      setMessage(`已导出 ${result.logs.length} 条日志`);
+      setMessage(`已导出 ${exportedLogs.length} 条日志`);
     } catch (err: any) {
       setError(err.message || '导出日志失败');
     }
