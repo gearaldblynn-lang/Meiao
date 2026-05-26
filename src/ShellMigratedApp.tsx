@@ -965,6 +965,7 @@ const normalizeParamsForGeneration = (
 ) => {
   if (module === AppModuleObj.TRANSLATION) return normalizeTranslationParamsForGeneration(subFeature, params);
   if (module === AppModuleObj.RETOUCH) return normalizeRetouchParamsForGeneration(params);
+  if (module === AppModuleObj.XHS_COVER) return normalizeXhsCoverParamsForGeneration(params);
   if (module !== AppModuleObj.ONE_CLICK) return params;
   const requestedSizeMode = String(params.resolutionMode || params.sizeMode || '').trim();
   const resolutionMode = requestedSizeMode.includes('原图') || requestedSizeMode.includes('AI 自适应') || requestedSizeMode === 'original'
@@ -983,6 +984,17 @@ const normalizeParamsForGeneration = (
   };
   if (subFeature !== 'sku') return oneClickParams;
   return { ...oneClickParams, count: String(resolveShellSkuCount(params)) };
+};
+
+const normalizeXhsCoverParamsForGeneration = (
+  params: Record<string, string>,
+) => {
+  const ratio = params.ratio || params.aspectRatio || '3:4';
+  return {
+    ...params,
+    ratio,
+    aspectRatio: ratio,
+  };
 };
 
 const normalizeRetouchParamsForGeneration = (

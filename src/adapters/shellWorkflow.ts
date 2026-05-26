@@ -521,6 +521,8 @@ export const buildShellModuleConfig = (input: ShellGenerateInput): ModuleConfig 
   const maxFileSize = toPositiveFloat(firstParam(input.params, ['maxFileSize', 'maxSize'], '2'), 2);
   const defaultAspectRatio = input.module === AppModule.ONE_CLICK
     ? (input.subFeature === 'detail_page' ? AspectRatio.AUTO : AspectRatio.SQUARE)
+    : input.module === AppModule.XHS_COVER
+      ? AspectRatio.P_3_4
     : AspectRatio.AUTO;
   return {
     targetLanguage: firstParam(input.params, ['lang', 'language'], 'English'),
