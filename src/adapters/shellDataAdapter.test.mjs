@@ -1158,6 +1158,106 @@ test('shell data adapter lets completed planning jobs replace stale planning fai
   assert.equal(project?.backendJobId, 'planning-chat-job-after-poll-error');
 });
 
+test('shell data adapter backfills missing planning schemes after the first sku image completed', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'sku-project-after-first-image',
+      name: '5月26日项目6',
+      module: 'one_click',
+      status: 'completed',
+      createdAt: '05-26',
+      results: [{
+        id: 'provider-sku-1',
+        planId: 'sku-planning-job-plan-1',
+        imageUrl: '/sku-1.png',
+        prompt: 'SKU 一出图提示词',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'completed',
+        createdAt: '05-26',
+        module: 'one_click',
+        subFeature: 'sku',
+        taskId: 'provider-sku-1',
+        backendJobId: 'sku-image-job-1',
+        creditsConsumed: 3,
+      }],
+      taskCount: 1,
+      completedCount: 1,
+      subFeature: 'sku',
+      backendJobId: 'sku-image-job-1',
+      selectedPlanId: 'sku-planning-job-plan-1',
+    }],
+  }, [
+    {
+      id: 'sku-planning-job',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      payload: {
+        shellProjectId: 'sku-project-after-first-image',
+        shellPlanningPurpose: 'one_click_planning',
+        subFeature: 'sku',
+      },
+      result: {
+        content: `[SCHEME_START]
+- SKU标识：[SKU一 - 车前子壳1罐（200g）]
+- 画面风格：统一白底
+- 画面描述：一罐商品
+- 文案内容排版：主标题：“车前子壳1罐（200g）”
+- 画面比例：1:1
+[SCHEME_END]
+
+[SCHEME_START]
+- SKU标识：[SKU二 - 车前子壳2罐（2*200g）]
+- 画面风格：统一白底
+- 画面描述：两罐商品
+- 文案内容排版：主标题：“车前子壳2罐（2*200g）”
+- 画面比例：1:1
+[SCHEME_END]`,
+        creditsConsumed: 0.27,
+      },
+      createdAt: 1779765280879,
+      updatedAt: 1779765365886,
+      finishedAt: 1779765365886,
+    },
+    {
+      id: 'sku-image-job-1',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'provider-sku-1',
+      payload: {
+        shellProjectId: 'sku-project-after-first-image',
+        shellPlanId: 'sku-planning-job-plan-1',
+        subFeature: 'sku',
+        batchIndex: 1,
+        batchCount: 1,
+      },
+      result: {
+        imageUrl: '/sku-1.png',
+        providerTaskId: 'provider-sku-1',
+        creditsConsumed: 3,
+      },
+      createdAt: 1779765426203,
+      updatedAt: 1779765742814,
+      finishedAt: 1779765742814,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'sku-project-after-first-image');
+  assert.equal(project?.status, 'planning');
+  assert.equal(project?.taskCount, 2);
+  assert.equal(project?.completedCount, 1);
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.plans?.length, 2);
+  assert.deepEqual(project?.plans?.map((plan) => plan.title), [
+    '[SKU一 - 车前子壳1罐（200g）]',
+    '[SKU二 - 车前子壳2罐（2*200g）]',
+  ]);
+});
+
 test('shell data adapter does not synthesize unpersisted completed planning jobs', () => {
   const planningResult = (title) => ({
     text: `[SCHEME_START]
@@ -1934,6 +2034,70 @@ test('shell data adapter merges completed backend video results into the origina
   assert.equal(project.results[0].mediaType, 'video');
   assert.equal(project.results[0].status, 'completed');
   assert.equal(snapshot.tasks.length, 0);
+});
+
+test('shell data adapter clears stale video failure fields when backend video succeeds later', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [
+      {
+        id: 'video-project-late-success',
+        name: '短视频误报失败',
+        module: 'video',
+        status: 'error',
+        createdAt: '05-26',
+        error: '请求超时，请稍后重试',
+        results: [{
+          id: 'provider-video-late-success',
+          imageUrl: '',
+          videoUrl: '',
+          mediaType: 'video',
+          prompt: '视频脚本',
+          model: 'bytedance/seedance-2-fast',
+          aspectRatio: '9:16',
+          status: 'error',
+          createdAt: '05-26',
+          module: 'video',
+          subFeature: 'generation',
+          backendJobId: 'job-video-late-success',
+          taskId: 'provider-video-late-success',
+          error: '请求超时，请稍后重试',
+        }],
+        taskCount: 2,
+        completedCount: 0,
+        subFeature: 'generation',
+        backendJobId: 'job-video-late-success',
+      },
+    ],
+  }, [
+    {
+      id: 'job-video-late-success',
+      module: 'video',
+      taskType: 'kie_seedance_video',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'provider-video-late-success',
+      payload: { prompt: '视频脚本', subFeature: 'generation', aspectRatio: '9:16' },
+      result: {
+        videoUrl: '/late-video.mp4',
+        providerTaskId: 'provider-video-late-success',
+        creditsConsumed: 495,
+      },
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      finishedAt: Date.now(),
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'video-project-late-success');
+  assert.ok(project);
+  assert.equal(project.status, 'completed');
+  assert.equal(project.taskCount, 1);
+  assert.equal(project.completedCount, 1);
+  assert.equal(project.error, undefined);
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].status, 'completed');
+  assert.equal(project.results[0].videoUrl, '/late-video.mp4');
+  assert.equal(project.results[0].error, undefined);
 });
 
 test('shell data adapter does not append parsed planning plans onto an existing one-click plan project', () => {

@@ -244,12 +244,47 @@ export const mergeArrayByStableKeys = (existingItems = [], incomingItems = []) =
   const seen = new Set();
   const merged = [];
 
+  const hasCompletedMediaResult = (item = {}) => (
+    ['completed', 'succeeded', 'success'].includes(String(item?.status || ''))
+    && Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl)
+  );
+  const clearCompletedResultErrors = (item = {}) => {
+    if (!hasCompletedMediaResult(item)) return item;
+    const next = { ...(item || {}) };
+    delete next.error;
+    delete next.message;
+    return next;
+  };
+  const mergeDuplicateItem = (current = {}, item = {}) => {
+    const next = hasCompletedMediaResult(current)
+      ? { ...(item || {}), ...(current || {}) }
+      : hasCompletedMediaResult(item)
+        ? { ...(current || {}), ...(item || {}) }
+        : { ...(item || {}), ...(current || {}) };
+    const mergedItem = {
+      ...next,
+      planId: current.planId || item?.planId,
+      projectId: current.projectId || item?.projectId,
+      subFeature: current.subFeature || item?.subFeature,
+      taskId: current.taskId || item?.taskId,
+      providerTaskId: current.providerTaskId || item?.providerTaskId,
+      backendJobId: current.backendJobId || item?.backendJobId,
+    };
+    return clearCompletedResultErrors(mergedItem);
+  };
+
   const push = (item) => {
     const keys = collectItemKeys(item);
-    const hasKnownDuplicate = Array.from(keys).some((key) => seen.has(key));
-    if (hasKnownDuplicate) return;
+    const duplicateIndex = Array.from(keys)
+      .map((key) => merged.findIndex((existing) => collectItemKeys(existing).has(key)))
+      .find((index) => index >= 0);
+    if (typeof duplicateIndex === 'number') {
+      merged[duplicateIndex] = mergeDuplicateItem(merged[duplicateIndex] || {}, item || {});
+      collectItemKeys(merged[duplicateIndex]).forEach((key) => seen.add(key));
+      return;
+    }
     keys.forEach((key) => seen.add(key));
-    merged.push(item);
+    merged.push(clearCompletedResultErrors(item));
   };
 
   incoming.forEach(push);
@@ -286,6 +321,25 @@ const hasOnlyStalePlanningFailureResults = (item = {}) => {
   return results.length > 0 && results.every((result) => isStalePlanningFailureResult(result));
 };
 
+const hasCompletedMediaItem = (item = {}) => (
+  ['completed', 'succeeded', 'success'].includes(String(item?.status || ''))
+  && Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl)
+);
+
+const isDirectVideoGenerationProject = (item = {}) => (
+  String(item?.module || '') === 'video'
+  && String(item?.subFeature || '') === 'generation'
+);
+
+const clearResolvedProjectErrorFields = (item = {}) => {
+  const completedMediaCount = (Array.isArray(item?.results) ? item.results : []).filter(hasCompletedMediaItem).length;
+  if (String(item?.status || '') !== 'completed' || completedMediaCount === 0) return item;
+  const next = { ...(item || {}) };
+  delete next.error;
+  delete next.message;
+  return next;
+};
+
 const shouldPreserveRecoveredPlanning = (existingItem = {}, incomingItem = {}) => {
   const existingPlans = Array.isArray(existingItem?.plans) ? existingItem.plans : [];
   if (existingItem?.status !== 'planning' || existingPlans.length === 0) return false;
@@ -302,14 +356,20 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
     : mergeArrayByStableKeys(existingItem?.results, incomingItem?.results);
   const mergedPlans = mergeArrayByStableKeys(existingItem?.plans, incomingItem?.plans);
   const mergedSchemes = mergeArrayByStableKeys(existingItem?.schemes, incomingItem?.schemes);
-  const taskCount = maxNumber(
+  const completedMediaCount = mergedResults.filter(hasCompletedMediaItem).length;
+  const isDirectVideoGeneration = isDirectVideoGenerationProject(incomingItem) || isDirectVideoGenerationProject(existingItem);
+  const taskCount = isDirectVideoGeneration && completedMediaCount > 0
+    ? maxNumber(completedMediaCount, mergedResults.length, 1)
+    : maxNumber(
     existingItem?.taskCount,
     incomingItem?.taskCount,
     mergedResults.length,
     mergedPlans.length,
     mergedSchemes.length,
   );
-  const completedCount = maxNumber(existingItem?.completedCount, incomingItem?.completedCount);
+  const completedCount = isDirectVideoGeneration && completedMediaCount > 0
+    ? completedMediaCount
+    : maxNumber(existingItem?.completedCount, incomingItem?.completedCount);
   const planningTaskId = mergeIdentityText(existingItem?.planningTaskId, incomingItem?.planningTaskId);
   const providerTaskId = incomingItem?.providerTaskId || existingItem?.providerTaskId;
   const taskId = incomingItem?.taskId || existingItem?.taskId;
@@ -339,7 +399,7 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
     ...(taskId ? { taskId } : {}),
     ...(kieTaskId ? { kieTaskId } : {}),
   };
-  if (!preserveRecoveredPlanning) return mergedItem;
+  if (!preserveRecoveredPlanning) return clearResolvedProjectErrorFields(mergedItem);
   return {
     ...mergedItem,
     status: existingItem.status,

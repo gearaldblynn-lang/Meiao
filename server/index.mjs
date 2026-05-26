@@ -7379,9 +7379,7 @@ const handleMysqlRequest = async (req, res, url) => {
     if (!user) return;
     const body = await readBody(req, { maxBytes: MAX_STATE_BODY_BYTES });
     const incomingState = body.state || createDefaultState();
-    const nextState = body.mode === 'replace'
-      ? incomingState
-      : mergeAppStateForStorage(await getDbAppState(user.id), incomingState);
+    const nextState = mergeAppStateForStorage(await getDbAppState(user.id), incomingState);
     await saveDbAppState(user.id, nextState);
     json(res, 200, { ok: true });
     return;
@@ -9114,9 +9112,7 @@ const handleLocalRequest = async (req, res, url) => {
     const body = await readBody(req, { maxBytes: MAX_STATE_BODY_BYTES });
     const incomingState = body.state || createDefaultState();
     store.appStates[user.id] = prepareStateForStorage(
-      body.mode === 'replace'
-        ? incomingState
-        : mergeAppStateForStorage(store.appStates[user.id] || createDefaultState(), incomingState)
+      mergeAppStateForStorage(store.appStates[user.id] || createDefaultState(), incomingState)
     );
     writeLocalStore(store);
     json(res, 200, { ok: true });

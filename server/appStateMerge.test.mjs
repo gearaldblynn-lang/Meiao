@@ -94,6 +94,76 @@ test('mergeAppStateForStorage deep-merges one-click planning project snapshots w
   assert.equal(merged.shellProjects[0].planningTaskId, 'kie-a,kie-b,kie-c,kie-d,kie-e');
 });
 
+test('mergeAppStateForStorage keeps recovered sku plans when a stale completed snapshot writes back', () => {
+  const recoveredPlans = [
+    { id: 'planning-job-plan-1', title: 'SKU一', selected: true, schemeContent: '第一张策划' },
+    { id: 'planning-job-plan-2', title: 'SKU二', selected: true, schemeContent: '第二张策划' },
+  ];
+  const completedResult = {
+    id: 'provider-sku-1',
+    planId: 'planning-job-plan-1',
+    taskId: 'provider-sku-1',
+    backendJobId: 'image-job-1',
+    imageUrl: '/sku-1.png',
+    status: 'completed',
+  };
+  const staleProject = {
+    id: 'proj-sku',
+    module: 'one_click',
+    subFeature: 'sku',
+    status: 'completed',
+    taskCount: 1,
+    completedCount: 1,
+    plans: [],
+    results: [completedResult],
+    backendJobId: 'image-job-1',
+  };
+
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      ...staleProject,
+      status: 'planning',
+      taskCount: 2,
+      plans: recoveredPlans,
+      planningTaskId: 'planning-job',
+    }],
+    oneClickMemory: {
+      sku: {
+        projects: [{
+          id: 'proj-sku',
+          taskCount: 2,
+          plans: recoveredPlans,
+          schemes: [
+            { id: 'planning-job-plan-1', planId: 'planning-job-plan-1', taskId: 'provider-sku-1', resultUrl: '/sku-1.png', status: 'completed' },
+            { id: 'planning-job-plan-2', planId: 'planning-job-plan-2', status: 'planning' },
+          ],
+          planningTaskId: 'planning-job',
+        }],
+      },
+    },
+  }, {
+    shellProjects: [staleProject],
+    oneClickMemory: {
+      sku: {
+        projects: [{
+          id: 'proj-sku',
+          taskCount: 1,
+          plans: [],
+          schemes: [{ id: 'provider-sku-1', taskId: 'provider-sku-1', resultUrl: '/sku-1.png', status: 'completed' }],
+        }],
+      },
+    },
+  });
+
+  assert.equal(merged.shellProjects[0].taskCount, 2);
+  assert.equal(merged.shellProjects[0].plans.length, 2);
+  assert.equal(merged.shellProjects[0].planningTaskId, 'planning-job');
+  assert.equal(merged.oneClickMemory.sku.projects[0].taskCount, 2);
+  assert.equal(merged.oneClickMemory.sku.projects[0].plans.length, 2);
+  assert.equal(merged.oneClickMemory.sku.projects[0].schemes.length, 2);
+  assert.equal(merged.oneClickMemory.sku.projects[0].schemes[0].planId, 'planning-job-plan-1');
+});
+
 test('mergeAppStateForStorage does not let stale planning failure overwrite recovered plans', () => {
   const merged = mergeAppStateForStorage({
     shellProjects: [{
@@ -287,6 +357,57 @@ test('mergeAppStateForStorage does not collapse non-project sibling items by pro
 
   assert.deepEqual(merged.translationMemory.main.files.map((file) => file.id), ['file-b', 'file-a']);
   assert.deepEqual(merged.retouchMemory.tasks.map((task) => task.id), ['retouch-task-b', 'retouch-task-a']);
+});
+
+test('mergeAppStateForStorage clears stale video failure fields when a completed video snapshot arrives', () => {
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'video-project-late-success',
+      module: 'video',
+      subFeature: 'generation',
+      status: 'error',
+      taskCount: 2,
+      completedCount: 0,
+      backendJobId: 'job-video-late-success',
+      error: '请求超时，请稍后重试',
+      results: [{
+        id: 'provider-video-late-success',
+        taskId: 'provider-video-late-success',
+        backendJobId: 'job-video-late-success',
+        status: 'error',
+        imageUrl: '',
+        videoUrl: '',
+        error: '请求超时，请稍后重试',
+      }],
+    }],
+  }, {
+    shellProjects: [{
+      id: 'video-project-late-success',
+      module: 'video',
+      subFeature: 'generation',
+      status: 'completed',
+      taskCount: 1,
+      completedCount: 1,
+      backendJobId: 'job-video-late-success',
+      results: [{
+        id: 'provider-video-late-success',
+        taskId: 'provider-video-late-success',
+        backendJobId: 'job-video-late-success',
+        status: 'completed',
+        imageUrl: '/late-video.mp4',
+        videoUrl: '/late-video.mp4',
+      }],
+    }],
+  });
+
+  assert.equal(merged.shellProjects[0].status, 'completed');
+  assert.equal(merged.shellProjects[0].taskCount, 1);
+  assert.equal(merged.shellProjects[0].completedCount, 1);
+  assert.equal(merged.shellProjects[0].error, undefined);
+  assert.equal(merged.shellProjects[0].results.length, 1);
+  assert.equal(merged.shellProjects[0].results[0].status, 'completed');
+  assert.equal(merged.shellProjects[0].results[0].videoUrl, '/late-video.mp4');
+  assert.equal(merged.shellProjects[0].results[0].error, undefined);
 });
 
 test('mergeAppStateForStorage preserves translation files across concurrent branch writes', () => {
