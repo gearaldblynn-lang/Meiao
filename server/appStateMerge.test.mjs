@@ -557,6 +557,69 @@ test('mergeAppStateForStorage keeps clean first-image completion from being poll
   assert.deepEqual(project.results.map((result) => result.status), ['completed', 'completed', 'completed', 'completed']);
 });
 
+test('mergeAppStateForStorage normalizes polluted one-click branch schemes', () => {
+  const plans = Array.from({ length: 4 }, (_, index) => ({
+    id: `client-plan-${index + 1}`,
+    title: `首图方案 ${index + 1}`,
+    selected: true,
+  }));
+  const completedSchemes = plans.map((plan, index) => ({
+    id: plan.id,
+    planId: plan.id,
+    resultUrl: `/branch-${index + 1}.png`,
+    status: 'completed',
+    taskId: `provider-${index + 1}`,
+    backendJobId: `image-job-${index + 1}`,
+  }));
+
+  const merged = mergeAppStateForStorage({
+    oneClickMemory: {
+      firstImage: {
+        projects: [{
+          id: 'polluted-branch-project',
+          status: 'error',
+          taskCount: 9,
+          completedCount: 4,
+          plans: [
+            ...plans,
+            { id: 'e0e7abe685d2f5986735dd7f-plan-1', title: '后台重复策划' },
+            { id: 'a81be24d397a41067b599126-plan-1', title: '后台重复策划' },
+          ],
+          schemes: [
+            ...completedSchemes,
+            { id: 'client-plan-1-error', planId: 'client-plan-1', status: 'error', error: '网络连接失败，请检查网络后重试' },
+            { id: 'client-plan-2', planId: 'client-plan-2', status: 'error', error: '网络连接失败，请检查网络后重试' },
+            { id: 'e0e7abe685d2f5986735dd7f-plan-1', status: 'pending' },
+          ],
+          error: '网络连接失败，请检查网络后重试',
+        }],
+      },
+    },
+  }, {
+    oneClickMemory: {
+      firstImage: {
+        projects: [{
+          id: 'polluted-branch-project',
+          status: 'completed',
+          taskCount: 4,
+          completedCount: 4,
+          plans,
+          schemes: completedSchemes,
+        }],
+      },
+    },
+  });
+
+  const project = merged.oneClickMemory.firstImage.projects[0];
+  assert.equal(project.status, 'completed');
+  assert.equal(project.taskCount, 4);
+  assert.equal(project.completedCount, 4);
+  assert.equal(project.error, undefined);
+  assert.deepEqual(project.plans.map((plan) => plan.id), plans.map((plan) => plan.id));
+  assert.deepEqual(project.schemes.map((scheme) => scheme.status), ['completed', 'completed', 'completed', 'completed']);
+  assert.deepEqual(project.schemes.map((scheme) => scheme.resultUrl), completedSchemes.map((scheme) => scheme.resultUrl));
+});
+
 test('compactAppStateForStorage removes recursively nested one-click project history', () => {
   const compacted = compactAppStateForStorage({
     oneClickMemory: {
