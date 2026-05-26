@@ -468,6 +468,95 @@ test('mergeAppStateForStorage prunes existing projects covered by deletion tombs
   assert.deepEqual(merged.oneClickMemory.firstImage.projects, []);
 });
 
+test('mergeAppStateForStorage keeps clean first-image completion from being polluted by stale failures', () => {
+  const plans = Array.from({ length: 4 }, (_, index) => ({
+    id: `client-plan-${index + 1}`,
+    title: `首图方案 ${index + 1}`,
+    selected: true,
+    schemeContent: `客户端首图方案 ${index + 1}`,
+  }));
+  const completedResults = plans.map((plan, index) => ({
+    id: `provider-${index + 1}`,
+    planId: plan.id,
+    projectId: 'polluted-first-image-project',
+    imageUrl: `/first-image-${index + 1}.png`,
+    status: 'completed',
+    taskId: `provider-${index + 1}`,
+    backendJobId: `image-job-${index + 1}`,
+    module: 'one_click',
+    subFeature: 'first_image',
+  }));
+  const staleFailures = [
+    {
+      id: 'failed-planning-job-error',
+      planId: plans[0].id,
+      projectId: 'polluted-first-image-project',
+      status: 'error',
+      imageUrl: '',
+      backendJobId: 'failed-planning-job',
+      error: 'The server is currently being maintained, please try again later~',
+    },
+    {
+      id: 'task-img-network-error-1',
+      planId: plans[0].id,
+      projectId: 'polluted-first-image-project',
+      status: 'error',
+      imageUrl: '',
+      error: '网络连接失败，请检查网络后重试',
+    },
+    {
+      id: plans[2].id,
+      planId: plans[2].id,
+      projectId: 'polluted-first-image-project',
+      status: 'error',
+      imageUrl: '',
+      error: '网络连接失败，请检查网络后重试',
+    },
+  ];
+
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'polluted-first-image-project',
+      name: '5月26日项目2',
+      module: 'one_click',
+      subFeature: 'first_image',
+      status: 'error',
+      taskCount: 13,
+      completedCount: 4,
+      plans: [
+        ...plans,
+        { id: 'e0e7abe685d2f5986735dd7f-plan-1', title: '后台重复策划', selected: true },
+        { id: 'a81be24d397a41067b599126-plan-1', title: '后台重复策划', selected: true },
+      ],
+      results: [
+        ...completedResults,
+        ...staleFailures,
+      ],
+      error: 'The server is currently being maintained, please try again later~',
+    }],
+  }, {
+    shellProjects: [{
+      id: 'polluted-first-image-project',
+      name: '5月26日项目2',
+      module: 'one_click',
+      subFeature: 'first_image',
+      status: 'completed',
+      taskCount: 4,
+      completedCount: 4,
+      plans,
+      results: completedResults,
+    }],
+  });
+
+  const project = merged.shellProjects[0];
+  assert.equal(project.status, 'completed');
+  assert.equal(project.taskCount, 4);
+  assert.equal(project.completedCount, 4);
+  assert.equal(project.error, undefined);
+  assert.deepEqual(project.plans.map((plan) => plan.id), plans.map((plan) => plan.id));
+  assert.deepEqual(project.results.map((result) => result.status), ['completed', 'completed', 'completed', 'completed']);
+});
+
 test('compactAppStateForStorage removes recursively nested one-click project history', () => {
   const compacted = compactAppStateForStorage({
     oneClickMemory: {

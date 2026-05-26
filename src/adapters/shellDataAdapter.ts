@@ -1476,6 +1476,29 @@ const shouldReplaceProjectSnapshot = (existing: ShellProjectData | undefined, ne
 const hasCompletedMediaResult = (result: ShellGeneratedResult) =>
   result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl);
 
+const resultHasMedia = (result: Partial<ShellGeneratedResult>) => Boolean(result.imageUrl || result.videoUrl);
+
+const isSupersededNoMediaErrorResult = (
+  result: ShellGeneratedResult,
+  completedPlanIds: Set<string>,
+) => {
+  const planId = String(result?.planId || '').trim();
+  if (!planId || !completedPlanIds.has(planId)) return false;
+  if (result.status !== 'error' || resultHasMedia(result)) return false;
+  return !String(result.taskId || '').trim();
+};
+
+const pruneSupersededOneClickResults = (results: ShellGeneratedResult[] = []) => {
+  const completedPlanIds = new Set(
+    results
+      .filter(hasCompletedMediaResult)
+      .map((result) => String(result.planId || '').trim())
+      .filter(Boolean),
+  );
+  if (completedPlanIds.size === 0) return results;
+  return results.filter((result) => !isSupersededNoMediaErrorResult(result, completedPlanIds));
+};
+
 const clearCompletedResultError = (result: ShellGeneratedResult): ShellGeneratedResult => {
   if (!hasCompletedMediaResult(result)) return result;
   return {
@@ -1550,11 +1573,16 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
     const planId = String(result?.planId || '').trim();
     return !planId || !droppedPlanIds.has(planId);
   });
+  results = pruneSupersededOneClickResults(results);
 
   const completedCount = results.filter(hasCompletedMediaResult).length;
   const planCount = filteredPlans.length;
+  const activeOrFailedCount = results.filter((result) => (
+    result.status === 'generating'
+    || (result.status === 'error' && !resultHasMedia(result))
+  )).length;
   const taskCount = planCount > 0
-    ? Math.max(Number(project.taskCount || 0) || 0, results.length, planCount, 1)
+    ? Math.max(planCount, completedCount, activeOrFailedCount, 1)
     : Math.max(Number(project.taskCount || 0) || 0, results.length, 1);
   const selectedPlanId = filteredPlans.some((plan) => String(plan?.id || '') === String(project.selectedPlanId || ''))
     ? project.selectedPlanId
@@ -1629,7 +1657,21 @@ const mergeProjectResultsByIdentity = (
     }
     rebuildIndex();
   };
+  const hasCompletedPlanResult = (result: ShellGeneratedResult) => {
+    const planId = String(result?.planId || '').trim();
+    return Boolean(planId && results.some((item) => (
+      String(item?.planId || '').trim() === planId
+      && hasCompletedMediaResult(item)
+    )));
+  };
   const upsert = (result: ShellGeneratedResult) => {
+    if (isSupersededNoMediaErrorResult(result, new Set(
+      results
+        .filter(hasCompletedMediaResult)
+        .map((item) => String(item.planId || '').trim())
+        .filter(Boolean),
+    ))) return;
+    if (result.status === 'error' && !resultHasMedia(result) && hasCompletedPlanResult(result) && !String(result.taskId || '').trim()) return;
     removeStalePlanPlaceholders(result);
     const keys = getGeneratedResultMergeKeys(result);
     const matchedIndex = keys

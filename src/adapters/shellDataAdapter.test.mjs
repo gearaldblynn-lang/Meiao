@@ -2387,3 +2387,106 @@ test('shell data adapter lets completed backend one-click jobs clear stale same-
   assert.equal(project.results[0].taskId, 'provider-late-success');
   assert.equal(project.results[0].imageUrl, '/late-success.png');
 });
+
+test('shell data adapter normalizes polluted first-image projects after backend success', () => {
+  const plans = Array.from({ length: 4 }, (_, index) => ({
+    id: `client-plan-${index + 1}`,
+    title: `首图方案 ${index + 1}`,
+    sellingPoints: [],
+    sceneDescription: `客户端首图方案 ${index + 1}`,
+    styleDirection: '',
+    colorPalette: '',
+    composition: '',
+    textLayout: '',
+    selected: true,
+    schemeContent: `客户端首图方案 ${index + 1}`,
+  }));
+  const completedResults = plans.map((plan, index) => ({
+    id: `provider-${index + 1}`,
+    planId: plan.id,
+    projectId: 'polluted-first-image-project',
+    imageUrl: `/first-image-${index + 1}.png`,
+    prompt: `完成结果 ${index + 1}`,
+    model: 'gpt-image-2',
+    aspectRatio: '1:1',
+    status: 'completed',
+    createdAt: '05-26',
+    module: 'one_click',
+    subFeature: 'first_image',
+    taskId: `provider-${index + 1}`,
+    backendJobId: `image-job-${index + 1}`,
+  }));
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'polluted-first-image-project',
+      name: '5月26日项目2',
+      module: 'one_click',
+      status: 'error',
+      createdAt: '05-26',
+      selectedPlanId: plans[0].id,
+      taskCount: 13,
+      completedCount: 4,
+      subFeature: 'first_image',
+      plans: [
+        ...plans,
+        { id: 'e0e7abe685d2f5986735dd7f-plan-1', title: '后台重复策划', selected: true, schemeContent: '不应扩容任务卡' },
+        { id: 'a81be24d397a41067b599126-plan-1', title: '后台重复策划', selected: true, schemeContent: '不应扩容任务卡' },
+      ],
+      results: [
+        ...completedResults,
+        {
+          id: 'failed-planning-job-error',
+          planId: plans[0].id,
+          projectId: 'polluted-first-image-project',
+          imageUrl: '',
+          prompt: 'The server is currently being maintained, please try again later~',
+          model: 'kie_chat',
+          aspectRatio: 'auto',
+          status: 'error',
+          createdAt: '05-26',
+          module: 'one_click',
+          subFeature: 'first_image',
+          backendJobId: 'failed-planning-job',
+          error: 'The server is currently being maintained, please try again later~',
+        },
+        {
+          id: 'task-img-network-error-1',
+          planId: plans[0].id,
+          projectId: 'polluted-first-image-project',
+          imageUrl: '',
+          prompt: '网络连接失败，请检查网络后重试',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          status: 'error',
+          createdAt: '05-26',
+          module: 'one_click',
+          subFeature: 'first_image',
+          error: '网络连接失败，请检查网络后重试',
+        },
+        {
+          id: plans[2].id,
+          planId: plans[2].id,
+          projectId: 'polluted-first-image-project',
+          imageUrl: '',
+          prompt: '网络连接失败，请检查网络后重试',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          status: 'error',
+          createdAt: '05-26',
+          module: 'one_click',
+          subFeature: 'first_image',
+          error: '网络连接失败，请检查网络后重试',
+        },
+      ],
+    }],
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'polluted-first-image-project');
+  assert.ok(project);
+  assert.equal(project.status, 'completed');
+  assert.equal(project.taskCount, 4);
+  assert.equal(project.completedCount, 4);
+  assert.deepEqual(project.plans?.map((plan) => plan.id), plans.map((plan) => plan.id));
+  assert.deepEqual(project.results.map((result) => result.status), ['completed', 'completed', 'completed', 'completed']);
+  assert.deepEqual(project.results.map((result) => result.imageUrl), completedResults.map((result) => result.imageUrl));
+});
