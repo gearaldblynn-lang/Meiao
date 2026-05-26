@@ -94,6 +94,99 @@ test('mergeAppStateForStorage deep-merges one-click planning project snapshots w
   assert.equal(merged.shellProjects[0].planningTaskId, 'kie-a,kie-b,kie-c,kie-d,kie-e');
 });
 
+test('mergeAppStateForStorage does not let stale planning failure overwrite recovered plans', () => {
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'proj-plan-recovered',
+      module: 'one_click',
+      subFeature: 'first_image',
+      status: 'planning',
+      backendJobId: 'planning-job-a',
+      taskCount: 1,
+      completedCount: 0,
+      plans: [{
+        id: 'planning-job-a-plan-1',
+        title: '首图裂变1-复刻主图参考1',
+        schemeContent: '真实策划方案',
+        selected: true,
+      }],
+      results: [],
+    }],
+  }, {
+    shellProjects: [{
+      id: 'proj-plan-recovered',
+      module: 'one_click',
+      subFeature: 'first_image',
+      status: 'error',
+      backendJobId: 'planning-job-a',
+      taskCount: 1,
+      completedCount: 0,
+      plans: [],
+      results: [{
+        id: 'task-proj-plan-recovered-error',
+        status: 'error',
+        imageUrl: '',
+        prompt: '共 1 张参考图，其中 1 张策划失败。',
+      }],
+    }],
+  });
+
+  assert.equal(merged.shellProjects.length, 1);
+  assert.equal(merged.shellProjects[0].status, 'planning');
+  assert.equal(merged.shellProjects[0].results.length, 0);
+  assert.equal(merged.shellProjects[0].plans.length, 1);
+  assert.equal(merged.shellProjects[0].plans[0].title, '首图裂变1-复刻主图参考1');
+});
+
+test('mergeAppStateForStorage does not let stale one-click branch failure overwrite recovered plans without job id', () => {
+  const recoveredProject = {
+    id: 'proj-plan-recovered',
+    module: 'one_click',
+    subFeature: 'first_image',
+    status: 'planning',
+    backendJobId: 'planning-job-a',
+    taskCount: 1,
+    completedCount: 0,
+    plans: [{
+      id: 'planning-job-a-plan-1',
+      title: '首图裂变1-复刻主图参考1',
+      schemeContent: '真实策划方案',
+      selected: true,
+    }],
+    results: [],
+  };
+  const staleBranchProject = {
+    id: 'proj-plan-recovered',
+    module: 'one_click',
+    subFeature: 'first_image',
+    status: 'error',
+    taskCount: 1,
+    completedCount: 0,
+    results: [{
+      id: 'task-proj-plan-recovered-error',
+      status: 'error',
+      imageUrl: '',
+      prompt: '共 1 张参考图，其中 1 张策划失败。',
+    }],
+  };
+
+  const merged = mergeAppStateForStorage({
+    oneClickMemory: {
+      firstImage: { projects: [recoveredProject] },
+    },
+  }, {
+    oneClickMemory: {
+      firstImage: { projects: [staleBranchProject] },
+    },
+  });
+
+  const project = merged.oneClickMemory.firstImage.projects[0];
+  assert.equal(project.status, 'planning');
+  assert.equal(project.results.length, 0);
+  assert.equal(project.plans.length, 1);
+  assert.equal(project.plans[0].title, '首图裂变1-复刻主图参考1');
+});
+
 test('mergeAppStateForStorage deep-merges one-click branch projects and schemes', () => {
   const existingProjects = [{
     id: 'proj-branch-5',

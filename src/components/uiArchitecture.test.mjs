@@ -191,6 +191,14 @@ test('cloud deploy keeps old hashed assets and missing chunks do not fall back t
   assert.match(missingAssetBody, /writeHead\(404/);
   assert.match(missingAssetBody, /Asset not found/);
   assert.doesNotMatch(missingAssetBody, /index\.html/);
+  assert.match(server, /const safeDecodePathname = \(value\) => \{/);
+  assert.match(server, /decodeURIComponent\(value\)/);
+  assert.match(server, /return null;/);
+  assert.match(server, /if \(!normalizedPath\) \{/);
+  assert.match(server, /Malformed path/);
+  assert.match(server, /statSync\(targetPath\)/);
+  assert.match(server, /targetStats\.isFile\(\)/);
+  assert.doesNotMatch(server, /if \(existsSync\(targetPath\)\) \{\s*serveStaticFile\(req, res, targetPath\);/);
   assert.match(deployScript, /REMOTE_OLD_ASSETS_DIR="\/tmp\/meiao-deploy-old-assets-\$\$"/);
   assert.match(deployScript, /OLD_ASSETS_DIR='\$REMOTE_OLD_ASSETS_DIR'/);
   assert.match(deployScript, /cp -R '\$REMOTE_APP_DIR\/dist\/assets'\/\. "\\\$OLD_ASSETS_DIR"\//);
@@ -343,6 +351,7 @@ test('project details expose actual task credits and provider task ids', () => {
   const arkService = read('../services/arkService.ts');
   const videoModule = read('../shell/modules/Video/VideoModule.tsx');
   const videoStoryboardService = read('../services/videoStoryboardService.ts');
+  const clipboard = read('../utils/clipboard.mjs');
 
   assert.match(projectCard, /creditsConsumed\?: number/);
   assert.match(projectCard, /getProjectCreditsConsumed/);
@@ -351,7 +360,7 @@ test('project details expose actual task credits and provider task ids', () => {
   assert.match(projectCard, /任务 ID/);
   assert.match(projectCard, /策划任务 ID/);
   assert.match(projectCard, /copyTextToClipboard/);
-  assert.match(projectCard, /document\.execCommand\('copy'\)/);
+  assert.match(clipboard, /execCommand\('copy'\)/);
   assert.doesNotMatch(projectCard, /planningTaskIdFallback/);
   assert.doesNotMatch(projectCard, /isStoryboardProject \? project\.id : ''/);
   assert.match(projectCard, /splitTaskIds\(project\.planningTaskId\)/);
@@ -2520,4 +2529,13 @@ test('one click fission and edit are direct image-generation projects without pl
   assert.match(shellPersistence, /directGeneration: project\.directGeneration/);
   assert.match(shellDataAdapter, /directGeneration\?: boolean/);
   assert.match(shellDataAdapter, /directGeneration: directGeneration === true/);
+});
+
+test('shell video generation submits seedance jobs without automatic retry and keeps audio enabled by default', () => {
+  const workflow = read('../adapters/shellWorkflow.ts');
+  const videoBody = workflow.match(/export const runShellVideoGeneration = async \(input: ShellGenerateInput\) => \{([\s\S]*?)\n\};/)?.[1] || '';
+
+  assert.match(videoBody, /generateAudio: parseSeedanceGenerateAudio\(input\.params\)/);
+  assert.match(videoBody, /maxRetries: 0/);
+  assert.doesNotMatch(videoBody, /generateAudio: false/);
 });

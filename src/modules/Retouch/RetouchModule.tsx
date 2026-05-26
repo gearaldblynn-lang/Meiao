@@ -7,6 +7,7 @@ import { uploadToCos } from '../../services/tencentCosService';
 import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from '../../services/kieAiService';
 import { downloadRemoteFilesAsZip, resizeImage, getImageDimensions } from '../../utils/imageUtils';
 import { normalizeFetchedImageBlob } from '../../utils/imageBlobUtils.mjs';
+import { copyTextToClipboard } from '../../utils/clipboard.mjs';
 import { releaseObjectURLs, safeCreateObjectURL } from '../../utils/urlUtils';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from '../../services/loggingService';
 import { getTaskDisplayName } from '../../utils/cloudAssetState.mjs';
@@ -446,8 +447,9 @@ const RetouchModule: React.FC<Props> = ({ apiConfig, persistentState, onStateCha
       },
     });
     try {
-      await navigator.clipboard.writeText(task.resultUrl);
-      alert("精修图片链接已复制！跳转后 Ctrl+V 即可。");
+      const copied = await copyTextToClipboard(task.resultUrl);
+      if (copied) alert("精修图片链接已复制！跳转后 Ctrl+V 即可。");
+      else alert("已打开抠图页面，请手动复制精修图片链接。");
       window.open("https://zh.bgsub.com/webapp/", "_blank");
     } catch (err) {
       window.open("https://zh.bgsub.com/webapp/", "_blank");

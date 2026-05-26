@@ -35,7 +35,7 @@ import {
 } from './localJobStore.mjs';
 import { executeProviderJob } from './providerGateway.mjs';
 import { compactAppStateForStorage, mergeAppStateForStorage } from './appStateMerge.mjs';
-import { buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins } from './jobRuntime.mjs';
+import { buildJobRuntimeLogMeta, buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins } from './jobRuntime.mjs';
 import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../src/utils/gptImage2.mjs';
 import { isExternallyReachableBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import {
@@ -88,6 +88,11 @@ const TRACKED_URL_FIELDS = new Set([
 const getJobDedupeWindowMs = (taskType) => (
   VIDEO_JOB_TASK_TYPES.has(String(taskType || '')) ? VIDEO_JOB_DEDUPE_WINDOW_MS : undefined
 );
+
+const normalizeJobMaxRetries = (taskType, value) => (
+  VIDEO_JOB_TASK_TYPES.has(String(taskType || '')) ? 0 : value
+);
+
 const TRACKED_URL_ARRAY_FIELDS = new Set(['uploadedProductUrls', 'veoReferenceImages']);
 const NULLABLE_TRACKED_FIELDS = new Set(['uploadedReferenceUrl', 'lastStyleUrl', 'uploadedLogoUrl', 'whiteBgImageUrl']);
 
@@ -272,6 +277,8 @@ const buildValidManagedAssetReferences = (assets = []) => {
   }
   return refs;
 };
+
+const normalizeStoredAssetJobId = (value) => String(value || '').trim().slice(0, 120);
 
 const sanitizePathPart = (value) => value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'anonymous';
 const sanitizeUploadFileName = (value) => {
@@ -1772,12 +1779,25 @@ const serveStaticFile = (req, res, filePath) => {
   res.end(body);
 };
 
+const safeDecodePathname = (value) => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+};
+
 const tryServeFrontend = (req, res, url) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') return false;
   if (url.pathname.startsWith('/api/')) return false;
   if (!existsSync(distDir)) return false;
 
-  const normalizedPath = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
+  const normalizedPath = safeDecodePathname(url.pathname === '/' ? '/index.html' : url.pathname);
+  if (!normalizedPath) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Malformed path');
+    return true;
+  }
   const relativePath = normalizedPath.replace(/^\/+/, '');
   const targetPath = path.resolve(distDir, relativePath);
 
@@ -1788,8 +1808,11 @@ const tryServeFrontend = (req, res, url) => {
   }
 
   if (existsSync(targetPath)) {
-    serveStaticFile(req, res, targetPath);
-    return true;
+    const targetStats = statSync(targetPath);
+    if (targetStats.isFile()) {
+      serveStaticFile(req, res, targetPath);
+      return true;
+    }
   }
 
   if (relativePath.startsWith('assets/')) {
@@ -3948,6 +3971,7 @@ const runAgenticRetrievalLoop = async ({
   initialMessages,
   currentMessage,
   selectedModel,
+  fallbackModels = [],
   reasoningLevel,
   webSearchEnabled,
   candidateChunks,
@@ -3977,7 +4001,7 @@ const runAgenticRetrievalLoop = async ({
     onProgress?.({ stage: 'thinking', round: extraRounds + 1 });
     const output = await executeProviderJob({
       taskType: 'kie_chat',
-      payload: { messages, model: selectedModel, reasoningLevel, webSearchEnabled },
+      payload: { messages, model: selectedModel, fallbackModels, reasoningLevel, webSearchEnabled },
     }, process.env, new AbortController().signal);
 
     const rawContent = String(output?.result?.content || '').trim();
@@ -4086,6 +4110,7 @@ const runAgentConversation = async ({
       initialMessages: messages,
       currentMessage,
       selectedModel,
+      fallbackModels,
       reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
       webSearchEnabled: Boolean(webSearchEnabled),
       candidateChunks,
@@ -5346,6 +5371,7 @@ const runLocalAgentConversation = async ({
       initialMessages: messages,
       currentMessage,
       selectedModel,
+      fallbackModels,
       reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
       webSearchEnabled: Boolean(webSearchEnabled),
       candidateChunks,
@@ -5822,7 +5848,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     remoteUrl: imageUrl,
     originalName: `${selectedImageModel || 'image_result'}.png`,
     provider: 'kie',
-    jobId: String(imageOutput?.providerTaskId || '').trim(),
+    jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId),
   });
   const promptTokens = analysisMessages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
   const completionTokens = estimateTokenCount(analysisContent);
@@ -7638,7 +7664,7 @@ const handleMysqlRequest = async (req, res, url) => {
       provider: body.provider,
       payload: body.payload,
       priority: body.priority,
-      maxRetries: body.maxRetries,
+      maxRetries: normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };
     const reusableJob = await findReusableJobRecord(pool, user, jobPayload, getJobDedupeWindowMs(jobPayload.taskType));
     if (reusableJob) {
@@ -7653,10 +7679,7 @@ const handleMysqlRequest = async (req, res, url) => {
       action: 'job_created',
       message: `创建任务：${job.taskType}`,
       status: 'started',
-      meta: {
-        jobId: job.id,
-        provider: job.provider,
-      },
+      meta: buildJobRuntimeLogMeta({ job }),
     });
     jobWorker?.trigger?.();
     json(res, 201, { job });
@@ -9381,7 +9404,7 @@ const handleLocalRequest = async (req, res, url) => {
       provider: body.provider,
       payload: body.payload,
       priority: body.priority,
-      maxRetries: body.maxRetries,
+      maxRetries: normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };
     const reusableJob = findReusableLocalJobRecord(store, user, jobPayload, getJobDedupeWindowMs(jobPayload.taskType));
     if (reusableJob) {
@@ -9396,10 +9419,7 @@ const handleLocalRequest = async (req, res, url) => {
       action: 'job_created',
       message: `创建任务：${job.taskType}`,
       status: 'started',
-      meta: {
-        jobId: job.id,
-        provider: job.provider,
-      },
+      meta: buildJobRuntimeLogMeta({ job }),
     });
     writeLocalStore(store);
     localJobWorker?.trigger?.();

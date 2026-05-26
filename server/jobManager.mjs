@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { buildJobFailureLogFields, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
+import { buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
 
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
@@ -504,19 +504,7 @@ export const createJobWorker = ({
                 action: 'job_completed',
                 message: `${refreshedJob.taskType} 任务${controller.signal.aborted ? '已取消' : '完成'}`,
                 status: controller.signal.aborted ? 'interrupted' : 'success',
-                meta: {
-                  jobId: refreshedJob.id,
-                  providerTaskId: output?.providerTaskId || notifiedProviderTaskId || refreshedJob.providerTaskId || '',
-                  provider: refreshedJob.provider,
-                  retryCount: refreshedJob.retryCount,
-                  taskType: refreshedJob.taskType,
-                  creditsConsumed: normalizeJobCreditsConsumed(output?.result?.creditsConsumed ?? output?.creditsConsumed),
-                  queueWaitMs: refreshedJob.startedAt && refreshedJob.createdAt ? Math.max(0, refreshedJob.startedAt - refreshedJob.createdAt) : 0,
-                  runtimeMs: finishedAt - (refreshedJob.startedAt || finishedAt),
-                  jobCreatedAt: refreshedJob.createdAt,
-                  jobStartedAt: refreshedJob.startedAt,
-                  jobFinishedAt: finishedAt,
-                },
+                meta: buildJobRuntimeLogMeta({ job: refreshedJob, result: output, finishedAt }),
               });
             }
           } catch (error) {
@@ -554,19 +542,7 @@ export const createJobWorker = ({
                 message: error?.code === 'request_cancelled' ? `${latestJob.taskType} 任务失败` : logFields.message,
                 detail: String(error?.message || '任务执行失败').slice(0, 5000),
                 status: error?.code === 'request_cancelled' ? 'interrupted' : logFields.status,
-                meta: {
-                  jobId: latestJob.id,
-                  providerTaskId: error?.providerTaskId || latestJob.providerTaskId || '',
-                  provider: latestJob.provider,
-                  retryCount: failure.retryCount,
-                  errorCode: error?.code || 'provider_internal_error',
-                  taskType: latestJob.taskType,
-                  queueWaitMs: latestJob.startedAt && latestJob.createdAt ? Math.max(0, latestJob.startedAt - latestJob.createdAt) : 0,
-                  runtimeMs: latestJob.startedAt ? Math.max(0, finishedAt - latestJob.startedAt) : 0,
-                  jobCreatedAt: latestJob.createdAt,
-                  jobStartedAt: latestJob.startedAt,
-                  jobFinishedAt: finishedAt,
-                },
+                meta: buildJobRuntimeLogMeta({ job: latestJob, error, finishedAt, retryCount: failure.retryCount }),
               });
             }
           } finally {

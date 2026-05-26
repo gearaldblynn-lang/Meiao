@@ -279,6 +279,35 @@ const inferMimeTypeFromName = (value, fallback = 'application/octet-stream') => 
   return fallback;
 };
 
+const UNSUPPORTED_GENERATION_IMAGE_EXTENSIONS = new Set(['.zip', '.rar', '.7z', '.tar', '.gz', '.tgz']);
+
+const extractPathExtension = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const pathname = (() => {
+    try {
+      return decodeURIComponent(new URL(raw).pathname || '');
+    } catch {
+      return raw.split('?')[0].split('#')[0];
+    }
+  })().toLowerCase();
+  const match = pathname.match(/(\.[a-z0-9]+)$/i);
+  return match?.[1] || '';
+};
+
+const assertSupportedGenerationImageReferences = (values = []) => {
+  for (const value of values) {
+    const normalized = normalizeProviderMediaReference(value);
+    if (!normalized) continue;
+    const extension = extractPathExtension(normalized);
+    if (!UNSUPPORTED_GENERATION_IMAGE_EXTENSIONS.has(extension)) continue;
+    throw createProviderError(
+      'provider_bad_request',
+      `不支持的图片素材格式：${extension.replace(/^\./, '')}。请先解压并上传 png、jpg、jpeg、webp 或 gif 图片。`
+    );
+  }
+};
+
 const inferExtensionFromMimeType = (value, fallback = 'bin') => {
   const normalized = String(value || '').trim().toLowerCase();
   if (normalized === 'image/png') return 'png';
@@ -1582,6 +1611,10 @@ const runKieImageJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
   const rawImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
+  assertSupportedGenerationImageReferences([
+    ...rawImageUrls,
+    ...Array.from(extractTextMediaUrls(payload.prompt || '')),
+  ]);
   const resolvedGenerationUrlByRawUrl = new Map();
   const resolveGenerationUrl = async (url) => {
     const rawUrl = String(url || '').trim();
@@ -1593,24 +1626,22 @@ const runKieImageJob = async (payload, env, signal, options = {}) => {
   };
   const imageUrls = await Promise.all(rawImageUrls.map((item) => resolveGenerationUrl(item)));
   const gptImageAlias = KIE_IMAGE_MODEL_ALIASES[payload.model];
-  const isGptImageEdit = Boolean(gptImageAlias && imageUrls.length > 0);
+  const limitedImageUrls = gptImageAlias ? imageUrls.slice(0, gptImageAlias.maxInputImages) : imageUrls;
+  const isGptImageEdit = Boolean(gptImageAlias && limitedImageUrls.length > 0);
   const promptWithResolvedMediaUrls = await rewriteProviderTextMediaUrls(payload.prompt || '', resolveGenerationUrl);
   const prompt = augmentImagePromptForModel(payload.model, promptWithResolvedMediaUrls, payload.aspectRatio, isGptImageEdit ? 'image' : 'text');
   const normalizedAspectRatio = String(payload.aspectRatio || 'auto').trim() || 'auto';
   const normalizedResolution = gptImageAlias
     ? normalizeGptImage2Resolution(normalizedAspectRatio, payload.resolution || GPT_IMAGE_2_DEFAULT_RESOLUTION)
     : String(payload.resolution || '1K').trim().toUpperCase();
-  if (gptImageAlias && imageUrls.length > gptImageAlias.maxInputImages) {
-    throw createProviderError('provider_bad_request', `GPT Image 2 最多支持 ${gptImageAlias.maxInputImages} 张输入图`);
-  }
 
   const requestBody = gptImageAlias
     ? {
-        model: imageUrls.length > 0 ? gptImageAlias.image : gptImageAlias.text,
-        input: imageUrls.length > 0
+        model: limitedImageUrls.length > 0 ? gptImageAlias.image : gptImageAlias.text,
+        input: limitedImageUrls.length > 0
           ? {
               prompt,
-              input_urls: imageUrls,
+              input_urls: limitedImageUrls,
               ...((gptImageAlias.supportedAspectRatios || []).includes(String(payload.aspectRatio || 'auto'))
                 ? { aspect_ratio: normalizedAspectRatio }
                 : {}),
@@ -1628,7 +1659,7 @@ const runKieImageJob = async (payload, env, signal, options = {}) => {
         model: payload.model || 'gpt-image-2',
         input: {
           prompt,
-          image_input: imageUrls,
+          image_input: limitedImageUrls,
           aspect_ratio: payload.aspectRatio || 'auto',
           resolution: payload.resolution || GPT_IMAGE_2_DEFAULT_RESOLUTION,
           output_format: 'png',
@@ -2131,6 +2162,15 @@ const normalizeSeedanceDuration = (value) => {
   return Math.max(4, Math.min(15, parsed));
 };
 
+const normalizeSeedanceGenerateAudio = (value, fallback = true) => {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (['false', '0', 'off', 'no', '关闭', '否'].includes(normalized)) return false;
+  if (['true', '1', 'on', 'yes', '开启', '是'].includes(normalized)) return true;
+  return fallback;
+};
+
 const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
@@ -2161,7 +2201,7 @@ const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
     duration: normalizeSeedanceDuration(payload.duration),
     aspect_ratio: normalizeSeedanceAspectRatio(payload.aspectRatio || payload.ratio),
     resolution: normalizeSeedanceResolution(payload.resolution || payload.videoResolution || payload.video_resolution),
-    generate_audio: Boolean(payload.generateAudio ?? payload.generate_audio ?? false),
+    generate_audio: normalizeSeedanceGenerateAudio(payload.generateAudio ?? payload.generate_audio, true),
     nsfw_checker: false,
   };
 
@@ -2517,6 +2557,18 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
     case 'kie_video':
       return runKieVideoJob(job.payload, env, signal, options);
     case 'kie_seedance_video':
+      if (job.providerTaskId) {
+        return runKieRecoverJob(
+          {
+            ...job.payload,
+            providerTaskId: job.providerTaskId,
+            taskId: job.providerTaskId,
+            isVideo: true,
+          },
+          env,
+          signal
+        );
+      }
       return runKieSeedanceVideoJob(job.payload, env, signal, options);
     case 'kie_veo':
       return runKieVeoJob(job.payload, env, signal, options);

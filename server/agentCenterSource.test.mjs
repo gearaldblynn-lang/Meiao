@@ -105,6 +105,12 @@ test('agent chat source preserves provider modelUsed metadata for direct convers
   assert.match(source, /let output = null;[\s\S]*output = await executeProviderJob\(\{[\s\S]*model: selectedModel,[\s\S]*const actualModel = String\(output\?\.result\?\.modelUsed \|\| selectedModel/);
 });
 
+test('agent retrieval loop forwards configured chat fallback models to provider execution', () => {
+  assert.match(source, /const runAgenticRetrievalLoop = async \(\{[\s\S]*fallbackModels = \[\],[\s\S]*\}\) =>/);
+  assert.match(source, /payload: \{ messages, model: selectedModel, fallbackModels, reasoningLevel, webSearchEnabled \}/);
+  assert.match(source, /runAgenticRetrievalLoop\(\{[\s\S]*selectedModel,[\s\S]*fallbackModels,[\s\S]*candidateChunks/);
+});
+
 test('agent chat source forwards multimodal attachments and model options into provider execution in both modes', () => {
   assert.match(source, /const buildChatMessageContent = \(text, attachments = \[\]\) =>/);
   assert.match(source, /type: 'image_url'/);
@@ -144,6 +150,11 @@ test('agent chat source records image generation usage and local image replies',
   assert.match(source, /action: requestMode === 'image_generation' \? 'create_image_task' : 'agent_chat'/);
   assert.match(source, /imagePlan: result\.imagePlan \|\| null/);
   assert.match(source, /imageResultUrls: result\.imageResultUrls \|\| null/);
+});
+
+test('agent image result asset persistence bounds provider task ids before writing stored asset job id', () => {
+  assert.match(source, /const normalizeStoredAssetJobId = \(value\) => String\(value \|\| ''\)\.trim\(\)\.slice\(0, 120\);/);
+  assert.match(source, /jobId: normalizeStoredAssetJobId\(imageOutput\?\.providerTaskId\)/);
 });
 
 test('agent chat source persists client request ids so timed-out image chats can sync completed results', () => {

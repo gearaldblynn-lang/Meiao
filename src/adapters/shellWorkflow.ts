@@ -116,6 +116,12 @@ const firstParam = (params: Record<string, string>, keys: string[], fallback = '
   return fallback;
 };
 
+const parseSeedanceGenerateAudio = (params: Record<string, string>) => {
+  const raw = firstParam(params, ['generateAudio', 'generate_audio', 'videoGenerateAudio'], 'true');
+  const normalized = String(raw || '').trim().toLowerCase();
+  return !['false', '0', 'off', 'no', '关闭', '否'].includes(normalized);
+};
+
 const normalizeShellAssetUrl = (url: string, publicBaseUrl = '') => resolvePublicAssetUrl(url, publicBaseUrl);
 
 const requireShellAssetUrl = (url: string, publicBaseUrl = '', label = '素材') => {
@@ -1095,7 +1101,7 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
           duration,
           aspectRatio: firstParam(input.params, ['ratio', 'aspectRatio'], '9:16'),
           resolution: normalizeSeedanceApiResolution(firstParam(input.params, ['videoResolution'], '720p')),
-          generateAudio: false,
+          generateAudio: parseSeedanceGenerateAudio(input.params),
           model: 'bytedance/seedance-2-fast',
           subFeature: input.subFeature,
         }
@@ -1112,7 +1118,7 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
           modelVersion: 'seedance2.0fast_vip',
           subFeature: input.subFeature,
         },
-    maxRetries: 1,
+    maxRetries: 0,
   });
   input.onJobCreated?.(job.id);
 

@@ -145,7 +145,8 @@ export const normalizeAllowedOrigins = (value) => {
 export const isRetryableErrorCode = (errorCode) => RETRYABLE_ERROR_CODES.has(String(errorCode || ''));
 
 export const isTransientMysqlConnectionError = (error) =>
-  TRANSIENT_MYSQL_CONNECTION_ERROR_CODES.has(String(error?.code || ''));
+  TRANSIENT_MYSQL_CONNECTION_ERROR_CODES.has(String(error?.code || ''))
+  || /pool is closed|connection lost|server closed the connection/i.test(String(error?.message || ''));
 
 export const getNextJobFailureState = ({ retryCount = 0, maxRetries = 0, errorCode = '' }) => {
   if (!isRetryableErrorCode(errorCode)) {
@@ -177,6 +178,87 @@ export const buildJobFailureLogFields = ({ jobStatus = '', taskType = '' }) => {
     action: 'job_failed',
     message: `${taskLabel} 任务失败`,
     status: 'failed',
+  };
+};
+
+const trimLogText = (value, limit = 160) => {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > limit ? `${text.slice(0, limit)}...` : text;
+};
+
+const normalizeLogNumber = (value, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
+const normalizeLogCreditsConsumed = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
+const countResultUrls = (result = {}) => {
+  const values = [
+    result?.imageUrl,
+    result?.videoUrl,
+    result?.resultUrl,
+    ...(Array.isArray(result?.resultUrls) ? result.resultUrls : []),
+    ...(Array.isArray(result?.imageResultUrls) ? result.imageResultUrls : []),
+    ...(Array.isArray(result?.videoResultUrls) ? result.videoResultUrls : []),
+    ...(Array.isArray(result?.outputUrls) ? result.outputUrls : []),
+  ];
+  return values.map((value) => String(value || '').trim()).filter(Boolean).length;
+};
+
+export const buildJobRuntimeLogMeta = ({
+  job = {},
+  result = null,
+  error = null,
+  finishedAt = 0,
+  retryCount,
+} = {}) => {
+  const payload = job?.payload && typeof job.payload === 'object' ? job.payload : {};
+  const resultBody = result?.result && typeof result.result === 'object' ? result.result : {};
+  const doneAt = normalizeLogNumber(finishedAt, 0);
+  const createdAt = normalizeLogNumber(job?.createdAt, 0);
+  const rawStartedAt = normalizeLogNumber(job?.startedAt, 0);
+  const startedAt = rawStartedAt || (doneAt && createdAt ? createdAt : 0);
+  const providerTaskId = String(
+    result?.providerTaskId
+    || resultBody?.providerTaskId
+    || error?.providerTaskId
+    || job?.providerTaskId
+    || payload?.providerTaskId
+    || payload?.taskId
+    || ''
+  ).trim();
+  const creditsConsumed = normalizeLogCreditsConsumed(resultBody?.creditsConsumed ?? result?.creditsConsumed);
+
+  return {
+    jobId: String(job?.id || '').trim(),
+    providerTaskId,
+    provider: String(job?.provider || '').trim(),
+    taskType: String(job?.taskType || '').trim(),
+    module: String(job?.module || '').trim(),
+    subFeature: String(payload?.subFeature || payload?.subMode || '').trim(),
+    shellPurpose: String(payload?.shellPurpose || payload?.shellPlanningPurpose || '').trim(),
+    shellProjectId: String(payload?.shellProjectId || payload?.projectId || payload?.clientProjectId || '').trim(),
+    shellProjectName: trimLogText(payload?.shellProjectName || payload?.projectName || ''),
+    shellPlanId: String(payload?.shellPlanId || payload?.planId || '').trim(),
+    batchIndex: normalizeLogNumber(payload?.batchIndex, 0),
+    batchCount: normalizeLogNumber(payload?.batchCount || payload?.count, 0),
+    requestId: String(payload?.requestId || '').trim(),
+    providerStage: String(result?.providerStage || error?.providerStage || '').trim(),
+    providerStatus: String(result?.providerStatus || error?.providerStatus || '').trim(),
+    retryCount: normalizeLogNumber(retryCount ?? job?.retryCount, 0),
+    maxRetries: normalizeLogNumber(job?.maxRetries, 0),
+    errorCode: String(error?.code || job?.errorCode || '').trim(),
+    resultUrlCount: countResultUrls(resultBody),
+    ...(creditsConsumed !== undefined ? { creditsConsumed } : {}),
+    queueWaitMs: rawStartedAt && createdAt ? Math.max(0, rawStartedAt - createdAt) : 0,
+    runtimeMs: doneAt && startedAt ? Math.max(0, doneAt - startedAt) : 0,
+    jobCreatedAt: createdAt,
+    jobStartedAt: startedAt || null,
+    jobFinishedAt: doneAt || null,
   };
 };
 

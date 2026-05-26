@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { buildJobFailureLogFields, getNextJobFailureState } from './jobRuntime.mjs';
+import { buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
 import { findReusableJobSubmission, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
 
 const now = () => Date.now();
@@ -372,19 +372,7 @@ export const createLocalJobWorker = ({
                 action: 'job_completed',
                 message: `${finishedJob.taskType} 任务${controller.signal.aborted ? '已取消' : '完成'}`,
                 status: controller.signal.aborted ? 'interrupted' : 'success',
-                meta: {
-                  jobId: finishedJob.id,
-                  providerTaskId: finishedJob.providerTaskId || '',
-                  provider: finishedJob.provider,
-                  retryCount: finishedJob.retryCount,
-                  taskType: finishedJob.taskType,
-                  creditsConsumed: normalizeJobCreditsConsumed(finishedJob.result?.creditsConsumed),
-                  queueWaitMs: finishedJob.startedAt && finishedJob.createdAt ? Math.max(0, finishedJob.startedAt - finishedJob.createdAt) : 0,
-                  runtimeMs: finishedJob.startedAt && finishedJob.finishedAt ? Math.max(0, finishedJob.finishedAt - finishedJob.startedAt) : 0,
-                  jobCreatedAt: finishedJob.createdAt,
-                  jobStartedAt: finishedJob.startedAt,
-                  jobFinishedAt: finishedJob.finishedAt,
-                },
+                meta: buildJobRuntimeLogMeta({ job: finishedJob, result: { providerTaskId: finishedJob.providerTaskId, result: finishedJob.result }, finishedAt: finishedJob.finishedAt }),
               });
             }
           } catch (error) {
@@ -407,19 +395,7 @@ export const createLocalJobWorker = ({
                 message: error?.code === 'request_cancelled' ? `${failedJob.taskType} 任务失败` : logFields.message,
                 detail: failedJob.errorMessage,
                 status: error?.code === 'request_cancelled' ? 'interrupted' : logFields.status,
-                meta: {
-                  jobId: failedJob.id,
-                  providerTaskId: error?.providerTaskId || failedJob.providerTaskId || '',
-                  provider: failedJob.provider,
-                  retryCount: failedJob.retryCount,
-                  errorCode: failedJob.errorCode,
-                  taskType: failedJob.taskType,
-                  queueWaitMs: failedJob.startedAt && failedJob.createdAt ? Math.max(0, failedJob.startedAt - failedJob.createdAt) : 0,
-                  runtimeMs: failedJob.startedAt ? Math.max(0, Date.now() - failedJob.startedAt) : 0,
-                  jobCreatedAt: failedJob.createdAt,
-                  jobStartedAt: failedJob.startedAt,
-                  jobFinishedAt: failedJob.finishedAt,
-                },
+                meta: buildJobRuntimeLogMeta({ job: failedJob, error, finishedAt: failedJob.finishedAt || Date.now(), retryCount: failedJob.retryCount }),
               });
             }
           } finally {
