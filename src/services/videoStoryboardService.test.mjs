@@ -63,6 +63,23 @@ test('original storyboard script generation explicitly uses the video analysis m
   assert.doesNotMatch(source, /const taskId = String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| job\.id/);
 });
 
+test('original storyboard planning outputs segmented storyboard and dynamic script prompts like viral mode', () => {
+  const requestPromptBlock = source.match(/const buildScriptRequestPrompt = \([\s\S]*?const CHINESE_NUMERALS =/)?.[0] || '';
+  const originalBuilderBlock = source.match(/const buildOriginalSplitShotsAndBoards = \([\s\S]*?const buildViralSplitShotsAndBoards =/)?.[0] || '';
+  const parseBlock = source.match(/if \(config\.videoGenerationMode === 'viral_split'\) \{[\s\S]*?const limited = parsed\.slice/)?.[0] || '';
+
+  assert.match(requestPromptBlock, /storyboardPrompt/);
+  assert.match(requestPromptBlock, /dynamicScriptPrompt/);
+  assert.match(requestPromptBlock, /宫格分镜图 prompt 必须严格使用以下格式/);
+  assert.match(requestPromptBlock, /动态视频脚本提示词必须严格使用以下格式/);
+  assert.match(requestPromptBlock, /不得描述、复述或猜测商品包装的品牌、标签、文字和内容物细节/);
+  assert.match(originalBuilderBlock, /normalizeOriginalStoryboardPrompt/);
+  assert.match(originalBuilderBlock, /normalizeOriginalDynamicScriptPrompt/);
+  assert.match(originalBuilderBlock, /buildOriginalSplitShotsAndBoards/);
+  assert.match(parseBlock, /if \(parsed\.some\(\(item\) => item\?\.storyboardPrompt \|\| item\?\.dynamicScriptPrompt\)\) \{/);
+  assert.match(parseBlock, /const result = buildOriginalSplitShotsAndBoards\(parsed, config\);/);
+});
+
 test('storyboard board edit uses a focused edit prompt instead of replaying the full generation prompt', () => {
   const editPromptBlock = source.match(/const buildStoryboardBoardEditPrompt = \(\{[\s\S]*?export const generateStoryboardBoardImage =/)?.[0] || '';
   const generationBlock = source.match(/export const generateStoryboardBoardImage = async \([\s\S]*?export const generateStoryboardWhiteBgImage =/)?.[0] || '';
