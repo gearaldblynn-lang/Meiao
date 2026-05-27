@@ -5316,6 +5316,35 @@ const AppContent: React.FC<{
         finalInstruction,
         uploadedSupplementUrls,
       );
+      if (isRecoverableShellWorkflowResult(generated.result)) {
+        const pendingMessage = generated.result.message || '任务已提交云端，结果待同步';
+        setVideoMemory((prev) => {
+          const currentStoryboard = (prev || baseVideoMemory).storyboard || baseStoryboard;
+          return {
+            ...(prev || baseVideoMemory),
+            storyboard: {
+              ...currentStoryboard,
+              projects: (currentStoryboard.projects || []).map((item) => item.id === projectId ? {
+                ...item,
+                status: 'imaging',
+                error: undefined,
+                boards: item.boards.map((currentBoard) => currentBoard.id === resultId ? {
+                  ...currentBoard,
+                  status: 'generating' as const,
+                  prompt: generated.prompt,
+                  taskId: generated.result.taskId || currentBoard.taskId,
+                  error: pendingMessage,
+                  previousBoardImageUrl,
+                  revisionInstruction: finalInstruction,
+                  imageVersions: nextVersions,
+                } : currentBoard),
+              } : item),
+            },
+          };
+        });
+        addToast('分镜图修改任务已提交云端，结果待同步，可稍后点击找回。', 'info');
+        return true;
+      }
       if (generated.result.status !== 'success' || !generated.result.imageUrl) {
         throw new Error(generated.result.message || '分镜图修改失败');
       }

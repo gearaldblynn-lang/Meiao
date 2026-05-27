@@ -2446,6 +2446,19 @@ test('video storyboard result edit stays in the same card with version history a
   assert.match(videoStoryboardService, /补充参考图公网URL/);
 });
 
+test('video storyboard edit keeps recoverable submitted cloud tasks pending instead of failed', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const storyboardEditBlock = shellApp.match(/const handleStoryboardEditResult = useCallback\(async \([\s\S]*?const handleEditResult = useCallback/)?.[0] || '';
+
+  assert.match(storyboardEditBlock, /if \(isRecoverableShellWorkflowResult\(generated\.result\)\) \{/);
+  assert.match(storyboardEditBlock, /status: 'imaging'/);
+  assert.match(storyboardEditBlock, /status: 'generating' as const/);
+  assert.match(storyboardEditBlock, /taskId: generated\.result\.taskId \|\| currentBoard\.taskId/);
+  assert.match(storyboardEditBlock, /addToast\('分镜图修改任务已提交云端，结果待同步，可稍后点击找回。', 'info'\)/);
+  assert.match(storyboardEditBlock, /return true;/);
+  assert.doesNotMatch(storyboardEditBlock, /if \(generated\.result\.status !== 'success' \|\| !generated\.result\.imageUrl\) \{\s*throw new Error\(generated\.result\.message \|\| '分镜图修改失败'\);\s*\}\s*if \(isRecoverableShellWorkflowResult\(generated\.result\)\)/);
+});
+
 test('video storyboard recovery polls KIE task id and writes back to the same board', () => {
   const projectCard = read('../shell/components/ProjectCard.tsx');
   const shellApp = read('../ShellMigratedApp.tsx');
