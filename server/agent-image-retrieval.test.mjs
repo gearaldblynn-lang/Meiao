@@ -59,3 +59,13 @@ test('image generation honors explicit image indexes before falling back to all 
   assert.match(selectorBlock, /if \(!hasRequestedIndexes \|\| selected\.length === 0\) \{\s*fallbackCandidates\.forEach\(\(item\) => pushReference\(item\)\);/);
   assert.doesNotMatch(selectorBlock, /if \(refs\.length <= limit\) return refs\.slice\(0, limit\);[\s\S]*const requestedIndexes/);
 });
+
+test('image generation analysis sends selected references as multimodal image url items', () => {
+  const analysisBlock = serverSource.match(/const buildImageGenerationAnalysisMessages = \(\{[\s\S]*?const detectExplicitAspectRatioInstruction =/)?.[0] || '';
+
+  assert.match(analysisBlock, /const referenceImageItems = imageReferences/);
+  assert.match(analysisBlock, /type: 'image_url'/);
+  assert.match(analysisBlock, /image_url: \{ url \}/);
+  assert.match(analysisBlock, /content: referenceImageItems\.length > 0\s*\?\s*\[/);
+  assert.match(analysisBlock, /\{ type: 'text', text: userAnalysisText \}/);
+});
