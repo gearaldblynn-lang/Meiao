@@ -71,6 +71,13 @@ const traceStartup = (label: string) => {
   console.info(`[MEIAO startup] ${label} ${entry.t.toFixed(1)}ms`);
 };
 
+const normalizeShellImageModel = (value: unknown) => {
+  const normalized = String(value || '').toLowerCase();
+  if (normalized.includes('nano') || normalized.includes('banana')) return 'nano-banana-2';
+  if (normalized.includes('secondary') || normalized.includes('副')) return 'gpt-image-2-secondary';
+  return 'gpt-image-2';
+};
+
 /* ═══════════════════════════════════════════
    Types
    ═══════════════════════════════════════════ */
@@ -3079,7 +3086,7 @@ const AppContent: React.FC<{
                 : String(generationParams.quality || '1K').toLowerCase().includes('2')
                   ? '2k'
                   : '1k',
-              model: String(generationParams.model || 'GPT Image 2').toLowerCase().includes('nano') ? 'nano-banana-2' : 'gpt-image-2',
+              model: normalizeShellImageModel(generationParams.model || 'GPT Image 2'),
               resolutionMode: String(generationParams.resolutionMode || generationParams.sizeMode || 'custom').includes('original')
                 ? 'original'
                 : 'custom',
@@ -4813,7 +4820,7 @@ const AppContent: React.FC<{
             : String(retryParams.quality || '1K').toLowerCase().includes('2')
               ? '2k'
               : '1k',
-          model: String(retryParams.model || 'GPT Image 2').toLowerCase().includes('nano') ? 'nano-banana-2' : 'gpt-image-2',
+          model: normalizeShellImageModel(retryParams.model || 'GPT Image 2'),
           resolutionMode: String(retryParams.resolutionMode || retryParams.sizeMode || 'custom').includes('original')
             ? 'original'
             : 'custom',

@@ -91,6 +91,7 @@ const MODULE_LABELS: Record<string, string> = {
 const toModel = (value?: string): KieAiModel => {
   const normalized = String(value || '').toLowerCase();
   if (normalized.includes('nano') || normalized.includes('banana')) return 'nano-banana-2';
+  if (normalized.includes('secondary') || normalized.includes('副')) return 'gpt-image-2-secondary';
   if (normalized.includes('gpt')) return 'gpt-image-2';
   return 'gpt-image-2';
 };
@@ -231,7 +232,7 @@ const firstMaterialUrl = (items: ShellMaterialInput[] | undefined, publicBaseUrl
 };
 
 const getImageResultModelLabel = (config: ModuleConfig) =>
-  config.model === 'nano-banana-2' ? 'Nano Banana 2' : 'GPT Image 2';
+  config.model === 'nano-banana-2' ? 'Nano Banana 2' : config.model === 'gpt-image-2-secondary' ? 'GPT Image 2（副）' : 'GPT Image 2';
 
 const getOneClickProductUrls = (input: ShellGenerateInput) => (input.materials.product || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
 const getOneClickReferenceUrls = (input: ShellGenerateInput) => [

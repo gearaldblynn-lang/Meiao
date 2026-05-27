@@ -25,6 +25,7 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
       MEIAO_JOB_MAX_CONCURRENCY: '7',
       MEIAO_ALLOWED_ORIGINS: 'https://meiao.internal',
       KIE_API_KEY: 'kie-secret',
+      APIPORTS_API_KEY: 'apiports-secret',
       MEIAO_PUBLIC_BASE_URL: 'https://meiao.internal',
     },
     { queued: 3, running: 2 }
@@ -36,6 +37,7 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.deepEqual(config.cors.allowedOrigins, ['https://meiao.internal']);
   assert.deepEqual(config.providers, {
     kie: { configured: true },
+    apiports: { configured: true },
   });
   assert.equal(config.publicBaseUrl, 'https://meiao.internal');
   assert.deepEqual(config.agentModels.chat.map((item) => item.id), [
@@ -74,6 +76,7 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.deepEqual(config.agentModels.chat[3].reasoningLevels, ['low', 'high']);
   assert.deepEqual(config.agentModels.image.map((item) => item.id), [
     'gpt-image-2',
+    'gpt-image-2-secondary',
     'nano-banana-2',
   ]);
   assert.equal(config.systemSettings.videoAnalysisModel, '');
@@ -310,6 +313,11 @@ test('buildJobRuntimeLogMeta exposes provider and shell binding fields for diagn
 
   assert.equal(meta.jobId, 'job-1');
   assert.equal(meta.providerTaskId, 'provider-new');
+  assert.equal(meta.diagnosticSchemaVersion, '2026-05-26.1');
+  assert.equal(meta.eventKind, 'job_runtime');
+  assert.equal(meta.traceId, 'request-1');
+  assert.equal(meta.correlationId, 'provider-new');
+  assert.equal(meta.jobStatus, '');
   assert.equal(meta.provider, 'kie');
   assert.equal(meta.taskType, 'kie_image');
   assert.equal(meta.module, 'one_click');
@@ -321,8 +329,12 @@ test('buildJobRuntimeLogMeta exposes provider and shell binding fields for diagn
   assert.equal(meta.batchIndex, 2);
   assert.equal(meta.batchCount, 4);
   assert.equal(meta.requestId, 'request-1');
+  assert.equal(meta.inputImageUrlCount, 0);
+  assert.equal(meta.inputFileUrlCount, 0);
+  assert.equal(meta.promptLength, 0);
   assert.equal(meta.providerStage, 'completed');
   assert.equal(meta.providerStatus, 'success');
+  assert.equal(meta.errorOrigin, '');
   assert.equal(meta.resultUrlCount, 1);
   assert.equal(meta.creditsConsumed, 0.25);
   assert.equal(meta.queueWaitMs, 1500);

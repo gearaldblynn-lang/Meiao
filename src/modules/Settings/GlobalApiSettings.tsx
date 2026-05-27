@@ -139,6 +139,7 @@ const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, curr
 
             <div className="grid grid-cols-1 gap-6">
               <ProviderCard title="Kie 引擎" configured={Boolean(systemConfig?.providers.kie.configured)} description="图片生成、视频生成、分镜脚本对话" />
+              <ProviderCard title="APIports Image 2（副）" configured={Boolean(systemConfig?.providers.apiports?.configured)} description="GPT Image 2 副通道，同步生图和参考图生成" />
             </div>
 
             <div className="mt-8 grid md:grid-cols-3 gap-4">

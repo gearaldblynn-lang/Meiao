@@ -101,6 +101,7 @@ const fallbackChatModels = [
 ];
 const fallbackImageModels = [
   { id: 'gpt-image-2', label: 'GPT Image 2' },
+  { id: 'gpt-image-2-secondary', label: 'GPT Image 2（副）' },
   { id: 'nano-banana-2', label: 'Nano Banana 2' },
 ];
 const AGENT_CENTER_MANAGER_STATE_KEY = 'MEIAO_AGENT_CENTER_MANAGER_STATE';

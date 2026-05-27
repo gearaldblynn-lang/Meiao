@@ -14,6 +14,15 @@ test('failed job logs keep providerTaskId from the thrown provider error', () =>
   assert.match(jobRuntimeSource, /error\?\.providerTaskId/);
 });
 
+test('job logs expose stable diagnostic correlation fields', () => {
+  assert.match(jobRuntimeSource, /diagnosticSchemaVersion: DIAGNOSTIC_SCHEMA_VERSION/);
+  assert.match(jobRuntimeSource, /eventKind: 'job_runtime'/);
+  assert.match(jobRuntimeSource, /traceId,/);
+  assert.match(jobRuntimeSource, /correlationId: firstNonEmpty\(providerTaskId, job\?\.id, requestId\)/);
+  assert.match(jobRuntimeSource, /errorOrigin: classifyRuntimeErrorOrigin\(error\)/);
+  assert.match(jobRuntimeSource, /inputImageUrlCount: inputCounts\.imageUrlCount/);
+});
+
 test('successful job logs include provider credits for billing statistics', () => {
   assert.match(jobManagerSource, /buildJobRuntimeLogMeta\(\{ job: refreshedJob, result: output, finishedAt \}\)/);
   assert.match(localJobStoreSource, /buildJobRuntimeLogMeta\(\{ job: finishedJob, result: \{ providerTaskId: finishedJob\.providerTaskId, result: finishedJob\.result \}, finishedAt: finishedJob\.finishedAt \}\)/);

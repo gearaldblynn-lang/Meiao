@@ -36,6 +36,7 @@ MEIAO_SUPER_ADMIN_USERS=admin
 MEIAO_SPIDER_GATEWAY_URL=请替换成你的 Spider 网关地址
 MEIAO_SPIDER_API_KEY=请替换成你的 Spider Key
 KIE_API_KEY=请替换成你的真实 KIE Key
+APIPORTS_API_KEY=请替换成你的真实 APIports Key
 ARK_API_KEY=请替换成你的真实 ARK Key
 EOF
 ```

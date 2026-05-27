@@ -12,6 +12,8 @@ const KIE_CHAT_URL = 'https://api.kie.ai/gpt-5-2/v1/chat/completions';
 const KIE_RESPONSES_URL = 'https://api.kie.ai/codex/v1/responses';
 const KIE_CLAUDE_MESSAGES_URL = 'https://api.kie.ai/claude/v1/messages';
 const KIE_GEMINI_FLASH_URL = 'https://api.kie.ai/gemini-3-flash/v1/chat/completions';
+const APIPORTS_IMAGE_GENERATIONS_URL = 'https://apiports.com/v1/api/generate';
+const APIPORTS_GPT_IMAGE_2_SECONDARY_MODEL = 'gpt-image-2-secondary';
 const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
 const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 240_000;
 const KIE_HTTP_REQUEST_TIMEOUT_MS = 60_000;
@@ -138,14 +140,14 @@ const attachProviderTaskId = (error, providerTaskId) => {
   return error;
 };
 
-const fetchKieWithTimeout = async (url, init = {}, timeoutMessage = 'Kie 请求超时') => {
+const fetchKieWithTimeout = async (url, init = {}, timeoutMessage = 'Kie 请求超时', timeoutMs = KIE_HTTP_REQUEST_TIMEOUT_MS) => {
   const controller = new AbortController();
   const upstreamSignal = init.signal;
   let timedOut = false;
   const timeoutId = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, KIE_HTTP_REQUEST_TIMEOUT_MS);
+  }, timeoutMs);
 
   const onAbort = () => controller.abort(upstreamSignal?.reason);
   if (upstreamSignal) {
@@ -182,6 +184,8 @@ const getEnvValue = (env, ...keys) => keys.map((key) => env[key]).find(Boolean) 
 
 const getProviderEnv = (env) => ({
   kieApiKey: getEnvValue(env, 'KIE_API_KEY', 'MEIAO_KIE_API_KEY'),
+  apiportsApiKey: getEnvValue(env, 'APIPORTS_API_KEY', 'MEIAO_APIPORTS_API_KEY'),
+  apiportsBaseUrl: getEnvValue(env, 'APIPORTS_BASE_URL', 'MEIAO_APIPORTS_BASE_URL'),
 });
 
 const ensureProviderKey = (value, label) => {
@@ -1607,7 +1611,122 @@ const runKieResponsesJob = async (payload, env, signal) => {
   };
 };
 
+const isApiportsGptImage2SecondaryModel = (model) =>
+  String(model || '').trim() === APIPORTS_GPT_IMAGE_2_SECONDARY_MODEL;
+
+const normalizeApiportsImageSize = (aspectRatio) => {
+  const normalized = String(aspectRatio || 'auto').trim() || 'auto';
+  if (!normalized || normalized === 'auto') return 'auto';
+  return normalized;
+};
+
+const sanitizeApiportsGptImage2Prompt = (prompt) => String(prompt || '')
+  .replace(/秒杀/g, '改善')
+  .replace(/杀菌/g, '清洁')
+  .replace(/抑菌/g, '清新')
+  .replace(/除菌/g, '清洁')
+  .replace(/抗菌/g, '清洁')
+  .replace(/除臭/g, '去味')
+  .replace(/官方背书/g, '通用推荐');
+
+const normalizeApiportsImageError = (responseStatus, result = {}) => {
+  const message = String(
+    (typeof result?.error === 'string' ? result.error : result?.error?.message)
+    || result?.message
+    || result?.msg
+    || 'APIports 图像任务请求失败'
+  ).trim();
+  if (responseStatus === 401 || responseStatus === 403) {
+    return createProviderError('provider_auth_invalid', message);
+  }
+  if (responseStatus === 429) {
+    return createProviderError('provider_rate_limited', message);
+  }
+  if (responseStatus >= 500) {
+    return createProviderError('provider_internal_error', message);
+  }
+  return createProviderError('provider_bad_request', message);
+};
+
+const runApiportsGptImage2Job = async (payload, env, signal) => {
+  const { apiportsApiKey, apiportsBaseUrl } = getProviderEnv(env);
+  ensureProviderKey(apiportsApiKey, 'APIports API Key');
+  const rawImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
+  const textMediaUrls = Array.from(extractTextMediaUrls(payload.prompt || ''));
+  assertSupportedGenerationImageReferences([
+    ...rawImageUrls,
+    ...textMediaUrls,
+  ]);
+  const resolvedGenerationUrlByRawUrl = new Map();
+  const resolveGenerationUrl = async (url) => {
+    const rawUrl = String(url || '').trim();
+    if (!rawUrl) return '';
+    if (!resolvedGenerationUrlByRawUrl.has(rawUrl)) {
+      resolvedGenerationUrlByRawUrl.set(rawUrl, resolveProviderGenerationMediaUrl(rawUrl, env, signal));
+    }
+    return resolvedGenerationUrlByRawUrl.get(rawUrl);
+  };
+  const imageUrls = await Promise.all(rawImageUrls.map((item) => resolveGenerationUrl(item)));
+  const limitedImageUrls = imageUrls.slice(0, KIE_IMAGE_MODEL_ALIASES['gpt-image-2'].maxInputImages);
+  const promptWithResolvedMediaUrls = await rewriteProviderTextMediaUrls(payload.prompt || '', resolveGenerationUrl);
+  const prompt = sanitizeApiportsGptImage2Prompt(promptWithResolvedMediaUrls);
+  const normalizedAspectRatio = String(payload.aspectRatio || 'auto').trim() || 'auto';
+  const requestUrl = `${String(apiportsBaseUrl || APIPORTS_IMAGE_GENERATIONS_URL).replace(/\/$/, '')}`;
+  const response = await fetchKieWithTimeout(requestUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiportsApiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'gpt-image-2',
+      prompt,
+      ...(limitedImageUrls.length > 0 ? { images: limitedImageUrls } : {}),
+      aspectRatio: normalizeApiportsImageSize(normalizedAspectRatio),
+      replyType: 'json',
+    }),
+    signal,
+  }, 'APIports 图像任务请求超时', 240_000);
+
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw normalizeApiportsImageError(response.status, result);
+  }
+  if (String(result?.status || '').toLowerCase() === 'failed') {
+    throw normalizeApiportsImageError(400, result);
+  }
+  const imageUrl = Array.isArray(result?.results)
+    ? String(result.results[0]?.url || '').trim()
+    : Array.isArray(result?.data)
+      ? String(result.data[0]?.url || '').trim()
+      : '';
+  if (!imageUrl) {
+    throw createProviderError('provider_bad_response', 'APIports 返回成功但没有结果链接');
+  }
+  const providerTaskId = String(result?.id || result?.taskId || result?.task_id || '').trim()
+    || (result?.created ? `apiports-${result.created}` : '');
+  const usageMeta = extractProviderUsageMeta(result);
+  return {
+    ...(providerTaskId ? { providerTaskId } : {}),
+    ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+    providerStage: 'completed',
+    providerStatus: 'success',
+    result: {
+      imageUrl,
+      taskId: providerTaskId,
+      status: 'success',
+      providerTaskId,
+      providerModel: APIPORTS_GPT_IMAGE_2_SECONDARY_MODEL,
+      ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+      ...(result?.usage ? { usage: result.usage } : {}),
+    },
+  };
+};
+
 const runKieImageJob = async (payload, env, signal, options = {}) => {
+  if (isApiportsGptImage2SecondaryModel(payload.model)) {
+    return runApiportsGptImage2Job(payload, env, signal, options);
+  }
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
   const rawImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
@@ -2585,6 +2704,7 @@ export const getProviderConfigStatus = (env) => {
   const providerEnv = getProviderEnv(env);
   return {
     kie: Boolean(providerEnv.kieApiKey),
+    apiports: Boolean(providerEnv.apiportsApiKey),
     dreamina: true,
   };
 };

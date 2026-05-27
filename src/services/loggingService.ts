@@ -159,6 +159,44 @@ interface LogActionPayload {
   meta?: Record<string, unknown>;
 }
 
+const DIAGNOSTIC_SCHEMA_VERSION = '2026-05-26.1';
+
+const firstMetaString = (meta: Record<string, unknown> | undefined, keys: string[]) => {
+  if (!meta) return '';
+  for (const key of keys) {
+    const value = meta[key];
+    const text = typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
+    if (text) return text;
+  }
+  return '';
+};
+
+const buildDiagnosticMeta = (meta: Record<string, unknown> | undefined, action: string, module: string) => {
+  const base = meta || {};
+  const requestId = firstMetaString(base, ['requestId', 'clientRequestId']);
+  const shellProjectId = firstMetaString(base, ['shellProjectId', 'projectId', 'clientProjectId']);
+  const shellPlanId = firstMetaString(base, ['shellPlanId', 'planId']);
+  const jobId = firstMetaString(base, ['jobId', 'backendJobId']);
+  const providerTaskId = firstMetaString(base, ['providerTaskId', 'taskId', 'kieTaskId']);
+  const traceId = firstMetaString(base, ['traceId', 'diagnosticTraceId'])
+    || requestId
+    || (shellPlanId ? `${shellProjectId || 'project'}:${shellPlanId}` : '')
+    || shellProjectId
+    || jobId
+    || providerTaskId;
+  const correlationId = providerTaskId || jobId || traceId;
+
+  return {
+    diagnosticSchemaVersion: DIAGNOSTIC_SCHEMA_VERSION,
+    eventKind: String(base.eventKind || 'frontend_action'),
+    action,
+    module,
+    ...(traceId ? { traceId } : {}),
+    ...(correlationId ? { correlationId } : {}),
+    ...base,
+  };
+};
+
 export const logInternalAction = async ({
   module,
   action,
@@ -176,7 +214,7 @@ export const logInternalAction = async ({
     message,
     detail,
     status,
-    meta,
+    meta: buildDiagnosticMeta(meta, action, finalModule),
   });
 };
 

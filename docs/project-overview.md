@@ -116,6 +116,8 @@ npm run dev
 
 模型与网关：
 - `KIE_API_KEY` 或 `MEIAO_KIE_API_KEY`
+- `APIPORTS_API_KEY` 或 `MEIAO_APIPORTS_API_KEY`
+- `APIPORTS_BASE_URL` 或 `MEIAO_APIPORTS_BASE_URL`，默认使用奇点图像生成入口 `https://apiports.com/v1/api/generate`
 - `ARK_API_KEY`
 - `KIE_CHAT_MODEL`
 - `MEIAO_DEFAULT_CHAT_MODEL`
