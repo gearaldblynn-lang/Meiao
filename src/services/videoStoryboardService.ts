@@ -242,13 +242,19 @@ ${formatUrlList(productImageUrls, '商品参考图公网URL')}
 - 裂变修改幅度：${config.viralVariationStrength === 'custom' ? (config.viralCustomVariationStrength || '自定义') : `${config.viralVariationStrength}%`}。
 - 不需要遵循用户单独填写的脚本逻辑，请直接按爆款视频的节奏、卖点组织和市场语言做商品替换式裂变。`
     : '';
+  const ranges = getSplitRanges(config);
+  const segmentSpec = ranges.map((range, index) => {
+    const panelCount = Math.max(1, range.end - range.start);
+    const segmentSeconds = config.duration === '30s' ? 15 : timingGuide.totalSeconds;
+    return `${getSegmentLabel(index)}：${segmentSeconds}秒，${panelCount}个分镜`;
+  }).join('；');
 
   return `
 R Role 角色
 专业电商短视频分镜导演。
 
 T Task 任务
-基于参考产品图，为一个 ${config.duration} 的视频生成 ${config.shotCount} 个连续分镜。
+基于参考产品图，为一个 ${config.duration} 的原创电商短视频生成可直接用于“分镜板生图”和“动态视频生成”的分段提示词。
 
 C Constraint 约束
 - 产品信息：${config.productInfo || '未补充'}
@@ -263,38 +269,54 @@ ${viralInstruction}
 
 硬性要求：
 1. 只输出 JSON 数组，不要 markdown，不要解释。
-2. 必须输出刚好 ${config.shotCount} 个对象，并按视频时间顺序排列。
-3. 每个对象必须包含 description、prompt、script 三个字段。
-4. description：描述静态分镜画面，不是视频运镜，不允许字幕、logo、水印。
-5. prompt：用于分镜板生成的单格画面提示词，必须严格保持产品与参考图一致，不要重复堆砌形容词。
-6. script 格式必须为：
-   分镜X（时长）
-   画面：...
-   动作：...
-   口播：...
-7. "画面" 和 "动作" 用中文；"口播" 用 ${config.countryLanguage} 对应语言。
-8. 总时长是 ${timingGuide.totalSeconds} 秒，平均每个镜头约 ${timingGuide.averageSeconds} 秒。每个分镜的时长分配必须合理，不可全部机械写成同一个秒数。
-9. 每个分镜的口播长度必须严格匹配该镜头时长。按当前语言，单镜头口播建议控制在 ${timingGuide.averageWords} 左右；镜头越短，口播越短。
-10. 每个分镜的动作描述必须符合镜头时长，短镜头只允许单一明确动作，不能塞进过多连续动作。
-11. 所有分镜必须符合电商广告逻辑，画面清楚、卖点明确、时间线连续。
-12. ${durationRule}
-13. 最终这些分镜将被排入单张分镜板中，请确保各分镜描述风格统一，便于一次性生成整板画面。
+2. 必须按分段输出对象：${segmentSpec}。
+3. 每个对象必须包含 title、durationSeconds、panelCount、storyboardPrompt、dynamicScriptPrompt 五个字段。
+4. storyboardPrompt 是“宫格分镜图生图提示词”，必须是完整中文结构化 prompt，不要只输出单格英文短句。
+5. dynamicScriptPrompt 是“对应动态视频脚本提示词”，必须和 storyboardPrompt 的每个分镜一一对应。
+6. 每个分镜都必须包含具体画面、动作状态、机位/景别、环境/道具/光影信息；不要只写“产品特写、女生喝咖啡”这种短句。
+7. 总时长是 ${timingGuide.totalSeconds} 秒，平均每个镜头约 ${timingGuide.averageSeconds} 秒。每个分镜的时长分配必须合理，不可全部机械写成同一个秒数。
+8. 每个分镜的口播长度必须严格匹配该镜头时长。按当前语言，单镜头口播建议控制在 ${timingGuide.averageWords} 左右；镜头越短，口播越短。
+9. 每个分镜的动作描述必须符合镜头时长，短镜头只允许单一明确动作，不能塞进过多连续动作。
+10. 所有分镜必须符合电商广告逻辑，画面清楚、卖点明确、时间线连续。
+11. ${durationRule}
+12. 分镜板中禁止字幕、广告语、水印、logo、分镜序号；口播只写在 dynamicScriptPrompt 中。
+13. 不得描述、复述或猜测商品包装的品牌、标签、文字和内容物细节；涉及商品时使用“[商品：保持与商品参考图完全一致，不展开描述包装细节]”。
+
+宫格分镜图 prompt 必须严格使用以下格式，不能压缩成一段话：
+分段一
+{任务：根据输入按照要求制作一张x宫格分镜图，保证每个分镜单元格画面都必须是${config.aspectRatio}视频比例。
+【全片核心视觉基调】
+人物细节：用一句完整中文描述本原创视频的人物类型、手部/身体动作、服装气质和出镜范围，所有分段保持一致
+环境/场景：用一句完整中文描述本原创视频的具体场景、桌面/办公/咖啡/道具、光线方向、景深和机位，并在全片保持连续
+全局一致性：商品参考图一致性、人物、场景、道具、光影、镜头语言、画面质感在所有分段保持连续一致。
+分镜内容如下
+分镜一：xxx
+……
+固定要求:
+-所有分镜头集中在“一张大图”中，采用均等的网格排列（例如 2x2, 3x4 根据视频镜头数量而定，严格按${config.aspectRatio}比例对单格内容先构图，保证每一个分镜单元格内容都是${config.aspectRatio}比例，再组合成整个画面，）
+-分镜画面需要保持纯净，严禁出现以下元素：字幕、广告语、水印、分镜序号等任何形式的后期叠加文本
+-如果是第二段及后续分段，必须写入：请延续上一张宫格分镜制作，并保持人物、商品、环境、光影、排版连续}
+
+动态视频脚本提示词必须严格使用以下格式，不能压缩成一段话：
+分段一
+{前置要求：保持视频画面纯净，禁止出现任何文字字幕！
+【全局一致性要求】
+商品必须保持与商品参考图一致；人物/场景/道具/光影必须与对应宫格分镜保持一致。
+【分镜详细描述】
+分镜一：00:00 - 00:00（脚本第二段也从00:00开始）
+画面描述(视觉)：xxx（景别+机位+动作状态+画面内容描述）；xxx（动作/运镜节奏）
+口播（情绪描写）：“xxx”
+音效：xxx}
+每个分段时间码都从 00:00 开始。
 
 F Format 格式
 [
   {
-    "description": "静态分镜画面描述",
-    "prompt": "单格分镜板提示词",
-    "script": "分镜1（时长）\\n画面：...\\n动作：...\\n口播：..."
-  }
-]
-
-E Example 示例
-[
-  {
-    "description": "产品置于干净台面，侧光突出材质。",
-    "prompt": "clean product on tabletop, soft side light, commercial frame",
-    "script": "分镜1（2秒）\\n画面：产品位于桌面中央。\\n动作：镜头轻推近。\\n口播：..."
+    "title": "分段一",
+    "durationSeconds": 15,
+    "panelCount": 9,
+    "storyboardPrompt": "用于生成该分段宫格分镜图的完整 prompt",
+    "dynamicScriptPrompt": "用于生成该分段动态视频的完整脚本提示词"
   }
 ]
   `.trim();
@@ -442,6 +464,111 @@ ${shots.map((shot, shotIndex) => `分镜${CHINESE_NUMERALS[shotIndex] || shotInd
 口播（${shot.voiceEmotion}）：“${shot.voiceover}”
 音效：${shot.audio}`).join('\n')}}
 `;
+};
+
+const normalizeOriginalStoryboardPrompt = (
+  item: { title?: string; storyboardPrompt?: string },
+  index: number,
+  panelCount: number,
+  config: VideoStoryboardConfig,
+) => {
+  const title = item.title || getSegmentLabel(index);
+  const raw = String(item.storyboardPrompt || '').trim();
+  const cells = extractStoryboardCells(raw, panelCount);
+  const personDetail = extractCoreVisualDescription(
+    raw,
+    '人物细节',
+    config.actorType === 'real_person'
+      ? `符合${config.countryLanguage}市场审美的真实人物出镜，手部和上半身动作自然，服装气质干净亲和，所有分段保持一致。`
+      : '根据演员类型保持统一的人物或局部动作表达，出镜范围、动作节奏和商业广告气质在所有分段保持一致。',
+  );
+  const environmentDetail = extractCoreVisualDescription(
+    raw,
+    '环境/场景',
+    String(config.scenes?.[0] || config.productInfo || '干净明亮的电商短视频拍摄场景，桌面道具、光线方向、景深和机位在全片保持连续。'),
+  );
+
+  return `${title}
+{任务：根据输入按照要求制作一张${panelCount}宫格分镜图，保证每个分镜单元格画面都必须是${config.aspectRatio}视频比例。
+【全片核心视觉基调】
+人物细节：${personDetail}
+环境/场景：${environmentDetail}
+全局一致性：商品参考图一致性、人物、场景、道具、光影、镜头语言、画面质感在所有分段保持连续一致。
+分镜内容如下
+${cells.map((cell, cellIndex) => `分镜${CHINESE_NUMERALS[cellIndex] || cellIndex + 1}：${cell}`).join('\n')}
+固定要求:
+-所有分镜头集中在“一张大图”中，采用均等的网格排列（例如 2x2, 3x4 根据视频镜头数量而定，严格按${config.aspectRatio}比例对单格内容先构图，保证每一个分镜单元格内容都是${config.aspectRatio}比例，再组合成整个画面，）
+-分镜画面需要保持纯净，严禁出现以下元素：字幕、广告语、水印、分镜序号等任何形式的后期叠加文本
+-${index > 0 ? '请延续上一张宫格分镜制作，并保持人物、商品、环境、光影、排版连续' : '建立可供后续分段延续的人物、商品、环境、光影、排版标准'}}`;
+};
+
+const normalizeOriginalDynamicScriptPrompt = (
+  item: { title?: string; dynamicScriptPrompt?: string },
+  index: number,
+  panelCount: number,
+  config: VideoStoryboardConfig,
+) => {
+  const title = item.title || getSegmentLabel(index);
+  const shots = extractScriptShots(item.dynamicScriptPrompt || '', panelCount, config);
+  return `${title}
+{前置要求：保持视频画面纯净，禁止出现任何文字字幕！
+【全局一致性要求】
+商品必须保持与商品参考图一致；人物/场景/道具/光影必须与对应宫格分镜保持一致。
+【分镜详细描述】
+${shots.map((shot, shotIndex) => `分镜${CHINESE_NUMERALS[shotIndex] || shotIndex + 1}：${shot.start} - ${shot.end}（脚本第二段也从00:00开始）
+画面描述(视觉)：${shot.visual}；${shot.motion}
+口播（${shot.voiceEmotion}）：“${shot.voiceover}”
+音效：${shot.audio}`).join('\n')}}
+`;
+};
+
+const buildOriginalSplitShotsAndBoards = (
+  parsed: Array<{
+    title?: string;
+    durationSeconds?: number;
+    panelCount?: number;
+    storyboardPrompt?: string;
+    dynamicScriptPrompt?: string;
+  }>,
+  config: VideoStoryboardConfig,
+) => {
+  const ranges = getSplitRanges(config);
+  const segments = parsed.filter((item) => item && (item.storyboardPrompt || item.dynamicScriptPrompt));
+  if (segments.length === 0) throw new Error('原创分镜策划结果为空');
+  const shots: VideoStoryboardShot[] = [];
+  const boards: VideoStoryboardBoard[] = segments.map((item, index) => {
+    const fallbackRange = ranges[index] || ranges[ranges.length - 1] || { start: 0, end: config.shotCount };
+    const panelCount = Math.max(1, Math.min(12, Number(item.panelCount || (fallbackRange.end - fallbackRange.start) || config.shotCount || 9) || 9));
+    const storyboardPrompt = normalizeOriginalStoryboardPrompt(item, index, panelCount, config);
+    const dynamicScriptPrompt = normalizeOriginalDynamicScriptPrompt(item, index, panelCount, config);
+    const cells = extractStoryboardCells(storyboardPrompt, panelCount);
+    const scriptShots = extractScriptShots(dynamicScriptPrompt, panelCount, config);
+    const shotIds = Array.from({ length: panelCount }, (_, shotIndex) => {
+      const id = `shot_${Date.now()}_${index}_${shotIndex}_${Math.random().toString(36).slice(2, 7)}`;
+      shots.push({
+        id,
+        description: cells[shotIndex] || `原创分镜 ${shotIndex + 1}`,
+        scriptContent: dynamicScriptPrompt,
+        prompt: cells[shotIndex] || scriptShots[shotIndex]?.visual || `原创分镜 ${shotIndex + 1}`,
+        status: 'pending',
+      });
+      return id;
+    });
+    return {
+      id: `board_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`,
+      title: item.title || getSegmentLabel(index),
+      shotIds,
+      scriptText: dynamicScriptPrompt,
+      dynamicScriptPrompt,
+      prompt: storyboardPrompt,
+      status: 'pending' as const,
+    };
+  });
+  return {
+    script: boards.map((board) => `${board.title}\n${board.dynamicScriptPrompt || board.scriptText}`).join('\n\n====================\n\n'),
+    shots,
+    boards,
+  };
 };
 
 const buildViralSplitShotsAndBoards = (
@@ -628,7 +755,16 @@ export const generateStoryboardScript = async (
     return { ...result, taskId, creditsConsumed };
   }
 
-  let parsed: Array<{ description: string; prompt: string; script: string }>;
+  let parsed: Array<{
+    description?: string;
+    prompt?: string;
+    script?: string;
+    title?: string;
+    durationSeconds?: number;
+    panelCount?: number;
+    storyboardPrompt?: string;
+    dynamicScriptPrompt?: string;
+  }>;
   try {
     parsed = JSON.parse(extractJsonArray(content));
   } catch {
@@ -636,12 +772,20 @@ export const generateStoryboardScript = async (
     throw new Error('分镜脚本解析失败');
   }
 
+  if (parsed.some((item) => item?.storyboardPrompt || item?.dynamicScriptPrompt)) {
+    const result = buildOriginalSplitShotsAndBoards(parsed, config);
+    logStoryboardEvent('storyboard_script', '原创分镜策划生成成功', 'success', '', {
+      boardCount: result.boards.length,
+    });
+    return { ...result, taskId, creditsConsumed };
+  }
+
   const limited = parsed.slice(0, config.shotCount);
   const shots: VideoStoryboardShot[] = limited.map((item, index) => ({
     id: `shot_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 7)}`,
-    description: item.description,
-    scriptContent: item.script,
-    prompt: item.prompt,
+    description: item.description || '',
+    scriptContent: item.script || '',
+    prompt: item.prompt || item.description || '',
     status: 'pending',
   }));
 
