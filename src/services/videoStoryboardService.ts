@@ -783,6 +783,68 @@ ${panelLines}
   `.trim();
 };
 
+const buildStoryboardBoardEditPrompt = ({
+  board,
+  config,
+  currentBoardImageUrl,
+  revisionInstruction,
+  productImageUrls = [],
+  previousBoardImageUrl = '',
+  sceneReferenceUrls = [],
+  supplementReferenceUrls = [],
+}: {
+  board: VideoStoryboardBoard;
+  config: VideoStoryboardConfig;
+  currentBoardImageUrl: string;
+  revisionInstruction: string;
+  productImageUrls?: string[];
+  previousBoardImageUrl?: string;
+  sceneReferenceUrls?: string[];
+  supplementReferenceUrls?: string[];
+}) => {
+  const panelCount = Math.max(1, Number(board.shotIds?.length || config.shotCount || 1) || 1);
+  const grid = getBoardGrid(config.aspectRatio, panelCount);
+  const productReferenceText = productImageUrls.length > 0
+    ? formatUrlList(productImageUrls, '商品参考图公网URL')
+    : '随 input_urls 一起上传的商品参考图，用于保持产品外观、包装结构、真实颜色、比例和细节一致。';
+  const sceneReferenceText = sceneReferenceUrls.length > 0
+    ? formatUrlList(sceneReferenceUrls, '场景参考图公网URL')
+    : '无额外场景参考图。';
+  const supplementReferenceText = supplementReferenceUrls.length > 0
+    ? formatUrlList(supplementReferenceUrls, '补充参考图公网URL')
+    : '未上传补充参考图时，仅根据当前分镜板、商品参考图和任务需求生成新结果。';
+
+  return [
+    '【修改基准图】',
+    currentBoardImageUrl || '当前已生成分镜板',
+    '',
+    '【商品参考图】',
+    productReferenceText,
+    '',
+    previousBoardImageUrl ? ['【连续性参考图】', `上一张分镜板公网URL：${previousBoardImageUrl}`, '只用于保持整套分镜的风格、光影和排版连续，不作为本次主要修改对象。'].join('\n') : '',
+    previousBoardImageUrl ? '' : '',
+    '【场景参考图】',
+    sceneReferenceText,
+    '',
+    '【补充参考图】',
+    supplementReferenceText,
+    '',
+    '【任务需求】',
+    revisionInstruction.trim() || '按用户输入要求修改当前分镜板。',
+    '',
+    '【约束规范】',
+    '- 以修改基准图为直接编辑基础，输出一张新的完整分镜板图，不拆分单格。',
+    `- 保持 ${panelCount} 宫格、${grid.cols} 列 × ${grid.rows} 行、从左到右从上到下的镜头顺序不变。`,
+    `- 每个分镜格继续保持 ${config.aspectRatio} 视频比例，整板画布智能适配，不拉伸不变形。`,
+    '- 只修改任务需求明确点名的位置、格子、元素、比例、表情、动作、光影或局部细节。',
+    '- 未被任务点名的分镜格、主体关系、画面结构、镜头连续性、人物气质、商品信息、风格和排版骨架保持不变。',
+    '- 产品一致性默认以商品参考图为准，保持产品主体、包装、标签、logo、材质、真实颜色、比例和细节不变。',
+    '- 若任务需求明确说明补充参考图是新的产品、局部替换、新增元素或场景参考，才允许对应部分参考补充图。',
+    '- 不重新策划分镜，不扩写原始分镜脚本，不把完整初始生图提示词重新执行一遍。',
+    '- 画面中禁止新增字幕、logo、水印、分镜序号或无关文字。',
+  ].filter(Boolean).join('\n');
+};
+
 export const generateStoryboardBoardImage = async (
   board: VideoStoryboardBoard,
   shots: VideoStoryboardShot[],
@@ -811,16 +873,27 @@ export const generateStoryboardBoardImage = async (
   const safeCurrentBoardImageUrl = revisionInstruction?.trim() && board.imageUrl
     ? requireModelAssetUrl(board.imageUrl, publicBaseUrl, '当前分镜板')
     : '';
-  const prompt = buildBoardPrompt(
-    board,
-    shots,
-    config,
-    safePreviousBoardImageUrl || undefined,
-    revisionInstruction,
-    safeImageUrls,
-    safeSceneReferenceUrls,
-    safeSupplementReferenceUrls
-  );
+  const prompt = revisionInstruction?.trim() && safeCurrentBoardImageUrl
+    ? buildStoryboardBoardEditPrompt({
+        board,
+        config,
+        currentBoardImageUrl: safeCurrentBoardImageUrl,
+        revisionInstruction,
+        productImageUrls: safeImageUrls,
+        previousBoardImageUrl: safePreviousBoardImageUrl,
+        sceneReferenceUrls: safeSceneReferenceUrls,
+        supplementReferenceUrls: safeSupplementReferenceUrls,
+      })
+    : buildBoardPrompt(
+        board,
+        shots,
+        config,
+        safePreviousBoardImageUrl || undefined,
+        revisionInstruction,
+        safeImageUrls,
+        safeSceneReferenceUrls,
+        safeSupplementReferenceUrls
+      );
   const inputImages = [
     ...safeImageUrls,
     ...safeSceneReferenceUrls,

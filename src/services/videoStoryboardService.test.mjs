@@ -62,3 +62,15 @@ test('original storyboard script generation explicitly uses the video analysis m
   assert.match(source, /const taskId = String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| ''\)\.trim\(\) \|\| undefined;/);
   assert.doesNotMatch(source, /const taskId = String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| job\.id/);
 });
+
+test('storyboard board edit uses a focused edit prompt instead of replaying the full generation prompt', () => {
+  const editPromptBlock = source.match(/const buildStoryboardBoardEditPrompt = \(\{[\s\S]*?export const generateStoryboardBoardImage =/)?.[0] || '';
+  const generationBlock = source.match(/export const generateStoryboardBoardImage = async \([\s\S]*?export const generateStoryboardWhiteBgImage =/)?.[0] || '';
+
+  assert.match(editPromptBlock, /【修改基准图】/);
+  assert.match(editPromptBlock, /【任务需求】/);
+  assert.match(editPromptBlock, /不重新策划分镜，不扩写原始分镜脚本，不把完整初始生图提示词重新执行一遍/);
+  assert.doesNotMatch(editPromptBlock, /分镜内容：\s*\\n\$\{panelLines\}/);
+  assert.match(generationBlock, /revisionInstruction\?\.trim\(\) && safeCurrentBoardImageUrl\s*\?\s*buildStoryboardBoardEditPrompt/);
+  assert.match(generationBlock, /:\s*buildBoardPrompt\(/);
+});
