@@ -12,3 +12,14 @@ test('getImageModelCapabilities reports GPT Image 2 as structured ratio and reso
   assert.equal(capabilities.supportsOutputFormat, false);
   assert.equal(capabilities.maxInputImages, 16);
 });
+
+test('getImageModelCapabilities gives GPT Image 2 secondary the same image2 feature surface', () => {
+  const primary = getImageModelCapabilities('gpt-image-2');
+  const secondary = getImageModelCapabilities('gpt-image-2-secondary');
+
+  assert.equal(secondary.supportsStructuredAspectRatio, primary.supportsStructuredAspectRatio);
+  assert.equal(secondary.supportsStructuredResolution, primary.supportsStructuredResolution);
+  assert.equal(secondary.supportsQualitySelection, primary.supportsQualitySelection);
+  assert.equal(secondary.maxInputImages, primary.maxInputImages);
+  assert.deepEqual(secondary.supportedAspectRatios, primary.supportedAspectRatios);
+});

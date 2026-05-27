@@ -26,6 +26,14 @@ test('image generation keeps conversation image context across uploaded and gene
   assert.match(serverSource, /如果用户没有明确指定使用哪张图，你要根据当前需求自动判断最合适的参考图/);
 });
 
+test('image generation filters unavailable managed asset references before provider upload', () => {
+  assert.match(serverSource, /const filterAvailableConversationImageReferences = async \(imageReferences = \[\]\) =>/);
+  assert.match(serverSource, /listStoredAssets\(pool\)/);
+  assert.match(serverSource, /isAvailableManagedAssetUrl\(item\.url, validAssetRefs\)/);
+  assert.match(serverSource, /await filterAvailableConversationImageReferences\(buildConversationImageCatalog\(/);
+  assert.match(serverSource, /availableManagedReferenceUrls\.has\(url\)/);
+});
+
 test('image generation analysis keeps text conversation context and summary', () => {
   assert.match(serverSource, /const buildImageConversationTextContext = \(priorMessages = \[\], maxRounds = 6, summary = ''\) =>/);
   assert.match(serverSource, /最近对话上下文：/);
@@ -40,4 +48,14 @@ test('image generation prefers editing the latest generated result when user ask
   assert.match(serverSource, /优先把最近一张历史生成图作为主编辑对象/);
   assert.match(serverSource, /const preferredInputImageUrls = editPreferenceHints\.preferPreviousResultAsPrimary/);
   assert.match(serverSource, /以最近一张历史生成图为主编辑对象/);
+});
+
+test('image generation honors explicit image indexes before falling back to all available history images', () => {
+  const selectorBlock = serverSource.match(/const selectRelevantImageReferences = \(\{[\s\S]*?const buildImageConversationTextContext =/)?.[0] || '';
+
+  assert.match(selectorBlock, /const requestedIndexes = Array\.from\(new Set\(\[\.\.\.explicitIndexes, \.\.\.directionalIndexes\]\)\);/);
+  assert.match(selectorBlock, /const hasRequestedIndexes = requestedIndexes\.length > 0;/);
+  assert.match(selectorBlock, /if \(refs\.length <= limit && !hasRequestedIndexes\) return refs\.slice\(0, limit\);/);
+  assert.match(selectorBlock, /if \(!hasRequestedIndexes \|\| selected\.length === 0\) \{\s*fallbackCandidates\.forEach\(\(item\) => pushReference\(item\)\);/);
+  assert.doesNotMatch(selectorBlock, /if \(refs\.length <= limit\) return refs\.slice\(0, limit\);[\s\S]*const requestedIndexes/);
 });

@@ -2,7 +2,7 @@ const GPT_IMAGE_2_RATIOS = ['auto', '1:1', '3:4', '4:3', '9:16', '16:9'];
 const NANO_BANANA_2_RATIOS = ['auto', '1:1', '1:4', '1:8', '2:3', '3:2', '3:4', '4:1', '4:3', '4:5', '5:4', '8:1', '9:16', '16:9', '21:9'];
 
 export const getImageModelCapabilities = (model = 'gpt-image-2') => {
-  if (model === 'gpt-image-2') {
+  if (model === 'gpt-image-2' || model === 'gpt-image-2-secondary') {
     return {
       supportsStructuredAspectRatio: true,
       supportsStructuredResolution: true,
@@ -35,7 +35,7 @@ export const isLegacyRemovedImageModel = (model = '') => String(model || '').tri
 
 export const normalizeImageModel = (model = '', fallback = 'gpt-image-2') => {
   if (isLegacyRemovedImageModel(model)) return 'gpt-image-2';
-  if (model === 'gpt-image-2' || model === 'nano-banana-2') return model;
+  if (model === 'gpt-image-2' || model === 'gpt-image-2-secondary' || model === 'nano-banana-2') return model;
   return fallback;
 };
 

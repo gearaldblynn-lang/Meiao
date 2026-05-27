@@ -278,6 +278,27 @@ const buildValidManagedAssetReferences = (assets = []) => {
   return refs;
 };
 
+const reindexImageReferences = (imageReferences = []) => (Array.isArray(imageReferences) ? imageReferences : [])
+  .map((item, index) => ({
+    ...item,
+    index: index + 1,
+    label: `图${index + 1}`,
+  }));
+
+const filterAvailableConversationImageReferences = async (imageReferences = []) => {
+  const refs = Array.isArray(imageReferences) ? imageReferences : [];
+  if (!refs.some((item) => isManagedAssetUrl(item?.url))) return reindexImageReferences(refs);
+
+  try {
+    const pool = shouldUseMysql ? await getMysqlPool() : null;
+    const assets = await listStoredAssets(pool);
+    const validAssetRefs = buildValidManagedAssetReferences(assets);
+    return reindexImageReferences(refs.filter((item) => !isManagedAssetUrl(item?.url) || isAvailableManagedAssetUrl(item.url, validAssetRefs)));
+  } catch {
+    return reindexImageReferences(refs);
+  }
+};
+
 const normalizeStoredAssetJobId = (value) => String(value || '').trim().slice(0, 120);
 
 const sanitizePathPart = (value) => value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'anonymous';
@@ -5574,11 +5595,12 @@ const extractDirectionalImageReferenceIndexes = ({ text = '', imageReferences = 
 const selectRelevantImageReferences = ({ imageReferences = [], userMessage = '', maxInputImages = 1, editPreferenceHints = null }) => {
   const refs = Array.isArray(imageReferences) ? imageReferences : [];
   const limit = Math.max(1, Number(maxInputImages || 1));
-  if (refs.length <= limit) return refs.slice(0, limit);
 
   const explicitIndexes = extractExplicitImageReferenceIndexes(userMessage);
   const directionalIndexes = extractDirectionalImageReferenceIndexes({ text: userMessage, imageReferences: refs });
   const requestedIndexes = Array.from(new Set([...explicitIndexes, ...directionalIndexes]));
+  const hasRequestedIndexes = requestedIndexes.length > 0;
+  if (refs.length <= limit && !hasRequestedIndexes) return refs.slice(0, limit);
   const selected = [];
   const selectedUrls = new Set();
   const pushReference = (item) => {
@@ -5606,7 +5628,9 @@ const selectRelevantImageReferences = ({ imageReferences = [], userMessage = '',
       ...historyAttachments.slice(-1),
     ];
 
-  fallbackCandidates.forEach((item) => pushReference(item));
+  if (!hasRequestedIndexes || selected.length === 0) {
+    fallbackCandidates.forEach((item) => pushReference(item));
+  }
 
   if (selected.length === 0) {
     fallbackCandidates.forEach((item) => pushReference(item));
@@ -5721,11 +5745,11 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
   if (!version?.modelPolicy?.imageGenerationEnabled || !selectedImageModel || !imageCapability) {
     throw new Error('当前智能体未启用生图模型');
   }
-  const imageReferences = buildConversationImageCatalog(
+  const imageReferences = await filterAvailableConversationImageReferences(buildConversationImageCatalog(
     attachments,
     priorMessages,
     Math.max(Number(imageCapability.maxInputImages || 1), 10)
-  );
+  ));
   const conversationContext = buildImageConversationTextContext(
     priorMessages,
     Number(version?.contextPolicy?.maxHistoryRounds || 6),
@@ -5788,10 +5812,16 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
       ? String(parsed.imageReferences.find((ref) => Number(ref?.index || 0) === item.index)?.role || '')
       : '',
   }));
+  const availableManagedReferenceUrls = new Set(
+    normalizedRefs
+      .map((item) => String(item?.url || '').trim())
+      .filter((url) => url && isManagedAssetUrl(url))
+  );
   const inputImageUrls = Array.from(
     new Set(
       (Array.isArray(parsed.inputImageUrls) ? parsed.inputImageUrls : normalizedRefs.map((item) => item.url))
         .map((item) => normalizeAgentImageUrl(item))
+        .filter((url) => !isManagedAssetUrl(url) || availableManagedReferenceUrls.has(url))
         .filter(Boolean)
     )
   ).slice(0, Number(imageCapability.maxInputImages || 1));

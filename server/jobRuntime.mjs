@@ -75,6 +75,18 @@ const AGENT_MODEL_CATALOG = {
       supportsTransparentBackground: false,
     },
     {
+      id: 'gpt-image-2-secondary',
+      label: 'GPT Image 2（副）',
+      provider: 'apiports',
+      supportsMultiImageInput: true,
+      supportsImageEdit: true,
+      maxInputImages: 16,
+      defaultSize: 'auto',
+      defaultResolution: '1K',
+      supportedSizes: ['auto', '1:1', '3:4', '4:3', '4:5', '9:16', '16:9'],
+      supportsTransparentBackground: false,
+    },
+    {
       id: 'nano-banana-2',
       label: 'Nano Banana 2',
       provider: 'kie',
@@ -196,6 +208,50 @@ const normalizeLogCreditsConsumed = (value) => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 };
 
+const DIAGNOSTIC_SCHEMA_VERSION = '2026-05-26.1';
+
+const firstNonEmpty = (...values) => {
+  for (const value of values) {
+    const text = String(value || '').trim();
+    if (text) return text;
+  }
+  return '';
+};
+
+const countStringItems = (value) => {
+  if (Array.isArray(value)) return value.map((item) => String(item || '').trim()).filter(Boolean).length;
+  const text = String(value || '').trim();
+  return text ? 1 : 0;
+};
+
+const countPayloadInputs = (payload = {}) => {
+  const imageUrlCount =
+    countStringItems(payload?.imageUrls)
+    + countStringItems(payload?.productUrls)
+    + countStringItems(payload?.referenceImages)
+    + countStringItems(payload?.sourceImages);
+  const fileUrlCount =
+    countStringItems(payload?.fileUrls)
+    + countStringItems(payload?.files)
+    + countStringItems(payload?.attachments);
+  return {
+    imageUrlCount,
+    fileUrlCount,
+    promptLength: String(payload?.prompt || payload?.input || '').length,
+  };
+};
+
+export const classifyRuntimeErrorOrigin = (error = {}) => {
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+  if (/request_cancelled|aborted|abort/.test(`${code} ${message}`)) return 'user_or_browser';
+  if (/provider_|rate|quota|task_not_found|timeout|fetch failed|network|upstream|server exception|maintenance/.test(`${code} ${message}`)) return 'upstream_provider';
+  if (/mysql|pool is closed|connection lost|server closed the connection|er_/.test(`${code} ${message}`)) return 'database';
+  if (/validation|unsupported|file type|too large|too long|bad_request/.test(`${code} ${message}`)) return 'input_or_guardrail';
+  if (/typeerror|referenceerror|cannot read properties|undefined|null/.test(`${code} ${message}`)) return 'program';
+  return error ? 'program_or_unknown' : '';
+};
+
 const countResultUrls = (result = {}) => {
   const values = [
     result?.imageUrl,
@@ -232,26 +288,40 @@ export const buildJobRuntimeLogMeta = ({
     || ''
   ).trim();
   const creditsConsumed = normalizeLogCreditsConsumed(resultBody?.creditsConsumed ?? result?.creditsConsumed);
+  const shellProjectId = firstNonEmpty(payload?.shellProjectId, payload?.projectId, payload?.clientProjectId);
+  const shellPlanId = firstNonEmpty(payload?.shellPlanId, payload?.planId);
+  const requestId = firstNonEmpty(payload?.requestId, payload?.clientRequestId);
+  const traceId = firstNonEmpty(payload?.traceId, payload?.diagnosticTraceId, requestId, shellPlanId ? `${shellProjectId || 'project'}:${shellPlanId}` : '', shellProjectId, job?.id);
+  const inputCounts = countPayloadInputs(payload);
 
   return {
+    diagnosticSchemaVersion: DIAGNOSTIC_SCHEMA_VERSION,
+    eventKind: 'job_runtime',
+    traceId,
+    correlationId: firstNonEmpty(providerTaskId, job?.id, requestId),
     jobId: String(job?.id || '').trim(),
+    jobStatus: String(job?.status || '').trim(),
     providerTaskId,
     provider: String(job?.provider || '').trim(),
     taskType: String(job?.taskType || '').trim(),
     module: String(job?.module || '').trim(),
     subFeature: String(payload?.subFeature || payload?.subMode || '').trim(),
     shellPurpose: String(payload?.shellPurpose || payload?.shellPlanningPurpose || '').trim(),
-    shellProjectId: String(payload?.shellProjectId || payload?.projectId || payload?.clientProjectId || '').trim(),
+    shellProjectId,
     shellProjectName: trimLogText(payload?.shellProjectName || payload?.projectName || ''),
-    shellPlanId: String(payload?.shellPlanId || payload?.planId || '').trim(),
+    shellPlanId,
     batchIndex: normalizeLogNumber(payload?.batchIndex, 0),
     batchCount: normalizeLogNumber(payload?.batchCount || payload?.count, 0),
-    requestId: String(payload?.requestId || '').trim(),
+    requestId,
+    inputImageUrlCount: inputCounts.imageUrlCount,
+    inputFileUrlCount: inputCounts.fileUrlCount,
+    promptLength: inputCounts.promptLength,
     providerStage: String(result?.providerStage || error?.providerStage || '').trim(),
     providerStatus: String(result?.providerStatus || error?.providerStatus || '').trim(),
     retryCount: normalizeLogNumber(retryCount ?? job?.retryCount, 0),
     maxRetries: normalizeLogNumber(job?.maxRetries, 0),
     errorCode: String(error?.code || job?.errorCode || '').trim(),
+    errorOrigin: classifyRuntimeErrorOrigin(error),
     resultUrlCount: countResultUrls(resultBody),
     ...(creditsConsumed !== undefined ? { creditsConsumed } : {}),
     queueWaitMs: rawStartedAt && createdAt ? Math.max(0, rawStartedAt - createdAt) : 0,
@@ -310,6 +380,9 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
     providers: {
       kie: {
         configured: Boolean(env.KIE_API_KEY),
+      },
+      apiports: {
+        configured: Boolean(env.APIPORTS_API_KEY || env.MEIAO_APIPORTS_API_KEY),
       },
     },
     systemSettings: {

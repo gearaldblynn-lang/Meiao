@@ -22,6 +22,7 @@ const logKieEvent = (action: string, message: string, status: 'started' | 'succe
 const KIE_IMAGE_TIMEOUT: Record<string, number> = {
   'nano-banana-2': 6 * 60_000,
   'gpt-image-2': 10 * 60_000,
+  'gpt-image-2-secondary': 10 * 60_000,
 };
 const KIE_IMAGE_DEFAULT_TIMEOUT = 10 * 60_000;
 const KIE_VIDEO_TIMEOUT = 5 * 60_000;
@@ -466,7 +467,7 @@ export const processWithKieAi = async (
   });
   const safeImageUrls = await normalizeModelAssetUrls(imageUrls, '图像素材');
   const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode);
-  const promptWithCleanupSuffix = moduleConfig.model === 'gpt-image-2'
+  const promptWithCleanupSuffix = moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary'
     ? `${finalPrompt}\n\n${GPT_IMAGE_2_CLEANUP_SUFFIX}`
     : finalPrompt;
   const module = getActiveModuleContext() || 'unknown';
@@ -485,7 +486,7 @@ export const processWithKieAi = async (
       targetWidth: moduleConfig.targetWidth || 0,
       targetHeight: moduleConfig.targetHeight || 0,
       maxFileSize: moduleConfig.maxFileSize || 2,
-      resolution: moduleConfig.model === 'gpt-image-2'
+      resolution: moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary'
         ? normalizeGptImage2Resolution(
             moduleConfig.aspectRatio === AspectRatio.AUTO ? 'auto' : moduleConfig.aspectRatio,
             moduleConfig.quality.toUpperCase()

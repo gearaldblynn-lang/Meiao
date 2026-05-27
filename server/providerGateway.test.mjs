@@ -713,6 +713,217 @@ test('executeProviderJob trims GPT Image 2 requests to the supported 16 input im
   }
 });
 
+test('executeProviderJob routes GPT Image 2 secondary image jobs through apiports generate api', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    return createJsonResponse({
+      id: 'apiports-task-123',
+      status: 'succeeded',
+      results: [{ url: 'https://example.com/apiports-image-result.png' }],
+      progress: 100,
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: '秒杀异味，杀菌除臭喷雾',
+          imageUrls: Array.from({ length: 17 }, (_, index) => `https://example.com/input-${index}.png`),
+          model: 'gpt-image-2-secondary',
+          aspectRatio: '9:16',
+          resolution: '2K',
+        },
+      },
+      { APIPORTS_API_KEY: 'apiports-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, 'https://apiports.com/v1/api/generate');
+    assert.equal(requests[0].init.headers.Authorization, 'Bearer apiports-key');
+    const createBody = JSON.parse(String(requests[0].init.body));
+    assert.deepEqual(createBody, {
+      model: 'gpt-image-2',
+      prompt: '改善异味，清洁去味喷雾',
+      images: Array.from({ length: 16 }, (_, index) => `https://example.com/input-${index}.png`),
+      aspectRatio: '9:16',
+      replyType: 'json',
+    });
+    assert.equal(result.providerTaskId, 'apiports-task-123');
+    assert.equal(result.result.imageUrl, 'https://example.com/apiports-image-result.png');
+    assert.equal(result.result.providerModel, 'gpt-image-2-secondary');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob routes GPT Image 2 secondary prompt-only jobs through apiports generate api', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    return createJsonResponse({
+      id: 'apiports-task-text',
+      status: 'succeeded',
+      results: [{ url: 'https://example.com/apiports-result.png' }],
+      usage: { total_tokens: 100 },
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'make a clean studio shot',
+          model: 'gpt-image-2-secondary',
+          aspectRatio: '9:16',
+          resolution: '2K',
+        },
+      },
+      { APIPORTS_API_KEY: 'apiports-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, 'https://apiports.com/v1/api/generate');
+    assert.equal(requests[0].init.headers.Authorization, 'Bearer apiports-key');
+    const createBody = JSON.parse(String(requests[0].init.body));
+    assert.deepEqual(createBody, {
+      model: 'gpt-image-2',
+      prompt: 'make a clean studio shot',
+      aspectRatio: '9:16',
+      replyType: 'json',
+    });
+    assert.equal(result.providerTaskId, 'apiports-task-text');
+    assert.equal(result.result.imageUrl, 'https://example.com/apiports-result.png');
+    assert.equal(result.result.providerModel, 'gpt-image-2-secondary');
+    assert.deepEqual(result.result.usage, { total_tokens: 100 });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob surfaces GPT Image 2 secondary apiports string errors', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () => createJsonResponse({
+    id: 'apiports-failed',
+    status: 'failed',
+    error: 'We are sorry, but the images we created may have violated our relevant policies.',
+  }, { status: 400 });
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_image',
+          payload: {
+            prompt: 'make a clean studio shot',
+            model: 'gpt-image-2-secondary',
+            aspectRatio: '1:1',
+          },
+        },
+        { APIPORTS_API_KEY: 'apiports-key' },
+        new AbortController().signal
+      ),
+      (error) => {
+        assert.equal(error.code, 'provider_bad_request');
+        assert.match(error.message, /violated our relevant policies/);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob treats GPT Image 2 secondary failed success responses as provider errors', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () => createJsonResponse({
+    id: 'apiports-failed',
+    status: 'failed',
+    error: 'policy rejected',
+    progress: 100,
+  });
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_image',
+          payload: {
+            prompt: 'make a clean studio shot',
+            model: 'gpt-image-2-secondary',
+            aspectRatio: '1:1',
+          },
+        },
+        { APIPORTS_API_KEY: 'apiports-key' },
+        new AbortController().signal
+      ),
+      (error) => {
+        assert.equal(error.code, 'provider_bad_request');
+        assert.equal(error.message, 'policy rejected');
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob supports data-array GPT Image 2 secondary apiports responses', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    return createJsonResponse({
+      created: 1779805430,
+      data: [{ url: 'https://example.com/apiports-result.png' }],
+      usage: { total_tokens: 100 },
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'make a clean studio shot',
+          model: 'gpt-image-2-secondary',
+          aspectRatio: '9:16',
+          resolution: '2K',
+        },
+      },
+      { APIPORTS_API_KEY: 'apiports-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, 'https://apiports.com/v1/api/generate');
+    assert.equal(requests[0].init.headers.Authorization, 'Bearer apiports-key');
+    const createBody = JSON.parse(String(requests[0].init.body));
+    assert.equal(createBody.model, 'gpt-image-2');
+    assert.equal(createBody.prompt, 'make a clean studio shot');
+    assert.equal(createBody.aspectRatio, '9:16');
+    assert.equal(createBody.replyType, 'json');
+    assert.equal(result.providerTaskId, 'apiports-1779805430');
+    assert.equal(result.result.imageUrl, 'https://example.com/apiports-result.png');
+    assert.equal(result.result.providerModel, 'gpt-image-2-secondary');
+    assert.deepEqual(result.result.usage, { total_tokens: 100 });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob rejects archive files before submitting image generation', async () => {
   const originalFetch = global.fetch;
   let requestCount = 0;

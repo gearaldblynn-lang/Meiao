@@ -117,7 +117,7 @@ const toSelectOption = (option: SelectOption) => (
 const QUICK_PARAMS: Record<string, ParamItem[]> = {
   [AppModuleObj.RETOUCH]: [
     { key: 'mode',    label: '原图精修', title: '修复模式', icon: <Wand2 size={12} />,   options: ['原图精修', '白底精修', '背景替换', '智能增强'], defaultValue: '原图精修' },
-    { key: 'model',   label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />, options: ['GPT Image 2', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
+    { key: 'model',   label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />, options: ['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
     { key: 'quality', label: '1K',       title: '出图分辨率', icon: <Sparkles size={12} />, options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
   ],
   [AppModuleObj.BUYER_SHOW]: [
@@ -310,7 +310,7 @@ const getOneClickBaseParams = (mode: string): ParamItem[] => {
           recommendedValue: '1:1',
           recommendedLabel: '推荐',
         },
-    { key: 'model',   label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />,  options: ['GPT Image 2', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
+    { key: 'model',   label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />,  options: ['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
     { key: 'quality', label: '1K', title: '出图分辨率', icon: <Sparkles size={12} />,   options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
   ];
 };
@@ -475,7 +475,7 @@ const getTranslationQuickParams = (activeSubFeature?: string): ParamItem[] => {
       recommendedValue: isDetail || isRemoveText ? 'auto' : '1:1',
       recommendedLabel: '推荐',
     },
-    { key: 'model',   label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />, options: ['GPT Image 2', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
+    { key: 'model',   label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />, options: ['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
     { key: 'quality', label: '1K',       title: '渲染质量', icon: <Sparkles size={12} />, options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
   ];
 };
