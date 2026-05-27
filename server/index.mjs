@@ -5687,11 +5687,19 @@ const buildImageGenerationAnalysisMessages = ({ agent, version, userMessage, ima
   const refsText = imageReferences.length > 0
     ? imageReferences.map((item) => `${item.label}：${item.name}，来源=${item.source}，URL=${item.url}`).join('\n')
     : '本轮没有上传参考图。';
+  const referenceImageItems = imageReferences
+    .map((item) => String(item?.url || '').trim())
+    .filter(Boolean)
+    .map((url) => ({
+      type: 'image_url',
+      image_url: { url },
+    }));
   const knowledgeText = Array.isArray(knowledgeChunks) && knowledgeChunks.length > 0
     ? knowledgeChunks.map((item, index) => `规则${index + 1}（${item.documentTitle || item.sourceType || '知识片段'}）：${String(item.content || '').trim()}`).join('\n\n')
     : '';
   const conversationText = recentConversationText ? `最近对话上下文：\n${recentConversationText}` : '';
   const summaryText = conversationSummary ? `会话摘要：\n${conversationSummary}` : '';
+  const userAnalysisText = `用户需求：${userMessage}\n\n图片输入：\n${refsText}`;
   return [
     {
       role: 'system',
@@ -5720,7 +5728,12 @@ const buildImageGenerationAnalysisMessages = ({ agent, version, userMessage, ima
     ...(knowledgeText ? [{ role: 'system', content: `知识库参考：\n${knowledgeText}` }] : []),
     {
       role: 'user',
-      content: `用户需求：${userMessage}\n\n图片输入：\n${refsText}`,
+      content: referenceImageItems.length > 0
+        ? [
+          { type: 'text', text: userAnalysisText },
+          ...referenceImageItems,
+        ]
+        : userAnalysisText,
     },
   ];
 };
