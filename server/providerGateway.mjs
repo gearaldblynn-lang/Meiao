@@ -678,6 +678,9 @@ const resolveProviderMediaUrl = async (value, env, signal) => {
     return convertInlineDataUrlToKieFileUrl(normalized, env);
   }
   if (!isManagedAssetUrl(normalized)) return normalized;
+  if (/^https?:\/\//i.test(normalized) && !isLocalHostValue(normalized)) {
+    return normalized;
+  }
   return convertManagedAssetUrlToKieFileUrl(normalized, env, signal);
 };
 

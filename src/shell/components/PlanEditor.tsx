@@ -158,11 +158,15 @@ const formatCreditsConsumed = (value: number) => {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
 };
 
-const splitTaskIds = (value?: string) =>
-  String(value || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
+const splitTaskIds = (value?: string) => {
+  const taskIds = Array.from(new Set(
+    String(value || '')
+      .split(/[,\s]+/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  ));
+  return taskIds.length > 0 ? [taskIds.at(-1) as string] : [];
+};
 
 const renderTaskIdChip = (taskId: string, onCopyTaskId?: (taskId: string) => void, label = '任务 ID') => (
   <span className="inline-grid min-w-0 max-w-full grid-cols-[auto_minmax(0,1fr)_16px] items-center gap-1 font-mono leading-4" style={{ color: 'var(--text-tertiary)' }} title={taskId}>
@@ -274,7 +278,6 @@ const PlanEditor: React.FC<Props> = ({
 }) => {
   const [expandedPromptIds, setExpandedPromptIds] = useState<Record<string, boolean>>({});
   const [pendingDeletePlan, setPendingDeletePlan] = useState<{ id: string; title: string } | null>(null);
-  const [planningIdsExpanded, setPlanningIdsExpanded] = useState(false);
   const resultHasVisibleTaskId = (result?: GeneratedResult | null) => Boolean(String(result?.taskId || '').trim());
   const resultIsActivelyGenerating = (result?: GeneratedResult | null) => Boolean(result && result.status === 'generating' && resultHasVisibleTaskId(result));
   const activeGeneratingResult = (results || []).find((result) => result.status === 'generating' && result.planId && resultHasVisibleTaskId(result));
@@ -528,45 +531,7 @@ const PlanEditor: React.FC<Props> = ({
       {planningTaskIds.length > 0 ? (
         <div className="mb-3 flex flex-wrap items-center gap-2 rounded-[18px] border px-3 py-2 text-[10px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
           <span className="font-semibold" style={{ color: 'var(--text-secondary)' }}>策划分析</span>
-          {planningTaskIds.length > 1 ? (
-            <div className="relative">
-              <button
-                type="button"
-                className="inline-flex max-w-full items-center gap-1 rounded-full px-2 py-1 text-[10px] font-semibold transition-colors"
-                style={{ background: 'var(--bg-surface)', color: 'var(--text-tertiary)' }}
-                title="查看多个策划任务 ID"
-                aria-expanded={planningIdsExpanded}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setPlanningIdsExpanded((prev) => !prev);
-                }}
-              >
-                <FileText size={12} />
-                <span>策划任务 ID</span>
-                <span className="rounded-full px-1.5 py-0.5 text-[9px]" style={{ background: 'var(--bg-elevated)', color: 'var(--accent)' }}>{planningTaskIds.length}</span>
-                {planningIdsExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-              </button>
-              {planningIdsExpanded ? (
-                <div
-                  className="absolute left-0 top-full z-30 mt-2 flex w-[min(340px,calc(100vw-48px))] flex-col gap-2 rounded-[16px] border p-2 shadow-lg"
-                  style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <div className="px-1 text-[10px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>
-                    共 {planningTaskIds.length} 个策划任务 ID
-                  </div>
-                  {planningTaskIds.map((taskId, index) => (
-                    <div key={`${taskId}-${index}`} className="min-w-0 rounded-[12px] px-2 py-1" style={{ background: 'var(--bg-surface)' }}>
-                      {renderTaskIdChip(taskId, onCopyTaskId, `策划任务 ID ${index + 1}`)}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            renderTaskIdChip(planningTaskIds[0], onCopyTaskId, '策划任务 ID')
-          )}
+          {renderTaskIdChip(planningTaskIds[0], onCopyTaskId, '策划任务 ID')}
         </div>
       ) : null}
       {isDetailProject ? (

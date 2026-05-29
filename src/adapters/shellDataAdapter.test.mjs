@@ -1846,7 +1846,7 @@ test('shell data adapter reconnects completed planning jobs by payload project i
   assert.equal(snapshot.projects.some((item) => item.id === 'job-planning-job-created-after-placeholder'), false);
 });
 
-test('shell data adapter keeps multiple first-image planning provider tasks on one project', () => {
+test('shell data adapter keeps multiple first-image planning plans but exposes only the latest planning provider task', () => {
   const baseProject = {
     id: 'first-planning-project',
     name: '多参考图首图裂变',
@@ -1898,7 +1898,7 @@ test('shell data adapter keeps multiple first-image planning provider tasks on o
   assert.equal(project?.plans?.length, 2);
   assert.deepEqual(project?.plans?.map((plan) => plan.id), ['planning-job-a-plan-1', 'planning-job-b-plan-1']);
   assert.deepEqual(project?.plans?.map((plan) => plan.title), ['首图裂变1-复刻主图参考1', '首图裂变2-复刻主图参考2']);
-  assert.equal(project?.planningTaskId, 'kie-plan-a, kie-plan-b');
+  assert.equal(project?.planningTaskId, 'kie-plan-b');
   assert.equal(project?.taskCount, 2);
   assert.equal(snapshot.projects.some((item) => item.id === 'job-planning-job-b'), false);
 });

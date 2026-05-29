@@ -45,8 +45,13 @@ test('analysis service no longer routes planning through ark or doubao', () => {
   );
   assert.match(
     arkServiceSource,
-    /let fallbackModels = getAnalysisFallbackModels\(model\)/,
-    'planning analysis should provide a stronger fallback model when the configured model refuses or returns unusable content'
+    /selectAnalysisFallbackModels\(model,\s*runtimeConfig\.chatModels\)/,
+    'planning analysis should select a fallback from the current system model catalog instead of a hardcoded model'
+  );
+  assert.doesNotMatch(
+    arkServiceSource,
+    /const fallback = 'gpt-5-4-openai-resp'/,
+    'planning fallback should not be hardcoded to a specific model because model inventory changes'
   );
   assert.match(
     arkServiceSource,
@@ -389,6 +394,16 @@ test('first image replication planning analyzes product selling points against e
     firstImageReplicationBlock,
     /const schemes: string\[\] = \[\];[\s\S]*for \(let index = 0; index < validReferenceUrls\.length; index \+= 1\)/,
     'first-image replication planning should no longer use a serial for-loop over references'
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /const taskId = perReferenceResults[\s\S]*?\.at\(-1\)/,
+    'first-image replication planning should expose the latest effective provider task id instead of a comma-joined history'
+  );
+  assert.doesNotMatch(
+    firstImageReplicationBlock,
+    /\.join\(', '\)/,
+    'first-image replication planning should not merge multiple planning provider ids into the project-facing task id'
   );
 });
 

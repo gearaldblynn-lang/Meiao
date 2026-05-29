@@ -363,7 +363,7 @@ test('mergeAppStateForStorage deep-merges one-click planning project snapshots w
   assert.equal(merged.shellProjects[0].plans[0].selected, false);
   assert.deepEqual(merged.shellProjects[0].plans.map((plan) => plan.id), ['plan-1', 'plan-2', 'plan-3', 'plan-4', 'plan-5']);
   assert.equal(merged.shellProjects[0].taskCount, 5);
-  assert.equal(merged.shellProjects[0].planningTaskId, 'kie-a,kie-b,kie-c,kie-d,kie-e');
+  assert.equal(merged.shellProjects[0].planningTaskId, 'kie-e');
 });
 
 test('mergeAppStateForStorage keeps recovered sku plans when a stale completed snapshot writes back', () => {

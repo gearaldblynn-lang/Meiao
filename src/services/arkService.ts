@@ -7,28 +7,67 @@ import { resolvePublicAssetUrl } from "../utils/modelAssetUrl.mjs";
 const estimatePromptTokens = (items: Array<{ type: string; text?: string }>) =>
   items.reduce((sum, item) => sum + Math.ceil((item.text || '').length / 4), 0);
 
-let cachedAnalysisModel = '';
-let cachedAnalysisModelAt = 0;
+let cachedAnalysisRuntimeConfig: { model: string; chatModels: any[] } | null = null;
+let cachedAnalysisRuntimeConfigAt = 0;
 let cachedPublicBaseUrl = '';
 let cachedPublicBaseUrlAt = 0;
 const ANALYSIS_MODEL_CACHE_TTL_MS = 30_000;
 const PUBLIC_BASE_URL_CACHE_TTL_MS = 30_000;
 
-const resolveAnalysisModel = async () => {
-  if (cachedAnalysisModel && Date.now() - cachedAnalysisModelAt < ANALYSIS_MODEL_CACHE_TTL_MS) {
-    return cachedAnalysisModel;
+const normalizeModelId = (value: unknown) => String(value || '').trim();
+
+const getAnalysisModelFamily = (value: unknown) => {
+  const normalized = normalizeModelId(value).toLowerCase();
+  if (!normalized) return '';
+  if (normalized.includes('gemini')) return 'gemini';
+  if (normalized.includes('claude')) return 'claude';
+  if (normalized.includes('gpt') || normalized.includes('openai')) return 'gpt';
+  return normalized.split(/[-_.]/)[0] || normalized;
+};
+
+const normalizeChatModelOption = (model: unknown) => {
+  if (typeof model === 'string') {
+    const id = normalizeModelId(model);
+    return id ? { id } : null;
+  }
+  if (!model || typeof model !== 'object') return null;
+  const id = normalizeModelId((model as any).id);
+  return id ? { ...(model as any), id } : null;
+};
+
+const selectAnalysisFallbackModels = (model: string, chatModels: any[] = []) => {
+  const currentModel = normalizeModelId(model);
+  if (!currentModel) return [];
+  const currentFamily = getAnalysisModelFamily(currentModel);
+  const candidates = (Array.isArray(chatModels) ? chatModels : [])
+    .map(normalizeChatModelOption)
+    .filter((item): item is { id: string; [key: string]: any } => Boolean(item))
+    .filter((item) => item.id !== currentModel);
+  const fallback = candidates.find((item) => getAnalysisModelFamily(item.id) !== currentFamily)
+    || candidates[0];
+  return fallback ? [fallback.id] : [];
+};
+
+const resolveAnalysisRuntimeConfig = async () => {
+  if (cachedAnalysisRuntimeConfig && Date.now() - cachedAnalysisRuntimeConfigAt < ANALYSIS_MODEL_CACHE_TTL_MS) {
+    return cachedAnalysisRuntimeConfig;
   }
 
   const result = await fetchSystemConfig();
+  const chatModels = Array.isArray(result.config.agentModels.chat) ? result.config.agentModels.chat : [];
   const nextModel = String(
     result.config.systemSettings.effectiveAnalysisModel ||
-    result.config.agentModels.chat?.[0]?.id ||
-    'gpt-5-4-openai-resp'
+    chatModels[0]?.id ||
+    ''
   ).trim();
 
-  cachedAnalysisModel = nextModel;
-  cachedAnalysisModelAt = Date.now();
-  return nextModel;
+  if (!nextModel) {
+    throw new Error('未配置可用的策划模型，请先在系统设置中配置模型。');
+  }
+
+  cachedAnalysisRuntimeConfig = { model: nextModel, chatModels };
+  cachedAnalysisRuntimeConfigAt = Date.now();
+  return cachedAnalysisRuntimeConfig;
 };
 
 const resolveRuntimePublicBaseUrl = async () => {
@@ -104,12 +143,6 @@ const ensureUsableAnalysisContent = (content: string, label = 'AI 策划') => {
   return normalized;
 };
 
-const getAnalysisFallbackModels = (model: string) => {
-  const normalized = String(model || '').trim();
-  const fallback = 'gpt-5-4-openai-resp';
-  return normalized && normalized !== fallback ? [fallback] : [];
-};
-
 const buildAnalysisResponseFromJob = (
   finalJob: any,
   normalizedContent: Array<{ type: string; text?: string }>,
@@ -165,10 +198,11 @@ const requestAnalysisResponseDetailed = async (
 ): Promise<{ content: string; creditsConsumed?: number; taskId?: string }> => {
   const module = getActiveModuleContext() || 'unknown';
   const startedAt = Date.now();
-  const [model, publicBaseUrl] = await Promise.all([
-    resolveAnalysisModel(),
+  const [runtimeConfig, publicBaseUrl] = await Promise.all([
+    resolveAnalysisRuntimeConfig(),
     resolveRuntimePublicBaseUrl(),
   ]);
+  const model = runtimeConfig.model;
   const normalizedContent = inputContent.map((item, index) => {
     if (item.type === 'text') {
       return { type: 'text', text: item.text || '' };
@@ -262,7 +296,7 @@ const requestAnalysisResponseDetailed = async (
   };
 
   let selectedModel = model;
-  let fallbackModels = getAnalysisFallbackModels(model);
+  let fallbackModels = selectAnalysisFallbackModels(model, runtimeConfig.chatModels);
   let bundle = await runAnalysisJob(selectedModel, fallbackModels);
   let response = bundle.response;
   const usedModels = new Set([
@@ -775,7 +809,7 @@ ${safeLogoUrl ? `品牌logo公网URL：${safeLogoUrl}` : ''}
       .filter((item) => item.status === 'success')
       .map((item) => String(item.taskId || '').trim())
       .filter(Boolean)
-      .join(', ');
+      .at(-1);
     return { status: hasSuccess ? 'success' : 'error', schemes, perReferenceResults, message, creditsConsumed, taskId: taskId || undefined };
   } catch (error: any) {
     logArkEvent('first_image_replication_plan', '首图裂变策划失败', 'failed', error.message, {

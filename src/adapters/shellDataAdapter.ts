@@ -638,7 +638,7 @@ const projectFromItems = (
     selectedPlanId,
     generationContext,
     creditsConsumed: normalizeCreditsConsumed(creditsConsumed) || normalizeCreditsConsumed(totalResultCredits),
-    planningTaskId: String(planningTaskId || '').trim() || undefined,
+    planningTaskId: latestIdentityTextList(String(planningTaskId || '').trim() || undefined),
     directGeneration: directGeneration === true,
   };
 };
@@ -827,7 +827,7 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
       completedCount: Number(project.completedCount || 0),
       sourceType: 'persisted',
       creditsConsumed: normalizeCreditsConsumed(project.creditsConsumed),
-      planningTaskId: String(project.planningTaskId || '').trim() || undefined,
+      planningTaskId: latestIdentityTextList(String(project.planningTaskId || '').trim() || undefined),
       directGeneration: project.directGeneration === true,
     });
   });
@@ -1199,7 +1199,7 @@ const mapJobs = (
               taskCount,
               completedCount,
               creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || planningProject.creditsConsumed,
-              planningTaskId: mergeIdentityTextList(
+              planningTaskId: latestIdentityTextList(
                 planningProject.planningTaskId,
                 String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || undefined,
               ),
@@ -1213,7 +1213,7 @@ const mapJobs = (
             backendJobId: job.id,
             results: [],
             creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || planningProject.creditsConsumed,
-            planningTaskId: mergeIdentityTextList(planningProject.planningTaskId, planningTaskId),
+            planningTaskId: latestIdentityTextList(planningProject.planningTaskId, planningTaskId),
             taskCount: Math.max(planningProject.plans?.length || 0, 1),
             completedCount: 0,
           });
@@ -1240,7 +1240,7 @@ const mapJobs = (
             taskCount,
             completedCount,
             creditsConsumed: planningProject.creditsConsumed || normalizeCreditsConsumed((job.result as any)?.creditsConsumed),
-            planningTaskId: mergeIdentityTextList(
+            planningTaskId: latestIdentityTextList(
               planningProject.planningTaskId,
               String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || undefined,
             ),
@@ -1284,7 +1284,7 @@ const mapJobs = (
           ...matchedProject,
           backendJobId: job.id,
           creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || matchedProject.creditsConsumed,
-          planningTaskId: mergeIdentityTextList(matchedProject.planningTaskId, planningTaskId),
+          planningTaskId: latestIdentityTextList(matchedProject.planningTaskId, planningTaskId),
         });
         return;
       }
@@ -1371,7 +1371,7 @@ const mapJobs = (
           subFeature: matchedProject.subFeature || subFeature,
           sourceType: matchedProject.sourceType || 'persisted',
           backendJobId: job.id,
-          planningTaskId: mergeIdentityTextList(matchedProject.planningTaskId, providerTaskId || undefined),
+          planningTaskId: latestIdentityTextList(matchedProject.planningTaskId, providerTaskId || undefined),
           error: errorMessage,
         });
         return;
@@ -1600,7 +1600,7 @@ const mapJobs = (
           subFeature: cleanProject?.subFeature || subFeature,
           sourceType: cleanProject?.sourceType || 'job',
           backendJobId: job.id,
-          planningTaskId: mergeIdentityTextList(cleanProject?.planningTaskId, providerTaskId || undefined),
+          planningTaskId: latestIdentityTextList(cleanProject?.planningTaskId, providerTaskId || undefined),
         });
         tasks.push(activeTask);
         return;
@@ -2110,12 +2110,12 @@ const mergeProjectPlansById = (
   return plans.length > 0 ? plans : undefined;
 };
 
-const mergeIdentityTextList = (...values: Array<string | undefined>) => {
+const latestIdentityTextList = (...values: Array<string | undefined>) => {
   const merged = Array.from(new Set(
     values
       .flatMap((value) => splitIdentityText(value)),
   ));
-  return merged.length > 0 ? merged.join(', ') : undefined;
+  return merged.length > 0 ? merged.at(-1) : undefined;
 };
 
 const getPlanningJobIdentities = (...projects: Array<Partial<ShellProjectData> | undefined>) => new Set(
@@ -2226,7 +2226,7 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
     taskCount,
     completedCount,
     completedAt: completedCount >= taskCount ? (next.completedAt || existing.completedAt) : existing.completedAt,
-    planningTaskId: mergeIdentityTextList(existing.planningTaskId, next.planningTaskId),
+    planningTaskId: latestIdentityTextList(existing.planningTaskId, next.planningTaskId),
     directGeneration: existing.directGeneration || next.directGeneration,
   };
   if (status === 'completed' && completedCount > 0) {

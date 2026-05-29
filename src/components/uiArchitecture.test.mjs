@@ -151,6 +151,16 @@ test('account management exposes admin-only task platform diagnostics', () => {
   assert.match(account, /canManageAccounts && tab === 'tasks'/);
 });
 
+test('project cards expose only one current planning provider task id', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const planEditor = read('../shell/components/PlanEditor.tsx');
+
+  assert.doesNotMatch(projectCard, /查看多个策划任务 ID/);
+  assert.doesNotMatch(projectCard, /共 \{planningTaskIds\.length\} 个策划任务 ID/);
+  assert.doesNotMatch(planEditor, /查看多个策划任务 ID/);
+  assert.doesNotMatch(planEditor, /共 \{planningTaskIds\.length\} 个策划任务 ID/);
+});
+
 test('app workspace mounts the agent center as a top-level module', () => {
   const app = read('../ShellMigratedApp.tsx');
   const agentCenter = read('../shell/modules/AgentCenter/AgentCenterModule.tsx');
@@ -412,7 +422,7 @@ test('project details expose actual task credits and provider task ids', () => {
   assert.doesNotMatch(projectCard, /project\.planningTaskId \|\| project\.backendJobId/);
   assert.match(planEditor, /planningTaskId\?: string/);
   assert.match(planEditor, /planningTaskIds = splitTaskIds\(planningTaskId\)/);
-  assert.match(planEditor, /setPlanningIdsExpanded/);
+  assert.doesNotMatch(planEditor, /setPlanningIdsExpanded/);
   assert.match(planEditor, /策划任务 ID/);
   assert.match(planEditor, /生图任务 ID/);
   assert.match(planEditor, /策划分析/);
@@ -421,7 +431,7 @@ test('project details expose actual task credits and provider task ids', () => {
   assert.match(shellApp, /let planningProviderTaskId = ''/);
   assert.match(shellApp, /let activePlanningBackendJobId = ''/);
   assert.doesNotMatch(shellApp, /providerId \|\| backendJobId/);
-  assert.match(shellApp, /planningTaskId: planResult\.taskId \|\| planningProviderTaskId \|\| undefined/);
+  assert.match(shellApp, /planningTaskId: latestIdentityText\(planResult\.taskId, planningProviderTaskId\)/);
   assert.match(shellApp, /const generationTaskIdByPlanId = new Map<string, string>\(\)/);
   assert.match(shellApp, /upsertGeneratingPlanResult/);
   assert.match(shellApp, /createPlanJobCreatedHandler\(plan, index, batchPrompt\)/);
