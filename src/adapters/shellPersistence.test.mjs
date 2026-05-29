@@ -225,6 +225,45 @@ test('shell persistence preserves planning credits and generated kie task ids in
   assert.equal(project?.results[0]?.creditsConsumed, 3);
 });
 
+test('shell persistence keeps planned one-click schemes pending until an image provider task exists', () => {
+  const state = buildPersistedAppState({
+    oneClickMemory: {
+      firstImage: { projects: [] },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  });
+
+  const nextState = upsertOneClickProjectIntoPersistedState(state, {
+    id: 'proj-plan-only',
+    name: '只有策划的项目',
+    module: 'one_click',
+    status: 'generating',
+    createdAt: '05-29',
+    plans: [{
+      id: 'plan-only-1',
+      title: '首图裂变1',
+      sellingPoints: [],
+      sceneDescription: '策划内容',
+      styleDirection: '',
+      colorPalette: '',
+      composition: '',
+      textLayout: '',
+      selected: true,
+      schemeContent: '策划内容',
+    }],
+    results: [],
+    taskCount: 1,
+    completedCount: 0,
+    subFeature: 'first_image',
+  });
+
+  const saved = nextState.oneClickMemory.firstImage.projects[0];
+  assert.equal(saved.schemes[0].status, 'pending');
+  assert.notEqual(saved.status, 'generating');
+});
+
 test('shell persistence strips inline base64 previews from translation files before shared storage', () => {
   const state = buildPersistedAppState({
     translationMemory: {

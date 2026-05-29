@@ -591,13 +591,23 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
     const setId = set.id;
     const tasks = set.tasks;
 
-    const updateSetTaskStatus = (taskId: string, status: BuyerShowTask['status'], resultUrl?: string, error?: string, taskIdValue?: string) => {
+    const updateSetTaskStatus = (taskId: string, status: BuyerShowTask['status'], resultUrl?: string, error?: string, taskIdValue?: string, backendJobIdValue?: string) => {
+        const nextTaskId = String(taskIdValue || '').trim() || undefined;
+        const nextBackendJobId = String(backendJobIdValue || '').trim() || undefined;
+        const shouldClearRuntimeIds = status === 'generating' && taskIdValue === undefined && backendJobIdValue === undefined;
         onStateChange(prev => ({
             ...prev,
             sets: prev.sets.map(s => s.id === setId ? {
                 ...s,
                 status: 'generating',
-                tasks: s.tasks.map(t => t.id === taskId ? { ...t, status, resultUrl, error, taskId: taskIdValue } : t)
+                tasks: s.tasks.map(t => t.id === taskId ? {
+                  ...t,
+                  status,
+                  resultUrl,
+                  error,
+                  taskId: taskIdValue !== undefined ? nextTaskId : shouldClearRuntimeIds ? undefined : t.taskId,
+                  backendJobId: backendJobIdValue !== undefined ? nextBackendJobId : shouldClearRuntimeIds ? undefined : t.backendJobId,
+                } : t)
             } : s)
         }));
     };
@@ -607,7 +617,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         updateSetTaskStatus(firstTask.id, 'generating');
         const firstController = createTrackedAbortController(setId);
         const firstRes = await triggerNewKieTask(firstTask.prompt, productUrls, globalRefUrl, true, firstController.signal, (jobId, providerTaskId) => {
-          updateSetTaskStatus(firstTask.id, 'generating', undefined, '任务已创建，正在生成...', providerTaskId || jobId);
+          updateSetTaskStatus(firstTask.id, 'generating', undefined, providerTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...', providerTaskId || undefined, jobId || undefined);
         });
         generationAbortControllersRef.current.delete(firstController);
 
@@ -623,7 +633,7 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                     try {
                         const taskController = createTrackedAbortController(setId);
                         const res = await triggerNewKieTask(task.prompt, productUrls, referenceForOthers, false, taskController.signal, (jobId, providerTaskId) => {
-                          updateSetTaskStatus(task.id, 'generating', undefined, '任务已创建，正在生成...', providerTaskId || jobId);
+                          updateSetTaskStatus(task.id, 'generating', undefined, providerTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...', providerTaskId || undefined, jobId || undefined);
                         });
                         generationAbortControllersRef.current.delete(taskController);
                         if (res.status === 'success') updateSetTaskStatus(task.id, 'completed', res.imageUrl, undefined, res.taskId);
@@ -711,7 +721,13 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         ...prev,
         sets: prev.sets.map(s => s.id === setId ? {
             ...s,
-            tasks: s.tasks.map(t => tasksToRun.find(tr => tr.id === t.id) ? { ...t, status: 'generating', error: undefined } : t)
+            tasks: s.tasks.map(t => tasksToRun.find(tr => tr.id === t.id) ? {
+              ...t,
+              status: 'generating',
+              error: undefined,
+              taskId: undefined,
+              backendJobId: undefined,
+            } : t)
         } : s)
     }));
 
@@ -726,7 +742,12 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
                     ...prev,
                     sets: prev.sets.map(s => s.id === setId ? {
                       ...s,
-                      tasks: s.tasks.map(t => t.id === task.id ? { ...t, taskId: providerTaskId || jobId, error: '任务已创建，正在生成...' } : t)
+                      tasks: s.tasks.map(t => t.id === task.id ? {
+                        ...t,
+                        taskId: providerTaskId || undefined,
+                        backendJobId: jobId || undefined,
+                        error: providerTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
+                      } : t)
                     } : s)
                   }));
                 });
@@ -951,7 +972,13 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
         ...prev,
         sets: prev.sets.map(s => s.id === setId ? {
             ...s,
-            tasks: s.tasks.map(t => t.id === task.id ? { ...t, status: 'generating', error: undefined } : t)
+            tasks: s.tasks.map(t => t.id === task.id ? {
+              ...t,
+              status: 'generating',
+              error: undefined,
+              taskId: undefined,
+              backendJobId: undefined,
+            } : t)
         } : s)
     }));
     try {
@@ -1073,7 +1100,12 @@ const BuyerShowModule: React.FC<Props> = ({ apiConfig, persistentState, onStateC
             ...prev,
             sets: prev.sets.map(s => s.id === setId ? {
               ...s,
-              tasks: s.tasks.map(t => t.id === task.id ? { ...t, taskId: providerTaskId || jobId, error: '任务已创建，正在生成...' } : t)
+              tasks: s.tasks.map(t => t.id === task.id ? {
+                ...t,
+                taskId: providerTaskId || undefined,
+                backendJobId: jobId || undefined,
+                error: providerTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
+              } : t)
             } : s)
           }));
         });

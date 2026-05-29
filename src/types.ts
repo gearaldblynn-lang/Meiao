@@ -653,6 +653,7 @@ export interface VideoConfig {
 export interface VideoTask {
   id: string;
   taskId?: string;
+  backendJobId?: string;
   status: 'pending' | 'generating' | 'completed' | 'error' | 'interrupted';
   resultUrl?: string;
   error?: string;
@@ -881,6 +882,7 @@ export interface OneClickReferencePresetLibrary {
 export interface MainImageScheme {
   id: string;
   taskId?: string;
+  backendJobId?: string;
   uiTitle?: string;
   originalContent: string;
   editedContent: string;
@@ -923,6 +925,7 @@ export interface OneClickWorkspaceProject extends OneClickWorkspaceProjectMeta, 
 export interface BuyerShowTask {
   id: string;
   taskId?: string;
+  backendJobId?: string;
   prompt: string;
   styleDescription: string;
   hasFace: boolean;
@@ -1050,6 +1053,7 @@ export interface KieAiResult {
   imageUrl: string;
   videoUrl?: string;
   taskId?: string;
+  backendJobId?: string;
   status: 'success' | 'error' | 'generating' | 'interrupted' | 'task_not_found';
   message?: string;
   errorCode?: string;

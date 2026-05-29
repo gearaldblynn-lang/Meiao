@@ -338,7 +338,11 @@ const SkuSubModule: React.FC<Props> = ({
           undefined,
           'main',
           {},
-          (jobId, providerTaskId) => updateSingleScheme(schemeId, { taskId: providerTaskId || jobId, error: '任务已创建，正在生成...' })
+          (jobId, providerTaskId) => updateSingleScheme(schemeId, {
+            taskId: providerTaskId || undefined,
+            backendJobId: jobId || undefined,
+            error: providerTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
+          })
         );
       }
 

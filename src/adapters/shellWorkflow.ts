@@ -68,6 +68,7 @@ export interface ShellWorkflowImageResult {
   imageUrl: string;
   prompt: string;
   taskId?: string;
+  backendJobId?: string;
   creditsConsumed?: number;
   model: string;
   aspectRatio: string;
@@ -852,6 +853,7 @@ export const runShellBuyerShowWorkflow = async (
             imageUrl: '',
             prompt,
             taskId: generation.taskId,
+            backendJobId: generation.backendJobId,
             model: getImageResultModelLabel(config),
             aspectRatio: config.aspectRatio,
             fileName: `方案${setIndex + 1}-图${taskIndex + 1}`,
@@ -876,6 +878,7 @@ export const runShellBuyerShowWorkflow = async (
           prompt,
         ].filter(Boolean).join('\n\n'),
         taskId: generation.taskId,
+        backendJobId: generation.backendJobId,
         creditsConsumed: generation.creditsConsumed,
         model: getImageResultModelLabel(config),
         aspectRatio: config.aspectRatio,
@@ -1009,6 +1012,7 @@ export const runShellRetouchWorkflow = async (
           imageUrl: '',
           prompt,
           taskId: generation.taskId,
+          backendJobId: generation.backendJobId,
           model: getImageResultModelLabel(config),
           aspectRatio: config.aspectRatio,
           fileName: material?.fileName || `精修图片 ${index + 1}`,
@@ -1034,6 +1038,7 @@ export const runShellRetouchWorkflow = async (
       imageUrl: finalUrl,
       prompt,
       taskId: generation.taskId,
+      backendJobId: generation.backendJobId,
       creditsConsumed: generation.creditsConsumed,
       model: getImageResultModelLabel(config),
       aspectRatio: config.aspectRatio,
@@ -1132,7 +1137,8 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
       return {
         imageUrl: videoUrl,
         videoUrl,
-        taskId: finalJob.providerTaskId || finalJob.id,
+        taskId: String(finalJob.providerTaskId || finalJob.result?.providerTaskId || '').trim() || undefined,
+        backendJobId: String(finalJob.id || job.id || '').trim() || undefined,
         status: 'success',
         prompt: input.prompt.trim(),
         creditsConsumed: Number.isFinite(Number(finalJob.result?.creditsConsumed)) ? Number(finalJob.result?.creditsConsumed) : undefined,
@@ -1143,7 +1149,8 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
         imageUrl: '',
         status: 'interrupted',
         message: finalJob.errorMessage || '任务已取消',
-        taskId: finalJob.providerTaskId || finalJob.id,
+        taskId: String(finalJob.providerTaskId || finalJob.result?.providerTaskId || '').trim() || undefined,
+        backendJobId: String(finalJob.id || job.id || '').trim() || undefined,
         prompt: input.prompt.trim(),
       };
     }
@@ -1152,7 +1159,8 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
       status: 'error',
       message: finalJob.errorMessage || '即梦视频任务失败',
       errorCode: finalJob.errorCode,
-      taskId: finalJob.providerTaskId || finalJob.id,
+      taskId: String(finalJob.providerTaskId || finalJob.result?.providerTaskId || '').trim() || undefined,
+      backendJobId: String(finalJob.id || job.id || '').trim() || undefined,
       prompt: input.prompt.trim(),
     };
   } catch (error: any) {
@@ -1163,7 +1171,8 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
     return {
       imageUrl: '',
       status: 'generating',
-      taskId: job.providerTaskId || job.id,
+      taskId: String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
+      backendJobId: job.id,
       message: error?.message || '任务已提交云端，结果待同步',
       prompt: input.prompt.trim(),
     };

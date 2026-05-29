@@ -199,7 +199,7 @@ test('shell data adapter preserves one-click persisted project order from the sa
   assert.deepEqual(snapshot.projects.map((project) => project.id), ['first-1', 'first-2', 'first-3']);
 });
 
-test('shell data adapter shows a running retry as its own one-click result card', () => {
+test('shell data adapter keeps providerless one-click image jobs out of visible generating cards', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{
       id: 'retry-project',
@@ -234,11 +234,44 @@ test('shell data adapter shows a running retry as its own one-click result card'
   }]);
 
   const project = snapshot.projects.find((item) => item.id === 'retry-project');
-  assert.equal(project?.status, 'generating');
-  assert.equal(project?.taskCount, 2);
+  assert.equal(project?.status, 'completed');
+  assert.equal(project?.taskCount, 1);
   assert.equal(project?.completedCount, 1);
-  assert.ok(project?.results.some((result) => result.backendJobId === 'job-new' && result.status === 'generating'));
+  assert.equal(project?.results.some((result) => result.backendJobId === 'job-new'), false);
   assert.ok(project?.results.some((result) => result.backendJobId === 'job-old' && result.status === 'completed'));
+  assert.equal(snapshot.tasks.find((task) => task.backendJobId === 'job-new')?.status, 'generating');
+});
+
+test('shell data adapter keeps providerless KIE media jobs out of visible generating cards for every module', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'translation-project',
+      name: '翻译任务',
+      module: 'translation',
+      status: 'generating',
+      createdAt: '05-29',
+      taskCount: 1,
+      completedCount: 0,
+      results: [],
+    }],
+  }, [{
+    id: 'translation-job-no-provider',
+    module: 'translation',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'running',
+    payload: {
+      shellProjectId: 'translation-project',
+      prompt: '翻译图片',
+    },
+    result: null,
+    createdAt: 1780026972564,
+    updatedAt: 1780026972564,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'translation-project');
+  assert.equal(project?.results.some((result) => result.backendJobId === 'translation-job-no-provider'), false);
+  assert.equal(snapshot.tasks.find((task) => task.backendJobId === 'translation-job-no-provider')?.status, 'generating');
 });
 
 test('shell data adapter surfaces provider id for a retry-waiting one-click edit job', () => {
@@ -280,6 +313,54 @@ test('shell data adapter surfaces provider id for a retry-waiting one-click edit
   assert.equal(project?.results[0]?.taskId, 'new-provider-task');
   assert.equal(project?.results[0]?.backendJobId, 'job-edit-1');
   assert.equal(snapshot.tasks.find((task) => task.backendJobId === 'job-edit-1')?.status, 'generating');
+});
+
+test('shell data adapter does not display internal backend job ids as planning KIE task ids', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'planning-id-project',
+      name: '5月29日项目1',
+      module: 'one_click',
+      status: 'generating',
+      createdAt: '05-29',
+      subFeature: 'first_image',
+      plans: [{
+        id: 'plan-1',
+        title: '首图裂变1',
+        selected: true,
+        schemeContent: '策划内容',
+      }],
+      selectedPlanId: 'plan-1',
+      taskCount: 1,
+      completedCount: 0,
+      results: [],
+    }],
+  }, [{
+    id: 'internal-planning-job-id',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: '',
+    payload: {
+      shellProjectId: 'planning-id-project',
+      prompt: '策划',
+      subFeature: 'first_image',
+    },
+    result: {
+      content: '[SCHEME_START]\n- 参考图标识：首图裂变1\n[SCHEME_END]',
+      providerTaskId: '',
+      creditsConsumed: 0.2,
+    },
+    createdAt: 1780026972564,
+    updatedAt: 1780026972564,
+    finishedAt: 1780026972564,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'planning-id-project');
+  assert.equal(project?.status, 'planning');
+  assert.equal(project?.backendJobId, 'internal-planning-job-id');
+  assert.equal(project?.planningTaskId, undefined);
 });
 
 test('shell data adapter backfills one-click generation context from saved branch config and materials', () => {
@@ -1241,6 +1322,84 @@ test('shell data adapter lets completed planning jobs replace stale planning fai
   assert.equal(project?.backendJobId, 'planning-chat-job-after-poll-error');
 });
 
+test('shell data adapter clears planning job pending placeholders once planning succeeds', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'planning-succeeded-but-pending',
+      name: '5月29日项目1',
+      module: 'one_click',
+      status: 'generating',
+      createdAt: '05-29',
+      backendJobId: 'planning-job-succeeded',
+      planningTaskId: 'planning-job-succeeded',
+      plans: [{
+        id: 'plan-after-success',
+        title: '首图裂变1-复刻主图参考1',
+        sellingPoints: [],
+        sceneDescription: '',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '',
+        selected: true,
+      }],
+      selectedPlanId: 'plan-after-success',
+      results: [{
+        id: 'planning-job-succeeded-pending',
+        imageUrl: '',
+        prompt: '一键主详',
+        model: 'gemini-3-flash-openai',
+        aspectRatio: 'auto',
+        status: 'generating',
+        createdAt: '05-29',
+        module: 'one_click',
+        subFeature: 'first_image',
+        backendJobId: 'planning-job-succeeded',
+        error: '任务已提交，等待执行',
+      }],
+      taskCount: 2,
+      completedCount: 0,
+      subFeature: 'first_image',
+    }],
+  }, [
+    {
+      id: 'planning-job-succeeded',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      payload: {
+        model: 'gemini-3-flash-openai',
+        shellProjectId: 'planning-succeeded-but-pending',
+        shellProjectName: '5月29日项目1',
+        shellPlanningPurpose: 'one_click_planning',
+        subFeature: 'first_image',
+      },
+      result: {
+        content: `[SCHEME_START]
+- 屏序/类型：首图裂变1-复刻主图参考1
+- 参考图标识：复刻主图参考1
+- 设计意图：策划已成功
+- 画面描述：方案内容
+- 画面比例：1:1
+[SCHEME_END]`,
+        creditsConsumed: 0.32,
+      },
+      createdAt: 1780026938780,
+      updatedAt: 1780026971959,
+      finishedAt: 1780026971959,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'planning-succeeded-but-pending');
+  assert.equal(project?.status, 'planning');
+  assert.equal(project?.taskCount, 1);
+  assert.equal(project?.completedCount, 0);
+  assert.equal(project?.results.length, 0);
+  assert.equal(project?.plans?.length, 1);
+  assert.equal(project?.planningTaskId, 'planning-job-succeeded');
+});
+
 test('shell data adapter replaces stale one-click planning placeholders with the terminal backend failure', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{
@@ -2049,6 +2208,7 @@ test('shell data adapter keeps active video project cards after refresh while ba
       taskType: 'kie_seedance_video',
       provider: 'kie',
       status: 'running',
+      providerTaskId: 'provider-video-active',
       payload: {
         prompt: '视频脚本',
         subFeature: 'generation',
@@ -2098,6 +2258,7 @@ test('shell data adapter keeps active non-video project cards after refresh whil
       taskType: 'kie_image',
       provider: 'kie',
       status: 'queued',
+      providerTaskId: 'provider-main-active',
       payload: {
         prompt: '主图生成脚本',
         subFeature: 'main_image',
@@ -2114,6 +2275,7 @@ test('shell data adapter keeps active non-video project cards after refresh whil
   assert.equal(project.results.length, 1);
   assert.equal(project.results[0].mediaType, 'image');
   assert.equal(project.results[0].status, 'generating');
+  assert.equal(project.results[0].taskId, 'provider-main-active');
   assert.equal(project.results[0].backendJobId, 'job-main-active');
   const task = snapshot.tasks.find((item) => item.id === 'job-main-active');
   assert.ok(task);

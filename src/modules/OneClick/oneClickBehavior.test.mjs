@@ -101,15 +101,17 @@ test('sku batch generation waits for the first benchmark image then runs remaini
   assert.doesNotMatch(skuSource, /for \(let i = 0; i < selected\.length; i\+\+\)/);
 });
 
-test('one click and buyer show replace internal job ids with provider task ids as soon as KIE returns them', () => {
+test('one click and buyer show never expose internal job ids as KIE task ids', () => {
   for (const source of [mainSource, firstImageSource, detailSource, skuSource, buyerShowSource]) {
-    assert.match(source, /onJobCreated|任务已创建，正在生成/);
+    assert.match(source, /onJobCreated|任务正在提交云端|任务已提交云端，正在生成/);
+    assert.doesNotMatch(source, /taskId:\s*providerTaskId\s*\|\|\s*jobId/);
+    assert.doesNotMatch(source, /providerTaskId\s*\|\|\s*jobId/);
   }
-  assert.match(mainSource, /taskId: providerTaskId \|\| jobId/);
-  assert.match(firstImageSource, /taskId: providerTaskId \|\| jobId/);
-  assert.match(detailSource, /taskId: providerTaskId \|\| jobId/);
-  assert.match(skuSource, /taskId: providerTaskId \|\| jobId/);
-  assert.match(buyerShowSource, /taskId: providerTaskId \|\| jobId/);
+  assert.match(mainSource, /backendJobId: jobId \|\| undefined/);
+  assert.match(firstImageSource, /backendJobId: jobId \|\| undefined/);
+  assert.match(detailSource, /backendJobId: jobId \|\| undefined/);
+  assert.match(skuSource, /backendJobId: jobId \|\| undefined/);
+  assert.match(buyerShowSource, /backendJobId: jobId \|\| undefined/);
 });
 
 test('one click planning and generation paths normalize legacy copy layout rows before rendering', () => {

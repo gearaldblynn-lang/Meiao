@@ -324,13 +324,14 @@ const ProjectCard: React.FC<Props> = ({
     title: result.fileName || result.taskId || `${project.name || '结果'} #${index + 1}`,
   }));
   const isCompletedMediaResult = (result: GeneratedResult) => result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl);
-  const hasGeneratingResult = project.results.some((result) => result.status === 'generating' && !isCompletedMediaResult(result));
+  const resultHasVisibleTaskId = (result: GeneratedResult) => Boolean(String(result.taskId || '').trim());
+  const isResultActivelyGenerating = (result: GeneratedResult) => result.status === 'generating' && !isCompletedMediaResult(result) && resultHasVisibleTaskId(result);
+  const hasGeneratingResult = project.results.some((result) => isResultActivelyGenerating(result));
   const projectProgressIncomplete = Number(project.completedCount || 0) < Number(project.taskCount || 0);
   const isProjectActivelyGenerating = project.status === 'generating' && (
     hasGeneratingResult
     || (!hasPlans && projectProgressIncomplete)
   );
-  const isResultActivelyGenerating = (result: GeneratedResult) => result.status === 'generating' && !isCompletedMediaResult(result);
   const displayProjectStatus: Project['status'] = project.status === 'generating' && !isProjectActivelyGenerating
     ? (hasResults ? 'completed' : 'planning')
     : project.status;

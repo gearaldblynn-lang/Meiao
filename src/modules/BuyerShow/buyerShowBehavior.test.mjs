@@ -98,3 +98,10 @@ test('buyer show new workflow prepends new sets instead of replacing existing se
     'buyer-show planning should not clear the existing set list before the new plans are ready'
   );
 });
+
+test('buyer show stores provider task ids separately from internal backend job ids', () => {
+  assert.doesNotMatch(source, /providerTaskId\s*\|\|\s*jobId/);
+  assert.doesNotMatch(source, /taskId:\s*providerTaskId\s*\|\|\s*jobId/);
+  assert.match(source, /taskId: providerTaskId \|\| undefined/);
+  assert.match(source, /backendJobId: jobId \|\| undefined/);
+});

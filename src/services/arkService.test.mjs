@@ -45,6 +45,16 @@ test('analysis service no longer routes planning through ark or doubao', () => {
   );
   assert.match(
     arkServiceSource,
+    /fallbackModels: getAnalysisFallbackModels\(model\)/,
+    'planning analysis should provide a stronger fallback model when the configured model refuses or returns unusable content'
+  );
+  assert.match(
+    arkServiceSource,
+    /isAnalysisRefusalText/,
+    'planning analysis should reject model refusal text instead of turning it into a plan'
+  );
+  assert.match(
+    arkServiceSource,
     /taskId: String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| ''\)\.trim\(\) \|\| undefined/,
     'planning analysis should expose only the KIE provider task id'
   );
@@ -54,6 +64,7 @@ test('analysis service no longer routes planning through ark or doubao', () => {
     'planning analysis should not read providerTaskId from a missing job state'
   );
   assert.doesNotMatch(arkServiceSource, /taskId: String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| job\.id/);
+  assert.doesNotMatch(arkServiceSource, /const scheme = tagMatch\?\.\[1\]\?\.trim\(\) \|\| content\.trim\(\)/);
 });
 
 test('analysis service recovers completed KIE chat jobs after transient polling failures', () => {
