@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CheckSquare2, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, Download, FileText, Film, ImagePlus, Maximize2, Package, Palette, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { CheckSquare2, ChevronLeft, ChevronRight, Copy, Download, FileText, Film, ImagePlus, Maximize2, Package, Palette, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, VideoStoryboardProject } from '../../types';
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
@@ -191,11 +191,15 @@ const formatCreditsConsumed = (value: number) => {
   return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '');
 };
 
-const splitTaskIds = (value?: string) =>
-  String(value || '')
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
+const splitTaskIds = (value?: string) => {
+  const taskIds = Array.from(new Set(
+    String(value || '')
+      .split(/[,\s]+/)
+      .map((item) => item.trim())
+      .filter(Boolean),
+  ));
+  return taskIds.length > 0 ? [taskIds.at(-1) as string] : [];
+};
 
 const getProjectCreditsConsumed = (project: Project) => {
   const rawProjectCredits = normalizeCreditsConsumed(project.creditsConsumed);
@@ -275,7 +279,6 @@ const ProjectCard: React.FC<Props> = ({
     project.subFeature === 'detail_page' || project.subFeature === 'detail' ? 'stack' : 'single',
   );
   const [expandedPrompts, setExpandedPrompts] = useState<Record<string, boolean>>({});
-  const [planningIdsExpanded, setPlanningIdsExpanded] = useState(false);
   const [confirmDeleteProject, setConfirmDeleteProject] = useState(false);
   const [confirmDeleteResult, setConfirmDeleteResult] = useState<string | null>(null);
   const [fissionDialog, setFissionDialog] = useState<{
@@ -425,46 +428,7 @@ const ProjectCard: React.FC<Props> = ({
   const renderPlanningTaskId = (className = '') => {
     const planningTaskIds = splitTaskIds(project.planningTaskId);
     if (planningTaskIds.length === 0) return null;
-    if (planningTaskIds.length === 1) {
-      return renderTaskIdChip(planningTaskIds[0], '策划任务 ID', `text-[10px] ${className}`);
-    }
-    return (
-      <div className={`relative inline-flex min-w-0 text-[10px] ${className}`}>
-        <button
-          type="button"
-          className="inline-flex max-w-full items-center gap-1 rounded-full px-2 py-1 font-semibold transition-colors"
-          style={{ background: 'var(--bg-surface)', color: 'var(--text-tertiary)' }}
-          title="查看多个策划任务 ID"
-          aria-expanded={planningIdsExpanded}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setPlanningIdsExpanded((prev) => !prev);
-          }}
-        >
-          <FileText size={12} />
-          <span>策划任务 ID</span>
-          <span className="rounded-full px-1.5 py-0.5 text-[9px]" style={{ background: 'var(--bg-elevated)', color: 'var(--accent)' }}>{planningTaskIds.length}</span>
-          {planningIdsExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        </button>
-        {planningIdsExpanded ? (
-          <div
-            className="absolute left-0 top-full z-30 mt-2 flex w-[min(340px,calc(100vw-48px))] flex-col gap-2 rounded-[16px] border p-2 shadow-lg"
-            style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="px-1 text-[10px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>
-              共 {planningTaskIds.length} 个策划任务 ID
-            </div>
-            {planningTaskIds.map((taskId, index) => (
-              <div key={`${taskId}-${index}`} className="min-w-0 rounded-[12px] px-2 py-1" style={{ background: 'var(--bg-surface)' }}>
-                {renderTaskIdChip(taskId, `策划任务 ID ${index + 1}`)}
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
-    );
+    return renderTaskIdChip(planningTaskIds[0], '策划任务 ID', `text-[10px] ${className}`);
   };
   const getTranslationStatusMeta = (result: GeneratedResult) => {
     if (result.status === 'completed') return { label: 'COMPLETED', color: '#059669', bg: 'rgba(16,185,129,0.10)' };

@@ -2,6 +2,16 @@ import type { AppModule } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
 import { isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 
+const latestIdentityText = (...values: unknown[]) => {
+  const merged = Array.from(new Set(
+    values
+      .flatMap((value) => String(value || '').split(/[,\s]+/))
+      .map((item) => item.trim())
+      .filter(Boolean),
+  ));
+  return merged.at(-1) || undefined;
+};
+
 type ShellResult = {
   id: string;
   imageUrl: string;
@@ -271,6 +281,7 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
     ...(Array.isArray(baseProject.results) || Array.isArray(incomingProject.results) ? { results } : {}),
     ...(Array.isArray(baseProject.plans) || Array.isArray(incomingProject.plans) ? { plans } : {}),
     ...(Array.isArray(baseProject.schemes) || Array.isArray(incomingProject.schemes) ? { schemes } : {}),
+    planningTaskId: latestIdentityText(baseProject.planningTaskId, incomingProject.planningTaskId),
     taskCount,
     completedCount,
     status,
@@ -439,7 +450,7 @@ export const upsertOneClickProjectIntoPersistedState = (
       : plans.find((plan) => plan.selected)?.id || null,
     generationContext: project.generationContext,
     creditsConsumed: project.creditsConsumed,
-    planningTaskId: project.planningTaskId,
+    planningTaskId: latestIdentityText(project.planningTaskId),
     directGeneration: project.directGeneration,
   };
   const existingBranchProjects = Array.isArray(branch.projects) ? branch.projects : [];

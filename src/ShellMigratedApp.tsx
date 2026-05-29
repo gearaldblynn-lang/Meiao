@@ -158,6 +158,16 @@ const shouldRefreshVideoAssetUrl = (url?: string, hasLocalAsset = false) => {
 
 const buildGenerationSubmitLockKey = (module: AppModule, subFeature?: string) => `${module}:${subFeature || 'default'}`;
 
+const latestIdentityText = (...values: unknown[]) => {
+  const merged = Array.from(new Set(
+    values
+      .flatMap((value) => String(value || '').split(/[,\s]+/))
+      .map((item) => item.trim())
+      .filter(Boolean),
+  ));
+  return merged.at(-1) || undefined;
+};
+
 const shouldGuardGenerationSubmit = (module: AppModule, _subFeature?: string) => (
   module === AppModuleObj.ONE_CLICK
   || module === AppModuleObj.TRANSLATION
@@ -627,7 +637,7 @@ const compactRuntimeProject = (project: Project): Project => ({
   subFeature: project.subFeature,
   sourceType: project.sourceType,
   backendJobId: project.backendJobId,
-  planningTaskId: project.planningTaskId,
+  planningTaskId: latestIdentityText(project.planningTaskId),
   creditsConsumed: project.creditsConsumed,
   directGeneration: project.directGeneration,
   error: trimRuntimeText(project.error),
@@ -3382,7 +3392,7 @@ const AppContent: React.FC<{
         const persistedPlanningProject = {
           ...planningProject,
           backendJobId,
-          ...(providerId ? { planningTaskId: providerId } : {}),
+          ...(providerId ? { planningTaskId: latestIdentityText(providerId) } : {}),
         };
         setProjects((prev) => prev.map((project) => (
           project.id === projectId
@@ -3432,7 +3442,7 @@ const AppContent: React.FC<{
           generationContext,
           backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
           creditsConsumed: planResult.creditsConsumed,
-          planningTaskId: planResult.taskId || planningProviderTaskId || undefined,
+          planningTaskId: latestIdentityText(planResult.taskId, planningProviderTaskId),
         };
         setProjects((prev) => prev.map((p) =>
           p.id === projectId
@@ -3460,7 +3470,7 @@ const AppContent: React.FC<{
             ...planningProject,
             status: 'planning',
             backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
-            planningTaskId: planningProviderTaskId || undefined,
+            planningTaskId: latestIdentityText(planningProviderTaskId),
             error: '任务已提交云端，结果待同步',
           };
           setProjects((prev) => prev.map((p) =>
@@ -3481,7 +3491,7 @@ const AppContent: React.FC<{
           ...planningProject,
           status: 'error',
           backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
-          planningTaskId: planningProviderTaskId || undefined,
+          planningTaskId: latestIdentityText(planningProviderTaskId),
           results: [{
             id: `${taskId}-error`,
             imageUrl: '',
@@ -4306,7 +4316,7 @@ const AppContent: React.FC<{
               results: mergedPendingResults,
               subFeature: sceneSubFeature,
               creditsConsumed: project.creditsConsumed,
-              planningTaskId: project.planningTaskId,
+              planningTaskId: latestIdentityText(project.planningTaskId),
               error: recoverablePlanResult.message || '结果待同步',
             };
             updateTaskProgress();
@@ -4404,7 +4414,7 @@ const AppContent: React.FC<{
         completedCount: countCompletedProjectResults(mergedCompletedResults),
         subFeature: sceneSubFeature,
         creditsConsumed: project.creditsConsumed,
-        planningTaskId: project.planningTaskId,
+        planningTaskId: latestIdentityText(project.planningTaskId),
       };
       if (pendingSyncProject) {
         pendingSyncProject = {
@@ -4481,7 +4491,7 @@ const AppContent: React.FC<{
         results: mergedFailedResults,
         subFeature: sceneSubFeature,
         creditsConsumed: project.creditsConsumed,
-        planningTaskId: project.planningTaskId,
+        planningTaskId: latestIdentityText(project.planningTaskId),
       };
       setProjects((prev) => {
         const next = prev.map((p) => {
