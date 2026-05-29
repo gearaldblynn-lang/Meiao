@@ -2760,6 +2760,54 @@ test('shell data adapter clears stale planning failure when backend planning job
   assert.equal(project.planningTaskId, 'kie-planning-task-1');
 });
 
+test('shell data adapter reconstructs a one-click planning project from a successful fallback planning job', () => {
+  const snapshot = buildShellDataSnapshot({}, [{
+    id: 'fallback-planning-job',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'resp-fallback-provider',
+    payload: {
+      shellPlanningPurpose: 'one_click_planning',
+      shellProjectId: 'proj-plan-fallback',
+      shellProjectName: '5月29日项目1',
+      subFeature: 'first_image',
+      shellReferenceUrl: 'https://example.com/ref.jpg',
+      model: 'gemini-3-flash-openai',
+      fallbackModels: ['gpt-5-4-openai-resp'],
+    },
+    result: {
+      content: `[SCHEME_START]
+- 屏序/类型：首图裂变1-复刻主图参考1
+- 参考图标识：复刻主图参考1
+- 设计意图：fallback 后 GPT5.4 成功返回
+- 画面描述：真实策划内容
+- 画面比例：1:1
+[SCHEME_END]`,
+      modelUsed: 'gpt-5-4-openai-resp',
+      fallbackFrom: 'gemini-3-flash-openai',
+      providerTaskId: 'resp-fallback-provider',
+      creditsConsumed: 0.42,
+    },
+    createdAt: 3000,
+    updatedAt: 4000,
+    finishedAt: 4000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-plan-fallback');
+  assert.ok(project);
+  assert.equal(project.name, '5月29日项目1');
+  assert.equal(project.status, 'planning');
+  assert.equal(project.subFeature, 'first_image');
+  assert.equal(project.results.length, 0);
+  assert.equal(project.plans?.length, 1);
+  assert.equal(project.plans?.[0]?.schemeContent?.includes('真实策划内容'), true);
+  assert.equal(project.plans?.[0]?.sourceReferenceUrl, 'https://example.com/ref.jpg');
+  assert.equal(project.planningTaskId, 'resp-fallback-provider');
+  assert.equal(project.creditsConsumed, 0.42);
+});
+
 test('shell data adapter collapses duplicate no-media failures for the same one-click plan', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{
