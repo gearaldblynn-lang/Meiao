@@ -266,6 +266,59 @@ test('mergeAppStateForStorage keeps plan-only pending one-click projects out of 
   assert.equal(merged.shellProjects[0].schemes[0].status, 'pending');
 });
 
+test('mergeAppStateForStorage drops invalid completed one-click media from failed planning placeholders', () => {
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'failed-planning-project',
+      module: 'one_click',
+      status: 'completed',
+      taskCount: 2,
+      completedCount: 1,
+      subFeature: 'first_image',
+      plans: [{
+        id: 'planning-error',
+        title: '5月29日项目12',
+        selected: true,
+        schemeContent: 'fetch failed',
+      }],
+      results: [{
+        id: 'planning-error',
+        planId: 'planning-error',
+        status: 'completed',
+        imageUrl: 'https://example.com/bad.png',
+        prompt: 'fetch failed',
+        module: 'one_click',
+        subFeature: 'first_image',
+      }],
+    }],
+  }, {
+    shellProjects: [{
+      id: 'failed-planning-project',
+      module: 'one_click',
+      status: 'error',
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      results: [{
+        id: 'task-plan-error',
+        status: 'error',
+        imageUrl: '',
+        prompt: '共 1 张参考图，其中 1 张策划失败。',
+        error: '共 1 张参考图，其中 1 张策划失败。',
+        module: 'one_click',
+        subFeature: 'first_image',
+      }],
+    }],
+  });
+
+  assert.equal(merged.shellProjects[0].status, 'error');
+  assert.equal(merged.shellProjects[0].taskCount, 1);
+  assert.equal(merged.shellProjects[0].completedCount, 0);
+  assert.equal(merged.shellProjects[0].plans.length, 0);
+  assert.equal(merged.shellProjects[0].results.length, 1);
+  assert.equal(merged.shellProjects[0].results[0].status, 'error');
+});
+
 test('mergeAppStateForStorage deep-merges one-click planning project snapshots without dropping plans', () => {
   const existingPlans = Array.from({ length: 5 }, (_, index) => ({
     id: `plan-${index + 1}`,

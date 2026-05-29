@@ -663,6 +663,75 @@ test('shell persistence merges partial one-click branch updates without shrinkin
   assert.equal(nextState.oneClickMemory.detailPage.schemes.length, 3);
 });
 
+test('shell persistence does not pair invalid one-click planning placeholders with generated media by index', () => {
+  const state = buildPersistedAppState({
+    oneClickMemory: {
+      firstImage: {
+        projects: [],
+        schemes: [],
+      },
+    },
+  });
+
+  const nextState = upsertOneClickProjectIntoPersistedState(state, {
+    id: 'failed-placeholder-project',
+    name: '5月29日项目12',
+    module: 'one_click',
+    status: 'completed',
+    createdAt: '05-29',
+    subFeature: 'first_image',
+    taskCount: 2,
+    completedCount: 1,
+    selectedPlanId: 'failed-plan',
+    plans: [
+      {
+        id: 'failed-plan',
+        title: '5月29日项目12',
+        sellingPoints: [],
+        sceneDescription: '',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: 'fetch failed',
+        selected: true,
+        schemeContent: 'fetch failed',
+      },
+      {
+        id: 'valid-plan',
+        title: '首图裂变1',
+        sellingPoints: [],
+        sceneDescription: '真实策划',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '真实策划',
+        selected: true,
+        schemeContent: '真实策划',
+      },
+    ],
+    results: [{
+      id: 'provider-good',
+      planId: 'valid-plan',
+      imageUrl: 'https://example.com/good.png',
+      prompt: '真实策划',
+      model: 'gpt-image-2',
+      aspectRatio: '1:1',
+      status: 'completed',
+      createdAt: '05-29',
+      module: 'one_click',
+      subFeature: 'first_image',
+      taskId: 'provider-good',
+      backendJobId: 'image-job-good',
+    }],
+  });
+
+  const project = nextState.oneClickMemory.firstImage.projects[0];
+  assert.deepEqual(project.plans.map((plan) => plan.id), ['valid-plan']);
+  assert.deepEqual(project.schemes.map((scheme) => scheme.id), ['valid-plan']);
+  assert.equal(project.schemes[0].resultUrl, 'https://example.com/good.png');
+  assert.equal(project.schemes.some((scheme) => scheme.editedContent === 'fetch failed'), false);
+});
+
 test('shell persistence stores translation files into the matching branch so completed cards survive refresh', () => {
   const state = buildPersistedAppState({
     translationMemory: {

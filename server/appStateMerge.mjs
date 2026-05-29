@@ -4,6 +4,37 @@ const ONE_CLICK_BRANCH_KEYS = ['firstImage', 'mainImage', 'detailPage', 'sku'];
 const TRANSLATION_BRANCH_KEYS = ['main', 'detail', 'removeText'];
 
 const compactKey = (value) => String(value || '').trim();
+const getOneClickPlanContent = (item = {}) => compactKey(
+  item?.schemeContent
+  || item?.textLayout
+  || item?.sceneDescription
+  || item?.styleDirection
+  || item?.colorPalette
+  || item?.composition
+  || item?.originalContent
+  || item?.editedContent
+  || item?.prompt
+  || item?.error
+  || item?.title
+);
+const isInvalidOneClickPlanText = (value) => {
+  const content = compactKey(value).replace(/\s+/g, ' ');
+  if (!content) return false;
+  return [
+    /fetch failed/i,
+    /共\s*\d+\s*张参考图，其中\s*\d+\s*张策划失败/,
+    /Failed to get (?:the )?file information/i,
+    /I cannot fulfill this request/i,
+    /Cannot read properties of undefined/i,
+    /providerTaskId/i,
+    /网络连接失败，请检查网络后重试/,
+    /AI\s*分析请求失败/,
+    /SKU方案策划失败/,
+    /策划失败/,
+    /任务状态同步失败/,
+  ].some((pattern) => pattern.test(content));
+};
+const isInvalidOneClickPlanLike = (item = {}) => isInvalidOneClickPlanText(getOneClickPlanContent(item));
 const idSet = (values) => new Set(
   (Array.isArray(values) ? values : [])
     .map((value) => compactKey(value))
@@ -424,13 +455,21 @@ const pruneSupersededNoMediaItems = (items = []) => {
 const normalizeProjectLikeItem = (item = {}, options = {}) => {
   const isOneClickProject = options.forceOneClick || String(item?.module || '') === 'one_click';
   const originalPlans = Array.isArray(item?.plans) ? item.plans : [];
+  const invalidPlanIds = new Set(
+    (isOneClickProject ? originalPlans.filter(isInvalidOneClickPlanLike) : [])
+      .map((plan) => compactKey(plan?.id))
+      .filter(Boolean),
+  );
   const hasClientPlanIds = isOneClickProject && originalPlans.some((plan) => {
     const id = compactKey(plan?.id);
     return id && !isPlanningGeneratedPlanId(id);
   });
-  const plans = hasClientPlanIds
+  const visiblePlans = hasClientPlanIds
     ? originalPlans.filter((plan) => !isPlanningGeneratedPlanId(plan?.id))
     : originalPlans;
+  const plans = isOneClickProject
+    ? visiblePlans.filter((plan) => !isInvalidOneClickPlanLike(plan))
+    : visiblePlans;
   const droppedPlanIds = new Set(
     originalPlans
       .filter((plan) => !plans.some((kept) => compactKey(kept?.id) === compactKey(plan?.id)))
@@ -438,10 +477,18 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
       .filter(Boolean),
   );
   const originalResults = Array.isArray(item?.results) ? item.results : [];
+  let droppedInvalidCompletedMedia = false;
   const filterDroppedPlans = (items = []) => (
     (Array.isArray(items) ? items : []).filter((entry) => {
       const planId = getPlanIdentity(entry);
-      return !planId || !droppedPlanIds.has(planId);
+      const invalidCompletedMedia = isOneClickProject
+        && hasCompletedMediaItem(entry)
+        && (
+          isInvalidOneClickPlanText(getOneClickPlanContent(entry))
+          || (planId && invalidPlanIds.has(planId))
+        );
+      if (invalidCompletedMedia) droppedInvalidCompletedMedia = true;
+      return !invalidCompletedMedia && (!planId || !droppedPlanIds.has(planId));
     })
   );
   const results = pruneSupersededNoMediaItems(filterDroppedPlans(originalResults));
@@ -460,13 +507,17 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
     && ['error', 'failed'].includes(String(stateItems[0]?.status || ''))
     && !itemHasMedia(stateItems[0])
     && Boolean(compactKey(stateItems[0]?.backendJobId));
+  const droppedInvalidPlanningArtifacts = isOneClickProject && (invalidPlanIds.size > 0 || droppedInvalidCompletedMedia);
+  const persistedTaskCount = droppedInvalidPlanningArtifacts && completedMediaCount === 0
+    ? 0
+    : item?.taskCount;
   const taskCount = planCount > 0
     ? maxNumber(planCount, completedMediaCount, activeOrFailedCount, 1)
     : hasSingleTerminalBackendFailure
       ? 1
     : completedMediaCount > 0
       ? maxNumber(completedMediaCount, activeOrFailedCount, 1)
-      : maxNumber(item?.taskCount, stateItems.length, 1);
+      : maxNumber(persistedTaskCount, stateItems.length, 1);
   const hasGenerating = stateItems.some((entry) => isActiveGenerationItem(entry));
   const hasError = stateItems.some((entry) => ['error', 'failed'].includes(String(entry?.status || '')));
   const hasPlanOnlyPendingItems = isOneClickProject

@@ -1969,6 +1969,61 @@ test('shell data adapter keeps multiple completed image provider tasks for one p
   assert.equal(project?.taskCount, 2);
 });
 
+test('shell data adapter removes completed media generated from failed one-click planning text', () => {
+  const snapshot = buildShellDataSnapshot({
+    oneClickMemory: {
+      firstImage: {
+        projects: [{
+          id: 'failed-planning-generated-project',
+          name: '5月29日项目12',
+          module: 'one_click',
+          subFeature: 'first_image',
+          status: 'completed',
+          taskCount: 2,
+          completedCount: 1,
+          plans: [{
+            id: 'planning-job-error',
+            title: '5月29日项目12',
+            selected: true,
+            schemeContent: 'fetch failed',
+          }],
+          selectedPlanId: 'planning-job-error',
+          schemes: [
+            {
+              id: 'planning-job-error',
+              status: 'completed',
+              resultUrl: 'https://example.com/bad.png',
+              taskId: 'kie-bad-image',
+              backendJobId: 'image-job-from-failed-plan',
+              editedContent: 'fetch failed',
+              prompt: 'fetch failed',
+            },
+            {
+              id: 'task-plan-error',
+              status: 'error',
+              editedContent: '共 1 张参考图，其中 1 张策划失败。',
+              prompt: '共 1 张参考图，其中 1 张策划失败。',
+              error: '共 1 张参考图，其中 1 张策划失败。',
+            },
+          ],
+        }],
+      },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'failed-planning-generated-project');
+  assert.equal(project?.status, 'error');
+  assert.equal(project?.completedCount, 0);
+  assert.equal(project?.taskCount, 1);
+  assert.equal(project?.plans, undefined);
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.results[0]?.status, 'error');
+  assert.equal(project?.results.some((result) => result.imageUrl), false);
+});
+
 test('shell data adapter does not restore jobs hidden by deletion tombstones', () => {
   const snapshot = buildShellDataSnapshot({
     shellDraft: {
