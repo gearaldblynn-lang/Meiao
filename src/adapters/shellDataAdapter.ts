@@ -456,6 +456,18 @@ const parseOneClickPlanningText = (text: unknown, jobId: string): ShellProjectDa
   });
 };
 
+const attachReferenceUrlToPlans = (
+  plans: ShellProjectData['plans'] = [],
+  sourceReferenceUrl: unknown,
+) => {
+  const referenceUrl = String(sourceReferenceUrl || '').trim();
+  if (!referenceUrl) return plans;
+  return plans.map((plan) => ({
+    ...plan,
+    sourceReferenceUrl: plan.sourceReferenceUrl || referenceUrl,
+  }));
+};
+
 const getOneClickProjectPromptFallback = (project: any) => {
   const config = project?.config || {};
   const configLines = [
@@ -1031,7 +1043,42 @@ const mapJobs = (
         && urls.length === 0
       ) {
         const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
-        if (!matchedProject) return;
+        const planningText = String((job.result as any)?.content || (job.result as any)?.text || '').trim();
+        const parsedPlans = attachReferenceUrlToPlans(
+          parseOneClickPlanningText(planningText, job.id),
+          (job.payload as any)?.shellReferenceUrl,
+        );
+        if (!matchedProject) {
+          const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
+          const isTrackedPlanningJob = Boolean(
+            payloadProjectId
+            || String((job.payload as any)?.shellPlanningPurpose || '').trim() === 'one_click_planning',
+          );
+          if (!isTrackedPlanningJob || parsedPlans.length === 0) return;
+          const inferredSubFeature = getStructuredOneClickJobSubFeature(job.payload)
+            || normalizeJobSubFeature(module, job.taskType, { ...job.payload, prompt: planningText });
+          projects.push({
+            id: payloadProjectId || `job-${job.id}`,
+            name: String((job.payload as any)?.shellProjectName || '').trim()
+              || parsedPlans[0]?.title
+              || prompt.slice(0, 28)
+              || '一键主详策划',
+            module,
+            status: 'planning',
+            createdAt,
+            results: [],
+            taskCount: parsedPlans.length,
+            completedCount: 0,
+            subFeature: inferredSubFeature,
+            sourceType: 'job',
+            backendJobId: job.id,
+            creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed),
+            planningTaskId: String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || undefined,
+            plans: parsedPlans,
+            selectedPlanId: parsedPlans.find((plan) => plan.selected)?.id || parsedPlans[0]?.id,
+          });
+          return;
+        }
         const planningProject = removePlanningJobPendingPlaceholders(matchedProject, job);
         const hasExistingConcreteResults = (planningProject.results || []).some((result) => (
           hasCompletedMediaResult(result)
@@ -1077,8 +1124,7 @@ const mapJobs = (
           });
           return;
         }
-        const planningText = String((job.result as any)?.content || (job.result as any)?.text || '').trim();
-        const plans = parseOneClickPlanningText(planningText, job.id);
+        const plans = parsedPlans;
         if (plans.length === 0) return;
         if (hasExistingConcreteResults || Number(matchedProject.completedCount || 0) > 0) {
           const planningProject = removePlanningJobPendingPlaceholders(matchedProject, job);
