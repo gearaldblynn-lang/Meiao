@@ -39,6 +39,7 @@ import { getShellDraftStateKey, loadShellDraftState, normalizeShellDraftState, r
 import { getImageDimensions, getImageDimensionsFromUrl } from './utils/imageUtils';
 import { safeCreateObjectURL } from './utils/urlUtils';
 import { countCompletedProjectResults, mergeGeneratedPlanResults } from './utils/shellProjectResults.mjs';
+import { isInvalidOneClickPlanLike } from './utils/oneClickPlanValidation.ts';
 import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion } from './utils/shellRuntimePrune.mjs';
 import { deleteShellDraftAsset, loadShellDraftAsset, pruneShellDraftAssets, restoreShellDraftAssetUrls, saveShellDraftAsset } from './utils/shellDraftAssetStore';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
@@ -722,28 +723,7 @@ const normalizePlanSchemeContent = (scheme: string) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-const INVALID_PLAN_CONTENT_PATTERNS = [
-  'Cannot read properties of undefined',
-  'providerTaskId',
-  '网络连接失败，请检查网络后重试',
-  'AI 分析请求失败',
-  'SKU方案策划失败',
-  '策划失败',
-  '任务状态同步失败',
-];
-
-const isInvalidPlanContentForGeneration = (plan: PlanItem) => {
-  const content = normalizePlanSchemeContent(plan.schemeContent || [
-    plan.title,
-    plan.sceneDescription,
-    plan.styleDirection,
-    plan.colorPalette,
-    plan.composition,
-    plan.textLayout,
-  ].filter(Boolean).join('\n')).replace(/\s+/g, ' ');
-  if (!content) return false;
-  return INVALID_PLAN_CONTENT_PATTERNS.some((pattern) => content.includes(pattern));
-};
+const isInvalidPlanContentForGeneration = (plan: PlanItem) => isInvalidOneClickPlanLike(plan);
 
 const buildPlanPromptSummary = (plan: PlanItem, subFeature: string) => {
   const scheme = normalizePlanSchemeContent(plan.schemeContent || '');

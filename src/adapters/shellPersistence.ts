@@ -1,5 +1,6 @@
 import type { AppModule } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
+import { isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 
 type ShellResult = {
   id: string;
@@ -204,24 +205,39 @@ const isStaleOneClickPlanningPlaceholderItem = (item: any) => {
   );
 };
 
-const filterStaleOneClickPlanningPlaceholders = <T extends Record<string, any>>(items: T[] | undefined, isOneClick: boolean) => (
-  (items || []).filter((item) => !(isOneClick && isStaleOneClickPlanningPlaceholderItem(item)))
+const isInvalidOneClickCompletedMediaItem = (item: any) => (
+  hasCompletedMedia(item)
+  && isInvalidOneClickPlanText(item?.prompt || item?.editedContent || item?.originalContent || item?.schemeContent || item?.error)
+);
+
+const filterStaleOneClickPlanningPlaceholders = <T extends Record<string, any>>(
+  items: T[] | undefined,
+  isOneClick: boolean,
+  kind: 'result' | 'plan' | 'scheme',
+) => (
+  (items || []).filter((item) => {
+    if (!isOneClick) return true;
+    if (isStaleOneClickPlanningPlaceholderItem(item)) return false;
+    if (kind === 'plan' && isInvalidOneClickPlanLike(item)) return false;
+    if ((kind === 'result' || kind === 'scheme') && isInvalidOneClickCompletedMediaItem(item)) return false;
+    return true;
+  })
 );
 
 const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingProject: T | undefined, incomingProject: T): T => {
   const baseProject = existingProject || {} as T;
   const isOneClick = String(incomingProject.module || baseProject.module || '') === 'one_click';
   const results = mergeArrayByStableKeys(
-    filterStaleOneClickPlanningPlaceholders(baseProject.results, isOneClick),
-    filterStaleOneClickPlanningPlaceholders(incomingProject.results, isOneClick),
+    filterStaleOneClickPlanningPlaceholders(baseProject.results, isOneClick, 'result'),
+    filterStaleOneClickPlanningPlaceholders(incomingProject.results, isOneClick, 'result'),
   );
   const plans = mergeArrayByStableKeys(
-    filterStaleOneClickPlanningPlaceholders(baseProject.plans, isOneClick),
-    filterStaleOneClickPlanningPlaceholders(incomingProject.plans, isOneClick),
+    filterStaleOneClickPlanningPlaceholders(baseProject.plans, isOneClick, 'plan'),
+    filterStaleOneClickPlanningPlaceholders(incomingProject.plans, isOneClick, 'plan'),
   );
   const schemes = mergeArrayByStableKeys(
-    filterStaleOneClickPlanningPlaceholders(baseProject.schemes, isOneClick),
-    filterStaleOneClickPlanningPlaceholders(incomingProject.schemes, isOneClick),
+    filterStaleOneClickPlanningPlaceholders(baseProject.schemes, isOneClick, 'scheme'),
+    filterStaleOneClickPlanningPlaceholders(incomingProject.schemes, isOneClick, 'scheme'),
   );
   const stateItems = results.length > 0 ? results : schemes;
   const completedCount = stateItems.filter(hasCompletedMedia).length;
@@ -397,13 +413,18 @@ export const upsertOneClickProjectIntoPersistedState = (
 
   const branch = state.oneClickMemory[branchKey];
   const now = Date.now();
-  const plans = Array.isArray(project.plans) ? project.plans : [];
+  const plans = Array.isArray(project.plans)
+    ? project.plans.filter((plan) => !isInvalidOneClickPlanLike(plan))
+    : [];
+  const results = (Array.isArray(project.results) ? project.results : [])
+    .filter((result) => !isInvalidOneClickCompletedMediaItem(result));
   const schemes = plans.length > 0
     ? plans.map((plan, index) => {
-        const matchingResult = project.results.find((result) => result.planId === plan.id) || project.results[index];
+        const matchingResult = results.find((result) => result.planId === plan.id)
+          || (results[index] && !String(results[index].planId || '').trim() ? results[index] : undefined);
         return buildSchemeFromPlan(project, plan, matchingResult, index);
       })
-    : project.results.map((result, index) => buildSchemeFromResult(project, result, index));
+    : results.map((result, index) => buildSchemeFromResult(project, result, index));
   const persistedProject = {
     ...cloneOneClickBranchProjectBase(branch as unknown as Record<string, unknown>),
     id: project.id,
@@ -413,7 +434,9 @@ export const upsertOneClickProjectIntoPersistedState = (
     isDraft: project.status !== 'completed',
     schemes,
     plans,
-    selectedPlanId: project.selectedPlanId || plans.find((plan) => plan.selected)?.id || null,
+    selectedPlanId: plans.some((plan) => String(plan.id || '') === String(project.selectedPlanId || ''))
+      ? project.selectedPlanId
+      : plans.find((plan) => plan.selected)?.id || null,
     generationContext: project.generationContext,
     creditsConsumed: project.creditsConsumed,
     planningTaskId: project.planningTaskId,

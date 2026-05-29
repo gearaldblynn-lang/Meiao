@@ -4,6 +4,7 @@ import type { GeneratedResult } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, VideoStoryboardProject } from '../../types';
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
 import { copyTextToClipboard } from '../../utils/clipboard.mjs';
+import { isInvalidOneClickPlanLike } from '../../utils/oneClickPlanValidation.ts';
 import ConfirmDialog from './ConfirmDialog';
 import ImageLightbox, { type LightboxMediaItem } from './ImageLightbox';
 import PlanEditor, { type PlanItem } from './PlanEditor';
@@ -710,6 +711,11 @@ const ProjectCard: React.FC<Props> = ({
 
   const handleStartSelectedPlans = () => {
     if (!onConfirmPlan || !Array.isArray(project.plans)) return;
+    const invalidSelectedPlans = project.plans.filter((plan) => plan.selected && isInvalidOneClickPlanLike(plan));
+    if (invalidSelectedPlans.length > 0) {
+      addToast('当前策划结果无效，请重新策划后再生图。', 'error');
+      return;
+    }
     const completedPlanIds = new Set(
       project.results
         .filter((result) => isCompletedMediaResult(result))

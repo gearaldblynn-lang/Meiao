@@ -175,10 +175,13 @@ test('app workspace lazy loads major modules to avoid one giant startup bundle',
 
 test('one click generation refuses to turn planning error text into image prompts', () => {
   const app = read('../ShellMigratedApp.tsx');
+  const validation = read('../utils/oneClickPlanValidation.ts');
 
-  assert.match(app, /const INVALID_PLAN_CONTENT_PATTERNS = \[/);
-  assert.match(app, /Cannot read properties of undefined/);
-  assert.match(app, /网络连接失败，请检查网络后重试/);
+  assert.match(app, /isInvalidOneClickPlanLike/);
+  assert.match(validation, /INVALID_ONE_CLICK_PLAN_PATTERNS/);
+  assert.match(validation, /fetch failed/i);
+  assert.match(validation, /Cannot read properties of undefined/);
+  assert.match(validation, /网络连接失败，请检查网络后重试/);
   assert.match(app, /isInvalidPlanContentForGeneration/);
   assert.match(app, /当前策划结果无效，请重新策划后再生图。/);
 });

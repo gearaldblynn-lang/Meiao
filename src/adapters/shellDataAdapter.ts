@@ -1,5 +1,6 @@
 import type { AppModule, InternalJob } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
+import { isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 
 type ShellProjectStatus = 'planning' | 'generating' | 'completed' | 'error';
 type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error';
@@ -1880,8 +1881,15 @@ const hasPendingSelectedPlan = (
 const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectData => {
   if (project.module !== MODULE_VALUES.ONE_CLICK) return project;
   const rawPlans = Array.isArray(project.plans) ? project.plans : [];
+  const invalidPlanIds = new Set(
+    rawPlans
+      .filter((plan) => isInvalidOneClickPlanLike(plan))
+      .map((plan) => String(plan?.id || '').trim())
+      .filter(Boolean),
+  );
   const plans = rawPlans
-    .filter((plan) => !isStaleOneClickPlanningPlaceholderPlan(plan));
+    .filter((plan) => !isStaleOneClickPlanningPlaceholderPlan(plan))
+    .filter((plan) => !isInvalidOneClickPlanLike(plan));
   const hasClientPlanIds = plans.some((plan) => {
     const id = String(plan?.id || '').trim();
     return id && !isPlanningGeneratedPlanId(id);
@@ -1896,10 +1904,18 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
       .filter(Boolean),
   );
 
+  let droppedInvalidCompletedMedia = false;
   let results = (project.results || []).filter((result) => {
     const planId = String(result?.planId || '').trim();
+    const isInvalidCompletedMedia = hasCompletedMediaResult(result)
+      && (
+        isInvalidOneClickPlanText(result.prompt)
+        || (planId && invalidPlanIds.has(planId))
+      );
+    if (isInvalidCompletedMedia) droppedInvalidCompletedMedia = true;
     return (!planId || !droppedPlanIds.has(planId))
-      && !isStaleOneClickPlanningPlaceholderResult(result);
+      && !isStaleOneClickPlanningPlaceholderResult(result)
+      && !isInvalidCompletedMedia;
   });
   results = pruneSupersededOneClickResults(results);
 
@@ -1909,7 +1925,10 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
     (result.status === 'generating' && resultHasProviderTaskIdentity(result))
     || (result.status === 'error' && !resultHasMedia(result))
   )).length;
-  const projectTaskCount = Number(project.taskCount || 0) || 0;
+  const droppedInvalidPlanningArtifacts = invalidPlanIds.size > 0 || droppedInvalidCompletedMedia;
+  const projectTaskCount = droppedInvalidPlanningArtifacts && completedCount === 0
+    ? 0
+    : Number(project.taskCount || 0) || 0;
   const hasSingleTerminalBackendFailure = filteredPlans.length === 0
     && results.length === 1
     && isTerminalBackendFailureResult(results[0]);
