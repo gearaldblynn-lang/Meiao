@@ -190,6 +190,87 @@ export interface InternalJob {
   cancelRequestedAt: number | null;
 }
 
+export interface TaskPlatformHealth {
+  ok: boolean;
+  engine: 'mysql' | 'dual' | 'temporal';
+  mysqlLedger: boolean;
+  temporal: {
+    configured: boolean;
+    reachable: boolean;
+    address?: string;
+    namespace?: string;
+    taskQueue?: string;
+    message: string;
+  };
+}
+
+export interface TaskPlatformJob {
+  id: string;
+  userId: string;
+  user: { id: string; username: string; displayName: string };
+  module: string;
+  taskType: string;
+  provider: string;
+  status: InternalJob['status'];
+  providerTaskId: string;
+  errorCode: string;
+  errorMessage: string;
+  retryCount: number;
+  maxRetries: number;
+  createdAt: number;
+  updatedAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+  attemptCount: number;
+  latestAttemptStatus: string;
+  latestStage: string;
+  latestEventStatus: string;
+  latestEventAt: number | null;
+  providerSubmitted: boolean;
+  retryable: boolean;
+  errorFingerprint: string;
+  workflowId: string;
+  runId: string;
+  traceId: string;
+}
+
+export interface TaskPlatformAttempt {
+  id: string;
+  jobId: string;
+  attemptNo: number;
+  engine: string;
+  workflowId: string;
+  runId: string;
+  traceId: string;
+  status: string;
+  providerTaskId: string;
+  errorCode: string;
+  errorMessage: string;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
+export interface TaskPlatformEvent {
+  id: string;
+  jobId: string;
+  attemptId: string;
+  traceId: string;
+  stage: string;
+  eventName: string;
+  status: 'success' | 'failed' | 'started' | 'interrupted';
+  engine: string;
+  providerSubmitted: boolean;
+  retryable: boolean;
+  errorCode: string;
+  errorMessage: string;
+  errorFingerprint: string;
+  providerTaskId: string;
+  workflowId: string;
+  runId: string;
+  meta: Record<string, unknown> | null;
+  createdAt: number;
+}
+
 export interface SystemPublicConfig {
   queue: {
     maxConcurrency: number;
@@ -418,6 +499,10 @@ export interface AgentChatSession {
   reasoningLevel?: string | null;
   webSearchEnabled: boolean;
   lastImageMode?: boolean;
+  messageCount?: number;
+  imageCount?: number;
+  lastMessagePreview?: string;
+  lastRunStatus?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -456,6 +541,22 @@ export interface AgentChatMessage {
     requestMode?: 'chat' | 'image_generation';
     selectedModel?: string;
     fallbackFrom?: string | null;
+    runId?: string;
+    status?: string;
+    phase?: string;
+    messageIds?: Record<string, string>;
+    contextTrace?: {
+      sessionId?: string;
+      clientRequestId?: string;
+      runId?: string;
+      requestMode?: 'chat' | 'image_generation';
+      historyMessageCount?: number;
+      recentHistoryMessageIds?: string[];
+      summaryUsed?: boolean;
+      knowledgeChunkCount?: number;
+      attachmentRefs?: Array<{ name?: string; kind?: string; url?: string; assetId?: string; mimeType?: string }>;
+      imageMode?: boolean;
+    };
     imagePlan?: AgentImageGenerationPlan | null;
     imageResultUrls?: string[] | null;
     retrievalSummary?: Array<{

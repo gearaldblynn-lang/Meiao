@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.meiao.temporal.dev</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/temporal</string>
+    <string>server</string>
+    <string>start-dev</string>
+    <string>--ip</string>
+    <string>127.0.0.1</string>
+    <string>--port</string>
+    <string>7233</string>
+    <string>--ui-port</string>
+    <string>8233</string>
+    <string>--db-filename</string>
+    <string>/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本/server/data/temporal-dev.db</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/feiyanglin/程序开发/电商视觉一键化/版本管理/梅奥MEIAO-当前版本</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/meiao-temporal-dev.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/meiao-temporal-dev.err.log</string>
+</dict>
+</plist>

@@ -42,7 +42,8 @@
   `MEIAO_SSH_KEY=~/.ssh/MEIAO.pem MEIAO_SERVER_HOST=111.229.66.247 ./scripts/deploy_tencent.sh`
 - 说明：
   - 该脚本会把本地代码同步到腾讯云目录。
-  - 服务器上会执行 `npm install`、`npm run build`。
+  - 服务器上会执行 `npm install`、`npm run security:audit`、`npm run build`。
+  - 若依赖树仍有 high/critical 级别漏洞，发布会在构建和 PM2 重启前停止。
   - 然后用 PM2 重启 `meiao-internal`。
 
 ## 6. 发布后验证

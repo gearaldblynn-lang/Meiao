@@ -11,6 +11,7 @@
     "acceptance": "node scripts/acceptance-report.mjs",
     "build": "tsc -b && vite build",
     "lint": "tsc -b",
+    "security:audit": "npm audit --audit-level=high",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -41,6 +42,9 @@
     "@radix-ui/react-toggle": "^1.1.10",
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@temporalio/client": "1.16.2",
+    "@temporalio/worker": "1.16.2",
+    "@temporalio/workflow": "1.16.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",

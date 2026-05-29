@@ -65,6 +65,7 @@ tar \
     npm config delete sass_binary_site >/dev/null 2>&1 || true
     npm config set registry https://registry.npmjs.org/ >/dev/null 2>&1
     npm install
+    npm run security:audit
     npm run build
 
     if [ -d "\$OLD_ASSETS_DIR" ]; then

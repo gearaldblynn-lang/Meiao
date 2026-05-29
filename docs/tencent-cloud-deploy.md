@@ -29,6 +29,10 @@ MEIAO_DB_PASSWORD=请替换成你的真实密码
 MEIAO_DB_NAME=meiao_internal
 MEIAO_PUBLIC_BASE_URL=http://111.229.66.247:3100
 MEIAO_JOB_MAX_CONCURRENCY=3
+MEIAO_TASK_ENGINE=mysql
+MEIAO_TEMPORAL_ADDRESS=127.0.0.1:7233
+MEIAO_TEMPORAL_NAMESPACE=default
+MEIAO_TEMPORAL_TASK_QUEUE=meiao-cloud
 MEIAO_ALLOWED_ORIGINS=http://111.229.66.247,http://111.229.66.247:3100
 MEIAO_ADMIN_USERNAME=admin
 MEIAO_ADMIN_PASSWORD=请替换成你的管理员密码
@@ -51,6 +55,30 @@ pm2 start ecosystem.config.cjs
 pm2 save
 ```
 
+## 自托管 Temporal
+任务平台切到 Temporal 前，先在云端启动自托管 Temporal。Compose 文件在 `deploy/temporal/docker-compose.yml`，使用 PostgreSQL 持久化，Temporal gRPC 和 UI 都只绑定 `127.0.0.1`，不直接暴露公网。
+
+```bash
+cd /www/wwwroot/meiao-internal/deploy/temporal
+docker compose up -d
+docker compose ps
+```
+
+确认健康后再把 `.env.server` 切到：
+```bash
+MEIAO_TASK_ENGINE=temporal
+MEIAO_TEMPORAL_ADDRESS=127.0.0.1:7233
+MEIAO_TEMPORAL_NAMESPACE=default
+MEIAO_TEMPORAL_TASK_QUEUE=meiao-cloud
+```
+
+然后重启 PM2：
+```bash
+cd /www/wwwroot/meiao-internal
+pm2 restart meiao-internal --update-env
+pm2 save
+```
+
 ## 本地一键部署
 在本地项目目录执行：
 ```bash
@@ -61,6 +89,7 @@ MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh
 ## 云上发布硬性门禁
 - 每次同步新内容到云上前，必须先完成代码审查；至少检查本次 diff、数据隔离、公网资源 URL、日志/统计保留、权限边界和核心任务链路。
 - 部署脚本默认会拦截未审查发布；只有确认审查完成后，才允许带 `MEIAO_CODE_REVIEW_CONFIRMED=1` 执行。
+- 服务器 `npm install` 后会执行 `npm run security:audit`；只要依赖树仍有 high/critical 级别漏洞，发布会在构建和 PM2 重启前停止。
 - 不允许为了省时间绕过该门禁；紧急修复也必须先做最小范围代码审查并记录验证结果。
 
 如果密钥路径或服务器地址变化，可以临时指定：

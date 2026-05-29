@@ -83,6 +83,28 @@ test('analysis service recovers completed KIE chat jobs after transient polling 
   );
 });
 
+test('analysis service treats transient KIE task-not-found planning states as recoverable sync gaps', () => {
+  const detailedBlock = arkServiceSource.match(
+    /const requestAnalysisResponseDetailed = async[\s\S]*?const requestAnalysisResponse = async/,
+  )?.[0] || '';
+
+  assert.match(
+    arkServiceSource,
+    /const isRecoverableAnalysisJobFailure = \(job: any\) => \{[\s\S]*task_not_found[\s\S]*任务不存在/,
+    'planning task_not_found should be recognized before it becomes a permanent failed card'
+  );
+  assert.match(
+    arkServiceSource,
+    /if \(finalJob\.status !== 'succeeded'\) \{[\s\S]*isRecoverableAnalysisJobFailure\(finalJob\)[\s\S]*createRecoverableAnalysisSyncError/,
+    'a terminal task_not_found response should keep the planning card recoverable'
+  );
+  assert.match(
+    detailedBlock,
+    /isRecoverableAnalysisJobFailure\(recoveredJob\)[\s\S]*createRecoverableAnalysisSyncError/,
+    'a recovered failed task_not_found job should also be treated as pending sync'
+  );
+});
+
 test('marketing scheme prompt uses RTCFE structure and the new copy layout format', () => {
   assert.match(
     arkServiceSource,

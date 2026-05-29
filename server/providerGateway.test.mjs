@@ -2867,6 +2867,214 @@ test('executeProviderJob routes gemini 3 flash through the new openai chat compl
   }
 });
 
+test('executeProviderJob applies the KIE HTTP timeout to gemini 3 flash requests', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  let sawKieTimeout = false;
+
+  global.fetch = async () =>
+    createJsonResponse({
+      choices: [
+        {
+          message: {
+            content: 'gemini timeout guarded result',
+          },
+        },
+      ],
+    });
+  global.setTimeout = (handler, ms) => {
+    if (ms === 60_000) sawKieTimeout = true;
+    return originalSetTimeout(handler, ms);
+  };
+  global.clearTimeout = (timer) => originalClearTimeout(timer);
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          messages: [{ role: 'user', content: '请只回复 timeout guarded result' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'gemini timeout guarded result');
+    assert.equal(sawKieTimeout, true);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('executeProviderJob respects fallback models when gemini 3 flash fetch fails', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
+      throw new TypeError('fetch failed');
+    }
+    return createJsonResponse({
+      choices: [
+        {
+          message: {
+            content: 'chat fallback after flash failure',
+          },
+        },
+      ],
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          fallbackModels: ['gpt-5-2'],
+          messages: [{ role: 'user', content: '请只回复 fallback result' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'chat fallback after flash failure');
+    assert.equal(result.result.modelUsed, 'gpt-5-2');
+    assert.match(requests[0].url, /\/gemini-3-flash\/v1\/chat\/completions$/);
+    assert.match(requests[1].url, /\/gpt-5-2\/v1\/chat\/completions$/);
+    assert.equal(requests.length, 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob falls back to base64 asset upload when gemini 3 flash stream upload fails', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/api/file-stream-upload')) {
+      throw new TypeError('fetch failed');
+    }
+    if (String(url).includes('/api/file-base64-upload')) {
+      return createJsonResponse({ data: { downloadUrl: 'https://tempfile.example/uploaded.png' } });
+    }
+    return createJsonResponse({
+      choices: [
+        {
+          message: {
+            content: 'uploaded through fallback',
+          },
+        },
+      ],
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '分析图片' },
+                { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } },
+              ],
+            },
+          ],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'uploaded through fallback');
+    assert.match(requests[0].url, /\/api\/file-stream-upload$/);
+    assert.match(requests[1].url, /\/api\/file-base64-upload$/);
+    assert.match(requests[2].url, /\/gemini-3-flash\/v1\/chat\/completions$/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob falls back when gemini 3 flash stream stalls after submission', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+  let sawStreamTimeout = false;
+
+  global.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'text/event-stream' }),
+        body: new ReadableStream({
+          start() {},
+        }),
+        json: async () => ({}),
+      };
+    }
+    return createJsonResponse({
+      choices: [
+        {
+          message: {
+            content: 'fallback after stalled stream',
+          },
+        },
+      ],
+    });
+  };
+  global.setTimeout = (handler, ms) => {
+    if (ms === 120_000) {
+      sawStreamTimeout = true;
+      handler();
+      return 0;
+    }
+    return originalSetTimeout(handler, ms);
+  };
+  global.clearTimeout = (timer) => {
+    if (timer) originalClearTimeout(timer);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          fallbackModels: ['gpt-5-2'],
+          messages: [{ role: 'user', content: '请只回复 stalled fallback' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(sawStreamTimeout, true);
+    assert.equal(result.result.content, 'fallback after stalled stream');
+    assert.equal(result.result.modelUsed, 'gpt-5-2');
+    assert.equal(requests.length, 2);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
 test('executeProviderJob preserves provider task id from successful kie gemini chat responses', async () => {
   const originalFetch = global.fetch;
   const seenProviderTaskIds = [];

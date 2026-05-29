@@ -135,6 +135,22 @@ test('sidebar navigation separates business and system groups with readable labe
   assert.match(sidebar, /账户管理/);
 });
 
+test('account management exposes admin-only task platform diagnostics', () => {
+  const account = read('../shell/modules/Account/AccountManagement.tsx');
+  const api = read('../services/internalApi.ts');
+  const types = read('../types.ts');
+
+  assert.match(types, /export interface TaskPlatformJob/);
+  assert.match(api, /fetchTaskPlatformHealth/);
+  assert.match(api, /\/api\/admin\/task-platform\/jobs/);
+  assert.match(api, /\/api\/admin\/task-platform\/health/);
+  assert.match(account, /type TabId = 'users' \| 'logs' \| 'stats' \| 'tasks'/);
+  assert.match(account, /fetchTaskPlatformJobs/);
+  assert.match(account, /fetchTaskPlatformTimeline/);
+  assert.match(account, /\{ id: 'tasks' as const, label: '任务'/);
+  assert.match(account, /canManageAccounts && tab === 'tasks'/);
+});
+
 test('app workspace mounts the agent center as a top-level module', () => {
   const app = read('../ShellMigratedApp.tsx');
   const agentCenter = read('../shell/modules/AgentCenter/AgentCenterModule.tsx');
@@ -1855,7 +1871,7 @@ test('agent center module wires chat capability controls and session deletion in
   assert.match(module, /const refreshChatCatalog = async/);
   assert.match(module, /if \(workspaceMode !== 'plaza'\) return;/);
   assert.match(module, /setWorkspacePage\('plaza'\);/);
-  assert.match(module, /setSelectedSessionId\(''\);/);
+  assert.match(module, /setActiveSessionId\(''\);/);
   assert.match(module, /onAgentCatalogChanged=\{\(\) => \{\s*void refreshChatCatalog\(\);\s*\}\}/);
   assert.match(module, /void syncSessionOptions\(\{ lastImageMode: next \}\);/);
   assert.match(module, /需求分析中/);

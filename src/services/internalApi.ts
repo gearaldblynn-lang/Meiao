@@ -12,6 +12,10 @@ import type {
   KnowledgeDocumentSummary,
   StudioConfigDiff,
   SystemPublicConfig,
+  TaskPlatformAttempt,
+  TaskPlatformEvent,
+  TaskPlatformHealth,
+  TaskPlatformJob,
   VideoDiagnosisAccessMode,
   VideoDiagnosisAnalysisItem,
   VideoDiagnosisPlatform,
@@ -460,6 +464,42 @@ export const backfillUsageStats = async () => {
   return request<{ ok: boolean; upserted: number }>('/api/stats/backfill', {
     method: 'POST',
   });
+};
+
+export const fetchTaskPlatformHealth = async () => {
+  return request<TaskPlatformHealth>('/api/admin/task-platform/health');
+};
+
+export const fetchTaskPlatformJobs = async (filters?: Partial<{
+  status: string;
+  module: string;
+  provider: string;
+  taskType: string;
+  userId: string;
+  traceId: string;
+  page: number;
+  pageSize: number;
+}>) => {
+  const params = new URLSearchParams();
+  if (filters?.status && filters.status !== 'all') params.set('status', filters.status);
+  if (filters?.module && filters.module !== 'all') params.set('module', filters.module);
+  if (filters?.provider && filters.provider !== 'all') params.set('provider', filters.provider);
+  if (filters?.taskType) params.set('taskType', filters.taskType);
+  if (filters?.userId && filters.userId !== 'all') params.set('userId', filters.userId);
+  if (filters?.traceId) params.set('traceId', filters.traceId);
+  if (filters?.page) params.set('page', String(filters.page));
+  if (filters?.pageSize) params.set('pageSize', String(filters.pageSize));
+  const query = params.toString();
+  return request<{ jobs: TaskPlatformJob[]; total: number; page: number; pageSize: number }>(
+    `/api/admin/task-platform/jobs${query ? `?${query}` : ''}`,
+  );
+};
+
+export const fetchTaskPlatformTimeline = async (jobId: string) => {
+  return request<{
+    job: InternalJob;
+    timeline: { attempts: TaskPlatformAttempt[]; events: TaskPlatformEvent[] };
+  }>(`/api/admin/task-platform/jobs/${encodeURIComponent(jobId)}/timeline`);
 };
 
 export const fetchSystemConfig = async () => {
@@ -930,6 +970,14 @@ export const recoverInternalJob = async (payload: {
   });
 };
 
+const isTransientJobPollError = (error: unknown) => {
+  if (!(error instanceof ApiError)) return false;
+  return error.code === 'network_error'
+    || error.code === 'timeout'
+    || error.code === 'rate_limited'
+    || error.code === 'server_error';
+};
+
 export const waitForInternalJob = async (
   jobId: string,
   signal?: AbortSignal,
@@ -938,18 +986,30 @@ export const waitForInternalJob = async (
   onJobUpdate?: (job: InternalJob) => void,
 ): Promise<InternalJob> => {
   const deadline = maxWaitMs > 0 ? Date.now() + maxWaitMs : 0;
+  let lastPollError: unknown = null;
   while (true) {
     if (signal?.aborted) {
       throw new Error('INTERRUPTED');
     }
     if (deadline > 0 && Date.now() > deadline) {
+      if (lastPollError instanceof ApiError) {
+        throw new ApiError(lastPollError.message, lastPollError.code, lastPollError.status);
+      }
       throw new ApiError('任务等待超时，请稍后在任务列表中查看结果', 'job_timeout', 408);
     }
 
-    const { job } = await fetchInternalJob(jobId);
-    onJobUpdate?.(job);
-    if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
-      return job;
+    try {
+      const { job } = await fetchInternalJob(jobId);
+      lastPollError = null;
+      onJobUpdate?.(job);
+      if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
+        return job;
+      }
+    } catch (error) {
+      if (!isTransientJobPollError(error)) {
+        throw error;
+      }
+      lastPollError = error;
     }
 
     await new Promise<void>((resolve, reject) => {

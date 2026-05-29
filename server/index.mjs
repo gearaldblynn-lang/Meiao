@@ -20,7 +20,9 @@ import {
 import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
 import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
+import { ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import {
+  attachLocalJobWorkflowExecution,
   createLocalJobRecord,
   createLocalJobWorker,
   deleteLocalJobRecord,
@@ -29,6 +31,8 @@ import {
   getLocalJobQueueStats,
   listLocalJobsForUser,
   markLocalJobCompleted,
+  markLocalJobFailed,
+  normalizeLocalJobs,
   reconcileRestartedLocalJobs,
   requestLocalCancelJob,
   requestLocalRetryJob,
@@ -55,6 +59,8 @@ import {
 } from './assetStore.mjs';
 import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
 import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLogin } from './dreaminaCli.mjs';
+import { createTemporalTaskAdapter } from './temporalTaskAdapter.mjs';
+import { createLocalTemporalActivities, createMysqlTemporalActivities, startMeiaoTemporalWorker } from './temporalWorker.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -134,9 +140,11 @@ let mysqlPool = null;
 let mysqlPoolHealthCheckPromise = null;
 let jobWorker = null;
 let localJobWorker = null;
+let temporalWorkerRuntime = null;
 let localStoreCache = null;
 let assetCleanupTimer = null;
 let logCleanupTimer = null;
+const temporalTaskAdapter = createTemporalTaskAdapter();
 
 const defaultApiConfig = {
   kieApiKey: '',
@@ -1149,10 +1157,12 @@ const ensureLocalStore = () => {
   }
 };
 
-const normalizeLocalStoreShape = (store) => {
+const normalizeLocalStoreShape = (store, options = {}) => {
   store.users = Array.isArray(store.users) ? store.users.map(normalizeStoredUser) : [];
   store.logs = normalizeLogs(store.logs);
-  store.jobs = reconcileRestartedLocalJobs(Array.isArray(store.jobs) ? store.jobs : []);
+  store.jobs = options.reconcileRunningJobs
+    ? reconcileRestartedLocalJobs(Array.isArray(store.jobs) ? store.jobs : [])
+    : normalizeLocalJobs(Array.isArray(store.jobs) ? store.jobs : []);
   store.sessions = Array.isArray(store.sessions) ? store.sessions : [];
   store.systemSettings = normalizeSystemSettings(store.systemSettings || createDefaultSystemSettings());
   store.appStates = store.appStates && typeof store.appStates === 'object' ? store.appStates : {};
@@ -1202,6 +1212,14 @@ const normalizeLocalStoreShape = (store) => {
     };
   });
   return store;
+};
+
+const reconcileLocalStoreJobsAfterRestart = () => {
+  ensureLocalStore();
+  const rawStore = JSON.parse(readFileSync(storePath, 'utf8'));
+  localStoreCache = normalizeLocalStoreShape(rawStore, { reconcileRunningJobs: true });
+  writeFileSync(storePath, JSON.stringify(localStoreCache, null, 2), 'utf8');
+  return localStoreCache.jobs.filter((job) => job.errorCode === 'service_restarted' && job.status === 'retry_waiting');
 };
 
 const readLocalStore = () => {
@@ -2271,6 +2289,7 @@ const ensureMysqlSchema = async () => {
   `);
 
   await ensureJobsSchema(pool);
+  await ensureTaskPlatformSchema(pool);
   await ensureAssetSchema(pool);
 
   const [rows] = await pool.query('SELECT id FROM users LIMIT 1');
@@ -4320,7 +4339,14 @@ const listDbChatSessions = async (user, agentId = '') => {
     values.push(agentId);
   }
   const [rows] = await pool.query(
-    `SELECT * FROM chat_sessions WHERE ${clauses.join(' AND ')} ORDER BY updated_at DESC`,
+    `SELECT s.*,
+       (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id AND m.user_id = s.user_id) AS message_count,
+       (SELECT COUNT(*) FROM chat_messages m WHERE m.session_id = s.id AND m.user_id = s.user_id AND (m.attachments_json LIKE '%"kind":"image"%' OR m.metadata_json LIKE '%"imageResultUrls"%')) AS image_count,
+       (SELECT LEFT(m.content, 120) FROM chat_messages m WHERE m.session_id = s.id AND m.user_id = s.user_id ORDER BY m.created_at DESC LIMIT 1) AS last_message_preview,
+       (SELECT JSON_UNQUOTE(JSON_EXTRACT(m.metadata_json, '$.status')) FROM chat_messages m WHERE m.session_id = s.id AND m.user_id = s.user_id AND m.role = 'assistant' ORDER BY m.created_at DESC LIMIT 1) AS last_run_status
+     FROM chat_sessions s
+     WHERE ${clauses.map((clause) => clause.replace(/\buser_id\b/g, 's.user_id').replace(/\bagent_id\b/g, 's.agent_id').replace(/\bis_studio\b/g, 's.is_studio')).join(' AND ')}
+     ORDER BY s.updated_at DESC`,
     values
   );
   return rows.map((row) => ({
@@ -4335,6 +4361,10 @@ const listDbChatSessions = async (user, agentId = '') => {
     reasoningLevel: row.reasoning_level || null,
     webSearchEnabled: Boolean(row.web_search_enabled),
     lastImageMode: Boolean(row.last_image_mode),
+    messageCount: Number(row.message_count || 0),
+    imageCount: Number(row.image_count || 0),
+    lastMessagePreview: row.last_message_preview || '',
+    lastRunStatus: row.last_run_status || '',
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   }));
@@ -4532,6 +4562,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   const content = String(payload?.content || '').trim();
   const requestMode = payload?.requestMode === 'image_generation' ? 'image_generation' : 'chat';
   const clientRequestId = String(payload?.clientRequestId || createEntityId()).trim() || createEntityId();
+  const runId = `run-${clientRequestId}`;
   const session = await getDbChatSessionById(user, sessionId);
   if (!session) return null;
   const existingExchange = await findDbChatExchangeByClientRequestId(user, sessionId, clientRequestId);
@@ -4615,8 +4646,57 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       }))
     : null;
   const assistantCreatedAt = Date.now();
-  const userMetadata = { selectedModel, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, clientRequestId };
-  const assistantMetadata = { selectedModel: result.selectedModel, fallbackFrom: result.fallbackFrom || null, usedRetrieval: result.usedRetrieval, reasoningLevel: payload?.reasoningLevel || null, webSearchEnabled: Boolean(payload?.webSearchEnabled), requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] };
+  const contextTrace = {
+    sessionId,
+    clientRequestId,
+    runId,
+    requestMode,
+    historyMessageCount: history.length,
+    recentHistoryMessageIds: history.slice(-8).map((message) => message.id).filter(Boolean),
+    summaryUsed: Boolean(summary),
+    knowledgeChunkCount: requestMode === 'image_generation'
+      ? imageKnowledgeChunks.length
+      : Array.isArray(result.retrievalSummary)
+        ? result.retrievalSummary.length
+        : 0,
+    attachmentRefs: attachments.map((item) => ({
+      name: item.name,
+      kind: item.kind,
+      url: item.url || '',
+      assetId: item.assetId || '',
+      mimeType: item.mimeType || '',
+    })),
+    imageMode: requestMode === 'image_generation',
+  };
+  const userMetadata = {
+    selectedModel,
+    reasoningLevel: payload?.reasoningLevel || null,
+    webSearchEnabled: Boolean(payload?.webSearchEnabled),
+    requestMode,
+    clientRequestId,
+    runId,
+    status: 'completed',
+    phase: 'submitted',
+    contextTrace,
+    messageIds: { userMessageId },
+  };
+  const assistantMetadata = {
+    selectedModel: result.selectedModel,
+    fallbackFrom: result.fallbackFrom || null,
+    usedRetrieval: result.usedRetrieval,
+    reasoningLevel: payload?.reasoningLevel || null,
+    webSearchEnabled: Boolean(payload?.webSearchEnabled),
+    requestMode,
+    clientRequestId,
+    runId,
+    status: 'completed',
+    phase: 'completed',
+    contextTrace,
+    messageIds: { userMessageId, assistantMessageId },
+    imagePlan: result.imagePlan || null,
+    imageResultUrls: result.imageResultUrls || null,
+    retrievalSummary: result.retrievalSummary || [],
+  };
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
@@ -4642,6 +4722,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     connection.release();
   }
   result.clientRequestId = clientRequestId;
+  result.runId = runId;
   void createDbAgentUsageLog(user, agent, version, result, 'success').catch((error) => {
     console.warn('[agent-chat] usage log write failed', {
       sessionId,
@@ -4757,6 +4838,122 @@ const getDbJobByIdForUser = async (user, jobId) => {
   if (!job) return null;
   if (user.role !== 'admin' && job.userId !== user.id) return null;
   return job;
+};
+
+const recordDbTaskPlatformEvent = async (pool, job, event) => {
+  try {
+    await recordJobEvent(pool, job, {
+      engine: normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE),
+      ...event,
+    });
+  } catch (error) {
+    console.error('Task platform event write failed.', error);
+  }
+};
+
+const mirrorDbJobToTemporalIfEnabled = async (pool, job) => {
+  const engine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
+  if (engine === 'mysql') return null;
+  const executionMode = engine === 'temporal' ? 'execute' : 'observe';
+  const result = await temporalTaskAdapter.startJobWorkflow(job, { executionMode, ledger: 'mysql' });
+  const workflowAvailable = result.started || result.code === 'temporal_workflow_already_started';
+  await recordDbTaskPlatformEvent(pool, job, {
+    stage: engine === 'temporal' ? 'workflow' : 'temporal_mirror',
+    eventName: result.started
+      ? 'temporal_workflow_started'
+      : result.code === 'temporal_workflow_already_started'
+        ? 'temporal_workflow_already_started'
+        : 'temporal_workflow_unavailable',
+    status: workflowAvailable ? 'started' : 'failed',
+    providerSubmitted: false,
+    retryable: !workflowAvailable,
+    workflowId: result.workflowId || '',
+    runId: result.runId || '',
+    errorCode: workflowAvailable ? '' : result.code || 'temporal_start_failed',
+    errorMessage: workflowAvailable ? '' : result.message || 'Temporal workflow start failed.',
+    meta: {
+      engine,
+      executionMode,
+      temporal: result,
+    },
+  });
+  if (engine === 'temporal' && !workflowAvailable) {
+    const failedAt = Date.now();
+    await pool.query(
+      `UPDATE internal_jobs
+       SET status = 'failed', error_code = ?, error_message = ?, finished_at = ?, updated_at = ?
+       WHERE id = ? AND status IN ('queued', 'retry_waiting')`,
+      [
+        result.code || 'temporal_start_failed',
+        result.message || 'Temporal workflow start failed.',
+        failedAt,
+        failedAt,
+        job.id,
+      ]
+    );
+  }
+  return result;
+};
+
+const resumePendingDbTemporalJobs = async (pool, limit = 100) => {
+  const engine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
+  if (engine !== 'temporal' || !temporalTaskAdapter.configured) return 0;
+  const [rows] = await pool.query(
+    `SELECT id
+     FROM internal_jobs
+     WHERE status IN ('queued', 'retry_waiting')
+     ORDER BY created_at ASC
+     LIMIT ?`,
+    [Math.max(1, Math.min(500, Number(limit || 100)))]
+  );
+  let resumed = 0;
+  for (const row of rows) {
+    const job = await getJobById(pool, row.id);
+    if (!job) continue;
+    const result = await mirrorDbJobToTemporalIfEnabled(pool, job);
+    if (result?.started || result?.code === 'temporal_workflow_already_started') resumed += 1;
+  }
+  return resumed;
+};
+
+const shouldUseTemporalForLocalExecution = () => normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE) === 'temporal';
+
+const startLocalJobWorkflowIfEnabled = async (store, job) => {
+  const engine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
+  if (engine === 'mysql') return null;
+  const executionMode = engine === 'temporal' ? 'execute' : 'observe';
+
+  const result = await temporalTaskAdapter.startJobWorkflow(job, {
+    executionMode,
+  });
+  if (result.started) {
+    attachLocalJobWorkflowExecution(store, job.id, result, { engine, executionMode });
+  }
+
+  if (engine === 'temporal' && !result.started) {
+    const failedJob = markLocalJobFailed(store, job.id, {
+      code: result.code || 'temporal_start_failed',
+      message: result.message || 'Temporal workflow start failed.',
+    });
+    if (failedJob) {
+      appendLocalLog(store, {
+        user: findLocalUserById(failedJob.userId),
+        level: 'error',
+        module: failedJob.module,
+        action: 'job_failed',
+        message: `${failedJob.taskType} 任务启动失败`,
+        detail: failedJob.errorMessage,
+        status: 'failed',
+        meta: buildJobRuntimeLogMeta({
+          job: failedJob,
+          error: { code: failedJob.errorCode, message: failedJob.errorMessage },
+          finishedAt: failedJob.finishedAt || Date.now(),
+          retryCount: failedJob.retryCount,
+        }),
+      });
+    }
+  }
+  return result;
 };
 
 const incrementLocalUsageStat = (store, log) => {
@@ -6518,6 +6715,7 @@ const handleMysqlRequest = async (req, res, url) => {
   const chatSessionMessagesMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/messages$/);
   const studioTrainingMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/message$/);
   const studioTrainingApplyMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/apply$/);
+  const taskPlatformTimelineMatch = url.pathname.match(/^\/api\/admin\/task-platform\/jobs\/([^/]+)\/timeline$/);
 
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
   if (req.method === 'GET' && assetRouteMatch) {
@@ -7129,6 +7327,47 @@ const handleMysqlRequest = async (req, res, url) => {
     return;
   }
 
+  if (url.pathname === '/api/admin/task-platform/health' && req.method === 'GET') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const health = await getTaskPlatformHealth({ engine: process.env.MEIAO_TASK_ENGINE, temporalAdapter: temporalTaskAdapter });
+    json(res, 200, health);
+    return;
+  }
+
+  if (url.pathname === '/api/admin/task-platform/jobs' && req.method === 'GET') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const pool = await getMysqlPool();
+    const result = await listTaskPlatformJobs(pool, {
+      status: url.searchParams.get('status'),
+      module: url.searchParams.get('module'),
+      provider: url.searchParams.get('provider'),
+      taskType: url.searchParams.get('taskType'),
+      userId: url.searchParams.get('userId'),
+      traceId: url.searchParams.get('traceId'),
+      page: url.searchParams.get('page'),
+      pageSize: url.searchParams.get('pageSize'),
+    });
+    json(res, 200, result);
+    return;
+  }
+
+  if (taskPlatformTimelineMatch && req.method === 'GET') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const pool = await getMysqlPool();
+    const jobId = decodeURIComponent(taskPlatformTimelineMatch[1]);
+    const job = await getJobById(pool, jobId);
+    if (!job) {
+      json(res, 404, { message: '任务不存在。' });
+      return;
+    }
+    const timeline = await getTaskPlatformTimeline(pool, job.id);
+    json(res, 200, { job, timeline });
+    return;
+  }
+
   if (url.pathname === '/api/logs' && req.method === 'GET') {
     const admin = await requireDbAdmin(req, res);
     if (!admin) return;
@@ -7722,6 +7961,14 @@ const handleMysqlRequest = async (req, res, url) => {
       status: 'started',
       meta: buildJobRuntimeLogMeta({ job }),
     });
+    await recordDbTaskPlatformEvent(pool, job, {
+      stage: 'created',
+      eventName: 'job_created',
+      status: 'started',
+      providerSubmitted: false,
+      meta: buildJobRuntimeLogMeta({ job }),
+    });
+    await mirrorDbJobToTemporalIfEnabled(pool, job);
     jobWorker?.trigger?.();
     json(res, 201, { job });
     return;
@@ -7796,6 +8043,16 @@ const handleMysqlRequest = async (req, res, url) => {
       user,
       createLog: createDbLog,
     });
+    await recordDbTaskPlatformEvent(pool, job, {
+      stage: 'cancelled',
+      eventName: 'job_cancel_requested',
+      status: 'interrupted',
+      providerSubmitted: Boolean(job.providerTaskId),
+      providerTaskId: job.providerTaskId || '',
+      errorCode: 'request_cancelled',
+      errorMessage: '用户请求取消任务',
+      meta: buildJobRuntimeLogMeta({ job }),
+    });
     jobWorker?.cancelActiveJob(job.id);
     json(res, 200, { ok: true });
     return;
@@ -7815,7 +8072,22 @@ const handleMysqlRequest = async (req, res, url) => {
       user,
       createLog: createDbLog,
     });
-    jobWorker?.trigger?.();
+    await recordDbTaskPlatformEvent(pool, job, {
+      stage: 'retry',
+      eventName: 'job_retry_requested',
+      status: 'started',
+      providerSubmitted: Boolean(job.providerTaskId),
+      providerTaskId: job.providerTaskId || '',
+      retryable: true,
+      meta: buildJobRuntimeLogMeta({ job }),
+    });
+    const retriedJob = await getJobById(pool, job.id);
+    if (retriedJob) {
+      await mirrorDbJobToTemporalIfEnabled(pool, retriedJob);
+    }
+    if (normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE) !== 'temporal') {
+      jobWorker?.trigger?.();
+    }
     json(res, 200, { ok: true });
     return;
   }
@@ -7846,6 +8118,15 @@ const handleMysqlRequest = async (req, res, url) => {
       return;
     }
     const job = await createJobRecord(pool, user, jobPayload);
+    await recordDbTaskPlatformEvent(pool, job, {
+      stage: 'created',
+      eventName: 'job_recovered',
+      status: 'started',
+      providerSubmitted: true,
+      providerTaskId: body.providerTaskId,
+      meta: buildJobRuntimeLogMeta({ job }),
+    });
+    await mirrorDbJobToTemporalIfEnabled(pool, job);
     jobWorker?.trigger?.();
     json(res, 201, { job });
     return;
@@ -7872,6 +8153,7 @@ const handleLocalRequest = async (req, res, url) => {
   const chatSessionMessagesMatch = url.pathname.match(/^\/api\/chat\/sessions\/([^/]+)\/messages$/);
   const studioTrainingMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/message$/);
   const studioTrainingApplyMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/apply$/);
+  const taskPlatformTimelineMatch = url.pathname.match(/^\/api\/admin\/task-platform\/jobs\/([^/]+)\/timeline$/);
 
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
   if (req.method === 'GET' && assetRouteMatch) {
@@ -8894,6 +9176,133 @@ const handleLocalRequest = async (req, res, url) => {
     return;
   }
 
+  if (url.pathname === '/api/admin/task-platform/health' && req.method === 'GET') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const health = await getTaskPlatformHealth({ engine: process.env.MEIAO_TASK_ENGINE, temporalAdapter: temporalTaskAdapter });
+    json(res, 200, health);
+    return;
+  }
+
+  if (url.pathname === '/api/admin/task-platform/jobs' && req.method === 'GET') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const pageSize = Math.min(100, Math.max(1, Number(url.searchParams.get('pageSize') || 20)));
+    const page = Math.max(1, Number(url.searchParams.get('page') || 1));
+    const status = String(url.searchParams.get('status') || '');
+    const moduleFilter = String(url.searchParams.get('module') || '');
+    const userId = String(url.searchParams.get('userId') || '');
+    const taskType = String(url.searchParams.get('taskType') || '');
+    const traceId = String(url.searchParams.get('traceId') || '');
+    const jobs = (store.jobs || [])
+      .filter((job) => !status || status === 'all' || job.status === status)
+      .filter((job) => !moduleFilter || moduleFilter === 'all' || job.module === moduleFilter)
+      .filter((job) => !userId || userId === 'all' || job.userId === userId)
+      .filter((job) => !taskType || String(job.taskType || '').includes(taskType))
+      .filter((job) => !traceId || String(job.id || '').includes(traceId) || String(job.payload?.traceId || '').includes(traceId))
+      .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+    const total = jobs.length;
+    const pageJobs = jobs.slice((page - 1) * pageSize, page * pageSize);
+    json(res, 200, {
+      jobs: pageJobs.map((job) => {
+        const owner = (store.users || []).find((item) => item.id === job.userId) || {};
+        return {
+          id: job.id,
+          userId: job.userId,
+          user: { id: job.userId, username: owner.username || '', displayName: owner.displayName || owner.username || '' },
+          module: job.module,
+          taskType: job.taskType,
+          provider: job.provider,
+          status: job.status,
+          providerTaskId: job.providerTaskId || '',
+          errorCode: job.errorCode || '',
+          errorMessage: job.errorMessage || '',
+          retryCount: Number(job.retryCount || 0),
+          maxRetries: Number(job.maxRetries || 0),
+          createdAt: Number(job.createdAt || 0),
+          updatedAt: Number(job.updatedAt || 0),
+          startedAt: job.startedAt ?? null,
+          finishedAt: job.finishedAt ?? null,
+          attemptCount: Math.max(0, Number(job.retryCount || 0)) + (job.startedAt ? 1 : 0),
+          latestAttemptStatus: job.status,
+          latestStage: job.status === 'queued' ? 'created' : job.status,
+          latestEventStatus: job.status === 'failed' ? 'failed' : job.status === 'succeeded' ? 'success' : 'started',
+          latestEventAt: Number(job.updatedAt || job.createdAt || 0),
+          providerSubmitted: Boolean(job.providerTaskId),
+          retryable: job.status === 'retry_waiting',
+          errorFingerprint: job.errorCode ? `${job.provider}:${job.taskType}:${job.status}:${job.errorCode}` : '',
+          workflowId: job.workflowId || '',
+          runId: job.runId || '',
+          traceId: String(job.payload?.traceId || job.payload?.requestId || job.id || ''),
+        };
+      }),
+      total,
+      page,
+      pageSize,
+    });
+    return;
+  }
+
+  if (taskPlatformTimelineMatch && req.method === 'GET') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const jobId = decodeURIComponent(taskPlatformTimelineMatch[1]);
+    const job = (store.jobs || []).find((item) => item.id === jobId);
+    if (!job) {
+      json(res, 404, { message: '任务不存在。' });
+      return;
+    }
+    const baseEvent = {
+      jobId: job.id,
+      attemptId: '',
+      traceId: String(job.payload?.traceId || job.payload?.requestId || job.id || ''),
+      engine: job.taskEngine || normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE),
+      providerSubmitted: Boolean(job.providerTaskId),
+      retryable: job.status === 'retry_waiting',
+      providerTaskId: job.providerTaskId || '',
+      workflowId: job.workflowId || '',
+      runId: job.runId || '',
+      meta: null,
+    };
+    const events = [
+      { ...baseEvent, id: `${job.id}-created`, stage: 'created', eventName: 'job_created', status: 'started', errorCode: '', errorMessage: '', errorFingerprint: '', createdAt: Number(job.createdAt || 0) },
+      ...(job.startedAt ? [{ ...baseEvent, id: `${job.id}-started`, stage: 'provider_submit', eventName: 'job_started', status: 'started', errorCode: '', errorMessage: '', errorFingerprint: '', createdAt: Number(job.startedAt || job.updatedAt || 0) }] : []),
+      ...(job.finishedAt || job.status === 'failed' || job.status === 'retry_waiting' || job.status === 'cancelled' ? [{
+        ...baseEvent,
+        id: `${job.id}-final`,
+        stage: job.status === 'succeeded' ? 'completed' : job.status === 'cancelled' ? 'cancelled' : 'failed',
+        eventName: job.status === 'succeeded' ? 'job_completed' : 'job_failed',
+        status: job.status === 'succeeded' ? 'success' : job.status === 'cancelled' ? 'interrupted' : 'failed',
+        errorCode: job.errorCode || '',
+        errorMessage: job.errorMessage || '',
+        errorFingerprint: job.errorCode ? `${job.provider}:${job.taskType}:${job.status}:${job.errorCode}` : '',
+        createdAt: Number(job.finishedAt || job.updatedAt || 0),
+      }] : []),
+    ];
+    json(res, 200, {
+      job,
+      timeline: {
+        attempts: job.startedAt ? [{
+          id: `${job.id}-attempt-1`,
+          jobId: job.id,
+          attemptNo: 1,
+          engine: baseEvent.engine,
+          workflowId: baseEvent.workflowId,
+          runId: baseEvent.runId,
+          traceId: baseEvent.traceId,
+          status: job.status,
+          providerTaskId: job.providerTaskId || '',
+          errorCode: job.errorCode || '',
+          errorMessage: job.errorMessage || '',
+          startedAt: Number(job.startedAt || 0),
+          finishedAt: job.finishedAt ?? null,
+        }] : [],
+        events,
+      },
+    });
+    return;
+  }
+
   if (url.pathname === '/api/logs' && req.method === 'GET') {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
@@ -9460,9 +9869,12 @@ const handleLocalRequest = async (req, res, url) => {
       status: 'started',
       meta: buildJobRuntimeLogMeta({ job }),
     });
+    await startLocalJobWorkflowIfEnabled(store, job);
     writeLocalStore(store);
-    localJobWorker?.trigger?.();
-    json(res, 201, { job });
+    if (!shouldUseTemporalForLocalExecution()) {
+      localJobWorker?.trigger?.();
+    }
+    json(res, 201, { job: getLocalJobById(store, job.id) || job });
     return;
   }
 
@@ -9560,7 +9972,7 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 404, { message: '任务不存在。' });
       return;
     }
-    requestLocalRetryJob(store, jobId);
+    const retriedJob = requestLocalRetryJob(store, jobId);
     appendLocalLog(store, {
       user,
       level: 'info',
@@ -9576,8 +9988,13 @@ const handleLocalRequest = async (req, res, url) => {
         jobCreatedAt: job.createdAt,
       },
     });
+    if (retriedJob) {
+      await startLocalJobWorkflowIfEnabled(store, retriedJob);
+    }
     writeLocalStore(store);
-    localJobWorker?.trigger?.();
+    if (!shouldUseTemporalForLocalExecution()) {
+      localJobWorker?.trigger?.();
+    }
     json(res, 200, { ok: true });
     return;
   }
@@ -9607,9 +10024,12 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
     const job = createLocalJobRecord(store, user, jobPayload);
+    await startLocalJobWorkflowIfEnabled(store, job);
     writeLocalStore(store);
-    localJobWorker?.trigger?.();
-    json(res, 201, { job });
+    if (!shouldUseTemporalForLocalExecution()) {
+      localJobWorker?.trigger?.();
+    }
+    json(res, 201, { job: getLocalJobById(store, job.id) || job });
     return;
   }
 
@@ -9627,7 +10047,11 @@ const server = createServer(async (req, res) => {
 
   try {
     if (url.pathname === '/api/health' && req.method === 'GET') {
-      json(res, 200, { ok: true, mode: shouldUseMysql ? 'internal-mysql-v1' : 'internal-v1' });
+      json(res, 200, {
+        ok: true,
+        mode: shouldUseMysql ? 'internal-mysql-v1' : 'internal-v1',
+        taskEngine: normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE),
+      });
       return;
     }
 
@@ -9667,41 +10091,98 @@ const bootstrap = async () => {
   if (shouldUseMysql) {
     await ensureMysqlSchema();
     const pool = await getMysqlPool();
-    const reconciledJobs = await reconcileRestartedRunningJobs(pool);
-    if (reconciledJobs.length > 0) {
-      console.log(`Reconciled ${reconciledJobs.length} stale running jobs after restart.`);
+    const taskEngine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
+    if (taskEngine !== 'temporal') {
+      const reconciledJobs = await reconcileRestartedRunningJobs(pool);
+      if (reconciledJobs.length > 0) {
+        console.log(`Reconciled ${reconciledJobs.length} stale running jobs after restart.`);
+      }
     }
-    jobWorker = createJobWorker({
-      getPool: getMysqlPool,
-      executeJob: async (job, signal, options) => {
-        const output = await executeProviderJob(job, process.env, signal, options);
-        return persistJobOutputAssetsIfEnabled(job, output);
-      },
-      getMaxConcurrency: getDbWorkerConcurrency,
-      createLog: createDbLog,
-      findUserById: findDbUserById,
-    });
-    jobWorker.start(1000);
-    console.log(`Meiao internal server listening on http://0.0.0.0:${PORT} (MySQL mode)`);
+    if (taskEngine !== 'mysql' && temporalTaskAdapter.configured) {
+      temporalWorkerRuntime = await startMeiaoTemporalWorker({
+        config: temporalTaskAdapter.config,
+        activities: createMysqlTemporalActivities({
+          getPool: getMysqlPool,
+          executeJob: async (job, signal, options) => {
+            const output = await executeProviderJob(job, process.env, signal, options);
+            return persistJobOutputAssetsIfEnabled(job, output);
+          },
+          getMaxConcurrency: getDbWorkerConcurrency,
+          createLog: createDbLog,
+          findUserById: findDbUserById,
+        }),
+        workerOptions: {
+          maxConcurrentActivityTaskExecutions: Math.max(1, await getDbWorkerConcurrency()),
+        },
+      });
+      console.log(`Temporal worker listening on task queue ${temporalTaskAdapter.config.taskQueue}.`);
+      const resumedTemporalJobs = await resumePendingDbTemporalJobs(pool);
+      if (resumedTemporalJobs > 0) {
+        console.log(`Resumed ${resumedTemporalJobs} pending Temporal jobs after restart.`);
+      }
+    }
+    if (taskEngine !== 'temporal') {
+      jobWorker = createJobWorker({
+        getPool: getMysqlPool,
+        executeJob: async (job, signal, options) => {
+          const output = await executeProviderJob(job, process.env, signal, options);
+          return persistJobOutputAssetsIfEnabled(job, output);
+        },
+        getMaxConcurrency: getDbWorkerConcurrency,
+        createLog: createDbLog,
+        findUserById: findDbUserById,
+        getTaskEngineMode: () => process.env.MEIAO_TASK_ENGINE,
+      });
+      jobWorker.start(1000);
+    }
+    console.log(`Meiao internal server listening on http://0.0.0.0:${PORT} (MySQL mode, task engine: ${taskEngine})`);
     console.log(`MySQL target: ${dbConfig.host}:${dbConfig.port}/${dbConfig.database}`);
   } else {
-    ensureLocalStore();
-    localJobWorker = createLocalJobWorker({
-      readStore: readLocalStore,
-      writeStore: writeLocalStore,
-      executeJob: async (job, signal, options) => {
-        const output = await executeProviderJob(job, process.env, signal, options);
-        return persistJobOutputAssetsIfEnabled(job, output);
-      },
-      getMaxConcurrency: getLocalWorkerConcurrency,
-      createLog: (payload) => {
-        const store = readLocalStore();
-        appendLocalLog(store, payload);
-        writeLocalStore(store);
-      },
-      findUserById: (userId) => findLocalUserById(userId),
-    });
-    localJobWorker.start(1000);
+    const taskEngine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
+    if (taskEngine !== 'temporal') {
+      const reconciledJobs = reconcileLocalStoreJobsAfterRestart();
+      if (reconciledJobs.length > 0) {
+        console.log(`Reconciled ${reconciledJobs.length} local stale running jobs after restart.`);
+      }
+    }
+    if (taskEngine !== 'mysql' && temporalTaskAdapter.configured) {
+      temporalWorkerRuntime = await startMeiaoTemporalWorker({
+        config: temporalTaskAdapter.config,
+        activities: createLocalTemporalActivities({
+          readStore: readLocalStore,
+          writeStore: writeLocalStore,
+          executeJob: async (job, signal, options) => {
+            const output = await executeProviderJob(job, process.env, signal, options);
+            return persistJobOutputAssetsIfEnabled(job, output);
+          },
+          createLog: (payload) => {
+            const store = readLocalStore();
+            appendLocalLog(store, payload);
+            writeLocalStore(store);
+          },
+          findUserById: (userId) => findLocalUserById(userId),
+        }),
+      });
+      console.log(`Temporal worker listening on task queue ${temporalTaskAdapter.config.taskQueue}.`);
+    }
+    if (taskEngine !== 'temporal') {
+      localJobWorker = createLocalJobWorker({
+        readStore: readLocalStore,
+        writeStore: writeLocalStore,
+        executeJob: async (job, signal, options) => {
+          const output = await executeProviderJob(job, process.env, signal, options);
+          return persistJobOutputAssetsIfEnabled(job, output);
+        },
+        getMaxConcurrency: getLocalWorkerConcurrency,
+        createLog: (payload) => {
+          const store = readLocalStore();
+          appendLocalLog(store, payload);
+          writeLocalStore(store);
+        },
+        findUserById: (userId) => findLocalUserById(userId),
+      });
+      localJobWorker.start(1000);
+    }
     console.log(`Meiao internal server listening on http://0.0.0.0:${PORT} (Local JSON mode)`);
   }
 

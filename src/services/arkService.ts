@@ -74,6 +74,12 @@ const createRecoverableAnalysisSyncError = () => {
   return error;
 };
 
+const isRecoverableAnalysisJobFailure = (job: any) => {
+  const errorCode = String(job?.errorCode || job?.result?.errorCode || '').trim();
+  const message = String(job?.errorMessage || job?.result?.errorMessage || '').trim();
+  return errorCode === 'task_not_found' || /任务不存在|not found|expired|过期/i.test(message);
+};
+
 const buildAnalysisResponseFromJob = (
   finalJob: any,
   normalizedContent: Array<{ type: string; text?: string }>,
@@ -86,6 +92,9 @@ const buildAnalysisResponseFromJob = (
     throw new Error('AI 分析任务状态同步失败，请稍后在任务列表中同步任务结果');
   }
   if (finalJob.status !== 'succeeded') {
+    if (isRecoverableAnalysisJobFailure(finalJob)) {
+      throw createRecoverableAnalysisSyncError();
+    }
     throw new Error(finalJob.errorMessage || 'AI 分析请求失败');
   }
   const content = String(finalJob.result?.content || finalJob.result?.text || '');
@@ -198,6 +207,9 @@ const requestAnalysisResponseDetailed = async (
       return buildAnalysisResponseFromJob(recoveredJob, normalizedContent as any[], startedAt, model, module, job.id);
     }
     if (isPendingAnalysisJobStatus(recoveredJob?.status)) {
+      throw createRecoverableAnalysisSyncError();
+    }
+    if (isRecoverableAnalysisJobFailure(recoveredJob)) {
       throw createRecoverableAnalysisSyncError();
     }
     throw error;

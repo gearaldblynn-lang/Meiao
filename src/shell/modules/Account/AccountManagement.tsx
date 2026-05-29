@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   BarChart3,
+  Clock,
   Download,
+  GitBranch,
   KeyRound,
   LogOut,
   Plus,
@@ -12,11 +15,14 @@ import {
   UserCog,
   Users,
 } from 'lucide-react';
-import type { AuthUser, InternalLogEntry } from '../../../types';
+import type { AuthUser, InternalLogEntry, TaskPlatformAttempt, TaskPlatformEvent, TaskPlatformHealth, TaskPlatformJob } from '../../../types';
 import {
   backfillUsageStats,
   createInternalUser,
   deleteInternalUser,
+  fetchTaskPlatformHealth,
+  fetchTaskPlatformJobs,
+  fetchTaskPlatformTimeline,
   fetchInternalLogMeta,
   fetchInternalLogs,
   fetchInternalUsers,
@@ -34,7 +40,7 @@ interface Props {
   onLogout?: () => void;
 }
 
-type TabId = 'users' | 'logs' | 'stats';
+type TabId = 'users' | 'logs' | 'stats' | 'tasks';
 type UsageRow = {
   statDate: string;
   userId: string;
@@ -136,6 +142,15 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   const [logsQueried, setLogsQueried] = useState(false);
   const [logMeta, setLogMeta] = useState<{ modules: string[]; users: Array<{ id: string; label: string }> }>({ modules: [], users: [] });
   const [logFilters, setLogFilters] = useState({ module: 'all', userId: 'all', status: 'all', startAt: '', endAt: '' });
+  const [taskHealth, setTaskHealth] = useState<TaskPlatformHealth | null>(null);
+  const [taskJobs, setTaskJobs] = useState<TaskPlatformJob[]>([]);
+  const [taskTotal, setTaskTotal] = useState(0);
+  const [taskPage, setTaskPage] = useState(1);
+  const [taskLoading, setTaskLoading] = useState(false);
+  const [taskQueried, setTaskQueried] = useState(false);
+  const [taskFilters, setTaskFilters] = useState({ status: 'all', module: 'all', userId: 'all', taskType: '', traceId: '' });
+  const [taskTimeline, setTaskTimeline] = useState<{ jobId: string; attempts: TaskPlatformAttempt[]; events: TaskPlatformEvent[] } | null>(null);
+  const [taskTimelineLoading, setTaskTimelineLoading] = useState(false);
 
   const [usageRows, setUsageRows] = useState<UsageRow[]>([]);
   const [usageLoading, setUsageLoading] = useState(false);
@@ -171,7 +186,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
 
   useEffect(() => {
     if (!canManageAccounts) return;
-    if (tab !== 'logs' && tab !== 'stats') {
+    if (tab !== 'logs' && tab !== 'stats' && tab !== 'tasks') {
       logMetaFetchRequestedRef.current = false;
       return;
     }
@@ -196,9 +211,19 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     { value: 'failed', label: '失败' },
     { value: 'interrupted', label: '中断' },
   ];
+  const taskStatusOptions = [
+    { value: 'all', label: '全部状态' },
+    { value: 'queued', label: '排队' },
+    { value: 'running', label: '运行' },
+    { value: 'retry_waiting', label: '待重试' },
+    { value: 'succeeded', label: '成功' },
+    { value: 'failed', label: '失败' },
+    { value: 'cancelled', label: '取消' },
+  ];
 
   const roleLabel = currentUser?.role === 'admin' ? '管理员' : '员工';
   const logsPageCount = Math.max(1, Math.ceil(logsTotal / PAGE_SIZE));
+  const taskPageCount = Math.max(1, Math.ceil(taskTotal / PAGE_SIZE));
   const filteredUsers = useMemo(() => {
     const keyword = userSearch.trim().toLowerCase();
     if (!keyword) return users;
@@ -364,6 +389,49 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     }
   };
 
+  const queryTaskJobs = async (page = 1) => {
+    if (!isAdmin) return;
+    setTaskLoading(true);
+    setError('');
+    setMessage('');
+    try {
+      const [health, result] = await Promise.all([
+        fetchTaskPlatformHealth(),
+        fetchTaskPlatformJobs({ ...taskFilters, page, pageSize: PAGE_SIZE }),
+      ]);
+      setTaskHealth(health);
+      setTaskJobs(result.jobs);
+      setTaskTotal(result.total);
+      setTaskPage(result.page);
+      setTaskQueried(true);
+      if (!taskTimeline || !result.jobs.some((job) => job.id === taskTimeline.jobId)) {
+        setTaskTimeline(null);
+      }
+    } catch (err: any) {
+      setError(err.message || '任务诊断读取失败');
+    } finally {
+      setTaskLoading(false);
+    }
+  };
+
+  const openTaskTimeline = async (job: TaskPlatformJob) => {
+    setTaskTimelineLoading(true);
+    setError('');
+    try {
+      const result = await fetchTaskPlatformTimeline(job.id);
+      setTaskTimeline({ jobId: job.id, attempts: result.timeline.attempts, events: result.timeline.events });
+    } catch (err: any) {
+      setError(err.message || '任务时间线读取失败');
+    } finally {
+      setTaskTimelineLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!canManageAccounts || tab !== 'tasks' || taskQueried) return;
+    void queryTaskJobs(1);
+  }, [canManageAccounts, tab, taskQueried]);
+
   const backfillUsageNow = async () => {
     setUsageLoading(true);
     setError('');
@@ -439,6 +507,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
         {[
           { id: 'users' as const, label: '账号', icon: <Users size={14} /> },
           ...(canManageAccounts ? [{ id: 'logs' as const, label: '日志', icon: <Search size={14} /> }] : []),
+          ...(canManageAccounts ? [{ id: 'tasks' as const, label: '任务', icon: <Activity size={14} /> }] : []),
           { id: 'stats' as const, label: '统计', icon: <BarChart3 size={14} /> },
         ].map((item) => (
           <button
@@ -627,6 +696,128 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {canManageAccounts && tab === 'tasks' && (
+        <div className="space-y-4">
+          <div className="rounded-3xl border p-4" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+            <div className="flex flex-wrap items-end gap-2">
+              <SelectField label="任务状态" value={taskFilters.status} onChange={(status) => setTaskFilters({ ...taskFilters, status })} options={taskStatusOptions} />
+              <SelectField label="功能" value={taskFilters.module} onChange={(module) => setTaskFilters({ ...taskFilters, module })} options={moduleOptions} />
+              <SelectField label="人员" value={taskFilters.userId} onChange={(userId) => setTaskFilters({ ...taskFilters, userId })} options={userOptions} />
+              <TextField label="任务类型" value={taskFilters.taskType} onChange={(taskType) => setTaskFilters({ ...taskFilters, taskType })} placeholder="kie_chat" />
+              <TextField label="Trace" value={taskFilters.traceId} onChange={(traceId) => setTaskFilters({ ...taskFilters, traceId })} placeholder="traceId" />
+              <button type="button" onClick={() => void queryTaskJobs(1)} className="btn-primary h-10 px-4 text-[12px]"><Search size={14} /> 查询</button>
+              <button type="button" onClick={() => void queryTaskJobs(taskPage)} disabled={taskLoading} className="btn-secondary h-10 px-3 text-[12px]"><RefreshCw size={14} /></button>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            {[
+              ['任务引擎', taskHealth?.engine || '-', 'var(--accent)'],
+              ['Temporal', taskHealth?.temporal?.configured ? (taskHealth.temporal.reachable ? '可达' : '不可达') : '未配置', taskHealth?.temporal?.reachable ? 'var(--success)' : 'var(--warning)'],
+              ['任务总数', taskTotal, 'var(--text-primary)'],
+            ].map(([label, value, color]) => (
+              <div key={String(label)} className="rounded-3xl border p-4" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+                <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{label}</p>
+                <p className="mt-2 truncate text-[20px] font-semibold tabular-nums" style={{ color: String(color) }}>{String(value)}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_380px]">
+            <div className="rounded-3xl border" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+              <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+                <div className="flex items-center gap-2">
+                  <Activity size={15} style={{ color: 'var(--accent)' }} />
+                  <span className="section-title mb-0">任务诊断</span>
+                </div>
+                <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>第 {taskPage} / {taskPageCount} 页</span>
+              </div>
+              {!taskQueried ? (
+                <div className="p-8 text-center text-[13px]" style={{ color: 'var(--text-tertiary)' }}>选择条件后查询任务</div>
+              ) : taskLoading ? (
+                <div className="p-8 text-center text-[13px]" style={{ color: 'var(--text-tertiary)' }}>正在读取任务...</div>
+              ) : taskJobs.length === 0 ? (
+                <div className="p-8 text-center text-[13px]" style={{ color: 'var(--text-tertiary)' }}>没有匹配任务</div>
+              ) : (
+                <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+                  {taskJobs.map((job) => (
+                    <button
+                      key={job.id}
+                      type="button"
+                      onClick={() => void openTaskTimeline(job)}
+                      className="block w-full px-4 py-3 text-left transition hover:opacity-80"
+                      style={{ background: taskTimeline?.jobId === job.id ? 'var(--accent-soft)' : 'transparent' }}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="pill">{MODULE_LABELS[job.module] || job.module}</span>
+                            <span className="pill">{job.taskType}</span>
+                            <span className="pill" style={{ color: job.status === 'failed' ? 'var(--error)' : job.status === 'succeeded' ? 'var(--success)' : 'var(--text-secondary)' }}>{job.status}</span>
+                            <span className="pill">{job.latestStage || '未开始'}</span>
+                          </div>
+                          <p className="mt-2 text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>{job.user.displayName || job.user.username || job.userId}</p>
+                          <p className="mt-1 truncate text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{job.errorFingerprint || job.errorMessage || job.traceId || job.id}</p>
+                        </div>
+                        <div className="shrink-0 text-right text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                          <p>尝试 {job.attemptCount}</p>
+                          <p>{job.providerSubmitted ? '已到上游' : '未到上游'}</p>
+                          <p>{formatTime(job.updatedAt)}</p>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                  <div className="flex items-center justify-between p-4 text-[12px]" style={{ color: 'var(--text-tertiary)' }}>
+                    <span>共 {taskTotal} 个任务</span>
+                    <div className="flex gap-2">
+                      <button type="button" disabled={taskPage <= 1} onClick={() => void queryTaskJobs(taskPage - 1)} className="btn-secondary px-3 py-2 text-[12px]">上一页</button>
+                      <button type="button" disabled={taskPage >= taskPageCount} onClick={() => void queryTaskJobs(taskPage + 1)} className="btn-secondary px-3 py-2 text-[12px]">下一页</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-3xl border" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+              <div className="flex items-center gap-2 border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+                <GitBranch size={15} style={{ color: 'var(--accent)' }} />
+                <span className="section-title mb-0">阶段时间线</span>
+              </div>
+              {taskTimelineLoading ? (
+                <div className="p-6 text-[13px]" style={{ color: 'var(--text-tertiary)' }}>正在读取时间线...</div>
+              ) : !taskTimeline ? (
+                <div className="p-6 text-[13px]" style={{ color: 'var(--text-tertiary)' }}>选择左侧任务查看 attempts 和阶段事件</div>
+              ) : (
+                <div className="max-h-[640px] space-y-3 overflow-auto p-4">
+                  <div className="rounded-2xl border p-3 text-[11px]" style={{ background: 'var(--bg-base)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                    <p className="font-semibold" style={{ color: 'var(--text-primary)' }}>Attempts</p>
+                    <p className="mt-1">共 {taskTimeline.attempts.length} 次，当前任务 {taskTimeline.jobId}</p>
+                  </div>
+                  {taskTimeline.events.map((event) => (
+                    <div key={event.id} className="rounded-2xl border p-3" style={{ background: 'var(--bg-base)', borderColor: 'var(--border-subtle)' }}>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{event.stage} · {event.eventName}</p>
+                          <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{event.providerSubmitted ? '已提交上游 API' : '未提交上游 API'} · {event.retryable ? '可重试' : '不可重试'}</p>
+                        </div>
+                        <span className="pill" style={{ color: event.status === 'failed' ? 'var(--error)' : event.status === 'success' ? 'var(--success)' : 'var(--text-secondary)' }}>{event.status}</span>
+                      </div>
+                      {(event.errorCode || event.errorMessage) && (
+                        <p className="mt-2 text-[11px] leading-5" style={{ color: 'var(--warning)' }}>{event.errorCode} {event.errorMessage}</p>
+                      )}
+                      <div className="mt-2 flex items-center gap-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                        <Clock size={12} />
+                        <span>{formatTime(event.createdAt)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

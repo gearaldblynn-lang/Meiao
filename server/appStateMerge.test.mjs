@@ -47,6 +47,48 @@ test('mergeAppStateForStorage lets incoming project updates win without duplicat
   assert.equal(merged.shellProjects[0].results[0].imageUrl, '/new.png');
 });
 
+test('mergeAppStateForStorage lets a submitted edit job replace the old result identity while generating', () => {
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'project-a',
+      module: 'one_click',
+      status: 'completed',
+      taskCount: 1,
+      completedCount: 1,
+      results: [{
+        id: 'result-a',
+        planId: 'plan-a',
+        taskId: 'old-provider-task',
+        backendJobId: 'old-backend-job',
+        imageUrl: '/old.png',
+        status: 'completed',
+      }],
+    }],
+  }, {
+    shellProjects: [{
+      id: 'project-a',
+      module: 'one_click',
+      status: 'generating',
+      taskCount: 1,
+      completedCount: 0,
+      results: [{
+        id: 'result-a',
+        planId: 'plan-a',
+        taskId: 'new-provider-task',
+        backendJobId: 'new-backend-job',
+        imageUrl: '',
+        status: 'generating',
+      }],
+    }],
+  });
+
+  assert.equal(merged.shellProjects[0].status, 'generating');
+  assert.equal(merged.shellProjects[0].results[0].status, 'generating');
+  assert.equal(merged.shellProjects[0].results[0].taskId, 'new-provider-task');
+  assert.equal(merged.shellProjects[0].results[0].backendJobId, 'new-backend-job');
+  assert.equal(merged.shellProjects[0].results[0].imageUrl, '');
+});
+
 test('mergeAppStateForStorage deep-merges one-click planning project snapshots without dropping plans', () => {
   const existingPlans = Array.from({ length: 5 }, (_, index) => ({
     id: `plan-${index + 1}`,

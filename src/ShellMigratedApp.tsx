@@ -309,6 +309,14 @@ const getProjectErrorResultCount = (project?: Pick<Project, 'results'> | null) =
   (project?.results || []).filter((result) => result.status === 'error').length
 );
 
+const getProjectActiveResultIdentities = (project?: Pick<Project, 'results'> | null) => new Set(
+  (project?.results || [])
+    .filter((result) => ['generating', 'pending', 'queued'].includes(String(result.status || '')))
+    .flatMap((result) => [result.backendJobId, result.taskId])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean),
+);
+
 const findPersistedShellProject = (state: Partial<PersistedAppState> | null | undefined, projectId: string) => (
   (Array.isArray(state?.shellProjects) ? state?.shellProjects : [])
     .find((project) => String(project?.id || '').trim() === projectId)
@@ -322,6 +330,12 @@ const shouldPersistSyncedProjectFromJobs = (
   if (!projectId) return false;
   const persistedProject = findPersistedShellProject(state, projectId) as Project | undefined;
   if (!persistedProject) return false;
+  if (project.status === 'generating') {
+    const persistedActiveIdentities = getProjectActiveResultIdentities(persistedProject);
+    const hasNewActiveIdentity = Array.from(getProjectActiveResultIdentities(project))
+      .some((identity) => !persistedActiveIdentities.has(identity));
+    if (hasNewActiveIdentity) return true;
+  }
   const nextCompletedCount = getProjectCompletedMediaCount(project);
   const persistedCompletedCount = getProjectCompletedMediaCount(persistedProject);
   if (nextCompletedCount > persistedCompletedCount) return true;

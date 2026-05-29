@@ -32,6 +32,10 @@ const normalizeJob = (job) => ({
   startedAt: job?.startedAt === null || job?.startedAt === undefined ? null : Number(job.startedAt),
   finishedAt: job?.finishedAt === null || job?.finishedAt === undefined ? null : Number(job.finishedAt),
   cancelRequestedAt: job?.cancelRequestedAt === null || job?.cancelRequestedAt === undefined ? null : Number(job.cancelRequestedAt),
+  taskEngine: String(job?.taskEngine || ''),
+  workflowId: String(job?.workflowId || ''),
+  runId: String(job?.runId || ''),
+  workflowExecutionMode: String(job?.workflowExecutionMode || ''),
 });
 
 const compactLocalJobRecord = (job) => {
@@ -112,6 +116,10 @@ export const createLocalJobRecord = (store, user, payload) => {
     startedAt: null,
     finishedAt: null,
     cancelRequestedAt: null,
+    taskEngine: '',
+    workflowId: '',
+    runId: '',
+    workflowExecutionMode: '',
   });
 
   ensureStoreJobs(store);
@@ -204,6 +212,10 @@ export const requestLocalRetryJob = (store, jobId) => {
     startedAt: null,
     finishedAt: null,
     cancelRequestedAt: null,
+    taskEngine: '',
+    workflowId: '',
+    runId: '',
+    workflowExecutionMode: '',
     updatedAt,
   });
 
@@ -251,6 +263,44 @@ export const takeNextLocalExecutableJobs = (store, availableSlots, options = {})
     store.jobs[index] = updated;
     return updated;
   });
+};
+
+export const claimLocalJobForExecution = (store, jobId) => {
+  const index = findJobIndex(store, jobId);
+  if (index < 0) return null;
+  const current = store.jobs[index];
+  if (current.status !== 'queued' && current.status !== 'retry_waiting') {
+    return normalizeJob(current);
+  }
+
+  const claimedAt = now();
+  const next = normalizeJob({
+    ...current,
+    status: 'running',
+    startedAt: claimedAt,
+    updatedAt: claimedAt,
+    errorCode: '',
+    errorMessage: '',
+  });
+  store.jobs[index] = next;
+  return next;
+};
+
+export const attachLocalJobWorkflowExecution = (store, jobId, result, options = {}) => {
+  const index = findJobIndex(store, jobId);
+  if (index < 0) return null;
+
+  const updatedAt = now();
+  const next = normalizeJob({
+    ...store.jobs[index],
+    taskEngine: String(options.engine || ''),
+    workflowId: String(result?.workflowId || ''),
+    runId: String(result?.runId || ''),
+    workflowExecutionMode: String(options.executionMode || ''),
+    updatedAt,
+  });
+  store.jobs[index] = next;
+  return next;
 };
 
 export const markLocalJobCompleted = (store, jobId, output, aborted = false) => {
