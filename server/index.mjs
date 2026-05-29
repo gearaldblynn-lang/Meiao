@@ -144,6 +144,7 @@ const shouldUseMysql = Boolean(
 let mysql = null;
 let mysqlPool = null;
 let mysqlPoolHealthCheckPromise = null;
+let warnedAppStateBinlogDisableFailure = false;
 let jobWorker = null;
 let localJobWorker = null;
 let temporalWorkerRuntime = null;
@@ -2002,6 +2003,34 @@ const getMysqlPool = async () => {
   return mysqlPool;
 };
 
+const shouldSuppressAppStateBinlog = () => process.env.MEIAO_DB_SUPPRESS_APP_STATE_BINLOG !== '0';
+
+const runAppStateWriteWithoutBinlog = async (pool, sql, params) => {
+  const connection = await pool.getConnection();
+  let binlogSuppressed = false;
+  try {
+    if (shouldSuppressAppStateBinlog()) {
+      try {
+        await connection.query('SET SESSION sql_log_bin = 0');
+        binlogSuppressed = true;
+      } catch (error) {
+        if (!warnedAppStateBinlogDisableFailure) {
+          warnedAppStateBinlogDisableFailure = true;
+          console.warn(`Unable to suppress MySQL binlog for app_state writes: ${error?.message || error}`);
+        }
+      }
+    }
+    return await connection.query(sql, params);
+  } finally {
+    if (binlogSuppressed) {
+      await connection.query('SET SESSION sql_log_bin = 1').catch((error) => {
+        console.warn(`Unable to restore MySQL binlog after app_state write: ${error?.message || error}`);
+      });
+    }
+    connection.release();
+  }
+};
+
 const ensureMysqlSchema = async () => {
   const pool = await getMysqlPool();
   if (!pool) return;
@@ -2328,7 +2357,7 @@ const ensureMysqlSchema = async () => {
       ]
     );
 
-    await pool.query(
+    await runAppStateWriteWithoutBinlog(pool,
       'INSERT INTO app_states (user_id, state_json, updated_at) VALUES (?, ?, ?)',
       [admin.id, JSON.stringify(createDefaultState()), Date.now()]
     );
@@ -2410,7 +2439,7 @@ const ensureDbAppState = async (userId) => {
   const [rows] = await pool.query('SELECT user_id FROM app_states WHERE user_id = ? LIMIT 1', [userId]);
   if (rows[0]) return;
 
-  await pool.query(
+  await runAppStateWriteWithoutBinlog(pool,
     'INSERT INTO app_states (user_id, state_json, updated_at) VALUES (?, ?, ?)',
     [userId, JSON.stringify(createDefaultState()), Date.now()]
   );
@@ -2433,7 +2462,7 @@ const getDbAppState = async (userId) => {
 const saveDbAppState = async (userId, state) => {
   const pool = await getMysqlPool();
   const preparedState = prepareStateForStorage(state);
-  await pool.query(
+  await runAppStateWriteWithoutBinlog(pool,
     `INSERT INTO app_states (user_id, state_json, updated_at)
      VALUES (?, ?, ?)
      ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)`,
