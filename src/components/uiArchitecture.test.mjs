@@ -1548,6 +1548,14 @@ test('one-click planning cards are persisted before long-running backend plannin
   assert.match(shellApp, /void persistProjectToSharedState\(persistedPlanningProject\);/);
 });
 
+test('shell job hydration persists repaired one-click planning snapshots', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(shellApp, /hasStaleOneClickPlanningPlaceholder/);
+  assert.match(shellApp, /getOneClickPlanningFingerprint/);
+  assert.match(shellApp, /hasPlanningSnapshotChanged/);
+});
+
 test('agent chat image replies keep result summaries and reference rules collapsed by default', () => {
   const chatPane = read('../modules/AgentCenter/ChatConversationPane.tsx');
 

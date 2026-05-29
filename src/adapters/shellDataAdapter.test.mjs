@@ -1400,6 +1400,207 @@ test('shell data adapter clears planning job pending placeholders once planning 
   assert.equal(project?.planningTaskId, 'planning-job-succeeded');
 });
 
+test('shell data adapter drops persisted one-click planning placeholder plans after planning succeeds', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'dusang-planning-project',
+      name: '5月29日项目7',
+      module: 'one_click',
+      status: 'generating',
+      createdAt: '05-29',
+      backendJobId: 'dusang-planning-job',
+      results: [{
+        id: 'dusang-planning-job-pending',
+        imageUrl: '',
+        prompt: '一键主详',
+        model: 'gemini-3-flash-openai',
+        aspectRatio: 'auto',
+        status: 'generating',
+        createdAt: '05-29',
+        module: 'one_click',
+        subFeature: 'first_image',
+        backendJobId: 'dusang-planning-job',
+        error: '任务正在运行',
+      }],
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+    }],
+    oneClickMemory: {
+      firstImage: {
+        projects: [{
+          id: 'dusang-planning-project',
+          name: '5月29日项目7',
+          status: 'planning',
+          schemes: [{
+            id: 'dusang-planning-job-pending',
+            backendJobId: 'dusang-planning-job',
+            status: 'generating',
+            originalContent: '一键主详',
+            editedContent: '一键主详',
+            selected: true,
+            subFeature: 'first_image',
+          }],
+          selectedPlanId: 'dusang-planning-job-pending',
+          taskCount: 1,
+          completedCount: 0,
+        }],
+      },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  }, [{
+    id: 'dusang-planning-job',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'kie-chat-provider-id',
+    payload: {
+      model: 'gemini-3-flash-openai',
+      shellProjectId: 'dusang-planning-project',
+      shellProjectName: '5月29日项目7',
+      shellPlanningPurpose: 'one_click_planning',
+      subFeature: 'first_image',
+    },
+    result: {
+      providerTaskId: 'kie-chat-provider-id',
+      content: `[SCHEME_START]
+- 屏序/类型：首图裂变1-复刻主图参考1
+- 参考图标识：复刻主图参考1
+- 设计意图：真实策划已返回
+- 画面描述：真实方案内容
+- 画面比例：1:1
+[SCHEME_END]`,
+    },
+    createdAt: 1780042215231,
+    updatedAt: 1780042257231,
+    finishedAt: 1780042257231,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'dusang-planning-project');
+  assert.equal(project?.status, 'planning');
+  assert.equal(project?.results.length, 0);
+  assert.equal(project?.plans?.length, 1);
+  assert.equal(project?.plans?.[0]?.id, 'dusang-planning-job-plan-1');
+  assert.equal(project?.plans?.[0]?.schemeContent?.includes('真实方案内容'), true);
+  assert.equal(project?.plans?.some((plan) => plan.schemeContent === '一键主详'), false);
+  assert.equal(project?.selectedPlanId, 'dusang-planning-job-plan-1');
+  assert.equal(project?.taskCount, 1);
+  assert.equal(project?.planningTaskId, 'kie-chat-provider-id');
+});
+
+test('shell data adapter shows active one-click planning jobs without fake generation result prompts', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'active-planning-project',
+      name: '5月29日项目8',
+      module: 'one_click',
+      status: 'planning',
+      createdAt: '05-29',
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      backendJobId: 'active-planning-job',
+    }],
+  }, [{
+    id: 'active-planning-job',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'running',
+    payload: {
+      shellProjectId: 'active-planning-project',
+      shellProjectName: '5月29日项目8',
+      shellPlanningPurpose: 'one_click_planning',
+      subFeature: 'first_image',
+      model: 'gemini-3-flash-openai',
+      messages: [{ role: 'user', content: [{ type: 'text', text: '真实策划输入' }] }],
+    },
+    createdAt: 1780042590341,
+    updatedAt: 1780042595341,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'active-planning-project');
+  assert.equal(project?.status, 'generating');
+  assert.equal(project?.results.length, 0);
+  assert.equal(project?.plans?.length || 0, 0);
+  assert.equal(project?.taskCount, 1);
+  assert.equal(project?.backendJobId, 'active-planning-job');
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.tasks[0].type, 'plan');
+  assert.equal(snapshot.tasks[0].projectId, 'active-planning-project');
+  assert.equal(snapshot.tasks[0].prompt, '真实策划输入');
+});
+
+test('shell data adapter removes stale one-click planning result placeholders from completed projects', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'completed-project-with-stale-planning-result',
+      name: '5月29日项目5',
+      module: 'one_click',
+      status: 'completed',
+      createdAt: '05-29',
+      backendJobId: 'image-job-after-planning',
+      planningTaskId: 'kie-chat-provider-id',
+      plans: [{
+        id: 'real-plan-1',
+        title: '首图裂变1-复刻主图参考1',
+        sellingPoints: [],
+        sceneDescription: '真实方案内容',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '真实方案内容',
+        selected: true,
+        schemeContent: '[SCHEME_START]\n- 画面描述：真实方案内容\n[SCHEME_END]',
+      }],
+      selectedPlanId: 'real-plan-1',
+      results: [
+        {
+          id: 'image-provider-task-id',
+          planId: 'real-plan-1',
+          imageUrl: 'https://example.com/result.png',
+          prompt: '真实生图 prompt',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          status: 'completed',
+          createdAt: '05-29',
+          module: 'one_click',
+          subFeature: 'first_image',
+          taskId: 'image-provider-task-id',
+          backendJobId: 'image-job-after-planning',
+        },
+        {
+          id: 'planning-job-pending',
+          imageUrl: '',
+          prompt: '一键主详',
+          model: 'gemini-3-flash-openai',
+          aspectRatio: 'auto',
+          status: 'generating',
+          createdAt: '05-29',
+          module: 'one_click',
+          subFeature: 'first_image',
+          backendJobId: 'planning-job',
+          error: '任务正在运行',
+        },
+      ],
+      taskCount: 2,
+      completedCount: 1,
+      subFeature: 'first_image',
+    }],
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'completed-project-with-stale-planning-result');
+  assert.equal(project?.status, 'completed');
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.results[0]?.id, 'image-provider-task-id');
+  assert.equal(project?.taskCount, 1);
+  assert.equal(project?.completedCount, 1);
+});
+
 test('shell data adapter replaces stale one-click planning placeholders with the terminal backend failure', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{
