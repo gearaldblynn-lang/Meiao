@@ -969,6 +969,26 @@ const hasOnlyStalePlanningFailureResults = (project?: Partial<ShellProjectData>)
   return results.length > 0 && results.every((result) => isStalePlanningFailureResult(result));
 };
 
+const isPlanningJobPendingPlaceholder = (
+  result: Partial<ShellGeneratedResult>,
+  job: InternalJob,
+) => (
+  result.status === 'generating'
+  && !result.imageUrl
+  && !result.videoUrl
+  && String(result.backendJobId || '').trim() === String(job.id || '').trim()
+  && !String(result.taskId || '').trim()
+  && String(job.taskType || '') === 'kie_chat'
+);
+
+const removePlanningJobPendingPlaceholders = (
+  project: ShellProjectData,
+  job: InternalJob,
+) => ({
+  ...project,
+  results: (project.results || []).filter((result) => !isPlanningJobPendingPlaceholder(result, job)),
+});
+
 const mapJobs = (
   jobs: InternalJob[] = [],
   persistedProjects: ShellProjectData[] = [],
@@ -1012,46 +1032,47 @@ const mapJobs = (
       ) {
         const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
         if (!matchedProject) return;
-        const hasExistingConcreteResults = (matchedProject.results || []).some((result) => (
+        const planningProject = removePlanningJobPendingPlaceholders(matchedProject, job);
+        const hasExistingConcreteResults = (planningProject.results || []).some((result) => (
           hasCompletedMediaResult(result)
-          || result.status === 'generating'
+          || (result.status === 'generating' && resultHasProviderTaskIdentity(result))
           || (result.status === 'error' && !isStalePlanningFailureResult(result))
         ));
-        if ((matchedProject.plans || []).length > 0) {
-          if (hasExistingConcreteResults || Number(matchedProject.completedCount || 0) > 0) {
-            const completedCount = (matchedProject.results || []).filter(hasCompletedMediaResult).length;
+        if ((planningProject.plans || []).length > 0) {
+          if (hasExistingConcreteResults || Number(planningProject.completedCount || 0) > 0) {
+            const completedCount = (planningProject.results || []).filter(hasCompletedMediaResult).length;
             const taskCount = Math.max(
-              Number(matchedProject.taskCount || 0) || 0,
-              matchedProject.plans?.length || 0,
-              matchedProject.results?.length || 0,
+              Number(planningProject.taskCount || 0) || 0,
+              planningProject.plans?.length || 0,
+              planningProject.results?.length || 0,
               1,
             );
             projects.push({
-              ...matchedProject,
+              ...planningProject,
               status: completedCount >= taskCount
                 ? 'completed'
-                : hasPendingSelectedPlan(matchedProject.plans, matchedProject.results || [])
+                : hasPendingSelectedPlan(planningProject.plans, planningProject.results || [])
                   ? 'planning'
-                  : matchedProject.status,
+                  : planningProject.status,
               taskCount,
               completedCount,
-              creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || matchedProject.creditsConsumed,
+              creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || planningProject.creditsConsumed,
               planningTaskId: mergeIdentityTextList(
-                matchedProject.planningTaskId,
-                String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || job.id,
+                planningProject.planningTaskId,
+                String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || undefined,
               ),
             });
             return;
           }
-          const planningTaskId = String(job.providerTaskId || (job.result as any)?.providerTaskId || job.id || '').trim();
+          const planningTaskId = String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim();
           projects.push({
-            ...matchedProject,
+            ...planningProject,
             status: 'planning',
             backendJobId: job.id,
             results: [],
-            creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || matchedProject.creditsConsumed,
-            planningTaskId: mergeIdentityTextList(matchedProject.planningTaskId, planningTaskId),
-            taskCount: Math.max(Number(matchedProject.taskCount || 0) || 0, matchedProject.plans?.length || 0, 1),
+            creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || planningProject.creditsConsumed,
+            planningTaskId: mergeIdentityTextList(planningProject.planningTaskId, planningTaskId),
+            taskCount: Math.max(planningProject.plans?.length || 0, 1),
             completedCount: 0,
           });
           return;
@@ -1060,29 +1081,30 @@ const mapJobs = (
         const plans = parseOneClickPlanningText(planningText, job.id);
         if (plans.length === 0) return;
         if (hasExistingConcreteResults || Number(matchedProject.completedCount || 0) > 0) {
-          const completedCount = (matchedProject.results || []).filter(hasCompletedMediaResult).length;
+          const planningProject = removePlanningJobPendingPlaceholders(matchedProject, job);
+          const completedCount = (planningProject.results || []).filter(hasCompletedMediaResult).length;
           const taskCount = Math.max(
-            Number(matchedProject.taskCount || 0) || 0,
+            Number(planningProject.taskCount || 0) || 0,
             plans.length,
-            matchedProject.results?.length || 0,
+            planningProject.results?.length || 0,
             1,
           );
           projects.push({
-            ...matchedProject,
+            ...planningProject,
             status: completedCount >= taskCount
               ? 'completed'
-              : hasPendingSelectedPlan(plans, matchedProject.results || [])
+              : hasPendingSelectedPlan(plans, planningProject.results || [])
                 ? 'planning'
-                : matchedProject.status,
+                : planningProject.status,
             taskCount,
             completedCount,
-            creditsConsumed: matchedProject.creditsConsumed || normalizeCreditsConsumed((job.result as any)?.creditsConsumed),
+            creditsConsumed: planningProject.creditsConsumed || normalizeCreditsConsumed((job.result as any)?.creditsConsumed),
             planningTaskId: mergeIdentityTextList(
-              matchedProject.planningTaskId,
-              String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || job.id,
+              planningProject.planningTaskId,
+              String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || undefined,
             ),
             plans,
-            selectedPlanId: matchedProject.selectedPlanId || plans.find((plan) => plan.selected)?.id || plans[0]?.id,
+            selectedPlanId: planningProject.selectedPlanId || plans.find((plan) => plan.selected)?.id || plans[0]?.id,
           });
           return;
         }
@@ -1353,6 +1375,29 @@ const mapJobs = (
         return;
       }
       const activeProjectId = matchedProject?.id || projectId;
+      const visibleProviderTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+      const taskTypeText = String(job.taskType || '');
+      const isProviderMediaJob = String(job.provider || '') === 'kie' && /image|video|seedance|veo/i.test(taskTypeText);
+      const activeTask: ShellTaskData = {
+        id: job.id,
+        projectId: activeProjectId,
+        module,
+        type: mediaType === 'video' ? 'video' : 'image',
+        status: taskStatusToTask(job.status),
+        title: jobTaskTitle(job, module, subFeature),
+        prompt,
+        progress: job.status === 'running' ? 42 : 8,
+        createdAt,
+        subFeature,
+        backendJobId: job.id,
+      };
+      if (
+        isProviderMediaJob
+        && !visibleProviderTaskId
+      ) {
+        tasks.push(activeTask);
+        return;
+      }
       const activeResult: ShellGeneratedResult = {
         id: `${job.id}-pending`,
         planId: payloadPlanId || matchedProject?.selectedPlanId,
@@ -1367,7 +1412,7 @@ const mapJobs = (
         createdAt,
         module,
         subFeature: matchedProject?.subFeature || subFeature,
-        taskId: String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
+        taskId: visibleProviderTaskId || undefined,
         backendJobId: job.id,
         error: job.status === 'queued' ? '任务已提交，等待执行' : '任务正在运行',
       };
@@ -1399,19 +1444,7 @@ const mapJobs = (
         sourceType: matchedProject?.sourceType || 'job',
         backendJobId: job.id,
       });
-      tasks.push({
-        id: job.id,
-        projectId: activeProjectId,
-        module,
-        type: mediaType === 'video' ? 'video' : 'image',
-        status: taskStatusToTask(job.status),
-        title: jobTaskTitle(job, module, subFeature),
-        prompt,
-        progress: job.status === 'running' ? 42 : 8,
-        createdAt,
-        subFeature,
-        backendJobId: job.id,
-      });
+      tasks.push(activeTask);
     }
   });
 
@@ -1494,6 +1527,10 @@ const resultHasMedia = (result: Partial<ShellGeneratedResult>) => Boolean(result
 
 const resultHasRuntimeIdentity = (result: Partial<ShellGeneratedResult>) => Boolean(
   String(result.taskId || result.backendJobId || '').trim(),
+);
+
+const resultHasProviderTaskIdentity = (result: Partial<ShellGeneratedResult>) => Boolean(
+  String(result.taskId || '').trim(),
 );
 
 const isTerminalBackendFailureResult = (result: Partial<ShellGeneratedResult>) => (
@@ -1579,7 +1616,7 @@ const hasTerminalResultForPlan = (results: ShellGeneratedResult[] = [], planId: 
     String(result.planId || '').trim() === planId
     && (
       hasCompletedMediaResult(result)
-      || result.status === 'generating'
+      || (result.status === 'generating' && resultHasProviderTaskIdentity(result))
       || result.status === 'error'
     )
   ))
@@ -1621,7 +1658,7 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
   const completedCount = results.filter(hasCompletedMediaResult).length;
   const planCount = filteredPlans.length;
   const activeOrFailedCount = results.filter((result) => (
-    result.status === 'generating'
+    (result.status === 'generating' && resultHasProviderTaskIdentity(result))
     || (result.status === 'error' && !resultHasMedia(result))
   )).length;
   const projectTaskCount = Number(project.taskCount || 0) || 0;
@@ -1637,7 +1674,7 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
   const selectedPlanId = filteredPlans.some((plan) => String(plan?.id || '') === String(project.selectedPlanId || ''))
     ? project.selectedPlanId
     : filteredPlans.find((plan) => plan.selected)?.id || filteredPlans[0]?.id || project.selectedPlanId;
-  const hasGenerating = results.some((result) => result.status === 'generating');
+  const hasGenerating = results.some((result) => result.status === 'generating' && resultHasProviderTaskIdentity(result));
   const hasError = results.some((result) => result.status === 'error');
   const status = completedCount >= taskCount
     ? 'completed'
@@ -1814,6 +1851,38 @@ const mergeIdentityTextList = (...values: Array<string | undefined>) => {
   return merged.length > 0 ? merged.join(', ') : undefined;
 };
 
+const getPlanningJobIdentities = (...projects: Array<Partial<ShellProjectData> | undefined>) => new Set(
+  projects
+    .flatMap((project) => [
+      String(project?.backendJobId || '').trim(),
+      ...splitIdentityText(project?.planningTaskId),
+    ])
+    .filter(Boolean),
+);
+
+const isPlanningJobPendingResult = (
+  result: Partial<ShellGeneratedResult>,
+  planningJobIds: Set<string>,
+) => (
+  result.status === 'generating'
+  && !resultHasMedia(result)
+  && planningJobIds.has(String(result.backendJobId || '').trim())
+  && !String(result.taskId || '').trim()
+);
+
+const shouldClearPlanningJobPendingResults = (
+  existing: ShellProjectData,
+  next: ShellProjectData,
+) => {
+  if (next.module !== MODULE_VALUES.ONE_CLICK) return false;
+  if (next.status !== 'planning') return false;
+  if ((next.plans || []).length === 0) return false;
+  if ((next.results || []).length > 0) return false;
+  const planningJobIds = getPlanningJobIdentities(existing, next);
+  if (planningJobIds.size === 0) return false;
+  return (existing.results || []).some((result) => isPlanningJobPendingResult(result, planningJobIds));
+};
+
 const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData): ShellProjectData => {
   if (!shouldReplaceProjectSnapshot(existing, next)) return existing;
   const plans = mergeProjectPlansById(existing.plans, next.plans);
@@ -1821,12 +1890,19 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
     && (plans || []).length > 0
     && hasOnlyStalePlanningFailureResults(existing)
     && (next.results || []).length === 0;
+  const clearPlanningJobPendingResults = shouldClearPlanningJobPendingResults(existing, next);
+  const planningJobIds = clearPlanningJobPendingResults
+    ? getPlanningJobIdentities(existing, next)
+    : new Set<string>();
+  const existingResults = clearPlanningJobPendingResults
+    ? (existing.results || []).filter((result) => !isPlanningJobPendingResult(result, planningJobIds))
+    : existing.results || [];
   const results = replacesStalePlanningFailure
     ? []
-    : mergeProjectResultsByIdentity(existing.results || [], next.results || []);
+    : mergeProjectResultsByIdentity(existingResults, next.results || []);
   const completedCount = results.filter(hasCompletedMediaResult).length;
   const taskCount = getMergedProjectTaskCount(existing, next, plans, results, completedCount);
-  const hasGenerating = results.some((result) => result.status === 'generating');
+  const hasGenerating = results.some((result) => result.status === 'generating' && resultHasProviderTaskIdentity(result));
   const hasError = results.some((result) => result.status === 'error');
   const status = completedCount >= taskCount
     ? 'completed'

@@ -922,6 +922,33 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
 
 const getDefaultSubFeature = (module: AppModule) => MODULE_SUB_FEATURES[module]?.[0]?.id || 'default';
 
+const hasActiveGuardedGeneration = (
+  projects: Project[],
+  tasks: Task[],
+  module: AppModule,
+  subFeature?: string,
+) => {
+  const scope = subFeature || getDefaultSubFeature(module);
+  const isSameScope = (item: { module: AppModule; subFeature?: string }) => (
+    item.module === module && (item.subFeature || getDefaultSubFeature(item.module)) === scope
+  );
+  const hasActiveTask = tasks.some((task) => (
+    isSameScope(task) && (task.status === 'pending' || task.status === 'generating')
+  ));
+  if (hasActiveTask) return true;
+  return projects.some((project) => {
+    if (!isSameScope(project)) return false;
+    if (project.status === 'generating') return true;
+    if (project.status === 'planning' && !(project.plans || []).length) return true;
+    return (project.results || []).some((result) => (
+      result.status === 'generating'
+      && !result.imageUrl
+      && !result.videoUrl
+      && Boolean(result.backendJobId || result.taskId)
+    ));
+  });
+};
+
 const isPendingShellSubFeature = (module: AppModule, subFeature: string) =>
   Boolean(MODULE_SUB_FEATURES[module]?.find((item) => item.id === subFeature)?.disabled);
 
@@ -1093,6 +1120,7 @@ type TranslationBatchFile = {
   projectName: string;
   projectCreatedAt: number;
   taskId?: string;
+  backendJobId?: string;
   creditsConsumed?: number;
   resultUrl?: string;
   matchedAspectRatio?: string;
@@ -1126,6 +1154,7 @@ const translationFileToResult = (
   fileName: file.fileName,
   relativePath: file.relativePath,
   taskId: file.taskId,
+  backendJobId: file.backendJobId,
   creditsConsumed: file.creditsConsumed,
   error: file.error,
   matchedAspectRatio: file.matchedAspectRatio,
@@ -1732,6 +1761,14 @@ const AppContent: React.FC<{
       loadShellDraftState(userId),
       remoteDraft || latestSharedStateRef.current?.shellDraft,
     );
+  }, []);
+
+  const getCurrentScopedImageModel = useCallback((module: AppModule, subFeature?: string) => {
+    if (module === AppModuleObj.ONE_CLICK) {
+      const branchKey = ONE_CLICK_REMOTE_BRANCH_BY_SUBFEATURE[subFeature || ''];
+      return String(latestSharedStateRef.current?.oneClickMemory?.[branchKey]?.config?.model || '').trim();
+    }
+    return '';
   }, []);
 
   const resolveSharedStateBaseForWrite = useCallback(async () => {
@@ -2619,6 +2656,10 @@ const AppContent: React.FC<{
       addToast('该子功能待制作，当前先迁移 3000 已有能力。', 'warning');
       return;
     }
+    if (hasGuardedSubmitLock && hasActiveGuardedGeneration(projects, tasks, targetModule, targetSubFeature)) {
+      addToast('当前已有任务未返回，请等待完成或取消后再提交。', 'warning');
+      return;
+    }
 
     if (targetModule === AppModuleObj.VIDEO && targetSubFeature === 'storyboard') {
       const storyboardPrompt = promptText.trim();
@@ -3039,7 +3080,7 @@ const AppContent: React.FC<{
           if (!current) return task;
           return {
             ...task,
-            backendJobId: current.taskId || task.backendJobId,
+            backendJobId: current.backendJobId || task.backendJobId,
             status: current.status === 'completed'
               ? 'completed'
               : current.status === 'error' || current.status === 'interrupted'
@@ -3158,10 +3199,11 @@ const AppContent: React.FC<{
                 }],
               },
               signal: controller.signal,
-              onJobCreated: (jobId: string) => {
+              onJobCreated: (jobId: string, providerTaskId?: string) => {
                 translationFileItems[index] = {
                   ...translationFileItems[index],
-                  taskId: jobId,
+                  backendJobId: jobId || undefined,
+                  taskId: providerTaskId || translationFileItems[index].taskId,
                 };
                 syncTranslationProject(translationFileItems);
                 releaseGuardedSubmit();
@@ -3302,7 +3344,6 @@ const AppContent: React.FC<{
             : task
         )));
         void persistProjectToSharedState(persistedPlanningProject);
-        releaseGuardedSubmit();
       };
 
       try {
@@ -4015,24 +4056,24 @@ const AppContent: React.FC<{
     let firstGenerationError: Error | null = null;
     const getPublishedResults = () => resultsByIndex.filter((item): item is GeneratedResult => Boolean(item));
     const buildMissingPlanResult = (plan: PlanItem, index: number, message: string): GeneratedResult => {
-      const visibleTaskId = generationTaskIdByPlanId.get(plan.id);
-      const backendJobId = generationBackendJobIdByPlanId.get(plan.id);
-      const isSubmitted = Boolean(visibleTaskId || backendJobId);
+      const visibleTaskId = String(generationTaskIdByPlanId.get(plan.id) || '').trim() || undefined;
+      const backendJobId = String(generationBackendJobIdByPlanId.get(plan.id) || '').trim() || undefined;
+      const hasProviderTaskId = Boolean(visibleTaskId);
       const promptSummary = buildPlanPromptSummary(plan, sceneSubFeature);
       return {
         id: visibleTaskId || `${taskId}-error-${index}`,
         planId: plan.id,
         imageUrl: '',
-        prompt: isSubmitted ? promptSummary : message,
+        prompt: hasProviderTaskId ? promptSummary : message,
         model: generationParams['model'] || 'gpt-image-2',
         aspectRatio: effectiveRatio,
-        status: isSubmitted ? 'generating' : 'error',
+        status: hasProviderTaskId ? 'generating' : 'error',
         createdAt: project.createdAt,
         module: AppModuleObj.ONE_CLICK,
         subFeature: sceneSubFeature,
         taskId: visibleTaskId,
         backendJobId,
-        error: isSubmitted ? '任务已提交云端，结果待同步' : message,
+        error: hasProviderTaskId ? '任务已提交云端，结果待同步' : message,
       };
     };
     const collectPlanResultsForFailure = (message: string) => {
@@ -4322,7 +4363,9 @@ const AppContent: React.FC<{
         const next = prev.map((p) => {
           if (p.id !== projectId) return p;
           const currentMergedResults = mergeProjectResults(p.results || [], publishedResults);
-          const hasActiveSibling = currentMergedResults.some((result) => result.status === 'generating');
+          const hasActiveSibling = currentMergedResults.some((result) => (
+            result.status === 'generating' && Boolean(String(result.taskId || '').trim())
+          ));
           projectToPersist = {
             ...p,
             ...(pendingSyncProject || completedProject),
@@ -4364,7 +4407,9 @@ const AppContent: React.FC<{
       const publishedResults = getPublishedResults();
       const failedPlanResults = collectPlanResultsForFailure(message);
       const mergedFailedResults = mergeLatestProjectResults(failedPlanResults);
-      const hasPendingSubmittedResult = mergedFailedResults.some((result) => result.status === 'generating');
+      const hasPendingSubmittedResult = mergedFailedResults.some((result) => (
+        result.status === 'generating' && Boolean(String(result.taskId || '').trim())
+      ));
       logShellError('one_click_image_generation_failed', error, {
         projectId,
         taskId,
@@ -4387,10 +4432,13 @@ const AppContent: React.FC<{
         const next = prev.map((p) => {
           if (p.id !== projectId) return p;
           const currentMergedResults = mergeProjectResults(p.results || [], failedPlanResults);
+          const hasSubmittedGeneratingResult = currentMergedResults.some((result) => (
+            result.status === 'generating' && Boolean(String(result.taskId || '').trim())
+          ));
           failedProject = {
             ...p,
             ...failedProject,
-            status: currentMergedResults.some((result) => result.status === 'generating') ? 'generating' : 'error',
+            status: hasSubmittedGeneratingResult ? 'generating' : 'error',
             results: currentMergedResults,
             completedCount: countCompletedProjectResults(currentMergedResults),
           };
@@ -4817,11 +4865,12 @@ const AppContent: React.FC<{
           return;
         }
         const subFeature = project.subFeature || 'main';
+        const currentScopedImageModel = getCurrentScopedImageModel(project.module, subFeature);
         const retryParams = normalizeParamsForGeneration(AppModuleObj.TRANSLATION, subFeature, {
           ...currentParams,
           ratio: result.aspectRatio || currentParams.ratio,
           aspectRatio: result.aspectRatio || currentParams.aspectRatio,
-          model: result.model || currentParams.model,
+          model: currentScopedImageModel || currentParams.model || result.model,
         }) as Record<string, string> & { [key: string]: string | undefined };
         const sourceDimensions = await getImageDimensionsFromUrl(sourceUrl).catch(() => null);
         const modelConfig = {
@@ -4878,6 +4927,7 @@ const AppContent: React.FC<{
           projectName: project.name,
           projectCreatedAt: Date.now(),
           taskId: nextResult.taskId,
+          backendJobId: nextResult.backendJobId,
           creditsConsumed: nextResult.creditsConsumed,
           resultUrl: nextResult.imageUrl || undefined,
           matchedAspectRatio: nextResult.aspectRatio || matchedRatio,
@@ -4948,8 +4998,18 @@ const AppContent: React.FC<{
             }],
           },
           signal: controller.signal,
-          onJobCreated: (jobId) => {
+          onJobCreated: (jobId, providerTaskId) => {
             setTasks((prev) => prev.map((task) => task.id === retryTaskId ? { ...task, backendJobId: jobId } : task));
+            if (providerTaskId) {
+              const providerPendingResult: GeneratedResult = {
+                ...pendingResult,
+                taskId: providerTaskId,
+                backendJobId: jobId,
+                error: undefined,
+              };
+              setProjectResult(providerPendingResult);
+              void persistTranslationFilesToSharedState(subFeature, [toFileItem(providerPendingResult, 'processing')]);
+            }
           },
           publicBaseUrl,
         });
@@ -4998,11 +5058,12 @@ const AppContent: React.FC<{
       }
       const subFeature = project.subFeature || getDefaultSubFeature(project.module);
       const storedContext = project.generationContext;
+      const currentScopedImageModel = getCurrentScopedImageModel(project.module, subFeature);
       const retryParams = normalizeParamsForGeneration(project.module, subFeature, {
         ...(storedContext?.params || currentParams),
         ratio: result.aspectRatio || storedContext?.params?.ratio || currentParams.ratio,
         aspectRatio: result.aspectRatio || storedContext?.params?.aspectRatio || currentParams.aspectRatio,
-        model: result.model || storedContext?.params?.model || currentParams.model,
+        model: currentScopedImageModel || currentParams.model || storedContext?.params?.model || result.model,
       }) as Record<string, string> & { [key: string]: string | undefined };
       const sourceUrl = resolvePublicAssetUrl(result.sourceUrl || result.sourcePreviewUrl || '', publicBaseUrl);
       const contextMaterials = hasMaterialInputs(storedContext?.materials as Record<string, Material[]>)
@@ -5162,7 +5223,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig.workspacePreferences, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig.workspacePreferences, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction]);
 
   const handleFissionResult = useCallback(async (
     projectId: string,
@@ -5189,9 +5250,10 @@ const AppContent: React.FC<{
       const variantLabel = mode === 'scene' ? '换场景' : mode === 'palette' ? '换配色' : '自定义';
       const fissionInstruction = instruction.trim();
       const storedContext = project.generationContext;
+      const currentScopedImageModel = getCurrentScopedImageModel(project.module, project.subFeature);
       const fissionParams = {
         ...(storedContext?.params || currentParams),
-        model: storedContext?.params?.model || result.model || currentParams.model || 'GPT Image 2',
+        model: currentScopedImageModel || storedContext?.params?.model || result.model || currentParams.model || 'GPT Image 2',
         ratio: storedContext?.params?.ratio || result.aspectRatio || currentParams.ratio,
         aspectRatio: storedContext?.params?.aspectRatio || result.aspectRatio || currentParams.aspectRatio,
       };
@@ -5237,7 +5299,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, addToast, currentParams, filteredMaterials, buildVariantMaterials, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, addToast, currentParams, filteredMaterials, buildVariantMaterials, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction]);
 
   const handleStoryboardEditResult = useCallback(async (
     projectId: string,
@@ -5467,12 +5529,13 @@ const AppContent: React.FC<{
       }
 
       const storedContext = project.generationContext;
+      const currentScopedImageModel = getCurrentScopedImageModel(project.module, project.subFeature);
       const contextMaterials = hasMaterialInputs(storedContext?.materials as Record<string, Material[]>)
         ? storedContext?.materials as Record<string, Material[]>
         : filteredMaterials;
       const generationParams = {
         ...(storedContext?.params || currentParams),
-        model: storedContext?.params?.model || result.model || currentParams.model || 'GPT Image 2',
+        model: currentScopedImageModel || storedContext?.params?.model || result.model || currentParams.model || 'GPT Image 2',
         ratio: storedContext?.params?.ratio || result.aspectRatio || currentParams.ratio,
         aspectRatio: storedContext?.params?.aspectRatio || result.aspectRatio || currentParams.aspectRatio,
       };
@@ -5567,7 +5630,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, addToast, activeSubFeature, currentParams, filteredMaterials, createRemoteMaterial, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, handleStoryboardEditResult, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, addToast, activeSubFeature, currentParams, filteredMaterials, createRemoteMaterial, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, handleStoryboardEditResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction]);
 
   const handleStoryboardRecoverResult = useCallback(async (projectId: string, resultId?: string) => {
     const baseVideoMemory = videoMemory || createDefaultVideoState();
@@ -5685,8 +5748,8 @@ const AppContent: React.FC<{
     const project = projects.find((item) => item.id === projectId);
     const targetResult = resultId
       ? project?.results.find((item) => item.id === resultId)
-      : project?.results.find((item) => item.taskId || item.backendJobId);
-    const recoverTaskId = String(targetResult?.taskId || targetResult?.backendJobId || '').trim();
+      : project?.results.find((item) => item.taskId);
+    const recoverTaskId = String(targetResult?.taskId || '').trim();
     if (!project || !targetResult || !recoverTaskId) {
       void hydrateShellData();
       void hydrateShellJobs();
@@ -5861,8 +5924,9 @@ const AppContent: React.FC<{
 	    return t.module === activeModule && (t.subFeature || getDefaultSubFeature(t.module)) === activeSubFeature;
 	  });
 	  const currentGenerationSubmitLockKey = buildGenerationSubmitLockKey(activeModule, activeSubFeature);
+	  const hasCurrentActiveGuardedGeneration = hasActiveGuardedGeneration(projects, tasks, activeModule, activeSubFeature);
 	  const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit(activeModule, activeSubFeature)
-	    && Boolean(generationSubmitLocks[currentGenerationSubmitLockKey]);
+	    && (Boolean(generationSubmitLocks[currentGenerationSubmitLockKey]) || hasCurrentActiveGuardedGeneration);
 
 	  const activeModuleView = (() => {
     switch (pageMode) {

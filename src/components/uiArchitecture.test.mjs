@@ -191,6 +191,25 @@ test('one click batch generation keeps every selected plan visible when one item
   assert.match(app, /部分任务已提交云端，结果待同步，可稍后点击同步。/);
 });
 
+test('one click image fallback requires a visible KIE task id before showing generating', () => {
+  const app = read('../ShellMigratedApp.tsx');
+
+  assert.match(app, /const hasProviderTaskId = Boolean\(visibleTaskId\);/);
+  assert.doesNotMatch(app, /const isSubmitted = Boolean\(visibleTaskId \|\| backendJobId\);/);
+  assert.match(app, /status: hasProviderTaskId \? 'generating' : 'error'/);
+  assert.match(app, /result\.status === 'generating' && Boolean\(String\(result\.taskId \|\| ''\)\.trim\(\)\)/);
+  assert.match(app, /const hasActiveSibling = currentMergedResults\.some\(\(result\) => \(\s*result\.status === 'generating' && Boolean\(String\(result\.taskId \|\| ''\)\.trim\(\)\)\s*\)\);/);
+});
+
+test('project result reruns prefer the current scoped image model over stale failed result models', () => {
+  const app = read('../ShellMigratedApp.tsx');
+
+  assert.match(app, /const getCurrentScopedImageModel = useCallback/);
+  assert.match(app, /latestSharedStateRef\.current\?\.oneClickMemory\?\.\[branchKey\]\?\.config\?\.model/);
+  assert.match(app, /model: currentScopedImageModel \|\| currentParams\.model \|\| storedContext\?\.params\?\.model \|\| result\.model/);
+  assert.match(app, /model: currentScopedImageModel \|\| storedContext\?\.params\?\.model \|\| result\.model \|\| currentParams\.model \|\| 'GPT Image 2'/);
+});
+
 test('one click planning remains syncable after recoverable cloud submission failures', () => {
   const app = read('../ShellMigratedApp.tsx');
 
@@ -513,7 +532,8 @@ test('shell recover polls a single result by KIE task id instead of only refresh
   const app = read('../ShellMigratedApp.tsx');
 
   assert.match(app, /const handleRecoverResult = useCallback\(async \(projectId: string, resultId\?: string\)/);
-  assert.match(app, /const recoverTaskId = String\(targetResult\?\.taskId \|\| targetResult\?\.backendJobId \|\| ''\)\.trim\(\)/);
+  assert.match(app, /const recoverTaskId = String\(targetResult\?\.taskId \|\| ''\)\.trim\(\)/);
+  assert.doesNotMatch(app, /targetResult\?\.taskId \|\| targetResult\?\.backendJobId/);
   assert.match(app, /await recoverKieAiTask\(recoverTaskId, apiConfig, controller\.signal, isVideoRecover\)/);
   assert.match(app, /status: 'completed'/);
   assert.match(app, /await persistProjectToSharedState\(recoveredProject\)/);
@@ -589,7 +609,7 @@ test('shell generation paths upload local draft assets before provider submissio
   assert.match(oneClickImageBody, /materials: planMaterials/);
 });
 
-test('guarded generation blocks duplicate submits only during submit handoff', () => {
+test('guarded generation blocks duplicate submits while scoped jobs are active', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
   const workflow = read('../adapters/shellWorkflow.ts');
@@ -599,9 +619,9 @@ test('guarded generation blocks duplicate submits only during submit handoff', (
   assert.match(shellApp, /generationSubmitLocksRef/);
   assert.match(shellApp, /shouldGuardGenerationSubmit\(targetModule, targetSubFeature\)/);
   assert.match(shellApp, /module === AppModuleObj\.ONE_CLICK/);
-  assert.doesNotMatch(shellApp, /hasActiveGuardedGeneration/);
-  assert.doesNotMatch(shellApp, /当前已有任务未返回/);
-  assert.doesNotMatch(shellApp, /hasCurrentActiveGuardedGeneration/);
+  assert.match(shellApp, /const hasActiveGuardedGeneration = \(/);
+  assert.match(shellApp, /当前已有任务未返回，请等待完成或取消后再提交。/);
+  assert.match(shellApp, /const hasCurrentActiveGuardedGeneration = hasActiveGuardedGeneration\(projects, tasks, activeModule, activeSubFeature\)/);
   assert.match(shellApp, /beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(shellApp, /endGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(shellApp, /persistProjectToSharedState\(pendingVideoProject\)/);
@@ -615,7 +635,9 @@ test('guarded generation blocks duplicate submits only during submit handoff', (
   assert.match(workflow, /resolution: normalizeSeedanceApiResolution\(firstParam\(input\.params, \['videoResolution'\], '720p'\)\)/);
   assert.doesNotMatch(workflow, /requestId: `\$\{Date\.now\(\)\}-/);
   assert.match(serverIndex, /VIDEO_JOB_DEDUPE_WINDOW_MS = 1000 \* 60 \* 60/);
+  assert.match(serverIndex, /CHAT_JOB_DEDUPE_WINDOW_MS = 1000 \* 60 \* 3/);
   assert.match(serverIndex, /VIDEO_JOB_TASK_TYPES = new Set\(\['dreamina_video', 'kie_seedance_video'\]\)/);
+  assert.match(serverIndex, /CHAT_JOB_TASK_TYPES = new Set\(\['kie_chat'\]\)/);
   assert.match(serverIndex, /getJobDedupeWindowMs\(jobPayload\.taskType\)/);
   assert.match(jobManager, /key !== 'requestId'/);
 });
@@ -714,12 +736,15 @@ test('one click shell planning dialog exposes old-style selected batch generatio
   const projectCard = read('../shell/components/ProjectCard.tsx');
 
   assert.match(workflow, /selected: true/);
-  assert.match(planEditor, /const activeGeneratingResult = \(results \|\| \[\]\)\.find\(\(result\) => result\.status === 'generating' && result\.planId\)/);
+  assert.match(planEditor, /const resultHasVisibleTaskId = \(result\?: GeneratedResult \| null\) => Boolean\(String\(result\?\.taskId \|\| ''\)\.trim\(\)\)/);
+  assert.match(planEditor, /const activeGeneratingResult = \(results \|\| \[\]\)\.find\(\(result\) => result\.status === 'generating' && result\.planId && resultHasVisibleTaskId\(result\)\)/);
   assert.match(planEditor, /const activeGeneratingPlanId = projectStatus === 'generating' \? \(activeGeneratingResult\?\.planId \|\| null\) : null/);
   assert.match(planEditor, /const isPlanSubmitPending = Boolean\(isConfirmPlanPending\?\.\(plan\.id\)\)/);
   assert.match(planEditor, /const hasErrorResult = result\?\.status === 'error'/);
   assert.match(planEditor, /hasErrorResult \? '生成失败' : isGenerating \? '生成中'/);
   assert.match(projectCard, /const hasGeneratingResult = project\.results\.some/);
+  assert.match(projectCard, /const resultHasVisibleTaskId = \(result: GeneratedResult\) => Boolean\(String\(result\.taskId \|\| ''\)\.trim\(\)\)/);
+  assert.match(projectCard, /const isResultActivelyGenerating = \(result: GeneratedResult\) => result\.status === 'generating' && !isCompletedMediaResult\(result\) && resultHasVisibleTaskId\(result\)/);
   assert.match(projectCard, /const pendingPlans = project\.plans\.filter\(\(plan\) => \([\s\S]*plan\.selected[\s\S]*!completedPlanIds\.has\(plan\.id\)[\s\S]*!activePlanIds\.has\(plan\.id\)[\s\S]*!isPlanConfirmPending\(plan\.id\)/);
   assert.match(projectCard, /const firstBenchmarkPlanId = project\.module === 'one_click' && project\.subFeature === 'sku'/);
   assert.match(projectCard, /activePlanIds\.has\(firstBenchmarkPlanId\)/);
@@ -1006,6 +1031,7 @@ test('project cards keep pending result actions independent while sibling result
   assert.match(projectCard, /const isPlanConfirmPending = \(planId: string\) => isPendingAction\(getConfirmPlanActionKey\(planId\)\)/);
   assert.match(projectCard, /const isGeneratingResult = isResultActivelyGenerating\(result\)/);
   assert.match(planEditor, /isConfirmPlanPending\?: \(planId: string\) => boolean/);
+  assert.match(planEditor, /const resultIsActivelyGenerating = \(result\?: GeneratedResult \| null\) => Boolean\(result && result\.status === 'generating' && resultHasVisibleTaskId\(result\)\)/);
   assert.match(planEditor, /const activeGeneratingPlanId = projectStatus === 'generating' \? \(activeGeneratingResult\?\.planId \|\| null\) : null/);
   assert.doesNotMatch(planEditor, /activeGeneratingResult\?\.planId \|\| selectedPlanId \|\| pendingSelectedPlanIds\[0\]/);
 });
@@ -2432,7 +2458,7 @@ test('one click completed result edit supports supplement image upload and keeps
   assert.match(shellApp, /const handleEditResult = useCallback/);
   assert.match(shellApp, /id: `project-edit-\$\{Date\.now\(\)\}`/);
   assert.match(shellApp, /directGeneration: true/);
-  assert.match(shellApp, /model: storedContext\?\.params\?\.model \|\| result\.model \|\| currentParams\.model \|\| 'GPT Image 2'/);
+  assert.match(shellApp, /model: currentScopedImageModel \|\| storedContext\?\.params\?\.model \|\| result\.model \|\| currentParams\.model \|\| 'GPT Image 2'/);
   assert.match(shellApp, /editInstruction: finalInstruction/);
   assert.match(shellApp, /runOneClickPlanGeneration\(readyEditProject, \[editPlan\], editMaterials\)/);
 });
@@ -2489,6 +2515,14 @@ test('video storyboard recovery polls KIE task id and writes back to the same bo
   assert.match(shellApp, /imageUrl: recovery\.imageUrl \|\| currentBoard\.imageUrl/);
   assert.match(shellApp, /taskId: recovery\.taskId \|\| recoverTaskId/);
   assert.match(shellApp, /if \(await handleStoryboardRecoverResult\(projectId, resultId\)\) return;/);
+});
+
+test('shell workflows do not expose internal job ids as provider task ids', () => {
+  const workflow = read('../adapters/shellWorkflow.ts');
+
+  assert.doesNotMatch(workflow, /taskId:\s*finalJob\.providerTaskId\s*\|\|\s*finalJob\.id/);
+  assert.doesNotMatch(workflow, /taskId:\s*job\.providerTaskId\s*\|\|\s*job\.id/);
+  assert.match(workflow, /taskId: String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| ''\)\.trim\(\) \|\| undefined/);
 });
 
 test('one click result edit and fission show immediate feedback before long async work', () => {

@@ -147,6 +147,113 @@ test('mergeAppStateForStorage replaces stale planning placeholders with terminal
   assert.equal(merged.shellProjects[0].results[0].status, 'error');
 });
 
+test('mergeAppStateForStorage clears planning job pending placeholders after planning succeeds', () => {
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'planning-succeeded-but-pending',
+      module: 'one_click',
+      status: 'generating',
+      taskCount: 2,
+      completedCount: 0,
+      subFeature: 'first_image',
+      backendJobId: 'planning-job-succeeded',
+      planningTaskId: 'planning-job-succeeded',
+      plans: [{
+        id: 'plan-after-success',
+        title: '首图裂变1-复刻主图参考1',
+        selected: true,
+      }],
+      selectedPlanId: 'plan-after-success',
+      results: [{
+        id: 'planning-job-succeeded-pending',
+        status: 'generating',
+        imageUrl: '',
+        prompt: '任务已提交，等待执行',
+        backendJobId: 'planning-job-succeeded',
+        module: 'one_click',
+        subFeature: 'first_image',
+      }],
+    }],
+  }, {
+    shellProjects: [{
+      id: 'planning-succeeded-but-pending',
+      module: 'one_click',
+      status: 'planning',
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      backendJobId: 'planning-job-succeeded',
+      planningTaskId: 'planning-job-succeeded',
+      plans: [{
+        id: 'plan-after-success',
+        title: '首图裂变1-复刻主图参考1',
+        selected: true,
+      }],
+      selectedPlanId: 'plan-after-success',
+      results: [],
+    }],
+  });
+
+  assert.equal(merged.shellProjects[0].status, 'planning');
+  assert.equal(merged.shellProjects[0].taskCount, 1);
+  assert.equal(merged.shellProjects[0].completedCount, 0);
+  assert.equal(merged.shellProjects[0].results.length, 0);
+  assert.equal(merged.shellProjects[0].plans.length, 1);
+});
+
+test('mergeAppStateForStorage keeps plan-only pending one-click projects out of generating state', () => {
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'proj-plan-only-pending',
+      module: 'one_click',
+      status: 'generating',
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      plans: [{
+        id: 'plan-only-1',
+        title: '首图裂变1',
+        selected: true,
+      }],
+      schemes: [{
+        id: 'plan-only-1',
+        status: 'pending',
+        uiTitle: '首图裂变1',
+        editedContent: '策划内容',
+        selected: true,
+      }],
+      results: [],
+    }],
+  }, {
+    shellProjects: [{
+      id: 'proj-plan-only-pending',
+      module: 'one_click',
+      status: 'planning',
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      plans: [{
+        id: 'plan-only-1',
+        title: '首图裂变1',
+        selected: true,
+      }],
+      schemes: [{
+        id: 'plan-only-1',
+        status: 'pending',
+        uiTitle: '首图裂变1',
+        editedContent: '策划内容',
+        selected: true,
+      }],
+      results: [],
+    }],
+  });
+
+  assert.equal(merged.shellProjects[0].status, 'planning');
+  assert.equal(merged.shellProjects[0].taskCount, 1);
+  assert.equal(merged.shellProjects[0].completedCount, 0);
+  assert.equal(merged.shellProjects[0].schemes[0].status, 'pending');
+});
+
 test('mergeAppStateForStorage deep-merges one-click planning project snapshots without dropping plans', () => {
   const existingPlans = Array.from({ length: 5 }, (_, index) => ({
     id: `plan-${index + 1}`,

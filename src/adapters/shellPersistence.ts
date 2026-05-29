@@ -181,19 +181,31 @@ const hasCompletedMedia = (item: any) => (
   && Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl)
 );
 
-const hasGeneratingState = (item: any) => ['generating', 'pending', 'queued', 'uploading', 'processing'].includes(String(item?.status || ''));
+const hasProviderTaskIdentity = (item: any) => Boolean(String(item?.taskId || item?.providerTaskId || item?.kieTaskId || '').trim());
+
+const hasGeneratingState = (item: any) => (
+  ['generating', 'pending', 'queued', 'uploading', 'processing'].includes(String(item?.status || ''))
+  && hasProviderTaskIdentity(item)
+);
 
 const hasErrorState = (item: any) => ['error', 'failed', 'interrupted'].includes(String(item?.status || ''));
 
 const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingProject: T | undefined, incomingProject: T): T => {
-  if (!existingProject) return { ...incomingProject };
-  const results = mergeArrayByStableKeys(existingProject.results, incomingProject.results);
-  const plans = mergeArrayByStableKeys(existingProject.plans, incomingProject.plans);
-  const schemes = mergeArrayByStableKeys(existingProject.schemes, incomingProject.schemes);
+  const baseProject = existingProject || {} as T;
+  const results = mergeArrayByStableKeys(baseProject.results, incomingProject.results);
+  const plans = mergeArrayByStableKeys(baseProject.plans, incomingProject.plans);
+  const schemes = mergeArrayByStableKeys(baseProject.schemes, incomingProject.schemes);
   const stateItems = results.length > 0 ? results : schemes;
   const completedCount = stateItems.filter(hasCompletedMedia).length;
+  const hasGenerating = stateItems.some(hasGeneratingState);
+  const hasError = stateItems.some(hasErrorState);
+  const isOneClickPlanOnly = String(incomingProject.module || baseProject.module || '') === 'one_click'
+    && plans.length > 0
+    && completedCount === 0
+    && !hasGenerating
+    && !hasError;
   const taskCount = Math.max(
-    Number(existingProject.taskCount || 0) || 0,
+    Number(baseProject.taskCount || 0) || 0,
     Number(incomingProject.taskCount || 0) || 0,
     plans.length,
     schemes.length,
@@ -202,17 +214,19 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
   );
   const status = completedCount >= taskCount
     ? 'completed'
-    : stateItems.some(hasGeneratingState)
+    : hasGenerating
       ? 'generating'
-      : stateItems.some(hasErrorState)
+      : hasError
         ? 'error'
-        : incomingProject.status || existingProject.status;
+        : isOneClickPlanOnly
+          ? 'planning'
+          : incomingProject.status || baseProject.status;
   const merged = {
-    ...existingProject,
+    ...baseProject,
     ...incomingProject,
-    ...(Array.isArray(existingProject.results) || Array.isArray(incomingProject.results) ? { results } : {}),
-    ...(Array.isArray(existingProject.plans) || Array.isArray(incomingProject.plans) ? { plans } : {}),
-    ...(Array.isArray(existingProject.schemes) || Array.isArray(incomingProject.schemes) ? { schemes } : {}),
+    ...(Array.isArray(baseProject.results) || Array.isArray(incomingProject.results) ? { results } : {}),
+    ...(Array.isArray(baseProject.plans) || Array.isArray(incomingProject.plans) ? { plans } : {}),
+    ...(Array.isArray(baseProject.schemes) || Array.isArray(incomingProject.schemes) ? { schemes } : {}),
     taskCount,
     completedCount,
     status,
@@ -314,12 +328,10 @@ const buildSchemeFromPlan = (
     status: result?.status === 'error'
       ? 'error'
       : result?.status === 'generating'
-        ? 'generating'
+        ? taskId ? 'generating' : 'pending'
         : resultUrl
           ? 'completed'
-          : project.status === 'generating'
-            ? 'generating'
-            : 'pending',
+          : 'pending',
     selected: plan.selected !== false,
     resultUrl,
     error: result?.status === 'error' ? String(result.prompt || '任务失败') : undefined,

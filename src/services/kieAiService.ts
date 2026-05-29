@@ -157,11 +157,14 @@ const waitForJobResult = async (
       throw Object.assign(new Error('任务状态同步失败'), { code: 'job_state_missing' });
     }
     notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
+    const finalProviderTaskId = getUserVisibleTaskId(finalJob) || undefined;
+    const finalBackendJobId = String(finalJob.id || jobId || '').trim() || undefined;
     if (finalJob.status === 'succeeded') {
       return {
         imageUrl: String(finalJob.result?.imageUrl || ''),
         videoUrl: finalJob.result?.videoUrl ? String(finalJob.result.videoUrl) : undefined,
-        taskId: getUserVisibleTaskId(finalJob),
+        taskId: finalProviderTaskId,
+        backendJobId: finalBackendJobId,
         status: 'success',
         message: '',
         creditsConsumed: Number.isFinite(Number(finalJob.result?.creditsConsumed)) ? Number(finalJob.result?.creditsConsumed) : undefined,
@@ -171,7 +174,8 @@ const waitForJobResult = async (
     if (finalJob.status === 'cancelled') {
       return {
         imageUrl: '',
-        taskId: getUserVisibleTaskId(finalJob),
+        taskId: finalProviderTaskId,
+        backendJobId: finalBackendJobId,
         status: 'interrupted',
         message: finalJob.errorMessage || '任务已取消',
         errorCode: String(finalJob.errorCode || '').trim(),
@@ -181,7 +185,8 @@ const waitForJobResult = async (
     if (finalJob.errorCode === 'task_not_found') {
       return {
         imageUrl: '',
-        taskId: getUserVisibleTaskId(finalJob),
+        taskId: finalProviderTaskId,
+        backendJobId: finalBackendJobId,
         status: 'task_not_found',
         message: finalJob.errorMessage || '任务不存在或已过期',
         errorCode: String(finalJob.errorCode || '').trim(),
@@ -195,11 +200,12 @@ const waitForJobResult = async (
     const errorCode = String(finalJob.errorCode || '').trim();
     return {
       imageUrl: '',
-      taskId: getUserVisibleTaskId(finalJob),
+      taskId: finalProviderTaskId,
+      backendJobId: finalBackendJobId,
       status: 'error',
       message: getUserFacingKieErrorMessage({
         status: 'error',
-        taskId: getUserVisibleTaskId(finalJob),
+        taskId: finalProviderTaskId,
         message: finalJob.errorMessage || '任务执行失败',
         errorCode,
       }),
@@ -208,7 +214,7 @@ const waitForJobResult = async (
   } catch (error: any) {
     if (error.message === 'INTERRUPTED') {
       void cancelInternalJob(jobId).catch(() => null);
-      return { imageUrl: '', status: 'interrupted', message: '任务已取消' };
+      return { imageUrl: '', status: 'interrupted', message: '任务已取消', backendJobId: jobId };
     }
     if (error.code === 'job_timeout') {
       const timeoutJob = await fetchInternalJob(jobId).catch(() => null);
@@ -220,6 +226,7 @@ const waitForJobResult = async (
         return {
           imageUrl: '',
           taskId: fallbackTaskId,
+          backendJobId: jobId,
           status: 'generating',
           message: '任务已提交云端，结果待同步',
           errorCode: String(timeoutJob?.job?.errorCode || error?.code || '').trim(),
@@ -228,6 +235,7 @@ const waitForJobResult = async (
       return {
         imageUrl: '',
         taskId: fallbackTaskId,
+        backendJobId: jobId,
         status: 'error',
         message: getUserFacingKieErrorMessage({
           status: 'error',
@@ -242,6 +250,7 @@ const waitForJobResult = async (
       return {
         imageUrl: '',
         taskId: notifiedProviderTaskId,
+        backendJobId: jobId,
         status: 'generating',
         message: '任务已提交云端，结果待同步',
         errorCode: String(error?.code || '').trim(),
@@ -250,6 +259,7 @@ const waitForJobResult = async (
     return {
       imageUrl: '',
       taskId: notifiedProviderTaskId,
+      backendJobId: jobId,
       status: 'error',
       message: getUserFacingKieErrorMessage({
         status: 'error',

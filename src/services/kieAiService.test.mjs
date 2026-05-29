@@ -7,7 +7,7 @@ import { getUserVisibleTaskId } from './kieTaskUtils.mjs';
 const kieAiSource = readFileSync(new URL('./kieAiService.ts', import.meta.url), 'utf8');
 const internalApiSource = readFileSync(new URL('./internalApi.ts', import.meta.url), 'utf8');
 
-test('getUserVisibleTaskId falls back to the internal job id when the provider task id is not available yet', () => {
+test('getUserVisibleTaskId only returns upstream provider task ids', () => {
   assert.equal(
     getUserVisibleTaskId({
       id: 'internal-job-1',
@@ -21,14 +21,17 @@ test('getUserVisibleTaskId falls back to the internal job id when the provider t
       id: 'internal-job-2',
       providerTaskId: '',
     }),
-    'internal-job-2'
+    ''
   );
 });
 
-test('kieAiService keeps a recoverable task id when wait timeout happens before provider task id is written back', () => {
+test('kieAiService keeps internal backend ids out of visible task ids before upstream submission', () => {
   assert.match(kieAiSource, /const timeoutJob = await fetchInternalJob\(jobId\)\.catch\(\(\) => null\)/);
   assert.match(kieAiSource, /const fallbackTaskId = notifiedProviderTaskId \|\| getUserVisibleTaskId\(timeoutJob\?\.job\)/);
   assert.match(kieAiSource, /taskId: fallbackTaskId/);
+  assert.match(kieAiSource, /backendJobId: jobId/);
+  assert.doesNotMatch(kieAiSource, /taskId:\s*getUserVisibleTaskId\(finalJob\)/);
+  assert.doesNotMatch(kieAiSource, /\|\|\s*job\?\.id/);
 });
 
 test('kieAiService can resume waiting on an internal job id before falling back to provider recovery', () => {
@@ -80,6 +83,7 @@ test('kieAiService preserves the notified provider task id when polling throws a
   assert.match(kieAiSource, /const fallbackTaskId = notifiedProviderTaskId \|\| getUserVisibleTaskId\(timeoutJob\?\.job\)/);
   assert.match(kieAiSource, /taskId: fallbackTaskId/);
   assert.match(kieAiSource, /taskId: notifiedProviderTaskId/);
+  assert.doesNotMatch(kieAiSource, /getUserVisibleTaskId\(timeoutJob\?\.job\)[\s\S]{0,120}\|\|\s*timeoutJob\?\.job\?\.id/);
 });
 
 test('internal job polling ignores transient read failures and keeps waiting for terminal state', () => {

@@ -77,7 +77,9 @@ const MAX_JSON_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_STATE_BODY_BYTES = 100 * 1024 * 1024;
 const MAX_MULTIPART_BODY_BYTES = 1024 * 1024 * 1024;
 const VIDEO_JOB_DEDUPE_WINDOW_MS = 1000 * 60 * 60;
+const CHAT_JOB_DEDUPE_WINDOW_MS = 1000 * 60 * 3;
 const VIDEO_JOB_TASK_TYPES = new Set(['dreamina_video', 'kie_seedance_video']);
+const CHAT_JOB_TASK_TYPES = new Set(['kie_chat']);
 const INTERNAL_ASSET_REGISTRY_KEY = '__assetRegistry';
 const TRACKED_URL_FIELDS = new Set([
   'resultUrl',
@@ -92,7 +94,11 @@ const TRACKED_URL_FIELDS = new Set([
 ]);
 
 const getJobDedupeWindowMs = (taskType) => (
-  VIDEO_JOB_TASK_TYPES.has(String(taskType || '')) ? VIDEO_JOB_DEDUPE_WINDOW_MS : undefined
+  VIDEO_JOB_TASK_TYPES.has(String(taskType || ''))
+    ? VIDEO_JOB_DEDUPE_WINDOW_MS
+    : CHAT_JOB_TASK_TYPES.has(String(taskType || ''))
+      ? CHAT_JOB_DEDUPE_WINDOW_MS
+      : undefined
 );
 
 const normalizeJobMaxRetries = (taskType, value) => (

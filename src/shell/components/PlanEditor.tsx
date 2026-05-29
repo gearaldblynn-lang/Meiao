@@ -275,7 +275,9 @@ const PlanEditor: React.FC<Props> = ({
   const [expandedPromptIds, setExpandedPromptIds] = useState<Record<string, boolean>>({});
   const [pendingDeletePlan, setPendingDeletePlan] = useState<{ id: string; title: string } | null>(null);
   const [planningIdsExpanded, setPlanningIdsExpanded] = useState(false);
-  const activeGeneratingResult = (results || []).find((result) => result.status === 'generating' && result.planId);
+  const resultHasVisibleTaskId = (result?: GeneratedResult | null) => Boolean(String(result?.taskId || '').trim());
+  const resultIsActivelyGenerating = (result?: GeneratedResult | null) => Boolean(result && result.status === 'generating' && resultHasVisibleTaskId(result));
+  const activeGeneratingResult = (results || []).find((result) => result.status === 'generating' && result.planId && resultHasVisibleTaskId(result));
   const activeGeneratingPlanId = projectStatus === 'generating' ? (activeGeneratingResult?.planId || null) : null;
   const shouldShowPerPlanGenerating = Boolean(activeGeneratingPlanId);
   const isDetailProject = subFeature === 'detail_page' || subFeature === 'detail';
@@ -337,7 +339,7 @@ const PlanEditor: React.FC<Props> = ({
     const hasResult = Boolean(result && (result.imageUrl || result.videoUrl));
     const hasErrorResult = result?.status === 'error';
     const isPlanSubmitPending = Boolean(isConfirmPlanPending?.(plan.id));
-    const isGenerating = !hasResult && !hasErrorResult && (isPlanSubmitPending || result?.status === 'generating' || activeGeneratingPlanId === plan.id);
+    const isGenerating = !hasResult && !hasErrorResult && (isPlanSubmitPending || resultIsActivelyGenerating(result) || activeGeneratingPlanId === plan.id);
     const isQueued = !hasResult && shouldShowPerPlanGenerating && plan.selected && activeGeneratingPlanId !== plan.id;
     const confirmLabel = hasErrorResult ? '重试' : hasResult ? '重生成' : '生成';
     const isPromptExpanded = Boolean(expandedPromptIds[plan.id]);
@@ -575,7 +577,7 @@ const PlanEditor: React.FC<Props> = ({
             const hasResult = Boolean(result && (result.imageUrl || result.videoUrl));
             const hasErrorResult = result?.status === 'error';
             const isPlanSubmitPending = Boolean(isConfirmPlanPending?.(plan.id));
-            const isGenerating = !hasResult && !hasErrorResult && (isPlanSubmitPending || result?.status === 'generating' || activeGeneratingPlanId === plan.id);
+            const isGenerating = !hasResult && !hasErrorResult && (isPlanSubmitPending || resultIsActivelyGenerating(result) || activeGeneratingPlanId === plan.id);
             const confirmLabel = hasErrorResult ? '重试' : hasResult ? '重生成' : '生成';
             const isPromptExpanded = Boolean(expandedPromptIds[plan.id]);
             const statusLabel = hasResult ? '已出图' : hasErrorResult ? '生成失败' : isGenerating ? '生成中' : plan.selected ? '待生成' : '未选中';

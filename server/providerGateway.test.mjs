@@ -3158,6 +3158,44 @@ test('executeProviderJob surfaces kie gemini stream task id before completion', 
   }
 });
 
+test('executeProviderJob rejects kie gemini refusal text instead of treating it as a successful plan', async () => {
+  const originalFetch = global.fetch;
+  const encoder = new TextEncoder();
+
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'content-type': 'text/event-stream' }),
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"I cannot fulfill this request."}}]}\n\n'));
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    }),
+    json: async () => ({}),
+  });
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gemini-3-flash-openai',
+            messages: [{ role: 'user', content: '生成策划' }],
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_refusal' && /cannot fulfill/i.test(error.message)
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob prefers real kie gemini task id over chat completion ids', async () => {
   const originalFetch = global.fetch;
 

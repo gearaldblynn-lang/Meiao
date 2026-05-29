@@ -566,7 +566,11 @@ const FirstImageSubModule: React.FC<Props> = ({
         res = await recoverKieAiTask(targetScheme.taskId, apiConfig, controller.signal);
       } else {
         res = await triggerNewKieTask(targetScheme, productUrls, controller.signal, (jobId, providerTaskId) => {
-          updateSingleScheme(schemeId, { taskId: providerTaskId || jobId, error: '任务已创建，正在生成...' });
+          updateSingleScheme(schemeId, {
+            taskId: providerTaskId || undefined,
+            backendJobId: jobId || undefined,
+            error: providerTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
+          });
         });
       }
 

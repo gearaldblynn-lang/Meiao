@@ -80,6 +80,31 @@ const isRecoverableAnalysisJobFailure = (job: any) => {
   return errorCode === 'task_not_found' || /任务不存在|not found|expired|过期/i.test(message);
 };
 
+const isAnalysisRefusalText = (value: unknown) => {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return /\bI\s+cannot\s+fulfill\s+this\s+request\b|\bI\s+can(?:not|'t)\s+(?:help|assist|comply|fulfill)\b|\bI'm\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|\bI\s+am\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|无法满足(?:该|这个|此)?请求|不能满足(?:该|这个|此)?请求|无法协助(?:该|这个|此)?请求/i.test(text);
+};
+
+const ensureUsableAnalysisContent = (content: string, label = 'AI 策划') => {
+  const normalized = String(content || '').trim();
+  if (!normalized) {
+    throw new Error(`${label}未返回可用内容`);
+  }
+  if (isAnalysisRefusalText(normalized)) {
+    const error = new Error(`${label}被模型拒绝，未返回可用方案，请更换参考图/描述或稍后重试。`) as Error & { code?: string };
+    error.code = 'provider_refusal';
+    throw error;
+  }
+  return normalized;
+};
+
+const getAnalysisFallbackModels = (model: string) => {
+  const normalized = String(model || '').trim();
+  const fallback = 'gpt-5-4-openai-resp';
+  return normalized && normalized !== fallback ? [fallback] : [];
+};
+
 const buildAnalysisResponseFromJob = (
   finalJob: any,
   normalizedContent: Array<{ type: string; text?: string }>,
@@ -153,13 +178,14 @@ const requestAnalysisResponseDetailed = async (
   const { job } = await createInternalJob({
     module,
     taskType: 'kie_chat',
-    provider: 'kie',
-    payload: {
-      ...jobMetadata,
-      model,
-      messages: [
-        {
-          role: 'user',
+      provider: 'kie',
+      payload: {
+        ...jobMetadata,
+        model,
+        fallbackModels: getAnalysisFallbackModels(model),
+        messages: [
+          {
+            role: 'user',
           content: normalizedContent,
         },
       ],
@@ -528,7 +554,7 @@ ${safeLogoUrl ? `品牌logo图（已附）：${safeLogoUrl}。该图仅用于识
 
     try {
       const analysis = await requestAnalysisResponseDetailed(inputContent, apiConfig, signal || timeoutController.signal, onJobCreated, jobMetadata);
-      const content = analysis.content;
+      const content = ensureUsableAnalysisContent(analysis.content, `${planningLabel}方案策划`);
       let schemes: string[] = [];
       const tagRegex = /\[SCHEME_START\]([\s\S]*?)\[SCHEME_END\]/g;
       let match;
@@ -658,11 +684,11 @@ ${safeLogoUrl ? `品牌logo公网URL：${safeLogoUrl}` : ''}
         shellReferenceUrl: safeReferenceUrls[index],
         shellReferenceIndex: index + 1,
       });
-      const content = analysis.content;
+      const content = ensureUsableAnalysisContent(analysis.content, `复刻主图参考${index + 1} 策划`);
       const tagMatch = content.match(/\[SCHEME_START\]([\s\S]*?)\[SCHEME_END\]/);
-      const scheme = tagMatch?.[1]?.trim() || content.trim();
+      const scheme = tagMatch?.[1]?.trim() || '';
       if (!scheme) {
-        throw new Error(`复刻主图参考${index + 1} 未返回有效方案。`);
+        throw new Error(`复刻主图参考${index + 1} 未返回有效方案。内容预览: ${content.substring(0, 80)}...`);
       }
       return { referenceUrl: safeReferenceUrls[index], scheme, status: 'success' as const, creditsConsumed: analysis.creditsConsumed, taskId: analysis.taskId };
     }));
@@ -815,7 +841,7 @@ ${referenceAnalysisSummary ? `\n【参考分析结论】\n${referenceAnalysisSum
 
     try {
       const analysis = await requestAnalysisResponseDetailed(inputContent, apiConfig, signal || timeoutController.signal, onJobCreated, jobMetadata);
-      const content = analysis.content;
+      const content = ensureUsableAnalysisContent(analysis.content, 'SKU方案策划');
       let schemes: string[] = [];
       const tagRegex = /\[SCHEME_START\]([\s\S]*?)\[SCHEME_END\]/g;
       let match;

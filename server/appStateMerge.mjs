@@ -395,6 +395,13 @@ const isPlanningGeneratedPlanId = (value) => /^[a-f0-9]{24}-plan-\d+$/i.test(Str
 
 const itemHasMedia = (item = {}) => Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl);
 
+const itemHasProviderTaskIdentity = (item = {}) => Boolean(compactKey(item?.taskId || item?.providerTaskId || item?.kieTaskId));
+
+const isActiveGenerationItem = (item = {}) => (
+  ['generating', 'pending', 'queued', 'running', 'retry_waiting', 'uploading', 'processing'].includes(String(item?.status || ''))
+  && itemHasProviderTaskIdentity(item)
+);
+
 const getPlanIdentity = (item = {}) => compactKey(item?.planId || item?.id);
 
 const pruneSupersededNoMediaItems = (items = []) => {
@@ -445,7 +452,7 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
   const stateItems = normalizedResults.length > 0 ? normalizedResults : schemes;
   const completedMediaCount = stateItems.filter(hasCompletedMediaItem).length;
   const activeOrFailedCount = stateItems.filter((entry) => (
-    ['generating', 'pending', 'queued'].includes(String(entry?.status || ''))
+    isActiveGenerationItem(entry)
     || (['error', 'failed'].includes(String(entry?.status || '')) && !itemHasMedia(entry))
   )).length;
   const hasSingleTerminalBackendFailure = planCount === 0
@@ -460,15 +467,29 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
     : completedMediaCount > 0
       ? maxNumber(completedMediaCount, activeOrFailedCount, 1)
       : maxNumber(item?.taskCount, stateItems.length, 1);
-  const hasGenerating = stateItems.some((entry) => ['generating', 'pending', 'queued'].includes(String(entry?.status || '')));
+  const hasGenerating = stateItems.some((entry) => isActiveGenerationItem(entry));
   const hasError = stateItems.some((entry) => ['error', 'failed'].includes(String(entry?.status || '')));
+  const hasPlanOnlyPendingItems = isOneClickProject
+    && completedMediaCount === 0
+    && !hasGenerating
+    && !hasError
+    && (
+      planCount > 0
+      || stateItems.some((entry) => (
+        ['generating', 'pending', 'queued'].includes(String(entry?.status || ''))
+        && !itemHasMedia(entry)
+        && !itemHasProviderTaskIdentity(entry)
+      ))
+    );
   const status = completedMediaCount >= taskCount
     ? 'completed'
     : hasGenerating
       ? 'generating'
       : hasError
         ? 'error'
-        : item?.status;
+        : hasPlanOnlyPendingItems
+          ? 'planning'
+          : item?.status;
   const next = {
     ...(item || {}),
     ...(Array.isArray(item?.plans) ? { plans } : {}),
@@ -503,11 +524,39 @@ const shouldPreserveRecoveredPlanning = (existingItem = {}, incomingItem = {}) =
   return !incomingJobId || Boolean(existingJobId && existingJobId === incomingJobId);
 };
 
+const getPlanningJobIdentity = (item = {}) => compactKey(item?.backendJobId || item?.planningTaskId);
+
+const isPlanningJobPendingPlaceholder = (result = {}, planningJobId = '') => (
+  ['generating', 'pending', 'queued', 'running', 'retry_waiting'].includes(String(result?.status || ''))
+  && !itemHasMedia(result)
+  && Boolean(planningJobId)
+  && compactKey(result?.backendJobId) === planningJobId
+  && !compactKey(result?.taskId || result?.providerTaskId || result?.kieTaskId)
+);
+
+const shouldClearPlanningPendingPlaceholders = (existingItem = {}, incomingItem = {}) => {
+  if (String(incomingItem?.status || '') !== 'planning') return false;
+  if (!Array.isArray(incomingItem?.plans) || incomingItem.plans.length === 0) return false;
+  if (Array.isArray(incomingItem?.results) && incomingItem.results.length > 0) return false;
+  const planningJobId = getPlanningJobIdentity(incomingItem) || getPlanningJobIdentity(existingItem);
+  if (!planningJobId) return false;
+  return (Array.isArray(existingItem?.results) ? existingItem.results : [])
+    .some((result) => isPlanningJobPendingPlaceholder(result, planningJobId));
+};
+
 const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
   const preserveRecoveredPlanning = shouldPreserveRecoveredPlanning(existingItem, incomingItem);
+  const clearPlanningPendingPlaceholders = shouldClearPlanningPendingPlaceholders(existingItem, incomingItem);
+  const planningJobId = clearPlanningPendingPlaceholders
+    ? getPlanningJobIdentity(incomingItem) || getPlanningJobIdentity(existingItem)
+    : '';
+  const existingResults = clearPlanningPendingPlaceholders
+    ? (Array.isArray(existingItem?.results) ? existingItem.results : [])
+      .filter((result) => !isPlanningJobPendingPlaceholder(result, planningJobId))
+    : existingItem?.results;
   const mergedResults = preserveRecoveredPlanning
     ? []
-    : mergeArrayByStableKeys(existingItem?.results, incomingItem?.results);
+    : mergeArrayByStableKeys(existingResults, incomingItem?.results);
   const mergedPlans = mergeArrayByStableKeys(existingItem?.plans, incomingItem?.plans);
   const mergedSchemes = mergeArrayByStableKeys(existingItem?.schemes, incomingItem?.schemes);
   const completedMediaCount = mergedResults.filter(hasCompletedMediaItem).length;

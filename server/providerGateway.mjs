@@ -1120,6 +1120,13 @@ const isProviderErrorText = (value) => {
   const text = String(value || '').trim();
   if (!text) return false;
   return [
+    /\bI\s+cannot\s+fulfill\s+this\s+request\b/i,
+    /\bI\s+can(?:not|'t)\s+(?:help|assist|comply|fulfill)\b/i,
+    /\bI'm\s+sorry,\s+but\s+I\s+can(?:not|'t)\b/i,
+    /\bI\s+am\s+sorry,\s+but\s+I\s+can(?:not|'t)\b/i,
+    /无法满足(?:该|这个|此)?请求/,
+    /不能满足(?:该|这个|此)?请求/,
+    /无法协助(?:该|这个|此)?请求/,
     /file mime type is not supported/i,
     /image download failed/i,
     /http 404:\s*not found/i,
@@ -1130,7 +1137,9 @@ const isProviderErrorText = (value) => {
 };
 
 const providerErrorCodeFromText = (value) =>
-  /server is currently being maintained|server exception,\s*please try again later/i.test(String(value || ''))
+  /\bI\s+cannot\s+fulfill\s+this\s+request\b|\bI\s+can(?:not|'t)\s+(?:help|assist|comply|fulfill)\b|\bI'm\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|\bI\s+am\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|无法满足(?:该|这个|此)?请求|不能满足(?:该|这个|此)?请求|无法协助(?:该|这个|此)?请求/i.test(String(value || ''))
+    ? 'provider_refusal'
+    : /server is currently being maintained|server exception,\s*please try again later/i.test(String(value || ''))
     ? 'provider_internal_error'
     : 'provider_bad_request';
 
@@ -1177,6 +1186,7 @@ const getKieChatFallbackModels = (model, preferredFallbackModels = []) => {
 
 const KIE_CHAT_FALLBACK_ERROR_CODES = new Set([
   'provider_bad_response',
+  'provider_refusal',
   'provider_internal_error',
   'provider_network_error',
   'provider_timeout',
