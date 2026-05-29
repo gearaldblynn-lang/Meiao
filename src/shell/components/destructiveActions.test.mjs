@@ -129,6 +129,7 @@ test('all runnable bottom generation submits are guarded before visible project 
   assert.match(submitGuardBlock, /module === AppModuleObj\.RETOUCH/);
   assert.match(submitGuardBlock, /module === AppModuleObj\.VIDEO/);
   assert.match(submitGuardBlock, /module === AppModuleObj\.XHS_COVER/);
+  assert.match(shellSource, /const hasRuntimeTaskIdentity = /);
   assert.match(shellSource, /hasActiveGuardedGeneration/);
   assert.match(shellSource, /hasCurrentActiveGuardedGeneration/);
   assert.doesNotMatch(shellSource, /hasCurrentActiveGuardedVideoGeneration/);
@@ -137,7 +138,7 @@ test('all runnable bottom generation submits are guarded before visible project 
   assert.match(shellSource, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& \(Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\) \|\| hasCurrentActiveGuardedGeneration\)/);
   assert.match(shellSource, /if \(!beginGuardedSubmit\(\)\) \{\s*return;\s*\}\s*addToast\('任务已提交，正在准备素材', 'info'\);\s*try \{\s*generationMaterials = await ensureMaterialRemoteUrls/);
   assert.match(translationBranch, /onJobCreated: \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
-  assert.doesNotMatch(oneClickBranch.match(/const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n      \};/)?.[0] || '', /releaseGuardedSubmit\(\);/);
+  assert.match(oneClickBranch.match(/const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n      \};/)?.[0] || '', /releaseGuardedSubmit\(\);/);
   assert.match(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
   assert.match(oneClickBranch, /finally \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*setIsGenerating\(false\);[\s\S]*\}/);
 });

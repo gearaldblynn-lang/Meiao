@@ -166,6 +166,19 @@ const shouldGuardGenerationSubmit = (module: AppModule, _subFeature?: string) =>
   || module === AppModuleObj.XHS_COVER
 );
 
+const hasRuntimeTaskIdentity = (item?: {
+  backendJobId?: unknown;
+  taskId?: unknown;
+  providerTaskId?: unknown;
+  planningTaskId?: unknown;
+}) => Boolean(String(
+  item?.backendJobId
+  || item?.taskId
+  || item?.providerTaskId
+  || item?.planningTaskId
+  || ''
+).trim());
+
 const cloneMaterialSnapshot = (material: Material) => {
   const persistedUrl = material.remoteUrl || (isTransientMaterialUrl(material.url) ? '' : material.url);
   return {
@@ -934,17 +947,18 @@ const hasActiveGuardedGeneration = (
   );
   const hasActiveTask = tasks.some((task) => (
     isSameScope(task) && (task.status === 'pending' || task.status === 'generating')
+    && !hasRuntimeTaskIdentity(task)
   ));
   if (hasActiveTask) return true;
   return projects.some((project) => {
     if (!isSameScope(project)) return false;
-    if (project.status === 'generating') return true;
-    if (project.status === 'planning' && !(project.plans || []).length) return true;
+    if (project.status === 'generating' && !hasRuntimeTaskIdentity(project)) return true;
+    if (project.status === 'planning' && !(project.plans || []).length && !hasRuntimeTaskIdentity(project)) return true;
     return (project.results || []).some((result) => (
       result.status === 'generating'
       && !result.imageUrl
       && !result.videoUrl
-      && Boolean(result.backendJobId || result.taskId)
+      && !hasRuntimeTaskIdentity(result)
     ));
   });
 };
@@ -3344,6 +3358,9 @@ const AppContent: React.FC<{
             : task
         )));
         void persistProjectToSharedState(persistedPlanningProject);
+        if (backendJobId || providerId) {
+          releaseGuardedSubmit();
+        }
       };
 
       try {
@@ -3441,6 +3458,7 @@ const AppContent: React.FC<{
           }],
           taskCount: 1,
           completedCount: 0,
+          error: message,
         };
         setProjects((prev) => prev.map((p) =>
           p.id === projectId
