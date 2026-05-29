@@ -1492,6 +1492,32 @@ const hasCompletedMediaResult = (result: ShellGeneratedResult) =>
 
 const resultHasMedia = (result: Partial<ShellGeneratedResult>) => Boolean(result.imageUrl || result.videoUrl);
 
+const resultHasRuntimeIdentity = (result: Partial<ShellGeneratedResult>) => Boolean(
+  String(result.taskId || result.backendJobId || '').trim(),
+);
+
+const isTerminalBackendFailureResult = (result: Partial<ShellGeneratedResult>) => (
+  result.status === 'error'
+  && !resultHasMedia(result)
+  && Boolean(String(result.backendJobId || '').trim())
+);
+
+const isStaleRuntimePlaceholderResult = (result: Partial<ShellGeneratedResult>) => (
+  (result.status === 'error' || result.status === 'generating')
+  && !resultHasMedia(result)
+  && !resultHasRuntimeIdentity(result)
+);
+
+const isSameResultPlanScope = (
+  left: Partial<ShellGeneratedResult>,
+  right: Partial<ShellGeneratedResult>,
+) => {
+  const leftPlanId = String(left.planId || '').trim();
+  const rightPlanId = String(right.planId || '').trim();
+  if (leftPlanId && rightPlanId) return leftPlanId === rightPlanId;
+  return !leftPlanId && !rightPlanId;
+};
+
 const isSupersededNoMediaErrorResult = (
   result: ShellGeneratedResult,
   completedPlanIds: Set<string>,
@@ -1533,6 +1559,9 @@ const getMergedProjectTaskCount = (
   results: ShellGeneratedResult[],
   completedCount: number,
 ) => {
+  if (!(plans || []).length && results.length === 1 && isTerminalBackendFailureResult(results[0])) {
+    return 1;
+  }
   if ((isDirectVideoGenerationProject(existing) || isDirectVideoGenerationProject(next)) && completedCount > 0) {
     return Math.max(results.length, completedCount, 1);
   }
@@ -1596,10 +1625,15 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
     || (result.status === 'error' && !resultHasMedia(result))
   )).length;
   const projectTaskCount = Number(project.taskCount || 0) || 0;
-  const activeTaskBaseline = activeOrFailedCount > 0 ? projectTaskCount : 0;
+  const hasSingleTerminalBackendFailure = filteredPlans.length === 0
+    && results.length === 1
+    && isTerminalBackendFailureResult(results[0]);
+  const activeTaskBaseline = activeOrFailedCount > 0 && !hasSingleTerminalBackendFailure ? projectTaskCount : 0;
   const taskCount = planCount > 0
     ? Math.max(activeTaskBaseline, planCount, completedCount, activeOrFailedCount, 1)
-    : Math.max(projectTaskCount, results.length, 1);
+    : hasSingleTerminalBackendFailure
+      ? 1
+      : Math.max(projectTaskCount, results.length, 1);
   const selectedPlanId = filteredPlans.some((plan) => String(plan?.id || '') === String(project.selectedPlanId || ''))
     ? project.selectedPlanId
     : filteredPlans.find((plan) => plan.selected)?.id || filteredPlans[0]?.id || project.selectedPlanId;
@@ -1680,6 +1714,23 @@ const mergeProjectResultsByIdentity = (
       && hasCompletedMediaResult(item)
     )));
   };
+  const removeStaleRuntimePlaceholders = (result: ShellGeneratedResult) => {
+    if (!isTerminalBackendFailureResult(result)) return;
+    for (let index = results.length - 1; index >= 0; index -= 1) {
+      const existing = results[index];
+      if (
+        isStaleRuntimePlaceholderResult(existing)
+        && isSameResultPlanScope(existing, result)
+      ) {
+        results.splice(index, 1);
+      }
+    }
+    rebuildIndex();
+  };
+  const isSupersededRuntimePlaceholder = (result: ShellGeneratedResult) => (
+    isStaleRuntimePlaceholderResult(result)
+    && results.some((item) => isTerminalBackendFailureResult(item) && isSameResultPlanScope(item, result))
+  );
   const findNoMediaPlanPlaceholderIndex = (result: ShellGeneratedResult) => {
     const planId = String(result?.planId || '').trim();
     if (!planId || resultHasMedia(result)) return -1;
@@ -1698,6 +1749,8 @@ const mergeProjectResultsByIdentity = (
         .filter(Boolean),
     ))) return;
     if (result.status === 'error' && !resultHasMedia(result) && hasCompletedPlanResult(result) && !String(result.taskId || '').trim()) return;
+    if (isSupersededRuntimePlaceholder(result)) return;
+    removeStaleRuntimePlaceholders(result);
     removeStalePlanPlaceholders(result);
     const noMediaPlanPlaceholderIndex = findNoMediaPlanPlaceholderIndex(result);
     if (noMediaPlanPlaceholderIndex >= 0) {

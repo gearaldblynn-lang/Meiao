@@ -1241,6 +1241,65 @@ test('shell data adapter lets completed planning jobs replace stale planning fai
   assert.equal(project?.backendJobId, 'planning-chat-job-after-poll-error');
 });
 
+test('shell data adapter replaces stale one-click planning placeholders with the terminal backend failure', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'proj-plan-failed-retry',
+      name: '5月29日项目2',
+      module: 'one_click',
+      status: 'error',
+      createdAt: '05-29',
+      results: [
+        {
+          id: 'task-proj-plan-failed-retry-error',
+          imageUrl: '',
+          prompt: '共 1 张参考图，其中 1 张策划失败。',
+          model: 'GPT Image 2',
+          aspectRatio: '1:1',
+          status: 'error',
+          createdAt: '05-29',
+          module: 'one_click',
+          subFeature: 'first_image',
+        },
+      ],
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      backendJobId: 'planning-job-failed',
+    }],
+  }, [
+    {
+      id: 'planning-job-failed',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'failed',
+      payload: {
+        model: 'gemini-3-flash-openai',
+        shellProjectId: 'proj-plan-failed-retry',
+        shellProjectName: '5月29日项目2',
+        shellPlanningPurpose: 'one_click_planning',
+        subFeature: 'first_image',
+      },
+      errorCode: 'provider_timeout',
+      errorMessage: 'Kie 素材上传超时',
+      retryCount: 2,
+      maxRetries: 2,
+      createdAt: 1780023092895,
+      updatedAt: 1780023626471,
+      finishedAt: 1780023626471,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-plan-failed-retry');
+  assert.equal(project?.status, 'error');
+  assert.equal(project?.taskCount, 1);
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.results[0]?.backendJobId, 'planning-job-failed');
+  assert.equal(project?.results[0]?.status, 'error');
+  assert.equal(project?.results[0]?.error, 'Kie 素材上传超时');
+});
+
 test('shell data adapter backfills missing planning schemes after the first sku image completed', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{

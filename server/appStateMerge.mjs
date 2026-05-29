@@ -249,6 +249,35 @@ export const mergeArrayByStableKeys = (existingItems = [], incomingItems = []) =
     && Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl)
   );
   const hasMediaResult = (item = {}) => Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl);
+  const hasRuntimeIdentity = (item = {}) => Boolean(compactKey(item?.backendJobId || item?.taskId || item?.providerTaskId || item?.kieTaskId));
+  const isTerminalBackendFailure = (item = {}) => (
+    ['error', 'failed'].includes(String(item?.status || ''))
+    && !hasMediaResult(item)
+    && Boolean(compactKey(item?.backendJobId))
+  );
+  const isStaleRuntimePlaceholder = (item = {}) => (
+    ['error', 'failed', 'generating', 'pending', 'queued'].includes(String(item?.status || ''))
+    && !hasMediaResult(item)
+    && !hasRuntimeIdentity(item)
+  );
+  const isSamePlanScope = (left = {}, right = {}) => {
+    const leftPlanId = compactKey(left?.planId);
+    const rightPlanId = compactKey(right?.planId);
+    if (leftPlanId && rightPlanId) return leftPlanId === rightPlanId;
+    return !leftPlanId && !rightPlanId;
+  };
+  const pruneStaleRuntimePlaceholders = (item = {}) => {
+    if (!isTerminalBackendFailure(item)) return;
+    for (let index = merged.length - 1; index >= 0; index -= 1) {
+      if (isStaleRuntimePlaceholder(merged[index]) && isSamePlanScope(merged[index], item)) {
+        merged.splice(index, 1);
+      }
+    }
+  };
+  const isSupersededRuntimePlaceholder = (item = {}) => (
+    isStaleRuntimePlaceholder(item)
+    && merged.some((existing) => isTerminalBackendFailure(existing) && isSamePlanScope(existing, item))
+  );
   const findNoMediaPlanPlaceholderIndex = (item = {}) => {
     const planId = compactKey(item?.planId);
     const status = String(item?.status || '');
@@ -294,6 +323,8 @@ export const mergeArrayByStableKeys = (existingItems = [], incomingItems = []) =
   };
 
   const push = (item) => {
+    if (isSupersededRuntimePlaceholder(item)) return;
+    pruneStaleRuntimePlaceholders(item);
     const noMediaPlanPlaceholderIndex = findNoMediaPlanPlaceholderIndex(item);
     if (noMediaPlanPlaceholderIndex >= 0) {
       merged[noMediaPlanPlaceholderIndex] = mergeDuplicateItem(merged[noMediaPlanPlaceholderIndex] || {}, item || {});
@@ -417,8 +448,15 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
     ['generating', 'pending', 'queued'].includes(String(entry?.status || ''))
     || (['error', 'failed'].includes(String(entry?.status || '')) && !itemHasMedia(entry))
   )).length;
+  const hasSingleTerminalBackendFailure = planCount === 0
+    && stateItems.length === 1
+    && ['error', 'failed'].includes(String(stateItems[0]?.status || ''))
+    && !itemHasMedia(stateItems[0])
+    && Boolean(compactKey(stateItems[0]?.backendJobId));
   const taskCount = planCount > 0
     ? maxNumber(planCount, completedMediaCount, activeOrFailedCount, 1)
+    : hasSingleTerminalBackendFailure
+      ? 1
     : completedMediaCount > 0
       ? maxNumber(completedMediaCount, activeOrFailedCount, 1)
       : maxNumber(item?.taskCount, stateItems.length, 1);
