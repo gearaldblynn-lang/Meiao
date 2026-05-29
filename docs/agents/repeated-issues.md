@@ -20,6 +20,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-05-29 - Internal asset API URLs must not be sent directly to providers
+
+- Symptom: KIE planning/image requests fail with `image download failed: HTTP 403: Forbidden` for URLs like `http://111.229.66.247/api/assets/file/...`, while the browser may still open the same image.
+- Environment: Tencent Cloud production provider gateway / local development.
+- Root cause: `/api/assets/file/...` is an internal managed asset route, not a provider-owned stable media URL. Browser reachability is not enough proof that KIE's downloader can fetch it. A previous optimization incorrectly treated non-local managed asset URLs as safe to pass directly, so provider submission skipped the local download + KIE file conversion step.
+- Fix: Provider gateway now converts every managed asset URL before submission, including cloud absolute `/api/assets/file/...` URLs in image generation inputs, chat image/file attachments, and text labels. Only non-managed true public URLs are passed through directly.
+- Regression check: `node --test server/providerGateway.test.mjs`
+- Files/tests: `server/providerGateway.mjs`, `server/providerGateway.test.mjs`
+- Avoid next time: Do not classify an `/api/assets/file/...` URL as model-readable just because it has a public host. Before provider submission, managed asset URLs must be converted to a provider-readable file URL, and tests must cover cloud absolute managed URLs, not only localhost or relative paths.
+
 ## 2026-05-26 - Asset persistence failures must log actionable detail
 
 - Symptom: 云上日志只出现 `资产持久化失败`，meta 只有文件名和大小，没有可判断原因的 detail。

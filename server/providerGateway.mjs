@@ -246,9 +246,6 @@ const normalizeProviderMediaReference = (value) => {
   return absoluteUrl?.[0]?.trim() || raw;
 };
 
-const isLocalHostValue = (value) =>
-  /(^|\/\/)(127\.0\.0\.1|localhost)(:|$)/i.test(String(value || ''));
-
 const normalizeManagedAssetDownloadUrl = (value) => {
   const normalized = String(value || '').trim();
   if (!isManagedAssetUrl(normalized)) return normalized;
@@ -665,9 +662,6 @@ const resolveProviderGenerationMediaUrl = async (value, env, signal) => {
   const normalized = normalizeProviderMediaReference(value);
   if (!normalized) return '';
   if (!isManagedAssetUrl(normalized)) return normalized;
-  if (/^https?:\/\//i.test(normalized) && !isLocalHostValue(normalized)) {
-    return normalized;
-  }
   return convertManagedAssetUrlToKieFileUrl(normalized, env, signal);
 };
 
@@ -678,9 +672,6 @@ const resolveProviderMediaUrl = async (value, env, signal) => {
     return convertInlineDataUrlToKieFileUrl(normalized, env);
   }
   if (!isManagedAssetUrl(normalized)) return normalized;
-  if (/^https?:\/\//i.test(normalized) && !isLocalHostValue(normalized)) {
-    return normalized;
-  }
   return convertManagedAssetUrlToKieFileUrl(normalized, env, signal);
 };
 
