@@ -1221,7 +1221,7 @@ test('executeProviderJob routes gpt-5-4 kie chat through responses api with reas
   }
 });
 
-test('executeProviderJob keeps cloud managed asset image urls for kie image tasks instead of reuploading them', async () => {
+test('executeProviderJob converts cloud managed asset image urls before creating kie image tasks', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
@@ -1229,6 +1229,21 @@ test('executeProviderJob keeps cloud managed asset image urls for kie image task
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/jpeg' }),
+        arrayBuffer: async () => new TextEncoder().encode('cloud-asset-binary').buffer,
+        json: async () => ({}),
+      };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.jpg' },
+      });
+    }
     if (String(url).includes('/createTask')) {
       return createJsonResponse({ code: 200, data: { taskId: 'kie-task-managed-asset' } });
     }
@@ -1266,11 +1281,13 @@ test('executeProviderJob keeps cloud managed asset image urls for kie image task
     );
 
     assert.equal(result.providerTaskId, 'kie-task-managed-asset');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
     const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
-    assert.deepEqual(createTaskBody.input.image_input, ['http://111.229.66.247/api/assets/file/asset-1/source.jpg']);
+    assert.deepEqual(createTaskBody.input.image_input, [
+      'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.jpg',
+    ]);
   } finally {
     global.fetch = originalFetch;
     global.setTimeout = originalSetTimeout;
@@ -1483,7 +1500,7 @@ test('executeProviderJob can download relative managed asset paths before upload
   }
 });
 
-test('executeProviderJob keeps cloud managed file attachments for gpt-5.4 responses instead of uploading them to kie', async () => {
+test('executeProviderJob converts cloud managed file attachments for gpt-5.4 responses', async () => {
   const originalFetch = global.fetch;
   const requests = [];
   const cloudFileUrl = 'http://111.229.66.247/api/assets/file/file-1/source.pdf';
@@ -1491,10 +1508,19 @@ test('executeProviderJob keeps cloud managed file attachments for gpt-5.4 respon
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
     if (String(url).includes('/api/assets/file/')) {
-      throw new Error(`cloud managed file should be passed directly, not fetched: ${String(url)}`);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/pdf' }),
+        arrayBuffer: async () => new TextEncoder().encode('pdf-binary').buffer,
+        json: async () => ({}),
+      };
     }
     if (String(url).includes('/file-stream-upload')) {
-      throw new Error(`cloud managed file should not be uploaded to kie: ${String(url)}`);
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.pdf' },
+      });
     }
     if (String(url).includes('/codex/v1/responses')) {
       return createJsonResponse({ output_text: 'ok' });
@@ -1525,21 +1551,21 @@ test('executeProviderJob keeps cloud managed file attachments for gpt-5.4 respon
     );
 
     assert.equal(result.result.content, 'ok');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 0);
     const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
     const responseBody = JSON.parse(String(responseRequest.init.body));
     assert.equal(responseBody.input[0].content[1].type, 'input_file');
     assert.equal(responseBody.input[0].content[1].filename, 'source.pdf');
-    assert.equal(responseBody.input[0].content[1].file_url, cloudFileUrl);
+    assert.equal(responseBody.input[0].content[1].file_url, 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.pdf');
     assert.equal(responseBody.input[0].content[1].file_data, undefined);
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-test('executeProviderJob keeps cloud managed asset images for gpt-5.4 responses api instead of uploading them to kie', async () => {
+test('executeProviderJob converts cloud managed asset images for gpt-5.4 responses api', async () => {
   const originalFetch = global.fetch;
   const requests = [];
   const cloudAssetUrl = 'http://111.229.66.247/api/assets/file/img-1/source.png';
@@ -1547,10 +1573,19 @@ test('executeProviderJob keeps cloud managed asset images for gpt-5.4 responses 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
     if (String(url).includes('/api/assets/file/')) {
-      throw new Error(`cloud managed asset should be passed directly, not fetched: ${String(url)}`);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/png' }),
+        arrayBuffer: async () => new TextEncoder().encode('png-binary').buffer,
+        json: async () => ({}),
+      };
     }
     if (String(url).includes('/file-stream-upload')) {
-      throw new Error(`cloud managed asset should not be uploaded to kie: ${String(url)}`);
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.png' },
+      });
     }
     if (String(url).includes('/codex/v1/responses')) {
       return createJsonResponse({ output_text: 'ok' });
@@ -1581,12 +1616,12 @@ test('executeProviderJob keeps cloud managed asset images for gpt-5.4 responses 
     );
 
     assert.equal(result.result.content, 'ok');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 0);
     const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
     const responseBody = JSON.parse(String(responseRequest.init.body));
-    assert.equal(responseBody.input[0].content[1].image_url, cloudAssetUrl);
+    assert.equal(responseBody.input[0].content[1].image_url, 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.png');
   } finally {
     global.fetch = originalFetch;
   }
@@ -1806,7 +1841,7 @@ test('executeProviderJob routes gemini 3.1 pro through kie chat endpoint with go
   }
 });
 
-test('executeProviderJob keeps cloud managed file attachments for gemini chat models instead of uploading them to kie', async () => {
+test('executeProviderJob converts cloud managed file attachments for gemini chat models', async () => {
   const originalFetch = global.fetch;
   const requests = [];
   const cloudFileUrl = 'http://111.229.66.247/api/assets/file/file-2/source.pdf';
@@ -1814,10 +1849,19 @@ test('executeProviderJob keeps cloud managed file attachments for gemini chat mo
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
     if (String(url).includes('/api/assets/file/')) {
-      throw new Error(`cloud managed file should be passed directly, not fetched: ${String(url)}`);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/pdf' }),
+        arrayBuffer: async () => new TextEncoder().encode('pdf-binary').buffer,
+        json: async () => ({}),
+      };
     }
     if (String(url).includes('/file-stream-upload')) {
-      throw new Error(`cloud managed file should not be uploaded to kie: ${String(url)}`);
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.pdf' },
+      });
     }
     if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
       return createJsonResponse({
@@ -1856,13 +1900,13 @@ test('executeProviderJob keeps cloud managed file attachments for gemini chat mo
     );
 
     assert.equal(result.result.content, 'gemini managed file ok');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     const chatRequest = requests.find((item) => item.url.includes('/gemini-3-flash/v1/chat/completions'));
     const chatBody = JSON.parse(String(chatRequest.init.body));
-    assert.equal(chatBody.messages[1].content[0].text, `读取这个 pdf，文件URL：${cloudFileUrl}`);
+    assert.equal(chatBody.messages[1].content[0].text, '读取这个 pdf，文件URL：https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.pdf');
     assert.equal(chatBody.messages[1].content[1].type, 'image_url');
-    assert.equal(chatBody.messages[1].content[1].image_url.url, cloudFileUrl);
+    assert.equal(chatBody.messages[1].content[1].image_url.url, 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.pdf');
   } finally {
     global.fetch = originalFetch;
   }
@@ -2300,17 +2344,26 @@ test('executeProviderJob never sends redpanda openrouter-chat mp4 directly to ge
   }
 });
 
-test('executeProviderJob keeps cloud managed image urls inside gemini text labels instead of uploading them to kie', async () => {
+test('executeProviderJob converts cloud managed image urls inside gemini text labels', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
     if (String(url).includes('/api/assets/file/')) {
-      throw new Error(`cloud managed image should be passed directly, not fetched: ${String(url)}`);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/jpeg' }),
+        arrayBuffer: async () => new TextEncoder().encode('jpg-binary').buffer,
+        json: async () => ({}),
+      };
     }
     if (String(url).includes('/file-stream-upload')) {
-      throw new Error(`cloud managed image should not be uploaded to kie: ${String(url)}`);
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/reference.jpg' },
+      });
     }
     if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
       return createJsonResponse({ choices: [{ message: { content: 'gemini image ok' } }] });
@@ -2341,12 +2394,12 @@ test('executeProviderJob keeps cloud managed image urls inside gemini text label
     );
 
     assert.equal(result.result.content, 'gemini image ok');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     const chatRequest = requests.find((item) => item.url.includes('/gemini-3-flash/v1/chat/completions'));
     const chatBody = JSON.parse(String(chatRequest.init.body));
-    assert.equal(chatBody.messages[0].content[0].text, `[复刻主图参考1] 图片URL：${sourceUrl}。这是唯一版式参考。`);
-    assert.equal(chatBody.messages[0].content[1].image_url.url, sourceUrl);
+    assert.equal(chatBody.messages[0].content[0].text, '[复刻主图参考1] 图片URL：https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/reference.jpg。这是唯一版式参考。');
+    assert.equal(chatBody.messages[0].content[1].image_url.url, 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/reference.jpg');
   } finally {
     global.fetch = originalFetch;
   }
@@ -3200,7 +3253,7 @@ test('executeProviderJob prefers real kie gemini task id over chat completion id
   }
 });
 
-test('executeProviderJob keeps cloud managed asset images for gemini planning instead of uploading them to kie', async () => {
+test('executeProviderJob converts cloud managed asset images for gemini planning', async () => {
   const originalFetch = global.fetch;
   const requests = [];
   const cloudAssetUrl = 'http://111.229.66.247/api/assets/file/img-1/source.png';
@@ -3208,10 +3261,19 @@ test('executeProviderJob keeps cloud managed asset images for gemini planning in
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
     if (String(url).includes('/api/assets/file/')) {
-      throw new Error(`cloud managed asset should be passed directly, not fetched: ${String(url)}`);
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/png' }),
+        arrayBuffer: async () => new TextEncoder().encode('png-binary').buffer,
+        json: async () => ({}),
+      };
     }
     if (String(url).includes('/file-stream-upload')) {
-      throw new Error(`cloud managed asset should not be uploaded to kie: ${String(url)}`);
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.png' },
+      });
     }
     return createJsonResponse({
       data: {
@@ -3243,12 +3305,12 @@ test('executeProviderJob keeps cloud managed asset images for gemini planning in
     );
 
     assert.equal(result.result.content, 'gemini result');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     const geminiRequest = requests.find((item) => item.url.includes('/gemini-3-flash'));
     assert.ok(geminiRequest);
     const body = JSON.parse(String(geminiRequest.init.body));
-    assert.equal(body.messages[0].content[1].image_url.url, cloudAssetUrl);
+    assert.equal(body.messages[0].content[1].image_url.url, 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.png');
   } finally {
     global.fetch = originalFetch;
   }
