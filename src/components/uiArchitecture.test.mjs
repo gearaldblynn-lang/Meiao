@@ -2436,9 +2436,11 @@ test('shell project lists render history progressively so refresh stays responsi
   assert.match(projectListView, /visibleProjects\.map/);
 });
 
-test('shell project lists keep the persisted order instead of regrouping active and history cards', () => {
+test('shell project lists sort newest cards first without regrouping active and history cards', () => {
   const projectListView = read('../shell/components/ProjectListView.tsx');
 
+  assert.match(projectListView, /sortProjectsNewestFirst/);
+  assert.match(projectListView, /const orderedProjects = useMemo\(\(\) => sortProjectsNewestFirst\(filteredProjects\), \[filteredProjects\]\)/);
   assert.doesNotMatch(projectListView, /const activeProjects = useMemo/);
   assert.doesNotMatch(projectListView, /const historyProjects = useMemo/);
   assert.doesNotMatch(projectListView, /\[\.\.\.activeProjects,\s*\.\.\.historyProjects\]/);

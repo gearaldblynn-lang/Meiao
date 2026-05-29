@@ -9,7 +9,10 @@ export interface ScopeProject {
   module: string;
   name?: string;
   status?: 'planning' | 'generating' | 'completed' | 'error';
-  createdAt?: string;
+  createdAt?: string | number;
+  sortAt?: number;
+  createdAtMs?: number;
+  updatedAt?: number;
   results: ScopeProjectResult[];
   taskCount: number;
   completedCount: number;
@@ -45,6 +48,75 @@ const projectResultSubFeature = <TProject extends ScopeProject>(
   result: ScopeProjectResult,
   getDefaultSubFeature: (module: string) => string,
 ) => result.subFeature || project.subFeature || getDefaultSubFeature(project.module);
+
+const timestampLowerBound = new Date('2020-01-01T00:00:00Z').getTime();
+const timestampUpperBound = new Date('2100-01-01T00:00:00Z').getTime();
+
+const toFiniteTimestamp = (value: unknown) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= timestampLowerBound && parsed <= timestampUpperBound ? parsed : 0;
+};
+
+const extractTimestampFromText = (value: unknown) => {
+  const matches = String(value || '').match(/\d{12,13}/g) || [];
+  for (const match of matches) {
+    const timestamp = toFiniteTimestamp(match);
+    if (timestamp) return timestamp;
+  }
+  return 0;
+};
+
+const parseMonthDay = (value: unknown) => {
+  const text = String(value || '').trim();
+  const match = text.match(/(\d{1,2})月(\d{1,2})日/) || text.match(/^(\d{1,2})-(\d{1,2})$/);
+  if (!match) return 0;
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  if (!Number.isInteger(month) || !Number.isInteger(day) || month < 1 || month > 12 || day < 1 || day > 31) return 0;
+  const date = new Date();
+  date.setMonth(month - 1, day);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+};
+
+const parseProjectSequence = (value: unknown) => {
+  const match = String(value || '').match(/项目\s*(\d+)/);
+  const parsed = Number(match?.[1] || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+
+const startOfDay = (timestamp: number) => {
+  if (!timestamp) return 0;
+  const date = new Date(timestamp);
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+};
+
+const projectSortKey = (project: ScopeProject) => {
+  const directTimestamp = toFiniteTimestamp(project.sortAt)
+    || toFiniteTimestamp(project.createdAtMs)
+    || toFiniteTimestamp(project.createdAt)
+    || extractTimestampFromText(project.id);
+  const dayTimestamp = startOfDay(directTimestamp)
+    || parseMonthDay(project.createdAt)
+    || parseMonthDay(project.name)
+    || startOfDay(toFiniteTimestamp(project.updatedAt));
+  return {
+    dayTimestamp,
+    sequence: parseProjectSequence(project.name) || parseProjectSequence(project.id),
+    directTimestamp,
+  };
+};
+
+export const sortProjectsNewestFirst = <TProject extends ScopeProject>(projects: TProject[]): TProject[] => [...projects]
+  .map((project, index) => ({ project, index, key: projectSortKey(project) }))
+  .sort((left, right) => (
+    right.key.dayTimestamp - left.key.dayTimestamp
+    || right.key.sequence - left.key.sequence
+    || right.key.directTimestamp - left.key.directTimestamp
+    || left.index - right.index
+  ))
+  .map((item) => item.project);
 
 export const filterProjectsForScope = <TProject extends ScopeProject>({
   projects,

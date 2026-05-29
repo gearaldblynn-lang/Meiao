@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildTaskFallbackProjects, filterProjectsForScope } from './shellScopeFilters.ts';
+import { buildTaskFallbackProjects, filterProjectsForScope, sortProjectsNewestFirst } from './shellScopeFilters.ts';
 
 const getDefaultSubFeature = (module) => module === 'one_click' ? 'first_image' : 'default';
 
@@ -96,4 +96,58 @@ test('task fallback project cards are skipped when a project already represents 
   }];
 
   assert.deepEqual(buildTaskFallbackProjects(projects, tasks), []);
+});
+
+test('project cards sort newest first by created timestamp and same-day project number', () => {
+  const projects = [
+    {
+      id: 'proj-plan-1779990000000',
+      name: '5月29日项目12',
+      module: 'one_click',
+      status: 'completed',
+      createdAt: '05-29',
+      results: [],
+      taskCount: 1,
+      completedCount: 1,
+      subFeature: 'first_image',
+    },
+    {
+      id: 'legacy-without-timestamp',
+      name: '5月29日项目15',
+      module: 'one_click',
+      status: 'completed',
+      createdAt: '05-29',
+      results: [],
+      taskCount: 1,
+      completedCount: 1,
+      subFeature: 'first_image',
+    },
+    {
+      id: 'proj-plan-1780000000000',
+      name: '5月29日项目14',
+      module: 'one_click',
+      status: 'completed',
+      createdAt: '05-29',
+      results: [],
+      taskCount: 1,
+      completedCount: 1,
+      subFeature: 'first_image',
+    },
+    {
+      id: 'older-project',
+      name: '5月28日项目99',
+      module: 'one_click',
+      status: 'completed',
+      createdAt: '05-28',
+      results: [],
+      taskCount: 1,
+      completedCount: 1,
+      subFeature: 'first_image',
+    },
+  ];
+
+  assert.deepEqual(
+    sortProjectsNewestFirst(projects).map((project) => project.name),
+    ['5月29日项目15', '5月29日项目14', '5月29日项目12', '5月28日项目99'],
+  );
 });

@@ -5,7 +5,7 @@ import ConfirmDialog from './ConfirmDialog';
 import ProjectCard from './ProjectCard';
 import SubFeatureTabs from './SubFeatureTabs';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { buildTaskFallbackProjects } from '../../adapters/shellScopeFilters';
+import { buildTaskFallbackProjects, sortProjectsNewestFirst } from '../../adapters/shellScopeFilters';
 import type { Project, SubFeatureOption, Task } from '../../ShellMigratedApp';
 import type { VideoStoryboardProject } from '../../types';
 
@@ -104,7 +104,7 @@ const ProjectListView: React.FC<Props> = ({
     });
   }, [displayProjects, dateFilter, statusFilter]);
 
-  const orderedProjects = useMemo(() => filteredProjects, [filteredProjects]);
+  const orderedProjects = useMemo(() => sortProjectsNewestFirst(filteredProjects), [filteredProjects]);
   const visibleProjects = useMemo(() => orderedProjects.slice(0, visibleProjectCount), [orderedProjects, visibleProjectCount]);
   const selectableProjectIds = useMemo(() => orderedProjects.map((project) => project.id), [orderedProjects]);
   const allFilteredProjectsSelected = selectableProjectIds.length > 0 && selectableProjectIds.every((id) => selectedProjectIds.has(id));
