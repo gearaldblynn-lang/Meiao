@@ -896,6 +896,22 @@ const resolveChatFallbackModels = (version, primaryModel = '') => {
     .filter((item) => item && !blocked.has(item) && allowedModels.includes(item));
   return Array.from(new Set(preferred));
 };
+const resolveImageAnalysisFallbackModels = (version, primaryModel = '') => {
+  const available = new Set(getChatModelCatalog().map((item) => item.id));
+  const allowedModels = resolveAllowedChatModels(version);
+  const blocked = new Set([String(primaryModel || '').trim()].filter(Boolean));
+  const preferred = [
+    version?.modelPolicy?.defaultModel,
+    version?.modelPolicy?.cheapModel,
+    version?.modelPolicy?.advancedModel,
+    'gpt-5-4-openai-resp',
+    'claude-sonnet-4-6',
+    ...allowedModels,
+  ]
+    .map((item) => String(item || '').trim())
+    .filter((item) => item && !blocked.has(item) && available.has(item));
+  return Array.from(new Set(preferred));
+};
 const isStudioTestChatSession = (session) => String(session?.title || '').trim() === '工作室测试' || Boolean(session?.is_studio);
 const resolvePreferredReasoningLevel = (reasoningLevels = []) => {
   const normalized = Array.from(new Set(
@@ -6029,10 +6045,14 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     version.modelPolicy.defaultModel,
     version.modelPolicy.cheapModel
   );
+  const analysisFallbackModels = resolveImageAnalysisFallbackModels(version, analysisModel);
   const startedAt = Date.now();
   let analysisOutput;
   try {
-    analysisOutput = await executeProviderJob({ taskType: 'kie_chat', payload: { messages: analysisMessages, model: analysisModel } }, process.env, new AbortController().signal);
+    analysisOutput = await executeProviderJob({
+      taskType: 'kie_chat',
+      payload: { messages: analysisMessages, model: analysisModel, fallbackModels: analysisFallbackModels },
+    }, process.env, new AbortController().signal);
   } catch (error) {
     throw enrichRuntimeError(error, {
       providerStage: error?.providerStage || 'analysis',
