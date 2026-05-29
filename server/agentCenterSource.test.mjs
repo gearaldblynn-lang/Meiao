@@ -161,8 +161,8 @@ test('agent chat source persists client request ids so timed-out image chats can
   assert.match(source, /const clientRequestId = String\(payload\?\.clientRequestId \|\| createEntityId\(\)\)\.trim\(\) \|\| createEntityId\(\);/);
   assert.match(source, /const clientRequestId = String\(body\?\.clientRequestId \|\| createEntityId\(\)\)\.trim\(\) \|\| createEntityId\(\);/);
   assert.match(source, /clientRequestId,/);
-  assert.match(source, /const userMetadata = \{ selectedModel, reasoningLevel: payload\?\.reasoningLevel \|\| null, webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\), requestMode, clientRequestId \};/);
-  assert.match(source, /const assistantMetadata = \{ selectedModel: result\.selectedModel, fallbackFrom: result\.fallbackFrom \|\| null, usedRetrieval: result\.usedRetrieval, reasoningLevel: payload\?\.reasoningLevel \|\| null, webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\), requestMode, clientRequestId, imagePlan: result\.imagePlan \|\| null, imageResultUrls: result\.imageResultUrls \|\| null, retrievalSummary: result\.retrievalSummary \|\| \[\] \};/);
+  assert.match(source, /const userMetadata = \{[\s\S]*?selectedModel,[\s\S]*?reasoningLevel: payload\?\.reasoningLevel \|\| null,[\s\S]*?webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\),[\s\S]*?requestMode,[\s\S]*?clientRequestId,[\s\S]*?runId,[\s\S]*?contextTrace,[\s\S]*?\};/);
+  assert.match(source, /const assistantMetadata = \{[\s\S]*?selectedModel: result\.selectedModel,[\s\S]*?fallbackFrom: result\.fallbackFrom \|\| null,[\s\S]*?usedRetrieval: result\.usedRetrieval,[\s\S]*?reasoningLevel: payload\?\.reasoningLevel \|\| null,[\s\S]*?webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\),[\s\S]*?requestMode,[\s\S]*?clientRequestId,[\s\S]*?runId,[\s\S]*?imagePlan: result\.imagePlan \|\| null,[\s\S]*?imageResultUrls: result\.imageResultUrls \|\| null,[\s\S]*?retrievalSummary: result\.retrievalSummary \|\| \[\][\s\S]*?\};/);
   assert.match(source, /metadata: userMetadata/);
   assert.match(source, /metadata: assistantMetadata/);
 });

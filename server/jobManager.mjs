@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
+import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
@@ -37,6 +38,26 @@ const normalizeJobCreditsConsumed = (value) => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 };
 
+const runTaskPlatformWrite = async (operation) => {
+  try {
+    return await operation();
+  } catch (error) {
+    console.error('Task platform diagnostic write failed.', error);
+    return null;
+  }
+};
+
+const mapProviderStageToTaskStage = (providerStage) => {
+  const stage = String(providerStage || '').trim();
+  if (!stage) return 'provider_submit';
+  if (/asset|upload/i.test(stage)) return 'asset_upload';
+  if (stage === 'create_task' || stage === 'http_request') return 'provider_submit';
+  if (stage === 'polling') return 'provider_wait';
+  if (stage === 'stream_read') return 'provider_stream';
+  if (stage === 'completed') return 'completed';
+  return stage.slice(0, 80);
+};
+
 export const selectJobsWithinConcurrencyLimits = ({
   jobs,
   availableSlots,
@@ -68,6 +89,11 @@ export const selectJobsWithinConcurrencyLimits = ({
   }
 
   return selected;
+};
+
+export const shouldMysqlWorkerProcessTaskEngine = (engine) => {
+  const mode = normalizeTaskEngineMode(engine);
+  return mode === 'mysql' || mode === 'dual';
 };
 
 export const findReusableJobSubmission = ({
@@ -311,7 +337,7 @@ export const reconcileRestartedRunningJobs = async (pool) => {
   return reconciled;
 };
 
-const updateJobFields = async (pool, jobId, fields) => {
+export const updateJobFields = async (pool, jobId, fields) => {
   const assignments = [];
   const values = [];
   Object.entries(fields).forEach(([key, value]) => {
@@ -396,6 +422,7 @@ export const createJobWorker = ({
   getMaxConcurrency,
   createLog,
   findUserById,
+  getTaskEngineMode = () => process.env.MEIAO_TASK_ENGINE,
 }) => {
   const activeControllers = new Map();
   let timer = null;
@@ -406,6 +433,9 @@ export const createJobWorker = ({
     draining = true;
 
     try {
+      const taskEngine = normalizeTaskEngineMode(getTaskEngineMode());
+      if (!shouldMysqlWorkerProcessTaskEngine(taskEngine)) return;
+
       const pool = await getPool();
       const maxConcurrency = await Promise.resolve(getMaxConcurrency());
       const availableSlots = Math.max(0, maxConcurrency - activeControllers.size);
@@ -463,10 +493,12 @@ export const createJobWorker = ({
         activeControllers.set(job.id, controller);
 
         void (async () => {
+          let attempt = null;
           try {
             const refreshedJob = await getJobById(pool, job.id);
             if (!refreshedJob) return;
 
+            attempt = await runTaskPlatformWrite(() => createJobAttempt(pool, refreshedJob, { engine: taskEngine }));
             const user = await findUserById(refreshedJob.userId);
             if (refreshedJob.cancelRequestedAt) {
               controller.abort();
@@ -482,21 +514,100 @@ export const createJobWorker = ({
                 provider_task_id: value,
                 updated_at: updatedAt,
               });
+              await runTaskPlatformWrite(() => recordJobEvent(pool, refreshedJob, {
+                attemptId: attempt?.id,
+                attemptNo: attempt?.attemptNo,
+                traceId: attempt?.traceId,
+                stage: 'provider_submit',
+                eventName: 'provider_task_id_received',
+                status: 'started',
+                engine: attempt?.engine,
+                providerSubmitted: true,
+                providerTaskId: value,
+                workflowId: attempt?.workflowId,
+                runId: attempt?.runId,
+                meta: { providerTaskId: value },
+              }));
             };
+
+            await runTaskPlatformWrite(() => recordJobEvent(pool, refreshedJob, {
+              attemptId: attempt?.id,
+              attemptNo: attempt?.attemptNo,
+              traceId: attempt?.traceId,
+              stage: 'provider_submit',
+              eventName: 'provider_submit_started',
+              status: 'started',
+              engine: attempt?.engine,
+              providerSubmitted: false,
+              providerTaskId: refreshedJob.providerTaskId || '',
+              workflowId: attempt?.workflowId,
+              runId: attempt?.runId,
+              meta: buildJobRuntimeLogMeta({ job: refreshedJob }),
+            }));
+
+            if (user && createLog) {
+              await createLog({
+                user,
+                level: 'info',
+                module: refreshedJob.module,
+                action: 'provider_submit_started',
+                message: `${refreshedJob.taskType} 开始提交上游`,
+                status: 'started',
+                meta: {
+                  ...buildJobRuntimeLogMeta({ job: refreshedJob }),
+                  providerSubmitPhase: 'started',
+                },
+              });
+            }
 
             const output = await executeJob(refreshedJob, controller.signal, { onProviderTaskId });
             const finishedAt = now();
+            const finalProviderTaskId = output?.providerTaskId || notifiedProviderTaskId || refreshedJob.providerTaskId || '';
             await updateJobFields(pool, refreshedJob.id, {
               status: controller.signal.aborted ? 'cancelled' : 'succeeded',
-              provider_task_id: output?.providerTaskId || notifiedProviderTaskId || refreshedJob.providerTaskId || null,
+              provider_task_id: finalProviderTaskId || null,
               result_json: serializeJsonValue(output?.result || null),
               error_code: controller.signal.aborted ? 'request_cancelled' : null,
               error_message: controller.signal.aborted ? '任务已取消' : null,
               finished_at: finishedAt,
               updated_at: finishedAt,
             });
+            await runTaskPlatformWrite(() => attempt?.id ? finishJobAttempt(pool, attempt.id, {
+              status: controller.signal.aborted ? 'cancelled' : 'succeeded',
+              providerTaskId: finalProviderTaskId,
+              errorCode: controller.signal.aborted ? 'request_cancelled' : '',
+              errorMessage: controller.signal.aborted ? '任务已取消' : '',
+              finishedAt,
+            }) : null);
+            await runTaskPlatformWrite(() => recordJobEvent(pool, refreshedJob, {
+              attemptId: attempt?.id,
+              attemptNo: attempt?.attemptNo,
+              traceId: attempt?.traceId,
+              stage: controller.signal.aborted ? 'cancelled' : 'completed',
+              eventName: controller.signal.aborted ? 'job_cancelled' : 'job_completed',
+              status: controller.signal.aborted ? 'interrupted' : 'success',
+              engine: attempt?.engine,
+              providerSubmitted: Boolean(finalProviderTaskId),
+              providerTaskId: finalProviderTaskId,
+              workflowId: attempt?.workflowId,
+              runId: attempt?.runId,
+              meta: buildJobRuntimeLogMeta({ job: refreshedJob, result: output, finishedAt }),
+              createdAt: finishedAt,
+            }));
 
             if (user && createLog) {
+              await createLog({
+                user,
+                level: 'info',
+                module: refreshedJob.module,
+                action: 'provider_submit_succeeded',
+                message: `${refreshedJob.taskType} 上游提交完成`,
+                status: controller.signal.aborted ? 'interrupted' : 'success',
+                meta: {
+                  ...buildJobRuntimeLogMeta({ job: refreshedJob, result: output, finishedAt }),
+                  providerSubmitPhase: 'succeeded',
+                },
+              });
               await createLog({
                 user,
                 level: 'info',
@@ -526,6 +637,41 @@ export const createJobWorker = ({
               updated_at: finishedAt,
               finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
             });
+            await runTaskPlatformWrite(() => attempt?.id ? finishJobAttempt(poolAgain, attempt.id, {
+              status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
+              providerTaskId: error?.providerTaskId || latestJob?.providerTaskId || '',
+              errorCode: error?.code || 'provider_internal_error',
+              errorMessage: String(error?.message || '任务执行失败').slice(0, 5000),
+              finishedAt: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
+            }) : null);
+            if (latestJob) {
+              await runTaskPlatformWrite(() => recordJobEvent(poolAgain, latestJob, {
+                attemptId: attempt?.id,
+                attemptNo: attempt?.attemptNo,
+                traceId: attempt?.traceId,
+                stage: error?.code === 'request_cancelled' ? 'cancelled' : mapProviderStageToTaskStage(error?.providerStage),
+                eventName: error?.code === 'request_cancelled' ? 'job_cancelled' : 'job_failed',
+                status: error?.code === 'request_cancelled'
+                  ? 'interrupted'
+                  : failure.status === 'retry_waiting'
+                    ? 'started'
+                    : 'failed',
+                engine: attempt?.engine,
+                providerSubmitted: Boolean(error?.providerTaskId || latestJob?.providerTaskId),
+                retryable: failure.status === 'retry_waiting',
+                errorCode: error?.code || 'provider_internal_error',
+                errorMessage: String(error?.message || '任务执行失败').slice(0, 5000),
+                providerTaskId: error?.providerTaskId || latestJob?.providerTaskId || '',
+                workflowId: attempt?.workflowId,
+                runId: attempt?.runId,
+                meta: {
+                  ...buildJobRuntimeLogMeta({ job: latestJob, error, finishedAt, retryCount: failure.retryCount }),
+                  providerStage: String(error?.providerStage || '').trim(),
+                  providerStatus: String(error?.providerStatus || '').trim(),
+                },
+                createdAt: finishedAt,
+              }));
+            }
 
             const user = latestJob ? await findUserById(latestJob.userId) : null;
             if (user && createLog) {
@@ -533,6 +679,23 @@ export const createJobWorker = ({
                 jobStatus: failure.status,
                 taskType: latestJob.taskType,
                 errorCode: error?.code || 'provider_internal_error',
+              });
+              await createLog({
+                user,
+                level: error?.code === 'request_cancelled' ? 'info' : logFields.level,
+                module: latestJob.module,
+                action: 'provider_submit_failed',
+                message: `${latestJob.taskType} 上游提交失败`,
+                detail: String(error?.message || '任务执行失败').slice(0, 5000),
+                status: error?.code === 'request_cancelled'
+                  ? 'interrupted'
+                  : failure.status === 'retry_waiting'
+                    ? 'started'
+                    : 'failed',
+                meta: {
+                  ...buildJobRuntimeLogMeta({ job: latestJob, error, finishedAt, retryCount: failure.retryCount }),
+                  providerSubmitPhase: 'failed',
+                },
               });
               await createLog({
                 user,

@@ -64,6 +64,15 @@ const formatModelLabel = (modelId?: string | null) => {
     .trim();
 };
 
+const formatRunStatusLabel = (status?: string | null) => {
+  if (status === 'completed') return '已完成';
+  if (status === 'failed') return '失败';
+  if (status === 'cancelled') return '已取消';
+  if (status === 'running') return '运行中';
+  if (status === 'queued') return '排队中';
+  return '待开始';
+};
+
 const AgentCenterChatWorkspace: React.FC<Props> = ({
   currentUser = null,
   chatAgents,
@@ -106,6 +115,7 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
   const [recentDeleteMode, setRecentDeleteMode] = useState(false);
   const [agentDetailOpen, setAgentDetailOpen] = useState(true);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
+  const [contextPanelOpen, setContextPanelOpen] = useState(false);
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionId) || null,
     [sessions, selectedSessionId]
@@ -139,6 +149,21 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
   const selectedAgentSummary = selectedAgent?.description || '未填写介绍';
   const imageGenerationEnabled = Boolean(selectedAgent?.imageGenerationEnabled && selectedAgent?.imageModel);
   const imageMaxInputCount = Number(selectedAgent?.imageMaxInputCount || 1);
+  const latestAssistantRun = useMemo(() => {
+    return [...messages].reverse().find((message) => (
+      message.role === 'assistant' && Boolean(message.metadata?.clientRequestId || message.metadata?.runId)
+    )) || null;
+  }, [messages]);
+  const contextTrace = latestAssistantRun?.metadata?.contextTrace || null;
+  const currentSessionImageCount = useMemo(() => messages.reduce((count, message) => (
+    count + (Array.isArray(message.attachments)
+      ? message.attachments.filter((attachment) => attachment.kind === 'image' && attachment.url).length
+      : 0)
+  ), 0), [messages]);
+  const pendingMessageCount = useMemo(() => messages.filter((message) => Boolean(message.metadata?.pending)).length, [messages]);
+  const currentRunStatus = sendingMessage || pendingMessageCount > 0
+    ? 'running'
+    : String(latestAssistantRun?.metadata?.status || selectedSession?.lastRunStatus || '');
 
   const openDeleteAgentHistoryConfirm = (agent: AgentSummary) => {
     setConfirmState({
@@ -204,6 +229,87 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
           </div>
         </div>
       </div>
+    );
+  };
+
+  const renderContextPanel = () => {
+    if (!contextPanelOpen) return null;
+    return (
+      <aside
+        className="fixed right-6 top-[96px] z-40 flex max-h-[calc(100vh-120px)] w-[340px] min-h-0 flex-col overflow-hidden rounded-[22px] border p-3.5 shadow-[0_18px_46px_rgba(15,23,42,0.16)]"
+        style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+      >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em]" style={{ color: 'var(--text-tertiary)' }}>运行视图</p>
+              <h4 className="mt-1.5 text-[16px] font-semibold" style={{ color: 'var(--text-primary)' }}>任务状态</h4>
+            </div>
+            <button
+              type="button"
+              onClick={() => setContextPanelOpen(false)}
+              className="flex h-9 w-9 items-center justify-center rounded-full transition"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+              aria-label="关闭运行视图"
+              title="关闭运行视图"
+            >
+              <LegacyFaIcon icon="fa-xmark" className="text-[13px]" />
+            </button>
+          </div>
+
+          <div className="mt-4 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+            <div className="rounded-[16px] p-3" style={{ background: 'var(--bg-base)' }}>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>当前任务</span>
+                <span className="rounded-full px-2.5 py-1 text-[10px] font-black" style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}>
+                  {formatRunStatusLabel(currentRunStatus)}
+                </span>
+              </div>
+              <p className="mt-2 break-all text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>
+                {latestAssistantRun?.metadata?.runId ? String(latestAssistantRun.metadata.runId) : '发送后生成运行 ID'}
+              </p>
+            </div>
+
+            <div className="rounded-[16px] p-3" style={{ background: 'var(--bg-base)' }}>
+              <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>历史复用</p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <div className="rounded-[12px] px-3 py-2" style={{ background: 'var(--bg-elevated)' }}>
+                  <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>历史消息</p>
+                  <p className="mt-1 text-[16px] font-black" style={{ color: 'var(--text-primary)' }}>{Number(contextTrace?.historyMessageCount || 0)}</p>
+                </div>
+                <div className="rounded-[12px] px-3 py-2" style={{ background: 'var(--bg-elevated)' }}>
+                  <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>知识命中</p>
+                  <p className="mt-1 text-[16px] font-black" style={{ color: 'var(--text-primary)' }}>{Number(contextTrace?.knowledgeChunkCount || 0)}</p>
+                </div>
+                <div className="rounded-[12px] px-3 py-2" style={{ background: 'var(--bg-elevated)' }}>
+                  <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>附件引用</p>
+                  <p className="mt-1 text-[16px] font-black" style={{ color: 'var(--text-primary)' }}>{Array.isArray(contextTrace?.attachmentRefs) ? contextTrace.attachmentRefs.length : 0}</p>
+                </div>
+                <div className="rounded-[12px] px-3 py-2" style={{ background: 'var(--bg-elevated)' }}>
+                  <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>摘要</p>
+                  <p className="mt-1 text-[13px] font-black" style={{ color: 'var(--text-primary)' }}>{contextTrace?.summaryUsed ? '已启用' : '未启用'}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-[16px] p-3" style={{ background: 'var(--bg-base)' }}>
+              <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>会话资产</p>
+              <div className="mt-3 space-y-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
+                <div className="flex items-center justify-between">
+                  <span>消息</span>
+                  <span className="font-black" style={{ color: 'var(--text-primary)' }}>{messages.length}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>图片</span>
+                  <span className="font-black" style={{ color: 'var(--text-primary)' }}>{currentSessionImageCount}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>模式</span>
+                  <span className="font-black" style={{ color: 'var(--text-primary)' }}>{imageModeEnabled ? '生图' : '对话'}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+      </aside>
     );
   };
 
@@ -436,16 +542,29 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
               ) : null}
             </div>
             {selectedAgent && selectedAgentSessions.length > 0 ? (
-              <button
-                type="button"
-                onClick={onToggleSessionsCollapsed}
-                className="flex h-9 w-9 items-center justify-center rounded-[16px]"
-                style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
-                title={sessionsCollapsed ? '展开会话列表' : '收起会话列表'}
-                aria-label={sessionsCollapsed ? '展开会话列表' : '收起会话列表'}
-              >
-                <LegacyFaIcon icon={sessionsCollapsed ? 'fa-angles-right' : 'fa-angles-left'} className="text-sm" />
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setContextPanelOpen(true)}
+                  className="inline-flex h-9 items-center gap-2 rounded-[16px] px-3 text-[12px] font-semibold"
+                  style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                  title="打开运行视图"
+                  aria-label="打开运行视图"
+                >
+                  <LegacyFaIcon icon="fa-chart-line" className="text-[12px]" />
+                  <span>运行视图</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={onToggleSessionsCollapsed}
+                  className="flex h-9 w-9 items-center justify-center rounded-[16px]"
+                  style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                  title={sessionsCollapsed ? '展开会话列表' : '收起会话列表'}
+                  aria-label={sessionsCollapsed ? '展开会话列表' : '收起会话列表'}
+                >
+                  <LegacyFaIcon icon={sessionsCollapsed ? 'fa-angles-right' : 'fa-angles-left'} className="text-sm" />
+                </button>
+              </div>
             ) : null}
           </div>
         </section>
@@ -555,6 +674,9 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
                   <div className="mt-4 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                     {selectedAgentSessions.map((session) => {
                       const active = session.id === selectedSessionId;
+                      const lastMessagePreview = session.lastMessagePreview?.trim() || '暂无消息';
+                      const messageCount = Number(session.messageCount || 0);
+                      const imageCount = Number(session.imageCount || 0);
                       return (
                         <div
                           key={session.id}
@@ -565,14 +687,27 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
                         >
                           <button type="button" onClick={() => onSelectSession(session.id)} className="w-full text-left">
                             <p className="truncate text-[13px] font-black" style={{ color: 'var(--text-primary)' }}>{session.title}</p>
+                            <p className="mt-1 line-clamp-2 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>{lastMessagePreview}</p>
                             <p className="mt-1 text-[10px]" style={{ color: 'var(--text-secondary)' }}>
                               {new Date(session.updatedAt).toLocaleString('zh-CN', { hour12: false })}
                             </p>
                           </button>
                           <div className="mt-2 flex items-center justify-between">
-                            <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
-                              {session.selectedModel || '默认模型'}
-                            </span>
+                            <div className="flex min-w-0 flex-wrap gap-1.5">
+                              <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+                                {messageCount} 消息
+                              </span>
+                              {imageCount > 0 ? (
+                                <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+                                  {imageCount} 图
+                                </span>
+                              ) : null}
+                              {session.lastRunStatus ? (
+                                <span className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+                                  {formatRunStatusLabel(session.lastRunStatus)}
+                                </span>
+                              ) : null}
+                            </div>
                             <button
                               type="button"
                               onClick={() => openDeleteSessionConfirm(session)}
@@ -621,6 +756,8 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
                 onBatchSend={onBatchSend}
               />
             </div>
+
+            {renderContextPanel()}
           </div>
         )}
       </div>

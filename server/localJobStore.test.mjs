@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  attachLocalJobWorkflowExecution,
+  claimLocalJobForExecution,
   createLocalJobRecord,
   deleteLocalJobRecord,
   getLocalJobById,
@@ -144,6 +146,46 @@ test('takeNextLocalExecutableJobs respects per-user concurrency limits', () => {
   assert.equal(getLocalJobById(store, a1.id).status, 'running');
   assert.equal(getLocalJobById(store, a2.id).status, 'queued');
   assert.equal(getLocalJobById(store, b1.id).status, 'running');
+});
+
+test('claimLocalJobForExecution claims one queued job without sweeping other running jobs', () => {
+  const store = createStore();
+  const user = createUser();
+  const target = createLocalJobRecord(store, user, { module: 'a', taskType: 't1', provider: 'kie', payload: {} });
+  const alreadyRunning = createLocalJobRecord(store, user, { module: 'b', taskType: 't2', provider: 'kie', payload: {} });
+  alreadyRunning.status = 'running';
+  alreadyRunning.startedAt = Date.now() - 10000;
+
+  const claimed = claimLocalJobForExecution(store, target.id);
+
+  assert.equal(claimed.id, target.id);
+  assert.equal(claimed.status, 'running');
+  assert.equal(getLocalJobById(store, alreadyRunning.id).status, 'running');
+});
+
+test('attachLocalJobWorkflowExecution stores workflow identity outside payload', () => {
+  const store = createStore();
+  const user = createUser();
+  const job = createLocalJobRecord(store, user, {
+    module: 'a',
+    taskType: 't1',
+    provider: 'kie',
+    payload: { traceId: 'trace-1' },
+  });
+
+  const updated = attachLocalJobWorkflowExecution(store, job.id, {
+    workflowId: 'wf-1',
+    runId: 'run-1',
+  }, {
+    engine: 'temporal',
+    executionMode: 'execute',
+  });
+
+  assert.equal(updated.workflowId, 'wf-1');
+  assert.equal(updated.runId, 'run-1');
+  assert.equal(updated.taskEngine, 'temporal');
+  assert.equal(updated.workflowExecutionMode, 'execute');
+  assert.deepEqual(updated.payload, { traceId: 'trace-1' });
 });
 
 test('getLocalJobQueueStats counts queued and running jobs', () => {

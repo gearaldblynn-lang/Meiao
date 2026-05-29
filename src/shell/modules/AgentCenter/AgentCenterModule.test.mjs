@@ -23,3 +23,13 @@ test('agent center keeps plaza, factory, and real studio workflows available', (
   assert.match(managerSource, /page === 'agent_studio'/);
   assert.match(detailSource, /智能体工作室/);
 });
+
+test('shell agent center keeps async chat results scoped to the active session', () => {
+  assert.match(shellModuleSource, /const selectedSessionIdRef = useRef\(selectedSessionId\);/);
+  assert.match(shellModuleSource, /const loadChatRequestSeqRef = useRef\(0\);/);
+  assert.match(shellModuleSource, /const messageLoadSeqRef = useRef\(0\);/);
+  assert.match(shellModuleSource, /const applyMessagesForSession = \(sessionId: string, nextMessages: AgentChatMessage\[\]\) =>/);
+  assert.match(shellModuleSource, /const sendSessionId = selectedSessionId;/);
+  assert.match(shellModuleSource, /sendChatMessage\(sendSessionId,/);
+  assert.match(shellModuleSource, /await syncCompletedMessageAfterTimeout\(sendSessionId, clientRequestId\)/);
+});

@@ -224,20 +224,59 @@ const countStringItems = (value) => {
   return text ? 1 : 0;
 };
 
+const countMessageInputs = (messages = []) => {
+  const counts = { imageUrlCount: 0, fileUrlCount: 0, promptLength: 0 };
+  if (!Array.isArray(messages)) return counts;
+
+  const visitContent = (content) => {
+    if (typeof content === 'string') {
+      counts.promptLength += content.length;
+      return;
+    }
+    if (Array.isArray(content)) {
+      content.forEach(visitContent);
+      return;
+    }
+    if (!content || typeof content !== 'object') return;
+
+    const type = String(content.type || '').trim();
+    if (type === 'text') {
+      counts.promptLength += String(content.text || '').length;
+      return;
+    }
+    if (type === 'image_url' && content.image_url?.url) {
+      counts.imageUrlCount += 1;
+      return;
+    }
+    if ((type === 'input_file' || type === 'file') && (content.file_url || content.fileUrl || content.url)) {
+      counts.fileUrlCount += 1;
+      return;
+    }
+
+    Object.values(content).forEach(visitContent);
+  };
+
+  messages.forEach((message) => visitContent(message?.content));
+  return counts;
+};
+
 const countPayloadInputs = (payload = {}) => {
+  const messageCounts = countMessageInputs(payload?.messages);
   const imageUrlCount =
     countStringItems(payload?.imageUrls)
     + countStringItems(payload?.productUrls)
     + countStringItems(payload?.referenceImages)
-    + countStringItems(payload?.sourceImages);
+    + countStringItems(payload?.sourceImages)
+    + messageCounts.imageUrlCount;
   const fileUrlCount =
     countStringItems(payload?.fileUrls)
     + countStringItems(payload?.files)
-    + countStringItems(payload?.attachments);
+    + countStringItems(payload?.attachments)
+    + messageCounts.fileUrlCount;
   return {
     imageUrlCount,
     fileUrlCount,
-    promptLength: String(payload?.prompt || payload?.input || '').length,
+    promptLength: String(payload?.prompt || payload?.input || '').length + messageCounts.promptLength,
   };
 };
 

@@ -52,3 +52,25 @@ test('local json chat mode follows the same idempotency and history ordering saf
     /store\.chatMessages\.push\(userMessage\);[\s\S]{0,600}const history = \(store\.chatMessages \|\| \[\]\)/,
   );
 });
+
+test('agent sessions expose durable history signals for the conversation sidebar', () => {
+  assert.match(source, /AS message_count/);
+  assert.match(source, /AS image_count/);
+  assert.match(source, /AS last_message_preview/);
+  assert.match(source, /AS last_run_status/);
+  assert.match(source, /messageCount: Number\(row\.message_count \|\| 0\)/);
+  assert.match(source, /imageCount: Number\(row\.image_count \|\| 0\)/);
+  assert.match(source, /lastMessagePreview: row\.last_message_preview \|\| ''/);
+});
+
+test('agent chat messages persist run identity and context trace metadata', () => {
+  assert.match(source, /const runId = `run-\$\{clientRequestId\}`;/);
+  assert.match(source, /const contextTrace = \{/);
+  assert.match(source, /historyMessageCount: history\.length/);
+  assert.match(source, /summaryUsed: Boolean\(summary\)/);
+  assert.match(source, /knowledgeChunkCount:/);
+  assert.match(source, /attachmentRefs:/);
+  assert.match(source, /messageIds: \{ userMessageId, assistantMessageId \}/);
+  assert.match(source, /status: 'completed'/);
+  assert.match(source, /phase: 'completed'/);
+});

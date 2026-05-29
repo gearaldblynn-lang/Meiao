@@ -352,6 +352,137 @@ test('shell persistence replaces an existing one-click project instead of duplic
   assert.equal(secondState.oneClickMemory.mainImage.projects[0].schemes[0].editedContent, '第二次主图 prompt');
 });
 
+test('shell persistence merges partial shell project updates without dropping sibling plans and results', () => {
+  const plans = [1, 2, 3].map((index) => ({
+    id: `plan-${index}`,
+    title: `方案 ${index}`,
+    sellingPoints: [],
+    sceneDescription: `方案 ${index}`,
+    styleDirection: '',
+    colorPalette: '',
+    composition: '',
+    textLayout: '',
+    selected: true,
+    schemeContent: `方案 ${index}`,
+  }));
+  const state = buildPersistedAppState({
+    shellProjects: [{
+      id: 'detail-project-3',
+      name: '5月27日项目7',
+      module: 'one_click',
+      status: 'generating',
+      createdAt: '05-27',
+      subFeature: 'detail_page',
+      plans,
+      selectedPlanId: 'plan-1',
+      taskCount: 3,
+      completedCount: 2,
+      results: [
+        { id: 'provider-1', planId: 'plan-1', imageUrl: '/one.png', prompt: '一', model: 'gpt-image-2', aspectRatio: '1:1', status: 'completed', createdAt: '05-27', module: 'one_click', subFeature: 'detail_page', taskId: 'provider-1' },
+        { id: 'provider-2', planId: 'plan-2', imageUrl: '/two.png', prompt: '二', model: 'gpt-image-2', aspectRatio: '1:1', status: 'completed', createdAt: '05-27', module: 'one_click', subFeature: 'detail_page', taskId: 'provider-2' },
+      ],
+    }],
+  });
+
+  const nextState = upsertShellProjectIntoPersistedState(state, {
+    id: 'detail-project-3',
+    name: '5月27日项目7',
+    module: 'one_click',
+    status: 'completed',
+    createdAt: '05-27',
+    subFeature: 'detail_page',
+    plans: [plans[2]],
+    selectedPlanId: 'plan-3',
+    taskCount: 1,
+    completedCount: 1,
+    results: [
+      { id: 'provider-3', planId: 'plan-3', imageUrl: '/three.png', prompt: '三', model: 'gpt-image-2', aspectRatio: '1:1', status: 'completed', createdAt: '05-27', module: 'one_click', subFeature: 'detail_page', taskId: 'provider-3' },
+    ],
+  });
+
+  const project = nextState.shellProjects[0];
+  assert.equal(project.taskCount, 3);
+  assert.equal(project.completedCount, 3);
+  assert.equal(project.status, 'completed');
+  assert.deepEqual(project.plans.map((plan) => plan.id), ['plan-3', 'plan-1', 'plan-2']);
+  assert.deepEqual(project.results.map((result) => result.taskId), ['provider-3', 'provider-1', 'provider-2']);
+});
+
+test('shell persistence merges partial one-click branch updates without shrinking the visible selection set', () => {
+  const plans = [1, 2, 3].map((index) => ({
+    id: `branch-plan-${index}`,
+    title: `详情方案 ${index}`,
+    sellingPoints: [],
+    sceneDescription: `详情方案 ${index}`,
+    styleDirection: '',
+    colorPalette: '',
+    composition: '',
+    textLayout: '',
+    selected: true,
+    schemeContent: `详情方案 ${index}`,
+  }));
+  const schemes = plans.map((plan, index) => ({
+    id: plan.id,
+    uiTitle: plan.title,
+    editedContent: plan.schemeContent,
+    originalContent: plan.schemeContent,
+    selected: true,
+    status: 'completed',
+    resultUrl: `/detail-${index + 1}.png`,
+    taskId: `provider-${index + 1}`,
+  }));
+  const state = buildPersistedAppState({
+    oneClickMemory: {
+      detailPage: {
+        projects: [{
+          id: 'detail-branch-project',
+          name: '5月27日项目7',
+          module: 'one_click',
+          subFeature: 'detail_page',
+          status: 'completed',
+          taskCount: 3,
+          completedCount: 3,
+          plans,
+          schemes,
+        }],
+        schemes,
+      },
+    },
+  });
+
+  const nextState = upsertOneClickProjectIntoPersistedState(state, {
+    id: 'detail-branch-project',
+    name: '5月27日项目7',
+    module: 'one_click',
+    status: 'completed',
+    createdAt: '05-27',
+    subFeature: 'detail_page',
+    plans: [plans[2]],
+    selectedPlanId: plans[2].id,
+    taskCount: 1,
+    completedCount: 1,
+    results: [{
+      id: 'provider-3-new',
+      planId: plans[2].id,
+      imageUrl: '/detail-3-new.png',
+      prompt: '第 3 张修改',
+      model: 'gpt-image-2',
+      aspectRatio: '1:1',
+      status: 'completed',
+      createdAt: '05-27',
+      module: 'one_click',
+      subFeature: 'detail_page',
+      taskId: 'provider-3-new',
+    }],
+  });
+
+  const project = nextState.oneClickMemory.detailPage.projects[0];
+  assert.equal(project.taskCount, 3);
+  assert.equal(project.schemes.length, 3);
+  assert.equal(project.plans.length, 3);
+  assert.equal(nextState.oneClickMemory.detailPage.schemes.length, 3);
+});
+
 test('shell persistence stores translation files into the matching branch so completed cards survive refresh', () => {
   const state = buildPersistedAppState({
     translationMemory: {

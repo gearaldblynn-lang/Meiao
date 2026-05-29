@@ -1043,11 +1043,12 @@ const mapJobs = (
             });
             return;
           }
-          const planningTaskId = String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim();
+          const planningTaskId = String(job.providerTaskId || (job.result as any)?.providerTaskId || job.id || '').trim();
           projects.push({
             ...matchedProject,
             status: 'planning',
             backendJobId: job.id,
+            results: [],
             creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || matchedProject.creditsConsumed,
             planningTaskId: mergeIdentityTextList(matchedProject.planningTaskId, planningTaskId),
             taskCount: Math.max(Number(matchedProject.taskCount || 0) || 0, matchedProject.plans?.length || 0, 1),
@@ -1352,25 +1353,38 @@ const mapJobs = (
         return;
       }
       const activeProjectId = matchedProject?.id || projectId;
-      const activeResults: ShellGeneratedResult[] = (matchedProject?.results || []).length > 0
-        ? matchedProject?.results || []
-        : [{
-            id: `${job.id}-pending`,
-            projectId: activeProjectId,
-            imageUrl: '',
-            videoUrl: undefined,
-            mediaType: mediaType === 'video' ? 'video' : 'image',
-            prompt,
-            model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
-            aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
-            status: 'generating',
-            createdAt,
-            module,
-            subFeature,
-            taskId: String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
-            backendJobId: job.id,
-            error: job.status === 'queued' ? '任务已提交，等待执行' : '任务正在运行',
-          }];
+      const activeResult: ShellGeneratedResult = {
+        id: `${job.id}-pending`,
+        planId: payloadPlanId || matchedProject?.selectedPlanId,
+        projectId: activeProjectId,
+        imageUrl: '',
+        videoUrl: undefined,
+        mediaType: mediaType === 'video' ? 'video' : 'image',
+        prompt,
+        model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+        aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
+        status: 'generating',
+        createdAt,
+        module,
+        subFeature: matchedProject?.subFeature || subFeature,
+        taskId: String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
+        backendJobId: job.id,
+        error: job.status === 'queued' ? '任务已提交，等待执行' : '任务正在运行',
+      };
+      const existingActiveResults = matchedProject?.results || [];
+      const hasActiveResult = existingActiveResults.some((result) => (
+        String(result.backendJobId || '').trim() === job.id
+        || (activeResult.taskId && String(result.taskId || '').trim() === activeResult.taskId)
+      ));
+      const activeResults: ShellGeneratedResult[] = existingActiveResults.length > 0
+        ? (hasActiveResult ? existingActiveResults : [...existingActiveResults, activeResult])
+        : [activeResult];
+      const activeTaskCount = Math.max(
+        Number(matchedProject?.taskCount || 0) || 0,
+        Number(job.payload?.batchCount || job.payload?.count || 0) || 0,
+        activeResults.length,
+        1,
+      );
       projects.push({
         ...(matchedProject || {}),
         id: activeProjectId,
@@ -1379,7 +1393,7 @@ const mapJobs = (
         status: projectStatus,
         createdAt: matchedProject?.createdAt || createdAt,
         results: activeResults,
-        taskCount: matchedProject?.taskCount || Number(job.payload?.batchCount || job.payload?.count || 1) || 1,
+        taskCount: activeTaskCount,
         completedCount: matchedProject?.completedCount || 0,
         subFeature: matchedProject?.subFeature || subFeature,
         sourceType: matchedProject?.sourceType || 'job',
@@ -1581,9 +1595,11 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
     result.status === 'generating'
     || (result.status === 'error' && !resultHasMedia(result))
   )).length;
+  const projectTaskCount = Number(project.taskCount || 0) || 0;
+  const activeTaskBaseline = activeOrFailedCount > 0 ? projectTaskCount : 0;
   const taskCount = planCount > 0
-    ? Math.max(planCount, completedCount, activeOrFailedCount, 1)
-    : Math.max(Number(project.taskCount || 0) || 0, results.length, 1);
+    ? Math.max(activeTaskBaseline, planCount, completedCount, activeOrFailedCount, 1)
+    : Math.max(projectTaskCount, results.length, 1);
   const selectedPlanId = filteredPlans.some((plan) => String(plan?.id || '') === String(project.selectedPlanId || ''))
     ? project.selectedPlanId
     : filteredPlans.find((plan) => plan.selected)?.id || filteredPlans[0]?.id || project.selectedPlanId;
@@ -1664,6 +1680,16 @@ const mergeProjectResultsByIdentity = (
       && hasCompletedMediaResult(item)
     )));
   };
+  const findNoMediaPlanPlaceholderIndex = (result: ShellGeneratedResult) => {
+    const planId = String(result?.planId || '').trim();
+    if (!planId || resultHasMedia(result)) return -1;
+    if (result.status !== 'error' && result.status !== 'generating') return -1;
+    return results.findIndex((item) => (
+      String(item?.planId || '').trim() === planId
+      && !resultHasMedia(item)
+      && (item.status === 'error' || item.status === 'generating')
+    ));
+  };
   const upsert = (result: ShellGeneratedResult) => {
     if (isSupersededNoMediaErrorResult(result, new Set(
       results
@@ -1673,6 +1699,14 @@ const mergeProjectResultsByIdentity = (
     ))) return;
     if (result.status === 'error' && !resultHasMedia(result) && hasCompletedPlanResult(result) && !String(result.taskId || '').trim()) return;
     removeStalePlanPlaceholders(result);
+    const noMediaPlanPlaceholderIndex = findNoMediaPlanPlaceholderIndex(result);
+    if (noMediaPlanPlaceholderIndex >= 0) {
+      if (shouldReplaceGeneratedResult(results[noMediaPlanPlaceholderIndex], result)) {
+        results[noMediaPlanPlaceholderIndex] = clearCompletedResultError(result);
+      }
+      rebuildIndex();
+      return;
+    }
     const keys = getGeneratedResultMergeKeys(result);
     const matchedIndex = keys
       .map((key) => keyToIndex.get(key))

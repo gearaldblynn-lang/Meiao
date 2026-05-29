@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { findReusableJobSubmission, reconcileRestartedMysqlJobs, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
+import {
+  findReusableJobSubmission,
+  reconcileRestartedMysqlJobs,
+  selectJobsWithinConcurrencyLimits,
+  shouldMysqlWorkerProcessTaskEngine,
+} from './jobManager.mjs';
 
 const createJob = (id, userId, priority = 0, status = 'queued') => ({
   id,
@@ -44,6 +49,13 @@ test('selectJobsWithinConcurrencyLimits falls back to default concurrency of 5',
 
   assert.equal(selected.length, 5);
   assert.deepEqual(selected.map((job) => job.id), ['job-1', 'job-2', 'job-3', 'job-4', 'job-5']);
+});
+
+test('mysql worker only processes mysql-backed task engines', () => {
+  assert.equal(shouldMysqlWorkerProcessTaskEngine('mysql'), true);
+  assert.equal(shouldMysqlWorkerProcessTaskEngine('dual'), true);
+  assert.equal(shouldMysqlWorkerProcessTaskEngine('temporal'), false);
+  assert.equal(shouldMysqlWorkerProcessTaskEngine('unknown'), true);
 });
 
 test('findReusableJobSubmission reuses the newest matching active job in the dedupe window', () => {

@@ -72,8 +72,31 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   const sendAbortControllerRef = useRef<AbortController | null>(null);
   const pendingRestoreRef = useRef<{ draft: string; attachments: ComposerAttachment[]; userMessageId: string; assistantMessageId: string } | null>(null);
   const previousWorkspaceModeRef = useRef(workspaceMode);
+  const selectedSessionIdRef = useRef(selectedSessionId);
+  const loadChatRequestSeqRef = useRef(0);
+  const messageLoadSeqRef = useRef(0);
   const canManage = Boolean(internalMode && currentUser?.role === 'admin');
   const canAccessAgentCenter = Boolean(internalMode && currentUser);
+
+  const setActiveSessionId = (sessionId: string) => {
+    selectedSessionIdRef.current = sessionId;
+    setSelectedSessionId(sessionId);
+  };
+
+  const applyMessagesForSession = (sessionId: string, nextMessages: AgentChatMessage[]) => {
+    if (selectedSessionIdRef.current !== sessionId) return false;
+    setMessages(nextMessages);
+    return true;
+  };
+
+  const updateMessagesForSession = (
+    sessionId: string,
+    updater: (prev: AgentChatMessage[]) => AgentChatMessage[],
+  ) => {
+    if (selectedSessionIdRef.current !== sessionId) return false;
+    setMessages(updater);
+    return true;
+  };
 
   const selectedSession = useMemo(() => sessions.find((session) => session.id === selectedSessionId) || null, [sessions, selectedSessionId]);
   const selectedAgent = useMemo(() => {
@@ -115,12 +138,20 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     setChatAgents(agentResult.agents);
   };
 
+  const refreshChatSessions = async () => {
+    const sessionResult = await fetchChatSessions();
+    setSessions(sessionResult.sessions);
+    return sessionResult.sessions;
+  };
+
   const loadChat = async (preferredAgentId = '', preferredSessionId = '') => {
+    const requestSeq = ++loadChatRequestSeqRef.current;
     const [agentResult, sessionResult, systemConfigResult] = await Promise.all([
       fetchChatAgents(),
       fetchChatSessions(),
       fetchSystemConfig(),
     ]);
+    if (requestSeq !== loadChatRequestSeqRef.current) return;
     setChatAgents(agentResult.agents);
     setSessions(sessionResult.sessions);
     setChatModels(systemConfigResult.config.agentModels?.chat || []);
@@ -131,10 +162,12 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     const preferredSession = preferredSessionId
       ? sessionResult.sessions.find((item) => item.id === preferredSessionId)
       : sessionResult.sessions.find((item) => item.agentId === nextAgentId) || sessionResult.sessions[0] || null;
-    setSelectedSessionId(preferredSession?.id || '');
+    const targetSessionId = preferredSession?.id || '';
+    setActiveSessionId(targetSessionId);
     if (preferredSession?.id) {
       const messageResult = await fetchChatMessages(preferredSession.id);
-      setMessages(messageResult.messages);
+      if (requestSeq !== loadChatRequestSeqRef.current) return;
+      applyMessagesForSession(preferredSession.id, messageResult.messages);
     } else {
       setMessages([]);
     }
@@ -148,6 +181,10 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
       .catch((error: any) => setErrorMessage(error.message || '智能体中心初始化失败'))
       .finally(() => setLoading(false));
   }, [canAccessAgentCenter]);
+
+  useEffect(() => {
+    selectedSessionIdRef.current = selectedSessionId;
+  }, [selectedSessionId]);
 
   useEffect(() => {
     try {
@@ -173,7 +210,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     previousWorkspaceModeRef.current = workspaceMode;
     if (workspaceMode !== 'plaza') return;
     setWorkspacePage('plaza');
-    setSelectedSessionId('');
+    setActiveSessionId('');
     setMessages([]);
     setImageModeEnabled(false);
   }, [workspaceMode]);
@@ -183,8 +220,13 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
       setMessages([]);
       return;
     }
-    fetchChatMessages(selectedSessionId)
-      .then((result) => setMessages(result.messages))
+    const targetSessionId = selectedSessionId;
+    const requestSeq = ++messageLoadSeqRef.current;
+    fetchChatMessages(targetSessionId)
+      .then((result) => {
+        if (requestSeq !== messageLoadSeqRef.current) return;
+        applyMessagesForSession(targetSessionId, result.messages);
+      })
       .catch((error: any) => setErrorMessage(error.message || '会话消息读取失败'));
   }, [selectedSessionId]);
 
@@ -204,8 +246,9 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
           { delay: 900, label: '组织回复中', stage: 'replying' },
         ];
     const timers = stages.map((stage) => window.setTimeout(() => {
+      const targetSessionId = selectedSessionIdRef.current;
       setMessages((prev) => prev.map((item) => (
-        item.id === pendingAssistantMessageId
+        item.sessionId === targetSessionId && item.id === pendingAssistantMessageId
           ? {
               ...item,
               content: stage.label,
@@ -286,7 +329,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     setWorkspacePage('chat');
     await loadChat(agentId, result.session.id);
     if (result.openingRemarks?.trim()) {
-      setMessages([{
+      applyMessagesForSession(result.session.id, [{
         id: `opening-${result.session.id}`,
         sessionId: result.session.id,
         userId: '',
@@ -313,7 +356,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     const result = await createChatSession(agentId);
     await loadChat(agentId, result.session.id);
     if (result.openingRemarks?.trim()) {
-      setMessages([{
+      applyMessagesForSession(result.session.id, [{
         id: `opening-${result.session.id}`,
         sessionId: result.session.id,
         userId: '',
@@ -335,7 +378,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   const handleDeleteAgentHistory = (agentId: string) => runAction(async () => {
     await deleteUserAgentHistory(agentId);
     if (selectedAgentId === agentId) {
-      setSelectedSessionId('');
+      setActiveSessionId('');
       setMessages([]);
       setWorkspacePage('plaza');
     }
@@ -350,6 +393,11 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
 
   const handleSendMessage = () => {
     if (sendingMessage || !selectedSessionId || (!messageDraft.trim() && attachments.length === 0)) return;
+    const sendSessionId = selectedSessionId;
+    const sendAgentId = selectedAgentId;
+    const sendSelectedModel = selectedModel;
+    const sendReasoningLevel = reasoningLevel;
+    const sendWebSearchEnabled = webSearchEnabled;
     const content = messageDraft.trim();
     const requestMode = imageModeEnabled ? 'image_generation' : 'chat';
     const clientRequestId = `chatreq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -361,7 +409,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     }));
     const optimisticUserMessage: AgentChatMessage = {
       id: `pending-user-${Date.now()}`,
-      sessionId: selectedSessionId,
+      sessionId: sendSessionId,
       userId: currentUser?.id || '',
       role: 'user',
       content,
@@ -371,7 +419,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     };
     const optimisticAssistantMessage: AgentChatMessage = {
       id: `pending-assistant-${Date.now()}`,
-      sessionId: selectedSessionId,
+      sessionId: sendSessionId,
       userId: currentUser?.id || '',
       role: 'assistant',
       content: requestMode === 'image_generation' ? '需求分析中' : '思考中',
@@ -399,24 +447,24 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     setSendingRequestMode(requestMode);
     setPendingAssistantMessageId(optimisticAssistantMessage.id);
     setErrorMessage('');
-    setMessages((prev) => [...prev, optimisticUserMessage, optimisticAssistantMessage]);
+    updateMessagesForSession(sendSessionId, (prev) => [...prev, optimisticUserMessage, optimisticAssistantMessage]);
     setMessageDraft('');
     setAttachments([]);
     setLoading(true);
     void (async () => {
       try {
-        const result = await sendChatMessage(selectedSessionId, {
+        const result = await sendChatMessage(sendSessionId, {
           content,
           attachments: attachmentPayload,
-          selectedModel,
-          reasoningLevel,
-          webSearchEnabled,
+          selectedModel: sendSelectedModel,
+          reasoningLevel: sendReasoningLevel,
+          webSearchEnabled: sendWebSearchEnabled,
           requestMode,
           clientRequestId,
         }, {
           signal: controller.signal,
           onProgress: (event: ChatProgressEvent) => {
-            setMessages((prev) => prev.map((item) => {
+            updateMessagesForSession(sendSessionId, (prev) => prev.map((item) => {
               if (item.id !== optimisticAssistantMessage.id) return item;
               let content: string;
               let progressStage: string;
@@ -441,18 +489,24 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
             }));
           },
         });
-        setMessages((prev) => [
+        updateMessagesForSession(sendSessionId, (prev) => [
           ...prev.filter((item) => item.id !== optimisticUserMessage.id && item.id !== optimisticAssistantMessage.id),
           result.userMessage,
           result.assistantMessage,
         ]);
-        await loadChat(selectedAgentId, selectedSessionId);
+        const refreshedSessions = await refreshChatSessions();
+        if (selectedSessionIdRef.current === sendSessionId) {
+          const messageResult = await fetchChatMessages(sendSessionId);
+          applyMessagesForSession(sendSessionId, messageResult.messages);
+        } else if (refreshedSessions.some((item) => item.id === sendSessionId && item.agentId !== sendAgentId)) {
+          void refreshChatCatalog().catch(() => {});
+        }
       } catch (error: any) {
         const pendingRestore = pendingRestoreRef.current;
         const shouldSyncCompletedResult = isUncertainSendFailure(error);
         if (shouldSyncCompletedResult) {
           setStatusMessage('后台仍在处理中，正在同步最新结果');
-          setMessages((prev) => prev.map((item) => (
+          updateMessagesForSession(sendSessionId, (prev) => prev.map((item) => (
             item.id === (pendingRestore?.assistantMessageId || optimisticAssistantMessage.id)
               ? {
                   ...item,
@@ -462,9 +516,10 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
               : item
           )));
           try {
-            const synced = await syncCompletedMessageAfterTimeout(selectedSessionId, clientRequestId);
+            const synced = await syncCompletedMessageAfterTimeout(sendSessionId, clientRequestId);
             if (synced) {
-              setMessages(synced.messages);
+              applyMessagesForSession(sendSessionId, synced.messages);
+              await refreshChatSessions();
               setStatusMessage('已同步后台生成结果');
               return;
             }
@@ -472,11 +527,11 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
             // ignore and fall through to restore draft
           }
         }
-        setMessages((prev) => prev.filter((item) => item.id !== (pendingRestore?.userMessageId || optimisticUserMessage.id) && item.id !== (pendingRestore?.assistantMessageId || optimisticAssistantMessage.id)));
-        if (pendingRestore) {
+        updateMessagesForSession(sendSessionId, (prev) => prev.filter((item) => item.id !== (pendingRestore?.userMessageId || optimisticUserMessage.id) && item.id !== (pendingRestore?.assistantMessageId || optimisticAssistantMessage.id)));
+        if (pendingRestore && selectedSessionIdRef.current === sendSessionId) {
           setMessageDraft(pendingRestore.draft);
           setAttachments(pendingRestore.attachments);
-        } else {
+        } else if (selectedSessionIdRef.current === sendSessionId) {
           setMessageDraft(previousDraft);
           setAttachments(previousAttachments);
         }
@@ -512,6 +567,10 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   ) => {
     if (!selectedSessionId || batches.length === 0) return;
 
+    const batchSessionId = selectedSessionId;
+    const batchSelectedModel = selectedModel;
+    const batchReasoningLevel = reasoningLevel;
+    const batchWebSearchEnabled = webSearchEnabled;
     const controller = new AbortController();
     sendAbortControllerRef.current = controller;
     setSendingMessage(true);
@@ -549,7 +608,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         const clientRequestId = `batchreq-${batchIndex}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         const optimisticUserMessage: AgentChatMessage = {
           id: `pending-user-batch-${batchIndex}-${Date.now()}`,
-          sessionId: selectedSessionId,
+          sessionId: batchSessionId,
           userId: currentUser?.id || '',
           role: 'user',
           content: batchContent,
@@ -559,7 +618,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         };
         const optimisticAssistantMessage: AgentChatMessage = {
           id: `pending-assistant-batch-${batchIndex}-${Date.now()}`,
-          sessionId: selectedSessionId,
+          sessionId: batchSessionId,
           userId: currentUser?.id || '',
           role: 'assistant',
           content: '思考中',
@@ -569,21 +628,21 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         };
 
         setPendingAssistantMessageId(optimisticAssistantMessage.id);
-        setMessages((prev) => [...prev, optimisticUserMessage, optimisticAssistantMessage]);
+        updateMessagesForSession(batchSessionId, (prev) => [...prev, optimisticUserMessage, optimisticAssistantMessage]);
 
         try {
-          const result = await sendChatMessage(selectedSessionId, {
+          const result = await sendChatMessage(batchSessionId, {
             content: batchContent,
             attachments: attachmentPayload,
-            selectedModel,
-            reasoningLevel,
-            webSearchEnabled,
+            selectedModel: batchSelectedModel,
+            reasoningLevel: batchReasoningLevel,
+            webSearchEnabled: batchWebSearchEnabled,
             requestMode: 'chat',
             clientRequestId,
           }, {
             signal: controller.signal,
             onProgress: (event: ChatProgressEvent) => {
-              setMessages((prev) => prev.map((item) => {
+              updateMessagesForSession(batchSessionId, (prev) => prev.map((item) => {
                 if (item.id !== optimisticAssistantMessage.id) return item;
                 let content: string;
                 let progressStage: string;
@@ -602,14 +661,14 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
             },
           });
 
-          setMessages((prev) => [
+          updateMessagesForSession(batchSessionId, (prev) => [
             ...prev.filter((item) => item.id !== optimisticUserMessage.id && item.id !== optimisticAssistantMessage.id),
             result.userMessage,
             result.assistantMessage,
           ]);
         } catch (batchError: any) {
           // 移除乐观消息
-          setMessages((prev) => prev.filter(
+          updateMessagesForSession(batchSessionId, (prev) => prev.filter(
             (item) => item.id !== optimisticUserMessage.id && item.id !== optimisticAssistantMessage.id
           ));
           if (batchError?.name === 'AbortError' || batchError?.message === 'INTERRUPTED' || String(batchError?.message || '').includes('aborted')) {
@@ -622,14 +681,18 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
       }
 
       // 全部批次完成后刷新会话
-      await loadChat(selectedAgentId, selectedSessionId);
+      await refreshChatSessions();
+      if (selectedSessionIdRef.current === batchSessionId) {
+        const messageResult = await fetchChatMessages(batchSessionId);
+        applyMessagesForSession(batchSessionId, messageResult.messages);
+      }
     } finally {
       sendAbortControllerRef.current = null;
       setSendingMessage(false);
       setPendingAssistantMessageId('');
       setLoading(false);
     }
-  }, [selectedSessionId, selectedModel, reasoningLevel, webSearchEnabled, currentUser, selectedAgentId]);
+  }, [selectedSessionId, selectedModel, reasoningLevel, webSearchEnabled, currentUser]);
 
   if (!canAccessAgentCenter) {
     return (
@@ -730,7 +793,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
               onEnterAgent={handleEnterAgent}
               onBackToPlaza={() => {
                 setWorkspacePage('plaza');
-                setSelectedSessionId('');
+                setActiveSessionId('');
                 setMessages([]);
               }}
               onCreateSession={handleCreateSession}
@@ -738,7 +801,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
                 const matched = sessions.find((item) => item.id === sessionId);
                 if (matched) setSelectedAgentId(matched.agentId);
                 setWorkspacePage('chat');
-                setSelectedSessionId(sessionId);
+                setActiveSessionId(sessionId);
               }}
               onDeleteSession={handleDeleteSession}
               onDeleteAgentHistory={handleDeleteAgentHistory}

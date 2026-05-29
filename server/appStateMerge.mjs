@@ -248,6 +248,17 @@ export const mergeArrayByStableKeys = (existingItems = [], incomingItems = []) =
     ['completed', 'succeeded', 'success'].includes(String(item?.status || ''))
     && Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl)
   );
+  const hasMediaResult = (item = {}) => Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl);
+  const findNoMediaPlanPlaceholderIndex = (item = {}) => {
+    const planId = compactKey(item?.planId);
+    const status = String(item?.status || '');
+    if (!planId || hasMediaResult(item) || !['error', 'failed', 'generating', 'pending', 'queued'].includes(status)) return -1;
+    return merged.findIndex((existing) => (
+      compactKey(existing?.planId) === planId
+      && !hasMediaResult(existing)
+      && ['error', 'failed', 'generating', 'pending', 'queued'].includes(String(existing?.status || ''))
+    ));
+  };
   const clearCompletedResultErrors = (item = {}) => {
     if (!hasCompletedMediaResult(item)) return item;
     const next = { ...(item || {}) };
@@ -256,24 +267,39 @@ export const mergeArrayByStableKeys = (existingItems = [], incomingItems = []) =
     return next;
   };
   const mergeDuplicateItem = (current = {}, item = {}) => {
+    const isActiveRuntimeReplacement = (value = {}) => (
+      ['generating', 'pending', 'queued', 'running', 'retry_waiting'].includes(String(value?.status || ''))
+      && !hasMediaResult(value)
+      && Boolean(compactKey(value?.backendJobId || value?.taskId || value?.providerTaskId || value?.kieTaskId))
+    );
     const next = hasCompletedMediaResult(current)
       ? { ...(item || {}), ...(current || {}) }
+      : isActiveRuntimeReplacement(current) && hasCompletedMediaResult(item)
+        ? { ...(item || {}), ...(current || {}) }
       : hasCompletedMediaResult(item)
         ? { ...(current || {}), ...(item || {}) }
+        : isActiveRuntimeReplacement(item) && hasCompletedMediaResult(current)
+          ? { ...(current || {}), ...(item || {}) }
         : { ...(item || {}), ...(current || {}) };
     const mergedItem = {
       ...next,
       planId: current.planId || item?.planId,
       projectId: current.projectId || item?.projectId,
       subFeature: current.subFeature || item?.subFeature,
-      taskId: current.taskId || item?.taskId,
-      providerTaskId: current.providerTaskId || item?.providerTaskId,
-      backendJobId: current.backendJobId || item?.backendJobId,
+      taskId: next.taskId,
+      providerTaskId: next.providerTaskId,
+      backendJobId: next.backendJobId,
     };
     return clearCompletedResultErrors(mergedItem);
   };
 
   const push = (item) => {
+    const noMediaPlanPlaceholderIndex = findNoMediaPlanPlaceholderIndex(item);
+    if (noMediaPlanPlaceholderIndex >= 0) {
+      merged[noMediaPlanPlaceholderIndex] = mergeDuplicateItem(merged[noMediaPlanPlaceholderIndex] || {}, item || {});
+      collectItemKeys(merged[noMediaPlanPlaceholderIndex]).forEach((key) => seen.add(key));
+      return;
+    }
     const keys = collectItemKeys(item);
     const duplicateIndex = Array.from(keys)
       .map((key) => merged.findIndex((existing) => collectItemKeys(existing).has(key)))
@@ -382,9 +408,11 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
   );
   const results = pruneSupersededNoMediaItems(filterDroppedPlans(originalResults));
   const schemes = pruneSupersededNoMediaItems(filterDroppedPlans(item?.schemes));
-  const stateItems = results.length > 0 ? results : schemes;
-  const completedMediaCount = stateItems.filter(hasCompletedMediaItem).length;
   const planCount = plans.length;
+  const stalePlanningFailureCleared = planCount > 0 && hasOnlyStalePlanningFailureResults({ results });
+  const normalizedResults = stalePlanningFailureCleared ? [] : results;
+  const stateItems = normalizedResults.length > 0 ? normalizedResults : schemes;
+  const completedMediaCount = stateItems.filter(hasCompletedMediaItem).length;
   const activeOrFailedCount = stateItems.filter((entry) => (
     ['generating', 'pending', 'queued'].includes(String(entry?.status || ''))
     || (['error', 'failed'].includes(String(entry?.status || '')) && !itemHasMedia(entry))
@@ -406,7 +434,7 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
   const next = {
     ...(item || {}),
     ...(Array.isArray(item?.plans) ? { plans } : {}),
-    ...(Array.isArray(item?.results) ? { results } : {}),
+    ...(Array.isArray(item?.results) ? { results: normalizedResults } : {}),
     ...(Array.isArray(item?.schemes) ? { schemes } : {}),
     taskCount,
     completedCount: stateItems.length > 0 ? completedMediaCount : Number(item?.completedCount || 0) || 0,

@@ -130,6 +130,100 @@ const cloneShellProject = (project: ShellProject): ShellProject => ({
   } : undefined,
 });
 
+const compactKey = (value: unknown) => String(value || '').trim();
+
+const collectMergeKeys = (item: any) => {
+  const keys = new Set<string>();
+  const add = (prefix: string, value: unknown) => {
+    const normalized = compactKey(value);
+    if (normalized) keys.add(`${prefix}:${normalized}`);
+  };
+  add('id', item?.id);
+  add('job', item?.backendJobId);
+  add('provider', item?.providerTaskId || item?.taskId || item?.kieTaskId);
+  add('plan', item?.planId);
+  return keys;
+};
+
+const mergeArrayByStableKeys = <T extends Record<string, any>>(existingItems: T[] = [], incomingItems: T[] = []) => {
+  const keyToIndex = new Map<string, number>();
+  const merged: T[] = [];
+
+  const register = (item: T, index: number) => {
+    collectMergeKeys(item).forEach((key) => keyToIndex.set(key, index));
+  };
+
+  const push = (item: T, source: 'existing' | 'incoming') => {
+    if (!item) return;
+    const duplicateIndex = Array.from(collectMergeKeys(item))
+      .map((key) => keyToIndex.get(key))
+      .find((index) => typeof index === 'number');
+    if (typeof duplicateIndex === 'number') {
+      const current = merged[duplicateIndex];
+      merged[duplicateIndex] = source === 'incoming'
+        ? { ...current, ...item }
+        : { ...item, ...current };
+      register(merged[duplicateIndex], duplicateIndex);
+      return;
+    }
+    const index = merged.length;
+    merged.push({ ...item });
+    register(item, index);
+  };
+
+  incomingItems.filter(Boolean).forEach((item) => push(item, 'incoming'));
+  existingItems.filter(Boolean).forEach((item) => push(item, 'existing'));
+  return merged;
+};
+
+const hasCompletedMedia = (item: any) => (
+  String(item?.status || '') === 'completed'
+  && Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl)
+);
+
+const hasGeneratingState = (item: any) => ['generating', 'pending', 'queued', 'uploading', 'processing'].includes(String(item?.status || ''));
+
+const hasErrorState = (item: any) => ['error', 'failed', 'interrupted'].includes(String(item?.status || ''));
+
+const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingProject: T | undefined, incomingProject: T): T => {
+  if (!existingProject) return { ...incomingProject };
+  const results = mergeArrayByStableKeys(existingProject.results, incomingProject.results);
+  const plans = mergeArrayByStableKeys(existingProject.plans, incomingProject.plans);
+  const schemes = mergeArrayByStableKeys(existingProject.schemes, incomingProject.schemes);
+  const stateItems = results.length > 0 ? results : schemes;
+  const completedCount = stateItems.filter(hasCompletedMedia).length;
+  const taskCount = Math.max(
+    Number(existingProject.taskCount || 0) || 0,
+    Number(incomingProject.taskCount || 0) || 0,
+    plans.length,
+    schemes.length,
+    stateItems.length,
+    1,
+  );
+  const status = completedCount >= taskCount
+    ? 'completed'
+    : stateItems.some(hasGeneratingState)
+      ? 'generating'
+      : stateItems.some(hasErrorState)
+        ? 'error'
+        : incomingProject.status || existingProject.status;
+  const merged = {
+    ...existingProject,
+    ...incomingProject,
+    ...(Array.isArray(existingProject.results) || Array.isArray(incomingProject.results) ? { results } : {}),
+    ...(Array.isArray(existingProject.plans) || Array.isArray(incomingProject.plans) ? { plans } : {}),
+    ...(Array.isArray(existingProject.schemes) || Array.isArray(incomingProject.schemes) ? { schemes } : {}),
+    taskCount,
+    completedCount,
+    status,
+  };
+  if (status === 'completed' && completedCount > 0) {
+    delete merged.error;
+    delete merged.message;
+  }
+  return merged as T;
+};
+
 const isInlineImageDataUrl = (value: unknown) => (
   typeof value === 'string' && /^data:image\//i.test(value.trim())
 );
@@ -154,10 +248,12 @@ export const upsertShellProjectIntoPersistedState = (
 ): PersistedAppState => {
   const nextProject = cloneShellProject(project);
   const existingProjects = Array.isArray(state.shellProjects) ? state.shellProjects : [];
+  const existingProject = existingProjects.find((item: any) => String(item?.id || '') === String(project.id || ''));
+  const mergedProject = cloneShellProject(mergeProjectLikeForPersistence(existingProject, nextProject) as ShellProject);
   return {
     ...state,
     shellProjects: [
-      nextProject,
+      mergedProject,
       ...existingProjects.filter((item: any) => String(item?.id || '') !== String(project.id || '')),
     ],
   };
@@ -265,9 +361,15 @@ export const upsertOneClickProjectIntoPersistedState = (
     planningTaskId: project.planningTaskId,
     directGeneration: project.directGeneration,
   };
+  const existingBranchProjects = Array.isArray(branch.projects) ? branch.projects : [];
+  const existingBranchProject = existingBranchProjects.find((item: any) => String(item?.id || '') === String(project.id || ''));
+  const mergedPersistedProject = mergeProjectLikeForPersistence(
+    existingBranchProject as Record<string, any> | undefined,
+    persistedProject as Record<string, any>,
+  );
   const nextProjects = [
-    ...(Array.isArray(branch.projects) ? branch.projects.filter((item) => item?.id !== project.id) : []),
-    persistedProject,
+    ...existingBranchProjects.filter((item: any) => String(item?.id || '') !== String(project.id || '')),
+    mergedPersistedProject,
   ];
 
   return {
@@ -275,10 +377,10 @@ export const upsertOneClickProjectIntoPersistedState = (
     oneClickMemory: {
       ...state.oneClickMemory,
       [branchKey]: {
-        ...persistedProject,
+        ...mergedPersistedProject,
         projects: nextProjects,
         activeProjectId: project.id,
-        schemes,
+        schemes: mergedPersistedProject.schemes || schemes,
       },
     },
   };

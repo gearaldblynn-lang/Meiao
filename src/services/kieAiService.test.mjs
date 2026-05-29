@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { getUserVisibleTaskId } from './kieTaskUtils.mjs';
 
 const kieAiSource = readFileSync(new URL('./kieAiService.ts', import.meta.url), 'utf8');
+const internalApiSource = readFileSync(new URL('./internalApi.ts', import.meta.url), 'utf8');
 
 test('getUserVisibleTaskId falls back to the internal job id when the provider task id is not available yet', () => {
   assert.equal(
@@ -79,6 +80,17 @@ test('kieAiService preserves the notified provider task id when polling throws a
   assert.match(kieAiSource, /const fallbackTaskId = notifiedProviderTaskId \|\| getUserVisibleTaskId\(timeoutJob\?\.job\)/);
   assert.match(kieAiSource, /taskId: fallbackTaskId/);
   assert.match(kieAiSource, /taskId: notifiedProviderTaskId/);
+});
+
+test('internal job polling ignores transient read failures and keeps waiting for terminal state', () => {
+  assert.match(internalApiSource, /const isTransientJobPollError = \(error: unknown\) => \{/);
+  assert.match(internalApiSource, /error\.code === 'network_error'/);
+  assert.match(internalApiSource, /error\.code === 'timeout'/);
+  assert.match(internalApiSource, /error\.code === 'server_error'/);
+  assert.match(
+    internalApiSource,
+    /try \{[\s\S]*const \{ job \} = await fetchInternalJob\(jobId\);[\s\S]*lastPollError = null;[\s\S]*\} catch \(error\) \{[\s\S]*if \(!isTransientJobPollError\(error\)\) \{[\s\S]*throw error;[\s\S]*\}[\s\S]*lastPollError = error;/,
+  );
 });
 
 test('kieAiService keeps submitted provider tasks generating on frontend polling exceptions', () => {

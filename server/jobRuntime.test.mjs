@@ -342,6 +342,38 @@ test('buildJobRuntimeLogMeta exposes provider and shell binding fields for diagn
   assert.equal(JSON.stringify(meta).includes('https://example.com/result.png'), false);
 });
 
+test('buildJobRuntimeLogMeta counts multimodal chat payload inputs without leaking urls', () => {
+  const meta = buildJobRuntimeLogMeta({
+    job: {
+      id: 'job-chat',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      createdAt: 1000,
+      startedAt: 1200,
+      payload: {
+        model: 'gemini-3-flash-openai',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: '生成首图方案' },
+              { type: 'image_url', image_url: { url: 'https://example.com/private-a.png' } },
+              { type: 'input_file', file_url: 'https://example.com/private-b.pdf' },
+            ],
+          },
+        ],
+      },
+    },
+  });
+
+  assert.equal(meta.inputImageUrlCount, 1);
+  assert.equal(meta.inputFileUrlCount, 1);
+  assert.equal(meta.promptLength, 6);
+  assert.equal(JSON.stringify(meta).includes('private-a.png'), false);
+  assert.equal(JSON.stringify(meta).includes('private-b.pdf'), false);
+});
+
 test('buildJobRuntimeLogMeta estimates runtime from createdAt when recovered jobs lost startedAt', () => {
   const meta = buildJobRuntimeLogMeta({
     job: {

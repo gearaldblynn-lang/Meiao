@@ -17,6 +17,7 @@ const APIPORTS_GPT_IMAGE_2_SECONDARY_MODEL = 'gpt-image-2-secondary';
 const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
 const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 240_000;
 const KIE_HTTP_REQUEST_TIMEOUT_MS = 60_000;
+const KIE_CHAT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const DREAMINA_VIDEO_POLL_RETRIES = 180;
 const DREAMINA_VIDEO_POLL_INTERVAL_MS = 5_000;
 const MAX_PROVIDER_REMOTE_MEDIA_MB = 256;
@@ -140,7 +141,13 @@ const attachProviderTaskId = (error, providerTaskId) => {
   return error;
 };
 
-const fetchKieWithTimeout = async (url, init = {}, timeoutMessage = 'Kie 请求超时', timeoutMs = KIE_HTTP_REQUEST_TIMEOUT_MS) => {
+const fetchKieWithTimeout = async (
+  url,
+  init = {},
+  timeoutMessage = 'Kie 请求超时',
+  timeoutMs = KIE_HTTP_REQUEST_TIMEOUT_MS,
+  providerStage = 'http_request'
+) => {
   const controller = new AbortController();
   const upstreamSignal = init.signal;
   let timedOut = false;
@@ -169,11 +176,14 @@ const fetchKieWithTimeout = async (url, init = {}, timeoutMessage = 'Kie 请求�
     }
     if (timedOut || error?.name === 'AbortError') {
       throw createProviderError('provider_timeout', timeoutMessage, {
-        providerStage: 'http_request',
+        providerStage,
         providerStatus: 'timeout',
       });
     }
-    throw error;
+    throw createProviderError('provider_network_error', error?.message || 'Kie 网络请求失败', {
+      providerStage,
+      providerStatus: 'network_error',
+    });
   } finally {
     clearTimeout(timeoutId);
     upstreamSignal?.removeEventListener?.('abort', onAbort);
@@ -392,11 +402,32 @@ const parseDataUrlPayload = (value) => {
   };
 };
 
+const shouldFallbackKieUploadError = (error) => new Set([
+  'provider_auth_invalid',
+  'provider_internal_error',
+  'provider_network_error',
+  'provider_timeout',
+]).has(String(error?.code || '').trim());
+
+const uploadAssetViaKieWithFallback = async (payload, env) => {
+  try {
+    return await uploadAssetViaKieStream(payload, env);
+  } catch (error) {
+    if (!shouldFallbackKieUploadError(error)) throw error;
+    const fileBuffer = payload.fileBuffer instanceof Uint8Array ? payload.fileBuffer : Buffer.from(payload.fileBuffer || '');
+    return uploadAssetViaKie({
+      ...payload,
+      fileBuffer,
+      base64Data: Buffer.from(fileBuffer).toString('base64'),
+    }, env);
+  }
+};
+
 const convertInlineDataUrlToKieFileUrl = async (value, env) => {
   const parsed = parseDataUrlPayload(value);
   if (!parsed) return String(value || '').trim();
   const extension = inferExtensionFromMimeType(parsed.mimeType);
-  const uploaded = await uploadAssetViaKieStream({
+  const uploaded = await uploadAssetViaKieWithFallback({
     fileBuffer: Buffer.from(parsed.base64Data, 'base64'),
     mimeType: parsed.mimeType,
     fileName: `inline-upload.${extension}`,
@@ -406,10 +437,10 @@ const convertInlineDataUrlToKieFileUrl = async (value, env) => {
 };
 
 const downloadManagedAsset = async (assetUrl, signal) => {
-  const response = await fetch(normalizeManagedAssetDownloadUrl(assetUrl), {
+  const response = await fetchKieWithTimeout(normalizeManagedAssetDownloadUrl(assetUrl), {
     method: 'GET',
     signal,
-  });
+  }, '内部素材下载超时', 60_000, 'asset_download');
   if (!response.ok) {
     throw createProviderError('provider_bad_request', `内部素材下载失败：HTTP ${response.status}`);
   }
@@ -428,22 +459,10 @@ const downloadManagedAsset = async (assetUrl, signal) => {
 const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal) => {
   if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
   const downloaded = await downloadManagedAsset(assetUrl, signal);
-  let uploaded;
-  try {
-    uploaded = await uploadAssetViaKieStream({
-      ...downloaded,
-      uploadPath: 'mayo-storage/internal',
-    }, env);
-  } catch (error) {
-    if (error?.code !== 'provider_auth_invalid' && error?.code !== 'provider_internal_error') {
-      throw error;
-    }
-    uploaded = await uploadAssetViaKie({
-      ...downloaded,
-      base64Data: Buffer.from(downloaded.fileBuffer || '').toString('base64'),
-      uploadPath: 'mayo-storage/internal',
-    }, env);
-  }
+  const uploaded = await uploadAssetViaKieWithFallback({
+    ...downloaded,
+    uploadPath: 'mayo-storage/internal',
+  }, env);
   return String(uploaded?.result?.fileUrl || '').trim();
 };
 
@@ -545,10 +564,10 @@ const readRemoteMediaBufferWithLimit = async (response, label = '远程素材') 
 const downloadRemoteMediaUrl = async (mediaUrl, signal) => {
   if (isManagedAssetUrl(mediaUrl)) return downloadManagedAsset(mediaUrl, signal);
   assertRemoteProviderMediaUrlAllowed(mediaUrl);
-  const response = await fetch(mediaUrl, {
+  const response = await fetchKieWithTimeout(mediaUrl, {
     method: 'GET',
     signal,
-  });
+  }, '远程视频素材下载超时', 120_000, 'asset_download');
   if (!response.ok) {
     throw createProviderError('provider_bad_request', `远程视频素材下载失败：HTTP ${response.status}`);
   }
@@ -566,10 +585,10 @@ const downloadRemoteMediaUrl = async (mediaUrl, signal) => {
 const downloadRemoteProviderMediaUrl = async (mediaUrl, signal) => {
   if (isManagedAssetUrl(mediaUrl)) return downloadManagedAsset(mediaUrl, signal);
   assertRemoteProviderMediaUrlAllowed(mediaUrl);
-  const response = await fetch(mediaUrl, {
+  const response = await fetchKieWithTimeout(mediaUrl, {
     method: 'GET',
     signal,
-  });
+  }, '远程素材下载超时', 120_000, 'asset_download');
   if (!response.ok) {
     throw createProviderError('provider_bad_request', `远程素材下载失败：HTTP ${response.status}`);
   }
@@ -623,7 +642,7 @@ const convertGeminiVideoToOpenRouterChatUrl = async (mediaUrl, env, signal) => {
   const normalized = String(mediaUrl || '').trim();
   if (!shouldUploadGeminiVideoUrlToOpenRouterChat(normalized)) return normalized;
   const downloaded = await downloadRemoteMediaUrl(normalized, signal);
-  const uploaded = await uploadAssetViaKieStream({
+  const uploaded = await uploadAssetViaKieWithFallback({
     ...downloaded,
     uploadPath: 'openrouter-chat',
   }, env);
@@ -1328,7 +1347,7 @@ const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false, model = '
           Authorization: `Bearer ${kieApiKey}`,
         },
         signal,
-      }, isVideo ? 'Kie 视频任务查询超时' : 'Kie 图像任务查询超时');
+      }, isVideo ? 'Kie 视频任务查询超时' : 'Kie 图像任务查询超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'polling');
     } catch (error) {
       if (signal?.aborted) {
         throw createProviderError('request_cancelled', '任务已取消', { providerTaskId: taskId, providerStage: 'polling', providerStatus: lastKnownState || 'cancelled' });
@@ -1420,12 +1439,12 @@ const pollKieVeoTask = async (taskId, kieApiKey, signal) => {
 
     await wait(15000, signal);
 
-    const response = await fetch(`${KIE_VEO_BASE_URL}/record-info?taskId=${encodeURIComponent(taskId)}`, {
+    const response = await fetchKieWithTimeout(`${KIE_VEO_BASE_URL}/record-info?taskId=${encodeURIComponent(taskId)}`, {
       headers: {
         Authorization: `Bearer ${kieApiKey}`,
       },
       signal,
-    });
+    }, 'Kie Veo 任务查询超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'polling');
     const result = await response.json().catch(() => ({}));
 
     if (!response.ok) {
@@ -1475,7 +1494,7 @@ const uploadAssetViaKie = async (payload, env) => {
   const uploadPath = payload.uploadPath || 'mayo-storage/internal';
   const uploadFileName = payload.fileName || `upload_${Date.now()}.bin`;
 
-  const response = await fetch('https://kieai.redpandaai.co/api/file-base64-upload', {
+  const response = await fetchKieWithTimeout('https://kieai.redpandaai.co/api/file-base64-upload', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${kieApiKey}`,
@@ -1486,7 +1505,7 @@ const uploadAssetViaKie = async (payload, env) => {
       uploadPath,
       fileName: uploadFileName,
     }),
-  });
+  }, 'Kie 素材上传超时', 120_000, 'asset_upload');
 
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -1526,13 +1545,13 @@ export const uploadAssetViaKieStream = async (payload, env) => {
   formData.append('fileName', fileName);
   formData.append('uploadPath', payload.uploadPath || 'mayo-storage/internal');
 
-  const response = await fetch('https://kieai.redpandaai.co/api/file-stream-upload', {
+  const response = await fetchKieWithTimeout('https://kieai.redpandaai.co/api/file-stream-upload', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${kieApiKey}`,
     },
     body: formData,
-  });
+  }, 'Kie 素材上传超时', 120_000, 'asset_upload');
 
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -1566,7 +1585,7 @@ const runKieResponsesJob = async (payload, env, signal) => {
   const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model: payload.model });
   const instructions = extractResponsesInstructions(preparedMessages);
 
-  const response = await fetch(KIE_RESPONSES_URL, {
+  const response = await fetchKieWithTimeout(KIE_RESPONSES_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${kieApiKey}`,
@@ -1581,7 +1600,7 @@ const runKieResponsesJob = async (payload, env, signal) => {
       ...(payload.webSearchEnabled ? { tools: [{ type: 'web_search' }] } : {}),
     }),
     signal,
-  });
+  }, 'Kie Responses 请求超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'chat_completion');
 
   if (!response.ok) {
     await mapHttpError(response, 'Kie Responses 请求失败');
@@ -1871,7 +1890,7 @@ const runKieClaudeMessagesJob = async (payload, env, signal) => {
         ],
       };
 
-  const sendClaudeRequest = async (requestBody) => fetch(KIE_CLAUDE_MESSAGES_URL, {
+  const sendClaudeRequest = async (requestBody) => fetchKieWithTimeout(KIE_CLAUDE_MESSAGES_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${kieApiKey}`,
@@ -1879,7 +1898,7 @@ const runKieClaudeMessagesJob = async (payload, env, signal) => {
     },
     body: JSON.stringify(requestBody),
     signal,
-  });
+  }, 'Kie Claude 请求超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'chat_completion');
 
   let response = await sendClaudeRequest(primaryRequestBody);
 
@@ -1968,6 +1987,47 @@ const extractChatStreamDeltaText = (event) => {
   return extractChatMessageText(root?.delta?.content || root?.content || root?.data?.content || '');
 };
 
+const readProviderStreamChunkWithTimeout = async (reader, signal, providerTaskId = '') => {
+  let timeoutId = null;
+  let timedOut = false;
+  let removeAbortListener = null;
+  const providerTaskMeta = providerTaskId ? { providerTaskId } : null;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      reject(createProviderError('provider_timeout', 'Kie Gemini 3 Flash 流式响应超时', {
+        ...(providerTaskMeta || {}),
+        providerStage: 'stream_read',
+        providerStatus: 'timeout',
+      }));
+    }, KIE_CHAT_STREAM_IDLE_TIMEOUT_MS);
+  });
+
+  const abortPromise = new Promise((_, reject) => {
+    if (!signal) return;
+    const onAbort = () => reject(createProviderError('request_cancelled', '任务已取消', providerTaskMeta));
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener?.('abort', onAbort, { once: true });
+    removeAbortListener = () => signal.removeEventListener?.('abort', onAbort);
+  });
+
+  try {
+    return await Promise.race([reader.read(), timeoutPromise, abortPromise]);
+  } catch (error) {
+    if (timedOut || error?.code === 'request_cancelled') {
+      await reader.cancel?.().catch(() => null);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+    removeAbortListener?.();
+  }
+};
+
 const readProviderSseChatResponse = async (response, signal, options = {}) => {
   const reader = response.body?.getReader?.();
   if (!reader) {
@@ -2009,7 +2069,7 @@ const readProviderSseChatResponse = async (response, signal, options = {}) => {
     if (signal?.aborted) {
       throw createProviderError('request_cancelled', '任务已取消', providerTaskId ? { providerTaskId } : null);
     }
-    const { value, done } = await reader.read();
+    const { value, done } = await readProviderStreamChunkWithTimeout(reader, signal, providerTaskId);
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const chunks = buffer.split(/\r?\n\r?\n/);
@@ -2060,7 +2120,7 @@ const runKieGeminiFlashOpenAiJob = async (payload, env, signal, options = {}) =>
     ...(tools ? { tools } : {}),
   };
 
-  const response = await fetch(KIE_GEMINI_FLASH_URL, {
+  const response = await fetchKieWithTimeout(KIE_GEMINI_FLASH_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${kieApiKey}`,
@@ -2068,7 +2128,7 @@ const runKieGeminiFlashOpenAiJob = async (payload, env, signal, options = {}) =>
     },
     body: JSON.stringify(requestBody),
     signal,
-  });
+  }, 'Kie Gemini 3 Flash 请求超时');
 
   if (!response.ok) {
     await mapHttpError(response, 'Kie Gemini 3 Flash 请求失败');
@@ -2221,7 +2281,7 @@ const runKieVeoJob = async (payload, env, signal, options = {}) => {
     requestPayload.generationType = 'TEXT_2_VIDEO';
   }
 
-  const response = await fetch(endpoint, {
+  const response = await fetchKieWithTimeout(endpoint, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${kieApiKey}`,
@@ -2229,7 +2289,7 @@ const runKieVeoJob = async (payload, env, signal, options = {}) => {
     },
     body: JSON.stringify(requestPayload),
     signal,
-  });
+  }, 'Kie Veo 任务创建超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'create_task');
 
   const result = await response.json().catch(() => ({}));
   if (!response.ok || result?.code !== 200 || !result?.data?.taskId) {
@@ -2379,7 +2439,13 @@ const downloadProviderAssetToLocalFile = async (assetUrl, tempDir, env, signal, 
   if (!isManagedAssetUrl(resolvedUrl)) {
     assertRemoteProviderMediaUrlAllowed(resolvedUrl);
   }
-  const response = await fetch(normalizeManagedAssetDownloadUrl(resolvedUrl), { method: 'GET', signal });
+  const response = await fetchKieWithTimeout(
+    normalizeManagedAssetDownloadUrl(resolvedUrl),
+    { method: 'GET', signal },
+    '即梦素材下载超时',
+    120_000,
+    'asset_download'
+  );
   if (!response.ok) {
     throw createProviderError('provider_bad_request', `即梦素材下载失败：HTTP ${response.status}`);
   }
@@ -2569,7 +2635,11 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
   }
   const transport = resolveChatTransport(payload.model);
   if (isKieGeminiFlashOpenAiModel(payload.model)) {
-    return runKieGeminiFlashOpenAiJob(payload, env, signal, options);
+    try {
+      return await runKieGeminiFlashOpenAiJob(payload, env, signal, options);
+    } catch (error) {
+      return runKieChatFallbackModels(payload, env, signal, error);
+    }
   }
   if (transport === 'unsupported') {
     throw createProviderError('provider_bad_request', `不支持的聊天模型：${String(payload.model || '').trim() || '未知模型'}`);
@@ -2596,7 +2666,7 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
       ? buildProviderInputMessages(preparedMessages, buildKieChatContent)
       : preparedMessages;
 
-    const response = await fetch(endpoint, {
+    const response = await fetchKieWithTimeout(endpoint, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${kieApiKey}`,
@@ -2610,7 +2680,7 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
         ...(isGeminiModel && payload.reasoningLevel ? { include_thoughts: true, reasoning_effort: normalizeReasoningLevelForModel(model, payload.reasoningLevel) } : {}),
       }),
       signal,
-    });
+    }, 'Kie 对话请求超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'chat_completion');
 
     if (!response.ok) {
       await mapHttpError(response, 'Kie 对话请求失败');
