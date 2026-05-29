@@ -86,6 +86,11 @@ const isAnalysisRefusalText = (value: unknown) => {
   return /\bI\s+cannot\s+fulfill\s+this\s+request\b|\bI\s+can(?:not|'t)\s+(?:help|assist|comply|fulfill)\b|\bI'm\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|\bI\s+am\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|无法满足(?:该|这个|此)?请求|不能满足(?:该|这个|此)?请求|无法协助(?:该|这个|此)?请求/i.test(text);
 };
 
+const isAnalysisContentUnusable = (content: unknown) => {
+  const normalized = String(content || '').trim();
+  return !normalized || isAnalysisRefusalText(normalized);
+};
+
 const ensureUsableAnalysisContent = (content: string, label = 'AI 策划') => {
   const normalized = String(content || '').trim();
   if (!normalized) {
@@ -175,71 +180,122 @@ const requestAnalysisResponseDetailed = async (
       },
     };
   });
-  const { job } = await createInternalJob({
-    module,
-    taskType: 'kie_chat',
+  const runAnalysisJob = async (
+    selectedModel: string,
+    fallbackModels: string[],
+    semanticFallbackFrom = '',
+  ) => {
+    const { job } = await createInternalJob({
+      module,
+      taskType: 'kie_chat',
       provider: 'kie',
       payload: {
         ...jobMetadata,
-        model,
-        fallbackModels: getAnalysisFallbackModels(model),
+        ...(semanticFallbackFrom ? { semanticFallbackFrom } : {}),
+        model: selectedModel,
+        fallbackModels,
         messages: [
           {
             role: 'user',
-          content: normalizedContent,
-        },
-      ],
-      requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
-    },
-    maxRetries: 2,
-  });
-  onJobCreated?.(job.id);
-  let notifiedProviderTaskId = '';
-  const notifyProviderTaskId = (providerTaskId: unknown) => {
-    const value = String(providerTaskId || '').trim();
-    if (!value || value === notifiedProviderTaskId) return;
-    notifiedProviderTaskId = value;
-    onJobCreated?.(job.id, value);
-  };
-
-  try {
-    const finalJob = await waitForInternalJob(job.id, signal, 2500, 0, (currentJob) => {
-      notifyProviderTaskId(currentJob?.providerTaskId);
+            content: normalizedContent,
+          },
+        ],
+        requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      },
+      maxRetries: 2,
     });
-    if (!finalJob || typeof finalJob !== 'object') {
-      throw new Error('AI 分析任务状态同步失败，请稍后在任务列表中同步任务结果');
-    }
-    notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
-    return buildAnalysisResponseFromJob(finalJob, normalizedContent as any[], startedAt, model, module, job.id);
-  } catch (error: any) {
-    if (error.message === 'INTERRUPTED') {
-      void cancelInternalJob(job.id).catch(() => null);
+    onJobCreated?.(job.id);
+    let notifiedProviderTaskId = '';
+    const notifyProviderTaskId = (providerTaskId: unknown) => {
+      const value = String(providerTaskId || '').trim();
+      if (!value || value === notifiedProviderTaskId) return;
+      notifiedProviderTaskId = value;
+      onJobCreated?.(job.id, value);
+    };
+
+    try {
+      const finalJob = await waitForInternalJob(job.id, signal, 2500, 0, (currentJob) => {
+        notifyProviderTaskId(currentJob?.providerTaskId);
+      });
+      if (!finalJob || typeof finalJob !== 'object') {
+        throw new Error('AI 分析任务状态同步失败，请稍后在任务列表中同步任务结果');
+      }
+      notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
+      return {
+        job,
+        finalJob,
+        response: buildAnalysisResponseFromJob(finalJob, normalizedContent as any[], startedAt, selectedModel, module, job.id),
+      };
+    } catch (error: any) {
+      if (error.message === 'INTERRUPTED') {
+        void cancelInternalJob(job.id).catch(() => null);
+        throw error;
+      }
+      const recoveredJob = await fetchInternalJob(job.id)
+        .then((response) => response.job)
+        .catch(() => null);
+      notifyProviderTaskId(recoveredJob?.providerTaskId || recoveredJob?.result?.providerTaskId);
+      if (recoveredJob?.status === 'succeeded') {
+        void safeCreateInternalLog({
+          level: 'info',
+          module,
+          action: 'analysis_job_recovered_after_poll_error',
+          message: '分析任务轮询异常后已从后台成功结果恢复',
+          status: 'success',
+          detail: error?.message || '',
+          meta: { jobId: job.id, errorCode: error?.code || '', providerTaskId: recoveredJob.providerTaskId || recoveredJob.result?.providerTaskId || '' },
+        });
+        return {
+          job,
+          finalJob: recoveredJob,
+          response: buildAnalysisResponseFromJob(recoveredJob, normalizedContent as any[], startedAt, selectedModel, module, job.id),
+        };
+      }
+      if (isPendingAnalysisJobStatus(recoveredJob?.status)) {
+        throw createRecoverableAnalysisSyncError();
+      }
+      if (isRecoverableAnalysisJobFailure(recoveredJob)) {
+        throw createRecoverableAnalysisSyncError();
+      }
       throw error;
     }
-    const recoveredJob = await fetchInternalJob(job.id)
-      .then((response) => response.job)
-      .catch(() => null);
-    notifyProviderTaskId(recoveredJob?.providerTaskId || recoveredJob?.result?.providerTaskId);
-    if (recoveredJob?.status === 'succeeded') {
-      void safeCreateInternalLog({
-        level: 'info',
-        module,
-        action: 'analysis_job_recovered_after_poll_error',
-        message: '分析任务轮询异常后已从后台成功结果恢复',
-        status: 'success',
-        detail: error?.message || '',
-        meta: { jobId: job.id, errorCode: error?.code || '', providerTaskId: recoveredJob.providerTaskId || recoveredJob.result?.providerTaskId || '' },
-      });
-      return buildAnalysisResponseFromJob(recoveredJob, normalizedContent as any[], startedAt, model, module, job.id);
-    }
-    if (isPendingAnalysisJobStatus(recoveredJob?.status)) {
-      throw createRecoverableAnalysisSyncError();
-    }
-    if (isRecoverableAnalysisJobFailure(recoveredJob)) {
-      throw createRecoverableAnalysisSyncError();
-    }
-    throw error;
+  };
+
+  let selectedModel = model;
+  let fallbackModels = getAnalysisFallbackModels(model);
+  let bundle = await runAnalysisJob(selectedModel, fallbackModels);
+  let response = bundle.response;
+  const usedModels = new Set([
+    selectedModel,
+    String(bundle.finalJob?.result?.modelUsed || '').trim(),
+  ].filter(Boolean));
+
+  while (isAnalysisContentUnusable(response.content)) {
+    const fallbackModel = fallbackModels.find((item) => !usedModels.has(String(item || '').trim()));
+    if (!fallbackModel) break;
+    void safeCreateInternalLog({
+      level: 'info',
+      module,
+      action: 'analysis_semantic_fallback_started',
+      message: '分析任务返回空内容或拒答，切换备用模型重试',
+      status: 'started',
+      detail: String(response.content || '').slice(0, 500),
+      meta: {
+        fromModel: selectedModel,
+        fallbackModel,
+        previousJobId: bundle.job.id,
+        previousProviderTaskId: bundle.finalJob?.providerTaskId || bundle.finalJob?.result?.providerTaskId || '',
+      },
+    });
+    selectedModel = fallbackModel;
+    fallbackModels = fallbackModels.filter((item) => item !== fallbackModel);
+    bundle = await runAnalysisJob(selectedModel, fallbackModels, model);
+    response = bundle.response;
+    usedModels.add(selectedModel);
+    usedModels.add(String(bundle.finalJob?.result?.modelUsed || '').trim());
   }
+
+  return response;
 };
 
 const requestAnalysisResponse = async (

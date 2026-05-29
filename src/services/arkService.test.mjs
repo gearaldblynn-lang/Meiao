@@ -45,13 +45,23 @@ test('analysis service no longer routes planning through ark or doubao', () => {
   );
   assert.match(
     arkServiceSource,
-    /fallbackModels: getAnalysisFallbackModels\(model\)/,
+    /let fallbackModels = getAnalysisFallbackModels\(model\)/,
     'planning analysis should provide a stronger fallback model when the configured model refuses or returns unusable content'
   );
   assert.match(
     arkServiceSource,
     /isAnalysisRefusalText/,
     'planning analysis should reject model refusal text instead of turning it into a plan'
+  );
+  assert.match(
+    arkServiceSource,
+    /analysis_semantic_fallback_started/,
+    'planning analysis should resubmit with the configured fallback model when a successful upstream response is actually a refusal or empty answer'
+  );
+  assert.match(
+    arkServiceSource,
+    /isAnalysisContentUnusable\(response\.content\)/,
+    'planning analysis should detect semantic refusal after job completion before returning content to parsers'
   );
   assert.match(
     arkServiceSource,

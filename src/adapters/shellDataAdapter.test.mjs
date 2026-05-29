@@ -2808,6 +2808,43 @@ test('shell data adapter reconstructs a one-click planning project from a succes
   assert.equal(project.creditsConsumed, 0.42);
 });
 
+test('shell data adapter reconstructs a tracked failed one-click planning project without a persisted snapshot', () => {
+  const snapshot = buildShellDataSnapshot({}, [{
+    id: 'planning-failed-job',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'failed',
+    providerTaskId: 'kie-failed-planning-provider',
+    errorCode: 'provider_bad_request',
+    errorMessage: '上游返回失败：内容不可用',
+    payload: {
+      shellPlanningPurpose: 'one_click_planning',
+      shellProjectId: 'proj-plan-failed',
+      shellProjectName: '5月29日项目失败',
+      subFeature: 'first_image',
+      model: 'gemini-3-flash-openai',
+      fallbackModels: ['gpt-5-4-openai-resp'],
+    },
+    result: {},
+    createdAt: 3000,
+    updatedAt: 4000,
+    finishedAt: 4000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-plan-failed');
+  assert.ok(project);
+  assert.equal(project.name, '5月29日项目失败');
+  assert.equal(project.status, 'error');
+  assert.equal(project.subFeature, 'first_image');
+  assert.equal(project.backendJobId, 'planning-failed-job');
+  assert.equal(project.planningTaskId, 'kie-failed-planning-provider');
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].status, 'error');
+  assert.equal(project.results[0].taskId, 'kie-failed-planning-provider');
+  assert.match(project.results[0].error, /上游返回失败/);
+});
+
 test('shell data adapter collapses duplicate no-media failures for the same one-click plan', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{

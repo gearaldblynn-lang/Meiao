@@ -44,6 +44,7 @@ export interface ShellProjectData {
   backendJobId?: string;
   creditsConsumed?: number;
   planningTaskId?: string;
+  error?: string;
   plans?: Array<{
     id: string;
     title: string;
@@ -1195,8 +1196,58 @@ const mapJobs = (
       }
       if (projectStatus === 'error' && urls.length === 0) {
         const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
-        if (!matchedProject) return;
+        const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
+        const isTrackedOneClickPlanningJob = Boolean(
+          module === MODULE_VALUES.ONE_CLICK
+          && String(job.taskType || '') === 'kie_chat'
+          && (
+            payloadProjectId
+            || String((job.payload as any)?.shellPlanningPurpose || '').trim() === 'one_click_planning'
+          )
+        );
         const errorMessage = String(job.errorMessage || job.errorCode || '任务失败').trim();
+        const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+        if (!matchedProject) {
+          if (!isTrackedOneClickPlanningJob) return;
+          const inferredSubFeature = getStructuredOneClickJobSubFeature(job.payload)
+            || normalizeJobSubFeature(module, job.taskType, job.payload);
+          const projectName = String((job.payload as any)?.shellProjectName || '').trim()
+            || prompt.slice(0, 28)
+            || MODULE_LABELS[module]
+            || '一键主详策划';
+          projects.push({
+            id: payloadProjectId || `job-${job.id}`,
+            name: projectName,
+            module,
+            status: 'error',
+            createdAt,
+            results: [{
+              id: `${job.id}-error`,
+              planId: payloadPlanId || undefined,
+              projectId: payloadProjectId || `job-${job.id}`,
+              imageUrl: '',
+              prompt: errorMessage || prompt,
+              model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+              aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
+              status: 'error',
+              createdAt,
+              module,
+              subFeature: inferredSubFeature,
+              taskId: providerTaskId || undefined,
+              backendJobId: job.id,
+              creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+              error: errorMessage,
+            }],
+            taskCount: 1,
+            completedCount: 0,
+            subFeature: inferredSubFeature,
+            sourceType: 'job',
+            backendJobId: job.id,
+            planningTaskId: providerTaskId || undefined,
+            error: errorMessage,
+          });
+          return;
+        }
         projects.push({
           ...matchedProject,
           id: matchedProject.id,
@@ -1216,7 +1267,7 @@ const mapJobs = (
             createdAt,
             module,
             subFeature: matchedProject.subFeature || subFeature,
-            taskId: String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
+            taskId: providerTaskId || undefined,
             backendJobId: job.id,
             creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
             error: errorMessage,
@@ -1226,7 +1277,8 @@ const mapJobs = (
           subFeature: matchedProject.subFeature || subFeature,
           sourceType: matchedProject.sourceType || 'persisted',
           backendJobId: job.id,
-          planningTaskId: matchedProject.planningTaskId,
+          planningTaskId: mergeIdentityTextList(matchedProject.planningTaskId, providerTaskId || undefined),
+          error: errorMessage,
         });
         return;
       }
