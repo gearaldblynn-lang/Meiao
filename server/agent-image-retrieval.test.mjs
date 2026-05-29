@@ -69,3 +69,11 @@ test('image generation analysis sends selected references as multimodal image ur
   assert.match(analysisBlock, /content: referenceImageItems\.length > 0\s*\?\s*\[/);
   assert.match(analysisBlock, /\{ type: 'text', text: userAnalysisText \}/);
 });
+
+test('image generation analysis uses fallback models when the primary analyser refuses', () => {
+  assert.match(serverSource, /const resolveImageAnalysisFallbackModels = \(version, primaryModel = ''\) =>/);
+  assert.match(serverSource, /'gpt-5-4-openai-resp'/);
+  assert.match(serverSource, /'claude-sonnet-4-6'/);
+  assert.match(serverSource, /const analysisFallbackModels = resolveImageAnalysisFallbackModels\(version, analysisModel\);/);
+  assert.match(serverSource, /payload: \{ messages: analysisMessages, model: analysisModel, fallbackModels: analysisFallbackModels \}/);
+});
