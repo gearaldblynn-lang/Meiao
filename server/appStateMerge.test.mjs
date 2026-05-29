@@ -89,6 +89,64 @@ test('mergeAppStateForStorage lets a submitted edit job replace the old result i
   assert.equal(merged.shellProjects[0].results[0].imageUrl, '');
 });
 
+test('mergeAppStateForStorage replaces stale planning placeholders with terminal backend failure', () => {
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'proj-plan-failed-retry',
+      module: 'one_click',
+      status: 'error',
+      taskCount: 2,
+      completedCount: 0,
+      subFeature: 'first_image',
+      results: [
+        {
+          id: 'task-proj-plan-failed-retry-error',
+          status: 'error',
+          imageUrl: '',
+          prompt: '共 1 张参考图，其中 1 张策划失败。',
+          module: 'one_click',
+          subFeature: 'first_image',
+        },
+        {
+          id: 'planning-job-failed-pending',
+          status: 'generating',
+          imageUrl: '',
+          prompt: '任务正在运行',
+          backendJobId: 'planning-job-failed',
+          module: 'one_click',
+          subFeature: 'first_image',
+        },
+      ],
+    }],
+  }, {
+    shellProjects: [{
+      id: 'proj-plan-failed-retry',
+      module: 'one_click',
+      status: 'error',
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      backendJobId: 'planning-job-failed',
+      results: [{
+        id: 'planning-job-failed-error',
+        status: 'error',
+        imageUrl: '',
+        prompt: 'Kie 素材上传超时',
+        error: 'Kie 素材上传超时',
+        backendJobId: 'planning-job-failed',
+        module: 'one_click',
+        subFeature: 'first_image',
+      }],
+    }],
+  });
+
+  assert.equal(merged.shellProjects[0].status, 'error');
+  assert.equal(merged.shellProjects[0].taskCount, 1);
+  assert.equal(merged.shellProjects[0].results.length, 1);
+  assert.equal(merged.shellProjects[0].results[0].backendJobId, 'planning-job-failed');
+  assert.equal(merged.shellProjects[0].results[0].status, 'error');
+});
+
 test('mergeAppStateForStorage deep-merges one-click planning project snapshots without dropping plans', () => {
   const existingPlans = Array.from({ length: 5 }, (_, index) => ({
     id: `plan-${index + 1}`,
