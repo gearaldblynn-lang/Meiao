@@ -330,6 +330,62 @@ const getProjectActiveResultIdentities = (project?: Pick<Project, 'results'> | n
     .filter(Boolean),
 );
 
+const isOneClickPlanningPlaceholderText = (value: unknown) => {
+  const normalized = String(value || '').trim();
+  return normalized === '一键主详';
+};
+
+const hasStaleOneClickPlanningPlaceholder = (project?: Pick<Project, 'module' | 'results' | 'plans'> | null) => {
+  if (project?.module !== AppModuleObj.ONE_CLICK) return false;
+  const hasPlaceholderResult = (project.results || []).some((result) => (
+    result.status === 'generating'
+    && !result.imageUrl
+    && !result.videoUrl
+    && !String(result.taskId || '').trim()
+    && Boolean(String(result.backendJobId || '').trim())
+    && isOneClickPlanningPlaceholderText(result.prompt)
+  ));
+  if (hasPlaceholderResult) return true;
+  return (project.plans || []).some((plan) => {
+    const planId = String(plan?.id || '').trim();
+    const content = String(
+      plan?.schemeContent
+      || plan?.textLayout
+      || plan?.sceneDescription
+      || plan?.styleDirection
+      || ''
+    ).trim();
+    return /-pending$/i.test(planId) && isOneClickPlanningPlaceholderText(content);
+  });
+};
+
+const getOneClickPlanningFingerprint = (project?: Pick<Project, 'plans'> | null) => (
+  (project?.plans || [])
+    .map((plan) => [
+      String(plan?.id || '').trim(),
+      String(
+        plan?.schemeContent
+        || plan?.textLayout
+        || plan?.sceneDescription
+        || plan?.styleDirection
+        || ''
+      ).trim(),
+    ].join(':'))
+    .filter(Boolean)
+    .join('|')
+);
+
+const hasPlanningSnapshotChanged = (
+  project: Project,
+  persistedProject: Project,
+) => {
+  if (project.module !== AppModuleObj.ONE_CLICK) return false;
+  if (project.status !== 'planning') return false;
+  if ((project.plans || []).length === 0) return false;
+  return hasStaleOneClickPlanningPlaceholder(persistedProject)
+    || getOneClickPlanningFingerprint(project) !== getOneClickPlanningFingerprint(persistedProject);
+};
+
 const findPersistedShellProject = (state: Partial<PersistedAppState> | null | undefined, projectId: string) => (
   (Array.isArray(state?.shellProjects) ? state?.shellProjects : [])
     .find((project) => String(project?.id || '').trim() === projectId)
@@ -343,6 +399,7 @@ const shouldPersistSyncedProjectFromJobs = (
   if (!projectId) return false;
   const persistedProject = findPersistedShellProject(state, projectId) as Project | undefined;
   if (!persistedProject) return false;
+  if (hasPlanningSnapshotChanged(project, persistedProject)) return true;
   if (project.status === 'generating') {
     const persistedActiveIdentities = getProjectActiveResultIdentities(persistedProject);
     const hasNewActiveIdentity = Array.from(getProjectActiveResultIdentities(project))

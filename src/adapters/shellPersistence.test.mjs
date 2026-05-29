@@ -225,6 +225,147 @@ test('shell persistence preserves planning credits and generated kie task ids in
   assert.equal(project?.results[0]?.creditsConsumed, 3);
 });
 
+test('shell persistence does not inherit branch-level planning ids when saving a new one-click project', () => {
+  const state = buildPersistedAppState({
+    oneClickMemory: {
+      firstImage: {
+        id: 'previous-active-project',
+        name: '上一项目',
+        status: 'generating',
+        planningTaskId: 'previous-kie-chat-id',
+        backendJobId: 'previous-backend-job',
+        projects: [],
+      },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  });
+
+  const nextState = upsertOneClickProjectIntoPersistedState(state, {
+    id: 'new-planning-project',
+    name: '新项目',
+    module: 'one_click',
+    status: 'planning',
+    createdAt: '05-29',
+    results: [],
+    plans: [{
+      id: 'new-plan-1',
+      title: '方案 1',
+      sellingPoints: [],
+      sceneDescription: '',
+      styleDirection: '',
+      colorPalette: '',
+      composition: '',
+      textLayout: '新方案内容',
+      selected: true,
+      schemeContent: '新方案内容',
+    }],
+    taskCount: 1,
+    completedCount: 0,
+    subFeature: 'first_image',
+  });
+
+  const saved = nextState.oneClickMemory.firstImage.projects[0];
+  assert.equal(saved.id, 'new-planning-project');
+  assert.equal(saved.planningTaskId, undefined);
+  assert.equal(saved.backendJobId, undefined);
+  assert.equal(saved.name, '新项目');
+  assert.equal(nextState.oneClickMemory.firstImage.planningTaskId, undefined);
+});
+
+test('shell persistence drops stale one-click planning placeholders while merging completed projects', () => {
+  const state = buildPersistedAppState({
+    oneClickMemory: {
+      firstImage: {
+        projects: [{
+          id: 'completed-project-with-stale-placeholder',
+          name: '5月29日项目5',
+          module: 'one_click',
+          status: 'generating',
+          schemes: [{
+            id: 'planning-job-pending',
+            backendJobId: 'planning-job',
+            originalContent: '一键主详',
+            editedContent: '一键主详',
+            status: 'generating',
+            selected: true,
+          }],
+        }],
+      },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+    shellProjects: [{
+      id: 'completed-project-with-stale-placeholder',
+      name: '5月29日项目5',
+      module: 'one_click',
+      status: 'generating',
+      createdAt: '05-29',
+      results: [{
+        id: 'planning-job-pending',
+        imageUrl: '',
+        prompt: '一键主详',
+        model: 'gemini-3-flash-openai',
+        aspectRatio: 'auto',
+        status: 'generating',
+        createdAt: '05-29',
+        module: 'one_click',
+        subFeature: 'first_image',
+        backendJobId: 'planning-job',
+      }],
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+    }],
+  });
+
+  const nextState = upsertOneClickProjectIntoPersistedState(state, {
+    id: 'completed-project-with-stale-placeholder',
+    name: '5月29日项目5',
+    module: 'one_click',
+    status: 'completed',
+    createdAt: '05-29',
+    planningTaskId: 'kie-chat-provider-id',
+    plans: [{
+      id: 'real-plan-1',
+      title: '首图裂变1-复刻主图参考1',
+      sellingPoints: [],
+      sceneDescription: '真实方案内容',
+      styleDirection: '',
+      colorPalette: '',
+      composition: '',
+      textLayout: '真实方案内容',
+      selected: true,
+      schemeContent: '真实方案内容',
+    }],
+    selectedPlanId: 'real-plan-1',
+    results: [{
+      id: 'image-provider-task-id',
+      planId: 'real-plan-1',
+      imageUrl: '/result.png',
+      prompt: '真实生图 prompt',
+      model: 'gpt-image-2',
+      aspectRatio: '1:1',
+      status: 'completed',
+      createdAt: '05-29',
+      module: 'one_click',
+      subFeature: 'first_image',
+      taskId: 'image-provider-task-id',
+      backendJobId: 'image-job',
+    }],
+    taskCount: 1,
+    completedCount: 1,
+    subFeature: 'first_image',
+  });
+
+  const branchProject = nextState.oneClickMemory.firstImage.projects[0];
+  assert.equal(branchProject.schemes.length, 1);
+  assert.equal(branchProject.schemes[0].id, 'real-plan-1');
+  assert.equal(branchProject.schemes.some((scheme) => scheme.editedContent === '一键主详'), false);
+});
+
 test('shell persistence keeps planned one-click schemes pending until an image provider task exists', () => {
   const state = buildPersistedAppState({
     oneClickMemory: {

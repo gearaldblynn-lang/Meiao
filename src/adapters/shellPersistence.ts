@@ -181,6 +181,8 @@ const hasCompletedMedia = (item: any) => (
   && Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl)
 );
 
+const hasAnyMedia = (item: any) => Boolean(item?.imageUrl || item?.videoUrl || item?.resultUrl);
+
 const hasProviderTaskIdentity = (item: any) => Boolean(String(item?.taskId || item?.providerTaskId || item?.kieTaskId || '').trim());
 
 const hasGeneratingState = (item: any) => (
@@ -190,16 +192,42 @@ const hasGeneratingState = (item: any) => (
 
 const hasErrorState = (item: any) => ['error', 'failed', 'interrupted'].includes(String(item?.status || ''));
 
+const isStaleOneClickPlanningPlaceholderItem = (item: any) => {
+  const content = compactKey(item?.prompt || item?.schemeContent || item?.editedContent || item?.originalContent);
+  if (content !== '一键主详') return false;
+  const id = compactKey(item?.id);
+  return (
+    (String(item?.status || '') === 'generating' || /-pending$/i.test(id))
+    && !hasAnyMedia(item)
+    && !hasProviderTaskIdentity(item)
+    && (Boolean(compactKey(item?.backendJobId)) || /-pending$/i.test(id))
+  );
+};
+
+const filterStaleOneClickPlanningPlaceholders = <T extends Record<string, any>>(items: T[] | undefined, isOneClick: boolean) => (
+  (items || []).filter((item) => !(isOneClick && isStaleOneClickPlanningPlaceholderItem(item)))
+);
+
 const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingProject: T | undefined, incomingProject: T): T => {
   const baseProject = existingProject || {} as T;
-  const results = mergeArrayByStableKeys(baseProject.results, incomingProject.results);
-  const plans = mergeArrayByStableKeys(baseProject.plans, incomingProject.plans);
-  const schemes = mergeArrayByStableKeys(baseProject.schemes, incomingProject.schemes);
+  const isOneClick = String(incomingProject.module || baseProject.module || '') === 'one_click';
+  const results = mergeArrayByStableKeys(
+    filterStaleOneClickPlanningPlaceholders(baseProject.results, isOneClick),
+    filterStaleOneClickPlanningPlaceholders(incomingProject.results, isOneClick),
+  );
+  const plans = mergeArrayByStableKeys(
+    filterStaleOneClickPlanningPlaceholders(baseProject.plans, isOneClick),
+    filterStaleOneClickPlanningPlaceholders(incomingProject.plans, isOneClick),
+  );
+  const schemes = mergeArrayByStableKeys(
+    filterStaleOneClickPlanningPlaceholders(baseProject.schemes, isOneClick),
+    filterStaleOneClickPlanningPlaceholders(incomingProject.schemes, isOneClick),
+  );
   const stateItems = results.length > 0 ? results : schemes;
   const completedCount = stateItems.filter(hasCompletedMedia).length;
   const hasGenerating = stateItems.some(hasGeneratingState);
   const hasError = stateItems.some(hasErrorState);
-  const isOneClickPlanOnly = String(incomingProject.module || baseProject.module || '') === 'one_click'
+  const isOneClickPlanOnly = isOneClick
     && plans.length > 0
     && completedCount === 0
     && !hasGenerating
@@ -246,6 +274,24 @@ const stripInlinePreviewUrl = (value: unknown) => isInlineImageDataUrl(value) ? 
 
 const cloneOneClickBranchProjectBase = (branch: Record<string, unknown> = {}) => {
   const {
+    id,
+    name,
+    status,
+    schemes,
+    plans,
+    selectedPlanId,
+    results,
+    taskCount,
+    completedCount,
+    planningTaskId,
+    backendJobId,
+    creditsConsumed,
+    completedAt,
+    error,
+    message,
+    isDraft,
+    directGeneration,
+    generationContext,
     projects,
     activeProjectId,
     isGenerating,

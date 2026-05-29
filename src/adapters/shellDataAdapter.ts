@@ -994,13 +994,106 @@ const isPlanningJobPendingPlaceholder = (
   && String(job.taskType || '') === 'kie_chat'
 );
 
+const isTrackedOneClickPlanningJob = (job: InternalJob, module: AppModule) => {
+  if (module !== MODULE_VALUES.ONE_CLICK) return false;
+  if (String(job.taskType || '') !== 'kie_chat') return false;
+  const payload = (job.payload || {}) as Record<string, unknown>;
+  return Boolean(
+    String(payload.shellProjectId || '').trim()
+    || String(payload.shellPlanningPurpose || '').trim() === 'one_click_planning'
+  );
+};
+
+const extractChatPromptText = (payload: Record<string, unknown> = {}) => {
+  const direct = String(
+    payload.prompt
+    || payload.content
+    || payload.promptText
+    || payload.script
+    || ''
+  ).trim();
+  if (direct) return direct;
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const texts: string[] = [];
+  messages.forEach((message: any) => {
+    const content = message?.content;
+    if (typeof content === 'string') {
+      const text = content.trim();
+      if (text) texts.push(text);
+      return;
+    }
+    if (!Array.isArray(content)) return;
+    content.forEach((part: any) => {
+      const text = String(part?.text || '').trim();
+      if (text) texts.push(text);
+    });
+  });
+  return texts.join('\n').trim();
+};
+
+const getPlanningProviderTaskId = (job: InternalJob) => String(
+  job.providerTaskId
+  || (job.result as any)?.providerTaskId
+  || ''
+).trim();
+
+const isOneClickPlanningPlaceholderText = (value: unknown) => {
+  const normalized = String(value || '').trim();
+  return normalized === MODULE_LABELS[MODULE_VALUES.ONE_CLICK] || normalized === '一键主详';
+};
+
+const isPlanningJobPendingPlanPlaceholder = (
+  plan: NonNullable<ShellProjectData['plans']>[number],
+  planningJobIds: Set<string>,
+) => {
+  if (!plan || planningJobIds.size === 0) return false;
+  const planId = String(plan.id || '').trim();
+  if (!planId) return false;
+  const isJobPlanId = Array.from(planningJobIds).some((id) => (
+    planId === id
+    || planId === `${id}-pending`
+    || planId === `${id}-result-1`
+    || planId.startsWith(`${id}-pending`)
+  ));
+  if (!isJobPlanId) return false;
+  const content = String(
+    plan.schemeContent
+    || plan.textLayout
+    || plan.sceneDescription
+    || plan.styleDirection
+    || ''
+  ).trim();
+  return isOneClickPlanningPlaceholderText(content);
+};
+
+const removePlanningJobPendingPlans = (
+  plans: ShellProjectData['plans'],
+  job: InternalJob,
+) => {
+  if (!Array.isArray(plans) || plans.length === 0) return plans;
+  const jobIds = new Set([
+    String(job.id || '').trim(),
+    getPlanningProviderTaskId(job),
+  ].filter(Boolean));
+  const filtered = plans.filter((plan) => !isPlanningJobPendingPlanPlaceholder(plan, jobIds));
+  return filtered.length > 0 ? filtered : undefined;
+};
+
 const removePlanningJobPendingPlaceholders = (
   project: ShellProjectData,
   job: InternalJob,
-) => ({
-  ...project,
-  results: (project.results || []).filter((result) => !isPlanningJobPendingPlaceholder(result, job)),
-});
+) => {
+  const plans = removePlanningJobPendingPlans(project.plans, job);
+  const selectedPlanId = plans?.some((plan) => String(plan.id || '') === String(project.selectedPlanId || ''))
+    ? project.selectedPlanId
+    : plans?.find((plan) => plan.selected)?.id || plans?.[0]?.id;
+  return {
+    ...project,
+    results: (project.results || []).filter((result) => !isPlanningJobPendingPlaceholder(result, job)),
+    plans,
+    selectedPlanId,
+  };
+};
 
 const mapJobs = (
   jobs: InternalJob[] = [],
@@ -1465,6 +1558,52 @@ const mapJobs = (
 
     if (projectStatus === 'generating' || projectStatus === 'planning') {
       const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
+      if (isTrackedOneClickPlanningJob(job, module)) {
+        const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
+        const cleanProject = matchedProject
+          ? removePlanningJobPendingPlaceholders(matchedProject, job)
+          : undefined;
+        const activeProjectId = cleanProject?.id || payloadProjectId || projectId;
+        const planningPrompt = extractChatPromptText((job.payload || {}) as Record<string, unknown>) || prompt;
+        const providerTaskId = getPlanningProviderTaskId(job);
+        const activeTask: ShellTaskData = {
+          id: job.id,
+          projectId: activeProjectId,
+          module,
+          type: 'plan',
+          status: taskStatusToTask(job.status),
+          title: jobTaskTitle(job, module, subFeature),
+          prompt: planningPrompt,
+          progress: job.status === 'running' ? 42 : 8,
+          createdAt,
+          subFeature: cleanProject?.subFeature || subFeature,
+          backendJobId: job.id,
+        };
+        projects.push({
+          ...(cleanProject || {}),
+          id: activeProjectId,
+          name: cleanProject?.name
+            || String((job.payload as any)?.shellProjectName || '').trim()
+            || MODULE_LABELS[module]
+            || '一键主详策划',
+          module,
+          status: projectStatus,
+          createdAt: cleanProject?.createdAt || createdAt,
+          results: cleanProject?.results || [],
+          taskCount: Math.max(
+            Number(cleanProject?.taskCount || 0) || 0,
+            cleanProject?.plans?.length || 0,
+            1,
+          ),
+          completedCount: cleanProject?.completedCount || 0,
+          subFeature: cleanProject?.subFeature || subFeature,
+          sourceType: cleanProject?.sourceType || 'job',
+          backendJobId: job.id,
+          planningTaskId: mergeIdentityTextList(cleanProject?.planningTaskId, providerTaskId || undefined),
+        });
+        tasks.push(activeTask);
+        return;
+      }
       if (
         module === MODULE_VALUES.ONE_CLICK
         && String(job.taskType || '').includes('image')
@@ -1643,6 +1782,14 @@ const isStaleRuntimePlaceholderResult = (result: Partial<ShellGeneratedResult>) 
   && !resultHasRuntimeIdentity(result)
 );
 
+const isStaleOneClickPlanningPlaceholderResult = (result: Partial<ShellGeneratedResult>) => (
+  result.status === 'generating'
+  && !resultHasMedia(result)
+  && !String(result.taskId || '').trim()
+  && Boolean(String(result.backendJobId || '').trim())
+  && isOneClickPlanningPlaceholderText(result.prompt)
+);
+
 const isSameResultPlanScope = (
   left: Partial<ShellGeneratedResult>,
   right: Partial<ShellGeneratedResult>,
@@ -1732,7 +1879,9 @@ const hasPendingSelectedPlan = (
 
 const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectData => {
   if (project.module !== MODULE_VALUES.ONE_CLICK) return project;
-  const plans = Array.isArray(project.plans) ? project.plans : [];
+  const rawPlans = Array.isArray(project.plans) ? project.plans : [];
+  const plans = rawPlans
+    .filter((plan) => !isStaleOneClickPlanningPlaceholderPlan(plan));
   const hasClientPlanIds = plans.some((plan) => {
     const id = String(plan?.id || '').trim();
     return id && !isPlanningGeneratedPlanId(id);
@@ -1749,7 +1898,8 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
 
   let results = (project.results || []).filter((result) => {
     const planId = String(result?.planId || '').trim();
-    return !planId || !droppedPlanIds.has(planId);
+    return (!planId || !droppedPlanIds.has(planId))
+      && !isStaleOneClickPlanningPlaceholderResult(result);
   });
   results = pruneSupersededOneClickResults(results);
 
@@ -1787,7 +1937,7 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
   return {
     ...project,
     status,
-    plans: filteredPlans.length > 0 ? filteredPlans : project.plans,
+    plans: filteredPlans.length > 0 ? filteredPlans : rawPlans.length > 0 ? undefined : project.plans,
     selectedPlanId,
     results,
     taskCount,
@@ -1968,6 +2118,24 @@ const isPlanningJobPendingResult = (
   && !String(result.taskId || '').trim()
 );
 
+const isStaleOneClickPlanningPlaceholderPlan = (
+  plan: NonNullable<ShellProjectData['plans']>[number],
+  planningJobIds?: Set<string>,
+) => {
+  const content = String(
+    plan?.schemeContent
+    || plan?.textLayout
+    || plan?.sceneDescription
+    || plan?.styleDirection
+    || ''
+  ).trim();
+  if (!isOneClickPlanningPlaceholderText(content)) return false;
+  const planId = String(plan?.id || '').trim();
+  if (!planId) return false;
+  if (!planningJobIds || planningJobIds.size === 0) return /-pending$/i.test(planId);
+  return isPlanningJobPendingPlanPlaceholder(plan, planningJobIds);
+};
+
 const shouldClearPlanningJobPendingResults = (
   existing: ShellProjectData,
   next: ShellProjectData,
@@ -1981,9 +2149,28 @@ const shouldClearPlanningJobPendingResults = (
   return (existing.results || []).some((result) => isPlanningJobPendingResult(result, planningJobIds));
 };
 
+const shouldClearPlanningJobPendingPlans = (
+  existing: ShellProjectData,
+  next: ShellProjectData,
+) => {
+  if (next.module !== MODULE_VALUES.ONE_CLICK) return false;
+  if (next.status !== 'planning') return false;
+  if ((next.plans || []).length === 0) return false;
+  const planningJobIds = getPlanningJobIdentities(existing, next);
+  if (planningJobIds.size === 0) return false;
+  return (existing.plans || []).some((plan) => isStaleOneClickPlanningPlaceholderPlan(plan, planningJobIds));
+};
+
 const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData): ShellProjectData => {
   if (!shouldReplaceProjectSnapshot(existing, next)) return existing;
-  const plans = mergeProjectPlansById(existing.plans, next.plans);
+  const clearPlanningJobPendingPlans = shouldClearPlanningJobPendingPlans(existing, next);
+  const planningPlanJobIds = clearPlanningJobPendingPlans
+    ? getPlanningJobIdentities(existing, next)
+    : new Set<string>();
+  const existingPlans = clearPlanningJobPendingPlans
+    ? (existing.plans || []).filter((plan) => !isStaleOneClickPlanningPlaceholderPlan(plan, planningPlanJobIds))
+    : existing.plans;
+  const plans = mergeProjectPlansById(existingPlans, next.plans);
   const replacesStalePlanningFailure = next.status === 'planning'
     && (plans || []).length > 0
     && hasOnlyStalePlanningFailureResults(existing)
