@@ -2021,6 +2021,14 @@ const getMysqlPool = async () => {
 
 const shouldSuppressAppStateBinlog = () => process.env.MEIAO_DB_SUPPRESS_APP_STATE_BINLOG !== '0';
 
+const redactAppStateWriteError = (error) => {
+  if (!error || typeof error !== 'object') return error;
+  error.sql = '[redacted app_states write sql]';
+  error.sqlMessage = String(error.sqlMessage || error.message || 'app_states write failed').slice(0, 500);
+  error.sqlState = error.sqlState ? String(error.sqlState).slice(0, 20) : error.sqlState;
+  return error;
+};
+
 const runAppStateWriteWithoutBinlog = async (pool, sql, params) => {
   const connection = await pool.getConnection();
   let binlogSuppressed = false;
@@ -2037,6 +2045,8 @@ const runAppStateWriteWithoutBinlog = async (pool, sql, params) => {
       }
     }
     return await connection.query(sql, params);
+  } catch (error) {
+    throw redactAppStateWriteError(error);
   } finally {
     if (binlogSuppressed) {
       await connection.query('SET SESSION sql_log_bin = 1').catch((error) => {

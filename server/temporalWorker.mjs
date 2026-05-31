@@ -31,6 +31,16 @@ const toActivityResult = (job) => ({
   finishedAt: job?.finishedAt ?? null,
 });
 
+const toMissingJobActivityResult = (jobId) => ({
+  jobId: String(jobId || ''),
+  status: 'cancelled',
+  providerTaskId: '',
+  errorCode: 'job_not_found',
+  errorMessage: '任务已被删除或不存在，已停止 Temporal 重试',
+  retryCount: 0,
+  finishedAt: now(),
+});
+
 const serializeJsonValue = (value) => JSON.stringify(value ?? null);
 
 const toSafeJobConcurrency = (value, fallback = DEFAULT_JOB_CONCURRENCY) => {
@@ -115,7 +125,7 @@ export const createLocalTemporalActivities = ({
     const initialStore = readStore();
     const claimedJob = claimLocalJobForExecution(initialStore, jobId);
     if (!claimedJob) {
-      throw new Error(`Temporal activity job not found: ${jobId}`);
+      return toMissingJobActivityResult(jobId);
     }
     writeStore(initialStore);
 
@@ -210,7 +220,7 @@ export const createMysqlTemporalActivities = ({
     const jobId = String(input.jobId || '').trim();
     const currentJob = await getJobById(pool, jobId);
     if (!currentJob) {
-      throw new Error(`Temporal activity job not found: ${jobId}`);
+      return toMissingJobActivityResult(jobId);
     }
     if (isTerminalJobStatus(currentJob.status)) {
       return toActivityResult(currentJob);
@@ -236,7 +246,7 @@ export const createMysqlTemporalActivities = ({
 
     const refreshedJob = await getJobById(pool, currentJob.id);
     if (!refreshedJob) {
-      throw new Error(`Temporal activity job disappeared after claim: ${currentJob.id}`);
+      return toMissingJobActivityResult(currentJob.id);
     }
 
     const controller = new AbortController();
@@ -377,7 +387,7 @@ export const createMysqlTemporalActivities = ({
     } catch (error) {
       const latestJob = await getJobById(pool, refreshedJob.id);
       if (!latestJob) {
-        throw error;
+        return toMissingJobActivityResult(refreshedJob.id);
       }
       const failure = getNextJobFailureState({
         retryCount: latestJob.retryCount ?? 0,

@@ -70,6 +70,26 @@ test('local temporal activity writes a failed terminal job without submitting up
   assert.equal(store.logs.at(-1).status, 'failed');
 });
 
+test('local temporal activity returns a terminal result when the job was already removed', async () => {
+  const store = createStore();
+  const activities = createLocalTemporalActivities({
+    readStore: () => store,
+    writeStore: () => {},
+    executeJob: async () => {
+      throw new Error('executeJob should not be called for a missing job');
+    },
+    createLog: (entry) => store.logs.push(entry),
+    findUserById: (userId) => store.users.find((user) => user.id === userId),
+  });
+
+  const result = await activities.executeLocalJobAttemptActivity({ jobId: 'deleted-job' });
+
+  assert.equal(result.jobId, 'deleted-job');
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.errorCode, 'job_not_found');
+  assert.equal(store.logs.length, 0);
+});
+
 const createMysqlHarness = (initialJob) => {
   const state = {
     job: {
@@ -152,6 +172,37 @@ const createMysqlHarness = (initialJob) => {
   };
   return { state, pool };
 };
+
+test('mysql temporal activity returns a terminal result when the job was already removed', async () => {
+  const pool = {
+    async query(sql) {
+      if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1/.test(sql)) {
+        return [[]];
+      }
+      throw new Error(`execute SQL should not be called for a missing job: ${sql}`);
+    },
+  };
+  const logs = [];
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async () => {
+      throw new Error('executeJob should not be called for a missing job');
+    },
+    createLog: async (entry) => logs.push(entry),
+    findUserById: async () => null,
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: 'deleted-job',
+    workflowId: 'meiao-job-deleted-job',
+    runId: 'run-1',
+  });
+
+  assert.equal(result.jobId, 'deleted-job');
+  assert.equal(result.status, 'cancelled');
+  assert.equal(result.errorCode, 'job_not_found');
+  assert.equal(logs.length, 0);
+});
 
 test('mysql temporal activity executes a queued db job and writes attempts/events', async () => {
   const { state, pool } = createMysqlHarness({
