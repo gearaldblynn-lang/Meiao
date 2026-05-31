@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Copy, Download, FileText, RotateCcw, Sparkles, 
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import { isImeComposing } from '../../utils/ime';
 import ConfirmDialog from './ConfirmDialog';
+import { findResultsForPlanDisplay } from './planResultMatching';
 
 export interface PlanItem {
   id: string;
@@ -105,25 +106,6 @@ const renderMedia = (result?: GeneratedResult, className = '') => {
     return src ? <video src={src} className={className} controls muted playsInline preload="metadata" /> : null;
   }
   return result.imageUrl ? <img src={result.imageUrl} alt={result.prompt} className={className} loading="lazy" decoding="async" /> : null;
-};
-
-const stableResultIdentity = (result: GeneratedResult) =>
-  String(result.backendJobId || result.taskId || result.id || '').trim();
-
-const sortResultsForSinglePlanDisplay = (results: GeneratedResult[]) => {
-  if (results.length <= 1) return results;
-  return results
-    .map((result, index) => ({ result, index }))
-    .sort((left, right) => {
-      const leftIdentity = stableResultIdentity(left.result);
-      const rightIdentity = stableResultIdentity(right.result);
-      if (leftIdentity && rightIdentity && leftIdentity !== rightIdentity) {
-        return leftIdentity.localeCompare(rightIdentity);
-      }
-      if (leftIdentity !== rightIdentity) return leftIdentity ? -1 : 1;
-      return left.index - right.index;
-    })
-    .map(({ result }) => result);
 };
 
 const normalizeAspectRatio = (value?: string) => {
@@ -307,11 +289,7 @@ const PlanEditor: React.FC<Props> = ({
   );
 
   const findResultsForPlan = (plan: PlanItem, index: number) => {
-    if (!results || results.length === 0) return [];
-    const byPlanId = results.filter((result) => result.planId === plan.id);
-    if (byPlanId.length > 0) return sortResultsForSinglePlanDisplay(byPlanId);
-    const hasMappedResults = results.some((result) => Boolean(result.planId));
-    return hasMappedResults ? [] : (results[index] ? [results[index]] : []);
+    return findResultsForPlanDisplay(plans, results || [], plan, index) as GeneratedResult[];
   };
 
   const findResult = (plan: PlanItem, index: number) => findResultsForPlan(plan, index)?.[0] || null;

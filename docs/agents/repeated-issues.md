@@ -110,6 +110,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Files/tests: `server/jobRuntime.mjs`, `server/jobRuntime.test.mjs`, `server/jobManager.mjs`
 - Avoid next time: worker 遇到数据库连接类错误时不要当供应商或任务逻辑失败处理；日志看板里若部署后仍高频出现，应重点查云上重启原因、MySQL idle timeout 和连接池生命周期，而不是只改业务流程。
 
+## 2026-05-31 - Generated one-click media must not depend only on current plan ids
+
+- Symptom: 洛克账号一键主详项目卡显示已生成，积分已消耗且可批量下载；打开详情后部分方案仍显示“待生成图”。
+- Environment: cloud production frontend shell / one_click project detail modal
+- Root cause: 详情页 `PlanEditor` 只按当前 `plan.id === result.planId` 匹配生成结果。一键主详历史项目和重复生成项目里，结果图片可能已经保存到 `schemes[].resultUrl` 并进入 `project.results`，但它的 `planId` 仍是旧策划批次或 provider 任务 id；此时批量下载按 `results` 可用，详情方案卡却因为 planId 错位显示待生成。
+- Fix: 抽出 `findResultsForPlanDisplay`，先按 planId 精确匹配；精确匹配不到时，把未归属到当前任一方案的 orphan media results 按未匹配方案顺序兜底展示，避免已有图片被隐藏。
+- Regression check: `node --test src/shell/components/planResultMatching.test.mjs`
+- Files/tests: `src/shell/components/PlanEditor.tsx`, `src/shell/components/planResultMatching.ts`, `src/shell/components/planResultMatching.test.mjs`
+- Avoid next time: 详情展示不能只以当前策划 id 判断是否“已出图”；只要结果有真实媒体 URL、backendJobId 或 provider task id，就必须有可见路径。排查同类问题先对比 `plans[].id`、`results[].planId`、`schemes[].resultUrl` 和批量下载列表。
+
 ## 2026-05-25 - Clipboard API must be treated as optional
 
 - Symptom: 云上前端日志出现 `Cannot read properties of undefined (reading 'writeText')`，集中在复制提示词、复制文案、复制任务/图片链接等点击入口。
