@@ -4,6 +4,7 @@ import {
   BuyerShowSubMode,
   GenerationQuality,
   GlobalApiConfig,
+  KieAiResult,
   KieAiModel,
   ModuleConfig,
   OneClickConfig,
@@ -234,6 +235,27 @@ const firstMaterialUrl = (items: ShellMaterialInput[] | undefined, publicBaseUrl
 
 const getImageResultModelLabel = (config: ModuleConfig) =>
   config.model === 'nano-banana-2' ? 'Nano Banana 2' : config.model === 'gpt-image-2-secondary' ? 'GPT Image 2（副）' : 'GPT Image 2';
+
+const normalizeKieAiResult = (result: Partial<KieAiResult> | null | undefined): KieAiResult => {
+  const status = String(result?.status || '');
+  if (['success', 'error', 'generating', 'interrupted', 'task_not_found'].includes(status)) {
+    return {
+      ...(result || {}),
+      imageUrl: String(result?.imageUrl || ''),
+      status: status as KieAiResult['status'],
+    };
+  }
+  return {
+    imageUrl: String(result?.imageUrl || ''),
+    videoUrl: result?.videoUrl,
+    taskId: result?.taskId,
+    backendJobId: result?.backendJobId,
+    status: 'error',
+    message: String(result?.message || '图像任务返回空结果，请稍后重试或同步任务。'),
+    errorCode: String(result?.errorCode || 'empty_generation_result'),
+    creditsConsumed: result?.creditsConsumed,
+  };
+};
 
 const getOneClickProductUrls = (input: ShellGenerateInput) => (input.materials.product || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
 const getOneClickReferenceUrls = (input: ShellGenerateInput) => [
@@ -677,7 +699,7 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
       : undefined,
   };
 
-  const result = await processWithKieAi(
+  const rawResult = await processWithKieAi(
     imageUrls,
     apiConfig,
     config,
@@ -697,6 +719,7 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
     },
     input.onJobCreated,
   );
+  const result = normalizeKieAiResult(rawResult);
   const finalImageUrl = result.status === 'success' && result.imageUrl
     ? await maybeResizeAndPersistImageResult(
         result.imageUrl,

@@ -58,5 +58,13 @@ test('one click shell planning jobs carry project metadata so completed text job
   assert.match(shellAppSource, /taskMetadata:\s*\{[\s\S]*shellPlanningPurpose:\s*'one_click_planning'[\s\S]*shellProjectId:\s*projectId[\s\S]*subFeature:\s*targetSubFeature[\s\S]*\}/);
   assert.match(shellWorkflowSource, /input\.taskMetadata/);
   assert.match(arkServiceSource, /jobMetadata:\s*Record<string,\s*unknown>/);
-  assert.match(arkServiceSource, /\.\.\.jobMetadata[\s\S]*model,[\s\S]*messages:/);
+  assert.match(arkServiceSource, /\.\.\.jobMetadata[\s\S]*model: selectedModel,[\s\S]*messages:/);
+});
+
+test('one click image generation normalizes empty provider results before reading status', () => {
+  assert.match(shellWorkflowSource, /const normalizeKieAiResult = \(result: Partial<KieAiResult> \| null \| undefined\): KieAiResult =>/);
+  assert.match(shellWorkflowSource, /errorCode: String\(result\?\.errorCode \|\| 'empty_generation_result'\)/);
+  assert.match(shellWorkflowSource, /const rawResult = await processWithKieAi\(/);
+  assert.match(shellWorkflowSource, /const result = normalizeKieAiResult\(rawResult\);/);
+  assert.doesNotMatch(shellWorkflowSource, /const result = await processWithKieAi\(/);
 });

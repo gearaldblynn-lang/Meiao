@@ -15,6 +15,15 @@ test('mysql app state writes suppress binary logging for full state payloads', (
   assert.match(source, /await runAppStateWriteWithoutBinlog\(pool,[\s\S]*INSERT INTO app_states \(user_id, state_json, updated_at\)[\s\S]*ON DUPLICATE KEY UPDATE state_json = VALUES\(state_json\), updated_at = VALUES\(updated_at\)/);
 });
 
+test('mysql app state write failures redact oversized state payloads before logging', () => {
+  const source = serverSource();
+
+  assert.match(source, /const redactAppStateWriteError = \(error\) =>/);
+  assert.match(source, /error\.sql = '\[redacted app_states write sql\]'/);
+  assert.match(source, /error\.sqlMessage = String\(error\.sqlMessage \|\| error\.message \|\| 'app_states write failed'\)\.slice\(0, 500\)/);
+  assert.match(source, /catch \(error\) \{[\s\S]*throw redactAppStateWriteError\(error\);[\s\S]*\} finally \{/);
+});
+
 test('mergeAppStateForStorage preserves existing project cards when a draft-only write arrives', () => {
   const merged = mergeAppStateForStorage({
     shellProjects: [{
