@@ -4634,6 +4634,36 @@ const setChatProgress = (clientRequestId, progress) => {
 const activeDbChatReplyRequests = new Map();
 const activeLocalChatReplyRequests = new Map();
 const buildChatRequestKey = (sessionId, clientRequestId) => `${sessionId || ''}:${clientRequestId || ''}`;
+const isAgentChatRunPendingMetadata = (metadata) => {
+  const status = String(metadata?.status || '').trim().toLowerCase();
+  return Boolean(metadata?.pending) || status === 'pending' || status === 'running';
+};
+const getAgentChatClientRequestId = (message) => String(message?.metadata?.clientRequestId || '').trim();
+const buildPendingAgentChatContent = (requestMode) => (
+  requestMode === 'image_generation' ? '需求分析中' : '思考中'
+);
+const buildActiveAgentChatRunError = () => {
+  const error = new Error('当前会话已有任务处理中，请等待完成后再发送新任务。');
+  error.code = 'agent_chat_run_active';
+  error.statusCode = 409;
+  return error;
+};
+const findPendingDbChatRunForSession = async (user, sessionId, excludeClientRequestId = '') => {
+  const pool = await getMysqlPool();
+  const [rows] = await pool.query(
+    `SELECT * FROM chat_messages
+     WHERE session_id = ? AND user_id = ? AND role = 'assistant'
+     ORDER BY created_at DESC
+     LIMIT 30`,
+    [sessionId, user.id]
+  );
+  return rows
+    .map(mapDbChatMessageRow)
+    .find((message) => (
+      isAgentChatRunPendingMetadata(message.metadata)
+      && getAgentChatClientRequestId(message) !== String(excludeClientRequestId || '').trim()
+    )) || null;
+};
 const sanitizeAgentAssistantContent = (content) =>
   String(content || '')
     .replace(/(^|\n)\s*final_answer\s*(?=\n|$)/gi, '$1')
@@ -4647,10 +4677,13 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   const runId = `run-${clientRequestId}`;
   const session = await getDbChatSessionById(user, sessionId);
   if (!session) return null;
-  const existingExchange = await findDbChatExchangeByClientRequestId(user, sessionId, clientRequestId);
-  if (existingExchange) return existingExchange;
   const activeKey = buildChatRequestKey(sessionId, clientRequestId);
   if (activeDbChatReplyRequests.has(activeKey)) return activeDbChatReplyRequests.get(activeKey);
+  const existingExchange = await findDbChatExchangeByClientRequestId(user, sessionId, clientRequestId);
+  if (existingExchange && !isAgentChatRunPendingMetadata(existingExchange.assistantMessage?.metadata)) return existingExchange;
+  const activeSessionRun = await findPendingDbChatRunForSession(user, sessionId, clientRequestId);
+  if (activeSessionRun) throw buildActiveAgentChatRunError();
+  if (existingExchange) return existingExchange;
 
   const promise = (async () => {
   const version = await getDbAgentVersionById(session.agentVersionId);
@@ -4677,6 +4710,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   const pool = await getMysqlPool();
   const now = Date.now();
   const userMessageId = createEntityId();
+  const assistantMessageId = createEntityId();
   const history = await listDbChatMessages(user, sessionId);
   const summaryNeeded = history.filter((item) => item.role !== 'system').length > Number(version.contextPolicy.summaryTriggerThreshold || 10);
   const summary = summaryNeeded ? buildConversationSummary(history, Number(version.contextPolicy.maxSummaryChars || 1200)) : (session.summary || '');
@@ -4689,46 +4723,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         maxContextChars: Math.min(Number(version.retrievalPolicy?.maxContextChars || 2400), 1800),
       })
     : [];
-  const result = requestMode === 'image_generation'
-    ? await buildImageConversationResult({
-        user,
-        agent,
-        version,
-        priorMessages: history,
-        currentMessage: content,
-        sessionId,
-        selectedModelOverride: selectedModel,
-        attachments,
-        systemSettings,
-        knowledgeChunks: imageKnowledgeChunks,
-        conversationSummary: summary,
-      })
-    : await runAgentConversation({
-        user,
-        agent,
-        version,
-        priorMessages: history,
-        currentMessage: content,
-        sessionId,
-        selectedModelOverride: selectedModel,
-        attachments,
-        reasoningLevel: payload?.reasoningLevel || null,
-        webSearchEnabled: Boolean(payload?.webSearchEnabled),
-        onProgress: (progress) => {
-          setChatProgress(clientRequestId, progress);
-          if (sendEvent) sendEvent('progress', progress);
-        },
-      });
-  const assistantMessageId = createEntityId();
-  const assistantAttachments = Array.isArray(result.imageResultUrls) && result.imageResultUrls.length > 0
-    ? result.imageResultUrls.map((url, index) => ({
-        name: `生成结果${index + 1}`,
-        url: String(url || ''),
-        kind: 'image',
-      }))
-    : null;
-  const assistantCreatedAt = Date.now();
-  const contextTrace = {
+  const contextTraceBase = {
     sessionId,
     clientRequestId,
     runId,
@@ -4736,11 +4731,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     historyMessageCount: history.length,
     recentHistoryMessageIds: history.slice(-8).map((message) => message.id).filter(Boolean),
     summaryUsed: Boolean(summary),
-    knowledgeChunkCount: requestMode === 'image_generation'
-      ? imageKnowledgeChunks.length
-      : Array.isArray(result.retrievalSummary)
-        ? result.retrievalSummary.length
-        : 0,
+    knowledgeChunkCount: requestMode === 'image_generation' ? imageKnowledgeChunks.length : 0,
     attachmentRefs: attachments.map((item) => ({
       name: item.name,
       kind: item.kind,
@@ -4750,17 +4741,168 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     })),
     imageMode: requestMode === 'image_generation',
   };
-  const userMetadata = {
+  const pendingUserMetadata = {
     selectedModel,
     reasoningLevel: payload?.reasoningLevel || null,
     webSearchEnabled: Boolean(payload?.webSearchEnabled),
     requestMode,
     clientRequestId,
     runId,
+    status: 'pending',
+    phase: 'submitted',
+    pending: true,
+    contextTrace: contextTraceBase,
+    messageIds: { userMessageId, assistantMessageId },
+  };
+  const pendingAssistantMetadata = {
+    selectedModel,
+    fallbackFrom: null,
+    usedRetrieval: false,
+    reasoningLevel: payload?.reasoningLevel || null,
+    webSearchEnabled: Boolean(payload?.webSearchEnabled),
+    requestMode,
+    clientRequestId,
+    runId,
+    status: 'pending',
+    phase: requestMode === 'image_generation' ? 'analyzing' : 'thinking',
+    pending: true,
+    progress: true,
+    progressStage: requestMode === 'image_generation' ? 'analyzing' : 'thinking',
+    contextTrace: contextTraceBase,
+    messageIds: { userMessageId, assistantMessageId },
+    imagePlan: null,
+    imageResultUrls: null,
+    retrievalSummary: [],
+  };
+  const pendingConnection = await pool.getConnection();
+  try {
+    await pendingConnection.beginTransaction();
+    await pendingConnection.query(
+      `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [userMessageId, sessionId, user.id, 'user', content, JSON.stringify(attachments), JSON.stringify(pendingUserMetadata), now]
+    );
+    await pendingConnection.query(
+      `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [assistantMessageId, sessionId, user.id, 'assistant', buildPendingAgentChatContent(requestMode), JSON.stringify(null), JSON.stringify(pendingAssistantMetadata), now + 1]
+    );
+    await pendingConnection.query(
+      'UPDATE chat_sessions SET title = ?, selected_model = ?, reasoning_level = ?, web_search_enabled = ?, last_image_mode = ?, updated_at = ? WHERE id = ?',
+      [session.title === '新会话' ? content.slice(0, 24) : session.title, selectedModel || '', payload?.reasoningLevel ? String(payload.reasoningLevel) : null, requestMode === 'image_generation' ? 0 : payload?.webSearchEnabled ? 1 : 0, requestMode === 'image_generation' ? 1 : 0, now, sessionId]
+    );
+    await pendingConnection.commit();
+  } catch (error) {
+    await pendingConnection.rollback();
+    throw error;
+  } finally {
+    pendingConnection.release();
+  }
+  const markDbChatRunFailed = async (error) => {
+    const errorMessage = error?.message || '聊天回复失败。';
+    const failedUserMetadata = {
+      ...pendingUserMetadata,
+      status: 'failed',
+      phase: 'failed',
+      pending: false,
+      errorMessage,
+      errorCode: error?.code || '',
+    };
+    const failedAssistantMetadata = {
+      ...pendingAssistantMetadata,
+      status: 'failed',
+      phase: 'failed',
+      pending: false,
+      progress: false,
+      progressStage: 'failed',
+      errorMessage,
+      errorCode: error?.code || '',
+      providerStage: error?.providerStage || '',
+      providerStatus: error?.providerStatus || '',
+      providerTaskId: error?.providerTaskId || '',
+    };
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.query(
+        'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+        [JSON.stringify(failedUserMetadata), userMessageId, sessionId, user.id]
+      );
+      await connection.query(
+        'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+        [errorMessage, JSON.stringify(null), JSON.stringify(failedAssistantMetadata), assistantMessageId, sessionId, user.id]
+      );
+      await connection.query('UPDATE chat_sessions SET updated_at = ? WHERE id = ?', [Date.now(), sessionId]);
+      await connection.commit();
+    } catch (updateError) {
+      await connection.rollback();
+      console.warn('[agent-chat] failed to persist failed pending message', {
+        sessionId,
+        clientRequestId,
+        message: updateError?.message || String(updateError || ''),
+      });
+    } finally {
+      connection.release();
+    }
+  };
+  let result;
+  try {
+    result = requestMode === 'image_generation'
+      ? await buildImageConversationResult({
+          user,
+          agent,
+          version,
+          priorMessages: history,
+          currentMessage: content,
+          sessionId,
+          selectedModelOverride: selectedModel,
+          attachments,
+          systemSettings,
+          knowledgeChunks: imageKnowledgeChunks,
+          conversationSummary: summary,
+        })
+      : await runAgentConversation({
+          user,
+          agent,
+          version,
+          priorMessages: history,
+          currentMessage: content,
+          sessionId,
+          selectedModelOverride: selectedModel,
+          attachments,
+          reasoningLevel: payload?.reasoningLevel || null,
+          webSearchEnabled: Boolean(payload?.webSearchEnabled),
+          onProgress: (progress) => {
+            setChatProgress(clientRequestId, progress);
+            if (sendEvent) sendEvent('progress', progress);
+          },
+        });
+  } catch (error) {
+    await markDbChatRunFailed(error);
+    throw error;
+  }
+  const assistantAttachments = Array.isArray(result.imageResultUrls) && result.imageResultUrls.length > 0
+    ? result.imageResultUrls.map((url, index) => ({
+        name: `生成结果${index + 1}`,
+        url: String(url || ''),
+        kind: 'image',
+      }))
+    : null;
+  const assistantCreatedAt = Date.now();
+  const contextTrace = {
+    ...contextTraceBase,
+    knowledgeChunkCount: requestMode === 'image_generation'
+      ? imageKnowledgeChunks.length
+      : Array.isArray(result.retrievalSummary)
+        ? result.retrievalSummary.length
+        : 0,
+  };
+  const userMetadata = {
+    ...pendingUserMetadata,
     status: 'completed',
+    pending: false,
     phase: 'submitted',
     contextTrace,
-    messageIds: { userMessageId },
   };
   const assistantMetadata = {
     selectedModel: result.selectedModel,
@@ -4772,6 +4914,8 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     clientRequestId,
     runId,
     status: 'completed',
+    pending: false,
+    progress: false,
     phase: 'completed',
     contextTrace,
     messageIds: { userMessageId, assistantMessageId },
@@ -4783,14 +4927,12 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   try {
     await connection.beginTransaction();
     await connection.query(
-      `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [userMessageId, sessionId, user.id, 'user', content, JSON.stringify(attachments), JSON.stringify(userMetadata), now]
+      'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+      [JSON.stringify(userMetadata), userMessageId, sessionId, user.id]
     );
     await connection.query(
-      `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [assistantMessageId, sessionId, user.id, 'assistant', result.content, JSON.stringify(assistantAttachments), JSON.stringify(assistantMetadata), assistantCreatedAt]
+      'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ?, created_at = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+      [result.content, JSON.stringify(assistantAttachments), JSON.stringify(assistantMetadata), assistantCreatedAt, assistantMessageId, sessionId, user.id]
     );
     await connection.query(
       'UPDATE chat_sessions SET title = ?, summary = ?, selected_model = ?, reasoning_level = ?, web_search_enabled = ?, last_image_mode = ?, updated_at = ? WHERE id = ?',
@@ -7342,7 +7484,7 @@ const handleMysqlRequest = async (req, res, url) => {
       const session = await getDbChatSessionById(user, sessionId);
       const version = session ? await getDbAgentVersionById(session.agentVersionId) : null;
       const agent = session ? await getDbAgentById(session.agentId) : null;
-      if (session && version && agent) {
+      if (session && version && agent && error?.code !== 'agent_chat_run_active') {
         await createDbLog({
           user,
           level: 'error',
@@ -7361,7 +7503,7 @@ const handleMysqlRequest = async (req, res, url) => {
           }),
         }).catch(() => null);
       }
-      json(res, 500, { message: error?.message || '聊天回复失败。' });
+      json(res, error?.statusCode || 500, { message: error?.message || '聊天回复失败。', code: error?.code || '' });
     }
     return;
   }
@@ -8951,7 +9093,13 @@ const handleLocalRequest = async (req, res, url) => {
       .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
     const existingUserMessage = existingMessages.find((item) => item.role === 'user') || null;
     const existingAssistantMessage = existingMessages.find((item) => item.role === 'assistant') || null;
-    if (existingUserMessage && existingAssistantMessage) {
+    const activeKey = buildChatRequestKey(sessionId, clientRequestId);
+    if (activeLocalChatReplyRequests.has(activeKey)) {
+      const response = await activeLocalChatReplyRequests.get(activeKey);
+      json(res, response.status, response.body);
+      return;
+    }
+    if (existingUserMessage && existingAssistantMessage && !isAgentChatRunPendingMetadata(existingAssistantMessage.metadata)) {
       json(res, 201, {
         userMessage: existingUserMessage,
         assistantMessage: existingAssistantMessage,
@@ -8965,15 +9113,33 @@ const handleLocalRequest = async (req, res, url) => {
       });
       return;
     }
-    const activeKey = buildChatRequestKey(sessionId, clientRequestId);
-    if (activeLocalChatReplyRequests.has(activeKey)) {
-      const response = await activeLocalChatReplyRequests.get(activeKey);
-      json(res, response.status, response.body);
+    const activeSessionRun = (store.chatMessages || [])
+      .filter((item) => item.sessionId === sessionId && item.userId === user.id && item.role === 'assistant')
+      .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
+      .find((item) => isAgentChatRunPendingMetadata(item.metadata) && getAgentChatClientRequestId(item) !== clientRequestId);
+    if (activeSessionRun) {
+      json(res, 409, { message: buildActiveAgentChatRunError().message, code: 'agent_chat_run_active' });
+      return;
+    }
+    if (existingUserMessage && existingAssistantMessage) {
+      json(res, 201, {
+        userMessage: existingUserMessage,
+        assistantMessage: existingAssistantMessage,
+        usage: {
+          idempotent: true,
+          pending: true,
+          clientRequestId,
+          selectedModel: existingAssistantMessage.metadata?.selectedModel || existingUserMessage.metadata?.selectedModel || selectedModel,
+          requestType: existingAssistantMessage.metadata?.requestMode || existingUserMessage.metadata?.requestMode || requestMode,
+          sessionId,
+        },
+      });
       return;
     }
     const promise = (async () => {
     const now = Date.now();
-    const userMessage = { id: createEntityId(), sessionId, userId: user.id, role: 'user', content, attachments, metadata: { selectedModel, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode, clientRequestId }, createdAt: now };
+    const userMessageId = createEntityId();
+    const assistantMessageId = createEntityId();
     const history = (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
     const systemSettings = getUserScopedSystemSettings(getLocalSystemSettings(store), user);
     const imageKnowledgeChunks = requestMode === 'image_generation' && version.retrievalPolicy?.enabled
@@ -8984,6 +9150,85 @@ const handleLocalRequest = async (req, res, url) => {
           maxContextChars: Math.min(Number(version.retrievalPolicy?.maxContextChars || 2400), 1800),
         })
       : [];
+    const runId = `run-${clientRequestId}`;
+    const contextTraceBase = {
+      sessionId,
+      clientRequestId,
+      runId,
+      requestMode,
+      historyMessageCount: history.length,
+      recentHistoryMessageIds: history.slice(-8).map((message) => message.id).filter(Boolean),
+      summaryUsed: Boolean(session.summary),
+      knowledgeChunkCount: requestMode === 'image_generation' ? imageKnowledgeChunks.length : 0,
+      attachmentRefs: attachments.map((item) => ({
+        name: item.name,
+        kind: item.kind,
+        url: item.url || '',
+        assetId: item.assetId || '',
+        mimeType: item.mimeType || '',
+      })),
+      imageMode: requestMode === 'image_generation',
+    };
+    const userMessage = {
+      id: userMessageId,
+      sessionId,
+      userId: user.id,
+      role: 'user',
+      content,
+      attachments,
+      metadata: {
+        selectedModel,
+        reasoningLevel: body?.reasoningLevel || null,
+        webSearchEnabled: Boolean(body?.webSearchEnabled),
+        requestMode,
+        clientRequestId,
+        runId,
+        status: 'pending',
+        phase: 'submitted',
+        pending: true,
+        contextTrace: contextTraceBase,
+        messageIds: { userMessageId, assistantMessageId },
+      },
+      createdAt: now,
+    };
+    const assistantMessage = {
+      id: assistantMessageId,
+      sessionId,
+      userId: user.id,
+      role: 'assistant',
+      content: buildPendingAgentChatContent(requestMode),
+      attachments: [],
+      metadata: {
+        selectedModel,
+        fallbackFrom: null,
+        usedRetrieval: false,
+        reasoningLevel: body?.reasoningLevel || null,
+        webSearchEnabled: Boolean(body?.webSearchEnabled),
+        requestMode,
+        clientRequestId,
+        runId,
+        status: 'pending',
+        phase: requestMode === 'image_generation' ? 'analyzing' : 'thinking',
+        pending: true,
+        progress: true,
+        progressStage: requestMode === 'image_generation' ? 'analyzing' : 'thinking',
+        contextTrace: contextTraceBase,
+        messageIds: { userMessageId, assistantMessageId },
+        imagePlan: null,
+        imageResultUrls: null,
+        retrievalSummary: [],
+      },
+      createdAt: now + 1,
+    };
+    store.chatMessages.push(userMessage);
+    store.chatMessages.push(assistantMessage);
+    session.title = session.title === '新会话' ? content.slice(0, 24) : session.title;
+    session.selectedModel = selectedModel || '';
+    session.reasoningLevel = capability?.supportsReasoningLevel && body?.reasoningLevel ? String(body.reasoningLevel) : null;
+    session.webSearchEnabled = requestMode === 'image_generation' ? false : capability?.supportsWebSearch ? Boolean(body?.webSearchEnabled) : false;
+    session.lastImageMode = requestMode === 'image_generation';
+    session.updatedAt = now;
+    writeLocalStore(store);
     try {
       const result = requestMode === 'image_generation'
         ? await buildImageConversationResult({
@@ -9020,18 +9265,42 @@ const handleLocalRequest = async (req, res, url) => {
             kind: 'image',
           }))
         : null;
-      const assistantMessage = {
-        id: createEntityId(),
-        sessionId,
-        userId: user.id,
-        role: 'assistant',
-        content: result.content,
-        attachments: assistantAttachments,
-        metadata: { selectedModel: result.selectedModel, fallbackFrom: result.fallbackFrom || null, usedRetrieval: result.usedRetrieval, reasoningLevel: body?.reasoningLevel || null, webSearchEnabled: Boolean(body?.webSearchEnabled), requestMode, clientRequestId, imagePlan: result.imagePlan || null, imageResultUrls: result.imageResultUrls || null, retrievalSummary: result.retrievalSummary || [] },
-        createdAt: Date.now(),
+      const completedContextTrace = {
+        ...contextTraceBase,
+        knowledgeChunkCount: requestMode === 'image_generation'
+          ? imageKnowledgeChunks.length
+          : Array.isArray(result.retrievalSummary)
+            ? result.retrievalSummary.length
+            : 0,
       };
-      store.chatMessages.push(userMessage);
-      store.chatMessages.push(assistantMessage);
+      userMessage.metadata = {
+        ...userMessage.metadata,
+        status: 'completed',
+        pending: false,
+        contextTrace: completedContextTrace,
+      };
+      assistantMessage.content = result.content;
+      assistantMessage.attachments = assistantAttachments;
+      assistantMessage.metadata = {
+        selectedModel: result.selectedModel,
+        fallbackFrom: result.fallbackFrom || null,
+        usedRetrieval: result.usedRetrieval,
+        reasoningLevel: body?.reasoningLevel || null,
+        webSearchEnabled: Boolean(body?.webSearchEnabled),
+        requestMode,
+        clientRequestId,
+        runId,
+        status: 'completed',
+        phase: 'completed',
+        pending: false,
+        progress: false,
+        contextTrace: completedContextTrace,
+        messageIds: { userMessageId, assistantMessageId },
+        imagePlan: result.imagePlan || null,
+        imageResultUrls: result.imageResultUrls || null,
+        retrievalSummary: result.retrievalSummary || [],
+      };
+      assistantMessage.createdAt = Date.now();
       session.title = session.title === '新会话' ? content.slice(0, 24) : session.title;
       session.selectedModel = selectedModel || '';
       session.reasoningLevel = capability?.supportsReasoningLevel && body?.reasoningLevel ? String(body.reasoningLevel) : null;
@@ -9075,6 +9344,30 @@ const handleLocalRequest = async (req, res, url) => {
       writeLocalStore(store);
       return { status: 201, body: { userMessage, assistantMessage, usage: result } };
     } catch (error) {
+      const errorMessage = error?.message || '聊天回复失败。';
+      userMessage.metadata = {
+        ...userMessage.metadata,
+        status: 'failed',
+        phase: 'failed',
+        pending: false,
+        errorMessage,
+        errorCode: error?.code || '',
+      };
+      assistantMessage.content = errorMessage;
+      assistantMessage.attachments = [];
+      assistantMessage.metadata = {
+        ...assistantMessage.metadata,
+        status: 'failed',
+        phase: 'failed',
+        pending: false,
+        progress: false,
+        progressStage: 'failed',
+        errorMessage,
+        errorCode: error?.code || '',
+        providerStage: error?.providerStage || '',
+        providerStatus: error?.providerStatus || '',
+        providerTaskId: error?.providerTaskId || '',
+      };
       appendLocalLog(store, {
         user,
         level: 'error',
@@ -9093,7 +9386,7 @@ const handleLocalRequest = async (req, res, url) => {
         }),
       });
       writeLocalStore(store);
-      return { status: 500, body: { message: error?.message || '聊天回复失败。' } };
+      return { status: error?.statusCode || 500, body: { message: errorMessage, code: error?.code || '' } };
     }
     })();
     activeLocalChatReplyRequests.set(activeKey, promise);

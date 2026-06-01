@@ -26,6 +26,24 @@ test('agent chat persists the user and assistant exchange atomically after provi
   );
 });
 
+test('agent chat keeps running requests durable across refresh and blocks parallel sends', () => {
+  assert.match(source, /const isAgentChatRunPendingMetadata = \(metadata\) =>/);
+  assert.match(source, /const findPendingDbChatRunForSession = async \(user, sessionId, excludeClientRequestId = ''\) =>/);
+  assert.match(source, /if \(activeSessionRun\) throw buildActiveAgentChatRunError\(\);/);
+  assert.match(source, /buildPendingAgentChatContent\(requestMode\)/);
+  assert.match(source, /status: 'pending'[\s\S]{0,260}progressStage: requestMode === 'image_generation' \? 'analyzing' : 'thinking'/);
+  assert.match(source, /const markDbChatRunFailed = async \(error\) =>/);
+  assert.match(source, /UPDATE chat_messages SET content = \?, attachments_json = \?, metadata_json = \?, created_at = \?/);
+});
+
+test('local json chat mode also persists pending messages before provider work', () => {
+  assert.match(source, /const activeSessionRun = \(store\.chatMessages \|\| \[\]\)/);
+  assert.match(source, /json\(res, 409, \{ message: buildActiveAgentChatRunError\(\)\.message, code: 'agent_chat_run_active' \}\);/);
+  assert.match(source, /store\.chatMessages\.push\(userMessage\);\s*store\.chatMessages\.push\(assistantMessage\);/);
+  assert.match(source, /assistantMessage\.content = result\.content;/);
+  assert.match(source, /assistantMessage\.content = errorMessage;/);
+});
+
 test('agent chat auxiliary logging and asset persistence cannot fail the main reply', () => {
   assert.match(source, /void createDbAgentUsageLog\(user, agent, version, result, 'success'\)\.catch/);
   assert.match(source, /console\.warn\('\[agent-chat\] usage log write failed'/);

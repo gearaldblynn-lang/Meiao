@@ -590,7 +590,7 @@ const ChatComposer: React.FC<Props> = ({
           </div>
         ) : null}
 
-        {sending ? (
+        {sending && onInterruptSend ? (
           <button
             type="button"
             onClick={onInterruptSend}
@@ -599,6 +599,16 @@ const ChatComposer: React.FC<Props> = ({
             title="中断发送"
           >
             <LegacyFaIcon icon="fa-stop" className="text-[11px]" />
+          </button>
+        ) : sending ? (
+          <button
+            type="button"
+            disabled
+            className="absolute bottom-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-500 text-[13px] font-semibold text-white opacity-70"
+            aria-label="任务处理中"
+            title="任务处理中，完成后会自动同步"
+          >
+            <LegacyFaIcon icon="fa-spinner" className="animate-spin text-[11px]" />
           </button>
         ) : (
           <button
