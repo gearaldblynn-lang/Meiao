@@ -902,6 +902,34 @@ const loadShellPersistenceTools = () => {
   return shellPersistenceToolsPromise;
 };
 
+type ShellWorkflowModule = typeof import('./adapters/shellWorkflow');
+
+let shellWorkflowModulePromise: Promise<ShellWorkflowModule> | null = null;
+
+const isDynamicImportFetchError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i.test(message);
+};
+
+const loadShellWorkflowModule = async () => {
+  if (!shellWorkflowModulePromise) {
+    shellWorkflowModulePromise = import('./adapters/shellWorkflow');
+  }
+  try {
+    return await shellWorkflowModulePromise;
+  } catch (error) {
+    shellWorkflowModulePromise = null;
+    if (isDynamicImportFetchError(error) && typeof window !== 'undefined') {
+      console.warn('[shell-workflow] stale frontend asset detected, reloading page', error);
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 80);
+      return new Promise<never>(() => undefined);
+    }
+    throw error;
+  }
+};
+
 const MODULE_NAMES: Record<string, string> = {
   [AppModuleObj.AGENT_CENTER]: '智能体中心',
   [AppModuleObj.ONE_CLICK]: '一键主详',
@@ -2583,7 +2611,7 @@ const AppContent: React.FC<{
             originalHeight: dimensions?.height,
           }],
         }));
-        const { uploadShellMaterial } = await import('./adapters/shellWorkflow');
+        const { uploadShellMaterial } = await loadShellWorkflowModule();
         const uploaded = await uploadShellMaterial(activeModule, type, file).catch(() => null);
         if (uploaded?.remoteUrl) {
           setMaterials((prev) => ({
@@ -3120,7 +3148,7 @@ const AppContent: React.FC<{
       setIsGenerating(true);
       void persistTranslationFilesToSharedState(targetSubFeature, translationFileItems);
 
-      const { runShellImageGeneration } = await import('./adapters/shellWorkflow');
+      const { runShellImageGeneration } = await loadShellWorkflowModule();
       const syncTranslationProject = (nextFiles: TranslationBatchFile[]) => {
         const nextResults = nextFiles.map((item) => translationFileToResult(item, createdAt));
         setProjects((prev) => prev.map((project) => (
@@ -3411,7 +3439,7 @@ const AppContent: React.FC<{
       };
 
       try {
-        const { runShellOneClickPlanning } = await import('./adapters/shellWorkflow');
+        const { runShellOneClickPlanning } = await loadShellWorkflowModule();
         const planResult = await runShellOneClickPlanning({
           module: targetModule,
           subFeature: targetSubFeature,
@@ -3608,7 +3636,7 @@ const AppContent: React.FC<{
 
     try {
       setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, progress: 12 } : t));
-      const { runShellBuyerShowWorkflow, runShellImageGeneration, runShellRetouchWorkflow, runShellVideoGeneration } = await import('./adapters/shellWorkflow');
+      const { runShellBuyerShowWorkflow, runShellImageGeneration, runShellRetouchWorkflow, runShellVideoGeneration } = await loadShellWorkflowModule();
           const result = targetModule === AppModuleObj.VIDEO
         ? await runShellVideoGeneration({
             module: targetModule,
@@ -4213,7 +4241,7 @@ const AppContent: React.FC<{
     };
 
     try {
-      const { runShellImageGeneration } = await import('./adapters/shellWorkflow');
+      const { runShellImageGeneration } = await loadShellWorkflowModule();
       const preparedGenerationMaterials = await ensureMaterialRemoteUrls(generationMaterials, AppModuleObj.ONE_CLICK);
       const updateTaskProgress = () => {
         const publishedResults = getPublishedResults();
@@ -5038,7 +5066,7 @@ const AppContent: React.FC<{
 
         const controller = new AbortController();
         taskControllersRef.current[retryTaskId] = controller;
-        const { runShellImageGeneration } = await import('./adapters/shellWorkflow');
+        const { runShellImageGeneration } = await loadShellWorkflowModule();
         const generation = await runShellImageGeneration({
           module: AppModuleObj.TRANSLATION,
           subFeature,
@@ -5200,7 +5228,7 @@ const AppContent: React.FC<{
       await persistProjectToSharedState(pendingProject);
       addToast('已提交重生成任务', 'success');
 
-      const { runShellImageGeneration } = await import('./adapters/shellWorkflow');
+      const { runShellImageGeneration } = await loadShellWorkflowModule();
       const preparedMaterials = await ensureMaterialRemoteUrls(retryMaterials, project.module);
       let activeRegenerationProviderTaskId = '';
       const generation = await runShellImageGeneration({
