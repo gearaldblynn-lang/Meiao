@@ -55,10 +55,10 @@ export const findResultsForPlanDisplay = <
   });
   const unmatchedPlanIndex = unmatchedPlans.findIndex((item) => item === plan || compact(item.id) === planId);
   const fallbackIndex = unmatchedPlanIndex >= 0 ? unmatchedPlanIndex : index;
-  const orphanResults = results.filter((result) => {
+  const orphanResults = sortResultsForSinglePlanDisplay(results.filter((result) => {
     const resultPlanId = compact(result.planId);
     return !resultPlanId || !planIds.has(resultPlanId);
-  });
+  }));
 
   return orphanResults[fallbackIndex] ? [orphanResults[fallbackIndex]] : [];
 };
