@@ -1024,6 +1024,37 @@ test('compactAppStateForStorage removes recursively nested one-click project his
   assert.equal(Object.hasOwn(compacted.oneClickMemory.firstImage.projects[0], 'activeProjectId'), false);
 });
 
+test('compactAppStateForStorage removes nested generation context snapshots from one-click history', () => {
+  const compacted = compactAppStateForStorage({
+    oneClickMemory: {
+      firstImage: {
+        projects: [{
+          id: 'project-a',
+          name: '项目 A',
+          generationContext: {
+            prompt: '生成提示',
+            params: { ratio: '1:1' },
+            materials: {
+              product: [{ remoteUrl: 'https://example.com/product.png' }],
+            },
+            projects: [{ id: 'nested-project', prompt: '重复历史项目' }],
+            activeProjectId: 'nested-project',
+            tasks: [{ id: 'runtime-task' }],
+          },
+        }],
+      },
+    },
+  });
+
+  const context = compacted.oneClickMemory.firstImage.projects[0].generationContext;
+  assert.equal(context.prompt, '生成提示');
+  assert.equal(context.params.ratio, '1:1');
+  assert.equal(context.materials.product[0].remoteUrl, 'https://example.com/product.png');
+  assert.equal(Object.hasOwn(context, 'projects'), false);
+  assert.equal(Object.hasOwn(context, 'activeProjectId'), false);
+  assert.equal(Object.hasOwn(context, 'tasks'), false);
+});
+
 test('compactAppStateForStorage strips inline image previews from translation history', () => {
   const compacted = compactAppStateForStorage({
     translationMemory: {

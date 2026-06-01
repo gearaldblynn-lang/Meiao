@@ -74,3 +74,18 @@ test('agent chat messages persist run identity and context trace metadata', () =
   assert.match(source, /status: 'completed'/);
   assert.match(source, /phase: 'completed'/);
 });
+
+test('agent image generation filters expired provider temp images before sending image URLs', () => {
+  assert.match(source, /const isProviderTemporaryImageUrl = \(value\) =>/);
+  assert.match(source, /filterAvailableConversationImageReferences/);
+  assert.match(source, /item\?\.source !== 'current_upload' && isProviderTemporaryImageUrl\(item\?\.url\)/);
+  assert.match(source, /const preferredInputImageUrls = filterAvailableAgentImageUrls/);
+  assert.doesNotMatch(source, /const preferredInputImageUrls = editPreferenceHints\.preferPreviousResultAsPrimary[\s\S]{0,300}: inputImageUrls;/);
+});
+
+test('internal api timeout bridge removes abort listeners after fetch completion', () => {
+  const internalApiSource = readFileSync(new URL('../src/services/internalApi.ts', import.meta.url), 'utf8');
+  assert.match(internalApiSource, /const onAbort = \(\) => controller\.abort\(existingSignal\.reason\);/);
+  assert.match(internalApiSource, /existingSignal\?\.addEventListener\('abort', onAbort, \{ once: true \}\);/);
+  assert.match(internalApiSource, /existingSignal\?\.removeEventListener\?\.\('abort', onAbort\);/);
+});
