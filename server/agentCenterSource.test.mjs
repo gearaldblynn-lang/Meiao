@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+const imagePlanSource = readFileSync(new URL('./agentImagePlan.mjs', import.meta.url), 'utf8');
 
 test('agent publish flow keeps successful validation as a hard gate', () => {
   assert.match(source, /if \(!targetVersion \|\| targetVersion\.validationStatus !== 'success'\) return null;/);
@@ -190,11 +191,19 @@ test('agent chat source writes detailed runtime logs for both success and failur
 });
 
 test('agent image conversation prompt includes deterministic image order mapping with urls and falls back to image model on failures', () => {
-  assert.match(source, /const normalizeAgentImageUrl = \(value\) =>/);
-  assert.match(source, /const markdownTarget = raw\.match/);
+  assert.match(imagePlanSource, /export const normalizeAgentImageUrl = \(value\) =>/);
+  assert.match(imagePlanSource, /const markdownTarget = raw\.match/);
+  assert.match(imagePlanSource, /export const resolveAgentImagePlanInputUrlDetails = \(\{/);
+  assert.match(imagePlanSource, /recovered_selected_references_from_unusable_analysis_input/);
+  assert.match(imagePlanSource, /export const shouldRequireAgentImageInput = \(\{/);
+  assert.match(source, /改图任务没有可用输入图，已停止提交，避免被生图模型当作文生图执行。/);
+  assert.match(source, /结构化字段是后端提交生图的唯一依据/);
+  assert.match(imagePlanSource, /analysisReturnedEmptyInput/);
+  assert.match(imagePlanSource, /analysisReturnedUnusableInput/);
+  assert.match(imagePlanSource, /shouldRecoverSelectedReferences/);
   assert.match(source, /const url = normalizeAgentImageUrl\(item\?\.url\);/);
   assert.match(source, /message\.metadata\.imageResultUrls\.map\(\(item\) => normalizeAgentImageUrl\(item\)\)\.filter\(Boolean\)/);
-  assert.match(source, /\.map\(\(item\) => normalizeAgentImageUrl\(item\)\)/);
+  assert.match(imagePlanSource, /\.map\(\(item\) => normalizeAgentImageUrl\(item\)\)/);
   assert.match(source, /const buildImagePromptReferenceText = \(imageReferences = \[\], preferredInputImageUrls = \[\]\) =>/);
   assert.match(source, /const extractExplicitImageReferenceIndexes = \(text = ''\) =>/);
   assert.match(source, /const extractDirectionalImageReferenceIndexes = \(\{ text = '', imageReferences = \[\] \}\) =>/);
@@ -211,7 +220,8 @@ test('agent image conversation prompt includes deterministic image order mapping
   assert.match(source, /const relevantImageReferences = selectRelevantImageReferences\(\{/);
   assert.match(source, /imageReferences,\s+userMessage: currentMessage,\s+maxInputImages: Number\(imageCapability.maxInputImages \|\| 1\),\s+editPreferenceHints,/);
   assert.match(source, /const normalizedRefs = relevantImageReferences\.map\(\(item\) => \(\{/);
-  assert.match(source, /const usedImageReferences = preferredInputImageUrls\.map\(\(url\) => normalizedRefs\.find\(\(item\) => item\.url === url\)\)\.filter\(Boolean\);/);
+  assert.match(source, /const usedImageReferences = preferredInputImageUrls\.map\(\(url\) => \{/);
+  assert.match(source, /normalizeAgentImageUrl\(item\.url\) === normalizedUrl/);
   assert.match(source, /输入图顺序说明（必须严格按下列顺序理解）/);
   assert.match(source, /图\$\{index \+ 1\}：URL=\$\{url\}/);
   assert.match(source, /const promptReferenceText = buildImagePromptReferenceText\(normalizedRefs, preferredInputImageUrls\);/);
