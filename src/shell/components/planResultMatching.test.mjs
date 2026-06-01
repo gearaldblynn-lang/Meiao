@@ -48,3 +48,20 @@ test('findResultsForPlanDisplay does not reuse results already matched to anothe
     ['orphan-b'],
   );
 });
+
+test('findResultsForPlanDisplay assigns orphan media deterministically by stable result identity', () => {
+  const plans = [{ id: 'new-plan-a' }, { id: 'new-plan-b' }];
+  const results = [
+    { id: 'result-b', planId: 'old-plan-b', backendJobId: 'job-b' },
+    { id: 'result-a', planId: 'old-plan-a', backendJobId: 'job-a' },
+  ];
+
+  assert.deepEqual(
+    findResultsForPlanDisplay(plans, results, plans[0], 0).map((result) => result.id),
+    ['result-a'],
+  );
+  assert.deepEqual(
+    findResultsForPlanDisplay(plans, results, plans[1], 1).map((result) => result.id),
+    ['result-b'],
+  );
+});
