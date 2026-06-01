@@ -46,7 +46,7 @@ test('image generation prefers editing the latest generated result when user ask
   assert.match(serverSource, /const buildImageEditPreferenceHints = \(\{ userMessage = '', imageReferences = \[\] \}\) =>/);
   assert.match(serverSource, /不得因为上传了新的参考图，就直接把新图当成新的主体内容来源/);
   assert.match(serverSource, /优先把最近一张历史生成图作为主编辑对象/);
-  assert.match(serverSource, /const preferredInputImageUrls = editPreferenceHints\.preferPreviousResultAsPrimary/);
+  assert.match(serverSource, /const preferredInputImageUrls = filterAvailableAgentImageUrls\(\s+editPreferenceHints\.preferPreviousResultAsPrimary/);
   assert.match(serverSource, /以最近一张历史生成图为主编辑对象/);
 });
 

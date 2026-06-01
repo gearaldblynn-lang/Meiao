@@ -38,6 +38,12 @@ import {
   requestLocalRetryJob,
 } from './localJobStore.mjs';
 import { executeProviderJob } from './providerGateway.mjs';
+import {
+  filterAvailableAgentImageUrls,
+  normalizeAgentImageUrl,
+  resolveAgentImagePlanInputUrlDetails,
+  shouldRequireAgentImageInput,
+} from './agentImagePlan.mjs';
 import { compactAppStateForStorage, mergeAppStateForStorage } from './appStateMerge.mjs';
 import { buildJobRuntimeLogMeta, buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins } from './jobRuntime.mjs';
 import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../src/utils/gptImage2.mjs';
@@ -5721,28 +5727,6 @@ const extractJsonObject = (value) => {
   }
 };
 
-const normalizeAgentImageUrl = (value) => {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  const markdownTarget = raw.match(/^\[[^\]]*]\(([^)\s]+)\)$/);
-  if (markdownTarget?.[1]) return markdownTarget[1].trim();
-  const absoluteUrl = raw.match(/https?:\/\/[^\s"'<>，。；、）)\]】]+/i);
-  return absoluteUrl?.[0]?.trim() || raw;
-};
-
-const filterAvailableAgentImageUrls = (urls = [], imageReferences = [], limit = 1) => {
-  const availableUrls = new Set(
-    (Array.isArray(imageReferences) ? imageReferences : [])
-      .map((item) => normalizeAgentImageUrl(item?.url))
-      .filter(Boolean)
-  );
-  return Array.from(new Set(
-    (Array.isArray(urls) ? urls : [])
-      .map((item) => normalizeAgentImageUrl(item))
-      .filter((url) => url && availableUrls.has(url))
-  )).slice(0, Math.max(1, Number(limit || 1)));
-};
-
 const buildConversationImageCatalog = (attachments = [], priorMessages = [], maxReferenceImages = 10) => {
   const catalog = [];
   const seenUrls = new Set();
@@ -5997,6 +5981,9 @@ const buildImageGenerationAnalysisMessages = ({ agent, version, userMessage, ima
         '图片引用规则：你会拿到当前会话可用的参考图目录，必须严格按目录中的图1、图2、图3……理解，不得自行改号。',
         '若本轮有新上传图，新上传图会优先排在前面；其后才是历史上传图、历史生成图。',
         '如果用户说“把图1的xx换到图2”“参考图3色调”，必须在 imageReferences、inputImageUrls 和 reasoningSummary 里明确对应关系。',
+        '结构化字段是后端提交生图的唯一依据：凡是 image_to_image、image_edit、image_refinement、局部修改、替换、保持原图、参考图、基于图1/图2 的任务，inputImageUrls 绝不能返回空数组。',
+        'inputImageUrls 必须使用“图片输入”目录中列出的原始 URL，不要使用模型分析过程中看到的临时上传 URL；imageReferences 必须填写对应的 index 和 role。',
+        '如果只把图片 URL 写进 prompt 文本，但 inputImageUrls 或 imageReferences 没有对应图片，后端会判定为无效改图计划并停止提交。',
         '如果用户没有明确指定使用哪张图，你要根据当前需求自动判断最合适的参考图，并在 reasoningSummary 里说明最终采用了哪些图。',
         '你必须结合最近几轮对话来理解“继续调整”“按上一版修改”“保持刚才风格”这类指代，不要只看当前一句话。',
         '比例规则：默认 size 必须为 auto。只有用户明确指定了目标比例，或者明确表达“当前比例不对、需要改成长图/横图/方图”等比例修正诉求时，才允许修改 size。',
@@ -6120,14 +6107,22 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
       .map((item) => String(item?.url || '').trim())
       .filter((url) => url && isManagedAssetUrl(url))
   );
-  const inputImageUrls = Array.from(
-    new Set(
-      (Array.isArray(parsed.inputImageUrls) ? parsed.inputImageUrls : normalizedRefs.map((item) => item.url))
-        .map((item) => normalizeAgentImageUrl(item))
-        .filter((url) => !isManagedAssetUrl(url) || availableManagedReferenceUrls.has(url))
-        .filter(Boolean)
-    )
-  ).slice(0, Number(imageCapability.maxInputImages || 1));
+  const parsedInputImageUrls = Array.isArray(parsed.inputImageUrls)
+    ? parsed.inputImageUrls
+      .map((item) => normalizeAgentImageUrl(item))
+      .filter((url) => !isManagedAssetUrl(url) || availableManagedReferenceUrls.has(url))
+      .filter(Boolean)
+    : null;
+  const inputImageDetails = resolveAgentImagePlanInputUrlDetails({
+    parsed: {
+      ...parsed,
+      ...(parsedInputImageUrls ? { inputImageUrls: parsedInputImageUrls } : {}),
+    },
+    normalizedRefs,
+    imageCapability,
+    currentMessage,
+  });
+  const inputImageUrls = inputImageDetails.urls;
   const preferredInputImageUrls = filterAvailableAgentImageUrls(
     editPreferenceHints.preferPreviousResultAsPrimary
       ? Array.from(new Set([
@@ -6139,12 +6134,27 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     normalizedRefs,
     Number(imageCapability.maxInputImages || 1)
   );
+  if (shouldRequireAgentImageInput({ parsed, currentMessage }) && preferredInputImageUrls.length === 0) {
+    const error = new Error('改图任务没有可用输入图，已停止提交，避免被生图模型当作文生图执行。');
+    error.code = 'missing_image_input';
+    error.providerStage = 'input_prepare';
+    error.providerStatus = 'failed';
+    error.providerMessage = error.message;
+    error.selectedModel = selectedImageModel;
+    error.inputImageCount = 0;
+    error.inputImageUrls = [];
+    error.usedImageReferenceUrls = [];
+    throw error;
+  }
   const promptPrefix = editPreferenceHints.preferPreviousResultAsPrimary
     ? '以最近一张历史生成图为主编辑对象，保留主体内容连续性；其余输入图仅作为版式、排版、风格参考，不替换主体商品。\n'
     : '';
   const promptReferenceText = buildImagePromptReferenceText(normalizedRefs, preferredInputImageUrls);
   const finalPrompt = `${promptPrefix}${promptReferenceText}\n${String(parsed.prompt || currentMessage).trim()}`.trim();
-  const usedImageReferences = preferredInputImageUrls.map((url) => normalizedRefs.find((item) => item.url === url)).filter(Boolean);
+  const usedImageReferences = preferredInputImageUrls.map((url) => {
+    const normalizedUrl = normalizeAgentImageUrl(url);
+    return normalizedRefs.find((item) => normalizeAgentImageUrl(item.url) === normalizedUrl);
+  }).filter(Boolean);
   const requestedAspectRatio = String(parsed.size || '').trim();
   const hasExplicitAspectRatioInstruction = detectExplicitAspectRatioInstruction(currentMessage);
   const shouldKeepAutoAspectRatio = !hasExplicitAspectRatioInstruction && !hasAspectRatioCorrectionIntent(currentMessage);
@@ -6225,6 +6235,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
       selectedImageModel,
       inputImageUrls: preferredInputImageUrls,
       imageReferences: usedImageReferences,
+      inputImageResolution: inputImageDetails,
       size: normalizedAspectRatio,
       resolution: normalizedResolution,
       transparentBackground: Boolean(parsed.transparentBackground && imageCapability.supportsTransparentBackground),
