@@ -47,6 +47,19 @@ const isInlineImageDataUrl = (value) => (
 
 const stripInlinePreviewUrl = (value) => isInlineImageDataUrl(value) ? '' : value;
 
+const compactGenerationContextForStorage = (context = {}) => {
+  if (!context || typeof context !== 'object') return context;
+  const {
+    projects,
+    activeProjectId,
+    isGenerating,
+    isAnalyzing,
+    tasks,
+    ...compactContext
+  } = context;
+  return compactContext;
+};
+
 const compactOneClickProjectForStorage = (project = {}) => {
   if (!project || typeof project !== 'object') return project;
   const {
@@ -57,6 +70,9 @@ const compactOneClickProjectForStorage = (project = {}) => {
     tasks,
     ...compactProject
   } = project;
+  if (compactProject.generationContext && typeof compactProject.generationContext === 'object') {
+    compactProject.generationContext = compactGenerationContextForStorage(compactProject.generationContext);
+  }
   return compactProject;
 };
 

@@ -300,8 +300,23 @@ const reindexImageReferences = (imageReferences = []) => (Array.isArray(imageRef
     label: `图${index + 1}`,
   }));
 
+const isProviderTemporaryImageUrl = (value) => {
+  try {
+    const url = new URL(String(value || '').trim());
+    const hostname = url.hostname.toLowerCase();
+    return hostname === 'tempfile.redpandaai.co'
+      || hostname === 'tempfileb.aiquickdraw.com'
+      || hostname.endsWith('.tempfile.redpandaai.co')
+      || hostname.endsWith('.tempfileb.aiquickdraw.com')
+      || /\/openrouter-chat\//i.test(url.pathname);
+  } catch {
+    return false;
+  }
+};
+
 const filterAvailableConversationImageReferences = async (imageReferences = []) => {
-  const refs = Array.isArray(imageReferences) ? imageReferences : [];
+  const refs = (Array.isArray(imageReferences) ? imageReferences : [])
+    .filter((item) => !(item?.source !== 'current_upload' && isProviderTemporaryImageUrl(item?.url)));
   if (!refs.some((item) => isManagedAssetUrl(item?.url))) return reindexImageReferences(refs);
 
   try {
@@ -5715,6 +5730,19 @@ const normalizeAgentImageUrl = (value) => {
   return absoluteUrl?.[0]?.trim() || raw;
 };
 
+const filterAvailableAgentImageUrls = (urls = [], imageReferences = [], limit = 1) => {
+  const availableUrls = new Set(
+    (Array.isArray(imageReferences) ? imageReferences : [])
+      .map((item) => normalizeAgentImageUrl(item?.url))
+      .filter(Boolean)
+  );
+  return Array.from(new Set(
+    (Array.isArray(urls) ? urls : [])
+      .map((item) => normalizeAgentImageUrl(item))
+      .filter((url) => url && availableUrls.has(url))
+  )).slice(0, Math.max(1, Number(limit || 1)));
+};
+
 const buildConversationImageCatalog = (attachments = [], priorMessages = [], maxReferenceImages = 10) => {
   const catalog = [];
   const seenUrls = new Set();
@@ -6100,13 +6128,17 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
         .filter(Boolean)
     )
   ).slice(0, Number(imageCapability.maxInputImages || 1));
-  const preferredInputImageUrls = editPreferenceHints.preferPreviousResultAsPrimary
-    ? Array.from(new Set([
+  const preferredInputImageUrls = filterAvailableAgentImageUrls(
+    editPreferenceHints.preferPreviousResultAsPrimary
+      ? Array.from(new Set([
       ...editPreferenceHints.previousResultUrls.slice(-1),
       ...editPreferenceHints.currentUploadUrls,
       ...inputImageUrls,
-    ])).slice(0, Number(imageCapability.maxInputImages || 1))
-    : inputImageUrls;
+    ]))
+      : inputImageUrls,
+    normalizedRefs,
+    Number(imageCapability.maxInputImages || 1)
+  );
   const promptPrefix = editPreferenceHints.preferPreviousResultAsPrimary
     ? '以最近一张历史生成图为主编辑对象，保留主体内容连续性；其余输入图仅作为版式、排版、风格参考，不替换主体商品。\n'
     : '';

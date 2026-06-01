@@ -119,17 +119,17 @@ const fetchWithTimeout = (
   const { timeoutMs = DEFAULT_TIMEOUT_MS, ...fetchInit } = init;
   const controller = new AbortController();
   const existingSignal = fetchInit.signal;
+  const onAbort = () => controller.abort(existingSignal.reason);
   if (existingSignal?.aborted) {
     controller.abort(existingSignal.reason);
   } else {
-    existingSignal?.addEventListener('abort', () =>
-      controller.abort(existingSignal.reason),
-    );
+    existingSignal?.addEventListener('abort', onAbort, { once: true });
   }
   const timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
-  return fetch(url, { ...fetchInit, signal: controller.signal }).finally(() =>
-    clearTimeout(timer),
-  );
+  return fetch(url, { ...fetchInit, signal: controller.signal }).finally(() => {
+    clearTimeout(timer);
+    existingSignal?.removeEventListener?.('abort', onAbort);
+  });
 };
 
 // --------------- GET 自动重试 ---------------

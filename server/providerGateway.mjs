@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { getMaxListeners, setMaxListeners } from 'node:events';
 import { isIP } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -64,6 +65,14 @@ let dreaminaVideoRunnerForTest = null;
 
 export const __testOnly_setDreaminaVideoRunner = (runner) => {
   dreaminaVideoRunnerForTest = typeof runner === 'function' ? runner : null;
+};
+
+const allowConcurrentAbortListeners = (signal, count) => {
+  if (!signal || typeof signal !== 'object') return;
+  const currentLimit = Number(getMaxListeners(signal) || 10);
+  const requestedLimit = Math.max(10, Number(count || 0) + 4);
+  if (requestedLimit <= currentLimit) return;
+  setMaxListeners(Math.max(currentLimit, requestedLimit), signal);
 };
 
 const wait = (ms, signal) =>
@@ -1675,6 +1684,7 @@ const runApiportsGptImage2Job = async (payload, env, signal) => {
   const { apiportsApiKey, apiportsBaseUrl } = getProviderEnv(env);
   ensureProviderKey(apiportsApiKey, 'APIports API Key');
   const rawImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
+  allowConcurrentAbortListeners(signal, rawImageUrls.length);
   const textMediaUrls = Array.from(extractTextMediaUrls(payload.prompt || ''));
   assertSupportedGenerationImageReferences([
     ...rawImageUrls,
@@ -1753,6 +1763,7 @@ const runKieImageJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
   const rawImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
+  allowConcurrentAbortListeners(signal, rawImageUrls.length);
   assertSupportedGenerationImageReferences([
     ...rawImageUrls,
     ...Array.from(extractTextMediaUrls(payload.prompt || '')),
@@ -2278,6 +2289,7 @@ const runKieVeoJob = async (payload, env, signal, options = {}) => {
       prompt: fullPrompt,
     };
   } else if (Array.isArray(payload.imageUrls) && payload.imageUrls.length > 0) {
+    allowConcurrentAbortListeners(signal, payload.imageUrls.length);
     const imageUrls = await Promise.all(payload.imageUrls.map((item) => resolveProviderMediaUrl(item, env, signal)));
     requestPayload.generationType = 'REFERENCE_2_VIDEO';
     requestPayload.imageUrls = imageUrls;
@@ -2359,17 +2371,18 @@ const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
   ensureProviderKey(kieApiKey, 'Kie API Key');
 
   const mode = normalizeSeedanceVideoMode(payload.mode || payload.subMode);
+  const rawImageUrls = normalizeArray(payload.imageUrls || payload.images || payload.imageUrl || payload.image);
+  const rawVideoUrls = normalizeArray(payload.videoUrls || payload.videos || payload.videoUrl || payload.video);
+  const rawAudioUrls = normalizeArray(payload.audioUrls || payload.audios || payload.audioUrl || payload.audio);
+  allowConcurrentAbortListeners(signal, rawImageUrls.length + rawVideoUrls.length + rawAudioUrls.length);
   const imageUrls = await Promise.all(
-    normalizeArray(payload.imageUrls || payload.images || payload.imageUrl || payload.image)
-      .map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
+    rawImageUrls.map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
   );
   const videoUrls = await Promise.all(
-    normalizeArray(payload.videoUrls || payload.videos || payload.videoUrl || payload.video)
-      .map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
+    rawVideoUrls.map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
   );
   const audioUrls = await Promise.all(
-    normalizeArray(payload.audioUrls || payload.audios || payload.audioUrl || payload.audio)
-      .map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
+    rawAudioUrls.map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
   );
 
   if (mode === 'frames2video' && imageUrls.length < 2) {
@@ -2475,6 +2488,7 @@ const prepareDreaminaLocalInputs = async (payload, env, signal) => {
   });
 
   try {
+    allowConcurrentAbortListeners(signal, rawImageUrls.length + rawVideoUrls.length + rawAudioUrls.length);
     const imagePaths = await Promise.all(rawImageUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index)));
     const videoPaths = await Promise.all(rawVideoUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index + imagePaths.length)));
     const audioPaths = await Promise.all(rawAudioUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index + imagePaths.length + videoPaths.length)));
