@@ -33,6 +33,18 @@ test('formal agent conversations only apply async message results to the active 
   assert.match(moduleSource, /await syncCompletedMessageAfterTimeout\(sendSessionId, clientRequestId\)/);
 });
 
+test('formal agent conversations keep persisted pending runs visible and locked after refresh', () => {
+  assert.match(moduleSource, /const isPendingAgentRunMessage = \(message\?: AgentChatMessage \| null\) =>/);
+  assert.match(moduleSource, /const activePendingRunMessage = useMemo\(/);
+  assert.match(moduleSource, /const activePendingClientRequestId = String\(activePendingRunMessage\?\.metadata\?\.clientRequestId \|\| ''\)\.trim\(\);/);
+  assert.match(moduleSource, /const hasActivePendingRun = Boolean\(activePendingRunMessage\);/);
+  assert.match(moduleSource, /void pollPendingRun\(\);/);
+  assert.match(moduleSource, /window\.setInterval\(\(\) => \{\s*void pollPendingRun\(\);\s*\}, 3000\);/);
+  assert.match(moduleSource, /if \(sendingMessage \|\| hasActivePendingRun \|\| !selectedSessionId/);
+  assert.match(moduleSource, /sendingMessage=\{sendingMessage \|\| hasActivePendingRun\}/);
+  assert.match(moduleSource, /onInterruptSend=\{sendingMessage \? handleInterruptSend : undefined\}/);
+});
+
 test('agent chat workspace exposes durable session and context state instead of hiding history', () => {
   const workspaceSource = readFileSync(new URL('./AgentCenterChatWorkspace.tsx', import.meta.url), 'utf8');
   assert.match(workspaceSource, /lastMessagePreview/);

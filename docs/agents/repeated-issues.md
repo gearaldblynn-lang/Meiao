@@ -20,6 +20,26 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-01 - Agent running chat tasks must be durable pending messages
+
+- Symptom: 智能体中心正在执行的对话/生图任务，刷新页面后“思考中/生成中”消息消失；用户会误以为任务没提交，从而再次点击发送。原任务完成后又可能恢复，造成前端状态混乱和重复提交风险。
+- Environment: Tencent Cloud production agent_center / local development.
+- Root cause: 智能体对话接口只在 provider 成功返回后一次性插入 user/assistant 消息；执行期间的 pending 消息只存在 React 内存中。刷新会丢掉乐观消息，而且同一会话没有以持久化 pending run 为准的发送锁。
+- Fix: 后端在调用模型前先持久化一组 pending user/assistant 消息，完成后原地更新为 completed，失败后原地更新为 failed；同一会话存在 pending assistant run 时拒绝新的发送。前端刷新后从历史消息识别 pending run，保持可见并轮询同步，同时锁住输入框。
+- Regression check: `node --test server/agentConversationReliability.test.mjs src/modules/AgentCenter/agentConversationReliability.test.mjs server/agentImagePlan.test.mjs server/agent-image-retrieval.test.mjs server/providerGateway.test.mjs server/agentCenterSource.test.mjs`; `npm run build`; local browser load check at `http://localhost:3100/`.
+- Files/tests: `server/index.mjs`, `src/modules/AgentCenter/AgentCenterModule.tsx`, `src/modules/AgentCenter/ChatComposer.tsx`, `server/agentConversationReliability.test.mjs`, `src/modules/AgentCenter/agentConversationReliability.test.mjs`.
+- Avoid next time: 长耗时任务不能只靠前端乐观状态表示“正在运行”。任何会跨刷新、超时或断线的任务，都必须先落一个后端可查询的 pending 身份，并用同一个身份控制重复提交。
+
+## 2026-06-01 - Agent image edits must resolve provider temporary analysis URLs back to selected references
+
+- Symptom: 智能体“对话改图”中，分析结果明确是 `image_edit` / `image_to_image` 并要求参考图1、图2，但最终生图请求 `inputImageCount=0`，KIE payload 走 `gpt-image-2-text-to-image`，导致参考图被漏掉。
+- Environment: Tencent Cloud production agent_center / local development.
+- Root cause: provider gateway 会在分析模型调用前把内部素材 URL 转换成 provider 临时 URL；分析模型有时把这些临时 URL 写回 `inputImageUrls`。后端再用原始选图 URL 精确匹配时匹配失败，把输入图过滤成空。
+- Fix: 新增 `agentImagePlan` 输入图解析层，按 `imageReferences.index` 映射回当前选中的原始参考图；当分析结果返回空输入或不可用 provider 临时 URL 时，按明确改图/参考意图恢复选中参考图；改图任务无可用输入时停止提交，不再静默降级为文生图。
+- Regression check: `node --test server/agentImagePlan.test.mjs server/agent-image-retrieval.test.mjs server/agentConversationReliability.test.mjs server/providerGateway.test.mjs server/agentCenterSource.test.mjs`; `npm run build`; cloud health check after deploy.
+- Files/tests: `server/agentImagePlan.mjs`, `server/agentImagePlan.test.mjs`, `server/index.mjs`, `server/agent-image-retrieval.test.mjs`, `server/agentCenterSource.test.mjs`.
+- Avoid next time: provider 临时上传 URL 不能当作业务选图身份。提交生图的最终输入图必须由后端根据当前会话选图目录解析，LLM 返回的 URL 只能作为辅助线索。
+
 ## 2026-05-29 - Internal asset API URLs must not be sent directly to providers
 
 - Symptom: KIE planning/image requests fail with `image download failed: HTTP 403: Forbidden` for URLs like `http://111.229.66.247/api/assets/file/...`, while the browser may still open the same image.
