@@ -30,12 +30,18 @@ echo "开始部署到 ${SERVER_USER}@${SERVER_HOST}:${REMOTE_APP_DIR}"
 export COPYFILE_DISABLE=1
 
 tar \
+  --no-mac-metadata \
+  --no-xattrs \
+  --no-acls \
+  --no-fflags \
   --exclude='./.git' \
   --exclude='./.worktrees' \
   --exclude='./node_modules' \
   --exclude='./dist' \
   --exclude='./server/data' \
   --exclude='./.env.server' \
+  --exclude='./._*' \
+  --exclude='*/._*' \
   -czf - \
   -C "$ROOT_DIR" . | ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "
     set -e
