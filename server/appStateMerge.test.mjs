@@ -375,6 +375,49 @@ test('mergeAppStateForStorage deep-merges one-click planning project snapshots w
   assert.equal(merged.shellProjects[0].planningTaskId, 'kie-e');
 });
 
+test('mergeAppStateForStorage strips internal backend ids from planning task ids', () => {
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'duosang-stale-sku-project',
+      module: 'one_click',
+      subFeature: 'sku',
+      status: 'planning',
+      backendJobId: '6296de5c861e08699d96a92b',
+      planningTaskId: '209a398cc2f3c9e1aabaf48a',
+      taskCount: 2,
+      completedCount: 1,
+      plans: [
+        { id: 'plan-1', title: 'SKU一', selected: true, schemeContent: '真实策划一' },
+        { id: 'plan-2', title: 'SKU二', selected: true, schemeContent: '真实策划二' },
+      ],
+      results: [{
+        id: '0db3a02612f517a9ea0c581210b37e8c',
+        planId: 'plan-1',
+        taskId: '0db3a02612f517a9ea0c581210b37e8c',
+        backendJobId: '6296de5c861e08699d96a92b',
+        imageUrl: '/sku-1.png',
+        status: 'completed',
+      }],
+    }],
+    oneClickMemory: {
+      sku: {
+        projects: [{
+          id: 'duosang-stale-sku-project',
+          status: 'planning',
+          planningTaskId: '209a398cc2f3c9e1aabaf48a',
+          plans: [
+            { id: 'plan-1', title: 'SKU一', selected: true, schemeContent: '真实策划一' },
+            { id: 'plan-2', title: 'SKU二', selected: true, schemeContent: '真实策划二' },
+          ],
+        }],
+      },
+    },
+  }, {});
+
+  assert.equal(merged.shellProjects[0].planningTaskId, undefined);
+  assert.equal(merged.oneClickMemory.sku.projects[0].planningTaskId, undefined);
+});
+
 test('mergeAppStateForStorage keeps recovered sku plans when a stale completed snapshot writes back', () => {
   const recoveredPlans = [
     { id: 'planning-job-plan-1', title: 'SKU一', selected: true, schemeContent: '第一张策划' },

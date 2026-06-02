@@ -254,6 +254,17 @@ const splitIdentityText = (value: unknown) =>
     .map((item) => item.trim())
     .filter(Boolean);
 
+const INTERNAL_BACKEND_JOB_ID_PATTERN = /^[a-f0-9]{24}$/i;
+
+const latestProviderTaskIdentityText = (...values: unknown[]) => {
+  const merged = Array.from(new Set(
+    values
+      .flatMap((value) => splitIdentityText(value))
+      .filter((item) => !INTERNAL_BACKEND_JOB_ID_PATTERN.test(item)),
+  ));
+  return merged.at(-1) || undefined;
+};
+
 const collectPersistedProjectJobKeys = (projects: ShellProjectData[] = []) => {
   const keys = new Set<string>();
   projects.forEach((project) => {
@@ -455,7 +466,7 @@ const parseOneClickPlanningText = (text: unknown, jobId: string): ShellProjectDa
       selected: true,
       schemeContent: scheme,
     };
-  });
+  }).filter((plan) => !isInvalidOneClickPlanLike(plan));
 };
 
 const attachReferenceUrlToPlans = (
@@ -1143,13 +1154,78 @@ const mapJobs = (
           parseOneClickPlanningText(planningText, job.id),
           (job.payload as any)?.shellReferenceUrl,
         );
+        const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
+        const isTrackedPlanningJob = Boolean(
+          payloadProjectId
+          || String((job.payload as any)?.shellPlanningPurpose || '').trim() === 'one_click_planning',
+        );
+        if (parsedPlans.length === 0) {
+          if (!matchedProject && !isTrackedPlanningJob) return;
+          const cleanProject = matchedProject
+            ? removePlanningJobPendingPlaceholders(matchedProject, job)
+            : undefined;
+          const hasRecoveredOutcome = Boolean(cleanProject && (
+            (cleanProject.plans || []).length > 0
+            || (cleanProject.results || []).some((result) => (
+              hasCompletedMediaResult(result)
+              || (result.status === 'generating' && resultHasProviderTaskIdentity(result))
+              || (result.status === 'error' && !isStalePlanningFailureResult(result))
+            ))
+          ));
+          if (hasRecoveredOutcome) return;
+          const providerTaskId = getPlanningProviderTaskId(job);
+          const inferredSubFeature = cleanProject?.subFeature
+            || getStructuredOneClickJobSubFeature(job.payload)
+            || normalizeJobSubFeature(module, job.taskType, { ...job.payload, prompt: planningText });
+          const errorMessage = String(
+            job.errorMessage
+            || job.errorCode
+            || planningText
+            || '策划返回未解析出可用方案'
+          ).trim();
+          const errorProjectId = cleanProject?.id || payloadProjectId || `job-${job.id}`;
+          const errorProjectName = cleanProject?.name
+            || String((job.payload as any)?.shellProjectName || '').trim()
+            || prompt.slice(0, 28)
+            || MODULE_LABELS[module]
+            || '一键主详策划';
+          projects.push({
+            ...(cleanProject || {}),
+            id: errorProjectId,
+            name: errorProjectName,
+            module,
+            status: 'error',
+            createdAt: cleanProject?.createdAt || createdAt,
+            results: [{
+              id: `${job.id}-error`,
+              planId: payloadPlanId || cleanProject?.selectedPlanId,
+              projectId: errorProjectId,
+              imageUrl: '',
+              prompt: errorMessage,
+              model: String(job.payload?.model || job.result?.model || job.provider || '策划任务'),
+              aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
+              status: 'error',
+              createdAt,
+              module,
+              subFeature: inferredSubFeature,
+              taskId: providerTaskId || undefined,
+              backendJobId: job.id,
+              creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+              error: errorMessage,
+            }],
+            taskCount: cleanProject?.taskCount || 1,
+            completedCount: 0,
+            subFeature: inferredSubFeature,
+            sourceType: cleanProject?.sourceType || (matchedProject ? 'persisted' : 'job'),
+            backendJobId: job.id,
+            creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed) || cleanProject?.creditsConsumed,
+            planningTaskId: latestIdentityTextList(cleanProject?.planningTaskId, providerTaskId || undefined),
+            error: errorMessage,
+          });
+          return;
+        }
         if (!matchedProject) {
-          const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
-          const isTrackedPlanningJob = Boolean(
-            payloadProjectId
-            || String((job.payload as any)?.shellPlanningPurpose || '').trim() === 'one_click_planning',
-          );
-          if (!isTrackedPlanningJob || parsedPlans.length === 0) return;
+          if (!isTrackedPlanningJob) return;
           const inferredSubFeature = getStructuredOneClickJobSubFeature(job.payload)
             || normalizeJobSubFeature(module, job.taskType, { ...job.payload, prompt: planningText });
           projects.push({
@@ -1985,6 +2061,7 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
     results,
     taskCount,
     completedCount,
+    planningTaskId: latestProviderTaskIdentityText(project.planningTaskId),
   };
 };
 
@@ -2251,7 +2328,7 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
     taskCount,
     completedCount,
     completedAt: completedCount >= taskCount ? (next.completedAt || existing.completedAt) : existing.completedAt,
-    planningTaskId: latestIdentityTextList(existing.planningTaskId, next.planningTaskId),
+    planningTaskId: latestProviderTaskIdentityText(existing.planningTaskId, next.planningTaskId),
     directGeneration: existing.directGeneration || next.directGeneration,
   };
   if (status === 'completed' && completedCount > 0) {

@@ -600,8 +600,15 @@ const saveShellUiState = (state: ShellUiState, userId?: string | null) => {
 const hasRuntimeBackendIdentity = (entity: Pick<Project | Task, 'backendJobId'>) =>
   String(entity.backendJobId || '').trim().length > 0;
 
+const isOneClickPlanReadyProject = (project: Project) =>
+  project.module === AppModuleObj.ONE_CLICK
+  && project.status === 'planning'
+  && Array.isArray(project.plans)
+  && project.plans.length > 0;
+
 const shouldKeepRuntimeProject = (project: Project) =>
-  hasRuntimeBackendIdentity(project) && (project.status === 'planning' || project.status === 'generating');
+  hasRuntimeBackendIdentity(project)
+  && (project.status === 'generating' || (project.status === 'planning' && !isOneClickPlanReadyProject(project)));
 
 const shouldKeepRuntimeTask = (task: Task) =>
   hasRuntimeBackendIdentity(task) && (task.status === 'pending' || task.status === 'generating');
@@ -2544,6 +2551,7 @@ const AppContent: React.FC<{
     const hasActiveBackendProject = projects.some((project) => {
       const status = String(project.status || '');
       if (status !== 'planning' && status !== 'generating') return false;
+      if (isOneClickPlanReadyProject(project)) return false;
       return Boolean(project.backendJobId)
         || (project.results || []).some((result) => Boolean(result.backendJobId || result.taskId));
     });
@@ -3485,7 +3493,7 @@ const AppContent: React.FC<{
       } catch (error) {
         const message = error instanceof Error ? error.message : '策划失败';
         const planningRecoverable = isRecoverableKieTaskResult(
-          planningProviderTaskId || activePlanningBackendJobId,
+          planningProviderTaskId,
           message,
           error instanceof Error ? (error as Error & { code?: string }).code : undefined,
         );

@@ -799,12 +799,18 @@ ${safeLogoUrl ? `品牌logo公网URL：${safeLogoUrl}` : ''}
     const message = failureCount > 0 ? `共 ${validReferenceUrls.length} 张参考图，其中 ${failureCount} 张策划失败。` : undefined;
     const creditsConsumed = perReferenceResults.reduce((sum, item) => sum + (item.status === 'success' ? Number(item.creditsConsumed || 0) : 0), 0);
 
-    logArkEvent('first_image_replication_plan', '首图裂变策划成功', 'success', '', {
-      count: schemes.length,
-      failedCount: failureCount,
-      subMode: OneClickSubMode.FIRST_IMAGE,
-      creditsConsumed,
-    });
+    logArkEvent(
+      'first_image_replication_plan',
+      hasSuccess ? '首图裂变策划成功' : '首图裂变策划失败',
+      hasSuccess ? 'success' : 'failed',
+      hasSuccess ? '' : (message || '首图裂变策划未返回可用方案'),
+      {
+        count: schemes.length,
+        failedCount: failureCount,
+        subMode: OneClickSubMode.FIRST_IMAGE,
+        creditsConsumed,
+      }
+    );
     const taskId = perReferenceResults
       .filter((item) => item.status === 'success')
       .map((item) => String(item.taskId || '').trim())

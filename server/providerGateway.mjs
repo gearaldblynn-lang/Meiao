@@ -4,6 +4,7 @@ import { isIP } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { GPT_IMAGE_2_DEFAULT_RESOLUTION, normalizeGptImage2Resolution } from '../src/utils/gptImage2.mjs';
+import { isExternallyReachableBaseUrl, isLocalOrPrivateHostname, normalizeBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import { queryDreaminaVideoTask, submitDreaminaVideoTask } from './dreaminaVideoCli.mjs';
 
 const KIE_CREATE_TASK_URL = 'https://api.kie.ai/api/v1/jobs/createTask';
@@ -246,6 +247,41 @@ const buildResponsesInputMessages = (messages = [], mapper) =>
 const isManagedAssetUrl = (value) =>
   typeof value === 'string' && value.includes(MANAGED_ASSET_PATH_SEGMENT);
 
+const getManagedAssetPath = (value) => {
+  const normalized = String(value || '').trim();
+  if (!normalized) return '';
+  if (normalized.startsWith(MANAGED_ASSET_PATH_SEGMENT)) return normalized;
+  try {
+    const parsed = new URL(normalized);
+    if (!parsed.pathname.includes(MANAGED_ASSET_PATH_SEGMENT)) return '';
+    return `${parsed.pathname}${parsed.search || ''}`;
+  } catch {
+    return '';
+  }
+};
+
+const getProviderPublicBaseUrl = (env = {}) =>
+  normalizeBaseUrl(env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || process.env.MEIAO_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL || '');
+
+const resolveExternallyReachableManagedAssetUrl = (value, env = {}) => {
+  const normalized = String(value || '').trim();
+  if (!isManagedAssetUrl(normalized)) return '';
+  try {
+    const parsed = new URL(normalized);
+    if (['http:', 'https:'].includes(parsed.protocol) && !isLocalOrPrivateHostname(parsed.hostname)) {
+      return normalized;
+    }
+  } catch {
+    // Relative managed asset paths can still be made public through MEIAO_PUBLIC_BASE_URL.
+  }
+  const assetPath = getManagedAssetPath(normalized);
+  const publicBaseUrl = getProviderPublicBaseUrl(env);
+  if (assetPath && isExternallyReachableBaseUrl(publicBaseUrl)) {
+    return `${publicBaseUrl}${assetPath}`;
+  }
+  return '';
+};
+
 const normalizeProviderMediaReference = (value) => {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -464,6 +500,8 @@ const downloadManagedAsset = async (assetUrl, signal) => {
 
 const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal) => {
   if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
+  const publicAssetUrl = resolveExternallyReachableManagedAssetUrl(assetUrl, env);
+  if (publicAssetUrl) return publicAssetUrl;
   const downloaded = await downloadManagedAsset(assetUrl, signal);
   const uploaded = await uploadAssetViaKieWithFallback({
     ...downloaded,

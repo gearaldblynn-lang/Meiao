@@ -231,6 +231,8 @@ test('one click planning remains syncable after recoverable cloud submission fai
   const app = read('../ShellMigratedApp.tsx');
 
   assert.match(app, /const planningRecoverable = isRecoverableKieTaskResult\(/);
+  assert.match(app, /const planningRecoverable = isRecoverableKieTaskResult\(\s*planningProviderTaskId,/);
+  assert.doesNotMatch(app, /isRecoverableKieTaskResult\(\s*planningProviderTaskId \|\| activePlanningBackendJobId,/);
   assert.match(app, /status: 'planning'/);
   assert.match(app, /策划任务已提交云端，结果待同步，可稍后点击同步。/);
 });
@@ -2621,6 +2623,29 @@ test('one click fission and edit are direct image-generation projects without pl
   assert.match(shellPersistence, /directGeneration: project\.directGeneration/);
   assert.match(shellDataAdapter, /directGeneration\?: boolean/);
   assert.match(shellDataAdapter, /directGeneration: directGeneration === true/);
+});
+
+test('completed one-click planning snapshots are not kept as active runtime jobs', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(shellApp, /const isOneClickPlanReadyProject = \(project: Project\) =>/);
+  assert.match(shellApp, /project\.status === 'planning'[\s\S]*project\.plans\.length > 0/);
+  assert.match(shellApp, /project\.status === 'planning' && !isOneClickPlanReadyProject\(project\)/);
+  assert.match(shellApp, /if \(isOneClickPlanReadyProject\(project\)\) return false;/);
+});
+
+test('planning task id chips do not display internal backend job ids', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const planEditor = read('../shell/components/PlanEditor.tsx');
+  const shellDataAdapter = read('../adapters/shellDataAdapter.ts');
+  const shellPersistence = read('../adapters/shellPersistence.ts');
+  const appStateMerge = read('../../server/appStateMerge.mjs');
+
+  assert.match(projectCard, /\.filter\(\(item\) => !\/\^\[a-f0-9\]\{24\}\$\/i\.test\(item\)\)/);
+  assert.match(planEditor, /\.filter\(\(item\) => !\/\^\[a-f0-9\]\{24\}\$\/i\.test\(item\)\)/);
+  assert.match(shellDataAdapter, /latestProviderTaskIdentityText/);
+  assert.match(shellPersistence, /latestProviderTaskIdentityText/);
+  assert.match(appStateMerge, /latestProviderTaskIdentityText/);
 });
 
 test('shell video generation submits seedance jobs without automatic retry and keeps audio enabled by default', () => {

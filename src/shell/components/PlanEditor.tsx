@@ -145,7 +145,8 @@ const splitTaskIds = (value?: string) => {
     String(value || '')
       .split(/[,\s]+/)
       .map((item) => item.trim())
-      .filter(Boolean),
+      .filter(Boolean)
+      .filter((item) => !/^[a-f0-9]{24}$/i.test(item)),
   ));
   return taskIds.length > 0 ? [taskIds.at(-1) as string] : [];
 };

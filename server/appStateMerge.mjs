@@ -401,8 +401,14 @@ const splitIdentityText = (value) => String(value || '')
   .map((item) => item.trim())
   .filter(Boolean);
 
-const latestIdentityText = (...values) => {
-  const merged = Array.from(new Set(values.flatMap(splitIdentityText)));
+const INTERNAL_BACKEND_JOB_ID_PATTERN = /^[a-f0-9]{24}$/i;
+
+const latestProviderTaskIdentityText = (...values) => {
+  const merged = Array.from(new Set(
+    values
+      .flatMap(splitIdentityText)
+      .filter((item) => !INTERNAL_BACKEND_JOB_ID_PATTERN.test(item)),
+  ));
   return merged.at(-1) || '';
 };
 
@@ -574,7 +580,7 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
     ...(Array.isArray(item?.plans) ? { plans } : {}),
     ...(Array.isArray(item?.results) ? { results: normalizedResults } : {}),
     ...(Array.isArray(item?.schemes) ? { schemes } : {}),
-    planningTaskId: latestIdentityText(item?.planningTaskId) || undefined,
+    planningTaskId: latestProviderTaskIdentityText(item?.planningTaskId) || undefined,
     taskCount,
     completedCount: stateItems.length > 0 ? completedMediaCount : Number(item?.completedCount || 0) || 0,
     status,
@@ -653,7 +659,7 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
   const completedCount = isDirectVideoGeneration && completedMediaCount > 0
     ? completedMediaCount
     : maxNumber(existingItem?.completedCount, incomingItem?.completedCount);
-  const planningTaskId = latestIdentityText(existingItem?.planningTaskId, incomingItem?.planningTaskId);
+  const planningTaskId = latestProviderTaskIdentityText(existingItem?.planningTaskId, incomingItem?.planningTaskId);
   const providerTaskId = incomingItem?.providerTaskId || existingItem?.providerTaskId;
   const taskId = incomingItem?.taskId || existingItem?.taskId;
   const kieTaskId = incomingItem?.kieTaskId || existingItem?.kieTaskId;
