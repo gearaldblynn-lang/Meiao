@@ -444,6 +444,15 @@ const itemHasMedia = (item = {}) => Boolean(item?.imageUrl || item?.videoUrl || 
 
 const itemHasProviderTaskIdentity = (item = {}) => Boolean(compactKey(item?.taskId || item?.providerTaskId || item?.kieTaskId));
 
+const isTransientNoIdentityRuntimePlaceholder = (item = {}) => {
+  const status = String(item?.status || '');
+  if (!['error', 'failed', 'generating', 'pending', 'queued'].includes(status)) return false;
+  if (itemHasMedia(item)) return false;
+  if (compactKey(item?.backendJobId || item?.taskId || item?.providerTaskId || item?.kieTaskId)) return false;
+  const message = compactKey(item?.error || item?.message || item?.prompt || item?.detail || item?.title);
+  return /网络连接失败|请求超时|failed to fetch|fetch failed|dynamically imported module|任务状态同步失败|任务已提交云端|结果待同步/i.test(message);
+};
+
 const isActiveGenerationItem = (item = {}) => (
   ['generating', 'pending', 'queued', 'running', 'retry_waiting', 'uploading', 'processing'].includes(String(item?.status || ''))
   && itemHasProviderTaskIdentity(item)
@@ -452,14 +461,17 @@ const isActiveGenerationItem = (item = {}) => (
 const getPlanIdentity = (item = {}) => compactKey(item?.planId || item?.id);
 
 const pruneSupersededNoMediaItems = (items = []) => {
+  const normalizedItems = Array.isArray(items) ? items : [];
+  const hasCompletedMedia = normalizedItems.some(hasCompletedMediaItem);
   const completedPlanIds = new Set(
-    (Array.isArray(items) ? items : [])
+    normalizedItems
       .filter(hasCompletedMediaItem)
       .map(getPlanIdentity)
       .filter(Boolean),
   );
-  if (completedPlanIds.size === 0) return Array.isArray(items) ? items : [];
-  return (Array.isArray(items) ? items : []).filter((item) => {
+  if (!hasCompletedMedia) return normalizedItems;
+  return normalizedItems.filter((item) => {
+    if (isTransientNoIdentityRuntimePlaceholder(item)) return false;
     const planId = getPlanIdentity(item);
     if (!planId || !completedPlanIds.has(planId)) return true;
     const status = String(item?.status || '');
