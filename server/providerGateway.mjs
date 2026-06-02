@@ -498,10 +498,12 @@ const downloadManagedAsset = async (assetUrl, signal) => {
   };
 };
 
-const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal) => {
+const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal, options = {}) => {
   if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
-  const publicAssetUrl = resolveExternallyReachableManagedAssetUrl(assetUrl, env);
-  if (publicAssetUrl) return publicAssetUrl;
+  if (!options.forceUpload) {
+    const publicAssetUrl = resolveExternallyReachableManagedAssetUrl(assetUrl, env);
+    if (publicAssetUrl) return publicAssetUrl;
+  }
   const downloaded = await downloadManagedAsset(assetUrl, signal);
   const uploaded = await uploadAssetViaKieWithFallback({
     ...downloaded,
@@ -709,7 +711,7 @@ const resolveProviderGenerationMediaUrl = async (value, env, signal) => {
   const normalized = normalizeProviderMediaReference(value);
   if (!normalized) return '';
   if (!isManagedAssetUrl(normalized)) return normalized;
-  return convertManagedAssetUrlToKieFileUrl(normalized, env, signal);
+  return convertManagedAssetUrlToKieFileUrl(normalized, env, signal, { forceUpload: true });
 };
 
 const resolveProviderMediaUrl = async (value, env, signal) => {
