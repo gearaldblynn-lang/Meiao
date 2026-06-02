@@ -91,6 +91,13 @@ const CHAT_REUSE_IMAGE_MIME = 'application/x-meiao-chat-image';
 const isImageGenerationMessage = (message: AgentChatMessage) =>
   message.role === 'assistant' && message.metadata?.requestMode === 'image_generation';
 
+const isFailedImageGenerationMessage = (message: AgentChatMessage) => {
+  const status = String(message.metadata?.status || '').trim();
+  const phase = String(message.metadata?.phase || '').trim();
+  const errorMessage = String(message.metadata?.errorMessage || '').trim();
+  return status === 'failed' || phase === 'failed' || Boolean(errorMessage);
+};
+
 const getProgressStageLabel = (message: AgentChatMessage) => {
   const stage = String(message.metadata?.progressStage || '').trim();
   if (stage === 'analyzing') return '正在理解需求与参考图';
@@ -115,6 +122,12 @@ const getImageGenerationSummary = (message: AgentChatMessage) => {
     resultCount,
     referenceText: imageReferences.length > 0 ? `参考了 ${imageReferences.join('、')}` : '已按当前需求生成图片',
   };
+};
+
+const getImageGenerationBadgeText = (message: AgentChatMessage, resultCount: number) => {
+  if (isFailedImageGenerationMessage(message)) return '生成失败';
+  if (resultCount > 0) return `已生成 ${resultCount} 张图片`;
+  return '未返回图片';
 };
 
 const getProgressBadgeText = (message: AgentChatMessage) => {
@@ -304,6 +317,8 @@ const ChatConversationPane: React.FC<Props> = ({
     const imageAttachments = Array.isArray(message.attachments)
       ? message.attachments.filter((item) => item.kind === 'image' && item.url)
       : [];
+    const visibleResultCount = Math.max(resultCount, imageAttachments.length);
+    const failedImageGeneration = isFailedImageGenerationMessage(message);
     const previewImages = imageAttachments.map((attachment, index) => ({
       id: `${message.id}-${index}`,
       url: String(attachment.url || ''),
@@ -338,8 +353,17 @@ const ChatConversationPane: React.FC<Props> = ({
           </div>
         ) : null}
         <div className="flex flex-wrap items-center gap-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-          <span className="rounded-full px-2.5 py-1 font-medium" style={isPending ? { background: 'var(--accent-soft)', color: 'var(--accent)' } : { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
-            {isPending ? getProgressBadgeText(message) : `已生成 ${Math.max(resultCount, imageAttachments.length || 1)} 张图片`}
+          <span
+            className="rounded-full px-2.5 py-1 font-medium"
+            style={
+              isPending
+                ? { background: 'var(--accent-soft)', color: 'var(--accent)' }
+                : failedImageGeneration
+                  ? { background: 'color-mix(in srgb, var(--error) 10%, transparent)', color: 'var(--error)' }
+                  : { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }
+            }
+          >
+            {isPending ? getProgressBadgeText(message) : getImageGenerationBadgeText(message, visibleResultCount)}
           </span>
           {referenceImages.length > 0 ? (
             referenceImages.map((image, index) => (
@@ -359,7 +383,7 @@ const ChatConversationPane: React.FC<Props> = ({
                 参考图 {image.label}{image.role ? ` · ${image.role}` : ''}
               </button>
             ))
-          ) : !isPending ? (
+          ) : !isPending && !failedImageGeneration && visibleResultCount > 0 ? (
             <span>{referenceText}</span>
           ) : null}
         </div>

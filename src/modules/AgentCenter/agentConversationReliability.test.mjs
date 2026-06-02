@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const moduleSource = readFileSync(new URL('./AgentCenterModule.tsx', import.meta.url), 'utf8');
 const studioSource = readFileSync(new URL('./AgentStudioTestingPane.tsx', import.meta.url), 'utf8');
+const conversationPaneSource = readFileSync(new URL('./ChatConversationPane.tsx', import.meta.url), 'utf8');
 
 test('formal agent conversations try to recover completed replies after uncertain failures', () => {
   assert.match(moduleSource, /const isUncertainSendFailure = \(error: any\) =>/);
@@ -43,6 +44,13 @@ test('formal agent conversations keep persisted pending runs visible and locked 
   assert.match(moduleSource, /if \(sendingMessage \|\| hasActivePendingRun \|\| !selectedSessionId/);
   assert.match(moduleSource, /sendingMessage=\{sendingMessage \|\| hasActivePendingRun\}/);
   assert.match(moduleSource, /onInterruptSend=\{sendingMessage \? handleInterruptSend : undefined\}/);
+});
+
+test('agent image generation failures do not display fake generated image counts', () => {
+  assert.match(conversationPaneSource, /const isFailedImageGenerationMessage = \(message: AgentChatMessage\) =>/);
+  assert.match(conversationPaneSource, /const getImageGenerationBadgeText = \(message: AgentChatMessage, resultCount: number\) =>/);
+  assert.match(conversationPaneSource, /if \(isFailedImageGenerationMessage\(message\)\) return '生成失败';/);
+  assert.doesNotMatch(conversationPaneSource, /Math\.max\(resultCount, imageAttachments\.length \|\| 1\)/);
 });
 
 test('agent chat workspace exposes durable session and context state instead of hiding history', () => {
