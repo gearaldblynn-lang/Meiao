@@ -1496,7 +1496,7 @@ test('agent chat client keeps image generation requests alive longer and can syn
   assert.match(agentCenter, /const deadline = Date\.now\(\) \+ 210_000/);
   assert.match(agentCenter, /metadata\?\.clientRequestId/);
   assert.match(agentCenter, /fallbackAssistantMessage/);
-  assert.match(agentCenter, /!item\.metadata\?\.pending/);
+  assert.match(agentCenter, /isPendingAgentRunMessage/);
   assert.match(agentCenter, /后台仍在处理中，正在同步最新结果/);
 });
 
@@ -2215,6 +2215,7 @@ test('stored asset route supports byte range streaming for video playback', () =
 test('shell first-image fission can use the generated result as the variant base without requiring the original reference', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const promptUtils = read('../modules/OneClick/generationPromptUtils.ts');
+  const oneClickMaterials = read('../adapters/shellOneClickMaterials.mjs');
 
   assert.match(shellApp, /handleFissionResult/);
   assert.doesNotMatch(shellApp, /当前结果缺少主图参考/);
@@ -2223,8 +2224,9 @@ test('shell first-image fission can use the generated result as the variant base
   assert.match(shellApp, /sourceResultUrl: resolvePublicAssetUrl\(result\.imageUrl, publicBaseUrl\) \|\| ''/);
   assert.match(shellApp, /schemeContent: fissionInstruction \|\| `按\$\{variantLabel\}方向继续裂变这张生成图。`/);
   assert.match(shellApp, /buildVariantMaterials\(baseMaterials, variantPlan, 'first_image'\)/);
-  assert.match(shellApp, /Object\.entries\(baseMaterials \|\| \{\}\)\.map/);
-  assert.match(shellApp, /\.\.\.\(next\.reference \|\| \[\]\)/);
+  assert.match(shellApp, /buildOneClickPlanGenerationMaterials/);
+  assert.match(oneClickMaterials, /const cloneMaterials = \(materials = \{\}\) => Object\.fromEntries/);
+  assert.match(oneClickMaterials, /\.\.\.\(next\.reference \|\| \[\]\)/);
   assert.doesNotMatch(shellApp, /const variantBaseMaterials = hasMaterialInputs\(projectMaterials\) \? projectMaterials : filteredMaterials/);
   assert.doesNotMatch(shellApp, /schemeContent: matchedPlan\.schemeContent \|\| result\.prompt/);
   assert.match(promptUtils, /上一张生成结果图是继续裂变的直接基础/);
@@ -2613,7 +2615,7 @@ test('one click fission and edit are direct image-generation projects without pl
   assert.match(shellApp, /variationInstruction: fissionInstruction \|\| `按\$\{variantLabel\}方向继续裂变这张生成图。`/);
   assert.match(shellApp, /variantProject\.generationContext = cloneGenerationContext\(variantPlan\.schemeContent \|\| fissionInstruction, fissionParams, variantMaterials\)/);
   assert.match(shellApp, /const variantMaterials = buildVariantMaterials\(baseMaterials, variantPlan, 'first_image'\)/);
-  assert.match(shellApp, /if \(plan\.sourceResultUrl && !plan\.editInstruction\?\.trim\(\) && !plan\.variationInstruction\?\.trim\(\)\)/);
+  assert.match(shellApp, /buildOneClickPlanGenerationMaterials/);
   assert.match(shellApp, /directGeneration: true/);
   assert.match(shellPersistence, /directGeneration\?: boolean/);
   assert.match(shellPersistence, /directGeneration: project\.directGeneration/);

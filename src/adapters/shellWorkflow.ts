@@ -22,6 +22,7 @@ import { getImageDimensions, resizeImage } from '../utils/imageUtils';
 import { normalizeFetchedImageBlob } from '../utils/imageBlobUtils.mjs';
 import { persistGeneratedAsset } from '../services/persistedAssetClient';
 import { resolveShellSkuCount } from './shellSkuCount';
+import { buildShellImageInputUrls } from './shellOneClickMaterials.mjs';
 
 export { extractShellSchemeField } from './shellSchemeFields';
 
@@ -624,36 +625,15 @@ export const uploadShellMaterial = async (
 };
 
 export const runShellImageGeneration = async (input: ShellGenerateInput) => {
-  const allMaterials = buildOrderedMaterialsForGeneration(input);
-  const materialImageUrls = allMaterials.map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
   const productImageUrls = (input.materials.product || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
-  const giftImageUrls = (input.materials.gift || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
-  const logoImageUrls = (input.materials.logo || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
-  const consistencyImageUrls = [...productImageUrls, ...giftImageUrls, ...logoImageUrls];
   const supplementalImageUrls = (input.materials.reference || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
-  const variationSourceResultUrl = typeof input.taskMetadata?.sourceResultUrl === 'string'
-    ? resolvePublicAssetUrl(input.taskMetadata.sourceResultUrl, input.publicBaseUrl || '')
-    : '';
-  const editSourceResultUrl = typeof input.taskMetadata?.sourceResultUrl === 'string'
-    ? resolvePublicAssetUrl(input.taskMetadata.sourceResultUrl, input.publicBaseUrl || '')
-    : '';
-  const isOneClickResultEdit = Boolean(
-    input.module === AppModule.ONE_CLICK
-    && editSourceResultUrl
-    && typeof input.taskMetadata?.editInstruction === 'string'
-    && input.taskMetadata.editInstruction.trim()
-  );
-  const isOneClickContinuationVariation = Boolean(
-    input.module === AppModule.ONE_CLICK
-    && variationSourceResultUrl
-    && typeof input.taskMetadata?.variationInstruction === 'string'
-    && input.taskMetadata.variationInstruction.trim()
-  );
-  const imageUrls = isOneClickResultEdit
-    ? [...consistencyImageUrls, editSourceResultUrl, ...supplementalImageUrls]
-    : isOneClickContinuationVariation
-      ? [variationSourceResultUrl, ...materialImageUrls]
-      : materialImageUrls;
+  const imageUrls = buildShellImageInputUrls({
+    module: input.module,
+    subFeature: input.subFeature,
+    materials: input.materials,
+    publicBaseUrl: input.publicBaseUrl || '',
+    taskMetadata: input.taskMetadata || {},
+  } as any);
   if (imageUrls.length === 0) {
     throw new Error('请先上传产品图或参考素材，再提交生成任务。');
   }
