@@ -1222,7 +1222,7 @@ test('executeProviderJob routes gpt-5-4 kie chat through responses api with reas
   }
 });
 
-test('executeProviderJob sends externally reachable managed asset image urls directly before creating kie image tasks', async () => {
+test('executeProviderJob uploads managed asset image urls before creating kie image tasks', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
@@ -1230,6 +1230,18 @@ test('executeProviderJob sends externally reachable managed asset image urls dir
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/jpeg' },
+      });
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.jpg' },
+      });
+    }
     if (String(url).includes('/createTask')) {
       return createJsonResponse({ code: 200, data: { taskId: 'kie-task-managed-asset' } });
     }
@@ -1267,12 +1279,12 @@ test('executeProviderJob sends externally reachable managed asset image urls dir
     );
 
     assert.equal(result.providerTaskId, 'kie-task-managed-asset');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
     const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
     assert.deepEqual(createTaskBody.input.image_input, [
-      'http://111.229.66.247/api/assets/file/asset-1/source.jpg',
+      'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.jpg',
     ]);
   } finally {
     global.fetch = originalFetch;
