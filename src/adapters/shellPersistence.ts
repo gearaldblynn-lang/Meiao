@@ -256,6 +256,7 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
   const completedCount = stateItems.filter(hasCompletedMedia).length;
   const hasGenerating = stateItems.some(hasGeneratingState);
   const hasError = stateItems.some(hasErrorState);
+  const hasCompletedMediaItem = completedCount > 0;
   const isOneClickPlanOnly = isOneClick
     && plans.length > 0
     && completedCount === 0
@@ -269,15 +270,17 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
     stateItems.length,
     1,
   );
-  const status = completedCount >= taskCount
+  const status = hasCompletedMediaItem && !hasGenerating && !hasError
     ? 'completed'
-    : hasGenerating
-      ? 'generating'
-      : hasError
-        ? 'error'
-        : isOneClickPlanOnly
-          ? 'planning'
-          : incomingProject.status || baseProject.status;
+    : completedCount >= taskCount
+      ? 'completed'
+      : hasGenerating
+        ? 'generating'
+        : hasError
+          ? 'error'
+          : isOneClickPlanOnly
+            ? 'planning'
+            : incomingProject.status || baseProject.status;
   const merged = {
     ...baseProject,
     ...incomingProject,

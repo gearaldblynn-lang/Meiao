@@ -1650,6 +1650,9 @@ test('shell data adapter does not expose internal backend job ids as planning pr
 
   const project = snapshot.projects.find((item) => item.id === 'duosang-stale-sku-project');
   assert.equal(project?.planningTaskId, undefined);
+  assert.equal(project?.status, 'completed');
+  assert.equal(project?.completedCount, 1);
+  assert.equal(project?.taskCount, 2);
   assert.equal(project?.plans?.length, 2);
   assert.equal(project?.results.length, 1);
 });
@@ -1912,7 +1915,7 @@ test('shell data adapter backfills missing planning schemes after the first sku 
   ]);
 
   const project = snapshot.projects.find((item) => item.id === 'sku-project-after-first-image');
-  assert.equal(project?.status, 'planning');
+  assert.equal(project?.status, 'completed');
   assert.equal(project?.taskCount, 2);
   assert.equal(project?.completedCount, 1);
   assert.equal(project?.results.length, 1);

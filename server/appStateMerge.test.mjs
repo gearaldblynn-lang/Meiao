@@ -415,6 +415,9 @@ test('mergeAppStateForStorage strips internal backend ids from planning task ids
   }, {});
 
   assert.equal(merged.shellProjects[0].planningTaskId, undefined);
+  assert.equal(merged.shellProjects[0].status, 'completed');
+  assert.equal(merged.shellProjects[0].completedCount, 1);
+  assert.equal(merged.shellProjects[0].taskCount, 2);
   assert.equal(merged.oneClickMemory.sku.projects[0].planningTaskId, undefined);
 });
 
