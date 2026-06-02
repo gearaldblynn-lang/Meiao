@@ -3267,6 +3267,82 @@ test('shell data adapter reconstructs a tracked failed one-click planning projec
   assert.match(project.results[0].error, /上游返回失败/);
 });
 
+test('shell data adapter promotes matched failed one-click planning jobs over pending planning state', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'proj-plan-stuck',
+      name: '6月2日项目失败',
+      module: 'one_click',
+      status: 'planning',
+      createdAt: '06-02',
+      backendJobId: 'planning-failed-job',
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      plans: [{
+        id: 'planning-failed-job-plan-1',
+        title: '首图裂变1-复刻主图参考1',
+        selected: true,
+        schemeContent: '[SCHEME_START]\n- 画面描述：旧占位\n[SCHEME_END]',
+      }],
+      selectedPlanId: 'planning-failed-job-plan-1',
+    }],
+    oneClickMemory: {
+      firstImage: {
+        projects: [{
+          id: 'proj-plan-stuck',
+          name: '6月2日项目失败',
+          status: 'planning',
+          backendJobId: 'planning-failed-job',
+          plans: [{
+            id: 'planning-failed-job-plan-1',
+            title: '首图裂变1-复刻主图参考1',
+            selected: true,
+            schemeContent: '[SCHEME_START]\n- 画面描述：旧占位\n[SCHEME_END]',
+          }],
+          selectedPlanId: 'planning-failed-job-plan-1',
+          taskCount: 1,
+          completedCount: 0,
+        }],
+      },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  }, [{
+    id: 'planning-failed-job',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'failed',
+    providerTaskId: 'kie-failed-planning-provider',
+    errorCode: 'provider_timeout',
+    errorMessage: 'Kie Claude 请求超时',
+    payload: {
+      shellPlanningPurpose: 'one_click_planning',
+      shellProjectId: 'proj-plan-stuck',
+      shellProjectName: '6月2日项目失败',
+      subFeature: 'first_image',
+      model: 'claude-sonnet-4-openai',
+    },
+    result: {},
+    createdAt: 3000,
+    updatedAt: 4000,
+    finishedAt: 4000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-plan-stuck');
+  assert.ok(project);
+  assert.equal(project.status, 'error');
+  assert.equal(project.backendJobId, 'planning-failed-job');
+  assert.equal(project.planningTaskId, 'kie-failed-planning-provider');
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].status, 'error');
+  assert.equal(project.results[0].backendJobId, 'planning-failed-job');
+  assert.match(project.error, /Kie Claude 请求超时/);
+});
+
 test('shell data adapter collapses duplicate no-media failures for the same one-click plan', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{

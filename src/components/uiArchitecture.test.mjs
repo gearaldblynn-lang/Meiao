@@ -218,6 +218,15 @@ test('one click image fallback requires a visible KIE task id before showing gen
   assert.match(app, /const hasActiveSibling = currentMergedResults\.some\(\(result\) => \(\s*result\.status === 'generating' && Boolean\(String\(result\.taskId \|\| ''\)\.trim\(\)\)\s*\)\);/);
 });
 
+test('project cards do not label terminal failed image results as pending sync', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+
+  assert.match(projectCard, /const getMissingMediaLabel = \(result: GeneratedResult, mediaType: 'image' \| 'video'\) =>/);
+  assert.match(projectCard, /if \(result\.status === 'error'\) return mediaType === 'video' \? '视频生成失败' : '生成失败';/);
+  assert.match(projectCard, /style=\{\{ color: result\.status === 'error' \? 'var\(--error\)' : 'var\(--text-tertiary\)' \}\}/);
+  assert.doesNotMatch(projectCard, /图片结果待同步/);
+});
+
 test('project result reruns prefer the current scoped image model over stale failed result models', () => {
   const app = read('../ShellMigratedApp.tsx');
 
@@ -227,11 +236,14 @@ test('project result reruns prefer the current scoped image model over stale fai
   assert.match(app, /model: currentScopedImageModel \|\| storedContext\?\.params\?\.model \|\| result\.model \|\| currentParams\.model \|\| 'GPT Image 2'/);
 });
 
-test('one click planning remains syncable after recoverable cloud submission failures', () => {
+test('one click planning only remains syncable while the backend job is still active', () => {
   const app = read('../ShellMigratedApp.tsx');
 
+  assert.match(app, /fetchInternalJob\(\s*planningBackendJobId\s*\)/);
+  assert.match(app, /const planningJobIsStillActive = \['queued', 'running', 'retry_waiting'\]\.includes\(latestPlanningJobStatus\)/);
   assert.match(app, /const planningRecoverable = isRecoverableKieTaskResult\(/);
   assert.match(app, /const planningRecoverable = isRecoverableKieTaskResult\(\s*planningProviderTaskId,/);
+  assert.match(app, /if \(planningRecoverable && planningJobIsStillActive\)/);
   assert.doesNotMatch(app, /isRecoverableKieTaskResult\(\s*planningProviderTaskId \|\| activePlanningBackendJobId,/);
   assert.match(app, /status: 'planning'/);
   assert.match(app, /策划任务已提交云端，结果待同步，可稍后点击同步。/);

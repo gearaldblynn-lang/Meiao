@@ -113,6 +113,12 @@ const CardVideoPreview: React.FC<{
   );
 };
 
+const getMissingMediaLabel = (result: GeneratedResult, mediaType: 'image' | 'video') => {
+  if (result.status === 'error') return mediaType === 'video' ? '视频生成失败' : '生成失败';
+  if (result.status === 'generating') return mediaType === 'video' ? '视频生成中' : '生成中';
+  return mediaType === 'video' ? '视频待生成' : '待生成图';
+};
+
 const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto' }) => {
   if (result.mediaType === 'video' || result.videoUrl) {
     const src = result.videoUrl || result.imageUrl;
@@ -124,11 +130,23 @@ const renderMedia = (result: GeneratedResult, className: string, options?: { vid
         preload={options?.videoPreload || 'metadata'}
       />
     ) : (
-      <div className={`flex items-center justify-center text-[12px] ${className}`} style={{ color: 'var(--text-tertiary)' }}>视频结果待同步</div>
+      <div
+        className={`flex items-center justify-center text-[12px] ${className}`}
+        style={{ color: result.status === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}
+      >
+        {getMissingMediaLabel(result, 'video')}
+      </div>
     );
   }
   if (!result.imageUrl) {
-    return <div className={`flex items-center justify-center text-[12px] ${className}`} style={{ color: 'var(--text-tertiary)' }}>图片结果待同步</div>;
+    return (
+      <div
+        className={`flex items-center justify-center text-[12px] ${className}`}
+        style={{ color: result.status === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}
+      >
+        {getMissingMediaLabel(result, 'image')}
+      </div>
+    );
   }
   return <img src={result.imageUrl} alt={result.prompt} className={className} loading="lazy" decoding="async" />;
 };

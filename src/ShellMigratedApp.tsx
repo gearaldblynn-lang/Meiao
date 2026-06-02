@@ -1,7 +1,7 @@
 import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useRef } from 'react';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import LoginScreen from './shell/components/Internal/LoginScreen';
@@ -10,6 +10,7 @@ import {
   clearSessionToken,
   deleteInternalJob,
   fetchCurrentUser,
+  fetchInternalJob,
   fetchInternalJobs,
   fetchRemoteAppState,
   fetchSystemConfig,
@@ -3492,21 +3493,41 @@ const AppContent: React.FC<{
         addToast(`策划已完成，共 ${planResult.plans.length} 个方案`, 'success');
       } catch (error) {
         const message = error instanceof Error ? error.message : '策划失败';
+        const planningBackendJobId = activePlanningBackendJobId || planningProject.backendJobId || '';
+        const latestPlanningJob: InternalJob | null = planningBackendJobId
+          ? await fetchInternalJob(planningBackendJobId).then((result) => result.job).catch(() => null)
+          : null;
+        const latestPlanningJobStatus = String(latestPlanningJob?.status || '');
+        const planningJobIsStillActive = ['queued', 'running', 'retry_waiting'].includes(latestPlanningJobStatus);
+        const planningErrorCode = String(
+          latestPlanningJob?.errorCode
+          || (error instanceof Error ? (error as Error & { code?: string }).code : '')
+          || ''
+        ).trim();
+        const planningErrorMessage = String(
+          latestPlanningJob?.errorMessage
+          || latestPlanningJob?.errorCode
+          || message
+          || '策划失败'
+        ).trim();
         const planningRecoverable = isRecoverableKieTaskResult(
           planningProviderTaskId,
-          message,
-          error instanceof Error ? (error as Error & { code?: string }).code : undefined,
+          planningErrorMessage,
+          planningErrorCode,
         );
         logShellError('one_click_planning_failed', error, {
           projectId,
           taskId,
           subFeature: targetSubFeature,
+          backendJobId: planningBackendJobId || undefined,
+          providerTaskId: planningProviderTaskId || undefined,
+          latestJobStatus: latestPlanningJobStatus || undefined,
         }, '一键主详策划失败');
-        if (planningRecoverable) {
+        if (planningRecoverable && planningJobIsStillActive) {
           const pendingPlanningProject: Project = {
             ...planningProject,
             status: 'planning',
-            backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
+            backendJobId: planningBackendJobId,
             planningTaskId: latestIdentityText(planningProviderTaskId),
             error: '任务已提交云端，结果待同步',
           };
@@ -3517,7 +3538,7 @@ const AppContent: React.FC<{
           ));
           void persistProjectToSharedState(pendingPlanningProject);
           setTasks((prev) => prev.map((t) => t.id === taskId
-            ? { ...t, backendJobId: activePlanningBackendJobId || t.backendJobId, status: 'generating', progress: Math.max(t.progress || 0, 8) }
+            ? { ...t, backendJobId: planningBackendJobId || t.backendJobId, status: 'generating', progress: Math.max(t.progress || 0, 8) }
             : t
           ));
           addToast('策划任务已提交云端，结果待同步，可稍后点击同步。', 'info');
@@ -3527,22 +3548,25 @@ const AppContent: React.FC<{
         const failedProject: Project = {
           ...planningProject,
           status: 'error',
-          backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
+          backendJobId: planningBackendJobId,
           planningTaskId: latestIdentityText(planningProviderTaskId),
           results: [{
             id: `${taskId}-error`,
             imageUrl: '',
-            prompt: message,
+            prompt: planningErrorMessage,
             model: generationParams['model'] || 'gpt-image-2',
             aspectRatio: generationParams['ratio'] || 'auto',
             status: 'error',
             createdAt,
             module: targetModule,
             subFeature: targetSubFeature,
+            taskId: planningProviderTaskId || undefined,
+            backendJobId: planningBackendJobId || undefined,
+            error: planningErrorMessage,
           }],
           taskCount: 1,
           completedCount: 0,
-          error: message,
+          error: planningErrorMessage,
         };
         setProjects((prev) => prev.map((p) =>
           p.id === projectId
@@ -3551,7 +3575,7 @@ const AppContent: React.FC<{
         ));
         void persistProjectToSharedState(failedProject);
         setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, status: 'error', progress: 100 } : t));
-        addToast(message, 'error');
+        addToast(planningErrorMessage, 'error');
       } finally {
         delete taskControllersRef.current[taskId];
         releaseGuardedSubmit();
