@@ -243,7 +243,13 @@ test('mysql temporal activity executes a queued db job and writes attempts/event
   assert.equal(JSON.parse(state.job.result_json).imageUrl, 'https://example.test/image.png');
   assert.ok(state.attempts.length >= 1);
   assert.ok(state.events.length >= 3);
+  assert.ok(state.events.some((params) => (
+    params[4] === 'provider_wait'
+    && params[5] === 'provider_wait_started'
+    && params[13] === 'provider-task-1'
+  )));
   assert.equal(logs.at(-1).action, 'job_completed');
   assert.ok(heartbeats.some((details) => details?.jobId === 'job-1' && details?.stage === 'running'));
+  assert.ok(heartbeats.some((details) => details?.jobId === 'job-1' && details?.stage === 'provider_wait'));
   assert.ok(heartbeats.some((details) => details?.providerTaskId === 'provider-task-1'));
 });

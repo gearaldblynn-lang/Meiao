@@ -294,6 +294,21 @@ export const createMysqlTemporalActivities = ({
           runId: input.runId,
           meta: { providerTaskId: value },
         }));
+        safeHeartbeat(heartbeat, { jobId: refreshedJob.id, stage: 'provider_wait', providerTaskId: value });
+        await runTaskPlatformWrite(() => recordJobEvent(pool, refreshedJob, {
+          attemptId: attempt?.id,
+          attemptNo: attempt?.attemptNo,
+          traceId: attempt?.traceId,
+          stage: 'provider_wait',
+          eventName: 'provider_wait_started',
+          status: 'started',
+          engine: 'temporal',
+          providerSubmitted: true,
+          providerTaskId: value,
+          workflowId: input.workflowId,
+          runId: input.runId,
+          meta: { providerTaskId: value },
+        }));
       };
 
       await runTaskPlatformWrite(() => recordJobEvent(pool, refreshedJob, {
