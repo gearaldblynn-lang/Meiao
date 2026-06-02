@@ -1764,7 +1764,13 @@ const hasCompletedMediaResult = (result: ShellGeneratedResult) =>
 const resultHasMedia = (result: Partial<ShellGeneratedResult>) => Boolean(result.imageUrl || result.videoUrl);
 
 const resultHasRuntimeIdentity = (result: Partial<ShellGeneratedResult>) => Boolean(
-  String(result.taskId || result.backendJobId || '').trim(),
+  String(
+    result.taskId
+    || result.backendJobId
+    || (result as Record<string, unknown>).providerTaskId
+    || (result as Record<string, unknown>).kieTaskId
+    || ''
+  ).trim(),
 );
 
 const resultHasProviderTaskIdentity = (result: Partial<ShellGeneratedResult>) => Boolean(
@@ -1782,6 +1788,20 @@ const isStaleRuntimePlaceholderResult = (result: Partial<ShellGeneratedResult>) 
   && !resultHasMedia(result)
   && !resultHasRuntimeIdentity(result)
 );
+
+const isTransientNoIdentityRuntimePlaceholderResult = (result: Partial<ShellGeneratedResult>) => {
+  if (!['error', 'failed', 'generating', 'pending', 'queued'].includes(String(result.status || ''))) return false;
+  if (resultHasMedia(result)) return false;
+  if (resultHasRuntimeIdentity(result)) return false;
+  const message = String(
+    result.error
+    || result.prompt
+    || (result as Record<string, unknown>).message
+    || (result as Record<string, unknown>).detail
+    || ''
+  ).trim();
+  return /网络连接失败|请求超时|failed to fetch|fetch failed|dynamically imported module|任务状态同步失败|任务已提交云端|结果待同步/i.test(message);
+};
 
 const isStaleOneClickPlanningPlaceholderResult = (result: Partial<ShellGeneratedResult>) => (
   result.status === 'generating'
@@ -1812,14 +1832,18 @@ const isSupersededNoMediaErrorResult = (
 };
 
 const pruneSupersededOneClickResults = (results: ShellGeneratedResult[] = []) => {
+  const hasCompletedMedia = results.some(hasCompletedMediaResult);
   const completedPlanIds = new Set(
     results
       .filter(hasCompletedMediaResult)
       .map((result) => String(result.planId || '').trim())
       .filter(Boolean),
   );
-  if (completedPlanIds.size === 0) return results;
-  return results.filter((result) => !isSupersededNoMediaErrorResult(result, completedPlanIds));
+  if (!hasCompletedMedia) return results;
+  return results.filter((result) => (
+    !isTransientNoIdentityRuntimePlaceholderResult(result)
+    && !isSupersededNoMediaErrorResult(result, completedPlanIds)
+  ));
 };
 
 const clearCompletedResultError = (result: ShellGeneratedResult): ShellGeneratedResult => {
@@ -2046,6 +2070,7 @@ const mergeProjectResultsByIdentity = (
     ));
   };
   const upsert = (result: ShellGeneratedResult) => {
+    if (isTransientNoIdentityRuntimePlaceholderResult(result) && results.some(hasCompletedMediaResult)) return;
     if (isSupersededNoMediaErrorResult(result, new Set(
       results
         .filter(hasCompletedMediaResult)

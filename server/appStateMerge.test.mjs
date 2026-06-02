@@ -838,6 +838,65 @@ test('mergeAppStateForStorage keeps clean first-image completion from being poll
   assert.deepEqual(project.results.map((result) => result.status), ['completed', 'completed', 'completed', 'completed']);
 });
 
+test('mergeAppStateForStorage ignores late frontend network placeholders after backend success', () => {
+  const completedResult = {
+    id: 'provider-success-1',
+    planId: 'client-plan-1',
+    projectId: 'late-network-project',
+    imageUrl: '/first-image-success.png',
+    status: 'completed',
+    taskId: 'provider-task-success-1',
+    backendJobId: 'backend-job-success-1',
+    module: 'one_click',
+    subFeature: 'first_image',
+  };
+
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'late-network-project',
+      name: '6月1日项目3',
+      module: 'one_click',
+      subFeature: 'first_image',
+      status: 'completed',
+      taskCount: 1,
+      completedCount: 1,
+      plans: [{
+        id: 'client-plan-1',
+        title: '首图裂变1-复刻主图参考1',
+        selected: true,
+        schemeContent: '真实策划结果',
+      }],
+      results: [completedResult],
+    }],
+  }, {
+    shellProjects: [{
+      id: 'late-network-project',
+      name: '6月1日项目3',
+      module: 'one_click',
+      subFeature: 'first_image',
+      status: 'error',
+      taskCount: 1,
+      completedCount: 0,
+      results: [{
+        id: 'frontend-network-error-after-success',
+        projectId: 'late-network-project',
+        status: 'error',
+        imageUrl: '',
+        error: '网络连接失败，请检查网络后重试',
+        prompt: '网络连接失败，请检查网络后重试',
+      }],
+      error: '网络连接失败，请检查网络后重试',
+    }],
+  });
+
+  const project = merged.shellProjects[0];
+  assert.equal(project.status, 'completed');
+  assert.equal(project.taskCount, 1);
+  assert.equal(project.completedCount, 1);
+  assert.equal(project.error, undefined);
+  assert.deepEqual(project.results, [completedResult]);
+});
+
 test('mergeAppStateForStorage normalizes polluted one-click branch schemes', () => {
   const plans = Array.from({ length: 4 }, (_, index) => ({
     id: `client-plan-${index + 1}`,
