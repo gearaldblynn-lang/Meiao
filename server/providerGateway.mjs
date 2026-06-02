@@ -704,7 +704,17 @@ const resolveProviderGeminiChatMediaUrl = async (value, env, signal) => {
   if (shouldUploadGeminiMediaUrlForStableMime(normalized)) {
     return convertGeminiMediaToStableKieUrl(normalized, env, signal);
   }
-  return resolveProviderMediaUrl(normalized, env, signal);
+  return resolveProviderChatMediaUrl(normalized, env, signal);
+};
+
+const resolveProviderChatMediaUrl = async (value, env, signal) => {
+  const normalized = normalizeProviderMediaReference(value);
+  if (!normalized) return '';
+  if (normalized.startsWith('data:')) {
+    return convertInlineDataUrlToKieFileUrl(normalized, env);
+  }
+  if (!isManagedAssetUrl(normalized)) return normalized;
+  return convertManagedAssetUrlToKieFileUrl(normalized, env, signal, { forceUpload: true });
 };
 
 const resolveProviderGenerationMediaUrl = async (value, env, signal) => {
@@ -847,7 +857,7 @@ const resolveProviderMessages = async (messages = [], env, signal, options = {})
     const resolvedMediaUrlByRawUrl = new Map();
     const providerMediaResolver = isKieGeminiChatModel(options.model)
       ? resolveProviderGeminiChatMediaUrl
-      : resolveProviderMediaUrl;
+      : resolveProviderChatMediaUrl;
     const resolveMediaUrl = async (url) => {
       const rawUrl = String(url || '').trim();
       if (!rawUrl) return '';

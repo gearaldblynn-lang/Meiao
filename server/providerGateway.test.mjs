@@ -1498,13 +1498,29 @@ test('executeProviderJob can download relative managed asset paths before upload
   }
 });
 
-test('executeProviderJob sends externally reachable managed file attachments directly for gpt-5.4 responses', async () => {
+test('executeProviderJob uploads managed file attachments before gpt-5.4 responses', async () => {
   const originalFetch = global.fetch;
   const requests = [];
   const cloudFileUrl = 'http://111.229.66.247/api/assets/file/file-1/source.pdf';
+  const stagedFileUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.pdf';
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/pdf' }),
+        arrayBuffer: async () => new TextEncoder().encode('pdf-binary').buffer,
+        json: async () => ({}),
+      };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: stagedFileUrl },
+      });
+    }
     if (String(url).includes('/codex/v1/responses')) {
       return createJsonResponse({ output_text: 'ok' });
     }
@@ -1534,27 +1550,43 @@ test('executeProviderJob sends externally reachable managed file attachments dir
     );
 
     assert.equal(result.result.content, 'ok');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 0);
     const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
     const responseBody = JSON.parse(String(responseRequest.init.body));
     assert.equal(responseBody.input[0].content[1].type, 'input_file');
     assert.equal(responseBody.input[0].content[1].filename, 'source.pdf');
-    assert.equal(responseBody.input[0].content[1].file_url, cloudFileUrl);
+    assert.equal(responseBody.input[0].content[1].file_url, stagedFileUrl);
     assert.equal(responseBody.input[0].content[1].file_data, undefined);
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-test('executeProviderJob sends externally reachable managed asset images directly for gpt-5.4 responses api', async () => {
+test('executeProviderJob uploads managed asset images before gpt-5.4 responses api', async () => {
   const originalFetch = global.fetch;
   const requests = [];
   const cloudAssetUrl = 'http://111.229.66.247/api/assets/file/img-1/source.png';
+  const stagedAssetUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.png';
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/png' }),
+        arrayBuffer: async () => new TextEncoder().encode('png-binary').buffer,
+        json: async () => ({}),
+      };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: stagedAssetUrl },
+      });
+    }
     if (String(url).includes('/codex/v1/responses')) {
       return createJsonResponse({ output_text: 'ok' });
     }
@@ -1584,12 +1616,12 @@ test('executeProviderJob sends externally reachable managed asset images directl
     );
 
     assert.equal(result.result.content, 'ok');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 0);
     const responseRequest = requests.find((item) => item.url.includes('/codex/v1/responses'));
     const responseBody = JSON.parse(String(responseRequest.init.body));
-    assert.equal(responseBody.input[0].content[1].image_url, cloudAssetUrl);
+    assert.equal(responseBody.input[0].content[1].image_url, stagedAssetUrl);
   } finally {
     global.fetch = originalFetch;
   }
@@ -1809,13 +1841,29 @@ test('executeProviderJob routes gemini 3.1 pro through kie chat endpoint with go
   }
 });
 
-test('executeProviderJob sends externally reachable managed file attachments directly for gemini chat models', async () => {
+test('executeProviderJob uploads managed file attachments before gemini chat models', async () => {
   const originalFetch = global.fetch;
   const requests = [];
   const cloudFileUrl = 'http://111.229.66.247/api/assets/file/file-2/source.pdf';
+  const stagedFileUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.pdf';
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'application/pdf' }),
+        arrayBuffer: async () => new TextEncoder().encode('pdf-binary').buffer,
+        json: async () => ({}),
+      };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: stagedFileUrl },
+      });
+    }
     if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
       return createJsonResponse({
         choices: [
@@ -1853,13 +1901,13 @@ test('executeProviderJob sends externally reachable managed file attachments dir
     );
 
     assert.equal(result.result.content, 'gemini managed file ok');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     const chatRequest = requests.find((item) => item.url.includes('/gemini-3-flash/v1/chat/completions'));
     const chatBody = JSON.parse(String(chatRequest.init.body));
-    assert.equal(chatBody.messages[1].content[0].text, `读取这个 pdf，文件URL：${cloudFileUrl}`);
+    assert.equal(chatBody.messages[1].content[0].text, `读取这个 pdf，文件URL：${stagedFileUrl}`);
     assert.equal(chatBody.messages[1].content[1].type, 'image_url');
-    assert.equal(chatBody.messages[1].content[1].image_url.url, cloudFileUrl);
+    assert.equal(chatBody.messages[1].content[1].image_url.url, stagedFileUrl);
   } finally {
     global.fetch = originalFetch;
   }
@@ -2297,12 +2345,29 @@ test('executeProviderJob never sends redpanda openrouter-chat mp4 directly to ge
   }
 });
 
-test('executeProviderJob preserves externally reachable managed image urls inside gemini text labels', async () => {
+test('executeProviderJob uploads managed image urls inside gemini text labels', async () => {
   const originalFetch = global.fetch;
   const requests = [];
+  const sourceUrl = 'http://111.229.66.247/api/assets/file/ref-1/reference.jpg';
+  const stagedUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/reference.jpg';
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/jpeg' }),
+        arrayBuffer: async () => new TextEncoder().encode('jpg-binary').buffer,
+        json: async () => ({}),
+      };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: stagedUrl },
+      });
+    }
     if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
       return createJsonResponse({ choices: [{ message: { content: 'gemini image ok' } }] });
     }
@@ -2310,7 +2375,6 @@ test('executeProviderJob preserves externally reachable managed image urls insid
   };
 
   try {
-    const sourceUrl = 'http://111.229.66.247/api/assets/file/ref-1/reference.jpg';
     const result = await executeProviderJob(
       {
         taskType: 'kie_chat',
@@ -2332,12 +2396,12 @@ test('executeProviderJob preserves externally reachable managed image urls insid
     );
 
     assert.equal(result.result.content, 'gemini image ok');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     const chatRequest = requests.find((item) => item.url.includes('/gemini-3-flash/v1/chat/completions'));
     const chatBody = JSON.parse(String(chatRequest.init.body));
-    assert.equal(chatBody.messages[0].content[0].text, `[复刻主图参考1] 图片URL：${sourceUrl}。这是唯一版式参考。`);
-    assert.equal(chatBody.messages[0].content[1].image_url.url, sourceUrl);
+    assert.equal(chatBody.messages[0].content[0].text, `[复刻主图参考1] 图片URL：${stagedUrl}。这是唯一版式参考。`);
+    assert.equal(chatBody.messages[0].content[1].image_url.url, stagedUrl);
   } finally {
     global.fetch = originalFetch;
   }
@@ -3191,13 +3255,32 @@ test('executeProviderJob prefers real kie gemini task id over chat completion id
   }
 });
 
-test('executeProviderJob sends externally reachable managed asset images directly for gemini planning', async () => {
+test('executeProviderJob uploads managed asset images before gemini planning', async () => {
   const originalFetch = global.fetch;
   const requests = [];
   const cloudAssetUrl = 'http://111.229.66.247/api/assets/file/img-1/source.png';
+  const stagedAssetUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.png';
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/png' }),
+        arrayBuffer: async () => new TextEncoder().encode('png-binary').buffer,
+        json: async () => ({}),
+      };
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: stagedAssetUrl },
+      });
+    }
+    if (!String(url).includes('/gemini-3-flash')) {
+      throw new Error(`unexpected request: ${String(url)}`);
+    }
     return createJsonResponse({
       data: {
         id: 'gemini-dashboard-task-id',
@@ -3228,12 +3311,12 @@ test('executeProviderJob sends externally reachable managed asset images directl
     );
 
     assert.equal(result.result.content, 'gemini result');
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
     const geminiRequest = requests.find((item) => item.url.includes('/gemini-3-flash'));
     assert.ok(geminiRequest);
     const body = JSON.parse(String(geminiRequest.init.body));
-    assert.equal(body.messages[0].content[1].image_url.url, cloudAssetUrl);
+    assert.equal(body.messages[0].content[1].image_url.url, stagedAssetUrl);
   } finally {
     global.fetch = originalFetch;
   }
