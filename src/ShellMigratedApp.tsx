@@ -51,6 +51,7 @@ import { getEffectiveConcurrency } from './modules/Account/accountManagementUtil
 import { isRecoverableKieTaskResult, recoverKieAiTask } from './services/kieAiService';
 import { buildStoryboardBoardGenerationImport } from './shell/modules/Video/storyboardImportUtils.mjs';
 import { resolveShellSkuCount } from './adapters/shellSkuCount';
+import { buildOneClickPlanGenerationMaterials } from './adapters/shellOneClickMaterials.mjs';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -4045,19 +4046,13 @@ const AppContent: React.FC<{
     const baseMaterials = hasBaseMaterials ? baseMaterialsOrPlan as Record<string, Material[]> : {};
     const plan = hasBaseMaterials ? planOrSubFeature as PlanItem : baseMaterialsOrPlan as PlanItem;
     const subFeature = hasBaseMaterials ? String(maybeSubFeature || '') : String(planOrSubFeature || '');
-    const next: Record<string, Material[]> = Object.fromEntries(
-      Object.entries(baseMaterials || {}).map(([type, items]) => [type, Array.isArray(items) ? [...items] : []]),
-    );
-    if (plan.sourceResultUrl && !plan.editInstruction?.trim() && !plan.variationInstruction?.trim()) {
-      const normalizedResultUrl = resolvePublicAssetUrl(plan.sourceResultUrl, publicBaseUrl);
-      if (normalizedResultUrl) {
-        next.reference = [
-          createRemoteMaterial(`prev-${plan.id}`, 'reference', normalizedResultUrl, 'first-image-variant-base.png', subFeature),
-          ...(next.reference || []),
-        ];
-      }
-    }
-    return next;
+    return buildOneClickPlanGenerationMaterials({
+      baseMaterials,
+      plan,
+      subFeature,
+      publicBaseUrl,
+      createRemoteMaterial,
+    } as any) as Record<string, Material[]>;
   }, [createRemoteMaterial, publicBaseUrl]);
 
   const runOneClickPlanGeneration = useCallback(async (

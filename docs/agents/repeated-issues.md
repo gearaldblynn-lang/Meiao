@@ -20,6 +20,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-02 - First-image replication generation must not submit sibling style references
+
+- Symptom: 首图复刻策划里产品素材和复刻参考图角色看起来正确，但后续生图模型收到的 `imageUrls` 同时包含同项目多张风格/复刻参考图，导致模型把参考图里的包装当成商品素材，出图包装错误。
+- Environment: Tencent Cloud production one_click first_image / local development.
+- Root cause: Shell 批量生图层对一键主详非 SKU 直接把 `Object.values(input.materials).flat()` 全量提交给 provider；首图复刻每个方案虽然有自己的 `sourceReferenceUrl`，但提交时没有按方案过滤 `styleRef`，所以同项目其他参考图也被上传给生图模型。
+- Fix: 新增 `shellOneClickMaterials` 过滤层；首图复刻每个方案只保留产品素材、当前方案对应的复刻参考图、logo/上一张结果（如有）。`runShellImageGeneration` 底层也按 `sourceReferenceUrl` 二次过滤 provider 输入 URL。
+- Regression check: `node --test src/adapters/shellOneClickMaterials.test.mjs src/modules/OneClick/oneClickBehavior.test.mjs`; `node --test src/components/uiArchitecture.test.mjs`; `npm run build`.
+- Files/tests: `src/adapters/shellOneClickMaterials.mjs`, `src/adapters/shellOneClickMaterials.test.mjs`, `src/ShellMigratedApp.tsx`, `src/adapters/shellWorkflow.ts`, `src/modules/OneClick/oneClickBehavior.test.mjs`, `src/components/uiArchitecture.test.mjs`.
+- Avoid next time: 多参考图工作流不能把“项目级材料集合”直接当“单个方案的模型输入”。提交 provider 前必须按当前方案 role/filter 生成最终 input image list，并用真实历史 payload 回放验证。
+
 ## 2026-06-01 - Agent running chat tasks must be durable pending messages
 
 - Symptom: 智能体中心正在执行的对话/生图任务，刷新页面后“思考中/生成中”消息消失；用户会误以为任务没提交，从而再次点击发送。原任务完成后又可能恢复，造成前端状态混乱和重复提交风险。

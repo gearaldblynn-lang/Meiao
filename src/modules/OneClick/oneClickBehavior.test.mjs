@@ -12,6 +12,7 @@ const promptUtilsSource = readFileSync(new URL('./generationPromptUtils.ts', imp
 const configSidebarSource = readFileSync(new URL('./ConfigSidebar.tsx', import.meta.url), 'utf8');
 const skuSidebarSource = readFileSync(new URL('./SkuSidebar.tsx', import.meta.url), 'utf8');
 const shellWorkflowSource = readFileSync(new URL('../../adapters/shellWorkflow.ts', import.meta.url), 'utf8');
+const shellOneClickMaterialsSource = readFileSync(new URL('../../adapters/shellOneClickMaterials.mjs', import.meta.url), 'utf8');
 const typesSource = readFileSync(new URL('../../types.ts', import.meta.url), 'utf8');
 const referencePresetUtilsSource = readFileSync(new URL('./referencePresetUtils.mjs', import.meta.url), 'utf8');
 const referencePresetManagerSource = readFileSync(new URL('./ReferencePresetManager.tsx', import.meta.url), 'utf8');
@@ -299,9 +300,9 @@ test('first image continuation variants use the generated result as primary base
   assert.match(firstImageSource, /const inputImages = isContinueVariation[\s\S]*scheme\.sourceResultUrl![\s\S]*\.\.\.productUrls/);
   assert.match(firstImageSource, /replicationReferenceUrl: isContinueVariation \? null : scheme\.sourceReferenceUrl/);
   assert.match(firstImageSource, /hasProductReferences: productUrls\.length > 0/);
-  assert.match(shellWorkflowSource, /const variationSourceResultUrl = typeof input\.taskMetadata\?\.sourceResultUrl === 'string'/);
-  assert.match(shellWorkflowSource, /const isOneClickContinuationVariation = Boolean/);
-  assert.match(shellWorkflowSource, /isOneClickContinuationVariation\s*\?\s*\[variationSourceResultUrl, \.\.\.materialImageUrls\]/);
+  assert.match(shellWorkflowSource, /buildShellImageInputUrls/);
+  assert.match(shellOneClickMaterialsSource, /const hasVariationInstruction = Boolean\(String\(taskMetadata\?\.variationInstruction/);
+  assert.match(shellOneClickMaterialsSource, /if \(sourceResultUrl && hasVariationInstruction\) \{\s*return dedupeUrls\(\[sourceResultUrl, \.\.\.productImageUrls/);
   assert.match(shellWorkflowSource, /hasProductReferences: \(input\.materials\.product \|\| \[\]\)\.length > 0/);
 });
 
@@ -316,12 +317,11 @@ test('one click result edit uses generated image as baseline, product assets for
   assert.match(promptUtilsSource, /若任务需求明确说明补充参考图是新的产品、包装、局部替换或新增元素参考/);
   assert.match(promptUtilsSource, /生成新结果，保留原图/);
   assert.match(promptUtilsSource, /if \(previousResultUrl && editInstruction\?\.trim\(\)\)/);
-  assert.match(shellWorkflowSource, /const editSourceResultUrl = typeof input\.taskMetadata\?\.sourceResultUrl === 'string'/);
-  assert.match(shellWorkflowSource, /const isOneClickResultEdit = Boolean/);
+  assert.match(shellWorkflowSource, /buildShellImageInputUrls/);
+  assert.match(shellOneClickMaterialsSource, /const hasEditInstruction = Boolean\(String\(taskMetadata\?\.editInstruction/);
   assert.match(shellWorkflowSource, /const productImageUrls = \(input\.materials\.product \|\| \[\]\)\.map/);
-  assert.match(shellWorkflowSource, /const consistencyImageUrls = \[\.\.\.productImageUrls, \.\.\.giftImageUrls, \.\.\.logoImageUrls\]/);
   assert.match(shellWorkflowSource, /const supplementalImageUrls = \(input\.materials\.reference \|\| \[\]\)\.map/);
-  assert.match(shellWorkflowSource, /isOneClickResultEdit[\s\S]*\?\s*\[\.\.\.consistencyImageUrls, editSourceResultUrl, \.\.\.supplementalImageUrls\]/);
+  assert.match(shellOneClickMaterialsSource, /if \(sourceResultUrl && hasEditInstruction\) \{\s*return dedupeUrls\(\[\.\.\.productImageUrls, \.\.\.giftImageUrls, sourceResultUrl, \.\.\.logoImageUrls\]\)/);
   assert.match(shellWorkflowSource, /editInstruction: typeof input\.taskMetadata\?\.editInstruction === 'string'/);
 });
 
