@@ -17,6 +17,8 @@ const INVALID_ONE_CLICK_PLAN_PATTERNS = [
   /共\s*\d+\s*张参考图，其中\s*\d+\s*张策划失败/,
   /Failed to get (?:the )?file information/i,
   /I cannot fulfill this request/i,
+  /Internal Error,?\s*Please try again later/i,
+  /server is currently being maintained/i,
   /Cannot read properties of undefined/i,
   /providerTaskId/i,
   /网络连接失败，请检查网络后重试/,

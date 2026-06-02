@@ -1260,6 +1260,109 @@ test('shell data adapter restores completed one-click planning jobs only into pe
   assert.equal(snapshot.tasks.length, 0);
 });
 
+test('shell data adapter marks completed but unparsable planning jobs as failed instead of leaving placeholders active', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'planning-empty-placeholder',
+      name: '正在策划的首图',
+      module: 'one_click',
+      status: 'generating',
+      createdAt: '06-02',
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      backendJobId: 'planning-empty-job',
+    }],
+  }, [
+    {
+      id: 'planning-empty-job',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'resp_empty_planning',
+      payload: {
+        shellProjectId: 'planning-empty-placeholder',
+        shellPlanningPurpose: 'one_click_planning',
+        model: 'gemini-3-flash-openai',
+        subFeature: 'first_image',
+      },
+      result: {
+        text: 'I cannot fulfill this request.',
+        creditsConsumed: 0.12,
+      },
+      createdAt: 1780380000000,
+      updatedAt: 1780380001000,
+      finishedAt: 1780380001000,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'planning-empty-placeholder');
+  assert.equal(project?.status, 'error');
+  assert.equal(project?.planningTaskId, 'resp_empty_planning');
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.results[0]?.status, 'error');
+  assert.equal(project?.results[0]?.taskId, 'resp_empty_planning');
+  assert.match(project?.error || '', /I cannot fulfill this request/);
+  assert.equal(snapshot.tasks.length, 0);
+});
+
+test('shell data adapter does not let an unparsable fallback planning response overwrite recovered plans', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'planning-recovered-project',
+      name: '已经有方案的首图',
+      module: 'one_click',
+      status: 'planning',
+      createdAt: '06-02',
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      backendJobId: 'planning-empty-fallback-job',
+      plans: [{
+        id: 'plan-ok',
+        title: '首图裂变1',
+        sellingPoints: [],
+        sceneDescription: '保留参考图构图并替换商品。',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '',
+        selected: true,
+        schemeContent: '可用方案',
+      }],
+      selectedPlanId: 'plan-ok',
+    }],
+  }, [
+    {
+      id: 'planning-empty-fallback-job',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'resp_empty_fallback',
+      payload: {
+        shellProjectId: 'planning-recovered-project',
+        shellPlanningPurpose: 'one_click_planning',
+        subFeature: 'first_image',
+      },
+      result: { text: 'I cannot fulfill this request.' },
+      createdAt: 1780380000000,
+      updatedAt: 1780380001000,
+      finishedAt: 1780380001000,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'planning-recovered-project');
+  assert.equal(project?.status, 'planning');
+  assert.equal(project?.plans?.length, 1);
+  assert.equal(project?.plans?.[0]?.id, 'plan-ok');
+  assert.equal(project?.results.length, 0);
+  assert.equal(project?.error, undefined);
+});
+
 test('shell data adapter lets completed planning jobs replace stale planning failure placeholders', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{
@@ -1489,6 +1592,66 @@ test('shell data adapter drops persisted one-click planning placeholder plans af
   assert.equal(project?.selectedPlanId, 'dusang-planning-job-plan-1');
   assert.equal(project?.taskCount, 1);
   assert.equal(project?.planningTaskId, 'kie-chat-provider-id');
+});
+
+test('shell data adapter does not expose internal backend job ids as planning provider ids', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'duosang-stale-sku-project',
+      name: '5月26日项目6',
+      module: 'one_click',
+      status: 'planning',
+      createdAt: '05-26',
+      backendJobId: '6296de5c861e08699d96a92b',
+      planningTaskId: '209a398cc2f3c9e1aabaf48a',
+      plans: [{
+        id: '209a398cc2f3c9e1aabaf48a-plan-1',
+        title: 'SKU一',
+        sellingPoints: [],
+        sceneDescription: '真实策划一',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '真实策划一',
+        selected: true,
+        schemeContent: '真实策划一',
+      }, {
+        id: '209a398cc2f3c9e1aabaf48a-plan-2',
+        title: 'SKU二',
+        sellingPoints: [],
+        sceneDescription: '真实策划二',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '真实策划二',
+        selected: true,
+        schemeContent: '真实策划二',
+      }],
+      selectedPlanId: '209a398cc2f3c9e1aabaf48a-plan-1',
+      results: [{
+        id: '0db3a02612f517a9ea0c581210b37e8c',
+        planId: '209a398cc2f3c9e1aabaf48a-plan-1',
+        imageUrl: 'https://example.com/sku-1.png',
+        prompt: '真实生图 prompt',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'completed',
+        createdAt: '05-26',
+        module: 'one_click',
+        subFeature: 'sku',
+        taskId: '0db3a02612f517a9ea0c581210b37e8c',
+        backendJobId: '6296de5c861e08699d96a92b',
+      }],
+      taskCount: 2,
+      completedCount: 1,
+      subFeature: 'sku',
+    }],
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'duosang-stale-sku-project');
+  assert.equal(project?.planningTaskId, undefined);
+  assert.equal(project?.plans?.length, 2);
+  assert.equal(project?.results.length, 1);
 });
 
 test('shell data adapter shows active one-click planning jobs without fake generation result prompts', () => {

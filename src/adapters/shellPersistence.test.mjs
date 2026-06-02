@@ -274,6 +274,47 @@ test('shell persistence does not inherit branch-level planning ids when saving a
   assert.equal(nextState.oneClickMemory.firstImage.planningTaskId, undefined);
 });
 
+test('shell persistence does not store internal backend job ids as planning task ids', () => {
+  const state = buildPersistedAppState({
+    oneClickMemory: {
+      firstImage: { projects: [] },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  });
+
+  const nextState = upsertOneClickProjectIntoPersistedState(state, {
+    id: 'stale-provider-id-project',
+    name: '旧内部 ID 项目',
+    module: 'one_click',
+    status: 'planning',
+    createdAt: '05-29',
+    backendJobId: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+    planningTaskId: 'bbbbbbbbbbbbbbbbbbbbbbbb',
+    results: [],
+    plans: [{
+      id: 'plan-1',
+      title: '方案 1',
+      sellingPoints: [],
+      sceneDescription: '真实方案内容',
+      styleDirection: '',
+      colorPalette: '',
+      composition: '',
+      textLayout: '真实方案内容',
+      selected: true,
+      schemeContent: '真实方案内容',
+    }],
+    taskCount: 1,
+    completedCount: 0,
+    subFeature: 'first_image',
+  });
+
+  const saved = nextState.oneClickMemory.firstImage.projects[0];
+  assert.equal(saved.planningTaskId, undefined);
+  assert.equal(nextState.oneClickMemory.firstImage.planningTaskId, undefined);
+});
+
 test('shell persistence drops stale one-click planning placeholders while merging completed projects', () => {
   const state = buildPersistedAppState({
     oneClickMemory: {

@@ -12,6 +12,8 @@ test('one-click plan validation rejects failed planning placeholders', () => {
   assert.equal(isInvalidOneClickPlanText('共 1 张参考图，其中 1 张策划失败。'), true);
   assert.equal(isInvalidOneClickPlanText('Failed to get the file information'), true);
   assert.equal(isInvalidOneClickPlanText('I cannot fulfill this request.'), true);
+  assert.equal(isInvalidOneClickPlanText('Internal Error, Please try again later.'), true);
+  assert.equal(isInvalidOneClickPlanText('The server is currently being maintained, please try again later~'), true);
 });
 
 test('one-click plan validation keeps real scheme content valid', () => {
