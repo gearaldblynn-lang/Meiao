@@ -27,6 +27,7 @@
 - UI 和交互优先服务用户任务。不要为了技术结构牺牲可用性。
 - 所有 prompt 新增或重写必须遵守 `docs/prompt-rtcfe-migration-map.md` 中的 RTCFE 结构：R Role、T Task、C Constraint、F Format、E Example。改 prompt 时必须保留既有输出字段、解析锚点和历史约束，并同步补防回归测试。
 - 修复重复出现的问题时，必须先查 `docs/agents/repeated-issues.md`、相关测试和最近交接文档；修完后如果形成可复用经验，追加到 `docs/agents/repeated-issues.md`，避免同一类错误反复靠记忆重修。
+- 每次提交 bug 修复都必须同步到外部诊断日志看板 `/Users/feiyanglin/程序开发/电商视觉一键化/云上日志诊断看板`：优先运行 `npm run record-fix -- ...`，一次性写入修改流水、问题主线、修复记录和经验沉淀。不要在业务应用里另建修复记录看板。修复已提交或部署时，最终回复必须给出看板入口、`fingerprint`、commit、部署状态和看板校验结果，不能只说“已记录”。
 
 ## Agent skills
 
