@@ -2043,15 +2043,18 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
     : filteredPlans.find((plan) => plan.selected)?.id || filteredPlans[0]?.id || project.selectedPlanId;
   const hasGenerating = results.some((result) => result.status === 'generating' && resultHasProviderTaskIdentity(result));
   const hasError = results.some((result) => result.status === 'error');
-  const status = completedCount >= taskCount
+  const hasCompletedMedia = completedCount > 0;
+  const status = hasCompletedMedia && !hasGenerating && !hasError
     ? 'completed'
-    : hasGenerating
-      ? 'generating'
-      : hasError
-        ? 'error'
-        : hasPendingSelectedPlan(filteredPlans, results)
-          ? 'planning'
-          : project.status;
+    : completedCount >= taskCount
+      ? 'completed'
+      : hasGenerating
+        ? 'generating'
+        : hasError
+          ? 'error'
+          : hasPendingSelectedPlan(filteredPlans, results)
+            ? 'planning'
+            : project.status;
 
   return {
     ...project,
@@ -2310,15 +2313,18 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
   const taskCount = getMergedProjectTaskCount(existing, next, plans, results, completedCount);
   const hasGenerating = results.some((result) => result.status === 'generating' && resultHasProviderTaskIdentity(result));
   const hasError = results.some((result) => result.status === 'error');
-  const status = completedCount >= taskCount
+  const hasCompletedMedia = completedCount > 0;
+  const status = hasCompletedMedia && !hasGenerating && !hasError
     ? 'completed'
-    : hasGenerating
-      ? 'generating'
-      : hasError
-        ? 'error'
-        : hasPendingSelectedPlan(plans, results)
-          ? 'planning'
-          : next.status;
+    : completedCount >= taskCount
+      ? 'completed'
+      : hasGenerating
+        ? 'generating'
+        : hasError
+          ? 'error'
+          : hasPendingSelectedPlan(plans, results)
+            ? 'planning'
+            : next.status;
   const mergedProject: ShellProjectData & { error?: string } = {
     ...existing,
     ...next,

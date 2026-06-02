@@ -554,6 +554,7 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
       : maxNumber(persistedTaskCount, stateItems.length, 1);
   const hasGenerating = stateItems.some((entry) => isActiveGenerationItem(entry));
   const hasError = stateItems.some((entry) => ['error', 'failed'].includes(String(entry?.status || '')));
+  const hasCompletedMedia = completedMediaCount > 0;
   const hasPlanOnlyPendingItems = isOneClickProject
     && completedMediaCount === 0
     && !hasGenerating
@@ -566,15 +567,17 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
         && !itemHasProviderTaskIdentity(entry)
       ))
     );
-  const status = completedMediaCount >= taskCount
+  const status = hasCompletedMedia && !hasGenerating && !hasError
     ? 'completed'
-    : hasGenerating
-      ? 'generating'
-      : hasError
-        ? 'error'
-        : hasPlanOnlyPendingItems
-          ? 'planning'
-          : item?.status;
+    : completedMediaCount >= taskCount
+      ? 'completed'
+      : hasGenerating
+        ? 'generating'
+        : hasError
+          ? 'error'
+          : hasPlanOnlyPendingItems
+            ? 'planning'
+            : item?.status;
   const next = {
     ...(item || {}),
     ...(Array.isArray(item?.plans) ? { plans } : {}),

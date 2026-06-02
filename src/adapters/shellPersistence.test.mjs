@@ -446,6 +446,67 @@ test('shell persistence keeps planned one-click schemes pending until an image p
   assert.notEqual(saved.status, 'generating');
 });
 
+test('shell persistence normalizes partial completed one-click projects out of planning state', () => {
+  const state = buildPersistedAppState({
+    shellProjects: [{
+      id: 'duosang-stale-sku-project',
+      name: '5月26日项目6',
+      module: 'one_click',
+      status: 'planning',
+      createdAt: '05-26',
+      backendJobId: '6296de5c861e08699d96a92b',
+      planningTaskId: '209a398cc2f3c9e1aabaf48a',
+      taskCount: 2,
+      completedCount: 1,
+      subFeature: 'sku',
+      plans: [{
+        id: 'plan-1',
+        title: 'SKU一',
+        sellingPoints: [],
+        sceneDescription: '真实策划一',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '真实策划一',
+        selected: true,
+        schemeContent: '真实策划一',
+      }, {
+        id: 'plan-2',
+        title: 'SKU二',
+        sellingPoints: [],
+        sceneDescription: '真实策划二',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '真实策划二',
+        selected: true,
+        schemeContent: '真实策划二',
+      }],
+      results: [{
+        id: '0db3a02612f517a9ea0c581210b37e8c',
+        planId: 'plan-1',
+        imageUrl: '/sku-1.png',
+        prompt: '真实生图 prompt',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'completed',
+        createdAt: '05-26',
+        module: 'one_click',
+        subFeature: 'sku',
+        taskId: '0db3a02612f517a9ea0c581210b37e8c',
+        backendJobId: '6296de5c861e08699d96a92b',
+      }],
+    }],
+  });
+
+  const nextState = upsertShellProjectIntoPersistedState(state, state.shellProjects[0]);
+  const saved = nextState.shellProjects[0];
+  assert.equal(saved.status, 'completed');
+  assert.equal(saved.planningTaskId, undefined);
+  assert.equal(saved.completedCount, 1);
+  assert.equal(saved.taskCount, 2);
+});
+
 test('shell persistence strips inline base64 previews from translation files before shared storage', () => {
   const state = buildPersistedAppState({
     translationMemory: {
