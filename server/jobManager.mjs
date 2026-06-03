@@ -181,12 +181,12 @@ export const reconcileStaleProviderlessRunningMysqlJobs = (
     ))
     .map((job) => ({
       ...job,
-      status: 'retry_waiting',
+      status: 'failed',
       startedAt: null,
-      finishedAt: null,
+      finishedAt: Number(referenceTime || now()),
       updatedAt: Number(referenceTime || now()),
       errorCode: 'provider_submit_stale',
-      errorMessage: '任务提交上游前长时间未返回上游任务 ID，已回收到待重试状态',
+      errorMessage: '任务提交上游前长时间未返回上游任务 ID，已自动失败并释放并发',
     }));
 };
 
@@ -389,14 +389,14 @@ export const reconcileStaleProviderlessRunningJobs = async (pool, options = {}) 
     await updateJobFields(pool, job.id, {
       status: job.status,
       started_at: null,
-      finished_at: null,
+      finished_at: job.finishedAt,
       updated_at: job.updatedAt,
       error_code: job.errorCode,
       error_message: job.errorMessage,
     });
     if (attempt?.id) {
       await runTaskPlatformWrite(() => finishJobAttempt(pool, attempt.id, {
-        status: 'retry_waiting',
+        status: 'failed',
         providerTaskId: '',
         errorCode: job.errorCode,
         errorMessage: job.errorMessage,
@@ -408,11 +408,11 @@ export const reconcileStaleProviderlessRunningJobs = async (pool, options = {}) 
       attemptNo: attempt?.attempt_no,
       traceId: attempt?.trace_id,
       stage: 'provider_submit',
-      eventName: 'provider_submit_stale_recovered',
-      status: 'interrupted',
+      eventName: 'provider_submit_stale_failed',
+      status: 'failed',
       engine: attempt?.engine || 'temporal',
       providerSubmitted: false,
-      retryable: true,
+      retryable: false,
       errorCode: job.errorCode,
       errorMessage: job.errorMessage,
       providerTaskId: '',
