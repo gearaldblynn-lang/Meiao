@@ -5,6 +5,7 @@ import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobE
 
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
+const DEFAULT_PROVIDERLESS_RUNNING_STALE_MS = 15 * 60 * 1000;
 const REUSABLE_JOB_STATUSES = new Set(['queued', 'running', 'retry_waiting']);
 
 const parseJsonValue = (value, fallback = null) => {
@@ -161,6 +162,31 @@ export const reconcileRestartedMysqlJobs = (jobs, referenceTime = now()) => {
       updatedAt: Number(referenceTime || now()),
       errorCode: 'service_restarted',
       errorMessage: '服务重启后任务已回收到待重试状态',
+    }));
+};
+
+export const reconcileStaleProviderlessRunningMysqlJobs = (
+  jobs,
+  referenceTime = now(),
+  staleMs = DEFAULT_PROVIDERLESS_RUNNING_STALE_MS
+) => {
+  if (!Array.isArray(jobs)) return [];
+  const cutoff = Number(referenceTime || now()) - Math.max(1, Number(staleMs || DEFAULT_PROVIDERLESS_RUNNING_STALE_MS));
+  return jobs
+    .filter((job) => (
+      String(job?.status || '') === 'running'
+      && !String(job?.providerTaskId || '').trim()
+      && Number(job?.startedAt || job?.updatedAt || job?.createdAt || 0) > 0
+      && Number(job?.startedAt || job?.updatedAt || job?.createdAt || 0) <= cutoff
+    ))
+    .map((job) => ({
+      ...job,
+      status: 'retry_waiting',
+      startedAt: null,
+      finishedAt: null,
+      updatedAt: Number(referenceTime || now()),
+      errorCode: 'provider_submit_stale',
+      errorMessage: '任务提交上游前长时间未返回上游任务 ID，已回收到待重试状态',
     }));
 };
 
@@ -333,6 +359,72 @@ export const reconcileRestartedRunningJobs = async (pool) => {
       error_code: job.errorCode,
       error_message: job.errorMessage,
     });
+  }
+  return reconciled;
+};
+
+export const reconcileStaleProviderlessRunningJobs = async (pool, options = {}) => {
+  const referenceTime = Number(options.referenceTime || now());
+  const staleMs = Math.max(1, Number(options.staleMs || DEFAULT_PROVIDERLESS_RUNNING_STALE_MS));
+  const [rows] = await pool.query(
+    `SELECT *
+     FROM internal_jobs
+     WHERE status = 'running'
+       AND (provider_task_id IS NULL OR provider_task_id = '')
+       AND started_at IS NOT NULL
+       AND started_at <= ?`,
+    [referenceTime - staleMs]
+  );
+  const reconciled = reconcileStaleProviderlessRunningMysqlJobs(rows.map(mapJobRow), referenceTime, staleMs);
+  for (const job of reconciled) {
+    const [attemptRows] = await pool.query(
+      `SELECT *
+       FROM internal_job_attempts
+       WHERE job_id = ?
+       ORDER BY attempt_no DESC
+       LIMIT 1`,
+      [job.id]
+    );
+    const attempt = attemptRows?.[0] || null;
+    await updateJobFields(pool, job.id, {
+      status: job.status,
+      started_at: null,
+      finished_at: null,
+      updated_at: job.updatedAt,
+      error_code: job.errorCode,
+      error_message: job.errorMessage,
+    });
+    if (attempt?.id) {
+      await runTaskPlatformWrite(() => finishJobAttempt(pool, attempt.id, {
+        status: 'retry_waiting',
+        providerTaskId: '',
+        errorCode: job.errorCode,
+        errorMessage: job.errorMessage,
+        finishedAt: job.updatedAt,
+      }));
+    }
+    await runTaskPlatformWrite(() => recordJobEvent(pool, job, {
+      attemptId: attempt?.id,
+      attemptNo: attempt?.attempt_no,
+      traceId: attempt?.trace_id,
+      stage: 'provider_submit',
+      eventName: 'provider_submit_stale_recovered',
+      status: 'interrupted',
+      engine: attempt?.engine || 'temporal',
+      providerSubmitted: false,
+      retryable: true,
+      errorCode: job.errorCode,
+      errorMessage: job.errorMessage,
+      providerTaskId: '',
+      workflowId: attempt?.workflow_id,
+      runId: attempt?.run_id,
+      meta: {
+        staleMs,
+        recoveredAt: job.updatedAt,
+        previousStartedAt: rows.find((row) => row.id === job.id)?.started_at || null,
+      },
+      createdAt: job.updatedAt,
+    }));
   }
   return reconciled;
 };

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   findReusableJobSubmission,
   reconcileRestartedMysqlJobs,
+  reconcileStaleProviderlessRunningMysqlJobs,
   selectJobsWithinConcurrencyLimits,
   shouldMysqlWorkerProcessTaskEngine,
 } from './jobManager.mjs';
@@ -216,4 +217,60 @@ test('reconcileRestartedMysqlJobs recovers stale running jobs after a server res
   assert.equal(reconciled[0].finishedAt, null);
   assert.equal(reconciled[0].errorCode, 'service_restarted');
   assert.match(reconciled[0].errorMessage, /服务重启后任务已回收到待重试状态/);
+});
+
+test('reconcileStaleProviderlessRunningMysqlJobs only recovers old running jobs before upstream submission', () => {
+  const reconciled = reconcileStaleProviderlessRunningMysqlJobs([
+    {
+      id: 'job-providerless-stale',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: '',
+      retryCount: 0,
+      maxRetries: 2,
+      errorCode: '',
+      errorMessage: '',
+      createdAt: 1000,
+      updatedAt: 1500,
+      startedAt: 1500,
+      finishedAt: null,
+    },
+    {
+      id: 'job-provider-submitted',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: 'kie-task-id',
+      createdAt: 1000,
+      updatedAt: 1500,
+      startedAt: 1500,
+      finishedAt: null,
+    },
+    {
+      id: 'job-young',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: '',
+      createdAt: 9000,
+      updatedAt: 9000,
+      startedAt: 9000,
+      finishedAt: null,
+    },
+  ], 10_000, 5_000);
+
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0].id, 'job-providerless-stale');
+  assert.equal(reconciled[0].status, 'retry_waiting');
+  assert.equal(reconciled[0].startedAt, null);
+  assert.equal(reconciled[0].finishedAt, null);
+  assert.equal(reconciled[0].errorCode, 'provider_submit_stale');
+  assert.match(reconciled[0].errorMessage, /未返回上游任务 ID/);
 });
