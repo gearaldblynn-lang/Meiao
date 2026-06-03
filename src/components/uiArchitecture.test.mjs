@@ -218,6 +218,20 @@ test('one click image fallback requires a visible KIE task id before showing gen
   assert.match(app, /const hasActiveSibling = currentMergedResults\.some\(\(result\) => \(\s*result\.status === 'generating' && Boolean\(String\(result\.taskId \|\| ''\)\.trim\(\)\)\s*\)\);/);
 });
 
+test('shell task cancel cancels backend jobs and persists interrupted cards', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+
+  assert.match(shellApp, /cancelInternalJob/);
+  assert.match(shellApp, /collectShellCancelJobIds/);
+  assert.match(shellApp, /collectShellCancelControllerIds/);
+  assert.match(shellApp, /void cancelInternalJob\(jobId\)/);
+  assert.match(shellApp, /void persistProjectToSharedState\(project\)/);
+  assert.match(shellApp, /status: 'error',\s*error: SHELL_MANUAL_CANCEL_ERROR/);
+  assert.match(projectCard, /getResultCancelTarget\(result, project\)/);
+  assert.doesNotMatch(projectCard, /onCancelTask\(project\.id\)/);
+});
+
 test('project cards do not label terminal failed image results as pending sync', () => {
   const projectCard = read('../shell/components/ProjectCard.tsx');
 

@@ -349,6 +349,9 @@ const ProjectCard: React.FC<Props> = ({
   const isCompletedMediaResult = (result: GeneratedResult) => result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl);
   const resultHasVisibleTaskId = (result: GeneratedResult) => Boolean(String(result.taskId || '').trim());
   const isResultActivelyGenerating = (result: GeneratedResult) => result.status === 'generating' && !isCompletedMediaResult(result) && resultHasVisibleTaskId(result);
+  const getResultCancelTarget = (result: GeneratedResult, targetProject: Project) => (
+    String(result.backendJobId || result.id || result.taskId || targetProject.backendJobId || targetProject.id).trim() || targetProject.id
+  );
   const hasGeneratingResult = project.results.some((result) => isResultActivelyGenerating(result));
   const projectProgressIncomplete = Number(project.completedCount || 0) < Number(project.taskCount || 0);
   const isProjectActivelyGenerating = project.status === 'generating' && (
@@ -1521,7 +1524,7 @@ const ProjectCard: React.FC<Props> = ({
                                       icon={<Square size={12} />}
                                       label="中断"
                                       tone="danger"
-                                      onClick={() => onCancelTask(project.id)}
+                                      onClick={() => onCancelTask(getResultCancelTarget(result, project))}
                                     />
                                   ) : hasResult ? (
                                     <ResultActionButton
@@ -1752,7 +1755,7 @@ const ProjectCard: React.FC<Props> = ({
                                         icon={<Square size={12} />}
                                         label="中断"
                                         tone="danger"
-                                        onClick={() => onCancelTask(project.id)}
+                                        onClick={() => onCancelTask(getResultCancelTarget(result, project))}
                                       />
                                     ) : hasResult ? (
                                       <ResultActionButton
