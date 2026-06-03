@@ -19,6 +19,7 @@ const APIPORTS_GPT_IMAGE_2_SECONDARY_MODEL = 'gpt-image-2-secondary';
 const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
 const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 240_000;
 const KIE_HTTP_REQUEST_TIMEOUT_MS = 60_000;
+const KIE_CHAT_COMPLETION_TIMEOUT_MS = 240_000;
 const KIE_CHAT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const DREAMINA_VIDEO_POLL_RETRIES = 180;
 const DREAMINA_VIDEO_POLL_INTERVAL_MS = 5_000;
@@ -1663,7 +1664,7 @@ const runKieResponsesJob = async (payload, env, signal) => {
       ...(payload.webSearchEnabled ? { tools: [{ type: 'web_search' }] } : {}),
     }),
     signal,
-  }, 'Kie Responses 请求超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'chat_completion');
+  }, 'Kie Responses 请求超时', KIE_CHAT_COMPLETION_TIMEOUT_MS, 'chat_completion');
 
   if (!response.ok) {
     await mapHttpError(response, 'Kie Responses 请求失败');
@@ -1963,7 +1964,7 @@ const runKieClaudeMessagesJob = async (payload, env, signal) => {
     },
     body: JSON.stringify(requestBody),
     signal,
-  }, 'Kie Claude 请求超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'chat_completion');
+  }, 'Kie Claude 请求超时', KIE_CHAT_COMPLETION_TIMEOUT_MS, 'chat_completion');
 
   let response = await sendClaudeRequest(primaryRequestBody);
 
@@ -2193,7 +2194,7 @@ const runKieGeminiFlashOpenAiJob = async (payload, env, signal, options = {}) =>
     },
     body: JSON.stringify(requestBody),
     signal,
-  }, 'Kie Gemini 3 Flash 请求超时');
+  }, 'Kie Gemini 3 Flash 请求超时', KIE_CHAT_COMPLETION_TIMEOUT_MS, 'chat_completion');
 
   if (!response.ok) {
     await mapHttpError(response, 'Kie Gemini 3 Flash 请求失败');
@@ -2748,7 +2749,7 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
         ...(isGeminiModel && payload.reasoningLevel ? { include_thoughts: true, reasoning_effort: normalizeReasoningLevelForModel(model, payload.reasoningLevel) } : {}),
       }),
       signal,
-    }, 'Kie 对话请求超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'chat_completion');
+    }, 'Kie 对话请求超时', KIE_CHAT_COMPLETION_TIMEOUT_MS, 'chat_completion');
 
     if (!response.ok) {
       await mapHttpError(response, 'Kie 对话请求失败');
