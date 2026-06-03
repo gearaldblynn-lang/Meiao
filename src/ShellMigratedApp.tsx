@@ -54,6 +54,12 @@ import { isRecoverableKieTaskResult, recoverKieAiTask } from './services/kieAiSe
 import { buildStoryboardBoardGenerationImport } from './shell/modules/Video/storyboardImportUtils.mjs';
 import { resolveShellSkuCount } from './adapters/shellSkuCount';
 import { buildOneClickPlanGenerationMaterials } from './adapters/shellOneClickMaterials.mjs';
+import {
+  filterMaterialsForSkuUpload,
+  resetSkuInputStateForProductUpload,
+  shouldResetSkuInputTextForUpload,
+  shouldResetSkuMaterialsForUpload,
+} from './adapters/shellSkuUploadReset.mjs';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -2706,13 +2712,20 @@ const AppContent: React.FC<{
   // ── Material upload ──
   const handleMaterialUpload = useCallback((type: string, files: FileList | null) => {
     if (!files) return;
+    const shouldResetSkuMaterials = shouldResetSkuMaterialsForUpload(activeModule, activeSubFeature, type);
+    if (shouldResetSkuMaterials) {
+      setMaterials((prev) => filterMaterialsForSkuUpload(prev, type) as Record<string, Material[]>);
+    }
+    if (shouldResetSkuInputTextForUpload(activeModule, activeSubFeature, type)) {
+      setInputStateByScope((prev) => resetSkuInputStateForProductUpload(prev, activeScopeKey));
+    }
     const giftStartIndex = type === 'gift'
-      ? Math.max(
+      ? (shouldResetSkuMaterials ? 1 : Math.max(
           0,
           ...((materials.gift || [])
             .filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature))
             .map((item) => item.giftIndex || 0))
-        ) + 1
+        ) + 1)
       : 0;
     Array.from(files).forEach((file, fileIndex) => {
       void (async () => {
@@ -2753,7 +2766,7 @@ const AppContent: React.FC<{
       })();
     });
     addToast(`已添加 ${files.length} 个${type === 'product' ? '产品素材' : type === 'gift' ? '赠品素材' : type === 'logo' ? '品牌Logo' : '参考素材'}`, 'success');
-  }, [activeModule, activeSubFeature, addToast, materials.gift]);
+  }, [activeModule, activeScopeKey, activeSubFeature, addToast, materials.gift]);
 
   const handlePresetMaterialsApply = useCallback((items: Array<{ type: string; url: string; remoteUrl?: string; fileName: string }>) => {
     if (items.length === 0) return;
