@@ -1451,6 +1451,17 @@ const buildBatchPrompt = (
   return lines.filter(Boolean).join('\n');
 };
 
+const isMaterialInActiveScope = (
+  material: { subFeature?: string },
+  module: AppModule,
+  activeSubFeature: string,
+) => {
+  if (module === AppModuleObj.ONE_CLICK && activeSubFeature === 'sku') {
+    return material.subFeature === 'sku';
+  }
+  return !material.subFeature || material.subFeature === activeSubFeature;
+};
+
 const toVideoStoryboardAspectRatio = (value?: string): VideoStoryboardConfig['aspectRatio'] => {
   if (value === '3:4') return AspectRatio.P_3_4;
   if (value === '4:5') return AspectRatio.P_3_4;
@@ -2699,7 +2710,7 @@ const AppContent: React.FC<{
       ? Math.max(
           0,
           ...((materials.gift || [])
-            .filter((item) => !item.subFeature || item.subFeature === activeSubFeature)
+            .filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature))
             .map((item) => item.giftIndex || 0))
         ) + 1
       : 0;
@@ -2832,7 +2843,7 @@ const AppContent: React.FC<{
       type,
       activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'sku' && type === 'logo'
         ? []
-        : items.filter((item) => !item.subFeature || item.subFeature === activeSubFeature),
+        : items.filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature)),
     ])
   ) as Record<string, Material[]>;
 

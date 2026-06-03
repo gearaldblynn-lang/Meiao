@@ -20,6 +20,17 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-03 - SKU material scope must not inherit legacy unscoped assets
+
+- Symptom: 用户怀疑云上账号“林一”制作 SKU 时，新作图会带上之前产品图片数据，导致新出图像旧产品。
+- Environment: Tencent Cloud production one_click SKU / local development.
+- Cloud evidence: 林一账号最新 SKU 项目 `6月3日项目2` 的云端 state 和 `kie_chat` 策划 payload 只包含当前 SKU 的 `主图_6.jpg` 产品图和 `SKU图_4...` 风格参考图；截至排查时没有最新 SKU image generation job，因此没有证据表明最新生成任务已经把首图/主图旧素材 URL 一起提交给上游。
+- Root cause: 代码存在可复发风险：`filteredMaterials` 用 `!item.subFeature || item.subFeature === activeSubFeature` 兼容旧素材，导致历史无 `subFeature` 标记的材料会被当成通用材料进入 SKU 策划/生图；SKU 是独立商品组合工作流，不应继承未标作用域的旧产品图。
+- Fix: 新增 `isMaterialInActiveScope`，对 `one_click + sku` 启用严格隔离，只允许 `subFeature === 'sku'` 的素材进入 SKU；同样用于 SKU 赠品编号计算，防止旧未标记赠品影响新 SKU。
+- Regression check: `node --test src/components/uiArchitecture.test.mjs`; `npm run build`.
+- Files/tests: `src/ShellMigratedApp.tsx`, `src/components/uiArchitecture.test.mjs`.
+- Avoid next time: 多子功能共用材料池时，SKU/首图等独立工作流必须显式定义材料作用域规则。不能用“未标记等于通用”覆盖 SKU，因为旧浏览器、导入、恢复和历史 state 都可能产生无 `subFeature` 素材；排查云上问题时要同时核对 app state、internal job payload 和实际 image generation job。
+
 ## 2026-06-02 - First-image replication generation must not submit sibling style references
 
 - Symptom: 首图复刻策划里产品素材和复刻参考图角色看起来正确，但后续生图模型收到的 `imageUrls` 同时包含同项目多张风格/复刻参考图，导致模型把参考图里的包装当成商品素材，出图包装错误。
