@@ -20,6 +20,17 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-03 - SKU new product upload must clear stale sku draft context
+
+- Symptom: 云上账号“林一”制作 SKU 时，用户上传/进入新 SKU 项目后，策划和后续出图仍像之前的老产品；用户反馈“输入框上传新的内容，之前的数据就要被完全清楚，不要有残留”。
+- Environment: Tencent Cloud production one_click SKU / local development.
+- Cloud evidence: 林一账号最新 SKU 策划 job `25a482cf9de376e9b1402508` 的 payload 仍包含旧 SKU 文案 `曜石黑/星耀金/甜心粉...`；策划输入图为旧 H2O 加湿器产品图 `主图_6.jpg` 和旧 JISULIFE 风格参考图；最新项目没有对应的 `kie_image` SKU 生图任务，问题已在策划输入阶段复现。账号 `shellDraft.inputStateByScope['one_click:sku']` 仍保留旧 `skuCopyText_*` 和 `count`，`shellDraft.materials` 仍保留旧 SKU-scoped product/styleRef。
+- Root cause: 上一次修复只阻止 SKU 继承“未标记 subFeature 的历史素材”，但没有处理“同一个 SKU 作用域里的旧产品、旧风格图、旧赠品和旧 SKU 文案”。`handleMaterialUpload` 一直 append 新上传素材，不会在新产品上传时重置 SKU 草稿输入，所以策划会继续读取旧 `skuCopyText_*` 和旧 SKU-scoped materials。
+- Fix: 新增 `shellSkuUploadReset` 上传重置规则：一键 SKU 上传新产品时清理整个 SKU 素材上下文并清空旧 prompt、`skuCopyText_*`、`count` 等业务输入；上传风格参考/赠品时只替换同类型 SKU 素材，避免第二步补参考图时误删刚上传的新产品。`ShellMigratedApp` 的真实上传入口已接入该规则。
+- Regression check: `node --test src/adapters/shellSkuUploadReset.test.mjs`; `node --test src/components/uiArchitecture.test.mjs`; `npm run build`.
+- Files/tests: `src/adapters/shellSkuUploadReset.mjs`, `src/adapters/shellSkuUploadReset.test.mjs`, `src/ShellMigratedApp.tsx`, `src/components/uiArchitecture.test.mjs`.
+- Avoid next time: SKU 是“新产品即新上下文”的工作流。排查 SKU 串图不要只看最终出图，要同时核对 shell draft 的 `materials`、`inputStateByScope`、planning job payload 和 image job payload；新产品上传必须切断旧 SKU 文案和同作用域旧素材。
+
 ## 2026-06-03 - SKU material scope must not inherit legacy unscoped assets
 
 - Symptom: 用户怀疑云上账号“林一”制作 SKU 时，新作图会带上之前产品图片数据，导致新出图像旧产品。

@@ -57,6 +57,19 @@ test('sku material scope rejects legacy unscoped materials before planning or ge
   assert.doesNotMatch(app, /items\.filter\(\(item\) => !item\.subFeature \|\| item\.subFeature === activeSubFeature\)/);
 });
 
+test('sku product uploads reset stale sku materials and copy params before new planning', () => {
+  const app = read('../ShellMigratedApp.tsx');
+  const resetAdapter = read('../adapters/shellSkuUploadReset.mjs');
+
+  assert.match(app, /shouldResetSkuMaterialsForUpload\(activeModule, activeSubFeature, type\)/);
+  assert.match(app, /filterMaterialsForSkuUpload\(prev, type\)/);
+  assert.match(app, /shouldResetSkuInputTextForUpload\(activeModule, activeSubFeature, type\)/);
+  assert.match(app, /resetSkuInputStateForProductUpload\(prev, activeScopeKey\)/);
+  assert.match(resetAdapter, /materialType === 'product'/);
+  assert.match(resetAdapter, /\^skuCopyText_\\d\+\$/);
+  assert.match(resetAdapter, /key === 'count'/);
+});
+
 test('one click visuals avoid decorative english labels in the main work surfaces', () => {
   const oneClickSidebar = read('../modules/OneClick/ConfigSidebar.tsx');
   const workspacePrimitives = read('./ui/workspacePrimitives.tsx');
