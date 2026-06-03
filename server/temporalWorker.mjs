@@ -73,6 +73,11 @@ const safeHeartbeat = (heartbeat, details) => {
   }
 };
 
+const isSameMysqlClaim = (job, claimedAt) => (
+  String(job?.status || '') === 'running'
+  && Number(job?.startedAt || 0) === Number(claimedAt || 0)
+);
+
 const mapProviderStageToTaskStage = (providerStage) => {
   const stage = String(providerStage || '').trim();
   if (!stage) return 'provider_submit';
@@ -343,6 +348,10 @@ export const createMysqlTemporalActivities = ({
 
       const output = await executeJob(refreshedJob, controller.signal, { onProviderTaskId });
       const finishedAt = now();
+      const latestBeforeComplete = await getJobById(pool, refreshedJob.id);
+      if (!isSameMysqlClaim(latestBeforeComplete, claimedAt)) {
+        return toActivityResult(latestBeforeComplete || refreshedJob);
+      }
       const finalProviderTaskId = output?.providerTaskId || notifiedProviderTaskId || refreshedJob.providerTaskId || '';
       await updateJobFields(pool, refreshedJob.id, {
         status: controller.signal.aborted ? 'cancelled' : 'succeeded',
@@ -403,6 +412,9 @@ export const createMysqlTemporalActivities = ({
       const latestJob = await getJobById(pool, refreshedJob.id);
       if (!latestJob) {
         return toMissingJobActivityResult(refreshedJob.id);
+      }
+      if (!isSameMysqlClaim(latestJob, claimedAt)) {
+        return toActivityResult(latestJob);
       }
       const failure = getNextJobFailureState({
         retryCount: latestJob.retryCount ?? 0,

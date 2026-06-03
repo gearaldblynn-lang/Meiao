@@ -119,6 +119,9 @@ test('mysql temporal engine starts a real temporal worker instead of the inline 
 
 test('temporal engine keeps durable running jobs owned by temporal after restart', () => {
   assert.match(serverSource, /if \(taskEngine !== 'temporal'\) \{[\s\S]*reconcileRestartedRunningJobs\(pool\)/);
+  assert.match(serverSource, /reconcileStaleProviderlessRunningJobs/);
+  assert.match(serverSource, /await runTemporalStaleRunningJobReconcile\(pool, 'startup'\)/);
+  assert.match(serverSource, /startTemporalStaleRunningJobReconciler\(pool\)/);
   assert.match(serverSource, /resumePendingDbTemporalJobs\(pool\)/);
   assert.match(serverSource, /temporal_workflow_already_started/);
   assert.match(serverSource, /const retriedJob = await getJobById\(pool, job\.id\)/);
@@ -127,6 +130,8 @@ test('temporal engine keeps durable running jobs owned by temporal after restart
   assert.match(temporalWorkflowSource, /heartbeatTimeout: '30 seconds'/);
   assert.match(temporalWorkflowSource, /maximumAttempts: 3/);
   assert.match(temporalWorkerSource, /temporalActivityHeartbeat/);
+  assert.match(temporalWorkerSource, /const isSameMysqlClaim = \(job, claimedAt\) =>/);
+  assert.match(temporalWorkerSource, /if \(!isSameMysqlClaim\(latestBeforeComplete, claimedAt\)\) \{/);
   assert.match(temporalWorkerSource, /safeHeartbeat\(heartbeat, \{ jobId: refreshedJob\.id, stage: 'provider_submit', providerTaskId: value \}\)/);
 });
 

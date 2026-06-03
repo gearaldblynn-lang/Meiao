@@ -201,6 +201,103 @@ const fetchKieWithTimeout = async (
   }
 };
 
+const readProviderBodyChunkWithTimeout = async (readOperation, {
+  signal,
+  timeoutMessage,
+  timeoutMs = KIE_HTTP_REQUEST_TIMEOUT_MS,
+  providerStage = 'asset_download',
+  onTimeout = null,
+}) => {
+  let timedOut = false;
+  let timeoutId = null;
+  let onAbort = null;
+  const abortPromise = new Promise((_, reject) => {
+    onAbort = () => {
+      onTimeout?.();
+      reject(createProviderError('request_cancelled', '任务已取消'));
+    };
+    if (signal) {
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      reject(createProviderError('provider_timeout', timeoutMessage, {
+        providerStage,
+        providerStatus: 'timeout',
+      }));
+      onTimeout?.();
+    }, timeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([readOperation(), timeoutPromise, abortPromise]);
+    return result;
+  } catch (error) {
+    if (signal?.aborted) {
+      throw createProviderError('request_cancelled', '任务已取消');
+    }
+    if (timedOut || error?.code === 'provider_timeout') {
+      throw createProviderError('provider_timeout', timeoutMessage, {
+        providerStage,
+        providerStatus: 'timeout',
+      });
+    }
+    if (error?.code) throw error;
+    throw createProviderError('provider_network_error', error?.message || `${timeoutMessage.replace(/超时$/, '')}失败`, {
+      providerStage,
+      providerStatus: 'network_error',
+    });
+  } finally {
+    clearTimeout(timeoutId);
+    if (signal && onAbort) signal.removeEventListener?.('abort', onAbort);
+  }
+};
+
+const readResponseBodyWithTimeout = async (response, {
+  signal,
+  timeoutMessage = '素材下载超时',
+  timeoutMs = KIE_HTTP_REQUEST_TIMEOUT_MS,
+  providerStage = 'asset_download',
+} = {}) => {
+  if (!response.body?.getReader) {
+    const arrayBuffer = await readProviderBodyChunkWithTimeout(
+      () => response.arrayBuffer(),
+      {
+        signal,
+        timeoutMessage,
+        timeoutMs,
+        providerStage,
+        onTimeout: () => response.body?.cancel?.().catch?.(() => null),
+      }
+    );
+    return Buffer.from(arrayBuffer);
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await readProviderBodyChunkWithTimeout(
+      () => reader.read(),
+      {
+        signal,
+        timeoutMessage,
+        timeoutMs,
+        providerStage,
+        onTimeout: () => reader.cancel().catch(() => null),
+      }
+    );
+    if (done) break;
+    const chunk = Buffer.from(value);
+    total += chunk.length;
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total);
+};
+
 const getEnvValue = (env, ...keys) => keys.map((key) => env[key]).find(Boolean) || '';
 
 const getProviderEnv = (env) => ({
@@ -491,7 +588,12 @@ const downloadManagedAsset = async (assetUrl, signal) => {
   const fileName = extractFileNameFromUrl(assetUrl);
   const mimeTypeHeader = response.headers?.get?.('content-type') || '';
   const mimeType = String(mimeTypeHeader || '').split(';')[0].trim() || inferMimeTypeFromName(fileName);
-  const fileBuffer = Buffer.from(await response.arrayBuffer());
+  const fileBuffer = await readResponseBodyWithTimeout(response, {
+    signal,
+    timeoutMessage: '内部素材下载超时',
+    timeoutMs: 60_000,
+    providerStage: 'asset_download',
+  });
   return {
     fileName,
     mimeType,
@@ -577,35 +679,22 @@ const assertRemoteProviderMediaUrlAllowed = (mediaUrl) => {
   }
 };
 
-const readRemoteMediaBufferWithLimit = async (response, label = '远程素材') => {
+const readRemoteMediaBufferWithLimit = async (response, label = '远程素材', options = {}) => {
   const contentLength = Number(response.headers?.get?.('content-length') || 0);
   if (Number.isFinite(contentLength) && contentLength > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
     throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 ${MAX_PROVIDER_REMOTE_MEDIA_MB}MB`);
   }
 
-  if (!response.body?.getReader) {
-    const fallbackBuffer = Buffer.from(await response.arrayBuffer());
-    if (fallbackBuffer.length > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
-      throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 ${MAX_PROVIDER_REMOTE_MEDIA_MB}MB`);
-    }
-    return fallbackBuffer;
+  const fileBuffer = await readResponseBodyWithTimeout(response, {
+    signal: options.signal,
+    timeoutMessage: `${label}下载超时`,
+    timeoutMs: Number(options.timeoutMs || 120_000),
+    providerStage: 'asset_download',
+  });
+  if (fileBuffer.length > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
+    throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 ${MAX_PROVIDER_REMOTE_MEDIA_MB}MB`);
   }
-
-  const reader = response.body.getReader();
-  const chunks = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const chunk = Buffer.from(value);
-    total += chunk.length;
-    if (total > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
-      await reader.cancel().catch(() => null);
-      throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 ${MAX_PROVIDER_REMOTE_MEDIA_MB}MB`);
-    }
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks, total);
+  return fileBuffer;
 };
 
 const downloadRemoteMediaUrl = async (mediaUrl, signal) => {
@@ -621,7 +710,7 @@ const downloadRemoteMediaUrl = async (mediaUrl, signal) => {
   const fileName = extractFileNameFromUrl(mediaUrl, `video-${Date.now()}.mp4`);
   const mimeTypeHeader = response.headers?.get?.('content-type') || '';
   const mimeType = String(mimeTypeHeader || '').split(';')[0].trim() || inferMimeTypeFromName(fileName, 'video/mp4');
-  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '远程视频素材');
+  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '远程视频素材', { signal });
   return {
     fileName,
     mimeType,
@@ -641,7 +730,7 @@ const downloadRemoteProviderMediaUrl = async (mediaUrl, signal) => {
   }
   const rawFileName = extractFileNameFromUrl(mediaUrl, `media-${Date.now()}.bin`);
   const mimeTypeHeader = response.headers?.get?.('content-type') || '';
-  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '远程素材');
+  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '远程素材', { signal });
   const inferredFromName = inferMimeTypeFromName(rawFileName, '');
   const inferredFromBuffer = detectMimeTypeFromBuffer(fileBuffer);
   const headerMimeType = String(mimeTypeHeader || '').split(';')[0].trim();
@@ -1735,8 +1824,8 @@ const runApiportsGptImage2Job = async (payload, env, signal) => {
   const { apiportsApiKey, apiportsBaseUrl } = getProviderEnv(env);
   ensureProviderKey(apiportsApiKey, 'APIports API Key');
   const rawImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
-  allowConcurrentAbortListeners(signal, rawImageUrls.length);
   const textMediaUrls = Array.from(extractTextMediaUrls(payload.prompt || ''));
+  allowConcurrentAbortListeners(signal, rawImageUrls.length + textMediaUrls.length);
   assertSupportedGenerationImageReferences([
     ...rawImageUrls,
     ...textMediaUrls,
@@ -1814,10 +1903,11 @@ const runKieImageJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
   const rawImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
-  allowConcurrentAbortListeners(signal, rawImageUrls.length);
+  const textMediaUrls = Array.from(extractTextMediaUrls(payload.prompt || ''));
+  allowConcurrentAbortListeners(signal, rawImageUrls.length + textMediaUrls.length);
   assertSupportedGenerationImageReferences([
     ...rawImageUrls,
-    ...Array.from(extractTextMediaUrls(payload.prompt || '')),
+    ...textMediaUrls,
   ]);
   const resolvedGenerationUrlByRawUrl = new Map();
   const resolveGenerationUrl = async (url) => {
@@ -2520,7 +2610,7 @@ const downloadProviderAssetToLocalFile = async (assetUrl, tempDir, env, signal, 
   const mimeType = String(response.headers?.get?.('content-type') || '').split(';')[0].trim() || inferMimeTypeFromName(resolvedUrl);
   const fileName = ensureFileNameWithExtension(extractFileNameFromUrl(resolvedUrl, `dreamina-input-${index}.bin`), mimeType);
   const filePath = path.join(tempDir, `${index}-${fileName.replace(/[^\w.-]+/g, '_')}`);
-  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '即梦素材');
+  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '即梦素材', { signal });
   await writeFile(filePath, fileBuffer);
   return filePath;
 };

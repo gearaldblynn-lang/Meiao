@@ -19,7 +19,7 @@ import {
 } from '../src/modules/AgentCenter/agentCenterUtils.mjs';
 import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
-import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleProviderlessRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
 import { ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import {
   attachLocalJobWorkflowExecution,
@@ -157,6 +157,7 @@ let temporalWorkerRuntime = null;
 let localStoreCache = null;
 let assetCleanupTimer = null;
 let logCleanupTimer = null;
+let staleRunningJobReconcilerTimer = null;
 const temporalTaskAdapter = createTemporalTaskAdapter();
 
 const defaultApiConfig = {
@@ -5138,6 +5139,50 @@ const resumePendingDbTemporalJobs = async (pool, limit = 100) => {
     if (result?.started || result?.code === 'temporal_workflow_already_started') resumed += 1;
   }
   return resumed;
+};
+
+const getTemporalProviderlessRunningStaleMs = () => {
+  const parsed = Number.parseInt(String(process.env.MEIAO_PROVIDERLESS_RUNNING_STALE_MS || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 15 * 60 * 1000;
+};
+
+const getTemporalStaleReconcilerIntervalMs = () => {
+  const parsed = Number.parseInt(String(process.env.MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 1000;
+};
+
+const runTemporalStaleRunningJobReconcile = async (pool, reason = 'interval') => {
+  const engine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
+  if (engine !== 'temporal' || !temporalTaskAdapter.configured) return 0;
+  const recoveredJobs = await reconcileStaleProviderlessRunningJobs(pool, {
+    staleMs: getTemporalProviderlessRunningStaleMs(),
+  });
+  if (recoveredJobs.length > 0) {
+    console.log(`Recovered ${recoveredJobs.length} providerless running Temporal jobs (${reason}).`);
+    const resumed = await resumePendingDbTemporalJobs(pool, Math.max(100, recoveredJobs.length + 20));
+    if (resumed > 0) {
+      console.log(`Resumed ${resumed} Temporal jobs after providerless running recovery.`);
+    }
+  }
+  return recoveredJobs.length;
+};
+
+const startTemporalStaleRunningJobReconciler = (pool) => {
+  if (staleRunningJobReconcilerTimer) return;
+  let busy = false;
+  const run = async (reason) => {
+    if (busy) return;
+    busy = true;
+    try {
+      await runTemporalStaleRunningJobReconcile(pool, reason);
+    } catch (error) {
+      console.error('Temporal stale running job reconcile failed.', error);
+    } finally {
+      busy = false;
+    }
+  };
+  staleRunningJobReconcilerTimer = setInterval(() => run('interval'), getTemporalStaleReconcilerIntervalMs());
+  staleRunningJobReconcilerTimer.unref?.();
 };
 
 const shouldUseTemporalForLocalExecution = () => normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE) === 'temporal';
@@ -10517,6 +10562,8 @@ const bootstrap = async () => {
         },
       });
       console.log(`Temporal worker listening on task queue ${temporalTaskAdapter.config.taskQueue}.`);
+      await runTemporalStaleRunningJobReconcile(pool, 'startup');
+      startTemporalStaleRunningJobReconciler(pool);
       const resumedTemporalJobs = await resumePendingDbTemporalJobs(pool);
       if (resumedTemporalJobs > 0) {
         console.log(`Resumed ${resumedTemporalJobs} pending Temporal jobs after restart.`);
