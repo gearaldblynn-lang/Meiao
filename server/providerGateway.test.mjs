@@ -2888,11 +2888,11 @@ test('executeProviderJob routes gemini 3 flash through the new openai chat compl
   }
 });
 
-test('executeProviderJob applies the KIE HTTP timeout to gemini 3 flash requests', async () => {
+test('executeProviderJob applies the KIE chat completion timeout to gemini 3 flash requests', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
-  let sawKieTimeout = false;
+  let sawChatCompletionTimeout = false;
 
   global.fetch = async () =>
     createJsonResponse({
@@ -2903,9 +2903,9 @@ test('executeProviderJob applies the KIE HTTP timeout to gemini 3 flash requests
           },
         },
       ],
-    });
+  });
   global.setTimeout = (handler, ms) => {
-    if (ms === 60_000) sawKieTimeout = true;
+    if (ms === 240_000) sawChatCompletionTimeout = true;
     return originalSetTimeout(handler, ms);
   };
   global.clearTimeout = (timer) => originalClearTimeout(timer);
@@ -2924,7 +2924,7 @@ test('executeProviderJob applies the KIE HTTP timeout to gemini 3 flash requests
     );
 
     assert.equal(result.result.content, 'gemini timeout guarded result');
-    assert.equal(sawKieTimeout, true);
+    assert.equal(sawChatCompletionTimeout, true);
   } finally {
     global.fetch = originalFetch;
     global.setTimeout = originalSetTimeout;
@@ -3503,6 +3503,49 @@ test('executeProviderJob preserves claude-native image blocks and rejects tool_u
     assert.deepEqual(body.tool_choice, { type: 'none' });
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob gives claude planning requests the chat completion timeout budget', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  let sawBaseHttpTimeout = false;
+  let sawChatCompletionTimeout = false;
+
+  global.fetch = async () =>
+    createJsonResponse({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'claude timeout budget result' }],
+      model: 'claude-sonnet-4-6',
+    });
+  global.setTimeout = (handler, ms) => {
+    if (ms === 60_000) sawBaseHttpTimeout = true;
+    if (ms === 240_000) sawChatCompletionTimeout = true;
+    return originalSetTimeout(handler, ms);
+  };
+  global.clearTimeout = (timer) => originalClearTimeout(timer);
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'claude-sonnet-4-6',
+          messages: [{ role: 'user', content: '请输出一套主图策划' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'claude timeout budget result');
+    assert.equal(sawChatCompletionTimeout, true);
+    assert.equal(sawBaseHttpTimeout, false);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
   }
 });
 
