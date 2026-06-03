@@ -6,6 +6,7 @@ import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import LoginScreen from './shell/components/Internal/LoginScreen';
 import {
+  cancelInternalJob,
   clearCurrentUserContext,
   clearSessionToken,
   deleteInternalJob,
@@ -294,6 +295,113 @@ export interface Task {
   backendJobId?: string;
   prompt?: string;
 }
+
+const SHELL_MANUAL_CANCEL_ERROR = '已手动中断';
+
+const normalizeShellCancelId = (value: unknown) => String(value || '').trim();
+
+const addShellCancelId = (ids: Set<string>, value: unknown) => {
+  const normalized = normalizeShellCancelId(value);
+  if (normalized) ids.add(normalized);
+};
+
+const collectShellResultIds = (result?: Partial<GeneratedResult> | null) => {
+  const ids = new Set<string>();
+  addShellCancelId(ids, result?.id);
+  addShellCancelId(ids, result?.backendJobId);
+  addShellCancelId(ids, result?.taskId);
+  addShellCancelId(ids, result?.projectId);
+  return ids;
+};
+
+const collectShellProjectIds = (project?: Partial<Project> | null) => {
+  const ids = new Set<string>();
+  addShellCancelId(ids, project?.id);
+  addShellCancelId(ids, project?.backendJobId);
+  addShellCancelId(ids, project?.planningTaskId);
+  return ids;
+};
+
+const collectShellTaskIds = (task?: Partial<Task> | null) => {
+  const ids = new Set<string>();
+  addShellCancelId(ids, task?.id);
+  addShellCancelId(ids, task?.projectId);
+  addShellCancelId(ids, task?.backendJobId);
+  return ids;
+};
+
+const shellCancelTargetMatches = (targetId: string, ids: Set<string>) => ids.has(targetId);
+
+const shellResultHasMedia = (result?: Partial<GeneratedResult> | null) => Boolean(result?.imageUrl || result?.videoUrl);
+
+const isShellResultCancellable = (result?: Partial<GeneratedResult> | null) => (
+  Boolean(result)
+  && !shellResultHasMedia(result)
+  && (result?.status === 'generating' || hasRuntimeTaskIdentity(result))
+);
+
+const collectShellCancelJobIds = (targetId: string, projects: Project[], tasks: Task[]) => {
+  const jobIds = new Set<string>();
+  tasks.forEach((task) => {
+    if (shellCancelTargetMatches(targetId, collectShellTaskIds(task))) addShellCancelId(jobIds, task.backendJobId);
+  });
+  projects.forEach((project) => {
+    const projectMatches = shellCancelTargetMatches(targetId, collectShellProjectIds(project));
+    if (projectMatches) addShellCancelId(jobIds, project.backendJobId);
+    (project.results || []).forEach((result) => {
+      if ((projectMatches || shellCancelTargetMatches(targetId, collectShellResultIds(result))) && isShellResultCancellable(result)) {
+        addShellCancelId(jobIds, result.backendJobId);
+      }
+    });
+  });
+  return Array.from(jobIds);
+};
+
+const collectShellCancelControllerIds = (targetId: string, projects: Project[], tasks: Task[]) => {
+  const controllerIds = new Set<string>([targetId].filter(Boolean));
+  tasks.forEach((task) => {
+    if (!shellCancelTargetMatches(targetId, collectShellTaskIds(task))) return;
+    collectShellTaskIds(task).forEach((id) => controllerIds.add(id));
+  });
+  projects.forEach((project) => {
+    const projectMatches = shellCancelTargetMatches(targetId, collectShellProjectIds(project));
+    if (projectMatches) collectShellProjectIds(project).forEach((id) => controllerIds.add(id));
+    (project.results || []).forEach((result) => {
+      if (projectMatches || shellCancelTargetMatches(targetId, collectShellResultIds(result))) {
+        collectShellResultIds(result).forEach((id) => controllerIds.add(id));
+      }
+    });
+  });
+  return Array.from(controllerIds);
+};
+
+const markShellProjectCancelled = (project: Project, targetId: string) => {
+  const projectMatches = shellCancelTargetMatches(targetId, collectShellProjectIds(project));
+  let changed = false;
+  const results = (project.results || []).map((result) => {
+    const resultMatches = projectMatches || shellCancelTargetMatches(targetId, collectShellResultIds(result));
+    if (!resultMatches || !isShellResultCancellable(result)) return result;
+    changed = true;
+    return {
+      ...result,
+      status: 'error',
+      error: SHELL_MANUAL_CANCEL_ERROR,
+    } satisfies GeneratedResult;
+  });
+  if (!changed && !projectMatches) return { project, changed: false };
+  const hasActiveResult = results.some((result) => isShellResultCancellable(result));
+  const completedCount = countCompletedProjectResults(results);
+  return {
+    project: {
+      ...project,
+      status: hasActiveResult ? project.status : 'error',
+      error: SHELL_MANUAL_CANCEL_ERROR,
+      results,
+      completedCount,
+    },
+    changed: true,
+  };
+};
 
 const ONE_CLICK_REMOTE_BRANCH_BY_SUBFEATURE: Record<string, 'firstImage' | 'mainImage' | 'detailPage' | 'sku'> = {
   first_image: 'firstImage',
@@ -5984,33 +6092,37 @@ const AppContent: React.FC<{
   }, [handleStoryboardRecoverResult, projects, hydrateShellData, hydrateShellJobs, addToast, apiConfig, persistProjectToSharedState]);
 
   const handleCancelTask = useCallback((taskIdOrProjectId: string) => {
-    const matchingTasks = tasks.filter((task) => (
-      task.id === taskIdOrProjectId || task.projectId === taskIdOrProjectId || task.backendJobId === taskIdOrProjectId
-    ));
-    matchingTasks.forEach((task) => {
-      taskControllersRef.current[task.id]?.abort();
-      delete taskControllersRef.current[task.id];
+    const targetId = normalizeShellCancelId(taskIdOrProjectId);
+    if (!targetId) return;
+
+    collectShellCancelControllerIds(targetId, projects, tasks).forEach((controllerId) => {
+      taskControllersRef.current[controllerId]?.abort();
+      delete taskControllersRef.current[controllerId];
     });
-    taskControllersRef.current[taskIdOrProjectId]?.abort();
-    delete taskControllersRef.current[taskIdOrProjectId];
-    setTasks((prev) => prev.filter((task) => (
-      task.id !== taskIdOrProjectId && task.projectId !== taskIdOrProjectId && task.backendJobId !== taskIdOrProjectId
-    )));
-    setProjects((prev) => prev.map((project) => {
-      if (project.id !== taskIdOrProjectId) return project;
-      return {
-        ...project,
-        status: 'error',
-        error: '已手动中断',
-        results: project.results.map((result) => (
-          result.status === 'generating'
-            ? { ...result, status: 'error', error: '已手动中断' }
-            : result
-        )),
-      };
-    }));
-    addToast(matchingTasks.length > 0 ? '任务已中断' : '已尝试中断任务', 'info');
-  }, [addToast, tasks]);
+
+    const matchingTasks = tasks.filter((task) => shellCancelTargetMatches(targetId, collectShellTaskIds(task)));
+    const cancelJobIds = collectShellCancelJobIds(targetId, projects, tasks);
+    cancelJobIds.forEach((jobId) => {
+      void cancelInternalJob(jobId).catch(() => null);
+    });
+
+    setTasks((prev) => prev.filter((task) => !shellCancelTargetMatches(targetId, collectShellTaskIds(task))));
+
+    const interruptedProjects: Project[] = [];
+    const nextProjects = projects.map((project) => {
+      const marked = markShellProjectCancelled(project, targetId);
+      if (marked.changed) interruptedProjects.push(marked.project);
+      return marked.project;
+    });
+    if (interruptedProjects.length > 0) {
+      setProjects(nextProjects);
+      interruptedProjects.forEach((project) => {
+        void persistProjectToSharedState(project);
+      });
+    }
+
+    addToast(matchingTasks.length > 0 || interruptedProjects.length > 0 || cancelJobIds.length > 0 ? '任务已中断' : '已尝试中断任务', 'info');
+  }, [addToast, persistProjectToSharedState, projects, tasks]);
 
   const handleParamChange = useCallback((key: string, value: string) => {
     const nextSubFeature = subFeatureFromParam(activeModule, key, value);
