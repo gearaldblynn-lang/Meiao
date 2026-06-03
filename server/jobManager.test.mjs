@@ -219,7 +219,7 @@ test('reconcileRestartedMysqlJobs recovers stale running jobs after a server res
   assert.match(reconciled[0].errorMessage, /服务重启后任务已回收到待重试状态/);
 });
 
-test('reconcileStaleProviderlessRunningMysqlJobs only recovers old running jobs before upstream submission', () => {
+test('reconcileStaleProviderlessRunningMysqlJobs fails old running jobs before upstream submission', () => {
   const reconciled = reconcileStaleProviderlessRunningMysqlJobs([
     {
       id: 'job-providerless-stale',
@@ -268,9 +268,9 @@ test('reconcileStaleProviderlessRunningMysqlJobs only recovers old running jobs 
 
   assert.equal(reconciled.length, 1);
   assert.equal(reconciled[0].id, 'job-providerless-stale');
-  assert.equal(reconciled[0].status, 'retry_waiting');
+  assert.equal(reconciled[0].status, 'failed');
   assert.equal(reconciled[0].startedAt, null);
-  assert.equal(reconciled[0].finishedAt, null);
+  assert.equal(reconciled[0].finishedAt, 10_000);
   assert.equal(reconciled[0].errorCode, 'provider_submit_stale');
   assert.match(reconciled[0].errorMessage, /未返回上游任务 ID/);
 });
