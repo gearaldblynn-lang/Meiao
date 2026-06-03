@@ -45,6 +45,18 @@ test('one click module keeps submode switching out of the workspace header', () 
   assert.doesNotMatch(oneClickModule, /<SegmentedTabs/);
 });
 
+test('sku material scope rejects legacy unscoped materials before planning or generation', () => {
+  const app = read('../ShellMigratedApp.tsx');
+  const scopeHelper = app.match(/const isMaterialInActiveScope = \([\s\S]*?\n\};/)?.[0] || '';
+
+  assert.match(scopeHelper, /activeSubFeature === 'sku'/);
+  assert.match(scopeHelper, /return material\.subFeature === 'sku';/);
+  assert.match(scopeHelper, /return !material\.subFeature \|\| material\.subFeature === activeSubFeature;/);
+  assert.match(app, /items\.filter\(\(item\) => isMaterialInActiveScope\(item, activeModule, activeSubFeature\)\)/);
+  assert.match(app, /materials\.gift \|\| \[\]\)[\s\S]*isMaterialInActiveScope\(item, activeModule, activeSubFeature\)/);
+  assert.doesNotMatch(app, /items\.filter\(\(item\) => !item\.subFeature \|\| item\.subFeature === activeSubFeature\)/);
+});
+
 test('one click visuals avoid decorative english labels in the main work surfaces', () => {
   const oneClickSidebar = read('../modules/OneClick/ConfigSidebar.tsx');
   const workspacePrimitives = read('./ui/workspacePrimitives.tsx');
