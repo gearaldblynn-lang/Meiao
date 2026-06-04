@@ -97,6 +97,26 @@ test('download helper falls back to direct anchor when remote CORS blocks blob f
   );
 });
 
+test('zip download helper retries remote CORS failures through the same-origin asset proxy', () => {
+  const source = readFileSync(new URL('./imageUtils.ts', import.meta.url), 'utf8');
+
+  assert.match(
+    source,
+    /shouldUseDownloadProxy/,
+    'remote download helper should detect when a remote URL can use the same-origin proxy'
+  );
+  assert.match(
+    source,
+    /\/api\/assets\/download-proxy\?url=/,
+    'remote download helper should retry remote assets through the backend proxy'
+  );
+  assert.match(
+    source,
+    /return fetchRemoteFileBlobViaProxy\(url\);/,
+    'zip downloads should be able to resolve remote blobs after browser CORS failures'
+  );
+});
+
 test('zip downloads store already-compressed media and stream entries instead of recompressing images', () => {
   const source = readFileSync(new URL('./imageUtils.ts', import.meta.url), 'utf8');
 

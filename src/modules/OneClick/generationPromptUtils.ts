@@ -10,8 +10,6 @@ export const appendOneClickCopyGuardrails = (prompt: string, language: string | 
     nextPrompt += `\n投放平台：${targetPlatform}，画面文字表达、信息密度和移动端可读性必须符合该平台的电商主图展示习惯。`;
   }
   nextPrompt += '\n严格按照当前方案中已经写明的文案内容与排版指令进行渲染，不要把方案模板、字段名或说明文字再次输出到画面中。';
-  nextPrompt += '\n圆括号内的字体、字号字重、位置、颜色等内容仅作为排版指令理解，不是要直接渲染到画面中的正文。';
-  nextPrompt += '\n只有中文引号“”内的文字才是最终需要渲染到画面中的正文文案。字段名、冒号、说明文字都不得出现在最终画面中。';
 
   return nextPrompt;
 };
@@ -25,11 +23,54 @@ interface BuildOneClickImagePromptOptions {
   variationInstruction?: string | null;
   editInstruction?: string | null;
   supplementalReferenceUrls?: string[];
+  suiteReferenceUrls?: string[];
   hasProductReferences?: boolean;
   platform?: string | null;
   includeCopyGuardrails?: boolean;
   publicBaseUrl?: string;
 }
+
+const normalizeSuiteReplicationSchemeForGenerationPrompt = (schemeContent: string) => {
+  const copyLayouts: string[] = [];
+  const normalizeCopyReplacementLine = (line: string) => {
+    const normalized = String(line || '').trim().replace(/^[-\s]+/, '');
+    if (!normalized) return '';
+    const textMatch = normalized.match(/[“"]([^”"]+)[”"]/);
+    const source = normalized.split(/[（(:：]/)[0]?.trim();
+    if (textMatch?.[1] && source) return `“${source}”改为“${textMatch[1]}”`;
+    return normalized;
+  };
+  const withoutCopyLayout = String(schemeContent || '').replace(
+    /-?\s*文案内容排版[：:]\s*([\s\S]*?)(?=\n-\s*(?:画面比例|设计意图|画面风格|画面描述|屏序\/类型|参考图标识)|\n\[SCHEME_END\]|$)/g,
+    (_match, content) => {
+      const normalizedLines = String(content || '')
+        .split('\n')
+        .map(normalizeCopyReplacementLine)
+        .filter(Boolean);
+      copyLayouts.push(...normalizedLines);
+      return '';
+    }
+  ).replace(/\n{3,}/g, '\n\n');
+
+  const withoutVisualStyle = withoutCopyLayout.replace(
+    /-?\s*画面风格[：:]\s*([\s\S]*?)(?=\n-\s*(?:画面描述|画面比例|设计意图|屏序\/类型|参考图标识)|\n\[SCHEME_END\]|$)/g,
+    ''
+  ).replace(/\n{3,}/g, '\n\n');
+
+  if (copyLayouts.length === 0) return withoutVisualStyle.trim();
+  const copySummary = `文案替换：${copyLayouts.join('；')}`;
+  const sceneDescriptionRegex = /(-\s*画面描述[：:]\s*)([\s\S]*?)(?=\n-\s*(?:画面比例|设计意图|屏序\/类型|参考图标识)|\n\[SCHEME_END\]|$)/;
+  if (sceneDescriptionRegex.test(withoutVisualStyle)) {
+    return withoutVisualStyle.replace(sceneDescriptionRegex, (_match, prefix, content) => {
+      const trimmed = String(content || '').trim();
+      return `${prefix}${trimmed}${trimmed ? '；' : ''}${copySummary}`;
+    }).trim();
+  }
+  if (/\n-\s*画面比例/.test(withoutVisualStyle)) {
+    return withoutVisualStyle.replace(/\n-\s*画面比例/, `\n- 画面描述：${copySummary}\n- 画面比例`).trim();
+  }
+  return `${withoutVisualStyle.trim()}\n- 画面描述：${copySummary}`.trim();
+};
 
 const buildOneClickVariationPrompt = ({
   previousResultUrl,
@@ -111,6 +152,7 @@ export const buildOneClickImagePrompt = ({
   variationInstruction,
   editInstruction,
   supplementalReferenceUrls,
+  suiteReferenceUrls = [],
   hasProductReferences = false,
   platform,
   includeCopyGuardrails = true,
@@ -141,6 +183,7 @@ export const buildOneClickImagePrompt = ({
   const isResultOnlyVariation = Boolean(previousResultUrl && !replicationReferenceUrl);
   if (!isResultOnlyVariation) {
     priorityLines.push('上传产品素材是产品外观、结构、比例、包装、文字、logo 和标签信息的唯一依据；产品包装上的文字、logo、品牌名和标签信息不得去除或改写。');
+    priorityLines.push('必须精准还原上传产品的真实细节，不得修改产品外观、形状、比例、颜色、包装文字、logo、标签、材质、纹理、配件和结构；参考图只决定版式和风格，不得覆盖产品素材中的产品信息。');
   }
 
   if (previousResultUrl) {
@@ -149,12 +192,27 @@ export const buildOneClickImagePrompt = ({
     priorityLines.push('上一张生成结果图是继续裂变的直接基础，继承其产品主体、结构关系、卖点层级与版式骨架，只按当前裂变要求调整。');
   }
 
-  if (replicationReferenceUrl) {
+  if (suiteReferenceUrls.length > 0) {
+    const safeSuiteReferenceUrls = suiteReferenceUrls
+      .map((url) => resolvePublicAssetUrl(url || '', publicBaseUrl))
+      .filter(Boolean);
+    if (safeSuiteReferenceUrls.length > 0) {
+      imageRoleLines.push(...safeSuiteReferenceUrls.map((url, index) => `参考套图${index + 1}（图片URL）：${url}`));
+    }
+    priorityLines.push('参考套图是整套主图的版式、屏序、视觉节奏、信息层级和风格连续性基准；必须按当前方案中写明的整套参考结构进行复刻与延展，不得把参考套图拆成互不相关的单张图任务。');
+    priorityLines.push('产品素材只决定替换进去的商品本体；参考套图中的原商品、品牌、店铺、价格和原文案不得带入最终画面。');
+    priorityLines.push('若参考套图中出现人物，在保持场景风格、景别、光影、动作节奏和商业拍摄质感一致的情况下，人物必须与参考图人物做出明显差异；不得复制同一张脸、发型、服装、体态、身份特征或可识别人物形象。');
+    replacementLines.push(logoUrl
+      ? '去除参考套图中的所有 logo、品牌名、店铺名、平台标识、价格和原文案；品牌位只能使用品牌logo图或通用信息补足。'
+      : '去除参考套图中的所有 logo、品牌名、店铺名、平台标识、价格和原文案；未上传品牌 logo 时，品牌/店铺/logo/官方背书位统一写通用信息。');
+    replacementLines.push('所有文案与卖点只能基于上传产品的真实信息，不得照搬参考套图原文案或编造促销信息。');
+  } else if (replicationReferenceUrl) {
     const safeReferenceUrl = resolvePublicAssetUrl(replicationReferenceUrl, publicBaseUrl);
     imageRoleLines.push(safeReferenceUrl ? `复刻主图参考图（图片URL）：${safeReferenceUrl}` : '复刻主图参考图（图片URL）');
     priorityLines.push('复刻主图参考图是最高版式基准，必须直接复刻该参考图的整体风格、版式结构、信息层级、视觉节奏、设计细节，不得改成另一种风格。');
     priorityLines.push('若执行内容中对参考图版式、颜色、结构或视觉元素的描述与复刻主图参考图真实画面不一致，必须以复刻主图参考图真实画面为准；执行内容只用于指导商品、文案和品牌信息替换，不得覆盖参考图真实布局。');
     priorityLines.push('商品区的位置、角度、大小关系、层级、道具关系和背景以复刻主图参考原商品区为准；产品素材只决定替换进去的商品本体。');
+    priorityLines.push('若复刻主图参考图中出现人物，在确保场景风格、景别、光影、动作节奏和商业拍摄质感一致的情况下，人物必须与参考图人物做出明显差异；不得复制同一张脸、发型、服装、体态、身份特征或可识别人物形象。');
     replacementLines.push(logoUrl
       ? '去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案；原位置用品牌logo图或通用信息补足。'
       : '去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案；未上传品牌 logo 时，品牌/店铺/logo/官方背书位统一写通用信息，不写官方自营/旗舰店或具体品牌名。');
@@ -181,12 +239,21 @@ export const buildOneClickImagePrompt = ({
     replacementLines.push('不得把产品素材图上的logo或参考图logo提取成我方独立品牌元素使用；若执行内容写了具体品牌/店铺/logo文字，改用通用信息。');
   }
 
+  const executableSchemeContent = suiteReferenceUrls.length > 0
+    ? normalizeSuiteReplicationSchemeForGenerationPrompt(schemeContent)
+    : schemeContent;
+
+  if (/文案映射|->|→/.test(executableSchemeContent)) {
+    priorityLines.push('执行内容若包含“文案映射”或箭头映射，箭头右侧文字就是最终上屏文案，必须逐字生成，保留原有文字、数字、单位、符号、标点和大小写；不得润色、缩写、扩写、同义替换或改成更自然的表达。');
+    priorityLines.push('不得使用映射之外的自编标题、标签、卖点或促销语。');
+  }
+
   const sections = [
     imageRoleLines.length > 0 ? ['【图片角色】', ...imageRoleLines.map(line => `- ${line}`)].join('\n') : '',
     ['【执行优先级】', ...priorityLines.map(line => `- ${line}`)].join('\n'),
     ['【替换规则】', ...replacementLines.map(line => `- ${line}`)].join('\n'),
   ].filter(Boolean);
-  let prompt = `【硬约束】\n${sections.join('\n\n')}\n\n【执行内容】\n${schemeContent.trim()}\n\n【画面质量】\n高端商业摄影棚拍质感。`;
+  let prompt = `【硬约束】\n${sections.join('\n\n')}\n\n【执行内容】\n${executableSchemeContent.trim()}\n\n【画面质量】\n高端商业摄影棚拍质感。`;
   if (includeCopyGuardrails) {
     prompt = appendOneClickCopyGuardrails(prompt, language, platform);
   }

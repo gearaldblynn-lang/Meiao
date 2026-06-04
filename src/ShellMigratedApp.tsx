@@ -2712,6 +2712,26 @@ const AppContent: React.FC<{
   // ── Material upload ──
   const handleMaterialUpload = useCallback((type: string, files: FileList | null) => {
     if (!files) return;
+    let selectedFiles = Array.from(files);
+    if (
+      activeModule === AppModuleObj.ONE_CLICK
+      && activeSubFeature === 'main_image'
+      && type === 'styleRef'
+      && currentParams.planningLogic === '套图复刻'
+    ) {
+      const existingCount = (materials.styleRef || [])
+        .filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature))
+        .length;
+      const remaining = Math.max(0, 5 - existingCount);
+      if (remaining <= 0) {
+        addToast('参考套图最多上传 5 张', 'warning');
+        return;
+      }
+      if (selectedFiles.length > remaining) {
+        selectedFiles = selectedFiles.slice(0, remaining);
+        addToast(`参考套图最多上传 5 张，本次已保留前 ${remaining} 张`, 'warning');
+      }
+    }
     const shouldResetSkuMaterials = shouldResetSkuMaterialsForUpload(activeModule, activeSubFeature, type);
     if (shouldResetSkuMaterials) {
       setMaterials((prev) => filterMaterialsForSkuUpload(prev, type) as Record<string, Material[]>);
@@ -2727,7 +2747,7 @@ const AppContent: React.FC<{
             .map((item) => item.giftIndex || 0))
         ) + 1)
       : 0;
-    Array.from(files).forEach((file, fileIndex) => {
+    selectedFiles.forEach((file, fileIndex) => {
       void (async () => {
         const optimisticId = Math.random().toString(36).slice(2, 9);
         const localAssetId = `draft-${Date.now()}-${optimisticId}`;
@@ -2765,8 +2785,8 @@ const AppContent: React.FC<{
         }
       })();
     });
-    addToast(`已添加 ${files.length} 个${type === 'product' ? '产品素材' : type === 'gift' ? '赠品素材' : type === 'logo' ? '品牌Logo' : '参考素材'}`, 'success');
-  }, [activeModule, activeScopeKey, activeSubFeature, addToast, materials.gift]);
+    addToast(`已添加 ${selectedFiles.length} 个${type === 'product' ? '产品素材' : type === 'gift' ? '赠品素材' : type === 'logo' ? '品牌Logo' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'main_image' && currentParams.planningLogic === '套图复刻' ? '参考套图' : '参考素材'}`, 'success');
+  }, [activeModule, activeScopeKey, activeSubFeature, addToast, currentParams.planningLogic, materials.gift, materials.styleRef]);
 
   const handlePresetMaterialsApply = useCallback((items: Array<{ type: string; url: string; remoteUrl?: string; fileName: string }>) => {
     if (items.length === 0) return;

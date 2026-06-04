@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { createReadStream, mkdirSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -225,8 +226,122 @@ const defaultTranslationConfigs = {
 const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 const ASSET_FILE_ROUTE_REGEX = /^\/api\/assets\/file\/([^/]+)(?:\/[^/]+)?$/;
 const ASSET_CLEANUP_INTERVAL_MS = 1000 * 60 * 30;
+const DOWNLOAD_PROXY_TIMEOUT_MS = 30_000;
+const DOWNLOAD_PROXY_MAX_BYTES = 80 * 1024 * 1024;
 
 const isLocalHostValue = (value) => /(^|\/\/)(127\.0\.0\.1|localhost)(:|$)/i.test(String(value || ''));
+
+const isPrivateIpv4Hostname = (hostname) => {
+  const parts = String(hostname || '').split('.').map((part) => Number(part));
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = parts;
+  return a === 10
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 169 && b === 254)
+    || a === 127
+    || a === 0;
+};
+
+const normalizeDownloadProxyUrl = (value) => {
+  let parsed;
+  try {
+    parsed = new URL(String(value || '').trim());
+  } catch {
+    throw new Error('下载地址无效');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('仅支持 HTTP/HTTPS 下载地址');
+  }
+  const hostname = parsed.hostname.toLowerCase();
+  const ipVersion = isIP(hostname);
+  const blocked = hostname === 'localhost'
+    || hostname.endsWith('.localhost')
+    || hostname.endsWith('.local')
+    || (ipVersion === 4 && isPrivateIpv4Hostname(hostname))
+    || (ipVersion === 6 && (
+      hostname === '::1'
+      || hostname.startsWith('fc')
+      || hostname.startsWith('fd')
+      || hostname.startsWith('fe80:')
+    ));
+  if (blocked) {
+    throw new Error('下载地址不能指向本机或内网地址');
+  }
+  parsed.hash = '';
+  return parsed.toString();
+};
+
+const proxyRemoteDownload = async (req, res, remoteUrl) => {
+  let normalizedUrl;
+  try {
+    normalizedUrl = normalizeDownloadProxyUrl(remoteUrl);
+  } catch (error) {
+    json(res, 400, { message: error?.message || '下载地址无效' });
+    return;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DOWNLOAD_PROXY_TIMEOUT_MS);
+  let response;
+  try {
+    response = await fetch(normalizedUrl, {
+      method: 'GET',
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: {
+        Accept: 'image/*,application/octet-stream,*/*;q=0.8',
+      },
+    });
+  } catch (error) {
+    clearTimeout(timeout);
+    const message = error?.name === 'AbortError' ? '下载远程图片超时' : '下载远程图片失败';
+    json(res, 502, { message });
+    return;
+  }
+
+  if (!response.ok) {
+    clearTimeout(timeout);
+    json(res, response.status >= 400 && response.status < 600 ? response.status : 502, {
+      message: `远程图片下载失败: ${response.status}`,
+    });
+    return;
+  }
+
+  const declaredLength = Number.parseInt(String(response.headers.get('content-length') || '0'), 10);
+  if (Number.isFinite(declaredLength) && declaredLength > DOWNLOAD_PROXY_MAX_BYTES) {
+    clearTimeout(timeout);
+    json(res, 413, { message: '远程图片过大，无法下载' });
+    return;
+  }
+
+  let buffer;
+  try {
+    buffer = Buffer.from(await response.arrayBuffer());
+  } catch (error) {
+    clearTimeout(timeout);
+    const message = error?.name === 'AbortError' ? '下载远程图片超时' : '读取远程图片失败';
+    json(res, 502, { message });
+    return;
+  }
+  clearTimeout(timeout);
+  if (buffer.length > DOWNLOAD_PROXY_MAX_BYTES) {
+    json(res, 413, { message: '远程图片过大，无法下载' });
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': response.headers.get('content-type') || 'application/octet-stream',
+    'Content-Length': buffer.length,
+    'Cache-Control': 'no-store',
+    ...(res.__corsHeaders || {}),
+  });
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+  res.end(buffer);
+};
 
 const getPersistentAssetBaseUrl = (req = null) => {
   const explicit = getPublicBaseUrl(process.env, null);
@@ -7019,6 +7134,13 @@ const handleMysqlRequest = async (req, res, url) => {
     return;
   }
 
+  if (url.pathname === '/api/assets/download-proxy' && (req.method === 'GET' || req.method === 'HEAD')) {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    await proxyRemoteDownload(req, res, url.searchParams.get('url') || '');
+    return;
+  }
+
   if (url.pathname === '/api/video-diagnosis/probe' && req.method === 'POST') {
     const user = await requireDbUser(req, res);
     if (!user) return;
@@ -8454,6 +8576,13 @@ const handleLocalRequest = async (req, res, url) => {
   if (req.method === 'GET' && assetRouteMatch) {
     const assetId = decodeURIComponent(assetRouteMatch[1]);
     await serveStoredAsset(req, res, assetId);
+    return;
+  }
+
+  if (url.pathname === '/api/assets/download-proxy' && (req.method === 'GET' || req.method === 'HEAD')) {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    await proxyRemoteDownload(req, res, url.searchParams.get('url') || '');
     return;
   }
 

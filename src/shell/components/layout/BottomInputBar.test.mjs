@@ -15,7 +15,8 @@ test('one click shell params are subfeature-aware and do not expose fake style p
   assert.match(bottomInputBar, /mode === '首图'/);
   assert.match(bottomInputBar, /首图配色/);
   assert.match(bottomInputBar, /module !== AppModuleObj\.VIDEO \|\| activeSubFeature !== 'storyboard'/);
-  assert.doesNotMatch(bottomInputBar, /planningLogic/);
+  assert.match(bottomInputBar, /key: 'planningLogic'/);
+  assert.match(bottomInputBar, /options: \['AI直出', '套图复刻'\]/);
 });
 
 test('shell select params support old frontend custom platform and language input flow', () => {
@@ -104,6 +105,37 @@ test('one click upload menu keeps subfeature-aware reference preset library entr
   assert.match(bottomInputBar, /mode === 'SKU'\) return \['product', 'gift', 'styleRef'\]/);
   assert.doesNotMatch(presetLibrary, /AIGC_APP_STATE_V1/);
   assert.doesNotMatch(presetLibrary, /localStorage\.getItem/);
+});
+
+test('one click main image set replication hides presets and uses reference suite count', () => {
+  const bottomInputBar = source();
+  const shellApp = read('../../../ShellMigratedApp.tsx');
+  const workflow = read('../../../adapters/shellWorkflow.ts');
+  const promptUtils = read('../../../modules/OneClick/generationPromptUtils.ts');
+
+  assert.match(bottomInputBar, /isMainImageSuiteReplication/);
+  assert.match(bottomInputBar, /currentParams\.planningLogic === '套图复刻'/);
+  assert.match(bottomInputBar, /mode === '主图' && currentParams\.planningLogic === '套图复刻'\) return getOneClickBaseParams\(mode\)/);
+  assert.match(bottomInputBar, /mode === '首图' \|\| isMainImageSuiteReplication/);
+  assert.match(bottomInputBar, /return '参考套图'/);
+  assert.match(bottomInputBar, /return '整套主图参考，最多5张'/);
+  assert.match(bottomInputBar, /billingParams = isMainImageSuiteReplication[\s\S]*count: String\(\(materials\.styleRef \|\| \[\]\)\.length\)/);
+  assert.match(bottomInputBar, /!\s*isMainImageSuiteReplication && \(/);
+  assert.match(shellApp, /参考套图最多上传 5 张/);
+  assert.match(shellApp, /selectedFiles = selectedFiles\.slice\(0, remaining\)/);
+  assert.match(workflow, /generateMainImageSetReplicationSchemes/);
+  assert.match(workflow, /firstParam\(input\.params, \['planningLogic'\], ''\) === '套图复刻'/);
+  assert.match(workflow, /getOneClickReferenceUrls\(input\)\.slice\(0, 5\)/);
+  assert.match(workflow, /\{ \.\.\.buildOneClickConfig\(input\), count: referenceUrls\.length \}/);
+  assert.match(workflow, /result\.schemes\.map\(\(scheme, index\) => toShellPlan\(scheme, index, referenceUrls\[index\]\)\)/);
+  assert.match(promptUtils, /suiteReferenceUrls/);
+  assert.match(promptUtils, /参考套图是整套主图的版式、屏序、视觉节奏、信息层级和风格连续性基准/);
+  assert.match(promptUtils, /不得把参考套图拆成互不相关的单张图任务/);
+  assert.match(promptUtils, /不得复制同一张脸、发型、服装、体态、身份特征或可识别人物形象/);
+  assert.match(promptUtils, /必须精准还原上传产品的真实细节/);
+  assert.match(promptUtils, /执行内容若包含“文案映射”或箭头映射/);
+  assert.match(promptUtils, /箭头右侧文字就是最终上屏文案，必须逐字生成/);
+  assert.match(promptUtils, /normalizeSuiteReplicationSchemeForGenerationPrompt/);
 });
 
 test('buyer show shell removes duplicate scene reference and preserves effective model and atmosphere roles', () => {
