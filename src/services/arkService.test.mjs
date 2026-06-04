@@ -209,20 +209,25 @@ test('marketing scheme prompt uses RTCFE structure and the new copy layout forma
   );
 });
 
-test('marketing planning rejects incomplete scheme counts instead of saving partial plans', () => {
+test('marketing planning keeps partial schemes and logs undercount diagnostics', () => {
   const marketingBlock = arkServiceSource.match(
     /export const generateMarketingSchemes = async[\s\S]*?export const generateMainImageSetReplicationSchemes = async/,
   )?.[0] || '';
 
   assert.match(
     marketingBlock,
-    /schemes\.length < expectedSchemeCount/,
-    'ordinary main/detail planning should detect when the model returns fewer complete schemes than requested'
+    /marketing_plan_partial_count/,
+    'ordinary main/detail planning should log an undercount diagnostic when the model returns fewer complete schemes than requested'
   );
   assert.match(
     marketingBlock,
-    /方案数量不足/,
-    'ordinary main/detail planning should surface a clear undercount error instead of silently creating a smaller project'
+    /return \{ status: 'success', schemes: schemes\.slice\(0, actualSchemeCount\)/,
+    'ordinary main/detail planning should still save the complete schemes that were returned'
+  );
+  assert.doesNotMatch(
+    marketingBlock,
+    /throw new Error\(`\$\{planningLabel\}方案数量不足/,
+    'ordinary main/detail planning should not fail the whole request when partial complete schemes are available'
   );
 });
 

@@ -748,17 +748,26 @@ ${safeLogoUrl ? `品牌logo图（已附）：${safeLogoUrl}。该图仅用于识
       }
 
       const expectedSchemeCount = Math.max(1, Number(config.count) || 1);
-      if (schemes.length < expectedSchemeCount) {
-        throw new Error(`${planningLabel}方案数量不足：需要 ${expectedSchemeCount} 屏，实际返回 ${schemes.length} 屏。请重新策划或减少单次策划屏数。`);
+      const actualSchemeCount = Math.min(schemes.length, expectedSchemeCount);
+      if (actualSchemeCount < expectedSchemeCount) {
+        logArkEvent('marketing_plan_partial_count', `${planningLabel}方案部分返回`, 'success', '', {
+          expectedCount: expectedSchemeCount,
+          actualCount: actualSchemeCount,
+          missingCount: expectedSchemeCount - actualSchemeCount,
+          subMode,
+          creditsConsumed: analysis.creditsConsumed,
+          taskId: analysis.taskId,
+        });
       }
 
       logArkEvent('marketing_plan', `${planningLabel}方案策划成功`, 'success', '', {
-        count: schemes.slice(0, expectedSchemeCount).length,
+        count: schemes.slice(0, actualSchemeCount).length,
+        expectedCount: expectedSchemeCount,
         subMode,
         creditsConsumed: analysis.creditsConsumed,
         taskId: analysis.taskId,
       });
-      return { status: 'success', schemes: schemes.slice(0, expectedSchemeCount), creditsConsumed: analysis.creditsConsumed, taskId: analysis.taskId };
+      return { status: 'success', schemes: schemes.slice(0, actualSchemeCount), creditsConsumed: analysis.creditsConsumed, taskId: analysis.taskId };
     } finally {
       clearTimeout(timeoutId);
     }
