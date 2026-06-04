@@ -747,13 +747,18 @@ ${safeLogoUrl ? `品牌logo图（已附）：${safeLogoUrl}。该图仅用于识
         throw new Error("AI 返回的内容格式不正确，无法解析为有效的策划方案。内容预览: " + content.substring(0, 100) + "...");
       }
 
+      const expectedSchemeCount = Math.max(1, Number(config.count) || 1);
+      if (schemes.length < expectedSchemeCount) {
+        throw new Error(`${planningLabel}方案数量不足：需要 ${expectedSchemeCount} 屏，实际返回 ${schemes.length} 屏。请重新策划或减少单次策划屏数。`);
+      }
+
       logArkEvent('marketing_plan', `${planningLabel}方案策划成功`, 'success', '', {
-        count: schemes.slice(0, config.count).length,
+        count: schemes.slice(0, expectedSchemeCount).length,
         subMode,
         creditsConsumed: analysis.creditsConsumed,
         taskId: analysis.taskId,
       });
-      return { status: 'success', schemes: schemes.slice(0, config.count), creditsConsumed: analysis.creditsConsumed, taskId: analysis.taskId };
+      return { status: 'success', schemes: schemes.slice(0, expectedSchemeCount), creditsConsumed: analysis.creditsConsumed, taskId: analysis.taskId };
     } finally {
       clearTimeout(timeoutId);
     }
