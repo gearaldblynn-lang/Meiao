@@ -20,16 +20,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
-## 2026-06-04 - Main-image planning must not save partial scheme counts
+## 2026-06-04 - Main-image planning must keep partial scheme counts visible
 
 - Symptom: 云上账号“洛克”主图提交 10 张需求后，项目卡最终只显示 6 个策划任务。
 - Environment: Tencent Cloud production one_click main_image / local development.
 - Cloud evidence: 洛克账号 job `ca9bc58f30508c981065f4ce` 的 payload 和日志均为 `count:10`，Prompt 写明“策划 10 屏”；上游返回内容只有 7 个 `[SCHEME_START]`、6 个 `[SCHEME_END]`，第 7 屏停在“三档强风·强力降...”中途。项目 `proj-plan-1780556041028` 最终保存 `planCount=6`、`taskCount=6`。
-- Root cause: 普通主图/详情页策划只解析完整 `[SCHEME_START]...[SCHEME_END]` 块，但没有校验解析出的完整方案数是否达到用户要求；上游半截返回时，代码把 6 个完整块当成成功结果保存。
-- Fix: `generateMarketingSchemes` 现在会把 `config.count` 归一化为期望屏数，若完整方案数少于期望值，直接返回“方案数量不足：需要 N 屏，实际返回 M 屏”，不再沉淀成部分成功项目。
+- Root cause: 上游半截返回时，只有完整闭合的 6 个方案可用于后续生图；第 7 个未闭合方案不能安全生成任务卡。把整次策划判失败会浪费已经可用的 6 个方案，也不符合用户预期。
+- Fix: `generateMarketingSchemes` 现在保留所有完整方案并生成对应任务卡；若完整方案数少于期望数，额外写入 `marketing_plan_partial_count` 诊断日志，记录期望数、实际数和缺口数。
 - Regression check: `node --test src/services/arkService.test.mjs`.
 - Files/tests: `src/services/arkService.ts`, `src/services/arkService.test.mjs`.
-- Avoid next time: 所有“用户指定数量”的策划链路都必须在解析后做数量校验。排查同类问题先对比：请求 `count`、Prompt 里的屏数、返回文本里的 `[SCHEME_START]`/`[SCHEME_END]` 数、最终 `plans.length/taskCount`；不要只看前端卡片数量。
+- Avoid next time: 所有“用户指定数量”的策划链路都要区分“完全无可用方案”和“部分完整方案”。有完整方案时优先让用户可用；数量缺口进入诊断日志和看板统计。排查同类问题先对比：请求 `count`、Prompt 里的屏数、返回文本里的 `[SCHEME_START]`/`[SCHEME_END]` 数、最终 `plans.length/taskCount`。
 
 ## 2026-06-03 - SKU new product upload must clear stale sku draft context
 
