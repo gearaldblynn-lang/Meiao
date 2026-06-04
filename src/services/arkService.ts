@@ -97,6 +97,83 @@ const requireModelAssetUrls = (values: string[] | null | undefined, publicBaseUr
     .map((value, index) => requireModelAssetUrl(value, publicBaseUrl, `${label}${index + 1}`))
     .filter(Boolean);
 
+type MainImageSuiteCopyMapping = { slot: string; text: string };
+
+const extractMainImageSuiteCopyMappings = (scheme: string): MainImageSuiteCopyMapping[] => {
+  const raw = String(scheme || '');
+  const mappingSection = raw.match(/文案映射(?:部分)?[：:]\s*([\s\S]*?)(?=\n\s*-?\s*(?:文案内容排版|画面比例|设计意图|画面风格|画面描述|图\d+设计意图|主图\d+|参考套图\d+)|\n\[SCHEME_END\]|$)/)?.[1] || '';
+  if (!mappingSection.trim()) return [];
+
+  const mappings: MainImageSuiteCopyMapping[] = [];
+  const pairRegex = /(?:^|[\n;；,，])\s*(?:\d+[\.\、]\s*)?([\s\S]{0,80}?)\s*(?:->|→)\s*(?:[“"']([^“”"'\n]+)[”"']|([^;；\n]+))/g;
+  let match;
+  while ((match = pairRegex.exec(mappingSection)) !== null) {
+    const slot = String(match[1] || '')
+      .replace(/[“"'][^“”"']*[”"']\s*$/, '')
+      .replace(/^[-\s:：]+/, '')
+      .trim();
+    const text = String(match[2] || match[3] || '')
+      .replace(/^[“”"'\s]+|[“”"'\s]+$/g, '')
+      .trim();
+    if (text) mappings.push({ slot: slot || `映射文案${mappings.length + 1}`, text });
+  }
+  return mappings;
+};
+
+const extractMainImageSuiteInputCopyMappings = (description: string, expectedCount: number) => {
+  const raw = String(description || '');
+  const result = Array.from({ length: Math.max(expectedCount, 0) }, () => [] as MainImageSuiteCopyMapping[]);
+  const markerRegex = /(?:^|[\n\r])\s*(?:图|主图|参考套图)\s*([1-9]\d*)\s*(?:设计意图|文案映射(?:部分)?|[:：])/g;
+  const markers = Array.from(raw.matchAll(markerRegex)).map((match) => ({
+    index: match.index || 0,
+    screenIndex: Number(match[1]) - 1,
+  }));
+
+  markers.forEach((marker, markerIndex) => {
+    if (marker.screenIndex < 0 || marker.screenIndex >= result.length) return;
+    const next = markers[markerIndex + 1];
+    const segment = raw.slice(marker.index, next ? next.index : raw.length);
+    const mappings = extractMainImageSuiteCopyMappings(segment);
+    if (mappings.length > 0) result[marker.screenIndex] = mappings;
+  });
+
+  if (result.every((items) => items.length === 0)) {
+    const mappings = extractMainImageSuiteCopyMappings(raw);
+    if (mappings.length > 0 && result.length > 0) result[0] = mappings;
+  }
+  return result;
+};
+
+const applyMainImageSuiteCopyMapping = (scheme: string, preferredMappings: MainImageSuiteCopyMapping[] = []) => {
+  const mappings = preferredMappings.length > 0 ? preferredMappings : extractMainImageSuiteCopyMappings(scheme);
+  if (mappings.length === 0) return scheme;
+
+  const copyLayout = `文案替换：${mappings.map(({ slot, text }) => {
+    const source = slot || '参考图对应文字位';
+    return `“${source}”改为“${text}”`;
+  }).join('；')}。`;
+  const raw = String(scheme || '');
+  const withoutMapping = raw
+    .replace(/-\s*文案映射[：:][\s\S]*?(?=\n\s*-?\s*(?:文案内容排版|画面比例|设计意图|画面风格|画面描述)|\n\[SCHEME_END\]|$)/, '')
+    .replace(/\n{3,}/g, '\n\n');
+  const copyLayoutRegex = /-\s*文案内容排版[：:][\s\S]*?(?=\n-\s*画面比例|\n\[SCHEME_END\]|$)/;
+  const sceneDescriptionRegex = /(-\s*画面描述[：:]\s*)([\s\S]*?)(?=\n-\s*(?:画面风格|文案内容排版|画面比例)|\n\[SCHEME_END\]|$)/;
+  const appendCopyLayoutToScene = (value: string) => value.replace(sceneDescriptionRegex, (_match, prefix, content) => {
+    const trimmed = String(content || '').trim();
+    return `${prefix}${trimmed}${trimmed ? '；' : ''}${copyLayout}`;
+  });
+
+  if (copyLayoutRegex.test(withoutMapping)) {
+    const withoutCopyLayout = withoutMapping.replace(copyLayoutRegex, '').replace(/\n{3,}/g, '\n\n');
+    return sceneDescriptionRegex.test(withoutCopyLayout) ? appendCopyLayoutToScene(withoutCopyLayout) : withoutCopyLayout.trim();
+  }
+  if (sceneDescriptionRegex.test(withoutMapping)) return appendCopyLayoutToScene(withoutMapping);
+  if (/\n-\s*画面比例/.test(withoutMapping)) {
+    return withoutMapping.replace(/\n-\s*画面比例/, `\n- 画面描述：${copyLayout}\n- 画面比例`);
+  }
+  return `${withoutMapping.trim()}\n- 画面描述：${copyLayout}`;
+};
+
 const normalizeCreditsConsumed = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
@@ -685,6 +762,133 @@ ${safeLogoUrl ? `品牌logo图（已附）：${safeLogoUrl}。该图仅用于识
     logArkEvent('marketing_plan', `${failureLabel}方案策划失败`, 'failed', error.message, {
       count: config.count,
       subMode,
+    });
+    return { status: 'error', schemes: [], message: error.message };
+  }
+};
+
+export const generateMainImageSetReplicationSchemes = async (
+  productUrls: string[],
+  referenceUrls: string[],
+  config: OneClickConfig,
+  apiConfig: GlobalApiConfig,
+  signal?: AbortSignal,
+  logoUrl?: string | null,
+  onJobCreated?: AnalysisJobCreatedCallback,
+  jobMetadata: Record<string, unknown> = {},
+): Promise<ArkSchemeResult> => {
+  try {
+    const publicBaseUrl = await resolveRuntimePublicBaseUrl();
+    const targetLang = config.language;
+    const platform = config.platform;
+    const firstImageColorMode = config.firstImageColorMode === 'reference_locked' ? 'reference_locked' : 'product_adaptive';
+    const safeProductUrls = requireModelAssetUrls(productUrls, publicBaseUrl, '产品素材图');
+    const safeReferenceUrls = requireModelAssetUrls(referenceUrls.filter(Boolean).slice(0, 5), publicBaseUrl, '参考套图');
+    const safeLogoUrl = logoUrl ? requireModelAssetUrl(logoUrl, publicBaseUrl, '品牌logo图') : '';
+    const effectiveRatio = config.aspectRatio === AspectRatio.AUTO ? AspectRatio.SQUARE : (config.aspectRatio || AspectRatio.SQUARE);
+
+    if (safeReferenceUrls.length === 0) {
+      return { status: 'error', schemes: [], message: '套图复刻必须至少上传 1 张参考套图。' };
+    }
+    const expectedSchemeCount = safeReferenceUrls.length;
+
+    logArkEvent('main_image_set_replication_plan', '开始策划主图套图复刻方案', 'started', '', {
+      count: expectedSchemeCount,
+      referenceCount: safeReferenceUrls.length,
+      subMode: OneClickSubMode.MAIN_IMAGE,
+    });
+
+    const systemPrompt = `R Role 角色
+你是电商主图套图复刻策划总监，负责先拆解参考套图的整套视觉逻辑，再替换为我方商品主图系列。
+
+T Task 任务
+基于参考套图、产品素材、产品卖点与目标平台，输出 ${expectedSchemeCount} 屏可直接生图的整套主图复刻方案；${expectedSchemeCount} 来自参考套图上传数量，不接受额外生成数量配置。
+
+C Constraint 约束
+1. 参考套图是整套主图的版式、屏序、视觉节奏、信息层级和连续性参考；不是一张参考图策划一张图，也不是逐张独立改稿，而是一次性分析整套图之间的主次关系、卖点分工和风格统一规则，再输出一整套主图方案。
+2. 产品素材图只用于识别我方商品本体外观、包装、配件、结构、真实颜色和比例，不作为版式参考；商品本体必须保持与产品素材一致，生图时不得修改我方产品外观，必须精准还原产品的形状、比例、颜色、包装文字、logo、标签、材质、纹理、配件和细节，禁止编造或改写包装形态、标签、logo、颜色和配件。
+3. 输出屏数必须等于参考套图张数；主图1必须对应参考套图1、主图2必须对应参考套图2，以此类推。不得跳号、重排、合并参考图，也不得用“整套参考延展”替代单张对应关系；每一屏都必须在整套统一分析下直接复刻同序号参考图的整体风格、版式结构、信息层级、视觉节奏和设计细节。
+4. 每一屏都要说明它在整套主图中的功能、承接的卖点层级和与其他屏的连续关系，不能把每张参考图割裂成互不相关的单图任务。
+5. 若同序号参考图中出现人物，可以延续人物出镜位置、景别、动作节奏、场景氛围和拍摄风格，但必须与参考图人物做出明显差异：不得复制同一张脸、发型、服装、体态、身份特征或可识别人物形象；人物要改成不同外貌与穿搭，同时保持场景风格一致。
+6. 参考套图中的所有竞品 logo、品牌名、店铺名、平台标识、价格、促销/买赠活动、产品数据和原文案都必须删除或替换；参考套图中的每个可见文案位、商品位、品牌位、价格位、促销位、角标位和图标位都必须逐项处理，必须明确写出保留、删除或替换，不得让参考图原内容残留；${safeLogoUrl ? '品牌位只能使用品牌logo图或通用信息补足。' : '未上传品牌logo图时，品牌/店铺/logo/官方背书位统一写通用信息，不写官方自营/旗舰店或具体品牌名。'}
+7. 文案只使用上传的产品信息与真实卖点。未在产品信息及卖点中明确给出的价格、折扣、满减、买赠活动、赠品、销量、排名、认证、检测数据、功效数据、规格参数、百分比和对比数据一律不得生成；文案排版必须沿用参考套图的信息密度和位置关系。
+8. 如果“产品信息及卖点”中包含文案映射、卖点映射、屏序文案、主图1/主图2等逐屏指定内容，必须把它当成最高优先级的文案替换规则；主图N只能使用映射中分配给主图N/参考套图N的信息，不得擅自换屏、合并、遗漏或改写成其他卖点。
+9. 整套主图的文案必须先按屏序分配不同卖点，再分别撰写差异化文案；五张图以内不得出现重复描述、重复标题、重复副标题或同义改写式重复。如果参考套图有 ${expectedSchemeCount} 张，就输出 ${expectedSchemeCount} 组互不重复的文案，每张图的主标题、辅助信息和卖点表达都必须不同；不得让两屏共同使用同一卖点短语，例如不能多张图都写“300ml容量”。
+10. 全套配色规则：${firstImageColorMode === 'reference_locked' ? '参考图基准，直接复刻参考套图的整体风格、版式结构、信息层级、视觉节奏、设计细节，不得改成另一种风格，并保持整套配色连贯。' : '商品自适应时，先确定一套适合我方商品的统一色板（主色、辅助色、背景色、强调色），每一屏必须沿用同一套色板，确保整套主图统一；仅允许在明暗、面积、局部强调色上做变化，版式结构、信息层级和套图视觉节奏仍需延续参考套图。'}
+11. 全套画面比例必须为 ${effectiveRatio}，每一屏方案的[-画面比例]栏位严格回填“${effectiveRatio}”。
+12. 输出格式与首图裂变提示词保持一致，不输出[- 文案内容排版]、[- 文案映射]或任何额外字段；所有上屏文案和文字替换关系都写入[- 画面描述]。
+13. 如果用户输入中包含逐屏文案映射，不要单独输出[- 文案映射]字段；直接把映射箭头右侧文字写入[- 画面描述]中的对应文案替换说明，并必须使用“原文案/原文字位”改为“新文案”的句式。如果映射格式为“A -> B”，B 就是最终上屏文案，必须逐字照抄，保留原有文字、数字、单位、符号、标点和大小写，不得润色、缩写、扩写、同义替换或改成更自然的表达。若用户未输入文案映射，也不要输出[- 文案映射]字段。
+
+F Format 格式
+每屏必须严格按首图裂变字段顺序输出：
+[SCHEME_START]
+- 屏序/类型：主图1-套图复刻核心视觉
+- 参考图标识：必须填“参考套图N”（N与屏序一致，例如主图1填参考套图1）
+- 设计意图：完全基于参考套图N内容修改调整，保持参考图视觉效果、版式设计；若出图比例与参考图不一致，需要将参考图自适应调整为要求比例
+- 画面描述：保持参考图视觉效果、版式设计，并按参考套图N原版式逐项写清海报/页面文案替换、参考图标识处理、商品本体替换、配色处理、该屏在整套主图中的功能与承接关系；参考套图中的文案位、商品位、品牌位、价格位、促销位、角标位和图标位都必须一一对应说明保留、删除或替换，不得省略；不要主动改写或重新命名产品包装上的文字、logo和标签，产品包装本体按产品素材原样保留；如有文案映射，必须在这里用“原文案/原文字位”改为“新文案”的形式写清对应文字替换，不得输出文案内容排版字段
+- 画面比例：[必须填入：${effectiveRatio}]
+[SCHEME_END]
+`;
+
+    const userPrompt = `产品信息及卖点：${config.description}
+目标平台：${platform}
+目标语言：${targetLang}
+参考套图公网URL：
+${safeReferenceUrls.map((url, index) => `- 参考套图${index + 1}：${url}`).join('\n')}
+产品素材公网URL（仅用于识别商品，不作为版式参考）：
+${safeProductUrls.map((url, index) => `- 产品素材图${index + 1}：${url}`).join('\n')}
+${safeLogoUrl ? `品牌logo公网URL：${safeLogoUrl}` : ''}
+
+请先把参考套图作为一个完整主图套系整体分析：屏序、卖点分工、视觉统一规则、版式节奏、统一配色和各屏功能必须一起判断；不要逐张独立策划。如果产品信息及卖点中写了文案映射、卖点映射或逐屏文案，请先提取该映射关系，并严格按映射把对应文案放到对应主图/参考套图上；映射箭头右侧文字必须原样使用，不能改写、润色、缩写、扩写或同义替换，输出时直接写入[- 画面描述]里的对应文字替换说明，必须写成“原文案/原文字位”改为“新文案”的形式，不要输出[- 文案内容排版]。然后先为 ${expectedSchemeCount} 屏分配互不重复的真实卖点，再输出 ${expectedSchemeCount} 屏主图复刻方案，并严格保持主图N与参考套图N一一对应。每一屏都要逐项说明参考套图中可见文案位、商品位、品牌位、价格位、促销位、角标位和图标位的保留、删除或替换方式，不能省略导致参考图内容残留。整套文案只能基于产品信息与真实卖点；未在产品信息及卖点中明确给出的价格、折扣、满减、买赠活动、赠品、销量、排名、认证、检测数据、功效数据、规格参数、百分比和对比数据一律不得生成；各屏文案必须互不重复，主标题、副标题、卖点短语都不能重复或同义重复。`;
+
+    const inputContent: any[] = [{ type: 'text', text: `${systemPrompt}\n\n${userPrompt}` }];
+    safeReferenceUrls.forEach((url, index) => {
+      inputContent.push({ type: 'text', text: `[参考套图${index + 1}] 图片URL：${url}。用于整套分析，同时主图${index + 1}必须一一对应复刻这张参考图的整体风格、版式结构、信息层级、视觉节奏和设计细节。` });
+      inputContent.push({ type: 'image_url', image_url: { url } });
+    });
+    safeProductUrls.forEach((url, index) => {
+      inputContent.push({ type: 'text', text: `[产品素材图${index + 1}] 图片URL：${url}。仅用于识别我方商品本体，不是版式参考。` });
+      inputContent.push({ type: 'image_url', image_url: { url } });
+    });
+    if (safeLogoUrl) {
+      inputContent.push({ type: 'text', text: `[品牌logo图] 图片URL：${safeLogoUrl}。仅用于识别和还原我方品牌标识，不是版式参考。` });
+      inputContent.push({ type: 'image_url', image_url: { url: safeLogoUrl } });
+    }
+
+    const analysis = await requestAnalysisResponseDetailed(inputContent, apiConfig, signal, onJobCreated, {
+      ...jobMetadata,
+      shellPlanningLogic: 'main_image_set_replication',
+      shellReferenceCount: safeReferenceUrls.length,
+    });
+    const content = ensureUsableAnalysisContent(analysis.content, '主图套图复刻策划');
+    const schemes: string[] = [];
+    const tagRegex = /\[SCHEME_START\]([\s\S]*?)\[SCHEME_END\]/g;
+    let match;
+    while ((match = tagRegex.exec(content)) !== null) {
+      if (match[1].trim()) schemes.push(match[1].trim());
+    }
+    if (schemes.length === 0) {
+      throw new Error(`主图套图复刻未返回有效方案。内容预览: ${content.substring(0, 100)}...`);
+    }
+    if (schemes.length < expectedSchemeCount) {
+      throw new Error(`主图套图复刻方案数量不足：需要 ${expectedSchemeCount} 屏，实际返回 ${schemes.length} 屏。`);
+    }
+    const inputCopyMappings = extractMainImageSuiteInputCopyMappings(config.description, expectedSchemeCount);
+    const selectedSchemes = schemes
+      .slice(0, expectedSchemeCount)
+      .map((scheme, index) => applyMainImageSuiteCopyMapping(scheme, inputCopyMappings[index] || []));
+
+    logArkEvent('main_image_set_replication_plan', '主图套图复刻策划成功', 'success', '', {
+      count: selectedSchemes.length,
+      referenceCount: safeReferenceUrls.length,
+      subMode: OneClickSubMode.MAIN_IMAGE,
+      creditsConsumed: analysis.creditsConsumed,
+      taskId: analysis.taskId,
+    });
+    return { status: 'success', schemes: selectedSchemes, creditsConsumed: analysis.creditsConsumed, taskId: analysis.taskId };
+  } catch (error: any) {
+    logArkEvent('main_image_set_replication_plan', '主图套图复刻策划失败', 'failed', error.message, {
+      subMode: OneClickSubMode.MAIN_IMAGE,
     });
     return { status: 'error', schemes: [], message: error.message };
   }

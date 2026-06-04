@@ -13,7 +13,7 @@ import {
 } from '../types';
 import { cancelInternalJob, createInternalJob, uploadInternalAssetStream, storeActiveModuleContext, waitForInternalJob } from '../services/internalApi';
 import { processWithKieAi } from '../services/kieAiService';
-import { analyzeRetouchTask, generateBuyerShowPrompts, generateFirstImageReplicationSchemes, generateMarketingSchemes, generateSkuSchemes } from '../services/arkService';
+import { analyzeRetouchTask, generateBuyerShowPrompts, generateFirstImageReplicationSchemes, generateMainImageSetReplicationSchemes, generateMarketingSchemes, generateSkuSchemes } from '../services/arkService';
 import { buildOneClickImagePrompt } from '../modules/OneClick/generationPromptUtils';
 import { XHS_COVER_STYLES } from '../modules/XhsCover/xhsCoverStyles';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
@@ -415,6 +415,32 @@ export const runShellOneClickPlanning = async (input: ShellGenerateInput): Promi
     return { plans: result.schemes.map((scheme, index) => toShellPlan(scheme, index)), message: result.message, creditsConsumed: result.creditsConsumed, taskId: result.taskId };
   }
 
+  if (subMode === OneClickSubMode.MAIN_IMAGE && firstParam(input.params, ['planningLogic'], '') === '套图复刻') {
+    const referenceUrls = getOneClickReferenceUrls(input).slice(0, 5);
+    if (referenceUrls.length === 0) {
+      throw new Error('套图复刻必须先上传参考套图，最多 5 张。');
+    }
+    const result = await generateMainImageSetReplicationSchemes(
+      productUrls,
+      referenceUrls,
+      { ...buildOneClickConfig(input), count: referenceUrls.length },
+      apiConfig,
+      input.signal,
+      getOneClickLogoUrl(input) || null,
+      input.onJobCreated,
+      input.taskMetadata || {},
+    );
+    if (result.status !== 'success' || result.schemes.length === 0) {
+      throw new Error(result.message || '主图套图复刻策划失败');
+    }
+    return {
+      plans: result.schemes.map((scheme, index) => toShellPlan(scheme, index, referenceUrls[index])),
+      message: result.message,
+      creditsConsumed: result.creditsConsumed,
+      taskId: result.taskId,
+    };
+  }
+
   const result = await generateMarketingSchemes(
     productUrls,
     firstMaterialUrl(input.materials.styleRef, input.publicBaseUrl || '') || firstMaterialUrl(input.materials.reference, input.publicBaseUrl || '') || null,
@@ -627,6 +653,9 @@ export const uploadShellMaterial = async (
 export const runShellImageGeneration = async (input: ShellGenerateInput) => {
   const productImageUrls = (input.materials.product || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
   const supplementalImageUrls = (input.materials.reference || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
+  const suiteReferenceUrls = input.module === AppModule.ONE_CLICK && input.subFeature === 'main_image' && input.params.planningLogic === '套图复刻'
+    ? (input.materials.styleRef || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean).slice(0, 5)
+    : [];
   const imageUrls = buildShellImageInputUrls({
     module: input.module,
     subFeature: input.subFeature,
@@ -658,6 +687,7 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
         variationInstruction: typeof input.taskMetadata?.variationInstruction === 'string' ? input.taskMetadata.variationInstruction : null,
         editInstruction: typeof input.taskMetadata?.editInstruction === 'string' ? input.taskMetadata.editInstruction : null,
         supplementalReferenceUrls: supplementalImageUrls,
+        suiteReferenceUrls,
         hasProductReferences: (input.materials.product || []).length > 0,
         includeCopyGuardrails: true,
       })

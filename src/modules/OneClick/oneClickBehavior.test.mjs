@@ -47,15 +47,15 @@ test('one click redo flow clears stale task id before starting a brand new gener
   assert.match(detailSource, /updateSingleScreen\(id, \{ status: 'generating', error: '正在准备素材\.\.\.', taskId: undefined, resultUrl: undefined \}\)/);
 });
 
-test('one click generation prompts explain that parentheses are requirements and quoted text is the only renderable copy', () => {
+test('one click generation prompts keep copy rendering guardrails concise', () => {
   assert.match(mainSource, /buildOneClickImagePrompt/);
   assert.match(detailSource, /buildOneClickImagePrompt/);
   assert.match(skuSource, /appendOneClickCopyGuardrails/);
   assert.match(promptUtilsSource, /严格按照当前方案中已经写明的文案内容与排版指令进行渲染/);
   assert.match(promptUtilsSource, /投放平台：\$\{targetPlatform\}/);
-  assert.match(promptUtilsSource, /圆括号内的字体、字号字重、位置、颜色等内容仅作为排版指令理解/);
-  assert.match(promptUtilsSource, /只有中文引号“”内的文字才是最终需要渲染到画面中的正文文案/);
-  assert.match(promptUtilsSource, /字段名、冒号、说明文字都不得出现在最终画面中/);
+  assert.doesNotMatch(promptUtilsSource, /圆括号内的字体、字号字重、位置、颜色等内容仅作为排版指令理解/);
+  assert.doesNotMatch(promptUtilsSource, /只有中文引号“”内的文字才是最终需要渲染到画面中的正文文案/);
+  assert.doesNotMatch(promptUtilsSource, /字段名、冒号、说明文字都不得出现在最终画面中/);
   assert.doesNotMatch(promptUtilsSource, /输出规范：/);
   assert.doesNotMatch(promptUtilsSource, /主标题（字体，字号字重，位置，颜色色值）：“xxx”/);
   assert.doesNotMatch(promptUtilsSource, /love potion/);

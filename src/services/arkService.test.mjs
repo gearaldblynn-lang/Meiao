@@ -407,6 +407,55 @@ test('first image replication planning analyzes product selling points against e
   );
 });
 
+test('main image set replication planning analyzes an uploaded reference suite as one full plan', () => {
+  const setReplicationBlockMatch = arkServiceSource.match(
+    /export const generateMainImageSetReplicationSchemes = async[\s\S]*?return \{ status: 'success', schemes: selectedSchemes, creditsConsumed: analysis\.creditsConsumed, taskId: analysis\.taskId \};/,
+  );
+  const setReplicationBlock = setReplicationBlockMatch?.[0] || '';
+
+  assert.match(arkServiceSource, /export const generateMainImageSetReplicationSchemes = async/);
+  assert.match(setReplicationBlock, /referenceUrls\.filter\(Boolean\)\.slice\(0, 5\)/);
+  assert.match(setReplicationBlock, /套图复刻必须至少上传 1 张参考套图/);
+  assert.match(setReplicationBlock, /const expectedSchemeCount = safeReferenceUrls\.length/);
+  assert.match(setReplicationBlock, /\$\{expectedSchemeCount\} 来自参考套图上传数量，不接受额外生成数量配置/);
+  assert.match(setReplicationBlock, /不是一张参考图策划一张图，也不是逐张独立改稿，而是一次性分析整套图之间的主次关系、卖点分工和风格统一规则/);
+  assert.match(setReplicationBlock, /输出屏数必须等于参考套图张数/);
+  assert.match(setReplicationBlock, /主图1必须对应参考套图1、主图2必须对应参考套图2/);
+  assert.match(setReplicationBlock, /不得跳号、重排、合并参考图/);
+  assert.match(setReplicationBlock, /不得用“整套参考延展”替代单张对应关系/);
+  assert.match(setReplicationBlock, /若同序号参考图中出现人物/);
+  assert.match(setReplicationBlock, /不得复制同一张脸、发型、服装、体态、身份特征或可识别人物形象/);
+  assert.match(setReplicationBlock, /参考图标识：必须填“参考套图N”/);
+  assert.match(setReplicationBlock, /严格保持主图N与参考套图N一一对应/);
+  assert.match(setReplicationBlock, /schemes\.length < expectedSchemeCount/);
+  assert.match(setReplicationBlock, /生图时不得修改我方产品外观/);
+  assert.match(setReplicationBlock, /必须精准还原产品的形状、比例、颜色、包装文字、logo、标签、材质、纹理、配件和细节/);
+  assert.match(setReplicationBlock, /文案只使用上传的产品信息与真实卖点/);
+  assert.match(setReplicationBlock, /必须把它当成最高优先级的文案替换规则/);
+  assert.match(setReplicationBlock, /B 就是最终上屏文案，必须逐字照抄/);
+  assert.match(setReplicationBlock, /不得润色、缩写、扩写、同义替换或改成更自然的表达/);
+  assert.match(arkServiceSource, /const extractMainImageSuiteCopyMappings = \(scheme: string\)/);
+  assert.match(arkServiceSource, /const extractMainImageSuiteInputCopyMappings = \(description: string, expectedCount: number\)/);
+  assert.match(arkServiceSource, /const applyMainImageSuiteCopyMapping = \(scheme: string, preferredMappings: MainImageSuiteCopyMapping\[\] = \[\]\)/);
+  assert.match(setReplicationBlock, /const inputCopyMappings = extractMainImageSuiteInputCopyMappings\(config\.description, expectedSchemeCount\)/);
+  assert.match(setReplicationBlock, /\.map\(\(scheme, index\) => applyMainImageSuiteCopyMapping\(scheme, inputCopyMappings\[index\] \|\| \[\]\)\)/);
+  assert.match(setReplicationBlock, /未在产品信息及卖点中明确给出的价格、折扣、满减、买赠活动、赠品、销量、排名、认证、检测数据、功效数据、规格参数、百分比和对比数据一律不得生成/);
+  assert.match(setReplicationBlock, /五张图以内不得出现重复描述、重复标题、重复副标题或同义改写式重复/);
+  assert.doesNotMatch(setReplicationBlock, /首图配色规则/);
+  assert.match(setReplicationBlock, /全套配色规则/);
+  assert.match(setReplicationBlock, /先确定一套适合我方商品的统一色板/);
+  assert.match(setReplicationBlock, /每一屏必须沿用同一套色板/);
+  assert.match(setReplicationBlock, /仅允许在明暗、面积、局部强调色上做变化/);
+  assert.match(setReplicationBlock, /参考套图中的每个可见文案位、商品位、品牌位、价格位、促销位、角标位和图标位都必须逐项处理/);
+  assert.match(setReplicationBlock, /必须明确写出保留、删除或替换/);
+  assert.match(setReplicationBlock, /保持参考图视觉效果、版式设计/);
+  assert.match(setReplicationBlock, /参考套图公网URL/);
+  assert.match(setReplicationBlock, /请先把参考套图作为一个完整主图套系整体分析/);
+  assert.match(setReplicationBlock, /不要逐张独立策划/);
+  assert.match(setReplicationBlock, /safeReferenceUrls\.forEach/);
+  assert.match(setReplicationBlock, /shellPlanningLogic: 'main_image_set_replication'/);
+});
+
 test('sku planning prompt uses RTCFE structure and the new copy layout format', () => {
   assert.match(
     arkServiceSource,

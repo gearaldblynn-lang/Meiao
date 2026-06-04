@@ -237,7 +237,38 @@ const triggerDirectDownloadFallback = (url: string, fileName: string) => {
 };
 
 export const fetchRemoteFileBlob = async (url: string) => {
-  const response = await fetch(url, { mode: 'cors', cache: 'no-cache' });
+  try {
+    const response = await fetch(url, { mode: 'cors', cache: 'no-cache' });
+    if (!response.ok) {
+      throw new Error(`下载失败: ${response.status}`);
+    }
+    return response.blob();
+  } catch (error) {
+    if (shouldUseDownloadProxy(url)) {
+      return fetchRemoteFileBlobViaProxy(url);
+    }
+    throw error;
+  }
+};
+
+const shouldUseDownloadProxy = (url: string) => {
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+    if (parsed.origin === window.location.origin) return false;
+    const hostname = parsed.hostname.toLowerCase();
+    return hostname !== 'localhost'
+      && !hostname.endsWith('.localhost')
+      && !hostname.endsWith('.local')
+      && hostname !== '127.0.0.1'
+      && hostname !== '0.0.0.0';
+  } catch {
+    return false;
+  }
+};
+
+const fetchRemoteFileBlobViaProxy = async (url: string) => {
+  const response = await fetch(`/api/assets/download-proxy?url=${encodeURIComponent(url)}`, { cache: 'no-cache' });
   if (!response.ok) {
     throw new Error(`下载失败: ${response.status}`);
   }

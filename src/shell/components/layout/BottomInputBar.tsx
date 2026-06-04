@@ -285,31 +285,40 @@ const getOneClickBaseParams = (mode: string): ParamItem[] => {
   const ratioOptions = mode === '详情页'
     ? ['auto', '3:4', '1:1', '2:3', '4:3', '16:9', '9:16']
     : ['1:1', '2:3', '3:4', '4:3', '16:9', '9:16', 'auto'];
+  const ratioParam: ParamItem = mode === '详情页'
+    ? {
+        key: 'ratio',
+        label: 'auto',
+        title: '出图比例',
+        icon: <BoxSelect size={12} />,
+        options: ratioOptions,
+        defaultValue: 'auto',
+        recommendedValue: 'auto',
+        recommendedLabel: '推荐',
+        secondaryRecommendedValue: '3:4',
+        secondaryRecommendedLabel: '推荐',
+      }
+    : {
+        key: 'ratio',
+        label: '1:1',
+        title: '出图比例',
+        icon: <BoxSelect size={12} />,
+        options: ratioOptions,
+        defaultValue: '1:1',
+        recommendedValue: '1:1',
+        recommendedLabel: '推荐',
+      };
   return [
     { key: 'mode',    label: '首图', title: '图片类型', icon: <Layers size={12} />,    options: ['首图', '主图', '详情页', 'SKU'], defaultValue: '首图' },
-    mode === '详情页'
-      ? {
-          key: 'ratio',
-          label: 'auto',
-          title: '出图比例',
-          icon: <BoxSelect size={12} />,
-          options: ratioOptions,
-          defaultValue: 'auto',
-          recommendedValue: 'auto',
-          recommendedLabel: '推荐',
-          secondaryRecommendedValue: '3:4',
-          secondaryRecommendedLabel: '推荐',
-        }
-      : {
-          key: 'ratio',
-          label: '1:1',
-          title: '出图比例',
-          icon: <BoxSelect size={12} />,
-          options: ratioOptions,
-          defaultValue: '1:1',
-          recommendedValue: '1:1',
-          recommendedLabel: '推荐',
-        },
+    ...(mode === '主图' ? [{
+      key: 'planningLogic',
+      label: 'AI直出',
+      title: '生成逻辑',
+      icon: <Clapperboard size={12} />,
+      options: ['AI直出', '套图复刻'],
+      defaultValue: 'AI直出',
+    } as ParamItem] : []),
+    ratioParam,
     { key: 'model',   label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />,  options: ['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
     { key: 'quality', label: '1K', title: '出图分辨率', icon: <Sparkles size={12} />,   options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
   ];
@@ -499,6 +508,7 @@ const getQuickParamsForModule = (
   const mode = currentParams.mode || '首图';
   if (mode === '首图') return getOneClickBaseParams(mode);
   if (mode === 'SKU') return getOneClickBaseParams(mode);
+  if (mode === '主图' && currentParams.planningLogic === '套图复刻') return getOneClickBaseParams(mode);
   return [
     ...getOneClickBaseParams(mode),
     {
@@ -648,6 +658,7 @@ const getExtendedSectionsForModule = (module: AppModule, currentParams: Record<s
   }
   if (module !== AppModuleObj.ONE_CLICK) return EXTENDED_PARAMS[module] || [];
   const mode = currentParams.mode || '首图';
+  const isMainImageSuiteReplication = mode === '主图' && currentParams.planningLogic === '套图复刻';
   return [
     {
       section: '投放',
@@ -670,7 +681,7 @@ const getExtendedSectionsForModule = (module: AppModule, currentParams: Record<s
     {
       section: '画面',
       params: [
-        ...(mode === '首图' ? [{
+        ...(mode === '首图' || isMainImageSuiteReplication ? [{
           key: 'firstImageColorMode',
           label: '首图配色',
           type: 'select' as const,
@@ -929,6 +940,7 @@ const BottomInputBar: React.FC<Props> = ({
   const isTranslation = module === AppModuleObj.TRANSLATION;
   const isOneClick = module === AppModuleObj.ONE_CLICK;
   const isSkuMode = isOneClick && (currentParams.mode || '首图') === 'SKU';
+  const isMainImageSuiteReplication = isOneClick && (currentParams.mode || '首图') === '主图' && currentParams.planningLogic === '套图复刻';
   const isXhsCover = module === AppModuleObj.XHS_COVER;
   const isBuyerShow = module === AppModuleObj.BUYER_SHOW;
   const isPendingSubFeature = isPendingShellSubFeature(module, activeSubFeature);
@@ -955,10 +967,13 @@ const BottomInputBar: React.FC<Props> = ({
   const billingMaterialCount = module === AppModuleObj.TRANSLATION
     ? (materials.product || []).filter((item) => !item.subFeature || item.subFeature === activeSubFeature).length
     : 0;
+  const billingParams = isMainImageSuiteReplication
+    ? { ...currentParams, count: String((materials.styleRef || []).length) }
+    : currentParams;
   const imageBillingEstimate = estimateImageBilling({
     module,
     subFeature: activeSubFeature || '',
-    params: currentParams,
+    params: billingParams,
     materialCount: billingMaterialCount,
   });
   const seedanceBillingEstimate = isDreaminaVideoGeneration
@@ -1323,6 +1338,7 @@ const BottomInputBar: React.FC<Props> = ({
     if (type === 'product') return '素材上传';
     if (type === 'gift') return '赠品上传';
     if (type === 'logo') return 'Logo上传';
+    if (type === 'styleRef' && isMainImageSuiteReplication) return '参考套图';
     if (type === 'styleRef') return mode === 'SKU' ? '风格参考' : '风格参考';
     return '参考素材';
   };
@@ -1331,6 +1347,7 @@ const BottomInputBar: React.FC<Props> = ({
     if (type === 'product') return '产品主体原图';
     if (type === 'gift') return '按顺序编号赠品';
     if (type === 'logo') return '品牌标识素材';
+    if (type === 'styleRef' && isMainImageSuiteReplication) return '整套主图参考，最多5张';
     if (type === 'styleRef') return '版式与视觉参考';
     return '参考素材';
   };
@@ -1750,19 +1767,21 @@ const BottomInputBar: React.FC<Props> = ({
                                 <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{getOneClickUploadDesc(type)}</span>
                               </button>
                             ))}
-                            <button
-                              onClick={() => { setUploadMenuOpen(false); setOneClickPresetLibraryOpen(true); }}
-                              className="flex min-h-[62px] flex-col items-start justify-center gap-1 rounded-2xl p-3 text-left transition-colors"
-                              style={{ color: 'var(--text-secondary)' }}
-                              onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-surface-hover)'; }}
-                              onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
-                            >
-                              <span className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                                <Palette size={15} />
-                                预设库
-                              </span>
-                              <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>按当前子功能筛选</span>
-                            </button>
+                            {!isMainImageSuiteReplication && (
+                              <button
+                                onClick={() => { setUploadMenuOpen(false); setOneClickPresetLibraryOpen(true); }}
+                                className="flex min-h-[62px] flex-col items-start justify-center gap-1 rounded-2xl p-3 text-left transition-colors"
+                                style={{ color: 'var(--text-secondary)' }}
+                                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-surface-hover)'; }}
+                                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+                              >
+                                <span className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                                  <Palette size={15} />
+                                  预设库
+                                </span>
+                                <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>按当前子功能筛选</span>
+                              </button>
+                            )}
                           </div>
                         </div>
                       </>
