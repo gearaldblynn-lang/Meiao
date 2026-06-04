@@ -20,6 +20,17 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-04 - Main-image planning must not save partial scheme counts
+
+- Symptom: 云上账号“洛克”主图提交 10 张需求后，项目卡最终只显示 6 个策划任务。
+- Environment: Tencent Cloud production one_click main_image / local development.
+- Cloud evidence: 洛克账号 job `ca9bc58f30508c981065f4ce` 的 payload 和日志均为 `count:10`，Prompt 写明“策划 10 屏”；上游返回内容只有 7 个 `[SCHEME_START]`、6 个 `[SCHEME_END]`，第 7 屏停在“三档强风·强力降...”中途。项目 `proj-plan-1780556041028` 最终保存 `planCount=6`、`taskCount=6`。
+- Root cause: 普通主图/详情页策划只解析完整 `[SCHEME_START]...[SCHEME_END]` 块，但没有校验解析出的完整方案数是否达到用户要求；上游半截返回时，代码把 6 个完整块当成成功结果保存。
+- Fix: `generateMarketingSchemes` 现在会把 `config.count` 归一化为期望屏数，若完整方案数少于期望值，直接返回“方案数量不足：需要 N 屏，实际返回 M 屏”，不再沉淀成部分成功项目。
+- Regression check: `node --test src/services/arkService.test.mjs`.
+- Files/tests: `src/services/arkService.ts`, `src/services/arkService.test.mjs`.
+- Avoid next time: 所有“用户指定数量”的策划链路都必须在解析后做数量校验。排查同类问题先对比：请求 `count`、Prompt 里的屏数、返回文本里的 `[SCHEME_START]`/`[SCHEME_END]` 数、最终 `plans.length/taskCount`；不要只看前端卡片数量。
+
 ## 2026-06-03 - SKU new product upload must clear stale sku draft context
 
 - Symptom: 云上账号“林一”制作 SKU 时，用户上传/进入新 SKU 项目后，策划和后续出图仍像之前的老产品；用户反馈“输入框上传新的内容，之前的数据就要被完全清楚，不要有残留”。

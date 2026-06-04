@@ -209,6 +209,23 @@ test('marketing scheme prompt uses RTCFE structure and the new copy layout forma
   );
 });
 
+test('marketing planning rejects incomplete scheme counts instead of saving partial plans', () => {
+  const marketingBlock = arkServiceSource.match(
+    /export const generateMarketingSchemes = async[\s\S]*?export const generateMainImageSetReplicationSchemes = async/,
+  )?.[0] || '';
+
+  assert.match(
+    marketingBlock,
+    /schemes\.length < expectedSchemeCount/,
+    'ordinary main/detail planning should detect when the model returns fewer complete schemes than requested'
+  );
+  assert.match(
+    marketingBlock,
+    /方案数量不足/,
+    'ordinary main/detail planning should surface a clear undercount error instead of silently creating a smaller project'
+  );
+});
+
 test('first image replication planning analyzes product selling points against each uploaded reference and outputs one scheme per reference', () => {
   const firstImageReplicationBlockMatch = arkServiceSource.match(
     /export const generateFirstImageReplicationSchemes = async[\s\S]*?return \{ status: hasSuccess \? 'success' : 'error', schemes, perReferenceResults, message, creditsConsumed, taskId: taskId \|\| undefined \};/,
