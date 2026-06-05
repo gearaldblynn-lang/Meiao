@@ -196,6 +196,12 @@ const isRecoverableAnalysisJobFailure = (job: any) => {
   return errorCode === 'task_not_found' || /任务不存在|not found|expired|过期/i.test(message);
 };
 
+const isRecoverableAnalysisSyncError = (error: any) => {
+  const code = String(error?.code || '').trim();
+  const message = String(error?.message || '').trim();
+  return code === 'job_timeout' || code === 'task_not_found' || /任务不存在|not found|expired|过期/i.test(message);
+};
+
 const isAnalysisRefusalText = (value: unknown) => {
   const text = String(value || '').trim();
   if (!text) return false;
@@ -773,6 +779,13 @@ ${safeLogoUrl ? `品牌logo图（已附）：${safeLogoUrl}。该图仅用于识
     }
   } catch (error: any) {
     const failureLabel = subMode === OneClickSubMode.DETAIL_PAGE ? '详情页' : subMode === OneClickSubMode.FIRST_IMAGE ? '首图' : '主图';
+    if (isRecoverableAnalysisSyncError(error)) {
+      logArkEvent('marketing_plan_sync_pending', `${failureLabel}方案策划结果待同步`, 'started', error.message, {
+        count: config.count,
+        subMode,
+      });
+      return { status: 'task_not_found', schemes: [], message: error.message };
+    }
     logArkEvent('marketing_plan', `${failureLabel}方案策划失败`, 'failed', error.message, {
       count: config.count,
       subMode,

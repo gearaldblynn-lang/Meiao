@@ -380,6 +380,16 @@ const MainImageSubModule: React.FC<Props> = ({
           },
         });
         addToast("策划方案已生成，请检查并启动渲染。", 'success');
+      } else if (res.status === 'task_not_found') {
+        void logActionSuccess({
+          module: 'one_click',
+          action: 'plan_main_start',
+          message: '主图策划结果待同步',
+          detail: res.message,
+          meta: baseMeta,
+        });
+        addToast(`AI 分析任务已提交云端，结果待同步，请稍后同步任务结果。${res.message ? ` 原因：${res.message}` : ''}`, 'info');
+        return;
       } else {
         void logActionFailure({
           module: 'one_click',

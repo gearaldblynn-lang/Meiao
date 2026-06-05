@@ -1081,7 +1081,7 @@ export interface ArkPureEvaluationResult {
 
 export interface ArkSchemeResult {
   schemes: string[];
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'task_not_found';
   message?: string;
   creditsConsumed?: number;
   taskId?: string;

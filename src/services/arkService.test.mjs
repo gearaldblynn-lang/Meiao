@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const arkServiceSource = readFileSync(new URL('./arkService.ts', import.meta.url), 'utf8');
 const skuSubModuleSource = readFileSync(new URL('../modules/OneClick/SkuSubModule.tsx', import.meta.url), 'utf8');
+const typesSource = readFileSync(new URL('../types.ts', import.meta.url), 'utf8');
 const promptUtilsSource = readFileSync(new URL('../modules/OneClick/generationPromptUtils.ts', import.meta.url), 'utf8');
 const retouchModuleSource = readFileSync(new URL('../modules/Retouch/RetouchModule.tsx', import.meta.url), 'utf8');
 
@@ -128,6 +129,28 @@ test('analysis service treats transient KIE task-not-found planning states as re
     detailedBlock,
     /isRecoverableAnalysisJobFailure\(recoveredJob\)[\s\S]*createRecoverableAnalysisSyncError/,
     'a recovered failed task_not_found job should also be treated as pending sync'
+  );
+});
+
+test('marketing planning returns recoverable task-not-found status instead of logging a failed plan', () => {
+  const marketingBlock = arkServiceSource.match(
+    /export const generateMarketingSchemes = async[\s\S]*?export const generateMainImageSetReplicationSchemes = async/,
+  )?.[0] || '';
+
+  assert.match(
+    typesSource,
+    /export interface ArkSchemeResult \{[\s\S]*status: 'success' \| 'error' \| 'task_not_found'/,
+    'planning result status must be able to represent recoverable task-not-found sync gaps',
+  );
+  assert.match(
+    marketingBlock,
+    /if \(isRecoverableAnalysisSyncError\(error\)\) \{[\s\S]*marketing_plan_sync_pending[\s\S]*return \{ status: 'task_not_found'/,
+    'recoverable KIE planning sync gaps should not be written as marketing_plan failed logs',
+  );
+  assert.doesNotMatch(
+    marketingBlock,
+    /logArkEvent\('marketing_plan', `\$\{failureLabel\}方案策划失败`, 'failed', error\.message,[\s\S]*isRecoverableAnalysisSyncError/,
+    'recoverable planning sync gaps must bypass the ordinary failed marketing_plan log path',
   );
 });
 
