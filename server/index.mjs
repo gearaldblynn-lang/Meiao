@@ -1141,7 +1141,7 @@ const normalizeKnowledgeDocumentText = async (rawText, processEnv, systemSetting
       { role: 'system', content: '你负责把知识库原文整理为更适合检索的规则化文本。' },
       { role: 'user', content: buildKnowledgeNormalizationPrompt(source) },
     ];
-    const output = await executeProviderJob(
+    const output = await executeProviderJobWithManagedAssetScrub(
       {
         taskType: 'kie_chat',
         payload: {
@@ -1941,7 +1941,7 @@ const handleVideoDiagnosisAnalyzeRequest = async (req, res) => {
 
   let output;
   try {
-    output = await executeProviderJob(
+    output = await executeProviderJobWithManagedAssetScrub(
       { taskType: 'kie_chat', payload: { messages, model } },
       process.env,
       new AbortController().signal
@@ -2738,6 +2738,17 @@ const scrubLocalJobPayloadBeforeSubmission = async (payload) => {
   const assets = await listStoredAssets(null);
   const scrubbed = scrubUnavailableManagedAssetUrls(payload || {}, buildValidManagedAssetReferences(assets));
   return scrubbed && typeof scrubbed === 'object' ? scrubbed : {};
+};
+
+const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options) => {
+  const taskType = String(job?.taskType || '');
+  if (taskType === 'upload_asset') {
+    return await executeProviderJob(job, env, signal, options);
+  }
+  const scrubbedPayload = shouldUseMysql
+    ? await scrubDbJobPayloadBeforeSubmission(job?.payload)
+    : await scrubLocalJobPayloadBeforeSubmission(job?.payload);
+  return await executeProviderJob({ ...job, payload: scrubbedPayload }, env, signal, options);
 };
 
 const collectOneClickReferencePresetAssetUrls = (state) => {
@@ -4275,7 +4286,7 @@ const runAgenticRetrievalLoop = async ({
   let extraRounds = 0;
   while (extraRounds <= maxExtraRounds) {
     onProgress?.({ stage: 'thinking', round: extraRounds + 1 });
-    const output = await executeProviderJob({
+    const output = await executeProviderJobWithManagedAssetScrub({
       taskType: 'kie_chat',
       payload: { messages, model: selectedModel, fallbackModels, reasoningLevel, webSearchEnabled },
     }, process.env, new AbortController().signal);
@@ -4397,7 +4408,7 @@ const runAgentConversation = async ({
     usedChunks = agenticResult.allUsedChunks;
   } else {
     onProgress?.({ stage: 'thinking', round: 1 });
-    output = await executeProviderJob({
+    output = await executeProviderJobWithManagedAssetScrub({
       taskType: 'kie_chat',
       payload: {
         messages,
@@ -6021,7 +6032,7 @@ const runLocalAgentConversation = async ({
     usedChunks = agenticResult.allUsedChunks;
   } else {
     onProgress?.({ stage: 'thinking', round: 1 });
-    output = await executeProviderJob({
+    output = await executeProviderJobWithManagedAssetScrub({
       taskType: 'kie_chat',
       payload: {
         messages,
@@ -6414,7 +6425,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
   const startedAt = Date.now();
   let analysisOutput;
   try {
-    analysisOutput = await executeProviderJob({
+    analysisOutput = await executeProviderJobWithManagedAssetScrub({
       taskType: 'kie_chat',
       payload: { messages: analysisMessages, model: analysisModel, fallbackModels: analysisFallbackModels },
     }, process.env, new AbortController().signal);
@@ -6506,7 +6517,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
   const normalizedResolution = String(imageCapability.defaultResolution || '1K').trim() || '1K';
   let imageOutput;
   try {
-    imageOutput = await executeProviderJob({
+    imageOutput = await executeProviderJobWithManagedAssetScrub({
       taskType: 'kie_image',
       payload: {
         imageUrls: preferredInputImageUrls,
@@ -8273,7 +8284,7 @@ const handleMysqlRequest = async (req, res, url) => {
       },
       maxRetries: 1,
     });
-    const result = await executeProviderJob(uploadJob, process.env, new AbortController().signal);
+    const result = await executeProviderJobWithManagedAssetScrub(uploadJob, process.env, new AbortController().signal);
     await createDbLog({
       user,
       level: 'info',
@@ -8331,7 +8342,7 @@ const handleMysqlRequest = async (req, res, url) => {
     }
 
     const uploadPath = `mayo-storage/${sanitizePathPart(user.id)}`;
-    const result = await executeProviderJob({
+    const result = await executeProviderJobWithManagedAssetScrub({
       taskType: 'upload_asset',
       payload: {
         fileBuffer,
@@ -10334,7 +10345,7 @@ const handleLocalRequest = async (req, res, url) => {
 
     writeLocalStore(store);
 
-    const result = await executeProviderJob(uploadJob, process.env, new AbortController().signal);
+    const result = await executeProviderJobWithManagedAssetScrub(uploadJob, process.env, new AbortController().signal);
     const finishStore = readLocalStore();
     markLocalJobCompleted(finishStore, uploadJob.id, result, false);
     appendLocalLog(finishStore, {
@@ -10396,7 +10407,7 @@ const handleLocalRequest = async (req, res, url) => {
     }
 
     const uploadPath = `mayo-storage/${sanitizePathPart(user.id)}`;
-    const result = await executeProviderJob({
+    const result = await executeProviderJobWithManagedAssetScrub({
       taskType: 'upload_asset',
       payload: {
         fileBuffer,
@@ -10721,7 +10732,7 @@ const bootstrap = async () => {
         activities: createMysqlTemporalActivities({
           getPool: getMysqlPool,
           executeJob: async (job, signal, options) => {
-            const output = await executeProviderJob(job, process.env, signal, options);
+            const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
             return persistJobOutputAssetsIfEnabled(job, output);
           },
           getMaxConcurrency: getDbWorkerConcurrency,
@@ -10744,7 +10755,7 @@ const bootstrap = async () => {
       jobWorker = createJobWorker({
         getPool: getMysqlPool,
         executeJob: async (job, signal, options) => {
-          const output = await executeProviderJob(job, process.env, signal, options);
+          const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
           return persistJobOutputAssetsIfEnabled(job, output);
         },
         getMaxConcurrency: getDbWorkerConcurrency,
@@ -10771,7 +10782,7 @@ const bootstrap = async () => {
           readStore: readLocalStore,
           writeStore: writeLocalStore,
           executeJob: async (job, signal, options) => {
-            const output = await executeProviderJob(job, process.env, signal, options);
+            const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
             return persistJobOutputAssetsIfEnabled(job, output);
           },
           createLog: (payload) => {
@@ -10789,7 +10800,7 @@ const bootstrap = async () => {
         readStore: readLocalStore,
         writeStore: writeLocalStore,
         executeJob: async (job, signal, options) => {
-          const output = await executeProviderJob(job, process.env, signal, options);
+          const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
           return persistJobOutputAssetsIfEnabled(job, output);
         },
         getMaxConcurrency: getLocalWorkerConcurrency,

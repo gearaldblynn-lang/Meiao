@@ -47,3 +47,11 @@ test('job creation scrubs stale managed assets from direct payload submissions',
   assert.match(source, /payload: await scrubLocalJobPayloadBeforeSubmission\(body\.payload\)/);
   assert.match(source, /const recoveredPayload = await scrubLocalJobPayloadBeforeSubmission\(\{/);
 });
+
+test('provider execution boundary also scrubs stale managed assets', () => {
+  assert.match(source, /const executeProviderJobWithManagedAssetScrub = async \(job, env, signal, options\) => \{/);
+  assert.match(source, /taskType === 'upload_asset'/);
+  assert.match(source, /shouldUseMysql\s+\? await scrubDbJobPayloadBeforeSubmission\(job\?\.payload\)/);
+  assert.match(source, /: await scrubLocalJobPayloadBeforeSubmission\(job\?\.payload\)/);
+  assert.match(source, /executeJob: async \(job, signal, options\) => \{\s*const output = await executeProviderJobWithManagedAssetScrub/);
+});
