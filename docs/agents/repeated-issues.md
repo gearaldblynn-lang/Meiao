@@ -20,6 +20,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-05 - Reappeared sync gaps must not become failed planning/provider logs
+
+- Symptom: 诊断看板 2026-06-04 标出 3 个“修复后复发”指纹：一键主详 `59ab7efe833e424f` 仍出现“主图方案策划失败 任务不存在。”；智能体中心 `fc0db7a357615a50` / `1a51259398fdafe8` 仍出现“内部素材下载失败：HTTP 404”。
+- Environment: Tencent Cloud production one_click main_image and agent_center / local development.
+- Root cause: 一键主图策划服务已能把 KIE chat `task_not_found/任务不存在/过期` 识别成可恢复同步缺口，但 `generateMarketingSchemes` 的 catch 又统一写 `marketing_plan failed`，前端也把结果按“主图策划失败”打点，导致同一指纹复发。智能体历史图片过滤只校验 asset registry 未删除，没有校验托管文件还在本地存储；过期/清理后的 asset 记录仍可能进入 provider 下载链路，最终变成 HTTP 404。
+- Fix: 策划结果类型新增 `task_not_found`，`generateMarketingSchemes` 对可恢复同步缺口写 `marketing_plan_sync_pending` started 日志并返回待同步状态，主图 UI 显示可恢复提示且不写失败打点；智能体托管素材引用进入会话/生图上下文前同时校验 `storageKey` 对应文件存在。
+- Regression check: `node --test src/services/arkService.test.mjs src/modules/OneClick/oneClickBehavior.test.mjs server/agent-image-retrieval.test.mjs`; `node --test server/agentConversationReliability.test.mjs server/agentCenterSource.test.mjs server/providerGateway.test.mjs`; `npm run build`.
+- Files/tests: `src/services/arkService.ts`, `src/types.ts`, `src/modules/OneClick/MainImageSubModule.tsx`, `server/index.mjs`, `src/services/arkService.test.mjs`, `src/modules/OneClick/oneClickBehavior.test.mjs`, `server/agent-image-retrieval.test.mjs`.
+- Avoid next time: “后台任务已经提交但查询短暂不可见”和“业务失败”必须用不同状态、不同日志 action；看板再次看到 `任务不存在` 的 failed planning 指纹，应先查 catch 层是否吞掉可恢复状态。托管素材 URL 不能只凭 registry 判断可用，提交 provider 前必须证明文件仍可读或先从上下文剔除。
+
 ## 2026-06-04 - Main-image planning must keep partial scheme counts visible
 
 - Symptom: 云上账号“洛克”主图提交 10 张需求后，项目卡最终只显示 6 个策划任务。

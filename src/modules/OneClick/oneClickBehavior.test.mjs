@@ -163,6 +163,21 @@ test('main image planning flow exposes a real cancel path that aborts the active
   assert.match(mainSource, /取消策划/);
 });
 
+test('main image planning keeps task-not-found sync gaps recoverable instead of logging plan failure', () => {
+  const planningBlock = mainSource.match(/const handleStartAnalysis = async \(\) => \{[\s\S]*?const handleCancelAnalysis = async/)?.[0] || '';
+
+  assert.match(
+    planningBlock,
+    /if \(res\.status === 'task_not_found'\) \{[\s\S]*AI 分析任务已提交云端，结果待同步/,
+    'main-image planning should show a recoverable sync message when KIE says task_not_found',
+  );
+  assert.match(
+    planningBlock,
+    /return;[\s\S]*\} else \{[\s\S]*message: '主图策划失败'/,
+    'recoverable planning sync gaps should exit before the ordinary failed-plan log path',
+  );
+});
+
 test('one click workspace only mounts the active submodule to avoid hidden-module side effects', () => {
   assert.match(oneClickModuleSource, /subMode === OneClickSubMode\.MAIN_IMAGE \? \(/);
   assert.match(oneClickModuleSource, /subMode === OneClickSubMode\.DETAIL_PAGE \? \(/);
