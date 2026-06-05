@@ -157,6 +157,26 @@ export const normalizeShellDraftState = (value: unknown, options: NormalizeShell
   };
 };
 
+export const mergeShellDraftInputState = (
+  existingInput: ShellDraftInputState = {},
+  incomingInput: ShellDraftInputState = {},
+): ShellDraftInputState => {
+  const next: ShellDraftInputState = { ...existingInput };
+  Object.entries(incomingInput || {}).forEach(([scopeKey, incoming]) => {
+    const existing = next[scopeKey];
+    next[scopeKey] = {
+      promptText: incoming.promptText.trim() || !existing?.promptText.trim()
+        ? incoming.promptText
+        : existing.promptText,
+      params: {
+        ...(existing?.params || {}),
+        ...(incoming.params || {}),
+      },
+    };
+  });
+  return next;
+};
+
 export const mergeShellDraftMaterials = (
   ...materialMaps: Array<Record<string, ShellDraftMaterial[]> | undefined | null>
 ): Record<string, ShellDraftMaterial[]> => {
@@ -177,9 +197,14 @@ export const mergeShellDraftMaterials = (
   return next;
 };
 
+const mergeDeletedIds = (...lists: string[][]) => Array.from(new Set(
+  lists.flatMap((list) => Array.isArray(list) ? list : []).filter(Boolean),
+)).slice(-500);
+
 const hasDraftContent = (draft: ShellDraftState) =>
-  draft.updatedAt > 0
-  || Object.keys(draft.inputStateByScope).length > 0
+  Object.values(draft.inputStateByScope).some((entry) =>
+    entry.promptText.trim() || Object.keys(entry.params || {}).length > 0
+  )
   || Object.values(draft.materials).some((list) => (list || []).length > 0)
   || draft.deletedJobIds.length > 0
   || draft.deletedProjectIds.length > 0
@@ -197,9 +222,19 @@ export const resolveHydratedShellDraftState = ({
   const local = normalizeShellDraftState(localDraft);
   const remote = normalizeShellDraftState(remoteDraft);
   const preferred = remote.updatedAt > local.updatedAt ? remote : local;
+  const fallback = preferred === remote ? local : remote;
 
-  if (hasDraftContent(preferred)) {
-    return preferred;
+  if (hasDraftContent(local) || hasDraftContent(remote)) {
+    const preferredHasMaterials = Object.values(preferred.materials).some((list) => (list || []).length > 0);
+    const fallbackHasMaterials = Object.values(fallback.materials).some((list) => (list || []).length > 0);
+    return normalizeShellDraftState({
+      inputStateByScope: mergeShellDraftInputState(fallback.inputStateByScope, preferred.inputStateByScope),
+      materials: preferredHasMaterials ? preferred.materials : fallbackHasMaterials ? fallback.materials : {},
+      deletedJobIds: mergeDeletedIds(fallback.deletedJobIds, preferred.deletedJobIds),
+      deletedProjectIds: mergeDeletedIds(fallback.deletedProjectIds, preferred.deletedProjectIds),
+      deletedResultIds: mergeDeletedIds(fallback.deletedResultIds, preferred.deletedResultIds),
+      updatedAt: Math.max(local.updatedAt, remote.updatedAt),
+    });
   }
 
   return normalizeShellDraftState({

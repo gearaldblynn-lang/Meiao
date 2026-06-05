@@ -308,6 +308,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Root cause: Provider boundary cleanup was added to prevent deleted managed assets from reaching models, but the asset file existence check called `resolveStoredAssetPath(asset.storageKey)` while `resolveStoredAssetPath` expects the full asset object. Valid stored files were therefore treated as missing and scrubbed out of job payloads.
 - Avoid next time: Any stale-asset scrubber must test both sides: deleted or missing assets are removed, and existing uploaded assets are preserved through the final provider payload. Path helpers should be called with their actual domain object, not a derived key string unless the helper contract says so.
 
+### Draft input persistence must not revive old product materials
+
+- Symptom: 输入框刷新后像是没有持久化，或 SKU/主图重新上传新商品后仍引用旧商品图，导致新任务生成旧产品。
+- Root cause: Draft state merge treated `inputStateByScope` and `materials` too coarsely. A newer empty draft could wipe local non-empty input, while material merging could keep an old `product` item beside the new upload.
+- Avoid next time: Draft input must merge per scope and an empty prompt must not overwrite an existing non-empty prompt. Draft materials must be authoritative per type: when the incoming draft contains `product`, that list replaces the old `product` list, including explicit empty lists for clearing. Tests must cover prompt persistence and old-product non-revival together.
+
 ### Cloud deployment requires code review every time
 
 - Symptom: A fix reaches cloud without a fresh review of diff, data isolation, URL handling, logs/statistics, permissions, or task-chain impact.
