@@ -35,3 +35,15 @@ test('state saving scrubs deleted managed assets before they can be persisted ag
   assert.match(source, /const nextState = await scrubDbStateBeforeStorage\(\s*mergeAppStateForStorage\(await getDbAppState\(user\.id\), incomingState\)\s*\)/);
   assert.match(source, /store\.appStates\[user\.id\] = await scrubLocalStateBeforeStorage\(\s*mergeAppStateForStorage\(store\.appStates\[user\.id\] \|\| createDefaultState\(\), incomingState\)\s*\)/);
 });
+
+test('job creation scrubs stale managed assets from direct payload submissions', () => {
+  assert.match(source, /const MANAGED_ASSET_REFERENCE_PATTERN = /);
+  assert.match(source, /value\.replace\(MANAGED_ASSET_REFERENCE_PATTERN,/);
+  assert.match(source, /value\.type === 'image_url'/);
+  assert.match(source, /const scrubDbJobPayloadBeforeSubmission = async \(payload\) => \{/);
+  assert.match(source, /const scrubLocalJobPayloadBeforeSubmission = async \(payload\) => \{/);
+  assert.match(source, /payload: await scrubDbJobPayloadBeforeSubmission\(body\.payload\)/);
+  assert.match(source, /const recoveredPayload = await scrubDbJobPayloadBeforeSubmission\(\{/);
+  assert.match(source, /payload: await scrubLocalJobPayloadBeforeSubmission\(body\.payload\)/);
+  assert.match(source, /const recoveredPayload = await scrubLocalJobPayloadBeforeSubmission\(\{/);
+});

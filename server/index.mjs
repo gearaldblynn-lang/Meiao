@@ -224,6 +224,7 @@ const defaultTranslationConfigs = {
 };
 
 const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
+const MANAGED_ASSET_REFERENCE_PATTERN = /(?:https?:\/\/[^\s"'<>，。；;、)）]+)?\/api\/assets\/file\/[^/?#"'\s<>，。；;、)）]+(?:\/[^?#"'\s<>，。；;、)）]+)?/g;
 const ASSET_FILE_ROUTE_REGEX = /^\/api\/assets\/file\/([^/]+)(?:\/[^/]+)?$/;
 const ASSET_CLEANUP_INTERVAL_MS = 1000 * 60 * 30;
 const DOWNLOAD_PROXY_TIMEOUT_MS = 30_000;
@@ -363,6 +364,20 @@ const isAvailableManagedAssetUrl = (value, validAssetUrls) => {
   return Boolean(assetId && validAssetUrls.has(assetId));
 };
 
+const scrubUnavailableManagedAssetString = (value, validAssetUrls) => {
+  if (!isManagedAssetUrl(value)) return value;
+  let removedCount = 0;
+  const nextValue = value.replace(MANAGED_ASSET_REFERENCE_PATTERN, (match) => {
+    if (isAvailableManagedAssetUrl(match, validAssetUrls)) return match;
+    removedCount += 1;
+    return '';
+  });
+  if (removedCount === 0) {
+    return isAvailableManagedAssetUrl(value, validAssetUrls) ? value : undefined;
+  }
+  return nextValue.trim() ? nextValue : undefined;
+};
+
 const collectManagedAssetUrls = (value, bucket = new Set()) => {
   if (Array.isArray(value)) {
     value.forEach((item) => collectManagedAssetUrls(item, bucket));
@@ -385,10 +400,8 @@ const scrubUnavailableManagedAssetUrls = (value, validAssetUrls) => {
   }
 
   if (!value || typeof value !== 'object') {
-    if (isManagedAssetUrl(value) && !isAvailableManagedAssetUrl(value, validAssetUrls)) {
-      return undefined;
-    }
-    return value;
+    if (typeof value === 'string') return scrubUnavailableManagedAssetString(value, validAssetUrls);
+    return isManagedAssetUrl(value) && !isAvailableManagedAssetUrl(value, validAssetUrls) ? undefined : value;
   }
 
   const next = {};
@@ -400,6 +413,9 @@ const scrubUnavailableManagedAssetUrls = (value, validAssetUrls) => {
     next[key] = cleaned === undefined ? (NULLABLE_TRACKED_FIELDS.has(key) ? null : Array.isArray(child) ? [] : undefined) : cleaned;
   }
   if (hadUnavailableUploadedUrl && (value.role === 'product' || value.role === 'gift' || value.role === 'style_ref')) {
+    return undefined;
+  }
+  if (value.type === 'image_url' && (!next.image_url || !next.image_url.url)) {
     return undefined;
   }
   return next;
@@ -2700,6 +2716,13 @@ const scrubDbStateBeforeStorage = async (state) => {
   return await scrubDbStateForUnavailableManagedAssets(state);
 };
 
+const scrubDbJobPayloadBeforeSubmission = async (payload) => {
+  const pool = await getMysqlPool();
+  const assets = await listStoredAssets(pool);
+  const scrubbed = scrubUnavailableManagedAssetUrls(payload || {}, buildValidManagedAssetReferences(assets));
+  return scrubbed && typeof scrubbed === 'object' ? scrubbed : {};
+};
+
 const scrubLocalStateForUnavailableManagedAssets = async (state) => {
   const assets = await listStoredAssets(null);
   return prepareStateForStorage(
@@ -2709,6 +2732,12 @@ const scrubLocalStateForUnavailableManagedAssets = async (state) => {
 
 const scrubLocalStateBeforeStorage = async (state) => {
   return await scrubLocalStateForUnavailableManagedAssets(state);
+};
+
+const scrubLocalJobPayloadBeforeSubmission = async (payload) => {
+  const assets = await listStoredAssets(null);
+  const scrubbed = scrubUnavailableManagedAssetUrls(payload || {}, buildValidManagedAssetReferences(assets));
+  return scrubbed && typeof scrubbed === 'object' ? scrubbed : {};
 };
 
 const collectOneClickReferencePresetAssetUrls = (state) => {
@@ -8370,7 +8399,7 @@ const handleMysqlRequest = async (req, res, url) => {
       module: body.module,
       taskType: body.taskType,
       provider: body.provider,
-      payload: body.payload,
+      payload: await scrubDbJobPayloadBeforeSubmission(body.payload),
       priority: body.priority,
       maxRetries: normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };
@@ -8530,14 +8559,15 @@ const handleMysqlRequest = async (req, res, url) => {
     }
 
     const pool = await getMysqlPool();
+    const recoveredPayload = await scrubDbJobPayloadBeforeSubmission({
+      ...body.payload,
+      providerTaskId: body.providerTaskId,
+    });
     const jobPayload = {
       module: body.module || 'system',
       taskType: body.taskType,
       provider: body.provider,
-      payload: {
-        ...body.payload,
-        providerTaskId: body.providerTaskId,
-      },
+      payload: recoveredPayload,
       maxRetries: body.maxRetries ?? 1,
     };
     const reusableJob = await findReusableJobRecord(pool, user, jobPayload);
@@ -10436,7 +10466,7 @@ const handleLocalRequest = async (req, res, url) => {
       module: body.module,
       taskType: body.taskType,
       provider: body.provider,
-      payload: body.payload,
+      payload: await scrubLocalJobPayloadBeforeSubmission(body.payload),
       priority: body.priority,
       maxRetries: normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };
@@ -10594,14 +10624,15 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
 
+    const recoveredPayload = await scrubLocalJobPayloadBeforeSubmission({
+      ...body.payload,
+      providerTaskId: body.providerTaskId,
+    });
     const jobPayload = {
       module: body.module || 'system',
       taskType: body.taskType,
       provider: body.provider,
-      payload: {
-        ...body.payload,
-        providerTaskId: body.providerTaskId,
-      },
+      payload: recoveredPayload,
       maxRetries: body.maxRetries ?? 1,
     };
     const reusableJob = findReusableLocalJobRecord(store, user, jobPayload);
