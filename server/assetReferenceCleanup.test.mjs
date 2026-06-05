@@ -55,3 +55,8 @@ test('provider execution boundary also scrubs stale managed assets', () => {
   assert.match(source, /: await scrubLocalJobPayloadBeforeSubmission\(job\?\.payload\)/);
   assert.match(source, /executeJob: async \(job, signal, options\) => \{\s*const output = await executeProviderJobWithManagedAssetScrub/);
 });
+
+test('managed asset availability checks the real stored asset object path', () => {
+  assert.match(source, /existsSync\(resolveStoredAssetPath\(asset\)\)/);
+  assert.doesNotMatch(source, /existsSync\(resolveStoredAssetPath\(asset\.storageKey\)\)/);
+});
