@@ -45,6 +45,76 @@ test('mergeAppStateForStorage preserves existing project cards when a draft-only
   assert.equal(merged.shellDraft.inputStateByScope['one_click:first_image'].promptText, '新草稿');
 });
 
+test('mergeAppStateForStorage does not let empty draft input wipe existing scoped prompt', () => {
+  const merged = mergeAppStateForStorage({
+    shellDraft: {
+      inputStateByScope: {
+        'one_click:sku': {
+          promptText: '林一新产品 SKU 输入',
+          params: { mode: 'SKU', count: '3' },
+        },
+      },
+      materials: {
+        product: [{
+          id: 'product-new',
+          url: 'https://example.com/new.png',
+          remoteUrl: 'https://example.com/new.png',
+          localAssetId: '',
+        }],
+      },
+    },
+  }, {
+    shellDraft: {
+      inputStateByScope: {
+        'one_click:sku': {
+          promptText: '',
+          params: { count: '5' },
+        },
+      },
+      materials: {},
+    },
+  });
+
+  assert.equal(merged.shellDraft.inputStateByScope['one_click:sku'].promptText, '林一新产品 SKU 输入');
+  assert.equal(merged.shellDraft.inputStateByScope['one_click:sku'].params.count, '5');
+  assert.equal(merged.shellDraft.materials.product[0].remoteUrl, 'https://example.com/new.png');
+});
+
+test('mergeAppStateForStorage treats incoming draft materials as authoritative per type', () => {
+  const merged = mergeAppStateForStorage({
+    shellDraft: {
+      inputStateByScope: {},
+      materials: {
+        product: [{
+          id: 'old-product',
+          url: 'https://example.com/old.png',
+          remoteUrl: 'https://example.com/old.png',
+        }],
+        styleRef: [{
+          id: 'style-ref',
+          url: 'https://example.com/style.png',
+          remoteUrl: 'https://example.com/style.png',
+        }],
+      },
+    },
+  }, {
+    shellDraft: {
+      inputStateByScope: {},
+      materials: {
+        product: [{
+          id: 'new-product',
+          url: 'https://example.com/new.png',
+          remoteUrl: 'https://example.com/new.png',
+        }],
+      },
+    },
+  });
+
+  assert.equal(merged.shellDraft.materials.product.length, 1);
+  assert.equal(merged.shellDraft.materials.product[0].id, 'new-product');
+  assert.equal(merged.shellDraft.materials.styleRef[0].id, 'style-ref');
+});
+
 test('mergeAppStateForStorage lets incoming project updates win without duplicating backend jobs', () => {
   const merged = mergeAppStateForStorage({
     shellProjects: [{

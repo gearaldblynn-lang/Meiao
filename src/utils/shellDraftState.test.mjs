@@ -68,6 +68,59 @@ test('hydrating shell draft treats the newest draft as authoritative over legacy
   assert.equal(hydrated.inputStateByScope['one_click:main_image'].params.targetWidth, '900');
 });
 
+test('hydrating shell draft does not let a newer empty draft wipe local input', () => {
+  const hydrated = resolveHydratedShellDraftState({
+    localDraft: {
+      inputStateByScope: {
+        'one_click:sku': {
+          promptText: '新产品 SKU 草稿',
+          params: { mode: 'SKU' },
+        },
+      },
+      updatedAt: 100,
+    },
+    remoteDraft: {
+      inputStateByScope: {},
+      materials: {},
+      updatedAt: 200,
+    },
+  });
+
+  assert.equal(hydrated.inputStateByScope['one_click:sku'].promptText, '新产品 SKU 草稿');
+  assert.equal(hydrated.inputStateByScope['one_click:sku'].params.mode, 'SKU');
+});
+
+test('hydrating shell draft merges scopes and preserves non-empty prompt text', () => {
+  const hydrated = resolveHydratedShellDraftState({
+    localDraft: {
+      inputStateByScope: {
+        'one_click:sku': {
+          promptText: '本地未提交输入',
+          params: { mode: 'SKU', count: '3' },
+        },
+      },
+      updatedAt: 100,
+    },
+    remoteDraft: {
+      inputStateByScope: {
+        'one_click:sku': {
+          promptText: '',
+          params: { count: '5' },
+        },
+        'one_click:main_image': {
+          promptText: '远端主图草稿',
+          params: { mode: '主图' },
+        },
+      },
+      updatedAt: 200,
+    },
+  });
+
+  assert.equal(hydrated.inputStateByScope['one_click:sku'].promptText, '本地未提交输入');
+  assert.equal(hydrated.inputStateByScope['one_click:sku'].params.count, '5');
+  assert.equal(hydrated.inputStateByScope['one_click:main_image'].promptText, '远端主图草稿');
+});
+
 test('shell draft state keeps deleted job tombstones bounded and deduped', () => {
   const normalized = normalizeShellDraftState({
     deletedJobIds: ['job-a', '', 'job-b', 'job-a', null],
