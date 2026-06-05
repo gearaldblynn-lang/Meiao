@@ -302,6 +302,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Root cause: The shell optimistically adds a local `blob:` preview first and uploads the public URL in the background. Some generation paths submitted before the background upload had filled `remoteUrl`, or reused stored generation context that still contained only local draft material data.
 - Avoid next time: Every generation entry point must run uploaded-material normalization immediately before provider submission. If a material only has `localAssetId`, load the draft blob from IndexedDB and upload it first; only pass remote/public URLs into `shellWorkflow` and model services.
 
+### Managed asset cleanup must not remove valid uploaded materials
+
+- Symptom: 新任务的 `imageUrls` / `input_urls` 为空，模型没有收到用户上传的商品素材，出图与上传产品无关。
+- Root cause: Provider boundary cleanup was added to prevent deleted managed assets from reaching models, but the asset file existence check called `resolveStoredAssetPath(asset.storageKey)` while `resolveStoredAssetPath` expects the full asset object. Valid stored files were therefore treated as missing and scrubbed out of job payloads.
+- Avoid next time: Any stale-asset scrubber must test both sides: deleted or missing assets are removed, and existing uploaded assets are preserved through the final provider payload. Path helpers should be called with their actual domain object, not a derived key string unless the helper contract says so.
+
 ### Cloud deployment requires code review every time
 
 - Symptom: A fix reaches cloud without a fresh review of diff, data isolation, URL handling, logs/statistics, permissions, or task-chain impact.

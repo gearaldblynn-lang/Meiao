@@ -425,7 +425,7 @@ const buildValidManagedAssetReferences = (assets = []) => {
   const refs = new Set();
   for (const asset of assets || []) {
     if (!asset || asset.deletedAt) continue;
-    if (!asset.storageKey || !existsSync(resolveStoredAssetPath(asset.storageKey))) continue;
+    if (!asset.storageKey || !existsSync(resolveStoredAssetPath(asset))) continue;
     if (asset.publicUrl) refs.add(asset.publicUrl);
     if (asset.id) refs.add(String(asset.id));
   }
