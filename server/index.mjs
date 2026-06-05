@@ -2696,11 +2696,19 @@ const scrubDbStateForUnavailableManagedAssets = async (state) => {
   return prepareStateForStorage(scrubUnavailableManagedAssetUrls(state || createDefaultState(), buildValidManagedAssetReferences(assets)));
 };
 
+const scrubDbStateBeforeStorage = async (state) => {
+  return await scrubDbStateForUnavailableManagedAssets(state);
+};
+
 const scrubLocalStateForUnavailableManagedAssets = async (state) => {
   const assets = await listStoredAssets(null);
   return prepareStateForStorage(
     scrubUnavailableManagedAssetUrls(state || createDefaultState(), buildValidManagedAssetReferences(assets))
   );
+};
+
+const scrubLocalStateBeforeStorage = async (state) => {
+  return await scrubLocalStateForUnavailableManagedAssets(state);
 };
 
 const collectOneClickReferencePresetAssetUrls = (state) => {
@@ -8079,7 +8087,9 @@ const handleMysqlRequest = async (req, res, url) => {
     if (!user) return;
     const body = await readBody(req, { maxBytes: MAX_STATE_BODY_BYTES });
     const incomingState = body.state || createDefaultState();
-    const nextState = mergeAppStateForStorage(await getDbAppState(user.id), incomingState);
+    const nextState = await scrubDbStateBeforeStorage(
+      mergeAppStateForStorage(await getDbAppState(user.id), incomingState)
+    );
     await saveDbAppState(user.id, nextState);
     json(res, 200, { ok: true });
     return;
@@ -10139,7 +10149,7 @@ const handleLocalRequest = async (req, res, url) => {
     if (!user) return;
     const body = await readBody(req, { maxBytes: MAX_STATE_BODY_BYTES });
     const incomingState = body.state || createDefaultState();
-    store.appStates[user.id] = prepareStateForStorage(
+    store.appStates[user.id] = await scrubLocalStateBeforeStorage(
       mergeAppStateForStorage(store.appStates[user.id] || createDefaultState(), incomingState)
     );
     writeLocalStore(store);

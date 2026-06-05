@@ -20,6 +20,17 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-05 - Main-image failures can be provider balance or stale deleted assets
+
+- Symptom: 云上账号“洛克”主图任务前端显示一堆失败，用户反馈切换多个模型也无法生图/策划。
+- Environment: Tencent Cloud production one_click main_image / local development.
+- Cloud evidence: 近 24 小时洛克 `internal_jobs` 中 `kie_image` 多次失败为 `provider_bad_request: 通用余额不足，请先充值`；同日后续 `kie_chat` 主图策划失败集中为 `provider_bad_request: 内部素材下载失败：HTTP 404`。失败项目 `proj-plan-1780644568547` 等 payload 仍携带已逻辑删除的 `/api/assets/file/e85227a...`、`1c444a...`、`f6d795...`、`41c600...` 素材 URL。
+- Root cause: 这是两类独立问题。生图失败来自 KIE/供应商账户通用余额不足，切换同供应商模型不会解决。策划 404 来自已删除托管素材仍残留在用户 app state / 页面内存，读取状态会清理，但保存状态路径没有写前清理，旧页面可把删除后的 URL 再次落库并提交给 provider。
+- Fix: `/api/state` 的 MySQL 和本地 PUT 写入路径在 `mergeAppStateForStorage` 后、落库前再次执行失效托管素材清理，防止旧前端状态把已删除素材复写回数据库。
+- Regression check: `node --test server/assetReferenceCleanup.test.mjs`.
+- Files/tests: `server/index.mjs`, `server/assetReferenceCleanup.test.mjs`.
+- Avoid next time: 看到“换模型也失败”先按失败边界分桶：`kie_image` 的余额/额度类错误归供应商账户；`kie_chat` 的 `内部素材下载失败：HTTP 404` 先查 payload 中 `/api/assets/file/{assetId}` 是否已删除或文件缺失。托管素材清理必须同时覆盖读取、保存、提交 provider 三个边界，不能只做读取时清理。
+
 ## 2026-06-05 - Reappeared sync gaps must not become failed planning/provider logs
 
 - Symptom: 诊断看板 2026-06-04 标出 3 个“修复后复发”指纹：一键主详 `59ab7efe833e424f` 仍出现“主图方案策划失败 任务不存在。”；智能体中心 `fc0db7a357615a50` / `1a51259398fdafe8` 仍出现“内部素材下载失败：HTTP 404”。

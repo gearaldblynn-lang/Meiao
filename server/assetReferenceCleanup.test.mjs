@@ -28,3 +28,10 @@ test('state loading scrubs deleted managed sku image items before returning to c
   assert.match(source, /scrubLocalStateForUnavailableManagedAssets\(store\.appStates\[user\.id\]/);
   assert.match(source, /value\.role === 'product' \|\| value\.role === 'gift' \|\| value\.role === 'style_ref'/);
 });
+
+test('state saving scrubs deleted managed assets before they can be persisted again', () => {
+  assert.match(source, /const scrubDbStateBeforeStorage = async \(state\) => \{/);
+  assert.match(source, /const scrubLocalStateBeforeStorage = async \(state\) => \{/);
+  assert.match(source, /const nextState = await scrubDbStateBeforeStorage\(\s*mergeAppStateForStorage\(await getDbAppState\(user\.id\), incomingState\)\s*\)/);
+  assert.match(source, /store\.appStates\[user\.id\] = await scrubLocalStateBeforeStorage\(\s*mergeAppStateForStorage\(store\.appStates\[user\.id\] \|\| createDefaultState\(\), incomingState\)\s*\)/);
+});
