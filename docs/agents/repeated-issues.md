@@ -26,10 +26,10 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Environment: Tencent Cloud production one_click main_image / local development.
 - Cloud evidence: 近 24 小时洛克 `internal_jobs` 中 `kie_image` 多次失败为 `provider_bad_request: 通用余额不足，请先充值`；同日后续 `kie_chat` 主图策划失败集中为 `provider_bad_request: 内部素材下载失败：HTTP 404`。失败项目 `proj-plan-1780644568547` 等 payload 仍携带已逻辑删除的 `/api/assets/file/e85227a...`、`1c444a...`、`f6d795...`、`41c600...` 素材 URL。
 - Root cause: 这是两类独立问题。生图失败来自 KIE/供应商账户通用余额不足，切换同供应商模型不会解决。策划 404 来自已删除托管素材仍残留在用户 app state / 页面内存，读取状态会清理，但保存状态路径没有写前清理，旧页面可把删除后的 URL 再次落库并提交给 provider。后续复查发现，仅清 app state 仍不够：当前页面内存可以直接提交 `/api/jobs` payload，payload 的 prompt 文本和 `image_url` 消息块里仍会携带 deleted asset URL。
-- Fix: `/api/state` 的 MySQL 和本地 PUT 写入路径在 `mergeAppStateForStorage` 后、落库前再次执行失效托管素材清理；`/api/jobs` 普通创建和恢复任务入口也在查重/落库前清理 payload，包含数组、对象、`image_url` 块和 prompt 字符串内嵌的 `/api/assets/file/...` 引用，防止旧前端内存绕过状态保存。
+- Fix: `/api/state` 的 MySQL 和本地 PUT 写入路径在 `mergeAppStateForStorage` 后、落库前再次执行失效托管素材清理；`/api/jobs` 普通创建和恢复任务入口也在查重/落库前清理 payload，包含数组、对象、`image_url` 块和 prompt 字符串内嵌的 `/api/assets/file/...` 引用，防止旧前端内存绕过状态保存。后端直接 provider 调用统一改走 `executeProviderJobWithManagedAssetScrub`，在 provider 执行边界前再清一次，覆盖已排队旧任务、智能体聊天/生图、知识库整理、视频诊断等绕过 `/api/jobs` 的路径；`upload_asset` 原样放行，避免破坏文件上传。
 - Regression check: `node --test server/assetReferenceCleanup.test.mjs server/appStateMerge.test.mjs server/jobLoggingBehavior.test.mjs server/jobManager.test.mjs`.
 - Files/tests: `server/index.mjs`, `server/assetReferenceCleanup.test.mjs`.
-- Avoid next time: 看到“换模型也失败”先按失败边界分桶：`kie_image` 的余额/额度类错误归供应商账户；`kie_chat` 的 `内部素材下载失败：HTTP 404` 先查 payload 中 `/api/assets/file/{assetId}` 是否已删除或文件缺失。托管素材清理必须同时覆盖读取、保存、任务创建、提交 provider 四个边界，不能只做读取或保存时清理；prompt 文本里的 URL 和结构化图片块要一起查。
+- Avoid next time: 看到“换模型也失败”先按失败边界分桶：`kie_image` 的余额/额度类错误归供应商账户；`kie_chat` 的 `内部素材下载失败：HTTP 404` 先查 payload 中 `/api/assets/file/{assetId}` 是否已删除或文件缺失。托管素材清理必须同时覆盖读取、保存、任务创建、provider 执行边界四个边界，不能只做读取或保存时清理；prompt 文本里的 URL 和结构化图片块要一起查。新增任何直接 `executeProviderJob` 路径都必须说明为什么不能走 `executeProviderJobWithManagedAssetScrub`。
 
 ## 2026-06-05 - Reappeared sync gaps must not become failed planning/provider logs
 
