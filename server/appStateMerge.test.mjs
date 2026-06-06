@@ -821,6 +821,46 @@ test('mergeAppStateForStorage preserves translation files across concurrent bran
   assert.deepEqual(merged.translationMemory.main.files.map((file) => file.id), ['file-b', 'file-a']);
 });
 
+test('mergeAppStateForStorage replaces stale translation processing file with completed same source', () => {
+  const merged = mergeAppStateForStorage({
+    translationMemory: {
+      main: {
+        files: [{
+          id: 'stale-file',
+          fileName: 'source-a.png',
+          status: 'processing',
+          progress: 12,
+          sourceUrl: 'https://example.com/source-a.png',
+          error: '任务已提交云端，结果待同步',
+          projectId: 'translation-batch-1',
+        }],
+      },
+    },
+  }, {
+    translationMemory: {
+      main: {
+        files: [{
+          id: 'completed-file',
+          fileName: 'source-a.png',
+          status: 'completed',
+          progress: 100,
+          sourceUrl: 'https://example.com/source-a.png',
+          resultUrl: '/result-a.png',
+          taskId: 'provider-a',
+          backendJobId: 'backend-job-a',
+          projectId: 'translation-batch-1',
+        }],
+      },
+    },
+  });
+
+  assert.equal(merged.translationMemory.main.files.length, 1);
+  assert.equal(merged.translationMemory.main.files[0].id, 'completed-file');
+  assert.equal(merged.translationMemory.main.files[0].status, 'completed');
+  assert.equal(merged.translationMemory.main.files[0].error, undefined);
+  assert.equal(merged.translationMemory.main.files[0].resultUrl, '/result-a.png');
+});
+
 test('mergeAppStateForStorage prunes existing projects covered by deletion tombstones', () => {
   const merged = mergeAppStateForStorage({
     shellProjects: [
