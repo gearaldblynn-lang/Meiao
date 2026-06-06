@@ -314,11 +314,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Root cause: Draft state merge treated `inputStateByScope` and `materials` too coarsely. A newer empty draft could wipe local non-empty input, while material merging could keep an old `product` item beside the new upload.
 - Avoid next time: Draft input must merge per scope and an empty prompt must not overwrite an existing non-empty prompt. Draft materials must be authoritative per type: when the incoming draft contains `product`, that list replaces the old `product` list, including explicit empty lists for clearing. Tests must cover prompt persistence and old-product non-revival together.
 
-### Translation cards must reconcile completed backend jobs by stable media identity
+### Persisted task cards must reconcile completed backend jobs by stable media identity
 
 - Symptom: 出海翻译前端卡片长期显示“任务处理中”，但 `internal_jobs` 中对应 KIE image job 已经 `succeeded`，或旧 error 卡片仍压住成功结果。
 - Root cause: Translation file persistence and server app-state merge only keyed records by local file `id`. If a refresh, retry, or historical write produced a new local id for the same source image, the completed backend result could not replace the old `processing` / `error` file.
-- Avoid next time: Translation files must merge by stable identities: backend job id, provider task id, source URL, and project+file name. Completed files with media must clear stale error/message fields and win over processing/error placeholders. Empty pending files without source URL and backend task id are not executable and should not keep `isProcessing=true`.
+- Avoid next time: Persisted task cards in every module must merge by stable identities, not only local UI ids. Use backend job id, provider task id, source/result URL, and module-specific source identity such as project+file name. Completed files with media must clear stale error/message fields and win over processing/error placeholders. Empty pending files without source URL and backend task id are not executable and must not keep runtime flags such as `isProcessing=true` / `isGenerating=true`.
 
 ### Cloud deployment requires code review every time
 
