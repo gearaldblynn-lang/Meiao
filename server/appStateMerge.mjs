@@ -426,6 +426,62 @@ export const mergeArrayByStableKeys = (existingItems = [], incomingItems = []) =
   return merged;
 };
 
+const getTranslationFileMergeKeys = (file = {}) => {
+  const keys = new Set();
+  const add = (prefix, value) => {
+    const normalized = compactKey(value);
+    if (normalized) keys.add(`${prefix}:${normalized}`);
+  };
+  add('id', file?.id);
+  add('job', file?.backendJobId);
+  add('provider', file?.providerTaskId || file?.taskId || file?.kieTaskId);
+  add('source', file?.sourceUrl || file?.sourcePreviewUrl);
+  if (file?.projectId && file?.fileName) add('project-file', `${file.projectId}:${file.fileName}`);
+  return keys;
+};
+
+const hasCompletedTranslationFile = (file = {}) => (
+  ['completed', 'succeeded', 'success'].includes(String(file?.status || ''))
+  && Boolean(file?.resultUrl || file?.imageUrl)
+);
+
+const mergeTranslationFile = (existing = {}, incoming = {}) => {
+  const next = hasCompletedTranslationFile(existing) && !hasCompletedTranslationFile(incoming)
+    ? { ...(incoming || {}), ...(existing || {}) }
+    : { ...(existing || {}), ...(incoming || {}) };
+  if (hasCompletedTranslationFile(next)) {
+    delete next.error;
+    delete next.message;
+  }
+  return next;
+};
+
+const mergeTranslationFiles = (existingFiles = [], incomingFiles = []) => {
+  const existing = Array.isArray(existingFiles) ? existingFiles.filter(Boolean) : [];
+  const incoming = Array.isArray(incomingFiles) ? incomingFiles.filter(Boolean) : [];
+  const merged = [];
+  const keyToIndex = new Map();
+  const register = (file, index) => {
+    getTranslationFileMergeKeys(file).forEach((key) => keyToIndex.set(key, index));
+  };
+  const push = (file) => {
+    const matchedIndex = Array.from(getTranslationFileMergeKeys(file))
+      .map((key) => keyToIndex.get(key))
+      .find((index) => typeof index === 'number');
+    if (typeof matchedIndex === 'number') {
+      merged[matchedIndex] = mergeTranslationFile(merged[matchedIndex], file);
+      register(merged[matchedIndex], matchedIndex);
+      return;
+    }
+    const index = merged.length;
+    merged.push(file);
+    register(file, index);
+  };
+  incoming.forEach(push);
+  existing.forEach(push);
+  return merged;
+};
+
 const splitIdentityText = (value) => String(value || '')
   .split(/[,\s]+/)
   .map((item) => item.trim())
@@ -776,7 +832,7 @@ const mergeBranchProjects = (existingBranch = {}, incomingBranch = {}) => {
 const mergeTranslationBranch = (existingBranch = {}, incomingBranch = {}) => ({
   ...existingBranch,
   ...incomingBranch,
-  files: mergeArrayByStableKeys(existingBranch?.files, incomingBranch?.files),
+  files: mergeTranslationFiles(existingBranch?.files, incomingBranch?.files),
 });
 
 const mergeVideoMemory = (existingMemory = {}, incomingMemory = {}) => ({

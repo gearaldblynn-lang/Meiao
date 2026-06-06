@@ -887,6 +887,45 @@ test('shell persistence stores translation files into the matching branch so com
   assert.equal(secondProject?.results.length, 0);
 });
 
+test('shell persistence lets completed translation file replace stale processing entry by source url', () => {
+  const state = buildPersistedAppState({
+    translationMemory: {
+      main: {
+        files: [{
+          id: 'stale-file',
+          fileName: 'source-a.png',
+          status: 'processing',
+          progress: 12,
+          sourceUrl: 'https://example.com/source-a.png',
+          error: '任务已提交云端，结果待同步',
+          projectId: 'translation-batch-1',
+        }],
+        isProcessing: true,
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  });
+
+  const nextState = upsertTranslationFilesIntoPersistedState(state, 'main', [{
+    id: 'completed-file',
+    fileName: 'source-a.png',
+    status: 'completed',
+    progress: 100,
+    sourceUrl: 'https://example.com/source-a.png',
+    resultUrl: 'https://example.com/result-a.png',
+    taskId: 'provider-a',
+    backendJobId: 'backend-job-a',
+    projectId: 'translation-batch-1',
+  }]);
+
+  assert.equal(nextState.translationMemory.main.files.length, 1);
+  assert.equal(nextState.translationMemory.main.files[0].status, 'completed');
+  assert.equal(nextState.translationMemory.main.files[0].resultUrl, 'https://example.com/result-a.png');
+  assert.equal(nextState.translationMemory.main.files[0].error, undefined);
+  assert.equal(nextState.translationMemory.main.isProcessing, false);
+});
+
 test('shell persistence restores video storyboard projects with board prompts and scripts', () => {
   const state = buildPersistedAppState({
     videoMemory: {

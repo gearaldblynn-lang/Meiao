@@ -489,6 +489,60 @@ const sanitizeTranslationFileForStorage = (file: ShellTranslationFile): ShellTra
   sourcePreviewUrl: stripInlinePreviewUrl(file.sourcePreviewUrl) as string | undefined,
 });
 
+const getTranslationFileMergeKeys = (file: Partial<ShellTranslationFile> = {}) => {
+  const keys = new Set<string>();
+  const add = (prefix: string, value: unknown) => {
+    const normalized = String(value || '').trim();
+    if (normalized) keys.add(`${prefix}:${normalized}`);
+  };
+  add('id', file.id);
+  add('job', (file as any).backendJobId);
+  add('provider', file.taskId);
+  add('source', file.sourceUrl || file.sourcePreviewUrl);
+  if (file.projectId && file.fileName) add('project-file', `${file.projectId}:${file.fileName}`);
+  return keys;
+};
+
+const hasCompletedTranslationResult = (file: Partial<ShellTranslationFile> = {}) =>
+  file.status === 'completed' && Boolean(file.resultUrl);
+
+const mergeTranslationFile = (existing: ShellTranslationFile, incoming: ShellTranslationFile): ShellTranslationFile => {
+  const merged = hasCompletedTranslationResult(existing) && !hasCompletedTranslationResult(incoming)
+    ? { ...incoming, ...existing }
+    : { ...existing, ...incoming };
+  if (hasCompletedTranslationResult(merged)) {
+    delete (merged as any).error;
+  }
+  return merged;
+};
+
+const mergeTranslationFilesForStorage = (
+  existingFiles: ShellTranslationFile[],
+  incomingFiles: ShellTranslationFile[],
+) => {
+  const merged: ShellTranslationFile[] = [];
+  const keyToIndex = new Map<string, number>();
+  const register = (file: ShellTranslationFile, index: number) => {
+    getTranslationFileMergeKeys(file).forEach((key) => keyToIndex.set(key, index));
+  };
+  const push = (file: ShellTranslationFile) => {
+    const matchedIndex = Array.from(getTranslationFileMergeKeys(file))
+      .map((key) => keyToIndex.get(key))
+      .find((index): index is number => typeof index === 'number');
+    if (typeof matchedIndex === 'number') {
+      merged[matchedIndex] = mergeTranslationFile(merged[matchedIndex], file);
+      register(merged[matchedIndex], matchedIndex);
+      return;
+    }
+    const nextIndex = merged.length;
+    merged.push(file);
+    register(file, nextIndex);
+  };
+  incomingFiles.forEach(push);
+  existingFiles.forEach(push);
+  return merged;
+};
+
 export const upsertTranslationFilesIntoPersistedState = (
   state: PersistedAppState,
   subFeature: string,
@@ -503,14 +557,7 @@ export const upsertTranslationFilesIntoPersistedState = (
   const branch = translationMemory[branchKey] || { files: [], isProcessing: false };
   const nextFilesInput = Array.isArray(files) ? files.filter((item) => Boolean(item?.id)).map(sanitizeTranslationFileForStorage) : [];
   const existingFiles = Array.isArray(branch.files) ? branch.files.filter((item) => Boolean(item?.id)) : [];
-  const nextFileById = new Map<string, ShellTranslationFile>();
-  existingFiles.forEach((item) => {
-    nextFileById.set(String(item.id), item);
-  });
-  nextFilesInput.forEach((item) => {
-    nextFileById.set(String(item.id), item);
-  });
-  const nextFiles = Array.from(nextFileById.values());
+  const nextFiles = mergeTranslationFilesForStorage(existingFiles, nextFilesInput);
   const nextState = {
     ...state,
     translationMemory: {
