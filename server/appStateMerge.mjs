@@ -482,6 +482,18 @@ const mergeTranslationFiles = (existingFiles = [], incomingFiles = []) => {
   return merged;
 };
 
+const isExecutableActiveTranslationFile = (file = {}) => (
+  ['pending', 'uploading', 'processing'].includes(String(file?.status || ''))
+  && Boolean(compactKey(
+    file?.backendJobId
+    || file?.providerTaskId
+    || file?.taskId
+    || file?.kieTaskId
+    || file?.sourceUrl
+    || file?.sourcePreviewUrl
+  ))
+);
+
 const splitIdentityText = (value) => String(value || '')
   .split(/[,\s]+/)
   .map((item) => item.trim())
@@ -829,11 +841,15 @@ const mergeBranchProjects = (existingBranch = {}, incomingBranch = {}) => {
   };
 };
 
-const mergeTranslationBranch = (existingBranch = {}, incomingBranch = {}) => ({
-  ...existingBranch,
-  ...incomingBranch,
-  files: mergeTranslationFiles(existingBranch?.files, incomingBranch?.files),
-});
+const mergeTranslationBranch = (existingBranch = {}, incomingBranch = {}) => {
+  const files = mergeTranslationFiles(existingBranch?.files, incomingBranch?.files);
+  return {
+    ...existingBranch,
+    ...incomingBranch,
+    files,
+    isProcessing: files.some(isExecutableActiveTranslationFile),
+  };
+};
 
 const mergeVideoMemory = (existingMemory = {}, incomingMemory = {}) => ({
   ...existingMemory,

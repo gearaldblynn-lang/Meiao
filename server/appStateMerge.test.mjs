@@ -859,6 +859,42 @@ test('mergeAppStateForStorage replaces stale translation processing file with co
   assert.equal(merged.translationMemory.main.files[0].status, 'completed');
   assert.equal(merged.translationMemory.main.files[0].error, undefined);
   assert.equal(merged.translationMemory.main.files[0].resultUrl, '/result-a.png');
+  assert.equal(merged.translationMemory.main.isProcessing, false);
+});
+
+test('mergeAppStateForStorage does not keep translation processing true for empty pending placeholders', () => {
+  const merged = mergeAppStateForStorage({
+    translationMemory: {
+      removeText: {
+        isProcessing: true,
+        files: [
+          { id: 'empty-pending-1', fileName: 'white.jpg', status: 'pending', progress: 0 },
+          { id: 'empty-pending-2', fileName: 'pink.jpg', status: 'pending', progress: 0 },
+        ],
+      },
+    },
+  }, {});
+
+  assert.equal(merged.translationMemory.removeText.isProcessing, false);
+});
+
+test('mergeAppStateForStorage keeps translation processing true when a persisted file has executable identity', () => {
+  const merged = mergeAppStateForStorage({
+    translationMemory: {
+      main: {
+        isProcessing: false,
+        files: [{
+          id: 'active-file',
+          fileName: 'source.jpg',
+          status: 'processing',
+          progress: 12,
+          sourceUrl: 'https://example.com/source.jpg',
+        }],
+      },
+    },
+  }, {});
+
+  assert.equal(merged.translationMemory.main.isProcessing, true);
 });
 
 test('mergeAppStateForStorage prunes existing projects covered by deletion tombstones', () => {
