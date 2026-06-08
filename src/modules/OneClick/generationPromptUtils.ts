@@ -19,6 +19,7 @@ interface BuildOneClickImagePromptOptions {
   language: string | null | undefined;
   logoUrl?: string | null;
   replicationReferenceUrl?: string | null;
+  replicationReferenceLabel?: string | null;
   previousResultUrl?: string | null;
   variationInstruction?: string | null;
   editInstruction?: string | null;
@@ -148,6 +149,7 @@ export const buildOneClickImagePrompt = ({
   language,
   logoUrl,
   replicationReferenceUrl,
+  replicationReferenceLabel,
   previousResultUrl,
   variationInstruction,
   editInstruction,
@@ -208,11 +210,12 @@ export const buildOneClickImagePrompt = ({
     replacementLines.push('所有文案与卖点只能基于上传产品的真实信息，不得照搬参考套图原文案或编造促销信息。');
   } else if (replicationReferenceUrl) {
     const safeReferenceUrl = resolvePublicAssetUrl(replicationReferenceUrl, publicBaseUrl);
-    imageRoleLines.push(safeReferenceUrl ? `复刻主图参考图（图片URL）：${safeReferenceUrl}` : '复刻主图参考图（图片URL）');
-    priorityLines.push('复刻主图参考图是最高版式基准，必须直接复刻该参考图的整体风格、版式结构、信息层级、视觉节奏、设计细节，不得改成另一种风格。');
-    priorityLines.push('若执行内容中对参考图版式、颜色、结构或视觉元素的描述与复刻主图参考图真实画面不一致，必须以复刻主图参考图真实画面为准；执行内容只用于指导商品、文案和品牌信息替换，不得覆盖参考图真实布局。');
-    priorityLines.push('商品区的位置、角度、大小关系、层级、道具关系和背景以复刻主图参考原商品区为准；产品素材只决定替换进去的商品本体。');
-    priorityLines.push('若复刻主图参考图中出现人物，在确保场景风格、景别、光影、动作节奏和商业拍摄质感一致的情况下，人物必须与参考图人物做出明显差异；不得复制同一张脸、发型、服装、体态、身份特征或可识别人物形象。');
+    const referenceLabel = String(replicationReferenceLabel || '复刻主图参考图');
+    imageRoleLines.push(safeReferenceUrl ? `${referenceLabel}（图片URL）：${safeReferenceUrl}` : `${referenceLabel}（图片URL）`);
+    priorityLines.push(`${referenceLabel}是最高版式基准，必须直接复刻该参考图的整体风格、版式结构、信息层级、视觉节奏、设计细节，不得改成另一种风格。`);
+    priorityLines.push(`若执行内容中对参考图版式、颜色、结构或视觉元素的描述与${referenceLabel}真实画面不一致，必须以${referenceLabel}真实画面为准；执行内容只用于指导商品、文案和品牌信息替换，不得覆盖参考图真实布局。`);
+    priorityLines.push(`商品区的位置、角度、大小关系、层级、道具关系和背景以${referenceLabel}原商品区为准；产品素材只决定替换进去的商品本体。`);
+    priorityLines.push(`若${referenceLabel}中出现人物，在确保场景风格、景别、光影、动作节奏和商业拍摄质感一致的情况下，人物必须与参考图人物做出明显差异；不得复制同一张脸、发型、服装、体态、身份特征或可识别人物形象。`);
     replacementLines.push(logoUrl
       ? '去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案；原位置用品牌logo图或通用信息补足。'
       : '去除参考图中的所有 logo、品牌名、店铺名、平台标识和原文案；未上传品牌 logo 时，品牌/店铺/logo/官方背书位统一写通用信息，不写官方自营/旗舰店或具体品牌名。');

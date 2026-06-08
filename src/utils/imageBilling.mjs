@@ -17,6 +17,18 @@ const parsePositiveInt = (value, fallback = 1, max = 20) => {
   return Math.min(max, parsed);
 };
 
+const parseExactCount = (value, max = 20) => {
+  const parsed = Number.parseInt(String(value ?? '').replace(/[^\d]/g, ''), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.min(max, parsed);
+};
+
+const resolveParamCount = (params = {}, fallback = 1, max = 20) => (
+  params.exactCount === true || params.exactCount === 'true'
+    ? parseExactCount(params.count, max)
+    : parsePositiveInt(params.count, fallback, max)
+);
+
 export const normalizeBillingModel = (model = '') => {
   const normalized = String(model || '').trim().toLowerCase();
   if (normalized.includes('nano')) return 'nano-banana-2';
@@ -39,7 +51,7 @@ export const getImageModelCreditCost = (model = '', resolution = '') => {
 export const isImageBillingModule = (module = '', subFeature = '') => {
   if (module === 'settings' || module === 'account' || module === 'agent_center') return false;
   if (module === 'video') return subFeature === 'storyboard';
-  return ['one_click', 'translation', 'buyer_show', 'retouch', 'photography', 'xhs_cover'].includes(module);
+  return ['one_click', 'translation', 'buyer_show', 'retouch', 'everything_replace', 'photography', 'xhs_cover'].includes(module);
 };
 
 export const resolveImageBillingCount = ({ module = '', subFeature = '', params = {}, materialCount = 0 } = {}) => {
@@ -47,9 +59,9 @@ export const resolveImageBillingCount = ({ module = '', subFeature = '', params 
 
   if (module === 'one_click') {
     if (subFeature === 'first_image') return 1;
-    if (subFeature === 'sku') return parsePositiveInt(params.count, 4, 20);
-    if (subFeature === 'main_image') return parsePositiveInt(params.count, 5, 20);
-    if (subFeature === 'detail_page') return parsePositiveInt(params.count, 7, 20);
+    if (subFeature === 'sku') return resolveParamCount(params, 4, 20);
+    if (subFeature === 'main_image') return resolveParamCount(params, 5, 20);
+    if (subFeature === 'detail_page') return resolveParamCount(params, 7, 20);
     return 1;
   }
 
@@ -57,6 +69,10 @@ export const resolveImageBillingCount = ({ module = '', subFeature = '', params 
     const perSetCount = parsePositiveInt(params.count, 4, 20);
     const setCount = parsePositiveInt(params.setCount, 1, 4);
     return Math.min(20, perSetCount * setCount);
+  }
+
+  if (module === 'everything_replace') {
+    return resolveParamCount(params, 1, 40);
   }
 
   if (module === 'xhs_cover') {

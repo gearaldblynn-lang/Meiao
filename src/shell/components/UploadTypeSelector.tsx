@@ -37,6 +37,7 @@ const MODULE_MATERIALS: Record<string, MaterialType[]> = {
   one_click:   ['product', 'logo', 'styleRef'],
   translation: ['product'],
   retouch:     ['product', 'texture', 'styleRef'],
+  everything_replace: ['product', 'logo', 'styleRef'],
   buyer_show:  ['product', 'atmosphere', 'model'],
   video:       ['product', 'scene', 'referenceVideo', 'audio'],
   xhs_cover:   ['product', 'styleRef'],
@@ -48,11 +49,13 @@ interface Props {
   open: boolean;
   onClose: () => void;
   onSelect: (type: MaterialType) => void;
+  onMaterialAction?: (type: MaterialType) => void;
   materialTypes?: MaterialType[];
   materialLabels?: Partial<Record<MaterialType, Partial<Omit<MaterialDef, 'key'>>>>;
+  materialActionLabels?: Partial<Record<MaterialType, string>>;
 }
 
-const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, materialTypes, materialLabels }) => {
+const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, onMaterialAction, materialTypes, materialLabels, materialActionLabels }) => {
   const panelRef = useRef<HTMLDivElement>(null);
   const types = materialTypes || MODULE_MATERIALS[module] || ['product', 'styleRef'];
   const materials = types
@@ -88,31 +91,55 @@ const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, 
       >
         <div className="grid grid-cols-2 gap-1.5">
           {materials.map((m) => (
-            <button
+            <div
               key={m.key}
-              onClick={() => { onSelect(m.key); onClose(); }}
-              className="flex items-center gap-2.5 p-2.5 rounded-2xl text-left transition-all"
+              className="flex items-center gap-2.5 rounded-2xl p-2.5 text-left transition-all"
               style={{ color: 'var(--text-secondary)' }}
               onMouseEnter={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-surface-hover)';
-                (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-primary)';
+                (e.currentTarget as HTMLDivElement).style.background = 'var(--bg-surface-hover)';
+                (e.currentTarget as HTMLDivElement).style.color = 'var(--text-primary)';
               }}
               onMouseLeave={(e) => {
-                (e.currentTarget as HTMLButtonElement).style.background = 'transparent';
-                (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-secondary)';
+                (e.currentTarget as HTMLDivElement).style.background = 'transparent';
+                (e.currentTarget as HTMLDivElement).style.color = 'var(--text-secondary)';
               }}
             >
-              <div
+              <button
+                type="button"
+                onClick={() => { onSelect(m.key); onClose(); }}
                 className="flex items-center justify-center h-8 w-8 rounded-full shrink-0"
                 style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}
+                title={m.label}
               >
                 {m.icon}
-              </div>
+              </button>
               <div className="min-w-0">
-                <p className="text-[11px] font-medium" style={{ color: 'inherit' }}>{m.label}</p>
-                <p className="text-[9px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>{m.desc}</p>
+                <button
+                  type="button"
+                  onClick={() => { onSelect(m.key); onClose(); }}
+                  className="block text-left text-[11px] font-medium"
+                  style={{ color: 'inherit' }}
+                >
+                  {m.label}
+                </button>
+                {materialActionLabels?.[m.key] ? (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onMaterialAction?.(m.key);
+                      onClose();
+                    }}
+                    className="mt-1 rounded-full px-2 py-0.5 text-[9px] font-medium"
+                    style={{ background: 'rgba(37,99,235,0.14)', color: 'var(--accent)' }}
+                  >
+                    {materialActionLabels[m.key]}
+                  </button>
+                ) : (
+                  <p className="text-[9px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>{m.desc}</p>
+                )}
               </div>
-            </button>
+            </div>
           ))}
 
         </div>

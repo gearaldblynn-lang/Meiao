@@ -115,7 +115,7 @@ test('task action buttons use an exclusive pending key to prevent duplicate subm
   assert.match(projectCardSource, /disabled=\{isStoryboardImagePending\}/);
 });
 
-test('all runnable bottom generation submits are guarded before visible project cards exist', () => {
+test('all runnable bottom generation submits are guarded before material preparation or cloud submission', () => {
   const shellSource = read('../../ShellMigratedApp.tsx');
   const submitGuardBlock = shellSource.match(/const shouldGuardGenerationSubmit = [\s\S]*?\n\);/)?.[0] || '';
   const handleGeneratePrefix = shellSource.match(/const handleGenerate = useCallback\(async \(\) => \{[\s\S]*?if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'storyboard'\)/)?.[0] || '';
@@ -136,7 +136,7 @@ test('all runnable bottom generation submits are guarded before visible project 
   assert.match(handleGeneratePrefix, /const beginGuardedSubmit = \(\) => !hasGuardedSubmitLock \|\| beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(handleGeneratePrefix, /const releaseGuardedSubmit = \(\) => \{/);
   assert.match(shellSource, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& \(Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\) \|\| hasCurrentActiveGuardedGeneration\)/);
-  assert.match(shellSource, /if \(!beginGuardedSubmit\(\)\) \{\s*return;\s*\}\s*addToast\('任务已提交，正在准备素材', 'info'\);\s*try \{\s*generationMaterials = await ensureMaterialRemoteUrls/);
+  assert.match(shellSource, /if \(!beginGuardedSubmit\(\)\) \{\s*return;\s*\}\s*addToast\('任务已提交，正在准备素材', 'info'\);[\s\S]*?const immediateProject = targetModule === AppModuleObj\.EVERYTHING_REPLACE[\s\S]*?try \{\s*generationMaterials = await ensureMaterialRemoteUrls/);
   assert.match(translationBranch, /onJobCreated: \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
   assert.match(oneClickBranch.match(/const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n      \};/)?.[0] || '', /releaseGuardedSubmit\(\);/);
   assert.match(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);

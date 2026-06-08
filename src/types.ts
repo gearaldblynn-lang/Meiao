@@ -5,6 +5,7 @@ export enum AppModule {
   TRANSLATION = 'translation',
   BUYER_SHOW = 'buyer_show',
   RETOUCH = 'retouch',
+  EVERYTHING_REPLACE = 'everything_replace',
   PHOTOGRAPHY = 'photography',
   VIDEO = 'video',
   XHS_COVER = 'xhs_cover',
@@ -18,6 +19,7 @@ export const AppModuleObj = {
   TRANSLATION: AppModule.TRANSLATION,
   BUYER_SHOW: AppModule.BUYER_SHOW,
   RETOUCH: AppModule.RETOUCH,
+  EVERYTHING_REPLACE: AppModule.EVERYTHING_REPLACE,
   PHOTOGRAPHY: AppModule.PHOTOGRAPHY,
   VIDEO: AppModule.VIDEO,
   XHS_COVER: AppModule.XHS_COVER,
@@ -812,6 +814,8 @@ export interface OneClickConfig {
   count: number;
   aspectRatio?: AspectRatio;
   firstImageColorMode?: 'product_adaptive' | 'reference_locked';
+  detailGenerationMode?: 'AI直出' | '套图复刻';
+  detailColorMode?: 'product_adaptive' | 'reference_locked';
   quality: GenerationQuality;
   model: KieAiModel;
   styleStrength: StyleStrength;
@@ -848,9 +852,14 @@ export interface OneClickMaterialSnapshot {
   type: string;
   url: string;
   remoteUrl?: string;
+  localAssetId?: string;
   fileName: string;
+  relativePath?: string;
   subFeature?: string;
   giftIndex?: number;
+  originalWidth?: number;
+  originalHeight?: number;
+  logoPlacement?: Record<string, unknown>;
 }
 
 export interface OneClickGenerationContext {

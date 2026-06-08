@@ -505,6 +505,91 @@ test('shell data adapter preserves provider task ids and consumed credits for pr
   assert.equal(snapshot.projects[0]?.results[0]?.creditsConsumed, 3);
 });
 
+test('shell data adapter merges everything replace child jobs by shell project and sorts by batch index', () => {
+  const snapshot = buildShellDataSnapshot({}, [
+    {
+      id: 'everything-job-2',
+      module: 'everything_replace',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'provider-2',
+      payload: {
+        shellProjectId: 'everything-project-1',
+        shellProjectName: '万物替换批次',
+        subFeature: 'product_replace',
+        prompt: '第2张产品替换',
+        batchIndex: 2,
+        batchCount: 3,
+        referenceIndex: 1,
+        referenceCount: 2,
+      },
+      result: { imageUrl: '/replace-2.png', providerTaskId: 'provider-2' },
+      createdAt: 2000,
+      updatedAt: 2600,
+      finishedAt: 2600,
+    },
+    {
+      id: 'everything-job-1',
+      module: 'everything_replace',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'provider-1',
+      payload: {
+        shellProjectId: 'everything-project-1',
+        shellProjectName: '万物替换批次',
+        subFeature: 'product_replace',
+        prompt: '第1张产品替换',
+        batchIndex: 1,
+        batchCount: 3,
+        referenceIndex: 1,
+        referenceCount: 2,
+      },
+      result: { imageUrl: '/replace-1.png', providerTaskId: 'provider-1' },
+      createdAt: 1000,
+      updatedAt: 1600,
+      finishedAt: 1600,
+    },
+    {
+      id: 'everything-job-3',
+      module: 'everything_replace',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: 'provider-3',
+      payload: {
+        shellProjectId: 'everything-project-1',
+        shellProjectName: '万物替换批次',
+        subFeature: 'product_replace',
+        prompt: '第3张产品替换',
+        batchIndex: 3,
+        batchCount: 3,
+        referenceIndex: 2,
+        referenceCount: 2,
+      },
+      result: null,
+      createdAt: 3000,
+      updatedAt: 3200,
+    },
+  ]);
+
+  assert.equal(snapshot.projects.length, 1);
+  assert.equal(snapshot.projects[0]?.module, 'everything_replace');
+  assert.equal(snapshot.projects[0]?.subFeature, 'product_replace');
+  assert.equal(snapshot.projects[0]?.name, '万物替换批次');
+  assert.equal(snapshot.projects[0]?.taskCount, 3);
+  assert.equal(snapshot.projects[0]?.completedCount, 2);
+  assert.deepEqual(snapshot.projects[0]?.results.map((result) => result.backendJobId), [
+    'everything-job-1',
+    'everything-job-2',
+    'everything-job-3',
+  ]);
+  assert.deepEqual(snapshot.projects[0]?.results.map((result) => result.batchIndex), [1, 2, 3]);
+  assert.equal(snapshot.projects[0]?.results[2]?.status, 'generating');
+  assert.equal(snapshot.projects[0]?.results[2]?.taskId, 'provider-3');
+});
+
 test('shell data adapter restores one-click planning credits from saved projects', () => {
   const snapshot = buildShellDataSnapshot({
     oneClickMemory: {
@@ -3228,6 +3313,96 @@ test('shell data adapter reconstructs a one-click planning project from a succes
   assert.equal(project.plans?.[0]?.sourceReferenceUrl, 'https://example.com/ref.jpg');
   assert.equal(project.planningTaskId, 'resp-fallback-provider');
   assert.equal(project.creditsConsumed, 0.42);
+});
+
+test('shell data adapter reconstructs detail page set replication plans with per-page references', () => {
+  const referenceUrls = Array.from({ length: 10 }, (_, index) => `https://example.com/detail-ref-${index + 1}.jpg`);
+  const content = referenceUrls.map((_url, index) => `[SCHEME_START]
+- 屏序/类型：第${index + 1}屏-复刻详情页参考${index + 1}
+- 参考图标识：详情页套图参考${index + 1}
+- 设计意图：恢复第${index + 1}屏
+- 画面描述：真实策划内容${index + 1}
+- 画面比例：3:4
+[SCHEME_END]`).join('\n\n');
+
+  const snapshot = buildShellDataSnapshot({}, [{
+    id: 'detail-planning-job',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'detail-provider-task',
+    payload: {
+      shellPlanningPurpose: 'one_click_planning',
+      shellPlanningMode: 'detail_page_set_replication_all_at_once',
+      shellProjectId: 'proj-plan-detail',
+      shellProjectName: '详情页套图复刻项目',
+      subFeature: 'detail_page',
+      shellReferenceUrls: referenceUrls,
+    },
+    result: {
+      content,
+      providerTaskId: 'detail-provider-task',
+      creditsConsumed: 0.66,
+    },
+    createdAt: 3000,
+    updatedAt: 4000,
+    finishedAt: 4000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-plan-detail');
+  assert.ok(project);
+  assert.equal(project.status, 'planning');
+  assert.equal(project.subFeature, 'detail_page');
+  assert.equal(project.plans?.length, 10);
+  assert.deepEqual(project.plans?.map((plan) => plan.sourceReferenceUrl), referenceUrls);
+  assert.equal(project.taskCount, 10);
+  assert.equal(project.selectedPlanId, project.plans?.[0]?.id);
+});
+
+test('shell data adapter backfills missing detail page set replication plans during job recovery', () => {
+  const referenceUrls = Array.from({ length: 10 }, (_, index) => `https://example.com/detail-ref-${index + 1}.jpg`);
+  const content = referenceUrls.slice(0, 8).map((_url, index) => `[SCHEME_START]
+- 屏序/类型：第${index + 1}屏-复刻详情页参考${index + 1}
+- 参考图标识：详情页套图参考${index + 1}
+- 设计意图：恢复第${index + 1}屏
+- 画面描述：真实策划内容${index + 1}
+- 画面比例：3:4
+[SCHEME_END]`).join('\n\n');
+
+  const snapshot = buildShellDataSnapshot({}, [{
+    id: 'detail-partial-planning-job',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'detail-partial-provider-task',
+    payload: {
+      shellPlanningPurpose: 'one_click_planning',
+      shellPlanningMode: 'detail_page_set_replication_all_at_once',
+      shellProjectId: 'proj-plan-detail-partial',
+      shellProjectName: '详情页套图复刻缺失补齐项目',
+      subFeature: 'detail_page',
+      shellReferenceUrls: referenceUrls,
+      shellReferenceCount: referenceUrls.length,
+    },
+    result: {
+      content,
+      providerTaskId: 'detail-partial-provider-task',
+      creditsConsumed: 0.66,
+    },
+    createdAt: 3000,
+    updatedAt: 4000,
+    finishedAt: 4000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-plan-detail-partial');
+  assert.ok(project);
+  assert.equal(project.status, 'planning');
+  assert.equal(project.plans?.length, 10);
+  assert.equal(project.plans?.[8]?.sourceReferenceUrl, referenceUrls[8]);
+  assert.equal(project.plans?.[8]?.schemeContent.includes('第9屏-复刻详情页参考9'), true);
+  assert.equal(project.plans?.[9]?.sourceReferenceUrl, referenceUrls[9]);
 });
 
 test('shell data adapter reconstructs a tracked failed one-click planning project without a persisted snapshot', () => {

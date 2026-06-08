@@ -13,16 +13,22 @@ import {
 } from '../types';
 import { cancelInternalJob, createInternalJob, uploadInternalAssetStream, storeActiveModuleContext, waitForInternalJob } from '../services/internalApi';
 import { processWithKieAi } from '../services/kieAiService';
-import { analyzeRetouchTask, generateBuyerShowPrompts, generateFirstImageReplicationSchemes, generateMainImageSetReplicationSchemes, generateMarketingSchemes, generateSkuSchemes } from '../services/arkService';
+import { analyzeRetouchTask, generateBuyerShowPrompts, generateDetailPageReplicationSchemes, generateFirstImageReplicationSchemes, generateMainImageSetReplicationSchemes, generateMarketingSchemes, generateSkuSchemes } from '../services/arkService';
 import { buildOneClickImagePrompt } from '../modules/OneClick/generationPromptUtils';
 import { XHS_COVER_STYLES } from '../modules/XhsCover/xhsCoverStyles';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 import { extractShellSchemeField } from './shellSchemeFields';
-import { getImageDimensions, resizeImage } from '../utils/imageUtils';
+import { getImageDimensions, getImageDimensionsFromUrl, resizeImage } from '../utils/imageUtils';
 import { normalizeFetchedImageBlob } from '../utils/imageBlobUtils.mjs';
 import { persistGeneratedAsset } from '../services/persistedAssetClient';
 import { resolveShellSkuCount } from './shellSkuCount';
 import { buildShellImageInputUrls } from './shellOneClickMaterials.mjs';
+import { getExactAspectRatioFromDimensions, resolveNearestSupportedAspectRatio } from '../utils/aspectRatioUtils';
+import { getSupportedAspectRatiosForModel } from '../utils/modelAspectRatio';
+import {
+  createDefaultLogoPlacement,
+  createEverythingReplaceLogoPlacementGuide,
+} from '../utils/everythingReplaceLogoPlacement.mjs';
 
 export { extractShellSchemeField } from './shellSchemeFields';
 
@@ -35,6 +41,9 @@ export interface ShellMaterialInput {
   fileName: string;
   subFeature?: string;
   giftIndex?: number;
+  originalWidth?: number;
+  originalHeight?: number;
+  logoPlacement?: Record<string, unknown>;
 }
 
 export interface ShellGenerateInput {
@@ -61,6 +70,11 @@ export interface ShellPlanItem {
   selected: boolean;
   schemeContent: string;
   sourceReferenceUrl?: string;
+  sourceReferenceLabel?: string;
+  sourceReferenceWidth?: number;
+  sourceReferenceHeight?: number;
+  referenceMatchedAspectRatio?: string;
+  aspectRatio?: string;
   variationMode?: 'scene' | 'palette' | 'custom';
   variationInstruction?: string;
   sourceResultUrl?: string;
@@ -80,6 +94,7 @@ export interface ShellWorkflowImageResult {
   status?: 'completed' | 'generating' | 'error';
   message?: string;
   errorCode?: string;
+  batchIndex?: number;
 }
 
 const MODULE_LABELS: Record<string, string> = {
@@ -87,6 +102,7 @@ const MODULE_LABELS: Record<string, string> = {
   [AppModule.TRANSLATION]: '出海翻译',
   [AppModule.BUYER_SHOW]: '买家秀',
   [AppModule.RETOUCH]: '产品精修',
+  [AppModule.EVERYTHING_REPLACE]: '万物替换',
   [AppModule.VIDEO]: '短视频',
   [AppModule.XHS_COVER]: '小红书封面',
 };
@@ -156,7 +172,7 @@ const getDefaultShellTargetSize = (input: ShellGenerateInput) => {
   if (input.module === AppModule.ONE_CLICK) {
     return { width: input.subFeature === 'detail_page' ? 750 : 800, height: 0 };
   }
-  if (input.module === AppModule.RETOUCH) {
+  if (input.module === AppModule.RETOUCH || input.module === AppModule.EVERYTHING_REPLACE) {
     return { width: 800, height: 1200 };
   }
   return { width: 0, height: 0 };
@@ -165,7 +181,8 @@ const getDefaultShellTargetSize = (input: ShellGenerateInput) => {
 const hasShellSizeControls = (input: ShellGenerateInput) =>
   input.module === AppModule.ONE_CLICK
   || input.module === AppModule.TRANSLATION
-  || input.module === AppModule.RETOUCH;
+  || input.module === AppModule.RETOUCH
+  || input.module === AppModule.EVERYTHING_REPLACE;
 
 const toResolutionMode = (value?: string): ModuleConfig['resolutionMode'] => {
   const normalized = String(value || '').trim().toLowerCase();
@@ -265,6 +282,25 @@ const getOneClickReferenceUrls = (input: ShellGenerateInput) => [
 ].map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
 const getOneClickLogoUrl = (input: ShellGenerateInput) => firstMaterialUrl(input.materials.logo, input.publicBaseUrl || '', '品牌logo');
 
+const getDetailReferenceAspectRatios = (input: ShellGenerateInput) => {
+  const isDetailSetReplication = input.module === AppModule.ONE_CLICK
+    && input.subFeature === 'detail_page'
+    && firstParam(input.params, ['detailGenerationMode'], 'AI直出') === '套图复刻'
+    && toAspectRatio(firstParam(input.params, ['ratio', 'aspectRatio'], AspectRatio.AUTO)) === AspectRatio.AUTO;
+  if (!isDetailSetReplication) return [];
+  const autoGeneratableRatios = getSupportedAspectRatiosForModel(toModel(firstParam(input.params, ['model'], 'GPT Image 2')))
+    .filter((ratio) => ratio !== AspectRatio.AUTO);
+  return [
+    ...(input.materials.styleRef || []),
+    ...(input.materials.reference || []),
+  ]
+    .map((item) => resolveNearestSupportedAspectRatio(
+      getExactAspectRatioFromDimensions(item.originalWidth, item.originalHeight),
+      autoGeneratableRatios,
+    ))
+    .filter(Boolean);
+};
+
 const normalizePlatformType = (value?: string): OneClickConfig['platformType'] => {
   const normalized = String(value || '').toLowerCase();
   return normalized.includes('cross') || normalized.includes('跨境') || normalized.includes('global') ? 'crossborder' : 'domestic';
@@ -288,6 +324,10 @@ const buildOneClickConfig = (input: ShellGenerateInput): OneClickConfig => {
     count: toPositiveInt(firstParam(input.params, ['count'], input.subFeature === 'detail_page' ? '7' : input.subFeature === 'first_image' ? '1' : '5'), 1),
     aspectRatio: moduleConfig.aspectRatio,
     firstImageColorMode: String(input.params.firstImageColorMode || '').includes('参考') || input.params.firstImageColorMode === 'reference_locked'
+      ? 'reference_locked'
+      : 'product_adaptive',
+    detailGenerationMode: firstParam(input.params, ['detailGenerationMode'], 'AI直出') === '套图复刻' ? '套图复刻' : 'AI直出',
+    detailColorMode: String(input.params.detailColorMode || '').includes('参考') || input.params.detailColorMode === 'reference_locked'
       ? 'reference_locked'
       : 'product_adaptive',
     quality: moduleConfig.quality,
@@ -432,6 +472,33 @@ export const runShellOneClickPlanning = async (input: ShellGenerateInput): Promi
     );
     if (result.status !== 'success' || result.schemes.length === 0) {
       throw new Error(result.message || '主图套图复刻策划失败');
+    }
+    return {
+      plans: result.schemes.map((scheme, index) => toShellPlan(scheme, index, referenceUrls[index])),
+      message: result.message,
+      creditsConsumed: result.creditsConsumed,
+      taskId: result.taskId,
+    };
+  }
+
+  if (subMode === OneClickSubMode.DETAIL_PAGE && firstParam(input.params, ['detailGenerationMode'], 'AI直出') === '套图复刻') {
+    const referenceUrls = getOneClickReferenceUrls(input).slice(0, 10);
+    if (referenceUrls.length === 0) {
+      throw new Error('详情页套图复刻需要先上传 1-10 张风格参考图。');
+    }
+    const result = await generateDetailPageReplicationSchemes(
+      productUrls,
+      referenceUrls,
+      { ...buildOneClickConfig(input), count: referenceUrls.length },
+      apiConfig,
+      input.signal,
+      getOneClickLogoUrl(input) || null,
+      input.onJobCreated,
+      input.taskMetadata || {},
+      getDetailReferenceAspectRatios(input),
+    );
+    if (result.status !== 'success' || result.schemes.length === 0) {
+      throw new Error(result.message || '详情页套图复刻策划失败');
     }
     return {
       plans: result.schemes.map((scheme, index) => toShellPlan(scheme, index, referenceUrls[index])),
@@ -683,6 +750,7 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
         platform: input.subFeature === 'first_image' ? firstParam(input.params, ['platform'], '淘宝') : null,
         logoUrl: getOneClickLogoUrl(input) || null,
         replicationReferenceUrl: typeof input.taskMetadata?.sourceReferenceUrl === 'string' ? input.taskMetadata.sourceReferenceUrl : null,
+        replicationReferenceLabel: input.subFeature === 'detail_page' || input.subFeature === 'detail' ? '详情页套图参考图' : null,
         previousResultUrl: typeof input.taskMetadata?.sourceResultUrl === 'string' ? input.taskMetadata.sourceResultUrl : null,
         variationInstruction: typeof input.taskMetadata?.variationInstruction === 'string' ? input.taskMetadata.variationInstruction : null,
         editInstruction: typeof input.taskMetadata?.editInstruction === 'string' ? input.taskMetadata.editInstruction : null,
@@ -690,6 +758,7 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
         suiteReferenceUrls,
         hasProductReferences: (input.materials.product || []).length > 0,
         includeCopyGuardrails: true,
+        publicBaseUrl: input.publicBaseUrl || '',
       })
     : [
         `模块：${moduleLabel}`,
@@ -929,8 +998,11 @@ export const runShellBuyerShowWorkflow = async (
   };
 };
 
-const getRetouchMode = (input: ShellGenerateInput): 'original' | 'white_bg' => {
+type ShellRetouchMode = 'original' | 'white_bg' | 'product_replace';
+
+const getRetouchMode = (input: ShellGenerateInput): ShellRetouchMode => {
   const value = String(input.subFeature || input.params.mode || '').trim();
+  if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'product_replace' || value.includes('产品'))) return 'product_replace';
   if (value === 'white_bg' || value.includes('白底')) return 'white_bg';
   if (value === 'original' || value.includes('原图') || !value) return 'original';
   throw new Error('该产品精修子功能待制作，当前只迁移了 3000 的原图精修和白底精修。');
@@ -952,6 +1024,400 @@ const buildRetouchPrompt = (sourceUrl: string, referenceUrl: string | null, anal
   }
   strictStandards += `${mode === 'original' ? '6' : '4'}. 比例自适应：适配 ${aspectRatio} 比例构图。`;
   return finalPrompt + strictStandards;
+};
+
+const normalizeReplacementLogic = (value?: string) => {
+  const normalized = String(value || '').trim();
+  return normalized === 'combination_replace' || normalized.includes('组合') ? 'combination_replace' : 'single_replace';
+};
+
+const normalizeProductReplaceStrength = (value?: string) => {
+  const normalized = String(value || '').trim();
+  if (normalized === 'global_adjust' || normalized.includes('全局')) return 'global_adjust';
+  if (normalized === 'person_adjust' || normalized === 'scene_adaptive' || normalized.includes('人物') || normalized.includes('自适应')) return 'person_adjust';
+  return 'exact_replicate';
+};
+
+const buildProductReplaceStrengthConstraint = (referenceStrength: string) => {
+  if (referenceStrength === 'person_adjust') {
+    return '6. 参考强度：人物微调。人物必须出现可见但轻微的差异，不能与参考图完全一致；需要微调人物外貌相似度、表情、姿态、手部、遮挡、佩戴或互动细节中的至少一项；整体构图、场景、动作关系和产品位置仍需接近参考图。';
+  }
+  if (referenceStrength === 'global_adjust') {
+    return '6. 参考强度：全局微调。在大致相同的基础上，对人物、场景、动作、道具细节、光影或局部构图做可见但轻微的调整；不得改变核心画面结构、产品替换目标和商业表达。';
+  }
+  return '6. 参考强度：完全复刻。尽量精确复刻参考图画面结构、主体位置、色调、镜头和氛围，只替换产品主体。';
+};
+
+const buildProductReplaceBaseConstraints = (referenceStrength: string) => [
+  '【万物替换-产品替换硬约束】：',
+  '1. 先识别当前替换参考图中所有应被替换的原产品/商品区域；参考图中的原产品必须被移除，不得残留原品牌、原商标、原包装或原产品轮廓。',
+  '2. 必须用待替换产品图中的真实产品替换参考图中的主体，严禁改变待替换产品的品牌、包装文字、Logo、结构比例和关键细节。',
+  '3. 参考图只提供构图、场景、道具关系、光影、镜头语言和视觉风格，不得保留参考图原产品、原品牌或可识别商标。',
+  '4. 替换后的产品必须自然融入参考画面，接触阴影、遮挡关系、透视角度、材质反光、景深和边缘融合都要可信，不能像简单贴图。',
+  '5. 文字保真：产品包装文字、Logo、标签、画面中已有非产品文案和用户要求保留的文字均不得改写、翻译、增删或重新排版。',
+  buildProductReplaceStrengthConstraint(referenceStrength),
+].join('\n');
+
+const buildProductReplaceInputRoleBlock = ({
+  productUrls,
+  referenceUrl,
+  isCombination,
+  hasLogoInputs,
+}: {
+  productUrls: string[];
+  referenceUrl: string;
+  isCombination: boolean;
+  hasLogoInputs: boolean;
+}) => [
+  '【输入图片角色（严格按上传顺序识别，不得混淆）】：',
+  `1. ${isCombination ? '待组合替换产品图' : '待替换产品图'}：${productUrls.join('、')}。${isCombination ? '这些图共同构成一组产品，需要整体替换到当前参考图的对应产品组合位置。' : '这些图都是同一单品的多角度或细节补充，用来确定同一个待替换产品的真实外观。'}`,
+  `2. 当前替换参考图：${referenceUrl}。当前任务只参考这一张图的构图、场景、人物、光影和原产品位置；不要混入其它参考图。`,
+  hasLogoInputs ? '3. Logo原图与Logo位置示意图：Logo原图是品牌标识来源；Logo位置示意图只用于位置、面积和比例参考，不可当作背景、风格图、水印效果或最终画面内容。' : '',
+].filter(Boolean).join('\n');
+
+const buildProductReplaceLogoPromptBlock = ({
+  logoUrl,
+  logoPlacementGuideUrl,
+  logoPlacementRatio,
+}: {
+  logoUrl?: string;
+  logoPlacementGuideUrl?: string;
+  logoPlacementRatio?: string;
+}) => {
+  if (!logoUrl || !logoPlacementGuideUrl) return '';
+  return [
+    '【Logo植入要求】：',
+    `1. Logo原图：${logoUrl}`,
+    `2. Logo位置示意图：${logoPlacementGuideUrl}`,
+    `3. Logo是必须植入的输出元素。即使参考图原本没有 Logo，也必须按示意图位置加入；不得遗漏、替换成文字、改造品牌形状或降低到不可见。`,
+    `4. 示意图只用于位置、面积和比例参考。按示意图中的相对位置、大小和方向融合 Logo 到最终画面，匹配当前参考图的 ${logoPlacementRatio || '相近'} 比例，边缘、光影和材质要自然，不要生硬贴图。`,
+  ].join('\n');
+};
+
+const buildSingleProductReplacePrompt = ({
+  productUrls,
+  referenceUrl,
+  userPrompt,
+  referenceStrength,
+  aspectRatio,
+  batchIndex,
+  batchCount,
+  logoPromptBlock,
+}: {
+  productUrls: string[];
+  referenceUrl: string;
+  userPrompt: string;
+  referenceStrength: string;
+  aspectRatio: AspectRatio;
+  batchIndex: number;
+  batchCount: number;
+  logoPromptBlock?: string;
+}) => [
+  `【任务类型】：万物替换 / 产品替换 / 单品替换`,
+  buildProductReplaceInputRoleBlock({
+    productUrls,
+    referenceUrl,
+    isCombination: false,
+    hasLogoInputs: Boolean(logoPromptBlock),
+  }),
+  `【待替换产品图】：${productUrls.join('、')}`,
+  `【替换参考图】：${referenceUrl}`,
+  logoPromptBlock || '',
+  buildProductReplaceBaseConstraints(referenceStrength),
+  '【单品要求】：上传的待替换产品图视为同一个产品的多角度、细节或包装补充；不要把多张产品图拆成多张结果，只需把当前参考图中的产品替换为这一单品。',
+  '【任务边界】：当前任务只参考本条替换参考图，不得把其它参考图的构图、产品或场景混入本次输出。',
+  userPrompt ? `【用户补充要求】：${userPrompt}` : '',
+  `【输出要求】：生成第 ${batchIndex}/${batchCount} 张，画面比例适配 ${aspectRatio}。`,
+].filter(Boolean).join('\n\n');
+
+const buildCombinationProductReplacePrompt = ({
+  productUrls,
+  referenceUrl,
+  userPrompt,
+  referenceStrength,
+  aspectRatio,
+  batchIndex,
+  batchCount,
+  logoPromptBlock,
+}: {
+  productUrls: string[];
+  referenceUrl: string;
+  userPrompt: string;
+  referenceStrength: string;
+  aspectRatio: AspectRatio;
+  batchIndex: number;
+  batchCount: number;
+  logoPromptBlock?: string;
+}) => [
+  `【任务类型】：万物替换 / 产品替换 / 组合替换`,
+  buildProductReplaceInputRoleBlock({
+    productUrls,
+    referenceUrl,
+    isCombination: true,
+    hasLogoInputs: Boolean(logoPromptBlock),
+  }),
+  `【待组合替换产品图】：${productUrls.join('、')}`,
+  `【替换参考图】：${referenceUrl}`,
+  logoPromptBlock || '',
+  buildProductReplaceBaseConstraints(referenceStrength),
+  '【组合要求】：上传的待替换产品图视为同一组商品，必须整体对应替换进当前参考图里的产品组合位置，保持各产品真实比例和身份，不要互相融合成新产品。',
+  '【任务边界】：当前任务只参考本条替换参考图，不得把其它参考图的构图、产品或场景混入本次输出。',
+  userPrompt ? `【用户补充要求】：${userPrompt}` : '',
+  `【输出要求】：生成第 ${batchIndex}/${batchCount} 张，画面比例适配 ${aspectRatio}。`,
+].filter(Boolean).join('\n\n');
+
+const resolveProductReplaceReferenceAspectRatio = async (
+  reference: ShellMaterialInput,
+  config: ModuleConfig,
+  publicBaseUrl: string,
+  signal: AbortSignal,
+) => {
+  if (config.aspectRatio !== AspectRatio.AUTO) return config.aspectRatio;
+  const supported = getSupportedAspectRatiosForModel(config.model).filter((ratio) => ratio !== AspectRatio.AUTO);
+  let exact = getExactAspectRatioFromDimensions(reference.originalWidth, reference.originalHeight);
+  if (!exact) {
+    const referenceUrl = materialUrl(reference, publicBaseUrl);
+    const dims = await getImageDimensionsFromUrl(referenceUrl).catch(() => null);
+    exact = getExactAspectRatioFromDimensions(dims?.width, dims?.height);
+  }
+  return (resolveNearestSupportedAspectRatio(exact, supported, AspectRatio.AUTO) || AspectRatio.AUTO) as AspectRatio;
+};
+
+const buildEverythingReplaceLogoInputs = async ({
+  input,
+  referenceMaterial,
+  referenceUrl,
+  publicBaseUrl,
+  referenceIndex,
+}: {
+  input: ShellGenerateInput;
+  referenceMaterial: ShellMaterialInput;
+  referenceUrl: string;
+  publicBaseUrl: string;
+  referenceIndex: number;
+}) => {
+  const logoMaterial = (input.materials.logo || [])[0];
+  if (!logoMaterial) {
+    return { imageUrls: [] as string[], promptBlock: '', logoPlacementGuideUrl: '', logoPlacementRatio: '' };
+  }
+  const logoUrl = materialUrl(logoMaterial, publicBaseUrl);
+  if (!logoUrl) {
+    return { imageUrls: [] as string[], promptBlock: '', logoPlacementGuideUrl: '', logoPlacementRatio: '' };
+  }
+  const logoRatio = logoMaterial.originalWidth && logoMaterial.originalHeight
+    ? logoMaterial.originalWidth / Math.max(1, logoMaterial.originalHeight)
+    : 2;
+  const placement = logoMaterial.logoPlacement || createDefaultLogoPlacement({
+    width: referenceMaterial.originalWidth || 1000,
+    height: referenceMaterial.originalHeight || 1000,
+    logoRatio,
+  });
+  const guide = await createEverythingReplaceLogoPlacementGuide({
+    referenceUrl,
+    logoUrl,
+    placement,
+    referenceWidth: referenceMaterial.originalWidth,
+    referenceHeight: referenceMaterial.originalHeight,
+    logoRatio,
+  });
+  const guideFile = new File(
+    [guide.blob],
+    `everything-replace-logo-placement-${referenceIndex + 1}.png`,
+    { type: 'image/png' },
+  );
+  const uploaded = await uploadInternalAssetStream({
+    module: input.module,
+    file: guideFile,
+    fileName: guideFile.name,
+    signal: input.signal,
+  });
+  if (!uploaded.fileUrl) throw new Error('Logo位置示意图上传失败，请重新调整 Logo 位置后再生成。');
+  const logoPlacementGuideUrl = uploaded.fileUrl;
+  return {
+    imageUrls: [logoUrl, logoPlacementGuideUrl],
+    promptBlock: buildProductReplaceLogoPromptBlock({
+      logoUrl,
+      logoPlacementGuideUrl,
+      logoPlacementRatio: guide.ratio,
+    }),
+    logoPlacementGuideUrl,
+    logoPlacementRatio: guide.ratio,
+  };
+};
+
+const runProductReplaceWorkflow = async (
+  input: ShellGenerateInput,
+  config: ModuleConfig,
+  apiConfig: GlobalApiConfig,
+  onItemCompleted?: (item: ShellWorkflowImageResult, index: number, total: number) => void,
+): Promise<{ results: ShellWorkflowImageResult[]; creditsConsumed?: number }> => {
+  const publicBaseUrl = input.publicBaseUrl || '';
+  const productMaterials = input.materials.product || [];
+  const referenceMaterials = input.materials.styleRef || [];
+  const productUrls = productMaterials.map((item) => materialUrl(item, publicBaseUrl)).filter(Boolean);
+  const referenceUrls = referenceMaterials.map((item) => materialUrl(item, publicBaseUrl)).filter(Boolean);
+  if (productUrls.length === 0) throw new Error('请先上传待替换产品图。');
+  if (referenceUrls.length === 0) throw new Error('请先上传替换参考图。');
+
+  const replacementLogic = normalizeReplacementLogic(input.params.replacementLogic);
+  const referenceStrength = normalizeProductReplaceStrength(input.params.firstImageColorMode);
+  const isCombination = replacementLogic === 'combination_replace';
+  const total = referenceUrls.length;
+  let batchIndex = 0;
+  const results = await Promise.all(referenceUrls.map((referenceUrl, referenceIndex) => {
+    const referenceMaterial = referenceMaterials[referenceIndex];
+    batchIndex += 1;
+    const currentBatchIndex = batchIndex;
+    if (isCombination) {
+      return (async () => {
+        const aspectRatio = await resolveProductReplaceReferenceAspectRatio(referenceMaterial, config, publicBaseUrl, input.signal);
+        const logoInputs = await buildEverythingReplaceLogoInputs({
+          input,
+          referenceMaterial,
+          referenceUrl,
+          publicBaseUrl,
+          referenceIndex,
+        });
+        const prompt = buildCombinationProductReplacePrompt({
+          productUrls,
+          referenceUrl,
+          userPrompt: input.prompt.trim(),
+          referenceStrength,
+          aspectRatio,
+          batchIndex: currentBatchIndex,
+          batchCount: total,
+          logoPromptBlock: logoInputs.promptBlock,
+        });
+        const generation = await processWithKieAi(
+          [...productUrls, referenceUrl, ...logoInputs.imageUrls],
+          apiConfig,
+          { ...config, aspectRatio, targetLanguage: 'zh', removeWatermark: true, resolutionMode: 'original', targetWidth: 0, targetHeight: 0 },
+          aspectRatio === AspectRatio.AUTO,
+          input.signal,
+          prompt,
+          false,
+          undefined,
+          'main',
+          {
+            ...(input.taskMetadata || {}),
+            subFeature: input.subFeature || 'product_replace',
+            replacementLogic,
+            firstImageColorMode: referenceStrength,
+            batchIndex: currentBatchIndex,
+            batchCount: total,
+            referenceIndex: referenceIndex + 1,
+            referenceCount: referenceUrls.length,
+            logoPlacementGuideUrl: logoInputs.logoPlacementGuideUrl,
+          },
+          input.onJobCreated,
+        );
+        const item = await toProductReplaceResultItem(generation, prompt, config, aspectRatio, currentBatchIndex, total, referenceUrl, input.signal);
+        onItemCompleted?.(item, currentBatchIndex, total);
+        return item;
+      })();
+    }
+    return (async () => {
+        const aspectRatio = await resolveProductReplaceReferenceAspectRatio(referenceMaterial, config, publicBaseUrl, input.signal);
+        const logoInputs = await buildEverythingReplaceLogoInputs({
+          input,
+          referenceMaterial,
+          referenceUrl,
+          publicBaseUrl,
+          referenceIndex,
+        });
+        const prompt = buildSingleProductReplacePrompt({
+          productUrls,
+          referenceUrl,
+          userPrompt: input.prompt.trim(),
+          referenceStrength,
+          aspectRatio,
+          batchIndex: currentBatchIndex,
+          batchCount: total,
+          logoPromptBlock: logoInputs.promptBlock,
+        });
+        const generation = await processWithKieAi(
+          [...productUrls, referenceUrl, ...logoInputs.imageUrls],
+          apiConfig,
+          { ...config, aspectRatio, targetLanguage: 'zh', removeWatermark: true, resolutionMode: 'original', targetWidth: 0, targetHeight: 0 },
+          aspectRatio === AspectRatio.AUTO,
+          input.signal,
+          prompt,
+          false,
+          undefined,
+          'main',
+          {
+            ...(input.taskMetadata || {}),
+            subFeature: input.subFeature || 'product_replace',
+            replacementLogic,
+            firstImageColorMode: referenceStrength,
+            batchIndex: currentBatchIndex,
+            batchCount: total,
+            productCount: productUrls.length,
+            referenceIndex: referenceIndex + 1,
+            referenceCount: referenceUrls.length,
+            logoPlacementGuideUrl: logoInputs.logoPlacementGuideUrl,
+          },
+          input.onJobCreated,
+        );
+        const item = await toProductReplaceResultItem(generation, prompt, config, aspectRatio, currentBatchIndex, total, referenceUrl, input.signal);
+        onItemCompleted?.(item, currentBatchIndex, total);
+        return item;
+    })();
+  }));
+
+  return {
+    results,
+    creditsConsumed: results.reduce((sum, item) => sum + (Number(item.creditsConsumed) || 0), 0) || undefined,
+  };
+};
+
+const toProductReplaceResultItem = async (
+  generation: KieAiResult,
+  prompt: string,
+  config: ModuleConfig,
+  aspectRatio: AspectRatio,
+  batchIndex: number,
+  batchCount: number,
+  sourceUrl: string,
+  signal: AbortSignal,
+): Promise<ShellWorkflowImageResult> => {
+  if (generation.status !== 'success' || !generation.imageUrl) {
+    if (generation.taskId) {
+      return {
+        imageUrl: '',
+        prompt,
+        taskId: generation.taskId,
+        backendJobId: generation.backendJobId,
+        model: getImageResultModelLabel(config),
+        aspectRatio,
+        sourceUrl,
+        status: generation.status === 'generating' ? 'generating' : 'error',
+        error: generation.message || `第 ${batchIndex}/${batchCount} 张产品替换失败`,
+        message: generation.message,
+        errorCode: generation.errorCode,
+        batchIndex,
+      };
+    }
+    throw new Error(generation.message || `第 ${batchIndex}/${batchCount} 张产品替换失败`);
+  }
+  const finalUrl = await maybeResizeAndPersistRetouchResult(
+    generation.imageUrl,
+    `everything-replace-${batchIndex}.png`,
+    { ...config, aspectRatio, resolutionMode: 'original', targetWidth: 0, targetHeight: 0 },
+    signal,
+  );
+  return {
+    imageUrl: finalUrl,
+    prompt,
+    taskId: generation.taskId,
+    backendJobId: generation.backendJobId,
+    creditsConsumed: generation.creditsConsumed,
+    model: getImageResultModelLabel(config),
+    aspectRatio,
+    sourceUrl,
+    status: 'completed',
+    batchIndex,
+  };
 };
 
 const maybeResizeAndPersistRetouchResult = async (
@@ -997,7 +1463,7 @@ export const runShellRetouchWorkflow = async (
   const mode = getRetouchMode(input);
   const sourceMaterials = input.materials.product || [];
   const sourceUrls = sourceMaterials.map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
-  if (sourceUrls.length === 0) throw new Error('请先上传产品素材，再启动产品精修。');
+  if (sourceUrls.length === 0) throw new Error(mode === 'product_replace' ? '请先上传待替换产品图。' : '请先上传产品素材，再启动产品精修。');
 
   storeActiveModuleContext(input.module);
   const apiConfig: GlobalApiConfig = {
@@ -1013,6 +1479,9 @@ export const runShellRetouchWorkflow = async (
       aspectRatio: input.params.aspectRatio || input.params.ratio || 'auto',
     },
   });
+  if (mode === 'product_replace') {
+    return runProductReplaceWorkflow(input, config, apiConfig, onItemCompleted);
+  }
   const referenceUrl = firstMaterialUrl(input.materials.styleRef, input.publicBaseUrl || '', '精修参考图')
     || firstMaterialUrl(input.materials.texture, input.publicBaseUrl || '', '精修质感参考图')
     || '';

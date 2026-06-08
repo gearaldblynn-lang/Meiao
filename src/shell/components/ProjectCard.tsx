@@ -55,7 +55,7 @@ interface Props {
 }
 
 const moduleNames: Record<string, string> = {
-  one_click: '一键主详', translation: '出海翻译', retouch: '产品精修',
+  one_click: '一键主详', translation: '出海翻译', retouch: '产品精修', everything_replace: '万物替换',
   buyer_show: '买家秀', video: '短视频', xhs_cover: '小红书', agent_center: '智能体',
 };
 
@@ -69,6 +69,7 @@ const subFeatureNames: Record<string, string> = {
   remove_text: '去文案',
   original: '原图精修',
   white_bg: '白底精修',
+  product_replace: '产品替换',
   background_replace: '背景替换',
   enhance: '智能增强',
   image: '买家秀图片',
@@ -1635,6 +1636,7 @@ const ProjectCard: React.FC<Props> = ({
                           const promptExpanded = Boolean(expandedPrompts[result.id]);
                           const matchedPlan = findPlanByResult(result, index);
                           const displayedPrompt = normalizeSchemeText(matchedPlan?.schemeContent || result.prompt || '无 prompt 记录');
+                          const hideResultPromptInProjectCard = project.module === 'everything_replace' && project.subFeature === 'product_replace';
                           const hasResult = Boolean(result.imageUrl || result.videoUrl);
                           const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
                           const resultMeta: string[] = [];
@@ -1728,6 +1730,7 @@ const ProjectCard: React.FC<Props> = ({
                                     </div>
                                   ) : null}
                                   {renderResultUsageMeta(result)}
+                                {!hideResultPromptInProjectCard && (
                                 <div className="relative overflow-hidden rounded-[16px]" style={{ background: 'var(--bg-surface)' }}>
                                   <button
                                     type="button"
@@ -1743,6 +1746,7 @@ const ProjectCard: React.FC<Props> = ({
                                     {displayedPrompt || '无 prompt 记录'}
                                   </p>
                                 </div>
+                                )}
                                 <div className="space-y-1.5">
                                   <div className="grid grid-cols-4 gap-1">
                                     <ResultActionButton

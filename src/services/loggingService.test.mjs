@@ -83,6 +83,10 @@ test('logging service labels every literal frontend log action emitted in app so
   }
 });
 
+test('logging service labels the everything replace module used by shell workflows', () => {
+  assert.match(source, /everything_replace:\s*'万物替换'/);
+});
+
 test('logging service labels task helper log actions that pass action as function arguments', () => {
   [
     'recover_task',

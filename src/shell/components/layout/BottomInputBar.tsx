@@ -20,6 +20,14 @@ import {
 import PresetLibrary, { type Preset } from '../PresetLibrary';
 import { estimateImageBilling, getImageModelCreditCost } from '../../../utils/imageBilling.mjs';
 import { isImeComposing } from '../../../utils/ime';
+import {
+  LOGO_PLACEMENT_RATIOS,
+  applyLogoPlacementTemplateToAllRatios,
+  createDefaultLogoPlacement,
+  resolveLogoPlacementRect,
+  resolveNearestLogoPlacementRatio,
+  updateLogoPlacementTemplate,
+} from '../../../utils/everythingReplaceLogoPlacement.mjs';
 
 /* ── Module-specific toolbar params ── */
 interface ParamItem {
@@ -116,7 +124,7 @@ const toSelectOption = (option: SelectOption) => (
 
 const QUICK_PARAMS: Record<string, ParamItem[]> = {
   [AppModuleObj.RETOUCH]: [
-    { key: 'mode',    label: '原图精修', title: '修复模式', icon: <Wand2 size={12} />,   options: ['原图精修', '白底精修', '背景替换', '智能增强'], defaultValue: '原图精修' },
+    { key: 'mode',    label: '原图精修', title: '修复模式', icon: <Wand2 size={12} />,   options: ['原图精修', '白底精修', '智能增强'], defaultValue: '原图精修' },
     { key: 'model',   label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />, options: ['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
     { key: 'quality', label: '1K',       title: '出图分辨率', icon: <Sparkles size={12} />, options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
   ],
@@ -143,6 +151,8 @@ const RETOUCH_RATIO_LABELS: Record<string, string> = {
   auto: 'AI 自适应尺寸',
 };
 
+const getEverythingReplaceRatioLabel = (ratio: string) => (ratio === 'auto' ? 'auto' : RETOUCH_RATIO_LABELS[ratio] || ratio);
+
 const getRetouchQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
   const supportedRatios = getRetouchSupportedAspectRatiosForModel(currentParams.model || 'GPT Image 2');
   return [
@@ -160,6 +170,45 @@ const getRetouchQuickParams = (currentParams: Record<string, string>): ParamItem
       secondaryRecommendedLabel: '推荐',
     },
     ...QUICK_PARAMS[AppModuleObj.RETOUCH].slice(1),
+  ];
+};
+
+const isProductReplaceContext = (module: AppModule, activeSubFeature?: string) => (
+  module === AppModuleObj.EVERYTHING_REPLACE && (!activeSubFeature || activeSubFeature === 'product_replace')
+);
+
+const getEverythingReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
+  const supportedRatios = getRetouchSupportedAspectRatiosForModel(currentParams.model || 'GPT Image 2');
+  return [
+    {
+      key: 'replacementLogic',
+      label: currentParams.replacementLogic === '单产品替换' ? '单品替换' : currentParams.replacementLogic || '单品替换',
+      title: '替换逻辑',
+      icon: <Wand2 size={12} />,
+      options: ['单品替换', '组合替换'],
+      defaultValue: '单品替换',
+    },
+    {
+      key: 'ratio',
+      label: getEverythingReplaceRatioLabel(supportedRatios[0] || 'auto'),
+      title: '出图比例',
+      icon: <BoxSelect size={12} />,
+      options: supportedRatios.map((ratio) => ({ value: ratio, label: getEverythingReplaceRatioLabel(ratio) })),
+      defaultValue: 'auto',
+      recommendedValue: 'auto',
+      recommendedLabel: '推荐',
+    },
+    { key: 'model', label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />, options: ['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
+    { key: 'quality', label: '1K', title: '出图分辨率', icon: <Sparkles size={12} />, options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
+    {
+      key: 'firstImageColorMode',
+      label: String(currentParams.firstImageColorMode || '').includes('自适应') ? '人物微调' : currentParams.firstImageColorMode || '完全复刻',
+      title: '参考强度',
+      icon: <Palette size={12} />,
+      options: ['完全复刻', '人物微调', '全局微调'],
+      defaultValue: '完全复刻',
+      recommendedValue: '完全复刻',
+    },
   ];
 };
 
@@ -315,6 +364,14 @@ const getOneClickBaseParams = (mode: string): ParamItem[] => {
       label: 'AI直出',
       title: '生成逻辑',
       icon: <Clapperboard size={12} />,
+      options: ['AI直出', '套图复刻'],
+      defaultValue: 'AI直出',
+    } as ParamItem] : []),
+    ...(mode === '详情页' ? [{
+      key: 'detailGenerationMode',
+      label: 'AI直出',
+      title: '详情生成方式',
+      icon: <Palette size={12} />,
       options: ['AI直出', '套图复刻'],
       defaultValue: 'AI直出',
     } as ParamItem] : []),
@@ -504,11 +561,13 @@ const getQuickParamsForModule = (
   if (module === AppModuleObj.TRANSLATION) return getTranslationQuickParams(activeSubFeature);
   if (module === AppModuleObj.VIDEO) return getVideoQuickParams(activeSubFeature, systemConfig, currentParams);
   if (module === AppModuleObj.RETOUCH) return getRetouchQuickParams(currentParams);
+  if (isProductReplaceContext(module, activeSubFeature)) return getEverythingReplaceQuickParams(currentParams);
   if (module !== AppModuleObj.ONE_CLICK) return QUICK_PARAMS[module] || [];
   const mode = currentParams.mode || '首图';
   if (mode === '首图') return getOneClickBaseParams(mode);
   if (mode === 'SKU') return getOneClickBaseParams(mode);
   if (mode === '主图' && currentParams.planningLogic === '套图复刻') return getOneClickBaseParams(mode);
+  if (mode === '详情页' && currentParams.detailGenerationMode === '套图复刻') return getOneClickBaseParams(mode);
   return [
     ...getOneClickBaseParams(mode),
     {
@@ -525,6 +584,7 @@ const getQuickParamsForModule = (
 
 const getMaterialTypesForContext = (module: AppModule, currentParams: Record<string, string>, activeSubFeature?: string): MaterialType[] | undefined => {
   if (module === AppModuleObj.BUYER_SHOW) return ['product', 'atmosphere', 'model'];
+  if (isProductReplaceContext(module, activeSubFeature)) return ['product', 'logo', 'styleRef'];
   if (module === AppModuleObj.VIDEO) {
     if (activeSubFeature === 'diagnosis') return [];
     if (activeSubFeature === 'storyboard') {
@@ -632,6 +692,36 @@ const getStoryboardMaterialLabels = (params: Record<string, string>): Partial<Re
   };
 };
 
+const getEverythingReplaceMaterialLabels = (
+  params: Record<string, string>,
+): Partial<Record<MaterialType, { label: string; desc: string }>> => {
+  const isCombination = params.replacementLogic === '组合替换';
+  return {
+    product: {
+      label: '替换产品图',
+      desc: isCombination
+        ? '同一组产品，整体替换'
+        : '仅同一产品，可多角度/细节图',
+    },
+    logo: { label: 'Logo上传', desc: '上传Logo' },
+    styleRef: { label: '替换参考图', desc: '一图一结果' },
+  };
+};
+
+const resolveEverythingReplaceBillingCount = (
+  materials: Record<string, Material[]>,
+  activeSubFeature: string | undefined,
+  params: Record<string, string>,
+) => {
+  const scopedCount = (type: string) => (materials[type] || [])
+    .filter((item) => !item.subFeature || item.subFeature === activeSubFeature)
+    .length;
+  const productCount = scopedCount('product');
+  const referenceCount = scopedCount('styleRef');
+  if (productCount <= 0 || referenceCount <= 0) return 1;
+  return referenceCount;
+};
+
 const getBuyerShowSetCount = (currentParams: Record<string, string>) => {
   const parsed = parseInt(String(currentParams.setCount || '1套'), 10);
   if (!Number.isFinite(parsed) || parsed < 1) return 1;
@@ -701,6 +791,7 @@ const MODULE_PLACEHOLDERS: Record<string, string> = {
   [AppModuleObj.TRANSLATION]: '',
   [AppModuleObj.BUYER_SHOW]: '请输入产品名称、核心卖点、目标人群和基础适用场景...',
   [AppModuleObj.RETOUCH]: '上传产品图并描述精修要求...',
+  [AppModuleObj.EVERYTHING_REPLACE]: '填写替换要求、保留重点或禁区说明...',
   [AppModuleObj.VIDEO]: '输入视频脚本或产品卖点...',
   [AppModuleObj.XHS_COVER]: '主标题：\n副标题：\n内容/卖点：',
 };
@@ -723,6 +814,7 @@ const getPlaceholderForContext = (module: AppModule, activeSubFeature?: string, 
 
 const getGenerateLabelForContext = (module: AppModule, activeSubFeature?: string) => {
   if (isPendingShellSubFeature(module, activeSubFeature)) return '待制作';
+  if (isProductReplaceContext(module, activeSubFeature)) return '开始产品替换';
   if (module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard') return '生成分镜';
   if (module === AppModuleObj.VIDEO && activeSubFeature === 'diagnosis') return '一键勘探深度分析';
   return '生成';
@@ -730,7 +822,8 @@ const getGenerateLabelForContext = (module: AppModule, activeSubFeature?: string
 
 const isPendingShellSubFeature = (module: AppModule, activeSubFeature?: string) =>
   (module === AppModuleObj.BUYER_SHOW && activeSubFeature === 'copy')
-  || (module === AppModuleObj.RETOUCH && (activeSubFeature === 'background_replace' || activeSubFeature === 'enhance'));
+  || (module === AppModuleObj.RETOUCH && (activeSubFeature === 'background_replace' || activeSubFeature === 'enhance'))
+  || (module === AppModuleObj.EVERYTHING_REPLACE && (activeSubFeature === 'background_replace' || activeSubFeature === 'logo_replace'));
 
 /* ── Compact Dropdown ── */
 const CompactSelect: React.FC<{
@@ -904,6 +997,7 @@ interface Props {
   oneClickReferencePresets?: OneClickReferencePreset[];
   onUploadMaterial: (type: string, files: FileList | null) => void;
   onApplyPresetMaterials?: (items: Array<{ type: string; url: string; remoteUrl?: string; fileName: string }>) => void;
+  onUpdateMaterial?: (type: string, id: string, patch: Partial<Material>) => void;
   onRemoveMaterial: (type: string, id: string) => void;
   systemConfig?: SystemPublicConfig | null;
   generationDisabledReason?: string;
@@ -911,7 +1005,7 @@ interface Props {
 
 const BottomInputBar: React.FC<Props> = ({
   module, activeSubFeature, promptText, onPromptChange, onGenerate, isGenerating: _isGenerating, isSubmitLocked = false,
-  currentParams, onParamChange, materials, oneClickReferencePresets, onUploadMaterial, onApplyPresetMaterials, onRemoveMaterial,
+  currentParams, onParamChange, materials, oneClickReferencePresets, onUploadMaterial, onApplyPresetMaterials, onUpdateMaterial, onRemoveMaterial,
   systemConfig, generationDisabledReason = '',
 }) => {
   const quickParams = getQuickParamsForModule(module, currentParams, activeSubFeature, systemConfig);
@@ -933,6 +1027,19 @@ const BottomInputBar: React.FC<Props> = ({
   const [skuCountOpen, setSkuCountOpen] = useState(false);
   const [xhsPresetOpen, setXhsPresetOpen] = useState(false);
   const [xhsPreviewImage, setXhsPreviewImage] = useState<string | null>(null);
+  const logoPlacementFrameRef = useRef<HTMLDivElement>(null);
+  const logoPlacementInteractionRef = useRef<null | {
+    mode: 'move' | 'resize';
+    startX: number;
+    startY: number;
+    startRect: { x: number; y: number; width: number; height: number };
+  }>(null);
+  const [logoPlacementEditorOpen, setLogoPlacementEditorOpen] = useState(false);
+  const [logoPlacementEditingLogoId, setLogoPlacementEditingLogoId] = useState('');
+  const [logoPlacementRatio, setLogoPlacementRatio] = useState('1:1');
+  const [logoPlacementDraft, setLogoPlacementDraft] = useState<any>(null);
+  const [logoPlacementFrameSize, setLogoPlacementFrameSize] = useState({ width: 520, height: 520 });
+  const lastAutoOpenedLogoIdRef = useRef<string>('');
   const [customStoryboardNarrativePresets, setCustomStoryboardNarrativePresets] = useState<StoryboardNarrativePreset[]>(() => loadCustomStoryboardNarrativePresets());
   const [storyboardNarrativeSelectOpen, setStoryboardNarrativeSelectOpen] = useState(false);
   const [storyboardPresetNamingOpen, setStoryboardPresetNamingOpen] = useState(false);
@@ -941,8 +1048,10 @@ const BottomInputBar: React.FC<Props> = ({
   const isOneClick = module === AppModuleObj.ONE_CLICK;
   const isSkuMode = isOneClick && (currentParams.mode || '首图') === 'SKU';
   const isMainImageSuiteReplication = isOneClick && (currentParams.mode || '首图') === '主图' && currentParams.planningLogic === '套图复刻';
+  const isDetailPageSuiteReplication = isOneClick && (currentParams.mode || '首图') === '详情页' && currentParams.detailGenerationMode === '套图复刻';
   const isXhsCover = module === AppModuleObj.XHS_COVER;
   const isBuyerShow = module === AppModuleObj.BUYER_SHOW;
+  const isEverythingReplaceProductReplace = isProductReplaceContext(module, activeSubFeature);
   const isPendingSubFeature = isPendingShellSubFeature(module, activeSubFeature);
   const disabledReason = generationDisabledReason || (isPendingSubFeature ? '该子功能待制作' : '');
   const retouchSizeWarning = module === AppModuleObj.RETOUCH
@@ -956,7 +1065,7 @@ const BottomInputBar: React.FC<Props> = ({
     : '';
   const isDreaminaVideoGeneration = module === AppModuleObj.VIDEO && (!activeSubFeature || activeSubFeature === 'generation');
   const isStoryboardViralReplicationContext = module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard' && isStoryboardViralReplicationMode(currentParams.videoMode);
-  const canGenerateWithoutPrompt = isSkuPromptMode || isTranslation || module === AppModuleObj.RETOUCH || isStoryboardViralReplicationContext;
+  const canGenerateWithoutPrompt = isSkuPromptMode || isTranslation || module === AppModuleObj.RETOUCH || isEverythingReplaceProductReplace || isStoryboardViralReplicationContext;
   const isGenerateDisabled = isSubmitLocked || Boolean(disabledReason) || (!promptText.trim() && !canGenerateWithoutPrompt);
   const isSubmitBusy = isSubmitLocked;
   const submitLabel = isSubmitBusy ? '任务处理中...' : generateLabel;
@@ -967,8 +1076,15 @@ const BottomInputBar: React.FC<Props> = ({
   const billingMaterialCount = module === AppModuleObj.TRANSLATION
     ? (materials.product || []).filter((item) => !item.subFeature || item.subFeature === activeSubFeature).length
     : 0;
-  const billingParams = isMainImageSuiteReplication
-    ? { ...currentParams, count: String((materials.styleRef || []).length) }
+  const activeStyleRefCount = (materials.styleRef || [])
+    .filter((item) => !item.subFeature || item.subFeature === activeSubFeature)
+    .length;
+  const billingParams = isDetailPageSuiteReplication
+    ? { ...currentParams, count: String(activeStyleRefCount), exactCount: 'true' }
+    : isMainImageSuiteReplication
+    ? { ...currentParams, count: String(activeStyleRefCount), exactCount: 'true' }
+    : isEverythingReplaceProductReplace
+    ? { ...currentParams, count: String(resolveEverythingReplaceBillingCount(materials, activeSubFeature, currentParams)), exactCount: 'true' }
     : currentParams;
   const imageBillingEstimate = estimateImageBilling({
     module,
@@ -985,6 +1101,15 @@ const BottomInputBar: React.FC<Props> = ({
       })
     : { billable: false, estimatedCredits: 0 };
   const billingEstimate = seedanceBillingEstimate.billable ? seedanceBillingEstimate : imageBillingEstimate;
+  const activeEverythingReplaceLogo = isEverythingReplaceProductReplace ? (materials.logo || [])[0] : undefined;
+  const activeEverythingReplaceReference = isEverythingReplaceProductReplace ? (materials.styleRef || [])[0] : undefined;
+  const activeLogoRatio = activeEverythingReplaceLogo?.originalWidth && activeEverythingReplaceLogo?.originalHeight
+    ? activeEverythingReplaceLogo.originalWidth / Math.max(1, activeEverythingReplaceLogo.originalHeight)
+    : 2;
+  const logoPlacementReferenceSize = {
+    width: activeEverythingReplaceReference?.originalWidth || 1000,
+    height: activeEverythingReplaceReference?.originalHeight || 1000,
+  };
 
   useEffect(() => {
     setTypeSelectorOpen(false);
@@ -997,6 +1122,7 @@ const BottomInputBar: React.FC<Props> = ({
     setXhsPreviewImage(null);
     setStoryboardNarrativeSelectOpen(false);
     setStoryboardPresetNamingOpen(false);
+    setLogoPlacementEditorOpen(false);
     setUploadTarget('');
   }, [module, activeSubFeature, currentParams.mode]);
 
@@ -1006,6 +1132,38 @@ const BottomInputBar: React.FC<Props> = ({
     ta.style.height = 'auto';
     ta.style.height = Math.min(ta.scrollHeight, 160) + 'px';
   }, [promptText]);
+
+  useEffect(() => {
+    if (!logoPlacementEditorOpen) return undefined;
+    const el = logoPlacementFrameRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      setLogoPlacementFrameSize({
+        width: Math.max(1, entry.contentRect.width),
+        height: Math.max(1, entry.contentRect.height),
+      });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [logoPlacementEditorOpen, logoPlacementRatio]);
+
+  useEffect(() => {
+    if (!isEverythingReplaceProductReplace || !activeEverythingReplaceLogo) return;
+    if (activeEverythingReplaceLogo.logoPlacement) return;
+    if (lastAutoOpenedLogoIdRef.current === activeEverythingReplaceLogo.id) return;
+    const baseRatio = resolveNearestLogoPlacementRatio(logoPlacementReferenceSize);
+    lastAutoOpenedLogoIdRef.current = activeEverythingReplaceLogo.id;
+    setLogoPlacementEditingLogoId(activeEverythingReplaceLogo.id);
+    setLogoPlacementRatio(baseRatio);
+    setLogoPlacementDraft(createDefaultLogoPlacement({
+      width: logoPlacementReferenceSize.width,
+      height: logoPlacementReferenceSize.height,
+      logoRatio: activeLogoRatio,
+    }));
+    setLogoPlacementEditorOpen(true);
+  }, [activeEverythingReplaceLogo, logoPlacementReferenceSize.height, logoPlacementReferenceSize.width, activeLogoRatio, isEverythingReplaceProductReplace]);
 
   const getVal = useCallback((key: string, def: string) => currentParams[key] ?? def, [currentParams]);
   const getSelectValue = useCallback((param: ParamItem) => {
@@ -1083,6 +1241,107 @@ const BottomInputBar: React.FC<Props> = ({
     setUploadTarget(type);
     setTypeSelectorOpen(false);
     setTimeout(() => fileInputRef.current?.click(), 50);
+  };
+
+  const openLogoPlacementEditor = (logoMaterial = activeEverythingReplaceLogo) => {
+    if (!logoMaterial) return;
+    const savedPlacement = logoMaterial.logoPlacement as any;
+    setLogoPlacementEditingLogoId(logoMaterial.id);
+    const baseRatio = String(savedPlacement?.baseRatio || resolveNearestLogoPlacementRatio({
+      width: activeEverythingReplaceReference?.originalWidth || 1000,
+      height: activeEverythingReplaceReference?.originalHeight || 1000,
+    }));
+    setLogoPlacementRatio(baseRatio);
+    setLogoPlacementDraft(savedPlacement || createDefaultLogoPlacement({
+      width: activeEverythingReplaceReference?.originalWidth || 1000,
+      height: activeEverythingReplaceReference?.originalHeight || 1000,
+      logoRatio: activeLogoRatio,
+    }));
+    setLogoPlacementEditorOpen(true);
+  };
+
+  const resolveCurrentLogoPlacementRect = () => resolveLogoPlacementRect(
+    logoPlacementDraft || createDefaultLogoPlacement({ logoRatio: activeLogoRatio }),
+    {
+      ratio: logoPlacementRatio,
+      canvasWidth: logoPlacementFrameSize.width,
+      canvasHeight: logoPlacementFrameSize.height,
+      logoRatio: activeLogoRatio,
+    },
+  );
+
+  const updateCurrentLogoPlacementRect = (
+    rect: { x: number; y: number; width: number; height: number },
+    applyToAll = false,
+  ) => {
+    setLogoPlacementDraft((prev: any) => updateLogoPlacementTemplate(
+      prev || createDefaultLogoPlacement({ logoRatio: activeLogoRatio }),
+      logoPlacementRatio,
+      {
+        ...rect,
+        canvasWidth: logoPlacementFrameSize.width,
+        canvasHeight: logoPlacementFrameSize.height,
+      },
+      { applyToAll },
+    ));
+  };
+
+  const handleLogoPlacementPointerDown = (event: React.PointerEvent<HTMLDivElement>, mode: 'move' | 'resize') => {
+    event.preventDefault();
+    event.stopPropagation();
+    (event.currentTarget as HTMLDivElement).setPointerCapture?.(event.pointerId);
+    logoPlacementInteractionRef.current = {
+      mode,
+      startX: event.clientX,
+      startY: event.clientY,
+      startRect: resolveCurrentLogoPlacementRect(),
+    };
+  };
+
+  const handleLogoPlacementPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const interaction = logoPlacementInteractionRef.current;
+    if (!interaction) return;
+    event.preventDefault();
+    const dx = event.clientX - interaction.startX;
+    const dy = event.clientY - interaction.startY;
+    const minWidth = Math.max(24, logoPlacementFrameSize.width * 0.04);
+    let nextRect = interaction.startRect;
+    if (interaction.mode === 'resize') {
+      const width = Math.max(minWidth, interaction.startRect.width + dx);
+      const height = width / Math.max(0.1, activeLogoRatio);
+      nextRect = {
+        ...interaction.startRect,
+        width: Math.min(width, logoPlacementFrameSize.width - interaction.startRect.x),
+        height: Math.min(height, logoPlacementFrameSize.height - interaction.startRect.y),
+      };
+    } else {
+      nextRect = {
+        ...interaction.startRect,
+        x: Math.min(Math.max(0, interaction.startRect.x + dx), Math.max(0, logoPlacementFrameSize.width - interaction.startRect.width)),
+        y: Math.min(Math.max(0, interaction.startRect.y + dy), Math.max(0, logoPlacementFrameSize.height - interaction.startRect.height)),
+      };
+    }
+    updateCurrentLogoPlacementRect(nextRect, false);
+  };
+
+  const handleLogoPlacementPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!logoPlacementInteractionRef.current) return;
+    event.preventDefault();
+    logoPlacementInteractionRef.current = null;
+  };
+
+  const applyCurrentLogoPlacementToAllRatios = () => {
+    setLogoPlacementDraft((prev: any) => applyLogoPlacementTemplateToAllRatios(
+      prev || createDefaultLogoPlacement({ logoRatio: activeLogoRatio }),
+      logoPlacementRatio,
+    ));
+  };
+
+  const saveLogoPlacement = () => {
+    const targetLogo = (materials.logo || []).find((item) => item.id === logoPlacementEditingLogoId) || activeEverythingReplaceLogo;
+    if (!targetLogo || !logoPlacementDraft) return;
+    onUpdateMaterial?.('logo', targetLogo.id, { logoPlacement: logoPlacementDraft });
+    setLogoPlacementEditorOpen(false);
   };
 
   const storyboardNarrativePresets = [...BUILTIN_STORYBOARD_NARRATIVE_PRESETS, ...customStoryboardNarrativePresets];
@@ -1339,6 +1598,7 @@ const BottomInputBar: React.FC<Props> = ({
     if (type === 'gift') return '赠品上传';
     if (type === 'logo') return 'Logo上传';
     if (type === 'styleRef' && isMainImageSuiteReplication) return '参考套图';
+    if (type === 'styleRef' && isDetailPageSuiteReplication) return '详情页套图参考';
     if (type === 'styleRef') return mode === 'SKU' ? '风格参考' : '风格参考';
     return '参考素材';
   };
@@ -1348,6 +1608,7 @@ const BottomInputBar: React.FC<Props> = ({
     if (type === 'gift') return '按顺序编号赠品';
     if (type === 'logo') return '品牌标识素材';
     if (type === 'styleRef' && isMainImageSuiteReplication) return '整套主图参考，最多5张';
+    if (type === 'styleRef' && isDetailPageSuiteReplication) return '详情页整套参考，最多10张';
     if (type === 'styleRef') return '版式与视觉参考';
     return '参考素材';
   };
@@ -1645,11 +1906,168 @@ const BottomInputBar: React.FC<Props> = ({
     onRemoveMaterial(type, id);
   };
 
+  const handlePreviewAdjust = (type: string, id: string) => {
+    if (type !== 'logo') return;
+    const logo = (materials.logo || []).find((item) => item.id === id);
+    if (!logo) return;
+    openLogoPlacementEditor(logo);
+  };
+
+  const renderEverythingReplaceLogoPlacementEditor = () => {
+    if (!logoPlacementEditorOpen || !activeEverythingReplaceLogo) return null;
+    const ratioMeta = LOGO_PLACEMENT_RATIOS.find((item: any) => item.ratio === logoPlacementRatio) || LOGO_PLACEMENT_RATIOS[0];
+    const previewRatio = ratioMeta.width / Math.max(1, ratioMeta.height);
+    const currentRect = resolveCurrentLogoPlacementRect();
+    const logoStyle = {
+      left: `${(currentRect.x / Math.max(1, logoPlacementFrameSize.width)) * 100}%`,
+      top: `${(currentRect.y / Math.max(1, logoPlacementFrameSize.height)) * 100}%`,
+      width: `${(currentRect.width / Math.max(1, logoPlacementFrameSize.width)) * 100}%`,
+      height: `${(currentRect.height / Math.max(1, logoPlacementFrameSize.height)) * 100}%`,
+    };
+
+    return (
+      <div
+        className="fixed inset-0 z-[280] flex items-center justify-center p-5"
+        style={{ background: 'rgba(0,0,0,0.76)', backdropFilter: 'blur(12px)' }}
+      >
+        <div
+          className="flex max-h-[90vh] w-full max-w-[980px] flex-col overflow-hidden rounded-3xl border"
+          style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', boxShadow: 'var(--shadow-elevated)' }}
+        >
+          <div className="flex items-center justify-between gap-3 border-b px-5 py-4" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div>
+              <h3 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Logo位置区域调整</h3>
+              <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                默认按当前比例自动适配其它比例，也可切换比例单独调整。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLogoPlacementEditorOpen(false)}
+              className="flex h-9 w-9 items-center justify-center rounded-2xl transition-colors"
+              style={{ color: 'var(--text-tertiary)', background: 'var(--bg-elevated)' }}
+              title="关闭"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 md:grid-cols-[180px_minmax(0,1fr)]">
+            <div className="flex flex-col gap-2">
+              <p className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>比例模板</p>
+              {LOGO_PLACEMENT_RATIOS.map((item: any) => (
+                <button
+                  key={item.ratio}
+                  type="button"
+                  onClick={() => setLogoPlacementRatio(item.ratio)}
+                  className="flex items-center justify-between rounded-2xl px-3 py-2 text-[12px] transition-colors"
+                  style={{
+                    background: logoPlacementRatio === item.ratio ? 'rgba(37,99,235,0.16)' : 'var(--bg-elevated)',
+                    color: logoPlacementRatio === item.ratio ? 'var(--accent)' : 'var(--text-secondary)',
+                  }}
+                >
+                  <span>{item.label}</span>
+                  {logoPlacementRatio === item.ratio && <Check size={14} />}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={applyCurrentLogoPlacementToAllRatios}
+                className="mt-2 rounded-2xl px-3 py-2 text-[12px] font-medium transition-colors"
+                style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)' }}
+              >
+                应用到全部比例
+              </button>
+            </div>
+
+            <div className="min-w-0">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <span className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  当前模板 {ratioMeta.label}
+                </span>
+                <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                  拖动调整位置，拖右下角调整大小
+                </span>
+              </div>
+              <div className="flex min-h-0 justify-center">
+                <div
+                  className="flex w-full max-w-[620px] items-center justify-center rounded-3xl p-3"
+                  style={{
+                    height: 'min(58vh, 620px)',
+                    background: 'var(--bg-elevated)',
+                  }}
+                >
+                  <div
+                    ref={logoPlacementFrameRef}
+                    className="relative overflow-hidden rounded-3xl border"
+                    style={{
+                      aspectRatio: `${ratioMeta.width} / ${ratioMeta.height}`,
+                      width: previewRatio >= 1 ? '100%' : `calc(min(58vh, 620px) * ${previewRatio})`,
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      borderColor: 'var(--border-subtle)',
+                      background: 'linear-gradient(135deg, var(--bg-elevated), var(--bg-surface-hover))',
+                    }}
+                    onPointerMove={handleLogoPlacementPointerMove}
+                    onPointerUp={handleLogoPlacementPointerUp}
+                    onPointerCancel={handleLogoPlacementPointerUp}
+                  >
+                    <div className="absolute inset-0 bg-black/10" />
+                    <div
+                      className="absolute cursor-move select-none rounded-xl border-2 border-blue-500 bg-white/10 shadow-[0_0_0_1px_rgba(255,255,255,0.45)]"
+                      style={logoStyle}
+                      onPointerDown={(event) => handleLogoPlacementPointerDown(event, 'move')}
+                    >
+                      <img
+                        src={activeEverythingReplaceLogo.url}
+                        alt="Logo位置预览"
+                        className="h-full w-full object-contain"
+                        draggable={false}
+                      />
+                      <div
+                        className="absolute -bottom-2 -right-2 h-5 w-5 cursor-nwse-resize rounded-full border-2 border-white bg-blue-500"
+                        onPointerDown={(event) => handleLogoPlacementPointerDown(event, 'resize')}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t px-5 py-4" style={{ borderColor: 'var(--border-subtle)' }}>
+            <button
+              type="button"
+              onClick={() => setLogoPlacementEditorOpen(false)}
+              className="rounded-2xl px-4 py-2 text-[12px] font-medium"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={saveLogoPlacement}
+              className="rounded-2xl px-4 py-2 text-[12px] font-medium text-white"
+              style={{ background: 'var(--accent)' }}
+            >
+              确定位置
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="shrink-0" style={{ background: 'var(--bg-base)' }}>
       <div className="px-6 pt-4 pb-5">
         {/* Material previews — grouped by type */}
-        <MaterialPreviewBar materials={displayMaterials} onRemoveMaterial={handlePreviewRemove} />
+        <MaterialPreviewBar
+          materials={displayMaterials}
+          onRemoveMaterial={handlePreviewRemove}
+          onAdjustMaterial={isEverythingReplaceProductReplace ? handlePreviewAdjust : undefined}
+        />
+        {renderEverythingReplaceLogoPlacementEditor()}
         {isDreaminaVideoGeneration && (
           <div className="mx-auto mb-3 flex max-w-[896px] flex-col gap-1 rounded-2xl border px-4 py-2.5 text-[12px] leading-relaxed" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)', color: 'var(--text-secondary)' }}>
             <span>{getDreaminaModeGuidance(currentParams)}</span>
@@ -1767,7 +2185,7 @@ const BottomInputBar: React.FC<Props> = ({
                                 <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{getOneClickUploadDesc(type)}</span>
                               </button>
                             ))}
-                            {!isMainImageSuiteReplication && (
+                            {!(isMainImageSuiteReplication || isDetailPageSuiteReplication) && (
                               <button
                                 onClick={() => { setUploadMenuOpen(false); setOneClickPresetLibraryOpen(true); }}
                                 className="flex min-h-[62px] flex-col items-start justify-center gap-1 rounded-2xl p-3 text-left transition-colors"
@@ -1853,13 +2271,23 @@ const BottomInputBar: React.FC<Props> = ({
                       open={typeSelectorOpen}
                       onClose={() => setTypeSelectorOpen(false)}
                       onSelect={handleMaterialTypeSelect}
+                      onMaterialAction={(type) => {
+                        if (type === 'logo') openLogoPlacementEditor();
+                      }}
                       materialTypes={contextMaterialTypes}
                       materialLabels={
-                        activeSubFeature === 'storyboard'
+                        isEverythingReplaceProductReplace
+                          ? getEverythingReplaceMaterialLabels(currentParams)
+                          : activeSubFeature === 'storyboard'
                           ? getStoryboardMaterialLabels(currentParams)
                           : isDreaminaVideoGeneration
-                            ? getDreaminaMaterialLabels(currentParams)
+                          ? getDreaminaMaterialLabels(currentParams)
                             : undefined
+                      }
+                      materialActionLabels={
+                        isEverythingReplaceProductReplace && activeEverythingReplaceLogo
+                          ? { logo: '调整位置' }
+                          : undefined
                       }
                     />
                   </>

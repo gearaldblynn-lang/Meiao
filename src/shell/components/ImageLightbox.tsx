@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { Download, X, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Download, X, ChevronLeft, ChevronRight, Move } from 'lucide-react';
 
 export interface LightboxMediaItem {
   url: string;
@@ -16,9 +16,11 @@ interface Props {
   onPrev: () => void;
   onNext: () => void;
   onDownloadCurrent?: () => void;
+  actionLabel?: string;
+  onActionCurrent?: () => void;
 }
 
-const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onClose, onPrev, onNext, onDownloadCurrent }) => {
+const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onClose, onPrev, onNext, onDownloadCurrent, actionLabel, onActionCurrent }) => {
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -119,6 +121,21 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
           onClick={(e) => e.stopPropagation()}
         />
       )}
+
+      {actionLabel && onActionCurrent ? (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onActionCurrent();
+          }}
+          className="absolute bottom-8 left-1/2 flex h-11 -translate-x-1/2 items-center gap-2 rounded-full px-5 text-[14px] font-semibold shadow-[0_18px_40px_rgba(37,99,235,0.35)] transition-transform hover:scale-[1.03]"
+          style={{ background: 'rgba(37,99,235,0.96)', color: '#fff' }}
+        >
+          <Move size={17} />
+          {actionLabel}
+        </button>
+      ) : null}
 
       {/* Next */}
       {mediaItems.length > 1 && (

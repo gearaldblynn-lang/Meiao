@@ -61,3 +61,25 @@ test('storyboard billing estimates the direct board image request', () => {
   assert.equal(estimate.imageCount, 1);
   assert.equal(estimate.estimatedCredits, 3);
 });
+
+test('one click suite replication billing can use exact zero reference count', () => {
+  const estimate = estimateImageBilling({
+    module: 'one_click',
+    subFeature: 'detail_page',
+    params: { model: 'GPT Image 2', quality: '1K', count: '0', exactCount: 'true' },
+  });
+
+  assert.equal(estimate.imageCount, 0);
+  assert.equal(estimate.estimatedCredits, 0);
+});
+
+test('one click detail billing keeps the default count without exact mode', () => {
+  const estimate = estimateImageBilling({
+    module: 'one_click',
+    subFeature: 'detail_page',
+    params: { model: 'GPT Image 2', quality: '1K', count: '0' },
+  });
+
+  assert.equal(estimate.imageCount, 7);
+  assert.equal(estimate.estimatedCredits, 21);
+});
