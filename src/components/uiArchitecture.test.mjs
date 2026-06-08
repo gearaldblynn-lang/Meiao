@@ -220,6 +220,10 @@ test('one click generation refuses to turn planning error text into image prompt
   const validation = read('../utils/oneClickPlanValidation.ts');
 
   assert.match(app, /isInvalidOneClickPlanLike/);
+  assert.match(app, /const isFailedPlanningPlan = \(plan: PlanItem\) => Boolean/);
+  assert.match(app, /const failedSelectedPlans = selectedPlans\.filter\(isFailedPlanningPlan\)/);
+  assert.match(app, /selectedPlans = runnableSelectedPlans/);
+  assert.match(app, /选中的方案均为策划失败项，请先重新策划失败项后再出图。/);
   assert.match(validation, /INVALID_ONE_CLICK_PLAN_PATTERNS/);
   assert.match(validation, /fetch failed/i);
   assert.match(validation, /Cannot read properties of undefined/);

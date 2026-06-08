@@ -107,3 +107,17 @@
   - 云上现行 `260430A` 版本只读执行 `npm audit --json` 返回 0 个漏洞；云上仍是旧 3000 构建，尚未同步本次 3001 前端壳升级。
   - 本地当前版本服务已重新启动：前端 `http://127.0.0.1:3000/`，后端 `http://127.0.0.1:3100/api/health` 返回 `{"ok":true,"mode":"internal-v1"}`。
   - 腾讯云尚未执行本次前端升级发布；发布前必须先按 `docs/cloud-update-data-cleanup.md` 做数据巡检和垃圾卡清理。
+
+## 12. 2026-06-08 首图策划失败可见性热修
+
+- 触发问题：云上账号“天琪”的一键主详首图项目“6月8日项目3”提交 5 个参考图策划后，5 个 `kie_chat` 策划任务均以 `provider_submit_stale` 失败，但界面最终只显示 2 张失败策划卡，且失败文案可能继续作为正常方案提交出图。
+- 修复范围：
+  - `src/adapters/shellDataAdapter.ts`：按每个失败参考图生成 `planningFailed` 失败方案卡，保留 `shellReferenceIndex`，真实失败替换旧占位，不重复抬高 `taskCount`。
+  - `src/ShellMigratedApp.tsx`：出图入口拦截失败策划卡，全失败时提示重新策划，混选时跳过失败项。
+  - `src/adapters/shellDataAdapter.test.mjs`、`src/components/uiArchitecture.test.mjs`：增加 5 个首图策划全部失败和失败文案不得进入出图链路的回归覆盖。
+- 本地验证：
+  - `node --test src/adapters/shellDataAdapter.test.mjs`
+  - `node --test src/components/uiArchitecture.test.mjs --test-name-pattern "one click generation refuses to turn planning error text"`
+  - `npm run build`
+- 云上发布：已通过 `MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh` 发布到腾讯云 `/www/wwwroot/meiao-internal`，服务器端 `npm audit --audit-level=high`、`npm run build` 通过，PM2 `meiao-internal` 已重启并保存。
+- 后续观察：诊断看板继续观察同类 `provider_submit_stale` / provider task id 缺失场景；这类上游提交超时仍可能发生，但前端必须完整显示失败数量并阻止错误文案进入出图。
