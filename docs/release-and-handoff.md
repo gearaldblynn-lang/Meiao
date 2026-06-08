@@ -139,4 +139,4 @@
   - `node --test src/adapters/shellDataAdapter.test.mjs`
   - `npm run build`
   - `npm test` 不存在，npm 返回 `Missing script: "test"`。
-- 云上发布：待执行本次提交后的 `MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh`，发布后需复查 `/api/health` 和 PM2 `meiao-internal`。
+- 云上发布：已通过 `MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh` 发布到腾讯云 `/www/wwwroot/meiao-internal`；云端 `npm audit --audit-level=high`、`npm run build` 通过，PM2 `meiao-internal` 已重启并保存。发布后 `http://111.229.66.247/api/health` 和 `http://111.229.66.247:3100/api/health` 均返回 `{"ok":true,"mode":"internal-mysql-v1","taskEngine":"temporal"}`。
