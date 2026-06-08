@@ -20,6 +20,17 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-08 - Failed first-image planning references must stay visible and must not become image prompts
+
+- Symptom: 云上账号“天琪”首图项目“6月8日项目3”提交 5 个策划任务后，界面最后只露出 2 张失败策划卡，用户无法判断 5 个参考图是否全部失败；失败卡里的“任务提交上游前长时间未返回上游任务 ID...”还可能被当成正常方案继续提交出图。
+- Environment: Tencent Cloud production one_click first_image / local development.
+- Cloud evidence: 用户 `823cdda9d1164f59c34d5a6d` 的项目 `proj-plan-1780906352472` 在 2026-06-08 16:12:32 之后创建 5 个 `kie_chat` 首图策划 job，均在 16:28:05 以 `provider_submit_stale` 失败且没有上游 provider task id；日志同时写出“共 5 张参考图，其中 5 张策划失败”。云端 state 最终只保留 2 个 `*-error` plans，并有后续 `kie_image` 任务把失败文案作为 prompt 提交。
+- Root cause: `shellDataAdapter` 对失败策划 job 只生成错误 result，没有按 `shellReferenceIndex` 生成稳定可见的 failed plan；归一化阶段又会把错误文案形态的 plan 当无效内容清掉。生成入口只拦截通用 invalid plan 文本，没有把已标记的策划失败卡作为不可出图状态处理。此前修复主要覆盖 provider task id 缺失、任务不存在和成功回填，漏了“策划提交上游前未拿到 providerTaskId 后终态失败”的恢复路径。
+- Fix: 失败的一键首图策划 job 现在会按每个参考图构造 `planningFailed/status:error/error` 方案卡并保留 reference index；真实后端失败会替换旧失败占位而不是重复抬高 taskCount；归一化不再清掉 `planningFailed` 卡。`ShellMigratedApp` 生成入口会拦截失败策划卡，全失败时提示重新策划，混选时跳过失败项，避免错误文案进入出图 provider payload。
+- Regression check: `node --test src/adapters/shellDataAdapter.test.mjs`; `node --test src/components/uiArchitecture.test.mjs --test-name-pattern "one click generation refuses to turn planning error text"`; `npm run build`.
+- Files/tests: `src/adapters/shellDataAdapter.ts`, `src/adapters/shellDataAdapter.test.mjs`, `src/ShellMigratedApp.tsx`, `src/components/uiArchitecture.test.mjs`.
+- Avoid next time: 多参考图策划的失败恢复必须以“用户提交的参考图数”为可见性基线，不能只按成功 plans 或结果数组推断。错误文案可以显示，但必须带 `planningFailed` 身份并在出图入口硬拦截；任何 provider-submit stale、providerTaskId 缺失、task_not_found 等策划链路终态都要验证“失败卡数量、taskCount、可见提示、后续出图 payload”四件事。
+
 ## 2026-06-05 - Main-image failures can be provider balance or stale deleted assets
 
 - Symptom: 云上账号“洛克”主图任务前端显示一堆失败，用户反馈切换多个模型也无法生图/策划。

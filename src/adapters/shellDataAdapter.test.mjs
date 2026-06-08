@@ -2154,6 +2154,59 @@ test('shell data adapter keeps multiple first-image planning plans but exposes o
   assert.equal(snapshot.projects.some((item) => item.id === 'job-planning-job-b'), false);
 });
 
+test('shell data adapter preserves every failed first-image planning reference as a visible failed plan', () => {
+  const makeFailedPlanningJob = (refIndex) => ({
+    id: `failed-planning-job-${refIndex}`,
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'failed',
+    providerTaskId: '',
+    errorCode: 'provider_submit_stale',
+    errorMessage: '任务提交上游前长时间未返回上游任务 ID，已自动失败并释放并发',
+    payload: {
+      model: 'claude-sonnet-4-6',
+      shellProjectId: 'first-planning-all-failed',
+      shellProjectName: '6月8日项目3',
+      shellPlanningPurpose: 'one_click_planning',
+      shellReferenceIndex: refIndex,
+      shellReferenceUrl: `https://example.com/ref-${refIndex}.jpg`,
+      subFeature: 'first_image',
+    },
+    result: null,
+    createdAt: 1780906352000 + refIndex,
+    updatedAt: 1780907285000,
+    finishedAt: 1780907285000,
+  });
+
+  const snapshot = buildShellDataSnapshot({}, [1, 2, 3, 4, 5].map(makeFailedPlanningJob));
+
+  const project = snapshot.projects.find((item) => item.id === 'first-planning-all-failed');
+  assert.equal(project?.status, 'error');
+  assert.equal(project?.taskCount, 5);
+  assert.equal(project?.completedCount, 0);
+  assert.equal(project?.plans?.length, 5);
+  assert.deepEqual(project?.plans?.map((plan) => plan.id), [
+    'failed-planning-job-1-error',
+    'failed-planning-job-2-error',
+    'failed-planning-job-3-error',
+    'failed-planning-job-4-error',
+    'failed-planning-job-5-error',
+  ]);
+  assert.deepEqual(project?.plans?.map((plan) => plan.title), [
+    '6月8日项目3 1',
+    '6月8日项目3 2',
+    '6月8日项目3 3',
+    '6月8日项目3 4',
+    '6月8日项目3 5',
+  ]);
+  assert.ok(project?.plans?.every((plan) => plan.planningFailed === true));
+  assert.ok(project?.plans?.every((plan) => plan.error?.includes('未返回上游任务 ID')));
+  assert.equal(project?.results.length, 5);
+  assert.ok(project?.results.every((result) => result.status === 'error'));
+  assert.ok(project?.results.every((result) => result.error?.includes('未返回上游任务 ID')));
+});
+
 test('shell data adapter keeps multiple completed image provider tasks for one plan', () => {
   const baseProject = {
     id: 'first-image-project-with-two-results',

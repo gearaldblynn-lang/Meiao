@@ -276,6 +276,9 @@ export interface PlanItem {
   variationInstruction?: string;
   editInstruction?: string;
   sourceResultUrl?: string;
+  status?: 'error';
+  error?: string;
+  planningFailed?: boolean;
 }
 
 export interface Project {
@@ -872,7 +875,16 @@ const normalizePlanSchemeContent = (scheme: string) =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
-const isInvalidPlanContentForGeneration = (plan: PlanItem) => isInvalidOneClickPlanLike(plan);
+const isFailedPlanningPlan = (plan: PlanItem) => Boolean(
+  plan.planningFailed
+  || plan.status === 'error'
+  || String(plan.error || '').trim(),
+);
+
+const isInvalidPlanContentForGeneration = (plan: PlanItem) => (
+  isFailedPlanningPlan(plan)
+  || isInvalidOneClickPlanLike(plan)
+);
 
 const buildPlanPromptSummary = (plan: PlanItem, subFeature: string) => {
   const scheme = normalizePlanSchemeContent(plan.schemeContent || '');
@@ -4441,6 +4453,16 @@ const AppContent: React.FC<{
     if (selectedPlans.length === 0) {
       addToast('请先选择要生成的策划方案', 'warning');
       return;
+    }
+    const failedSelectedPlans = selectedPlans.filter(isFailedPlanningPlan);
+    if (failedSelectedPlans.length > 0) {
+      const runnableSelectedPlans = selectedPlans.filter((plan) => !isFailedPlanningPlan(plan));
+      if (runnableSelectedPlans.length === 0) {
+        addToast('选中的方案均为策划失败项，请先重新策划失败项后再出图。', 'error');
+        return;
+      }
+      addToast(`已跳过 ${failedSelectedPlans.length} 个策划失败项，请先重新策划后再出图。`, 'warning');
+      selectedPlans = runnableSelectedPlans;
     }
     if (selectedPlans.some((plan) => isInvalidPlanContentForGeneration(plan))) {
       addToast('当前策划结果无效，请重新策划后再生图。', 'error');

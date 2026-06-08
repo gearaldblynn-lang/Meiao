@@ -63,6 +63,9 @@ export interface ShellProjectData {
     variationInstruction?: string;
     editInstruction?: string;
     sourceResultUrl?: string;
+    status?: 'error';
+    error?: string;
+    planningFailed?: boolean;
   }>;
   selectedPlanId?: string;
   generationContext?: {
@@ -1130,6 +1133,39 @@ const getPlanningProviderTaskId = (job: InternalJob) => String(
   || ''
 ).trim();
 
+const getPlanningReferenceIndex = (job: InternalJob) => {
+  const parsed = Number((job.payload as any)?.shellReferenceIndex || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+
+const buildFailedOneClickPlanningPlan = (
+  job: InternalJob,
+  projectName: string,
+  errorMessage: string,
+) => {
+  const referenceIndex = getPlanningReferenceIndex(job);
+  const indexLabel = referenceIndex > 0 ? String(referenceIndex) : '1';
+  const title = projectName
+    ? `${projectName} ${indexLabel}`
+    : `首图裂变${indexLabel}-策划失败`;
+  return {
+    id: `${job.id}-error`,
+    title,
+    sellingPoints: [],
+    sceneDescription: errorMessage,
+    styleDirection: '',
+    colorPalette: '',
+    composition: '',
+    textLayout: errorMessage,
+    selected: false,
+    schemeContent: errorMessage,
+    sourceReferenceUrl: String((job.payload as any)?.shellReferenceUrl || '').trim() || undefined,
+    status: 'error' as const,
+    error: errorMessage,
+    planningFailed: true,
+  };
+};
+
 const isOneClickPlanningPlaceholderText = (value: unknown) => {
   const normalized = String(value || '').trim();
   return normalized === MODULE_LABELS[MODULE_VALUES.ONE_CLICK] || normalized === '一键主详';
@@ -1365,6 +1401,7 @@ const mapJobs = (
             || prompt.slice(0, 28)
             || MODULE_LABELS[module]
             || '一键主详策划';
+          const failedPlan = buildFailedOneClickPlanningPlan(job, errorProjectName, errorMessage);
           projects.push({
             ...(cleanProject || {}),
             id: errorProjectId,
@@ -1374,7 +1411,7 @@ const mapJobs = (
             createdAt: cleanProject?.createdAt || createdAt,
             results: [{
               id: `${job.id}-error`,
-              planId: payloadPlanId || cleanProject?.selectedPlanId,
+              planId: payloadPlanId || failedPlan.id || cleanProject?.selectedPlanId,
               projectId: errorProjectId,
               imageUrl: '',
               prompt: errorMessage,
@@ -1389,7 +1426,9 @@ const mapJobs = (
               creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
               error: errorMessage,
             }],
-            taskCount: cleanProject?.taskCount || 1,
+            plans: mergeProjectPlansById(cleanProject?.plans, [failedPlan]),
+            selectedPlanId: cleanProject?.selectedPlanId,
+            taskCount: Math.max(Number(cleanProject?.taskCount || 0) || 0, getPlanningReferenceIndex(job), 1),
             completedCount: 0,
             subFeature: inferredSubFeature,
             sourceType: cleanProject?.sourceType || (matchedProject ? 'persisted' : 'job'),
@@ -1561,6 +1600,7 @@ const mapJobs = (
             || prompt.slice(0, 28)
             || MODULE_LABELS[module]
             || '一键主详策划';
+          const failedPlan = buildFailedOneClickPlanningPlan(job, projectName, errorMessage);
           projects.push({
             id: payloadProjectId || `job-${job.id}`,
             name: projectName,
@@ -1569,7 +1609,7 @@ const mapJobs = (
             createdAt,
             results: [{
               id: `${job.id}-error`,
-              planId: payloadPlanId || undefined,
+              planId: payloadPlanId || failedPlan.id,
               projectId: payloadProjectId || `job-${job.id}`,
               imageUrl: '',
               prompt: errorMessage || prompt,
@@ -1584,7 +1624,8 @@ const mapJobs = (
               creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
               error: errorMessage,
             }],
-            taskCount: 1,
+            plans: [failedPlan],
+            taskCount: Math.max(getPlanningReferenceIndex(job), 1),
             completedCount: 0,
             subFeature: inferredSubFeature,
             sourceType: 'job',
@@ -1594,6 +1635,9 @@ const mapJobs = (
           });
           return;
         }
+        const failedPlan = isTrackedOneClickPlanningJob
+          ? buildFailedOneClickPlanningPlan(job, matchedProject.name || String((job.payload as any)?.shellProjectName || '').trim(), errorMessage)
+          : undefined;
         projects.push({
           ...matchedProject,
           id: matchedProject.id,
@@ -1603,7 +1647,7 @@ const mapJobs = (
           createdAt: matchedProject.createdAt || createdAt,
           results: [{
             id: `${job.id}-error`,
-            planId: payloadPlanId || matchedProject.selectedPlanId,
+            planId: payloadPlanId || failedPlan?.id || matchedProject.selectedPlanId,
             projectId: matchedProject.id,
             imageUrl: '',
             prompt: errorMessage || prompt,
@@ -1618,7 +1662,11 @@ const mapJobs = (
             creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
             error: errorMessage,
           }],
-          taskCount: matchedProject.taskCount || 1,
+          plans: failedPlan ? mergeProjectPlansById(matchedProject.plans, [failedPlan]) : matchedProject.plans,
+          selectedPlanId: matchedProject.selectedPlanId,
+          taskCount: failedPlan
+            ? Math.max(Number(matchedProject.taskCount || 0) || 0, getPlanningReferenceIndex(job), 1)
+            : Math.max(Number(matchedProject.taskCount || 0) || 0, 1),
           completedCount: matchedProject.completedCount || 0,
           subFeature: matchedProject.subFeature || subFeature,
           sourceType: matchedProject.sourceType || 'persisted',
@@ -2159,13 +2207,13 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
   const rawPlans = Array.isArray(project.plans) ? project.plans : [];
   const invalidPlanIds = new Set(
     rawPlans
-      .filter((plan) => isInvalidOneClickPlanLike(plan))
+      .filter((plan) => !plan?.planningFailed && isInvalidOneClickPlanLike(plan))
       .map((plan) => String(plan?.id || '').trim())
       .filter(Boolean),
   );
   const plans = rawPlans
     .filter((plan) => !isStaleOneClickPlanningPlaceholderPlan(plan))
-    .filter((plan) => !isInvalidOneClickPlanLike(plan));
+    .filter((plan) => Boolean(plan?.planningFailed) || !isInvalidOneClickPlanLike(plan));
   const hasClientPlanIds = plans.some((plan) => {
     const id = String(plan?.id || '').trim();
     return id && !isPlanningGeneratedPlanId(id);
@@ -2471,20 +2519,28 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
     ? (existing.plans || []).filter((plan) => !isStaleOneClickPlanningPlaceholderPlan(plan, planningPlanJobIds))
     : existing.plans;
   const plans = mergeProjectPlansById(existingPlans, next.plans);
-  const replacesStalePlanningFailure = next.status === 'planning'
-    && (plans || []).length > 0
-    && hasOnlyStalePlanningFailureResults(existing)
-    && (next.results || []).length === 0;
+  const replacesStalePlanningFailure = hasOnlyStalePlanningFailureResults(existing) && (
+    (
+      next.status === 'planning'
+      && (plans || []).length > 0
+      && (next.results || []).length === 0
+    )
+    || (
+      next.status === 'error'
+      && (next.plans || []).some((plan) => Boolean(plan?.planningFailed))
+      && (next.results || []).length > 0
+    )
+  );
   const clearPlanningJobPendingResults = shouldClearPlanningJobPendingResults(existing, next);
   const planningJobIds = clearPlanningJobPendingResults
     ? getPlanningJobIdentities(existing, next)
     : new Set<string>();
-  const existingResults = clearPlanningJobPendingResults
+  const existingResults = replacesStalePlanningFailure
+    ? []
+    : clearPlanningJobPendingResults
     ? (existing.results || []).filter((result) => !isPlanningJobPendingResult(result, planningJobIds))
     : existing.results || [];
-  const results = replacesStalePlanningFailure
-    ? []
-    : mergeProjectResultsByIdentity(existingResults, next.results || []);
+  const results = mergeProjectResultsByIdentity(existingResults, next.results || []);
   const completedCount = results.filter(hasCompletedMediaResult).length;
   const taskCount = getMergedProjectTaskCount(existing, next, plans, results, completedCount);
   const hasGenerating = results.some((result) => result.status === 'generating' && resultHasProviderTaskIdentity(result));
