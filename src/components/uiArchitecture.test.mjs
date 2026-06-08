@@ -232,6 +232,22 @@ test('one click generation refuses to turn planning error text into image prompt
   assert.match(app, /当前策划结果无效，请重新策划后再生图。/);
 });
 
+test('one click planning keeps failed reference plans visible', () => {
+  const app = read('../ShellMigratedApp.tsx');
+  const workflow = read('../adapters/shellWorkflow.ts');
+
+  assert.match(workflow, /toFailedShellPlan/);
+  assert.match(workflow, /planningFailed: true/);
+  assert.match(workflow, /perReferenceResults\.map/);
+  assert.doesNotMatch(workflow, /\.filter\(\(item\) => item\.status === 'success'\)\s*\.map/);
+  assert.match(app, /const failedPlanningPlans = planResult\.plans\.filter\(isFailedPlanningPlan\)/);
+  assert.match(app, /策划完成 \$\{runnablePlanningPlans\.length\}\/\$\{planResult\.plans\.length\}/);
+  assert.match(app, /fetchInternalJobs\(500\)/);
+  assert.match(app, /collectFailedOneClickPlanningPlans/);
+  assert.match(app, /plans: failedPlanningPlans\.length > 0 \? failedPlanningPlans : planningProject\.plans/);
+  assert.match(app, /failedPlanningResults\.length > 0 \? failedPlanningResults/);
+});
+
 test('one click batch generation keeps every selected plan visible when one item fails', () => {
   const app = read('../ShellMigratedApp.tsx');
 

@@ -60,6 +60,7 @@ import {
   shouldResetSkuInputTextForUpload,
   shouldResetSkuMaterialsForUpload,
 } from './adapters/shellSkuUploadReset.mjs';
+import { collectFailedOneClickPlanningPlans } from './adapters/shellPlanningFailure.ts';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -885,6 +886,41 @@ const isInvalidPlanContentForGeneration = (plan: PlanItem) => (
   isFailedPlanningPlan(plan)
   || isInvalidOneClickPlanLike(plan)
 );
+
+const getBackendJobIdFromFailedPlan = (plan: PlanItem) => {
+  const id = String(plan.id || '').trim();
+  return id.endsWith('-error') ? id.slice(0, -'-error'.length) : '';
+};
+
+const buildFailedPlanningResultFromPlan = (options: {
+  plan: PlanItem;
+  index: number;
+  projectId: string;
+  createdAt: string;
+  module: AppModule;
+  subFeature?: string;
+  model: string;
+  aspectRatio: string;
+  fallbackMessage: string;
+}): GeneratedResult => {
+  const message = String(options.plan.error || options.plan.schemeContent || options.fallbackMessage || '策划失败').trim();
+  const backendJobId = getBackendJobIdFromFailedPlan(options.plan);
+  return {
+    id: `${options.plan.id || `planning-${options.index + 1}`}-result-error`,
+    planId: options.plan.id,
+    projectId: options.projectId,
+    imageUrl: '',
+    prompt: message,
+    model: options.model,
+    aspectRatio: options.aspectRatio,
+    status: 'error',
+    createdAt: options.createdAt,
+    module: options.module,
+    subFeature: options.subFeature,
+    backendJobId: backendJobId || undefined,
+    error: message,
+  };
+};
 
 const buildPlanPromptSummary = (plan: PlanItem, subFeature: string) => {
   const scheme = normalizePlanSchemeContent(plan.schemeContent || '');
@@ -3803,11 +3839,28 @@ const AppContent: React.FC<{
         if (!planResult.plans.length) {
           throw new Error(planResult.message || '策划没有返回可用方案');
         }
+        const failedPlanningPlans = planResult.plans.filter(isFailedPlanningPlan);
+        const runnablePlanningPlans = planResult.plans.filter((plan) => !isFailedPlanningPlan(plan));
+        const planningErrorMessage = String(planResult.message || '策划失败').trim();
+        const failedPlanningResults = failedPlanningPlans.length === planResult.plans.length
+          ? failedPlanningPlans.map((plan, index) => buildFailedPlanningResultFromPlan({
+            plan,
+            index,
+            projectId,
+            createdAt,
+            module: targetModule,
+            subFeature: targetSubFeature,
+            model: generationParams['model'] || 'gpt-image-2',
+            aspectRatio: generationParams['ratio'] || 'auto',
+            fallbackMessage: planningErrorMessage,
+          }))
+          : [];
         const plannedProject: Project = {
           ...planningProject,
-          status: 'planning',
+          status: runnablePlanningPlans.length > 0 ? 'planning' : 'error',
           plans: planResult.plans,
-          selectedPlanId: planResult.plans.find((plan) => plan.selected)?.id || planResult.plans[0]?.id,
+          selectedPlanId: runnablePlanningPlans.find((plan) => plan.selected)?.id || runnablePlanningPlans[0]?.id,
+          results: failedPlanningResults,
           taskCount: planResult.plans.length,
           completedCount: 0,
           subFeature: targetSubFeature,
@@ -3815,6 +3868,7 @@ const AppContent: React.FC<{
           backendJobId: activePlanningBackendJobId || planningProject.backendJobId,
           creditsConsumed: planResult.creditsConsumed,
           planningTaskId: latestIdentityText(planResult.taskId, planningProviderTaskId),
+          error: runnablePlanningPlans.length > 0 ? undefined : planningErrorMessage,
         };
         setProjects((prev) => prev.map((p) =>
           p.id === projectId
@@ -3824,7 +3878,13 @@ const AppContent: React.FC<{
         void persistProjectToSharedState(plannedProject);
         setTasks((prev) => prev.filter((t) => t.id !== taskId));
         setScopedPromptText('');
-        addToast(`策划已完成，共 ${planResult.plans.length} 个方案`, 'success');
+        if (failedPlanningPlans.length > 0 && runnablePlanningPlans.length > 0) {
+          addToast(`策划完成 ${runnablePlanningPlans.length}/${planResult.plans.length}，${failedPlanningPlans.length} 个参考图失败`, 'warning');
+        } else if (failedPlanningPlans.length > 0) {
+          addToast(planningErrorMessage, 'error');
+        } else {
+          addToast(`策划已完成，共 ${planResult.plans.length} 个方案`, 'success');
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : '策划失败';
         const planningBackendJobId = activePlanningBackendJobId || planningProject.backendJobId || '';
@@ -3879,12 +3939,34 @@ const AppContent: React.FC<{
           window.setTimeout(() => void hydrateShellJobs(), 800);
           return;
         }
+        const planningPeerJobs = await fetchInternalJobs(500)
+          .then((result) => Array.isArray(result.jobs) ? result.jobs : [])
+          .catch(() => []);
+        const failedPlanningPlans = collectFailedOneClickPlanningPlans(
+          [latestPlanningJob, ...planningPeerJobs],
+          {
+            projectId,
+            projectName,
+            fallbackErrorMessage: planningErrorMessage,
+          },
+        );
+        const failedPlanningResults = failedPlanningPlans.map((plan, index) => buildFailedPlanningResultFromPlan({
+          plan,
+          index,
+          projectId,
+          createdAt,
+          module: targetModule,
+          subFeature: targetSubFeature,
+          model: generationParams['model'] || 'gpt-image-2',
+          aspectRatio: generationParams['ratio'] || 'auto',
+          fallbackMessage: planningErrorMessage,
+        }));
         const failedProject: Project = {
           ...planningProject,
           status: 'error',
           backendJobId: planningBackendJobId,
           planningTaskId: latestIdentityText(planningProviderTaskId),
-          results: [{
+          results: failedPlanningResults.length > 0 ? failedPlanningResults : [{
             id: `${taskId}-error`,
             imageUrl: '',
             prompt: planningErrorMessage,
@@ -3898,7 +3980,13 @@ const AppContent: React.FC<{
             backendJobId: planningBackendJobId || undefined,
             error: planningErrorMessage,
           }],
-          taskCount: 1,
+          plans: failedPlanningPlans.length > 0 ? failedPlanningPlans : planningProject.plans,
+          taskCount: Math.max(
+            Number(planningProject.taskCount || 0) || 0,
+            failedPlanningPlans.length,
+            failedPlanningResults.length,
+            1,
+          ),
           completedCount: 0,
           error: planningErrorMessage,
         };
