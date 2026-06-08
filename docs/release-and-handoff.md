@@ -121,3 +121,22 @@
   - `npm run build`
 - 云上发布：已通过 `MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh` 发布到腾讯云 `/www/wwwroot/meiao-internal`，服务器端 `npm audit --audit-level=high`、`npm run build` 通过，PM2 `meiao-internal` 已重启并保存。
 - 后续观察：诊断看板继续观察同类 `provider_submit_stale` / provider task id 缺失场景；这类上游提交超时仍可能发生，但前端必须完整显示失败数量并阻止错误文案进入出图。
+
+## 13. 2026-06-08 首图策划失败可见性二次热修
+
+- 触发问题：天琪账号继续出现策划失败；进一步检查发现同日后续项目 `taskCount=5` 但 `plans.length` 仍可能只有 2、3 或 4，说明第一次热修没有覆盖提交后的即时持久化路径。
+- 诊断结论：
+  - 直接失败边界在上游/网络提交阶段：日志出现 `provider_network_error` / `asset_download`、Temporal activity heartbeat timeout，随后被 stale reconciler 标记为 `provider_submit_stale`。
+  - 素材 URL 本身可读，最新项目的 1 张参考图和 4 张产品图均返回 `206 image/jpeg`。
+  - 程序问题是双路径缺口：首图策划部分成功时 `runShellOneClickPlanning` 只返回成功 plans；全失败进入 catch 时 `ShellMigratedApp` 只按最新 backend job 写单条错误结果。
+- 修复范围：
+  - `src/adapters/shellWorkflow.ts`：首图复刻每个 `perReferenceResult` 都返回对应 plan，失败参考图生成 `planningFailed/status:error/selected:false` 卡片。
+  - `src/ShellMigratedApp.tsx`：部分失败 toast 显示成功/总数；全失败时拉取同项目 jobs 聚合完整失败 plans 和 error results 后持久化。
+  - `src/adapters/shellPlanningFailure.ts`：抽出失败策划 job 聚合与失败 plan 构造 helper。
+- 本地验证：
+  - `node --test src/adapters/shellPlanningFailure.test.mjs`
+  - `node --test src/components/uiArchitecture.test.mjs --test-name-pattern "one click planning keeps failed reference plans visible|one click generation refuses"`
+  - `node --test src/adapters/shellDataAdapter.test.mjs`
+  - `npm run build`
+  - `npm test` 不存在，npm 返回 `Missing script: "test"`。
+- 云上发布：待执行本次提交后的 `MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh`，发布后需复查 `/api/health` 和 PM2 `meiao-internal`。

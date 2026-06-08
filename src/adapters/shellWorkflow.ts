@@ -78,6 +78,9 @@ export interface ShellPlanItem {
   variationMode?: 'scene' | 'palette' | 'custom';
   variationInstruction?: string;
   sourceResultUrl?: string;
+  status?: 'error';
+  error?: string;
+  planningFailed?: boolean;
 }
 
 export interface ShellWorkflowImageResult {
@@ -389,6 +392,26 @@ const toShellPlan = (scheme: string, index: number, sourceReferenceUrl?: string)
   };
 };
 
+const toFailedShellPlan = (message: string, index: number, sourceReferenceUrl?: string): ShellPlanItem => {
+  const errorMessage = String(message || '当前参考图策划失败').trim();
+  return {
+    id: `plan-failed-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`,
+    title: `首图参考 ${index + 1}：策划失败`,
+    sellingPoints: [],
+    sceneDescription: errorMessage,
+    styleDirection: '',
+    colorPalette: '',
+    composition: '',
+    textLayout: errorMessage,
+    selected: false,
+    schemeContent: errorMessage,
+    sourceReferenceUrl,
+    status: 'error',
+    error: errorMessage,
+    planningFailed: true,
+  };
+};
+
 export const runShellOneClickPlanning = async (input: ShellGenerateInput): Promise<{ plans: ShellPlanItem[]; message?: string; creditsConsumed?: number; taskId?: string }> => {
   const productUrls = getOneClickProductUrls(input);
   if (productUrls.length === 0) {
@@ -420,13 +443,16 @@ export const runShellOneClickPlanning = async (input: ShellGenerateInput): Promi
       input.onJobCreated,
       input.taskMetadata || {},
     );
-    if (result.status !== 'success' || !result.perReferenceResults?.some((item) => item.status === 'success')) {
+    const perReferenceResults = Array.isArray(result.perReferenceResults) ? result.perReferenceResults : [];
+    if (perReferenceResults.length === 0) {
       throw new Error(result.message || '首图策划失败');
     }
     return {
-      plans: result.perReferenceResults
-        .filter((item) => item.status === 'success')
-        .map((item, index) => toShellPlan(item.scheme, index, item.referenceUrl)),
+      plans: perReferenceResults.map((item, index) => (
+        item.status === 'success'
+          ? toShellPlan(item.scheme, index, item.referenceUrl)
+          : toFailedShellPlan(item.message || result.message || '当前参考图策划失败', index, item.referenceUrl || referenceUrls[index])
+      )),
       message: result.message,
       creditsConsumed: result.creditsConsumed,
       taskId: result.taskId,

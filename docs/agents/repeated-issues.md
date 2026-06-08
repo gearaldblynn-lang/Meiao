@@ -20,6 +20,17 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-08 - First-image planning failures must be preserved in both submit and sync paths
+
+- Symptom: “天琪”账号首图策划失败复现；云上 state 显示部分项目 `taskCount=5`，但 `plans.length` 只有 2、3 或 4，用户仍看不到所有参考图的策划失败状态。
+- Environment: Tencent Cloud production one_click first_image / local development.
+- Cloud evidence: 2026-06-08 18:05:56 项目 `proj-plan-1780913155904` 创建 5 个 `kie_chat` 策划 job；日志先出现 `provider_network_error` / `asset_download`，Temporal worker 随后出现 `Activity task timed out` / heartbeat timeout，最终全部以 `provider_submit_stale` 失败。对应 app state 仍只有 3 个失败 plans；同日项目 5 只有 2 个，项目 4 只有 4 个。
+- Root cause: 这是双层问题。直接策划失败来自上游/网络提交阶段，素材 URL 本身可读；但程序修复不完整：第一次热修只覆盖 `shellDataAdapter` 的同步/恢复路径，提交后的前端成功分支仍过滤掉失败 `perReferenceResults`，catch 分支仍只按最新 backend job 写 1 条泛化错误结果。
+- Fix: 首图策划返回层不再 `filter(success)`，而是为每个参考图返回成功 plan 或 `planningFailed/status:error` 失败 plan；部分失败 toast 明确显示完成数和失败数。catch 分支拉取同项目最近 500 个 internal jobs，按 `shellProjectId` 聚合所有终态失败的策划子任务，持久化完整 failed plans 和对应 error results。
+- Regression check: `node --test src/adapters/shellPlanningFailure.test.mjs`; `node --test src/components/uiArchitecture.test.mjs --test-name-pattern "one click planning keeps failed reference plans visible|one click generation refuses"`; `node --test src/adapters/shellDataAdapter.test.mjs`; `npm run build`. 仓库没有 `npm test` 脚本。
+- Files/tests: `src/adapters/shellPlanningFailure.ts`, `src/adapters/shellPlanningFailure.test.mjs`, `src/adapters/shellWorkflow.ts`, `src/ShellMigratedApp.tsx`, `src/components/uiArchitecture.test.mjs`.
+- Avoid next time: 多参考图策划必须同时测试“部分成功”和“全失败异常”两条路径；只修 job hydration/sync 不够。验收时查云上 `app_states`，确认 `taskCount`、`plans.length`、失败 toast、失败卡和出图拦截都一致。
+
 ## 2026-06-08 - Failed first-image planning references must stay visible and must not become image prompts
 
 - Symptom: 云上账号“天琪”首图项目“6月8日项目3”提交 5 个策划任务后，界面最后只露出 2 张失败策划卡，用户无法判断 5 个参考图是否全部失败；失败卡里的“任务提交上游前长时间未返回上游任务 ID...”还可能被当成正常方案继续提交出图。
