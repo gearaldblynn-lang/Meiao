@@ -2,6 +2,7 @@ import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 
 const ONE_CLICK_MODULE = 'one_click';
 const FIRST_IMAGE_SUBFEATURE = 'first_image';
+const DETAIL_PAGE_SUBFEATURE = 'detail_page';
 
 export const getShellMaterialUrl = (material, publicBaseUrl = '') => {
   const raw = String(material?.remoteUrl || material?.url || '').trim();
@@ -60,7 +61,7 @@ export const buildOneClickPlanGenerationMaterials = ({
   createRemoteMaterial,
 } = {}) => {
   const next = cloneMaterials(baseMaterials);
-  if (subFeature !== FIRST_IMAGE_SUBFEATURE) {
+  if (subFeature !== FIRST_IMAGE_SUBFEATURE && subFeature !== DETAIL_PAGE_SUBFEATURE) {
     return appendPreviousResultReference({ next, plan, subFeature, publicBaseUrl, createRemoteMaterial });
   }
 
@@ -73,7 +74,7 @@ export const buildOneClickPlanGenerationMaterials = ({
         id: `plan-ref-${plan.id || Date.now()}`,
         type: 'styleRef',
         url: sourceReferenceUrl,
-        fileName: 'first-image-reference.png',
+        fileName: subFeature === DETAIL_PAGE_SUBFEATURE ? 'detail-page-reference.png' : 'first-image-reference.png',
         subFeature,
         createRemoteMaterial,
       }),
@@ -104,8 +105,9 @@ export const buildShellImageInputUrls = ({
   const hasEditInstruction = Boolean(String(taskMetadata?.editInstruction || '').trim());
   const hasVariationInstruction = Boolean(String(taskMetadata?.variationInstruction || '').trim());
   const isFirstImage = module === ONE_CLICK_MODULE && subFeature === FIRST_IMAGE_SUBFEATURE;
+  const isDetailPage = module === ONE_CLICK_MODULE && subFeature === DETAIL_PAGE_SUBFEATURE;
 
-  if (!isFirstImage) {
+  if (!isFirstImage && !isDetailPage) {
     if (sourceResultUrl && hasEditInstruction) {
       return dedupeUrls([...productImageUrls, ...giftImageUrls, ...logoImageUrls, sourceResultUrl, ...referenceImageUrls]);
     }
@@ -118,6 +120,9 @@ export const buildShellImageInputUrls = ({
   const currentReferenceUrls = sourceReferenceUrl
     ? [sourceReferenceUrl]
     : styleRefUrls.slice(0, 1);
+  if (isDetailPage) {
+    return dedupeUrls([...productImageUrls, ...giftImageUrls, ...currentReferenceUrls, ...logoImageUrls]);
+  }
   if (sourceResultUrl && hasEditInstruction) {
     return dedupeUrls([...productImageUrls, ...giftImageUrls, sourceResultUrl, ...logoImageUrls]);
   }

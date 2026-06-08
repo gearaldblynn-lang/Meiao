@@ -67,6 +67,7 @@ const AgentCenterModule = lazy(() => import('./shell/modules/AgentCenter/AgentCe
 const TranslationModule = lazy(() => import('./shell/modules/Translation/TranslationModule'));
 const OneClickModule = lazy(() => import('./shell/modules/OneClick/OneClickModule'));
 const RetouchModule = lazy(() => import('./shell/modules/Retouch/RetouchModule'));
+const EverythingReplaceModule = lazy(() => import('./shell/modules/EverythingReplace/EverythingReplaceModule'));
 const BuyerShowModule = lazy(() => import('./shell/modules/BuyerShow/BuyerShowModule'));
 const VideoModule = lazy(() => import('./shell/modules/Video/VideoModule'));
 const XhsCoverModule = lazy(() => import('./shell/modules/XhsCover/XhsCoverModule'));
@@ -112,6 +113,7 @@ export interface GeneratedResult {
   relativePath?: string;
   taskId?: string;
   backendJobId?: string;
+  batchIndex?: number;
   creditsConsumed?: number;
   error?: string;
   matchedAspectRatio?: string;
@@ -143,6 +145,7 @@ export interface Material {
   giftIndex?: number;
   originalWidth?: number;
   originalHeight?: number;
+  logoPlacement?: Record<string, unknown>;
 }
 
 const isTransientMaterialUrl = (url?: string) => {
@@ -177,11 +180,23 @@ const latestIdentityText = (...values: unknown[]) => {
   return merged.at(-1) || undefined;
 };
 
+const sortGeneratedResultsByBatchIndex = (items: GeneratedResult[]) => (
+  [...items].sort((a, b) => {
+    const aIndex = Number(a.batchIndex || 0);
+    const bIndex = Number(b.batchIndex || 0);
+    if (aIndex > 0 && bIndex > 0 && aIndex !== bIndex) return aIndex - bIndex;
+    if (aIndex > 0 && bIndex <= 0) return -1;
+    if (aIndex <= 0 && bIndex > 0) return 1;
+    return 0;
+  })
+);
+
 const shouldGuardGenerationSubmit = (module: AppModule, _subFeature?: string) => (
   module === AppModuleObj.ONE_CLICK
   || module === AppModuleObj.TRANSLATION
   || module === AppModuleObj.BUYER_SHOW
   || module === AppModuleObj.RETOUCH
+  || module === AppModuleObj.EVERYTHING_REPLACE
   || module === AppModuleObj.VIDEO
   || module === AppModuleObj.XHS_COVER
 );
@@ -213,6 +228,7 @@ const cloneMaterialSnapshot = (material: Material) => {
     giftIndex: material.giftIndex,
     originalWidth: material.originalWidth,
     originalHeight: material.originalHeight,
+    logoPlacement: material.logoPlacement,
   };
 };
 
@@ -1059,6 +1075,7 @@ const MODULE_NAMES: Record<string, string> = {
   [AppModuleObj.TRANSLATION]: '出海翻译',
   [AppModuleObj.BUYER_SHOW]: '买家秀',
   [AppModuleObj.RETOUCH]: '产品精修',
+  [AppModuleObj.EVERYTHING_REPLACE]: '万物替换',
   [AppModuleObj.VIDEO]: '短视频生成',
   [AppModuleObj.XHS_COVER]: '小红书封面',
   [AppModuleObj.SETTINGS]: '系统设置',
@@ -1108,8 +1125,12 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
   [AppModuleObj.RETOUCH]: [
     { id: 'original', label: '原图精修' },
     { id: 'white_bg', label: '白底精修' },
-    { id: 'background_replace', label: '背景替换', description: '待制作', disabled: true },
     { id: 'enhance', label: '智能增强', description: '待制作', disabled: true },
+  ],
+  [AppModuleObj.EVERYTHING_REPLACE]: [
+    { id: 'product_replace', label: '产品替换' },
+    { id: 'background_replace', label: '背景替换', description: '待制作', disabled: true },
+    { id: 'logo_replace', label: 'logo替换', disabled: true },
   ],
   [AppModuleObj.BUYER_SHOW]: [
     { id: 'image', label: '买家秀图片' },
@@ -1225,6 +1246,7 @@ const normalizeParamsForGeneration = (
 ) => {
   if (module === AppModuleObj.TRANSLATION) return normalizeTranslationParamsForGeneration(subFeature, params);
   if (module === AppModuleObj.RETOUCH) return normalizeRetouchParamsForGeneration(params);
+  if (module === AppModuleObj.EVERYTHING_REPLACE) return normalizeEverythingReplaceParamsForGeneration(subFeature, params);
   if (module === AppModuleObj.XHS_COVER) return normalizeXhsCoverParamsForGeneration(params);
   if (module !== AppModuleObj.ONE_CLICK) return params;
   const requestedSizeMode = String(params.resolutionMode || params.sizeMode || '').trim();
@@ -1277,6 +1299,26 @@ const normalizeRetouchParamsForGeneration = (
     height: params.height || params.targetHeight || '800',
     maxFileSize: params.maxFileSize || params.maxSize || '2',
     maxSize: params.maxSize || params.maxFileSize || '2',
+  };
+};
+
+const normalizeEverythingReplaceParamsForGeneration = (
+  subFeature: string,
+  params: Record<string, string>,
+) => {
+  const ratio = params.ratio || params.aspectRatio || 'auto';
+  return {
+    ...normalizeRetouchParamsForGeneration({
+      ...params,
+      ratio,
+      aspectRatio: ratio,
+      mode: subFeature || params.mode || 'product_replace',
+      resolutionMode: params.resolutionMode || 'original',
+      sizeMode: params.sizeMode || 'AI 自适应尺寸',
+    }),
+    mode: subFeature || params.mode || 'product_replace',
+    replacementLogic: params.replacementLogic === '单产品替换' ? '单品替换' : params.replacementLogic || '单品替换',
+    firstImageColorMode: String(params.firstImageColorMode || '').includes('自适应') ? '人物微调' : params.firstImageColorMode || '完全复刻',
   };
 };
 
@@ -1401,6 +1443,16 @@ const parsePositiveInt = (value: string | undefined, fallback = 1, max = 20) => 
   return Math.min(max, parsed);
 };
 
+const resolveEverythingReplaceBatchCount = (
+  materials: Record<string, Material[]>,
+  params: Record<string, string>,
+) => {
+  const productCount = Math.max(0, (materials.product || []).length);
+  const referenceCount = Math.max(0, (materials.styleRef || []).length);
+  if (productCount <= 0 || referenceCount <= 0) return 1;
+  return Math.min(40, referenceCount);
+};
+
 const resolveBatchCount = (module: AppModule, subFeature: string, params: Record<string, string>) => {
   if (module === AppModuleObj.ONE_CLICK) {
     if (subFeature === 'first_image') return 1;
@@ -1467,6 +1519,19 @@ const isMaterialInActiveScope = (
   }
   return !material.subFeature || material.subFeature === activeSubFeature;
 };
+
+const filterMaterialsForScope = (
+  sourceMaterials: Record<string, Material[]>,
+  module: AppModule,
+  activeSubFeature: string,
+) => Object.fromEntries(
+  Object.entries(sourceMaterials).map(([type, items]) => [
+    type,
+    module === AppModuleObj.ONE_CLICK && activeSubFeature === 'sku' && type === 'logo'
+      ? []
+      : (items || []).filter((item) => isMaterialInActiveScope(item, module, activeSubFeature)),
+  ]),
+) as Record<string, Material[]>;
 
 const toVideoStoryboardAspectRatio = (value?: string): VideoStoryboardConfig['aspectRatio'] => {
   if (value === '3:4') return AspectRatio.P_3_4;
@@ -1852,6 +1917,7 @@ const AppContent: React.FC<{
   const [materials, setMaterials] = useState<Record<string, Material[]>>(
     () => initialDraftSnapshot.materials as Record<string, Material[]> || {},
   );
+  const materialsRef = useRef<Record<string, Material[]>>(materials);
   const [oneClickReferencePresets, setOneClickReferencePresets] = useState<OneClickReferencePreset[]>([]);
 
   const restoreLocalMaterialPreviews = useCallback((sourceMaterials: Record<string, Material[]>) => {
@@ -1936,6 +2002,7 @@ const AppContent: React.FC<{
             item.id === update.id ? { ...item, remoteUrl: update.remoteUrl, url: update.remoteUrl } : item
           );
         });
+        materialsRef.current = next;
         return next;
       });
     }
@@ -2732,6 +2799,25 @@ const AppContent: React.FC<{
         addToast(`参考套图最多上传 5 张，本次已保留前 ${remaining} 张`, 'warning');
       }
     }
+    if (
+      activeModule === AppModuleObj.ONE_CLICK
+      && activeSubFeature === 'detail_page'
+      && type === 'styleRef'
+      && currentParams.detailGenerationMode === '套图复刻'
+    ) {
+      const existingCount = (materials.styleRef || [])
+        .filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature))
+        .length;
+      const remaining = Math.max(0, 10 - existingCount);
+      if (remaining <= 0) {
+        addToast('详情页套图复刻最多保留 10 张参考风格图。', 'warning');
+        return;
+      }
+      if (selectedFiles.length > remaining) {
+        selectedFiles = selectedFiles.slice(0, remaining);
+        addToast(`详情页套图复刻最多保留 10 张参考风格图，本次已保留前 ${remaining} 张。`, 'warning');
+      }
+    }
     const shouldResetSkuMaterials = shouldResetSkuMaterialsForUpload(activeModule, activeSubFeature, type);
     if (shouldResetSkuMaterials) {
       setMaterials((prev) => filterMaterialsForSkuUpload(prev, type) as Record<string, Material[]>);
@@ -2758,35 +2844,43 @@ const AppContent: React.FC<{
           file.type.startsWith('image/') ? getImageDimensions(file).catch(() => null) : Promise.resolve(null),
           saveShellDraftAsset(localAssetId, file, { fileName: file.name, mimeType: file.type }).catch(() => false),
         ]);
-        setMaterials((prev) => ({
-          ...prev,
-          [type]: [...(prev[type] || []), {
-            id: optimisticId,
-            type,
-            url: previewUrl,
-            localAssetId,
-            fileName: file.name,
+        setMaterials((prev) => {
+          const next = {
+            ...prev,
+            [type]: [...(prev[type] || []), {
+              id: optimisticId,
+              type,
+              url: previewUrl,
+              localAssetId,
+              fileName: file.name,
             relativePath,
             subFeature: activeSubFeature,
-            giftIndex,
-            originalWidth: dimensions?.width,
-            originalHeight: dimensions?.height,
-          }],
-        }));
+              giftIndex,
+              originalWidth: dimensions?.width,
+              originalHeight: dimensions?.height,
+            }],
+          };
+          materialsRef.current = next;
+          return next;
+        });
         const { uploadShellMaterial } = await loadShellWorkflowModule();
         const uploaded = await uploadShellMaterial(activeModule, type, file).catch(() => null);
         if (uploaded?.remoteUrl) {
-          setMaterials((prev) => ({
-            ...prev,
-            [type]: (prev[type] || []).map((m) =>
+          setMaterials((prev) => {
+            const next = {
+              ...prev,
+              [type]: (prev[type] || []).map((m) =>
               m.id === optimisticId ? { ...m, remoteUrl: uploaded.remoteUrl, url: uploaded.remoteUrl } : m
-            ),
-          }));
+              ),
+            };
+            materialsRef.current = next;
+            return next;
+          });
         }
       })();
     });
-    addToast(`已添加 ${selectedFiles.length} 个${type === 'product' ? '产品素材' : type === 'gift' ? '赠品素材' : type === 'logo' ? '品牌Logo' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'main_image' && currentParams.planningLogic === '套图复刻' ? '参考套图' : '参考素材'}`, 'success');
-  }, [activeModule, activeScopeKey, activeSubFeature, addToast, currentParams.planningLogic, materials.gift, materials.styleRef]);
+    addToast(`已添加 ${selectedFiles.length} 个${type === 'product' ? '产品素材' : type === 'gift' ? '赠品素材' : type === 'logo' ? '品牌Logo' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'main_image' && currentParams.planningLogic === '套图复刻' ? '参考套图' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'detail_page' && currentParams.detailGenerationMode === '套图复刻' ? '详情页套图参考' : '参考素材'}`, 'success');
+  }, [activeModule, activeScopeKey, activeSubFeature, addToast, currentParams.detailGenerationMode, currentParams.planningLogic, materials.gift, materials.styleRef]);
 
   const handlePresetMaterialsApply = useCallback((items: Array<{ type: string; url: string; remoteUrl?: string; fileName: string }>) => {
     if (items.length === 0) return;
@@ -2807,6 +2901,17 @@ const AppContent: React.FC<{
     });
     addToast(`已添加 ${items.length} 个参考预设`, 'success');
   }, [activeSubFeature, addToast]);
+
+  const handleUpdateMaterial = useCallback((type: string, id: string, patch: Partial<Material>) => {
+    setMaterials((prev) => {
+      const next = {
+        ...prev,
+        [type]: (prev[type] || []).map((item) => (item.id === id ? { ...item, ...patch } : item)),
+      };
+      materialsRef.current = next;
+      return next;
+    });
+  }, []);
 
   const handleImportStoryboardToGeneration = useCallback((project: VideoStoryboardProject, boardId?: string, boardIndex?: number, imageUrl?: string) => {
     const imported = buildStoryboardBoardGenerationImport(project, { boardId, boardIndex, imageUrl });
@@ -2871,14 +2976,11 @@ const AppContent: React.FC<{
     }
   }, []);
 
-  const filteredMaterials = Object.fromEntries(
-    Object.entries(materials).map(([type, items]) => [
-      type,
-      activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'sku' && type === 'logo'
-        ? []
-        : items.filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature)),
-    ])
-  ) as Record<string, Material[]>;
+  useEffect(() => {
+    materialsRef.current = materials;
+  }, [materials]);
+
+  const filteredMaterials = filterMaterialsForScope(materials, activeModule, activeSubFeature);
 
   // ── Generate (standard modules) ──
   const handleGenerate = useCallback(async () => {
@@ -3192,7 +3294,8 @@ const AppContent: React.FC<{
     const generationPrompt = targetModule === AppModuleObj.TRANSLATION ? '' : promptText;
     const allowEmptySkuPrompt = targetModule === AppModuleObj.ONE_CLICK && targetSubFeature === 'sku';
     const allowEmptyRetouchPrompt = targetModule === AppModuleObj.RETOUCH;
-    const allowEmptyPrompt = allowEmptySkuPrompt || allowEmptyRetouchPrompt || targetModule === AppModuleObj.TRANSLATION;
+    const allowEmptyEverythingReplacePrompt = targetModule === AppModuleObj.EVERYTHING_REPLACE && targetSubFeature === 'product_replace';
+    const allowEmptyPrompt = allowEmptySkuPrompt || allowEmptyRetouchPrompt || allowEmptyEverythingReplacePrompt || targetModule === AppModuleObj.TRANSLATION;
     if (!generationPrompt.trim() && !allowEmptyPrompt) { addToast('请输入创作描述', 'warning'); return; }
     const generationParams = normalizeParamsForGeneration(targetModule, targetSubFeature, currentParams) as Record<string, string> & {
       __workspacePreferences?: string;
@@ -3213,17 +3316,59 @@ const AppContent: React.FC<{
       }
     }
     generationParams.__workspacePreferences = JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences());
-    const batchCount = resolveBatchCount(targetModule, targetSubFeature, generationParams);
+    let batchCount = resolveBatchCount(targetModule, targetSubFeature, generationParams);
     const translationSubFeatureLabel = MODULE_SUB_FEATURES[targetModule]
       ?.find((item) => item.id === targetSubFeature)?.label;
 	    const projectName = reserveShortProjectName();
-	    let generationMaterials = filteredMaterials;
-	    if (!beginGuardedSubmit()) {
-	      return;
-	    }
+    const latestFilteredMaterials = filterMaterialsForScope(materialsRef.current, targetModule, targetSubFeature);
+	    let generationMaterials = hasMaterialInputs(latestFilteredMaterials) || !hasMaterialInputs(filteredMaterials)
+        ? latestFilteredMaterials
+        : filteredMaterials;
+    if (targetModule === AppModuleObj.EVERYTHING_REPLACE) {
+      batchCount = resolveEverythingReplaceBatchCount(generationMaterials, generationParams);
+    }
+    if (!beginGuardedSubmit()) {
+      return;
+    }
     addToast('任务已提交，正在准备素材', 'info');
+    const immediateCreatedAt = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-');
+    const immediateProject = targetModule === AppModuleObj.EVERYTHING_REPLACE
+      ? ({
+        id: 'proj-' + Date.now(),
+        name: projectName,
+        module: targetModule,
+        status: 'generating',
+        createdAt: immediateCreatedAt,
+        results: [],
+        taskCount: batchCount,
+        completedCount: 0,
+        subFeature: targetSubFeature,
+        generationContext: cloneGenerationContext(generationPrompt, generationParams, generationMaterials),
+      } satisfies Project)
+      : null;
+    const immediateTask = immediateProject
+      ? ({
+        id: 'task-' + Date.now(),
+        projectId: immediateProject.id,
+        module: targetModule,
+        type: 'image',
+        status: 'pending',
+        title: projectName,
+        progress: 0,
+        createdAt: immediateCreatedAt,
+        total: batchCount,
+        completed: 0,
+        subFeature: targetSubFeature,
+      } satisfies Task)
+      : null;
+    if (immediateProject && immediateTask) {
+      setProjects((prev) => [immediateProject, ...prev]);
+      setTasks((prev) => [immediateTask, ...prev]);
+      setIsGenerating(true);
+      void persistProjectToSharedState(immediateProject);
+    }
 	    try {
-	      generationMaterials = await ensureMaterialRemoteUrls(filteredMaterials, targetModule);
+	      generationMaterials = await ensureMaterialRemoteUrls(generationMaterials, targetModule);
 	    } catch (error) {
       const message = error instanceof Error ? error.message : '素材上传失败，请重新上传后重试。';
       logShellError('shell_generation_failed', error, {
@@ -3231,11 +3376,36 @@ const AppContent: React.FC<{
         subFeature: targetSubFeature,
         step: 'material_upload',
 	      }, `${MODULE_NAMES[targetModule] || targetModule}素材上传失败`);
+      if (immediateProject && immediateTask) {
+        const failedProject: Project = {
+          ...immediateProject,
+          status: 'error',
+          error: message,
+          results: [{
+            id: `${immediateTask.id}-material-error`,
+            imageUrl: '',
+            prompt: message,
+            model: generationParams['model'] || 'gpt-image-2',
+            aspectRatio: generationParams['ratio'] || 'auto',
+            status: 'error',
+            createdAt: immediateProject.createdAt,
+            module: targetModule,
+            subFeature: targetSubFeature,
+            error: message,
+          }],
+          completedCount: 0,
+          taskCount: batchCount,
+        };
+        setProjects((prev) => prev.map((project) => project.id === failedProject.id ? failedProject : project));
+        setTasks((prev) => prev.map((task) => task.id === immediateTask.id ? { ...task, status: 'error', progress: 100 } : task));
+        void persistProjectToSharedState(failedProject);
+        setIsGenerating(false);
+      }
 	      addToast(message, 'error');
 	      releaseGuardedSubmit();
 	      return;
 	    }
-    const generationContext = targetModule === AppModuleObj.ONE_CLICK || targetModule === AppModuleObj.TRANSLATION
+    const generationContext = targetModule === AppModuleObj.ONE_CLICK || targetModule === AppModuleObj.TRANSLATION || targetModule === AppModuleObj.EVERYTHING_REPLACE
       ? cloneGenerationContext(generationPrompt, generationParams, generationMaterials)
       : undefined;
 
@@ -3737,23 +3907,30 @@ const AppContent: React.FC<{
     }
 
     // Create project
-    const projectId = 'proj-' + Date.now();
+    const projectId = immediateProject?.id || 'proj-' + Date.now();
     const newProject: Project = {
+      ...(immediateProject || {}),
       id: projectId,
       name: projectName,
       module: targetModule,
       status: 'generating',
-      createdAt: new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-'),
+      createdAt: immediateProject?.createdAt || new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-'),
       results: [],
       taskCount: batchCount,
       completedCount: 0,
       subFeature: targetSubFeature,
+      generationContext,
     };
-    setProjects((prev) => [...prev, newProject]);
+    if (immediateProject) {
+      setProjects((prev) => prev.map((project) => project.id === projectId ? newProject : project));
+    } else {
+      setProjects((prev) => [...prev, newProject]);
+    }
 
     // Create task
-    const taskId = 'task-' + Date.now();
+    const taskId = immediateTask?.id || 'task-' + Date.now();
     const newTask: Task = {
+      ...(immediateTask || {}),
       id: taskId,
       projectId,
       module: targetModule,
@@ -3766,7 +3943,11 @@ const AppContent: React.FC<{
       completed: 0,
       subFeature: targetSubFeature,
     };
-    setTasks((prev) => [newTask, ...prev]);
+    if (immediateTask) {
+      setTasks((prev) => prev.map((task) => task.id === taskId ? newTask : task));
+    } else {
+      setTasks((prev) => [newTask, ...prev]);
+    }
     setIsGenerating(true);
 
     const controller = new AbortController();
@@ -3902,7 +4083,7 @@ const AppContent: React.FC<{
 	            creditsConsumed: result.creditsConsumed,
 	          };
 	        }
-	      } else if (targetModule === AppModuleObj.BUYER_SHOW || targetModule === AppModuleObj.RETOUCH) {
+	      } else if (targetModule === AppModuleObj.BUYER_SHOW || targetModule === AppModuleObj.RETOUCH || targetModule === AppModuleObj.EVERYTHING_REPLACE) {
         const onSpecialItemCompleted = (item: any, completed: number, total: number) => {
           const itemStatus: GeneratedResult['status'] = item.status || (item.imageUrl ? 'completed' : 'generating');
           const nextResult: GeneratedResult = {
@@ -3918,11 +4099,16 @@ const AppContent: React.FC<{
             subFeature: targetSubFeature,
             creditsConsumed: item.creditsConsumed,
             taskId: item.taskId,
+            backendJobId: item.backendJobId,
+            batchIndex: Number(item.batchIndex || completed) || completed,
             sourceUrl: item.sourceUrl,
             fileName: item.fileName,
             error: item.error || item.message,
           };
-          batchResults = [...batchResults, nextResult];
+          const resultIdentity = nextResult.backendJobId || nextResult.taskId || nextResult.id;
+          const nextByIdentity = new Map(batchResults.map((result) => [result.backendJobId || result.taskId || result.id, result]));
+          nextByIdentity.set(resultIdentity, nextResult);
+          batchResults = sortGeneratedResultsByBatchIndex(Array.from(nextByIdentity.values()));
           const completedItemCount = batchResults.filter((result) => result.status === 'completed').length;
           const processedItemCount = batchResults.filter((result) => result.status === 'completed' || result.status === 'generating' || result.status === 'error').length;
           setTasks((prev) => prev.map((t) =>
@@ -3962,15 +4148,21 @@ const AppContent: React.FC<{
           : await runShellRetouchWorkflow({
               module: targetModule,
               subFeature: targetSubFeature,
-              prompt: generationPrompt || '产品精修',
+              prompt: generationPrompt || (targetModule === AppModuleObj.EVERYTHING_REPLACE ? '产品替换' : '产品精修'),
               params: generationParams,
               materials: generationMaterials,
               signal: controller.signal,
+              taskMetadata: {
+                shellProjectId: projectId,
+                shellProjectName: projectName,
+                batchCount,
+                subFeature: targetSubFeature,
+              },
               onJobCreated,
               publicBaseUrl,
             }, onSpecialItemCompleted);
 
-        const specialWorkflowResults: GeneratedResult[] = batchResults.length > 0 ? batchResults : specialResult.results.map((item, index) => ({
+        const specialWorkflowResults: GeneratedResult[] = sortGeneratedResultsByBatchIndex(batchResults.length > 0 ? batchResults : specialResult.results.map((item, index) => ({
           id: item.taskId || `${taskId}-${index}`,
           imageUrl: item.imageUrl || '',
           mediaType: 'image' as const,
@@ -3983,10 +4175,12 @@ const AppContent: React.FC<{
           subFeature: targetSubFeature,
           creditsConsumed: item.creditsConsumed,
           taskId: item.taskId,
+          backendJobId: item.backendJobId,
+          batchIndex: Number(item.batchIndex || index + 1) || index + 1,
           sourceUrl: item.sourceUrl,
           fileName: item.fileName,
           error: item.error || item.message,
-        }));
+        })));
         const hasSpecialGenerating = specialWorkflowResults.some((item) => item.status === 'generating');
         const hasSpecialError = specialWorkflowResults.some((item) => item.status === 'error');
         completedProject = {
@@ -6309,6 +6503,21 @@ const AppContent: React.FC<{
           pendingActionKeys={pendingActionKeys}
           showGenerationProgress={showGenerationProgress}
         />;
+      case AppModuleObj.EVERYTHING_REPLACE:
+        return <EverythingReplaceModule
+          projects={filteredProjects}
+          tasks={filteredTasks}
+          subFeatures={MODULE_SUB_FEATURES[AppModuleObj.EVERYTHING_REPLACE]}
+          activeSubFeature={activeSubFeature}
+          onSubFeatureChange={handleSubFeatureChange}
+          onDeleteResult={handleDeleteResult}
+          onDeleteProject={handleDeleteProject}
+          onRegenerateResult={handleRegenerateResult}
+          onRecoverResult={handleRecoverResult}
+          onCancelTask={handleCancelTask}
+          pendingActionKeys={pendingActionKeys}
+          showGenerationProgress={showGenerationProgress}
+        />;
       case AppModuleObj.VIDEO:
         return <VideoModule
           projects={filteredProjects}
@@ -6387,6 +6596,7 @@ const AppContent: React.FC<{
                 oneClickReferencePresets={oneClickReferencePresets}
                 onUploadMaterial={handleMaterialUpload}
                 onApplyPresetMaterials={handlePresetMaterialsApply}
+                onUpdateMaterial={handleUpdateMaterial}
                 onRemoveMaterial={handleRemoveMaterial}
                 systemConfig={systemConfig}
                 generationDisabledReason={

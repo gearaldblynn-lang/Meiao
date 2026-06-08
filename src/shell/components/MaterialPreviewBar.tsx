@@ -28,9 +28,10 @@ const getMediaKind = (type: string, url = '', fileName = '') => {
 interface Props {
   materials: Record<string, Material[]>;
   onRemoveMaterial: (type: string, id: string) => void;
+  onAdjustMaterial?: (type: string, id: string) => void;
 }
 
-const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial }) => {
+const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAdjustMaterial }) => {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -49,11 +50,13 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial }) =>
 
   if (groups.length === 0) return null;
 
-  const allUrls = groups.flatMap((g) =>
+  const allImageItems = groups.flatMap((g) =>
     g.list
       .filter((m) => getMediaKind(g.type, m.url, m.fileName) === 'image')
-      .map((m) => m.url)
+      .map((m) => ({ url: m.url, type: g.type, id: m.id, fileName: m.fileName }))
   );
+  const allUrls = allImageItems.map((item) => item.url);
+  const currentLightboxItem = allImageItems[lightboxIndex];
 
   const toggleGroup = (type: string) => {
     setCollapsedGroups((prev) => ({ ...prev, [type]: !prev[type] }));
@@ -216,6 +219,11 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial }) =>
         onClose={() => setLightboxOpen(false)}
         onPrev={() => setLightboxIndex((i) => (i - 1 + allUrls.length) % allUrls.length)}
         onNext={() => setLightboxIndex((i) => (i + 1) % allUrls.length)}
+        actionLabel={currentLightboxItem?.type === 'logo' && onAdjustMaterial ? '调整位置' : undefined}
+        onActionCurrent={currentLightboxItem?.type === 'logo' && onAdjustMaterial ? () => {
+          setLightboxOpen(false);
+          onAdjustMaterial(currentLightboxItem.type, currentLightboxItem.id);
+        } : undefined}
       />
 
       <ImageLightbox

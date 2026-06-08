@@ -119,8 +119,10 @@ test('one click main image set replication hides presets and uses reference suit
   assert.match(bottomInputBar, /mode === '首图' \|\| isMainImageSuiteReplication/);
   assert.match(bottomInputBar, /return '参考套图'/);
   assert.match(bottomInputBar, /return '整套主图参考，最多5张'/);
-  assert.match(bottomInputBar, /billingParams = isMainImageSuiteReplication[\s\S]*count: String\(\(materials\.styleRef \|\| \[\]\)\.length\)/);
-  assert.match(bottomInputBar, /!\s*isMainImageSuiteReplication && \(/);
+  assert.match(bottomInputBar, /const activeStyleRefCount = \(materials\.styleRef \|\| \[\]\)[\s\S]*item\.subFeature === activeSubFeature[\s\S]*\.length;/);
+  assert.match(bottomInputBar, /billingParams = isDetailPageSuiteReplication[\s\S]*isMainImageSuiteReplication[\s\S]*count: String\(activeStyleRefCount\)/);
+  assert.match(bottomInputBar, /count: String\(activeStyleRefCount\), exactCount: 'true'/);
+  assert.match(bottomInputBar, /!\s*\(isMainImageSuiteReplication \|\| isDetailPageSuiteReplication\) && \(/);
   assert.match(shellApp, /参考套图最多上传 5 张/);
   assert.match(shellApp, /selectedFiles = selectedFiles\.slice\(0, remaining\)/);
   assert.match(workflow, /generateMainImageSetReplicationSchemes/);
@@ -136,6 +138,31 @@ test('one click main image set replication hides presets and uses reference suit
   assert.match(promptUtils, /执行内容若包含“文案映射”或箭头映射/);
   assert.match(promptUtils, /箭头右侧文字就是最终上屏文案，必须逐字生成/);
   assert.match(promptUtils, /normalizeSuiteReplicationSchemeForGenerationPrompt/);
+});
+
+test('one click detail page set replication exposes mode and uses reference suite count', () => {
+  const bottomInputBar = source();
+  const shellApp = read('../../../ShellMigratedApp.tsx');
+  const workflow = read('../../../adapters/shellWorkflow.ts');
+
+  assert.match(bottomInputBar, /key: 'detailGenerationMode'/);
+  assert.match(bottomInputBar, /title: '详情生成方式'/);
+  assert.match(bottomInputBar, /options: \['AI直出', '套图复刻'\]/);
+  assert.match(bottomInputBar, /isDetailPageSuiteReplication/);
+  assert.match(bottomInputBar, /mode === '详情页' && currentParams\.detailGenerationMode === '套图复刻'\) return getOneClickBaseParams\(mode\)/);
+  assert.match(bottomInputBar, /return '详情页套图参考'/);
+  assert.match(bottomInputBar, /return '详情页整套参考，最多10张'/);
+  assert.match(bottomInputBar, /const activeStyleRefCount = \(materials\.styleRef \|\| \[\]\)[\s\S]*item\.subFeature === activeSubFeature[\s\S]*\.length;/);
+  assert.match(bottomInputBar, /billingParams = isDetailPageSuiteReplication[\s\S]*count: String\(activeStyleRefCount\)/);
+  assert.match(bottomInputBar, /count: String\(activeStyleRefCount\), exactCount: 'true'/);
+  assert.match(bottomInputBar, /!\s*\(isMainImageSuiteReplication \|\| isDetailPageSuiteReplication\) && \(/);
+  assert.match(shellApp, /详情页套图复刻最多保留 10 张参考风格图/);
+  assert.match(shellApp, /selectedFiles = selectedFiles\.slice\(0, remaining\)/);
+  assert.match(workflow, /generateDetailPageReplicationSchemes/);
+  assert.match(workflow, /firstParam\(input\.params, \['detailGenerationMode'\], 'AI直出'\) === '套图复刻'/);
+  assert.match(workflow, /getOneClickReferenceUrls\(input\)\.slice\(0, 10\)/);
+  assert.match(workflow, /getDetailReferenceAspectRatios\(input\)/);
+  assert.match(workflow, /result\.schemes\.map\(\(scheme, index\) => toShellPlan\(scheme, index, referenceUrls\[index\]\)\)/);
 });
 
 test('buyer show shell removes duplicate scene reference and preserves effective model and atmosphere roles', () => {
@@ -318,4 +345,69 @@ test('video storyboard original mode passes scene reference uploads into storybo
 
   assert.match(builderBody, /const sceneReferenceUrls = \(materials\.scene \|\| \[\]\)/);
   assert.match(builderBody, /sceneReferenceUrls,/);
+});
+
+test('everything replace product mode exposes replacement controls and material slots', () => {
+  const bottomInputBar = source();
+  const uploadSelector = read('../UploadTypeSelector.tsx');
+  const materialPreview = read('../MaterialPreviewBar.tsx');
+  const imageLightbox = read('../ImageLightbox.tsx');
+
+  assert.match(bottomInputBar, /isProductReplaceContext/);
+  assert.match(bottomInputBar, /AppModuleObj\.EVERYTHING_REPLACE/);
+  assert.match(bottomInputBar, /key: 'replacementLogic'/);
+  assert.match(bottomInputBar, /title: '替换逻辑'/);
+  assert.match(bottomInputBar, /options: \['单品替换', '组合替换'\]/);
+  assert.doesNotMatch(bottomInputBar, /recommendedValue: '单品替换'/);
+  assert.doesNotMatch(bottomInputBar, /recommendedValue: '单产品替换'/);
+  assert.match(bottomInputBar, /getEverythingReplaceMaterialLabels\(currentParams\)/);
+  assert.match(bottomInputBar, /替换产品图/);
+  assert.match(bottomInputBar, /仅同一产品，可多角度\/细节图/);
+  assert.match(bottomInputBar, /同一组产品，整体替换/);
+  assert.match(bottomInputBar, /一图一结果/);
+  assert.doesNotMatch(bottomInputBar, /上传的几张都必须是同一个产品/);
+  assert.doesNotMatch(bottomInputBar, /同一组产品，整体对应替换到参考图/);
+  assert.doesNotMatch(bottomInputBar, /同一单品的多角度或一组组合产品/);
+  assert.match(bottomInputBar, /getEverythingReplaceRatioLabel/);
+  assert.match(bottomInputBar, /ratio === 'auto' \? 'auto'/);
+  assert.match(bottomInputBar, /recommendedValue: 'auto'/);
+  assert.match(bottomInputBar, /recommendedLabel: '推荐'/);
+  assert.match(bottomInputBar, /key: 'firstImageColorMode'/);
+  assert.match(bottomInputBar, /title: '参考强度'/);
+  assert.match(bottomInputBar, /options: \['完全复刻', '人物微调', '全局微调'\]/);
+  assert.doesNotMatch(bottomInputBar, /人物自适应/);
+  assert.match(bottomInputBar, /return \['product', 'logo', 'styleRef'\]/);
+  assert.match(bottomInputBar, /替换参考图/);
+  assert.match(bottomInputBar, /Logo上传/);
+  assert.match(bottomInputBar, /materialActionLabels/);
+  assert.match(bottomInputBar, /logo: '调整位置'/);
+  assert.match(bottomInputBar, /onMaterialAction/);
+  assert.doesNotMatch(bottomInputBar, /位置可调/);
+  assert.match(bottomInputBar, /Logo位置区域调整/);
+  assert.match(bottomInputBar, /LOGO_PLACEMENT_RATIOS/);
+  assert.match(bottomInputBar, /logoPlacementReferenceSize/);
+  assert.match(bottomInputBar, /activeEverythingReplaceReference\?\.originalWidth \|\| 1000/);
+  assert.doesNotMatch(bottomInputBar, /activeEverythingReplaceReference\.originalWidth/);
+  assert.match(bottomInputBar, /max-w-\[620px\] items-center justify-center/);
+  assert.match(bottomInputBar, /height: 'min\(58vh, 620px\)'/);
+  assert.match(bottomInputBar, /width: previewRatio >= 1 \? '100%' : `calc\(min\(58vh, 620px\) \* \$\{previewRatio\}\)`/);
+  assert.doesNotMatch(bottomInputBar, /center \/ cover no-repeat url\("\$\{activeEverythingReplaceReference\.url\}"\)/);
+  assert.match(bottomInputBar, /应用到全部比例/);
+  assert.match(bottomInputBar, /确定位置/);
+  assert.match(bottomInputBar, /onUpdateMaterial/);
+  assert.doesNotMatch(bottomInputBar, /调整Logo位置/);
+  assert.match(bottomInputBar, /开始产品替换/);
+  assert.match(bottomInputBar, /填写替换要求、保留重点或禁区说明/);
+  assert.match(bottomInputBar, /count: String\(resolveEverythingReplaceBillingCount/);
+  assert.match(bottomInputBar, /exactCount: 'true'/);
+
+  assert.doesNotMatch(uploadSelector, /everything_replace:\s+\['product', 'productDetail', 'styleRef'\]/);
+  assert.match(uploadSelector, /everything_replace:\s+\['product', 'logo', 'styleRef'\]/);
+  assert.match(uploadSelector, /materialActionLabels/);
+  assert.match(uploadSelector, /onMaterialAction/);
+  assert.match(materialPreview, /onAdjustMaterial/);
+  assert.match(materialPreview, /调整位置/);
+  assert.match(imageLightbox, /bottom-8 left-1\/2/);
+  assert.match(imageLightbox, /Move size=\{17\}/);
+  assert.doesNotMatch(materialPreview, /详情补充/);
 });

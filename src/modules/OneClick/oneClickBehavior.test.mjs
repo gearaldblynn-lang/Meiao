@@ -270,14 +270,16 @@ test('first image generation prompt explicitly identifies the replication main-i
   assert.match(promptUtilsSource, /【图片角色】/);
   assert.match(promptUtilsSource, /【执行优先级】/);
   assert.match(promptUtilsSource, /【替换规则】/);
-  assert.match(promptUtilsSource, /复刻主图参考图（图片URL）：\$\{safeReferenceUrl\}/);
+  assert.match(promptUtilsSource, /replicationReferenceLabel\?: string \| null/);
+  assert.match(promptUtilsSource, /const referenceLabel = String\(replicationReferenceLabel \|\| '复刻主图参考图'\)/);
+  assert.match(promptUtilsSource, /\$\{referenceLabel\}（图片URL）：\$\{safeReferenceUrl\}/);
   assert.match(promptUtilsSource, /必须直接复刻该参考图的整体风格、版式结构、信息层级、视觉节奏、设计细节，不得改成另一种风格/);
-  assert.match(promptUtilsSource, /若执行内容中对参考图版式、颜色、结构或视觉元素的描述与复刻主图参考图真实画面不一致，必须以复刻主图参考图真实画面为准/);
-  assert.match(promptUtilsSource, /商品区的位置、角度、大小关系、层级、道具关系和背景以复刻主图参考原商品区为准/);
+  assert.match(promptUtilsSource, /若执行内容中对参考图版式、颜色、结构或视觉元素的描述与\$\{referenceLabel\}真实画面不一致/);
+  assert.match(promptUtilsSource, /商品区的位置、角度、大小关系、层级、道具关系和背景以\$\{referenceLabel\}原商品区为准/);
   assert.match(promptUtilsSource, /产品素材只决定替换进去的商品本体/);
   assert.match(promptUtilsSource, /产品包装上的文字、logo、品牌名和标签信息不得去除或改写/);
   assert.match(promptUtilsSource, /品牌logo图（图片URL）：\$\{safeLogoUrl\}/);
-  assert.match(promptUtilsSource, /复刻主图参考图是最高版式基准/);
+  assert.match(promptUtilsSource, /\$\{referenceLabel\}是最高版式基准/);
   assert.doesNotMatch(promptUtilsSource, /色调关系/);
   assert.match(promptUtilsSource, /未上传品牌 logo 时，品牌\/店铺\/logo\/官方背书位统一写通用信息/);
   assert.match(promptUtilsSource, /不写官方自营\/旗舰店或具体品牌名/);
@@ -297,6 +299,22 @@ test('first image generation appends target-language rendering guardrails', () =
   assert.match(promptUtilsSource, /includeCopyGuardrails = true/);
   assert.match(firstImageSource, /platform: config\.platform/);
   assert.doesNotMatch(firstImageSource, /includeCopyGuardrails: false/);
+});
+
+test('detail page set replication carries each reference image into shell generation prompts', () => {
+  assert.match(typesSource, /detailGenerationMode\?: 'AI直出' \| '套图复刻'/);
+  assert.match(shellWorkflowSource, /generateDetailPageReplicationSchemes/);
+  assert.match(shellWorkflowSource, /const getDetailReferenceAspectRatios = \(input: ShellGenerateInput\) =>/);
+  assert.match(shellWorkflowSource, /firstParam\(input\.params, \['detailGenerationMode'\], 'AI直出'\) === '套图复刻'/);
+  assert.match(shellWorkflowSource, /getOneClickReferenceUrls\(input\)\.slice\(0, 10\)/);
+  assert.match(shellWorkflowSource, /getDetailReferenceAspectRatios\(input\)/);
+  assert.match(shellWorkflowSource, /toShellPlan\(scheme, index, referenceUrls\[index\]\)/);
+  assert.match(shellWorkflowSource, /replicationReferenceUrl: typeof input\.taskMetadata\?\.sourceReferenceUrl === 'string' \? input\.taskMetadata\.sourceReferenceUrl : null/);
+  assert.match(shellWorkflowSource, /replicationReferenceLabel: input\.subFeature === 'detail_page' \|\| input\.subFeature === 'detail' \? '详情页套图参考图' : null/);
+  assert.match(promptUtilsSource, /replicationReferenceLabel\?: string \| null/);
+  assert.match(promptUtilsSource, /const referenceLabel = String\(replicationReferenceLabel \|\| '复刻主图参考图'\)/);
+  assert.match(promptUtilsSource, /\$\{referenceLabel\}（图片URL）：\$\{safeReferenceUrl\}/);
+  assert.match(promptUtilsSource, /\$\{referenceLabel\}是最高版式基准/);
 });
 
 test('first image continuation variants use the generated result as primary base and product assets only for consistency', () => {

@@ -228,6 +228,8 @@ export const createDefaultOneClickState = (): OneClickPersistentState => ({
         language: '中文',
         count: 7,
         aspectRatio: ASPECT_RATIO_3_4,
+        detailGenerationMode: 'AI直出',
+        detailColorMode: 'product_adaptive',
         quality: '1k',
         model: 'gpt-image-2',
         styleStrength: 'medium',
@@ -849,7 +851,12 @@ export const normalizeLoadedPersistedAppState = (saved: Partial<PersistedAppStat
             const projects = normalizeOneClickWorkspaceProjects(source.projects, defaultOneClickState.mainImage, '主图');
             return {
               ...source,
-              config: normalizeModelField(source.config as any),
+              config: {
+                ...defaultOneClickState.detailPage.config,
+                ...normalizeModelField(source.config as any),
+                detailGenerationMode: source.config?.detailGenerationMode === '套图复刻' ? '套图复刻' : 'AI直出',
+                detailColorMode: source.config?.detailColorMode === 'reference_locked' ? 'reference_locked' : 'product_adaptive',
+              },
               productImages: normalizeFileArray(source.productImages),
               logoImage: normalizeNullableFile(source.logoImage),
               styleImage: normalizeNullableFile(source.styleImage),

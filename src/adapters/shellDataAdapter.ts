@@ -25,6 +25,7 @@ export interface ShellGeneratedResult {
   relativePath?: string;
   taskId?: string;
   backendJobId?: string;
+  batchIndex?: number;
   creditsConsumed?: number;
   error?: string;
   matchedAspectRatio?: string;
@@ -95,8 +96,12 @@ export interface ShellMaterialData {
   remoteUrl?: string;
   localAssetId?: string;
   fileName: string;
+  relativePath?: string;
   subFeature?: string;
   giftIndex?: number;
+  originalWidth?: number;
+  originalHeight?: number;
+  logoPlacement?: Record<string, unknown>;
 }
 
 export interface ShellDataSnapshot {
@@ -110,6 +115,7 @@ const MODULE_LABELS: Record<string, string> = {
   translation: '出海翻译',
   buyer_show: '买家秀',
   retouch: '产品精修',
+  everything_replace: '万物替换',
   video: '短视频',
   xhs_cover: '小红书封面',
   agent_center: '智能体中心',
@@ -120,6 +126,7 @@ const MODULE_VALUES = {
   TRANSLATION: 'translation' as AppModule,
   BUYER_SHOW: 'buyer_show' as AppModule,
   RETOUCH: 'retouch' as AppModule,
+  EVERYTHING_REPLACE: 'everything_replace' as AppModule,
   VIDEO: 'video' as AppModule,
   XHS_COVER: 'xhs_cover' as AppModule,
   AGENT_CENTER: 'agent_center' as AppModule,
@@ -469,15 +476,83 @@ const parseOneClickPlanningText = (text: unknown, jobId: string): ShellProjectDa
   }).filter((plan) => !isInvalidOneClickPlanLike(plan));
 };
 
+const normalizePayloadStringList = (value: unknown) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item || '').trim()).filter(Boolean);
+  }
+  return String(value || '')
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const getPlanningReferenceUrls = (payload: any) => {
+  const urls = normalizePayloadStringList(payload?.shellReferenceUrls);
+  if (urls.length > 0) return urls;
+  return normalizePayloadStringList(payload?.shellReferenceUrl);
+};
+
+const isDetailPageSetReplicationPlanningPayload = (payload: any) => (
+  String(payload?.shellPlanningMode || '').trim() === 'detail_page_set_replication_all_at_once'
+  || (
+    String(payload?.subFeature || '').trim() === 'detail_page'
+    && getPlanningReferenceUrls(payload).length > 1
+  )
+);
+
+const buildRecoveredDetailPagePlan = (jobId: string, index: number, sourceReferenceUrl = '') => {
+  const title = `第${index + 1}屏-复刻详情页参考${index + 1}`;
+  const schemeContent = [
+    `- 屏序/类型：${title}`,
+    `- 参考图标识：详情页套图参考${index + 1}`,
+    '- 设计意图：后台策划结果未返回本屏完整方案，按对应详情页参考图继续复刻商品替换、卖点承接和版式骨架',
+    '- 画面描述：用我方真实商品替换对应参考图原商品区，保持该参考图的整体风格、版式结构、信息层级、视觉节奏、图文关系和留白边距；删除参考图原品牌、店铺、平台标识和原文案，并按整套详情页逻辑替换为我方商品卖点。',
+    '- 画面比例：auto',
+  ].join('\n');
+  return {
+    id: `${jobId}-plan-${index + 1}`,
+    title,
+    sellingPoints: ['后台缺失方案补齐'],
+    sceneDescription: '后台策划结果缺少本屏完整方案，已按对应参考图补齐可执行复刻计划。',
+    styleDirection: '复刻对应详情页参考图',
+    colorPalette: 'auto',
+    composition: 'auto',
+    textLayout: schemeContent,
+    selected: true,
+    schemeContent,
+    sourceReferenceUrl: sourceReferenceUrl || undefined,
+  };
+};
+
+const backfillDetailPageSetReplicationPlans = (
+  plans: ShellProjectData['plans'] = [],
+  jobId: string,
+  payload: any,
+) => {
+  if (!isDetailPageSetReplicationPlanningPayload(payload)) return plans;
+  const referenceUrls = getPlanningReferenceUrls(payload);
+  const expectedCount = Math.max(
+    referenceUrls.length,
+    Number.parseInt(String(payload?.shellReferenceCount || ''), 10) || 0,
+    plans.length,
+  );
+  if (expectedCount <= plans.length) return plans;
+  const nextPlans = [...plans];
+  for (let index = plans.length; index < expectedCount; index += 1) {
+    nextPlans.push(buildRecoveredDetailPagePlan(jobId, index, referenceUrls[index] || ''));
+  }
+  return nextPlans;
+};
+
 const attachReferenceUrlToPlans = (
   plans: ShellProjectData['plans'] = [],
   sourceReferenceUrl: unknown,
 ) => {
-  const referenceUrl = String(sourceReferenceUrl || '').trim();
-  if (!referenceUrl) return plans;
-  return plans.map((plan) => ({
+  const referenceUrls = normalizePayloadStringList(sourceReferenceUrl);
+  if (referenceUrls.length === 0) return plans;
+  return plans.map((plan, index) => ({
     ...plan,
-    sourceReferenceUrl: plan.sourceReferenceUrl || referenceUrl,
+    sourceReferenceUrl: plan.sourceReferenceUrl || referenceUrls[index] || referenceUrls[0],
   }));
 };
 
@@ -544,6 +619,11 @@ const normalizeJobSubFeature = (module: AppModule, taskType: unknown, payload: R
     if (raw.includes('background') || raw.includes('背景')) return 'background_replace';
     return 'original';
   }
+  if (module === MODULE_VALUES.EVERYTHING_REPLACE) {
+    if (raw.includes('background') || raw.includes('背景')) return 'background_replace';
+    if (raw.includes('logo') || raw.includes('Logo')) return 'logo_replace';
+    return 'product_replace';
+  }
   if (module === MODULE_VALUES.VIDEO) {
     if (raw.includes('diagnosis') || raw.includes('诊断')) return 'diagnosis';
     if (raw.includes('storyboard') || raw.includes('分镜')) return 'storyboard';
@@ -601,6 +681,7 @@ const resultFromItem = (
     relativePath: String(item?.relativePath || item?.fileName || '').trim() || undefined,
     taskId: getVisibleTaskId(item),
     backendJobId: String(item?.backendJobId || item?.jobId || '').trim() || undefined,
+    batchIndex: Number(item?.batchIndex || item?.payload?.batchIndex || 0) || undefined,
     creditsConsumed: normalizeCreditsConsumed(item?.creditsConsumed || item?.result?.creditsConsumed),
     error: String(item?.error || '').trim() || undefined,
     matchedAspectRatio: String(item?.matchedAspectRatio || item?.aspectRatio || item?.payload?.aspectRatio || item?.payload?.ratio || 'auto'),
@@ -1116,9 +1197,104 @@ const mapJobs = (
   const tasks: ShellTaskData[] = [];
   const hiddenJobIds = new Set(deletedJobIds.map((id) => String(id || '').trim()).filter(Boolean));
   const persistedJobKeys = collectPersistedProjectJobKeys(persistedProjects);
+  const groupedEverythingReplaceJobIds = new Set<string>();
+  const everythingReplaceGroups = new Map<string, InternalJob[]>();
+
+  jobs.forEach((job) => {
+    const jobId = String(job?.id || '').trim();
+    if (!jobId || hiddenJobIds.has(jobId)) return;
+    const module = toModule(job.module);
+    if (module !== MODULE_VALUES.EVERYTHING_REPLACE || !String(job.taskType || '').includes('image')) return;
+    const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
+    if (!payloadProjectId) return;
+    const bucket = everythingReplaceGroups.get(payloadProjectId) || [];
+    bucket.push(job);
+    everythingReplaceGroups.set(payloadProjectId, bucket);
+  });
+
+  everythingReplaceGroups.forEach((groupJobs, shellProjectId) => {
+    const sortedJobs = [...groupJobs].sort((a, b) => {
+      const aBatch = Number((a.payload as any)?.batchIndex || 0);
+      const bBatch = Number((b.payload as any)?.batchIndex || 0);
+      if (aBatch > 0 && bBatch > 0 && aBatch !== bBatch) return aBatch - bBatch;
+      return Number(a.createdAt || 0) - Number(b.createdAt || 0);
+    });
+    sortedJobs.forEach((job) => groupedEverythingReplaceJobIds.add(String(job.id || '').trim()));
+    const firstJob = sortedJobs[0];
+    const createdAt = toDateLabel(firstJob?.createdAt || firstJob?.updatedAt || Date.now());
+    const subFeature = normalizeJobSubFeature(MODULE_VALUES.EVERYTHING_REPLACE, firstJob?.taskType, firstJob?.payload || {});
+    const results: ShellGeneratedResult[] = sortedJobs.map((job, index) => {
+      const urls = getResultUrls(job);
+      const status = taskStatusToProject(job.status);
+      const batchIndex = Number((job.payload as any)?.batchIndex || index + 1) || index + 1;
+      const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+      return {
+        id: String(providerTaskId || `${job.id}-result-${batchIndex}`),
+        projectId: shellProjectId,
+        imageUrl: urls[0] || '',
+        mediaType: 'image' as const,
+        prompt: String(job.payload?.prompt || job.errorMessage || MODULE_LABELS[MODULE_VALUES.EVERYTHING_REPLACE] || '万物替换'),
+        model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+        aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
+        status: (status === 'completed' && urls[0] ? 'completed' : status === 'error' ? 'error' : 'generating') as ShellGeneratedResult['status'],
+        createdAt: toDateLabel(job.createdAt || firstJob?.createdAt),
+        module: MODULE_VALUES.EVERYTHING_REPLACE,
+        subFeature,
+        taskId: providerTaskId || undefined,
+        backendJobId: String(job.id || '').trim() || undefined,
+        batchIndex,
+        creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+        error: String(job.errorMessage || job.errorCode || '').trim() || undefined,
+      };
+    }).sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0));
+    const completedCount = results.filter((result) => result.status === 'completed' && result.imageUrl).length;
+    const hasRunning = results.some((result) => result.status === 'generating');
+    const hasError = results.some((result) => result.status === 'error');
+    const taskCount = Math.max(
+      ...sortedJobs.map((job) => Number((job.payload as any)?.batchCount || 0) || 0),
+      results.length,
+      1,
+    );
+    const projectName = String((firstJob?.payload as any)?.shellProjectName || '').trim()
+      || MODULE_LABELS[MODULE_VALUES.EVERYTHING_REPLACE]
+      || '万物替换';
+    projects.push({
+      id: shellProjectId,
+      name: projectName,
+      module: MODULE_VALUES.EVERYTHING_REPLACE,
+      status: hasRunning ? 'generating' : hasError ? 'error' : 'completed',
+      createdAt,
+      completedAt: completedCount >= taskCount && !hasRunning ? toDateLabel(sortedJobs.at(-1)?.finishedAt || sortedJobs.at(-1)?.updatedAt || sortedJobs.at(-1)?.createdAt) : undefined,
+      results,
+      taskCount,
+      completedCount,
+      subFeature,
+      sourceType: 'job',
+      backendJobId: String(sortedJobs.at(-1)?.id || '').trim() || undefined,
+      creditsConsumed: normalizeCreditsConsumed(results.reduce((sum, result) => sum + (Number(result.creditsConsumed) || 0), 0)),
+    });
+    sortedJobs
+      .filter((job) => ['queued', 'running', 'retry_waiting'].includes(String(job.status || '')))
+      .forEach((job) => {
+        tasks.push({
+          id: String(job.id || ''),
+          projectId: shellProjectId,
+          module: MODULE_VALUES.EVERYTHING_REPLACE,
+          type: 'image',
+          status: taskStatusToTask(job.status),
+          title: jobTaskTitle(job, MODULE_VALUES.EVERYTHING_REPLACE, subFeature),
+          prompt: String(job.payload?.prompt || ''),
+          progress: job.status === 'running' ? 42 : 8,
+          createdAt: toDateLabel(job.createdAt),
+          subFeature,
+          backendJobId: String(job.id || ''),
+        });
+      });
+  });
 
   jobs.forEach((job) => {
     if (hiddenJobIds.has(String(job.id || '').trim())) return;
+    if (groupedEverythingReplaceJobIds.has(String(job.id || '').trim())) return;
     const module = toModule(job.module);
     const projectStatus = taskStatusToProject(job.status);
     const createdAt = toDateLabel(job.createdAt);
@@ -1151,8 +1327,8 @@ const mapJobs = (
         const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
         const planningText = String((job.result as any)?.content || (job.result as any)?.text || '').trim();
         const parsedPlans = attachReferenceUrlToPlans(
-          parseOneClickPlanningText(planningText, job.id),
-          (job.payload as any)?.shellReferenceUrl,
+          backfillDetailPageSetReplicationPlans(parseOneClickPlanningText(planningText, job.id), job.id, job.payload),
+          getPlanningReferenceUrls(job.payload),
         );
         const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
         const isTrackedPlanningJob = Boolean(

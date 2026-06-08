@@ -61,3 +61,38 @@ test('first image provider input urls exclude other style references', () => {
     'https://example.com/ref-2.png',
   ]);
 });
+
+test('detail page set replication generation keeps only the current page reference', () => {
+  const materials = {
+    product: [material('product', 'https://example.com/product.png')],
+    styleRef: [
+      material('styleRef', 'https://example.com/detail-ref-1.png'),
+      material('styleRef', 'https://example.com/detail-ref-2.png'),
+      material('styleRef', 'https://example.com/detail-ref-3.png'),
+    ],
+    logo: [material('logo', 'https://example.com/logo.png')],
+  };
+
+  const next = buildOneClickPlanGenerationMaterials({
+    baseMaterials: materials,
+    plan: { id: 'detail-plan-2', sourceReferenceUrl: 'https://example.com/detail-ref-2.png' },
+    subFeature: 'detail_page',
+  });
+
+  assert.deepEqual(next.styleRef.map((item) => item.remoteUrl), ['https://example.com/detail-ref-2.png']);
+
+  const imageUrls = buildShellImageInputUrls({
+    module: 'one_click',
+    subFeature: 'detail_page',
+    materials: next,
+    taskMetadata: {
+      sourceReferenceUrl: 'https://example.com/detail-ref-2.png',
+    },
+  });
+
+  assert.deepEqual(imageUrls, [
+    'https://example.com/product.png',
+    'https://example.com/detail-ref-2.png',
+    'https://example.com/logo.png',
+  ]);
+});

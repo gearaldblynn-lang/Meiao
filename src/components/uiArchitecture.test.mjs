@@ -28,6 +28,7 @@ test('help guide config covers all top-level modules from shared content', () =>
   assert.match(guideConfig, /AppModule\.TRANSLATION/);
   assert.match(guideConfig, /AppModule\.BUYER_SHOW/);
   assert.match(guideConfig, /AppModule\.RETOUCH/);
+  assert.match(guideConfig, /AppModule\.EVERYTHING_REPLACE/);
   assert.match(guideConfig, /AppModule\.PHOTOGRAPHY/);
   assert.match(guideConfig, /AppModule\.VIDEO/);
   assert.match(guideConfig, /AppModule\.XHS_COVER/);
@@ -52,7 +53,9 @@ test('sku material scope rejects legacy unscoped materials before planning or ge
   assert.match(scopeHelper, /activeSubFeature === 'sku'/);
   assert.match(scopeHelper, /return material\.subFeature === 'sku';/);
   assert.match(scopeHelper, /return !material\.subFeature \|\| material\.subFeature === activeSubFeature;/);
-  assert.match(app, /items\.filter\(\(item\) => isMaterialInActiveScope\(item, activeModule, activeSubFeature\)\)/);
+  assert.match(app, /const filterMaterialsForScope = \(/);
+  assert.match(app, /\(items \|\| \[\]\)\.filter\(\(item\) => isMaterialInActiveScope\(item, module, activeSubFeature\)\)/);
+  assert.match(app, /const filteredMaterials = filterMaterialsForScope\(materials, activeModule, activeSubFeature\);/);
   assert.match(app, /materials\.gift \|\| \[\]\)[\s\S]*isMaterialInActiveScope\(item, activeModule, activeSubFeature\)/);
   assert.doesNotMatch(app, /items\.filter\(\(item\) => !item\.subFeature \|\| item\.subFeature === activeSubFeature\)/);
 });
@@ -668,8 +671,10 @@ test('shell generation paths upload local draft assets before provider submissio
   const handleGenerateBody = app;
   const oneClickImageBody = app.match(/const runOneClickPlanGeneration = useCallback\(async \([\s\S]*?=> \{([\s\S]*?)\n  \}, \[currentParams/)?.[1] || '';
 
-  assert.match(handleGenerateBody, /let generationMaterials = filteredMaterials;/);
-  assert.match(handleGenerateBody, /generationMaterials = await ensureMaterialRemoteUrls\(filteredMaterials, targetModule\);/);
+  assert.match(handleGenerateBody, /const materialsRef = useRef<Record<string, Material\[\]>>\(materials\);/);
+  assert.match(handleGenerateBody, /const latestFilteredMaterials = filterMaterialsForScope\(materialsRef\.current, targetModule, targetSubFeature\);/);
+  assert.match(handleGenerateBody, /let generationMaterials = hasMaterialInputs\(latestFilteredMaterials\) \|\| !hasMaterialInputs\(filteredMaterials\)/);
+  assert.match(handleGenerateBody, /generationMaterials = await ensureMaterialRemoteUrls\(generationMaterials, targetModule\);/);
   assert.match(handleGenerateBody, /cloneGenerationContext\(generationPrompt, generationParams, generationMaterials\)/);
   assert.match(handleGenerateBody, /\(generationMaterials\.product \|\| \[\]\)/);
   assert.match(handleGenerateBody, /\.\.\.generationMaterials,\s+product:/);
@@ -677,6 +682,22 @@ test('shell generation paths upload local draft assets before provider submissio
   assert.match(oneClickImageBody, /const preparedGenerationMaterials = await ensureMaterialRemoteUrls\(generationMaterials, AppModuleObj\.ONE_CLICK\);/);
   assert.match(oneClickImageBody, /const planMaterials = buildVariantMaterials\(preparedGenerationMaterials, plan, sceneSubFeature\);/);
   assert.match(oneClickImageBody, /materials: planMaterials/);
+});
+
+test('everything replace submit creates visible project card before preparing remote materials', () => {
+  const app = read('../ShellMigratedApp.tsx');
+  const placeholderIndex = app.indexOf('const immediateProject = targetModule === AppModuleObj.EVERYTHING_REPLACE');
+  const uploadIndex = app.indexOf('generationMaterials = await ensureMaterialRemoteUrls(generationMaterials, targetModule);');
+
+  assert.notEqual(placeholderIndex, -1);
+  assert.notEqual(uploadIndex, -1);
+  assert.ok(placeholderIndex < uploadIndex);
+  assert.match(app, /setProjects\(\(prev\) => \[immediateProject, \.\.\.prev\]\);/);
+  assert.match(app, /setTasks\(\(prev\) => \[immediateTask, \.\.\.prev\]\);/);
+  assert.match(app, /immediateProject\?\.id \|\| 'proj-' \+ Date\.now\(\)/);
+  assert.match(app, /immediateTask\?\.id \|\| 'task-' \+ Date\.now\(\)/);
+  assert.match(app, /shellProjectId: projectId/);
+  assert.match(app, /shellProjectName: projectName/);
 });
 
 test('guarded generation blocks duplicate submits while scoped jobs are active', () => {
@@ -2309,10 +2330,13 @@ test('shell buyer show and retouch only expose migrated 3000-backed subfeatures 
   const shellApp = read('../ShellMigratedApp.tsx');
   const subFeatureTabs = read('../shell/components/SubFeatureTabs.tsx');
   const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
+  const retouchSubFeatures = shellApp.match(/\[AppModuleObj\.RETOUCH\]: \[[\s\S]*?\n  \],/)?.[0] || '';
+  const retouchQuickParams = bottomInputBar.match(/\[AppModuleObj\.RETOUCH\]: \[[\s\S]*?\n  \],/)?.[0] || '';
 
   assert.match(shellApp, /\{ id: 'copy', label: '纯文案', description: '待制作', disabled: true \}/);
-  assert.match(shellApp, /\{ id: 'background_replace', label: '背景替换', description: '待制作', disabled: true \}/);
-  assert.match(shellApp, /\{ id: 'enhance', label: '智能增强', description: '待制作', disabled: true \}/);
+  assert.doesNotMatch(retouchSubFeatures, /background_replace/);
+  assert.doesNotMatch(retouchQuickParams, /背景替换/);
+  assert.match(retouchSubFeatures, /\{ id: 'enhance', label: '智能增强', description: '待制作', disabled: true \}/);
   assert.match(subFeatureTabs, /item\.disabled/);
   assert.match(subFeatureTabs, /待制作/);
   assert.match(bottomInputBar, /isPendingShellSubFeature/);
@@ -2706,4 +2730,85 @@ test('shell video generation submits seedance jobs without automatic retry and k
   assert.match(videoBody, /generateAudio: parseSeedanceGenerateAudio\(input\.params\)/);
   assert.match(videoBody, /maxRetries: 0/);
   assert.doesNotMatch(videoBody, /generateAudio: false/);
+});
+
+test('everything replace is registered as a shell module with product replace entry points', () => {
+  const types = read('../types.ts');
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const sidebar = read('../shell/components/layout/SidebarNavigation.tsx');
+  const modulePath = new URL('../shell/modules/EverythingReplace/EverythingReplaceModule.tsx', import.meta.url);
+
+  assert.match(types, /EVERYTHING_REPLACE = 'everything_replace'/);
+  assert.match(types, /EVERYTHING_REPLACE: AppModule\.EVERYTHING_REPLACE/);
+  assert.match(sidebar, /ReplaceAll/);
+  assert.match(sidebar, /AppModuleObj\.EVERYTHING_REPLACE/);
+  assert.match(sidebar, /万物替换/);
+  assert.match(shellApp, /lazy\(\(\) => import\('\.\/shell\/modules\/EverythingReplace\/EverythingReplaceModule'\)\)/);
+  assert.match(shellApp, /\[AppModuleObj\.EVERYTHING_REPLACE\]: '万物替换'/);
+  assert.match(shellApp, /id: 'product_replace', label: '产品替换'/);
+  assert.match(shellApp, /id: 'background_replace', label: '背景替换'/);
+  assert.match(shellApp, /id: 'logo_replace', label: 'logo替换', disabled: true/);
+  assert.match(shellApp, /case AppModuleObj\.EVERYTHING_REPLACE:/);
+  assert.equal(existsSync(modulePath), true);
+
+  const everythingReplace = read('../shell/modules/EverythingReplace/EverythingReplaceModule.tsx');
+  assert.match(everythingReplace, /ProjectListView/);
+  assert.match(everythingReplace, /开始万物替换/);
+});
+
+test('everything replace product workflow keeps batch metadata so many outputs remain visible', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const workflow = read('../adapters/shellWorkflow.ts');
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+
+  assert.match(shellApp, /targetModule === AppModuleObj\.EVERYTHING_REPLACE/);
+  assert.match(shellApp, /resolveEverythingReplaceBatchCount/);
+  assert.match(shellApp, /shellProjectId: projectId/);
+  assert.match(shellApp, /shellProjectName: projectName/);
+  assert.match(shellApp, /sortGeneratedResultsByBatchIndex/);
+  assert.match(workflow, /AppModule\.EVERYTHING_REPLACE/);
+  assert.match(workflow, /runProductReplaceWorkflow/);
+  assert.match(workflow, /replacementLogic/);
+  assert.match(workflow, /【任务类型】：万物替换 \/ 产品替换 \/ 单品替换/);
+  assert.doesNotMatch(workflow, /productDetailUrls/);
+  assert.doesNotMatch(workflow, /buildProductDetailReferencePrompt/);
+  assert.match(workflow, /const total = referenceUrls\.length/);
+  assert.match(workflow, /buildEverythingReplaceLogoInputs/);
+  assert.doesNotMatch(workflow, /\.\.\.productDetailUrls/);
+  assert.match(workflow, /人物微调/);
+  assert.match(workflow, /人物必须出现可见但轻微的差异/);
+  assert.match(workflow, /全局微调/);
+  assert.match(workflow, /人物、场景、动作、道具细节/);
+  assert.match(workflow, /产品包装文字、Logo、标签、画面中已有非产品文案/);
+  assert.match(workflow, /输入图片角色/);
+  assert.match(workflow, /当前替换参考图/);
+  assert.match(workflow, /参考图中的原产品必须被移除/);
+  assert.match(workflow, /接触阴影、遮挡关系、透视角度、材质反光/);
+  assert.doesNotMatch(workflow, /人物自适应/);
+  assert.match(workflow, /firstImageColorMode/);
+  assert.match(workflow, /Promise\.all/);
+  assert.match(workflow, /batchIndex/);
+  assert.match(workflow, /referenceIndex/);
+  assert.match(workflow, /resolveProductReplaceReferenceAspectRatio/);
+  assert.match(projectCard, /hideResultPromptInProjectCard/);
+  assert.match(projectCard, /project\.module === 'everything_replace'/);
+  assert.match(projectCard, /project\.subFeature === 'product_replace'/);
+});
+
+test('everything replace product workflow sends logo placement guides per reference task', () => {
+  const workflow = read('../adapters/shellWorkflow.ts');
+  const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(bottomInputBar, /return \['product', 'logo', 'styleRef'\]/);
+  assert.match(bottomInputBar, /Logo位置区域调整/);
+  assert.match(bottomInputBar, /应用到全部比例/);
+  assert.match(shellApp, /const cloneMaterialSnapshot = \(material: Material\) => \{[\s\S]*logoPlacement: material\.logoPlacement/);
+  assert.match(workflow, /buildEverythingReplaceLogoInputs/);
+  assert.match(workflow, /createEverythingReplaceLogoPlacementGuide/);
+  assert.match(workflow, /logoPlacementGuideUrl/);
+  assert.match(workflow, /Logo位置示意图/);
+  assert.match(workflow, /Logo是必须植入的输出元素/);
+  assert.match(workflow, /示意图只用于位置、面积和比例参考/);
+  assert.match(workflow, /按示意图中的相对位置、大小和方向融合/);
 });

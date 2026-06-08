@@ -7,6 +7,7 @@ export type AppModule =
   | 'translation'
   | 'buyer_show'
   | 'retouch'
+  | 'everything_replace'
   | 'photography'
   | 'video'
   | 'xhs_cover'
@@ -19,6 +20,7 @@ export const AppModuleObj = {
   TRANSLATION: 'translation' as AppModule,
   BUYER_SHOW: 'buyer_show' as AppModule,
   RETOUCH: 'retouch' as AppModule,
+  EVERYTHING_REPLACE: 'everything_replace' as AppModule,
   PHOTOGRAPHY: 'photography' as AppModule,
   VIDEO: 'video' as AppModule,
   XHS_COVER: 'xhs_cover' as AppModule,

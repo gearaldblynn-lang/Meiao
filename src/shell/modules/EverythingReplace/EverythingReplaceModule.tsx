@@ -1,5 +1,5 @@
 import React from 'react';
-import { Wand2 } from 'lucide-react';
+import { ReplaceAll } from 'lucide-react';
 import type { Project, SubFeatureOption, Task } from '../../../ShellMigratedApp';
 import ProjectListView from '../../components/ProjectListView';
 
@@ -18,15 +18,15 @@ interface Props {
   showGenerationProgress?: boolean;
 }
 
-const RetouchModule: React.FC<Props> = (props) => (
+const EverythingReplaceModule: React.FC<Props> = (props) => (
   <ProjectListView
     {...props}
-    title="产品精修"
-    description="AI 驱动的商业级产品图片精修。已迁移原图精修、白底精修；智能增强标记为待制作。"
-    emptyIcon={<Wand2 size={30} strokeWidth={1} />}
-    emptyTitle="开始精修产品图"
-    emptySubtitle="上传产品图片并描述精修要求，选择修复模式和画质，AI 将自动优化产品图片"
+    title="万物替换"
+    description="上传待替换素材与参考画面，复刻画面结构并完成替换生成。"
+    emptyIcon={<ReplaceAll size={30} strokeWidth={1} />}
+    emptyTitle="开始万物替换"
+    emptySubtitle="上传产品素材和替换参考图，选择替换逻辑后提交生成。"
   />
 );
 
-export default RetouchModule;
+export default EverythingReplaceModule;

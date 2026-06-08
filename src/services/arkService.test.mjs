@@ -134,7 +134,7 @@ test('analysis service treats transient KIE task-not-found planning states as re
 
 test('marketing planning returns recoverable task-not-found status instead of logging a failed plan', () => {
   const marketingBlock = arkServiceSource.match(
-    /export const generateMarketingSchemes = async[\s\S]*?export const generateMainImageSetReplicationSchemes = async/,
+    /export const generateMarketingSchemes = async[\s\S]*?export const generateDetailPageReplicationSchemes = async/,
   )?.[0] || '';
 
   assert.match(
@@ -234,7 +234,7 @@ test('marketing scheme prompt uses RTCFE structure and the new copy layout forma
 
 test('marketing planning keeps partial schemes and logs undercount diagnostics', () => {
   const marketingBlock = arkServiceSource.match(
-    /export const generateMarketingSchemes = async[\s\S]*?export const generateMainImageSetReplicationSchemes = async/,
+    /export const generateMarketingSchemes = async[\s\S]*?export const generateDetailPageReplicationSchemes = async/,
   )?.[0] || '';
 
   assert.match(
@@ -499,6 +499,40 @@ test('main image set replication planning analyzes an uploaded reference suite a
   assert.match(setReplicationBlock, /不要逐张独立策划/);
   assert.match(setReplicationBlock, /safeReferenceUrls\.forEach/);
   assert.match(setReplicationBlock, /shellPlanningLogic: 'main_image_set_replication'/);
+});
+
+test('detail page set replication planning analyzes the uploaded reference page set as one long page', () => {
+  const detailReplicationBlockMatch = arkServiceSource.match(
+    /export const generateDetailPageReplicationSchemes = async[\s\S]*?return \{ status: hasSuccess \? 'success' : 'error', schemes, perReferenceResults, message, creditsConsumed, taskId: taskId \|\| undefined \};/,
+  );
+  const detailReplicationBlock = detailReplicationBlockMatch?.[0] || '';
+
+  assert.match(arkServiceSource, /export const generateDetailPageReplicationSchemes = async/);
+  assert.match(detailReplicationBlock, /referenceUrls\.filter\(Boolean\)\.slice\(0, 10\)/);
+  assert.match(detailReplicationBlock, /详情页套图复刻必须至少上传 1 张风格参考图/);
+  assert.match(detailReplicationBlock, /一次性阅读整套详情页参考图/);
+  assert.match(detailReplicationBlock, /作为同一条详情长卷来分析/);
+  assert.match(detailReplicationBlock, /先输出“整套卖点与利益点分析”/);
+  assert.match(detailReplicationBlock, /\[SET_ANALYSIS_START\]/);
+  assert.match(detailReplicationBlock, /\[SET_ANALYSIS_END\]/);
+  assert.match(detailReplicationBlock, /每个 \[SCHEME_START\] 块只对应一张参考图/);
+  assert.match(detailReplicationBlock, /数量必须等于参考图数量/);
+  assert.match(detailReplicationBlock, /字段限制：生图策划逻辑与首图复刻裂变一致/);
+  assert.match(detailReplicationBlock, /不要单独输出“文案内容排版”、字体字号、颜色色值或其他排版字段/);
+  assert.match(detailReplicationBlock, /产品素材图只用于识别我方商品本体、包装、配件和真实结构/);
+  assert.match(detailReplicationBlock, /产品包装上的文字、logo、品牌名和标签信息必须原样保留/);
+  assert.match(detailReplicationBlock, /safeReferenceUrls\.forEach/);
+  assert.match(detailReplicationBlock, /safeProductUrls\.forEach/);
+  assert.match(detailReplicationBlock, /shellPlanningMode: 'detail_page_set_replication_all_at_once'/);
+  assert.match(detailReplicationBlock, /const schemeMatches = extractDetailReplicationSchemes\(content, safeReferenceUrls\.length\)/);
+  assert.match(detailReplicationBlock, /buildMissingDetailReplicationScheme/);
+  assert.match(detailReplicationBlock, /enforceDetailSchemeAspectRatio/);
+  assert.match(detailReplicationBlock, /perReferenceResults/);
+  assert.match(arkServiceSource, /const extractDetailReplicationSchemes = \(content: string, expectedCount: number\)/);
+  assert.match(arkServiceSource, /const extractDetailPageManualRevision = \(description: string, index: number\)/);
+  assert.match(arkServiceSource, /const enforceDetailSchemeAspectRatio = \(scheme: string, aspectRatio: string\)/);
+  assert.match(arkServiceSource, /resolveNearestSupportedAspectRatio/);
+  assert.match(detailReplicationBlock, /无法读取详情页套图参考\$\{missingReferenceRatioIndexes\.join\('、'\)\}的实际宽高比例/);
 });
 
 test('sku planning prompt uses RTCFE structure and the new copy layout format', () => {

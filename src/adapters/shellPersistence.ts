@@ -79,8 +79,12 @@ type ShellProject = {
       remoteUrl?: string;
       localAssetId?: string;
       fileName: string;
+      relativePath?: string;
       subFeature?: string;
       giftIndex?: number;
+      originalWidth?: number;
+      originalHeight?: number;
+      logoPlacement?: Record<string, unknown>;
     }>>;
   };
   sourceType?: 'persisted' | 'job';

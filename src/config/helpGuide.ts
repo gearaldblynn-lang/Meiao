@@ -12,6 +12,7 @@ export const GUIDE_MODULES: AppModule[] = [
   AppModule.TRANSLATION,
   AppModule.BUYER_SHOW,
   AppModule.RETOUCH,
+  AppModule.EVERYTHING_REPLACE,
   AppModule.PHOTOGRAPHY,
   AppModule.VIDEO,
   AppModule.XHS_COVER,
@@ -98,6 +99,22 @@ export const HELP_CONTENT: Record<AppModule, GuideEntry> = {
       '白底图适合电商标准素材，原图精修更适合已有场景图升级',
       '如果你非常在意精确尺寸，优先在导出尺寸里统一结果',
       'GPT Image 2 下质量档位不会单独暴露，清晰度按模型默认策略处理',
+    ],
+  },
+  [AppModule.EVERYTHING_REPLACE]: {
+    summary:
+      '万物替换用于上传待替换产品和参考画面，按参考图的构图、场景、光影和风格完成产品替换。',
+    steps: [
+      '选择产品替换子功能',
+      '上传待替换产品图：单品替换时为同一产品的多角度，组合替换时为同一组产品',
+      '上传替换参考图，选择单品替换或组合替换',
+      '按需填写保留重点、禁区和额外替换要求',
+      '提交后在项目卡中查看整批结果，支持同步、找回和下载',
+    ],
+    tips: [
+      '每张替换参考图是一个独立生图任务，上传几张参考图就生成几张结果',
+      '每个任务只使用全部待替换产品图和当前这一张参考图，不会混用其它参考图',
+      '参考图越接近目标商业场景，替换后的光影和透视越稳定',
     ],
   },
   [AppModule.PHOTOGRAPHY]: {
