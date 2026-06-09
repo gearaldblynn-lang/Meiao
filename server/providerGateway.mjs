@@ -14,6 +14,7 @@ const KIE_CHAT_URL = 'https://api.kie.ai/gpt-5-2/v1/chat/completions';
 const KIE_RESPONSES_URL = 'https://api.kie.ai/codex/v1/responses';
 const KIE_CLAUDE_MESSAGES_URL = 'https://api.kie.ai/claude/v1/messages';
 const KIE_GEMINI_FLASH_URL = 'https://api.kie.ai/gemini-3-flash/v1/chat/completions';
+const KIE_GEMINI_35_FLASH_URL = 'https://api.kie.ai/gemini/v1/models/gemini-3-5-flash:streamGenerateContent';
 const APIPORTS_IMAGE_GENERATIONS_URL = 'https://apiports.com/v1/api/generate';
 const APIPORTS_GPT_IMAGE_2_SECONDARY_MODEL = 'gpt-image-2-secondary';
 const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
@@ -1036,6 +1037,60 @@ const buildGeminiFlashContent = (items) =>
     };
   });
 
+const buildGeminiNativePart = (item) => {
+  if (item.type === 'text' || item.type === 'input_text') {
+    return { text: item.text || '' };
+  }
+  const fileUri = String(item.file_url || item.source?.url || item.image_url?.url || item.image_url || item.url || '').trim();
+  if (fileUri) {
+    const nameOrUrl = item.filename || item.name || fileUri;
+    return {
+      file_data: {
+        mime_type: item.mime_type || item.mimeType || inferMimeTypeFromName(nameOrUrl),
+        file_uri: fileUri,
+      },
+    };
+  }
+  return { text: '' };
+};
+
+const buildGeminiNativeContents = (messages = []) => {
+  const contents = [];
+  const systemText = (Array.isArray(messages) ? messages : [])
+    .filter((message) => String(message?.role || '').trim() === 'system')
+    .flatMap((message) => normalizeMessageContentItems(message?.content))
+    .filter((item) => item?.type === 'text' || item?.type === 'input_text')
+    .map((item) => String(item?.text || '').trim())
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+
+  (Array.isArray(messages) ? messages : [])
+    .filter((message) => String(message?.role || '').trim() !== 'system')
+    .forEach((message) => {
+      const role = String(message?.role || '').trim() === 'assistant' ? 'model' : 'user';
+      const parts = normalizeMessageContentItems(message?.content).map(buildGeminiNativePart).filter(Boolean);
+      contents.push({ role, parts: parts.length ? parts : [{ text: '' }] });
+    });
+
+  if (!contents.length) {
+    contents.push({ role: 'user', parts: [{ text: systemText || '' }] });
+    return contents;
+  }
+
+  if (systemText) {
+    const firstUserContent = contents.find((content) => content.role === 'user') || contents[0];
+    const firstTextPart = firstUserContent.parts.find((part) => typeof part?.text === 'string');
+    if (firstTextPart) {
+      firstTextPart.text = `${systemText}\n\n${firstTextPart.text || ''}`.trim();
+    } else {
+      firstUserContent.parts.unshift({ text: systemText });
+    }
+  }
+
+  return contents;
+};
+
 const normalizeGeminiFlashTool = (tool) => {
   if (!tool || typeof tool !== 'object') return null;
   if (tool.type === 'function' && tool.function && typeof tool.function === 'object') {
@@ -1082,6 +1137,34 @@ const buildGeminiFlashTools = (payload = {}) => {
       const normalized = normalizeGeminiFlashTool(tool);
       if (normalized) tools.push(normalized);
     }
+  }
+  return tools.length > 0 ? tools : undefined;
+};
+
+const normalizeGeminiNativeFunctionDeclaration = (tool) => {
+  if (!tool || typeof tool !== 'object') return null;
+  const source = tool.type === 'function' && tool.function && typeof tool.function === 'object'
+    ? tool.function
+    : tool;
+  const name = String(source.name || '').trim();
+  if (!name) return null;
+  return {
+    name,
+    description: String(source.description || tool.description || '').trim() || name,
+    parameters: source.parameters || source.input_schema || tool.parameters || tool.input_schema || { type: 'OBJECT', properties: {} },
+  };
+};
+
+const buildGeminiNativeTools = (payload = {}) => {
+  const tools = [];
+  if (payload.webSearchEnabled) {
+    tools.push({ googleSearch: {} });
+  }
+  const functionDeclarations = Array.isArray(payload.tools)
+    ? payload.tools.map(normalizeGeminiNativeFunctionDeclaration).filter(Boolean)
+    : [];
+  if (functionDeclarations.length > 0) {
+    tools.push({ functionDeclarations });
   }
   return tools.length > 0 ? tools : undefined;
 };
@@ -1231,6 +1314,8 @@ const extractProviderTaskIdFromResponse = (data) => {
     data?.task_id ||
     data?.providerTaskId ||
     data?.provider_task_id ||
+    data?.responseId ||
+    data?.response_id ||
     ''
   ).trim();
   if (explicitId) return explicitId;
@@ -1255,7 +1340,7 @@ const extractProviderUsageMeta = (data = {}) => {
       nested.credits_consumed ??
       nested.creditsConsumedTotal
     ),
-    usage: root.usage || nested.usage || null,
+    usage: root.usage || nested.usage || root.usageMetadata || nested.usageMetadata || null,
   };
 };
 
@@ -1317,6 +1402,7 @@ const resolveKieChatEndpoint = (model) =>
 
 const isKieGeminiChatModel = (model) => /^gemini-/i.test(String(model || '').trim());
 const isKieGeminiFlashOpenAiModel = (model) => String(model || '').trim() === 'gemini-3-flash-openai';
+const isKieGemini35FlashModel = (model) => String(model || '').trim() === 'gemini-3-5-flash';
 
 const isKieClaudeChatModel = (model) => normalizeKieChatModel(model) === 'claude-sonnet-4-6';
 
@@ -2140,7 +2226,7 @@ const extractChatStreamDeltaText = (event) => {
     if (deltaText) parts.push(deltaText);
   });
   if (parts.length > 0) return parts.join('');
-  return extractChatMessageText(root?.delta?.content || root?.content || root?.data?.content || '');
+  return extractChatMessageText(root?.delta?.content || root?.content || root?.candidates || root?.data?.content || root?.data?.candidates || '');
 };
 
 const readProviderStreamChunkWithTimeout = async (reader, signal, providerTaskId = '') => {
@@ -2322,6 +2408,95 @@ const runKieGeminiFlashOpenAiJob = async (payload, env, signal, options = {}) =>
 
   if (!content) {
     throw createProviderError('provider_bad_response', 'Kie Gemini 3 Flash 返回为空');
+  }
+  if (isProviderErrorText(content)) {
+    throw createProviderError(providerErrorCodeFromText(content), content);
+  }
+
+  const providerTaskId = extractProviderTaskIdFromResponse(data);
+  await notifyProviderTaskId(options, providerTaskId);
+  const usageMeta = extractProviderUsageMeta(data);
+  return {
+    ...(providerTaskId ? { providerTaskId } : {}),
+    ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+    result: {
+      content,
+      modelUsed: model,
+      providerTaskId,
+      ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+      ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
+    },
+  };
+};
+
+const runKieGemini35FlashJob = async (payload, env, signal, options = {}) => {
+  const { kieApiKey } = getProviderEnv(env);
+  ensureProviderKey(kieApiKey, 'Kie API Key');
+  const model = 'gemini-3-5-flash';
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model });
+  const reasoningLevel = normalizeReasoningLevelForModel(model, payload.reasoningLevel);
+  const tools = buildGeminiNativeTools(payload);
+  const requestBody = {
+    stream: true,
+    contents: buildGeminiNativeContents(preparedMessages),
+    ...(tools ? { tools } : {}),
+    ...(reasoningLevel
+      ? {
+          generationConfig: {
+            thinkingConfig: {
+              includeThoughts: payload.includeThoughts === false ? false : true,
+              thinkingLevel: reasoningLevel,
+            },
+          },
+        }
+      : {}),
+  };
+
+  const response = await fetchKieWithTimeout(KIE_GEMINI_35_FLASH_URL, {
+    method: 'POST',
+    headers: {
+      'X-Goog-Api-Key': kieApiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(requestBody),
+    signal,
+  }, 'Kie Gemini 3.5 Flash 请求超时', KIE_CHAT_COMPLETION_TIMEOUT_MS, 'chat_completion');
+
+  if (!response.ok) {
+    await mapHttpError(response, 'Kie Gemini 3.5 Flash 请求失败');
+  }
+
+  const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
+  if (contentType.includes('text/event-stream') && response.body) {
+    const streamResult = await readProviderSseChatResponse(response, signal, options);
+    if (!streamResult.content) {
+      throw createProviderError('provider_bad_response', 'Kie Gemini 3.5 Flash 返回为空');
+    }
+    if (isProviderErrorText(streamResult.content)) {
+      throw createProviderError(providerErrorCodeFromText(streamResult.content), streamResult.content);
+    }
+    return {
+      ...(streamResult.providerTaskId ? { providerTaskId: streamResult.providerTaskId } : {}),
+      ...(streamResult.usageMeta.creditsConsumed !== undefined ? { creditsConsumed: streamResult.usageMeta.creditsConsumed } : {}),
+      result: {
+        content: streamResult.content,
+        modelUsed: model,
+        providerTaskId: streamResult.providerTaskId,
+        ...(streamResult.usageMeta.creditsConsumed !== undefined ? { creditsConsumed: streamResult.usageMeta.creditsConsumed } : {}),
+        ...(streamResult.usageMeta.usage ? { usage: streamResult.usageMeta.usage } : {}),
+      },
+    };
+  }
+
+  const data = await response.json().catch(() => ({}));
+  const content =
+    extractChatMessageText(data?.candidates?.[0]?.content?.parts) ||
+    extractChatMessageText(data?.candidates?.[0]?.content) ||
+    extractChatMessageText(data) ||
+    '';
+
+  if (!content) {
+    throw createProviderError('provider_bad_response', 'Kie Gemini 3.5 Flash 返回为空');
   }
   if (isProviderErrorText(content)) {
     throw createProviderError(providerErrorCodeFromText(content), content);
@@ -2793,6 +2968,13 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
     throw createProviderError('provider_bad_request', '缺少聊天模型，请检查功能是否已接入统一模型设置。');
   }
   const transport = resolveChatTransport(payload.model);
+  if (isKieGemini35FlashModel(payload.model)) {
+    try {
+      return await runKieGemini35FlashJob(payload, env, signal, options);
+    } catch (error) {
+      return runKieChatFallbackModels(payload, env, signal, error);
+    }
+  }
   if (isKieGeminiFlashOpenAiModel(payload.model)) {
     try {
       return await runKieGeminiFlashOpenAiJob(payload, env, signal, options);

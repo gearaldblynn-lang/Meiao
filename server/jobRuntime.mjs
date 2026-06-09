@@ -60,6 +60,17 @@ const AGENT_MODEL_CATALOG = {
       supportsReasoningLevel: true,
       reasoningLevels: ['low', 'high'],
     },
+    {
+      id: 'gemini-3-5-flash',
+      label: 'Gemini 3.5 Flash',
+      provider: 'kie',
+      mediaTransport: 'public_url',
+      supportsImageInput: true,
+      supportsFileInput: true,
+      supportsWebSearch: true,
+      supportsReasoningLevel: true,
+      reasoningLevels: ['low', 'high'],
+    },
   ],
   image: [
     {
