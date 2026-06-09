@@ -45,6 +45,7 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
     'claude-sonnet-4-6',
     'gemini-3.1-pro-openai',
     'gemini-3-flash-openai',
+    'gemini-3-5-flash',
   ]);
   assert.deepEqual(
     config.agentModels.chat
@@ -52,6 +53,7 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
       .filter((id) => id.startsWith('gemini-3-flash')),
     ['gemini-3-flash-openai']
   );
+  const gemini35 = config.agentModels.chat.find((item) => item.id === 'gemini-3-5-flash');
   assert.equal(config.agentModels.chat[0].supportsFileInput, true);
   assert.equal(config.agentModels.chat[0].supportsImageInput, true);
   assert.equal(config.agentModels.chat[0].supportsReasoningLevel, true);
@@ -74,6 +76,12 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.equal(config.agentModels.chat[3].supportsWebSearch, true);
   assert.equal(config.agentModels.chat[3].supportsReasoningLevel, true);
   assert.deepEqual(config.agentModels.chat[3].reasoningLevels, ['low', 'high']);
+  assert.equal(gemini35?.provider, 'kie');
+  assert.equal(gemini35?.supportsFileInput, true);
+  assert.equal(gemini35?.supportsImageInput, true);
+  assert.equal(gemini35?.supportsWebSearch, true);
+  assert.equal(gemini35?.supportsReasoningLevel, true);
+  assert.deepEqual(gemini35?.reasoningLevels, ['low', 'high']);
   assert.deepEqual(config.agentModels.image.map((item) => item.id), [
     'gpt-image-2',
     'gpt-image-2-secondary',
@@ -117,6 +125,7 @@ test('buildPublicSystemConfig exposes user planning model and gemini-only video 
   assert.deepEqual(config.videoAnalysisModels.map((item) => item.id), [
     'gemini-3.1-pro-openai',
     'gemini-3-flash-openai',
+    'gemini-3-5-flash',
   ]);
 });
 

@@ -1841,6 +1841,125 @@ test('executeProviderJob routes gemini 3.1 pro through kie chat endpoint with go
   }
 });
 
+test('executeProviderJob routes gemini 3.5 flash through kie native gemini streamGenerateContent', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    return createJsonResponse({
+      candidates: [
+        {
+          content: {
+            role: 'model',
+            parts: [{ text: '商品卖点文案' }],
+          },
+          finishReason: 'STOP',
+        },
+      ],
+      modelVersion: 'gemini-3-5-flash',
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 },
+      credits_consumed: 0.01,
+      responseId: 'gemini35-response-1',
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        provider: 'kie',
+        payload: {
+          model: 'gemini-3-5-flash',
+          reasoningLevel: 'high',
+          webSearchEnabled: true,
+          messages: [
+            { role: 'system', content: '只输出中文。' },
+            { role: 'user', content: '写一个商品卖点。' },
+          ],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(requests[0].url, 'https://api.kie.ai/gemini/v1/models/gemini-3-5-flash:streamGenerateContent');
+    assert.equal(requests[0].init.headers['X-Goog-Api-Key'], 'test-key');
+    assert.equal(requests[0].init.headers.Authorization, undefined);
+    const body = JSON.parse(String(requests[0].init.body));
+    assert.equal(body.stream, true);
+    assert.equal(body.contents[0].role, 'user');
+    assert.match(body.contents[0].parts[0].text, /只输出中文。/);
+    assert.match(body.contents[0].parts[0].text, /写一个商品卖点。/);
+    assert.deepEqual(body.tools, [{ googleSearch: {} }]);
+    assert.deepEqual(body.generationConfig, {
+      thinkingConfig: { includeThoughts: true, thinkingLevel: 'high' },
+    });
+    assert.equal(result.providerTaskId, 'gemini35-response-1');
+    assert.equal(result.result.content, '商品卖点文案');
+    assert.equal(result.result.modelUsed, 'gemini-3-5-flash');
+    assert.equal(result.result.creditsConsumed, 0.01);
+    assert.deepEqual(result.result.usage, { promptTokenCount: 10, candidatesTokenCount: 5, totalTokenCount: 15 });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob extracts gemini 3.5 flash text from native sse candidates', async () => {
+  const originalFetch = global.fetch;
+  const seenProviderTaskIds = [];
+
+  global.fetch = async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({ 'content-type': 'text/event-stream' }),
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({
+          candidates: [
+            {
+              content: {
+                role: 'model',
+                parts: [{ text: '流式商品卖点' }],
+              },
+            },
+          ],
+          responseId: 'gemini35-stream-1',
+          usageMetadata: { totalTokenCount: 11 },
+          credits_consumed: 0.02,
+        })}\n\n`));
+        controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        controller.close();
+      },
+    }),
+    json: async () => ({}),
+  });
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        provider: 'kie',
+        payload: {
+          model: 'gemini-3-5-flash',
+          messages: [{ role: 'user', content: '写一个商品卖点。' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal,
+      { onProviderTaskId: async (taskId) => seenProviderTaskIds.push(taskId) }
+    );
+
+    assert.equal(result.providerTaskId, 'gemini35-stream-1');
+    assert.equal(result.result.content, '流式商品卖点');
+    assert.equal(result.result.creditsConsumed, 0.02);
+    assert.deepEqual(result.result.usage, { totalTokenCount: 11 });
+    assert.deepEqual(seenProviderTaskIds, ['gemini35-stream-1']);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob uploads managed file attachments before gemini chat models', async () => {
   const originalFetch = global.fetch;
   const requests = [];
