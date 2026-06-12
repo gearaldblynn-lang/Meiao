@@ -65,3 +65,29 @@ test('findResultsForPlanDisplay assigns orphan media deterministically by stable
     ['result-b'],
   );
 });
+
+test('findResultsForPlanDisplay shows completed media before stale same-plan failures', () => {
+  const plans = [{ id: 'plan-detail-6' }];
+  const results = [
+    {
+      id: '032d51d6e6828c4b970cf78c-error',
+      planId: 'plan-detail-6',
+      backendJobId: '032d51d6e6828c4b970cf78c',
+      taskId: '705e5006f68f209d6023372d02f2ea65',
+      status: 'error',
+    },
+    {
+      id: '766a8224eebd2f5c264c4ad35b722fb7',
+      planId: 'plan-detail-6',
+      backendJobId: '677a83b1448a37c928c03f6e',
+      taskId: '766a8224eebd2f5c264c4ad35b722fb7',
+      status: 'completed',
+      imageUrl: '/retry-success.png',
+    },
+  ];
+
+  assert.deepEqual(
+    findResultsForPlanDisplay(plans, results, plans[0], 0).map((result) => result.id),
+    ['766a8224eebd2f5c264c4ad35b722fb7', '032d51d6e6828c4b970cf78c-error'],
+  );
+});

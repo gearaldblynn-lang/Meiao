@@ -7,6 +7,9 @@ export interface PlanResultMatchResult {
   planId?: string;
   backendJobId?: string;
   taskId?: string;
+  status?: string;
+  imageUrl?: string;
+  videoUrl?: string;
 }
 
 const compact = (value: unknown) => String(value || '').trim();
@@ -19,6 +22,9 @@ export const sortResultsForSinglePlanDisplay = <TResult extends PlanResultMatchR
   return results
     .map((result, index) => ({ result, index }))
     .sort((left, right) => {
+      const leftCompletedMedia = left.result.status === 'completed' && Boolean(left.result.imageUrl || left.result.videoUrl);
+      const rightCompletedMedia = right.result.status === 'completed' && Boolean(right.result.imageUrl || right.result.videoUrl);
+      if (leftCompletedMedia !== rightCompletedMedia) return leftCompletedMedia ? -1 : 1;
       const leftIdentity = stableResultIdentity(left.result);
       const rightIdentity = stableResultIdentity(right.result);
       if (leftIdentity && rightIdentity && leftIdentity !== rightIdentity) {

@@ -3292,6 +3292,102 @@ test('shell data adapter lets completed backend one-click jobs clear stale same-
   assert.equal(project.results[0].imageUrl, '/late-success.png');
 });
 
+test('shell data adapter drops stale same-plan backend failures after a retry succeeds', () => {
+  const plans = Array.from({ length: 8 }, (_, index) => ({
+    id: `detail-plan-${index + 1}`,
+    title: `详情第${index + 1}屏`,
+    sellingPoints: [],
+    sceneDescription: `详情第${index + 1}屏`,
+    styleDirection: '',
+    colorPalette: '',
+    composition: '',
+    textLayout: '',
+    selected: true,
+    schemeContent: `详情第${index + 1}屏`,
+  }));
+  const failedPlanId = plans[5].id;
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'dusang-detail-retry-project',
+      name: '详情套图复刻',
+      module: 'one_click',
+      status: 'completed',
+      createdAt: '06-12',
+      selectedPlanId: plans[0].id,
+      taskCount: 9,
+      completedCount: 9,
+      subFeature: 'detail_page',
+      plans,
+      results: [
+        ...plans.slice(0, 5).map((plan, index) => ({
+          id: `provider-detail-${index + 1}`,
+          planId: plan.id,
+          imageUrl: `/detail-${index + 1}.png`,
+          prompt: `详情第${index + 1}屏`,
+          model: 'gpt-image-2',
+          aspectRatio: 'auto',
+          status: 'completed',
+          createdAt: '06-12',
+          module: 'one_click',
+          subFeature: 'detail_page',
+          taskId: `provider-detail-${index + 1}`,
+          backendJobId: `job-detail-${index + 1}`,
+        })),
+        {
+          id: '032d51d6e6828c4b970cf78c-error',
+          planId: failedPlanId,
+          imageUrl: '',
+          prompt: 'Internal Error, Please try again later.',
+          model: 'gpt-image-2',
+          aspectRatio: 'auto',
+          status: 'error',
+          createdAt: '06-12',
+          module: 'one_click',
+          subFeature: 'detail_page',
+          taskId: '705e5006f68f209d6023372d02f2ea65',
+          backendJobId: '032d51d6e6828c4b970cf78c',
+          error: 'Internal Error, Please try again later.',
+        },
+      ],
+    }],
+  }, [
+    {
+      id: '677a83b1448a37c928c03f6e',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: '766a8224eebd2f5c264c4ad35b722fb7',
+      payload: {
+        prompt: '详情第6屏重试成功',
+        shellProjectId: 'dusang-detail-retry-project',
+        shellPlanId: failedPlanId,
+        subFeature: 'detail_page',
+        batchIndex: 1,
+        batchCount: 1,
+      },
+      result: {
+        imageUrl: '/detail-6-retry-success.png',
+        providerTaskId: '766a8224eebd2f5c264c4ad35b722fb7',
+      },
+      createdAt: 1781231215866,
+      updatedAt: 1781231340428,
+      finishedAt: 1781231340428,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'dusang-detail-retry-project');
+  assert.ok(project);
+  assert.equal(project.status, 'completed');
+  assert.equal(project.taskCount, 8);
+  assert.equal(project.completedCount, 6);
+  const failedPlanResults = project.results.filter((result) => result.planId === failedPlanId);
+  assert.equal(failedPlanResults.length, 1);
+  assert.equal(failedPlanResults[0].status, 'completed');
+  assert.equal(failedPlanResults[0].backendJobId, '677a83b1448a37c928c03f6e');
+  assert.equal(failedPlanResults[0].imageUrl, '/detail-6-retry-success.png');
+});
+
 test('shell data adapter clears stale planning failure when backend planning job later succeeds with existing plans', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{

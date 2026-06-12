@@ -20,6 +20,17 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-12 - Detail-page retry success must outrank stale same-plan failures
+
+- Symptom: 云上账号“多桑”一键详情套图复刻已出图，但前端详情页仍显示“失败/重试”；用户再次重试后，云上继续成功出图，前端仍显示失败。
+- Environment: Tencent Cloud production one_click detail_page set replication / local development.
+- Cloud evidence: 项目 `proj-plan-1781230443454` 首次批量 8 张中 7 张成功，`plan-1781230569944-5-j5tdw` 的原 job `032d51d6e6828c4b970cf78c` 在 polling 阶段失败，错误为 `Internal Error, Please try again later.`；随后同一 `planId` 的重试 job `677a83b1448a37c928c03f6e` 成功并返回图片 `d67f11b4b89a7b26bb50e7c7/kie_image.png`，再次重试 job `a8576dd93d6563650c8b10a5` 也成功。云端 app state 同时保留成功结果和旧失败结果，旧失败 job id `032...` 字典序排在成功 job id `677...` 前。
+- Root cause: `PlanEditor` 通过 `findResultsForPlanDisplay(...)[0]` 判定详情页单屏状态；同一 `planId` 有多个结果时，排序只按 backend/task/id 的稳定字符串，没有把“已完成且有图”的结果排在“无图失败”前。数据适配层也只清理无任务身份的失败占位，没有清理带 providerTaskId/backendJobId 的旧失败结果，所以重试成功后旧失败仍可参与显示与计数。
+- Fix: `planResultMatching` 同一方案结果排序优先展示 `status=completed` 且有媒体 URL 的结果；`shellDataAdapter` 在同一 `planId` 已存在完成媒体时，清理所有无媒体 error 结果，包括带 taskId/backendJobId 的旧 provider 失败。
+- Regression check: `node --test src/shell/components/planResultMatching.test.mjs`; `node --test src/adapters/shellDataAdapter.test.mjs`; `node --test src/components/uiArchitecture.test.mjs --test-name-pattern "project details expose|shell project detail|one click batch generation keeps|one click completed result edit"`; `npm run build`.
+- Files/tests: `src/shell/components/planResultMatching.ts`, `src/shell/components/planResultMatching.test.mjs`, `src/adapters/shellDataAdapter.ts`, `src/adapters/shellDataAdapter.test.mjs`.
+- Avoid next time: 重试链路不能只测“旧失败无身份占位”。必须覆盖“旧失败有 providerTaskId/backendJobId + 新成功同 planId”的真实生产形态；详情页单屏状态判断必须按结果语义排序，不能只按任务 id 字符串排序。
+
 ## 2026-06-12 - Agent prompt-only design briefs must not be forced into image-edit mode
 
 - Symptom: 云上智能体“对话改图”里，用户发送纯文字首图设计 brief，没有上传图片，系统返回“改图任务没有可用输入图”，两次记录为 `missing_image_input`。
