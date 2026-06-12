@@ -1,6 +1,7 @@
 import type { AppModule } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
 import { isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
+import { mergeArrayByStableKeys } from '../utils/taskResultReconcile.mjs';
 
 const INTERNAL_BACKEND_JOB_ID_PATTERN = /^[a-f0-9]{24}$/i;
 
@@ -149,50 +150,6 @@ const cloneShellProject = (project: ShellProject): ShellProject => ({
 });
 
 const compactKey = (value: unknown) => String(value || '').trim();
-
-const collectMergeKeys = (item: any) => {
-  const keys = new Set<string>();
-  const add = (prefix: string, value: unknown) => {
-    const normalized = compactKey(value);
-    if (normalized) keys.add(`${prefix}:${normalized}`);
-  };
-  add('id', item?.id);
-  add('job', item?.backendJobId);
-  add('provider', item?.providerTaskId || item?.taskId || item?.kieTaskId);
-  add('plan', item?.planId);
-  return keys;
-};
-
-const mergeArrayByStableKeys = <T extends Record<string, any>>(existingItems: T[] = [], incomingItems: T[] = []) => {
-  const keyToIndex = new Map<string, number>();
-  const merged: T[] = [];
-
-  const register = (item: T, index: number) => {
-    collectMergeKeys(item).forEach((key) => keyToIndex.set(key, index));
-  };
-
-  const push = (item: T, source: 'existing' | 'incoming') => {
-    if (!item) return;
-    const duplicateIndex = Array.from(collectMergeKeys(item))
-      .map((key) => keyToIndex.get(key))
-      .find((index) => typeof index === 'number');
-    if (typeof duplicateIndex === 'number') {
-      const current = merged[duplicateIndex];
-      merged[duplicateIndex] = source === 'incoming'
-        ? { ...current, ...item }
-        : { ...item, ...current };
-      register(merged[duplicateIndex], duplicateIndex);
-      return;
-    }
-    const index = merged.length;
-    merged.push({ ...item });
-    register(item, index);
-  };
-
-  incomingItems.filter(Boolean).forEach((item) => push(item, 'incoming'));
-  existingItems.filter(Boolean).forEach((item) => push(item, 'existing'));
-  return merged;
-};
 
 const hasCompletedMedia = (item: any) => (
   String(item?.status || '') === 'completed'
