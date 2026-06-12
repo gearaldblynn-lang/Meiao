@@ -673,11 +673,14 @@ test('storyboard generation uploads local draft assets before building model-rea
   assert.match(app, /resolvePublicAssetUrl\(item\.remoteUrl \|\| item\.url, publicBaseUrl\)/);
   assert.match(app, /shouldRefreshVideoAssetUrl/);
   assert.match(app, /shouldRefreshVideoAssetUrl\(currentSafeUrl, Boolean\(item\.localAssetId\)\)/);
+  assert.match(app, /shouldRefreshExpiringMaterialUrl/);
+  assert.match(app, /shouldRefreshExpiringMaterialUrl\(currentSafeUrl, Boolean\(item\.localAssetId\)\)/);
   assert.match(app, /tempfileb\.aiquickdraw\.com/);
   assert.match(app, /tempfile\.redpandaai\.co/);
+  assert.match(app, /tempfile\.aiquickdraw\.com/);
   assert.match(app, /path\.includes\('\/openrouter-chat\/'\)/);
   assert.match(app, /type === 'referenceVideo'/);
-  assert.match(app, /currentSafeUrl && !refreshVideoAssetUrl/);
+  assert.match(app, /currentSafeUrl && !refreshVideoAssetUrl && !refreshExpiringMaterialUrl/);
   assert.match(storyboardGenerateBody, /const storyboardMaterials = await ensureMaterialRemoteUrls\(filteredMaterials, AppModuleObj\.VIDEO\)/);
   assert.match(storyboardGenerateBody, /buildVideoStoryboardConfig\(baseStoryboard\.config, storyboardPrompt, currentParams, storyboardMaterials\)/);
   assert.doesNotMatch(storyboardGenerateBody, /buildVideoStoryboardConfig\(baseStoryboard\.config, storyboardPrompt, currentParams, filteredMaterials\)/);
@@ -729,6 +732,7 @@ test('guarded generation blocks duplicate submits while scoped jobs are active',
 
   assert.match(shellApp, /generationSubmitLocksRef/);
   assert.match(shellApp, /shouldGuardGenerationSubmit\(targetModule, targetSubFeature\)/);
+  assert.match(shellApp, /!\(module === AppModuleObj\.EVERYTHING_REPLACE && subFeature === 'product_replace'\)/);
   assert.match(shellApp, /module === AppModuleObj\.ONE_CLICK/);
   assert.match(shellApp, /const hasActiveGuardedGeneration = \(/);
   assert.match(shellApp, /当前已有任务未返回，请等待完成或取消后再提交。/);
@@ -854,8 +858,8 @@ test('one click shell planning dialog exposes old-style selected batch generatio
   assert.match(planEditor, /const hasErrorResult = result\?\.status === 'error'/);
   assert.match(planEditor, /hasErrorResult \? '生成失败' : isGenerating \? '生成中'/);
   assert.match(projectCard, /const hasGeneratingResult = project\.results\.some/);
-  assert.match(projectCard, /const resultHasVisibleTaskId = \(result: GeneratedResult\) => Boolean\(String\(result\.taskId \|\| ''\)\.trim\(\)\)/);
-  assert.match(projectCard, /const isResultActivelyGenerating = \(result: GeneratedResult\) => result\.status === 'generating' && !isCompletedMediaResult\(result\) && resultHasVisibleTaskId\(result\)/);
+  assert.match(projectCard, /const resultHasVisibleTaskId = \(result: GeneratedResult\) => Boolean\(String\(result\.taskId \|\| result\.backendJobId \|\| ''\)\.trim\(\)\)/);
+  assert.match(projectCard, /const isResultActivelyGenerating = \(result: GeneratedResult\) => \([\s\S]*result\.status === 'generating'[\s\S]*!isCompletedMediaResult\(result\)[\s\S]*\(resultHasVisibleTaskId\(result\) \|\| project\.status === 'generating'\)/);
   assert.match(projectCard, /const pendingPlans = project\.plans\.filter\(\(plan\) => \([\s\S]*plan\.selected[\s\S]*!completedPlanIds\.has\(plan\.id\)[\s\S]*!activePlanIds\.has\(plan\.id\)[\s\S]*!isPlanConfirmPending\(plan\.id\)/);
   assert.match(projectCard, /const firstBenchmarkPlanId = project\.module === 'one_click' && project\.subFeature === 'sku'/);
   assert.match(projectCard, /activePlanIds\.has\(firstBenchmarkPlanId\)/);
@@ -993,7 +997,7 @@ test('video workspace keeps the shell UI while migrating storyboard and diagnosi
   assert.match(projectCard, /确认生图/);
   assert.match(videoModule, /onConfirmStoryboardImaging/);
   assert.match(projectCard, /storyboardProjectStatus === 'awaiting_image_confirmation'[\s\S]*?确认生图/);
-  assert.match(projectCard, /if \(isStoryboardAwaitingImageConfirmation \|\| regeneratePending \|\| isGeneratingResult\) return;[\s\S]*?onRegenerate\(result\.id\)/);
+  assert.match(projectCard, /if \(isStoryboardAwaitingImageConfirmation \|\| regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\) return;[\s\S]*?onRegenerate\(result\.id\)/);
   assert.match(shellApp, /parseStoryboardShotCount/);
   assert.match(shellApp, /countryLanguage: params\.countryLanguage \|\| base\.countryLanguage/);
   assert.match(shellApp, /projectCount: 1/);
@@ -2568,7 +2572,7 @@ test('project card preview prefers completed media over failed or pending placeh
   assert.match(projectCard, /renderMedia\(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-\[1\.03\]'\)/);
 });
 
-test('one click completed result edit supports supplement image upload and keeps original result instead of replacing it', () => {
+test('one click completed result edit uses only product assets and generated baseline while keeping original result', () => {
   const projectCard = read('../shell/components/ProjectCard.tsx');
   const projectListView = read('../shell/components/ProjectListView.tsx');
   const oneClickShellModule = read('../shell/modules/OneClick/OneClickModule.tsx');
@@ -2576,9 +2580,10 @@ test('one click completed result edit supports supplement image upload and keeps
 
   assert.match(projectCard, /onEdit\?: \(resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(projectCard, /editDialog/);
-  assert.match(projectCard, /补充参考图/);
-  assert.match(projectCard, /type="file"/);
-  assert.match(projectCard, /onEdit\(editDialog\.resultId, finalInstruction, editDialog\.files\)/);
+  assert.match(projectCard, /const isOneClickProject = project\.module === 'one_click'/);
+  assert.match(projectCard, /const usesMinimalRoleEditPrompt = isOneClickProject \|\| isEverythingReplaceProductEditProject/);
+  assert.match(projectCard, /onEdit\(editDialog\.resultId, finalInstruction, usesMinimalRoleEditPrompt \? \[\] : editDialog\.files\)/);
+  assert.doesNotMatch(projectCard, /补充参考图/);
   assert.match(projectListView, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(oneClickShellModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(shellApp, /const handleEditResult = useCallback/);
@@ -2586,7 +2591,35 @@ test('one click completed result edit supports supplement image upload and keeps
   assert.match(shellApp, /directGeneration: true/);
   assert.match(shellApp, /model: currentScopedImageModel \|\| storedContext\?\.params\?\.model \|\| result\.model \|\| currentParams\.model \|\| 'GPT Image 2'/);
   assert.match(shellApp, /editInstruction: finalInstruction/);
+  assert.match(shellApp, /const isOneClickEdit = project\.module === AppModuleObj\.ONE_CLICK/);
+  assert.match(shellApp, /const usesMinimalRoleEditPrompt = isOneClickEdit \|\| isEverythingReplaceProductEdit/);
+  assert.match(shellApp, /logo: usesMinimalRoleEditPrompt \? \[\] : \[\.\.\.\(contextMaterials\.logo \|\| \[\]\)\]/);
+  assert.match(shellApp, /const uploadedSupplementMaterials = usesMinimalRoleEditPrompt\s*\?\s*\[\]\s*:\s*await Promise\.all/);
   assert.match(shellApp, /runOneClickPlanGeneration\(readyEditProject, \[editPlan\], editMaterials\)/);
+});
+
+test('everything replace product edit uses its own generation flow', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const projectListView = read('../shell/components/ProjectListView.tsx');
+  const everythingReplaceModule = read('../shell/modules/EverythingReplace/EverythingReplaceModule.tsx');
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const workflow = read('../adapters/shellWorkflow.ts');
+  const editPromptFunction = workflow.match(/const buildEverythingReplaceResultEditPrompt = \(\{[\s\S]*?\n\};/)?.[0] || '';
+
+  assert.match(projectCard, /onEdit\?: \(resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(projectListView, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(everythingReplaceModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(shellApp, /onEditResult=\{handleEditResult\}/);
+  assert.match(shellApp, /const runEverythingReplaceEditGeneration = useCallback/);
+  assert.match(shellApp, /shellPurpose: 'everything_replace_product_edit'/);
+  assert.match(shellApp, /project\?\.module === AppModuleObj\.EVERYTHING_REPLACE && project\.subFeature === 'product_replace'/);
+  assert.match(shellApp, /runEverythingReplaceEditGeneration\(readyEditProject, editPlan, editMaterials\)/);
+  assert.match(workflow, /buildEverythingReplaceResultEditPrompt/);
+  assert.match(editPromptFunction, /产品素材图：\$\{formatRoleUrls\(safeProductUrls, '已上传原素材图'\)\}（公网url）/);
+  assert.match(editPromptFunction, /需修改基准图：\$\{safePreviousResultUrl \|\| '需修改的生成图'\}（公网url）/);
+  assert.match(editPromptFunction, /任务：\$\{instruction \|\| '按用户输入要求修改当前生成图。'\}/);
+  assert.doesNotMatch(editPromptFunction, /【补充参考图】/);
+  assert.doesNotMatch(editPromptFunction, /【约束规范】/);
 });
 
 test('video storyboard result edit stays in the same card with version history and supplement uploads', () => {
@@ -2657,7 +2690,7 @@ test('one click result edit and fission show immediate feedback before long asyn
   const shellApp = read('../ShellMigratedApp.tsx');
 
   assert.match(projectCard, /onFission\(fissionDialog\.resultId, fissionDialog\.mode, finalInstruction\);\s*setFissionDialog\(null\);\s*setDetailOpen\(false\);/);
-  assert.match(projectCard, /onEdit\(editDialog\.resultId, finalInstruction, editDialog\.files\);\s*setEditDialog\(null\);\s*setDetailOpen\(false\);/);
+  assert.match(projectCard, /onEdit\(editDialog\.resultId, finalInstruction, usesMinimalRoleEditPrompt \? \[\] : editDialog\.files\);\s*setEditDialog\(null\);\s*setDetailOpen\(false\);/);
   assert.match(projectCard, /isEditResultPending=\{isEditPending\}/);
   assert.match(projectCard, /isFissionResultPending=\{isFissionPending\}/);
   assert.match(planEditor, /isEditResultPending\?: \(resultId: string\) => boolean/);
@@ -2666,7 +2699,7 @@ test('one click result edit and fission show immediate feedback before long asyn
   assert.match(planEditor, /label=\{isFissionPending \? '提交中' : '裂变'\}/);
   assert.match(shellApp, /addToast\('裂变任务已提交，正在创建新任务卡', 'info'\)/);
   assert.match(shellApp, /addToast\('修改任务已提交，正在准备素材', 'info'\)/);
-  assert.match(shellApp, /setProjects\(\(prev\) => \[editProject, \.\.\.prev\]\);[\s\S]{0,1200}const uploadedSupplementMaterials = await Promise\.all/);
+  assert.match(shellApp, /setProjects\(\(prev\) => \[editProject, \.\.\.prev\]\);[\s\S]{0,1200}const uploadedSupplementMaterials = usesMinimalRoleEditPrompt/);
 });
 
 test('plan prompt editor preserves IME composition and does not normalize while typing', () => {
@@ -2789,23 +2822,47 @@ test('everything replace product workflow keeps batch metadata so many outputs r
   assert.match(workflow, /AppModule\.EVERYTHING_REPLACE/);
   assert.match(workflow, /runProductReplaceWorkflow/);
   assert.match(workflow, /replacementLogic/);
-  assert.match(workflow, /【任务类型】：万物替换 \/ 产品替换 \/ 单品替换/);
+  assert.match(workflow, /【角色】/);
+  assert.match(workflow, /【输入图片角色】/);
+  assert.match(workflow, /【任务】/);
+  assert.match(workflow, /【替换逻辑】/);
+  assert.match(workflow, /【文案处理】/);
+  assert.match(workflow, /【约束】/);
+  assert.doesNotMatch(workflow, /【Logo 参考】/);
+  assert.doesNotMatch(workflow, /Logo 原图：随 input_urls 上传/);
+  assert.match(workflow, /skipPromptCleanupSuffix/);
+  assert.match(workflow, /normalizeProductReplaceTextPolicy/);
+  assert.match(workflow, /当前任务只使用当前这一张替换参考图/);
+  assert.match(workflow, /找到当前替换参考图中应被替换的原产品区域，将产品素材图中的目标产品自然替换进对应位置/);
+  assert.match(workflow, /去除参考图中的所有宣传文案内容/);
+  assert.match(workflow, /参考图中的所有非产品宣传文案均不做任何变动/);
+  assert.doesNotMatch(workflow, /【任务类型】：万物替换 \/ 产品替换 \/ 单品替换/);
   assert.doesNotMatch(workflow, /productDetailUrls/);
   assert.doesNotMatch(workflow, /buildProductDetailReferencePrompt/);
   assert.match(workflow, /const total = referenceUrls\.length/);
   assert.match(workflow, /buildEverythingReplaceLogoInputs/);
+  assert.match(workflow, /loadShellDraftAsset/);
+  assert.match(workflow, /logoBlob: localLogoRecord\?\.blob/);
   assert.doesNotMatch(workflow, /\.\.\.productDetailUrls/);
+  assert.doesNotMatch(workflow, /产品素材硬约束｜最高优先级/);
+  assert.doesNotMatch(workflow, /产品细节锁定/);
+  assert.doesNotMatch(workflow, /主产品图URL/);
+  assert.doesNotMatch(workflow, /产品细节补充图URL/);
+  assert.doesNotMatch(workflow, /若主产品图与细节补充图存在差异，以主产品图为准/);
+  assert.match(workflow, /不得遗漏任意上传产品/);
   assert.match(workflow, /人物微调/);
-  assert.match(workflow, /人物必须出现可见但轻微的差异/);
+  assert.match(workflow, /必须重绘为不同人物/);
+  assert.match(workflow, /不得只做几乎不可见的轻微修饰/);
   assert.match(workflow, /全局微调/);
-  assert.match(workflow, /人物、场景、动作、道具细节/);
-  assert.match(workflow, /产品包装文字、Logo、标签、画面中已有非产品文案/);
+  assert.match(workflow, /人物、场景、动作和局部细节允许轻微变化/);
+  assert.match(workflow, /产品素材图是产品外观的最高优先级依据/);
   assert.match(workflow, /输入图片角色/);
   assert.match(workflow, /当前替换参考图/);
-  assert.match(workflow, /参考图中的原产品必须被移除/);
-  assert.match(workflow, /接触阴影、遮挡关系、透视角度、材质反光/);
+  assert.match(workflow, /移除参考图中的原产品、原品牌、原商标、原包装信息和原产品轮廓/);
+  assert.match(workflow, /透视、遮挡、接触阴影、材质反光/);
   assert.doesNotMatch(workflow, /人物自适应/);
   assert.match(workflow, /firstImageColorMode/);
+  assert.match(workflow, /textPolicy/);
   assert.match(workflow, /Promise\.all/);
   assert.match(workflow, /batchIndex/);
   assert.match(workflow, /referenceIndex/);
@@ -2813,6 +2870,7 @@ test('everything replace product workflow keeps batch metadata so many outputs r
   assert.match(projectCard, /hideResultPromptInProjectCard/);
   assert.match(projectCard, /project\.module === 'everything_replace'/);
   assert.match(projectCard, /project\.subFeature === 'product_replace'/);
+  assert.match(projectCard, /result\.status !== 'error'/);
 });
 
 test('everything replace product workflow sends logo placement guides per reference task', () => {
@@ -2828,7 +2886,40 @@ test('everything replace product workflow sends logo placement guides per refere
   assert.match(workflow, /createEverythingReplaceLogoPlacementGuide/);
   assert.match(workflow, /logoPlacementGuideUrl/);
   assert.match(workflow, /Logo位置示意图/);
-  assert.match(workflow, /Logo是必须植入的输出元素/);
-  assert.match(workflow, /示意图只用于位置、面积和比例参考/);
-  assert.match(workflow, /按示意图中的相对位置、大小和方向融合/);
+  assert.match(workflow, /Logo 必须植入最终图/);
+  assert.match(workflow, /Logo 位置示意图只作为位置参考/);
+  assert.match(workflow, /边框、辅助线、底色、选区框或标记/);
+  assert.match(workflow, /相对位置、面积、方向和比例/);
+});
+
+test('everything replace product edit is wired to its own generation path', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const workflow = read('../adapters/shellWorkflow.ts');
+  const everythingReplaceModule = read('../shell/modules/EverythingReplace/EverythingReplaceModule.tsx');
+  const editPromptFunction = workflow.match(/const buildEverythingReplaceResultEditPrompt = \(\{[\s\S]*?\n\};/)?.[0] || '';
+
+  assert.match(shellApp, /const runEverythingReplaceEditGeneration = useCallback/);
+  assert.match(shellApp, /shellPurpose: 'everything_replace_product_edit'/);
+  assert.match(shellApp, /isEverythingReplaceProductEdit/);
+  assert.match(shellApp, /await runEverythingReplaceEditGeneration\(readyEditProject, editPlan, editMaterials\)/);
+  assert.match(shellApp, /onEditResult=\{handleEditResult\}/);
+  assert.match(everythingReplaceModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(workflow, /buildEverythingReplaceResultEditPrompt/);
+  assert.match(workflow, /everythingReplaceEditPrompt/);
+  assert.match(editPromptFunction, /产品素材图：\$\{formatRoleUrls\(safeProductUrls, '已上传原素材图'\)\}（公网url）/);
+  assert.match(editPromptFunction, /需修改基准图：\$\{safePreviousResultUrl \|\| '需修改的生成图'\}（公网url）/);
+  assert.match(editPromptFunction, /任务：\$\{instruction \|\| '按用户输入要求修改当前生成图。'\}/);
+});
+
+test('generation refreshes expiring uploaded material urls from local draft assets', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(shellApp, /shouldRefreshExpiringMaterialUrl/);
+  assert.match(shellApp, /host === 'tempfile\.redpandaai\.co'/);
+  assert.match(shellApp, /host === 'tempfile\.aiquickdraw\.com'/);
+  assert.match(shellApp, /host === 'tempfileb\.aiquickdraw\.com'/);
+  assert.match(shellApp, /const refreshExpiringMaterialUrl = type !== 'referenceVideo'/);
+  assert.match(shellApp, /&& !refreshExpiringMaterialUrl/);
+  assert.match(shellApp, /loadShellDraftAsset\(item\.localAssetId\)/);
+  assert.match(shellApp, /uploadInternalAssetStream\(\{/);
 });

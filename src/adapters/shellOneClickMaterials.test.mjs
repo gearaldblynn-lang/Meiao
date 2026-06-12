@@ -96,3 +96,26 @@ test('detail page set replication generation keeps only the current page referen
     'https://example.com/logo.png',
   ]);
 });
+
+test('one click edit provider input urls include only product assets and generated baseline', () => {
+  const imageUrls = buildShellImageInputUrls({
+    module: 'one_click',
+    subFeature: 'main_image',
+    materials: {
+      product: [material('product', 'https://example.com/product.png')],
+      gift: [material('gift', 'https://example.com/gift.png')],
+      logo: [material('logo', 'https://example.com/logo.png')],
+      reference: [material('reference', 'https://example.com/extra-reference.png')],
+    },
+    taskMetadata: {
+      sourceResultUrl: 'https://example.com/generated.png',
+      editInstruction: '把背景换成浅灰色',
+    },
+  });
+
+  assert.deepEqual(imageUrls, [
+    'https://example.com/product.png',
+    'https://example.com/gift.png',
+    'https://example.com/generated.png',
+  ]);
+});

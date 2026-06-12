@@ -109,7 +109,7 @@ export const buildShellImageInputUrls = ({
 
   if (!isFirstImage && !isDetailPage) {
     if (sourceResultUrl && hasEditInstruction) {
-      return dedupeUrls([...productImageUrls, ...giftImageUrls, ...logoImageUrls, sourceResultUrl, ...referenceImageUrls]);
+      return dedupeUrls([...productImageUrls, ...giftImageUrls, sourceResultUrl]);
     }
     if (sourceResultUrl && hasVariationInstruction) {
       return dedupeUrls([sourceResultUrl, ...allMaterialUrls]);
@@ -124,7 +124,7 @@ export const buildShellImageInputUrls = ({
     return dedupeUrls([...productImageUrls, ...giftImageUrls, ...currentReferenceUrls, ...logoImageUrls]);
   }
   if (sourceResultUrl && hasEditInstruction) {
-    return dedupeUrls([...productImageUrls, ...giftImageUrls, sourceResultUrl, ...logoImageUrls]);
+    return dedupeUrls([...productImageUrls, ...giftImageUrls, sourceResultUrl]);
   }
   if (sourceResultUrl && hasVariationInstruction) {
     return dedupeUrls([sourceResultUrl, ...productImageUrls, ...giftImageUrls, ...logoImageUrls]);

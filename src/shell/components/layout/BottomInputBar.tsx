@@ -200,15 +200,6 @@ const getEverythingReplaceQuickParams = (currentParams: Record<string, string>):
     },
     { key: 'model', label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />, options: ['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
     { key: 'quality', label: '1K', title: '出图分辨率', icon: <Sparkles size={12} />, options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
-    {
-      key: 'firstImageColorMode',
-      label: String(currentParams.firstImageColorMode || '').includes('自适应') ? '人物微调' : currentParams.firstImageColorMode || '完全复刻',
-      title: '参考强度',
-      icon: <Palette size={12} />,
-      options: ['完全复刻', '人物微调', '全局微调'],
-      defaultValue: '完全复刻',
-      recommendedValue: '完全复刻',
-    },
   ];
 };
 
@@ -227,6 +218,12 @@ const EXTENDED_PARAMS: Record<string, Array<{
       { key: 'width',   label: '宽度(px)',      type: 'number', defaultValue: '800' },
       { key: 'height',  label: '高度(px)',      type: 'number', defaultValue: '1200' },
       { key: 'maxSize', label: '体积限制(MB)',  type: 'number', defaultValue: '2.0' },
+    ]},
+  ],
+  [AppModuleObj.EVERYTHING_REPLACE]: [
+    { section: '画面', params: [
+      { key: 'firstImageColorMode', label: '参考强度', type: 'select', options: ['完全复刻', '人物微调', '全局微调'], defaultValue: '完全复刻' },
+      { key: 'textPolicy', label: '文案处理', type: 'select', options: ['维持文案', '去除文案'], defaultValue: '维持文案' },
     ]},
   ],
   [AppModuleObj.BUYER_SHOW]: [

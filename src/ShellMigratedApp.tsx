@@ -203,14 +203,17 @@ const sortGeneratedResultsByBatchIndex = (items: GeneratedResult[]) => (
   })
 );
 
-const shouldGuardGenerationSubmit = (module: AppModule, _subFeature?: string) => (
-  module === AppModuleObj.ONE_CLICK
-  || module === AppModuleObj.TRANSLATION
-  || module === AppModuleObj.BUYER_SHOW
-  || module === AppModuleObj.RETOUCH
-  || module === AppModuleObj.EVERYTHING_REPLACE
-  || module === AppModuleObj.VIDEO
-  || module === AppModuleObj.XHS_COVER
+const shouldGuardGenerationSubmit = (module: AppModule, subFeature?: string) => (
+  !(module === AppModuleObj.EVERYTHING_REPLACE && subFeature === 'product_replace')
+  && (
+    module === AppModuleObj.ONE_CLICK
+    || module === AppModuleObj.TRANSLATION
+    || module === AppModuleObj.BUYER_SHOW
+    || module === AppModuleObj.RETOUCH
+    || module === AppModuleObj.EVERYTHING_REPLACE
+    || module === AppModuleObj.VIDEO
+    || module === AppModuleObj.XHS_COVER
+  )
 );
 
 const hasRuntimeTaskIdentity = (item?: {
@@ -1246,6 +1249,32 @@ const hasActiveGuardedGeneration = (
   });
 };
 
+const isActiveRegenerationStatus = (status?: unknown) => status === 'pending' || status === 'generating';
+
+const hasActiveRegenerationConflict = (
+  projects: Project[],
+  tasks: Task[],
+  targetProject: Project,
+) => {
+  const scope = targetProject.subFeature || getDefaultSubFeature(targetProject.module);
+  const isSameScope = (item: { module: AppModule; subFeature?: string }) => (
+    item.module === targetProject.module && (item.subFeature || getDefaultSubFeature(item.module)) === scope
+  );
+  if (tasks.some((task) => isSameScope(task) && isActiveRegenerationStatus(task.status))) return true;
+  return projects.some((project) => {
+    if (!isSameScope(project)) return false;
+    const hasGeneratingResult = (project.results || []).some((result) => (
+      result.status === 'generating'
+      && !result.imageUrl
+      && !result.videoUrl
+    ));
+    if (hasGeneratingResult) return true;
+    const projectProgressIncomplete = Number(project.completedCount || 0) < Number(project.taskCount || 0);
+    if (project.status === 'generating' && (!(project.results || []).length || projectProgressIncomplete)) return true;
+    return false;
+  });
+};
+
 const isPendingShellSubFeature = (module: AppModule, subFeature: string) =>
   Boolean(MODULE_SUB_FEATURES[module]?.find((item) => item.id === subFeature)?.disabled);
 
@@ -1383,6 +1412,7 @@ const normalizeEverythingReplaceParamsForGeneration = (
     mode: subFeature || params.mode || 'product_replace',
     replacementLogic: params.replacementLogic === '单产品替换' ? '单品替换' : params.replacementLogic || '单品替换',
     firstImageColorMode: String(params.firstImageColorMode || '').includes('自适应') ? '人物微调' : params.firstImageColorMode || '完全复刻',
+    textPolicy: params.textPolicy || '维持文案',
   };
 };
 
@@ -5447,9 +5477,13 @@ const AppContent: React.FC<{
     const actionKey = `regenerate:${projectId}:${resultId}`;
     if (!beginExclusiveAction(actionKey, '重生成任务已提交，请等待当前任务完成')) return;
     try {
-      if (await handleStoryboardRegenerateResult(projectId, resultId, revisionInstruction)) return;
       const project = projects.find((p) => p.id === projectId);
       if (!project) return;
+      if (hasActiveRegenerationConflict(projects, tasks, project)) {
+        addToast('当前模块仍有任务生成中，请先中断或等待当前任务完成后再重生成', 'warning');
+        return;
+      }
+      if (await handleStoryboardRegenerateResult(projectId, resultId, revisionInstruction)) return;
       const retryTaskId = `${resultId}-retry-${Date.now()}`;
       try {
       if (project.module === AppModuleObj.TRANSLATION) {
@@ -5823,7 +5857,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig.workspacePreferences, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig.workspacePreferences, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction]);
 
   const handleFissionResult = useCallback(async (
     projectId: string,
@@ -6098,6 +6132,226 @@ const AppContent: React.FC<{
     return true;
   }, [videoMemory, addToast, apiConfig, logShellError, setVideoMemory]);
 
+  const runEverythingReplaceEditGeneration = useCallback(async (
+    project: Project,
+    plan: PlanItem,
+    materialsOverride: Record<string, Material[]>,
+  ) => {
+    const projectId = project.id;
+    const subFeature = project.subFeature || 'product_replace';
+    const storedContext = project.generationContext;
+    const generationParams: Record<string, string> = {
+      ...((storedContext?.params || currentParams) as Record<string, string>),
+      __workspacePreferences: JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences()),
+      __batchIndex: '1',
+      __batchCount: '1',
+    };
+    const effectiveRatio = String(generationParams.ratio || generationParams.aspectRatio || AspectRatio.AUTO);
+    const taskId = 'task-img-' + Date.now();
+    const controller = new AbortController();
+    taskControllersRef.current[taskId] = controller;
+
+    setProjects((prev) => {
+      const next = prev.map((item) => item.id === projectId ? {
+        ...item,
+        status: 'generating' as const,
+        subFeature,
+        taskCount: 1,
+        completedCount: 0,
+      } : item);
+      projectsRef.current = next;
+      return next;
+    });
+    setTasks((prev) => [{
+      id: taskId,
+      projectId,
+      module: AppModuleObj.EVERYTHING_REPLACE,
+      type: 'image',
+      status: 'pending',
+      title: `出图: ${project.name} · 产品替换修改`,
+      progress: 0,
+      createdAt: project.createdAt,
+      total: 1,
+      completed: 0,
+      subFeature,
+    }, ...prev]);
+
+    let backendJobId = '';
+    let providerTaskId = '';
+    const onJobCreated = (jobId: string, visibleTaskId?: string) => {
+      backendJobId = jobId || backendJobId;
+      providerTaskId = String(visibleTaskId || providerTaskId || '').trim();
+      setProjects((prev) => {
+        const next = prev.map((item) => item.id === projectId ? { ...item, backendJobId: backendJobId || item.backendJobId } : item);
+        projectsRef.current = next;
+        return next;
+      });
+      setTasks((prev) => prev.map((task) => task.id === taskId ? {
+        ...task,
+        backendJobId: backendJobId || task.backendJobId,
+        status: 'generating',
+        progress: Math.max(task.progress || 0, 8),
+      } : task));
+    };
+
+    try {
+      const { runShellImageGeneration } = await loadShellWorkflowModule();
+      const preparedMaterials = await ensureMaterialRemoteUrls(materialsOverride, AppModuleObj.EVERYTHING_REPLACE);
+      const prompt = plan.schemeContent || plan.editInstruction || storedContext?.prompt || '';
+      const result = await runShellImageGeneration({
+        module: AppModuleObj.EVERYTHING_REPLACE,
+        subFeature,
+        prompt,
+        params: generationParams,
+        materials: preparedMaterials,
+        signal: controller.signal,
+        onJobCreated,
+        publicBaseUrl,
+        taskMetadata: {
+          shellPurpose: 'everything_replace_product_edit',
+          shellProjectId: projectId,
+          shellProjectName: project.name,
+          shellPlanId: plan.id,
+          subFeature,
+          batchIndex: 1,
+          batchCount: 1,
+          sourceResultUrl: plan.sourceResultUrl ? resolvePublicAssetUrl(plan.sourceResultUrl, publicBaseUrl) : undefined,
+          editInstruction: plan.editInstruction || prompt,
+        },
+      });
+
+      if (result.status !== 'success' || !result.imageUrl) {
+        const recoverable = {
+          ...result,
+          taskId: result.taskId || providerTaskId,
+        };
+        if (isRecoverableShellWorkflowResult(recoverable)) {
+          const pendingResult: GeneratedResult = {
+            id: recoverable.taskId || `${taskId}-pending-0`,
+            planId: plan.id,
+            imageUrl: '',
+            prompt: result.prompt || prompt,
+            model: generationParams.model || 'gpt-image-2',
+            aspectRatio: effectiveRatio,
+            status: 'generating',
+            createdAt: project.createdAt,
+            module: AppModuleObj.EVERYTHING_REPLACE,
+            subFeature,
+            taskId: recoverable.taskId,
+            backendJobId,
+            error: result.message || '结果待同步',
+          };
+          const pendingProject: Project = {
+            ...project,
+            status: 'generating',
+            results: [pendingResult],
+            taskCount: 1,
+            completedCount: 0,
+            subFeature,
+            backendJobId: backendJobId || project.backendJobId,
+            error: result.message || '结果待同步',
+          };
+          setProjects((prev) => {
+            const next = prev.map((item) => item.id === projectId ? pendingProject : item);
+            projectsRef.current = next;
+            return next;
+          });
+          setTasks((prev) => prev.map((task) => task.id === taskId ? {
+            ...task,
+            status: 'generating',
+            progress: Math.max(task.progress || 0, 8),
+            completed: 0,
+            total: 1,
+          } : task));
+          await persistProjectToSharedState(pendingProject);
+          addToast('修改任务已提交云端，结果待同步，可稍后点击同步。', 'info');
+          window.setTimeout(() => void hydrateShellJobs(), 800);
+          return;
+        }
+        throw new Error(result.message || '产品替换修改生成失败');
+      }
+
+      const completedResult: GeneratedResult = {
+        id: result.taskId || `${Date.now()}-0`,
+        planId: plan.id,
+        imageUrl: result.imageUrl,
+        prompt: result.prompt || prompt,
+        model: generationParams.model || 'gpt-image-2',
+        aspectRatio: effectiveRatio,
+        status: 'completed',
+        createdAt: project.createdAt,
+        module: AppModuleObj.EVERYTHING_REPLACE,
+        subFeature,
+        creditsConsumed: result.creditsConsumed,
+        taskId: result.taskId || providerTaskId,
+        backendJobId: result.backendJobId || backendJobId,
+      };
+      const completedProject: Project = {
+        ...project,
+        status: 'completed',
+        completedAt: project.createdAt,
+        results: [completedResult],
+        taskCount: 1,
+        completedCount: 1,
+        subFeature,
+        creditsConsumed: result.creditsConsumed || project.creditsConsumed,
+        backendJobId: result.backendJobId || backendJobId || project.backendJobId,
+      };
+      setProjects((prev) => {
+        const next = prev.map((item) => item.id === projectId ? completedProject : item);
+        projectsRef.current = next;
+        return next;
+      });
+      setTasks((prev) => prev.filter((task) => task.id !== taskId));
+      await persistProjectToSharedState(completedProject);
+      addToast(`已生成 1 张图片 · ${project.name}`, 'success');
+      window.setTimeout(() => void hydrateShellJobs(), 800);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '产品替换修改生成失败';
+      const failedResult: GeneratedResult = {
+        id: providerTaskId || `${taskId}-error-0`,
+        planId: plan.id,
+        imageUrl: '',
+        prompt: plan.schemeContent || plan.editInstruction || message,
+        model: generationParams.model || 'gpt-image-2',
+        aspectRatio: effectiveRatio,
+        status: 'error',
+        createdAt: project.createdAt,
+        module: AppModuleObj.EVERYTHING_REPLACE,
+        subFeature,
+        taskId: providerTaskId || undefined,
+        backendJobId: backendJobId || undefined,
+        error: message,
+      };
+      const failedProject: Project = {
+        ...project,
+        status: 'error',
+        results: [failedResult],
+        taskCount: 1,
+        completedCount: 0,
+        subFeature,
+        backendJobId: backendJobId || project.backendJobId,
+        error: message,
+      };
+      setProjects((prev) => {
+        const next = prev.map((item) => item.id === projectId ? failedProject : item);
+        projectsRef.current = next;
+        return next;
+      });
+      setTasks((prev) => prev.map((task) => task.id === taskId ? {
+        ...task,
+        status: 'error',
+        progress: 100,
+        completed: 0,
+        total: 1,
+      } : task));
+      void persistProjectToSharedState(failedProject);
+      addToast(message, 'error');
+    } finally {
+      delete taskControllersRef.current[taskId];
+    }
+  }, [addToast, apiConfig.workspacePreferences, currentParams, ensureMaterialRemoteUrls, hydrateShellJobs, persistProjectToSharedState, publicBaseUrl]);
+
   const handleEditResult = useCallback(async (
     projectId: string,
     resultId: string,
@@ -6110,7 +6364,9 @@ const AppContent: React.FC<{
     try {
       if (await handleStoryboardEditResult(projectId, resultId, instruction, files)) return;
       const project = projects.find((p) => p.id === projectId);
-      if (!project || project.module !== AppModuleObj.ONE_CLICK) return;
+      const isSupportedImageEditProject = project?.module === AppModuleObj.ONE_CLICK
+        || (project?.module === AppModuleObj.EVERYTHING_REPLACE && project.subFeature === 'product_replace');
+      if (!project || !isSupportedImageEditProject) return;
       const resultIndex = project.results.findIndex((item) => item.id === resultId);
       const result = resultIndex >= 0 ? project.results[resultIndex] : null;
       if (!result?.imageUrl || result.mediaType === 'video' || result.videoUrl) {
@@ -6133,16 +6389,25 @@ const AppContent: React.FC<{
       const contextMaterials = hasMaterialInputs(storedContext?.materials as Record<string, Material[]>)
         ? storedContext?.materials as Record<string, Material[]>
         : filteredMaterials;
+      const isEverythingReplaceProductEdit = project.module === AppModuleObj.EVERYTHING_REPLACE
+        && project.subFeature === 'product_replace';
+      const isOneClickEdit = project.module === AppModuleObj.ONE_CLICK;
+      const usesMinimalRoleEditPrompt = isOneClickEdit || isEverythingReplaceProductEdit;
+      const sourceResultAspectRatio = String(result.aspectRatio || '').trim();
       const generationParams = {
         ...(storedContext?.params || currentParams),
         model: currentScopedImageModel || storedContext?.params?.model || result.model || currentParams.model || 'GPT Image 2',
-        ratio: storedContext?.params?.ratio || result.aspectRatio || currentParams.ratio,
-        aspectRatio: storedContext?.params?.aspectRatio || result.aspectRatio || currentParams.aspectRatio,
+        ratio: isEverythingReplaceProductEdit
+          ? sourceResultAspectRatio || storedContext?.params?.ratio || storedContext?.params?.aspectRatio || currentParams.ratio
+          : storedContext?.params?.ratio || result.aspectRatio || currentParams.ratio,
+        aspectRatio: isEverythingReplaceProductEdit
+          ? sourceResultAspectRatio || storedContext?.params?.aspectRatio || storedContext?.params?.ratio || currentParams.aspectRatio
+          : storedContext?.params?.aspectRatio || result.aspectRatio || currentParams.aspectRatio,
       };
       const initialEditMaterials: Record<string, Material[]> = {
         product: [...(contextMaterials.product || [])],
         gift: [...(contextMaterials.gift || [])],
-        logo: [...(contextMaterials.logo || [])],
+        logo: usesMinimalRoleEditPrompt ? [] : [...(contextMaterials.logo || [])],
         reference: [],
       };
       const matchedPlan = project.plans?.find((plan) => plan.id === result.planId) || project.plans?.[resultIndex];
@@ -6171,7 +6436,7 @@ const AppContent: React.FC<{
       const editProject: Project = {
         id: `project-edit-${Date.now()}`,
         name: `${project.name} · 修改`,
-        module: AppModuleObj.ONE_CLICK,
+        module: project.module,
         status: 'planning',
         createdAt: new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-'),
         results: [],
@@ -6179,7 +6444,7 @@ const AppContent: React.FC<{
         selectedPlanId: editPlan.id,
         taskCount: 1,
         completedCount: 0,
-        subFeature: project.subFeature || activeSubFeature || 'first_image',
+        subFeature: project.subFeature || activeSubFeature || (project.module === AppModuleObj.ONE_CLICK ? 'first_image' : 'product_replace'),
         sourceType: 'persisted',
         directGeneration: true,
         generationContext: cloneGenerationContext(finalInstruction, generationParams, initialEditMaterials),
@@ -6189,23 +6454,25 @@ const AppContent: React.FC<{
       addToast('修改任务已提交，正在准备素材', 'info');
       await persistProjectToSharedState(editProject);
 
-      const uploadedSupplementMaterials = await Promise.all(files.map(async (file, index) => {
-        const uploaded = await uploadInternalAssetStream({
-          module: AppModuleObj.ONE_CLICK,
-          file,
-          fileName: file.name,
-        });
-        if (!uploaded.fileUrl) {
-          throw new Error(`${file.name || '补充参考图'} 上传失败，请重试。`);
-        }
-        return createRemoteMaterial(
-          `edit-supplement-${Date.now()}-${index}`,
-          'reference',
-          uploaded.fileUrl,
-          file.name || `supplement-${index + 1}.png`,
-          project.subFeature || activeSubFeature || 'first_image',
-        );
-      }));
+      const uploadedSupplementMaterials = usesMinimalRoleEditPrompt
+        ? []
+        : await Promise.all(files.map(async (file, index) => {
+            const uploaded = await uploadInternalAssetStream({
+              module: project.module,
+              file,
+              fileName: file.name,
+            });
+            if (!uploaded.fileUrl) {
+              throw new Error(`${file.name || '补充参考图'} 上传失败，请重试。`);
+            }
+            return createRemoteMaterial(
+              `edit-supplement-${Date.now()}-${index}`,
+              'reference',
+              uploaded.fileUrl,
+              file.name || `supplement-${index + 1}.png`,
+              project.subFeature || activeSubFeature || (project.module === AppModuleObj.ONE_CLICK ? 'first_image' : 'product_replace'),
+            );
+          }));
       const editMaterials: Record<string, Material[]> = {
         ...initialEditMaterials,
         reference: uploadedSupplementMaterials,
@@ -6216,7 +6483,11 @@ const AppContent: React.FC<{
       };
       setProjects((prev) => prev.map((item) => item.id === readyEditProject.id ? readyEditProject : item));
       await persistProjectToSharedState(readyEditProject);
-      await runOneClickPlanGeneration(readyEditProject, [editPlan], editMaterials);
+      if (isEverythingReplaceProductEdit) {
+        await runEverythingReplaceEditGeneration(readyEditProject, editPlan, editMaterials);
+      } else {
+        await runOneClickPlanGeneration(readyEditProject, [editPlan], editMaterials);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : '修改任务提交失败';
       if (createdEditProjectId) {
@@ -6230,7 +6501,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, addToast, activeSubFeature, currentParams, filteredMaterials, createRemoteMaterial, persistProjectToSharedState, runOneClickPlanGeneration, publicBaseUrl, handleStoryboardEditResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, addToast, activeSubFeature, currentParams, filteredMaterials, createRemoteMaterial, persistProjectToSharedState, runOneClickPlanGeneration, runEverythingReplaceEditGeneration, publicBaseUrl, handleStoryboardEditResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction]);
 
   const handleStoryboardRecoverResult = useCallback(async (projectId: string, resultId?: string) => {
     const baseVideoMemory = videoMemory || createDefaultVideoState();
@@ -6647,6 +6918,7 @@ const AppContent: React.FC<{
           onDeleteResult={handleDeleteResult}
           onDeleteProject={handleDeleteProject}
           onRegenerateResult={handleRegenerateResult}
+          onEditResult={handleEditResult}
           onRecoverResult={handleRecoverResult}
           onCancelTask={handleCancelTask}
           pendingActionKeys={pendingActionKeys}
