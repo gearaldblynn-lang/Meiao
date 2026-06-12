@@ -43,6 +43,7 @@ import { safeCreateObjectURL } from './utils/urlUtils';
 import { countCompletedProjectResults, mergeGeneratedPlanResults } from './utils/shellProjectResults.mjs';
 import { isInvalidOneClickPlanLike } from './utils/oneClickPlanValidation.ts';
 import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion } from './utils/shellRuntimePrune.mjs';
+import { isFrontendResourceError } from './utils/frontendResourceError.mjs';
 import { deleteShellDraftAsset, loadShellDraftAsset, pruneShellDraftAssets, restoreShellDraftAssetUrls, saveShellDraftAsset } from './utils/shellDraftAssetStore';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
 import {
@@ -1112,9 +1113,20 @@ type ShellWorkflowModule = typeof import('./adapters/shellWorkflow');
 
 let shellWorkflowModulePromise: Promise<ShellWorkflowModule> | null = null;
 
-const isDynamicImportFetchError = (error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error || '');
-  return /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/i.test(message);
+const reloadForStaleFrontendAsset = (error?: unknown) => {
+  if (typeof window === 'undefined') return;
+  console.warn('[shell-workflow] stale frontend asset detected, reloading page', error);
+  window.setTimeout(() => {
+    window.location.reload();
+  }, 80);
+};
+
+// 根因 #5 护栏:前端资源/chunk 加载失败(部署后浏览器请求旧 hash chunk 导致 404)
+// 绝不能被当成业务任务失败。命中即刷新页面并返回 true,调用方据此 return,不写任何业务失败态。
+const bailIfFrontendResourceError = (error: unknown): boolean => {
+  if (typeof window === 'undefined' || !isFrontendResourceError(error)) return false;
+  reloadForStaleFrontendAsset(error);
+  return true;
 };
 
 const loadShellWorkflowModule = async () => {
@@ -1125,11 +1137,7 @@ const loadShellWorkflowModule = async () => {
     return await shellWorkflowModulePromise;
   } catch (error) {
     shellWorkflowModulePromise = null;
-    if (isDynamicImportFetchError(error) && typeof window !== 'undefined') {
-      console.warn('[shell-workflow] stale frontend asset detected, reloading page', error);
-      window.setTimeout(() => {
-        window.location.reload();
-      }, 80);
+    if (bailIfFrontendResourceError(error)) {
       return new Promise<never>(() => undefined);
     }
     throw error;
@@ -3281,6 +3289,7 @@ const AppContent: React.FC<{
         setScopedPromptText('');
         return;
       } catch (error) {
+        if (bailIfFrontendResourceError(error)) return;
         const failureMessage = formatVideoStoryboardFailureMessage(storyboardFailureStep, error);
         if (pendingStoryboardProjectIds.length > 0) {
           setVideoMemory((prev) => {
@@ -3747,6 +3756,7 @@ const AppContent: React.FC<{
             successCount += 1;
             syncTranslationProject(translationFileItems);
           } catch (error) {
+            if (bailIfFrontendResourceError(error)) return;
             const message = error instanceof Error ? error.message : '翻译任务失败';
             logShellError('translation_generation_failed', error, {
               projectId,
@@ -3934,6 +3944,7 @@ const AppContent: React.FC<{
           addToast(`策划已完成，共 ${planResult.plans.length} 个方案`, 'success');
         }
       } catch (error) {
+        if (bailIfFrontendResourceError(error)) return;
         const message = error instanceof Error ? error.message : '策划失败';
         const planningBackendJobId = activePlanningBackendJobId || planningProject.backendJobId || '';
         const latestPlanningJob: InternalJob | null = planningBackendJobId
@@ -4519,6 +4530,7 @@ const AppContent: React.FC<{
       );
       window.setTimeout(() => void hydrateShellJobs(), 800);
     } catch (error) {
+      if (bailIfFrontendResourceError(error)) return;
       const message = error instanceof Error ? error.message : '任务执行失败';
       logShellError('shell_generation_failed', error, {
         projectId,
@@ -4940,6 +4952,7 @@ const AppContent: React.FC<{
             try {
               await runPlanAtIndex(currentIndex);
             } catch (error) {
+              if (bailIfFrontendResourceError(error)) return;
               if (!firstGenerationError) {
                 firstGenerationError = error instanceof Error ? error : new Error(String(error || `${sceneConfig.label} 生成失败`));
               }
@@ -5850,6 +5863,7 @@ const AppContent: React.FC<{
       await persistProjectToSharedState(completedProject);
       addToast('重生成已完成', 'success');
       } catch (error) {
+        if (bailIfFrontendResourceError(error)) return;
         addToast(error instanceof Error ? error.message : '重新生成失败', 'error');
         setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
         delete taskControllersRef.current[retryTaskId];
@@ -6307,6 +6321,7 @@ const AppContent: React.FC<{
       addToast(`已生成 1 张图片 · ${project.name}`, 'success');
       window.setTimeout(() => void hydrateShellJobs(), 800);
     } catch (error) {
+      if (bailIfFrontendResourceError(error)) return;
       const message = error instanceof Error ? error.message : '产品替换修改生成失败';
       const failedResult: GeneratedResult = {
         id: providerTaskId || `${taskId}-error-0`,
