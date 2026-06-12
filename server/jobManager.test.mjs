@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   findReusableJobSubmission,
   reconcileRestartedMysqlJobs,
+  reconcileStaleCancelledRunningMysqlJobs,
   reconcileStaleProviderlessRunningMysqlJobs,
   selectJobsWithinConcurrencyLimits,
   shouldMysqlWorkerProcessTaskEngine,
@@ -273,4 +274,50 @@ test('reconcileStaleProviderlessRunningMysqlJobs fails old running jobs before u
   assert.equal(reconciled[0].finishedAt, 10_000);
   assert.equal(reconciled[0].errorCode, 'provider_submit_stale');
   assert.match(reconciled[0].errorMessage, /未返回上游任务 ID/);
+});
+
+test('reconcileStaleCancelledRunningMysqlJobs releases cancelled running jobs after abort acknowledgement stalls', () => {
+  const reconciled = reconcileStaleCancelledRunningMysqlJobs([
+    {
+      id: 'job-cancelled-stale',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: 'provider-task-id',
+      retryCount: 0,
+      maxRetries: 2,
+      errorCode: 'request_cancelled',
+      errorMessage: '用户请求取消任务',
+      createdAt: 1000,
+      updatedAt: 2000,
+      startedAt: 1500,
+      finishedAt: null,
+      cancelRequestedAt: 2000,
+    },
+    {
+      id: 'job-cancelled-young',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: 'provider-task-id-2',
+      errorCode: 'request_cancelled',
+      errorMessage: '用户请求取消任务',
+      createdAt: 1000,
+      updatedAt: 9000,
+      startedAt: 1500,
+      finishedAt: null,
+      cancelRequestedAt: 9000,
+    },
+  ], 10_000, 5_000);
+
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0].id, 'job-cancelled-stale');
+  assert.equal(reconciled[0].status, 'cancelled');
+  assert.equal(reconciled[0].finishedAt, 10_000);
+  assert.equal(reconciled[0].errorCode, 'request_cancelled');
+  assert.match(reconciled[0].errorMessage, /已自动取消并释放并发/);
 });

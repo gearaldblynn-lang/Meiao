@@ -6,6 +6,7 @@ import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobE
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
 const DEFAULT_PROVIDERLESS_RUNNING_STALE_MS = 15 * 60 * 1000;
+const DEFAULT_CANCELLED_RUNNING_STALE_MS = 60 * 1000;
 const REUSABLE_JOB_STATUSES = new Set(['queued', 'running', 'retry_waiting']);
 
 const parseJsonValue = (value, fallback = null) => {
@@ -187,6 +188,37 @@ export const reconcileStaleProviderlessRunningMysqlJobs = (
       updatedAt: Number(referenceTime || now()),
       errorCode: 'provider_submit_stale',
       errorMessage: '任务提交上游前长时间未返回上游任务 ID，已自动失败并释放并发',
+    }));
+};
+
+export const reconcileStaleCancelledRunningMysqlJobs = (
+  jobs,
+  referenceTime = now(),
+  staleMs = DEFAULT_CANCELLED_RUNNING_STALE_MS
+) => {
+  if (!Array.isArray(jobs)) return [];
+  const cutoff = Number(referenceTime || now()) - Math.max(1, Number(staleMs || DEFAULT_CANCELLED_RUNNING_STALE_MS));
+  return jobs
+    .filter((job) => {
+      const cancelRequestedAt = Number(job?.cancelRequestedAt || 0);
+      return (
+        String(job?.status || '') === 'running'
+        && (
+          String(job?.errorCode || '') === 'request_cancelled'
+          || /用户请求取消任务|任务已取消|request_cancelled/i.test(String(job?.errorMessage || ''))
+          || cancelRequestedAt > 0
+        )
+        && cancelRequestedAt > 0
+        && cancelRequestedAt <= cutoff
+      );
+    })
+    .map((job) => ({
+      ...job,
+      status: 'cancelled',
+      finishedAt: Number(referenceTime || now()),
+      updatedAt: Number(referenceTime || now()),
+      errorCode: 'request_cancelled',
+      errorMessage: '用户请求取消任务后执行器未及时退出，已自动取消并释放并发',
     }));
 };
 
@@ -422,6 +454,70 @@ export const reconcileStaleProviderlessRunningJobs = async (pool, options = {}) 
         staleMs,
         recoveredAt: job.updatedAt,
         previousStartedAt: rows.find((row) => row.id === job.id)?.started_at || null,
+      },
+      createdAt: job.updatedAt,
+    }));
+  }
+  return reconciled;
+};
+
+export const reconcileStaleCancelledRunningJobs = async (pool, options = {}) => {
+  const referenceTime = Number(options.referenceTime || now());
+  const staleMs = Math.max(1, Number(options.staleMs || DEFAULT_CANCELLED_RUNNING_STALE_MS));
+  const [rows] = await pool.query(
+    `SELECT *
+     FROM internal_jobs
+     WHERE status = 'running'
+       AND cancel_requested_at IS NOT NULL
+       AND cancel_requested_at <= ?`,
+    [referenceTime - staleMs]
+  );
+  const reconciled = reconcileStaleCancelledRunningMysqlJobs(rows.map(mapJobRow), referenceTime, staleMs);
+  for (const job of reconciled) {
+    const [attemptRows] = await pool.query(
+      `SELECT *
+       FROM internal_job_attempts
+       WHERE job_id = ?
+       ORDER BY attempt_no DESC
+       LIMIT 1`,
+      [job.id]
+    );
+    const attempt = attemptRows?.[0] || null;
+    await updateJobFields(pool, job.id, {
+      status: job.status,
+      finished_at: job.finishedAt,
+      updated_at: job.updatedAt,
+      error_code: job.errorCode,
+      error_message: job.errorMessage,
+    });
+    if (attempt?.id) {
+      await runTaskPlatformWrite(() => finishJobAttempt(pool, attempt.id, {
+        status: 'cancelled',
+        providerTaskId: job.providerTaskId || '',
+        errorCode: job.errorCode,
+        errorMessage: job.errorMessage,
+        finishedAt: job.updatedAt,
+      }));
+    }
+    await runTaskPlatformWrite(() => recordJobEvent(pool, job, {
+      attemptId: attempt?.id,
+      attemptNo: attempt?.attempt_no,
+      traceId: attempt?.trace_id,
+      stage: 'cancelled',
+      eventName: 'stale_cancelled_running_job_reconciled',
+      status: 'interrupted',
+      engine: attempt?.engine || 'temporal',
+      providerSubmitted: Boolean(job.providerTaskId),
+      retryable: false,
+      errorCode: job.errorCode,
+      errorMessage: job.errorMessage,
+      providerTaskId: job.providerTaskId || '',
+      workflowId: attempt?.workflow_id,
+      runId: attempt?.run_id,
+      meta: {
+        staleMs,
+        recoveredAt: job.updatedAt,
+        cancelRequestedAt: rows.find((row) => row.id === job.id)?.cancel_requested_at || null,
       },
       createdAt: job.updatedAt,
     }));
