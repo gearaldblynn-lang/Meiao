@@ -103,7 +103,7 @@ test('agent chat source expands legacy default model allowlists to include newly
 });
 
 test('agent chat source preserves provider modelUsed metadata for direct conversations', () => {
-  assert.match(source, /let output = null;[\s\S]*output = await executeProviderJob\(\{[\s\S]*model: selectedModel,[\s\S]*const actualModel = String\(output\?\.result\?\.modelUsed \|\| selectedModel/);
+  assert.match(source, /let output = null;[\s\S]*output = await executeProviderJobWithManagedAssetScrub\(\{[\s\S]*model: selectedModel,[\s\S]*const actualModel = String\(output\?\.result\?\.modelUsed \|\| selectedModel/);
 });
 
 test('agent retrieval loop forwards configured chat fallback models to provider execution', () => {
