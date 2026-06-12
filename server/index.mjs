@@ -20,7 +20,7 @@ import {
 } from '../src/modules/AgentCenter/agentCenterUtils.mjs';
 import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
-import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleProviderlessRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
 import { ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import {
   attachLocalJobWorkflowExecution,
@@ -5310,6 +5310,11 @@ const getTemporalProviderlessRunningStaleMs = () => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 15 * 60 * 1000;
 };
 
+const getTemporalCancelledRunningStaleMs = () => {
+  const parsed = Number.parseInt(String(process.env.MEIAO_CANCELLED_RUNNING_STALE_MS || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 1000;
+};
+
 const getTemporalStaleReconcilerIntervalMs = () => {
   const parsed = Number.parseInt(String(process.env.MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 1000;
@@ -5318,17 +5323,26 @@ const getTemporalStaleReconcilerIntervalMs = () => {
 const runTemporalStaleRunningJobReconcile = async (pool, reason = 'interval') => {
   const engine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
   if (engine !== 'temporal' || !temporalTaskAdapter.configured) return 0;
+  const cancelledJobs = await reconcileStaleCancelledRunningJobs(pool, {
+    staleMs: getTemporalCancelledRunningStaleMs(),
+  });
   const recoveredJobs = await reconcileStaleProviderlessRunningJobs(pool, {
     staleMs: getTemporalProviderlessRunningStaleMs(),
   });
-  if (recoveredJobs.length > 0) {
-    console.log(`Recovered ${recoveredJobs.length} providerless running Temporal jobs (${reason}).`);
-    const resumed = await resumePendingDbTemporalJobs(pool, Math.max(100, recoveredJobs.length + 20));
+  const totalRecovered = cancelledJobs.length + recoveredJobs.length;
+  if (totalRecovered > 0) {
+    if (cancelledJobs.length > 0) {
+      console.log(`Recovered ${cancelledJobs.length} cancelled running Temporal jobs (${reason}).`);
+    }
+    if (recoveredJobs.length > 0) {
+      console.log(`Recovered ${recoveredJobs.length} providerless running Temporal jobs (${reason}).`);
+    }
+    const resumed = await resumePendingDbTemporalJobs(pool, Math.max(100, totalRecovered + 20));
     if (resumed > 0) {
-      console.log(`Resumed ${resumed} Temporal jobs after providerless running recovery.`);
+      console.log(`Resumed ${resumed} Temporal jobs after stale running recovery.`);
     }
   }
-  return recoveredJobs.length;
+  return totalRecovered;
 };
 
 const startTemporalStaleRunningJobReconciler = (pool) => {
