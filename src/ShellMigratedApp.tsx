@@ -169,6 +169,17 @@ const shouldRefreshVideoAssetUrl = (url?: string, hasLocalAsset = false) => {
   return !/\.(mp4|mov|webm|m4v)$/i.test(path);
 };
 
+const shouldRefreshExpiringMaterialUrl = (url?: string, hasLocalAsset = false) => {
+  if (!hasLocalAsset) return false;
+  try {
+    const parsed = new URL(String(url || ''));
+    const host = parsed.hostname.toLowerCase();
+    return host === 'tempfile.redpandaai.co' || host === 'tempfile.aiquickdraw.com' || host === 'tempfileb.aiquickdraw.com';
+  } catch {
+    return false;
+  }
+};
+
 const buildGenerationSubmitLockKey = (module: AppModule, subFeature?: string) => `${module}:${subFeature || 'default'}`;
 
 const latestIdentityText = (...values: unknown[]) => {
@@ -2017,7 +2028,9 @@ const AppContent: React.FC<{
         const nextList = await Promise.all((list || []).map(async (item) => {
           const currentSafeUrl = resolvePublicAssetUrl(item.remoteUrl || item.url, publicBaseUrl);
           const refreshVideoAssetUrl = type === 'referenceVideo' && shouldRefreshVideoAssetUrl(currentSafeUrl, Boolean(item.localAssetId));
-          if (currentSafeUrl && !refreshVideoAssetUrl) {
+          const refreshExpiringMaterialUrl = type !== 'referenceVideo'
+            && shouldRefreshExpiringMaterialUrl(currentSafeUrl, Boolean(item.localAssetId));
+          if (currentSafeUrl && !refreshVideoAssetUrl && !refreshExpiringMaterialUrl) {
             return item.remoteUrl ? item : { ...item, remoteUrl: item.url };
           }
           if (!item.localAssetId) return item;
@@ -2196,7 +2209,7 @@ const AppContent: React.FC<{
       const baseState = buildPersistedAppState(persistedBase);
       const nextState = sanitizePersistedAppState({
         ...baseState,
-        shellDraft: normalizeShellDraftState(draftState),
+        shellDraft: normalizeShellDraftState(draftState, { requirePersistableMaterialUrl: true }),
       });
       latestSharedStateRef.current = nextState;
       savePersistedAppState(nextState, shellLocalScopeUserId);

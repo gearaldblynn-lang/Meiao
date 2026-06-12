@@ -50,7 +50,7 @@ test('everything replace logo placement matches the nearest supported ratio', ()
   assert.equal(resolveNearestLogoPlacementRatio({ width: 1024, height: 1365 }), '3:4');
 });
 
-test('everything replace logo placement guide uses a neutral mask instead of loading the reference background', async () => {
+test('everything replace logo placement guide uses a transparent logo-only mask', async () => {
   const originalFetch = globalThis.fetch;
   const originalCreateImageBitmap = globalThis.createImageBitmap;
   const originalDocument = globalThis.document;
@@ -58,6 +58,7 @@ test('everything replace logo placement guide uses a neutral mask instead of loa
 
   const requestedUrls = [];
   const requestedOptions = [];
+  const canvasOps = [];
   globalThis.window = {
     location: { href: 'http://localhost:3000/', origin: 'http://localhost:3000' },
     localStorage: { getItem: () => 'session-token' },
@@ -86,16 +87,17 @@ test('everything replace logo placement guide uses a neutral mask instead of loa
         height: 0,
         getContext() {
           return {
-            drawImage() {},
-            fillRect() {},
-            save() {},
-            restore() {},
-            setLineDash() {},
-            strokeRect() {},
-            set globalAlpha(value) {},
-            set fillStyle(value) {},
-            set strokeStyle(value) {},
-            set lineWidth(value) {},
+            clearRect() { canvasOps.push('clearRect'); },
+            drawImage() { canvasOps.push('drawImage'); },
+            fillRect() { canvasOps.push('fillRect'); },
+            save() { canvasOps.push('save'); },
+            restore() { canvasOps.push('restore'); },
+            setLineDash() { canvasOps.push('setLineDash'); },
+            strokeRect() { canvasOps.push('strokeRect'); },
+            set globalAlpha(value) { canvasOps.push(`globalAlpha:${value}`); },
+            set fillStyle(value) { canvasOps.push(`fillStyle:${value}`); },
+            set strokeStyle(value) { canvasOps.push(`strokeStyle:${value}`); },
+            set lineWidth(value) { canvasOps.push(`lineWidth:${value}`); },
           };
         },
         toBlob(callback) {
@@ -121,6 +123,71 @@ test('everything replace logo placement guide uses a neutral mask instead of loa
     assert.ok(!requestedUrls.some((url) => url.includes('reference.png')));
     assert.ok(requestedOptions.some((options) => options.credentials === 'include'));
     assert.ok(requestedOptions.some((options) => options.headers?.Authorization === 'Bearer session-token'));
+    assert.ok(canvasOps.includes('clearRect'));
+    assert.ok(canvasOps.includes('drawImage'));
+    assert.equal(canvasOps.includes('fillRect'), false);
+    assert.equal(canvasOps.includes('strokeRect'), false);
+    assert.equal(canvasOps.includes('setLineDash'), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.createImageBitmap = originalCreateImageBitmap;
+    globalThis.document = originalDocument;
+    globalThis.window = originalWindow;
+  }
+});
+
+test('everything replace logo placement guide can use local logo blob without downloading the remote logo', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+
+  const requestedUrls = [];
+  globalThis.window = {
+    location: { href: 'http://localhost:3000/', origin: 'http://localhost:3000' },
+    localStorage: { getItem: () => '' },
+  };
+  globalThis.fetch = async (url) => {
+    requestedUrls.push(String(url));
+    throw new Error('remote logo should not be fetched when local blob is available');
+  };
+  globalThis.createImageBitmap = async () => ({ width: 410, height: 175, close() {} });
+  globalThis.document = {
+    createElement(tag) {
+      assert.equal(tag, 'canvas');
+      return {
+        width: 0,
+        height: 0,
+        getContext() {
+          return {
+            clearRect() {},
+            drawImage() {},
+            save() {},
+            restore() {},
+            set globalAlpha(value) {},
+          };
+        },
+        toBlob(callback) {
+          callback(new Blob(['guide'], { type: 'image/png' }));
+        },
+      };
+    },
+  };
+
+  try {
+    const result = await createEverythingReplaceLogoPlacementGuide({
+      referenceUrl: 'https://example-cdn.invalid/reference.png',
+      logoUrl: 'https://example-cdn.invalid/logo.png',
+      logoBlob: new Blob(['local-logo'], { type: 'image/png' }),
+      placement: createDefaultLogoPlacement({ width: 1440, height: 1920, logoRatio: 410 / 175 }),
+      referenceWidth: 1440,
+      referenceHeight: 1920,
+      logoRatio: 410 / 175,
+    });
+
+    assert.equal(result.ratio, '3:4');
+    assert.ok(result.blob instanceof Blob);
+    assert.deepEqual(requestedUrls, []);
   } finally {
     globalThis.fetch = originalFetch;
     globalThis.createImageBitmap = originalCreateImageBitmap;

@@ -35,6 +35,7 @@ export type ShellDraftMaterial = {
   giftIndex?: number;
   originalWidth?: number;
   originalHeight?: number;
+  logoPlacement?: Record<string, unknown>;
 };
 
 export type ShellDraftState = {
@@ -51,6 +52,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 
 type NormalizeShellDraftOptions = {
   allowInlineAssets?: boolean;
+  requirePersistableMaterialUrl?: boolean;
 };
 
 const isPersistableUrl = (value: string, options: NormalizeShellDraftOptions = {}) => {
@@ -63,6 +65,16 @@ const isPersistableUrl = (value: string, options: NormalizeShellDraftOptions = {
 const sanitizePersistedUrl = (value: string, options: NormalizeShellDraftOptions = {}) => {
   const url = value.trim();
   return isPersistableUrl(url, options) ? url : '';
+};
+
+const normalizeJsonRecord = (value: unknown): Record<string, unknown> | undefined => {
+  if (!isRecord(value)) return undefined;
+  try {
+    const cloned = JSON.parse(JSON.stringify(value));
+    return isRecord(cloned) ? cloned : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 const normalizeInputState = (value: unknown): ShellDraftInputState => {
@@ -94,6 +106,7 @@ const normalizeMaterial = (value: unknown, options: NormalizeShellDraftOptions =
   const localAssetId = typeof value.localAssetId === 'string' && value.localAssetId.trim()
     ? value.localAssetId.trim()
     : '';
+  if (options.requirePersistableMaterialUrl === true && !persistableUrl) return null;
   if (!type || (!persistableUrl && !localAssetId)) return null;
   return {
     id: typeof value.id === 'string' && value.id.trim()
@@ -117,6 +130,7 @@ const normalizeMaterial = (value: unknown, options: NormalizeShellDraftOptions =
     originalHeight: typeof value.originalHeight === 'number' && Number.isFinite(value.originalHeight)
       ? value.originalHeight
       : undefined,
+    logoPlacement: normalizeJsonRecord(value.logoPlacement),
   };
 };
 
@@ -184,17 +198,67 @@ export const mergeShellDraftMaterials = (
   materialMaps.forEach((materials) => {
     Object.entries(normalizeMaterials(materials)).forEach(([type, list]) => {
       const existing = next[type] || [];
-      const seen = new Set(existing.map((item) => `${item.id}:${item.remoteUrl || item.url || item.localAssetId || ''}`));
-      const additions = list.filter((item) => {
-        const key = `${item.id}:${item.remoteUrl || item.url || item.localAssetId || ''}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
+      const merged = [...existing];
+      list.forEach((item) => {
+        const identity = item.localAssetId || item.id || item.remoteUrl || item.url || '';
+        const matchIndex = identity
+          ? merged.findIndex((current) => (
+              current.localAssetId === identity
+              || current.id === identity
+              || current.remoteUrl === identity
+              || current.url === identity
+            ))
+          : -1;
+        if (matchIndex < 0) {
+          merged.push(item);
+          return;
+        }
+        const current = merged[matchIndex];
+        merged[matchIndex] = {
+          ...current,
+          ...item,
+          logoPlacement: item.logoPlacement || current.logoPlacement,
+          localAssetId: item.localAssetId || current.localAssetId,
+          remoteUrl: item.remoteUrl || current.remoteUrl,
+          url: item.url || current.url,
+        };
       });
-      next[type] = [...existing, ...additions];
+      next[type] = merged;
     });
   });
   return next;
+};
+
+const mergeFallbackFieldsIntoPreferredMaterials = (
+  preferredMaterials: Record<string, ShellDraftMaterial[]>,
+  fallbackMaterials: Record<string, ShellDraftMaterial[]>,
+): Record<string, ShellDraftMaterial[]> => {
+  const normalizedPreferred = normalizeMaterials(preferredMaterials);
+  const normalizedFallback = normalizeMaterials(fallbackMaterials);
+  return Object.fromEntries(
+    Object.entries(normalizedPreferred).map(([type, list]) => {
+      const fallbackList = normalizedFallback[type] || [];
+      return [type, list.map((item) => {
+        const identity = item.localAssetId || item.id || item.remoteUrl || item.url || '';
+        const fallback = identity
+          ? fallbackList.find((candidate) => (
+              candidate.localAssetId === identity
+              || candidate.id === identity
+              || candidate.remoteUrl === identity
+              || candidate.url === identity
+            ))
+          : undefined;
+        if (!fallback) return item;
+        return {
+          ...item,
+          logoPlacement: item.logoPlacement || fallback.logoPlacement,
+          localAssetId: item.localAssetId || fallback.localAssetId,
+          originalWidth: item.originalWidth ?? fallback.originalWidth,
+          originalHeight: item.originalHeight ?? fallback.originalHeight,
+        };
+      })];
+    }),
+  );
 };
 
 const mergeDeletedIds = (...lists: string[][]) => Array.from(new Set(
@@ -227,9 +291,14 @@ export const resolveHydratedShellDraftState = ({
   if (hasDraftContent(local) || hasDraftContent(remote)) {
     const preferredHasMaterials = Object.values(preferred.materials).some((list) => (list || []).length > 0);
     const fallbackHasMaterials = Object.values(fallback.materials).some((list) => (list || []).length > 0);
+    const materials = preferredHasMaterials
+      ? mergeFallbackFieldsIntoPreferredMaterials(preferred.materials, fallback.materials)
+      : fallbackHasMaterials
+        ? fallback.materials
+        : {};
     return normalizeShellDraftState({
       inputStateByScope: mergeShellDraftInputState(fallback.inputStateByScope, preferred.inputStateByScope),
-      materials: preferredHasMaterials ? preferred.materials : fallbackHasMaterials ? fallback.materials : {},
+      materials,
       deletedJobIds: mergeDeletedIds(fallback.deletedJobIds, preferred.deletedJobIds),
       deletedProjectIds: mergeDeletedIds(fallback.deletedProjectIds, preferred.deletedProjectIds),
       deletedResultIds: mergeDeletedIds(fallback.deletedResultIds, preferred.deletedResultIds),
