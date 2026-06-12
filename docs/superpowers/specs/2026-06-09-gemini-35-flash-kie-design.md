@@ -10,7 +10,7 @@
 
 - 在公共系统配置的聊天模型目录中新增 `gemini-3-5-flash`。
 - 在 Provider 网关新增 Gemini-native 请求适配器。
-- 复用 `KIE_API_KEY` / `MEIAO_KIE_API_KEY`，不新增环境变量；该 endpoint 按文档使用 `X-Goog-Api-Key` header 承载同一个 key 值。
+- 复用 `KIE_API_KEY` / `MEIAO_KIE_API_KEY`，不新增环境变量；该 endpoint 按 KIE cURL 示例和 Request 鉴权说明使用 `Authorization: Bearer <KIE key>`。
 - 维持现有 `gemini-3-flash-openai`、`gemini-3.1-pro-openai`、`gpt-5-4-openai-resp` 和 Claude 路由不变。
 - 更新测试覆盖模型目录和 Provider 请求契约。
 
@@ -28,7 +28,7 @@
 - `webSearchEnabled` 映射为 `tools: [{ googleSearch: {} }]`。
 - caller function tools 映射为 `tools: [{ functionDeclarations: [...] }]`。
 - `reasoningLevel` 映射为 `generationConfig.thinkingConfig.thinkingLevel`，只传 `low` 或 `high`。
-- 鉴权 header 使用 `X-Goog-Api-Key: <KIE key>`，不把 key 放入 URL 或请求体。
+- 鉴权 header 使用 `Authorization: Bearer <KIE key>`，不把 key 放入 URL 或请求体。
 
 ## 响应处理
 
@@ -49,7 +49,7 @@
 新增或更新以下测试：
 
 - `server/jobRuntime.test.mjs`：公共配置暴露 `gemini-3-5-flash`，该模型 provider 为 `kie`，reasoning levels 为 `low/high`，且默认视频分析模型不改变。
-- `server/providerGateway.test.mjs`：执行 `kie_chat` 且 model 为 `gemini-3-5-flash` 时，请求发往 Gemini-native endpoint，`X-Goog-Api-Key` 使用同一个 KIE key，请求体包含 `contents`、`tools.googleSearch` 和 `generationConfig.thinkingConfig`。
+- `server/providerGateway.test.mjs`：执行 `kie_chat` 且 model 为 `gemini-3-5-flash` 时，请求发往 Gemini-native endpoint，`Authorization: Bearer` 使用同一个 KIE key，请求体包含 `contents`、`tools.googleSearch` 和 `generationConfig.thinkingConfig`。
 - `server/providerGateway.test.mjs`：JSON 响应可提取 content、responseId、credits 和 usage metadata。
 
 ## 非目标

@@ -25,6 +25,8 @@ const isInvalidOneClickPlanText = (value) => {
     /共\s*\d+\s*张参考图，其中\s*\d+\s*张策划失败/,
     /Failed to get (?:the )?file information/i,
     /I cannot fulfill this request/i,
+    /Unauthorized\s*[–-]\s*Authentication failed/i,
+    /Authentication failed\.?\s*Please check/i,
     /Cannot read properties of undefined/i,
     /providerTaskId/i,
     /网络连接失败，请检查网络后重试/,
@@ -35,6 +37,20 @@ const isInvalidOneClickPlanText = (value) => {
   ].some((pattern) => pattern.test(content));
 };
 const isInvalidOneClickPlanLike = (item = {}) => isInvalidOneClickPlanText(getOneClickPlanContent(item));
+const normalizeInvalidPlanAsFailedPlanningCard = (plan = {}) => {
+  if (plan?.planningFailed || !isInvalidOneClickPlanLike(plan)) return plan;
+  const message = getOneClickPlanContent(plan) || compactKey(plan?.error) || '策划失败';
+  return {
+    ...plan,
+    selected: false,
+    status: 'error',
+    error: message,
+    planningFailed: true,
+    schemeContent: message,
+    sceneDescription: compactKey(plan?.sceneDescription) || message,
+    textLayout: compactKey(plan?.textLayout) || message,
+  };
+};
 const idSet = (values) => new Set(
   (Array.isArray(values) ? values : [])
     .map((value) => compactKey(value))
@@ -557,6 +573,26 @@ const isTransientNoIdentityRuntimePlaceholder = (item = {}) => {
   return /网络连接失败|请求超时|failed to fetch|fetch failed|dynamically imported module|任务状态同步失败|任务已提交云端|结果待同步/i.test(message);
 };
 
+const isProviderPollutionText = (value) => {
+  const text = compactKey(value);
+  if (!text) return false;
+  return [
+    /unauthorized\s*[–-]\s*authentication failed/i,
+    /authentication failed\.?\s*please check/i,
+    /server exception,\s*please try again later/i,
+    /server is currently being maintained/i,
+    /internal error,\s*please try again later/i,
+  ].some((pattern) => pattern.test(text));
+};
+
+const isInvalidNoIdentityOneClickResult = (item = {}) => {
+  const status = String(item?.status || '');
+  if (!['error', 'failed', 'generating', 'pending', 'queued'].includes(status)) return false;
+  if (itemHasMedia(item)) return false;
+  if (compactKey(item?.backendJobId || item?.taskId || item?.providerTaskId || item?.kieTaskId)) return false;
+  return isProviderPollutionText(getOneClickPlanContent(item));
+};
+
 const isActiveGenerationItem = (item = {}) => (
   ['generating', 'pending', 'queued', 'running', 'retry_waiting', 'uploading', 'processing'].includes(String(item?.status || ''))
   && itemHasProviderTaskIdentity(item)
@@ -588,7 +624,7 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
   const isOneClickProject = options.forceOneClick || String(item?.module || '') === 'one_click';
   const originalPlans = Array.isArray(item?.plans) ? item.plans : [];
   const invalidPlanIds = new Set(
-    (isOneClickProject ? originalPlans.filter(isInvalidOneClickPlanLike) : [])
+    (isOneClickProject ? originalPlans.filter((plan) => !plan?.planningFailed && isInvalidOneClickPlanLike(plan)) : [])
       .map((plan) => compactKey(plan?.id))
       .filter(Boolean),
   );
@@ -600,7 +636,7 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
     ? originalPlans.filter((plan) => !isPlanningGeneratedPlanId(plan?.id))
     : originalPlans;
   const plans = isOneClickProject
-    ? visiblePlans.filter((plan) => !isInvalidOneClickPlanLike(plan))
+    ? visiblePlans.map(normalizeInvalidPlanAsFailedPlanningCard)
     : visiblePlans;
   const droppedPlanIds = new Set(
     originalPlans
@@ -619,8 +655,15 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
           isInvalidOneClickPlanText(getOneClickPlanContent(entry))
           || (planId && invalidPlanIds.has(planId))
         );
+      const invalidNoIdentityFailure = isOneClickProject && isInvalidNoIdentityOneClickResult(entry);
+      const noIdentityFailureForFailedPlan = isOneClickProject
+        && planId
+        && invalidPlanIds.has(planId)
+        && !itemHasMedia(entry)
+        && !compactKey(entry?.backendJobId || entry?.taskId || entry?.providerTaskId || entry?.kieTaskId)
+        && ['error', 'failed', 'generating', 'pending', 'queued'].includes(String(entry?.status || ''));
       if (invalidCompletedMedia) droppedInvalidCompletedMedia = true;
-      return !invalidCompletedMedia && (!planId || !droppedPlanIds.has(planId));
+      return !invalidCompletedMedia && !invalidNoIdentityFailure && !noIdentityFailureForFailedPlan && (!planId || !droppedPlanIds.has(planId));
     })
   );
   const results = pruneSupersededNoMediaItems(filterDroppedPlans(originalResults));
@@ -651,7 +694,8 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
       ? maxNumber(completedMediaCount, activeOrFailedCount, 1)
       : maxNumber(persistedTaskCount, stateItems.length, 1);
   const hasGenerating = stateItems.some((entry) => isActiveGenerationItem(entry));
-  const hasError = stateItems.some((entry) => ['error', 'failed'].includes(String(entry?.status || '')));
+  const hasFailedPlan = isOneClickProject && plans.some((plan) => plan?.planningFailed || ['error', 'failed'].includes(String(plan?.status || '')));
+  const hasError = hasFailedPlan || stateItems.some((entry) => ['error', 'failed'].includes(String(entry?.status || '')));
   const hasCompletedMedia = completedMediaCount > 0;
   const hasPlanOnlyPendingItems = isOneClickProject
     && completedMediaCount === 0
@@ -683,7 +727,11 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
     ...(Array.isArray(item?.schemes) ? { schemes } : {}),
     planningTaskId: latestProviderTaskIdentityText(item?.planningTaskId) || undefined,
     taskCount,
-    completedCount: stateItems.length > 0 ? completedMediaCount : Number(item?.completedCount || 0) || 0,
+    completedCount: stateItems.length > 0
+      ? completedMediaCount
+      : droppedInvalidPlanningArtifacts
+        ? 0
+        : Number(item?.completedCount || 0) || 0,
     status,
   };
   if (status === 'completed' && completedMediaCount > 0) {

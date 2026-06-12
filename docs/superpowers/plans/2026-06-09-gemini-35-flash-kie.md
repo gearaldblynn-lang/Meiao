@@ -4,7 +4,7 @@
 
 **Goal:** Add KIE-backed `Gemini 3.5 Flash` as a new selectable chat/planning model without replacing existing Gemini models.
 
-**Architecture:** Expose the model through the existing public system config catalog, then route `gemini-3-5-flash` through a dedicated Gemini-native adapter in `server/providerGateway.mjs`. The adapter reuses KIE key resolution but sends the key with `X-Goog-Api-Key`, converts internal messages to Gemini `contents`, and supports JSON plus SSE response parsing.
+**Architecture:** Expose the model through the existing public system config catalog, then route `gemini-3-5-flash` through a dedicated Gemini-native adapter in `server/providerGateway.mjs`. The adapter reuses KIE key resolution and sends the key with `Authorization: Bearer`, converts internal messages to Gemini `contents`, and supports JSON plus SSE response parsing.
 
 **Tech Stack:** Node.js ESM, built-in `node:test`, existing Provider gateway helpers.
 
@@ -140,8 +140,8 @@ Assert:
 
 ```js
 assert.equal(requests[0].url, 'https://api.kie.ai/gemini/v1/models/gemini-3-5-flash:streamGenerateContent');
-assert.equal(requests[0].init.headers['X-Goog-Api-Key'], 'test-key');
-assert.equal(requests[0].init.headers.Authorization, undefined);
+assert.equal(requests[0].init.headers.Authorization, 'Bearer test-key');
+assert.equal(requests[0].init.headers['X-Goog-Api-Key'], undefined);
 const body = JSON.parse(requests[0].init.body);
 assert.equal(body.stream, true);
 assert.equal(body.contents[0].role, 'user');
@@ -190,7 +190,7 @@ and run the request with:
 
 ```js
 headers: {
-  'X-Goog-Api-Key': kieApiKey,
+  Authorization: `Bearer ${kieApiKey}`,
   'Content-Type': 'application/json',
 }
 ```

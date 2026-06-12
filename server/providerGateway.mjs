@@ -1359,6 +1359,8 @@ const isProviderErrorText = (value) => {
     /image download failed/i,
     /http 404:\s*not found/i,
     /please convert or change the file/i,
+    /unauthorized\s*[–-]\s*authentication failed/i,
+    /authentication failed\.?\s*please check/i,
     /server exception,\s*please try again later/i,
     /server is currently being maintained/i,
   ].some((pattern) => pattern.test(text));
@@ -2455,7 +2457,7 @@ const runKieGemini35FlashJob = async (payload, env, signal, options = {}) => {
   const response = await fetchKieWithTimeout(KIE_GEMINI_35_FLASH_URL, {
     method: 'POST',
     headers: {
-      'X-Goog-Api-Key': kieApiKey,
+      Authorization: `Bearer ${kieApiKey}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(requestBody),

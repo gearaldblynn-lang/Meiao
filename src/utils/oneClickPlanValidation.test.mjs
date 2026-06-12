@@ -14,6 +14,7 @@ test('one-click plan validation rejects failed planning placeholders', () => {
   assert.equal(isInvalidOneClickPlanText('I cannot fulfill this request.'), true);
   assert.equal(isInvalidOneClickPlanText('Internal Error, Please try again later.'), true);
   assert.equal(isInvalidOneClickPlanText('The server is currently being maintained, please try again later~'), true);
+  assert.equal(isInvalidOneClickPlanText('Unauthorized – Authentication failed. Please check that your Authorization and Content-Type headers are correctly set.'), true);
 });
 
 test('one-click plan validation keeps real scheme content valid', () => {
