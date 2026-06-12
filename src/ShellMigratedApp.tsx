@@ -6411,6 +6411,13 @@ const AppContent: React.FC<{
         reference: [],
       };
       const matchedPlan = project.plans?.find((plan) => plan.id === result.planId) || project.plans?.[resultIndex];
+      const matchedPlanPrompt = matchedPlan ? buildPlanPromptSummary(matchedPlan, project.subFeature || activeSubFeature || '') : '';
+      const originalGenerationPrompt = [
+        result.prompt,
+        matchedPlan?.schemeContent,
+        matchedPlanPrompt,
+        storedContext?.prompt,
+      ].map((value) => String(value || '').trim()).find(Boolean) || '';
       const editPlan: PlanItem = {
         ...(matchedPlan || {
           id: `plan-edit-base-${Date.now()}`,
@@ -6431,7 +6438,7 @@ const AppContent: React.FC<{
         variationInstruction: undefined,
         editInstruction: finalInstruction,
         sourceResultUrl,
-        schemeContent: finalInstruction,
+        schemeContent: originalGenerationPrompt || finalInstruction,
       };
       const editProject: Project = {
         id: `project-edit-${Date.now()}`,
@@ -6447,7 +6454,7 @@ const AppContent: React.FC<{
         subFeature: project.subFeature || activeSubFeature || (project.module === AppModuleObj.ONE_CLICK ? 'first_image' : 'product_replace'),
         sourceType: 'persisted',
         directGeneration: true,
-        generationContext: cloneGenerationContext(finalInstruction, generationParams, initialEditMaterials),
+        generationContext: cloneGenerationContext(originalGenerationPrompt || finalInstruction, generationParams, initialEditMaterials),
       };
       createdEditProjectId = editProject.id;
       setProjects((prev) => [editProject, ...prev]);
@@ -6479,7 +6486,7 @@ const AppContent: React.FC<{
       };
       const readyEditProject: Project = {
         ...editProject,
-        generationContext: cloneGenerationContext(finalInstruction, generationParams, editMaterials),
+        generationContext: cloneGenerationContext(originalGenerationPrompt || finalInstruction, generationParams, editMaterials),
       };
       setProjects((prev) => prev.map((item) => item.id === readyEditProject.id ? readyEditProject : item));
       await persistProjectToSharedState(readyEditProject);

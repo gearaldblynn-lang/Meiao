@@ -20,6 +20,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-12 - One-click result edits must pass the generated baseline as image input
+
+- Symptom: 一键主详/详情页“修改”时，提交 payload 的 prompt 里有 `【修改基准图】` URL，但最终结果没有按该基准图编辑；同时新生图任务没有复用原先的生图 prompt，只按短修改说明重建画面。
+- Environment: Tencent Cloud production one_click result edit / local development.
+- Root cause: 不是 JSON `\n` 导致 URL 不可读；换行后的 URL 文本仍是有效字符串。程序问题有两层：详情页编辑在 `buildShellImageInputUrls` 中先命中了详情页套图参考图分支，导致 `sourceResultUrl` 只写在 prompt 文本里，没有进入上游真正读图的 `input_urls`；`handleEditResult` 又把 `schemeContent` 覆盖成用户短修改说明，编辑 prompt 无法复用原始生图 prompt。
+- Fix: 一键编辑只要存在 `sourceResultUrl + editInstruction`，优先提交 `product/gift/sourceResultUrl` 作为模型图片输入，避免详情页参考图分支吞掉编辑基准图；编辑任务 `schemeContent` 优先复用 `result.prompt`、原方案 `schemeContent` 或方案摘要；编辑 prompt 显式包含“原始生图 Prompt”块和基准图/素材/任务/约束分区。
+- Regression check: `node --test src/adapters/shellOneClickMaterials.test.mjs`; `node --test src/modules/OneClick/oneClickBehavior.test.mjs --test-name-pattern "one click result edit|continue fission"`; `node --test src/components/uiArchitecture.test.mjs --test-name-pattern "one click completed result edit"`; `npm run build`.
+- Files/tests: `src/adapters/shellOneClickMaterials.mjs`, `src/modules/OneClick/generationPromptUtils.ts`, `src/ShellMigratedApp.tsx`, `src/adapters/shellOneClickMaterials.test.mjs`, `src/modules/OneClick/oneClickBehavior.test.mjs`, `src/components/uiArchitecture.test.mjs`.
+- Avoid next time: prompt 中写 URL 不等于模型已获得图片输入。凡是“基于生成结果修改/裂变”的链路，都必须同时检查 `taskMetadata.sourceResultUrl`、最终 `input_urls` 和最终 submitted prompt；编辑分支不能把原始方案 prompt 替换成短指令。
+
 ## 2026-06-12 - Detail-page retry success must outrank stale same-plan failures
 
 - Symptom: 云上账号“多桑”一键详情套图复刻已出图，但前端详情页仍显示“失败/重试”；用户再次重试后，云上继续成功出图，前端仍显示失败。

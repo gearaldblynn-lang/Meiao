@@ -119,3 +119,27 @@ test('one click edit provider input urls include only product assets and generat
     'https://example.com/generated.png',
   ]);
 });
+
+test('one click detail edit provider input urls include the generated baseline instead of suite references', () => {
+  const imageUrls = buildShellImageInputUrls({
+    module: 'one_click',
+    subFeature: 'detail_page',
+    materials: {
+      product: [material('product', 'https://example.com/product.png')],
+      gift: [material('gift', 'https://example.com/gift.png')],
+      logo: [material('logo', 'https://example.com/logo.png')],
+      styleRef: [material('styleRef', 'https://example.com/detail-reference.png')],
+    },
+    taskMetadata: {
+      sourceReferenceUrl: 'https://example.com/detail-reference.png',
+      sourceResultUrl: 'https://example.com/generated-detail.png',
+      editInstruction: '把背景替换成符合产品的元素',
+    },
+  });
+
+  assert.deepEqual(imageUrls, [
+    'https://example.com/product.png',
+    'https://example.com/gift.png',
+    'https://example.com/generated-detail.png',
+  ]);
+});

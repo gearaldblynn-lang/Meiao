@@ -107,21 +107,50 @@ const buildOneClickVariationPrompt = ({
 const formatRoleUrls = (urls: string[], fallback: string) => urls.length > 0 ? urls.join('、') : fallback;
 
 export const buildOneClickResultEditPrompt = ({
+  schemeContent,
   previousResultUrl,
   editInstruction,
   productUrls = [],
+  supplementalReferenceUrls = [],
   publicBaseUrl,
-}: Pick<BuildOneClickImagePromptOptions, 'previousResultUrl' | 'editInstruction' | 'productUrls' | 'publicBaseUrl'>) => {
+}: Pick<BuildOneClickImagePromptOptions, 'schemeContent' | 'previousResultUrl' | 'editInstruction' | 'productUrls' | 'supplementalReferenceUrls' | 'publicBaseUrl'>) => {
   const safePreviousResultUrl = resolvePublicAssetUrl(previousResultUrl || '', publicBaseUrl || '');
   const instruction = String(editInstruction || '').trim();
+  const originalPrompt = String(schemeContent || '').trim();
   const safeProductUrls = productUrls
+    .map((url) => resolvePublicAssetUrl(url || '', publicBaseUrl || ''))
+    .filter(Boolean);
+  const safeSupplementalUrls = supplementalReferenceUrls
     .map((url) => resolvePublicAssetUrl(url || '', publicBaseUrl || ''))
     .filter(Boolean);
 
   return [
-    `产品素材图：${formatRoleUrls(safeProductUrls, '已上传原素材图')}（公网url）`,
-    `需修改基准图：${safePreviousResultUrl || '需修改的生成图'}（公网url）`,
-    `任务：${instruction || '按用户输入要求修改当前生成图。'}`,
+    '【修改基准图】',
+    safePreviousResultUrl || '随 input_urls 一起上传的需修改生成图。',
+    '',
+    '【原始生图 Prompt】',
+    originalPrompt || '未读取到原始生图 Prompt；以修改基准图、原素材商品图和任务需求为准生成新结果。',
+    '',
+    '【原素材商品图】',
+    `${formatRoleUrls(safeProductUrls, '随 input_urls 一起上传的原素材商品图')}，用于保持产品外观、包装结构、标签文字、logo、材质、真实颜色、比例和细节一致。`,
+    '',
+    '【补充参考图】',
+    safeSupplementalUrls.length > 0
+      ? `${safeSupplementalUrls.join('、')}，仅在任务需求明确点名时作为局部替换、新增元素或风格参考。`
+      : '未上传补充参考图时，仅根据修改基准图、原素材商品图、原始生图 Prompt 和任务需求生成新结果。',
+    '',
+    '【任务需求】',
+    instruction || '按用户输入要求修改当前生成图。',
+    '',
+    '【约束规范】',
+    '- 生成新结果，保留原图；不要覆盖、替换或删除原来的生成结果。',
+    '- 以修改基准图为直接编辑基础，保持其画面结构、构图、排版骨架、卖点信息、信息层级和文案位置不变。',
+    '- 原始生图 Prompt 用于延续原任务的画面目标、卖点表达、文案内容、风格方向和商品呈现要求；不得只根据本次短修改说明重建全新画面。',
+    '- 产品一致性默认以原素材商品图为准，保持产品主体、包装、标签、logo、材质、真实颜色、比例和细节不变。',
+    '- 若任务需求明确说明补充参考图是新的产品、包装、局部替换或新增元素参考，则对应部分以补充参考图为准；未被任务点名的产品部分仍以原素材商品图为准。',
+    '- 修改只作用于任务需求点名的局部、场景、配色、装饰、光影、道具或信息；没有点名的产品主体、卖点层级和版式关系保持不变。',
+    '',
+    '要求：画面干净通透，材质完整自然，纹理平滑统一。禁止高频纹理，颜色过渡要平滑柔和，禁止过度锐化、色斑、噪点、破碎图案、伪影和畸变。',
   ].filter(Boolean).join('\n');
 };
 
@@ -144,9 +173,11 @@ export const buildOneClickImagePrompt = ({
 }: BuildOneClickImagePromptOptions) => {
   if (previousResultUrl && editInstruction?.trim()) {
     return buildOneClickResultEditPrompt({
+      schemeContent,
       previousResultUrl,
       editInstruction,
       productUrls,
+      supplementalReferenceUrls,
       publicBaseUrl,
     });
   }

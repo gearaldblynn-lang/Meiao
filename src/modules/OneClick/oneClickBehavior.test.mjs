@@ -340,20 +340,23 @@ test('first image continuation variants use the generated result as primary base
   assert.match(shellWorkflowSource, /hasProductReferences: \(input\.materials\.product \|\| \[\]\)\.length > 0/);
 });
 
-test('one click result edit uses only product assets and the generated baseline with a minimal role prompt', () => {
+test('one click result edit uses product assets, generated baseline, and original prompt context', () => {
   const editPromptBlock = promptUtilsSource.match(/export const buildOneClickResultEditPrompt = \(\{[\s\S]*?\n\};/)?.[0] || '';
 
   assert.match(promptUtilsSource, /export const buildOneClickResultEditPrompt =/);
   assert.match(promptUtilsSource, /productUrls\?: string\[\]/);
-  assert.match(editPromptBlock, /产品素材图：\$\{formatRoleUrls\(safeProductUrls, '已上传原素材图'\)\}（公网url）/);
-  assert.match(editPromptBlock, /需修改基准图：\$\{safePreviousResultUrl \|\| '需修改的生成图'\}（公网url）/);
-  assert.match(editPromptBlock, /任务：\$\{instruction \|\| '按用户输入要求修改当前生成图。'\}/);
-  assert.doesNotMatch(editPromptBlock, /【补充参考图】/);
-  assert.doesNotMatch(editPromptBlock, /【约束规范】/);
-  assert.doesNotMatch(editPromptBlock, /产品一致性默认以原素材商品图为准/);
-  assert.doesNotMatch(editPromptBlock, /若任务需求明确说明补充参考图是新的产品、包装、局部替换或新增元素参考/);
-  assert.doesNotMatch(editPromptBlock, /生成新结果，保留原图/);
+  assert.match(promptUtilsSource, /supplementalReferenceUrls\?: string\[\]/);
+  assert.match(editPromptBlock, /const originalPrompt = String\(schemeContent \|\| ''\)\.trim\(\)/);
+  assert.match(editPromptBlock, /【修改基准图】/);
+  assert.match(editPromptBlock, /【原始生图 Prompt】/);
+  assert.match(editPromptBlock, /【原素材商品图】/);
+  assert.match(editPromptBlock, /【补充参考图】/);
+  assert.match(editPromptBlock, /【约束规范】/);
+  assert.match(editPromptBlock, /产品一致性默认以原素材商品图为准/);
+  assert.match(editPromptBlock, /若任务需求明确说明补充参考图是新的产品、包装、局部替换或新增元素参考/);
+  assert.match(editPromptBlock, /生成新结果，保留原图/);
   assert.match(promptUtilsSource, /if \(previousResultUrl && editInstruction\?\.trim\(\)\)/);
+  assert.match(promptUtilsSource, /schemeContent,\s*previousResultUrl,\s*editInstruction,\s*productUrls,\s*supplementalReferenceUrls,\s*publicBaseUrl/);
   assert.match(shellWorkflowSource, /buildShellImageInputUrls/);
   assert.match(shellOneClickMaterialsSource, /const hasEditInstruction = Boolean\(String\(taskMetadata\?\.editInstruction/);
   assert.match(shellWorkflowSource, /const productImageUrls = \(input\.materials\.product \|\| \[\]\)\.map/);
