@@ -126,7 +126,7 @@ test('kieAiService exposes a shared recharge prompt for KIE credit failures', ()
 test('kieAiService appends the GPT Image 2 cleanup suffix only for GPT Image 2 image tasks', () => {
   assert.match(
     kieAiSource,
-    /const finalPrompt = customPrompt \|\| buildKieAiPrompt\(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode\);[\s\S]*const promptWithCleanupSuffix = moduleConfig\.model === 'gpt-image-2'/s,
+    /const finalPrompt = customPrompt \|\| buildKieAiPrompt\(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode\);[\s\S]*const \{ skipPromptCleanupSuffix,[\s\S]*const promptWithCleanupSuffix = \(moduleConfig\.model === 'gpt-image-2'/s,
   );
   assert.match(
     kieAiSource,
@@ -134,8 +134,16 @@ test('kieAiService appends the GPT Image 2 cleanup suffix only for GPT Image 2 i
   );
   assert.match(
     kieAiSource,
-    /const promptWithCleanupSuffix = moduleConfig\.model === 'gpt-image-2'[\s\S]*\?\s*`\$\{finalPrompt\}\\n\\n\$\{GPT_IMAGE_2_CLEANUP_SUFFIX\}`[\s\S]*:\s*finalPrompt;/s,
+    /const promptWithCleanupSuffix = \(moduleConfig\.model === 'gpt-image-2'[\s\S]*&& skipPromptCleanupSuffix !== true[\s\S]*\?\s*`\$\{finalPrompt\}\\n\\n\$\{GPT_IMAGE_2_CLEANUP_SUFFIX\}`[\s\S]*:\s*finalPrompt;/s,
   );
+});
+
+test('kieAiService can skip the global cleanup suffix for prompts that already include output requirements', () => {
+  assert.match(kieAiSource, /skipPromptCleanupSuffix/);
+  assert.match(kieAiSource, /const \{ skipPromptCleanupSuffix,[\s\S]*safeTaskMetadata/);
+  assert.match(kieAiSource, /&& skipPromptCleanupSuffix !== true/);
+  assert.match(kieAiSource, /\.\.\.safeTaskMetadata/);
+  assert.doesNotMatch(kieAiSource, /\.\.\.taskMetadata,[\s\S]*model: moduleConfig\.model/);
 });
 
 test('kieAiService de-duplicates normalized model input image urls before submitting', () => {

@@ -373,8 +373,12 @@ test('everything replace product mode exposes replacement controls and material 
   assert.match(bottomInputBar, /recommendedValue: 'auto'/);
   assert.match(bottomInputBar, /recommendedLabel: '推荐'/);
   assert.match(bottomInputBar, /key: 'firstImageColorMode'/);
-  assert.match(bottomInputBar, /title: '参考强度'/);
+  assert.match(bottomInputBar, /label: '参考强度'/);
   assert.match(bottomInputBar, /options: \['完全复刻', '人物微调', '全局微调'\]/);
+  assert.match(bottomInputBar, /key: 'textPolicy'/);
+  assert.match(bottomInputBar, /label: '文案处理'/);
+  assert.match(bottomInputBar, /options: \['维持文案', '去除文案'\]/);
+  assert.match(bottomInputBar, /defaultValue: '维持文案'/);
   assert.doesNotMatch(bottomInputBar, /人物自适应/);
   assert.match(bottomInputBar, /return \['product', 'logo', 'styleRef'\]/);
   assert.match(bottomInputBar, /替换参考图/);

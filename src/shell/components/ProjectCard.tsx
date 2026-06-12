@@ -329,6 +329,9 @@ const ProjectCard: React.FC<Props> = ({
   const selectedPlanCount = visiblePlans.length;
   const allPlansSelected = Array.isArray(project.plans) && project.plans.length > 0 && visiblePlans.length === project.plans.length;
   const isStoryboardProject = project.module === 'video' && project.subFeature === 'storyboard';
+  const isOneClickProject = project.module === 'one_click';
+  const isEverythingReplaceProductEditProject = project.module === 'everything_replace' && project.subFeature === 'product_replace';
+  const usesMinimalRoleEditPrompt = isOneClickProject || isEverythingReplaceProductEditProject;
   const getCurrentStoryboardDisplayUrl = (result: GeneratedResult) => {
     if (!isStoryboardProject) return result.imageUrl;
     const versions = (result.storyboardImageVersions || []).filter((item) => item.imageUrl);
@@ -348,8 +351,12 @@ const ProjectCard: React.FC<Props> = ({
     title: result.fileName || result.taskId || `${project.name || '结果'} #${index + 1}`,
   }));
   const isCompletedMediaResult = (result: GeneratedResult) => result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl);
-  const resultHasVisibleTaskId = (result: GeneratedResult) => Boolean(String(result.taskId || '').trim());
-  const isResultActivelyGenerating = (result: GeneratedResult) => result.status === 'generating' && !isCompletedMediaResult(result) && resultHasVisibleTaskId(result);
+  const resultHasVisibleTaskId = (result: GeneratedResult) => Boolean(String(result.taskId || result.backendJobId || '').trim());
+  const isResultActivelyGenerating = (result: GeneratedResult) => (
+    result.status === 'generating'
+    && !isCompletedMediaResult(result)
+    && (resultHasVisibleTaskId(result) || project.status === 'generating')
+  );
   const getResultCancelTarget = (result: GeneratedResult, targetProject: Project) => (
     String(result.backendJobId || result.id || result.taskId || targetProject.backendJobId || targetProject.id).trim() || targetProject.id
   );
@@ -359,6 +366,7 @@ const ProjectCard: React.FC<Props> = ({
     hasGeneratingResult
     || (!hasPlans && projectProgressIncomplete)
   );
+  const regenerationLockedByActiveProject = isProjectActivelyGenerating || hasGeneratingResult;
   const displayProjectStatus: Project['status'] = project.status === 'generating' && !isProjectActivelyGenerating
     ? (hasResults ? 'completed' : 'planning')
     : project.status;
@@ -530,7 +538,7 @@ const ProjectCard: React.FC<Props> = ({
       addToast('请先填写修改说明', 'warning');
       return;
     }
-    onEdit(editDialog.resultId, finalInstruction, editDialog.files);
+    onEdit(editDialog.resultId, finalInstruction, usesMinimalRoleEditPrompt ? [] : editDialog.files);
     setEditDialog(null);
     setDetailOpen(false);
   };
@@ -679,6 +687,10 @@ const ProjectCard: React.FC<Props> = ({
 
   const handleRetryFailedTranslation = () => {
     if (!onRegenerate || failedTranslationResults.length === 0) return;
+    if (regenerationLockedByActiveProject) {
+      addToast('当前项目仍有任务生成中，请先中断或等待完成后再重试', 'warning');
+      return;
+    }
     const retryableResults = failedTranslationResults.filter((result) => !isRegeneratePending(result.id));
     if (retryableResults.length === 0) {
       addToast('失败项重试已提交，请等待当前任务完成', 'info');
@@ -937,7 +949,7 @@ const ProjectCard: React.FC<Props> = ({
                         <button
                           type="button"
                           onClick={handleRetryFailedTranslation}
-                          disabled={failedTranslationResults.every((result) => isRegeneratePending(result.id))}
+                          disabled={regenerationLockedByActiveProject || failedTranslationResults.every((result) => isRegeneratePending(result.id))}
                           className="flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
                           style={{ background: 'rgba(239,68,68,0.08)', color: 'var(--error)' }}
                         >
@@ -1267,11 +1279,11 @@ const ProjectCard: React.FC<Props> = ({
                               {onRegenerate ? (
                                 <ResultActionButton
                                   icon={<RefreshCw size={12} />}
-                                  label={isStoryboardAwaitingImageConfirmation ? '待确认' : regeneratePending ? '提交中' : isGeneratingResult ? '生成中' : '重生成'}
+                                  label={isStoryboardAwaitingImageConfirmation ? '待确认' : regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : '重生成'}
                                   tone="primary"
-                                  disabled={isStoryboardAwaitingImageConfirmation || regeneratePending || isGeneratingResult}
+                                  disabled={isStoryboardAwaitingImageConfirmation || regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
                                   onClick={() => {
-                                    if (isStoryboardAwaitingImageConfirmation || regeneratePending || isGeneratingResult) return;
+                                    if (isStoryboardAwaitingImageConfirmation || regeneratePending || isGeneratingResult || regenerationLockedByActiveProject) return;
                                     onRegenerate(result.id);
                                   }}
                                 />
@@ -1391,10 +1403,13 @@ const ProjectCard: React.FC<Props> = ({
                               ) : result.status === 'error' && onRegenerate ? (
                                 <ResultActionButton
                                   icon={<RefreshCw size={12} />}
-                                  label={regeneratePending ? '提交中' : '重试'}
+                                  label={regeneratePending ? '提交中' : regenerationLockedByActiveProject ? '生成中' : '重试'}
                                   tone="danger"
-                                  disabled={regeneratePending}
-                                  onClick={() => onRegenerate(result.id)}
+                                  disabled={regeneratePending || regenerationLockedByActiveProject}
+                                  onClick={() => {
+                                    if (regeneratePending || regenerationLockedByActiveProject) return;
+                                    onRegenerate(result.id);
+                                  }}
                                 />
                               ) : (
                                 <span className="inline-flex min-h-9 items-center rounded-[16px] px-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
@@ -1550,10 +1565,13 @@ const ProjectCard: React.FC<Props> = ({
                                   {onRegenerate && canRetryTranslationResult(result) ? (
                                     <ResultActionButton
                                       icon={<Sparkles size={12} />}
-                                      label={regeneratePending ? '提交中' : isTranslationProject ? '重试' : (isGeneratingResult ? '生成中' : '重生成')}
+                                      label={regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : isTranslationProject ? '重试' : '重生成'}
                                       tone="primary"
-                                      disabled={regeneratePending || isGeneratingResult}
-                                      onClick={() => onRegenerate(result.id)}
+                                      disabled={regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
+                                      onClick={() => {
+                                        if (regeneratePending || isGeneratingResult || regenerationLockedByActiveProject) return;
+                                        onRegenerate(result.id);
+                                      }}
                                     />
                                   ) : (
                                     <div />
@@ -1636,7 +1654,7 @@ const ProjectCard: React.FC<Props> = ({
                           const promptExpanded = Boolean(expandedPrompts[result.id]);
                           const matchedPlan = findPlanByResult(result, index);
                           const displayedPrompt = normalizeSchemeText(matchedPlan?.schemeContent || result.prompt || '无 prompt 记录');
-                          const hideResultPromptInProjectCard = project.module === 'everything_replace' && project.subFeature === 'product_replace';
+                          const hideResultPromptInProjectCard = project.module === 'everything_replace' && project.subFeature === 'product_replace' && result.status !== 'error';
                           const hasResult = Boolean(result.imageUrl || result.videoUrl);
                           const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
                           const resultMeta: string[] = [];
@@ -1788,10 +1806,13 @@ const ProjectCard: React.FC<Props> = ({
                                   {onRegenerate && canRetryTranslationResult(result) ? (
                                     <ResultActionButton
                                       icon={<RefreshCw size={12} />}
-                                      label={regeneratePending ? '提交中' : isTranslationProject ? '重试' : '重生成'}
+                                      label={regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : isTranslationProject ? '重试' : '重生成'}
                                       tone="primary"
-                                      disabled={regeneratePending || isGeneratingResult}
-                                      onClick={() => onRegenerate(result.id)}
+                                      disabled={regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
+                                      onClick={() => {
+                                        if (regeneratePending || isGeneratingResult || regenerationLockedByActiveProject) return;
+                                        onRegenerate(result.id);
+                                      }}
                                     />
                                   ) : (
                                       <div />
@@ -1895,10 +1916,10 @@ const ProjectCard: React.FC<Props> = ({
                   ) : result.status === 'error' && onRegenerate ? (
                     <button
                       type="button"
-                      disabled={isRegeneratePending(result.id)}
+                      disabled={isRegeneratePending(result.id) || regenerationLockedByActiveProject}
                       onClick={(event) => {
                         event.stopPropagation();
-                        if (isRegeneratePending(result.id)) return;
+                        if (isRegeneratePending(result.id) || regenerationLockedByActiveProject) return;
                         onRegenerate(result.id);
                         setTranslationCompareOpen(false);
                       }}
@@ -1906,7 +1927,7 @@ const ProjectCard: React.FC<Props> = ({
                       style={{ background: 'rgba(239,68,68,0.08)', color: 'var(--error)' }}
                     >
                       <RefreshCw size={16} />
-                      {isRegeneratePending(result.id) ? '提交中' : '重试'}
+                      {isRegeneratePending(result.id) ? '提交中' : regenerationLockedByActiveProject ? '生成中' : '重试'}
                     </button>
                   ) : null}
                   <button
@@ -2102,46 +2123,45 @@ const ProjectCard: React.FC<Props> = ({
                 <textarea
                   value={editDialog.instruction}
                   onChange={(event) => setEditDialog((prev) => prev ? { ...prev, instruction: event.target.value } : prev)}
-                  placeholder="例如：把背景换成浴室场景 / 参考补充图替换瓶身贴纸 / 只调整框体为蜜桃配色，产品本身不变"
+                  placeholder={usesMinimalRoleEditPrompt ? '例如：把背景换成浴室场景 / 只调整框体为蜜桃配色' : '例如：把背景换成浴室场景 / 参考图替换瓶身贴纸 / 只调整框体为蜜桃配色，产品本身不变'}
                   className="h-32 w-full resize-none rounded-[18px] border px-4 py-3 text-[13px] leading-6 outline-none"
                   style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
                 />
               </div>
-              <div>
-                <label className="mb-2 block text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>补充参考图</label>
-                <label
-                  className="flex min-h-12 cursor-pointer items-center justify-between gap-3 rounded-[18px] border px-4 py-3 text-[12px] transition-colors"
-                  style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
-                >
-                  <span className="min-w-0 truncate">
-                    {editDialog.files.length > 0 ? `${editDialog.files.length} 张补充图已选择` : '上传新的局部、包装、元素或场景参考图（可选）'}
-                  </span>
-                  <ImagePlus size={16} />
-                  <input
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    className="hidden"
-                    onChange={(event) => {
-                      const files = Array.from(event.target.files || []);
-                      setEditDialog((prev) => prev ? { ...prev, files } : prev);
-                      event.currentTarget.value = '';
-                    }}
-                  />
-                </label>
-                {editDialog.files.length > 0 ? (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {editDialog.files.map((file, index) => (
-                      <span key={`${file.name}-${index}`} className="max-w-[180px] truncate rounded-full px-2.5 py-1 text-[11px]" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
-                        {file.name}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-              <p className="text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>
-                会生成一张新结果并保留原图；产品一致性默认以原素材商品图为准，若修改说明明确指定补充图为替换或新增依据，则对应部分以补充图为准。
-              </p>
+              {!usesMinimalRoleEditPrompt ? (
+                <div>
+                  <label className="mb-2 block text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>参考图</label>
+                  <label
+                    className="flex min-h-12 cursor-pointer items-center justify-between gap-3 rounded-[18px] border px-4 py-3 text-[12px] transition-colors"
+                    style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                  >
+                    <span className="min-w-0 truncate">
+                      {editDialog.files.length > 0 ? `${editDialog.files.length} 张参考图已选择` : '上传新的局部、包装、元素或场景参考图（可选）'}
+                    </span>
+                    <ImagePlus size={16} />
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      className="hidden"
+                      onChange={(event) => {
+                        const files = Array.from(event.target.files || []);
+                        setEditDialog((prev) => prev ? { ...prev, files } : prev);
+                        event.currentTarget.value = '';
+                      }}
+                    />
+                  </label>
+                  {editDialog.files.length > 0 ? (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {editDialog.files.map((file, index) => (
+                        <span key={`${file.name}-${index}`} className="max-w-[180px] truncate rounded-full px-2.5 py-1 text-[11px]" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
+                          {file.name}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
             <div className="flex items-center justify-end gap-2 border-t px-6 py-4" style={{ borderColor: 'var(--border-subtle)' }}>
               <button

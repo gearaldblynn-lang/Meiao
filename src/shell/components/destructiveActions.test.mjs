@@ -109,10 +109,23 @@ test('task action buttons use an exclusive pending key to prevent duplicate subm
 
   assert.match(projectCardSource, /pendingActionKeys\?: Record<string, boolean>/);
   assert.match(projectCardSource, /const getRegenerateActionKey = \(resultId: string\) => `regenerate:\$\{project\.id\}:\$\{resultId\}`/);
-  assert.match(projectCardSource, /disabled=\{regeneratePending \|\| isGeneratingResult\}/);
+  assert.match(projectCardSource, /const regenerationLockedByActiveProject = isProjectActivelyGenerating \|\| hasGeneratingResult/);
+  assert.match(projectCardSource, /disabled=\{regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\}/);
   assert.match(projectCardSource, /const getConfirmPlanActionKey = \(planId: string\) => `confirm-plan:\$\{project\.id\}:\$\{planId\}`/);
   assert.match(projectCardSource, /isConfirmPlanPending=\{isPlanConfirmPending\}/);
   assert.match(projectCardSource, /disabled=\{isStoryboardImagePending\}/);
+});
+
+test('result regeneration is locked while the current project or scope is actively generating', () => {
+  const projectCardSource = read('./ProjectCard.tsx');
+  const shellSource = read('../../ShellMigratedApp.tsx');
+
+  assert.match(projectCardSource, /const hasGeneratingResult = project\.results\.some\(\(result\) => isResultActivelyGenerating\(result\)\)/);
+  assert.match(projectCardSource, /if \(isStoryboardAwaitingImageConfirmation \|\| regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\) return/);
+  assert.match(projectCardSource, /if \(regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\) return/);
+  assert.match(shellSource, /const hasActiveRegenerationConflict = \(/);
+  assert.match(shellSource, /hasActiveRegenerationConflict\(projects, tasks, project\)/);
+  assert.match(shellSource, /请先中断或等待当前任务完成后再重生成/);
 });
 
 test('all runnable bottom generation submits are guarded before material preparation or cloud submission', () => {

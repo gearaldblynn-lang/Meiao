@@ -746,6 +746,7 @@ export const uploadShellMaterial = async (
 
 export const runShellImageGeneration = async (input: ShellGenerateInput) => {
   const productImageUrls = (input.materials.product || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
+  const giftImageUrls = (input.materials.gift || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
   const supplementalImageUrls = (input.materials.reference || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
   const suiteReferenceUrls = input.module === AppModule.ONE_CLICK && input.subFeature === 'main_image' && input.params.planningLogic === '套图复刻'
     ? (input.materials.styleRef || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean).slice(0, 5)
@@ -770,6 +771,18 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
   const oneClickSchemeContent = typeof input.taskMetadata?.schemeContent === 'string'
     ? input.taskMetadata.schemeContent.trim()
     : '';
+  const everythingReplaceEditPrompt = input.module === AppModule.EVERYTHING_REPLACE
+    && input.subFeature === 'product_replace'
+    && typeof input.taskMetadata?.sourceResultUrl === 'string'
+    && typeof input.taskMetadata?.editInstruction === 'string'
+    && input.taskMetadata.editInstruction.trim()
+      ? buildEverythingReplaceResultEditPrompt({
+        previousResultUrl: input.taskMetadata.sourceResultUrl,
+        editInstruction: input.taskMetadata.editInstruction,
+        productUrls: productImageUrls,
+        publicBaseUrl: input.publicBaseUrl || '',
+      })
+    : '';
   const customPrompt = oneClickSchemeContent && input.module === AppModule.ONE_CLICK
     ? buildOneClickImagePrompt({
         schemeContent: oneClickSchemeContent,
@@ -781,12 +794,15 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
         previousResultUrl: typeof input.taskMetadata?.sourceResultUrl === 'string' ? input.taskMetadata.sourceResultUrl : null,
         variationInstruction: typeof input.taskMetadata?.variationInstruction === 'string' ? input.taskMetadata.variationInstruction : null,
         editInstruction: typeof input.taskMetadata?.editInstruction === 'string' ? input.taskMetadata.editInstruction : null,
+        productUrls: [...productImageUrls, ...giftImageUrls],
         supplementalReferenceUrls: supplementalImageUrls,
         suiteReferenceUrls,
         hasProductReferences: (input.materials.product || []).length > 0,
         includeCopyGuardrails: true,
         publicBaseUrl: input.publicBaseUrl || '',
       })
+    : everythingReplaceEditPrompt
+      ? everythingReplaceEditPrompt
     : [
         `模块：${moduleLabel}`,
         input.subFeature ? `子功能：${input.subFeature}` : '',
@@ -1101,41 +1117,70 @@ const normalizeProductReplaceStrength = (value?: string) => {
   return 'exact_replicate';
 };
 
-const buildProductReplaceStrengthConstraint = (referenceStrength: string) => {
-  if (referenceStrength === 'person_adjust') {
-    return '6. 参考强度：人物微调。人物必须出现可见但轻微的差异，不能与参考图完全一致；需要微调人物外貌相似度、表情、姿态、手部、遮挡、佩戴或互动细节中的至少一项；整体构图、场景、动作关系和产品位置仍需接近参考图。';
-  }
-  if (referenceStrength === 'global_adjust') {
-    return '6. 参考强度：全局微调。在大致相同的基础上，对人物、场景、动作、道具细节、光影或局部构图做可见但轻微的调整；不得改变核心画面结构、产品替换目标和商业表达。';
-  }
-  return '6. 参考强度：完全复刻。尽量精确复刻参考图画面结构、主体位置、色调、镜头和氛围，只替换产品主体。';
+const normalizeProductReplaceTextPolicy = (value?: string) => {
+  const normalized = String(value || '').trim();
+  if (normalized === 'remove_text' || normalized.includes('去除') || normalized.includes('移除') || normalized.includes('删除')) return 'remove_text';
+  return 'keep_text';
 };
 
-const buildProductReplaceBaseConstraints = (referenceStrength: string) => [
-  '【万物替换-产品替换硬约束】：',
-  '1. 先识别当前替换参考图中所有应被替换的原产品/商品区域；参考图中的原产品必须被移除，不得残留原品牌、原商标、原包装或原产品轮廓。',
-  '2. 必须用待替换产品图中的真实产品替换参考图中的主体，严禁改变待替换产品的品牌、包装文字、Logo、结构比例和关键细节。',
-  '3. 参考图只提供构图、场景、道具关系、光影、镜头语言和视觉风格，不得保留参考图原产品、原品牌或可识别商标。',
-  '4. 替换后的产品必须自然融入参考画面，接触阴影、遮挡关系、透视角度、材质反光、景深和边缘融合都要可信，不能像简单贴图。',
-  '5. 文字保真：产品包装文字、Logo、标签、画面中已有非产品文案和用户要求保留的文字均不得改写、翻译、增删或重新排版。',
-  buildProductReplaceStrengthConstraint(referenceStrength),
-].join('\n');
+const buildProductReplaceStrengthConstraint = (referenceStrength: string) => {
+  if (referenceStrength === 'person_adjust') {
+    return '人物微调：保持参考图的场景、构图、动作、光影、景别和整体商业拍摄质感；若参考图出现人物，必须重绘为不同人物，脸型、五官比例、可识别面部特征、发型轮廓或发丝走向都要有明确变化，不得保留为同一张脸，不得只做几乎不可见的轻微修饰。';
+  }
+  if (referenceStrength === 'global_adjust') {
+    return '全局微调：保持参考图的大致构图、主题、信息层级和商业风格；人物、场景、动作和局部细节允许轻微变化。';
+  }
+  return '完全复刻：除被替换产品和指定 Logo 外，参考图中的场景、构图、人物、动作、光影和整体风格尽量保持一致。';
+};
+
+const buildProductReplaceTextPolicyBlock = (textPolicy: string) => (
+  textPolicy === 'remove_text'
+    ? '去除文案：去除参考图中的所有宣传文案内容，并自然修复背景。不得影响产品素材自身的 Logo、标签、包装文字，也不得去除上传 Logo。'
+    : '维持文案：参考图中的所有非产品宣传文案均不做任何变动，保持原文案内容、语言、位置、字号层级和排版关系。'
+);
+
+const formatRoleUrls = (urls: string[], fallback: string) => urls.length > 0 ? urls.join('、') : fallback;
+
+const buildEverythingReplaceResultEditPrompt = ({
+  previousResultUrl,
+  editInstruction,
+  productUrls,
+  publicBaseUrl,
+}: {
+  previousResultUrl?: string | null;
+  editInstruction?: string | null;
+  productUrls: string[];
+  publicBaseUrl?: string;
+}) => {
+  const safePreviousResultUrl = resolvePublicAssetUrl(previousResultUrl || '', publicBaseUrl || '');
+  const safeProductUrls = productUrls
+    .map((url) => resolvePublicAssetUrl(url || '', publicBaseUrl || ''))
+    .filter(Boolean);
+  const instruction = String(editInstruction || '').trim();
+  return [
+    `产品素材图：${formatRoleUrls(safeProductUrls, '已上传原素材图')}（公网url）`,
+    `需修改基准图：${safePreviousResultUrl || '需修改的生成图'}（公网url）`,
+    `任务：${instruction || '按用户输入要求修改当前生成图。'}`,
+  ].filter(Boolean).join('\n');
+};
 
 const buildProductReplaceInputRoleBlock = ({
   productUrls,
   referenceUrl,
   isCombination,
-  hasLogoInputs,
+  logoRoleBlock,
 }: {
   productUrls: string[];
   referenceUrl: string;
   isCombination: boolean;
-  hasLogoInputs: boolean;
+  logoRoleBlock?: string;
 }) => [
-  '【输入图片角色（严格按上传顺序识别，不得混淆）】：',
-  `1. ${isCombination ? '待组合替换产品图' : '待替换产品图'}：${productUrls.join('、')}。${isCombination ? '这些图共同构成一组产品，需要整体替换到当前参考图的对应产品组合位置。' : '这些图都是同一单品的多角度或细节补充，用来确定同一个待替换产品的真实外观。'}`,
-  `2. 当前替换参考图：${referenceUrl}。当前任务只参考这一张图的构图、场景、人物、光影和原产品位置；不要混入其它参考图。`,
-  hasLogoInputs ? '3. Logo原图与Logo位置示意图：Logo原图是品牌标识来源；Logo位置示意图只用于位置、面积和比例参考，不可当作背景、风格图、水印效果或最终画面内容。' : '',
+  '【输入图片角色】',
+  isCombination
+    ? `1. 产品素材图：${productUrls.join('、')}\n用途：目标产品组合的唯一外观依据。每张图代表一个需要保留独立身份的产品，必须保持各产品轮廓、结构比例、颜色、材质、纹理、Logo、标签、包装文字、图案和所有可见细节。\n组合替换说明：产品素材图表示同一组需要共同替换的产品。每个产品都要保持独立身份，并对应替换到当前参考图中的产品组合位置，不得遗漏、融合成新产品或自行新增组合关系。`
+    : `1. 产品素材图：${productUrls.join('、')}\n用途：目标产品的唯一外观依据。必须保持产品轮廓、结构比例、颜色、材质、纹理、Logo、标签、包装文字、图案和所有可见细节。\n单品替换说明：产品素材图表示同一个产品，可以包含多角度、细节图或包装补充。所有产品素材共同用于确认同一产品外观，不按产品素材数量生成图片。`,
+  `2. 当前替换参考图：${referenceUrl}\n用途：当前任务唯一参考图。只参考这一张图的构图、场景、人物、动作、光影、景深、版式、原产品位置和画面风格。`,
+  logoRoleBlock || '',
 ].filter(Boolean).join('\n');
 
 const buildProductReplaceLogoPromptBlock = ({
@@ -1149,19 +1194,77 @@ const buildProductReplaceLogoPromptBlock = ({
 }) => {
   if (!logoUrl || !logoPlacementGuideUrl) return '';
   return [
-    '【Logo植入要求】：',
-    `1. Logo原图：${logoUrl}`,
-    `2. Logo位置示意图：${logoPlacementGuideUrl}`,
-    `3. Logo是必须植入的输出元素。即使参考图原本没有 Logo，也必须按示意图位置加入；不得遗漏、替换成文字、改造品牌形状或降低到不可见。`,
-    `4. 示意图只用于位置、面积和比例参考。按示意图中的相对位置、大小和方向融合 Logo 到最终画面，匹配当前参考图的 ${logoPlacementRatio || '相近'} 比例，边缘、光影和材质要自然，不要生硬贴图。`,
+    `3. Logo 原图：${logoUrl}`,
+    '用途：品牌 Logo 的唯一形状、颜色和细节依据。它不是产品素材，也不是替换参考图，不得被当作待替换产品。',
+    `4. Logo 位置示意图：${logoPlacementGuideUrl}`,
+    `用途：只用于判断 Logo 在最终图中的相对位置、面积、方向和比例，当前位置比例参考为 ${logoPlacementRatio || '相近比例'}。不得把示意图中的边框、辅助线、底色、选区框或标记生成到最终图里。`,
   ].join('\n');
 };
+
+const buildProductReplaceTaskBlock = () => [
+  '1. 找到当前替换参考图中应被替换的原产品区域，将产品素材图中的目标产品自然替换进对应位置，并保持产品外观、细节、结构、比例、颜色、材质和 Logo 一致性准确。',
+  '2. 移除参考图中的原产品、原品牌、原商标、原包装信息和原产品轮廓。',
+  '3. 按 Logo 位置示意图，将 Logo 原图融合到最终画面的指定区域。',
+  '4. 保持参考图中的场景、构图、光影、人物动作和整体商业视觉风格。',
+  '5. 当前任务只使用当前这一张替换参考图，不得混入其它参考图的构图、产品、人物或场景。',
+].join('\n');
+
+const buildProductReplaceConstraintBlock = (hasLogoInputs: boolean) => [
+  '1. 产品素材图是产品外观的最高优先级依据，不得重新设计、改色、改材质、改版型、改 Logo、改标签、改包装文字或改产品图案。',
+  '2. 不得把参考图中原产品的品牌、结构、包装、标签、文字或图案套到目标产品上。',
+  '3. 产品必须真实融入画面，透视、遮挡、接触阴影、材质反光、边缘融合和景深关系要自然，不能像简单贴图。',
+  hasLogoInputs ? '4. Logo 必须植入最终图。若参考图中已有非产品旧 Logo、角标、水印或品牌标识，应先移除，再按 Logo 位置示意图放置上传 Logo。' : '',
+  hasLogoInputs ? '5. Logo 位置示意图只作为位置参考，不得作为背景、风格图、水印图或最终画面内容。' : '',
+  `${hasLogoInputs ? '6' : '4'}. 若产品准确性与参考图效果冲突，优先保证产品素材准确，其次保证画面自然融合。`,
+].filter(Boolean).join('\n');
+
+const buildProductReplacePrompt = ({
+  productUrls,
+  referenceUrl,
+  userPrompt,
+  referenceStrength,
+  textPolicy,
+  aspectRatio,
+  batchIndex,
+  batchCount,
+  logoPromptBlock,
+  isCombination,
+}: {
+  productUrls: string[];
+  referenceUrl: string;
+  userPrompt: string;
+  referenceStrength: string;
+  textPolicy: string;
+  aspectRatio: AspectRatio;
+  batchIndex: number;
+  batchCount: number;
+  logoPromptBlock?: string;
+  isCombination: boolean;
+}) => [
+  '【角色】\n你是电商视觉产品替换执行模型。目标是基于当前这一张替换参考图，生成一张完成产品替换、Logo 植入和画面融合的商业效果图。',
+  buildProductReplaceInputRoleBlock({
+    productUrls,
+    referenceUrl,
+    isCombination,
+    logoRoleBlock: logoPromptBlock,
+  }),
+  '【任务】\n' + buildProductReplaceTaskBlock(),
+  '【替换逻辑】\n' + (isCombination
+    ? '将当前参考图中的原产品组合整体替换为上传的产品组合。保持各产品真实比例、独立外观和相对关系，并与参考图中的产品位置一一对应。不得遗漏任意上传产品。'
+    : '将当前参考图中的原产品替换为产品素材图中的同一单品。若产品素材有多张，只用于补充同一产品的角度和细节，不拆分为多个结果。'),
+  '【参考强度】\n' + buildProductReplaceStrengthConstraint(referenceStrength),
+  '【文案处理】\n' + buildProductReplaceTextPolicyBlock(textPolicy),
+  '【约束】\n' + buildProductReplaceConstraintBlock(Boolean(logoPromptBlock)),
+  userPrompt ? `【用户补充要求】\n${userPrompt}` : '',
+  `【输出要求】\n生成第 ${batchIndex}/${batchCount} 张，画面比例为 ${aspectRatio}。\n输出干净完整的商业效果图。画面自然、清晰、材质统一，避免噪点、伪影、畸变、破碎纹理、过度锐化和不自然贴图感。`,
+].filter(Boolean).join('\n\n');
 
 const buildSingleProductReplacePrompt = ({
   productUrls,
   referenceUrl,
   userPrompt,
   referenceStrength,
+  textPolicy,
   aspectRatio,
   batchIndex,
   batchCount,
@@ -1171,33 +1274,30 @@ const buildSingleProductReplacePrompt = ({
   referenceUrl: string;
   userPrompt: string;
   referenceStrength: string;
+  textPolicy: string;
   aspectRatio: AspectRatio;
   batchIndex: number;
   batchCount: number;
   logoPromptBlock?: string;
-}) => [
-  `【任务类型】：万物替换 / 产品替换 / 单品替换`,
-  buildProductReplaceInputRoleBlock({
-    productUrls,
-    referenceUrl,
-    isCombination: false,
-    hasLogoInputs: Boolean(logoPromptBlock),
-  }),
-  `【待替换产品图】：${productUrls.join('、')}`,
-  `【替换参考图】：${referenceUrl}`,
-  logoPromptBlock || '',
-  buildProductReplaceBaseConstraints(referenceStrength),
-  '【单品要求】：上传的待替换产品图视为同一个产品的多角度、细节或包装补充；不要把多张产品图拆成多张结果，只需把当前参考图中的产品替换为这一单品。',
-  '【任务边界】：当前任务只参考本条替换参考图，不得把其它参考图的构图、产品或场景混入本次输出。',
-  userPrompt ? `【用户补充要求】：${userPrompt}` : '',
-  `【输出要求】：生成第 ${batchIndex}/${batchCount} 张，画面比例适配 ${aspectRatio}。`,
-].filter(Boolean).join('\n\n');
+}) => buildProductReplacePrompt({
+  productUrls,
+  referenceUrl,
+  userPrompt,
+  referenceStrength,
+  textPolicy,
+  aspectRatio,
+  batchIndex,
+  batchCount,
+  logoPromptBlock,
+  isCombination: false,
+});
 
 const buildCombinationProductReplacePrompt = ({
   productUrls,
   referenceUrl,
   userPrompt,
   referenceStrength,
+  textPolicy,
   aspectRatio,
   batchIndex,
   batchCount,
@@ -1207,27 +1307,23 @@ const buildCombinationProductReplacePrompt = ({
   referenceUrl: string;
   userPrompt: string;
   referenceStrength: string;
+  textPolicy: string;
   aspectRatio: AspectRatio;
   batchIndex: number;
   batchCount: number;
   logoPromptBlock?: string;
-}) => [
-  `【任务类型】：万物替换 / 产品替换 / 组合替换`,
-  buildProductReplaceInputRoleBlock({
-    productUrls,
-    referenceUrl,
-    isCombination: true,
-    hasLogoInputs: Boolean(logoPromptBlock),
-  }),
-  `【待组合替换产品图】：${productUrls.join('、')}`,
-  `【替换参考图】：${referenceUrl}`,
-  logoPromptBlock || '',
-  buildProductReplaceBaseConstraints(referenceStrength),
-  '【组合要求】：上传的待替换产品图视为同一组商品，必须整体对应替换进当前参考图里的产品组合位置，保持各产品真实比例和身份，不要互相融合成新产品。',
-  '【任务边界】：当前任务只参考本条替换参考图，不得把其它参考图的构图、产品或场景混入本次输出。',
-  userPrompt ? `【用户补充要求】：${userPrompt}` : '',
-  `【输出要求】：生成第 ${batchIndex}/${batchCount} 张，画面比例适配 ${aspectRatio}。`,
-].filter(Boolean).join('\n\n');
+}) => buildProductReplacePrompt({
+  productUrls,
+  referenceUrl,
+  userPrompt,
+  referenceStrength,
+  textPolicy,
+  aspectRatio,
+  batchIndex,
+  batchCount,
+  logoPromptBlock,
+  isCombination: true,
+});
 
 const resolveProductReplaceReferenceAspectRatio = async (
   reference: ShellMaterialInput,
@@ -1328,6 +1424,7 @@ const runProductReplaceWorkflow = async (
 
   const replacementLogic = normalizeReplacementLogic(input.params.replacementLogic);
   const referenceStrength = normalizeProductReplaceStrength(input.params.firstImageColorMode);
+  const textPolicy = normalizeProductReplaceTextPolicy(input.params.textPolicy);
   const isCombination = replacementLogic === 'combination_replace';
   const total = referenceUrls.length;
   let batchIndex = 0;
@@ -1350,6 +1447,7 @@ const runProductReplaceWorkflow = async (
           referenceUrl,
           userPrompt: input.prompt.trim(),
           referenceStrength,
+          textPolicy,
           aspectRatio,
           batchIndex: currentBatchIndex,
           batchCount: total,
@@ -1370,6 +1468,8 @@ const runProductReplaceWorkflow = async (
             subFeature: input.subFeature || 'product_replace',
             replacementLogic,
             firstImageColorMode: referenceStrength,
+            textPolicy,
+            skipPromptCleanupSuffix: true,
             batchIndex: currentBatchIndex,
             batchCount: total,
             referenceIndex: referenceIndex + 1,
@@ -1397,6 +1497,7 @@ const runProductReplaceWorkflow = async (
           referenceUrl,
           userPrompt: input.prompt.trim(),
           referenceStrength,
+          textPolicy,
           aspectRatio,
           batchIndex: currentBatchIndex,
           batchCount: total,
@@ -1417,6 +1518,8 @@ const runProductReplaceWorkflow = async (
             subFeature: input.subFeature || 'product_replace',
             replacementLogic,
             firstImageColorMode: referenceStrength,
+            textPolicy,
+            skipPromptCleanupSuffix: true,
             batchIndex: currentBatchIndex,
             batchCount: total,
             productCount: productUrls.length,

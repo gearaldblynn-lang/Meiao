@@ -13,6 +13,7 @@ const configSidebarSource = readFileSync(new URL('./ConfigSidebar.tsx', import.m
 const skuSidebarSource = readFileSync(new URL('./SkuSidebar.tsx', import.meta.url), 'utf8');
 const shellWorkflowSource = readFileSync(new URL('../../adapters/shellWorkflow.ts', import.meta.url), 'utf8');
 const shellOneClickMaterialsSource = readFileSync(new URL('../../adapters/shellOneClickMaterials.mjs', import.meta.url), 'utf8');
+const projectCardSource = readFileSync(new URL('../../shell/components/ProjectCard.tsx', import.meta.url), 'utf8');
 const typesSource = readFileSync(new URL('../../types.ts', import.meta.url), 'utf8');
 const referencePresetUtilsSource = readFileSync(new URL('./referencePresetUtils.mjs', import.meta.url), 'utf8');
 const referencePresetManagerSource = readFileSync(new URL('./ReferencePresetManager.tsx', import.meta.url), 'utf8');
@@ -339,23 +340,28 @@ test('first image continuation variants use the generated result as primary base
   assert.match(shellWorkflowSource, /hasProductReferences: \(input\.materials\.product \|\| \[\]\)\.length > 0/);
 });
 
-test('one click result edit uses generated image as baseline, product assets for consistency, and optional supplement images by semantic need', () => {
+test('one click result edit uses only product assets and the generated baseline with a minimal role prompt', () => {
+  const editPromptBlock = promptUtilsSource.match(/export const buildOneClickResultEditPrompt = \(\{[\s\S]*?\n\};/)?.[0] || '';
+
   assert.match(promptUtilsSource, /export const buildOneClickResultEditPrompt =/);
-  assert.match(promptUtilsSource, /【修改基准图】/);
-  assert.match(promptUtilsSource, /【原素材商品图】/);
-  assert.match(promptUtilsSource, /【补充参考图】/);
-  assert.match(promptUtilsSource, /【任务需求】/);
-  assert.match(promptUtilsSource, /【约束规范】/);
-  assert.match(promptUtilsSource, /产品一致性默认以原素材商品图为准/);
-  assert.match(promptUtilsSource, /若任务需求明确说明补充参考图是新的产品、包装、局部替换或新增元素参考/);
-  assert.match(promptUtilsSource, /生成新结果，保留原图/);
+  assert.match(promptUtilsSource, /productUrls\?: string\[\]/);
+  assert.match(editPromptBlock, /产品素材图：\$\{formatRoleUrls\(safeProductUrls, '已上传原素材图'\)\}（公网url）/);
+  assert.match(editPromptBlock, /需修改基准图：\$\{safePreviousResultUrl \|\| '需修改的生成图'\}（公网url）/);
+  assert.match(editPromptBlock, /任务：\$\{instruction \|\| '按用户输入要求修改当前生成图。'\}/);
+  assert.doesNotMatch(editPromptBlock, /【补充参考图】/);
+  assert.doesNotMatch(editPromptBlock, /【约束规范】/);
+  assert.doesNotMatch(editPromptBlock, /产品一致性默认以原素材商品图为准/);
+  assert.doesNotMatch(editPromptBlock, /若任务需求明确说明补充参考图是新的产品、包装、局部替换或新增元素参考/);
+  assert.doesNotMatch(editPromptBlock, /生成新结果，保留原图/);
   assert.match(promptUtilsSource, /if \(previousResultUrl && editInstruction\?\.trim\(\)\)/);
   assert.match(shellWorkflowSource, /buildShellImageInputUrls/);
   assert.match(shellOneClickMaterialsSource, /const hasEditInstruction = Boolean\(String\(taskMetadata\?\.editInstruction/);
   assert.match(shellWorkflowSource, /const productImageUrls = \(input\.materials\.product \|\| \[\]\)\.map/);
-  assert.match(shellWorkflowSource, /const supplementalImageUrls = \(input\.materials\.reference \|\| \[\]\)\.map/);
-  assert.match(shellOneClickMaterialsSource, /if \(sourceResultUrl && hasEditInstruction\) \{\s*return dedupeUrls\(\[\.\.\.productImageUrls, \.\.\.giftImageUrls, sourceResultUrl, \.\.\.logoImageUrls\]\)/);
+  assert.match(shellOneClickMaterialsSource, /if \(sourceResultUrl && hasEditInstruction\) \{\s*return dedupeUrls\(\[\.\.\.productImageUrls, \.\.\.giftImageUrls, sourceResultUrl\]\)/);
   assert.match(shellWorkflowSource, /editInstruction: typeof input\.taskMetadata\?\.editInstruction === 'string'/);
+  assert.match(shellWorkflowSource, /productUrls: \[\.\.\.productImageUrls, \.\.\.giftImageUrls\]/);
+  assert.doesNotMatch(projectCardSource, /补充参考图/);
+  assert.doesNotMatch(projectCardSource, /产品一致性默认以原素材商品图为准/);
 });
 
 test('first image divergence actions stay visible, avoid window.prompt, and require explicit confirmation', () => {

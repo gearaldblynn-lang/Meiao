@@ -477,7 +477,8 @@ export const processWithKieAi = async (
   });
   const safeImageUrls = await normalizeModelAssetUrls(imageUrls, '图像素材');
   const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode);
-  const promptWithCleanupSuffix = moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary'
+  const { skipPromptCleanupSuffix, ...safeTaskMetadata } = taskMetadata || {};
+  const promptWithCleanupSuffix = (moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary') && skipPromptCleanupSuffix !== true
     ? `${finalPrompt}\n\n${GPT_IMAGE_2_CLEANUP_SUFFIX}`
     : finalPrompt;
   const module = getActiveModuleContext() || 'unknown';
@@ -489,7 +490,7 @@ export const processWithKieAi = async (
     payload: {
       imageUrls: safeImageUrls,
       prompt: promptWithCleanupSuffix,
-      ...taskMetadata,
+      ...safeTaskMetadata,
       model: moduleConfig.model || 'gpt-image-2',
       aspectRatio: moduleConfig.aspectRatio === AspectRatio.AUTO ? 'auto' : moduleConfig.aspectRatio,
       resolutionMode: moduleConfig.resolutionMode,
