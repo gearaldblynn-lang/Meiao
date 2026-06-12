@@ -241,16 +241,22 @@ const loadImage = async (url, label = '图片') => {
   return decodeImageFromBlob(blob, label);
 };
 
+const loadImageFromBlob = async (blob, label = '图片') => {
+  if (!(blob instanceof Blob)) return null;
+  return decodeImageFromBlob(blob, label);
+};
+
 export const createEverythingReplaceLogoPlacementGuide = async ({
   referenceUrl,
   logoUrl,
+  logoBlob,
   placement,
   referenceWidth,
   referenceHeight,
   logoRatio,
 } = {}) => {
   void referenceUrl;
-  const logoImage = await loadImage(logoUrl, 'Logo图');
+  const logoImage = await loadImageFromBlob(logoBlob, 'Logo图') || await loadImage(logoUrl, 'Logo图');
   const sourceWidth = referenceWidth || 1000;
   const sourceHeight = referenceHeight || 1000;
   const maxEdge = 1600;
@@ -273,25 +279,10 @@ export const createEverythingReplaceLogoPlacementGuide = async ({
   canvas.height = canvasHeight;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Logo位置示意图生成失败');
-  ctx.fillStyle = '#24262d';
-  ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-  ctx.fillStyle = 'rgba(255,255,255,0.04)';
-  const gridSize = Math.max(24, Math.round(Math.min(canvasWidth, canvasHeight) * 0.08));
-  for (let x = 0; x < canvasWidth; x += gridSize) {
-    ctx.fillRect(x, 0, 1, canvasHeight);
-  }
-  for (let y = 0; y < canvasHeight; y += gridSize) {
-    ctx.fillRect(0, y, canvasWidth, 1);
-  }
+  ctx.clearRect(0, 0, canvasWidth, canvasHeight);
   ctx.save();
-  ctx.globalAlpha = 0.92;
+  ctx.globalAlpha = 1;
   ctx.drawImage(logoImage, rect.x, rect.y, rect.width, rect.height);
-  ctx.restore();
-  ctx.save();
-  ctx.strokeStyle = 'rgba(37, 99, 235, 0.95)';
-  ctx.lineWidth = Math.max(2, Math.round(Math.min(canvasWidth, canvasHeight) * 0.004));
-  ctx.setLineDash([ctx.lineWidth * 3, ctx.lineWidth * 2]);
-  ctx.strokeRect(rect.x, rect.y, rect.width, rect.height);
   ctx.restore();
 
   const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png', 0.95));

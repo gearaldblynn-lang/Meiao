@@ -25,6 +25,7 @@ import { resolveShellSkuCount } from './shellSkuCount';
 import { buildShellImageInputUrls } from './shellOneClickMaterials.mjs';
 import { getExactAspectRatioFromDimensions, resolveNearestSupportedAspectRatio } from '../utils/aspectRatioUtils';
 import { getSupportedAspectRatiosForModel } from '../utils/modelAspectRatio';
+import { loadShellDraftAsset } from '../utils/shellDraftAssetStore';
 import {
   createDefaultLogoPlacement,
   createEverythingReplaceLogoPlacementGuide,
@@ -1269,6 +1270,9 @@ const buildEverythingReplaceLogoInputs = async ({
   const logoRatio = logoMaterial.originalWidth && logoMaterial.originalHeight
     ? logoMaterial.originalWidth / Math.max(1, logoMaterial.originalHeight)
     : 2;
+  const localLogoRecord = logoMaterial.localAssetId
+    ? await loadShellDraftAsset(logoMaterial.localAssetId).catch(() => null)
+    : null;
   const placement = logoMaterial.logoPlacement || createDefaultLogoPlacement({
     width: referenceMaterial.originalWidth || 1000,
     height: referenceMaterial.originalHeight || 1000,
@@ -1277,6 +1281,7 @@ const buildEverythingReplaceLogoInputs = async ({
   const guide = await createEverythingReplaceLogoPlacementGuide({
     referenceUrl,
     logoUrl,
+    logoBlob: localLogoRecord?.blob,
     placement,
     referenceWidth: referenceMaterial.originalWidth,
     referenceHeight: referenceMaterial.originalHeight,

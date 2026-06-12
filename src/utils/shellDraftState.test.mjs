@@ -68,6 +68,80 @@ test('hydrating shell draft treats the newest draft as authoritative over legacy
   assert.equal(hydrated.inputStateByScope['one_click:main_image'].params.targetWidth, '900');
 });
 
+test('normalizing shell draft preserves everything replace logo placement templates', () => {
+  const logoPlacement = {
+    version: 1,
+    baseRatio: '3:4',
+    logoRatio: 2.2,
+    templates: {
+      '3:4': { anchorX: 'right', anchorY: 'top', offsetX: 0.08, offsetY: 0.06, widthRatio: 0.18 },
+      '1:1': { anchorX: 'center', anchorY: 'bottom', offsetX: 0, offsetY: 0.08, widthRatio: 0.2 },
+    },
+  };
+
+  const draft = normalizeShellDraftState({
+    materials: {
+      logo: [{
+        id: 'logo-1',
+        type: 'logo',
+        url: 'https://example.com/logo.png',
+        remoteUrl: 'https://example.com/logo.png',
+        fileName: 'logo.png',
+        subFeature: 'product_replace',
+        originalWidth: 410,
+        originalHeight: 175,
+        logoPlacement,
+      }],
+    },
+  });
+
+  assert.deepEqual(draft.materials.logo[0].logoPlacement, logoPlacement);
+});
+
+test('hydrating shell draft keeps local logo placement when newer remote material lacks it', () => {
+  const logoPlacement = {
+    version: 1,
+    baseRatio: '1:1',
+    templates: {
+      '1:1': { anchorX: 'right', anchorY: 'top', offsetX: 0.07, offsetY: 0.05, widthRatio: 0.18 },
+    },
+  };
+  const localDraft = {
+    updatedAt: 100,
+    materials: {
+      logo: [{
+        id: 'logo-1',
+        type: 'logo',
+        url: 'https://example.com/logo-old.png',
+        remoteUrl: 'https://example.com/logo-old.png',
+        localAssetId: 'draft-logo-1',
+        fileName: 'logo.png',
+        subFeature: 'product_replace',
+        logoPlacement,
+      }],
+    },
+  };
+  const remoteDraft = {
+    updatedAt: 200,
+    materials: {
+      logo: [{
+        id: 'logo-1',
+        type: 'logo',
+        url: 'https://example.com/logo-new.png',
+        remoteUrl: 'https://example.com/logo-new.png',
+        localAssetId: 'draft-logo-1',
+        fileName: 'logo.png',
+        subFeature: 'product_replace',
+      }],
+    },
+  };
+
+  const hydrated = resolveHydratedShellDraftState({ localDraft, remoteDraft });
+
+  assert.deepEqual(hydrated.materials.logo[0].logoPlacement, logoPlacement);
+  assert.equal(hydrated.materials.logo[0].remoteUrl, 'https://example.com/logo-new.png');
+});
+
 test('hydrating shell draft does not let a newer empty draft wipe local input', () => {
   const hydrated = resolveHydratedShellDraftState({
     localDraft: {
@@ -131,4 +205,39 @@ test('shell draft state keeps deleted job tombstones bounded and deduped', () =>
   assert.deepEqual(normalized.deletedJobIds, ['job-a', 'job-b']);
   assert.deepEqual(normalized.deletedProjectIds, ['project-a', 'project-b']);
   assert.deepEqual(normalized.deletedResultIds, ['result-a', 'result-b']);
+});
+
+test('remote shell draft normalization drops local-only material cache entries', () => {
+  const normalized = normalizeShellDraftState({
+    inputStateByScope: {
+      'one_click:main_image': {
+        promptText: '保留文字草稿',
+        params: { mode: '主图' },
+      },
+    },
+    materials: {
+      product: [
+        {
+          id: 'local-only',
+          type: 'product',
+          url: '',
+          localAssetId: 'draft-local-only',
+          fileName: 'local-only.png',
+        },
+        {
+          id: 'remote-ready',
+          type: 'product',
+          url: 'https://example.com/remote.png',
+          remoteUrl: 'https://example.com/remote.png',
+          localAssetId: 'draft-remote-ready',
+          fileName: 'remote.png',
+        },
+      ],
+    },
+  }, { requirePersistableMaterialUrl: true });
+
+  assert.equal(normalized.inputStateByScope['one_click:main_image'].promptText, '保留文字草稿');
+  assert.equal(normalized.materials.product.length, 1);
+  assert.equal(normalized.materials.product[0].id, 'remote-ready');
+  assert.equal(normalized.materials.product[0].remoteUrl, 'https://example.com/remote.png');
 });
