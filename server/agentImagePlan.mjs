@@ -45,7 +45,14 @@ const getParsedReferenceUrls = (parsed = {}, normalizedRefs = []) => {
 
 export const hasAgentImageReferenceIntent = (...values) => {
   const text = values.map((value) => String(value || '')).join('\n');
-  return /图\s*[1-9]\d*|原图|参考图|输入图|基于图|基于原图|修改|改成|替换|去掉|清除|擦除|保持|不变|局部|编辑|精修|优化背景|背景优化|换字|改字|(?:文案|文字).{0,20}(?:改|换|替换|修改)|(?:改|换|替换|修改).{0,20}(?:文案|文字)/.test(text);
+  const compactText = text.replace(/\s+/g, '');
+  if (/图\s*[1-9]\d*|原图|参考图|输入图|基于图|基于原图|这张图|这张图片|当前图|当前图片|上一张|上一版|最近一张|刚才那张|刚才那版|上次生成|生成图|结果图/.test(text)) {
+    return true;
+  }
+  if (/局部(?:修改|编辑|重绘|替换)|(?:修改|编辑|替换|去掉|清除|擦除|精修|优化|换字|改字|改文案).{0,12}(?:图片|照片|图像|画面|海报|主图|商品图)|(?:图片|照片|图像|画面|海报|主图|商品图).{0,12}(?:修改|编辑|替换|去掉|清除|擦除|精修|优化|换字|改字|改文案)/.test(text)) {
+    return true;
+  }
+  return /换背景|改背景|去背景|抠图|消除笔|局部重绘|局部修复/.test(compactText);
 };
 
 export const isAgentImageEditTaskType = (value) => /edit|image[-_ ]?to[-_ ]?image|imageediting|retouch|resize|modify|variation|局部|修改|编辑|精修/.test(String(value || '').toLowerCase());

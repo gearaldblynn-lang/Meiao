@@ -20,6 +20,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-12 - Agent prompt-only design briefs must not be forced into image-edit mode
+
+- Symptom: 云上智能体“对话改图”里，用户发送纯文字首图设计 brief，没有上传图片，系统返回“改图任务没有可用输入图”，两次记录为 `missing_image_input`。
+- Environment: Tencent Cloud production agent_center / local development.
+- Root cause: 智能体生图输入判断把“改善浑浊”“保持原包装”“不改包装文字和 logo”这类普通电商设计约束识别成强改图意图，导致 prompt-only 新图需求被要求必须有输入图。
+- Fix: 收窄 `hasAgentImageReferenceIntent`，只有明确图片引用、历史图指代、局部编辑或图片/画面附近的编辑动作才强制要求输入图；普通 brief 中的“保持/不改/改善”不再触发 `missing_image_input`。
+- Regression check: `node --test server/agentImagePlan.test.mjs server/agent-image-retrieval.test.mjs server/agentConversationReliability.test.mjs server/agentCenterSource.test.mjs`.
+- Files/tests: `server/agentImagePlan.mjs`, `server/agentImagePlan.test.mjs`, `server/agentCenterSource.test.mjs`.
+- Avoid next time: 生图模式必须区分“文字 brief 里的设计约束”和“基于已有图修改”。看板再次出现 `missing_image_input` 时，先查用户消息是否真的有附件/历史图指代，而不是只看“改、保持、不变”等单字触发词。
+
 ## 2026-06-08 - First-image planning failures must be preserved in both submit and sync paths
 
 - Symptom: “天琪”账号首图策划失败复现；云上 state 显示部分项目 `taskCount=5`，但 `plans.length` 只有 2、3 或 4，用户仍看不到所有参考图的策划失败状态。

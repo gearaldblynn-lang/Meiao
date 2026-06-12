@@ -118,3 +118,19 @@ test('agent image plans require input for image edit and reference instructions'
     currentMessage: '',
   }), false);
 });
+
+test('agent image plans treat prompt-only ecommerce design briefs as new image requests', () => {
+  const cloudBrief = [
+    '| 字段 | 内容 |',
+    '|---|---|',
+    '| 图位 | 首图 A |',
+    '| 主利益点 | 改善浑浊，先给用户一个“水能变清”的下单理由 |',
+    '| 产品展示方式 | 产品瓶和盒保持原包装，略带投影，占画面 35%-40%，不改包装文字和 logo |',
+    '| 画面比例 | 1:1 |',
+  ].join('\n');
+
+  assert.equal(shouldRequireAgentImageInput({
+    parsed: { taskType: 'new_image', prompt: cloudBrief },
+    currentMessage: cloudBrief,
+  }), false);
+});
