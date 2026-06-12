@@ -207,7 +207,8 @@ test('app workspace lazy loads major modules to avoid one giant startup bundle',
   assert.match(app, /lazy\(\(\) => import\('\.\/shell\/modules\/Video\/VideoModule'\)\)/);
   assert.match(app, /import\('\.\/adapters\/shellWorkflow'\)/);
   assert.match(app, /const loadShellWorkflowModule = async \(\) =>/);
-  assert.match(app, /isDynamicImportFetchError\(error\)/);
+  assert.match(app, /bailIfFrontendResourceError\(error\)/);
+  assert.match(app, /isFrontendResourceError/);
   assert.match(app, /window\.location\.reload\(\)/);
   assert.match(app, /return new Promise<never>\(\(\) => undefined\);/);
   assert.doesNotMatch(app, /from '\.\/adapters\/shellWorkflow'/);
