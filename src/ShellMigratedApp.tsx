@@ -545,7 +545,12 @@ const shouldPersistSyncedProjectFromJobs = (
   const projectId = String(project?.id || '').trim();
   if (!projectId) return false;
   const persistedProject = findPersistedShellProject(state, projectId) as Project | undefined;
-  if (!persistedProject) return false;
+  if (!persistedProject) {
+    return project.sourceType === 'job'
+      && project.status === 'error'
+      && Boolean(String(project.backendJobId || '').trim())
+      && getProjectErrorResultCount(project) > 0;
+  }
   if (hasPlanningSnapshotChanged(project, persistedProject)) return true;
   if (project.status === 'generating') {
     const persistedActiveIdentities = getProjectActiveResultIdentities(persistedProject);
@@ -4242,6 +4247,12 @@ const AppContent: React.FC<{
               params: generationParams,
               materials: generationMaterials,
               signal: controller.signal,
+              taskMetadata: {
+                shellProjectId: projectId,
+                shellProjectName: projectName,
+                batchCount,
+                subFeature: targetSubFeature,
+              },
               onJobCreated,
               publicBaseUrl,
             }, onSpecialItemCompleted)

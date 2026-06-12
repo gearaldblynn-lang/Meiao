@@ -2322,7 +2322,9 @@ test('shell data adapter removes completed media generated from failed one-click
   assert.equal(project?.status, 'error');
   assert.equal(project?.completedCount, 0);
   assert.equal(project?.taskCount, 1);
-  assert.equal(project?.plans, undefined);
+  assert.equal(project?.plans?.length, 1);
+  assert.equal(project?.plans?.[0]?.planningFailed, true);
+  assert.equal(project?.plans?.[0]?.selected, false);
   assert.equal(project?.results.length, 1);
   assert.equal(project?.results[0]?.status, 'error');
   assert.equal(project?.results.some((result) => result.imageUrl), false);
@@ -2842,6 +2844,44 @@ test('shell data adapter keeps active non-video project cards after refresh whil
   assert.equal(task.projectId, 'main-image-active');
   assert.equal(task.type, 'image');
   assert.equal(task.status, 'pending');
+});
+
+test('shell data adapter keeps active buyer show project cards before provider task id is visible', () => {
+  const snapshot = buildShellDataSnapshot({}, [
+    {
+      id: 'buyer-show-job-active',
+      module: 'buyer_show',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: '',
+      payload: {
+        prompt: '买家秀生成脚本',
+        subFeature: 'image',
+        shellProjectId: 'buyer-show-active-project',
+        shellProjectName: '买家秀即时任务',
+        batchCount: 4,
+        aspectRatio: '3:4',
+      },
+      createdAt: Date.now(),
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'buyer-show-active-project');
+  assert.ok(project);
+  assert.equal(project.status, 'generating');
+  assert.equal(project.name, '买家秀即时任务');
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].mediaType, 'image');
+  assert.equal(project.results[0].status, 'generating');
+  assert.equal(project.results[0].taskId, undefined);
+  assert.equal(project.results[0].backendJobId, 'buyer-show-job-active');
+  assert.equal(project.taskCount, 4);
+  const task = snapshot.tasks.find((item) => item.id === 'buyer-show-job-active');
+  assert.ok(task);
+  assert.equal(task.projectId, 'buyer-show-active-project');
+  assert.equal(task.type, 'image');
+  assert.equal(task.status, 'generating');
 });
 
 test('shell data adapter merges completed backend video results into the original project card', () => {
@@ -3493,6 +3533,159 @@ test('shell data adapter reconstructs a tracked failed one-click planning projec
   assert.equal(project.results[0].status, 'error');
   assert.equal(project.results[0].taskId, 'kie-failed-planning-provider');
   assert.match(project.results[0].error, /上游返回失败/);
+});
+
+test('shell data adapter keeps untracked failed planning jobs visible as error projects', () => {
+  const snapshot = buildShellDataSnapshot({}, [{
+    id: 'untracked-planning-failed-job',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'failed',
+    providerTaskId: '',
+    errorCode: 'provider_bad_request',
+    errorMessage: 'Unauthorized - Authentication failed. Please check that your Authorization and Content-Type headers are correctly set.',
+    payload: {},
+    result: {},
+    createdAt: 3000,
+    updatedAt: 4000,
+    finishedAt: 4000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'job-untracked-planning-failed-job');
+  assert.ok(project);
+  assert.equal(project.status, 'error');
+  assert.equal(project.sourceType, 'job');
+  assert.equal(project.backendJobId, 'untracked-planning-failed-job');
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].status, 'error');
+  assert.equal(project.results[0].backendJobId, 'untracked-planning-failed-job');
+  assert.match(project.results[0].error, /Authentication failed/);
+});
+
+test('shell data adapter treats successful provider auth text as a visible error project', () => {
+  const snapshot = buildShellDataSnapshot({}, [{
+    id: 'auth-text-succeeded-job',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: '',
+    errorCode: null,
+    errorMessage: null,
+    payload: {},
+    result: {
+      content: 'Unauthorized - Authentication failed. Please check that your Authorization and Content-Type headers are correctly set.',
+      modelUsed: 'gemini-3-5-flash',
+      providerTaskId: '',
+    },
+    createdAt: 3000,
+    updatedAt: 4000,
+    finishedAt: 4000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'job-auth-text-succeeded-job');
+  assert.ok(project);
+  assert.equal(project.status, 'error');
+  assert.equal(project.backendJobId, 'auth-text-succeeded-job');
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].status, 'error');
+  assert.match(project.results[0].error, /Authentication failed/);
+});
+
+test('shell data adapter keeps persisted auth-text pollution visible as failed planning card before first refresh paint', () => {
+  const authText = 'Unauthorized - Authentication failed. Please check that your Authorization and Content-Type headers are correctly set.';
+  const dirtyProject = {
+    id: 'persisted-auth-dirty-project',
+    name: '6月10日项目2',
+    module: 'one_click',
+    status: 'error',
+    taskCount: 1,
+    completedCount: 0,
+    subFeature: 'first_image',
+    plans: [{
+      id: 'auth-dirty-plan',
+      title: '首图参考 1',
+      selected: true,
+      schemeContent: authText,
+    }],
+    results: [{
+      id: 'auth-dirty-result',
+      planId: 'auth-dirty-plan',
+      status: 'error',
+      imageUrl: '',
+      prompt: authText,
+      error: authText,
+      module: 'one_click',
+      subFeature: 'first_image',
+    }],
+  };
+
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [dirtyProject],
+    oneClickMemory: {
+      firstImage: { projects: [dirtyProject] },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === dirtyProject.id);
+  assert.ok(project);
+  assert.equal(project.status, 'error');
+  assert.equal(project.plans.length, 1);
+  assert.equal(project.plans[0].planningFailed, true);
+  assert.equal(project.plans[0].selected, false);
+  assert.match(project.plans[0].error, /Authentication failed/);
+  assert.equal(project.results.length, 0);
+});
+
+test('shell data adapter keeps historical no-identity one-click failures visible instead of hiding dirty cards', () => {
+  const failureText = '网络连接失败，请检查网络后重试';
+  const dirtyProject = {
+    id: 'persisted-network-dirty-project',
+    name: '历史失败项目',
+    module: 'one_click',
+    status: 'error',
+    taskCount: 1,
+    completedCount: 0,
+    subFeature: 'first_image',
+    plans: [{
+      id: 'network-dirty-plan',
+      title: '首图参考 1',
+      selected: true,
+      schemeContent: failureText,
+    }],
+    results: [{
+      id: 'network-dirty-result',
+      planId: 'network-dirty-plan',
+      status: 'error',
+      imageUrl: '',
+      prompt: failureText,
+      error: failureText,
+      module: 'one_click',
+      subFeature: 'first_image',
+    }],
+  };
+
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [dirtyProject],
+    oneClickMemory: {
+      firstImage: { projects: [dirtyProject] },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === dirtyProject.id);
+  assert.ok(project);
+  assert.equal(project.status, 'error');
+  assert.equal(project.plans.length, 1);
+  assert.equal(project.plans[0].planningFailed, true);
+  assert.equal(project.plans[0].selected, false);
+  assert.equal(project.results.length, 0);
 });
 
 test('shell data adapter promotes matched failed one-click planning jobs over pending planning state', () => {
