@@ -1253,6 +1253,8 @@ const mapJobs = (
   const persistedJobKeys = collectPersistedProjectJobKeys(persistedProjects);
   const groupedEverythingReplaceJobIds = new Set<string>();
   const everythingReplaceGroups = new Map<string, InternalJob[]>();
+  const groupedOneClickPlanningJobIds = new Set<string>();
+  const oneClickPlanningGroups = new Map<string, InternalJob[]>();
 
   jobs.forEach((job) => {
     const jobId = String(job?.id || '').trim();
@@ -1264,6 +1266,23 @@ const mapJobs = (
     const bucket = everythingReplaceGroups.get(payloadProjectId) || [];
     bucket.push(job);
     everythingReplaceGroups.set(payloadProjectId, bucket);
+  });
+
+  jobs.forEach((job) => {
+    const jobId = String(job?.id || '').trim();
+    if (!jobId || hiddenJobIds.has(jobId)) return;
+    const module = toModule(job.module);
+    if (module !== MODULE_VALUES.ONE_CLICK) return;
+    if (String(job.taskType || '') !== 'kie_chat') return;
+    if (taskStatusToProject(job.status) !== 'completed') return;
+    if (getResultUrls(job).length > 0) return;
+    const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
+    if (!payloadProjectId) return;
+    const isTrackedPlanningJob = String((job.payload as any)?.shellPlanningPurpose || '').trim() === 'one_click_planning';
+    if (!isTrackedPlanningJob) return;
+    const bucket = oneClickPlanningGroups.get(payloadProjectId) || [];
+    bucket.push(job);
+    oneClickPlanningGroups.set(payloadProjectId, bucket);
   });
 
   everythingReplaceGroups.forEach((groupJobs, shellProjectId) => {
@@ -1346,9 +1365,111 @@ const mapJobs = (
       });
   });
 
+  oneClickPlanningGroups.forEach((groupJobs, shellProjectId) => {
+    if (groupJobs.length <= 1) return;
+    const sortedJobs = [...groupJobs].sort((a, b) => {
+      const aReferenceIndex = getPlanningReferenceIndex(a);
+      const bReferenceIndex = getPlanningReferenceIndex(b);
+      if (aReferenceIndex > 0 && bReferenceIndex > 0 && aReferenceIndex !== bReferenceIndex) {
+        return aReferenceIndex - bReferenceIndex;
+      }
+      return Number(a.createdAt || 0) - Number(b.createdAt || 0);
+    });
+    const parsedEntries = sortedJobs
+      .map((job) => {
+        const planningText = String((job.result as any)?.content || (job.result as any)?.text || '').trim();
+        const plans = attachReferenceUrlToPlans(
+          backfillDetailPageSetReplicationPlans(parseOneClickPlanningText(planningText, job.id), job.id, job.payload),
+          getPlanningReferenceUrls(job.payload),
+        );
+        return { job, plans };
+      })
+      .filter((entry) => (entry.plans || []).length > 0);
+    if (parsedEntries.length <= 1) return;
+
+    const matchedProject = parsedEntries
+      .map((entry) => findPersistedPlanningProjectForJob(entry.job, persistedProjects))
+      .find(Boolean);
+    const cleanProject = matchedProject
+      ? parsedEntries.reduce(
+        (project, entry) => removePlanningJobPendingPlaceholders(project, entry.job),
+        matchedProject,
+      )
+      : undefined;
+    const hasExistingConcreteResults = Boolean(cleanProject && (
+      (cleanProject.results || []).some((result) => (
+        hasCompletedMediaResult(result)
+        || (result.status === 'generating' && resultHasProviderTaskIdentity(result))
+        || (result.status === 'error' && !isStalePlanningFailureResult(result))
+      ))
+      || Number(cleanProject.completedCount || 0) > 0
+    ));
+    if (hasExistingConcreteResults) return;
+
+    parsedEntries.forEach((entry) => groupedOneClickPlanningJobIds.add(String(entry.job.id || '').trim()));
+    const parsedPlans = parsedEntries.flatMap((entry) => entry.plans || []);
+    const planningOrderById = new Map<string, number>();
+    const planningOrderByReferenceUrl = new Map<string, number>();
+    parsedPlans.forEach((plan, index) => {
+      const id = String(plan?.id || '').trim();
+      const referenceUrl = String(plan?.sourceReferenceUrl || '').trim();
+      if (id) planningOrderById.set(id, index);
+      if (referenceUrl) planningOrderByReferenceUrl.set(referenceUrl, index);
+    });
+    const getPlanningPlanOrder = (plan: NonNullable<ShellProjectData['plans']>[number]) => {
+      const id = String(plan?.id || '').trim();
+      const referenceUrl = String(plan?.sourceReferenceUrl || '').trim();
+      if (id && planningOrderById.has(id)) return planningOrderById.get(id) ?? Number.MAX_SAFE_INTEGER;
+      if (referenceUrl && planningOrderByReferenceUrl.has(referenceUrl)) {
+        return planningOrderByReferenceUrl.get(referenceUrl) ?? Number.MAX_SAFE_INTEGER;
+      }
+      const titleIndex = Number.parseInt(String(plan?.title || '').match(/(?:首图裂变|参考图?)(\d+)/)?.[1] || '', 10);
+      return Number.isFinite(titleIndex) && titleIndex > 0 ? titleIndex - 1 : Number.MAX_SAFE_INTEGER;
+    };
+    const plans = (mergeProjectPlansById(cleanProject?.plans, parsedPlans) || [])
+      .sort((a, b) => getPlanningPlanOrder(a) - getPlanningPlanOrder(b));
+    const firstJob = sortedJobs[0];
+    const lastJob = sortedJobs.at(-1);
+    const latestParsedJob = parsedEntries.at(-1)?.job || lastJob || firstJob;
+    const firstParsedPlan = plans[0];
+    const inferredSubFeature = cleanProject?.subFeature
+      || getStructuredOneClickJobSubFeature(firstJob?.payload)
+      || normalizeJobSubFeature(MODULE_VALUES.ONE_CLICK, firstJob?.taskType, firstJob?.payload || {});
+    const maxReferenceIndex = Math.max(...sortedJobs.map(getPlanningReferenceIndex), 0);
+    const providerTaskIds = parsedEntries
+      .map((entry) => getPlanningProviderTaskId(entry.job))
+      .filter(Boolean);
+    projects.push({
+      ...(cleanProject || {}),
+      id: cleanProject?.id || shellProjectId,
+      name: cleanProject?.name
+        || String((firstJob?.payload as any)?.shellProjectName || '').trim()
+        || firstParsedPlan?.title
+        || '一键主详策划',
+      module: MODULE_VALUES.ONE_CLICK,
+      status: 'planning',
+      createdAt: cleanProject?.createdAt || toDateLabel(firstJob?.createdAt),
+      results: [],
+      taskCount: Math.max(Number(cleanProject?.taskCount || 0) || 0, plans.length, maxReferenceIndex, 1),
+      completedCount: 0,
+      subFeature: inferredSubFeature,
+      sourceType: cleanProject?.sourceType || (matchedProject ? 'persisted' : 'job'),
+      backendJobId: String(latestParsedJob?.id || '').trim() || cleanProject?.backendJobId,
+      creditsConsumed: normalizeCreditsConsumed(
+        parsedEntries.reduce((sum, entry) => sum + (Number((entry.job.result as any)?.creditsConsumed) || 0), 0),
+      ) || cleanProject?.creditsConsumed,
+      planningTaskId: latestIdentityTextList(cleanProject?.planningTaskId, ...providerTaskIds),
+      plans,
+      selectedPlanId: plans.some((plan) => String(plan.id || '') === String(cleanProject?.selectedPlanId || ''))
+        ? cleanProject?.selectedPlanId
+        : plans.find((plan) => plan.selected)?.id || firstParsedPlan?.id,
+    });
+  });
+
   jobs.forEach((job) => {
     if (hiddenJobIds.has(String(job.id || '').trim())) return;
     if (groupedEverythingReplaceJobIds.has(String(job.id || '').trim())) return;
+    if (groupedOneClickPlanningJobIds.has(String(job.id || '').trim())) return;
     const module = toModule(job.module);
     const providerErrorText = getProviderErrorText(job);
     const projectStatus = taskStatusToProject(job.status) === 'completed' && providerErrorText
@@ -2526,6 +2647,29 @@ const mergeProjectPlansById = (
   return plans.length > 0 ? plans : undefined;
 };
 
+const orderProjectPlansByTemplate = (
+  plans: ShellProjectData['plans'],
+  templatePlans: ShellProjectData['plans'],
+) => {
+  if (!plans || !templatePlans || templatePlans.length <= 1) return plans;
+  const orderById = new Map<string, number>();
+  const orderByReferenceUrl = new Map<string, number>();
+  templatePlans.forEach((plan, index) => {
+    const id = String(plan?.id || '').trim();
+    const referenceUrl = String(plan?.sourceReferenceUrl || '').trim();
+    if (id) orderById.set(id, index);
+    if (referenceUrl) orderByReferenceUrl.set(referenceUrl, index);
+  });
+  const getOrder = (plan: NonNullable<ShellProjectData['plans']>[number], fallback: number) => {
+    const id = String(plan?.id || '').trim();
+    const referenceUrl = String(plan?.sourceReferenceUrl || '').trim();
+    if (id && orderById.has(id)) return orderById.get(id) ?? fallback;
+    if (referenceUrl && orderByReferenceUrl.has(referenceUrl)) return orderByReferenceUrl.get(referenceUrl) ?? fallback;
+    return fallback;
+  };
+  return [...plans].sort((a, b) => getOrder(a, plans.indexOf(a)) - getOrder(b, plans.indexOf(b)));
+};
+
 const latestIdentityTextList = (...values: Array<string | undefined>) => {
   const merged = Array.from(new Set(
     values
@@ -2605,7 +2749,15 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
   const existingPlans = clearPlanningJobPendingPlans
     ? (existing.plans || []).filter((plan) => !isStaleOneClickPlanningPlaceholderPlan(plan, planningPlanJobIds))
     : existing.plans;
-  const plans = mergeProjectPlansById(existingPlans, next.plans);
+  let plans = mergeProjectPlansById(existingPlans, next.plans);
+  if (
+    next.module === MODULE_VALUES.ONE_CLICK
+    && next.status === 'planning'
+    && (next.plans || []).length > 1
+    && (next.results || []).length === 0
+  ) {
+    plans = orderProjectPlansByTemplate(plans, next.plans);
+  }
   const replacesStalePlanningFailure = hasOnlyStalePlanningFailureResults(existing) && (
     (
       next.status === 'planning'

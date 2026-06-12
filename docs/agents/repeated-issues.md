@@ -409,6 +409,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Root cause: Deployment was treated as a mechanical copy step instead of a guarded production release.
 - Avoid next time: Do not deploy unless code review is complete. Use the deploy script only with `MEIAO_CODE_REVIEW_CONFIRMED=1`; the script intentionally blocks unconfirmed cloud releases.
 
+## 2026-06-12 - First-image planning recovery must aggregate sibling reference jobs
+
+- Symptom: 天琪账号首图功能上传 5 张风格参考图后，后台实际创建并完成了 5 个 `kie_chat` 策划 job，但前端项目卡只显示 1 个策划，用户无法发现少了 4 个。
+- Environment: Tencent Cloud production, one-click first-image planning, page refresh/reconnect while planning jobs were still finishing.
+- Root cause: 在线提交链路已按 5 张参考图发起 5 个策划任务；问题出在刷新后的 `shellDataAdapter` 恢复逻辑。持久化项目里已经有 1 个 recovered plan 时，后续同 `shellProjectId` 的兄弟 planning jobs 被逐条处理并短路，没有先按 `shellReferenceIndex` 聚合，最终只保留单个 plan。
+- Fix: `shellDataAdapter` 现在会按 `shellProjectId` 聚合已完成的 one-click planning `kie_chat` jobs，按 `shellReferenceIndex`/创建时间排序，把所有解析出的 plans 一次性恢复到同一项目；最终项目合并时也按恢复模板保留参考图顺序。
+- Regression check: `node --test src/adapters/shellDataAdapter.test.mjs --test-name-pattern "first-image planning|planning reference|completed planning jobs by payload project id"`; `npm run build`.
+- Avoid next time: 多参考图策划的状态恢复不能以单个 backend job 为单位判断完整性。凡是同一个 `shellProjectId` 下存在多个 planning jobs，都必须按参考图序号聚合后再计算 `taskCount/plans/planningTaskId`，并且回归测试要覆盖“持久化已有 1 个 plan、后台实际有 N 个成功 plan”的刷新形态。
+
 ## 2026-05-26 - Completed planning jobs must recover stale planning-failure cards
 
 - Symptom: 多桑账号 2026-05-26 的“项目3/项目4”后台 `kie_chat` 策划 job 均已 `succeeded` 且 `result_json.content` 包含 `[SCHEME_START]... [SCHEME_END]`，但前端项目卡显示“共 1 张参考图，其中 1 张策划失败。”
