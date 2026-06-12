@@ -2198,7 +2198,7 @@ const isSupersededNoMediaErrorResult = (
   const planId = String(result?.planId || '').trim();
   if (!planId || !completedPlanIds.has(planId)) return false;
   if (result.status !== 'error' || resultHasMedia(result)) return false;
-  return !String(result.taskId || '').trim();
+  return true;
 };
 
 const pruneSupersededOneClickResults = (results: ShellGeneratedResult[] = []) => {
