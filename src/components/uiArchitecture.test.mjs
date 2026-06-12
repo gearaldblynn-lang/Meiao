@@ -2590,7 +2590,10 @@ test('one click completed result edit uses only product assets and generated bas
   assert.match(shellApp, /id: `project-edit-\$\{Date\.now\(\)\}`/);
   assert.match(shellApp, /directGeneration: true/);
   assert.match(shellApp, /model: currentScopedImageModel \|\| storedContext\?\.params\?\.model \|\| result\.model \|\| currentParams\.model \|\| 'GPT Image 2'/);
+  assert.match(shellApp, /const originalGenerationPrompt = \[/);
+  assert.match(shellApp, /result\.prompt,\s*matchedPlan\?\.schemeContent,\s*matchedPlanPrompt,\s*storedContext\?\.prompt,/);
   assert.match(shellApp, /editInstruction: finalInstruction/);
+  assert.match(shellApp, /schemeContent: originalGenerationPrompt \|\| finalInstruction/);
   assert.match(shellApp, /const isOneClickEdit = project\.module === AppModuleObj\.ONE_CLICK/);
   assert.match(shellApp, /const usesMinimalRoleEditPrompt = isOneClickEdit \|\| isEverythingReplaceProductEdit/);
   assert.match(shellApp, /logo: usesMinimalRoleEditPrompt \? \[\] : \[\.\.\.\(contextMaterials\.logo \|\| \[\]\)\]/);

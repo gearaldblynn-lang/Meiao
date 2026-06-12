@@ -107,10 +107,11 @@ export const buildShellImageInputUrls = ({
   const isFirstImage = module === ONE_CLICK_MODULE && subFeature === FIRST_IMAGE_SUBFEATURE;
   const isDetailPage = module === ONE_CLICK_MODULE && subFeature === DETAIL_PAGE_SUBFEATURE;
 
+  if (sourceResultUrl && hasEditInstruction) {
+    return dedupeUrls([...productImageUrls, ...giftImageUrls, sourceResultUrl]);
+  }
+
   if (!isFirstImage && !isDetailPage) {
-    if (sourceResultUrl && hasEditInstruction) {
-      return dedupeUrls([...productImageUrls, ...giftImageUrls, sourceResultUrl]);
-    }
     if (sourceResultUrl && hasVariationInstruction) {
       return dedupeUrls([sourceResultUrl, ...allMaterialUrls]);
     }
@@ -122,9 +123,6 @@ export const buildShellImageInputUrls = ({
     : styleRefUrls.slice(0, 1);
   if (isDetailPage) {
     return dedupeUrls([...productImageUrls, ...giftImageUrls, ...currentReferenceUrls, ...logoImageUrls]);
-  }
-  if (sourceResultUrl && hasEditInstruction) {
-    return dedupeUrls([...productImageUrls, ...giftImageUrls, sourceResultUrl]);
   }
   if (sourceResultUrl && hasVariationInstruction) {
     return dedupeUrls([sourceResultUrl, ...productImageUrls, ...giftImageUrls, ...logoImageUrls]);
