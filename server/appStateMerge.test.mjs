@@ -393,9 +393,87 @@ test('mergeAppStateForStorage drops invalid completed one-click media from faile
   assert.equal(merged.shellProjects[0].status, 'error');
   assert.equal(merged.shellProjects[0].taskCount, 1);
   assert.equal(merged.shellProjects[0].completedCount, 0);
-  assert.equal(merged.shellProjects[0].plans.length, 0);
-  assert.equal(merged.shellProjects[0].results.length, 1);
-  assert.equal(merged.shellProjects[0].results[0].status, 'error');
+  assert.equal(merged.shellProjects[0].plans.length, 1);
+  assert.equal(merged.shellProjects[0].plans[0].planningFailed, true);
+  assert.equal(merged.shellProjects[0].plans[0].selected, false);
+  assert.equal(merged.shellProjects[0].results.length, 0);
+});
+
+test('mergeAppStateForStorage keeps persisted auth-text pollution as failed planning card without backend identity', () => {
+  const authText = 'Unauthorized - Authentication failed. Please check that your Authorization and Content-Type headers are correctly set.';
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'auth-dirty-project',
+      module: 'one_click',
+      status: 'error',
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      plans: [{
+        id: 'auth-dirty-plan',
+        title: '首图参考 1',
+        selected: true,
+        schemeContent: authText,
+      }],
+      results: [{
+        id: 'auth-dirty-result',
+        planId: 'auth-dirty-plan',
+        status: 'error',
+        imageUrl: '',
+        prompt: authText,
+        error: authText,
+        module: 'one_click',
+        subFeature: 'first_image',
+      }],
+    }],
+  }, {});
+
+  assert.equal(merged.shellProjects.length, 1);
+  assert.equal(merged.shellProjects[0].status, 'error');
+  assert.equal(merged.shellProjects[0].plans.length, 1);
+  assert.equal(merged.shellProjects[0].plans[0].planningFailed, true);
+  assert.equal(merged.shellProjects[0].plans[0].selected, false);
+  assert.match(merged.shellProjects[0].plans[0].error, /Authentication failed/);
+  assert.equal(merged.shellProjects[0].results.length, 0);
+  assert.equal(merged.shellProjects[0].taskCount, 1);
+});
+
+test('mergeAppStateForStorage keeps historical no-identity one-click failures visible instead of storing hidden dirty cards', () => {
+  const failureText = '网络连接失败，请检查网络后重试';
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'network-dirty-project',
+      module: 'one_click',
+      status: 'error',
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      plans: [{
+        id: 'network-dirty-plan',
+        title: '首图参考 1',
+        selected: true,
+        schemeContent: failureText,
+      }],
+      results: [{
+        id: 'network-dirty-result',
+        planId: 'network-dirty-plan',
+        status: 'error',
+        imageUrl: '',
+        prompt: failureText,
+        error: failureText,
+        module: 'one_click',
+        subFeature: 'first_image',
+      }],
+    }],
+  }, {});
+
+  assert.equal(merged.shellProjects.length, 1);
+  assert.equal(merged.shellProjects[0].status, 'error');
+  assert.equal(merged.shellProjects[0].plans.length, 1);
+  assert.equal(merged.shellProjects[0].plans[0].planningFailed, true);
+  assert.equal(merged.shellProjects[0].plans[0].selected, false);
+  assert.equal(merged.shellProjects[0].results.length, 0);
+  assert.equal(merged.shellProjects[0].taskCount, 1);
 });
 
 test('mergeAppStateForStorage deep-merges one-click planning project snapshots without dropping plans', () => {

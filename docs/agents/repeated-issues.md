@@ -30,6 +30,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Files/tests: `server/agentImagePlan.mjs`, `server/agentImagePlan.test.mjs`, `server/agentCenterSource.test.mjs`.
 - Avoid next time: 生图模式必须区分“文字 brief 里的设计约束”和“基于已有图修改”。看板再次出现 `missing_image_input` 时，先查用户消息是否真的有附件/历史图指代，而不是只看“改、保持、不变”等单字触发词。
 
+## 2026-06-10 - KIE Gemini 3.5 auth text must not become one-click plans
+
+- Symptom: 云上账号一键主详策划/生图出现 `Unauthorized – Authentication failed. Please check that your Authorization and Content-Type headers are correctly set.`；刷新时可短暂看到带该错误文案的脏项目，随后又被 job 同步隐藏。
+- Environment: Tencent Cloud production one_click / local development.
+- Root cause: 新增 `gemini-3-5-flash` Gemini-native 通道时按旧设计发送 `X-Goog-Api-Key`，但 KIE 实际请求契约使用 `Authorization: Bearer <KIE key>`，导致上游返回鉴权错误文本。此前 provider 网关和一键状态归一化没有完整把该文本当作错误/污染处理，历史持久化 state 中无后端身份的错误文案会在首屏刷新时先被渲染。
+- Fix: `gemini-3-5-flash` 改用 `Authorization: Bearer`；provider 网关把成功响应里的鉴权错误文本转为 provider 错误；一键策划校验识别鉴权文本；服务端 state 合并和前端 shell 快照把无后端身份、无媒体的历史错误方案转成不可选的可见失败策划卡，并保留真实 backend job 失败用于排障。
+- Regression check: `node --test server/providerGateway.test.mjs`; `node --test src/adapters/shellDataAdapter.test.mjs`; `node --test server/appStateMerge.test.mjs`; `node --test src/utils/oneClickPlanValidation.test.mjs`; `npm run build`.
+- Files/tests: `server/providerGateway.mjs`, `server/providerGateway.test.mjs`, `src/adapters/shellDataAdapter.ts`, `src/adapters/shellDataAdapter.test.mjs`, `server/appStateMerge.mjs`, `server/appStateMerge.test.mjs`, `src/utils/oneClickPlanValidation.ts`, `src/utils/oneClickPlanValidation.test.mjs`.
+- Avoid next time: 新接 KIE 端点不能只照计划文档写鉴权头，要用当前官方 Request/cURL 契约回归请求头；任何 provider 错误文本都不得作为正常 `schemeContent` 或生图 prompt。刷新脏数据要验证 `buildShellDataSnapshot(state, [])` 首屏路径，而不只是后续 `/api/jobs` hydration；历史失败卡必须可见，不要用过滤制造“藏在 state 里但 UI 不显示”的脏数据。
+
 ## 2026-06-08 - First-image planning failures must be preserved in both submit and sync paths
 
 - Symptom: “天琪”账号首图策划失败复现；云上 state 显示部分项目 `taskCount=5`，但 `plans.length` 只有 2、3 或 4，用户仍看不到所有参考图的策划失败状态。

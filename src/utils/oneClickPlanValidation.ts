@@ -19,6 +19,8 @@ const INVALID_ONE_CLICK_PLAN_PATTERNS = [
   /I cannot fulfill this request/i,
   /Internal Error,?\s*Please try again later/i,
   /server is currently being maintained/i,
+  /unauthorized\s*[–-]\s*authentication failed/i,
+  /authentication failed\.?\s*please check/i,
   /Cannot read properties of undefined/i,
   /providerTaskId/i,
   /网络连接失败，请检查网络后重试/,

@@ -1884,8 +1884,8 @@ test('executeProviderJob routes gemini 3.5 flash through kie native gemini strea
     );
 
     assert.equal(requests[0].url, 'https://api.kie.ai/gemini/v1/models/gemini-3-5-flash:streamGenerateContent');
-    assert.equal(requests[0].init.headers['X-Goog-Api-Key'], 'test-key');
-    assert.equal(requests[0].init.headers.Authorization, undefined);
+    assert.equal(requests[0].init.headers.Authorization, 'Bearer test-key');
+    assert.equal(requests[0].init.headers['X-Goog-Api-Key'], undefined);
     const body = JSON.parse(String(requests[0].init.body));
     assert.equal(body.stream, true);
     assert.equal(body.contents[0].role, 'user');
@@ -2691,6 +2691,41 @@ test('executeProviderJob treats provider error text in successful kie chat respo
       ),
       (error) => error?.code === 'provider_bad_request'
         && /file mime type is not supported/i.test(error.message)
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob treats provider authentication text in successful kie chat responses as a failed request', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () =>
+    createJsonResponse({
+      choices: [
+        {
+          message: {
+            content: 'Unauthorized – Authentication failed. Please check that your Authorization and Content-Type headers are correctly set.',
+          },
+        },
+      ],
+    });
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gemini-3-5-flash',
+            messages: [{ role: 'user', content: '生成策划' }],
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_bad_request'
+        && /Authentication failed/i.test(error.message)
     );
   } finally {
     global.fetch = originalFetch;
