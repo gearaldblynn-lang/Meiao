@@ -2154,6 +2154,89 @@ test('shell data adapter keeps multiple first-image planning plans but exposes o
   assert.equal(snapshot.projects.some((item) => item.id === 'job-planning-job-b'), false);
 });
 
+test('shell data adapter restores all first-image planning plans when persisted state already contains one recovered plan', () => {
+  const makePlanningJob = (id, providerTaskId, refIndex) => ({
+    id,
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId,
+    payload: {
+      model: 'gemini-3-flash-openai',
+      shellProjectId: 'first-planning-refresh-project',
+      shellProjectName: '刷新后多参考图首图裂变',
+      shellPlanningPurpose: 'one_click_planning',
+      shellReferenceIndex: refIndex,
+      shellReferenceUrl: `https://example.com/ref-${refIndex}.png`,
+      subFeature: 'first_image',
+    },
+    result: {
+      content: `[SCHEME_START]
+- 屏序/类型：首图裂变${refIndex}-复刻主图参考${refIndex}
+- 参考图标识：复刻主图参考${refIndex}
+- 设计意图：保留第 ${refIndex} 张参考图结构
+- 画面描述：第 ${refIndex} 张参考图生成方案
+- 画面比例：1:1
+[SCHEME_END]`,
+      providerTaskId,
+      creditsConsumed: 0.34,
+    },
+    createdAt: 1000 + refIndex,
+    updatedAt: 2000 + refIndex,
+  });
+  const jobs = [1, 2, 3, 4, 5].map((index) => makePlanningJob(`planning-job-${index}`, `kie-plan-${index}`, index));
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'first-planning-refresh-project',
+      name: '刷新后多参考图首图裂变',
+      module: 'one_click',
+      status: 'planning',
+      createdAt: '06-12',
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'first_image',
+      backendJobId: 'planning-job-2',
+      planningTaskId: 'kie-plan-2',
+      plans: [{
+        id: 'planning-job-2-plan-1',
+        title: '首图裂变2-复刻主图参考2',
+        sellingPoints: ['保留第 2 张参考图结构'],
+        sceneDescription: '第 2 张参考图生成方案',
+        styleDirection: '',
+        colorPalette: '',
+        composition: '',
+        textLayout: '',
+        schemeContent: '第 2 张参考图生成方案',
+        sourceReferenceUrl: 'https://example.com/ref-2.png',
+      }],
+      selectedPlanId: 'planning-job-2-plan-1',
+    }],
+  }, jobs);
+
+  const project = snapshot.projects.find((item) => item.id === 'first-planning-refresh-project');
+  assert.equal(project?.status, 'planning');
+  assert.equal(project?.plans?.length, 5);
+  assert.deepEqual(project?.plans?.map((plan) => plan.id), [
+    'planning-job-1-plan-1',
+    'planning-job-2-plan-1',
+    'planning-job-3-plan-1',
+    'planning-job-4-plan-1',
+    'planning-job-5-plan-1',
+  ]);
+  assert.deepEqual(project?.plans?.map((plan) => plan.sourceReferenceUrl), [
+    'https://example.com/ref-1.png',
+    'https://example.com/ref-2.png',
+    'https://example.com/ref-3.png',
+    'https://example.com/ref-4.png',
+    'https://example.com/ref-5.png',
+  ]);
+  assert.equal(project?.planningTaskId, 'kie-plan-5');
+  assert.equal(project?.taskCount, 5);
+  assert.equal(snapshot.projects.some((item) => item.id === 'job-planning-job-5'), false);
+});
+
 test('shell data adapter preserves every failed first-image planning reference as a visible failed plan', () => {
   const makeFailedPlanningJob = (refIndex) => ({
     id: `failed-planning-job-${refIndex}`,
