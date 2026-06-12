@@ -1,6 +1,6 @@
 import type { AppModule, InternalJob } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
-import { isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
+import { getOneClickPlanContent, isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 
 type ShellProjectStatus = 'planning' | 'generating' | 'completed' | 'error';
 type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error';
@@ -210,6 +210,24 @@ const taskStatusToTask = (status: unknown): ShellTaskStatus => {
   if (status === 'error' || status === 'failed' || status === 'cancelled' || status === 'interrupted') return 'error';
   if (status === 'pending' || status === 'queued') return 'pending';
   return 'generating';
+};
+
+const getProviderErrorText = (job: any): string => {
+  const text = String(
+    job?.errorMessage
+    || job?.result?.content
+    || job?.result?.text
+    || job?.result?.message
+    || ''
+  ).trim();
+  if (!text) return '';
+  return [
+    /unauthorized\s*[–-]\s*authentication failed/i,
+    /authentication failed\.?\s*please check/i,
+    /server exception,\s*please try again later/i,
+    /server is currently being maintained/i,
+    /internal error,\s*please try again later/i,
+  ].some((pattern) => pattern.test(text)) ? text : '';
 };
 
 const getResultUrls = (item: any): string[] => {
@@ -1332,7 +1350,10 @@ const mapJobs = (
     if (hiddenJobIds.has(String(job.id || '').trim())) return;
     if (groupedEverythingReplaceJobIds.has(String(job.id || '').trim())) return;
     const module = toModule(job.module);
-    const projectStatus = taskStatusToProject(job.status);
+    const providerErrorText = getProviderErrorText(job);
+    const projectStatus = taskStatusToProject(job.status) === 'completed' && providerErrorText
+      ? 'error'
+      : taskStatusToProject(job.status);
     const createdAt = toDateLabel(job.createdAt);
     const mediaType = job.taskType?.includes('video') || Boolean(job.result?.videoUrl) ? 'video' : 'image';
     const prompt = String(
@@ -1347,6 +1368,8 @@ const mapJobs = (
       || '任务'
     );
     const projectId = `job-${job.id}`;
+    const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
+    const payloadProjectName = String((job.payload as any)?.shellProjectName || '').trim();
     const payloadPlanId = String((job.payload as any)?.shellPlanId || (job.payload as any)?.planId || '').trim();
     const subFeature = module === MODULE_VALUES.ONE_CLICK
       ? (getStructuredOneClickJobSubFeature(job.payload) || normalizeJobSubFeature(module, job.taskType, job.payload))
@@ -1590,27 +1613,31 @@ const mapJobs = (
             || String((job.payload as any)?.shellPlanningPurpose || '').trim() === 'one_click_planning'
           )
         );
-        const errorMessage = String(job.errorMessage || job.errorCode || '任务失败').trim();
+        const errorMessage = String(job.errorMessage || providerErrorText || job.errorCode || '任务失败').trim();
         const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
         if (!matchedProject) {
-          if (!isTrackedOneClickPlanningJob) return;
+          const shouldShowUntrackedTerminalFailure = String(job.taskType || '') === 'kie_chat' || Boolean(providerErrorText);
+          if (!isTrackedOneClickPlanningJob && !shouldShowUntrackedTerminalFailure) return;
           const inferredSubFeature = getStructuredOneClickJobSubFeature(job.payload)
             || normalizeJobSubFeature(module, job.taskType, job.payload);
           const projectName = String((job.payload as any)?.shellProjectName || '').trim()
             || prompt.slice(0, 28)
             || MODULE_LABELS[module]
             || '一键主详策划';
-          const failedPlan = buildFailedOneClickPlanningPlan(job, projectName, errorMessage);
+          const failedPlan = isTrackedOneClickPlanningJob
+            ? buildFailedOneClickPlanningPlan(job, projectName, errorMessage)
+            : undefined;
+          const projectId = payloadProjectId || `job-${job.id}`;
           projects.push({
-            id: payloadProjectId || `job-${job.id}`,
+            id: projectId,
             name: projectName,
             module,
             status: 'error',
             createdAt,
             results: [{
               id: `${job.id}-error`,
-              planId: payloadPlanId || failedPlan.id,
-              projectId: payloadProjectId || `job-${job.id}`,
+              planId: payloadPlanId || failedPlan?.id,
+              projectId,
               imageUrl: '',
               prompt: errorMessage || prompt,
               model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
@@ -1624,7 +1651,7 @@ const mapJobs = (
               creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
               error: errorMessage,
             }],
-            plans: [failedPlan],
+            plans: failedPlan ? [failedPlan] : [],
             taskCount: Math.max(getPlanningReferenceIndex(job), 1),
             completedCount: 0,
             subFeature: inferredSubFeature,
@@ -1860,7 +1887,6 @@ const mapJobs = (
     if (projectStatus === 'generating' || projectStatus === 'planning') {
       const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
       if (isTrackedOneClickPlanningJob(job, module)) {
-        const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
         const cleanProject = matchedProject
           ? removePlanningJobPendingPlaceholders(matchedProject, job)
           : undefined;
@@ -1884,7 +1910,7 @@ const mapJobs = (
           ...(cleanProject || {}),
           id: activeProjectId,
           name: cleanProject?.name
-            || String((job.payload as any)?.shellProjectName || '').trim()
+            || payloadProjectName
             || MODULE_LABELS[module]
             || '一键主详策划',
           module,
@@ -1912,7 +1938,7 @@ const mapJobs = (
       ) {
         return;
       }
-      const activeProjectId = matchedProject?.id || projectId;
+      const activeProjectId = matchedProject?.id || payloadProjectId || projectId;
       const visibleProviderTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
       const taskTypeText = String(job.taskType || '');
       const isProviderMediaJob = String(job.provider || '') === 'kie' && /image|video|seedance|veo/i.test(taskTypeText);
@@ -1932,6 +1958,7 @@ const mapJobs = (
       if (
         isProviderMediaJob
         && !visibleProviderTaskId
+        && !(module === MODULE_VALUES.BUYER_SHOW && payloadProjectId)
       ) {
         tasks.push(activeTask);
         return;
@@ -1971,7 +1998,7 @@ const mapJobs = (
       projects.push({
         ...(matchedProject || {}),
         id: activeProjectId,
-        name: matchedProject?.name || prompt.slice(0, 28) || MODULE_LABELS[module] || String(job.taskType || '生成任务'),
+        name: matchedProject?.name || payloadProjectName || prompt.slice(0, 28) || MODULE_LABELS[module] || String(job.taskType || '生成任务'),
         module,
         status: projectStatus,
         createdAt: matchedProject?.createdAt || createdAt,
@@ -2103,6 +2130,49 @@ const isTransientNoIdentityRuntimePlaceholderResult = (result: Partial<ShellGene
   return /网络连接失败|请求超时|failed to fetch|fetch failed|dynamically imported module|任务状态同步失败|任务已提交云端|结果待同步/i.test(message);
 };
 
+const isProviderPollutionText = (value: unknown) => {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return [
+    /unauthorized\s*[–-]\s*authentication failed/i,
+    /authentication failed\.?\s*please check/i,
+    /server exception,\s*please try again later/i,
+    /server is currently being maintained/i,
+    /internal error,\s*please try again later/i,
+  ].some((pattern) => pattern.test(text));
+};
+
+const normalizeInvalidPlanAsFailedPlanningCard = (
+  plan: NonNullable<ShellProjectData['plans']>[number],
+): NonNullable<ShellProjectData['plans']>[number] => {
+  if (plan?.planningFailed || !isInvalidOneClickPlanLike(plan)) return plan;
+  const message = getOneClickPlanContent(plan) || String(plan?.error || '').trim() || '策划失败';
+  return {
+    ...plan,
+    selected: false,
+    status: 'error' as const,
+    error: message,
+    planningFailed: true,
+    schemeContent: message,
+    sceneDescription: String(plan?.sceneDescription || '').trim() || message,
+    textLayout: String(plan?.textLayout || '').trim() || message,
+  };
+};
+
+const isInvalidNoIdentityOneClickResult = (result: Partial<ShellGeneratedResult>) => {
+  if (!['error', 'failed', 'generating', 'pending', 'queued'].includes(String(result.status || ''))) return false;
+  if (resultHasMedia(result)) return false;
+  if (resultHasRuntimeIdentity(result)) return false;
+  const message = String(
+    result.error
+    || result.prompt
+    || (result as Record<string, unknown>).message
+    || (result as Record<string, unknown>).detail
+    || ''
+  ).trim();
+  return isProviderPollutionText(message);
+};
+
 const isStaleOneClickPlanningPlaceholderResult = (result: Partial<ShellGeneratedResult>) => (
   result.status === 'generating'
   && !resultHasMedia(result)
@@ -2213,7 +2283,7 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
   );
   const plans = rawPlans
     .filter((plan) => !isStaleOneClickPlanningPlaceholderPlan(plan))
-    .filter((plan) => Boolean(plan?.planningFailed) || !isInvalidOneClickPlanLike(plan));
+    .map(normalizeInvalidPlanAsFailedPlanningCard);
   const hasClientPlanIds = plans.some((plan) => {
     const id = String(plan?.id || '').trim();
     return id && !isPlanningGeneratedPlanId(id);
@@ -2237,8 +2307,18 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
         || (planId && invalidPlanIds.has(planId))
       );
     if (isInvalidCompletedMedia) droppedInvalidCompletedMedia = true;
+    const isInvalidNoIdentityFailure = isInvalidNoIdentityOneClickResult(result);
+    const isNoIdentityFailureForFailedPlan = Boolean(
+      planId
+      && invalidPlanIds.has(planId)
+      && !resultHasMedia(result)
+      && !resultHasRuntimeIdentity(result)
+      && ['error', 'failed', 'generating', 'pending', 'queued'].includes(String(result.status || '')),
+    );
     return (!planId || !droppedPlanIds.has(planId))
       && !isStaleOneClickPlanningPlaceholderResult(result)
+      && !isInvalidNoIdentityFailure
+      && !isNoIdentityFailureForFailedPlan
       && !isInvalidCompletedMedia;
   });
   results = pruneSupersededOneClickResults(results);
@@ -2266,7 +2346,8 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
     ? project.selectedPlanId
     : filteredPlans.find((plan) => plan.selected)?.id || filteredPlans[0]?.id || project.selectedPlanId;
   const hasGenerating = results.some((result) => result.status === 'generating' && resultHasProviderTaskIdentity(result));
-  const hasError = results.some((result) => result.status === 'error');
+  const hasFailedPlan = filteredPlans.some((plan) => Boolean(plan?.planningFailed) || plan?.status === 'error');
+  const hasError = hasFailedPlan || results.some((result) => result.status === 'error');
   const hasCompletedMedia = completedCount > 0;
   const status = hasCompletedMedia && !hasGenerating && !hasError
     ? 'completed'
@@ -2290,6 +2371,12 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
     completedCount,
     planningTaskId: latestProviderTaskIdentityText(project.planningTaskId),
   };
+};
+
+const hasVisibleProjectContent = (project: ShellProjectData) => {
+  if ((project.results || []).length > 0) return true;
+  if ((project.plans || []).length > 0) return true;
+  return project.status === 'generating';
 };
 
 const getGeneratedResultMergeKeys = (result: ShellGeneratedResult) => {
@@ -2591,7 +2678,9 @@ export const buildShellDataSnapshot = (
     }
     byId.set(project.id, mergeProjectSnapshot(existing, project));
   });
-  const projects = Array.from(byId.values()).map(normalizeOneClickProjectCard);
+  const projects = Array.from(byId.values())
+    .map(normalizeOneClickProjectCard)
+    .filter(hasVisibleProjectContent);
   return {
     projects,
     tasks: jobData.tasks,

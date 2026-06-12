@@ -959,6 +959,7 @@ export const runShellBuyerShowWorkflow = async (
     for (let taskIndex = 0; taskIndex < tasks.length; taskIndex += 1) {
       const task = tasks[taskIndex];
       const isFirstImage = taskIndex === 0;
+      const currentBatchIndex = setIndex * state.imageCount + taskIndex + 1;
       const prompt = buildBuyerShowImagePrompt(
         task.prompt,
         productUrls,
@@ -967,6 +968,25 @@ export const runShellBuyerShowWorkflow = async (
         state.includeModel,
         state.targetCountry,
       );
+      const publishPendingBuyerShowJob = (jobId: string, providerTaskId?: string) => {
+        input.onJobCreated?.(jobId, providerTaskId);
+        const backendJobId = String(jobId || '').trim() || undefined;
+        const visibleTaskId = String(providerTaskId || '').trim() || undefined;
+        const pendingItem: ShellWorkflowImageResult = {
+          imageUrl: '',
+          prompt,
+          taskId: visibleTaskId,
+          backendJobId,
+          model: getImageResultModelLabel(config),
+          aspectRatio: config.aspectRatio,
+          fileName: `方案${setIndex + 1}-图${taskIndex + 1}`,
+          status: 'generating',
+          error: visibleTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
+          message: visibleTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
+          batchIndex: currentBatchIndex,
+        };
+        onItemCompleted?.(pendingItem, currentBatchIndex, total);
+      };
       const generation = await processWithKieAi(
         isFirstImage && firstReferenceUrl ? [...productUrls, firstReferenceUrl] : setBenchmarkUrl ? [...productUrls, setBenchmarkUrl] : productUrls,
         apiConfig,
@@ -974,6 +994,20 @@ export const runShellBuyerShowWorkflow = async (
         false,
         input.signal,
         prompt,
+        false,
+        undefined,
+        'main',
+        {
+          ...(input.taskMetadata || {}),
+          subFeature: input.subFeature || 'image',
+          batchIndex: currentBatchIndex,
+          batchCount: total,
+          setIndex: setIndex + 1,
+          setCount: state.setCount,
+          imageIndex: taskIndex + 1,
+          imageCount: state.imageCount,
+        },
+        publishPendingBuyerShowJob,
       );
       if (generation.status !== 'success' || !generation.imageUrl) {
         if (generation.taskId) {
@@ -989,9 +1023,10 @@ export const runShellBuyerShowWorkflow = async (
             error: generation.message || `买家秀第 ${setIndex + 1} 套第 ${taskIndex + 1} 张生成失败`,
             message: generation.message,
             errorCode: generation.errorCode,
+            batchIndex: currentBatchIndex,
           };
           results.push(pendingItem);
-          onItemCompleted?.(pendingItem, results.length, total);
+          onItemCompleted?.(pendingItem, currentBatchIndex, total);
           if (generation.status === 'generating') break;
         }
         throw new Error(generation.message || `买家秀第 ${setIndex + 1} 套第 ${taskIndex + 1} 张生成失败`);
@@ -1012,9 +1047,10 @@ export const runShellBuyerShowWorkflow = async (
         aspectRatio: config.aspectRatio,
         fileName: `方案${setIndex + 1}-图${taskIndex + 1}`,
         status: 'completed',
+        batchIndex: currentBatchIndex,
       };
       results.push(item);
-      onItemCompleted?.(item, results.length, total);
+      onItemCompleted?.(item, currentBatchIndex, total);
     }
   }
 

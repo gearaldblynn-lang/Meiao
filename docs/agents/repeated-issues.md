@@ -30,6 +30,26 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Files/tests: `server/agentImagePlan.mjs`, `server/agentImagePlan.test.mjs`, `server/agentCenterSource.test.mjs`.
 - Avoid next time: 生图模式必须区分“文字 brief 里的设计约束”和“基于已有图修改”。看板再次出现 `missing_image_input` 时，先查用户消息是否真的有附件/历史图指代，而不是只看“改、保持、不变”等单字触发词。
 
+## 2026-06-10 - Long-running shell generation must publish pending cards at job creation
+
+- Symptom: 买家秀点击生成后没有及时出现项目任务卡，底部生成按钮一直显示“任务处理中...”，用户无法确认任务是否已经提交。
+- Environment: local development buyer_show shell workflow.
+- Root cause: 买家秀 shell 工作流调用 KIE 图像任务时没有把 `onJobCreated` 传入 `processWithKieAi`，外层新壳收不到 backend job / provider task 身份，不能像一键主详一样在任务建立后发布 `generating` 卡片并释放提交锁。
+- Fix: 在买家秀 KIE job 创建回调中透传 `input.onJobCreated`，立即发布带 `backendJobId`/`taskId` 的 pending result；提交入口给买家秀传项目级 `taskMetadata`。
+- Regression check: `node --test src/shell/components/destructiveActions.test.mjs src/shell/components/layout/BottomInputBar.test.mjs src/modules/BuyerShow/buyerShowBehavior.test.mjs`; `npm run lint`.
+- Files/tests: `src/adapters/shellWorkflow.ts`, `src/ShellMigratedApp.tsx`, `src/shell/components/destructiveActions.test.mjs`.
+- Avoid next time: 任何长耗时生成链路都不能等最终结果才通知外层 UI。provider/internal job 一创建，就必须回传任务身份、写入可见 `generating` 卡片，并释放“提交中”按钮锁。
+
+## 2026-06-10 - Buyer-show active KIE jobs must remain visible before provider task id
+
+- Symptom: 买家秀生成按钮已经释放，但项目任务卡出现一瞬间后消失；直到所有图片生成完成后任务卡才回显，用户看不到任务是否还在生成。
+- Environment: Tencent Cloud production buyer_show / local development.
+- Root cause: job hydration 的通用 KIE media 分支为了避免 providerless 孤儿任务污染 UI，在没有 `providerTaskId` 时只保留 task 并跳过 project/result。买家秀提交链路已写入 `shellProjectId`，但该分支没有用这个前端项目身份补出可见 `generating` 卡片。
+- Fix: 运行中 buyer_show KIE image job 即使暂时没有上游 `providerTaskId`，只要 payload 有 `shellProjectId`，就用 backend job id 建立项目卡和 pending result；其他模块的 providerless KIE media 仍保持原有过滤规则。
+- Regression check: `node --test src/adapters/shellDataAdapter.test.mjs`; `node --test src/shell/components/destructiveActions.test.mjs src/shell/components/layout/BottomInputBar.test.mjs src/modules/BuyerShow/buyerShowBehavior.test.mjs`.
+- Files/tests: `src/adapters/shellDataAdapter.ts`, `src/adapters/shellDataAdapter.test.mjs`.
+- Avoid next time: 修长耗时任务的“提交即显示”时，要同时覆盖前端乐观发布和后续 `/api/jobs` hydration。按钮释放只能证明 job 创建回调到了，不能证明轮询快照会持续保留项目卡。
+
 ## 2026-06-10 - KIE Gemini 3.5 auth text must not become one-click plans
 
 - Symptom: 云上账号一键主详策划/生图出现 `Unauthorized – Authentication failed. Please check that your Authorization and Content-Type headers are correctly set.`；刷新时可短暂看到带该错误文案的脏项目，随后又被 job 同步隐藏。

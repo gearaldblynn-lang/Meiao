@@ -143,6 +143,20 @@ test('all runnable bottom generation submits are guarded before material prepara
   assert.match(oneClickBranch, /finally \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*setIsGenerating\(false\);[\s\S]*\}/);
 });
 
+test('buyer show shell publishes pending task cards and releases submit when image jobs are created', () => {
+  const shellSource = read('../../ShellMigratedApp.tsx');
+  const workflowSource = read('../../adapters/shellWorkflow.ts');
+  const buyerShowBranch = shellSource.match(/targetModule === AppModuleObj\.BUYER_SHOW[\s\S]*?runShellRetouchWorkflow/)?.[0] || '';
+  const buyerShowWorkflow = workflowSource.match(/export const runShellBuyerShowWorkflow = async \([\s\S]*?\n\};\n\ntype ShellRetouchMode/)?.[0] || '';
+
+  assert.match(buyerShowBranch, /taskMetadata:\s*\{[\s\S]*shellProjectId:\s*projectId[\s\S]*shellProjectName:\s*projectName[\s\S]*batchCount[\s\S]*subFeature:\s*targetSubFeature[\s\S]*\}/);
+  assert.match(buyerShowWorkflow, /const publishPendingBuyerShowJob = \(jobId: string, providerTaskId\?: string\) => \{/);
+  assert.match(buyerShowWorkflow, /input\.onJobCreated\?\.\(jobId, providerTaskId\)/);
+  assert.match(buyerShowWorkflow, /status:\s*'generating'/);
+  assert.match(buyerShowWorkflow, /onItemCompleted\?\.\(pendingItem, currentBatchIndex, total\)/);
+  assert.match(buyerShowWorkflow, /processWithKieAi\([\s\S]*publishPendingBuyerShowJob[\s\S]*\)/);
+});
+
 test('shell result deletion records backend job tombstones for pending results', () => {
   const shellSource = read('../../ShellMigratedApp.tsx');
   const deleteResultBlock = shellSource.match(/const handleDeleteResult = useCallback\([\s\S]*?\n  \}, \[projects, addToast, persistDeletionToSharedState\]\);/)?.[0] || '';
