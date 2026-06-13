@@ -46,29 +46,27 @@ export const getImageDimensionsFromUrl = (url: string): Promise<{ width: number,
 /**
  * 获取原始图片尺寸和比例值
  */
-export const getImageDimensions = (file: File | Blob): Promise<{ width: number, height: number, ratio: number }> => {
-  return new Promise(async (resolve) => {
-    if (typeof createImageBitmap === 'function') {
+export const getImageDimensions = async (file: File | Blob): Promise<{ width: number, height: number, ratio: number }> => {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(file);
       try {
-        const bitmap = await createImageBitmap(file);
-        try {
-          const { width, height } = bitmap;
-          resolve({ width, height, ratio: height ? width / height : 1 });
-          return;
-        } finally {
-          bitmap.close?.();
-        }
-      } catch {
-        // Fall back to HTMLImageElement decoding below.
+        const { width, height } = bitmap;
+        return { width, height, ratio: height ? width / height : 1 };
+      } finally {
+        bitmap.close?.();
       }
+    } catch {
+      // Fall back to HTMLImageElement decoding below.
     }
+  }
 
-    const objectUrl = safeCreateObjectURL(file);
-    if (!objectUrl) {
-      resolve({ width: 0, height: 0, ratio: 1 });
-      return;
-    }
+  const objectUrl = safeCreateObjectURL(file);
+  if (!objectUrl) {
+    return { width: 0, height: 0, ratio: 1 };
+  }
 
+  return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
       const { width, height } = img;

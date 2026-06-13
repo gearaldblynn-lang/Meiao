@@ -45,8 +45,8 @@ import {
   resolveAgentImagePlanInputUrlDetails,
   shouldRequireAgentImageInput,
 } from './agentImagePlan.mjs';
-import { compactAppStateForStorage, mergeAppStateForStorage } from './appStateMerge.mjs';
-import { buildJobRuntimeLogMeta, buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins } from './jobRuntime.mjs';
+import { compactAppStateForStorage, mergeAppStateForStorage, trimAppStateForStorage } from './appStateMerge.mjs';
+import { buildJobRuntimeLogMeta, buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins, runWithTransientRetry, getReconcileBackoffMs } from './jobRuntime.mjs';
 import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../src/utils/gptImage2.mjs';
 import { isExternallyReachableBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import {
@@ -721,13 +721,29 @@ const clearExpiredAssetsFromState = (value, registryMap, fieldName) => {
   return next;
 };
 
+const APP_STATE_MAX_BYTES = (() => {
+  const raw = Number(process.env.APP_STATE_MAX_BYTES);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  return 4 * 1024 * 1024; // 4 MiB,远低于 MySQL max_allowed_packet 默认 16 MiB
+})();
+
 const prepareStateForStorage = (state) => {
   const rawState = compactAppStateForStorage(cloneJsonValue(state || createDefaultState()));
-  const existingRegistry = normalizeAssetRegistry(rawState[INTERNAL_ASSET_REGISTRY_KEY]);
-  delete rawState[INTERNAL_ASSET_REGISTRY_KEY];
+  const sizeBefore = JSON.stringify(rawState).length;
+  const trimmedState = sizeBefore > APP_STATE_MAX_BYTES
+    ? trimAppStateForStorage(rawState, APP_STATE_MAX_BYTES)
+    : rawState;
+  if (trimmedState !== rawState) {
+    const sizeAfter = JSON.stringify(trimmedState).length;
+    console.warn(
+      `[app_states] trim triggered: ${sizeBefore} -> ${sizeAfter} bytes (max ${APP_STATE_MAX_BYTES})`,
+    );
+  }
+  const existingRegistry = normalizeAssetRegistry(trimmedState[INTERNAL_ASSET_REGISTRY_KEY]);
+  delete trimmedState[INTERNAL_ASSET_REGISTRY_KEY];
 
   const urlBucket = new Set();
-  collectTrackedAssetUrls(rawState, undefined, urlBucket);
+  collectTrackedAssetUrls(trimmedState, undefined, urlBucket);
 
   const existingMap = new Map(existingRegistry.map((item) => [item.url, item.createdAt]));
   const nextRegistry = Array.from(urlBucket).map((url) => ({
@@ -737,7 +753,7 @@ const prepareStateForStorage = (state) => {
 
   const validRegistry = normalizeAssetRegistry(nextRegistry);
   const registryMap = new Map(validRegistry.map((item) => [item.url, item.createdAt]));
-  const prunedState = clearExpiredAssetsFromState(rawState, registryMap, undefined);
+  const prunedState = clearExpiredAssetsFromState(trimmedState, registryMap, undefined);
   prunedState[INTERNAL_ASSET_REGISTRY_KEY] = validRegistry;
   return prunedState;
 };
@@ -2640,13 +2656,23 @@ const getDbAppState = async (userId) => {
 };
 
 const saveDbAppState = async (userId, state) => {
-  const pool = await getMysqlPool();
   const preparedState = prepareStateForStorage(state);
-  await runAppStateWriteWithoutBinlog(pool,
-    `INSERT INTO app_states (user_id, state_json, updated_at)
-     VALUES (?, ?, ?)
-     ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)`,
-    [userId, JSON.stringify(preparedState), Date.now()]
+  const serializedState = JSON.stringify(preparedState);
+  await runWithTransientRetry(
+    async () => {
+      const pool = await getMysqlPool();
+      return runAppStateWriteWithoutBinlog(pool,
+        `INSERT INTO app_states (user_id, state_json, updated_at)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)`,
+        [userId, serializedState, Date.now()]
+      );
+    },
+    {
+      onRetry: ({ attempt, delay }) => {
+        console.warn(`[app_states] transient write error, retry ${attempt + 1} after ${delay}ms (user ${userId})`);
+      },
+    },
   );
 };
 
@@ -5320,6 +5346,11 @@ const getTemporalStaleReconcilerIntervalMs = () => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 1000;
 };
 
+const getTemporalStaleReconcilerMaxBackoffMs = () => {
+  const parsed = Number.parseInt(String(process.env.MEIAO_STALE_RUNNING_RECONCILE_MAX_BACKOFF_MS || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 10 * 60 * 1000;
+};
+
 const runTemporalStaleRunningJobReconcile = async (pool, reason = 'interval') => {
   const engine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
   if (engine !== 'temporal' || !temporalTaskAdapter.configured) return 0;
@@ -5348,19 +5379,29 @@ const runTemporalStaleRunningJobReconcile = async (pool, reason = 'interval') =>
 const startTemporalStaleRunningJobReconciler = (pool) => {
   if (staleRunningJobReconcilerTimer) return;
   let busy = false;
+  let consecutiveFailures = 0;
+  const baseMs = getTemporalStaleReconcilerIntervalMs();
+  const maxMs = getTemporalStaleReconcilerMaxBackoffMs();
+  const scheduleNext = () => {
+    const delay = getReconcileBackoffMs(consecutiveFailures, baseMs, maxMs);
+    staleRunningJobReconcilerTimer = setTimeout(() => { void run('interval'); }, delay);
+    staleRunningJobReconcilerTimer.unref?.();
+  };
   const run = async (reason) => {
     if (busy) return;
     busy = true;
     try {
       await runTemporalStaleRunningJobReconcile(pool, reason);
+      consecutiveFailures = 0;
     } catch (error) {
-      console.error('Temporal stale running job reconcile failed.', error);
+      consecutiveFailures += 1;
+      console.error(`Temporal stale running job reconcile failed (consecutive ${consecutiveFailures}).`, error);
     } finally {
       busy = false;
+      scheduleNext();
     }
   };
-  staleRunningJobReconcilerTimer = setInterval(() => run('interval'), getTemporalStaleReconcilerIntervalMs());
-  staleRunningJobReconcilerTimer.unref?.();
+  scheduleNext();
 };
 
 const shouldUseTemporalForLocalExecution = () => normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE) === 'temporal';

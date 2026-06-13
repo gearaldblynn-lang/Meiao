@@ -55,7 +55,7 @@ test('sku material scope rejects legacy unscoped materials before planning or ge
   assert.match(scopeHelper, /return !material\.subFeature \|\| material\.subFeature === activeSubFeature;/);
   assert.match(app, /const filterMaterialsForScope = \(/);
   assert.match(app, /\(items \|\| \[\]\)\.filter\(\(item\) => isMaterialInActiveScope\(item, module, activeSubFeature\)\)/);
-  assert.match(app, /const filteredMaterials = filterMaterialsForScope\(materials, activeModule, activeSubFeature\);/);
+  assert.match(app, /const filteredMaterials = useMemo\(\s*\(\) => filterMaterialsForScope\(materials, activeModule, activeSubFeature\)/);
   assert.match(app, /materials\.gift \|\| \[\]\)[\s\S]*isMaterialInActiveScope\(item, activeModule, activeSubFeature\)/);
   assert.doesNotMatch(app, /items\.filter\(\(item\) => !item\.subFeature \|\| item\.subFeature === activeSubFeature\)/);
 });
@@ -762,7 +762,7 @@ test('material preview bar opens uploaded videos in a playable modal', () => {
   const previewBar = read('../shell/components/MaterialPreviewBar.tsx');
 
   assert.match(previewBar, /openVideoPreview/);
-  assert.match(previewBar, /mediaKind === 'video' \? openVideoPreview\(m\)/);
+  assert.match(previewBar, /if \(mediaKind === 'video'\) \{ openVideoPreview\(m\); \}/);
   assert.match(previewBar, /selectedVideo/);
   assert.match(previewBar, /items=\{selectedVideo \? \[\{ url: selectedVideo\.url, type: 'video', title: selectedVideo\.fileName \}\] : \[\]\}/);
   assert.match(previewBar, /onClose=\{\(\) => setSelectedVideo\(null\)\}/);

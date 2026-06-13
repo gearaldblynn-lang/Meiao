@@ -25,7 +25,6 @@ interface Props {
   onStateChange: React.Dispatch<React.SetStateAction<VideoPersistentState>>;
 }
 
-const formatDate = (time: number) => new Date(time).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-');
 
 const getStoryboardImageVersions = (board: VideoStoryboardProject['boards'][number]) => {
   const versions = Array.isArray(board.imageVersions) ? board.imageVersions.filter((item) => item?.imageUrl) : [];
@@ -53,7 +52,7 @@ const toStoryboardCards = (items: VideoStoryboardProject[]): Project[] => items.
       model: project.config.model,
       aspectRatio: project.config.aspectRatio,
       status: board.status === 'failed' ? 'error' : board.status === 'generating' ? 'generating' : 'completed',
-      createdAt: formatDate(project.createdAt),
+      createdAt: project.createdAt,
       module: 'video' as Project['module'],
       subFeature: 'storyboard',
       error: board.error,
@@ -79,8 +78,8 @@ const toStoryboardCards = (items: VideoStoryboardProject[]): Project[] => items.
     name: project.name,
     module: 'video' as Project['module'],
     status,
-    createdAt: formatDate(project.createdAt),
-    completedAt: project.status === 'completed' ? formatDate(project.createdAt) : undefined,
+    createdAt: project.createdAt,
+    completedAt: project.status === 'completed' ? project.createdAt : undefined,
     results,
     taskCount: Math.max(project.boards.length || project.shots.length || 1, 1),
     completedCount: Math.max(project.boards.filter((board) => board.imageUrl && board.status === 'completed').length, project.status === 'completed' ? 1 : 0),
@@ -108,8 +107,8 @@ const toDiagnosisCards = (state: VideoPersistentState): Project[] => {
     name: '视频诊断结果',
     module: 'video' as Project['module'],
     status,
-    createdAt: formatDate(analysis?.completedAt || probe?.completedAt || Date.now()),
-    completedAt: analysis?.completedAt ? formatDate(analysis.completedAt) : undefined,
+    createdAt: analysis?.completedAt || probe?.completedAt || Date.now(),
+    completedAt: analysis?.completedAt ? analysis.completedAt : undefined,
     results: [{
       id: 'video-diagnosis-summary',
       imageUrl: '',
@@ -117,7 +116,7 @@ const toDiagnosisCards = (state: VideoPersistentState): Project[] => {
       model: state.diagnosis?.analysisModel || 'analysis',
       aspectRatio: 'auto',
       status: status === 'error' ? 'error' : status === 'completed' ? 'completed' : 'generating',
-      createdAt: formatDate(analysis?.completedAt || probe?.completedAt || Date.now()),
+      createdAt: analysis?.completedAt || probe?.completedAt || Date.now(),
       module: 'video' as Project['module'],
       subFeature: 'diagnosis',
     }],

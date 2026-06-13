@@ -1,7 +1,27 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(*)"
+    "defaultMode": "dontAsk",
+    "ask": [
+      "Bash(rm *)",
+      "Bash(rm -*)",
+      "Bash(rmdir *)",
+      "Bash(mv *)",
+      "Bash(git commit *)",
+      "Bash(git commit*)",
+      "Bash(git push *)",
+      "Bash(git push*)",
+      "Bash(git reset *)",
+      "Bash(git checkout *)",
+      "Bash(git rebase *)",
+      "Bash(git merge *)",
+      "Bash(npm install*)",
+      "Bash(npm i *)",
+      "Bash(npm uninstall*)",
+      "Bash(npm publish*)",
+      "Bash(node scripts/cloud-*)",
+      "Bash(bash scripts/deploy*)",
+      "Bash(sh scripts/deploy*)",
+      "Bash(./scripts/deploy*)"
     ]
   }
 }

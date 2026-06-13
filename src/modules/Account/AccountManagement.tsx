@@ -3,6 +3,7 @@ import { AuthUser, InternalLogEntry } from '../../types';
 import UserAdminPanel from '../../components/Internal/UserAdminPanel';
 import { fetchInternalLogMeta, fetchInternalLogs } from '../../services/internalApi';
 import { ACTION_LABELS, MODULE_LABELS, STATUS_LABELS } from '../../services/loggingService';
+import { formatTime } from '../../utils/timeFormat.ts';
 import { buildLogCsv, deriveLogFailureReason } from './accountManagementUtils.mjs';
 import { buildLogFilterOptions } from './logQueryUtils.mjs';
 import { PopoverSelect, SegmentedTabs, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
@@ -99,14 +100,6 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
       } catch { /* 静默失败 */ }
     })();
   }, [isAdmin]);
-
-  const formatTime = (value: number) => {
-    try {
-      return new Date(value).toLocaleString('zh-CN', { hour12: false });
-    } catch {
-      return String(value);
-    }
-  };
 
   const formatDay = (value: number) => {
     try {

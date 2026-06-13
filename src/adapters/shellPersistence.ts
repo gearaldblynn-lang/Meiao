@@ -26,7 +26,7 @@ type ShellResult = {
   model: string;
   aspectRatio: string;
   status: 'completed' | 'generating' | 'error';
-  createdAt: string;
+  createdAt: number;
   module: AppModule;
   subFeature?: string;
   planId?: string;
@@ -47,8 +47,8 @@ type ShellProject = {
   name: string;
   module: AppModule;
   status: 'planning' | 'generating' | 'completed' | 'error';
-  createdAt: string;
-  completedAt?: string;
+  createdAt: number;
+  completedAt?: number;
   results: ShellResult[];
   taskCount: number;
   completedCount: number;

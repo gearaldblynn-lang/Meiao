@@ -5,6 +5,7 @@ import type { OneClickGenerationContext, VideoStoryboardProject } from '../../ty
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
 import { copyTextToClipboard } from '../../utils/clipboard.mjs';
 import { isInvalidOneClickPlanLike } from '../../utils/oneClickPlanValidation.ts';
+import { formatMonthDay } from '../../utils/timeFormat.ts';
 import ConfirmDialog from './ConfirmDialog';
 import ImageLightbox, { type LightboxMediaItem } from './ImageLightbox';
 import PlanEditor, { type PlanItem } from './PlanEditor';
@@ -15,8 +16,9 @@ export interface Project {
   name: string;
   module: string;
   status: 'planning' | 'generating' | 'completed' | 'error';
-  createdAt: string;
-  completedAt?: string;
+  createdAt: number;
+  completedAt?: number;
+  createdAtPrecise?: boolean;
   results: GeneratedResult[];
   plans?: PlanItem[];
   selectedPlanId?: string;
@@ -862,7 +864,7 @@ const ProjectCard: React.FC<Props> = ({
               {project.subFeature && (
                 <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{subFeatureNames[project.subFeature] || project.subFeature}</span>
               )}
-              <span className="text-[11px]" style={{ color: 'var(--text-disabled)' }}>{project.createdAt}</span>
+              <span className="text-[11px]" style={{ color: 'var(--text-disabled)' }}>{formatMonthDay(project.createdAt)}</span>
               {hasResults && (
                 <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
                   {project.results.length} 个结果
@@ -894,7 +896,7 @@ const ProjectCard: React.FC<Props> = ({
                 <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
                   <span>{moduleNames[project.module] || project.module}</span>
                   {project.subFeature && <span>{subFeatureNames[project.subFeature] || project.subFeature}</span>}
-                  <span>{project.createdAt}</span>
+                  <span>{formatMonthDay(project.createdAt)}</span>
                   <span>任务 {project.completedCount}/{project.taskCount}</span>
                 </div>
               </div>
@@ -1025,7 +1027,7 @@ const ProjectCard: React.FC<Props> = ({
                     </div>
                     <div className="rounded-2xl px-3 py-2" style={{ background: 'var(--bg-elevated)' }}>
                       <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>更新时间</p>
-                      <p className="mt-1 text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>{textReportResult?.createdAt || project.completedAt || project.createdAt}</p>
+                      <p className="mt-1 text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>{formatMonthDay(textReportResult?.createdAt || project.completedAt || project.createdAt)}</p>
                     </div>
                   </div>
                 </section>
@@ -1153,7 +1155,7 @@ const ProjectCard: React.FC<Props> = ({
                                 </span>
                               </div>
                               <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                                {result.aspectRatio || 'auto'} · {result.model || 'GPT Image 2'}
+                                {result.aspectRatio || 'auto'} · {result.model || '未记录'}
                                 {versionItems.length > 1 ? ` · 版本 ${selectedVersionIndex + 1}/${versionItems.length}` : ''}
                               </p>
                               {renderResultUsageMeta(displayResult)}
@@ -1476,7 +1478,7 @@ const ProjectCard: React.FC<Props> = ({
                             const displayedPrompt = normalizeSchemeText(matchedPlan?.schemeContent || result.prompt || '无 prompt 记录');
                             const resultMeta: string[] = [];
                             if (result.aspectRatio && result.aspectRatio !== 'auto') resultMeta.push(result.aspectRatio);
-                            if (result.createdAt) resultMeta.push(result.createdAt);
+                            if (result.createdAt) resultMeta.push(formatMonthDay(result.createdAt));
                             const regeneratePending = isRegeneratePending(result.id);
 
                             return (
@@ -1659,7 +1661,7 @@ const ProjectCard: React.FC<Props> = ({
                           const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
                           const resultMeta: string[] = [];
                           if (result.aspectRatio && result.aspectRatio !== 'auto') resultMeta.push(result.aspectRatio);
-                          if (result.createdAt) resultMeta.push(result.createdAt);
+                          if (result.createdAt) resultMeta.push(formatMonthDay(result.createdAt));
                           const regeneratePending = isRegeneratePending(result.id);
                           const mediaPanel = isTranslationProject ? (
                             <div className="grid h-[210px] w-full grid-cols-2 overflow-hidden">

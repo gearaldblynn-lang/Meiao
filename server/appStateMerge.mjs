@@ -140,6 +140,62 @@ export const compactAppStateForStorage = (state = {}) => {
   return next;
 };
 
+const projectAge = (project) => {
+  if (!project || typeof project !== 'object') return 0;
+  return Number(project.updatedAt || project.completedAt || project.createdAt || 0);
+};
+
+const collectTrimmableBuckets = (state) => {
+  const buckets = [];
+  if (Array.isArray(state?.shellProjects)) {
+    buckets.push({ array: state.shellProjects });
+  }
+  if (state?.oneClickMemory && typeof state.oneClickMemory === 'object') {
+    ONE_CLICK_BRANCH_KEYS.forEach((key) => {
+      const branch = state.oneClickMemory[key];
+      if (branch && Array.isArray(branch.projects)) {
+        buckets.push({ array: branch.projects });
+      }
+    });
+  }
+  return buckets;
+};
+
+export const trimAppStateForStorage = (state = {}, maxBytes) => {
+  if (!state || typeof state !== 'object') return state;
+  if (!maxBytes || maxBytes <= 0) return state;
+  const next = cloneJson(state);
+  let size = JSON.stringify(next).length;
+  if (size <= maxBytes) return next;
+
+  const activeId = compactKey(next.activeProjectId);
+  const buckets = collectTrimmableBuckets(next);
+
+  const findOldestVictim = ({ allowSingletonBuckets }) => {
+    let victim = null;
+    buckets.forEach((bucket) => {
+      if (!allowSingletonBuckets && bucket.array.length <= 1) return;
+      bucket.array.forEach((project, index) => {
+        if (project && compactKey(project.id) === activeId && activeId) return;
+        const age = projectAge(project);
+        if (victim == null || age < victim.age) {
+          victim = { bucket, index, age };
+        }
+      });
+    });
+    return victim;
+  };
+
+  while (size > maxBytes) {
+    const victim = findOldestVictim({ allowSingletonBuckets: false });
+    if (!victim) break;
+    victim.bucket.array.splice(victim.index, 1);
+    size = JSON.stringify(next).length;
+  }
+
+  return next;
+};
+
 const mergeIdArrays = (...lists) => Array.from(new Set(
   lists
     .flatMap((list) => Array.isArray(list) ? list : [])

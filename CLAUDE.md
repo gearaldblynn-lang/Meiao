@@ -14,6 +14,10 @@
 
 - 改任何"任务卡片状态/对账"相关代码前,**先读本文件第 3 节根因库**——这一块是历史复发重灾区(165 次提交里 114 次是 fix:,churn 最高的全是状态文件)。
 - 动手重构前确认 git 工作树干净、可回滚;改完跑 `npm run lint` + 相关 `node --test server/*.test.mjs`。
+- **跑测试的命令**(本项目没装 tsx):
+  - 后端 `.mjs` 测试 → `node --test server/xxx.test.mjs`
+  - 前端 `.test.mjs`(会 `import './xxx.ts'`)→ 必须加 `node --experimental-strip-types --test src/.../xxx.test.mjs`,否则 Node 报 `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`(文档里写的 `node --test` 漏了这个 flag)。
+  - 全量:`find src -name "*.test.mjs" | xargs node --experimental-strip-types --test` / `find server -name "*.test.mjs" | xargs node --test`。
 
 ## 3. 已诊断根因库 ★(2026-06-12 全栈只读诊断,均已读码确认,**暂未修复**)
 
@@ -57,3 +61,9 @@
   现象:好端端的项目被标记"生成失败"。
   修复:抽出纯函数判据 `src/utils/frontendResourceError.mjs` `isFrontendResourceError`(配行为测试 `frontendResourceError.test.mjs`);`ShellMigratedApp.tsx` 加 `bailIfFrontendResourceError`——命中即刷新页面并 `return`,在 **7 个 workflow catch 顶部 + 加载器**统一拦截,资源错永远到不了那 21 处 `status:'error'` 写入。验证:920 测试全过 + tsc + build。分支 `fix/chunk-error-boundary`。
   如何避免:**资源加载错误不得污染业务状态;两类错误必须分流处理。**(已固化为 `isFrontendResourceError` 单一判据 + 行为测试)
+
+- **#6 ✅ 已修(2026-06-13)· `createdAt` 把展示标签当数据存,导致排序乱序**
+  根因:壳层 `Project/GeneratedResult/Task.createdAt` 是 `string`,既当数据又当展示;产生侧多处 `new Date().toLocaleDateString(...).replace('/','-')` 产年缺失的 `"06-13"`,`shellDataAdapter.toDateLabel` 把后端 job 本来就有的毫秒戳主动降精度成字符串。消费侧 `shellScopeFilters.projectSortKey` 为容忍脏数据堆了 6 层启发式,其中 `parseMonthDay("06-13")` 用 `new Date()` 当前年拼戳 → 任何"id 不含 12-13 位毫秒戳 + createdAt 是年缺失字符串"的历史/导入项目被算成"今年某月某日"浮到最顶,无视真实新旧。**最小输入对比探针(`/tmp/sortprobe.mjs` 喂进真 `sortProjectsNewestFirst`)复现了乱序**——光读代码会误判为"新项目也乱",实际只影响历史项目。
+  现象:项目列表里老项目被顶到最前、顺序翻烧饼。
+  修复:`createdAt`/`completedAt` 全链路 `string → number`(规范毫秒戳),靠 tsc 揪出全部消费点;恢复启发式收敛到读边界单一判据 `src/utils/createdAtMs.ts` `coerceCreatedAtMs(raw,{id,updatedAt}) → {ms,precise}`;`projectSortKey` 塌成 `precise tier desc → createdAt desc → sequence desc → 原序`(年缺失值 tier=0 永不排在真实戳之前);展示抽共享 `src/utils/timeFormat.ts`(`formatMonthDay` 等价旧 `toDateLabel`,卡片仍显示 `"06-13"`;`formatTime` 合并原 3 份重复实现)。后端零改动(`appStateMerge.mjs:145` 本就 `Number()` coerce)。探针固化为 `shellScopeFilters.test.mjs` 回归测试 + `createdAtMs`/`timeFormat` 单测。验证:前端 650 + 后端 303 全过 + tsc 干净 + eslint 0 error。spec/plan 见 `docs/superpowers/{specs,plans}/2026-06-13-createdAt-*`。
+  如何避免:**时间一律存数字毫秒戳,展示字符串只在渲染处由 `formatMonthDay`/`formatTime` 产出;展示标签绝不当排序/逻辑数据存。"现算/合并/排序"类改动前,先写最小输入对比探针复现,别只靠读代码推断根因。**

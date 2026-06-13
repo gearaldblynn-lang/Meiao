@@ -4173,3 +4173,116 @@ test('shell data adapter preserves retry_waiting status on result and task witho
   // task 级也保留(供 ActiveTasksPanel 等用)
   assert.equal(snapshot.tasks.find((t) => t.backendJobId === 'job-retry-1')?.status, 'retry_waiting', 'task.status 必须保留 retry_waiting');
 });
+
+// 根因 · 脏数据 fallback 不入库(2026-06-13 体检发现)
+// 来源:shellDataAdapter.ts:696、926 把缺失的 model 写死成 '旧任务',
+// shellDataAdapter.ts:695 把缺失的 prompt 落到 fallbackTitle("项目名 N")。
+// 这些"占位值"被当成真实历史持久化进库 → 用户看到的脏数据。
+// 修复方向:fallback 缺失时输出 undefined / 空串,展示侧再决定占位文案。
+test('shell data adapter does not synthesize "旧任务" model when item has no model field', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'proj-no-model',
+      name: '缺模型项目',
+      module: 'retouch',
+      status: 'completed',
+      createdAt: '06-13',
+      subFeature: 'original',
+      taskCount: 1,
+      completedCount: 1,
+      results: [{
+        id: 'r-no-model-1',
+        imageUrl: 'https://example.com/img.png',
+        status: 'completed',
+        prompt: 'real prompt',
+        // model 故意不写 —— 模拟历史/上游缺字段场景
+        aspectRatio: '1:1',
+        createdAt: '06-13',
+        module: 'retouch',
+      }],
+    }],
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-no-model');
+  assert.ok(project);
+  // 关键断言:model 缺失时不得伪造 '旧任务'
+  assert.notEqual(project.results[0].model, '旧任务', 'model 缺失不能伪造为 "旧任务"');
+  // 缺失就是缺失:undefined 或空串(由展示侧兜底)
+  assert.ok(
+    project.results[0].model === undefined || project.results[0].model === '',
+    `model 缺失应为 undefined 或空,当前为 ${JSON.stringify(project.results[0].model)}`,
+  );
+});
+
+test('shell data adapter strips legacy "旧任务" placeholder back to undefined on read', () => {
+  // 库里已经写入了脏数据 '旧任务',读取入口应识别为占位、不让它继续往下流
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'proj-legacy-dirty',
+      name: '历史脏数据项目',
+      module: 'retouch',
+      status: 'completed',
+      createdAt: '06-13',
+      subFeature: 'original',
+      taskCount: 1,
+      completedCount: 1,
+      results: [{
+        id: 'r-legacy-1',
+        imageUrl: 'https://example.com/img.png',
+        status: 'completed',
+        prompt: 'real prompt',
+        model: '旧任务',
+        aspectRatio: '1:1',
+        createdAt: '06-13',
+        module: 'retouch',
+      }],
+    }],
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-legacy-dirty');
+  assert.ok(project);
+  assert.notEqual(project.results[0].model, '旧任务', '入口必须把 "旧任务" 占位剥成 undefined,不让脏数据继续传播');
+});
+
+test('shell data adapter does not synthesize fake prompt from project name when item has no prompt fields', () => {
+  // 来自后端 jobs(走 resultFromItem 路径),不是 shellProjects 直传
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'proj-no-prompt',
+      name: '缺提示词项目',
+      module: 'retouch',
+      status: 'generating',
+      createdAt: '06-13',
+      subFeature: 'original',
+      taskCount: 1,
+      completedCount: 0,
+      results: [],
+    }],
+  }, [{
+    id: 'job-no-prompt-1',
+    module: 'retouch',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'completed',
+    providerTaskId: 'kie-no-prompt',
+    payload: {
+      shellProjectId: 'proj-no-prompt',
+      subFeature: 'original',
+      // prompt 故意不写
+    },
+    result: { imageUrl: 'https://example.com/np.png' },
+    createdAt: 1780020000000,
+    updatedAt: 1780020005000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-no-prompt');
+  assert.ok(project);
+  const result = project.results[0];
+  assert.ok(result, 'should have a result row');
+  // 关键断言:prompt 缺失时不能落到 "缺提示词项目 1" 这种伪造标题
+  const promptStr = String(result.prompt || '');
+  assert.ok(
+    !promptStr.includes('缺提示词项目'),
+    `prompt 缺失不能伪造为 fallbackTitle("项目名 N"),当前为 ${JSON.stringify(promptStr)}`,
+  );
+});

@@ -171,6 +171,40 @@ export const isTransientMysqlConnectionError = (error) =>
   TRANSIENT_MYSQL_CONNECTION_ERROR_CODES.has(String(error?.code || ''))
   || /pool is closed|connection lost|server closed the connection/i.test(String(error?.message || ''));
 
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// reconcile loop 退避:按连续失败次数指数放大间隔,封顶 maxMs,下限 baseMs。
+// failureCount=0(健康)→ baseMs;每多失败一次翻倍。成功后调用方应把计数清零。
+export const getReconcileBackoffMs = (failureCount, baseMs, maxMs) => {
+  const base = Number(baseMs) > 0 ? Number(baseMs) : 60000;
+  const max = Number(maxMs) > 0 ? Number(maxMs) : base;
+  const failures = Number.isFinite(failureCount) && failureCount > 0 ? Math.floor(failureCount) : 0;
+  return Math.min(base * 2 ** failures, max);
+};
+
+// 瞬时连接错(Pool is closed 等)有限次重试 + 指数退避。
+// 非瞬时错立即抛;重试耗尽抛最后一次错。sleep 可注入便于测试。
+export const runWithTransientRetry = async (operation, {
+  maxRetries = 2,
+  isTransient = isTransientMysqlConnectionError,
+  backoffMs = (attempt) => Math.min(200 * 2 ** attempt, 4000),
+  sleep = defaultSleep,
+  onRetry,
+} = {}) => {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await operation();
+    } catch (error) {
+      if (!isTransient(error) || attempt >= maxRetries) throw error;
+      const delay = backoffMs(attempt);
+      if (onRetry) onRetry({ attempt, delay, error });
+      await sleep(delay);
+      attempt += 1;
+    }
+  }
+};
+
 export const getNextJobFailureState = ({ retryCount = 0, maxRetries = 0, errorCode = '' }) => {
   if (!isRetryableErrorCode(errorCode)) {
     return { status: 'failed', retryCount };
