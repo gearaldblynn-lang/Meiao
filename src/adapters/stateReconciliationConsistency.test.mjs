@@ -97,3 +97,54 @@ test('shell persistence keeps a partially-completed project generating until eve
   assert.equal(merged.status, 'generating', '还有任务在跑时不得谎报已完成');
   assert.equal(merged.taskCount, 3, 'taskCount 必须把还在跑的任务也数进去(2 完成 + 1 生成中 = 3)');
 });
+
+// 根因 #1 漂移③验收测试:stale 占位检测不能只保护 one_click。
+// 当 prompt 等于模块自己的中文标签(说明是 fallback 出来的占位、用户没填真实内容)、
+// 又无 media/无 provider 身份/id 带 -pending,这种"假占位"应在所有模块被识别为 stale 并过滤。
+// 现状:isStaleOneClickPlanningPlaceholderItem 硬编码 '一键主详' 且只在 isOneClick 路径调用,
+// 其它模块(如 retouch)同模式占位会一直保留,看起来"卡处理中"。
+test('shell persistence drops stale fallback-prompt placeholders for non-one_click modules', () => {
+  const state = buildPersistedAppState();
+  const partialProject = {
+    id: 'proj-retouch-stale',
+    name: '精修项目',
+    module: 'retouch',
+    status: 'generating',
+    createdAt: '06-13',
+    subFeature: 'original',
+    results: [
+      {
+        id: 'r1',
+        imageUrl: 'https://example.com/r1.png',
+        prompt: 'p',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'completed',
+        createdAt: '06-13',
+        module: 'retouch',
+        subFeature: 'original',
+      },
+      // 假占位:prompt 是模块标签 fallback、id 带 -pending、无 media/无身份/有 backendJobId
+      {
+        id: 'r2-pending',
+        imageUrl: '',
+        prompt: '产品精修',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'generating',
+        createdAt: '06-13',
+        module: 'retouch',
+        subFeature: 'original',
+        backendJobId: 'job-stale',
+      },
+    ],
+    taskCount: 2,
+    completedCount: 1,
+  };
+
+  const next = upsertShellProjectIntoPersistedState(state, partialProject);
+  const merged = next.shellProjects.find((p) => p.id === 'proj-retouch-stale');
+
+  assert.equal(merged.results.length, 1, 'fallback-prompt 占位应被过滤,只保留真实完成项');
+  assert.equal(merged.results[0].id, 'r1', '保留的应是真实完成项 r1');
+});

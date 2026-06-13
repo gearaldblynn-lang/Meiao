@@ -2,6 +2,7 @@ import type { AppModule } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
 import { isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 import { mergeArrayByStableKeys } from '../utils/taskResultReconcile.mjs';
+import { SHELL_MODULE_LABELS } from './shellDataAdapter.ts';
 
 const INTERNAL_BACKEND_JOB_ID_PATTERN = /^[a-f0-9]{24}$/i;
 
@@ -167,9 +168,19 @@ const hasGeneratingState = (item: any) => (
 
 const hasErrorState = (item: any) => ['error', 'failed', 'interrupted'].includes(String(item?.status || ''));
 
-const isStaleOneClickPlanningPlaceholderItem = (item: any) => {
+// 漂移③ 修复:不再硬编码 '一键主详',改为读模块标签常量,并推广到所有模块。
+// 当 prompt 等于该模块自己的中文标签 fallback,且无 media/无 provider 身份时,
+// 这条记录就是"假占位"——以前只保护 one_click,现在所有模块同款保护。
+// scheme 这类没 module 字段的元素,退化为"prompt 命中任意已知模块标签",
+// 仍需配合无 media/无身份/有 backendJobId 或 -pending 才命中,误判概率极低。
+const isStaleFallbackPromptPlaceholderItem = (item: any) => {
   const content = compactKey(item?.prompt || item?.schemeContent || item?.editedContent || item?.originalContent);
-  if (content !== '一键主详') return false;
+  if (!content) return false;
+  const moduleLabel = SHELL_MODULE_LABELS[String(item?.module || '')];
+  const matchesFallbackLabel = moduleLabel
+    ? content === moduleLabel
+    : Object.values(SHELL_MODULE_LABELS).includes(content);
+  if (!matchesFallbackLabel) return false;
   const id = compactKey(item?.id);
   return (
     (String(item?.status || '') === 'generating' || /-pending$/i.test(id))
@@ -190,8 +201,9 @@ const filterStaleOneClickPlanningPlaceholders = <T extends Record<string, any>>(
   kind: 'result' | 'plan' | 'scheme',
 ) => (
   (items || []).filter((item) => {
+    // fallback-prompt 占位检测对所有模块生效,不再只保护 one_click
+    if (isStaleFallbackPromptPlaceholderItem(item)) return false;
     if (!isOneClick) return true;
-    if (isStaleOneClickPlanningPlaceholderItem(item)) return false;
     if (kind === 'plan' && isInvalidOneClickPlanLike(item)) return false;
     if ((kind === 'result' || kind === 'scheme') && isInvalidOneClickCompletedMediaItem(item)) return false;
     return true;
