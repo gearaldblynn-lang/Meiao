@@ -1,5 +1,5 @@
 import './shell/index.css';
-import React, { Suspense, lazy, useState, useCallback, useEffect, useRef } from 'react';
+import React, { Suspense, lazy, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
 import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
@@ -106,7 +106,7 @@ export interface GeneratedResult {
   model: string;
   aspectRatio: string;
   status: 'completed' | 'generating' | 'error';
-  createdAt: string;
+  createdAt: number;
   module: AppModule;
   subFeature?: string;
   sourceUrl?: string;
@@ -302,8 +302,9 @@ export interface Project {
   name: string;
   module: AppModule;
   status: 'planning' | 'generating' | 'completed' | 'error';
-  createdAt: string;
-  completedAt?: string;
+  createdAt: number;
+  completedAt?: number;
+  createdAtPrecise?: boolean;
   results: GeneratedResult[];
   plans?: PlanItem[];
   selectedPlanId?: string;
@@ -329,7 +330,7 @@ export interface Task {
   status: 'pending' | 'generating' | 'completed' | 'error';
   title: string;
   progress?: number;
-  createdAt: string;
+  createdAt: number;
   total?: number;
   completed?: number;
   subFeature?: string;
@@ -548,10 +549,10 @@ const hasPlanningSnapshotChanged = (
     || getOneClickPlanningFingerprint(project) !== getOneClickPlanningFingerprint(persistedProject);
 };
 
-const findPersistedShellProject = (state: Partial<PersistedAppState> | null | undefined, projectId: string) => (
-  (Array.isArray(state?.shellProjects) ? state?.shellProjects : [])
-    .find((project) => String(project?.id || '').trim() === projectId)
-);
+const findPersistedShellProject = (state: Partial<PersistedAppState> | null | undefined, projectId: string) => {
+  const shellProjects = Array.isArray(state?.shellProjects) ? state.shellProjects : [];
+  return shellProjects.find((project) => String(project?.id || '').trim() === projectId);
+};
 
 const shouldPersistSyncedProjectFromJobs = (
   project: Project,
@@ -916,7 +917,7 @@ const buildFailedPlanningResultFromPlan = (options: {
   plan: PlanItem;
   index: number;
   projectId: string;
-  createdAt: string;
+  createdAt: number;
   module: AppModule;
   subFeature?: string;
   model: string;
@@ -1493,7 +1494,7 @@ const translationStatusToGeneratedStatus = (status: TranslationBatchFile['status
 
 const translationFileToResult = (
   file: TranslationBatchFile,
-  createdAtLabel: string,
+  createdAtLabel: number,
 ): GeneratedResult => ({
   id: file.id,
   projectId: file.projectId,
@@ -1892,7 +1893,12 @@ const AppContent: React.FC<{
     () => initialDraftSnapshot.inputStateByScope || {},
   );
   const promptText = inputStateByScope[activeScopeKey]?.promptText || '';
-  const currentParams = inputStateByScope[activeScopeKey]?.params || {};
+  // currentParams 用 useMemo 稳住引用:原来 `|| {}` 每次渲染都造新对象,
+  // 导致下游 5 个 useCallback 依赖每次都变、记忆全部失效(前端卡顿真凶)。
+  const currentParams = useMemo(
+    () => inputStateByScope[activeScopeKey]?.params || {},
+    [inputStateByScope, activeScopeKey],
+  );
   const [videoMemory, setVideoMemoryState] = useState<VideoPersistentState | null>(null);
   const taskControllersRef = useRef<Record<string, AbortController>>({});
   const generationSubmitLocksRef = useRef<Set<string>>(new Set());
@@ -3084,7 +3090,10 @@ const AppContent: React.FC<{
     materialsRef.current = materials;
   }, [materials]);
 
-  const filteredMaterials = filterMaterialsForScope(materials, activeModule, activeSubFeature);
+  const filteredMaterials = useMemo(
+    () => filterMaterialsForScope(materials, activeModule, activeSubFeature),
+    [materials, activeModule, activeSubFeature],
+  );
 
   // ── Generate (standard modules) ──
   const handleGenerate = useCallback(async () => {
@@ -3436,7 +3445,7 @@ const AppContent: React.FC<{
       return;
     }
     addToast('任务已提交，正在准备素材', 'info');
-    const immediateCreatedAt = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-');
+    const immediateCreatedAt = Date.now();
     const immediateProject = targetModule === AppModuleObj.EVERYTHING_REPLACE
       ? ({
         id: 'proj-' + Date.now(),
@@ -3530,7 +3539,7 @@ const AppContent: React.FC<{
 
       const projectId = `translation-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const createdAtTs = Date.now();
-      const createdAt = new Date(createdAtTs).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-');
+      const createdAt = createdAtTs;
       const projectTitle = translationSubFeatureLabel || MODULE_NAMES[targetModule];
       const totalCount = translationSourceMaterials.length;
       const translationFileItems: TranslationBatchFile[] = translationSourceMaterials.map((material, index) => ({
@@ -3815,7 +3824,7 @@ const AppContent: React.FC<{
 
     if (targetModule === AppModuleObj.ONE_CLICK) {
       const projectId = 'proj-plan-' + Date.now();
-      const createdAt = new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-');
+      const createdAt = Date.now();
       const planningProject: Project = {
         id: projectId,
         name: projectName,
@@ -4073,7 +4082,7 @@ const AppContent: React.FC<{
       name: projectName,
       module: targetModule,
       status: 'generating',
-      createdAt: immediateProject?.createdAt || new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-'),
+      createdAt: immediateProject?.createdAt ?? Date.now(),
       results: [],
       taskCount: batchCount,
       completedCount: 0,
@@ -5925,7 +5934,7 @@ const AppContent: React.FC<{
         name: `${project.name} · ${variantLabel}`,
         module: AppModuleObj.ONE_CLICK,
         status: 'planning',
-        createdAt: new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-'),
+        createdAt: Date.now(),
         results: [],
         plans: [variantPlan],
         selectedPlanId: variantPlan.id,
@@ -6460,7 +6469,7 @@ const AppContent: React.FC<{
         name: `${project.name} · 修改`,
         module: project.module,
         status: 'planning',
-        createdAt: new Date().toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-'),
+        createdAt: Date.now(),
         results: [],
         plans: [editPlan],
         selectedPlanId: editPlan.id,

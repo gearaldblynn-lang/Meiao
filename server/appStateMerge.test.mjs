@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { compactAppStateForStorage, mergeAppStateForStorage } from './appStateMerge.mjs';
+import { compactAppStateForStorage, mergeAppStateForStorage, trimAppStateForStorage } from './appStateMerge.mjs';
 
 const serverSource = () => readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
 
@@ -1437,3 +1437,107 @@ test('mergeAppStateForStorage keeps a partially-completed project generating unt
   assert.equal(merged.shellProjects[0].status, 'generating', '还有任务在跑时不得谎报已完成');
   assert.equal(merged.shellProjects[0].taskCount, 3, 'taskCount 必须把还在跑的任务也数进去(2 完成 + 1 生成中 = 3)');
 });
+
+// 根因 #4 止血(2026-06-13 体检):写入前给 state_json 加大小守卫,
+// 超过阈值时按 updatedAt 倒序裁掉老项目。LONGTEXT 上限 4 GiB 不是问题,
+// 真正会撞的是 MySQL max_allowed_packet(常见 16 MiB),所以默认阈值给保守的 4 MiB。
+test('trimAppStateForStorage returns state unchanged when under maxBytes', () => {
+  const state = {
+    shellProjects: [
+      { id: 'p1', name: 'a', updatedAt: 1000, results: [] },
+      { id: 'p2', name: 'b', updatedAt: 2000, results: [] },
+    ],
+  };
+  const maxBytes = 1024 * 1024;
+  const trimmed = trimAppStateForStorage(state, maxBytes);
+  assert.equal(trimmed.shellProjects.length, 2, '未超阈值不裁剪');
+  assert.equal(trimmed.shellProjects[0].id, 'p1');
+  assert.equal(trimmed.shellProjects[1].id, 'p2');
+});
+
+test('trimAppStateForStorage drops oldest shellProjects when state_json exceeds maxBytes', () => {
+  const padding = 'x'.repeat(500);
+  const state = {
+    shellProjects: Array.from({ length: 10 }, (_, i) => ({
+      id: `p${i}`,
+      name: `proj-${i}`,
+      updatedAt: 1000 + i, // i=9 最新, i=0 最老
+      padding,
+      results: [],
+    })),
+  };
+  const maxBytes = 2000; // 故意定小,逼裁剪
+  const trimmed = trimAppStateForStorage(state, maxBytes);
+  // 必须裁,至少不能跟原状一致
+  assert.ok(trimmed.shellProjects.length < 10, `裁后项目数应 < 10,当前 ${trimmed.shellProjects.length}`);
+  assert.ok(trimmed.shellProjects.length >= 1, '至少保留 1 项,不得清空');
+  // 保留的必须是最新的(updatedAt 大的)
+  const keptIds = trimmed.shellProjects.map((p) => p.id);
+  const newest = `p${10 - trimmed.shellProjects.length}`;
+  assert.ok(keptIds.includes('p9'), `必须保留最新项目 p9,当前留下 ${keptIds.join(',')}`);
+  assert.ok(!keptIds.includes('p0'), `必须先裁最老项目 p0,当前留下 ${keptIds.join(',')}`);
+  // 裁后大小达标
+  const trimmedSize = JSON.stringify(trimmed).length;
+  assert.ok(trimmedSize <= maxBytes, `裁后字节数 ${trimmedSize} 必须 <= maxBytes ${maxBytes}`);
+});
+
+test('trimAppStateForStorage drops oldest oneClickMemory branch projects when oversize', () => {
+  const padding = 'x'.repeat(500);
+  const mkProj = (i) => ({
+    id: `oc-${i}`,
+    updatedAt: 1000 + i,
+    padding,
+    schemes: [],
+  });
+  const state = {
+    oneClickMemory: {
+      firstImage: { projects: Array.from({ length: 8 }, (_, i) => mkProj(i)) },
+      mainImage: { projects: [] },
+      detailPage: { projects: [] },
+      sku: { projects: [] },
+    },
+  };
+  const maxBytes = 1500;
+  const trimmed = trimAppStateForStorage(state, maxBytes);
+  const kept = trimmed.oneClickMemory.firstImage.projects;
+  assert.ok(kept.length < 8, `firstImage 应被裁,当前剩 ${kept.length}`);
+  assert.ok(kept.length >= 1, '至少保留 1 项');
+  // 必须留最新的(id 末尾大),不留最老的
+  assert.ok(kept.some((p) => p.id === 'oc-7'), `必须留最新 oc-7,实际 ${kept.map((p) => p.id).join(',')}`);
+  assert.ok(!kept.some((p) => p.id === 'oc-0'), `必须先裁最老 oc-0,实际 ${kept.map((p) => p.id).join(',')}`);
+  assert.ok(JSON.stringify(trimmed).length <= maxBytes);
+});
+
+test('trimAppStateForStorage protects activeProjectId from being trimmed even if oldest', () => {
+  // active 项目是 oc-0(最老),按 updatedAt 应该最先被裁,但守卫必须留它
+  const padding = 'x'.repeat(500);
+  const state = {
+    activeProjectId: 'oc-0',
+    shellProjects: Array.from({ length: 8 }, (_, i) => ({
+      id: `oc-${i}`,
+      updatedAt: 1000 + i,
+      padding,
+      results: [],
+    })),
+  };
+  const maxBytes = 2000;
+  const trimmed = trimAppStateForStorage(state, maxBytes);
+  const keptIds = trimmed.shellProjects.map((p) => p.id);
+  assert.ok(keptIds.includes('oc-0'), `active 项目 oc-0 必须保留(即便最老),实际 ${keptIds.join(',')}`);
+});
+
+test('trimAppStateForStorage falls back to keeping at least one project when no project alone fits', () => {
+  // 极端:单个项目就超过 maxBytes — 不能清空,至少保留最新一项,让连接池活下来
+  const huge = 'x'.repeat(5000);
+  const state = {
+    shellProjects: [
+      { id: 'p1', updatedAt: 1000, padding: huge, results: [] },
+      { id: 'p2', updatedAt: 2000, padding: huge, results: [] },
+    ],
+  };
+  const maxBytes = 200; // 比单个还小
+  const trimmed = trimAppStateForStorage(state, maxBytes);
+  assert.equal(trimmed.shellProjects.length, 1, '极端情况至少留 1 项');
+  assert.equal(trimmed.shellProjects[0].id, 'p2', '保留的必须是最新那个');
+});
+

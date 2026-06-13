@@ -1,6 +1,7 @@
 import type { AppModule, InternalJob } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
 import { getOneClickPlanContent, isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
+import { coerceCreatedAtMs } from '../utils/createdAtMs.ts';
 
 type ShellProjectStatus = 'planning' | 'generating' | 'completed' | 'error';
 type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
@@ -13,10 +14,10 @@ export interface ShellGeneratedResult {
   videoUrl?: string;
   mediaType?: 'image' | 'video';
   prompt: string;
-  model: string;
+  model?: string;
   aspectRatio: string;
   status: 'completed' | 'generating' | 'error' | 'retry_waiting';
-  createdAt: string;
+  createdAt: number;
   module: AppModule;
   subFeature?: string;
   sourceUrl?: string;
@@ -36,8 +37,9 @@ export interface ShellProjectData {
   name: string;
   module: AppModule;
   status: ShellProjectStatus;
-  createdAt: string;
-  completedAt?: string;
+  createdAt: number;
+  completedAt?: number;
+  createdAtPrecise?: boolean;
   results: ShellGeneratedResult[];
   taskCount: number;
   completedCount: number;
@@ -84,7 +86,7 @@ export interface ShellTaskData {
   status: ShellTaskStatus;
   title: string;
   progress?: number;
-  createdAt: string;
+  createdAt: number;
   total?: number;
   completed?: number;
   subFeature?: string;
@@ -190,9 +192,10 @@ const TRANSLATION_SUBFEATURES: Record<string, string> = {
   remove_text: 'remove_text',
 };
 
-const toDateLabel = (value: unknown) => {
-  const ts = typeof value === 'number' && Number.isFinite(value) ? value : Date.now();
-  return new Date(ts).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }).replace('/', '-');
+// 把 job 的时间字段取成规范毫秒戳(无有效值则退当前时刻)。展示由渲染层 formatMonthDay 负责。
+const toCreatedMs = (value: unknown): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : Date.now();
 };
 
 const toModule = (value: unknown): AppModule => {
@@ -404,6 +407,16 @@ const findPersistedStoryboardPlanningProjectForJob = (job: InternalJob, projects
     }))
     .sort((a, b) => a.distance - b.distance);
   return candidates[0]?.project;
+};
+
+const LEGACY_MODEL_PLACEHOLDERS = new Set(['旧任务', '生成任务', '策划任务']);
+
+const normalizeModel = (raw: unknown): string | undefined => {
+  if (raw == null) return undefined;
+  const text = String(raw).trim();
+  if (!text) return undefined;
+  if (LEGACY_MODEL_PLACEHOLDERS.has(text)) return undefined;
+  return text;
 };
 
 const getPrompt = (item: any, fallback: string, module?: AppModule) => {
@@ -675,7 +688,7 @@ const resultFromItem = (
   item: any,
   module: AppModule,
   fallbackTitle: string,
-  createdAt: string,
+  createdAt: number,
   subFeature?: string,
   fallbackPrompt?: string,
 ): ShellGeneratedResult | null => {
@@ -693,7 +706,7 @@ const resultFromItem = (
     videoUrl: mediaType === 'video' ? url : undefined,
     mediaType,
     prompt: getPrompt(item, fallbackPrompt || fallbackTitle, module),
-    model: String(item?.model || item?.payload?.model || '旧任务'),
+    model: normalizeModel(item?.model || item?.payload?.model),
     aspectRatio: String(item?.matchedAspectRatio || item?.aspectRatio || item?.payload?.aspectRatio || item?.payload?.ratio || 'auto'),
     status: status === 'completed' ? 'completed' : status === 'error' ? 'error' : status === 'retry_waiting' ? 'retry_waiting' : 'generating',
     createdAt,
@@ -728,7 +741,7 @@ const projectFromItems = (
   directGeneration?: unknown,
 ): ShellProjectData | null => {
   if (!items.length) return null;
-  const createdAt = toDateLabel(createdAtValue);
+  const { ms: createdAt, precise: createdAtPrecise } = coerceCreatedAtMs(createdAtValue, { id });
   const results = items
     .map((item, index) => resultFromItem(item, module, `${name} ${index + 1}`, createdAt, subFeature, fallbackPrompt))
     .filter((item): item is ShellGeneratedResult => Boolean(item));
@@ -744,6 +757,7 @@ const projectFromItems = (
     module,
     status: hasRunning ? 'generating' : hasError ? 'error' : completedCount > 0 ? 'completed' : 'planning',
     createdAt,
+    createdAtPrecise,
     completedAt: completedCount > 0 ? createdAt : undefined,
     results,
     taskCount: Math.max(items.length, results.length),
@@ -915,6 +929,9 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
       ...project,
       module: toModule(project.module),
       status: taskStatusToProject(project.status),
+      createdAt: coerceCreatedAtMs(project.createdAt, { id: project.id, updatedAt: project.updatedAt }).ms,
+      createdAtPrecise: coerceCreatedAtMs(project.createdAt, { id: project.id, updatedAt: project.updatedAt }).precise,
+      completedAt: project.completedAt != null ? coerceCreatedAtMs(project.completedAt, { id: project.id, updatedAt: project.updatedAt }).ms : undefined,
       results: Array.isArray(project.results) ? project.results.map((result: any, index: number) => ({
         id: String(result?.id || `${project.id}-result-${index}`),
         planId: String(result?.planId || '').trim() || undefined,
@@ -923,10 +940,10 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         videoUrl: String(result?.videoUrl || '').trim() || undefined,
         mediaType: result?.mediaType === 'video' ? 'video' : 'image',
         prompt: String(result?.prompt || '').trim(),
-        model: String(result?.model || '旧任务'),
+        model: normalizeModel(result?.model),
         aspectRatio: String(result?.aspectRatio || 'auto'),
         status: result?.status === 'error' ? 'error' : result?.status === 'generating' ? 'generating' : 'completed',
-        createdAt: String(result?.createdAt || project.createdAt || toDateLabel(Date.now())),
+        createdAt: coerceCreatedAtMs(result?.createdAt ?? project.createdAt, { id: result?.id ?? project.id, updatedAt: project.updatedAt }).ms,
         module: toModule(result?.module || project.module),
         subFeature: String(result?.subFeature || project.subFeature || '').trim() || undefined,
         sourceUrl: String(result?.sourceUrl || '').trim() || undefined,
@@ -1297,7 +1314,7 @@ const mapJobs = (
     });
     sortedJobs.forEach((job) => groupedEverythingReplaceJobIds.add(String(job.id || '').trim()));
     const firstJob = sortedJobs[0];
-    const createdAt = toDateLabel(firstJob?.createdAt || firstJob?.updatedAt || Date.now());
+    const createdAt = toCreatedMs(firstJob?.createdAt || firstJob?.updatedAt || Date.now());
     const subFeature = normalizeJobSubFeature(MODULE_VALUES.EVERYTHING_REPLACE, firstJob?.taskType, firstJob?.payload || {});
     const results: ShellGeneratedResult[] = sortedJobs.map((job, index) => {
       const urls = getResultUrls(job);
@@ -1310,10 +1327,10 @@ const mapJobs = (
         imageUrl: urls[0] || '',
         mediaType: 'image' as const,
         prompt: String(job.payload?.prompt || job.errorMessage || MODULE_LABELS[MODULE_VALUES.EVERYTHING_REPLACE] || '万物替换'),
-        model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+        model: normalizeModel(job.payload?.model || job.result?.model || job.provider),
         aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
         status: (status === 'completed' && urls[0] ? 'completed' : status === 'error' ? 'error' : 'generating') as ShellGeneratedResult['status'],
-        createdAt: toDateLabel(job.createdAt || firstJob?.createdAt),
+        createdAt: toCreatedMs(job.createdAt || firstJob?.createdAt),
         module: MODULE_VALUES.EVERYTHING_REPLACE,
         subFeature,
         taskId: providerTaskId || undefined,
@@ -1340,7 +1357,7 @@ const mapJobs = (
       module: MODULE_VALUES.EVERYTHING_REPLACE,
       status: hasRunning ? 'generating' : hasError ? 'error' : 'completed',
       createdAt,
-      completedAt: completedCount >= taskCount && !hasRunning ? toDateLabel(sortedJobs.at(-1)?.finishedAt || sortedJobs.at(-1)?.updatedAt || sortedJobs.at(-1)?.createdAt) : undefined,
+      completedAt: completedCount >= taskCount && !hasRunning ? toCreatedMs(sortedJobs.at(-1)?.finishedAt || sortedJobs.at(-1)?.updatedAt || sortedJobs.at(-1)?.createdAt) : undefined,
       results,
       taskCount,
       completedCount,
@@ -1361,7 +1378,7 @@ const mapJobs = (
           title: jobTaskTitle(job, MODULE_VALUES.EVERYTHING_REPLACE, subFeature),
           prompt: String(job.payload?.prompt || ''),
           progress: job.status === 'running' ? 42 : 8,
-          createdAt: toDateLabel(job.createdAt),
+          createdAt: toCreatedMs(job.createdAt),
           subFeature,
           backendJobId: String(job.id || ''),
         });
@@ -1451,7 +1468,7 @@ const mapJobs = (
         || '一键主详策划',
       module: MODULE_VALUES.ONE_CLICK,
       status: 'planning',
-      createdAt: cleanProject?.createdAt || toDateLabel(firstJob?.createdAt),
+      createdAt: coerceCreatedAtMs(cleanProject?.createdAt ?? firstJob?.createdAt, { id: cleanProject?.id ?? shellProjectId }).ms,
       results: [],
       taskCount: Math.max(Number(cleanProject?.taskCount || 0) || 0, plans.length, maxReferenceIndex, 1),
       completedCount: 0,
@@ -1478,7 +1495,7 @@ const mapJobs = (
     const projectStatus = taskStatusToProject(job.status) === 'completed' && providerErrorText
       ? 'error'
       : taskStatusToProject(job.status);
-    const createdAt = toDateLabel(job.createdAt);
+    const createdAt = toCreatedMs(job.createdAt);
     const mediaType = job.taskType?.includes('video') || Boolean(job.result?.videoUrl) ? 'video' : 'image';
     const prompt = String(
       job.payload?.prompt
@@ -1562,7 +1579,7 @@ const mapJobs = (
               projectId: errorProjectId,
               imageUrl: '',
               prompt: errorMessage,
-              model: String(job.payload?.model || job.result?.model || job.provider || '策划任务'),
+              model: normalizeModel(job.payload?.model || job.result?.model || job.provider),
               aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
               status: 'error',
               createdAt,
@@ -1764,7 +1781,7 @@ const mapJobs = (
               projectId,
               imageUrl: '',
               prompt: errorMessage || prompt,
-              model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+              model: normalizeModel(job.payload?.model || job.result?.model || job.provider),
               aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
               status: 'error',
               createdAt,
@@ -1802,7 +1819,7 @@ const mapJobs = (
             projectId: matchedProject.id,
             imageUrl: '',
             prompt: errorMessage || prompt,
-            model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+            model: normalizeModel(job.payload?.model || job.result?.model || job.provider),
             aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
             status: 'error',
             createdAt,
@@ -1856,7 +1873,7 @@ const mapJobs = (
               imageUrl: url,
               mediaType: 'image',
               prompt,
-              model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+              model: normalizeModel(job.payload?.model || job.result?.model || job.provider),
               aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
               status: 'completed',
               createdAt,
@@ -1887,7 +1904,7 @@ const mapJobs = (
         projects.push({
           ...matchedProject,
           status: completedCount >= taskCount ? 'completed' : 'generating',
-          completedAt: completedCount >= taskCount ? toDateLabel(job.finishedAt || job.updatedAt || job.createdAt) : matchedProject.completedAt,
+          completedAt: completedCount >= taskCount ? toCreatedMs(job.finishedAt || job.updatedAt || job.createdAt) : matchedProject.completedAt,
           results: mergedResults,
           taskCount,
           completedCount,
@@ -1910,7 +1927,7 @@ const mapJobs = (
           videoUrl: mediaType === 'video' ? url : undefined,
           mediaType: mediaType === 'video' ? 'video' : 'image',
           prompt,
-          model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+          model: normalizeModel(job.payload?.model || job.result?.model || job.provider),
           aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
           status: 'completed',
           createdAt,
@@ -1936,7 +1953,7 @@ const mapJobs = (
         projects.push({
           ...matchedTerminalProject,
           status: completedCount >= taskCount ? 'completed' : 'generating',
-          completedAt: completedCount >= taskCount ? toDateLabel(job.finishedAt || job.updatedAt || job.createdAt) : matchedTerminalProject.completedAt,
+          completedAt: completedCount >= taskCount ? toCreatedMs(job.finishedAt || job.updatedAt || job.createdAt) : matchedTerminalProject.completedAt,
           results: mergedResults,
           taskCount,
           completedCount,
@@ -2002,7 +2019,7 @@ const mapJobs = (
           status: projectStatus,
           sourceType: 'job',
           backendJobId: job.id,
-          completedAt: projectStatus === 'completed' ? toDateLabel(job.finishedAt || job.updatedAt || job.createdAt) : project.completedAt,
+          completedAt: projectStatus === 'completed' ? toCreatedMs(job.finishedAt || job.updatedAt || job.createdAt) : project.completedAt,
         });
       }
       return;
@@ -2095,7 +2112,7 @@ const mapJobs = (
         videoUrl: undefined,
         mediaType: mediaType === 'video' ? 'video' : 'image',
         prompt,
-        model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
+        model: normalizeModel(job.payload?.model || job.result?.model || job.provider),
         aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
         status: job.status === 'retry_waiting' ? 'retry_waiting' : 'generating',
         createdAt,

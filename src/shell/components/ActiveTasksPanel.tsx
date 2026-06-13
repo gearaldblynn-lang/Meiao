@@ -9,7 +9,7 @@ export interface Task {
   status: 'pending' | 'generating' | 'completed' | 'error';
   title: string;
   progress?: number;
-  createdAt: string;
+  createdAt: number;
   total?: number;
   completed?: number;
   prompt?: string;

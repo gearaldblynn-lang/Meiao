@@ -10,7 +10,7 @@
     "doctor": "node scripts/local-doctor.mjs",
     "acceptance": "node scripts/acceptance-report.mjs",
     "build": "tsc -b && vite build",
-    "lint": "tsc -b",
+    "lint": "tsc -b && eslint .",
     "security:audit": "npm audit --audit-level=high",
     "preview": "vite preview"
   },

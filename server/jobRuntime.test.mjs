@@ -10,6 +10,8 @@ import {
   isRetryableErrorCode,
   isTransientMysqlConnectionError,
   normalizeAllowedOrigins,
+  runWithTransientRetry,
+  getReconcileBackoffMs,
 } from './jobRuntime.mjs';
 
 test('normalizeAllowedOrigins trims blanks and removes duplicates', () => {
@@ -413,3 +415,94 @@ test('isTransientMysqlConnectionError detects broken mysql pool connections', ()
   assert.equal(isTransientMysqlConnectionError({ code: 'ER_BAD_DB_ERROR' }), false);
   assert.equal(isTransientMysqlConnectionError(new Error('ordinary failure')), false);
 });
+
+// 根因 #4 链路加固(2026-06-13):写入路径遇到瞬时连接错(Pool is closed 等)
+// 现在只识别、不恢复。runWithTransientRetry 给写入加有限次重试 + 指数退避,
+// 让一次连接抖动不会直接把任务打死、触发 reconcile 死循环。
+test('runWithTransientRetry returns result on first success without sleeping', async () => {
+  const sleeps = [];
+  let calls = 0;
+  const result = await runWithTransientRetry(
+    async () => { calls += 1; return 'ok'; },
+    { sleep: async (ms) => { sleeps.push(ms); } },
+  );
+  assert.equal(result, 'ok');
+  assert.equal(calls, 1, '成功时只调用一次');
+  assert.deepEqual(sleeps, [], '成功时不退避');
+});
+
+test('runWithTransientRetry retries transient errors then succeeds with increasing backoff', async () => {
+  const sleeps = [];
+  let calls = 0;
+  const result = await runWithTransientRetry(
+    async () => {
+      calls += 1;
+      if (calls < 3) throw new Error('Pool is closed.');
+      return 'recovered';
+    },
+    {
+      maxRetries: 3,
+      sleep: async (ms) => { sleeps.push(ms); },
+    },
+  );
+  assert.equal(result, 'recovered');
+  assert.equal(calls, 3, '失败两次后第三次成功');
+  assert.equal(sleeps.length, 2, '重试两次,退避两次');
+  assert.ok(sleeps[1] > sleeps[0], `退避必须递增,实际 ${sleeps.join(',')}`);
+});
+
+test('runWithTransientRetry rethrows non-transient errors immediately without retry', async () => {
+  const sleeps = [];
+  let calls = 0;
+  await assert.rejects(
+    runWithTransientRetry(
+      async () => { calls += 1; throw new Error('ordinary failure'); },
+      { sleep: async (ms) => { sleeps.push(ms); } },
+    ),
+    /ordinary failure/,
+  );
+  assert.equal(calls, 1, '非瞬时错不重试');
+  assert.deepEqual(sleeps, [], '非瞬时错不退避');
+});
+
+test('runWithTransientRetry gives up after maxRetries and throws the last transient error', async () => {
+  const sleeps = [];
+  let calls = 0;
+  await assert.rejects(
+    runWithTransientRetry(
+      async () => { calls += 1; throw new Error('Pool is closed.'); },
+      { maxRetries: 2, sleep: async (ms) => { sleeps.push(ms); } },
+    ),
+    /Pool is closed/,
+  );
+  assert.equal(calls, 3, '初次 + 2 次重试 = 3 次尝试');
+  assert.equal(sleeps.length, 2, '退避 2 次后放弃');
+});
+
+// 根因 #4 链路加固 · reconcile 退避(2026-06-13):
+// reconcile loop 原本固定 60s,DB 挂时每 60s 锤一次。连续失败时按次数指数退避,
+// 成功后回落到基础间隔,避免对挂掉的 DB 死循环施压。
+test('getReconcileBackoffMs returns base interval when no consecutive failures', () => {
+  assert.equal(getReconcileBackoffMs(0, 60000, 600000), 60000);
+});
+
+test('getReconcileBackoffMs grows exponentially with consecutive failures', () => {
+  const base = 60000;
+  const max = 600000;
+  assert.equal(getReconcileBackoffMs(1, base, max), 120000, '1 次失败 → 2x');
+  assert.equal(getReconcileBackoffMs(2, base, max), 240000, '2 次失败 → 4x');
+  assert.equal(getReconcileBackoffMs(3, base, max), 480000, '3 次失败 → 8x');
+});
+
+test('getReconcileBackoffMs is capped at maxMs', () => {
+  const base = 60000;
+  const max = 600000;
+  assert.equal(getReconcileBackoffMs(10, base, max), max, '远超上限时封顶 maxMs');
+});
+
+test('getReconcileBackoffMs never returns below base interval', () => {
+  assert.ok(getReconcileBackoffMs(0, 60000, 600000) >= 60000);
+  assert.ok(getReconcileBackoffMs(-5, 60000, 600000) >= 60000, '负数兜底到 base');
+});
+
+

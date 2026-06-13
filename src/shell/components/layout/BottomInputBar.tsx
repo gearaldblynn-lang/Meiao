@@ -2458,4 +2458,4 @@ const BottomInputBar: React.FC<Props> = ({
   );
 };
 
-export default BottomInputBar;
+export default React.memo(BottomInputBar);

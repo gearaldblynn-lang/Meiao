@@ -566,7 +566,11 @@ const VeoWorkspace: React.FC<Props> = ({
                                     />
                                     <div className="absolute top-4 right-4 opacity-0 group-hover/video:opacity-100 transition-opacity duration-300 z-20">
                                         <button
-                                            onClick={() => handleSingleSegmentDownload(activeSegment.variants.find(v => v.id === activeSegment.selectedVariantId)?.blobUrl!, `veo_segment_${activeIndex+1}.mp4`)}
+                                            onClick={() => {
+                                                const blobUrl = activeSegment.variants.find(v => v.id === activeSegment.selectedVariantId)?.blobUrl;
+                                                if (!blobUrl) { addToast('该分镜暂无可下载文件', 'error'); return; }
+                                                handleSingleSegmentDownload(blobUrl, `veo_segment_${activeIndex+1}.mp4`);
+                                            }}
                                             className="w-8 h-8 bg-black/50 backdrop-blur-md text-white rounded-full flex items-center justify-center hover:bg-white hover:text-black transition-all shadow-lg border border-white/10"
                                             title="下载此分镜"
                                         >

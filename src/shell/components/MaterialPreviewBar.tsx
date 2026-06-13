@@ -135,7 +135,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                       <div key={m.id} className="relative shrink-0 group">
                       <button
                         type="button"
-                        onClick={() => { mediaKind === 'video' ? openVideoPreview(m) : mediaKind === 'image' ? openLightbox(m.url) : undefined; }}
+                        onClick={() => { if (mediaKind === 'video') { openVideoPreview(m); } else if (mediaKind === 'image') { openLightbox(m.url); } }}
                         className="block w-11 h-11 rounded-2xl overflow-hidden transition-transform"
                         style={{ border: `1.5px solid ${meta.color}30` }}
                         title={mediaKind === 'video' ? '点击播放' : mediaKind === 'image' ? '点击预览' : m.fileName}

@@ -32,6 +32,7 @@ import {
 import { ACTION_LABELS, MODULE_LABELS, STATUS_LABELS } from '../../../services/loggingService';
 import { PopoverSelect } from '../../../components/ui/workspacePrimitives';
 import { buildLogCsv, deriveLogFailureReason, shouldRefreshCurrentUser } from './accountManagementUtils.mjs';
+import { formatTime } from '../../../utils/timeFormat.ts';
 
 interface Props {
   currentUser?: AuthUser | null;
@@ -62,11 +63,6 @@ const isMissingAccountError = (error: unknown) => (
   && 'status' in error
   && Number((error as { status?: number }).status) === 404
 );
-
-const formatTime = (value?: number | null) => {
-  if (!value) return '-';
-  return new Date(value).toLocaleString('zh-CN', { hour12: false });
-};
 
 const todayInputDate = () => new Date().toISOString().slice(0, 10);
 

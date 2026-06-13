@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Download, RefreshCw, Copy, Check, Trash2, MoreHorizontal } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import { copyTextToClipboard } from '../../utils/clipboard.mjs';
+import { formatMonthDay } from '../../utils/timeFormat.ts';
 import ConfirmDialog from './ConfirmDialog';
 
 interface Props {
@@ -50,7 +51,7 @@ const ResultCard: React.FC<Props> = ({ result, onDelete, onRegenerate }) => {
           }}
         >
           <div className="flex items-center gap-1.5">
-            <span className="pill">{result.model}</span>
+            <span className="pill">{result.model || '未记录'}</span>
             <span className="pill">{result.aspectRatio}</span>
           </div>
           <div className="flex items-center gap-1.5">
@@ -102,7 +103,7 @@ const ResultCard: React.FC<Props> = ({ result, onDelete, onRegenerate }) => {
       {/* Info */}
       <div className="px-3 py-2.5">
         <p className="text-[12px] leading-relaxed line-clamp-2" style={{ color: 'var(--text-secondary)' }}>{result.prompt}</p>
-        <p className="mt-1 text-[10px]" style={{ color: 'var(--text-disabled)' }}>{result.createdAt}</p>
+        <p className="mt-1 text-[10px]" style={{ color: 'var(--text-disabled)' }}>{formatMonthDay(result.createdAt)}</p>
       </div>
 
       <ConfirmDialog

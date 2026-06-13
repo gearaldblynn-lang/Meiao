@@ -80,10 +80,8 @@ const ProjectListView: React.FC<Props> = ({
 
   const parseProjectDate = (project: Project) => {
     const raw = project.completedAt || project.createdAt;
-    const match = /^(\d{2})-(\d{2})$/.exec(raw);
-    if (!match) return null;
-    const date = new Date();
-    date.setMonth(Number(match[1]) - 1, Number(match[2]));
+    if (!raw) return null;
+    const date = new Date(raw);
     date.setHours(0, 0, 0, 0);
     return date;
   };

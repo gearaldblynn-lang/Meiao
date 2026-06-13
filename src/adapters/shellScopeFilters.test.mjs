@@ -98,14 +98,16 @@ test('task fallback project cards are skipped when a project already represents 
   assert.deepEqual(buildTaskFallbackProjects(projects, tasks), []);
 });
 
-test('project cards sort newest first by created timestamp and same-day project number', () => {
+test('project cards sort newest first by numeric createdAt; year-less (imprecise) sinks below precise', () => {
+  // 读边界 coerce 后的形态:createdAt 已是规范数字毫秒戳,createdAtPrecise 标注是否来自真实完整戳。
   const projects = [
     {
       id: 'proj-plan-1779990000000',
       name: '5月29日项目12',
       module: 'one_click',
       status: 'completed',
-      createdAt: '05-29',
+      createdAt: 1779990000000,
+      createdAtPrecise: true,
       results: [],
       taskCount: 1,
       completedCount: 1,
@@ -116,7 +118,9 @@ test('project cards sort newest first by created timestamp and same-day project 
       name: '5月29日项目15',
       module: 'one_click',
       status: 'completed',
-      createdAt: '05-29',
+      // 年缺失历史项目:无法恢复真实戳 → createdAt 0、precise false,必须沉到最后
+      createdAt: 0,
+      createdAtPrecise: false,
       results: [],
       taskCount: 1,
       completedCount: 1,
@@ -127,7 +131,8 @@ test('project cards sort newest first by created timestamp and same-day project 
       name: '5月29日项目14',
       module: 'one_click',
       status: 'completed',
-      createdAt: '05-29',
+      createdAt: 1780000000000,
+      createdAtPrecise: true,
       results: [],
       taskCount: 1,
       completedCount: 1,
@@ -138,7 +143,8 @@ test('project cards sort newest first by created timestamp and same-day project 
       name: '5月28日项目99',
       module: 'one_click',
       status: 'completed',
-      createdAt: '05-28',
+      createdAt: 1779900000000,
+      createdAtPrecise: true,
       results: [],
       taskCount: 1,
       completedCount: 1,
@@ -148,6 +154,23 @@ test('project cards sort newest first by created timestamp and same-day project 
 
   assert.deepEqual(
     sortProjectsNewestFirst(projects).map((project) => project.name),
-    ['5月29日项目15', '5月29日项目14', '5月29日项目12', '5月28日项目99'],
+    ['5月29日项目14', '5月29日项目12', '5月28日项目99', '5月29日项目15'],
   );
+});
+
+test('sortProjectsNewestFirst: 年缺失项目不得顶到真实时间戳之前', () => {
+  const LOWER = new Date('2020-01-01T00:00:00Z').getTime();
+  const day = 86400000;
+  const base = LOWER + 100 * day;
+  const projects = [
+    // 年缺失(读边界 coerce 后 precise=false),createdAt 仍是不可解析字符串 → 视作 0
+    { id: 'legacy-abc', createdAt: '06-13', createdAtPrecise: false, name: '老项目', results: [], taskCount: 1, completedCount: 0 },
+    // 真实最新(precise=true)
+    { id: `proj-${base + 3 * day}`, createdAt: base + 3 * day, createdAtPrecise: true, name: '项目3', results: [], taskCount: 1, completedCount: 0 },
+    // 真实较早(precise=true)
+    { id: `proj-${base + 2 * day}`, createdAt: base + 2 * day, createdAtPrecise: true, name: '项目2', results: [], taskCount: 1, completedCount: 0 },
+  ];
+  const sorted = sortProjectsNewestFirst(projects).map((p) => p.id);
+  // 两个真实戳项目必须排在年缺失项目之前,且新者在前
+  assert.deepEqual(sorted, [`proj-${base + 3 * day}`, `proj-${base + 2 * day}`, 'legacy-abc']);
 });
