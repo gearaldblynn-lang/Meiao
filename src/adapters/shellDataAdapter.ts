@@ -124,6 +124,8 @@ const MODULE_LABELS: Record<string, string> = {
   agent_center: '智能体中心',
 };
 
+export { MODULE_LABELS as SHELL_MODULE_LABELS };
+
 const MODULE_VALUES = {
   ONE_CLICK: 'one_click' as AppModule,
   TRANSLATION: 'translation' as AppModule,
