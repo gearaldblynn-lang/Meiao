@@ -309,10 +309,10 @@ test('shell data adapter surfaces provider id for a retry-waiting one-click edit
 
   const project = snapshot.projects.find((item) => item.id === 'project-edit-1');
   assert.equal(project?.status, 'generating');
-  assert.equal(project?.results[0]?.status, 'generating');
+  assert.equal(project?.results[0]?.status, 'retry_waiting');
   assert.equal(project?.results[0]?.taskId, 'new-provider-task');
   assert.equal(project?.results[0]?.backendJobId, 'job-edit-1');
-  assert.equal(snapshot.tasks.find((task) => task.backendJobId === 'job-edit-1')?.status, 'generating');
+  assert.equal(snapshot.tasks.find((task) => task.backendJobId === 'job-edit-1')?.status, 'retry_waiting');
 });
 
 test('shell data adapter does not display internal backend job ids as planning KIE task ids', () => {
@@ -4129,4 +4129,47 @@ test('shell data adapter normalizes polluted first-image projects after backend 
   assert.deepEqual(project.plans?.map((plan) => plan.id), plans.map((plan) => plan.id));
   assert.deepEqual(project.results.map((result) => result.status), ['completed', 'completed', 'completed', 'completed']);
   assert.deepEqual(project.results.map((result) => result.imageUrl), completedResults.map((result) => result.imageUrl));
+});
+
+// 根因 #3 验收测试:retry_waiting 必须保留为 retry_waiting,不得被透出层压成 generating。
+// 这是"前端不认识 retry_waiting"的真断点——后端的重试中状态在到达 result.status 前
+// 被 taskStatusToTask 的 default 分支抹掉,导致 UI 没法把"重试中"和"生成中"区分开。
+// 项目级仍是 generating(按 #1 漂移④ 设计),但 result/task 级要保留 retry_waiting。
+test('shell data adapter preserves retry_waiting status on result and task without flattening to generating', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'proj-retry',
+      name: '重试中项目',
+      module: 'retouch',
+      status: 'generating',
+      createdAt: '06-13',
+      subFeature: 'original',
+      taskCount: 1,
+      completedCount: 0,
+      results: [],
+    }],
+  }, [{
+    id: 'job-retry-1',
+    module: 'retouch',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'retry_waiting',
+    providerTaskId: 'kie-task-retry-1',
+    payload: {
+      shellProjectId: 'proj-retry',
+      prompt: 'p',
+      subFeature: 'original',
+    },
+    result: null,
+    createdAt: 1780020000000,
+    updatedAt: 1780020005000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'proj-retry');
+  // 项目级仍 generating(整体在跑),不变
+  assert.equal(project?.status, 'generating', '项目级保持 generating');
+  // result 级必须保留 retry_waiting(关键契约,UI 据此显示"重试中")
+  assert.equal(project?.results[0]?.status, 'retry_waiting', 'result.status 必须保留 retry_waiting');
+  // task 级也保留(供 ActiveTasksPanel 等用)
+  assert.equal(snapshot.tasks.find((t) => t.backendJobId === 'job-retry-1')?.status, 'retry_waiting', 'task.status 必须保留 retry_waiting');
 });
