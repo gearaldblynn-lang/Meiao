@@ -17,7 +17,7 @@
 
 ## 3. 已诊断根因库 ★(2026-06-12 全栈只读诊断,均已读码确认,**暂未修复**)
 
-> 这些是"天天修不完 bug、同样问题反复出现"的架构根因。重构顺序已定:**先 #5 止血 → 再 #1/#2/#3 治本 → #4 中期**。
+> 这些是"天天修不完 bug、同样问题反复出现"的架构根因。重构顺序已定:**先 #5 止血 → 再 #1/#2/#3 治本 → #4 中期**。当前进度:#5 ✅ / #1 ✅ / #3 ✅,**剩 #2(正则猜状态)和 #4(数据模型重构)**。
 > 修完任意一条后,把该条改成"已修",补上`修复:(文件:行)`+ 把"如何避免"固化成测试。
 
 - **#1 🔴 主病灶 · 任务状态靠"现算",前后端两套算法已漂移**
@@ -40,11 +40,11 @@
   重构方向:用上游返回的**结构化错误码/状态字段**判定成败,不靠文本;失败语义集中一处。
   如何避免:**禁止用正则匹配报错文案来决定业务状态;状态判定只读结构化字段。**
 
-- **#3 🟠 · `retry_waiting` 是后端真值,前端词汇表里没有**
+- **#3 ✅ 已修(2026-06-13)· `retry_waiting` 是后端真值,前端词汇表里没有**
   根因:后端 `jobRuntime.mjs:174-187` 有三态(可重试→`retry_waiting`、耗尽/不可重试→`failed`);前端 result status 联合类型只有 `completed|generating|error`(`shellPersistence.ts:26`),不认识 `retry_waiting`。
-  现象:后端"重试中"被前端降级成"失败"展示→用户重复点重试→后端无响应。
-  重构方向:前端状态词汇表与后端对齐,显式处理 `retry_waiting`(不可点重试、提示等待中)。
-  如何避免:**前后端状态枚举必须同源对齐,后端新增状态时前端不得静默降级。**
+  现象:后端"重试中"被前端降级成"失败/生成中"展示→用户重复点重试→后端无响应。
+  修复(`src/adapters/shellDataAdapter.ts`):`ShellTaskStatus` + `ShellGeneratedResult.status` 联合类型加上 `retry_waiting`;`taskStatusToTask` 显式返回 `retry_waiting` 不再 default 落到 generating;`resultFromItem`(L698)和"活跃任务 pending result 构造器"(L2100)按 `job.status === 'retry_waiting'` 分流;`normalizeOneClickProjectCard` / `mergeProjectSnapshot` 的 `hasGenerating` 把 retry_waiting 视为"还在跑",项目级状态保持 generating。验证:80 个 adapter 测试 + 635 frontend + 290 backend 全过 + tsc 干净。提交 6a4935b。
+  如何避免:**前后端状态枚举必须同源对齐,后端新增状态时前端不得静默降级;新增 status 联合类型成员后,grep 所有 `=== 'generating'` 类硬比对站点,确认每处都正确分流。**
 
 - **#4 🟠 · 数据模型把"整个项目快照"塞进 app_state 一行 JSON**
   根因:`appStateMerge.mjs:66-93` 的 `compactGenerationContextForStorage/compactOneClickProjectForStorage` 在拼命剥 `projects/tasks/generationContext`——是原始设计把整棵项目树嵌进单行 JSON 的化石证据。剥不净→单条 INSERT 超 MySQL 16MB / `/tmp` errno 28→`Pool is closed`(看板 17 次)→temporal 残留 stale job→PM2 重启 203 次。
