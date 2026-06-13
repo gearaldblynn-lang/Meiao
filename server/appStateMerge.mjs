@@ -557,6 +557,8 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
     ? maxNumber(planCount, completedMediaCount, activeOrFailedCount, 1)
     : hasSingleTerminalBackendFailure
       ? 1
+    : completedMediaCount > 0 && activeOrFailedCount > 0
+      ? completedMediaCount + activeOrFailedCount
     : completedMediaCount > 0
       ? maxNumber(completedMediaCount, activeOrFailedCount, 1)
       : maxNumber(persistedTaskCount, stateItems.length, 1);

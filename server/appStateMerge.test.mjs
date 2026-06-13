@@ -1400,3 +1400,40 @@ test('compactAppStateForStorage strips inline image previews from translation hi
   assert.equal(compacted.translationMemory.detail.files[0].sourcePreviewUrl, '');
   assert.equal(compacted.translationMemory.detail.files[0].sourceUrl, 'https://example.com/source.png');
 });
+
+// 根因 #1 漂移④:后端 normalizeProjectLikeItem 在"部分完成"时谎报已完成。
+// 真实场景:2 张已完成 + 1 张仍在生成(带 provider task id)。正确行为=选项 A:
+// 只要还有任务在跑就 generating,直到全部完成;taskCount 必须把在跑的任务也数进去
+// (2 完成 + 1 生成中 = 3,而非 max(2,1)=2)。当前后端用 maxNumber 取最大值,
+// 会把在跑的那张吞掉、误判 completedMediaCount(2) >= taskCount(2) → 谎报完成。
+// 这与前端(已正确判 generating)产生漂移,正是"同步翻烧饼"的来源之一。
+test('mergeAppStateForStorage keeps a partially-completed project generating until every task finishes', () => {
+  const mkResult = (id, status, imageUrl) => ({
+    id,
+    taskId: `task-${id}`,
+    imageUrl,
+    status,
+    module: 'retouch',
+    subFeature: 'original',
+  });
+  const merged = mergeAppStateForStorage({
+    shellProjects: [],
+  }, {
+    shellProjects: [{
+      id: 'proj-partial',
+      module: 'retouch',
+      status: 'generating',
+      taskCount: 3,
+      completedCount: 2,
+      subFeature: 'original',
+      results: [
+        mkResult('r1', 'completed', 'https://example.com/r1.png'),
+        mkResult('r2', 'completed', 'https://example.com/r2.png'),
+        mkResult('r3', 'generating', ''),
+      ],
+    }],
+  });
+
+  assert.equal(merged.shellProjects[0].status, 'generating', '还有任务在跑时不得谎报已完成');
+  assert.equal(merged.shellProjects[0].taskCount, 3, 'taskCount 必须把还在跑的任务也数进去(2 完成 + 1 生成中 = 3)');
+});
