@@ -3,7 +3,7 @@ import type { PersistedAppState } from '../utils/appState.ts';
 import { getOneClickPlanContent, isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 
 type ShellProjectStatus = 'planning' | 'generating' | 'completed' | 'error';
-type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error';
+type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
 
 export interface ShellGeneratedResult {
   id: string;
@@ -15,7 +15,7 @@ export interface ShellGeneratedResult {
   prompt: string;
   model: string;
   aspectRatio: string;
-  status: 'completed' | 'generating' | 'error';
+  status: 'completed' | 'generating' | 'error' | 'retry_waiting';
   createdAt: string;
   module: AppModule;
   subFeature?: string;
@@ -211,6 +211,7 @@ const taskStatusToTask = (status: unknown): ShellTaskStatus => {
   if (status === 'completed' || status === 'succeeded') return 'completed';
   if (status === 'error' || status === 'failed' || status === 'cancelled' || status === 'interrupted') return 'error';
   if (status === 'pending' || status === 'queued') return 'pending';
+  if (status === 'retry_waiting') return 'retry_waiting';
   return 'generating';
 };
 
@@ -679,7 +680,7 @@ const resultFromItem = (
   fallbackPrompt?: string,
 ): ShellGeneratedResult | null => {
   const url = getResultUrl(item);
-  const status = taskStatusToProject(item?.status);
+  const status = taskStatusToTask(item?.status);
   if (!url && status !== 'error') return null;
   const mediaType = module === MODULE_VALUES.VIDEO || Boolean(item?.videoUrl || item?.result?.videoUrl) ? 'video' : 'image';
   return {
@@ -694,7 +695,7 @@ const resultFromItem = (
     prompt: getPrompt(item, fallbackPrompt || fallbackTitle, module),
     model: String(item?.model || item?.payload?.model || '旧任务'),
     aspectRatio: String(item?.matchedAspectRatio || item?.aspectRatio || item?.payload?.aspectRatio || item?.payload?.ratio || 'auto'),
-    status: status === 'completed' ? 'completed' : status === 'error' ? 'error' : 'generating',
+    status: status === 'completed' ? 'completed' : status === 'error' ? 'error' : status === 'retry_waiting' ? 'retry_waiting' : 'generating',
     createdAt,
     module,
     subFeature,
@@ -2096,13 +2097,13 @@ const mapJobs = (
         prompt,
         model: String(job.payload?.model || job.result?.model || job.provider || '生成任务'),
         aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
-        status: 'generating',
+        status: job.status === 'retry_waiting' ? 'retry_waiting' : 'generating',
         createdAt,
         module,
         subFeature: matchedProject?.subFeature || subFeature,
         taskId: visibleProviderTaskId || undefined,
         backendJobId: job.id,
-        error: job.status === 'queued' ? '任务已提交，等待执行' : '任务正在运行',
+        error: job.status === 'queued' ? '任务已提交，等待执行' : job.status === 'retry_waiting' ? '任务重试中' : '任务正在运行',
       };
       const existingActiveResults = matchedProject?.results || [];
       const hasActiveResult = existingActiveResults.some((result) => (
@@ -2468,7 +2469,7 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
   const selectedPlanId = filteredPlans.some((plan) => String(plan?.id || '') === String(project.selectedPlanId || ''))
     ? project.selectedPlanId
     : filteredPlans.find((plan) => plan.selected)?.id || filteredPlans[0]?.id || project.selectedPlanId;
-  const hasGenerating = results.some((result) => result.status === 'generating' && resultHasProviderTaskIdentity(result));
+  const hasGenerating = results.some((result) => (result.status === 'generating' || result.status === 'retry_waiting') && resultHasProviderTaskIdentity(result));
   const hasFailedPlan = filteredPlans.some((plan) => Boolean(plan?.planningFailed) || plan?.status === 'error');
   const hasError = hasFailedPlan || results.some((result) => result.status === 'error');
   const hasCompletedMedia = completedCount > 0;
@@ -2784,7 +2785,7 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
   const results = mergeProjectResultsByIdentity(existingResults, next.results || []);
   const completedCount = results.filter(hasCompletedMediaResult).length;
   const taskCount = getMergedProjectTaskCount(existing, next, plans, results, completedCount);
-  const hasGenerating = results.some((result) => result.status === 'generating' && resultHasProviderTaskIdentity(result));
+  const hasGenerating = results.some((result) => (result.status === 'generating' || result.status === 'retry_waiting') && resultHasProviderTaskIdentity(result));
   const hasError = results.some((result) => result.status === 'error');
   const hasCompletedMedia = completedCount > 0;
   const status = hasCompletedMedia && !hasGenerating && !hasError
