@@ -27,9 +27,12 @@
     ③ stale 占位定义不同——后端通用判断(`appStateMerge.mjs:351-355`),前端硬编码 `content !== '一键主详'`(`shellPersistence.ts:215`);
     ④ taskCount 公式不同(`appStateMerge.mjs:689-695` vs `shellPersistence.ts:269-276`),而两边都用 `completedCount >= taskCount ? 'completed'`。
   现象:卡片一直"处理中"、已完成结果被旧状态覆盖、每次同步翻烧饼。
-  进度(2026-06-12):**结果数组对账已统一**——抽出 `src/utils/taskResultReconcile.mjs`(后端验证过的 `mergeArrayByStableKeys`+`collectItemKeys`),前后端共同 import,漂移点 ①②(稳定身份去重 + 已完成必胜)已消除;验收测试 `src/adapters/stateReconciliationConsistency.test.mjs` 绿,全量 921 测试过。
-  **仍待统一**:项目级状态/`taskCount` 现算(前端 `mergeProjectLikeForPersistence` vs 后端 `normalizeProjectLikeItem`,漂移点④)、前端硬编码 `'一键主详'` 的 stale 判断(`isStaleOneClickPlanningPlaceholderItem`,漂移点③)。
-  如何避免:**任何"任务卡片状态"判断只能有一份实现,前后端共用;新增模块不得再复制一份 merge/normalize 逻辑。**(结果对账已落实为共享模块,项目级状态待跟进)
+  进度(2026-06-13):**结果对账 + 项目级 status/taskCount + stale 占位检测均已统一**——
+    ① 结果数组对账:抽出 `src/utils/taskResultReconcile.mjs`,前后端共用,漂移①②(稳定身份去重 + 已完成必胜)消除;
+    ④ 项目级状态:后端 `normalizeProjectLikeItem` 在"已完成+在跑"分支 taskCount 改为相加(原 max 会吞活跃任务、谎报完成),前后端对同一输入产出一致结论;
+    ③ stale 占位:`shellPersistence` 的 sentinel 不再硬编码 `'一键主详'`,改为读 `SHELL_MODULE_LABELS[item.module]`,且从 `isOneClick` 守卫里拉出来,所有模块同款保护(retouch/translation/video/buyer_show/xhs_cover)。
+   3 条前端验收 + 1 条后端验收一致性测试(`stateReconciliationConsistency.test.mjs` + `appStateMerge.test.mjs`)锁定契约,924 全过。
+  如何避免:**任何"任务卡片状态/对账/stale 检测"判断只能有一份实现,前后端共用;新增模块不得再复制 merge/normalize/sentinel 逻辑。**
 
 - **#2 🔴 · 业务状态由"正则匹配报错文字"决定**
   根因:`appStateMerge.mjs:20-38` `isInvalidOneClickPlanText` 硬编码 13 条正则(混中文「策划失败/任务状态同步失败」与上游英文「fetch failed / I cannot fulfill this request / Unauthorized – Authentication failed」)判定方案是否失败;这套正则在 后端 / 前端 / `utils/oneClickPlanValidation.ts` **至少三份拷贝**。
