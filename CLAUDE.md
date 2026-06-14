@@ -38,11 +38,13 @@
    3 条前端验收 + 1 条后端验收一致性测试(`stateReconciliationConsistency.test.mjs` + `appStateMerge.test.mjs`)锁定契约,924 全过。
   如何避免:**任何"任务卡片状态/对账/stale 检测"判断只能有一份实现,前后端共用;新增模块不得再复制 merge/normalize/sentinel 逻辑。**
 
-- **#2 🔴 · 业务状态由"正则匹配报错文字"决定**
-  根因:`appStateMerge.mjs:20-38` `isInvalidOneClickPlanText` 硬编码 13 条正则(混中文「策划失败/任务状态同步失败」与上游英文「fetch failed / I cannot fulfill this request / Unauthorized – Authentication failed」)判定方案是否失败;这套正则在 后端 / 前端 / `utils/oneClickPlanValidation.ts` **至少三份拷贝**。
-  现象:上游每换一种报错措辞就漏判一次(provider 错误 21+ 指纹反复出现的放大器),且改一份漏两份。
-  重构方向:用上游返回的**结构化错误码/状态字段**判定成败,不靠文本;失败语义集中一处。
-  如何避免:**禁止用正则匹配报错文案来决定业务状态;状态判定只读结构化字段。**
+- **#2 ✅ 已收敛(2026-06-14)· 业务状态由"正则匹配报错文字"决定**
+  根因:`isInvalidOneClickPlanText` 硬编码正则(混中文「策划失败/任务状态同步失败」与上游英文「fetch failed / I cannot fulfill this request / Unauthorized – Authentication failed」)判定方案是否失败;这套正则在 后端 `appStateMerge.mjs` / 前端 `utils/oneClickPlanValidation.ts` **两份拷贝且已漂移**(前端 15 条 / 后端 13 条,前端多 `Internal Error` 与 `server is currently being maintained` 两条)。
+  现象:上游每换一种报错措辞就漏判一次,且改一份漏两份。
+  修复(2a,提交 `7b65061`):两份正则合并成共享单一判据 `src/utils/planFailure.mjs` `isPlanFailed`——**结构化字段优先**(`planningFailed` / `status:'error'` / `errorCode`),正则降为同一处的最后兜底;正则取两份**并集**消除漂移。重试分类同样收敛到 `src/utils/errorClassification.mjs` `isRecoverableError`(结构化优先)。生产端经探针确认失败路径本就已结构化(失败-plan 设 `planningFailed:true`,失败-result 设 `status:'error'`+`errorCode`)。
+  **刻意保留正则兜底(业主决定 2026-06-14)**:原计划 2c"彻底删正则+迁移旧库"是整件事唯一会**静默把历史失败方案翻成成功**的不可逆操作,其安全性依赖无法 100% 静态证明的"消费者必在迁移下游"前提。#2 的实际危害(两份漂移正则替程序判成败)已被 2a 根除,故**不为'看起来更干净'去赌线上数据正确性**——正则作为单一处、结构化之后的安全网长期保留。**这条正则兜底是有意 sentinel,后人勿当脏代码清理。** (未做的 2c 方案见 `docs/superpowers/specs/2026-06-14-structured-failure-status-2c-design.md`,标注为"决定不执行")
+  如何避免:**业务状态判定一律结构化字段优先(`planningFailed`/`status`/`errorCode`);新增失败路径必须在源头设结构化字段,不得新增"靠正则文本决定状态"的代码;现存正则仅作单一处安全网,不再扩散、也不轻易删除。**
+
 
 - **#3 ✅ 已修(2026-06-13)· `retry_waiting` 是后端真值,前端词汇表里没有**
   根因:后端 `jobRuntime.mjs:174-187` 有三态(可重试→`retry_waiting`、耗尽/不可重试→`failed`);前端 result status 联合类型只有 `completed|generating|error`(`shellPersistence.ts:26`),不认识 `retry_waiting`。
