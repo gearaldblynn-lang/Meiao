@@ -52,11 +52,12 @@
   修复(`src/adapters/shellDataAdapter.ts`):`ShellTaskStatus` + `ShellGeneratedResult.status` 联合类型加上 `retry_waiting`;`taskStatusToTask` 显式返回 `retry_waiting` 不再 default 落到 generating;`resultFromItem`(L698)和"活跃任务 pending result 构造器"(L2100)按 `job.status === 'retry_waiting'` 分流;`normalizeOneClickProjectCard` / `mergeProjectSnapshot` 的 `hasGenerating` 把 retry_waiting 视为"还在跑",项目级状态保持 generating。验证:80 个 adapter 测试 + 635 frontend + 290 backend 全过 + tsc 干净。提交 6a4935b。
   如何避免:**前后端状态枚举必须同源对齐,后端新增状态时前端不得静默降级;新增 status 联合类型成员后,grep 所有 `=== 'generating'` 类硬比对站点,确认每处都正确分流。**
 
-- **#4 🟠 · 数据模型把"整个项目快照"塞进 app_state 一行 JSON**
-  根因:`appStateMerge.mjs:66-93` 的 `compactGenerationContextForStorage/compactOneClickProjectForStorage` 在拼命剥 `projects/tasks/generationContext`——是原始设计把整棵项目树嵌进单行 JSON 的化石证据。剥不净→单条 INSERT 超 MySQL 16MB / `/tmp` errno 28→`Pool is closed`(看板 17 次)→temporal 残留 stale job→PM2 重启 203 次。
+- **#4 🟢 已止血 + 用数据决策暂缓治本(2026-06-14)· 数据模型把"整个项目快照"塞进 app_state 一行 JSON**
+  根因:`appStateMerge.mjs` 的 `compactGenerationContextForStorage/compactOneClickProjectForStorage` 在拼命剥 `projects/tasks/generationContext`——原始设计把整棵项目树嵌进单行 JSON 的化石证据。剥不净→单条 INSERT 超 MySQL 16MB / `/tmp` errno 28→`Pool is closed`→temporal stale job→PM2 重启。
   现象:数据库连接池关闭、磁盘写满、后台任务堆积。
-  重构方向(中期):把项目/结果数据从 `app_states` 单行 JSON 里搬出去,改成规范化存储或按需加载。
-  如何避免:**单行状态记录里不得嵌套整棵项目树;大对象分表/分行存。**
+  止血现状(已挡住急性崩溃,2026-06-13~14):① 写入大小闸 `APP_STATE_MAX_BYTES`(超闸按 updatedAt 倒序裁老项目,active 永留)；② `Pool is closed` 瞬时错重试退避(`jobRuntime.runWithTransientRetry`)；③ 压缩存储剥嵌套快照。
+  **用真实数据决策(2026-06-14)**:写了只读统计脚本 `scripts/cloud-stat-state-sizes.mjs`(纯 SELECT,拒 `--apply`),在腾讯云线上跑——**41 用户,最大 3.824 MiB,平均 0.42 MiB,0 人超 4 MiB 闸(无人在丢老项目)**,仅 1 人逼近。结论:数据模型大改(分表/按需加载)**会改商家可见数据 + 迁移线上库,风险最高,而当前 0 人受影响 → 暂缓,不拿没人受影响的问题赌线上大改**。即时止血改为把闸 4→8 MiB(线上 `.env.server` 加 `APP_STATE_MAX_BYTES=8388608` + `source` 后 `pm2 restart --update-env`,已验进程环境生效),那个 3.8 MiB 用户脱离风险。`.env.server.example` 已注释该旋钮。
+  如何避免:**单行状态记录里不得嵌套整棵项目树;阈值类参数 env+保守默认,先用只读统计量真实分布再决定动不动数据模型——容量问题先放宽闸缓冲,治本等数据真触发(有人在丢)再做。`pm2 restart --update-env` 不一定重读 `.env.server`,改 env 后需 `source .env.server` 再重启并从进程环境复核生效。**
 
 - **#5 ✅ 已修(2026-06-12)· 部署后旧 chunk 404 被错当成"业务失败"**
   根因:云上发新版后,用户浏览器旧入口请求旧 hash 的 chunk(如 `shellWorkflow-CYJkx3HQ.js`)→404;前端错误边界把"前端资源加载失败"**写进了项目的"生成失败"业务状态**,污染真实数据(看板 18 指纹)。
