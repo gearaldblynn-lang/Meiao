@@ -219,16 +219,19 @@ test('app workspace lazy loads major modules to avoid one giant startup bundle',
 test('one click generation refuses to turn planning error text into image prompts', () => {
   const app = read('../ShellMigratedApp.tsx');
   const validation = read('../utils/oneClickPlanValidation.ts');
+  const planFailure = read('../utils/planFailure.mjs');
 
   assert.match(app, /isInvalidOneClickPlanLike/);
   assert.match(app, /const isFailedPlanningPlan = \(plan: PlanItem\) => Boolean/);
   assert.match(app, /const failedSelectedPlans = selectedPlans\.filter\(isFailedPlanningPlan\)/);
   assert.match(app, /selectedPlans = runnableSelectedPlans/);
   assert.match(app, /选中的方案均为策划失败项，请先重新策划失败项后再出图。/);
-  assert.match(validation, /INVALID_ONE_CLICK_PLAN_PATTERNS/);
-  assert.match(validation, /fetch failed/i);
-  assert.match(validation, /Cannot read properties of undefined/);
-  assert.match(validation, /网络连接失败，请检查网络后重试/);
+  // 正则已收敛到共享 planFailure.mjs;oneClickPlanValidation 委托它
+  assert.match(validation, /from '\.\/planFailure\.mjs'/);
+  assert.match(planFailure, /LEGACY_FAILURE_TEXT_PATTERNS/);
+  assert.match(planFailure, /fetch failed/i);
+  assert.match(planFailure, /Cannot read properties of undefined/);
+  assert.match(planFailure, /网络连接失败，请检查网络后重试/);
   assert.match(app, /isInvalidPlanContentForGeneration/);
   assert.match(app, /当前策划结果无效，请重新策划后再生图。/);
 });
