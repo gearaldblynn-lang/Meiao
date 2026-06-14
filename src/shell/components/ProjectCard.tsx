@@ -38,13 +38,13 @@ export interface Project {
 
 interface Props {
   project: Project;
-  onDeleteResult?: (resultId: string) => void;
+  onDeleteResult?: (projectId: string, resultId: string) => void;
   onDeleteProject?: (projectId: string) => void;
-  onRegenerate?: (resultId: string, instruction?: string) => void;
+  onRegenerate?: (projectId: string, resultId: string, instruction?: string) => void;
   onConfirmStoryboardImaging?: (projectId: string) => void;
-  onFission?: (resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
-  onEdit?: (resultId: string, instruction: string, files: File[]) => void;
-  onRecover?: (resultId: string) => void;
+  onFission?: (projectId: string, resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
+  onEdit?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
+  onRecover?: (projectId: string, resultId: string) => void;
   onConfirmPlan?: (projectId: string, plan: PlanItem | PlanItem[]) => void;
   onUpdatePlans?: (projectId: string, plans: PlanItem[]) => void;
   onDeletePlan?: (projectId: string, planId: string) => void;
@@ -527,7 +527,7 @@ const ProjectCard: React.FC<Props> = ({
       addToast('请先填写继续裂变说明', 'warning');
       return;
     }
-    onFission(fissionDialog.resultId, fissionDialog.mode, finalInstruction);
+    onFission(project.id, fissionDialog.resultId, fissionDialog.mode, finalInstruction);
     setFissionDialog(null);
     setDetailOpen(false);
   };
@@ -540,7 +540,7 @@ const ProjectCard: React.FC<Props> = ({
       addToast('请先填写修改说明', 'warning');
       return;
     }
-    onEdit(editDialog.resultId, finalInstruction, usesMinimalRoleEditPrompt ? [] : editDialog.files);
+    onEdit(project.id, editDialog.resultId, finalInstruction, usesMinimalRoleEditPrompt ? [] : editDialog.files);
     setEditDialog(null);
     setDetailOpen(false);
   };
@@ -553,7 +553,7 @@ const ProjectCard: React.FC<Props> = ({
       addToast('请先填写修改说明', 'warning');
       return;
     }
-    onRegenerate(storyboardRevisionDialog.resultId, finalInstruction);
+    onRegenerate(project.id, storyboardRevisionDialog.resultId, finalInstruction);
     setStoryboardRevisionDialog(null);
   };
 
@@ -698,7 +698,7 @@ const ProjectCard: React.FC<Props> = ({
       addToast('失败项重试已提交，请等待当前任务完成', 'info');
       return;
     }
-    retryableResults.forEach((result) => onRegenerate(result.id));
+    retryableResults.forEach((result) => onRegenerate(project.id, result.id));
     addToast(`已提交 ${retryableResults.length} 个失败项重试`, 'success');
   };
 
@@ -1050,7 +1050,7 @@ const ProjectCard: React.FC<Props> = ({
                   onCopyTaskId={(taskId) => void handleCopyTaskId(taskId)}
                   onDownloadResult={(result, index) => handleDownloadSingle(result, index)}
                   onPreviewResult={(resultId) => openImage(resultId)}
-                  onRecoverResult={(resultId) => onRecover?.(resultId)}
+                  onRecoverResult={(resultId) => onRecover?.(project.id, resultId)}
                   onRequestDeleteResult={(resultId) => setConfirmDeleteResult(resultId)}
                   onDeletePlan={(planId) => onDeletePlan?.(project.id, planId)}
                   onEditResult={(resultId) => {
@@ -1274,7 +1274,7 @@ const ProjectCard: React.FC<Props> = ({
                                   disabled={!canRecoverStoryboardResult(result)}
                                   onClick={() => {
                                     if (!canRecoverStoryboardResult(result)) return;
-                                    onRecover?.(result.id);
+                                    onRecover?.(project.id, result.id);
                                   }}
                                 />
                               ) : <div />}
@@ -1286,7 +1286,7 @@ const ProjectCard: React.FC<Props> = ({
                                   disabled={isStoryboardAwaitingImageConfirmation || regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
                                   onClick={() => {
                                     if (isStoryboardAwaitingImageConfirmation || regeneratePending || isGeneratingResult || regenerationLockedByActiveProject) return;
-                                    onRegenerate(result.id);
+                                    onRegenerate(project.id, result.id);
                                   }}
                                 />
                               ) : <div />}
@@ -1410,7 +1410,7 @@ const ProjectCard: React.FC<Props> = ({
                                   disabled={regeneratePending || regenerationLockedByActiveProject}
                                   onClick={() => {
                                     if (regeneratePending || regenerationLockedByActiveProject) return;
-                                    onRegenerate(result.id);
+                                    onRegenerate(project.id, result.id);
                                   }}
                                 />
                               ) : (
@@ -1562,7 +1562,7 @@ const ProjectCard: React.FC<Props> = ({
                                   <ResultActionButton
                                     icon={<RotateCcw size={12} />}
                                     label="找回"
-                                    onClick={() => onRecover?.(result.id)}
+                                    onClick={() => onRecover?.(project.id, result.id)}
                                   />
                                   {onRegenerate && canRetryTranslationResult(result) ? (
                                     <ResultActionButton
@@ -1572,7 +1572,7 @@ const ProjectCard: React.FC<Props> = ({
                                       disabled={regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
                                       onClick={() => {
                                         if (regeneratePending || isGeneratingResult || regenerationLockedByActiveProject) return;
-                                        onRegenerate(result.id);
+                                        onRegenerate(project.id, result.id);
                                       }}
                                     />
                                   ) : (
@@ -1800,7 +1800,7 @@ const ProjectCard: React.FC<Props> = ({
                                       <ResultActionButton
                                         icon={<RotateCcw size={12} />}
                                         label="找回"
-                                        onClick={() => onRecover(result.id)}
+                                        onClick={() => onRecover(project.id, result.id)}
                                       />
                                     ) : (
                                       <div />
@@ -1813,7 +1813,7 @@ const ProjectCard: React.FC<Props> = ({
                                       disabled={regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
                                       onClick={() => {
                                         if (regeneratePending || isGeneratingResult || regenerationLockedByActiveProject) return;
-                                        onRegenerate(result.id);
+                                        onRegenerate(project.id, result.id);
                                       }}
                                     />
                                   ) : (
@@ -1922,7 +1922,7 @@ const ProjectCard: React.FC<Props> = ({
                       onClick={(event) => {
                         event.stopPropagation();
                         if (isRegeneratePending(result.id) || regenerationLockedByActiveProject) return;
-                        onRegenerate(result.id);
+                        onRegenerate(project.id, result.id);
                         setTranslationCompareOpen(false);
                       }}
                       className="flex h-9 items-center gap-2 rounded-[18px] px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
@@ -2024,7 +2024,7 @@ const ProjectCard: React.FC<Props> = ({
         open={confirmDeleteResult !== null}
         title="删除图片"
         message="确定要删除这张图片吗？此操作不可撤销。"
-        onConfirm={() => { if (confirmDeleteResult) onDeleteResult?.(confirmDeleteResult); setConfirmDeleteResult(null); }}
+        onConfirm={() => { if (confirmDeleteResult) onDeleteResult?.(project.id, confirmDeleteResult); setConfirmDeleteResult(null); }}
         onCancel={() => setConfirmDeleteResult(null)}
       />
 
@@ -2286,4 +2286,4 @@ const ProjectCard: React.FC<Props> = ({
   );
 };
 
-export default ProjectCard;
+export default React.memo(ProjectCard);

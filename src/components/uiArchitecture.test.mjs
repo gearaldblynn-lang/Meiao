@@ -998,7 +998,7 @@ test('video workspace keeps the shell UI while migrating storyboard and diagnosi
   assert.match(projectCard, /确认生图/);
   assert.match(videoModule, /onConfirmStoryboardImaging/);
   assert.match(projectCard, /storyboardProjectStatus === 'awaiting_image_confirmation'[\s\S]*?确认生图/);
-  assert.match(projectCard, /if \(isStoryboardAwaitingImageConfirmation \|\| regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\) return;[\s\S]*?onRegenerate\(result\.id\)/);
+  assert.match(projectCard, /if \(isStoryboardAwaitingImageConfirmation \|\| regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\) return;[\s\S]*?onRegenerate\(project\.id, result\.id\)/);
   assert.match(shellApp, /parseStoryboardShotCount/);
   assert.match(shellApp, /countryLanguage: params\.countryLanguage \|\| base\.countryLanguage/);
   assert.match(shellApp, /projectCount: 1/);
@@ -2579,11 +2579,11 @@ test('one click completed result edit uses only product assets and generated bas
   const oneClickShellModule = read('../shell/modules/OneClick/OneClickModule.tsx');
   const shellApp = read('../ShellMigratedApp.tsx');
 
-  assert.match(projectCard, /onEdit\?: \(resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(projectCard, /onEdit\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(projectCard, /editDialog/);
   assert.match(projectCard, /const isOneClickProject = project\.module === 'one_click'/);
   assert.match(projectCard, /const usesMinimalRoleEditPrompt = isOneClickProject \|\| isEverythingReplaceProductEditProject/);
-  assert.match(projectCard, /onEdit\(editDialog\.resultId, finalInstruction, usesMinimalRoleEditPrompt \? \[\] : editDialog\.files\)/);
+  assert.match(projectCard, /onEdit\(project\.id, editDialog\.resultId, finalInstruction, usesMinimalRoleEditPrompt \? \[\] : editDialog\.files\)/);
   assert.doesNotMatch(projectCard, /补充参考图/);
   assert.match(projectListView, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(oneClickShellModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
@@ -2610,7 +2610,7 @@ test('everything replace product edit uses its own generation flow', () => {
   const workflow = read('../adapters/shellWorkflow.ts');
   const editPromptFunction = workflow.match(/const buildEverythingReplaceResultEditPrompt = \(\{[\s\S]*?\n\};/)?.[0] || '';
 
-  assert.match(projectCard, /onEdit\?: \(resultId: string, instruction: string, files: File\[\]\) => void/);
+  assert.match(projectCard, /onEdit\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(projectListView, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(everythingReplaceModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(shellApp, /onEditResult=\{handleEditResult\}/);
@@ -2670,7 +2670,7 @@ test('video storyboard recovery polls KIE task id and writes back to the same bo
 
   assert.match(projectCard, /const canRecoverStoryboardResult = \(result\?: GeneratedResult \| null\) => Boolean\(/);
   assert.match(projectCard, /project\.module === 'video'[\s\S]*project\.subFeature === 'storyboard'[\s\S]*result\?\.taskId/);
-  assert.match(projectCard, /label="找回"[\s\S]*onRecover\?\.\(result\.id\)/);
+  assert.match(projectCard, /label="找回"[\s\S]*onRecover\?\.\(project\.id, result\.id\)/);
   assert.match(shellApp, /const handleStoryboardRecoverResult = useCallback\(async \(projectId: string, resultId\?: string\)/);
   assert.match(shellApp, /const recoverTaskId = String\(board\?\.taskId \|\| ''\)\.trim\(\)/);
   assert.match(shellApp, /await recoverKieAiTask\(recoverTaskId, apiConfig, controller\.signal, false\)/);
@@ -2693,8 +2693,8 @@ test('one click result edit and fission show immediate feedback before long asyn
   const planEditor = read('../shell/components/PlanEditor.tsx');
   const shellApp = read('../ShellMigratedApp.tsx');
 
-  assert.match(projectCard, /onFission\(fissionDialog\.resultId, fissionDialog\.mode, finalInstruction\);\s*setFissionDialog\(null\);\s*setDetailOpen\(false\);/);
-  assert.match(projectCard, /onEdit\(editDialog\.resultId, finalInstruction, usesMinimalRoleEditPrompt \? \[\] : editDialog\.files\);\s*setEditDialog\(null\);\s*setDetailOpen\(false\);/);
+  assert.match(projectCard, /onFission\(project\.id, fissionDialog\.resultId, fissionDialog\.mode, finalInstruction\);\s*setFissionDialog\(null\);\s*setDetailOpen\(false\);/);
+  assert.match(projectCard, /onEdit\(project\.id, editDialog\.resultId, finalInstruction, usesMinimalRoleEditPrompt \? \[\] : editDialog\.files\);\s*setEditDialog\(null\);\s*setDetailOpen\(false\);/);
   assert.match(projectCard, /isEditResultPending=\{isEditPending\}/);
   assert.match(projectCard, /isFissionResultPending=\{isFissionPending\}/);
   assert.match(planEditor, /isEditResultPending\?: \(resultId: string\) => boolean/);
@@ -2926,4 +2926,19 @@ test('generation refreshes expiring uploaded material urls from local draft asse
   assert.match(shellApp, /&& !refreshExpiringMaterialUrl/);
   assert.match(shellApp, /loadShellDraftAsset\(item\.localAssetId\)/);
   assert.match(shellApp, /uploadInternalAssetStream\(\{/);
+});
+
+test('ProjectCard is memoized and ProjectListView passes stable handlers (no inline closures)', () => {
+  const card = read('../shell/components/ProjectCard.tsx');
+  const listView = read('../shell/components/ProjectListView.tsx');
+
+  // 卡片已包 memo
+  assert.match(card, /export default React\.memo\(ProjectCard\)/);
+  // 调用点透传稳定 handler,不再有绑 project.id 的内联闭包
+  assert.match(listView, /onDeleteResult=\{onDeleteResult\}/);
+  assert.match(listView, /onRegenerate=\{onRegenerateResult\}/);
+  assert.match(listView, /onFission=\{onFissionResult\}/);
+  assert.match(listView, /onEdit=\{onEditResult\}/);
+  assert.match(listView, /onRecover=\{onRecoverResult\}/);
+  assert.doesNotMatch(listView, /onDeleteResult=\{\(rid\) =>/);
 });
