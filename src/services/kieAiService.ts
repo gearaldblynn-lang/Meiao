@@ -5,6 +5,7 @@ import { getUserVisibleTaskId } from './kieTaskUtils.mjs';
 import { normalizeGptImage2Resolution } from '../utils/gptImage2.mjs';
 import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
+import { isRecoverableError } from '../utils/errorClassification.mjs';
 
 const logKieEvent = (action: string, message: string, status: 'started' | 'success' | 'failed' | 'interrupted', detail = '', meta: Record<string, unknown> | null = null) => {
   const module = getActiveModuleContext() || 'unknown';
@@ -41,7 +42,6 @@ const KIE_NON_RECOVERABLE_ERROR_CODES = new Set([
   'provider_bad_request',
   'task_not_found',
 ]);
-const KIE_RECOVERABLE_MESSAGE_PATTERN = /fetch failed|network|timeout|超时|服务异常|网络异常|网络连接失败/i;
 const PUBLIC_BASE_URL_CACHE_TTL_MS = 30_000;
 let cachedPublicBaseUrl = '';
 let cachedPublicBaseUrlAt = 0;
@@ -51,7 +51,7 @@ export const isRecoverableKieTaskResult = (taskId?: string, errorMessage?: strin
   if (!String(taskId || '').trim()) return false;
   if (errorCode && KIE_NON_RECOVERABLE_ERROR_CODES.has(String(errorCode))) return false;
   if (errorCode && KIE_AUTO_RECOVER_ERROR_CODES.has(String(errorCode))) return true;
-  return KIE_RECOVERABLE_MESSAGE_PATTERN.test(String(errorMessage || ''));
+  return isRecoverableError({ message: errorMessage });
 };
 
 export const getUserFacingKieErrorMessage = (result: Partial<KieAiResult>) => {

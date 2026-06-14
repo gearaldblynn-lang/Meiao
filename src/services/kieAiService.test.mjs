@@ -69,7 +69,8 @@ test('kieAiService treats restart-reconciled provider tasks as recoverable inste
   );
   assert.match(kieAiSource, /'service_restarted'/);
   assert.match(kieAiSource, /'job_timeout'/);
-  assert.match(kieAiSource, /网络连接失败/);
+  // message 兜底已委托共享 errorClassification(网络连接失败等模式收敛到单一判据)
+  assert.match(kieAiSource, /return isRecoverableError\(\{ message: errorMessage \}\)/);
 });
 
 test('kieAiService only treats timeout-like failures as recoverable when provider task id exists', () => {

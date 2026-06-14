@@ -1,42 +1,13 @@
 import { compactKey, collectItemKeys, mergeArrayByStableKeys } from '../src/utils/taskResultReconcile.mjs';
+import { getPlanContent, isLegacyFailureText, isPlanFailed } from '../src/utils/planFailure.mjs';
 const cloneJson = (value) => JSON.parse(JSON.stringify(value || {}));
 
 const ONE_CLICK_BRANCH_KEYS = ['firstImage', 'mainImage', 'detailPage', 'sku'];
 const TRANSLATION_BRANCH_KEYS = ['main', 'detail', 'removeText'];
 
-const getOneClickPlanContent = (item = {}) => compactKey(
-  item?.schemeContent
-  || item?.textLayout
-  || item?.sceneDescription
-  || item?.styleDirection
-  || item?.colorPalette
-  || item?.composition
-  || item?.originalContent
-  || item?.editedContent
-  || item?.prompt
-  || item?.error
-  || item?.title
-);
-const isInvalidOneClickPlanText = (value) => {
-  const content = compactKey(value).replace(/\s+/g, ' ');
-  if (!content) return false;
-  return [
-    /fetch failed/i,
-    /共\s*\d+\s*张参考图，其中\s*\d+\s*张策划失败/,
-    /Failed to get (?:the )?file information/i,
-    /I cannot fulfill this request/i,
-    /Unauthorized\s*[–-]\s*Authentication failed/i,
-    /Authentication failed\.?\s*Please check/i,
-    /Cannot read properties of undefined/i,
-    /providerTaskId/i,
-    /网络连接失败，请检查网络后重试/,
-    /AI\s*分析请求失败/,
-    /SKU方案策划失败/,
-    /策划失败/,
-    /任务状态同步失败/,
-  ].some((pattern) => pattern.test(content));
-};
-const isInvalidOneClickPlanLike = (item = {}) => isInvalidOneClickPlanText(getOneClickPlanContent(item));
+const getOneClickPlanContent = (item = {}) => getPlanContent(item);
+const isInvalidOneClickPlanText = (value) => isLegacyFailureText(value);
+const isInvalidOneClickPlanLike = (item = {}) => isPlanFailed(item);
 const normalizeInvalidPlanAsFailedPlanningCard = (plan = {}) => {
   if (plan?.planningFailed || !isInvalidOneClickPlanLike(plan)) return plan;
   const message = getOneClickPlanContent(plan) || compactKey(plan?.error) || '策划失败';
