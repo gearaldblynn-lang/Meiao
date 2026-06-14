@@ -348,14 +348,14 @@ const ProjectListView: React.FC<Props> = ({
                   <ProjectCard
                     compact
                     project={project}
-                    onDeleteResult={(rid) => onDeleteResult(project.id, rid)}
+                    onDeleteResult={onDeleteResult}
                     onDeleteProject={onDeleteProject}
                     onDeletePlan={onDeletePlan}
-                    onRegenerate={(rid, instruction) => onRegenerateResult?.(project.id, rid, instruction)}
+                    onRegenerate={onRegenerateResult}
                     onConfirmStoryboardImaging={onConfirmStoryboardImaging}
-                    onFission={(rid, mode, instruction) => onFissionResult?.(project.id, rid, mode, instruction)}
-                    onEdit={(rid, instruction, files) => onEditResult?.(project.id, rid, instruction, files)}
-                    onRecover={(rid) => onRecoverResult?.(project.id, rid)}
+                    onFission={onFissionResult}
+                    onEdit={onEditResult}
+                    onRecover={onRecoverResult}
                     onConfirmPlan={onConfirmPlan}
                     onUpdatePlans={onUpdatePlans}
                     onRegeneratePlans={onRegeneratePlans}
