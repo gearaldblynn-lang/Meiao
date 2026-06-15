@@ -2282,13 +2282,16 @@ test('shell project detail uses responsive side-by-side image comparison and sta
   assert.match(projectCard, /controlsList="nofullscreen nodownload noremoteplayback"/);
   assert.match(projectCard, /disablePictureInPicture/);
   assert.match(projectCard, /meiao-video-no-fullscreen/);
-  assert.match(projectCard, /querySelectorAll<HTMLVideoElement>\('video\[data-meiao-card-video="true"\]'\)/);
-  assert.match(projectCard, /videoControls: true, videoPreload: 'metadata'/);
+  assert.match(projectCard, /querySelectorAll<HTMLVideoElement>\('video'\)/);
+  assert.match(projectCard, /videoControls: true, videoPreload: 'none'/);
   assert.match(projectCard, /items=\{lightboxItems\}/);
   assert.match(projectCard, /预览/);
   const imageLightbox = read('../shell/components/ImageLightbox.tsx');
   assert.match(imageLightbox, /type\?: 'image' \| 'video'/);
-  assert.match(imageLightbox, /<video[\s\S]*preload="auto"/);
+  assert.match(imageLightbox, /data-meiao-lightbox-video="true"/);
+  assert.match(imageLightbox, /<video[\s\S]*preload="metadata"/);
+  assert.doesNotMatch(imageLightbox, /autoPlay/);
+  assert.match(imageLightbox, /querySelectorAll<HTMLVideoElement>\('video'\)/);
   assert.match(imageLightbox, /controlsList="nofullscreen nodownload noremoteplayback"/);
   assert.match(imageLightbox, /meiao-video-no-fullscreen/);
   const shellCss = read('../shell/index.css');
@@ -2308,6 +2311,10 @@ test('stored asset route supports byte range streaming for video playback', () =
 
   assert.match(serverIndex, /req\.headers\.range/);
   assert.match(serverIndex, /'Accept-Ranges': 'bytes'/);
+  assert.match(serverIndex, /ASSET_ACCESS_TOUCH_THROTTLE_MS/);
+  assert.match(serverIndex, /scheduleStoredAssetAccessTouch\(pool, asset\.id, Date\.now\(\)\)/);
+  assert.match(serverIndex, /void markStoredAssetAccessed\(pool, assetId, touchedAt\)/);
+  assert.doesNotMatch(serverIndex, /await markStoredAssetAccessed\(pool, asset\.id, Date\.now\(\)\)/);
   assert.match(serverIndex, /writeHead\(206/);
   assert.match(serverIndex, /'Content-Range': `bytes \$\{start\}-\$\{end\}\/\$\{fileSize\}`/);
   assert.match(serverIndex, /createReadStream\(fullPath, \{ start, end \}\)/);
@@ -2442,6 +2449,7 @@ test('shell sku uploads use ordered gift assets instead of brand logo materials'
   assert.match(shellApp, /giftIndex = type === 'gift' \? giftStartIndex \+ fileIndex : undefined/);
   assert.match(shellApp, /activeSubFeature === 'sku' && type === 'logo'/);
   assert.match(materialPreviewBar, /赠品\{m\.giftIndex\}/);
+  assert.match(materialPreviewBar, /<video src=\{m\.url\}[\s\S]*preload="none"/);
   assert.match(shellWorkflow, /input\.module === AppModule\.ONE_CLICK && input\.subFeature === 'sku'/);
   assert.match(shellWorkflow, /input\.materials\.gift/);
   assert.match(shellWorkflow, /sort\(\(a, b\) => \(a\.giftIndex \|\| 0\) - \(b\.giftIndex \|\| 0\)\)/);

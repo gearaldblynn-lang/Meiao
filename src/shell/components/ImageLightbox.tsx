@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Download, X, ChevronLeft, ChevronRight, Move } from 'lucide-react';
 
 export interface LightboxMediaItem {
@@ -21,6 +21,8 @@ interface Props {
 }
 
 const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onClose, onPrev, onNext, onDownloadCurrent, actionLabel, onActionCurrent }) => {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
@@ -36,9 +38,23 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
     ? items
     : images.map((url) => ({ url, type: 'image' as const }));
   const currentItem = mediaItems[currentIndex];
+  const isVideo = currentItem?.type === 'video';
+
+  useEffect(() => {
+    if (!open || !isVideo || !currentItem) return;
+    document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
+      if (video !== videoRef.current && !video.paused) {
+        video.pause();
+      }
+    });
+    return () => {
+      if (videoRef.current && !videoRef.current.paused) {
+        videoRef.current.pause();
+      }
+    };
+  }, [open, isVideo, currentItem]);
 
   if (!open || mediaItems.length === 0 || !currentItem) return null;
-  const isVideo = currentItem.type === 'video';
 
   return (
     <div
@@ -101,15 +117,23 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
           ) : null}
           <video
             key={currentItem.url}
+            ref={videoRef}
+            data-meiao-lightbox-video="true"
             src={currentItem.url}
             className="meiao-video-no-fullscreen max-h-[80vh] w-full rounded-[18px] object-contain"
             controls
             controlsList="nofullscreen nodownload noremoteplayback"
             disablePictureInPicture
-            autoPlay
             playsInline
-            preload="auto"
+            preload="metadata"
             style={{ background: '#000', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
+            onPlay={(event) => {
+              document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
+                if (video !== event.currentTarget && !video.paused) {
+                  video.pause();
+                }
+              });
+            }}
           />
         </div>
       ) : (

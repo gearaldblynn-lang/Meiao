@@ -88,6 +88,27 @@ const CHAT_JOB_DEDUPE_WINDOW_MS = 1000 * 60 * 3;
 const VIDEO_JOB_TASK_TYPES = new Set(['dreamina_video', 'kie_seedance_video']);
 const CHAT_JOB_TASK_TYPES = new Set(['kie_chat']);
 const INTERNAL_ASSET_REGISTRY_KEY = '__assetRegistry';
+const ASSET_ACCESS_TOUCH_THROTTLE_MS = 1000 * 60 * 5;
+const recentAssetAccessTouches = new Map();
+
+const scheduleStoredAssetAccessTouch = (pool, assetId, touchedAt = Date.now()) => {
+  if (!assetId) return;
+  const lastTouchedAt = recentAssetAccessTouches.get(assetId) || 0;
+  if (touchedAt - lastTouchedAt < ASSET_ACCESS_TOUCH_THROTTLE_MS) return;
+  recentAssetAccessTouches.set(assetId, touchedAt);
+  if (recentAssetAccessTouches.size > 5000) {
+    const cutoff = touchedAt - ASSET_ACCESS_TOUCH_THROTTLE_MS;
+    for (const [key, value] of recentAssetAccessTouches) {
+      if (value < cutoff) recentAssetAccessTouches.delete(key);
+    }
+  }
+  void markStoredAssetAccessed(pool, assetId, touchedAt).catch((error) => {
+    console.warn('[asset-store] failed to touch asset access time', {
+      assetId,
+      message: error?.message || String(error || ''),
+    });
+  });
+};
 const TRACKED_URL_FIELDS = new Set([
   'resultUrl',
   'sourceUrl',
@@ -3001,10 +3022,10 @@ const serveStoredAsset = async (req, res, assetId) => {
     return;
   }
 
-  await markStoredAssetAccessed(pool, asset.id, Date.now());
   const stats = statSync(fullPath);
   const fileSize = stats.size;
   const contentType = asset.mimeType || 'application/octet-stream';
+  scheduleStoredAssetAccessTouch(pool, asset.id, Date.now());
   const baseHeaders = {
     'Content-Type': contentType,
     'Accept-Ranges': 'bytes',

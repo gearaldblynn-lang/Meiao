@@ -143,7 +143,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                         onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1)'; }}
                       >
                         {mediaKind === 'video' ? (
-                          <video src={m.url} className="w-full h-full object-cover" muted playsInline preload="metadata" />
+                          <video src={m.url} className="w-full h-full object-cover" muted playsInline preload="none" />
                         ) : mediaKind === 'audio' ? (
                           <span className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" style={{ background: `${meta.color}12`, color: meta.color }}>
                             <Music2 size={14} />

@@ -93,7 +93,7 @@ const CardVideoPreview: React.FC<{
   className: string;
   controls?: boolean;
   preload?: 'none' | 'metadata' | 'auto';
-}> = ({ src, className, controls = false, preload = 'metadata' }) => {
+}> = ({ src, className, controls = false, preload = 'none' }) => {
   return (
     <video
       data-meiao-card-video="true"
@@ -106,7 +106,7 @@ const CardVideoPreview: React.FC<{
       playsInline
       preload={preload}
       onPlay={(event) => {
-        document.querySelectorAll<HTMLVideoElement>('video[data-meiao-card-video="true"]').forEach((video) => {
+        document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
           if (video !== event.currentTarget && !video.paused) {
             video.pause();
           }
@@ -130,7 +130,7 @@ const renderMedia = (result: GeneratedResult, className: string, options?: { vid
         src={src}
         className={className}
         controls={options?.videoControls ?? false}
-        preload={options?.videoPreload || 'metadata'}
+        preload={options?.videoPreload || 'none'}
       />
     ) : (
       <div
@@ -1687,7 +1687,7 @@ const ProjectCard: React.FC<Props> = ({
                           ) : isVideoResult ? (
                             <div className="relative flex h-[300px] w-full items-center justify-center overflow-hidden bg-black sm:h-[340px]">
                               {hasResult ? (
-                                renderMedia(result, 'h-full w-full object-contain', { videoControls: true, videoPreload: 'metadata' })
+                                renderMedia(result, 'h-full w-full object-contain', { videoControls: true, videoPreload: 'none' })
                               ) : (
                                 <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-[12px]" style={{ color: 'rgba(255,255,255,0.74)' }}>
                                   <Film size={20} />
