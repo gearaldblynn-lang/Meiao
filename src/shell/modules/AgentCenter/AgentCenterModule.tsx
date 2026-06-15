@@ -211,6 +211,76 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     return true;
   };
 
+  const updateAssistantProgress = (
+    sessionId: string,
+    assistantMessageId: string,
+    event: ChatProgressEvent,
+  ) => {
+    const eventType = 'type' in event ? event.type : event.stage;
+    if (eventType === 'compressed') {
+      const foldedRounds = Number(event.foldedRounds || 0);
+      const noticeId = `compressed-${assistantMessageId}`;
+      updateMessagesForSession(sessionId, (prev) => (
+        prev.some((item) => item.id === noticeId)
+          ? prev
+          : [
+              ...prev,
+              {
+                id: noticeId,
+                sessionId,
+                userId: currentUser?.id || '',
+                role: 'system',
+                content: `较早的 ${foldedRounds} 轮对话已折叠为摘要`,
+                attachments: [],
+                createdAt: Date.now(),
+                metadata: { localOnly: true, progressStage: 'compressed' },
+              },
+            ]
+      ));
+      return;
+    }
+
+    updateMessagesForSession(sessionId, (prev) => prev.map((item) => {
+      if (item.id !== assistantMessageId) return item;
+      if (eventType === 'streaming') {
+        const streamedContent = `${String(item.metadata?.streamedContent || '')}${event.delta || ''}`;
+        return {
+          ...item,
+          content: streamedContent,
+          metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage: 'streaming', streamedContent },
+        };
+      }
+      if (eventType === 'error') {
+        return {
+          ...item,
+          content: event.message || '聊天回复失败。',
+          metadata: { ...(item.metadata || {}), pending: false, progress: false, progressStage: 'failed' },
+        };
+      }
+      const round = 'round' in event ? Number(event.round || 0) : 0;
+      let content: string;
+      let progressStage: string;
+      if (eventType === 'thinking') {
+        content = round <= 1 ? '正在思考...' : `第 ${round} 轮深度思考中...`;
+        progressStage = 'thinking';
+      } else {
+        const docs = ('docTitles' in event ? event.docTitles || [] : []).slice(0, 3);
+        if (round === 0) {
+          content = docs.length > 0
+            ? `已读取：${docs.join('、')}${('docTitles' in event && (event.docTitles || []).length > 3) ? ` 等 ${(event.docTitles || []).length} 份资料` : ''}`
+            : `已检索到 ${'chunkCount' in event ? event.chunkCount || 0 : 0} 条相关内容`;
+        } else {
+          const queryStr = ('queries' in event ? event.queries || [] : []).slice(0, 2).join('、');
+          content = docs.length > 0
+            ? `检索「${queryStr}」→ ${docs.join('、')}`
+            : `检索「${queryStr}」未找到新内容`;
+        }
+        progressStage = 'replying';
+      }
+      return { ...item, content, metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage } };
+    }));
+  };
+
   const selectedSession = useMemo(() => sessions.find((session) => session.id === selectedSessionId) || null, [sessions, selectedSessionId]);
   const selectedAgent = useMemo(() => {
     const activeAgentId = resolveActiveAgentId({
@@ -587,30 +657,9 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
           clientRequestId,
         }, {
           signal: controller.signal,
+          stream: true,
           onProgress: (event: ChatProgressEvent) => {
-            updateMessagesForSession(sendSessionId, (prev) => prev.map((item) => {
-              if (item.id !== optimisticAssistantMessage.id) return item;
-              let content: string;
-              let progressStage: string;
-              if (event.stage === 'thinking') {
-                content = event.round <= 1 ? '正在思考...' : `第 ${event.round} 轮深度思考中...`;
-                progressStage = 'thinking';
-              } else {
-                const docs = (event.docTitles || []).slice(0, 3);
-                if (event.round === 0) {
-                  content = docs.length > 0
-                    ? `已读取：${docs.join('、')}${(event.docTitles || []).length > 3 ? ` 等 ${(event.docTitles || []).length} 份资料` : ''}`
-                    : `已检索到 ${event.chunkCount || 0} 条相关内容`;
-                } else {
-                  const queryStr = (event.queries || []).slice(0, 2).join('、');
-                  content = docs.length > 0
-                    ? `检索「${queryStr}」→ ${docs.join('、')}`
-                    : `检索「${queryStr}」未找到新内容`;
-                }
-                progressStage = 'replying';
-              }
-              return { ...item, content, metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage } };
-            }));
+            updateAssistantProgress(sendSessionId, optimisticAssistantMessage.id, event);
           },
         });
         updateMessagesForSession(sendSessionId, (prev) => [
@@ -763,23 +812,9 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
             clientRequestId,
           }, {
             signal: controller.signal,
+            stream: true,
             onProgress: (event: ChatProgressEvent) => {
-              updateMessagesForSession(batchSessionId, (prev) => prev.map((item) => {
-                if (item.id !== optimisticAssistantMessage.id) return item;
-                let content: string;
-                let progressStage: string;
-                if (event.stage === 'thinking') {
-                  content = event.round <= 1 ? '正在思考...' : `第 ${event.round} 轮深度思考中...`;
-                  progressStage = 'thinking';
-                } else {
-                  const docs = (event.docTitles || []).slice(0, 3);
-                  content = docs.length > 0
-                    ? `已读取：${docs.join('、')}`
-                    : `已检索到 ${event.chunkCount || 0} 条相关内容`;
-                  progressStage = 'replying';
-                }
-                return { ...item, content, metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage } };
-              }));
+              updateAssistantProgress(batchSessionId, optimisticAssistantMessage.id, event);
             },
           });
 
