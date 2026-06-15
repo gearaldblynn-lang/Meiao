@@ -2311,6 +2311,7 @@ test('stored asset route supports byte range streaming for video playback', () =
 
   assert.match(serverIndex, /req\.headers\.range/);
   assert.match(serverIndex, /'Accept-Ranges': 'bytes'/);
+  assert.match(serverIndex, /req\.method === 'GET' \|\| req\.method === 'HEAD'\) && assetRouteMatch/);
   assert.match(serverIndex, /ASSET_ACCESS_TOUCH_THROTTLE_MS/);
   assert.match(serverIndex, /scheduleStoredAssetAccessTouch\(pool, asset\.id, Date\.now\(\)\)/);
   assert.match(serverIndex, /void markStoredAssetAccessed\(pool, assetId, touchedAt\)/);

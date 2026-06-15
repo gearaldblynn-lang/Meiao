@@ -7253,7 +7253,7 @@ const handleMysqlRequest = async (req, res, url) => {
   const taskPlatformTimelineMatch = url.pathname.match(/^\/api\/admin\/task-platform\/jobs\/([^/]+)\/timeline$/);
 
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
-  if (req.method === 'GET' && assetRouteMatch) {
+  if ((req.method === 'GET' || req.method === 'HEAD') && assetRouteMatch) {
     const assetId = decodeURIComponent(assetRouteMatch[1]);
     await serveStoredAsset(req, res, assetId);
     return;
@@ -8701,7 +8701,7 @@ const handleLocalRequest = async (req, res, url) => {
   const taskPlatformTimelineMatch = url.pathname.match(/^\/api\/admin\/task-platform\/jobs\/([^/]+)\/timeline$/);
 
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
-  if (req.method === 'GET' && assetRouteMatch) {
+  if ((req.method === 'GET' || req.method === 'HEAD') && assetRouteMatch) {
     const assetId = decodeURIComponent(assetRouteMatch[1]);
     await serveStoredAsset(req, res, assetId);
     return;

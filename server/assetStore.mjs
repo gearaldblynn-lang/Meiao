@@ -16,6 +16,99 @@ const ensureDir = (dirPath) => {
 };
 
 const now = () => Date.now();
+const MP4_CONTAINER_ATOMS = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl', 'edts', 'dinf']);
+
+const readMp4Atom = (buffer, offset, limit = buffer.length) => {
+  if (!Buffer.isBuffer(buffer) || offset + 8 > limit) return null;
+  const smallSize = buffer.readUInt32BE(offset);
+  const type = buffer.toString('latin1', offset + 4, offset + 8);
+  let size = smallSize;
+  let headerSize = 8;
+  if (smallSize === 1) {
+    if (offset + 16 > limit) return null;
+    const wideSize = buffer.readBigUInt64BE(offset + 8);
+    if (wideSize > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    size = Number(wideSize);
+    headerSize = 16;
+  } else if (smallSize === 0) {
+    size = limit - offset;
+  }
+  if (!Number.isFinite(size) || size < headerSize || offset + size > limit) return null;
+  return { type, offset, size, headerSize, end: offset + size };
+};
+
+const patchMp4ChunkOffsets = (buffer, start, limit, delta) => {
+  let offset = start;
+  while (offset + 8 <= limit) {
+    const atom = readMp4Atom(buffer, offset, limit);
+    if (!atom) return;
+    const payloadStart = atom.offset + atom.headerSize;
+    if (atom.type === 'stco') {
+      const countOffset = payloadStart + 4;
+      if (countOffset + 4 <= atom.end) {
+        const entryCount = buffer.readUInt32BE(countOffset);
+        for (let index = 0; index < entryCount; index += 1) {
+          const valueOffset = countOffset + 4 + index * 4;
+          if (valueOffset + 4 > atom.end) break;
+          const nextValue = buffer.readUInt32BE(valueOffset) + delta;
+          if (nextValue <= 0xffffffff) buffer.writeUInt32BE(nextValue, valueOffset);
+        }
+      }
+    } else if (atom.type === 'co64') {
+      const countOffset = payloadStart + 4;
+      if (countOffset + 4 <= atom.end) {
+        const entryCount = buffer.readUInt32BE(countOffset);
+        for (let index = 0; index < entryCount; index += 1) {
+          const valueOffset = countOffset + 4 + index * 8;
+          if (valueOffset + 8 > atom.end) break;
+          buffer.writeBigUInt64BE(buffer.readBigUInt64BE(valueOffset) + BigInt(delta), valueOffset);
+        }
+      }
+    } else if (MP4_CONTAINER_ATOMS.has(atom.type)) {
+      patchMp4ChunkOffsets(buffer, payloadStart, atom.end, delta);
+    }
+    offset = atom.end;
+  }
+};
+
+export const optimizeMp4BufferForStreaming = (input) => {
+  const buffer = Buffer.isBuffer(input) ? input : Buffer.from(input || []);
+  if (buffer.length < 32 || buffer.toString('latin1', 4, 8) !== 'ftyp') return buffer;
+
+  const atoms = [];
+  let offset = 0;
+  while (offset + 8 <= buffer.length) {
+    const atom = readMp4Atom(buffer, offset);
+    if (!atom) return buffer;
+    atoms.push(atom);
+    offset = atom.end;
+  }
+
+  const ftyp = atoms.find((atom) => atom.type === 'ftyp');
+  const moov = atoms.find((atom) => atom.type === 'moov');
+  const firstMdat = atoms.find((atom) => atom.type === 'mdat');
+  if (!ftyp || !moov || !firstMdat || moov.offset < firstMdat.offset) return buffer;
+  if (buffer.subarray(moov.offset, moov.end).includes(Buffer.from('cmov'))) return buffer;
+
+  const adjustedMoov = Buffer.from(buffer.subarray(moov.offset, moov.end));
+  patchMp4ChunkOffsets(adjustedMoov, readMp4Atom(adjustedMoov, 0)?.headerSize || 8, adjustedMoov.length, moov.size);
+
+  const withoutMoov = Buffer.concat([
+    buffer.subarray(0, moov.offset),
+    buffer.subarray(moov.end),
+  ]);
+  const insertAt = ftyp.end;
+  return Buffer.concat([
+    withoutMoov.subarray(0, insertAt),
+    adjustedMoov,
+    withoutMoov.subarray(insertAt),
+  ]);
+};
+
+const shouldOptimizeMp4 = ({ mimeType = '', originalName = '' }) => (
+  String(mimeType || '').toLowerCase().includes('video/mp4')
+  || /\.mp4(?:$|\?)/i.test(String(originalName || ''))
+);
 
 const normalizeBaseUrl = (value) => {
   const trimmed = String(value || '').trim();
@@ -269,6 +362,9 @@ export const persistAssetBuffer = async ({
   jobId = '',
 }) => {
   const createdAt = now();
+  const storedBuffer = shouldOptimizeMp4({ mimeType, originalName })
+    ? optimizeMp4BufferForStreaming(fileBuffer)
+    : fileBuffer;
   const id = randomBytes(12).toString('hex');
   const safeName = sanitizeAssetName(originalName);
   const extension = path.extname(safeName);
@@ -277,7 +373,7 @@ export const persistAssetBuffer = async ({
   const fullPath = path.join(ASSET_DIR, storageKey);
 
   ensureDir(path.dirname(fullPath));
-  await fs.writeFile(fullPath, fileBuffer);
+  await fs.writeFile(fullPath, storedBuffer);
 
   const record = {
     id,
@@ -287,7 +383,7 @@ export const persistAssetBuffer = async ({
     storageKey: storageKey.replace(/\\/g, '/'),
     originalName: safeName,
     mimeType: String(mimeType || 'application/octet-stream'),
-    fileSize: fileBuffer?.length || 0,
+    fileSize: storedBuffer?.length || 0,
     width: Number(width || 0),
     height: Number(height || 0),
     provider: String(provider || 'internal').slice(0, 40),

@@ -8,9 +8,20 @@ import {
   ensureAssetSchema,
   extractStoredAssetIdFromPublicUrl,
   getPublicBaseUrl,
+  optimizeMp4BufferForStreaming,
   sanitizeAssetName,
   shouldRetainAssetRecord,
 } from './assetStore.mjs';
+
+const atom = (type, payload = Buffer.alloc(0)) => {
+  const output = Buffer.alloc(8 + payload.length);
+  output.writeUInt32BE(output.length, 0);
+  output.write(type, 4, 4, 'latin1');
+  payload.copy(output, 8);
+  return output;
+};
+
+const findAtomOffset = (buffer, type) => buffer.indexOf(Buffer.from(type, 'latin1'));
 
 test('sanitizeAssetName keeps extension and removes unsafe chars', () => {
   assert.equal(sanitizeAssetName('海报 图(1).png'), '_____1_.png');
@@ -61,4 +72,29 @@ test('ensureAssetSchema accepts provider task ids longer than local entity ids',
     queries.some((sql) => /ALTER TABLE stored_assets MODIFY COLUMN job_id VARCHAR\(120\) NULL/.test(sql)),
     'existing stored_assets.job_id column should be widened during startup migration'
   );
+});
+
+test('optimizeMp4BufferForStreaming moves tail moov before mdat and patches stco offsets', () => {
+  const ftyp = atom('ftyp', Buffer.from('isom0000', 'latin1'));
+  const mdatPayload = Buffer.alloc(24, 7);
+  const mdat = atom('mdat', mdatPayload);
+  const originalChunkOffset = ftyp.length + 8;
+  const stcoPayload = Buffer.alloc(12);
+  stcoPayload.writeUInt32BE(0, 0);
+  stcoPayload.writeUInt32BE(1, 4);
+  stcoPayload.writeUInt32BE(originalChunkOffset, 8);
+  const stco = atom('stco', stcoPayload);
+  const stbl = atom('stbl', stco);
+  const minf = atom('minf', stbl);
+  const mdia = atom('mdia', minf);
+  const trak = atom('trak', mdia);
+  const moov = atom('moov', trak);
+  const input = Buffer.concat([ftyp, mdat, moov]);
+
+  const optimized = optimizeMp4BufferForStreaming(input);
+
+  assert.equal(optimized.length, input.length);
+  assert.ok(findAtomOffset(optimized, 'moov') < findAtomOffset(optimized, 'mdat'));
+  const patchedStcoOffset = optimized.indexOf(Buffer.from('stco', 'latin1')) + 12;
+  assert.equal(optimized.readUInt32BE(patchedStcoOffset), originalChunkOffset + moov.length);
 });
