@@ -1,5 +1,9 @@
 # Repeated Issues Log
 
+> 🔗 **架构级根因库以 `CLAUDE.md` 第3节「已诊断根因库」为单一真相（那是 Claude 维护的同一套根因库的主源）。**
+> 调试复发问题前,先读 `CLAUDE.md` 第3节 + 上两层 `../../CLAUDE.md`、`../../../CLAUDE.md`;那里记录了状态对账漂移、正则猜业务状态、占位当真值持久化等会复发的线上 bug 根因。
+> 本文件与 `CLAUDE.md` 第3节是**同一套记忆的两个入口**:沉淀新经验时,架构级根因写进 `CLAUDE.md`(Claude 与 Codex 都从那读),本文件可保留指针或记录纯操作型/工具型复发问题,**两边不重复抄全文以免漂移**。
+
 Use this file to stop the same problems from being rediscovered and re-fixed in slightly different ways.
 
 Before debugging a recurring issue, search this file, related tests, and recent handoff/release docs. After fixing a repeated issue, append a concise entry.
