@@ -21,6 +21,7 @@ import {
 import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
 import { resolveContextLimits } from './contextPlan.mjs';
+import { formatChatSseEvent } from './chatStreaming.mjs';
 import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
 import { ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import {
@@ -4404,6 +4405,7 @@ const runAgentConversation = async ({
   if (allPrior.length > summaryThreshold * 2) {
     const olderMessages = allPrior.slice(0, -recentCount);
     summary = buildConversationSummary(olderMessages, ctxLimits.maxSummaryChars);
+    onProgress?.({ stage: 'compressed', foldedRounds: olderMessages.length });
     recentSlice = allPrior.slice(-recentCount);
   } else {
     recentSlice = allPrior.slice(-recentCount);
@@ -7771,10 +7773,38 @@ const handleMysqlRequest = async (req, res, url) => {
     if (!user) return;
     const body = await readBody(req);
     const sessionId = decodeURIComponent(chatSessionMessagesMatch[1]);
+    const wantsStream = String(req.headers.accept || '').includes('text/event-stream') || body?.stream === true;
+    const sendChatEvent = wantsStream
+      ? (type, payload = {}) => {
+          if (res.writableEnded) return;
+          const normalizedType = type === 'progress' && payload?.stage ? String(payload.stage) : type;
+          res.write(formatChatSseEvent(normalizedType, payload));
+        }
+      : null;
     try {
-      const result = await createDbChatReply(user, sessionId, body || {});
+      if (wantsStream) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          ...(res.__corsHeaders || {}),
+        });
+        sendChatEvent('thinking', {});
+      }
+      const result = await createDbChatReply(user, sessionId, body || {}, sendChatEvent);
       if (!result) {
+        if (wantsStream) {
+          sendChatEvent('error', { message: '会话不存在或无权限。' });
+          res.end();
+          return;
+        }
         json(res, 404, { message: '会话不存在或无权限。' });
+        return;
+      }
+      if (wantsStream) {
+        sendChatEvent('streaming', { delta: result.assistantMessage?.content || '' });
+        sendChatEvent('done', { assistantMessage: result.assistantMessage, usage: result.usage });
+        res.end();
         return;
       }
       json(res, 201, result);
@@ -7800,6 +7830,11 @@ const handleMysqlRequest = async (req, res, url) => {
             error,
           }),
         }).catch(() => null);
+      }
+      if (wantsStream) {
+        sendChatEvent('error', { message: error?.message || '聊天回复失败。', code: error?.code || '' });
+        res.end();
+        return;
       }
       json(res, error?.statusCode || 500, { message: error?.message || '聊天回复失败。', code: error?.code || '' });
     }
