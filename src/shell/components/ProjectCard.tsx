@@ -98,7 +98,8 @@ const CardVideoPreview: React.FC<{
   preload?: 'none' | 'metadata' | 'auto';
   previewFrameTime?: number;
   showPlayOverlay?: boolean;
-}> = ({ src, className, controls = false, preload = 'none', previewFrameTime = 0, showPlayOverlay = false }) => {
+  showVideoIndicator?: boolean;
+}> = ({ src, className, controls = false, preload = 'none', previewFrameTime = 0, showPlayOverlay = false, showVideoIndicator = false }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const handleLoadedMetadata = (event: React.SyntheticEvent<HTMLVideoElement>) => {
@@ -153,6 +154,14 @@ const CardVideoPreview: React.FC<{
           <Play size={24} fill="currentColor" strokeWidth={2.4} />
         </button>
       ) : null}
+      {showVideoIndicator && !showPlayOverlay ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute left-1/2 top-1/2 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white shadow-[0_12px_34px_rgba(0,0,0,0.28)] backdrop-blur"
+        >
+          <Play size={22} fill="currentColor" strokeWidth={2.4} />
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -163,7 +172,7 @@ const getMissingMediaLabel = (result: GeneratedResult, mediaType: 'image' | 'vid
   return mediaType === 'video' ? '视频待生成' : '待生成图';
 };
 
-const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto'; videoPreviewFrameTime?: number; videoShowPlayOverlay?: boolean }) => {
+const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto'; videoPreviewFrameTime?: number; videoShowPlayOverlay?: boolean; videoShowIndicator?: boolean }) => {
   if (result.mediaType === 'video' || result.videoUrl) {
     const src = result.videoUrl || result.imageUrl;
     return src ? (
@@ -174,6 +183,7 @@ const renderMedia = (result: GeneratedResult, className: string, options?: { vid
         preload={options?.videoPreload || 'none'}
         previewFrameTime={options?.videoPreviewFrameTime || 0}
         showPlayOverlay={options?.videoShowPlayOverlay || false}
+        showVideoIndicator={options?.videoShowIndicator || false}
       />
     ) : (
       <div
@@ -829,7 +839,7 @@ const ProjectCard: React.FC<Props> = ({
                 </p>
                 <span className="text-[11px]" style={{ color: 'var(--accent)' }}>查看文字详情</span>
               </div>
-            ) : hasResults ? renderMedia(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]', { videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS }) : hasPlans ? (
+            ) : hasResults ? renderMedia(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]', { videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowIndicator: true }) : hasPlans ? (
               <div className="flex h-full flex-col justify-between p-4" style={{ color: 'var(--text-secondary)' }}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
