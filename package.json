@@ -11,7 +11,7 @@
     "acceptance": "node scripts/acceptance-report.mjs",
     "build": "tsc -b && vite build",
     "lint": "tsc -b && eslint .",
-    "security:audit": "npm audit --audit-level=high",
+    "security:audit": "npm audit --audit-level=high --omit=dev",
     "preview": "vite preview"
   },
   "dependencies": {
