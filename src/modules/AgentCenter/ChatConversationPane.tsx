@@ -544,7 +544,9 @@ const ChatConversationPane: React.FC<Props> = ({
             {messages.map((message) => {
               const isUser = message.role === 'user';
               const imageGenerationMessage = isImageGenerationMessage(message);
-              const progressOnlyMessage = !isUser && !imageGenerationMessage && Boolean(message.metadata?.progress);
+              const progressStage = String(message.metadata?.progressStage || '').trim();
+              const isStreamingMessage = !isUser && !imageGenerationMessage && progressStage === 'streaming';
+              const progressOnlyMessage = !isUser && !imageGenerationMessage && Boolean(message.metadata?.progress) && progressStage !== 'streaming';
               return (
                 <div key={message.id} className={`flex gap-2.5 ${isUser ? 'justify-end' : 'justify-start'}`}>
                   {!isUser ? (
@@ -592,6 +594,12 @@ const ChatConversationPane: React.FC<Props> = ({
                               {!isUser ? <MarkdownMessage content={displayContent} /> : (
                                 <p className="select-text whitespace-pre-wrap break-words">{displayContent}</p>
                               )}
+                              {isStreamingMessage ? (
+                                <span
+                                  className="agent-streaming-cursor ml-0.5 inline-block h-4 w-[2px] animate-pulse align-[-2px]"
+                                  style={{ background: 'var(--accent)' }}
+                                />
+                              ) : null}
                               {handoff && onHandoff && (
                                 <div className="mt-3">
                                   <button
