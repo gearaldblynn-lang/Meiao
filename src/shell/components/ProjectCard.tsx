@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CheckSquare2, ChevronLeft, ChevronRight, Copy, Download, FileText, Film, ImagePlus, Maximize2, Package, Palette, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { CheckSquare2, ChevronLeft, ChevronRight, Copy, Download, FileText, Film, ImagePlus, Maximize2, Package, Palette, Play, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, VideoStoryboardProject } from '../../types';
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
@@ -88,8 +88,8 @@ const normalizeSchemeText = (scheme?: string) =>
     .replace(/\[SCHEME_END\]/g, '')
     .trim();
 
-const CARD_PREVIEW_VIDEO_PRELOAD = 'metadata';
-const CARD_PREVIEW_FRAME_TIME_SECONDS = 0.5;
+const VIDEO_PREVIEW_PRELOAD = 'metadata';
+const VIDEO_PREVIEW_FRAME_TIME_SECONDS = 0.5;
 
 const CardVideoPreview: React.FC<{
   src: string;
@@ -97,9 +97,12 @@ const CardVideoPreview: React.FC<{
   controls?: boolean;
   preload?: 'none' | 'metadata' | 'auto';
   previewFrameTime?: number;
-}> = ({ src, className, controls = false, preload = 'none', previewFrameTime = 0 }) => {
+  showPlayOverlay?: boolean;
+}> = ({ src, className, controls = false, preload = 'none', previewFrameTime = 0, showPlayOverlay = false }) => {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
   const handleLoadedMetadata = (event: React.SyntheticEvent<HTMLVideoElement>) => {
-    if (controls || preload === 'none' || previewFrameTime <= 0) return;
+    if (preload === 'none' || previewFrameTime <= 0) return;
     const duration = event.currentTarget.duration;
     if (!Number.isFinite(duration) || duration <= previewFrameTime) return;
     try {
@@ -110,25 +113,47 @@ const CardVideoPreview: React.FC<{
   };
 
   return (
-    <video
-      data-meiao-card-video="true"
-      src={src}
-      className={`${className} meiao-video-no-fullscreen`}
-      controls={controls}
-      controlsList="nofullscreen nodownload noremoteplayback"
-      disablePictureInPicture
-      muted
-      playsInline
-      preload={preload}
-      onLoadedMetadata={handleLoadedMetadata}
-      onPlay={(event) => {
-        document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
-          if (video !== event.currentTarget && !video.paused) {
-            video.pause();
-          }
-        });
-      }}
-    />
+    <div className="relative h-full w-full">
+      <video
+        ref={videoRef}
+        data-meiao-card-video="true"
+        src={src}
+        className={`${className} meiao-video-no-fullscreen`}
+        controls={controls}
+        controlsList="nofullscreen nodownload noremoteplayback"
+        disablePictureInPicture
+        muted
+        playsInline
+        preload={preload}
+        onLoadedMetadata={handleLoadedMetadata}
+        onPlay={(event) => {
+          setIsPlaying(true);
+          document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
+            if (video !== event.currentTarget && !video.paused) {
+              video.pause();
+            }
+          });
+        }}
+        onPause={() => setIsPlaying(false)}
+        onEnded={() => setIsPlaying(false)}
+      />
+      {showPlayOverlay && !isPlaying ? (
+        <button
+          type="button"
+          aria-label="播放视频"
+          className="absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white shadow-[0_12px_40px_rgba(0,0,0,0.32)] backdrop-blur transition-transform hover:scale-105"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const video = videoRef.current;
+            if (!video) return;
+            void video.play().catch(() => undefined);
+          }}
+        >
+          <Play size={24} fill="currentColor" strokeWidth={2.4} />
+        </button>
+      ) : null}
+    </div>
   );
 };
 
@@ -138,7 +163,7 @@ const getMissingMediaLabel = (result: GeneratedResult, mediaType: 'image' | 'vid
   return mediaType === 'video' ? '视频待生成' : '待生成图';
 };
 
-const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto'; videoPreviewFrameTime?: number }) => {
+const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto'; videoPreviewFrameTime?: number; videoShowPlayOverlay?: boolean }) => {
   if (result.mediaType === 'video' || result.videoUrl) {
     const src = result.videoUrl || result.imageUrl;
     return src ? (
@@ -148,6 +173,7 @@ const renderMedia = (result: GeneratedResult, className: string, options?: { vid
         controls={options?.videoControls ?? false}
         preload={options?.videoPreload || 'none'}
         previewFrameTime={options?.videoPreviewFrameTime || 0}
+        showPlayOverlay={options?.videoShowPlayOverlay || false}
       />
     ) : (
       <div
@@ -803,7 +829,7 @@ const ProjectCard: React.FC<Props> = ({
                 </p>
                 <span className="text-[11px]" style={{ color: 'var(--accent)' }}>查看文字详情</span>
               </div>
-            ) : hasResults ? renderMedia(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]', { videoPreload: CARD_PREVIEW_VIDEO_PRELOAD, videoPreviewFrameTime: CARD_PREVIEW_FRAME_TIME_SECONDS }) : hasPlans ? (
+            ) : hasResults ? renderMedia(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]', { videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS }) : hasPlans ? (
               <div className="flex h-full flex-col justify-between p-4" style={{ color: 'var(--text-secondary)' }}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -1704,7 +1730,7 @@ const ProjectCard: React.FC<Props> = ({
                           ) : isVideoResult ? (
                             <div className="relative flex h-[300px] w-full items-center justify-center overflow-hidden bg-black sm:h-[340px]">
                               {hasResult ? (
-                                renderMedia(result, 'h-full w-full object-contain', { videoControls: true, videoPreload: 'none' })
+                                renderMedia(result, 'h-full w-full object-contain', { videoControls: true, videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowPlayOverlay: true })
                               ) : (
                                 <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-[12px]" style={{ color: 'rgba(255,255,255,0.74)' }}>
                                   <Film size={20} />
