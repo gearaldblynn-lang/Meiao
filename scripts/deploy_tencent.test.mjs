@@ -23,7 +23,7 @@ test('deploy_tencent blocks releases with high severity dependency vulnerabiliti
 
   assert.equal(
     packageJson.scripts['security:audit'],
-    'npm audit --audit-level=high',
+    'npm audit --audit-level=high --omit=dev',
     'package.json should expose the release security audit command'
   );
 
