@@ -79,6 +79,7 @@ const toStoryboardCards = (items: VideoStoryboardProject[]): Project[] => items.
     module: 'video' as Project['module'],
     status,
     createdAt: project.createdAt,
+    createdAtPrecise: true,
     completedAt: project.status === 'completed' ? project.createdAt : undefined,
     results,
     taskCount: Math.max(project.boards.length || project.shots.length || 1, 1),
@@ -108,6 +109,7 @@ const toDiagnosisCards = (state: VideoPersistentState): Project[] => {
     module: 'video' as Project['module'],
     status,
     createdAt: analysis?.completedAt || probe?.completedAt || Date.now(),
+    createdAtPrecise: true,
     completedAt: analysis?.completedAt ? analysis.completedAt : undefined,
     results: [{
       id: 'video-diagnosis-summary',
