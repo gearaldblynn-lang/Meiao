@@ -20,12 +20,21 @@ import { resolveActiveAgentId } from '../../../modules/AgentCenter/agentCenterUt
 import { filterChatModelsByAllowlist } from '../../../modules/AgentCenter/chatModelAllowlist';
 import { resolveSessionReasoningLevel } from '../../../modules/AgentCenter/chatReasoningDefaults.mjs';
 import { MAX_FILES_PER_BATCH } from '../../../modules/AgentCenter/folderZipUpload';
+import { LegacyFaIcon } from '../../../components/ui/workspacePrimitives';
 
 interface Props {
   currentUser?: AuthUser | null;
   internalMode?: boolean;
   onHandoff?: (target: ModuleInterfaceId, payload: Record<string, unknown>) => void;
 }
+
+type ChatAttachmentPayload = {
+  name: string;
+  kind?: 'image' | 'file';
+  url?: string;
+  assetId?: string;
+  mimeType?: string;
+};
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const AGENT_CENTER_UI_STATE_KEY = 'MEIAO_AGENT_CENTER_UI_STATE';
@@ -586,21 +595,35 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     setSessions((prev) => prev.map((item) => item.id === selectedSessionId ? result.session : item));
   };
 
-  const handleSendMessage = () => {
-    if (sendingMessage || !selectedSessionId || (!messageDraft.trim() && attachments.length === 0)) return;
+  const createAttachmentPayload = (items: Array<ComposerAttachment | ChatAttachmentPayload>): ChatAttachmentPayload[] => items.map((item) => ({
+    name: item.name,
+    kind: item.kind,
+    url: item.url,
+    assetId: 'assetId' in item ? item.assetId : undefined,
+    mimeType: item.mimeType,
+  }));
+
+  const submitChatMessage = ({
+    content: rawContent,
+    sourceAttachments,
+    requestMode,
+    restoreDraft,
+    restoreAttachments,
+  }: {
+    content: string;
+    sourceAttachments: Array<ComposerAttachment | ChatAttachmentPayload>;
+    requestMode: 'chat' | 'image_generation';
+    restoreDraft: string;
+    restoreAttachments: ComposerAttachment[];
+  }) => {
+    if (sendingMessage || !selectedSessionId || (!rawContent.trim() && sourceAttachments.length === 0)) return false;
     const sendSessionId = selectedSessionId;
     const sendSelectedModel = selectedModel;
     const sendReasoningLevel = reasoningLevel;
     const sendWebSearchEnabled = webSearchEnabled;
-    const content = messageDraft.trim();
-    const requestMode = imageModeEnabled ? 'image_generation' : 'chat';
+    const content = rawContent.trim();
     const clientRequestId = `chatreq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const attachmentPayload = attachments.map((item) => ({
-      name: item.name,
-      kind: item.kind,
-      url: item.url,
-      mimeType: item.mimeType,
-    }));
+    const attachmentPayload = createAttachmentPayload(sourceAttachments);
     const optimisticUserMessage: AgentChatMessage = {
       id: `pending-user-${Date.now()}`,
       sessionId: sendSessionId,
@@ -627,13 +650,11 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         progressStage: requestMode === 'image_generation' ? 'analyzing' : 'thinking',
       },
     };
-    const previousDraft = messageDraft;
-    const previousAttachments = attachments;
     const controller = new AbortController();
     sendAbortControllerRef.current = controller;
     pendingRestoreRef.current = {
-      draft: previousDraft,
-      attachments: previousAttachments,
+      draft: restoreDraft,
+      attachments: restoreAttachments,
       userMessageId: optimisticUserMessage.id,
       assistantMessageId: optimisticAssistantMessage.id,
     };
@@ -702,9 +723,6 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         if (pendingRestore && selectedSessionIdRef.current === sendSessionId) {
           setMessageDraft(pendingRestore.draft);
           setAttachments(pendingRestore.attachments);
-        } else if (selectedSessionIdRef.current === sendSessionId) {
-          setMessageDraft(previousDraft);
-          setAttachments(previousAttachments);
         }
         if (error?.name === 'AbortError' || error?.message === 'INTERRUPTED' || String(error?.message || '').includes('aborted')) {
           setStatusMessage('已中断本次发送');
@@ -720,12 +738,87 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         setLoading(false);
       }
     })();
+    return true;
+  };
+
+  const handleSendMessage = () => {
+    void submitChatMessage({
+      content: messageDraft,
+      sourceAttachments: attachments,
+      requestMode: imageModeEnabled ? 'image_generation' : 'chat',
+      restoreDraft: messageDraft,
+      restoreAttachments: attachments,
+    });
   };
 
   const handleInterruptSend = () => {
     if (!sendAbortControllerRef.current) return;
     sendAbortControllerRef.current.abort();
   };
+
+  const handleCopyMessage = useCallback(async (message: AgentChatMessage) => {
+    try {
+      await navigator.clipboard.writeText(message.content || '');
+      setStatusMessage('已复制消息内容');
+      setErrorMessage('');
+    } catch {
+      setErrorMessage('复制失败，请手动选择消息内容复制');
+    }
+  }, []);
+
+  const handleRegenerateMessage = useCallback((message: AgentChatMessage) => {
+    if (sendingMessage || message.role !== 'assistant') return;
+    const messageIndex = messages.findIndex((item) => item.id === message.id);
+    const previousUserMessage = messages
+      .slice(0, messageIndex >= 0 ? messageIndex : messages.length)
+      .reverse()
+      .find((item) => item.role === 'user');
+    if (!previousUserMessage) {
+      setErrorMessage('找不到可重新生成的问题');
+      return;
+    }
+    const submitted = submitChatMessage({
+      content: previousUserMessage.content || '',
+      sourceAttachments: previousUserMessage.attachments || [],
+      requestMode: 'chat',
+      restoreDraft: '',
+      restoreAttachments: [],
+    });
+    if (!submitted) {
+      setErrorMessage('当前会话暂时无法重新生成');
+    }
+  }, [messages, sendingMessage, submitChatMessage]);
+
+  const renderShellMessageActions = useCallback((message: AgentChatMessage) => {
+    if (message.role !== 'assistant' || message.metadata?.pending) return null;
+    return (
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <button
+          type="button"
+          onClick={() => handleCopyMessage(message)}
+          className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold transition"
+          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+          title="复制消息"
+          aria-label="复制消息"
+        >
+          <LegacyFaIcon icon="fa-copy" className="text-[10px]" />
+          复制
+        </button>
+        <button
+          type="button"
+          onClick={() => handleRegenerateMessage(message)}
+          disabled={sendingMessage}
+          className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+          style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+          title="重新生成"
+          aria-label="重新生成"
+        >
+          <LegacyFaIcon icon="fa-rotate-right" className="text-[10px]" />
+          重新生成
+        </button>
+      </div>
+    );
+  }, [handleCopyMessage, handleRegenerateMessage, sendingMessage]);
 
   /**
    * 批量发送调度：串行发送每批附件，等待每批模型回复后再发下一批。
@@ -1094,6 +1187,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
               onInterruptSend={handleInterruptSend}
               onHandoff={onHandoff}
               onBatchSend={handleBatchSend}
+              renderMessageActions={renderShellMessageActions}
             />
           )}
         </div>
