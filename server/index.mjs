@@ -20,6 +20,7 @@ import {
 } from '../src/modules/AgentCenter/agentCenterUtils.mjs';
 import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
+import { resolveContextLimits } from './contextPlan.mjs';
 import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
 import { ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import {
@@ -4389,14 +4390,20 @@ const runAgentConversation = async ({
   const hasKnowledgeBase = Array.isArray(version.knowledgeBaseIds) && version.knowledgeBaseIds.length > 0 && Boolean(version.retrievalPolicy?.enabled);
   const candidateChunks = (shouldRetrieve || hasKnowledgeBase) ? await listDbKnowledgeChunksForVersion(version) : [];
   const allPrior = Array.isArray(priorMessages) ? priorMessages : [];
-  const maxRounds = Number(version.contextPolicy.maxHistoryRounds || 6);
-  const summaryThreshold = Number(version.contextPolicy.summaryTriggerThreshold || 10);
+  const selectedModel = String(selectedModelOverride || (hasKnowledgeBase ? version.modelPolicy.defaultModel : version.modelPolicy.cheapModel) || '').trim();
+  const fallbackModels = resolveChatFallbackModels(version, selectedModel);
+  const ctxLimits = resolveContextLimits({
+    modelId: selectedModel,
+    contextPolicy: version.contextPolicy || {},
+  });
+  const maxRounds = ctxLimits.maxHistoryRounds;
+  const summaryThreshold = ctxLimits.summaryTriggerThreshold;
   const recentCount = maxRounds * 2;
   let summary = '';
   let recentSlice = allPrior;
   if (allPrior.length > summaryThreshold * 2) {
     const olderMessages = allPrior.slice(0, -recentCount);
-    summary = buildConversationSummary(olderMessages, Number(version.contextPolicy.maxSummaryChars || 1200));
+    summary = buildConversationSummary(olderMessages, ctxLimits.maxSummaryChars);
     recentSlice = allPrior.slice(-recentCount);
   } else {
     recentSlice = allPrior.slice(-recentCount);
@@ -4433,8 +4440,6 @@ const runAgentConversation = async ({
       content: buildChatMessageContent(inlinedMessage, remainingAttachments),
     };
   }
-  const selectedModel = String(selectedModelOverride || (hasKnowledgeBase ? version.modelPolicy.defaultModel : version.modelPolicy.cheapModel) || '').trim();
-  const fallbackModels = resolveChatFallbackModels(version, selectedModel);
   const startedAt = Date.now();
   let content;
   let usedChunks = [];
@@ -4463,6 +4468,7 @@ const runAgentConversation = async ({
         fallbackModels,
         reasoningLevel: reasoningLevel ? String(reasoningLevel) : null,
         webSearchEnabled: Boolean(webSearchEnabled),
+        maxTokens: ctxLimits.maxOutputTokens,
       },
     }, process.env, new AbortController().signal);
     content = sanitizeAgentAssistantContent(output?.result?.content);
