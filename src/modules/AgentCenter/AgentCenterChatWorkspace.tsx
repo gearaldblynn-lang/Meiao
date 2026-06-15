@@ -43,6 +43,7 @@ interface Props {
   sendingMessage?: boolean;
   onHandoff?: (target: ModuleInterfaceId, payload: Record<string, unknown>) => void;
   onBatchSend?: (batches: ComposerAttachment[][], meta: { totalFiles: number; skippedCount: number; skippedReasons: string[] }) => Promise<void>;
+  renderMessageActions?: (message: AgentChatMessage) => React.ReactNode;
 }
 
 interface ConfirmState {
@@ -110,6 +111,7 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
   sendingMessage = false,
   onHandoff,
   onBatchSend,
+  renderMessageActions,
 }) => {
   const [departmentFilter, setDepartmentFilter] = useState('all');
   const [recentDeleteMode, setRecentDeleteMode] = useState(false);
@@ -754,6 +756,7 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
                 onInterruptSend={onInterruptSend}
                 onHandoff={onHandoff}
                 onBatchSend={onBatchSend}
+                renderMessageActions={renderMessageActions}
               />
             </div>
 

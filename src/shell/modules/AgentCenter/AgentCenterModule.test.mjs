@@ -6,6 +6,7 @@ const shellAppSource = readFileSync(new URL('../../../ShellMigratedApp.tsx', imp
 const shellModuleSource = readFileSync(new URL('./AgentCenterModule.tsx', import.meta.url), 'utf8');
 const managerSource = readFileSync(new URL('../../../modules/AgentCenter/AgentCenterManager.tsx', import.meta.url), 'utf8');
 const detailSource = readFileSync(new URL('../../../modules/AgentCenter/AgentDetailView.tsx', import.meta.url), 'utf8');
+const chatWorkspaceSource = readFileSync(new URL('../../../modules/AgentCenter/AgentCenterChatWorkspace.tsx', import.meta.url), 'utf8');
 
 test('shell app mounts the upgraded shell agent center instead of directly copying the old module', () => {
   assert.match(shellAppSource, /lazy\(\(\) => import\('\.\/shell\/modules\/AgentCenter\/AgentCenterModule'\)\)/);
@@ -32,4 +33,19 @@ test('shell agent center keeps async chat results scoped to the active session',
   assert.match(shellModuleSource, /const sendSessionId = selectedSessionId;/);
   assert.match(shellModuleSource, /sendChatMessage\(sendSessionId,/);
   assert.match(shellModuleSource, /await syncCompletedMessageAfterTimeout\(sendSessionId, clientRequestId\)/);
+});
+
+test('shell chat workspace exposes assistant message actions for copy and regenerate', () => {
+  assert.match(chatWorkspaceSource, /renderMessageActions\?: \(message: AgentChatMessage\) => React\.ReactNode;/);
+  assert.match(chatWorkspaceSource, /renderMessageActions,/);
+  assert.match(chatWorkspaceSource, /renderMessageActions=\{renderMessageActions\}/);
+
+  assert.match(shellModuleSource, /const handleCopyMessage = useCallback/);
+  assert.match(shellModuleSource, /navigator\.clipboard\.writeText\(message\.content \|\| ''\)/);
+  assert.match(shellModuleSource, /const handleRegenerateMessage = useCallback/);
+  assert.match(shellModuleSource, /message\.role !== 'assistant'/);
+  assert.match(shellModuleSource, /renderShellMessageActions/);
+  assert.match(shellModuleSource, /handleCopyMessage\(message\)/);
+  assert.match(shellModuleSource, /handleRegenerateMessage\(message\)/);
+  assert.match(shellModuleSource, /renderMessageActions=\{renderShellMessageActions\}/);
 });
