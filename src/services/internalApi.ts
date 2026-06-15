@@ -24,6 +24,7 @@ import type {
 } from '../types';
 import type { PersistedAppState } from '../utils/appState';
 import { ensureUploadFileName } from '../utils/uploadFileName.mjs';
+import { parseChatSseChunk, type ChatStreamEvent } from './chatStreamParse';
 
 const SESSION_TOKEN_KEY = 'MEIAO_INTERNAL_SESSION_TOKEN';
 const CURRENT_USER_KEY = 'MEIAO_INTERNAL_CURRENT_USER';
@@ -802,11 +803,24 @@ export const fetchChatMessages = async (sessionId: string) => {
 };
 
 export type ChatProgressEvent = {
-  stage: 'thinking' | 'retrieved';
-  round: number;
+  stage?: 'thinking' | 'retrieved';
+  type?: 'thinking' | 'retrieved' | 'streaming' | 'compressed' | 'done' | 'error';
+  round?: number;
   queries?: string[];
   chunkCount?: number;
   docTitles?: string[];
+  delta?: string;
+  foldedRounds?: number;
+  assistantMessage?: unknown;
+  usage?: unknown;
+  message?: string;
+  code?: string;
+};
+
+type SendChatMessageResult = {
+  userMessage: AgentChatMessage;
+  assistantMessage: AgentChatMessage;
+  usage: Record<string, unknown>;
 };
 
 export const sendChatMessage = async (sessionId: string, payload: {
@@ -820,9 +834,11 @@ export const sendChatMessage = async (sessionId: string, payload: {
 }, options?: {
   signal?: AbortSignal;
   onProgress?: (event: ChatProgressEvent) => void;
-}) => {
+  stream?: boolean;
+}): Promise<SendChatMessageResult> => {
   const clientRequestId = payload.clientRequestId;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  const useStream = payload.requestMode !== 'image_generation' && options?.stream === true;
 
   if (clientRequestId && options?.onProgress) {
     pollTimer = setInterval(async () => {
@@ -836,17 +852,89 @@ export const sendChatMessage = async (sessionId: string, payload: {
   }
 
   try {
-    return await request<{
-      userMessage: AgentChatMessage;
-      assistantMessage: AgentChatMessage;
-      usage: Record<string, unknown>;
-    }>(`/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    const path = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
+    if (!useStream) {
+      return await request<SendChatMessageResult>(path, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        signal: options?.signal,
+        timeoutMs: 300_000,
+        dedupe: false,
+      });
+    }
+
+    const token = getSessionToken();
+    const response = await fetchWithTimeout(path, {
       method: 'POST',
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ ...payload, stream: true }),
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+      },
       signal: options?.signal,
-      timeoutMs: payload.requestMode === 'image_generation' ? 300_000 : 240_000,
-      dedupe: false,
+      timeoutMs: 240_000,
+      cache: 'no-store' as RequestCache,
     });
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('text/event-stream') || !response.body) {
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw classifyError(response.status, data.message || '');
+      return data as SendChatMessageResult;
+    }
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw classifyError(response.status, data.message || '');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let rest = '';
+    let streamedContent = '';
+    let doneMessage: AgentChatMessage | null = null;
+    let doneUsage: Record<string, unknown> | null = null;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = rest + decoder.decode(value, { stream: true });
+      const parsed = parseChatSseChunk(chunk, { withRest: true }) as { events: ChatStreamEvent[]; rest: string };
+      rest = parsed.rest;
+      for (const event of parsed.events) {
+        options?.onProgress?.(event as ChatProgressEvent);
+        if (event.type === 'streaming') {
+          streamedContent += event.delta || '';
+        } else if (event.type === 'done') {
+          doneMessage = event.assistantMessage as AgentChatMessage | undefined || null;
+          doneUsage = event.usage as Record<string, unknown> | undefined || null;
+        } else if (event.type === 'error') {
+          throw new ApiError(event.message || '聊天回复失败。', event.code || 'request_failed', 500);
+        }
+      }
+    }
+
+    if (!doneMessage) {
+      throw new ApiError('聊天流式响应未返回完成消息', 'stream_incomplete', 500);
+    }
+
+    const userMessage: AgentChatMessage = {
+      id: String(doneMessage.metadata?.messageIds?.userMessageId || ''),
+      sessionId,
+      userId: '',
+      role: 'user',
+      content: payload.content,
+      attachments: payload.attachments || [],
+      metadata: { clientRequestId },
+      createdAt: Date.now(),
+    };
+
+    return {
+      userMessage,
+      assistantMessage: { ...doneMessage, content: doneMessage.content || streamedContent },
+      usage: doneUsage || {},
+    };
   } finally {
     if (pollTimer !== null) clearInterval(pollTimer);
   }
