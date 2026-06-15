@@ -93,6 +93,33 @@ test('agent chat messages persist run identity and context trace metadata', () =
   assert.match(source, /phase: 'completed'/);
 });
 
+test('agent conversation uses selected model context limits instead of fixed history and output constants', () => {
+  assert.match(source, /import \{ resolveContextLimits \} from '\.\/contextPlan\.mjs';/);
+
+  const runStart = source.indexOf('const runAgentConversation = async');
+  const runEnd = source.indexOf('const validateDbAgentVersion', runStart);
+  assert.ok(runStart > -1, 'runAgentConversation should exist');
+  assert.ok(runEnd > runStart, 'runAgentConversation slice should be bounded');
+  const runSource = source.slice(runStart, runEnd);
+
+  const selectedModelIndex = runSource.indexOf('const selectedModel = String(');
+  const ctxLimitsIndex = runSource.indexOf('const ctxLimits = resolveContextLimits({');
+  const promptIndex = runSource.indexOf('const messages = buildAgentPromptMessages({');
+  assert.ok(selectedModelIndex > -1, 'selected model should be resolved in runAgentConversation');
+  assert.ok(ctxLimitsIndex > selectedModelIndex, 'context limits should use the final selected model');
+  assert.ok(promptIndex > ctxLimitsIndex, 'context limits should be resolved before prompt messages are built');
+
+  assert.match(runSource, /modelId: selectedModel/);
+  assert.match(runSource, /contextPolicy: version\.contextPolicy \|\| \{\}/);
+  assert.match(runSource, /const maxRounds = ctxLimits\.maxHistoryRounds;/);
+  assert.match(runSource, /const summaryThreshold = ctxLimits\.summaryTriggerThreshold;/);
+  assert.match(runSource, /buildConversationSummary\(olderMessages, ctxLimits\.maxSummaryChars\)/);
+  assert.match(runSource, /maxTokens: ctxLimits\.maxOutputTokens/);
+  assert.doesNotMatch(runSource, /contextPolicy\.maxHistoryRounds \|\| 6/);
+  assert.doesNotMatch(runSource, /contextPolicy\.summaryTriggerThreshold \|\| 10/);
+  assert.doesNotMatch(runSource, /contextPolicy\.maxSummaryChars \|\| 1200/);
+});
+
 test('agent image generation filters expired provider temp images before sending image URLs', () => {
   assert.match(source, /const isProviderTemporaryImageUrl = \(value\) =>/);
   assert.match(source, /filterAvailableConversationImageReferences/);
