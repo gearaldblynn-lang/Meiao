@@ -17,3 +17,9 @@ test('MarkdownMessage keeps raw HTML disabled and adds copy controls for code bl
   assert.doesNotMatch(markdownSource, /rehype-raw/);
   assert.match(markdownSource, /navigator\.clipboard\.writeText/);
 });
+
+test('streaming assistant messages render content with a typewriter cursor instead of spinner-only progress', () => {
+  assert.match(paneSource, /progressStage !== 'streaming'/);
+  assert.match(paneSource, /agent-streaming-cursor/);
+  assert.match(paneSource, /isStreamingMessage/);
+});
