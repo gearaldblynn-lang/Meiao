@@ -2283,6 +2283,11 @@ test('shell project detail uses responsive side-by-side image comparison and sta
   assert.match(projectCard, /disablePictureInPicture/);
   assert.match(projectCard, /meiao-video-no-fullscreen/);
   assert.match(projectCard, /querySelectorAll<HTMLVideoElement>\('video'\)/);
+  assert.match(projectCard, /CARD_PREVIEW_VIDEO_PRELOAD = 'metadata'/);
+  assert.match(projectCard, /CARD_PREVIEW_FRAME_TIME_SECONDS = 0\.5/);
+  assert.match(projectCard, /onLoadedMetadata=\{handleLoadedMetadata\}/);
+  assert.match(projectCard, /event\.currentTarget\.currentTime = previewFrameTime/);
+  assert.match(projectCard, /renderMedia\(previewResult,[\s\S]*videoPreload: CARD_PREVIEW_VIDEO_PRELOAD/);
   assert.match(projectCard, /videoControls: true, videoPreload: 'none'/);
   assert.match(projectCard, /items=\{lightboxItems\}/);
   assert.match(projectCard, /预览/);
@@ -2582,7 +2587,7 @@ test('project card preview prefers completed media over failed or pending placeh
   const projectCard = read('../shell/components/ProjectCard.tsx');
 
   assert.match(projectCard, /const previewResult = project\.results\.find\(\(result\) => isCompletedMediaResult\(result\)\) \|\| project\.results\[0\];/);
-  assert.match(projectCard, /renderMedia\(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-\[1\.03\]'\)/);
+  assert.match(projectCard, /renderMedia\(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-\[1\.03\]', \{ videoPreload: CARD_PREVIEW_VIDEO_PRELOAD, videoPreviewFrameTime: CARD_PREVIEW_FRAME_TIME_SECONDS \}\)/);
 });
 
 test('one click completed result edit uses only product assets and generated baseline while keeping original result', () => {

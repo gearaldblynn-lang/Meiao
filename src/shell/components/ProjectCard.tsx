@@ -88,12 +88,27 @@ const normalizeSchemeText = (scheme?: string) =>
     .replace(/\[SCHEME_END\]/g, '')
     .trim();
 
+const CARD_PREVIEW_VIDEO_PRELOAD = 'metadata';
+const CARD_PREVIEW_FRAME_TIME_SECONDS = 0.5;
+
 const CardVideoPreview: React.FC<{
   src: string;
   className: string;
   controls?: boolean;
   preload?: 'none' | 'metadata' | 'auto';
-}> = ({ src, className, controls = false, preload = 'none' }) => {
+  previewFrameTime?: number;
+}> = ({ src, className, controls = false, preload = 'none', previewFrameTime = 0 }) => {
+  const handleLoadedMetadata = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    if (controls || preload === 'none' || previewFrameTime <= 0) return;
+    const duration = event.currentTarget.duration;
+    if (!Number.isFinite(duration) || duration <= previewFrameTime) return;
+    try {
+      event.currentTarget.currentTime = previewFrameTime;
+    } catch {
+      // Some browsers reject early seeks on partially loaded media; metadata loading still improves the card preview.
+    }
+  };
+
   return (
     <video
       data-meiao-card-video="true"
@@ -105,6 +120,7 @@ const CardVideoPreview: React.FC<{
       muted
       playsInline
       preload={preload}
+      onLoadedMetadata={handleLoadedMetadata}
       onPlay={(event) => {
         document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
           if (video !== event.currentTarget && !video.paused) {
@@ -122,7 +138,7 @@ const getMissingMediaLabel = (result: GeneratedResult, mediaType: 'image' | 'vid
   return mediaType === 'video' ? '视频待生成' : '待生成图';
 };
 
-const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto' }) => {
+const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto'; videoPreviewFrameTime?: number }) => {
   if (result.mediaType === 'video' || result.videoUrl) {
     const src = result.videoUrl || result.imageUrl;
     return src ? (
@@ -131,6 +147,7 @@ const renderMedia = (result: GeneratedResult, className: string, options?: { vid
         className={className}
         controls={options?.videoControls ?? false}
         preload={options?.videoPreload || 'none'}
+        previewFrameTime={options?.videoPreviewFrameTime || 0}
       />
     ) : (
       <div
@@ -786,7 +803,7 @@ const ProjectCard: React.FC<Props> = ({
                 </p>
                 <span className="text-[11px]" style={{ color: 'var(--accent)' }}>查看文字详情</span>
               </div>
-            ) : hasResults ? renderMedia(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]') : hasPlans ? (
+            ) : hasResults ? renderMedia(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]', { videoPreload: CARD_PREVIEW_VIDEO_PRELOAD, videoPreviewFrameTime: CARD_PREVIEW_FRAME_TIME_SECONDS }) : hasPlans ? (
               <div className="flex h-full flex-col justify-between p-4" style={{ color: 'var(--text-secondary)' }}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
