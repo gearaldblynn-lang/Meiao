@@ -7,6 +7,7 @@ import UserAvatar from './UserAvatar';
 import ChatComposer, { ComposerAttachment, BatchSendTask } from './ChatComposer';
 import { MODULE_INTERFACES } from './agentCenterUtils.mjs';
 import { MAX_FILES_PER_BATCH } from './folderZipUpload';
+import MarkdownMessage from './MarkdownMessage';
 
 interface Props {
   messages: AgentChatMessage[];
@@ -588,7 +589,9 @@ const ChatConversationPane: React.FC<Props> = ({
                           const displayContent = stripConversationProtocolMarkers(handoff ? stripHandoffBlock(message.content) : message.content);
                           return (
                             <>
-                              <p className="select-text whitespace-pre-wrap break-words">{displayContent}</p>
+                              {!isUser ? <MarkdownMessage content={displayContent} /> : (
+                                <p className="select-text whitespace-pre-wrap break-words">{displayContent}</p>
+                              )}
                               {handoff && onHandoff && (
                                 <div className="mt-3">
                                   <button
