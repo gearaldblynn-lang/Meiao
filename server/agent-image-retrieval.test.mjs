@@ -12,8 +12,8 @@ test('image generation analysis prompt can include retrieved knowledge snippets'
 
 test('image generation requests retrieve knowledge before analysis in both db and local modes', () => {
   assert.match(serverSource, /const imageKnowledgeChunks = requestMode === 'image_generation' && version\.retrievalPolicy\?\.enabled/);
-  assert.match(serverSource, /searchKnowledgeChunks\(await listDbKnowledgeChunksForVersion\(version\), content,/);
-  assert.match(serverSource, /searchKnowledgeChunks\(listLocalKnowledgeChunksForVersion\(store, version\), content,/);
+  assert.match(serverSource, /await searchKnowledgeChunksByVector\(content, await listDbKnowledgeChunksForVersion\(version\),/);
+  assert.match(serverSource, /await searchKnowledgeChunksByVector\(content, listLocalKnowledgeChunksForVersion\(store, version\),/);
   assert.match(serverSource, /knowledgeChunks: imageKnowledgeChunks/);
 });
 
