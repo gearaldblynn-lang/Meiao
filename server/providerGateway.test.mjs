@@ -10,6 +10,23 @@ const createJsonResponse = (body, status = 200) => ({
   json: async () => body,
 });
 
+test('executeProviderJob 路由 openai_tool_calling 到新 provider', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{ finish_reason: 'stop', message: { content: 'routed-ok' } }],
+  }), { status: 200 });
+  try {
+    const out = await executeProviderJob(
+      { taskType: 'openai_tool_calling', payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] } },
+      { OPENAI_COMPATIBLE_API_KEY: 'sk-test', OPENAI_COMPATIBLE_BASE_URL: 'https://relay.test', OPENAI_COMPATIBLE_MODELS: 'gpt-5.4' },
+      null
+    );
+    assert.equal(out.content, 'routed-ok');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test('executeProviderJob routes dreamina frames2video jobs through the dreamina cli adapter', async () => {
   const calls = [];
   __testOnly_setDreaminaVideoRunner(async (payload) => {
