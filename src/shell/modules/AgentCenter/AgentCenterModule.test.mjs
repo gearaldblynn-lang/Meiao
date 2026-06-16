@@ -49,3 +49,13 @@ test('shell chat workspace exposes assistant message actions for copy and regene
   assert.match(shellModuleSource, /handleRegenerateMessage\(message\)/);
   assert.match(shellModuleSource, /renderMessageActions=\{renderShellMessageActions\}/);
 });
+
+test('shell chat progress handles image tool calling SSE events', () => {
+  assert.match(shellModuleSource, /eventType === 'tool_calling'/);
+  assert.match(shellModuleSource, /分析需求中/);
+  assert.match(shellModuleSource, /eventType === 'image_generating'/);
+  assert.match(shellModuleSource, /生成图片中/);
+  assert.match(shellModuleSource, /eventType === 'image_ready'/);
+  assert.match(shellModuleSource, /imageResultUrls/);
+  assert.match(shellModuleSource, /imagePlan/);
+});

@@ -15,3 +15,17 @@ test('忽略不完整的尾块(留待下次拼接)', () => {
   assert.equal(events.length, 0);
   assert.ok(rest.length > 0);
 });
+
+test('解析生图工具调用进度事件', () => {
+  const chunk = [
+    'data: {"type":"tool_calling","tool":"generate_image","args":{"prompt":"商品主图"}}',
+    'data: {"type":"image_generating","model":"gpt-image-2","phase":"submit"}',
+    'data: {"type":"image_ready","imageUrl":"https://img.example/result.png","imagePlan":{"taskType":"new_image"}}',
+    '',
+  ].join('\n\n');
+  const events = parseChatSseChunk(chunk);
+  assert.deepEqual(events.map((event) => event.type), ['tool_calling', 'image_generating', 'image_ready']);
+  assert.equal(events[0].tool, 'generate_image');
+  assert.equal(events[1].model, 'gpt-image-2');
+  assert.equal(events[2].imageUrl, 'https://img.example/result.png');
+});
