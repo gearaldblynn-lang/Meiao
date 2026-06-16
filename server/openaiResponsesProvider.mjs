@@ -72,10 +72,12 @@ export const runResponsesJob = async ({ payload = {}, env = {}, signal = null } 
     ? payload.input
     : (Array.isArray(payload?.messages) ? payload.messages : []);
   const tools = (Array.isArray(payload?.tools) ? payload.tools : []).map(toResponsesTool);
+  const reasoningLevel = String(payload?.reasoningLevel || '').trim();
   const body = {
     model,
     input,
     ...(tools.length > 0 ? { tools } : {}),
+    ...(reasoningLevel ? { reasoning: { effort: reasoningLevel } } : {}),
     ...(payload?.maxTokens ? { max_output_tokens: Number(payload.maxTokens) } : {}),
   };
 
@@ -103,4 +105,3 @@ export const runResponsesJob = async ({ payload = {}, env = {}, signal = null } 
     if (signal) signal.removeEventListener('abort', onAbort);
   }
 };
-

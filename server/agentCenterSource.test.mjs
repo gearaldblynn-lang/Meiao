@@ -101,6 +101,8 @@ test('V2 接入 responses provider 并注入知识库/联网工具(双 handler)'
   assert.ok(searchKnowledge.length >= 2, '双 handler 都要注入 searchKnowledge');
   const webSearchEnabled = Array.from(source.matchAll(/webSearchEnabled: Boolean\(/g));
   assert.ok(webSearchEnabled.length >= 2, '双 handler 都要透传 webSearchEnabled');
+  const reasoningPayloads = Array.from(source.matchAll(/taskType: 'openai_responses',[\s\S]*?reasoningLevel:/g));
+  assert.ok(reasoningPayloads.length >= 2, '双 handler 的 responses payload 都要透传 reasoningLevel');
 });
 
 test('agent chat source exposes current-user profile updates and session patch delete routes', () => {

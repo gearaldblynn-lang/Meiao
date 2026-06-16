@@ -74,7 +74,20 @@ test('非流式请求体走 responses 格式（input 数组 + 扁平 tools）', 
   assert.deepEqual(captured.body.tools[0], { type: 'web_search' });
 });
 
+test('非流式请求体透传 reasoning effort', async () => {
+  let captured = null;
+  globalThis.fetch = async (url, init) => {
+    void url;
+    captured = JSON.parse(init.body);
+    return new Response(JSON.stringify({ output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }] }), { status: 200 });
+  };
+  await runResponsesJob({
+    payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }], reasoningLevel: 'high' },
+    env,
+  });
+  assert.deepEqual(captured.reasoning, { effort: 'high' });
+});
+
 test('未配 key 抛错', async () => {
   await assert.rejects(runResponsesJob({ payload: { model: 'gpt-5.4', messages: [] }, env: {} }), /API.?KEY|未配置/i);
 });
-

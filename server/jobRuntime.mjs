@@ -138,6 +138,7 @@ const buildOpenAICompatibleChatModels = ({ apiKey = '', models = '' } = {}) => {
     })
     .map((modelId) => {
       const capability = getModelCapability(modelId);
+      const supportsResponsesTools = Boolean(capability.supportsToolUse);
       return {
         id: modelId,
         label: formatOpenAICompatibleModelLabel(modelId),
@@ -145,10 +146,10 @@ const buildOpenAICompatibleChatModels = ({ apiKey = '', models = '' } = {}) => {
         mediaTransport: 'inline_data',
         supportsImageInput: true,
         supportsFileInput: true,
-        supportsWebSearch: false,
-        supportsReasoningLevel: false,
-        supportsToolUse: Boolean(capability.supportsToolUse),
-        reasoningLevels: [],
+        supportsWebSearch: supportsResponsesTools,
+        supportsReasoningLevel: supportsResponsesTools,
+        supportsToolUse: supportsResponsesTools,
+        reasoningLevels: supportsResponsesTools ? ['low', 'medium', 'high'] : [],
       };
     });
 };
