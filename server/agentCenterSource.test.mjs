@@ -93,6 +93,16 @@ test('知识库检索接入向量并保持 MySQL/本地双 handler 同步', () =
   assert.doesNotMatch(source, /= searchKnowledgeChunks\(/);
 });
 
+test('V2 接入 responses provider 并注入知识库/联网工具(双 handler)', () => {
+  assert.match(source, /openai_responses/);
+  const hasKnowledgeBase = Array.from(source.matchAll(/hasKnowledgeBase:/g));
+  assert.ok(hasKnowledgeBase.length >= 2, 'MySQL+本地双 handler 都要传 hasKnowledgeBase');
+  const searchKnowledge = Array.from(source.matchAll(/searchKnowledge:/g));
+  assert.ok(searchKnowledge.length >= 2, '双 handler 都要注入 searchKnowledge');
+  const webSearchEnabled = Array.from(source.matchAll(/webSearchEnabled: Boolean\(/g));
+  assert.ok(webSearchEnabled.length >= 2, '双 handler 都要透传 webSearchEnabled');
+});
+
 test('agent chat source exposes current-user profile updates and session patch delete routes', () => {
   assert.match(source, /if \(url\.pathname === '\/api\/auth\/me' && req\.method === 'PATCH'\)/);
   assert.match(source, /if \(chatSessionDetailMatch && req\.method === 'PATCH'\)/);

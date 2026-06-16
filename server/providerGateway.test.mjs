@@ -27,6 +27,48 @@ test('executeProviderJob 路由 openai_tool_calling 到新 provider', async () =
   }
 });
 
+test('executeProviderJob 路由 openai_responses 到 responses provider', async () => {
+  const realFetch = globalThis.fetch;
+  let captured = null;
+  globalThis.fetch = async (url, init = {}) => {
+    captured = {
+      url: String(url),
+      body: JSON.parse(init.body),
+    };
+    return new Response(JSON.stringify({
+      output: [
+        {
+          type: 'message',
+          content: [{ type: 'output_text', text: 'responses-ok' }],
+        },
+      ],
+    }), { status: 200 });
+  };
+  try {
+    const out = await executeProviderJob(
+      {
+        taskType: 'openai_responses',
+        payload: {
+          model: 'gpt-5.4',
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: [{ type: 'web_search' }],
+        },
+      },
+      {
+        OPENAI_COMPATIBLE_API_KEY: 'sk-test',
+        OPENAI_COMPATIBLE_BASE_URL: 'https://relay.test',
+        OPENAI_COMPATIBLE_MODELS: 'gpt-5.4',
+      },
+      new AbortController().signal
+    );
+    assert.equal(out.content, 'responses-ok');
+    assert.match(captured.url, /\/v1\/responses$/);
+    assert.deepEqual(captured.body.tools, [{ type: 'web_search' }]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test('executeProviderJob routes dreamina frames2video jobs through the dreamina cli adapter', async () => {
   const calls = [];
   __testOnly_setDreaminaVideoRunner(async (payload) => {

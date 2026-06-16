@@ -5135,13 +5135,13 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       const imageCapability = getImageModelCapability(version?.modelPolicy?.multimodalModel);
       const openaiCompatibleEnv = buildOpenAICompatibleRuntimeEnv(process.env, systemSettings);
       const callModel = async ({ messages, tools, toolChoice, maxTokens, onDelta }) => {
+        void toolChoice;
         const output = await executeProviderJobWithManagedAssetScrub({
-          taskType: 'openai_tool_calling',
+          taskType: 'openai_responses',
           payload: {
             model: selectedModel,
             messages,
             tools,
-            toolChoice,
             maxTokens,
           },
         }, openaiCompatibleEnv, new AbortController().signal, {
@@ -5193,6 +5193,15 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         selectedImageModel: String(version?.modelPolicy?.multimodalModel || '').trim(),
         maxInputImages: Number(imageCapability?.maxInputImages || 1),
         contextLimits: ctxLimits,
+        hasKnowledgeBase: cleanKnowledgeBaseIds(version?.knowledgeBaseIds).length > 0 && Boolean(version?.retrievalPolicy?.enabled),
+        webSearchEnabled: Boolean(payload?.webSearchEnabled),
+        searchKnowledge: async (query) => searchKnowledgeChunksByVector(
+          query,
+          await listDbKnowledgeChunksForVersion(version),
+          version.retrievalPolicy || {},
+          process.env,
+          searchKnowledgeChunks
+        ),
         callModel,
         generateImage,
         onProgress: (event) => {
@@ -9734,13 +9743,13 @@ const handleLocalRequest = async (req, res, url) => {
         const imageCapability = getImageModelCapability(version?.modelPolicy?.multimodalModel);
         const openaiCompatibleEnv = buildOpenAICompatibleRuntimeEnv(process.env, systemSettings);
         const callModel = async ({ messages, tools, toolChoice, maxTokens, onDelta }) => {
+          void toolChoice;
           const output = await executeProviderJobWithManagedAssetScrub({
-            taskType: 'openai_tool_calling',
+            taskType: 'openai_responses',
             payload: {
               model: selectedModel,
               messages,
               tools,
-              toolChoice,
               maxTokens,
             },
           }, openaiCompatibleEnv, new AbortController().signal, {
@@ -9791,6 +9800,15 @@ const handleLocalRequest = async (req, res, url) => {
           selectedImageModel: String(version?.modelPolicy?.multimodalModel || '').trim(),
           maxInputImages: Number(imageCapability?.maxInputImages || 1),
           contextLimits: ctxLimits,
+          hasKnowledgeBase: cleanKnowledgeBaseIds(version?.knowledgeBaseIds).length > 0 && Boolean(version?.retrievalPolicy?.enabled),
+          webSearchEnabled: Boolean(body?.webSearchEnabled),
+          searchKnowledge: async (query) => searchKnowledgeChunksByVector(
+            query,
+            listLocalKnowledgeChunksForVersion(store, version),
+            version.retrievalPolicy || {},
+            process.env,
+            searchKnowledgeChunks
+          ),
           callModel,
           generateImage,
           onProgress: (event) => {
