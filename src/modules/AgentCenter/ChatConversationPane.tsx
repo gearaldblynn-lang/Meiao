@@ -89,6 +89,14 @@ type PreviewState = {
   index: number;
 };
 
+type AssistantRunStage = {
+  key: string;
+  label: string;
+  active?: boolean;
+  done?: boolean;
+  error?: boolean;
+};
+
 const CHAT_REUSE_IMAGE_MIME = 'application/x-meiao-chat-image';
 
 const isImageGenerationMessage = (message: AgentChatMessage) =>
@@ -106,10 +114,58 @@ const getProgressStageLabel = (message: AgentChatMessage) => {
   if (stage === 'analyzing') return '正在理解需求与参考图';
   if (stage === 'planning') return '正在整理生图参数与提示词';
   if (stage === 'generating') return '正在生成图片';
+  if (stage === 'image_generating') return '正在生成图片';
+  if (stage === 'tool_calling') return '正在调用工具';
+  if (stage === 'image_ready') return '图片已返回，整理结果中';
+  if (stage === 'failed') return '运行失败';
   if (stage === 'finalizing') return '正在整理结果';
   if (stage === 'thinking') return '调用模型中';
   if (stage === 'replying') return '知识库检索完成，整理回复中';
   return message.metadata?.requestMode === 'image_generation' ? '处理中' : '调用模型中';
+};
+
+const getAssistantRunStages = (message: AgentChatMessage) => {
+  const metadata = message.metadata || {};
+  const progressStage = String(metadata.progressStage || '').trim();
+  const isPending = Boolean(metadata.pending || metadata.progress);
+  const failed = isFailedImageGenerationMessage(message) || progressStage === 'failed';
+  const stages: AssistantRunStage[] = [];
+  const pushStage = (stage: AssistantRunStage) => {
+    if (!stages.some((item) => item.key === stage.key)) stages.push(stage);
+  };
+
+  pushStage({
+    key: 'thinking',
+    label: '思考中',
+    active: ['thinking', 'streaming', 'replying', 'analyzing', 'planning'].includes(progressStage),
+    done: !isPending || !['thinking', 'analyzing', 'planning'].includes(progressStage),
+  });
+
+  if (Array.isArray(metadata.retrievalSummary) && metadata.retrievalSummary.length > 0) {
+    pushStage({ key: 'retrieved', label: '检索知识库', done: true });
+  }
+
+  if (metadata.webSearchEnabled) {
+    pushStage({ key: 'web_search', label: '联网搜索', active: isPending && progressStage === 'replying', done: !isPending || progressStage !== 'thinking' });
+  }
+
+  if (progressStage === 'tool_calling' || metadata.toolName || metadata.toolCallName) {
+    pushStage({ key: 'tool_calling', label: '调用工具', active: progressStage === 'tool_calling', done: !isPending || progressStage !== 'tool_calling' });
+  }
+
+  if (metadata.requestMode === 'image_generation' || progressStage === 'image_generating' || progressStage === 'image_ready') {
+    pushStage({ key: 'image_generating', label: '生成图片', active: ['generating', 'image_generating'].includes(progressStage), done: !isPending || progressStage === 'image_ready' });
+  }
+
+  pushStage({
+    key: failed ? 'error' : 'done',
+    label: failed ? '失败' : '完成',
+    active: false,
+    done: !failed && !isPending,
+    error: failed,
+  });
+
+  return stages;
 };
 
 const getImageGenerationSummary = (message: AgentChatMessage) => {
@@ -317,6 +373,36 @@ const ChatConversationPane: React.FC<Props> = ({
     }));
   };
 
+  const renderAssistantRunTrace = (message: AgentChatMessage) => {
+    if (message.role !== 'assistant') return null;
+    const stages = getAssistantRunStages(message);
+    if (stages.length === 0) return null;
+
+    return (
+      <details className="assistant-run-trace mb-2 rounded-[12px] border px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)' }}>
+        <summary className="cursor-pointer font-semibold" style={{ color: 'var(--text-secondary)' }}>
+          运行步骤
+        </summary>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {stages.map((stage) => (
+            <span
+              key={stage.key}
+              className="inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium"
+              style={stage.error
+                ? { background: 'color-mix(in srgb, var(--error) 10%, transparent)', color: 'var(--error)' }
+                : stage.active
+                  ? { background: 'var(--accent-soft)', color: 'var(--accent)' }
+                  : { background: 'var(--bg-elevated)', color: stage.done ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+            >
+              <LegacyFaIcon icon={stage.error ? 'fa-triangle-exclamation' : stage.done ? 'fa-check' : stage.active ? 'fa-spinner' : 'fa-circle'} className={`text-[9px] ${stage.active ? 'animate-spin' : ''}`} />
+              {stage.label}
+            </span>
+          ))}
+        </div>
+      </details>
+    );
+  };
+
   const renderImageGenerationMessage = (message: AgentChatMessage) => {
     const isPending = Boolean(message.metadata?.pending);
     const summaryExpanded = Boolean(expandedSummaries[message.id]);
@@ -351,6 +437,7 @@ const ChatConversationPane: React.FC<Props> = ({
       : [];
     return (
       <div className="space-y-2">
+        {renderAssistantRunTrace(message)}
         {isPending ? (
           <div className="rounded-[18px] border px-3.5 py-3" style={{ borderColor: 'color-mix(in srgb, var(--accent) 22%, var(--border-subtle))', background: 'var(--accent-soft)' }}>
             <div className="flex items-center gap-2">
@@ -587,6 +674,7 @@ const ChatConversationPane: React.FC<Props> = ({
                         ? { background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }
                         : { background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
                     >
+                      {!isUser && !imageGenerationMessage ? renderAssistantRunTrace(message) : null}
                       {imageGenerationMessage ? renderImageGenerationMessage(message) : progressOnlyMessage ? (
                         <div className="flex items-center gap-2">
                           <span className="flex h-6 w-6 items-center justify-center rounded-full" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
