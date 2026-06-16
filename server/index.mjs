@@ -22,6 +22,7 @@ import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Ac
 import { loadServerEnvFile } from './envLoader.mjs';
 import { resolveContextLimits } from './contextPlan.mjs';
 import { formatChatSseEvent } from './chatStreaming.mjs';
+import { embedTexts } from './embeddingProvider.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
 import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
@@ -1245,6 +1246,19 @@ const normalizeKnowledgeDocumentText = async (rawText, processEnv, systemSetting
       chunkSource: 'raw',
       normalizationError: String(error?.message || 'AI 规范整理失败。'),
     };
+  }
+};
+
+const embedChunkContentsSafe = async (contents) => {
+  const source = Array.isArray(contents) ? contents : [];
+  if (source.length === 0) return [];
+  try {
+    return await embedTexts(source, process.env);
+  } catch (error) {
+    console.warn('[rag] chunk embedding 失败，降级写入 null', {
+      message: error?.message || String(error || ''),
+    });
+    return source.map(() => null);
   }
 };
 
@@ -4083,6 +4097,7 @@ const createDbKnowledgeDocument = async (user, payload) => {
     : { normalizedText: '', normalizedStatus: 'idle', chunkSource: 'raw', normalizationError: '' };
   const chunkText = normalizationResult.chunkSource === 'normalized' ? normalizationResult.normalizedText : rawText;
   const chunks = chunkKnowledgeText(chunkText, { strategy: chunkStrategy });
+  const chunkEmbeddings = await embedChunkContentsSafe(chunks);
   const now = Date.now();
   const documentId = createEntityId();
   await pool.query(
@@ -4121,7 +4136,7 @@ const createDbKnowledgeDocument = async (user, payload) => {
         normalizeSourceType(payload.sourceType),
         content,
         estimateTokenCount(content),
-        null,
+        chunkEmbeddings[index] ? JSON.stringify(chunkEmbeddings[index]) : null,
         now,
       ]
     );
@@ -4161,6 +4176,7 @@ const updateDbKnowledgeDocument = async (user, documentId, payload) => {
     : { normalizedText: '', normalizedStatus: 'idle', chunkSource: 'raw', normalizationError: '' };
   const chunkText = normalizationResult.chunkSource === 'normalized' ? normalizationResult.normalizedText : rawText;
   const chunks = chunkKnowledgeText(chunkText, { strategy: chunkStrategy });
+  const chunkEmbeddings = await embedChunkContentsSafe(chunks);
   const now = Date.now();
   await pool.query(
     `UPDATE knowledge_documents
@@ -4195,7 +4211,7 @@ const updateDbKnowledgeDocument = async (user, documentId, payload) => {
         sourceType,
         content,
         estimateTokenCount(content),
-        null,
+        chunkEmbeddings[index] ? JSON.stringify(chunkEmbeddings[index]) : null,
         now,
       ]
     );
@@ -6020,7 +6036,7 @@ const listLocalKnowledgeDocuments = (store, user, knowledgeBaseId) => {
     .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
 };
 
-const createLocalKnowledgeDocument = (store, user, payload) => {
+const createLocalKnowledgeDocument = async (store, user, payload) => {
   const knowledgeBase = (store.knowledgeBases || []).find((item) => item.id === payload.knowledgeBaseId);
   if (!knowledgeBase || !canManageOwnedResource(user, knowledgeBase.ownerUserId)) return null;
   const rawText = String(payload.rawText || '').trim();
@@ -6032,6 +6048,7 @@ const createLocalKnowledgeDocument = (store, user, payload) => {
     : { normalizedText: '', normalizedStatus: 'idle', chunkSource: 'raw', normalizationError: '' };
   const chunkText = normalizationResult.chunkSource === 'normalized' ? normalizationResult.normalizedText : rawText;
   const chunks = chunkKnowledgeText(chunkText, { strategy: chunkStrategy });
+  const chunkEmbeddings = await embedChunkContentsSafe(chunks);
   const documentId = createEntityId();
   const now = Date.now();
   const document = {
@@ -6062,6 +6079,7 @@ const createLocalKnowledgeDocument = (store, user, payload) => {
       sourceType: document.sourceType,
       content,
       tokenEstimate: estimateTokenCount(content),
+      embedding: chunkEmbeddings[index] || null,
       documentTitle: document.title,
       createdAt: now,
     });
@@ -6082,7 +6100,7 @@ const createLocalKnowledgeDocument = (store, user, payload) => {
   return document;
 };
 
-const updateLocalKnowledgeDocument = (store, user, documentId, payload) => {
+const updateLocalKnowledgeDocument = async (store, user, documentId, payload) => {
   const document = (store.knowledgeDocuments || []).find((item) => item.id === documentId);
   if (!document) return null;
   const knowledgeBase = (store.knowledgeBases || []).find((item) => item.id === document.knowledgeBaseId);
@@ -6098,6 +6116,7 @@ const updateLocalKnowledgeDocument = (store, user, documentId, payload) => {
     : { normalizedText: '', normalizedStatus: 'idle', chunkSource: 'raw', normalizationError: '' };
   const chunkText = normalizationResult.chunkSource === 'normalized' ? normalizationResult.normalizedText : rawText;
   const chunks = chunkKnowledgeText(chunkText, { strategy: chunkStrategy });
+  const chunkEmbeddings = await embedChunkContentsSafe(chunks);
   const now = Date.now();
   document.title = title;
   document.sourceType = sourceType;
@@ -6121,6 +6140,7 @@ const updateLocalKnowledgeDocument = (store, user, documentId, payload) => {
       sourceType,
       content,
       tokenEstimate: estimateTokenCount(content),
+      embedding: chunkEmbeddings[index] || null,
       documentTitle: title,
       createdAt: now,
     });
@@ -7204,7 +7224,7 @@ const applyStudioTrainingChanges = async (user, versionId, payload) => {
   return { appliedChanges, updatedVersion };
 };
 
-const applyLocalStudioTrainingChanges = (store, user, versionId, payload) => {
+const applyLocalStudioTrainingChanges = async (store, user, versionId, payload) => {
   const version = getLocalAgentVersionById(store, versionId);
   if (!version || version.isPublished) return null;
   const agent = getLocalAgentById(store, version.agentId);
@@ -7224,7 +7244,7 @@ const applyLocalStudioTrainingChanges = (store, user, versionId, payload) => {
     if (change.field === 'knowledgeDocument' && change.knowledgeDocument) {
       const targetKnowledgeBaseId = resolveStudioKnowledgeBaseTargetId(change, updatedVersion, knowledgeBaseMap);
       if (change.action === 'add') {
-        const created = createLocalKnowledgeDocument(store, user, {
+        const created = await createLocalKnowledgeDocument(store, user, {
           knowledgeBaseId: targetKnowledgeBaseId,
           title: change.knowledgeDocument.title,
           rawText: change.knowledgeDocument.rawText,
@@ -7245,7 +7265,7 @@ const applyLocalStudioTrainingChanges = (store, user, versionId, payload) => {
       } else if (change.action === 'update') {
         const targetDocumentId = change.knowledgeDocument.documentId || change.documentId;
         if (targetDocumentId && knowledgeDocumentMap.has(targetDocumentId)) {
-          const updatedDocument = updateLocalKnowledgeDocument(store, user, targetDocumentId, {
+          const updatedDocument = await updateLocalKnowledgeDocument(store, user, targetDocumentId, {
             title: change.knowledgeDocument.title,
             rawText: change.knowledgeDocument.rawText,
             sourceType: change.knowledgeDocument.sourceType,
@@ -9351,7 +9371,7 @@ const handleLocalRequest = async (req, res, url) => {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
     const body = await readBody(req);
-    const document = createLocalKnowledgeDocument(store, admin, body || {});
+    const document = await createLocalKnowledgeDocument(store, admin, body || {});
     if (!document) {
       json(res, 404, { message: '知识库不存在或无权限。' });
       return;
@@ -9374,7 +9394,7 @@ const handleLocalRequest = async (req, res, url) => {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
     const body = await readBody(req);
-    const document = updateLocalKnowledgeDocument(store, admin, decodeURIComponent(knowledgeDocumentDetailMatch[1]), body || {});
+    const document = await updateLocalKnowledgeDocument(store, admin, decodeURIComponent(knowledgeDocumentDetailMatch[1]), body || {});
     if (!document) {
       json(res, 404, { message: '文档不存在或无权限。' });
       return;
@@ -10064,7 +10084,7 @@ const handleLocalRequest = async (req, res, url) => {
     const versionId = decodeURIComponent(studioTrainingApplyMatch[1]);
     const body = await readBody(req);
     try {
-      const result = applyLocalStudioTrainingChanges(store, admin, versionId, body || {});
+      const result = await applyLocalStudioTrainingChanges(store, admin, versionId, body || {});
       if (!result) {
         json(res, 404, { message: '版本不存在、非草稿或无权限。' });
         return;

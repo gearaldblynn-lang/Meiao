@@ -75,6 +75,16 @@ test('agent retrieval source filters chunks by enabled knowledge document ids', 
   assert.match(source, /enabledDocumentIds\.has\(chunk\.documentId\)/);
 });
 
+test('知识文档分块写入时填充 embedding（两种 mode + 失败降级 null）', () => {
+  assert.match(source, /import \{ embedTexts \} from '\.\/embeddingProvider\.mjs'/);
+  assert.match(source, /const embedChunkContentsSafe = async \(contents\) =>/);
+  assert.match(source, /embedTexts\(/);
+  assert.match(source, /chunkEmbeddings/);
+  assert.match(source, /chunkEmbeddings\[index\] \? JSON\.stringify\(chunkEmbeddings\[index\]\) : null/);
+  assert.match(source, /embedding: chunkEmbeddings\[index\] \|\| null/);
+  assert.match(source, /chunk embedding 失败/);
+});
+
 test('agent chat source exposes current-user profile updates and session patch delete routes', () => {
   assert.match(source, /if \(url\.pathname === '\/api\/auth\/me' && req\.method === 'PATCH'\)/);
   assert.match(source, /if \(chatSessionDetailMatch && req\.method === 'PATCH'\)/);
