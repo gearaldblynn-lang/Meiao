@@ -1,6 +1,11 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { runOpenAIToolCallingJob, parseToolCallsFromChoice } from './openaiToolCalling.mjs';
+import {
+  runOpenAIToolCallingJob,
+  parseToolCallsFromChoice,
+  runOpenAIToolCallingStream,
+  accumulateToolCallDeltas,
+} from './openaiToolCalling.mjs';
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
@@ -79,4 +84,59 @@ test('请求体含 tools 参数', async () => {
   });
   assert.ok(Array.isArray(captured.tools));
   assert.equal(captured.tool_choice, 'auto');
+});
+
+const sseResponse = (chunks) => new Response(
+  new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      for (const chunk of chunks) controller.enqueue(enc.encode(chunk));
+      controller.close();
+    },
+  }),
+  { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
+);
+
+test('accumulateToolCallDeltas 按 index 拼装分片 arguments', () => {
+  const acc = new Map();
+  accumulateToolCallDeltas(acc, [{ index: 0, id: 'c1', function: { name: 'generate_image', arguments: '{"prom' } }]);
+  accumulateToolCallDeltas(acc, [{ index: 0, function: { arguments: 'pt":"猫"}' } }]);
+  const result = Array.from(acc.values());
+  assert.equal(result[0].function.name, 'generate_image');
+  assert.equal(result[0].function.arguments, '{"prompt":"猫"}');
+});
+
+test('流式：文本 delta 逐个回调 onDelta，最终拼成完整内容', async () => {
+  globalThis.fetch = async () => sseResponse([
+    'data: {"choices":[{"delta":{"content":"你"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"好"}}]}\n\n',
+    'data: {"choices":[{"finish_reason":"stop","delta":{}}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+  const deltas = [];
+  const out = await runOpenAIToolCallingStream({
+    payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+    env: mockEnv,
+    onDelta: (delta) => deltas.push(delta),
+  });
+  assert.deepEqual(deltas, ['你', '好']);
+  assert.equal(out.content, '你好');
+  assert.equal(out.finishReason, 'stop');
+});
+
+test('流式：tool_calls 分片累积，finishReason=tool_calls', async () => {
+  globalThis.fetch = async () => sseResponse([
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"generate_image","arguments":"{\\"prompt"}}]}}]}\n\n',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\":\\"猫\\",\\"task_type\\":\\"new_image\\"}"}}]}}]}\n\n',
+    'data: {"choices":[{"finish_reason":"tool_calls","delta":{}}]}\n\n',
+    'data: [DONE]\n\n',
+  ]);
+  const out = await runOpenAIToolCallingStream({
+    payload: { model: 'gpt-5.4', messages: [], tools: [{ type: 'function', function: { name: 'generate_image' } }] },
+    env: mockEnv,
+    onDelta: () => {},
+  });
+  assert.equal(out.finishReason, 'tool_calls');
+  assert.equal(out.toolCalls.length, 1);
+  assert.deepEqual(out.toolCalls[0].args, { prompt: '猫', task_type: 'new_image' });
 });
