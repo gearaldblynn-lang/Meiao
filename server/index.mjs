@@ -658,6 +658,17 @@ const createDefaultState = () => ({
 const createDefaultSystemSettings = () => ({
   analysisModel: '',
   videoAnalysisModel: '',
+  openaiCompatible: {
+    apiKey: '',
+    baseUrl: '',
+    models: '',
+  },
+});
+
+const normalizeOpenAICompatibleSettings = (value = {}) => ({
+  apiKey: String(value?.apiKey || '').trim(),
+  baseUrl: String(value?.baseUrl || '').trim().replace(/\/$/, ''),
+  models: String(value?.models || '').trim(),
 });
 
 const normalizeSystemSettings = (value = {}) => {
@@ -668,7 +679,31 @@ const normalizeSystemSettings = (value = {}) => {
   return {
     analysisModel: analysisModel && available.has(analysisModel) ? analysisModel : '',
     videoAnalysisModel: videoAnalysisModel && videoAvailable.has(videoAnalysisModel) ? videoAnalysisModel : '',
+    openaiCompatible: normalizeOpenAICompatibleSettings(value?.openaiCompatible || {}),
   };
+};
+
+const buildOpenAICompatibleRuntimeEnv = (env, systemSettings = {}) => {
+  const openaiCompatible = normalizeOpenAICompatibleSettings(systemSettings?.openaiCompatible || {});
+  return {
+    ...env,
+    ...(openaiCompatible.apiKey ? { OPENAI_COMPATIBLE_API_KEY: openaiCompatible.apiKey } : {}),
+    ...(openaiCompatible.baseUrl ? { OPENAI_COMPATIBLE_BASE_URL: openaiCompatible.baseUrl } : {}),
+    ...(openaiCompatible.models ? { OPENAI_COMPATIBLE_MODELS: openaiCompatible.models } : {}),
+  };
+};
+
+const mergeOpenAICompatibleSettingsUpdate = (currentSettings = {}, bodySettings = undefined) => {
+  const current = normalizeOpenAICompatibleSettings(currentSettings?.openaiCompatible || {});
+  if (!bodySettings || typeof bodySettings !== 'object') return current;
+  const next = normalizeOpenAICompatibleSettings({
+    apiKey: bodySettings.apiKey === undefined || String(bodySettings.apiKey || '').trim() === ''
+      ? current.apiKey
+      : bodySettings.apiKey,
+    baseUrl: bodySettings.baseUrl === undefined ? current.baseUrl : bodySettings.baseUrl,
+    models: bodySettings.models === undefined ? current.models : bodySettings.models,
+  });
+  return next;
 };
 
 const cloneJsonValue = (value) => JSON.parse(JSON.stringify(value ?? createDefaultState()));
@@ -5078,6 +5113,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         .slice(-(ctxLimits.maxHistoryRounds * 2))
         .map((message) => ({ role: message.role, content: message.content }));
       const imageCapability = getImageModelCapability(version?.modelPolicy?.multimodalModel);
+      const openaiCompatibleEnv = buildOpenAICompatibleRuntimeEnv(process.env, systemSettings);
       const callModel = async ({ messages, tools, toolChoice, maxTokens, onDelta }) => {
         const output = await executeProviderJobWithManagedAssetScrub({
           taskType: 'openai_tool_calling',
@@ -5088,7 +5124,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
             toolChoice,
             maxTokens,
           },
-        }, process.env, new AbortController().signal, {
+        }, openaiCompatibleEnv, new AbortController().signal, {
           onDelta: (delta) => {
             onDelta?.(delta);
             if (sendEvent) sendEvent('streaming', { delta });
@@ -8362,6 +8398,7 @@ const handleMysqlRequest = async (req, res, url) => {
       ...currentSettings,
       analysisModel: body?.analysisModel,
       videoAnalysisModel: body?.videoAnalysisModel,
+      openaiCompatible: mergeOpenAICompatibleSettingsUpdate(currentSettings, body?.openaiCompatible),
     });
     const pool = await getMysqlPool();
     const queueStats = await getJobQueueStats(pool);
@@ -10422,6 +10459,7 @@ const handleLocalRequest = async (req, res, url) => {
       ...getLocalSystemSettings(store),
       analysisModel: body?.analysisModel,
       videoAnalysisModel: body?.videoAnalysisModel,
+      openaiCompatible: mergeOpenAICompatibleSettingsUpdate(getLocalSystemSettings(store), body?.openaiCompatible),
     });
     writeLocalStore(store);
     json(res, 200, {

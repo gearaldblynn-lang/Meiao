@@ -95,6 +95,35 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.equal(JSON.stringify(config).includes('secret'), false);
 });
 
+test('buildPublicSystemConfig exposes openai compatible readiness without leaking key', () => {
+  const config = buildPublicSystemConfig(
+    {
+      OPENAI_COMPATIBLE_API_KEY: 'sk-env-secret',
+      OPENAI_COMPATIBLE_BASE_URL: 'https://env-relay.test',
+      OPENAI_COMPATIBLE_MODELS: 'gpt-5.4,gpt-5.5',
+    },
+    { queued: 0, running: 0 },
+    {
+      systemSettings: {
+        openaiCompatible: {
+          apiKey: 'sk-db-secret',
+          baseUrl: 'https://db-relay.test',
+          models: 'gpt-5.4',
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(config.systemSettings.openaiCompatible, {
+    configured: true,
+    baseUrl: 'https://db-relay.test',
+    models: 'gpt-5.4',
+    apiKeyMasked: 'sk-d...cret',
+  });
+  assert.equal(JSON.stringify(config).includes('sk-db-secret'), false);
+  assert.equal(JSON.stringify(config).includes('sk-env-secret'), false);
+});
+
 test('buildPublicSystemConfig keeps video analysis model independent from planning analysis model', () => {
   const config = buildPublicSystemConfig(
     { KIE_API_KEY: 'kie-secret', MEIAO_DEFAULT_ANALYSIS_MODEL: 'gpt-5-4-openai-resp' },
@@ -504,5 +533,4 @@ test('getReconcileBackoffMs never returns below base interval', () => {
   assert.ok(getReconcileBackoffMs(0, 60000, 600000) >= 60000);
   assert.ok(getReconcileBackoffMs(-5, 60000, 600000) >= 60000, '负数兜底到 base');
 });
-
 

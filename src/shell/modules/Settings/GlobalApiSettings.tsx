@@ -48,10 +48,15 @@ const GlobalApiSettings: React.FC<{
   const [analysisModel, setAnalysisModel] = useState('');
   const [userAnalysisModel, setUserAnalysisModel] = useState('');
   const [videoAnalysisModel, setVideoAnalysisModel] = useState('');
+  const [openaiCompatibleApiKey, setOpenaiCompatibleApiKey] = useState('');
+  const [openaiCompatibleBaseUrl, setOpenaiCompatibleBaseUrl] = useState('');
+  const [openaiCompatibleModels, setOpenaiCompatibleModels] = useState('');
   const [savingAnalysisModel, setSavingAnalysisModel] = useState(false);
   const [savingUserAnalysisModel, setSavingUserAnalysisModel] = useState(false);
+  const [savingOpenaiCompatible, setSavingOpenaiCompatible] = useState(false);
   const [broadcastingAnalysisModel, setBroadcastingAnalysisModel] = useState(false);
   const [analysisModelMessage, setAnalysisModelMessage] = useState('');
+  const [openaiCompatibleMessage, setOpenaiCompatibleMessage] = useState('');
   const [saved, setSaved] = useState(false);
   const [dreaminaStatus, setDreaminaStatus] = useState<DreaminaStatus | null>(null);
   const [dreaminaLogin, setDreaminaLogin] = useState<DreaminaLoginStart | null>(null);
@@ -59,6 +64,15 @@ const GlobalApiSettings: React.FC<{
   const [dreaminaMessage, setDreaminaMessage] = useState('');
   const canManageSystemSettings = currentUser?.role === 'admin';
   const effectiveConcurrency = getEffectiveConcurrency(systemConfig?.queue.maxConcurrency, currentUser?.jobConcurrency);
+  const applySystemConfig = (config: SystemPublicConfig) => {
+    setSystemConfig(config);
+    setAnalysisModel(config.systemSettings.analysisModel || '');
+    setUserAnalysisModel(config.systemSettings.userAnalysisModel || '');
+    setVideoAnalysisModel(config.systemSettings.videoAnalysisModel || '');
+    setOpenaiCompatibleBaseUrl(config.systemSettings.openaiCompatible?.baseUrl || '');
+    setOpenaiCompatibleModels(config.systemSettings.openaiCompatible?.models || '');
+    setOpenaiCompatibleApiKey('');
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -67,10 +81,7 @@ const GlobalApiSettings: React.FC<{
     void fetchSystemConfig()
       .then((result) => {
         if (disposed) return;
-        setSystemConfig(result.config);
-        setAnalysisModel(result.config.systemSettings.analysisModel || '');
-        setUserAnalysisModel(result.config.systemSettings.userAnalysisModel || '');
-        setVideoAnalysisModel(result.config.systemSettings.videoAnalysisModel || '');
+        applySystemConfig(result.config);
       })
       .catch((error) => {
         if (disposed) return;
@@ -197,15 +208,38 @@ const GlobalApiSettings: React.FC<{
     setAnalysisModelMessage('');
     try {
       const result = await updateSystemConfig({ analysisModel, videoAnalysisModel });
-      setSystemConfig(result.config);
-      setAnalysisModel(result.config.systemSettings.analysisModel || '');
-      setUserAnalysisModel(result.config.systemSettings.userAnalysisModel || '');
-      setVideoAnalysisModel(result.config.systemSettings.videoAnalysisModel || '');
+      applySystemConfig(result.config);
       setAnalysisModelMessage('已保存全局模型设置。');
     } catch (error) {
       setAnalysisModelMessage(error instanceof Error ? error.message : '保存失败');
     } finally {
       setSavingAnalysisModel(false);
+    }
+  };
+
+  const handleSaveOpenaiCompatible = async () => {
+    if (!canManageSystemSettings) {
+      setOpenaiCompatibleMessage('当前账号没有全局设置权限。');
+      return;
+    }
+    setSavingOpenaiCompatible(true);
+    setOpenaiCompatibleMessage('');
+    try {
+      const result = await updateSystemConfig({
+        analysisModel,
+        videoAnalysisModel,
+        openaiCompatible: {
+          apiKey: openaiCompatibleApiKey,
+          baseUrl: openaiCompatibleBaseUrl,
+          models: openaiCompatibleModels,
+        },
+      });
+      applySystemConfig(result.config);
+      setOpenaiCompatibleMessage('已保存 OpenAI Compatible 中转站配置。');
+    } catch (error) {
+      setOpenaiCompatibleMessage(error instanceof Error ? error.message : '保存失败');
+    } finally {
+      setSavingOpenaiCompatible(false);
     }
   };
 
@@ -216,10 +250,7 @@ const GlobalApiSettings: React.FC<{
       const result = await updateCurrentUserAnalysisModel(userAnalysisModel);
       onCurrentUserChange?.(result.user);
       const configResult = await fetchSystemConfig();
-      setSystemConfig(configResult.config);
-      setAnalysisModel(configResult.config.systemSettings.analysisModel || '');
-      setUserAnalysisModel(configResult.config.systemSettings.userAnalysisModel || '');
-      setVideoAnalysisModel(configResult.config.systemSettings.videoAnalysisModel || '');
+      applySystemConfig(configResult.config);
       setAnalysisModelMessage('已保存我的策划分析模型。');
     } catch (error) {
       setAnalysisModelMessage(error instanceof Error ? error.message : '保存失败');
@@ -237,10 +268,7 @@ const GlobalApiSettings: React.FC<{
     setAnalysisModelMessage('');
     try {
       const result = await broadcastSystemAnalysisModel();
-      setSystemConfig(result.config);
-      setAnalysisModel(result.config.systemSettings.analysisModel || '');
-      setUserAnalysisModel(result.config.systemSettings.userAnalysisModel || '');
-      setVideoAnalysisModel(result.config.systemSettings.videoAnalysisModel || '');
+      applySystemConfig(result.config);
       setAnalysisModelMessage('已将全局策划分析模型覆盖到所有账号。');
     } catch (error) {
       setAnalysisModelMessage(error instanceof Error ? error.message : '覆盖失败');
@@ -351,6 +379,81 @@ const GlobalApiSettings: React.FC<{
               )}
             </div>
           </div>
+
+          {canManageSystemSettings ? (
+            <div className="rounded-2xl border p-5 surface" style={{ borderColor: 'var(--border-subtle)' }}>
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: 'var(--bg-elevated)' }}>
+                    <Link2 size={16} style={{ color: 'var(--accent)' }} />
+                  </div>
+                  <div className="min-w-0">
+                    <h3 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>OpenAI Compatible 中转站</h3>
+                    <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>管理员可更换智能体 tool calling 使用的中转站</p>
+                  </div>
+                </div>
+                <span
+                  className="rounded-full border px-3 py-1.5 text-[11px] font-medium"
+                  style={{
+                    borderColor: systemConfig?.systemSettings.openaiCompatible?.configured ? 'rgba(34,197,94,0.28)' : 'rgba(245,158,11,0.28)',
+                    background: systemConfig?.systemSettings.openaiCompatible?.configured ? 'rgba(34,197,94,0.08)' : 'rgba(245,158,11,0.08)',
+                    color: systemConfig?.systemSettings.openaiCompatible?.configured ? 'var(--success)' : 'rgb(180,83,9)',
+                  }}
+                >
+                  {systemConfig?.systemSettings.openaiCompatible?.configured ? '已配置' : '未配置'}
+                </span>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>Base URL</span>
+                  <input
+                    value={openaiCompatibleBaseUrl}
+                    onChange={(event) => setOpenaiCompatibleBaseUrl(event.target.value)}
+                    placeholder="https://maxforai.top"
+                    className="h-11 w-full rounded-2xl border px-3 text-[13px] outline-none"
+                    style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)', color: 'var(--text-primary)' }}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>模型白名单</span>
+                  <input
+                    value={openaiCompatibleModels}
+                    onChange={(event) => setOpenaiCompatibleModels(event.target.value)}
+                    placeholder="gpt-5.4,gpt-5.5"
+                    className="h-11 w-full rounded-2xl border px-3 text-[13px] outline-none"
+                    style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)', color: 'var(--text-primary)' }}
+                  />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="mb-1 block text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                    API Key{systemConfig?.systemSettings.openaiCompatible?.apiKeyMasked ? `（当前 ${systemConfig.systemSettings.openaiCompatible.apiKeyMasked}）` : ''}
+                  </span>
+                  <input
+                    value={openaiCompatibleApiKey}
+                    onChange={(event) => setOpenaiCompatibleApiKey(event.target.value)}
+                    placeholder="留空则不更换现有 Key"
+                    type="password"
+                    autoComplete="new-password"
+                    className="h-11 w-full rounded-2xl border px-3 text-[13px] outline-none"
+                    style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)', color: 'var(--text-primary)' }}
+                  />
+                </label>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => void handleSaveOpenaiCompatible()}
+                  disabled={loadingSystemConfig || savingOpenaiCompatible}
+                  className="rounded-2xl bg-slate-900 px-4 py-3 text-[13px] font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {savingOpenaiCompatible ? '保存中...' : '保存中转站'}
+                </button>
+                {openaiCompatibleMessage ? <span className="text-[12px] font-medium text-slate-600">{openaiCompatibleMessage}</span> : null}
+              </div>
+            </div>
+          ) : null}
 
           {canManageSystemSettings ? (
             <div className="rounded-2xl border p-5 surface" style={{ borderColor: 'var(--border-subtle)' }}>

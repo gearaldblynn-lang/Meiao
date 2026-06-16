@@ -451,6 +451,12 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
     || (videoAnalysisModels.some((item) => item.id === envVideoAnalysisModel)
       ? envVideoAnalysisModel
       : defaultVideoAnalysisModel);
+  const openaiCompatibleSettings = overrides?.systemSettings?.openaiCompatible || {};
+  const openaiCompatibleApiKey = String(openaiCompatibleSettings.apiKey || env.OPENAI_COMPATIBLE_API_KEY || '').trim();
+  const openaiCompatibleBaseUrl = String(openaiCompatibleSettings.baseUrl || env.OPENAI_COMPATIBLE_BASE_URL || 'https://maxforai.top').trim();
+  const openaiCompatibleModels = String(openaiCompatibleSettings.models || env.OPENAI_COMPATIBLE_MODELS || '').trim();
+  const openaiCompatibleKeyPrefix = openaiCompatibleApiKey.slice(0, 4);
+  const openaiCompatibleKeySuffix = openaiCompatibleApiKey.slice(-4);
 
   return {
     queue: {
@@ -476,6 +482,14 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       videoAnalysisModel: validConfiguredVideoAnalysisModel,
       effectiveVideoAnalysisModel,
       videoAnalysisReasoningLevel: 'high',
+      openaiCompatible: {
+        configured: Boolean(openaiCompatibleApiKey),
+        baseUrl: openaiCompatibleBaseUrl,
+        models: openaiCompatibleModels,
+        apiKeyMasked: openaiCompatibleApiKey
+          ? `${openaiCompatibleKeyPrefix}...${openaiCompatibleKeySuffix}`
+          : '',
+      },
     },
     videoAnalysisModels: videoAnalysisModels.map((item) => ({ ...item })),
     publicBaseUrl,
