@@ -35,6 +35,7 @@ type ChatAttachmentPayload = {
   assetId?: string;
   mimeType?: string;
 };
+type AgentMessageMetadata = NonNullable<AgentChatMessage['metadata']>;
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const AGENT_CENTER_UI_STATE_KEY = 'MEIAO_AGENT_CENTER_UI_STATE';
@@ -257,6 +258,60 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
           ...item,
           content: streamedContent,
           metadata: { ...(item.metadata || {}), pending: true, progress: true, progressStage: 'streaming', streamedContent },
+        };
+      }
+      if (eventType === 'tool_calling') {
+        return {
+          ...item,
+          content: '分析需求中...',
+          metadata: {
+            ...(item.metadata || {}),
+            pending: true,
+            progress: true,
+            progressStage: 'tool_calling',
+            toolCall: { tool: event.tool || '', args: event.args || {} },
+          },
+        };
+      }
+      if (eventType === 'image_generating') {
+        const modelLabel = event.model ? `（${event.model}）` : '';
+        return {
+          ...item,
+          content: `生成图片中${modelLabel}...`,
+          metadata: {
+            ...(item.metadata || {}),
+            pending: true,
+            progress: true,
+            progressStage: 'image_generating',
+            imageModel: event.model || '',
+            imagePhase: event.phase || '',
+          },
+        };
+      }
+      if (eventType === 'image_ready') {
+        const imageUrl = String(event.imageUrl || '').trim();
+        const existingAttachments = Array.isArray(item.attachments) ? item.attachments : [];
+        const existingUrls = Array.isArray(item.metadata?.imageResultUrls)
+          ? item.metadata.imageResultUrls.filter((url): url is string => typeof url === 'string' && url.trim().length > 0)
+          : [];
+        const imageResultUrls = imageUrl && !existingUrls.includes(imageUrl)
+          ? [...existingUrls, imageUrl]
+          : existingUrls;
+        const attachments = imageUrl && !existingAttachments.some((attachment) => attachment.url === imageUrl)
+          ? [...existingAttachments, { name: `生成图片 ${imageResultUrls.length || 1}`, url: imageUrl, kind: 'image' as const }]
+          : existingAttachments;
+        return {
+          ...item,
+          content: imageUrl ? '图片已生成，正在整理回复...' : item.content,
+          attachments,
+          metadata: {
+            ...(item.metadata || {}),
+            pending: true,
+            progress: true,
+            progressStage: 'image_ready',
+            imageResultUrls,
+            imagePlan: (event.imagePlan || item.metadata?.imagePlan || null) as AgentMessageMetadata['imagePlan'],
+          },
         };
       }
       if (eventType === 'error') {

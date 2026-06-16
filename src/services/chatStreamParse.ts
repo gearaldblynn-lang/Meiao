@@ -3,6 +3,9 @@ export type ChatStreamEvent =
   | { type: 'retrieved'; round?: number; queries?: string[]; chunkCount?: number; docTitles?: string[] }
   | { type: 'streaming'; delta: string }
   | { type: 'compressed'; foldedRounds: number }
+  | { type: 'tool_calling'; tool?: string; args?: Record<string, unknown> }
+  | { type: 'image_generating'; model?: string; phase?: string }
+  | { type: 'image_ready'; imageUrl?: string; imagePlan?: unknown }
   | { type: 'done'; assistantMessage?: unknown; usage?: unknown }
   | { type: 'error'; message?: string; code?: string };
 

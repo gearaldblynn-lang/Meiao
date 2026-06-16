@@ -804,13 +804,19 @@ export const fetchChatMessages = async (sessionId: string) => {
 
 export type ChatProgressEvent = {
   stage?: 'thinking' | 'retrieved';
-  type?: 'thinking' | 'retrieved' | 'streaming' | 'compressed' | 'done' | 'error';
+  type?: 'thinking' | 'retrieved' | 'streaming' | 'compressed' | 'tool_calling' | 'image_generating' | 'image_ready' | 'done' | 'error';
   round?: number;
   queries?: string[];
   chunkCount?: number;
   docTitles?: string[];
   delta?: string;
   foldedRounds?: number;
+  tool?: string;
+  args?: Record<string, unknown>;
+  model?: string;
+  phase?: string;
+  imageUrl?: string;
+  imagePlan?: unknown;
   assistantMessage?: unknown;
   usage?: unknown;
   message?: string;
