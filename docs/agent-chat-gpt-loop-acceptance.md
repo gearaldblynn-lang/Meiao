@@ -30,7 +30,7 @@
   - Root cause: 旧模块已有持久 pending run 保护，但当前应用入口挂载 shell 模块；前端双入口逻辑未同步。
   - Fix: shell 入口补齐结构化 pending/running 判定、后台消息轮询回填、重复发送锁定、Composer running 状态传递；仅本地正在发送时显示真正中断按钮。
   - Regression test: `src/shell/modules/AgentCenter/AgentCenterModule.test.mjs` 新增 shell 入口断言。
-  - Commit: 待提交。
+  - Commit: `a0c23f7`
 
 ### Batch A Facts
 
@@ -38,8 +38,36 @@
 - Verification evidence: shell 入口新增测试红灯后转绿；相关 AgentCenter 行为测试全绿；localhost 浏览器观察到智能体会话主路径和能力栏正常。
 - Fixes: shell 入口补齐 pending run 结构化识别、后台轮询、重复发送锁定、运行态传递；补 `docs/agents/repeated-issues.md` 操作型经验。
 - Avoid next time: 前端同时存在 `src/modules/AgentCenter/AgentCenterModule.tsx` 与 `src/shell/modules/AgentCenter/AgentCenterModule.tsx` 时，涉及用户真实入口的对话生命周期逻辑必须在 shell 测试中单独设门禁，不能只测旧模块。
-- Commits: 待提交。
+- Commits: `a0c23f7`
 
 ## 每批事实沉淀
 
 后续 Batch B-D 继续在本文件追加事实、验证、反馈补丁和最终 commit。
+
+## Batch B - 输入能力状态智能化
+
+- Goal: 输入框能力栏按模型、智能体配置和会话状态动态约束；用户不用猜当前能力是否可用，也不会选到无效能力。
+- Files: `src/modules/AgentCenter/ChatComposer.tsx`, `src/modules/AgentCenter/chatComposerReasoningUi.test.mjs`, `docs/agent-chat-gpt-loop-acceptance.md`
+- Red lines: 未触碰 `server/appStateMerge.mjs`、`src/adapters/shellPersistence.ts`；未改后端 chat handler；未新增业务意图/状态正则。
+- Browser acceptance: 2026-06-17 刷新 `http://localhost:3000/`，Composer 默认显示 `模型 · GPT-5.5`、`+ 附件`、`文件夹`、`生图关`、`联网关`、`思考 medium`；点击生图 pill 后短标签显示 `生图开 · 0/16`，随后已切回 `生图关`；空输入时发送按钮保持禁用。
+- Verification commands:
+  - PASS `node --experimental-strip-types --test src/modules/AgentCenter/chatComposerReasoningUi.test.mjs`
+  - PASS `node --experimental-strip-types --test src/modules/AgentCenter/chatReasoningModelSwitch.test.mjs`
+  - PASS `node --experimental-strip-types --test src/components/uiArchitecture.test.mjs --test-name-pattern "agent"`
+  - PASS `npm run lint`（0 errors，既有 warnings）
+- Fact log:
+  - Fact: 能力栏已有 pill，但不可用原因和生图容量主要依赖 tooltip；默认短标签不足以表达“本轮能力确定性”。
+  - Reproduce: 新增 `chat composer capability labels expose unavailable and capacity states without relying on tooltips` 后红灯，缺少 `imageAttachmentCount` 和不可用短标签。
+  - Evidence: `node --experimental-strip-types --test src/modules/AgentCenter/chatComposerReasoningUi.test.mjs` 在新增断言上红灯；浏览器开启生图前只能看到 `生图关`。
+  - Root cause: 能力状态分成可见短标签和 tooltip 两层，之前把容量/不可用原因放在 tooltip，主标签信息密度不够。
+  - Fix: web/reasoning/image pill 的短标签直接显示 `联网不可用`、`思考不可用`、`生图不可用`；生图开启时显示 `生图开 · 当前图片数/上限`；Enter 发送测试补 IME composition 断言。
+  - Regression test: `src/modules/AgentCenter/chatComposerReasoningUi.test.mjs`。
+  - Commit: `feat(智能体): 强化输入能力状态标签`
+
+### Batch B Facts
+
+- Problems found: 能力栏短标签对不可用状态和生图容量表达不足，用户需要 hover 才能知道完整能力状态。
+- Verification evidence: 新增测试红灯后转绿；localhost 生图 pill 验收显示 `生图开 · 0/16`。
+- Fixes: `feat(智能体): 强化输入能力状态标签`
+- Avoid next time: GPT 式能力栏的关键信息必须在短标签里可见；tooltip 只能补解释，不能承载“是否可用/容量/当前模式”的唯一信号。
+- Commits: `feat(智能体): 强化输入能力状态标签`

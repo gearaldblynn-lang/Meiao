@@ -150,6 +150,7 @@ const ChatComposer: React.FC<Props> = ({
   const supportsAnyAttachment = imageModeEnabled
     ? imageModeAvailable
     : Boolean(selectedModelOption?.supportsImageInput || selectedModelOption?.supportsFileInput);
+  const imageAttachmentCount = attachments.filter((attachment) => attachment.kind === 'image').length;
   const folderReady = folderCard?.phase === 'done' && (folderCard.batches?.length ?? 0) > 0;
   const canSend = !disabled && !uploading && !sending && (Boolean(messageDraft.trim()) || attachments.length > 0 || folderReady);
 
@@ -166,9 +167,15 @@ const ChatComposer: React.FC<Props> = ({
   const imageModeHint = imageModeAvailable
     ? (imageModeEnabled ? '生图模式已开启' : '进入生图模式')
     : '当前智能体未启用生图模型';
-  const webStatusLabel = webSearchEnabled ? '联网开' : '联网关';
-  const reasoningStatusLabel = effectiveReasoningLevel ? `思考 ${effectiveReasoningLevel}` : '思考默认';
-  const imageModeStatusLabel = imageModeEnabled ? '生图开' : '生图关';
+  const webStatusLabel = selectedModelOption?.supportsWebSearch
+    ? webSearchEnabled ? '联网开' : '联网关'
+    : '联网不可用';
+  const reasoningStatusLabel = selectedModelOption?.supportsReasoningLevel
+    ? effectiveReasoningLevel ? `思考 ${effectiveReasoningLevel}` : '思考默认'
+    : '思考不可用';
+  const imageModeStatusLabel = !imageModeAvailable
+    ? '生图不可用'
+    : imageModeEnabled ? `生图开 · ${imageAttachmentCount}/${imageMaxInputCount}` : '生图关';
 
   // ─── 文件夹上传处理 ────────────────────────────────────────────────────────────
 
