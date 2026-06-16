@@ -27,9 +27,9 @@ const UserAvatar: React.FC<Props> = ({ name = '我', avatarUrl, avatarPreset, cl
       className={`${className} flex items-center justify-center rounded-full border shadow-none`}
       data-avatar-preset={preset.id}
       style={{
-        background: 'var(--bg-elevated)',
-        borderColor: 'var(--border-subtle)',
-        color: 'var(--accent)',
+        background: preset.gradient,
+        borderColor: preset.borderColor,
+        color: preset.foreground,
       }}
       aria-hidden="true"
     >

@@ -114,16 +114,6 @@ const AgentCenterShellStyles = () => (
     .agent-center-shell-scope textarea::placeholder {
       color: var(--text-tertiary) !important;
     }
-    .agent-center-shell-scope [class*="bg-gradient-to-br"],
-    .agent-center-shell-scope [class*="from-cyan-"],
-    .agent-center-shell-scope [class*="from-indigo-"],
-    .agent-center-shell-scope [class*="from-amber-"],
-    .agent-center-shell-scope [class*="from-emerald-"],
-    .agent-center-shell-scope [class*="from-pink-"],
-    .agent-center-shell-scope [class*="from-slate-"] {
-      background: var(--agent-panel-strong) !important;
-      border-color: var(--agent-hairline) !important;
-    }
     .agent-center-shell-scope [class*="backdrop-blur"] {
       backdrop-filter: none !important;
     }

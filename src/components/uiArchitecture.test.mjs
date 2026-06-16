@@ -1597,6 +1597,57 @@ test('shell settings stop exposing a public KIE api key input and only keep inte
   assert.match(types, /openaiCompatible: \{/);
 });
 
+test('agent creation wires openai compatible tool calling defaults into the first version', () => {
+  const manager = read('../modules/AgentCenter/AgentCenterManager.tsx');
+  const types = read('../types.ts');
+
+  assert.match(manager, /const usesOpenAICompatibleToolCalling = defaultAllowedChatModels\.some/);
+  assert.match(manager, /toolCallingProvider: usesOpenAICompatibleToolCalling \? 'openai_compatible' : ''/);
+  assert.match(manager, /imageGenerationEnabled: usesOpenAICompatibleToolCalling \|\| Boolean\(wizardForm\.enableImageGeneration\)/);
+  assert.match(manager, /allowedChatModels,/);
+  assert.match(manager, /defaultChatModel,/);
+  assert.match(types, /provider: 'kie' \| 'openai_compatible'/);
+});
+
+test('agent wizard explains chat model channels and provider impact', () => {
+  const wizard = read('../modules/AgentCenter/AgentWizardView.tsx');
+  const allowlist = read('../modules/AgentCenter/chatModelAllowlist.ts');
+
+  assert.match(wizard, /chatModelChannelFilter/);
+  assert.match(wizard, /filterChatModelsByChannel/);
+  assert.match(wizard, /getChatModelChannelMeta/);
+  assert.match(wizard, /channelMeta\.label/);
+  assert.doesNotMatch(wizard, /\{channelMeta\.impact\}/);
+  assert.match(allowlist, /label: '中转站'/);
+  assert.match(allowlist, /label: 'KIE 托管'/);
+  assert.match(allowlist, /tool calling/);
+  assert.match(allowlist, /生图工具/);
+  assert.match(allowlist, /普通聊天/);
+  assert.match(allowlist, /后备/);
+});
+
+test('agent creation persists wizard avatar and runtime strategy settings', () => {
+  const manager = read('../modules/AgentCenter/AgentCenterManager.tsx');
+  const avatar = read('../modules/AgentCenter/AgentAvatar.tsx');
+  const avatarOptions = read('../modules/AgentCenter/agentAvatarOptions.ts');
+  const shellAgentCenter = read('../shell/modules/AgentCenter/AgentCenterModule.tsx');
+
+  assert.match(manager, /allowedChatModels,\s*\n\s*defaultChatModel,/);
+  assert.match(manager, /const modelPolicy = \{\s*\n\s*cheapModel,/);
+  assert.match(manager, /defaultModel: defaultChatModel,/);
+  assert.match(manager, /multimodalModel: imageModel,/);
+  assert.match(manager, /imageGenerationEnabled: usesOpenAICompatibleToolCalling \|\| Boolean\(wizardForm\.enableImageGeneration\),/);
+  assert.match(manager, /modelPolicy,/);
+  assert.match(manager, /retrievalPolicy: \{[^}]*topK: wizardForm\.topK[^}]*\},/);
+  assert.match(avatar, /preset\.gradient/);
+  assert.match(avatar, /preset\.foreground/);
+  assert.match(avatarOptions, /mark: /);
+  assert.match(avatarOptions, /gradient: /);
+  assert.doesNotMatch(avatarOptions, /gradientClassName/);
+  assert.doesNotMatch(shellAgentCenter, /\[class\*="bg-gradient-to-br"\]/);
+  assert.doesNotMatch(avatar, /background: 'var\(--bg-elevated\)'/);
+});
+
 test('agent chat client keeps image generation requests alive longer and can sync completed results after timeout', () => {
   const api = read('../services/internalApi.ts');
   const agentCenter = read('../modules/AgentCenter/AgentCenterModule.tsx');

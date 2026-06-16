@@ -128,6 +128,24 @@ test('agent image generation filters expired provider temp images before sending
   assert.doesNotMatch(source, /const preferredInputImageUrls = editPreferenceHints\.preferPreviousResultAsPrimary[\s\S]{0,300}: inputImageUrls;/);
 });
 
+test('agent creation stores selected model policies on the initial version', () => {
+  const dbCreateStart = source.indexOf('const createDbAgent = async');
+  const dbCreateEnd = source.indexOf('const updateDbAgent = async', dbCreateStart);
+  const localCreateStart = source.indexOf('const createLocalAgent =');
+  const localCreateEnd = source.indexOf('const updateLocalAgent =', localCreateStart);
+  assert.ok(dbCreateStart > -1 && dbCreateEnd > dbCreateStart, 'db agent creation should be bounded');
+  assert.ok(localCreateStart > -1 && localCreateEnd > localCreateStart, 'local agent creation should be bounded');
+
+  const dbCreateSource = source.slice(dbCreateStart, dbCreateEnd);
+  const localCreateSource = source.slice(localCreateStart, localCreateEnd);
+  for (const createSource of [dbCreateSource, localCreateSource]) {
+    assert.match(createSource, /allowedChatModels: payload\.allowedChatModels \|\| \[\]/);
+    assert.match(createSource, /defaultChatModel: payload\.defaultChatModel \|\| ''/);
+    assert.match(createSource, /modelPolicy: payload\.modelPolicy \|\| \{\}/);
+    assert.match(createSource, /retrievalPolicy: payload\.retrievalPolicy \|\| \{\}/);
+  }
+});
+
 test('internal api timeout bridge removes abort listeners after fetch completion', () => {
   const internalApiSource = readFileSync(new URL('../src/services/internalApi.ts', import.meta.url), 'utf8');
   assert.match(internalApiSource, /const onAbort = \(\) => controller\.abort\(existingSignal\.reason\);/);

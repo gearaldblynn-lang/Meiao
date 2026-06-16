@@ -124,6 +124,28 @@ test('buildPublicSystemConfig exposes openai compatible readiness without leakin
   assert.equal(JSON.stringify(config).includes('sk-env-secret'), false);
 });
 
+test('buildPublicSystemConfig publishes configured openai compatible tool-calling models', () => {
+  const config = buildPublicSystemConfig(
+    {
+      OPENAI_COMPATIBLE_API_KEY: 'sk-env-secret',
+      OPENAI_COMPATIBLE_BASE_URL: 'https://env-relay.test',
+      OPENAI_COMPATIBLE_MODELS: 'gpt-5.4,gpt-5.5',
+    },
+    { queued: 0, running: 0 },
+  );
+
+  const gpt54 = config.agentModels.chat.find((item) => item.id === 'gpt-5.4');
+  const gpt55 = config.agentModels.chat.find((item) => item.id === 'gpt-5.5');
+
+  assert.deepEqual(config.agentModels.chat.slice(0, 2).map((item) => item.id), ['gpt-5.4', 'gpt-5.5']);
+  assert.equal(gpt54?.provider, 'openai_compatible');
+  assert.equal(gpt54?.supportsToolUse, true);
+  assert.equal(gpt54?.supportsFileInput, true);
+  assert.equal(gpt54?.supportsImageInput, true);
+  assert.equal(gpt55?.provider, 'openai_compatible');
+  assert.equal(gpt55?.supportsToolUse, true);
+});
+
 test('buildPublicSystemConfig keeps video analysis model independent from planning analysis model', () => {
   const config = buildPublicSystemConfig(
     { KIE_API_KEY: 'kie-secret', MEIAO_DEFAULT_ANALYSIS_MODEL: 'gpt-5-4-openai-resp' },
@@ -533,4 +555,3 @@ test('getReconcileBackoffMs never returns below base interval', () => {
   assert.ok(getReconcileBackoffMs(0, 60000, 600000) >= 60000);
   assert.ok(getReconcileBackoffMs(-5, 60000, 600000) >= 60000, '负数兜底到 base');
 });
-

@@ -26,11 +26,7 @@ const AgentAvatar: React.FC<Props> = ({ name, iconUrl, avatarPreset, className =
     <div
       className={`${className} shrink-0 flex items-center justify-center border font-black shadow-none`}
       data-avatar-preset={preset.id}
-      style={{
-        background: 'var(--bg-elevated)',
-        borderColor: 'var(--border-subtle)',
-        color: 'var(--accent)',
-      }}
+      style={{ background: preset.gradient, borderColor: preset.borderColor, color: preset.foreground }}
     >
       {initial}
     </div>
