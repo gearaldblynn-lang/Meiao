@@ -13,6 +13,10 @@
 ## 2. 本项目特有约定
 
 - 改任何"任务卡片状态/对账"相关代码前,**先读本文件第 3 节根因库**——这一块是历史复发重灾区(165 次提交里 114 次是 fix:,churn 最高的全是状态文件)。
+- 改高风险区域前先跑 Hermes Harness,让 Claude Code / Codex 共用同一套门禁提示:
+  `cd /Users/feiyanglin/程序开发/hermes-harness && npm run check`
+  已知改动文件时用:
+  `node scripts/hermes-harness.mjs --changed server/index.mjs --changed src/adapters/shellDataAdapter.ts`
 - 动手重构前确认 git 工作树干净、可回滚;改完跑 `npm run lint` + 相关 `node --test server/*.test.mjs`。
 - **跑测试的命令**(本项目没装 tsx):
   - 后端 `.mjs` 测试 → `node --test server/xxx.test.mjs`
