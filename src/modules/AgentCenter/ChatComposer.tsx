@@ -79,11 +79,11 @@ const buildAttachmentId = (kind: 'image' | 'file', name: string) =>
   `${kind}-${name.replace(/\s+/g, '-')}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const CHAT_REUSE_IMAGE_MIME = 'application/x-meiao-chat-image';
 
-const iconButtonClassName = (active: boolean, available: boolean) =>
-  `group relative flex h-8 w-8 items-center justify-center rounded-full border transition ${
+const capabilityPillClassName = (active: boolean, available: boolean) =>
+  `group relative inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full border transition px-3 text-[12px] font-semibold ${
     available
       ? active
-        ? 'border-[color:var(--accent)] bg-[color:var(--accent)] text-white shadow-[0_0_0_3px_var(--accent-soft)]'
+        ? 'border-[color:var(--accent)] bg-[color:var(--accent-soft)] text-[color:var(--accent)] shadow-[0_0_0_3px_var(--accent-soft)]'
         : 'border-[color:var(--border-subtle)] bg-[color:var(--bg-base)] text-[color:var(--text-secondary)] hover:border-[color:var(--border-default)] hover:text-[color:var(--text-primary)]'
       : 'cursor-not-allowed border-[color:var(--border-subtle)] bg-[color:var(--bg-base)] text-[color:var(--text-tertiary)]'
   }`;
@@ -166,6 +166,9 @@ const ChatComposer: React.FC<Props> = ({
   const imageModeHint = imageModeAvailable
     ? (imageModeEnabled ? '生图模式已开启' : '进入生图模式')
     : '当前智能体未启用生图模型';
+  const webStatusLabel = webSearchEnabled ? '联网开' : '联网关';
+  const reasoningStatusLabel = effectiveReasoningLevel ? `思考 ${effectiveReasoningLevel}` : '思考默认';
+  const imageModeStatusLabel = imageModeEnabled ? '生图开' : '生图关';
 
   // ─── 文件夹上传处理 ────────────────────────────────────────────────────────────
 
@@ -383,13 +386,13 @@ const ChatComposer: React.FC<Props> = ({
           <PopoverTrigger asChild>
             <button
               type="button"
-              className="group relative flex h-8 w-8 items-center justify-center rounded-full border transition"
-              style={{ background: 'var(--bg-base)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+              className={capabilityPillClassName(false, !disabled && !uploading && !sending)}
               title={modelHint}
               aria-label={modelHint}
               disabled={disabled || uploading || sending}
             >
               <LegacyFaIcon icon="fa-sliders" className="text-[12px]" />
+              <span>模型 · {selectedModelLabel}</span>
               <IconTooltip label={modelHint} />
             </button>
           </PopoverTrigger>
@@ -429,9 +432,10 @@ const ChatComposer: React.FC<Props> = ({
           aria-label={attachmentHint}
           disabled={!supportsAnyAttachment || disabled || uploading || sending}
           onClick={() => attachmentInputRef.current?.click()}
-          className={iconButtonClassName(false, supportsAnyAttachment)}
+          className={capabilityPillClassName(false, supportsAnyAttachment)}
         >
           <LegacyFaIcon icon="fa-paperclip" className="text-[13px]" />
+          <span>+ 附件</span>
           <IconTooltip label={attachmentHint} />
         </button>
 
@@ -443,9 +447,10 @@ const ChatComposer: React.FC<Props> = ({
             aria-label={folderHint}
             disabled={disabled || uploading || sending}
             onClick={() => folderInputRef.current?.click()}
-            className={iconButtonClassName(false, !disabled && !uploading && !sending)}
+            className={capabilityPillClassName(false, !disabled && !uploading && !sending)}
           >
             <LegacyFaIcon icon="fa-folder-open" className="text-[13px]" />
+            <span>文件夹</span>
             <IconTooltip label={folderHint} />
           </button>
         ) : null}
@@ -457,9 +462,10 @@ const ChatComposer: React.FC<Props> = ({
           aria-pressed={imageModeEnabled}
           disabled={!imageModeAvailable || disabled || uploading || sending}
           onClick={onImageModeToggle}
-          className={iconButtonClassName(imageModeEnabled, imageModeAvailable)}
+          className={capabilityPillClassName(imageModeEnabled, imageModeAvailable)}
         >
           <LegacyFaIcon icon="fa-image" className="text-[13px]" />
+          <span>{imageModeStatusLabel}</span>
           <IconTooltip label={imageModeHint} />
         </button>
 
@@ -470,9 +476,10 @@ const ChatComposer: React.FC<Props> = ({
           aria-pressed={webSearchEnabled}
           disabled={!selectedModelOption?.supportsWebSearch || disabled || uploading || sending}
           onClick={onWebSearchToggle}
-          className={iconButtonClassName(webSearchEnabled, Boolean(selectedModelOption?.supportsWebSearch))}
+          className={capabilityPillClassName(webSearchEnabled, Boolean(selectedModelOption?.supportsWebSearch))}
         >
           <LegacyFaIcon icon="fa-globe" className="text-[13px]" />
+          <span>{webStatusLabel}</span>
           <IconTooltip label={webHint} />
         </button>
 
@@ -487,9 +494,10 @@ const ChatComposer: React.FC<Props> = ({
               if (!selectedModelOption?.supportsReasoningLevel) return;
               setReasoningPopoverOpen((value) => !value);
             }}
-            className={iconButtonClassName(Boolean(reasoningLevel), Boolean(selectedModelOption?.supportsReasoningLevel))}
+            className={capabilityPillClassName(Boolean(reasoningLevel), Boolean(selectedModelOption?.supportsReasoningLevel))}
           >
             <LegacyFaIcon icon="fa-brain" className="text-[13px]" />
+            <span>{reasoningStatusLabel}</span>
             <IconTooltip label={reasoningHint} />
           </button>
 
