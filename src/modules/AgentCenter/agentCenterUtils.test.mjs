@@ -46,8 +46,36 @@ test('chunkKnowledgeText splits long paragraphs into bounded chunks', () => {
   const chunks = chunkKnowledgeText(longText, { maxChunkChars: 300 });
 
   assert.equal(chunks[0], '第一段内容。');
-  assert.equal(chunks.length, 4);
+  assert.ok(chunks.length >= 4);
   assert.ok(chunks.every((chunk) => chunk.length <= 300));
+});
+
+test('长文本分块带重叠：相邻块有共同尾/首内容', () => {
+  const text = '句子一。'.repeat(50) + '句子二。'.repeat(50);
+  const chunks = chunkKnowledgeText(text, { strategy: 'general', maxChunkChars: 200 });
+  assert.ok(chunks.length >= 2, '应切成多块');
+  const tailOfFirst = chunks[0].slice(-30);
+  assert.ok(
+    chunks[1].includes(tailOfFirst.slice(0, 10)) || chunks[1].startsWith(chunks[0].slice(-20)),
+    '相邻块应有重叠'
+  );
+});
+
+test('优先在句子边界（。！？）切，不在句中硬劈', () => {
+  const text = '第一句话结束。第二句话也结束。第三句话同样结束。'.repeat(20);
+  const chunks = chunkKnowledgeText(text, { strategy: 'general', maxChunkChars: 100 });
+  for (const chunk of chunks.slice(0, -1)) {
+    assert.match(chunk.trim().slice(-1), /[。！？!?]/);
+  }
+});
+
+test('短文本（小于块大小）不切，单块返回', () => {
+  const chunks = chunkKnowledgeText('一句简短的话。', { strategy: 'general' });
+  assert.equal(chunks.length, 1);
+});
+
+test('空文本返回空数组', () => {
+  assert.deepEqual(chunkKnowledgeText('', { strategy: 'general' }), []);
 });
 
 test('chunkKnowledgeText uses rule strategy to keep rule blocks more complete', () => {

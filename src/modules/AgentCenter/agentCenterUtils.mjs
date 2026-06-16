@@ -90,7 +90,7 @@ const SOURCE_PRIORITY_WEIGHT = {
 export const KNOWLEDGE_CHUNK_STRATEGY_META = {
   general: {
     label: '通用型',
-    maxChunkChars: 420,
+    maxChunkChars: 760,
     description: '适合普通说明文档，按空行分段，超长再截断。',
   },
   rule: {
@@ -100,7 +100,7 @@ export const KNOWLEDGE_CHUNK_STRATEGY_META = {
   },
   sop: {
     label: 'SOP型',
-    maxChunkChars: 520,
+    maxChunkChars: 820,
     description: '适合操作流程和步骤说明，优先保留步骤顺序。',
   },
   faq: {
@@ -110,7 +110,7 @@ export const KNOWLEDGE_CHUNK_STRATEGY_META = {
   },
   case: {
     label: '案例型',
-    maxChunkChars: 680,
+    maxChunkChars: 900,
     description: '适合案例和素材记录，保留更多上下文。',
   },
 };
@@ -193,16 +193,38 @@ export const normalizeAgentConfig = (input = {}) => ({
   },
 });
 
+const CHUNK_OVERLAP_RATIO = 0.15;
+
 const splitChunkByLength = (value, maxChunkChars) => {
   const source = String(value || '').trim();
   if (!source) return [];
   if (source.length <= maxChunkChars) return [source];
+  const overlap = Math.min(
+    Math.floor(maxChunkChars * CHUNK_OVERLAP_RATIO),
+    Math.floor(maxChunkChars / 3)
+  );
   const slices = [];
   let start = 0;
   while (start < source.length) {
-    const slice = source.slice(start, start + maxChunkChars).trim();
+    let end = Math.min(start + maxChunkChars, source.length);
+    if (end < source.length) {
+      const windowText = source.slice(start, end);
+      const lastBoundary = Math.max(
+        windowText.lastIndexOf('。'),
+        windowText.lastIndexOf('！'),
+        windowText.lastIndexOf('？'),
+        windowText.lastIndexOf('!'),
+        windowText.lastIndexOf('?'),
+        windowText.lastIndexOf('\n')
+      );
+      if (lastBoundary >= maxChunkChars * 0.5) {
+        end = start + lastBoundary + 1;
+      }
+    }
+    const slice = source.slice(start, end).trim();
     if (slice) slices.push(slice);
-    start += maxChunkChars;
+    if (end >= source.length) break;
+    start = Math.max(end - overlap, start + 1);
   }
   return slices;
 };
