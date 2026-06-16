@@ -60,6 +60,27 @@ test('生图：模型返回 tool_calls → 出图 → 二次回复', async () =>
   assert.ok(progress.includes('image_ready'));
 });
 
+test('生图工具结果不把图片 URL 暴露给模型正文', async () => {
+  let round = 0;
+  await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '画只橘猫',
+    callModel: async ({ messages }) => {
+      round += 1;
+      if (round === 1) {
+        return { content: '', toolCalls: [{ id: 'c1', name: 'generate_image', args: { prompt: '橘猫', task_type: 'new_image' } }], finishReason: 'tool_calls' };
+      }
+      const toolMsg = findToolOutputMessage(messages);
+      const toolText = String(toolMsg?.content || toolMsg?.output || '');
+      assert.doesNotMatch(toolText, /https?:\/\//);
+      assert.match(toolText, /不要输出图片 URL/);
+      return { content: '已生成图片', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'https://tempfile.aiquickdraw.com/images/cat.png', providerTaskId: 't1' }),
+    onProgress: () => {},
+  });
+});
+
 test('imageGenerationEnabled=false：不传 tools，纯对话', async () => {
   let toolsPassed = null;
   await runAgentConversationV2({

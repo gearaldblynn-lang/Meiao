@@ -118,6 +118,7 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
   const [agentDetailOpen, setAgentDetailOpen] = useState(true);
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
+  const [galleryOpenRequest, setGalleryOpenRequest] = useState(0);
   const selectedSession = useMemo(
     () => sessions.find((session) => session.id === selectedSessionId) || null,
     [sessions, selectedSessionId]
@@ -149,6 +150,7 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
     return chatAgents.filter((agent) => (agent.department?.trim() || '通用') === departmentFilter);
   }, [chatAgents, departmentFilter]);
   const selectedAgentSummary = selectedAgent?.description || '未填写介绍';
+  const focusedSessionTitle = selectedSession?.title || '新会话';
   const imageGenerationEnabled = Boolean(selectedAgent?.imageGenerationEnabled && selectedAgent?.imageModel);
   const imageMaxInputCount = Number(selectedAgent?.imageMaxInputCount || 1);
   const latestAssistantRun = useMemo(() => {
@@ -538,13 +540,39 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
                   />
                   <div className="min-w-0">
                     <p className="truncate text-[16px] font-semibold tracking-[-0.02em]" style={{ color: 'var(--text-primary)' }}>{selectedAgent.name}</p>
-                    <p className="truncate text-[12px]" style={{ color: 'var(--text-secondary)' }}>{selectedAgentSummary}</p>
+                    <p className="truncate text-[12px]" style={{ color: 'var(--text-secondary)' }}>当前会话 · {focusedSessionTitle}</p>
                   </div>
                 </>
               ) : null}
             </div>
             {selectedAgent && selectedAgentSessions.length > 0 ? (
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                {currentSessionImageCount > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setGalleryOpenRequest((value) => value + 1)}
+                    className="inline-flex h-9 items-center rounded-[16px] px-3 text-[12px] font-semibold"
+                    style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                    title="打开本次会话图库"
+                    aria-label="打开本次会话图库"
+                  >
+                    本次会话图库
+                  </button>
+                ) : null}
+                <span
+                  className="inline-flex h-9 items-center rounded-[16px] px-3 text-[12px] font-semibold"
+                  style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                >
+                  附件 {attachments.length} 个
+                </span>
+                {webSearchEnabled ? (
+                  <span
+                    className="inline-flex h-9 items-center rounded-[16px] px-3 text-[12px] font-semibold"
+                    style={{ background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                  >
+                    联网
+                  </span>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => setContextPanelOpen(true)}
@@ -753,6 +781,8 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
                 imageModeAvailable={imageGenerationEnabled}
                 imageMaxInputCount={imageMaxInputCount}
                 onImageModeToggle={onImageModeToggle}
+                hideSessionHeader={true}
+                openGalleryRequest={galleryOpenRequest}
                 onInterruptSend={onInterruptSend}
                 onHandoff={onHandoff}
                 onBatchSend={onBatchSend}

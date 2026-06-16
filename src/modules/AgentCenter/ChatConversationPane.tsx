@@ -34,6 +34,7 @@ interface Props {
   onImageModeToggle: () => void;
   sending?: boolean;
   hideSessionHeader?: boolean;
+  openGalleryRequest?: number;
   onHandoff?: (target: ModuleInterfaceId, payload: Record<string, unknown>) => void;
   renderMessageActions?: (message: AgentChatMessage) => ReactNode;
   /**
@@ -167,6 +168,7 @@ const ChatConversationPane: React.FC<Props> = ({
   onImageModeToggle,
   sending = false,
   hideSessionHeader = false,
+  openGalleryRequest = 0,
   onHandoff,
   renderMessageActions,
   onBatchSend,
@@ -175,6 +177,7 @@ const ChatConversationPane: React.FC<Props> = ({
   const selectedModelOption = chatModels.find((item) => item.id === selectedModel) || chatModels[0];
   const isDisabled = !selectedSession;
   const messageScrollRef = useRef<HTMLDivElement | null>(null);
+  const lastOpenGalleryRequestRef = useRef(openGalleryRequest);
   const [showGallery, setShowGallery] = useState(false);
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
   const [expandedSummaries, setExpandedSummaries] = useState<Record<string, boolean>>({});
@@ -249,6 +252,12 @@ const ChatConversationPane: React.FC<Props> = ({
       setShowGallery(false);
     }
   }, [galleryImages, previewState, showGallery]);
+
+  useEffect(() => {
+    if (openGalleryRequest === lastOpenGalleryRequestRef.current) return;
+    lastOpenGalleryRequestRef.current = openGalleryRequest;
+    if (galleryImages.length > 0) setShowGallery(true);
+  }, [galleryImages.length, openGalleryRequest]);
 
   const openPreview = (images: GalleryImage[], index = 0) => {
     if (images.length === 0) return;

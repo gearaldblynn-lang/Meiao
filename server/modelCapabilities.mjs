@@ -1,8 +1,8 @@
 // 模型能力单一来源。新增模型只改这张表。
 // 上下文数值为官方权威值(业主 2026-06-15 核实)。
 export const MODEL_CAPABILITIES = {
-  'gpt-5.4': { contextWindowTokens: 400000, maxOutputTokens: 128000, supportsStreaming: true, supportsToolUse: true },
-  'gpt-5.5': { contextWindowTokens: 400000, maxOutputTokens: 128000, supportsStreaming: true, supportsToolUse: true },
+  'gpt-5.4': { contextWindowTokens: 400000, maxOutputTokens: 128000, supportsStreaming: true, supportsToolUse: true, reasoningLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
+  'gpt-5.5': { contextWindowTokens: 400000, maxOutputTokens: 128000, supportsStreaming: true, supportsToolUse: true, reasoningLevels: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
   'gpt-5-4-openai-resp': { contextWindowTokens: 1000000, maxOutputTokens: 128000, supportsStreaming: true, supportsToolUse: false },
   'claude-sonnet-4-6': { contextWindowTokens: 1000000, maxOutputTokens: 64000, supportsStreaming: true, supportsToolUse: false },
   'gemini-3.1-pro-openai': { contextWindowTokens: 1000000, maxOutputTokens: 64000, supportsStreaming: true, supportsToolUse: false },
