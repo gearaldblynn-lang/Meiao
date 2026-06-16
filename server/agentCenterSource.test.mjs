@@ -85,6 +85,14 @@ test('知识文档分块写入时填充 embedding（两种 mode + 失败降级 n
   assert.match(source, /chunk embedding 失败/);
 });
 
+test('知识库检索接入向量并保持 MySQL/本地双 handler 同步', () => {
+  assert.match(source, /import \{ searchKnowledgeChunksByVector \} from '\.\/ragRetrieval\.mjs'/);
+  assert.match(source, /embedding: parseJsonField\(row\.embedding_json, null\)/);
+  const calls = Array.from(source.matchAll(/await searchKnowledgeChunksByVector\(/g));
+  assert.ok(calls.length >= 4);
+  assert.doesNotMatch(source, /= searchKnowledgeChunks\(/);
+});
+
 test('agent chat source exposes current-user profile updates and session patch delete routes', () => {
   assert.match(source, /if \(url\.pathname === '\/api\/auth\/me' && req\.method === 'PATCH'\)/);
   assert.match(source, /if \(chatSessionDetailMatch && req\.method === 'PATCH'\)/);
