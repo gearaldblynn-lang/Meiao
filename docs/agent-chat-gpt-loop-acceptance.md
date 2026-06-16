@@ -71,3 +71,31 @@
 - Fixes: `feat(智能体): 强化输入能力状态标签`
 - Avoid next time: GPT 式能力栏的关键信息必须在短标签里可见；tooltip 只能补解释，不能承载“是否可用/容量/当前模式”的唯一信号。
 - Commits: `feat(智能体): 强化输入能力状态标签`
+
+## Batch C - assistant run 主路径与调试视图分层
+
+- Goal: 普通用户看到简洁运行步骤和结果；管理员可在运行视图定位 tool、RAG、联网、provider 失败。
+- Files: `src/modules/AgentCenter/AgentCenterChatWorkspace.tsx`, `src/modules/AgentCenter/chatConversationRendering.test.mjs`, `src/shell/modules/AgentCenter/ChatConversationPane.test.mjs`, `docs/agent-chat-gpt-loop-acceptance.md`
+- Red lines: 未触碰 `server/appStateMerge.mjs`、`src/adapters/shellPersistence.ts`；未改后端 chat handler；未新增业务意图/状态正则；未把 provider payload 或内部 function 输出渲染进 assistant 正文。
+- Browser acceptance: 2026-06-17 打开 `http://localhost:3000/` 的智能体会话，点击“运行视图”；面板显示 `诊断详情`，包含 `模型`、`Provider`、`工具`、`错误码`、`知识库命中`、`耗时`；主消息正文未出现 `providerTaskId` 或 `function_call_output`；验收后已关闭运行视图。
+- Verification commands:
+  - PASS `node --experimental-strip-types --test src/modules/AgentCenter/chatConversationRendering.test.mjs`
+  - PASS `node --experimental-strip-types --test src/shell/modules/AgentCenter/ChatConversationPane.test.mjs`
+  - PASS `node --experimental-strip-types --test src/shell/modules/AgentCenter/AgentCenterModule.test.mjs`
+  - PASS `npm run lint`（0 errors，既有 warnings）
+- Fact log:
+  - Fact: 主消息 run trace 已经 compact，但运行视图缺少 model/provider/tool/errorCode/duration 等结构化诊断字段。
+  - Reproduce: 新增 `run view exposes diagnostics while keeping debug fields out of assistant text` 后红灯，缺少 `runDiagnostics`。
+  - Evidence: `node --experimental-strip-types --test src/modules/AgentCenter/chatConversationRendering.test.mjs` 在新增断言上红灯。
+  - Root cause: 调试面板此前偏会话资产和上下文统计，未把 assistant run 的结构化 metadata 汇总成诊断表。
+  - Fix: 运行视图新增 `runDiagnostics`，展示模型、Provider、工具、错误码、知识库命中、耗时；主消息正文仍只走 compact run trace 和清洗后的 Markdown。
+  - Regression test: `src/modules/AgentCenter/chatConversationRendering.test.mjs`；同步修正 `src/shell/modules/AgentCenter/ChatConversationPane.test.mjs` 到当前 `assistantDisplayContent` 契约。
+  - Commit: `feat(智能体): 分离运行诊断与主消息`
+
+### Batch C Facts
+
+- Problems found: 运行视图诊断信息不够结构化；shell ChatConversationPane 测试仍断言旧 `displayContent` 变量，和现有实现漂移。
+- Verification evidence: 新增测试红灯后转绿；localhost 运行视图显示诊断详情，主正文无内部字段泄漏。
+- Fixes: `feat(智能体): 分离运行诊断与主消息`
+- Avoid next time: 主聊天只放用户可读 run 摘要；定位 provider/tool/RAG 失败的字段放运行视图，且回归测试要同时覆盖主消息不泄漏内部字段。
+- Commits: `feat(智能体): 分离运行诊断与主消息`

@@ -6,8 +6,9 @@ const paneSource = readFileSync(new URL('../../../modules/AgentCenter/ChatConver
 
 test('assistant messages render through MarkdownMessage while user messages stay plain text', () => {
   assert.match(paneSource, /import MarkdownMessage from '\.\/MarkdownMessage';/);
-  assert.match(paneSource, /!isUser\s*\?\s*<MarkdownMessage content=\{displayContent\}/);
-  assert.match(paneSource, /<p className="select-text whitespace-pre-wrap break-words">\{displayContent\}<\/p>/);
+  assert.match(paneSource, /const assistantDisplayContent = !isUser \? stripImageResultUrls\(protocolDisplayContent\) : protocolDisplayContent;/);
+  assert.match(paneSource, /!isUser\s*\?\s*<MarkdownMessage content=\{assistantDisplayContent\}/);
+  assert.match(paneSource, /<p className="select-text whitespace-pre-wrap break-words">\{assistantDisplayContent\}<\/p>/);
 });
 
 test('MarkdownMessage keeps raw HTML disabled and adds copy controls for code blocks', () => {

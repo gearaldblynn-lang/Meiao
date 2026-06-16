@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('./ChatConversationPane.tsx', import.meta.url), 'utf8');
+const workspaceSource = readFileSync(new URL('./AgentCenterChatWorkspace.tsx', import.meta.url), 'utf8');
 const displaySource = readFileSync(new URL('./chatMessageDisplay.mjs', import.meta.url), 'utf8');
 
 test('chat conversation rendering hides provider protocol markers from old replies', () => {
@@ -45,4 +46,16 @@ test('chat conversation uses chat-first reading layout instead of assistant card
   assert.match(source, /background: 'transparent', borderColor: 'transparent'/);
   assert.match(source, /className="mt-1 h-7 w-7 rounded-\[10px\] text-\[10px\] opacity-70"/);
   assert.doesNotMatch(source, /shadow-\[0_8px_22px/);
+});
+
+test('run view exposes diagnostics while keeping debug fields out of assistant text', () => {
+  assert.match(workspaceSource, /const runDiagnostics = useMemo\(/);
+  assert.match(workspaceSource, /模型/);
+  assert.match(workspaceSource, /Provider/);
+  assert.match(workspaceSource, /工具/);
+  assert.match(workspaceSource, /错误码/);
+  assert.match(workspaceSource, /知识库命中/);
+  assert.match(workspaceSource, /耗时/);
+  assert.doesNotMatch(source, /providerTaskId.*MarkdownMessage/s);
+  assert.doesNotMatch(source, /function_call_output.*MarkdownMessage/s);
 });
