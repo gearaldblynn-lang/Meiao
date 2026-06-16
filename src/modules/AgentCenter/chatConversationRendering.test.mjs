@@ -33,3 +33,11 @@ test('assistant replies render a unified folded run trace across chat and image 
   assert.match(source, /className="assistant-run-trace/);
   assert.match(source, /renderAssistantRunTrace\(message\)/);
 });
+
+test('chat conversation uses chat-first reading layout instead of assistant cards', () => {
+  assert.match(source, /max-w-\[78%\]/);
+  assert.match(source, /isUser \? 'rounded-\[18px\] border px-3\.5 py-2\.5' : 'px-1 py-1'/);
+  assert.match(source, /background: 'transparent', borderColor: 'transparent'/);
+  assert.match(source, /className="mt-1 h-7 w-7 rounded-\[10px\] text-\[10px\] opacity-70"/);
+  assert.doesNotMatch(source, /shadow-\[0_8px_22px/);
+});

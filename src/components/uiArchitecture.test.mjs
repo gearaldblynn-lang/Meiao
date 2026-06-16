@@ -1982,7 +1982,7 @@ test('chat conversation pane uses compact header tags and refined message layout
   assert.match(conversationPane, /AgentAvatar/);
   assert.match(conversationPane, /UserAvatar/);
   assert.match(conversationPane, /rounded-\[30px\]/);
-  assert.match(conversationPane, /max-w-\[62%\]/);
+  assert.match(conversationPane, /max-w-\[78%\]/);
   assert.match(conversationPane, /当前会话/);
   assert.match(conversationPane, /附件\s+\{attachments\.length\}\s+个/);
   assert.match(conversationPane, /currentUser\?\.username/);
