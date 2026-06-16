@@ -46,6 +46,10 @@ npm run server
 npm run dev
 ```
 
+智能体多工具：
+- 第4期 V2 对话复用 `OPENAI_COMPATIBLE_*` 中转站配置，responses 端点默认 `OPENAI_COMPATIBLE_RESPONSES_PATH=/v1/responses`。
+- `AGENT_TOOL_MAX_ROUNDS` 控制单轮对话工具循环上限，默认 5，防止模型反复调用 `search_knowledge` / `generate_image`。
+
 ## 4. 关键 API 速查
 
 账号与用户：

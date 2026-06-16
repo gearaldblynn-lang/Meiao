@@ -42,8 +42,15 @@ MEIAO_SPIDER_API_KEY=请替换成你的 Spider Key
 KIE_API_KEY=请替换成你的真实 KIE Key
 APIPORTS_API_KEY=请替换成你的真实 APIports Key
 ARK_API_KEY=请替换成你的真实 ARK Key
+OPENAI_COMPATIBLE_API_KEY=请替换成你的 OpenAI Compatible 中转站 Key
+OPENAI_COMPATIBLE_BASE_URL=https://maxforai.top
+OPENAI_COMPATIBLE_MODELS=gpt-5.4,gpt-5.5
+OPENAI_COMPATIBLE_RESPONSES_PATH=/v1/responses
+AGENT_TOOL_MAX_ROUNDS=5
 EOF
 ```
+
+第4期智能体多工具复用 `OPENAI_COMPATIBLE_*`，V2 对话经 `OPENAI_COMPATIBLE_RESPONSES_PATH` 调 responses 端点以支持 `web_search`；`AGENT_TOOL_MAX_ROUNDS` 是单轮工具循环上限，默认 5。
 
 ## 启动
 ```bash
