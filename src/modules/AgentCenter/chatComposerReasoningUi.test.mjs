@@ -27,7 +27,8 @@ test('chat composer toolbar icons expose visible hover and focus tooltips', () =
 });
 
 test('chat composer toggle icons expose a high-contrast pressed state', () => {
-  assert.match(source, /bg-\[color:var\(--accent\)\]/);
+  assert.match(source, /bg-\[color:var\(--accent-soft\)\]/);
+  assert.match(source, /text-\[color:var\(--accent\)\]/);
   assert.match(source, /shadow-\[0_0_0_3px_var\(--accent-soft\)\]/);
   assert.match(source, /aria-pressed=\{imageModeEnabled\}/);
   assert.match(source, /aria-pressed=\{webSearchEnabled\}/);
@@ -41,4 +42,16 @@ test('chat composer sends with Enter and keeps Shift+Enter for newline', () => {
   assert.match(source, /event\.preventDefault\(\)/);
   assert.match(source, /onSendMessage\(\)/);
   assert.match(source, /onKeyDown=\{handleComposerKeyDown\}/);
+});
+
+test('chat composer capability bar exposes GPT style visible pills', () => {
+  assert.match(source, /const capabilityPillClassName = \(active: boolean, available: boolean\) =>/);
+  assert.match(source, /const webStatusLabel = webSearchEnabled \? '联网开' : '联网关';/);
+  assert.match(source, /const reasoningStatusLabel = effectiveReasoningLevel \? `思考 \$\{effectiveReasoningLevel\}` : '思考默认';/);
+  assert.match(source, /const imageModeStatusLabel = imageModeEnabled \? '生图开' : '生图关';/);
+  assert.match(source, /<span>模型 · \{selectedModelLabel\}<\/span>/);
+  assert.match(source, /<span>\{webStatusLabel\}<\/span>/);
+  assert.match(source, /<span>\{reasoningStatusLabel\}<\/span>/);
+  assert.match(source, /<span>\{imageModeStatusLabel\}<\/span>/);
+  assert.match(source, /<span>\+ 附件<\/span>/);
 });
