@@ -23,6 +23,7 @@ import { loadServerEnvFile } from './envLoader.mjs';
 import { resolveContextLimits } from './contextPlan.mjs';
 import { formatChatSseEvent } from './chatStreaming.mjs';
 import { embedTexts } from './embeddingProvider.mjs';
+import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
 import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
@@ -4276,6 +4277,7 @@ const listDbKnowledgeChunksForVersion = async (version) => {
       sourceType: row.source_type,
       content: row.content,
       tokenEstimate: Number(row.token_estimate || 0),
+      embedding: parseJsonField(row.embedding_json, null),
       documentTitle: row.document_title,
     })));
   }
@@ -4373,7 +4375,7 @@ const runAgenticRetrievalLoop = async ({
   const messages = [...initialMessages];
   const allUsedChunks = [];
 
-  const initialChunks = searchKnowledgeChunks(candidateChunks, currentMessage, retrievalPolicy);
+  const initialChunks = await searchKnowledgeChunksByVector(currentMessage, candidateChunks, retrievalPolicy, process.env, searchKnowledgeChunks);
   if (initialChunks.length > 0) {
     allUsedChunks.push(...initialChunks);
     const block = initialChunks
@@ -4408,7 +4410,7 @@ const runAgenticRetrievalLoop = async ({
     let roundNewChunkCount = 0;
     const roundDocTitles = [];
     for (const call of toolCalls) {
-      const chunks = searchKnowledgeChunks(candidateChunks, call.query, retrievalPolicy);
+      const chunks = await searchKnowledgeChunksByVector(call.query, candidateChunks, retrievalPolicy, process.env, searchKnowledgeChunks);
       const newChunks = chunks.filter((c) => !allUsedChunks.some((u) => u.id === c.id));
       allUsedChunks.push(...newChunks);
       roundNewChunkCount += newChunks.length;
@@ -4991,12 +4993,12 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   const summary = summaryNeeded ? buildConversationSummary(history, Number(version.contextPolicy.maxSummaryChars || 1200)) : (session.summary || '');
   const systemSettings = getUserScopedSystemSettings(await getDbSystemSettings(), user);
   const imageKnowledgeChunks = requestMode === 'image_generation' && version.retrievalPolicy?.enabled
-    ? searchKnowledgeChunks(await listDbKnowledgeChunksForVersion(version), content, {
+    ? await searchKnowledgeChunksByVector(content, await listDbKnowledgeChunksForVersion(version), {
         ...version.retrievalPolicy,
         topK: Math.min(Number(version.retrievalPolicy?.topK || 3), 3),
         maxChunks: Math.min(Number(version.retrievalPolicy?.maxChunks || 5), 3),
         maxContextChars: Math.min(Number(version.retrievalPolicy?.maxContextChars || 2400), 1800),
-      })
+      }, process.env, searchKnowledgeChunks)
     : [];
   const contextTraceBase = {
     sessionId,
@@ -9631,12 +9633,12 @@ const handleLocalRequest = async (req, res, url) => {
     const history = (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
     const systemSettings = getUserScopedSystemSettings(getLocalSystemSettings(store), user);
     const imageKnowledgeChunks = requestMode === 'image_generation' && version.retrievalPolicy?.enabled
-      ? searchKnowledgeChunks(listLocalKnowledgeChunksForVersion(store, version), content, {
+      ? await searchKnowledgeChunksByVector(content, listLocalKnowledgeChunksForVersion(store, version), {
           ...version.retrievalPolicy,
           topK: Math.min(Number(version.retrievalPolicy?.topK || 3), 3),
           maxChunks: Math.min(Number(version.retrievalPolicy?.maxChunks || 5), 3),
           maxContextChars: Math.min(Number(version.retrievalPolicy?.maxContextChars || 2400), 1800),
-        })
+        }, process.env, searchKnowledgeChunks)
       : [];
     const runId = `run-${clientRequestId}`;
     const contextTraceBase = {
