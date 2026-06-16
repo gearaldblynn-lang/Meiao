@@ -3726,6 +3726,8 @@ const createDbAgent = async (user, payload) => {
     createdBy: user.id,
     source: {
       systemPrompt: payload.systemPrompt || '',
+      allowedChatModels: payload.allowedChatModels || [],
+      defaultChatModel: payload.defaultChatModel || '',
       knowledgeDocumentBindings: payload.knowledgeDocumentBindings || [],
       replyStyleRules: payload.replyStyleRules || {},
       modelPolicy: payload.modelPolicy || {},
@@ -5739,6 +5741,8 @@ const createLocalAgent = (store, user, payload) => {
     createdBy: user.id,
     source: {
       systemPrompt: payload.systemPrompt || '',
+      allowedChatModels: payload.allowedChatModels || [],
+      defaultChatModel: payload.defaultChatModel || '',
       replyStyleRules: payload.replyStyleRules || {},
       modelPolicy: payload.modelPolicy || {},
       contextPolicy: payload.contextPolicy || {},
@@ -9694,33 +9698,117 @@ const handleLocalRequest = async (req, res, url) => {
     session.updatedAt = now;
     writeLocalStore(store);
     try {
-      const result = requestMode === 'image_generation'
-        ? await buildImageConversationResult({
-            user,
-            agent,
-            version,
-            priorMessages: history,
-            currentMessage: content,
-            sessionId,
-            selectedModelOverride: selectedModel,
-            attachments,
-            systemSettings,
-            knowledgeChunks: imageKnowledgeChunks,
-            conversationSummary: session.summary || '',
-          })
-        : await runLocalAgentConversation({
-            store,
-            user,
-            agent,
-            version,
-            priorMessages: history,
-            currentMessage: content,
-            sessionId,
-            selectedModelOverride: selectedModel,
-            attachments,
-            reasoningLevel: body?.reasoningLevel || null,
-          webSearchEnabled: Boolean(body?.webSearchEnabled),
+      let result;
+      if (shouldUseToolCallingConversation(version)) {
+        const summaryNeeded = history.filter((item) => item.role !== 'system').length > Number(version.contextPolicy.summaryTriggerThreshold || 10);
+        const summary = summaryNeeded ? buildConversationSummary(history, Number(version.contextPolicy.maxSummaryChars || 1200)) : (session.summary || '');
+        const ctxLimits = resolveContextLimits({
+          modelId: selectedModel,
+          contextPolicy: version.contextPolicy || {},
         });
+        const recentMessages = history
+          .slice(-(ctxLimits.maxHistoryRounds * 2))
+          .map((message) => ({ role: message.role, content: message.content }));
+        const imageCapability = getImageModelCapability(version?.modelPolicy?.multimodalModel);
+        const openaiCompatibleEnv = buildOpenAICompatibleRuntimeEnv(process.env, systemSettings);
+        const callModel = async ({ messages, tools, toolChoice, maxTokens, onDelta }) => {
+          const output = await executeProviderJobWithManagedAssetScrub({
+            taskType: 'openai_tool_calling',
+            payload: {
+              model: selectedModel,
+              messages,
+              tools,
+              toolChoice,
+              maxTokens,
+            },
+          }, openaiCompatibleEnv, new AbortController().signal, {
+            onDelta: (delta) => {
+              onDelta?.(delta);
+            },
+          });
+          return {
+            content: output?.content ?? output?.result?.content ?? '',
+            toolCalls: output?.toolCalls || output?.result?.toolCalls || [],
+            finishReason: output?.finishReason || output?.result?.finishReason || '',
+            modelUsed: output?.modelUsed || output?.result?.modelUsed || selectedModel,
+          };
+        };
+        const generateImage = async ({ prompt, taskType, inputImageUrls, aspectRatio, model }) => {
+          void taskType;
+          const imageOutput = await executeProviderJobWithManagedAssetScrub({
+            taskType: 'kie_image',
+            payload: {
+              imageUrls: inputImageUrls,
+              prompt,
+              model,
+              aspectRatio: aspectRatio || 'auto',
+              resolution: String(imageCapability?.defaultResolution || '1K'),
+            },
+          }, process.env, new AbortController().signal);
+          const rawUrl = String(imageOutput?.result?.imageUrl || '').trim();
+          const persistedUrl = await persistRuntimeRemoteAssetIfEnabled({
+            userId: user.id,
+            moduleName: 'agent_center',
+            assetType: 'result',
+            remoteUrl: rawUrl,
+            originalName: `${model || 'image_result'}.png`,
+            provider: 'kie',
+            jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId),
+          });
+          return { imageUrl: persistedUrl || rawUrl, providerTaskId: String(imageOutput?.providerTaskId || '') };
+        };
+        result = await runAgentConversationV2({
+          systemPrompt: version.systemPrompt || '',
+          summary,
+          recentMessages,
+          currentMessage: content,
+          attachments,
+          priorMessages: history,
+          imageGenerationEnabled: Boolean(version?.modelPolicy?.imageGenerationEnabled),
+          imageMode: requestMode === 'image_generation',
+          selectedImageModel: String(version?.modelPolicy?.multimodalModel || '').trim(),
+          maxInputImages: Number(imageCapability?.maxInputImages || 1),
+          contextLimits: ctxLimits,
+          callModel,
+          generateImage,
+          onProgress: (event) => {
+            setChatProgress(clientRequestId, event);
+          },
+        });
+        result.usedRetrieval = false;
+        result.retrievalSummary = [];
+        result.promptTokens = result.promptTokens || 0;
+        result.completionTokens = result.completionTokens || 0;
+        result.fallbackFrom = null;
+      } else {
+        result = requestMode === 'image_generation'
+          ? await buildImageConversationResult({
+              user,
+              agent,
+              version,
+              priorMessages: history,
+              currentMessage: content,
+              sessionId,
+              selectedModelOverride: selectedModel,
+              attachments,
+              systemSettings,
+              knowledgeChunks: imageKnowledgeChunks,
+              conversationSummary: session.summary || '',
+            })
+          : await runLocalAgentConversation({
+              store,
+              user,
+              agent,
+              version,
+              priorMessages: history,
+              currentMessage: content,
+              sessionId,
+              selectedModelOverride: selectedModel,
+              attachments,
+              reasoningLevel: body?.reasoningLevel || null,
+              webSearchEnabled: Boolean(body?.webSearchEnabled),
+            });
+      }
       result.clientRequestId = clientRequestId;
       const assistantAttachments = Array.isArray(result.imageResultUrls) && result.imageResultUrls.length > 0
         ? result.imageResultUrls.map((url, index) => ({
