@@ -139,3 +139,48 @@ test('一条消息最多触发一次出图（不允许连续多次）', async ()
   });
   assert.equal(genCount, 1);
 });
+
+test('本轮上传图：附进用户消息(多模态) + system 引导优先编辑新上传图', async () => {
+  let capturedMessages = null;
+  await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '把这张图上的文字改成韩文',
+    attachments: [{ kind: 'image', url: 'https://upload/photo.jpg', name: '照片.jpg' }],
+    // 历史里有一张之前生成的图（容易被模型误选）
+    priorMessages: [
+      { role: 'assistant', content: '已生成', metadata: { imageUrl: 'https://gen/old-cat.png', imagePlan: { inputImageUrls: [] } } },
+    ],
+    callModel: async ({ messages }) => {
+      capturedMessages = messages;
+      return { content: '', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    onProgress: () => {},
+  });
+  // 用户消息必须是多模态数组，且含上传图的 image_url（模型能"看到"）
+  const userMsg = capturedMessages.find((m) => m.role === 'user');
+  assert.ok(Array.isArray(userMsg.content), '用户消息应为多模态数组');
+  const imgPart = userMsg.content.find((p) => p.type === 'image_url');
+  assert.equal(imgPart?.image_url?.url, 'https://upload/photo.jpg');
+  // system 提示必须出现"优先用新上传图做 edit"的引导 + 该 URL
+  const sysText = capturedMessages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+  assert.match(sysText, /新上传/);
+  assert.match(sysText, /https:\/\/upload\/photo\.jpg/);
+});
+
+test('无上传图时：用户消息退化为纯文本字符串', async () => {
+  let capturedMessages = null;
+  await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '你好',
+    attachments: [],
+    callModel: async ({ messages }) => {
+      capturedMessages = messages;
+      return { content: 'hi', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    onProgress: () => {},
+  });
+  const userMsg = capturedMessages.find((m) => m.role === 'user');
+  assert.equal(userMsg.content, '你好');
+});

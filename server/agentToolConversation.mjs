@@ -8,6 +8,21 @@ const IMAGE_MODE_GUIDANCE = [
   '- 你可以结合对话上下文理解"继续调整""按上一版改"等指代',
 ].join('\n');
 
+// 把当前消息的文字 + 上传图片附件拼成多模态 content，让模型真正"看到"图片。
+// 没有图片附件时退化为纯文本字符串（兼容不支持多模态 content 数组的场景）。
+const buildUserMessageContent = (text, attachments = []) => {
+  const imageAttachments = (Array.isArray(attachments) ? attachments : [])
+    .filter((item) => item?.kind === 'image' && item?.url);
+  if (imageAttachments.length === 0) return String(text || '');
+  return [
+    { type: 'text', text: String(text || '') },
+    ...imageAttachments.map((item) => ({
+      type: 'image_url',
+      image_url: { url: String(item.url) },
+    })),
+  ];
+};
+
 export const runAgentConversationV2 = async ({
   systemPrompt = '',
   summary = '',
@@ -32,16 +47,31 @@ export const runAgentConversationV2 = async ({
   const catalog = buildSessionImageCatalog({ attachments, priorMessages });
   const catalogText = formatCatalogForPrompt(catalog);
 
+  // 本轮新上传的图（多模态消息里模型能直接看到的那几张）——改图时应优先作为编辑对象，
+  // 不要被历史生成图带偏。把它们的 URL 显式告诉模型。
+  const freshUploadUrls = (Array.isArray(attachments) ? attachments : [])
+    .filter((item) => item?.kind === 'image' && item?.url)
+    .map((item) => String(item.url));
+  const freshUploadGuidance = freshUploadUrls.length > 0
+    ? [
+        '本轮用户新上传了图片（已在本条消息中随附，你可以直接看到）。',
+        '如果用户要求"修改/编辑这张图、在图上改文字、换背景"等，必须把本轮新上传图作为 edit_image 的 input_image_urls，URL 如下：',
+        ...freshUploadUrls.map((url) => `- ${url}`),
+        '不要错用历史生成图（如之前生成的其它图片）当作本次编辑对象，除非用户明确要求基于历史图修改。',
+      ].join('\n')
+    : '';
+
   const systemParts = [systemPrompt];
   if (imageMode && imageGenerationEnabled) systemParts.push(IMAGE_MODE_GUIDANCE);
   if (imageGenerationEnabled && catalog.length > 0) systemParts.push(catalogText);
+  if (imageGenerationEnabled && freshUploadGuidance) systemParts.push(freshUploadGuidance);
   const fullSystem = systemParts.filter(Boolean).join('\n\n');
 
   const messages = [
     { role: 'system', content: fullSystem },
     ...(summary ? [{ role: 'system', content: `会话摘要：\n${summary}` }] : []),
     ...(Array.isArray(recentMessages) ? recentMessages : []),
-    { role: 'user', content: currentMessage },
+    { role: 'user', content: buildUserMessageContent(currentMessage, attachments) },
   ];
   const tools = imageGenerationEnabled ? [GENERATE_IMAGE_TOOL] : [];
 

@@ -140,7 +140,7 @@ test('agent chat source records image generation usage and local image replies',
   assert.match(source, /result\?\.requestType === 'image_generation' \? 'create_image_task' : result\?\.sessionId \? 'agent_chat' : 'agent_validate'/);
   assert.match(source, /const requestMode = body\?\.requestMode === 'image_generation' \? 'image_generation' : 'chat';/);
   assert.match(source, /if \(requestMode === 'image_generation' && attachments\.some\(\(item\) => item\.kind !== 'image'\)\)/);
-  assert.match(source, /const result = requestMode === 'image_generation'/);
+  assert.match(source, /result = requestMode === 'image_generation'/);
   assert.match(source, /buildImageConversationResult\(/);
   assert.match(source, /imageCapability\.defaultSize \|\| 'auto'/);
   assert.match(source, /const hasExplicitAspectRatioInstruction = detectExplicitAspectRatioInstruction\(currentMessage\);/);
