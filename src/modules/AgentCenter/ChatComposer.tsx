@@ -342,6 +342,13 @@ const ChatComposer: React.FC<Props> = ({
     await handleFilesUpload(clipboardFiles);
   };
 
+  const handleComposerKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const shouldSendOnEnter = event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing;
+    if (!shouldSendOnEnter) return;
+    event.preventDefault();
+    if (canSend) onSendMessage();
+  };
+
   const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -576,6 +583,7 @@ const ChatComposer: React.FC<Props> = ({
           value={messageDraft}
           onChange={(event) => onMessageDraftChange(event.target.value)}
           onPaste={handlePaste}
+          onKeyDown={handleComposerKeyDown}
           placeholder={sending ? '消息发送中，请稍候' : imageModeEnabled ? '输入生图需求，引用图片时请直接说图1、图2、图3...' : '输入问题、需求或上传附件后发送'}
           disabled={disabled || sending}
           className={`min-h-[84px] w-full resize-none rounded-[18px] border px-4 py-3 pr-14 text-[13px] leading-6 outline-none transition ${

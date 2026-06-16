@@ -2056,6 +2056,7 @@ test('studio panes forward uploaded attachments into training and testing payloa
 
 test('agent center module wires chat capability controls and session deletion into the workspace', () => {
   const module = read('../modules/AgentCenter/AgentCenterModule.tsx');
+  const workspace = read('../modules/AgentCenter/AgentCenterChatWorkspace.tsx');
 
   assert.match(module, /deleteChatSession/);
   assert.match(module, /sendingMessage/);
@@ -2093,6 +2094,10 @@ test('agent center module wires chat capability controls and session deletion in
   assert.match(module, /结果整理中/);
   assert.match(module, /组织回复中/);
   assert.match(module, /progressStage/);
+  assert.match(workspace, /hideSessionHeader=\{true\}/);
+  assert.match(workspace, /focusedSessionTitle/);
+  assert.match(workspace, /本次会话图库/);
+  assert.match(workspace, /附件 \{attachments\.length\} 个/);
   assert.doesNotMatch(module, /lockWorkspaceScroll = lockChatPageScroll \|\| \(canManage && workspaceMode === 'factory'\)/);
   assert.match(module, /lockWorkspaceScroll = lockChatPageScroll/);
 });

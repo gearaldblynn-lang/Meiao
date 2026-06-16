@@ -33,3 +33,12 @@ test('chat composer toggle icons expose a high-contrast pressed state', () => {
   assert.match(source, /aria-pressed=\{webSearchEnabled\}/);
   assert.match(source, /aria-pressed=\{Boolean\(reasoningLevel\)\}/);
 });
+
+test('chat composer sends with Enter and keeps Shift+Enter for newline', () => {
+  assert.match(source, /const handleComposerKeyDown = \(event: React\.KeyboardEvent<HTMLTextAreaElement>\) =>/);
+  assert.match(source, /event\.key === 'Enter'/);
+  assert.match(source, /!event\.shiftKey/);
+  assert.match(source, /event\.preventDefault\(\)/);
+  assert.match(source, /onSendMessage\(\)/);
+  assert.match(source, /onKeyDown=\{handleComposerKeyDown\}/);
+});

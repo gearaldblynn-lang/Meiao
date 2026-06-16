@@ -163,7 +163,7 @@ export const runAgentConversationV2 = async ({
             const imageUrl = String(result?.imageUrl || '').trim();
             const providerTaskId = String(result?.providerTaskId || '').trim();
             toolResultContent = imageUrl
-              ? `图片已生成成功，URL: ${imageUrl}。请用一句话向用户说明生成结果。`
+              ? '图片已生成成功。图片已作为对话附件返回给用户，请用一句话向用户说明生成结果，不要输出图片 URL。'
               : '图片生成返回为空。请向用户说明生成失败。';
             if (imageUrl) {
               emit('image_ready', { imageUrl });

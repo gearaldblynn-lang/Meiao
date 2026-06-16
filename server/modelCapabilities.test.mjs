@@ -39,10 +39,12 @@ test('gpt-5.4 登记为支持 tool use 的百万上下文模型', () => {
   assert.equal(cap.supportsToolUse, true);
   assert.equal(cap.isFallbackDefault, false);
   assert.ok(cap.contextWindowTokens >= 200000);
+  assert.deepEqual(cap.reasoningLevels, ['minimal', 'low', 'medium', 'high', 'xhigh']);
 });
 
 test('gpt-5.5 同样支持 tool use', () => {
   const cap = getModelCapability('gpt-5.5');
   assert.equal(cap.supportsToolUse, true);
   assert.equal(cap.isFallbackDefault, false);
+  assert.deepEqual(cap.reasoningLevels, ['minimal', 'low', 'medium', 'high', 'xhigh']);
 });
