@@ -29,5 +29,20 @@ test('能力表至少登记本期五个对话模型', () => {
     'gemini-3-flash-openai',
     'gemini-3.1-pro-openai',
     'gpt-5-4-openai-resp',
+    'gpt-5.4',
+    'gpt-5.5',
   ]);
+});
+
+test('gpt-5.4 登记为支持 tool use 的百万上下文模型', () => {
+  const cap = getModelCapability('gpt-5.4');
+  assert.equal(cap.supportsToolUse, true);
+  assert.equal(cap.isFallbackDefault, false);
+  assert.ok(cap.contextWindowTokens >= 200000);
+});
+
+test('gpt-5.5 同样支持 tool use', () => {
+  const cap = getModelCapability('gpt-5.5');
+  assert.equal(cap.supportsToolUse, true);
+  assert.equal(cap.isFallbackDefault, false);
 });
