@@ -1,4 +1,5 @@
 import { isExternallyReachableBaseUrl, normalizeBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
+import { getModelCapability } from './modelCapabilities.mjs';
 
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',
@@ -113,6 +114,44 @@ const AGENT_MODEL_CATALOG = {
 };
 
 const isGeminiModelId = (modelId) => String(modelId || '').toLowerCase().startsWith('gemini');
+
+const formatOpenAICompatibleModelLabel = (modelId) => {
+  const normalized = String(modelId || '').trim();
+  if (!normalized) return '';
+  return normalized
+    .split('-')
+    .map((part) => (part.toLowerCase() === 'gpt' ? 'GPT' : part))
+    .join('-');
+};
+
+const buildOpenAICompatibleChatModels = ({ apiKey = '', models = '' } = {}) => {
+  if (!String(apiKey || '').trim()) return [];
+  const seen = new Set();
+  return String(models || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((modelId) => {
+      if (seen.has(modelId)) return false;
+      seen.add(modelId);
+      return true;
+    })
+    .map((modelId) => {
+      const capability = getModelCapability(modelId);
+      return {
+        id: modelId,
+        label: formatOpenAICompatibleModelLabel(modelId),
+        provider: 'openai_compatible',
+        mediaTransport: 'inline_data',
+        supportsImageInput: true,
+        supportsFileInput: true,
+        supportsWebSearch: false,
+        supportsReasoningLevel: false,
+        supportsToolUse: Boolean(capability.supportsToolUse),
+        reasoningLevels: [],
+      };
+    });
+};
 
 const toSafePositiveInteger = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -457,6 +496,10 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
   const openaiCompatibleModels = String(openaiCompatibleSettings.models || env.OPENAI_COMPATIBLE_MODELS || '').trim();
   const openaiCompatibleKeyPrefix = openaiCompatibleApiKey.slice(0, 4);
   const openaiCompatibleKeySuffix = openaiCompatibleApiKey.slice(-4);
+  const openaiCompatibleChatModels = buildOpenAICompatibleChatModels({
+    apiKey: openaiCompatibleApiKey,
+    models: openaiCompatibleModels,
+  });
 
   return {
     queue: {
@@ -494,7 +537,7 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
     videoAnalysisModels: videoAnalysisModels.map((item) => ({ ...item })),
     publicBaseUrl,
     agentModels: {
-      chat: chatCatalog,
+      chat: [...openaiCompatibleChatModels, ...chatCatalog],
       image: AGENT_MODEL_CATALOG.image.map((item) => ({ ...item })),
     },
   };

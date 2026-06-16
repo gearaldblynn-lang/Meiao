@@ -1,9 +1,15 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AgentKnowledgeDocumentBinding, KnowledgeBaseSummary, KnowledgeDocumentSummary } from '../../types';
-import { PopoverSelect, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
+import { LegacyFaIcon, PopoverSelect, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 import AgentAvatar from './AgentAvatar';
 import { AGENT_AVATAR_PRESETS } from './agentAvatarOptions';
 import { MODULE_INTERFACES } from './agentCenterUtils.mjs';
+import {
+  ChatModelChannelFilter,
+  filterChatModelsByChannel,
+  getChatModelChannelMeta,
+  orderChatModelsBySelection,
+} from './chatModelAllowlist';
 
 interface WizardForm {
   name: string;
@@ -30,7 +36,7 @@ interface Props {
   form: WizardForm;
   knowledgeBases: KnowledgeBaseSummary[];
   knowledgeDocumentsByBase: Record<string, KnowledgeDocumentSummary[]>;
-  availableChatModels: Array<{ id: string; label: string }>;
+  availableChatModels: Array<{ id: string; label: string; provider?: string }>;
   availableImageModels: Array<{ id: string; label: string; maxInputImages?: number }>;
   onBack: () => void;
   onPrev: () => void;
@@ -86,10 +92,15 @@ const stepMeta = [
   },
 ];
 
-const panelClassName = 'rounded-[22px] border border-white/70 bg-white/72 p-4 shadow-[0_16px_36px_rgba(148,163,184,0.1)] backdrop-blur-xl';
-const subPanelClassName = 'rounded-[18px] border border-slate-200/70 bg-slate-50/70 p-4';
+const panelClassName = 'min-w-0 rounded-[20px] border border-white/70 bg-white/72 p-3.5 shadow-[0_16px_36px_rgba(148,163,184,0.1)] backdrop-blur-xl sm:p-4';
+const subPanelClassName = 'min-w-0 rounded-[18px] border border-slate-200/70 bg-slate-50/70 p-3.5 sm:p-4';
 const inputClassName = 'w-full rounded-[16px] border border-slate-200/80 bg-white/92 px-4 py-3 text-[13px] font-medium text-slate-700 outline-none transition focus:border-cyan-300 focus:bg-white focus:ring-4 focus:ring-cyan-100/70';
 const smallButtonClassName = 'inline-flex items-center justify-center gap-2 rounded-[14px] border border-slate-200/80 bg-white/90 px-3.5 py-2 text-[12px] font-black text-slate-700 shadow-[0_8px_18px_rgba(148,163,184,0.08)] transition hover:border-slate-300 hover:bg-white';
+const chatModelChannelOptions: Array<{ id: ChatModelChannelFilter; label: string; detail: string }> = [
+  { id: 'all', label: '全部', detail: '显示所有可选模型' },
+  { id: 'openai_compatible', label: '中转站', detail: 'tool calling / 生图工具链' },
+  { id: 'kie', label: 'KIE 托管', detail: '普通聊天分析 / 后备通道' },
+];
 
 const FieldLabel: React.FC<{ title: string; detail?: string }> = ({ title, detail }) => (
   <div className="mb-2">
@@ -98,10 +109,30 @@ const FieldLabel: React.FC<{ title: string; detail?: string }> = ({ title, detai
   </div>
 );
 
+const HelpTooltip: React.FC<{ label: string; children: React.ReactNode; align?: 'left' | 'right' }> = ({ label, children, align = 'left' }) => (
+  <div className="group relative inline-flex">
+    <button
+      type="button"
+      className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-200/80 bg-white text-slate-500 transition hover:text-slate-900 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-cyan-100"
+      aria-label={label}
+      title={label}
+    >
+      <LegacyFaIcon icon="fa-circle-question" className="text-xs" />
+    </button>
+    <div
+      className={`pointer-events-none absolute top-8 z-30 hidden w-max max-w-[min(18rem,calc(100vw-2rem))] whitespace-normal rounded-2xl bg-slate-900 px-4 py-3 text-xs font-medium leading-6 text-white shadow-[0_18px_40px_rgba(15,23,42,0.24)] group-hover:block group-focus-within:block ${
+        align === 'right' ? 'right-0' : 'left-0'
+      }`}
+    >
+      {children}
+    </div>
+  </div>
+);
+
 const SectionTitle: React.FC<{ eyebrow: string; title: string; detail?: string; icon?: string }> = ({ eyebrow, title, detail, icon }) => (
-  <div className="mb-4 flex items-start gap-3">
+  <div className="mb-3 flex items-start gap-3">
     {icon ? (
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[16px] bg-slate-900 text-white shadow-[0_12px_24px_rgba(15,23,42,0.14)]">
+      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[14px] border border-cyan-100 bg-cyan-50 text-cyan-600">
         <i className={`fas ${icon} text-sm`} />
       </div>
     ) : null}
@@ -129,10 +160,19 @@ const AgentWizardView: React.FC<Props> = ({
   onChange,
 }) => {
   const [customDepartment, setCustomDepartment] = useState('');
+  const [chatModelChannelFilter, setChatModelChannelFilter] = useState<ChatModelChannelFilter>('all');
   const contentTopRef = useRef<HTMLDivElement | null>(null);
   const canJumpToStep = mode === 'edit';
-  const defaultChatOptions = availableChatModels.filter((item) => form.allowedChatModels.includes(item.id));
-  const cheapChatOptions = defaultChatOptions.length ? defaultChatOptions : availableChatModels;
+  const orderedChatModels = useMemo(
+    () => orderChatModelsBySelection(availableChatModels, form.allowedChatModels),
+    [availableChatModels, form.allowedChatModels]
+  );
+  const visibleChatModels = useMemo(
+    () => filterChatModelsByChannel(orderedChatModels, chatModelChannelFilter),
+    [chatModelChannelFilter, orderedChatModels]
+  );
+  const defaultChatOptions = orderedChatModels.filter((item) => form.allowedChatModels.includes(item.id));
+  const cheapChatOptions = defaultChatOptions.length ? defaultChatOptions : orderedChatModels;
   const departmentOptions = useMemo(() => {
     const current = form.department?.trim();
     return current && !DEPARTMENT_PRESETS.includes(current) ? [...DEPARTMENT_PRESETS, current] : DEPARTMENT_PRESETS;
@@ -160,101 +200,78 @@ const AgentWizardView: React.FC<Props> = ({
   }, [currentStep]);
 
   return (
-    <div className="mx-auto grid max-w-7xl gap-4 pb-8 xl:grid-cols-[280px_minmax(0,1fr)]">
-      <WorkspaceShellCard className="h-fit overflow-hidden border border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(248,250,252,0.72))] px-4 py-4 shadow-[0_20px_48px_rgba(148,163,184,0.12)] backdrop-blur-2xl">
-        <button
-          onClick={onBack}
-          className="inline-flex items-center gap-2 rounded-full border border-white/75 bg-white/80 px-3.5 py-2 text-[13px] font-black text-slate-600 shadow-[0_8px_18px_rgba(148,163,184,0.1)] transition hover:border-slate-300 hover:text-slate-900"
-        >
-          <i className="fas fa-arrow-left text-xs" />
-          返回
-        </button>
-        <div className="mt-5">
-          <p className="text-[10px] font-black tracking-[0.18em] text-slate-400">AGENT BUILDER</p>
-          <h3 className="mt-1 text-[22px] font-black tracking-[-0.04em] text-slate-950">{mode === 'create' ? '新建智能体' : '编辑草稿'}</h3>
-          <p className="mt-2 text-[12px] font-medium leading-5 text-slate-500">
-            {mode === 'create' ? '从零配置可发布的智能体。' : '正在编辑未发布草稿，保存后回到详情页验证与发布。'}
-          </p>
+    <div className="mx-auto grid w-full max-w-[1180px] grid-cols-[minmax(0,1fr)] gap-3 pb-8">
+      <WorkspaceShellCard className="h-fit overflow-hidden border border-white/70 bg-[linear-gradient(180deg,rgba(255,255,255,0.9),rgba(248,250,252,0.72))] px-4 py-3 shadow-[0_16px_34px_rgba(148,163,184,0.11)] backdrop-blur-2xl">
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={onBack}
+            className="inline-flex h-9 items-center gap-2 rounded-full border border-white/75 bg-white/80 px-3 text-[12px] font-black text-slate-600 shadow-[0_8px_18px_rgba(148,163,184,0.1)] transition hover:border-slate-300 hover:text-slate-900"
+          >
+            <i className="fas fa-arrow-left text-xs" />
+            返回
+          </button>
+          <div className="min-w-0 flex-1">
+            <p className="text-[10px] font-black tracking-[0.16em] text-slate-400">AGENT BUILDER</p>
+            <h3 className="truncate text-[17px] font-black tracking-[-0.03em] text-slate-950">{mode === 'create' ? '新建智能体' : '编辑草稿'}</h3>
+          </div>
+          {canJumpToStep ? <span className="rounded-full border border-white/75 bg-white/70 px-3 py-1 text-[11px] font-black text-slate-400">可直接编辑步骤</span> : null}
         </div>
-        <div className="mt-5 space-y-2.5">
-          {stepMeta.map((step, index) => (
-            <button
-              key={step.title}
-              type="button"
-              onClick={() => {
-                if (!canJumpToStep) return;
-                onStepChange(index);
-              }}
-              disabled={!canJumpToStep}
-              className={`w-full rounded-[20px] border px-3.5 py-3 text-left ${
-                index === currentStep ? 'border-cyan-200 bg-[linear-gradient(135deg,rgba(236,254,255,0.92),rgba(255,255,255,0.86))] shadow-[0_16px_30px_rgba(14,165,233,0.12)]' : 'border-white/75 bg-white/62'
-              } ${canJumpToStep ? 'transition hover:border-slate-300 hover:bg-white' : 'cursor-default'}`}
-            >
-              <div className="flex items-start gap-3">
-                <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[13px] ${index === currentStep ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                  <i className={`fas ${step.icon} text-[12px]`} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-[10px] font-black tracking-[0.16em] text-slate-400">步骤 {index + 1}</p>
-                    {canJumpToStep ? <span className="text-[10px] font-black text-slate-400">可直接编辑</span> : null}
-                  </div>
-                  <p className="mt-1 text-[13px] font-black text-slate-900">{step.title}</p>
-                  <p className="mt-1 line-clamp-2 text-[11px] font-medium leading-5 text-slate-500">{step.detail}</p>
-                </div>
-              </div>
-            </button>
-          ))}
+        <div className="mt-3 grid grid-cols-5 gap-1.5 sm:gap-2">
+          {stepMeta.map((step, index) => {
+            const isCurrentStep = index === currentStep;
+            return (
+              <button
+                key={step.title}
+                type="button"
+                onClick={() => {
+                  if (!canJumpToStep) return;
+                  onStepChange(index);
+                }}
+                disabled={!canJumpToStep}
+                className={`min-w-0 rounded-[14px] border px-1.5 py-2 text-center transition sm:px-2.5 ${
+                  isCurrentStep ? 'border-cyan-200 bg-cyan-50/90 text-slate-950 shadow-[0_10px_22px_rgba(14,165,233,0.1)]' : 'border-white/75 bg-white/62 text-slate-500'
+                } ${canJumpToStep ? 'hover:border-slate-300 hover:bg-white' : 'cursor-default'}`}
+              >
+                <p className="text-[10px] font-black text-slate-400">{index + 1}</p>
+                <p className="mt-0.5 truncate text-[12px] font-black">{step.title}</p>
+              </button>
+            );
+          })}
         </div>
       </WorkspaceShellCard>
 
       <WorkspaceShellCard className="overflow-hidden border border-white/70 bg-white/82 shadow-[0_24px_60px_rgba(148,163,184,0.13)] backdrop-blur-2xl">
         <div ref={contentTopRef} />
-        <div className="border-b border-slate-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(248,250,252,0.66))] px-5 py-4">
-          <SectionTitle eyebrow={currentMeta.eyebrow} title={currentMeta.sectionTitle} detail={currentMeta.detail} icon={currentMeta.icon} />
-          <div className="flex flex-wrap gap-2">
+        <div className="border-b border-slate-100/80 bg-[linear-gradient(180deg,rgba(255,255,255,0.88),rgba(248,250,252,0.66))] px-5 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <SectionTitle eyebrow={currentMeta.eyebrow} title={currentMeta.sectionTitle} />
+            <div className="flex flex-wrap gap-2">
             {currentMeta.checkpoints.map((item) => (
               <span key={item} className="rounded-full border border-white/75 bg-white/72 px-3 py-1 text-[11px] font-black text-slate-500 shadow-[0_8px_18px_rgba(148,163,184,0.08)]">
                 {item}
               </span>
             ))}
+            </div>
           </div>
         </div>
-        <div className="px-5 py-5">
+        <div className="px-5 py-4">
         {currentStep === 0 ? (
-          <div className="grid gap-5">
-            <div className="grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)]">
-              <div className={panelClassName}>
-                <FieldLabel title="图标预览" detail="头像会出现在广场、会话列表和消息头部。" />
-                <div className="flex items-center gap-4 rounded-[20px] border border-slate-200/70 bg-slate-50/80 p-4">
-                  <AgentAvatar name={form.name || 'A'} iconUrl={form.iconUrl} avatarPreset={form.avatarPreset} className="h-[76px] w-[76px] rounded-[26px] text-2xl shadow-[0_14px_30px_rgba(148,163,184,0.18)]" />
-                  <div className="min-w-0">
+          <div className={panelClassName}>
+            <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-x-4 gap-y-3 sm:grid-cols-[116px_minmax(0,1fr)] xl:grid-cols-[140px_minmax(0,1fr)]">
+              <div className="min-w-0">
+                <div className="min-w-0">
+                  <AgentAvatar
+                    name={form.name || 'A'}
+                    iconUrl={form.iconUrl}
+                    avatarPreset={form.avatarPreset}
+                    className="h-20 w-20 rounded-[26px] text-[26px] shadow-[0_14px_30px_rgba(148,163,184,0.16)]"
+                  />
+                  <div className="mt-2 min-w-0">
                     <p className="truncate text-[15px] font-black text-slate-900">{form.name || '未命名智能体'}</p>
                     <p className="mt-1 text-[12px] font-medium text-slate-500">{form.department || '通用'} · {form.iconUrl ? '已上传图标' : '默认头像'}</p>
                   </div>
                 </div>
-                <div className="mt-4">
-                  <FieldLabel title="默认头像" detail="没有上传图标时使用，和当前工作台卡片风格保持一致。" />
-                  <div className="grid grid-cols-3 gap-2">
-                    {AGENT_AVATAR_PRESETS.map((item) => {
-                      const active = form.avatarPreset === item.id;
-                      return (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => onChange('avatarPreset', item.id)}
-                          className={`rounded-[18px] border px-2.5 py-3 text-center transition ${
-                            active ? 'border-cyan-200 bg-cyan-50/90 shadow-[0_12px_24px_rgba(14,165,233,0.1)]' : 'border-slate-200/80 bg-white/82 hover:border-slate-300'
-                          }`}
-                        >
-                          <div className={`mx-auto h-9 w-9 rounded-[15px] bg-gradient-to-br ${item.gradientClassName}`} />
-                          <p className="mt-2 text-[11px] font-black text-slate-700">{item.label}</p>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-                <div className="mt-4 flex flex-wrap items-center gap-2.5">
+                <div className="mt-3 flex flex-wrap items-center gap-2">
                   <label className={smallButtonClassName}>
                     <i className="fas fa-upload text-[11px]" />
                     上传图标
@@ -279,10 +296,9 @@ const AgentWizardView: React.FC<Props> = ({
                 </div>
               </div>
 
-              <div className={panelClassName}>
-                <SectionTitle eyebrow="基础档案" title="名称、说明与部门" detail="这里决定管理列表和用户入口看到的第一层信息。" icon="fa-pen-to-square" />
-                <div className="grid gap-4 md:grid-cols-2">
-                  <label className="block">
+              <div className="min-w-0">
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="block min-w-0">
                     <FieldLabel title="智能体名称" />
                     <input
                       value={form.name}
@@ -291,7 +307,7 @@ const AgentWizardView: React.FC<Props> = ({
                       className={inputClassName}
                     />
                   </label>
-                  <label className="block">
+                  <label className="block min-w-0">
                     <FieldLabel title="所属部门" />
                     <PopoverSelect
                       value={form.department || '通用'}
@@ -300,9 +316,38 @@ const AgentWizardView: React.FC<Props> = ({
                       buttonClassName="h-[46px] rounded-[16px] border-slate-200/80 bg-white/92 px-4 text-[13px] font-medium text-slate-700"
                     />
                   </label>
-                  <div className="md:col-span-2">
+                </div>
+              </div>
+
+              <div className="col-span-2 min-w-0 xl:col-start-2 xl:col-span-1">
+                <FieldLabel title="默认头像" />
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                  {AGENT_AVATAR_PRESETS.map((item) => {
+                    const active = form.avatarPreset === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => onChange('avatarPreset', item.id)}
+                        className={`flex min-w-0 items-center gap-2 rounded-[16px] border px-2.5 py-2 text-left transition ${
+                          active ? 'border-cyan-200 bg-cyan-50/90 shadow-[0_10px_22px_rgba(14,165,233,0.1)]' : 'border-slate-200/80 bg-white/82 hover:border-slate-300'
+                        }`}
+                      >
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[12px] text-[12px] font-black" style={{ background: item.gradient, color: item.foreground }}>
+                          {item.mark}
+                        </span>
+                        <span className="min-w-0 truncate text-[12px] font-black text-slate-700">{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="col-span-2 min-w-0 xl:col-start-2 xl:col-span-1">
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
+                  <div className="min-w-0">
                     <FieldLabel title="自定义部门" detail="输入后点添加，会立即作为当前部门使用。" />
-                    <div className="flex flex-col gap-2 sm:flex-row">
+                    <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_112px]">
                       <input
                         value={customDepartment}
                         onChange={(event) => setCustomDepartment(event.target.value)}
@@ -317,19 +362,19 @@ const AgentWizardView: React.FC<Props> = ({
                           onChange('department', nextDepartment);
                           setCustomDepartment('');
                         }}
-                        className={`${smallButtonClassName} sm:w-[112px]`}
+                        className={smallButtonClassName}
                       >
                         添加部门
                       </button>
                     </div>
                   </div>
-                  <label className="block md:col-span-2">
+                  <label className="block min-w-0">
                     <FieldLabel title="智能体说明" detail="建议写清楚适用任务，避免和其它智能体混淆。" />
                     <textarea
                       value={form.description}
                       onChange={(event) => onChange('description', event.target.value)}
                       placeholder="智能体说明"
-                      className={`${inputClassName} min-h-[132px] resize-y leading-6`}
+                      className={`${inputClassName} min-h-[82px] resize-y leading-6`}
                     />
                   </label>
                 </div>
@@ -512,32 +557,41 @@ const AgentWizardView: React.FC<Props> = ({
 
         {currentStep === 3 ? (
           <div className="grid gap-6">
-            <div className="grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(260px,0.8fr)]">
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)]">
               <div className={panelClassName}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
                     <p className="text-xs font-black tracking-[0.18em] text-slate-500">聊天模型</p>
-                    <div className="group relative">
-                      <button
-                        type="button"
-                        className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-200/80 bg-white text-slate-500 transition hover:text-slate-900"
-                        aria-label="聊天模型说明"
-                        title="聊天模型说明"
-                      >
-                        <i className="fas fa-circle-question text-xs" />
-                      </button>
-                      <div className="pointer-events-none absolute left-0 top-8 z-10 hidden w-72 rounded-2xl bg-slate-900 px-4 py-3 text-xs font-medium leading-6 text-white shadow-[0_18px_40px_rgba(15,23,42,0.24)] group-hover:block">
-                        用户在聊天页只能看到并选择这里启用的模型。
-                      </div>
-                    </div>
+                    <HelpTooltip label="聊天模型说明">用户在聊天页只能看到并选择这里启用的模型。</HelpTooltip>
                   </div>
                   <span className="rounded-full border border-white/75 bg-white/85 px-3 py-1 text-[11px] font-black text-slate-500">
                     已选 {form.allowedChatModels.length} 个
                   </span>
                 </div>
+                <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                  {chatModelChannelOptions.map((option) => {
+                    const active = chatModelChannelFilter === option.id;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setChatModelChannelFilter(option.id)}
+                        className={`rounded-[14px] border px-3 py-2 text-left transition ${
+                          active
+                            ? 'border-cyan-200 bg-cyan-50/70 text-cyan-800'
+                            : 'border-slate-200/80 bg-white/72 text-slate-600 hover:border-slate-300'
+                        }`}
+                      >
+                        <span className="block text-[12px] font-black">{option.label}</span>
+                        <span className="mt-0.5 block text-[11px] font-medium leading-5">{option.detail}</span>
+                      </button>
+                    );
+                  })}
+                </div>
                 <div className="mt-4 grid gap-3 md:grid-cols-2">
-                  {availableChatModels.map((item) => {
+                  {visibleChatModels.map((item) => {
                     const checked = form.allowedChatModels.includes(item.id);
+                    const channelMeta = getChatModelChannelMeta(item);
                     return (
                       <label
                         key={item.id}
@@ -556,8 +610,19 @@ const AgentWizardView: React.FC<Props> = ({
                           }}
                           className="mt-1"
                         />
-                        <div>
-                          <p className="text-sm font-black text-slate-900">{item.label}</p>
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-black text-slate-900">{item.label}</p>
+                            <span
+                              className={`rounded-full border px-2 py-0.5 text-[10px] font-black ${
+                                channelMeta.tone === 'relay'
+                                  ? 'border-cyan-200 bg-cyan-50 text-cyan-700'
+                                  : 'border-slate-200 bg-white text-slate-500'
+                              }`}
+                            >
+                              {channelMeta.label}
+                            </span>
+                          </div>
                           <p className="mt-1 text-[11px] text-slate-500">{item.id}</p>
                         </div>
                       </label>
@@ -614,19 +679,9 @@ const AgentWizardView: React.FC<Props> = ({
                 <div className={subPanelClassName}>
                   <div className="mb-2 flex items-center gap-2">
                     <span className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">检索参考数量</span>
-                    <div className="group relative">
-                      <button
-                        type="button"
-                        className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-200/80 bg-white text-slate-500 transition hover:text-slate-900"
-                        aria-label="检索参考数量说明"
-                        title="检索参考数量说明"
-                      >
-                        <i className="fas fa-circle-question text-xs" />
-                      </button>
-                      <div className="pointer-events-none absolute left-0 top-8 z-10 hidden w-72 rounded-2xl bg-slate-900 px-4 py-3 text-xs font-medium leading-6 text-white shadow-[0_18px_40px_rgba(15,23,42,0.24)] group-hover:block">
-                        检索参考数量说明：当问题需要查知识库时，系统最多带给模型参考的片段数量。越大，信息越多，但响应会更慢、成本也更高。
-                      </div>
-                    </div>
+                    <HelpTooltip label="检索参考数量说明" align="right">
+                      检索参考数量说明：当问题需要查知识库时，系统最多带给模型参考的片段数量。越大，信息越多，但响应会更慢、成本也更高。
+                    </HelpTooltip>
                   </div>
                   <input
                     type="number"

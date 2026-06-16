@@ -315,11 +315,12 @@ export interface SystemPublicConfig {
     chat: Array<{
       id: string;
       label: string;
-      provider: 'kie';
+      provider: 'kie' | 'openai_compatible';
       supportsImageInput: boolean;
       supportsFileInput: boolean;
       supportsWebSearch: boolean;
       supportsReasoningLevel: boolean;
+      supportsToolUse?: boolean;
       reasoningLevels: string[];
     }>;
     image: Array<{

@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AgentSummary, AgentVersion, KnowledgeBaseSummary, KnowledgeDocumentSummary } from '../../types';
+import { AgentSummary, AgentVersion, KnowledgeBaseSummary, KnowledgeDocumentSummary, SystemPublicConfig } from '../../types';
 import {
   archiveAgent,
   createAgent,
@@ -31,7 +31,7 @@ import AgentWizardView from './AgentWizardView';
 import KnowledgeBaseListView from './KnowledgeBaseListView';
 import KnowledgeBaseEditorView from './KnowledgeBaseEditorView';
 import AgentStudioWorkspace from './AgentStudioWorkspace';
-import { resolveDefaultAllowedChatModels } from './chatModelAllowlist';
+import { resolveDefaultAllowedChatModels, shouldRefreshCreateWizardChatModels } from './chatModelAllowlist';
 
 type ManagerPage = 'agent_list' | 'agent_detail' | 'agent_wizard' | 'knowledge_list' | 'knowledge_editor' | 'agent_studio';
 
@@ -57,7 +57,7 @@ const emptyDocumentForm = {
   chunkStrategy: 'general' as 'general' | 'rule' | 'sop' | 'faq' | 'case',
   normalizationEnabled: false,
 };
-const fallbackChatModels = [
+const fallbackChatModels: SystemPublicConfig['agentModels']['chat'] = [
   {
     id: 'gpt-5-4-openai-resp',
     label: 'GPT-5.4',
@@ -162,7 +162,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
   const [documentForm, setDocumentForm] = useState(emptyDocumentForm);
   const [editingDocumentId, setEditingDocumentId] = useState('');
   const [isDocumentSubmitting, setIsDocumentSubmitting] = useState(false);
-  const [availableChatModels, setAvailableChatModels] = useState(fallbackChatModels);
+  const [availableChatModels, setAvailableChatModels] = useState<SystemPublicConfig['agentModels']['chat']>(fallbackChatModels);
   const [availableImageModels, setAvailableImageModels] = useState(fallbackImageModels);
   const [dangerConfirm, setDangerConfirm] = useState<DangerConfirmState | null>(null);
 
@@ -275,6 +275,9 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
     const defaultAllowedChatModels = resolveDefaultAllowedChatModels(availableChatModels);
     const defaultChatModel = defaultAllowedChatModels[0] || availableChatModels[0]?.id || '';
     const cheapModel = defaultAllowedChatModels.find((id) => id.includes('flash') || id.includes('lite')) || defaultAllowedChatModels[0] || defaultChatModel;
+    const usesOpenAICompatibleToolCalling = defaultAllowedChatModels.some((id) =>
+      availableChatModels.some((model) => model.id === id && model.provider === 'openai_compatible')
+    );
     setWizardMode('create');
     setWizardStep(0);
     setWizardForm({
@@ -290,13 +293,31 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       allowedChatModels: defaultAllowedChatModels,
       defaultChatModel,
       cheapModel,
-      enableImageGeneration: false,
+      enableImageGeneration: usesOpenAICompatibleToolCalling,
       imageModel: availableImageModels[0]?.id || 'gpt-image-2',
       topK: 3,
       linkedModuleInterfaces: [],
     });
     setPage('agent_wizard');
   };
+
+  useEffect(() => {
+    if (page !== 'agent_wizard' || wizardMode !== 'create') return;
+    if (!shouldRefreshCreateWizardChatModels(availableChatModels, wizardForm.allowedChatModels)) return;
+    const defaultAllowedChatModels = resolveDefaultAllowedChatModels(availableChatModels);
+    const defaultChatModel = defaultAllowedChatModels[0] || availableChatModels[0]?.id || '';
+    const cheapModel = defaultAllowedChatModels.find((id) => id.includes('flash') || id.includes('lite')) || defaultAllowedChatModels[0] || defaultChatModel;
+    setWizardForm((current) => {
+      if (!shouldRefreshCreateWizardChatModels(availableChatModels, current.allowedChatModels)) return current;
+      return {
+        ...current,
+        allowedChatModels: defaultAllowedChatModels,
+        defaultChatModel,
+        cheapModel,
+        enableImageGeneration: true,
+      };
+    });
+  }, [availableChatModels, page, wizardMode, wizardForm.allowedChatModels]);
 
   const applyEditWizardState = (editableVersion: AgentVersion, initialStep = 0) => {
     if (!selectedAgent) return;
@@ -361,6 +382,16 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       ? wizardForm.cheapModel
       : allowedChatModels[0] || defaultChatModel;
     const imageModel = wizardForm.imageModel || availableImageModels[0]?.id || 'gpt-image-2';
+    const usesOpenAICompatibleToolCalling = allowedChatModels.some((id) =>
+      availableChatModels.some((model) => model.id === id && model.provider === 'openai_compatible')
+    );
+    const modelPolicy = {
+      cheapModel,
+      defaultModel: defaultChatModel,
+      multimodalModel: imageModel,
+      imageGenerationEnabled: usesOpenAICompatibleToolCalling || Boolean(wizardForm.enableImageGeneration),
+      toolCallingProvider: usesOpenAICompatibleToolCalling ? 'openai_compatible' : '',
+    };
     if (wizardMode === 'create') {
       const result = await createAgent({
         name: wizardForm.name,
@@ -370,6 +401,10 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
         avatarPreset: wizardForm.avatarPreset || null,
         systemPrompt: wizardForm.systemPrompt,
         openingRemarks: wizardForm.openingRemarks || null,
+        allowedChatModels,
+        defaultChatModel,
+        modelPolicy,
+        retrievalPolicy: { topK: wizardForm.topK },
         knowledgeBaseIds: wizardForm.selectedKnowledgeBaseIds,
         knowledgeDocumentBindings: wizardForm.knowledgeDocumentBindings,
         toolPolicy: { linkedModuleInterfaces: wizardForm.linkedModuleInterfaces },
@@ -394,7 +429,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       knowledgeDocumentBindings: wizardForm.knowledgeDocumentBindings,
       allowedChatModels,
       defaultChatModel,
-      modelPolicy: { ...selectedVersion.modelPolicy, cheapModel, defaultModel: defaultChatModel, multimodalModel: imageModel, imageGenerationEnabled: Boolean(wizardForm.enableImageGeneration) },
+      modelPolicy: { ...selectedVersion.modelPolicy, ...modelPolicy },
       retrievalPolicy: { ...selectedVersion.retrievalPolicy, topK: wizardForm.topK },
       toolPolicy: { ...selectedVersion.toolPolicy, linkedModuleInterfaces: wizardForm.linkedModuleInterfaces },
     });
