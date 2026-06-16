@@ -21,6 +21,7 @@ import { filterChatModelsByAllowlist } from '../../../modules/AgentCenter/chatMo
 import { resolveSessionReasoningLevel } from '../../../modules/AgentCenter/chatReasoningDefaults.mjs';
 import { MAX_FILES_PER_BATCH } from '../../../modules/AgentCenter/folderZipUpload';
 import { LegacyFaIcon } from '../../../components/ui/workspacePrimitives';
+import { copyTextToClipboard } from '../../../utils/clipboard.mjs';
 
 interface Props {
   currentUser?: AuthUser | null;
@@ -812,13 +813,13 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   };
 
   const handleCopyMessage = useCallback(async (message: AgentChatMessage) => {
-    try {
-      await navigator.clipboard.writeText(message.content || '');
+    const copied = await copyTextToClipboard(message.content || '');
+    if (copied) {
       setStatusMessage('已复制消息内容');
       setErrorMessage('');
-    } catch {
-      setErrorMessage('复制失败，请手动选择消息内容复制');
+      return;
     }
+    setErrorMessage('复制失败，请手动选择消息内容复制');
   }, []);
 
   const handleRegenerateMessage = useCallback((message: AgentChatMessage) => {

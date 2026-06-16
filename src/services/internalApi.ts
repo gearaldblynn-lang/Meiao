@@ -864,7 +864,7 @@ export const sendChatMessage = async (sessionId: string, payload: {
         method: 'POST',
         body: JSON.stringify(payload),
         signal: options?.signal,
-        timeoutMs: 300_000,
+        timeoutMs: payload.requestMode === 'image_generation' ? 300_000 : 240_000,
         dedupe: false,
       });
     }
