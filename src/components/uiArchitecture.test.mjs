@@ -36,6 +36,21 @@ test('help guide config covers all top-level modules from shared content', () =>
   assert.match(guideConfig, /AppModule\.ACCOUNT/);
 });
 
+test('agent chat GPT loop acceptance record documents verification feedback and fact learning', () => {
+  const doc = read('../../docs/agent-chat-gpt-loop-acceptance.md');
+  assert.match(doc, /普通问答/);
+  assert.match(doc, /生图/);
+  assert.match(doc, /改图/);
+  assert.match(doc, /知识库/);
+  assert.match(doc, /联网/);
+  assert.match(doc, /失败恢复/);
+  assert.match(doc, /重新生成/);
+  assert.match(doc, /事实沉淀/);
+  assert.match(doc, /反馈补丁/);
+  assert.match(doc, /## 最终回归/);
+  assert.match(doc, /npm run build/);
+});
+
 test('one click module keeps submode switching out of the workspace header', () => {
   const oneClickModule = read('../modules/OneClick/OneClickModule.tsx');
   const oneClickSidebar = read('../modules/OneClick/ConfigSidebar.tsx');
