@@ -652,27 +652,23 @@ const ChatConversationPane: React.FC<Props> = ({
                       name={selectedAgent?.name || '智能体'}
                       iconUrl={selectedAgent?.iconUrl || undefined}
                       avatarPreset={selectedAgent?.avatarPreset || undefined}
-                      className="mt-0.5 h-9 w-9 rounded-[13px] text-xs shadow-[0_8px_18px_rgba(56,189,248,0.14)]"
+                      className="mt-1 h-7 w-7 rounded-[10px] text-[10px] opacity-70"
                     />
                   ) : null}
 
-                  <div className={`max-w-[62%] ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
-                    <div className={`mb-1 flex items-center gap-2 ${isUser ? 'flex-row-reverse' : ''}`}>
-                      <span className="text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>{isUser ? (currentUser?.username || '我') : '智能体'}</span>
-                      <span className="text-[10px] font-normal" style={{ color: 'var(--text-tertiary)' }}>
+                  <div className={`max-w-[78%] ${isUser ? 'items-end' : 'items-start'} flex flex-col`}>
+                    <div className={`mb-0.5 flex items-center gap-2 opacity-70 ${isUser ? 'flex-row-reverse' : ''}`}>
+                      <span className="text-[10px] font-medium" style={{ color: 'var(--text-secondary)' }}>{isUser ? (currentUser?.username || '我') : '智能体'}</span>
+                      <span className="text-[9px] font-normal" style={{ color: 'var(--text-tertiary)' }}>
                         {new Date(message.createdAt).toLocaleString('zh-CN', { hour12: false })}
                       </span>
                     </div>
 
                     <div
-                      className={`w-full rounded-[18px] px-3.5 py-2.5 text-[13px] leading-6 shadow-[0_8px_22px_rgba(15,23,42,0.05)] ${
-                        isUser
-                          ? 'border text-[color:var(--text-primary)]'
-                          : 'border text-[color:var(--text-primary)]'
-                      }`}
+                      className={`w-full text-[13px] leading-6 text-[color:var(--text-primary)] ${isUser ? 'rounded-[18px] border px-3.5 py-2.5' : 'px-1 py-1'}`}
                       style={isUser
                         ? { background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }
-                        : { background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+                        : { background: 'transparent', borderColor: 'transparent' }}
                     >
                       {!isUser && !imageGenerationMessage ? renderAssistantRunTrace(message) : null}
                       {imageGenerationMessage ? renderImageGenerationMessage(message) : progressOnlyMessage ? (
