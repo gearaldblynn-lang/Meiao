@@ -5142,6 +5142,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
             model: selectedModel,
             messages,
             tools,
+            reasoningLevel: payload?.reasoningLevel || null,
             maxTokens,
           },
         }, openaiCompatibleEnv, new AbortController().signal, {
@@ -9750,6 +9751,7 @@ const handleLocalRequest = async (req, res, url) => {
               model: selectedModel,
               messages,
               tools,
+              reasoningLevel: body?.reasoningLevel || null,
               maxTokens,
             },
           }, openaiCompatibleEnv, new AbortController().signal, {

@@ -142,8 +142,13 @@ test('buildPublicSystemConfig publishes configured openai compatible tool-callin
   assert.equal(gpt54?.supportsToolUse, true);
   assert.equal(gpt54?.supportsFileInput, true);
   assert.equal(gpt54?.supportsImageInput, true);
+  assert.equal(gpt54?.supportsWebSearch, true);
+  assert.equal(gpt54?.supportsReasoningLevel, true);
+  assert.deepEqual(gpt54?.reasoningLevels, ['low', 'medium', 'high']);
   assert.equal(gpt55?.provider, 'openai_compatible');
   assert.equal(gpt55?.supportsToolUse, true);
+  assert.equal(gpt55?.supportsWebSearch, true);
+  assert.equal(gpt55?.supportsReasoningLevel, true);
 });
 
 test('buildPublicSystemConfig keeps video analysis model independent from planning analysis model', () => {
