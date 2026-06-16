@@ -6,6 +6,7 @@
 > `CLAUDE.md` 是 Hermes 三层记忆框架的本项目层（第2层），继承上两层 `../../CLAUDE.md`（第1层）和 `../../../CLAUDE.md`（第0层）。
 > **尤其是 `CLAUDE.md` 第3节「已诊断根因库」**：那里记录了本项目反复复发的线上 bug 根因（状态对账漂移、用正则猜业务状态、把占位值当真值持久化、单行 JSON 撑爆数据库等）。
 > **违反这些纪律会重新引入已修复的线上 bug。** 修改任何「任务卡片状态 / 对账 / 失败判定 / 上下文合并」相关代码前，必须先读对应根因条目。
+> **Codex / Claude Code 共用 Hermes Harness：** 改高风险区域前先运行 `/Users/feiyanglin/程序开发/hermes-harness` 里的 `npm run check`；已知改动文件时运行 `node scripts/hermes-harness.mjs --changed <path>`。这个 harness 只做门禁提示，根因库仍以本项目 `CLAUDE.md` 为单一真相。
 > 单次任务的具体红线（哪些文件禁止触碰、哪些做法禁止使用、完工要过哪些测试）以本次执行方案（plan 文档）开头的约束为准。
 
 ## 项目事实
