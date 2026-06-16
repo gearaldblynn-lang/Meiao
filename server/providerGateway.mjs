@@ -6,6 +6,7 @@ import path from 'node:path';
 import { GPT_IMAGE_2_DEFAULT_RESOLUTION, normalizeGptImage2Resolution } from '../src/utils/gptImage2.mjs';
 import { isExternallyReachableBaseUrl, isLocalOrPrivateHostname, normalizeBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import { queryDreaminaVideoTask, submitDreaminaVideoTask } from './dreaminaVideoCli.mjs';
+import { runOpenAIToolCallingJob, runOpenAIToolCallingStream } from './openaiToolCalling.mjs';
 
 const KIE_CREATE_TASK_URL = 'https://api.kie.ai/api/v1/jobs/createTask';
 const KIE_RECORD_INFO_URL = 'https://api.kie.ai/api/v1/jobs/recordInfo';
@@ -3108,6 +3109,11 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
       return runDreaminaVideoJob(job.payload, env, signal, job.providerTaskId);
     case 'kie_chat':
       return runKieChatJob(job.payload, env, signal, options);
+    case 'openai_tool_calling':
+      if (typeof options?.onDelta === 'function') {
+        return runOpenAIToolCallingStream({ payload: job.payload, env, signal, onDelta: options.onDelta });
+      }
+      return runOpenAIToolCallingJob({ payload: job.payload, env, signal });
     default:
       throw createProviderError('provider_bad_request', `不支持的任务类型：${job.taskType}`);
   }
