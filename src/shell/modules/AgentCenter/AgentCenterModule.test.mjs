@@ -41,9 +41,13 @@ test('shell chat workspace exposes assistant message actions for copy and regene
   assert.match(chatWorkspaceSource, /renderMessageActions=\{renderMessageActions\}/);
 
   assert.match(shellModuleSource, /const handleCopyMessage = useCallback/);
-  assert.match(shellModuleSource, /copyTextToClipboard\(message\.content \|\| ''\)/);
+  assert.match(shellModuleSource, /copyTextToClipboard\(getVisibleMessageText\(message\)\)/);
   assert.match(shellModuleSource, /const handleRegenerateMessage = useCallback/);
   assert.match(shellModuleSource, /message\.role !== 'assistant'/);
+  assert.match(shellModuleSource, /resolveRegenerateRequest\(\{/);
+  assert.match(shellModuleSource, /selectedModelOverride: regenerateRequest\.selectedModel/);
+  assert.match(shellModuleSource, /reasoningLevelOverride: regenerateRequest\.reasoningLevel/);
+  assert.match(shellModuleSource, /webSearchEnabledOverride: regenerateRequest\.webSearchEnabled/);
   assert.match(shellModuleSource, /renderShellMessageActions/);
   assert.match(shellModuleSource, /handleCopyMessage\(message\)/);
   assert.match(shellModuleSource, /handleRegenerateMessage\(message\)/);

@@ -3,14 +3,18 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('./ChatConversationPane.tsx', import.meta.url), 'utf8');
+const displaySource = readFileSync(new URL('./chatMessageDisplay.mjs', import.meta.url), 'utf8');
 
 test('chat conversation rendering hides provider protocol markers from old replies', () => {
+  assert.match(source, /stripConversationProtocolMarkersBase/);
   assert.match(source, /const stripConversationProtocolMarkers = \(content: string\): string =>/);
-  assert.match(source, /final_answer/);
+  assert.match(displaySource, /final_answer/);
   assert.match(source, /const displayContent = stripConversationProtocolMarkers\(handoff \? stripHandoffBlock\(message\.content\) : message\.content\);/);
 });
 
 test('image generation result summaries do not render raw provider image urls', () => {
+  assert.match(source, /stripImageResultUrlsBase/);
+  assert.match(displaySource, /aiquickdraw/);
   assert.match(source, /const stripImageResultUrls = \(content: string\): string =>/);
   assert.match(source, /const summaryContent = stripImageResultUrls\(message\.content\);/);
   assert.match(source, /summaryContent \|\| '图片已生成，结果见上方图片。'/);
