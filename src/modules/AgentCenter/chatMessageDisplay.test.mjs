@@ -13,6 +13,17 @@ test('getVisibleMessageText hides provider image urls from image generation summ
   assert.doesNotMatch(text, /aiquickdraw\.com\/images/);
 });
 
+test('getVisibleMessageText hides legacy provider image urls from old assistant text replies', () => {
+  const text = getVisibleMessageText({
+    role: 'assistant',
+    content: '画好了，一只可爱的橘猫在这里：\nhttps://tempfile.aiquickdraw.com/images/chatgpt/file_abc.png',
+    metadata: { requestMode: 'chat' },
+  });
+
+  assert.equal(text, '画好了，一只可爱的橘猫在这里');
+  assert.doesNotMatch(text, /aiquickdraw\.com\/images/);
+});
+
 test('getVisibleMessageText keeps normal markdown answer text', () => {
   const text = getVisibleMessageText({
     role: 'assistant',

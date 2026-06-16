@@ -22,7 +22,7 @@ export const getVisibleMessageText = (message = {}) => {
   const metadata = message?.metadata || {};
   const withoutProtocol = stripConversationProtocolMarkers(message?.content || '');
 
-  if (metadata.requestMode === 'image_generation') {
+  if (message?.role === 'assistant' || metadata.requestMode === 'image_generation') {
     return stripImageResultUrls(withoutProtocol);
   }
 

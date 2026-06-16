@@ -683,11 +683,12 @@ const ChatConversationPane: React.FC<Props> = ({
                         </div>
                       ) : (() => {
                           const handoff = !message.metadata?.pending ? parseHandoffBlock(message.content) : null;
-                          const displayContent = stripConversationProtocolMarkers(handoff ? stripHandoffBlock(message.content) : message.content);
+                          const protocolDisplayContent = stripConversationProtocolMarkers(handoff ? stripHandoffBlock(message.content) : message.content);
+                          const assistantDisplayContent = !isUser ? stripImageResultUrls(protocolDisplayContent) : protocolDisplayContent;
                           return (
                             <>
-                              {!isUser ? <MarkdownMessage content={displayContent} /> : (
-                                <p className="select-text whitespace-pre-wrap break-words">{displayContent}</p>
+                              {!isUser ? <MarkdownMessage content={assistantDisplayContent} /> : (
+                                <p className="select-text whitespace-pre-wrap break-words">{assistantDisplayContent}</p>
                               )}
                               {isStreamingMessage ? (
                                 <span
