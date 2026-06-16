@@ -4,13 +4,13 @@
 
 | 场景 | 操作 | 预期 | 自动测试 | 浏览器验收 | 结果 |
 | --- | --- | --- | --- | --- | --- |
-| 普通问答 | 发送普通问题 | assistant 流式回答，Markdown 正常 | chatConversationRendering | localhost 对话 | 待执行 |
-| 生图 | 要求生成图片 | run trace 显示生成图片，结果不泄漏 provider URL | agentToolConversation | localhost 对话 | 待执行 |
-| 改图 | 上传/复用图片并要求修改 | 附件进入同轮上下文，结果图可查看 | agentToolConversation | localhost 对话 | 待执行 |
-| 知识库 | 问绑定知识内容 | search_knowledge 被触发，引用内容用于回答 | agentToolConversation | localhost 对话 | 待执行 |
-| 联网 | 问实时信息 | web_search 可用时触发联网 | providerGateway/openaiResponsesProvider | localhost 对话 | 待执行 |
-| 失败恢复 | 模拟 provider 失败 | 显示失败阶段，可重新生成 | agentConversationReliability | localhost 对话 | 待执行 |
-| 重新生成 | 点 assistant 重新生成 | 保留原模型、联网、思考强度、附件、requestMode | chatMessageDisplay | localhost 对话 | 待执行 |
+| 普通问答 | 发送普通问题 | assistant 流式回答，Markdown 正常 | chatConversationRendering | localhost 对话 | 自动回归 PASS；真实 provider 发送待人工验收 |
+| 生图 | 要求生成图片 | run trace 显示生成图片，结果不泄漏 provider URL | agentToolConversation | localhost 对话 | 自动回归 PASS；真实 provider 发送待人工验收 |
+| 改图 | 上传/复用图片并要求修改 | 附件进入同轮上下文，结果图可查看 | agentToolConversation | localhost 对话 | 自动回归 PASS；真实 provider 发送待人工验收 |
+| 知识库 | 问绑定知识内容 | search_knowledge 被触发，引用内容用于回答 | agentToolConversation | localhost 对话 | 自动回归 PASS；真实 provider 发送待人工验收 |
+| 联网 | 问实时信息 | web_search 可用时触发联网 | providerGateway/openaiResponsesProvider | localhost 对话 | 自动回归 PASS；真实 provider 发送待人工验收 |
+| 失败恢复 | 模拟 provider 失败 | 显示失败阶段，可重新生成 | agentConversationReliability | localhost 对话 | 自动回归 PASS |
+| 重新生成 | 点 assistant 重新生成 | 保留原模型、联网、思考强度、附件、requestMode | chatMessageDisplay | localhost 对话 | PASS |
 
 ## Batch A - 对话生命周期可靠性
 
@@ -99,3 +99,49 @@
 - Fixes: `feat(智能体): 分离运行诊断与主消息`
 - Avoid next time: 主聊天只放用户可读 run 摘要；定位 provider/tool/RAG 失败的字段放运行视图，且回归测试要同时覆盖主消息不泄漏内部字段。
 - Commits: `feat(智能体): 分离运行诊断与主消息`
+
+## Batch D - 验收矩阵与事实沉淀
+
+- Goal: 把真实对话验收、反馈迭代和事实经验沉淀固定成可复用记录。
+- Files: `docs/agent-chat-gpt-loop-acceptance.md`, `src/components/uiArchitecture.test.mjs`
+- Red lines: 本批只加文档守护和最终回归记录，不改业务逻辑，不触碰红线文件。
+- Browser acceptance: 复用 Batch A-C 的 localhost 观察；本批不新增 UI 行为。
+- Verification commands:
+  - PASS `node --experimental-strip-types --test src/components/uiArchitecture.test.mjs --test-name-pattern "agent chat GPT loop acceptance"`
+  - PASS `node --experimental-strip-types --test src/modules/AgentCenter/chatMessageDisplay.test.mjs`
+  - PASS `node --experimental-strip-types --test src/modules/AgentCenter/chatComposerReasoningUi.test.mjs`
+  - PASS `node --experimental-strip-types --test src/modules/AgentCenter/chatConversationRendering.test.mjs`
+  - PASS `node --experimental-strip-types --test src/shell/modules/AgentCenter/AgentCenterModule.test.mjs`
+  - PASS `node --experimental-strip-types --test src/shell/modules/AgentCenter/ChatConversationPane.test.mjs`
+  - PASS `node --experimental-strip-types --test src/components/uiArchitecture.test.mjs --test-name-pattern "agent"`
+  - PASS `npm run lint`（0 errors，既有 warnings）
+  - PASS `npm run build`
+- Fact log:
+  - Fact: 计划执行记录已存在，但缺少测试守护的最终回归区，后续可能只看分批记录而漏掉总验收。
+  - Reproduce: 新增 `agent chat GPT loop acceptance record documents verification feedback and fact learning` 后红灯，缺少 `## 最终回归`。
+  - Evidence: `node --experimental-strip-types --test src/components/uiArchitecture.test.mjs --test-name-pattern "agent chat GPT loop acceptance"` 红灯。
+  - Root cause: Batch A-C 聚焦功能闭环，最终验收矩阵没有被单独固化成可测试文档结构。
+  - Fix: 增加文档守护测试和最终回归区。
+  - Regression test: `src/components/uiArchitecture.test.mjs`。
+  - Commit: `docs(智能体): 固化 GPT 化验收矩阵`
+
+## 反馈补丁
+
+| 批次 | 反馈来源 | 问题 | 补丁 | 验证 |
+| --- | --- | --- | --- | --- |
+| Batch A | 自动测试 | shell 真实入口缺少 pending run 恢复门禁 | 补 shell 入口实现和测试 | 已通过 |
+| Batch B | 浏览器观察 | 生图容量只在 tooltip 中说明 | 生图 pill 短标签显示当前数量/上限 | 已通过 |
+| Batch C | 回归测试 | shell ChatConversationPane 测试仍断言旧变量 | 更新为 `assistantDisplayContent` 契约 | 已通过 |
+
+## 最终回归
+
+| 命令 | 结果 | 备注 |
+| --- | --- | --- |
+| `node --experimental-strip-types --test src/modules/AgentCenter/chatMessageDisplay.test.mjs` | PASS | 复制、重新生成、可见内容 |
+| `node --experimental-strip-types --test src/modules/AgentCenter/chatComposerReasoningUi.test.mjs` | PASS | 能力栏、Enter/IME |
+| `node --experimental-strip-types --test src/modules/AgentCenter/chatConversationRendering.test.mjs` | PASS | run trace、provider URL 清洗 |
+| `node --experimental-strip-types --test src/shell/modules/AgentCenter/AgentCenterModule.test.mjs` | PASS | shell 真实入口 |
+| `node --experimental-strip-types --test src/shell/modules/AgentCenter/ChatConversationPane.test.mjs` | PASS | shell conversation rendering |
+| `node --experimental-strip-types --test src/components/uiArchitecture.test.mjs --test-name-pattern "agent"` | PASS | 架构与文档门禁 |
+| `npm run lint` | PASS | 0 errors，既有 warnings |
+| `npm run build` | PASS | production build |
