@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 把智能体对话剩余 GPT 化改动拆成可自动化执行的闭环批次，每批都有验证、反馈、迭代修复和事实经验沉淀。
+**Goal:** 基于已发现的“梅奥智能体对话 vs GPT Web 对话”差距，把剩余产品优化拆成可自动化执行的闭环批次，每批都有验证、反馈、迭代修复和事实经验沉淀。
 
-**Architecture:** 本计划不新增独立 loop runtime，而是把施工过程固化成 Batch A-D 的执行协议。每批遵循 Define → Test → Build → Verify → Observe → Feedback → Record → Gate；功能改动仍落在现有 AgentCenter 前端、chat handler、provider/tool conversation 模块和文档记录中。
+**Architecture:** 本计划不新增独立 loop runtime。loop 是执行方式：每个 GPT Web 差距优化批次都遵循 Define → Test → Build → Verify → Observe → Feedback → Record → Gate；功能改动仍落在现有 AgentCenter 前端、chat handler、provider/tool conversation 模块和文档记录中。
 
 **Tech Stack:** React/TypeScript 前端、Node ESM `.mjs` 后端、`node --test`、`node --experimental-strip-types --test`、`npm run lint`、`npm run build`、Browser localhost 验收、Hermes Harness。
 
@@ -20,6 +20,15 @@
 - 改后端后先重启本地服务，再做浏览器验证。
 - 任何 bug fix 都要同步外部诊断日志看板；真实遇到的问题要进入本批事实沉淀。
 - 每个 Batch 独立提交；反馈补丁独立提交。
+
+## GPT Web 差距 → 优化批次
+
+| 已发现差距 | 产品优化目标 | 批次 |
+| --- | --- | --- |
+| 用户无法稳定判断长耗时 run 在刷新/中断/失败后处于什么状态 | 对话生命周期可靠：每轮 run 有明确状态、恢复动作和重新生成语义 | Batch A |
+| 能力栏已经可见，但模型能力、联网、生图、思考强度、附件限制仍不够联动 | 输入能力状态智能化：本轮会使用什么能力一眼可见，且不可选择无效能力 | Batch B |
+| 主聊天仍可能混入任务系统感或 debug 信息 | assistant run 分层：主路径简洁，运行视图负责诊断 | Batch C |
+| 是否真的更像 GPT Web 依赖人工记忆，问题修复经验可能散落 | 验收矩阵与事实沉淀：每轮验证、反馈、修复、沉淀可复查 | Batch D |
 
 ## 通用 Loop 模板（每批必跑）
 
@@ -106,9 +115,17 @@ Expected: 新增断言必须先 FAIL，失败原因必须指向缺失行为，�
 
 ---
 
-## Batch A: 对话运行可靠性
+## Batch A: 对话生命周期可靠性
 
-**Goal:** 发送、刷新、中断、失败、重新生成在普通聊天、生图、知识库、联网 run 上语义一致。
+**GPT Web gap:** 当前智能体对话在长耗时 run、刷新、中断、失败恢复时，用户仍可能不确定“这一轮是否还在跑、是否失败、能不能继续”。GPT Web 的成熟体验是：每一轮都有稳定运行状态，失败和中断都有可理解的后续动作。
+
+**Goal:** 发送、刷新、中断、失败、重新生成在普通聊天、生图、知识库、联网 run 上语义一致，让用户明确知道“这一轮正在跑、已中断、失败、可重试或已完成”。
+
+**Product optimizations:**
+- Pending run 刷新后仍可见，输入区锁定逻辑不靠纯 React 临时状态。
+- 中断后显示“已中断/可重新生成”，不误导为完成。
+- 失败后保留上下文和可恢复动作。
+- 重新生成保留原 run 的 requestMode、模型、联网、思考强度、附件。
 
 **Files:**
 - Modify: `src/shell/modules/AgentCenter/AgentCenterModule.tsx`
@@ -230,9 +247,18 @@ git commit -m "fix(智能体): 加固对话运行可靠性"
 
 ---
 
-## Batch B: 输入与能力状态 GPT 化
+## Batch B: 输入能力状态智能化
 
-**Goal:** 输入框能力栏按模型和智能体配置动态约束；用户不用猜当前能力是否可用。
+**GPT Web gap:** 输入框已经从纯图标升级成能力 pill，但还没有完全做到 GPT Web 那种“本轮能力确定性”：模型支持什么思考强度、联网是否可用、生图是否启用、附件是否超限，都应该在输入区即时表达。
+
+**Goal:** 输入框能力栏按模型、智能体配置和会话状态动态约束；用户不用猜当前能力是否可用，也不会选到无效能力。
+
+**Product optimizations:**
+- 思考强度菜单只展示当前模型支持的档位。
+- 联网 pill 显示开/关/不可用原因。
+- 生图 pill 显示开/关/当前输入图容量。
+- `+` 入口统一附件、文件夹、图片复用，不挤压输入内容和发送按钮。
+- Enter、Shift+Enter、IME 组合输入保持 GPT 式稳定行为。
 
 **Files:**
 - Modify: `src/modules/AgentCenter/ChatComposer.tsx`
@@ -325,9 +351,17 @@ git commit -m "feat(智能体): 对齐输入能力栏与模型能力"
 
 ---
 
-## Batch C: assistant run 观测与管理员调试
+## Batch C: assistant run 主路径与调试视图分层
 
-**Goal:** 普通用户看到简洁运行步骤；管理员可在运行视图定位 tool、RAG、联网、provider 失败。
+**GPT Web gap:** 当前 run trace 已进入 assistant 消息，但主聊天与运行视图还需要进一步分层。GPT Web 的主路径是阅读流；调试/工具细节不应该抢普通用户注意力，但管理员又必须能定位失败边界。
+
+**Goal:** 普通用户看到简洁运行步骤和结果；管理员可在运行视图定位 tool、RAG、联网、provider 失败。
+
+**Product optimizations:**
+- 主聊天只显示“思考/检索/联网/工具/生图/完成/失败”等摘要阶段。
+- 运行视图展示 model、provider、tool、耗时、错误码、知识库命中摘要。
+- provider URL、内部 job id、function payload 不进入 assistant 正文和复制内容。
+- debug 信息以结构化字段记录，不靠自然语言堆在聊天里。
 
 **Files:**
 - Modify: `src/modules/AgentCenter/ChatConversationPane.tsx`
@@ -414,9 +448,17 @@ git commit -m "feat(智能体): 分离运行摘要与调试详情"
 
 ---
 
-## Batch D: 真实对话验收矩阵与事实经验沉淀
+## Batch D: GPT Web 对标验收矩阵与事实经验沉淀
+
+**GPT Web gap:** “像不像 GPT Web”现在主要靠人工感受；施工中发现的问题如果只停留在对话里，后续容易复发。成熟做法是把对话体验拆成可复验场景，并把真实遇到的问题沉淀成规则。
 
 **Goal:** 把真实对话验收、反馈迭代和事实经验沉淀固定成可复用记录。
+
+**Product optimizations:**
+- 建立对标 GPT Web 的验收矩阵：普通问答、生图、改图、知识库、联网、混合工具、失败恢复、重新生成。
+- 每次浏览器验收记录实际结果，不只写“通过”。
+- 施工中遇到的问题必须记录事实、复现、根因、修复、避免复发规则。
+- 有复发风险的问题进入 `docs/agents/repeated-issues.md` 或 `CLAUDE.md`。
 
 **Files:**
 - Create: `docs/agent-chat-gpt-loop-acceptance.md`
