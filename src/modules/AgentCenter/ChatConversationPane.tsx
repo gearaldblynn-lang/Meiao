@@ -76,6 +76,15 @@ const stripConversationProtocolMarkers = (content: string): string =>
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 
+const stripImageResultUrls = (content: string): string =>
+  content
+    .replace(/!?\[[^\]]*\]\(https?:\/\/(?:tempfile\.)?aiquickdraw\.com\/images\/[^\s)]+\)/gi, '')
+    .replace(/https?:\/\/(?:tempfile\.)?aiquickdraw\.com\/images\/[^\s<>)]+/gi, '')
+    .replace(/[：:]\s*(?=\n|$)/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
 type GalleryImage = {
   id: string;
   url: string;
@@ -327,6 +336,7 @@ const ChatConversationPane: React.FC<Props> = ({
     const imageAttachments = Array.isArray(message.attachments)
       ? message.attachments.filter((item) => item.kind === 'image' && item.url)
       : [];
+    const summaryContent = stripImageResultUrls(message.content);
     const visibleResultCount = Math.max(resultCount, imageAttachments.length);
     const failedImageGeneration = isFailedImageGenerationMessage(message);
     const previewImages = imageAttachments.map((attachment, index) => ({
@@ -484,7 +494,7 @@ const ChatConversationPane: React.FC<Props> = ({
         {summaryExpanded && message.content ? (
           <div className="rounded-[14px] px-3.5 py-3" style={{ background: 'var(--bg-base)' }}>
             <p className="text-[11px] font-black" style={{ color: 'var(--text-primary)' }}>结果总结</p>
-            <p className="mt-1.5 select-text whitespace-pre-wrap text-[12px] leading-6" style={{ color: 'var(--text-secondary)' }}>{message.content}</p>
+            <p className="mt-1.5 select-text whitespace-pre-wrap text-[12px] leading-6" style={{ color: 'var(--text-secondary)' }}>{summaryContent || '图片已生成，结果见上方图片。'}</p>
           </div>
         ) : null}
         {referenceRulesExpanded && retrievalSummary.length > 0 ? (

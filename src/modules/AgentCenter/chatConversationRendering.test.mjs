@@ -9,3 +9,10 @@ test('chat conversation rendering hides provider protocol markers from old repli
   assert.match(source, /final_answer/);
   assert.match(source, /const displayContent = stripConversationProtocolMarkers\(handoff \? stripHandoffBlock\(message\.content\) : message\.content\);/);
 });
+
+test('image generation result summaries do not render raw provider image urls', () => {
+  assert.match(source, /const stripImageResultUrls = \(content: string\): string =>/);
+  assert.match(source, /const summaryContent = stripImageResultUrls\(message\.content\);/);
+  assert.match(source, /summaryContent \|\| '图片已生成，结果见上方图片。'/);
+  assert.doesNotMatch(source, /\{message\.content\}<\/p>/);
+});
