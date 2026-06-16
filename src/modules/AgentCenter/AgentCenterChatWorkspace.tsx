@@ -168,6 +168,27 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
   const currentRunStatus = sendingMessage || pendingMessageCount > 0
     ? 'running'
     : String(latestAssistantRun?.metadata?.status || selectedSession?.lastRunStatus || '');
+  const runDiagnostics = useMemo(() => {
+    const metadata = latestAssistantRun?.metadata || {};
+    const metadataRecord = metadata as Record<string, any>;
+    const retrievalCount = Array.isArray(metadataRecord.retrievalSummary)
+      ? metadataRecord.retrievalSummary.length
+      : Number(contextTrace?.knowledgeChunkCount || 0);
+    const durationMs = Number(metadataRecord.durationMs || metadataRecord.elapsedMs || 0);
+    const toolName = String(metadataRecord.toolName || metadataRecord.toolCallName || '').trim();
+    const provider = String(metadataRecord.provider || metadataRecord.toolCallingProvider || metadataRecord.channel || '').trim();
+    const errorCode = String(metadataRecord.errorCode || metadataRecord.code || '').trim();
+    const requestMode = String(metadataRecord.requestMode || '').trim();
+
+    return [
+      { label: '模型', value: formatModelLabel(String(metadataRecord.selectedModel || selectedModel || '')) },
+      { label: 'Provider', value: provider || '-' },
+      { label: '工具', value: toolName || (requestMode === 'image_generation' ? 'image_generation' : '-') },
+      { label: '错误码', value: errorCode || '-' },
+      { label: '知识库命中', value: String(retrievalCount || 0) },
+      { label: '耗时', value: durationMs > 0 ? `${durationMs}ms` : '-' },
+    ];
+  }, [contextTrace?.knowledgeChunkCount, latestAssistantRun?.metadata, selectedModel]);
 
   const openDeleteAgentHistoryConfirm = (agent: AgentSummary) => {
     setConfirmState({
@@ -271,6 +292,18 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
               <p className="mt-2 break-all text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>
                 {latestAssistantRun?.metadata?.runId ? String(latestAssistantRun.metadata.runId) : '发送后生成运行 ID'}
               </p>
+            </div>
+
+            <div className="rounded-[16px] p-3" style={{ background: 'var(--bg-base)' }}>
+              <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>诊断详情</p>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {runDiagnostics.map((item) => (
+                  <div key={item.label} className="rounded-[12px] px-3 py-2" style={{ background: 'var(--bg-elevated)' }}>
+                    <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{item.label}</p>
+                    <p className="mt-1 truncate text-[12px] font-black" style={{ color: 'var(--text-primary)' }} title={item.value}>{item.value}</p>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="rounded-[16px] p-3" style={{ background: 'var(--bg-base)' }}>
