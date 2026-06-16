@@ -1,4 +1,5 @@
 import { GENERATE_IMAGE_TOOL, normalizeGenerateImageArgs } from './imageToolDefinition.mjs';
+import { SEARCH_KNOWLEDGE_TOOL, normalizeSearchKnowledgeArgs } from './knowledgeToolDefinition.mjs';
 import { buildSessionImageCatalog, formatCatalogForPrompt, isUrlInCatalog } from './conversationImageCatalog.mjs';
 
 const IMAGE_MODE_GUIDANCE = [
@@ -23,6 +24,20 @@ const buildUserMessageContent = (text, attachments = []) => {
   ];
 };
 
+const formatKnowledgeToolOutput = (chunks = []) => {
+  const items = Array.isArray(chunks) ? chunks : [];
+  if (items.length === 0) return '未在知识库中找到相关内容。';
+  return `检索结果:\n${items.map((chunk, index) => (
+    `资料${index + 1}(${chunk?.documentTitle || chunk?.sourceType || '知识'}): ${chunk?.content || ''}`
+  )).join('\n\n')}`;
+};
+
+const buildFunctionCallOutput = (callId, output) => ({
+  type: 'function_call_output',
+  call_id: callId,
+  output,
+});
+
 export const runAgentConversationV2 = async ({
   systemPrompt = '',
   summary = '',
@@ -32,11 +47,14 @@ export const runAgentConversationV2 = async ({
   priorMessages = [],
   imageGenerationEnabled = false,
   imageMode = false,
+  hasKnowledgeBase = false,
+  webSearchEnabled = false,
   selectedImageModel = '',
   maxInputImages = 1,
   contextLimits = {},
   callModel,
   generateImage,
+  searchKnowledge = null,
   onProgress = null,
 } = {}) => {
   void maxInputImages;
@@ -73,10 +91,13 @@ export const runAgentConversationV2 = async ({
     ...(Array.isArray(recentMessages) ? recentMessages : []),
     { role: 'user', content: buildUserMessageContent(currentMessage, attachments) },
   ];
-  const tools = imageGenerationEnabled ? [GENERATE_IMAGE_TOOL] : [];
+  const tools = [];
+  if (imageGenerationEnabled) tools.push(GENERATE_IMAGE_TOOL);
+  if (hasKnowledgeBase) tools.push(SEARCH_KNOWLEDGE_TOOL);
+  if (webSearchEnabled) tools.push({ type: 'web_search' });
 
   emit('thinking', { round: 1 });
-  const first = await callModel({
+  let response = await callModel({
     messages,
     tools,
     toolChoice: tools.length > 0 ? 'auto' : undefined,
@@ -84,91 +105,106 @@ export const runAgentConversationV2 = async ({
     onDelta: (delta) => emit('streaming', { delta }),
   });
 
-  if (first.finishReason !== 'tool_calls' || !first.toolCalls?.length) {
+  if (response.finishReason !== 'tool_calls' || !response.toolCalls?.length) {
     emit('done', {});
     return {
-      content: first.content,
+      content: response.content,
       imagePlan: null,
       imageResultUrls: null,
-      selectedModel: first.modelUsed || '',
-      finishReason: first.finishReason,
+      selectedModel: response.modelUsed || '',
+      finishReason: response.finishReason,
     };
   }
 
-  const firstCall = first.toolCalls.find((call) => call.name === 'generate_image') || first.toolCalls[0];
-  emit('tool_calling', { tool: firstCall.name, args: firstCall.args });
+  const maxToolRounds = Number(process.env.AGENT_TOOL_MAX_ROUNDS || 5);
+  let rounds = 0;
+  let imageGenerated = false;
+  let imagePlan = null;
+  let imageResultUrls = null;
+  let selectedModel = response.modelUsed || '';
+  while (response.finishReason === 'tool_calls' && response.toolCalls?.length && rounds < maxToolRounds) {
+    rounds += 1;
+    if (response.modelUsed) selectedModel = response.modelUsed;
+    const call = response.toolCalls.find((item) => ['generate_image', 'search_knowledge'].includes(item.name)) || response.toolCalls[0];
+    const callId = call.id || `call_${rounds}`;
+    emit('tool_calling', { tool: call.name, args: call.args });
 
-  let normalized;
-  try {
-    normalized = normalizeGenerateImageArgs(firstCall.args);
-  } catch {
-    emit('done', {});
-    return {
-      content: first.content || '抱歉，我没能理解生图需求，请再具体描述一下。',
-      imagePlan: null,
-      imageResultUrls: null,
-      selectedModel: first.modelUsed || '',
-      finishReason: 'stop',
-    };
-  }
+    let toolResultContent = '';
+    if (call.name === 'search_knowledge') {
+      try {
+        const { query } = normalizeSearchKnowledgeArgs(call.args);
+        emit('searching_knowledge', { query });
+        const chunks = typeof searchKnowledge === 'function' ? await searchKnowledge(query) : [];
+        toolResultContent = formatKnowledgeToolOutput(chunks);
+      } catch (error) {
+        toolResultContent = `知识库检索失败: ${error?.message || '未知错误'}。请据此向用户说明,不要编造。`;
+      }
+    } else if (call.name === 'generate_image') {
+      if (imageGenerated) {
+        toolResultContent = '已生成过图片,不再重复生成。';
+      } else {
+        let normalized;
+        try {
+          normalized = normalizeGenerateImageArgs(call.args);
+        } catch {
+          toolResultContent = '生图参数无效。请向用户追问更明确的图片需求。';
+        }
+        if (normalized) {
+          const validInputUrls = normalized.inputImageUrls.filter((url) => isUrlInCatalog(catalog, url));
+          emit('image_generating', { model: selectedImageModel });
+          try {
+            const result = await generateImage({
+              prompt: normalized.prompt,
+              taskType: normalized.taskType,
+              inputImageUrls: validInputUrls,
+              aspectRatio: normalized.aspectRatio,
+              model: selectedImageModel,
+            });
+            const imageUrl = String(result?.imageUrl || '').trim();
+            const providerTaskId = String(result?.providerTaskId || '').trim();
+            toolResultContent = imageUrl
+              ? `图片已生成成功，URL: ${imageUrl}。请用一句话向用户说明生成结果。`
+              : '图片生成返回为空。请向用户说明生成失败。';
+            if (imageUrl) {
+              emit('image_ready', { imageUrl });
+              imageGenerated = true;
+              imagePlan = {
+                requestMode: 'tool_calling',
+                taskType: normalized.taskType,
+                selectedImageModel,
+                inputImageUrls: validInputUrls,
+                prompt: normalized.prompt,
+                size: normalized.aspectRatio,
+                providerTaskId,
+              };
+              imageResultUrls = [imageUrl];
+            }
+          } catch (error) {
+            toolResultContent = `图片生成失败：${error?.message || '未知错误'}。请向用户说明失败原因，不要假装已生成。`;
+            imageGenerated = true;
+          }
+        }
+      }
+    } else {
+      toolResultContent = `不支持的工具: ${call.name || 'unknown'}。`;
+    }
 
-  const validInputUrls = normalized.inputImageUrls.filter((url) => isUrlInCatalog(catalog, url));
-
-  messages.push({
-    role: 'assistant',
-    content: first.content || null,
-    tool_calls: [{
-      id: firstCall.id || 'call_1',
-      type: 'function',
-      function: { name: 'generate_image', arguments: JSON.stringify(firstCall.args) },
-    }],
-  });
-
-  emit('image_generating', { model: selectedImageModel });
-  let imageUrl = '';
-  let providerTaskId = '';
-  let toolResultContent = '';
-  try {
-    const result = await generateImage({
-      prompt: normalized.prompt,
-      taskType: normalized.taskType,
-      inputImageUrls: validInputUrls,
-      aspectRatio: normalized.aspectRatio,
-      model: selectedImageModel,
+    messages.push(buildFunctionCallOutput(callId, toolResultContent));
+    response = await callModel({
+      messages,
+      tools,
+      toolChoice: 'auto',
+      maxTokens: contextLimits.maxOutputTokens,
+      onDelta: (delta) => emit('streaming', { delta }),
     });
-    imageUrl = String(result?.imageUrl || '').trim();
-    providerTaskId = String(result?.providerTaskId || '').trim();
-    toolResultContent = imageUrl
-      ? `图片已生成成功，URL: ${imageUrl}。请用一句话向用户说明生成结果。`
-      : '图片生成返回为空。请向用户说明生成失败。';
-    if (imageUrl) emit('image_ready', { imageUrl });
-  } catch (error) {
-    toolResultContent = `图片生成失败：${error?.message || '未知错误'}。请向用户说明失败原因，不要假装已生成。`;
   }
-
-  messages.push({ role: 'tool', tool_call_id: firstCall.id || 'call_1', content: toolResultContent });
-  const second = await callModel({
-    messages,
-    tools,
-    toolChoice: 'none',
-    maxTokens: contextLimits.maxOutputTokens,
-    onDelta: (delta) => emit('streaming', { delta }),
-  });
-
+  if (response.modelUsed) selectedModel = response.modelUsed;
   emit('done', {});
   return {
-    content: second.content || (imageUrl ? '已为你生成图片。' : '抱歉，图片生成失败了。'),
-    imagePlan: imageUrl ? {
-      requestMode: 'tool_calling',
-      taskType: normalized.taskType,
-      selectedImageModel,
-      inputImageUrls: validInputUrls,
-      prompt: normalized.prompt,
-      size: normalized.aspectRatio,
-      providerTaskId,
-    } : null,
-    imageResultUrls: imageUrl ? [imageUrl] : null,
-    selectedModel: first.modelUsed || '',
+    content: response.content || (imagePlan ? '已为你生成图片。' : '抱歉，我没能完成这次工具调用。'),
+    imagePlan,
+    imageResultUrls,
+    selectedModel,
     finishReason: 'stop',
   };
 };

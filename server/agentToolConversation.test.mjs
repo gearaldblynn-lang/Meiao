@@ -16,6 +16,10 @@ const baseArgs = {
   contextLimits: { maxOutputTokens: 4096 },
 };
 
+const findToolOutputMessage = (messages = []) => (
+  messages.find((message) => message.role === 'tool' || message.type === 'function_call_output')
+);
+
 test('纯对话：模型 finish=stop，不触发出图', async () => {
   const progress = [];
   const out = await runAgentConversationV2({
@@ -94,8 +98,8 @@ test('出图失败：tool result 带 error，模型仍能回复', async () => {
     callModel: async ({ messages }) => {
       round += 1;
       if (round === 1) return { content: '', toolCalls: [{ id: 'c1', name: 'generate_image', args: { prompt: '猫', task_type: 'new_image' } }], finishReason: 'tool_calls' };
-      const toolMsg = messages.find((message) => message.role === 'tool');
-      assert.match(String(toolMsg?.content || ''), /失败|error/i);
+      const toolMsg = findToolOutputMessage(messages);
+      assert.match(String(toolMsg?.content || toolMsg?.output || ''), /失败|error/i);
       return { content: '抱歉，图片生成失败了', toolCalls: [], finishReason: 'stop' };
     },
     generateImage: async () => { throw new Error('KIE 余额不足'); },
@@ -183,4 +187,100 @@ test('无上传图时：用户消息退化为纯文本字符串', async () => {
   });
   const userMsg = capturedMessages.find((m) => m.role === 'user');
   assert.equal(userMsg.content, '你好');
+});
+
+test('动态注入: 绑知识库才有 search_knowledge, 启用才有 web_search', async () => {
+  let toolsSeen = null;
+  await runAgentConversationV2({
+    ...baseArgs,
+    hasKnowledgeBase: true,
+    webSearchEnabled: true,
+    callModel: async ({ tools }) => {
+      toolsSeen = tools;
+      return { content: 'ok', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    searchKnowledge: async () => [],
+    onProgress: () => {},
+  });
+  const names = toolsSeen.map((tool) => tool.function?.name || tool.type);
+  assert.ok(names.includes('generate_image'));
+  assert.ok(names.includes('search_knowledge'));
+  assert.ok(names.includes('web_search'));
+});
+
+test('没绑知识库: 不注入 search_knowledge', async () => {
+  let toolsSeen = null;
+  await runAgentConversationV2({
+    ...baseArgs,
+    hasKnowledgeBase: false,
+    webSearchEnabled: false,
+    callModel: async ({ tools }) => {
+      toolsSeen = tools;
+      return { content: 'ok', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    searchKnowledge: async () => [],
+    onProgress: () => {},
+  });
+  const names = toolsSeen.map((tool) => tool.function?.name || tool.type);
+  assert.ok(!names.includes('search_knowledge'));
+  assert.ok(!names.includes('web_search'));
+});
+
+test('search_knowledge 调用: 执行检索 -> 结果回传 -> 模型作答', async () => {
+  let round = 0;
+  const progress = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    hasKnowledgeBase: true,
+    currentMessage: '退货政策是什么',
+    callModel: async ({ messages }) => {
+      round += 1;
+      if (round === 1) {
+        return {
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: '退货政策' } }],
+          finishReason: 'tool_calls',
+        };
+      }
+      const toolMsg = findToolOutputMessage(messages);
+      assert.ok(JSON.stringify(toolMsg).includes('7天无理由'));
+      return { content: '退货政策: 7天无理由', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    searchKnowledge: async (query) => {
+      assert.equal(query, '退货政策');
+      return [{ content: '7天无理由退货', documentTitle: '售后' }];
+    },
+    onProgress: (event) => progress.push(event.stage),
+  });
+  assert.match(out.content, /7天无理由/);
+  assert.ok(progress.includes('searching_knowledge'));
+});
+
+test('search_knowledge 失败: 回传错误, 模型仍能回复', async () => {
+  let round = 0;
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    hasKnowledgeBase: true,
+    currentMessage: 'x',
+    callModel: async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'search_knowledge', args: { query: 'x' } }],
+          finishReason: 'tool_calls',
+        };
+      }
+      return { content: '抱歉暂时查不到', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    searchKnowledge: async () => {
+      throw new Error('检索服务挂了');
+    },
+    onProgress: () => {},
+  });
+  assert.match(out.content, /查不到|抱歉/);
 });
