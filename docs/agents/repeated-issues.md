@@ -24,6 +24,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-17 - Agent chat lifecycle tests must cover the shell entry
+
+- Symptom: 智能体对话旧模块 `src/modules/AgentCenter/AgentCenterModule.tsx` 已有 pending run 恢复和输入锁定保护，但真实应用入口 `src/shell/modules/AgentCenter/AgentCenterModule.tsx` 缺少同款逻辑；刷新后的后台 run 可能锁定/展示语义不一致。
+- Environment: local development agent_center shell route.
+- Root cause: 前端同时保留旧模块入口和 shell 入口，已有回归测试只覆盖旧模块源文件，真实挂载路径没有同等断言，导致对话生命周期逻辑发生路径漂移。
+- Fix: shell 入口补齐结构化 pending/running 判定、后台轮询同步、重复发送锁定、Composer running 状态传递；新增 shell 专属回归测试。
+- Regression check: `node --experimental-strip-types --test src/shell/modules/AgentCenter/AgentCenterModule.test.mjs`; `node --experimental-strip-types --test src/modules/AgentCenter/agentConversationReliability.test.mjs`.
+- Files/tests: `src/shell/modules/AgentCenter/AgentCenterModule.tsx`, `src/shell/modules/AgentCenter/AgentCenterModule.test.mjs`, `src/modules/AgentCenter/agentConversationReliability.test.mjs`.
+- Avoid next time: 改智能体对话生命周期、复制/重新生成、能力栏、run trace 时，必须确认真实入口 `src/ShellMigratedApp.tsx` 当前挂载的是 shell 版本，并给 `src/shell/modules/AgentCenter/AgentCenterModule.test.mjs` 加同等门禁；不能只测旧 `src/modules/AgentCenter/AgentCenterModule.tsx`。
+
 ## 2026-06-12 - One-click result edits must pass the generated baseline as image input
 
 - Symptom: 一键主详/详情页“修改”时，提交 payload 的 prompt 里有 `【修改基准图】` URL，但最终结果没有按该基准图编辑；同时新生图任务没有复用原先的生图 prompt，只按短修改说明重建画面。

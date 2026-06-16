@@ -54,6 +54,18 @@ test('shell chat workspace exposes assistant message actions for copy and regene
   assert.match(shellModuleSource, /renderMessageActions=\{renderShellMessageActions\}/);
 });
 
+test('shell chat workspace keeps restored pending runs visible and locked', () => {
+  assert.match(shellModuleSource, /const isPendingAgentRunMessage = \(message\?: AgentChatMessage \| null\) =>/);
+  assert.match(shellModuleSource, /const activePendingRunMessage = useMemo\(/);
+  assert.match(shellModuleSource, /const activePendingClientRequestId = String\(activePendingRunMessage\?\.metadata\?\.clientRequestId \|\| ''\)\.trim\(\);/);
+  assert.match(shellModuleSource, /const hasActivePendingRun = Boolean\(activePendingRunMessage\);/);
+  assert.match(shellModuleSource, /void pollPendingRun\(\);/);
+  assert.match(shellModuleSource, /window\.setInterval\(\(\) => \{\s*void pollPendingRun\(\);\s*\}, 3000\);/);
+  assert.match(shellModuleSource, /if \(sendingMessage \|\| hasActivePendingRun \|\| !selectedSessionId/);
+  assert.match(shellModuleSource, /sendingMessage=\{sendingMessage \|\| hasActivePendingRun\}/);
+  assert.match(shellModuleSource, /onInterruptSend=\{sendingMessage \? handleInterruptSend : undefined\}/);
+});
+
 test('shell chat progress handles image tool calling SSE events', () => {
   assert.match(shellModuleSource, /eventType === 'tool_calling'/);
   assert.match(shellModuleSource, /分析需求中/);

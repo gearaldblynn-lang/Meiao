@@ -48,6 +48,10 @@ const isUncertainSendFailure = (error: any) =>
     || String(error?.message || '').includes('aborted')
   )
   && ['timeout', 'network_error', 'server_error'].includes(error?.code);
+const isPendingAgentRunMessage = (message?: AgentChatMessage | null) => {
+  const status = String(message?.metadata?.status || '').trim().toLowerCase();
+  return message?.role === 'assistant' && (Boolean(message?.metadata?.pending) || status === 'pending' || status === 'running');
+};
 
 const readAgentCenterUiState = () => {
   try {
@@ -338,6 +342,12 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   };
 
   const selectedSession = useMemo(() => sessions.find((session) => session.id === selectedSessionId) || null, [sessions, selectedSessionId]);
+  const activePendingRunMessage = useMemo(
+    () => messages.find((message) => message.sessionId === selectedSessionId && isPendingAgentRunMessage(message)) || null,
+    [messages, selectedSessionId],
+  );
+  const activePendingClientRequestId = String(activePendingRunMessage?.metadata?.clientRequestId || '').trim();
+  const hasActivePendingRun = Boolean(activePendingRunMessage);
   const selectedAgent = useMemo(() => {
     const activeAgentId = resolveActiveAgentId({
       workspacePage,
@@ -553,10 +563,10 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
       try {
         const result = await fetchChatMessages(sessionId);
         const userMessage = result.messages.find((item) => item.role === 'user' && item.metadata?.clientRequestId === clientRequestId);
-        const assistantMessage = result.messages.find((item) => item.role === 'assistant' && item.metadata?.clientRequestId === clientRequestId);
+        const assistantMessage = result.messages.find((item) => item.role === 'assistant' && item.metadata?.clientRequestId === clientRequestId && !isPendingAgentRunMessage(item));
         const fallbackAssistantMessage = userMessage
           ? result.messages
-              .filter((item) => item.role === 'assistant' && !item.metadata?.pending && Number(item.createdAt || 0) >= Number(userMessage.createdAt || 0))
+              .filter((item) => item.role === 'assistant' && !isPendingAgentRunMessage(item) && Number(item.createdAt || 0) >= Number(userMessage.createdAt || 0))
               .slice(-1)[0]
           : null;
         if (userMessage && (assistantMessage || fallbackAssistantMessage)) {
@@ -573,6 +583,41 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     }
     return null;
   };
+
+  useEffect(() => {
+    if (!selectedSessionId || !activePendingClientRequestId) return;
+    let disposed = false;
+    let polling = false;
+    const pollPendingRun = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const result = await fetchChatMessages(selectedSessionId);
+        if (disposed) return;
+        applyMessagesForSession(selectedSessionId, result.messages);
+        const stillPending = result.messages.some((message) => (
+          message.sessionId === selectedSessionId
+          && String(message.metadata?.clientRequestId || '').trim() === activePendingClientRequestId
+          && isPendingAgentRunMessage(message)
+        ));
+        if (!stillPending) {
+          await refreshChatSessions();
+        }
+      } catch {
+        // keep the persisted pending message visible; the next poll can recover.
+      } finally {
+        polling = false;
+      }
+    };
+    void pollPendingRun();
+    const timer = window.setInterval(() => {
+      void pollPendingRun();
+    }, 3000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [selectedSessionId, activePendingClientRequestId]);
 
   const handleCreateSession = (agentId: string) => runAction(async () => {
     const result = await createChatSession(agentId);
@@ -669,7 +714,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     restoreDraft: string;
     restoreAttachments: ComposerAttachment[];
   }) => {
-    if (sendingMessage || !selectedSessionId || (!rawContent.trim() && sourceAttachments.length === 0)) return false;
+    if (sendingMessage || hasActivePendingRun || !selectedSessionId || (!rawContent.trim() && sourceAttachments.length === 0)) return false;
     const sendSessionId = selectedSessionId;
     const sendSelectedModel = selectedModelOverride || selectedModel;
     const sendReasoningLevel = reasoningLevelOverride ?? reasoningLevel;
@@ -1190,7 +1235,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
               webSearchEnabled={webSearchEnabled}
               attachments={attachments}
               imageModeEnabled={imageModeEnabled}
-              sendingMessage={sendingMessage}
+              sendingMessage={sendingMessage || hasActivePendingRun}
               sessionsCollapsed={sessionsCollapsed}
               onToggleSessionsCollapsed={() => setSessionsCollapsed((value) => !value)}
               onPreviewAgent={(agentId) => {
@@ -1244,7 +1289,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
                 void syncSessionOptions({ lastImageMode: next });
               }}
               onSendMessage={handleSendMessage}
-              onInterruptSend={handleInterruptSend}
+              onInterruptSend={sendingMessage ? handleInterruptSend : undefined}
               onHandoff={onHandoff}
               onBatchSend={handleBatchSend}
               renderMessageActions={renderShellMessageActions}
