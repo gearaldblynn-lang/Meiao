@@ -510,6 +510,11 @@ export const fetchSystemConfig = async () => {
 export const updateSystemConfig = async (payload: {
   analysisModel?: string;
   videoAnalysisModel?: string;
+  openaiCompatible?: {
+    apiKey?: string;
+    baseUrl?: string;
+    models?: string;
+  };
 }) => {
   return request<{ config: SystemPublicConfig }>('/api/system/config', {
     method: 'PATCH',

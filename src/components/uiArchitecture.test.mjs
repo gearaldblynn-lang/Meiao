@@ -1580,12 +1580,21 @@ test('shell batch counts come from actual SKU and buyer-show params instead of a
 
 test('shell settings stop exposing a public KIE api key input and only keep internal托管 hints', () => {
   const settings = read('../shell/modules/Settings/GlobalApiSettings.tsx');
+  const api = read('../services/internalApi.ts');
+  const types = read('../types.ts');
 
   assert.doesNotMatch(settings, /KIE AI API Key/);
   assert.doesNotMatch(settings, /setApiKey/);
   assert.match(settings, /内部服务托管/);
   assert.match(settings, /KIE 密钥由服务端统一接管/);
   assert.match(settings, /这里仅保留本地工作区偏好与并发控制/);
+  assert.match(settings, /OpenAI Compatible 中转站/);
+  assert.match(settings, /setOpenaiCompatibleApiKey/);
+  assert.match(settings, /setOpenaiCompatibleBaseUrl/);
+  assert.match(settings, /setOpenaiCompatibleModels/);
+  assert.match(settings, /openaiCompatible: \{/);
+  assert.match(api, /openaiCompatible\?: \{/);
+  assert.match(types, /openaiCompatible: \{/);
 });
 
 test('agent chat client keeps image generation requests alive longer and can sync completed results after timeout', () => {
@@ -2528,7 +2537,7 @@ test('shell settings lets staff choose planning model while admins can broadcast
   assert.match(types, /analysisModel\?: string/);
   assert.match(internalApi, /updateCurrentUserAnalysisModel/);
   assert.match(internalApi, /broadcastSystemAnalysisModel/);
-  assert.match(settings, /setUserAnalysisModel\(result\.config\.systemSettings\.userAnalysisModel \|\| ''\)/);
+  assert.match(settings, /setUserAnalysisModel\(config\.systemSettings\.userAnalysisModel \|\| ''\)/);
   assert.match(settings, /handleSaveUserAnalysisModel/);
   assert.match(settings, /handleBroadcastAnalysisModel/);
   assert.match(settings, /普通账号可选择自己的策划分析模型/);

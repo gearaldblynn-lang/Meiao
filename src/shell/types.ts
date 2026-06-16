@@ -315,6 +315,12 @@ export interface SystemPublicConfig {
     videoAnalysisModel: string;
     effectiveVideoAnalysisModel: string;
     videoAnalysisReasoningLevel: string;
+    openaiCompatible: {
+      configured: boolean;
+      baseUrl: string;
+      models: string;
+      apiKeyMasked: string;
+    };
   };
   publicBaseUrl: string;
   agentModels: {
