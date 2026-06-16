@@ -19,6 +19,7 @@ import { ComposerAttachment } from '../../../modules/AgentCenter/ChatComposer';
 import { resolveActiveAgentId } from '../../../modules/AgentCenter/agentCenterUtils.mjs';
 import { filterChatModelsByAllowlist } from '../../../modules/AgentCenter/chatModelAllowlist';
 import { resolveSessionReasoningLevel } from '../../../modules/AgentCenter/chatReasoningDefaults.mjs';
+import { getVisibleMessageText, resolveRegenerateRequest } from '../../../modules/AgentCenter/chatMessageDisplay.mjs';
 import { MAX_FILES_PER_BATCH } from '../../../modules/AgentCenter/folderZipUpload';
 import { LegacyFaIcon } from '../../../components/ui/workspacePrimitives';
 import { copyTextToClipboard } from '../../../utils/clipboard.mjs';
@@ -653,20 +654,26 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     content: rawContent,
     sourceAttachments,
     requestMode,
+    selectedModelOverride,
+    reasoningLevelOverride,
+    webSearchEnabledOverride,
     restoreDraft,
     restoreAttachments,
   }: {
     content: string;
     sourceAttachments: Array<ComposerAttachment | ChatAttachmentPayload>;
     requestMode: 'chat' | 'image_generation';
+    selectedModelOverride?: string;
+    reasoningLevelOverride?: string | null;
+    webSearchEnabledOverride?: boolean;
     restoreDraft: string;
     restoreAttachments: ComposerAttachment[];
   }) => {
     if (sendingMessage || !selectedSessionId || (!rawContent.trim() && sourceAttachments.length === 0)) return false;
     const sendSessionId = selectedSessionId;
-    const sendSelectedModel = selectedModel;
-    const sendReasoningLevel = reasoningLevel;
-    const sendWebSearchEnabled = webSearchEnabled;
+    const sendSelectedModel = selectedModelOverride || selectedModel;
+    const sendReasoningLevel = reasoningLevelOverride ?? reasoningLevel;
+    const sendWebSearchEnabled = webSearchEnabledOverride ?? webSearchEnabled;
     const content = rawContent.trim();
     const clientRequestId = `chatreq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const attachmentPayload = createAttachmentPayload(sourceAttachments);
@@ -803,7 +810,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   };
 
   const handleCopyMessage = useCallback(async (message: AgentChatMessage) => {
-    const copied = await copyTextToClipboard(message.content || '');
+    const copied = await copyTextToClipboard(getVisibleMessageText(message));
     if (copied) {
       setStatusMessage('已复制消息内容');
       setErrorMessage('');
@@ -823,10 +830,17 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
       setErrorMessage('找不到可重新生成的问题');
       return;
     }
+    const regenerateRequest = resolveRegenerateRequest({
+      assistantMessage: message,
+      previousUserMessage,
+    });
     const submitted = submitChatMessage({
-      content: previousUserMessage.content || '',
-      sourceAttachments: previousUserMessage.attachments || [],
-      requestMode: 'chat',
+      content: regenerateRequest.content,
+      sourceAttachments: regenerateRequest.sourceAttachments,
+      requestMode: regenerateRequest.requestMode === 'image_generation' ? 'image_generation' : 'chat',
+      selectedModelOverride: regenerateRequest.selectedModel,
+      reasoningLevelOverride: regenerateRequest.reasoningLevel,
+      webSearchEnabledOverride: regenerateRequest.webSearchEnabled,
       restoreDraft: '',
       restoreAttachments: [],
     });

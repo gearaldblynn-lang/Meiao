@@ -8,6 +8,7 @@ import ChatComposer, { ComposerAttachment, BatchSendTask } from './ChatComposer'
 import { MODULE_INTERFACES } from './agentCenterUtils.mjs';
 import { MAX_FILES_PER_BATCH } from './folderZipUpload';
 import MarkdownMessage from './MarkdownMessage';
+import { stripConversationProtocolMarkers as stripConversationProtocolMarkersBase, stripImageResultUrls as stripImageResultUrlsBase } from './chatMessageDisplay.mjs';
 
 interface Props {
   messages: AgentChatMessage[];
@@ -71,19 +72,10 @@ const stripHandoffBlock = (content: string): string =>
   content.replace(/```meiao-handoff[\s\S]*?```/g, '').trim();
 
 const stripConversationProtocolMarkers = (content: string): string =>
-  content
-    .replace(/(^|\n)\s*final_answer\s*(?=\n|$)/gi, '$1')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  stripConversationProtocolMarkersBase(content);
 
 const stripImageResultUrls = (content: string): string =>
-  content
-    .replace(/!?\[[^\]]*\]\(https?:\/\/(?:tempfile\.)?aiquickdraw\.com\/images\/[^\s)]+\)/gi, '')
-    .replace(/https?:\/\/(?:tempfile\.)?aiquickdraw\.com\/images\/[^\s<>)]+/gi, '')
-    .replace(/[：:]\s*(?=\n|$)/g, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  stripImageResultUrlsBase(content);
 
 type GalleryImage = {
   id: string;
