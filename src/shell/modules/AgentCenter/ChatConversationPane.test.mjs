@@ -15,7 +15,7 @@ test('MarkdownMessage keeps raw HTML disabled and adds copy controls for code bl
   assert.match(markdownSource, /react-markdown/);
   assert.match(markdownSource, /remark-gfm/);
   assert.doesNotMatch(markdownSource, /rehype-raw/);
-  assert.match(markdownSource, /navigator\.clipboard\.writeText/);
+  assert.match(markdownSource, /copyTextToClipboard\(text\)/);
 });
 
 test('streaming assistant messages render content with a typewriter cursor instead of spinner-only progress', () => {

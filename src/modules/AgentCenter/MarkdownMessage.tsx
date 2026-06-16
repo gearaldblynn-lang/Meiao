@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { LegacyFaIcon } from '../../components/ui/workspacePrimitives';
+import { copyTextToClipboard } from '../../utils/clipboard.mjs';
 
 interface Props {
   content: string;
@@ -13,9 +14,11 @@ const CodeBlock: React.FC<{ className?: string; children?: React.ReactNode }> = 
   const language = className.replace(/^language-/, '').trim();
 
   const copyCode = async () => {
-    await navigator.clipboard.writeText(text);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
+    const copiedToClipboard = await copyTextToClipboard(text);
+    if (copiedToClipboard) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    }
   };
 
   return (
