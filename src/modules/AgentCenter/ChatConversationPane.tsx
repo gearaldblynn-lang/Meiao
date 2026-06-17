@@ -175,38 +175,6 @@ const getAssistantRunStages = (message: AgentChatMessage) => {
   return stages;
 };
 
-const getImageGenerationSummary = (message: AgentChatMessage) => {
-  const resultCount = Array.isArray(message.metadata?.imageResultUrls)
-    ? message.metadata.imageResultUrls.filter(Boolean).length
-    : Array.isArray(message.attachments)
-      ? message.attachments.filter((item) => item.kind === 'image' && item.url).length
-      : 0;
-  const imageReferences = Array.isArray(message.metadata?.imagePlan?.imageReferences)
-    ? message.metadata.imagePlan.imageReferences.map((item) => item.label).filter(Boolean)
-    : [];
-  return {
-    resultCount,
-    referenceText: imageReferences.length > 0 ? `参考了 ${imageReferences.join('、')}` : '已按当前需求生成图片',
-  };
-};
-
-const getImageGenerationBadgeText = (message: AgentChatMessage, resultCount: number) => {
-  if (isFailedImageGenerationMessage(message)) return '生成失败';
-  if (resultCount > 0) return `已生成 ${resultCount} 张图片`;
-  return '未返回图片';
-};
-
-const getProgressBadgeText = (message: AgentChatMessage) => {
-  const stage = String(message.metadata?.progressStage || '').trim();
-  if (stage === 'analyzing') return '需求分析中';
-  if (stage === 'planning') return '参数整理中';
-  if (stage === 'generating') return '图像生成中';
-  if (stage === 'finalizing') return '结果整理中';
-  if (stage === 'thinking') return '思考中';
-  if (stage === 'replying') return '检索知识库';
-  return message.metadata?.requestMode === 'image_generation' ? '处理中' : '思考中';
-};
-
 const ChatConversationPane: React.FC<Props> = ({
   messages,
   messageDraft,
@@ -244,8 +212,6 @@ const ChatConversationPane: React.FC<Props> = ({
   const lastOpenGalleryRequestRef = useRef(openGalleryRequest);
   const [showGallery, setShowGallery] = useState(false);
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
-  const [expandedSummaries, setExpandedSummaries] = useState<Record<string, boolean>>({});
-  const [expandedReferenceRules, setExpandedReferenceRules] = useState<Record<string, boolean>>({});
 
   // 批量发送状态
   const [batchSendState, setBatchSendState] = useState<{
@@ -366,23 +332,12 @@ const ChatConversationPane: React.FC<Props> = ({
     event.dataTransfer.setData('text/plain', image.name);
   };
 
-  const toggleSummary = (messageId: string) => {
-    setExpandedSummaries((current) => ({
-      ...current,
-      [messageId]: !current[messageId],
-    }));
-  };
-
-  const toggleReferenceRules = (messageId: string) => {
-    setExpandedReferenceRules((current) => ({
-      ...current,
-      [messageId]: !current[messageId],
-    }));
-  };
-
   const renderAssistantRunTrace = (message: AgentChatMessage) => {
     if (message.role !== 'assistant') return null;
     const stages = getAssistantRunStages(message);
+    const retrievalSummary = Array.isArray(message.metadata?.retrievalSummary)
+      ? message.metadata.retrievalSummary.filter((item) => item && (item.documentTitle || item.preview))
+      : [];
     if (stages.length === 0) return null;
 
     return (
@@ -406,23 +361,28 @@ const ChatConversationPane: React.FC<Props> = ({
             </span>
           ))}
         </div>
+        {retrievalSummary.length > 0 ? (
+          <div className="mt-3 space-y-1.5 border-t pt-2" style={{ borderColor: 'var(--border-subtle)' }}>
+            <p className="font-semibold" style={{ color: 'var(--text-secondary)' }}>本次参考规则</p>
+            {retrievalSummary.map((item, index) => (
+              <div key={`${message.id}-run-rule-${index}`} className="rounded-[10px] px-2.5 py-2" style={{ background: 'var(--bg-elevated)' }}>
+                <p className="font-semibold" style={{ color: 'var(--text-primary)' }}>{item.documentTitle || `规则${index + 1}`}</p>
+                <p className="mt-1 select-text leading-5" style={{ color: 'var(--text-secondary)' }}>{item.preview || '已命中相关规则'}</p>
+              </div>
+            ))}
+          </div>
+        ) : null}
       </details>
     );
   };
 
   const renderImageGenerationMessage = (message: AgentChatMessage) => {
     const isPending = Boolean(message.metadata?.pending);
-    const summaryExpanded = Boolean(expandedSummaries[message.id]);
-    const retrievalSummary = Array.isArray(message.metadata?.retrievalSummary)
-      ? message.metadata.retrievalSummary.filter((item) => item && (item.documentTitle || item.preview))
-      : [];
-    const referenceRulesExpanded = Boolean(expandedReferenceRules[message.id]);
-    const { resultCount, referenceText } = getImageGenerationSummary(message);
     const imageAttachments = Array.isArray(message.attachments)
       ? message.attachments.filter((item) => item.kind === 'image' && item.url)
       : [];
     const summaryContent = stripImageResultUrls(message.content);
-    const visibleResultCount = Math.max(resultCount, imageAttachments.length);
+    const showImageSummary = !isPending && Boolean(summaryContent);
     const failedImageGeneration = isFailedImageGenerationMessage(message);
     const previewImages = imageAttachments.map((attachment, index) => ({
       id: `${message.id}-${index}`,
@@ -430,20 +390,10 @@ const ChatConversationPane: React.FC<Props> = ({
       name: attachment.name || `图片${index + 1}`,
       createdAt: message.createdAt,
     }));
-    const referenceImages = Array.isArray(message.metadata?.imagePlan?.imageReferences)
-      ? message.metadata.imagePlan.imageReferences
-          .filter((item) => item?.url)
-          .map((item, index) => ({
-            id: `${message.id}-ref-${index}`,
-            url: String(item.url || ''),
-            name: String(item.name || item.label || `参考图${index + 1}`),
-            createdAt: message.createdAt,
-            label: String(item.label || `图${index + 1}`),
-            role: String(item.role || '').trim(),
-          }))
-      : [];
+    const primaryImage = previewImages[0] || null;
+    const secondaryPreviewImages = previewImages.slice(1);
     return (
-      <div className="space-y-2">
+      <div className="space-y-3">
         {renderAssistantRunTrace(message)}
         {isPending ? (
           <div className="rounded-[18px] border px-3.5 py-3" style={{ borderColor: 'color-mix(in srgb, var(--accent) 22%, var(--border-subtle))', background: 'var(--accent-soft)' }}>
@@ -458,59 +408,34 @@ const ChatConversationPane: React.FC<Props> = ({
             </div>
           </div>
         ) : null}
-        <div className="flex flex-wrap items-center gap-2 text-[11px]" style={{ color: 'var(--text-secondary)' }}>
-          <span
-            className="rounded-full px-2.5 py-1 font-medium"
-            style={
-              isPending
-                ? { background: 'var(--accent-soft)', color: 'var(--accent)' }
-                : failedImageGeneration
-                  ? { background: 'color-mix(in srgb, var(--error) 10%, transparent)', color: 'var(--error)' }
-                  : { background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }
-            }
-          >
-            {isPending ? getProgressBadgeText(message) : getImageGenerationBadgeText(message, visibleResultCount)}
-          </span>
-          {referenceImages.length > 0 ? (
-            referenceImages.map((image, index) => (
-              <button
-                key={image.id}
-                type="button"
-                onClick={() => openPreview(referenceImages.map((item) => ({
-                  id: item.id,
-                  url: item.url,
-                  name: item.name,
-                  createdAt: item.createdAt,
-                })), index)}
-                className="rounded-full px-2.5 py-1 font-medium transition"
-                style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)', color: 'var(--text-secondary)' }}
-                title={`${image.label}${image.role ? ` · ${image.role}` : ''}`}
-              >
-                参考图 {image.label}{image.role ? ` · ${image.role}` : ''}
-              </button>
-            ))
-          ) : !isPending && !failedImageGeneration && visibleResultCount > 0 ? (
-            <span>{referenceText}</span>
-          ) : null}
-        </div>
-        {imageAttachments.length > 0 ? (
-          <div className="grid gap-2 sm:grid-cols-2">
-            {imageAttachments.map((attachment, index) => (
+        {showImageSummary ? (
+          <div className="max-w-[720px] select-text text-[14px] leading-7" style={{ color: 'var(--text-primary)' }}>
+            <MarkdownMessage content={summaryContent} />
+          </div>
+        ) : failedImageGeneration ? (
+          <p className="select-text text-[14px] leading-7" style={{ color: 'var(--error)' }}>
+            {summaryContent || '生成失败，请重新尝试。'}
+          </p>
+        ) : null}
+        {primaryImage ? (
+          <div className="flex max-w-[760px] flex-col gap-2 sm:flex-row sm:items-start">
+            <div
+              className="agent-image-result-primary group relative overflow-hidden rounded-[18px] text-left transition"
+              style={{ background: 'var(--bg-base)' }}
+            >
               <div
-                key={`${message.id}-${attachment.name}-${index}`}
-                className="group relative overflow-hidden rounded-[18px] p-1.5 text-left transition"
-                style={{ background: 'var(--bg-base)' }}
+                className="relative"
               >
-                <button type="button" onClick={() => openPreview(previewImages, index)} className="block w-full">
+                <button type="button" onClick={() => openPreview(previewImages, 0)} className="block w-full">
                   <img
-                    src={attachment.url}
-                    alt={attachment.name}
-                    className="h-auto w-full rounded-[12px] object-cover"
+                    src={primaryImage.url}
+                    alt={primaryImage.name}
+                    className="h-auto max-h-[70vh] w-full rounded-[18px] object-contain"
                     draggable
-                    onDragStart={(event) => beginDragReuseImage(event, previewImages[index])}
+                    onDragStart={(event) => beginDragReuseImage(event, primaryImage)}
                   />
                 </button>
-                <span className="pointer-events-none absolute inset-x-2 bottom-2 rounded-[12px] bg-slate-950/0 px-2.5 py-1.5 text-[11px] text-white opacity-0 transition group-hover:bg-slate-950/60 group-hover:opacity-100">
+                <span className="pointer-events-none absolute inset-x-3 bottom-3 rounded-full bg-slate-950/0 px-3 py-1.5 text-[11px] font-medium text-white opacity-0 transition group-hover:bg-slate-950/60 group-hover:opacity-100">
                   点击查看大图
                 </span>
                 <span className="absolute right-3 top-3 flex gap-2 opacity-0 transition group-hover:opacity-100">
@@ -518,9 +443,9 @@ const ChatConversationPane: React.FC<Props> = ({
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      reuseImage(previewImages[index]);
+                      reuseImage(primaryImage);
                     }}
-                    className="flex h-8 min-w-8 items-center justify-center rounded-full border border-white/12 bg-white/88 px-2 text-slate-900 shadow-[0_10px_22px_rgba(15,23,42,0.18)] transition hover:bg-white"
+                    className="flex h-8 w-8 items-center justify-center rounded-full border border-white/12 bg-white/88 text-slate-900 shadow-[0_10px_22px_rgba(15,23,42,0.18)] transition hover:bg-white"
                     aria-label="放入当前输入框"
                     title="放入当前输入框"
                   >
@@ -530,7 +455,7 @@ const ChatConversationPane: React.FC<Props> = ({
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
-                      downloadImage(previewImages[index]);
+                      downloadImage(primaryImage);
                     }}
                     className="flex h-8 w-8 items-center justify-center rounded-full border border-white/12 bg-white/88 text-slate-900 shadow-[0_10px_22px_rgba(15,23,42,0.18)] transition hover:bg-white"
                     aria-label="下载生成图片"
@@ -540,60 +465,30 @@ const ChatConversationPane: React.FC<Props> = ({
                   </button>
                 </span>
               </div>
-            ))}
-          </div>
-        ) : null}
-        <div className="flex flex-wrap items-center gap-2">
-          {message.content ? (
-            <button
-              type="button"
-              onClick={() => toggleSummary(message.id)}
-              className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-medium transition"
-              style={summaryExpanded
-                ? { background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }
-                : { background: 'var(--bg-base)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
-              aria-expanded={summaryExpanded}
-              aria-label={summaryExpanded ? '收起结果总结' : '展开结果总结'}
-              title={summaryExpanded ? '收起结果总结' : '展开结果总结'}
-            >
-              <LegacyFaIcon icon="fa-file-lines" className="text-[12px]" />
-              <span>结果总结</span>
-            </button>
-          ) : null}
-          {retrievalSummary.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => toggleReferenceRules(message.id)}
-              className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[11px] font-medium transition"
-              style={referenceRulesExpanded
-                ? { background: 'var(--accent-soft)', borderColor: 'color-mix(in srgb, var(--accent) 18%, var(--border-subtle))', color: 'var(--accent)' }
-                : { background: 'var(--bg-base)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
-              aria-expanded={referenceRulesExpanded}
-              aria-label={referenceRulesExpanded ? '收起本次参考规则' : '展开本次参考规则'}
-              title={referenceRulesExpanded ? '收起本次参考规则' : '展开本次参考规则'}
-            >
-              <LegacyFaIcon icon="fa-book-open" className="text-[12px]" />
-              <span>参考规则</span>
-            </button>
-          ) : null}
-        </div>
-        {summaryExpanded && message.content ? (
-          <div className="rounded-[14px] px-3.5 py-3" style={{ background: 'var(--bg-base)' }}>
-            <p className="text-[11px] font-black" style={{ color: 'var(--text-primary)' }}>结果总结</p>
-            <p className="mt-1.5 select-text whitespace-pre-wrap text-[12px] leading-6" style={{ color: 'var(--text-secondary)' }}>{summaryContent || '图片已生成，结果见上方图片。'}</p>
-          </div>
-        ) : null}
-        {referenceRulesExpanded && retrievalSummary.length > 0 ? (
-          <div className="rounded-[14px] px-3.5 py-3" style={{ background: 'var(--accent-soft)' }}>
-            <p className="text-[11px] font-black" style={{ color: 'var(--accent)' }}>本次参考规则</p>
-            <div className="mt-2 space-y-2">
-              {retrievalSummary.map((item, index) => (
-                <div key={`${message.id}-rule-${index}`} className="rounded-[12px] px-3 py-2" style={{ background: 'var(--bg-surface)' }}>
-                  <p className="text-[11px] font-black" style={{ color: 'var(--text-primary)' }}>{item.documentTitle || `规则${index + 1}`}</p>
-                  <p className="mt-1 select-text text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>{item.preview || '已命中相关规则'}</p>
-                </div>
-              ))}
             </div>
+            {secondaryPreviewImages.length > 0 ? (
+              <div className="agent-image-result-thumbnails flex gap-2 overflow-x-auto sm:max-h-[70vh] sm:w-16 sm:flex-col sm:overflow-y-auto sm:overflow-x-visible">
+                {secondaryPreviewImages.map((image, index) => (
+                  <button
+                    key={image.id}
+                    type="button"
+                    onClick={() => openPreview(previewImages, index + 1)}
+                    className="h-14 w-14 shrink-0 overflow-hidden rounded-[12px] border p-0.5 transition hover:opacity-85"
+                    style={{ borderColor: index === 0 ? 'var(--accent)' : 'var(--border-subtle)', background: 'var(--bg-base)' }}
+                    aria-label={`查看${image.name}`}
+                    title={`查看${image.name}`}
+                  >
+                    <img
+                      src={image.url}
+                      alt={image.name}
+                      className="h-full w-full rounded-[9px] object-cover"
+                      draggable
+                      onDragStart={(event) => beginDragReuseImage(event, image)}
+                    />
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>

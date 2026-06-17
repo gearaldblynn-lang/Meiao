@@ -18,7 +18,7 @@ test('image generation result summaries do not render raw provider image urls', 
   assert.match(displaySource, /aiquickdraw/);
   assert.match(source, /const stripImageResultUrls = \(content: string\): string =>/);
   assert.match(source, /const summaryContent = stripImageResultUrls\(message\.content\);/);
-  assert.match(source, /summaryContent \|\| '图片已生成，结果见上方图片。'/);
+  assert.match(source, /const showImageSummary = !isPending && Boolean\(summaryContent\);/);
   assert.doesNotMatch(source, /\{message\.content\}<\/p>/);
 });
 
@@ -29,6 +29,20 @@ test('tool-called image results render as image result cards even when request m
   assert.match(source, /message\.attachments\.some\(\(item\) => item\.kind === 'image' && item\.url\)/);
   assert.match(source, /message\.role === 'assistant' && \(message\.metadata\?\.requestMode === 'image_generation' \|\| hasAssistantImageResults\(message\)\)/);
   assert.match(source, /isImageGenerationMessage\(message\) && Array\.isArray\(message\.attachments\)/);
+});
+
+test('image result card keeps final summary in the result layer instead of a separate summary button', () => {
+  assert.match(source, /const showImageSummary = !isPending && Boolean\(summaryContent\);/);
+  assert.match(source, /<MarkdownMessage content=\{summaryContent\} \/>/);
+  assert.doesNotMatch(source, /<span>结果总结<\/span>/);
+  assert.doesNotMatch(source, /展开结果总结/);
+});
+
+test('image result card uses a primary image with compact thumbnails for multiple outputs', () => {
+  assert.match(source, /const primaryImage = previewImages\[0\] \|\| null;/);
+  assert.match(source, /const secondaryPreviewImages = previewImages\.slice\(1\);/);
+  assert.match(source, /agent-image-result-primary/);
+  assert.match(source, /agent-image-result-thumbnails/);
 });
 
 test('assistant text replies also strip legacy provider image urls before markdown rendering', () => {

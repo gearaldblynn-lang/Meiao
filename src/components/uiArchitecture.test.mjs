@@ -1750,15 +1750,18 @@ test('shell job hydration persists repaired one-click planning snapshots', () =>
   assert.match(shellApp, /hasPlanningSnapshotChanged/);
 });
 
-test('agent chat image replies keep result summaries and reference rules collapsed by default', () => {
+test('agent chat image replies put final results in the result layer and references in the run trace', () => {
   const chatPane = read('../modules/AgentCenter/ChatConversationPane.tsx');
 
-  assert.match(chatPane, /const \[expandedReferenceRules, setExpandedReferenceRules\] = useState<Record<string, boolean>>\(\{\}\);/);
-  assert.match(chatPane, /aria-label=\{summaryExpanded \? '收起结果总结' : '展开结果总结'\}/);
-  assert.match(chatPane, /aria-label=\{referenceRulesExpanded \? '收起本次参考规则' : '展开本次参考规则'\}/);
-  assert.match(chatPane, /结果总结/);
-  assert.match(chatPane, /参考规则/);
+  assert.match(chatPane, /const showImageSummary = !isPending && Boolean\(summaryContent\);/);
+  assert.match(chatPane, /<MarkdownMessage content=\{summaryContent\} \/>/);
+  assert.match(chatPane, /agent-image-result-primary/);
+  assert.match(chatPane, /agent-image-result-thumbnails/);
   assert.match(chatPane, /本次参考规则/);
+  assert.doesNotMatch(chatPane, /expandedReferenceRules/);
+  assert.doesNotMatch(chatPane, /expandedSummaries/);
+  assert.doesNotMatch(chatPane, /展开结果总结/);
+  assert.doesNotMatch(chatPane, /<span>结果总结<\/span>/);
 });
 
 test('agent center supports preset avatars and uploaded icon images in management views', () => {
@@ -2023,17 +2026,16 @@ test('chat conversation pane uses compact header tags and refined message layout
   assert.match(conversationPane, /downloadRemoteFile/);
   assert.match(conversationPane, /select-text/);
   assert.doesNotMatch(conversationPane, /select-none/);
-  assert.match(conversationPane, /结果总结/);
-  assert.match(conversationPane, /expandedSummaries/);
-  assert.match(conversationPane, /toggleSummary/);
-  assert.match(conversationPane, /aria-expanded/);
-  assert.match(conversationPane, /收起/);
-  assert.match(conversationPane, /展开/);
+  assert.match(conversationPane, /const showImageSummary = !isPending && Boolean\(summaryContent\);/);
+  assert.match(conversationPane, /<MarkdownMessage content=\{summaryContent\} \/>/);
+  assert.match(conversationPane, /agent-image-result-primary/);
+  assert.match(conversationPane, /agent-image-result-thumbnails/);
+  assert.doesNotMatch(conversationPane, /expandedSummaries/);
+  assert.doesNotMatch(conversationPane, /toggleSummary/);
+  assert.doesNotMatch(conversationPane, /展开结果总结/);
   assert.match(conversationPane, /正在整理生图参数与提示词/);
-  assert.match(conversationPane, /需求分析中/);
-  assert.match(conversationPane, /参数整理中/);
-  assert.match(conversationPane, /图像生成中/);
-  assert.match(conversationPane, /参考图/);
+  assert.match(conversationPane, /正在理解需求与参考图/);
+  assert.match(conversationPane, /正在生成图片/);
   assert.match(conversationPane, /本次参考规则/);
   assert.match(conversationPane, /retrievalSummary/);
   assert.match(conversationPane, /rounded-\[22px\] border border-slate-200\/80 bg-slate-50\/80 p-2/);

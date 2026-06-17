@@ -901,25 +901,23 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         <button
           type="button"
           onClick={() => handleCopyMessage(message)}
-          className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold transition"
+          className="agent-message-action-icon inline-flex h-8 w-8 items-center justify-center rounded-full border text-[12px] transition hover:opacity-80"
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
           title="复制消息"
           aria-label="复制消息"
         >
-          <LegacyFaIcon icon="fa-copy" className="text-[10px]" />
-          复制
+          <LegacyFaIcon icon="fa-copy" />
         </button>
         <button
           type="button"
           onClick={() => handleRegenerateMessage(message)}
           disabled={sendingMessage}
-          className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-semibold transition disabled:cursor-not-allowed disabled:opacity-50"
+          className="agent-message-action-icon inline-flex h-8 w-8 items-center justify-center rounded-full border text-[12px] transition hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
           title="重新生成"
           aria-label="重新生成"
         >
-          <LegacyFaIcon icon="fa-rotate-right" className="text-[10px]" />
-          重新生成
+          <LegacyFaIcon icon="fa-rotate-right" />
         </button>
       </div>
     );
