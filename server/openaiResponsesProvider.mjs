@@ -43,7 +43,20 @@ export const parseResponsesOutput = (data = {}) => {
       } catch {
         continue;
       }
-      toolCalls.push({ id: String(item?.call_id || item?.id || ''), name, args });
+      const callId = String(item?.call_id || item?.id || '');
+      toolCalls.push({
+        id: callId,
+        name,
+        args,
+        responseItem: {
+          type: 'function_call',
+          ...(item?.id ? { id: String(item.id) } : {}),
+          name,
+          arguments: String(item?.arguments || '{}'),
+          call_id: callId,
+          ...(item?.status ? { status: String(item.status) } : {}),
+        },
+      });
     }
   }
   return {

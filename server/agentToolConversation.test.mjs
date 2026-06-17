@@ -81,6 +81,73 @@ test('生图工具结果不把图片 URL 暴露给模型正文', async () => {
   });
 });
 
+test('Responses HTTP 二次请求在 function_call_output 前保留原 function_call item', async () => {
+  let round = 0;
+  await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '画一个拉布拉多',
+    callModel: async ({ messages }) => {
+      round += 1;
+      if (round === 1) {
+        return {
+          content: '',
+          toolCalls: [{
+            id: 'call_img_1',
+            name: 'generate_image',
+            args: { prompt: '拉布拉多', task_type: 'new_image' },
+            responseItem: {
+              type: 'function_call',
+              id: 'fc_img_1',
+              call_id: 'call_img_1',
+              name: 'generate_image',
+              arguments: '{"prompt":"拉布拉多","task_type":"new_image"}',
+              status: 'completed',
+            },
+          }],
+          finishReason: 'tool_calls',
+        };
+      }
+      const functionCallIndex = messages.findIndex((message) => message.type === 'function_call');
+      const outputIndex = messages.findIndex((message) => message.type === 'function_call_output');
+      assert.ok(functionCallIndex >= 0, '二次请求必须带回原始 function_call item');
+      assert.equal(outputIndex, functionCallIndex + 1, 'function_call_output 必须紧跟对应 function_call');
+      assert.equal(messages[functionCallIndex].id, 'fc_img_1');
+      assert.equal(messages[functionCallIndex].call_id, 'call_img_1');
+      assert.equal(messages[outputIndex].call_id, 'call_img_1');
+      return { content: '已为你生成拉布拉多图片', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'https://img/dog.png', providerTaskId: 't1' }),
+    onProgress: () => {},
+  });
+});
+
+test('Responses HTTP 二次请求缺原始 item 时用 tool call 参数构造 function_call item', async () => {
+  let round = 0;
+  await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '画一个拉布拉多',
+    callModel: async ({ messages }) => {
+      round += 1;
+      if (round === 1) {
+        return {
+          content: '',
+          toolCalls: [{ id: 'call_img_2', name: 'generate_image', args: { prompt: '拉布拉多', task_type: 'new_image' } }],
+          finishReason: 'tool_calls',
+        };
+      }
+      const functionCall = messages.find((message) => message.type === 'function_call');
+      const output = messages.find((message) => message.type === 'function_call_output');
+      assert.equal(functionCall?.call_id, 'call_img_2');
+      assert.equal(functionCall?.name, 'generate_image');
+      assert.equal(functionCall?.arguments, '{"prompt":"拉布拉多","task_type":"new_image"}');
+      assert.equal(output?.call_id, 'call_img_2');
+      return { content: '已为你生成拉布拉多图片', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'https://img/dog.png', providerTaskId: 't1' }),
+    onProgress: () => {},
+  });
+});
+
 test('imageGenerationEnabled=false：不传 tools，纯对话', async () => {
   let toolsPassed = null;
   await runAgentConversationV2({

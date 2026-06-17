@@ -423,6 +423,14 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Root cause: Deployment was treated as a mechanical copy step instead of a guarded production release.
 - Avoid next time: Do not deploy unless code review is complete. Use the deploy script only with `MEIAO_CODE_REVIEW_CONFIRMED=1`; the script intentionally blocks unconfirmed cloud releases.
 
+### Responses tool output must carry its matching function_call item
+
+- Symptom: 智能体生图时上游已经收到需求并完成出图，但前端 assistant 消息失败，显示 `responses 请求失败 (400): function_call_output requires item_reference ids matching each call_id...`。
+- Root cause: V2 工具循环在第一次模型返回 `function_call` 后只把 `function_call_output` 追加进第二次 Responses HTTP 请求，没有把对应的原始 `function_call` item 一起带回。HTTP 无状态 Responses 调用无法像 WebSocket continuation 那样只靠 previous response 继续，因此 provider 拒绝最终总结请求。KIE 出图链路本身已经成功。
+- Fix: `parseResponsesOutput` 保留每个 Responses `function_call` 的原始 item；`runAgentConversationV2` 在追加 `function_call_output` 前先追加匹配的 `function_call` item，缺少原始 item 时用 tool call 参数构造兜底 item。
+- Regression check: `node --test server/openaiResponsesProvider.test.mjs server/agentToolConversation.test.mjs server/providerGateway.test.mjs server/agentCenterSource.test.mjs`; `npm run lint`; `npm run build`。
+- Avoid next time: 看到“上游已出图但对话失败”时，先按阶段切分：模型 tool call、KIE 出图、工具结果回填、最终总结。Responses HTTP 的工具回填测试必须断言 `function_call` 和 `function_call_output` 成对且 `call_id` 一致，不能只断言工具执行成功。
+
 ## 2026-06-12 - First-image planning recovery must aggregate sibling reference jobs
 
 - Symptom: 天琪账号首图功能上传 5 张风格参考图后，后台实际创建并完成了 5 个 `kie_chat` 策划 job，但前端项目卡只显示 1 个策划，用户无法发现少了 4 个。
