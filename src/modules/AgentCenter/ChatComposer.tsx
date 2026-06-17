@@ -138,7 +138,6 @@ const ChatComposer: React.FC<Props> = ({
   const uploading = attachmentUploading || folderCard?.phase === 'uploading';
   const [error, setError] = useState('');
   const [dragActive, setDragActive] = useState(false);
-  const [reasoningPopoverOpen, setReasoningPopoverOpen] = useState(false);
   // 文件夹/ZIP 上传前的确认弹窗状态
   const [pendingBatchConfirm, setPendingBatchConfirm] = useState<{
     fileCount: number;
@@ -168,11 +167,12 @@ const ChatComposer: React.FC<Props> = ({
   const webHint = selectedModelOption?.supportsWebSearch
     ? webSearchEnabled ? '已开启联网搜索，再点一次关闭' : '开启联网搜索'
     : '当前模型不支持联网搜索';
-  const reasoningHint = selectedModelOption?.supportsReasoningLevel
-    ? '切换思考强度'
-    : '当前模型不支持思考强度';
   const selectedModelLabel = selectedModelOption?.label || '默认模型';
   const modelHint = `当前模型：${selectedModelLabel}`;
+  const uploadStatusLabel = attachments.length > 0 ? `上传 · ${attachments.length}` : '上传';
+  const configStatusLabel = `配置 · ${selectedModelLabel}`;
+  const uploadAvailable = supportsAnyAttachment || Boolean(onBatchSendReady);
+  const uploadHint = uploadAvailable ? '上传附件或文件夹' : '当前模型不支持附件上传';
   const folderHint = '上传文件夹（批量分析）';
   const imageModeHint = imageModeAvailable
     ? (imageModeEnabled ? '生图模式已开启' : '进入生图模式')
@@ -186,6 +186,7 @@ const ChatComposer: React.FC<Props> = ({
   const imageModeStatusLabel = !imageModeAvailable
     ? '生图不可用'
     : imageModeEnabled ? `生图开 · ${imageAttachmentCount}/${imageMaxInputCount}` : '生图关';
+  const configHint = `${modelHint}；${webStatusLabel || '联网'}；${reasoningStatusLabel || '思考'}；${imageModeStatusLabel || '生图'}`;
 
   // ─── 文件夹上传处理 ────────────────────────────────────────────────────────────
 
@@ -403,146 +404,155 @@ const ChatComposer: React.FC<Props> = ({
           <PopoverTrigger asChild>
             <button
               type="button"
-              className={capabilityPillClassName(false, !disabled && !uploading && !sending)}
-              title={modelHint}
-              aria-label={modelHint}
+              title={uploadHint}
+              aria-label={uploadHint}
               disabled={disabled || uploading || sending}
+              className={capabilityPillClassName(false, uploadAvailable)}
             >
-              <LegacyFaIcon icon="fa-sliders" className="text-[12px]" />
-              <span>模型 · {selectedModelLabel}</span>
-              <IconTooltip label={modelHint} />
+              <LegacyFaIcon icon="fa-plus" className="text-[12px]" />
+              <span>{uploadStatusLabel}</span>
+              <IconTooltip label={uploadHint} />
             </button>
           </PopoverTrigger>
           <PopoverContent
             align="start"
-            className="w-64 rounded-[16px] border p-2 shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
+            className="agent-composer-upload-menu w-60 rounded-[16px] border p-2 shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
             style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
           >
-            <div className="px-2 pb-2 pt-1">
-              <p className="text-[11px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>模型切换</p>
-            </div>
-            <div className="space-y-1">
-              {selectableModels.map((model) => {
-                const active = model.id === selectedModel;
-                return (
-                  <button
-                    key={model.id}
-                    type="button"
-                    onClick={() => onModelChange(model.id)}
-                    className="flex w-full items-center justify-between rounded-[12px] px-3 py-2 text-left text-[13px] font-medium transition"
-                    style={active
-                      ? { background: 'var(--bg-elevated)', color: 'var(--text-primary)' }
-                      : { color: 'var(--text-secondary)' }}
-                  >
-                    <span>{model.label}</span>
-                    {active ? <LegacyFaIcon icon="fa-check" className="text-[11px]" /> : null}
-                  </button>
-                );
-              })}
-            </div>
+            <button
+              type="button"
+              title={attachmentHint}
+              aria-label={attachmentHint}
+              disabled={!supportsAnyAttachment || disabled || uploading || sending}
+              onClick={() => attachmentInputRef.current?.click()}
+              className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50"
+              style={{ color: supportsAnyAttachment ? 'var(--text-primary)' : 'var(--text-tertiary)' }}
+            >
+              <LegacyFaIcon icon="fa-paperclip" className="text-[13px]" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-semibold">附件</span>
+                <span className="block truncate text-[11px] font-medium" style={{ color: 'var(--text-tertiary)' }}>{attachmentHint}</span>
+              </span>
+            </button>
+            {onBatchSendReady ? (
+              <button
+                type="button"
+                title={folderHint}
+                aria-label={folderHint}
+                disabled={disabled || uploading || sending}
+                onClick={() => folderInputRef.current?.click()}
+                className="mt-1 flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50"
+                style={{ color: 'var(--text-primary)' }}
+              >
+                <LegacyFaIcon icon="fa-folder-open" className="text-[13px]" />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[13px] font-semibold">文件夹</span>
+                  <span className="block truncate text-[11px] font-medium" style={{ color: 'var(--text-tertiary)' }}>{folderHint}</span>
+                </span>
+              </button>
+            ) : null}
           </PopoverContent>
         </Popover>
 
-        <button
-          type="button"
-          title={attachmentHint}
-          aria-label={attachmentHint}
-          disabled={!supportsAnyAttachment || disabled || uploading || sending}
-          onClick={() => attachmentInputRef.current?.click()}
-          className={capabilityPillClassName(false, supportsAnyAttachment)}
-        >
-          <LegacyFaIcon icon="fa-paperclip" className="text-[13px]" />
-          <span>+ 附件</span>
-          <IconTooltip label={attachmentHint} />
-        </button>
-
-        {/* 文件夹上传按钮 */}
-        {onBatchSendReady ? (
-          <button
-            type="button"
-            title={folderHint}
-            aria-label={folderHint}
-            disabled={disabled || uploading || sending}
-            onClick={() => folderInputRef.current?.click()}
-            className={capabilityPillClassName(false, !disabled && !uploading && !sending)}
+        <Popover>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className={capabilityPillClassName(webSearchEnabled || Boolean(reasoningLevel) || imageModeEnabled, !disabled && !uploading && !sending)}
+              title={configHint}
+              aria-label={configHint}
+              disabled={disabled || uploading || sending}
+            >
+              <LegacyFaIcon icon="fa-sliders" className="text-[12px]" />
+              <span>{configStatusLabel}</span>
+              <IconTooltip label={configHint} />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="start"
+            className="agent-composer-config-menu w-72 rounded-[18px] border p-3 shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
+            style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
           >
-            <LegacyFaIcon icon="fa-folder-open" className="text-[13px]" />
-            <span>文件夹</span>
-            <IconTooltip label={folderHint} />
-          </button>
-        ) : null}
-
-        <button
-          type="button"
-          title={imageModeHint}
-          aria-label={imageModeHint}
-          aria-pressed={imageModeEnabled}
-          disabled={!imageModeAvailable || disabled || uploading || sending}
-          onClick={onImageModeToggle}
-          className={capabilityPillClassName(imageModeEnabled, imageModeAvailable)}
-        >
-          <LegacyFaIcon icon="fa-image" className="text-[13px]" />
-          <span>{imageModeStatusLabel}</span>
-          <IconTooltip label={imageModeHint} />
-        </button>
-
-        <button
-          type="button"
-          title={webHint}
-          aria-label={webHint}
-          aria-pressed={webSearchEnabled}
-          disabled={!selectedModelOption?.supportsWebSearch || disabled || uploading || sending}
-          onClick={onWebSearchToggle}
-          className={capabilityPillClassName(webSearchEnabled, Boolean(selectedModelOption?.supportsWebSearch))}
-        >
-          <LegacyFaIcon icon="fa-globe" className="text-[13px]" />
-          <span>{webStatusLabel}</span>
-          <IconTooltip label={webHint} />
-        </button>
-
-        <div className="relative">
-          <button
-            type="button"
-            title={reasoningHint}
-            aria-label={reasoningHint}
-            aria-pressed={Boolean(reasoningLevel)}
-            disabled={!selectedModelOption?.supportsReasoningLevel || disabled || uploading || sending}
-            onClick={() => {
-              if (!selectedModelOption?.supportsReasoningLevel) return;
-              setReasoningPopoverOpen((value) => !value);
-            }}
-            className={capabilityPillClassName(Boolean(reasoningLevel), Boolean(selectedModelOption?.supportsReasoningLevel))}
-          >
-            <LegacyFaIcon icon="fa-brain" className="text-[13px]" />
-            <span>{reasoningStatusLabel}</span>
-            <IconTooltip label={reasoningHint} />
-          </button>
-
-          {reasoningPopoverOpen && selectedModelOption?.supportsReasoningLevel ? (
-            <div className="absolute left-0 bottom-11 z-20 min-w-[110px] rounded-2xl border p-1 shadow-[0_18px_40px_rgba(15,23,42,0.12)]" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
-              {reasoningLevels.map((level) => {
-                const active = effectiveReasoningLevel === level;
-                return (
-                  <button
-                    key={level}
-                    type="button"
-                    onClick={() => {
-                      onReasoningLevelChange(level);
-                      setReasoningPopoverOpen(false);
-                    }}
-                    className="flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[13px] font-medium transition"
-                    style={active
-                      ? { background: 'var(--bg-elevated)', color: 'var(--text-primary)' }
-                      : { color: 'var(--text-secondary)' }}
-                  >
-                    <span>{formatReasoningLevelLabel(level)}</span>
-                    {active ? <LegacyFaIcon icon="fa-check" className="text-[11px]" /> : null}
-                  </button>
-                );
-              })}
+            <div>
+              <p className="px-1 text-[11px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>模型</p>
+              <div className="mt-1 space-y-1">
+                {selectableModels.map((model) => {
+                  const active = model.id === selectedModel;
+                  return (
+                    <button
+                      key={model.id}
+                      type="button"
+                      onClick={() => onModelChange(model.id)}
+                      className="flex w-full items-center justify-between rounded-[12px] px-3 py-2 text-left text-[13px] font-medium transition"
+                      style={active
+                        ? { background: 'var(--bg-elevated)', color: 'var(--text-primary)' }
+                        : { color: 'var(--text-secondary)' }}
+                    >
+                      <span>{model.label}</span>
+                      {active ? <LegacyFaIcon icon="fa-check" className="text-[11px]" /> : null}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          ) : null}
-        </div>
+
+            <div className="mt-3 border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
+              <p className="px-1 text-[11px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>能力</p>
+              <div className="mt-2 grid gap-2">
+                <button
+                  type="button"
+                  title={webHint}
+                  aria-label={webHint}
+                  aria-pressed={webSearchEnabled}
+                  disabled={!selectedModelOption?.supportsWebSearch || disabled || uploading || sending}
+                  onClick={onWebSearchToggle}
+                  className={capabilityPillClassName(webSearchEnabled, Boolean(selectedModelOption?.supportsWebSearch))}
+                >
+                  <LegacyFaIcon icon="fa-globe" className="text-[13px]" />
+                  <span>{webStatusLabel}</span>
+                </button>
+                <button
+                  type="button"
+                  title={imageModeHint}
+                  aria-label={imageModeHint}
+                  aria-pressed={imageModeEnabled}
+                  disabled={!imageModeAvailable || disabled || uploading || sending}
+                  onClick={onImageModeToggle}
+                  className={capabilityPillClassName(imageModeEnabled, imageModeAvailable)}
+                >
+                  <LegacyFaIcon icon="fa-image" className="text-[13px]" />
+                  <span>{imageModeStatusLabel}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-3 border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
+              <p className="px-1 text-[11px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>思考强度</p>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                {selectedModelOption?.supportsReasoningLevel ? reasoningLevels.map((level) => {
+                  const active = effectiveReasoningLevel === level;
+                  return (
+                    <button
+                      key={level}
+                      type="button"
+                      onClick={() => onReasoningLevelChange(level)}
+                      aria-pressed={active}
+                      className={capabilityPillClassName(active, true)}
+                    >
+                      <LegacyFaIcon icon="fa-brain" className="text-[12px]" />
+                      <span>{formatReasoningLevelLabel(level)}</span>
+                    </button>
+                  );
+                }) : (
+                  <span className={capabilityPillClassName(false, false)}>
+                    <LegacyFaIcon icon="fa-brain" className="text-[12px]" />
+                    <span>{reasoningStatusLabel}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          </PopoverContent>
+        </Popover>
       </div>
 
       {/* 文件夹上传卡片 */}

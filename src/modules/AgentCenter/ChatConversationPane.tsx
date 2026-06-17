@@ -435,21 +435,19 @@ const ChatConversationPane: React.FC<Props> = ({
                     onDragStart={(event) => beginDragReuseImage(event, primaryImage)}
                   />
                 </button>
-                <span className="pointer-events-none absolute inset-x-3 bottom-3 rounded-full bg-slate-950/0 px-3 py-1.5 text-[11px] font-medium text-white opacity-0 transition group-hover:bg-slate-950/60 group-hover:opacity-100">
-                  点击查看大图
-                </span>
-                <span className="absolute right-3 top-3 flex gap-2 opacity-0 transition group-hover:opacity-100">
+                <span className="agent-image-result-actions absolute inset-x-3 bottom-3 flex items-center justify-between opacity-0 transition group-hover:opacity-100">
                   <button
                     type="button"
                     onClick={(event) => {
                       event.stopPropagation();
                       reuseImage(primaryImage);
                     }}
-                    className="flex h-8 w-8 items-center justify-center rounded-full border border-white/12 bg-white/88 text-slate-900 shadow-[0_10px_22px_rgba(15,23,42,0.18)] transition hover:bg-white"
-                    aria-label="放入当前输入框"
-                    title="放入当前输入框"
+                    className="agent-image-result-edit inline-flex h-9 items-center gap-1.5 rounded-full bg-slate-950/72 px-3 text-[12px] font-semibold text-white shadow-[0_10px_22px_rgba(15,23,42,0.22)] transition hover:bg-slate-950/86"
+                    aria-label="编辑图片"
+                    title="编辑图片"
                   >
                     <LegacyFaIcon icon="fa-plus" className="text-[12px]" />
+                    <span>编辑</span>
                   </button>
                   <button
                     type="button"
@@ -457,8 +455,8 @@ const ChatConversationPane: React.FC<Props> = ({
                       event.stopPropagation();
                       downloadImage(primaryImage);
                     }}
-                    className="flex h-8 w-8 items-center justify-center rounded-full border border-white/12 bg-white/88 text-slate-900 shadow-[0_10px_22px_rgba(15,23,42,0.18)] transition hover:bg-white"
-                    aria-label="下载生成图片"
+                    className="agent-image-result-download flex h-9 w-9 items-center justify-center rounded-full bg-slate-950/72 text-white shadow-[0_10px_22px_rgba(15,23,42,0.22)] transition hover:bg-slate-950/86"
+                    aria-label="下载图片"
                     title="下载图片"
                   >
                     <LegacyFaIcon icon="fa-download" className="text-[12px]" />

@@ -45,6 +45,17 @@ test('image result card uses a primary image with compact thumbnails for multipl
   assert.match(source, /agent-image-result-thumbnails/);
 });
 
+test('image result card uses a bottom image action layer instead of top-right utility icons', () => {
+  assert.match(source, /agent-image-result-actions/);
+  assert.match(source, /agent-image-result-edit/);
+  assert.match(source, /aria-label="编辑图片"/);
+  assert.match(source, /title="编辑图片"/);
+  assert.match(source, /aria-label="下载图片"/);
+  assert.match(source, /title="下载图片"/);
+  assert.doesNotMatch(source, /absolute right-3 top-3/);
+  assert.doesNotMatch(source, /agent-image-result-primary[\s\S]*aria-label="放入当前输入框"[\s\S]*agent-image-result-thumbnails/);
+});
+
 test('assistant text replies also strip legacy provider image urls before markdown rendering', () => {
   assert.match(source, /const assistantDisplayContent = !isUser \? stripImageResultUrls\(protocolDisplayContent\) : protocolDisplayContent;/);
   assert.match(source, /<MarkdownMessage content=\{assistantDisplayContent\} \/>/);

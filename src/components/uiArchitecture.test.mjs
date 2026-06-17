@@ -1962,7 +1962,11 @@ test('chat composer uses a unified attachment entry and compact capability icons
   assert.match(composer, /fa-globe/);
   assert.match(composer, /fa-brain/);
   assert.match(composer, /attachmentHint/);
-  assert.match(composer, /reasoningPopoverOpen/);
+  assert.match(composer, /agent-composer-upload-menu/);
+  assert.match(composer, /agent-composer-config-menu/);
+  assert.match(composer, /const uploadStatusLabel = attachments\.length > 0 \? `上传 · \$\{attachments\.length\}` : '上传';/);
+  assert.match(composer, /const configStatusLabel = `配置 · \$\{selectedModelLabel\}`;/);
+  assert.doesNotMatch(composer, /reasoningPopoverOpen/);
   assert.match(composer, /上传图片或文件附件/);
   assert.match(composer, /attachmentAccept/);
   assert.match(composer, /if \(imageModeEnabled\) return 'image\/\*';/);
@@ -2030,9 +2034,13 @@ test('chat conversation pane uses compact header tags and refined message layout
   assert.match(conversationPane, /<MarkdownMessage content=\{summaryContent\} \/>/);
   assert.match(conversationPane, /agent-image-result-primary/);
   assert.match(conversationPane, /agent-image-result-thumbnails/);
+  assert.match(conversationPane, /agent-image-result-actions/);
+  assert.match(conversationPane, /agent-image-result-edit/);
+  assert.match(conversationPane, /aria-label="编辑图片"/);
   assert.doesNotMatch(conversationPane, /expandedSummaries/);
   assert.doesNotMatch(conversationPane, /toggleSummary/);
   assert.doesNotMatch(conversationPane, /展开结果总结/);
+  assert.doesNotMatch(conversationPane, /absolute right-3 top-3/);
   assert.match(conversationPane, /正在整理生图参数与提示词/);
   assert.match(conversationPane, /正在理解需求与参考图/);
   assert.match(conversationPane, /正在生成图片/);
@@ -2053,7 +2061,7 @@ test('chat conversation pane uses compact header tags and refined message layout
   assert.doesNotMatch(conversationPane, /text-\[12px\] font-medium text-slate-400/);
   assert.doesNotMatch(conversationPane, /Prompt：/);
   assert.doesNotMatch(conversationPane, /参数摘要：/);
-  assert.match(composer, /模型切换/);
+  assert.match(composer, /agent-composer-config-menu/);
   assert.match(composer, /PopoverTrigger/);
   assert.match(composer, /rounded-full border transition/);
   assert.match(agentCenterModule, /需求分析中/);
