@@ -78,6 +78,16 @@ interface Props {
 const buildAttachmentId = (kind: 'image' | 'file', name: string) =>
   `${kind}-${name.replace(/\s+/g, '-')}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 const CHAT_REUSE_IMAGE_MIME = 'application/x-meiao-chat-image';
+const REASONING_LEVEL_LABELS: Record<string, string> = {
+  minimal: '极低',
+  low: '低',
+  medium: '中等',
+  high: '高',
+  xhigh: '极高',
+};
+
+const formatReasoningLevelLabel = (level: string | null | undefined) =>
+  level ? (REASONING_LEVEL_LABELS[level] || level) : '';
 
 const capabilityPillClassName = (active: boolean, available: boolean) =>
   `group relative inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full border transition px-3 text-[12px] font-semibold ${
@@ -171,7 +181,7 @@ const ChatComposer: React.FC<Props> = ({
     ? webSearchEnabled ? '联网开' : '联网关'
     : '联网不可用';
   const reasoningStatusLabel = selectedModelOption?.supportsReasoningLevel
-    ? effectiveReasoningLevel ? `思考 ${effectiveReasoningLevel}` : '思考默认'
+    ? effectiveReasoningLevel ? `思考 ${formatReasoningLevelLabel(effectiveReasoningLevel)}` : '思考默认'
     : '思考不可用';
   const imageModeStatusLabel = !imageModeAvailable
     ? '生图不可用'
@@ -525,7 +535,7 @@ const ChatComposer: React.FC<Props> = ({
                       ? { background: 'var(--bg-elevated)', color: 'var(--text-primary)' }
                       : { color: 'var(--text-secondary)' }}
                   >
-                    <span>{level}</span>
+                    <span>{formatReasoningLevelLabel(level)}</span>
                     {active ? <LegacyFaIcon icon="fa-check" className="text-[11px]" /> : null}
                   </button>
                 );
