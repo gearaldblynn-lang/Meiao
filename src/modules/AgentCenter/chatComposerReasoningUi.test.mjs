@@ -66,3 +66,15 @@ test('chat composer capability labels expose unavailable and capacity states wit
   assert.match(source, /const imageModeStatusLabel = !imageModeAvailable/);
   assert.match(source, /`生图开 · \$\{imageAttachmentCount\}\/\$\{imageMaxInputCount\}`/);
 });
+
+test('chat composer translates provider reasoning levels to Chinese labels', () => {
+  assert.match(source, /const REASONING_LEVEL_LABELS: Record<string, string> = \{/);
+  assert.match(source, /minimal: '极低'/);
+  assert.match(source, /low: '低'/);
+  assert.match(source, /medium: '中等'/);
+  assert.match(source, /high: '高'/);
+  assert.match(source, /xhigh: '极高'/);
+  assert.match(source, /const formatReasoningLevelLabel = \(level: string \| null \| undefined\) =>/);
+  assert.match(source, /`思考 \$\{formatReasoningLevelLabel\(effectiveReasoningLevel\)\}`/);
+  assert.match(source, /<span>\{formatReasoningLevelLabel\(level\)\}<\/span>/);
+});
