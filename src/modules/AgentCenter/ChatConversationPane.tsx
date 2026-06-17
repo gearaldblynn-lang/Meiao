@@ -99,8 +99,15 @@ type AssistantRunStage = {
 
 const CHAT_REUSE_IMAGE_MIME = 'application/x-meiao-chat-image';
 
+const hasAssistantImageResults = (message: AgentChatMessage) =>
+  message.role === 'assistant' && (
+    (Array.isArray(message.metadata?.imageResultUrls) && message.metadata.imageResultUrls.some(Boolean)) ||
+    Boolean(message.metadata?.imagePlan) ||
+    (Array.isArray(message.attachments) && message.attachments.some((item) => item.kind === 'image' && item.url))
+  );
+
 const isImageGenerationMessage = (message: AgentChatMessage) =>
-  message.role === 'assistant' && message.metadata?.requestMode === 'image_generation';
+  message.role === 'assistant' && (message.metadata?.requestMode === 'image_generation' || hasAssistantImageResults(message));
 
 const isFailedImageGenerationMessage = (message: AgentChatMessage) => {
   const status = String(message.metadata?.status || '').trim();
