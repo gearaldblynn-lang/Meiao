@@ -41,13 +41,21 @@ test('parseResponsesOutput 提取 message 文本', () => {
 test('parseResponsesOutput 提取 function_call', () => {
   const out = parseResponsesOutput({
     output: [
-      { type: 'function_call', name: 'generate_image', arguments: '{"prompt":"猫","task_type":"new_image"}', call_id: 'c1' },
+      { type: 'function_call', id: 'fc_1', name: 'generate_image', arguments: '{"prompt":"猫","task_type":"new_image"}', call_id: 'c1', status: 'completed' },
     ],
   });
   assert.equal(out.toolCalls.length, 1);
   assert.equal(out.toolCalls[0].name, 'generate_image');
   assert.deepEqual(out.toolCalls[0].args, { prompt: '猫', task_type: 'new_image' });
   assert.equal(out.toolCalls[0].id, 'c1');
+  assert.deepEqual(out.toolCalls[0].responseItem, {
+    type: 'function_call',
+    id: 'fc_1',
+    name: 'generate_image',
+    arguments: '{"prompt":"猫","task_type":"new_image"}',
+    call_id: 'c1',
+    status: 'completed',
+  });
   assert.equal(out.finishReason, 'tool_calls');
 });
 

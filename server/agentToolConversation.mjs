@@ -38,6 +38,24 @@ const buildFunctionCallOutput = (callId, output) => ({
   output,
 });
 
+const buildFunctionCallInputItem = (call = {}, callId = '') => {
+  const responseItem = call?.responseItem;
+  if (responseItem?.type === 'function_call') {
+    return {
+      ...responseItem,
+      call_id: String(responseItem.call_id || callId),
+    };
+  }
+  return {
+    type: 'function_call',
+    id: `fc_${String(callId || call?.id || 'tool').replace(/[^a-zA-Z0-9_-]/g, '_')}`,
+    call_id: String(callId || call?.id || ''),
+    name: String(call?.name || ''),
+    arguments: JSON.stringify(call?.args || {}),
+    status: 'completed',
+  };
+};
+
 export const runAgentConversationV2 = async ({
   systemPrompt = '',
   summary = '',
@@ -189,6 +207,7 @@ export const runAgentConversationV2 = async ({
       toolResultContent = `不支持的工具: ${call.name || 'unknown'}。`;
     }
 
+    messages.push(buildFunctionCallInputItem(call, callId));
     messages.push(buildFunctionCallOutput(callId, toolResultContent));
     response = await callModel({
       messages,
