@@ -54,6 +54,16 @@ test('shell chat workspace exposes assistant message actions for copy and regene
   assert.match(shellModuleSource, /renderMessageActions=\{renderShellMessageActions\}/);
 });
 
+test('shell assistant message actions are compact icon buttons with Chinese tooltips', () => {
+  assert.match(shellModuleSource, /agent-message-action-icon/);
+  assert.match(shellModuleSource, /title="复制消息"/);
+  assert.match(shellModuleSource, /aria-label="复制消息"/);
+  assert.match(shellModuleSource, /title="重新生成"/);
+  assert.match(shellModuleSource, /aria-label="重新生成"/);
+  assert.doesNotMatch(shellModuleSource, />\s*复制\s*</);
+  assert.doesNotMatch(shellModuleSource, />\s*重新生成\s*</);
+});
+
 test('shell chat workspace keeps restored pending runs visible and locked', () => {
   assert.match(shellModuleSource, /const isPendingAgentRunMessage = \(message\?: AgentChatMessage \| null\) =>/);
   assert.match(shellModuleSource, /const activePendingRunMessage = useMemo\(/);
