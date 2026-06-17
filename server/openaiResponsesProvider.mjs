@@ -23,6 +23,34 @@ export const toResponsesTool = (tool) => {
   return tool;
 };
 
+const normalizeResponsesContentPart = (part = {}) => {
+  const type = String(part?.type || '').trim();
+  if (type === 'text' || type === 'input_text') {
+    return { type: 'input_text', text: String(part?.text || '') };
+  }
+  if (type === 'image_url' || type === 'input_image') {
+    const imageUrl = String(
+      part?.image_url && typeof part.image_url === 'object'
+        ? part.image_url.url || ''
+        : part?.image_url || part?.url || ''
+    ).trim();
+    if (!imageUrl) return null;
+    return { type: 'input_image', image_url: imageUrl };
+  }
+  return part;
+};
+
+const normalizeResponsesInputMessage = (message = {}) => {
+  if (message?.type === 'function_call' || message?.type === 'function_call_output') return message;
+  if (!Array.isArray(message?.content)) return message;
+  return {
+    ...message,
+    content: message.content
+      .map((part) => normalizeResponsesContentPart(part))
+      .filter(Boolean),
+  };
+};
+
 export const parseResponsesOutput = (data = {}) => {
   const items = Array.isArray(data?.output) ? data.output : [];
   let content = '';
@@ -82,8 +110,8 @@ export const runResponsesJob = async ({ payload = {}, env = {}, signal = null } 
   }
 
   const input = Array.isArray(payload?.input)
-    ? payload.input
-    : (Array.isArray(payload?.messages) ? payload.messages : []);
+    ? payload.input.map((message) => normalizeResponsesInputMessage(message))
+    : (Array.isArray(payload?.messages) ? payload.messages.map((message) => normalizeResponsesInputMessage(message)) : []);
   const tools = (Array.isArray(payload?.tools) ? payload.tools : []).map(toResponsesTool);
   const reasoningLevel = String(payload?.reasoningLevel || '').trim();
   const body = {

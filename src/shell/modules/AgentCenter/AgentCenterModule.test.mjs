@@ -55,13 +55,29 @@ test('shell chat workspace exposes assistant message actions for copy and regene
 });
 
 test('shell assistant message actions are compact icon buttons with Chinese tooltips', () => {
+  assert.match(shellModuleSource, /const MessageActionTooltip = \(\{ label \}: \{ label: string \}\) =>/);
   assert.match(shellModuleSource, /agent-message-action-icon/);
+  assert.match(shellModuleSource, /h-9 w-9/);
+  assert.match(shellModuleSource, /text-\[15px\]/);
   assert.match(shellModuleSource, /title="复制消息"/);
   assert.match(shellModuleSource, /aria-label="复制消息"/);
+  assert.match(shellModuleSource, /<MessageActionTooltip label="复制消息" \/>/);
   assert.match(shellModuleSource, /title="重新生成"/);
   assert.match(shellModuleSource, /aria-label="重新生成"/);
+  assert.match(shellModuleSource, /<MessageActionTooltip label="重新生成" \/>/);
   assert.doesNotMatch(shellModuleSource, />\s*复制\s*</);
   assert.doesNotMatch(shellModuleSource, />\s*重新生成\s*</);
+});
+
+test('shell agent center preserves glass styling for chat composer popovers', () => {
+  assert.match(shellModuleSource, /\.agent-composer-config-menu,\n\s+\.agent-composer-upload-menu,/);
+  assert.match(shellModuleSource, /\.agent-center-shell-scope \.agent-composer-config-menu/);
+  assert.match(shellModuleSource, /\.agent-center-shell-scope \.agent-composer-upload-menu/);
+  assert.match(shellModuleSource, /background: rgba\(255, 255, 255, 0\.78\) !important;/);
+  assert.match(shellModuleSource, /backdrop-filter: blur\(28px\) saturate\(1\.22\) !important;/);
+  assert.match(shellModuleSource, /\.agent-composer-config-popout/);
+  assert.match(shellModuleSource, /background: rgba\(255, 255, 255, 0\.46\) !important;/);
+  assert.match(shellModuleSource, /box-shadow: none !important;/);
 });
 
 test('shell chat workspace keeps restored pending runs visible and locked', () => {
@@ -71,9 +87,20 @@ test('shell chat workspace keeps restored pending runs visible and locked', () =
   assert.match(shellModuleSource, /const hasActivePendingRun = Boolean\(activePendingRunMessage\);/);
   assert.match(shellModuleSource, /void pollPendingRun\(\);/);
   assert.match(shellModuleSource, /window\.setInterval\(\(\) => \{\s*void pollPendingRun\(\);\s*\}, 3000\);/);
-  assert.match(shellModuleSource, /if \(sendingMessage \|\| hasActivePendingRun \|\| !selectedSessionId/);
+  assert.match(shellModuleSource, /const runSubmissionMode(: RunSubmissionMode)? =/);
+  assert.match(shellModuleSource, /FINAL_EXECUTION_PROGRESS_STAGES/);
+  assert.match(shellModuleSource, /imageExecutionStageActive/);
+  assert.match(shellModuleSource, /pendingAutoSubmission/);
+  assert.match(shellModuleSource, /queueChatSubmission/);
+  assert.match(shellModuleSource, /interruptingChatSubmissionRef/);
+  assert.match(shellModuleSource, /if \(runSubmissionMode === 'queue'\)/);
+  assert.match(shellModuleSource, /if \(runSubmissionMode === 'insert'\)/);
+  assert.doesNotMatch(shellModuleSource, /if \(sendingMessage \|\| hasActivePendingRun \|\| !selectedSessionId/);
   assert.match(shellModuleSource, /sendingMessage=\{sendingMessage \|\| hasActivePendingRun\}/);
-  assert.match(shellModuleSource, /onInterruptSend=\{sendingMessage \? handleInterruptSend : undefined\}/);
+  assert.match(shellModuleSource, /runSubmissionMode=\{runSubmissionMode\}/);
+  assert.match(shellModuleSource, /queuedMessageCount=\{queuedMessageCount\}/);
+  assert.doesNotMatch(shellModuleSource, /const handleInterruptSend =/);
+  assert.doesNotMatch(shellModuleSource, /onInterruptSend=\{sendingMessage \? handleInterruptSend : undefined\}/);
 });
 
 test('shell chat progress handles image tool calling SSE events', () => {

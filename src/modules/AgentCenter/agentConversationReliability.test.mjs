@@ -41,16 +41,30 @@ test('formal agent conversations keep persisted pending runs visible and locked 
   assert.match(moduleSource, /const hasActivePendingRun = Boolean\(activePendingRunMessage\);/);
   assert.match(moduleSource, /void pollPendingRun\(\);/);
   assert.match(moduleSource, /window\.setInterval\(\(\) => \{\s*void pollPendingRun\(\);\s*\}, 3000\);/);
-  assert.match(moduleSource, /if \(sendingMessage \|\| hasActivePendingRun \|\| !selectedSessionId/);
+  assert.match(moduleSource, /const runSubmissionMode(: RunSubmissionMode)? =/);
+  assert.match(moduleSource, /FINAL_EXECUTION_PROGRESS_STAGES/);
+  assert.match(moduleSource, /imageExecutionStageActive/);
+  assert.match(moduleSource, /pendingAutoSubmission/);
+  assert.match(moduleSource, /queueChatSubmission/);
+  assert.match(moduleSource, /interruptingChatSubmissionRef/);
+  assert.match(moduleSource, /if \(runSubmissionMode === 'queue'\)/);
+  assert.match(moduleSource, /if \(runSubmissionMode === 'insert'\)/);
+  assert.doesNotMatch(moduleSource, /if \(sendingMessage \|\| hasActivePendingRun \|\| !selectedSessionId/);
   assert.match(moduleSource, /sendingMessage=\{sendingMessage \|\| hasActivePendingRun\}/);
-  assert.match(moduleSource, /onInterruptSend=\{sendingMessage \? handleInterruptSend : undefined\}/);
+  assert.match(moduleSource, /runSubmissionMode=\{runSubmissionMode\}/);
+  assert.match(moduleSource, /queuedMessageCount=\{queuedMessageCount\}/);
+  assert.doesNotMatch(moduleSource, /const handleInterruptSend =/);
+  assert.doesNotMatch(moduleSource, /onInterruptSend=\{sendingMessage \? handleInterruptSend : undefined\}/);
 });
 
 test('agent image generation failures do not display fake generated image counts', () => {
   assert.match(conversationPaneSource, /const isFailedImageGenerationMessage = \(message: AgentChatMessage\) =>/);
-  assert.match(conversationPaneSource, /const getImageGenerationBadgeText = \(message: AgentChatMessage, resultCount: number\) =>/);
-  assert.match(conversationPaneSource, /if \(isFailedImageGenerationMessage\(message\)\) return '生成失败';/);
+  assert.match(conversationPaneSource, /const failedImageGeneration = isFailedImageGenerationMessage\(message\);/);
+  assert.match(conversationPaneSource, /showImageSummary \? \(/);
+  assert.match(conversationPaneSource, /: failedImageGeneration \? \(/);
+  assert.match(conversationPaneSource, /summaryContent \|\| '生成失败，请重新尝试。'/);
   assert.doesNotMatch(conversationPaneSource, /Math\.max\(resultCount, imageAttachments\.length \|\| 1\)/);
+  assert.doesNotMatch(conversationPaneSource, /已生成\s*\{Math\.max/);
 });
 
 test('agent chat workspace exposes durable session and context state instead of hiding history', () => {

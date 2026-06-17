@@ -17,6 +17,8 @@ import {
   ChevronsRight,
   Circle,
   Code2,
+  Copy,
+  Clock,
   File,
   FileText,
   FolderOpen,
@@ -29,6 +31,7 @@ import {
   Paperclip,
   PlayCircle,
   Plus,
+  RotateCcw,
   Search,
   Settings,
   SlidersHorizontal,
@@ -65,6 +68,9 @@ export const LegacyFaIcon: React.FC<{ icon?: string; className?: string; style?:
     lowerIcon.includes('arrow-left') ? ArrowLeft :
     lowerIcon.includes('arrow-right') ? ArrowRight :
     lowerIcon.includes('arrow-up') ? ArrowUp :
+    lowerIcon.includes('copy') ? Copy :
+    lowerIcon.includes('rotate') || lowerIcon.includes('redo') || lowerIcon.includes('refresh') ? RotateCcw :
+    lowerIcon.includes('clock') ? Clock :
     lowerIcon.includes('download') ? Download :
     lowerIcon.includes('upload') ? Upload :
     lowerIcon.includes('folder') ? FolderOpen :

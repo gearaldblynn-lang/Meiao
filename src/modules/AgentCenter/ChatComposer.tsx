@@ -57,6 +57,8 @@ interface Props {
   onInterruptSend?: () => void;
   disabled?: boolean;
   sending?: boolean;
+  runSubmissionMode?: 'idle' | 'insert' | 'queue';
+  queuedMessageCount?: number;
   chatModels: SystemPublicConfig['agentModels']['chat'];
   selectedModel: string;
   onModelChange: (value: string) => void;
@@ -89,14 +91,22 @@ const REASONING_LEVEL_LABELS: Record<string, string> = {
 const formatReasoningLevelLabel = (level: string | null | undefined) =>
   level ? (REASONING_LEVEL_LABELS[level] || level) : '';
 
-const capabilityPillClassName = (active: boolean, available: boolean) =>
-  `group relative inline-flex h-8 min-w-0 items-center gap-1.5 rounded-full border transition px-3 text-[12px] font-semibold ${
+const composerPopoverSurfaceClassName =
+  'rounded-[18px] border border-white/70 bg-white/[0.88] p-2 shadow-[0_22px_70px_rgba(15,23,42,0.14)] backdrop-blur-2xl';
+
+const capabilityIconClassName = (active: boolean, available: boolean) =>
+  `group relative inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border transition text-[13px] ${
     available
       ? active
         ? 'border-[color:var(--accent)] bg-[color:var(--accent-soft)] text-[color:var(--accent)] shadow-[0_0_0_3px_var(--accent-soft)]'
         : 'border-[color:var(--border-subtle)] bg-[color:var(--bg-base)] text-[color:var(--text-secondary)] hover:border-[color:var(--border-default)] hover:text-[color:var(--text-primary)]'
       : 'cursor-not-allowed border-[color:var(--border-subtle)] bg-[color:var(--bg-base)] text-[color:var(--text-tertiary)]'
   }`;
+
+const configRowClassName =
+  'flex w-full items-center justify-between gap-3 rounded-[14px] px-3 py-2.5 text-left text-[13px] font-semibold transition hover:bg-slate-100/70';
+const configOptionClassName =
+  'block w-full rounded-[10px] px-3 py-1 text-left text-[11px] font-medium leading-4 transition hover:bg-white/55';
 
 const IconTooltip = ({ label }: { label: string }) => (
   <span
@@ -111,9 +121,10 @@ const ChatComposer: React.FC<Props> = ({
   messageDraft,
   onMessageDraftChange,
   onSendMessage,
-  onInterruptSend,
   disabled = false,
   sending = false,
+  runSubmissionMode = 'idle',
+  queuedMessageCount = 0,
   chatModels,
   selectedModel,
   onModelChange,
@@ -138,6 +149,7 @@ const ChatComposer: React.FC<Props> = ({
   const uploading = attachmentUploading || folderCard?.phase === 'uploading';
   const [error, setError] = useState('');
   const [dragActive, setDragActive] = useState(false);
+  const [configPane, setConfigPane] = useState<'main' | 'models' | 'reasoning'>('main');
   // 文件夹/ZIP 上传前的确认弹窗状态
   const [pendingBatchConfirm, setPendingBatchConfirm] = useState<{
     fileCount: number;
@@ -161,7 +173,7 @@ const ChatComposer: React.FC<Props> = ({
     : Boolean(selectedModelOption?.supportsImageInput || selectedModelOption?.supportsFileInput);
   const imageAttachmentCount = attachments.filter((attachment) => attachment.kind === 'image').length;
   const folderReady = folderCard?.phase === 'done' && (folderCard.batches?.length ?? 0) > 0;
-  const canSend = !disabled && !uploading && !sending && (Boolean(messageDraft.trim()) || attachments.length > 0 || folderReady);
+  const canSend = !disabled && !uploading && (Boolean(messageDraft.trim()) || attachments.length > 0 || folderReady);
 
   const attachmentHint = supportsAnyAttachment ? `上传图片或文件附件${imageModeEnabled ? `，当前最多 ${imageMaxInputCount} 张图` : ''}` : '当前模型不支持附件上传';
   const webHint = selectedModelOption?.supportsWebSearch
@@ -187,6 +199,12 @@ const ChatComposer: React.FC<Props> = ({
     ? '生图不可用'
     : imageModeEnabled ? `生图开 · ${imageAttachmentCount}/${imageMaxInputCount}` : '生图关';
   const configHint = `${modelHint}；${webStatusLabel || '联网'}；${reasoningStatusLabel || '思考'}；${imageModeStatusLabel || '生图'}`;
+  const sendButtonLabel = runSubmissionMode === 'queue' ? '加入下一轮' : runSubmissionMode === 'insert' ? '插入引导' : '发送';
+  const runModeHint = runSubmissionMode === 'queue'
+    ? queuedMessageCount > 0 ? `已有 ${queuedMessageCount} 条待发送，当前内容会替换下一轮` : '当前任务已进入执行阶段，发送后会排到下一轮'
+    : runSubmissionMode === 'insert'
+      ? '当前回复仍可调整，发送后会按新输入重新回答'
+      : '';
 
   // ─── 文件夹上传处理 ────────────────────────────────────────────────────────────
 
@@ -352,7 +370,7 @@ const ChatComposer: React.FC<Props> = ({
   };
 
   const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    if (disabled || sending || uploading || !supportsAnyAttachment) return;
+    if (disabled || uploading || !supportsAnyAttachment) return;
     const clipboardItems = Array.from(event.clipboardData.items || []) as DataTransferItem[];
     const clipboardFiles = clipboardItems
       .filter((item) => item.type.startsWith('image/'))
@@ -374,7 +392,7 @@ const ChatComposer: React.FC<Props> = ({
     event.preventDefault();
     event.stopPropagation();
     setDragActive(false);
-    if (disabled || sending || uploading) return;
+    if (disabled || uploading) return;
     const reusedImageRaw = event.dataTransfer.getData(CHAT_REUSE_IMAGE_MIME);
     if (reusedImageRaw) {
       try {
@@ -404,26 +422,28 @@ const ChatComposer: React.FC<Props> = ({
           <PopoverTrigger asChild>
             <button
               type="button"
-              title={uploadHint}
+              title={uploadStatusLabel}
               aria-label={uploadHint}
-              disabled={disabled || uploading || sending}
-              className={capabilityPillClassName(false, uploadAvailable)}
+              disabled={disabled || uploading}
+              className={capabilityIconClassName(attachments.length > 0 || folderReady, uploadAvailable)}
             >
-              <LegacyFaIcon icon="fa-plus" className="text-[12px]" />
-              <span>{uploadStatusLabel}</span>
-              <IconTooltip label={uploadHint} />
+              <LegacyFaIcon icon="fa-plus" className="text-[14px]" />
+              {(attachments.length > 0 || folderReady) ? <span className="agent-composer-status-dot absolute right-1 top-1 h-2 w-2 rounded-full bg-[color:var(--accent)]" /> : null}
+              <IconTooltip label={uploadStatusLabel} />
             </button>
           </PopoverTrigger>
           <PopoverContent
+            side="top"
+            sideOffset={10}
+            avoidCollisions={false}
             align="start"
-            className="agent-composer-upload-menu w-60 rounded-[16px] border p-2 shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
-            style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+            className={`agent-composer-upload-menu ${composerPopoverSurfaceClassName} w-60`}
           >
             <button
               type="button"
               title={attachmentHint}
               aria-label={attachmentHint}
-              disabled={!supportsAnyAttachment || disabled || uploading || sending}
+              disabled={!supportsAnyAttachment || disabled || uploading}
               onClick={() => attachmentInputRef.current?.click()}
               className="flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50"
               style={{ color: supportsAnyAttachment ? 'var(--text-primary)' : 'var(--text-tertiary)' }}
@@ -439,7 +459,7 @@ const ChatComposer: React.FC<Props> = ({
                 type="button"
                 title={folderHint}
                 aria-label={folderHint}
-                disabled={disabled || uploading || sending}
+                disabled={disabled || uploading}
                 onClick={() => folderInputRef.current?.click()}
                 className="mt-1 flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left transition disabled:cursor-not-allowed disabled:opacity-50"
                 style={{ color: 'var(--text-primary)' }}
@@ -458,99 +478,132 @@ const ChatComposer: React.FC<Props> = ({
           <PopoverTrigger asChild>
             <button
               type="button"
-              className={capabilityPillClassName(webSearchEnabled || Boolean(reasoningLevel) || imageModeEnabled, !disabled && !uploading && !sending)}
+              className={capabilityIconClassName(webSearchEnabled || Boolean(reasoningLevel) || imageModeEnabled, !disabled && !uploading)}
               title={configHint}
               aria-label={configHint}
-              disabled={disabled || uploading || sending}
+              disabled={disabled || uploading}
             >
-              <LegacyFaIcon icon="fa-sliders" className="text-[12px]" />
-              <span>{configStatusLabel}</span>
-              <IconTooltip label={configHint} />
+              <LegacyFaIcon icon="fa-sliders" className="text-[14px]" />
+              {(webSearchEnabled || Boolean(reasoningLevel) || imageModeEnabled) ? <span className="agent-composer-status-dot absolute right-1 top-1 h-2 w-2 rounded-full bg-[color:var(--accent)]" /> : null}
+              <IconTooltip label={configStatusLabel} />
             </button>
           </PopoverTrigger>
           <PopoverContent
+            side="top"
+            sideOffset={10}
+            avoidCollisions={false}
             align="start"
-            className="agent-composer-config-menu w-72 rounded-[18px] border p-3 shadow-[0_18px_40px_rgba(15,23,42,0.12)]"
-            style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+            className={`agent-composer-config-menu ${composerPopoverSurfaceClassName} relative w-72 overflow-hidden`}
           >
-            <div>
-              <p className="px-1 text-[11px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>模型</p>
-              <div className="mt-1 space-y-1">
-                {selectableModels.map((model) => {
-                  const active = model.id === selectedModel;
-                  return (
-                    <button
-                      key={model.id}
-                      type="button"
-                      onClick={() => onModelChange(model.id)}
-                      className="flex w-full items-center justify-between rounded-[12px] px-3 py-2 text-left text-[13px] font-medium transition"
-                      style={active
-                        ? { background: 'var(--bg-elevated)', color: 'var(--text-primary)' }
-                        : { color: 'var(--text-secondary)' }}
-                    >
-                      <span>{model.label}</span>
-                      {active ? <LegacyFaIcon icon="fa-check" className="text-[11px]" /> : null}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="mt-3 border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
-              <p className="px-1 text-[11px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>能力</p>
-              <div className="mt-2 grid gap-2">
+            <div className={`agent-composer-config-main space-y-1 transition ${configPane !== 'main' ? 'pointer-events-none opacity-45 blur-[1.5px]' : ''}`}>
+                <button
+                  type="button"
+                  className={configRowClassName}
+                  onClick={() => setConfigPane(configPane === 'models' ? 'main' : 'models')}
+                  style={{ color: 'var(--text-primary)' }}
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <LegacyFaIcon icon="fa-sliders" className="text-[13px]" />
+                    模型
+                  </span>
+                  <span className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>{selectedModelLabel}</span>
+                </button>
                 <button
                   type="button"
                   title={webHint}
                   aria-label={webHint}
                   aria-pressed={webSearchEnabled}
-                  disabled={!selectedModelOption?.supportsWebSearch || disabled || uploading || sending}
+                  disabled={!selectedModelOption?.supportsWebSearch || disabled || uploading}
                   onClick={onWebSearchToggle}
-                  className={capabilityPillClassName(webSearchEnabled, Boolean(selectedModelOption?.supportsWebSearch))}
+                  className={configRowClassName}
+                  style={{ color: selectedModelOption?.supportsWebSearch ? 'var(--text-primary)' : 'var(--text-tertiary)' }}
                 >
-                  <LegacyFaIcon icon="fa-globe" className="text-[13px]" />
-                  <span>{webStatusLabel}</span>
+                  <span className="inline-flex items-center gap-2">
+                    <LegacyFaIcon icon="fa-globe" className="text-[13px]" />
+                    联网
+                  </span>
+                  <span className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>{webStatusLabel.replace('联网', '') || webStatusLabel}</span>
+                </button>
+                <button
+                  type="button"
+                  className={configRowClassName}
+                  onClick={() => setConfigPane(configPane === 'reasoning' ? 'main' : 'reasoning')}
+                  disabled={!selectedModelOption?.supportsReasoningLevel}
+                  style={{ color: selectedModelOption?.supportsReasoningLevel ? 'var(--text-primary)' : 'var(--text-tertiary)' }}
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <LegacyFaIcon icon="fa-brain" className="text-[13px]" />
+                    思考
+                  </span>
+                  <span className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>{reasoningStatusLabel.replace('思考 ', '').replace('思考', '') || reasoningStatusLabel}</span>
                 </button>
                 <button
                   type="button"
                   title={imageModeHint}
                   aria-label={imageModeHint}
                   aria-pressed={imageModeEnabled}
-                  disabled={!imageModeAvailable || disabled || uploading || sending}
+                  disabled={!imageModeAvailable || disabled || uploading}
                   onClick={onImageModeToggle}
-                  className={capabilityPillClassName(imageModeEnabled, imageModeAvailable)}
+                  className={configRowClassName}
+                  style={{ color: imageModeAvailable ? 'var(--text-primary)' : 'var(--text-tertiary)' }}
                 >
-                  <LegacyFaIcon icon="fa-image" className="text-[13px]" />
-                  <span>{imageModeStatusLabel}</span>
+                  <span className="inline-flex items-center gap-2">
+                    <LegacyFaIcon icon="fa-image" className="text-[13px]" />
+                    生图
+                  </span>
+                  <span className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>{imageModeStatusLabel.replace('生图', '') || imageModeStatusLabel}</span>
                 </button>
               </div>
-            </div>
-
-            <div className="mt-3 border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
-              <p className="px-1 text-[11px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>思考强度</p>
-              <div className="mt-2 grid grid-cols-2 gap-2">
+            {configPane === 'models' ? (
+              <div className="agent-composer-config-popout agent-composer-config-detail agent-composer-config-models absolute inset-0 z-10 space-y-0.5 rounded-[18px] bg-white/[0.46] p-2 backdrop-blur-sm">
+                <p className="px-2 py-0.5 text-[10px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>模型</p>
+                {selectableModels.map((model) => {
+                  const active = model.id === selectedModel;
+                  return (
+                    <button
+                      key={model.id}
+                      type="button"
+                      onClick={() => {
+                        onModelChange(model.id);
+                        setConfigPane('main');
+                      }}
+                      className={configOptionClassName}
+                      style={active
+                        ? { background: 'var(--accent-soft)', color: 'var(--accent)', fontWeight: 700 }
+                        : { color: 'var(--text-secondary)' }}
+                    >
+                      {model.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : configPane === 'reasoning' ? (
+              <div className="agent-composer-config-popout agent-composer-config-detail agent-composer-config-reasoning absolute inset-0 z-10 space-y-0.5 rounded-[18px] bg-white/[0.46] p-2 backdrop-blur-sm">
+                <p className="px-2 py-0.5 text-[10px] font-semibold" style={{ color: 'var(--text-tertiary)' }}>思考强度</p>
                 {selectedModelOption?.supportsReasoningLevel ? reasoningLevels.map((level) => {
                   const active = effectiveReasoningLevel === level;
                   return (
                     <button
                       key={level}
                       type="button"
-                      onClick={() => onReasoningLevelChange(level)}
+                      onClick={() => {
+                        onReasoningLevelChange(level);
+                        setConfigPane('main');
+                      }}
                       aria-pressed={active}
-                      className={capabilityPillClassName(active, true)}
+                      className={configOptionClassName}
+                      style={active
+                        ? { background: 'var(--accent-soft)', color: 'var(--accent)', fontWeight: 700 }
+                        : { color: 'var(--text-primary)' }}
                     >
-                      <LegacyFaIcon icon="fa-brain" className="text-[12px]" />
-                      <span>{formatReasoningLevelLabel(level)}</span>
+                      {formatReasoningLevelLabel(level)}
                     </button>
                   );
                 }) : (
-                  <span className={capabilityPillClassName(false, false)}>
-                    <LegacyFaIcon icon="fa-brain" className="text-[12px]" />
-                    <span>{reasoningStatusLabel}</span>
-                  </span>
+                  <span className={configRowClassName} style={{ color: 'var(--text-tertiary)' }}>{reasoningStatusLabel}</span>
                 )}
               </div>
-            </div>
+            ) : null}
           </PopoverContent>
         </Popover>
       </div>
@@ -619,8 +672,8 @@ const ChatComposer: React.FC<Props> = ({
           onChange={(event) => onMessageDraftChange(event.target.value)}
           onPaste={handlePaste}
           onKeyDown={handleComposerKeyDown}
-          placeholder={sending ? '消息发送中，请稍候' : imageModeEnabled ? '输入生图需求，引用图片时请直接说图1、图2、图3...' : '输入问题、需求或上传附件后发送'}
-          disabled={disabled || sending}
+          placeholder={runSubmissionMode === 'queue' ? '当前任务执行中，可输入下一轮需求' : runSubmissionMode === 'insert' ? '继续输入可调整当前回复方向' : imageModeEnabled ? '输入生图需求，引用图片时请直接说图1、图2、图3...' : '输入问题、需求或上传附件后发送'}
+          disabled={disabled}
           className={`min-h-[84px] w-full resize-none rounded-[18px] border px-4 py-3 pr-14 text-[13px] leading-6 outline-none transition ${
             attachments.length > 0 ? 'pb-[4.5rem]' : ''
           }`}
@@ -633,49 +686,36 @@ const ChatComposer: React.FC<Props> = ({
           </div>
         ) : null}
 
-        {sending && onInterruptSend ? (
-          <button
-            type="button"
-            onClick={onInterruptSend}
-            className="absolute bottom-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-rose-500 text-[13px] font-semibold text-white transition hover:bg-rose-600"
-            aria-label="中断发送"
-            title="中断发送"
-          >
-            <LegacyFaIcon icon="fa-stop" className="text-[11px]" />
-          </button>
-        ) : sending ? (
-          <button
-            type="button"
-            disabled
-            className="absolute bottom-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-500 text-[13px] font-semibold text-white opacity-70"
-            aria-label="任务处理中"
-            title="任务处理中，完成后会自动同步"
-          >
-            <LegacyFaIcon icon="fa-spinner" className="animate-spin text-[11px]" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => {
-              if (folderCard?.phase === 'done' && folderCard.batches && onBatchSendReady) {
-                const task: BatchSendTask = {
-                  batches: folderCard.batches,
-                  totalFiles: folderCard.files.length,
-                  skippedCount: folderCard.skippedCount,
-                  skippedReasons: folderCard.skippedReasons,
-                };
-                setFolderCard(null);
-                void onBatchSendReady(task);
-              } else {
-                onSendMessage();
-              }
-            }}
-            disabled={!canSend}
-            className="absolute bottom-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-slate-800 text-[13px] font-semibold text-white transition hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-45"
-          >
-            <LegacyFaIcon icon="fa-arrow-up" className="text-[12px]" />
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => {
+            if (folderCard?.phase === 'done' && folderCard.batches && onBatchSendReady) {
+              const task: BatchSendTask = {
+                batches: folderCard.batches,
+                totalFiles: folderCard.files.length,
+                skippedCount: folderCard.skippedCount,
+                skippedReasons: folderCard.skippedReasons,
+              };
+              setFolderCard(null);
+              void onBatchSendReady(task);
+            } else {
+              onSendMessage();
+            }
+          }}
+          disabled={!canSend}
+          className={`group absolute bottom-3 right-3 inline-flex h-8 w-8 items-center justify-center rounded-full text-[13px] font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-45 ${
+            runSubmissionMode === 'queue'
+              ? 'bg-amber-500 hover:bg-amber-600'
+              : runSubmissionMode === 'insert'
+                ? 'bg-blue-600 hover:bg-blue-700'
+                : 'bg-slate-800 hover:bg-slate-900'
+          }`}
+          aria-label={sendButtonLabel}
+          title={runModeHint || sendButtonLabel}
+        >
+          <LegacyFaIcon icon={runSubmissionMode === 'queue' ? 'fa-clock' : runSubmissionMode === 'insert' ? 'fa-rotate-right' : 'fa-arrow-up'} className="text-[12px]" />
+          <IconTooltip label={sendButtonLabel} />
+        </button>
       </div>
 
       {error ? <div className="mt-3 rounded-2xl border px-4 py-3 text-sm font-bold" style={{ borderColor: 'rgba(239,68,68,0.28)', background: 'rgba(239,68,68,0.1)', color: 'var(--error)' }}>{error}</div> : null}

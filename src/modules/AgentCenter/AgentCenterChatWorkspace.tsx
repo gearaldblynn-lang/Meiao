@@ -41,6 +41,8 @@ interface Props {
   onSendMessage: () => void;
   onInterruptSend?: () => void;
   sendingMessage?: boolean;
+  runSubmissionMode?: 'idle' | 'insert' | 'queue';
+  queuedMessageCount?: number;
   onHandoff?: (target: ModuleInterfaceId, payload: Record<string, unknown>) => void;
   onBatchSend?: (batches: ComposerAttachment[][], meta: { totalFiles: number; skippedCount: number; skippedReasons: string[] }) => Promise<void>;
   renderMessageActions?: (message: AgentChatMessage) => React.ReactNode;
@@ -109,6 +111,8 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
   onSendMessage,
   onInterruptSend,
   sendingMessage = false,
+  runSubmissionMode = 'idle',
+  queuedMessageCount = 0,
   onHandoff,
   onBatchSend,
   renderMessageActions,
@@ -817,6 +821,8 @@ const AgentCenterChatWorkspace: React.FC<Props> = ({
                 hideSessionHeader={true}
                 openGalleryRequest={galleryOpenRequest}
                 onInterruptSend={onInterruptSend}
+                runSubmissionMode={runSubmissionMode}
+                queuedMessageCount={queuedMessageCount}
                 onHandoff={onHandoff}
                 onBatchSend={onBatchSend}
                 renderMessageActions={renderMessageActions}
