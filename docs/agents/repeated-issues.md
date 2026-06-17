@@ -24,6 +24,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-17 - Providerless submit recovery must not blindly resubmit upstream jobs
+
+- Symptom: 长苏账号批量详情页出图时，5 个 `kie_image` 任务一直没有拿到上游 `providerTaskId`，前端显示“任务等待超时”，后端 15 分钟后以 `provider_submit_stale` 终态失败。
+- Environment: Tencent Cloud production one_click detail_page / Temporal task engine.
+- Root cause: 任务提交上游期间云上 `meiao-internal` / Temporal worker 连续重启，活动 heartbeat timeout；但“没有拿到 providerTaskId”不等于“上游一定没收到请求”。原实现允许 MySQL Temporal activity 重新认领 `running` 任务，若该任务还没有 `providerTaskId`，activity retry 会再次进入 `executeJob`，存在重复向上游创建任务的风险。
+- Fix: MySQL Temporal activity 遇到 `status='running'` 且没有 `providerTaskId` 的任务时，直接返回当前状态，不再 claim、不创建 attempt/event、不执行 `executeJob`。继续保持 providerless stale 兜底终态失败并释放并发；后续若要自动恢复，必须先引入 provider 提交幂等键或把提交阶段拆成可证明未发送/已发送的状态。
+- Regression check: `node --test server/temporalWorker.test.mjs --test-name-pattern "does not resubmit"`; `node --test server/jobManager.test.mjs server/temporalWorker.test.mjs server/jobLoggingBehavior.test.mjs server/taskPlatform.test.mjs server/temporalTaskAdapter.test.mjs`.
+- Files/tests: `server/temporalWorker.mjs`, `server/temporalWorker.test.mjs`, `server/jobManager.test.mjs`, `server/jobLoggingBehavior.test.mjs`.
+- Avoid next time: 看板出现 `provider_submit_stale` 且 PM2 同窗口有 `Activity task timed out` / `Worker state changed STOPPING/RUNNING` 时，先查进程重启；但不要靠盲目提高 Temporal activity retry 或自动 `retry_waiting` 来“稳定”，除非 provider 提交具备幂等性或能证明请求尚未发出。
+
 ## 2026-06-17 - Agent chat lifecycle tests must cover the shell entry
 
 - Symptom: 智能体对话旧模块 `src/modules/AgentCenter/AgentCenterModule.tsx` 已有 pending run 恢复和输入锁定保护，但真实应用入口 `src/shell/modules/AgentCenter/AgentCenterModule.tsx` 缺少同款逻辑；刷新后的后台 run 可能锁定/展示语义不一致。
