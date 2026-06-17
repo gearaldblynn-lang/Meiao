@@ -230,6 +230,9 @@ export const createMysqlTemporalActivities = ({
     if (isTerminalJobStatus(currentJob.status)) {
       return toActivityResult(currentJob);
     }
+    if (String(currentJob.status || '') === 'running' && !String(currentJob.providerTaskId || '').trim()) {
+      return toActivityResult(currentJob);
+    }
 
     const user = await Promise.resolve(findUserById?.(currentJob.userId));
     if (await shouldDelayMysqlJobForUserConcurrency({ pool, job: currentJob, user, getMaxConcurrency })) {

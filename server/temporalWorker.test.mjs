@@ -204,6 +204,46 @@ test('mysql temporal activity returns a terminal result when the job was already
   assert.equal(logs.length, 0);
 });
 
+test('mysql temporal activity does not resubmit a running job before provider task id is known', async () => {
+  const { state, pool } = createMysqlHarness({
+    id: 'job-running-no-provider',
+    user_id: 'user-1',
+    module: 'one_click',
+    task_type: 'kie_image',
+    provider: 'kie',
+    status: 'running',
+    priority: 0,
+    payload_json: JSON.stringify({ traceId: 'trace-running' }),
+    provider_task_id: null,
+    created_at: 1000,
+    updated_at: 1500,
+    started_at: 1500,
+  });
+  let executeCalls = 0;
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async () => {
+      executeCalls += 1;
+      throw new Error('running providerless job must not be resubmitted');
+    },
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', username: 'user-1', displayName: 'User 1', role: 'admin' }),
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: 'job-running-no-provider',
+    workflowId: 'meiao-job-running-no-provider',
+    runId: 'run-1',
+  });
+
+  assert.equal(result.status, 'running');
+  assert.equal(result.providerTaskId, '');
+  assert.equal(executeCalls, 0);
+  assert.equal(state.attempts.length, 0);
+  assert.equal(state.events.length, 0);
+  assert.equal(state.job.started_at, 1500);
+});
+
 test('mysql temporal activity executes a queued db job and writes attempts/events', async () => {
   const { state, pool } = createMysqlHarness({
     id: 'job-1',
