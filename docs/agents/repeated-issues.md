@@ -431,6 +431,14 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/openaiResponsesProvider.test.mjs server/agentToolConversation.test.mjs server/providerGateway.test.mjs server/agentCenterSource.test.mjs`; `npm run lint`; `npm run build`。
 - Avoid next time: 看到“上游已出图但对话失败”时，先按阶段切分：模型 tool call、KIE 出图、工具结果回填、最终总结。Responses HTTP 的工具回填测试必须断言 `function_call` 和 `function_call_output` 成对且 `call_id` 一致，不能只断言工具执行成功。
 
+### Agent image result rendering must use result metadata, not only request mode
+
+- Symptom: 智能体通过普通聊天触发 `generate_image` 后，图片实际生成成功，但 assistant 回复只把结果图渲染成 9x9 小附件缩略图和 `图1` 标签，没有展示“已生成图片 / 点击查看大图 / 下载 / 结果总结”的生图结果卡。
+- Root cause: 前端 `ChatConversationPane` 只用 `metadata.requestMode === 'image_generation'` 判断是否渲染生图结果卡；工具调用路径的原始请求仍是 `chat`，但成功后带有 `metadata.imageResultUrls`、`metadata.imagePlan` 和 assistant 图片附件。
+- Fix: 增加 `hasAssistantImageResults`，只要 assistant 消息带 `imageResultUrls`、`imagePlan` 或图片结果附件，就按生图结果卡渲染；图库收集也继续复用同一判定。
+- Regression check: `node --experimental-strip-types --test src/modules/AgentCenter/chatConversationRendering.test.mjs src/shell/modules/AgentCenter/ChatConversationPane.test.mjs`; `npm run lint`; `npm run build`。
+- Avoid next time: 对话模式和结果形态要分开判断。`requestMode` 表示用户发起方式，`imageResultUrls/imagePlan/assistant image attachments` 才是结果展示形态；工具调用能从普通 chat 产出生图结果。
+
 ## 2026-06-12 - First-image planning recovery must aggregate sibling reference jobs
 
 - Symptom: 天琪账号首图功能上传 5 张风格参考图后，后台实际创建并完成了 5 个 `kie_chat` 策划 job，但前端项目卡只显示 1 个策划，用户无法发现少了 4 个。

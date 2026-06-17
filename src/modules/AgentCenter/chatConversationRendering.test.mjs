@@ -22,6 +22,15 @@ test('image generation result summaries do not render raw provider image urls', 
   assert.doesNotMatch(source, /\{message\.content\}<\/p>/);
 });
 
+test('tool-called image results render as image result cards even when request mode is chat', () => {
+  assert.match(source, /const hasAssistantImageResults = \(message: AgentChatMessage\) =>/);
+  assert.match(source, /Array\.isArray\(message\.metadata\?\.imageResultUrls\)/);
+  assert.match(source, /Boolean\(message\.metadata\?\.imagePlan\)/);
+  assert.match(source, /message\.attachments\.some\(\(item\) => item\.kind === 'image' && item\.url\)/);
+  assert.match(source, /message\.role === 'assistant' && \(message\.metadata\?\.requestMode === 'image_generation' \|\| hasAssistantImageResults\(message\)\)/);
+  assert.match(source, /isImageGenerationMessage\(message\) && Array\.isArray\(message\.attachments\)/);
+});
+
 test('assistant text replies also strip legacy provider image urls before markdown rendering', () => {
   assert.match(source, /const assistantDisplayContent = !isUser \? stripImageResultUrls\(protocolDisplayContent\) : protocolDisplayContent;/);
   assert.match(source, /<MarkdownMessage content=\{assistantDisplayContent\} \/>/);
