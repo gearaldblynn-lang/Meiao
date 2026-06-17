@@ -11,19 +11,17 @@ test('chat composer reasoning menu uses shared default selection instead of the 
   assert.doesNotMatch(source, /\(reasoningLevel \|\| reasoningLevels\[0\] \|\| ''\) === level/);
 });
 
-test('chat composer reasoning menu opens upward to avoid clipping near the bottom composer area', () => {
-  assert.match(source, /absolute left-0 bottom-11 z-20/);
+test('chat composer reasoning controls live inside the unified config menu', () => {
+  assert.match(source, /agent-composer-config-menu/);
+  assert.match(source, /思考强度/);
+  assert.doesNotMatch(source, /absolute left-0 bottom-11 z-20/);
 });
 
 test('chat composer toolbar icons expose visible hover and focus tooltips', () => {
   assert.match(source, /const IconTooltip = \(\{ label \}: \{ label: string \}\) =>/);
   assert.match(source, /group-hover:opacity-100 group-focus-visible:opacity-100/);
-  assert.match(source, /<IconTooltip label=\{modelHint\} \/>/);
-  assert.match(source, /<IconTooltip label=\{attachmentHint\} \/>/);
-  assert.match(source, /<IconTooltip label=\{folderHint\} \/>/);
-  assert.match(source, /<IconTooltip label=\{imageModeHint\} \/>/);
-  assert.match(source, /<IconTooltip label=\{webHint\} \/>/);
-  assert.match(source, /<IconTooltip label=\{reasoningHint\} \/>/);
+  assert.match(source, /<IconTooltip label=\{uploadHint\} \/>/);
+  assert.match(source, /<IconTooltip label=\{configHint\} \/>/);
 });
 
 test('chat composer toggle icons expose a high-contrast pressed state', () => {
@@ -32,7 +30,7 @@ test('chat composer toggle icons expose a high-contrast pressed state', () => {
   assert.match(source, /shadow-\[0_0_0_3px_var\(--accent-soft\)\]/);
   assert.match(source, /aria-pressed=\{imageModeEnabled\}/);
   assert.match(source, /aria-pressed=\{webSearchEnabled\}/);
-  assert.match(source, /aria-pressed=\{Boolean\(reasoningLevel\)\}/);
+  assert.match(source, /aria-pressed=\{active\}/);
 });
 
 test('chat composer sends with Enter and keeps Shift+Enter for newline', () => {
@@ -50,11 +48,17 @@ test('chat composer capability bar exposes GPT style visible pills', () => {
   assert.match(source, /const webStatusLabel = selectedModelOption\?\.supportsWebSearch/);
   assert.match(source, /const reasoningStatusLabel = selectedModelOption\?\.supportsReasoningLevel/);
   assert.match(source, /const imageModeStatusLabel = !imageModeAvailable/);
-  assert.match(source, /<span>模型 · \{selectedModelLabel\}<\/span>/);
+  assert.match(source, /const uploadStatusLabel = attachments\.length > 0 \? `上传 · \$\{attachments\.length\}` : '上传';/);
+  assert.match(source, /const configStatusLabel = `配置 · \$\{selectedModelLabel\}`;/);
+  assert.match(source, /agent-composer-upload-menu/);
+  assert.match(source, /agent-composer-config-menu/);
+  assert.match(source, /<span>\{uploadStatusLabel\}<\/span>/);
+  assert.match(source, /<span>\{configStatusLabel\}<\/span>/);
   assert.match(source, /<span>\{webStatusLabel\}<\/span>/);
   assert.match(source, /<span>\{reasoningStatusLabel\}<\/span>/);
   assert.match(source, /<span>\{imageModeStatusLabel\}<\/span>/);
-  assert.match(source, /<span>\+ 附件<\/span>/);
+  assert.doesNotMatch(source, /<span>\+ 附件<\/span>/);
+  assert.doesNotMatch(source, /<span>模型 · \{selectedModelLabel\}<\/span>/);
 });
 
 test('chat composer capability labels expose unavailable and capacity states without relying on tooltips', () => {
