@@ -43,15 +43,26 @@ test('image result card uses a primary image with compact thumbnails for multipl
   assert.match(source, /const secondaryPreviewImages = previewImages\.slice\(1\);/);
   assert.match(source, /agent-image-result-primary/);
   assert.match(source, /agent-image-result-thumbnails/);
+  assert.match(source, /max-w-\[min\(420px,100%\)\]/);
+  assert.match(source, /max-h-\[44vh\]/);
+  assert.doesNotMatch(source, /max-w-\[min\(480px,100%\)\]/);
+  assert.doesNotMatch(source, /max-h-\[52vh\]/);
+  assert.doesNotMatch(source, /max-w-\[min\(560px,100%\)\]/);
+  assert.doesNotMatch(source, /max-h-\[58vh\]/);
+  assert.doesNotMatch(source, /max-h-\[70vh\] w-full rounded-\[18px\] object-contain/);
 });
 
 test('image result card uses a bottom image action layer instead of top-right utility icons', () => {
   assert.match(source, /agent-image-result-actions/);
   assert.match(source, /agent-image-result-edit/);
   assert.match(source, /aria-label="编辑图片"/);
-  assert.match(source, /title="编辑图片"/);
   assert.match(source, /aria-label="下载图片"/);
-  assert.match(source, /title="下载图片"/);
+  assert.match(source, /inline-flex h-10 w-10 items-center justify-center/);
+  assert.match(source, /icon="fa-wand-magic-sparkles" className="text-\[15px\]"/);
+  assert.match(source, /icon="fa-wand-magic-sparkles"/);
+  assert.doesNotMatch(source, /<span>编辑<\/span>/);
+  assert.doesNotMatch(source, /<IconTooltip label="编辑图片" \/>/);
+  assert.doesNotMatch(source, /<IconTooltip label="下载图片" \/>/);
   assert.doesNotMatch(source, /absolute right-3 top-3/);
   assert.doesNotMatch(source, /agent-image-result-primary[\s\S]*aria-label="放入当前输入框"[\s\S]*agent-image-result-thumbnails/);
 });
@@ -63,6 +74,8 @@ test('assistant text replies also strip legacy provider image urls before markdo
 
 test('assistant replies render a unified folded run trace across chat and image modes', () => {
   assert.match(source, /const getAssistantRunStages = \(message: AgentChatMessage\) =>/);
+  assert.match(source, /const shouldShowAssistantRunTrace = \(message: AgentChatMessage\) =>/);
+  assert.match(source, /const getAssistantThoughtTrace = \(message: AgentChatMessage, turnInputMessage\?: AgentChatMessage \| null\) =>/);
   assert.match(source, /思考中/);
   assert.match(source, /检索知识库/);
   assert.match(source, /联网搜索/);
@@ -70,8 +83,38 @@ test('assistant replies render a unified folded run trace across chat and image 
   assert.match(source, /生成图片/);
   assert.match(source, /完成/);
   assert.match(source, /失败/);
+  assert.match(source, /思考过程/);
+  assert.match(source, /reasoningSummary/);
+  assert.match(source, /toolCall/);
+  assert.match(source, /contextTrace/);
+  assert.match(source, /const getReadableContextTrace = \(contextTrace: Record<string, unknown>\) =>/);
+  assert.match(source, /const getTurnInputTrace = \(message: AgentChatMessage, turnInputMessage\?: AgentChatMessage \| null\) =>/);
+  assert.match(source, /const getCapabilityTrace = \(message: AgentChatMessage, contextTrace: Record<string, unknown>\) =>/);
+  assert.match(source, /const getResultTrace = \(message: AgentChatMessage\) =>/);
+  assert.match(source, /本轮输入/);
+  assert.match(source, /包含 \$\{imageCount\} 张图片/);
+  assert.match(source, /启用能力/);
+  assert.match(source, /生图/);
+  assert.match(source, /结果/);
+  assert.match(source, /生成 \$\{imageResultCount\} 张图片/);
+  assert.match(source, /历史消息/);
+  assert.match(source, /会话摘要/);
+  assert.match(source, /知识库：命中/);
+  assert.match(source, /messages\.slice\(0, index\)\.reverse\(\)\.find\(\(item\) => item\.role === 'user'\)/);
+  assert.match(source, /renderAssistantRunTrace\(message, previousUserMessage\)/);
+  assert.match(source, /renderImageGenerationMessage\(message, previousUserMessage\)/);
+  assert.doesNotMatch(source, /formatTraceContent\(contextTrace\)/);
+  assert.doesNotMatch(source, /label: '上下文', content: contextContent/);
+  assert.match(source, /retrievalSummary/);
+  assert.match(source, /shouldShowAssistantRunTrace\(message\)/);
   assert.match(source, /className="assistant-run-trace/);
-  assert.match(source, /renderAssistantRunTrace\(message\)/);
+  assert.match(source, /renderAssistantRunTrace\(message, previousUserMessage\)/);
+  assert.doesNotMatch(source, /getAssistantRunDetails/);
+  assert.doesNotMatch(source, /run-detail/);
+  assert.doesNotMatch(source, /grid gap-1\.5 sm:grid-cols-2/);
+  assert.doesNotMatch(source, /providerTaskId.*thoughtTrace/s);
+  assert.doesNotMatch(source, /<summary[^>]*>\s*运行步骤\s*<\/summary>/);
+  assert.doesNotMatch(source, /<summary[^>]*>\s*执行详情\s*<\/summary>/);
 });
 
 test('chat conversation uses chat-first reading layout instead of assistant cards', () => {

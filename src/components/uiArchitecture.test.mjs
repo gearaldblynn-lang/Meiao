@@ -51,6 +51,23 @@ test('agent chat GPT loop acceptance record documents verification feedback and 
   assert.match(doc, /npm run build/);
 });
 
+test('release announcement promotes the June 17 native GPT-style agent chat repair', () => {
+  const releaseNotes = read('../config/releaseNotes.ts');
+  const shellToast = read('../shell/components/ToastSystem.tsx');
+
+  assert.match(releaseNotes, /APP_RELEASE_VERSION = 'V260617A'/);
+  assert.match(releaseNotes, /6 月 17 功能调整/);
+  assert.match(releaseNotes, /智能体对话已修复/);
+  assert.match(releaseNotes, /原生 GPT 式智能对话/);
+  assert.match(releaseNotes, /连续对话/);
+  assert.match(releaseNotes, /改图/);
+  assert.match(shellToast, /CURRENT_RELEASE_NOTES/);
+  assert.match(shellToast, /RELEASE_NOTES_STORAGE_KEY/);
+  assert.match(shellToast, /localStorage\.getItem\(RELEASE_NOTES_STORAGE_KEY\)/);
+  assert.match(shellToast, /智能体对话已修复/);
+  assert.match(shellToast, /setTimeout\(\(\) => setToasts/);
+});
+
 test('one click module keeps submode switching out of the workspace header', () => {
   const oneClickModule = read('../modules/OneClick/OneClickModule.tsx');
   const oneClickSidebar = read('../modules/OneClick/ConfigSidebar.tsx');
@@ -104,6 +121,15 @@ test('one click visuals avoid decorative english labels in the main work surface
   assert.match(workspacePrimitives, /var\(--bg-surface\)/);
   assert.match(workspacePrimitives, /var\(--accent-soft\)/);
   assert.doesNotMatch(oneClickSidebar, /ChoiceGrid/);
+});
+
+test('legacy icon bridge maps chat action icons instead of falling back to file icons', () => {
+  const workspacePrimitives = read('./ui/workspacePrimitives.tsx');
+
+  assert.match(workspacePrimitives, /Copy,/);
+  assert.match(workspacePrimitives, /RotateCcw,/);
+  assert.match(workspacePrimitives, /lowerIcon\.includes\('copy'\) \? Copy/);
+  assert.match(workspacePrimitives, /lowerIcon\.includes\('rotate'\) \|\| lowerIcon\.includes\('redo'\) \|\| lowerIcon\.includes\('refresh'\) \? RotateCcw/);
 });
 
 test('one click sidebars split design references from product assets and support grouped reference analysis', () => {
@@ -1757,7 +1783,9 @@ test('agent chat image replies put final results in the result layer and referen
   assert.match(chatPane, /<MarkdownMessage content=\{summaryContent\} \/>/);
   assert.match(chatPane, /agent-image-result-primary/);
   assert.match(chatPane, /agent-image-result-thumbnails/);
-  assert.match(chatPane, /本次参考规则/);
+  assert.match(chatPane, /思考过程/);
+  assert.match(chatPane, /知识库检索/);
+  assert.match(chatPane, /模型规划/);
   assert.doesNotMatch(chatPane, /expandedReferenceRules/);
   assert.doesNotMatch(chatPane, /expandedSummaries/);
   assert.doesNotMatch(chatPane, /展开结果总结/);
@@ -1992,8 +2020,9 @@ test('chat composer uses a unified attachment entry and compact capability icons
   assert.match(composer, /onPaste=\{handlePaste\}/);
   assert.match(composer, /松开即可放入当前输入框/);
   assert.match(composer, /sending/);
-  assert.match(composer, /onInterruptSend/);
-  assert.match(composer, /中断/);
+  assert.match(composer, /runSubmissionMode/);
+  assert.match(composer, /插入引导/);
+  assert.match(composer, /加入下一轮/);
   assert.match(composer, /发送/);
 });
 
@@ -2044,7 +2073,9 @@ test('chat conversation pane uses compact header tags and refined message layout
   assert.match(conversationPane, /正在整理生图参数与提示词/);
   assert.match(conversationPane, /正在理解需求与参考图/);
   assert.match(conversationPane, /正在生成图片/);
-  assert.match(conversationPane, /本次参考规则/);
+  assert.match(conversationPane, /思考过程/);
+  assert.match(conversationPane, /知识库检索/);
+  assert.match(conversationPane, /模型规划/);
   assert.match(conversationPane, /retrievalSummary/);
   assert.match(conversationPane, /rounded-\[22px\] border border-slate-200\/80 bg-slate-50\/80 p-2/);
   assert.match(conversationPane, /fixed inset-0 z-40 px-4 py-5 sm:px-6 sm:py-6/);
@@ -2088,9 +2119,11 @@ test('agent center module wires chat capability controls and session deletion in
   assert.match(module, /sendAbortControllerRef/);
   assert.match(module, /pendingRestoreRef/);
   assert.match(module, /pendingAssistantMessageId/);
-  assert.match(module, /handleInterruptSend/);
   assert.match(module, /AbortController/);
-  assert.match(module, /已中断本次发送/);
+  assert.match(module, /runSubmissionMode/);
+  assert.match(module, /pendingAutoSubmission/);
+  assert.match(module, /queueChatSubmission/);
+  assert.match(module, /正在按新输入重新回复/);
   assert.match(module, /optimisticUserMessage/);
   assert.match(module, /optimisticAssistantMessage/);
   assert.match(module, /lockChatPageScroll/);

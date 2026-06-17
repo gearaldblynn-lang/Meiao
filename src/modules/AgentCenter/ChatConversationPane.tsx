@@ -34,6 +34,8 @@ interface Props {
   imageMaxInputCount: number;
   onImageModeToggle: () => void;
   sending?: boolean;
+  runSubmissionMode?: 'idle' | 'insert' | 'queue';
+  queuedMessageCount?: number;
   hideSessionHeader?: boolean;
   openGalleryRequest?: number;
   onHandoff?: (target: ModuleInterfaceId, payload: Record<string, unknown>) => void;
@@ -97,7 +99,29 @@ type AssistantRunStage = {
   error?: boolean;
 };
 
+type AssistantThoughtTraceEntry = {
+  key: string;
+  label: string;
+  content: string;
+  tone?: 'error' | 'muted';
+};
+
 const CHAT_REUSE_IMAGE_MIME = 'application/x-meiao-chat-image';
+const REASONING_LABELS: Record<string, string> = {
+  minimal: '极低',
+  low: '低',
+  medium: '中等',
+  high: '高',
+  xhigh: '极高',
+};
+
+const IconTooltip = ({ label }: { label: string }) => (
+  <span
+    className="pointer-events-none absolute bottom-full left-1/2 z-30 mb-2 -translate-x-1/2 whitespace-nowrap rounded-full bg-slate-950 px-2.5 py-1 text-[11px] font-medium text-white opacity-0 shadow-[0_12px_32px_rgba(15,23,42,0.16)] transition group-hover:opacity-100 group-focus-visible:opacity-100"
+  >
+    {label}
+  </span>
+);
 
 const hasAssistantImageResults = (message: AgentChatMessage) =>
   message.role === 'assistant' && (
@@ -175,6 +199,200 @@ const getAssistantRunStages = (message: AgentChatMessage) => {
   return stages;
 };
 
+const countContextAttachments = (message: AgentChatMessage) => {
+  const refs = message.metadata?.contextTrace?.attachmentRefs;
+  if (Array.isArray(refs)) return refs.length;
+  return Array.isArray(message.attachments) ? message.attachments.length : 0;
+};
+
+const getAttachmentSummary = (attachments: AgentChatMessage['attachments']) => {
+  const items = Array.isArray(attachments) ? attachments : [];
+  const imageCount = items.filter((item) => item.kind === 'image').length;
+  const fileCount = Math.max(items.length - imageCount, 0);
+  const parts: string[] = [];
+  if (imageCount > 0) parts.push(`包含 ${imageCount} 张图片`);
+  if (fileCount > 0) parts.push(`包含 ${fileCount} 个文件`);
+  return { imageCount, fileCount, total: items.length, text: parts.join('，') };
+};
+
+const asTraceRecord = (value: unknown) => (
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {}
+);
+
+const sanitizeTraceValue = (value: unknown, key = ''): unknown => {
+  const hiddenKeys = new Set([
+    ['provider', 'TaskId'].join(''),
+    'inputImageUrls',
+    'imageResultUrls',
+    'usedImageReferenceUrls',
+    'url',
+    'imageUrl',
+    'image_url',
+  ]);
+  if (hiddenKeys.has(key)) {
+    return Array.isArray(value) ? `${value.length} 项` : value ? '已记录' : '';
+  }
+  if (Array.isArray(value)) return value.map((item) => sanitizeTraceValue(item));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined && item !== null && item !== '')
+      .map(([itemKey, item]) => [itemKey, sanitizeTraceValue(item, itemKey)]),
+  );
+};
+
+const formatTraceContent = (value: unknown) => {
+  if (typeof value === 'string') return value.trim();
+  const sanitized = sanitizeTraceValue(value);
+  if (!sanitized || (typeof sanitized === 'object' && Object.keys(sanitized as Record<string, unknown>).length === 0)) return '';
+  return JSON.stringify(sanitized, null, 2);
+};
+
+const getTurnInputTrace = (message: AgentChatMessage, turnInputMessage?: AgentChatMessage | null) => {
+  const lines: string[] = [];
+  const inputMessage = turnInputMessage || null;
+  const contextAttachmentCount = countContextAttachments(message);
+  const inputAttachmentSummary = getAttachmentSummary(inputMessage?.attachments);
+  const fallbackAttachmentText = contextAttachmentCount > 0 ? `包含 ${contextAttachmentCount} 个附件` : '';
+  const inputText = stripConversationProtocolMarkers(inputMessage?.content || '').trim();
+
+  if (inputText) {
+    lines.push(`需求：${inputText.length > 80 ? `${inputText.slice(0, 80)}...` : inputText}`);
+  }
+  if (inputAttachmentSummary.text) {
+    lines.push(`素材：${inputAttachmentSummary.text}`);
+  } else if (fallbackAttachmentText) {
+    lines.push(`素材：${fallbackAttachmentText}`);
+  }
+  return lines.join('\n');
+};
+
+const getCapabilityTrace = (message: AgentChatMessage, contextTrace: Record<string, unknown>) => {
+  const metadata = message.metadata || {};
+  const lines: string[] = [];
+  const model = [metadata.selectedModel, metadata.model].map((item) => String(item || '').trim()).find(Boolean);
+  const reasoning = String(metadata.reasoningLevel || contextTrace.reasoningLevel || '').trim();
+  const knowledgeChunkCount = Number(contextTrace.knowledgeChunkCount || 0);
+  const hasKnowledgeSignal = Object.prototype.hasOwnProperty.call(contextTrace, 'knowledgeChunkCount');
+  const imageMode = Boolean(contextTrace.imageMode) || isImageGenerationMessage(message);
+  const requestMode = String(metadata.requestMode || '').trim();
+
+  if (model) lines.push(`模型：${model}`);
+  if (reasoning) lines.push(`思考强度：${REASONING_LABELS[reasoning] || reasoning}`);
+  if (imageMode || requestMode === 'image_generation') lines.push('生图：已启用');
+  if (metadata.webSearchEnabled) lines.push('联网：已启用');
+  if (hasKnowledgeSignal) {
+    lines.push(knowledgeChunkCount > 0 ? `知识库：命中 ${knowledgeChunkCount} 条` : '知识库：未命中');
+  }
+  return lines.join('\n');
+};
+
+const getResultTrace = (message: AgentChatMessage) => {
+  const metadata = message.metadata || {};
+  const lines: string[] = [];
+  const imageResultCount = Array.isArray(message.attachments)
+    ? message.attachments.filter((item) => item.kind === 'image' && item.url).length
+    : 0;
+  const failed = isFailedImageGenerationMessage(message);
+
+  if (failed) {
+    lines.push('状态：失败');
+  } else if (imageResultCount > 0) {
+    lines.push(`结果：生成 ${imageResultCount} 张图片`);
+  } else if (metadata.pending || metadata.progress) {
+    lines.push(`状态：${getProgressStageLabel(message)}`);
+  } else {
+    lines.push('状态：已完成');
+  }
+  return lines.join('\n');
+};
+
+const getReadableContextTrace = (contextTrace: Record<string, unknown>) => {
+  const lines: string[] = [];
+  const historyMessageCount = Number(contextTrace.historyMessageCount || 0);
+  const recentHistoryMessageCount = Array.isArray(contextTrace.recentHistoryMessageIds)
+    ? contextTrace.recentHistoryMessageIds.length
+    : 0;
+  const summaryUsed = Boolean(contextTrace.summaryUsed);
+
+  if (historyMessageCount > 0) {
+    lines.push(`历史消息：${historyMessageCount} 条${recentHistoryMessageCount > 0 ? `，最近保留 ${recentHistoryMessageCount} 条` : ''}`);
+  }
+  lines.push(`会话摘要：${summaryUsed ? '已使用' : '未使用'}`);
+
+  return lines.join('\n');
+};
+
+const getAssistantThoughtTrace = (message: AgentChatMessage, turnInputMessage?: AgentChatMessage | null) => {
+  const metadata = message.metadata || {};
+  const thoughtTrace: AssistantThoughtTraceEntry[] = [];
+  const imagePlan = asTraceRecord(metadata.imagePlan);
+  const contextTrace = asTraceRecord(metadata.contextTrace);
+  const toolCall = asTraceRecord(metadata.toolCall);
+  const turnInputTrace = getTurnInputTrace(message, turnInputMessage);
+  const capabilityTrace = getCapabilityTrace(message, contextTrace);
+  const resultTrace = getResultTrace(message);
+  const reasoningSummary = String(imagePlan.reasoningSummary || '').trim();
+  const retrievalSummary = Array.isArray(metadata.retrievalSummary)
+    ? metadata.retrievalSummary
+        .map((item) => asTraceRecord(item))
+        .filter((item) => item.documentTitle || item.preview)
+    : [];
+
+  if (turnInputTrace) {
+    thoughtTrace.push({ key: 'turnInput', label: '本轮输入', content: turnInputTrace });
+  }
+  if (capabilityTrace) {
+    thoughtTrace.push({ key: 'capabilities', label: '启用能力', content: capabilityTrace });
+  }
+  if (resultTrace) {
+    thoughtTrace.push({ key: 'result', label: '结果', content: resultTrace });
+  }
+  if (reasoningSummary) {
+    thoughtTrace.push({ key: 'reasoningSummary', label: '模型规划', content: reasoningSummary });
+  }
+  if (Object.keys(toolCall).length > 0) {
+    const toolContent = formatTraceContent(toolCall);
+    if (toolContent) thoughtTrace.push({ key: 'toolCall', label: '工具调用', content: toolContent });
+  }
+  if (retrievalSummary.length > 0) {
+    const retrievalContent = retrievalSummary
+      .map((item, index) => `${item.documentTitle || `资料${index + 1}`}\n${item.preview || ''}`.trim())
+      .filter(Boolean)
+      .join('\n\n');
+    if (retrievalContent) thoughtTrace.push({ key: 'retrievalSummary', label: '知识库检索', content: retrievalContent });
+  }
+  if (Object.keys(contextTrace).length > 0) {
+    const readableContext = getReadableContextTrace(contextTrace);
+    if (readableContext) thoughtTrace.push({ key: 'contextTrace', label: '上下文', content: readableContext, tone: 'muted' });
+  }
+  if (metadata.errorCode || metadata.errorMessage) {
+    thoughtTrace.push({
+      key: 'error',
+      label: '错误',
+      content: [metadata.errorCode, metadata.errorMessage].filter(Boolean).join('\n'),
+      tone: 'error',
+    });
+  }
+  return thoughtTrace;
+};
+
+const shouldShowAssistantRunTrace = (message: AgentChatMessage) => {
+  if (message.role !== 'assistant') return false;
+  const metadata = message.metadata || {};
+  if (metadata.pending || metadata.progress) return true;
+  if (isFailedImageGenerationMessage(message) || metadata.errorCode || metadata.errorMessage) return true;
+  if (metadata.requestMode === 'image_generation' || hasAssistantImageResults(message)) return true;
+  if (metadata.webSearchEnabled || metadata.toolName || metadata.toolCallName) return true;
+  if (metadata.toolCall) return true;
+  if (Array.isArray(metadata.retrievalSummary) && metadata.retrievalSummary.length > 0) return true;
+  if (Number(metadata.contextTrace?.knowledgeChunkCount || 0) > 0) return true;
+  if (countContextAttachments(message) > 0) return true;
+  return false;
+};
+
 const ChatConversationPane: React.FC<Props> = ({
   messages,
   messageDraft,
@@ -199,6 +417,8 @@ const ChatConversationPane: React.FC<Props> = ({
   imageMaxInputCount,
   onImageModeToggle,
   sending = false,
+  runSubmissionMode = 'idle',
+  queuedMessageCount = 0,
   hideSessionHeader = false,
   openGalleryRequest = 0,
   onHandoff,
@@ -332,43 +552,46 @@ const ChatConversationPane: React.FC<Props> = ({
     event.dataTransfer.setData('text/plain', image.name);
   };
 
-  const renderAssistantRunTrace = (message: AgentChatMessage) => {
-    if (message.role !== 'assistant') return null;
+  const renderAssistantRunTrace = (message: AgentChatMessage, turnInputMessage?: AgentChatMessage | null) => {
+    if (!shouldShowAssistantRunTrace(message)) return null;
     const stages = getAssistantRunStages(message);
-    const retrievalSummary = Array.isArray(message.metadata?.retrievalSummary)
-      ? message.metadata.retrievalSummary.filter((item) => item && (item.documentTitle || item.preview))
-      : [];
-    if (stages.length === 0) return null;
+    const thoughtTrace = getAssistantThoughtTrace(message, turnInputMessage);
+    if (stages.length === 0 && thoughtTrace.length === 0) return null;
 
     return (
       <details className="assistant-run-trace mb-2 rounded-[12px] border px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)' }}>
         <summary className="cursor-pointer font-semibold" style={{ color: 'var(--text-secondary)' }}>
-          运行步骤
+          思考过程
         </summary>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {stages.map((stage) => (
-            <span
-              key={stage.key}
-              className="inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium"
-              style={stage.error
-                ? { background: 'color-mix(in srgb, var(--error) 10%, transparent)', color: 'var(--error)' }
-                : stage.active
-                  ? { background: 'var(--accent-soft)', color: 'var(--accent)' }
-                  : { background: 'var(--bg-elevated)', color: stage.done ? 'var(--text-primary)' : 'var(--text-secondary)' }}
-            >
-              <LegacyFaIcon icon={stage.error ? 'fa-triangle-exclamation' : stage.done ? 'fa-check' : stage.active ? 'fa-spinner' : 'fa-circle'} className={`text-[9px] ${stage.active ? 'animate-spin' : ''}`} />
-              {stage.label}
-            </span>
-          ))}
-        </div>
-        {retrievalSummary.length > 0 ? (
-          <div className="mt-3 space-y-1.5 border-t pt-2" style={{ borderColor: 'var(--border-subtle)' }}>
-            <p className="font-semibold" style={{ color: 'var(--text-secondary)' }}>本次参考规则</p>
-            {retrievalSummary.map((item, index) => (
-              <div key={`${message.id}-run-rule-${index}`} className="rounded-[10px] px-2.5 py-2" style={{ background: 'var(--bg-elevated)' }}>
-                <p className="font-semibold" style={{ color: 'var(--text-primary)' }}>{item.documentTitle || `规则${index + 1}`}</p>
-                <p className="mt-1 select-text leading-5" style={{ color: 'var(--text-secondary)' }}>{item.preview || '已命中相关规则'}</p>
-              </div>
+        {stages.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {stages.map((stage) => (
+              <span
+                key={stage.key}
+                className="inline-flex items-center gap-1 rounded-full px-2 py-1 font-medium"
+                style={stage.error
+                  ? { background: 'color-mix(in srgb, var(--error) 10%, transparent)', color: 'var(--error)' }
+                  : stage.active
+                    ? { background: 'var(--accent-soft)', color: 'var(--accent)' }
+                    : { background: 'var(--bg-elevated)', color: stage.done ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+              >
+                <LegacyFaIcon icon={stage.error ? 'fa-triangle-exclamation' : stage.done ? 'fa-check' : stage.active ? 'fa-spinner' : 'fa-circle'} className={`text-[9px] ${stage.active ? 'animate-spin' : ''}`} />
+                {stage.label}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {thoughtTrace.length > 0 ? (
+          <div className="mt-3 space-y-2 border-t pt-2" style={{ borderColor: 'var(--border-subtle)' }}>
+            {thoughtTrace.map((item) => (
+              <section key={`${message.id}-thought-${item.key}`} className="rounded-[10px] px-2.5 py-2" style={{ background: 'var(--bg-elevated)' }}>
+                <p className="text-[10px] font-semibold" style={{ color: item.tone === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}>
+                  {item.label}
+                </p>
+                <pre className="mt-1 whitespace-pre-wrap break-words font-sans text-[11px] leading-5" style={{ color: item.tone === 'error' ? 'var(--error)' : item.tone === 'muted' ? 'var(--text-secondary)' : 'var(--text-primary)' }}>
+                  {item.content}
+                </pre>
+              </section>
             ))}
           </div>
         ) : null}
@@ -376,7 +599,7 @@ const ChatConversationPane: React.FC<Props> = ({
     );
   };
 
-  const renderImageGenerationMessage = (message: AgentChatMessage) => {
+  const renderImageGenerationMessage = (message: AgentChatMessage, turnInputMessage?: AgentChatMessage | null) => {
     const isPending = Boolean(message.metadata?.pending);
     const imageAttachments = Array.isArray(message.attachments)
       ? message.attachments.filter((item) => item.kind === 'image' && item.url)
@@ -394,7 +617,7 @@ const ChatConversationPane: React.FC<Props> = ({
     const secondaryPreviewImages = previewImages.slice(1);
     return (
       <div className="space-y-3">
-        {renderAssistantRunTrace(message)}
+        {renderAssistantRunTrace(message, turnInputMessage)}
         {isPending ? (
           <div className="rounded-[18px] border px-3.5 py-3" style={{ borderColor: 'color-mix(in srgb, var(--accent) 22%, var(--border-subtle))', background: 'var(--accent-soft)' }}>
             <div className="flex items-center gap-2">
@@ -418,7 +641,7 @@ const ChatConversationPane: React.FC<Props> = ({
           </p>
         ) : null}
         {primaryImage ? (
-          <div className="flex max-w-[760px] flex-col gap-2 sm:flex-row sm:items-start">
+          <div className="flex max-w-[min(420px,100%)] flex-col gap-2 sm:flex-row sm:items-start">
             <div
               className="agent-image-result-primary group relative overflow-hidden rounded-[18px] text-left transition"
               style={{ background: 'var(--bg-base)' }}
@@ -430,7 +653,7 @@ const ChatConversationPane: React.FC<Props> = ({
                   <img
                     src={primaryImage.url}
                     alt={primaryImage.name}
-                    className="h-auto max-h-[70vh] w-full rounded-[18px] object-contain"
+                    className="h-auto max-h-[44vh] w-full rounded-[18px] object-contain"
                     draggable
                     onDragStart={(event) => beginDragReuseImage(event, primaryImage)}
                   />
@@ -442,12 +665,10 @@ const ChatConversationPane: React.FC<Props> = ({
                       event.stopPropagation();
                       reuseImage(primaryImage);
                     }}
-                    className="agent-image-result-edit inline-flex h-9 items-center gap-1.5 rounded-full bg-slate-950/72 px-3 text-[12px] font-semibold text-white shadow-[0_10px_22px_rgba(15,23,42,0.22)] transition hover:bg-slate-950/86"
+                    className="agent-image-result-edit relative inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-950/72 text-white shadow-[0_10px_22px_rgba(15,23,42,0.22)] transition hover:bg-slate-950/86"
                     aria-label="编辑图片"
-                    title="编辑图片"
                   >
-                    <LegacyFaIcon icon="fa-plus" className="text-[12px]" />
-                    <span>编辑</span>
+                    <LegacyFaIcon icon="fa-wand-magic-sparkles" className="text-[15px]" />
                   </button>
                   <button
                     type="button"
@@ -455,17 +676,16 @@ const ChatConversationPane: React.FC<Props> = ({
                       event.stopPropagation();
                       downloadImage(primaryImage);
                     }}
-                    className="agent-image-result-download flex h-9 w-9 items-center justify-center rounded-full bg-slate-950/72 text-white shadow-[0_10px_22px_rgba(15,23,42,0.22)] transition hover:bg-slate-950/86"
+                    className="agent-image-result-download relative flex h-10 w-10 items-center justify-center rounded-full bg-slate-950/72 text-white shadow-[0_10px_22px_rgba(15,23,42,0.22)] transition hover:bg-slate-950/86"
                     aria-label="下载图片"
-                    title="下载图片"
                   >
-                    <LegacyFaIcon icon="fa-download" className="text-[12px]" />
+                    <LegacyFaIcon icon="fa-download" className="text-[15px]" />
                   </button>
                 </span>
               </div>
             </div>
             {secondaryPreviewImages.length > 0 ? (
-              <div className="agent-image-result-thumbnails flex gap-2 overflow-x-auto sm:max-h-[70vh] sm:w-16 sm:flex-col sm:overflow-y-auto sm:overflow-x-visible">
+              <div className="agent-image-result-thumbnails flex gap-2 overflow-x-auto sm:max-h-[44vh] sm:w-16 sm:flex-col sm:overflow-y-auto sm:overflow-x-visible">
                 {secondaryPreviewImages.map((image, index) => (
                   <button
                     key={image.id}
@@ -539,8 +759,11 @@ const ChatConversationPane: React.FC<Props> = ({
           </div>
         ) : (
           <div className="space-y-4">
-            {messages.map((message) => {
+            {messages.map((message, index) => {
               const isUser = message.role === 'user';
+              const previousUserMessage = !isUser
+                ? messages.slice(0, index).reverse().find((item) => item.role === 'user') || null
+                : null;
               const imageGenerationMessage = isImageGenerationMessage(message);
               const progressStage = String(message.metadata?.progressStage || '').trim();
               const isStreamingMessage = !isUser && !imageGenerationMessage && progressStage === 'streaming';
@@ -570,8 +793,8 @@ const ChatConversationPane: React.FC<Props> = ({
                         ? { background: 'var(--bg-elevated)', borderColor: 'var(--border-subtle)' }
                         : { background: 'transparent', borderColor: 'transparent' }}
                     >
-                      {!isUser && !imageGenerationMessage ? renderAssistantRunTrace(message) : null}
-                      {imageGenerationMessage ? renderImageGenerationMessage(message) : progressOnlyMessage ? (
+                      {!isUser && !imageGenerationMessage ? renderAssistantRunTrace(message, previousUserMessage) : null}
+                      {imageGenerationMessage ? renderImageGenerationMessage(message, previousUserMessage) : progressOnlyMessage ? (
                         <div className="flex items-center gap-2">
                           <span className="flex h-6 w-6 items-center justify-center rounded-full" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
                             <LegacyFaIcon icon="fa-spinner" className="animate-spin text-[11px]" />
@@ -909,6 +1132,8 @@ const ChatConversationPane: React.FC<Props> = ({
           onInterruptSend={onInterruptSend}
           disabled={isDisabled}
           sending={sending}
+          runSubmissionMode={runSubmissionMode}
+          queuedMessageCount={queuedMessageCount}
           chatModels={chatModels}
           selectedModel={selectedModel}
           onModelChange={onModelChange}

@@ -38,9 +38,21 @@ type ChatAttachmentPayload = {
   mimeType?: string;
 };
 type AgentMessageMetadata = NonNullable<AgentChatMessage['metadata']>;
+type RunSubmissionMode = 'idle' | 'insert' | 'queue';
+type ChatSubmissionInput = {
+  content: string;
+  sourceAttachments: Array<ComposerAttachment | ChatAttachmentPayload>;
+  requestMode: 'chat' | 'image_generation';
+  selectedModelOverride?: string;
+  reasoningLevelOverride?: string | null;
+  webSearchEnabledOverride?: boolean;
+  restoreDraft: string;
+  restoreAttachments: ComposerAttachment[];
+};
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const AGENT_CENTER_UI_STATE_KEY = 'MEIAO_AGENT_CENTER_UI_STATE';
+const FINAL_EXECUTION_PROGRESS_STAGES = new Set(['tool_calling', 'generating', 'image_generating', 'image_ready', 'syncing']);
 const isUncertainSendFailure = (error: any) =>
   !(
     error?.name === 'AbortError'
@@ -141,6 +153,22 @@ const AgentCenterShellStyles = () => (
     .agent-center-shell-scope .shadow-none {
       box-shadow: none !important;
     }
+    .agent-composer-config-menu,
+    .agent-composer-upload-menu,
+    .agent-center-shell-scope .agent-composer-config-menu,
+    .agent-center-shell-scope .agent-composer-upload-menu {
+      background: rgba(255, 255, 255, 0.78) !important;
+      border-color: rgba(255, 255, 255, 0.72) !important;
+      backdrop-filter: blur(28px) saturate(1.22) !important;
+      box-shadow: 0 24px 70px rgba(15,23,42,0.16) !important;
+    }
+    .agent-composer-config-popout,
+    .agent-center-shell-scope .agent-composer-config-popout {
+      background: rgba(255, 255, 255, 0.46) !important;
+      border-color: transparent !important;
+      backdrop-filter: blur(10px) saturate(1.08) !important;
+      box-shadow: none !important;
+    }
     .agent-center-shell-scope [class*="text-cyan-"],
     .agent-center-shell-scope [class*="text-emerald-"],
     .agent-center-shell-scope [class*="text-amber-"],
@@ -161,6 +189,12 @@ const AgentCenterShellStyles = () => (
       appearance: none;
     }
   `}</style>
+);
+
+const MessageActionTooltip = ({ label }: { label: string }) => (
+  <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-2 -translate-x-1/2 whitespace-nowrap rounded-full bg-slate-950 px-2.5 py-1 text-[11px] font-semibold text-white opacity-0 shadow-[0_12px_28px_rgba(15,23,42,0.18)] transition group-hover:opacity-100 group-focus-visible:opacity-100">
+    {label}
+  </span>
 );
 
 const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode = false, onHandoff }) => {
@@ -188,8 +222,11 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   const [loading, setLoading] = useState(false);
   const [factoryView, setFactoryView] = useState<'overview' | 'manager'>('overview');
   const [factoryAgents, setFactoryAgents] = useState<AgentSummary[]>([]);
+  const [pendingAutoSubmission, setPendingAutoSubmission] = useState<ChatSubmissionInput | null>(null);
+  const [queuedMessageCount, setQueuedMessageCount] = useState(0);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
   const pendingRestoreRef = useRef<{ draft: string; attachments: ComposerAttachment[]; userMessageId: string; assistantMessageId: string } | null>(null);
+  const interruptingChatSubmissionRef = useRef<ChatSubmissionInput | null>(null);
   const previousWorkspaceModeRef = useRef(workspaceMode);
   const selectedSessionIdRef = useRef(selectedSessionId);
   const loadChatRequestSeqRef = useRef(0);
@@ -348,6 +385,13 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   );
   const activePendingClientRequestId = String(activePendingRunMessage?.metadata?.clientRequestId || '').trim();
   const hasActivePendingRun = Boolean(activePendingRunMessage);
+  const activeRunProgressStage = String(activePendingRunMessage?.metadata?.progressStage || '').trim();
+  const activeRunRequestMode = String(activePendingRunMessage?.metadata?.requestMode || sendingRequestMode || '').trim();
+  const imageExecutionStageActive = activeRunRequestMode === 'image_generation' && FINAL_EXECUTION_PROGRESS_STAGES.has(activeRunProgressStage);
+  const finalExecutionActive = FINAL_EXECUTION_PROGRESS_STAGES.has(activeRunProgressStage) || imageExecutionStageActive;
+  const runSubmissionMode: RunSubmissionMode = !sendingMessage && !hasActivePendingRun
+    ? 'idle'
+    : finalExecutionActive ? 'queue' : 'insert';
   const selectedAgent = useMemo(() => {
     const activeAgentId = resolveActiveAgentId({
       workspacePage,
@@ -695,6 +739,16 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     mimeType: item.mimeType,
   }));
 
+  const queueChatSubmission = (submission: ChatSubmissionInput) => {
+    setPendingAutoSubmission(submission);
+    setQueuedMessageCount(1);
+    setMessageDraft('');
+    setAttachments([]);
+    setStatusMessage('当前任务已进入执行阶段，下一条消息会在结果后发送');
+    setErrorMessage('');
+    return true;
+  };
+
   const submitChatMessage = ({
     content: rawContent,
     sourceAttachments,
@@ -704,17 +758,42 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     webSearchEnabledOverride,
     restoreDraft,
     restoreAttachments,
-  }: {
-    content: string;
-    sourceAttachments: Array<ComposerAttachment | ChatAttachmentPayload>;
-    requestMode: 'chat' | 'image_generation';
-    selectedModelOverride?: string;
-    reasoningLevelOverride?: string | null;
-    webSearchEnabledOverride?: boolean;
-    restoreDraft: string;
-    restoreAttachments: ComposerAttachment[];
-  }) => {
-    if (sendingMessage || hasActivePendingRun || !selectedSessionId || (!rawContent.trim() && sourceAttachments.length === 0)) return false;
+  }: ChatSubmissionInput) => {
+    if (!selectedSessionId || (!rawContent.trim() && sourceAttachments.length === 0)) return false;
+    if (runSubmissionMode === 'queue') {
+      return queueChatSubmission({
+        content: rawContent,
+        sourceAttachments,
+        requestMode,
+        selectedModelOverride,
+        reasoningLevelOverride,
+        webSearchEnabledOverride,
+        restoreDraft: rawContent,
+        restoreAttachments: sourceAttachments
+          .filter((item): item is ComposerAttachment => 'id' in item)
+          .map((item) => item),
+      });
+    }
+    if (runSubmissionMode === 'insert') {
+      const interruptingSubmission: ChatSubmissionInput = {
+        content: rawContent,
+        sourceAttachments,
+        requestMode,
+        selectedModelOverride,
+        reasoningLevelOverride,
+        webSearchEnabledOverride,
+        restoreDraft: rawContent,
+        restoreAttachments: sourceAttachments
+          .filter((item): item is ComposerAttachment => 'id' in item)
+          .map((item) => item),
+      };
+      interruptingChatSubmissionRef.current = interruptingSubmission;
+      setMessageDraft('');
+      setAttachments([]);
+      setStatusMessage('已收到新引导，正在停止当前回复');
+      sendAbortControllerRef.current?.abort();
+      return true;
+    }
     const sendSessionId = selectedSessionId;
     const sendSelectedModel = selectedModelOverride || selectedModel;
     const sendReasoningLevel = reasoningLevelOverride ?? reasoningLevel;
@@ -793,6 +872,8 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         }
       } catch (error: any) {
         const pendingRestore = pendingRestoreRef.current;
+        const interruptedSubmission = interruptingChatSubmissionRef.current;
+        const abortedForInsert = Boolean(interruptedSubmission) && (error?.name === 'AbortError' || error?.message === 'INTERRUPTED' || String(error?.message || '').includes('aborted'));
         const shouldSyncCompletedResult = isUncertainSendFailure(error);
         if (shouldSyncCompletedResult) {
           setStatusMessage('后台仍在处理中，正在同步最新结果');
@@ -818,16 +899,21 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
           }
         }
         updateMessagesForSession(sendSessionId, (prev) => prev.filter((item) => item.id !== (pendingRestore?.userMessageId || optimisticUserMessage.id) && item.id !== (pendingRestore?.assistantMessageId || optimisticAssistantMessage.id)));
-        if (pendingRestore && selectedSessionIdRef.current === sendSessionId) {
+        if (!abortedForInsert && pendingRestore && selectedSessionIdRef.current === sendSessionId) {
           setMessageDraft(pendingRestore.draft);
           setAttachments(pendingRestore.attachments);
         }
         if (error?.name === 'AbortError' || error?.message === 'INTERRUPTED' || String(error?.message || '').includes('aborted')) {
-          setStatusMessage('已中断本次发送');
+          setStatusMessage(abortedForInsert ? '正在按新输入重新回复' : '已停止等待本次回复');
         } else {
           setErrorMessage(error.message || '消息发送失败');
         }
       } finally {
+        const nextSubmission = interruptingChatSubmissionRef.current;
+        if (nextSubmission) {
+          interruptingChatSubmissionRef.current = null;
+          setPendingAutoSubmission(nextSubmission);
+        }
         sendAbortControllerRef.current = null;
         pendingRestoreRef.current = null;
         setSendingMessage(false);
@@ -849,10 +935,13 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     });
   };
 
-  const handleInterruptSend = () => {
-    if (!sendAbortControllerRef.current) return;
-    sendAbortControllerRef.current.abort();
-  };
+  useEffect(() => {
+    if (!pendingAutoSubmission || sendingMessage || hasActivePendingRun) return;
+    const nextSubmission = pendingAutoSubmission;
+    setPendingAutoSubmission(null);
+    setQueuedMessageCount(0);
+    void submitChatMessage(nextSubmission);
+  }, [pendingAutoSubmission, sendingMessage, hasActivePendingRun]);
 
   const handleCopyMessage = useCallback(async (message: AgentChatMessage) => {
     const copied = await copyTextToClipboard(getVisibleMessageText(message));
@@ -901,23 +990,25 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         <button
           type="button"
           onClick={() => handleCopyMessage(message)}
-          className="agent-message-action-icon inline-flex h-8 w-8 items-center justify-center rounded-full border text-[12px] transition hover:opacity-80"
+          className="agent-message-action-icon group relative inline-flex h-9 w-9 items-center justify-center rounded-full border text-[15px] transition hover:opacity-80"
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
           title="复制消息"
           aria-label="复制消息"
         >
           <LegacyFaIcon icon="fa-copy" />
+          <MessageActionTooltip label="复制消息" />
         </button>
         <button
           type="button"
           onClick={() => handleRegenerateMessage(message)}
           disabled={sendingMessage}
-          className="agent-message-action-icon inline-flex h-8 w-8 items-center justify-center rounded-full border text-[12px] transition hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
+          className="agent-message-action-icon group relative inline-flex h-9 w-9 items-center justify-center rounded-full border text-[15px] transition hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-50"
           style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
           title="重新生成"
           aria-label="重新生成"
         >
           <LegacyFaIcon icon="fa-rotate-right" />
+          <MessageActionTooltip label="重新生成" />
         </button>
       </div>
     );
@@ -1287,7 +1378,9 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
                 void syncSessionOptions({ lastImageMode: next });
               }}
               onSendMessage={handleSendMessage}
-              onInterruptSend={sendingMessage ? handleInterruptSend : undefined}
+              onInterruptSend={undefined}
+              runSubmissionMode={runSubmissionMode}
+              queuedMessageCount={queuedMessageCount}
               onHandoff={onHandoff}
               onBatchSend={handleBatchSend}
               renderMessageActions={renderShellMessageActions}

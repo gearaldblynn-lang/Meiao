@@ -1,4 +1,4 @@
-export const APP_RELEASE_VERSION = 'V260516A';
+export const APP_RELEASE_VERSION = 'V260617A';
 export const RELEASE_NOTES_STORAGE_KEY = 'meiao_release_notes_seen_version';
 
 export interface ReleaseNoteSection {
@@ -8,19 +8,19 @@ export interface ReleaseNoteSection {
 
 export const CURRENT_RELEASE_NOTES: ReleaseNoteSection[] = [
   {
-    title: '新版前端工作台',
+    title: '6 月 17 功能调整',
     items: [
-      '3001 前端工作台同步到云端：一键主图、出海翻译、视频诊断、分镜生成等核心入口统一到新版任务卡片体验。',
-      '任务卡增加任务 ID 与积分消耗展示，成功任务按 KIE 返回的真实积分记录，失败任务不计入扣费统计。',
-      '生图模型按模型与分辨率展示预计积分，并在生成按钮上方汇总本次预计消耗。',
+      '智能体对话已修复，还原更接近原生 GPT 式智能对话的输入、输出与操作体验。',
+      '支持连续对话中追问、改图、生图与重新生成，历史轮次会保留原模式、附件、联网和思考强度。',
+      '生图结果、思考过程、复制与重新生成路径做了收敛，避免把内部链接、任务 ID 或无效技术细节带给用户。',
     ],
   },
   {
-    title: '账号隔离与数据清理',
+    title: '智能体能力链路',
     items: [
-      '本地持久化输入、预设与项目卡改为按账号读取，避免不同账号共用旧前端遗留状态。',
-      '空诊断报告、无结果无状态的旧任务不会再生成项目卡，减少历史垃圾数据污染前端。',
-      '系统统计支持个人账号只读查看基础信息与积分统计，管理员仍保留配置修改权限。',
+      'OpenAI Compatible 中转、Responses 多模态图文请求、知识库检索与工具调用链路完成修复和回归。',
+      '输入框能力项简化为上传与配置入口，模型、联网、思考强度和生图模式统一在配置中调整。',
+      '生成后的图片展示更简洁，结果层、过程层和操作按钮区分更清楚。',
     ],
   },
 ];
