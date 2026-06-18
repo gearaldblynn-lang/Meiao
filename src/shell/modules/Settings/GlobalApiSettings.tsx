@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, CheckCircle2, Cpu, KeyRound, Link2, LogIn, LogOut, Moon, RefreshCcw, Server, Shield } from 'lucide-react';
+import { AlertCircle, Bell, CheckCircle2, Cpu, KeyRound, Link2, LogIn, LogOut, Moon, RefreshCcw, Server, Shield, Trash2 } from 'lucide-react';
 import { createDefaultWorkspacePreferences, loadPersistedAppState, savePersistedAppState, buildPersistedAppState } from '../../../utils/appState';
 import {
   broadcastSystemAnalysisModel,
@@ -51,12 +51,16 @@ const GlobalApiSettings: React.FC<{
   const [openaiCompatibleApiKey, setOpenaiCompatibleApiKey] = useState('');
   const [openaiCompatibleBaseUrl, setOpenaiCompatibleBaseUrl] = useState('');
   const [openaiCompatibleModels, setOpenaiCompatibleModels] = useState('');
+  const [announcementTitle, setAnnouncementTitle] = useState('');
+  const [announcementContent, setAnnouncementContent] = useState('');
   const [savingAnalysisModel, setSavingAnalysisModel] = useState(false);
   const [savingUserAnalysisModel, setSavingUserAnalysisModel] = useState(false);
   const [savingOpenaiCompatible, setSavingOpenaiCompatible] = useState(false);
+  const [savingAnnouncement, setSavingAnnouncement] = useState(false);
   const [broadcastingAnalysisModel, setBroadcastingAnalysisModel] = useState(false);
   const [analysisModelMessage, setAnalysisModelMessage] = useState('');
   const [openaiCompatibleMessage, setOpenaiCompatibleMessage] = useState('');
+  const [announcementMessage, setAnnouncementMessage] = useState('');
   const [saved, setSaved] = useState(false);
   const [dreaminaStatus, setDreaminaStatus] = useState<DreaminaStatus | null>(null);
   const [dreaminaLogin, setDreaminaLogin] = useState<DreaminaLoginStart | null>(null);
@@ -72,6 +76,11 @@ const GlobalApiSettings: React.FC<{
     setOpenaiCompatibleBaseUrl(config.systemSettings.openaiCompatible?.baseUrl || '');
     setOpenaiCompatibleModels(config.systemSettings.openaiCompatible?.models || '');
     setOpenaiCompatibleApiKey('');
+    setAnnouncementTitle(config.systemSettings.announcement?.title || '');
+    setAnnouncementContent(config.systemSettings.announcement?.content || '');
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('meiao:system-config-updated', { detail: { config } }));
+    }
   };
 
   useEffect(() => {
@@ -243,6 +252,56 @@ const GlobalApiSettings: React.FC<{
     }
   };
 
+  const handleSaveAnnouncement = async () => {
+    if (!canManageSystemSettings) {
+      setAnnouncementMessage('当前账号没有公告编辑权限。');
+      return;
+    }
+    const title = announcementTitle.trim();
+    const content = announcementContent.trim();
+    if (!title || !content) {
+      setAnnouncementMessage('请填写公告标题和内容。');
+      return;
+    }
+    setSavingAnnouncement(true);
+    setAnnouncementMessage('');
+    try {
+      const result = await updateSystemConfig({
+        analysisModel,
+        videoAnalysisModel,
+        announcement: { title, content, enabled: true },
+      });
+      applySystemConfig(result.config);
+      setAnnouncementMessage('公告已保存，用户首次打开网页会看到弹窗。');
+    } catch (error) {
+      setAnnouncementMessage(error instanceof Error ? error.message : '保存公告失败');
+    } finally {
+      setSavingAnnouncement(false);
+    }
+  };
+
+  const handleDeleteAnnouncement = async () => {
+    if (!canManageSystemSettings) {
+      setAnnouncementMessage('当前账号没有公告编辑权限。');
+      return;
+    }
+    setSavingAnnouncement(true);
+    setAnnouncementMessage('');
+    try {
+      const result = await updateSystemConfig({
+        analysisModel,
+        videoAnalysisModel,
+        announcement: { enabled: false },
+      });
+      applySystemConfig(result.config);
+      setAnnouncementMessage('公告已删除。');
+    } catch (error) {
+      setAnnouncementMessage(error instanceof Error ? error.message : '删除公告失败');
+    } finally {
+      setSavingAnnouncement(false);
+    }
+  };
+
   const handleSaveUserAnalysisModel = async () => {
     setSavingUserAnalysisModel(true);
     setAnalysisModelMessage('');
@@ -378,6 +437,87 @@ const GlobalApiSettings: React.FC<{
                 </div>
               )}
             </div>
+          </div>
+
+          <div className="rounded-2xl border p-5 surface" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl" style={{ background: 'var(--bg-elevated)' }}>
+                  <Bell size={16} style={{ color: 'var(--accent)' }} />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>公告管理</h3>
+                  <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>网页首次打开时居中弹出，可选择今日不再提醒</p>
+                </div>
+              </div>
+              <span
+                className="rounded-full border px-3 py-1.5 text-[11px] font-medium"
+                style={{
+                  borderColor: systemConfig?.systemSettings.announcement?.enabled ? 'rgba(34,197,94,0.28)' : 'var(--border-subtle)',
+                  background: systemConfig?.systemSettings.announcement?.enabled ? 'rgba(34,197,94,0.08)' : 'var(--bg-elevated)',
+                  color: systemConfig?.systemSettings.announcement?.enabled ? 'var(--success)' : 'var(--text-tertiary)',
+                }}
+              >
+                {systemConfig?.systemSettings.announcement?.enabled ? '展示中' : '暂无公告'}
+              </span>
+            </div>
+
+            {canManageSystemSettings ? (
+              <div className="space-y-3">
+                <label className="block">
+                  <span className="mb-1 block text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>公告标题</span>
+                  <input
+                    value={announcementTitle}
+                    onChange={(event) => setAnnouncementTitle(event.target.value)}
+                    placeholder="例如：6 月 18 功能调整"
+                    maxLength={120}
+                    className="h-11 w-full rounded-2xl border px-3 text-[13px] outline-none"
+                    style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)', color: 'var(--text-primary)' }}
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>公告内容</span>
+                  <textarea
+                    value={announcementContent}
+                    onChange={(event) => setAnnouncementContent(event.target.value)}
+                    placeholder="填写需要所有用户看到的公告内容"
+                    maxLength={4000}
+                    className="min-h-[120px] w-full resize-y rounded-2xl border px-3 py-3 text-[13px] leading-6 outline-none"
+                    style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-base)', color: 'var(--text-primary)' }}
+                  />
+                </label>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleSaveAnnouncement()}
+                    disabled={loadingSystemConfig || savingAnnouncement}
+                    className="rounded-2xl bg-slate-900 px-4 py-3 text-[13px] font-black text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {savingAnnouncement ? '保存中...' : '保存公告'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteAnnouncement()}
+                    disabled={loadingSystemConfig || savingAnnouncement || !systemConfig?.systemSettings.announcement?.enabled}
+                    className="inline-flex items-center gap-2 rounded-2xl border px-4 py-3 text-[13px] font-black disabled:cursor-not-allowed disabled:opacity-60"
+                    style={{ borderColor: 'rgba(239,68,68,0.28)', background: 'rgba(239,68,68,0.08)', color: 'var(--error)' }}
+                  >
+                    <Trash2 size={14} />
+                    删除公告
+                  </button>
+                  {announcementMessage ? <span className="text-[12px] font-medium text-slate-600">{announcementMessage}</span> : null}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-2xl border border-dashed px-4 py-3 text-[12px] leading-6" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}>
+                <p className="font-semibold" style={{ color: 'var(--text-primary)' }}>
+                  {systemConfig?.systemSettings.announcement?.enabled ? systemConfig.systemSettings.announcement.title : '当前暂无公告'}
+                </p>
+                <p className="mt-2 whitespace-pre-wrap">
+                  {systemConfig?.systemSettings.announcement?.enabled ? systemConfig.systemSettings.announcement.content : '当前账号没有公告编辑权限。'}
+                </p>
+              </div>
+            )}
           </div>
 
           {canManageSystemSettings ? (

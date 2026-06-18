@@ -472,6 +472,169 @@ test('shell data adapter preserves translation source metadata on restored resul
   assert.equal(project?.results[0]?.aspectRatio, '3:4');
 });
 
+test('shell data adapter groups tracked translation generation jobs into their batch project', () => {
+  const snapshot = buildShellDataSnapshot({}, [
+    {
+      id: 'translation-image-job-1',
+      module: 'translation',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'translation-provider-1',
+      payload: {
+        prompt: '角色：商业图像文案翻译与修复助手。\n任务：根据 AI优化结果生成详情出海成品图。',
+        shellProjectId: 'translation-batch-project',
+        shellProjectName: '详情出海 · 2张',
+        shellResultId: 'translation-batch-project-file-1',
+        shellPurpose: 'translation_generation',
+        subFeature: 'detail',
+        sourceUrl: 'https://example.com/source-1.png',
+        sourcePreviewUrl: 'https://example.com/source-1.png',
+        sourceFileName: 'source-1.png',
+        sourceRelativePath: 'folder/source-1.png',
+        finalSize: { width: 1000, height: 1200 },
+        batchIndex: 1,
+        batchCount: 2,
+      },
+      result: {
+        imageUrl: 'https://example.com/translation-1.png',
+        providerTaskId: 'translation-provider-1',
+        creditsConsumed: 3,
+      },
+      createdAt: 2000,
+      updatedAt: 3000,
+      finishedAt: 3000,
+    },
+    {
+      id: 'translation-image-job-2',
+      module: 'translation',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'translation-provider-2',
+      payload: {
+        prompt: '角色：商业图像文案翻译与修复助手。\n任务：根据 AI优化结果生成详情出海成品图。',
+        shellProjectId: 'translation-batch-project',
+        shellProjectName: '详情出海 · 2张',
+        shellResultId: 'translation-batch-project-file-2',
+        shellPurpose: 'translation_generation',
+        subFeature: 'detail',
+        sourceUrl: 'https://example.com/source-2.png',
+        sourcePreviewUrl: 'https://example.com/source-2.png',
+        sourceFileName: 'source-2.png',
+        sourceRelativePath: 'folder/source-2.png',
+        finalSize: { width: 900, height: 1100 },
+        batchIndex: 2,
+        batchCount: 2,
+      },
+      result: {
+        imageUrl: 'https://example.com/translation-2.png',
+        providerTaskId: 'translation-provider-2',
+        creditsConsumed: 3,
+      },
+      createdAt: 2100,
+      updatedAt: 3100,
+      finishedAt: 3100,
+    },
+    {
+      id: 'translation-analysis-job-1',
+      module: 'translation',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'translation-analysis-provider-1',
+      payload: {
+        shellProjectId: 'translation-batch-project',
+        shellResultId: 'translation-batch-project-file-1',
+        shellPurpose: 'translation_planning_analysis',
+        subFeature: 'detail',
+      },
+      result: { content: '策划分析内容', providerTaskId: 'translation-analysis-provider-1' },
+      createdAt: 1000,
+      updatedAt: 1500,
+      finishedAt: 1500,
+    },
+  ]);
+
+  const translationProjects = snapshot.projects.filter((project) => project.module === 'translation');
+
+  assert.equal(translationProjects.length, 1);
+  assert.equal(translationProjects[0].id, 'translation-batch-project');
+  assert.equal(translationProjects[0].name, '详情出海 · 2张');
+  assert.equal(translationProjects[0].results.length, 2);
+  assert.equal(translationProjects[0].completedCount, 2);
+  assert.equal(translationProjects[0].results[0].sourceUrl, 'https://example.com/source-1.png');
+  assert.equal(translationProjects[0].results[0].sourcePreviewUrl, 'https://example.com/source-1.png');
+  assert.equal(translationProjects[0].results[0].fileName, 'source-1.png');
+  assert.equal(translationProjects[0].results[0].relativePath, 'folder/source-1.png');
+  assert.equal(translationProjects[0].results[0].originalWidth, 1000);
+  assert.equal(translationProjects[0].results[0].originalHeight, 1200);
+  assert.equal(translationProjects.some((project) => project.id.startsWith('job-translation-image-job')), false);
+  assert.equal(translationProjects.some((project) => project.id.startsWith('job-translation-analysis-job')), false);
+});
+
+test('shell data adapter keeps translation source urls when backend job refreshes saved result', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'translation-source-project',
+      name: '详情出海',
+      module: 'translation',
+      status: 'completed',
+      createdAt: '06-17',
+      taskCount: 1,
+      completedCount: 1,
+      subFeature: 'detail',
+      results: [{
+        id: 'translation-source-project-file-1',
+        projectId: 'translation-source-project',
+        imageUrl: 'https://example.com/old-result.png',
+        sourceUrl: 'https://example.com/source-original.png',
+        sourcePreviewUrl: 'https://example.com/source-preview.png',
+        prompt: '旧结果',
+        model: 'GPT Image 2',
+        aspectRatio: 'auto',
+        status: 'completed',
+        createdAt: '06-17',
+        module: 'translation',
+        subFeature: 'detail',
+        taskId: 'translation-provider-source',
+        backendJobId: 'translation-job-source',
+      }],
+    }],
+  }, [{
+    id: 'translation-job-source',
+    module: 'translation',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'translation-provider-source',
+    payload: {
+      prompt: '刷新后的结果',
+      shellProjectId: 'translation-source-project',
+      shellProjectName: '详情出海',
+      shellResultId: 'translation-source-project-file-1',
+      shellPurpose: 'translation_generation',
+      subFeature: 'detail',
+      batchIndex: 1,
+      batchCount: 1,
+    },
+    result: {
+      imageUrl: 'https://example.com/new-result.png',
+      providerTaskId: 'translation-provider-source',
+      creditsConsumed: 3,
+    },
+    createdAt: 2000,
+    updatedAt: 3000,
+    finishedAt: 3000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'translation-source-project');
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.results[0]?.imageUrl, 'https://example.com/new-result.png');
+  assert.equal(project?.results[0]?.sourceUrl, 'https://example.com/source-original.png');
+  assert.equal(project?.results[0]?.sourcePreviewUrl, 'https://example.com/source-preview.png');
+});
+
 test('shell data adapter preserves provider task ids and consumed credits for project cards', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{

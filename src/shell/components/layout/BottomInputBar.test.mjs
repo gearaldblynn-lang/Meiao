@@ -78,11 +78,49 @@ test('one click shell ratio defaults follow live shell mode rules for 3001', () 
 test('translation remove-text quick params hide target language and recommend auto ratio only', () => {
   const bottomInputBar = source();
   const translationQuickParams = bottomInputBar.match(/const getTranslationQuickParams[\s\S]*?const getTranslationSizeDefaults/)?.[0] || '';
+  const translationExtendedParams = bottomInputBar.match(/if \(module === AppModuleObj\.TRANSLATION\) \{[\s\S]*?if \(module !== AppModuleObj\.ONE_CLICK\)/)?.[0] || '';
 
   assert.match(translationQuickParams, /\.\.\.\(isRemoveText \? \[\] : \[\{/);
   assert.match(translationQuickParams, /title: '目标语言'/);
-  assert.match(translationQuickParams, /recommendedValue: isDetail \|\| isRemoveText \? 'auto' : '1:1'/);
+  assert.doesNotMatch(translationQuickParams, /key: 'ratio'/);
   assert.doesNotMatch(translationQuickParams, /secondaryRecommendedValue:/);
+  assert.match(translationExtendedParams, /key: 'ratio'/);
+  assert.match(translationExtendedParams, /defaultValue: isDetail \|\| isRemoveText \? 'auto' : '1:1'/);
+});
+
+test('translation integration exposes ai optimize mode and original-size generation contract', () => {
+  const bottomInputBar = source();
+  const shellApp = read('../../../ShellMigratedApp.tsx');
+  const workflow = read('../../../adapters/shellWorkflow.ts');
+  const translationQuickParams = bottomInputBar.match(/const getTranslationQuickParams[\s\S]*?const getTranslationSizeDefaults/)?.[0] || '';
+  const translationExtendedParams = bottomInputBar.match(/if \(module === AppModuleObj\.TRANSLATION\) \{[\s\S]*?if \(module !== AppModuleObj\.ONE_CLICK\)/)?.[0] || '';
+  const translationNormalizer = shellApp.match(/const normalizeTranslationParamsForGeneration[\s\S]*?^};/m)?.[0] || '';
+
+  assert.match(translationQuickParams, /key: 'translationGenerationMode'/);
+  assert.match(translationQuickParams, /options: \['AI直出', 'AI优化'\]/);
+  assert.match(translationQuickParams, /defaultValue: 'AI直出'/);
+  assert.ok(
+    translationQuickParams.indexOf("key: 'translationGenerationMode'") < translationQuickParams.indexOf("key: 'lang'"),
+    'translation generation mode should appear before target language',
+  );
+  assert.doesNotMatch(
+    translationQuickParams.match(/\{ key: 'translationGenerationMode'[\s\S]*?\}/)?.[0] || '',
+    /recommendedLabel: '默认'|recommendedValue: 'AI直出'/,
+  );
+  assert.doesNotMatch(translationQuickParams, /key: 'ratio'/);
+  assert.match(translationExtendedParams, /key: 'ratio'/);
+  assert.match(translationExtendedParams, /disabled: isOriginalSizeMode/);
+  assert.match(translationNormalizer, /translationGenerationMode: \['AI优化', '策划分析'\]\.includes\(params\.translationGenerationMode\) \? 'AI优化' : 'AI直出'/);
+  assert.match(translationNormalizer, /ratio: isOriginalSizeMode \? 'auto' : \(params\.ratio \|\| params\.aspectRatio \|\| defaults\.ratio\)/);
+  assert.match(shellApp, /runShellTranslationPlanningAnalysis/);
+  assert.match(shellApp, /useTranslationPlanningAnalysis = \['AI优化', '策划分析'\]\.includes\(generationParams\.translationGenerationMode\)/);
+  assert.match(shellApp, /所有替换文案必须逐字照抄 AI优化结果中右侧引号内的本地化文案/);
+  assert.match(shellApp, /throw new Error\('原图尺寸读取失败，请重新上传素材后再生成。'\)/);
+  assert.match(shellApp, /finalSize,/);
+  assert.match(shellApp, /taskMetadata: translationTaskMetadata/);
+  assert.match(workflow, /export const runShellTranslationPlanningAnalysis/);
+  assert.match(workflow, /const isTranslationAiOptimizeMode = \['AI优化', '策划分析'\]\.includes\(input\.params\.translationGenerationMode\)/);
+  assert.match(workflow, /input\.module === AppModule\.TRANSLATION && config\.resolutionMode === 'original'[\s\S]*input\.taskMetadata\?\.finalSize/);
 });
 
 test('one click upload menu keeps subfeature-aware reference preset library entries visible', () => {
@@ -360,7 +398,7 @@ test('everything replace product mode exposes replacement controls and material 
   assert.match(bottomInputBar, /options: \['单品替换', '组合替换'\]/);
   assert.doesNotMatch(bottomInputBar, /recommendedValue: '单品替换'/);
   assert.doesNotMatch(bottomInputBar, /recommendedValue: '单产品替换'/);
-  assert.match(bottomInputBar, /getEverythingReplaceMaterialLabels\(currentParams\)/);
+  assert.match(bottomInputBar, /getEverythingReplaceMaterialLabels\(activeSubFeature, currentParams\)/);
   assert.match(bottomInputBar, /替换产品图/);
   assert.match(bottomInputBar, /仅同一产品，可多角度\/细节图/);
   assert.match(bottomInputBar, /同一组产品，整体替换/);
@@ -414,4 +452,33 @@ test('everything replace product mode exposes replacement controls and material 
   assert.match(imageLightbox, /bottom-8 left-1\/2/);
   assert.match(imageLightbox, /Move size=\{17\}/);
   assert.doesNotMatch(materialPreview, /详情补充/);
+});
+
+test('everything replace background mode exposes only background replacement controls', () => {
+  const bottomInputBar = source();
+
+  assert.match(bottomInputBar, /isBackgroundReplaceContext/);
+  assert.match(bottomInputBar, /getBackgroundReplaceQuickParams/);
+  assert.match(bottomInputBar, /activeSubFeature === 'background_replace'/);
+  assert.doesNotMatch(bottomInputBar, /label: '画面模式'/);
+  assert.match(bottomInputBar, /key: 'resolutionMode'/);
+  assert.match(bottomInputBar, /label: '尺寸模式'/);
+  assert.match(bottomInputBar, /options: \['AI 自适应尺寸', '固定宽度'\]/);
+  assert.match(bottomInputBar, /defaultValue: 'AI 自适应尺寸'/);
+  assert.match(bottomInputBar, /key: 'targetWidth'/);
+  assert.match(bottomInputBar, /label: '输出宽度\(px\)'/);
+  assert.match(bottomInputBar, /key: 'textPolicy'/);
+  assert.match(bottomInputBar, /label: '文案处理'/);
+  assert.match(bottomInputBar, /options: \['维持文案', '去除文案'\]/);
+  assert.match(bottomInputBar, /return \['product', 'styleRef'\]/);
+  assert.match(bottomInputBar, /原产品图/);
+  assert.match(bottomInputBar, /保持产品和人物不变/);
+  assert.match(bottomInputBar, /背景参考图/);
+  assert.match(bottomInputBar, /只替换场景\/背景/);
+  assert.match(bottomInputBar, /开始背景替换/);
+  assert.match(bottomInputBar, /补充背景替换要求/);
+  assert.match(bottomInputBar, /isEverythingReplaceImageContext/);
+  assert.match(bottomInputBar, /isEverythingReplaceImageReplace/);
+  assert.match(bottomInputBar, /canGenerateWithoutPrompt = .*isEverythingReplaceImageReplace/);
+  assert.doesNotMatch(bottomInputBar, /activeSubFeature === 'background_replace' \|\| activeSubFeature === 'logo_replace'/);
 });

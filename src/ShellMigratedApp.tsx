@@ -4,6 +4,7 @@ import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
 import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
+import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
 import LoginScreen from './shell/components/Internal/LoginScreen';
 import {
   cancelInternalJob,
@@ -91,6 +92,19 @@ const normalizeShellImageModel = (value: unknown) => {
   return 'gpt-image-2';
 };
 
+const ANNOUNCEMENT_DISMISS_STORAGE_PREFIX = 'meiao_announcement_dismissed_today';
+
+const getLocalDateKey = () => {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}-${month}-${day}`;
+};
+
+const getAnnouncementDismissKey = (userId = '', announcementId = '') => (
+  `${ANNOUNCEMENT_DISMISS_STORAGE_PREFIX}:${userId || 'anonymous'}:${announcementId || 'empty'}`
+);
+
 /* ═══════════════════════════════════════════
    Types
    ═══════════════════════════════════════════ */
@@ -119,6 +133,8 @@ export interface GeneratedResult {
   creditsConsumed?: number;
   error?: string;
   matchedAspectRatio?: string;
+  originalWidth?: number;
+  originalHeight?: number;
   dynamicScriptPrompt?: string;
   storyboardBoardTitle?: string;
   storyboardBoardIndex?: number;
@@ -1205,7 +1221,7 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
   ],
   [AppModuleObj.EVERYTHING_REPLACE]: [
     { id: 'product_replace', label: '产品替换' },
-    { id: 'background_replace', label: '背景替换', description: '待制作', disabled: true },
+    { id: 'background_replace', label: '背景替换' },
     { id: 'logo_replace', label: 'logo替换', disabled: true },
   ],
   [AppModuleObj.BUYER_SHOW]: [
@@ -1409,18 +1425,30 @@ const normalizeEverythingReplaceParamsForGeneration = (
   params: Record<string, string>,
 ) => {
   const ratio = params.ratio || params.aspectRatio || 'auto';
+  const mode = subFeature || params.mode || 'product_replace';
+  const isBackgroundReplace = mode === 'background_replace';
   return {
     ...normalizeRetouchParamsForGeneration({
       ...params,
       ratio,
       aspectRatio: ratio,
-      mode: subFeature || params.mode || 'product_replace',
+      mode,
       resolutionMode: params.resolutionMode || 'original',
       sizeMode: params.sizeMode || 'AI 自适应尺寸',
+      ...(isBackgroundReplace
+        ? {
+            targetHeight: params.targetHeight || params.height || '0',
+            height: params.height || params.targetHeight || '0',
+          }
+        : {}),
     }),
-    mode: subFeature || params.mode || 'product_replace',
-    replacementLogic: params.replacementLogic === '单产品替换' ? '单品替换' : params.replacementLogic || '单品替换',
-    firstImageColorMode: String(params.firstImageColorMode || '').includes('自适应') ? '人物微调' : params.firstImageColorMode || '完全复刻',
+    mode,
+    ...(isBackgroundReplace
+      ? {}
+      : { replacementLogic: params.replacementLogic === '单产品替换' ? '单品替换' : params.replacementLogic || '单品替换' }),
+    ...(isBackgroundReplace
+      ? {}
+      : { firstImageColorMode: String(params.firstImageColorMode || '').includes('自适应') ? '人物微调' : params.firstImageColorMode || '完全复刻' }),
     textPolicy: params.textPolicy || '维持文案',
   };
 };
@@ -1436,19 +1464,21 @@ const normalizeTranslationParamsForGeneration = (
   params: Record<string, string>,
 ) => {
   const defaults = TRANSLATION_PARAM_DEFAULTS[subFeature] || TRANSLATION_PARAM_DEFAULTS.main;
-  const requestedSizeMode = String(params.sizeMode || params.resolutionMode || '').trim();
+  const requestedSizeMode = String(params.resolutionMode || params.sizeMode || '').trim();
   const resolutionMode = requestedSizeMode.includes('原图') || requestedSizeMode === 'original'
     ? 'original'
     : 'custom';
+  const isOriginalSizeMode = resolutionMode === 'original';
   return {
     ...params,
     mode: subFeature,
     submode: params.submode || (subFeature === 'detail' ? '详情出海' : subFeature === 'remove_text' ? '去文案' : '主图出海'),
     lang: params.lang || 'English',
+    translationGenerationMode: ['AI优化', '策划分析'].includes(params.translationGenerationMode) ? 'AI优化' : 'AI直出',
     model: params.model || 'GPT Image 2',
     quality: params.quality || '1K',
-    ratio: params.ratio || params.aspectRatio || defaults.ratio,
-    aspectRatio: params.ratio || params.aspectRatio || defaults.ratio,
+    ratio: isOriginalSizeMode ? 'auto' : (params.ratio || params.aspectRatio || defaults.ratio),
+    aspectRatio: isOriginalSizeMode ? 'auto' : (params.ratio || params.aspectRatio || defaults.ratio),
     resolutionMode,
     sizeMode: resolutionMode === 'original' ? '原图' : '自定义',
     targetWidth: params.targetWidth || params.width || defaults.targetWidth,
@@ -1515,6 +1545,8 @@ const translationFileToResult = (
   creditsConsumed: file.creditsConsumed,
   error: file.error,
   matchedAspectRatio: file.matchedAspectRatio,
+  originalWidth: file.originalWidth,
+  originalHeight: file.originalHeight,
 });
 
 const getTranslationProjectStatus = (files: TranslationBatchFile[]): Project['status'] => {
@@ -1855,6 +1887,7 @@ const AppContent: React.FC<{
     workspacePreferences: getWorkspacePreferences(),
   }));
   const [systemConfig, setSystemConfig] = useState<SystemPublicConfig | null>(null);
+  const [announcementOpenSource, setAnnouncementOpenSource] = useState<'auto' | 'manual' | null>(null);
   const publicBaseUrl = systemConfig?.publicBaseUrl || '';
   const shellLocalScopeUserId = currentUser?.id || null;
   const savedShellUiState = readShellUiState(shellLocalScopeUserId);
@@ -1904,6 +1937,9 @@ const AppContent: React.FC<{
   const generationSubmitLocksRef = useRef<Set<string>>(new Set());
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
   const { addToast } = useToast();
+  const activeAnnouncement = systemConfig?.systemSettings?.announcement?.enabled
+    ? systemConfig.systemSettings.announcement
+    : null;
 
   const beginExclusiveAction = useCallback((key: string, duplicateMessage = '任务已提交，请等待当前操作完成') => {
     if (pendingActionKeysRef.current.has(key)) {
@@ -2020,6 +2056,50 @@ const AppContent: React.FC<{
       disposed = true;
     };
   }, [currentUser?.id, currentUser?.role, currentUser?.jobConcurrency]);
+
+  useEffect(() => {
+    const handleSystemConfigUpdated = (event: Event) => {
+      const nextConfig = (event as CustomEvent<{ config?: SystemPublicConfig }>).detail?.config;
+      if (nextConfig) setSystemConfig(nextConfig);
+    };
+    window.addEventListener('meiao:system-config-updated', handleSystemConfigUpdated as EventListener);
+    return () => {
+      window.removeEventListener('meiao:system-config-updated', handleSystemConfigUpdated as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeAnnouncement?.id || !currentUser?.id || announcementOpenSource) return;
+    try {
+      const dismissedToday = localStorage.getItem(getAnnouncementDismissKey(currentUser.id, activeAnnouncement.id));
+      if (dismissedToday === getLocalDateKey()) return;
+    } catch {
+      // localStorage failure should not block an important system announcement.
+    }
+    setAnnouncementOpenSource('auto');
+  }, [activeAnnouncement?.id, announcementOpenSource, currentUser?.id]);
+
+  const handleOpenAnnouncementPanel = useCallback(() => {
+    if (!activeAnnouncement) {
+      addToast('当前暂无公告', 'info');
+    }
+    setAnnouncementOpenSource('manual');
+  }, [activeAnnouncement, addToast]);
+
+  const handleCloseAnnouncementPanel = useCallback(() => {
+    setAnnouncementOpenSource(null);
+  }, []);
+
+  const handleDismissAnnouncementToday = useCallback(() => {
+    if (activeAnnouncement?.id && currentUser?.id) {
+      try {
+        localStorage.setItem(getAnnouncementDismissKey(currentUser.id, activeAnnouncement.id), getLocalDateKey());
+      } catch {
+        addToast('浏览器无法记录今日不再提醒，已先关闭本次公告。', 'warning');
+      }
+    }
+    setAnnouncementOpenSource(null);
+  }, [activeAnnouncement?.id, addToast, currentUser?.id]);
 
   // ── Materials (type-aware uploads) ──
   const [materials, setMaterials] = useState<Record<string, Material[]>>(
@@ -3408,7 +3488,7 @@ const AppContent: React.FC<{
     const generationPrompt = targetModule === AppModuleObj.TRANSLATION ? '' : promptText;
     const allowEmptySkuPrompt = targetModule === AppModuleObj.ONE_CLICK && targetSubFeature === 'sku';
     const allowEmptyRetouchPrompt = targetModule === AppModuleObj.RETOUCH;
-    const allowEmptyEverythingReplacePrompt = targetModule === AppModuleObj.EVERYTHING_REPLACE && targetSubFeature === 'product_replace';
+    const allowEmptyEverythingReplacePrompt = targetModule === AppModuleObj.EVERYTHING_REPLACE && (targetSubFeature === 'product_replace' || targetSubFeature === 'background_replace');
     const allowEmptyPrompt = allowEmptySkuPrompt || allowEmptyRetouchPrompt || allowEmptyEverythingReplacePrompt || targetModule === AppModuleObj.TRANSLATION;
     if (!generationPrompt.trim() && !allowEmptyPrompt) { addToast('请输入创作描述', 'warning'); return; }
     const generationParams = normalizeParamsForGeneration(targetModule, targetSubFeature, currentParams) as Record<string, string> & {
@@ -3594,7 +3674,7 @@ const AppContent: React.FC<{
       setIsGenerating(true);
       void persistTranslationFilesToSharedState(targetSubFeature, translationFileItems);
 
-      const { runShellImageGeneration } = await loadShellWorkflowModule();
+      const { runShellImageGeneration, runShellTranslationPlanningAnalysis } = await loadShellWorkflowModule();
       const syncTranslationProject = (nextFiles: TranslationBatchFile[]) => {
         const nextResults = nextFiles.map((item) => translationFileToResult(item, createdAt));
         setProjects((prev) => prev.map((project) => (
@@ -3629,21 +3709,38 @@ const AppContent: React.FC<{
         void persistTranslationFilesToSharedState(targetSubFeature, nextFiles);
       };
 
-      const buildTranslationPrompt = (material: TranslationBatchFile, index: number, matchedRatio: string) => [
-        `模块：${MODULE_NAMES[targetModule]}`,
-        `子功能：${targetSubFeature}`,
-        `用户需求：请根据上传的素材完成${translationSubFeatureLabel || '出海翻译'}，保持商品主体与文字结构稳定，输出适合当前页面展示的结果。`,
-        `前端参数：${JSON.stringify({
-          ...generationParams,
-          ratio: matchedRatio,
-          aspectRatio: matchedRatio,
-          __batchIndex: String(index + 1),
-          __batchCount: String(totalCount),
-          __sourceFileName: material.fileName,
-          __sourceRelativePath: material.relativePath,
-        })}`,
-        '请严格围绕上传素材完成对应电商视觉任务，保持商品主体一致，输出可直接用于当前模块结果展示的图片。',
-      ].filter(Boolean).join('\n');
+      const useTranslationPlanningAnalysis = ['AI优化', '策划分析'].includes(generationParams.translationGenerationMode);
+
+      const buildTranslationPrompt = (material: TranslationBatchFile, index: number, matchedRatio: string, planningAnalysis = '') => {
+        if (planningAnalysis) {
+          return [
+            '角色：商业图像文案翻译与修复助手。',
+            `任务：根据 AI优化结果生成${translationSubFeatureLabel || '出海翻译'}成品图，按策划输出的“xxx”本地化为“xxx”执行文案替换。`,
+            '约束：',
+            '1. 所有替换文案必须逐字照抄 AI优化结果中右侧引号内的本地化文案，禁止改写、翻译、增删、替换字符。',
+            '2. 产品主体、包装、logo、画面主题和版式位置保持不变；产品/包装表面文字、实拍压印文字视为图片内容，不翻译、不重绘、不移动。',
+            '3. 参数、尺寸、温度、数量等数值信息必须准确保留；表格/参数/尺码类图片保持原表格行列、单元格位置和边框，仅替换对应短标签。',
+            '4. 不新增原图不存在的信息或虚假卖点。',
+            `要求：严格执行以下 AI优化结果，输出最终图片。\n${planningAnalysis}`,
+          ].join('\n');
+        }
+        return [
+          `模块：${MODULE_NAMES[targetModule]}`,
+          `子功能：${targetSubFeature}`,
+          `生成逻辑：${useTranslationPlanningAnalysis ? 'AI优化' : 'AI直出'}`,
+          `用户需求：请根据上传的素材完成${translationSubFeatureLabel || '出海翻译'}，保持商品主体与文字结构稳定，输出适合当前页面展示的结果。`,
+          `前端参数：${JSON.stringify({
+            ...generationParams,
+            ratio: matchedRatio,
+            aspectRatio: matchedRatio,
+            __batchIndex: String(index + 1),
+            __batchCount: String(totalCount),
+            __sourceFileName: material.fileName,
+            __sourceRelativePath: material.relativePath,
+          })}`,
+          '请严格围绕上传素材完成对应电商视觉任务，保持商品主体一致，输出可直接用于当前模块结果展示的图片。',
+        ].filter(Boolean).join('\n');
+      };
 
       let successCount = 0;
       let nextIndex = 0;
@@ -3666,11 +3763,11 @@ const AppContent: React.FC<{
                   ratio: material.originalWidth / material.originalHeight,
                 }
               : await getImageDimensionsFromUrl(material.sourceUrl).catch(() => null);
-            const modelConfig = {
-              targetLanguage: String(generationParams.lang || 'English'),
-              customLanguage: '',
-              removeWatermark: true,
-              aspectRatio: String(generationParams.ratio || generationParams.aspectRatio || 'auto'),
+	            const modelConfig = {
+	              targetLanguage: String(generationParams.lang || 'English'),
+	              customLanguage: '',
+	              removeWatermark: true,
+	              aspectRatio: String(generationParams.ratio || generationParams.aspectRatio || 'auto'),
               quality: String(generationParams.quality || '1K').toLowerCase().includes('4')
                 ? '4k'
                 : String(generationParams.quality || '1K').toLowerCase().includes('2')
@@ -3681,34 +3778,120 @@ const AppContent: React.FC<{
                 ? 'original'
                 : 'custom',
               targetWidth: Number(generationParams.targetWidth || generationParams.width || 0),
-              targetHeight: Number(generationParams.targetHeight || generationParams.height || 0),
-              maxFileSize: Number(generationParams.maxFileSize || generationParams.maxSize || 2),
-            };
-            const { effectiveConfig } = deriveTranslationExecutionPlan({
-              config: modelConfig as any,
-              subMode: targetSubFeature === 'detail' ? 'detail' : targetSubFeature === 'remove_text' ? 'remove_text' : 'main',
-              sourceDimensions: sourceDimensions || undefined,
-            });
-            const matchedRatio = String(effectiveConfig.aspectRatio || modelConfig.aspectRatio || 'auto');
-            const promptForModel = buildTranslationPrompt(currentFileItem, index, matchedRatio);
+	              targetHeight: Number(generationParams.targetHeight || generationParams.height || 0),
+	              maxFileSize: Number(generationParams.maxFileSize || generationParams.maxSize || 2),
+	            };
+	            const resolvedSourceDimensions = sourceDimensions && sourceDimensions.width > 0 && sourceDimensions.height > 0
+	              ? sourceDimensions
+	              : null;
+	            if (modelConfig.resolutionMode === 'original' && !resolvedSourceDimensions) {
+	              throw new Error('原图尺寸读取失败，请重新上传素材后再生成。');
+	            }
+	            if (resolvedSourceDimensions && (!currentFileItem.originalWidth || !currentFileItem.originalHeight)) {
+	              translationFileItems[index] = {
+	                ...currentFileItem,
+	                originalWidth: resolvedSourceDimensions.width,
+	                originalHeight: resolvedSourceDimensions.height,
+	              };
+	              syncTranslationProject(translationFileItems);
+	            }
+	            const { effectiveConfig } = deriveTranslationExecutionPlan({
+	              config: modelConfig as any,
+	              subMode: targetSubFeature === 'detail' ? 'detail' : targetSubFeature === 'remove_text' ? 'remove_text' : 'main',
+	              sourceDimensions: resolvedSourceDimensions || undefined,
+	            });
+	            const matchedRatio = String(effectiveConfig.aspectRatio || modelConfig.aspectRatio || 'auto');
+	            const finalSize = resolvedSourceDimensions
+	              ? { width: resolvedSourceDimensions.width, height: resolvedSourceDimensions.height }
+	              : undefined;
+	            const translationTaskMetadata = {
+	              shellProjectId: projectId,
+	              shellProjectName: translationProject.name,
+	              shellResultId: currentFileItem.id,
+	              shellPurpose: 'translation_generation',
+	              subFeature: targetSubFeature,
+	              sourceUrl: currentFileItem.sourceUrl,
+	              sourcePreviewUrl: currentFileItem.sourcePreviewUrl || currentFileItem.sourceUrl,
+	              sourceFileName: currentFileItem.fileName,
+	              sourceRelativePath: currentFileItem.relativePath,
+	              finalSize,
+	              batchIndex: index + 1,
+	              batchCount: totalCount,
+	            };
+	            let planningAnalysis = '';
 
-            translationFileItems[index] = {
-              ...currentFileItem,
-              status: 'processing',
-              progress: 12,
-              prompt: promptForModel,
-              aspectRatio: matchedRatio,
-              matchedAspectRatio: matchedRatio,
-              taskId,
-            };
+	            translationFileItems[index] = {
+	              ...currentFileItem,
+	              status: 'processing',
+	              progress: useTranslationPlanningAnalysis ? 8 : 12,
+	              prompt: useTranslationPlanningAnalysis ? '正在提取并分析图片文案...' : buildTranslationPrompt(currentFileItem, index, matchedRatio),
+	              aspectRatio: matchedRatio,
+	              matchedAspectRatio: matchedRatio,
+	              taskId,
+	            };
             syncTranslationProject(translationFileItems);
-            setTasks((prev) => prev.map((task) => (
-              task.id === taskId
-                ? { ...task, status: 'generating', progress: 12 }
-                : task
-            )));
+	            setTasks((prev) => prev.map((task) => (
+	              task.id === taskId
+	                ? { ...task, status: 'generating', progress: useTranslationPlanningAnalysis ? 8 : 12 }
+	                : task
+	            )));
 
-            const result = await runShellImageGeneration({
+	            if (useTranslationPlanningAnalysis) {
+	              const analysisResult = await runShellTranslationPlanningAnalysis({
+	                module: targetModule,
+	                subFeature: targetSubFeature,
+	                prompt: '',
+	                params: {
+	                  ...generationParams,
+	                  ratio: matchedRatio,
+	                  aspectRatio: matchedRatio,
+	                  __workspacePreferences: JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences()),
+	                  __batchIndex: String(index + 1),
+	                  __batchCount: String(totalCount),
+	                  __sourceFileName: currentFileItem.fileName,
+	                  __sourceRelativePath: currentFileItem.relativePath,
+	                },
+	                materials: {
+	                  ...generationMaterials,
+	                  product: [{
+	                    id: material.id,
+	                    type: material.type,
+	                    url: material.sourceUrl,
+	                    remoteUrl: material.sourceUrl,
+	                    fileName: material.fileName,
+	                    subFeature: targetSubFeature,
+	                    originalWidth: resolvedSourceDimensions?.width,
+	                    originalHeight: resolvedSourceDimensions?.height,
+	                  }],
+	                },
+	                signal: controller.signal,
+	                taskMetadata: {
+	                  ...translationTaskMetadata,
+	                  shellPurpose: 'translation_planning_analysis',
+	                },
+	                publicBaseUrl,
+	              }, material.sourceUrl, (jobId: string) => {
+	                translationFileItems[index] = {
+	                  ...translationFileItems[index],
+	                  backendJobId: jobId || translationFileItems[index].backendJobId,
+	                };
+	                syncTranslationProject(translationFileItems);
+	              });
+	              planningAnalysis = analysisResult.description;
+	              translationFileItems[index] = {
+	                ...translationFileItems[index],
+	                progress: 35,
+	                prompt: buildTranslationPrompt(currentFileItem, index, matchedRatio, planningAnalysis),
+	              };
+	              syncTranslationProject(translationFileItems);
+	              setTasks((prev) => prev.map((task) => (
+	                task.id === taskId ? { ...task, status: 'generating', progress: 35 } : task
+	              )));
+	            }
+
+	            const promptForModel = buildTranslationPrompt(currentFileItem, index, matchedRatio, planningAnalysis);
+
+	            const result = await runShellImageGeneration({
               module: targetModule,
               subFeature: targetSubFeature,
               prompt: promptForModel,
@@ -3728,12 +3911,15 @@ const AppContent: React.FC<{
                   id: material.id,
                   type: material.type,
                   url: material.sourceUrl,
-                  remoteUrl: material.sourceUrl,
-                  fileName: material.fileName,
-                  subFeature: targetSubFeature,
-                }],
-              },
-              signal: controller.signal,
+	                  remoteUrl: material.sourceUrl,
+	                  fileName: material.fileName,
+	                  subFeature: targetSubFeature,
+	                  originalWidth: resolvedSourceDimensions?.width,
+	                  originalHeight: resolvedSourceDimensions?.height,
+	                }],
+	              },
+	              taskMetadata: translationTaskMetadata,
+	              signal: controller.signal,
               onJobCreated: (jobId: string, providerTaskId?: string) => {
                 translationFileItems[index] = {
                   ...translationFileItems[index],
@@ -3758,10 +3944,12 @@ const AppContent: React.FC<{
               creditsConsumed: result.creditsConsumed,
               resultUrl: result.imageUrl,
               matchedAspectRatio: matchedRatio,
-              prompt: result.prompt || promptForModel,
-              model: String(generationParams.model || 'GPT Image 2'),
-              aspectRatio: matchedRatio,
-            };
+	              prompt: result.prompt || promptForModel,
+	              model: String(generationParams.model || 'GPT Image 2'),
+	              aspectRatio: matchedRatio,
+	              originalWidth: resolvedSourceDimensions?.width || currentFileItem.originalWidth,
+	              originalHeight: resolvedSourceDimensions?.height || currentFileItem.originalHeight,
+	            };
             successCount += 1;
             syncTranslationProject(translationFileItems);
           } catch (error) {
@@ -4322,7 +4510,9 @@ const AppContent: React.FC<{
           : await runShellRetouchWorkflow({
               module: targetModule,
               subFeature: targetSubFeature,
-              prompt: generationPrompt || (targetModule === AppModuleObj.EVERYTHING_REPLACE ? '产品替换' : '产品精修'),
+              prompt: generationPrompt || (targetModule === AppModuleObj.EVERYTHING_REPLACE
+                ? (targetSubFeature === 'background_replace' ? '背景替换' : '产品替换')
+                : '产品精修'),
               params: generationParams,
               materials: generationMaterials,
               signal: controller.signal,
@@ -5748,8 +5938,17 @@ const AppContent: React.FC<{
       const controller = new AbortController();
       taskControllersRef.current[retryTaskId] = controller;
       let latestRegeneratedProject = project;
+      const shouldAppendRegeneratedResult = project.module === AppModuleObj.EVERYTHING_REPLACE;
+      const regeneratedResultId = shouldAppendRegeneratedResult
+        ? `result-regenerated-${Date.now()}`
+        : result.id;
       const updateProjectWithRegeneratedResult = (nextResult: GeneratedResult) => {
-        const nextResults = latestRegeneratedProject.results.map((current) => current.id === result.id ? nextResult : current);
+        const hasExistingRegeneratedResult = latestRegeneratedProject.results.some((current) => current.id === nextResult.id);
+        const nextResults = shouldAppendRegeneratedResult
+          ? hasExistingRegeneratedResult
+            ? latestRegeneratedProject.results.map((current) => current.id === nextResult.id ? nextResult : current)
+            : [...latestRegeneratedProject.results, nextResult]
+          : latestRegeneratedProject.results.map((current) => current.id === result.id ? nextResult : current);
         const hasGenerating = nextResults.some((current) => current.status === 'generating');
         const hasError = nextResults.some((current) => current.status === 'error');
         latestRegeneratedProject = {
@@ -5757,6 +5956,7 @@ const AppContent: React.FC<{
           status: hasGenerating ? 'generating' : hasError ? 'error' : 'completed',
           error: hasGenerating ? undefined : latestRegeneratedProject.error,
           results: nextResults,
+          taskCount: shouldAppendRegeneratedResult ? Math.max(Number(latestRegeneratedProject.taskCount || 0), nextResults.length) : latestRegeneratedProject.taskCount,
           completedCount: nextResults.filter((current) => current.status === 'completed' && (current.imageUrl || current.videoUrl)).length,
         };
         setProjects((prev) => prev.map((item) => item.id === project.id ? latestRegeneratedProject : item));
@@ -5765,6 +5965,7 @@ const AppContent: React.FC<{
 
       const pendingResult: GeneratedResult = {
         ...result,
+        id: regeneratedResultId,
         imageUrl: '',
         videoUrl: undefined,
         mediaType: 'image',
@@ -5791,23 +5992,17 @@ const AppContent: React.FC<{
       await persistProjectToSharedState(pendingProject);
       addToast('已提交重生成任务', 'success');
 
-      const { runShellImageGeneration } = await loadShellWorkflowModule();
+      const { runShellImageGeneration, runShellRetouchWorkflow } = await loadShellWorkflowModule();
       const preparedMaterials = await ensureMaterialRemoteUrls(retryMaterials, project.module);
       let activeRegenerationProviderTaskId = '';
-      const generation = await runShellImageGeneration({
-        module: project.module,
-        subFeature,
-        prompt: retryPrompt,
-        params: {
+      const finalRetryParams = {
           ...retryParams,
           ratio: result.aspectRatio || retryParams.ratio || retryParams.aspectRatio || 'auto',
           aspectRatio: result.aspectRatio || retryParams.aspectRatio || retryParams.ratio || 'auto',
           __workspacePreferences: JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences()),
           __retryResultId: result.id,
-        },
-        materials: preparedMaterials,
-        signal: controller.signal,
-        onJobCreated: (jobId, providerTaskId) => {
+      };
+      const updateRegenerationJobIdentity = (jobId: string, providerTaskId?: string) => {
           setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
             ...task,
             backendJobId: jobId,
@@ -5823,18 +6018,72 @@ const AppContent: React.FC<{
             });
             void persistProjectToSharedState(providerPendingProject);
           }
-        },
-        publicBaseUrl,
-        taskMetadata: {
-          shellPurpose: 'result_regeneration',
-          shellProjectId: project.id,
-          shellProjectName: project.name,
-          shellResultId: result.id,
-          shellPlanId: result.planId,
-          subFeature,
-          sourceFileName: result.fileName || result.id,
-        },
-      });
+      };
+      const isEverythingReplaceBackgroundRegeneration = project.module === AppModuleObj.EVERYTHING_REPLACE && subFeature === 'background_replace';
+      const regenerationMaterials = isEverythingReplaceBackgroundRegeneration && sourceUrl
+        ? {
+            ...preparedMaterials,
+            styleRef: [{
+              id: `${result.id}-retry-background-reference`,
+              type: 'styleRef',
+              url: sourceUrl,
+              remoteUrl: sourceUrl,
+              fileName: result.fileName || 'background-reference.png',
+              subFeature,
+            }],
+          }
+        : preparedMaterials;
+      const generation = await (isEverythingReplaceBackgroundRegeneration
+        ? (async () => {
+          const workflowResult = await runShellRetouchWorkflow({
+            module: project.module,
+            subFeature,
+            prompt: retryPrompt,
+            params: finalRetryParams,
+            materials: regenerationMaterials,
+            signal: controller.signal,
+            onJobCreated: updateRegenerationJobIdentity,
+            publicBaseUrl,
+            taskMetadata: {
+              shellPurpose: 'background_replace_regeneration',
+              shellProjectId: project.id,
+              shellProjectName: project.name,
+              shellResultId: regeneratedResultId,
+              shellPlanId: result.planId,
+              subFeature,
+              sourceFileName: result.fileName || result.id,
+            },
+          });
+          const item = workflowResult.results[0];
+          return {
+            imageUrl: item?.imageUrl || '',
+            taskId: item?.taskId,
+            backendJobId: item?.backendJobId,
+            status: item?.status === 'completed' ? 'success' : item?.status || 'error',
+            message: item?.message || item?.error,
+            prompt: item?.prompt || retryPrompt,
+            creditsConsumed: item?.creditsConsumed,
+          };
+        })()
+        : runShellImageGeneration({
+            module: project.module,
+            subFeature,
+            prompt: retryPrompt,
+            params: finalRetryParams,
+            materials: regenerationMaterials,
+            signal: controller.signal,
+            onJobCreated: updateRegenerationJobIdentity,
+            publicBaseUrl,
+            taskMetadata: {
+              shellPurpose: 'result_regeneration',
+              shellProjectId: project.id,
+              shellProjectName: project.name,
+              shellResultId: regeneratedResultId,
+              shellPlanId: result.planId,
+              subFeature,
+              sourceFileName: result.fileName || result.id,
+            },
+          }));
       if (generation.status !== 'success' || !generation.imageUrl) {
         const recoverableGeneration = {
           ...generation,
@@ -5855,6 +6104,7 @@ const AppContent: React.FC<{
       }
       const completedResult: GeneratedResult = {
         ...result,
+        id: regeneratedResultId,
         imageUrl: generation.imageUrl,
         videoUrl: undefined,
         mediaType: 'image',
@@ -6220,6 +6470,8 @@ const AppContent: React.FC<{
     try {
       const { runShellImageGeneration } = await loadShellWorkflowModule();
       const preparedMaterials = await ensureMaterialRemoteUrls(materialsOverride, AppModuleObj.EVERYTHING_REPLACE);
+      const resultOnlyEdit = project.module === AppModuleObj.EVERYTHING_REPLACE
+        && (project.subFeature === 'product_replace' || project.subFeature === 'background_replace');
       const prompt = plan.schemeContent || plan.editInstruction || storedContext?.prompt || '';
       const result = await runShellImageGeneration({
         module: AppModuleObj.EVERYTHING_REPLACE,
@@ -6231,7 +6483,7 @@ const AppContent: React.FC<{
         onJobCreated,
         publicBaseUrl,
         taskMetadata: {
-          shellPurpose: 'everything_replace_product_edit',
+          shellPurpose: resultOnlyEdit ? 'everything_replace_result_only_edit' : 'everything_replace_product_edit',
           shellProjectId: projectId,
           shellProjectName: project.name,
           shellPlanId: plan.id,
@@ -6240,6 +6492,7 @@ const AppContent: React.FC<{
           batchCount: 1,
           sourceResultUrl: plan.sourceResultUrl ? resolvePublicAssetUrl(plan.sourceResultUrl, publicBaseUrl) : undefined,
           editInstruction: plan.editInstruction || prompt,
+          resultOnlyEdit,
         },
       });
 
@@ -6389,7 +6642,7 @@ const AppContent: React.FC<{
       if (await handleStoryboardEditResult(projectId, resultId, instruction, files)) return;
       const project = projects.find((p) => p.id === projectId);
       const isSupportedImageEditProject = project?.module === AppModuleObj.ONE_CLICK
-        || (project?.module === AppModuleObj.EVERYTHING_REPLACE && project.subFeature === 'product_replace');
+        || (project?.module === AppModuleObj.EVERYTHING_REPLACE && (project.subFeature === 'product_replace' || project.subFeature === 'background_replace'));
       if (!project || !isSupportedImageEditProject) return;
       const resultIndex = project.results.findIndex((item) => item.id === resultId);
       const result = resultIndex >= 0 ? project.results[resultIndex] : null;
@@ -6415,22 +6668,25 @@ const AppContent: React.FC<{
         : filteredMaterials;
       const isEverythingReplaceProductEdit = project.module === AppModuleObj.EVERYTHING_REPLACE
         && project.subFeature === 'product_replace';
+      const isEverythingReplaceBackgroundEdit = project.module === AppModuleObj.EVERYTHING_REPLACE
+        && project.subFeature === 'background_replace';
       const isOneClickEdit = project.module === AppModuleObj.ONE_CLICK;
-      const usesMinimalRoleEditPrompt = isOneClickEdit || isEverythingReplaceProductEdit;
+      const usesMinimalRoleEditPrompt = isOneClickEdit || isEverythingReplaceProductEdit || isEverythingReplaceBackgroundEdit;
+      const usesResultOnlyEditPrompt = isEverythingReplaceProductEdit || isEverythingReplaceBackgroundEdit;
       const sourceResultAspectRatio = String(result.aspectRatio || '').trim();
       const generationParams = {
         ...(storedContext?.params || currentParams),
         model: currentScopedImageModel || storedContext?.params?.model || result.model || currentParams.model || 'GPT Image 2',
-        ratio: isEverythingReplaceProductEdit
+        ratio: project.module === AppModuleObj.EVERYTHING_REPLACE
           ? sourceResultAspectRatio || storedContext?.params?.ratio || storedContext?.params?.aspectRatio || currentParams.ratio
           : storedContext?.params?.ratio || result.aspectRatio || currentParams.ratio,
-        aspectRatio: isEverythingReplaceProductEdit
+        aspectRatio: project.module === AppModuleObj.EVERYTHING_REPLACE
           ? sourceResultAspectRatio || storedContext?.params?.aspectRatio || storedContext?.params?.ratio || currentParams.aspectRatio
           : storedContext?.params?.aspectRatio || result.aspectRatio || currentParams.aspectRatio,
       };
       const initialEditMaterials: Record<string, Material[]> = {
-        product: [...(contextMaterials.product || [])],
-        gift: [...(contextMaterials.gift || [])],
+        product: usesResultOnlyEditPrompt ? [] : [...(contextMaterials.product || [])],
+        gift: usesResultOnlyEditPrompt ? [] : [...(contextMaterials.gift || [])],
         logo: usesMinimalRoleEditPrompt ? [] : [...(contextMaterials.logo || [])],
         reference: [],
       };
@@ -6462,7 +6718,7 @@ const AppContent: React.FC<{
         variationInstruction: undefined,
         editInstruction: finalInstruction,
         sourceResultUrl,
-        schemeContent: originalGenerationPrompt || finalInstruction,
+        schemeContent: usesResultOnlyEditPrompt ? finalInstruction : originalGenerationPrompt || finalInstruction,
       };
       const editProject: Project = {
         id: `project-edit-${Date.now()}`,
@@ -6478,7 +6734,7 @@ const AppContent: React.FC<{
         subFeature: project.subFeature || activeSubFeature || (project.module === AppModuleObj.ONE_CLICK ? 'first_image' : 'product_replace'),
         sourceType: 'persisted',
         directGeneration: true,
-        generationContext: cloneGenerationContext(originalGenerationPrompt || finalInstruction, generationParams, initialEditMaterials),
+        generationContext: cloneGenerationContext(usesResultOnlyEditPrompt ? finalInstruction : originalGenerationPrompt || finalInstruction, generationParams, initialEditMaterials),
       };
       createdEditProjectId = editProject.id;
       setProjects((prev) => [editProject, ...prev]);
@@ -6510,11 +6766,11 @@ const AppContent: React.FC<{
       };
       const readyEditProject: Project = {
         ...editProject,
-        generationContext: cloneGenerationContext(originalGenerationPrompt || finalInstruction, generationParams, editMaterials),
+        generationContext: cloneGenerationContext(usesResultOnlyEditPrompt ? finalInstruction : originalGenerationPrompt || finalInstruction, generationParams, editMaterials),
       };
       setProjects((prev) => prev.map((item) => item.id === readyEditProject.id ? readyEditProject : item));
       await persistProjectToSharedState(readyEditProject);
-      if (isEverythingReplaceProductEdit) {
+      if (isEverythingReplaceProductEdit || isEverythingReplaceBackgroundEdit) {
         await runEverythingReplaceEditGeneration(readyEditProject, editPlan, editMaterials);
       } else {
         await runOneClickPlanGeneration(readyEditProject, [editPlan], editMaterials);
@@ -7003,6 +7259,7 @@ const AppContent: React.FC<{
           onModuleChange={handleModuleChange}
           theme={theme}
           onToggleTheme={toggleTheme}
+          onOpenAnnouncement={handleOpenAnnouncementPanel}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => setSidebarCollapsed((prev) => !prev)}
         />
@@ -7045,6 +7302,12 @@ const AppContent: React.FC<{
             </Suspense>
           )}
         </div>
+        <SystemAnnouncementModal
+          open={Boolean(announcementOpenSource)}
+          announcement={activeAnnouncement}
+          onClose={handleCloseAnnouncementPanel}
+          onDismissToday={handleDismissAnnouncementToday}
+        />
       </div>
     </ThemeContext.Provider>
   );

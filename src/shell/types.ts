@@ -301,6 +301,15 @@ export interface PersistedAppState {
 
 export type ModuleInterfaceId = 'one_click_main';
 
+export interface SystemAnnouncement {
+  id: string;
+  title: string;
+  content: string;
+  enabled: boolean;
+  updatedAt: number;
+  updatedBy: string;
+}
+
 export interface SystemPublicConfig {
   queue: {
     maxConcurrency: number;
@@ -315,6 +324,7 @@ export interface SystemPublicConfig {
     videoAnalysisModel: string;
     effectiveVideoAnalysisModel: string;
     videoAnalysisReasoningLevel: string;
+    announcement: SystemAnnouncement;
     openaiCompatible: {
       configured: boolean;
       baseUrl: string;

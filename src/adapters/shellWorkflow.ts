@@ -13,12 +13,12 @@ import {
 } from '../types';
 import { cancelInternalJob, createInternalJob, uploadInternalAssetStream, storeActiveModuleContext, waitForInternalJob } from '../services/internalApi';
 import { processWithKieAi } from '../services/kieAiService';
-import { analyzeRetouchTask, generateBuyerShowPrompts, generateDetailPageReplicationSchemes, generateFirstImageReplicationSchemes, generateMainImageSetReplicationSchemes, generateMarketingSchemes, generateSkuSchemes } from '../services/arkService';
+import { analyzeRetouchTask, analyzeTranslationCopyForGeneration, generateBuyerShowPrompts, generateDetailPageReplicationSchemes, generateFirstImageReplicationSchemes, generateMainImageSetReplicationSchemes, generateMarketingSchemes, generateSkuSchemes } from '../services/arkService';
 import { buildOneClickImagePrompt } from '../modules/OneClick/generationPromptUtils';
 import { XHS_COVER_STYLES } from '../modules/XhsCover/xhsCoverStyles';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 import { extractShellSchemeField } from './shellSchemeFields';
-import { getImageDimensions, getImageDimensionsFromUrl, resizeImage } from '../utils/imageUtils';
+import { fetchRemoteFileBlob, getImageDimensions, getImageDimensionsFromUrl, resizeImage } from '../utils/imageUtils';
 import { normalizeFetchedImageBlob } from '../utils/imageBlobUtils.mjs';
 import { persistGeneratedAsset } from '../services/persistedAssetClient';
 import { resolveShellSkuCount } from './shellSkuCount';
@@ -688,21 +688,27 @@ const maybeResizeAndPersistImageResult = async (
   sourceName: string,
   config: ModuleConfig,
   signal: AbortSignal,
+  finalSize?: { width: number; height: number } | null,
 ) => {
-  if (config.resolutionMode !== 'custom' || (config.targetWidth <= 0 && config.targetHeight <= 0)) {
+  const shouldUseFinalSize = Boolean(
+    config.resolutionMode === 'original'
+    && finalSize
+    && Number(finalSize.width) > 0
+    && Number(finalSize.height) > 0,
+  );
+  if (!shouldUseFinalSize && (config.resolutionMode !== 'custom' || (config.targetWidth <= 0 && config.targetHeight <= 0))) {
     return imageUrl;
   }
 
   try {
-    const response = await fetch(imageUrl, { signal });
-    if (!response.ok) throw new Error(`获取生成图片失败: ${response.status}`);
-    const blob = await normalizeFetchedImageBlob(await response.blob(), imageUrl);
-    let width = config.targetWidth;
-    let height = config.targetHeight;
-    if (width > 0 && height === 0) {
+    if (signal.aborted) throw new Error('INTERRUPTED');
+    const blob = await normalizeFetchedImageBlob(await fetchRemoteFileBlob(imageUrl), imageUrl);
+    let width = shouldUseFinalSize ? Number(finalSize?.width || 0) : config.targetWidth;
+    let height = shouldUseFinalSize ? Number(finalSize?.height || 0) : config.targetHeight;
+    if (!shouldUseFinalSize && width > 0 && height === 0) {
       const dims = await getImageDimensions(blob);
       height = Math.round(width / (dims.ratio || 1));
-    } else if (height > 0 && width === 0) {
+    } else if (!shouldUseFinalSize && height > 0 && width === 0) {
       const dims = await getImageDimensions(blob);
       width = Math.round(height * (dims.ratio || 1));
     }
@@ -744,6 +750,45 @@ export const uploadShellMaterial = async (
   return material;
 };
 
+export const runShellTranslationPlanningAnalysis = async (
+  input: ShellGenerateInput,
+  sourceImageUrl?: string,
+  onJobCreated?: (jobId: string, providerTaskId?: string) => void,
+) => {
+  storeActiveModuleContext(input.module);
+  const publicBaseUrl = input.publicBaseUrl || '';
+  const imageUrl = requireShellAssetUrl(
+    sourceImageUrl || firstMaterialUrl(input.materials.product, publicBaseUrl) || '',
+    publicBaseUrl,
+    '出海翻译原图',
+  );
+  const result = await analyzeTranslationCopyForGeneration({
+    imageUrl,
+    targetLanguage: firstParam(input.params, ['lang', 'language'], 'English'),
+    subFeature: input.subFeature || input.params.mode || 'main',
+    apiConfig: {
+      kieApiKey: '',
+      concurrency: 1,
+      workspacePreferences: input.params.__workspacePreferences
+        ? JSON.parse(input.params.__workspacePreferences)
+        : undefined,
+    },
+    signal: input.signal,
+    onJobCreated: onJobCreated || input.onJobCreated,
+    jobMetadata: {
+      ...(input.taskMetadata || {}),
+      taskPurpose: 'translation_copy_analysis',
+    },
+  });
+
+  return {
+    description: result.description,
+    message: result.message,
+    creditsConsumed: result.creditsConsumed,
+    taskId: result.taskId,
+  };
+};
+
 export const runShellImageGeneration = async (input: ShellGenerateInput) => {
   const productImageUrls = (input.materials.product || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
   const giftImageUrls = (input.materials.gift || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
@@ -767,12 +812,13 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
   const moduleLabel = MODULE_LABELS[input.module] || input.module;
   const materialManifest = buildMaterialManifest(input);
   const xhsPresetPrompt = input.module === AppModule.XHS_COVER ? buildXhsPresetPrompt(input.params) : '';
-  const useNativeTranslationPrompt = input.module === AppModule.TRANSLATION;
+  const isTranslationAiOptimizeMode = ['AI优化', '策划分析'].includes(input.params.translationGenerationMode);
+  const useNativeTranslationPrompt = input.module === AppModule.TRANSLATION && !isTranslationAiOptimizeMode;
   const oneClickSchemeContent = typeof input.taskMetadata?.schemeContent === 'string'
     ? input.taskMetadata.schemeContent.trim()
     : '';
   const everythingReplaceEditPrompt = input.module === AppModule.EVERYTHING_REPLACE
-    && input.subFeature === 'product_replace'
+    && (input.subFeature === 'product_replace' || input.subFeature === 'background_replace')
     && typeof input.taskMetadata?.sourceResultUrl === 'string'
     && typeof input.taskMetadata?.editInstruction === 'string'
     && input.taskMetadata.editInstruction.trim()
@@ -781,9 +827,15 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
         editInstruction: input.taskMetadata.editInstruction,
         productUrls: productImageUrls,
         publicBaseUrl: input.publicBaseUrl || '',
+        resultOnlyEdit: Boolean(input.taskMetadata?.resultOnlyEdit),
       })
     : '';
-  const customPrompt = oneClickSchemeContent && input.module === AppModule.ONE_CLICK
+  const useTranslationPlanningPrompt = input.module === AppModule.TRANSLATION
+    && isTranslationAiOptimizeMode
+    && input.prompt.trim();
+  const customPrompt = useTranslationPlanningPrompt
+    ? input.prompt.trim()
+    : oneClickSchemeContent && input.module === AppModule.ONE_CLICK
     ? buildOneClickImagePrompt({
         schemeContent: oneClickSchemeContent,
         language: firstParam(input.params, ['language', 'lang'], '中文'),
@@ -848,6 +900,9 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
         String(input.taskMetadata?.sourceFileName || input.taskMetadata?.shellPlanId || input.taskMetadata?.batchIndex || 'result.png'),
         config,
         input.signal,
+        input.module === AppModule.TRANSLATION && config.resolutionMode === 'original'
+          ? input.taskMetadata?.finalSize as { width: number; height: number } | undefined
+          : undefined,
       )
     : result.imageUrl;
   return { ...result, imageUrl: finalImageUrl, prompt: useNativeTranslationPrompt ? input.prompt || customPrompt : customPrompt };
@@ -1077,11 +1132,12 @@ export const runShellBuyerShowWorkflow = async (
   };
 };
 
-type ShellRetouchMode = 'original' | 'white_bg' | 'product_replace';
+type ShellRetouchMode = 'original' | 'white_bg' | 'product_replace' | 'background_replace';
 
 const getRetouchMode = (input: ShellGenerateInput): ShellRetouchMode => {
   const value = String(input.subFeature || input.params.mode || '').trim();
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'product_replace' || value.includes('产品'))) return 'product_replace';
+  if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'background_replace' || value.includes('背景'))) return 'background_replace';
   if (value === 'white_bg' || value.includes('白底')) return 'white_bg';
   if (value === 'original' || value.includes('原图') || !value) return 'original';
   throw new Error('该产品精修子功能待制作，当前只迁移了 3000 的原图精修和白底精修。');
@@ -1146,17 +1202,26 @@ const buildEverythingReplaceResultEditPrompt = ({
   editInstruction,
   productUrls,
   publicBaseUrl,
+  resultOnlyEdit = false,
 }: {
   previousResultUrl?: string | null;
   editInstruction?: string | null;
   productUrls: string[];
   publicBaseUrl?: string;
+  resultOnlyEdit?: boolean;
 }) => {
   const safePreviousResultUrl = resolvePublicAssetUrl(previousResultUrl || '', publicBaseUrl || '');
   const safeProductUrls = productUrls
     .map((url) => resolvePublicAssetUrl(url || '', publicBaseUrl || ''))
     .filter(Boolean);
   const instruction = String(editInstruction || '').trim();
+  if (resultOnlyEdit) {
+    return [
+      `修改基准图：${safePreviousResultUrl || '当前产出的结果图'}（唯一参考基准，公网url）`,
+      '规则：只以当前产出的结果图为唯一参考基准，在此基础上按用户要求做补充修改；原任务的背景替换、产品替换、人物/产品锁定等约束均不再生效。',
+      `修改要求：${instruction || '按用户输入要求修改当前结果图。'}`,
+    ].filter(Boolean).join('\n');
+  }
   return [
     `产品素材图：${formatRoleUrls(safeProductUrls, '已上传原素材图')}（公网url）`,
     `需修改基准图：${safePreviousResultUrl || '需修改的生成图'}（公网url）`,
@@ -1324,6 +1389,62 @@ const buildCombinationProductReplacePrompt = ({
   logoPromptBlock,
   isCombination: true,
 });
+
+const BACKGROUND_REPLACE_SCENE_RULE = '根据背景参考图的场景/背景进行复刻，延续参考图的空间类型、环境材质、色调、光线方向、景深和商业拍摄质感；场景的镜头角度、透视比例、空间尺度、道具大小和远近关系必须主动适配原产品图，不得让产品或人物去适配参考背景；新背景必须与原产品和人物自然融合，并严格符合原产品的角度、透视、受光方向和接触关系。';
+
+const buildBackgroundReplaceTextPolicyBlock = (textPolicy: string) => (
+  textPolicy === 'remove_text'
+    ? '去除文案：去除背景、场景、道具、墙面、海报、水印和非产品区域中的文字/品牌/标识，并自然修复背景；不得去除或改写产品包装文字、产品标签和产品自身 Logo。'
+    : '维持文案：保留原产品图中非产品区域已有的背景文字、场景标识和画面文案；产品包装文字、产品标签和产品自身 Logo 必须始终保持原样。'
+);
+
+const buildBackgroundReplacePrompt = ({
+  sourceUrl,
+  referenceUrl,
+  userPrompt,
+  textPolicy,
+  aspectRatio,
+  batchIndex,
+  batchCount,
+}: {
+  sourceUrl: string;
+  referenceUrl: string;
+  userPrompt: string;
+  textPolicy: string;
+  aspectRatio: AspectRatio;
+  batchIndex: number;
+  batchCount: number;
+}) => [
+  'R Role 角色\n你是电商视觉背景替换执行模型，专门在不改变产品和人物主体的前提下，为产品图更换真实可信的商业场景。',
+  [
+    'T Task 任务',
+    `原产品图：${sourceUrl}`,
+    `背景参考图：${referenceUrl}`,
+    '只更换原产品图中的背景/场景，产品和人物状态动作保持不变，生成一张新的商业产品图。',
+    `当前生成第 ${batchIndex}/${batchCount} 张背景替换结果。`,
+  ].join('\n'),
+  [
+    'C Constraint 约束',
+    '1. 唯一允许变化项：只允许更换背景/场景；产品、人物、主体尺度、主体轮廓、主体位置、遮挡关系和产品摆放必须沿用原产品图，不得重新生成、重新摆拍或借用背景参考图中的主体。',
+    '2. 产品硬锁定：产品外观、形状、比例、颜色、材质、纹理、结构、配件、包装文字、标签、Logo、品牌名、图案、接口、边缘和所有可见细节必须保持原样，不得抹除、替换、改写、移动或重排。',
+    '3. 人物硬锁定：如果原产品图中有人物，人物动态必须以原产品图为唯一依据，保持原人物状态动作、姿势、肢体动态、手势、视线、表情趋势、服装轮廓、身体与产品的接触关系和遮挡关系；不得换脸、换发型、换服装、换动作、换手势、换站姿或改变人与产品的相对位置。',
+    '4. 参考图边界：背景参考图只提供场景/背景依据，不得把参考图中的人物、产品、品牌、文字、促销、价格、认证、赠品、平台标识或水印带入最终图。',
+    `5. 场景复刻：${BACKGROUND_REPLACE_SCENE_RULE}`,
+    '6. 空间标定：先以原产品图中的产品/人物为唯一空间锚点，判断脚底/底部接触点、地面线、相机高度、主体占画面比例、前后景距离和遮挡层级；再按这些锚点重建背景的门窗、台阶、家具、墙面、地面纹理和道具大小。背景必须反向适配主体，不能出现人物悬浮、脚底无接触阴影、台阶过大/过小、门窗比例失真、地面透视线与主体不一致或主体像贴图的效果。',
+    `7. 文案处理：${buildBackgroundReplaceTextPolicyBlock(textPolicy)}`,
+    '8. 融合质量：新背景必须与原产品和人物自然融合，场景角度、比例大小、空间尺度、接触阴影、反射、景深、边缘过渡、色温、光线方向和透视关系要围绕原产品图校准；若背景效果与主体准确性冲突，优先保证产品、人物状态动作和产品角度不变。',
+  ].join('\n'),
+  [
+    'F Format 格式',
+    `输出一张干净完整的背景替换商业效果图，最终画面比例为 ${aspectRatio}。`,
+    '只输出最终图像，不输出分析文字、辅助线、边框、选区框、蒙版或对比图。',
+  ].join('\n'),
+  [
+    'E Example 示例',
+    '示例：原图是人物手持产品，背景参考图是明亮浴室；最终图必须保留人物手持动作、产品包装和 Logo 不变，只把环境换成浴室场景，并让光影自然融合。',
+  ].join('\n'),
+  userPrompt ? `【用户补充要求】\n${userPrompt}` : '',
+].filter(Boolean).join('\n\n');
 
 const resolveProductReplaceReferenceAspectRatio = async (
   reference: ShellMaterialInput,
@@ -1541,6 +1662,79 @@ const runProductReplaceWorkflow = async (
   };
 };
 
+const runBackgroundReplaceWorkflow = async (
+  input: ShellGenerateInput,
+  config: ModuleConfig,
+  apiConfig: GlobalApiConfig,
+  onItemCompleted?: (item: ShellWorkflowImageResult, index: number, total: number) => void,
+): Promise<{ results: ShellWorkflowImageResult[]; creditsConsumed?: number }> => {
+  const publicBaseUrl = input.publicBaseUrl || '';
+  const sourceMaterials = input.materials.product || [];
+  const referenceMaterials = input.materials.styleRef || [];
+  const sourceUrl = firstMaterialUrl(sourceMaterials, publicBaseUrl, '原产品图');
+  const referenceUrls = referenceMaterials.map((item) => materialUrl(item, publicBaseUrl)).filter(Boolean);
+  if (!sourceUrl) throw new Error('请先上传原产品图。');
+  if (referenceUrls.length === 0) throw new Error('请先上传背景参考图。');
+
+  const textPolicy = normalizeProductReplaceTextPolicy(input.params.textPolicy);
+  const total = referenceUrls.length;
+  const results = await Promise.all(referenceUrls.map(async (referenceUrl, referenceIndex) => {
+    const currentBatchIndex = referenceIndex + 1;
+    const referenceMaterial = referenceMaterials[referenceIndex];
+    const aspectRatio = await resolveProductReplaceReferenceAspectRatio(referenceMaterial, config, publicBaseUrl, input.signal);
+    const prompt = buildBackgroundReplacePrompt({
+      sourceUrl,
+      referenceUrl,
+      userPrompt: input.prompt.trim(),
+      textPolicy,
+      aspectRatio,
+      batchIndex: currentBatchIndex,
+      batchCount: total,
+    });
+    const generation = await processWithKieAi(
+      [sourceUrl, referenceUrl],
+      apiConfig,
+      { ...config, aspectRatio, targetLanguage: 'zh', removeWatermark: true },
+      aspectRatio === AspectRatio.AUTO,
+      input.signal,
+      prompt,
+      false,
+      undefined,
+      'main',
+      {
+        ...(input.taskMetadata || {}),
+        subFeature: 'background_replace',
+        textPolicy,
+        skipPromptCleanupSuffix: true,
+        batchIndex: currentBatchIndex,
+        batchCount: total,
+        referenceIndex: currentBatchIndex,
+        referenceCount: referenceUrls.length,
+      },
+      input.onJobCreated,
+    );
+    const item = await toProductReplaceResultItem(
+      generation,
+      prompt,
+      config,
+      aspectRatio,
+      currentBatchIndex,
+      total,
+      referenceUrl,
+      input.signal,
+      '背景替换',
+      { ...config, aspectRatio },
+    );
+    onItemCompleted?.(item, currentBatchIndex, total);
+    return item;
+  }));
+
+  return {
+    results,
+    creditsConsumed: results.reduce((sum, item) => sum + (Number(item.creditsConsumed) || 0), 0) || undefined,
+  };
+};
+
 const toProductReplaceResultItem = async (
   generation: KieAiResult,
   prompt: string,
@@ -1550,6 +1744,8 @@ const toProductReplaceResultItem = async (
   batchCount: number,
   sourceUrl: string,
   signal: AbortSignal,
+  taskLabel = '产品替换',
+  resultConfig: ModuleConfig = { ...config, aspectRatio, resolutionMode: 'original', targetWidth: 0, targetHeight: 0 },
 ): Promise<ShellWorkflowImageResult> => {
   if (generation.status !== 'success' || !generation.imageUrl) {
     if (generation.taskId) {
@@ -1562,18 +1758,18 @@ const toProductReplaceResultItem = async (
         aspectRatio,
         sourceUrl,
         status: generation.status === 'generating' ? 'generating' : 'error',
-        error: generation.message || `第 ${batchIndex}/${batchCount} 张产品替换失败`,
+        error: generation.message || `第 ${batchIndex}/${batchCount} 张${taskLabel}失败`,
         message: generation.message,
         errorCode: generation.errorCode,
         batchIndex,
       };
     }
-    throw new Error(generation.message || `第 ${batchIndex}/${batchCount} 张产品替换失败`);
+    throw new Error(generation.message || `第 ${batchIndex}/${batchCount} 张${taskLabel}失败`);
   }
   const finalUrl = await maybeResizeAndPersistRetouchResult(
     generation.imageUrl,
-    `everything-replace-${batchIndex}.png`,
-    { ...config, aspectRatio, resolutionMode: 'original', targetWidth: 0, targetHeight: 0 },
+    `everything-replace-${taskLabel === '背景替换' ? 'background' : 'product'}-${batchIndex}.png`,
+    resultConfig,
     signal,
   );
   return {
@@ -1651,6 +1847,9 @@ export const runShellRetouchWorkflow = async (
   });
   if (mode === 'product_replace') {
     return runProductReplaceWorkflow(input, config, apiConfig, onItemCompleted);
+  }
+  if (mode === 'background_replace') {
+    return runBackgroundReplaceWorkflow(input, config, apiConfig, onItemCompleted);
   }
   const referenceUrl = firstMaterialUrl(input.materials.styleRef, input.publicBaseUrl || '', '精修参考图')
     || firstMaterialUrl(input.materials.texture, input.publicBaseUrl || '', '精修质感参考图')

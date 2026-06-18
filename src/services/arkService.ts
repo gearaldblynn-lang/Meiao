@@ -501,6 +501,57 @@ const requestAnalysisResponse = async (
   onJobCreated?: AnalysisJobCreatedCallback
 ) => (await requestAnalysisResponseDetailed(inputContent, apiConfig, signal, onJobCreated)).content;
 
+export const analyzeTranslationCopyForGeneration = async ({
+  imageUrl,
+  targetLanguage,
+  subFeature: _subFeature,
+  apiConfig,
+  signal,
+  onJobCreated,
+  jobMetadata = {},
+}: {
+  imageUrl: string;
+  targetLanguage: string;
+  subFeature?: string;
+  apiConfig: GlobalApiConfig;
+  signal?: AbortSignal;
+  onJobCreated?: AnalysisJobCreatedCallback;
+  jobMetadata?: Record<string, unknown>;
+}): Promise<{ description: string; message: string; creditsConsumed?: number; taskId?: string }> => {
+  const target = String(targetLanguage || 'English').trim() || 'English';
+  const prompt = `R Role 角色
+你是商业图像文案翻译与修复助手，只翻译画面中的营销文案。
+
+T Task 任务
+提取图片文案，分析并翻译为本地化语言。
+
+C Constraint 约束
+1. 除产品/包装表面文字、装饰性/氛围/非核心英文外，其余文案均翻译；核心卖点、标题和购买决策信息仍按目标语言处理。
+2. 译文不得逐词硬翻，必须先理解卖点含义，在不新增原图不存在的信息或虚假卖点的前提下，本地化改写为${target}消费者熟悉的电商表达；可调整语序、拆分或合并表达，符合${target}电商语气，避免翻译腔。
+3. 参数、尺寸、温度、数量等数值信息必须准确保留；表格/参数/尺码类仅输出短标签，不扩写成句。
+4. 产品主体、包装、logo、画面主题和版式位置保持不变；产品/包装表面文字、实拍压印文字视为图片内容，不翻译、不重绘、不移动。
+
+F Format 格式
+用中文逐条输出：
+- “xxx”本地化为“xxx”
+- “产品主体/包装实物表面的原文案、压印文字或原图 logo”保持不变`;
+  const analysis = await requestAnalysisResponseDetailed([
+    { type: 'text', text: prompt },
+    { type: 'image_url', image_url: { url: imageUrl } },
+  ], apiConfig, signal, onJobCreated, {
+    ...jobMetadata,
+    taskPurpose: String(jobMetadata.taskPurpose || 'translation_copy_analysis'),
+    targetLanguage: target,
+  });
+
+  return {
+    description: analysis.content.trim(),
+    message: analysis.content.trim() ? '出海翻译策划分析完成' : '出海翻译策划分析未返回可用内容',
+    creditsConsumed: analysis.creditsConsumed,
+    taskId: analysis.taskId,
+  };
+};
+
 const logArkEvent = (action: string, message: string, status: 'started' | 'success' | 'failed' | 'interrupted', detail = '', meta: Record<string, unknown> | null = null) => {
   const module = getActiveModuleContext() || 'unknown';
   void safeCreateInternalLog({

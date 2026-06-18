@@ -51,21 +51,29 @@ test('agent chat GPT loop acceptance record documents verification feedback and 
   assert.match(doc, /npm run build/);
 });
 
-test('release announcement promotes the June 17 native GPT-style agent chat repair', () => {
-  const releaseNotes = read('../config/releaseNotes.ts');
+test('system announcement replaces static release toast with editable first-open modal', () => {
   const shellToast = read('../shell/components/ToastSystem.tsx');
+  const api = read('../services/internalApi.ts');
+  const app = read('../ShellMigratedApp.tsx');
+  const settings = read('../shell/modules/Settings/GlobalApiSettings.tsx');
+  const announcementModal = read('../shell/components/SystemAnnouncementModal.tsx');
+  const types = read('../types.ts');
 
-  assert.match(releaseNotes, /APP_RELEASE_VERSION = 'V260617A'/);
-  assert.match(releaseNotes, /6 月 17 功能调整/);
-  assert.match(releaseNotes, /智能体对话已修复/);
-  assert.match(releaseNotes, /原生 GPT 式智能对话/);
-  assert.match(releaseNotes, /连续对话/);
-  assert.match(releaseNotes, /改图/);
-  assert.match(shellToast, /CURRENT_RELEASE_NOTES/);
-  assert.match(shellToast, /RELEASE_NOTES_STORAGE_KEY/);
-  assert.match(shellToast, /localStorage\.getItem\(RELEASE_NOTES_STORAGE_KEY\)/);
-  assert.match(shellToast, /智能体对话已修复/);
-  assert.match(shellToast, /setTimeout\(\(\) => setToasts/);
+  assert.equal(existsSync(new URL('../config/releaseNotes.ts', import.meta.url)), false);
+  assert.doesNotMatch(shellToast, /CURRENT_RELEASE_NOTES|RELEASE_NOTES_STORAGE_KEY|APP_RELEASE_VERSION/);
+  assert.match(types, /export interface SystemAnnouncement/);
+  assert.match(types, /announcement: SystemAnnouncement/);
+  assert.match(api, /announcement\?: Partial<SystemAnnouncement>/);
+  assert.match(app, /SystemAnnouncementModal/);
+  assert.match(app, /announcementOpenSource/);
+  assert.match(app, /meiao_announcement_dismissed_today/);
+  assert.match(app, /onOpenAnnouncement/);
+  assert.match(settings, /公告管理/);
+  assert.match(settings, /保存公告/);
+  assert.match(settings, /删除公告/);
+  assert.match(settings, /当前账号没有公告编辑权限/);
+  assert.match(announcementModal, /今日不再提醒/);
+  assert.match(announcementModal, /backdropFilter: 'blur\(24px\) saturate\(1\.18\)'/);
 });
 
 test('one click module keeps submode switching out of the workspace header', () => {
@@ -2762,13 +2770,14 @@ test('everything replace product edit uses its own generation flow', () => {
   assert.match(everythingReplaceModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(shellApp, /onEditResult=\{handleEditResult\}/);
   assert.match(shellApp, /const runEverythingReplaceEditGeneration = useCallback/);
-  assert.match(shellApp, /shellPurpose: 'everything_replace_product_edit'/);
-  assert.match(shellApp, /project\?\.module === AppModuleObj\.EVERYTHING_REPLACE && project\.subFeature === 'product_replace'/);
+  assert.match(shellApp, /shellPurpose: resultOnlyEdit \? 'everything_replace_result_only_edit' : 'everything_replace_product_edit'/);
+  assert.match(shellApp, /project\?\.module === AppModuleObj\.EVERYTHING_REPLACE && \(project\.subFeature === 'product_replace' \|\| project\.subFeature === 'background_replace'\)/);
+  assert.match(shellApp, /const usesResultOnlyEditPrompt = isEverythingReplaceProductEdit \|\| isEverythingReplaceBackgroundEdit/);
   assert.match(shellApp, /runEverythingReplaceEditGeneration\(readyEditProject, editPlan, editMaterials\)/);
   assert.match(workflow, /buildEverythingReplaceResultEditPrompt/);
-  assert.match(editPromptFunction, /产品素材图：\$\{formatRoleUrls\(safeProductUrls, '已上传原素材图'\)\}（公网url）/);
-  assert.match(editPromptFunction, /需修改基准图：\$\{safePreviousResultUrl \|\| '需修改的生成图'\}（公网url）/);
-  assert.match(editPromptFunction, /任务：\$\{instruction \|\| '按用户输入要求修改当前生成图。'\}/);
+  assert.match(editPromptFunction, /修改基准图：\$\{safePreviousResultUrl \|\| '当前产出的结果图'\}（唯一参考基准，公网url）/);
+  assert.match(editPromptFunction, /原任务的背景替换、产品替换、人物\/产品锁定等约束均不再生效/);
+  assert.match(editPromptFunction, /修改要求：\$\{instruction \|\| '按用户输入要求修改当前结果图。'\}/);
   assert.doesNotMatch(editPromptFunction, /【补充参考图】/);
   assert.doesNotMatch(editPromptFunction, /【约束规范】/);
 });
@@ -3024,6 +3033,120 @@ test('everything replace product workflow keeps batch metadata so many outputs r
   assert.match(projectCard, /result\.status !== 'error'/);
 });
 
+test('everything replace background workflow is wired with RTCFE prompt and locked subject constraints', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const workflow = read('../adapters/shellWorkflow.ts');
+  const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
+  const backgroundWorkflow = workflow.match(/const runBackgroundReplaceWorkflow = async \([\s\S]*?const toProductReplaceResultItem = async /)?.[0] || '';
+
+  assert.match(shellApp, /id: 'background_replace', label: '背景替换' \}/);
+  assert.doesNotMatch(shellApp, /id: 'background_replace', label: '背景替换', description: '待制作', disabled: true/);
+  assert.match(shellApp, /targetSubFeature === 'product_replace' \|\| targetSubFeature === 'background_replace'/);
+  assert.match(shellApp, /targetSubFeature === 'background_replace' \? '背景替换' : '产品替换'/);
+
+  assert.match(bottomInputBar, /getBackgroundReplaceQuickParams/);
+  assert.doesNotMatch(bottomInputBar, /label: '画面模式'/);
+  assert.match(bottomInputBar, /key: 'resolutionMode'/);
+  assert.match(bottomInputBar, /label: '尺寸模式'/);
+  assert.match(bottomInputBar, /options: \['AI 自适应尺寸', '固定宽度'\]/);
+  assert.match(bottomInputBar, /key: 'targetWidth'/);
+  assert.match(bottomInputBar, /label: '输出宽度\(px\)'/);
+  assert.match(bottomInputBar, /return \['product', 'styleRef'\]/);
+  assert.match(shellApp, /const isBackgroundReplace = mode === 'background_replace'/);
+  assert.match(shellApp, /targetHeight: params\.targetHeight \|\| params\.height \|\| '0'/);
+
+  assert.match(workflow, /type ShellRetouchMode = 'original' \| 'white_bg' \| 'product_replace' \| 'background_replace'/);
+  assert.match(workflow, /runBackgroundReplaceWorkflow/);
+  assert.match(backgroundWorkflow, /\{ \.\.\.config, aspectRatio, targetLanguage: 'zh', removeWatermark: true \}/);
+  assert.match(workflow, /\{ \.\.\.config, aspectRatio \}/);
+  assert.doesNotMatch(backgroundWorkflow, /resolutionMode: 'original'/);
+  assert.doesNotMatch(backgroundWorkflow, /targetWidth: 0/);
+  assert.doesNotMatch(backgroundWorkflow, /targetHeight: 0/);
+  assert.match(workflow, /buildBackgroundReplacePrompt/);
+  assert.match(workflow, /BACKGROUND_REPLACE_SCENE_RULE/);
+  assert.match(workflow, /根据背景参考图的场景\/背景进行复刻/);
+  assert.match(workflow, /R Role 角色/);
+  assert.match(workflow, /T Task 任务/);
+  assert.match(workflow, /C Constraint 约束/);
+  assert.match(workflow, /F Format 格式/);
+  assert.match(workflow, /E Example 示例/);
+  assert.match(workflow, /只更换原产品图中的背景\/场景/);
+  assert.match(workflow, /唯一允许变化项：只允许更换背景\/场景/);
+  assert.match(workflow, /产品和人物状态动作保持不变/);
+  assert.match(workflow, /主体尺度、主体轮廓、主体位置、遮挡关系和产品摆放必须沿用原产品图/);
+  assert.match(workflow, /延续参考图的空间类型、环境材质、色调、光线方向、景深和商业拍摄质感/);
+  assert.match(workflow, /场景的镜头角度、透视比例、空间尺度、道具大小和远近关系必须主动适配原产品图/);
+  assert.match(workflow, /不得让产品或人物去适配参考背景/);
+  assert.match(workflow, /空间标定：先以原产品图中的产品\/人物为唯一空间锚点/);
+  assert.match(workflow, /脚底\/底部接触点、地面线、相机高度、主体占画面比例、前后景距离和遮挡层级/);
+  assert.match(workflow, /背景必须反向适配主体/);
+  assert.match(workflow, /不能出现人物悬浮、脚底无接触阴影、台阶过大\/过小、门窗比例失真、地面透视线与主体不一致或主体像贴图的效果/);
+  assert.match(workflow, /新背景必须与原产品和人物自然融合/);
+  assert.match(workflow, /严格符合原产品的角度、透视、受光方向和接触关系/);
+  assert.match(workflow, /人物动态必须以原产品图为唯一依据/);
+  assert.match(workflow, /保持原人物状态动作、姿势、肢体动态、手势、视线、表情趋势、服装轮廓/);
+  assert.match(workflow, /产品外观、形状、比例、颜色、材质、纹理、结构、配件、包装文字、标签、Logo、品牌名、图案/);
+  assert.match(workflow, /不得换脸、换发型、换服装、换动作、换手势、换站姿或改变人与产品的相对位置/);
+  assert.match(workflow, /背景参考图只提供场景\/背景依据/);
+  assert.match(workflow, /场景角度、比例大小、空间尺度、接触阴影、反射、景深、边缘过渡/);
+  assert.match(workflow, /不得把参考图中的人物、产品、品牌、文字、促销、价格、认证、赠品、平台标识或水印带入最终图/);
+  assert.match(workflow, /buildBackgroundReplaceTextPolicyBlock/);
+  assert.match(workflow, /文案处理：/);
+  assert.match(workflow, /去除背景、场景、道具、墙面、海报、水印和非产品区域中的文字\/品牌\/标识/);
+  assert.match(workflow, /不得去除或改写产品包装文字、产品标签和产品自身 Logo/);
+  assert.match(workflow, /保留原产品图中非产品区域已有的背景文字、场景标识和画面文案/);
+  assert.match(workflow, /textPolicy = normalizeProductReplaceTextPolicy\(input\.params\.textPolicy\)/);
+  assert.match(workflow, /subFeature: 'background_replace'/);
+  assert.match(workflow, /\[sourceUrl, referenceUrl\]/);
+});
+
+test('everything replace regeneration appends a new result instead of overwriting the previous output', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(shellApp, /const \{ runShellImageGeneration, runShellRetouchWorkflow \} = await loadShellWorkflowModule\(\)/);
+  assert.match(shellApp, /const shouldAppendRegeneratedResult = project\.module === AppModuleObj\.EVERYTHING_REPLACE/);
+  assert.match(shellApp, /const hasExistingRegeneratedResult = latestRegeneratedProject\.results\.some\(\(current\) => current\.id === nextResult\.id\)/);
+  assert.match(shellApp, /: \[\.\.\.latestRegeneratedProject\.results, nextResult\]/);
+  assert.match(shellApp, /taskCount: shouldAppendRegeneratedResult/);
+  assert.match(shellApp, /id: regeneratedResultId/);
+  assert.match(shellApp, /const isEverythingReplaceBackgroundRegeneration = project\.module === AppModuleObj\.EVERYTHING_REPLACE && subFeature === 'background_replace'/);
+  assert.match(shellApp, /const regenerationMaterials = isEverythingReplaceBackgroundRegeneration && sourceUrl/);
+  assert.match(shellApp, /styleRef: \[\{/);
+  assert.match(shellApp, /id: `\$\{result\.id\}-retry-background-reference`/);
+  assert.match(shellApp, /runShellRetouchWorkflow\(\{/);
+  assert.match(shellApp, /shellPurpose: 'background_replace_regeneration'/);
+  assert.match(shellApp, /shellResultId: regeneratedResultId/);
+  assert.match(shellApp, /shellPurpose: 'result_regeneration'[\s\S]*?shellResultId: regeneratedResultId/);
+  assert.match(shellApp, /status: item\?\.status === 'completed' \? 'success' : item\?\.status \|\| 'error'/);
+});
+
+test('everything replace product and background edits use only the current result image as baseline', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const workflow = read('../adapters/shellWorkflow.ts');
+  const materials = read('../adapters/shellOneClickMaterials.mjs');
+
+  assert.match(projectCard, /const isEverythingReplaceBackgroundEditProject = project\.module === 'everything_replace' && project\.subFeature === 'background_replace'/);
+  assert.match(projectCard, /project\.module === 'everything_replace' && project\.subFeature === 'background_replace'/);
+  assert.match(projectCard, /const usesMinimalRoleEditPrompt = isOneClickProject \|\| isEverythingReplaceProductEditProject \|\| isEverythingReplaceBackgroundEditProject/);
+
+  assert.match(shellApp, /const isEverythingReplaceBackgroundEdit = project\.module === AppModuleObj\.EVERYTHING_REPLACE[\s\S]*?project\.subFeature === 'background_replace'/);
+  assert.match(shellApp, /const usesResultOnlyEditPrompt = isEverythingReplaceProductEdit \|\| isEverythingReplaceBackgroundEdit/);
+  assert.match(shellApp, /product: usesResultOnlyEditPrompt \? \[\] : \[\.\.\.\(contextMaterials\.product \|\| \[\]\)\]/);
+  assert.match(shellApp, /gift: usesResultOnlyEditPrompt \? \[\] : \[\.\.\.\(contextMaterials\.gift \|\| \[\]\)\]/);
+  assert.match(shellApp, /schemeContent: usesResultOnlyEditPrompt \? finalInstruction : originalGenerationPrompt \|\| finalInstruction/);
+  assert.match(shellApp, /shellPurpose: resultOnlyEdit \? 'everything_replace_result_only_edit' : 'everything_replace_product_edit'/);
+  assert.match(shellApp, /const resultOnlyEdit = project\.module === AppModuleObj\.EVERYTHING_REPLACE[\s\S]*?\(project\.subFeature === 'product_replace' \|\| project\.subFeature === 'background_replace'\)/);
+  assert.match(shellApp, /resultOnlyEdit,/);
+
+  assert.match(materials, /if \(sourceResultUrl && hasEditInstruction && isResultOnlyEdit\) \{[\s\S]*?return dedupeUrls\(\[sourceResultUrl\]\)/);
+  assert.match(workflow, /input\.subFeature === 'product_replace' \|\| input\.subFeature === 'background_replace'/);
+  assert.match(workflow, /resultOnlyEdit: Boolean\(input\.taskMetadata\?\.resultOnlyEdit\)/);
+  assert.match(workflow, /修改基准图：\$\{safePreviousResultUrl \|\| '当前产出的结果图'\}（唯一参考基准，公网url）/);
+  assert.match(workflow, /原任务的背景替换、产品替换、人物\/产品锁定等约束均不再生效/);
+  assert.match(workflow, /修改要求：\$\{instruction \|\| '按用户输入要求修改当前结果图。'\}/);
+});
+
 test('everything replace product workflow sends logo placement guides per reference task', () => {
   const workflow = read('../adapters/shellWorkflow.ts');
   const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
@@ -3050,16 +3173,17 @@ test('everything replace product edit is wired to its own generation path', () =
   const editPromptFunction = workflow.match(/const buildEverythingReplaceResultEditPrompt = \(\{[\s\S]*?\n\};/)?.[0] || '';
 
   assert.match(shellApp, /const runEverythingReplaceEditGeneration = useCallback/);
-  assert.match(shellApp, /shellPurpose: 'everything_replace_product_edit'/);
   assert.match(shellApp, /isEverythingReplaceProductEdit/);
   assert.match(shellApp, /await runEverythingReplaceEditGeneration\(readyEditProject, editPlan, editMaterials\)/);
   assert.match(shellApp, /onEditResult=\{handleEditResult\}/);
   assert.match(everythingReplaceModule, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(workflow, /buildEverythingReplaceResultEditPrompt/);
   assert.match(workflow, /everythingReplaceEditPrompt/);
-  assert.match(editPromptFunction, /产品素材图：\$\{formatRoleUrls\(safeProductUrls, '已上传原素材图'\)\}（公网url）/);
-  assert.match(editPromptFunction, /需修改基准图：\$\{safePreviousResultUrl \|\| '需修改的生成图'\}（公网url）/);
-  assert.match(editPromptFunction, /任务：\$\{instruction \|\| '按用户输入要求修改当前生成图。'\}/);
+  assert.match(shellApp, /shellPurpose: resultOnlyEdit \? 'everything_replace_result_only_edit' : 'everything_replace_product_edit'/);
+  assert.match(shellApp, /const usesResultOnlyEditPrompt = isEverythingReplaceProductEdit \|\| isEverythingReplaceBackgroundEdit/);
+  assert.match(editPromptFunction, /修改基准图：\$\{safePreviousResultUrl \|\| '当前产出的结果图'\}（唯一参考基准，公网url）/);
+  assert.match(editPromptFunction, /原任务的背景替换、产品替换、人物\/产品锁定等约束均不再生效/);
+  assert.match(editPromptFunction, /修改要求：\$\{instruction \|\| '按用户输入要求修改当前结果图。'\}/);
 });
 
 test('generation refreshes expiring uploaded material urls from local draft assets', () => {

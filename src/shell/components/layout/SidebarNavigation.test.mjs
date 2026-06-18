@@ -19,3 +19,15 @@ test('landing navigation uses the same item geometry as module navigation', () =
   assert.doesNotMatch(source, /h-9 min-w-0/);
   assert.doesNotMatch(source, /collapsed \? 'w-8 justify-center'/);
 });
+
+test('sidebar exposes a lightweight system announcement entry above settings', () => {
+  const source = read('src/shell/components/layout/SidebarNavigation.tsx');
+  const app = read('src/ShellMigratedApp.tsx');
+
+  assert.match(source, /Bell size=\{20\}/);
+  assert.match(source, /onOpenAnnouncement: \(\) => void/);
+  assert.match(source, /公告/);
+  assert.match(source, /renderAnnouncementItem/);
+  assert.match(source, /renderAnnouncementItem\(\)/);
+  assert.match(app, /onOpenAnnouncement=\{handleOpenAnnouncementPanel\}/);
+});

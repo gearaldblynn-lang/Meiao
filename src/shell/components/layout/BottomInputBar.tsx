@@ -53,6 +53,7 @@ interface ExtendedParamItem {
   placeholder?: string;
   rows?: number;
   allowCustom?: boolean;
+  disabled?: boolean;
 }
 
 type SelectOption = string | { value: string; label: string };
@@ -177,6 +178,14 @@ const isProductReplaceContext = (module: AppModule, activeSubFeature?: string) =
   module === AppModuleObj.EVERYTHING_REPLACE && (!activeSubFeature || activeSubFeature === 'product_replace')
 );
 
+const isBackgroundReplaceContext = (module: AppModule, activeSubFeature?: string) => (
+  module === AppModuleObj.EVERYTHING_REPLACE && activeSubFeature === 'background_replace'
+);
+
+const isEverythingReplaceImageContext = (module: AppModule, activeSubFeature?: string) => (
+  isProductReplaceContext(module, activeSubFeature) || isBackgroundReplaceContext(module, activeSubFeature)
+);
+
 const getEverythingReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
   const supportedRatios = getRetouchSupportedAspectRatiosForModel(currentParams.model || 'GPT Image 2');
   return [
@@ -188,6 +197,24 @@ const getEverythingReplaceQuickParams = (currentParams: Record<string, string>):
       options: ['单品替换', '组合替换'],
       defaultValue: '单品替换',
     },
+    {
+      key: 'ratio',
+      label: getEverythingReplaceRatioLabel(supportedRatios[0] || 'auto'),
+      title: '出图比例',
+      icon: <BoxSelect size={12} />,
+      options: supportedRatios.map((ratio) => ({ value: ratio, label: getEverythingReplaceRatioLabel(ratio) })),
+      defaultValue: 'auto',
+      recommendedValue: 'auto',
+      recommendedLabel: '推荐',
+    },
+    { key: 'model', label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />, options: ['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
+    { key: 'quality', label: '1K', title: '出图分辨率', icon: <Sparkles size={12} />, options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
+  ];
+};
+
+const getBackgroundReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
+  const supportedRatios = getRetouchSupportedAspectRatiosForModel(currentParams.model || 'GPT Image 2');
+  return [
     {
       key: 'ratio',
       label: getEverythingReplaceRatioLabel(supportedRatios[0] || 'auto'),
@@ -503,11 +530,9 @@ const getVideoQuickParams = (
 const getTranslationQuickParams = (activeSubFeature?: string): ParamItem[] => {
   const isDetail = activeSubFeature === 'detail';
   const isRemoveText = activeSubFeature === 'remove_text';
-  const ratioOptions = isDetail || isRemoveText
-    ? ['auto', '1:1', '3:4', '4:3', '9:16', '16:9']
-    : ['1:1', '3:4', '4:3', '9:16', '16:9'];
   return [
     { key: 'submode', label: isDetail ? '详情出海' : isRemoveText ? '去文案' : '主图出海', title: '翻译模式', icon: <Globe size={12} />, options: ['主图出海', '详情出海', '去文案'], defaultValue: isDetail ? '详情出海' : isRemoveText ? '去文案' : '主图出海' },
+    { key: 'translationGenerationMode', label: 'AI直出', title: '生成逻辑', icon: <Wand2 size={12} />, options: ['AI直出', 'AI优化'], defaultValue: 'AI直出' },
     ...(isRemoveText ? [] : [{
       key: 'lang',
       label: '英语',
@@ -528,16 +553,6 @@ const getTranslationQuickParams = (activeSubFeature?: string): ParamItem[] => {
       defaultValue: 'English',
       allowCustom: true,
     } as ParamItem]),
-    {
-      key: 'ratio',
-      label: isDetail || isRemoveText ? 'auto' : '1:1',
-      title: '出图比例',
-      icon: <BoxSelect size={12} />,
-      options: ratioOptions,
-      defaultValue: isDetail || isRemoveText ? 'auto' : '1:1',
-      recommendedValue: isDetail || isRemoveText ? 'auto' : '1:1',
-      recommendedLabel: '推荐',
-    },
     { key: 'model',   label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />, options: ['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
     { key: 'quality', label: '1K',       title: '渲染质量', icon: <Sparkles size={12} />, options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
   ];
@@ -559,6 +574,7 @@ const getQuickParamsForModule = (
   if (module === AppModuleObj.VIDEO) return getVideoQuickParams(activeSubFeature, systemConfig, currentParams);
   if (module === AppModuleObj.RETOUCH) return getRetouchQuickParams(currentParams);
   if (isProductReplaceContext(module, activeSubFeature)) return getEverythingReplaceQuickParams(currentParams);
+  if (isBackgroundReplaceContext(module, activeSubFeature)) return getBackgroundReplaceQuickParams(currentParams);
   if (module !== AppModuleObj.ONE_CLICK) return QUICK_PARAMS[module] || [];
   const mode = currentParams.mode || '首图';
   if (mode === '首图') return getOneClickBaseParams(mode);
@@ -582,6 +598,7 @@ const getQuickParamsForModule = (
 const getMaterialTypesForContext = (module: AppModule, currentParams: Record<string, string>, activeSubFeature?: string): MaterialType[] | undefined => {
   if (module === AppModuleObj.BUYER_SHOW) return ['product', 'atmosphere', 'model'];
   if (isProductReplaceContext(module, activeSubFeature)) return ['product', 'logo', 'styleRef'];
+  if (isBackgroundReplaceContext(module, activeSubFeature)) return ['product', 'styleRef'];
   if (module === AppModuleObj.VIDEO) {
     if (activeSubFeature === 'diagnosis') return [];
     if (activeSubFeature === 'storyboard') {
@@ -690,8 +707,15 @@ const getStoryboardMaterialLabels = (params: Record<string, string>): Partial<Re
 };
 
 const getEverythingReplaceMaterialLabels = (
+  activeSubFeature: string | undefined,
   params: Record<string, string>,
 ): Partial<Record<MaterialType, { label: string; desc: string }>> => {
+  if (activeSubFeature === 'background_replace') {
+    return {
+      product: { label: '原产品图', desc: '保持产品和人物不变' },
+      styleRef: { label: '背景参考图', desc: '只替换场景/背景' },
+    };
+  }
   const isCombination = params.replacementLogic === '组合替换';
   return {
     product: {
@@ -731,14 +755,32 @@ const getExtendedSectionsForModule = (module: AppModule, currentParams: Record<s
   if (module === AppModuleObj.TRANSLATION) {
     const isDetail = activeSubFeature === 'detail';
     const isRemoveText = activeSubFeature === 'remove_text';
+    const isOriginalSizeMode = String(currentParams.resolutionMode || currentParams.sizeMode || '').includes('原图')
+      || currentParams.resolutionMode === 'original';
+    const ratioOptions = isDetail || isRemoveText
+      ? ['auto', '1:1', '3:4', '4:3', '9:16', '16:9']
+      : ['1:1', '3:4', '4:3', '9:16', '16:9'];
     return [
       {
         section: '尺寸',
         params: [
           { key: 'resolutionMode', label: '尺寸模式', type: 'select', options: ['自定义', '原图'], defaultValue: '自定义' },
           { key: 'maxSize', label: '体积限制(MB)', type: 'number', defaultValue: '2.0' },
-          { key: 'targetWidth', label: '输出宽度(px)', type: 'number', defaultValue: isDetail ? '750' : isRemoveText ? '1200' : '800' },
-          { key: 'targetHeight', label: '输出高度(px)', type: 'number', defaultValue: isDetail || isRemoveText ? '0' : '800' },
+          { key: 'ratio', label: '出图比例', type: 'select', options: ratioOptions, defaultValue: isDetail || isRemoveText ? 'auto' : '1:1', disabled: isOriginalSizeMode },
+          { key: 'targetWidth', label: '输出宽度(px)', type: 'number', defaultValue: isDetail ? '750' : isRemoveText ? '1200' : '800', disabled: isOriginalSizeMode },
+          { key: 'targetHeight', label: '输出高度(px)', type: 'number', defaultValue: isDetail || isRemoveText ? '0' : '800', disabled: isOriginalSizeMode },
+        ],
+      },
+    ];
+  }
+  if (isBackgroundReplaceContext(module, activeSubFeature)) {
+    return [
+      {
+        section: '画面',
+        params: [
+          { key: 'resolutionMode', label: '尺寸模式', type: 'select' as const, options: ['AI 自适应尺寸', '固定宽度'], defaultValue: 'AI 自适应尺寸' },
+          { key: 'targetWidth', label: '输出宽度(px)', type: 'number' as const, defaultValue: '800' },
+          { key: 'textPolicy', label: '文案处理', type: 'select' as const, options: ['维持文案', '去除文案'], defaultValue: '维持文案' },
         ],
       },
     ];
@@ -794,6 +836,9 @@ const MODULE_PLACEHOLDERS: Record<string, string> = {
 };
 
 const getPlaceholderForContext = (module: AppModule, activeSubFeature?: string, currentParams: Record<string, string> = {}) => {
+  if (isBackgroundReplaceContext(module, activeSubFeature)) {
+    return '补充背景替换要求，例如：保留人物姿势和产品不变，只换成参考图同款场景...';
+  }
   if (module === AppModuleObj.VIDEO && (!activeSubFeature || activeSubFeature === 'generation')) {
     return '描述视频动作、镜头运动、产品卖点和氛围要求...';
   }
@@ -812,6 +857,7 @@ const getPlaceholderForContext = (module: AppModule, activeSubFeature?: string, 
 const getGenerateLabelForContext = (module: AppModule, activeSubFeature?: string) => {
   if (isPendingShellSubFeature(module, activeSubFeature)) return '待制作';
   if (isProductReplaceContext(module, activeSubFeature)) return '开始产品替换';
+  if (isBackgroundReplaceContext(module, activeSubFeature)) return '开始背景替换';
   if (module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard') return '生成分镜';
   if (module === AppModuleObj.VIDEO && activeSubFeature === 'diagnosis') return '一键勘探深度分析';
   return '生成';
@@ -820,7 +866,7 @@ const getGenerateLabelForContext = (module: AppModule, activeSubFeature?: string
 const isPendingShellSubFeature = (module: AppModule, activeSubFeature?: string) =>
   (module === AppModuleObj.BUYER_SHOW && activeSubFeature === 'copy')
   || (module === AppModuleObj.RETOUCH && (activeSubFeature === 'background_replace' || activeSubFeature === 'enhance'))
-  || (module === AppModuleObj.EVERYTHING_REPLACE && (activeSubFeature === 'background_replace' || activeSubFeature === 'logo_replace'));
+  || (module === AppModuleObj.EVERYTHING_REPLACE && activeSubFeature === 'logo_replace');
 
 /* ── Compact Dropdown ── */
 const CompactSelect: React.FC<{
@@ -835,6 +881,7 @@ const CompactSelect: React.FC<{
   secondaryRecommendedValue?: string;
   secondaryRecommendedLabel?: string;
   getOptionMeta?: (value: string) => string;
+  disabled?: boolean;
 }> = ({
   value,
   options,
@@ -847,6 +894,7 @@ const CompactSelect: React.FC<{
   secondaryRecommendedValue,
   secondaryRecommendedLabel = '常用',
   getOptionMeta,
+  disabled,
 }) => {
   const [open, setOpen] = useState(false);
   const [customInputs, setCustomInputs] = useState(false);
@@ -879,8 +927,9 @@ const CompactSelect: React.FC<{
     <div ref={ref} className="relative">
       <button
         type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 px-3 py-1.5 rounded-2xl text-[11px] font-medium transition-all"
+        onClick={() => { if (!disabled) setOpen(!open); }}
+        disabled={disabled}
+        className="flex items-center gap-1 px-3 py-1.5 rounded-2xl text-[11px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-45"
         style={{
           color: open ? 'var(--accent)' : 'var(--text-secondary)',
           background: open ? 'var(--accent-soft)' : 'var(--bg-elevated)',
@@ -899,7 +948,7 @@ const CompactSelect: React.FC<{
         ) : null}
         <ChevronDown size={9} className="transition-transform" style={{ transform: open ? 'rotate(180deg)' : 'none' }} />
       </button>
-      {open && (
+      {open && !disabled && (
         <div
           className={`absolute bottom-full left-0 mb-1.5 rounded-2xl py-2 px-1.5 border z-[200] ${isModelSelect ? 'min-w-[240px]' : 'min-w-[170px]'}`}
           style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', boxShadow: 'var(--shadow-elevated)' }}
@@ -1049,6 +1098,7 @@ const BottomInputBar: React.FC<Props> = ({
   const isXhsCover = module === AppModuleObj.XHS_COVER;
   const isBuyerShow = module === AppModuleObj.BUYER_SHOW;
   const isEverythingReplaceProductReplace = isProductReplaceContext(module, activeSubFeature);
+  const isEverythingReplaceImageReplace = isEverythingReplaceImageContext(module, activeSubFeature);
   const isPendingSubFeature = isPendingShellSubFeature(module, activeSubFeature);
   const disabledReason = generationDisabledReason || (isPendingSubFeature ? '该子功能待制作' : '');
   const retouchSizeWarning = module === AppModuleObj.RETOUCH
@@ -1062,7 +1112,7 @@ const BottomInputBar: React.FC<Props> = ({
     : '';
   const isDreaminaVideoGeneration = module === AppModuleObj.VIDEO && (!activeSubFeature || activeSubFeature === 'generation');
   const isStoryboardViralReplicationContext = module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard' && isStoryboardViralReplicationMode(currentParams.videoMode);
-  const canGenerateWithoutPrompt = isSkuPromptMode || isTranslation || module === AppModuleObj.RETOUCH || isEverythingReplaceProductReplace || isStoryboardViralReplicationContext;
+  const canGenerateWithoutPrompt = isSkuPromptMode || isTranslation || module === AppModuleObj.RETOUCH || isEverythingReplaceImageReplace || isStoryboardViralReplicationContext;
   const isGenerateDisabled = isSubmitLocked || Boolean(disabledReason) || (!promptText.trim() && !canGenerateWithoutPrompt);
   const isSubmitBusy = isSubmitLocked;
   const submitLabel = isSubmitBusy ? '任务处理中...' : generateLabel;
@@ -2273,8 +2323,8 @@ const BottomInputBar: React.FC<Props> = ({
                       }}
                       materialTypes={contextMaterialTypes}
                       materialLabels={
-                        isEverythingReplaceProductReplace
-                          ? getEverythingReplaceMaterialLabels(currentParams)
+                        isEverythingReplaceImageReplace
+                          ? getEverythingReplaceMaterialLabels(activeSubFeature, currentParams)
                           : activeSubFeature === 'storyboard'
                           ? getStoryboardMaterialLabels(currentParams)
                           : isDreaminaVideoGeneration
@@ -2363,27 +2413,28 @@ const BottomInputBar: React.FC<Props> = ({
                             >
                               <p className="text-[12px] font-semibold mb-3" style={{ color: 'var(--text-secondary)' }}>{section.section}</p>
                               <div className="grid grid-cols-2 gap-2.5">
-                                {section.params.map((p) => {
-                                  const val = getVal(p.key, p.defaultValue || '');
-                                  if (
-                                    module === AppModuleObj.TRANSLATION &&
+	                                {section.params.map((p) => {
+	                                  const val = getVal(p.key, p.defaultValue || '');
+	                                  const isParamDisabled = Boolean(p.disabled);
+	                                  if (
+	                                    module === AppModuleObj.TRANSLATION &&
                                     (activeSubFeature === 'detail' || activeSubFeature === 'remove_text') &&
                                     p.key === 'targetHeight'
                                   ) {
                                     return null;
                                   }
-                                  if (p.type === 'select') return (
-                                    <div key={p.key}>
-                                      <label className="block text-[10px] mb-1.5" style={{ color: 'var(--text-tertiary)' }}>{p.label}</label>
-                                      <CompactSelect value={val} options={p.options || []} onChange={(v) => handleTranslationParamChange(p.key, v)} allowCustom={p.allowCustom} />
-                                    </div>
-                                  );
-                                  if (p.type === 'number') return (
-                                    <div key={p.key}>
-                                      <label className="block text-[10px] mb-1.5" style={{ color: 'var(--text-tertiary)' }}>{p.label}</label>
-                                      <input type="number" value={val} onChange={(e) => handleTranslationParamChange(p.key, e.target.value)} className="input-field w-full text-[12px] py-1.5 rounded-2xl" />
-                                    </div>
-                                  );
+	                                  if (p.type === 'select') return (
+	                                    <div key={p.key}>
+	                                      <label className="block text-[10px] mb-1.5" style={{ color: 'var(--text-tertiary)' }}>{p.label}</label>
+	                                      <CompactSelect value={val} options={p.options || []} onChange={(v) => handleTranslationParamChange(p.key, v)} allowCustom={p.allowCustom} disabled={isParamDisabled} />
+	                                    </div>
+	                                  );
+	                                  if (p.type === 'number') return (
+	                                    <div key={p.key}>
+	                                      <label className="block text-[10px] mb-1.5" style={{ color: 'var(--text-tertiary)' }}>{p.label}</label>
+	                                      <input type="number" value={val} onChange={(e) => handleTranslationParamChange(p.key, e.target.value)} disabled={isParamDisabled} className="input-field w-full text-[12px] py-1.5 rounded-2xl disabled:cursor-not-allowed disabled:opacity-45" />
+	                                    </div>
+	                                  );
                                   if (p.type === 'checkbox') {
                                     const checked = val === 'true' || val === '1' || val === '是';
                                     return (

@@ -143,3 +143,24 @@ test('one click detail edit provider input urls include the generated baseline i
     'https://example.com/generated-detail.png',
   ]);
 });
+
+test('everything replace background result-only edit provider input urls include only generated baseline', () => {
+  const imageUrls = buildShellImageInputUrls({
+    module: 'everything_replace',
+    subFeature: 'background_replace',
+    materials: {
+      product: [material('product', 'https://example.com/original-product.png')],
+      styleRef: [material('styleRef', 'https://example.com/background-reference.png')],
+      reference: [material('reference', 'https://example.com/extra-reference.png')],
+    },
+    taskMetadata: {
+      sourceResultUrl: 'https://example.com/current-result.png',
+      editInstruction: '把天空改成傍晚',
+      resultOnlyEdit: true,
+    },
+  });
+
+  assert.deepEqual(imageUrls, [
+    'https://example.com/current-result.png',
+  ]);
+});
