@@ -26,13 +26,13 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## 2026-06-18 - Cloud video playback must not preload every visible result
 
-- Symptom: 云上视频播放再次出现卡顿/不流畅；本地网络快时不明显，但公网入口下载 1MB range 约 0.4-0.9s，多个视频同时预取会抢带宽和解码。
+- Symptom: 云上视频播放再次出现卡顿/不流畅；本地网络快时不明显，但公网入口下载 1MB range 约 0.4-0.9s，多个视频同时预取会抢带宽和解码。后续用户进一步确认不是转圈缓冲，而是播放观看时卡帧。
 - Environment: Tencent Cloud production video playback / project cards.
-- Root cause: 资产路由已有 Range 支持，但项目卡片为了预览帧对可见视频直接 `preload=metadata` 并 seek；视频工作区的 `<video>` 也存在未显式 preload 的入口，浏览器可按默认策略提前加载。后端资产响应缺少 ETag/Last-Modified，Nginx 也只显式转发 `Range/If-Range`，公网条件请求不能 304 命中。
-- Fix: 缩略视频默认 `preload=none`；可播放视频在 hover/focus/pointerdown 时切到 `preload=auto` 预缓冲，点击覆盖播放按钮时等待 `canplay/loadeddata` 或短超时后再 `play()`，并在真实播放时跳过预览 seek，避免抢首帧。视频工作区显式 `preload="metadata"`/`playsInline`。托管资产响应增加 `Cache-Control: private, max-age=604800, immutable`、ETag、Last-Modified、`X-Accel-Buffering: no`；云上 Nginx 补 `If-None-Match` 和 `If-Modified-Since` 代理头。
+- Root cause: 资产路由已有 Range 支持，但项目卡片为了预览帧对可见视频直接 `preload=metadata` 并 seek；视频工作区的 `<video>` 也存在未显式 preload 的入口，浏览器可按默认策略提前加载。后端资产响应缺少 ETag/Last-Modified，Nginx 也只显式转发 `Range/If-Range`，公网条件请求不能 304 命中。卡帧场景还叠加了 UI 合成压力：视频播放路径被项目卡 hover scale、整屏 `backdrop-filter`、圆角裁剪和大阴影包裹，真实浏览器容易掉帧。
+- Fix: 缩略视频默认 `preload=none`；可播放视频在 hover/focus/pointerdown 时切到 `preload=auto` 预缓冲，点击覆盖播放按钮时等待 `canplay/loadeddata` 或短超时后再 `play()`，并在真实播放时跳过预览 seek，避免抢首帧。视频工作区显式 `preload="metadata"`/`playsInline`。托管资产响应增加 `Cache-Control: private, max-age=604800, immutable`、ETag、Last-Modified、`X-Accel-Buffering: no`；云上 Nginx 补 `If-None-Match` 和 `If-Modified-Since` 代理头。视频播放 UI 禁用 hover scale、整屏背景模糊、放大预览视频阴影和圆角裁剪，降低 GPU 合成压力。
 - Regression check: `node --test --test-name-pattern "shell project detail uses responsive side-by-side image comparison and stack preview|stored asset route supports byte range streaming for video playback|video workspaces avoid implicit eager video downloads on cloud playback views" src/components/uiArchitecture.test.mjs`; `npm run lint`; `npm run build`；云上 `curl -H Range` 必须 206，`curl -H If-None-Match` 必须 304。
-- Files/tests: `src/shell/components/ProjectCard.tsx`, `src/modules/Video/LongVideoSubModule.tsx`, `src/modules/Video/VeoWorkspace.tsx`, `server/index.mjs`, `src/components/uiArchitecture.test.mjs`, `/www/server/panel/vhost/nginx/meiao-internal.conf`.
-- Avoid next time: 修视频卡顿不能只看播放器 UI；必须同时查 `<video preload>`、可见视频数量、托管资产 Range/缓存头、Nginx 是否转发条件请求。缩略视频默认 `preload=none`，但用户明确要播放的单个视频必须提前切 `auto` 做短预缓冲，否则公网波动会把“点击即播”变成边播边等。
+- Files/tests: `src/shell/components/ProjectCard.tsx`, `src/shell/components/ImageLightbox.tsx`, `src/modules/Video/LongVideoSubModule.tsx`, `src/modules/Video/VeoWorkspace.tsx`, `server/index.mjs`, `src/components/uiArchitecture.test.mjs`, `/www/server/panel/vhost/nginx/meiao-internal.conf`.
+- Avoid next time: 修视频卡顿不能只看播放器 UI；必须同时查 `<video preload>`、可见视频数量、托管资产 Range/缓存头、Nginx 是否转发条件请求，以及播放时祖先元素是否有 `backdrop-filter`、transform/scale、overflow rounded clipping、大阴影。缩略视频默认 `preload=none`，但用户明确要播放的单个视频必须提前切 `auto` 做短预缓冲，否则公网波动会把“点击即播”变成边播边等。
 
 ## 2026-06-18 - Expired legacy agent models need a fallback pair
 
