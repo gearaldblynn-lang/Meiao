@@ -66,6 +66,8 @@ test('system announcement replaces static release toast with editable first-open
   assert.match(api, /announcement\?: Partial<SystemAnnouncement>/);
   assert.match(app, /SystemAnnouncementModal/);
   assert.match(app, /announcementOpenSource/);
+  assert.match(app, /closedAnnouncementId/);
+  assert.match(app, /closedAnnouncementId === activeAnnouncement\.id/);
   assert.match(app, /meiao_announcement_dismissed_today/);
   assert.match(app, /onOpenAnnouncement/);
   assert.match(settings, /公告管理/);
@@ -74,6 +76,9 @@ test('system announcement replaces static release toast with editable first-open
   assert.match(settings, /当前账号没有公告编辑权限/);
   assert.match(announcementModal, /今日不再提醒/);
   assert.match(announcementModal, /backdropFilter: 'blur\(24px\) saturate\(1\.18\)'/);
+  assert.match(announcementModal, /color: '#0f172a'/);
+  assert.match(announcementModal, /color: '#334155'/);
+  assert.match(announcementModal, /background: 'rgba\(255,255,255,0\.94\)'/);
 });
 
 test('one click module keeps submode switching out of the workspace header', () => {
