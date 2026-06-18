@@ -74,6 +74,7 @@ import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
 import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLogin } from './dreaminaCli.mjs';
 import { createTemporalTaskAdapter } from './temporalTaskAdapter.mjs';
 import { createLocalTemporalActivities, createMysqlTemporalActivities, startMeiaoTemporalWorker } from './temporalWorker.mjs';
+import { buildImageOutputTransformFromJob, transformImageOutputBuffer } from './imagePostProcess.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1199,7 +1200,9 @@ const resolveImageAnalysisFallbackModels = (version, primaryModel = '') => {
     version?.modelPolicy?.defaultModel,
     version?.modelPolicy?.cheapModel,
     version?.modelPolicy?.advancedModel,
+    'gpt-5.4',
     'gpt-5-4-openai-resp',
+    'gemini-3-flash-openai',
     'claude-sonnet-4-6',
     ...allowedModels,
   ]
@@ -3023,6 +3026,12 @@ const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, fileName, 
   });
 };
 
+const buildTransformedImageOutputName = (fallbackName = 'result.png') => {
+  const name = String(fallbackName || 'result.png').trim() || 'result.png';
+  const ext = path.extname(name);
+  return ext ? `${name.slice(0, -ext.length)}.jpg` : `${name}.jpg`;
+};
+
 const persistJobOutputAssetsIfEnabled = async (job, output) => {
   const publicBaseUrl = getPersistentAssetBaseUrl();
   if (!publicBaseUrl || !output?.result || !job?.userId) {
@@ -3031,23 +3040,49 @@ const persistJobOutputAssetsIfEnabled = async (job, output) => {
 
   const pool = shouldUseMysql ? await getMysqlPool() : null;
   const result = { ...(output.result || {}) };
+  const imageTransform = buildImageOutputTransformFromJob(job);
   const persistRemoteField = async (fieldName, assetType, fallbackName) => {
     const sourceUrl = result[fieldName];
     if (typeof sourceUrl !== 'string' || !/^https?:\/\//i.test(sourceUrl) || isManagedAssetUrl(sourceUrl)) {
       return;
     }
 
-    const persisted = await persistRemoteAsset({
-      pool,
-      publicBaseUrl,
-      userId: job.userId,
-      module: job.module,
-      assetType,
-      remoteUrl: sourceUrl,
-      originalName: fallbackName,
-      provider: job.provider,
-      jobId: job.id,
-    });
+    let persisted;
+    if (fieldName === 'imageUrl' && imageTransform) {
+      const response = await fetch(sourceUrl);
+      if (!response.ok) {
+        throw new Error(`结果资源抓取失败: HTTP ${response.status}`);
+      }
+      const fileBuffer = Buffer.from(await response.arrayBuffer());
+      const transformed = await transformImageOutputBuffer(fileBuffer, imageTransform);
+      persisted = await persistAssetBuffer({
+        pool,
+        publicBaseUrl,
+        userId: job.userId,
+        module: job.module,
+        assetType,
+        originalName: buildTransformedImageOutputName(fallbackName),
+        mimeType: transformed.mimeType,
+        fileBuffer: transformed.buffer,
+        width: transformed.width || imageTransform.width || 0,
+        height: transformed.height || imageTransform.height || 0,
+        provider: job.provider,
+        providerSourceUrl: sourceUrl,
+        jobId: job.id,
+      });
+    } else {
+      persisted = await persistRemoteAsset({
+        pool,
+        publicBaseUrl,
+        userId: job.userId,
+        module: job.module,
+        assetType,
+        remoteUrl: sourceUrl,
+        originalName: fallbackName,
+        provider: job.provider,
+        jobId: job.id,
+      });
+    }
     result[fieldName] = persisted.publicUrl;
     result[`${fieldName}AssetId`] = persisted.id;
     result[`${fieldName}RemoteUrl`] = sourceUrl;
@@ -6820,6 +6855,35 @@ const buildImageGenerationAnalysisMessages = ({ agent, version, userMessage, ima
   ];
 };
 
+const buildFallbackImageAnalysisPlan = ({ userMessage = '', imageReferences = [], selectedImageModel = '', maxInputImages = 1 }) => {
+  const usableRefs = (Array.isArray(imageReferences) ? imageReferences : [])
+    .filter((item) => item?.url)
+    .slice(0, Math.max(Number(maxInputImages || 1), 1));
+  const refsText = usableRefs.length > 0
+    ? usableRefs.map((item) => `${item.label || `图${item.index || ''}`}=${item.url}`).join('\n')
+    : '无';
+  const prompt = [
+    '请严格按用户需求执行图片生成或编辑。',
+    `用户需求：${String(userMessage || '').trim()}`,
+    `可用图片引用：\n${refsText}`,
+    '保持未被要求修改的主体、文字、排版、风格和比例关系，避免自行添加用户未要求的新元素。',
+  ].join('\n');
+  return {
+    taskType: usableRefs.length > 0 ? 'edit_image' : 'new_image',
+    selectedImageModel,
+    size: 'auto',
+    transparentBackground: false,
+    inputImageUrls: usableRefs.map((item) => item.url),
+    imageReferences: usableRefs.map((item) => ({
+      index: item.index,
+      label: item.label,
+      role: item.index === 1 ? 'primary_edit_source' : 'reference',
+    })),
+    prompt,
+    reasoningSummary: '已按用户原始需求和图片引用直接整理生图参数。',
+  };
+};
+
 const detectExplicitAspectRatioInstruction = (text = '') => /(?:^|[^\d])(1:1|3:4|4:3|4:5|9:16|16:9)(?:$|[^\d])|正方形|方图|竖图|横图|长图|比例改成|做成.*比例|尺寸改成/.test(String(text || ''));
 
 const hasAspectRatioCorrectionIntent = (text = '') => /比例.*(不对|不太对|不合适|有问题|改一下|调整一下)|尺寸.*(不对|不太对|不合适|有问题)|改比例|调比例/.test(String(text || ''));
@@ -6882,13 +6946,14 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
   const analysisFallbackModels = resolveImageAnalysisFallbackModels(version, analysisModel);
   const startedAt = Date.now();
   let analysisOutput;
+  let analysisError = null;
   try {
     analysisOutput = await executeProviderJobWithManagedAssetScrub({
       taskType: 'kie_chat',
       payload: { messages: analysisMessages, model: analysisModel, fallbackModels: analysisFallbackModels },
     }, process.env, new AbortController().signal);
   } catch (error) {
-    throw enrichRuntimeError(error, {
+    analysisError = enrichRuntimeError(error, {
       providerStage: error?.providerStage || 'analysis',
       providerStatus: error?.providerStatus || 'failed',
       providerMessage: error?.providerMessage || error?.message || '生图分析失败',
@@ -6899,7 +6964,14 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     });
   }
   const analysisContent = String(analysisOutput?.result?.content || '').trim();
-  const parsed = extractJsonObject(analysisContent) || {};
+  const parsed = analysisError
+    ? buildFallbackImageAnalysisPlan({
+        userMessage: currentMessage,
+        imageReferences: relevantImageReferences,
+        selectedImageModel,
+        maxInputImages: Number(imageCapability.maxInputImages || 1),
+      })
+    : (extractJsonObject(analysisContent) || {});
   const normalizedRefs = relevantImageReferences.map((item) => ({
     index: item.index,
     label: item.label,
