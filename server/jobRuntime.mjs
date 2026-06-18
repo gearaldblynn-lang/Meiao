@@ -504,6 +504,23 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
     apiKey: openaiCompatibleApiKey,
     models: openaiCompatibleModels,
   });
+  const normalizePublicAnnouncement = (value = {}) => {
+    const title = String(value?.title || '').trim().slice(0, 120);
+    const content = String(value?.content || '').trim().slice(0, 4000);
+    const enabled = Boolean(value?.enabled);
+    if (!enabled || !title || !content) {
+      return { id: '', title: '', content: '', enabled: false, updatedAt: 0, updatedBy: '' };
+    }
+    const updatedAt = Number(value?.updatedAt || 0);
+    return {
+      id: String(value?.id || '').trim().slice(0, 80),
+      title,
+      content,
+      enabled: true,
+      updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : 0,
+      updatedBy: String(value?.updatedBy || '').trim().slice(0, 120),
+    };
+  };
 
   return {
     queue: {
@@ -529,6 +546,7 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       videoAnalysisModel: validConfiguredVideoAnalysisModel,
       effectiveVideoAnalysisModel,
       videoAnalysisReasoningLevel: 'high',
+      announcement: normalizePublicAnnouncement(overrides?.systemSettings?.announcement || {}),
       openaiCompatible: {
         configured: Boolean(openaiCompatibleApiKey),
         baseUrl: openaiCompatibleBaseUrl,

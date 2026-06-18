@@ -660,6 +660,14 @@ const createDefaultState = () => ({
 const createDefaultSystemSettings = () => ({
   analysisModel: '',
   videoAnalysisModel: '',
+  announcement: {
+    id: '',
+    title: '',
+    content: '',
+    enabled: false,
+    updatedAt: 0,
+    updatedBy: '',
+  },
   openaiCompatible: {
     apiKey: '',
     baseUrl: '',
@@ -673,6 +681,31 @@ const normalizeOpenAICompatibleSettings = (value = {}) => ({
   models: String(value?.models || '').trim(),
 });
 
+const createEmptySystemAnnouncement = () => ({
+  id: '',
+  title: '',
+  content: '',
+  enabled: false,
+  updatedAt: 0,
+  updatedBy: '',
+});
+
+const normalizeSystemAnnouncement = (value = {}) => {
+  const title = String(value?.title || '').trim().slice(0, 120);
+  const content = String(value?.content || '').trim().slice(0, 4000);
+  const enabled = Boolean(value?.enabled);
+  if (!enabled || !title || !content) return createEmptySystemAnnouncement();
+  const updatedAt = Number(value?.updatedAt || 0);
+  return {
+    id: String(value?.id || '').trim().slice(0, 80),
+    title,
+    content,
+    enabled: true,
+    updatedAt: Number.isFinite(updatedAt) && updatedAt > 0 ? updatedAt : Date.now(),
+    updatedBy: String(value?.updatedBy || '').trim().slice(0, 120),
+  };
+};
+
 const normalizeSystemSettings = (value = {}) => {
   const analysisModel = String(value?.analysisModel || '').trim();
   const videoAnalysisModel = String(value?.videoAnalysisModel || '').trim();
@@ -681,6 +714,7 @@ const normalizeSystemSettings = (value = {}) => {
   return {
     analysisModel: analysisModel && available.has(analysisModel) ? analysisModel : '',
     videoAnalysisModel: videoAnalysisModel && videoAvailable.has(videoAnalysisModel) ? videoAnalysisModel : '',
+    announcement: normalizeSystemAnnouncement(value?.announcement || {}),
     openaiCompatible: normalizeOpenAICompatibleSettings(value?.openaiCompatible || {}),
   };
 };
@@ -706,6 +740,26 @@ const mergeOpenAICompatibleSettingsUpdate = (currentSettings = {}, bodySettings 
     models: bodySettings.models === undefined ? current.models : bodySettings.models,
   });
   return next;
+};
+
+const mergeSystemAnnouncementUpdate = (currentSettings = {}, bodyAnnouncement = undefined, admin = null) => {
+  const current = normalizeSystemAnnouncement(currentSettings?.announcement || {});
+  if (bodyAnnouncement === undefined) return current;
+  if (!bodyAnnouncement || typeof bodyAnnouncement !== 'object' || bodyAnnouncement.enabled === false) {
+    return createEmptySystemAnnouncement();
+  }
+  const title = String(bodyAnnouncement.title ?? current.title).trim();
+  const content = String(bodyAnnouncement.content ?? current.content).trim();
+  if (!title || !content) return createEmptySystemAnnouncement();
+  const nextSeed = {
+    id: bodyAnnouncement.id || current.id || `ann-${createEntityId()}`,
+    title,
+    content,
+    enabled: true,
+    updatedAt: Date.now(),
+    updatedBy: admin?.displayName || admin?.username || '',
+  };
+  return normalizeSystemAnnouncement(nextSeed);
 };
 
 const cloneJsonValue = (value) => JSON.parse(JSON.stringify(value ?? createDefaultState()));
@@ -8432,8 +8486,9 @@ const handleMysqlRequest = async (req, res, url) => {
     const currentSettings = await getDbSystemSettings();
     const nextSettings = await saveDbSystemSettings({
       ...currentSettings,
-      analysisModel: body?.analysisModel,
-      videoAnalysisModel: body?.videoAnalysisModel,
+      analysisModel: body?.analysisModel ?? currentSettings.analysisModel,
+      videoAnalysisModel: body?.videoAnalysisModel ?? currentSettings.videoAnalysisModel,
+      announcement: mergeSystemAnnouncementUpdate(currentSettings, body?.announcement, admin),
       openaiCompatible: mergeOpenAICompatibleSettingsUpdate(currentSettings, body?.openaiCompatible),
     });
     const pool = await getMysqlPool();
@@ -10585,11 +10640,13 @@ const handleLocalRequest = async (req, res, url) => {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
     const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
     const nextSettings = saveLocalSystemSettings(store, {
-      ...getLocalSystemSettings(store),
-      analysisModel: body?.analysisModel,
-      videoAnalysisModel: body?.videoAnalysisModel,
-      openaiCompatible: mergeOpenAICompatibleSettingsUpdate(getLocalSystemSettings(store), body?.openaiCompatible),
+      ...currentLocalSettings,
+      analysisModel: body?.analysisModel ?? currentLocalSettings.analysisModel,
+      videoAnalysisModel: body?.videoAnalysisModel ?? currentLocalSettings.videoAnalysisModel,
+      announcement: mergeSystemAnnouncementUpdate(currentLocalSettings, body?.announcement, admin),
+      openaiCompatible: mergeOpenAICompatibleSettingsUpdate(currentLocalSettings, body?.openaiCompatible),
     });
     writeLocalStore(store);
     json(res, 200, {

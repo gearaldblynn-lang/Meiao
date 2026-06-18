@@ -3,7 +3,7 @@ import type { AppModule } from '../../types';
 import { AppModuleObj } from '../../types';
 import {
   Bot, Sparkles, Globe, Users, Wand2, PlayCircle, BookOpen,
-  Settings, UserCircle, Hexagon, Sun, Moon, ChevronLeft, ChevronRight, ReplaceAll
+  Settings, UserCircle, Hexagon, Sun, Moon, ChevronLeft, ChevronRight, ReplaceAll, Bell
 } from 'lucide-react';
 
 interface SidebarNavDef { module: AppModule | 'landing'; icon: React.ReactNode; label: string; }
@@ -37,11 +37,12 @@ interface Props {
   onModuleChange: (m: AppModule | 'landing') => void;
   theme: 'dark' | 'light';
   onToggleTheme: () => void;
+  onOpenAnnouncement: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
 }
 
-const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange, theme, onToggleTheme, collapsed, onToggleCollapsed }) => {
+const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange, theme, onToggleTheme, onOpenAnnouncement, collapsed, onToggleCollapsed }) => {
   const isLight = theme === 'light';
   const renderItem = (item: SidebarNavDef) => {
     const isActive = activeModule === item.module;
@@ -73,6 +74,27 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange, them
       </button>
     );
   };
+
+  const renderAnnouncementItem = () => (
+    <button
+      type="button"
+      onClick={onOpenAnnouncement}
+      className={`group relative flex h-[44px] w-full items-center rounded-2xl transition-all ${collapsed ? 'justify-center px-0' : 'justify-start gap-3 px-3'}`}
+      style={{ color: 'var(--text-tertiary)' }}
+      title="公告"
+    >
+      <span className="flex h-6 w-6 shrink-0 items-center justify-center"><Bell size={20} strokeWidth={1.5} /></span>
+      {!collapsed && <span className="min-w-0 truncate text-[13px] font-semibold">公告</span>}
+      {collapsed && (
+        <div
+          className="absolute left-full ml-2.5 px-3 py-2 rounded-2xl text-[11px] font-medium whitespace-nowrap opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50"
+          style={{ background: 'var(--bg-elevated)', color: 'var(--text-primary)', boxShadow: 'var(--shadow-elevated)' }}
+        >
+          公告
+        </div>
+      )}
+    </button>
+  );
 
   return (
     <aside
@@ -112,6 +134,7 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange, them
       <nav className="flex flex-col gap-1 flex-1">{MAIN.map(renderItem)}</nav>
 
       <div className="flex flex-col gap-1 mt-2">
+        {renderAnnouncementItem()}
         {/* Theme toggle */}
         <button
           onClick={onToggleTheme}

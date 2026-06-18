@@ -104,8 +104,13 @@ export const buildShellImageInputUrls = ({
   const sourceResultUrl = resolvePublicAssetUrl(taskMetadata?.sourceResultUrl, publicBaseUrl) || '';
   const hasEditInstruction = Boolean(String(taskMetadata?.editInstruction || '').trim());
   const hasVariationInstruction = Boolean(String(taskMetadata?.variationInstruction || '').trim());
+  const isResultOnlyEdit = taskMetadata?.resultOnlyEdit === true;
   const isFirstImage = module === ONE_CLICK_MODULE && subFeature === FIRST_IMAGE_SUBFEATURE;
   const isDetailPage = module === ONE_CLICK_MODULE && subFeature === DETAIL_PAGE_SUBFEATURE;
+
+  if (sourceResultUrl && hasEditInstruction && isResultOnlyEdit) {
+    return dedupeUrls([sourceResultUrl]);
+  }
 
   if (sourceResultUrl && hasEditInstruction) {
     return dedupeUrls([...productImageUrls, ...giftImageUrls, sourceResultUrl]);

@@ -12,6 +12,7 @@ import type {
   KnowledgeDocumentSummary,
   StudioConfigDiff,
   SystemPublicConfig,
+  SystemAnnouncement,
   TaskPlatformAttempt,
   TaskPlatformEvent,
   TaskPlatformHealth,
@@ -510,6 +511,7 @@ export const fetchSystemConfig = async () => {
 export const updateSystemConfig = async (payload: {
   analysisModel?: string;
   videoAnalysisModel?: string;
+  announcement?: Partial<SystemAnnouncement>;
   openaiCompatible?: {
     apiKey?: string;
     baseUrl?: string;

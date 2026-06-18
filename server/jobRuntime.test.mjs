@@ -124,6 +124,64 @@ test('buildPublicSystemConfig exposes openai compatible readiness without leakin
   assert.equal(JSON.stringify(config).includes('sk-env-secret'), false);
 });
 
+test('buildPublicSystemConfig exposes sanitized system announcement', () => {
+  const config = buildPublicSystemConfig(
+    {},
+    { queued: 0, running: 0 },
+    {
+      systemSettings: {
+        announcement: {
+          id: 'ann-260618',
+          title: ' 6 月 18 功能调整 ',
+          content: ' 智能体公告恢复上线 ',
+          enabled: true,
+          updatedAt: 1781760000000,
+          updatedBy: 'admin',
+          secretDraft: 'should-not-leak',
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(config.systemSettings.announcement, {
+    id: 'ann-260618',
+    title: '6 月 18 功能调整',
+    content: '智能体公告恢复上线',
+    enabled: true,
+    updatedAt: 1781760000000,
+    updatedBy: 'admin',
+  });
+  assert.equal(JSON.stringify(config).includes('secretDraft'), false);
+});
+
+test('buildPublicSystemConfig hides deleted or empty announcements', () => {
+  const config = buildPublicSystemConfig(
+    {},
+    { queued: 0, running: 0 },
+    {
+      systemSettings: {
+        announcement: {
+          id: 'ann-deleted',
+          title: '旧公告',
+          content: '已删除内容',
+          enabled: false,
+          updatedAt: 1781760000000,
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(config.systemSettings.announcement, {
+    id: '',
+    title: '',
+    content: '',
+    enabled: false,
+    updatedAt: 0,
+    updatedBy: '',
+  });
+  assert.equal(JSON.stringify(config).includes('已删除内容'), false);
+});
+
 test('buildPublicSystemConfig publishes configured openai compatible tool-calling models', () => {
   const config = buildPublicSystemConfig(
     {

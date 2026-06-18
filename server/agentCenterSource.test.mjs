@@ -61,6 +61,19 @@ test('agent chat source persists user avatars, chat session options, and model r
   assert.match(source, /default_chat_model VARCHAR\(80\) NULL/);
 });
 
+test('system announcement source stays in global settings for mysql and local modes', () => {
+  assert.match(source, /const normalizeSystemAnnouncement = \(value = \{\}\) =>/);
+  assert.match(source, /announcement: normalizeSystemAnnouncement/);
+  assert.match(source, /const mergeSystemAnnouncementUpdate = \(currentSettings = \{\}, bodyAnnouncement = undefined, admin = null\) =>/);
+  assert.match(source, /announcement: mergeSystemAnnouncementUpdate\(currentSettings, body\?\.announcement, admin\)/);
+  assert.match(source, /announcement: mergeSystemAnnouncementUpdate\(currentLocalSettings, body\?\.announcement, admin\)/);
+  assert.match(source, /analysisModel: body\?\.analysisModel \?\? currentSettings\.analysisModel/);
+  assert.match(source, /videoAnalysisModel: body\?\.videoAnalysisModel \?\? currentSettings\.videoAnalysisModel/);
+  assert.match(source, /const currentLocalSettings = getLocalSystemSettings\(store\)/);
+  assert.match(source, /analysisModel: body\?\.analysisModel \?\? currentLocalSettings\.analysisModel/);
+  assert.match(source, /videoAnalysisModel: body\?\.videoAnalysisModel \?\? currentLocalSettings\.videoAnalysisModel/);
+});
+
 test('agent version source persists knowledge document bindings in mysql and local modes', () => {
   assert.match(source, /knowledge_document_bindings_json LONGTEXT NULL/);
   assert.match(source, /ensureMysqlColumn\(pool, 'agent_versions', 'knowledge_document_bindings_json', 'LONGTEXT NULL'\)/);

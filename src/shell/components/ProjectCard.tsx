@@ -386,7 +386,8 @@ const ProjectCard: React.FC<Props> = ({
   const isStoryboardProject = project.module === 'video' && project.subFeature === 'storyboard';
   const isOneClickProject = project.module === 'one_click';
   const isEverythingReplaceProductEditProject = project.module === 'everything_replace' && project.subFeature === 'product_replace';
-  const usesMinimalRoleEditPrompt = isOneClickProject || isEverythingReplaceProductEditProject;
+  const isEverythingReplaceBackgroundEditProject = project.module === 'everything_replace' && project.subFeature === 'background_replace';
+  const usesMinimalRoleEditPrompt = isOneClickProject || isEverythingReplaceProductEditProject || isEverythingReplaceBackgroundEditProject;
   const getCurrentStoryboardDisplayUrl = (result: GeneratedResult) => {
     if (!isStoryboardProject) return result.imageUrl;
     const versions = (result.storyboardImageVersions || []).filter((item) => item.imageUrl);
@@ -530,6 +531,7 @@ const ProjectCard: React.FC<Props> = ({
     && (
       project.module === 'one_click'
       || (project.module === 'video' && project.subFeature === 'storyboard')
+      || (project.module === 'everything_replace' && project.subFeature === 'background_replace')
     )
     && result?.status === 'completed'
     && result.imageUrl
@@ -1709,7 +1711,9 @@ const ProjectCard: React.FC<Props> = ({
                           const promptExpanded = Boolean(expandedPrompts[result.id]);
                           const matchedPlan = findPlanByResult(result, index);
                           const displayedPrompt = normalizeSchemeText(matchedPlan?.schemeContent || result.prompt || '无 prompt 记录');
-                          const hideResultPromptInProjectCard = project.module === 'everything_replace' && project.subFeature === 'product_replace' && result.status !== 'error';
+                          const hideResultPromptInProjectCard = project.module === 'everything_replace'
+                            && (project.subFeature === 'product_replace' || project.subFeature === 'background_replace')
+                            && result.status !== 'error';
                           const hasResult = Boolean(result.imageUrl || result.videoUrl);
                           const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
                           const resultMeta: string[] = [];
