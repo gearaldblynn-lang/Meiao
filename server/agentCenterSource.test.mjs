@@ -147,7 +147,8 @@ test('agent chat source expands legacy default model allowlists to include newly
 
 test('agent chat source gives fully expired legacy model configs a usable fallback pair', () => {
   assert.match(source, /const DEFAULT_RECOVERY_ALLOWED_CHAT_MODELS = \['gpt-5-4-openai-resp', 'gemini-3-flash-openai'\];/);
-  assert.match(source, /const recoveryModels = DEFAULT_RECOVERY_ALLOWED_CHAT_MODELS\.filter\(\(item\) => available\.has\(item\)\);/);
+  assert.match(source, /const configuredRelayModels = catalog[\s\S]*?\.filter\(\(item\) => item\.provider === 'openai_compatible'\)[\s\S]*?\.map\(\(item\) => item\.id\);/);
+  assert.match(source, /const recoveryModels = \[\.\.\.configuredRelayModels, \.\.\.DEFAULT_RECOVERY_ALLOWED_CHAT_MODELS\]/);
   assert.match(source, /if \(recoveryModels\.length > 0\) return recoveryModels;/);
 });
 
