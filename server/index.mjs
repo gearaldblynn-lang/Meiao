@@ -1202,7 +1202,6 @@ const resolveImageAnalysisFallbackModels = (version, primaryModel = '') => {
     version?.modelPolicy?.advancedModel,
     'gpt-5.4',
     'gpt-5-4-openai-resp',
-    'gemini-3-flash-openai',
     'claude-sonnet-4-6',
     ...allowedModels,
   ]

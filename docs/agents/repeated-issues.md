@@ -28,11 +28,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 - Symptom: 云上智能体对话里 assistant 直接显示 `responses 请求失败 (502): openai_error/bad_response_status_code`，且没有生成图片结果。
 - Environment: Tencent Cloud production agent_center / old direct `image_generation` path.
-- Root cause: 失败发生在生图前的 `kie_chat` 分析/规划阶段，样本中 `imagePlan:null`、`imageResultUrls:null`、`providerTaskId:''`，说明 KIE 出图未提交。原分析 fallback 偏向同类 Responses 模型，缺少非 Responses 备用；所有分析 provider 都失败时直接抛错给用户。
-- Fix: 分析 fallback 模型补入 `gpt-5.4`、`gpt-5-4-openai-resp`、`gemini-3-flash-openai`、`claude-sonnet-4-6`；分析阶段全失败时，用用户原话和已选图片引用构造 deterministic image plan，继续提交 KIE 生图。
+- Root cause: 失败发生在生图前的 `kie_chat` 分析/规划阶段，样本中 `imagePlan:null`、`imageResultUrls:null`、`providerTaskId:''`，说明 KIE 出图未提交。所有分析 provider 都失败时直接抛错给用户；分析 fallback 还必须尊重智能体配置，不能擅自跳到用户未配置的供应商模型。
+- Fix: 分析 fallback 只在版本策略、白名单和当前中转配置内选择备用模型；守住 `gpt-5.4`、`gpt-5-4-openai-resp`、`claude-sonnet-4-6`，并加测试禁止无配置 Gemini fallback。分析阶段全失败时，用用户原话和已选图片引用构造 deterministic image plan，继续提交 KIE 生图。
 - Regression check: `node --test server/agent-image-retrieval.test.mjs server/agentCenterSource.test.mjs server/agentConversationReliability.test.mjs server/agentToolConversation.test.mjs`; `node --test server/providerGateway.test.mjs --test-name-pattern "fallback|responses|gemini 3 flash"`; `npm run build`; `npm run lint`.
 - Files/tests: `server/index.mjs`, `server/agent-image-retrieval.test.mjs`, `CLAUDE.md`.
-- Avoid next time: 智能体 502 先按 `imagePlan/providerTaskId/imageResultUrls` 判定失败边界；`imagePlan:null + providerTaskId:''` 是分析阶段，不是“出图后丢结果”。分析阶段是辅助步骤，不能让 provider 502 直接成为用户可见终态。
+- Avoid next time: 智能体 502 先按 `imagePlan/providerTaskId/imageResultUrls` 判定失败边界；`imagePlan:null + providerTaskId:''` 是分析阶段，不是“出图后丢结果”。分析 fallback 必须尊重用户配置；分析阶段是辅助步骤，不能让 provider 502 直接成为用户可见终态。
 
 ## 2026-06-18 - Agent image asset checkpoints must survive deploy restarts
 
