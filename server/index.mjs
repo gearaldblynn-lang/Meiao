@@ -1109,15 +1109,20 @@ const resolveConfiguredVideoAnalysisModel = (systemSettings = {}, ...preferredMo
     ...preferredModels
   );
 const sanitizeAllowedChatModels = (configured, fallbacks = []) => {
-  const available = new Set(getChatModelCatalog().map((item) => item.id));
+  const catalog = getChatModelCatalog();
+  const available = new Set(catalog.map((item) => item.id));
   const preferred = [...(Array.isArray(configured) ? configured : []), ...fallbacks]
     .map((item) => String(item || '').trim())
     .filter((item) => item && available.has(item));
   const unique = Array.from(new Set(preferred));
   if (unique.length > 0) return unique;
-  const recoveryModels = DEFAULT_RECOVERY_ALLOWED_CHAT_MODELS.filter((item) => available.has(item));
+  const configuredRelayModels = catalog
+    .filter((item) => item.provider === 'openai_compatible')
+    .map((item) => item.id);
+  const recoveryModels = [...configuredRelayModels, ...DEFAULT_RECOVERY_ALLOWED_CHAT_MODELS]
+    .filter((item) => available.has(item));
   if (recoveryModels.length > 0) return recoveryModels;
-  return getChatModelCatalog()[0]?.id ? [getChatModelCatalog()[0].id] : [];
+  return catalog[0]?.id ? [catalog[0].id] : [];
 };
 const DEFAULT_RECOVERY_ALLOWED_CHAT_MODELS = ['gpt-5-4-openai-resp', 'gemini-3-flash-openai'];
 const LEGACY_DEFAULT_ALLOWED_CHAT_MODELS = new Set(['gpt-5-4-openai-resp', 'gemini-3-flash-openai']);

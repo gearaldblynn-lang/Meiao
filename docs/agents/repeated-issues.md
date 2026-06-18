@@ -29,10 +29,10 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Symptom: 云上日志出现 `智能体对话失败：对话改图 Kie Responses 返回为空`，用户会话里 assistant 直接显示 `Kie Responses 返回为空`。
 - Environment: Tencent Cloud production agent_center / local development.
 - Root cause: 历史智能体版本仍保存已下线的豆包模型白名单；服务端读取版本时会丢弃当前模型目录中不存在的模型。原先当配置模型全部失效时只回落到模型目录第一个模型 `gpt-5-4-openai-resp`，导致旧会话被迁到 KIE Responses 单模型运行；上游空返时 `resolveChatFallbackModels` 没有任何备用模型可切。
-- Fix: `sanitizeAllowedChatModels` 在配置模型全部失效时恢复为默认主备组合 `gpt-5-4-openai-resp` + `gemini-3-flash-openai`，保留主模型能力，同时让 `provider_bad_response` 能切到显式 fallback。
+- Fix: `sanitizeAllowedChatModels` 在配置模型全部失效时先纳入当前中转站 `OPENAI_COMPATIBLE_MODELS` 发布出的模型，再补默认主备组合 `gpt-5-4-openai-resp` + `gemini-3-flash-openai`，保留主模型能力，同时让 `provider_bad_response` 能切到显式 fallback。
 - Regression check: `node --test server/agentCenterSource.test.mjs server/providerGateway.test.mjs`; `node --test server/agent-image-retrieval.test.mjs`; `npm run lint`; `npm run build`.
 - Files/tests: `server/index.mjs`, `server/agentCenterSource.test.mjs`.
-- Avoid next time: 模型目录下线旧模型时，不能只验证新建智能体；还要查历史 `agent_versions.allowed_chat_models_json/default_chat_model/model_policy_json` 里是否有全失效配置，并确保归一化后至少有一个备用模型。看到 `Kie Responses 返回为空` 先查会话绑定版本、`selected_model` 和 `allowed_chat_models_json` 是否漂移。
+- Avoid next time: 模型目录下线旧模型时，不能只验证新建智能体；还要查历史 `agent_versions.allowed_chat_models_json/default_chat_model/model_policy_json` 里是否有全失效配置，并确保归一化后纳入当前中转站模型和至少一个备用模型。看到 `Kie Responses 返回为空` 先查会话绑定版本、`selected_model`、`allowed_chat_models_json` 与 `OPENAI_COMPATIBLE_MODELS` 是否漂移。
 
 ## 2026-06-17 - Providerless submit recovery must not blindly resubmit upstream jobs
 
