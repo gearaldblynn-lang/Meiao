@@ -89,7 +89,93 @@ const normalizeSchemeText = (scheme?: string) =>
     .trim();
 
 const VIDEO_PREVIEW_PRELOAD = 'metadata';
+const VIDEO_PLAYBACK_PRELOAD = 'auto';
 const VIDEO_PREVIEW_FRAME_TIME_SECONDS = 0.5;
+const VIDEO_PLAYBACK_PREPARE_TIMEOUT_MS = 1400;
+
+const readPositiveNumberEnv = (key: string, fallback: number) => {
+  const rawValue = import.meta.env?.[key];
+  if (typeof rawValue !== 'string' || rawValue.trim() === '') return fallback;
+  const parsedValue = Number(rawValue);
+  return Number.isFinite(parsedValue) && parsedValue > 0 ? parsedValue : fallback;
+};
+
+const VIDEO_PLAYBACK_MIN_BUFFER_SECONDS = readPositiveNumberEnv('VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS', 3);
+const VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS = readPositiveNumberEnv('VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS', 5000);
+
+const getBufferedAheadSeconds = (video: HTMLVideoElement) => {
+  const currentTime = video.currentTime || 0;
+  for (let index = 0; index < video.buffered.length; index += 1) {
+    const start = video.buffered.start(index);
+    const end = video.buffered.end(index);
+    if (start <= currentTime && end >= currentTime) {
+      return Math.max(0, end - currentTime);
+    }
+  }
+  return 0;
+};
+
+const waitForPlayableVideo = (video: HTMLVideoElement, timeoutMs = VIDEO_PLAYBACK_PREPARE_TIMEOUT_MS) => new Promise<void>((resolve) => {
+  const playableReadyState = typeof HTMLMediaElement === 'undefined' ? 3 : HTMLMediaElement.HAVE_FUTURE_DATA;
+  if (video.readyState >= playableReadyState) {
+    resolve();
+    return;
+  }
+
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    settled = true;
+    window.clearTimeout(timer);
+    video.removeEventListener('canplay', finish);
+    video.removeEventListener('loadeddata', finish);
+    video.removeEventListener('error', finish);
+    resolve();
+  };
+  const timer = window.setTimeout(finish, timeoutMs);
+  video.addEventListener('canplay', finish, { once: true });
+  video.addEventListener('loadeddata', finish, { once: true });
+  video.addEventListener('error', finish, { once: true });
+});
+
+const waitForBufferedVideo = (
+  video: HTMLVideoElement,
+  minBufferSeconds = VIDEO_PLAYBACK_MIN_BUFFER_SECONDS,
+  timeoutMs = VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS,
+) => new Promise<void>((resolve) => {
+  const duration = Number.isFinite(video.duration) ? video.duration : 0;
+  const targetBufferSeconds = duration > 0
+    ? Math.min(minBufferSeconds, Math.max(0.5, duration - (video.currentTime || 0)))
+    : minBufferSeconds;
+  if (getBufferedAheadSeconds(video) >= targetBufferSeconds) {
+    resolve();
+    return;
+  }
+
+  let settled = false;
+  const finish = () => {
+    if (settled) return;
+    if (getBufferedAheadSeconds(video) < targetBufferSeconds && !video.ended) return;
+    settled = true;
+    window.clearTimeout(timer);
+    video.removeEventListener('progress', finish);
+    video.removeEventListener('canplaythrough', finish);
+    video.removeEventListener('error', timeoutFinish);
+    resolve();
+  };
+  const timeoutFinish = () => {
+    if (settled) return;
+    settled = true;
+    video.removeEventListener('progress', finish);
+    video.removeEventListener('canplaythrough', finish);
+    video.removeEventListener('error', timeoutFinish);
+    resolve();
+  };
+  const timer = window.setTimeout(timeoutFinish, timeoutMs);
+  video.addEventListener('progress', finish);
+  video.addEventListener('canplaythrough', finish, { once: true });
+  video.addEventListener('error', timeoutFinish, { once: true });
+});
 
 const CardVideoPreview: React.FC<{
   src: string;
@@ -103,13 +189,30 @@ const CardVideoPreview: React.FC<{
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const requestedPlaybackRef = useRef(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isPreparingPlayback, setIsPreparingPlayback] = useState(false);
   const [shouldLoadVideoPreview, setShouldLoadVideoPreview] = useState(preload === 'none');
+  const [shouldWarmVideoPlayback, setShouldWarmVideoPlayback] = useState(false);
   const armVideoPreviewLoad = () => setShouldLoadVideoPreview(true);
+  const markVideoPlaybackIntent = () => {
+    requestedPlaybackRef.current = true;
+    setShouldLoadVideoPreview(true);
+    setShouldWarmVideoPlayback(true);
+  };
+  const armVideoPlaybackLoad = () => {
+    markVideoPlaybackIntent();
+    const video = videoRef.current;
+    if (video && video.preload !== VIDEO_PLAYBACK_PRELOAD) {
+      video.preload = VIDEO_PLAYBACK_PRELOAD;
+      video.load();
+    }
+  };
 
   useEffect(() => {
     requestedPlaybackRef.current = false;
     setIsPlaying(false);
+    setIsPreparingPlayback(false);
     setShouldLoadVideoPreview(preload === 'none');
+    setShouldWarmVideoPlayback(false);
   }, [preload, src]);
 
   const handleLoadedMetadata = (event: React.SyntheticEvent<HTMLVideoElement>) => {
@@ -121,6 +224,16 @@ const CardVideoPreview: React.FC<{
     } catch {
       // Some browsers reject early seeks on partially loaded media; metadata loading still improves the card preview.
     }
+  };
+  const startVideoPlayback = async () => {
+    const video = videoRef.current;
+    if (!video) return;
+    armVideoPlaybackLoad();
+    setIsPreparingPlayback(true);
+    await waitForPlayableVideo(video);
+    await waitForBufferedVideo(video);
+    await video.play();
+    setIsPreparingPlayback(false);
   };
 
   return (
@@ -135,13 +248,14 @@ const CardVideoPreview: React.FC<{
         disablePictureInPicture
         muted
         playsInline
-        preload={shouldLoadVideoPreview ? preload : 'none'}
-        onPointerEnter={armVideoPreviewLoad}
-        onFocusCapture={armVideoPreviewLoad}
+        preload={shouldLoadVideoPreview ? (shouldWarmVideoPlayback ? VIDEO_PLAYBACK_PRELOAD : preload) : 'none'}
+        onPointerEnter={() => (controls ? armVideoPlaybackLoad() : armVideoPreviewLoad())}
+        onFocusCapture={() => (controls ? armVideoPlaybackLoad() : armVideoPreviewLoad())}
+        onPointerDown={controls ? () => armVideoPlaybackLoad() : undefined}
         onLoadedMetadata={handleLoadedMetadata}
         onPlay={(event) => {
-          requestedPlaybackRef.current = true;
-          armVideoPreviewLoad();
+          markVideoPlaybackIntent();
+          setIsPreparingPlayback(false);
           setIsPlaying(true);
           document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
             if (video !== event.currentTarget && !video.paused) {
@@ -155,16 +269,13 @@ const CardVideoPreview: React.FC<{
       {showPlayOverlay && !isPlaying ? (
         <button
           type="button"
-          aria-label="播放视频"
+          aria-label={isPreparingPlayback ? '正在准备播放' : '播放视频'}
+          disabled={isPreparingPlayback}
           className="absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white shadow-[0_12px_40px_rgba(0,0,0,0.32)] backdrop-blur transition-transform hover:scale-105"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            requestedPlaybackRef.current = true;
-            armVideoPreviewLoad();
-            const video = videoRef.current;
-            if (!video) return;
-            void video.play().catch(() => undefined);
+            void startVideoPlayback().catch(() => setIsPreparingPlayback(false));
           }}
         >
           <Play size={24} fill="currentColor" strokeWidth={2.4} />

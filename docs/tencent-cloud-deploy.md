@@ -34,6 +34,9 @@ MEIAO_TEMPORAL_ADDRESS=127.0.0.1:7233
 MEIAO_TEMPORAL_NAMESPACE=default
 MEIAO_TEMPORAL_TASK_QUEUE=meiao-cloud
 MEIAO_ALLOWED_ORIGINS=http://111.229.66.247,http://111.229.66.247:3100
+MEIAO_ASSET_X_ACCEL=0
+VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS=3
+VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS=5000
 MEIAO_ADMIN_USERNAME=admin
 MEIAO_ADMIN_PASSWORD=请替换成你的管理员密码
 MEIAO_SUPER_ADMIN_USERS=admin
@@ -51,6 +54,24 @@ EOF
 ```
 
 第4期智能体多工具复用 `OPENAI_COMPATIBLE_*`，V2 对话经 `OPENAI_COMPATIBLE_RESPONSES_PATH` 调 responses 端点以支持 `web_search`；`AGENT_TOOL_MAX_ROUNDS` 是单轮工具循环上限，默认 5。
+
+`MEIAO_ASSET_X_ACCEL` 默认保持 `0`。只有在 Nginx 已配置内部资源映射后才可设为 `1`，让 `/api/assets/file/:id` 由 Node 校验权限和缓存头，再通过 `X-Accel-Redirect` 交给 Nginx 直出文件，降低大视频经过 Node 流式转发的抖动。示例：
+
+`VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS` 和 `VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS` 是前端构建期变量，控制项目卡片视频播放前的预缓冲。默认值分别为 `3` 秒和 `5000` 毫秒；线上网络较慢时可小幅上调，调整后需要重新构建前端。
+
+```nginx
+location /__meiao_stored_assets/ {
+  internal;
+  alias /www/wwwroot/meiao-internal/server/data/assets/;
+}
+```
+
+开启后重启服务：
+
+```bash
+MEIAO_ASSET_X_ACCEL=1
+pm2 restart meiao-internal --update-env
+```
 
 ## 启动
 ```bash
@@ -127,6 +148,7 @@ MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh
 - 生产模式下，`server/index.mjs` 会直接托管 `dist` 前端页面。
 - API 和前端页面都走同一个服务，不需要再单独跑 `vite dev`。
 - `MEIAO_PUBLIC_BASE_URL` 配置后，上传素材和生成结果会优先保存到云服务器本地持久化资源目录，并通过内部稳定 URL 恢复与下载。
+- `MEIAO_ASSET_X_ACCEL=1` 仅用于已配置 Nginx internal alias 的生产环境；未配置时必须保持默认 `0`。
 - `MEIAO_ALLOWED_ORIGINS` 用于限制允许访问内部 API 的前端来源。
 - `MEIAO_ADMIN_USERNAME`、`MEIAO_ADMIN_PASSWORD`、`MEIAO_SUPER_ADMIN_USERS` 用于首次管理员账号和超级管理员识别，生产环境必须替换默认值。
 - 视频诊断依赖 Spider 网关时，需要配置 `MEIAO_SPIDER_GATEWAY_URL` 和 `MEIAO_SPIDER_API_KEY`。
