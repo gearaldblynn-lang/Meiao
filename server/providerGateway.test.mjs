@@ -69,6 +69,34 @@ test('executeProviderJob 路由 openai_responses 到 responses provider', async 
   }
 });
 
+test('executeProviderJob can probe a submitted KIE image task without long polling', async () => {
+  const realFetch = globalThis.fetch;
+  let capturedUrl = '';
+  globalThis.fetch = async (url) => {
+    capturedUrl = String(url);
+    return createJsonResponse({
+      code: 200,
+      data: {
+        state: 'success',
+        resultJson: JSON.stringify({ resultUrls: ['https://cdn.test/image.png'] }),
+      },
+    });
+  };
+  try {
+    const out = await executeProviderJob(
+      { taskType: 'kie_probe', payload: { providerTaskId: 'kie-task-1' } },
+      { KIE_API_KEY: 'kie-test' },
+      new AbortController().signal
+    );
+    assert.match(capturedUrl, /\/api\/v1\/jobs\/recordInfo\?taskId=kie-task-1$/);
+    assert.equal(out.providerTaskId, 'kie-task-1');
+    assert.equal(out.providerStatus, 'success');
+    assert.equal(out.result.imageUrl, 'https://cdn.test/image.png');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test('executeProviderJob routes dreamina frames2video jobs through the dreamina cli adapter', async () => {
   const calls = [];
   __testOnly_setDreaminaVideoRunner(async (payload) => {

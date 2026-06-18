@@ -199,7 +199,8 @@ test('agent chat source records image generation usage and local image replies',
   assert.match(source, /const normalizedResolution = String\(imageCapability\.defaultResolution \|\| '1K'\)\.trim\(\) \|\| '1K';/);
   assert.match(source, /requestType: result\.requestType \|\| requestMode/);
   assert.match(source, /action: requestMode === 'image_generation' \? 'create_image_task' : 'agent_chat'/);
-  assert.match(source, /imagePlan: result\.imagePlan \|\| null/);
+  assert.match(source, /imagePlan: result\.imagePlan \|\| latestDbChatProviderTaskCheckpoint\?\.imagePlan \|\| null/);
+  assert.match(source, /imagePlan: result\.imagePlan \|\| latestLocalChatProviderTaskCheckpoint\?\.imagePlan \|\| null/);
   assert.match(source, /imageResultUrls: result\.imageResultUrls \|\| null/);
 });
 
@@ -215,6 +216,24 @@ test('agent image chats checkpoint generated assets before final reply persisten
   assert.match(source, /if \(typeof onImageReady === 'function' && result\.imageResultUrls\.length > 0\) \{[\s\S]*?await onImageReady\(result\);/);
 });
 
+test('agent tool-calling image chats checkpoint provider task ids immediately after submission', () => {
+  assert.match(source, /const persistDbChatProviderTaskCheckpoint = async \(checkpointResult = \{\}\) =>/);
+  assert.match(source, /checkpoint: 'image_task_submitted'/);
+  assert.match(source, /const persistLocalChatProviderTaskCheckpoint = async \(checkpointResult = \{\}\) =>/);
+  assert.match(source, /onProviderTaskId: async \(providerTaskId\) => \{[\s\S]*?await persistDbChatProviderTaskCheckpoint\(\{/);
+  assert.match(source, /onProviderTaskId: async \(providerTaskId\) => \{[\s\S]*?await persistLocalChatProviderTaskCheckpoint\(\{/);
+  assert.match(source, /imagePlan: \{[\s\S]*?requestMode: 'tool_calling'[\s\S]*?providerTaskId,[\s\S]*?\}/);
+});
+
+test('agent chat message listing auto-recovers submitted provider image tasks', () => {
+  assert.match(source, /const recoverDbSubmittedChatImageTasks = async \(user, sessionId, messages = \[\]\) =>/);
+  assert.match(source, /const recoverLocalSubmittedChatImageTasks = async \(store, user, sessionId, messages = \[\]\) =>/);
+  assert.match(source, /taskType: 'kie_probe'/);
+  assert.match(source, /checkpoint: 'image_task_recovered'/);
+  assert.match(source, /await recoverDbSubmittedChatImageTasks\(user, sessionId, messages\)/);
+  assert.match(source, /await recoverLocalSubmittedChatImageTasks\(store, user, sessionId, messages\)/);
+});
+
 test('agent image result asset persistence bounds provider task ids before writing stored asset job id', () => {
   assert.match(source, /const normalizeStoredAssetJobId = \(value\) => String\(value \|\| ''\)\.trim\(\)\.slice\(0, 120\);/);
   assert.match(source, /jobId: normalizeStoredAssetJobId\(imageOutput\?\.providerTaskId\)/);
@@ -225,7 +244,7 @@ test('agent chat source persists client request ids so timed-out image chats can
   assert.match(source, /const clientRequestId = String\(body\?\.clientRequestId \|\| createEntityId\(\)\)\.trim\(\) \|\| createEntityId\(\);/);
   assert.match(source, /clientRequestId,/);
   assert.match(source, /const userMetadata = \{[\s\S]*?selectedModel,[\s\S]*?reasoningLevel: payload\?\.reasoningLevel \|\| null,[\s\S]*?webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\),[\s\S]*?requestMode,[\s\S]*?clientRequestId,[\s\S]*?runId,[\s\S]*?contextTrace,[\s\S]*?\};/);
-  assert.match(source, /const assistantMetadata = \{[\s\S]*?selectedModel: result\.selectedModel,[\s\S]*?fallbackFrom: result\.fallbackFrom \|\| null,[\s\S]*?usedRetrieval: result\.usedRetrieval,[\s\S]*?reasoningLevel: payload\?\.reasoningLevel \|\| null,[\s\S]*?webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\),[\s\S]*?requestMode,[\s\S]*?clientRequestId,[\s\S]*?runId,[\s\S]*?imagePlan: result\.imagePlan \|\| null,[\s\S]*?imageResultUrls: result\.imageResultUrls \|\| null,[\s\S]*?retrievalSummary: result\.retrievalSummary \|\| \[\][\s\S]*?\};/);
+  assert.match(source, /const assistantMetadata = \{[\s\S]*?selectedModel: result\.selectedModel,[\s\S]*?fallbackFrom: result\.fallbackFrom \|\| null,[\s\S]*?usedRetrieval: result\.usedRetrieval,[\s\S]*?reasoningLevel: payload\?\.reasoningLevel \|\| null,[\s\S]*?webSearchEnabled: Boolean\(payload\?\.webSearchEnabled\),[\s\S]*?requestMode,[\s\S]*?clientRequestId,[\s\S]*?runId,[\s\S]*?imagePlan: result\.imagePlan \|\| latestDbChatProviderTaskCheckpoint\?\.imagePlan \|\| null,[\s\S]*?imageResultUrls: result\.imageResultUrls \|\| null,[\s\S]*?retrievalSummary: result\.retrievalSummary \|\| \[\][\s\S]*?\};/);
   assert.match(source, /metadata: userMetadata/);
   assert.match(source, /metadata: assistantMetadata/);
 });

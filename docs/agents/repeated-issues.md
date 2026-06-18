@@ -24,6 +24,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-18 - Agent tool-calling image tasks need task-id checkpoints and message-list recovery
+
+- Symptom: 云上智能体上游任务已经提交/出图，但前端仍停在“思考中/调用模型中”，刷新和轮询也不显示结果。
+- Environment: Tencent Cloud production agent_center / V2 tool calling `requestMode:'chat'`.
+- Root cause: V2 `generate_image` 在 HTTP chat handler 内直接调用 KIE，不创建 `internal_jobs`。原逻辑等图片完整返回并持久化后才写 `image_result_ready`；如果在 KIE createTask 成功后、图片结果落库前中断，DB 没有 providerTaskId，消息只能永久 pending。
+- Fix: MySQL/本地 JSON 两套 chat handler 在 `onProviderTaskId` 立即写 `image_task_submitted` checkpoint；最终落库不再擦掉 taskId。`providerGateway` 增加 `kie_probe` 单次查询；消息列表 GET 自动探测带 providerTaskId 的 pending 消息，完成后写回 `image_task_recovered`。
+- Regression check: `node --test server/providerGateway.test.mjs`; `node --test server/agentCenterSource.test.mjs`; `node --test server/agentToolConversation.test.mjs server/agent-image-retrieval.test.mjs src/modules/AgentCenter/agentConversationReliability.test.mjs`; `npm run build`.
+- Files/tests: `server/index.mjs`, `server/providerGateway.mjs`, `server/agentCenterSource.test.mjs`, `server/providerGateway.test.mjs`, `CLAUDE.md`.
+- Avoid next time: 智能体生图要把“上游 task 已提交”和“图片结果已落库”作为两个独立 checkpoint；任何等待上游的工具调用一拿到 provider task id 就必须持久化，并给消息列表/刷新路径一条自动恢复通道。
+
 ## 2026-06-18 - Agent image analysis 502 must degrade to a deterministic plan
 
 - Symptom: 云上智能体对话里 assistant 直接显示 `responses 请求失败 (502): openai_error/bad_response_status_code`，且没有生成图片结果。

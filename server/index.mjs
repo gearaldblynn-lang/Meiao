@@ -4926,7 +4926,15 @@ const listDbChatMessages = async (user, sessionId) => {
     'SELECT * FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY created_at ASC',
     [sessionId, user.id]
   );
-  return rows.map(mapDbChatMessageRow);
+  const messages = rows.map(mapDbChatMessageRow);
+  if (await recoverDbSubmittedChatImageTasks(user, sessionId, messages)) {
+    const [nextRows] = await pool.query(
+      'SELECT * FROM chat_messages WHERE session_id = ? AND user_id = ? ORDER BY created_at ASC',
+      [sessionId, user.id]
+    );
+    return nextRows.map(mapDbChatMessageRow);
+  }
+  return messages;
 };
 
 const findDbChatExchangeByClientRequestId = async (user, sessionId, clientRequestId) => {
@@ -5085,6 +5093,193 @@ const buildAgentImageResultAttachments = (imageResultUrls) => (
       }))
     : null
 );
+const shouldRecoverSubmittedChatImageTask = (message) => {
+  const metadata = message?.metadata || {};
+  const providerTaskId = String(metadata.providerTaskId || metadata.imagePlan?.providerTaskId || '').trim();
+  if (!providerTaskId) return false;
+  if (metadata.checkpoint !== 'image_task_submitted') return false;
+  if (Array.isArray(metadata.imageResultUrls) && metadata.imageResultUrls.length > 0) return false;
+  if (!isAgentChatRunPendingMetadata(metadata)) return false;
+  const lastCheckedAt = Number(metadata.recoveryCheckedAt || 0);
+  return !lastCheckedAt || Date.now() - lastCheckedAt >= 10_000;
+};
+const buildRecoveredChatImageMetadata = ({ metadata = {}, imageUrl = '', providerTaskId = '', providerStatus = '' }) => ({
+  ...metadata,
+  status: 'completed',
+  phase: 'completed',
+  pending: false,
+  progress: false,
+  progressStage: 'image_ready',
+  imagePlan: {
+    ...(metadata.imagePlan || {}),
+    providerTaskId,
+  },
+  imageResultUrls: [imageUrl],
+  providerTaskId,
+  providerStatus: providerStatus || 'success',
+  checkpoint: 'image_task_recovered',
+  recoveredAt: Date.now(),
+});
+const recoverDbSubmittedChatImageTasks = async (user, sessionId, messages = []) => {
+  const candidates = (Array.isArray(messages) ? messages : [])
+    .filter((message) => message.role === 'assistant' && shouldRecoverSubmittedChatImageTask(message));
+  if (candidates.length === 0) return false;
+  const pool = await getMysqlPool();
+  let recovered = false;
+  for (const message of candidates) {
+    const metadata = message.metadata || {};
+    const providerTaskId = String(metadata.providerTaskId || metadata.imagePlan?.providerTaskId || '').trim();
+    try {
+      const output = await executeProviderJobWithManagedAssetScrub({
+        taskType: 'kie_probe',
+        payload: { providerTaskId, isVideo: false },
+      }, process.env, new AbortController().signal);
+      const rawUrl = String(output?.result?.imageUrl || '').trim();
+      if (!rawUrl) {
+        await pool.query(
+          'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+          [JSON.stringify({ ...metadata, recoveryCheckedAt: Date.now(), providerStatus: output?.providerStatus || 'pending' }), message.id, sessionId, user.id]
+        );
+        continue;
+      }
+      const persistedUrl = await persistRuntimeRemoteAssetIfEnabled({
+        userId: user.id,
+        moduleName: 'agent_center',
+        assetType: 'result',
+        remoteUrl: rawUrl,
+        originalName: `${providerTaskId || 'image_result'}.png`,
+        provider: 'kie',
+        jobId: normalizeStoredAssetJobId(providerTaskId),
+      });
+      const imageUrl = persistedUrl || rawUrl;
+      const assistantMetadata = buildRecoveredChatImageMetadata({
+        metadata,
+        imageUrl,
+        providerTaskId,
+        providerStatus: output?.providerStatus || 'success',
+      });
+      const now = Date.now();
+      const connection = await pool.getConnection();
+      try {
+        await connection.beginTransaction();
+        await connection.query(
+          'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ?, created_at = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+          [
+            '图片已生成完成。',
+            JSON.stringify(buildAgentImageResultAttachments([imageUrl])),
+            JSON.stringify(assistantMetadata),
+            now,
+            message.id,
+            sessionId,
+            user.id,
+          ]
+        );
+        const clientRequestId = String(metadata.clientRequestId || '').trim();
+        if (clientRequestId) {
+          await connection.query(
+            `UPDATE chat_messages
+             SET metadata_json = JSON_SET(metadata_json, '$.status', 'completed', '$.pending', false, '$.phase', 'submitted')
+             WHERE session_id = ? AND user_id = ? AND role = 'user'
+               AND JSON_UNQUOTE(JSON_EXTRACT(metadata_json, '$.clientRequestId')) = ?`,
+            [sessionId, user.id, clientRequestId]
+          );
+        }
+        await connection.query('UPDATE chat_sessions SET updated_at = ? WHERE id = ?', [now, sessionId]);
+        await connection.commit();
+        recovered = true;
+      } catch (error) {
+        await connection.rollback();
+        throw error;
+      } finally {
+        connection.release();
+      }
+    } catch (error) {
+      await pool.query(
+        'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+        [JSON.stringify({ ...metadata, recoveryCheckedAt: Date.now(), providerStatus: error?.providerStatus || 'recover_probe_failed', providerMessage: error?.message || String(error || '') }), message.id, sessionId, user.id]
+      ).catch(() => {});
+    }
+  }
+  return recovered;
+};
+const recoverLocalSubmittedChatImageTasks = async (store, user, sessionId, messages = []) => {
+  const candidates = (Array.isArray(messages) ? messages : [])
+    .filter((message) => message.role === 'assistant' && shouldRecoverSubmittedChatImageTask(message));
+  if (candidates.length === 0) return false;
+  let recovered = false;
+  let changed = false;
+  for (const message of candidates) {
+    const metadata = message.metadata || {};
+    const providerTaskId = String(metadata.providerTaskId || metadata.imagePlan?.providerTaskId || '').trim();
+    try {
+      const output = await executeProviderJobWithManagedAssetScrub({
+        taskType: 'kie_probe',
+        payload: { providerTaskId, isVideo: false },
+      }, process.env, new AbortController().signal);
+      const rawUrl = String(output?.result?.imageUrl || '').trim();
+      const targetMessage = (store.chatMessages || []).find((item) => item.id === message.id && item.sessionId === sessionId && item.userId === user.id);
+      if (!targetMessage) continue;
+      if (!rawUrl) {
+        targetMessage.metadata = {
+          ...(targetMessage.metadata || metadata),
+          recoveryCheckedAt: Date.now(),
+          providerStatus: output?.providerStatus || 'pending',
+        };
+        changed = true;
+        continue;
+      }
+      const persistedUrl = await persistRuntimeRemoteAssetIfEnabled({
+        userId: user.id,
+        moduleName: 'agent_center',
+        assetType: 'result',
+        remoteUrl: rawUrl,
+        originalName: `${providerTaskId || 'image_result'}.png`,
+        provider: 'kie',
+        jobId: normalizeStoredAssetJobId(providerTaskId),
+      });
+      const imageUrl = persistedUrl || rawUrl;
+      targetMessage.content = '图片已生成完成。';
+      targetMessage.attachments = buildAgentImageResultAttachments([imageUrl]);
+      targetMessage.metadata = buildRecoveredChatImageMetadata({
+        metadata: targetMessage.metadata || metadata,
+        imageUrl,
+        providerTaskId,
+        providerStatus: output?.providerStatus || 'success',
+      });
+      targetMessage.createdAt = Date.now();
+      const clientRequestId = String(metadata.clientRequestId || '').trim();
+      if (clientRequestId) {
+        (store.chatMessages || [])
+          .filter((item) => item.sessionId === sessionId && item.userId === user.id && item.role === 'user' && String(item.metadata?.clientRequestId || '').trim() === clientRequestId)
+          .forEach((item) => {
+            item.metadata = {
+              ...(item.metadata || {}),
+              status: 'completed',
+              pending: false,
+              phase: 'submitted',
+            };
+          });
+      }
+      const session = (store.chatSessions || []).find((item) => item.id === sessionId && item.userId === user.id);
+      if (session) session.updatedAt = Date.now();
+      recovered = true;
+      changed = true;
+    } catch (error) {
+      const targetMessage = (store.chatMessages || []).find((item) => item.id === message.id && item.sessionId === sessionId && item.userId === user.id);
+      if (targetMessage) {
+        targetMessage.metadata = {
+          ...(targetMessage.metadata || metadata),
+          recoveryCheckedAt: Date.now(),
+          providerStatus: error?.providerStatus || 'recover_probe_failed',
+          providerMessage: error?.message || String(error || ''),
+        };
+        changed = true;
+      }
+    }
+  }
+  if (changed) writeLocalStore(store);
+  return recovered;
+};
 const buildActiveAgentChatRunError = () => {
   const error = new Error('当前会话已有任务处理中，请等待完成后再发送新任务。');
   error.code = 'agent_chat_run_active';
@@ -5241,6 +5436,78 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   } finally {
     pendingConnection.release();
   }
+  let latestDbChatProviderTaskCheckpoint = null;
+  const persistDbChatProviderTaskCheckpoint = async (checkpointResult = {}) => {
+    const providerTaskId = String(checkpointResult.providerTaskId || '').trim();
+    if (!providerTaskId) return;
+    const imagePlan = checkpointResult.imagePlan || {
+      requestMode: 'tool_calling',
+      taskType: checkpointResult.taskType || 'image_generate',
+      selectedImageModel: checkpointResult.selectedModel || '',
+      inputImageUrls: Array.isArray(checkpointResult.inputImageUrls) ? checkpointResult.inputImageUrls : [],
+      prompt: checkpointResult.prompt || '',
+      size: checkpointResult.size || 'auto',
+      providerTaskId,
+    };
+    latestDbChatProviderTaskCheckpoint = { providerTaskId, imagePlan };
+    const checkpointContextTrace = {
+      ...contextTraceBase,
+      knowledgeChunkCount: requestMode === 'image_generation' ? imageKnowledgeChunks.length : 0,
+    };
+    const checkpointUserMetadata = {
+      ...pendingUserMetadata,
+      status: 'pending',
+      pending: true,
+      phase: 'submitted',
+      contextTrace: checkpointContextTrace,
+    };
+    const checkpointAssistantMetadata = {
+      ...pendingAssistantMetadata,
+      selectedModel: checkpointResult.selectedModel || pendingAssistantMetadata.selectedModel,
+      status: 'pending',
+      pending: true,
+      progress: true,
+      phase: 'image_generating',
+      progressStage: 'image_generating',
+      contextTrace: checkpointContextTrace,
+      imagePlan,
+      imageResultUrls: null,
+      retrievalSummary: [],
+      providerTaskId,
+      checkpoint: 'image_task_submitted',
+    };
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.query(
+        'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+        [JSON.stringify(checkpointUserMetadata), userMessageId, sessionId, user.id]
+      );
+      await connection.query(
+        'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+        [
+          checkpointResult.content || '图片任务已提交，正在生成中。',
+          JSON.stringify(null),
+          JSON.stringify(checkpointAssistantMetadata),
+          assistantMessageId,
+          sessionId,
+          user.id,
+        ]
+      );
+      await connection.query('UPDATE chat_sessions SET updated_at = ? WHERE id = ?', [Date.now(), sessionId]);
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      console.warn('[agent-chat] failed to persist provider task checkpoint', {
+        sessionId,
+        clientRequestId,
+        providerTaskId,
+        message: error?.message || String(error || ''),
+      });
+    } finally {
+      connection.release();
+    }
+  };
   const persistDbChatImageCheckpoint = async (checkpointResult = {}) => {
     const imageResultUrls = Array.isArray(checkpointResult.imageResultUrls)
       ? checkpointResult.imageResultUrls.map((url) => String(url || '').trim()).filter(Boolean)
@@ -5331,7 +5598,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       errorCode: error?.code || '',
       providerStage: error?.providerStage || '',
       providerStatus: error?.providerStatus || '',
-      providerTaskId: error?.providerTaskId || '',
+      providerTaskId: error?.providerTaskId || latestDbChatProviderTaskCheckpoint?.providerTaskId || '',
     };
     const connection = await pool.getConnection();
     try {
@@ -5394,7 +5661,6 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         };
       };
       const generateImage = async ({ prompt, taskType, inputImageUrls, aspectRatio, model }) => {
-        void taskType;
         const imageOutput = await executeProviderJobWithManagedAssetScrub({
           taskType: 'kie_image',
           payload: {
@@ -5404,7 +5670,29 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
             aspectRatio: aspectRatio || 'auto',
             resolution: String(imageCapability?.defaultResolution || '1K'),
           },
-        }, process.env, new AbortController().signal);
+        }, process.env, new AbortController().signal, {
+          onProviderTaskId: async (providerTaskId) => {
+            await persistDbChatProviderTaskCheckpoint({
+              content: '图片任务已提交，正在生成中。',
+              providerTaskId,
+              selectedModel: model || selectedModel,
+              taskType,
+              inputImageUrls,
+              prompt,
+              size: aspectRatio || 'auto',
+              imagePlan: {
+                requestMode: 'tool_calling',
+                taskType,
+                selectedImageModel: model || '',
+                inputImageUrls,
+                prompt,
+                size: aspectRatio || 'auto',
+                providerTaskId,
+              },
+            });
+            if (sendEvent) sendEvent('progress', { stage: 'image_generating', providerTaskId });
+          },
+        });
         const rawUrl = String(imageOutput?.result?.imageUrl || '').trim();
         const persistedUrl = await persistRuntimeRemoteAssetIfEnabled({
           userId: user.id,
@@ -5540,9 +5828,10 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     phase: 'completed',
     contextTrace,
     messageIds: { userMessageId, assistantMessageId },
-    imagePlan: result.imagePlan || null,
+    imagePlan: result.imagePlan || latestDbChatProviderTaskCheckpoint?.imagePlan || null,
     imageResultUrls: result.imageResultUrls || null,
     retrievalSummary: result.retrievalSummary || [],
+    providerTaskId: result.providerTaskId || result.imagePlan?.providerTaskId || latestDbChatProviderTaskCheckpoint?.providerTaskId || '',
     finalReplyErrorMessage: result.finalReplyErrorMessage || '',
   };
   const connection = await pool.getConnection();
@@ -9836,6 +10125,10 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 404, { message: '会话不存在或无权限。' });
       return;
     }
+    const messages = (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+    if (await recoverLocalSubmittedChatImageTasks(store, user, sessionId, messages)) {
+      store = readLocalStore();
+    }
     json(res, 200, { messages: (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0)) });
     return;
   }
@@ -10023,6 +10316,51 @@ const handleLocalRequest = async (req, res, url) => {
     session.lastImageMode = requestMode === 'image_generation';
     session.updatedAt = now;
     writeLocalStore(store);
+    let latestLocalChatProviderTaskCheckpoint = null;
+    const persistLocalChatProviderTaskCheckpoint = async (checkpointResult = {}) => {
+      const providerTaskId = String(checkpointResult.providerTaskId || '').trim();
+      if (!providerTaskId) return;
+      const imagePlan = checkpointResult.imagePlan || {
+        requestMode: 'tool_calling',
+        taskType: checkpointResult.taskType || 'image_generate',
+        selectedImageModel: checkpointResult.selectedModel || '',
+        inputImageUrls: Array.isArray(checkpointResult.inputImageUrls) ? checkpointResult.inputImageUrls : [],
+        prompt: checkpointResult.prompt || '',
+        size: checkpointResult.size || 'auto',
+        providerTaskId,
+      };
+      latestLocalChatProviderTaskCheckpoint = { providerTaskId, imagePlan };
+      const checkpointContextTrace = {
+        ...contextTraceBase,
+        knowledgeChunkCount: requestMode === 'image_generation' ? imageKnowledgeChunks.length : 0,
+      };
+      userMessage.metadata = {
+        ...userMessage.metadata,
+        status: 'pending',
+        pending: true,
+        phase: 'submitted',
+        contextTrace: checkpointContextTrace,
+      };
+      assistantMessage.content = checkpointResult.content || '图片任务已提交，正在生成中。';
+      assistantMessage.attachments = [];
+      assistantMessage.metadata = {
+        ...assistantMessage.metadata,
+        selectedModel: checkpointResult.selectedModel || assistantMessage.metadata?.selectedModel || selectedModel,
+        status: 'pending',
+        phase: 'image_generating',
+        pending: true,
+        progress: true,
+        progressStage: 'image_generating',
+        contextTrace: checkpointContextTrace,
+        imagePlan,
+        imageResultUrls: null,
+        retrievalSummary: [],
+        providerTaskId,
+        checkpoint: 'image_task_submitted',
+      };
+      session.updatedAt = Date.now();
+      writeLocalStore(store);
+    };
     const persistLocalChatImageCheckpoint = async (checkpointResult = {}) => {
       const imageResultUrls = Array.isArray(checkpointResult.imageResultUrls)
         ? checkpointResult.imageResultUrls.map((url) => String(url || '').trim()).filter(Boolean)
@@ -10104,7 +10442,6 @@ const handleLocalRequest = async (req, res, url) => {
           };
         };
         const generateImage = async ({ prompt, taskType, inputImageUrls, aspectRatio, model }) => {
-          void taskType;
           const imageOutput = await executeProviderJobWithManagedAssetScrub({
             taskType: 'kie_image',
             payload: {
@@ -10114,7 +10451,28 @@ const handleLocalRequest = async (req, res, url) => {
               aspectRatio: aspectRatio || 'auto',
               resolution: String(imageCapability?.defaultResolution || '1K'),
             },
-          }, process.env, new AbortController().signal);
+          }, process.env, new AbortController().signal, {
+            onProviderTaskId: async (providerTaskId) => {
+              await persistLocalChatProviderTaskCheckpoint({
+                content: '图片任务已提交，正在生成中。',
+                providerTaskId,
+                selectedModel: model || selectedModel,
+                taskType,
+                inputImageUrls,
+                prompt,
+                size: aspectRatio || 'auto',
+                imagePlan: {
+                  requestMode: 'tool_calling',
+                  taskType,
+                  selectedImageModel: model || '',
+                  inputImageUrls,
+                  prompt,
+                  size: aspectRatio || 'auto',
+                  providerTaskId,
+                },
+              });
+            },
+          });
           const rawUrl = String(imageOutput?.result?.imageUrl || '').trim();
           const persistedUrl = await persistRuntimeRemoteAssetIfEnabled({
             userId: user.id,
@@ -10243,9 +10601,10 @@ const handleLocalRequest = async (req, res, url) => {
         progress: false,
         contextTrace: completedContextTrace,
         messageIds: { userMessageId, assistantMessageId },
-        imagePlan: result.imagePlan || null,
+        imagePlan: result.imagePlan || latestLocalChatProviderTaskCheckpoint?.imagePlan || null,
         imageResultUrls: result.imageResultUrls || null,
         retrievalSummary: result.retrievalSummary || [],
+        providerTaskId: result.providerTaskId || result.imagePlan?.providerTaskId || latestLocalChatProviderTaskCheckpoint?.providerTaskId || '',
         finalReplyErrorMessage: result.finalReplyErrorMessage || '',
       };
       assistantMessage.createdAt = Date.now();
@@ -10314,7 +10673,7 @@ const handleLocalRequest = async (req, res, url) => {
         errorCode: error?.code || '',
         providerStage: error?.providerStage || '',
         providerStatus: error?.providerStatus || '',
-        providerTaskId: error?.providerTaskId || '',
+        providerTaskId: error?.providerTaskId || latestLocalChatProviderTaskCheckpoint?.providerTaskId || '',
       };
       appendLocalLog(store, {
         user,
