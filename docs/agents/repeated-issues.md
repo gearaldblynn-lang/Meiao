@@ -459,6 +459,14 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --experimental-strip-types --test src/modules/AgentCenter/chatConversationRendering.test.mjs src/shell/modules/AgentCenter/ChatConversationPane.test.mjs`; `npm run lint`; `npm run build`。
 - Avoid next time: 对话模式和结果形态要分开判断。`requestMode` 表示用户发起方式，`imageResultUrls/imagePlan/assistant image attachments` 才是结果展示形态；工具调用能从普通 chat 产出生图结果。
 
+### Agent edit wizard must submit the draft version it opened
+
+- Symptom: 智能体工厂进入“编辑草稿/检查并提交”后保存或发布修改时，前端提示 `版本不存在、已发布或无权限。`。
+- Root cause: 详情页可能当前选中已发布版本 V2，同时系统已有未发布草稿 V1。编辑入口会加载草稿 V1 的内容，但提交保存仍使用 `selectedVersion.id`，把 PATCH 发给已发布 V2；后端禁止修改已发布版本，因此返回该错误。
+- Fix: `AgentCenterManager` 进入编辑向导时记录 `editingVersionId`，提交时按这个 ID 找到实际正在编辑的草稿版本，并用该版本的策略字段更新草稿；保存后再清理编辑指针。
+- Regression check: `node --test src/shell/modules/AgentCenter/AgentCenterModule.test.mjs --test-name-pattern "agent edit wizard submits"`。
+- Avoid next time: 编辑流不要复用“详情页当前查看版本”作为写入目标。打开编辑器时必须固化本次编辑对象 ID；涉及发布版/草稿版并存的 UI，都要分别维护“查看版本”和“编辑版本”。
+
 ## 2026-06-12 - First-image planning recovery must aggregate sibling reference jobs
 
 - Symptom: 天琪账号首图功能上传 5 张风格参考图后，后台实际创建并完成了 5 个 `kie_chat` 策划 job，但前端项目卡只显示 1 个策划，用户无法发现少了 4 个。

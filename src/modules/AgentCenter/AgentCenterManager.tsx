@@ -127,6 +127,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
   const [selectedAgentId, setSelectedAgentId] = useState(String(initialManagerState.selectedAgentId || ''));
   const [versions, setVersions] = useState<AgentVersion[]>([]);
   const [selectedVersionId, setSelectedVersionId] = useState(String(initialManagerState.selectedVersionId || ''));
+  const [editingVersionId, setEditingVersionId] = useState('');
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBaseSummary[]>([]);
   const [selectedKnowledgeBaseId, setSelectedKnowledgeBaseId] = useState(String(initialManagerState.selectedKnowledgeBaseId || ''));
   const [documents, setDocuments] = useState<KnowledgeDocumentSummary[]>([]);
@@ -279,6 +280,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       availableChatModels.some((model) => model.id === id && model.provider === 'openai_compatible')
     );
     setWizardMode('create');
+    setEditingVersionId('');
     setWizardStep(0);
     setWizardForm({
       name: '',
@@ -323,6 +325,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
     if (!selectedAgent) return;
     const config = normalizeAgentConfig(editableVersion);
     setWizardMode('edit');
+    setEditingVersionId(editableVersion.id);
     setWizardStep(initialStep);
     setWizardForm({
       name: selectedAgent.name,
@@ -414,7 +417,12 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       setPage('agent_detail');
       return;
     }
-    if (!selectedAgent || !selectedVersion) return;
+    const editingVersion = versions.find((item) => item.id === editingVersionId) || selectedVersion;
+    if (!selectedAgent || !editingVersion) return;
+    if (editingVersion.isPublished) {
+      onErrorMessage('请先创建草稿版本再编辑');
+      return;
+    }
     await updateAgent(selectedAgent.id, {
       name: wizardForm.name,
       description: wizardForm.description,
@@ -422,19 +430,21 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       iconUrl: wizardForm.iconUrl || null,
       avatarPreset: wizardForm.avatarPreset || null,
     });
-    await updateAgentVersion(selectedVersion.id, {
+    await updateAgentVersion(editingVersion.id, {
       systemPrompt: wizardForm.systemPrompt,
       openingRemarks: wizardForm.openingRemarks || null,
       knowledgeBaseIds: wizardForm.selectedKnowledgeBaseIds,
       knowledgeDocumentBindings: wizardForm.knowledgeDocumentBindings,
       allowedChatModels,
       defaultChatModel,
-      modelPolicy: { ...selectedVersion.modelPolicy, ...modelPolicy },
-      retrievalPolicy: { ...selectedVersion.retrievalPolicy, topK: wizardForm.topK },
-      toolPolicy: { ...selectedVersion.toolPolicy, linkedModuleInterfaces: wizardForm.linkedModuleInterfaces },
+      modelPolicy: { ...editingVersion.modelPolicy, ...modelPolicy },
+      retrievalPolicy: { ...editingVersion.retrievalPolicy, topK: wizardForm.topK },
+      toolPolicy: { ...editingVersion.toolPolicy, linkedModuleInterfaces: wizardForm.linkedModuleInterfaces },
     });
     onStatusMessage('草稿已保存。');
     await loadAgents(selectedAgent.id);
+    setSelectedVersionId(editingVersion.id);
+    setEditingVersionId('');
     setPage('agent_detail');
   });
 
