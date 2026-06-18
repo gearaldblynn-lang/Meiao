@@ -1674,6 +1674,90 @@ const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false, model = '
   throw createProviderError('provider_timeout', isVideo ? '视频合成超时' : '图像任务超时', { providerTaskId: taskId, providerStage: 'polling', providerStatus: lastKnownState || 'timeout' });
 };
 
+const probeKieTaskOnce = async (taskId, kieApiKey, signal, isVideo = false) => {
+  const response = await fetchKieWithTimeout(`${KIE_RECORD_INFO_URL}?taskId=${encodeURIComponent(taskId)}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${kieApiKey}`,
+    },
+    signal,
+  }, isVideo ? 'Kie 视频任务查询超时' : 'Kie 图像任务查询超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'polling');
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403 || result?.code === 401 || result?.code === 403) {
+      throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 鉴权失败', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'auth_invalid' });
+    }
+    if (response.status === 404 || result?.code === 404) {
+      throw createProviderError('task_not_found', result?.msg || '任务不存在或已过期', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'not_found' });
+    }
+    if (response.status === 429) {
+      throw createProviderError('provider_rate_limited', result?.msg || 'Kie 请求过于频繁', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'rate_limited' });
+    }
+    if (response.status >= 500) {
+      throw createProviderError('provider_internal_error', result?.msg || 'Kie 服务异常', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'server_error' });
+    }
+  }
+  if (result?.code === 200) {
+    const state = String(result.data?.state || '').trim();
+    if (state === 'success') {
+      const resultJson = JSON.parse(result.data.resultJson || '{}');
+      const url = Array.isArray(resultJson.resultUrls) ? resultJson.resultUrls[0] : '';
+      if (!url) {
+        throw createProviderError('provider_bad_response', 'Kie 返回成功但没有结果链接', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'success_without_result' });
+      }
+      const usageMeta = extractProviderUsageMeta(result);
+      return {
+        providerTaskId: taskId,
+        ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+        providerStage: 'completed',
+        providerStatus: 'success',
+        result: {
+          imageUrl: url,
+          videoUrl: isVideo ? url : undefined,
+          taskId,
+          status: 'success',
+          providerTaskId: taskId,
+          ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
+          ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
+          providerModel: result.data?.model || '',
+        },
+      };
+    }
+    if (state === 'fail') {
+      throw createProviderError('provider_bad_request', result.data?.failMsg || 'Kie 任务失败', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'failed' });
+    }
+    return {
+      providerTaskId: taskId,
+      providerStage: 'polling',
+      providerStatus: state || 'pending',
+      result: {
+        taskId,
+        providerTaskId: taskId,
+        status: state || 'pending',
+      },
+    };
+  }
+  if (result?.code === 404) {
+    throw createProviderError('task_not_found', result?.msg || '任务不存在或已过期', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'not_found' });
+  }
+  if (result?.code === 401 || result?.code === 403) {
+    throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 鉴权失败', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'auth_invalid' });
+  }
+  if (result?.code >= 500) {
+    throw createProviderError('provider_internal_error', result?.msg || 'Kie 服务异常', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'server_error' });
+  }
+  return {
+    providerTaskId: taskId,
+    providerStage: 'polling',
+    providerStatus: 'pending',
+    result: {
+      taskId,
+      providerTaskId: taskId,
+      status: 'pending',
+    },
+  };
+};
+
 const pollKieVeoTask = async (taskId, kieApiKey, signal) => {
   for (let attempts = 0; attempts < 120; attempts += 1) {
     if (signal?.aborted) {
@@ -2533,6 +2617,17 @@ const runKieRecoverJob = async (payload, env, signal) => {
   }
 };
 
+const runKieProbeJob = async (payload, env, signal) => {
+  const { kieApiKey } = getProviderEnv(env);
+  ensureProviderKey(kieApiKey, 'Kie API Key');
+  const providerTaskId = payload.providerTaskId || payload.taskId;
+  try {
+    return await probeKieTaskOnce(providerTaskId, kieApiKey, signal, Boolean(payload.isVideo));
+  } catch (error) {
+    throw attachProviderTaskId(error, providerTaskId);
+  }
+};
+
 const runKieVideoJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
@@ -3088,6 +3183,8 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
       return runKieImageJob(job.payload, env, signal, options);
     case 'kie_recover':
       return runKieRecoverJob(job.payload, env, signal);
+    case 'kie_probe':
+      return runKieProbeJob(job.payload, env, signal);
     case 'kie_video':
       return runKieVideoJob(job.payload, env, signal, options);
     case 'kie_seedance_video':
