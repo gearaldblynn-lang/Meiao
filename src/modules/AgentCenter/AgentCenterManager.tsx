@@ -198,16 +198,17 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
     }
   };
 
-  const loadAgents = async (preferredAgentId = selectedAgentId) => {
+  const loadAgents = async (preferredAgentId = selectedAgentId, preferredVersionId = selectedVersionId) => {
     const result = await fetchAgentSummaries();
     setAgents(result.agents);
     const nextId = preferredAgentId || result.agents[0]?.id || '';
     setSelectedAgentId(nextId);
     if (nextId) {
       const detail = await fetchAgentDetail(nextId);
+      const nextVersion = detail.versions.find((item) => item.id === preferredVersionId) || detail.versions[0] || null;
       setVersions(detail.versions);
-      setSelectedVersionId((current) => current && detail.versions.some((item) => item.id === current) ? current : detail.versions[0]?.id || '');
-      setValidationResult(detail.versions[0]?.validationSummary || null);
+      setSelectedVersionId(nextVersion?.id || '');
+      setValidationResult(nextVersion?.validationSummary || null);
     } else {
       setVersions([]);
       setSelectedVersionId('');
@@ -413,7 +414,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
         toolPolicy: { linkedModuleInterfaces: wizardForm.linkedModuleInterfaces },
       });
       onStatusMessage(`已创建智能体：${result.agent.name}`);
-      await loadAgents(result.agent.id);
+      await loadAgents(result.agent.id, result.version.id);
       setPage('agent_detail');
       return;
     }
@@ -442,7 +443,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
       toolPolicy: { ...editingVersion.toolPolicy, linkedModuleInterfaces: wizardForm.linkedModuleInterfaces },
     });
     onStatusMessage('草稿已保存。');
-    await loadAgents(selectedAgent.id);
+    await loadAgents(selectedAgent.id, editingVersion.id);
     setSelectedVersionId(editingVersion.id);
     setEditingVersionId('');
     setPage('agent_detail');
@@ -452,7 +453,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
     if (!selectedAgent) return;
     const result = await createAgentDraft(selectedAgent.id);
     onStatusMessage(`已创建草稿版本 V${result.version.versionNo}`);
-    await loadAgents(selectedAgent.id);
+    await loadAgents(selectedAgent.id, result.version.id);
     setSelectedVersionId(result.version.id);
     setPage('agent_detail');
   });
@@ -530,11 +531,15 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
   };
 
   const handleValidate = () => runAction(async () => {
-    if (!selectedVersion) return;
-    const result = await validateAgentVersion(selectedVersion.id, validationMessage);
+    const targetVersion = draftVersion || selectedVersion;
+    if (!targetVersion || targetVersion.isPublished) {
+      onErrorMessage('请先创建草稿版本再验证');
+      return;
+    }
+    const result = await validateAgentVersion(targetVersion.id, validationMessage);
     setValidationResult(result.result);
     onStatusMessage('验证完成。');
-    await loadAgents(selectedAgentId);
+    await loadAgents(selectedAgentId, targetVersion.id);
   });
 
   const openStudio = () => runAction(async () => {

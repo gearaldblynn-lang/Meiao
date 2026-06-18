@@ -64,6 +64,27 @@ const isPendingAgentRunMessage = (message?: AgentChatMessage | null) => {
   const status = String(message?.metadata?.status || '').trim().toLowerCase();
   return message?.role === 'assistant' && (Boolean(message?.metadata?.pending) || status === 'pending' || status === 'running');
 };
+const mergePendingLocalMessages = (
+  currentMessages: AgentChatMessage[],
+  incomingMessages: AgentChatMessage[],
+  sessionId: string,
+) => {
+  const incomingIds = new Set(incomingMessages.map((item) => item.id));
+  const incomingClientRequestIds = new Set(
+    incomingMessages
+      .map((item) => String(item.metadata?.clientRequestId || '').trim())
+      .filter(Boolean),
+  );
+  const localPendingMessages = currentMessages.filter((item) => {
+    const clientRequestId = String(item.metadata?.clientRequestId || '').trim();
+    return item.sessionId === sessionId
+      && Boolean(item.metadata?.pending)
+      && !incomingIds.has(item.id)
+      && (!clientRequestId || !incomingClientRequestIds.has(clientRequestId));
+  });
+  return [...incomingMessages, ...localPendingMessages]
+    .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+};
 
 const readAgentCenterUiState = () => {
   try {
@@ -530,7 +551,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     fetchChatMessages(targetSessionId)
       .then((result) => {
         if (requestSeq !== messageLoadSeqRef.current) return;
-        applyMessagesForSession(targetSessionId, result.messages);
+        updateMessagesForSession(targetSessionId, (current) => mergePendingLocalMessages(current, result.messages, targetSessionId));
       })
       .catch((error: any) => setErrorMessage(error.message || '会话消息读取失败'));
   }, [selectedSessionId]);
@@ -638,7 +659,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
       try {
         const result = await fetchChatMessages(selectedSessionId);
         if (disposed) return;
-        applyMessagesForSession(selectedSessionId, result.messages);
+        updateMessagesForSession(selectedSessionId, (current) => mergePendingLocalMessages(current, result.messages, selectedSessionId));
         const stillPending = result.messages.some((message) => (
           message.sessionId === selectedSessionId
           && String(message.metadata?.clientRequestId || '').trim() === activePendingClientRequestId

@@ -33,6 +33,23 @@ test('agent edit wizard submits the draft version being edited instead of the se
   assert.doesNotMatch(managerSource, /await updateAgentVersion\(selectedVersion\.id,/);
 });
 
+test('agent factory validation targets the editable draft and keeps its validation result selected', () => {
+  assert.match(managerSource, /const loadAgents = async \(preferredAgentId = selectedAgentId, preferredVersionId = selectedVersionId\) =>/);
+  assert.match(managerSource, /const nextVersion = detail\.versions\.find\(\(item\) => item\.id === preferredVersionId\) \|\| detail\.versions\[0\] \|\| null;/);
+  assert.match(managerSource, /setValidationResult\(nextVersion\?\.validationSummary \|\| null\)/);
+  assert.match(managerSource, /const targetVersion = draftVersion \|\| selectedVersion;/);
+  assert.match(managerSource, /validateAgentVersion\(targetVersion\.id, validationMessage\)/);
+  assert.match(managerSource, /await loadAgents\(selectedAgentId, targetVersion\.id\)/);
+  assert.doesNotMatch(managerSource, /validateAgentVersion\(selectedVersion\.id, validationMessage\)/);
+});
+
+test('shell chat message refresh preserves local pending messages while a send is in flight', () => {
+  assert.match(shellModuleSource, /const mergePendingLocalMessages = \(\s*currentMessages: AgentChatMessage\[\],\s*incomingMessages: AgentChatMessage\[\],\s*sessionId: string,\s*\) =>/);
+  assert.match(shellModuleSource, /incomingClientRequestIds\.has\(clientRequestId\)/);
+  assert.match(shellModuleSource, /updateMessagesForSession\(targetSessionId, \(current\) => mergePendingLocalMessages\(current, result\.messages, targetSessionId\)\)/);
+  assert.doesNotMatch(shellModuleSource, /applyMessagesForSession\(targetSessionId, result\.messages\);/);
+});
+
 test('shell agent center keeps async chat results scoped to the active session', () => {
   assert.match(shellModuleSource, /const selectedSessionIdRef = useRef\(selectedSessionId\);/);
   assert.match(shellModuleSource, /const loadChatRequestSeqRef = useRef\(0\);/);
