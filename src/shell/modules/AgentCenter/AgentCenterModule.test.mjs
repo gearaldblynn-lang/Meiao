@@ -25,6 +25,14 @@ test('agent center keeps plaza, factory, and real studio workflows available', (
   assert.match(detailSource, /智能体工作室/);
 });
 
+test('agent edit wizard submits the draft version being edited instead of the selected published version', () => {
+  assert.match(managerSource, /editingVersionId/);
+  assert.match(managerSource, /setEditingVersionId\(editableVersion\.id\)/);
+  assert.match(managerSource, /const editingVersion = versions\.find\(\(item\) => item\.id === editingVersionId\) \|\| selectedVersion;/);
+  assert.match(managerSource, /await updateAgentVersion\(editingVersion\.id,/);
+  assert.doesNotMatch(managerSource, /await updateAgentVersion\(selectedVersion\.id,/);
+});
+
 test('shell agent center keeps async chat results scoped to the active session', () => {
   assert.match(shellModuleSource, /const selectedSessionIdRef = useRef\(selectedSessionId\);/);
   assert.match(shellModuleSource, /const loadChatRequestSeqRef = useRef\(0\);/);
