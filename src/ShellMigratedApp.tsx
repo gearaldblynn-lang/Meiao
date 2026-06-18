@@ -1888,6 +1888,7 @@ const AppContent: React.FC<{
   }));
   const [systemConfig, setSystemConfig] = useState<SystemPublicConfig | null>(null);
   const [announcementOpenSource, setAnnouncementOpenSource] = useState<'auto' | 'manual' | null>(null);
+  const [closedAnnouncementId, setClosedAnnouncementId] = useState('');
   const publicBaseUrl = systemConfig?.publicBaseUrl || '';
   const shellLocalScopeUserId = currentUser?.id || null;
   const savedShellUiState = readShellUiState(shellLocalScopeUserId);
@@ -2070,6 +2071,7 @@ const AppContent: React.FC<{
 
   useEffect(() => {
     if (!activeAnnouncement?.id || !currentUser?.id || announcementOpenSource) return;
+    if (closedAnnouncementId === activeAnnouncement.id) return;
     try {
       const dismissedToday = localStorage.getItem(getAnnouncementDismissKey(currentUser.id, activeAnnouncement.id));
       if (dismissedToday === getLocalDateKey()) return;
@@ -2077,18 +2079,20 @@ const AppContent: React.FC<{
       // localStorage failure should not block an important system announcement.
     }
     setAnnouncementOpenSource('auto');
-  }, [activeAnnouncement?.id, announcementOpenSource, currentUser?.id]);
+  }, [activeAnnouncement?.id, announcementOpenSource, closedAnnouncementId, currentUser?.id]);
 
   const handleOpenAnnouncementPanel = useCallback(() => {
     if (!activeAnnouncement) {
       addToast('当前暂无公告', 'info');
     }
+    setClosedAnnouncementId('');
     setAnnouncementOpenSource('manual');
   }, [activeAnnouncement, addToast]);
 
   const handleCloseAnnouncementPanel = useCallback(() => {
+    if (activeAnnouncement?.id) setClosedAnnouncementId(activeAnnouncement.id);
     setAnnouncementOpenSource(null);
-  }, []);
+  }, [activeAnnouncement?.id]);
 
   const handleDismissAnnouncementToday = useCallback(() => {
     if (activeAnnouncement?.id && currentUser?.id) {
@@ -2098,6 +2102,7 @@ const AppContent: React.FC<{
         addToast('浏览器无法记录今日不再提醒，已先关闭本次公告。', 'warning');
       }
     }
+    setClosedAnnouncementId(activeAnnouncement?.id || '');
     setAnnouncementOpenSource(null);
   }, [activeAnnouncement?.id, addToast, currentUser?.id]);
 
