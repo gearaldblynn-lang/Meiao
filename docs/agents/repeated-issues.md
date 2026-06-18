@@ -24,6 +24,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-18 - Agent image asset checkpoints must survive deploy restarts
+
+- Symptom: 多桑账号智能体功能里,上游已出图并保存到 `stored_assets`,但前端一直显示思考/需求分析中。
+- Environment: Tencent Cloud production agent_center / PM2 deploy restart window.
+- Root cause: 智能体生图只在整条回复结束时一次性更新 `chat_messages`;部署重启卡在图片资产落库之后、assistant 消息 completed 更新之前,导致消息永久停在 `pending/analyzing`。
+- Fix: MySQL 和本地 JSON 两套 chat handler 增加 `image_result_ready` checkpoint；图片一旦持久化且 `imageResultUrls` 非空,立即把对应消息更新为 completed 并写入图片附件、image plan、provider task id。后续最终回复仍可覆盖。
+- Regression check: `node --test server/agentCenterSource.test.mjs server/agentConversationReliability.test.mjs server/agentToolConversation.test.mjs`; `npm run build`.
+- Files/tests: `server/index.mjs`, `server/agentCenterSource.test.mjs`, `CLAUDE.md`.
+- Avoid next time: 多阶段链路的用户可见主产物不能等最后一步才落库；任何 `await` 后都要假设进程可能被重启。
+
 ## 2026-06-18 - Agent image success must survive final text failure
 
 - Symptom: 云上智能体存在"上游已经出图,但对话里显示失败"的情况。
