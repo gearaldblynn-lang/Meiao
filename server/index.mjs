@@ -5415,6 +5415,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     imagePlan: result.imagePlan || null,
     imageResultUrls: result.imageResultUrls || null,
     retrievalSummary: result.retrievalSummary || [],
+    finalReplyErrorMessage: result.finalReplyErrorMessage || '',
   };
   const connection = await pool.getConnection();
   try {
@@ -10017,6 +10018,7 @@ const handleLocalRequest = async (req, res, url) => {
         imagePlan: result.imagePlan || null,
         imageResultUrls: result.imageResultUrls || null,
         retrievalSummary: result.retrievalSummary || [],
+        finalReplyErrorMessage: result.finalReplyErrorMessage || '',
       };
       assistantMessage.createdAt = Date.now();
       session.title = session.title === '新会话' ? content.slice(0, 24) : session.title;

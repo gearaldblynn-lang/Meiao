@@ -24,6 +24,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-18 - Agent image success must survive final text failure
+
+- Symptom: 云上智能体存在"上游已经出图,但对话里显示失败"的情况。
+- Environment: Tencent Cloud production agent_center / V2 tool calling image generation.
+- Root cause: V2 生图工具链路在 KIE 返回图片后还会再请求 Responses 生成最终文字说明；原实现没有局部降级,第二轮 Responses 502 会把整条 assistant 消息标记为 failed,并丢掉已生成的 `imageResultUrls/imagePlan/providerTaskId`。
+- Fix: `runAgentConversationV2` 在图片结果已存在时捕获最终文案模型失败,返回降级成功回复并保留图片附件、image plan、provider task id；技术错误写入消息 metadata,不直接裸露在用户正文里。
+- Regression check: `node --test server/agentToolConversation.test.mjs`.
+- Files/tests: `server/agentToolConversation.mjs`, `server/index.mjs`, `server/agentToolConversation.test.mjs`, `CLAUDE.md`.
+- Avoid next time: 多阶段 provider 编排要把"主产物成功"和"尾部说明失败"分开处理；新增链路必须测"主产物成功 + 最后一步失败"。
+
 ## 2026-06-18 - Cloud video playback must not preload every visible result
 
 - Symptom: 云上视频播放再次出现卡顿/不流畅；本地网络快时不明显，但公网入口下载 1MB range 约 0.4-0.9s，多个视频同时预取会抢带宽和解码。后续用户进一步确认不是转圈缓冲，而是播放观看时卡帧。

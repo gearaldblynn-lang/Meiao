@@ -56,6 +56,11 @@ const buildFunctionCallInputItem = (call = {}, callId = '') => {
   };
 };
 
+const buildImageGeneratedFallbackReply = (error) => {
+  void error;
+  return '图片已生成完成，但最终文字说明生成失败。已为你保留图片结果。';
+};
+
 export const runAgentConversationV2 = async ({
   systemPrompt = '',
   summary = '',
@@ -209,13 +214,28 @@ export const runAgentConversationV2 = async ({
 
     messages.push(buildFunctionCallInputItem(call, callId));
     messages.push(buildFunctionCallOutput(callId, toolResultContent));
-    response = await callModel({
-      messages,
-      tools,
-      toolChoice: 'auto',
-      maxTokens: contextLimits.maxOutputTokens,
-      onDelta: (delta) => emit('streaming', { delta }),
-    });
+    try {
+      response = await callModel({
+        messages,
+        tools,
+        toolChoice: 'auto',
+        maxTokens: contextLimits.maxOutputTokens,
+        onDelta: (delta) => emit('streaming', { delta }),
+      });
+    } catch (error) {
+      if (imageGenerated && Array.isArray(imageResultUrls) && imageResultUrls.length > 0) {
+        emit('done', { recovered: true, finalReplyErrorMessage: error?.message || '模型总结失败' });
+        return {
+          content: buildImageGeneratedFallbackReply(error),
+          imagePlan,
+          imageResultUrls,
+          selectedModel,
+          finishReason: 'image_ready_final_reply_failed',
+          finalReplyErrorMessage: error?.message || '',
+        };
+      }
+      throw error;
+    }
   }
   if (response.modelUsed) selectedModel = response.modelUsed;
   emit('done', {});

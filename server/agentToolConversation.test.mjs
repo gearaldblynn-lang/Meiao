@@ -60,6 +60,43 @@ test('生图：模型返回 tool_calls → 出图 → 二次回复', async () =>
   assert.ok(progress.includes('image_ready'));
 });
 
+test('生图已成功但最终文案模型失败时：保留图片结果并降级回复', async () => {
+  const progress = [];
+  let round = 0;
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '画只白猫',
+    callModel: async () => {
+      round += 1;
+      if (round === 1) {
+        return {
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'generate_image', args: { prompt: '白猫', task_type: 'new_image' } }],
+          finishReason: 'tool_calls',
+          modelUsed: 'gpt-5.5',
+        };
+      }
+      const error = new Error('responses 请求失败 (502): bad_response_status_code');
+      error.code = 'provider_bad_response';
+      throw error;
+    },
+    generateImage: async ({ prompt, taskType }) => {
+      assert.equal(prompt, '白猫');
+      assert.equal(taskType, 'new_image');
+      return { imageUrl: 'https://img/white-cat.png', providerTaskId: 'kie-task-1' };
+    },
+    onProgress: (event) => progress.push(event),
+  });
+  assert.match(out.content, /图片已生成完成/);
+  assert.deepEqual(out.imageResultUrls, ['https://img/white-cat.png']);
+  assert.equal(out.imagePlan.providerTaskId, 'kie-task-1');
+  assert.equal(out.selectedModel, 'gpt-5.5');
+  assert.equal(out.finishReason, 'image_ready_final_reply_failed');
+  assert.match(out.finalReplyErrorMessage, /502/);
+  assert.ok(progress.some((event) => event.stage === 'image_ready'));
+  assert.ok(progress.some((event) => event.stage === 'done' && event.recovered));
+});
+
 test('生图工具结果不把图片 URL 暴露给模型正文', async () => {
   let round = 0;
   await runAgentConversationV2({
