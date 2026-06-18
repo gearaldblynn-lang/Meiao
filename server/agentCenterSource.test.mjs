@@ -145,6 +145,12 @@ test('agent chat source expands legacy default model allowlists to include newly
   assert.match(source, /return expandLegacyAllowedChatModels\(sanitizeAllowedChatModels\(configured,/);
 });
 
+test('agent chat source gives fully expired legacy model configs a usable fallback pair', () => {
+  assert.match(source, /const DEFAULT_RECOVERY_ALLOWED_CHAT_MODELS = \['gpt-5-4-openai-resp', 'gemini-3-flash-openai'\];/);
+  assert.match(source, /const recoveryModels = DEFAULT_RECOVERY_ALLOWED_CHAT_MODELS\.filter\(\(item\) => available\.has\(item\)\);/);
+  assert.match(source, /if \(recoveryModels\.length > 0\) return recoveryModels;/);
+});
+
 test('agent chat source preserves provider modelUsed metadata for direct conversations', () => {
   assert.match(source, /let output = null;[\s\S]*output = await executeProviderJobWithManagedAssetScrub\(\{[\s\S]*model: selectedModel,[\s\S]*const actualModel = String\(output\?\.result\?\.modelUsed \|\| selectedModel/);
 });
