@@ -545,6 +545,7 @@ const VeoWorkspace: React.FC<Props> = ({
                                         autoPlay={false}
                                         loop={false}
                                         playsInline
+                                        preload="metadata"
                                         onError={(e) => {
                                           const target = e.target as HTMLVideoElement;
                                           const videoUrl = activeSegment.variants.find(v => v.id === activeSegment.selectedVariantId)?.blobUrl;

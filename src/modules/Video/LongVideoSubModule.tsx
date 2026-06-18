@@ -445,6 +445,8 @@ const LongVideoSubModule: React.FC<Props> = ({ apiConfig, state, onUpdate, onPro
                          controls
                          className="w-full h-full object-cover"
                          key={task.resultUrl}
+                         playsInline
+                         preload="metadata"
                          onError={() => {
                            if (task.resultUrl?.startsWith('blob:')) {
                              setVideoErrors(prev => ({ ...prev, [task.id]: true }));
