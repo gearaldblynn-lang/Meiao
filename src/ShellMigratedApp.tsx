@@ -576,12 +576,26 @@ const shouldPersistSyncedProjectFromJobs = (
 ) => {
   const projectId = String(project?.id || '').trim();
   if (!projectId) return false;
+  const nextCompletedCount = getProjectCompletedMediaCount(project);
+  const nextErrorCount = getProjectErrorResultCount(project);
   const persistedProject = findPersistedShellProject(state, projectId) as Project | undefined;
   if (!persistedProject) {
+    if (
+      project.module === AppModuleObj.TRANSLATION
+      && project.sourceType === 'job'
+      && Boolean(String(project.backendJobId || '').trim())
+      && (
+        nextCompletedCount > 0
+        || getProjectActiveResultIdentities(project).size > 0
+        || nextErrorCount > 0
+      )
+    ) {
+      return true;
+    }
     return project.sourceType === 'job'
       && project.status === 'error'
       && Boolean(String(project.backendJobId || '').trim())
-      && getProjectErrorResultCount(project) > 0;
+      && nextErrorCount > 0;
   }
   if (hasPlanningSnapshotChanged(project, persistedProject)) return true;
   if (project.status === 'generating') {
@@ -590,11 +604,9 @@ const shouldPersistSyncedProjectFromJobs = (
       .some((identity) => !persistedActiveIdentities.has(identity));
     if (hasNewActiveIdentity) return true;
   }
-  const nextCompletedCount = getProjectCompletedMediaCount(project);
   const persistedCompletedCount = getProjectCompletedMediaCount(persistedProject);
   if (nextCompletedCount > persistedCompletedCount) return true;
   if (project.status === 'completed' && persistedProject.status !== 'completed' && nextCompletedCount > 0) return true;
-  const nextErrorCount = getProjectErrorResultCount(project);
   const persistedErrorCount = getProjectErrorResultCount(persistedProject);
   if (nextErrorCount > persistedErrorCount) return true;
   return project.status === 'error'
@@ -1549,6 +1561,40 @@ const translationFileToResult = (
   originalHeight: file.originalHeight,
 });
 
+const translationResultToFile = (
+  project: Project,
+  result: GeneratedResult,
+  index: number,
+): TranslationBatchFile => ({
+  id: String(result.id || `${project.id}-file-${index + 1}`),
+  file: null,
+  fileName: result.fileName || `翻译图片 ${index + 1}`,
+  relativePath: result.relativePath || result.fileName || `翻译图片 ${index + 1}`,
+  sourceUrl: String(result.sourceUrl || result.sourcePreviewUrl || '').trim(),
+  sourcePreviewUrl: String(result.sourcePreviewUrl || result.sourceUrl || '').trim(),
+  status: result.status === 'completed'
+    ? 'completed'
+    : result.status === 'error'
+      ? 'error'
+      : 'processing',
+  progress: result.status === 'completed' || result.status === 'error' ? 100 : 12,
+  prompt: result.prompt || project.name,
+  model: result.model || 'GPT Image 2',
+  aspectRatio: result.aspectRatio || result.matchedAspectRatio || 'auto',
+  matchedAspectRatio: result.matchedAspectRatio || result.aspectRatio || 'auto',
+  subFeature: project.subFeature || 'main',
+  projectId: project.id,
+  projectName: project.name,
+  projectCreatedAt: project.createdAt,
+  taskId: result.taskId,
+  backendJobId: result.backendJobId,
+  creditsConsumed: result.creditsConsumed,
+  resultUrl: result.imageUrl || '',
+  error: result.error,
+  originalWidth: result.originalWidth,
+  originalHeight: result.originalHeight,
+});
+
 const getTranslationProjectStatus = (files: TranslationBatchFile[]): Project['status'] => {
   if (files.some((item) => ['pending', 'uploading', 'processing'].includes(item.status))) return 'generating';
   if (files.some((item) => item.status === 'error' || item.status === 'interrupted')) return 'error';
@@ -2366,21 +2412,32 @@ const AppContent: React.FC<{
         sanitizePersistedAppState,
         upsertOneClickProjectIntoPersistedState,
         upsertShellProjectIntoPersistedState,
+        upsertTranslationFilesIntoPersistedState,
       } = await loadShellPersistenceTools();
       const persistedBase = await resolveSharedStateBaseForWrite();
       let nextState = buildPersistedAppState(persistedBase);
       const touchedOneClickBranches = new Set<string>();
+      const touchedTranslationBranches = new Set<string>();
       projectsToPersist.forEach((project) => {
-        const branchKey = project.module === AppModuleObj.ONE_CLICK
+        const oneClickBranchKey = project.module === AppModuleObj.ONE_CLICK
           ? ONE_CLICK_REMOTE_BRANCH_BY_SUBFEATURE[project.subFeature || '']
           : undefined;
-        if (branchKey) touchedOneClickBranches.add(branchKey);
+        if (oneClickBranchKey) touchedOneClickBranches.add(oneClickBranchKey);
         nextState = upsertShellProjectIntoPersistedState(
           project.module === AppModuleObj.ONE_CLICK
             ? upsertOneClickProjectIntoPersistedState(nextState, project)
             : nextState,
           project,
         );
+        if (project.module === AppModuleObj.TRANSLATION && Array.isArray(project.results) && project.results.length > 0) {
+          const translationBranchKey = TRANSLATION_REMOTE_BRANCH_BY_SUBFEATURE[project.subFeature || 'main'] || 'main';
+          touchedTranslationBranches.add(translationBranchKey);
+          nextState = upsertTranslationFilesIntoPersistedState(
+            nextState,
+            project.subFeature || 'main',
+            project.results.map((result, index) => translationResultToFile(project, result, index)) as any,
+          );
+        }
       });
       nextState = sanitizePersistedAppState(nextState);
       latestSharedStateRef.current = nextState;
@@ -2395,6 +2452,14 @@ const AppContent: React.FC<{
             nextState.oneClickMemory?.[branchKey as keyof PersistedAppState['oneClickMemory']],
           ]),
         ) as Partial<PersistedAppState['oneClickMemory']> as PersistedAppState['oneClickMemory'];
+      }
+      if (touchedTranslationBranches.size > 0) {
+        patch.translationMemory = Object.fromEntries(
+          Array.from(touchedTranslationBranches).map((branchKey) => [
+            branchKey,
+            nextState.translationMemory?.[branchKey as keyof PersistedAppState['translationMemory']],
+          ]),
+        ) as Partial<PersistedAppState['translationMemory']> as PersistedAppState['translationMemory'];
       }
       try {
         await saveRemoteAppState(patch);
@@ -3518,28 +3583,66 @@ const AppContent: React.FC<{
     let batchCount = resolveBatchCount(targetModule, targetSubFeature, generationParams);
     const translationSubFeatureLabel = MODULE_SUB_FEATURES[targetModule]
       ?.find((item) => item.id === targetSubFeature)?.label;
-	    const projectName = reserveShortProjectName();
+    const projectName = reserveShortProjectName();
     const latestFilteredMaterials = filterMaterialsForScope(materialsRef.current, targetModule, targetSubFeature);
-	    let generationMaterials = hasMaterialInputs(latestFilteredMaterials) || !hasMaterialInputs(filteredMaterials)
-        ? latestFilteredMaterials
-        : filteredMaterials;
+    let generationMaterials = hasMaterialInputs(latestFilteredMaterials) || !hasMaterialInputs(filteredMaterials)
+      ? latestFilteredMaterials
+      : filteredMaterials;
     if (targetModule === AppModuleObj.EVERYTHING_REPLACE) {
       batchCount = resolveEverythingReplaceBatchCount(generationMaterials, generationParams);
+    }
+    const isTranslationSubmit = targetModule === AppModuleObj.TRANSLATION;
+    const initialTranslationMaterials = isTranslationSubmit ? (generationMaterials.product || []).filter(Boolean) : [];
+    if (isTranslationSubmit && initialTranslationMaterials.length === 0) {
+      addToast('请先上传产品素材', 'warning');
+      return;
     }
     if (!beginGuardedSubmit()) {
       return;
     }
     addToast('任务已提交，正在准备素材', 'info');
     const immediateCreatedAt = Date.now();
-    const immediateProject = targetModule === AppModuleObj.EVERYTHING_REPLACE
+    const immediateTranslationCount = isTranslationSubmit ? Math.max(initialTranslationMaterials.length, 1) : batchCount;
+    const immediateTranslationProjectId = isTranslationSubmit
+      ? `translation-${immediateCreatedAt}-${Math.random().toString(36).slice(2, 7)}`
+      : '';
+    const immediateProject = targetModule === AppModuleObj.EVERYTHING_REPLACE || isTranslationSubmit
       ? ({
-        id: 'proj-' + Date.now(),
-        name: projectName,
+        id: isTranslationSubmit ? immediateTranslationProjectId : 'proj-' + Date.now(),
+        name: isTranslationSubmit
+          ? (immediateTranslationCount > 1
+            ? `${translationSubFeatureLabel || MODULE_NAMES[targetModule]} · ${immediateTranslationCount}张`
+            : (translationSubFeatureLabel || MODULE_NAMES[targetModule]))
+          : projectName,
         module: targetModule,
         status: 'generating',
         createdAt: immediateCreatedAt,
-        results: [],
-        taskCount: batchCount,
+        results: targetModule === AppModuleObj.TRANSLATION
+          ? Array.from({ length: immediateTranslationCount }, (_, index) => {
+            const material = initialTranslationMaterials[index] as Material | undefined;
+            const rawSourceUrl = String(material?.remoteUrl || material?.url || '').trim();
+            const persistableSourceUrl = isTransientMaterialUrl(rawSourceUrl) ? '' : rawSourceUrl;
+            return {
+              id: `${immediateTranslationProjectId}-file-${index + 1}`,
+              projectId: immediateTranslationProjectId,
+              imageUrl: '',
+              prompt: '素材上传中，正在准备公网参考 URL...',
+              model: String(generationParams.model || 'GPT Image 2'),
+              aspectRatio: String(generationParams.ratio || generationParams.aspectRatio || 'auto'),
+              status: 'generating',
+              createdAt: immediateCreatedAt,
+              module: targetModule,
+              subFeature: targetSubFeature,
+              sourceUrl: persistableSourceUrl || undefined,
+              sourcePreviewUrl: persistableSourceUrl || undefined,
+              fileName: material?.fileName || `翻译图片 ${index + 1}`,
+              relativePath: material?.relativePath || material?.fileName || `翻译图片 ${index + 1}`,
+              originalWidth: material?.originalWidth,
+              originalHeight: material?.originalHeight,
+            } satisfies GeneratedResult;
+          })
+          : [],
+        taskCount: isTranslationSubmit ? immediateTranslationCount : batchCount,
         completedCount: 0,
         subFeature: targetSubFeature,
         generationContext: cloneGenerationContext(generationPrompt, generationParams, generationMaterials),
@@ -3552,10 +3655,10 @@ const AppContent: React.FC<{
         module: targetModule,
         type: 'image',
         status: 'pending',
-        title: projectName,
+        title: immediateProject.name,
         progress: 0,
         createdAt: immediateCreatedAt,
-        total: batchCount,
+        total: immediateProject.taskCount || batchCount,
         completed: 0,
         subFeature: targetSubFeature,
       } satisfies Task)
@@ -3566,9 +3669,9 @@ const AppContent: React.FC<{
       setIsGenerating(true);
       void persistProjectToSharedState(immediateProject);
     }
-	    try {
-	      generationMaterials = await ensureMaterialRemoteUrls(generationMaterials, targetModule);
-	    } catch (error) {
+    try {
+      generationMaterials = await ensureMaterialRemoteUrls(generationMaterials, targetModule);
+    } catch (error) {
       const message = error instanceof Error ? error.message : '素材上传失败，请重新上传后重试。';
       logShellError('shell_generation_failed', error, {
         module: targetModule,
@@ -3600,10 +3703,10 @@ const AppContent: React.FC<{
         void persistProjectToSharedState(failedProject);
         setIsGenerating(false);
       }
-	      addToast(message, 'error');
-	      releaseGuardedSubmit();
-	      return;
-	    }
+      addToast(message, 'error');
+      releaseGuardedSubmit();
+      return;
+    }
     const generationContext = targetModule === AppModuleObj.ONE_CLICK || targetModule === AppModuleObj.TRANSLATION || targetModule === AppModuleObj.EVERYTHING_REPLACE
       ? cloneGenerationContext(generationPrompt, generationParams, generationMaterials)
       : undefined;
@@ -3617,13 +3720,46 @@ const AppContent: React.FC<{
         })
         .filter((item): item is Material & { sourceUrl: string } => Boolean(item));
       if (translationSourceMaterials.length === 0) {
-        addToast('请先上传产品素材', 'warning');
+        const message = '素材公网地址准备失败，请重新上传产品素材后重试。';
+        if (immediateProject && immediateTask) {
+          const failedProject: Project = {
+            ...immediateProject,
+            status: 'error',
+            error: message,
+            results: immediateProject.results.length > 0
+              ? immediateProject.results.map((result) => ({
+                ...result,
+                status: 'error',
+                error: message,
+                prompt: message,
+              }))
+              : [{
+                id: `${immediateTask.id}-material-error`,
+                imageUrl: '',
+                prompt: message,
+                model: generationParams.model || 'GPT Image 2',
+                aspectRatio: generationParams.ratio || generationParams.aspectRatio || 'auto',
+                status: 'error',
+                createdAt: immediateProject.createdAt,
+                module: targetModule,
+                subFeature: targetSubFeature,
+                error: message,
+              }],
+            completedCount: 0,
+            taskCount: immediateProject.taskCount || 1,
+          };
+          setProjects((prev) => prev.map((project) => project.id === failedProject.id ? failedProject : project));
+          setTasks((prev) => prev.map((task) => task.id === immediateTask.id ? { ...task, status: 'error', progress: 100 } : task));
+          void persistProjectToSharedState(failedProject);
+          setIsGenerating(false);
+        }
+        addToast(message, 'error');
         releaseGuardedSubmit();
         return;
       }
 
-      const projectId = `translation-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const createdAtTs = Date.now();
+      const projectId = immediateProject?.id || `translation-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const createdAtTs = immediateProject?.createdAt || Date.now();
       const createdAt = createdAtTs;
       const projectTitle = translationSubFeatureLabel || MODULE_NAMES[targetModule];
       const totalCount = translationSourceMaterials.length;
@@ -3674,10 +3810,18 @@ const AppContent: React.FC<{
         subFeature: targetSubFeature,
       }));
 
-      setProjects((prev) => [translationProject, ...prev]);
-      setTasks((prev) => [...translationTasks, ...prev]);
+      setProjects((prev) => (
+        prev.some((project) => project.id === projectId)
+          ? prev.map((project) => project.id === projectId ? translationProject : project)
+          : [translationProject, ...prev]
+      ));
+      setTasks((prev) => [
+        ...translationTasks,
+        ...prev.filter((task) => task.id !== immediateTask?.id && !translationTasks.some((item) => item.id === task.id)),
+      ]);
       setIsGenerating(true);
       void persistTranslationFilesToSharedState(targetSubFeature, translationFileItems);
+      void persistProjectToSharedState(translationProject);
 
       const { runShellImageGeneration, runShellTranslationPlanningAnalysis } = await loadShellWorkflowModule();
       const syncTranslationProject = (nextFiles: TranslationBatchFile[]) => {
@@ -3942,19 +4086,19 @@ const AppContent: React.FC<{
             }
 
             translationFileItems[index] = {
-              ...currentFileItem,
+              ...translationFileItems[index],
               status: 'completed',
               progress: 100,
-              taskId: result.taskId || currentFileItem.taskId,
+              taskId: result.taskId || translationFileItems[index]?.taskId || currentFileItem.taskId,
               creditsConsumed: result.creditsConsumed,
               resultUrl: result.imageUrl,
               matchedAspectRatio: matchedRatio,
-	              prompt: result.prompt || promptForModel,
-	              model: String(generationParams.model || 'GPT Image 2'),
-	              aspectRatio: matchedRatio,
-	              originalWidth: resolvedSourceDimensions?.width || currentFileItem.originalWidth,
-	              originalHeight: resolvedSourceDimensions?.height || currentFileItem.originalHeight,
-	            };
+              prompt: result.prompt || promptForModel,
+              model: String(generationParams.model || 'GPT Image 2'),
+              aspectRatio: matchedRatio,
+              originalWidth: resolvedSourceDimensions?.width || translationFileItems[index]?.originalWidth || currentFileItem.originalWidth,
+              originalHeight: resolvedSourceDimensions?.height || translationFileItems[index]?.originalHeight || currentFileItem.originalHeight,
+            };
             successCount += 1;
             syncTranslationProject(translationFileItems);
           } catch (error) {
@@ -3970,11 +4114,11 @@ const AppContent: React.FC<{
               totalCount,
             }, '出海翻译任务失败');
             translationFileItems[index] = {
-              ...currentFileItem,
+              ...translationFileItems[index],
               status: 'error',
               progress: 100,
               error: message,
-              prompt: currentFileItem.prompt || message,
+              prompt: translationFileItems[index]?.prompt || currentFileItem.prompt || message,
               model: String(generationParams.model || 'GPT Image 2'),
             };
             syncTranslationProject(translationFileItems);

@@ -162,6 +162,13 @@ const toPositiveInt = (value: string, fallback = 0) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const toNonNegativeInt = (value: string, fallback = 0) => {
+  const raw = String(value ?? '').trim();
+  if (!raw) return fallback;
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
 const toPositiveFloat = (value: string, fallback = 2) => {
   const parsed = parseFloat(String(value || '').trim());
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -662,7 +669,7 @@ export const buildShellModuleConfig = (input: ShellGenerateInput): ModuleConfig 
   const defaultSize = getDefaultShellTargetSize(input);
   const resolutionMode = toResolutionMode(firstParam(input.params, ['resolutionMode', 'sizeMode'], hasShellSizeControls(input) ? 'custom' : 'original'));
   const targetWidth = toPositiveInt(firstParam(input.params, ['targetWidth', 'width'], String(defaultSize.width)), defaultSize.width);
-  const targetHeight = toPositiveInt(firstParam(input.params, ['targetHeight', 'height'], String(defaultSize.height)), defaultSize.height);
+  const targetHeight = toNonNegativeInt(firstParam(input.params, ['targetHeight', 'height'], String(defaultSize.height)), defaultSize.height);
   const maxFileSize = toPositiveFloat(firstParam(input.params, ['maxFileSize', 'maxSize'], '2'), 2);
   const defaultAspectRatio = input.module === AppModule.ONE_CLICK
     ? (input.subFeature === 'detail_page' ? AspectRatio.AUTO : AspectRatio.SQUARE)

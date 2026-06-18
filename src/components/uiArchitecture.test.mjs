@@ -781,6 +781,28 @@ test('everything replace submit creates visible project card before preparing re
   assert.match(app, /shellProjectName: projectName/);
 });
 
+test('translation submit creates visible project card before preparing remote materials', () => {
+  const app = read('../ShellMigratedApp.tsx');
+  const placeholderIndex = app.indexOf('const immediateProject =');
+  const uploadIndex = app.indexOf('generationMaterials = await ensureMaterialRemoteUrls(generationMaterials, targetModule);');
+
+  assert.notEqual(placeholderIndex, -1);
+  assert.notEqual(uploadIndex, -1);
+  assert.ok(placeholderIndex < uploadIndex);
+  assert.match(app, /targetModule === AppModuleObj\.TRANSLATION/);
+  assert.match(app, /results: targetModule === AppModuleObj\.TRANSLATION/);
+  assert.match(app, /void persistProjectToSharedState\(immediateProject\);/);
+});
+
+test('synced translation job projects are persisted after cloud recovery', () => {
+  const app = read('../ShellMigratedApp.tsx');
+  const persistPredicate = app.match(/const shouldPersistSyncedProjectFromJobs = \([\s\S]*?\n\};/)?.[0] || '';
+
+  assert.match(persistPredicate, /project\.module === AppModuleObj\.TRANSLATION/);
+  assert.match(persistPredicate, /project\.sourceType === 'job'/);
+  assert.match(persistPredicate, /nextCompletedCount > 0/);
+});
+
 test('guarded generation blocks duplicate submits while scoped jobs are active', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
@@ -1599,7 +1621,7 @@ test('shell workflow keeps real image model and size parameters wired into task 
   assert.match(shellWorkflow, /maybeResizeAndPersistImageResult/);
   assert.match(shellWorkflow, /resizeImage\(blob, width, height, config\.maxFileSize\)/);
   assert.match(shellWorkflow, /targetWidth = toPositiveInt/);
-  assert.match(shellWorkflow, /targetHeight = toPositiveInt/);
+  assert.match(shellWorkflow, /targetHeight = toNonNegativeInt/);
   assert.match(shellWorkflow, /maxFileSize = toPositiveFloat/);
   assert.match(shellWorkflow, /model: toModel\(firstParam\(input\.params, \['model'\], 'GPT Image 2'\)\)/);
   assert.match(shellWorkflow, /resolutionMode,/);
@@ -1612,6 +1634,14 @@ test('shell workflow keeps real image model and size parameters wired into task 
   assert.match(kieAiService, /maxFileSize: moduleConfig\.maxFileSize \|\| 2/);
   assert.match(bottomInput, /defaultValue: '固定宽度'/);
   assert.match(bottomInput, /defaultValue: '自定义'/);
+});
+
+test('shell workflow preserves zero target height for fixed-width proportional resizing', () => {
+  const shellWorkflow = read('../adapters/shellWorkflow.ts');
+
+  assert.match(shellWorkflow, /const targetHeight = toNonNegativeInt\(/);
+  assert.match(shellWorkflow, /targetHeight: resolutionMode === 'custom' \? targetHeight : 0/);
+  assert.match(shellWorkflow, /if \(width > 0 && height === 0\)/);
 });
 
 test('shell batch counts come from actual SKU and buyer-show params instead of a fixed floor', () => {
@@ -2770,7 +2800,10 @@ test('project card preview prefers completed media over failed or pending placeh
   const projectCard = read('../shell/components/ProjectCard.tsx');
 
   assert.match(projectCard, /const previewResult = project\.results\.find\(\(result\) => isCompletedMediaResult\(result\)\) \|\| project\.results\[0\];/);
-  assert.match(projectCard, /renderMedia\(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-\[1\.03\]', \{ videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowIndicator: true \}\)/);
+  assert.match(projectCard, /renderMedia\(previewResult,/);
+  assert.match(projectCard, /videoPreload: VIDEO_PREVIEW_PRELOAD/);
+  assert.match(projectCard, /videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS/);
+  assert.match(projectCard, /videoShowIndicator: true/);
 });
 
 test('one click completed result edit uses only product assets and generated baseline while keeping original result', () => {
@@ -2794,7 +2827,7 @@ test('one click completed result edit uses only product assets and generated bas
   assert.match(shellApp, /const originalGenerationPrompt = \[/);
   assert.match(shellApp, /result\.prompt,\s*matchedPlan\?\.schemeContent,\s*matchedPlanPrompt,\s*storedContext\?\.prompt,/);
   assert.match(shellApp, /editInstruction: finalInstruction/);
-  assert.match(shellApp, /schemeContent: originalGenerationPrompt \|\| finalInstruction/);
+  assert.match(shellApp, /schemeContent: usesResultOnlyEditPrompt \? finalInstruction : originalGenerationPrompt \|\| finalInstruction/);
   assert.match(shellApp, /const isOneClickEdit = project\.module === AppModuleObj\.ONE_CLICK/);
   assert.match(shellApp, /const usesMinimalRoleEditPrompt = isOneClickEdit \|\| isEverythingReplaceProductEdit/);
   assert.match(shellApp, /logo: usesMinimalRoleEditPrompt \? \[\] : \[\.\.\.\(contextMaterials\.logo \|\| \[\]\)\]/);
