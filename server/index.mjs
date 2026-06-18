@@ -5042,6 +5042,15 @@ const getAgentChatClientRequestId = (message) => String(message?.metadata?.clien
 const buildPendingAgentChatContent = (requestMode) => (
   requestMode === 'image_generation' ? '需求分析中' : '思考中'
 );
+const buildAgentImageResultAttachments = (imageResultUrls) => (
+  Array.isArray(imageResultUrls) && imageResultUrls.length > 0
+    ? imageResultUrls.map((url, index) => ({
+        name: `生成结果${index + 1}`,
+        url: String(url || ''),
+        kind: 'image',
+      }))
+    : null
+);
 const buildActiveAgentChatRunError = () => {
   const error = new Error('当前会话已有任务处理中，请等待完成后再发送新任务。');
   error.code = 'agent_chat_run_active';
@@ -5198,6 +5207,75 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   } finally {
     pendingConnection.release();
   }
+  const persistDbChatImageCheckpoint = async (checkpointResult = {}) => {
+    const imageResultUrls = Array.isArray(checkpointResult.imageResultUrls)
+      ? checkpointResult.imageResultUrls.map((url) => String(url || '').trim()).filter(Boolean)
+      : [];
+    if (imageResultUrls.length === 0) return;
+    const checkpointContextTrace = {
+      ...contextTraceBase,
+      knowledgeChunkCount: requestMode === 'image_generation'
+        ? imageKnowledgeChunks.length
+        : Array.isArray(checkpointResult.retrievalSummary)
+          ? checkpointResult.retrievalSummary.length
+          : 0,
+    };
+    const checkpointUserMetadata = {
+      ...pendingUserMetadata,
+      status: 'completed',
+      pending: false,
+      phase: 'submitted',
+      contextTrace: checkpointContextTrace,
+    };
+    const checkpointAssistantMetadata = {
+      ...pendingAssistantMetadata,
+      selectedModel: checkpointResult.selectedModel || pendingAssistantMetadata.selectedModel,
+      fallbackFrom: checkpointResult.fallbackFrom || null,
+      usedRetrieval: Boolean(checkpointResult.usedRetrieval),
+      status: 'completed',
+      pending: false,
+      progress: false,
+      phase: 'completed',
+      progressStage: 'image_ready',
+      contextTrace: checkpointContextTrace,
+      imagePlan: checkpointResult.imagePlan || null,
+      imageResultUrls,
+      retrievalSummary: checkpointResult.retrievalSummary || [],
+      providerTaskId: checkpointResult.providerTaskId || checkpointResult.imagePlan?.providerTaskId || '',
+      checkpoint: 'image_result_ready',
+    };
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.query(
+        'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+        [JSON.stringify(checkpointUserMetadata), userMessageId, sessionId, user.id]
+      );
+      await connection.query(
+        'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ?, created_at = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+        [
+          checkpointResult.content || '图片已生成完成。',
+          JSON.stringify(buildAgentImageResultAttachments(imageResultUrls)),
+          JSON.stringify(checkpointAssistantMetadata),
+          Date.now(),
+          assistantMessageId,
+          sessionId,
+          user.id,
+        ]
+      );
+      await connection.query('UPDATE chat_sessions SET updated_at = ? WHERE id = ?', [Date.now(), sessionId]);
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      console.warn('[agent-chat] failed to persist image checkpoint', {
+        sessionId,
+        clientRequestId,
+        message: error?.message || String(error || ''),
+      });
+    } finally {
+      connection.release();
+    }
+  };
   const markDbChatRunFailed = async (error) => {
     const errorMessage = error?.message || '聊天回复失败。';
     const failedUserMetadata = {
@@ -5303,7 +5381,28 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
           provider: 'kie',
           jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId),
         });
-        return { imageUrl: persistedUrl || rawUrl, providerTaskId: String(imageOutput?.providerTaskId || '') };
+        const imageUrl = persistedUrl || rawUrl;
+        const providerTaskId = String(imageOutput?.providerTaskId || '');
+        if (imageUrl) {
+          await persistDbChatImageCheckpoint({
+            content: '图片已生成完成，正在整理回复。',
+            selectedModel: model || selectedModel,
+            usedRetrieval: false,
+            retrievalSummary: [],
+            providerTaskId,
+            imagePlan: {
+              requestMode: 'tool_calling',
+              taskType,
+              selectedImageModel: model || '',
+              inputImageUrls,
+              prompt,
+              size: aspectRatio || 'auto',
+              providerTaskId,
+            },
+            imageResultUrls: [imageUrl],
+          });
+        }
+        return { imageUrl, providerTaskId };
       };
       result = await runAgentConversationV2({
         systemPrompt: version.systemPrompt || '',
@@ -5352,6 +5451,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
             systemSettings,
             knowledgeChunks: imageKnowledgeChunks,
             conversationSummary: summary,
+            onImageReady: persistDbChatImageCheckpoint,
           })
         : await runAgentConversation({
             user,
@@ -5374,13 +5474,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     await markDbChatRunFailed(error);
     throw error;
   }
-  const assistantAttachments = Array.isArray(result.imageResultUrls) && result.imageResultUrls.length > 0
-    ? result.imageResultUrls.map((url, index) => ({
-        name: `生成结果${index + 1}`,
-        url: String(url || ''),
-        kind: 'image',
-      }))
-    : null;
+  const assistantAttachments = buildAgentImageResultAttachments(result.imageResultUrls);
   const assistantCreatedAt = Date.now();
   const contextTrace = {
     ...contextTraceBase,
@@ -6740,7 +6834,7 @@ const enrichRuntimeError = (error, extras = {}) => {
   return error;
 };
 
-const buildImageConversationResult = async ({ user, agent, version, priorMessages, currentMessage, sessionId = null, selectedModelOverride = '', attachments = [], systemSettings = {}, knowledgeChunks = [], conversationSummary = '' }) => {
+const buildImageConversationResult = async ({ user, agent, version, priorMessages, currentMessage, sessionId = null, selectedModelOverride = '', attachments = [], systemSettings = {}, knowledgeChunks = [], conversationSummary = '', onImageReady = null }) => {
   const imageCapability = getImageModelCapability(version?.modelPolicy?.multimodalModel);
   const selectedImageModel = String(version?.modelPolicy?.multimodalModel || '').trim();
   if (!version?.modelPolicy?.imageGenerationEnabled || !selectedImageModel || !imageCapability) {
@@ -6921,7 +7015,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     `参数摘要：${String(parsed.reasoningSummary || '已按当前需求自动整理图片关系、构图与风格要求。')}`,
     `Prompt：${finalPrompt}`,
   ].join('\n');
-  return {
+  const result = {
     content,
     selectedModel: selectedImageModel,
     usedRetrieval: knowledgeChunks.length > 0,
@@ -6959,6 +7053,10 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     },
     imageResultUrls: persistedImageUrl ? [persistedImageUrl] : [],
   };
+  if (typeof onImageReady === 'function' && result.imageResultUrls.length > 0) {
+    await onImageReady(result);
+  }
+  return result;
 };
 
 const findLocalUserById = (userId) => {
@@ -9854,6 +9952,49 @@ const handleLocalRequest = async (req, res, url) => {
     session.lastImageMode = requestMode === 'image_generation';
     session.updatedAt = now;
     writeLocalStore(store);
+    const persistLocalChatImageCheckpoint = async (checkpointResult = {}) => {
+      const imageResultUrls = Array.isArray(checkpointResult.imageResultUrls)
+        ? checkpointResult.imageResultUrls.map((url) => String(url || '').trim()).filter(Boolean)
+        : [];
+      if (imageResultUrls.length === 0) return;
+      const checkpointContextTrace = {
+        ...contextTraceBase,
+        knowledgeChunkCount: requestMode === 'image_generation'
+          ? imageKnowledgeChunks.length
+          : Array.isArray(checkpointResult.retrievalSummary)
+            ? checkpointResult.retrievalSummary.length
+            : 0,
+      };
+      userMessage.metadata = {
+        ...userMessage.metadata,
+        status: 'completed',
+        phase: 'submitted',
+        pending: false,
+        contextTrace: checkpointContextTrace,
+      };
+      assistantMessage.content = checkpointResult.content || '图片已生成完成。';
+      assistantMessage.attachments = buildAgentImageResultAttachments(imageResultUrls);
+      assistantMessage.metadata = {
+        ...assistantMessage.metadata,
+        selectedModel: checkpointResult.selectedModel || assistantMessage.metadata?.selectedModel || selectedModel,
+        fallbackFrom: checkpointResult.fallbackFrom || null,
+        usedRetrieval: Boolean(checkpointResult.usedRetrieval),
+        status: 'completed',
+        phase: 'completed',
+        pending: false,
+        progress: false,
+        progressStage: 'image_ready',
+        contextTrace: checkpointContextTrace,
+        imagePlan: checkpointResult.imagePlan || null,
+        imageResultUrls,
+        retrievalSummary: checkpointResult.retrievalSummary || [],
+        providerTaskId: checkpointResult.providerTaskId || checkpointResult.imagePlan?.providerTaskId || '',
+        checkpoint: 'image_result_ready',
+      };
+      assistantMessage.createdAt = Date.now();
+      session.updatedAt = Date.now();
+      writeLocalStore(store);
+    };
     try {
       let result;
       if (shouldUseToolCallingConversation(version)) {
@@ -9913,7 +10054,28 @@ const handleLocalRequest = async (req, res, url) => {
             provider: 'kie',
             jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId),
           });
-          return { imageUrl: persistedUrl || rawUrl, providerTaskId: String(imageOutput?.providerTaskId || '') };
+          const imageUrl = persistedUrl || rawUrl;
+          const providerTaskId = String(imageOutput?.providerTaskId || '');
+          if (imageUrl) {
+            await persistLocalChatImageCheckpoint({
+              content: '图片已生成完成，正在整理回复。',
+              selectedModel: model || selectedModel,
+              usedRetrieval: false,
+              retrievalSummary: [],
+              providerTaskId,
+              imagePlan: {
+                requestMode: 'tool_calling',
+                taskType,
+                selectedImageModel: model || '',
+                inputImageUrls,
+                prompt,
+                size: aspectRatio || 'auto',
+                providerTaskId,
+              },
+              imageResultUrls: [imageUrl],
+            });
+          }
+          return { imageUrl, providerTaskId };
         };
         result = await runAgentConversationV2({
           systemPrompt: version.systemPrompt || '',
@@ -9961,6 +10123,7 @@ const handleLocalRequest = async (req, res, url) => {
               systemSettings,
               knowledgeChunks: imageKnowledgeChunks,
               conversationSummary: session.summary || '',
+              onImageReady: persistLocalChatImageCheckpoint,
             })
           : await runLocalAgentConversation({
               store,
@@ -9977,13 +10140,7 @@ const handleLocalRequest = async (req, res, url) => {
             });
       }
       result.clientRequestId = clientRequestId;
-      const assistantAttachments = Array.isArray(result.imageResultUrls) && result.imageResultUrls.length > 0
-        ? result.imageResultUrls.map((url, index) => ({
-            name: `生成结果${index + 1}`,
-            url: String(url || ''),
-            kind: 'image',
-          }))
-        : null;
+      const assistantAttachments = buildAgentImageResultAttachments(result.imageResultUrls);
       const completedContextTrace = {
         ...contextTraceBase,
         knowledgeChunkCount: requestMode === 'image_generation'

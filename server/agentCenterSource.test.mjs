@@ -203,6 +203,18 @@ test('agent chat source records image generation usage and local image replies',
   assert.match(source, /imageResultUrls: result\.imageResultUrls \|\| null/);
 });
 
+test('agent image chats checkpoint generated assets before final reply persistence', () => {
+  assert.match(source, /const buildAgentImageResultAttachments = \(imageResultUrls\) =>/);
+  assert.match(source, /const persistDbChatImageCheckpoint = async \(checkpointResult = \{\}\) =>/);
+  assert.match(source, /checkpoint: 'image_result_ready'/);
+  assert.match(source, /onImageReady: persistDbChatImageCheckpoint/);
+  assert.match(source, /const persistLocalChatImageCheckpoint = async \(checkpointResult = \{\}\) =>/);
+  assert.match(source, /onImageReady: persistLocalChatImageCheckpoint/);
+  assert.match(source, /await persistDbChatImageCheckpoint\(\{[\s\S]*?requestMode: 'tool_calling'[\s\S]*?imageResultUrls: \[imageUrl\]/);
+  assert.match(source, /await persistLocalChatImageCheckpoint\(\{[\s\S]*?requestMode: 'tool_calling'[\s\S]*?imageResultUrls: \[imageUrl\]/);
+  assert.match(source, /if \(typeof onImageReady === 'function' && result\.imageResultUrls\.length > 0\) \{[\s\S]*?await onImageReady\(result\);/);
+});
+
 test('agent image result asset persistence bounds provider task ids before writing stored asset job id', () => {
   assert.match(source, /const normalizeStoredAssetJobId = \(value\) => String\(value \|\| ''\)\.trim\(\)\.slice\(0, 120\);/);
   assert.match(source, /jobId: normalizeStoredAssetJobId\(imageOutput\?\.providerTaskId\)/);

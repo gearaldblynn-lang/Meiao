@@ -100,3 +100,9 @@
   现象:云上用户看到"上游已经出图,但对话里显示失败";`stored_assets/internal_jobs` 能看到 KIE 图片结果,但对应聊天消息 metadata 可能没有图片附件,只剩 provider_bad_response 或 Responses 502 文案。
   修复:`runAgentConversationV2` 在图片已经生成且 `imageResultUrls` 非空时,捕获最终文案模型失败并返回降级成功结果:保留 `imagePlan`、`imageResultUrls`、`providerTaskId` 和 `selectedModel`,正文提示"图片已生成完成,但最终文字说明生成失败",技术错误写入 `finalReplyErrorMessage` metadata 供排障。补 `agentToolConversation.test.mjs` 回归:第一轮 tool_calls、KIE 成功、第二轮 Responses 502 时仍返回图片结果。
   如何避免:**tool calling 里"业务产物已完成"与"后续总结文案失败"必须分开处理。任何多阶段 provider 编排都不能让后置非关键步骤覆盖前面已经成功的用户可见产物;回归测试要模拟"主产物成功 + 尾部请求失败",不只测全成功/全失败。**
+
+- **#11 ✅ 已修(2026-06-18)· 智能体图片已落库但进程重启发生在最终 chat message 更新前,前端一直思考**
+  根因:智能体生图原来只在整条回复结束时一次性更新 `chat_messages`。云上部署/PM2 重启如果恰好发生在 `stored_assets` 已保存图片之后、assistant 消息最终 `completed` 更新之前,就会留下 `pending/analyzing` 的 assistant 消息;图片资产存在,但对话 UI 只能继续显示"需求分析中/思考中"。
+  现象:多桑账号 2026-06-18 07:42:59 的智能体生图请求一直 pending;同账号 07:44:15 已有 `agent_center/result/kie` 资产 `e4f4ae21f17496494983659b`,07:44:16 左右 PM2 因部署重启,精准卡在资产落库和消息落库之间。
+  修复:MySQL 和本地 JSON 两套 chat handler 增加 `image_result_ready` checkpoint:只要图片持久化成功且 `imageResultUrls` 非空,立即把对应 user/assistant 消息更新为 completed、写入图片附件、`imagePlan`、`providerTaskId` 和 `imageResultUrls`;后续完整总结成功时仍会覆盖为最终回复。V2 tool calling 与旧 `image_generation` 直连路径都接入 checkpoint。
+  如何避免:**长耗时多阶段链路不能只在最后一次性落对话状态。任何用户可见主产物一旦持久化,必须立刻给前端可恢复 checkpoint;部署/重启窗口要按"任意 await 后都可能中断"设计。改 `server/index.mjs` 智能体 chat 路径时继续同步 MySQL 和本地 JSON handler。**
