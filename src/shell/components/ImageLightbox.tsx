@@ -39,6 +39,9 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
     : images.map((url) => ({ url, type: 'image' as const }));
   const currentItem = mediaItems[currentIndex];
   const isVideo = currentItem?.type === 'video';
+  const lightboxOverlayStyle = isVideo
+    ? { background: 'rgba(0,0,0,0.92)' }
+    : { background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)' };
 
   useEffect(() => {
     if (!open || !isVideo || !currentItem) return;
@@ -59,7 +62,7 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
   return (
     <div
       className="fixed inset-0 z-[520] flex items-center justify-center px-10 py-10"
-      style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)' }}
+      style={lightboxOverlayStyle}
       onClick={onClose}
     >
       {/* Close button */}
@@ -120,13 +123,13 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
             ref={videoRef}
             data-meiao-lightbox-video="true"
             src={currentItem.url}
-            className="meiao-video-no-fullscreen max-h-[80vh] w-full rounded-[18px] object-contain"
+            className="meiao-video-no-fullscreen max-h-[82vh] w-full object-contain"
             controls
             controlsList="nofullscreen nodownload noremoteplayback"
             disablePictureInPicture
             playsInline
             preload="metadata"
-            style={{ background: '#000', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
+            style={{ background: '#000' }}
             onPlay={(event) => {
               document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
                 if (video !== event.currentTarget && !video.paused) {

@@ -582,6 +582,20 @@ const ProjectCard: React.FC<Props> = ({
   const isCopyTextReport = project.module === 'buyer_show' && project.subFeature === 'copy';
   const isTextReport = isDiagnosisReport || isCopyTextReport;
   const previewResult = project.results.find((result) => isCompletedMediaResult(result)) || project.results[0];
+  const isPreviewVideoResult = Boolean(previewResult && (previewResult.mediaType === 'video' || previewResult.videoUrl));
+  const playableVideoResults = previewableResults.filter((result) => result.mediaType === 'video' || result.videoUrl);
+  const hasPlayableVideoResult = playableVideoResults.length > 0;
+  const detailOverlayStyle = hasPlayableVideoResult
+    ? { background: 'rgba(15,23,42,0.72)' }
+    : { background: 'var(--overlay-bg)', backdropFilter: 'blur(8px)' };
+  const detailPanelStyle = {
+    background: 'var(--bg-base)',
+    borderColor: 'var(--border-subtle)',
+    boxShadow: hasPlayableVideoResult ? '0 18px 44px rgba(15,23,42,0.16)' : 'var(--shadow-elevated)',
+  };
+  const detailHeaderStyle = hasPlayableVideoResult
+    ? { borderColor: 'var(--border-subtle)', background: 'var(--bg-base)' }
+    : { borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-base) 94%, transparent)', backdropFilter: 'blur(16px)' };
   const textReportResult = project.results[0];
   const textReportTitle = isDiagnosisReport ? '诊断报告' : '纯文案结果';
   const textReportCopyLabel = isDiagnosisReport ? '复制报告' : '复制文案';
@@ -968,7 +982,7 @@ const ProjectCard: React.FC<Props> = ({
                 </p>
                 <span className="text-[11px]" style={{ color: 'var(--accent)' }}>查看文字详情</span>
               </div>
-            ) : hasResults ? renderMedia(previewResult, 'h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]', { videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowIndicator: true }) : hasPlans ? (
+            ) : hasResults ? renderMedia(previewResult, `h-full w-full object-cover ${isPreviewVideoResult ? '' : 'transition-transform duration-300 group-hover:scale-[1.03]'}`, { videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowIndicator: true }) : hasPlans ? (
               <div className="flex h-full flex-col justify-between p-4" style={{ color: 'var(--text-secondary)' }}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -1062,13 +1076,13 @@ const ProjectCard: React.FC<Props> = ({
       </div>
 
       {detailOpen && (
-        <div className="fixed inset-0 z-[320] flex items-center justify-center p-4" style={{ background: 'var(--overlay-bg)', backdropFilter: 'blur(8px)' }} onClick={() => setDetailOpen(false)}>
+        <div className="fixed inset-0 z-[320] flex items-center justify-center p-4" style={detailOverlayStyle} onClick={() => setDetailOpen(false)}>
           <div
             className={`flex w-full max-w-[1040px] flex-col overflow-hidden rounded-[28px] border ${isTranslationProject ? 'h-[88vh] max-h-[88vh]' : 'max-h-[88vh]'}`}
-            style={{ background: 'var(--bg-base)', borderColor: 'var(--border-subtle)', boxShadow: 'var(--shadow-elevated)' }}
+            style={detailPanelStyle}
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="sticky top-0 z-10 mb-3 border-b px-4 py-3 sm:px-5" style={{ borderColor: 'var(--border-subtle)', background: 'color-mix(in srgb, var(--bg-base) 94%, transparent)', backdropFilter: 'blur(16px)' }}>
+            <div className="sticky top-0 z-10 mb-3 border-b px-4 py-3 sm:px-5" style={detailHeaderStyle}>
               <div className="flex items-start gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
