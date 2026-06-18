@@ -1115,8 +1115,11 @@ const sanitizeAllowedChatModels = (configured, fallbacks = []) => {
     .filter((item) => item && available.has(item));
   const unique = Array.from(new Set(preferred));
   if (unique.length > 0) return unique;
+  const recoveryModels = DEFAULT_RECOVERY_ALLOWED_CHAT_MODELS.filter((item) => available.has(item));
+  if (recoveryModels.length > 0) return recoveryModels;
   return getChatModelCatalog()[0]?.id ? [getChatModelCatalog()[0].id] : [];
 };
+const DEFAULT_RECOVERY_ALLOWED_CHAT_MODELS = ['gpt-5-4-openai-resp', 'gemini-3-flash-openai'];
 const LEGACY_DEFAULT_ALLOWED_CHAT_MODELS = new Set(['gpt-5-4-openai-resp', 'gemini-3-flash-openai']);
 const EXPANDED_LEGACY_CHAT_MODELS = ['claude-sonnet-4-6'];
 const expandLegacyAllowedChatModels = (allowedModels = []) => {
