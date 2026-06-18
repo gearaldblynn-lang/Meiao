@@ -94,3 +94,9 @@
   现象:智能体对话里上传图片后发改图需求,前端显示 `responses 请求失败 (502)`;本地 `server/data/internal-store.json` 同一 session 记录显示 `requestMode:'chat'`, `imageMode:false`, `attachmentRefs` 有图片,但 `imagePlan:null`/`imageResultCount:0`,说明失败发生在 responses 规划层而非 KIE 生图层。用户反馈"不是第一次出现"后,从 `logs/chatMessages` 里复现到同类记录。
   修复:`server/openaiResponsesProvider.mjs` 增加 responses input 归一化:只在 provider 边界把 content 数组里的 `text/input_text` 统一为 `input_text`,把 `image_url/input_image` 统一为 `input_image` + 字符串 `image_url`;`function_call` 和 `function_call_output` 原样保留,不破坏 HTTP 二次工具回传。`server/openaiResponsesProvider.test.mjs` 增加带图请求体测试,断言不会再把 `"type":"image_url"` 送进 responses。
   如何避免:**内部编排可以继续使用 Chat Completions 风格多模态 content,但任何发往 responses 端点的 provider 必须在边界显式转换为 responses input schema;看到 `openai_error/bad_response_status_code` 且请求含图片时,先查 provider 请求体 schema,不要先归因成"上游偶发 502"。修 responses/provider 改动必须覆盖 `openaiResponsesProvider.test.mjs` + `agentToolConversation.test.mjs` 的 function_call_output 回归。**
+
+- **#10 ✅ 已修(2026-06-18)· V2 tool calling 出图成功后,最终文案请求失败会把整条消息标失败**
+  根因:`runAgentConversationV2` 的生图工具链路是两阶段:第一轮 Responses 决策调用 `generate_image`,KIE 出图成功后,再把 `function_call_output` 回传给 Responses 生成最终文字说明。原实现对第二轮 `callModel` 没有局部降级;只要第二轮 Responses 返回 502/空返,异常会一路抛到 `createDbChatReply` 的 catch,把 assistant 消息写成 `failed`,同时丢掉已拿到的 `imageResultUrls/imagePlan/providerTaskId`。
+  现象:云上用户看到"上游已经出图,但对话里显示失败";`stored_assets/internal_jobs` 能看到 KIE 图片结果,但对应聊天消息 metadata 可能没有图片附件,只剩 provider_bad_response 或 Responses 502 文案。
+  修复:`runAgentConversationV2` 在图片已经生成且 `imageResultUrls` 非空时,捕获最终文案模型失败并返回降级成功结果:保留 `imagePlan`、`imageResultUrls`、`providerTaskId` 和 `selectedModel`,正文提示"图片已生成完成,但最终文字说明生成失败",技术错误写入 `finalReplyErrorMessage` metadata 供排障。补 `agentToolConversation.test.mjs` 回归:第一轮 tool_calls、KIE 成功、第二轮 Responses 502 时仍返回图片结果。
+  如何避免:**tool calling 里"业务产物已完成"与"后续总结文案失败"必须分开处理。任何多阶段 provider 编排都不能让后置非关键步骤覆盖前面已经成功的用户可见产物;回归测试要模拟"主产物成功 + 尾部请求失败",不只测全成功/全失败。**
