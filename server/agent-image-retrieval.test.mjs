@@ -74,8 +74,21 @@ test('image generation analysis sends selected references as multimodal image ur
 
 test('image generation analysis uses fallback models when the primary analyser refuses', () => {
   assert.match(serverSource, /const resolveImageAnalysisFallbackModels = \(version, primaryModel = ''\) =>/);
+  assert.match(serverSource, /'gpt-5\.4'/);
   assert.match(serverSource, /'gpt-5-4-openai-resp'/);
+  assert.match(serverSource, /'gemini-3-flash-openai'/);
   assert.match(serverSource, /'claude-sonnet-4-6'/);
   assert.match(serverSource, /const analysisFallbackModels = resolveImageAnalysisFallbackModels\(version, analysisModel\);/);
   assert.match(serverSource, /payload: \{ messages: analysisMessages, model: analysisModel, fallbackModels: analysisFallbackModels \}/);
+});
+
+test('image generation continues with a deterministic plan when all analysis providers fail', () => {
+  assert.match(serverSource, /const buildFallbackImageAnalysisPlan = \(\{ userMessage = '', imageReferences = \[\], selectedImageModel = '', maxInputImages = 1 \}\) =>/);
+  assert.match(serverSource, /taskType: usableRefs\.length > 0 \? 'edit_image' : 'new_image'/);
+  assert.match(serverSource, /inputImageUrls: usableRefs\.map\(\(item\) => item\.url\)/);
+  assert.match(serverSource, /reasoningSummary: '已按用户原始需求和图片引用直接整理生图参数。'/);
+  assert.match(serverSource, /let analysisError = null;/);
+  assert.match(serverSource, /analysisError = enrichRuntimeError\(error,/);
+  assert.match(serverSource, /const parsed = analysisError\s+\? buildFallbackImageAnalysisPlan\(/);
+  assert.doesNotMatch(serverSource, /catch \(error\) \{\s+throw enrichRuntimeError\(error, \{\s+providerStage: error\?\.providerStage \|\| 'analysis'/);
 });
