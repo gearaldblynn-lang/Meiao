@@ -2414,7 +2414,10 @@ test('shell project detail uses responsive side-by-side image comparison and sta
   assert.match(projectCard, /视频 Prompt/);
   assert.match(projectCard, /CardVideoPreview/);
   assert.match(projectCard, /data-meiao-card-video="true"/);
-  assert.match(projectCard, /preload=\{preload\}/);
+  assert.match(projectCard, /shouldLoadVideoPreview/);
+  assert.match(projectCard, /preload=\{shouldLoadVideoPreview \? preload : 'none'\}/);
+  assert.match(projectCard, /onPointerEnter=\{armVideoPreviewLoad\}/);
+  assert.match(projectCard, /onFocusCapture=\{armVideoPreviewLoad\}/);
   assert.match(projectCard, /controlsList="nofullscreen nodownload noremoteplayback"/);
   assert.match(projectCard, /disablePictureInPicture/);
   assert.match(projectCard, /meiao-video-no-fullscreen/);
@@ -2459,6 +2462,10 @@ test('stored asset route supports byte range streaming for video playback', () =
 
   assert.match(serverIndex, /req\.headers\.range/);
   assert.match(serverIndex, /'Accept-Ranges': 'bytes'/);
+  assert.match(serverIndex, /'ETag': assetCacheTag/);
+  assert.match(serverIndex, /'Last-Modified': assetLastModified/);
+  assert.match(serverIndex, /'X-Accel-Buffering': 'no'/);
+  assert.match(serverIndex, /isConditionalAssetCacheHit\(req, assetCacheTag, assetLastModified\)/);
   assert.match(serverIndex, /req\.method === 'GET' \|\| req\.method === 'HEAD'\) && assetRouteMatch/);
   assert.match(serverIndex, /ASSET_ACCESS_TOUCH_THROTTLE_MS/);
   assert.match(serverIndex, /scheduleStoredAssetAccessTouch\(pool, asset\.id, Date\.now\(\)\)/);
@@ -2603,6 +2610,16 @@ test('shell sku uploads use ordered gift assets instead of brand logo materials'
   assert.match(shellWorkflow, /input\.materials\.gift/);
   assert.match(shellWorkflow, /sort\(\(a, b\) => \(a\.giftIndex \|\| 0\) - \(b\.giftIndex \|\| 0\)\)/);
   assert.match(shellWorkflow, /不存在品牌Logo素材/);
+});
+
+test('video workspaces avoid implicit eager video downloads on cloud playback views', () => {
+  const longVideoSubModule = read('../modules/Video/LongVideoSubModule.tsx');
+  const veoWorkspace = read('../modules/Video/VeoWorkspace.tsx');
+
+  assert.match(longVideoSubModule, /<video[\s\S]*src=\{task\.resultUrl\}[\s\S]*preload="metadata"/);
+  assert.match(longVideoSubModule, /<video[\s\S]*src=\{task\.resultUrl\}[\s\S]*playsInline/);
+  assert.match(veoWorkspace, /<video[\s\S]*src=\{activeSegment\.variants\.find\(v => v\.id === activeSegment\.selectedVariantId\)\?\.blobUrl\}[\s\S]*preload="metadata"/);
+  assert.match(veoWorkspace, /<video[\s\S]*src=\{activeSegment\.variants\.find\(v => v\.id === activeSegment\.selectedVariantId\)\?\.blobUrl\}[\s\S]*playsInline/);
 });
 
 test('workspace preference toggles are wired into real generation and upload flows', () => {

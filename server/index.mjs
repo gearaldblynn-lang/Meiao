@@ -3123,6 +3123,26 @@ const persistRuntimeRemoteAssetIfEnabled = async ({ userId, moduleName, assetTyp
   }
 };
 
+const buildStoredAssetCacheTag = (assetId, fileSize, mtimeMs) => (
+  `W/"stored-asset-${assetId}-${fileSize}-${Math.floor(mtimeMs)}"`
+);
+
+const isConditionalAssetCacheHit = (req, assetCacheTag, assetLastModified) => {
+  const ifNoneMatch = String(req.headers['if-none-match'] || '').trim();
+  if (ifNoneMatch) {
+    const candidates = ifNoneMatch.split(',').map((item) => item.trim());
+    if (candidates.includes('*') || candidates.includes(assetCacheTag)) {
+      return true;
+    }
+  }
+
+  const ifModifiedSince = String(req.headers['if-modified-since'] || '').trim();
+  if (!ifModifiedSince) return false;
+  const requestedTime = Date.parse(ifModifiedSince);
+  const assetTime = Date.parse(assetLastModified);
+  return Number.isFinite(requestedTime) && Number.isFinite(assetTime) && requestedTime >= assetTime;
+};
+
 const serveStoredAsset = async (req, res, assetId) => {
   const pool = shouldUseMysql ? await getMysqlPool() : null;
   const asset = await getStoredAssetById(pool, assetId);
@@ -3141,14 +3161,26 @@ const serveStoredAsset = async (req, res, assetId) => {
   const stats = statSync(fullPath);
   const fileSize = stats.size;
   const contentType = asset.mimeType || 'application/octet-stream';
+  const assetLastModified = new Date(stats.mtimeMs).toUTCString();
+  const assetCacheTag = buildStoredAssetCacheTag(asset.id, fileSize, stats.mtimeMs);
   scheduleStoredAssetAccessTouch(pool, asset.id, Date.now());
   const baseHeaders = {
     'Content-Type': contentType,
     'Accept-Ranges': 'bytes',
-    'Cache-Control': 'private, max-age=86400',
+    'Cache-Control': 'private, max-age=604800, immutable',
+    'ETag': assetCacheTag,
+    'Last-Modified': assetLastModified,
+    'X-Accel-Buffering': 'no',
+    'X-Content-Type-Options': 'nosniff',
     ...(res.__corsHeaders || {}),
   };
   const rangeHeader = String(req.headers.range || '').trim();
+
+  if (!rangeHeader && isConditionalAssetCacheHit(req, assetCacheTag, assetLastModified)) {
+    res.writeHead(304, baseHeaders);
+    res.end();
+    return;
+  }
 
   if (rangeHeader) {
     const rangeMatch = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);

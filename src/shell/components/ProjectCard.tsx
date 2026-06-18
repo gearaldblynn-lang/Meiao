@@ -101,9 +101,19 @@ const CardVideoPreview: React.FC<{
   showVideoIndicator?: boolean;
 }> = ({ src, className, controls = false, preload = 'none', previewFrameTime = 0, showPlayOverlay = false, showVideoIndicator = false }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const requestedPlaybackRef = useRef(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [shouldLoadVideoPreview, setShouldLoadVideoPreview] = useState(preload === 'none');
+  const armVideoPreviewLoad = () => setShouldLoadVideoPreview(true);
+
+  useEffect(() => {
+    requestedPlaybackRef.current = false;
+    setIsPlaying(false);
+    setShouldLoadVideoPreview(preload === 'none');
+  }, [preload, src]);
+
   const handleLoadedMetadata = (event: React.SyntheticEvent<HTMLVideoElement>) => {
-    if (preload === 'none' || previewFrameTime <= 0) return;
+    if (preload === 'none' || !shouldLoadVideoPreview || requestedPlaybackRef.current || previewFrameTime <= 0) return;
     const duration = event.currentTarget.duration;
     if (!Number.isFinite(duration) || duration <= previewFrameTime) return;
     try {
@@ -125,9 +135,13 @@ const CardVideoPreview: React.FC<{
         disablePictureInPicture
         muted
         playsInline
-        preload={preload}
+        preload={shouldLoadVideoPreview ? preload : 'none'}
+        onPointerEnter={armVideoPreviewLoad}
+        onFocusCapture={armVideoPreviewLoad}
         onLoadedMetadata={handleLoadedMetadata}
         onPlay={(event) => {
+          requestedPlaybackRef.current = true;
+          armVideoPreviewLoad();
           setIsPlaying(true);
           document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
             if (video !== event.currentTarget && !video.paused) {
@@ -146,6 +160,8 @@ const CardVideoPreview: React.FC<{
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
+            requestedPlaybackRef.current = true;
+            armVideoPreviewLoad();
             const video = videoRef.current;
             if (!video) return;
             void video.play().catch(() => undefined);
