@@ -253,6 +253,7 @@ const defaultTranslationConfigs = {
 const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 const MANAGED_ASSET_REFERENCE_PATTERN = /(?:https?:\/\/[^\s"'<>，。；;、)）]+)?\/api\/assets\/file\/[^/?#"'\s<>，。；;、)）]+(?:\/[^?#"'\s<>，。；;、)）]+)?/g;
 const ASSET_FILE_ROUTE_REGEX = /^\/api\/assets\/file\/([^/]+)(?:\/[^/]+)?$/;
+const ASSET_X_ACCEL_PREFIX = '/__meiao_stored_assets';
 const ASSET_CLEANUP_INTERVAL_MS = 1000 * 60 * 30;
 const DOWNLOAD_PROXY_TIMEOUT_MS = 30_000;
 const DOWNLOAD_PROXY_MAX_BYTES = 80 * 1024 * 1024;
@@ -3143,6 +3144,22 @@ const isConditionalAssetCacheHit = (req, assetCacheTag, assetLastModified) => {
   return Number.isFinite(requestedTime) && Number.isFinite(assetTime) && requestedTime >= assetTime;
 };
 
+const buildStoredAssetXAccelRedirectPath = (storageKey) => {
+  const segments = String(storageKey || '')
+    .split(/[\\/]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (!segments.length || segments.some((segment) => segment === '.' || segment === '..')) {
+    return '';
+  }
+  return `${ASSET_X_ACCEL_PREFIX}/${segments.map((segment) => encodeURIComponent(segment)).join('/')}`;
+};
+
+const shouldUseStoredAssetXAccel = (req) => (
+  process.env.MEIAO_ASSET_X_ACCEL === '1'
+  && Boolean(req.headers['x-forwarded-for'] || req.headers['x-real-ip'])
+);
+
 const serveStoredAsset = async (req, res, assetId) => {
   const pool = shouldUseMysql ? await getMysqlPool() : null;
   const asset = await getStoredAssetById(pool, assetId);
@@ -3178,6 +3195,18 @@ const serveStoredAsset = async (req, res, assetId) => {
 
   if (!rangeHeader && isConditionalAssetCacheHit(req, assetCacheTag, assetLastModified)) {
     res.writeHead(304, baseHeaders);
+    res.end();
+    return;
+  }
+
+  const xAccelRedirectPath = shouldUseStoredAssetXAccel(req)
+    ? buildStoredAssetXAccelRedirectPath(asset.storageKey)
+    : '';
+  if (xAccelRedirectPath) {
+    res.writeHead(200, {
+      ...baseHeaders,
+      'X-Accel-Redirect': xAccelRedirectPath,
+    });
     res.end();
     return;
   }

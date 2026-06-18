@@ -105,6 +105,9 @@ npm run dev
 - `MEIAO_ALLOWED_ORIGINS`
 - `MEIAO_PUBLIC_BASE_URL`
 - `MEIAO_JOB_MAX_CONCURRENCY`
+- `MEIAO_ASSET_X_ACCEL`：默认 `0`；生产 Nginx 配好 `/__meiao_stored_assets/` internal alias 后可设为 `1`，让托管素材通过 `X-Accel-Redirect` 直出。
+- `VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS`：默认 `3`；项目卡片视频点击播放前等待的最小预缓冲秒数。
+- `VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS`：默认 `5000`；项目卡片视频预缓冲最长等待毫秒数，超时后继续播放。
 
 数据库：
 - `MEIAO_DB_HOST`
