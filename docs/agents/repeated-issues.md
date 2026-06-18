@@ -467,6 +467,22 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test src/shell/modules/AgentCenter/AgentCenterModule.test.mjs --test-name-pattern "agent edit wizard submits"`。
 - Avoid next time: 编辑流不要复用“详情页当前查看版本”作为写入目标。打开编辑器时必须固化本次编辑对象 ID；涉及发布版/草稿版并存的 UI，都要分别维护“查看版本”和“编辑版本”。
 
+### Agent chat must preserve optimistic messages during slow refreshes
+
+- Symptom: 云上智能体聊天点击发送后，对话区没有立即显示用户消息和“思考中/需求分析中”，要等模型结果返回后才出现；本地快时不明显。
+- Root cause: 前端已经插入本地 optimistic user/assistant pending 消息，但同时存在 `selectedSessionId` 触发的 `fetchChatMessages`。云上慢请求下，旧的消息加载结果可能在发送后返回，并用不含本地 pending 的远端消息列表覆盖当前对话，直到发送接口最终返回真实消息才恢复显示。
+- Fix: 会话消息刷新不再直接覆盖当前列表，而是用 `mergePendingLocalMessages` 保留当前 session 下尚未被远端同 `clientRequestId` 接管的本地 pending 消息；pending 轮询也使用同一合并逻辑。
+- Regression check: `node --test src/shell/modules/AgentCenter/AgentCenterModule.test.mjs --test-name-pattern "pending messages"`。
+- Avoid next time: 任何远端刷新都不能无条件覆盖本地 in-flight UI 状态。带 `clientRequestId` 的 optimistic 消息必须保留到远端返回同 ID 的 pending/final 消息，或请求明确失败。
+
+### Agent factory validation must stay on the draft version
+
+- Symptom: 智能体工厂里选择中转模型并执行验证后，验证结果卡仍显示 `gemini-3-flash-openai` 等旧模型，而不是当前草稿选择的中转模型。
+- Root cause: 验证前后有两层版本错位：`handleValidate` 使用详情页 `selectedVersion`，而 `loadAgents` 刷新后总是把 `validationResult` 设为 `detail.versions[0]` 的摘要。即使后端验证了草稿，刷新也可能立刻把展示覆盖成已发布版本或最新版本的旧验证摘要。
+- Fix: `loadAgents` 支持传入 `preferredVersionId` 并按该版本设置 `selectedVersionId` 和 `validationResult`；验证时固定使用 `draftVersion || selectedVersion`，并在刷新后保留目标草稿版本。
+- Regression check: `node --test src/shell/modules/AgentCenter/AgentCenterModule.test.mjs --test-name-pattern "agent factory validation"`。
+- Avoid next time: 发布版和草稿版并存时，验证/保存/发布后的刷新必须显式传递目标版本 ID。不要用 `versions[0]` 推导当前验证摘要。
+
 ## 2026-06-12 - First-image planning recovery must aggregate sibling reference jobs
 
 - Symptom: 天琪账号首图功能上传 5 张风格参考图后，后台实际创建并完成了 5 个 `kie_chat` 策划 job，但前端项目卡只显示 1 个策划，用户无法发现少了 4 个。
