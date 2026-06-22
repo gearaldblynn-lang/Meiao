@@ -24,5 +24,6 @@ dist-ssr
 *.sln
 *.sw?
 server/data/
+backups/app-state-repair/
 .superpowers/
 .worktrees/
