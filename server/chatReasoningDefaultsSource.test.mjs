@@ -1,13 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import {
+  resolvePreferredReasoningLevel,
+  resolveSessionReasoningLevel,
+} from './chatSessionRules.mjs';
 
-const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+test('chat session reasoning defaults prefer medium, then low, then first supported level', () => {
+  assert.equal(resolvePreferredReasoningLevel(['high', 'medium', 'low']), 'medium');
+  assert.equal(resolvePreferredReasoningLevel(['high', 'low']), 'low');
+  assert.equal(resolvePreferredReasoningLevel(['xhigh', 'high']), 'xhigh');
+  assert.equal(resolvePreferredReasoningLevel([]), null);
+  assert.equal(resolvePreferredReasoningLevel('high'), null);
+});
 
-test('chat session reasoning defaults prefer medium, then low, in mysql and local modes', () => {
-  assert.match(source, /const resolvePreferredReasoningLevel = \(reasoningLevels = \[\]\) => \{/);
-  assert.match(source, /if \(normalized\.includes\('medium'\)\) return 'medium';/);
-  assert.match(source, /if \(normalized\.includes\('low'\)\) return 'low';/);
-  assert.match(source, /const resolveSessionReasoningLevel = \(\{ capability = null, requestedReasoningLevel = null \} = \{\}\) => \{/);
-  assert.match(source, /const defaultReasoningLevel = resolveSessionReasoningLevel\(\{ capability, requestedReasoningLevel: null \}\);/);
+test('chat session reasoning level respects capability support and valid user requests', () => {
+  assert.equal(resolveSessionReasoningLevel({
+    capability: { supportsReasoningLevel: false, reasoningLevels: ['medium'] },
+    requestedReasoningLevel: 'medium',
+  }), null);
+  assert.equal(resolveSessionReasoningLevel({
+    capability: { supportsReasoningLevel: true, reasoningLevels: ['low', 'medium', 'high'] },
+    requestedReasoningLevel: 'high',
+  }), 'high');
+  assert.equal(resolveSessionReasoningLevel({
+    capability: { supportsReasoningLevel: true, reasoningLevels: ['low', 'medium', 'high'] },
+    requestedReasoningLevel: 'xhigh',
+  }), 'medium');
+  assert.equal(resolveSessionReasoningLevel({
+    capability: { supportsReasoningLevel: true, reasoningLevels: ['high', 'low'] },
+    requestedReasoningLevel: null,
+  }), 'low');
 });

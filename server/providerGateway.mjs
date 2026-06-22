@@ -1,18 +1,46 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { getMaxListeners, setMaxListeners } from 'node:events';
-import { isIP } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { GPT_IMAGE_2_DEFAULT_RESOLUTION, normalizeGptImage2Resolution } from '../src/utils/gptImage2.mjs';
-import { isExternallyReachableBaseUrl, isLocalOrPrivateHostname, normalizeBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import { queryDreaminaVideoTask, submitDreaminaVideoTask } from './dreaminaVideoCli.mjs';
 import { runOpenAIToolCallingJob, runOpenAIToolCallingStream } from './openaiToolCalling.mjs';
 import { runResponsesJob } from './openaiResponsesProvider.mjs';
 import {
-  isVideoMediaUrl,
-  shouldUploadGeminiMediaUrlForStableMime,
-  shouldUploadGeminiVideoUrlToOpenRouterChat,
-} from './providerMediaRouting.mjs';
+  assertRemoteProviderMediaUrlAllowed,
+  convertGeminiMediaToStableKieUrl as convertGeminiMediaToStableKieUrlWithDeps,
+  convertGeminiVideoToOpenRouterChatUrl as convertGeminiVideoToOpenRouterChatUrlWithDeps,
+  convertInlineDataUrlToKieFileUrl as convertInlineDataUrlToKieFileUrlWithDeps,
+  convertManagedAssetUrlToKieFileUrl as convertManagedAssetUrlToKieFileUrlWithDeps,
+  downloadRemoteMediaUrl as downloadRemoteMediaUrlWithDeps,
+  downloadRemoteProviderMediaUrl as downloadRemoteProviderMediaUrlWithDeps,
+  ensureProviderFileNameWithExtension,
+  extractFileNameFromUrl,
+  inferExtensionFromMimeType,
+  inferMimeTypeFromName,
+  isManagedAssetUrl,
+  MANAGED_ASSET_PATH_SEGMENT,
+  normalizeManagedAssetDownloadUrl,
+  normalizeProviderMediaReference,
+  readRemoteMediaBufferWithLimit as readRemoteMediaBufferWithLimitWithDeps,
+  resolveProviderChatMediaUrl as resolveProviderChatMediaUrlWithDeps,
+  resolveProviderGeminiChatMediaUrl as resolveProviderGeminiChatMediaUrlWithDeps,
+  resolveProviderGenerationMediaUrl as resolveProviderGenerationMediaUrlWithDeps,
+  resolveProviderMediaUrl as resolveProviderMediaUrlWithDeps,
+  uploadAssetViaKieWithFallback as uploadAssetViaKieWithFallbackWithDeps,
+} from './providerAssetTransfer.mjs';
+import {
+  KIE_IMAGE_MODEL_ALIASES,
+  runKieImageJob as runKieImageProviderJob,
+} from './providerKieImage.mjs';
+import {
+  allowConcurrentAbortListeners,
+  readResponseBodyWithTimeout,
+} from './providerBodyRead.mjs';
+import {
+  attachProviderTaskId,
+  extractProviderUsageMeta,
+  pollKieTask,
+  probeKieTaskOnce,
+} from './providerKieTask.mjs';
 
 const KIE_CREATE_TASK_URL = 'https://api.kie.ai/api/v1/jobs/createTask';
 const KIE_RECORD_INFO_URL = 'https://api.kie.ai/api/v1/jobs/recordInfo';
@@ -31,9 +59,6 @@ const KIE_CHAT_COMPLETION_TIMEOUT_MS = 240_000;
 const KIE_CHAT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const DREAMINA_VIDEO_POLL_RETRIES = 180;
 const DREAMINA_VIDEO_POLL_INTERVAL_MS = 5_000;
-const MAX_PROVIDER_REMOTE_MEDIA_MB = 256;
-const MAX_PROVIDER_REMOTE_MEDIA_BYTES = MAX_PROVIDER_REMOTE_MEDIA_MB * 1024 * 1024;
-const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 const KIE_RESPONSES_MODEL_ALIASES = {
   'gpt-5-4-openai-resp': 'gpt-5-4',
   'gpt-5-4': 'gpt-5-4',
@@ -42,15 +67,6 @@ const KIE_RESPONSES_MODEL_ALIASES = {
 const KIE_CLAUDE_MODEL_ALIASES = {
   'claude-sonnet-4-6': 'claude-sonnet-4-6',
   'claude-sonnet-4-6-v1messages': 'claude-sonnet-4-6',
-};
-const KIE_IMAGE_MODEL_ALIASES = {
-  'gpt-image-2': {
-    text: 'gpt-image-2-text-to-image',
-    image: 'gpt-image-2-image-to-image',
-    maxInputImages: 16,
-    pollRetries: 150,
-    supportedAspectRatios: ['auto', '1:1', '9:16', '16:9', '4:3', '3:4'],
-  },
 };
 const KIE_CHAT_MODEL_ENDPOINTS = {
   'gpt-5-2': KIE_CHAT_URL,
@@ -75,14 +91,6 @@ let dreaminaVideoRunnerForTest = null;
 
 export const __testOnly_setDreaminaVideoRunner = (runner) => {
   dreaminaVideoRunnerForTest = typeof runner === 'function' ? runner : null;
-};
-
-const allowConcurrentAbortListeners = (signal, count) => {
-  if (!signal || typeof signal !== 'object') return;
-  const currentLimit = Number(getMaxListeners(signal) || 10);
-  const requestedLimit = Math.max(10, Number(count || 0) + 4);
-  if (requestedLimit <= currentLimit) return;
-  setMaxListeners(Math.max(currentLimit, requestedLimit), signal);
 };
 
 const wait = (ms, signal) =>
@@ -153,13 +161,6 @@ const normalizeKieTaskCreationError = (responseStatus, result = {}, defaultMessa
   });
 };
 
-const attachProviderTaskId = (error, providerTaskId) => {
-  if (error && typeof error === 'object' && providerTaskId && !error.providerTaskId) {
-    error.providerTaskId = providerTaskId;
-  }
-  return error;
-};
-
 const fetchKieWithTimeout = async (
   url,
   init = {},
@@ -209,103 +210,6 @@ const fetchKieWithTimeout = async (
   }
 };
 
-const readProviderBodyChunkWithTimeout = async (readOperation, {
-  signal,
-  timeoutMessage,
-  timeoutMs = KIE_HTTP_REQUEST_TIMEOUT_MS,
-  providerStage = 'asset_download',
-  onTimeout = null,
-}) => {
-  let timedOut = false;
-  let timeoutId = null;
-  let onAbort = null;
-  const abortPromise = new Promise((_, reject) => {
-    onAbort = () => {
-      onTimeout?.();
-      reject(createProviderError('request_cancelled', '任务已取消'));
-    };
-    if (signal) {
-      if (signal.aborted) onAbort();
-      else signal.addEventListener('abort', onAbort, { once: true });
-    }
-  });
-  const timeoutPromise = new Promise((_, reject) => {
-    timeoutId = setTimeout(() => {
-      timedOut = true;
-      reject(createProviderError('provider_timeout', timeoutMessage, {
-        providerStage,
-        providerStatus: 'timeout',
-      }));
-      onTimeout?.();
-    }, timeoutMs);
-  });
-
-  try {
-    const result = await Promise.race([readOperation(), timeoutPromise, abortPromise]);
-    return result;
-  } catch (error) {
-    if (signal?.aborted) {
-      throw createProviderError('request_cancelled', '任务已取消');
-    }
-    if (timedOut || error?.code === 'provider_timeout') {
-      throw createProviderError('provider_timeout', timeoutMessage, {
-        providerStage,
-        providerStatus: 'timeout',
-      });
-    }
-    if (error?.code) throw error;
-    throw createProviderError('provider_network_error', error?.message || `${timeoutMessage.replace(/超时$/, '')}失败`, {
-      providerStage,
-      providerStatus: 'network_error',
-    });
-  } finally {
-    clearTimeout(timeoutId);
-    if (signal && onAbort) signal.removeEventListener?.('abort', onAbort);
-  }
-};
-
-const readResponseBodyWithTimeout = async (response, {
-  signal,
-  timeoutMessage = '素材下载超时',
-  timeoutMs = KIE_HTTP_REQUEST_TIMEOUT_MS,
-  providerStage = 'asset_download',
-} = {}) => {
-  if (!response.body?.getReader) {
-    const arrayBuffer = await readProviderBodyChunkWithTimeout(
-      () => response.arrayBuffer(),
-      {
-        signal,
-        timeoutMessage,
-        timeoutMs,
-        providerStage,
-        onTimeout: () => response.body?.cancel?.().catch?.(() => null),
-      }
-    );
-    return Buffer.from(arrayBuffer);
-  }
-
-  const reader = response.body.getReader();
-  const chunks = [];
-  let total = 0;
-  while (true) {
-    const { done, value } = await readProviderBodyChunkWithTimeout(
-      () => reader.read(),
-      {
-        signal,
-        timeoutMessage,
-        timeoutMs,
-        providerStage,
-        onTimeout: () => reader.cancel().catch(() => null),
-      }
-    );
-    if (done) break;
-    const chunk = Buffer.from(value);
-    total += chunk.length;
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks, total);
-};
-
 const getEnvValue = (env, ...keys) => keys.map((key) => env[key]).find(Boolean) || '';
 
 const getProviderEnv = (env) => ({
@@ -350,97 +254,6 @@ const buildResponsesInputMessages = (messages = [], mapper) =>
     mapper
   );
 
-const isManagedAssetUrl = (value) =>
-  typeof value === 'string' && value.includes(MANAGED_ASSET_PATH_SEGMENT);
-
-const getManagedAssetPath = (value) => {
-  const normalized = String(value || '').trim();
-  if (!normalized) return '';
-  if (normalized.startsWith(MANAGED_ASSET_PATH_SEGMENT)) return normalized;
-  try {
-    const parsed = new URL(normalized);
-    if (!parsed.pathname.includes(MANAGED_ASSET_PATH_SEGMENT)) return '';
-    return `${parsed.pathname}${parsed.search || ''}`;
-  } catch {
-    return '';
-  }
-};
-
-const getProviderPublicBaseUrl = (env = {}) =>
-  normalizeBaseUrl(env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || process.env.MEIAO_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL || '');
-
-const resolveExternallyReachableManagedAssetUrl = (value, env = {}) => {
-  const normalized = String(value || '').trim();
-  if (!isManagedAssetUrl(normalized)) return '';
-  try {
-    const parsed = new URL(normalized);
-    if (['http:', 'https:'].includes(parsed.protocol) && !isLocalOrPrivateHostname(parsed.hostname)) {
-      return normalized;
-    }
-  } catch {
-    // Relative managed asset paths can still be made public through MEIAO_PUBLIC_BASE_URL.
-  }
-  const assetPath = getManagedAssetPath(normalized);
-  const publicBaseUrl = getProviderPublicBaseUrl(env);
-  if (assetPath && isExternallyReachableBaseUrl(publicBaseUrl)) {
-    return `${publicBaseUrl}${assetPath}`;
-  }
-  return '';
-};
-
-const normalizeProviderMediaReference = (value) => {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  const markdownTarget = raw.match(/^\[[^\]]*]\(([^)\s]+)\)$/);
-  if (markdownTarget?.[1]) return markdownTarget[1].trim();
-  const absoluteUrl = raw.match(/https?:\/\/[^\s"'<>，。；、）)\]】]+/i);
-  return absoluteUrl?.[0]?.trim() || raw;
-};
-
-const normalizeManagedAssetDownloadUrl = (value) => {
-  const normalized = String(value || '').trim();
-  if (!isManagedAssetUrl(normalized)) return normalized;
-  if (normalized.startsWith('/')) {
-    return `http://127.0.0.1:${process.env.PORT || 3100}${normalized}`;
-  }
-  try {
-    const url = new URL(normalized);
-    return `http://127.0.0.1:3100${url.pathname || ''}${url.search || ''}`;
-  } catch {
-    return normalized;
-  }
-};
-
-const extractFileNameFromUrl = (value, fallback = 'upload.bin') => {
-  try {
-    const url = new URL(String(value || ''));
-    const pathname = decodeURIComponent(url.pathname || '');
-    const segments = pathname.split('/').filter(Boolean);
-    const candidate = segments[segments.length - 1] || '';
-    return candidate || fallback;
-  } catch {
-    return fallback;
-  }
-};
-
-const inferMimeTypeFromName = (value, fallback = 'application/octet-stream') => {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized.endsWith('.png')) return 'image/png';
-  if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) return 'image/jpeg';
-  if (normalized.endsWith('.webp')) return 'image/webp';
-  if (normalized.endsWith('.gif')) return 'image/gif';
-  if (normalized.endsWith('.bmp')) return 'image/bmp';
-  if (normalized.endsWith('.svg')) return 'image/svg+xml';
-  if (normalized.endsWith('.mp4') || normalized.endsWith('.m4v')) return 'video/mp4';
-  if (normalized.endsWith('.mov')) return 'video/quicktime';
-  if (normalized.endsWith('.webm')) return 'video/webm';
-  if (normalized.endsWith('.pdf')) return 'application/pdf';
-  if (normalized.endsWith('.txt')) return 'text/plain';
-  if (normalized.endsWith('.md')) return 'text/markdown';
-  if (normalized.endsWith('.json')) return 'application/json';
-  return fallback;
-};
-
 const UNSUPPORTED_GENERATION_IMAGE_EXTENSIONS = new Set(['.zip', '.rar', '.7z', '.tar', '.gz', '.tgz']);
 
 const extractPathExtension = (value) => {
@@ -470,319 +283,56 @@ const assertSupportedGenerationImageReferences = (values = []) => {
   }
 };
 
-const inferExtensionFromMimeType = (value, fallback = 'bin') => {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'image/png') return 'png';
-  if (normalized === 'image/jpeg') return 'jpg';
-  if (normalized === 'image/webp') return 'webp';
-  if (normalized === 'image/gif') return 'gif';
-  if (normalized === 'image/bmp') return 'bmp';
-  if (normalized === 'image/svg+xml') return 'svg';
-  if (normalized === 'video/mp4') return 'mp4';
-  if (normalized === 'video/quicktime') return 'mov';
-  if (normalized === 'video/webm') return 'webm';
-  if (normalized === 'application/pdf') return 'pdf';
-  if (normalized === 'text/plain') return 'txt';
-  if (normalized === 'text/markdown') return 'md';
-  if (normalized === 'application/json') return 'json';
-  return fallback;
-};
+const buildAssetTransferOptions = (env = {}, signal = null, options = {}) => ({
+  env,
+  signal,
+  ...options,
+  deps: {
+    fetchWithTimeout: fetchKieWithTimeout,
+    readResponseBodyWithTimeout,
+    uploadAssetViaKieStream,
+    uploadAssetViaKieBase64: uploadAssetViaKie,
+    uploadAssetViaKieWithFallback: (payload, transferOptions = {}) =>
+      uploadAssetViaKieWithFallback(payload, transferOptions.env || env),
+    ...(options.deps || {}),
+  },
+});
 
-const detectMimeTypeFromBuffer = (buffer) => {
-  const bytes = buffer instanceof Uint8Array ? buffer : Buffer.from(buffer || '');
-  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
-  if (
-    bytes.length >= 8 &&
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47 &&
-    bytes[4] === 0x0d &&
-    bytes[5] === 0x0a &&
-    bytes[6] === 0x1a &&
-    bytes[7] === 0x0a
-  ) return 'image/png';
-  if (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x45 &&
-    bytes[10] === 0x42 &&
-    bytes[11] === 0x50
-  ) return 'image/webp';
-  if (bytes.length >= 6) {
-    const signature = Buffer.from(bytes.slice(0, 6)).toString('ascii');
-    if (signature === 'GIF87a' || signature === 'GIF89a') return 'image/gif';
-  }
-  return '';
-};
+const uploadAssetViaKieWithFallback = async (payload, env) =>
+  uploadAssetViaKieWithFallbackWithDeps(payload, buildAssetTransferOptions(env));
 
-const ensureProviderFileNameWithExtension = (fileName, mimeType) => {
-  const normalizedName = String(fileName || '').trim() || 'upload';
-  if (/\.[a-z0-9]{2,5}$/i.test(normalizedName)) return normalizedName;
-  const extension = inferExtensionFromMimeType(mimeType, '');
-  return extension ? `${normalizedName}.${extension}` : normalizedName;
-};
+const convertInlineDataUrlToKieFileUrl = async (value, env) =>
+  convertInlineDataUrlToKieFileUrlWithDeps(value, buildAssetTransferOptions(env));
 
-const buildKieAspectRatioPromptHint = (aspectRatio) => {
-  const normalized = String(aspectRatio || '').trim();
-  if (!normalized || normalized === 'auto') return '';
-  return `最终画面按 ${normalized} 比例构图生成。`;
-};
+const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal, options = {}) =>
+  convertManagedAssetUrlToKieFileUrlWithDeps(assetUrl, buildAssetTransferOptions(env, signal, options));
 
-const augmentImagePromptForModel = (model, prompt, aspectRatio, mode = 'text') => {
-  const normalizedPrompt = String(prompt || '').trim();
-  if (model !== 'gpt-image-2') return normalizedPrompt;
-  if (mode === 'image') return normalizedPrompt;
-  return normalizedPrompt;
-};
+const readRemoteMediaBufferWithLimit = async (response, label = '远程素材', options = {}) =>
+  readRemoteMediaBufferWithLimitWithDeps(response, label, buildAssetTransferOptions({}, options.signal, options));
 
-const parseDataUrlPayload = (value) => {
-  const raw = String(value || '').trim();
-  const match = raw.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,([A-Za-z0-9+/=]+)$/i);
-  if (!match) return null;
-  return {
-    mimeType: String(match[1] || 'application/octet-stream').trim().toLowerCase() || 'application/octet-stream',
-    base64Data: match[2] || '',
-  };
-};
+const downloadRemoteMediaUrl = async (mediaUrl, signal) =>
+  downloadRemoteMediaUrlWithDeps(mediaUrl, buildAssetTransferOptions({}, signal));
 
-const shouldFallbackKieUploadError = (error) => new Set([
-  'provider_auth_invalid',
-  'provider_internal_error',
-  'provider_network_error',
-  'provider_timeout',
-]).has(String(error?.code || '').trim());
+const downloadRemoteProviderMediaUrl = async (mediaUrl, signal) =>
+  downloadRemoteProviderMediaUrlWithDeps(mediaUrl, buildAssetTransferOptions({}, signal));
 
-const uploadAssetViaKieWithFallback = async (payload, env) => {
-  try {
-    return await uploadAssetViaKieStream(payload, env);
-  } catch (error) {
-    if (!shouldFallbackKieUploadError(error)) throw error;
-    const fileBuffer = payload.fileBuffer instanceof Uint8Array ? payload.fileBuffer : Buffer.from(payload.fileBuffer || '');
-    return uploadAssetViaKie({
-      ...payload,
-      fileBuffer,
-      base64Data: Buffer.from(fileBuffer).toString('base64'),
-    }, env);
-  }
-};
+const convertGeminiMediaToStableKieUrl = async (mediaUrl, env, signal) =>
+  convertGeminiMediaToStableKieUrlWithDeps(mediaUrl, buildAssetTransferOptions(env, signal));
 
-const convertInlineDataUrlToKieFileUrl = async (value, env) => {
-  const parsed = parseDataUrlPayload(value);
-  if (!parsed) return String(value || '').trim();
-  const extension = inferExtensionFromMimeType(parsed.mimeType);
-  const uploaded = await uploadAssetViaKieWithFallback({
-    fileBuffer: Buffer.from(parsed.base64Data, 'base64'),
-    mimeType: parsed.mimeType,
-    fileName: `inline-upload.${extension}`,
-    uploadPath: 'mayo-storage/internal',
-  }, env);
-  return String(uploaded?.result?.fileUrl || '').trim();
-};
+const convertGeminiVideoToOpenRouterChatUrl = async (mediaUrl, env, signal) =>
+  convertGeminiVideoToOpenRouterChatUrlWithDeps(mediaUrl, buildAssetTransferOptions(env, signal));
 
-const downloadManagedAsset = async (assetUrl, signal) => {
-  const response = await fetchKieWithTimeout(normalizeManagedAssetDownloadUrl(assetUrl), {
-    method: 'GET',
-    signal,
-  }, '内部素材下载超时', 60_000, 'asset_download');
-  if (!response.ok) {
-    throw createProviderError('provider_bad_request', `内部素材下载失败：HTTP ${response.status}`);
-  }
+const resolveProviderGeminiChatMediaUrl = async (value, env, signal) =>
+  resolveProviderGeminiChatMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal));
 
-  const fileName = extractFileNameFromUrl(assetUrl);
-  const mimeTypeHeader = response.headers?.get?.('content-type') || '';
-  const mimeType = String(mimeTypeHeader || '').split(';')[0].trim() || inferMimeTypeFromName(fileName);
-  const fileBuffer = await readResponseBodyWithTimeout(response, {
-    signal,
-    timeoutMessage: '内部素材下载超时',
-    timeoutMs: 60_000,
-    providerStage: 'asset_download',
-  });
-  return {
-    fileName,
-    mimeType,
-    fileBuffer,
-  };
-};
+const resolveProviderChatMediaUrl = async (value, env, signal) =>
+  resolveProviderChatMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal));
 
-const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal, options = {}) => {
-  if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
-  if (!options.forceUpload) {
-    const publicAssetUrl = resolveExternallyReachableManagedAssetUrl(assetUrl, env);
-    if (publicAssetUrl) return publicAssetUrl;
-  }
-  const downloaded = await downloadManagedAsset(assetUrl, signal);
-  const uploaded = await uploadAssetViaKieWithFallback({
-    ...downloaded,
-    uploadPath: 'mayo-storage/internal',
-  }, env);
-  return String(uploaded?.result?.fileUrl || '').trim();
-};
+const resolveProviderGenerationMediaUrl = async (value, env, signal) =>
+  resolveProviderGenerationMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal));
 
-const isPrivateIpv4Hostname = (hostname) => {
-  const parts = String(hostname || '').split('.').map((part) => Number(part));
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
-  const [a, b] = parts;
-  return a === 10
-    || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168)
-    || (a === 169 && b === 254)
-    || a === 127
-    || a === 0;
-};
-
-const assertRemoteProviderMediaUrlAllowed = (mediaUrl) => {
-  let parsed;
-  try {
-    parsed = new URL(String(mediaUrl || '').trim());
-  } catch {
-    throw createProviderError('provider_bad_request', '远程素材 URL 无效');
-  }
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw createProviderError('provider_bad_request', '远程素材仅支持 HTTP/HTTPS 地址');
-  }
-  const hostname = parsed.hostname.toLowerCase();
-  const ipVersion = isIP(hostname);
-  const isBlockedHost = hostname === 'localhost'
-    || hostname.endsWith('.localhost')
-    || hostname.endsWith('.local')
-    || (ipVersion === 4 && isPrivateIpv4Hostname(hostname))
-    || (ipVersion === 6 && (
-      hostname === '::1'
-      || hostname.startsWith('fc')
-      || hostname.startsWith('fd')
-      || hostname.startsWith('fe80:')
-    ));
-  if (isBlockedHost) {
-    throw createProviderError('provider_bad_request', '远程素材地址不可指向本机或内网地址');
-  }
-};
-
-const readRemoteMediaBufferWithLimit = async (response, label = '远程素材', options = {}) => {
-  const contentLength = Number(response.headers?.get?.('content-length') || 0);
-  if (Number.isFinite(contentLength) && contentLength > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
-    throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 ${MAX_PROVIDER_REMOTE_MEDIA_MB}MB`);
-  }
-
-  const fileBuffer = await readResponseBodyWithTimeout(response, {
-    signal: options.signal,
-    timeoutMessage: `${label}下载超时`,
-    timeoutMs: Number(options.timeoutMs || 120_000),
-    providerStage: 'asset_download',
-  });
-  if (fileBuffer.length > MAX_PROVIDER_REMOTE_MEDIA_BYTES) {
-    throw createProviderError('provider_bad_request', `${label}过大，当前最大支持 ${MAX_PROVIDER_REMOTE_MEDIA_MB}MB`);
-  }
-  return fileBuffer;
-};
-
-const downloadRemoteMediaUrl = async (mediaUrl, signal) => {
-  if (isManagedAssetUrl(mediaUrl)) return downloadManagedAsset(mediaUrl, signal);
-  assertRemoteProviderMediaUrlAllowed(mediaUrl);
-  const response = await fetchKieWithTimeout(mediaUrl, {
-    method: 'GET',
-    signal,
-  }, '远程视频素材下载超时', 120_000, 'asset_download');
-  if (!response.ok) {
-    throw createProviderError('provider_bad_request', `远程视频素材下载失败：HTTP ${response.status}`);
-  }
-  const fileName = extractFileNameFromUrl(mediaUrl, `video-${Date.now()}.mp4`);
-  const mimeTypeHeader = response.headers?.get?.('content-type') || '';
-  const mimeType = String(mimeTypeHeader || '').split(';')[0].trim() || inferMimeTypeFromName(fileName, 'video/mp4');
-  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '远程视频素材', { signal });
-  return {
-    fileName,
-    mimeType,
-    fileBuffer,
-  };
-};
-
-const downloadRemoteProviderMediaUrl = async (mediaUrl, signal) => {
-  if (isManagedAssetUrl(mediaUrl)) return downloadManagedAsset(mediaUrl, signal);
-  assertRemoteProviderMediaUrlAllowed(mediaUrl);
-  const response = await fetchKieWithTimeout(mediaUrl, {
-    method: 'GET',
-    signal,
-  }, '远程素材下载超时', 120_000, 'asset_download');
-  if (!response.ok) {
-    throw createProviderError('provider_bad_request', `远程素材下载失败：HTTP ${response.status}`);
-  }
-  const rawFileName = extractFileNameFromUrl(mediaUrl, `media-${Date.now()}.bin`);
-  const mimeTypeHeader = response.headers?.get?.('content-type') || '';
-  const fileBuffer = await readRemoteMediaBufferWithLimit(response, '远程素材', { signal });
-  const inferredFromName = inferMimeTypeFromName(rawFileName, '');
-  const inferredFromBuffer = detectMimeTypeFromBuffer(fileBuffer);
-  const headerMimeType = String(mimeTypeHeader || '').split(';')[0].trim();
-  const mimeType = inferredFromBuffer || inferredFromName || headerMimeType || 'application/octet-stream';
-  return {
-    fileName: ensureProviderFileNameWithExtension(rawFileName, mimeType),
-    mimeType,
-    fileBuffer,
-  };
-};
-
-const convertGeminiMediaToStableKieUrl = async (mediaUrl, env, signal) => {
-  const downloaded = await downloadRemoteProviderMediaUrl(mediaUrl, signal);
-  const uploaded = await uploadAssetViaKieStream({
-    ...downloaded,
-    uploadPath: 'mayo-storage/internal',
-  }, env);
-  return String(uploaded?.result?.fileUrl || '').trim();
-};
-
-const convertGeminiVideoToOpenRouterChatUrl = async (mediaUrl, env, signal) => {
-  const normalized = String(mediaUrl || '').trim();
-  if (!shouldUploadGeminiVideoUrlToOpenRouterChat(normalized)) return normalized;
-  const downloaded = await downloadRemoteMediaUrl(normalized, signal);
-  const uploaded = await uploadAssetViaKieWithFallback({
-    ...downloaded,
-    uploadPath: 'openrouter-chat',
-  }, env);
-  return String(uploaded?.result?.fileUrl || '').trim();
-};
-
-const resolveProviderGeminiChatMediaUrl = async (value, env, signal) => {
-  const normalized = String(value || '').trim();
-  if (!normalized) return '';
-  if (isVideoMediaUrl(normalized)) {
-    return convertGeminiVideoToOpenRouterChatUrl(normalized, env, signal);
-  }
-  if (shouldUploadGeminiMediaUrlForStableMime(normalized, { isManagedAssetUrl })) {
-    return convertGeminiMediaToStableKieUrl(normalized, env, signal);
-  }
-  return resolveProviderChatMediaUrl(normalized, env, signal);
-};
-
-const resolveProviderChatMediaUrl = async (value, env, signal) => {
-  const normalized = normalizeProviderMediaReference(value);
-  if (!normalized) return '';
-  if (normalized.startsWith('data:')) {
-    return convertInlineDataUrlToKieFileUrl(normalized, env);
-  }
-  if (!isManagedAssetUrl(normalized)) return normalized;
-  return convertManagedAssetUrlToKieFileUrl(normalized, env, signal, { forceUpload: true });
-};
-
-const resolveProviderGenerationMediaUrl = async (value, env, signal) => {
-  const normalized = normalizeProviderMediaReference(value);
-  if (!normalized) return '';
-  if (!isManagedAssetUrl(normalized)) return normalized;
-  return convertManagedAssetUrlToKieFileUrl(normalized, env, signal, { forceUpload: true });
-};
-
-const resolveProviderMediaUrl = async (value, env, signal) => {
-  const normalized = normalizeProviderMediaReference(value);
-  if (!normalized) return '';
-  if (normalized.startsWith('data:')) {
-    return convertInlineDataUrlToKieFileUrl(normalized, env);
-  }
-  if (!isManagedAssetUrl(normalized)) return normalized;
-  return convertManagedAssetUrlToKieFileUrl(normalized, env, signal);
-};
+const resolveProviderMediaUrl = async (value, env, signal) =>
+  resolveProviderMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal));
 
 const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -1282,27 +832,6 @@ const extractProviderTaskIdFromResponse = (data) => {
   return /^chatcmpl-/i.test(fallbackId) ? '' : fallbackId;
 };
 
-const normalizeProviderCreditsConsumed = (value) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
-};
-
-const extractProviderUsageMeta = (data = {}) => {
-  const root = data && typeof data === 'object' ? data : {};
-  const nested = root.data && typeof root.data === 'object' ? root.data : {};
-  return {
-    creditsConsumed: normalizeProviderCreditsConsumed(
-      root.creditsConsumed ??
-      root.credits_consumed ??
-      root.creditsConsumedTotal ??
-      nested.creditsConsumed ??
-      nested.credits_consumed ??
-      nested.creditsConsumedTotal
-    ),
-    usage: root.usage || nested.usage || root.usageMetadata || nested.usageMetadata || null,
-  };
-};
-
 const isProviderErrorText = (value) => {
   const text = String(value || '').trim();
   if (!text) return false;
@@ -1527,192 +1056,6 @@ const notifyProviderTaskId = async (options, providerTaskId) => {
   const value = String(providerTaskId || '').trim();
   if (!value || typeof options?.onProviderTaskId !== 'function') return;
   await options.onProviderTaskId(value);
-};
-
-const pollKieTask = async (taskId, kieApiKey, signal, isVideo = false, model = '') => {
-  const maxRetries = isVideo ? 180 : (KIE_IMAGE_MODEL_ALIASES[model]?.pollRetries || 90);
-  const startedAt = Date.now();
-  let lastKnownState = '';
-
-  for (let i = 0; i < maxRetries; i += 1) {
-    if (signal?.aborted) {
-      throw createProviderError('request_cancelled', '任务已取消', { providerTaskId: taskId, providerStage: 'polling', providerStatus: lastKnownState || 'cancelled' });
-    }
-
-    let response;
-    try {
-      response = await fetchKieWithTimeout(`${KIE_RECORD_INFO_URL}?taskId=${encodeURIComponent(taskId)}`, {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${kieApiKey}`,
-        },
-        signal,
-      }, isVideo ? 'Kie 视频任务查询超时' : 'Kie 图像任务查询超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'polling');
-    } catch (error) {
-      if (signal?.aborted) {
-        throw createProviderError('request_cancelled', '任务已取消', { providerTaskId: taskId, providerStage: 'polling', providerStatus: lastKnownState || 'cancelled' });
-      }
-      const isTransientFetchError = error instanceof TypeError || /fetch failed/i.test(String(error?.message || ''));
-      if (isTransientFetchError && Date.now() - startedAt < KIE_TRANSIENT_FETCH_ERROR_GRACE_MS) {
-        await wait(4000, signal);
-        continue;
-      }
-      throw attachProviderTaskId(
-        createProviderError('provider_network_error', error?.message || 'Kie 任务查询失败', { providerStage: 'polling', providerStatus: lastKnownState || 'network_error' }),
-        taskId
-      );
-    }
-
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      if (response.status === 401 || response.status === 403 || result?.code === 401 || result?.code === 403) {
-        throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 鉴权失败');
-      }
-      if (response.status === 404 || result?.code === 404) {
-        if (Date.now() - startedAt < KIE_TRANSIENT_NOT_FOUND_GRACE_MS) {
-          await wait(4000, signal);
-          continue;
-        }
-        throw createProviderError('task_not_found', result?.msg || '任务不存在或已过期', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'not_found' });
-      }
-      if (response.status === 429) {
-        throw createProviderError('provider_rate_limited', result?.msg || 'Kie 请求过于频繁', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'rate_limited' });
-      }
-      if (response.status >= 500) {
-        throw createProviderError('provider_internal_error', result?.msg || 'Kie 服务异常', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'server_error' });
-      }
-    }
-
-    if (result?.code === 200) {
-      const state = result.data?.state;
-      lastKnownState = String(state || '').trim() || lastKnownState;
-      if (state === 'success') {
-        const resultJson = JSON.parse(result.data.resultJson || '{}');
-        const url = Array.isArray(resultJson.resultUrls) ? resultJson.resultUrls[0] : '';
-        if (!url) {
-          throw createProviderError('provider_bad_response', 'Kie 返回成功但没有结果链接', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'success_without_result' });
-        }
-        const usageMeta = extractProviderUsageMeta(result);
-        return {
-          providerTaskId: taskId,
-          ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
-          providerStage: 'completed',
-          providerStatus: 'success',
-          result: {
-            imageUrl: url,
-            videoUrl: isVideo ? url : undefined,
-            taskId,
-            status: 'success',
-            providerTaskId: taskId,
-            ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
-            ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
-            providerModel: result.data?.model || model || '',
-          },
-        };
-      }
-      if (state === 'fail') {
-        throw createProviderError('provider_bad_request', result.data?.failMsg || 'Kie 任务失败', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'failed' });
-      }
-    } else if (result?.code === 404) {
-      if (Date.now() - startedAt < KIE_TRANSIENT_NOT_FOUND_GRACE_MS) {
-        await wait(4000, signal);
-        continue;
-      }
-      throw createProviderError('task_not_found', result?.msg || '任务不存在或已过期', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'not_found' });
-    } else if (result?.code === 401 || result?.code === 403) {
-      throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 鉴权失败', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'auth_invalid' });
-    } else if (result?.code >= 500) {
-      throw createProviderError('provider_internal_error', result?.msg || 'Kie 服务异常', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'server_error' });
-    }
-
-    await wait(4000, signal);
-  }
-
-  throw createProviderError('provider_timeout', isVideo ? '视频合成超时' : '图像任务超时', { providerTaskId: taskId, providerStage: 'polling', providerStatus: lastKnownState || 'timeout' });
-};
-
-const probeKieTaskOnce = async (taskId, kieApiKey, signal, isVideo = false) => {
-  const response = await fetchKieWithTimeout(`${KIE_RECORD_INFO_URL}?taskId=${encodeURIComponent(taskId)}`, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${kieApiKey}`,
-    },
-    signal,
-  }, isVideo ? 'Kie 视频任务查询超时' : 'Kie 图像任务查询超时', KIE_HTTP_REQUEST_TIMEOUT_MS, 'polling');
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403 || result?.code === 401 || result?.code === 403) {
-      throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 鉴权失败', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'auth_invalid' });
-    }
-    if (response.status === 404 || result?.code === 404) {
-      throw createProviderError('task_not_found', result?.msg || '任务不存在或已过期', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'not_found' });
-    }
-    if (response.status === 429) {
-      throw createProviderError('provider_rate_limited', result?.msg || 'Kie 请求过于频繁', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'rate_limited' });
-    }
-    if (response.status >= 500) {
-      throw createProviderError('provider_internal_error', result?.msg || 'Kie 服务异常', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'server_error' });
-    }
-  }
-  if (result?.code === 200) {
-    const state = String(result.data?.state || '').trim();
-    if (state === 'success') {
-      const resultJson = JSON.parse(result.data.resultJson || '{}');
-      const url = Array.isArray(resultJson.resultUrls) ? resultJson.resultUrls[0] : '';
-      if (!url) {
-        throw createProviderError('provider_bad_response', 'Kie 返回成功但没有结果链接', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'success_without_result' });
-      }
-      const usageMeta = extractProviderUsageMeta(result);
-      return {
-        providerTaskId: taskId,
-        ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
-        providerStage: 'completed',
-        providerStatus: 'success',
-        result: {
-          imageUrl: url,
-          videoUrl: isVideo ? url : undefined,
-          taskId,
-          status: 'success',
-          providerTaskId: taskId,
-          ...(usageMeta.creditsConsumed !== undefined ? { creditsConsumed: usageMeta.creditsConsumed } : {}),
-          ...(usageMeta.usage ? { usage: usageMeta.usage } : {}),
-          providerModel: result.data?.model || '',
-        },
-      };
-    }
-    if (state === 'fail') {
-      throw createProviderError('provider_bad_request', result.data?.failMsg || 'Kie 任务失败', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'failed' });
-    }
-    return {
-      providerTaskId: taskId,
-      providerStage: 'polling',
-      providerStatus: state || 'pending',
-      result: {
-        taskId,
-        providerTaskId: taskId,
-        status: state || 'pending',
-      },
-    };
-  }
-  if (result?.code === 404) {
-    throw createProviderError('task_not_found', result?.msg || '任务不存在或已过期', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'not_found' });
-  }
-  if (result?.code === 401 || result?.code === 403) {
-    throw createProviderError('provider_auth_invalid', result?.msg || 'Kie 鉴权失败', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'auth_invalid' });
-  }
-  if (result?.code >= 500) {
-    throw createProviderError('provider_internal_error', result?.msg || 'Kie 服务异常', { providerTaskId: taskId, providerStage: 'polling', providerStatus: 'server_error' });
-  }
-  return {
-    providerTaskId: taskId,
-    providerStage: 'polling',
-    providerStatus: 'pending',
-    result: {
-      taskId,
-      providerTaskId: taskId,
-      status: 'pending',
-    },
-  };
 };
 
 const pollKieVeoTask = async (taskId, kieApiKey, signal) => {
@@ -2035,89 +1378,24 @@ const runKieImageJob = async (payload, env, signal, options = {}) => {
   ensureProviderKey(kieApiKey, 'Kie API Key');
   const rawImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
   const textMediaUrls = Array.from(extractTextMediaUrls(payload.prompt || ''));
-  allowConcurrentAbortListeners(signal, rawImageUrls.length + textMediaUrls.length);
   assertSupportedGenerationImageReferences([
     ...rawImageUrls,
     ...textMediaUrls,
   ]);
-  const resolvedGenerationUrlByRawUrl = new Map();
-  const resolveGenerationUrl = async (url) => {
-    const rawUrl = String(url || '').trim();
-    if (!rawUrl) return '';
-    if (!resolvedGenerationUrlByRawUrl.has(rawUrl)) {
-      resolvedGenerationUrlByRawUrl.set(rawUrl, resolveProviderGenerationMediaUrl(rawUrl, env, signal));
-    }
-    return resolvedGenerationUrlByRawUrl.get(rawUrl);
-  };
-  const imageUrls = await Promise.all(rawImageUrls.map((item) => resolveGenerationUrl(item)));
-  const gptImageAlias = KIE_IMAGE_MODEL_ALIASES[payload.model];
-  const limitedImageUrls = gptImageAlias ? imageUrls.slice(0, gptImageAlias.maxInputImages) : imageUrls;
-  const isGptImageEdit = Boolean(gptImageAlias && limitedImageUrls.length > 0);
-  const promptWithResolvedMediaUrls = await rewriteProviderTextMediaUrls(payload.prompt || '', resolveGenerationUrl);
-  const prompt = augmentImagePromptForModel(payload.model, promptWithResolvedMediaUrls, payload.aspectRatio, isGptImageEdit ? 'image' : 'text');
-  const normalizedAspectRatio = String(payload.aspectRatio || 'auto').trim() || 'auto';
-  const normalizedResolution = gptImageAlias
-    ? normalizeGptImage2Resolution(normalizedAspectRatio, payload.resolution || GPT_IMAGE_2_DEFAULT_RESOLUTION)
-    : String(payload.resolution || '1K').trim().toUpperCase();
-
-  const requestBody = gptImageAlias
-    ? {
-        model: limitedImageUrls.length > 0 ? gptImageAlias.image : gptImageAlias.text,
-        input: limitedImageUrls.length > 0
-          ? {
-              prompt,
-              input_urls: limitedImageUrls,
-              ...((gptImageAlias.supportedAspectRatios || []).includes(String(payload.aspectRatio || 'auto'))
-                ? { aspect_ratio: normalizedAspectRatio }
-                : {}),
-              resolution: normalizedResolution,
-            }
-          : {
-              prompt,
-              ...((gptImageAlias.supportedAspectRatios || []).includes(String(payload.aspectRatio || 'auto'))
-                ? { aspect_ratio: normalizedAspectRatio }
-                : {}),
-              resolution: normalizedResolution,
-            },
-      }
-    : {
-        model: payload.model || 'gpt-image-2',
-        input: {
-          prompt,
-          image_input: limitedImageUrls,
-          aspect_ratio: payload.aspectRatio || 'auto',
-          resolution: payload.resolution || GPT_IMAGE_2_DEFAULT_RESOLUTION,
-          output_format: 'png',
-        },
-      };
-
-  const response = await fetchKieWithTimeout(KIE_CREATE_TASK_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${kieApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(requestBody),
+  return runKieImageProviderJob({
+    payload,
     signal,
-  }, 'Kie 图像任务创建超时');
-
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok || result?.code !== 200 || !result?.data?.taskId) {
-    throw normalizeKieTaskCreationError(response.status, result, 'Kie 图像任务创建失败');
-  }
-  await notifyProviderTaskId(options, result.data.taskId);
-
-  try {
-    const imageResult = await pollKieTask(result.data.taskId, kieApiKey, signal, false, payload.model);
-    return {
-      ...imageResult,
-      providerTaskId: imageResult.providerTaskId || result.data.taskId,
-      providerStage: imageResult.providerStage || 'completed',
-      providerStatus: imageResult.providerStatus || 'success',
-    };
-  } catch (error) {
-    throw attachProviderTaskId(error, result.data.taskId);
-  }
+    options,
+    deps: {
+      kieApiKey,
+      createTaskUrl: KIE_CREATE_TASK_URL,
+      fetchWithTimeout: fetchKieWithTimeout,
+      resolveGenerationMediaUrl: (url) => resolveProviderGenerationMediaUrl(url, env, signal),
+      normalizeTaskCreationError: normalizeKieTaskCreationError,
+      pollKieTask,
+      wait,
+    },
+  });
 };
 
 const runKieClaudeMessagesJob = async (payload, env, signal) => {
@@ -2568,7 +1846,13 @@ const runKieRecoverJob = async (payload, env, signal) => {
   ensureProviderKey(kieApiKey, 'Kie API Key');
   const providerTaskId = payload.providerTaskId || payload.taskId;
   try {
-    return await pollKieTask(providerTaskId, kieApiKey, signal, Boolean(payload.isVideo));
+    return await pollKieTask(providerTaskId, {
+      kieApiKey,
+      signal,
+      isVideo: Boolean(payload.isVideo),
+      fetchWithTimeout: fetchKieWithTimeout,
+      wait,
+    });
   } catch (error) {
     throw attachProviderTaskId(error, providerTaskId);
   }
@@ -2579,7 +1863,12 @@ const runKieProbeJob = async (payload, env, signal) => {
   ensureProviderKey(kieApiKey, 'Kie API Key');
   const providerTaskId = payload.providerTaskId || payload.taskId;
   try {
-    return await probeKieTaskOnce(providerTaskId, kieApiKey, signal, Boolean(payload.isVideo));
+    return await probeKieTaskOnce(providerTaskId, {
+      kieApiKey,
+      signal,
+      isVideo: Boolean(payload.isVideo),
+      fetchWithTimeout: fetchKieWithTimeout,
+    });
   } catch (error) {
     throw attachProviderTaskId(error, providerTaskId);
   }
@@ -2636,7 +1925,13 @@ const runKieVideoJob = async (payload, env, signal, options = {}) => {
   await notifyProviderTaskId(options, result.data.taskId);
 
   try {
-    return await pollKieTask(result.data.taskId, kieApiKey, signal, true);
+    return await pollKieTask(result.data.taskId, {
+      kieApiKey,
+      signal,
+      isVideo: true,
+      fetchWithTimeout: fetchKieWithTimeout,
+      wait,
+    });
   } catch (error) {
     throw attachProviderTaskId(error, result.data.taskId);
   }
@@ -2802,7 +2097,14 @@ const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
   await notifyProviderTaskId(options, result.data.taskId);
 
   try {
-    const videoResult = await pollKieTask(result.data.taskId, kieApiKey, signal, true, 'bytedance/seedance-2-fast');
+    const videoResult = await pollKieTask(result.data.taskId, {
+      kieApiKey,
+      signal,
+      isVideo: true,
+      model: 'bytedance/seedance-2-fast',
+      fetchWithTimeout: fetchKieWithTimeout,
+      wait,
+    });
     return {
       ...videoResult,
       providerTaskId: videoResult.providerTaskId || result.data.taskId,

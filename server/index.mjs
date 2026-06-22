@@ -20,6 +20,11 @@ import {
 } from '../src/modules/AgentCenter/agentCenterUtils.mjs';
 import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
+import {
+  filterVisibleChatSessions,
+  isStudioTestChatSession,
+  resolveSessionReasoningLevel,
+} from './chatSessionRules.mjs';
 import { resolveContextLimits } from './contextPlan.mjs';
 import { formatChatSseEvent } from './chatStreaming.mjs';
 import { embedTexts } from './embeddingProvider.mjs';
@@ -1213,31 +1218,6 @@ const resolveImageAnalysisFallbackModels = (version, primaryModel = '') => {
     .filter((item) => item && !blocked.has(item) && available.has(item));
   return Array.from(new Set(preferred));
 };
-const isStudioTestChatSession = (session) => String(session?.title || '').trim() === '工作室测试' || Boolean(session?.is_studio);
-const resolvePreferredReasoningLevel = (reasoningLevels = []) => {
-  const normalized = Array.from(new Set(
-    (Array.isArray(reasoningLevels) ? reasoningLevels : [])
-      .map((item) => String(item || '').trim())
-      .filter(Boolean)
-  ));
-  if (normalized.includes('medium')) return 'medium';
-  if (normalized.includes('low')) return 'low';
-  return normalized[0] || null;
-};
-const resolveSessionReasoningLevel = ({ capability = null, requestedReasoningLevel = null } = {}) => {
-  if (!capability?.supportsReasoningLevel) return null;
-  const normalized = Array.from(new Set(
-    (Array.isArray(capability.reasoningLevels) ? capability.reasoningLevels : [])
-      .map((item) => String(item || '').trim())
-      .filter(Boolean)
-  ));
-  if (!normalized.length) return null;
-  const requested = String(requestedReasoningLevel || '').trim();
-  if (requested && normalized.includes(requested)) return requested;
-  const defaultReasoningLevel = resolvePreferredReasoningLevel(capability.reasoningLevels);
-  return defaultReasoningLevel && normalized.includes(defaultReasoningLevel) ? defaultReasoningLevel : normalized[0] || null;
-};
-
 const canManageOwnedResource = (user, ownerUserId) => Boolean(user?.role === 'admin' && (isSuperAdminUser(user) || ownerUserId === user.id));
 
 const shouldUseKnowledgeRetrieval = (message, retrievalPolicy, knowledgeBaseIds) => {
@@ -9977,9 +9957,7 @@ const handleLocalRequest = async (req, res, url) => {
     const user = localRequireUser(req, res, store);
     if (!user) return;
     const agentId = String(url.searchParams.get('agentId') || '');
-    const sessions = (store.chatSessions || [])
-      .filter((item) => item.userId === user.id && !isStudioTestChatSession(item) && (!agentId || item.agentId === agentId))
-      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+    const sessions = filterVisibleChatSessions(store.chatSessions || [], { userId: user.id, agentId })
       .map((item) => ({
         ...item,
         selectedModel: String(item.selectedModel || ''),

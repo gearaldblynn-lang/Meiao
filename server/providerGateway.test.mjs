@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import { executeProviderJob, uploadAssetViaKieStream, __testOnly_setDreaminaVideoRunner } from './providerGateway.mjs';
 
@@ -3908,23 +3907,4 @@ test('executeProviderJob falls back to a minimal claude request when tool_choice
   } finally {
     global.fetch = originalFetch;
   }
-});
-
-test('provider gateway raises abort signal listener budget for concurrent media fetches', () => {
-  const source = readFileSync(new URL('./providerGateway.mjs', import.meta.url), 'utf8');
-
-  assert.match(source, /import \{ getMaxListeners, setMaxListeners \} from 'node:events';/);
-  assert.match(source, /const allowConcurrentAbortListeners = \(signal, count\) =>/);
-  assert.match(source, /setMaxListeners\(Math\.max\(currentLimit, requestedLimit\), signal\)/);
-  assert.match(source, /allowConcurrentAbortListeners\(signal, rawImageUrls\.length \+ textMediaUrls\.length\)/);
-});
-
-test('provider gateway applies timeouts while reading downloaded provider media bodies', () => {
-  const source = readFileSync(new URL('./providerGateway.mjs', import.meta.url), 'utf8');
-
-  assert.match(source, /const readResponseBodyWithTimeout = async \(response, \{/);
-  assert.match(source, /readResponseBodyWithTimeout\(response, \{[\s\S]*timeoutMessage: '内部素材下载超时'/);
-  assert.match(source, /readResponseBodyWithTimeout\(response, \{[\s\S]*timeoutMessage: `\$\{label\}下载超时`/);
-  assert.doesNotMatch(source, /Buffer\.from\(await response\.arrayBuffer\(\)\)/);
-  assert.doesNotMatch(source, /const \{ done, value \} = await reader\.read\(\)/);
 });
