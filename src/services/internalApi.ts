@@ -25,7 +25,7 @@ import type {
 } from '../types';
 import type { PersistedAppState } from '../utils/appState';
 import { ensureUploadFileName } from '../utils/uploadFileName.mjs';
-import { parseChatSseChunk, type ChatStreamEvent } from './chatStreamParse';
+import { parseChatSseChunk, type ChatStreamEvent } from './chatStreamParse.ts';
 
 const SESSION_TOKEN_KEY = 'MEIAO_INTERNAL_SESSION_TOKEN';
 const CURRENT_USER_KEY = 'MEIAO_INTERNAL_CURRENT_USER';

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
 const imagePlanSource = readFileSync(new URL('./agentImagePlan.mjs', import.meta.url), 'utf8');
+const checkpointMetadataSource = readFileSync(new URL('./agentChatCheckpointMetadata.mjs', import.meta.url), 'utf8');
 
 test('agent publish flow keeps successful validation as a hard gate', () => {
   assert.match(source, /if \(!targetVersion \|\| targetVersion\.validationStatus !== 'success'\) return null;/);
@@ -206,8 +207,10 @@ test('agent chat source records image generation usage and local image replies',
 
 test('agent image chats checkpoint generated assets before final reply persistence', () => {
   assert.match(source, /const buildAgentImageResultAttachments = \(imageResultUrls\) =>/);
+  assert.match(source, /buildReadyImageCheckpoint/);
   assert.match(source, /const persistDbChatImageCheckpoint = async \(checkpointResult = \{\}\) =>/);
-  assert.match(source, /checkpoint: 'image_result_ready'/);
+  assert.match(source, /const checkpoint = buildReadyImageCheckpoint\(\{/);
+  assert.match(checkpointMetadataSource, /checkpoint: 'image_result_ready'/);
   assert.match(source, /onImageReady: persistDbChatImageCheckpoint/);
   assert.match(source, /const persistLocalChatImageCheckpoint = async \(checkpointResult = \{\}\) =>/);
   assert.match(source, /onImageReady: persistLocalChatImageCheckpoint/);
@@ -217,8 +220,10 @@ test('agent image chats checkpoint generated assets before final reply persisten
 });
 
 test('agent tool-calling image chats checkpoint provider task ids immediately after submission', () => {
+  assert.match(source, /buildSubmittedImageTaskCheckpoint/);
   assert.match(source, /const persistDbChatProviderTaskCheckpoint = async \(checkpointResult = \{\}\) =>/);
-  assert.match(source, /checkpoint: 'image_task_submitted'/);
+  assert.match(source, /const checkpoint = buildSubmittedImageTaskCheckpoint\(\{/);
+  assert.match(checkpointMetadataSource, /checkpoint: 'image_task_submitted'/);
   assert.match(source, /const persistLocalChatProviderTaskCheckpoint = async \(checkpointResult = \{\}\) =>/);
   assert.match(source, /onProviderTaskId: async \(providerTaskId\) => \{[\s\S]*?await persistDbChatProviderTaskCheckpoint\(\{/);
   assert.match(source, /onProviderTaskId: async \(providerTaskId\) => \{[\s\S]*?await persistLocalChatProviderTaskCheckpoint\(\{/);

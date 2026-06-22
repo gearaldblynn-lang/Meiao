@@ -7,6 +7,7 @@ const firstImageSource = readFileSync(new URL('./FirstImageSubModule.tsx', impor
 const detailSource = readFileSync(new URL('./DetailPageSubModule.tsx', import.meta.url), 'utf8');
 const buyerShowSource = readFileSync(new URL('../BuyerShow/BuyerShowModule.tsx', import.meta.url), 'utf8');
 const skuSource = readFileSync(new URL('./SkuSubModule.tsx', import.meta.url), 'utf8');
+const oneClickGenerationRunSource = readFileSync(new URL('./oneClickGenerationRun.mjs', import.meta.url), 'utf8');
 const oneClickModuleSource = readFileSync(new URL('./OneClickModule.tsx', import.meta.url), 'utf8');
 const promptUtilsSource = readFileSync(new URL('./generationPromptUtils.ts', import.meta.url), 'utf8');
 const configSidebarSource = readFileSync(new URL('./ConfigSidebar.tsx', import.meta.url), 'utf8');
@@ -104,15 +105,18 @@ test('sku batch generation waits for the first benchmark image then runs remaini
 });
 
 test('one click and buyer show never expose internal job ids as KIE task ids', () => {
-  for (const source of [mainSource, firstImageSource, detailSource, skuSource, buyerShowSource]) {
+  for (const source of [mainSource, firstImageSource, detailSource, buyerShowSource]) {
     assert.match(source, /onJobCreated|任务正在提交云端|任务已提交云端，正在生成/);
     assert.doesNotMatch(source, /taskId:\s*providerTaskId\s*\|\|\s*jobId/);
     assert.doesNotMatch(source, /providerTaskId\s*\|\|\s*jobId/);
   }
-  assert.match(mainSource, /backendJobId: jobId \|\| undefined/);
-  assert.match(firstImageSource, /backendJobId: jobId \|\| undefined/);
-  assert.match(detailSource, /backendJobId: jobId \|\| undefined/);
-  assert.match(skuSource, /backendJobId: jobId \|\| undefined/);
+  for (const source of [mainSource, firstImageSource, detailSource, skuSource]) {
+    assert.match(source, /buildOneClickJobCreatedPatch\(jobId, providerTaskId\)/);
+  }
+  assert.match(oneClickGenerationRunSource, /visibleProviderTaskId/);
+  assert.match(oneClickGenerationRunSource, /taskId: visibleProviderTaskId/);
+  assert.doesNotMatch(oneClickGenerationRunSource, /taskId:\s*visibleProviderTaskId\s*\|\|\s*backendJobId/);
+  assert.match(oneClickGenerationRunSource, /backendJobId/);
   assert.match(buyerShowSource, /backendJobId: jobId \|\| undefined/);
 });
 
@@ -384,6 +388,10 @@ test('reference preset content is split by submode: first image and sku save ima
   assert.match(referencePresetUtilsSource, /subMode === OneClickSubMode\.FIRST_IMAGE \|\| subMode === OneClickSubMode\.SKU/);
   assert.match(referencePresetUtilsSource, /const contentType = buildPresetContentType\(subMode\)/);
   assert.match(referencePresetUtilsSource, /summary: ''/);
+  assert.match(referencePresetManagerSource, /import ConfirmDialog from '..\/..\/shell\/components\/ConfirmDialog'/);
+  assert.match(referencePresetManagerSource, /const \[pendingDeletePreset, setPendingDeletePreset\] = useState<OneClickReferencePreset \| null>\(null\)/);
+  assert.match(referencePresetManagerSource, /<ConfirmDialog[\s\S]*title="删除预设"/);
+  assert.doesNotMatch(referencePresetManagerSource, /window\.confirm/);
   assert.match(referencePresetUtilsSource, /detail: ''/);
   assert.match(referencePresetUtilsSource, /const shouldRestoreAnalysis = preset\.contentType === 'images_with_analysis'/);
   assert.match(referencePresetUtilsSource, /summary: shouldRestoreAnalysis \? preset\.summary : ''/);

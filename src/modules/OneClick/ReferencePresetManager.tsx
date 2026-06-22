@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { OneClickReferencePreset, OneClickSubMode } from '../../types';
+import ConfirmDialog from '../../shell/components/ConfirmDialog';
 import { filterReferencePresets } from './referencePresetUtils.mjs';
 
 const SUBMODE_LABELS: Record<OneClickSubMode, string> = {
@@ -44,6 +45,7 @@ const ReferencePresetManager: React.FC<Props> = ({
 }) => {
   const [query, setQuery] = useState('');
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [pendingDeletePreset, setPendingDeletePreset] = useState<OneClickReferencePreset | null>(null);
   const visiblePresets = useMemo(
     () => filterReferencePresets(presets, { subMode: activeSubMode, query }).sort((a, b) => b.updatedAt - a.updatedAt),
     [presets, activeSubMode, query],
@@ -201,7 +203,7 @@ const ReferencePresetManager: React.FC<Props> = ({
                 <div className="mt-4 flex gap-2">
                   <button onClick={() => onApply(selectedPreset)} className="flex-1 rounded-xl bg-rose-600 px-3 py-2 text-xs font-black text-white">应用</button>
                   <button onClick={() => onEdit(selectedPreset)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-600">编辑</button>
-                  <button onClick={() => { if (window.confirm('确认删除该预设？')) onDelete(selectedPreset.id); }} className="rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-black text-rose-600">删除</button>
+                  <button onClick={() => setPendingDeletePreset(selectedPreset)} className="rounded-xl border border-rose-200 bg-white px-3 py-2 text-xs font-black text-rose-600">删除</button>
                 </div>
               </>
             ) : (
@@ -210,6 +212,20 @@ const ReferencePresetManager: React.FC<Props> = ({
           </div>
         </div>
       </div>
+      <ConfirmDialog
+        open={pendingDeletePreset !== null}
+        title="删除预设"
+        message={pendingDeletePreset ? `确定要删除预设「${pendingDeletePreset.name}」吗？此操作不可恢复。` : '确定要删除这个预设吗？此操作不可恢复。'}
+        confirmText="删除"
+        cancelText="取消"
+        onConfirm={() => {
+          if (!pendingDeletePreset) return;
+          onDelete(pendingDeletePreset.id);
+          setSelectedIds((prev) => prev.filter((id) => id !== pendingDeletePreset.id));
+          setPendingDeletePreset(null);
+        }}
+        onCancel={() => setPendingDeletePreset(null)}
+      />
     </div>
   );
 };
