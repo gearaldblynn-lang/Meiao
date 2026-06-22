@@ -16,6 +16,7 @@ import { logActionFailure, logActionInterrupted, logActionStart, logActionSucces
 import { persistGeneratedAsset } from '../../services/persistedAssetClient';
 import { normalizeCopyLayoutText } from './copyLayoutUtils.mjs';
 import { buildOneClickImagePrompt } from './generationPromptUtils';
+import { buildOneClickJobCreatedPatch, buildOneClickRunStartPatch } from './oneClickGenerationRun.mjs';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -538,12 +539,7 @@ const DetailPageSubModule: React.FC<Props> = ({
     const controller = new AbortController();
     screenControllersRef.current[schemeId] = controller;
 
-    updateSingleScreen(
-      schemeId,
-      mode === 'recover'
-        ? { status: 'generating', error: undefined }
-        : { status: 'generating', error: undefined, taskId: undefined, resultUrl: undefined }
-    );
+    updateSingleScreen(schemeId, buildOneClickRunStartPatch(mode));
 
     try {
       let res: KieAiResult;
@@ -566,11 +562,7 @@ const DetailPageSubModule: React.FC<Props> = ({
         res = await recoverKieAiTask(targetScheme.taskId, apiConfig, controller.signal);
       } else {
         res = await triggerNewKieTask(targetScheme, productUrls, controller.signal, (jobId, providerTaskId) => {
-          updateSingleScheme(schemeId, {
-            taskId: providerTaskId || undefined,
-            backendJobId: jobId || undefined,
-            error: providerTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
-          });
+          updateSingleScheme(schemeId, buildOneClickJobCreatedPatch(jobId, providerTaskId));
         });
       }
 

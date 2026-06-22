@@ -75,6 +75,10 @@ import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLog
 import { createTemporalTaskAdapter } from './temporalTaskAdapter.mjs';
 import { createLocalTemporalActivities, createMysqlTemporalActivities, startMeiaoTemporalWorker } from './temporalWorker.mjs';
 import { buildImageOutputTransformFromJob, transformImageOutputBuffer } from './imagePostProcess.mjs';
+import {
+  buildReadyImageCheckpoint,
+  buildSubmittedImageTaskCheckpoint,
+} from './agentChatCheckpointMetadata.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -5438,44 +5442,17 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   }
   let latestDbChatProviderTaskCheckpoint = null;
   const persistDbChatProviderTaskCheckpoint = async (checkpointResult = {}) => {
-    const providerTaskId = String(checkpointResult.providerTaskId || '').trim();
-    if (!providerTaskId) return;
-    const imagePlan = checkpointResult.imagePlan || {
-      requestMode: 'tool_calling',
-      taskType: checkpointResult.taskType || 'image_generate',
-      selectedImageModel: checkpointResult.selectedModel || '',
-      inputImageUrls: Array.isArray(checkpointResult.inputImageUrls) ? checkpointResult.inputImageUrls : [],
-      prompt: checkpointResult.prompt || '',
-      size: checkpointResult.size || 'auto',
-      providerTaskId,
-    };
-    latestDbChatProviderTaskCheckpoint = { providerTaskId, imagePlan };
-    const checkpointContextTrace = {
-      ...contextTraceBase,
-      knowledgeChunkCount: requestMode === 'image_generation' ? imageKnowledgeChunks.length : 0,
-    };
-    const checkpointUserMetadata = {
-      ...pendingUserMetadata,
-      status: 'pending',
-      pending: true,
-      phase: 'submitted',
-      contextTrace: checkpointContextTrace,
-    };
-    const checkpointAssistantMetadata = {
-      ...pendingAssistantMetadata,
-      selectedModel: checkpointResult.selectedModel || pendingAssistantMetadata.selectedModel,
-      status: 'pending',
-      pending: true,
-      progress: true,
-      phase: 'image_generating',
-      progressStage: 'image_generating',
-      contextTrace: checkpointContextTrace,
-      imagePlan,
-      imageResultUrls: null,
-      retrievalSummary: [],
-      providerTaskId,
-      checkpoint: 'image_task_submitted',
-    };
+    const checkpoint = buildSubmittedImageTaskCheckpoint({
+      checkpointResult,
+      pendingUserMetadata,
+      pendingAssistantMetadata,
+      contextTraceBase,
+      requestMode,
+      imageKnowledgeChunkCount: imageKnowledgeChunks.length,
+    });
+    if (!checkpoint) return;
+    const { providerTaskId, userMetadata: checkpointUserMetadata, assistantMetadata: checkpointAssistantMetadata } = checkpoint;
+    latestDbChatProviderTaskCheckpoint = checkpoint.latestCheckpoint;
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
@@ -5486,7 +5463,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       await connection.query(
         'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
         [
-          checkpointResult.content || '图片任务已提交，正在生成中。',
+          checkpoint.assistantContent,
           JSON.stringify(null),
           JSON.stringify(checkpointAssistantMetadata),
           assistantMessageId,
@@ -5509,42 +5486,16 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     }
   };
   const persistDbChatImageCheckpoint = async (checkpointResult = {}) => {
-    const imageResultUrls = Array.isArray(checkpointResult.imageResultUrls)
-      ? checkpointResult.imageResultUrls.map((url) => String(url || '').trim()).filter(Boolean)
-      : [];
-    if (imageResultUrls.length === 0) return;
-    const checkpointContextTrace = {
-      ...contextTraceBase,
-      knowledgeChunkCount: requestMode === 'image_generation'
-        ? imageKnowledgeChunks.length
-        : Array.isArray(checkpointResult.retrievalSummary)
-          ? checkpointResult.retrievalSummary.length
-          : 0,
-    };
-    const checkpointUserMetadata = {
-      ...pendingUserMetadata,
-      status: 'completed',
-      pending: false,
-      phase: 'submitted',
-      contextTrace: checkpointContextTrace,
-    };
-    const checkpointAssistantMetadata = {
-      ...pendingAssistantMetadata,
-      selectedModel: checkpointResult.selectedModel || pendingAssistantMetadata.selectedModel,
-      fallbackFrom: checkpointResult.fallbackFrom || null,
-      usedRetrieval: Boolean(checkpointResult.usedRetrieval),
-      status: 'completed',
-      pending: false,
-      progress: false,
-      phase: 'completed',
-      progressStage: 'image_ready',
-      contextTrace: checkpointContextTrace,
-      imagePlan: checkpointResult.imagePlan || null,
-      imageResultUrls,
-      retrievalSummary: checkpointResult.retrievalSummary || [],
-      providerTaskId: checkpointResult.providerTaskId || checkpointResult.imagePlan?.providerTaskId || '',
-      checkpoint: 'image_result_ready',
-    };
+    const checkpoint = buildReadyImageCheckpoint({
+      checkpointResult,
+      pendingUserMetadata,
+      pendingAssistantMetadata,
+      contextTraceBase,
+      requestMode,
+      imageKnowledgeChunkCount: imageKnowledgeChunks.length,
+    });
+    if (!checkpoint) return;
+    const { imageResultUrls, userMetadata: checkpointUserMetadata, assistantMetadata: checkpointAssistantMetadata } = checkpoint;
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
@@ -5555,7 +5506,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       await connection.query(
         'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ?, created_at = ? WHERE id = ? AND session_id = ? AND user_id = ?',
         [
-          checkpointResult.content || '图片已生成完成。',
+          checkpoint.assistantContent,
           JSON.stringify(buildAgentImageResultAttachments(imageResultUrls)),
           JSON.stringify(checkpointAssistantMetadata),
           Date.now(),
@@ -10318,88 +10269,37 @@ const handleLocalRequest = async (req, res, url) => {
     writeLocalStore(store);
     let latestLocalChatProviderTaskCheckpoint = null;
     const persistLocalChatProviderTaskCheckpoint = async (checkpointResult = {}) => {
-      const providerTaskId = String(checkpointResult.providerTaskId || '').trim();
-      if (!providerTaskId) return;
-      const imagePlan = checkpointResult.imagePlan || {
-        requestMode: 'tool_calling',
-        taskType: checkpointResult.taskType || 'image_generate',
-        selectedImageModel: checkpointResult.selectedModel || '',
-        inputImageUrls: Array.isArray(checkpointResult.inputImageUrls) ? checkpointResult.inputImageUrls : [],
-        prompt: checkpointResult.prompt || '',
-        size: checkpointResult.size || 'auto',
-        providerTaskId,
-      };
-      latestLocalChatProviderTaskCheckpoint = { providerTaskId, imagePlan };
-      const checkpointContextTrace = {
-        ...contextTraceBase,
-        knowledgeChunkCount: requestMode === 'image_generation' ? imageKnowledgeChunks.length : 0,
-      };
-      userMessage.metadata = {
-        ...userMessage.metadata,
-        status: 'pending',
-        pending: true,
-        phase: 'submitted',
-        contextTrace: checkpointContextTrace,
-      };
-      assistantMessage.content = checkpointResult.content || '图片任务已提交，正在生成中。';
+      const checkpoint = buildSubmittedImageTaskCheckpoint({
+        checkpointResult,
+        pendingUserMetadata: userMessage.metadata,
+        pendingAssistantMetadata: assistantMessage.metadata,
+        contextTraceBase,
+        requestMode,
+        imageKnowledgeChunkCount: imageKnowledgeChunks.length,
+      });
+      if (!checkpoint) return;
+      latestLocalChatProviderTaskCheckpoint = checkpoint.latestCheckpoint;
+      userMessage.metadata = checkpoint.userMetadata;
+      assistantMessage.content = checkpoint.assistantContent;
       assistantMessage.attachments = [];
-      assistantMessage.metadata = {
-        ...assistantMessage.metadata,
-        selectedModel: checkpointResult.selectedModel || assistantMessage.metadata?.selectedModel || selectedModel,
-        status: 'pending',
-        phase: 'image_generating',
-        pending: true,
-        progress: true,
-        progressStage: 'image_generating',
-        contextTrace: checkpointContextTrace,
-        imagePlan,
-        imageResultUrls: null,
-        retrievalSummary: [],
-        providerTaskId,
-        checkpoint: 'image_task_submitted',
-      };
+      assistantMessage.metadata = checkpoint.assistantMetadata;
       session.updatedAt = Date.now();
       writeLocalStore(store);
     };
     const persistLocalChatImageCheckpoint = async (checkpointResult = {}) => {
-      const imageResultUrls = Array.isArray(checkpointResult.imageResultUrls)
-        ? checkpointResult.imageResultUrls.map((url) => String(url || '').trim()).filter(Boolean)
-        : [];
-      if (imageResultUrls.length === 0) return;
-      const checkpointContextTrace = {
-        ...contextTraceBase,
-        knowledgeChunkCount: requestMode === 'image_generation'
-          ? imageKnowledgeChunks.length
-          : Array.isArray(checkpointResult.retrievalSummary)
-            ? checkpointResult.retrievalSummary.length
-            : 0,
-      };
-      userMessage.metadata = {
-        ...userMessage.metadata,
-        status: 'completed',
-        phase: 'submitted',
-        pending: false,
-        contextTrace: checkpointContextTrace,
-      };
-      assistantMessage.content = checkpointResult.content || '图片已生成完成。';
-      assistantMessage.attachments = buildAgentImageResultAttachments(imageResultUrls);
-      assistantMessage.metadata = {
-        ...assistantMessage.metadata,
-        selectedModel: checkpointResult.selectedModel || assistantMessage.metadata?.selectedModel || selectedModel,
-        fallbackFrom: checkpointResult.fallbackFrom || null,
-        usedRetrieval: Boolean(checkpointResult.usedRetrieval),
-        status: 'completed',
-        phase: 'completed',
-        pending: false,
-        progress: false,
-        progressStage: 'image_ready',
-        contextTrace: checkpointContextTrace,
-        imagePlan: checkpointResult.imagePlan || null,
-        imageResultUrls,
-        retrievalSummary: checkpointResult.retrievalSummary || [],
-        providerTaskId: checkpointResult.providerTaskId || checkpointResult.imagePlan?.providerTaskId || '',
-        checkpoint: 'image_result_ready',
-      };
+      const checkpoint = buildReadyImageCheckpoint({
+        checkpointResult,
+        pendingUserMetadata: userMessage.metadata,
+        pendingAssistantMetadata: assistantMessage.metadata,
+        contextTraceBase,
+        requestMode,
+        imageKnowledgeChunkCount: imageKnowledgeChunks.length,
+      });
+      if (!checkpoint) return;
+      userMessage.metadata = checkpoint.userMetadata;
+      assistantMessage.content = checkpoint.assistantContent;
+      assistantMessage.attachments = buildAgentImageResultAttachments(checkpoint.imageResultUrls);
+      assistantMessage.metadata = checkpoint.assistantMetadata;
       assistantMessage.createdAt = Date.now();
       session.updatedAt = Date.now();
       writeLocalStore(store);

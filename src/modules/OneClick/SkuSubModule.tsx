@@ -27,6 +27,7 @@ import { buildSkuGenerationAssets } from './skuGenerationUtils.mjs';
 import { normalizeCopyLayoutText } from './copyLayoutUtils.mjs';
 import { appendOneClickCopyGuardrails } from './generationPromptUtils';
 import { resolvePublicAssetUrl } from '../../utils/modelAssetUrl.mjs';
+import { buildOneClickJobCreatedPatch, buildOneClickRunStartPatch } from './oneClickGenerationRun.mjs';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -304,12 +305,7 @@ const SkuSubModule: React.FC<Props> = ({
     if (taskControllersRef.current[schemeId]) taskControllersRef.current[schemeId].abort();
     const controller = new AbortController();
     taskControllersRef.current[schemeId] = controller;
-    updateSingleScheme(
-      schemeId,
-      mode === 'recover'
-        ? { status: 'generating', error: undefined }
-        : { status: 'generating', error: undefined, taskId: undefined, resultUrl: undefined }
-    );
+    updateSingleScheme(schemeId, buildOneClickRunStartPatch(mode));
 
     const targetScheme = schemesRef.current.find(s => s.id === schemeId);
     if (!targetScheme) return false;
@@ -338,11 +334,7 @@ const SkuSubModule: React.FC<Props> = ({
           undefined,
           'main',
           {},
-          (jobId, providerTaskId) => updateSingleScheme(schemeId, {
-            taskId: providerTaskId || undefined,
-            backendJobId: jobId || undefined,
-            error: providerTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
-          })
+          (jobId, providerTaskId) => updateSingleScheme(schemeId, buildOneClickJobCreatedPatch(jobId, providerTaskId))
         );
       }
 

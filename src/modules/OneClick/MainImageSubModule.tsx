@@ -17,6 +17,7 @@ import { persistGeneratedAsset } from '../../services/persistedAssetClient';
 import { normalizeCopyLayoutText } from './copyLayoutUtils.mjs';
 import { buildOneClickImagePrompt } from './generationPromptUtils';
 import { cancelInternalJob } from '../../services/internalApi';
+import { buildOneClickJobCreatedPatch, buildOneClickRunStartPatch } from './oneClickGenerationRun.mjs';
 
 interface Props {
   apiConfig: GlobalApiConfig;
@@ -521,12 +522,7 @@ const MainImageSubModule: React.FC<Props> = ({
     taskControllersRef.current[schemeId] = controller;
 
     // 生成中状态再次确认（清除上传提示）
-    updateSingleScheme(
-      schemeId,
-      mode === 'recover'
-        ? { status: 'generating', error: undefined }
-        : { status: 'generating', error: undefined, taskId: undefined, resultUrl: undefined }
-    );
+    updateSingleScheme(schemeId, buildOneClickRunStartPatch(mode));
 
     try {
       let res: KieAiResult;
@@ -549,11 +545,7 @@ const MainImageSubModule: React.FC<Props> = ({
         res = await recoverKieAiTask(targetScheme.taskId, apiConfig, controller.signal);
       } else {
         res = await triggerNewKieTask(targetScheme, productUrls, controller.signal, (jobId, providerTaskId) => {
-          updateSingleScheme(schemeId, {
-            taskId: providerTaskId || undefined,
-            backendJobId: jobId || undefined,
-            error: providerTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
-          });
+          updateSingleScheme(schemeId, buildOneClickJobCreatedPatch(jobId, providerTaskId));
         });
       }
 

@@ -8,6 +8,11 @@ import { isExternallyReachableBaseUrl, isLocalOrPrivateHostname, normalizeBaseUr
 import { queryDreaminaVideoTask, submitDreaminaVideoTask } from './dreaminaVideoCli.mjs';
 import { runOpenAIToolCallingJob, runOpenAIToolCallingStream } from './openaiToolCalling.mjs';
 import { runResponsesJob } from './openaiResponsesProvider.mjs';
+import {
+  isVideoMediaUrl,
+  shouldUploadGeminiMediaUrlForStableMime,
+  shouldUploadGeminiVideoUrlToOpenRouterChat,
+} from './providerMediaRouting.mjs';
 
 const KIE_CREATE_TASK_URL = 'https://api.kie.ai/api/v1/jobs/createTask';
 const KIE_RECORD_INFO_URL = 'https://api.kie.ai/api/v1/jobs/recordInfo';
@@ -618,31 +623,6 @@ const convertManagedAssetUrlToKieFileUrl = async (assetUrl, env, signal, options
   return String(uploaded?.result?.fileUrl || '').trim();
 };
 
-const isOpenRouterChatFileUrl = (value) => {
-  try {
-    const url = new URL(String(value || ''));
-    return /^tempfileb\.aiquickdraw\.com$/i.test(url.hostname || '')
-      && /^\/kieai\/openrouter-chat\//i.test(url.pathname || '');
-  } catch {
-    return false;
-  }
-};
-
-const isRedpandaOpenRouterChatFileUrl = (value) => {
-  try {
-    const url = new URL(String(value || ''));
-    return /^tempfile\.redpandaai\.co$/i.test(url.hostname || '')
-      && /\/openrouter-chat\//i.test(url.pathname || '');
-  } catch {
-    return false;
-  }
-};
-
-const isVideoMediaUrl = (value) => {
-  const normalized = String(value || '').split('?')[0].toLowerCase();
-  return /\.(mp4|m4v|mov|webm)$/i.test(normalized);
-};
-
 const isPrivateIpv4Hostname = (hostname) => {
   const parts = String(hostname || '').split('.').map((part) => Number(part));
   if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
@@ -745,22 +725,6 @@ const downloadRemoteProviderMediaUrl = async (mediaUrl, signal) => {
   };
 };
 
-const shouldUploadGeminiMediaUrlForStableMime = (value) => {
-  const normalized = String(value || '').trim();
-  if (!normalized || isVideoMediaUrl(normalized) || isManagedAssetUrl(normalized)) return false;
-  if (!/^https?:\/\//i.test(normalized)) return false;
-  const pathname = (() => {
-    try {
-      return new URL(normalized).pathname || '';
-    } catch {
-      return normalized.split('?')[0] || '';
-    }
-  })();
-  if (/\.(png|jpe?g|webp|gif|bmp|svg|pdf|txt|md|json)$/i.test(pathname)) return false;
-  if (/tempfile\.redpandaai\.co|tempfileb\.aiquickdraw\.com/i.test(normalized)) return true;
-  return false;
-};
-
 const convertGeminiMediaToStableKieUrl = async (mediaUrl, env, signal) => {
   const downloaded = await downloadRemoteProviderMediaUrl(mediaUrl, signal);
   const uploaded = await uploadAssetViaKieStream({
@@ -768,13 +732,6 @@ const convertGeminiMediaToStableKieUrl = async (mediaUrl, env, signal) => {
     uploadPath: 'mayo-storage/internal',
   }, env);
   return String(uploaded?.result?.fileUrl || '').trim();
-};
-
-const shouldUploadGeminiVideoUrlToOpenRouterChat = (value) => {
-  const normalized = String(value || '').trim();
-  if (!normalized || !isVideoMediaUrl(normalized)) return false;
-  if (isOpenRouterChatFileUrl(normalized)) return false;
-  return true;
 };
 
 const convertGeminiVideoToOpenRouterChatUrl = async (mediaUrl, env, signal) => {
@@ -794,7 +751,7 @@ const resolveProviderGeminiChatMediaUrl = async (value, env, signal) => {
   if (isVideoMediaUrl(normalized)) {
     return convertGeminiVideoToOpenRouterChatUrl(normalized, env, signal);
   }
-  if (shouldUploadGeminiMediaUrlForStableMime(normalized)) {
+  if (shouldUploadGeminiMediaUrlForStableMime(normalized, { isManagedAssetUrl })) {
     return convertGeminiMediaToStableKieUrl(normalized, env, signal);
   }
   return resolveProviderChatMediaUrl(normalized, env, signal);
