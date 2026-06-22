@@ -1,8 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-
-const source = readFileSync(new URL('./internalApi.ts', import.meta.url), 'utf8');
 
 const installBrowserLikeGlobals = () => {
   const storage = new Map();
@@ -23,19 +20,73 @@ const loadInternalApi = async () => {
   return import(`./internalApi.ts?case=${Date.now()}-${Math.random()}`);
 };
 
-test('probeInternalApi uses a timeouted fetch instead of waiting on a bare health request', () => {
-  const probeBody = source.match(/export const probeInternalApi = async \([^)]*\)(?:: [^{]+)? => \{([\s\S]*?)\n\};/)?.[1] || '';
+test('probeInternalApi aborts the health request on timeout', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const api = await loadInternalApi();
+  let seenSignal = null;
+  globalThis.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+  globalThis.clearTimeout = () => {};
+  globalThis.fetch = async (_url, init = {}) => {
+    seenSignal = init.signal;
+    return new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+    });
+  };
 
-  assert.match(probeBody, /fetchWithTimeout/);
-  assert.match(probeBody, /timeoutMs/);
-  assert.doesNotMatch(probeBody, /await fetch\('\s*\/api\/health\s*'\)/);
+  try {
+    const ok = await api.probeInternalApi();
+    assert.equal(ok, false);
+    assert.equal(seenSignal instanceof AbortSignal, true);
+    assert.equal(seenSignal.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+  }
 });
 
-test('authenticated GET request dedupe keys include the current session token', () => {
-  assert.match(source, /const buildDedupeKey = \(path: string, method: string, body\?: BodyInit \| null, token = ''\)/);
-  assert.match(source, /const authScope = token \? `auth:\$\{token\}` : 'auth:anonymous'/);
-  assert.match(source, /if \(method === 'GET'\) return `GET:\$\{path\}:\$\{authScope\}`/);
-  assert.match(source, /const token = getSessionToken\(\);\s+const dedupeKey = dedupe \? buildDedupeKey\(path, method, init\?\.body, token\) : ''/);
+test('authenticated GET request dedupe is scoped by current session token', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const pending = [];
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), authorization: init.headers?.Authorization || '' });
+    return new Promise((resolve) => pending.push(resolve));
+  };
+
+  try {
+    api.storeSessionToken('token-a');
+    const firstA = api.fetchCurrentUser();
+    const secondA = api.fetchCurrentUser();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].authorization, 'Bearer token-a');
+
+    api.storeSessionToken('token-b');
+    const firstB = api.fetchCurrentUser();
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].authorization, 'Bearer token-b');
+
+    pending[0](new Response(JSON.stringify({ user: { id: 'a', username: 'alice' } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    pending[1](new Response(JSON.stringify({ user: { id: 'b', username: 'bob' } }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    assert.deepEqual(await firstA, { user: { id: 'a', username: 'alice' } });
+    assert.deepEqual(await secondA, { user: { id: 'a', username: 'alice' } });
+    assert.deepEqual(await firstB, { user: { id: 'b', username: 'bob' } });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('sendChatMessage falls back to JSON response when streaming is unavailable', async () => {
@@ -63,6 +114,51 @@ test('sendChatMessage falls back to JSON response when streaming is unavailable'
     );
     assert.equal(result.assistantMessage.content, 'hi');
     assert.deepEqual(result.usage, { totalTokens: 3 });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('sendChatMessage removes bridged abort listeners after JSON request completion', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  let addedListener = null;
+  let removedListener = null;
+  let addCount = 0;
+  let removeCount = 0;
+  const externalSignal = {
+    aborted: false,
+    reason: undefined,
+    addEventListener: (type, listener) => {
+      if (type !== 'abort') return;
+      addCount += 1;
+      addedListener = listener;
+    },
+    removeEventListener: (type, listener) => {
+      if (type !== 'abort') return;
+      removeCount += 1;
+      removedListener = listener;
+    },
+  };
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    userMessage: { id: 'user-1', role: 'user', content: 'hello' },
+    assistantMessage: { id: 'assistant-1', role: 'assistant', content: 'hi' },
+    usage: {},
+  }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+
+  try {
+    const result = await api.sendChatMessage(
+      'session-1',
+      { content: 'hello', requestMode: 'chat' },
+      { signal: externalSignal }
+    );
+    assert.equal(result.assistantMessage.content, 'hi');
+    assert.equal(addCount, 1);
+    assert.equal(removeCount, 1);
+    assert.equal(removedListener, addedListener);
   } finally {
     globalThis.fetch = originalFetch;
   }

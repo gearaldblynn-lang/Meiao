@@ -1,8 +1,165 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import {
+  createDbChatRouteHarness,
+  createLocalChatRouteHarness,
+} from './agentChatRouteHarness.mjs';
 
 const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+
+test('local chat route returns the existing exchange for duplicate clientRequestId', async () => {
+  const harness = createLocalChatRouteHarness({
+    now: () => 1700000000000,
+    runConversation: async () => ({ content: 'new reply', metadata: {} }),
+  });
+
+  harness.seedMessages([
+    { id: 'u1', sessionId: 's1', role: 'user', clientRequestId: 'req-1', content: 'hello' },
+    { id: 'a1', sessionId: 's1', role: 'assistant', clientRequestId: 'req-1', content: 'old reply', status: 'completed' },
+  ]);
+
+  const response = await harness.postMessage({
+    sessionId: 's1',
+    clientRequestId: 'req-1',
+    content: 'hello again',
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.assistantMessage.content, 'old reply');
+  assert.equal(harness.messages().length, 2);
+});
+
+test('local chat route rejects a new message while a run is pending in the same session', async () => {
+  const harness = createLocalChatRouteHarness({
+    runConversation: async () => ({ content: 'unused' }),
+  });
+  harness.seedMessages([
+    {
+      id: 'a-pending',
+      sessionId: 's1',
+      role: 'assistant',
+      status: 'pending',
+      metadata: { progressStage: 'thinking' },
+    },
+  ]);
+
+  const response = await harness.postMessage({
+    sessionId: 's1',
+    clientRequestId: 'req-2',
+    content: 'next',
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, 'agent_chat_run_active');
+  assert.equal(harness.messages().length, 1);
+});
+
+test('local chat checkpoint records submitted provider task id before image result exists', async () => {
+  const harness = createLocalChatRouteHarness({
+    runConversation: async () => ({ content: 'unused' }),
+  });
+  harness.seedMessages([
+    {
+      id: 'a1',
+      sessionId: 's1',
+      role: 'assistant',
+      status: 'pending',
+      clientRequestId: 'req-1',
+      metadata: {},
+    },
+  ]);
+
+  const updated = await harness.markImageTaskSubmitted({
+    assistantMessageId: 'a1',
+    providerTaskId: 'kie-task-1',
+    imagePlan: { prompt: 'generate image' },
+  });
+
+  const message = harness.messages().find((item) => item.id === 'a1');
+  assert.equal(updated, true);
+  assert.equal(message.status, 'pending');
+  assert.equal(message.metadata.providerTaskId, 'kie-task-1');
+  assert.deepEqual(message.metadata.imagePlan, { prompt: 'generate image' });
+  assert.equal(message.metadata.progressStage, 'image_task_submitted');
+});
+
+test('local chat checkpoint records completed image result attachments', async () => {
+  const harness = createLocalChatRouteHarness({
+    runConversation: async () => ({ content: 'unused' }),
+  });
+  harness.seedMessages([
+    {
+      id: 'a1',
+      sessionId: 's1',
+      role: 'assistant',
+      status: 'pending',
+      clientRequestId: 'req-1',
+      metadata: { providerTaskId: 'kie-task-1' },
+    },
+  ]);
+
+  const updated = await harness.markImageResultReady({
+    assistantMessageId: 'a1',
+    providerTaskId: 'kie-task-1',
+    imageResultUrls: ['https://cdn.test/result.png'],
+  });
+
+  const message = harness.messages().find((item) => item.id === 'a1');
+  assert.equal(updated, true);
+  assert.equal(message.status, 'completed');
+  assert.equal(message.metadata.providerTaskId, 'kie-task-1');
+  assert.deepEqual(message.metadata.imageResultUrls, ['https://cdn.test/result.png']);
+  assert.equal(message.metadata.progressStage, 'image_result_ready');
+  assert.deepEqual(message.attachments, [{ type: 'image', url: 'https://cdn.test/result.png' }]);
+});
+
+test('db chat route returns the existing exchange for duplicate clientRequestId', async () => {
+  const harness = createDbChatRouteHarness({
+    now: () => 1700000000000,
+    runConversation: async () => ({ content: 'new reply', metadata: {} }),
+  });
+
+  harness.seedMessages([
+    { id: 'u1', sessionId: 's1', role: 'user', clientRequestId: 'req-1', content: 'hello' },
+    { id: 'a1', sessionId: 's1', role: 'assistant', clientRequestId: 'req-1', content: 'old reply', status: 'completed' },
+  ]);
+
+  const response = await harness.postMessage({
+    sessionId: 's1',
+    clientRequestId: 'req-1',
+    content: 'hello again',
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.assistantMessage.content, 'old reply');
+  assert.equal(harness.messages().length, 2);
+});
+
+test('db chat route rejects a new message while a run is pending in the same session', async () => {
+  const harness = createDbChatRouteHarness({
+    runConversation: async () => ({ content: 'unused' }),
+  });
+  harness.seedMessages([
+    {
+      id: 'a-pending',
+      sessionId: 's1',
+      role: 'assistant',
+      status: 'pending',
+      metadata: { progressStage: 'thinking' },
+    },
+  ]);
+
+  const response = await harness.postMessage({
+    sessionId: 's1',
+    clientRequestId: 'req-2',
+    content: 'next',
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, 'agent_chat_run_active');
+  assert.equal(harness.messages().length, 1);
+});
 
 test('agent chat requests are idempotent across formal and studio sessions', () => {
   assert.match(source, /const activeDbChatReplyRequests = new Map\(\);/);
@@ -37,8 +194,6 @@ test('agent chat keeps running requests durable across refresh and blocks parall
 });
 
 test('local json chat mode also persists pending messages before provider work', () => {
-  assert.match(source, /const activeSessionRun = \(store\.chatMessages \|\| \[\]\)/);
-  assert.match(source, /json\(res, 409, \{ message: buildActiveAgentChatRunError\(\)\.message, code: 'agent_chat_run_active' \}\);/);
   assert.match(source, /store\.chatMessages\.push\(userMessage\);\s*store\.chatMessages\.push\(assistantMessage\);/);
   assert.match(source, /assistantMessage\.content = result\.content;/);
   assert.match(source, /assistantMessage\.content = errorMessage;/);
@@ -61,8 +216,6 @@ test('agent chat strips provider protocol markers before persisting replies', ()
 
 test('local json chat mode follows the same idempotency and history ordering safeguards', () => {
   assert.match(source, /const activeLocalChatReplyRequests = new Map\(\);/);
-  assert.match(source, /const existingMessages = \(store\.chatMessages \|\| \[\]\)/);
-  assert.match(source, /if \(existingUserMessage && existingAssistantMessage\) \{/);
   assert.match(source, /if \(activeLocalChatReplyRequests\.has\(activeKey\)\) \{/);
   assert.match(source, /activeLocalChatReplyRequests\.set\(activeKey, promise\);/);
   assert.doesNotMatch(
@@ -144,11 +297,4 @@ test('agent creation stores selected model policies on the initial version', () 
     assert.match(createSource, /modelPolicy: payload\.modelPolicy \|\| \{\}/);
     assert.match(createSource, /retrievalPolicy: payload\.retrievalPolicy \|\| \{\}/);
   }
-});
-
-test('internal api timeout bridge removes abort listeners after fetch completion', () => {
-  const internalApiSource = readFileSync(new URL('../src/services/internalApi.ts', import.meta.url), 'utf8');
-  assert.match(internalApiSource, /const onAbort = \(\) => controller\.abort\(existingSignal\.reason\);/);
-  assert.match(internalApiSource, /existingSignal\?\.addEventListener\('abort', onAbort, \{ once: true \}\);/);
-  assert.match(internalApiSource, /existingSignal\?\.removeEventListener\?\.\('abort', onAbort\);/);
 });
