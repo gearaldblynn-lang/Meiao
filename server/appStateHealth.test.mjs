@@ -61,12 +61,36 @@ test('analyzeAppState detects dirty task identity and display-state anomalies', 
 
   assert.equal(report.projectCount, 3);
   assert.equal(report.resultCount, 4);
-  assert.equal(report.issueCounts.duplicate_project_id, 1);
+  assert.equal(report.issueCounts.duplicate_project_id || 0, 0);
   assert.equal(report.issueCounts.duplicate_task_identity, 1);
   assert.equal(report.issueCounts.completed_project_incomplete, 1);
   assert.equal(report.issueCounts.completed_project_has_active_result, 1);
   assert.equal(report.issueCounts.active_result_without_identity, 1);
   assert.equal(report.issueCounts.internal_job_id_visible_as_task_id, 1);
+});
+
+test('analyzeAppState treats shell and branch project mirrors as normal', () => {
+  const report = analyzeAppState({
+    shellProjects: [{ id: 'project-a', status: 'completed', results: [{ id: 'result-a', imageUrl: '/a.png' }] }],
+    oneClickMemory: {
+      firstImage: {
+        projects: [{ id: 'project-a', status: 'completed', schemes: [{ id: 'scheme-a', resultUrl: '/a.png' }] }],
+      },
+    },
+  });
+
+  assert.equal(report.issueCounts.duplicate_project_id || 0, 0);
+});
+
+test('analyzeAppState detects duplicate project ids inside the same bucket', () => {
+  const report = analyzeAppState({
+    shellProjects: [
+      { id: 'project-a', status: 'completed', results: [{ id: 'result-a', imageUrl: '/a.png' }] },
+      { id: 'project-a', status: 'completed', results: [{ id: 'result-b', imageUrl: '/b.png' }] },
+    ],
+  });
+
+  assert.equal(report.issueCounts.duplicate_project_id, 1);
 });
 
 test('analyzeAppStateRow reports invalid JSON without throwing', () => {

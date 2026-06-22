@@ -58,25 +58,27 @@ const isInternalBackendJobId = (value) => {
 const projectBuckets = (state = {}) => {
   const buckets = [];
   if (Array.isArray(state.shellProjects)) {
-    buckets.push({ path: 'shellProjects', projects: state.shellProjects });
+    buckets.push({ bucket: 'shellProjects', path: 'shellProjects', projects: state.shellProjects });
   }
   if (isObject(state.oneClickMemory)) {
     ONE_CLICK_BRANCH_KEYS.forEach((key) => {
       const projects = state.oneClickMemory?.[key]?.projects;
-      if (Array.isArray(projects)) buckets.push({ path: `oneClickMemory.${key}.projects`, projects });
+      if (Array.isArray(projects)) {
+        buckets.push({ bucket: `oneClickMemory.${key}.projects`, path: `oneClickMemory.${key}.projects`, projects });
+      }
     });
   }
   if (Array.isArray(state.buyerShowMemory?.sets)) {
-    buckets.push({ path: 'buyerShowMemory.sets', projects: state.buyerShowMemory.sets });
+    buckets.push({ bucket: 'buyerShowMemory.sets', path: 'buyerShowMemory.sets', projects: state.buyerShowMemory.sets });
   }
   if (Array.isArray(state.xhsCoverMemory?.projects)) {
-    buckets.push({ path: 'xhsCoverMemory.projects', projects: state.xhsCoverMemory.projects });
+    buckets.push({ bucket: 'xhsCoverMemory.projects', path: 'xhsCoverMemory.projects', projects: state.xhsCoverMemory.projects });
   }
   if (Array.isArray(state.videoMemory?.veoProjects)) {
-    buckets.push({ path: 'videoMemory.veoProjects', projects: state.videoMemory.veoProjects });
+    buckets.push({ bucket: 'videoMemory.veoProjects', path: 'videoMemory.veoProjects', projects: state.videoMemory.veoProjects });
   }
   if (Array.isArray(state.videoMemory?.storyboard?.projects)) {
-    buckets.push({ path: 'videoMemory.storyboard.projects', projects: state.videoMemory.storyboard.projects });
+    buckets.push({ bucket: 'videoMemory.storyboard.projects', path: 'videoMemory.storyboard.projects', projects: state.videoMemory.storyboard.projects });
   }
   return buckets;
 };
@@ -104,7 +106,7 @@ export const analyzeAppState = (state = {}) => {
     issues: [],
   };
 
-  const projectIdPaths = new Map();
+  const projectIdLocations = new Map();
   const identityOwners = new Map();
 
   const registerIdentity = (value, ownerId, ownerPath) => {
@@ -124,8 +126,8 @@ export const analyzeAppState = (state = {}) => {
       const projectPath = `${bucket.path}[${projectIndex}]`;
       const projectId = compactKey(project.id);
       if (projectId) {
-        if (!projectIdPaths.has(projectId)) projectIdPaths.set(projectId, new Set());
-        projectIdPaths.get(projectId).add(projectPath);
+        if (!projectIdLocations.has(projectId)) projectIdLocations.set(projectId, []);
+        projectIdLocations.get(projectId).push({ bucket: bucket.bucket, path: projectPath });
       }
       const identityOwner = projectId || projectPath;
       collectTaskIdentities(project).forEach(({ value }) => registerIdentity(value, identityOwner, projectPath));
@@ -164,9 +166,14 @@ export const analyzeAppState = (state = {}) => {
     });
   });
 
-  for (const [projectId, paths] of projectIdPaths.entries()) {
-    if (paths.size > 1) {
-      addIssue(report, 'duplicate_project_id', { projectId, paths: Array.from(paths) });
+  for (const [projectId, locations] of projectIdLocations.entries()) {
+    const countsByBucket = new Map();
+    locations.forEach((location) => {
+      countsByBucket.set(location.bucket, (countsByBucket.get(location.bucket) || 0) + 1);
+    });
+    const hasSameBucketDuplicate = Array.from(countsByBucket.values()).some((count) => count > 1);
+    if (hasSameBucketDuplicate || locations.length > 2) {
+      addIssue(report, 'duplicate_project_id', { projectId, paths: locations.map((location) => location.path) });
     }
   }
   for (const [identity, entry] of identityOwners.entries()) {
