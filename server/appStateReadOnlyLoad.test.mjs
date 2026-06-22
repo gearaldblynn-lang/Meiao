@@ -1,0 +1,29 @@
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import test from 'node:test';
+
+const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+
+const stateGetRoutes = () => [
+  ...source.matchAll(/if \(url\.pathname === '\/api\/state' && req\.method === 'GET'\) \{[\s\S]*?json\(res, 200, \{ state: prepareStateForClient\([^}]+?\}\);\n    return;\n  \}/g),
+].map((match) => match[0]);
+
+test('api state GET stays read-only for cloud app_states', () => {
+  const routes = stateGetRoutes();
+  assert.equal(routes.length, 2);
+  const dbRoute = routes[0];
+
+  assert.match(dbRoute, /scrubDbStateForUnavailableManagedAssets\(await getDbAppState\(user\.id\)\)/);
+  assert.doesNotMatch(dbRoute, /saveDbAppState/);
+  assert.doesNotMatch(dbRoute, /runAppStateWriteWithoutBinlog/);
+});
+
+test('api state GET stays read-only for local app state fixture', () => {
+  const routes = stateGetRoutes();
+  assert.equal(routes.length, 2);
+  const localRoute = routes[1];
+
+  assert.match(localRoute, /scrubLocalStateForUnavailableManagedAssets\(store\.appStates\[user\.id\] \|\| createDefaultState\(\)\)/);
+  assert.doesNotMatch(localRoute, /store\.appStates\[user\.id\]\s*=/);
+  assert.doesNotMatch(localRoute, /writeLocalStore/);
+});

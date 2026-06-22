@@ -8903,7 +8903,6 @@ const handleMysqlRequest = async (req, res, url) => {
     const user = await requireDbUser(req, res);
     if (!user) return;
     const state = await scrubDbStateForUnavailableManagedAssets(await getDbAppState(user.id));
-    await saveDbAppState(user.id, state);
     json(res, 200, { state: prepareStateForClient(state) });
     return;
   }
@@ -11138,9 +11137,8 @@ const handleLocalRequest = async (req, res, url) => {
   if (url.pathname === '/api/state' && req.method === 'GET') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
-    store.appStates[user.id] = await scrubLocalStateForUnavailableManagedAssets(store.appStates[user.id] || createDefaultState());
-    writeLocalStore(store);
-    json(res, 200, { state: prepareStateForClient(store.appStates[user.id]) });
+    const state = await scrubLocalStateForUnavailableManagedAssets(store.appStates[user.id] || createDefaultState());
+    json(res, 200, { state: prepareStateForClient(state) });
     return;
   }
 
