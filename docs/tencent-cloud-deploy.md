@@ -33,6 +33,8 @@ MEIAO_TASK_ENGINE=mysql
 MEIAO_TEMPORAL_ADDRESS=127.0.0.1:7233
 MEIAO_TEMPORAL_NAMESPACE=default
 MEIAO_TEMPORAL_TASK_QUEUE=meiao-cloud
+MEIAO_PROVIDERLESS_RUNNING_STALE_MS=300000
+MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS=30000
 MEIAO_ALLOWED_ORIGINS=http://111.229.66.247,http://111.229.66.247:3100
 MEIAO_ASSET_X_ACCEL=0
 VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS=3
@@ -54,6 +56,8 @@ EOF
 ```
 
 第4期智能体多工具复用 `OPENAI_COMPATIBLE_*`，V2 对话经 `OPENAI_COMPATIBLE_RESPONSES_PATH` 调 responses 端点以支持 `web_search`；`AGENT_TOOL_MAX_ROUNDS` 是单轮工具循环上限，默认 5。
+
+`MEIAO_PROVIDERLESS_RUNNING_STALE_MS` 控制已标记 `running` 但还没有上游 `providerTaskId` 的任务兜底释放窗口。云上建议 `300000`，避免素材上传/提交阶段异常卡住后长期占满同账号并发；真正已拿到 `providerTaskId` 的任务不走这个释放规则，会继续等待上游结果。`MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS` 建议 `30000`，让回收检查更及时。
 
 `MEIAO_ASSET_X_ACCEL` 默认保持 `0`。只有在 Nginx 已配置内部资源映射后才可设为 `1`，让 `/api/assets/file/:id` 由 Node 校验权限和缓存头，再通过 `X-Accel-Redirect` 交给 Nginx 直出文件，降低大视频经过 Node 流式转发的抖动。示例：
 
