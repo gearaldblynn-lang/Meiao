@@ -19,6 +19,7 @@ import {
   isManagedAssetUrl,
   MANAGED_ASSET_PATH_SEGMENT,
   normalizeManagedAssetDownloadUrl,
+  parseDataUrlPayload,
   normalizeProviderMediaReference,
   readRemoteMediaBufferWithLimit as readRemoteMediaBufferWithLimitWithDeps,
   resolveProviderChatMediaUrl as resolveProviderChatMediaUrlWithDeps,
@@ -297,7 +298,6 @@ const buildAssetTransferOptions = (env = {}, signal = null, options = {}) => ({
     fetchWithTimeout: fetchKieWithTimeout,
     readResponseBodyWithTimeout,
     uploadAssetViaKieStream,
-    uploadAssetViaKieBase64: uploadAssetViaKie,
     uploadAssetViaKieWithFallback: (payload, transferOptions = {}) =>
       uploadAssetViaKieWithFallback(payload, transferOptions.env || env),
     ...(options.deps || {}),
@@ -1120,52 +1120,6 @@ const pollKieVeoTask = async (taskId, kieApiKey, signal) => {
   throw createProviderError('provider_timeout', 'Veo 任务超时');
 };
 
-const uploadAssetViaKie = async (payload, env) => {
-  const { kieApiKey } = getProviderEnv(env);
-  ensureProviderKey(kieApiKey, 'Kie API Key');
-
-  const uploadPath = payload.uploadPath || 'mayo-storage/internal';
-  const uploadFileName = payload.fileName || `upload_${Date.now()}.bin`;
-
-  const response = await fetchKieWithTimeout('https://kieai.redpandaai.co/api/file-base64-upload', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${kieApiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      base64Data: `data:${payload.mimeType || 'application/octet-stream'};base64,${payload.base64Data}`,
-      uploadPath,
-      fileName: uploadFileName,
-    }),
-  }, 'Kie 素材上传超时', getKieAssetUploadTimeoutMs(env), 'asset_upload');
-
-  const result = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
-      throw createProviderError('provider_auth_invalid', result?.msg || '素材上传鉴权失败');
-    }
-    if (response.status === 429) {
-      throw createProviderError('provider_rate_limited', result?.msg || '素材上传过于频繁');
-    }
-    if (response.status >= 500) {
-      throw createProviderError('provider_internal_error', result?.msg || '素材上传服务异常');
-    }
-    throw createProviderError('provider_bad_request', result?.msg || '素材上传失败');
-  }
-
-  const fileUrl = extractUrlFromResponse(result);
-  if (!fileUrl) {
-    throw createProviderError('provider_bad_response', '上传成功但未返回素材地址');
-  }
-
-  return {
-    result: {
-      fileUrl,
-    },
-  };
-};
-
 export const uploadAssetViaKieStream = async (payload, env) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
@@ -1209,6 +1163,27 @@ export const uploadAssetViaKieStream = async (payload, env) => {
     result: {
       fileUrl,
     },
+  };
+};
+
+const normalizeUploadAssetStreamPayload = (payload = {}) => {
+  if (payload.fileBuffer) return payload;
+  const rawBase64 = String(payload.base64Data || '').trim();
+  if (!rawBase64) {
+    throw createProviderError('provider_bad_request', '素材上传缺少文件内容');
+  }
+  const dataUrl = parseDataUrlPayload(rawBase64);
+  const mimeType = dataUrl?.mimeType || payload.mimeType || 'application/octet-stream';
+  const base64Data = dataUrl?.base64Data || rawBase64.replace(/^data:[^,]+,/, '');
+  const fileBuffer = Buffer.from(base64Data, 'base64');
+  if (!fileBuffer.length) {
+    throw createProviderError('provider_bad_request', '素材上传文件内容为空');
+  }
+  return {
+    ...payload,
+    fileBuffer,
+    mimeType,
+    fileName: payload.fileName || `upload.${inferExtensionFromMimeType(mimeType)}`,
   };
 };
 
@@ -2428,10 +2403,7 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
 export const executeProviderJob = async (job, env, signal, options = {}) => {
   switch (job.taskType) {
     case 'upload_asset':
-      if (job.payload?.fileBuffer) {
-        return uploadAssetViaKieStream(job.payload, env);
-      }
-      return uploadAssetViaKie(job.payload, env);
+      return uploadAssetViaKieStream(normalizeUploadAssetStreamPayload(job.payload), env);
     case 'kie_image':
       if (job.providerTaskId) {
         return runKieRecoverJob(

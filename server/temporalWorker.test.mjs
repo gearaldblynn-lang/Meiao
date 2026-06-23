@@ -294,7 +294,7 @@ test('mysql temporal activity executes a queued db job and writes attempts/event
   assert.ok(heartbeats.some((details) => details?.providerTaskId === 'provider-task-1'));
 });
 
-test('mysql temporal activity fails asset upload after upload fallback instead of holding concurrency', async () => {
+test('mysql temporal activity fails asset upload without holding concurrency', async () => {
   const { state, pool } = createMysqlHarness({
     id: 'job-asset-upload-retry',
     user_id: 'user-1',

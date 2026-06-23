@@ -356,7 +356,7 @@ test('getNextJobFailureState returns failed when retry budget is exhausted', () 
   );
 });
 
-test('getNextJobFailureState fails asset upload after its internal fallback is exhausted', () => {
+test('getNextJobFailureState fails asset upload without job-level retry', () => {
   assert.deepEqual(
     getNextJobFailureState({
       retryCount: 0,

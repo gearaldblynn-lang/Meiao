@@ -209,31 +209,13 @@ export const parseDataUrlPayload = (value) => {
   };
 };
 
-const shouldFallbackKieUploadError = (error) => new Set([
-  'provider_auth_invalid',
-  'provider_internal_error',
-  'provider_network_error',
-  'provider_timeout',
-]).has(String(error?.code || '').trim());
-
 export const uploadAssetViaKieWithFallback = async (payload, options = {}) => {
   const { env = {}, deps = {} } = options || {};
   const uploadAssetViaKieStream = deps.uploadAssetViaKieStream;
-  const uploadAssetViaKieBase64 = deps.uploadAssetViaKieBase64 || deps.uploadAssetViaKie;
-  if (typeof uploadAssetViaKieStream !== 'function' || typeof uploadAssetViaKieBase64 !== 'function') {
+  if (typeof uploadAssetViaKieStream !== 'function') {
     throw createProviderError('provider_bad_request', '素材上传依赖未配置');
   }
-  try {
-    return await uploadAssetViaKieStream(payload, env);
-  } catch (error) {
-    if (!shouldFallbackKieUploadError(error)) throw error;
-    const fileBuffer = payload.fileBuffer instanceof Uint8Array ? payload.fileBuffer : Buffer.from(payload.fileBuffer || '');
-    return uploadAssetViaKieBase64({
-      ...payload,
-      fileBuffer,
-      base64Data: Buffer.from(fileBuffer).toString('base64'),
-    }, env);
-  }
+  return uploadAssetViaKieStream(payload, env);
 };
 
 export const convertInlineDataUrlToKieFileUrl = async (value, options = {}) => {
