@@ -251,22 +251,56 @@ test('edit_image：校验 input_image_urls 在目录中，剔除幻觉 URL', asy
   assert.deepEqual(capturedUrls, ['https://real/1.jpg']);
 });
 
-test('一条消息最多触发一次出图（不允许连续多次）', async () => {
+test('模型同一轮返回多个 generate_image 时：逐个执行并返回多张结果', async () => {
   let genCount = 0;
-  await runAgentConversationV2({
+  const out = await runAgentConversationV2({
     ...baseArgs,
-    currentMessage: '画猫再画狗',
-    callModel: async () => ({ content: '', toolCalls: [
-      { id: 'c1', name: 'generate_image', args: { prompt: '猫', task_type: 'new_image' } },
-      { id: 'c2', name: 'generate_image', args: { prompt: '狗', task_type: 'new_image' } },
-    ], finishReason: 'tool_calls' }),
-    generateImage: async () => {
+    currentMessage: '每张图都按同一个明确要求分别处理',
+    attachments: [
+      { kind: 'image', url: 'https://upload/1.jpg', name: '1.jpg' },
+      { kind: 'image', url: 'https://upload/2.jpg', name: '2.jpg' },
+    ],
+    callModel: async ({ messages }) => {
+      if (genCount === 0) {
+        return { content: '', toolCalls: [
+          { id: 'c1', name: 'generate_image', args: { prompt: '对第一张图执行用户指定编辑', task_type: 'edit_image', input_image_urls: ['https://upload/1.jpg'] } },
+          { id: 'c2', name: 'generate_image', args: { prompt: '对第二张图执行用户指定编辑', task_type: 'edit_image', input_image_urls: ['https://upload/2.jpg'] } },
+        ], finishReason: 'tool_calls' };
+      }
+      const outputs = messages.filter((message) => message.type === 'function_call_output');
+      assert.equal(outputs.length, 2);
+      assert.deepEqual(outputs.map((item) => item.call_id), ['c1', 'c2']);
+      return { content: '两张图都已按要求分别处理', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async ({ prompt, inputImageUrls }) => {
       genCount += 1;
+      assert.match(prompt, genCount === 1 ? /第一张/ : /第二张/);
+      assert.deepEqual(inputImageUrls, [`https://upload/${genCount}.jpg`]);
       return { imageUrl: `https://img/${genCount}.png` };
     },
     onProgress: () => {},
   });
-  assert.equal(genCount, 1);
+  assert.equal(genCount, 2);
+  assert.deepEqual(out.imageResultUrls, ['https://img/1.png', 'https://img/2.png']);
+  assert.equal(out.imagePlan.requestMode, 'tool_calling');
+  assert.equal(out.imagePlan.outputCount, 2);
+  assert.equal(out.imagePlan.plans.length, 2);
+});
+
+test('生图模式引导模型按语义决定单次合成或多次独立调用', async () => {
+  let sysContent = '';
+  await runAgentConversationV2({
+    ...baseArgs,
+    imageMode: true,
+    callModel: async ({ messages }) => {
+      sysContent = messages.find((message) => message.role === 'system')?.content || '';
+      return { content: 'ok', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    onProgress: () => {},
+  });
+  assert.match(sysContent, /每张|逐张|分别处理/);
+  assert.match(sysContent, /融合|合成|同一张/);
 });
 
 test('本轮上传图：附进用户消息(多模态) + system 引导优先编辑新上传图', async () => {

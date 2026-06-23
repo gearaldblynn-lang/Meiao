@@ -24,6 +24,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-23 - Agent V2 image tool calls must execute all semantic outputs
+
+- Symptom: 智能体多图生图不能像 GPT 原生对话那样按语义决定生成几张图；用户表达“每张/逐张/分别处理”时，后端仍可能只执行一次生图或把多图当成一张合成输入。
+- Environment: Tencent Cloud production / local development agent_center V2 tool calling.
+- Root cause: `runAgentConversationV2` 只取第一条 `generate_image` tool call，并用 `imageGenerated=true` 阻止后续生图，把模型返回的多次工具调用压成单次。问题不是缺少某个“抠白底”关键词特判，而是执行器没有忠实执行模型的工具调用计划。
+- Fix: V2 工具循环改为按模型返回顺序执行所有 `generate_image` / `search_knowledge` tool calls；每个 `function_call` 后紧跟对应 `function_call_output`；多张生图结果聚合到 `imageResultUrls`，并在 `imagePlan.outputCount/plans/providerTaskIds/imageResultUrls` 中保留明细。生图模式提示词补充通用语义：逐张/分别/每个素材处理时多次调用，融合/合成/同一张图时单次调用，参考编辑时单次调用并说明角色。
+- Regression check: `node --test server/agentToolConversation.test.mjs`; `node --test server/agentCenterSource.test.mjs server/agentChatCheckpointMetadata.test.mjs server/agentConversationReliability.test.mjs server/agentToolConversation.test.mjs`; `node --experimental-strip-types --test src/modules/AgentCenter/chatConversationRendering.test.mjs src/modules/AgentCenter/chatMessageDisplay.test.mjs src/shell/modules/AgentCenter/AgentCenterModule.test.mjs`; `npm run lint`; `npm run build`.
+- Files/tests: `server/agentToolConversation.mjs`, `server/agentToolConversation.test.mjs`, `CLAUDE.md`.
+- Avoid next time: 不要在后端把图片语义写成具体需求关键词分支。模型负责判断需要几次工具调用；后端负责执行所有合法 tool calls、校验输入 URL 来自目录、聚合多结果，并保证最终文案失败不会丢主产物。
+
 ## 2026-06-18 - Agent tool-calling image tasks need task-id checkpoints and message-list recovery
 
 - Symptom: 云上智能体上游任务已经提交/出图，但前端仍停在“思考中/调用模型中”，刷新和轮询也不显示结果。
