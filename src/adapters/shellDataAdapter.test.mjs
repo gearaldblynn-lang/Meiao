@@ -2817,6 +2817,79 @@ test('shell data adapter does not duplicate terminal backend jobs already stored
   assert.equal(snapshot.tasks.length, 0);
 });
 
+test('shell data adapter recovers first-image timeout placeholders after backend image success', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [
+      {
+        id: 'first-image-timeout-project',
+        name: '首图后台成功恢复',
+        module: 'one_click',
+        status: 'error',
+        subFeature: 'first_image',
+        createdAt: 1782196101806,
+        selectedPlanId: 'plan-late-success',
+        plans: [{
+          id: 'plan-late-success',
+          title: '通用首图方案',
+          selected: true,
+          schemeContent: '通用首图方案',
+        }],
+        results: [{
+          id: 'provider-late-success',
+          planId: 'plan-late-success',
+          imageUrl: '',
+          prompt: '任务等待超时，请稍后在任务列表中查看结果',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          status: 'error',
+          createdAt: 1782196101806,
+          module: 'one_click',
+          subFeature: 'first_image',
+          taskId: 'provider-late-success',
+          backendJobId: 'job-late-success',
+          error: '任务等待超时，请稍后在任务列表中查看结果',
+        }],
+        taskCount: 1,
+        completedCount: 0,
+      },
+    ],
+  }, [
+    {
+      id: 'job-late-success',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'provider-late-success',
+      payload: {
+        prompt: '通用首图生成',
+        shellProjectId: 'first-image-timeout-project',
+        shellPlanId: 'plan-late-success',
+        subFeature: 'first_image',
+        batchIndex: 1,
+        batchCount: 1,
+      },
+      result: {
+        imageUrl: '/late-first-image.png',
+        providerTaskId: 'provider-late-success',
+      },
+      createdAt: 1782196101806,
+      updatedAt: 1782197000000,
+      finishedAt: 1782197000000,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'first-image-timeout-project');
+  assert.ok(project);
+  assert.equal(project.status, 'completed');
+  assert.equal(project.completedCount, 1);
+  assert.equal(project.taskCount, 1);
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].status, 'completed');
+  assert.equal(project.results[0].imageUrl, '/late-first-image.png');
+  assert.equal(project.results[0].backendJobId, 'job-late-success');
+});
+
 test('shell data adapter keeps active task titles compact while preserving backend job prompts', () => {
   const longPrompt = '详情页生成提示：'.repeat(20);
   const snapshot = buildShellDataSnapshot({}, [

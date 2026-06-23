@@ -1923,6 +1923,7 @@ const mapJobs = (
           jobId: job.id,
           providerTaskId,
           payloadPlanId,
+          incomingHasMedia: projectStatus === 'completed' && urls.length > 0,
         })) return;
         const nextJobResults: ShellGeneratedResult[] = urls.length > 0
           ? urls.map((url, index) => ({

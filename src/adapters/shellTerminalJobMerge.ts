@@ -16,16 +16,23 @@ const isTerminalPersistedResult = (result: TerminalResultLike = {}) => Boolean(
   || result.status === 'error'
 );
 
+const hasPersistedMedia = (result: TerminalResultLike = {}) => Boolean(
+  normalizeText(result.imageUrl)
+  || normalizeText(result.videoUrl)
+);
+
 export const hasPersistedTerminalJobResult = ({
   results = [],
   jobId = '',
   providerTaskId = '',
   payloadPlanId = '',
+  incomingHasMedia = false,
 }: {
   results?: TerminalResultLike[];
   jobId?: unknown;
   providerTaskId?: unknown;
   payloadPlanId?: unknown;
+  incomingHasMedia?: boolean;
 }) => {
   const normalizedJobId = normalizeText(jobId);
   const normalizedProviderTaskId = normalizeText(providerTaskId);
@@ -46,6 +53,8 @@ export const hasPersistedTerminalJobResult = ({
         && isTerminalPersistedResult(result)
       )
     );
-    return matches && isTerminalPersistedResult(result);
+    if (!matches) return false;
+    if (incomingHasMedia) return hasPersistedMedia(result);
+    return isTerminalPersistedResult(result);
   });
 };
