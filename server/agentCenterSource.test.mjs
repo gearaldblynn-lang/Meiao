@@ -119,6 +119,16 @@ test('V2 接入 responses provider 并注入知识库/联网工具(双 handler)'
   assert.ok(reasoningPayloads.length >= 2, '双 handler 的 responses payload 都要透传 reasoningLevel');
 });
 
+test('agent chat streaming is wired through both mysql and local handlers without duplicate final deltas', () => {
+  assert.match(source, /let chatStreamHadDelta = false;/);
+  assert.match(source, /if \(normalizedType === 'streaming' && payload\?\.delta\) chatStreamHadDelta = true;/);
+  assert.match(source, /if \(!chatStreamHadDelta\) sendChatEvent\('streaming', \{ delta: result\.assistantMessage\?\.content \|\| '' \}\);/);
+  assert.match(source, /const localWantsStream = String\(req\.headers\.accept \|\| ''\)\.includes\('text\/event-stream'\) \|\| body\?\.stream === true;/);
+  assert.match(source, /const sendLocalChatEvent = localWantsStream/);
+  assert.match(source, /if \(sendLocalChatEvent\) sendLocalChatEvent\('streaming', \{ delta \}\);/);
+  assert.match(source, /if \(!localStreamHadDelta\) sendLocalChatEvent\('streaming', \{ delta: response\.body\.assistantMessage\?\.content \|\| '' \}\);/);
+});
+
 test('agent chat source exposes current-user profile updates and session patch delete routes', () => {
   assert.match(source, /if \(url\.pathname === '\/api\/auth\/me' && req\.method === 'PATCH'\)/);
   assert.match(source, /if \(chatSessionDetailMatch && req\.method === 'PATCH'\)/);
