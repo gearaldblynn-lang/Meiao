@@ -95,7 +95,166 @@ export const parseResponsesOutput = (data = {}) => {
   };
 };
 
-export const runResponsesJob = async ({ payload = {}, env = {}, signal = null } = {}) => {
+const parseResponsesSseBlock = (block = '') => {
+  const lines = String(block || '').split(/\r?\n/);
+  const data = lines
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trim())
+    .join('\n');
+  if (!data || data === '[DONE]') return null;
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
+};
+
+const buildToolCallsFromStream = (itemsById) => {
+  const items = Array.from(itemsById.values())
+    .filter((item) => item?.type === 'function_call')
+    .sort((a, b) => Number(a.outputIndex || 0) - Number(b.outputIndex || 0));
+  const toolCalls = [];
+  for (const item of items) {
+    const name = String(item.name || '').trim();
+    if (!name) continue;
+    let args;
+    try {
+      args = JSON.parse(String(item.arguments || '{}'));
+    } catch {
+      continue;
+    }
+    const callId = String(item.call_id || item.id || '');
+    toolCalls.push({
+      id: callId,
+      name,
+      args,
+      responseItem: {
+        type: 'function_call',
+        ...(item.id ? { id: String(item.id) } : {}),
+        name,
+        arguments: String(item.arguments || '{}'),
+        call_id: callId,
+        ...(item.status ? { status: String(item.status) } : {}),
+      },
+    });
+  }
+  return toolCalls;
+};
+
+const readResponsesStream = async (response, { onDelta = null } = {}) => {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let usage = {};
+  let completedResponse = null;
+  const itemsById = new Map();
+
+  const applyEvent = (event = {}) => {
+    const type = String(event?.type || '').trim();
+    if (type === 'response.output_text.delta') {
+      const delta = String(event?.delta || '');
+      if (delta) {
+        content += delta;
+        onDelta?.(delta);
+      }
+      return;
+    }
+    if (type === 'response.output_text.done' && !content) {
+      content = String(event?.text || '');
+      return;
+    }
+    if (type === 'response.output_item.added' || type === 'response.output_item.done') {
+      const item = event?.item || {};
+      if (item?.type === 'function_call') {
+        const id = String(item.id || event?.item_id || `output_${event?.output_index ?? itemsById.size}`);
+        const existing = itemsById.get(id) || {};
+        itemsById.set(id, {
+          ...existing,
+          ...item,
+          id,
+          outputIndex: event?.output_index ?? existing.outputIndex,
+          arguments: String(item.arguments ?? existing.arguments ?? ''),
+        });
+      }
+      if (type === 'response.output_item.done' && item?.type === 'message' && !content) {
+        content = parseResponsesOutput({ output: [item] }).content;
+      }
+      return;
+    }
+    if (type === 'response.function_call_arguments.delta') {
+      const id = String(event?.item_id || '');
+      if (!id) return;
+      const existing = itemsById.get(id) || { id, type: 'function_call' };
+      itemsById.set(id, {
+        ...existing,
+        outputIndex: event?.output_index ?? existing.outputIndex,
+        arguments: `${String(existing.arguments || '')}${String(event?.delta || '')}`,
+      });
+      return;
+    }
+    if (type === 'response.function_call_arguments.done') {
+      const id = String(event?.item_id || '');
+      if (!id) return;
+      const existing = itemsById.get(id) || { id, type: 'function_call' };
+      itemsById.set(id, {
+        ...existing,
+        outputIndex: event?.output_index ?? existing.outputIndex,
+        arguments: String(event?.arguments ?? existing.arguments ?? ''),
+      });
+      return;
+    }
+    if (type === 'response.completed') {
+      completedResponse = event?.response || {};
+      usage = completedResponse?.usage || usage || {};
+      const parsed = parseResponsesOutput(completedResponse);
+      if (!content && parsed.content) content = parsed.content;
+      for (const call of parsed.toolCalls || []) {
+        const item = call.responseItem || {};
+        const id = String(item.id || call.id || `completed_${itemsById.size}`);
+        itemsById.set(id, {
+          ...itemsById.get(id),
+          ...item,
+          id,
+          type: 'function_call',
+          outputIndex: itemsById.get(id)?.outputIndex ?? itemsById.size,
+        });
+      }
+      return;
+    }
+    if (type === 'response.failed' || event?.error) {
+      const message = event?.response?.error?.message || event?.error?.message || 'responses 流式请求失败';
+      const error = new Error(message);
+      error.code = 'provider_bad_response';
+      throw error;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const blocks = buffer.split(/\n\n/);
+    buffer = blocks.pop() || '';
+    for (const block of blocks) {
+      const event = parseResponsesSseBlock(block);
+      if (event) applyEvent(event);
+    }
+  }
+  if (buffer.trim()) {
+    const event = parseResponsesSseBlock(buffer);
+    if (event) applyEvent(event);
+  }
+  const toolCalls = buildToolCallsFromStream(itemsById);
+  return {
+    content: content.trim(),
+    toolCalls,
+    finishReason: toolCalls.length > 0 ? 'tool_calls' : 'stop',
+    usage: usage || completedResponse?.usage || {},
+  };
+};
+
+export const runResponsesJob = async ({ payload = {}, env = {}, signal = null, onDelta = null } = {}) => {
   const { apiKey, baseUrl, responsesPath, allowedModels } = getRelayConfig(env);
   if (!apiKey) {
     const error = new Error('OPENAI_COMPATIBLE_API_KEY 未配置');
@@ -120,6 +279,7 @@ export const runResponsesJob = async ({ payload = {}, env = {}, signal = null } 
     ...(tools.length > 0 ? { tools } : {}),
     ...(reasoningLevel ? { reasoning: { effort: reasoningLevel } } : {}),
     ...(payload?.maxTokens ? { max_output_tokens: Number(payload.maxTokens) } : {}),
+    ...(typeof onDelta === 'function' ? { stream: true } : {}),
   };
 
   const controller = new AbortController();
@@ -138,6 +298,10 @@ export const runResponsesJob = async ({ payload = {}, env = {}, signal = null } 
       const error = new Error(`responses 请求失败 (${response.status}): ${text.slice(0, 200)}`);
       error.code = response.status === 401 || response.status === 403 ? 'provider_auth_invalid' : 'provider_bad_response';
       throw error;
+    }
+    const contentType = response.headers.get('content-type') || '';
+    if (typeof onDelta === 'function' && contentType.includes('text/event-stream') && response.body) {
+      return { ...await readResponsesStream(response, { onDelta }), modelUsed: model };
     }
     const data = await response.json().catch(() => ({}));
     return { ...parseResponsesOutput(data), modelUsed: model, raw: data };

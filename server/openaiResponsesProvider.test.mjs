@@ -123,6 +123,79 @@ test('非流式请求体透传 reasoning effort', async () => {
   assert.deepEqual(captured.reasoning, { effort: 'high' });
 });
 
+test('流式请求体透传文本 delta 并解析 completed usage', async () => {
+  let captured = null;
+  const chunks = [
+    'event: response.output_text.delta\n',
+    'data: {"type":"response.output_text.delta","delta":"你"}\n\n',
+    'event: response.output_text.delta\n',
+    'data: {"type":"response.output_text.delta","delta":"好"}\n\n',
+    'event: response.completed\n',
+    'data: {"type":"response.completed","response":{"usage":{"input_tokens":3,"output_tokens":2}}}\n\n',
+  ];
+  globalThis.fetch = async (url, init) => {
+    void url;
+    captured = JSON.parse(init.body);
+    return new Response(new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        chunks.forEach((chunk) => controller.enqueue(encoder.encode(chunk)));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  };
+  const deltas = [];
+  const out = await runResponsesJob({
+    payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+    env,
+    onDelta: (delta) => deltas.push(delta),
+  });
+  assert.equal(captured.stream, true);
+  assert.deepEqual(deltas, ['你', '好']);
+  assert.equal(out.content, '你好');
+  assert.equal(out.finishReason, 'stop');
+  assert.deepEqual(out.usage, { input_tokens: 3, output_tokens: 2 });
+});
+
+test('流式请求解析 function_call arguments', async () => {
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      [
+        'event: response.output_item.added\n',
+        'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","status":"in_progress","arguments":"","call_id":"call_1","name":"generate_image"},"output_index":0}\n\n',
+        'event: response.function_call_arguments.delta\n',
+        'data: {"type":"response.function_call_arguments.delta","delta":"{\\"prompt\\":\\"猫\\"","item_id":"fc_1","output_index":0}\n\n',
+        'event: response.function_call_arguments.delta\n',
+        'data: {"type":"response.function_call_arguments.delta","delta":",\\"task_type\\":\\"new_image\\"}","item_id":"fc_1","output_index":0}\n\n',
+        'event: response.output_item.done\n',
+        'data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","status":"completed","arguments":"{\\"prompt\\":\\"猫\\",\\"task_type\\":\\"new_image\\"}","call_id":"call_1","name":"generate_image"},"output_index":0}\n\n',
+        'event: response.completed\n',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":4}}}\n\n',
+      ].forEach((chunk) => controller.enqueue(encoder.encode(chunk)));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  const out = await runResponsesJob({
+    payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }], tools: [{ type: 'function', name: 'generate_image' }] },
+    env,
+    onDelta: () => {},
+  });
+  assert.equal(out.finishReason, 'tool_calls');
+  assert.equal(out.toolCalls.length, 1);
+  assert.equal(out.toolCalls[0].id, 'call_1');
+  assert.equal(out.toolCalls[0].name, 'generate_image');
+  assert.deepEqual(out.toolCalls[0].args, { prompt: '猫', task_type: 'new_image' });
+  assert.deepEqual(out.toolCalls[0].responseItem, {
+    type: 'function_call',
+    id: 'fc_1',
+    name: 'generate_image',
+    arguments: '{"prompt":"猫","task_type":"new_image"}',
+    call_id: 'call_1',
+    status: 'completed',
+  });
+});
+
 test('未配 key 抛错', async () => {
   await assert.rejects(runResponsesJob({ payload: { model: 'gpt-5.4', messages: [] }, env: {} }), /API.?KEY|未配置/i);
 });

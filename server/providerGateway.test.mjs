@@ -68,6 +68,51 @@ test('executeProviderJob 路由 openai_responses 到 responses provider', async 
   }
 });
 
+test('executeProviderJob passes onDelta through to openai_responses streaming provider', async () => {
+  const realFetch = globalThis.fetch;
+  let captured = null;
+  globalThis.fetch = async (url, init = {}) => {
+    void url;
+    captured = JSON.parse(init.body);
+    return new Response(new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        controller.enqueue(encoder.encode('event: response.output_text.delta\n'));
+        controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"流"}\n\n'));
+        controller.enqueue(encoder.encode('event: response.output_text.delta\n'));
+        controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"式"}\n\n'));
+        controller.enqueue(encoder.encode('event: response.completed\n'));
+        controller.enqueue(encoder.encode('data: {"type":"response.completed","response":{"usage":{"output_tokens":2}}}\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  };
+  try {
+    const deltas = [];
+    const out = await executeProviderJob(
+      {
+        taskType: 'openai_responses',
+        payload: {
+          model: 'gpt-5.4',
+          messages: [{ role: 'user', content: 'hi' }],
+        },
+      },
+      {
+        OPENAI_COMPATIBLE_API_KEY: 'sk-test',
+        OPENAI_COMPATIBLE_BASE_URL: 'https://relay.test',
+        OPENAI_COMPATIBLE_MODELS: 'gpt-5.4',
+      },
+      new AbortController().signal,
+      { onDelta: (delta) => deltas.push(delta) }
+    );
+    assert.equal(captured.stream, true);
+    assert.deepEqual(deltas, ['流', '式']);
+    assert.equal(out.content, '流式');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test('uploadAssetViaKieStream uses configured asset upload timeout', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;

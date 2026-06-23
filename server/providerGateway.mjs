@@ -2450,7 +2450,7 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
       }
       return runOpenAIToolCallingJob({ payload: job.payload, env, signal });
     case 'openai_responses':
-      return runResponsesJob({ payload: job.payload, env, signal });
+      return runResponsesJob({ payload: job.payload, env, signal, onDelta: options?.onDelta });
     default:
       throw createProviderError('provider_bad_request', `不支持的任务类型：${job.taskType}`);
   }

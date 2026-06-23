@@ -8443,10 +8443,12 @@ const handleMysqlRequest = async (req, res, url) => {
     const body = await readBody(req);
     const sessionId = decodeURIComponent(chatSessionMessagesMatch[1]);
     const wantsStream = String(req.headers.accept || '').includes('text/event-stream') || body?.stream === true;
+    let chatStreamHadDelta = false;
     const sendChatEvent = wantsStream
       ? (type, payload = {}) => {
           if (res.writableEnded) return;
           const normalizedType = type === 'progress' && payload?.stage ? String(payload.stage) : type;
+          if (normalizedType === 'streaming' && payload?.delta) chatStreamHadDelta = true;
           res.write(formatChatSseEvent(normalizedType, payload));
         }
       : null;
@@ -8471,7 +8473,7 @@ const handleMysqlRequest = async (req, res, url) => {
         return;
       }
       if (wantsStream) {
-        sendChatEvent('streaming', { delta: result.assistantMessage?.content || '' });
+        if (!chatStreamHadDelta) sendChatEvent('streaming', { delta: result.assistantMessage?.content || '' });
         sendChatEvent('done', { assistantMessage: result.assistantMessage, usage: result.usage });
         res.end();
         return;
@@ -10073,7 +10075,32 @@ const handleLocalRequest = async (req, res, url) => {
     const version = getLocalAgentVersionById(store, session.agentVersionId);
     const agent = getLocalAgentById(store, session.agentId);
     const body = await readBody(req);
+    const localWantsStream = String(req.headers.accept || '').includes('text/event-stream') || body?.stream === true;
+    let localStreamHadDelta = false;
+    let localStreamStarted = false;
+    const sendLocalChatEvent = localWantsStream
+      ? (type, payload = {}) => {
+          if (res.writableEnded) return;
+          if (!localStreamStarted) {
+            res.writeHead(200, {
+              'Content-Type': 'text/event-stream; charset=utf-8',
+              'Cache-Control': 'no-cache, no-transform',
+              Connection: 'keep-alive',
+              ...(res.__corsHeaders || {}),
+            });
+            localStreamStarted = true;
+          }
+          const normalizedType = type === 'progress' && payload?.stage ? String(payload.stage) : type;
+          if (normalizedType === 'streaming' && payload?.delta) localStreamHadDelta = true;
+          res.write(formatChatSseEvent(normalizedType, payload));
+        }
+      : null;
     if (!version || !agent) {
+      if (localWantsStream) {
+        sendLocalChatEvent('error', { message: '智能体版本不存在。' });
+        res.end();
+        return;
+      }
       json(res, 404, { message: '智能体版本不存在。' });
       return;
     }
@@ -10091,15 +10118,30 @@ const handleLocalRequest = async (req, res, url) => {
       kind: item?.kind === 'image' ? 'image' : 'file',
     })) : [];
     if (requestMode === 'image_generation' && attachments.some((item) => item.kind !== 'image')) {
+      if (localWantsStream) {
+        sendLocalChatEvent('error', { message: '生图模式暂只支持上传图片' });
+        res.end();
+        return;
+      }
       json(res, 400, { message: '生图模式暂只支持上传图片' });
       return;
     }
     const capabilityError = getAttachmentCapabilityError({ capability, attachments, requestMode, modelLabel: `模型 ${selectedModel} ` });
     if (capabilityError) {
+      if (localWantsStream) {
+        sendLocalChatEvent('error', { message: capabilityError });
+        res.end();
+        return;
+      }
       json(res, 400, { message: capabilityError });
       return;
     }
     if (requestMode !== 'image_generation' && body?.webSearchEnabled && !capability?.supportsWebSearch) {
+      if (localWantsStream) {
+        sendLocalChatEvent('error', { message: '当前模型不支持联网' });
+        res.end();
+        return;
+      }
       json(res, 400, { message: '当前模型不支持联网' });
       return;
     }
@@ -10111,11 +10153,21 @@ const handleLocalRequest = async (req, res, url) => {
     const activeKey = buildChatRequestKey(sessionId, clientRequestId);
     if (activeLocalChatReplyRequests.has(activeKey)) {
       const response = await activeLocalChatReplyRequests.get(activeKey);
+      if (localWantsStream) {
+        if (response.status >= 400) {
+          sendLocalChatEvent('error', { message: response.body?.message || '聊天回复失败。', code: response.body?.code || '' });
+        } else {
+          if (!localStreamHadDelta) sendLocalChatEvent('streaming', { delta: response.body.assistantMessage?.content || '' });
+          sendLocalChatEvent('done', { assistantMessage: response.body.assistantMessage, usage: response.body.usage });
+        }
+        res.end();
+        return;
+      }
       json(res, response.status, response.body);
       return;
     }
     if (existingUserMessage && existingAssistantMessage && !isAgentChatRunPendingMetadata(existingAssistantMessage.metadata)) {
-      json(res, 201, {
+      const responseBody = {
         userMessage: existingUserMessage,
         assistantMessage: existingAssistantMessage,
         usage: {
@@ -10125,7 +10177,14 @@ const handleLocalRequest = async (req, res, url) => {
           requestType: existingAssistantMessage.metadata?.requestMode || existingUserMessage.metadata?.requestMode || requestMode,
           sessionId,
         },
-      });
+      };
+      if (localWantsStream) {
+        if (!localStreamHadDelta) sendLocalChatEvent('streaming', { delta: responseBody.assistantMessage?.content || '' });
+        sendLocalChatEvent('done', { assistantMessage: responseBody.assistantMessage, usage: responseBody.usage });
+        res.end();
+        return;
+      }
+      json(res, 201, responseBody);
       return;
     }
     const activeSessionRun = (store.chatMessages || [])
@@ -10133,11 +10192,17 @@ const handleLocalRequest = async (req, res, url) => {
       .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
       .find((item) => isAgentChatRunPendingMetadata(item.metadata) && getAgentChatClientRequestId(item) !== clientRequestId);
     if (activeSessionRun) {
+      if (localWantsStream) {
+        const activeRunError = buildActiveAgentChatRunError();
+        sendLocalChatEvent('error', { message: activeRunError.message, code: activeRunError.code || 'agent_chat_run_active' });
+        res.end();
+        return;
+      }
       json(res, 409, { message: buildActiveAgentChatRunError().message, code: 'agent_chat_run_active' });
       return;
     }
     if (existingUserMessage && existingAssistantMessage) {
-      json(res, 201, {
+      const responseBody = {
         userMessage: existingUserMessage,
         assistantMessage: existingAssistantMessage,
         usage: {
@@ -10148,9 +10213,17 @@ const handleLocalRequest = async (req, res, url) => {
           requestType: existingAssistantMessage.metadata?.requestMode || existingUserMessage.metadata?.requestMode || requestMode,
           sessionId,
         },
-      });
+      };
+      if (localWantsStream) {
+        if (!localStreamHadDelta) sendLocalChatEvent('streaming', { delta: responseBody.assistantMessage?.content || '' });
+        sendLocalChatEvent('done', { assistantMessage: responseBody.assistantMessage, usage: responseBody.usage });
+        res.end();
+        return;
+      }
+      json(res, 201, responseBody);
       return;
     }
+    if (localWantsStream) sendLocalChatEvent('thinking', {});
     const promise = (async () => {
     const now = Date.now();
     const userMessageId = createEntityId();
@@ -10309,6 +10382,7 @@ const handleLocalRequest = async (req, res, url) => {
           }, openaiCompatibleEnv, new AbortController().signal, {
             onDelta: (delta) => {
               onDelta?.(delta);
+              if (sendLocalChatEvent) sendLocalChatEvent('streaming', { delta });
             },
           });
           return {
@@ -10576,6 +10650,16 @@ const handleLocalRequest = async (req, res, url) => {
     activeLocalChatReplyRequests.set(activeKey, promise);
     try {
       const response = await promise;
+      if (localWantsStream) {
+        if (response.status >= 400) {
+          sendLocalChatEvent('error', { message: response.body?.message || '聊天回复失败。', code: response.body?.code || '' });
+        } else {
+          if (!localStreamHadDelta) sendLocalChatEvent('streaming', { delta: response.body.assistantMessage?.content || '' });
+          sendLocalChatEvent('done', { assistantMessage: response.body.assistantMessage, usage: response.body.usage });
+        }
+        res.end();
+        return;
+      }
       json(res, response.status, response.body);
     } finally {
       activeLocalChatReplyRequests.delete(activeKey);
