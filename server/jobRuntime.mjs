@@ -248,12 +248,20 @@ export const runWithTransientRetry = async (operation, {
   }
 };
 
-export const getNextJobFailureState = ({ retryCount = 0, maxRetries = 0, errorCode = '' }) => {
+const FAST_FAIL_RETRY_STAGE_LIMITS = new Map([
+  ['asset_upload', 0],
+  ['asset_download', 1],
+]);
+
+export const getNextJobFailureState = ({ retryCount = 0, maxRetries = 0, errorCode = '', providerStage = '' }) => {
   if (!isRetryableErrorCode(errorCode)) {
     return { status: 'failed', retryCount };
   }
 
-  if (retryCount >= maxRetries) {
+  const stageLimit = FAST_FAIL_RETRY_STAGE_LIMITS.get(String(providerStage || '').trim());
+  const effectiveMaxRetries = Number.isFinite(stageLimit) ? Math.min(Number(maxRetries || 0), stageLimit) : Number(maxRetries || 0);
+
+  if (retryCount >= effectiveMaxRetries) {
     return { status: 'failed', retryCount };
   }
 

@@ -55,6 +55,7 @@ const APIPORTS_GPT_IMAGE_2_SECONDARY_MODEL = 'gpt-image-2-secondary';
 const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
 const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 240_000;
 const KIE_HTTP_REQUEST_TIMEOUT_MS = 60_000;
+const KIE_ASSET_UPLOAD_TIMEOUT_MS = 45_000;
 const KIE_CHAT_COMPLETION_TIMEOUT_MS = 240_000;
 const KIE_CHAT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const DREAMINA_VIDEO_POLL_RETRIES = 180;
@@ -211,6 +212,11 @@ const fetchKieWithTimeout = async (
 };
 
 const getEnvValue = (env, ...keys) => keys.map((key) => env[key]).find(Boolean) || '';
+
+const getKieAssetUploadTimeoutMs = (env = {}) => {
+  const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS', 'KIE_ASSET_UPLOAD_TIMEOUT_MS') || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_ASSET_UPLOAD_TIMEOUT_MS;
+};
 
 const getProviderEnv = (env) => ({
   kieApiKey: getEnvValue(env, 'KIE_API_KEY', 'MEIAO_KIE_API_KEY'),
@@ -1132,7 +1138,7 @@ const uploadAssetViaKie = async (payload, env) => {
       uploadPath,
       fileName: uploadFileName,
     }),
-  }, 'Kie 素材上传超时', 120_000, 'asset_upload');
+  }, 'Kie 素材上传超时', getKieAssetUploadTimeoutMs(env), 'asset_upload');
 
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -1178,7 +1184,7 @@ export const uploadAssetViaKieStream = async (payload, env) => {
       Authorization: `Bearer ${kieApiKey}`,
     },
     body: formData,
-  }, 'Kie 素材上传超时', 120_000, 'asset_upload');
+  }, 'Kie 素材上传超时', getKieAssetUploadTimeoutMs(env), 'asset_upload');
 
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {

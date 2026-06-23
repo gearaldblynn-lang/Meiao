@@ -423,6 +423,7 @@ export const createMysqlTemporalActivities = ({
         retryCount: latestJob.retryCount ?? 0,
         maxRetries: latestJob.maxRetries ?? 0,
         errorCode: error?.code || 'provider_internal_error',
+        providerStage: error?.providerStage || '',
       });
       const finishedAt = now();
 

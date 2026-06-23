@@ -343,6 +343,7 @@ export const markLocalJobFailed = (store, jobId, error) => {
     retryCount: current.retryCount,
     maxRetries: current.maxRetries,
     errorCode: error?.code || 'provider_internal_error',
+    providerStage: error?.providerStage || '',
   });
   const finishedAt = now();
   const next = normalizeJob({
