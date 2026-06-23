@@ -95,6 +95,82 @@ const shouldRetryModelWithoutInlineImages = (error, attachments = []) => {
   return code === 'provider_bad_response' || /responses 请求失败|bad_response_status_code|502/.test(message);
 };
 
+const getGenerateImageToolCalls = (response = {}) => (
+  (Array.isArray(response?.toolCalls) ? response.toolCalls : [])
+    .filter((call) => call?.name === 'generate_image')
+);
+
+const normalizeToolCallImageUrls = (call = {}) => {
+  try {
+    return normalizeGenerateImageArgs(call.args).inputImageUrls;
+  } catch {
+    return [];
+  }
+};
+
+const shouldAuditUnderPlannedImageBatch = ({ response, freshUploadUrls = [] } = {}) => {
+  const freshUrls = (Array.isArray(freshUploadUrls) ? freshUploadUrls : [])
+    .map((url) => String(url || '').trim())
+    .filter(Boolean);
+  if (freshUrls.length < 2) return false;
+  const generateCalls = getGenerateImageToolCalls(response);
+  if (generateCalls.length !== 1) return false;
+  const inputUrls = normalizeToolCallImageUrls(generateCalls[0]);
+  if (inputUrls.length !== 1) return false;
+  return freshUrls.includes(inputUrls[0]);
+};
+
+const buildUnderPlannedImageAuditPrompt = ({ currentMessage = '', freshUploadUrls = [], plannedCall = null } = {}) => {
+  const urls = (Array.isArray(freshUploadUrls) ? freshUploadUrls : [])
+    .map((url) => String(url || '').trim())
+    .filter(Boolean);
+  const plannedInputUrls = normalizeToolCallImageUrls(plannedCall);
+  return [
+    '请审查上一轮 generate_image 工具调用是否完整覆盖用户语义，不要机械拆分。',
+    `用户本轮要求是：${String(currentMessage || '').trim()}`,
+    `本轮共有 ${urls.length} 张新上传图片。上一轮只规划了 1 次 generate_image，输入图片为：${plannedInputUrls.join(', ') || '空'}`,
+    '',
+    '请按语义判断：',
+    '- 如果用户表达的是“每张/全部/都/分别/各自/每个产品都处理”等独立批处理需求，请重新返回多个 generate_image 工具调用；每张新上传图片一次，每次 input_image_urls 只放对应那一张，并按该图实际内容写 prompt。',
+    '- 如果用户表达的是“合成/融合/拼成/同一张/一张海报/参考某图修改另一图”等单张输出需求，请不要拆分。',
+    '- 如果用户只指定了某一张图（例如图1、第一张、这张）或上一轮单图计划已经符合用户语义，请不要调用任何工具，直接回复 PLAN_OK。',
+    '- 不要为了凑数量而复制同一个 prompt；只有语义确实要求多张独立输出时才返回多个工具调用。',
+    '',
+    '本轮新上传图片 URL：',
+    ...urls.map((url, index) => `图${index + 1}: ${url}`),
+  ].join('\n');
+};
+
+const getGenerateImageDedupKey = (call = {}) => {
+  if (call?.name !== 'generate_image') return '';
+  try {
+    const normalized = normalizeGenerateImageArgs(call.args);
+    return JSON.stringify({
+      name: 'generate_image',
+      prompt: String(normalized.prompt || '').trim(),
+      taskType: normalized.taskType,
+      aspectRatio: normalized.aspectRatio,
+      inputImageUrls: normalized.inputImageUrls.map((url) => String(url || '').trim()),
+    });
+  } catch {
+    return '';
+  }
+};
+
+const dedupeExactDuplicateToolCalls = (toolCalls = []) => {
+  const seenGenerateImage = new Set();
+  const deduped = [];
+  for (const call of Array.isArray(toolCalls) ? toolCalls : []) {
+    const key = getGenerateImageDedupKey(call);
+    if (key) {
+      if (seenGenerateImage.has(key)) continue;
+      seenGenerateImage.add(key);
+    }
+    deduped.push(call);
+  }
+  return deduped;
+};
+
 const formatKnowledgeToolOutput = (chunks = []) => {
   const items = Array.isArray(chunks) ? chunks : [];
   if (items.length === 0) return '未在知识库中找到相关内容。';
@@ -264,6 +340,26 @@ export const runAgentConversationV2 = async ({
     };
   }
 
+  if (shouldAuditUnderPlannedImageBatch({ response, freshUploadUrls })) {
+    emit('thinking', { round: 1, repair: 'under_planned_image_batch_audit' });
+    const originalGenerateCall = getGenerateImageToolCalls(response)[0];
+    const repairMessages = [
+      ...messages,
+      { role: 'system', content: buildUnderPlannedImageAuditPrompt({ currentMessage, freshUploadUrls, plannedCall: originalGenerateCall }) },
+    ];
+    const repairedResponse = await callModel({
+      messages: repairMessages,
+      tools,
+      toolChoice: 'auto',
+      maxTokens: contextLimits.maxOutputTokens,
+      onDelta: (delta) => emit('streaming', { delta }),
+    });
+    if (repairedResponse?.finishReason === 'tool_calls' && repairedResponse.toolCalls?.length) {
+      messages = repairMessages;
+      response = repairedResponse;
+    }
+  }
+
   const maxToolRounds = Number(process.env.AGENT_TOOL_MAX_ROUNDS || 5);
   let rounds = 0;
   const imagePlans = [];
@@ -274,7 +370,9 @@ export const runAgentConversationV2 = async ({
   while (response.finishReason === 'tool_calls' && response.toolCalls?.length && rounds < maxToolRounds) {
     rounds += 1;
     if (response.modelUsed) selectedModel = response.modelUsed;
-    const toolCalls = response.toolCalls.filter((item) => ['generate_image', 'search_knowledge'].includes(item.name));
+    const toolCalls = dedupeExactDuplicateToolCalls(
+      response.toolCalls.filter((item) => ['generate_image', 'search_knowledge'].includes(item.name))
+    );
     const callsToExecute = toolCalls.length > 0 ? toolCalls : [response.toolCalls[0]];
     for (const call of callsToExecute) {
       const callId = call.id || `call_${rounds}_${callsToExecute.indexOf(call) + 1}`;

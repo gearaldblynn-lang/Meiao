@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-06-23 - Multi-image independent edit requests need model-reviewed under-planning repair
+
+- Symptom: 将离账号 17:54:08 上传 3 张图并说“都做成白底图，1:1 的比例，正面摆放”，最终只生成 1 张。
+- Environment: Tencent Cloud production / agent_center V2 tool calling / `gpt-5.5` planning + `gpt-image-2` generation.
+- Root cause: #19 图床修复已生效，HTTP 图床已转成 KIE HTTPS 并进入 Responses 多模态分析；但首轮模型只返回了 1 个 `generate_image` tool call，`imagePlan.inputImageUrls` 只有一张图、`providerTaskId` 也只有一个。后端没有丢 tool calls，是模型对“都处理”欠规划。
+- Fix: `runAgentConversationV2` 增加语义审查而不是业务硬编码：只要出现“多张新上传图 + 首轮只规划 1 个单图 generate_image”的结构性风险，就让同一模型复核用户语义。模型判断是每张/全部/都/分别/各自处理时，重新返回多次 `generate_image`；模型判断只指定某一张或合成/融合/同一张输出时，回复 `PLAN_OK` 并保持单张计划。
+- Regression check: `server/agentToolConversation.test.mjs` 覆盖“都处理三张首轮只返回一个 tool call 会二次审查并重规划成三张”、“只处理图1审查后保持单张”、“合成一张海报不会被拆”。
+- Avoid next time: 不要为白底图、加字、换背景写具体需求特判；也不要只跑单元测试就提交。模型语义类修复必须用真实中转模型跑同类探针，确认审查后 tool call 数量符合预期，再提交/部署。
+
 ## 2026-06-23 - Agent Responses image-url planning failures must retry with the image catalog, not expose 502
 
 - Symptom: 将离账号智能体上传 3 张图并要求“都做成白底图，1:1 的比例，正面摆放”时，前端直接显示 `responses 请求失败 (502)`。
