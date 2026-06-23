@@ -103,6 +103,46 @@ test('uploadAssetViaKieStream uses configured asset upload timeout', async () =>
   }
 });
 
+test('executeProviderJob uploads base64 asset payloads through stream upload only', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: 'https://kie.example.com/stream-only.png' },
+      });
+    }
+    if (String(url).includes('/file-base64-upload')) {
+      throw new Error('base64 upload endpoint must not be used');
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'upload_asset',
+        payload: {
+          base64Data: 'aGVsbG8=',
+          mimeType: 'image/png',
+          fileName: 'source.png',
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.fileUrl, 'https://kie.example.com/stream-only.png');
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    assert.equal(requests.some((item) => item.url.includes('/file-base64-upload')), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob can probe a submitted KIE image task without long polling', async () => {
   const realFetch = globalThis.fetch;
   let capturedUrl = '';
@@ -1210,7 +1250,7 @@ test('uploadAssetViaKieStream prefers stream upload and returns file url', async
   }
 });
 
-test('uploadAssetViaKie falls back for relative managed assets when stream upload auth is rejected', async () => {
+test('executeProviderJob fails relative managed asset upload without base64 fallback', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
@@ -1230,14 +1270,8 @@ test('uploadAssetViaKie falls back for relative managed assets when stream uploa
     if (String(url).includes('/file-stream-upload')) {
       return createJsonResponse({ msg: 'stream auth denied' }, 401);
     }
-    if (String(url).includes('/file-base64-upload')) {
-      return createJsonResponse({
-        code: 200,
-        data: { fileUrl: 'https://kie.example.com/uploaded-from-base64.png' },
-      });
-    }
     if (String(url).includes('/createTask')) {
-      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-base64-fallback' } });
+      throw new Error('createTask should not run after upload failure');
     }
     if (String(url).includes('/recordInfo')) {
       return createJsonResponse({
@@ -1257,27 +1291,27 @@ test('uploadAssetViaKie falls back for relative managed assets when stream uploa
   global.clearTimeout = () => {};
 
   try {
-    const result = await executeProviderJob(
-      {
-        taskType: 'kie_image',
-        payload: {
-          prompt: 'test',
-          imageUrls: ['/api/assets/file/asset-fallback/source.png'],
-          model: 'nano-banana-2',
-          aspectRatio: '1:1',
-          resolution: '1K',
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_image',
+          payload: {
+            prompt: 'test',
+            imageUrls: ['/api/assets/file/asset-fallback/source.png'],
+            model: 'nano-banana-2',
+            aspectRatio: '1:1',
+            resolution: '1K',
+          },
         },
-      },
-      { KIE_API_KEY: 'test-key' },
-      new AbortController().signal
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      /stream auth denied|素材上传鉴权失败/
     );
 
-    assert.equal(result.providerTaskId, 'kie-task-base64-fallback');
     assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
-    assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 1);
-    const createTaskRequest = requests.find((item) => item.url.includes('/createTask'));
-    const createTaskBody = JSON.parse(String(createTaskRequest.init.body));
-    assert.deepEqual(createTaskBody.input.image_input, ['https://kie.example.com/uploaded-from-base64.png']);
+    assert.equal(requests.filter((item) => item.url.includes('/file-base64-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/createTask')).length, 0);
   } finally {
     global.fetch = originalFetch;
     global.setTimeout = originalSetTimeout;
@@ -3251,7 +3285,7 @@ test('executeProviderJob respects fallback models when gemini 3 flash fetch fail
   }
 });
 
-test('executeProviderJob falls back to base64 asset upload when gemini 3 flash stream upload fails', async () => {
+test('executeProviderJob fails gemini image upload without base64 fallback', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
@@ -3260,14 +3294,11 @@ test('executeProviderJob falls back to base64 asset upload when gemini 3 flash s
     if (String(url).includes('/api/file-stream-upload')) {
       throw new TypeError('fetch failed');
     }
-    if (String(url).includes('/api/file-base64-upload')) {
-      return createJsonResponse({ data: { downloadUrl: 'https://tempfile.example/uploaded.png' } });
-    }
     return createJsonResponse({
       choices: [
         {
           message: {
-            content: 'uploaded through fallback',
+            content: 'should not call gemini after upload failure',
           },
         },
       ],
@@ -3275,30 +3306,32 @@ test('executeProviderJob falls back to base64 asset upload when gemini 3 flash s
   };
 
   try {
-    const result = await executeProviderJob(
-      {
-        taskType: 'kie_chat',
-        payload: {
-          model: 'gemini-3-flash-openai',
-          messages: [
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: '分析图片' },
-                { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } },
-              ],
-            },
-          ],
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gemini-3-flash-openai',
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: '分析图片' },
+                  { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } },
+                ],
+              },
+            ],
+          },
         },
-      },
-      { KIE_API_KEY: 'test-key' },
-      new AbortController().signal
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      /fetch failed/
     );
 
-    assert.equal(result.result.content, 'uploaded through fallback');
     assert.match(requests[0].url, /\/api\/file-stream-upload$/);
-    assert.match(requests[1].url, /\/api\/file-base64-upload$/);
-    assert.match(requests[2].url, /\/gemini-3-flash\/v1\/chat\/completions$/);
+    assert.equal(requests.some((item) => String(item.url).includes('/api/file-base64-upload')), false);
+    assert.equal(requests.some((item) => String(item.url).includes('/gemini-3-flash/v1/chat/completions')), false);
   } finally {
     global.fetch = originalFetch;
   }

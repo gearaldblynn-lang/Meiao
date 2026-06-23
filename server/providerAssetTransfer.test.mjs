@@ -81,28 +81,30 @@ test('convertInlineDataUrlToKieFileUrl uploads with inferred extension', async (
   assert.equal(url, 'https://kie.test/inline-upload.png');
 });
 
-test('uploadAssetViaKieWithFallback falls back only for transient upload errors', async () => {
+test('uploadAssetViaKieWithFallback does not fall back to base64 uploads', async () => {
   const calls = [];
-  const result = await uploadAssetViaKieWithFallback({
-    fileBuffer: Buffer.from('hello'),
-    mimeType: 'text/plain',
-    fileName: 'a.txt',
-  }, {
-    env: {},
-    deps: {
-      uploadAssetViaKieStream: async () => {
-        calls.push('stream');
-        const error = new Error('timeout');
-        error.code = 'provider_timeout';
-        throw error;
+  await assert.rejects(
+    () => uploadAssetViaKieWithFallback({
+      fileBuffer: Buffer.from('hello'),
+      mimeType: 'text/plain',
+      fileName: 'a.txt',
+    }, {
+      env: {},
+      deps: {
+        uploadAssetViaKieStream: async () => {
+          calls.push('stream');
+          const error = new Error('timeout');
+          error.code = 'provider_timeout';
+          throw error;
+        },
+        uploadAssetViaKieBase64: async () => {
+          calls.push('base64');
+          return { result: { fileUrl: 'https://kie.test/a.txt' } };
+        },
       },
-      uploadAssetViaKieBase64: async (payload) => {
-        calls.push(`base64:${payload.base64Data}`);
-        return { result: { fileUrl: 'https://kie.test/a.txt' } };
-      },
-    },
-  });
+    }),
+    /timeout/
+  );
 
-  assert.deepEqual(calls, ['stream', 'base64:aGVsbG8=']);
-  assert.equal(result.result.fileUrl, 'https://kie.test/a.txt');
+  assert.deepEqual(calls, ['stream']);
 });

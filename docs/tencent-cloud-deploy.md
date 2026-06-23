@@ -60,7 +60,7 @@ EOF
 
 `MEIAO_PROVIDERLESS_RUNNING_STALE_MS` 控制已标记 `running` 但还没有上游 `providerTaskId` 的任务兜底释放窗口。云上建议 `300000`，避免素材上传/提交阶段异常卡住后长期占满同账号并发；真正已拿到 `providerTaskId` 的任务不走这个释放规则，会继续等待上游结果。`MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS` 建议 `30000`，让回收检查更及时。
 
-`MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 控制 KIE 素材上传单次 HTTP 超时，云上建议 `45000`。素材上传内部会先尝试 stream 上传，失败后立即 fallback 到 base64 上传；如果仍失败，任务应快速终态失败并释放并发，不再进入 job 级重试。
+`MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 控制 KIE 素材上传单次 HTTP 超时，云上建议 `45000`。素材只走 stream 图床上传；如果上传失败，任务应快速终态失败并释放并发，不再进入 job 级重试，也不走 base64 上传接口。
 
 `MEIAO_ASSET_X_ACCEL` 默认保持 `0`。只有在 Nginx 已配置内部资源映射后才可设为 `1`，让 `/api/assets/file/:id` 由 Node 校验权限和缓存头，再通过 `X-Accel-Redirect` 交给 Nginx 直出文件，降低大视频经过 Node 流式转发的抖动。示例：
 
