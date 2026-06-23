@@ -62,6 +62,7 @@ import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../src/utils/gptImage2.mjs';
 import { isExternallyReachableBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import {
   buildAssetPublicPath,
+  collectStoredAssetIdsFromValue,
   ensureAssetSchema,
   extractStoredAssetIdFromPublicUrl,
   getPublicBaseUrl,
@@ -3304,6 +3305,39 @@ const deleteStoredAssetForUser = async ({ user, fileUrl }) => {
   return { deleted: true, assetId };
 };
 
+const collectStoredAssetIdsFromChatMessages = (messages = []) => {
+  const ids = new Set();
+  for (const message of Array.isArray(messages) ? messages : []) {
+    const values = [
+      message?.content,
+      message?.attachments,
+      message?.metadata,
+      parseJsonField(message?.attachments_json, null),
+      parseJsonField(message?.metadata_json, null),
+    ];
+    for (const value of values) {
+      collectStoredAssetIdsFromValue(value).forEach((id) => ids.add(id));
+    }
+  }
+  return Array.from(ids);
+};
+
+const deleteStoredAssetsByIdsForUser = async ({ user, assetIds }) => {
+  const uniqueIds = Array.from(new Set(Array.isArray(assetIds) ? assetIds.filter(Boolean) : []));
+  if (!uniqueIds.length) return { deletedAssetIds: [] };
+  const pool = shouldUseMysql ? await getMysqlPool() : null;
+  const deletedAssetIds = [];
+  for (const assetId of uniqueIds) {
+    const asset = await getStoredAssetById(pool, assetId);
+    if (!asset || asset.deletedAt) continue;
+    if (asset.userId !== user.id && user.role !== 'admin') continue;
+    await deleteStoredAssetFile(asset.storageKey);
+    await markStoredAssetDeleted(pool, asset.id, Date.now());
+    deletedAssetIds.push(asset.id);
+  }
+  return { deletedAssetIds };
+};
+
 const cleanupExpiredStoredAssets = async () => {
   const pool = shouldUseMysql ? await getMysqlPool() : null;
   const allAssets = await listStoredAssets(pool);
@@ -5020,9 +5054,12 @@ const deleteDbChatSession = async (user, sessionId) => {
   const session = await getDbChatSessionById(user, sessionId);
   if (!session) return null;
   const pool = await getMysqlPool();
+  const [messages] = await pool.query('SELECT * FROM chat_messages WHERE session_id = ? AND user_id = ?', [sessionId, user.id]);
+  const assetIds = collectStoredAssetIdsFromChatMessages(messages);
+  await deleteStoredAssetsByIdsForUser({ user, assetIds });
   await pool.query('DELETE FROM chat_messages WHERE session_id = ? AND user_id = ?', [sessionId, user.id]);
   await pool.query('DELETE FROM chat_sessions WHERE id = ? AND user_id = ?', [sessionId, user.id]);
-  return { ok: true, deletedSessionId: sessionId };
+  return { ok: true, deletedSessionId: sessionId, deletedAssetIds: assetIds };
 };
 
 const deleteDbUserAgentHistory = async (user, agentId) => {
@@ -5032,7 +5069,14 @@ const deleteDbUserAgentHistory = async (user, agentId) => {
   const [sessionRows] = await pool.query('SELECT id FROM chat_sessions WHERE user_id = ? AND agent_id = ?', [user.id, agentId]);
   const sessionIds = sessionRows.map((row) => row.id);
   let deletedMessageCount = 0;
+  let historyAssetIds = [];
   if (sessionIds.length > 0) {
+    const [historyMessages] = await pool.query(
+      `SELECT * FROM chat_messages WHERE user_id = ? AND session_id IN (${sessionIds.map(() => '?').join(',')})`,
+      [user.id, ...sessionIds]
+    );
+    historyAssetIds = collectStoredAssetIdsFromChatMessages(historyMessages);
+    await deleteStoredAssetsByIdsForUser({ user, assetIds: historyAssetIds });
     const [messageResult] = await pool.query(
       `DELETE FROM chat_messages WHERE user_id = ? AND session_id IN (${sessionIds.map(() => '?').join(',')})`,
       [user.id, ...sessionIds]
@@ -5046,6 +5090,7 @@ const deleteDbUserAgentHistory = async (user, agentId) => {
     deletedSessionCount: Number(sessionResult.affectedRows || 0),
     deletedMessageCount,
     deletedUsageCount: Number(usageResult.affectedRows || 0),
+    deletedAssetIds: historyAssetIds,
   };
 };
 
@@ -6336,7 +6381,7 @@ const deleteLocalAgent = (store, user, agentId) => {
   return { ok: true, deletedAgentId: agentId };
 };
 
-const deleteLocalUserAgentHistory = (store, user, agentId) => {
+const deleteLocalUserAgentHistory = async (store, user, agentId) => {
   const agent = getLocalAgentById(store, agentId);
   if (!agent || agent.status !== 'published') return null;
   const deletedSessionIds = new Set(
@@ -6347,6 +6392,9 @@ const deleteLocalUserAgentHistory = (store, user, agentId) => {
   const deletedSessionCount = deletedSessionIds.size;
   const originalMessageCount = (store.chatMessages || []).length;
   const originalUsageCount = (store.agentUsageLogs || []).length;
+  const historyMessages = (store.chatMessages || []).filter((item) => item.userId === user.id && deletedSessionIds.has(item.sessionId));
+  const historyAssetIds = collectStoredAssetIdsFromChatMessages(historyMessages);
+  await deleteStoredAssetsByIdsForUser({ user, assetIds: historyAssetIds });
   store.chatMessages = (store.chatMessages || []).filter((item) => !(item.userId === user.id && deletedSessionIds.has(item.sessionId)));
   store.chatSessions = (store.chatSessions || []).filter((item) => !(item.userId === user.id && item.agentId === agentId));
   store.agentUsageLogs = (store.agentUsageLogs || []).filter((item) => !(item.userId === user.id && item.agentId === agentId));
@@ -6355,6 +6403,7 @@ const deleteLocalUserAgentHistory = (store, user, agentId) => {
     deletedSessionCount,
     deletedMessageCount: originalMessageCount - store.chatMessages.length,
     deletedUsageCount: originalUsageCount - store.agentUsageLogs.length,
+    deletedAssetIds: historyAssetIds,
   };
 };
 
@@ -9944,7 +9993,7 @@ const handleLocalRequest = async (req, res, url) => {
   if (chatAgentHistoryMatch && req.method === 'DELETE') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
-    const result = deleteLocalUserAgentHistory(store, user, decodeURIComponent(chatAgentHistoryMatch[1]));
+    const result = await deleteLocalUserAgentHistory(store, user, decodeURIComponent(chatAgentHistoryMatch[1]));
     if (!result) {
       json(res, 404, { message: '智能体不存在或无权限。' });
       return;
@@ -10039,10 +10088,13 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 404, { message: '会话不存在或无权限。' });
       return;
     }
+    const sessionMessages = (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id);
+    const deletedAssetIds = collectStoredAssetIdsFromChatMessages(sessionMessages);
+    await deleteStoredAssetsByIdsForUser({ user, assetIds: deletedAssetIds });
     store.chatMessages = (store.chatMessages || []).filter((item) => !(item.sessionId === sessionId && item.userId === user.id));
     store.chatSessions = (store.chatSessions || []).filter((item) => !(item.id === sessionId && item.userId === user.id));
     writeLocalStore(store);
-    json(res, 200, { ok: true, deletedSessionId: sessionId });
+    json(res, 200, { ok: true, deletedSessionId: sessionId, deletedAssetIds });
     return;
   }
 

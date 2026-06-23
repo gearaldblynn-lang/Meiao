@@ -24,6 +24,36 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## Standing Lessons
 
+## 2026-06-23 - Agent chat assets live with the chat session, not the temporary asset TTL
+
+- Symptom: 用户要求智能体对话生成的内容和图在云上长期保留，不能 3 天或 7 天后自动删除；只有删除会话时才删除会话内所有内容。
+- Environment: Tencent Cloud production / local development agent_center managed assets and chat sessions.
+- Root cause: 智能体对话生成图和附件复用了通用 `stored_assets` 3 天 TTL，删除会话/清空历史只删 `chat_messages` 和 `chat_sessions`，没有收集消息正文、附件和 metadata 中的 `/api/assets/file/:id` 去删除图床资产。
+- Fix: `agent_center` 写入的 managed asset 使用永久 `expiresAt=0`，资产清理器把非正数过期时间视为永久；删除单个会话、清空某智能体历史时，MySQL 和本地 JSON 两套 handler 都先级联删除会话内 managed assets，再删除消息和会话。架构级根因见 `CLAUDE.md` #18。
+- Regression check: `node --test server/agentCenterSource.test.mjs server/assetStore.test.mjs server/assetCleanup.test.mjs server/assetReferenceCleanup.test.mjs server/accountDataRetention.test.mjs`; `npm run build`; `npm run lint`.
+- Files/tests: `server/assetStore.mjs`, `server/index.mjs`, `server/assetStore.test.mjs`, `server/agentCenterSource.test.mjs`, `CLAUDE.md`.
+- Avoid next time: 会话内资源不能默认套临时素材 TTL；新增会话资产必须同时覆盖“清理任务不会误删”和“删除会话会释放图床文件”两条回归。
+
+## 2026-06-23 - Providerless detail jobs must not hold user concurrency for 15 minutes
+
+- Symptom: 天琪账号首图任务创建后长时间不开始，前端约 10 分钟后显示首图生成失败；后台实际首图 `kie_image` 在稍后才开始并成功出图。
+- Environment: Tencent Cloud production one_click first_image blocked by earlier detail_page jobs / Temporal task engine.
+- Root cause: 前一个详情页项目的 5 个 `kie_image` 任务占满该账号并发，但这些任务并不是在正常等上游出图；它们停在 provider 提交前的素材上传/提交阶段，`providerTaskId:null`、`providerSubmitted:false`，至少一个出现 `asset_upload fetch failed`。Temporal 为避免重复向上游创建任务，遇到 `running` 且没有 `providerTaskId` 的 MySQL job 不会自动重提，最终只能等 providerless stale reconciler 释放。云上原释放窗口为 15 分钟，导致后续首图任务被排队拖住。
+- Fix: 云上 `.env.server` 调整 `MEIAO_PROVIDERLESS_RUNNING_STALE_MS=300000`、`MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS=30000` 并重启 PM2；已确认健康检查通过。真正已拿到 `providerTaskId` 的任务不受该规则影响，仍继续等待上游结果。
+- Regression check: 云上 `.env.server` 已包含两个配置；`curl http://127.0.0.1:3100/api/health` 返回 `{"ok":true,"mode":"internal-mysql-v1","taskEngine":"temporal"}`；PM2 `meiao-internal` online。
+- Files/tests: `.env.server.example`, `docs/tencent-cloud-deploy.md`, `docs/project-overview.md`, `server/jobManager.mjs`, `server/index.mjs`.
+- Avoid next time: 看到后续任务排队超时，先区分“已提交上游正在出图”和“providerless 提交阶段异常”。`provider_submit_stale`、`providerTaskId:null`、`providerSubmitted:false` 代表没有进入正常出图等待；不要把并发占用误判为 image2/nano 出图慢。
+
+## 2026-06-23 - Agent Responses streaming must be real at the provider boundary
+
+- Symptom: 中转站后台显示智能体请求 `/v1/responses` 为“非流”，复杂需求对话出现 `status_code=502/openai_error`；前端虽然走 SSE，但正文不是 token 级流式。
+- Environment: Tencent Cloud production / local development agent_center V2 tool calling with `OPENAI_COMPATIBLE_*`.
+- Root cause: 浏览器到 Node 的 SSE 已存在，但 `openai_responses` provider 边界没有 `stream:true`，`providerGateway` 也没有转发 `onDelta`；本地 JSON chat handler 还没有 SSE 包装，导致排查时容易误判。
+- Fix: `openaiResponsesProvider` 支持 Responses SSE，解析 `output_text.delta` 和流式 `function_call_arguments`；`providerGateway` 转发 `onDelta`；MySQL 与本地 JSON chat handler 都透传 delta，并避免最终整段正文重复推送。架构级根因见 `CLAUDE.md` #16。
+- Regression check: `node --test server/openaiResponsesProvider.test.mjs server/providerGateway.test.mjs server/agentToolConversation.test.mjs server/agentCenterSource.test.mjs`; `node --experimental-strip-types --test src/services/internalApi.test.mjs src/services/chatStreamParse.test.mjs src/shell/modules/AgentCenter/AgentCenterModule.test.mjs src/shell/modules/AgentCenter/ChatConversationPane.test.mjs`; `npm run build`.
+- Files/tests: `server/openaiResponsesProvider.mjs`, `server/providerGateway.mjs`, `server/index.mjs`, `server/openaiResponsesProvider.test.mjs`, `server/providerGateway.test.mjs`, `server/agentCenterSource.test.mjs`, `CLAUDE.md`.
+- Avoid next time: 不要用“前端请求 SSE”证明上游已流式；必须查 provider 请求体、上游 content-type、delta 解析和双 handler 透传。中转站 502 先用最小真实探针比较 stream/non-stream，再改代码。
+
 ## 2026-06-23 - Agent V2 image tool calls must execute all semantic outputs
 
 - Symptom: 智能体多图生图不能像 GPT 原生对话那样按语义决定生成几张图；用户表达“每张/逐张/分别处理”时，后端仍可能只执行一次生图或把多图当成一张合成输入。

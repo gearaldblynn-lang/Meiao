@@ -139,6 +139,20 @@ test('agent chat source exposes current-user profile updates and session patch d
   assert.match(source, /createDbChatSessionOptions/);
 });
 
+test('agent chat session deletion cascades managed assets in mysql and local modes', () => {
+  assert.match(source, /collectStoredAssetIdsFromValue/);
+  assert.match(source, /const collectStoredAssetIdsFromChatMessages = \(messages = \[\]\) =>/);
+  assert.match(source, /const deleteStoredAssetsByIdsForUser = async \(\{ user, assetIds \}\) =>/);
+  assert.match(source, /SELECT \* FROM chat_messages WHERE session_id = \? AND user_id = \?/);
+  assert.match(source, /SELECT \* FROM chat_messages WHERE user_id = \? AND session_id IN/);
+  assert.match(source, /const assetIds = collectStoredAssetIdsFromChatMessages\(messages\);/);
+  assert.match(source, /await deleteStoredAssetsByIdsForUser\(\{ user, assetIds \}\)/);
+  assert.match(source, /const deletedAssetIds = collectStoredAssetIdsFromChatMessages\(sessionMessages\);/);
+  assert.match(source, /await deleteStoredAssetsByIdsForUser\(\{ user, assetIds: deletedAssetIds \}\)/);
+  assert.match(source, /const historyAssetIds = collectStoredAssetIdsFromChatMessages\(historyMessages\);/);
+  assert.match(source, /await deleteStoredAssetsByIdsForUser\(\{ user, assetIds: historyAssetIds \}\)/);
+});
+
 test('agent chat source validates model ability before accepting attachments or web search', () => {
   assert.match(source, /getChatModelCapability/);
   assert.match(source, /getAttachmentCapabilityError/);

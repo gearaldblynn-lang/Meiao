@@ -11,6 +11,8 @@ import {
   optimizeMp4BufferForStreaming,
   sanitizeAssetName,
   shouldRetainAssetRecord,
+  selectExpiredAssetsForCleanup,
+  collectStoredAssetIdsFromValue,
 } from './assetStore.mjs';
 
 const atom = (type, payload = Buffer.alloc(0)) => {
@@ -54,6 +56,39 @@ test('shouldRetainAssetRecord keeps referenced or unexpired assets', () => {
   assert.equal(shouldRetainAssetRecord({ expiresAt: now - 1, isReferenced: false }, now), false);
   assert.equal(shouldRetainAssetRecord({ expiresAt: now + ASSET_RETENTION_MS, isReferenced: false }, now), true);
   assert.equal(shouldRetainAssetRecord({ expiresAt: now - 1, isReferenced: true }, now), true);
+  assert.equal(shouldRetainAssetRecord({ expiresAt: 0, isReferenced: false }, now), true);
+});
+
+test('agent center assets are permanent until their chat session is deleted', () => {
+  const now = Date.now();
+  const rows = [
+    { id: 'agent-result', module: 'agent_center', expiresAt: 0, deletedAt: null, publicUrl: 'https://a', isReferenced: false },
+    { id: 'old-temp', module: 'one_click', expiresAt: now - 1000, deletedAt: null, publicUrl: 'https://b', isReferenced: false },
+  ];
+
+  assert.deepEqual(
+    selectExpiredAssetsForCleanup(rows, now).map((item) => item.id),
+    ['old-temp']
+  );
+});
+
+test('collectStoredAssetIdsFromValue finds managed assets in chat message payloads', () => {
+  const value = {
+    attachments: [
+      { url: 'https://meiao.example.com/api/assets/file/asset_img/result.png' },
+      { fileUrl: '/api/assets/file/asset_file/source.png' },
+    ],
+    metadata: {
+      imageResultUrls: ['https://meiao.example.com/api/assets/file/asset_result/out.png'],
+      nested: { ignored: 'https://example.com/not-managed.png' },
+    },
+    content: '可查看 /api/assets/file/asset_inline/poster.jpg',
+  };
+
+  assert.deepEqual(
+    collectStoredAssetIdsFromValue(value),
+    ['asset_img', 'asset_file', 'asset_result', 'asset_inline']
+  );
 });
 
 test('ensureAssetSchema accepts provider task ids longer than local entity ids', async () => {
