@@ -118,3 +118,9 @@
   现象:将离 2026-06-18 16:24:35 的会话记录为 `requestMode:'chat'`,assistant 停在 `pending/thinking`,无 `agent_center/result` 资产、无 internal_jobs、无 providerTaskId;用户侧上游面板可能已看到任务/出图,但应用无法自动关联回来。李松同窗口的 502 则是 #12 的分析阶段旧请求,两类症状不能混为一谈。
   修复:MySQL 和本地 JSON 两套 V2 chat handler 给 `kie_image` 传入 `onProviderTaskId`;KIE createTask 一返回 taskId,立即写 `image_task_submitted` checkpoint,包含 `providerTaskId`、`imagePlan`、输入图和 prompt,并保留 pending 状态。最终成功/失败落库不会再擦掉这个 taskId。`providerGateway` 增加 `kie_probe` 单次 recordInfo 查询;chat messages GET 遇到 `image_task_submitted` pending 消息会节流探测 provider,若上游已完成则持久化图片资产并把消息恢复成 completed `image_task_recovered`。
   如何避免:**长耗时工具调用不能只在"拿到最终结果"后落库;上游一旦返回 provider task id,必须立刻 durable checkpoint。前端轮询只同步 completed 消息不够,服务端消息列表也要能用 providerTaskId 做轻量恢复。改智能体 chat 路径必须同步 MySQL/本地两套 handler,并覆盖 `providerTaskId 提交即落库`、`消息列表自动恢复`、`provider 单次探测` 三类测试。**
+
+- **#14 ✅ 已修(2026-06-23)· V2 生图工具调用被后端压成单次,无法按语义生成多张结果**
+  根因:V2 `runAgentConversationV2` 虽然让模型返回 `generate_image` 工具调用,但执行器只取第一条 tool call,并用 `imageGenerated=true` 阻止同一轮或后续轮次继续出图。这把 GPT 原生"模型按语义决定调用几次工具"压回了旧的单任务生图模式:用户说"每张图都处理"时,模型即使返回多次 `generate_image`,后端也只执行一次。
+  现象:多图智能体需求会被错误当作"多图输入生成一张图"或只处理第一张图;这不是某个白底图需求的特判问题,而是工具执行器丢弃模型计划的问题。
+  修复:`runAgentConversationV2` 改为按模型返回的 tool calls 顺序逐个执行 `generate_image`/`search_knowledge`,每个 `function_call` 都紧跟对应 `function_call_output` 回传;多张生图结果聚合到 `imageResultUrls`,并在 `imagePlan` 中保留 `outputCount/plans/providerTaskIds/imageResultUrls`。生图模式 prompt 增加语义规则:逐张/分别/每个素材处理时多次调用;融合/合成/同一张图时单次调用;参考图编辑时单次调用并说明主图/参考图角色。
+  如何避免:**不要在后端用业务关键词硬判"抠白底/加字/换背景";语义判断交给模型和工具说明。后端职责是忠实执行模型返回的多个 tool calls,并保持多结果可落库、可展示、可在最终文案失败时保留。回归测试必须覆盖"同一轮多个 generate_image 全部执行"和"系统引导语表达逐张 vs 合成的工具调用语义"。**
