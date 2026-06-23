@@ -552,6 +552,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test src/adapters/shellDataAdapter.test.mjs --test-name-pattern "first-image planning|planning reference|completed planning jobs by payload project id"`; `npm run build`.
 - Avoid next time: 多参考图策划的状态恢复不能以单个 backend job 为单位判断完整性。凡是同一个 `shellProjectId` 下存在多个 planning jobs，都必须按参考图序号聚合后再计算 `taskCount/plans/planningTaskId`，并且回归测试要覆盖“持久化已有 1 个 plan、后台实际有 N 个成功 plan”的刷新形态。
 
+## 2026-06-23 - Completed backend media must replace timeout placeholders
+
+- Symptom: 天琪账号首图生成页面显示“生成失败 / 任务等待超时，请稍后在任务列表中查看结果”，但云上 `internal_jobs` 中同一批 `kie_image` 后台任务稍后全部 `succeeded` 且有 `imageUrl`。
+- Environment: Tencent Cloud production, one-click first-image image generation, backend queue slower than frontend polling window.
+- Root cause: 前端等待后台任务超时后写入同 `backendJobId/providerTaskId` 的无图 `status:'error'` 占位；刷新水合 terminal image job 时，`hasPersistedTerminalJobResult` 把这个无图 error 当成“已有终态结果”，导致成功的 backend media job 被提前跳过，旧失败卡片无法被后台结果覆盖。
+- Fix: `hasPersistedTerminalJobResult` 增加 `incomingHasMedia` 参数；当 incoming job 已有图片/视频 URL 时，只有已持久化的媒体结果才算重复，旧无图 error/generating 占位必须允许被成功结果替换。`shellDataAdapter` 对 completed image job 传入该标记，并补首图超时占位恢复回归测试。
+- Regression check: `node --experimental-strip-types --test src/adapters/shellTerminalJobMerge.test.mjs src/adapters/shellDataAdapter.test.mjs`; `node --test server/appStateMerge.test.mjs`; `npm run build`.
+- Avoid next time: 任务卡恢复逻辑不能把“前端没等到结果”当成“最终失败”。凡 backend job 后续拿到 image/video URL，必须能用 job/provider/plan 身份覆盖同一范围内的无媒体失败或等待占位；真正要防重复时，以已存在媒体结果为准。
+
 ## 2026-05-26 - Completed planning jobs must recover stale planning-failure cards
 
 - Symptom: 多桑账号 2026-05-26 的“项目3/项目4”后台 `kie_chat` 策划 job 均已 `succeeded` 且 `result_json.content` 包含 `[SCHEME_START]... [SCHEME_END]`，但前端项目卡显示“共 1 张参考图，其中 1 张策划失败。”

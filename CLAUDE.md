@@ -124,3 +124,9 @@
   现象:多图智能体需求会被错误当作"多图输入生成一张图"或只处理第一张图;这不是某个白底图需求的特判问题,而是工具执行器丢弃模型计划的问题。
   修复:`runAgentConversationV2` 改为按模型返回的 tool calls 顺序逐个执行 `generate_image`/`search_knowledge`,每个 `function_call` 都紧跟对应 `function_call_output` 回传;多张生图结果聚合到 `imageResultUrls`,并在 `imagePlan` 中保留 `outputCount/plans/providerTaskIds/imageResultUrls`。生图模式 prompt 增加语义规则:逐张/分别/每个素材处理时多次调用;融合/合成/同一张图时单次调用;参考图编辑时单次调用并说明主图/参考图角色。
   如何避免:**不要在后端用业务关键词硬判"抠白底/加字/换背景";语义判断交给模型和工具说明。后端职责是忠实执行模型返回的多个 tool calls,并保持多结果可落库、可展示、可在最终文案失败时保留。回归测试必须覆盖"同一轮多个 generate_image 全部执行"和"系统引导语表达逐张 vs 合成的工具调用语义"。**
+
+- **#15 ✅ 已修(2026-06-23)· 后台出图成功被前端超时失败占位挡住**
+  根因:一键主详/首图出图走 `internal_jobs` 后台任务。云上排队较慢时,前端 `waitForInternalJob` 先超时并写入无图 `status:'error'` 占位;后台 KIE job 随后成功并带回 `imageUrl`。但 `shellDataAdapter` 在恢复 terminal image job 前先调用 `hasPersistedTerminalJobResult`,该函数把同 job/provider 身份的无图 error 也当成"已有终态结果",直接 `return`,导致成功媒体结果没有机会覆盖旧占位。
+  现象:天琪账号 2026-06-23 14:28:22 的首图项目 5 个 `kie_image` job 后台全部 `succeeded`,但前端 14:38:25 先显示"生成失败 / 任务等待超时,请稍后在任务列表中查看结果";用户刷新后仍可能看到旧失败卡片,因为水合被旧无图 error 拦截。
+  修复:`hasPersistedTerminalJobResult` 增加 `incomingHasMedia` 语义:当 incoming backend job 已有图片/视频 URL 时,只有已持久化的媒体结果才算"已处理";同 job/provider 的无图 error/generating 占位必须允许被成功结果替换。`shellDataAdapter` 对 completed image jobs 传入该标记,并补首图超时占位恢复测试。
+  如何避免:**状态恢复里"已有终态"不能只看 `status:'error'`;必须区分"有媒体的用户结果"和"无媒体的运行时占位"。任何 backend job 后来拿到 image/video URL,都必须能覆盖同 job/provider/plan 的旧无图失败或等待占位。**

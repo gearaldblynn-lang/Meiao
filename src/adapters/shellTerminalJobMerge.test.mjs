@@ -30,6 +30,22 @@ test('hasPersistedTerminalJobResult matches a persisted terminal error by provid
   }), true);
 });
 
+test('hasPersistedTerminalJobResult lets incoming media replace a stale no-media error with same job id', () => {
+  assert.equal(hasPersistedTerminalJobResult({
+    results: [{
+      backendJobId: 'job-late-success',
+      taskId: 'provider-late-success',
+      imageUrl: '',
+      status: 'error',
+      error: '任务等待超时，请稍后在任务列表中查看结果',
+    }],
+    jobId: 'job-late-success',
+    providerTaskId: 'provider-late-success',
+    payloadPlanId: 'plan-1',
+    incomingHasMedia: true,
+  }), false);
+});
+
 test('hasPersistedTerminalJobResult does not treat same-plan stale failures as the same concrete retry job', () => {
   assert.equal(hasPersistedTerminalJobResult({
     results: [{
