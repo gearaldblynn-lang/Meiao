@@ -356,6 +356,62 @@ test('getNextJobFailureState returns failed when retry budget is exhausted', () 
   );
 });
 
+test('getNextJobFailureState fails asset upload after its internal fallback is exhausted', () => {
+  assert.deepEqual(
+    getNextJobFailureState({
+      retryCount: 0,
+      maxRetries: 2,
+      errorCode: 'provider_network_error',
+      providerStage: 'asset_upload',
+    }),
+    {
+      retryCount: 0,
+      status: 'failed',
+    }
+  );
+
+  assert.deepEqual(
+    getNextJobFailureState({
+      retryCount: 1,
+      maxRetries: 2,
+      errorCode: 'provider_network_error',
+      providerStage: 'asset_upload',
+    }),
+    {
+      retryCount: 1,
+      status: 'failed',
+    }
+  );
+});
+
+test('getNextJobFailureState lets asset download failures retry once then fail fast', () => {
+  assert.deepEqual(
+    getNextJobFailureState({
+      retryCount: 0,
+      maxRetries: 2,
+      errorCode: 'provider_network_error',
+      providerStage: 'asset_download',
+    }),
+    {
+      retryCount: 1,
+      status: 'retry_waiting',
+    }
+  );
+
+  assert.deepEqual(
+    getNextJobFailureState({
+      retryCount: 1,
+      maxRetries: 2,
+      errorCode: 'provider_network_error',
+      providerStage: 'asset_download',
+    }),
+    {
+      retryCount: 1,
+      status: 'failed',
+    }
+  );
+});
+
 test('getNextJobFailureState does not retry transient failures when retry budget is zero', () => {
   assert.deepEqual(
     getNextJobFailureState({

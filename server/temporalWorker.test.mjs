@@ -293,3 +293,53 @@ test('mysql temporal activity executes a queued db job and writes attempts/event
   assert.ok(heartbeats.some((details) => details?.jobId === 'job-1' && details?.stage === 'provider_wait'));
   assert.ok(heartbeats.some((details) => details?.providerTaskId === 'provider-task-1'));
 });
+
+test('mysql temporal activity fails asset upload after upload fallback instead of holding concurrency', async () => {
+  const { state, pool } = createMysqlHarness({
+    id: 'job-asset-upload-retry',
+    user_id: 'user-1',
+    module: 'one_click',
+    task_type: 'kie_image',
+    provider: 'kie',
+    status: 'retry_waiting',
+    priority: 0,
+    payload_json: JSON.stringify({ traceId: 'trace-upload' }),
+    provider_task_id: null,
+    retry_count: 0,
+    max_retries: 2,
+    created_at: 1000,
+    updated_at: 1500,
+  });
+  const logs = [];
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async () => {
+      const error = new Error('fetch failed');
+      error.code = 'provider_network_error';
+      error.providerStage = 'asset_upload';
+      throw error;
+    },
+    createLog: async (entry) => logs.push(entry),
+    findUserById: async () => ({ id: 'user-1', username: 'user-1', displayName: 'User 1', role: 'admin' }),
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: 'job-asset-upload-retry',
+    workflowId: 'meiao-job-asset-upload-retry',
+    runId: 'run-1',
+  });
+
+  assert.equal(result.status, 'failed');
+  assert.equal(state.job.status, 'failed');
+  assert.equal(state.job.retry_count, 0);
+  assert.equal(state.job.provider_task_id, null);
+  assert.equal(state.job.error_code, 'provider_network_error');
+  assert.equal(state.job.finished_at > 0, true);
+  assert.ok(state.events.some((params) => (
+    params[4] === 'asset_upload'
+    && params[5] === 'job_failed'
+    && params[6] === 'failed'
+    && params[10] === 'provider_network_error'
+  )));
+  assert.equal(logs.at(-1).status, 'failed');
+});

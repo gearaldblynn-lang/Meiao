@@ -68,6 +68,41 @@ test('executeProviderJob 路由 openai_responses 到 responses provider', async 
   }
 });
 
+test('uploadAssetViaKieStream uses configured asset upload timeout', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const timeouts = [];
+
+  global.fetch = async () => createJsonResponse({
+    code: 200,
+    data: { fileUrl: 'https://kie.example.com/uploaded.png' },
+  });
+  global.setTimeout = (_handler, timeoutMs) => {
+    timeouts.push(timeoutMs);
+    return 0;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    const result = await uploadAssetViaKieStream({
+      fileBuffer: Buffer.from('png'),
+      mimeType: 'image/png',
+      fileName: 'source.png',
+    }, {
+      KIE_API_KEY: 'test-key',
+      MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS: '12345',
+    });
+
+    assert.equal(result.result.fileUrl, 'https://kie.example.com/uploaded.png');
+    assert.ok(timeouts.includes(12345));
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
 test('executeProviderJob can probe a submitted KIE image task without long polling', async () => {
   const realFetch = globalThis.fetch;
   let capturedUrl = '';
