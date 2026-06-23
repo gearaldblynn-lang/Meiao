@@ -287,6 +287,167 @@ test('模型同一轮返回多个 generate_image 时：逐个执行并返回多�
   assert.equal(out.imagePlan.plans.length, 2);
 });
 
+test('模型重复返回完全相同的 generate_image 时只执行一次，但保留不同 prompt 变体', async () => {
+  const generated = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '图1做两个不同版本',
+    attachments: [{ kind: 'image', url: 'https://upload/1.jpg', name: '1.jpg' }],
+    callModel: async ({ messages }) => {
+      const outputs = messages.filter((message) => message.type === 'function_call_output');
+      if (outputs.length > 0) return { content: '已处理', toolCalls: [], finishReason: 'stop' };
+      return {
+        content: '',
+        toolCalls: [
+          { id: 'a1', name: 'generate_image', args: { prompt: '白底图 A', task_type: 'edit_image', input_image_urls: ['https://upload/1.jpg'] } },
+          { id: 'a2', name: 'generate_image', args: { prompt: '白底图 A', task_type: 'edit_image', input_image_urls: ['https://upload/1.jpg'] } },
+          { id: 'b1', name: 'generate_image', args: { prompt: '白底图 B', task_type: 'edit_image', input_image_urls: ['https://upload/1.jpg'] } },
+        ],
+        finishReason: 'tool_calls',
+      };
+    },
+    generateImage: async ({ inputImageUrls, prompt }) => {
+      generated.push({ inputImageUrls, prompt });
+      return { imageUrl: `https://img/${generated.length}.png` };
+    },
+    onProgress: () => {},
+  });
+  assert.deepEqual(generated.map((item) => item.prompt), ['白底图 A', '白底图 B']);
+  assert.deepEqual(out.imageResultUrls, ['https://img/1.png', 'https://img/2.png']);
+});
+
+test('用户明确要求都处理多张新图时，首轮模型只返回一个单图工具调用会触发二次规划', async () => {
+  let modelRound = 0;
+  const progress = [];
+  const generated = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '都做成白底图，1:1的比例，正面摆放',
+    attachments: [
+      { kind: 'image', url: 'https://upload/1.jpg', name: '1.jpg' },
+      { kind: 'image', url: 'https://upload/2.jpg', name: '2.jpg' },
+      { kind: 'image', url: 'https://upload/3.jpg', name: '3.jpg' },
+    ],
+    callModel: async ({ messages }) => {
+      modelRound += 1;
+      if (modelRound === 1) {
+        return {
+          content: '',
+          toolCalls: [
+            { id: 'c1', name: 'generate_image', args: { prompt: '只处理了第一张的白底图提示词', task_type: 'edit_image', input_image_urls: ['https://upload/1.jpg'] } },
+          ],
+          finishReason: 'tool_calls',
+        };
+      }
+      if (modelRound === 2) {
+        const repairText = messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n');
+        assert.match(repairText, /审查/);
+        assert.match(repairText, /语义/);
+        assert.match(repairText, /3 张/);
+        return {
+          content: '',
+          toolCalls: [
+            { id: 'r1', name: 'generate_image', args: { prompt: '图1白底图', task_type: 'edit_image', input_image_urls: ['https://upload/1.jpg'] } },
+            { id: 'r2', name: 'generate_image', args: { prompt: '图2白底图', task_type: 'edit_image', input_image_urls: ['https://upload/2.jpg'] } },
+            { id: 'r3', name: 'generate_image', args: { prompt: '图3白底图', task_type: 'edit_image', input_image_urls: ['https://upload/3.jpg'] } },
+          ],
+          finishReason: 'tool_calls',
+        };
+      }
+      const outputs = messages.filter((message) => message.type === 'function_call_output');
+      assert.equal(outputs.length, 3);
+      return { content: '三张图都已处理', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async ({ inputImageUrls, prompt }) => {
+      generated.push({ inputImageUrls, prompt });
+      return { imageUrl: `https://img/${generated.length}.png` };
+    },
+    onProgress: (event) => progress.push(event),
+  });
+  assert.equal(modelRound, 3);
+  assert.deepEqual(generated.map((item) => item.inputImageUrls[0]), [
+    'https://upload/1.jpg',
+    'https://upload/2.jpg',
+    'https://upload/3.jpg',
+  ]);
+  assert.deepEqual(out.imageResultUrls, ['https://img/1.png', 'https://img/2.png', 'https://img/3.png']);
+  assert.equal(out.imagePlan.outputCount, 3);
+  assert.ok(progress.some((event) => event.repair === 'under_planned_image_batch_audit'));
+});
+
+test('多张新图但用户只指定其中一张时，审查后保持单张计划', async () => {
+  let modelRound = 0;
+  let generated = 0;
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '只把图1做成白底图，其他先不要处理',
+    attachments: [
+      { kind: 'image', url: 'https://upload/1.jpg', name: '1.jpg' },
+      { kind: 'image', url: 'https://upload/2.jpg', name: '2.jpg' },
+      { kind: 'image', url: 'https://upload/3.jpg', name: '3.jpg' },
+    ],
+    callModel: async ({ messages }) => {
+      modelRound += 1;
+      if (modelRound === 1) {
+        return {
+          content: '',
+          toolCalls: [
+            { id: 'c1', name: 'generate_image', args: { prompt: '图1白底图', task_type: 'edit_image', input_image_urls: ['https://upload/1.jpg'] } },
+          ],
+          finishReason: 'tool_calls',
+        };
+      }
+      if (modelRound === 2) {
+        const auditText = messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n');
+        assert.match(auditText, /PLAN_OK/);
+        return { content: 'PLAN_OK', toolCalls: [], finishReason: 'stop' };
+      }
+      return { content: '图1已处理', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async ({ inputImageUrls }) => {
+      generated += 1;
+      assert.deepEqual(inputImageUrls, ['https://upload/1.jpg']);
+      return { imageUrl: 'https://img/only-1.png' };
+    },
+    onProgress: () => {},
+  });
+  assert.equal(modelRound, 3);
+  assert.equal(generated, 1);
+  assert.deepEqual(out.imageResultUrls, ['https://img/only-1.png']);
+});
+
+test('用户要求合成到同一张图时，单个多图工具调用不会被拆成多张', async () => {
+  let generated = 0;
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '把这三张图合成一张海报',
+    attachments: [
+      { kind: 'image', url: 'https://upload/1.jpg', name: '1.jpg' },
+      { kind: 'image', url: 'https://upload/2.jpg', name: '2.jpg' },
+      { kind: 'image', url: 'https://upload/3.jpg', name: '3.jpg' },
+    ],
+    callModel: async ({ messages }) => {
+      const outputs = messages.filter((message) => message.type === 'function_call_output');
+      if (outputs.length > 0) return { content: '已合成', toolCalls: [], finishReason: 'stop' };
+      return {
+        content: '',
+        toolCalls: [
+          { id: 'c1', name: 'generate_image', args: { prompt: '三图合成一张海报', task_type: 'edit_image', input_image_urls: ['https://upload/1.jpg', 'https://upload/2.jpg', 'https://upload/3.jpg'] } },
+        ],
+        finishReason: 'tool_calls',
+      };
+    },
+    generateImage: async ({ inputImageUrls }) => {
+      generated += 1;
+      assert.deepEqual(inputImageUrls, ['https://upload/1.jpg', 'https://upload/2.jpg', 'https://upload/3.jpg']);
+      return { imageUrl: 'https://img/poster.png' };
+    },
+    onProgress: () => {},
+  });
+  assert.equal(generated, 1);
+  assert.deepEqual(out.imageResultUrls, ['https://img/poster.png']);
+});
+
 test('生图模式引导模型按语义决定单次合成或多次独立调用', async () => {
   let sysContent = '';
   await runAgentConversationV2({
