@@ -119,6 +119,15 @@ test('V2 接入 responses provider 并注入知识库/联网工具(双 handler)'
   assert.ok(reasoningPayloads.length >= 2, '双 handler 的 responses payload 都要透传 reasoningLevel');
 });
 
+test('agent V2 prepares managed image URLs as provider-stable HTTPS URLs before model vision analysis', () => {
+  assert.match(source, /import \{ resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel \} from '\.\/providerAssetTransfer\.mjs'/);
+  assert.match(source, /import \{ executeProviderJob, uploadAssetViaKieStream \} from '\.\/providerGateway\.mjs'/);
+  assert.match(source, /const prepareAgentModelImageUrl = async \(url\) =>/);
+  assert.match(source, /resolveProviderChatMediaUrlForModel\(url, \{\s*env: process\.env,\s*deps: \{ uploadAssetViaKieStream \},\s*\}\)/);
+  const prepareHooks = Array.from(source.matchAll(/prepareModelImageUrl: prepareAgentModelImageUrl/g));
+  assert.ok(prepareHooks.length >= 2, 'MySQL+本地 V2 chat handler 都要准备模型可读图片 URL');
+});
+
 test('agent chat streaming is wired through both mysql and local handlers without duplicate final deltas', () => {
   assert.match(source, /let chatStreamHadDelta = false;/);
   assert.match(source, /if \(normalizedType === 'streaming' && payload\?\.delta\) chatStreamHadDelta = true;/);

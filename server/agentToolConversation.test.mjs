@@ -378,15 +378,20 @@ test('首轮 Responses 带图 502 时：用图片目录 URL 文本重试并继�
   assert.ok(progress.some((event) => event.retry === 'text_image_catalog'));
 });
 
-test('HTTP 图床图片不作为 Responses inline image 发送，直接用图片目录 URL 规划', async () => {
+test('HTTP 图床图片先转成模型稳定可读的 HTTPS 图床，再作为 inline image 发送给 Responses', async () => {
   let userContent = null;
   let systemText = '';
+  let generatedInputUrls = null;
   let round = 0;
   const progress = [];
   const out = await runAgentConversationV2({
     ...baseArgs,
     currentMessage: '都做成白底图',
     attachments: [{ kind: 'image', url: 'http://111.229.66.247/api/assets/file/a/1.png', name: '1.png' }],
+    prepareModelImageUrl: async (url) => {
+      assert.equal(url, 'http://111.229.66.247/api/assets/file/a/1.png');
+      return 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/1.png';
+    },
     callModel: async ({ messages }) => {
       round += 1;
       userContent = messages.find((message) => message.role === 'user')?.content;
@@ -394,18 +399,23 @@ test('HTTP 图床图片不作为 Responses inline image 发送，直接用图片
       if (round > 1) return { content: '已处理', toolCalls: [], finishReason: 'stop' };
       return {
         content: '',
-        toolCalls: [{ id: 'c1', name: 'generate_image', args: { prompt: '白底图', task_type: 'edit_image', input_image_urls: ['http://111.229.66.247/api/assets/file/a/1.png'] } }],
+        toolCalls: [{ id: 'c1', name: 'generate_image', args: { prompt: '白底图', task_type: 'edit_image', input_image_urls: ['https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/1.png'] } }],
         finishReason: 'tool_calls',
       };
     },
-    generateImage: async () => ({ imageUrl: 'https://img/white.png' }),
+    generateImage: async ({ inputImageUrls }) => {
+      generatedInputUrls = inputImageUrls;
+      return { imageUrl: 'https://img/white.png' };
+    },
     onProgress: (event) => progress.push(event),
   });
-  assert.equal(typeof userContent, 'string');
-  assert.match(systemText, /不要要求用户重新上传/);
-  assert.match(systemText, /http:\/\/111\.229\.66\.247\/api\/assets\/file\/a\/1\.png/);
+  assert.ok(Array.isArray(userContent), '转成 HTTPS 图床后应作为多模态图片发给模型分析');
+  const imagePart = userContent.find((part) => part.type === 'image_url');
+  assert.equal(imagePart?.image_url?.url, 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/1.png');
+  assert.match(systemText, /https:\/\/tempfile\.redpandaai\.co\/kieai\/30590\/mayo-storage\/internal\/1\.png/);
+  assert.deepEqual(generatedInputUrls, ['https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/1.png']);
   assert.deepEqual(out.imageResultUrls, ['https://img/white.png']);
-  assert.ok(progress.some((event) => event.imageInputMode === 'text_image_catalog'));
+  assert.equal(progress.some((event) => event.imageInputMode === 'text_image_catalog'), false);
 });
 
 test('无上传图时：用户消息退化为纯文本字符串', async () => {

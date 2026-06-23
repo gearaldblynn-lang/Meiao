@@ -31,6 +31,56 @@ const hasImageAttachments = (attachments = []) => (
   (Array.isArray(attachments) ? attachments : []).some((item) => item?.kind === 'image' && item?.url)
 );
 
+const prepareImageUrlForModel = async (url, prepareModelImageUrl, cache) => {
+  const normalized = String(url || '').trim();
+  if (!normalized) return '';
+  if (typeof prepareModelImageUrl !== 'function') return normalized;
+  if (cache.has(normalized)) return cache.get(normalized);
+  const prepared = String(await prepareModelImageUrl(normalized) || '').trim() || normalized;
+  cache.set(normalized, prepared);
+  return prepared;
+};
+
+const prepareAttachmentsForModel = async (attachments = [], prepareModelImageUrl, cache) => {
+  const items = Array.isArray(attachments) ? attachments : [];
+  return Promise.all(items.map(async (item) => {
+    if (item?.kind !== 'image' || !item?.url) return item;
+    return {
+      ...item,
+      originalUrl: item.originalUrl || item.url,
+      url: await prepareImageUrlForModel(item.url, prepareModelImageUrl, cache),
+    };
+  }));
+};
+
+const preparePriorMessagesForModel = async (priorMessages = [], prepareModelImageUrl, cache) => {
+  const messages = Array.isArray(priorMessages) ? priorMessages : [];
+  return Promise.all(messages.map(async (message) => {
+    const preparedAttachments = Array.isArray(message?.attachments)
+      ? await prepareAttachmentsForModel(message.attachments, prepareModelImageUrl, cache)
+      : message?.attachments;
+    const metadata = message?.metadata && typeof message.metadata === 'object'
+      ? { ...message.metadata }
+      : message?.metadata;
+    if (metadata?.imageUrl) {
+      metadata.imageUrl = await prepareImageUrlForModel(metadata.imageUrl, prepareModelImageUrl, cache);
+    }
+    if (Array.isArray(metadata?.imagePlan?.inputImageUrls)) {
+      metadata.imagePlan = {
+        ...metadata.imagePlan,
+        inputImageUrls: await Promise.all(metadata.imagePlan.inputImageUrls.map((url) => (
+          prepareImageUrlForModel(url, prepareModelImageUrl, cache)
+        ))),
+      };
+    }
+    return {
+      ...message,
+      ...(preparedAttachments ? { attachments: preparedAttachments } : {}),
+      ...(metadata ? { metadata } : {}),
+    };
+  }));
+};
+
 const shouldInlineImageAttachments = (attachments = []) => {
   const imageAttachments = (Array.isArray(attachments) ? attachments : [])
     .filter((item) => item?.kind === 'image' && item?.url);
@@ -127,6 +177,7 @@ export const runAgentConversationV2 = async ({
   callModel,
   generateImage,
   searchKnowledge = null,
+  prepareModelImageUrl = null,
   onProgress = null,
 } = {}) => {
   void maxInputImages;
@@ -134,12 +185,16 @@ export const runAgentConversationV2 = async ({
     if (onProgress) onProgress({ stage, ...extra });
   };
 
-  const catalog = buildSessionImageCatalog({ attachments, priorMessages });
+  const preparedImageUrlCache = new Map();
+  const modelAttachments = await prepareAttachmentsForModel(attachments, prepareModelImageUrl, preparedImageUrlCache);
+  const modelPriorMessages = await preparePriorMessagesForModel(priorMessages, prepareModelImageUrl, preparedImageUrlCache);
+
+  const catalog = buildSessionImageCatalog({ attachments: modelAttachments, priorMessages: modelPriorMessages });
   const catalogText = formatCatalogForPrompt(catalog);
 
   // 本轮新上传的图（多模态消息里模型能直接看到的那几张）——改图时应优先作为编辑对象，
   // 不要被历史生成图带偏。把它们的 URL 显式告诉模型。
-  const freshUploadUrls = (Array.isArray(attachments) ? attachments : [])
+  const freshUploadUrls = (Array.isArray(modelAttachments) ? modelAttachments : [])
     .filter((item) => item?.kind === 'image' && item?.url)
     .map((item) => String(item.url));
   const freshUploadGuidance = freshUploadUrls.length > 0
@@ -168,12 +223,12 @@ export const runAgentConversationV2 = async ({
     ...(includeImageInputFallbackGuidance ? [{ role: 'system', content: imageInputFallbackGuidance }] : []),
     ...(summary ? [{ role: 'system', content: `会话摘要：\n${summary}` }] : []),
     ...(Array.isArray(recentMessages) ? recentMessages : []),
-    { role: 'user', content: buildUserMessageContent(currentMessage, attachments, { includeImages }) },
+    { role: 'user', content: buildUserMessageContent(currentMessage, modelAttachments, { includeImages }) },
   ];
-  const inlineInitialImages = shouldInlineImageAttachments(attachments);
+  const inlineInitialImages = shouldInlineImageAttachments(modelAttachments);
   let messages = buildInitialMessages({
     includeImages: inlineInitialImages,
-    includeImageInputFallbackGuidance: hasImageAttachments(attachments) && !inlineInitialImages,
+    includeImageInputFallbackGuidance: hasImageAttachments(modelAttachments) && !inlineInitialImages,
   });
   const tools = [];
   if (imageGenerationEnabled) tools.push(GENERATE_IMAGE_TOOL);
@@ -192,7 +247,7 @@ export const runAgentConversationV2 = async ({
   try {
     response = await callInitialModel();
   } catch (error) {
-    if (!shouldRetryModelWithoutInlineImages(error, attachments)) throw error;
+    if (!shouldRetryModelWithoutInlineImages(error, modelAttachments)) throw error;
     emit('thinking', { round: 1, retry: 'text_image_catalog' });
     messages = buildInitialMessages({ includeImages: false, includeImageInputFallbackGuidance: true });
     response = await callInitialModel();

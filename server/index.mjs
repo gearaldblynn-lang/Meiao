@@ -49,7 +49,8 @@ import {
   requestLocalCancelJob,
   requestLocalRetryJob,
 } from './localJobStore.mjs';
-import { executeProviderJob } from './providerGateway.mjs';
+import { executeProviderJob, uploadAssetViaKieStream } from './providerGateway.mjs';
+import { resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel } from './providerAssetTransfer.mjs';
 import {
   filterAvailableAgentImageUrls,
   normalizeAgentImageUrl,
@@ -2902,6 +2903,14 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
   return await executeProviderJob({ ...job, payload: scrubbedPayload }, env, signal, options);
 };
 
+const prepareAgentModelImageUrl = async (url) => {
+  const resolved = await resolveProviderChatMediaUrlForModel(url, {
+    env: process.env,
+    deps: { uploadAssetViaKieStream },
+  });
+  return String(resolved || url || '').trim();
+};
+
 const collectOneClickReferencePresetAssetUrls = (state) => {
   const urls = [];
   const presets = state?.oneClickMemory?.referencePresets || {};
@@ -5725,6 +5734,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         ),
         callModel,
         generateImage,
+        prepareModelImageUrl: prepareAgentModelImageUrl,
         onProgress: (event) => {
           setChatProgress(clientRequestId, event);
           if (sendEvent) sendEvent('progress', event);
@@ -10532,6 +10542,7 @@ const handleLocalRequest = async (req, res, url) => {
           ),
           callModel,
           generateImage,
+          prepareModelImageUrl: prepareAgentModelImageUrl,
           onProgress: (event) => {
             setChatProgress(clientRequestId, event);
           },
