@@ -331,6 +331,83 @@ test('本轮上传图：附进用户消息(多模态) + system 引导优先编�
   assert.match(sysText, /https:\/\/upload\/photo\.jpg/);
 });
 
+test('首轮 Responses 带图 502 时：用图片目录 URL 文本重试并继续生图', async () => {
+  let round = 0;
+  const userContents = [];
+  let retrySystemText = '';
+  const progress = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '都做成白底图，1:1的比例，正面摆放',
+    attachments: [
+      { kind: 'image', url: 'https://cdn.example.com/api/assets/file/a/1.png', name: '1.png' },
+      { kind: 'image', url: 'https://cdn.example.com/api/assets/file/b/2.png', name: '2.png' },
+    ],
+    callModel: async ({ messages }) => {
+      round += 1;
+      userContents.push(messages.find((message) => message.role === 'user')?.content);
+      if (round === 2) retrySystemText = messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n');
+      if (round === 1) {
+        const error = new Error('responses 请求失败 (502): bad_response_status_code');
+        error.code = 'provider_bad_response';
+        throw error;
+      }
+      if (round === 2) {
+        return {
+          content: '',
+          toolCalls: [
+            { id: 'c1', name: 'generate_image', args: { prompt: '把图1做成白底图，1:1，正面摆放', task_type: 'edit_image', input_image_urls: ['https://cdn.example.com/api/assets/file/a/1.png'] } },
+            { id: 'c2', name: 'generate_image', args: { prompt: '把图2做成白底图，1:1，正面摆放', task_type: 'edit_image', input_image_urls: ['https://cdn.example.com/api/assets/file/b/2.png'] } },
+          ],
+          finishReason: 'tool_calls',
+        };
+      }
+      return { content: '两张图都已处理', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async ({ inputImageUrls }) => ({
+      imageUrl: `https://img/${inputImageUrls[0].endsWith('/1.png') ? '1' : '2'}.png`,
+    }),
+    onProgress: (event) => progress.push(event),
+  });
+  assert.ok(Array.isArray(userContents[0]), '第一次仍应尝试多模态图片输入');
+  assert.equal(typeof userContents[1], 'string', '重试时应去掉 inline image_url，改用图片目录文本');
+  assert.match(userContents[1], /都做成白底图/);
+  assert.match(retrySystemText, /不要要求用户重新上传/);
+  assert.match(retrySystemText, /当前会话图片目录/);
+  assert.deepEqual(out.imageResultUrls, ['https://img/1.png', 'https://img/2.png']);
+  assert.ok(progress.some((event) => event.retry === 'text_image_catalog'));
+});
+
+test('HTTP 图床图片不作为 Responses inline image 发送，直接用图片目录 URL 规划', async () => {
+  let userContent = null;
+  let systemText = '';
+  let round = 0;
+  const progress = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '都做成白底图',
+    attachments: [{ kind: 'image', url: 'http://111.229.66.247/api/assets/file/a/1.png', name: '1.png' }],
+    callModel: async ({ messages }) => {
+      round += 1;
+      userContent = messages.find((message) => message.role === 'user')?.content;
+      systemText = messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n');
+      if (round > 1) return { content: '已处理', toolCalls: [], finishReason: 'stop' };
+      return {
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'generate_image', args: { prompt: '白底图', task_type: 'edit_image', input_image_urls: ['http://111.229.66.247/api/assets/file/a/1.png'] } }],
+        finishReason: 'tool_calls',
+      };
+    },
+    generateImage: async () => ({ imageUrl: 'https://img/white.png' }),
+    onProgress: (event) => progress.push(event),
+  });
+  assert.equal(typeof userContent, 'string');
+  assert.match(systemText, /不要要求用户重新上传/);
+  assert.match(systemText, /http:\/\/111\.229\.66\.247\/api\/assets\/file\/a\/1\.png/);
+  assert.deepEqual(out.imageResultUrls, ['https://img/white.png']);
+  assert.ok(progress.some((event) => event.imageInputMode === 'text_image_catalog'));
+});
+
 test('无上传图时：用户消息退化为纯文本字符串', async () => {
   let capturedMessages = null;
   await runAgentConversationV2({

@@ -14,10 +14,10 @@ const IMAGE_MODE_GUIDANCE = [
 
 // 把当前消息的文字 + 上传图片附件拼成多模态 content，让模型真正"看到"图片。
 // 没有图片附件时退化为纯文本字符串（兼容不支持多模态 content 数组的场景）。
-const buildUserMessageContent = (text, attachments = []) => {
+const buildUserMessageContent = (text, attachments = [], { includeImages = true } = {}) => {
   const imageAttachments = (Array.isArray(attachments) ? attachments : [])
     .filter((item) => item?.kind === 'image' && item?.url);
-  if (imageAttachments.length === 0) return String(text || '');
+  if (!includeImages || imageAttachments.length === 0) return String(text || '');
   return [
     { type: 'text', text: String(text || '') },
     ...imageAttachments.map((item) => ({
@@ -25,6 +25,24 @@ const buildUserMessageContent = (text, attachments = []) => {
       image_url: { url: String(item.url) },
     })),
   ];
+};
+
+const hasImageAttachments = (attachments = []) => (
+  (Array.isArray(attachments) ? attachments : []).some((item) => item?.kind === 'image' && item?.url)
+);
+
+const shouldInlineImageAttachments = (attachments = []) => {
+  const imageAttachments = (Array.isArray(attachments) ? attachments : [])
+    .filter((item) => item?.kind === 'image' && item?.url);
+  if (imageAttachments.length === 0) return false;
+  return imageAttachments.every((item) => /^https:\/\//i.test(String(item.url || '').trim()));
+};
+
+const shouldRetryModelWithoutInlineImages = (error, attachments = []) => {
+  if (!hasImageAttachments(attachments)) return false;
+  const code = String(error?.code || '').trim();
+  const message = String(error?.message || '');
+  return code === 'provider_bad_response' || /responses 请求失败|bad_response_status_code|502/.test(message);
 };
 
 const formatKnowledgeToolOutput = (chunks = []) => {
@@ -139,25 +157,46 @@ export const runAgentConversationV2 = async ({
   if (imageGenerationEnabled && freshUploadGuidance) systemParts.push(freshUploadGuidance);
   const fullSystem = systemParts.filter(Boolean).join('\n\n');
 
-  const messages = [
+  const imageInputFallbackGuidance = [
+    '注意：上游模型直接读取本轮 inline 图片时可能失败。',
+    '如果当前消息没有附带 inline image_url，但系统消息里的"当前会话图片目录"列出了图片 URL，请继续使用这些 URL 理解用户指代。',
+    '用户已经提供了图片；不要要求用户重新上传。若用户需求明确需要生成/编辑图片，请按图片目录 URL 调用 generate_image。',
+  ].join('\n');
+
+  const buildInitialMessages = ({ includeImages = true, includeImageInputFallbackGuidance = false } = {}) => [
     { role: 'system', content: fullSystem },
+    ...(includeImageInputFallbackGuidance ? [{ role: 'system', content: imageInputFallbackGuidance }] : []),
     ...(summary ? [{ role: 'system', content: `会话摘要：\n${summary}` }] : []),
     ...(Array.isArray(recentMessages) ? recentMessages : []),
-    { role: 'user', content: buildUserMessageContent(currentMessage, attachments) },
+    { role: 'user', content: buildUserMessageContent(currentMessage, attachments, { includeImages }) },
   ];
+  const inlineInitialImages = shouldInlineImageAttachments(attachments);
+  let messages = buildInitialMessages({
+    includeImages: inlineInitialImages,
+    includeImageInputFallbackGuidance: hasImageAttachments(attachments) && !inlineInitialImages,
+  });
   const tools = [];
   if (imageGenerationEnabled) tools.push(GENERATE_IMAGE_TOOL);
   if (hasKnowledgeBase) tools.push(SEARCH_KNOWLEDGE_TOOL);
   if (webSearchEnabled) tools.push({ type: 'web_search' });
 
-  emit('thinking', { round: 1 });
-  let response = await callModel({
+  emit('thinking', { round: 1, ...(inlineInitialImages ? {} : hasImageAttachments(attachments) ? { imageInputMode: 'text_image_catalog' } : {}) });
+  const callInitialModel = async () => callModel({
     messages,
     tools,
     toolChoice: tools.length > 0 ? 'auto' : undefined,
     maxTokens: contextLimits.maxOutputTokens,
     onDelta: (delta) => emit('streaming', { delta }),
   });
+  let response;
+  try {
+    response = await callInitialModel();
+  } catch (error) {
+    if (!shouldRetryModelWithoutInlineImages(error, attachments)) throw error;
+    emit('thinking', { round: 1, retry: 'text_image_catalog' });
+    messages = buildInitialMessages({ includeImages: false, includeImageInputFallbackGuidance: true });
+    response = await callInitialModel();
+  }
 
   if (response.finishReason !== 'tool_calls' || !response.toolCalls?.length) {
     emit('done', {});

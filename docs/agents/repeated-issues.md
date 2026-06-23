@@ -17,12 +17,17 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Environment: cloud production / local development / local backup / GitHub comparison
 - Root cause:
 - Fix:
-- Regression check:
-- Files/tests:
-- Avoid next time:
-```
-
 ## Standing Lessons
+
+## 2026-06-23 - Agent Responses image-url planning failures must retry with the image catalog, not expose 502
+
+- Symptom: 将离账号智能体上传 3 张图并要求“都做成白底图，1:1 的比例，正面摆放”时，前端直接显示 `responses 请求失败 (502)`。
+- Environment: Tencent Cloud production / agent_center V2 tool calling / `gpt-5.5` via `/v1/responses`.
+- Root cause: 失败消息 metadata 为 `requestMode:'chat'`、`imagePlan:null`、`providerTaskId:''`，说明还没提交 KIE；附件 URL 均为 `http://111.229.66.247/api/assets/file/...` 公网图床 URL，外网 curl 200。真实中转探针显示纯文本成功，但 1 张 HTTP 图床 `image_url` 就会 502，大图会拖到 240s 超时，3 图约 118s 后 502。根因是 Responses 首轮多模态视觉输入拉取/解析 HTTP 图床 URL 不稳定，不是没有发公网 URL。
+- Fix: `runAgentConversationV2` 对 HTTP 图床附件不再首轮作为 Responses inline image 发送，直接用同一中转模型走文本 + 当前会话图片目录 URL；HTTPS 图片仍先尝试多模态，遇到 `provider_bad_response`/502 再降级到文本目录。提示模型不要要求用户重传，明确需求时继续调用 `generate_image`。真正生图仍由 KIE 接收图床 URL。架构级根因见 `CLAUDE.md` #19。
+- Regression check: `node --test server/agentToolConversation.test.mjs server/agentCenterSource.test.mjs server/openaiResponsesProvider.test.mjs server/providerGateway.test.mjs`; `npm run build`; `npm run lint`; real relay probe: text-only ok, image_url cases 502/timeout.
+- Files/tests: `server/agentToolConversation.mjs`, `server/agentToolConversation.test.mjs`, `CLAUDE.md`.
+- Avoid next time: 带图 502 先按 `imagePlan/providerTaskId` 分阶段；为空是 Responses 规划阶段，不要套用 KIE 恢复逻辑。云上 HTTP 图床不要先 inline 给 Responses，也不要引入 base64 fallback 或 Gemini fallback。
 
 ## 2026-06-23 - Agent chat assets live with the chat session, not the temporary asset TTL
 

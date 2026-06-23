@@ -145,3 +145,8 @@
   根因:智能体对话生成图和附件复用了通用 `stored_assets` 生命周期,默认 `expires_at = created_at + 3d`;清理任务只按过期和引用扫描判断,没有把 `agent_center` 会话资产视为会话内容的一部分。同时删除单个会话或清空某智能体历史时只删 `chat_messages/chat_sessions`,没有从消息正文、附件和 metadata 里收集 `/api/assets/file/:id` 并删除对应图床文件。
   修复:`agent_center` 模块写入的 managed asset 改为 `expiresAt=0` 永久保留,清理器把非正数过期时间视为永久;删除单个 chat session、清空某智能体历史时,MySQL 和本地 JSON 两套 handler 都先收集会话消息里的 managed asset id,删除图床文件并标记资产 deleted,再删除消息和会话。
   如何避免:**智能体对话内容和图的生命周期必须绑定会话,不能走临时素材 TTL。新增任何会话内持久化资源时,必须同时回答两个问题:清理任务是否会误删它、删除会话/清空历史是否会级联释放它;MySQL 和本地 JSON handler 必须同步覆盖。**
+
+- **#19 ✅ 已修(2026-06-23)· Responses 首轮多模态读取 HTTP 图床 URL 返回 502,智能体未进入 KIE 生图**
+  根因:将离 2026-06-23 16:46:15 的失败请求是 `requestMode:'chat'` 的 V2 tool calling 首轮 Responses 规划失败,`imagePlan:null/providerTaskId:''`,说明尚未提交 KIE。数据库里的 3 张附件确实是公网图床 URL(`http://111.229.66.247/api/assets/file/...`),外网 curl 200;但真实中转探针显示同一 `/v1/responses` 模型纯文本成功,只要带 1 张 HTTP 图床 `image_url` 就 502,大图可拖到 240s 超时,3 图约 118s 后 502。即问题不在多图语义/是否公网,而在中转 Responses 视觉输入拉取/解析 HTTP 图床 URL 不稳定。
+  修复:`runAgentConversationV2` 对 HTTP 图床附件不再首轮作为 Responses inline image 发送,直接用同一中转模型走"文本 + 当前会话图片目录 URL"规划;HTTPS 图片仍先尝试多模态,若遇到 `provider_bad_response`/502 再降级到文本目录。系统提示明确图片已在目录里、不要要求用户重传、明确需求时继续调用 `generate_image`。真正生图仍由 KIE 接收图床 URL。
+  如何避免:**智能体 V2 不能把首轮 Responses 多模态失败直接暴露给用户。带图 502 时先看 `imagePlan/providerTaskId`:为空代表规划阶段失败,应降级到文本 URL 目录继续 tool calling;云上 HTTP 图床不要先 inline 给 Responses 耗到 502/超时。有 taskId/结果才按 KIE 阶段恢复。任何修复都不得回退到 base64 或未配置模型。**
