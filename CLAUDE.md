@@ -130,3 +130,18 @@
   现象:天琪账号 2026-06-23 14:28:22 的首图项目 5 个 `kie_image` job 后台全部 `succeeded`,但前端 14:38:25 先显示"生成失败 / 任务等待超时,请稍后在任务列表中查看结果";用户刷新后仍可能看到旧失败卡片,因为水合被旧无图 error 拦截。
   修复:`hasPersistedTerminalJobResult` 增加 `incomingHasMedia` 语义:当 incoming backend job 已有图片/视频 URL 时,只有已持久化的媒体结果才算"已处理";同 job/provider 的无图 error/generating 占位必须允许被成功结果替换。`shellDataAdapter` 对 completed image jobs 传入该标记,并补首图超时占位恢复测试。
   如何避免:**状态恢复里"已有终态"不能只看 `status:'error'`;必须区分"有媒体的用户结果"和"无媒体的运行时占位"。任何 backend job 后来拿到 image/video URL,都必须能覆盖同 job/provider/plan 的旧无图失败或等待占位。**
+
+- **#16 ✅ 已修(2026-06-23)· 智能体前端 SSE 看似流式,但中转站 `/v1/responses` 实际走非流并暴露 502**
+  根因:前端 `sendChatMessage(...,{stream:true})` 和 MySQL chat route 都有 SSE,但 V2 tool calling 的 provider 边界走 `openai_responses` 时,`providerGateway` 没把 `options.onDelta` 传给 `runResponsesJob`;`runResponsesJob` 也只发非流请求并 `await response.json()`。所以 UI 只能收到 thinking/progress/done 或最终整段正文,中转站日志显示"非流";复杂需求在非流 `/v1/responses` 下出现 `status_code=502/openai_error` 时,用户看到整条对话失败。另一个漂移点是本地 JSON chat handler 完全没有 SSE 包装,本地排查会误判"流式不可用"。
+  修复:`server/openaiResponsesProvider.mjs` 增加 Responses SSE 解析,支持 `response.output_text.delta` 透传正文、`response.function_call_arguments.*` 组装 tool calls、`response.completed` 提取 usage;`server/providerGateway.mjs` 把 `onDelta` 传入 responses provider;MySQL route 记录已发送过正文 delta,避免最终再重复推整段;本地 JSON handler 也补齐 `text/event-stream`、delta 透传和 done/error。真实探针确认 `gpt-5.5` `/v1/responses stream:true` 带 reasoning 与带 `generate_image` tool 均返回 200。
+  如何避免:**判断智能体"是否流式"必须看 provider 请求体是否 `stream:true` 且是否解析上游 SSE,不能只看浏览器到 Node 的 SSE。改 `openai_responses` 时必须同时覆盖 provider 解析、`providerGateway` option 转发、MySQL/本地双 chat handler 和重复 final delta。遇到中转站非流 502,先做最小真实探针比较 simple/tool/reasoning 的 stream vs non-stream 路径,再下结论。**
+
+- **#17 ✅ 已止血(2026-06-23)· providerless 详情页任务卡在提交阶段,占满同账号并发拖垮后续首图**
+  根因:天琪账号前置详情页项目创建了 5 个 `kie_image` 任务,它们不是在正常等待上游出图,而是停在素材上传/提交阶段:无 `providerTaskId`, `providerSubmitted:false`,且至少一个 `asset_upload fetch failed`。这些 `running` job 会计入用户并发;Temporal 为避免重复扣费/重复出图,对 `running` 且无 `providerTaskId` 的 MySQL job 不会重新提交,只能等 providerless stale reconciler 兜底失败并释放并发。云上原窗口 15 分钟,导致后续首图任务足足排队十几分钟。
+  修复:云上 `.env.server` 调整 `MEIAO_PROVIDERLESS_RUNNING_STALE_MS=300000`、`MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS=30000` 并重启 PM2;环境样例和部署文档同步记录。这个规则只处理"尚未拿到上游 task id"的异常提交阶段,不会误杀已提交上游、正在正常等出图的任务。
+  如何避免:**排查排队/超时时先按 providerTaskId 分流:有 `providerTaskId` 才是正常等待上游出图;无 `providerTaskId` 且 `running` 是提交阶段异常,不能长期占用户并发。阈值类兜底必须走 env,云上默认按实际素材上传超时预算保守设置,不要写死在代码里。**
+
+- **#18 ✅ 已修(2026-06-23)· 智能体对话图片按临时素材 3 天清理,删除会话却不释放图床资产**
+  根因:智能体对话生成图和附件复用了通用 `stored_assets` 生命周期,默认 `expires_at = created_at + 3d`;清理任务只按过期和引用扫描判断,没有把 `agent_center` 会话资产视为会话内容的一部分。同时删除单个会话或清空某智能体历史时只删 `chat_messages/chat_sessions`,没有从消息正文、附件和 metadata 里收集 `/api/assets/file/:id` 并删除对应图床文件。
+  修复:`agent_center` 模块写入的 managed asset 改为 `expiresAt=0` 永久保留,清理器把非正数过期时间视为永久;删除单个 chat session、清空某智能体历史时,MySQL 和本地 JSON 两套 handler 都先收集会话消息里的 managed asset id,删除图床文件并标记资产 deleted,再删除消息和会话。
+  如何避免:**智能体对话内容和图的生命周期必须绑定会话,不能走临时素材 TTL。新增任何会话内持久化资源时,必须同时回答两个问题:清理任务是否会误删它、删除会话/清空历史是否会级联释放它;MySQL 和本地 JSON handler 必须同步覆盖。**

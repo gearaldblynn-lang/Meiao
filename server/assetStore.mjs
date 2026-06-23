@@ -10,6 +10,7 @@ const __dirname = path.dirname(__filename);
 export const ASSET_RETENTION_MS = 1000 * 60 * 60 * 24 * 3;
 const ASSET_DIR = path.join(__dirname, 'data', 'assets');
 const LOCAL_REGISTRY_PATH = path.join(__dirname, 'data', 'asset-registry.json');
+const PERMANENT_ASSET_MODULES = new Set(['agent_center']);
 
 const ensureDir = (dirPath) => {
   mkdirSync(dirPath, { recursive: true });
@@ -150,6 +151,33 @@ export const extractStoredAssetIdFromPublicUrl = (value) => {
   return match ? decodeURIComponent(match[1]) : '';
 };
 
+export const collectStoredAssetIdsFromValue = (value) => {
+  const ids = new Set();
+  const visit = (current) => {
+    if (current === null || current === undefined) return;
+    if (typeof current === 'string') {
+      const pattern = /\/api\/assets\/file\/([^/\s"'?#]+)/g;
+      let match = pattern.exec(current);
+      while (match) {
+        ids.add(decodeURIComponent(match[1]));
+        match = pattern.exec(current);
+      }
+      const directId = extractStoredAssetIdFromPublicUrl(current);
+      if (directId) ids.add(directId);
+      return;
+    }
+    if (Array.isArray(current)) {
+      current.forEach(visit);
+      return;
+    }
+    if (typeof current === 'object') {
+      Object.values(current).forEach(visit);
+    }
+  };
+  visit(value);
+  return Array.from(ids);
+};
+
 export const getPublicBaseUrl = (env = {}, requestLike = null) => {
   const explicit = normalizeBaseUrl(env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || '');
   if (explicit) return explicit;
@@ -169,6 +197,7 @@ export const getPublicBaseUrl = (env = {}, requestLike = null) => {
 export const shouldRetainAssetRecord = (asset, referenceTime = now()) => {
   if (!asset || asset.deletedAt) return false;
   if (asset.isReferenced) return true;
+  if (Number(asset.expiresAt || 0) <= 0) return true;
   return Number(asset.expiresAt || 0) > Number(referenceTime || 0);
 };
 
@@ -182,6 +211,12 @@ export const selectExpiredAssetsForCleanup = (records, referenceTime = now()) =>
     Number(record.expiresAt || 0) <= Number(referenceTime || 0)
   ));
 };
+
+const getAssetExpiresAt = ({ module = '', createdAt = now() } = {}) => (
+  PERMANENT_ASSET_MODULES.has(String(module || '').trim())
+    ? 0
+    : Number(createdAt || 0) + ASSET_RETENTION_MS
+);
 
 const mapAssetRow = (row) => ({
   id: String(row.id),
@@ -393,7 +428,7 @@ export const persistAssetBuffer = async ({
     createdAt,
     updatedAt: createdAt,
     lastAccessedAt: createdAt,
-    expiresAt: createdAt + ASSET_RETENTION_MS,
+    expiresAt: getAssetExpiresAt({ module, createdAt }),
     deletedAt: null,
   };
 
