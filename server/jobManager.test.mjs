@@ -140,6 +140,42 @@ test('findReusableJobSubmission ignores volatile requestId fields when matching 
   assert.equal(matched?.id, 'job-video');
 });
 
+test('findReusableJobSubmission ignores internal credit reservation metadata when matching active jobs', () => {
+  const matched = findReusableJobSubmission({
+    jobs: [
+      {
+        id: 'job-credit-reserved',
+        userId: 'user-a',
+        module: 'one_click',
+        taskType: 'kie_image',
+        provider: 'kie',
+        status: 'queued',
+        payload: {
+          prompt: 'same prompt',
+          imageUrls: ['same-url'],
+          __creditReservation: {
+            id: 'reservation-1',
+            amount: 3,
+            userId: 'user-a',
+          },
+        },
+        createdAt: 2000,
+      },
+    ],
+    userId: 'user-a',
+    module: 'one_click',
+    taskType: 'kie_image',
+    provider: 'kie',
+    payload: {
+      prompt: 'same prompt',
+      imageUrls: ['same-url'],
+    },
+    createdAfter: 1000,
+  });
+
+  assert.equal(matched?.id, 'job-credit-reserved');
+});
+
 test('findReusableJobSubmission ignores finished or stale jobs', () => {
   const matched = findReusableJobSubmission({
     jobs: [

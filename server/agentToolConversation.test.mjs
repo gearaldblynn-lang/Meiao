@@ -48,13 +48,14 @@ test('生图：模型返回 tool_calls → 出图 → 二次回复', async () =>
     generateImage: async ({ prompt, taskType }) => {
       assert.equal(prompt, '橘猫');
       assert.equal(taskType, 'new_image');
-      return { imageUrl: 'https://img/cat.png', providerTaskId: 't1' };
+      return { imageUrl: 'https://img/cat.png', providerTaskId: 't1', creditsConsumed: 2.5 };
     },
     onProgress: (event) => progress.push(event.stage),
   });
   assert.equal(out.content, '已为你生成橘猫图片');
   assert.equal(out.imagePlan.taskType, 'new_image');
   assert.deepEqual(out.imageResultUrls, ['https://img/cat.png']);
+  assert.equal(out.creditsConsumed, 2.5);
   assert.ok(progress.includes('tool_calling'));
   assert.ok(progress.includes('image_generating'));
   assert.ok(progress.includes('image_ready'));
@@ -83,7 +84,7 @@ test('生图已成功但最终文案模型失败时：保留图片结果并降�
     generateImage: async ({ prompt, taskType }) => {
       assert.equal(prompt, '白猫');
       assert.equal(taskType, 'new_image');
-      return { imageUrl: 'https://img/white-cat.png', providerTaskId: 'kie-task-1' };
+      return { imageUrl: 'https://img/white-cat.png', providerTaskId: 'kie-task-1', creditsConsumed: 3.75 };
     },
     onProgress: (event) => progress.push(event),
   });
@@ -92,6 +93,7 @@ test('生图已成功但最终文案模型失败时：保留图片结果并降�
   assert.equal(out.imagePlan.providerTaskId, 'kie-task-1');
   assert.equal(out.selectedModel, 'gpt-5.5');
   assert.equal(out.finishReason, 'image_ready_final_reply_failed');
+  assert.equal(out.creditsConsumed, 3.75);
   assert.match(out.finalReplyErrorMessage, /502/);
   assert.ok(progress.some((event) => event.stage === 'image_ready'));
   assert.ok(progress.some((event) => event.stage === 'done' && event.recovered));
@@ -276,12 +278,13 @@ test('模型同一轮返回多个 generate_image 时：逐个执行并返回多�
       genCount += 1;
       assert.match(prompt, genCount === 1 ? /第一张/ : /第二张/);
       assert.deepEqual(inputImageUrls, [`https://upload/${genCount}.jpg`]);
-      return { imageUrl: `https://img/${genCount}.png` };
+      return { imageUrl: `https://img/${genCount}.png`, creditsConsumed: genCount === 1 ? 1.25 : 1.75 };
     },
     onProgress: () => {},
   });
   assert.equal(genCount, 2);
   assert.deepEqual(out.imageResultUrls, ['https://img/1.png', 'https://img/2.png']);
+  assert.equal(out.creditsConsumed, 3);
   assert.equal(out.imagePlan.requestMode, 'tool_calling');
   assert.equal(out.imagePlan.outputCount, 2);
   assert.equal(out.imagePlan.plans.length, 2);
@@ -523,6 +526,54 @@ test('多张新图但用户只指定其中一张时，审查后保持单张计�
   assert.equal(modelRound, 3);
   assert.equal(generated, 1);
   assert.deepEqual(out.imageResultUrls, ['https://img/only-1.png']);
+});
+
+test('参考图替换主图局部时，两张输入图生成一张结果不应被判为多图欠规划', async () => {
+  let modelRound = 0;
+  let generated = 0;
+  const progress = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '把原图1中湿巾上的字母全部换成图2湿巾上面的字母，图1其他部分不发生任何改变，图片格式为800*800',
+    attachments: [
+      { kind: 'image', url: 'https://upload/main.jpg', name: '图1.jpg' },
+      { kind: 'image', url: 'https://upload/ref.jpg', name: '图2.jpg' },
+    ],
+    callModel: async ({ messages }) => {
+      modelRound += 1;
+      if (modelRound === 1) {
+        return {
+          content: '',
+          toolCalls: [
+            {
+              id: 'c1',
+              name: 'generate_image',
+              args: {
+                prompt: '以图1为主图，只把湿巾上的字母替换成图2湿巾上的字母，图1其它部分保持不变，输出800*800',
+                task_type: 'edit_image',
+                input_image_urls: ['https://upload/main.jpg', 'https://upload/ref.jpg'],
+                aspect_ratio: '1:1',
+              },
+            },
+          ],
+          finishReason: 'tool_calls',
+        };
+      }
+      const outputs = messages.filter((message) => message.type === 'function_call_output');
+      assert.equal(outputs.length, 1);
+      return { content: '已按图2字母替换图1湿巾文字', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async ({ inputImageUrls }) => {
+      generated += 1;
+      assert.deepEqual(inputImageUrls, ['https://upload/main.jpg', 'https://upload/ref.jpg']);
+      return { imageUrl: 'https://img/replaced.png' };
+    },
+    onProgress: (event) => progress.push(event),
+  });
+  assert.equal(modelRound, 2);
+  assert.equal(generated, 1);
+  assert.deepEqual(out.imageResultUrls, ['https://img/replaced.png']);
+  assert.equal(progress.some((event) => event.repair === 'under_planned_image_batch_audit'), false);
 });
 
 test('用户要求合成到同一张图时，单个多图工具调用不会被拆成多张', async () => {

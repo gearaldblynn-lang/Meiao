@@ -32,6 +32,18 @@ import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
 import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
+import {
+  CREDIT_LIMIT_MODES,
+  attachCreditReservationToJobPayload,
+  estimateCreditReservation,
+  getCreditAvailable,
+  getCreditReservationFromJob,
+  normalizeCreditAccount,
+  releaseLocalAccountCredits,
+  reserveLocalAccountCredits,
+  settleLocalAccountCredits,
+  stripCreditReservationFromPayload,
+} from './accountCredits.mjs';
 import { ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import {
   attachLocalJobWorkflowExecution,
@@ -911,6 +923,15 @@ const normalizeJobConcurrency = (value, fallback = DEFAULT_JOB_CONCURRENCY) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+const normalizeCreditLimitMode = (value) => (
+  value === CREDIT_LIMIT_MODES.LIMITED ? CREDIT_LIMIT_MODES.LIMITED : CREDIT_LIMIT_MODES.UNLIMITED
+);
+
+const normalizeCreditBalanceInput = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) / 100 : 0;
+};
+
 const normalizeFeaturePermissions = (value = DEFAULT_FEATURE_PERMISSIONS) => {
   let permissions = value;
   if (typeof permissions === 'string') {
@@ -938,7 +959,7 @@ const canUseVideoGenerationFeature = (user) =>
   user?.role === 'admin' || normalizeFeaturePermissions(user?.featurePermissions).videoGeneration;
 
 const normalizeStoredUser = (user) => ({
-  ...user,
+  ...normalizeCreditAccount(user),
   displayName: String(user?.displayName || user?.username || ''),
   avatarUrl: user?.avatarUrl ? String(user.avatarUrl) : '',
   avatarPreset: user?.avatarPreset ? String(user.avatarPreset) : 'aurora',
@@ -947,7 +968,7 @@ const normalizeStoredUser = (user) => ({
   analysisModel: normalizeUserAnalysisModel(user?.analysisModel),
 });
 
-const createUser = ({ username, password, role = 'staff', displayName = '', jobConcurrency = DEFAULT_JOB_CONCURRENCY, featurePermissions = DEFAULT_FEATURE_PERMISSIONS }) => {
+const createUser = ({ username, password, role = 'staff', displayName = '', jobConcurrency = DEFAULT_JOB_CONCURRENCY, featurePermissions = DEFAULT_FEATURE_PERMISSIONS, creditLimitMode = CREDIT_LIMIT_MODES.UNLIMITED, creditBalance = 0 }) => {
   const passwordRecord = createPasswordRecord(password);
   return {
     id: randomBytes(12).toString('hex'),
@@ -964,6 +985,10 @@ const createUser = ({ username, password, role = 'staff', displayName = '', jobC
     jobConcurrency: normalizeJobConcurrency(jobConcurrency, DEFAULT_JOB_CONCURRENCY),
     featurePermissions: normalizeFeaturePermissions(featurePermissions),
     analysisModel: '',
+    creditLimitMode: normalizeCreditLimitMode(creditLimitMode),
+    creditBalance: normalizeCreditBalanceInput(creditBalance),
+    creditReserved: 0,
+    creditConsumed: 0,
   };
 };
 
@@ -999,6 +1024,7 @@ const buildAgentRuntimeLogMeta = ({ agent, version, result = null, requestMode =
   imagePlan: result?.imagePlan || null,
   imageResultCount: Array.isArray(result?.imageResultUrls) ? result.imageResultUrls.length : 0,
   imageResultUrls: result?.imageResultUrls || [],
+  creditsConsumed: result?.creditsConsumed,
   providerTaskId: result?.providerTaskId || error?.providerTaskId || '',
   providerStage: result?.providerStage || error?.providerStage || '',
   providerStatus: result?.providerStatus || error?.providerStatus || '',
@@ -2205,6 +2231,11 @@ const cleanUser = (user) => ({
   jobConcurrency: normalizeJobConcurrency(user.jobConcurrency, DEFAULT_JOB_CONCURRENCY),
   featurePermissions: normalizeFeaturePermissions(user.featurePermissions),
   analysisModel: normalizeUserAnalysisModel(user.analysisModel),
+  creditLimitMode: user.creditLimitMode,
+  creditBalance: normalizeCreditBalanceInput(user.creditBalance),
+  creditReserved: normalizeCreditBalanceInput(user.creditReserved),
+  creditConsumed: normalizeCreditBalanceInput(user.creditConsumed),
+  creditAvailable: getCreditAvailable(user),
 });
 
 const localCreateSession = (store, userId) => {
@@ -2390,6 +2421,35 @@ const ensureMysqlSchema = async () => {
   await ensureMysqlColumn(pool, 'users', 'avatar_preset', 'VARCHAR(40) NULL');
   await ensureMysqlColumn(pool, 'users', 'feature_permissions_json', 'LONGTEXT NULL');
   await ensureMysqlColumn(pool, 'users', 'analysis_model', 'VARCHAR(120) NULL');
+  await ensureMysqlColumn(pool, 'users', 'credit_limit_mode', "VARCHAR(20) NOT NULL DEFAULT 'unlimited'");
+  await ensureMysqlColumn(pool, 'users', 'credit_balance', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
+  await ensureMysqlColumn(pool, 'users', 'credit_reserved', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
+  await ensureMysqlColumn(pool, 'users', 'credit_consumed', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS account_credit_ledger (
+      id VARCHAR(24) PRIMARY KEY,
+      reservation_id VARCHAR(24) NULL,
+      user_id VARCHAR(24) NOT NULL,
+      job_id VARCHAR(24) NULL,
+      request_id VARCHAR(80) NULL,
+      module VARCHAR(60) NULL,
+      task_type VARCHAR(80) NULL,
+      provider VARCHAR(40) NULL,
+      action VARCHAR(20) NOT NULL,
+      amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+      balance_after DECIMAL(12,2) NOT NULL DEFAULT 0,
+      reserved_after DECIMAL(12,2) NOT NULL DEFAULT 0,
+      reason VARCHAR(120) NULL,
+      meta_json LONGTEXT NULL,
+      created_at BIGINT NOT NULL,
+      INDEX idx_account_credit_reservation_id (reservation_id),
+      INDEX idx_account_credit_user_id (user_id),
+      INDEX idx_account_credit_job_id (job_id),
+      INDEX idx_account_credit_created_at (created_at)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+  await ensureMysqlColumn(pool, 'account_credit_ledger', 'reservation_id', 'VARCHAR(24) NULL AFTER id');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sessions (
@@ -2697,6 +2757,10 @@ const mapDbUser = (row) => ({
   jobConcurrency: normalizeJobConcurrency(row.job_concurrency, DEFAULT_JOB_CONCURRENCY),
   featurePermissions: normalizeFeaturePermissions(row.feature_permissions_json),
   analysisModel: normalizeUserAnalysisModel(row.analysis_model),
+  creditLimitMode: normalizeCreditLimitMode(row.credit_limit_mode),
+  creditBalance: normalizeCreditBalanceInput(row.credit_balance),
+  creditReserved: normalizeCreditBalanceInput(row.credit_reserved),
+  creditConsumed: normalizeCreditBalanceInput(row.credit_consumed),
   passwordHash: row.password_hash,
   salt: row.salt,
   createdAt: Number(row.created_at),
@@ -2900,7 +2964,7 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
   const scrubbedPayload = shouldUseMysql
     ? await scrubDbJobPayloadBeforeSubmission(job?.payload)
     : await scrubLocalJobPayloadBeforeSubmission(job?.payload);
-  return await executeProviderJob({ ...job, payload: scrubbedPayload }, env, signal, options);
+  return await executeProviderJob({ ...job, payload: stripCreditReservationFromPayload(scrubbedPayload) }, env, signal, options);
 };
 
 const prepareAgentModelImageUrl = async (url) => {
@@ -3492,12 +3556,17 @@ const getDbSessionUser = async (req) => {
   return rows[0] ? mapDbUser(rows[0]) : null;
 };
 
-const createDbUser = async ({ username, password, role = 'staff', displayName = '', jobConcurrency = DEFAULT_JOB_CONCURRENCY, featurePermissions = DEFAULT_FEATURE_PERMISSIONS }) => {
+const createDbUser = async ({ username, password, role = 'staff', displayName = '', jobConcurrency = DEFAULT_JOB_CONCURRENCY, featurePermissions = DEFAULT_FEATURE_PERMISSIONS, creditLimitMode = CREDIT_LIMIT_MODES.UNLIMITED, creditBalance = 0 }) => {
   const pool = await getMysqlPool();
-  const newUser = createUser({ username, password, role, displayName, jobConcurrency, featurePermissions });
+  const newUser = createUser({ username, password, role, displayName, jobConcurrency, featurePermissions, creditLimitMode, creditBalance });
   await pool.query(
-    `INSERT INTO users (id, username, display_name, avatar_url, avatar_preset, role, status, job_concurrency, feature_permissions_json, analysis_model, password_hash, salt, created_at, last_login_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO users (
+      id, username, display_name, avatar_url, avatar_preset, role, status,
+      job_concurrency, feature_permissions_json, analysis_model,
+      credit_limit_mode, credit_balance, credit_reserved, credit_consumed,
+      password_hash, salt, created_at, last_login_at
+    )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       newUser.id,
       newUser.username,
@@ -3509,6 +3578,10 @@ const createDbUser = async ({ username, password, role = 'staff', displayName = 
       newUser.jobConcurrency,
       serializeFeaturePermissions(newUser.featurePermissions),
       normalizeUserAnalysisModel(newUser.analysisModel),
+      newUser.creditLimitMode,
+      newUser.creditBalance,
+      newUser.creditReserved,
+      newUser.creditConsumed,
       newUser.passwordHash,
       newUser.salt,
       newUser.createdAt,
@@ -3561,6 +3634,14 @@ const updateDbUser = async (userId, updates) => {
   if (updates.analysisModel !== undefined) {
     fields.push('analysis_model = ?');
     values.push(normalizeUserAnalysisModel(updates.analysisModel) || null);
+  }
+  if (updates.creditLimitMode !== undefined) {
+    fields.push('credit_limit_mode = ?');
+    values.push(normalizeCreditLimitMode(updates.creditLimitMode));
+  }
+  if (updates.creditBalance !== undefined) {
+    fields.push('credit_balance = ?');
+    values.push(normalizeCreditBalanceInput(updates.creditBalance));
   }
   if (typeof updates.password === 'string' && updates.password) {
     const passwordRecord = createPasswordRecord(updates.password);
@@ -3639,6 +3720,7 @@ const deleteDbUser = async (userId) => {
     await connection.query('DELETE FROM chat_sessions WHERE user_id = ?', [userId]);
     await connection.query('DELETE FROM agent_usage_logs WHERE user_id = ?', [userId]);
     await connection.query('DELETE FROM internal_jobs WHERE user_id = ?', [userId]);
+    await connection.query('DELETE FROM account_credit_ledger WHERE user_id = ?', [userId]);
     await connection.query('DELETE FROM stored_assets WHERE user_id = ?', [userId]);
     await connection.query('DELETE FROM sessions WHERE user_id = ?', [userId]);
     await connection.query('DELETE FROM app_states WHERE user_id = ?', [userId]);
@@ -3755,6 +3837,477 @@ const createDbLog = async (payload) => {
   );
   await incrementDbUsageStat(pool, log);
   return log;
+};
+
+const insertDbCreditLedgerEntry = async (connection, user, {
+  action,
+  amount,
+  jobId = '',
+  requestId = '',
+  module = '',
+  taskType = '',
+  provider = '',
+  reason = '',
+  reservationId = '',
+  id: sourceReservationId = '',
+  meta = null,
+}) => {
+  const ledgerId = createEntityId();
+  const resolvedReservationId = String(reservationId || sourceReservationId || (action === 'reserve' ? ledgerId : '') || '').trim();
+  await connection.query(
+    `INSERT INTO account_credit_ledger (
+      id, reservation_id, user_id, job_id, request_id, module, task_type, provider, action,
+      amount, balance_after, reserved_after, reason, meta_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      ledgerId,
+      resolvedReservationId || null,
+      user.id,
+      jobId || null,
+      requestId || null,
+      module || null,
+      taskType || null,
+      provider || null,
+      action,
+      normalizeCreditBalanceInput(amount),
+      normalizeCreditBalanceInput(user.creditBalance),
+      normalizeCreditBalanceInput(user.creditReserved),
+      reason || null,
+      meta ? JSON.stringify(meta) : null,
+      Date.now(),
+    ]
+  );
+  return { id: ledgerId, reservationId: resolvedReservationId };
+};
+
+const hasDbProcessedCreditReservation = async (connection, reservation) => {
+  const reservationId = String(reservation?.id || '').trim();
+  if (!reservationId) return false;
+  const [rows] = await connection.query(
+    `SELECT id FROM account_credit_ledger
+     WHERE reservation_id = ? AND action IN ('settle', 'release')
+     LIMIT 1`,
+    [reservationId]
+  );
+  return Boolean(rows?.[0]);
+};
+
+const reserveDbAccountCredits = async (pool, user, context = {}) => {
+  const account = normalizeCreditAccount(user);
+  if (account.creditLimitMode !== CREDIT_LIMIT_MODES.LIMITED) return null;
+  const amount = normalizeCreditBalanceInput(context.amount);
+  if (amount <= 0) return null;
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [result] = await connection.query(
+      `UPDATE users
+       SET credit_reserved = credit_reserved + ?
+       WHERE id = ?
+         AND credit_limit_mode = 'limited'
+         AND (credit_balance - credit_reserved) >= ?`,
+      [amount, account.id, amount]
+    );
+    if (!result?.affectedRows) {
+      const [rows] = await connection.query('SELECT * FROM users WHERE id = ? LIMIT 1', [account.id]);
+      await connection.rollback();
+      const freshUser = rows[0] ? mapDbUser(rows[0]) : account;
+      const error = new Error(`积分不足：需要 ${amount} 积分，当前可用 ${normalizeCreditBalanceInput(getCreditAvailable(freshUser))} 积分。`);
+      error.code = 'account_credit_insufficient';
+      error.statusCode = 402;
+      error.requiredCredits = amount;
+      error.availableCredits = normalizeCreditBalanceInput(getCreditAvailable(freshUser));
+      throw error;
+    }
+    const [rows] = await connection.query('SELECT * FROM users WHERE id = ? LIMIT 1', [account.id]);
+    const updatedUser = mapDbUser(rows[0]);
+    const reservation = {
+      id: createEntityId(),
+      userId: updatedUser.id,
+      amount,
+      jobId: String(context.jobId || ''),
+      requestId: String(context.requestId || ''),
+      module: String(context.module || ''),
+      taskType: String(context.taskType || ''),
+      provider: String(context.provider || ''),
+    };
+    await insertDbCreditLedgerEntry(connection, updatedUser, {
+      ...reservation,
+      action: 'reserve',
+      reason: context.reason || 'reserve',
+    });
+    await connection.commit();
+    return reservation;
+  } catch (error) {
+    await connection.rollback().catch(() => null);
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
+const getProviderCreditsConsumed = (result) => {
+  const source = result && typeof result === 'object' && 'result' in result ? result.result : result;
+  const parsed = Number(source?.creditsConsumed ?? source?.usage?.credits ?? source?.usage?.creditsConsumed);
+  return Number.isFinite(parsed) && parsed >= 0 ? normalizeCreditBalanceInput(parsed) : undefined;
+};
+
+const settleDbAccountCredits = async (pool, reservation, context = {}) => {
+  if (!reservation?.userId || !(Number(reservation.amount) > 0)) return null;
+  const providerCredits = getProviderCreditsConsumed(context.result);
+  const reservedAmount = normalizeCreditBalanceInput(reservation.amount);
+  const settledAmount = providerCredits === undefined ? reservedAmount : providerCredits;
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    if (await hasDbProcessedCreditReservation(connection, reservation)) {
+      await connection.commit();
+      return { alreadyProcessed: true };
+    }
+    await connection.query(
+      `UPDATE users
+       SET credit_reserved = GREATEST(0, credit_reserved - ?),
+           credit_balance = GREATEST(0, credit_balance - ?),
+           credit_consumed = credit_consumed + ?
+       WHERE id = ?`,
+      [reservedAmount, settledAmount, settledAmount, reservation.userId]
+    );
+    const [rows] = await connection.query('SELECT * FROM users WHERE id = ? LIMIT 1', [reservation.userId]);
+    if (!rows[0]) {
+      await connection.rollback();
+      return null;
+    }
+    const updatedUser = mapDbUser(rows[0]);
+    await insertDbCreditLedgerEntry(connection, updatedUser, {
+      ...reservation,
+      ...context,
+      action: 'settle',
+      amount: settledAmount,
+      reason: context.reason || 'settle',
+      meta: {
+        ...(context.meta && typeof context.meta === 'object' ? context.meta : {}),
+        reservedAmount,
+        overageAmount: Math.max(0, normalizeCreditBalanceInput(settledAmount - reservedAmount)),
+        source: providerCredits === undefined ? 'estimate' : 'provider',
+      },
+    });
+    await connection.commit();
+    return {
+      settledAmount,
+      source: providerCredits === undefined ? 'estimate' : 'provider',
+    };
+  } catch (error) {
+    await connection.rollback().catch(() => null);
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
+const releaseDbAccountCredits = async (pool, reservation, context = {}) => {
+  if (!reservation?.userId || !(Number(reservation.amount) > 0)) return null;
+  const amount = normalizeCreditBalanceInput(reservation.amount);
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    if (await hasDbProcessedCreditReservation(connection, reservation)) {
+      await connection.commit();
+      return { alreadyProcessed: true };
+    }
+    await connection.query(
+      `UPDATE users
+       SET credit_reserved = GREATEST(0, credit_reserved - ?)
+       WHERE id = ?`,
+      [amount, reservation.userId]
+    );
+    const [rows] = await connection.query('SELECT * FROM users WHERE id = ? LIMIT 1', [reservation.userId]);
+    if (!rows[0]) {
+      await connection.rollback();
+      return null;
+    }
+    const updatedUser = mapDbUser(rows[0]);
+    await insertDbCreditLedgerEntry(connection, updatedUser, {
+      ...reservation,
+      ...context,
+      action: 'release',
+      amount,
+      reason: context.reason || 'release',
+    });
+    await connection.commit();
+    return { releasedAmount: amount };
+  } catch (error) {
+    await connection.rollback().catch(() => null);
+    throw error;
+  } finally {
+    connection.release();
+  }
+};
+
+const reserveDbJobCredits = async (pool, user, jobPayload) => {
+  const amount = estimateCreditReservation(jobPayload);
+  return await reserveDbAccountCredits(pool, user, {
+    amount,
+    module: jobPayload.module,
+    taskType: jobPayload.taskType,
+    provider: jobPayload.provider,
+    reason: 'job_created',
+  });
+};
+
+const reserveLocalJobCredits = (store, user, jobPayload) => {
+  const amount = estimateCreditReservation(jobPayload);
+  return reserveLocalAccountCredits(store, user.id, {
+    amount,
+    module: jobPayload.module,
+    taskType: jobPayload.taskType,
+    provider: jobPayload.provider,
+    reason: 'job_created',
+  });
+};
+
+const settleDbJobCredits = async ({ pool, job, output, finishedAt, aborted }) => {
+  const reservation = getCreditReservationFromJob(job);
+  if (!reservation) return null;
+  if (aborted) {
+    return await releaseDbAccountCredits(pool, reservation, {
+      module: job.module,
+      taskType: job.taskType,
+      provider: job.provider,
+      reason: 'job_cancelled',
+      meta: { finishedAt },
+    });
+  }
+  return await settleDbAccountCredits(pool, reservation, {
+    result: output,
+    module: job.module,
+    taskType: job.taskType,
+    provider: job.provider,
+    reason: 'job_completed',
+    meta: { finishedAt },
+  });
+};
+
+const releaseDbJobCredits = async ({ pool, job, error, finishedAt, retryWaiting }) => {
+  if (retryWaiting) return null;
+  const reservation = getCreditReservationFromJob(job);
+  if (!reservation) return null;
+  return await releaseDbAccountCredits(pool, reservation, {
+    module: job.module,
+    taskType: job.taskType,
+    provider: job.provider,
+    reason: error?.code === 'request_cancelled' ? 'job_cancelled' : 'job_failed',
+    meta: {
+      finishedAt,
+      errorCode: error?.code || '',
+      errorMessage: String(error?.message || '').slice(0, 500),
+    },
+  });
+};
+
+const settleLocalJobCredits = ({ store, job, output, aborted }) => {
+  const reservation = getCreditReservationFromJob(job);
+  if (!reservation) return null;
+  if (aborted) {
+    return releaseLocalAccountCredits(store, reservation, {
+      module: job.module,
+      taskType: job.taskType,
+      provider: job.provider,
+      reason: 'job_cancelled',
+    });
+  }
+  return settleLocalAccountCredits(store, reservation, {
+    result: output,
+    module: job.module,
+    taskType: job.taskType,
+    provider: job.provider,
+    reason: 'job_completed',
+  });
+};
+
+const releaseLocalJobCredits = ({ store, job, error, retryWaiting }) => {
+  if (retryWaiting) return null;
+  const reservation = getCreditReservationFromJob(job);
+  if (!reservation) return null;
+  return releaseLocalAccountCredits(store, reservation, {
+    module: job.module,
+    taskType: job.taskType,
+    provider: job.provider,
+    reason: error?.code === 'request_cancelled' ? 'job_cancelled' : 'job_failed',
+  });
+};
+
+const reserveDbAgentImageCredits = async (pool, user, { sessionId = '', clientRequestId = '', taskType = 'agent_image' } = {}) => {
+  const amount = estimateCreditReservation({
+    taskType: taskType || 'agent_image',
+    provider: 'kie',
+    payload: { outputCount: 1 },
+  });
+  return await reserveDbAccountCredits(pool, user, {
+    amount,
+    module: 'agent_center',
+    taskType: taskType || 'agent_image',
+    provider: 'kie',
+    requestId: clientRequestId,
+    reason: 'agent_image_generation',
+    meta: { sessionId, clientRequestId },
+  });
+};
+
+const settleDbAgentImageCredits = async (pool, reservation, { result, sessionId = '', clientRequestId = '' } = {}) => (
+  await settleDbAccountCredits(pool, reservation, {
+    result,
+    module: 'agent_center',
+    taskType: reservation?.taskType || 'agent_image',
+    provider: 'kie',
+    requestId: clientRequestId,
+    reason: 'agent_image_completed',
+    meta: { sessionId, clientRequestId },
+  })
+);
+
+const releaseDbAgentImageCredits = async (pool, reservation, { error, sessionId = '', clientRequestId = '' } = {}) => (
+  await releaseDbAccountCredits(pool, reservation, {
+    module: 'agent_center',
+    taskType: reservation?.taskType || 'agent_image',
+    provider: 'kie',
+    requestId: clientRequestId,
+    reason: 'agent_image_failed',
+    meta: {
+      sessionId,
+      clientRequestId,
+      errorCode: error?.code || '',
+      errorMessage: String(error?.message || '').slice(0, 500),
+    },
+  })
+);
+
+const reserveLocalAgentImageCredits = (store, user, { sessionId = '', clientRequestId = '', taskType = 'agent_image' } = {}) => {
+  const amount = estimateCreditReservation({
+    taskType: taskType || 'agent_image',
+    provider: 'kie',
+    payload: { outputCount: 1 },
+  });
+  return reserveLocalAccountCredits(store, user.id, {
+    amount,
+    module: 'agent_center',
+    taskType: taskType || 'agent_image',
+    provider: 'kie',
+    requestId: clientRequestId,
+    reason: 'agent_image_generation',
+    meta: { sessionId, clientRequestId },
+  });
+};
+
+const settleLocalAgentImageCredits = (store, reservation, { result, sessionId = '', clientRequestId = '' } = {}) => (
+  settleLocalAccountCredits(store, reservation, {
+    result,
+    module: 'agent_center',
+    taskType: reservation?.taskType || 'agent_image',
+    provider: 'kie',
+    requestId: clientRequestId,
+    reason: 'agent_image_completed',
+    meta: { sessionId, clientRequestId },
+  })
+);
+
+const releaseLocalAgentImageCredits = (store, reservation, { error, sessionId = '', clientRequestId = '' } = {}) => (
+  releaseLocalAccountCredits(store, reservation, {
+    module: 'agent_center',
+    taskType: reservation?.taskType || 'agent_image',
+    provider: 'kie',
+    requestId: clientRequestId,
+    reason: 'agent_image_failed',
+    meta: {
+      sessionId,
+      clientRequestId,
+      errorCode: error?.code || '',
+      errorMessage: String(error?.message || '').slice(0, 500),
+    },
+  })
+);
+
+const TERMINAL_CREDIT_JOB_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+
+const buildDbCreditJobFromRow = (row = {}) => ({
+  id: row.id,
+  userId: row.user_id,
+  module: row.module,
+  taskType: row.task_type,
+  provider: row.provider,
+  status: row.status,
+  payload: parseJsonField(row.payload_json, {}),
+  result: parseJsonField(row.result_json, null),
+  providerTaskId: row.provider_task_id || '',
+  errorCode: row.error_code || '',
+  errorMessage: row.error_message || '',
+  finishedAt: row.finished_at === null ? null : Number(row.finished_at || 0),
+});
+
+const reconcileDbTerminalJobCredits = async (pool, { limit = 500 } = {}) => {
+  const [rows] = await pool.query(
+    `SELECT id, user_id, module, task_type, provider, status, payload_json, result_json,
+            provider_task_id, error_code, error_message, finished_at
+     FROM internal_jobs
+     WHERE status IN ('succeeded', 'failed', 'cancelled')
+       AND payload_json LIKE '%__creditReservation%'
+     ORDER BY COALESCE(finished_at, updated_at, created_at) DESC
+     LIMIT ?`,
+    [Math.max(1, Math.min(5000, Number(limit || 500)))]
+  );
+  let reconciled = 0;
+  for (const row of rows || []) {
+    const job = buildDbCreditJobFromRow(row);
+    if (!getCreditReservationFromJob(job)) continue;
+    const result = job.status === 'succeeded'
+      ? await settleDbJobCredits({
+          pool,
+          job,
+          output: { providerTaskId: job.providerTaskId, result: job.result },
+          finishedAt: job.finishedAt || Date.now(),
+          aborted: false,
+        })
+      : await releaseDbJobCredits({
+          pool,
+          job,
+          error: { code: job.errorCode || (job.status === 'cancelled' ? 'request_cancelled' : 'job_failed'), message: job.errorMessage || '' },
+          finishedAt: job.finishedAt || Date.now(),
+          retryWaiting: false,
+        });
+    if (result && !result.alreadyProcessed) reconciled += 1;
+  }
+  return reconciled;
+};
+
+const reconcileLocalTerminalJobCredits = (store, { limit = 500 } = {}) => {
+  const jobs = (Array.isArray(store?.jobs) ? store.jobs : [])
+    .filter((job) => TERMINAL_CREDIT_JOB_STATUSES.has(String(job?.status || '')) && getCreditReservationFromJob(job))
+    .sort((a, b) => Number(b.finishedAt || b.updatedAt || b.createdAt || 0) - Number(a.finishedAt || a.updatedAt || a.createdAt || 0))
+    .slice(0, Math.max(1, Math.min(5000, Number(limit || 500))));
+  let reconciled = 0;
+  for (const job of jobs) {
+    const result = job.status === 'succeeded'
+      ? settleLocalJobCredits({
+          store,
+          job,
+          output: { providerTaskId: job.providerTaskId, result: job.result },
+          aborted: false,
+        })
+      : releaseLocalJobCredits({
+          store,
+          job,
+          error: { code: job.errorCode || (job.status === 'cancelled' ? 'request_cancelled' : 'job_failed'), message: job.errorMessage || '' },
+          retryWaiting: false,
+        });
+    if (result && !result.alreadyProcessed) reconciled += 1;
+  }
+  return reconciled;
+};
+
+const reconcileLocalTerminalJobCreditsAfterRestart = () => {
+  const store = readLocalStore();
+  const reconciled = reconcileLocalTerminalJobCredits(store);
+  if (reconciled > 0) writeLocalStore(store);
+  return reconciled;
 };
 
 const buildDbLogWhere = (filters = {}) => {
@@ -5479,6 +6032,10 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         maxContextChars: Math.min(Number(version.retrievalPolicy?.maxContextChars || 2400), 1800),
       }, process.env, searchKnowledgeChunks)
     : [];
+  const agentImageCreditReservation = requestMode === 'image_generation' && !shouldUseToolCallingConversation(version)
+    ? await reserveDbAgentImageCredits(pool, user, { sessionId, clientRequestId })
+    : null;
+  let agentImageCreditSettled = false;
   const contextTraceBase = {
     sessionId,
     clientRequestId,
@@ -5550,6 +6107,9 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     await pendingConnection.commit();
   } catch (error) {
     await pendingConnection.rollback();
+    if (agentImageCreditReservation) {
+      await releaseDbAgentImageCredits(pool, agentImageCreditReservation, { error, sessionId, clientRequestId });
+    }
     throw error;
   } finally {
     pendingConnection.release();
@@ -5699,6 +6259,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       const recentMessages = history
         .slice(-(ctxLimits.maxHistoryRounds * 2))
         .map((message) => ({ role: message.role, content: message.content }));
+      const fallbackModels = resolveChatFallbackModels(version, selectedModel);
       const imageCapability = getImageModelCapability(version?.modelPolicy?.multimodalModel);
       const openaiCompatibleEnv = buildOpenAICompatibleRuntimeEnv(process.env, systemSettings);
       const callModel = async ({ messages, tools, toolChoice, maxTokens, onDelta }) => {
@@ -5707,6 +6268,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
           taskType: 'openai_responses',
           payload: {
             model: selectedModel,
+            fallbackModels,
             messages,
             tools,
             reasoningLevel: payload?.reasoningLevel || null,
@@ -5726,38 +6288,46 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         };
       };
       const generateImage = async ({ prompt, taskType, inputImageUrls, aspectRatio, model }) => {
-        const imageOutput = await executeProviderJobWithManagedAssetScrub({
-          taskType: 'kie_image',
-          payload: {
-            imageUrls: inputImageUrls,
-            prompt,
-            model,
-            aspectRatio: aspectRatio || 'auto',
-            resolution: String(imageCapability?.defaultResolution || '1K'),
-          },
-        }, process.env, new AbortController().signal, {
-          onProviderTaskId: async (providerTaskId) => {
-            await persistDbChatProviderTaskCheckpoint({
-              content: '图片任务已提交，正在生成中。',
-              providerTaskId,
-              selectedModel: model || selectedModel,
-              taskType,
-              inputImageUrls,
+        const imageCreditReservation = await reserveDbAgentImageCredits(pool, user, { sessionId, clientRequestId, taskType });
+        let imageOutput;
+        try {
+          imageOutput = await executeProviderJobWithManagedAssetScrub({
+            taskType: 'kie_image',
+            payload: {
+              imageUrls: inputImageUrls,
               prompt,
-              size: aspectRatio || 'auto',
-              imagePlan: {
-                requestMode: 'tool_calling',
+              model,
+              aspectRatio: aspectRatio || 'auto',
+              resolution: String(imageCapability?.defaultResolution || '1K'),
+            },
+          }, process.env, new AbortController().signal, {
+            onProviderTaskId: async (providerTaskId) => {
+              await persistDbChatProviderTaskCheckpoint({
+                content: '图片任务已提交，正在生成中。',
+                providerTaskId,
+                selectedModel: model || selectedModel,
                 taskType,
-                selectedImageModel: model || '',
                 inputImageUrls,
                 prompt,
                 size: aspectRatio || 'auto',
-                providerTaskId,
-              },
-            });
-            if (sendEvent) sendEvent('progress', { stage: 'image_generating', providerTaskId });
-          },
-        });
+                imagePlan: {
+                  requestMode: 'tool_calling',
+                  taskType,
+                  selectedImageModel: model || '',
+                  inputImageUrls,
+                  prompt,
+                  size: aspectRatio || 'auto',
+                  providerTaskId,
+                },
+              });
+              if (sendEvent) sendEvent('progress', { stage: 'image_generating', providerTaskId });
+            },
+          });
+          await settleDbAgentImageCredits(pool, imageCreditReservation, { result: imageOutput, sessionId, clientRequestId });
+        } catch (error) {
+          await releaseDbAgentImageCredits(pool, imageCreditReservation, { error, sessionId, clientRequestId });
+          throw error;
+        }
         const rawUrl = String(imageOutput?.result?.imageUrl || '').trim();
         const persistedUrl = await persistRuntimeRemoteAssetIfEnabled({
           userId: user.id,
@@ -5770,7 +6340,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         });
         const imageUrl = persistedUrl || rawUrl;
         const providerTaskId = String(imageOutput?.providerTaskId || '');
-        return { imageUrl, providerTaskId };
+        return { imageUrl, providerTaskId, creditsConsumed: getProviderCreditsConsumed(imageOutput) };
       };
       const validateImageResult = async (validationInput) => validateAgentGeneratedImageResult({
         ...validationInput,
@@ -5846,7 +6416,14 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
             },
           });
     }
+    if (agentImageCreditReservation) {
+      await settleDbAgentImageCredits(pool, agentImageCreditReservation, { result, sessionId, clientRequestId });
+      agentImageCreditSettled = true;
+    }
   } catch (error) {
+    if (agentImageCreditReservation && !agentImageCreditSettled) {
+      await releaseDbAgentImageCredits(pool, agentImageCreditReservation, { error, sessionId, clientRequestId });
+    }
     await markDbChatRunFailed(error);
     throw error;
   }
@@ -7456,6 +8033,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     providerStage: String(imageOutput?.providerStage || 'completed').trim(),
     providerStatus: String(imageOutput?.providerStatus || 'success').trim(),
     providerMessage: '',
+    creditsConsumed: getProviderCreditsConsumed(imageOutput),
     imagePlan: {
       requestMode: 'image_generation',
       taskType: String(parsed.taskType || (inputImageUrls.length > 0 ? 'edit_image' : 'new_image')),
@@ -8184,6 +8762,8 @@ const handleMysqlRequest = async (req, res, url) => {
     const role = body.role === 'admin' ? 'admin' : 'staff';
     const jobConcurrency = normalizeJobConcurrency(body.jobConcurrency, DEFAULT_JOB_CONCURRENCY);
     const featurePermissions = normalizeFeaturePermissions(body.featurePermissions);
+    const creditLimitMode = normalizeCreditLimitMode(body.creditLimitMode);
+    const creditBalance = normalizeCreditBalanceInput(body.creditBalance);
 
     if (!username || !password) {
       json(res, 400, { message: '用户名和密码不能为空。' });
@@ -8196,7 +8776,7 @@ const handleMysqlRequest = async (req, res, url) => {
       return;
     }
 
-    const newUser = await createDbUser({ username, password, role, displayName, jobConcurrency, featurePermissions });
+    const newUser = await createDbUser({ username, password, role, displayName, jobConcurrency, featurePermissions, creditLimitMode, creditBalance });
     await createDbLog({
       user: admin,
       level: 'info',
@@ -8211,6 +8791,8 @@ const handleMysqlRequest = async (req, res, url) => {
         targetRole: newUser.role,
         targetJobConcurrency: newUser.jobConcurrency,
         targetFeaturePermissions: newUser.featurePermissions,
+        targetCreditLimitMode: newUser.creditLimitMode,
+        targetCreditBalance: newUser.creditBalance,
       },
     });
     json(res, 201, { user: cleanUser(newUser) });
@@ -8921,6 +9503,8 @@ const handleMysqlRequest = async (req, res, url) => {
     const nextJobConcurrency = body.jobConcurrency === undefined ? undefined : normalizeJobConcurrency(body.jobConcurrency, DEFAULT_JOB_CONCURRENCY);
     const nextFeaturePermissions = body.featurePermissions === undefined ? undefined : normalizeFeaturePermissions(body.featurePermissions);
     const nextAnalysisModel = body.analysisModel === undefined ? undefined : normalizeUserAnalysisModel(body.analysisModel);
+    const nextCreditLimitMode = body.creditLimitMode === undefined ? undefined : normalizeCreditLimitMode(body.creditLimitMode);
+    const nextCreditBalance = body.creditBalance === undefined ? undefined : normalizeCreditBalanceInput(body.creditBalance);
     const previousStatus = targetUser.status;
 
     if (targetUser.id === admin.id && nextStatus === 'disabled') {
@@ -8943,6 +9527,8 @@ const handleMysqlRequest = async (req, res, url) => {
       jobConcurrency: nextJobConcurrency,
       featurePermissions: nextFeaturePermissions,
       analysisModel: nextAnalysisModel,
+      creditLimitMode: nextCreditLimitMode,
+      creditBalance: nextCreditBalance,
       password: nextPassword,
       usernameFallback: targetUser.displayName || targetUser.username,
     });
@@ -9335,7 +9921,8 @@ const handleMysqlRequest = async (req, res, url) => {
       json(res, 200, { job: reusableJob, deduped: true });
       return;
     }
-    const job = await createJobRecord(pool, user, jobPayload);
+    const creditReservation = await reserveDbJobCredits(pool, user, jobPayload);
+    const job = await createJobRecord(pool, user, attachCreditReservationToJobPayload(jobPayload, creditReservation));
     await createDbLog({
       user,
       level: 'info',
@@ -9667,6 +10254,8 @@ const handleLocalRequest = async (req, res, url) => {
     const role = body.role === 'admin' ? 'admin' : 'staff';
     const jobConcurrency = normalizeJobConcurrency(body.jobConcurrency, DEFAULT_JOB_CONCURRENCY);
     const featurePermissions = normalizeFeaturePermissions(body.featurePermissions);
+    const creditLimitMode = normalizeCreditLimitMode(body.creditLimitMode);
+    const creditBalance = normalizeCreditBalanceInput(body.creditBalance);
 
     if (!username || !password) {
       json(res, 400, { message: '用户名和密码不能为空。' });
@@ -9678,7 +10267,7 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
 
-    const newUser = createUser({ username, password, role, displayName, jobConcurrency, featurePermissions });
+    const newUser = createUser({ username, password, role, displayName, jobConcurrency, featurePermissions, creditLimitMode, creditBalance });
     store.users.push(newUser);
     store.appStates[newUser.id] = createDefaultState();
     appendLocalLog(store, {
@@ -9695,6 +10284,8 @@ const handleLocalRequest = async (req, res, url) => {
         targetRole: newUser.role,
         targetJobConcurrency: newUser.jobConcurrency,
         targetFeaturePermissions: newUser.featurePermissions,
+        targetCreditLimitMode: newUser.creditLimitMode,
+        targetCreditBalance: newUser.creditBalance,
       },
     });
     writeLocalStore(store);
@@ -10353,6 +10944,27 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 201, responseBody);
       return;
     }
+    let agentImageCreditReservation = null;
+    let agentImageCreditSettled = false;
+    try {
+      agentImageCreditReservation = requestMode === 'image_generation' && !shouldUseToolCallingConversation(version)
+        ? reserveLocalAgentImageCredits(store, user, { sessionId, clientRequestId })
+        : null;
+      if (agentImageCreditReservation) writeLocalStore(store);
+    } catch (error) {
+      if (localWantsStream) {
+        sendLocalChatEvent('error', { message: error?.message || '积分不足', code: error?.code || '' });
+        res.end();
+        return;
+      }
+      json(res, error?.statusCode || 500, {
+        message: error?.message || '积分不足',
+        code: error?.code || '',
+        requiredCredits: error?.requiredCredits,
+        availableCredits: error?.availableCredits,
+      });
+      return;
+    }
     if (localWantsStream) sendLocalChatEvent('thinking', {});
     const promise = (async () => {
     const now = Date.now();
@@ -10496,6 +11108,7 @@ const handleLocalRequest = async (req, res, url) => {
         const recentMessages = history
           .slice(-(ctxLimits.maxHistoryRounds * 2))
           .map((message) => ({ role: message.role, content: message.content }));
+        const fallbackModels = resolveChatFallbackModels(version, selectedModel);
         const imageCapability = getImageModelCapability(version?.modelPolicy?.multimodalModel);
         const openaiCompatibleEnv = buildOpenAICompatibleRuntimeEnv(process.env, systemSettings);
         const callModel = async ({ messages, tools, toolChoice, maxTokens, onDelta }) => {
@@ -10504,6 +11117,7 @@ const handleLocalRequest = async (req, res, url) => {
             taskType: 'openai_responses',
             payload: {
               model: selectedModel,
+              fallbackModels,
               messages,
               tools,
               reasoningLevel: body?.reasoningLevel || null,
@@ -10523,37 +11137,48 @@ const handleLocalRequest = async (req, res, url) => {
           };
         };
         const generateImage = async ({ prompt, taskType, inputImageUrls, aspectRatio, model }) => {
-          const imageOutput = await executeProviderJobWithManagedAssetScrub({
-            taskType: 'kie_image',
-            payload: {
-              imageUrls: inputImageUrls,
-              prompt,
-              model,
-              aspectRatio: aspectRatio || 'auto',
-              resolution: String(imageCapability?.defaultResolution || '1K'),
-            },
-          }, process.env, new AbortController().signal, {
-            onProviderTaskId: async (providerTaskId) => {
-              await persistLocalChatProviderTaskCheckpoint({
-                content: '图片任务已提交，正在生成中。',
-                providerTaskId,
-                selectedModel: model || selectedModel,
-                taskType,
-                inputImageUrls,
+          const imageCreditReservation = reserveLocalAgentImageCredits(store, user, { sessionId, clientRequestId, taskType });
+          if (imageCreditReservation) writeLocalStore(store);
+          let imageOutput;
+          try {
+            imageOutput = await executeProviderJobWithManagedAssetScrub({
+              taskType: 'kie_image',
+              payload: {
+                imageUrls: inputImageUrls,
                 prompt,
-                size: aspectRatio || 'auto',
-                imagePlan: {
-                  requestMode: 'tool_calling',
+                model,
+                aspectRatio: aspectRatio || 'auto',
+                resolution: String(imageCapability?.defaultResolution || '1K'),
+              },
+            }, process.env, new AbortController().signal, {
+              onProviderTaskId: async (providerTaskId) => {
+                await persistLocalChatProviderTaskCheckpoint({
+                  content: '图片任务已提交，正在生成中。',
+                  providerTaskId,
+                  selectedModel: model || selectedModel,
                   taskType,
-                  selectedImageModel: model || '',
                   inputImageUrls,
                   prompt,
                   size: aspectRatio || 'auto',
-                  providerTaskId,
-                },
-              });
-            },
-          });
+                  imagePlan: {
+                    requestMode: 'tool_calling',
+                    taskType,
+                    selectedImageModel: model || '',
+                    inputImageUrls,
+                    prompt,
+                    size: aspectRatio || 'auto',
+                    providerTaskId,
+                  },
+                });
+              },
+            });
+            settleLocalAgentImageCredits(store, imageCreditReservation, { result: imageOutput, sessionId, clientRequestId });
+            writeLocalStore(store);
+          } catch (error) {
+            releaseLocalAgentImageCredits(store, imageCreditReservation, { error, sessionId, clientRequestId });
+            writeLocalStore(store);
+            throw error;
+          }
           const rawUrl = String(imageOutput?.result?.imageUrl || '').trim();
           const persistedUrl = await persistRuntimeRemoteAssetIfEnabled({
             userId: user.id,
@@ -10566,7 +11191,7 @@ const handleLocalRequest = async (req, res, url) => {
           });
           const imageUrl = persistedUrl || rawUrl;
           const providerTaskId = String(imageOutput?.providerTaskId || '');
-          return { imageUrl, providerTaskId };
+          return { imageUrl, providerTaskId, creditsConsumed: getProviderCreditsConsumed(imageOutput) };
         };
         const validateImageResult = async (validationInput) => validateAgentGeneratedImageResult({
           ...validationInput,
@@ -10637,6 +11262,10 @@ const handleLocalRequest = async (req, res, url) => {
               reasoningLevel: body?.reasoningLevel || null,
               webSearchEnabled: Boolean(body?.webSearchEnabled),
             });
+      }
+      if (agentImageCreditReservation) {
+        settleLocalAgentImageCredits(store, agentImageCreditReservation, { result, sessionId, clientRequestId });
+        agentImageCreditSettled = true;
       }
       result.clientRequestId = clientRequestId;
       const assistantAttachments = buildAgentImageResultAttachments(result.imageResultUrls);
@@ -10721,6 +11350,9 @@ const handleLocalRequest = async (req, res, url) => {
       writeLocalStore(store);
       return { status: 201, body: { userMessage, assistantMessage, usage: result } };
     } catch (error) {
+      if (agentImageCreditReservation && !agentImageCreditSettled) {
+        releaseLocalAgentImageCredits(store, agentImageCreditReservation, { error, sessionId, clientRequestId });
+      }
       const errorMessage = error?.message || '聊天回复失败。';
       userMessage.metadata = {
         ...userMessage.metadata,
@@ -10780,6 +11412,23 @@ const handleLocalRequest = async (req, res, url) => {
         return;
       }
       json(res, response.status, response.body);
+    } catch (error) {
+      if (agentImageCreditReservation && !agentImageCreditSettled) {
+        releaseLocalAgentImageCredits(store, agentImageCreditReservation, { error, sessionId, clientRequestId });
+        writeLocalStore(store);
+      }
+      const errorMessage = error?.message || '聊天回复失败。';
+      if (localWantsStream) {
+        sendLocalChatEvent('error', { message: errorMessage, code: error?.code || '' });
+        res.end();
+        return;
+      }
+      json(res, error?.statusCode || 500, {
+        message: errorMessage,
+        code: error?.code || '',
+        requiredCredits: error?.requiredCredits,
+        availableCredits: error?.availableCredits,
+      });
     } finally {
       activeLocalChatReplyRequests.delete(activeKey);
     }
@@ -11213,6 +11862,8 @@ const handleLocalRequest = async (req, res, url) => {
     const nextJobConcurrency = body.jobConcurrency === undefined ? undefined : normalizeJobConcurrency(body.jobConcurrency, DEFAULT_JOB_CONCURRENCY);
     const nextFeaturePermissions = body.featurePermissions === undefined ? undefined : normalizeFeaturePermissions(body.featurePermissions);
     const nextAnalysisModel = body.analysisModel === undefined ? undefined : normalizeUserAnalysisModel(body.analysisModel);
+    const nextCreditLimitMode = body.creditLimitMode === undefined ? undefined : normalizeCreditLimitMode(body.creditLimitMode);
+    const nextCreditBalance = body.creditBalance === undefined ? undefined : normalizeCreditBalanceInput(body.creditBalance);
     const previousStatus = targetUser.status;
 
     if (targetUser.id === admin.id && nextStatus === 'disabled') {
@@ -11232,6 +11883,8 @@ const handleLocalRequest = async (req, res, url) => {
     if (nextJobConcurrency !== undefined) targetUser.jobConcurrency = nextJobConcurrency;
     if (nextFeaturePermissions !== undefined) targetUser.featurePermissions = normalizeFeaturePermissions(nextFeaturePermissions);
     if (nextAnalysisModel !== undefined) targetUser.analysisModel = nextAnalysisModel;
+    if (nextCreditLimitMode !== undefined) targetUser.creditLimitMode = nextCreditLimitMode;
+    if (nextCreditBalance !== undefined) targetUser.creditBalance = nextCreditBalance;
     if (nextPassword) {
       const passwordRecord = createPasswordRecord(nextPassword);
       targetUser.passwordHash = passwordRecord.hash;
@@ -11309,6 +11962,7 @@ const handleLocalRequest = async (req, res, url) => {
     store.sessions = store.sessions.filter(session => session.userId !== targetUser.id);
     store.jobs = (store.jobs || []).filter((job) => job.userId !== targetUser.id);
     store.logs = normalizeLogs((store.logs || []).filter((log) => log.userId !== targetUser.id));
+    store.accountCreditLedger = (store.accountCreditLedger || []).filter((entry) => entry.userId !== targetUser.id);
     store.chatMessages = (store.chatMessages || []).filter((item) => item.userId !== targetUser.id && !deletedChatSessionIds.has(item.sessionId));
     store.chatSessions = (store.chatSessions || []).filter((item) => item.userId !== targetUser.id && !deletedAgentIds.has(item.agentId));
     store.agentUsageLogs = (store.agentUsageLogs || []).filter((item) => item.userId !== targetUser.id && !deletedAgentIds.has(item.agentId));
@@ -11649,7 +12303,8 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 200, { job: reusableJob, deduped: true });
       return;
     }
-    const job = createLocalJobRecord(store, user, jobPayload);
+    const creditReservation = reserveLocalJobCredits(store, user, jobPayload);
+    const job = createLocalJobRecord(store, user, attachCreditReservationToJobPayload(jobPayload, creditReservation));
     appendLocalLog(store, {
       user,
       level: 'info',
@@ -11874,6 +12529,15 @@ const server = createServer(async (req, res) => {
       json(res, 413, { message: '请求内容过大，请压缩后重试。' });
       return;
     }
+    if (error?.code === 'account_credit_insufficient') {
+      json(res, error.statusCode || 402, {
+        message: error.message,
+        code: error.code,
+        requiredCredits: error.requiredCredits,
+        availableCredits: error.availableCredits,
+      });
+      return;
+    }
     json(res, 500, { message: '服务端处理失败。', detail: error.message });
   }
 });
@@ -11889,6 +12553,10 @@ const bootstrap = async () => {
         console.log(`Reconciled ${reconciledJobs.length} stale running jobs after restart.`);
       }
     }
+    const reconciledCreditJobs = await reconcileDbTerminalJobCredits(pool);
+    if (reconciledCreditJobs > 0) {
+      console.log(`Reconciled ${reconciledCreditJobs} terminal job credit reservations after restart.`);
+    }
     if (taskEngine !== 'mysql' && temporalTaskAdapter.configured) {
       temporalWorkerRuntime = await startMeiaoTemporalWorker({
         config: temporalTaskAdapter.config,
@@ -11901,6 +12569,8 @@ const bootstrap = async () => {
           getMaxConcurrency: getDbWorkerConcurrency,
           createLog: createDbLog,
           findUserById: findDbUserById,
+          settleJobCredits: async ({ job, output, finishedAt, aborted }) => settleDbJobCredits({ pool, job, output, finishedAt, aborted }),
+          releaseJobCredits: async ({ job, error, finishedAt, retryWaiting }) => releaseDbJobCredits({ pool, job, error, finishedAt, retryWaiting }),
         }),
         workerOptions: {
           maxConcurrentActivityTaskExecutions: Math.max(1, await getDbWorkerConcurrency()),
@@ -11924,6 +12594,8 @@ const bootstrap = async () => {
         getMaxConcurrency: getDbWorkerConcurrency,
         createLog: createDbLog,
         findUserById: findDbUserById,
+        settleJobCredits: async ({ job, output, finishedAt, aborted }) => settleDbJobCredits({ pool, job, output, finishedAt, aborted }),
+        releaseJobCredits: async ({ job, error, finishedAt, retryWaiting }) => releaseDbJobCredits({ pool, job, error, finishedAt, retryWaiting }),
         getTaskEngineMode: () => process.env.MEIAO_TASK_ENGINE,
       });
       jobWorker.start(1000);
@@ -11937,6 +12609,10 @@ const bootstrap = async () => {
       if (reconciledJobs.length > 0) {
         console.log(`Reconciled ${reconciledJobs.length} local stale running jobs after restart.`);
       }
+    }
+    const reconciledCreditJobs = reconcileLocalTerminalJobCreditsAfterRestart();
+    if (reconciledCreditJobs > 0) {
+      console.log(`Reconciled ${reconciledCreditJobs} local terminal job credit reservations after restart.`);
     }
     if (taskEngine !== 'mysql' && temporalTaskAdapter.configured) {
       temporalWorkerRuntime = await startMeiaoTemporalWorker({
@@ -11954,6 +12630,8 @@ const bootstrap = async () => {
             writeLocalStore(store);
           },
           findUserById: (userId) => findLocalUserById(userId),
+          settleJobCredits: ({ store, job, output, aborted }) => settleLocalJobCredits({ store, job, output, aborted }),
+          releaseJobCredits: ({ store, job, error, retryWaiting }) => releaseLocalJobCredits({ store, job, error, retryWaiting }),
         }),
       });
       console.log(`Temporal worker listening on task queue ${temporalTaskAdapter.config.taskQueue}.`);
@@ -11973,6 +12651,8 @@ const bootstrap = async () => {
           writeLocalStore(store);
         },
         findUserById: (userId) => findLocalUserById(userId),
+        settleJobCredits: ({ store, job, output, aborted }) => settleLocalJobCredits({ store, job, output, aborted }),
+        releaseJobCredits: ({ store, job, error, retryWaiting }) => releaseLocalJobCredits({ store, job, error, retryWaiting }),
       });
       localJobWorker.start(1000);
     }

@@ -360,6 +360,11 @@ export interface AuthUser {
   status: 'active' | 'disabled';
   jobConcurrency: number;
   analysisModel?: string;
+  creditLimitMode?: 'unlimited' | 'limited';
+  creditBalance?: number;
+  creditReserved?: number;
+  creditConsumed?: number;
+  creditAvailable?: number;
   featurePermissions?: {
     videoGeneration?: boolean;
   };

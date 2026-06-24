@@ -1,8 +1,15 @@
 const DEFAULT_CONCURRENCY = 5;
+const CREDIT_LIMIT_MODE_LIMITED = 'limited';
 
 const sanitizePositiveInteger = (value, fallback = DEFAULT_CONCURRENCY) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const sanitizeCreditAmount = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.round(parsed * 100) / 100;
 };
 
 const sanitizeTimestamp = (value) => {
@@ -19,6 +26,27 @@ const escapeCsvCell = (value) => {
 export const getEffectiveConcurrency = (systemMax, userMax) => {
   const safeSystem = sanitizePositiveInteger(systemMax, DEFAULT_CONCURRENCY);
   return sanitizePositiveInteger(userMax, safeSystem);
+};
+
+export const formatCreditAmount = (value) => {
+  const amount = sanitizeCreditAmount(value);
+  return Number.isInteger(amount) ? String(amount) : amount.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+};
+
+export const getAccountCreditAvailable = (user = {}) => {
+  if (user?.creditLimitMode !== CREDIT_LIMIT_MODE_LIMITED) return Number.POSITIVE_INFINITY;
+  const direct = Number(user?.creditAvailable);
+  if (Number.isFinite(direct) && direct >= 0) return sanitizeCreditAmount(direct);
+  return Math.max(0, sanitizeCreditAmount(user?.creditBalance) - sanitizeCreditAmount(user?.creditReserved));
+};
+
+export const formatAccountCreditStatus = (user = {}) => {
+  if (user?.creditLimitMode !== CREDIT_LIMIT_MODE_LIMITED) return '积分不设限';
+  const balance = sanitizeCreditAmount(user?.creditBalance);
+  const reserved = sanitizeCreditAmount(user?.creditReserved);
+  const consumed = sanitizeCreditAmount(user?.creditConsumed);
+  const available = getAccountCreditAvailable(user);
+  return `可用 ${formatCreditAmount(available)} / 总额 ${formatCreditAmount(balance)} · 冻结 ${formatCreditAmount(reserved)} · 已用 ${formatCreditAmount(consumed)}`;
 };
 
 export const filterLogs = (logs, filters = {}) => {

@@ -31,7 +31,7 @@ import {
 } from '../../../services/internalApi';
 import { ACTION_LABELS, MODULE_LABELS, STATUS_LABELS } from '../../../services/loggingService';
 import { PopoverSelect } from '../../../components/ui/workspacePrimitives';
-import { buildLogCsv, deriveLogFailureReason, shouldRefreshCurrentUser } from './accountManagementUtils.mjs';
+import { buildLogCsv, deriveLogFailureReason, formatAccountCreditStatus, shouldRefreshCurrentUser } from './accountManagementUtils.mjs';
 import { formatTime } from '../../../utils/timeFormat.ts';
 
 interface Props {
@@ -127,9 +127,19 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   const [usersPage, setUsersPage] = useState(1);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [createForm, setCreateForm] = useState({ username: '', displayName: '', password: '', role: 'staff' as 'admin' | 'staff', jobConcurrency: '5', videoGeneration: false });
+  const [createForm, setCreateForm] = useState({
+    username: '',
+    displayName: '',
+    password: '',
+    role: 'staff' as 'admin' | 'staff',
+    jobConcurrency: '5',
+    videoGeneration: false,
+    creditLimitMode: 'unlimited' as 'unlimited' | 'limited',
+    creditBalance: '0',
+  });
   const [expandedUserId, setExpandedUserId] = useState('');
   const [passwordDraft, setPasswordDraft] = useState('');
+  const [creditDrafts, setCreditDrafts] = useState<Record<string, string>>({});
 
   const [logs, setLogs] = useState<InternalLogEntry[]>([]);
   const [logsTotal, setLogsTotal] = useState(0);
@@ -229,6 +239,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
       user.role === 'admin' ? '管理员' : '员工',
       user.status === 'active' ? '启用' : '禁用',
       formatVideoGenerationAccess(user),
+      formatAccountCreditStatus(user),
     ].some((value) => String(value || '').toLowerCase().includes(keyword)));
   }, [userSearch, users]);
   const usersPageCount = Math.max(1, Math.ceil(filteredUsers.length / USERS_PAGE_SIZE));
@@ -254,6 +265,16 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   }, [userSearch, users.length]);
 
   useEffect(() => {
+    setCreditDrafts((current) => {
+      const next = { ...current };
+      for (const user of users) {
+        if (next[user.id] === undefined) next[user.id] = String(user.creditBalance ?? 0);
+      }
+      return next;
+    });
+  }, [users]);
+
+  useEffect(() => {
     if (usersPage > usersPageCount) setUsersPage(usersPageCount);
   }, [usersPage, usersPageCount]);
 
@@ -269,8 +290,19 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
         role: createForm.role,
         jobConcurrency: Math.max(1, Number(createForm.jobConcurrency || 1)),
         featurePermissions: normalizeFeaturePermissions({ videoGeneration: createForm.videoGeneration }),
+        creditLimitMode: createForm.creditLimitMode,
+        creditBalance: Number(createForm.creditBalance || 0),
       });
-      setCreateForm({ username: '', displayName: '', password: '', role: 'staff', jobConcurrency: '5', videoGeneration: false });
+      setCreateForm({
+        username: '',
+        displayName: '',
+        password: '',
+        role: 'staff',
+        jobConcurrency: '5',
+        videoGeneration: false,
+        creditLimitMode: 'unlimited',
+        creditBalance: '0',
+      });
       setMessage('新账号已创建');
       await loadUsers();
     } catch (err: any) {
@@ -278,7 +310,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     }
   };
 
-  const updateUser = async (user: AuthUser, payload: Partial<Pick<AuthUser, 'role' | 'status' | 'jobConcurrency' | 'featurePermissions'> & { password: string }>) => {
+  const updateUser = async (user: AuthUser, payload: Partial<Pick<AuthUser, 'role' | 'status' | 'jobConcurrency' | 'featurePermissions' | 'creditLimitMode' | 'creditBalance'> & { password: string }>) => {
     setError('');
     setMessage('');
     try {
@@ -482,6 +514,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
             <div className="min-w-[180px]">
               <p className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{currentUser?.displayName || currentUser?.username || '未登录'}</p>
               <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{roleLabel} · 并发 {currentUser?.jobConcurrency ?? '-'} · {formatVideoGenerationAccess(currentUser)}</p>
+              <p className="mt-0.5 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{formatAccountCreditStatus(currentUser || {})}</p>
             </div>
             {onLogout ? (
               <button
@@ -526,6 +559,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
           <p className="text-[16px] font-semibold" style={{ color: 'var(--text-primary)' }}>{currentUser?.displayName || currentUser?.username || '当前账号'}</p>
           <p className="mt-2 text-[13px]">员工账号 · 并发 {currentUser?.jobConcurrency ?? '-'}</p>
           <p className="mt-1 text-[12px]">{formatVideoGenerationAccess(currentUser)}</p>
+          <p className="mt-1 text-[12px]">{formatAccountCreditStatus(currentUser || {})}</p>
           <p className="mt-1 text-[12px]">账号资料只读，如需调整请联系管理员。</p>
         </div>
       )}
@@ -554,6 +588,20 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                 <span>短视频生成</span>
                 <span>{createForm.role === 'admin' ? '管理员默认开放' : createForm.videoGeneration ? '已开放' : '默认关闭'}</span>
               </button>
+              <div className="grid grid-cols-2 gap-2">
+                <SelectField
+                  label="积分限制"
+                  value={createForm.creditLimitMode}
+                  onChange={(creditLimitMode) => setCreateForm({ ...createForm, creditLimitMode: creditLimitMode as 'unlimited' | 'limited' })}
+                  options={[{ value: 'unlimited', label: '不设限' }, { value: 'limited', label: '有限积分' }]}
+                />
+                <TextField
+                  label="总积分"
+                  value={createForm.creditBalance}
+                  onChange={(creditBalance) => setCreateForm({ ...createForm, creditBalance })}
+                  type="number"
+                />
+              </div>
               <button type="submit" className="btn-primary w-full"><Plus size={14} /> 创建</button>
             </div>
           </form>
@@ -591,6 +639,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                       <div className="min-w-0">
                         <p className="truncate text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{user.displayName || user.username}</p>
                         <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{user.username} · {user.role === 'admin' ? '管理员' : '员工'} · 并发 {user.jobConcurrency} · {formatVideoGenerationAccess(user)}</p>
+                        <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{formatAccountCreditStatus(user)}</p>
                       </div>
                     </button>
                     <div className="flex items-center gap-1.5">
@@ -619,6 +668,25 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                         }}
                       >
                         短视频生成 · {user.role === 'admin' ? '管理员默认开放' : canUseVideoGeneration(user) ? '已开放' : '未开放'}
+                      </button>
+                      <SelectField
+                        label="积分限制"
+                        value={user.creditLimitMode || 'unlimited'}
+                        onChange={(mode) => void updateUser(user, { creditLimitMode: mode as 'unlimited' | 'limited' })}
+                        options={[{ value: 'unlimited', label: '不设限' }, { value: 'limited', label: '有限积分' }]}
+                      />
+                      <TextField
+                        label="总积分"
+                        value={creditDrafts[user.id] ?? String(user.creditBalance ?? 0)}
+                        onChange={(value) => setCreditDrafts((current) => ({ ...current, [user.id]: value }))}
+                        type="number"
+                      />
+                      <button
+                        type="button"
+                        className="btn-secondary self-end px-3 py-2 text-[12px]"
+                        onClick={() => void updateUser(user, { creditBalance: Math.max(0, Number(creditDrafts[user.id] ?? user.creditBalance ?? 0)) })}
+                      >
+                        保存积分
                       </button>
                     </div>
                   )}

@@ -117,6 +117,8 @@ test('V2 接入 responses provider 并注入知识库/联网工具(双 handler)'
   assert.ok(webSearchEnabled.length >= 2, '双 handler 都要透传 webSearchEnabled');
   const reasoningPayloads = Array.from(source.matchAll(/taskType: 'openai_responses',[\s\S]*?reasoningLevel:/g));
   assert.ok(reasoningPayloads.length >= 2, '双 handler 的 responses payload 都要透传 reasoningLevel');
+  const fallbackPayloads = Array.from(source.matchAll(/taskType: 'openai_responses',[\s\S]*?fallbackModels,[\s\S]*?messages,[\s\S]*?tools/g));
+  assert.ok(fallbackPayloads.length >= 2, '双 handler 的 responses payload 都要传 allowed models 内的 fallbackModels');
 });
 
 test('agent V2 prepares managed image URLs as provider-stable HTTPS URLs before model vision analysis', () => {

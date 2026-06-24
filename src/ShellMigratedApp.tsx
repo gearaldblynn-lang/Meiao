@@ -1851,7 +1851,7 @@ const buildVideoStoryboardConfig = (
 };
 
 const buildAuthUserFromContext = (
-  user: Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset' | 'featurePermissions' | 'analysisModel'> | AuthUser | null,
+  user: Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset' | 'featurePermissions' | 'analysisModel' | 'creditLimitMode' | 'creditBalance' | 'creditReserved' | 'creditConsumed' | 'creditAvailable'> | AuthUser | null,
 ): AuthUser | null => {
   if (!user) return null;
   return {
@@ -1859,6 +1859,11 @@ const buildAuthUserFromContext = (
     status: 'active',
     jobConcurrency: 1,
     featurePermissions: { videoGeneration: false },
+    creditLimitMode: 'unlimited',
+    creditBalance: 0,
+    creditReserved: 0,
+    creditConsumed: 0,
+    creditAvailable: Number.POSITIVE_INFINITY,
     createdAt: 0,
     lastLoginAt: null,
     ...user,

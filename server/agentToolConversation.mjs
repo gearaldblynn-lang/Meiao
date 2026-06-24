@@ -81,7 +81,7 @@ const normalizeToolCallImageUrls = (call = {}) => {
 };
 
 const hasSingleImageOutputIntent = (text = '') => (
-  /合成|融合|拼成|合并|组合到|同一张|一张海报|一张图|单张|同一个画面|参考.*修改|参考.*改|按.*参考/i.test(String(text || ''))
+  /合成|融合|拼成|合并|组合到|同一张|一张海报|一张图|单张|同一个画面|参考.*修改|参考.*改|按.*参考|(?:原图|图)\s*[一二三四五六七八九十\d]+.*?(?:换成|替换成|换为|改成).*?(?:原图|图)\s*[一二三四五六七八九十\d]+|(?:其他|其它)部分.*?(?:不发生任何改变|不变|保持不变)/i.test(String(text || ''))
 );
 
 const hasExplicitSingleTargetIntent = (text = '') => (
@@ -215,6 +215,11 @@ const buildFunctionCallInputItem = (call = {}, callId = '') => {
 const buildImageGeneratedFallbackReply = (error) => {
   void error;
   return '图片已生成完成，但最终文字说明生成失败。已为你保留图片结果。';
+};
+
+const normalizeCreditsConsumed = (value) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * 100) / 100 : 0;
 };
 
 const buildAggregatedImagePlan = ({ plans = [], imageResultUrls = [], providerTaskIds = [] } = {}) => {
@@ -410,6 +415,7 @@ export const runAgentConversationV2 = async ({
   const imagePlans = [];
   const imageResultUrls = [];
   const providerTaskIds = [];
+  let creditsConsumed = 0;
   let imagePlan = null;
   let selectedModel = response.modelUsed || '';
   const configuredValidationRetries = Number(process.env.AGENT_IMAGE_RESULT_VALIDATION_MAX_RETRIES || 1);
@@ -459,6 +465,7 @@ export const runAgentConversationV2 = async ({
                 aspectRatio: normalized.aspectRatio,
                 model: selectedImageModel,
               });
+              creditsConsumed += normalizeCreditsConsumed(result?.creditsConsumed);
               const candidateUrl = String(result?.imageUrl || '').trim();
               if (!candidateUrl || typeof validateImageResult !== 'function' || validInputUrls.length === 0) break;
               emit('image_validating', { imageUrl: candidateUrl, attempt: imageAttempt });
@@ -518,10 +525,12 @@ export const runAgentConversationV2 = async ({
                   providerTaskId,
                   imagePlan,
                   imageResultUrls: imageResultUrls.slice(),
+                  creditsConsumed,
                 });
               }
             }
           } catch (error) {
+            if (error?.code === 'account_credit_insufficient') throw error;
             toolResultContent = `图片生成失败：${error?.message || '未知错误'}。请向用户说明失败原因，不要假装已生成。`;
           }
         }
@@ -550,6 +559,7 @@ export const runAgentConversationV2 = async ({
           imageResultUrls: imageResultUrls.slice(),
           selectedModel,
           finishReason: 'image_ready_final_reply_failed',
+          creditsConsumed,
           finalReplyErrorMessage: error?.message || '',
         };
       }
@@ -564,5 +574,6 @@ export const runAgentConversationV2 = async ({
     imageResultUrls: imageResultUrls.length > 0 ? imageResultUrls.slice() : null,
     selectedModel,
     finishReason: 'stop',
+    creditsConsumed,
   };
 };
