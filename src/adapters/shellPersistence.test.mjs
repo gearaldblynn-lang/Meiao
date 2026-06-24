@@ -568,6 +568,45 @@ test('shell persistence stores generic module project cards so they survive refr
   assert.equal(project?.results[0]?.prompt, '精修 prompt');
 });
 
+test('shell persistence mirrors direct video generation results into veo memory', () => {
+  const state = buildPersistedAppState();
+  const nextState = upsertShellProjectIntoPersistedState(state, {
+    id: 'video-project-1',
+    name: '视频项目',
+    module: 'video',
+    status: 'completed',
+    createdAt: 1782285629355,
+    completedAt: 1782285879670,
+    results: [{
+      id: 'provider-video-1',
+      imageUrl: 'https://example.com/video.mp4',
+      videoUrl: 'https://example.com/video.mp4',
+      mediaType: 'video',
+      prompt: '视频脚本',
+      model: 'bytedance/seedance-2-fast',
+      aspectRatio: '9:16',
+      status: 'completed',
+      createdAt: 1782285629355,
+      module: 'video',
+      subFeature: 'generation',
+      taskId: 'provider-video-1',
+      backendJobId: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+      creditsConsumed: 297,
+    }],
+    taskCount: 1,
+    completedCount: 1,
+    subFeature: 'generation',
+    backendJobId: 'aaaaaaaaaaaaaaaaaaaaaaaa',
+    creditsConsumed: 297,
+  });
+
+  assert.equal(nextState.shellProjects[0].results[0].videoUrl, 'https://example.com/video.mp4');
+  assert.equal(nextState.videoMemory.veoProjects.length, 1);
+  assert.equal(nextState.videoMemory.veoProjects[0].id, 'video-project-1');
+  assert.equal(nextState.videoMemory.veoProjects[0].states[0].status, 'COMPLETED');
+  assert.equal(nextState.videoMemory.veoProjects[0].states[0].variants[0].blobUrl, 'https://example.com/video.mp4');
+});
+
 test('shell persistence stores failed project cards for refresh recovery', () => {
   const state = buildPersistedAppState();
   const nextState = upsertShellProjectIntoPersistedState(state, {

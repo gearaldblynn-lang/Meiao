@@ -1474,30 +1474,41 @@ const ProjectCard: React.FC<Props> = ({
                                   }}
                                 />
                               ) : <div />}
-                              {onRegenerate ? (
-                                <ResultActionButton
-                                  icon={<RefreshCw size={12} />}
-                                  label={isStoryboardAwaitingImageConfirmation ? '待确认' : regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : '重生成'}
-                                  tone="primary"
-                                  disabled={isStoryboardAwaitingImageConfirmation || regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
-                                  onClick={() => {
-                                    if (isStoryboardAwaitingImageConfirmation || regeneratePending || isGeneratingResult || regenerationLockedByActiveProject) return;
-                                    onRegenerate(project.id, result.id);
-                                  }}
-                                />
-                              ) : <div />}
-                              {onEdit ? (
-                                <ResultActionButton
-                                  icon={<Sparkles size={12} />}
-                                  label={isStoryboardAwaitingImageConfirmation ? '待确认' : isEditPending(result.id) ? '提交中' : '修改'}
-                                  tone="primary"
-                                  disabled={isStoryboardAwaitingImageConfirmation || !canEditImageResult(result) || isEditPending(result.id) || isGeneratingResult}
-                                  onClick={() => {
-                                    if (isStoryboardAwaitingImageConfirmation || !canEditImageResult(result) || isEditPending(result.id) || isGeneratingResult) return;
-                                    openEditDialog(result.id, result.storyboardBoardTitle || `分段 ${index + 1}`);
-                                  }}
-                                />
-                              ) : <div />}
+                              {isStoryboardAwaitingImageConfirmation ? (
+                                <div
+                                  className="col-span-2 flex h-8 items-center justify-center rounded-full border px-2 text-[11px] font-semibold"
+                                  style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-tertiary)', background: 'var(--bg-surface)' }}
+                                >
+                                  等待统一确认生图
+                                </div>
+                              ) : (
+                                <>
+                                  {onRegenerate ? (
+                                    <ResultActionButton
+                                      icon={<RefreshCw size={12} />}
+                                      label={regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : '重生成'}
+                                      tone="primary"
+                                      disabled={regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
+                                      onClick={() => {
+                                        if (regeneratePending || isGeneratingResult || regenerationLockedByActiveProject) return;
+                                        onRegenerate(project.id, result.id);
+                                      }}
+                                    />
+                                  ) : <div />}
+                                  {onEdit ? (
+                                    <ResultActionButton
+                                      icon={<Sparkles size={12} />}
+                                      label={isEditPending(result.id) ? '提交中' : '修改'}
+                                      tone="primary"
+                                      disabled={!canEditImageResult(result) || isEditPending(result.id) || isGeneratingResult}
+                                      onClick={() => {
+                                        if (!canEditImageResult(result) || isEditPending(result.id) || isGeneratingResult) return;
+                                        openEditDialog(result.id, result.storyboardBoardTitle || `分段 ${index + 1}`);
+                                      }}
+                                    />
+                                  ) : <div />}
+                                </>
+                              )}
                             </div>
                           </div>
                         </article>

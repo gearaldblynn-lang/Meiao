@@ -1,4 +1,4 @@
-import type { AppModule } from '../types.ts';
+import type { AppModule, VeoProjectState } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
 import { isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 import { mergeArrayByStableKeys } from '../utils/taskResultReconcile.mjs';
@@ -96,6 +96,12 @@ type ShellProject = {
   directGeneration?: boolean;
 };
 
+type PersistedVeoProject = VeoProjectState & {
+  backendJobId?: string;
+  createdAt?: number;
+  updatedAt?: number;
+};
+
 type ShellTranslationFile = {
   id: string;
   fileName?: string;
@@ -151,6 +157,89 @@ const cloneShellProject = (project: ShellProject): ShellProject => ({
 });
 
 const compactKey = (value: unknown) => String(value || '').trim();
+
+const isDirectVideoGenerationProject = (project: Partial<ShellProject>) => (
+  project.module === 'video'
+  && project.subFeature === 'generation'
+);
+
+const buildVeoProjectFromShellProject = (project: ShellProject): PersistedVeoProject | null => {
+  if (!isDirectVideoGenerationProject(project)) return null;
+  const completedVideoResult = (project.results || []).find((result) => (
+    result.status === 'completed'
+    && (result.mediaType === 'video' || result.videoUrl)
+    && (result.videoUrl || result.imageUrl)
+  ));
+  if (!completedVideoResult) return null;
+  const videoUrl = compactKey(completedVideoResult.videoUrl || completedVideoResult.imageUrl);
+  if (!videoUrl) return null;
+  const taskId = compactKey(
+    completedVideoResult.taskId
+    || completedVideoResult.providerTaskId
+    || completedVideoResult.id
+    || project.backendJobId
+  );
+  const segmentId = `${project.id}-segment-1`;
+  return {
+    id: project.id,
+    name: project.name,
+    states: [{
+      segmentId,
+      script: {
+        id: segmentId,
+        type: 'INITIAL' as const,
+        title: '视频生成结果',
+        style: '',
+        description: compactKey(completedVideoResult.prompt || project.name),
+        spokenContent: '',
+        bgm: '',
+        duration: 0,
+      },
+      variants: [{
+        id: taskId || `${project.id}-video`,
+        taskId,
+        uri: videoUrl,
+        blobUrl: videoUrl,
+        createdAt: Number(project.completedAt || completedVideoResult.createdAt || project.createdAt || Date.now()),
+        schemeName: '生成结果',
+      }],
+      selectedVariantId: taskId || `${project.id}-video`,
+      status: 'COMPLETED' as const,
+      lastTaskId: taskId || undefined,
+    }],
+    isExpanded: true,
+    backendJobId: compactKey(project.backendJobId) || undefined,
+    createdAt: project.createdAt,
+    updatedAt: project.completedAt || completedVideoResult.createdAt || project.createdAt,
+  };
+};
+
+const upsertVideoProjectIntoVeoMemory = (
+  state: PersistedAppState,
+  project: ShellProject,
+): PersistedAppState => {
+  const veoProject = buildVeoProjectFromShellProject(project);
+  if (!veoProject) return state;
+  const videoMemory = state.videoMemory || {} as PersistedAppState['videoMemory'];
+  const existingProjects: PersistedVeoProject[] = Array.isArray(videoMemory.veoProjects) ? videoMemory.veoProjects : [];
+  const projectId = compactKey(veoProject.id);
+  const backendJobId = compactKey(veoProject.backendJobId);
+  const nextProjects: PersistedVeoProject[] = [
+    veoProject,
+    ...existingProjects.filter((item: any) => {
+      if (compactKey(item?.id) === projectId) return false;
+      if (backendJobId && compactKey(item?.backendJobId) === backendJobId) return false;
+      return true;
+    }),
+  ];
+  return {
+    ...state,
+    videoMemory: {
+      ...videoMemory,
+      veoProjects: nextProjects,
+    },
+  };
+};
 
 const hasCompletedMedia = (item: any) => (
   String(item?.status || '') === 'completed'
@@ -316,13 +405,14 @@ export const upsertShellProjectIntoPersistedState = (
   const existingProjects = Array.isArray(state.shellProjects) ? state.shellProjects : [];
   const existingProject = existingProjects.find((item: any) => String(item?.id || '') === String(project.id || ''));
   const mergedProject = cloneShellProject(mergeProjectLikeForPersistence(existingProject, nextProject) as ShellProject);
-  return {
+  const nextState = {
     ...state,
     shellProjects: [
       mergedProject,
       ...existingProjects.filter((item: any) => String(item?.id || '') !== String(project.id || '')),
     ],
   };
+  return upsertVideoProjectIntoVeoMemory(nextState, mergedProject);
 };
 
 const buildSchemeFromResult = (project: ShellProject, result: ShellResult, index: number) => {

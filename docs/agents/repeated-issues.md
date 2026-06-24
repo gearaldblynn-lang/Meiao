@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-06-24 - Direct video success must update shell project and video memory
+
+- Symptom: 董丹丹账号直接视频生成任务后端已成功、MP4 资产返回 200,但页面没有真实显示视频。
+- Environment: Tencent Cloud production / short video direct generation / Temporal task engine / shell project card migration.
+- Root cause: 直接视频生成的成功结果只稳定写入 `shellProjects`,旧视频工作区仍依赖 `videoMemory.veoProjects`;远端 patch 没有携带 `videoMemory`,完成 result 也缺少 `backendJobId`,刷新/切换后旧读取路径拿不到成功视频。
+- Fix: `shellPersistence` 对 completed 直接视频项目镜像 upsert 到 `videoMemory.veoProjects`;`buildProjectRemotePatch` 对 `video/generation` 同步 `videoMemory`;`mergeAppStateForStorage` 服务端合并层兜底从 completed 直接视频项目补 `videoMemory`;成功视频 result 补 `backendJobId`;已修复董丹丹项目现场状态。架构级根因见 `CLAUDE.md` #28。
+- Regression check: `shellPersistence` 覆盖 direct video mirror;`uiArchitecture` 覆盖 videoMemory remote patch 和 completed result `backendJobId`;`appStateMerge` 覆盖服务端状态合并镜像和 stale failure 清理;`shellDataAdapter` 覆盖视频结果恢复。
+- Avoid next time: 后端任务成功不等于 UI 已恢复。视频迁移期必须同时查 `shellProjects`、`videoMemory.veoProjects`、资产 200 和刷新恢复,不要只用 `internal_jobs.status=succeeded` 判断用户可见。
+
 ## 2026-06-24 - Multi-image planning repair must validate final coverage, and provider uploads need unique filenames
 
 - Symptom: 将离账号 2026-06-24 10:48:00 又提交 3 张图并说“都做成白底图，1:1 的比例，正面摆放”，云上最终只落库 1 张结果；用户消息确有 3 个 image attachments，助手 `imagePlan.inputImageUrls` 只有第 3 张。
