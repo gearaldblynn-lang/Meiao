@@ -196,6 +196,35 @@ test('流式请求解析 function_call arguments', async () => {
   });
 });
 
+test('流式请求按 call_id 合并 completed 中缺 id 的 function_call，避免重复工具调用', async () => {
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      [
+        'event: response.output_item.added\n',
+        'data: {"type":"response.output_item.added","item":{"id":"fc_1","type":"function_call","status":"in_progress","arguments":"","call_id":"call_1","name":"generate_image"},"output_index":0}\n\n',
+        'event: response.output_item.done\n',
+        'data: {"type":"response.output_item.done","item":{"id":"fc_1","type":"function_call","status":"completed","arguments":"{\\"prompt\\":\\"图1白底图\\",\\"task_type\\":\\"edit_image\\"}","call_id":"call_1","name":"generate_image"},"output_index":0}\n\n',
+        'event: response.completed\n',
+        'data: {"type":"response.completed","response":{"output":[{"type":"function_call","name":"generate_image","arguments":"{\\"prompt\\":\\"图1白底图\\",\\"task_type\\":\\"edit_image\\"}","call_id":"call_1","status":"completed"}],"usage":{"input_tokens":4}}}\n\n',
+      ].forEach((chunk) => controller.enqueue(encoder.encode(chunk)));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+
+  const out = await runResponsesJob({
+    payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }], tools: [{ type: 'function', name: 'generate_image' }] },
+    env,
+    onDelta: () => {},
+  });
+
+  assert.equal(out.finishReason, 'tool_calls');
+  assert.equal(out.toolCalls.length, 1);
+  assert.equal(out.toolCalls[0].id, 'call_1');
+  assert.deepEqual(out.toolCalls[0].args, { prompt: '图1白底图', task_type: 'edit_image' });
+  assert.equal(out.toolCalls[0].responseItem.id, 'fc_1');
+});
+
 test('未配 key 抛错', async () => {
   await assert.rejects(runResponsesJob({ payload: { model: 'gpt-5.4', messages: [] }, env: {} }), /API.?KEY|未配置/i);
 });

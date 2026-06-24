@@ -38,17 +38,22 @@ test('image result card keeps final summary in the result layer instead of a sep
   assert.doesNotMatch(source, /展开结果总结/);
 });
 
-test('image result card uses a primary image with compact thumbnails for multiple outputs', () => {
-  assert.match(source, /const primaryImage = previewImages\[0\] \|\| null;/);
-  assert.match(source, /const secondaryPreviewImages = previewImages\.slice\(1\);/);
+test('image result card uses a selected primary image with vertical thumbnails for multiple outputs', () => {
+  assert.match(source, /selectedImageIndexes/);
+  assert.match(source, /const selectedImageIndex = Math\.min\(/);
+  assert.match(source, /const primaryImage = previewImages\[selectedImageIndex\] \|\| null;/);
   assert.match(source, /agent-image-result-primary/);
   assert.match(source, /agent-image-result-thumbnails/);
-  assert.match(source, /max-w-\[min\(420px,100%\)\]/);
-  assert.match(source, /max-h-\[44vh\]/);
+  assert.match(source, /grid-cols-\[minmax\(0,1fr\)_72px\]/);
+  assert.match(source, /max-w-\[min\(760px,100%\)\]/);
+  assert.match(source, /max-h-\[58vh\]/);
+  assert.match(source, /overflow-y-auto overflow-x-hidden/);
+  assert.match(source, /setSelectedImageIndexes/);
+  assert.match(source, /aria-current=\{index === selectedImageIndex \? 'true' : undefined\}/);
+  assert.doesNotMatch(source, /overflow-x-auto/);
+  assert.doesNotMatch(source, /secondaryPreviewImages/);
   assert.doesNotMatch(source, /max-w-\[min\(480px,100%\)\]/);
-  assert.doesNotMatch(source, /max-h-\[52vh\]/);
   assert.doesNotMatch(source, /max-w-\[min\(560px,100%\)\]/);
-  assert.doesNotMatch(source, /max-h-\[58vh\]/);
   assert.doesNotMatch(source, /max-h-\[70vh\] w-full rounded-\[18px\] object-contain/);
 });
 
