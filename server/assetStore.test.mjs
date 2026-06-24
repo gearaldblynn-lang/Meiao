@@ -6,9 +6,11 @@ import {
   buildAssetPublicPath,
   buildAssetPublicUrl,
   ensureAssetSchema,
+  deleteStoredAssetFile,
   extractStoredAssetIdFromPublicUrl,
   getPublicBaseUrl,
   optimizeMp4BufferForStreaming,
+  persistAssetBuffer,
   sanitizeAssetName,
   shouldRetainAssetRecord,
   selectExpiredAssetsForCleanup,
@@ -59,10 +61,11 @@ test('shouldRetainAssetRecord keeps referenced or unexpired assets', () => {
   assert.equal(shouldRetainAssetRecord({ expiresAt: 0, isReferenced: false }, now), true);
 });
 
-test('agent center assets are permanent until their chat session is deleted', () => {
+test('agent chat and generated result assets are permanent until their chat session is deleted', async () => {
   const now = Date.now();
   const rows = [
     { id: 'agent-result', module: 'agent_center', expiresAt: 0, deletedAt: null, publicUrl: 'https://a', isReferenced: false },
+    { id: 'agent-source', module: 'agent_chat', expiresAt: 0, deletedAt: null, publicUrl: 'https://c', isReferenced: false },
     { id: 'old-temp', module: 'one_click', expiresAt: now - 1000, deletedAt: null, publicUrl: 'https://b', isReferenced: false },
   ];
 
@@ -70,6 +73,32 @@ test('agent center assets are permanent until their chat session is deleted', ()
     selectExpiredAssetsForCleanup(rows, now).map((item) => item.id),
     ['old-temp']
   );
+
+  let insertedValues = null;
+  const pool = {
+    query: async (_sql, values) => {
+      insertedValues = values;
+      return [[]];
+    },
+  };
+
+  const record = await persistAssetBuffer({
+    pool,
+    publicBaseUrl: 'https://meiao.example.com',
+    userId: 'user_agent',
+    module: 'agent_chat',
+    assetType: 'source',
+    originalName: 'source.png',
+    mimeType: 'image/png',
+    fileBuffer: Buffer.from('png'),
+  });
+
+  try {
+    assert.equal(record.expiresAt, 0);
+    assert.equal(insertedValues?.[17], 0);
+  } finally {
+    await deleteStoredAssetFile(record.storageKey);
+  }
 });
 
 test('collectStoredAssetIdsFromValue finds managed assets in chat message payloads', () => {
@@ -106,6 +135,10 @@ test('ensureAssetSchema accepts provider task ids longer than local entity ids',
   assert.ok(
     queries.some((sql) => /ALTER TABLE stored_assets MODIFY COLUMN job_id VARCHAR\(120\) NULL/.test(sql)),
     'existing stored_assets.job_id column should be widened during startup migration'
+  );
+  assert.ok(
+    queries.some((sql) => /UPDATE stored_assets\s+SET expires_at = 0\s+WHERE module IN \('agent_center', 'agent_chat'\)/s.test(sql)),
+    'startup migration should make existing agent chat assets permanent'
   );
 });
 
