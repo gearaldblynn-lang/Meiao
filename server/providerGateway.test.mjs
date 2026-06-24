@@ -3167,6 +3167,124 @@ test('executeProviderJob respects caller-provided fallback models when gpt-5.4 r
   }
 });
 
+test('executeProviderJob does not fallback when kie chat managed asset upload times out', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/jpeg' },
+      });
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      const error = new Error('timeout');
+      error.name = 'AbortError';
+      throw error;
+    }
+    throw new Error(`model fallback should not run after asset upload failure: ${String(url)}`);
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gpt-5-4-openai-resp',
+            fallbackModels: ['gpt-5-2'],
+            messages: [
+              {
+                role: 'user',
+                content: [
+                  { type: 'text', text: '分析这张图' },
+                  { type: 'image_url', image_url: { url: 'http://111.229.66.247/api/assets/file/asset-timeout/source.jpg' } },
+                ],
+              },
+            ],
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_timeout' && error?.providerStage === 'asset_upload'
+    );
+
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    assert.equal(requests.some((item) => item.url.includes('/v1/chat/completions')), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob reuses uploaded managed asset urls across kie chat fallback models', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  let uploadCount = 0;
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/jpeg' },
+      });
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      uploadCount += 1;
+      return createJsonResponse({
+        code: 200,
+        data: { fileUrl: `https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/uploaded-${uploadCount}.jpg` },
+      });
+    }
+    if (String(url).includes('/codex/v1/responses')) {
+      return createJsonResponse({ msg: 'temporary responses failure' }, 500);
+    }
+    if (String(url).includes('/v1/chat/completions')) {
+      return createJsonResponse({
+        choices: [{ message: { content: 'fallback result' } }],
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gpt-5-4-openai-resp',
+          fallbackModels: ['gpt-5-2'],
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '分析这张图' },
+                { type: 'image_url', image_url: { url: 'http://111.229.66.247/api/assets/file/asset-shared/source.jpg' } },
+              ],
+            },
+          ],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'fallback result');
+    assert.equal(uploadCount, 1);
+    const fallbackRequest = requests.find((item) => item.url.includes('/v1/chat/completions'));
+    const fallbackBody = JSON.parse(String(fallbackRequest.init.body));
+    assert.equal(
+      fallbackBody.messages[0].content[1].image_url.url,
+      'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/uploaded-1.jpg'
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob routes gemini 3 flash through the new openai chat completions contract', async () => {
   const originalFetch = global.fetch;
   const requests = [];

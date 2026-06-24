@@ -458,31 +458,34 @@ const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
   return item;
 };
 
-const resolveProviderMessages = async (messages = [], env, signal, options = {}) => Promise.all(
-  (Array.isArray(messages) ? messages : []).map(async (message) => {
-    const resolvedMediaUrlByRawUrl = new Map();
-    const providerMediaResolver = isKieGeminiChatModel(options.model)
-      ? resolveProviderGeminiChatMediaUrl
-      : resolveProviderChatMediaUrl;
-    const resolveMediaUrl = async (url) => {
-      const rawUrl = String(url || '').trim();
-      if (!rawUrl) return '';
-      if (!resolvedMediaUrlByRawUrl.has(rawUrl)) {
-        resolvedMediaUrlByRawUrl.set(rawUrl, providerMediaResolver(rawUrl, env, signal));
-      }
-      return resolvedMediaUrlByRawUrl.get(rawUrl);
-    };
-    return {
-      ...message,
-      content: await Promise.all(
-        normalizeMessageContentItems(message?.content).map((item) => resolveProviderMessageItem(item, env, signal, {
-          ...options,
-          resolveMediaUrl,
-        }))
-      ),
-    };
-  })
-);
+const resolveProviderMessages = async (messages = [], env, signal, options = {}) => {
+  const sharedResolvedMediaUrlByRawUrl = options.mediaUrlCache instanceof Map ? options.mediaUrlCache : null;
+  return Promise.all(
+    (Array.isArray(messages) ? messages : []).map(async (message) => {
+      const resolvedMediaUrlByRawUrl = sharedResolvedMediaUrlByRawUrl || new Map();
+      const providerMediaResolver = isKieGeminiChatModel(options.model)
+        ? resolveProviderGeminiChatMediaUrl
+        : resolveProviderChatMediaUrl;
+      const resolveMediaUrl = async (url) => {
+        const rawUrl = String(url || '').trim();
+        if (!rawUrl) return '';
+        if (!resolvedMediaUrlByRawUrl.has(rawUrl)) {
+          resolvedMediaUrlByRawUrl.set(rawUrl, providerMediaResolver(rawUrl, env, signal));
+        }
+        return resolvedMediaUrlByRawUrl.get(rawUrl);
+      };
+      return {
+        ...message,
+        content: await Promise.all(
+          normalizeMessageContentItems(message?.content).map((item) => resolveProviderMessageItem(item, env, signal, {
+            ...options,
+            resolveMediaUrl,
+          }))
+        ),
+      };
+    })
+  );
+};
 
 const buildKieResponsesContent = (items) =>
   items.map((item) => {
@@ -917,9 +920,17 @@ const KIE_CHAT_FALLBACK_ERROR_CODES = new Set([
   'provider_timeout',
 ]);
 
-const shouldFallbackKieChatError = (error) => KIE_CHAT_FALLBACK_ERROR_CODES.has(String(error?.code || '').trim());
+const KIE_CHAT_NON_FALLBACK_PROVIDER_STAGES = new Set([
+  'asset_upload',
+  'asset_download',
+]);
 
-const runKieChatFallbackModels = async (payload, env, signal, originalError) => {
+const shouldFallbackKieChatError = (error) => {
+  if (KIE_CHAT_NON_FALLBACK_PROVIDER_STAGES.has(String(error?.providerStage || '').trim())) return false;
+  return KIE_CHAT_FALLBACK_ERROR_CODES.has(String(error?.code || '').trim());
+};
+
+const runKieChatFallbackModels = async (payload, env, signal, originalError, options = {}) => {
   const fallbackModels = getKieChatFallbackModels(payload.model, payload.fallbackModels);
   if (!fallbackModels.length || !shouldFallbackKieChatError(originalError)) {
     throw originalError;
@@ -930,7 +941,8 @@ const runKieChatFallbackModels = async (payload, env, signal, originalError) => 
       const fallbackResult = await runKieChatJob(
         { ...payload, model: fallbackModel, reasoningLevel: normalizeReasoningLevelForModel(fallbackModel, payload.reasoningLevel) },
         env,
-        signal
+        signal,
+        options
       );
       if (fallbackResult?.result) {
         fallbackResult.result.fallbackFrom = String(payload.model || '').trim();
@@ -1187,10 +1199,13 @@ const normalizeUploadAssetStreamPayload = (payload = {}) => {
   };
 };
 
-const runKieResponsesJob = async (payload, env, signal) => {
+const runKieResponsesJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
-  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model: payload.model });
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, {
+    model: payload.model,
+    mediaUrlCache: options.mediaUrlCache,
+  });
   const instructions = extractResponsesInstructions(preparedMessages);
 
   const response = await fetchKieWithTimeout(KIE_RESPONSES_URL, {
@@ -2302,6 +2317,11 @@ const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '') =>
 };
 
 const runKieChatJob = async (payload, env, signal, options = {}) => {
+  const mediaUrlCache = options.mediaUrlCache instanceof Map ? options.mediaUrlCache : new Map();
+  const sharedOptions = {
+    ...options,
+    mediaUrlCache,
+  };
   const requestedModel = String(payload.model || '').trim();
   if (!requestedModel) {
     throw createProviderError('provider_bad_request', '缺少聊天模型，请检查功能是否已接入统一模型设置。');
@@ -2309,16 +2329,16 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
   const transport = resolveChatTransport(payload.model);
   if (isKieGemini35FlashModel(payload.model)) {
     try {
-      return await runKieGemini35FlashJob(payload, env, signal, options);
+      return await runKieGemini35FlashJob(payload, env, signal, sharedOptions);
     } catch (error) {
-      return runKieChatFallbackModels(payload, env, signal, error);
+      return runKieChatFallbackModels(payload, env, signal, error, sharedOptions);
     }
   }
   if (isKieGeminiFlashOpenAiModel(payload.model)) {
     try {
-      return await runKieGeminiFlashOpenAiJob(payload, env, signal, options);
+      return await runKieGeminiFlashOpenAiJob(payload, env, signal, sharedOptions);
     } catch (error) {
-      return runKieChatFallbackModels(payload, env, signal, error);
+      return runKieChatFallbackModels(payload, env, signal, error, sharedOptions);
     }
   }
   if (transport === 'unsupported') {
@@ -2326,9 +2346,9 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
   }
   if (transport === 'kie_responses') {
     try {
-      return await runKieResponsesJob(payload, env, signal);
+      return await runKieResponsesJob(payload, env, signal, sharedOptions);
     } catch (error) {
-      return runKieChatFallbackModels(payload, env, signal, error);
+      return runKieChatFallbackModels(payload, env, signal, error, sharedOptions);
     }
   }
   if (transport === 'kie_claude_messages') {
@@ -2341,7 +2361,10 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
     const model = String(payload.model || 'gpt-5-2').trim() || 'gpt-5-2';
     const endpoint = resolveKieChatEndpoint(model);
     const isGeminiModel = isKieGeminiChatModel(model);
-    const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model });
+    const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, {
+      model,
+      mediaUrlCache,
+    });
     const messages = isGeminiModel
       ? buildProviderInputMessages(preparedMessages, buildKieChatContent)
       : preparedMessages;
@@ -2396,7 +2419,7 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
       },
     };
   } catch (error) {
-    return runKieChatFallbackModels(payload, env, signal, error);
+    return runKieChatFallbackModels(payload, env, signal, error, sharedOptions);
   }
 };
 
