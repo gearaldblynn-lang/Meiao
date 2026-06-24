@@ -335,6 +335,21 @@ const buildAggregatedImagePlan = ({ plans = [], imageResultUrls = [], providerTa
   };
 };
 
+const getRequiredIndependentImageCount = ({ currentMessage = '', freshUploadUrls = [], attemptedIndependentOutputUrls = new Set() } = {}) => (
+  attemptedIndependentOutputUrls.size > 1 && hasIndependentBatchIntent(currentMessage, freshUploadUrls.length)
+    ? freshUploadUrls.length
+    : 0
+);
+
+const createImageBatchIncompleteError = ({ requiredImageCount = 0, actualImageCount = 0, imageResultUrls = [] } = {}) => {
+  const error = new Error(`图片生成未完整完成：需要 ${requiredImageCount} 张，实际完成 ${actualImageCount} 张。`);
+  error.code = 'image_batch_incomplete';
+  error.partialImageResultUrls = Array.isArray(imageResultUrls) ? imageResultUrls.slice() : [];
+  error.expectedImageCount = requiredImageCount;
+  error.actualImageCount = actualImageCount;
+  return error;
+};
+
 const buildImageValidationRetryPrompt = ({ prompt = '', validation = {}, attempt = 1 } = {}) => {
   const issues = Array.isArray(validation?.issues)
     ? validation.issues.map((item) => String(item || '').trim()).filter(Boolean)
@@ -664,6 +679,18 @@ export const runAgentConversationV2 = async ({
       });
     } catch (error) {
       if (imageResultUrls.length > 0) {
+        const requiredIndependentImageCount = getRequiredIndependentImageCount({
+          currentMessage,
+          freshUploadUrls,
+          attemptedIndependentOutputUrls,
+        });
+        if (requiredIndependentImageCount > 0 && imageResultUrls.length < requiredIndependentImageCount) {
+          throw createImageBatchIncompleteError({
+            requiredImageCount: requiredIndependentImageCount,
+            actualImageCount: imageResultUrls.length,
+            imageResultUrls,
+          });
+        }
         emit('done', { recovered: true, finalReplyErrorMessage: error?.message || '模型总结失败' });
         return {
           content: buildImageGeneratedFallbackReply(error),
@@ -679,16 +706,17 @@ export const runAgentConversationV2 = async ({
     }
   }
   if (response.modelUsed) selectedModel = response.modelUsed;
-  const requiredIndependentImageCount = attemptedIndependentOutputUrls.size > 1 && hasIndependentBatchIntent(currentMessage, freshUploadUrls.length)
-    ? freshUploadUrls.length
-    : 0;
+  const requiredIndependentImageCount = getRequiredIndependentImageCount({
+    currentMessage,
+    freshUploadUrls,
+    attemptedIndependentOutputUrls,
+  });
   if (requiredIndependentImageCount > 0 && imageResultUrls.length < requiredIndependentImageCount) {
-    const error = new Error(`图片生成未完整完成：需要 ${requiredIndependentImageCount} 张，实际完成 ${imageResultUrls.length} 张。`);
-    error.code = 'image_batch_incomplete';
-    error.partialImageResultUrls = imageResultUrls.slice();
-    error.expectedImageCount = requiredIndependentImageCount;
-    error.actualImageCount = imageResultUrls.length;
-    throw error;
+    throw createImageBatchIncompleteError({
+      requiredImageCount: requiredIndependentImageCount,
+      actualImageCount: imageResultUrls.length,
+      imageResultUrls,
+    });
   }
   emit('done', {});
   return {
