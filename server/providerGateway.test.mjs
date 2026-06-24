@@ -2897,6 +2897,41 @@ test('executeProviderJob treats provider error text in successful kie chat respo
   }
 });
 
+test('executeProviderJob treats provider file information text as a failed request', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () =>
+    createJsonResponse({
+      choices: [
+        {
+          message: {
+            content: 'Failed to get the file information',
+          },
+        },
+      ],
+    });
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gemini-3.1-pro-openai',
+            messages: [{ role: 'user', content: '读取视频' }],
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_bad_response'
+        && /failed to get the file information/i.test(error.message)
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob treats provider authentication text in successful kie chat responses as a failed request', async () => {
   const originalFetch = global.fetch;
 

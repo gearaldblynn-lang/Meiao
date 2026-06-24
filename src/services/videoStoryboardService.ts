@@ -44,6 +44,28 @@ let cachedVideoAnalysisModelAt = 0;
 const PUBLIC_BASE_URL_CACHE_TTL_MS = 30_000;
 const VIDEO_ANALYSIS_MODEL_CACHE_TTL_MS = 2_000;
 
+const normalizeModelId = (value: unknown) => String(value || '').trim();
+
+const getModelFamily = (value: unknown) => {
+  const normalized = normalizeModelId(value).toLowerCase();
+  if (!normalized) return '';
+  if (normalized.includes('gemini')) return 'gemini';
+  if (normalized.includes('claude')) return 'claude';
+  if (normalized.includes('gpt') || normalized.includes('openai')) return 'gpt';
+  return normalized.split(/[-_.]/)[0] || normalized;
+};
+
+const selectVideoAnalysisFallbackModels = (model: string, chatModels: any[] = []) => {
+  const currentModel = normalizeModelId(model);
+  if (!currentModel) return [];
+  const currentFamily = getModelFamily(currentModel);
+  const candidates = (Array.isArray(chatModels) ? chatModels : [])
+    .map((item) => (typeof item === 'string' ? { id: normalizeModelId(item) } : item))
+    .filter((item) => normalizeModelId(item?.id) && normalizeModelId(item?.id) !== currentModel);
+  const fallback = candidates.find((item) => getModelFamily(item.id) !== currentFamily) || candidates[0];
+  return fallback ? [normalizeModelId(fallback.id)] : [];
+};
+
 const resolveRuntimePublicBaseUrl = async () => {
   if (cachedPublicBaseUrl && Date.now() - cachedPublicBaseUrlAt < PUBLIC_BASE_URL_CACHE_TTL_MS) {
     return cachedPublicBaseUrl;
@@ -72,6 +94,11 @@ const resolveVideoAnalysisModel = async () => {
   cachedVideoAnalysisModel = videoAnalysisModel;
   cachedVideoAnalysisModelAt = Date.now();
   return videoAnalysisModel;
+};
+
+const resolveVideoAnalysisFallbackModels = async (videoAnalysisModel: string) => {
+  const result = await fetchSystemConfig();
+  return selectVideoAnalysisFallbackModels(videoAnalysisModel, result.config.agentModels.chat || []);
 };
 
 const requireModelAssetUrl = (value: string, publicBaseUrl: string, label: string) => {
@@ -619,8 +646,42 @@ const buildViralSplitShotsAndBoards = (
 };
 
 const extractJsonArray = (content: string) => {
-  const match = content.match(/\[[\s\S]*\]/);
-  return match ? match[0] : content.replace(/```json/g, '').replace(/```/g, '').trim();
+  const cleaned = content.replace(/```json/g, '').replace(/```/g, '').trim();
+  for (let start = cleaned.indexOf('['); start >= 0; start = cleaned.indexOf('[', start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < cleaned.length; index += 1) {
+      const char = cleaned[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === '\\') {
+          escaped = true;
+        } else if (char === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (char === '"') {
+        inString = true;
+      } else if (char === '[') {
+        depth += 1;
+      } else if (char === ']') {
+        depth -= 1;
+        if (depth === 0) {
+          const candidate = cleaned.slice(start, index + 1);
+          try {
+            JSON.parse(candidate);
+            return candidate;
+          } catch {
+            break;
+          }
+        }
+      }
+    }
+  }
+  return cleaned;
 };
 
 const allocateDurations = (totalSeconds: number, count: number) => {
@@ -676,6 +737,7 @@ export const generateStoryboardScript = async (
   const prompt = buildScriptRequestPrompt(config, sceneDescription, safeImageUrls, safeReferenceVideoUrl, safeSceneReferenceUrls);
   const userContent: any[] = [{ type: 'text', text: prompt }];
   const videoAnalysisModel = await resolveVideoAnalysisModel();
+  const videoAnalysisFallbackModels = await resolveVideoAnalysisFallbackModels(videoAnalysisModel);
 
   if (safeReferenceVideoUrl) {
     userContent.push({ type: 'text', text: `[爆款复刻视频URL] ${safeReferenceVideoUrl}` });
@@ -706,6 +768,7 @@ export const generateStoryboardScript = async (
     provider: 'kie',
     payload: {
       model: videoAnalysisModel,
+      fallbackModels: videoAnalysisFallbackModels,
       reasoningLevel: 'high',
       messages: [
         {
