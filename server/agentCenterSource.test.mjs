@@ -247,8 +247,11 @@ test('agent image chats checkpoint generated assets before final reply persisten
   assert.match(source, /onImageReady: persistDbChatImageCheckpoint/);
   assert.match(source, /const persistLocalChatImageCheckpoint = async \(checkpointResult = \{\}\) =>/);
   assert.match(source, /onImageReady: persistLocalChatImageCheckpoint/);
-  assert.match(source, /await persistDbChatImageCheckpoint\(\{[\s\S]*?requestMode: 'tool_calling'[\s\S]*?imageResultUrls: \[imageUrl\]/);
-  assert.match(source, /await persistLocalChatImageCheckpoint\(\{[\s\S]*?requestMode: 'tool_calling'[\s\S]*?imageResultUrls: \[imageUrl\]/);
+  assert.match(source, /const validateImageResult = async \(validationInput\) => validateAgentGeneratedImageResult\(\{/);
+  assert.match(source, /validateImageResult,[\s\S]*?onImageResultReady: persistDbChatImageCheckpoint/);
+  assert.match(source, /validateImageResult,[\s\S]*?onImageResultReady: persistLocalChatImageCheckpoint/);
+  assert.match(source, /const validateAgentGeneratedImageResult = async \(\{/);
+  assert.match(source, /AGENT_IMAGE_RESULT_VALIDATION_ENABLED/);
   assert.match(source, /if \(typeof onImageReady === 'function' && result\.imageResultUrls\.length > 0\) \{[\s\S]*?await onImageReady\(result\);/);
 });
 

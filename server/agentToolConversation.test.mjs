@@ -287,6 +287,53 @@ test('模型同一轮返回多个 generate_image 时：逐个执行并返回多�
   assert.equal(out.imagePlan.plans.length, 2);
 });
 
+test('生图结果质检不通过时按反馈重试，不把错误图标记为完成', async () => {
+  let generateCount = 0;
+  const validations = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '都做成白底图，1:1的比例，正面摆放',
+    attachments: [{ kind: 'image', url: 'https://upload/humidifier.jpg', name: '图2.jpg' }],
+    callModel: async ({ messages }) => {
+      const outputs = messages.filter((message) => message.type === 'function_call_output');
+      if (outputs.length > 0) {
+        assert.match(String(outputs[0].output || ''), /图片已生成成功/);
+        return { content: '已完成', toolCalls: [], finishReason: 'stop' };
+      }
+      return {
+        content: '',
+        toolCalls: [
+          { id: 'c1', name: 'generate_image', args: { prompt: '把黑色加湿器做成白底主图', task_type: 'edit_image', input_image_urls: ['https://upload/humidifier.jpg'] } },
+        ],
+        finishReason: 'tool_calls',
+      };
+    },
+    generateImage: async ({ prompt, inputImageUrls }) => {
+      generateCount += 1;
+      assert.deepEqual(inputImageUrls, ['https://upload/humidifier.jpg']);
+      if (generateCount === 2) assert.match(prompt, /质检反馈|不是同一个产品/);
+      return { imageUrl: `https://img/result-${generateCount}.png`, providerTaskId: `task-${generateCount}` };
+    },
+    validateImageResult: async ({ sourceImageUrls, resultImageUrl, prompt, attempt }) => {
+      validations.push({ sourceImageUrls, resultImageUrl, prompt, attempt });
+      if (attempt === 1) {
+        return {
+          ok: false,
+          issues: ['生成结果不是同一个产品，把黑色加湿器错误做成了瓶装产品'],
+          revisedPrompt: '必须严格基于输入图中的黑色加湿器重新生成白底图',
+        };
+      }
+      return { ok: true, issues: [] };
+    },
+    onProgress: () => {},
+  });
+  assert.equal(generateCount, 2);
+  assert.equal(validations.length, 2);
+  assert.deepEqual(out.imageResultUrls, ['https://img/result-2.png']);
+  assert.equal(out.imagePlan.providerTaskId, 'task-2');
+  assert.match(out.imagePlan.prompt, /质检反馈|黑色加湿器/);
+});
+
 test('模型重复返回完全相同的 generate_image 时只执行一次，但保留不同 prompt 变体', async () => {
   const generated = [];
   const out = await runAgentConversationV2({
