@@ -113,6 +113,8 @@ npm run dev
 - `MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_seedance_video` 任务提交 KIE 前解析/转存图片、视频、音频素材的总并发。分镜视频多素材建议保持保守默认，避免多张大图同时转存导致 `asset_upload fetch failed`。
 - `AGENT_IMAGE_RESULT_VALIDATION_ENABLED`：默认 `1`；智能体 V2 生图结果落库前用同一中转模型做源图/结果图一致性质检，避免“数量对了但图对不上”被标记完成。设为 `0` 可紧急关闭。
 - `AGENT_IMAGE_RESULT_VALIDATION_MAX_RETRIES`：默认 `1`；结果质检失败后最多自动重试次数，超过后快速失败，不把错误图写成完成结果。
+- `MEIAO_CHAT_SSE_HEARTBEAT_MS`：默认 `15000`；智能体聊天 SSE 心跳间隔，避免长耗时多图生图期间代理或浏览器因连接空闲断流。
+- `AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES`：默认 `1`；智能体单次 `generate_image` 提交/读取遇到 `fetch failed`、502、超时等瞬时上游错误时的内部快速重试次数，避免把瞬时失败总结成“部分完成”。
 - `MEIAO_ASSET_X_ACCEL`：默认 `0`；生产 Nginx 配好 `/__meiao_stored_assets/` internal alias 后可设为 `1`，让托管素材通过 `X-Accel-Redirect` 直出。
 - `VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS`：默认 `3`；项目卡片视频点击播放前等待的最小预缓冲秒数。
 - `VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS`：默认 `5000`；项目卡片视频预缓冲最长等待毫秒数，超时后继续播放。
