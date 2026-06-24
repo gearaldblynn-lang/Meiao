@@ -276,6 +276,52 @@ test('reconcileStaleProviderlessRunningMysqlJobs fails old running jobs before u
   assert.match(reconciled[0].errorMessage, /未返回上游任务 ID/);
 });
 
+test('reconcileStaleProviderlessRunningMysqlJobs keeps kie chat submit alive longer than short cloud stale windows', () => {
+  const tenMinutesAgo = 10 * 60 * 1000;
+  const sixteenMinutesAgo = 16 * 60 * 1000;
+  const referenceTime = 20 * 60 * 1000;
+  const shortCloudStaleMs = 5 * 60 * 1000;
+
+  const reconciled = reconcileStaleProviderlessRunningMysqlJobs([
+    {
+      id: 'job-kie-chat-short-cloud-window',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: '',
+      retryCount: 0,
+      maxRetries: 2,
+      errorCode: '',
+      errorMessage: '',
+      createdAt: referenceTime - tenMinutesAgo,
+      updatedAt: referenceTime - tenMinutesAgo,
+      startedAt: referenceTime - tenMinutesAgo,
+      finishedAt: null,
+    },
+    {
+      id: 'job-kie-chat-truly-stale',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: '',
+      retryCount: 0,
+      maxRetries: 2,
+      errorCode: '',
+      errorMessage: '',
+      createdAt: referenceTime - sixteenMinutesAgo,
+      updatedAt: referenceTime - sixteenMinutesAgo,
+      startedAt: referenceTime - sixteenMinutesAgo,
+      finishedAt: null,
+    },
+  ], referenceTime, shortCloudStaleMs);
+
+  assert.deepEqual(reconciled.map((job) => job.id), ['job-kie-chat-truly-stale']);
+});
+
 test('reconcileStaleCancelledRunningMysqlJobs releases cancelled running jobs after abort acknowledgement stalls', () => {
   const reconciled = reconcileStaleCancelledRunningMysqlJobs([
     {
