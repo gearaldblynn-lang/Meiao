@@ -58,6 +58,7 @@ const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 240_000;
 const KIE_HTTP_REQUEST_TIMEOUT_MS = 60_000;
 const KIE_ASSET_UPLOAD_TIMEOUT_MS = 45_000;
 const KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY = 2;
+const KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY = 2;
 const KIE_CHAT_COMPLETION_TIMEOUT_MS = 240_000;
 const KIE_CHAT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const DREAMINA_VIDEO_POLL_RETRIES = 180;
@@ -223,6 +224,32 @@ const getKieAssetUploadTimeoutMs = (env = {}) => {
 const getKieImageMediaResolutionConcurrency = (env = {}) => {
   const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY', 'KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY') || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY;
+};
+
+const getKieVideoMediaResolutionConcurrency = (env = {}) => {
+  const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY', 'KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY') || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY;
+};
+
+const mapWithConcurrency = async (items, limit, mapper) => {
+  const sourceItems = Array.isArray(items) ? items : [];
+  if (sourceItems.length === 0) return [];
+  const safeLimit = Math.max(1, Math.min(
+    sourceItems.length,
+    Number.isFinite(Number(limit)) && Number(limit) > 0 ? Math.floor(Number(limit)) : 1
+  ));
+  const results = new Array(sourceItems.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: safeLimit }, async () => {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= sourceItems.length) return;
+      results[index] = await mapper(sourceItems[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 };
 
 const getProviderEnv = (env) => ({
@@ -2050,15 +2077,21 @@ const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
   const rawVideoUrls = normalizeArray(payload.videoUrls || payload.videos || payload.videoUrl || payload.video);
   const rawAudioUrls = normalizeArray(payload.audioUrls || payload.audios || payload.audioUrl || payload.audio);
   allowConcurrentAbortListeners(signal, rawImageUrls.length + rawVideoUrls.length + rawAudioUrls.length);
-  const imageUrls = await Promise.all(
-    rawImageUrls.map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
-  );
-  const videoUrls = await Promise.all(
-    rawVideoUrls.map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
-  );
-  const audioUrls = await Promise.all(
-    rawAudioUrls.map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
-  );
+  const mediaResolutionConcurrency = getKieVideoMediaResolutionConcurrency(env);
+  const mediaItems = [
+    ...rawImageUrls.map((url, index) => ({ kind: 'image', index, url })),
+    ...rawVideoUrls.map((url, index) => ({ kind: 'video', index, url })),
+    ...rawAudioUrls.map((url, index) => ({ kind: 'audio', index, url })),
+  ];
+  const imageUrls = new Array(rawImageUrls.length);
+  const videoUrls = new Array(rawVideoUrls.length);
+  const audioUrls = new Array(rawAudioUrls.length);
+  await mapWithConcurrency(mediaItems, mediaResolutionConcurrency, async (item) => {
+    const resolvedUrl = await resolveProviderGenerationMediaUrl(item.url, env, signal);
+    if (item.kind === 'image') imageUrls[item.index] = resolvedUrl;
+    if (item.kind === 'video') videoUrls[item.index] = resolvedUrl;
+    if (item.kind === 'audio') audioUrls[item.index] = resolvedUrl;
+  });
 
   if (mode === 'frames2video' && imageUrls.length < 2) {
     throw createProviderError('provider_bad_request', 'Seedance 首尾帧需要至少 2 张图片素材');

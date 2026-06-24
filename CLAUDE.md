@@ -200,3 +200,8 @@
   根因:董丹丹账号直接视频生成任务 `f38dff2b17c4ef343856a48a` 后端已 `succeeded`,生成 MP4 `c410a0332deaa167a30ea4a0/kie_seedance_video.mp4` 也返回 200,但前端没有真实显示。原因是短视频直接生成已经迁到 shell 项目卡 `shellProjects`,而历史视频工作区仍读取 `videoMemory.veoProjects`;成功视频只稳定持久化到 `shellProjects`,远端 patch 也只发项目卡状态,没有同步 `videoMemory`,且完成结果缺少 `backendJobId`,导致刷新/切换后旧视频工作区仍停在待恢复状态。
   修复:`shellPersistence` 对 `module=video/subFeature=generation` 的 completed 视频项目构造并 upsert 同名 `videoMemory.veoProjects` 记录;`buildProjectRemotePatch` 对直接视频生成项目同步带上 `videoMemory`;`mergeAppStateForStorage` 服务端合并层也从 completed 直接视频项目兜底镜像 `videoMemory.veoProjects`;视频成功 result 补 `backendJobId`;已手工补齐董丹丹项目 `proj-1782285629355` 的 shell/veo 双状态。
   如何避免:**迁移期同一业务如果存在新旧两个状态桶,写入、远端 patch、刷新恢复测试必须同时覆盖。直接视频生成完成后不能只验 `internal_jobs.succeeded` 或 `shellProjects`;还要查 UI 实际读取的状态桶、`videoUrl` 资产 200、`backendJobId` 身份和刷新恢复。新增视频结果持久化必须跑 direct video mirror 与 videoMemory patch 回归。**
+
+- **#30 ✅ 已修(2026-06-24)· Seedance 视频多素材同时转存导致 asset_upload fetch failed**
+  根因:董丹丹账号 `6月24日项目2` 直接视频任务 `041e6f368539bc79d85b13f8` 真失败,`provider_task_id=null/provider_submitted=0`,事件停在 `kie:kie_seedance_video:asset_upload:provider_network_error`。输入 8 张素材,多张约 3-4MB;`runKieSeedanceVideoJob` 对图片/视频/音频素材使用 `Promise.all` 全量并发 `resolveProviderGenerationMediaUrl`,不像 `kie_image` 路径有单任务素材转存限流。云上回测同批素材虽返回 200,但部分大图 15 秒内只下载一小段并超时,说明失败发生在提交 KIE 前的素材下载/上传压力阶段,不是上游视频生成失败。
+  修复:`kie_seedance_video` 提交前素材解析/转存改为图片、视频、音频合计限流,默认 2 并发,通过 `MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY` 可调;补回归测试证明 4 个受管素材最大并发不超过 2。董丹丹失败卡 `proj-1782285952681` 已清理旧“生成中/任务已提交云端”占位,只保留真实失败结果。
+  如何避免:**视频分镜生成也要按“单任务素材数 × 素材大小”估算图床压力。`provider_task_id=null + provider_submitted=0 + asset_upload` 表示没提交上游,不能当成 KIE 视频出片失败或成功未显示。所有新的视频/多模态素材路径都必须有提交前素材转存限流和对应测试。**

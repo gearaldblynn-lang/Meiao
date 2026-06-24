@@ -37,6 +37,7 @@ MEIAO_PROVIDERLESS_RUNNING_STALE_MS=300000
 MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS=30000
 MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS=120000
 MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY=2
+MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY=2
 AGENT_IMAGE_RESULT_VALIDATION_ENABLED=1
 AGENT_IMAGE_RESULT_VALIDATION_MAX_RETRIES=1
 MEIAO_ALLOWED_ORIGINS=http://111.229.66.247,http://111.229.66.247:3100
@@ -67,6 +68,8 @@ EOF
 `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 控制 KIE 素材上传单次 HTTP 超时，云上建议 `120000`。分镜参考视频等较大素材需要更长上传预算；如果上传出现瞬时网络或上游 5xx 错误，任务允许有限重试后释放并发，不走 base64 上传接口。
 
 `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY` 控制单个 `kie_image` 任务在提交 KIE 前解析/转存素材的并发，默认 `2`。详情页批量生图会同时创建多张图，每张又带多张商品/参考素材；该值不要盲目调高，避免把 KIE 图床上传并发打满。
+
+`MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY` 控制单个 `kie_seedance_video` 任务在提交 KIE 前解析/转存图片、视频、音频素材的总并发，默认 `2`。分镜视频常带多张 3-5MB 商品图和分镜图，保持保守默认可降低 `asset_upload fetch failed`。
 
 `AGENT_IMAGE_RESULT_VALIDATION_ENABLED` 默认 `1`，控制智能体 V2 生图结果落库前的源图/结果图一致性质检。`AGENT_IMAGE_RESULT_VALIDATION_MAX_RETRIES` 默认 `1`，控制质检失败后最多自动重试次数；仍不通过时快速失败，不把错误图写成完成结果。
 
