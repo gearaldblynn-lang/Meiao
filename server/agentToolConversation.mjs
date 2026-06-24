@@ -511,6 +511,7 @@ export const runAgentConversationV2 = async ({
   const imagePlans = [];
   const imageResultUrls = [];
   const providerTaskIds = [];
+  const attemptedIndependentOutputUrls = new Set();
   let creditsConsumed = 0;
   let imagePlan = null;
   let selectedModel = response.modelUsed || '';
@@ -549,6 +550,9 @@ export const runAgentConversationV2 = async ({
         }
         if (normalized) {
           const validInputUrls = normalized.inputImageUrls.filter((url) => isUrlInCatalog(catalog, url));
+          if (validInputUrls.length === 1 && freshUploadUrls.includes(validInputUrls[0])) {
+            attemptedIndependentOutputUrls.add(validInputUrls[0]);
+          }
           emit('image_generating', { model: selectedImageModel });
           try {
             let result = null;
@@ -675,6 +679,17 @@ export const runAgentConversationV2 = async ({
     }
   }
   if (response.modelUsed) selectedModel = response.modelUsed;
+  const requiredIndependentImageCount = attemptedIndependentOutputUrls.size > 1 && hasIndependentBatchIntent(currentMessage, freshUploadUrls.length)
+    ? freshUploadUrls.length
+    : 0;
+  if (requiredIndependentImageCount > 0 && imageResultUrls.length < requiredIndependentImageCount) {
+    const error = new Error(`图片生成未完整完成：需要 ${requiredIndependentImageCount} 张，实际完成 ${imageResultUrls.length} 张。`);
+    error.code = 'image_batch_incomplete';
+    error.partialImageResultUrls = imageResultUrls.slice();
+    error.expectedImageCount = requiredIndependentImageCount;
+    error.actualImageCount = imageResultUrls.length;
+    throw error;
+  }
   emit('done', {});
   return {
     content: response.content || (imagePlan ? '已为你生成图片。' : '抱歉，我没能完成这次工具调用。'),

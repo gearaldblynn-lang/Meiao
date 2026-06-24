@@ -357,6 +357,11 @@ test('agent image conversation prompt includes deterministic image order mapping
   assert.match(source, /requestMode === 'image_generation' \? version\?\.modelPolicy\?\.multimodalModel : version\?\.modelPolicy\?\.defaultModel/);
 });
 
+test('agent image result validation does not reject allowed style conversion by default', () => {
+  assert.match(source, /不要仅因生成结果从图标、插画或海报素材变成写实电商主图而判失败/);
+  assert.match(source, /重点判断主体类别、颜色、结构和关键标识是否对应/);
+});
+
 test('agent studio source exposes draft-only training and testing endpoints in mysql and local modes', () => {
   assert.match(source, /const STUDIO_CONFIG_ASSISTANT_PROMPT = \(\{ agentName, systemPrompt, knowledgeNames, manageableKnowledgeBases, manageableKnowledgeDocuments \}\) =>/);
   assert.match(source, /R Role 角色/);
