@@ -337,6 +337,49 @@ test('生图结果质检不通过时按反馈重试，不把错误图标记为�
   assert.match(out.imagePlan.prompt, /质检反馈|黑色加湿器/);
 });
 
+test('质检重试遇到瞬时上游失败时执行器内部快速重试，不返回半完成', async () => {
+  let generateCount = 0;
+  const progress = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '把图1做成白底图',
+    attachments: [{ kind: 'image', url: 'https://upload/bottle.jpg', name: '图1.jpg' }],
+    callModel: async ({ messages }) => {
+      const outputs = messages.filter((message) => message.type === 'function_call_output');
+      if (outputs.length > 0) {
+        assert.match(String(outputs[0].output || ''), /图片已生成成功/);
+        assert.doesNotMatch(String(outputs[0].output || ''), /fetch failed|图片生成失败/);
+        return { content: '已完成', toolCalls: [], finishReason: 'stop' };
+      }
+      return {
+        content: '',
+        toolCalls: [
+          { id: 'c1', name: 'generate_image', args: { prompt: '把红色瓶子做成白底主图', task_type: 'edit_image', input_image_urls: ['https://upload/bottle.jpg'] } },
+        ],
+        finishReason: 'tool_calls',
+      };
+    },
+    generateImage: async () => {
+      generateCount += 1;
+      if (generateCount === 2) {
+        const error = new Error('fetch failed');
+        error.code = 'upstream_fetch_failed';
+        throw error;
+      }
+      return { imageUrl: `https://img/result-${generateCount}.png`, providerTaskId: `task-${generateCount}` };
+    },
+    validateImageResult: async ({ attempt }) => {
+      if (attempt === 1) return { ok: false, issues: ['背景不是纯白'], revisedPrompt: '必须纯白背景重新生成' };
+      return { ok: true, issues: [] };
+    },
+    onProgress: (event) => progress.push(event),
+  });
+  assert.equal(generateCount, 3);
+  assert.deepEqual(out.imageResultUrls, ['https://img/result-3.png']);
+  assert.equal(out.imagePlan.providerTaskId, 'task-3');
+  assert.ok(progress.some((event) => event.stage === 'image_regenerating' && event.retry === 'transient_generate_error'));
+});
+
 test('模型重复返回完全相同的 generate_image 时只执行一次，但保留不同 prompt 变体', async () => {
   const generated = [];
   const out = await runAgentConversationV2({

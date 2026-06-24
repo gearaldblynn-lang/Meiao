@@ -69,6 +69,41 @@ const shouldRetryModelWithoutInlineImages = (error, attachments = []) => {
   return code === 'provider_bad_response' || /responses 请求失败|bad_response_status_code|502/.test(message);
 };
 
+const isTransientImageGenerationError = (error) => {
+  const code = String(error?.code || error?.cause?.code || '').trim();
+  const message = String(error?.message || error?.cause?.message || '');
+  if (code === 'account_credit_insufficient') return false;
+  return /fetch failed|network|timeout|timed out|ECONNRESET|ETIMEDOUT|UND_ERR_SOCKET|bad_response_status_code|502|503|504/i.test(`${code} ${message}`);
+};
+
+const getImageGenerateTransientMaxRetries = (env = process.env) => {
+  const parsed = Number.parseInt(String(env?.AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES || ''), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
+};
+
+const generateImageWithTransientRetry = async ({
+  generateImage,
+  payload,
+  maxRetries,
+  emit,
+  imageAttempt,
+}) => {
+  let transientRetry = 0;
+  while (true) {
+    try {
+      return await generateImage(payload);
+    } catch (error) {
+      if (!isTransientImageGenerationError(error) || transientRetry >= maxRetries) throw error;
+      transientRetry += 1;
+      emit('image_regenerating', {
+        attempt: imageAttempt,
+        retry: 'transient_generate_error',
+        transientRetry,
+      });
+    }
+  }
+};
+
 const getGenerateImageToolCalls = (response = {}) => (
   (Array.isArray(response?.toolCalls) ? response.toolCalls : [])
     .filter((call) => call?.name === 'generate_image')
@@ -432,6 +467,7 @@ export const runAgentConversationV2 = async ({
   const maxImageValidationRetries = Number.isFinite(configuredValidationRetries)
     ? Math.max(0, configuredValidationRetries)
     : 1;
+  const maxImageGenerateTransientRetries = getImageGenerateTransientMaxRetries(process.env);
   while (response.finishReason === 'tool_calls' && response.toolCalls?.length && rounds < maxToolRounds) {
     rounds += 1;
     if (response.modelUsed) selectedModel = response.modelUsed;
@@ -468,12 +504,18 @@ export const runAgentConversationV2 = async ({
             let acceptedPrompt = normalized.prompt;
             let acceptedValidation = null;
             for (let imageAttempt = 1; imageAttempt <= maxImageValidationRetries + 1; imageAttempt += 1) {
-              result = await generateImage({
-                prompt: acceptedPrompt,
-                taskType: normalized.taskType,
-                inputImageUrls: validInputUrls,
-                aspectRatio: normalized.aspectRatio,
-                model: selectedImageModel,
+              result = await generateImageWithTransientRetry({
+                generateImage,
+                payload: {
+                  prompt: acceptedPrompt,
+                  taskType: normalized.taskType,
+                  inputImageUrls: validInputUrls,
+                  aspectRatio: normalized.aspectRatio,
+                  model: selectedImageModel,
+                },
+                maxRetries: maxImageGenerateTransientRetries,
+                emit,
+                imageAttempt,
               });
               creditsConsumed += normalizeCreditsConsumed(result?.creditsConsumed);
               const candidateUrl = String(result?.imageUrl || '').trim();
