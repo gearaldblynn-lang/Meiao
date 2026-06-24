@@ -861,6 +861,7 @@ const isProviderErrorText = (value) => {
     /file mime type is not supported/i,
     /image download failed/i,
     /http 404:\s*not found/i,
+    /failed\s+to\s+get\s+(?:the\s+)?file\s+information/i,
     /please convert or change the file/i,
     /unauthorized\s*[–-]\s*authentication failed/i,
     /authentication failed\.?\s*please check/i,
@@ -872,6 +873,8 @@ const isProviderErrorText = (value) => {
 const providerErrorCodeFromText = (value) =>
   /\bI\s+cannot\s+fulfill\s+this\s+request\b|\bI\s+can(?:not|'t)\s+(?:help|assist|comply|fulfill)\b|\bI'm\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|\bI\s+am\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|无法满足(?:该|这个|此)?请求|不能满足(?:该|这个|此)?请求|无法协助(?:该|这个|此)?请求/i.test(String(value || ''))
     ? 'provider_refusal'
+    : /failed\s+to\s+get\s+(?:the\s+)?file\s+information/i.test(String(value || ''))
+    ? 'provider_bad_response'
     : /server is currently being maintained|server exception,\s*please try again later/i.test(String(value || ''))
     ? 'provider_internal_error'
     : 'provider_bad_request';

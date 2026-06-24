@@ -29,6 +29,13 @@ test('viral storyboard parser preserves multiline voiceover and audio content fr
   assert.ok(source.includes("audio: audioMatch?.[1]?.trim() || getFallbackAudio(),"));
 });
 
+test('storyboard JSON parser scans for a valid array instead of using a greedy bracket match', () => {
+  const parserBody = source.match(/const extractJsonArray = \(content: string\) => \{[\s\S]*?\n\};/)?.[0] || '';
+  assert.match(parserBody, /for \(let start = cleaned\.indexOf\('\['\)/);
+  assert.match(parserBody, /JSON\.parse\(candidate\)/);
+  assert.doesNotMatch(parserBody, /content\.match\(\/\\\[\\\[\\s\\S\]\*\\\]\/\)/);
+});
+
 test('viral storyboard generation requires a reference video before submitting the task', () => {
   assert.ok(source.includes("if (config.videoGenerationMode === 'viral_split' && !config.uploadedReferenceVideoUrl && !config.referenceVideoFile)"));
   assert.ok(source.includes("throw new Error('请先上传爆款复刻视频');"));
@@ -57,8 +64,9 @@ test('original storyboard chain keeps scene references separate from product ref
 
 test('original storyboard script generation explicitly uses the video analysis model', () => {
   assert.match(source, /const videoAnalysisModel = await resolveVideoAnalysisModel\(\);/);
+  assert.match(source, /const videoAnalysisFallbackModels = await resolveVideoAnalysisFallbackModels\(videoAnalysisModel\);/);
   assert.doesNotMatch(source, /const videoAnalysisModel = safeReferenceVideoUrl \? await resolveVideoAnalysisModel\(\) : '';/);
-  assert.match(source, /model: videoAnalysisModel,\s*reasoningLevel: 'high'/);
+  assert.match(source, /model: videoAnalysisModel,\s*fallbackModels: videoAnalysisFallbackModels,\s*reasoningLevel: 'high'/);
   assert.match(source, /const taskId = String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| ''\)\.trim\(\) \|\| undefined;/);
   assert.doesNotMatch(source, /const taskId = String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| job\.id/);
 });
