@@ -57,6 +57,7 @@ const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
 const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 240_000;
 const KIE_HTTP_REQUEST_TIMEOUT_MS = 60_000;
 const KIE_ASSET_UPLOAD_TIMEOUT_MS = 45_000;
+const KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY = 2;
 const KIE_CHAT_COMPLETION_TIMEOUT_MS = 240_000;
 const KIE_CHAT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const DREAMINA_VIDEO_POLL_RETRIES = 180;
@@ -217,6 +218,11 @@ const getEnvValue = (env, ...keys) => keys.map((key) => env[key]).find(Boolean) 
 const getKieAssetUploadTimeoutMs = (env = {}) => {
   const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS', 'KIE_ASSET_UPLOAD_TIMEOUT_MS') || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_ASSET_UPLOAD_TIMEOUT_MS;
+};
+
+const getKieImageMediaResolutionConcurrency = (env = {}) => {
+  const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY', 'KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY') || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY;
 };
 
 const getProviderEnv = (env) => ({
@@ -1381,7 +1387,10 @@ const runKieImageJob = async (payload, env, signal, options = {}) => {
   return runKieImageProviderJob({
     payload,
     signal,
-    options,
+    options: {
+      ...options,
+      mediaResolutionConcurrency: options.mediaResolutionConcurrency || getKieImageMediaResolutionConcurrency(env),
+    },
     deps: {
       kieApiKey,
       createTaskUrl: KIE_CREATE_TASK_URL,

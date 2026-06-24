@@ -12,7 +12,34 @@ export const KIE_IMAGE_MODEL_ALIASES = {
   },
 };
 
+const DEFAULT_MEDIA_RESOLUTION_CONCURRENCY = 2;
+
 const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+const toPositiveInteger = (value, fallback) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const mapWithConcurrency = async (items, limit, mapper) => {
+  const sourceItems = Array.isArray(items) ? items : [];
+  if (sourceItems.length === 0) return [];
+  const results = new Array(sourceItems.length);
+  const workerCount = Math.min(sourceItems.length, toPositiveInteger(limit, DEFAULT_MEDIA_RESOLUTION_CONCURRENCY));
+  let nextIndex = 0;
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    for (;;) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= sourceItems.length) return;
+      results[index] = await mapper(sourceItems[index], index);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+};
 
 export const extractKieImageTextMediaUrls = (text = '') => {
   const source = String(text || '');
@@ -118,7 +145,11 @@ export const runKieImageJob = async ({
     }
     return resolvedGenerationUrlByRawUrl.get(rawUrl);
   };
-  const imageUrls = await Promise.all(rawImageUrls.map((item) => resolveGenerationUrl(item)));
+  const mediaResolutionConcurrency = toPositiveInteger(
+    options?.mediaResolutionConcurrency ?? payload?.mediaResolutionConcurrency,
+    DEFAULT_MEDIA_RESOLUTION_CONCURRENCY
+  );
+  const imageUrls = await mapWithConcurrency(rawImageUrls, mediaResolutionConcurrency, (item) => resolveGenerationUrl(item));
   const promptWithResolvedMediaUrls = await rewriteKieImageTextMediaUrls(payload.prompt || '', resolveGenerationUrl);
   const prompt = augmentImagePromptForModel(payload.model, promptWithResolvedMediaUrls);
   const requestBody = buildKieImageTaskRequestBody({ payload, imageUrls, prompt });

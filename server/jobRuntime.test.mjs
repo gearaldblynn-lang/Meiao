@@ -356,7 +356,7 @@ test('getNextJobFailureState returns failed when retry budget is exhausted', () 
   );
 });
 
-test('getNextJobFailureState fails asset upload without job-level retry', () => {
+test('getNextJobFailureState lets transient asset upload failures retry once then fail fast', () => {
   assert.deepEqual(
     getNextJobFailureState({
       retryCount: 0,
@@ -365,8 +365,8 @@ test('getNextJobFailureState fails asset upload without job-level retry', () => 
       providerStage: 'asset_upload',
     }),
     {
-      retryCount: 0,
-      status: 'failed',
+      retryCount: 1,
+      status: 'retry_waiting',
     }
   );
 

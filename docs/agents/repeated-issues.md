@@ -622,6 +622,14 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/jobManager.test.mjs --test-name-pattern "kie chat submit"`；正式云上同 job 重试成功，`providerTaskId=resp_0a056c56c2160b09016a3b711f3fa8819b9d00fd746de4b13a`，返回 7 个 `[SCHEME_START]`。
 - Avoid next time: providerless stale 要按任务语义分层。同步 chat/策划类任务不能套用异步生图/视频的 createTask 前短窗口；真实验收必须覆盖正式 job/Temporal 链路，而不只看 providerGateway 直连。
 
+### KIE detail image batches must throttle and retry asset staging
+
+- Symptom: 天琪账号 `6月24日项目4` 详情策划成功后，详情页批量生图失败；单张烟测 `gpt-image-2` 可成功，但 UI 实测 7 张详情图同时失败。
+- Root cause: UI 一次性创建 7 个 `kie_image` 详情图任务，每个任务带 7 张素材，瞬间形成约 49 次 KIE 图床素材上传。失败事件集中在 `asset_upload` 的 `provider_network_error/fetch failed` 和 `provider_internal_error`；另有任务因 5 分钟内无 providerTaskId 被 `provider_submit_stale` 回收。问题发生在提交 KIE 生图前的素材转存阶段，不是 KIE 已接单后出图失败。
+- Fix: `providerKieImage` 对单任务内素材解析/上传限流，默认 2 并发并支持 `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY` 配置；`jobRuntime` 允许 `asset_upload` 瞬时错误进行一次任务级重试；`jobManager` 对 `kie_image` providerless running job 使用不少于默认 15 分钟的 stale 窗口。
+- Regression check: `node --test server/jobManager.test.mjs server/jobRuntime.test.mjs server/providerKieImage.test.mjs`；`node --test --test-name-pattern "kie image|asset upload|managed asset|file-stream-upload" server/providerGateway.test.mjs`。
+- Avoid next time: 详情/批量生图必须用“任务数 × 每任务素材数”评估第三方图床压力。单张真实出图成功不等于批量链路成功；排障先看 `provider_task_id`、`provider_submitted` 和 event stage，`asset_upload` 是提交前传输问题，不能归因成已提交的 KIE 生图失败。
+
 ### Agent vision planning must not pre-upload historical images
 
 - Symptom: 将离账号最新 3 图需求仍只产出 1 张；修复多图覆盖校验后，云上 dry-run 又在进入模型规划前出现 KIE 素材上传超时。
@@ -677,3 +685,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/appStateMerge.test.mjs src/adapters/shellDataAdapter.test.mjs src/services/arkService.test.mjs src/adapters/shellPersistence.test.mjs src/adapters/shellRuntimeMerge.test.mjs src/modules/OneClick/oneClickRecoveryBehavior.test.mjs src/components/uiArchitecture.test.mjs`; `npm run build`.
 - Data repair: 已备份并修复多桑项目6，最终备份文件 `/www/backup/meiao-state-repair/duosang-sku-project6-2026-05-26T04-01-25-682Z.json`；恢复后 shell 项目为 `taskCount: 2/completedCount: 1/planCount: 2`，SKU 分支为 2 条 scheme：第 1 条 completed、第 2 条 planning。
 - Avoid next time: 不能用“已有一个 completed result”判断 planning job 不需要回填；SKU/批量策划的 text job 是任务总数来源。所有全量保存路径即使叫 replace，也必须保护云端已恢复的 backend-bound plans/results，删除应依赖 tombstone，而不是直接信任旧浏览器快照。
+
+## 2026-06-24 - Storyboard planning must reject provider file-info text and parse fallback output robustly
+
+- Symptom: 董丹丹账号“爆款复刻方案 4”分镜生成先后出现 `provider_submit_stale`、`Kie 素材上传超时`，修复后又被后台标记 `succeeded`，但内容只有 `Failed to get the file information` 或前置英文思考文本，前端项目仍停在 failed。
+- Environment: Tencent Cloud production, video storyboard `viral_split`, KIE chat `gemini-3.1-pro-openai` with 7 product images and one 23.9MB reference video.
+- Root cause: 这是三层问题叠加：PM2 800M 内存阈值会在大视频转存时杀 worker；45s KIE asset upload timeout 对 23.9MB 视频偏短；KIE/Gemini 把文件读取失败作为 200 文本返回，`providerGateway` 未识别为失败，分镜任务也没有 fallback；fallback 成功后 `extractJsonArray` 的贪婪正则又会从模型思考文本里的第一个 `[` 开始截取，导致 JSON 解析失败。
+- Fix: 云端 PM2 `max_memory_restart` 调到 1500M，`MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 调到 120000；`providerGateway` 将 `Failed to get the file information` 识别为 `provider_bad_response` 以触发 fallback；分镜脚本任务写入 `fallbackModels`；`extractJsonArray` 改为括号平衡扫描并验证 `JSON.parse(candidate)`；已清洗董丹丹 job `f1b73dd01c10b650133f1d74` 的结果并回填项目 `video_1782278558653_0_g6ra` 为 `awaiting_image_confirmation`，2 个 boards / 11 个 shots。
+- Regression check: `node --test server/providerGateway.test.mjs --test-name-pattern "provider file information|fallback models"`；`node --test src/services/videoStoryboardService.test.mjs`；`node --test server/jobManager.test.mjs --test-name-pattern "providerless|kie chat"`；`npm run build`；云端同组测试和 health check 通过。
+- Avoid next time: KIE chat 200 文本不能天然视为成功；凡是 provider 文件读取/维护/拒答文本，都必须进入 provider 错误归类和 fallback/失败路径。模型 fallback 输出可能夹带 reasoning 或说明文本，JSON 提取必须找“可解析的数组”，不能用贪婪首尾括号。手工修复后台 job 后，还要检查 `app_states` 是否绑定项目，否则用户页面不会自动显示结果。

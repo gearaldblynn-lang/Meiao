@@ -249,7 +249,7 @@ export const runWithTransientRetry = async (operation, {
 };
 
 const FAST_FAIL_RETRY_STAGE_LIMITS = new Map([
-  ['asset_upload', 0],
+  ['asset_upload', 1],
   ['asset_download', 1],
 ]);
 

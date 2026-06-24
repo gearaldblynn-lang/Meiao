@@ -226,7 +226,7 @@ test('reconcileStaleProviderlessRunningMysqlJobs fails old running jobs before u
       id: 'job-providerless-stale',
       userId: 'user-a',
       module: 'one_click',
-      taskType: 'kie_image',
+      taskType: 'local_probe',
       provider: 'kie',
       status: 'running',
       providerTaskId: '',
@@ -243,7 +243,7 @@ test('reconcileStaleProviderlessRunningMysqlJobs fails old running jobs before u
       id: 'job-provider-submitted',
       userId: 'user-a',
       module: 'one_click',
-      taskType: 'kie_image',
+      taskType: 'local_probe',
       provider: 'kie',
       status: 'running',
       providerTaskId: 'kie-task-id',
@@ -256,7 +256,7 @@ test('reconcileStaleProviderlessRunningMysqlJobs fails old running jobs before u
       id: 'job-young',
       userId: 'user-a',
       module: 'one_click',
-      taskType: 'kie_image',
+      taskType: 'local_probe',
       provider: 'kie',
       status: 'running',
       providerTaskId: '',
@@ -320,6 +320,39 @@ test('reconcileStaleProviderlessRunningMysqlJobs keeps kie chat submit alive lon
   ], referenceTime, shortCloudStaleMs);
 
   assert.deepEqual(reconciled.map((job) => job.id), ['job-kie-chat-truly-stale']);
+});
+
+test('reconcileStaleProviderlessRunningMysqlJobs keeps kie image asset staging alive longer than short cloud stale windows', () => {
+  const tenMinutesAgo = 10 * 60 * 1000;
+  const sixteenMinutesAgo = 16 * 60 * 1000;
+  const referenceTime = 20 * 60 * 1000;
+  const shortCloudStaleMs = 5 * 60 * 1000;
+
+  const reconciled = reconcileStaleProviderlessRunningMysqlJobs([
+    {
+      id: 'job-kie-image-staging-assets',
+      taskType: 'kie_image',
+      status: 'running',
+      providerTaskId: '',
+      startedAt: referenceTime - tenMinutesAgo,
+    },
+    {
+      id: 'job-kie-image-truly-stale',
+      taskType: 'kie_image',
+      status: 'running',
+      providerTaskId: '',
+      startedAt: referenceTime - sixteenMinutesAgo,
+    },
+    {
+      id: 'job-other-stale',
+      taskType: 'other_task',
+      status: 'running',
+      providerTaskId: '',
+      startedAt: referenceTime - tenMinutesAgo,
+    },
+  ], referenceTime, shortCloudStaleMs);
+
+  assert.deepEqual(reconciled.map((job) => job.id), ['job-kie-image-truly-stale', 'job-other-stale']);
 });
 
 test('reconcileStaleCancelledRunningMysqlJobs releases cancelled running jobs after abort acknowledgement stalls', () => {

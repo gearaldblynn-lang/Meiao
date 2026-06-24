@@ -10,6 +10,7 @@ const DEFAULT_CANCELLED_RUNNING_STALE_MS = 60 * 1000;
 const REUSABLE_JOB_STATUSES = new Set(['queued', 'running', 'retry_waiting']);
 const MIN_PROVIDERLESS_RUNNING_STALE_MS_BY_TASK_TYPE = new Map([
   ['kie_chat', DEFAULT_PROVIDERLESS_RUNNING_STALE_MS],
+  ['kie_image', DEFAULT_PROVIDERLESS_RUNNING_STALE_MS],
 ]);
 
 const parseJsonValue = (value, fallback = null) => {
