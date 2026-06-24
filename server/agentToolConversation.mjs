@@ -76,9 +76,49 @@ const isTransientImageGenerationError = (error) => {
   return /fetch failed|network|timeout|timed out|ECONNRESET|ETIMEDOUT|UND_ERR_SOCKET|bad_response_status_code|502|503|504/i.test(`${code} ${message}`);
 };
 
+const isTransientModelCallError = (error) => {
+  const code = String(error?.code || error?.cause?.code || '').trim();
+  const message = String(error?.message || error?.cause?.message || '');
+  if (code === 'provider_bad_response') return false;
+  return /fetch failed|network|timeout|timed out|ECONNRESET|ETIMEDOUT|UND_ERR_SOCKET|503|504/i.test(`${code} ${message}`);
+};
+
 const getImageGenerateTransientMaxRetries = (env = process.env) => {
   const parsed = Number.parseInt(String(env?.AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES || ''), 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
+};
+
+const getAgentModelTransientMaxRetries = (env = process.env) => {
+  const parsed = Number.parseInt(String(env?.AGENT_MODEL_TRANSIENT_MAX_RETRIES || ''), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
+};
+
+const callModelWithTransientRetry = async ({
+  callModel,
+  params,
+  maxRetries,
+  emit,
+}) => {
+  let transientRetry = 0;
+  while (true) {
+    let hadDelta = false;
+    try {
+      return await callModel({
+        ...params,
+        onDelta: (delta) => {
+          hadDelta = true;
+          params?.onDelta?.(delta);
+        },
+      });
+    } catch (error) {
+      if (hadDelta || !isTransientModelCallError(error) || transientRetry >= maxRetries) throw error;
+      transientRetry += 1;
+      emit('thinking', {
+        retry: 'transient_model_error',
+        transientRetry,
+      });
+    }
+  }
 };
 
 const generateImageWithTransientRetry = async ({
@@ -386,14 +426,20 @@ export const runAgentConversationV2 = async ({
   if (imageGenerationEnabled) tools.push(GENERATE_IMAGE_TOOL);
   if (hasKnowledgeBase) tools.push(SEARCH_KNOWLEDGE_TOOL);
   if (webSearchEnabled) tools.push({ type: 'web_search' });
+  const maxAgentModelTransientRetries = getAgentModelTransientMaxRetries(process.env);
 
   emit('thinking', { round: 1, ...(inlineInitialImages ? {} : hasImageAttachments(attachments) ? { imageInputMode: 'text_image_catalog' } : {}) });
-  const callInitialModel = async () => callModel({
-    messages,
-    tools,
-    toolChoice: tools.length > 0 ? 'auto' : undefined,
-    maxTokens: contextLimits.maxOutputTokens,
-    onDelta: (delta) => emit('streaming', { delta }),
+  const callInitialModel = async () => callModelWithTransientRetry({
+    callModel,
+    maxRetries: maxAgentModelTransientRetries,
+    emit,
+    params: {
+      messages,
+      tools,
+      toolChoice: tools.length > 0 ? 'auto' : undefined,
+      maxTokens: contextLimits.maxOutputTokens,
+      onDelta: (delta) => emit('streaming', { delta }),
+    },
   });
   let response;
   try {
@@ -432,12 +478,17 @@ export const runAgentConversationV2 = async ({
       ...messages,
       { role: 'system', content: buildUnderPlannedImageAuditPrompt({ currentMessage, freshUploadUrls, plannedCall: originalGenerateCall, attempt: planRepairRound }) },
     ];
-    const repairedResponse = await callModel({
-      messages: repairMessages,
-      tools,
-      toolChoice: 'auto',
-      maxTokens: contextLimits.maxOutputTokens,
-      onDelta: (delta) => emit('streaming', { delta }),
+    const repairedResponse = await callModelWithTransientRetry({
+      callModel,
+      maxRetries: maxAgentModelTransientRetries,
+      emit,
+      params: {
+        messages: repairMessages,
+        tools,
+        toolChoice: 'auto',
+        maxTokens: contextLimits.maxOutputTokens,
+        onDelta: (delta) => emit('streaming', { delta }),
+      },
     });
     if (repairedResponse?.finishReason === 'tool_calls' && repairedResponse.toolCalls?.length) {
       messages = repairMessages;
@@ -595,12 +646,17 @@ export const runAgentConversationV2 = async ({
     }
 
     try {
-      response = await callModel({
-        messages,
-        tools,
-        toolChoice: 'auto',
-        maxTokens: contextLimits.maxOutputTokens,
-        onDelta: (delta) => emit('streaming', { delta }),
+      response = await callModelWithTransientRetry({
+        callModel,
+        maxRetries: maxAgentModelTransientRetries,
+        emit,
+        params: {
+          messages,
+          tools,
+          toolChoice: 'auto',
+          maxTokens: contextLimits.maxOutputTokens,
+          onDelta: (delta) => emit('streaming', { delta }),
+        },
       });
     } catch (error) {
       if (imageResultUrls.length > 0) {
