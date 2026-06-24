@@ -130,6 +130,16 @@ test('chat conversation uses chat-first reading layout instead of assistant card
   assert.doesNotMatch(source, /shadow-\[0_8px_22px/);
 });
 
+test('image generation progress keeps internal validation and retry invisible to users', () => {
+  assert.match(source, /if \(stage === 'image_validating'\) return '正在生成图片';/);
+  assert.match(source, /if \(stage === 'image_validation_failed'\) return '正在生成图片';/);
+  assert.match(source, /if \(stage === 'image_regenerating'\) return '正在生成图片';/);
+  assert.doesNotMatch(source, /正在检查生成结果/);
+  assert.doesNotMatch(source, /生成结果未通过检查/);
+  assert.doesNotMatch(source, /正在根据检查结果重新生成/);
+  assert.doesNotMatch(source, /label: '检查结果'/);
+});
+
 test('run view exposes diagnostics while keeping debug fields out of assistant text', () => {
   assert.match(workspaceSource, /const runDiagnostics = useMemo\(/);
   assert.match(workspaceSource, /模型/);

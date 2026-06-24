@@ -52,7 +52,7 @@ type ChatSubmissionInput = {
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const AGENT_CENTER_UI_STATE_KEY = 'MEIAO_AGENT_CENTER_UI_STATE';
-const FINAL_EXECUTION_PROGRESS_STAGES = new Set(['tool_calling', 'generating', 'image_generating', 'image_ready', 'syncing']);
+const FINAL_EXECUTION_PROGRESS_STAGES = new Set(['tool_calling', 'generating', 'image_generating', 'image_validating', 'image_validation_failed', 'image_regenerating', 'image_ready', 'syncing']);
 const isUncertainSendFailure = (error: any) =>
   !(
     error?.name === 'AbortError'
@@ -355,14 +355,9 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         };
       }
       if (eventType === 'image_validating' || eventType === 'image_validation_failed' || eventType === 'image_regenerating') {
-        const stageContent = eventType === 'image_validating'
-          ? '检查生成结果中...'
-          : eventType === 'image_regenerating'
-            ? '根据检查结果重新生成中...'
-            : '生成结果未通过检查，准备重试...';
         return {
           ...item,
-          content: stageContent,
+          content: '生成图片中...',
           metadata: {
             ...(item.metadata || {}),
             pending: true,

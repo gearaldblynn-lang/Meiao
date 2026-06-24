@@ -24,6 +24,20 @@ test('AI 生成图推导出 generatedFrom（基于哪张图）', () => {
   assert.deepEqual(cat[1].generatedFrom, [1]);
 });
 
+test('最新 AI 生成图作为多轮修改的默认当前目标', () => {
+  const cat = buildSessionImageCatalog({
+    attachments: [],
+    priorMessages: [
+      ...priorMessages,
+      { role: 'assistant', content: '第二版', attachments: [{ kind: 'image', url: 'https://a/g2.png', name: '第二版' }], metadata: { imagePlan: { inputImageUrls: ['https://a/g1.png'] } } },
+    ],
+  });
+  const latest = cat.find((item) => item.url === 'https://a/g2.png');
+  assert.equal(latest?.isCurrentFocus, true);
+  assert.match(formatCatalogForPrompt(cat), /当前默认编辑图/);
+  assert.match(formatCatalogForPrompt(cat), /这张\/上一张\/刚才那张\/继续修改/);
+});
+
 test('本轮新上传图排在最前', () => {
   const cat = buildSessionImageCatalog({
     attachments: [{ kind: 'image', url: 'https://a/new.jpg', name: '新图.jpg' }],
@@ -31,6 +45,7 @@ test('本轮新上传图排在最前', () => {
   });
   assert.equal(cat[0].url, 'https://a/new.jpg');
   assert.equal(cat[0].source, 'user_upload');
+  assert.equal(cat[0].isCurrentFocus, true);
 });
 
 test('同一 URL 不重复进目录', () => {

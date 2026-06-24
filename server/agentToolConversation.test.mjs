@@ -656,6 +656,38 @@ test('本轮上传图：附进用户消息(多模态) + system 引导优先编�
   assert.match(sysText, /https:\/\/upload\/photo\.jpg/);
 });
 
+test('多轮修改：这张上一张默认指向最新 AI 生成图', async () => {
+  let capturedMessages = null;
+  await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '这张继续改成浅蓝色背景，主体保持不变',
+    attachments: [],
+    priorMessages: [
+      { role: 'user', content: '把这张产品图做成白底图', attachments: [{ kind: 'image', url: 'https://upload/source.png', name: '源图.png' }] },
+      {
+        role: 'assistant',
+        content: '图片已生成完成。',
+        attachments: [{ kind: 'image', url: 'https://result/latest.png', name: '白底图.png' }],
+        metadata: {
+          imagePlan: { inputImageUrls: ['https://upload/source.png'] },
+          imageResultUrls: ['https://result/latest.png'],
+        },
+      },
+    ],
+    callModel: async ({ messages }) => {
+      capturedMessages = messages;
+      return { content: '', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    onProgress: () => {},
+  });
+
+  const sysText = capturedMessages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+  assert.match(sysText, /当前默认编辑图/);
+  assert.match(sysText, /这张\/上一张\/刚才那张\/继续修改/);
+  assert.match(sysText, /https:\/\/result\/latest\.png/);
+});
+
 test('首轮 Responses 带图 502 时：用图片目录 URL 文本重试并继续生图', async () => {
   let round = 0;
   const userContents = [];
