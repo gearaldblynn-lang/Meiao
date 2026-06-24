@@ -165,3 +165,23 @@
   根因:将离 2026-06-24 10:48:00 再次提交 3 张图并说“都做成白底图,1:1 的比例,正面摆放”,云上落库显示用户消息确有 3 个 image attachments,但助手最终只有 1 个附件、`imagePlan.inputImageUrls` 只有第 3 张、`providerTaskId` 只有 1 个。复跑同一会话 dry-run 有时首轮能返回 3 个 tool calls,说明模型规划本身非确定;#20 只做了一轮模型审查,如果审查也误回 `PLAN_OK` 或仍少规划,后端仍会执行单张并标记完成。另外 `prepareModelImageUrl` 上传托管资产到 KIE 时沿用原文件名,多个历史/结果图都叫 `gpt-image-2.png` 会得到同一个 `https://tempfile.../gpt-image-2.png`,造成目录 URL 碰撞,放大模型把历史图/本轮图混淆的概率。
   修复:`runAgentConversationV2` 增加计划完整性防线:对“本轮多张新图 + 独立批处理语义 + 覆盖图片数少于目标数”的计划,最多进行 `AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS` 轮修复审查;强多图语义下不接受未补全的 `PLAN_OK`,仍未补全则抛 `image_plan_under_planned` 快速失败,不允许执行单张并显示完成。语义判断只做输出拓扑分类(每张/分别/都/全部 vs 合成/同一张/只处理某张),不写白底/加字/换背景业务特判。`providerAssetTransfer` 给托管资产上传文件名加 URL hash 后缀,避免同名文件覆盖同一个中转图床 URL。
   如何避免:**模型审查也不是可靠终态。任何多图独立输出链路必须在执行工具前校验计划覆盖率,不能只要模型返回 tool_calls 就执行;对强多图语义,少规划宁可快速失败也不能单张完成。同名素材上传到第三方图床必须使用稳定唯一文件名,不能依赖原文件名。回归测试要覆盖“首轮单图 + 审查 PLAN_OK + 再次修复成多图”、只处理单图不误拆、合成一张不误拆、同名托管资产上传 URL 不碰撞。**
+
+- **#23 ✅ 已修(2026-06-24)· KIE 素材上传超时被模型 fallback 放大成重复转存**
+  根因:天琪账号 `6月24日项目1` 详情页策划任务 `314b56717acef4bcf5a6c85e` 失败在 `kie_chat` 的前置素材转存阶段,`provider_task_id=null`,事件表记录 `provider_submitted=0`、`error_fingerprint=kie:kie_chat:asset_upload:provider_timeout`。输入 7 张托管素材,其中 6 张约 3.5-4.5MB;`resolveProviderChatMediaUrl` 对聊天/策划图片强制上传 KIE 图床。主模型 `gpt-5-4-openai-resp` 上传超时后,`runKieChatFallbackModels` 把 `provider_timeout` 当成模型可 fallback 错误,切到 `claude-sonnet-4-6` 后又重新转存同一批素材,把一次传输失败放大成两轮上传等待。现场探针验证单张同素材当前可 5 秒上传成功,所以不是 KIE 图床整体不可用,而是这批多图转存链路在当时超时并被 fallback 重复消耗。
+  修复:`providerGateway` 对 `providerStage=asset_upload/asset_download` 的 `kie_chat` 错误不再触发模型 fallback,因为换模型解决不了素材传输失败;同一轮 `kie_chat` 创建共享 `mediaUrlCache`,让主模型请求已经成功转存的托管素材 URL 在 fallback 模型里复用,不再重复上传同一个 `/api/assets/file/...`。补两个回归测试:素材上传超时时只上传一次并直接失败;主模型请求失败但素材上传成功时,fallback 复用同一个 KIE 图床 URL。
+  如何避免:**模型 fallback 只能用于模型/上游推理阶段错误,不能用于 asset_upload/asset_download 这类传输阶段错误。任何 provider fallback 链路都必须共享前置素材解析/上传缓存;看到 `provider_task_id=null + provider_submitted=0` 时,优先按提交前传输阶段排查,不要归因成 KIE 生图任务失败。**
+
+- **#25 ✅ 已修(2026-06-24)· KIE chat 同步策划被 providerless stale 保护提前杀死**
+  根因:天琪账号同一详情页任务 `cdeaca8888a946f1223da046` 上云重试后,已不再复现 `asset_upload` 失败,但 5 分多钟后被事件 `kie:kie_chat:provider_submit:provider_submit_stale` 标记失败。云上 `MEIAO_PROVIDERLESS_RUNNING_STALE_MS` 约为 5 分钟,用于回收图片/视频类“已提交前无 providerTaskId”的卡死任务;但 `kie_chat` 详情页策划是同步 Responses 文本请求,7 张素材转存加模型返回可能超过 5 分钟,且 providerTaskId 通常在请求成功后才落库。这个通用 stale 保护把仍在执行的同步策划误判为卡死。
+  修复:`reconcileStaleProviderlessRunningMysqlJobs` 按 `taskType` 计算 providerless stale 窗口,对 `kie_chat` 强制使用不少于默认 15 分钟的保护窗口,不被云上 5 分钟短窗口提前回收;图片/视频类 `kie_image` 等仍按云上短窗口回收。补回归测试验证 `kie_chat` 运行 10 分钟不会被 5 分钟窗口误杀,16 分钟才会进入 stale。
+  如何避免:**providerless stale 不是所有 provider 任务的同一语义。异步生图/视频“创建任务前无 providerTaskId”和同步文本/策划“完成前才有 providerTaskId”必须分开设窗口。真实验收必须跑同一 payload 的正式 job,只做图床探针或直连 providerGateway 不能证明 Temporal/job recovery 链路已通过。**
+
+- **#24 ✅ 已修(2026-06-24)· 智能体首轮规划前批量转存历史图片,拖慢并污染本轮多图规划**
+  根因:将离 2026-06-24 10:48:00 的 3 图白底任务修完 #22 后,云上 dry-run 仍在进入模型规划前卡到 KIE 素材上传超时。继续追踪发现 `runAgentConversationV2` 在首轮 Responses 规划前不仅转存本轮 3 张新图,还会把 `priorMessages` 里的历史附件、历史生成图、历史 `imagePlan.inputImageUrls` 全部走 `prepareModelImageUrl` 上传到中转图床。历史图并非本轮 inline 视觉输入,却占用了最关键的规划前链路;历史图多、同名或上传慢时,模型还没开始判断“本轮 3 张都处理”就可能失败或被旧图目录干扰。
+  修复:`runAgentConversationV2` 只对本轮 `attachments` 做首轮预转存并 inline 给模型;历史消息继续进入图片目录文本,但不在首轮规划前批量转存。若用户后续明确引用历史图,`generate_image` 阶段仍会按 catalog URL 校验并由 providerGateway 在真正提交生图时转存该历史图。补回归测试断言首轮规划只调用 3 张本轮图片的 `prepareModelImageUrl`,历史附件和历史生成图不触发预转存。
+  如何避免:**首轮视觉规划的关键路径只处理本轮新输入。历史上下文可以作为目录文本保留,但不能在每次新请求前批量转存;否则上传失败会被误判成模型/语义失败,并把旧图引入本轮多图覆盖判断。涉及 agent 图片目录的改动要分别验证“本轮 inline 图片”和“历史可引用图片”两条路径。**
+
+- **#26 ✅ 已修(2026-06-24)· 智能体多图结果数量正确但内容错图仍被标记完成**
+  根因:将离 2026-06-24 10:53:02 的 3 图白底任务已经返回 3 张并写入 completed,但第二张黑色加湿器被生成成红色营养瓶,且瓶图重复。数据库回溯显示旧消息的 `imagePlan.plans` 第 2 项已经被同名 KIE URL 碰撞带偏为瓶类 prompt;即使 #22/#24 修了 URL 唯一性和首轮历史图预转存,后端验收仍只看“计划覆盖数/输出数/URL 数”,没有检查每个生成结果是否真的对应当前源图和用户语义要求。模型/KIE 可能给出数量正确但主体错误的图片,原逻辑会直接落库为成功。
+  修复:`runAgentConversationV2` 在每个 `generate_image` 返回后、写 `image_result_ready` checkpoint 前新增结果质检钩子:用同一中转 Responses 模型同时看源图和生成结果,输出 JSON 判断主体一致性、白底/比例/构图等用户要求是否满足。质检失败时把反馈合并进强化 prompt 自动重试一次;仍失败则抛 `image_result_validation_failed`,不把错误图标记完成。MySQL 和本地 JSON 两套 chat handler 都接入 `validateAgentGeneratedImageResult`,并通过 `AGENT_IMAGE_RESULT_VALIDATION_ENABLED` / `AGENT_IMAGE_RESULT_VALIDATION_MAX_RETRIES` 控制。
+  如何避免:**智能体生图验收不能只验“有没有 N 张图”。多图独立处理必须在落库前逐张验证“源图 → 结果图”的主体一致性和用户要求满足度;结果质检通过后才允许写 completed checkpoint。生成结果质检也必须走 managed asset scrubbed provider 边界,禁止新增 base64 或未配置模型 fallback。**

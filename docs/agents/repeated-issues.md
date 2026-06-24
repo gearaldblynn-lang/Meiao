@@ -606,6 +606,38 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test src/shell/modules/AgentCenter/AgentCenterModule.test.mjs --test-name-pattern "agent factory validation"`。
 - Avoid next time: 发布版和草稿版并存时，验证/保存/发布后的刷新必须显式传递目标版本 ID。不要用 `versions[0]` 推导当前验证摘要。
 
+### KIE asset upload failures must not trigger model fallback
+
+- Symptom: 天琪账号 `6月24日项目1` 详情页策划显示 `Kie 素材上传超时`，用户误以为 KIE 图床整体传不上图片。
+- Root cause: 云上 `internal_jobs/internal_job_events` 显示任务 `314b56717acef4bcf5a6c85e` 的 `provider_task_id=null`、`provider_submitted=0`、`stage=asset_upload`，说明还没进入 KIE 详情策划/生成。`kie_chat` 主模型上传 7 张托管素材超时后，fallback 模型又重新上传同一批素材，导致一次传输问题被放大成两轮上传等待。
+- Fix: `providerGateway` 对 `asset_upload` / `asset_download` 阶段错误禁止模型 fallback；`kie_chat` fallback 链路共享 `mediaUrlCache`，主模型已上传成功的托管素材 URL 会被 fallback 复用。
+- Regression check: `node --test server/providerGateway.test.mjs server/providerAssetTransfer.test.mjs server/jobRuntime.test.mjs server/temporalWorker.test.mjs`。
+- Avoid next time: 先按 `provider_task_id` 和 `provider_submitted` 分阶段。`provider_task_id=null + provider_submitted=0` 是提交前传输/准备阶段，不是 KIE 已接单失败；模型 fallback 不能用于素材下载/上传错误，且 fallback 链路必须共享前置素材转存缓存。
+
+### KIE chat providerless stale windows must be longer than image task submit windows
+
+- Symptom: 天琪账号同一详情页 job `cdeaca8888a946f1223da046` 修复素材上传 fallback 后真实重试，5 分多钟后变成 `provider_submit_stale`。
+- Root cause: 云上 `MEIAO_PROVIDERLESS_RUNNING_STALE_MS` 约 5 分钟，适合回收图片/视频异步任务在 createTask 前卡死的情况；但 `kie_chat` 是同步 Responses 文本策划，7 张素材转存和模型响应期间通常没有 providerTaskId，只有成功返回后才写 `resp_*`。通用 5 分钟窗口会把仍在执行的同步策划误判为卡死。
+- Fix: `jobManager` 对 `kie_chat` providerless running job 使用不少于默认 15 分钟的 stale 窗口；其他任务仍按云上短窗口回收。
+- Regression check: `node --test server/jobManager.test.mjs --test-name-pattern "kie chat submit"`；正式云上同 job 重试成功，`providerTaskId=resp_0a056c56c2160b09016a3b711f3fa8819b9d00fd746de4b13a`，返回 7 个 `[SCHEME_START]`。
+- Avoid next time: providerless stale 要按任务语义分层。同步 chat/策划类任务不能套用异步生图/视频的 createTask 前短窗口；真实验收必须覆盖正式 job/Temporal 链路，而不只看 providerGateway 直连。
+
+### Agent vision planning must not pre-upload historical images
+
+- Symptom: 将离账号最新 3 图需求仍只产出 1 张；修复多图覆盖校验后，云上 dry-run 又在进入模型规划前出现 KIE 素材上传超时。
+- Root cause: `runAgentConversationV2` 会在首轮 Responses 规划前把 `priorMessages` 中的历史附件、历史生成图和历史 `imagePlan.inputImageUrls` 也走 `prepareModelImageUrl` 批量转存。历史图不是本轮 inline 视觉输入，却会占用本轮规划前的上传链路，并可能污染模型对本轮 3 张新图的覆盖判断。
+- Fix: 首轮规划只预转存本轮 `attachments`，并把这些 HTTPS URL inline 给模型；历史消息只进入图片目录文本，不再批量上传。真正引用历史图执行 `generate_image` 时，再由 providerGateway 在提交阶段转存。
+- Regression check: `node --test server/agentToolConversation.test.mjs --test-name-pattern "首轮规划只预转存"`；`node --test server/agentToolConversation.test.mjs server/providerAssetTransfer.test.mjs server/providerGateway.test.mjs server/openaiResponsesProvider.test.mjs server/agentCenterSource.test.mjs`。
+- Avoid next time: 首轮模型视觉分析的关键路径只允许包含本轮新上传图。历史图可以给模型做文本目录参考，但不能每次请求都先上传到第三方图床；否则会把传输失败伪装成模型/语义失败。
+
+### Agent image results need source/result validation before completion
+
+- Symptom: 将离账号 3 图白底任务返回了 3 张 completed 图片，但黑色加湿器缺失，结果里出现重复瓶类产品；用户看到的是“数量正确但图对不上”。
+- Root cause: #22/#24 修复了多图规划覆盖和 KIE 图床 URL 稳定性，但落库前仍只验证输出数量、provider task id 和 URL 列表，不验证每张生成结果是否对应当前源图和语义要求。模型/KIE 可能生成主体错误的图片，原逻辑仍会写 `image_result_ready` 并标记 completed。
+- Fix: `runAgentConversationV2` 在每个 `generate_image` 结果写 checkpoint 前调用 `validateImageResult`；服务端 `validateAgentGeneratedImageResult` 用同一中转 Responses 模型看源图和生成结果，返回 JSON 质检结论。失败时自动带质检反馈重试一次，仍失败则快速失败，不把错误图写成成功。
+- Regression check: `node --test server/agentToolConversation.test.mjs --test-name-pattern "生图结果质检"`；`node --test server/agentToolConversation.test.mjs server/providerAssetTransfer.test.mjs server/providerGateway.test.mjs server/openaiResponsesProvider.test.mjs server/agentCenterSource.test.mjs server/agentImagePlan.test.mjs`；`npm run build`；`npm run lint`。
+- Avoid next time: 智能体多图验收不能只数图片数量。只要是源图编辑/逐张处理，落库前必须逐张验证主体一致性和用户要求满足度；质检请求也必须走 managed asset scrubbed provider 边界，不新增 base64 或未配置模型 fallback。
+
 ## 2026-06-12 - First-image planning recovery must aggregate sibling reference jobs
 
 - Symptom: 天琪账号首图功能上传 5 张风格参考图后，后台实际创建并完成了 5 个 `kie_chat` 策划 job，但前端项目卡只显示 1 个策划，用户无法发现少了 4 个。
