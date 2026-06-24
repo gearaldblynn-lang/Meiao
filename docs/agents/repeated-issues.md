@@ -28,6 +28,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/agentToolConversation.test.mjs --test-name-pattern "参考图替换主图局部|用户明确要求都处理多张新图|用户要求合成到同一张图|多张新图但用户只指定其中一张"`; combined provider/source tests; `npm run build`; `npm run lint`.
 - Avoid next time: 多图判断看输出拓扑而不是单个词；`imagePlan:null/providerTaskId:''` 是规划阶段，先查 V2 fallback payload 和配置模型，不要把它当 KIE 出图失败。
 
+## 2026-06-24 - Seedance video asset upload failures need pre-submit media throttling
+
+- Symptom: 董丹丹账号 `6月24日项目2` 前端显示视频生成失败。对账后端 job `041e6f368539bc79d85b13f8` 为 `failed`,没有 `provider_task_id`,没有 `videoUrl`。
+- Environment: Tencent Cloud production / short video direct generation / `kie_seedance_video` / managed assets.
+- Root cause: 8 张视频参考素材提交前同时转存到 KIE 图床,多张 3-4MB 素材下载/上传压力过高;事件停在 `asset_upload` 的 `provider_network_error: fetch failed`,说明没进入 KIE 视频生成。`kie_seedance_video` 路径原来对图片/视频/音频素材 `Promise.all` 全量并发,不像 `kie_image` 有单任务限流。
+- Fix: `kie_seedance_video` 素材解析/转存改为图片、视频、音频合计限流,默认 `MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY=2`;已清理董丹丹失败卡旧的“生成中/任务已提交云端”占位。架构级根因见 `CLAUDE.md` #30。
+- Regression check: `server/providerGateway.test.mjs` 覆盖 Seedance managed asset transfer 最大并发不超过 2;`npm run build` 作为前端/类型门禁。
+- Avoid next time: 看到 `provider_task_id=null + provider_submitted=0 + asset_upload` 时,先查提交前素材转存,不要归因成上游视频生成失败或成功未显示。
+
 ## 2026-06-24 - Direct video success must update shell project and video memory
 
 - Symptom: 董丹丹账号直接视频生成任务后端已成功、MP4 资产返回 200,但页面没有真实显示视频。

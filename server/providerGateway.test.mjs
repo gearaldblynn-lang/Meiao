@@ -331,6 +331,84 @@ test('executeProviderJob submits seedance fast video jobs through kie api and pr
   }
 });
 
+test('executeProviderJob limits seedance video managed asset transfer concurrency', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  let activeAssetDownloads = 0;
+  let maxActiveAssetDownloads = 0;
+
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    if (requestUrl.startsWith('http://127.0.0.1:3100/api/assets/file/')) {
+      activeAssetDownloads += 1;
+      maxActiveAssetDownloads = Math.max(maxActiveAssetDownloads, activeAssetDownloads);
+      await new Promise((resolve) => originalSetTimeout(resolve, 5));
+      activeAssetDownloads -= 1;
+      return new Response(Buffer.from([0xff, 0xd8, 0xff]), {
+        status: 200,
+        headers: {
+          'content-type': 'image/jpeg',
+          'content-length': '3',
+        },
+      });
+    }
+    if (requestUrl.includes('/api/file-stream-upload')) {
+      return createJsonResponse({ code: 200, data: { fileUrl: `https://kie.example/upload-${Date.now()}.jpg` } });
+    }
+    if (requestUrl.includes('/api/v1/jobs/createTask')) {
+      return createJsonResponse({ code: 200, msg: 'success', data: { taskId: 'seedance-limited-transfer-task' } });
+    }
+    return createJsonResponse({
+      code: 200,
+      data: {
+        state: 'success',
+        resultJson: JSON.stringify({ resultUrls: ['https://example.com/seedance-limited-result.mp4'] }),
+      },
+    });
+  };
+  global.setTimeout = (handler, ms) => {
+    if (ms === 60_000) {
+      return originalSetTimeout(handler, ms);
+    }
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = (id) => originalClearTimeout(id);
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_seedance_video',
+        provider: 'kie',
+        payload: {
+          mode: 'multimodal2video',
+          prompt: 'show product',
+          imageUrls: [
+            '/api/assets/file/a/1.jpg',
+            '/api/assets/file/b/2.jpg',
+            '/api/assets/file/c/3.jpg',
+            '/api/assets/file/d/4.jpg',
+          ],
+          duration: 5,
+        },
+      },
+      {
+        KIE_API_KEY: 'test-key',
+        MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY: '2',
+      },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.videoUrl, 'https://example.com/seedance-limited-result.mp4');
+    assert.equal(maxActiveAssetDownloads, 2);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
 test('executeProviderJob keeps polling kie image jobs when recordInfo is temporarily not found', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
