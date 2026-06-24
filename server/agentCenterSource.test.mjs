@@ -360,6 +360,8 @@ test('agent image conversation prompt includes deterministic image order mapping
 test('agent image result validation does not reject allowed style conversion by default', () => {
   assert.match(source, /不要仅因生成结果从图标、插画或海报素材变成写实电商主图而判失败/);
   assert.match(source, /重点判断主体类别、颜色、结构和关键标识是否对应/);
+  assert.match(source, /允许产品边缘的轻微自然阴影、压缩色差或细微光照渐变/);
+  assert.match(source, /只有背景大面积不是目标颜色、出现复杂场景\/海报元素\/明显暗角时才判失败/);
 });
 
 test('agent studio source exposes draft-only training and testing endpoints in mysql and local modes', () => {
