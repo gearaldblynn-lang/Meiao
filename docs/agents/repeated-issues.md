@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-06-24 - Reference-image local replacement is single-output, and V2 planning needs configured fallback
+
+- Symptom: 林一账号提交“把原图1中湿巾上的字母全部换成图2湿巾上面的字母，图1其他部分不发生任何改变，图片格式为800*800”后，智能体生图失败；同类云上记录出现 `图片规划未完整覆盖本轮多图需求...`，另一路失败为 `Our servers are currently overloaded. Please try again later.`。
+- Environment: Tencent Cloud production / agent_center V2 tool calling / configured relay models.
+- Root cause: “全部”在该句中修饰湿巾字母，不是所有图片；旧审查把它误当多图独立批处理信号。V2 tool-calling 的 `/v1/responses` provider payload 又缺 `fallbackModels`，规划阶段 overload 时不能在智能体配置模型内切换。
+- Fix: 单输出拓扑识别增加“图 A 换成/替换成图 B”和“其它部分不变/保持不变”；MySQL 与本地 JSON 双 handler 的 `openai_responses` payload 都传 `resolveChatFallbackModels(version, selectedModel)`。架构级根因见 `CLAUDE.md` #29。
+- Regression check: `node --test server/agentToolConversation.test.mjs --test-name-pattern "参考图替换主图局部|用户明确要求都处理多张新图|用户要求合成到同一张图|多张新图但用户只指定其中一张"`; combined provider/source tests; `npm run build`; `npm run lint`.
+- Avoid next time: 多图判断看输出拓扑而不是单个词；`imagePlan:null/providerTaskId:''` 是规划阶段，先查 V2 fallback payload 和配置模型，不要把它当 KIE 出图失败。
+
 ## 2026-06-24 - Direct video success must update shell project and video memory
 
 - Symptom: 董丹丹账号直接视频生成任务后端已成功、MP4 资产返回 200,但页面没有真实显示视频。
