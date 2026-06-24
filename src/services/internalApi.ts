@@ -128,6 +128,8 @@ const classifyError = (status: number, serverMessage: string): ApiError => {
 
 // --------------- 超时控制 ---------------
 const DEFAULT_TIMEOUT_MS = 30_000;
+const CHAT_MESSAGE_TIMEOUT_MS = 240_000;
+const IMAGE_GENERATION_CHAT_TIMEOUT_MS = 900_000;
 
 const fetchWithTimeout = (
   url: string,
@@ -887,12 +889,15 @@ export const sendChatMessage = async (sessionId: string, payload: {
 
   try {
     const path = `/api/chat/sessions/${encodeURIComponent(sessionId)}/messages`;
+    const timeoutMs = payload.requestMode === 'image_generation'
+      ? IMAGE_GENERATION_CHAT_TIMEOUT_MS
+      : CHAT_MESSAGE_TIMEOUT_MS;
     if (!useStream) {
       return await request<SendChatMessageResult>(path, {
         method: 'POST',
         body: JSON.stringify(payload),
         signal: options?.signal,
-        timeoutMs: payload.requestMode === 'image_generation' ? 300_000 : 240_000,
+        timeoutMs,
         dedupe: false,
       });
     }
@@ -907,7 +912,7 @@ export const sendChatMessage = async (sessionId: string, payload: {
         Accept: 'text/event-stream',
       },
       signal: options?.signal,
-      timeoutMs: payload.requestMode === 'image_generation' ? 300_000 : 240_000,
+      timeoutMs,
       cache: 'no-store' as RequestCache,
     });
 
