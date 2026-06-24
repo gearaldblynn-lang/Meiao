@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 export const ASSET_RETENTION_MS = 1000 * 60 * 60 * 24 * 3;
 const ASSET_DIR = path.join(__dirname, 'data', 'assets');
 const LOCAL_REGISTRY_PATH = path.join(__dirname, 'data', 'asset-registry.json');
-const PERMANENT_ASSET_MODULES = new Set(['agent_center']);
+const PERMANENT_ASSET_MODULES = new Set(['agent_center', 'agent_chat']);
 
 const ensureDir = (dirPath) => {
   mkdirSync(dirPath, { recursive: true });
@@ -291,6 +291,12 @@ export const ensureAssetSchema = async (pool) => {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
   await pool.query('ALTER TABLE stored_assets MODIFY COLUMN job_id VARCHAR(120) NULL');
+  await pool.query(`
+    UPDATE stored_assets
+    SET expires_at = 0
+    WHERE module IN ('agent_center', 'agent_chat')
+      AND expires_at <> 0
+  `);
 };
 
 const createAssetRecord = async (pool, record) => {
