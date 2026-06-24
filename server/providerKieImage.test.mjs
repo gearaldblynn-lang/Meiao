@@ -84,6 +84,41 @@ test('runKieImageJob resolves duplicate input and prompt media URLs once', async
   assert.match(createTaskBody.input.prompt, /https:\/\/public\.test\/api\/assets\/file\/a\.png/);
 });
 
+test('runKieImageJob limits concurrent media resolution before creating a task', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const resolved = [];
+
+  await runKieImageJob({
+    payload: {
+      model: 'gpt-image-2',
+      prompt: 'batch detail page',
+      imageUrls: [
+        '/api/assets/file/a.png',
+        '/api/assets/file/b.png',
+        '/api/assets/file/c.png',
+        '/api/assets/file/d.png',
+      ],
+      aspectRatio: '3:4',
+    },
+    signal: new AbortController().signal,
+    options: {},
+    deps: createDeps({
+      resolveGenerationMediaUrl: async (url) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        active -= 1;
+        resolved.push(url);
+        return `https://public.test${url}`;
+      },
+    }),
+  });
+
+  assert.equal(resolved.length, 4);
+  assert.equal(maxActive <= 2, true);
+});
+
 test('runKieImageJob notifies provider task id before polling completes', async () => {
   const events = [];
   await runKieImageJob({
