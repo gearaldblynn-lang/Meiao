@@ -488,6 +488,13 @@ const buildProjectRemotePatch = (
   if (branchKey && state.oneClickMemory?.[branchKey]) {
     patch.oneClickMemory = { [branchKey]: state.oneClickMemory[branchKey] } as Partial<PersistedAppState['oneClickMemory']> as PersistedAppState['oneClickMemory'];
   }
+  if (
+    project.module === AppModuleObj.VIDEO
+    && project.subFeature === 'generation'
+    && state.videoMemory
+  ) {
+    patch.videoMemory = state.videoMemory;
+  }
   return patch;
 };
 
@@ -4575,6 +4582,7 @@ const AppContent: React.FC<{
 	            module: targetModule,
 	            subFeature: targetSubFeature,
 	            taskId: result.taskId,
+	            backendJobId: activeBackendJobId || undefined,
 	            creditsConsumed: result.creditsConsumed,
 	          };
 

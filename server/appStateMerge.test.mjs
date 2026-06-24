@@ -885,6 +885,38 @@ test('mergeAppStateForStorage clears stale video failure fields when a completed
   assert.equal(merged.shellProjects[0].results[0].error, undefined);
 });
 
+test('mergeAppStateForStorage mirrors completed direct video projects into video memory', () => {
+  const merged = mergeAppStateForStorage({}, {
+    shellProjects: [{
+      id: 'video-project-mirror',
+      name: '视频生成项目',
+      module: 'video',
+      subFeature: 'generation',
+      status: 'completed',
+      taskCount: 1,
+      completedCount: 1,
+      createdAt: 1782285629355,
+      completedAt: 1782285879670,
+      backendJobId: 'job-video-mirror',
+      results: [{
+        id: 'provider-video-mirror',
+        taskId: 'provider-video-mirror',
+        backendJobId: 'job-video-mirror',
+        status: 'completed',
+        mediaType: 'video',
+        prompt: '视频脚本',
+        imageUrl: '/mirrored-video.mp4',
+        videoUrl: '/mirrored-video.mp4',
+      }],
+    }],
+  });
+
+  assert.equal(merged.videoMemory.veoProjects.length, 1);
+  assert.equal(merged.videoMemory.veoProjects[0].id, 'video-project-mirror');
+  assert.equal(merged.videoMemory.veoProjects[0].states[0].status, 'COMPLETED');
+  assert.equal(merged.videoMemory.veoProjects[0].states[0].variants[0].blobUrl, '/mirrored-video.mp4');
+});
+
 test('mergeAppStateForStorage preserves translation files across concurrent branch writes', () => {
   const merged = mergeAppStateForStorage({
     translationMemory: {
@@ -1316,11 +1348,15 @@ test('mergeAppStateForStorage normalizes stale placeholders for every project mo
     },
   });
 
+  const mirroredDirectVideo = merged.videoMemory.veoProjects.find((project) => project.id === 'video-project');
+  assert.equal(mirroredDirectVideo?.states?.[0]?.status, 'COMPLETED');
+  assert.equal(mirroredDirectVideo?.states?.[0]?.variants?.[0]?.blobUrl, '/video-project.mp4');
+
   const allProjects = [
     ...merged.shellProjects,
     ...merged.buyerShowMemory.sets,
     ...merged.xhsCoverMemory.projects,
-    ...merged.videoMemory.veoProjects,
+    ...merged.videoMemory.veoProjects.filter((project) => project.id !== 'video-project'),
     ...merged.videoMemory.storyboard.projects,
   ];
   assert.equal(allProjects.length, 8);
@@ -1540,4 +1576,3 @@ test('trimAppStateForStorage falls back to keeping at least one project when no 
   assert.equal(trimmed.shellProjects.length, 1, '极端情况至少留 1 项');
   assert.equal(trimmed.shellProjects[0].id, 'p2', '保留的必须是最新那个');
 });
-

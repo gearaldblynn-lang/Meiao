@@ -77,6 +77,7 @@
 - 分镜板可用
 - 白底图可用
 - 刷新页面后视频结果仍能恢复
+- 直接视频生成完成后,`shellProjects` 与 `videoMemory.veoProjects` 均可恢复同一 `videoUrl`,旧 pending/failed 占位不能覆盖成功结果
 
 ### 素材上传
 - 上传成功后由内部接口返回素材地址

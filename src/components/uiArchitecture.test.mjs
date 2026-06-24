@@ -36,6 +36,15 @@ test('help guide config covers all top-level modules from shared content', () =>
   assert.match(guideConfig, /AppModule\.ACCOUNT/);
 });
 
+test('video generation project persistence patches video memory for refresh recovery', () => {
+  const app = read('../ShellMigratedApp.tsx');
+  const patchHelper = app.match(/const buildProjectRemotePatch = \([\s\S]*?\n\};/)?.[0] || '';
+
+  assert.match(patchHelper, /project\.module === AppModuleObj\.VIDEO/);
+  assert.match(patchHelper, /project\.subFeature === 'generation'/);
+  assert.match(patchHelper, /patch\.videoMemory = state\.videoMemory/);
+});
+
 test('agent chat GPT loop acceptance record documents verification feedback and fact learning', () => {
   const doc = read('../../docs/agent-chat-gpt-loop-acceptance.md');
   assert.match(doc, /普通问答/);
@@ -1076,8 +1085,8 @@ test('video workspace keeps the shell UI while migrating storyboard and diagnosi
   assert.match(videoModule, /project\.status === 'awaiting_image_confirmation' \? 'planning'/);
   assert.match(projectCard, /确认生图/);
   assert.match(videoModule, /onConfirmStoryboardImaging/);
-  assert.match(projectCard, /storyboardProjectStatus === 'awaiting_image_confirmation'[\s\S]*?确认生图/);
-  assert.match(projectCard, /if \(isStoryboardAwaitingImageConfirmation \|\| regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\) return;[\s\S]*?onRegenerate\(project\.id, result\.id\)/);
+  assert.match(projectCard, /等待统一确认生图/);
+  assert.doesNotMatch(projectCard, /label=\{isStoryboardAwaitingImageConfirmation \? '待确认'/);
   assert.match(shellApp, /parseStoryboardShotCount/);
   assert.match(shellApp, /countryLanguage: params\.countryLanguage \|\| base\.countryLanguage/);
   assert.match(shellApp, /projectCount: 1/);
@@ -3016,11 +3025,14 @@ test('planning task id chips do not display internal backend job ids', () => {
 
 test('shell video generation submits seedance jobs without automatic retry and keeps audio enabled by default', () => {
   const workflow = read('../adapters/shellWorkflow.ts');
+  const shellApp = read('../ShellMigratedApp.tsx');
   const videoBody = workflow.match(/export const runShellVideoGeneration = async \(input: ShellGenerateInput\) => \{([\s\S]*?)\n\};/)?.[1] || '';
+  const completedVideoResultBlock = shellApp.match(/const newResult: GeneratedResult = \{[\s\S]*?mediaType: 'video'[\s\S]*?\n\t          \};/)?.[0] || '';
 
   assert.match(videoBody, /generateAudio: parseSeedanceGenerateAudio\(input\.params\)/);
   assert.match(videoBody, /maxRetries: 0/);
   assert.doesNotMatch(videoBody, /generateAudio: false/);
+  assert.match(completedVideoResultBlock, /backendJobId: activeBackendJobId \|\| undefined/);
 });
 
 test('everything replace is registered as a shell module with product replace entry points', () => {

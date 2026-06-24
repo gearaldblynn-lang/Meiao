@@ -763,6 +763,77 @@ const mergeVideoMemory = (existingMemory = {}, incomingMemory = {}) => ({
   },
 });
 
+const buildVeoProjectFromShellVideoProject = (project = {}) => {
+  if (!isDirectVideoGenerationProject(project)) return null;
+  const result = (Array.isArray(project?.results) ? project.results : []).find((item) => (
+    hasCompletedMediaItem(item)
+    && (String(item?.mediaType || '') === 'video' || item?.videoUrl)
+  ));
+  if (!result) return null;
+  const videoUrl = compactKey(result.videoUrl || result.imageUrl || result.resultUrl);
+  if (!videoUrl) return null;
+  const taskId = compactKey(result.taskId || result.providerTaskId || result.id || project.backendJobId);
+  const segmentId = `${compactKey(project.id)}-segment-1`;
+  return {
+    id: project.id,
+    name: compactKey(project.name) || '视频生成结果',
+    states: [{
+      segmentId,
+      script: {
+        id: segmentId,
+        type: 'INITIAL',
+        title: '视频生成结果',
+        style: '',
+        description: compactKey(result.prompt || project.name),
+        spokenContent: '',
+        bgm: '',
+        duration: 0,
+      },
+      variants: [{
+        id: taskId || `${compactKey(project.id)}-video`,
+        taskId,
+        uri: videoUrl,
+        blobUrl: videoUrl,
+        createdAt: Number(project.completedAt || result.createdAt || project.createdAt || Date.now()),
+        schemeName: '生成结果',
+      }],
+      selectedVariantId: taskId || `${compactKey(project.id)}-video`,
+      status: 'COMPLETED',
+      lastTaskId: taskId || undefined,
+    }],
+    isExpanded: true,
+    backendJobId: compactKey(project.backendJobId) || undefined,
+    createdAt: project.createdAt,
+    updatedAt: project.completedAt || result.createdAt || project.createdAt,
+  };
+};
+
+const mirrorCompletedDirectVideosIntoVideoMemory = (state = {}) => {
+  const mirrors = (Array.isArray(state?.shellProjects) ? state.shellProjects : [])
+    .map(buildVeoProjectFromShellVideoProject)
+    .filter(Boolean);
+  if (mirrors.length === 0) return state;
+  const mirrorIds = new Set(mirrors.map((project) => compactKey(project.id)).filter(Boolean));
+  const mirrorJobIds = new Set(mirrors.map((project) => compactKey(project.backendJobId)).filter(Boolean));
+  const existingProjects = Array.isArray(state?.videoMemory?.veoProjects) ? state.videoMemory.veoProjects : [];
+  return {
+    ...state,
+    videoMemory: {
+      ...(state.videoMemory || {}),
+      veoProjects: [
+        ...mirrors,
+        ...existingProjects.filter((project) => {
+          const id = compactKey(project?.id);
+          const backendJobId = compactKey(project?.backendJobId);
+          if (id && mirrorIds.has(id)) return false;
+          if (backendJobId && mirrorJobIds.has(backendJobId)) return false;
+          return true;
+        }),
+      ],
+    },
+  };
+};
+
 export const mergeAppStateForStorage = (existingState = {}, incomingState = {}) => {
   const mergedDraft = mergeShellDraftForStorage(existingState?.shellDraft, incomingState?.shellDraft);
   const existing = applyDeletionTombstones(compactAppStateForStorage(existingState), mergedDraft);
@@ -822,5 +893,5 @@ export const mergeAppStateForStorage = (existingState = {}, incomingState = {}) 
     tasks: mergeArrayByStableKeys(existing.xhsCoverMemory?.tasks, incoming.xhsCoverMemory?.tasks),
   };
 
-  return compactAppStateForStorage(next);
+  return compactAppStateForStorage(mirrorCompletedDirectVideosIntoVideoMemory(next));
 };
