@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import { isExternallyReachableBaseUrl, isLocalOrPrivateHostname, normalizeBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import {
@@ -199,6 +200,16 @@ export const ensureProviderFileNameWithExtension = (fileName, mimeType) => {
   return extension ? `${normalizedName}.${extension}` : normalizedName;
 };
 
+export const buildUniqueProviderFileName = (fileName, uniqueKey = '') => {
+  const normalizedName = String(fileName || '').trim() || 'upload.bin';
+  const safeName = normalizedName.replace(/[^\w.\-\u4e00-\u9fa5]+/g, '_').slice(0, 120) || 'upload.bin';
+  const dotIndex = safeName.lastIndexOf('.');
+  const stem = dotIndex > 0 ? safeName.slice(0, dotIndex) : safeName;
+  const ext = dotIndex > 0 ? safeName.slice(dotIndex) : '';
+  const hash = createHash('sha256').update(String(uniqueKey || normalizedName)).digest('hex').slice(0, 12);
+  return `${stem}-${hash}${ext}`;
+};
+
 export const parseDataUrlPayload = (value) => {
   const raw = String(value || '').trim();
   const match = raw.match(/^data:([^;,]+)?(?:;charset=[^;,]+)?;base64,([A-Za-z0-9+/=]+)$/i);
@@ -290,6 +301,7 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
   const upload = normalizedOptions.deps.uploadAssetViaKieWithFallback || uploadAssetViaKieWithFallback;
   const uploaded = await upload({
     ...downloaded,
+    fileName: buildUniqueProviderFileName(downloaded.fileName, getManagedAssetPath(assetUrl) || assetUrl),
     uploadPath: 'mayo-storage/internal',
   }, normalizedOptions);
   return String(uploaded?.result?.fileUrl || '').trim();

@@ -28,21 +28,53 @@ test('convertManagedAssetUrlToKieFileUrl prefers externally reachable managed as
 });
 
 test('convertManagedAssetUrlToKieFileUrl force uploads managed assets', async () => {
+  let uploadedFileName = '';
   const uploaded = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/user/a.png', {
     env: {},
     signal: new AbortController().signal,
     forceUpload: true,
     deps: {
       fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
-      uploadAssetViaKieWithFallback: async (payload) => ({
-        result: {
-          fileUrl: `https://kie.test/${payload.fileName}`,
-        },
-      }),
+      uploadAssetViaKieWithFallback: async (payload) => {
+        uploadedFileName = payload.fileName;
+        return {
+          result: {
+            fileUrl: `https://kie.test/${payload.fileName}`,
+          },
+        };
+      },
     },
   });
 
-  assert.equal(uploaded, 'https://kie.test/a.png');
+  assert.match(uploadedFileName, /^a-[a-f0-9]{12}\.png$/);
+  assert.equal(uploaded, `https://kie.test/${uploadedFileName}`);
+});
+
+test('convertManagedAssetUrlToKieFileUrl gives same-name managed assets distinct provider filenames', async () => {
+  const uploadedFileNames = [];
+  const deps = {
+    fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
+    uploadAssetViaKieWithFallback: async (payload) => {
+      uploadedFileNames.push(payload.fileName);
+      return { result: { fileUrl: `https://kie.test/${payload.fileName}` } };
+    },
+  };
+
+  await convertManagedAssetUrlToKieFileUrl('/api/assets/file/a/gpt-image-2.png', {
+    env: {},
+    forceUpload: true,
+    deps,
+  });
+  await convertManagedAssetUrlToKieFileUrl('/api/assets/file/b/gpt-image-2.png', {
+    env: {},
+    forceUpload: true,
+    deps,
+  });
+
+  assert.equal(uploadedFileNames.length, 2);
+  assert.notEqual(uploadedFileNames[0], uploadedFileNames[1]);
+  assert.match(uploadedFileNames[0], /^gpt-image-2-[a-f0-9]{12}\.png$/);
+  assert.match(uploadedFileNames[1], /^gpt-image-2-[a-f0-9]{12}\.png$/);
 });
 
 test('assertRemoteProviderMediaUrlAllowed rejects local and private URLs', () => {

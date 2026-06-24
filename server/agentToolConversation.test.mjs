@@ -375,6 +375,68 @@ test('用户明确要求都处理多张新图时，首轮模型只返回一个�
   assert.ok(progress.some((event) => event.repair === 'under_planned_image_batch_audit'));
 });
 
+test('用户明确要求都处理多张新图时，审查轮仍未补全会继续修复而不是执行单张', async () => {
+  let modelRound = 0;
+  const progress = [];
+  const generated = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '都做成白底图，1:1的比例，正面摆放',
+    attachments: [
+      { kind: 'image', url: 'https://upload/1.jpg', name: '1.jpg' },
+      { kind: 'image', url: 'https://upload/2.jpg', name: '2.jpg' },
+      { kind: 'image', url: 'https://upload/3.jpg', name: '3.jpg' },
+    ],
+    callModel: async ({ messages }) => {
+      modelRound += 1;
+      if (modelRound === 1) {
+        return {
+          content: '',
+          toolCalls: [
+            { id: 'c1', name: 'generate_image', args: { prompt: '只处理了第三张的白底图提示词', task_type: 'edit_image', input_image_urls: ['https://upload/3.jpg'] } },
+          ],
+          finishReason: 'tool_calls',
+        };
+      }
+      if (modelRound === 2) {
+        const repairText = messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n');
+        assert.match(repairText, /审查/);
+        return { content: 'PLAN_OK', toolCalls: [], finishReason: 'stop' };
+      }
+      if (modelRound === 3) {
+        const repairText = messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n');
+        assert.match(repairText, /仍未完整覆盖/);
+        return {
+          content: '',
+          toolCalls: [
+            { id: 'r1', name: 'generate_image', args: { prompt: '图1白底图', task_type: 'edit_image', input_image_urls: ['https://upload/1.jpg'] } },
+            { id: 'r2', name: 'generate_image', args: { prompt: '图2白底图', task_type: 'edit_image', input_image_urls: ['https://upload/2.jpg'] } },
+            { id: 'r3', name: 'generate_image', args: { prompt: '图3白底图', task_type: 'edit_image', input_image_urls: ['https://upload/3.jpg'] } },
+          ],
+          finishReason: 'tool_calls',
+        };
+      }
+      const outputs = messages.filter((message) => message.type === 'function_call_output');
+      assert.equal(outputs.length, 3);
+      return { content: '三张图都已处理', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async ({ inputImageUrls, prompt }) => {
+      generated.push({ inputImageUrls, prompt });
+      return { imageUrl: `https://img/${generated.length}.png` };
+    },
+    onProgress: (event) => progress.push(event),
+  });
+  assert.equal(modelRound, 4);
+  assert.deepEqual(generated.map((item) => item.inputImageUrls[0]), [
+    'https://upload/1.jpg',
+    'https://upload/2.jpg',
+    'https://upload/3.jpg',
+  ]);
+  assert.deepEqual(out.imageResultUrls, ['https://img/1.png', 'https://img/2.png', 'https://img/3.png']);
+  assert.equal(out.imagePlan.outputCount, 3);
+  assert.equal(progress.filter((event) => event.repair === 'under_planned_image_batch_audit').length, 2);
+});
+
 test('多张新图但用户只指定其中一张时，审查后保持单张计划', async () => {
   let modelRound = 0;
   let generated = 0;

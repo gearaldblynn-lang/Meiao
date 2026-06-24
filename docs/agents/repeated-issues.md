@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-06-24 - Multi-image planning repair must validate final coverage, and provider uploads need unique filenames
+
+- Symptom: 将离账号 2026-06-24 10:48:00 又提交 3 张图并说“都做成白底图，1:1 的比例，正面摆放”，云上最终只落库 1 张结果；用户消息确有 3 个 image attachments，助手 `imagePlan.inputImageUrls` 只有第 3 张。
+- Environment: Tencent Cloud production / agent_center V2 tool calling / `gpt-5.5` planning + `gpt-image-2`.
+- Root cause: #20 的单轮欠规划审查仍把模型审查当可靠终态；如果审查也误回 `PLAN_OK` 或仍少规划，后端会继续执行单张并标记完成。同一 dry-run 复跑有时首轮又能返回 3 个 tool calls，说明规划非确定。另一个放大因素是托管资产上传到 KIE 时沿用原文件名，多个 `gpt-image-2.png` 会得到同一个中转 URL，历史图/本轮图在模型目录中可能撞 URL。
+- Fix: `runAgentConversationV2` 在执行工具前校验独立多图计划覆盖率；强多图语义下不接受未补全的 `PLAN_OK`，最多按 `AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS` 继续修复，仍未补全则快速失败而不是单张完成。`providerAssetTransfer` 上传托管资产时给文件名加稳定 URL hash，避免同名中转图床 URL 碰撞。架构级根因见 `CLAUDE.md` #22。
+- Regression check: `server/agentToolConversation.test.mjs` 覆盖“首轮单图 + 审查 PLAN_OK + 二次修复成三图”；`server/providerAssetTransfer.test.mjs` 覆盖同名托管资产上传成不同 provider 文件名；相关 163 个测试通过。
+- Avoid next time: 模型审查不是最终保证，执行前必须用结构化覆盖率校验计划；第三方图床上传不能使用裸原文件名作为唯一身份。
+
 ## 2026-06-24 - Responses streaming function calls must merge by call_id
 
 - Symptom: 将离账号同一个 3 图白底任务，真实探针里 `gpt-5.5` 看起来返回 6 个重复 `generate_image` tool calls；执行层去重后才执行 3 张，历史坏消息一度落库 6 张并错漏一张产品。
