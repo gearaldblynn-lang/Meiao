@@ -432,6 +432,7 @@ const ChatConversationPane: React.FC<Props> = ({
   const lastOpenGalleryRequestRef = useRef(openGalleryRequest);
   const [showGallery, setShowGallery] = useState(false);
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
+  const [selectedImageIndexes, setSelectedImageIndexes] = useState<Record<string, number>>({});
 
   // 批量发送状态
   const [batchSendState, setBatchSendState] = useState<{
@@ -613,8 +614,11 @@ const ChatConversationPane: React.FC<Props> = ({
       name: attachment.name || `图片${index + 1}`,
       createdAt: message.createdAt,
     }));
-    const primaryImage = previewImages[0] || null;
-    const secondaryPreviewImages = previewImages.slice(1);
+    const selectedImageIndex = Math.min(
+      Math.max(Number(selectedImageIndexes[message.id] || 0), 0),
+      Math.max(previewImages.length - 1, 0),
+    );
+    const primaryImage = previewImages[selectedImageIndex] || null;
     return (
       <div className="space-y-3">
         {renderAssistantRunTrace(message, turnInputMessage)}
@@ -641,19 +645,19 @@ const ChatConversationPane: React.FC<Props> = ({
           </p>
         ) : null}
         {primaryImage ? (
-          <div className="flex max-w-[min(420px,100%)] flex-col gap-2 sm:flex-row sm:items-start">
+          <div className="grid max-w-[min(760px,100%)] grid-cols-[minmax(0,1fr)_72px] items-stretch gap-3">
             <div
               className="agent-image-result-primary group relative overflow-hidden rounded-[18px] text-left transition"
               style={{ background: 'var(--bg-base)' }}
             >
               <div
-                className="relative"
+                className="relative flex aspect-square max-h-[58vh] items-center justify-center"
               >
-                <button type="button" onClick={() => openPreview(previewImages, 0)} className="block w-full">
+                <button type="button" onClick={() => openPreview(previewImages, selectedImageIndex)} className="flex h-full w-full items-center justify-center">
                   <img
                     src={primaryImage.url}
                     alt={primaryImage.name}
-                    className="h-auto max-h-[44vh] w-full rounded-[18px] object-contain"
+                    className="h-full w-full rounded-[18px] object-contain"
                     draggable
                     onDragStart={(event) => beginDragReuseImage(event, primaryImage)}
                   />
@@ -684,17 +688,18 @@ const ChatConversationPane: React.FC<Props> = ({
                 </span>
               </div>
             </div>
-            {secondaryPreviewImages.length > 0 ? (
-              <div className="agent-image-result-thumbnails flex gap-2 overflow-x-auto sm:max-h-[44vh] sm:w-16 sm:flex-col sm:overflow-y-auto sm:overflow-x-visible">
-                {secondaryPreviewImages.map((image, index) => (
+            {previewImages.length > 1 ? (
+              <div className="agent-image-result-thumbnails flex max-h-[58vh] flex-col gap-2 overflow-y-auto overflow-x-hidden pr-1">
+                {previewImages.map((image, index) => (
                   <button
                     key={image.id}
                     type="button"
-                    onClick={() => openPreview(previewImages, index + 1)}
-                    className="h-14 w-14 shrink-0 overflow-hidden rounded-[12px] border p-0.5 transition hover:opacity-85"
-                    style={{ borderColor: index === 0 ? 'var(--accent)' : 'var(--border-subtle)', background: 'var(--bg-base)' }}
+                    onClick={() => setSelectedImageIndexes((current) => ({ ...current, [message.id]: index }))}
+                    className="h-16 w-16 shrink-0 overflow-hidden rounded-[12px] border p-0.5 transition hover:opacity-85"
+                    style={{ borderColor: index === selectedImageIndex ? 'var(--accent)' : 'var(--border-subtle)', background: 'var(--bg-base)' }}
                     aria-label={`查看${image.name}`}
                     title={`查看${image.name}`}
+                    aria-current={index === selectedImageIndex ? 'true' : undefined}
                   >
                     <img
                       src={image.url}

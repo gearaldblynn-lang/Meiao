@@ -155,3 +155,8 @@
   根因:将离 2026-06-23 17:54:08 重新提交 3 张图并说“都做成白底图，1:1 的比例，正面摆放”后，#19 已生效，HTTP 图床已转成 KIE HTTPS 并成功进入 Responses 多模态分析；但首轮模型只返回了 1 个 `generate_image` tool call，`imagePlan.inputImageUrls` 只包含一张图，`providerTaskId` 也只有一个。后端执行器已经支持多 tool calls，但它忠实执行了模型的欠规划结果，所以用户只看到 1 张输出。这不是前端漏展示、不是 KIE 少返回、也不是 502，而是模型在“都/全部/每张/分别处理”语义下少规划。
   修复:`runAgentConversationV2` 增加通用欠规划审查:当本轮有多张新上传图、首轮模型却只返回 1 个单图 `generate_image` 时，不由后端词表直接决定拆分，而是追加系统审查提示让同一模型复核语义。模型若判断用户是“每张/全部/都/分别/各自/每个产品都处理”等独立批处理需求，就重新返回每张图一次的多个 `generate_image`;若判断用户只指定某一张、或是“合成/融合/同一张/一张海报/参考某图修改另一图”等单张输出需求，则回复 `PLAN_OK`，后端继续执行原单图计划。
   如何避免:**模型 tool calling 不是绝对可靠计划源。后端不要写具体业务关键词特判白底/加字/换背景，也不要用词表替模型决定业务语义；后端只识别结构性风险(多张新图 + 单图 tool call)，再让模型审查是否欠规划。回归测试要同时覆盖“都处理三张时审查后重规划”、“只处理图1时保持单张”和“合成一张不会被拆”。**
+
+- **#21 ✅ 已修(2026-06-24)· Responses 流式 function_call 被 completed 事件重复合并,3 个 tool call 误变 6 个**
+  根因:将离同一 3 图白底任务真实探针里,`gpt-5.5` 流式 Responses 首轮看起来返回 6 个重复 `generate_image` tool calls,执行层去重后才执行 3 张。进一步用最小 SSE 复现发现,不是模型语义重复规划,而是 `openaiResponsesProvider` 流式解析把同一个 function call 的 `response.output_item.added/done` 阶段按 `id=fc_*` 存了一条,`response.completed` 阶段如果只带 `call_id=call_*`、缺少原始 `id`,又按 `call_id` 新增了一条。于是每个真实 tool call 被解析成两条,3 个真实调用显示为 6 个重复调用,还会污染 `function_call_output` 回传和 `imagePlan.outputCount`。
+  修复:`readResponsesStream` 合并 function_call 时按 `call_id` 回查已有 `fc_*` item key,让 `output_item.*` 与 `response.completed` 的同一调用合并到一条记录;补回归测试模拟 completed 缺 `id` 但同 `call_id` 的流式响应,修前 `toolCalls.length=2`,修后为 1。真实探针用同 3 张 KIE HTTPS 图验证,首轮解析后为 3 个 tool calls,第二张正确识别为黑色 H2O 加湿器。
+  如何避免:**看到 tool calls 成倍重复时,不要先改 prompt 或业务语义;先保存/复现 provider 原始 SSE 事件,核对 `id`、`call_id`、`output_index` 的合并逻辑。Responses 流式解析必须把 `response.output_item.*`、`function_call_arguments.*`、`response.completed` 当同一事件流合并,不能按不同事件里的局部 id 直接追加。**

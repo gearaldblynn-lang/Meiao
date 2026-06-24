@@ -141,6 +141,19 @@ const buildToolCallsFromStream = (itemsById) => {
   return toolCalls;
 };
 
+const findStreamFunctionCallKey = (itemsById, item = {}) => {
+  const id = String(item?.id || '').trim();
+  if (id && itemsById.has(id)) return id;
+  const callId = String(item?.call_id || '').trim();
+  if (!callId) return id;
+  for (const [key, existing] of itemsById.entries()) {
+    if (existing?.type === 'function_call' && String(existing.call_id || '').trim() === callId) {
+      return key;
+    }
+  }
+  return id || callId;
+};
+
 const readResponsesStream = async (response, { onDelta = null } = {}) => {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -167,7 +180,8 @@ const readResponsesStream = async (response, { onDelta = null } = {}) => {
     if (type === 'response.output_item.added' || type === 'response.output_item.done') {
       const item = event?.item || {};
       if (item?.type === 'function_call') {
-        const id = String(item.id || event?.item_id || `output_${event?.output_index ?? itemsById.size}`);
+        const id = findStreamFunctionCallKey(itemsById, item)
+          || String(event?.item_id || `output_${event?.output_index ?? itemsById.size}`);
         const existing = itemsById.get(id) || {};
         itemsById.set(id, {
           ...existing,
@@ -211,7 +225,8 @@ const readResponsesStream = async (response, { onDelta = null } = {}) => {
       if (!content && parsed.content) content = parsed.content;
       for (const call of parsed.toolCalls || []) {
         const item = call.responseItem || {};
-        const id = String(item.id || call.id || `completed_${itemsById.size}`);
+        const id = findStreamFunctionCallKey(itemsById, item)
+          || String(call.id || `completed_${itemsById.size}`);
         itemsById.set(id, {
           ...itemsById.get(id),
           ...item,

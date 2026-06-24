@@ -19,6 +19,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-06-24 - Responses streaming function calls must merge by call_id
+
+- Symptom: 将离账号同一个 3 图白底任务，真实探针里 `gpt-5.5` 看起来返回 6 个重复 `generate_image` tool calls；执行层去重后才执行 3 张，历史坏消息一度落库 6 张并错漏一张产品。
+- Environment: Tencent Cloud production / agent_center V2 tool calling / streaming `/v1/responses`.
+- Root cause: 不是模型真的语义规划 6 张，而是 Responses SSE 解析器把同一 function call 记录了两次：`response.output_item.added/done` 带 `id=fc_*`，`response.completed` 有时只带 `call_id=call_*` 且缺原始 `id`，旧代码按不同 key 追加，导致每个真实调用翻倍。
+- Fix: `readResponsesStream` 合并 function_call 时用 `call_id` 回查已有 `fc_*` item key，保证 `output_item.*` 与 `response.completed` 的同一调用合并为一条；补 completed 缺 id 的 SSE 回归测试。架构级根因见 `CLAUDE.md` #21。
+- Regression check: `node --test server/openaiResponsesProvider.test.mjs`; `node --test server/openaiResponsesProvider.test.mjs server/agentToolConversation.test.mjs server/providerGateway.test.mjs server/agentCenterSource.test.mjs`; real relay probe with the same 3 KIE HTTPS inputs returns exactly 3 parsed tool calls.
+- Files/tests: `server/openaiResponsesProvider.mjs`, `server/openaiResponsesProvider.test.mjs`, `CLAUDE.md`.
+- Avoid next time: tool call 数量异常翻倍时先查 provider 原始 SSE 与解析合并逻辑，不要先改 prompt 或业务语义；Responses 流式事件必须按 `call_id` 做跨事件合并。
+
 ## 2026-06-23 - Multi-image independent edit requests need model-reviewed under-planning repair
 
 - Symptom: 将离账号 17:54:08 上传 3 张图并说“都做成白底图，1:1 的比例，正面摆放”，最终只生成 1 张。
