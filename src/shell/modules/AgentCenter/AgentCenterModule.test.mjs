@@ -133,6 +133,12 @@ test('shell chat progress handles image tool calling SSE events', () => {
   assert.match(shellModuleSource, /分析需求中/);
   assert.match(shellModuleSource, /eventType === 'image_generating'/);
   assert.match(shellModuleSource, /生成图片中/);
+  assert.match(shellModuleSource, /eventType === 'searching_knowledge'/);
+  assert.match(shellModuleSource, /检索知识库中/);
+  assert.match(shellModuleSource, /eventType === 'image_validating'/);
+  assert.match(shellModuleSource, /eventType === 'image_validation_failed'/);
+  assert.match(shellModuleSource, /eventType === 'image_regenerating'/);
+  assert.match(shellModuleSource, /检查生成结果中/);
   assert.match(shellModuleSource, /eventType === 'image_ready'/);
   assert.match(shellModuleSource, /imageResultUrls/);
   assert.match(shellModuleSource, /imagePlan/);

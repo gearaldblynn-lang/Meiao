@@ -146,7 +146,11 @@ const getProgressStageLabel = (message: AgentChatMessage) => {
   if (stage === 'planning') return '正在整理生图参数与提示词';
   if (stage === 'generating') return '正在生成图片';
   if (stage === 'image_generating') return '正在生成图片';
+  if (stage === 'image_validating') return '正在检查生成结果';
+  if (stage === 'image_validation_failed') return '生成结果未通过检查，准备重试';
+  if (stage === 'image_regenerating') return '正在根据检查结果重新生成';
   if (stage === 'tool_calling') return '正在调用工具';
+  if (stage === 'searching_knowledge') return '正在检索知识库';
   if (stage === 'image_ready') return '图片已返回，整理结果中';
   if (stage === 'failed') return '运行失败';
   if (stage === 'finalizing') return '正在整理结果';
@@ -168,7 +172,7 @@ const getAssistantRunStages = (message: AgentChatMessage) => {
   pushStage({
     key: 'thinking',
     label: '思考中',
-    active: ['thinking', 'streaming', 'replying', 'analyzing', 'planning'].includes(progressStage),
+    active: ['thinking', 'streaming', 'replying', 'analyzing', 'planning', 'searching_knowledge'].includes(progressStage),
     done: !isPending || !['thinking', 'analyzing', 'planning'].includes(progressStage),
   });
 
@@ -184,8 +188,11 @@ const getAssistantRunStages = (message: AgentChatMessage) => {
     pushStage({ key: 'tool_calling', label: '调用工具', active: progressStage === 'tool_calling', done: !isPending || progressStage !== 'tool_calling' });
   }
 
-  if (metadata.requestMode === 'image_generation' || progressStage === 'image_generating' || progressStage === 'image_ready') {
-    pushStage({ key: 'image_generating', label: '生成图片', active: ['generating', 'image_generating'].includes(progressStage), done: !isPending || progressStage === 'image_ready' });
+  if (metadata.requestMode === 'image_generation' || ['image_generating', 'image_validating', 'image_validation_failed', 'image_regenerating', 'image_ready'].includes(progressStage)) {
+    pushStage({ key: 'image_generating', label: '生成图片', active: ['generating', 'image_generating', 'image_regenerating'].includes(progressStage), done: !isPending || ['image_validating', 'image_ready'].includes(progressStage) });
+    if (['image_validating', 'image_validation_failed', 'image_regenerating', 'image_ready'].includes(progressStage)) {
+      pushStage({ key: 'image_validating', label: '检查结果', active: ['image_validating', 'image_validation_failed'].includes(progressStage), done: !isPending || progressStage === 'image_ready' || progressStage === 'image_regenerating' });
+    }
   }
 
   pushStage({

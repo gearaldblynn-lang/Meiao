@@ -394,6 +394,9 @@ test('用户明确要求都处理多张新图时，首轮模型只返回一个�
         assert.match(repairText, /审查/);
         assert.match(repairText, /语义/);
         assert.match(repairText, /3 张/);
+        assert.match(repairText, /multi_input_multi_output/);
+        assert.match(repairText, /multi_input_single_output/);
+        assert.match(repairText, /只按输入输出拓扑判断/);
         return {
           content: '',
           toolCalls: [
@@ -620,8 +623,9 @@ test('生图模式引导模型按语义决定单次合成或多次独立调用',
     generateImage: async () => ({ imageUrl: 'x' }),
     onProgress: () => {},
   });
-  assert.match(sysContent, /每张|逐张|分别处理/);
-  assert.match(sysContent, /融合|合成|同一张/);
+  assert.match(sysContent, /输入输出拓扑/);
+  assert.match(sysContent, /multi_input_single_output/);
+  assert.match(sysContent, /multi_input_multi_output/);
 });
 
 test('本轮上传图：附进用户消息(多模态) + system 引导优先编辑新上传图', async () => {

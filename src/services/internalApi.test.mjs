@@ -119,6 +119,49 @@ test('sendChatMessage falls back to JSON response when streaming is unavailable'
   }
 });
 
+test('sendChatMessage uses SSE for image generation when streaming is requested', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const encoder = new TextEncoder();
+  const progressEvents = [];
+  let seenBody = null;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), '/api/chat/sessions/session-1/messages');
+    assert.equal(init.method, 'POST');
+    seenBody = JSON.parse(String(init.body));
+    assert.equal(seenBody.stream, true);
+    assert.equal(seenBody.requestMode, 'image_generation');
+    assert.equal(init.headers?.Accept, 'text/event-stream');
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"type":"thinking","round":1}\n\n'));
+          controller.enqueue(encoder.encode('data: {"type":"image_generating","model":"gpt-image-2"}\n\n'));
+          controller.enqueue(encoder.encode('data: {"type":"done","assistantMessage":{"id":"assistant-1","role":"assistant","content":"图片已生成","metadata":{"messageIds":{"userMessageId":"user-1"}}},"usage":{"totalTokens":8}}\n\n'));
+          controller.close();
+        },
+      }),
+      {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }
+    );
+  };
+
+  try {
+    const result = await api.sendChatMessage(
+      'session-1',
+      { content: '生成图片', requestMode: 'image_generation' },
+      { stream: true, onProgress: (event) => progressEvents.push(event) }
+    );
+    assert.equal(result.assistantMessage.content, '图片已生成');
+    assert.equal(result.userMessage.id, 'user-1');
+    assert.deepEqual(progressEvents.map((event) => event.type), ['thinking', 'image_generating', 'done']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('sendChatMessage removes bridged abort listeners after JSON request completion', async () => {
   const originalFetch = globalThis.fetch;
   const api = await loadInternalApi();

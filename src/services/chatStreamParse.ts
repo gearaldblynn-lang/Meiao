@@ -4,7 +4,11 @@ export type ChatStreamEvent =
   | { type: 'streaming'; delta: string }
   | { type: 'compressed'; foldedRounds: number }
   | { type: 'tool_calling'; tool?: string; args?: Record<string, unknown> }
+  | { type: 'searching_knowledge'; query?: string }
   | { type: 'image_generating'; model?: string; phase?: string }
+  | { type: 'image_validating'; imageUrl?: string; attempt?: number }
+  | { type: 'image_validation_failed'; imageUrl?: string; attempt?: number; issues?: string[] }
+  | { type: 'image_regenerating'; attempt?: number }
   | { type: 'image_ready'; imageUrl?: string; imagePlan?: unknown }
   | { type: 'done'; assistantMessage?: unknown; usage?: unknown }
   | { type: 'error'; message?: string; code?: string };

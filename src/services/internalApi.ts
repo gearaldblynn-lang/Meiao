@@ -829,8 +829,8 @@ export const fetchChatMessages = async (sessionId: string) => {
 };
 
 export type ChatProgressEvent = {
-  stage?: 'thinking' | 'retrieved';
-  type?: 'thinking' | 'retrieved' | 'streaming' | 'compressed' | 'tool_calling' | 'image_generating' | 'image_ready' | 'done' | 'error';
+  stage?: 'thinking' | 'retrieved' | 'searching_knowledge' | 'image_validating' | 'image_validation_failed' | 'image_regenerating';
+  type?: 'thinking' | 'retrieved' | 'streaming' | 'compressed' | 'tool_calling' | 'searching_knowledge' | 'image_generating' | 'image_validating' | 'image_validation_failed' | 'image_regenerating' | 'image_ready' | 'done' | 'error';
   round?: number;
   queries?: string[];
   chunkCount?: number;
@@ -843,6 +843,8 @@ export type ChatProgressEvent = {
   phase?: string;
   imageUrl?: string;
   imagePlan?: unknown;
+  attempt?: number;
+  issues?: string[];
   assistantMessage?: unknown;
   usage?: unknown;
   message?: string;
@@ -870,7 +872,7 @@ export const sendChatMessage = async (sessionId: string, payload: {
 }): Promise<SendChatMessageResult> => {
   const clientRequestId = payload.clientRequestId;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
-  const useStream = payload.requestMode !== 'image_generation' && options?.stream === true;
+  const useStream = options?.stream === true;
 
   if (clientRequestId && options?.onProgress) {
     pollTimer = setInterval(async () => {
@@ -905,7 +907,7 @@ export const sendChatMessage = async (sessionId: string, payload: {
         Accept: 'text/event-stream',
       },
       signal: options?.signal,
-      timeoutMs: 240_000,
+      timeoutMs: payload.requestMode === 'image_generation' ? 300_000 : 240_000,
       cache: 'no-store' as RequestCache,
     });
 
