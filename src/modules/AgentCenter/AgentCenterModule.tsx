@@ -40,7 +40,7 @@ type ChatSubmissionInput = {
 
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const AGENT_CENTER_UI_STATE_KEY = 'MEIAO_AGENT_CENTER_UI_STATE';
-const FINAL_EXECUTION_PROGRESS_STAGES = new Set(['tool_calling', 'generating', 'image_generating', 'image_ready', 'syncing']);
+const FINAL_EXECUTION_PROGRESS_STAGES = new Set(['tool_calling', 'generating', 'image_generating', 'image_validating', 'image_validation_failed', 'image_regenerating', 'image_ready', 'syncing']);
 const isUncertainSendFailure = (error: any) =>
   !(
     error?.name === 'AbortError'

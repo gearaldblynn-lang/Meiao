@@ -114,6 +114,9 @@ test('shell chat workspace keeps restored pending runs visible and locked', () =
   assert.match(shellModuleSource, /window\.setInterval\(\(\) => \{\s*void pollPendingRun\(\);\s*\}, 3000\);/);
   assert.match(shellModuleSource, /const runSubmissionMode(: RunSubmissionMode)? =/);
   assert.match(shellModuleSource, /FINAL_EXECUTION_PROGRESS_STAGES/);
+  assert.match(shellModuleSource, /'image_validating'/);
+  assert.match(shellModuleSource, /'image_validation_failed'/);
+  assert.match(shellModuleSource, /'image_regenerating'/);
   assert.match(shellModuleSource, /imageExecutionStageActive/);
   assert.match(shellModuleSource, /pendingAutoSubmission/);
   assert.match(shellModuleSource, /queueChatSubmission/);
@@ -138,7 +141,10 @@ test('shell chat progress handles image tool calling SSE events', () => {
   assert.match(shellModuleSource, /eventType === 'image_validating'/);
   assert.match(shellModuleSource, /eventType === 'image_validation_failed'/);
   assert.match(shellModuleSource, /eventType === 'image_regenerating'/);
-  assert.match(shellModuleSource, /检查生成结果中/);
+  assert.match(shellModuleSource, /content: '生成图片中\.\.\.'/);
+  assert.doesNotMatch(shellModuleSource, /检查生成结果中/);
+  assert.doesNotMatch(shellModuleSource, /生成结果未通过检查/);
+  assert.doesNotMatch(shellModuleSource, /根据检查结果重新生成/);
   assert.match(shellModuleSource, /eventType === 'image_ready'/);
   assert.match(shellModuleSource, /imageResultUrls/);
   assert.match(shellModuleSource, /imagePlan/);

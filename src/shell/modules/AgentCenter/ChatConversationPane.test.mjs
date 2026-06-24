@@ -25,9 +25,11 @@ test('streaming assistant messages render content with a typewriter cursor inste
   assert.match(paneSource, /isStreamingMessage/);
 });
 
-test('image generation progress exposes validation and retry stages', () => {
-  assert.match(paneSource, /正在检查生成结果/);
-  assert.match(paneSource, /生成结果未通过检查，准备重试/);
-  assert.match(paneSource, /正在根据检查结果重新生成/);
-  assert.match(paneSource, /key: 'image_validating'/);
+test('image generation progress hides internal validation and retry stages', () => {
+  assert.doesNotMatch(paneSource, /正在检查生成结果/);
+  assert.doesNotMatch(paneSource, /生成结果未通过检查，准备重试/);
+  assert.doesNotMatch(paneSource, /正在根据检查结果重新生成/);
+  assert.match(paneSource, /if \(stage === 'image_validating'\) return '正在生成图片';/);
+  assert.match(paneSource, /if \(stage === 'image_validation_failed'\) return '正在生成图片';/);
+  assert.match(paneSource, /if \(stage === 'image_regenerating'\) return '正在生成图片';/);
 });
