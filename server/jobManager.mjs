@@ -29,7 +29,7 @@ const normalizeReusablePayload = (value) => {
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(
     Object.entries(value)
-      .filter(([key]) => key !== 'requestId')
+      .filter(([key]) => key !== 'requestId' && key !== '__creditReservation')
       .map(([key, entryValue]) => [key, normalizeReusablePayload(entryValue)])
   );
 };
@@ -621,6 +621,8 @@ export const createJobWorker = ({
   getMaxConcurrency,
   createLog,
   findUserById,
+  settleJobCredits,
+  releaseJobCredits,
   getTaskEngineMode = () => process.env.MEIAO_TASK_ENGINE,
 }) => {
   const activeControllers = new Map();
@@ -771,6 +773,11 @@ export const createJobWorker = ({
               finished_at: finishedAt,
               updated_at: finishedAt,
             });
+            try {
+              await settleJobCredits?.({ job: refreshedJob, output, finishedAt, aborted: controller.signal.aborted });
+            } catch (creditError) {
+              console.error('Account credit settlement failed after job completion.', creditError);
+            }
             await runTaskPlatformWrite(() => attempt?.id ? finishJobAttempt(pool, attempt.id, {
               status: controller.signal.aborted ? 'cancelled' : 'succeeded',
               providerTaskId: finalProviderTaskId,
@@ -837,6 +844,11 @@ export const createJobWorker = ({
               updated_at: finishedAt,
               finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
             });
+            try {
+              await releaseJobCredits?.({ job: latestJob, error, finishedAt, retryWaiting: failure.status === 'retry_waiting' });
+            } catch (creditError) {
+              console.error('Account credit release failed after job failure.', creditError);
+            }
             await runTaskPlatformWrite(() => attempt?.id ? finishJobAttempt(poolAgain, attempt.id, {
               status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
               providerTaskId: error?.providerTaskId || latestJob?.providerTaskId || '',

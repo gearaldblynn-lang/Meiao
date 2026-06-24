@@ -124,6 +124,8 @@ export const createLocalTemporalActivities = ({
   executeJob,
   createLog,
   findUserById,
+  settleJobCredits,
+  releaseJobCredits,
   heartbeat = defaultActivityHeartbeat,
 }) => ({
   async executeLocalJobAttemptActivity({ jobId }) {
@@ -159,6 +161,11 @@ export const createLocalTemporalActivities = ({
       const output = await executeJob(claimedJob, controller.signal, { onProviderTaskId });
       const completeStore = readStore();
       const finishedJob = markLocalJobCompleted(completeStore, claimedJob.id, output, controller.signal.aborted);
+      try {
+        settleJobCredits?.({ store: completeStore, job: finishedJob, output, aborted: controller.signal.aborted });
+      } catch (creditError) {
+        console.error('Account credit settlement failed after local Temporal job completion.', creditError);
+      }
       writeStore(completeStore);
 
       const user = finishedJob ? findUserById(finishedJob.userId) : null;
@@ -181,6 +188,11 @@ export const createLocalTemporalActivities = ({
     } catch (error) {
       const failureStore = readStore();
       const failedJob = markLocalJobFailed(failureStore, claimedJob.id, error);
+      try {
+        releaseJobCredits?.({ store: failureStore, job: failedJob, error, retryWaiting: failedJob?.status === 'retry_waiting' });
+      } catch (creditError) {
+        console.error('Account credit release failed after local Temporal job failure.', creditError);
+      }
       writeStore(failureStore);
 
       const user = failedJob ? findUserById(failedJob.userId) : null;
@@ -216,6 +228,8 @@ export const createMysqlTemporalActivities = ({
   executeJob,
   createLog,
   findUserById,
+  settleJobCredits,
+  releaseJobCredits,
   getMaxConcurrency = () => DEFAULT_JOB_CONCURRENCY,
   cancelPollMs = 2500,
   heartbeat = defaultActivityHeartbeat,
@@ -365,6 +379,11 @@ export const createMysqlTemporalActivities = ({
         finished_at: finishedAt,
         updated_at: finishedAt,
       });
+      try {
+        await settleJobCredits?.({ job: refreshedJob, output, finishedAt, aborted: controller.signal.aborted });
+      } catch (creditError) {
+        console.error('Account credit settlement failed after MySQL Temporal job completion.', creditError);
+      }
       await runTaskPlatformWrite(() => attempt?.id ? finishJobAttempt(pool, attempt.id, {
         status: controller.signal.aborted ? 'cancelled' : 'succeeded',
         providerTaskId: finalProviderTaskId,
@@ -436,6 +455,11 @@ export const createMysqlTemporalActivities = ({
         updated_at: finishedAt,
         finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
       });
+      try {
+        await releaseJobCredits?.({ job: latestJob, error, finishedAt, retryWaiting: failure.status === 'retry_waiting' });
+      } catch (creditError) {
+        console.error('Account credit release failed after MySQL Temporal job failure.', creditError);
+      }
       await runTaskPlatformWrite(() => attempt?.id ? finishJobAttempt(pool, attempt.id, {
         status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
         providerTaskId: error?.providerTaskId || latestJob.providerTaskId || '',

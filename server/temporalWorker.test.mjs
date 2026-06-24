@@ -294,7 +294,7 @@ test('mysql temporal activity executes a queued db job and writes attempts/event
   assert.ok(heartbeats.some((details) => details?.providerTaskId === 'provider-task-1'));
 });
 
-test('mysql temporal activity fails asset upload without holding concurrency', async () => {
+test('mysql temporal activity releases concurrency while retrying transient asset upload failure', async () => {
   const { state, pool } = createMysqlHarness({
     id: 'job-asset-upload-retry',
     user_id: 'user-1',
@@ -329,17 +329,18 @@ test('mysql temporal activity fails asset upload without holding concurrency', a
     runId: 'run-1',
   });
 
-  assert.equal(result.status, 'failed');
-  assert.equal(state.job.status, 'failed');
-  assert.equal(state.job.retry_count, 0);
+  assert.equal(result.status, 'retry_waiting');
+  assert.equal(state.job.status, 'retry_waiting');
+  assert.equal(state.job.retry_count, 1);
   assert.equal(state.job.provider_task_id, null);
   assert.equal(state.job.error_code, 'provider_network_error');
-  assert.equal(state.job.finished_at > 0, true);
+  assert.equal(state.job.finished_at, null);
   assert.ok(state.events.some((params) => (
     params[4] === 'asset_upload'
     && params[5] === 'job_failed'
-    && params[6] === 'failed'
+    && params[6] === 'started'
     && params[10] === 'provider_network_error'
   )));
-  assert.equal(logs.at(-1).status, 'failed');
+  assert.equal(logs.at(-1).action, 'job_retry_waiting');
+  assert.equal(logs.at(-1).status, 'started');
 });

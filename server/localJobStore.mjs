@@ -367,6 +367,8 @@ export const createLocalJobWorker = ({
   getMaxConcurrency,
   createLog,
   findUserById,
+  settleJobCredits,
+  releaseJobCredits,
 }) => {
   let timer = null;
   let draining = false;
@@ -412,6 +414,11 @@ export const createLocalJobWorker = ({
             const output = await executeJob(refreshedJob, controller.signal, { onProviderTaskId });
             const completeStore = readStore();
             const finishedJob = markLocalJobCompleted(completeStore, refreshedJob.id, output, controller.signal.aborted);
+            try {
+              settleJobCredits?.({ store: completeStore, job: finishedJob, output, aborted: controller.signal.aborted });
+            } catch (creditError) {
+              console.error('Account credit settlement failed after local job completion.', creditError);
+            }
             writeStore(completeStore);
 
             const user = finishedJob ? findUserById(finishedJob.userId) : null;
@@ -429,6 +436,11 @@ export const createLocalJobWorker = ({
           } catch (error) {
             const failureStore = readStore();
             const failedJob = markLocalJobFailed(failureStore, job.id, error);
+            try {
+              releaseJobCredits?.({ store: failureStore, job: failedJob, error, retryWaiting: failedJob?.status === 'retry_waiting' });
+            } catch (creditError) {
+              console.error('Account credit release failed after local job failure.', creditError);
+            }
             writeStore(failureStore);
 
             const user = failedJob ? findUserById(failedJob.userId) : null;

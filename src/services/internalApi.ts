@@ -47,11 +47,26 @@ export const clearSessionToken = () => {
   localStorage.removeItem(SESSION_TOKEN_KEY);
 };
 
-export const storeCurrentUserContext = (user: Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset' | 'featurePermissions' | 'analysisModel'>) => {
+type StoredCurrentUserContext = Pick<AuthUser,
+  | 'id'
+  | 'username'
+  | 'role'
+  | 'avatarUrl'
+  | 'avatarPreset'
+  | 'featurePermissions'
+  | 'analysisModel'
+  | 'creditLimitMode'
+  | 'creditBalance'
+  | 'creditReserved'
+  | 'creditConsumed'
+  | 'creditAvailable'
+>;
+
+export const storeCurrentUserContext = (user: StoredCurrentUserContext) => {
   localStorage.setItem(CURRENT_USER_KEY, JSON.stringify(user));
 };
 
-export const getCurrentUserContext = (): Pick<AuthUser, 'id' | 'username' | 'role' | 'avatarUrl' | 'avatarPreset' | 'featurePermissions' | 'analysisModel'> | null => {
+export const getCurrentUserContext = (): StoredCurrentUserContext | null => {
   try {
     const raw = localStorage.getItem(CURRENT_USER_KEY);
     if (!raw) return null;
@@ -339,6 +354,8 @@ export const createInternalUser = async (payload: {
   role: 'admin' | 'staff';
   jobConcurrency: number;
   featurePermissions?: AuthUser['featurePermissions'];
+  creditLimitMode?: 'unlimited' | 'limited';
+  creditBalance?: number;
 }) => {
   return request<{ user: AuthUser }>('/api/users', {
     method: 'POST',
@@ -355,6 +372,8 @@ export const updateInternalUser = async (
     status: 'active' | 'disabled';
     jobConcurrency: number;
     featurePermissions: AuthUser['featurePermissions'];
+    creditLimitMode?: 'unlimited' | 'limited';
+    creditBalance?: number;
   }>
 ) => {
   return request<{ user: AuthUser }>(`/api/users/${encodeURIComponent(userId)}`, {
