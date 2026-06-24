@@ -8,6 +8,9 @@ const DEFAULT_JOB_CONCURRENCY = 5;
 const DEFAULT_PROVIDERLESS_RUNNING_STALE_MS = 15 * 60 * 1000;
 const DEFAULT_CANCELLED_RUNNING_STALE_MS = 60 * 1000;
 const REUSABLE_JOB_STATUSES = new Set(['queued', 'running', 'retry_waiting']);
+const MIN_PROVIDERLESS_RUNNING_STALE_MS_BY_TASK_TYPE = new Map([
+  ['kie_chat', DEFAULT_PROVIDERLESS_RUNNING_STALE_MS],
+]);
 
 const parseJsonValue = (value, fallback = null) => {
   if (!value) return fallback;
@@ -172,14 +175,21 @@ export const reconcileStaleProviderlessRunningMysqlJobs = (
   staleMs = DEFAULT_PROVIDERLESS_RUNNING_STALE_MS
 ) => {
   if (!Array.isArray(jobs)) return [];
-  const cutoff = Number(referenceTime || now()) - Math.max(1, Number(staleMs || DEFAULT_PROVIDERLESS_RUNNING_STALE_MS));
+  const resolvedReferenceTime = Number(referenceTime || now());
+  const baseStaleMs = Math.max(1, Number(staleMs || DEFAULT_PROVIDERLESS_RUNNING_STALE_MS));
   return jobs
-    .filter((job) => (
-      String(job?.status || '') === 'running'
-      && !String(job?.providerTaskId || '').trim()
-      && Number(job?.startedAt || job?.updatedAt || job?.createdAt || 0) > 0
-      && Number(job?.startedAt || job?.updatedAt || job?.createdAt || 0) <= cutoff
-    ))
+    .filter((job) => {
+      const taskType = String(job?.taskType || '').trim();
+      const taskMinStaleMs = MIN_PROVIDERLESS_RUNNING_STALE_MS_BY_TASK_TYPE.get(taskType) || 0;
+      const cutoff = resolvedReferenceTime - Math.max(baseStaleMs, taskMinStaleMs);
+      const jobStartedAt = Number(job?.startedAt || job?.updatedAt || job?.createdAt || 0);
+      return (
+        String(job?.status || '') === 'running'
+        && !String(job?.providerTaskId || '').trim()
+        && jobStartedAt > 0
+        && jobStartedAt <= cutoff
+      );
+    })
     .map((job) => ({
       ...job,
       status: 'failed',
