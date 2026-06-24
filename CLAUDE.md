@@ -191,6 +191,11 @@
   修复:`providerKieImage` 对单个出图任务内素材解析/上传做限流,默认最多 2 并发,并通过 `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY` 可调;`jobRuntime` 允许 `asset_upload` 的瞬时 provider 错误进行一次任务级重试;`jobManager` 对 `kie_image` providerless running job 和 `kie_chat` 一样使用不少于默认 15 分钟的预提交保护窗口,避免素材转存仍在执行时被 5 分钟云上短窗口误杀。补回归测试覆盖限流、asset_upload 重试和 kie_image stale 窗口。
   如何避免:**详情/批量生图要按“任务数 × 每任务素材数”估算第三方图床压力。单张成功不能证明批量成功;任何 providerless `kie_image` 失败都要先看 `provider_task_id` 和事件 stage,`asset_upload` 是提交前传输问题,不是 KIE 已接单生图失败。上传类瞬时错误要可重试,批量素材转存必须限流且阈值可配置。**
 
+- **#29 ✅ 已修(2026-06-24)· 参考图局部替换被“全部”误判成多图欠规划,且 V2 Responses 缺配置内 fallback**
+  根因:林一账号湿巾需求“把原图1中字母全部换成图2湿巾上面的字母,图1其他部分不变”本质是两张输入图生成一张结果的参考图编辑,但后端多图审查把“全部”机械当作多图独立批处理信号,导致同类需求被 `image_plan_under_planned` 快速失败。另一条云上失败是 `imagePlan:null/providerTaskId:''` 的规划阶段 provider overload;V2 tool-calling handler 的 `openai_responses` payload 没有传 `resolveChatFallbackModels(version, selectedModel)`,所以没有按智能体配置内模型切换。
+  修复:`hasSingleImageOutputIntent` 增加“图/原图 A 换成/替换成图 B”和“其它部分不变/保持不变”这类单输出参考编辑拓扑,让“字母全部换成”不触发多图欠规划;MySQL 与本地 JSON 两套 V2 chat handler 都把 `fallbackModels` 传给 `openai_responses`,只在智能体允许模型内 fallback,不引入未配置 Gemini。补回归测试覆盖参考图替换主图局部保持单张输出,并用 source 测试锁住双 handler fallback payload。
+  如何避免:**多图/单图判断看输出拓扑,不要只看“全部/都”字面词。出现 `image_plan_under_planned` 要先判断“全部”修饰的是图片集合还是某个局部对象;出现 `imagePlan:null + providerTaskId:''` 的 overload/502 是 Responses 规划阶段,必须确认 V2 payload 带配置内 fallbackModels,不能裸露 provider 错误或 fallback 到未配置模型。**
+
 - **#28 ✅ 已修(2026-06-24)· 视频生成成功结果只写 shellProjects,旧视频工作区读不到**
   根因:董丹丹账号直接视频生成任务 `f38dff2b17c4ef343856a48a` 后端已 `succeeded`,生成 MP4 `c410a0332deaa167a30ea4a0/kie_seedance_video.mp4` 也返回 200,但前端没有真实显示。原因是短视频直接生成已经迁到 shell 项目卡 `shellProjects`,而历史视频工作区仍读取 `videoMemory.veoProjects`;成功视频只稳定持久化到 `shellProjects`,远端 patch 也只发项目卡状态,没有同步 `videoMemory`,且完成结果缺少 `backendJobId`,导致刷新/切换后旧视频工作区仍停在待恢复状态。
   修复:`shellPersistence` 对 `module=video/subFeature=generation` 的 completed 视频项目构造并 upsert 同名 `videoMemory.veoProjects` 记录;`buildProjectRemotePatch` 对直接视频生成项目同步带上 `videoMemory`;`mergeAppStateForStorage` 服务端合并层也从 completed 直接视频项目兜底镜像 `videoMemory.veoProjects`;视频成功 result 补 `backendJobId`;已手工补齐董丹丹项目 `proj-1782285629355` 的 shell/veo 双状态。
