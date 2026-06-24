@@ -202,6 +202,30 @@ test('imageGenerationEnabled=false：不传 tools，纯对话', async () => {
   assert.ok(!toolsPassed || toolsPassed.length === 0);
 });
 
+test('模型规划阶段无输出前遇到瞬时网络失败时内部快速重试', async () => {
+  let callCount = 0;
+  const progress = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '图1做成白底图',
+    attachments: [{ kind: 'image', url: 'https://upload/1.jpg', name: '图1.jpg' }],
+    callModel: async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        const error = new Error('fetch failed');
+        error.code = 'provider_network_error';
+        throw error;
+      }
+      return { content: 'ok', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    onProgress: (event) => progress.push(event),
+  });
+  assert.equal(callCount, 2);
+  assert.equal(out.content, 'ok');
+  assert.ok(progress.some((event) => event.stage === 'thinking' && event.retry === 'transient_model_error'));
+});
+
 test('生图模式 imageMode=true：system prompt 含引导语', async () => {
   let sysContent = '';
   await runAgentConversationV2({
