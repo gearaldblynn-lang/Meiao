@@ -53,34 +53,6 @@ const prepareAttachmentsForModel = async (attachments = [], prepareModelImageUrl
   }));
 };
 
-const preparePriorMessagesForModel = async (priorMessages = [], prepareModelImageUrl, cache) => {
-  const messages = Array.isArray(priorMessages) ? priorMessages : [];
-  return Promise.all(messages.map(async (message) => {
-    const preparedAttachments = Array.isArray(message?.attachments)
-      ? await prepareAttachmentsForModel(message.attachments, prepareModelImageUrl, cache)
-      : message?.attachments;
-    const metadata = message?.metadata && typeof message.metadata === 'object'
-      ? { ...message.metadata }
-      : message?.metadata;
-    if (metadata?.imageUrl) {
-      metadata.imageUrl = await prepareImageUrlForModel(metadata.imageUrl, prepareModelImageUrl, cache);
-    }
-    if (Array.isArray(metadata?.imagePlan?.inputImageUrls)) {
-      metadata.imagePlan = {
-        ...metadata.imagePlan,
-        inputImageUrls: await Promise.all(metadata.imagePlan.inputImageUrls.map((url) => (
-          prepareImageUrlForModel(url, prepareModelImageUrl, cache)
-        ))),
-      };
-    }
-    return {
-      ...message,
-      ...(preparedAttachments ? { attachments: preparedAttachments } : {}),
-      ...(metadata ? { metadata } : {}),
-    };
-  }));
-};
-
 const shouldInlineImageAttachments = (attachments = []) => {
   const imageAttachments = (Array.isArray(attachments) ? attachments : [])
     .filter((item) => item?.kind === 'image' && item?.url);
@@ -300,7 +272,7 @@ export const runAgentConversationV2 = async ({
 
   const preparedImageUrlCache = new Map();
   const modelAttachments = await prepareAttachmentsForModel(attachments, prepareModelImageUrl, preparedImageUrlCache);
-  const modelPriorMessages = await preparePriorMessagesForModel(priorMessages, prepareModelImageUrl, preparedImageUrlCache);
+  const modelPriorMessages = Array.isArray(priorMessages) ? priorMessages : [];
 
   const catalog = buildSessionImageCatalog({ attachments: modelAttachments, priorMessages: modelPriorMessages });
   const catalogText = formatCatalogForPrompt(catalog);

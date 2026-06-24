@@ -641,6 +641,58 @@ test('HTTP 图床图片先转成模型稳定可读的 HTTPS 图床，再作为 i
   assert.equal(progress.some((event) => event.imageInputMode === 'text_image_catalog'), false);
 });
 
+test('首轮规划只预转存本轮新上传图，不批量转存历史图片', async () => {
+  const preparedUrls = [];
+  let systemText = '';
+  let userContent = null;
+  await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '都做成白底图，1:1的比例，正面摆放',
+    attachments: [
+      { kind: 'image', url: 'http://111.229.66.247/api/assets/file/current/1.png', name: '1.png' },
+      { kind: 'image', url: 'http://111.229.66.247/api/assets/file/current/2.png', name: '2.png' },
+      { kind: 'image', url: 'http://111.229.66.247/api/assets/file/current/3.png', name: '3.png' },
+    ],
+    priorMessages: [
+      {
+        role: 'user',
+        attachments: [
+          { kind: 'image', url: 'http://111.229.66.247/api/assets/file/history/a.png', name: '历史A.png' },
+        ],
+      },
+      {
+        role: 'assistant',
+        metadata: {
+          imageUrl: 'http://111.229.66.247/api/assets/file/history/generated.png',
+          imagePlan: {
+            inputImageUrls: ['http://111.229.66.247/api/assets/file/history/a.png'],
+          },
+        },
+      },
+    ],
+    prepareModelImageUrl: async (url) => {
+      preparedUrls.push(url);
+      return `https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/${url.split('/').pop()}`;
+    },
+    callModel: async ({ messages }) => {
+      systemText = messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n');
+      userContent = messages.find((message) => message.role === 'user')?.content;
+      return { content: 'ok', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    onProgress: () => {},
+  });
+  assert.deepEqual(preparedUrls, [
+    'http://111.229.66.247/api/assets/file/current/1.png',
+    'http://111.229.66.247/api/assets/file/current/2.png',
+    'http://111.229.66.247/api/assets/file/current/3.png',
+  ]);
+  assert.ok(Array.isArray(userContent), '本轮图片转存后仍应 inline 给模型');
+  assert.match(systemText, /https:\/\/tempfile\.redpandaai\.co\/kieai\/30590\/mayo-storage\/internal\/1\.png/);
+  assert.match(systemText, /http:\/\/111\.229\.66\.247\/api\/assets\/file\/history\/a\.png/);
+  assert.doesNotMatch(systemText, /tempfile\.redpandaai\.co\/kieai\/30590\/mayo-storage\/internal\/a\.png/);
+});
+
 test('无上传图时：用户消息退化为纯文本字符串', async () => {
   let capturedMessages = null;
   await runAgentConversationV2({
