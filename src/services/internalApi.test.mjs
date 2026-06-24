@@ -121,10 +121,18 @@ test('sendChatMessage falls back to JSON response when streaming is unavailable'
 
 test('sendChatMessage uses SSE for image generation when streaming is requested', async () => {
   const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
   const api = await loadInternalApi();
   const encoder = new TextEncoder();
   const progressEvents = [];
   let seenBody = null;
+  const timeoutValues = [];
+  globalThis.setTimeout = (handler, ms, ...args) => {
+    timeoutValues.push(ms);
+    return originalSetTimeout(handler, ms, ...args);
+  };
+  globalThis.clearTimeout = (timer) => originalClearTimeout(timer);
   globalThis.fetch = async (url, init) => {
     assert.equal(String(url), '/api/chat/sessions/session-1/messages');
     assert.equal(init.method, 'POST');
@@ -157,8 +165,11 @@ test('sendChatMessage uses SSE for image generation when streaming is requested'
     assert.equal(result.assistantMessage.content, '图片已生成');
     assert.equal(result.userMessage.id, 'user-1');
     assert.deepEqual(progressEvents.map((event) => event.type), ['thinking', 'image_generating', 'done']);
+    assert.ok(timeoutValues.includes(900_000), 'image generation streaming should survive multi-image real runs longer than 5 minutes');
   } finally {
     globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
   }
 });
 
