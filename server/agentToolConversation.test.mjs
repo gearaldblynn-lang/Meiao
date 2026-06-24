@@ -557,6 +557,42 @@ test('用户明确要求都处理多张新图时，审查轮仍未补全会继�
   assert.equal(progress.filter((event) => event.repair === 'under_planned_image_batch_audit').length, 2);
 });
 
+test('强多图独立输出只完成部分图片时不能标记完成', async () => {
+  let modelRound = 0;
+  await assert.rejects(
+    runAgentConversationV2({
+      ...baseArgs,
+      currentMessage: '图1、图2、图3都分别处理，每张各输出一张，共3张',
+      attachments: [
+        { kind: 'image', url: 'https://upload/1.jpg', name: '1.jpg' },
+        { kind: 'image', url: 'https://upload/2.jpg', name: '2.jpg' },
+        { kind: 'image', url: 'https://upload/3.jpg', name: '3.jpg' },
+      ],
+      callModel: async ({ messages }) => {
+        const outputs = messages.filter((message) => message.type === 'function_call_output');
+        if (outputs.length > 0) return { content: '只完成两张', toolCalls: [], finishReason: 'stop' };
+        modelRound += 1;
+        return {
+          content: '',
+          toolCalls: [
+            { id: 'c1', name: 'generate_image', args: { prompt: '处理图1', task_type: 'edit_image', input_image_urls: ['https://upload/1.jpg'] } },
+            { id: 'c2', name: 'generate_image', args: { prompt: '处理图2', task_type: 'edit_image', input_image_urls: ['https://upload/2.jpg'] } },
+            { id: 'c3', name: 'generate_image', args: { prompt: '处理图3', task_type: 'edit_image', input_image_urls: ['https://upload/3.jpg'] } },
+          ],
+          finishReason: 'tool_calls',
+        };
+      },
+      generateImage: async ({ inputImageUrls }) => {
+        if (inputImageUrls[0] === 'https://upload/3.jpg') throw new Error('fetch failed');
+        return { imageUrl: `https://img/${inputImageUrls[0].match(/(\\d)\\.jpg/)?.[1]}.png` };
+      },
+      onProgress: () => {},
+    }),
+    (error) => error?.code === 'image_batch_incomplete' && error?.expectedImageCount === 3 && error?.actualImageCount === 2
+  );
+  assert.equal(modelRound, 1);
+});
+
 test('多张新图但用户只指定其中一张时，审查后保持单张计划', async () => {
   let modelRound = 0;
   let generated = 0;
