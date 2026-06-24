@@ -49,6 +49,7 @@ npm run dev
 智能体多工具：
 - 第4期 V2 对话复用 `OPENAI_COMPATIBLE_*` 中转站配置，responses 端点默认 `OPENAI_COMPATIBLE_RESPONSES_PATH=/v1/responses`。
 - `AGENT_TOOL_MAX_ROUNDS` 控制单轮对话工具循环上限，默认 5，防止模型反复调用 `search_knowledge` / `generate_image`。
+- `AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS` 控制多图独立输出规划欠覆盖时的修复审查轮数，默认 2；仍不完整则快速失败，避免只执行一张却显示完成。
 
 ## 4. 关键 API 速查
 

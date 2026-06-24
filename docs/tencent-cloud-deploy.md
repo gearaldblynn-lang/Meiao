@@ -53,10 +53,11 @@ OPENAI_COMPATIBLE_BASE_URL=https://maxforai.top
 OPENAI_COMPATIBLE_MODELS=gpt-5.4,gpt-5.5
 OPENAI_COMPATIBLE_RESPONSES_PATH=/v1/responses
 AGENT_TOOL_MAX_ROUNDS=5
+AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS=2
 EOF
 ```
 
-第4期智能体多工具复用 `OPENAI_COMPATIBLE_*`，V2 对话经 `OPENAI_COMPATIBLE_RESPONSES_PATH` 调 responses 端点以支持 `web_search`；`AGENT_TOOL_MAX_ROUNDS` 是单轮工具循环上限，默认 5。
+第4期智能体多工具复用 `OPENAI_COMPATIBLE_*`，V2 对话经 `OPENAI_COMPATIBLE_RESPONSES_PATH` 调 responses 端点以支持 `web_search`；`AGENT_TOOL_MAX_ROUNDS` 是单轮工具循环上限，默认 5。`AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS` 是多图独立输出规划欠覆盖时的修复审查轮数，默认 2；仍不完整会快速失败，不执行单张伪完成。
 
 `MEIAO_PROVIDERLESS_RUNNING_STALE_MS` 控制已标记 `running` 但还没有上游 `providerTaskId` 的任务兜底释放窗口。云上建议 `300000`，避免素材上传/提交阶段异常卡住后长期占满同账号并发；真正已拿到 `providerTaskId` 的任务不走这个释放规则，会继续等待上游结果。`MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS` 建议 `30000`，让回收检查更及时。
 

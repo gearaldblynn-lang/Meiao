@@ -108,31 +108,68 @@ const normalizeToolCallImageUrls = (call = {}) => {
   }
 };
 
-const shouldAuditUnderPlannedImageBatch = ({ response, freshUploadUrls = [] } = {}) => {
+const hasSingleImageOutputIntent = (text = '') => (
+  /合成|融合|拼成|合并|组合到|同一张|一张海报|一张图|单张|同一个画面|参考.*修改|参考.*改|按.*参考/i.test(String(text || ''))
+);
+
+const hasExplicitSingleTargetIntent = (text = '') => (
+  /只\s*(?:把|处理|修改|改|做)?\s*(?:图\s*[一二三四五六七八九十\d]+|第\s*[一二三四五六七八九十\d]+\s*张|这张|这一张)|(?:图\s*[一二三四五六七八九十\d]+|第\s*[一二三四五六七八九十\d]+\s*张|这张|这一张).*?(?:其他|其它).*?(?:不要|先不|不用|不处理)/i.test(String(text || ''))
+);
+
+const countMentionedImageTargets = (text = '') => {
+  const normalized = String(text || '');
+  const matches = normalized.match(/图\s*[一二三四五六七八九十\d]+|第\s*[一二三四五六七八九十\d]+\s*张/g);
+  return new Set(matches || []).size;
+};
+
+const hasIndependentBatchIntent = (text = '', freshUploadCount = 0) => {
+  const value = String(text || '').trim();
+  if (freshUploadCount < 2 || !value) return false;
+  if (hasExplicitSingleTargetIntent(value)) return false;
+  if (/每张|分别|各自|逐张|每个|一张张|each|every/i.test(value)) return true;
+  if (hasSingleImageOutputIntent(value)) return false;
+  if (/全部|全都|都|所有|all|both/i.test(value)) return true;
+  return countMentionedImageTargets(value) >= 2;
+};
+
+const getIndependentFreshImageCoverage = ({ response, freshUploadUrls = [] } = {}) => {
   const freshUrls = (Array.isArray(freshUploadUrls) ? freshUploadUrls : [])
     .map((url) => String(url || '').trim())
     .filter(Boolean);
-  if (freshUrls.length < 2) return false;
+  const freshSet = new Set(freshUrls);
+  const coveredUrls = new Set();
   const generateCalls = getGenerateImageToolCalls(response);
-  if (generateCalls.length !== 1) return false;
-  const inputUrls = normalizeToolCallImageUrls(generateCalls[0]);
-  if (inputUrls.length !== 1) return false;
-  return freshUrls.includes(inputUrls[0]);
+  for (const call of generateCalls) {
+    const inputUrls = normalizeToolCallImageUrls(call);
+    if (inputUrls.length === 1 && freshSet.has(inputUrls[0])) coveredUrls.add(inputUrls[0]);
+  }
+  return { freshUrls, generateCalls, coveredUrls };
 };
 
-const buildUnderPlannedImageAuditPrompt = ({ currentMessage = '', freshUploadUrls = [], plannedCall = null } = {}) => {
+const shouldAuditUnderPlannedImageBatch = ({ response, freshUploadUrls = [], currentMessage = '' } = {}) => {
+  const { freshUrls, generateCalls, coveredUrls } = getIndependentFreshImageCoverage({ response, freshUploadUrls });
+  if (freshUrls.length < 2) return false;
+  if (generateCalls.length === 0) return false;
+  if (coveredUrls.size >= freshUrls.length) return false;
+  if (generateCalls.length === 1 && coveredUrls.size === 1) return true;
+  return hasIndependentBatchIntent(currentMessage, freshUrls.length) && coveredUrls.size < freshUrls.length;
+};
+
+const buildUnderPlannedImageAuditPrompt = ({ currentMessage = '', freshUploadUrls = [], plannedCall = null, attempt = 1 } = {}) => {
   const urls = (Array.isArray(freshUploadUrls) ? freshUploadUrls : [])
     .map((url) => String(url || '').trim())
     .filter(Boolean);
   const plannedInputUrls = normalizeToolCallImageUrls(plannedCall);
   return [
     '请审查上一轮 generate_image 工具调用是否完整覆盖用户语义，不要机械拆分。',
+    attempt > 1 ? '上一轮审查仍未完整覆盖用户语义；这次必须重新核对所有本轮新上传图片和用户的数量要求。' : '',
     `用户本轮要求是：${String(currentMessage || '').trim()}`,
-    `本轮共有 ${urls.length} 张新上传图片。上一轮只规划了 1 次 generate_image，输入图片为：${plannedInputUrls.join(', ') || '空'}`,
+    `本轮共有 ${urls.length} 张新上传图片。上一轮规划的单图输入图片为：${plannedInputUrls.join(', ') || '空'}`,
     '',
     '请按语义判断：',
     '- 如果用户表达的是“每张/全部/都/分别/各自/每个产品都处理”等独立批处理需求，请重新返回多个 generate_image 工具调用；每张新上传图片一次，每次 input_image_urls 只放对应那一张，并按该图实际内容写 prompt。',
     '- 如果用户表达的是“合成/融合/拼成/同一张/一张海报/参考某图修改另一图”等单张输出需求，请不要拆分。',
+    attempt > 1 ? '- 注意：上一轮审查仍未完整覆盖。若用户语义是多张独立输出，这次不能回复 PLAN_OK，必须返回覆盖所有目标图的多个 generate_image。' : '',
     '- 如果用户只指定了某一张图（例如图1、第一张、这张）或上一轮单图计划已经符合用户语义，请不要调用任何工具，直接回复 PLAN_OK。',
     '- 不要为了凑数量而复制同一个 prompt；只有语义确实要求多张独立输出时才返回多个工具调用。',
     '',
@@ -340,12 +377,21 @@ export const runAgentConversationV2 = async ({
     };
   }
 
-  if (shouldAuditUnderPlannedImageBatch({ response, freshUploadUrls })) {
-    emit('thinking', { round: 1, repair: 'under_planned_image_batch_audit' });
+  const configuredPlanRepairRounds = Number(process.env.AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS || 2);
+  const maxPlanRepairRounds = Number.isFinite(configuredPlanRepairRounds)
+    ? Math.max(1, configuredPlanRepairRounds)
+    : 2;
+  let planRepairRound = 0;
+  while (
+    planRepairRound < maxPlanRepairRounds
+    && shouldAuditUnderPlannedImageBatch({ response, freshUploadUrls, currentMessage })
+  ) {
+    planRepairRound += 1;
+    emit('thinking', { round: 1, repair: 'under_planned_image_batch_audit', repairRound: planRepairRound });
     const originalGenerateCall = getGenerateImageToolCalls(response)[0];
     const repairMessages = [
       ...messages,
-      { role: 'system', content: buildUnderPlannedImageAuditPrompt({ currentMessage, freshUploadUrls, plannedCall: originalGenerateCall }) },
+      { role: 'system', content: buildUnderPlannedImageAuditPrompt({ currentMessage, freshUploadUrls, plannedCall: originalGenerateCall, attempt: planRepairRound }) },
     ];
     const repairedResponse = await callModel({
       messages: repairMessages,
@@ -357,7 +403,17 @@ export const runAgentConversationV2 = async ({
     if (repairedResponse?.finishReason === 'tool_calls' && repairedResponse.toolCalls?.length) {
       messages = repairMessages;
       response = repairedResponse;
+      continue;
     }
+    if (!hasIndependentBatchIntent(currentMessage, freshUploadUrls.length)) break;
+  }
+  if (
+    shouldAuditUnderPlannedImageBatch({ response, freshUploadUrls, currentMessage })
+    && hasIndependentBatchIntent(currentMessage, freshUploadUrls.length)
+  ) {
+    const error = new Error('图片规划未完整覆盖本轮多图需求，请重试或明确每张图的处理方式。');
+    error.code = 'image_plan_under_planned';
+    throw error;
   }
 
   const maxToolRounds = Number(process.env.AGENT_TOOL_MAX_ROUNDS || 5);
