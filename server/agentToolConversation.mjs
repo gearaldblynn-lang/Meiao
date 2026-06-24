@@ -5,9 +5,11 @@ import { buildSessionImageCatalog, formatCatalogForPrompt, isUrlInCatalog } from
 const IMAGE_MODE_GUIDANCE = [
   '你正处于生图模式。用户希望你帮助生成或修改图片。',
   '- 如果用户需求清晰（有明确的主体、风格或修改要求），直接调用 generate_image 工具',
-  '- 根据用户语义决定工具调用次数：如果用户要求每张图、逐张、分别处理、每个产品/每个素材都处理，应为每个目标输出分别调用一次 generate_image，并返回多张结果',
-  '- 如果用户要求融合、合成、组合到同一张图、做成一张海报或用多图共同构成一个画面，应只调用一次 generate_image，并把相关图片一起作为输入',
-  '- 如果用户要求参考某张图来修改另一张图，应只调用一次 generate_image，并把主编辑图和参考图都放进 input_image_urls，同时在 prompt 中说明各自角色',
+  '- 先判断本轮生图的输入输出拓扑，再决定工具调用方式：text_to_single_image、text_to_multi_image、single_input_single_output、multi_input_single_output、multi_input_multi_output',
+  '- multi_input_single_output：多张输入共同生成一张结果，例如融合、合成、参考、迁移局部信息、同一画面等，只调用一次 generate_image，并把相关输入图一起传入',
+  '- multi_input_multi_output：多张输入分别生成多张结果，每个目标输出分别调用一次 generate_image，并让每次 input_image_urls 只包含该输出需要的输入图',
+  '- single_input_single_output：一张输入编辑成一张结果，只调用一次 generate_image',
+  '- text_to_single_image / text_to_multi_image：无输入图时按用户语义决定生成一张还是多张',
   '- 如果需求不够明确（缺少关键信息），先追问用户，不要猜测生图',
   '- 你可以结合对话上下文理解"继续调整""按上一版改"等指代',
 ].join('\n');
@@ -80,10 +82,6 @@ const normalizeToolCallImageUrls = (call = {}) => {
   }
 };
 
-const hasSingleImageOutputIntent = (text = '') => (
-  /合成|融合|拼成|合并|组合到|同一张|一张海报|一张图|单张|同一个画面|参考.*修改|参考.*改|按.*参考|(?:原图|图)\s*[一二三四五六七八九十\d]+.*?(?:换成|替换成|换为|改成).*?(?:原图|图)\s*[一二三四五六七八九十\d]+|(?:其他|其它)部分.*?(?:不发生任何改变|不变|保持不变)/i.test(String(text || ''))
-);
-
 const hasExplicitSingleTargetIntent = (text = '') => (
   /只\s*(?:把|处理|修改|改|做)?\s*(?:图\s*[一二三四五六七八九十\d]+|第\s*[一二三四五六七八九十\d]+\s*张|这张|这一张)|(?:图\s*[一二三四五六七八九十\d]+|第\s*[一二三四五六七八九十\d]+\s*张|这张|这一张).*?(?:其他|其它).*?(?:不要|先不|不用|不处理)/i.test(String(text || ''))
 );
@@ -99,7 +97,6 @@ const hasIndependentBatchIntent = (text = '', freshUploadCount = 0) => {
   if (freshUploadCount < 2 || !value) return false;
   if (hasExplicitSingleTargetIntent(value)) return false;
   if (/每张|分别|各自|逐张|每个|一张张|each|every/i.test(value)) return true;
-  if (hasSingleImageOutputIntent(value)) return false;
   if (/全部|全都|都|所有|all|both/i.test(value)) return true;
   return countMentionedImageTargets(value) >= 2;
 };
@@ -123,6 +120,12 @@ const shouldAuditUnderPlannedImageBatch = ({ response, freshUploadUrls = [], cur
   if (freshUrls.length < 2) return false;
   if (generateCalls.length === 0) return false;
   if (coveredUrls.size >= freshUrls.length) return false;
+  if (generateCalls.length === 1) {
+    const inputUrls = normalizeToolCallImageUrls(generateCalls[0]).map((url) => String(url || '').trim()).filter(Boolean);
+    const freshSet = new Set(freshUrls);
+    const inputFreshCount = inputUrls.filter((url) => freshSet.has(url)).length;
+    if (inputFreshCount === freshUrls.length) return false;
+  }
   if (generateCalls.length === 1 && coveredUrls.size === 1) return true;
   return hasIndependentBatchIntent(currentMessage, freshUrls.length) && coveredUrls.size < freshUrls.length;
 };
@@ -133,17 +136,24 @@ const buildUnderPlannedImageAuditPrompt = ({ currentMessage = '', freshUploadUrl
     .filter(Boolean);
   const plannedInputUrls = normalizeToolCallImageUrls(plannedCall);
   return [
-    '请审查上一轮 generate_image 工具调用是否完整覆盖用户语义，不要机械拆分。',
+    '请审查上一轮 generate_image 工具调用是否完整覆盖用户语义。只按输入输出拓扑判断，不要按某个具体需求词硬拆。',
     attempt > 1 ? '上一轮审查仍未完整覆盖用户语义；这次必须重新核对所有本轮新上传图片和用户的数量要求。' : '',
     `用户本轮要求是：${String(currentMessage || '').trim()}`,
     `本轮共有 ${urls.length} 张新上传图片。上一轮规划的单图输入图片为：${plannedInputUrls.join(', ') || '空'}`,
     '',
-    '请按语义判断：',
-    '- 如果用户表达的是“每张/全部/都/分别/各自/每个产品都处理”等独立批处理需求，请重新返回多个 generate_image 工具调用；每张新上传图片一次，每次 input_image_urls 只放对应那一张，并按该图实际内容写 prompt。',
-    '- 如果用户表达的是“合成/融合/拼成/同一张/一张海报/参考某图修改另一图”等单张输出需求，请不要拆分。',
-    attempt > 1 ? '- 注意：上一轮审查仍未完整覆盖。若用户语义是多张独立输出，这次不能回复 PLAN_OK，必须返回覆盖所有目标图的多个 generate_image。' : '',
-    '- 如果用户只指定了某一张图（例如图1、第一张、这张）或上一轮单图计划已经符合用户语义，请不要调用任何工具，直接回复 PLAN_OK。',
-    '- 不要为了凑数量而复制同一个 prompt；只有语义确实要求多张独立输出时才返回多个工具调用。',
+    '可选拓扑只有：',
+    '- text_to_single_image：无输入图，输出一张图。',
+    '- text_to_multi_image：无输入图，输出多张图。',
+    '- single_input_single_output：一张输入图，输出一张图。',
+    '- multi_input_single_output：多张输入图共同产出一张图，相关输入图应放在同一次 generate_image 中。',
+    '- multi_input_multi_output：多张输入图分别或分组产出多张图，应返回多个 generate_image，并让每个输出覆盖自己的输入图。',
+    '',
+    '审查规则：',
+    '- 如果上一轮工具调用已经符合用户语义拓扑，请不要调用工具，直接回复 PLAN_OK，并简短说明 topology=<上述枚举之一>。',
+    '- 如果用户语义是 multi_input_multi_output 且上一轮没有覆盖所有本轮目标图，请重新返回多个 generate_image 工具调用。',
+    '- 如果用户语义是 multi_input_single_output，请不要拆成多张；应把相关输入图合在同一次 generate_image。',
+    attempt > 1 ? '- 注意：上一轮审查仍未完整覆盖。若拓扑是 multi_input_multi_output，这次不能回复 PLAN_OK，必须返回覆盖所有目标图的多个 generate_image。' : '',
+    '- 不要为了凑数量而复制同一个 prompt；只有拓扑确实要求多输出时才返回多个工具调用。',
     '',
     '本轮新上传图片 URL：',
     ...urls.map((url, index) => `图${index + 1}: ${url}`),

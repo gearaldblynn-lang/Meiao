@@ -327,6 +327,18 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
           },
         };
       }
+      if (eventType === 'searching_knowledge') {
+        return {
+          ...item,
+          content: '检索知识库中...',
+          metadata: {
+            ...(item.metadata || {}),
+            pending: true,
+            progress: true,
+            progressStage: 'searching_knowledge',
+          },
+        };
+      }
       if (eventType === 'image_generating') {
         const modelLabel = event.model ? `（${event.model}）` : '';
         return {
@@ -339,6 +351,25 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
             progressStage: 'image_generating',
             imageModel: event.model || '',
             imagePhase: event.phase || '',
+          },
+        };
+      }
+      if (eventType === 'image_validating' || eventType === 'image_validation_failed' || eventType === 'image_regenerating') {
+        const stageContent = eventType === 'image_validating'
+          ? '检查生成结果中...'
+          : eventType === 'image_regenerating'
+            ? '根据检查结果重新生成中...'
+            : '生成结果未通过检查，准备重试...';
+        return {
+          ...item,
+          content: stageContent,
+          metadata: {
+            ...(item.metadata || {}),
+            pending: true,
+            progress: true,
+            progressStage: eventType,
+            imageValidationAttempt: event.attempt || item.metadata?.imageValidationAttempt || 0,
+            imageValidationIssues: event.issues || item.metadata?.imageValidationIssues || [],
           },
         };
       }

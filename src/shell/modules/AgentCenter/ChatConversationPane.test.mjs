@@ -24,3 +24,10 @@ test('streaming assistant messages render content with a typewriter cursor inste
   assert.match(paneSource, /agent-streaming-cursor/);
   assert.match(paneSource, /isStreamingMessage/);
 });
+
+test('image generation progress exposes validation and retry stages', () => {
+  assert.match(paneSource, /正在检查生成结果/);
+  assert.match(paneSource, /生成结果未通过检查，准备重试/);
+  assert.match(paneSource, /正在根据检查结果重新生成/);
+  assert.match(paneSource, /key: 'image_validating'/);
+});
