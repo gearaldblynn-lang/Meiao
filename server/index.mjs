@@ -26,7 +26,7 @@ import {
   resolveSessionReasoningLevel,
 } from './chatSessionRules.mjs';
 import { resolveContextLimits } from './contextPlan.mjs';
-import { formatChatSseEvent } from './chatStreaming.mjs';
+import { formatChatSseEvent, startChatSseHeartbeat } from './chatStreaming.mjs';
 import { embedTexts } from './embeddingProvider.mjs';
 import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
@@ -9169,6 +9169,8 @@ const handleMysqlRequest = async (req, res, url) => {
           Connection: 'keep-alive',
           ...(res.__corsHeaders || {}),
         });
+        const stopChatHeartbeat = startChatSseHeartbeat(res);
+        res.once('close', stopChatHeartbeat);
         sendChatEvent('thinking', {});
       }
       const result = await createDbChatReply(user, sessionId, body || {}, sendChatEvent);
@@ -10810,6 +10812,8 @@ const handleLocalRequest = async (req, res, url) => {
               ...(res.__corsHeaders || {}),
             });
             localStreamStarted = true;
+            const stopLocalChatHeartbeat = startChatSseHeartbeat(res);
+            res.once('close', stopLocalChatHeartbeat);
           }
           const normalizedType = type === 'progress' && payload?.stage ? String(payload.stage) : type;
           if (normalizedType === 'streaming' && payload?.delta) localStreamHadDelta = true;

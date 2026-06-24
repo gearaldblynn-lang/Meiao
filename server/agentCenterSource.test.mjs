@@ -131,13 +131,16 @@ test('agent V2 prepares managed image URLs as provider-stable HTTPS URLs before 
 });
 
 test('agent chat streaming is wired through both mysql and local handlers without duplicate final deltas', () => {
+  assert.match(source, /import \{ formatChatSseEvent, startChatSseHeartbeat \} from '\.\/chatStreaming\.mjs';/);
   assert.match(source, /let chatStreamHadDelta = false;/);
   assert.match(source, /if \(normalizedType === 'streaming' && payload\?\.delta\) chatStreamHadDelta = true;/);
   assert.match(source, /if \(!chatStreamHadDelta\) sendChatEvent\('streaming', \{ delta: result\.assistantMessage\?\.content \|\| '' \}\);/);
+  assert.match(source, /const stopChatHeartbeat = startChatSseHeartbeat\(res\);/);
   assert.match(source, /const localWantsStream = String\(req\.headers\.accept \|\| ''\)\.includes\('text\/event-stream'\) \|\| body\?\.stream === true;/);
   assert.match(source, /const sendLocalChatEvent = localWantsStream/);
   assert.match(source, /if \(sendLocalChatEvent\) sendLocalChatEvent\('streaming', \{ delta \}\);/);
   assert.match(source, /if \(!localStreamHadDelta\) sendLocalChatEvent\('streaming', \{ delta: response\.body\.assistantMessage\?\.content \|\| '' \}\);/);
+  assert.match(source, /const stopLocalChatHeartbeat = startChatSseHeartbeat\(res\);/);
 });
 
 test('agent chat source exposes current-user profile updates and session patch delete routes', () => {
