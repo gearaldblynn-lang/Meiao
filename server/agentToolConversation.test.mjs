@@ -792,6 +792,38 @@ test('本轮上传图：附进用户消息(多模态) + system 引导优先编�
   assert.match(sysText, /https:\/\/upload\/photo\.jpg/);
 });
 
+test('本轮新上传图的新需求默认不继承上一轮任务目标', async () => {
+  let capturedMessages = null;
+  await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '都做成白底图，1:1比例居中',
+    attachments: [
+      { kind: 'image', url: 'https://upload/new-1.jpg', name: '图1.jpg' },
+      { kind: 'image', url: 'https://upload/new-2.jpg', name: '图2.jpg' },
+    ],
+    priorMessages: [
+      { role: 'user', content: '去除文案文字', attachments: [{ kind: 'image', url: 'https://upload/old-poster.jpg', name: '旧海报.jpg' }] },
+      {
+        role: 'assistant',
+        content: '已去除文案文字。',
+        attachments: [{ kind: 'image', url: 'https://result/no-text.png', name: '去字结果.png' }],
+        metadata: { imageResultUrls: ['https://result/no-text.png'] },
+      },
+    ],
+    callModel: async ({ messages }) => {
+      capturedMessages = messages;
+      return { content: 'ok', toolCalls: [], finishReason: 'stop' };
+    },
+    generateImage: async () => ({ imageUrl: 'x' }),
+    onProgress: () => {},
+  });
+
+  const sysText = capturedMessages.filter((m) => m.role === 'system').map((m) => m.content).join('\n');
+  assert.match(sysText, /新任务边界/);
+  assert.match(sysText, /不要把上一轮的任务目标/);
+  assert.match(sysText, /除非用户明确说/);
+});
+
 test('多轮修改：这张上一张默认指向最新 AI 生成图', async () => {
   let capturedMessages = null;
   await runAgentConversationV2({
@@ -822,6 +854,119 @@ test('多轮修改：这张上一张默认指向最新 AI 生成图', async () =
   assert.match(sysText, /当前默认编辑图/);
   assert.match(sysText, /这张\/上一张\/刚才那张\/继续修改/);
   assert.match(sysText, /https:\/\/result\/latest\.png/);
+});
+
+test('同一轮多张独立生图工具调用会受控并发执行', async () => {
+  const oldConcurrency = process.env.AGENT_IMAGE_TOOL_CONCURRENCY;
+  process.env.AGENT_IMAGE_TOOL_CONCURRENCY = '2';
+  let round = 0;
+  let secondStarted = false;
+  try {
+    const out = await runAgentConversationV2({
+      ...baseArgs,
+      currentMessage: '图1、图2都分别做成白底图，每张各输出一张',
+      attachments: [
+        { kind: 'image', url: 'https://upload/1.png', name: '图1.png' },
+        { kind: 'image', url: 'https://upload/2.png', name: '图2.png' },
+      ],
+      callModel: async () => {
+        round += 1;
+        if (round === 1) {
+          return {
+            content: '',
+            toolCalls: [
+              { id: 'c1', name: 'generate_image', args: { prompt: '图1白底', task_type: 'edit_image', input_image_urls: ['https://upload/1.png'] } },
+              { id: 'c2', name: 'generate_image', args: { prompt: '图2白底', task_type: 'edit_image', input_image_urls: ['https://upload/2.png'] } },
+            ],
+            finishReason: 'tool_calls',
+          };
+        }
+        return { content: '两张都处理好了', toolCalls: [], finishReason: 'stop' };
+      },
+      generateImage: async ({ inputImageUrls }) => {
+        const url = inputImageUrls[0];
+        if (url === 'https://upload/1.png') {
+          await new Promise((resolve, reject) => {
+            const started = Date.now();
+            const timer = setInterval(() => {
+              if (secondStarted) {
+                clearInterval(timer);
+                resolve();
+              } else if (Date.now() - started > 200) {
+                clearInterval(timer);
+                reject(new Error('第二张没有在第一张完成前启动'));
+              }
+            }, 5);
+          });
+          return { imageUrl: 'https://img/1.png', providerTaskId: 'task-1' };
+        }
+        secondStarted = true;
+        return { imageUrl: 'https://img/2.png', providerTaskId: 'task-2' };
+      },
+      onProgress: () => {},
+    });
+    assert.deepEqual(out.imageResultUrls, ['https://img/1.png', 'https://img/2.png']);
+    assert.deepEqual(out.imagePlan.providerTaskIds, ['task-1', 'task-2']);
+  } finally {
+    if (oldConcurrency === undefined) delete process.env.AGENT_IMAGE_TOOL_CONCURRENCY;
+    else process.env.AGENT_IMAGE_TOOL_CONCURRENCY = oldConcurrency;
+  }
+});
+
+test('同一轮多张独立生图并发时按原顺序渐进 checkpoint', async () => {
+  const oldConcurrency = process.env.AGENT_IMAGE_TOOL_CONCURRENCY;
+  process.env.AGENT_IMAGE_TOOL_CONCURRENCY = '2';
+  let round = 0;
+  let releaseSecond = null;
+  const checkpoints = [];
+  try {
+    const out = await runAgentConversationV2({
+      ...baseArgs,
+      currentMessage: '图1、图2都分别做成白底图，每张各输出一张',
+      attachments: [
+        { kind: 'image', url: 'https://upload/1.png', name: '图1.png' },
+        { kind: 'image', url: 'https://upload/2.png', name: '图2.png' },
+      ],
+      callModel: async () => {
+        round += 1;
+        if (round === 1) {
+          return {
+            content: '',
+            toolCalls: [
+              { id: 'c1', name: 'generate_image', args: { prompt: '图1白底', task_type: 'edit_image', input_image_urls: ['https://upload/1.png'] } },
+              { id: 'c2', name: 'generate_image', args: { prompt: '图2白底', task_type: 'edit_image', input_image_urls: ['https://upload/2.png'] } },
+            ],
+            finishReason: 'tool_calls',
+          };
+        }
+        return { content: '两张都处理好了', toolCalls: [], finishReason: 'stop' };
+      },
+      generateImage: async ({ inputImageUrls }) => {
+        const url = inputImageUrls[0];
+        if (url === 'https://upload/1.png') {
+          return { imageUrl: 'https://img/1.png', providerTaskId: 'task-1' };
+        }
+        await new Promise((resolve, reject) => {
+          releaseSecond = resolve;
+          setTimeout(() => reject(new Error('首张图片完成后没有及时 checkpoint')), 200);
+        });
+        return { imageUrl: 'https://img/2.png', providerTaskId: 'task-2' };
+      },
+      onImageResultReady: async ({ imageResultUrls }) => {
+        checkpoints.push(imageResultUrls.slice());
+        if (imageResultUrls.length === 1 && releaseSecond) releaseSecond();
+      },
+      onProgress: () => {},
+    });
+    assert.deepEqual(checkpoints, [
+      ['https://img/1.png'],
+      ['https://img/1.png', 'https://img/2.png'],
+    ]);
+    assert.deepEqual(out.imageResultUrls, ['https://img/1.png', 'https://img/2.png']);
+  } finally {
+    if (oldConcurrency === undefined) delete process.env.AGENT_IMAGE_TOOL_CONCURRENCY;
+    else process.env.AGENT_IMAGE_TOOL_CONCURRENCY = oldConcurrency;
+  }
 });
 
 test('首轮 Responses 带图 502 时：用图片目录 URL 文本重试并继续生图', async () => {

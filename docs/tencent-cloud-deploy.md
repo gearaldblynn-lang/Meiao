@@ -42,6 +42,7 @@ AGENT_IMAGE_RESULT_VALIDATION_ENABLED=1
 AGENT_IMAGE_RESULT_VALIDATION_MAX_RETRIES=1
 MEIAO_CHAT_SSE_HEARTBEAT_MS=15000
 AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES=1
+AGENT_IMAGE_TOOL_CONCURRENCY=2
 AGENT_MODEL_TRANSIENT_MAX_RETRIES=1
 MEIAO_ALLOWED_ORIGINS=http://111.229.66.247,http://111.229.66.247:3100
 MEIAO_ASSET_X_ACCEL=0
@@ -79,6 +80,8 @@ EOF
 `MEIAO_CHAT_SSE_HEARTBEAT_MS` 默认 `15000`，控制智能体聊天 SSE 心跳间隔。长耗时多图生图可能数分钟没有业务事件，心跳用于避免代理或浏览器把连接判定为空闲后断开。
 
 `AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES` 默认 `1`，控制智能体单次 `generate_image` 提交/读取遇到 `fetch failed`、502、超时等瞬时上游错误时的内部快速重试次数。该重试发生在执行器内部，不把瞬时失败交给模型总结成“部分完成”。
+
+`AGENT_IMAGE_TOOL_CONCURRENCY` 默认 `2`，控制智能体同一轮多张独立 `generate_image` 工具调用的受控并发，代码上限为 `4`。只有本轮工具调用全是生图时才并发；混合 `search_knowledge` / `generate_image` 仍串行，避免检索上下文与生图状态交叉。
 
 `AGENT_MODEL_TRANSIENT_MAX_RETRIES` 默认 `1`，控制智能体规划/总结模型请求在尚未输出内容前遇到 `fetch failed`、超时等瞬时网络错误时的内部快速重试次数。已开始流式输出的请求不会自动重试，避免用户看到重复文本。
 

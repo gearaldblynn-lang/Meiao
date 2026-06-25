@@ -11,12 +11,15 @@ test('第4期多工具 env 旋钮同步到模板、项目总览和部署文档',
   assert.match(envExample, /OPENAI_COMPATIBLE_RESPONSES_PATH/);
   assert.match(envExample, /\/v1\/responses/);
   assert.match(envExample, /MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS/);
+  assert.match(envExample, /AGENT_IMAGE_TOOL_CONCURRENCY/);
 
   assert.match(projectOverview, /AGENT_TOOL_MAX_ROUNDS/);
   assert.match(projectOverview, /OPENAI_COMPATIBLE_RESPONSES_PATH/);
   assert.match(projectOverview, /MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS/);
+  assert.match(projectOverview, /AGENT_IMAGE_TOOL_CONCURRENCY/);
 
   assert.match(deployDoc, /AGENT_TOOL_MAX_ROUNDS/);
   assert.match(deployDoc, /OPENAI_COMPATIBLE_RESPONSES_PATH/);
   assert.match(deployDoc, /MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS/);
+  assert.match(deployDoc, /AGENT_IMAGE_TOOL_CONCURRENCY/);
 });

@@ -14,6 +14,10 @@ const IMAGE_MODE_GUIDANCE = [
   '- 你可以结合对话上下文理解"继续调整""按上一版改"等指代',
 ].join('\n');
 
+const hasExplicitHistoryCarryoverIntent = (text = '') => (
+  /继续|再改|上一版|上一张|刚才|前面|上面|上文|历史|沿用|基于之前|基于上次|参考上(?:一)?轮|按(?:照)?(?:刚才|上次|上一版|之前)/i.test(String(text || ''))
+);
+
 // 把当前消息的文字 + 上传图片附件拼成多模态 content，让模型真正"看到"图片。
 // 没有图片附件时退化为纯文本字符串（兼容不支持多模态 content 数组的场景）。
 const buildUserMessageContent = (text, attachments = [], { includeImages = true } = {}) => {
@@ -91,6 +95,27 @@ const getImageGenerateTransientMaxRetries = (env = process.env) => {
 const getAgentModelTransientMaxRetries = (env = process.env) => {
   const parsed = Number.parseInt(String(env?.AGENT_MODEL_TRANSIENT_MAX_RETRIES || ''), 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
+};
+
+const getAgentImageToolConcurrency = (env = process.env) => {
+  const parsed = Number.parseInt(String(env?.AGENT_IMAGE_TOOL_CONCURRENCY || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 4) : 2;
+};
+
+const runWithConcurrency = async (items = [], concurrency = 1, worker) => {
+  const safeItems = Array.isArray(items) ? items : [];
+  const limit = Math.max(1, Math.min(Number(concurrency) || 1, safeItems.length || 1));
+  const results = new Array(safeItems.length);
+  let nextIndex = 0;
+  const runners = Array.from({ length: limit }, async () => {
+    while (nextIndex < safeItems.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await worker(safeItems[currentIndex], currentIndex);
+    }
+  });
+  await Promise.all(runners);
+  return results;
 };
 
 const callModelWithTransientRetry = async ({
@@ -407,9 +432,13 @@ export const runAgentConversationV2 = async ({
   const freshUploadGuidance = freshUploadUrls.length > 0
     ? [
         '本轮用户新上传了图片（已在本条消息中随附，你可以直接看到）。',
+        hasExplicitHistoryCarryoverIntent(currentMessage)
+          ? '用户本轮明确提到了继续、参考或沿用上文；可以结合上文理解指代，但仍必须优先核对本轮新上传图。'
+          : '新任务边界：本轮有新上传图片且用户没有明确说继续、参考或沿用上文。请把本轮文字和本轮新上传图片视为新的生图任务，不要把上一轮的任务目标、修改要求或失败反馈自动继承到本轮。',
         '如果用户要求"修改/编辑这张图、在图上改文字、换背景"等，必须把本轮新上传图作为 edit_image 的 input_image_urls，URL 如下：',
         ...freshUploadUrls.map((url) => `- ${url}`),
         '不要错用历史生成图（如之前生成的其它图片）当作本次编辑对象，除非用户明确要求基于历史图修改。',
+        '除非用户明确说“继续/参考上面/按刚才/沿用上一版”，否则上文只用于理解会话，不得把上一轮的“去字、换背景、加字、失败重试反馈”等目标并入本轮 prompt。',
       ].join('\n')
     : '';
 
@@ -542,11 +571,12 @@ export const runAgentConversationV2 = async ({
       response.toolCalls.filter((item) => ['generate_image', 'search_knowledge'].includes(item.name))
     );
     const callsToExecute = toolCalls.length > 0 ? toolCalls : [response.toolCalls[0]];
-    for (const call of callsToExecute) {
-      const callId = call.id || `call_${rounds}_${callsToExecute.indexOf(call) + 1}`;
+    const executeToolCall = async (call, callIndex) => {
+      const callId = call.id || `call_${rounds}_${callIndex + 1}`;
       emit('tool_calling', { tool: call.name, args: call.args });
 
       let toolResultContent = '';
+      let imageOutput = null;
       if (call.name === 'search_knowledge') {
         try {
           const { query } = normalizeSearchKnowledgeArgs(call.args);
@@ -573,6 +603,7 @@ export const runAgentConversationV2 = async ({
             let result = null;
             let acceptedPrompt = normalized.prompt;
             let acceptedValidation = null;
+            let localCreditsConsumed = 0;
             for (let imageAttempt = 1; imageAttempt <= maxImageValidationRetries + 1; imageAttempt += 1) {
               result = await generateImageWithTransientRetry({
                 generateImage,
@@ -587,7 +618,7 @@ export const runAgentConversationV2 = async ({
                 emit,
                 imageAttempt,
               });
-              creditsConsumed += normalizeCreditsConsumed(result?.creditsConsumed);
+              localCreditsConsumed += normalizeCreditsConsumed(result?.creditsConsumed);
               const candidateUrl = String(result?.imageUrl || '').trim();
               if (!candidateUrl || typeof validateImageResult !== 'function' || validInputUrls.length === 0) break;
               emit('image_validating', { imageUrl: candidateUrl, attempt: imageAttempt });
@@ -623,33 +654,21 @@ export const runAgentConversationV2 = async ({
               ? '图片已生成成功。图片已作为对话附件返回给用户，请用一句话向用户说明生成结果，不要输出图片 URL。'
               : '图片生成返回为空。请向用户说明生成失败。';
             if (imageUrl) {
-              emit('image_ready', { imageUrl });
-              const plan = {
-                requestMode: 'tool_calling',
-                taskType: normalized.taskType,
-                selectedImageModel,
-                inputImageUrls: validInputUrls,
-                prompt: acceptedPrompt,
-                size: normalized.aspectRatio,
+              imageOutput = {
+                imageUrl,
                 providerTaskId,
-                validation: acceptedValidation || null,
-              };
-              imagePlans.push(plan);
-              imageResultUrls.push(imageUrl);
-              if (providerTaskId) providerTaskIds.push(providerTaskId);
-              imagePlan = buildAggregatedImagePlan({ plans: imagePlans, imageResultUrls, providerTaskIds });
-              if (typeof onImageResultReady === 'function') {
-                await onImageResultReady({
-                  content: '图片已生成完成，正在整理回复。',
-                  selectedModel: selectedImageModel,
-                  usedRetrieval: false,
-                  retrievalSummary: [],
+                creditsConsumed: localCreditsConsumed,
+                plan: {
+                  requestMode: 'tool_calling',
+                  taskType: normalized.taskType,
+                  selectedImageModel,
+                  inputImageUrls: validInputUrls,
+                  prompt: acceptedPrompt,
+                  size: normalized.aspectRatio,
                   providerTaskId,
-                  imagePlan,
-                  imageResultUrls: imageResultUrls.slice(),
-                  creditsConsumed,
-                });
-              }
+                  validation: acceptedValidation || null,
+                },
+              };
             }
           } catch (error) {
             if (error?.code === 'account_credit_insufficient') throw error;
@@ -660,9 +679,58 @@ export const runAgentConversationV2 = async ({
         toolResultContent = `不支持的工具: ${call.name || 'unknown'}。`;
       }
 
-      messages.push(buildFunctionCallInputItem(call, callId));
-      messages.push(buildFunctionCallOutput(callId, toolResultContent));
-    }
+      return { call, callId, toolResultContent, imageOutput };
+    };
+
+    const canRunImageToolsConcurrently = callsToExecute.length > 1
+      && callsToExecute.every((call) => call.name === 'generate_image');
+    const toolExecutionConcurrency = canRunImageToolsConcurrently
+      ? getAgentImageToolConcurrency(process.env)
+      : 1;
+    const toolResults = new Array(callsToExecute.length);
+    let nextToolResultToAppend = 0;
+    let appendToolResultChain = Promise.resolve();
+    const appendReadyToolResults = async () => {
+      while (toolResults[nextToolResultToAppend]) {
+        const execution = toolResults[nextToolResultToAppend];
+        nextToolResultToAppend += 1;
+        messages.push(buildFunctionCallInputItem(execution.call, execution.callId));
+        messages.push(buildFunctionCallOutput(execution.callId, execution.toolResultContent));
+        if (execution.imageOutput?.imageUrl) {
+          const { imageUrl, providerTaskId, plan, creditsConsumed: imageCreditsConsumed } = execution.imageOutput;
+          creditsConsumed += normalizeCreditsConsumed(imageCreditsConsumed);
+          emit('image_ready', { imageUrl });
+          imagePlans.push(plan);
+          imageResultUrls.push(imageUrl);
+          if (providerTaskId) providerTaskIds.push(providerTaskId);
+          imagePlan = buildAggregatedImagePlan({ plans: imagePlans, imageResultUrls, providerTaskIds });
+          if (typeof onImageResultReady === 'function') {
+            await onImageResultReady({
+              content: '图片已生成完成，正在整理回复。',
+              selectedModel: selectedImageModel,
+              usedRetrieval: false,
+              retrievalSummary: [],
+              providerTaskId,
+              imagePlan,
+              imageResultUrls: imageResultUrls.slice(),
+              creditsConsumed,
+            });
+          }
+        }
+      }
+    };
+    await runWithConcurrency(
+      callsToExecute,
+      toolExecutionConcurrency,
+      async (call, callIndex) => {
+        const execution = await executeToolCall(call, callIndex);
+        toolResults[callIndex] = execution;
+        appendToolResultChain = appendToolResultChain.then(appendReadyToolResults);
+        await appendToolResultChain;
+        return execution;
+      },
+    );
+    await appendToolResultChain;
 
     try {
       response = await callModelWithTransientRetry({
