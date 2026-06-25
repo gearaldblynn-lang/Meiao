@@ -822,6 +822,7 @@ test('本轮新上传图的新需求默认不继承上一轮任务目标', async
   assert.match(sysText, /新任务边界/);
   assert.match(sysText, /不要把上一轮的任务目标/);
   assert.match(sysText, /除非用户明确说/);
+  assert.match(sysText, /不得删除产品本体标签、包装文字或关键标识/);
 });
 
 test('多轮修改：这张上一张默认指向最新 AI 生成图', async () => {
