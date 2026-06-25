@@ -99,7 +99,7 @@ const getAgentModelTransientMaxRetries = (env = process.env) => {
 
 const getAgentImageToolConcurrency = (env = process.env) => {
   const parsed = Number.parseInt(String(env?.AGENT_IMAGE_TOOL_CONCURRENCY || ''), 10);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 4) : 2;
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 5) : 2;
 };
 
 const runWithConcurrency = async (items = [], concurrency = 1, worker) => {
