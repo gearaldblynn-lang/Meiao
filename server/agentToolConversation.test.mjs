@@ -970,6 +970,70 @@ test('同一轮多张独立生图并发时按原顺序渐进 checkpoint', async 
   }
 });
 
+test('同一轮多张独立生图工具调用支持配置到 5 并发', async () => {
+  const oldConcurrency = process.env.AGENT_IMAGE_TOOL_CONCURRENCY;
+  process.env.AGENT_IMAGE_TOOL_CONCURRENCY = '5';
+  let round = 0;
+  const started = new Set();
+  const releaseWaiters = [];
+  const releaseAll = () => {
+    while (releaseWaiters.length > 0) releaseWaiters.pop()();
+  };
+  try {
+    const out = await runAgentConversationV2({
+      ...baseArgs,
+      currentMessage: '图1到图5都分别做成白底图，每张各输出一张',
+      attachments: Array.from({ length: 5 }, (_, index) => ({
+        kind: 'image',
+        url: `https://upload/${index + 1}.png`,
+        name: `图${index + 1}.png`,
+      })),
+      callModel: async () => {
+        round += 1;
+        if (round === 1) {
+          return {
+            content: '',
+            toolCalls: Array.from({ length: 5 }, (_, index) => ({
+              id: `c${index + 1}`,
+              name: 'generate_image',
+              args: {
+                prompt: `图${index + 1}白底`,
+                task_type: 'edit_image',
+                input_image_urls: [`https://upload/${index + 1}.png`],
+              },
+            })),
+            finishReason: 'tool_calls',
+          };
+        }
+        return { content: '五张都处理好了', toolCalls: [], finishReason: 'stop' };
+      },
+      generateImage: async ({ inputImageUrls }) => {
+        const url = inputImageUrls[0];
+        started.add(url);
+        if (started.size === 5) releaseAll();
+        await new Promise((resolve, reject) => {
+          if (started.size === 5) return resolve();
+          releaseWaiters.push(resolve);
+          setTimeout(() => reject(new Error(`并发启动不足 5 个，实际 ${started.size} 个`)), 200);
+        });
+        const index = Number(url.match(/\/(\d+)\.png$/)?.[1] || 0);
+        return { imageUrl: `https://img/${index}.png`, providerTaskId: `task-${index}` };
+      },
+      onProgress: () => {},
+    });
+    assert.deepEqual(out.imageResultUrls, [
+      'https://img/1.png',
+      'https://img/2.png',
+      'https://img/3.png',
+      'https://img/4.png',
+      'https://img/5.png',
+    ]);
+  } finally {
+    if (oldConcurrency === undefined) delete process.env.AGENT_IMAGE_TOOL_CONCURRENCY;
+    else process.env.AGENT_IMAGE_TOOL_CONCURRENCY = oldConcurrency;
+  }
+});
+
 test('首轮 Responses 带图 502 时：用图片目录 URL 文本重试并继续生图', async () => {
   let round = 0;
   const userContents = [];

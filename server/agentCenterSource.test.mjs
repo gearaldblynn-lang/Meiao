@@ -362,10 +362,9 @@ test('agent image result validation does not reject allowed style conversion by 
   assert.match(source, /重点判断主体类别、颜色、结构和关键标识是否对应/);
   assert.match(source, /允许产品边缘的轻微自然阴影、压缩色差或细微光照渐变/);
   assert.match(source, /只有背景大面积不是目标颜色、出现复杂场景\/海报元素\/明显暗角时才判失败/);
-  assert.match(source, /const shouldRelaxImageValidationFailure = \(issues = \[\]\) =>/);
-  assert.match(source, /HARD_IMAGE_VALIDATION_ISSUE_RE/);
-  assert.match(source, /SOFT_IMAGE_VALIDATION_ISSUE_RE/);
-  assert.match(source, /style_only_validation_failure/);
+  assert.doesNotMatch(source, /HARD_IMAGE_VALIDATION_ISSUE_RE/);
+  assert.doesNotMatch(source, /SOFT_IMAGE_VALIDATION_ISSUE_RE/);
+  assert.doesNotMatch(source, /style_only_validation_failure/);
 });
 
 test('agent studio source exposes draft-only training and testing endpoints in mysql and local modes', () => {
