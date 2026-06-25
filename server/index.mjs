@@ -2975,16 +2975,32 @@ const prepareAgentModelImageUrl = async (url) => {
   return String(resolved || url || '').trim();
 };
 
+const HARD_IMAGE_VALIDATION_ISSUE_RE = /不是同一|不对应|错用|历史图片|其它图片|其他图片|变成.*产品|产品.*错误|错误.*产品|主体.*(?:不一致|错误|不对|不符|缺失)|类别.*(?:错误|不符)|结构.*(?:错误|不符)|包装.*(?:错误|不符)|数量.*(?:错误|不符|不对)|缺少.*(?:产品|主体|图片)|多出.*(?:产品|主体|图片)|合成到同一张|没有.*(?:白底|正面)|不是白底|背景大面积|复杂场景|海报元素|明显暗角|严重裁切|比例.*(?:错误|不符|不对)|构图.*(?:错误|不符|不对)/;
+const SOFT_IMAGE_VALIDATION_ISSUE_RE = /风格|扁平|矢量|插画|图标|icon|outline|线条|渐变|高光|阴影|光影|立体|写实|质感|美化|柔和|颜色|纯色|填充|边缘|轻微|细微|压缩色差|灰色渐变|不是完全纯白/;
+
+const shouldRelaxImageValidationFailure = (issues = []) => {
+  const normalizedIssues = (Array.isArray(issues) ? issues : [])
+    .map((item) => String(item || '').trim())
+    .filter(Boolean);
+  if (normalizedIssues.length === 0) return false;
+  if (normalizedIssues.some((item) => HARD_IMAGE_VALIDATION_ISSUE_RE.test(item))) return false;
+  return normalizedIssues.every((item) => SOFT_IMAGE_VALIDATION_ISSUE_RE.test(item));
+};
+
 const normalizeImageValidationResult = (content = '') => {
   const parsed = extractJsonObject(content) || {};
   const issues = Array.isArray(parsed.issues)
     ? parsed.issues.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 6)
     : [];
   const revisedPrompt = String(parsed.revisedPrompt || parsed.retryPrompt || '').trim().slice(0, 2000);
+  const parsedOk = parsed.ok === true;
+  const relaxed = !parsedOk && shouldRelaxImageValidationFailure(issues);
   return {
-    ok: parsed.ok === true,
+    ok: parsedOk || relaxed,
     issues,
     revisedPrompt,
+    relaxed,
+    relaxReason: relaxed ? 'style_only_validation_failure' : '',
     raw: String(content || '').slice(0, 4000),
   };
 };
