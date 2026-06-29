@@ -404,6 +404,50 @@ test('质检重试遇到瞬时上游失败时执行器内部快速重试，不�
   assert.ok(progress.some((event) => event.stage === 'image_regenerating' && event.retry === 'transient_generate_error'));
 });
 
+test('质检连续不通过时保留生成图并标记人工复核风险', async () => {
+  let generateCount = 0;
+  const toolOutputs = [];
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '把图1做成白底图',
+    attachments: [{ kind: 'image', url: 'https://upload/bottle.jpg', name: '图1.jpg' }],
+    callModel: async ({ messages }) => {
+      const output = findToolOutputMessage(messages);
+      if (output) {
+        toolOutputs.push(String(output.output || output.content || ''));
+        return { content: '已完成，请检查图片', toolCalls: [], finishReason: 'stop' };
+      }
+      return {
+        content: '',
+        toolCalls: [
+          { id: 'c1', name: 'generate_image', args: { prompt: '把红色瓶子做成白底主图', task_type: 'edit_image', input_image_urls: ['https://upload/bottle.jpg'] } },
+        ],
+        finishReason: 'tool_calls',
+      };
+    },
+    generateImage: async ({ prompt }) => {
+      generateCount += 1;
+      if (generateCount === 2) assert.match(prompt, /质检反馈|背景不是纯白/);
+      return { imageUrl: `https://img/result-${generateCount}.png`, providerTaskId: `task-${generateCount}` };
+    },
+    validateImageResult: async ({ attempt }) => ({
+      ok: false,
+      issues: attempt === 1 ? ['背景不是纯白'] : ['自动质检仍认为背景不是纯白'],
+      revisedPrompt: '必须纯白背景重新生成',
+    }),
+    onProgress: () => {},
+  });
+
+  assert.equal(generateCount, 2);
+  assert.deepEqual(out.imageResultUrls, ['https://img/result-2.png']);
+  assert.equal(out.imagePlan.providerTaskId, 'task-2');
+  assert.equal(out.imagePlan.validation.ok, false);
+  assert.equal(out.imagePlan.validation.acceptedWithWarning, true);
+  assert.match(out.imagePlan.validation.issues.join('；'), /背景不是纯白/);
+  assert.match(toolOutputs.join('\n'), /自动质检提示/);
+  assert.doesNotMatch(toolOutputs.join('\n'), /图片生成失败/);
+});
+
 test('模型重复返回完全相同的 generate_image 时只执行一次，但保留不同 prompt 变体', async () => {
   const generated = [];
   const out = await runAgentConversationV2({
