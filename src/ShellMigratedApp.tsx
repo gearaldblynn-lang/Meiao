@@ -943,6 +943,20 @@ const isInvalidPlanContentForGeneration = (plan: PlanItem) => (
   || isInvalidOneClickPlanLike(plan)
 );
 
+const isOneClickPlanningFailureResult = (
+  project: Pick<Project, 'module'>,
+  result: Pick<GeneratedResult, 'id' | 'planId' | 'status' | 'imageUrl' | 'videoUrl' | 'error' | 'prompt'>,
+) => {
+  if (project.module !== AppModuleObj.ONE_CLICK) return false;
+  if (result.status !== 'error') return false;
+  if (result.imageUrl || result.videoUrl) return false;
+  const ids = [result.id, result.planId].map((value) => String(value || '').trim()).filter(Boolean);
+  return ids.some((id) => (
+    (id.startsWith('task-plan-') && id.endsWith('-error'))
+    || (id.includes('planning-') && id.endsWith('-error'))
+  ));
+};
+
 const getBackendJobIdFromFailedPlan = (plan: PlanItem) => {
   const id = String(plan.id || '').trim();
   return id.endsWith('-error') ? id.slice(0, -'-error'.length) : '';
@@ -6062,6 +6076,10 @@ const AppContent: React.FC<{
       if (!result) return;
       if (result.mediaType === 'video' || result.videoUrl || project.module === AppModuleObj.VIDEO) {
         addToast('视频结果暂不支持单张重生成，请重新提交视频生成任务', 'info');
+        return;
+      }
+      if (isOneClickPlanningFailureResult(project, result)) {
+        addToast('策划失败项需要先重新策划，不能直接重生成图片。', 'warning');
         return;
       }
       const subFeature = project.subFeature || getDefaultSubFeature(project.module);

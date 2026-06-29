@@ -299,6 +299,17 @@ test('one click generation refuses to turn planning error text into image prompt
   assert.match(app, /当前策划结果无效，请重新策划后再生图。/);
 });
 
+test('one click regenerate does not submit planning failure placeholders as image jobs', () => {
+  const app = read('../ShellMigratedApp.tsx');
+  const regenerateBody = app.match(/const handleRegenerateResult = useCallback\(async[\s\S]*?\n  \}, \[projects, tasks, addToast/)?.[0] || '';
+
+  assert.match(app, /const isOneClickPlanningFailureResult = \(/);
+  assert.match(regenerateBody, /isOneClickPlanningFailureResult\(project, result\)/);
+  assert.match(regenerateBody, /策划失败项需要先重新策划，不能直接重生成图片。/);
+  assert.match(regenerateBody, /return;[\s\S]*?const subFeature = project\.subFeature \|\| getDefaultSubFeature/);
+  assert.doesNotMatch(regenerateBody, /shellPlanId: result\.planId[\s\S]{0,300}isOneClickPlanningFailureResult/);
+});
+
 test('one click planning keeps failed reference plans visible', () => {
   const app = read('../ShellMigratedApp.tsx');
   const workflow = read('../adapters/shellWorkflow.ts');
