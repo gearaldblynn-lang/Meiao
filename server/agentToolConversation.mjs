@@ -375,21 +375,6 @@ const createImageBatchIncompleteError = ({ requiredImageCount = 0, actualImageCo
   return error;
 };
 
-const buildImageValidationRetryPrompt = ({ prompt = '', validation = {}, attempt = 1 } = {}) => {
-  const issues = Array.isArray(validation?.issues)
-    ? validation.issues.map((item) => String(item || '').trim()).filter(Boolean)
-    : [];
-  const revisedPrompt = String(validation?.revisedPrompt || validation?.retryPrompt || '').trim();
-  return [
-    String(prompt || '').trim(),
-    '',
-    `质检反馈（第 ${attempt} 次生成未通过）：`,
-    ...(issues.length > 0 ? issues.map((item) => `- ${item}`) : ['- 生成结果未通过输入图一致性或用户要求检查。']),
-    '',
-    revisedPrompt || '请严格基于同一张输入图重新生成，保持原产品身份、外观、颜色、结构和主要细节一致，并完整满足用户要求。不要换成其他产品，不要引入其它历史图片内容。',
-  ].filter(Boolean).join('\n');
-};
-
 export const runAgentConversationV2 = async ({
   systemPrompt = '',
   summary = '',
@@ -406,7 +391,6 @@ export const runAgentConversationV2 = async ({
   contextLimits = {},
   callModel,
   generateImage,
-  validateImageResult = null,
   onImageResultReady = null,
   searchKnowledge = null,
   prepareModelImageUrl = null,
@@ -560,10 +544,6 @@ export const runAgentConversationV2 = async ({
   let creditsConsumed = 0;
   let imagePlan = null;
   let selectedModel = response.modelUsed || '';
-  const configuredValidationRetries = Number(process.env.AGENT_IMAGE_RESULT_VALIDATION_MAX_RETRIES || 1);
-  const maxImageValidationRetries = Number.isFinite(configuredValidationRetries)
-    ? Math.max(0, configuredValidationRetries)
-    : 1;
   const maxImageGenerateTransientRetries = getImageGenerateTransientMaxRetries(process.env);
   while (response.finishReason === 'tool_calls' && response.toolCalls?.length && rounds < maxToolRounds) {
     rounds += 1;
@@ -601,66 +581,25 @@ export const runAgentConversationV2 = async ({
           }
           emit('image_generating', { model: selectedImageModel });
           try {
-            let result = null;
-            let acceptedPrompt = normalized.prompt;
-            let acceptedValidation = null;
             let localCreditsConsumed = 0;
-            for (let imageAttempt = 1; imageAttempt <= maxImageValidationRetries + 1; imageAttempt += 1) {
-              result = await generateImageWithTransientRetry({
-                generateImage,
-                payload: {
-                  prompt: acceptedPrompt,
-                  taskType: normalized.taskType,
-                  inputImageUrls: validInputUrls,
-                  aspectRatio: normalized.aspectRatio,
-                  model: selectedImageModel,
-                },
-                maxRetries: maxImageGenerateTransientRetries,
-                emit,
-                imageAttempt,
-              });
-              localCreditsConsumed += normalizeCreditsConsumed(result?.creditsConsumed);
-              const candidateUrl = String(result?.imageUrl || '').trim();
-              if (!candidateUrl || typeof validateImageResult !== 'function' || validInputUrls.length === 0) break;
-              emit('image_validating', { imageUrl: candidateUrl, attempt: imageAttempt });
-              let validation = null;
-              try {
-                validation = await validateImageResult({
-                  sourceImageUrls: validInputUrls,
-                  resultImageUrl: candidateUrl,
-                  prompt: acceptedPrompt,
-                  originalPrompt: normalized.prompt,
-                  userMessage: currentMessage,
-                  taskType: normalized.taskType,
-                  aspectRatio: normalized.aspectRatio,
-                  attempt: imageAttempt,
-                });
-              } catch (validationError) {
-                validation = { ok: true, skipped: true, error: validationError?.message || String(validationError || '') };
-              }
-              acceptedValidation = validation;
-              if (validation?.ok !== false) break;
-              emit('image_validation_failed', { imageUrl: candidateUrl, attempt: imageAttempt, issues: validation?.issues || [] });
-              if (imageAttempt > maxImageValidationRetries) {
-                acceptedValidation = {
-                  ...validation,
-                  acceptedWithWarning: true,
-                  reason: 'validation_retries_exhausted',
-                };
-                break;
-              }
-              acceptedPrompt = buildImageValidationRetryPrompt({ prompt: normalized.prompt, validation, attempt: imageAttempt });
-              emit('image_regenerating', { attempt: imageAttempt + 1 });
-            }
+            const result = await generateImageWithTransientRetry({
+              generateImage,
+              payload: {
+                prompt: normalized.prompt,
+                taskType: normalized.taskType,
+                inputImageUrls: validInputUrls,
+                aspectRatio: normalized.aspectRatio,
+                model: selectedImageModel,
+              },
+              maxRetries: maxImageGenerateTransientRetries,
+              emit,
+              imageAttempt: 1,
+            });
+            localCreditsConsumed += normalizeCreditsConsumed(result?.creditsConsumed);
             const imageUrl = String(result?.imageUrl || '').trim();
             const providerTaskId = String(result?.providerTaskId || '').trim();
-            const validationIssues = acceptedValidation?.ok === false
-              ? (acceptedValidation.issues || []).map((issue) => String(issue || '').trim()).filter(Boolean)
-              : [];
             toolResultContent = imageUrl
-              ? validationIssues.length
-                ? `图片已生成成功，但自动质检提示可能需要人工复核：${validationIssues.join('；')}。图片已作为对话附件返回给用户，请提醒用户查看后决定是否需要继续修改，不要输出图片 URL。`
-                : '图片已生成成功。图片已作为对话附件返回给用户，请用一句话向用户说明生成结果，不要输出图片 URL。'
+              ? '图片已生成成功。图片已作为对话附件返回给用户，请用一句话向用户说明生成结果，不要输出图片 URL。'
               : '图片生成返回为空。请向用户说明生成失败。';
             if (imageUrl) {
               imageOutput = {
@@ -672,10 +611,10 @@ export const runAgentConversationV2 = async ({
                   taskType: normalized.taskType,
                   selectedImageModel,
                   inputImageUrls: validInputUrls,
-                  prompt: acceptedPrompt,
+                  prompt: normalized.prompt,
                   size: normalized.aspectRatio,
                   providerTaskId,
-                  validation: acceptedValidation || null,
+                  validation: null,
                 },
               };
             }

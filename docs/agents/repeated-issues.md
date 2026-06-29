@@ -669,9 +669,9 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 - Symptom: 将离账号 3 图白底任务返回了 3 张 completed 图片，但黑色加湿器缺失，结果里出现重复瓶类产品；用户看到的是“数量正确但图对不上”。
 - Root cause: #22/#24 修复了多图规划覆盖和 KIE 图床 URL 稳定性，但落库前仍只验证输出数量、provider task id 和 URL 列表，不验证每张生成结果是否对应当前源图和语义要求。模型/KIE 可能生成主体错误的图片，原逻辑仍会写 `image_result_ready` 并标记 completed。
-- Fix: `runAgentConversationV2` 在每个 `generate_image` 结果写 checkpoint 前调用 `validateImageResult`；服务端 `validateAgentGeneratedImageResult` 用同一中转 Responses 模型看源图和生成结果，返回 JSON 质检结论。失败时自动带质检反馈重试一次，仍失败则保留最后一次生成图并在 `imagePlan.validation` 标记 `acceptedWithWarning`，提醒人工复核，不再自动吞掉用户满意的可见结果。
-- Regression check: `node --test server/agentToolConversation.test.mjs --test-name-pattern "生图结果质检"`；`node --test server/agentToolConversation.test.mjs server/providerAssetTransfer.test.mjs server/providerGateway.test.mjs server/openaiResponsesProvider.test.mjs server/agentCenterSource.test.mjs server/agentImagePlan.test.mjs`；`npm run build`；`npm run lint`。
-- Avoid next time: 智能体多图验收不能只数图片数量；自动质检也不能替代用户最终判断。只要是源图编辑/逐张处理，落库前必须逐张验证主体一致性和用户要求满足度；质检失败应优先重试和标风险，已有可见主产物时不要一票否决。质检请求也必须走 managed asset scrubbed provider 边界，不新增 base64 或未配置模型 fallback。
+- Fix: `runAgentConversationV2` 的正确性边界回到前置确定性链路：本轮新上传图 inline + 图片目录、tool call 计划覆盖率、`input_image_urls` 必须来自目录、强多图语义执行前校验、provider 返回 `imageUrl/providerTaskId` 后立即 checkpoint。移除出图后的模型质检和质检重试，不再用另一层主观模型裁判吞掉用户满意的可见结果。
+- Regression check: `node --test server/agentToolConversation.test.mjs --test-name-pattern "不调用后置质检"`；`node --test server/agentToolConversation.test.mjs server/providerAssetTransfer.test.mjs server/providerGateway.test.mjs server/openaiResponsesProvider.test.mjs server/agentCenterSource.test.mjs server/agentImagePlan.test.mjs`；`npm run build`；`npm run lint`。
+- Avoid next time: 智能体多图验收不能只数图片数量，但也不要靠“出图后再审图”兜底。正确性应来自输入映射、计划覆盖、工具调用和落库 checkpoint 这些可验证边界；用户对图片是否满意是最终验收。若发现错图，优先修前置图片目录、计划语义、provider 输入或结果映射。
 
 ## 2026-06-12 - First-image planning recovery must aggregate sibling reference jobs
 

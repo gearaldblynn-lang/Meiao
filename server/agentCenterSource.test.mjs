@@ -252,11 +252,10 @@ test('agent image chats checkpoint generated assets before final reply persisten
   assert.match(source, /onImageReady: persistDbChatImageCheckpoint/);
   assert.match(source, /const persistLocalChatImageCheckpoint = async \(checkpointResult = \{\}\) =>/);
   assert.match(source, /onImageReady: persistLocalChatImageCheckpoint/);
-  assert.match(source, /const validateImageResult = async \(validationInput\) => validateAgentGeneratedImageResult\(\{/);
-  assert.match(source, /validateImageResult,[\s\S]*?onImageResultReady: persistDbChatImageCheckpoint/);
-  assert.match(source, /validateImageResult,[\s\S]*?onImageResultReady: persistLocalChatImageCheckpoint/);
-  assert.match(source, /const validateAgentGeneratedImageResult = async \(\{/);
-  assert.match(source, /AGENT_IMAGE_RESULT_VALIDATION_ENABLED/);
+  assert.doesNotMatch(source, /const validateImageResult = async \(validationInput\) => validateAgentGeneratedImageResult\(\{/);
+  assert.doesNotMatch(source, /validateImageResult,[\s\S]*?onImageResultReady:/);
+  assert.doesNotMatch(source, /const validateAgentGeneratedImageResult = async \(\{/);
+  assert.doesNotMatch(source, /AGENT_IMAGE_RESULT_VALIDATION_ENABLED/);
   assert.match(source, /if \(typeof onImageReady === 'function' && result\.imageResultUrls\.length > 0\) \{[\s\S]*?await onImageReady\(result\);/);
 });
 
@@ -357,11 +356,13 @@ test('agent image conversation prompt includes deterministic image order mapping
   assert.match(source, /requestMode === 'image_generation' \? version\?\.modelPolicy\?\.multimodalModel : version\?\.modelPolicy\?\.defaultModel/);
 });
 
-test('agent image result validation does not reject allowed style conversion by default', () => {
-  assert.match(source, /不要仅因生成结果从图标、插画或海报素材变成写实电商主图而判失败/);
-  assert.match(source, /重点判断主体类别、颜色、结构和关键标识是否对应/);
-  assert.match(source, /允许产品边缘的轻微自然阴影、压缩色差或细微光照渐变/);
-  assert.match(source, /只有背景大面积不是目标颜色、出现复杂场景\/海报元素\/明显暗角时才判失败/);
+test('agent image result validation prompt is not part of the runtime path', () => {
+  assert.doesNotMatch(source, /不要仅因生成结果从图标、插画或海报素材变成写实电商主图而判失败/);
+  assert.doesNotMatch(source, /重点判断主体类别、颜色、结构和关键标识是否对应/);
+  assert.doesNotMatch(source, /允许产品边缘的轻微自然阴影、压缩色差或细微光照渐变/);
+  assert.doesNotMatch(source, /只有背景大面积不是目标颜色、出现复杂场景\/海报元素\/明显暗角时才判失败/);
+  assert.doesNotMatch(source, /你是严谨的电商图片质检器/);
+  assert.doesNotMatch(source, /image_result_validation_failed/);
   assert.doesNotMatch(source, /HARD_IMAGE_VALIDATION_ISSUE_RE/);
   assert.doesNotMatch(source, /SOFT_IMAGE_VALIDATION_ISSUE_RE/);
   assert.doesNotMatch(source, /style_only_validation_failure/);

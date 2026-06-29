@@ -183,8 +183,8 @@
 
 - **#26 ✅ 已修(2026-06-24)· 智能体多图结果数量正确但内容错图仍被标记完成**
   根因:将离 2026-06-24 10:53:02 的 3 图白底任务已经返回 3 张并写入 completed,但第二张黑色加湿器被生成成红色营养瓶,且瓶图重复。数据库回溯显示旧消息的 `imagePlan.plans` 第 2 项已经被同名 KIE URL 碰撞带偏为瓶类 prompt;即使 #22/#24 修了 URL 唯一性和首轮历史图预转存,后端验收仍只看“计划覆盖数/输出数/URL 数”,没有检查每个生成结果是否真的对应当前源图和用户语义要求。模型/KIE 可能给出数量正确但主体错误的图片,原逻辑会直接落库为成功。
-  修复:`runAgentConversationV2` 在每个 `generate_image` 返回后、写 `image_result_ready` checkpoint 前新增结果质检钩子:用同一中转 Responses 模型同时看源图和生成结果,输出 JSON 判断主体一致性、白底/比例/构图等用户要求是否满足。质检失败时把反馈合并进强化 prompt 自动重试一次;若重试后仍失败,保留最后一次生成图并在 `imagePlan.validation` 标记 `acceptedWithWarning`,提示人工复核,不再吞掉用户可见图片。MySQL 和本地 JSON 两套 chat handler 都接入 `validateAgentGeneratedImageResult`,并通过 `AGENT_IMAGE_RESULT_VALIDATION_ENABLED` / `AGENT_IMAGE_RESULT_VALIDATION_MAX_RETRIES` 控制。
-  如何避免:**智能体生图验收不能只验“有没有 N 张图”,但自动质检也不能取代用户验收。多图独立处理必须逐张验证“源图 → 结果图”的主体一致性和用户要求满足度;质检失败可以触发重试和风险标记,但不应在已经有可见主产物时一票否决。生成结果质检也必须走 managed asset scrubbed provider 边界,禁止新增 base64 或未配置模型 fallback。**
+  修复:`runAgentConversationV2` 的正确性边界收回到前置确定性链路:本轮新上传图 inline + 图片目录、tool call 计划覆盖率、`input_image_urls` 必须来自目录、强多图语义执行前校验、provider 返回 `imageUrl/providerTaskId` 后立即 checkpoint。已移除出图后的模型质检和质检重试,避免用另一层主观模型裁判吞掉用户满意的可见结果。
+  如何避免:**智能体生图不要靠“出图后再审图”兜底。正确性应来自输入映射、计划覆盖、工具调用和落库 checkpoint 这些可验证边界;用户对图片是否满意是最终验收。若发现错图,优先修前置的图片目录、计划语义、provider 输入或结果映射,不要再增加后置模型质检层。**
 
 - **#27 ✅ 已修(2026-06-24)· 详情页批量生图把 KIE 素材上传并发打满后失败**
   根因:天琪账号 `6月24日项目4` 详情策划已成功,但后续详情页一次性创建 7 个 `kie_image` 出图任务,每个任务又带 7 张商品/参考图素材,短时间内对 KIE 图床形成约 49 次素材转存。云上事件显示失败发生在出图前的 `asset_upload` 阶段:`kie:kie_image:asset_upload:provider_network_error` / `provider_internal_error`,且部分任务 5 分钟内未拿到 providerTaskId 被 `kie:kie_image:provider_submit:provider_submit_stale` 回收。单张烟测可成功,但真实批量详情图会因并发转存、缺少 asset_upload 重试、`kie_image` providerless 窗口过短而失败。

@@ -2975,88 +2975,6 @@ const prepareAgentModelImageUrl = async (url) => {
   return String(resolved || url || '').trim();
 };
 
-const normalizeImageValidationResult = (content = '') => {
-  const parsed = extractJsonObject(content) || {};
-  const issues = Array.isArray(parsed.issues)
-    ? parsed.issues.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 6)
-    : [];
-  const revisedPrompt = String(parsed.revisedPrompt || parsed.retryPrompt || '').trim().slice(0, 2000);
-  return {
-    ok: parsed.ok === true,
-    issues,
-    revisedPrompt,
-    raw: String(content || '').slice(0, 4000),
-  };
-};
-
-const validateAgentGeneratedImageResult = async ({
-  env,
-  selectedModel = '',
-  sourceImageUrls = [],
-  resultImageUrl = '',
-  prompt = '',
-  userMessage = '',
-  taskType = '',
-  aspectRatio = '',
-}) => {
-  if (String(process.env.AGENT_IMAGE_RESULT_VALIDATION_ENABLED || '1') === '0') {
-    return { ok: true, skipped: true, reason: 'disabled' };
-  }
-  const model = String(selectedModel || '').trim();
-  const resultUrl = String(resultImageUrl || '').trim();
-  const sourceUrls = (Array.isArray(sourceImageUrls) ? sourceImageUrls : [])
-    .map((url) => String(url || '').trim())
-    .filter(Boolean)
-    .slice(0, 4);
-  if (!model || !resultUrl || sourceUrls.length === 0) {
-    return { ok: true, skipped: true, reason: 'missing_input' };
-  }
-  const preparedSources = [];
-  for (const url of sourceUrls) {
-    preparedSources.push(await prepareAgentModelImageUrl(url));
-  }
-  const preparedResult = await prepareAgentModelImageUrl(resultUrl);
-  const userContent = [
-    {
-      type: 'text',
-      text: [
-        '请做图像生成结果质检。前面的是输入源图，最后一张是生成结果。',
-        `用户原始要求：${String(userMessage || '').trim()}`,
-        `工具任务类型：${String(taskType || '').trim()}`,
-        `尺寸/比例要求：${String(aspectRatio || '').trim() || '未指定'}`,
-        `生成提示词：${String(prompt || '').trim()}`,
-        '',
-        '判定规则：',
-        '- 生成结果必须对应同一个输入产品/主体，不能变成其它图片或历史图片里的产品。',
-        '- 如果用户要求逐张/都处理，每张结果必须只对应当前这一次的输入图。',
-        '- 检查主要外观、类别、颜色、结构、包装/形态是否一致；允许合理的白底重拍、抠图、角度轻微修正。',
-        '- 如果用户没有明确要求保持原图视觉风格/插画风/扁平风，不要仅因生成结果从图标、插画或海报素材变成写实电商主图而判失败；重点判断主体类别、颜色、结构和关键标识是否对应。',
-        '- 对纯白/纯色背景要求，允许产品边缘的轻微自然阴影、压缩色差或细微光照渐变；只有背景大面积不是目标颜色、出现复杂场景/海报元素/明显暗角时才判失败。',
-        '- 检查是否明显违反用户要求，例如不是白底、比例/构图错误、主体严重裁切、没有正面摆放、混入多余海报元素。',
-        '',
-        '只返回 JSON，不要 Markdown：',
-        '{"ok":true|false,"issues":["具体问题"],"revisedPrompt":"如果 ok=false，给出用于重试的强化提示词"}',
-      ].join('\n'),
-    },
-    ...preparedSources.map((url) => ({ type: 'image_url', image_url: { url } })),
-    { type: 'image_url', image_url: { url: preparedResult } },
-  ];
-  const output = await executeProviderJobWithManagedAssetScrub({
-    taskType: 'openai_responses',
-    payload: {
-      model,
-      messages: [
-        { role: 'system', content: '你是严谨的电商图片质检器，只判断生成结果是否忠实对应输入图和用户要求。必须输出合法 JSON。' },
-        { role: 'user', content: userContent },
-      ],
-      tools: [],
-      maxTokens: 900,
-    },
-  }, env, new AbortController().signal);
-  const content = output?.content ?? output?.result?.content ?? '';
-  return normalizeImageValidationResult(content);
-};
-
 const collectOneClickReferencePresetAssetUrls = (state) => {
   const urls = [];
   const presets = state?.oneClickMemory?.referencePresets || {};
@@ -6344,11 +6262,6 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         const providerTaskId = String(imageOutput?.providerTaskId || '');
         return { imageUrl, providerTaskId, creditsConsumed: getProviderCreditsConsumed(imageOutput) };
       };
-      const validateImageResult = async (validationInput) => validateAgentGeneratedImageResult({
-        ...validationInput,
-        env: openaiCompatibleEnv,
-        selectedModel,
-      });
       result = await runAgentConversationV2({
         systemPrompt: version.systemPrompt || '',
         summary,
@@ -6372,7 +6285,6 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         ),
         callModel,
         generateImage,
-        validateImageResult,
         onImageResultReady: persistDbChatImageCheckpoint,
         prepareModelImageUrl: prepareAgentModelImageUrl,
         onProgress: (event) => {
@@ -11199,11 +11111,6 @@ const handleLocalRequest = async (req, res, url) => {
           const providerTaskId = String(imageOutput?.providerTaskId || '');
           return { imageUrl, providerTaskId, creditsConsumed: getProviderCreditsConsumed(imageOutput) };
         };
-        const validateImageResult = async (validationInput) => validateAgentGeneratedImageResult({
-          ...validationInput,
-          env: openaiCompatibleEnv,
-          selectedModel,
-        });
         result = await runAgentConversationV2({
           systemPrompt: version.systemPrompt || '',
           summary,
@@ -11227,7 +11134,6 @@ const handleLocalRequest = async (req, res, url) => {
           ),
           callModel,
           generateImage,
-          validateImageResult,
           onImageResultReady: persistLocalChatImageCheckpoint,
           prepareModelImageUrl: prepareAgentModelImageUrl,
           onProgress: (event) => {

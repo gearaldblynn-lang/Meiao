@@ -314,9 +314,9 @@ test('模型同一轮返回多个 generate_image 时：逐个执行并返回多�
   assert.equal(out.imagePlan.plans.length, 2);
 });
 
-test('生图结果质检不通过时按反馈重试，不把错误图标记为完成', async () => {
+test('生图结果返回后不调用后置质检模型，直接进入完成链路', async () => {
   let generateCount = 0;
-  const validations = [];
+  let validationCalls = 0;
   const out = await runAgentConversationV2({
     ...baseArgs,
     currentMessage: '都做成白底图，1:1的比例，正面摆放',
@@ -337,31 +337,24 @@ test('生图结果质检不通过时按反馈重试，不把错误图标记为�
     },
     generateImage: async ({ prompt, inputImageUrls }) => {
       generateCount += 1;
+      assert.equal(prompt, '把黑色加湿器做成白底主图');
       assert.deepEqual(inputImageUrls, ['https://upload/humidifier.jpg']);
-      if (generateCount === 2) assert.match(prompt, /质检反馈|不是同一个产品/);
       return { imageUrl: `https://img/result-${generateCount}.png`, providerTaskId: `task-${generateCount}` };
     },
-    validateImageResult: async ({ sourceImageUrls, resultImageUrl, prompt, attempt }) => {
-      validations.push({ sourceImageUrls, resultImageUrl, prompt, attempt });
-      if (attempt === 1) {
-        return {
-          ok: false,
-          issues: ['生成结果不是同一个产品，把黑色加湿器错误做成了瓶装产品'],
-          revisedPrompt: '必须严格基于输入图中的黑色加湿器重新生成白底图',
-        };
-      }
-      return { ok: true, issues: [] };
+    validateImageResult: async () => {
+      validationCalls += 1;
+      throw new Error('后置质检不应被调用');
     },
     onProgress: () => {},
   });
-  assert.equal(generateCount, 2);
-  assert.equal(validations.length, 2);
-  assert.deepEqual(out.imageResultUrls, ['https://img/result-2.png']);
-  assert.equal(out.imagePlan.providerTaskId, 'task-2');
-  assert.match(out.imagePlan.prompt, /质检反馈|黑色加湿器/);
+  assert.equal(generateCount, 1);
+  assert.equal(validationCalls, 0);
+  assert.deepEqual(out.imageResultUrls, ['https://img/result-1.png']);
+  assert.equal(out.imagePlan.providerTaskId, 'task-1');
+  assert.equal(out.imagePlan.validation, null);
 });
 
-test('质检重试遇到瞬时上游失败时执行器内部快速重试，不返回半完成', async () => {
+test('生图遇到瞬时上游失败时执行器内部快速重试，不返回半完成', async () => {
   let generateCount = 0;
   const progress = [];
   const out = await runAgentConversationV2({
@@ -385,67 +378,19 @@ test('质检重试遇到瞬时上游失败时执行器内部快速重试，不�
     },
     generateImage: async () => {
       generateCount += 1;
-      if (generateCount === 2) {
+      if (generateCount === 1) {
         const error = new Error('fetch failed');
         error.code = 'upstream_fetch_failed';
         throw error;
       }
       return { imageUrl: `https://img/result-${generateCount}.png`, providerTaskId: `task-${generateCount}` };
     },
-    validateImageResult: async ({ attempt }) => {
-      if (attempt === 1) return { ok: false, issues: ['背景不是纯白'], revisedPrompt: '必须纯白背景重新生成' };
-      return { ok: true, issues: [] };
-    },
     onProgress: (event) => progress.push(event),
   });
-  assert.equal(generateCount, 3);
-  assert.deepEqual(out.imageResultUrls, ['https://img/result-3.png']);
-  assert.equal(out.imagePlan.providerTaskId, 'task-3');
-  assert.ok(progress.some((event) => event.stage === 'image_regenerating' && event.retry === 'transient_generate_error'));
-});
-
-test('质检连续不通过时保留生成图并标记人工复核风险', async () => {
-  let generateCount = 0;
-  const toolOutputs = [];
-  const out = await runAgentConversationV2({
-    ...baseArgs,
-    currentMessage: '把图1做成白底图',
-    attachments: [{ kind: 'image', url: 'https://upload/bottle.jpg', name: '图1.jpg' }],
-    callModel: async ({ messages }) => {
-      const output = findToolOutputMessage(messages);
-      if (output) {
-        toolOutputs.push(String(output.output || output.content || ''));
-        return { content: '已完成，请检查图片', toolCalls: [], finishReason: 'stop' };
-      }
-      return {
-        content: '',
-        toolCalls: [
-          { id: 'c1', name: 'generate_image', args: { prompt: '把红色瓶子做成白底主图', task_type: 'edit_image', input_image_urls: ['https://upload/bottle.jpg'] } },
-        ],
-        finishReason: 'tool_calls',
-      };
-    },
-    generateImage: async ({ prompt }) => {
-      generateCount += 1;
-      if (generateCount === 2) assert.match(prompt, /质检反馈|背景不是纯白/);
-      return { imageUrl: `https://img/result-${generateCount}.png`, providerTaskId: `task-${generateCount}` };
-    },
-    validateImageResult: async ({ attempt }) => ({
-      ok: false,
-      issues: attempt === 1 ? ['背景不是纯白'] : ['自动质检仍认为背景不是纯白'],
-      revisedPrompt: '必须纯白背景重新生成',
-    }),
-    onProgress: () => {},
-  });
-
   assert.equal(generateCount, 2);
   assert.deepEqual(out.imageResultUrls, ['https://img/result-2.png']);
   assert.equal(out.imagePlan.providerTaskId, 'task-2');
-  assert.equal(out.imagePlan.validation.ok, false);
-  assert.equal(out.imagePlan.validation.acceptedWithWarning, true);
-  assert.match(out.imagePlan.validation.issues.join('；'), /背景不是纯白/);
-  assert.match(toolOutputs.join('\n'), /自动质检提示/);
-  assert.doesNotMatch(toolOutputs.join('\n'), /图片生成失败/);
+  assert.ok(progress.some((event) => event.stage === 'image_regenerating' && event.retry === 'transient_generate_error'));
 });
 
 test('模型重复返回完全相同的 generate_image 时只执行一次，但保留不同 prompt 变体', async () => {
