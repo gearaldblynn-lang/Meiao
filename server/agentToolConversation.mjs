@@ -642,17 +642,25 @@ export const runAgentConversationV2 = async ({
               if (validation?.ok !== false) break;
               emit('image_validation_failed', { imageUrl: candidateUrl, attempt: imageAttempt, issues: validation?.issues || [] });
               if (imageAttempt > maxImageValidationRetries) {
-                const error = new Error(`图片质检未通过：${(validation?.issues || []).join('；') || '生成结果与输入图或用户要求不一致'}`);
-                error.code = 'image_result_validation_failed';
-                throw error;
+                acceptedValidation = {
+                  ...validation,
+                  acceptedWithWarning: true,
+                  reason: 'validation_retries_exhausted',
+                };
+                break;
               }
               acceptedPrompt = buildImageValidationRetryPrompt({ prompt: normalized.prompt, validation, attempt: imageAttempt });
               emit('image_regenerating', { attempt: imageAttempt + 1 });
             }
             const imageUrl = String(result?.imageUrl || '').trim();
             const providerTaskId = String(result?.providerTaskId || '').trim();
+            const validationIssues = acceptedValidation?.ok === false
+              ? (acceptedValidation.issues || []).map((issue) => String(issue || '').trim()).filter(Boolean)
+              : [];
             toolResultContent = imageUrl
-              ? '图片已生成成功。图片已作为对话附件返回给用户，请用一句话向用户说明生成结果，不要输出图片 URL。'
+              ? validationIssues.length
+                ? `图片已生成成功，但自动质检提示可能需要人工复核：${validationIssues.join('；')}。图片已作为对话附件返回给用户，请提醒用户查看后决定是否需要继续修改，不要输出图片 URL。`
+                : '图片已生成成功。图片已作为对话附件返回给用户，请用一句话向用户说明生成结果，不要输出图片 URL。'
               : '图片生成返回为空。请向用户说明生成失败。';
             if (imageUrl) {
               imageOutput = {

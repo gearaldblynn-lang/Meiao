@@ -112,7 +112,7 @@ npm run dev
 - `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_image` 任务提交 KIE 前解析/转存素材的并发。详情页批量生图建议保持保守默认，避免“任务数 × 素材数”打满 KIE 图床。
 - `MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_seedance_video` 任务提交 KIE 前解析/转存图片、视频、音频素材的总并发。分镜视频多素材建议保持保守默认，避免多张大图同时转存导致 `asset_upload fetch failed`。
 - `AGENT_IMAGE_RESULT_VALIDATION_ENABLED`：默认 `1`；智能体 V2 生图结果落库前用同一中转模型做源图/结果图一致性质检，避免“数量对了但图对不上”被标记完成。设为 `0` 可紧急关闭。
-- `AGENT_IMAGE_RESULT_VALIDATION_MAX_RETRIES`：默认 `1`；结果质检失败后最多自动重试次数，超过后快速失败，不把错误图写成完成结果。
+- `AGENT_IMAGE_RESULT_VALIDATION_MAX_RETRIES`：默认 `1`；结果质检失败后最多自动重试次数，超过后保留最后一次生成图并在 `imagePlan.validation` 标记人工复核风险，避免用户满意的结果被自动吞掉。
 - `MEIAO_CHAT_SSE_HEARTBEAT_MS`：默认 `15000`；智能体聊天 SSE 心跳间隔，避免长耗时多图生图期间代理或浏览器因连接空闲断流。
 - `AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES`：默认 `1`；智能体单次 `generate_image` 提交/读取遇到 `fetch failed`、502、超时等瞬时上游错误时的内部快速重试次数，避免把瞬时失败总结成“部分完成”。
 - `AGENT_IMAGE_TOOL_CONCURRENCY`：默认 `2`，代码上限 `5`；智能体同一轮返回多条独立 `generate_image` 工具调用时受控并发执行。只在本轮全是生图工具时启用，混合检索/生图仍串行，避免状态交叉。
