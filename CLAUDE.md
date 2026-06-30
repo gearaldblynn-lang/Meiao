@@ -210,3 +210,8 @@
   根因:广白账号 2026-06-30 15:43:54 的 `kie_seedance_video` 任务 `50723f2bfddcbef7b52cf095` 在提交 KIE 时返回 `The total duration of the video cannot exceed 15 seconds`,没有 `provider_task_id`, `provider_submitted=0`。该任务上传的参考视频实际约 53 秒,超过 Seedance API 对 `reference_video_urls` 的参考视频合计时长上限 15 秒;生成视频自身的 `duration` 是另一条 4-15 秒范围约束,不与参考视频相加。另一个用户可见问题是上传视频素材缩略图和灯箱预览仍按图片轻量预览思路处理:素材条视频 `preload="none"` 不主动取首帧,灯箱视频只用 `src` + `preload="metadata"` 且没有固定可见播放区域/错误提示,在部分浏览器里容易表现为黑块或只露出音频控件。
   修复:`runKieSeedanceVideoJob` 在提交前读取受管 MP4 的 `mvhd` 时长,对参考视频合计时长超过 15 秒的请求直接抛结构化 `provider_bad_request`,并把 KIE 英文错误归一成中文可操作提示;补回归测试证明 53 秒参考视频不会调用 KIE `createTask`,也证明 10 秒参考视频 + 10 秒生成可以正常提交。`MaterialPreviewBar` 上传视频缩略图改为主动加载并 seek 到首帧附近;`ImageLightbox` 视频播放改为 `<source type=...>`、固定 16:9 可见区域、`preload="auto"`、首帧 seek、播放互斥和可读错误提示。
   如何避免:**视频参考不是普通附件。Seedance API 路径必须在提交前校验 provider 的硬限制,不要把明显会被拒绝的请求送到上游才失败。排查“视频上传了但不显示/不能播”时先分三层:资产 HTTP 头和 Range、文件容器/编码/时长、前端 video 元素加载策略;确认有 `vide` track 后不要误判成素材上传失败。**
+
+- **#32 ✅ 已修(2026-06-30)· HEVC/H.265 上传视频在浏览器里只能播音频**
+  根因:将离账号上传的 `6_30_15.mp4` 资产 HTTP 200、`Accept-Ranges: bytes` 和文件大小都正常,不是图床上传失败;解析 MP4 容器发现视频轨道 sample entry 是 `hvc1`(HEVC/H.265),音频轨道是 `mp4a`。Chrome/多数浏览器对 HEVC 解码支持不稳定或不可用,所以会出现播放器进度条和声音正常、画面黑屏的症状。#31 的 `preload/seek` 只能解决首帧加载策略,不能让浏览器解码 H.265。
+  修复:新增 `src/utils/videoCodec.ts` 解析 MP4 `hdlr/stsd` 轨道编码,上传视频时把 `videoCodec` 写入素材状态并持久化;旧视频打开灯箱时按 Range 拉取 MP4 头部解析编码。`ImageLightbox` 和 `MaterialPreviewBar` 对 `hvc1/hev1` 等 HEVC 编码直接展示“当前浏览器可能只能播放音频或黑屏,请转 H.264/AVC MP4”的中文提示,不再让用户面对无解释的黑屏播放器。补 `videoCodec.test.mjs` 和 UI 架构测试。
+  如何避免:**排查视频预览必须把“上传成功”和“浏览器可解码”分开。MP4 只是容器,不能等同于 H.264;看到有声音无画面时先解析 `stsd` 视频轨道编码,`hvc1/hev1` 要明确提示转码或走服务端转码方案,不能继续归因成图床/加载策略问题。**

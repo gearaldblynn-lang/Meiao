@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Download, X, ChevronLeft, ChevronRight, Move } from 'lucide-react';
+import { detectRemoteMp4VideoCodec, getBrowserVideoCodecWarning } from '../../utils/videoCodec';
 
 export interface LightboxMediaItem {
   url: string;
   type?: 'image' | 'video';
   title?: string;
+  videoCodec?: string;
 }
 
 interface Props {
@@ -30,6 +32,7 @@ const getVideoMimeType = (item?: LightboxMediaItem) => {
 const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onClose, onPrev, onNext, onDownloadCurrent, actionLabel, onActionCurrent }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [videoError, setVideoError] = useState('');
+  const [detectedVideoCodec, setDetectedVideoCodec] = useState('');
 
   useEffect(() => {
     if (!open) return;
@@ -42,7 +45,7 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
     return () => document.removeEventListener('keydown', handler);
   }, [open, onClose, onPrev, onNext]);
 
-  const mediaItems = items?.length
+  const mediaItems: LightboxMediaItem[] = items?.length
     ? items
     : images.map((url) => ({ url, type: 'image' as const }));
   const currentItem = mediaItems[currentIndex];
@@ -68,7 +71,30 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
 
   useEffect(() => {
     setVideoError('');
+    setDetectedVideoCodec('');
   }, [currentItem?.url]);
+
+  useEffect(() => {
+    if (!open || !isVideo || !currentItem?.url) return;
+    const knownCodec = currentItem.videoCodec || '';
+    if (knownCodec) {
+      setDetectedVideoCodec(knownCodec);
+      setVideoError(getBrowserVideoCodecWarning(knownCodec));
+      return;
+    }
+    let cancelled = false;
+    void detectRemoteMp4VideoCodec(currentItem.url)
+      .then((codec) => {
+        if (cancelled || !codec) return;
+        setDetectedVideoCodec(codec);
+        const warning = getBrowserVideoCodecWarning(codec);
+        if (warning) setVideoError(warning);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [currentItem?.url, currentItem?.videoCodec, isVideo, open]);
 
   if (!open || mediaItems.length === 0 || !currentItem) return null;
 
@@ -143,7 +169,8 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
             preload="auto"
             style={{ background: '#000', aspectRatio: '16 / 9' }}
             onLoadedMetadata={(event) => {
-              setVideoError('');
+              const codecWarning = getBrowserVideoCodecWarning(currentItem.videoCodec || detectedVideoCodec);
+              setVideoError(codecWarning);
               const video = event.currentTarget;
               if (Number.isFinite(video.duration) && video.duration > 0 && video.currentTime === 0) {
                 try {
@@ -153,7 +180,7 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
                 }
               }
             }}
-            onCanPlay={() => setVideoError('')}
+            onCanPlay={() => setVideoError(getBrowserVideoCodecWarning(currentItem.videoCodec || detectedVideoCodec))}
             onError={() => setVideoError('视频预览加载失败。请确认文件是浏览器可播放的 MP4/H.264 编码，或重新上传转码后的视频。')}
             onPlay={(event) => {
               document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {

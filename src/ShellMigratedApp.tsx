@@ -46,6 +46,7 @@ import { isInvalidOneClickPlanLike } from './utils/oneClickPlanValidation.ts';
 import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion } from './utils/shellRuntimePrune.mjs';
 import { isFrontendResourceError } from './utils/frontendResourceError.mjs';
 import { deleteShellDraftAsset, loadShellDraftAsset, pruneShellDraftAssets, restoreShellDraftAssetUrls, saveShellDraftAsset } from './utils/shellDraftAssetStore';
+import { detectMp4VideoCodecFromBlob } from './utils/videoCodec';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
 import {
   getRetouchCustomSizeRatioWarning,
@@ -158,6 +159,7 @@ export interface Material {
   remoteUrl?: string;
   localAssetId?: string;
   fileName: string;
+  videoCodec?: string;
   relativePath?: string;
   subFeature?: string;
   buyerShowSetIndex?: number;
@@ -3129,6 +3131,9 @@ const AppContent: React.FC<{
           file.type.startsWith('image/') ? getImageDimensions(file).catch(() => null) : Promise.resolve(null),
           saveShellDraftAsset(localAssetId, file, { fileName: file.name, mimeType: file.type }).catch(() => false),
         ]);
+        const videoCodec = file.type.startsWith('video/') || /\.(mp4|mov|m4v)$/i.test(file.name)
+          ? await detectMp4VideoCodecFromBlob(file).catch(() => '')
+          : '';
         setMaterials((prev) => {
           const next = {
             ...prev,
@@ -3138,6 +3143,7 @@ const AppContent: React.FC<{
               url: previewUrl,
               localAssetId,
               fileName: file.name,
+              videoCodec: videoCodec || undefined,
             relativePath,
             subFeature: activeSubFeature,
               buyerShowSetIndex: options?.buyerShowSetIndex,
