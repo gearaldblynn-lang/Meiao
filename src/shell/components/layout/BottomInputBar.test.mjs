@@ -224,25 +224,77 @@ test('buyer show shell removes duplicate scene reference and preserves effective
   assert.match(workflow, /视觉氛围参考图/);
 });
 
-test('buyer show multi-set scene requirements expand into per-set inputs instead of one mixed textarea', () => {
+test('buyer show batch action opens set-count popover with per-set uploads instead of persistent page panels', () => {
   const bottomInputBar = source();
   const workflow = read('../../../adapters/shellWorkflow.ts');
+  const shellApp = read('../../../ShellMigratedApp.tsx');
+  const previewBar = read('../MaterialPreviewBar.tsx');
 
   assert.match(bottomInputBar, /getBuyerShowSetCount/);
   assert.match(bottomInputBar, /Math\.min\(parsed, 4\)/);
   assert.match(workflow, /Math\.min\(parsed, 4\)/);
-  assert.match(bottomInputBar, /key: 'setCount', label: '生成套数', type: 'select', options: \['1套', '2套', '3套', '4套'\], defaultValue: '1套' \}/);
+  assert.doesNotMatch(bottomInputBar, /key: 'setCount', label: '1套'/);
+  assert.match(bottomInputBar, /renderBuyerShowBatchAction/);
+  assert.match(bottomInputBar, /p\.key === 'count' && renderBuyerShowBatchAction\(\)/);
+  assert.match(bottomInputBar, /buyerShowBatchOpen/);
+  assert.match(bottomInputBar, /renderBuyerShowBatchPopover/);
+  assert.match(bottomInputBar, /生成套数/);
+  assert.match(bottomInputBar, /setCountOptions/);
+  assert.doesNotMatch(bottomInputBar, /section: '批量'/);
+  assert.doesNotMatch(bottomInputBar, /key: 'setCount', label: '生成套数', type: 'select'/);
   assert.doesNotMatch(bottomInputBar, /key: 'setCount', label: '生成套数'[^\n]*allowCustom/);
-  assert.match(bottomInputBar, /buyerShowSetDirection_\$\{index\}/);
-  assert.match(bottomInputBar, /md:grid-cols-2/);
-  assert.match(bottomInputBar, /第 \{index \+ 1\} 套场景要求/);
-  assert.match(bottomInputBar, /选择多套后，每套分别填写不同场景、人物状态、拍摄氛围或内容方向/);
+  assert.doesNotMatch(bottomInputBar, /\{renderBuyerShowSetReferenceUploads\(\)\}/);
+  assert.match(bottomInputBar, /uploadTargetSetIndex/);
+  assert.match(bottomInputBar, /buyerShowSetIndex: uploadTargetSetIndex/);
+  assert.match(bottomInputBar, /getBuyerShowSetMaterials/);
+  assert.match(bottomInputBar, /第 \{index \+ 1\} 套/);
+  assert.match(bottomInputBar, /openBuyerShowSetUpload\(type, index\)/);
+  assert.match(bottomInputBar, /renderBuyerShowSetMaterialRow\('atmosphere', index/);
+  assert.match(bottomInputBar, /renderBuyerShowSetMaterialRow\('model', index/);
+  assert.match(bottomInputBar, /includeModel \? 'grid-cols-2' : 'grid-cols-1'/);
+  assert.doesNotMatch(bottomInputBar, /环境、光线、生活感/);
+  assert.doesNotMatch(bottomInputBar, /面部、姿势、手部状态/);
+  assert.doesNotMatch(bottomInputBar, /buyerShowSetDirection_\$\{index\}/);
+  assert.doesNotMatch(bottomInputBar, /第 \{index \+ 1\} 套场景要求/);
+  assert.doesNotMatch(bottomInputBar, /选择多套后，每套分别填写不同场景、人物状态、拍摄氛围或内容方向/);
   assert.match(bottomInputBar, /产品名称、核心卖点、目标人群和基础适用场景/);
   assert.doesNotMatch(bottomInputBar, /key: 'setDirections'/);
-  assert.match(workflow, /buildBuyerShowSetDirectionLines/);
-  assert.match(workflow, /buyerShowSetDirection_\$\{index\}/);
-  assert.match(workflow, /第\$\{index \+ 1\}套场景要求：/);
-  assert.match(workflow, /多套场景要求：/);
+  assert.match(shellApp, /buyerShowSetIndex\?: number/);
+  assert.match(shellApp, /options\?: \{ buyerShowSetIndex\?: number \}/);
+  assert.match(shellApp, /buyerShowSetIndex: options\?\.buyerShowSetIndex/);
+  assert.match(previewBar, /buyerShowSetIndex/);
+  assert.match(workflow, /getBuyerShowSetReferenceUrls/);
+  assert.match(workflow, /getBuyerShowSetGenerationInputs/);
+  assert.match(workflow, /第\$\{setIndex \+ 1\}套氛围参考图/);
+  assert.match(workflow, /第\$\{setIndex \+ 1\}套模特参考图/);
+  assert.match(workflow, /setReference\.planningReferenceUrl/);
+  assert.doesNotMatch(workflow, /buildBuyerShowSetDirectionLines/);
+  assert.doesNotMatch(workflow, /buyerShowSetDirection_\$\{index\}/);
+});
+
+test('material thumbnails keep remove controls visible and buyer show batch popover stays lightweight', () => {
+  const bottomInputBar = source();
+  const previewBar = read('../MaterialPreviewBar.tsx');
+  const batchPopover = bottomInputBar.match(/const renderBuyerShowBatchPopover = \(\) => \{[\s\S]*?const renderBuyerShowBatchAction/)?.[0] || '';
+
+  assert.doesNotMatch(previewBar, /absolute -top-1 -right-1/);
+  assert.match(previewBar, /absolute right-0\.5 top-0\.5 z-10/);
+  assert.match(previewBar, /className="relative shrink-0 overflow-visible group"/);
+
+  assert.doesNotMatch(bottomInputBar, /absolute -right-1 -top-1/);
+  assert.match(bottomInputBar, /absolute right-0\.5 top-0\.5 z-10/);
+  assert.match(bottomInputBar, /className="group relative h-12 w-12 overflow-hidden rounded-2xl border"/);
+
+  assert.doesNotMatch(batchPopover, /w-\[356px\]/);
+  assert.doesNotMatch(batchPopover, /rounded-3xl border p-3\.5/);
+  assert.doesNotMatch(batchPopover, /boxShadow: 'var\(--shadow-elevated\)'/);
+  assert.match(batchPopover, /left-1\/2/);
+  assert.match(batchPopover, /-translate-x-1\/2/);
+  assert.doesNotMatch(batchPopover, /<Check size=\{12\}/);
+  assert.doesNotMatch(batchPopover, /flex h-3 w-3 items-center justify-center/);
+  assert.match(batchPopover, /items-center justify-center rounded-2xl text-center/);
+  assert.match(batchPopover, /w-\[380px\]/);
+  assert.match(batchPopover, /boxShadow: '0 18px 44px rgba\(15, 23, 42, 0\.12\)'/);
 });
 
 test('xhs cover shell input keeps title copy in the main prompt and moves decorations into more params', () => {

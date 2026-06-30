@@ -160,6 +160,7 @@ export interface Material {
   fileName: string;
   relativePath?: string;
   subFeature?: string;
+  buyerShowSetIndex?: number;
   giftIndex?: number;
   originalWidth?: number;
   originalHeight?: number;
@@ -257,6 +258,7 @@ const cloneMaterialSnapshot = (material: Material) => {
     fileName: material.fileName,
     relativePath: material.relativePath,
     subFeature: material.subFeature,
+    buyerShowSetIndex: material.buyerShowSetIndex,
     giftIndex: material.giftIndex,
     originalWidth: material.originalWidth,
     originalHeight: material.originalHeight,
@@ -1702,10 +1704,7 @@ const buildBatchPrompt = (
     const perSetCount = parsePositiveInt(params.count, 4, 20);
     const setCount = parsePositiveInt(params.setCount, 1, 4);
     const setIndex = Math.floor(index / perSetCount);
-    const setDirection = String(params[`buyerShowSetDirection_${setIndex}`] || '').trim();
-    if (setDirection) {
-      lines.push(`第 ${setIndex + 1}/${setCount} 套场景要求：${setDirection}`);
-    }
+    lines.push(`第 ${setIndex + 1}/${setCount} 套买家秀。`);
     lines.push(`请输出第 ${index + 1}/${totalCount} 张买家秀结果。`);
   }
   return lines.filter(Boolean).join('\n');
@@ -3063,7 +3062,7 @@ const AppContent: React.FC<{
   }, []);
 
   // ── Material upload ──
-  const handleMaterialUpload = useCallback((type: string, files: FileList | null) => {
+  const handleMaterialUpload = useCallback((type: string, files: FileList | null, options?: { buyerShowSetIndex?: number }) => {
     if (!files) return;
     let selectedFiles = Array.from(files);
     if (
@@ -3141,6 +3140,7 @@ const AppContent: React.FC<{
               fileName: file.name,
             relativePath,
             subFeature: activeSubFeature,
+              buyerShowSetIndex: options?.buyerShowSetIndex,
               giftIndex,
               originalWidth: dimensions?.width,
               originalHeight: dimensions?.height,
@@ -4666,6 +4666,11 @@ const AppContent: React.FC<{
               : p
           ));
         };
+        const buyerShowSetCount = targetModule === AppModuleObj.BUYER_SHOW ? parsePositiveInt(generationParams.setCount, 1, 4) : 1;
+        const effectiveBuyerShowConcurrency = Math.max(1, Number(apiConfig.concurrency || 1) || 1);
+        if (targetModule === AppModuleObj.BUYER_SHOW && buyerShowSetCount > 1 && batchCount > effectiveBuyerShowConcurrency && effectiveBuyerShowConcurrency <= 5) {
+          addToast(`当前账号并发为 ${effectiveBuyerShowConcurrency}，多套买家秀将按批轮流生成；如需一次生成更多图，请联系管理员提升并发数量。`, 'info');
+        }
         const specialResult = targetModule === AppModuleObj.BUYER_SHOW
           ? await runShellBuyerShowWorkflow({
               module: targetModule,
@@ -4674,6 +4679,7 @@ const AppContent: React.FC<{
               params: generationParams,
               materials: generationMaterials,
               signal: controller.signal,
+              apiConfig,
               taskMetadata: {
                 shellProjectId: projectId,
                 shellProjectName: projectName,
