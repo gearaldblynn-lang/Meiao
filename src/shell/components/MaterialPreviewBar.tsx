@@ -143,7 +143,23 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                         onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.transform = 'scale(1)'; }}
                       >
                         {mediaKind === 'video' ? (
-                          <video src={m.url} className="w-full h-full object-cover" muted playsInline preload="none" />
+                          <video
+                            src={m.url}
+                            className="w-full h-full object-cover"
+                            muted
+                            playsInline
+                            preload="auto"
+                            onLoadedMetadata={(event) => {
+                              const video = event.currentTarget;
+                              if (Number.isFinite(video.duration) && video.duration > 0) {
+                                try {
+                                  video.currentTime = Math.min(0.2, Math.max(0, video.duration - 0.05));
+                                } catch {
+                                  // Some browsers reject early seeks; metadata loading still gives the player enough to render.
+                                }
+                              }
+                            }}
+                          />
                         ) : mediaKind === 'audio' ? (
                           <span className="flex h-full w-full flex-col items-center justify-center gap-0.5 text-[9px] font-semibold" style={{ background: `${meta.color}12`, color: meta.color }}>
                             <Music2 size={14} />

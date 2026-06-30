@@ -9,6 +9,27 @@ const createJsonResponse = (body, status = 200) => ({
   json: async () => body,
 });
 
+const box = (type, payload = Buffer.alloc(0)) => {
+  const buffer = Buffer.alloc(8 + payload.length);
+  buffer.writeUInt32BE(buffer.length, 0);
+  buffer.write(type, 4, 4, 'ascii');
+  payload.copy(buffer, 8);
+  return buffer;
+};
+
+const createMp4WithDuration = (seconds) => {
+  const payload = Buffer.alloc(100);
+  payload.writeUInt8(0, 0);
+  payload.writeUInt32BE(0, 4);
+  payload.writeUInt32BE(0, 8);
+  payload.writeUInt32BE(1000, 12);
+  payload.writeUInt32BE(Math.round(seconds * 1000), 16);
+  return Buffer.concat([
+    box('ftyp', Buffer.from('isom0000isom', 'ascii')),
+    box('moov', box('mvhd', payload)),
+  ]);
+};
+
 test('executeProviderJob 路由 openai_tool_calling 到新 provider', async () => {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async () => new Response(JSON.stringify({
@@ -324,6 +345,117 @@ test('executeProviderJob submits seedance fast video jobs through kie api and pr
     assert.equal(result.result.videoUrl, 'https://example.com/seedance-result.mp4');
     assert.equal(result.result.creditsConsumed, 45.5);
     assert.deepEqual(result.result.usage, { credits_per_second: 9, seconds: 5 });
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('executeProviderJob blocks seedance api reference videos when total duration exceeds provider limit', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url) => {
+    requests.push(String(url));
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(createMp4WithDuration(53), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4' },
+      });
+    }
+    return createJsonResponse({ code: 200, msg: 'unexpected', data: { taskId: 'should-not-create' } });
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_seedance_video',
+          provider: 'kie',
+          payload: {
+            mode: 'multimodal2video',
+            prompt: 'add product naturally',
+            imageUrls: ['https://example.com/product.png'],
+            videoUrls: ['/api/assets/file/ref/source.mp4'],
+            duration: 15,
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => {
+        assert.equal(error.code, 'provider_bad_request');
+        assert.match(error.message, /参考视频合计时长/);
+        assert.match(error.message, /53/);
+        assert.match(error.message, /15/);
+        return true;
+      }
+    );
+    assert.equal(requests.some((url) => url.includes('/api/v1/jobs/createTask')), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob allows seedance reference videos within provider duration limit regardless of requested duration', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(createMp4WithDuration(10), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4' },
+      });
+    }
+    if (String(url).includes('/api/file-stream-upload')) {
+      return createJsonResponse({ code: 200, data: { fileUrl: 'https://tempfile.redpandaai.co/source.mp4' } });
+    }
+    if (String(url).includes('/api/v1/jobs/createTask')) {
+      return createJsonResponse({ code: 200, msg: 'success', data: { taskId: 'seedance-reference-ok' } });
+    }
+    return createJsonResponse({
+      code: 200,
+      data: {
+        state: 'success',
+        resultJson: JSON.stringify({ resultUrls: ['https://example.com/seedance-reference-ok.mp4'] }),
+      },
+    });
+  };
+  global.setTimeout = (handler, ms) => {
+    if (ms === 60_000) return originalSetTimeout(handler, ms);
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = (id) => originalClearTimeout(id);
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_seedance_video',
+        provider: 'kie',
+        payload: {
+          mode: 'multimodal2video',
+          prompt: 'extend product shot',
+          videoUrls: ['/api/assets/file/ref/source.mp4'],
+          duration: 10,
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    const createTaskRequest = requests.find((request) => request.url.includes('/api/v1/jobs/createTask'));
+    assert.ok(createTaskRequest);
+    const createTaskBody = JSON.parse(createTaskRequest.init.body);
+    assert.equal(createTaskBody.input.duration, 10);
+    assert.deepEqual(createTaskBody.input.reference_video_urls, ['https://tempfile.redpandaai.co/source.mp4']);
+    assert.equal(result.providerTaskId, 'seedance-reference-ok');
+    assert.equal(result.result.videoUrl, 'https://example.com/seedance-reference-ok.mp4');
   } finally {
     global.fetch = originalFetch;
     global.setTimeout = originalSetTimeout;

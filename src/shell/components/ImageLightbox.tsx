@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Download, X, ChevronLeft, ChevronRight, Move } from 'lucide-react';
 
 export interface LightboxMediaItem {
@@ -20,8 +20,16 @@ interface Props {
   onActionCurrent?: () => void;
 }
 
+const getVideoMimeType = (item?: LightboxMediaItem) => {
+  const source = `${item?.url || ''} ${item?.title || ''}`.toLowerCase();
+  if (/\.(mov|qt)(?:\?|#|$)/.test(source)) return 'video/quicktime';
+  if (/\.webm(?:\?|#|$)/.test(source)) return 'video/webm';
+  return 'video/mp4';
+};
+
 const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onClose, onPrev, onNext, onDownloadCurrent, actionLabel, onActionCurrent }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [videoError, setVideoError] = useState('');
 
   useEffect(() => {
     if (!open) return;
@@ -45,6 +53,7 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
 
   useEffect(() => {
     if (!open || !isVideo || !currentItem) return;
+    setVideoError('');
     document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
       if (video !== videoRef.current && !video.paused) {
         video.pause();
@@ -56,6 +65,10 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
       }
     };
   }, [open, isVideo, currentItem]);
+
+  useEffect(() => {
+    setVideoError('');
+  }, [currentItem?.url]);
 
   if (!open || mediaItems.length === 0 || !currentItem) return null;
 
@@ -122,14 +135,26 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
             key={currentItem.url}
             ref={videoRef}
             data-meiao-lightbox-video="true"
-            src={currentItem.url}
-            className="meiao-video-no-fullscreen max-h-[82vh] w-full object-contain"
+            className="meiao-video-no-fullscreen max-h-[82vh] min-h-[320px] w-full object-contain"
             controls
             controlsList="nofullscreen nodownload noremoteplayback"
             disablePictureInPicture
             playsInline
-            preload="metadata"
-            style={{ background: '#000' }}
+            preload="auto"
+            style={{ background: '#000', aspectRatio: '16 / 9' }}
+            onLoadedMetadata={(event) => {
+              setVideoError('');
+              const video = event.currentTarget;
+              if (Number.isFinite(video.duration) && video.duration > 0 && video.currentTime === 0) {
+                try {
+                  video.currentTime = Math.min(0.2, Math.max(0, video.duration - 0.05));
+                } catch {
+                  // Metadata is still enough for playback; some browsers reject early seeks.
+                }
+              }
+            }}
+            onCanPlay={() => setVideoError('')}
+            onError={() => setVideoError('视频预览加载失败。请确认文件是浏览器可播放的 MP4/H.264 编码，或重新上传转码后的视频。')}
             onPlay={(event) => {
               document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
                 if (video !== event.currentTarget && !video.paused) {
@@ -137,7 +162,14 @@ const ImageLightbox: React.FC<Props> = ({ open, images, items, currentIndex, onC
                 }
               });
             }}
-          />
+          >
+            <source src={currentItem.url} type={getVideoMimeType(currentItem)} />
+          </video>
+          {videoError ? (
+            <div className="rounded-[14px] px-3 py-2 text-[12px]" style={{ background: 'rgba(239,68,68,0.16)', color: 'rgba(255,255,255,0.9)' }}>
+              {videoError}
+            </div>
+          ) : null}
         </div>
       ) : (
         <img

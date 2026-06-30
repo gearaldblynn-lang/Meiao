@@ -59,6 +59,7 @@ const KIE_HTTP_REQUEST_TIMEOUT_MS = 60_000;
 const KIE_ASSET_UPLOAD_TIMEOUT_MS = 45_000;
 const KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY = 2;
 const KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY = 2;
+const SEEDANCE_MAX_TOTAL_VIDEO_DURATION_SECONDS = 15;
 const KIE_CHAT_COMPLETION_TIMEOUT_MS = 240_000;
 const KIE_CHAT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const DREAMINA_VIDEO_POLL_RETRIES = 180;
@@ -127,7 +128,10 @@ const createProviderError = (code, message, extras = null) => {
 
 const normalizeKieTaskCreationError = (responseStatus, result = {}, defaultMessage) => {
   const code = Number(result?.code || 0);
-  const message = String(result?.msg || defaultMessage || '').trim();
+  const rawMessage = String(result?.msg || defaultMessage || '').trim();
+  const message = /total duration of the video cannot exceed 15 seconds/i.test(rawMessage)
+    ? 'Seedance API 带参考视频时，参考视频合计时长不能超过 15 秒。请先裁短参考视频后重试。'
+    : rawMessage;
 
   if (responseStatus === 401 || responseStatus === 403 || code === 401 || code === 403) {
     return createProviderError('provider_auth_invalid', message || 'Kie 图像任务鉴权失败', {
@@ -2068,6 +2072,85 @@ const normalizeSeedanceGenerateAudio = (value, fallback = true) => {
   return fallback;
 };
 
+const readUInt64BEAsNumber = (buffer, offset) => Number(buffer.readBigUInt64BE(offset));
+
+const parseMp4DurationSeconds = (buffer) => {
+  const source = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer || '');
+  const walk = (start, end) => {
+    let offset = start;
+    while (offset + 8 <= end) {
+      let size = source.readUInt32BE(offset);
+      const type = source.toString('ascii', offset + 4, offset + 8);
+      let headerSize = 8;
+      if (size === 1 && offset + 16 <= end) {
+        size = readUInt64BEAsNumber(source, offset + 8);
+        headerSize = 16;
+      }
+      if (size === 0) size = end - offset;
+      const boxEnd = offset + size;
+      if (size < headerSize || boxEnd > end) break;
+      if (type === 'mvhd') {
+        const version = source.readUInt8(offset + headerSize);
+        let cursor = offset + headerSize + 4;
+        if (version === 1) {
+          cursor += 16;
+          const timescale = source.readUInt32BE(cursor);
+          const duration = readUInt64BEAsNumber(source, cursor + 4);
+          return timescale > 0 ? duration / timescale : null;
+        }
+        cursor += 8;
+        const timescale = source.readUInt32BE(cursor);
+        const duration = source.readUInt32BE(cursor + 4);
+        return timescale > 0 ? duration / timescale : null;
+      }
+      if (type === 'moov' || type === 'trak' || type === 'mdia') {
+        const nested = walk(offset + headerSize, boxEnd);
+        if (nested) return nested;
+      }
+      offset = boxEnd;
+    }
+    return null;
+  };
+  return walk(0, source.length);
+};
+
+const formatSecondsForMessage = (seconds) => {
+  const value = Number(seconds);
+  if (!Number.isFinite(value)) return '未知';
+  return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, '');
+};
+
+const getManagedReferenceVideoDurationSeconds = async (videoUrl, signal) => {
+  if (!isManagedAssetUrl(videoUrl)) return null;
+  try {
+    const downloaded = await downloadRemoteMediaUrl(videoUrl, signal);
+    const seconds = parseMp4DurationSeconds(downloaded.fileBuffer);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+  } catch {
+    return null;
+  }
+};
+
+const assertSeedanceReferenceVideoDuration = async (rawVideoUrls, signal) => {
+  if (!Array.isArray(rawVideoUrls) || rawVideoUrls.length === 0) return;
+  const durations = [];
+  for (const videoUrl of rawVideoUrls) {
+    const seconds = await getManagedReferenceVideoDurationSeconds(videoUrl, signal);
+    if (Number.isFinite(seconds) && seconds > 0) durations.push(seconds);
+  }
+  if (durations.length === 0) return;
+  const referenceTotal = durations.reduce((sum, seconds) => sum + seconds, 0);
+  if (referenceTotal <= SEEDANCE_MAX_TOTAL_VIDEO_DURATION_SECONDS) return;
+  throw createProviderError(
+    'provider_bad_request',
+    `Seedance API 带参考视频时，参考视频合计时长不能超过 ${SEEDANCE_MAX_TOTAL_VIDEO_DURATION_SECONDS} 秒。当前参考视频约 ${formatSecondsForMessage(referenceTotal)} 秒；请先把参考视频裁短，或改用图片参考/其他视频通道。`,
+    {
+      providerStage: 'create_task',
+      providerStatus: 'bad_request',
+    }
+  );
+};
+
 const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
@@ -2076,6 +2159,8 @@ const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
   const rawImageUrls = normalizeArray(payload.imageUrls || payload.images || payload.imageUrl || payload.image);
   const rawVideoUrls = normalizeArray(payload.videoUrls || payload.videos || payload.videoUrl || payload.video);
   const rawAudioUrls = normalizeArray(payload.audioUrls || payload.audios || payload.audioUrl || payload.audio);
+  const duration = normalizeSeedanceDuration(payload.duration);
+  await assertSeedanceReferenceVideoDuration(rawVideoUrls, signal);
   allowConcurrentAbortListeners(signal, rawImageUrls.length + rawVideoUrls.length + rawAudioUrls.length);
   const mediaResolutionConcurrency = getKieVideoMediaResolutionConcurrency(env);
   const mediaItems = [
@@ -2102,7 +2187,7 @@ const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
 
   const input = {
     prompt: String(payload.prompt || payload.script || payload.description || '').trim(),
-    duration: normalizeSeedanceDuration(payload.duration),
+    duration,
     aspect_ratio: normalizeSeedanceAspectRatio(payload.aspectRatio || payload.ratio),
     resolution: normalizeSeedanceResolution(payload.resolution || payload.videoResolution || payload.video_resolution),
     generate_audio: normalizeSeedanceGenerateAudio(payload.generateAudio ?? payload.generate_audio, true),

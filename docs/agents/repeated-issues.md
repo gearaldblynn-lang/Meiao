@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-06-30 - Seedance reference videos must be duration-checked before submit, and uploaded video previews must load real video frames
+
+- Symptom: 广白账号视频生成失败；用户上传的视频素材在素材条不显示，点开后也不能正常视频播放，只像音频播放。
+- Environment: Tencent Cloud production / video generation / `kie_seedance_video` / managed uploaded MP4 assets.
+- Root cause: 云上任务 `50723f2bfddcbef7b52cf095` 在 KIE createTask 阶段被拒，`provider_task_id=null`、`provider_submitted=0`，错误为 `The total duration of the video cannot exceed 15 seconds`。上传参考视频约 53 秒，超过 Seedance API 对 `reference_video_urls` 的参考视频合计时长上限 15 秒；生成视频自身的 `duration` 是另一条 4-15 秒范围约束，不与参考视频相加。资产本身是 `video/mp4`，有 `avc1` 视频轨和 `mp4a` 音频轨，HTTP Range 正常；前端缩略图 `preload="none"` 不主动取首帧，灯箱播放器只拿 metadata 且缺少固定视频显示区/错误提示，导致用户看到空白或类似音频控件。
+- Fix: `kie_seedance_video` 提交前读取受管 MP4 `mvhd` 时长，参考视频合计超过 15 秒时直接返回中文 `provider_bad_request`，不再调用 KIE `createTask`；KIE 原始英文总时长错误也统一归一成人能处理的中文提示。上传素材缩略图改为主动加载首帧；灯箱视频改为 `<source type=...>`、固定 16:9 可见区域、`preload="auto"`、首帧 seek、播放互斥和错误提示。架构级根因见 `CLAUDE.md` #31。
+- Regression check: `node --test server/providerGateway.test.mjs`; `node --experimental-strip-types --test src/components/uiArchitecture.test.mjs src/shell/components/layout/BottomInputBar.test.mjs`.
+- Avoid next time: 看到 `provider_task_id=null/provider_submitted=0/provider_bad_request` 要先读 provider 原始限制，不要归因为图床或生成失败。视频播放问题按“资产响应头/Range -> MP4 track/codec/duration -> 前端 video 元素加载策略”逐层排查；有 `vide` track 时优先修播放器显示链路。
+
 ## 2026-06-24 - Reference-image local replacement is single-output, and V2 planning needs configured fallback
 
 - Symptom: 林一账号提交“把原图1中湿巾上的字母全部换成图2湿巾上面的字母，图1其他部分不发生任何改变，图片格式为800*800”后，智能体生图失败；同类云上记录出现 `图片规划未完整覆盖本轮多图需求...`，另一路失败为 `Our servers are currently overloaded. Please try again later.`。
