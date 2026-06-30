@@ -30,6 +30,7 @@ export type ShellDraftMaterial = {
   remoteUrl?: string;
   localAssetId?: string;
   fileName: string;
+  videoCodec?: string;
   relativePath?: string;
   subFeature?: string;
   giftIndex?: number;
@@ -119,6 +120,9 @@ const normalizeMaterial = (value: unknown, options: NormalizeShellDraftOptions =
     fileName: typeof value.fileName === 'string' && value.fileName.trim()
       ? value.fileName
       : 'uploaded-asset',
+    videoCodec: typeof value.videoCodec === 'string' && value.videoCodec.trim()
+      ? value.videoCodec.trim()
+      : undefined,
     relativePath: typeof value.relativePath === 'string' ? value.relativePath : undefined,
     subFeature: typeof value.subFeature === 'string' ? value.subFeature : undefined,
     giftIndex: typeof value.giftIndex === 'number' && Number.isFinite(value.giftIndex)

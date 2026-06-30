@@ -863,13 +863,19 @@ test('material preview bar opens uploaded videos in a playable modal', () => {
   assert.match(previewBar, /openVideoPreview/);
   assert.match(previewBar, /if \(mediaKind === 'video'\) \{ openVideoPreview\(m\); \}/);
   assert.match(previewBar, /selectedVideo/);
-  assert.match(previewBar, /items=\{selectedVideo \? \[\{ url: selectedVideo\.url, type: 'video', title: selectedVideo\.fileName \}\] : \[\]\}/);
+  assert.match(previewBar, /videoCodec: material\.videoCodec/);
+  assert.match(previewBar, /isBrowserUnsupportedVideoCodec\(m\.videoCodec\)/);
+  assert.match(previewBar, /getBrowserVideoCodecWarning\(m\.videoCodec\)/);
+  assert.match(previewBar, /items=\{selectedVideo \? \[\{ url: selectedVideo\.url, type: 'video', title: selectedVideo\.fileName, videoCodec: selectedVideo\.videoCodec \}\] : \[\]\}/);
   assert.match(previewBar, /preload="auto"/);
   assert.match(previewBar, /onLoadedMetadata/);
   assert.match(previewBar, /video\.currentTime/);
   assert.match(previewBar, /onClose=\{\(\) => setSelectedVideo\(null\)\}/);
   assert.match(previewBar, /点击播放/);
-  assert.match(read('../shell/components/ImageLightbox.tsx'), /<source src=\{currentItem\.url\} type=\{getVideoMimeType\(currentItem\)\}/);
+  const imageLightbox = read('../shell/components/ImageLightbox.tsx');
+  assert.match(imageLightbox, /detectRemoteMp4VideoCodec/);
+  assert.match(imageLightbox, /getBrowserVideoCodecWarning\(currentItem\.videoCodec \|\| detectedVideoCodec\)/);
+  assert.match(imageLightbox, /<source src=\{currentItem\.url\} type=\{getVideoMimeType\(currentItem\)\}/);
 });
 
 test('viral storyboard prompts preserve the required segmented prompt and voiceover format', () => {

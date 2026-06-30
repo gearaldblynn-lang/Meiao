@@ -658,6 +658,14 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/jobManager.test.mjs --test-name-pattern "kie chat submit"`；正式云上同 job 重试成功，`providerTaskId=resp_0a056c56c2160b09016a3b711f3fa8819b9d00fd746de4b13a`，返回 7 个 `[SCHEME_START]`。
 - Avoid next time: providerless stale 要按任务语义分层。同步 chat/策划类任务不能套用异步生图/视频的 createTask 前短窗口；真实验收必须覆盖正式 job/Temporal 链路，而不只看 providerGateway 直连。
 
+### Uploaded MP4 preview must distinguish container support from codec support
+
+- Symptom: 将离账号上传 `6_30_15.mp4` 后，灯箱播放器能走进度并播放声音，但画面持续黑屏，看起来像“上传视频不显示”。
+- Root cause: 该资产 HTTP、Range 和文件大小都正常；MP4 容器里视频轨道是 `hvc1`，即 HEVC/H.265，音频轨道是 `mp4a`。浏览器能解 MP4 容器和音频，不代表能解 HEVC 视频轨道，所以会只播音频不出画面。
+- Fix: 新增 MP4 `hdlr/stsd` 轨道编码解析器；上传时保存 `videoCodec`，旧视频预览时从远程 MP4 头部探测编码；素材条和灯箱对 `hvc1/hev1` 等 HEVC 编码给出明确中文转码提示，不再无解释黑屏。
+- Regression check: `node --experimental-strip-types --test src/utils/videoCodec.test.mjs src/components/uiArchitecture.test.mjs`；`npm run build`；真实将离视频 `/tmp/meiao-jiangli-6_30_15.mp4` 解析为 `videoCodecs:["hvc1"]`、`audioCodecs:["mp4a"]`。
+- Avoid next time: “MP4 上传成功”不等于“浏览器能显示画面”。有声音无画面时先解析视频轨道 sample entry；`hvc1/hev1` 应提示 H.265/HEVC 转 H.264/AVC，或规划服务端转码，不能继续归因成图床上传或播放器 preload。
+
 ### KIE detail image batches must throttle and retry asset staging
 
 - Symptom: 天琪账号 `6月24日项目4` 详情策划成功后，详情页批量生图失败；单张烟测 `gpt-image-2` 可成功，但 UI 实测 7 张详情图同时失败。

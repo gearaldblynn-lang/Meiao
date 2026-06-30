@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { X, ChevronLeft, ChevronRight, Film, Music2 } from 'lucide-react';
 import type { Material } from '../../ShellMigratedApp';
+import { getBrowserVideoCodecWarning, isBrowserUnsupportedVideoCodec } from '../../utils/videoCodec';
 import ImageLightbox from './ImageLightbox';
 
 const TYPE_META: Record<string, { label: string; color: string }> = {
@@ -35,7 +36,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
-  const [selectedVideo, setSelectedVideo] = useState<{ url: string; fileName: string } | null>(null);
+  const [selectedVideo, setSelectedVideo] = useState<{ url: string; fileName: string; videoCodec?: string } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const groups = Object.entries(materials)
@@ -78,7 +79,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
 
   const openVideoPreview = (material: Material) => {
     if (!material.url) return;
-    setSelectedVideo({ url: material.url, fileName: material.fileName || '视频素材' });
+    setSelectedVideo({ url: material.url, fileName: material.fileName || '视频素材', videoCodec: material.videoCodec });
   };
 
   const totalCount = groups.reduce((sum, group) => sum + group.list.length, 0);
@@ -131,6 +132,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                   {/* Group images */}
                   {list.slice(0, showCount).map((m) => {
                     const mediaKind = getMediaKind(type, m.url, m.fileName);
+                    const unsupportedVideo = mediaKind === 'video' && isBrowserUnsupportedVideoCodec(m.videoCodec);
                     return (
                       <div key={m.id} className="relative shrink-0 overflow-visible group">
                       <button
@@ -172,9 +174,11 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                       {mediaKind === 'video' ? (
                         <span
                           className="absolute bottom-0.5 left-0.5 rounded-full px-1.5 py-0.5 text-[8px] font-semibold text-white"
-                          style={{ background: 'rgba(0,0,0,0.52)' }}
+                          style={{ background: unsupportedVideo ? 'rgba(239,68,68,0.86)' : 'rgba(0,0,0,0.52)' }}
+                          title={unsupportedVideo ? getBrowserVideoCodecWarning(m.videoCodec) : '视频素材'}
                         >
                           <Film size={8} className="inline" />
+                          {unsupportedVideo ? ' H.265' : ''}
                         </span>
                       ) : null}
                       {type === 'gift' && m.giftIndex ? (
@@ -254,7 +258,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
       <ImageLightbox
         open={Boolean(selectedVideo)}
         images={[]}
-        items={selectedVideo ? [{ url: selectedVideo.url, type: 'video', title: selectedVideo.fileName }] : []}
+        items={selectedVideo ? [{ url: selectedVideo.url, type: 'video', title: selectedVideo.fileName, videoCodec: selectedVideo.videoCodec }] : []}
         currentIndex={0}
         onClose={() => setSelectedVideo(null)}
         onPrev={() => undefined}
