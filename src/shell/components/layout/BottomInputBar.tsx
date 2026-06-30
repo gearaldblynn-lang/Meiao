@@ -253,11 +253,6 @@ const EXTENDED_PARAMS: Record<string, Array<{
       { key: 'textPolicy', label: '文案处理', type: 'select', options: ['维持文案', '去除文案'], defaultValue: '维持文案' },
     ]},
   ],
-  [AppModuleObj.BUYER_SHOW]: [
-    { section: '批量', params: [
-      { key: 'setCount', label: '生成套数', type: 'select', options: ['1套', '2套', '3套', '4套'], defaultValue: '1套' },
-    ]},
-  ],
   [AppModuleObj.RETOUCH]: [
     { section: '尺寸', params: [
       { key: 'sizeMode', label: '输出尺寸', type: 'select', options: ['AI 自适应尺寸', '自定义'], defaultValue: 'AI 自适应尺寸' },
@@ -749,6 +744,8 @@ const getBuyerShowSetCount = (currentParams: Record<string, string>) => {
   return Math.min(parsed, 4);
 };
 
+const setCountOptions = ['1套', '2套', '3套', '4套'];
+
 const getExtendedSectionsForModule = (module: AppModule, currentParams: Record<string, string>, activeSubFeature?: string) => {
   if (activeSubFeature === 'storyboard' && isStoryboardViralReplicationMode(currentParams.videoMode)) return [];
   if (module === AppModuleObj.VIDEO) return VIDEO_EXTENDED_PARAMS[activeSubFeature || 'generation'] || [];
@@ -1041,7 +1038,7 @@ interface Props {
   onParamChange: (key: string, value: string) => void;
   materials: Record<string, Material[]>;
   oneClickReferencePresets?: OneClickReferencePreset[];
-  onUploadMaterial: (type: string, files: FileList | null) => void;
+  onUploadMaterial: (type: string, files: FileList | null, options?: { buyerShowSetIndex?: number }) => void;
   onApplyPresetMaterials?: (items: Array<{ type: string; url: string; remoteUrl?: string; fileName: string }>) => void;
   onUpdateMaterial?: (type: string, id: string, patch: Partial<Material>) => void;
   onRemoveMaterial: (type: string, id: string) => void;
@@ -1065,9 +1062,11 @@ const BottomInputBar: React.FC<Props> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const [uploadTarget, setUploadTarget] = useState<string>('');
+  const [uploadTargetSetIndex, setUploadTargetSetIndex] = useState<number | null>(null);
   const [typeSelectorOpen, setTypeSelectorOpen] = useState(false);
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false);
+  const [buyerShowBatchOpen, setBuyerShowBatchOpen] = useState(false);
   const [oneClickPresetLibraryOpen, setOneClickPresetLibraryOpen] = useState(false);
   const [skuNamingOpen, setSkuNamingOpen] = useState(false);
   const [skuCountOpen, setSkuCountOpen] = useState(false);
@@ -1162,6 +1161,7 @@ const BottomInputBar: React.FC<Props> = ({
     setTypeSelectorOpen(false);
     setUploadMenuOpen(false);
     setPopoverOpen(false);
+    setBuyerShowBatchOpen(false);
     setOneClickPresetLibraryOpen(false);
     setSkuNamingOpen(false);
     setSkuCountOpen(false);
@@ -1171,6 +1171,7 @@ const BottomInputBar: React.FC<Props> = ({
     setStoryboardPresetNamingOpen(false);
     setLogoPlacementEditorOpen(false);
     setUploadTarget('');
+    setUploadTargetSetIndex(null);
   }, [module, activeSubFeature, currentParams.mode]);
 
   useEffect(() => {
@@ -1286,7 +1287,14 @@ const BottomInputBar: React.FC<Props> = ({
 
   const handleMaterialTypeSelect = (type: MaterialType) => {
     setUploadTarget(type);
+    setUploadTargetSetIndex(null);
     setTypeSelectorOpen(false);
+    setTimeout(() => fileInputRef.current?.click(), 50);
+  };
+
+  const openGlobalUpload = (type: string) => {
+    setUploadTarget(type);
+    setUploadTargetSetIndex(null);
     setTimeout(() => fileInputRef.current?.click(), 50);
   };
 
@@ -1587,9 +1595,14 @@ const BottomInputBar: React.FC<Props> = ({
   const onFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || !uploadTarget) return;
-    onUploadMaterial(uploadTarget, files);
+    onUploadMaterial(
+      uploadTarget,
+      files,
+      uploadTargetSetIndex === null ? undefined : { buyerShowSetIndex: uploadTargetSetIndex },
+    );
     e.target.value = '';
     setUploadTarget('');
+    setUploadTargetSetIndex(null);
   };
 
   const onFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1599,32 +1612,147 @@ const BottomInputBar: React.FC<Props> = ({
     e.target.value = '';
   };
 
-  const renderBuyerShowSetDirections = () => {
-    if (!isBuyerShow || buyerShowSetCount <= 1) return null;
+  const openBuyerShowSetUpload = (type: MaterialType, setIndex: number) => {
+    setUploadTarget(type);
+    setUploadTargetSetIndex(setIndex);
+    setTimeout(() => fileInputRef.current?.click(), 50);
+  };
+
+  const getBuyerShowSetMaterials = (type: 'atmosphere' | 'model', index: number) => (
+    (materials[type] || []).filter((item) => item.buyerShowSetIndex === index)
+  );
+
+  const renderBuyerShowSetMaterialRow = (
+    type: 'atmosphere' | 'model',
+    index: number,
+    label: string,
+  ) => {
+    const setMaterials = getBuyerShowSetMaterials(type, index);
     return (
-      <div className="col-span-2 mt-2 grid gap-2">
-        <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
-          选择多套后，每套分别填写不同场景、人物状态、拍摄氛围或内容方向。
-        </p>
-        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-          {Array.from({ length: buyerShowSetCount }).map((_, index) => {
-          const key = `buyerShowSetDirection_${index}`;
-          return (
-            <div key={key} className="rounded-2xl p-3" style={{ background: 'var(--bg-elevated)' }}>
-              <label className="mb-1.5 block text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
-                第 {index + 1} 套场景要求
-              </label>
-              <textarea
-                value={getVal(key, '')}
-                onChange={(event) => onParamChange(key, event.target.value)}
-                placeholder={`第 ${index + 1} 套要写什么场景、人物状态、拍摄氛围或内容方向...`}
-                rows={3}
-                className="input-field w-full resize-none rounded-2xl text-[12px]"
-              />
-            </div>
-          );
-          })}
+      <div className="rounded-2xl border p-2.5" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>{label}</p>
+          <button
+            type="button"
+            onClick={() => openBuyerShowSetUpload(type, index)}
+            className="flex shrink-0 items-center gap-1 rounded-2xl px-2.5 py-1 text-[11px] font-medium"
+            style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+          >
+            <ImagePlus size={12} />
+            上传
+          </button>
         </div>
+        {setMaterials.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {setMaterials.map((item) => (
+              <div key={item.id} className="group relative h-12 w-12 overflow-hidden rounded-2xl border" style={{ borderColor: 'var(--border-subtle)' }}>
+                <img src={item.url} alt={item.fileName} className="h-full w-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => onRemoveMaterial(type, item.id)}
+                  className="absolute right-0.5 top-0.5 z-10 flex h-4 w-4 items-center justify-center rounded-full opacity-0 transition-opacity group-hover:opacity-100"
+                  style={{ background: 'rgba(239, 68, 68, 0.94)', boxShadow: '0 1px 4px rgba(15, 23, 42, 0.24)' }}
+                  title="移除"
+                >
+                  <X size={9} className="text-white" />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderBuyerShowBatchPopover = () => {
+    if (!isBuyerShow || !buyerShowBatchOpen) return null;
+    const includeModel = getVal('target', '含模特') !== '仅静物';
+    const currentSetCountValue = `${buyerShowSetCount}套`;
+    return (
+      <>
+        <div className="fixed inset-0 z-[180]" onClick={() => setBuyerShowBatchOpen(false)} />
+        <div
+          className="absolute bottom-full left-1/2 z-[200] mb-2 w-[380px] max-w-[calc(100vw-32px)] -translate-x-1/2 overflow-hidden rounded-[28px] border p-3"
+          style={{
+            maxHeight: 'min(70vh, 520px)',
+            overflowY: 'auto',
+            background: 'var(--bg-surface)',
+            borderColor: 'var(--border-subtle)',
+            boxShadow: '0 18px 44px rgba(15, 23, 42, 0.12)',
+            animation: 'scale-in 0.14s ease',
+          }}
+        >
+          <div className="px-1 pb-2">
+            <p className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>生成套数</p>
+          </div>
+          <div className="grid grid-cols-4 gap-1">
+            {setCountOptions.map((option) => {
+              const active = option === currentSetCountValue;
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  onClick={() => onParamChange('setCount', option)}
+                  className="flex h-8 items-center justify-center rounded-2xl text-center text-[12px] font-medium transition-all"
+                  style={{
+                    color: active ? 'var(--accent)' : 'var(--text-secondary)',
+                    background: active ? 'var(--accent-soft)' : 'transparent',
+                    border: `1px solid ${active ? 'var(--accent-soft)' : 'var(--border-subtle)'}`,
+                  }}
+                >
+                  <span>{option}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {buyerShowSetCount > 1 ? (
+            <div className="mt-2 border-t pt-2" style={{ borderColor: 'var(--border-subtle)' }}>
+              <p className="mb-1.5 px-1 text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>每套参考图</p>
+              <div className="flex flex-col gap-2">
+                {Array.from({ length: buyerShowSetCount }).map((_, index) => (
+                  <div
+                    key={`buyer-show-set-${index}`}
+                    className="rounded-2xl border p-2.5"
+                    style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}
+                  >
+                    <div className="flex items-center justify-between">
+                      <p className="text-[11px] font-semibold" style={{ color: 'var(--text-primary)' }}>第 {index + 1} 套</p>
+                    </div>
+                    <div className={`mt-2 grid gap-2 ${includeModel ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                      {renderBuyerShowSetMaterialRow('atmosphere', index, '氛围参考')}
+                      {includeModel ? renderBuyerShowSetMaterialRow('model', index, '模特参考') : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </>
+    );
+  };
+
+  const renderBuyerShowBatchAction = () => {
+    if (!isBuyerShow) return null;
+    return (
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setBuyerShowBatchOpen((value) => !value)}
+          className="flex items-center gap-1 rounded-2xl border px-3 py-1.5 text-[11px] font-medium transition-all"
+          style={{
+            color: buyerShowBatchOpen || buyerShowSetCount > 1 ? 'var(--accent)' : 'var(--text-secondary)',
+            background: buyerShowBatchOpen ? 'var(--accent-soft)' : 'var(--bg-elevated)',
+            borderColor: buyerShowBatchOpen ? 'var(--accent)' : 'transparent',
+          }}
+          title="批量"
+        >
+          <Layers size={12} />
+          <span>{buyerShowSetCount}套</span>
+          <ChevronDown size={9} className="transition-transform" style={{ transform: buyerShowBatchOpen ? 'rotate(180deg)' : 'none' }} />
+        </button>
+        {renderBuyerShowBatchPopover()}
       </div>
     );
   };
@@ -2176,7 +2304,7 @@ const BottomInputBar: React.FC<Props> = ({
                           style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', boxShadow: 'var(--shadow-elevated)', animation: 'scale-in 0.15s ease' }}
                         >
                           <button
-                            onClick={() => { setUploadTarget('product'); setUploadMenuOpen(false); setTimeout(() => fileInputRef.current?.click(), 50); }}
+                            onClick={() => { openGlobalUpload('product'); setUploadMenuOpen(false); }}
                             className="flex items-center gap-2.5 w-full p-2.5 rounded-2xl text-left text-[12px] transition-colors"
                             style={{ color: 'var(--text-secondary)' }}
                             onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-surface-hover)'; }}
@@ -2219,7 +2347,7 @@ const BottomInputBar: React.FC<Props> = ({
                             {(contextMaterialTypes || []).map((type) => (
                               <button
                                 key={type}
-                                onClick={() => { setUploadTarget(type); setUploadMenuOpen(false); setTimeout(() => fileInputRef.current?.click(), 50); }}
+                                onClick={() => { openGlobalUpload(type); setUploadMenuOpen(false); }}
                                 className="flex min-h-[62px] flex-col items-start justify-center gap-1 rounded-2xl p-3 text-left transition-colors"
                                 style={{ color: 'var(--text-secondary)' }}
                                 onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-surface-hover)'; }}
@@ -2271,7 +2399,7 @@ const BottomInputBar: React.FC<Props> = ({
                           style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', boxShadow: 'var(--shadow-elevated)', animation: 'scale-in 0.15s ease' }}
                         >
                           <button
-                            onClick={() => { setUploadTarget('product'); setUploadMenuOpen(false); setTimeout(() => fileInputRef.current?.click(), 50); }}
+                            onClick={() => { openGlobalUpload('product'); setUploadMenuOpen(false); }}
                             className="flex items-center gap-2.5 w-full p-2.5 rounded-2xl text-left text-[12px] transition-colors"
                             style={{ color: 'var(--text-secondary)' }}
                             onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-surface-hover)'; }}
@@ -2280,7 +2408,7 @@ const BottomInputBar: React.FC<Props> = ({
                             <ImagePlus size={14} /> 素材上传
                           </button>
                           <button
-                            onClick={() => { setUploadTarget('styleRef'); setUploadMenuOpen(false); setTimeout(() => fileInputRef.current?.click(), 50); }}
+                            onClick={() => { openGlobalUpload('styleRef'); setUploadMenuOpen(false); }}
                             className="flex items-center gap-2.5 w-full p-2.5 rounded-2xl text-left text-[12px] transition-colors"
                             style={{ color: 'var(--text-secondary)' }}
                             onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-surface-hover)'; }}
@@ -2370,6 +2498,7 @@ const BottomInputBar: React.FC<Props> = ({
                       : undefined}
                   />
                   {p.key === 'mode' && renderSkuNamingAction()}
+                  {p.key === 'count' && renderBuyerShowBatchAction()}
                 </React.Fragment>
               ))}
 
@@ -2461,7 +2590,6 @@ const BottomInputBar: React.FC<Props> = ({
                                   );
                                   return null;
                                 })}
-                                {section.section === '批量' && renderBuyerShowSetDirections()}
                               </div>
                             </div>
                           ))}

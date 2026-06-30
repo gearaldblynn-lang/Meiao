@@ -132,7 +132,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                   {list.slice(0, showCount).map((m) => {
                     const mediaKind = getMediaKind(type, m.url, m.fileName);
                     return (
-                      <div key={m.id} className="relative shrink-0 group">
+                      <div key={m.id} className="relative shrink-0 overflow-visible group">
                       <button
                         type="button"
                         onClick={() => { if (mediaKind === 'video') { openVideoPreview(m); } else if (mediaKind === 'image') { openLightbox(m.url); } }}
@@ -169,14 +169,23 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                           赠品{m.giftIndex}
                         </span>
                       ) : null}
+                      {typeof m.buyerShowSetIndex === 'number' ? (
+                        <span
+                          className="absolute bottom-0.5 left-0.5 rounded-full px-1.5 py-0.5 text-[8px] font-semibold text-white"
+                          style={{ background: 'rgba(0,0,0,0.52)' }}
+                        >
+                          第{m.buyerShowSetIndex + 1}套
+                        </span>
+                      ) : null}
                       <button
                         type="button"
                         onClick={(event) => {
                           event.stopPropagation();
                           onRemoveMaterial(type, m.id);
                         }}
-                        className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
-                        style={{ background: 'var(--error)' }}
+                        className="absolute right-0.5 top-0.5 z-10 w-4 h-4 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                        style={{ background: 'rgba(239, 68, 68, 0.94)', boxShadow: '0 1px 4px rgba(15, 23, 42, 0.24)' }}
+                        title="移除"
                       >
                         <X size={9} className="text-white" />
                       </button>

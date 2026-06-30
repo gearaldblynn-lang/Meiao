@@ -41,6 +41,7 @@ export interface ShellMaterialInput {
   localAssetId?: string;
   fileName: string;
   subFeature?: string;
+  buyerShowSetIndex?: number;
   giftIndex?: number;
   originalWidth?: number;
   originalHeight?: number;
@@ -54,6 +55,7 @@ export interface ShellGenerateInput {
   params: Record<string, string>;
   materials: Record<string, ShellMaterialInput[]>;
   signal: AbortSignal;
+  apiConfig?: GlobalApiConfig;
   taskMetadata?: Record<string, unknown>;
   onJobCreated?: (jobId: string, providerTaskId?: string) => void;
   publicBaseUrl?: string;
@@ -567,18 +569,35 @@ const getBuyerShowSetCount = (params: Record<string, string>) => {
   return Math.min(parsed, 4);
 };
 
-const buildBuyerShowSetDirectionLines = (params: Record<string, string>) => {
-  const setCount = getBuyerShowSetCount(params);
-  const perSetLines = Array.from({ length: setCount })
-    .map((_, index) => {
-      const value = String(params[`buyerShowSetDirection_${index}`] || '').trim();
-      return value ? `第${index + 1}套场景要求：${value}` : '';
-    })
-    .filter(Boolean);
+const getBuyerShowScopedMaterials = (input: ShellGenerateInput, type: 'atmosphere' | 'model', setIndex: number) => {
+  const list = input.materials[type] || [];
+  const scoped = list.filter((item) => item.buyerShowSetIndex === setIndex);
+  if (scoped.length > 0) return scoped;
+  return list.filter((item) => typeof item.buyerShowSetIndex !== 'number');
+};
 
-  if (perSetLines.length > 0) return perSetLines;
-  const legacyDirections = String(params.setDirections || '').trim();
-  return legacyDirections ? [`多套场景要求：${legacyDirections}`] : [];
+const getBuyerShowSetReferenceUrls = (input: ShellGenerateInput, setIndex: number, includeModel: boolean) => {
+  const publicBaseUrl = input.publicBaseUrl || '';
+  const atmosphereUrls = getBuyerShowScopedMaterials(input, 'atmosphere', setIndex)
+    .map((item) => materialUrl(item, publicBaseUrl))
+    .filter(Boolean);
+  const modelUrls = includeModel
+    ? getBuyerShowScopedMaterials(input, 'model', setIndex)
+      .map((item) => materialUrl(item, publicBaseUrl))
+      .filter(Boolean)
+    : [];
+  const styleRefUrl = firstMaterialUrl(input.materials.styleRef, publicBaseUrl, '买家秀风格参考图') || '';
+  return {
+    atmosphereUrls,
+    modelUrls,
+    planningReferenceUrl: atmosphereUrls[0] || styleRefUrl || modelUrls[0] || '',
+    firstImageReferenceUrls: [...atmosphereUrls, ...modelUrls],
+  };
+};
+
+const getBuyerShowSetGenerationInputs = (productUrls: string[], setReference: ReturnType<typeof getBuyerShowSetReferenceUrls>, benchmarkUrl: string | null, isFirstImage: boolean) => {
+  if (isFirstImage) return [...productUrls, ...setReference.firstImageReferenceUrls];
+  return benchmarkUrl ? [...productUrls, benchmarkUrl] : productUrls;
 };
 
 const buildOrderedMaterialsForGeneration = (input: ShellGenerateInput) => {
@@ -618,8 +637,17 @@ const buildMaterialManifest = (input: ShellGenerateInput) => {
           : `模特面部与姿势参考图${index + 1}。用于参考人物面部气质、姿势、手部动作与拍摄状态，不改变目标市场人群设定。`;
       })
       .filter(Boolean);
-    const setDirectionLines = buildBuyerShowSetDirectionLines(input.params);
-    const lines = [...productLines, ...atmosphereLines, ...modelLines, ...setDirectionLines];
+    const setCount = getBuyerShowSetCount(input.params);
+    const perSetReferenceLines = Array.from({ length: setCount }).flatMap((_, setIndex) => {
+      const setAtmosphereLines = (input.materials.atmosphere || [])
+        .filter((item) => item.buyerShowSetIndex === setIndex)
+        .map((item, index) => describeLine(`第${setIndex + 1}套氛围参考图${index + 1}`, materialUrl(item, publicBaseUrl), `第${setIndex + 1}套氛围参考图${index + 1}`));
+      const setModelLines = (input.materials.model || [])
+        .filter((item) => item.buyerShowSetIndex === setIndex)
+        .map((item, index) => describeLine(`第${setIndex + 1}套模特参考图${index + 1}`, materialUrl(item, publicBaseUrl), `第${setIndex + 1}套模特参考图${index + 1}`));
+      return [...setAtmosphereLines, ...setModelLines].filter(Boolean);
+    });
+    const lines = [...productLines, ...atmosphereLines, ...modelLines, ...perSetReferenceLines];
     if (lines.length === 0) return '';
     return [
       '买家秀素材清单：',
@@ -918,12 +946,6 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
 const getBuyerShowProductUrls = (input: ShellGenerateInput) =>
   (input.materials.product || []).map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
 
-const getBuyerShowReferenceUrl = (input: ShellGenerateInput) =>
-  firstMaterialUrl(input.materials.atmosphere, input.publicBaseUrl || '', '买家秀氛围参考图')
-  || firstMaterialUrl(input.materials.styleRef, input.publicBaseUrl || '', '买家秀风格参考图')
-  || firstMaterialUrl(input.materials.model, input.publicBaseUrl || '', '买家秀模特参考图')
-  || '';
-
 const buildBuyerShowState = (input: ShellGenerateInput) => {
   const config = buildShellModuleConfig({
     ...input,
@@ -987,6 +1009,38 @@ const buildBuyerShowImagePrompt = (
   return `${realismPrompt}\n${baseRequirement}\n${productPreservation}${materialLine}\n\n${isFirstImage ? 'SCENE' : 'NEXT SHOT'}: ${prompt}`;
 };
 
+const runBuyerShowConcurrencyPool = async <T,>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+) => {
+  const workerCount = Math.max(1, Math.min(concurrency, items.length || 1));
+  let nextIndex = 0;
+  const errors: unknown[] = [];
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const item = items[nextIndex];
+      nextIndex += 1;
+      try {
+        await worker(item);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+  }));
+  if (errors.length > 0) throw errors[0];
+};
+
+type BuyerShowGeneratedTask = Awaited<ReturnType<typeof generateBuyerShowPrompts>>['tasks'][number];
+type BuyerShowSetPlan = {
+  setIndex: number;
+  setReference: ReturnType<typeof getBuyerShowSetReferenceUrls>;
+  tasks: BuyerShowGeneratedTask[];
+  evaluation?: string;
+  setBenchmarkUrl: string | null;
+  blocked: boolean;
+};
+
 export const runShellBuyerShowWorkflow = async (
   input: ShellGenerateInput,
   onItemCompleted?: (item: ShellWorkflowImageResult, index: number, total: number) => void,
@@ -998,13 +1052,14 @@ export const runShellBuyerShowWorkflow = async (
   if (productUrls.length === 0) throw new Error('请先上传产品素材，再生成买家秀。');
 
   storeActiveModuleContext(input.module);
-  const apiConfig: GlobalApiConfig = {
-    kieApiKey: '',
-    concurrency: 1,
-    workspacePreferences: input.params.__workspacePreferences ? JSON.parse(input.params.__workspacePreferences) : undefined,
-  };
   const state = buildBuyerShowState(input);
-  const firstReferenceUrl = getBuyerShowReferenceUrl(input) || null;
+  const total = state.imageCount * state.setCount;
+  const buyerShowConcurrency = Math.max(1, Math.min(Number(input.apiConfig?.concurrency || 1) || 1, total));
+  const apiConfig: GlobalApiConfig = {
+    kieApiKey: input.apiConfig?.kieApiKey || '',
+    concurrency: buyerShowConcurrency,
+    workspacePreferences: input.apiConfig?.workspacePreferences || (input.params.__workspacePreferences ? JSON.parse(input.params.__workspacePreferences) : undefined),
+  };
   const config: ModuleConfig = {
     targetLanguage: 'zh',
     customLanguage: '',
@@ -1018,9 +1073,11 @@ export const runShellBuyerShowWorkflow = async (
     maxFileSize: 2,
   };
   const results: ShellWorkflowImageResult[] = [];
-  const total = state.imageCount * state.setCount;
+  const plannedSets: BuyerShowSetPlan[] = [];
 
   for (let setIndex = 0; setIndex < state.setCount; setIndex += 1) {
+    const setReference = getBuyerShowSetReferenceUrls(input, setIndex, state.includeModel);
+    const firstReferenceUrl = setReference.planningReferenceUrl || null;
     const plan = await generateBuyerShowPrompts(productUrls, firstReferenceUrl, state, apiConfig, setIndex, input.signal);
     if (plan.status === 'error' || plan.tasks.length === 0) {
       throw new Error(plan.message || '买家秀策划失败');
@@ -1033,16 +1090,28 @@ export const runShellBuyerShowWorkflow = async (
         tasks = [faceTask, ...tasks];
       }
     }
+    plannedSets.push({
+      setIndex,
+      setReference,
+      tasks,
+      evaluation: plan.evaluation,
+      setBenchmarkUrl: firstReferenceUrl,
+      blocked: false,
+    });
+  }
 
-    let setBenchmarkUrl: string | null = firstReferenceUrl;
-    for (let taskIndex = 0; taskIndex < tasks.length; taskIndex += 1) {
-      const task = tasks[taskIndex];
+  for (let taskIndex = 0; taskIndex < state.imageCount; taskIndex += 1) {
+    const roundJobs = plannedSets
+      .filter((setPlan) => !setPlan.blocked && setPlan.tasks[taskIndex])
+      .map((setPlan) => ({ setPlan, taskIndex, task: setPlan.tasks[taskIndex] }));
+    await runBuyerShowConcurrencyPool(roundJobs, buyerShowConcurrency, async ({ setPlan, taskIndex, task }) => {
+      const { setIndex, setReference } = setPlan;
       const isFirstImage = taskIndex === 0;
       const currentBatchIndex = setIndex * state.imageCount + taskIndex + 1;
       const prompt = buildBuyerShowImagePrompt(
         task.prompt,
         productUrls,
-        isFirstImage ? firstReferenceUrl : setBenchmarkUrl,
+        isFirstImage ? setReference.planningReferenceUrl || null : setPlan.setBenchmarkUrl,
         isFirstImage,
         state.includeModel,
         state.targetCountry,
@@ -1067,7 +1136,7 @@ export const runShellBuyerShowWorkflow = async (
         onItemCompleted?.(pendingItem, currentBatchIndex, total);
       };
       const generation = await processWithKieAi(
-        isFirstImage && firstReferenceUrl ? [...productUrls, firstReferenceUrl] : setBenchmarkUrl ? [...productUrls, setBenchmarkUrl] : productUrls,
+        getBuyerShowSetGenerationInputs(productUrls, setReference, setPlan.setBenchmarkUrl, isFirstImage),
         apiConfig,
         config,
         false,
@@ -1106,17 +1175,20 @@ export const runShellBuyerShowWorkflow = async (
           };
           results.push(pendingItem);
           onItemCompleted?.(pendingItem, currentBatchIndex, total);
-          if (generation.status === 'generating') break;
+          if (generation.status === 'generating') {
+            setPlan.blocked = true;
+            return;
+          }
         }
         throw new Error(generation.message || `买家秀第 ${setIndex + 1} 套第 ${taskIndex + 1} 张生成失败`);
       }
-      if (isFirstImage) setBenchmarkUrl = generation.imageUrl;
+      if (isFirstImage) setPlan.setBenchmarkUrl = generation.imageUrl;
       const item: ShellWorkflowImageResult = {
         imageUrl: generation.imageUrl,
         prompt: [
           `方案 ${setIndex + 1} / 图片 ${taskIndex + 1}`,
           task.style ? `风格：${task.style}` : '',
-          plan.evaluation ? `评价文案：${plan.evaluation}` : '',
+          setPlan.evaluation ? `评价文案：${setPlan.evaluation}` : '',
           prompt,
         ].filter(Boolean).join('\n\n'),
         taskId: generation.taskId,
@@ -1130,7 +1202,7 @@ export const runShellBuyerShowWorkflow = async (
       };
       results.push(item);
       onItemCompleted?.(item, currentBatchIndex, total);
-    }
+    });
   }
 
   return {
