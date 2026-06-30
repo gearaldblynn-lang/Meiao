@@ -864,8 +864,12 @@ test('material preview bar opens uploaded videos in a playable modal', () => {
   assert.match(previewBar, /if \(mediaKind === 'video'\) \{ openVideoPreview\(m\); \}/);
   assert.match(previewBar, /selectedVideo/);
   assert.match(previewBar, /items=\{selectedVideo \? \[\{ url: selectedVideo\.url, type: 'video', title: selectedVideo\.fileName \}\] : \[\]\}/);
+  assert.match(previewBar, /preload="auto"/);
+  assert.match(previewBar, /onLoadedMetadata/);
+  assert.match(previewBar, /video\.currentTime/);
   assert.match(previewBar, /onClose=\{\(\) => setSelectedVideo\(null\)\}/);
   assert.match(previewBar, /点击播放/);
+  assert.match(read('../shell/components/ImageLightbox.tsx'), /<source src=\{currentItem\.url\} type=\{getVideoMimeType\(currentItem\)\}/);
 });
 
 test('viral storyboard prompts preserve the required segmented prompt and voiceover format', () => {
@@ -2508,7 +2512,8 @@ test('shell project detail uses responsive side-by-side image comparison and sta
   assert.match(imageLightbox, /background: 'rgba\(0,0,0,0\.92\)'/);
   assert.match(imageLightbox, /backdropFilter: 'blur\(8px\)'/);
   assert.match(imageLightbox, /data-meiao-lightbox-video="true"/);
-  assert.match(imageLightbox, /<video[\s\S]*preload="metadata"/);
+  assert.match(imageLightbox, /<video[\s\S]*preload="auto"/);
+  assert.match(imageLightbox, /<source src=\{currentItem\.url\} type=\{getVideoMimeType\(currentItem\)\}/);
   assert.doesNotMatch(imageLightbox, /autoPlay/);
   assert.doesNotMatch(lightboxVideoElement, /boxShadow/);
   assert.doesNotMatch(lightboxVideoElement, /rounded-\[18px\]/);
@@ -2678,7 +2683,8 @@ test('shell sku uploads use ordered gift assets instead of brand logo materials'
   assert.match(shellApp, /giftIndex = type === 'gift' \? giftStartIndex \+ fileIndex : undefined/);
   assert.match(shellApp, /activeSubFeature === 'sku' && type === 'logo'/);
   assert.match(materialPreviewBar, /赠品\{m\.giftIndex\}/);
-  assert.match(materialPreviewBar, /<video src=\{m\.url\}[\s\S]*preload="none"/);
+  assert.match(materialPreviewBar, /<video[\s\S]*src=\{m\.url\}[\s\S]*preload="auto"/);
+  assert.match(materialPreviewBar, /onLoadedMetadata/);
   assert.match(shellWorkflow, /input\.module === AppModule\.ONE_CLICK && input\.subFeature === 'sku'/);
   assert.match(shellWorkflow, /input\.materials\.gift/);
   assert.match(shellWorkflow, /sort\(\(a, b\) => \(a\.giftIndex \|\| 0\) - \(b\.giftIndex \|\| 0\)\)/);
