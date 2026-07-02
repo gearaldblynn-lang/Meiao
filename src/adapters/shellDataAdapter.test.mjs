@@ -3430,6 +3430,50 @@ test('shell data adapter treats buyer show jobs with image urls as completed eve
   assert.equal(snapshot.tasks.find((task) => task.id === 'buyer-show-stale-running-job'), undefined);
 });
 
+test('shell data adapter does not synthesize failed buyer show placeholders while later shots are not submitted yet', () => {
+  const snapshot = buildShellDataSnapshot({}, [
+    {
+      id: 'buyer-show-first-job-only',
+      module: 'buyer_show',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'provider-buyer-first-only',
+      payload: {
+        prompt: '买家秀首张 prompt',
+        buyerShowDisplayPrompt: '首张买家秀场景',
+        shellProjectId: 'buyer-show-partial-project',
+        shellProjectName: '买家秀任务',
+        batchIndex: 1,
+        batchCount: 3,
+        setIndex: 1,
+        setCount: 1,
+        imageIndex: 1,
+        imageCount: 3,
+        subFeature: 'image',
+        aspectRatio: '3:4',
+      },
+      result: {
+        imageUrl: '/buyer-first-result.png',
+        providerTaskId: 'provider-buyer-first-only',
+        creditsConsumed: 3,
+      },
+      createdAt: 1782889000001,
+      updatedAt: 1782889000100,
+      finishedAt: 1782889000100,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'buyer-show-partial-project');
+  assert.ok(project);
+  assert.equal(project.taskCount, 3);
+  assert.equal(project.completedCount, 1);
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].status, 'completed');
+  assert.equal(project.results.some((result) => String(result.id).includes('-missing-')), false);
+  assert.equal(project.results.some((result) => result.error === '历史任务未提交，无法继续生成；请重新提交该套买家秀。'), false);
+});
+
 test('shell data adapter recovers legacy buyer show root batches as per-set cards', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [
@@ -3541,13 +3585,13 @@ test('shell data adapter recovers legacy buyer show root batches as per-set card
   assert.ok(setTwo);
   assert.equal(setOne.taskCount, 3);
   assert.equal(setTwo.taskCount, 3);
-  assert.equal(setOne.status, 'error');
+  assert.equal(setOne.status, 'generating');
   assert.equal(setTwo.status, 'error');
-  assert.deepEqual(setOne.results.map((result) => result.batchIndex), [1, 2, 3]);
-  assert.deepEqual(setOne.results.map((result) => result.status), ['completed', 'error', 'error']);
-  assert.deepEqual(setTwo.results.map((result) => result.batchIndex), [1, 2, 3]);
-  assert.deepEqual(setTwo.results.map((result) => result.status), ['error', 'error', 'error']);
-  assert.match(setOne.results[1].error || '', /历史任务未提交/);
+  assert.deepEqual(setOne.results.map((result) => result.batchIndex), [1]);
+  assert.deepEqual(setOne.results.map((result) => result.status), ['completed']);
+  assert.deepEqual(setTwo.results.map((result) => result.batchIndex), [1]);
+  assert.deepEqual(setTwo.results.map((result) => result.status), ['error']);
+  assert.equal(setOne.results.some((result) => String(result.id).includes('-missing-')), false);
 });
 
 test('shell data adapter merges completed backend video results into the original project card', () => {
