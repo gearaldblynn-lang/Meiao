@@ -1,4 +1,5 @@
 import { runOpenAIToolCallingJob } from './openaiToolCalling.mjs';
+import { isProviderErrorText } from './providerErrorText.mjs';
 import {
   listChatwootConversationMessages,
   sendChatwootConversationMessage,
@@ -16,6 +17,11 @@ const normalizeUrl = (value = '') => clean(value, 500).replace(/\/+$/, '');
 const firstValue = (...values) => values.map((value) => clean(value)).find(Boolean) || '';
 
 const processedMessageIds = new Set();
+
+const isProviderUpstreamTextError = (error) => {
+  const message = clean(error?.message || error, 500);
+  return /^上游错误:/.test(message) || isProviderErrorText(message);
+};
 
 export const resolveChatwootAiConfig = (env = {}) => {
   const models = splitModels(env.OPENAI_COMPATIBLE_MODELS);
@@ -156,13 +162,21 @@ export const handleChatwootAiWebhook = async ({
     history: historyResult?.messages || [],
     currentContent: content,
   });
-  const generated = await generateChatwootAiReply({
-    messages: promptMessages,
-    env,
-    model: openai.model,
-    signal,
-    generateReplyImpl,
-  });
+  let generated;
+  try {
+    generated = await generateChatwootAiReply({
+      messages: promptMessages,
+      env,
+      model: openai.model,
+      signal,
+      generateReplyImpl,
+    });
+  } catch (error) {
+    if (isProviderUpstreamTextError(error)) {
+      return { ok: true, skipped: true, reason: 'provider_upstream_error' };
+    }
+    throw error;
+  }
   const reply = clean(generated?.content, 2000);
   if (!reply) return { ok: true, skipped: true, reason: 'empty_ai_reply' };
 

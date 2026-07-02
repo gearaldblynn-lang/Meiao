@@ -1,3 +1,5 @@
+import { isProviderErrorText } from './providerErrorText.mjs';
+
 const DEFAULT_TIMEOUT_MS = Number(process.env.OPENAI_COMPATIBLE_TIMEOUT_MS || 240000);
 
 const getRelayConfig = (env = {}) => {
@@ -73,8 +75,12 @@ export const runOpenAIToolCallingJob = async ({ payload = {}, env = {}, signal =
   }
   const data = await response.json().catch(() => ({}));
   const choice = data?.choices?.[0] || {};
+  const content = String(choice?.message?.content || '').trim();
+  if (isProviderErrorText(content)) {
+    throw new Error(`上游错误: ${content.slice(0, 120)}`);
+  }
   return {
-    content: String(choice?.message?.content || '').trim(),
+    content,
     toolCalls: parseToolCallsFromChoice(choice),
     finishReason: String(choice?.finish_reason || '').trim(),
     modelUsed: model,
