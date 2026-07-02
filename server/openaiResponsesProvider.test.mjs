@@ -82,6 +82,20 @@ test('非流式请求体走 responses 格式（input 数组 + 扁平 tools）', 
   assert.deepEqual(captured.body.tools[0], { type: 'web_search' });
 });
 
+test('非流式请求拦截伪成功上游错误文本', async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    output: [{ type: 'message', content: [{ type: 'output_text', text: 'Interal error: HTTP 500' }] }],
+  }), { status: 200 });
+  await assert.rejects(
+    () => runResponsesJob({
+      payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+      env,
+    }),
+    (error) => error?.code === 'provider_internal_error'
+      && /Interal error: HTTP 500/.test(error.message)
+  );
+});
+
 test('非流式请求体把 chat 多模态图片 content 转成 responses input_image', async () => {
   let captured = null;
   globalThis.fetch = async (url, init) => {
@@ -155,6 +169,26 @@ test('流式请求体透传文本 delta 并解析 completed usage', async () => 
   assert.equal(out.content, '你好');
   assert.equal(out.finishReason, 'stop');
   assert.deepEqual(out.usage, { input_tokens: 3, output_tokens: 2 });
+});
+
+test('流式请求拦截伪成功上游错误文本', async () => {
+  globalThis.fetch = async () => new Response(new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      controller.enqueue(encoder.encode('event: response.output_text.delta\n'));
+      controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"Interal error: HTTP 500"}\n\n'));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } });
+  await assert.rejects(
+    () => runResponsesJob({
+      payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+      env,
+      onDelta: () => {},
+    }),
+    (error) => error?.code === 'provider_internal_error'
+      && /Interal error: HTTP 500/.test(error.message)
+  );
 });
 
 test('流式请求解析 function_call arguments', async () => {

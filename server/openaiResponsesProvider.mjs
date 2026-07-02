@@ -1,3 +1,8 @@
+import {
+  isProviderErrorText,
+  providerErrorCodeFromText,
+} from './providerErrorText.mjs';
+
 const DEFAULT_TIMEOUT_MS = Number(process.env.OPENAI_COMPATIBLE_TIMEOUT_MS || 240000);
 
 const getRelayConfig = (env = {}) => {
@@ -139,6 +144,14 @@ const buildToolCallsFromStream = (itemsById) => {
     });
   }
   return toolCalls;
+};
+
+const assertUsableResponsesContent = (content) => {
+  const text = String(content || '').trim();
+  if (!isProviderErrorText(text)) return;
+  const error = new Error(text);
+  error.code = providerErrorCodeFromText(text);
+  throw error;
 };
 
 const findStreamFunctionCallKey = (itemsById, item = {}) => {
@@ -316,10 +329,14 @@ export const runResponsesJob = async ({ payload = {}, env = {}, signal = null, o
     }
     const contentType = response.headers.get('content-type') || '';
     if (typeof onDelta === 'function' && contentType.includes('text/event-stream') && response.body) {
-      return { ...await readResponsesStream(response, { onDelta }), modelUsed: model };
+      const parsed = await readResponsesStream(response, { onDelta });
+      assertUsableResponsesContent(parsed.content);
+      return { ...parsed, modelUsed: model };
     }
     const data = await response.json().catch(() => ({}));
-    return { ...parseResponsesOutput(data), modelUsed: model, raw: data };
+    const parsed = parseResponsesOutput(data);
+    assertUsableResponsesContent(parsed.content);
+    return { ...parsed, modelUsed: model, raw: data };
   } finally {
     clearTimeout(timer);
     if (signal) signal.removeEventListener('abort', onAbort);
