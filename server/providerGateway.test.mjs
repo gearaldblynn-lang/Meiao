@@ -89,6 +89,72 @@ test('executeProviderJob 路由 openai_responses 到 responses provider', async 
   }
 });
 
+test('executeProviderJob rejects disguised upstream errors from kie responses chat transport', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => createJsonResponse({
+    output: [
+      {
+        type: 'message',
+        content: [{ type: 'output_text', text: 'Interal error: HTTP 500' }],
+      },
+    ],
+  });
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gpt-5-4',
+            messages: [{ role: 'user', content: 'hi' }],
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_internal_error'
+        && /Interal error: HTTP 500/.test(error.message)
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('executeProviderJob ignores error and errors keys when extracting kie responses text', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => createJsonResponse({
+    output: [
+      {
+        type: 'message',
+        content: [
+          {
+            type: 'output_text',
+            text: '真实策划内容',
+            error: 'Interal error: HTTP 500',
+            errors: ['Internal server error'],
+          },
+        ],
+      },
+    ],
+  });
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gpt-5-4',
+          messages: [{ role: 'user', content: 'hi' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+    assert.equal(result.result.content, '真实策划内容');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
 test('executeProviderJob passes onDelta through to openai_responses streaming provider', async () => {
   const realFetch = globalThis.fetch;
   let captured = null;
@@ -4110,6 +4176,36 @@ test('executeProviderJob routes claude sonnet 4.6 through kie claude messages wi
     assert.equal(body.messages[1].content[2].type, 'document');
     assert.equal(body.messages[1].content[2].source.url, 'https://kie.example.com/uploaded-source.pdf');
     assert.equal(body.messages[1].content[2].title, 'source.pdf');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob rejects disguised upstream errors from kie claude messages', async () => {
+  const originalFetch = global.fetch;
+
+  global.fetch = async () => createJsonResponse({
+    role: 'assistant',
+    content: [{ type: 'text', text: 'Interal error: HTTP 500' }],
+    model: 'claude-sonnet-4-6',
+  });
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'claude-sonnet-4-6',
+            messages: [{ role: 'user', content: '请输出一套主图策划' }],
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_internal_error'
+        && /Interal error: HTTP 500/.test(error.message)
+    );
   } finally {
     global.fetch = originalFetch;
   }

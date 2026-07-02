@@ -42,6 +42,10 @@ import {
   pollKieTask,
   probeKieTaskOnce,
 } from './providerKieTask.mjs';
+import {
+  isProviderErrorText,
+  providerErrorCodeFromText,
+} from './providerErrorText.mjs';
 
 const KIE_CREATE_TASK_URL = 'https://api.kie.ai/api/v1/jobs/createTask';
 const KIE_RECORD_INFO_URL = 'https://api.kie.ai/api/v1/jobs/recordInfo';
@@ -791,10 +795,12 @@ const METADATA_KEYS = new Set([
   'usage',
   'credits_consumed',
 ]);
+const ERROR_PAYLOAD_KEYS = new Set(['error', 'errors']);
 
 const collectTextCandidates = (value, bucket, depth = 0, parentKey = '') => {
   if (!value || depth > 6) return;
   if (parentKey === 'input' || parentKey === 'instructions') return;
+  if (ERROR_PAYLOAD_KEYS.has(String(parentKey || '').trim().toLowerCase())) return;
 
   if (typeof value === 'string') {
     if (METADATA_KEYS.has(parentKey)) return;
@@ -838,6 +844,7 @@ const collectTextCandidates = (value, bucket, depth = 0, parentKey = '') => {
 
   Object.entries(value).forEach(([key, child]) => {
     if (priorityKeys.includes(key)) return;
+    if (ERROR_PAYLOAD_KEYS.has(String(key || '').trim().toLowerCase())) return;
     if (key === 'reasoning' || key === 'reasoning_content' || key === 'thought' || key === 'thoughts') return;
     collectTextCandidates(child, bucket, depth + 1, key);
   });
@@ -877,38 +884,6 @@ const extractProviderTaskIdFromResponse = (data) => {
   const fallbackId = String(data?.id || '').trim();
   return /^chatcmpl-/i.test(fallbackId) ? '' : fallbackId;
 };
-
-const isProviderErrorText = (value) => {
-  const text = String(value || '').trim();
-  if (!text) return false;
-  return [
-    /\bI\s+cannot\s+fulfill\s+this\s+request\b/i,
-    /\bI\s+can(?:not|'t)\s+(?:help|assist|comply|fulfill)\b/i,
-    /\bI'm\s+sorry,\s+but\s+I\s+can(?:not|'t)\b/i,
-    /\bI\s+am\s+sorry,\s+but\s+I\s+can(?:not|'t)\b/i,
-    /无法满足(?:该|这个|此)?请求/,
-    /不能满足(?:该|这个|此)?请求/,
-    /无法协助(?:该|这个|此)?请求/,
-    /file mime type is not supported/i,
-    /image download failed/i,
-    /http 404:\s*not found/i,
-    /failed\s+to\s+get\s+(?:the\s+)?file\s+information/i,
-    /please convert or change the file/i,
-    /unauthorized\s*[–-]\s*authentication failed/i,
-    /authentication failed\.?\s*please check/i,
-    /server exception,\s*please try again later/i,
-    /server is currently being maintained/i,
-  ].some((pattern) => pattern.test(text));
-};
-
-const providerErrorCodeFromText = (value) =>
-  /\bI\s+cannot\s+fulfill\s+this\s+request\b|\bI\s+can(?:not|'t)\s+(?:help|assist|comply|fulfill)\b|\bI'm\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|\bI\s+am\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|无法满足(?:该|这个|此)?请求|不能满足(?:该|这个|此)?请求|无法协助(?:该|这个|此)?请求/i.test(String(value || ''))
-    ? 'provider_refusal'
-    : /failed\s+to\s+get\s+(?:the\s+)?file\s+information/i.test(String(value || ''))
-    ? 'provider_bad_response'
-    : /server is currently being maintained|server exception,\s*please try again later/i.test(String(value || ''))
-    ? 'provider_internal_error'
-    : 'provider_bad_request';
 
 const hasToolUseContentBlock = (value) => {
   if (!value) return false;
@@ -1278,6 +1253,9 @@ const runKieResponsesJob = async (payload, env, signal, options = {}) => {
   if (!content) {
     throw createProviderError('provider_bad_response', 'Kie Responses 返回为空');
   }
+  if (isProviderErrorText(content)) {
+    throw createProviderError(providerErrorCodeFromText(content), content);
+  }
   const providerTaskId = extractProviderTaskIdFromResponse(data);
   const usageMeta = extractProviderUsageMeta(data);
   return {
@@ -1523,6 +1501,9 @@ const runKieClaudeMessagesJob = async (payload, env, signal) => {
         if (!retryContent) {
           throw createProviderError('provider_bad_response', 'Kie Claude 返回为空');
         }
+        if (isProviderErrorText(retryContent)) {
+          throw createProviderError(providerErrorCodeFromText(retryContent), retryContent);
+        }
         if (String(retryData?.stop_reason || '').trim() === 'tool_use' || hasToolUseContentBlock(retryData?.content)) {
           throw createProviderError('provider_bad_response', 'Kie Claude 返回了工具调用而不是文本策划结果');
         }
@@ -1537,6 +1518,9 @@ const runKieClaudeMessagesJob = async (payload, env, signal) => {
       const content = extractChatMessageText(data?.content) || extractChatMessageText(data) || '';
       if (!content) {
         throw createProviderError('provider_bad_response', 'Kie Claude 返回为空');
+      }
+      if (isProviderErrorText(content)) {
+        throw createProviderError(providerErrorCodeFromText(content), content);
       }
       if (toolUseDetected) {
         throw createProviderError('provider_bad_response', 'Kie Claude 返回了工具调用而不是文本策划结果');
@@ -1558,6 +1542,9 @@ const runKieClaudeMessagesJob = async (payload, env, signal) => {
   const content = extractChatMessageText(data?.content) || extractChatMessageText(data) || '';
   if (!content) {
     throw createProviderError('provider_bad_response', 'Kie Claude 返回为空');
+  }
+  if (isProviderErrorText(content)) {
+    throw createProviderError(providerErrorCodeFromText(content), content);
   }
   if (String(data?.stop_reason || '').trim() === 'tool_use' || hasToolUseContentBlock(data?.content)) {
     throw createProviderError('provider_bad_response', 'Kie Claude 返回了工具调用而不是文本策划结果');
