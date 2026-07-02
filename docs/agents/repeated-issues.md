@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-07-02 - Buyer-show batch references inherit unscoped input references as set 1
+
+- Symptom: 买家秀输入框已经上传产品图、氛围参考和模特参考，但切到 2/3/4 套后，套数弹窗里的第 1 套不显示这些已有参考图；生成链路也可能把未分套参考图从多套里丢掉。
+- Environment: local development / buyer_show shell input / `BottomInputBar` batch popover / `runShellBuyerShowWorkflow`.
+- Root cause: 旧多套逻辑把 `buyerShowSetIndex` 当成“只要存在任意分套素材，未标 setIndex 的素材就不属于任何套”。但产品实际语义是：输入框主上传的产品图全套共享，输入框主上传的氛围/模特参考就是第 1 套参考；后续套只补自己的差异参考。
+- Fix: UI 预览和 workflow 都改为 `setIndex === 0` 时包含未分套的氛围/模特素材；素材清单只输出分套清单，避免同一参考图同时以全局和分套身份重复进入 prompt。
+- Regression check: `node --experimental-strip-types --test src/shell/components/layout/BottomInputBar.test.mjs --test-name-pattern "buyer show"`; `node --experimental-strip-types --test src/shell/components/destructiveActions.test.mjs --test-name-pattern "buyer show"`; `npm run build`; `npm run lint`.
+- Avoid next time: 买家秀多套不是“每套一个产品”。产品图共享，参考图按套区分；未标 `buyerShowSetIndex` 的氛围/模特图必须被视为第 1 套，不得因为其它套有 scoped 素材就被丢弃。
+
 ## 2026-07-01 - Stale running jobs must not count as active account concurrency
 
 - Symptom: 买家秀、详情页、视频等多个功能都出现过“任务一直排队/生成中不出图”，同账号旧任务长期占满并发，后续新任务无法开始。
