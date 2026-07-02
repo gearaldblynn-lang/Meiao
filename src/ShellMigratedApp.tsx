@@ -3678,6 +3678,34 @@ const AppContent: React.FC<{
     const immediateTranslationProjectId = isTranslationSubmit
       ? `translation-${immediateCreatedAt}-${Math.random().toString(36).slice(2, 7)}`
       : '';
+    const immediateBuyerShowSetCount = targetModule === AppModuleObj.BUYER_SHOW ? parsePositiveInt(generationParams.setCount, 1, 4) : 0;
+    const immediateBuyerShowImageCount = targetModule === AppModuleObj.BUYER_SHOW ? parsePositiveInt(generationParams.count, 4, 20) : 0;
+    const immediateBuyerShowRootProjectId = targetModule === AppModuleObj.BUYER_SHOW
+      ? `proj-${immediateCreatedAt}`
+      : '';
+    const immediateBuyerShowProjects: Project[] = targetModule === AppModuleObj.BUYER_SHOW
+      ? Array.from({ length: immediateBuyerShowSetCount }, (_, setIndex) => {
+        const setNumber = setIndex + 1;
+        const projectId = immediateBuyerShowSetCount > 1
+          ? `${immediateBuyerShowRootProjectId}-set-${setNumber}`
+          : immediateBuyerShowRootProjectId;
+        const setName = immediateBuyerShowSetCount > 1
+          ? `${projectName} · 第${setNumber}套`
+          : projectName;
+        return {
+          id: projectId,
+          name: setName,
+          module: targetModule,
+          status: 'generating',
+          createdAt: immediateCreatedAt,
+          results: [],
+          taskCount: immediateBuyerShowImageCount,
+          completedCount: 0,
+          subFeature: targetSubFeature,
+          generationContext: cloneGenerationContext(generationPrompt, generationParams, generationMaterials),
+        } satisfies Project;
+      })
+      : [];
     const immediateProject = targetModule === AppModuleObj.EVERYTHING_REPLACE || isTranslationSubmit
       ? ({
         id: isTranslationSubmit ? immediateTranslationProjectId : 'proj-' + Date.now(),
@@ -3720,26 +3748,31 @@ const AppContent: React.FC<{
         generationContext: cloneGenerationContext(generationPrompt, generationParams, generationMaterials),
       } satisfies Project)
       : null;
-    const immediateTask = immediateProject
+    const immediateTask = immediateProject || immediateBuyerShowProjects.length > 0
       ? ({
         id: 'task-' + Date.now(),
-        projectId: immediateProject.id,
+        projectId: immediateProject?.id || immediateBuyerShowRootProjectId || immediateBuyerShowProjects[0]?.id || '',
         module: targetModule,
         type: 'image',
         status: 'pending',
-        title: immediateProject.name,
+        title: immediateProject?.name || projectName,
         progress: 0,
         createdAt: immediateCreatedAt,
-        total: immediateProject.taskCount || batchCount,
+        total: immediateProject?.taskCount || batchCount,
         completed: 0,
         subFeature: targetSubFeature,
       } satisfies Task)
       : null;
-    if (immediateProject && immediateTask) {
-      setProjects((prev) => [immediateProject, ...prev]);
+    if ((immediateProject || immediateBuyerShowProjects.length > 0) && immediateTask) {
+      setProjects((prev) => [...immediateBuyerShowProjects, ...(immediateProject ? [immediateProject] : []), ...prev]);
       setTasks((prev) => [immediateTask, ...prev]);
       setIsGenerating(true);
-      void persistProjectToSharedState(immediateProject);
+      if (immediateProject) {
+        void persistProjectToSharedState(immediateProject);
+      }
+      immediateBuyerShowProjects.forEach((project) => {
+        void persistProjectToSharedState(project);
+      });
     }
     try {
       generationMaterials = await ensureMaterialRemoteUrls(generationMaterials, targetModule);
@@ -3775,11 +3808,27 @@ const AppContent: React.FC<{
         void persistProjectToSharedState(failedProject);
         setIsGenerating(false);
       }
+      if (immediateBuyerShowProjects.length > 0 && immediateTask) {
+        const failedBuyerShowProjects = immediateBuyerShowProjects.map((project) => ({
+          ...project,
+          status: 'error' as const,
+          error: message,
+          results: [],
+          completedCount: 0,
+          taskCount: project.taskCount || immediateBuyerShowImageCount || 1,
+        }));
+        setProjects((prev) => prev.map((project) => failedBuyerShowProjects.find((item) => item.id === project.id) || project));
+        setTasks((prev) => prev.map((task) => task.id === immediateTask.id ? { ...task, status: 'error', progress: 100 } : task));
+        failedBuyerShowProjects.forEach((project) => {
+          void persistProjectToSharedState(project);
+        });
+        setIsGenerating(false);
+      }
       addToast(message, 'error');
       releaseGuardedSubmit();
       return;
     }
-    const generationContext = targetModule === AppModuleObj.ONE_CLICK || targetModule === AppModuleObj.TRANSLATION || targetModule === AppModuleObj.EVERYTHING_REPLACE
+    const generationContext = targetModule === AppModuleObj.ONE_CLICK || targetModule === AppModuleObj.TRANSLATION || targetModule === AppModuleObj.EVERYTHING_REPLACE || targetModule === AppModuleObj.BUYER_SHOW
       ? cloneGenerationContext(generationPrompt, generationParams, generationMaterials)
       : undefined;
 
@@ -4484,7 +4533,7 @@ const AppContent: React.FC<{
     }
 
     // Create project
-    const projectId = immediateProject?.id || 'proj-' + Date.now();
+    const projectId = immediateProject?.id || immediateBuyerShowRootProjectId || 'proj-' + Date.now();
     const newProject: Project = {
       ...(immediateProject || {}),
       id: projectId,
@@ -4500,6 +4549,12 @@ const AppContent: React.FC<{
     };
     if (immediateProject) {
       setProjects((prev) => prev.map((project) => project.id === projectId ? newProject : project));
+    } else if (immediateBuyerShowProjects.length > 0) {
+      setProjects((prev) => prev.map((project) => (
+        immediateBuyerShowProjects.some((item) => item.id === project.id)
+          ? { ...project, generationContext }
+          : project
+      )));
     } else {
       setProjects((prev) => [...prev, newProject]);
     }
