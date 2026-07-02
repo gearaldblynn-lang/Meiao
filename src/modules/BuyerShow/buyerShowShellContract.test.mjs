@@ -25,6 +25,13 @@ test('buyer show follow-up images wait for the first generated image as benchmar
   assert.match(workflowSource, /buyerShowReferenceMode:\s*isFirstImage\s*\?\s*'set_reference'\s*:\s*'first_result_benchmark'/);
 });
 
+test('buyer show model references support local human models and animal models', () => {
+  assert.match(arkSource, /If the model reference shows an animal or pet, the set MUST include that animal/);
+  assert.match(arkSource, /Human models must look like real local users from \$\{state\.targetCountry\}/);
+  assert.match(workflowSource, /If a model reference image shows an animal or pet, include that animal as the animal model/);
+  assert.match(workflowSource, /If a human appears, they must look like a real local user from \$\{targetCountry\}/);
+});
+
 test('buyer show detail supports review display, readable prompts and in-place edits', () => {
   assert.match(projectCardSource, /买家评价/);
   assert.match(projectCardSource, /getBuyerShowReadablePrompt/);

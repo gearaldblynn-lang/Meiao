@@ -1593,7 +1593,7 @@ export const generateBuyerShowPrompts = async (
     });
     // 动态调整 System Prompt 逻辑
     const modelPrompt = state.includeModel
-      ? `3. **Include Model Strategy**: The set must include human presence suitable for ${state.targetCountry}. The FIRST task MUST be a benchmark shot. Subsequent shots must maintain consistency. If hasFace=true, the person should look like a local user from ${state.targetCountry}.`
+      ? `3. **Include Model Strategy**: Use model references as the user/model subject. If the model reference shows an animal or pet, the set MUST include that animal as the animal model or pet user. If the model reference shows a human, use a human model. Human models must look like real local users from ${state.targetCountry}. The FIRST task MUST be a benchmark shot. Subsequent shots must maintain consistency.`
       : `3. **STILL LIFE Strategy**: **NO HUMAN FACES/BODIES.** Focus on product details and scenes. Hands are allowed if necessary for usage demonstration.`;
 
     const systemPrompt = `R Role 角色
@@ -1608,7 +1608,7 @@ C Constraint 约束
 3. Environment must be clean, tidy, and visually pleasing; forbid trash, stained surfaces, and bad lighting.
 4. The ${state.imageCount} images must form a coherent set covering context, detail, and usage/interaction.
 5. ${modelPrompt}
-6. If hasFace=true, the person should look like a local user from ${state.targetCountry}.
+6. If hasFace=true and the subject is human, the person should look like a local user from ${state.targetCountry}. If the model reference subject is an animal, keep the animal present and describe its species/breed/temperament instead of forcing a human.
 
 F Format 格式
 Output JSON only:
@@ -1653,7 +1653,7 @@ A reference image is provided. You MUST strictly follow these 4 dimensions:
 1. **Style**: Strictly match the overall visual style of the reference (e.g., ins风, 日系, 韩系, 欧美风). Do NOT deviate.
 2. **Color Tone**: Strictly match the color temperature and color tendency (warm/cool/neutral, saturation level).
 3. **Scene**: Create scenes that are SIMILAR in type but NOT identical (e.g., if reference is a café, use a different café or similar cozy space). Adapt to divergence theme: ${divergenceInstruction}
-4. **Model Appearance**: If the reference contains a person, the model's temperament, style, and age range MUST closely match the reference. If hasFace=true, the person should look like a local user from ${state.targetCountry}.
+4. **Model Appearance**: If the reference contains a person, the model's temperament, style, and age range MUST closely match the reference, and the person should look like a local user from ${state.targetCountry}. If the reference contains an animal or pet, the animal MUST appear in the set as the animal model or pet user, matching the species/breed, size, temperament, posture, and interaction role of the reference.
 PROHIBITION: Do NOT copy the exact composition of the reference. Maintain the same visual tone while creating fresh angles.`
       : `Creative Direction: ${divergenceInstruction}`;
 

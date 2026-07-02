@@ -1533,38 +1533,6 @@ const mapJobs = (
       results.length,
       1,
     );
-    const hasActiveJob = sortedJobs.some((job) => ['queued', 'running', 'retry_waiting'].includes(String(job.status || '')));
-    if (!hasActiveJob && results.length < taskCount) {
-      const existingBatchIndexes = new Set(results.map((result) => Number(result.batchIndex || 0) || 0).filter(Boolean));
-      const firstPayload = (firstJob?.payload || {}) as Record<string, any>;
-      const fallbackPrompt = getBuyerShowDisplayPrompt(firstPayload);
-      const fallbackEvaluation = getBuyerShowEvaluation(firstPayload);
-      const fallbackModel = normalizeModel(firstPayload.model || firstJob?.result?.model || firstJob?.provider);
-      const fallbackAspectRatio = String(firstPayload.aspectRatio || firstPayload.ratio || firstJob?.result?.aspectRatio || '3:4');
-      for (let batchIndex = 1; batchIndex <= taskCount; batchIndex += 1) {
-        if (existingBatchIndexes.has(batchIndex)) continue;
-        const missingResultId = `${shellProjectId}-missing-${batchIndex}`;
-        results.push({
-          id: missingResultId,
-          projectId: shellProjectId,
-          imageUrl: '',
-          mediaType: 'image' as const,
-          prompt: fallbackPrompt,
-          buyerShowDisplayPrompt: fallbackPrompt,
-          buyerShowEvaluation: fallbackEvaluation,
-          model: fallbackModel,
-          aspectRatio: fallbackAspectRatio,
-          status: 'error',
-          createdAt,
-          module: MODULE_VALUES.BUYER_SHOW,
-          subFeature,
-          taskId: missingResultId,
-          batchIndex,
-          error: '历史任务未提交，无法继续生成；请重新提交该套买家秀。',
-        });
-      }
-      results = results.sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0));
-    }
     const completedCount = results.filter((result) => result.status === 'completed' && result.imageUrl).length;
     const hasRunning = results.some((result) => result.status === 'generating');
     const hasError = results.some((result) => result.status === 'error');

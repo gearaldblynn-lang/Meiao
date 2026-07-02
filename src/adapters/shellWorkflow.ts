@@ -987,7 +987,7 @@ const buildBuyerShowImagePrompt = (
     ? `\nAtmosphere reference images: ${setReference.atmosphereUrls.join(', ')}. Use them for environment style, lighting, color tone, props, and lived-in mood.`
     : '';
   const modelLine = includeModel && setReference.modelUrls.length > 0
-    ? `\nModel reference images: ${setReference.modelUrls.join(', ')}. Use them for face temperament, age range, posture, hand action, outfit vibe, and camera state. Do not ignore these model references when a person appears.`
+    ? `\nModel reference images: ${setReference.modelUrls.join(', ')}. Use them for model-subject identity. If a model reference image shows an animal or pet, include that animal as the animal model or pet user and preserve its species/breed, size, temperament, posture, and interaction role. If a model reference image shows a human, use it for face temperament, age range, posture, hand action, outfit vibe, and camera state. Do not ignore these model references.`
     : '';
   let refDescription = '';
   if (refUrl) {
@@ -996,7 +996,7 @@ const buildBuyerShowImagePrompt = (
       : ` SCENE & CHARACTER CONSISTENCY: Reference benchmark image (URL=${refUrl}) establishes the reality of this set. Reference benchmark image (URL=${refUrl}) is the first generated image from this same buyer-show set. Treat that benchmark image as the single source of truth for person identity, room layout, props, lighting, and camera reality. This new shot MUST stay in the same session continuity but clearly differ in composition, framing, action focus, and product storytelling purpose.`;
   }
   const baseRequirement = includeModel
-    ? `People in the scene must look like real locals from ${targetCountry} — natural and relaxed, not model-posed. If a person is shown, they should look like a local user from ${targetCountry}.${refDescription}`
+    ? `If a human appears, they must look like a real local user from ${targetCountry} — natural and relaxed, not model-posed. If a model reference image shows an animal or pet, include that animal as the animal model or pet user instead of replacing it with a human.${refDescription}`
     : `No people. Product placed naturally in a real everyday environment.${refDescription}`;
   const productPreservation = 'PACKAGING CONSISTENCY FIRST: Keep the packaging identity exactly consistent with the uploaded product images. Strictly do not change the product\'s appearance details, size, structure, label information, packaging information, packaging layout, brand marks, color blocking, or any visible product elements. Do not redesign, rewrite, simplify, replace, or newly invent the package artwork or brand presentation. The product must appear at its true real-world physical size relative to the scene. REAL SCENE INTEGRATION: The product must feel naturally photographed inside the scene with correct contact, perspective, scale, shadows, and occlusion.';
   const materialLine = productUrls.length > 0 ? `\nProduct references: ${productUrls.join(', ')}` : '';
