@@ -104,6 +104,8 @@ export interface ShellWorkflowImageResult {
   message?: string;
   errorCode?: string;
   batchIndex?: number;
+  buyerShowEvaluation?: string;
+  buyerShowDisplayPrompt?: string;
 }
 
 const MODULE_LABELS: Record<string, string> = {
@@ -1029,7 +1031,21 @@ type BuyerShowSetPlan = {
   setReference: ReturnType<typeof getBuyerShowSetReferenceUrls>;
   tasks: BuyerShowGeneratedTask[];
   evaluation?: string;
+  planningCreditsConsumed?: number;
+  planningTaskId?: string;
   setBenchmarkUrl: string | null;
+};
+
+const extractBuyerShowGeneratedImageUrl = (job: any) => {
+  const result = job?.result || {};
+  const candidates = [
+    result.imageUrl,
+    result.url,
+    Array.isArray(result.urls) ? result.urls[0] : '',
+    Array.isArray(result.images) ? (typeof result.images[0] === 'string' ? result.images[0] : result.images[0]?.url || result.images[0]?.imageUrl) : '',
+    Array.isArray(result.resultUrls) ? result.resultUrls[0] : '',
+  ];
+  return candidates.map((item) => String(item || '').trim()).find(Boolean) || '';
 };
 
 const submitBuyerShowImageJob = async (
@@ -1112,7 +1128,7 @@ export const runShellBuyerShowWorkflow = async (
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         if (input.signal.aborted) throw new Error('INTERRUPTED');
       }
-      plan = await generateBuyerShowPrompts(productUrls, firstReferenceUrl, state, apiConfig, setIndex, input.signal);
+      plan = await generateBuyerShowPrompts(productUrls, firstReferenceUrl, state, apiConfig, setIndex, input.signal, input.onJobCreated);
       if (plan.status === 'success' && plan.tasks.length > 0) break;
     }
 
@@ -1134,6 +1150,8 @@ export const runShellBuyerShowWorkflow = async (
       setReference,
       tasks,
       evaluation: plan.evaluation,
+      planningCreditsConsumed: plan.creditsConsumed,
+      planningTaskId: plan.taskId,
       setBenchmarkUrl: firstReferenceUrl,
     });
   }
@@ -1143,11 +1161,10 @@ export const runShellBuyerShowWorkflow = async (
     throw new Error('买家秀策划失败：所有分套都未能生成方案，请稍后重试。');
   }
 
-  for (let taskIndex = 0; taskIndex < state.imageCount; taskIndex += 1) {
-    const roundJobs = plannedSets
-      .filter((setPlan) => setPlan.tasks[taskIndex])
-      .map((setPlan) => ({ setPlan, taskIndex, task: setPlan.tasks[taskIndex] }));
-    await runBuyerShowConcurrencyPool(roundJobs, buyerShowConcurrency, async ({ setPlan, taskIndex, task }) => {
+  await runBuyerShowConcurrencyPool(plannedSets, buyerShowConcurrency, async (setPlan) => {
+    for (let taskIndex = 0; taskIndex < state.imageCount; taskIndex += 1) {
+      const task = setPlan.tasks[taskIndex];
+      if (!task) continue;
       const { setIndex, setReference } = setPlan;
       const isFirstImage = taskIndex === 0;
       const currentBatchIndex = setIndex * state.imageCount + taskIndex + 1;
@@ -1186,6 +1203,12 @@ export const runShellBuyerShowWorkflow = async (
         buyerShowRootProjectName: rootProjectName || undefined,
         buyerShowGlobalBatchIndex: currentBatchIndex,
         buyerShowGlobalBatchCount: total,
+        buyerShowDisplayPrompt: task.prompt,
+        buyerShowStyle: task.style || undefined,
+        buyerShowEvaluation: setPlan.evaluation || undefined,
+        buyerShowPlanningCredits: setPlan.planningCreditsConsumed,
+        buyerShowPlanningTaskId: setPlan.planningTaskId,
+        buyerShowReferenceMode: isFirstImage ? 'set_reference' : 'first_result_benchmark',
         setIndex: setIndex + 1,
         setCount: state.setCount,
         imageIndex: setBatchIndex,
@@ -1210,6 +1233,8 @@ export const runShellBuyerShowWorkflow = async (
           setPlan.evaluation ? `评价文案：${setPlan.evaluation}` : '',
           prompt,
         ].filter(Boolean).join('\n\n'),
+        buyerShowDisplayPrompt: task.prompt,
+        buyerShowEvaluation: setPlan.evaluation,
         backendJobId: jobId,
         model: getImageResultModelLabel(config),
         aspectRatio: config.aspectRatio,
@@ -1222,12 +1247,20 @@ export const runShellBuyerShowWorkflow = async (
       input.onJobCreated?.(jobId);
       results.push(item);
       onItemCompleted?.(item, currentBatchIndex, total);
-    });
-  }
+      if (isFirstImage) {
+        const finalJob = await waitForInternalJob(jobId, input.signal, 3000, 0);
+        const benchmarkUrl = extractBuyerShowGeneratedImageUrl(finalJob);
+        if (!benchmarkUrl) {
+          throw new Error(finalJob.errorMessage || '买家秀首张基准图生成失败，后续图片无法继续。');
+        }
+        setPlan.setBenchmarkUrl = benchmarkUrl;
+      }
+    }
+  });
 
   return {
     results,
-    creditsConsumed: results.reduce((sum, item) => sum + (Number(item.creditsConsumed) || 0), 0) || undefined,
+    creditsConsumed: plannedSets.reduce((sum, item) => sum + (Number(item.planningCreditsConsumed) || 0), 0) || undefined,
   };
 };
 

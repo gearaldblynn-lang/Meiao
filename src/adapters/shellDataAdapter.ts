@@ -44,6 +44,8 @@ export interface ShellGeneratedResult {
   matchedAspectRatio?: string;
   originalWidth?: number;
   originalHeight?: number;
+  buyerShowEvaluation?: string;
+  buyerShowDisplayPrompt?: string;
 }
 
 export interface ShellProjectData {
@@ -1309,6 +1311,29 @@ const getBuyerShowSetProjectName = (job: InternalJob, fallback = '') => {
   return baseName;
 };
 
+const getBuyerShowDisplayPrompt = (payload: Record<string, any>, fallback = '') => (
+  String(payload.buyerShowDisplayPrompt || payload.prompt || fallback || MODULE_LABELS[MODULE_VALUES.BUYER_SHOW] || '买家秀').trim()
+);
+
+const getBuyerShowEvaluation = (payload: Record<string, any>) => (
+  String(payload.buyerShowEvaluation || payload.evaluation || '').trim() || undefined
+);
+
+const getBuyerShowPlanningCredits = (jobs: InternalJob[]) => {
+  const credits = jobs
+    .map((job) => normalizeCreditsConsumed((job.payload as any)?.buyerShowPlanningCredits))
+    .filter((value): value is number => Boolean(value));
+  return credits.length > 0 ? Math.max(...credits) : undefined;
+};
+
+const getBuyerShowPlanningTaskId = (jobs: InternalJob[]) => {
+  for (const job of jobs) {
+    const taskId = String((job.payload as any)?.buyerShowPlanningTaskId || '').trim();
+    if (taskId) return taskId;
+  }
+  return undefined;
+};
+
 const mapJobs = (
   jobs: InternalJob[] = [],
   persistedProjects: ShellProjectData[] = [],
@@ -1479,12 +1504,16 @@ const mapJobs = (
       const status = taskStatusToProject(job.status);
       const batchIndex = getBuyerShowSetBatchIndex(job, index + 1);
       const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+      const displayPrompt = getBuyerShowDisplayPrompt(payload, job.errorMessage);
+      const evaluationText = getBuyerShowEvaluation(payload);
       return {
         id: String(providerTaskId || `${job.id}-result-${batchIndex}`),
         projectId: shellProjectId,
         imageUrl: urls[0] || '',
         mediaType: 'image' as const,
-        prompt: String(payload.prompt || job.errorMessage || MODULE_LABELS[MODULE_VALUES.BUYER_SHOW] || '买家秀'),
+        prompt: displayPrompt,
+        buyerShowDisplayPrompt: displayPrompt,
+        buyerShowEvaluation: evaluationText,
         model: normalizeModel(payload.model || job.result?.model || job.provider),
         aspectRatio: String(payload.aspectRatio || payload.ratio || job.result?.aspectRatio || '3:4'),
         status: (status === 'completed' && urls[0] ? 'completed' : status === 'error' ? 'error' : 'generating') as ShellGeneratedResult['status'],
@@ -1507,7 +1536,8 @@ const mapJobs = (
     if (!hasActiveJob && results.length < taskCount) {
       const existingBatchIndexes = new Set(results.map((result) => Number(result.batchIndex || 0) || 0).filter(Boolean));
       const firstPayload = (firstJob?.payload || {}) as Record<string, any>;
-      const fallbackPrompt = String(firstPayload.prompt || MODULE_LABELS[MODULE_VALUES.BUYER_SHOW] || '买家秀');
+      const fallbackPrompt = getBuyerShowDisplayPrompt(firstPayload);
+      const fallbackEvaluation = getBuyerShowEvaluation(firstPayload);
       const fallbackModel = normalizeModel(firstPayload.model || firstJob?.result?.model || firstJob?.provider);
       const fallbackAspectRatio = String(firstPayload.aspectRatio || firstPayload.ratio || firstJob?.result?.aspectRatio || '3:4');
       for (let batchIndex = 1; batchIndex <= taskCount; batchIndex += 1) {
@@ -1519,6 +1549,8 @@ const mapJobs = (
           imageUrl: '',
           mediaType: 'image' as const,
           prompt: fallbackPrompt,
+          buyerShowDisplayPrompt: fallbackPrompt,
+          buyerShowEvaluation: fallbackEvaluation,
           model: fallbackModel,
           aspectRatio: fallbackAspectRatio,
           status: 'error',
@@ -1535,6 +1567,8 @@ const mapJobs = (
     const completedCount = results.filter((result) => result.status === 'completed' && result.imageUrl).length;
     const hasRunning = results.some((result) => result.status === 'generating');
     const hasError = results.some((result) => result.status === 'error');
+    const planningCredits = getBuyerShowPlanningCredits(sortedJobs);
+    const planningTaskId = getBuyerShowPlanningTaskId(sortedJobs);
     const projectName = getBuyerShowSetProjectName(firstJob, matchedProject?.name)
       || matchedProject?.name
       || MODULE_LABELS[MODULE_VALUES.BUYER_SHOW]
@@ -1553,7 +1587,8 @@ const mapJobs = (
       subFeature,
       sourceType: 'job',
       backendJobId: String(sortedJobs.at(-1)?.id || '').trim() || undefined,
-      creditsConsumed: normalizeCreditsConsumed(results.reduce((sum, result) => sum + (Number(result.creditsConsumed) || 0), 0)) || matchedProject?.creditsConsumed,
+      creditsConsumed: planningCredits || matchedProject?.creditsConsumed,
+      planningTaskId: planningTaskId || matchedProject?.planningTaskId,
     });
     sortedJobs
       .filter((job) => ['queued', 'running', 'retry_waiting'].includes(String(job.status || '')))

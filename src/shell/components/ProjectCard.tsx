@@ -411,8 +411,10 @@ const getProjectCreditsConsumed = (project: Project) => {
   const hasStoryboardPlanningUsage = project.module === 'video'
     && project.subFeature === 'storyboard'
     && rawProjectCredits > 0;
+  const hasBuyerShowPlanningUsage = project.module === 'buyer_show' && rawProjectCredits > 0;
   const hasPlanningUsage = !project.directGeneration && (Boolean(project.planningTaskId)
     || hasStoryboardPlanningUsage
+    || hasBuyerShowPlanningUsage
     || (project.module === 'one_click' && (
       Boolean(project.backendJobId)
       || (Array.isArray(project.plans) && project.plans.length > 0)
@@ -511,12 +513,14 @@ const ProjectCard: React.FC<Props> = ({
   const selectedPlanCount = visiblePlans.length;
   const allPlansSelected = Array.isArray(project.plans) && project.plans.length > 0 && visiblePlans.length === project.plans.length;
   const isStoryboardProject = project.module === 'video' && project.subFeature === 'storyboard';
+  const isBuyerShowProject = project.module === 'buyer_show' && project.subFeature !== 'copy';
+  const isVersionedImageProject = isStoryboardProject || isBuyerShowProject;
   const isOneClickProject = project.module === 'one_click';
   const isEverythingReplaceProductEditProject = project.module === 'everything_replace' && project.subFeature === 'product_replace';
   const isEverythingReplaceBackgroundEditProject = project.module === 'everything_replace' && project.subFeature === 'background_replace';
   const usesMinimalRoleEditPrompt = isOneClickProject || isEverythingReplaceProductEditProject || isEverythingReplaceBackgroundEditProject;
   const getCurrentStoryboardDisplayUrl = (result: GeneratedResult) => {
-    if (!isStoryboardProject) return result.imageUrl;
+    if (!isVersionedImageProject) return result.imageUrl;
     const versions = (result.storyboardImageVersions || []).filter((item) => item.imageUrl);
     if (versions.length === 0) return result.imageUrl;
     const selectedIndex = Math.min(
@@ -526,7 +530,7 @@ const ProjectCard: React.FC<Props> = ({
     return versions[selectedIndex]?.imageUrl || result.imageUrl;
   };
   const previewableResults = project.results
-    .map((result) => isStoryboardProject ? { ...result, imageUrl: getCurrentStoryboardDisplayUrl(result) || '' } : result)
+    .map((result) => isVersionedImageProject ? { ...result, imageUrl: getCurrentStoryboardDisplayUrl(result) || '' } : result)
     .filter((result) => result.imageUrl || result.videoUrl);
   const lightboxItems: LightboxMediaItem[] = previewableResults.map((result, index) => ({
     url: result.videoUrl || result.imageUrl || '',
@@ -581,6 +585,9 @@ const ProjectCard: React.FC<Props> = ({
   const isStoryboardAwaitingImageConfirmation = isStoryboardProject && project.storyboardProjectStatus === 'awaiting_image_confirmation';
   const isCopyTextReport = project.module === 'buyer_show' && project.subFeature === 'copy';
   const isTextReport = isDiagnosisReport || isCopyTextReport;
+  const buyerShowEvaluationText = project.results
+    .map((result) => String(result.buyerShowEvaluation || '').trim())
+    .find(Boolean) || '';
   const previewResult = project.results.find((result) => isCompletedMediaResult(result)) || project.results[0];
   const isPreviewVideoResult = Boolean(previewResult && (previewResult.mediaType === 'video' || previewResult.videoUrl));
   const playableVideoResults = previewableResults.filter((result) => result.mediaType === 'video' || result.videoUrl);
@@ -667,11 +674,23 @@ const ProjectCard: React.FC<Props> = ({
     if (!result || !Array.isArray(project.plans)) return null;
     return project.plans.find((plan) => plan.id === result.planId) || project.plans[index] || null;
   };
+  const getBuyerShowReadablePrompt = (result: GeneratedResult) => {
+    const directPrompt = String(result.buyerShowDisplayPrompt || '').trim();
+    if (directPrompt) return directPrompt;
+    const prompt = String(result.prompt || '').trim();
+    const markerMatch = /(?:^|\n)(?:SCENE|NEXT SHOT)\s*:\s*([\s\S]+)$/i.exec(prompt);
+    if (markerMatch?.[1]?.trim()) return markerMatch[1].trim();
+    return prompt;
+  };
+  const getDisplayedResultPrompt = (result: GeneratedResult, matchedPlan?: PlanItem | null) => (
+    normalizeSchemeText(isBuyerShowProject ? getBuyerShowReadablePrompt(result) : matchedPlan?.schemeContent || result.prompt || '无 prompt 记录')
+  );
   const canEditImageResult = (result?: GeneratedResult | null) => Boolean(
     onEdit
     && (
       project.module === 'one_click'
       || (project.module === 'video' && project.subFeature === 'storyboard')
+      || project.module === 'buyer_show'
       || (project.module === 'everything_replace' && project.subFeature === 'background_replace')
     )
     && result?.status === 'completed'
@@ -776,7 +795,7 @@ const ProjectCard: React.FC<Props> = ({
   }, [isLongDetailProject, project.id]);
 
   useEffect(() => {
-    if (!isStoryboardProject) return;
+    if (!isVersionedImageProject) return;
     const nextLengths = Object.fromEntries(project.results.map((result) => [
       result.id,
       result.storyboardImageVersions?.filter((item) => item.imageUrl).length || (result.imageUrl ? 1 : 0),
@@ -794,7 +813,7 @@ const ProjectCard: React.FC<Props> = ({
       return changed ? next : prev;
     });
     storyboardVersionLengthsRef.current = nextLengths;
-  }, [isStoryboardProject, project.results]);
+  }, [isVersionedImageProject, project.results]);
 
   useEffect(() => {
     if (!detailOpen || lightboxOpen) return;
@@ -1191,6 +1210,24 @@ const ProjectCard: React.FC<Props> = ({
                   </p>
                 </div>
               </section>
+              {isBuyerShowProject && buyerShowEvaluationText ? (
+                <section className="mb-4 rounded-[22px] border p-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>买家评价</p>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyPrompt(buyerShowEvaluationText)}
+                      className="rounded-full px-2.5 py-1 text-[10px] font-medium"
+                      style={{ background: 'var(--bg-surface)', color: 'var(--text-secondary)' }}
+                    >
+                      复制
+                    </button>
+                  </div>
+                  <p className="whitespace-pre-wrap text-[12px] leading-6" style={{ color: 'var(--text-secondary)' }}>
+                    {buyerShowEvaluationText}
+                  </p>
+                </section>
+              ) : null}
               {isTextReport ? (
                 <section className="space-y-3">
                   <div className="rounded-3xl p-4" style={{ background: 'var(--bg-elevated)' }}>
@@ -1857,28 +1894,54 @@ const ProjectCard: React.FC<Props> = ({
                       <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-3">
                         {project.results.map((result, index) => {
                           const isVideoResult = result.mediaType === 'video' || Boolean(result.videoUrl) || isVideoGenerationProject;
+                          const versionItems = isBuyerShowProject ? (
+                            result.storyboardImageVersions?.length
+                              ? result.storyboardImageVersions
+                              : result.imageUrl
+                                ? [{
+                                    id: `${result.id}:current`,
+                                    imageUrl: result.imageUrl,
+                                    prompt: result.prompt,
+                                    taskId: result.taskId,
+                                    creditsConsumed: result.creditsConsumed,
+                                    createdAt: result.createdAt || Date.now(),
+                                  }]
+                                : []
+                          ).filter((item) => item.imageUrl) : [];
+                          const rawVersionIndex = storyboardVersionIndexes[result.id] ?? Math.max(versionItems.length - 1, 0);
+                          const selectedVersionIndex = versionItems.length > 0
+                            ? Math.min(Math.max(rawVersionIndex, 0), versionItems.length - 1)
+                            : 0;
+                          const selectedVersion = versionItems[selectedVersionIndex];
+                          const displayResult: GeneratedResult = selectedVersion ? {
+                            ...result,
+                            imageUrl: selectedVersion.imageUrl,
+                            prompt: selectedVersion.prompt || result.prompt,
+                            taskId: selectedVersion.taskId || result.taskId,
+                            creditsConsumed: selectedVersion.creditsConsumed ?? result.creditsConsumed,
+                          } : result;
                           const canOpenImage = isTranslationProject
-                            ? Boolean(result.sourceUrl || result.sourcePreviewUrl || result.imageUrl)
-                            : Boolean(result.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
+                            ? Boolean(displayResult.sourceUrl || displayResult.sourcePreviewUrl || displayResult.imageUrl)
+                            : Boolean(displayResult.imageUrl && displayResult.mediaType !== 'video' && !displayResult.videoUrl);
                           const promptExpanded = Boolean(expandedPrompts[result.id]);
                           const matchedPlan = findPlanByResult(result, index);
-                          const displayedPrompt = normalizeSchemeText(matchedPlan?.schemeContent || result.prompt || '无 prompt 记录');
+                          const displayedPrompt = getDisplayedResultPrompt(displayResult, matchedPlan);
                           const hideResultPromptInProjectCard = project.module === 'everything_replace'
                             && (project.subFeature === 'product_replace' || project.subFeature === 'background_replace')
                             && result.status !== 'error';
-                          const hasResult = Boolean(result.imageUrl || result.videoUrl);
+                          const hasResult = Boolean(displayResult.imageUrl || displayResult.videoUrl);
                           const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
                           const resultMeta: string[] = [];
-                          if (result.aspectRatio && result.aspectRatio !== 'auto') resultMeta.push(result.aspectRatio);
-                          if (result.createdAt) resultMeta.push(formatMonthDay(result.createdAt));
+                          if (displayResult.aspectRatio && displayResult.aspectRatio !== 'auto') resultMeta.push(displayResult.aspectRatio);
+                          if (displayResult.createdAt) resultMeta.push(formatMonthDay(displayResult.createdAt));
                           const regeneratePending = isRegeneratePending(result.id);
                           const mediaPanel = isTranslationProject ? (
                             <div className="grid h-[210px] w-full grid-cols-2 overflow-hidden">
                               <div className="relative border-r" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 70%, transparent)', background: 'var(--bg-base)' }}>
-                                {result.sourcePreviewUrl || result.sourceUrl ? (
+                                {displayResult.sourcePreviewUrl || displayResult.sourceUrl ? (
                                   <img
-                                    src={result.sourcePreviewUrl || result.sourceUrl}
-                                    alt={`${result.fileName || 'source'} original`}
+                                    src={displayResult.sourcePreviewUrl || displayResult.sourceUrl}
+                                    alt={`${displayResult.fileName || 'source'} original`}
                                     className="h-full w-full object-contain"
                                     loading="lazy"
                                     decoding="async"
@@ -1889,14 +1952,14 @@ const ProjectCard: React.FC<Props> = ({
                                 <div className="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-[10px] font-medium text-white">原图</div>
                               </div>
                               <div className="relative" style={{ background: 'var(--bg-base)' }}>
-                                {renderMedia(result, 'h-full w-full object-contain')}
+                                {renderMedia(displayResult, 'h-full w-full object-contain')}
                                 <div className="absolute left-2 top-2 rounded-full bg-black/45 px-2 py-1 text-[10px] font-medium text-white">结果</div>
                               </div>
                             </div>
                           ) : isVideoResult ? (
                             <div className="relative flex h-[300px] w-full items-center justify-center overflow-hidden bg-black sm:h-[340px]">
                               {hasResult ? (
-                                renderMedia(result, 'h-full w-full object-contain', { videoControls: true, videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowPlayOverlay: true })
+                                renderMedia(displayResult, 'h-full w-full object-contain', { videoControls: true, videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowPlayOverlay: true })
                               ) : (
                                 <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-[12px]" style={{ color: 'rgba(255,255,255,0.74)' }}>
                                   <Film size={20} />
@@ -1921,7 +1984,7 @@ const ProjectCard: React.FC<Props> = ({
                             </div>
                           ) : (
                             <div className="relative">
-                              {renderMedia(result, 'h-[210px] w-full object-contain')}
+                              {renderMedia(displayResult, 'h-[210px] w-full object-contain')}
                               <div className="absolute left-3 top-3 rounded-full bg-black/45 px-2 py-1 text-[10px] font-medium text-white">#{index + 1}</div>
                             </div>
                           );
@@ -1958,7 +2021,30 @@ const ProjectCard: React.FC<Props> = ({
                                       ))}
                                     </div>
                                   ) : null}
-                                  {renderResultUsageMeta(result)}
+                                  {renderResultUsageMeta(displayResult)}
+                                  {isBuyerShowProject && versionItems.length > 1 ? (
+                                    <div className="flex items-center justify-between gap-2 rounded-full px-2.5 py-1 text-[10px]" style={{ background: 'var(--bg-surface)', color: 'var(--text-tertiary)' }}>
+                                      <button
+                                        type="button"
+                                        className="inline-flex h-6 w-6 items-center justify-center rounded-full disabled:opacity-35"
+                                        style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+                                        disabled={selectedVersionIndex <= 0}
+                                        onClick={() => setStoryboardVersionIndexes((prev) => ({ ...prev, [result.id]: Math.max(0, selectedVersionIndex - 1) }))}
+                                      >
+                                        <ChevronLeft size={12} />
+                                      </button>
+                                      <span className="font-medium">版本 {selectedVersionIndex + 1}/{versionItems.length}</span>
+                                      <button
+                                        type="button"
+                                        className="inline-flex h-6 w-6 items-center justify-center rounded-full disabled:opacity-35"
+                                        style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+                                        disabled={selectedVersionIndex >= versionItems.length - 1}
+                                        onClick={() => setStoryboardVersionIndexes((prev) => ({ ...prev, [result.id]: Math.min(versionItems.length - 1, selectedVersionIndex + 1) }))}
+                                      >
+                                        <ChevronRight size={12} />
+                                      </button>
+                                    </div>
+                                  ) : null}
                                 {!hideResultPromptInProjectCard && (
                                 <div className="relative overflow-hidden rounded-[16px]" style={{ background: 'var(--bg-surface)' }}>
                                   <button
@@ -1981,7 +2067,7 @@ const ProjectCard: React.FC<Props> = ({
                                     <ResultActionButton
                                       icon={<Download size={12} />}
                                       label="下载"
-                                      onClick={() => handleDownloadSingle(result, index)}
+                                      onClick={() => handleDownloadSingle(displayResult, index)}
                                     />
                                     {isGeneratingResult && onCancelTask ? (
                                       <ResultActionButton
