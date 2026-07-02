@@ -90,7 +90,7 @@ test('local temporal activity returns a terminal result when the job was already
   assert.equal(store.logs.length, 0);
 });
 
-const createMysqlHarness = (initialJob) => {
+const createMysqlHarness = (initialJob, options = {}) => {
   const state = {
     job: {
       ...initialJob,
@@ -106,6 +106,7 @@ const createMysqlHarness = (initialJob) => {
     },
     attempts: [],
     events: [],
+    runningRows: options.runningRows || [],
   };
   const toCamel = (column) => ({
     user_id: 'userId',
@@ -132,8 +133,8 @@ const createMysqlHarness = (initialJob) => {
       if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1/.test(sql)) {
         return [[state.job]];
       }
-      if (/SELECT COUNT\(\*\) AS running_count/.test(sql)) {
-        return [[{ running_count: 0 }]];
+      if (/SELECT \*\s+FROM internal_jobs\s+WHERE status = 'running' AND user_id = \? AND id <> \?/.test(sql)) {
+        return [state.runningRows];
       }
       if (/UPDATE internal_jobs\s+SET status = 'running'/.test(sql)) {
         if (!['queued', 'retry_waiting', 'running'].includes(state.job.status)) {
@@ -292,6 +293,60 @@ test('mysql temporal activity executes a queued db job and writes attempts/event
   assert.ok(heartbeats.some((details) => details?.jobId === 'job-1' && details?.stage === 'running'));
   assert.ok(heartbeats.some((details) => details?.jobId === 'job-1' && details?.stage === 'provider_wait'));
   assert.ok(heartbeats.some((details) => details?.providerTaskId === 'provider-task-1'));
+});
+
+test('mysql temporal activity ignores stale running jobs when checking user concurrency', async () => {
+  const referenceTime = Date.now();
+  const { state, pool } = createMysqlHarness({
+    id: 'job-after-stale-running',
+    user_id: 'user-1',
+    module: 'buyer_show',
+    task_type: 'kie_chat',
+    provider: 'kie',
+    status: 'queued',
+    priority: 0,
+    payload_json: JSON.stringify({ traceId: 'trace-after-stale' }),
+    created_at: referenceTime,
+    updated_at: referenceTime,
+  }, {
+    runningRows: [
+      {
+        id: 'old-submitted-running',
+        user_id: 'user-1',
+        module: 'one_click',
+        task_type: 'kie_image',
+        provider: 'kie',
+        status: 'running',
+        provider_task_id: 'kie-old-task',
+        created_at: referenceTime - 8 * 60 * 60 * 1000,
+        updated_at: referenceTime - 7 * 60 * 60 * 1000,
+        started_at: referenceTime - 7 * 60 * 60 * 1000,
+      },
+    ],
+  });
+  let executeCalls = 0;
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    getMaxConcurrency: () => 1,
+    getSubmittedRunningStaleMs: () => 6 * 60 * 60 * 1000,
+    executeJob: async (_claimedJob, _signal, options) => {
+      executeCalls += 1;
+      await options.onProviderTaskId('provider-task-after-stale');
+      return { providerTaskId: 'provider-task-after-stale', result: { ok: true } };
+    },
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', username: 'user-1', displayName: 'User 1', role: 'staff', jobConcurrency: 1 }),
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: 'job-after-stale-running',
+    workflowId: 'meiao-job-after-stale-running',
+    runId: 'run-1',
+  });
+
+  assert.equal(executeCalls, 1);
+  assert.equal(result.status, 'succeeded');
+  assert.equal(state.job.status, 'succeeded');
 });
 
 test('mysql temporal activity releases concurrency while retrying transient asset upload failure', async () => {

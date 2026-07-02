@@ -89,6 +89,9 @@ export interface ShellPlanItem {
 export interface ShellWorkflowImageResult {
   imageUrl: string;
   prompt: string;
+  projectId?: string;
+  projectName?: string;
+  projectTaskCount?: number;
   taskId?: string;
   backendJobId?: string;
   creditsConsumed?: number;
@@ -573,6 +576,7 @@ const getBuyerShowScopedMaterials = (input: ShellGenerateInput, type: 'atmospher
   const list = input.materials[type] || [];
   const scoped = list.filter((item) => item.buyerShowSetIndex === setIndex);
   if (scoped.length > 0) return scoped;
+  if (list.some((item) => typeof item.buyerShowSetIndex === 'number')) return [];
   return list.filter((item) => typeof item.buyerShowSetIndex !== 'number');
 };
 
@@ -990,11 +994,18 @@ const buildBuyerShowImagePrompt = (
   prompt: string,
   productUrls: string[],
   refUrl: string | null,
+  setReference: ReturnType<typeof getBuyerShowSetReferenceUrls>,
   isFirstImage: boolean,
   includeModel: boolean,
   targetCountry: string,
 ) => {
   const realismPrompt = 'Real iPhone snapshot posted by an everyday user — casual, unretouched, no studio lighting, no professional composition. Slight lens distortion, imperfect framing, natural ambient light. The scene feels lived-in and genuine, not staged.';
+  const atmosphereLine = setReference.atmosphereUrls.length > 0
+    ? `\nAtmosphere reference images: ${setReference.atmosphereUrls.join(', ')}. Use them for environment style, lighting, color tone, props, and lived-in mood.`
+    : '';
+  const modelLine = includeModel && setReference.modelUrls.length > 0
+    ? `\nModel reference images: ${setReference.modelUrls.join(', ')}. Use them for face temperament, age range, posture, hand action, outfit vibe, and camera state. Do not ignore these model references when a person appears.`
+    : '';
   let refDescription = '';
   if (refUrl) {
     refDescription = isFirstImage
@@ -1006,7 +1017,7 @@ const buildBuyerShowImagePrompt = (
     : `No people. Product placed naturally in a real everyday environment.${refDescription}`;
   const productPreservation = 'PACKAGING CONSISTENCY FIRST: Keep the packaging identity exactly consistent with the uploaded product images. Strictly do not change the product\'s appearance details, size, structure, label information, packaging information, packaging layout, brand marks, color blocking, or any visible product elements. Do not redesign, rewrite, simplify, replace, or newly invent the package artwork or brand presentation. The product must appear at its true real-world physical size relative to the scene. REAL SCENE INTEGRATION: The product must feel naturally photographed inside the scene with correct contact, perspective, scale, shadows, and occlusion.';
   const materialLine = productUrls.length > 0 ? `\nProduct references: ${productUrls.join(', ')}` : '';
-  return `${realismPrompt}\n${baseRequirement}\n${productPreservation}${materialLine}\n\n${isFirstImage ? 'SCENE' : 'NEXT SHOT'}: ${prompt}`;
+  return `${realismPrompt}\n${baseRequirement}\n${productPreservation}${materialLine}${atmosphereLine}${modelLine}\n\n${isFirstImage ? 'SCENE' : 'NEXT SHOT'}: ${prompt}`;
 };
 
 const runBuyerShowConcurrencyPool = async <T,>(
@@ -1038,7 +1049,36 @@ type BuyerShowSetPlan = {
   tasks: BuyerShowGeneratedTask[];
   evaluation?: string;
   setBenchmarkUrl: string | null;
-  blocked: boolean;
+};
+
+const submitBuyerShowImageJob = async (
+  input: ShellGenerateInput,
+  imageUrls: string[],
+  prompt: string,
+  config: ModuleConfig,
+  taskMetadata: Record<string, unknown>,
+): Promise<{ jobId: string }> => {
+  const { job } = await createInternalJob({
+    module: AppModule.BUYER_SHOW,
+    taskType: 'kie_image',
+    provider: 'kie',
+    payload: {
+      imageUrls,
+      prompt,
+      ...taskMetadata,
+      model: config.model || 'gpt-image-2',
+      aspectRatio: config.aspectRatio === AspectRatio.AUTO ? 'auto' : config.aspectRatio,
+      resolutionMode: config.resolutionMode,
+      targetWidth: config.targetWidth || 0,
+      targetHeight: config.targetHeight || 0,
+      maxFileSize: config.maxFileSize || 2,
+      resolution: String(config.quality || '1K').toUpperCase(),
+      kieClientConfigPresent: Boolean(input.apiConfig?.kieApiKey),
+      requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    },
+    maxRetries: 2,
+  });
+  return { jobId: job.id };
 };
 
 export const runShellBuyerShowWorkflow = async (
@@ -1075,13 +1115,31 @@ export const runShellBuyerShowWorkflow = async (
   const results: ShellWorkflowImageResult[] = [];
   const plannedSets: BuyerShowSetPlan[] = [];
 
+  const BUYER_SHOW_PLAN_MAX_ATTEMPTS = 3;
+  const BUYER_SHOW_PLAN_RETRY_DELAYS_MS = [800, 1600];
+
   for (let setIndex = 0; setIndex < state.setCount; setIndex += 1) {
     const setReference = getBuyerShowSetReferenceUrls(input, setIndex, state.includeModel);
     const firstReferenceUrl = setReference.planningReferenceUrl || null;
-    const plan = await generateBuyerShowPrompts(productUrls, firstReferenceUrl, state, apiConfig, setIndex, input.signal);
-    if (plan.status === 'error' || plan.tasks.length === 0) {
-      throw new Error(plan.message || '买家秀策划失败');
+
+    // 单套策划带轻量重试：瞬时失败(上游 502 / 非 JSON / 空方案)时最多再试 2 次退避重试。
+    let plan: Awaited<ReturnType<typeof generateBuyerShowPrompts>> | null = null;
+    for (let attempt = 0; attempt < BUYER_SHOW_PLAN_MAX_ATTEMPTS; attempt += 1) {
+      if (input.signal.aborted) throw new Error('INTERRUPTED');
+      if (attempt > 0) {
+        const delayMs = BUYER_SHOW_PLAN_RETRY_DELAYS_MS[attempt - 1] || 1600;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (input.signal.aborted) throw new Error('INTERRUPTED');
+      }
+      plan = await generateBuyerShowPrompts(productUrls, firstReferenceUrl, state, apiConfig, setIndex, input.signal);
+      if (plan.status === 'success' && plan.tasks.length > 0) break;
     }
+
+    if (!plan || plan.status === 'error' || plan.tasks.length === 0) {
+      // 单套策划最终仍失败：跳过这一套，继续生成其它套，不再让一套失败拖垮整批。
+      continue;
+    }
+
     let tasks = [...plan.tasks].slice(0, state.imageCount);
     if (state.includeModel) {
       const firstFaceIndex = tasks.findIndex((task) => task.hasFace);
@@ -1096,110 +1154,91 @@ export const runShellBuyerShowWorkflow = async (
       tasks,
       evaluation: plan.evaluation,
       setBenchmarkUrl: firstReferenceUrl,
-      blocked: false,
     });
+  }
+
+  if (plannedSets.length === 0) {
+    // 仅当所有分套都失败时才整体报错，成功的套仍照常提交出图。
+    throw new Error('买家秀策划失败：所有分套都未能生成方案，请稍后重试。');
   }
 
   for (let taskIndex = 0; taskIndex < state.imageCount; taskIndex += 1) {
     const roundJobs = plannedSets
-      .filter((setPlan) => !setPlan.blocked && setPlan.tasks[taskIndex])
+      .filter((setPlan) => setPlan.tasks[taskIndex])
       .map((setPlan) => ({ setPlan, taskIndex, task: setPlan.tasks[taskIndex] }));
     await runBuyerShowConcurrencyPool(roundJobs, buyerShowConcurrency, async ({ setPlan, taskIndex, task }) => {
       const { setIndex, setReference } = setPlan;
       const isFirstImage = taskIndex === 0;
       const currentBatchIndex = setIndex * state.imageCount + taskIndex + 1;
+      const setBatchIndex = taskIndex + 1;
+      const rootProjectId = String(input.taskMetadata?.shellProjectId || '').trim();
+      const rootProjectName = String(input.taskMetadata?.shellProjectName || '').trim();
+      const setProjectId = state.setCount > 1 && rootProjectId
+        ? `${rootProjectId}-set-${setIndex + 1}`
+        : rootProjectId;
+      const setProjectName = state.setCount > 1 && rootProjectName
+        ? `${rootProjectName} · 第${setIndex + 1}套`
+        : rootProjectName;
       const prompt = buildBuyerShowImagePrompt(
         task.prompt,
         productUrls,
         isFirstImage ? setReference.planningReferenceUrl || null : setPlan.setBenchmarkUrl,
+        setReference,
         isFirstImage,
         state.includeModel,
         state.targetCountry,
       );
-      const publishPendingBuyerShowJob = (jobId: string, providerTaskId?: string) => {
-        input.onJobCreated?.(jobId, providerTaskId);
-        const backendJobId = String(jobId || '').trim() || undefined;
-        const visibleTaskId = String(providerTaskId || '').trim() || undefined;
-        const pendingItem: ShellWorkflowImageResult = {
-          imageUrl: '',
-          prompt,
-          taskId: visibleTaskId,
-          backendJobId,
-          model: getImageResultModelLabel(config),
-          aspectRatio: config.aspectRatio,
-          fileName: `方案${setIndex + 1}-图${taskIndex + 1}`,
-          status: 'generating',
-          error: visibleTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
-          message: visibleTaskId ? '任务已提交云端，正在生成...' : '任务正在提交云端...',
-          batchIndex: currentBatchIndex,
-        };
-        onItemCompleted?.(pendingItem, currentBatchIndex, total);
-      };
-      const generation = await processWithKieAi(
-        getBuyerShowSetGenerationInputs(productUrls, setReference, setPlan.setBenchmarkUrl, isFirstImage),
-        apiConfig,
-        config,
-        false,
-        input.signal,
-        prompt,
-        false,
-        undefined,
-        'main',
-        {
-          ...(input.taskMetadata || {}),
-          subFeature: input.subFeature || 'image',
-          batchIndex: currentBatchIndex,
-          batchCount: total,
-          setIndex: setIndex + 1,
-          setCount: state.setCount,
-          imageIndex: taskIndex + 1,
-          imageCount: state.imageCount,
-        },
-        publishPendingBuyerShowJob,
+      const imageInputUrls = getBuyerShowSetGenerationInputs(
+        productUrls,
+        setReference,
+        setPlan.setBenchmarkUrl,
+        isFirstImage,
       );
-      if (generation.status !== 'success' || !generation.imageUrl) {
-        if (generation.taskId) {
-          const pendingItem: ShellWorkflowImageResult = {
-            imageUrl: '',
-            prompt,
-            taskId: generation.taskId,
-            backendJobId: generation.backendJobId,
-            model: getImageResultModelLabel(config),
-            aspectRatio: config.aspectRatio,
-            fileName: `方案${setIndex + 1}-图${taskIndex + 1}`,
-            status: generation.status === 'generating' ? 'generating' : 'error',
-            error: generation.message || `买家秀第 ${setIndex + 1} 套第 ${taskIndex + 1} 张生成失败`,
-            message: generation.message,
-            errorCode: generation.errorCode,
-            batchIndex: currentBatchIndex,
-          };
-          results.push(pendingItem);
-          onItemCompleted?.(pendingItem, currentBatchIndex, total);
-          if (generation.status === 'generating') {
-            setPlan.blocked = true;
-            return;
-          }
-        }
-        throw new Error(generation.message || `买家秀第 ${setIndex + 1} 套第 ${taskIndex + 1} 张生成失败`);
-      }
-      if (isFirstImage) setPlan.setBenchmarkUrl = generation.imageUrl;
+      const taskMetadata = {
+        ...(input.taskMetadata || {}),
+        shellProjectId: setProjectId || input.taskMetadata?.shellProjectId,
+        shellProjectName: setProjectName || input.taskMetadata?.shellProjectName,
+        subFeature: input.subFeature || 'image',
+        batchIndex: setBatchIndex,
+        batchCount: state.imageCount,
+        buyerShowRootProjectId: rootProjectId || undefined,
+        buyerShowRootProjectName: rootProjectName || undefined,
+        buyerShowGlobalBatchIndex: currentBatchIndex,
+        buyerShowGlobalBatchCount: total,
+        setIndex: setIndex + 1,
+        setCount: state.setCount,
+        imageIndex: setBatchIndex,
+        imageCount: state.imageCount,
+      };
+      if (input.signal.aborted) throw new Error('INTERRUPTED');
+      const { jobId } = await submitBuyerShowImageJob(
+        input,
+        imageInputUrls,
+        prompt,
+        config,
+        taskMetadata,
+      );
       const item: ShellWorkflowImageResult = {
-        imageUrl: generation.imageUrl,
+        imageUrl: '',
+        projectId: setProjectId || undefined,
+        projectName: setProjectName || undefined,
+        projectTaskCount: state.imageCount,
         prompt: [
           `方案 ${setIndex + 1} / 图片 ${taskIndex + 1}`,
           task.style ? `风格：${task.style}` : '',
           setPlan.evaluation ? `评价文案：${setPlan.evaluation}` : '',
           prompt,
         ].filter(Boolean).join('\n\n'),
-        taskId: generation.taskId,
-        backendJobId: generation.backendJobId,
-        creditsConsumed: generation.creditsConsumed,
+        backendJobId: jobId,
         model: getImageResultModelLabel(config),
         aspectRatio: config.aspectRatio,
         fileName: `方案${setIndex + 1}-图${taskIndex + 1}`,
-        status: 'completed',
-        batchIndex: currentBatchIndex,
+        status: 'generating',
+        message: '任务已提交云端，正在生成...',
+        error: '任务已提交云端，正在生成...',
+        batchIndex: setBatchIndex,
       };
+      input.onJobCreated?.(jobId);
       results.push(item);
       onItemCompleted?.(item, currentBatchIndex, total);
     });

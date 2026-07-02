@@ -25,6 +25,14 @@ test('agent center keeps plaza, factory, and real studio workflows available', (
   assert.match(detailSource, /智能体工作室/);
 });
 
+test('agent factory stays focused on old agent management without nesting Smart Factory', () => {
+  assert.doesNotMatch(shellModuleSource, /import SmartFactoryPanel/);
+  assert.match(shellModuleSource, /useState<'overview' \| 'manager'>\('overview'\)/);
+  assert.doesNotMatch(shellModuleSource, /setFactoryView\('smart_factory'\)/);
+  assert.doesNotMatch(shellModuleSource, /<SmartFactoryPanel/);
+  assert.match(shellModuleSource, /<AgentCenterManager/);
+});
+
 test('agent edit wizard submits the draft version being edited instead of the selected published version', () => {
   assert.match(managerSource, /editingVersionId/);
   assert.match(managerSource, /setEditingVersionId\(editableVersion\.id\)/);

@@ -39,6 +39,8 @@ const getSessionToken = () => {
   }
 };
 
+export const hasStoredSessionToken = () => Boolean(getSessionToken());
+
 export const storeSessionToken = (token: string) => {
   localStorage.setItem(SESSION_TOKEN_KEY, token);
 };
@@ -558,6 +560,75 @@ export const broadcastSystemAnalysisModel = async () => {
   });
 };
 
+export type SystemModelProvider = {
+  provider: string;
+  displayName?: string;
+  baseUrl?: string;
+  customBaseUrlRequired?: boolean;
+  hasCredential?: boolean;
+  defaultModel?: string;
+  fallbackModel?: string;
+  capabilityCounts?: Record<string, number>;
+  models: Array<{ id: string; mode?: string; features?: string[] }>;
+};
+
+export type SystemModelProviderRegistry = {
+  providers: SystemModelProvider[];
+  defaultChatModel?: string;
+  defaultEmbeddingModel?: string;
+  defaultRerankModel?: string;
+  defaultImageModel?: string;
+  defaultVideoModel?: string;
+};
+
+export type SystemModelProviderPreset = {
+  provider: string;
+  displayName: string;
+  baseUrl?: string;
+  credentialRef?: string;
+  customBaseUrlRequired?: boolean;
+  models: Array<{ id: string; mode?: string; features?: string[] }>;
+};
+
+export type SystemModelProviderPayload = {
+  provider: string;
+  displayName?: string;
+  baseUrl?: string;
+  credentialRef?: string;
+  apiKey?: string;
+  modelsText?: string;
+  models?: Array<{ id: string; mode?: string; features?: string[] }> | string[];
+  defaultModel?: string;
+  fallbackModel?: string;
+};
+
+export const fetchSystemModelProviders = async () => {
+  return request<{ registry: SystemModelProviderRegistry; presets: SystemModelProviderPreset[] }>('/api/system/model-providers');
+};
+
+export const saveSystemModelProvider = async (payload: SystemModelProviderPayload) => {
+  return request<{ registry: SystemModelProviderRegistry }>('/api/system/model-providers', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const deleteSystemModelProvider = async (provider: string) => {
+  return request<{ registry: SystemModelProviderRegistry }>(`/api/system/model-providers/${encodeURIComponent(provider)}`, {
+    method: 'DELETE',
+    dedupe: false,
+  });
+};
+
+export const testSystemModelProvider = async (payload: SystemModelProviderPayload) => {
+  return request<{ ok: boolean; message: string }>('/api/system/model-providers/test', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
 export type DreaminaStatus = {
   installed: boolean;
   authenticated: boolean;
@@ -824,6 +895,387 @@ export const deleteUserAgentHistory = async (agentId: string) => {
     `/api/chat/agents/${encodeURIComponent(agentId)}/history`,
     { method: 'DELETE' }
   );
+};
+
+export type SmartFactoryPreviewResult = {
+  mode: 'preview' | 'production';
+  agentId?: string;
+  answer: string;
+  modelRequest: {
+    model?: Record<string, unknown>;
+    systemPrompt?: string;
+    messages?: Array<Record<string, unknown>>;
+    tools?: Array<Record<string, unknown>>;
+  };
+  toolResults: Array<{
+    name: string;
+    observation: string;
+    trace?: Record<string, unknown>;
+  }>;
+  citations?: Array<Record<string, unknown>>;
+  trace: Array<Record<string, unknown>>;
+  runLog?: Record<string, unknown>;
+};
+
+export type SmartFactoryConfig = {
+  mode: 'preview' | 'production';
+  modelProviders?: Array<{
+    provider: string;
+    displayName?: string;
+    baseUrl?: string;
+    defaultModel?: string;
+    fallbackModel?: string;
+    hasCredential?: boolean;
+    models: Array<{ id: string; mode?: string; features?: string[] }>;
+  }>;
+  models: Array<{
+    provider: string;
+    name: string;
+    mode?: string;
+    features?: string[];
+  }>;
+  knowledgeBases: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    status?: string;
+    documentCount: number;
+    readyDocumentCount?: number;
+    failedDocumentCount?: number;
+    chunkCount?: number;
+    retrievalPolicy?: { topK?: number; similarityThreshold?: number; maxContextChars?: number };
+    embeddingModel?: { provider: string; model: string } | null;
+    rerankModel?: { provider: string; model: string } | null;
+    documents?: Array<{
+      id: string;
+      title: string;
+      fileName?: string;
+      sourceType?: string;
+      preview?: string;
+      status?: string;
+      error?: string;
+      chunkStrategy?: 'general' | 'rule' | 'sop' | 'faq' | 'case';
+      maxChunkChars?: number;
+      chunkCount?: number;
+      updatedAt?: number;
+    }>;
+  }>;
+  tools: Array<{
+    name: string;
+    type: string;
+    description?: string;
+    authorized?: boolean;
+    riskLevel?: string;
+    executorRef?: string;
+    capability?: string;
+    icon?: string;
+    modelProvider?: string;
+    model?: string;
+    inputSchema?: Record<string, unknown>;
+  }>;
+  agents: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    prompt?: string;
+    enabled?: boolean;
+    status?: 'draft' | 'published';
+    publishedAt?: number;
+    model?: Record<string, unknown>;
+    knowledgeBaseIds?: string[];
+    toolNames?: string[];
+    variables?: Array<{ key: string; label?: string; type?: string; required?: boolean; defaultValue?: string }>;
+    metadataFilters?: Array<{ key: string; operator?: string; value?: string }>;
+    vision?: { enabled?: boolean; transferMethods?: string[]; imageFileSizeLimit?: number };
+  }>;
+  sessions: Array<{
+    id: string;
+    agentId: string;
+    title: string;
+    messageCount: number;
+    messages: Array<{
+      id?: string;
+      role: string;
+      content: string;
+      createdAt?: number;
+      trace?: Array<Record<string, unknown>>;
+    }>;
+  }>;
+  runLogs?: Array<Record<string, unknown>>;
+};
+
+export type SmartFactoryModelProviderPreset = {
+  provider: string;
+  displayName: string;
+  baseUrl?: string;
+  credentialRef?: string;
+  customBaseUrlRequired?: boolean;
+  models: Array<{ id: string; mode?: string; features?: string[] }>;
+};
+
+export type SmartFactoryConfigUpdate = Partial<{
+  modelProviders: Array<{
+    provider: string;
+    credentialRef?: string;
+    models: Array<{
+      id: string;
+      mode?: string;
+      features?: string[];
+    }>;
+  }>;
+  knowledgeBases: Array<{
+    id: string;
+    name: string;
+    documents?: Array<{
+      id: string;
+      title: string;
+      content: string;
+    }>;
+  }>;
+  tools: Array<{
+    name: string;
+    type: 'cli';
+    description?: string;
+    authorization_status?: string;
+    risk_level?: string;
+    invoke_metadata?: Record<string, unknown>;
+  }>;
+}>;
+
+export const fetchSmartFactoryConfig = async () => {
+  return request<{ config: SmartFactoryConfig }>('/api/smart-factory/config');
+};
+
+export const updateSmartFactoryConfig = async (smartFactory: SmartFactoryConfigUpdate) => {
+  return request<{ config: SmartFactoryConfig }>('/api/smart-factory/config', {
+    method: 'PATCH',
+    body: JSON.stringify({ smartFactory }),
+    dedupe: false,
+  });
+};
+
+export const sendSmartFactoryChat = async (payload: { agentId: string; sessionId: string; message: string }) => {
+  return request<{ result: SmartFactoryPreviewResult; config: SmartFactoryConfig }>('/api/smart-factory/chat', {
+    method: 'POST',
+    body: JSON.stringify({
+      agentId: payload.agentId,
+      sessionId: payload.sessionId,
+      message: payload.message,
+    }),
+    timeoutMs: 120_000,
+    dedupe: false,
+  });
+};
+
+export const addSmartFactoryKnowledgeDocument = async (payload: {
+  knowledgeBaseId: string;
+  document: {
+    id?: string;
+    title: string;
+    content: string;
+    fileName?: string;
+    sourceType?: string;
+    chunkStrategy?: 'general' | 'rule' | 'sop' | 'faq' | 'case';
+    maxChunkChars?: number;
+  };
+}) => {
+  return request<{ config: SmartFactoryConfig }>('/api/smart-factory/knowledge-documents', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const saveSmartFactoryModelProvider = async (payload: {
+  provider: string;
+  displayName?: string;
+  baseUrl?: string;
+  credentialRef?: string;
+  apiKey?: string;
+  modelsText?: string;
+  models?: Array<{ id: string; mode?: string; features?: string[] }> | string[];
+  defaultModel?: string;
+  fallbackModel?: string;
+}) => {
+  return request<{ config: SmartFactoryConfig }>('/api/smart-factory/model-providers', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const fetchSmartFactoryModelProviderPresets = async () => {
+  return request<{ presets: SmartFactoryModelProviderPreset[] }>('/api/smart-factory/model-provider-presets');
+};
+
+export const deleteSmartFactoryModelProvider = async (provider: string) => {
+  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/model-providers/${encodeURIComponent(provider)}`, {
+    method: 'DELETE',
+    dedupe: false,
+  });
+};
+
+export const testSmartFactoryModelProvider = async (payload: {
+  provider: string;
+  baseUrl?: string;
+  credentialRef?: string;
+  modelsText?: string;
+  models?: Array<{ id: string }> | string[];
+}) => {
+  return request<{ ok: boolean; message: string }>('/api/smart-factory/model-providers/test', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const createSmartFactoryAgent = async (payload: {
+  name: string;
+  description?: string;
+  prompt?: string;
+  model?: Record<string, unknown>;
+  knowledgeBaseIds?: string[];
+  toolNames?: string[];
+  variables?: Array<{ key: string; label?: string; type?: string; required?: boolean; defaultValue?: string }>;
+  metadataFilters?: Array<{ key: string; operator?: string; value?: string }>;
+  vision?: { enabled?: boolean; transferMethods?: string[]; imageFileSizeLimit?: number };
+}) => {
+  return request<{ config: SmartFactoryConfig }>('/api/smart-factory/agents', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const updateSmartFactoryAgent = async (agentId: string, payload: {
+  name?: string;
+  description?: string;
+  prompt?: string;
+  model?: Record<string, unknown>;
+  knowledgeBaseIds?: string[];
+  toolNames?: string[];
+  variables?: Array<{ key: string; label?: string; type?: string; required?: boolean; defaultValue?: string }>;
+  metadataFilters?: Array<{ key: string; operator?: string; value?: string }>;
+  vision?: { enabled?: boolean; transferMethods?: string[]; imageFileSizeLimit?: number };
+}) => {
+  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/agents/${encodeURIComponent(agentId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const publishSmartFactoryAgent = async (agentId: string) => {
+  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/agents/${encodeURIComponent(agentId)}/publish`, {
+    method: 'POST',
+    dedupe: false,
+  });
+};
+
+export const createSmartFactoryKnowledgeBase = async (payload: { name: string; description?: string }) => {
+  return request<{ config: SmartFactoryConfig }>('/api/smart-factory/knowledge-bases', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const updateSmartFactoryKnowledgeBase = async (
+  knowledgeBaseId: string,
+  payload: {
+    name?: string;
+    description?: string;
+    retrievalPolicy?: { topK?: number; similarityThreshold?: number; maxContextChars?: number };
+    embeddingModel?: { provider: string; model: string };
+    rerankModel?: { provider: string; model: string };
+  },
+) => {
+  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const deleteSmartFactoryKnowledgeBase = async (knowledgeBaseId: string) => {
+  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/knowledge-bases/${encodeURIComponent(knowledgeBaseId)}`, {
+    method: 'DELETE',
+    dedupe: false,
+  });
+};
+
+export const retrainSmartFactoryKnowledgeDocument = async (
+  documentId: string,
+  payload: { title?: string; content?: string; chunkStrategy?: 'general' | 'rule' | 'sop' | 'faq' | 'case'; maxChunkChars?: number },
+) => {
+  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/knowledge-documents/${encodeURIComponent(documentId)}/retrain`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const deleteSmartFactoryKnowledgeDocument = async (documentId: string) => {
+  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/knowledge-documents/${encodeURIComponent(documentId)}`, {
+    method: 'DELETE',
+    dedupe: false,
+  });
+};
+
+export const searchSmartFactoryKnowledge = async (payload: {
+  query: string;
+  knowledgeBaseIds?: string[];
+  retrievalPolicy?: { topK?: number; similarityThreshold?: number; maxContextChars?: number };
+}) => {
+  return request<{ search: { query: string; results: Array<Record<string, unknown>> } }>('/api/smart-factory/knowledge-search', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const saveSmartFactoryTool = async (payload: {
+  name: string;
+  type?: 'cli' | 'builtin';
+  description?: string;
+  executorRef?: string;
+  riskLevel?: string;
+  capability?: string;
+  icon?: string;
+  modelProvider?: string;
+  model?: string;
+  inputSchemaText?: string;
+  inputSchema?: Record<string, unknown>;
+}) => {
+  return request<{ config: SmartFactoryConfig }>('/api/smart-factory/tools', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const testSmartFactoryTool = async (toolName: string, payload: Record<string, unknown>) => {
+  return request<{ ok: boolean; toolName: string; observation: string }>(`/api/smart-factory/tools/${encodeURIComponent(toolName)}/test`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const deleteSmartFactoryTool = async (toolName: string) => {
+  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/tools/${encodeURIComponent(toolName)}`, {
+    method: 'DELETE',
+    dedupe: false,
+  });
+};
+
+export const runSmartFactoryPreviewTurn = async (payload: { message: string }) => {
+  return request<{ result: SmartFactoryPreviewResult }>('/api/smart-factory/preview-turn', {
+    method: 'POST',
+    body: JSON.stringify({ message: payload.message }),
+    timeoutMs: 120_000,
+    dedupe: false,
+  });
 };
 
 export const fetchChatMessages = async (sessionId: string) => {
@@ -1200,5 +1652,457 @@ export const createStudioTestSession = async (agentId: string, versionId: string
   return request<{ session: AgentChatSession }>('/api/studio/test/sessions', {
     method: 'POST',
     body: JSON.stringify({ agentId, versionId }),
+  });
+};
+
+export type ChatwootConnectionPayload = {
+  baseUrl: string;
+  accountId: string;
+  inboxId: string;
+  apiToken: string;
+};
+
+export type ChatwootConversationSummary = {
+  id: string;
+  status: string;
+  inboxId: string;
+  customerName: string;
+  customerPhone: string;
+  lastMessage: string;
+  updatedAt: number;
+};
+
+export type ChatwootMessageSummary = {
+  id: string;
+  role: 'customer' | 'agent' | 'system';
+  senderName: string;
+  content: string;
+  createdAt: number;
+  private: boolean;
+  attachments?: Array<{
+    id: string;
+    fileType: string;
+    url: string;
+  }>;
+};
+
+export type ChatwootLabelSummary = {
+  id: string;
+  title: string;
+  color: string;
+  description: string;
+};
+
+export type ChatwootAgentSummary = {
+  id: string;
+  name: string;
+  email: string;
+  availability: string;
+};
+
+export type ChatwootTeamSummary = {
+  id: string;
+  name: string;
+  description: string;
+};
+
+export type ChatwootAssignmentSummary = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+export type ChatwootCannedResponseSummary = {
+  id: string;
+  shortCode: string;
+  content: string;
+};
+
+export type ChatwootAutomationRuleSummary = {
+  id: string;
+  name: string;
+  eventName: string;
+  active: boolean;
+};
+
+export type ChatwootContactSummary = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  lastActivityAt: number;
+  customAttributes?: Record<string, unknown>;
+  additionalAttributes?: Record<string, unknown>;
+};
+
+export type ChatwootContactNoteSummary = {
+  id: string;
+  content: string;
+  authorName: string;
+  createdAt: number;
+};
+
+export type ChatwootMacroSummary = {
+  id: string;
+  name: string;
+  visibility: string;
+  actions: Array<Record<string, unknown>>;
+};
+
+export type ChatwootCampaignSummary = {
+  id: string;
+  title: string;
+  message: string;
+  enabled: boolean;
+};
+
+export type ChatwootWebhookSummary = {
+  id: string;
+  name: string;
+  url: string;
+  subscriptions: string[];
+};
+
+export type ChatwootInboxSummary = {
+  id: string;
+  name: string;
+  channelType: string;
+  enableAutoAssignment: boolean;
+};
+
+export type ChatwootReportSummary = Record<string, unknown>;
+
+export const testChatwootConnection = async (payload: ChatwootConnectionPayload) => {
+  return request<{ ok: boolean; inbox: Record<string, unknown> }>('/api/chatwoot/test-connection', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootConversationMessages = async (payload: ChatwootConnectionPayload & { conversationId: string }) => {
+  return request<{ messages: ChatwootMessageSummary[] }>('/api/chatwoot/messages', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const sendChatwootConversationMessage = async (payload: ChatwootConnectionPayload & { conversationId: string; content: string }) => {
+  return request<{ message: ChatwootMessageSummary }>('/api/chatwoot/send-message', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const sendChatwootConversationAttachment = async (payload: ChatwootConnectionPayload & { conversationId: string; content?: string; file: File; fileName?: string }) => {
+  const token = getSessionToken();
+  const normalizedFileName = ensureUploadFileName(payload.fileName || payload.file.name || 'attachment.bin', payload.file.type || '');
+  const formData = new FormData();
+  formData.append('baseUrl', payload.baseUrl);
+  formData.append('accountId', payload.accountId);
+  formData.append('inboxId', payload.inboxId);
+  formData.append('apiToken', payload.apiToken);
+  formData.append('conversationId', payload.conversationId);
+  formData.append('content', payload.content || '');
+  formData.append('fileName', normalizedFileName);
+  formData.append('file', payload.file, normalizedFileName);
+
+  const response = await fetchWithTimeout('/api/chatwoot/send-attachment', {
+    method: 'POST',
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    body: formData,
+    timeoutMs: 120_000,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw classifyError(response.status, data.message || '');
+  }
+  return data as { message: ChatwootMessageSummary };
+};
+
+export const fetchChatwootConversations = async (payload: ChatwootConnectionPayload) => {
+  return request<{ conversations: ChatwootConversationSummary[] }>('/api/chatwoot/conversations', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const updateChatwootConversationStatus = async (payload: ChatwootConnectionPayload & { conversationId: string; status: 'open' | 'pending' | 'resolved' }) => {
+  return request<{ conversation: { id: string; status: string } }>('/api/chatwoot/conversation-status', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const createChatwootInternalNote = async (payload: ChatwootConnectionPayload & { conversationId: string; content: string }) => {
+  return request<{ message: ChatwootMessageSummary }>('/api/chatwoot/internal-note', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootLabels = async (payload: ChatwootConnectionPayload) => {
+  return request<{ labels: ChatwootLabelSummary[] }>('/api/chatwoot/labels', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const updateChatwootConversationLabels = async (payload: ChatwootConnectionPayload & { conversationId: string; labels: string[] }) => {
+  return request<{ labels: string[] }>('/api/chatwoot/conversation-labels', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootAssignableAgents = async (payload: ChatwootConnectionPayload) => {
+  return request<{ agents: ChatwootAgentSummary[] }>('/api/chatwoot/assignable-agents', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootTeams = async (payload: ChatwootConnectionPayload) => {
+  return request<{ teams: ChatwootTeamSummary[] }>('/api/chatwoot/teams', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const assignChatwootConversation = async (payload: ChatwootConnectionPayload & { conversationId: string; assigneeId?: string; teamId?: string }) => {
+  return request<{ assignment: ChatwootAssignmentSummary }>('/api/chatwoot/assign-conversation', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootCannedResponses = async (payload: ChatwootConnectionPayload) => {
+  return request<{ cannedResponses: ChatwootCannedResponseSummary[] }>('/api/chatwoot/canned-responses', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const createChatwootCannedResponse = async (payload: ChatwootConnectionPayload & { shortCode: string; content: string }) => {
+  return request<{ cannedResponse: ChatwootCannedResponseSummary }>('/api/chatwoot/canned-response', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootAutomationRules = async (payload: ChatwootConnectionPayload) => {
+  return request<{ automationRules: ChatwootAutomationRuleSummary[] }>('/api/chatwoot/automation-rules', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootContacts = async (payload: ChatwootConnectionPayload) => {
+  return request<{ contacts: ChatwootContactSummary[] }>('/api/chatwoot/contacts', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootContactNotes = async (payload: ChatwootConnectionPayload & { contactId: string }) => {
+  return request<{ notes: ChatwootContactNoteSummary[] }>('/api/chatwoot/contact-notes', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const createChatwootContactNote = async (payload: ChatwootConnectionPayload & { contactId: string; content: string }) => {
+  return request<{ note: ChatwootContactNoteSummary }>('/api/chatwoot/contact-note', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const updateChatwootContact = async (payload: ChatwootConnectionPayload & {
+  contactId: string;
+  name?: string;
+  email?: string;
+  phone?: string;
+  customAttributes?: Record<string, unknown>;
+  additionalAttributes?: Record<string, unknown>;
+}) => {
+  return request<{ contact: ChatwootContactSummary }>('/api/chatwoot/update-contact', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootContactConversations = async (payload: ChatwootConnectionPayload & { contactId: string }) => {
+  return request<{ conversations: ChatwootConversationSummary[] }>('/api/chatwoot/contact-conversations', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const deleteChatwootConversationMessage = async (payload: ChatwootConnectionPayload & { conversationId: string; messageId: string }) => {
+  return request<{ ok: boolean }>('/api/chatwoot/delete-message', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const retryChatwootConversationMessage = async (payload: ChatwootConnectionPayload & { conversationId: string; messageId: string }) => {
+  return request<{ ok: boolean }>('/api/chatwoot/retry-message', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const translateChatwootConversationMessage = async (payload: ChatwootConnectionPayload & { conversationId: string; messageId: string; targetLanguage: string }) => {
+  return request<{ translation: { content: string } }>('/api/chatwoot/translate-message', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootMacros = async (payload: ChatwootConnectionPayload) => {
+  return request<{ macros: ChatwootMacroSummary[] }>('/api/chatwoot/macros', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const createChatwootMacro = async (payload: ChatwootConnectionPayload & { name: string; visibility?: string; actions: Array<{ actionName: string; actionParams: string[] }> }) => {
+  return request<{ macro: ChatwootMacroSummary }>('/api/chatwoot/macro', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const executeChatwootMacro = async (payload: ChatwootConnectionPayload & { macroId: string; conversationIds: string[] }) => {
+  return request<{ ok: boolean }>('/api/chatwoot/execute-macro', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootCampaigns = async (payload: ChatwootConnectionPayload) => {
+  return request<{ campaigns: ChatwootCampaignSummary[] }>('/api/chatwoot/campaigns', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const createChatwootCampaign = async (payload: ChatwootConnectionPayload & {
+  title: string;
+  message: string;
+  inboxId?: string;
+  enabled?: boolean;
+}) => {
+  return request<{ campaign: ChatwootCampaignSummary }>('/api/chatwoot/campaign', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootWebhooks = async (payload: ChatwootConnectionPayload) => {
+  return request<{ webhooks: ChatwootWebhookSummary[] }>('/api/chatwoot/webhooks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const createChatwootWebhook = async (payload: ChatwootConnectionPayload & { name: string; url: string; subscriptions: string[] }) => {
+  return request<{ webhook: ChatwootWebhookSummary }>('/api/chatwoot/webhook', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const updateChatwootWebhook = async (payload: ChatwootConnectionPayload & { webhookId: string; name: string; url: string; subscriptions: string[] }) => {
+  return request<{ webhook: ChatwootWebhookSummary }>('/api/chatwoot/update-webhook', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootInboxes = async (payload: ChatwootConnectionPayload) => {
+  return request<{ inboxes: ChatwootInboxSummary[] }>('/api/chatwoot/inboxes', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const updateChatwootInbox = async (payload: ChatwootConnectionPayload & { targetInboxId?: string; name?: string; enableAutoAssignment?: boolean }) => {
+  return request<{ inbox: ChatwootInboxSummary }>('/api/chatwoot/update-inbox', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
+  });
+};
+
+export const fetchChatwootReportsSummary = async (payload: ChatwootConnectionPayload & { since?: number; until?: number }) => {
+  return request<{ summary: ChatwootReportSummary }>('/api/chatwoot/reports-summary', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+    timeoutMs: 30_000,
+    dedupe: false,
   });
 };

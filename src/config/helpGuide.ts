@@ -8,6 +8,8 @@ export interface GuideEntry {
 
 export const GUIDE_MODULES: AppModule[] = [
   AppModule.AGENT_CENTER,
+  AppModule.AI_CUSTOMER_SERVICE,
+  AppModule.SMART_FACTORY,
   AppModule.ONE_CLICK,
   AppModule.TRANSLATION,
   AppModule.BUYER_SHOW,
@@ -35,6 +37,36 @@ export const HELP_CONTENT: Record<AppModule, GuideEntry> = {
       '发布前先在工作室验证关键问题，避免把未验证草稿直接推到线上',
       '知识库更适合放稳定规则、流程和资料，临时问答适合放在聊天里处理',
       '生图模式下支持图片输入，但 GPT Image 2 生成会明显更慢',
+    ],
+  },
+  [AppModule.AI_CUSTOMER_SERVICE]: {
+    summary:
+      'AI客服用于接入 Chatwoot 客服中台，并在梅奥工作台内测试会话、AI建议回复、人工接管和话术策略。',
+    steps: [
+      '填写 Chatwoot 服务地址、Website Token、Inbox ID 和 API Token',
+      '用测试会话检查客户问题、订单上下文和知识库话术是否能组织成建议回复',
+      '低风险高频问题可先人工确认后发送，复杂售后问题切换到人工接管',
+      '需要查看完整客服后台时，打开 Chatwoot 控制台继续处理',
+    ],
+    tips: [
+      '当前入口先用于测试和页面适配，不直接连接淘宝、抖店、小红书或拼多多消息 API',
+      '平台消息自动收发要走官方 API 或 ISV 授权，不能只靠前端页面完成',
+      'API Token 只用于本地测试填写，正式落地前应改成服务端托管和权限隔离',
+    ],
+  },
+  [AppModule.SMART_FACTORY]: {
+    summary:
+      '智能工厂用于统一配置模型中转、知识库 RAG 和工具/CLI 调用，是搭建可复用智能体能力与工作流的主工作台。',
+    steps: [
+      '进入智能工厂查看当前可用模型、知识库和工具',
+      '先用试运行验证模型请求、知识库检索和工具调用链路',
+      '根据运行轨迹确认调用了哪个模型、哪个知识库和哪个工具',
+      '配置稳定后，再把能力组合成面向业务的智能体或工作流',
+    ],
+    tips: [
+      '模型、知识库和工具要分开管理，智能体只引用这些能力',
+      '工具和 CLI 调用必须走白名单，避免对外部系统产生不可控操作',
+      '知识库适合沉淀稳定流程和规则，不适合放一次性的临时聊天上下文',
     ],
   },
   [AppModule.ONE_CLICK]: {

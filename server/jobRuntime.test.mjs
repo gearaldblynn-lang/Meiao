@@ -89,6 +89,19 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
     'gpt-image-2-secondary',
     'nano-banana-2',
   ]);
+  assert.deepEqual(config.agentModels.video.map((item) => item.id), [
+    'sora-2-pro-storyboard',
+    'veo3_fast',
+    'bytedance/seedance-2-fast',
+  ]);
+  const seedance = config.agentModels.video.find((item) => item.id === 'bytedance/seedance-2-fast');
+  assert.equal(seedance?.provider, 'kie');
+  assert.equal(seedance?.supportsAsyncTask, true);
+  assert.equal(seedance?.supportsStreaming, false);
+  assert.equal(seedance?.supportsCacheHit, false);
+  assert.equal(seedance?.supportsReferenceImage, true);
+  assert.equal(seedance?.supportsReferenceVideo, true);
+  assert.equal(seedance?.supportsAudioInput, true);
   assert.equal(config.systemSettings.videoAnalysisModel, '');
   assert.equal(config.systemSettings.effectiveVideoAnalysisModel, 'gemini-3-flash-openai');
   assert.equal(config.systemSettings.videoAnalysisReasoningLevel, 'high');

@@ -139,6 +139,7 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   });
   const [expandedUserId, setExpandedUserId] = useState('');
   const [passwordDraft, setPasswordDraft] = useState('');
+  const [concurrencyDrafts, setConcurrencyDrafts] = useState<Record<string, string>>({});
   const [creditDrafts, setCreditDrafts] = useState<Record<string, string>>({});
 
   const [logs, setLogs] = useState<InternalLogEntry[]>([]);
@@ -265,6 +266,13 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   }, [userSearch, users.length]);
 
   useEffect(() => {
+    setConcurrencyDrafts((current) => {
+      const next = { ...current };
+      for (const user of users) {
+        if (next[user.id] === undefined) next[user.id] = String(user.jobConcurrency ?? 1);
+      }
+      return next;
+    });
     setCreditDrafts((current) => {
       const next = { ...current };
       for (const user of users) {
@@ -649,45 +657,97 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                     </div>
                   </div>
                   {expandedUserId === user.id && (
-                    <div className="mt-3 grid gap-2 rounded-2xl border p-3 sm:grid-cols-[120px_1fr_auto]" style={{ background: 'var(--bg-base)', borderColor: 'var(--border-subtle)' }}>
-                      <SelectField label="角色" value={user.role} onChange={(role) => void updateUser(user, { role: role as 'admin' | 'staff' })} options={[{ value: 'staff', label: '员工' }, { value: 'admin', label: '管理员' }]} />
-                      <TextField label="新密码" value={passwordDraft} onChange={setPasswordDraft} type="password" />
-                      <button type="button" disabled={!passwordDraft.trim()} className="btn-primary self-end px-3 py-2 text-[12px]" onClick={() => void updateUser(user, { password: passwordDraft.trim() })}><KeyRound size={13} /> 重置</button>
-                      <button
-                        type="button"
-                        disabled={user.role === 'admin'}
-                        className="rounded-2xl border px-3 py-2 text-left text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-70 sm:col-span-3"
-                        onClick={() => {
-                          const current = normalizeFeaturePermissions(user.featurePermissions);
-                          void updateUser(user, { featurePermissions: { ...current, videoGeneration: !current.videoGeneration } });
-                        }}
-                        style={{
-                          background: canUseVideoGeneration(user) ? 'var(--accent-soft)' : 'var(--bg-input)',
-                          borderColor: 'var(--border-subtle)',
-                          color: canUseVideoGeneration(user) ? 'var(--accent)' : 'var(--text-secondary)',
-                        }}
-                      >
-                        短视频生成 · {user.role === 'admin' ? '管理员默认开放' : canUseVideoGeneration(user) ? '已开放' : '未开放'}
-                      </button>
-                      <SelectField
-                        label="积分限制"
-                        value={user.creditLimitMode || 'unlimited'}
-                        onChange={(mode) => void updateUser(user, { creditLimitMode: mode as 'unlimited' | 'limited' })}
-                        options={[{ value: 'unlimited', label: '不设限' }, { value: 'limited', label: '有限积分' }]}
-                      />
-                      <TextField
-                        label="总积分"
-                        value={creditDrafts[user.id] ?? String(user.creditBalance ?? 0)}
-                        onChange={(value) => setCreditDrafts((current) => ({ ...current, [user.id]: value }))}
-                        type="number"
-                      />
-                      <button
-                        type="button"
-                        className="btn-secondary self-end px-3 py-2 text-[12px]"
-                        onClick={() => void updateUser(user, { creditBalance: Math.max(0, Number(creditDrafts[user.id] ?? user.creditBalance ?? 0)) })}
-                      >
-                        保存积分
-                      </button>
+                    <div className="mt-3 rounded-[22px] border px-3 py-1.5" style={{ background: 'var(--bg-base)', borderColor: 'var(--border-subtle)' }}>
+                      <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+                        <div className="grid items-center gap-2 py-1.5 lg:grid-cols-[52px_minmax(0,1fr)]">
+                          <p className="text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>权限</p>
+                          <div className="grid gap-2 sm:grid-cols-[120px_minmax(0,1fr)]">
+                            <PopoverSelect
+                              value={user.role}
+                              onChange={(role) => void updateUser(user, { role: role as 'admin' | 'staff' })}
+                              options={[{ value: 'staff', label: '员工' }, { value: 'admin', label: '管理员' }]}
+                              buttonClassName="h-9 rounded-2xl px-3 text-[12px] font-medium"
+                            />
+                            <button
+                              type="button"
+                              disabled={user.role === 'admin'}
+                              className="flex h-9 w-full items-center justify-between rounded-2xl border px-3 text-left text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-70"
+                              onClick={() => {
+                                const current = normalizeFeaturePermissions(user.featurePermissions);
+                                void updateUser(user, { featurePermissions: { ...current, videoGeneration: !current.videoGeneration } });
+                              }}
+                              style={{
+                                background: canUseVideoGeneration(user) ? 'var(--accent-soft)' : 'var(--bg-input)',
+                                borderColor: 'var(--border-subtle)',
+                                color: canUseVideoGeneration(user) ? 'var(--accent)' : 'var(--text-secondary)',
+                              }}
+                            >
+                              <span>短视频生成</span>
+                              <span>{user.role === 'admin' ? '默认开放' : canUseVideoGeneration(user) ? '已开放' : '未开放'}</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="grid items-center gap-2 py-1.5 lg:grid-cols-[52px_minmax(0,1fr)]">
+                          <p className="text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>额度</p>
+                          <div className="grid gap-1.5">
+                            <div className="grid items-center gap-2 sm:grid-cols-[40px_minmax(0,1fr)_auto]">
+                              <span className="text-[11px] font-medium" style={{ color: 'var(--text-tertiary)' }}>并发</span>
+                              <input
+                                value={concurrencyDrafts[user.id] ?? String(user.jobConcurrency ?? 1)}
+                                type="number"
+                                onChange={(event) => setConcurrencyDrafts((current) => ({ ...current, [user.id]: event.target.value }))}
+                                className="h-9 w-full rounded-2xl border bg-transparent px-3 text-[12px] font-medium outline-none"
+                                style={{ background: 'var(--bg-input)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+                              />
+                              <button
+                                type="button"
+                                className="btn-secondary h-9 px-3 py-0 text-[12px]"
+                                onClick={() => void updateUser(user, { jobConcurrency: Math.max(1, Number(concurrencyDrafts[user.id] ?? user.jobConcurrency ?? 1)) })}
+                              >
+                                保存
+                              </button>
+                            </div>
+                            <div className="grid items-center gap-2 sm:grid-cols-[40px_minmax(96px,1fr)_minmax(64px,0.7fr)_auto]">
+                              <span className="text-[11px] font-medium" style={{ color: 'var(--text-tertiary)' }}>积分</span>
+                              <PopoverSelect
+                                value={user.creditLimitMode || 'unlimited'}
+                                onChange={(mode) => void updateUser(user, { creditLimitMode: mode as 'unlimited' | 'limited' })}
+                                options={[{ value: 'unlimited', label: '不设限' }, { value: 'limited', label: '有限积分' }]}
+                                buttonClassName="h-9 rounded-2xl px-3 text-[12px] font-medium"
+                              />
+                              <input
+                                value={creditDrafts[user.id] ?? String(user.creditBalance ?? 0)}
+                                type="number"
+                                onChange={(event) => setCreditDrafts((current) => ({ ...current, [user.id]: event.target.value }))}
+                                className="h-9 w-full rounded-2xl border bg-transparent px-3 text-[12px] font-medium outline-none"
+                                style={{ background: 'var(--bg-input)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+                              />
+                              <button
+                                type="button"
+                                className="btn-secondary h-9 px-3 py-0 text-[12px]"
+                                onClick={() => void updateUser(user, { creditBalance: Math.max(0, Number(creditDrafts[user.id] ?? user.creditBalance ?? 0)) })}
+                              >
+                                保存
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid items-center gap-2 py-1.5 lg:grid-cols-[52px_minmax(0,1fr)]">
+                          <p className="text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>安全</p>
+                          <div className="grid items-center gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                            <input
+                              value={passwordDraft}
+                              type="password"
+                              onChange={(event) => setPasswordDraft(event.target.value)}
+                              className="h-9 w-full rounded-2xl border bg-transparent px-3 text-[12px] font-medium outline-none"
+                              style={{ background: 'var(--bg-input)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+                            />
+                            <button type="button" disabled={!passwordDraft.trim()} className="btn-primary h-9 px-3 py-0 text-[12px]" onClick={() => void updateUser(user, { password: passwordDraft.trim() })}><KeyRound size={13} /> 重置</button>
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>

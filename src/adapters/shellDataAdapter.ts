@@ -1234,6 +1234,53 @@ const removePlanningJobPendingPlaceholders = (
   };
 };
 
+const getBuyerShowSetProjectId = (job: InternalJob) => {
+  const payload = (job.payload || {}) as Record<string, unknown>;
+  const rootProjectId = String(payload.shellProjectId || '').trim();
+  if (!rootProjectId) return '';
+  const setIndex = Number(payload.setIndex || 0) || 0;
+  const setCount = Number(payload.setCount || 0) || 0;
+  if (setCount > 1 && setIndex > 0 && !rootProjectId.endsWith(`-set-${setIndex}`)) {
+    return `${rootProjectId}-set-${setIndex}`;
+  }
+  return rootProjectId;
+};
+
+const isSyntheticBuyerShowSetProject = (job: InternalJob) => {
+  const payload = (job.payload || {}) as Record<string, unknown>;
+  const rootProjectId = String(payload.shellProjectId || '').trim();
+  const setIndex = Number(payload.setIndex || 0) || 0;
+  const setCount = Number(payload.setCount || 0) || 0;
+  return setCount > 1 && setIndex > 0 && rootProjectId && !rootProjectId.endsWith(`-set-${setIndex}`);
+};
+
+const getBuyerShowSetBatchIndex = (job: InternalJob, fallback: number) => {
+  const payload = (job.payload || {}) as Record<string, unknown>;
+  if (isSyntheticBuyerShowSetProject(job)) {
+    return Number(payload.imageIndex || 0) || fallback;
+  }
+  return Number(payload.batchIndex || payload.imageIndex || 0) || fallback;
+};
+
+const getBuyerShowSetTaskCount = (job: InternalJob) => {
+  const payload = (job.payload || {}) as Record<string, unknown>;
+  if (isSyntheticBuyerShowSetProject(job)) {
+    return Number(payload.imageCount || 0) || 0;
+  }
+  return Number(payload.batchCount || payload.imageCount || 0) || 0;
+};
+
+const getBuyerShowSetProjectName = (job: InternalJob, fallback = '') => {
+  const payload = (job.payload || {}) as Record<string, unknown>;
+  const baseName = String(payload.shellProjectName || fallback || '').trim();
+  const setIndex = Number(payload.setIndex || 0) || 0;
+  const setCount = Number(payload.setCount || 0) || 0;
+  if (setCount > 1 && setIndex > 0 && baseName && !baseName.includes(`第${setIndex}套`)) {
+    return `${baseName} · 第${setIndex}套`;
+  }
+  return baseName;
+};
+
 const mapJobs = (
   jobs: InternalJob[] = [],
   persistedProjects: ShellProjectData[] = [],
@@ -1245,6 +1292,8 @@ const mapJobs = (
   const persistedJobKeys = collectPersistedProjectJobKeys(persistedProjects);
   const groupedEverythingReplaceJobIds = new Set<string>();
   const everythingReplaceGroups = new Map<string, InternalJob[]>();
+  const groupedBuyerShowJobIds = new Set<string>();
+  const buyerShowGroups = new Map<string, InternalJob[]>();
   const groupedTranslationJobIds = new Set<string>();
   const translationGroups = new Map<string, InternalJob[]>();
   const groupedOneClickPlanningJobIds = new Set<string>();
@@ -1260,6 +1309,18 @@ const mapJobs = (
     const bucket = everythingReplaceGroups.get(payloadProjectId) || [];
     bucket.push(job);
     everythingReplaceGroups.set(payloadProjectId, bucket);
+  });
+
+  jobs.forEach((job) => {
+    const jobId = String(job?.id || '').trim();
+    if (!jobId || hiddenJobIds.has(jobId)) return;
+    const module = toModule(job.module);
+    if (module !== MODULE_VALUES.BUYER_SHOW || !String(job.taskType || '').includes('image')) return;
+    const payloadProjectId = getBuyerShowSetProjectId(job);
+    if (!payloadProjectId) return;
+    const bucket = buyerShowGroups.get(payloadProjectId) || [];
+    bucket.push(job);
+    buyerShowGroups.set(payloadProjectId, bucket);
   });
 
   jobs.forEach((job) => {
@@ -1369,8 +1430,121 @@ const mapJobs = (
           subFeature,
           backendJobId: String(job.id || ''),
         });
-	      });
+      });
 	  });
+
+  buyerShowGroups.forEach((groupJobs, shellProjectId) => {
+    const sortedJobs = [...groupJobs].sort((a, b) => {
+      const aBatch = getBuyerShowSetBatchIndex(a, 0);
+      const bBatch = getBuyerShowSetBatchIndex(b, 0);
+      if (aBatch > 0 && bBatch > 0 && aBatch !== bBatch) return aBatch - bBatch;
+      return Number(a.createdAt || 0) - Number(b.createdAt || 0);
+    });
+    sortedJobs.forEach((job) => groupedBuyerShowJobIds.add(String(job.id || '').trim()));
+    const firstJob = sortedJobs[0];
+    const matchedProject = persistedProjects.find((project) => project.id === shellProjectId);
+    const createdAt = toCreatedMs(matchedProject?.createdAt || firstJob?.createdAt || firstJob?.updatedAt || Date.now());
+    const subFeature = normalizeJobSubFeature(MODULE_VALUES.BUYER_SHOW, firstJob?.taskType, firstJob?.payload || {});
+    let results: ShellGeneratedResult[] = sortedJobs.map((job, index) => {
+      const payload = (job.payload || {}) as Record<string, any>;
+      const urls = getResultUrls(job);
+      const status = taskStatusToProject(job.status);
+      const batchIndex = getBuyerShowSetBatchIndex(job, index + 1);
+      const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+      return {
+        id: String(providerTaskId || `${job.id}-result-${batchIndex}`),
+        projectId: shellProjectId,
+        imageUrl: urls[0] || '',
+        mediaType: 'image' as const,
+        prompt: String(payload.prompt || job.errorMessage || MODULE_LABELS[MODULE_VALUES.BUYER_SHOW] || '买家秀'),
+        model: normalizeModel(payload.model || job.result?.model || job.provider),
+        aspectRatio: String(payload.aspectRatio || payload.ratio || job.result?.aspectRatio || '3:4'),
+        status: (status === 'completed' && urls[0] ? 'completed' : status === 'error' ? 'error' : 'generating') as ShellGeneratedResult['status'],
+        createdAt: toCreatedMs(job.createdAt || firstJob?.createdAt),
+        module: MODULE_VALUES.BUYER_SHOW,
+        subFeature,
+        taskId: providerTaskId || undefined,
+        backendJobId: String(job.id || '').trim() || undefined,
+        batchIndex,
+        creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+        error: String(job.errorMessage || job.errorCode || '').trim() || undefined,
+      };
+    }).sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0));
+    const taskCount = Math.max(
+      ...sortedJobs.map((job) => getBuyerShowSetTaskCount(job)),
+      results.length,
+      1,
+    );
+    const hasActiveJob = sortedJobs.some((job) => ['queued', 'running', 'retry_waiting'].includes(String(job.status || '')));
+    if (!hasActiveJob && results.length < taskCount) {
+      const existingBatchIndexes = new Set(results.map((result) => Number(result.batchIndex || 0) || 0).filter(Boolean));
+      const firstPayload = (firstJob?.payload || {}) as Record<string, any>;
+      const fallbackPrompt = String(firstPayload.prompt || MODULE_LABELS[MODULE_VALUES.BUYER_SHOW] || '买家秀');
+      const fallbackModel = normalizeModel(firstPayload.model || firstJob?.result?.model || firstJob?.provider);
+      const fallbackAspectRatio = String(firstPayload.aspectRatio || firstPayload.ratio || firstJob?.result?.aspectRatio || '3:4');
+      for (let batchIndex = 1; batchIndex <= taskCount; batchIndex += 1) {
+        if (existingBatchIndexes.has(batchIndex)) continue;
+        const missingResultId = `${shellProjectId}-missing-${batchIndex}`;
+        results.push({
+          id: missingResultId,
+          projectId: shellProjectId,
+          imageUrl: '',
+          mediaType: 'image' as const,
+          prompt: fallbackPrompt,
+          model: fallbackModel,
+          aspectRatio: fallbackAspectRatio,
+          status: 'error',
+          createdAt,
+          module: MODULE_VALUES.BUYER_SHOW,
+          subFeature,
+          taskId: missingResultId,
+          batchIndex,
+          error: '历史任务未提交，无法继续生成；请重新提交该套买家秀。',
+        });
+      }
+      results = results.sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0));
+    }
+    const completedCount = results.filter((result) => result.status === 'completed' && result.imageUrl).length;
+    const hasRunning = results.some((result) => result.status === 'generating');
+    const hasError = results.some((result) => result.status === 'error');
+    const projectName = getBuyerShowSetProjectName(firstJob, matchedProject?.name)
+      || matchedProject?.name
+      || MODULE_LABELS[MODULE_VALUES.BUYER_SHOW]
+      || '买家秀';
+    projects.push({
+      ...(matchedProject || {}),
+      id: shellProjectId,
+      name: projectName,
+      module: MODULE_VALUES.BUYER_SHOW,
+      status: hasRunning ? 'generating' : hasError ? 'error' : completedCount >= taskCount ? 'completed' : 'generating',
+      createdAt,
+      completedAt: completedCount >= taskCount && !hasRunning && !hasError ? toCreatedMs(sortedJobs.at(-1)?.finishedAt || sortedJobs.at(-1)?.updatedAt || sortedJobs.at(-1)?.createdAt) : matchedProject?.completedAt,
+      results,
+      taskCount,
+      completedCount,
+      subFeature,
+      sourceType: 'job',
+      backendJobId: String(sortedJobs.at(-1)?.id || '').trim() || undefined,
+      creditsConsumed: normalizeCreditsConsumed(results.reduce((sum, result) => sum + (Number(result.creditsConsumed) || 0), 0)) || matchedProject?.creditsConsumed,
+    });
+    sortedJobs
+      .filter((job) => ['queued', 'running', 'retry_waiting'].includes(String(job.status || '')))
+      .forEach((job) => {
+        tasks.push({
+          id: String(job.id || ''),
+          projectId: shellProjectId,
+          module: MODULE_VALUES.BUYER_SHOW,
+          type: 'image',
+          status: taskStatusToTask(job.status),
+          title: jobTaskTitle(job, MODULE_VALUES.BUYER_SHOW, subFeature),
+          prompt: String(job.payload?.prompt || ''),
+          progress: job.status === 'running' ? 42 : 8,
+          createdAt: toCreatedMs(job.createdAt),
+          subFeature,
+          backendJobId: String(job.id || ''),
+        });
+      });
+  });
 
 	  translationGroups.forEach((groupJobs, shellProjectId) => {
 	    const sortedJobs = [...groupJobs].sort((a, b) => {
@@ -1566,6 +1740,7 @@ const mapJobs = (
   jobs.forEach((job) => {
 	    if (hiddenJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedEverythingReplaceJobIds.has(String(job.id || '').trim())) return;
+	    if (groupedBuyerShowJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedTranslationJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedOneClickPlanningJobIds.has(String(job.id || '').trim())) return;
     const module = toModule(job.module);
@@ -2251,6 +2426,13 @@ const filterDeletedProjects = (
 
 const shouldReplaceProjectSnapshot = (existing: ShellProjectData | undefined, next: ShellProjectData) => {
   if (!existing) return true;
+  if (
+    existing.module === MODULE_VALUES.BUYER_SHOW
+    && next.module === MODULE_VALUES.BUYER_SHOW
+    && next.sourceType === 'job'
+  ) {
+    return true;
+  }
   const existingHasResults = (existing.results || []).some((result) => result.imageUrl || result.videoUrl || result.status === 'error');
   const nextHasResults = (next.results || []).some((result) => result.imageUrl || result.videoUrl || result.status === 'error');
   if (
@@ -2431,6 +2613,14 @@ const getMergedProjectTaskCount = (
   results: ShellGeneratedResult[],
   completedCount: number,
 ) => {
+  if (next.module === MODULE_VALUES.BUYER_SHOW && next.sourceType === 'job') {
+    return Math.max(
+      Number(next.taskCount || 0) || 0,
+      results.length,
+      completedCount,
+      1,
+    );
+  }
   if (!(plans || []).length && results.length === 1 && isTerminalBackendFailureResult(results[0])) {
     return 1;
   }
@@ -2540,7 +2730,7 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
   const selectedPlanId = filteredPlans.some((plan) => String(plan?.id || '') === String(project.selectedPlanId || ''))
     ? project.selectedPlanId
     : filteredPlans.find((plan) => plan.selected)?.id || filteredPlans[0]?.id || project.selectedPlanId;
-  const hasGenerating = results.some((result) => (result.status === 'generating' || result.status === 'retry_waiting') && resultHasProviderTaskIdentity(result));
+  const hasGenerating = results.some((result) => (result.status === 'generating' || result.status === 'retry_waiting') && resultHasRuntimeIdentity(result));
   const hasFailedPlan = filteredPlans.some((plan) => Boolean(plan?.planningFailed) || plan?.status === 'error');
   const hasError = hasFailedPlan || results.some((result) => result.status === 'error');
   const hasCompletedMedia = completedCount > 0;
@@ -2709,6 +2899,20 @@ const mergeProjectResultsByIdentity = (
   return results;
 };
 
+const sortMergedResultsByBatchIndex = (results: ShellGeneratedResult[] = []) => (
+  results
+    .map((result, index) => ({ result, index }))
+    .sort((left, right) => {
+      const leftBatch = Number(left.result.batchIndex || 0) || 0;
+      const rightBatch = Number(right.result.batchIndex || 0) || 0;
+      if (leftBatch > 0 && rightBatch > 0 && leftBatch !== rightBatch) return leftBatch - rightBatch;
+      if (leftBatch > 0 && rightBatch <= 0) return -1;
+      if (leftBatch <= 0 && rightBatch > 0) return 1;
+      return left.index - right.index;
+    })
+    .map((item) => item.result)
+);
+
 const mergeProjectPlansById = (
   existingPlans: ShellProjectData['plans'] = [],
   nextPlans: ShellProjectData['plans'] = [],
@@ -2867,10 +3071,10 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
     : clearPlanningJobPendingResults
     ? (existing.results || []).filter((result) => !isPlanningJobPendingResult(result, planningJobIds))
     : existing.results || [];
-  const results = mergeProjectResultsByIdentity(existingResults, next.results || []);
+  const results = sortMergedResultsByBatchIndex(mergeProjectResultsByIdentity(existingResults, next.results || []));
   const completedCount = results.filter(hasCompletedMediaResult).length;
   const taskCount = getMergedProjectTaskCount(existing, next, plans, results, completedCount);
-  const hasGenerating = results.some((result) => (result.status === 'generating' || result.status === 'retry_waiting') && resultHasProviderTaskIdentity(result));
+  const hasGenerating = results.some((result) => (result.status === 'generating' || result.status === 'retry_waiting') && resultHasRuntimeIdentity(result));
   const hasError = results.some((result) => result.status === 'error');
   const hasCompletedMedia = completedCount > 0;
   const status = hasCompletedMedia && !hasGenerating && !hasError
@@ -2909,8 +3113,20 @@ export const buildShellDataSnapshot = (
   const persisted = mapPersistedState(state);
   const persistedProjects = filterDeletedProjects(persisted.projects, state);
   const jobData = mapJobs(jobs, persistedProjects, state?.shellDraft?.deletedJobIds || []);
+  const buyerShowSetRootProjectIds = new Set(
+    jobData.projects
+      .filter((project) => project.module === MODULE_VALUES.BUYER_SHOW)
+      .map((project) => String(project.id || '').match(/^(.*)-set-\d+$/)?.[1] || '')
+      .filter(Boolean),
+  );
+  const projectsForMerge = buyerShowSetRootProjectIds.size > 0
+    ? persistedProjects.filter((project) => !(
+      project.module === MODULE_VALUES.BUYER_SHOW
+      && buyerShowSetRootProjectIds.has(String(project.id || ''))
+    ))
+    : persistedProjects;
   const byId = new Map<string, ShellProjectData>();
-  filterDeletedProjects([...persistedProjects, ...jobData.projects], state).forEach((project) => {
+  filterDeletedProjects([...projectsForMerge, ...jobData.projects], state).forEach((project) => {
     const existing = byId.get(project.id);
     if (!existing) {
       byId.set(project.id, project);

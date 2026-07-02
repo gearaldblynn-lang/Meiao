@@ -6,6 +6,7 @@ import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobE
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
 const DEFAULT_PROVIDERLESS_RUNNING_STALE_MS = 15 * 60 * 1000;
+const DEFAULT_SUBMITTED_RUNNING_STALE_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_CANCELLED_RUNNING_STALE_MS = 60 * 1000;
 const REUSABLE_JOB_STATUSES = new Set(['queued', 'running', 'retry_waiting']);
 const MIN_PROVIDERLESS_RUNNING_STALE_MS_BY_TASK_TYPE = new Map([
@@ -37,6 +38,47 @@ const normalizeReusablePayload = (value) => {
 const toSafeJobConcurrency = (value, fallback = DEFAULT_JOB_CONCURRENCY) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const getJobValue = (job, camelKey, snakeKey = camelKey) => job?.[camelKey] ?? job?.[snakeKey];
+
+const getJobTimestamp = (job, camelKey, snakeKey = camelKey) => {
+  const value = getJobValue(job, camelKey, snakeKey);
+  const parsed = Number(value || 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+export const isRunningJobConcurrencyBlocking = (job, options = {}) => {
+  if (String(getJobValue(job, 'status') || '') !== 'running') return false;
+
+  const referenceTime = Number(options.referenceTime || now());
+  const providerTaskId = String(getJobValue(job, 'providerTaskId', 'provider_task_id') || '').trim();
+  const cancelRequestedAt = getJobTimestamp(job, 'cancelRequestedAt', 'cancel_requested_at');
+  const cancelledStaleMs = Math.max(1, Number(options.cancelledStaleMs || DEFAULT_CANCELLED_RUNNING_STALE_MS));
+  if (cancelRequestedAt > 0 && cancelRequestedAt <= referenceTime - cancelledStaleMs) {
+    return false;
+  }
+
+  if (providerTaskId) {
+    const submittedStaleMs = Math.max(1, Number(options.submittedStaleMs || DEFAULT_SUBMITTED_RUNNING_STALE_MS));
+    const jobUpdatedAt = (
+      getJobTimestamp(job, 'updatedAt', 'updated_at')
+      || getJobTimestamp(job, 'startedAt', 'started_at')
+      || getJobTimestamp(job, 'createdAt', 'created_at')
+    );
+    return !(jobUpdatedAt > 0 && jobUpdatedAt <= referenceTime - submittedStaleMs);
+  }
+
+  const baseProviderlessStaleMs = Math.max(1, Number(options.providerlessStaleMs || DEFAULT_PROVIDERLESS_RUNNING_STALE_MS));
+  const taskType = String(getJobValue(job, 'taskType', 'task_type') || '').trim();
+  const taskMinStaleMs = MIN_PROVIDERLESS_RUNNING_STALE_MS_BY_TASK_TYPE.get(taskType) || 0;
+  const staleMs = Math.max(baseProviderlessStaleMs, taskMinStaleMs);
+  const jobStartedAt = (
+    getJobTimestamp(job, 'startedAt', 'started_at')
+    || getJobTimestamp(job, 'updatedAt', 'updated_at')
+    || getJobTimestamp(job, 'createdAt', 'created_at')
+  );
+  return !(jobStartedAt > 0 && jobStartedAt <= referenceTime - staleMs);
 };
 
 const normalizeJobCreditsConsumed = (value) => {
@@ -199,6 +241,35 @@ export const reconcileStaleProviderlessRunningMysqlJobs = (
       updatedAt: Number(referenceTime || now()),
       errorCode: 'provider_submit_stale',
       errorMessage: '任务提交上游前长时间未返回上游任务 ID，已自动失败并释放并发',
+    }));
+};
+
+export const reconcileStaleSubmittedRunningMysqlJobs = (
+  jobs,
+  referenceTime = now(),
+  staleMs = DEFAULT_SUBMITTED_RUNNING_STALE_MS
+) => {
+  if (!Array.isArray(jobs)) return [];
+  const resolvedReferenceTime = Number(referenceTime || now());
+  const cutoff = resolvedReferenceTime - Math.max(1, Number(staleMs || DEFAULT_SUBMITTED_RUNNING_STALE_MS));
+  return jobs
+    .filter((job) => {
+      const jobUpdatedAt = Number(job?.updatedAt || job?.startedAt || job?.createdAt || 0);
+      return (
+        String(job?.status || '') === 'running'
+        && Boolean(String(job?.providerTaskId || '').trim())
+        && jobUpdatedAt > 0
+        && jobUpdatedAt <= cutoff
+      );
+    })
+    .map((job) => ({
+      ...job,
+      status: 'retry_waiting',
+      startedAt: null,
+      finishedAt: null,
+      updatedAt: resolvedReferenceTime,
+      errorCode: 'provider_wait_stale',
+      errorMessage: '任务已提交上游但长时间未完成，已回收到待恢复状态',
     }));
 };
 
@@ -472,6 +543,73 @@ export const reconcileStaleProviderlessRunningJobs = async (pool, options = {}) 
   return reconciled;
 };
 
+export const reconcileStaleSubmittedRunningJobs = async (pool, options = {}) => {
+  const referenceTime = Number(options.referenceTime || now());
+  const staleMs = Math.max(1, Number(options.staleMs || DEFAULT_SUBMITTED_RUNNING_STALE_MS));
+  const [rows] = await pool.query(
+    `SELECT *
+     FROM internal_jobs
+     WHERE status = 'running'
+       AND provider_task_id IS NOT NULL
+       AND provider_task_id <> ''
+       AND updated_at IS NOT NULL
+       AND updated_at <= ?`,
+    [referenceTime - staleMs]
+  );
+  const reconciled = reconcileStaleSubmittedRunningMysqlJobs(rows.map(mapJobRow), referenceTime, staleMs);
+  for (const job of reconciled) {
+    const [attemptRows] = await pool.query(
+      `SELECT *
+       FROM internal_job_attempts
+       WHERE job_id = ?
+       ORDER BY attempt_no DESC
+       LIMIT 1`,
+      [job.id]
+    );
+    const attempt = attemptRows?.[0] || null;
+    await updateJobFields(pool, job.id, {
+      status: job.status,
+      started_at: null,
+      finished_at: null,
+      updated_at: job.updatedAt,
+      error_code: job.errorCode,
+      error_message: job.errorMessage,
+    });
+    if (attempt?.id) {
+      await runTaskPlatformWrite(() => finishJobAttempt(pool, attempt.id, {
+        status: 'retry_waiting',
+        providerTaskId: job.providerTaskId || '',
+        errorCode: job.errorCode,
+        errorMessage: job.errorMessage,
+        finishedAt: null,
+      }));
+    }
+    await runTaskPlatformWrite(() => recordJobEvent(pool, job, {
+      attemptId: attempt?.id,
+      attemptNo: attempt?.attempt_no,
+      traceId: attempt?.trace_id,
+      stage: 'provider_wait',
+      eventName: 'provider_wait_stale_recovered',
+      status: 'started',
+      engine: attempt?.engine || 'temporal',
+      providerSubmitted: true,
+      retryable: true,
+      errorCode: job.errorCode,
+      errorMessage: job.errorMessage,
+      providerTaskId: job.providerTaskId || '',
+      workflowId: attempt?.workflow_id,
+      runId: attempt?.run_id,
+      meta: {
+        staleMs,
+        recoveredAt: job.updatedAt,
+        previousUpdatedAt: rows.find((row) => row.id === job.id)?.updated_at || null,
+      },
+      createdAt: job.updatedAt,
+    }));
+  }
+  return reconciled;
+};
+
 export const reconcileStaleCancelledRunningJobs = async (pool, options = {}) => {
   const referenceTime = Number(options.referenceTime || now());
   const staleMs = Math.max(1, Number(options.staleMs || DEFAULT_CANCELLED_RUNNING_STALE_MS));
@@ -624,6 +762,9 @@ export const createJobWorker = ({
   settleJobCredits,
   releaseJobCredits,
   getTaskEngineMode = () => process.env.MEIAO_TASK_ENGINE,
+  getProviderlessRunningStaleMs = () => DEFAULT_PROVIDERLESS_RUNNING_STALE_MS,
+  getSubmittedRunningStaleMs = () => DEFAULT_SUBMITTED_RUNNING_STALE_MS,
+  getCancelledRunningStaleMs = () => DEFAULT_CANCELLED_RUNNING_STALE_MS,
 }) => {
   const activeControllers = new Map();
   let timer = null;
@@ -644,10 +785,20 @@ export const createJobWorker = ({
       if (availableSlots <= 0) return;
 
       const [runningRows] = await pool.query(
-        `SELECT user_id
+        `SELECT *
          FROM internal_jobs
          WHERE status = 'running'`
       );
+      const referenceTime = now();
+      const runningConcurrencyOptions = {
+        referenceTime,
+        providerlessStaleMs: await Promise.resolve(getProviderlessRunningStaleMs()),
+        submittedStaleMs: await Promise.resolve(getSubmittedRunningStaleMs()),
+        cancelledStaleMs: await Promise.resolve(getCancelledRunningStaleMs()),
+      };
+      const concurrencyBlockingRunningJobs = runningRows
+        .map(mapJobRow)
+        .filter((job) => isRunningJobConcurrencyBlocking(job, runningConcurrencyOptions));
 
       const [rows] = await pool.query(
         `SELECT * FROM internal_jobs
@@ -673,7 +824,7 @@ export const createJobWorker = ({
       const executableJobs = selectJobsWithinConcurrencyLimits({
         jobs,
         availableSlots,
-        activeJobUserIds: runningRows.map((row) => row.user_id),
+        activeJobUserIds: concurrencyBlockingRunningJobs.map((job) => job.userId),
         getUserConcurrency: (userId) => userConcurrencyMap.get(String(userId || '')) || DEFAULT_JOB_CONCURRENCY,
       });
 

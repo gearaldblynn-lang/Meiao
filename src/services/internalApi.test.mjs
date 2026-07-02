@@ -119,6 +119,309 @@ test('sendChatMessage falls back to JSON response when streaming is unavailable'
   }
 });
 
+test('runSmartFactoryPreviewTurn posts message to Smart Factory preview API', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  let seenBody = null;
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), '/api/smart-factory/preview-turn');
+    assert.equal(init.method, 'POST');
+    seenBody = JSON.parse(String(init.body));
+    return new Response(JSON.stringify({
+      result: {
+        mode: 'preview',
+        answer: 'ok',
+        trace: [],
+        toolResults: [],
+        modelRequest: { tools: [] },
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const result = await api.runSmartFactoryPreviewTurn({ message: '退货规则是什么' });
+    assert.deepEqual(seenBody, { message: '退货规则是什么' });
+    assert.equal(result.result.answer, 'ok');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchSmartFactoryConfig reads Smart Factory runtime configuration', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  globalThis.fetch = async (url, init = {}) => {
+    assert.equal(String(url), '/api/smart-factory/config');
+    assert.equal(init.method || 'GET', 'GET');
+    return new Response(JSON.stringify({
+      config: {
+        mode: 'preview',
+        models: [{ provider: 'openai_compatible', name: 'gpt-5.5', features: ['tool-call'] }],
+        knowledgeBases: [{ id: 'kb-after-sale', name: '售后知识库', documentCount: 2 }],
+        tools: [{ name: 'feishu_create_sheet', type: 'cli', authorized: true }],
+        agents: [{ id: 'agent-after-sale', name: '售后智能体', enabled: true }],
+        sessions: [{ id: 'session-after-sale-demo', agentId: 'agent-after-sale', title: '售后试运行', messageCount: 0, messages: [] }],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const result = await api.fetchSmartFactoryConfig();
+    assert.equal(result.config.models[0].name, 'gpt-5.5');
+    assert.equal(result.config.knowledgeBases[0].documentCount, 2);
+    assert.equal(result.config.tools[0].name, 'feishu_create_sheet');
+    assert.equal(result.config.agents[0].name, '售后智能体');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('updateSmartFactoryConfig patches Smart Factory configuration only', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  let seenBody = null;
+  globalThis.fetch = async (url, init = {}) => {
+    assert.equal(String(url), '/api/smart-factory/config');
+    assert.equal(init.method, 'PATCH');
+    seenBody = JSON.parse(String(init.body));
+    return new Response(JSON.stringify({
+      config: {
+        mode: 'preview',
+        models: [{ provider: 'relay-b', name: 'relay-b-model', features: ['tool-call'] }],
+        knowledgeBases: [{ id: 'kb-after-sale', name: '售后知识库', documentCount: 2 }],
+        tools: [{ name: 'feishu_create_sheet', type: 'cli', authorized: true }],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const payload = {
+      modelProviders: [{
+        provider: 'relay-b',
+        credentialRef: 'env:RELAY_B_KEY',
+        models: [{ id: 'relay-b-model', mode: 'chat', features: ['tool-call'] }],
+      }],
+    };
+    const result = await api.updateSmartFactoryConfig(payload);
+    assert.deepEqual(seenBody, { smartFactory: payload });
+    assert.equal(result.config.models[0].name, 'relay-b-model');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('sendSmartFactoryChat posts agent session message and receives persisted config', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  let seenBody = null;
+  globalThis.fetch = async (url, init = {}) => {
+    assert.equal(String(url), '/api/smart-factory/chat');
+    assert.equal(init.method, 'POST');
+    seenBody = JSON.parse(String(init.body));
+    return new Response(JSON.stringify({
+      result: {
+        mode: 'preview',
+        agentId: 'agent-after-sale',
+        answer: '7 天内可退货',
+        trace: [{ event: 'model_request_built' }],
+        toolResults: [],
+        modelRequest: { tools: [] },
+      },
+      config: {
+        mode: 'preview',
+        models: [{ provider: 'openai_compatible', name: 'gpt-5.5', features: ['tool-call'] }],
+        knowledgeBases: [{ id: 'kb-after-sale', name: '售后知识库', documentCount: 2 }],
+        tools: [{ name: 'feishu_create_sheet', type: 'cli', authorized: true }],
+        agents: [{ id: 'agent-after-sale', name: '售后智能体', enabled: true }],
+        sessions: [{
+          id: 'session-after-sale-demo',
+          agentId: 'agent-after-sale',
+          title: '售后试运行',
+          messageCount: 2,
+          messages: [
+            { role: 'user', content: '退货规则是什么' },
+            { role: 'assistant', content: '7 天内可退货' },
+          ],
+        }],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const result = await api.sendSmartFactoryChat({
+      agentId: 'agent-after-sale',
+      sessionId: 'session-after-sale-demo',
+      message: '退货规则是什么',
+    });
+    assert.deepEqual(seenBody, {
+      agentId: 'agent-after-sale',
+      sessionId: 'session-after-sale-demo',
+      message: '退货规则是什么',
+    });
+    assert.equal(result.config.sessions[0].messageCount, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('addSmartFactoryKnowledgeDocument posts document for training', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  let seenBody = null;
+  globalThis.fetch = async (url, init = {}) => {
+    assert.equal(String(url), '/api/smart-factory/knowledge-documents');
+    assert.equal(init.method, 'POST');
+    seenBody = JSON.parse(String(init.body));
+    return new Response(JSON.stringify({
+      config: {
+        mode: 'preview',
+        models: [],
+        knowledgeBases: [{ id: 'kb-after-sale', name: '售后知识库', documentCount: 3 }],
+        tools: [],
+        agents: [],
+        sessions: [],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const result = await api.addSmartFactoryKnowledgeDocument({
+      knowledgeBaseId: 'kb-after-sale',
+      document: { title: '退货运费', content: '退货运费按平台规则处理。' },
+    });
+    assert.deepEqual(seenBody, {
+      knowledgeBaseId: 'kb-after-sale',
+      document: { title: '退货运费', content: '退货运费按平台规则处理。' },
+    });
+    assert.equal(result.config.knowledgeBases[0].documentCount, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('smart factory product APIs cover models agents knowledge tools and retrieval tests', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({
+      url: String(url),
+      method: init.method || 'GET',
+      body: init.body ? JSON.parse(String(init.body)) : null,
+    });
+    return new Response(JSON.stringify({
+      ok: true,
+      message: 'ok',
+      observation: 'tool ok',
+      search: { query: '退货', results: [{ title: '退货规则' }] },
+      config: {
+        mode: 'production',
+        modelProviders: [],
+        models: [],
+        knowledgeBases: [],
+        tools: [],
+        agents: [],
+        sessions: [],
+        runLogs: [],
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    await api.saveSmartFactoryModelProvider({ provider: 'relay-main', modelsText: 'gpt-5.5' });
+    await api.testSmartFactoryModelProvider({ provider: 'relay-main', modelsText: 'gpt-5.5' });
+    await api.createSmartFactoryAgent({ name: '资料助手' });
+    await api.updateSmartFactoryAgent('agent-1', { prompt: '只读知识库' });
+    await api.publishSmartFactoryAgent('agent-1');
+    await api.createSmartFactoryKnowledgeBase({ name: '资料库' });
+    await api.retrainSmartFactoryKnowledgeDocument('doc-1', { content: '新内容' });
+    await api.deleteSmartFactoryKnowledgeDocument('doc-1');
+    await api.searchSmartFactoryKnowledge({ query: '退货', knowledgeBaseIds: ['kb-1'] });
+    await api.saveSmartFactoryTool({ name: 'feishu_create_doc', executorRef: 'feishu.create_sheet' });
+    await api.testSmartFactoryTool('feishu_create_doc', { title: '日报' });
+
+    assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
+      'POST /api/smart-factory/model-providers',
+      'POST /api/smart-factory/model-providers/test',
+      'POST /api/smart-factory/agents',
+      'PATCH /api/smart-factory/agents/agent-1',
+      'POST /api/smart-factory/agents/agent-1/publish',
+      'POST /api/smart-factory/knowledge-bases',
+      'POST /api/smart-factory/knowledge-documents/doc-1/retrain',
+      'DELETE /api/smart-factory/knowledge-documents/doc-1',
+      'POST /api/smart-factory/knowledge-search',
+      'POST /api/smart-factory/tools',
+      'POST /api/smart-factory/tools/feishu_create_doc/test',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('system model provider APIs manage the unified model registry', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const calls = [];
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({
+      url: String(url),
+      method: init.method || 'GET',
+      body: init.body ? JSON.parse(String(init.body)) : null,
+    });
+    return new Response(JSON.stringify({
+      ok: true,
+      message: 'ok',
+      registry: {
+        providers: [{
+          provider: 'relay-main',
+          displayName: '主中转',
+          hasCredential: true,
+          capabilityCounts: { chat: 1 },
+          models: [{ id: 'gpt-5.5', mode: 'chat', features: ['tool-call'] }],
+        }],
+      },
+      presets: [],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    await api.fetchSystemModelProviders();
+    await api.saveSystemModelProvider({ provider: 'relay-main', modelsText: 'chat:gpt-5.5' });
+    await api.testSystemModelProvider({ provider: 'relay-main', modelsText: 'chat:gpt-5.5' });
+    await api.deleteSystemModelProvider('relay-main');
+
+    assert.deepEqual(calls.map((call) => `${call.method} ${call.url}`), [
+      'GET /api/system/model-providers',
+      'POST /api/system/model-providers',
+      'POST /api/system/model-providers/test',
+      'DELETE /api/system/model-providers/relay-main',
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('sendChatMessage uses SSE for image generation when streaming is requested', async () => {
   const originalFetch = globalThis.fetch;
   const originalSetTimeout = globalThis.setTimeout;

@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 
 import {
   findReusableJobSubmission,
+  isRunningJobConcurrencyBlocking,
   reconcileRestartedMysqlJobs,
   reconcileStaleCancelledRunningMysqlJobs,
   reconcileStaleProviderlessRunningMysqlJobs,
+  reconcileStaleSubmittedRunningMysqlJobs,
   selectJobsWithinConcurrencyLimits,
   shouldMysqlWorkerProcessTaskEngine,
 } from './jobManager.mjs';
@@ -51,6 +53,57 @@ test('selectJobsWithinConcurrencyLimits falls back to default concurrency of 5',
 
   assert.equal(selected.length, 5);
   assert.deepEqual(selected.map((job) => job.id), ['job-1', 'job-2', 'job-3', 'job-4', 'job-5']);
+});
+
+test('isRunningJobConcurrencyBlocking ignores stale running jobs that the reconciler will release', () => {
+  const referenceTime = 10 * 60 * 60 * 1000;
+
+  assert.equal(isRunningJobConcurrencyBlocking({
+    status: 'running',
+    taskType: 'kie_image',
+    providerTaskId: '',
+    startedAt: referenceTime - (20 * 60 * 1000),
+  }, {
+    referenceTime,
+    providerlessStaleMs: 5 * 60 * 1000,
+  }), false);
+
+  assert.equal(isRunningJobConcurrencyBlocking({
+    status: 'running',
+    providerTaskId: 'kie-task-stale',
+    updatedAt: referenceTime - (7 * 60 * 60 * 1000),
+  }, {
+    referenceTime,
+    submittedStaleMs: 6 * 60 * 60 * 1000,
+  }), false);
+
+  assert.equal(isRunningJobConcurrencyBlocking({
+    status: 'running',
+    providerTaskId: 'kie-task-cancel',
+    cancelRequestedAt: referenceTime - 2 * 60 * 1000,
+  }, {
+    referenceTime,
+    cancelledStaleMs: 60 * 1000,
+  }), false);
+
+  assert.equal(isRunningJobConcurrencyBlocking({
+    status: 'running',
+    taskType: 'kie_image',
+    providerTaskId: '',
+    startedAt: referenceTime - 10 * 60 * 1000,
+  }, {
+    referenceTime,
+    providerlessStaleMs: 5 * 60 * 1000,
+  }), true);
+
+  assert.equal(isRunningJobConcurrencyBlocking({
+    status: 'running',
+    providerTaskId: 'kie-task-fresh',
+    updatedAt: referenceTime - 2 * 60 * 60 * 1000,
+  }, {
+    referenceTime,
+    submittedStaleMs: 6 * 60 * 60 * 1000,
+  }), true);
 });
 
 test('mysql worker only processes mysql-backed task engines', () => {
@@ -389,6 +442,63 @@ test('reconcileStaleProviderlessRunningMysqlJobs keeps kie image asset staging a
   ], referenceTime, shortCloudStaleMs);
 
   assert.deepEqual(reconciled.map((job) => job.id), ['job-kie-image-truly-stale', 'job-other-stale']);
+});
+
+test('reconcileStaleSubmittedRunningMysqlJobs requeues old submitted running jobs for result recovery', () => {
+  const referenceTime = 10 * 60 * 60 * 1000;
+  const staleMs = 6 * 60 * 60 * 1000;
+
+  const reconciled = reconcileStaleSubmittedRunningMysqlJobs([
+    {
+      id: 'job-submitted-stale',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: 'kie-task-id',
+      createdAt: referenceTime - (8 * 60 * 60 * 1000),
+      updatedAt: referenceTime - (7 * 60 * 60 * 1000),
+      startedAt: referenceTime - (7 * 60 * 60 * 1000),
+      finishedAt: null,
+    },
+    {
+      id: 'job-submitted-young',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: 'kie-task-id-2',
+      createdAt: referenceTime - (2 * 60 * 60 * 1000),
+      updatedAt: referenceTime - (2 * 60 * 60 * 1000),
+      startedAt: referenceTime - (2 * 60 * 60 * 1000),
+      finishedAt: null,
+    },
+    {
+      id: 'job-providerless-old',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: '',
+      createdAt: referenceTime - (8 * 60 * 60 * 1000),
+      updatedAt: referenceTime - (7 * 60 * 60 * 1000),
+      startedAt: referenceTime - (7 * 60 * 60 * 1000),
+      finishedAt: null,
+    },
+  ], referenceTime, staleMs);
+
+  assert.equal(reconciled.length, 1);
+  assert.equal(reconciled[0].id, 'job-submitted-stale');
+  assert.equal(reconciled[0].status, 'retry_waiting');
+  assert.equal(reconciled[0].providerTaskId, 'kie-task-id');
+  assert.equal(reconciled[0].startedAt, null);
+  assert.equal(reconciled[0].finishedAt, null);
+  assert.equal(reconciled[0].updatedAt, referenceTime);
+  assert.equal(reconciled[0].errorCode, 'provider_wait_stale');
+  assert.match(reconciled[0].errorMessage, /已提交上游/);
 });
 
 test('reconcileStaleCancelledRunningMysqlJobs releases cancelled running jobs after abort acknowledgement stalls', () => {

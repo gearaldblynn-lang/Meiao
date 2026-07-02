@@ -228,6 +228,10 @@
     max-width: 860px;
   }
 
+  .workspace-content-wide {
+    max-width: 1440px;
+  }
+
   @media (min-width: 640px) {
     .workspace-shell {
       padding-top: 20px;

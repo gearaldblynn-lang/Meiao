@@ -24,6 +24,8 @@ test('help guide config covers all top-level modules from shared content', () =>
   const guideConfig = read('../config/helpGuide.ts');
 
   assert.match(guideConfig, /AppModule\.AGENT_CENTER/);
+  assert.match(guideConfig, /AppModule\.AI_CUSTOMER_SERVICE/);
+  assert.match(guideConfig, /AppModule\.SMART_FACTORY/);
   assert.match(guideConfig, /AppModule\.ONE_CLICK/);
   assert.match(guideConfig, /AppModule\.TRANSLATION/);
   assert.match(guideConfig, /AppModule\.BUYER_SHOW/);
@@ -34,6 +36,37 @@ test('help guide config covers all top-level modules from shared content', () =>
   assert.match(guideConfig, /AppModule\.XHS_COVER/);
   assert.match(guideConfig, /AppModule\.SETTINGS/);
   assert.match(guideConfig, /AppModule\.ACCOUNT/);
+});
+
+test('AI customer service module is a multi-store customer service workbench', () => {
+  const module = read('../shell/modules/AiCustomerService/AiCustomerServiceModule.tsx');
+
+  assert.match(module, /AI客服/);
+  assert.match(module, /Chatwoot/);
+  assert.match(module, /店铺接入/);
+  assert.match(module, /绑定店铺/);
+  assert.match(module, /进入客服台/);
+  assert.match(module, /返回店铺列表/);
+  assert.match(module, /店铺切换/);
+  assert.match(module, /客服工作台/);
+  assert.match(module, /会话管理/);
+  assert.match(module, /客户信息/);
+  assert.match(module, /客户资料/);
+  assert.match(module, /话术库/);
+  assert.match(module, /自动化/);
+  assert.match(module, /坐席/);
+  assert.match(module, /报表/);
+  assert.match(module, /店铺设置/);
+  assert.match(module, /功能对照/);
+  assert.match(module, /发送回复/);
+  assert.match(module, /fetchChatwootConversationMessages/);
+  assert.match(module, /sendChatwootConversationMessage/);
+  assert.match(module, /拉取会话/);
+  assert.match(module, /AI建议回复/);
+  assert.match(module, /人工接管/);
+  assert.match(module, /打开 Chatwoot 控制台/);
+  assert.doesNotMatch(module, />API Token</);
+  assert.doesNotMatch(module, /iframe/);
 });
 
 test('video generation project persistence patches video memory for refresh recovery', () => {
@@ -88,6 +121,105 @@ test('system announcement replaces static release toast with editable first-open
   assert.match(announcementModal, /color: '#0f172a'/);
   assert.match(announcementModal, /color: '#334155'/);
   assert.match(announcementModal, /background: 'rgba\(255,255,255,0\.94\)'/);
+});
+
+test('settings owns the unified model center and smart factory only consumes it', () => {
+  const settings = read('../shell/modules/Settings/GlobalApiSettings.tsx');
+  const smartFactory = read('../modules/AgentCenter/SmartFactoryPanel.tsx');
+  const api = read('../services/internalApi.ts');
+  const types = read('../types.ts');
+
+  assert.match(settings, /统一模型中心/);
+  assert.match(settings, /渠道详情/);
+  assert.match(settings, /能力矩阵/);
+  assert.match(settings, /连接测试/);
+  assert.match(settings, /默认模型/);
+  assert.match(settings, /备用模型/);
+  assert.match(settings, /本地模型暂不接入/);
+  assert.match(settings, /fetchSystemModelProviders/);
+  assert.match(settings, /saveSystemModelProvider/);
+  assert.match(settings, /deleteSystemModelProvider/);
+  assert.match(settings, /testSystemModelProvider/);
+  assert.match(api, /\/api\/system\/model-providers/);
+  assert.match(types, /modelProviders: \{/);
+  assert.match(smartFactory, /模型中心统一管理/);
+  assert.match(smartFactory, /这里只做绑定和运行选择/);
+  assert.doesNotMatch(smartFactory, /saveSmartFactoryModelProvider/);
+  assert.doesNotMatch(smartFactory, /deleteSmartFactoryModelProvider/);
+  assert.doesNotMatch(smartFactory, /fetchSmartFactoryModelProviderPresets/);
+});
+
+test('settings center uses first-level categories and keeps model center as a compact managed page', () => {
+  const settings = read('../shell/modules/Settings/GlobalApiSettings.tsx');
+  const jobRuntime = read('../../server/jobRuntime.mjs');
+
+  assert.match(settings, /type SettingsSection =/);
+  assert.match(settings, /settingsCategories/);
+  assert.match(settings, /模型中心/);
+  assert.match(settings, /服务接入/);
+  assert.doesNotMatch(settings, /id: 'agentRuntime'/);
+  assert.match(settings, /账号与权限/);
+  assert.match(settings, /通知公告/);
+  assert.match(settings, /系统偏好/);
+  assert.match(settings, /activeSettingsSection === 'models'/);
+  assert.match(settings, /dedupeModelProviders/);
+  assert.match(settings, /buildUnifiedModelAssets/);
+  assert.match(settings, /buildModelRuntimeTraits/);
+  assert.match(settings, /ProviderLogo/);
+  assert.match(settings, /source\.includes\('compatible'\)/);
+  assert.match(settings, /模型类型/);
+  assert.match(settings, /模型资产目录/);
+  assert.match(settings, /模型全局管理/);
+  assert.match(settings, /模型类型筛选栏/);
+  assert.doesNotMatch(settings, /xl:grid-cols-\[210px_minmax/);
+  assert.match(settings, /运行特性/);
+  assert.match(settings, /流式对话/);
+  assert.match(settings, /缓存命中/);
+  assert.match(settings, /异步任务/);
+  assert.match(settings, /KIE 托管/);
+  assert.match(settings, /APIports/);
+  assert.match(settings, /systemConfig\?\.agentModels\.chat/);
+  assert.match(settings, /systemConfig\?\.agentModels\.image/);
+  assert.match(settings, /systemConfig\?\.agentModels\.video/);
+  assert.match(settings, /systemConfig\?\.videoAnalysisModels/);
+  assert.match(jobRuntime, /GPT-5\.4/);
+  assert.match(jobRuntime, /GPT Image 2/);
+  assert.match(jobRuntime, /Nano Banana 2/);
+  assert.match(jobRuntime, /Seedance 2 Fast/);
+  assert.match(jobRuntime, /Veo 3 Fast/);
+  assert.match(jobRuntime, /Sora 2 Pro Storyboard/);
+  assert.equal((settings.match(/modelModeStats\.map/g) || []).length, 1);
+  assert.match(settings, /模型渠道矩阵/);
+  assert.match(settings, /allModelProvidersForManagement/);
+  assert.match(settings, /渠道详情/);
+  assert.match(settings, /模型中心操作栏/);
+  assert.match(settings, /同步模型列表/);
+  assert.match(settings, /健康检查/);
+  assert.match(settings, /新增渠道/);
+  assert.match(settings, /模型状态概览/);
+  assert.match(settings, /厂家 \/ 渠道/);
+  assert.match(settings, /默认模型/);
+  assert.match(settings, /能力/);
+  assert.match(settings, /使用方/);
+  assert.match(settings, /基础配置/);
+  assert.match(settings, /影响范围/);
+  assert.match(settings, /modelProviderEditing/);
+  assert.match(settings, /编辑渠道/);
+  assert.match(settings, /只读视图/);
+  assert.match(settings, /当前账号只能查看模型中心/);
+  assert.match(settings, /handleSaveUserAnalysisModel/);
+  assert.match(settings, /handleSaveAnalysisModel/);
+  assert.match(settings, /videoAnalysisModelOptions/);
+});
+
+test('smart factory model page is a consumer of settings model center, not a provider configurator', () => {
+  const smartFactory = read('../modules/AgentCenter/SmartFactoryPanel.tsx');
+
+  assert.match(smartFactory, /模型中心统一管理/);
+  assert.match(smartFactory, /这里只做绑定和运行选择/);
+  assert.doesNotMatch(smartFactory, /saveSmartFactoryModelProvider/);
+  assert.doesNotMatch(smartFactory, /deleteSmartFactoryModelProvider/);
+  assert.doesNotMatch(smartFactory, /fetchSmartFactoryModelProviderPresets/);
 });
 
 test('one click module keeps submode switching out of the workspace header', () => {
@@ -1147,11 +1279,16 @@ test('shell app uses the migrated sidebar, login screen, and toast system as the
 test('shell auth bootstrap reuses cached checks and shows saved users immediately', () => {
   const app = read('../ShellMigratedApp.tsx');
   const authBootstrapChunk = app.match(/const \[authStatus, setAuthStatus\][\s\S]*?const \[loginError, setLoginError\]/)?.[0] || '';
+  const localPreviewHelper = app.match(/const hasLocalPreviewFlag = \(\) => \{[\s\S]*?\n\};/)?.[0] || '';
+  const authenticatedSessionHelper = app.match(/const hasAuthenticatedLocalSession = \(\) => \([\s\S]*?\n\);/)?.[0] || '';
 
   assert.match(app, /runAuthBootstrap/);
-  assert.match(authBootstrapChunk, /getCurrentUserContext\(\)/);
-  assert.match(authBootstrapChunk, /meiaoLocalPreview/);
+  assert.match(authBootstrapChunk, /hasLocalPreviewFlag\(\)/);
+  assert.match(authBootstrapChunk, /hasAuthenticatedLocalSession\(\)/);
   assert.match(authBootstrapChunk, /logged_in/);
+  assert.match(localPreviewHelper, /meiaoLocalPreview/);
+  assert.match(authenticatedSessionHelper, /hasStoredSessionToken\(\)/);
+  assert.match(authenticatedSessionHelper, /getCurrentUserContext\(\)/);
 });
 
 test('shell authenticated user state drives account-scoped local project snapshots', () => {
@@ -1578,7 +1715,8 @@ test('system settings expose a global analysis model selector for server-side pl
   assert.match(settings, /默认 Gemini 3 Flash（High）/);
   assert.match(settings, /自动选择默认分析模型/);
   assert.match(shellSettings, /视频分析模型/);
-  assert.match(shellSettings, /effectiveVideoAnalysisModel/);
+  assert.match(shellSettings, /videoAnalysisModelOptions/);
+  assert.match(shellSettings, /保存视频模型/);
   assert.match(settings, /systemConfig\?\.agentModels\.chat/);
   assert.match(settings, /updateSystemConfig/);
   assert.match(api, /export const updateSystemConfig = async/);
@@ -1701,7 +1839,7 @@ test('shell settings stop exposing a public KIE api key input and only keep inte
   assert.doesNotMatch(settings, /setApiKey/);
   assert.match(settings, /内部服务托管/);
   assert.match(settings, /KIE 密钥由服务端统一接管/);
-  assert.match(settings, /这里仅保留本地工作区偏好与并发控制/);
+  assert.match(settings, /真实模型调用和密钥管理都走内部后端/);
   assert.match(settings, /OpenAI Compatible 中转站/);
   assert.match(settings, /setOpenaiCompatibleApiKey/);
   assert.match(settings, /setOpenaiCompatibleBaseUrl/);
@@ -1766,7 +1904,9 @@ test('agent chat client keeps image generation requests alive longer and can syn
   const api = read('../services/internalApi.ts');
   const agentCenter = read('../modules/AgentCenter/AgentCenterModule.tsx');
 
-  assert.match(api, /timeoutMs: payload\.requestMode === 'image_generation' \? 300_000 : 240_000/);
+  assert.match(api, /const CHAT_MESSAGE_TIMEOUT_MS = 240_000/);
+  assert.match(api, /const IMAGE_GENERATION_CHAT_TIMEOUT_MS = 900_000/);
+  assert.match(api, /payload\.requestMode === 'image_generation'\s*\n\s*\? IMAGE_GENERATION_CHAT_TIMEOUT_MS\s*\n\s*: CHAT_MESSAGE_TIMEOUT_MS/);
   assert.match(agentCenter, /clientRequestId/);
   assert.match(agentCenter, /syncCompletedMessageAfterTimeout/);
   assert.match(agentCenter, /const deadline = Date\.now\(\) \+ 210_000/);
@@ -2744,16 +2884,19 @@ test('workspace preference toggles are wired into real generation and upload flo
   assert.match(shellWorkflow, /__workspacePreferences/);
 });
 
-test('shell settings only lets admins modify concurrency while staff see it read-only', () => {
+test('shell settings shows account concurrency as read-only and leaves edits to account management', () => {
   const settings = read('../shell/modules/Settings/GlobalApiSettings.tsx');
-  const concurrencySection = settings.match(/<label[\s\S]*?并发任务数[\s\S]*?<\/div>\n\s*<\/div>/)?.[0] || '';
+  const accountManagement = read('../shell/modules/Account/AccountManagement.tsx');
 
   assert.match(settings, /const canManageSystemSettings = currentUser\?\.role === 'admin'/);
   assert.match(settings, /const effectiveConcurrency = getEffectiveConcurrency\(systemConfig\?\.queue\.maxConcurrency, currentUser\?\.jobConcurrency\)/);
-  assert.match(concurrencySection, /canManageSystemSettings \?/);
-  assert.match(concurrencySection, /type="range"/);
-  assert.match(concurrencySection, /value=\{concurrency\}/);
-  assert.match(concurrencySection, /\{loadingSystemConfig \? '\.\.\.' : String\(effectiveConcurrency\)\}/);
+  assert.match(settings, /当前并发/);
+  assert.doesNotMatch(settings, /并发任务数/);
+  assert.doesNotMatch(settings, /setConcurrency/);
+  assert.doesNotMatch(settings, /updateInternalUser\(currentUser\.id, \{ jobConcurrency/);
+  assert.match(accountManagement, /const \[concurrencyDrafts, setConcurrencyDrafts\]/);
+  assert.match(accountManagement, /TextField[\s\S]*label="并发"[\s\S]*保存并发/);
+  assert.match(accountManagement, /updateUser\(user, \{ jobConcurrency: Math\.max\(1, Number\(concurrencyDrafts\[user\.id\]/);
 });
 
 test('shell settings lets staff choose planning model while admins can broadcast and video model stays gemini-only', () => {
@@ -2769,8 +2912,8 @@ test('shell settings lets staff choose planning model while admins can broadcast
   assert.match(settings, /setUserAnalysisModel\(config\.systemSettings\.userAnalysisModel \|\| ''\)/);
   assert.match(settings, /handleSaveUserAnalysisModel/);
   assert.match(settings, /handleBroadcastAnalysisModel/);
-  assert.match(settings, /普通账号可选择自己的策划分析模型/);
-  assert.match(settings, /管理员可将全局策划分析模型覆盖到所有账号/);
+  assert.match(settings, /员工账号只能选择自己的策划分析模型/);
+  assert.match(settings, /管理员可修改全局模型和广播到所有账号/);
   assert.match(settings, /systemConfig\?\.videoAnalysisModels/);
   assert.doesNotMatch(settings, /仅管理员可以修改分析模型/);
 });

@@ -142,8 +142,7 @@ const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, curr
               <ProviderCard title="APIports Image 2（副）" configured={Boolean(systemConfig?.providers.apiports?.configured)} description="GPT Image 2 副通道，同步生图和参考图生成" />
             </div>
 
-            <div className="mt-8 grid md:grid-cols-3 gap-4">
-              <InfoPill label="可用并发" value={loading ? '...' : String(getEffectiveConcurrency(systemConfig?.queue.maxConcurrency, currentUser?.jobConcurrency))} />
+            <div className="mt-8 grid md:grid-cols-2 gap-4">
               <InfoPill label="待执行任务" value={loading ? '...' : String(systemConfig?.queue.queuedCount ?? '-')} />
               <InfoPill label="执行中任务" value={loading ? '...' : String(systemConfig?.queue.runningCount ?? '-')} />
             </div>
@@ -217,10 +216,6 @@ const GlobalApiSettings: React.FC<Props> = ({ apiConfig, onApiConfigChange, curr
                 {analysisModelMessage ? <span className="font-medium text-slate-600">{analysisModelMessage}</span> : null}
               </div>
             </WorkspaceShellCard>
-
-            <p className="mt-4 text-xs font-bold text-slate-400">
-              当前只保留一个并发值，按账号并发上限直接展示和执行。
-            </p>
           </>
         ) : (
           <WorkspaceShellCard className="bg-amber-50 px-6 py-5 border-amber-200">

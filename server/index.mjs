@@ -20,6 +20,43 @@ import {
 } from '../src/modules/AgentCenter/agentCenterUtils.mjs';
 import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Account/logQueryUtils.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
+import { handleChatwootAiWebhook } from './chatwootAiResponder.mjs';
+import {
+  assignChatwootConversation,
+  createChatwootCannedResponse,
+  createChatwootCampaign,
+  createChatwootContactNote,
+  createChatwootInternalNote,
+  createChatwootMacro,
+  createChatwootWebhook,
+  deleteChatwootConversationMessage,
+  executeChatwootMacro,
+  listChatwootAssignableAgents,
+  listChatwootAutomationRules,
+  listChatwootCannedResponses,
+  listChatwootCampaigns,
+  listChatwootContacts,
+  listChatwootContactConversations,
+  listChatwootContactNotes,
+  listChatwootConversationMessages,
+  listChatwootConversations,
+  listChatwootInboxes,
+  listChatwootLabels,
+  listChatwootMacros,
+  listChatwootReportsSummary,
+  listChatwootTeams,
+  listChatwootWebhooks,
+  retryChatwootConversationMessage,
+  sendChatwootConversationAttachment,
+  sendChatwootConversationMessage,
+  testChatwootConnection,
+  translateChatwootConversationMessage,
+  updateChatwootContact,
+  updateChatwootConversationLabels,
+  updateChatwootConversationStatus,
+  updateChatwootInbox,
+  updateChatwootWebhook,
+} from './chatwootClient.mjs';
 import {
   filterVisibleChatSessions,
   isStudioTestChatSession,
@@ -31,7 +68,7 @@ import { embedTexts } from './embeddingProvider.mjs';
 import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
-import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
 import {
   CREDIT_LIMIT_MODES,
   attachCreditReservationToJobPayload,
@@ -98,10 +135,50 @@ import {
   buildReadyImageCheckpoint,
   buildSubmittedImageTaskCheckpoint,
 } from './agentChatCheckpointMetadata.mjs';
+import {
+  getSmartFactoryPreviewConfig,
+  runSmartFactoryPreviewTurn,
+  testSmartFactoryKnowledgeSearch,
+  testSmartFactoryModelProviderConnection,
+} from './smartFactoryPreview.mjs';
+import {
+  addSmartFactoryKnowledgeDocument,
+  createDefaultSmartFactoryConfig,
+  createSmartFactoryAgent,
+  createSmartFactoryKnowledgeBase,
+  deleteSmartFactoryKnowledgeBase,
+  deleteSmartFactoryKnowledgeDocument,
+  deleteSmartFactoryTool,
+  mergeSmartFactoryConfigUpdate,
+  normalizeSmartFactoryConfig,
+  publishSmartFactoryAgent,
+  retrainSmartFactoryKnowledgeDocument,
+  updateSmartFactoryAgent,
+  updateSmartFactoryKnowledgeBase,
+  upsertSmartFactoryTool,
+} from './smartFactoryConfigStore.mjs';
+import {
+  createDefaultModelProviderRegistry,
+  deleteModelProvider,
+  extractSmartFactoryModelProvidersForMigration,
+  getModelProviderPresets,
+  getPublicModelProviderRegistry,
+  mergeModelProviderRegistryUpdate,
+  normalizeModelProviderRegistry,
+  upsertModelProvider,
+} from './modelProviderRegistry.mjs';
+import {
+  maybeTrainSmartFactoryKnowledgeBaseEmbeddings,
+  maybeTrainSmartFactoryKnowledgeDocumentEmbeddings,
+} from './smartFactoryKnowledgeTraining.mjs';
+import { runAllowedCliTool } from './ai-engine/cliToolRunner.mjs';
+import { runBuiltinMediaTool } from './ai-engine/smartFactoryMediaToolRunner.mjs';
+import { appendSmartFactoryConversationTurn } from './ai-engine/smartFactoryAgentStore.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 loadServerEnvFile({ envPath: path.join(__dirname, '..', '.env.server') });
+loadServerEnvFile({ envPath: path.join(__dirname, '..', '.env.local') });
 const dataDir = path.join(__dirname, 'data');
 const storePath = path.join(dataDir, 'internal-store.json');
 const distDir = path.join(__dirname, '..', 'dist');
@@ -162,6 +239,16 @@ const getJobDedupeWindowMs = (taskType) => (
 const normalizeJobMaxRetries = (taskType, value) => (
   VIDEO_JOB_TASK_TYPES.has(String(taskType || '')) ? 0 : value
 );
+
+const formatSmartFactoryToolMessagesForTest = (messages = []) => (Array.isArray(messages) ? messages : [])
+  .map((item) => {
+    const type = String(item?.type || 'text');
+    const text = String(item?.message?.text || item?.text || '').trim();
+    if (!text) return '';
+    return type === 'link' ? `result link: ${text}` : text;
+  })
+  .filter(Boolean)
+  .join('\n');
 
 const TRACKED_URL_ARRAY_FIELDS = new Set(['uploadedProductUrls', 'veoReferenceImages']);
 const NULLABLE_TRACKED_FIELDS = new Set(['uploadedReferenceUrl', 'lastStyleUrl', 'uploadedLogoUrl', 'whiteBgImageUrl']);
@@ -698,6 +785,8 @@ const createDefaultSystemSettings = () => ({
     baseUrl: '',
     models: '',
   },
+  modelProviders: createDefaultModelProviderRegistry(),
+  smartFactory: createDefaultSmartFactoryConfig(),
 });
 
 const normalizeOpenAICompatibleSettings = (value = {}) => ({
@@ -736,13 +825,25 @@ const normalizeSystemSettings = (value = {}) => {
   const videoAnalysisModel = String(value?.videoAnalysisModel || '').trim();
   const available = new Set(getChatModelCatalog().map((item) => item.id));
   const videoAvailable = new Set(getChatModelCatalog().filter((item) => String(item.id || '').toLowerCase().startsWith('gemini')).map((item) => item.id));
+  const modelProviders = normalizeModelProviderRegistry(
+    value?.modelProviders || extractSmartFactoryModelProvidersForMigration(value),
+  );
   return {
     analysisModel: analysisModel && available.has(analysisModel) ? analysisModel : '',
     videoAnalysisModel: videoAnalysisModel && videoAvailable.has(videoAnalysisModel) ? videoAnalysisModel : '',
     announcement: normalizeSystemAnnouncement(value?.announcement || {}),
     openaiCompatible: normalizeOpenAICompatibleSettings(value?.openaiCompatible || {}),
+    modelProviders,
+    smartFactory: normalizeSmartFactoryConfig(value?.smartFactory || {}),
   };
 };
+
+const composeSmartFactoryConfigForRuntime = (systemSettings = {}) => (
+  normalizeSmartFactoryConfig({
+    ...(systemSettings?.smartFactory || {}),
+    modelProviders: normalizeModelProviderRegistry(systemSettings?.modelProviders).providers,
+  })
+);
 
 const buildOpenAICompatibleRuntimeEnv = (env, systemSettings = {}) => {
   const openaiCompatible = normalizeOpenAICompatibleSettings(systemSettings?.openaiCompatible || {});
@@ -752,6 +853,30 @@ const buildOpenAICompatibleRuntimeEnv = (env, systemSettings = {}) => {
     ...(openaiCompatible.baseUrl ? { OPENAI_COMPATIBLE_BASE_URL: openaiCompatible.baseUrl } : {}),
     ...(openaiCompatible.models ? { OPENAI_COMPATIBLE_MODELS: openaiCompatible.models } : {}),
   };
+};
+
+const isValidChatwootAiWebhookSecret = (req, url) => {
+  const expected = String(process.env.MEIAO_CHATWOOT_AI_WEBHOOK_SECRET || process.env.CHATWOOT_AI_WEBHOOK_SECRET || '').trim();
+  if (!expected) return true;
+  const supplied = String(req.headers['x-meiao-webhook-secret'] || url.searchParams.get('secret') || '').trim();
+  return supplied && supplied === expected;
+};
+
+const handleChatwootAiWebhookRequest = async (req, res, url, systemSettings = {}) => {
+  if (!isValidChatwootAiWebhookSecret(req, url)) {
+    json(res, 401, { message: 'Chatwoot AI webhook secret 不正确。' });
+    return;
+  }
+  try {
+    const body = await readBody(req);
+    const result = await handleChatwootAiWebhook({
+      payload: body || {},
+      env: buildOpenAICompatibleRuntimeEnv(process.env, systemSettings),
+    });
+    json(res, 200, result);
+  } catch (error) {
+    json(res, 502, { message: error?.message || 'Chatwoot AI 自动回复失败' });
+  }
 };
 
 const mergeOpenAICompatibleSettingsUpdate = (currentSettings = {}, bodySettings = undefined) => {
@@ -6601,6 +6726,11 @@ const getTemporalProviderlessRunningStaleMs = () => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 15 * 60 * 1000;
 };
 
+const getTemporalSubmittedRunningStaleMs = () => {
+  const parsed = Number.parseInt(String(process.env.MEIAO_SUBMITTED_RUNNING_STALE_MS || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 6 * 60 * 60 * 1000;
+};
+
 const getTemporalCancelledRunningStaleMs = () => {
   const parsed = Number.parseInt(String(process.env.MEIAO_CANCELLED_RUNNING_STALE_MS || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 1000;
@@ -6625,13 +6755,19 @@ const runTemporalStaleRunningJobReconcile = async (pool, reason = 'interval') =>
   const recoveredJobs = await reconcileStaleProviderlessRunningJobs(pool, {
     staleMs: getTemporalProviderlessRunningStaleMs(),
   });
-  const totalRecovered = cancelledJobs.length + recoveredJobs.length;
+  const submittedJobs = await reconcileStaleSubmittedRunningJobs(pool, {
+    staleMs: getTemporalSubmittedRunningStaleMs(),
+  });
+  const totalRecovered = cancelledJobs.length + recoveredJobs.length + submittedJobs.length;
   if (totalRecovered > 0) {
     if (cancelledJobs.length > 0) {
       console.log(`Recovered ${cancelledJobs.length} cancelled running Temporal jobs (${reason}).`);
     }
     if (recoveredJobs.length > 0) {
       console.log(`Recovered ${recoveredJobs.length} providerless running Temporal jobs (${reason}).`);
+    }
+    if (submittedJobs.length > 0) {
+      console.log(`Recovered ${submittedJobs.length} submitted running Temporal jobs (${reason}).`);
     }
     const resumed = await resumePendingDbTemporalJobs(pool, Math.max(100, totalRecovered + 20));
     if (resumed > 0) {
@@ -8576,6 +8712,501 @@ const handleMysqlRequest = async (req, res, url) => {
     return;
   }
 
+  if (url.pathname === '/api/chatwoot/ai-webhook' && req.method === 'POST') {
+    const systemSettings = await getDbSystemSettings();
+    await handleChatwootAiWebhookRequest(req, res, url, systemSettings);
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/test-connection' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await testChatwootConnection(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 连接测试失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/conversations' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootConversations(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 会话拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/messages' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootConversationMessages(body || {}, body?.conversationId);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 消息拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/send-message' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await sendChatwootConversationMessage(body || {}, body?.conversationId, body?.content);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 回复发送失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/send-attachment' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const formData = await readMultipartFormData(req);
+      const result = await sendChatwootConversationAttachment({
+        baseUrl: formData.get('baseUrl'),
+        accountId: formData.get('accountId'),
+        inboxId: formData.get('inboxId'),
+        apiToken: formData.get('apiToken'),
+      }, formData.get('conversationId'), {
+        content: formData.get('content'),
+        file: formData.get('file'),
+        fileName: formData.get('fileName'),
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 附件发送失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/conversation-status' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await updateChatwootConversationStatus(body || {}, body?.conversationId, body?.status);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 会话状态更新失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/internal-note' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootInternalNote(body || {}, body?.conversationId, body?.content);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 内部备注发送失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/labels' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootLabels(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 标签拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/conversation-labels' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await updateChatwootConversationLabels(body || {}, body?.conversationId, body?.labels);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 会话标签更新失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/assignable-agents' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootAssignableAgents(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 坐席拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/teams' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootTeams(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 团队拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/assign-conversation' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await assignChatwootConversation(body || {}, body?.conversationId, {
+        assigneeId: body?.assigneeId,
+        teamId: body?.teamId,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 会话分配失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/canned-responses' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootCannedResponses(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 话术拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/canned-response' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootCannedResponse(body || {}, {
+        shortCode: body?.shortCode,
+        content: body?.content,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 话术创建失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/automation-rules' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootAutomationRules(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 自动化规则拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/contacts' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootContacts(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 客户资料拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/contact-notes' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootContactNotes(body || {}, body?.contactId);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 客户备注拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/contact-note' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootContactNote(body || {}, body?.contactId, body?.content);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 客户备注创建失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/update-contact' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await updateChatwootContact(body || {}, body?.contactId, {
+        name: body?.name,
+        email: body?.email,
+        phone: body?.phone,
+        customAttributes: body?.customAttributes,
+        additionalAttributes: body?.additionalAttributes,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 客户资料更新失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/contact-conversations' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootContactConversations(body || {}, body?.contactId);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 客户历史会话拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/delete-message' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await deleteChatwootConversationMessage(body || {}, body?.conversationId, body?.messageId);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 消息删除失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/retry-message' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await retryChatwootConversationMessage(body || {}, body?.conversationId, body?.messageId);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 消息重试失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/translate-message' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await translateChatwootConversationMessage(body || {}, body?.conversationId, body?.messageId, body?.targetLanguage || 'zh_CN');
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 消息翻译失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/macros' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootMacros(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 宏拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/macro' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootMacro(body || {}, {
+        name: body?.name,
+        visibility: body?.visibility,
+        actions: body?.actions,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 宏创建失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/execute-macro' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await executeChatwootMacro(body || {}, body?.macroId, body?.conversationIds);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 宏执行失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/campaigns' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootCampaigns(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 活动拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/campaign' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootCampaign(body || {}, {
+        title: body?.title,
+        message: body?.message,
+        inboxId: body?.inboxId,
+        enabled: body?.enabled,
+        triggerOnlyDuringBusinessHours: body?.triggerOnlyDuringBusinessHours,
+        audience: body?.audience,
+        triggerRules: body?.triggerRules,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 活动创建失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/webhooks' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootWebhooks(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot Webhook 拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/webhook' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootWebhook(body || {}, {
+        name: body?.name,
+        url: body?.url,
+        subscriptions: body?.subscriptions,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot Webhook 创建失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/update-webhook' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await updateChatwootWebhook(body || {}, body?.webhookId, {
+        name: body?.name,
+        url: body?.url,
+        subscriptions: body?.subscriptions,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot Webhook 更新失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/inboxes' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootInboxes(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 收件箱拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/update-inbox' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await updateChatwootInbox(body || {}, body?.targetInboxId || body?.inboxId, {
+        name: body?.name,
+        enableAutoAssignment: body?.enableAutoAssignment,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 收件箱更新失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/reports-summary' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootReportsSummary(body || {}, {
+        since: body?.since,
+        until: body?.until,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 报表摘要拉取失败' });
+    }
+    return;
+  }
+
   if (url.pathname === '/api/auth/login' && req.method === 'POST') {
     const body = await readBody(req);
     const username = String(body.username || '').trim();
@@ -8654,6 +9285,313 @@ const handleMysqlRequest = async (req, res, url) => {
       });
     }
     json(res, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/preview-turn' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const systemSettings = await getDbSystemSettings();
+    const result = await runSmartFactoryPreviewTurn({
+      message: body.message,
+      smartFactoryConfig: composeSmartFactoryConfigForRuntime(systemSettings),
+    });
+    json(res, 200, { result });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/config' && req.method === 'GET') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const systemSettings = await getDbSystemSettings();
+    json(res, 200, {
+      config: getSmartFactoryPreviewConfig({
+        smartFactoryConfig: composeSmartFactoryConfigForRuntime(systemSettings),
+      }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/config' && req.method === 'PATCH') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const nextSmartFactory = mergeSmartFactoryConfigUpdate(currentSettings.smartFactory, body?.smartFactory ?? body?.config ?? body);
+    const nextSettings = await saveDbSystemSettings({
+      ...currentSettings,
+      smartFactory: nextSmartFactory,
+    });
+    json(res, 200, {
+      config: getSmartFactoryPreviewConfig({
+        smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings),
+      }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/model-providers' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const nextSettings = await saveDbSystemSettings({
+      ...currentSettings,
+      modelProviders: upsertModelProvider(currentSettings.modelProviders, body),
+    });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/model-provider-presets' && req.method === 'GET') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    json(res, 200, { presets: getModelProviderPresets() });
+    return;
+  }
+
+  const dbSmartFactoryModelProviderMatch = url.pathname.match(/^\/api\/smart-factory\/model-providers\/([^/]+)$/);
+  if (dbSmartFactoryModelProviderMatch && req.method === 'DELETE') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const currentSettings = await getDbSystemSettings();
+    const nextSettings = await saveDbSystemSettings({
+      ...currentSettings,
+      modelProviders: deleteModelProvider(currentSettings.modelProviders, decodeURIComponent(dbSmartFactoryModelProviderMatch[1])),
+    });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/model-providers/test' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    json(res, 200, await testSmartFactoryModelProviderConnection(body, { env: process.env }));
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/agents' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const nextSmartFactory = createSmartFactoryAgent(currentSettings.smartFactory, body);
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const dbSmartFactoryAgentMatch = url.pathname.match(/^\/api\/smart-factory\/agents\/([^/]+)$/);
+  if (dbSmartFactoryAgentMatch && req.method === 'PATCH') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const nextSmartFactory = updateSmartFactoryAgent(currentSettings.smartFactory, decodeURIComponent(dbSmartFactoryAgentMatch[1]), body);
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const dbSmartFactoryAgentPublishMatch = url.pathname.match(/^\/api\/smart-factory\/agents\/([^/]+)\/publish$/);
+  if (dbSmartFactoryAgentPublishMatch && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const currentSettings = await getDbSystemSettings();
+    const nextSmartFactory = publishSmartFactoryAgent(currentSettings.smartFactory, decodeURIComponent(dbSmartFactoryAgentPublishMatch[1]));
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/knowledge-bases' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const nextSmartFactory = createSmartFactoryKnowledgeBase(currentSettings.smartFactory, body);
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const dbSmartFactoryKnowledgeBaseMatch = url.pathname.match(/^\/api\/smart-factory\/knowledge-bases\/([^/]+)$/);
+  if (dbSmartFactoryKnowledgeBaseMatch && req.method === 'PATCH') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const nextSmartFactory = updateSmartFactoryKnowledgeBase(currentSettings.smartFactory, decodeURIComponent(dbSmartFactoryKnowledgeBaseMatch[1]), body);
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (dbSmartFactoryKnowledgeBaseMatch && req.method === 'DELETE') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const currentSettings = await getDbSystemSettings();
+    const nextSmartFactory = deleteSmartFactoryKnowledgeBase(currentSettings.smartFactory, decodeURIComponent(dbSmartFactoryKnowledgeBaseMatch[1]));
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/chat' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const result = await runSmartFactoryPreviewTurn({
+      message: body.message,
+      agentId: body.agentId,
+      smartFactoryConfig: composeSmartFactoryConfigForRuntime(currentSettings),
+    });
+    const nextAgentState = appendSmartFactoryConversationTurn(currentSettings.smartFactory, {
+      sessionId: body.sessionId,
+      userMessage: body.message,
+      assistantAnswer: result.answer,
+      trace: result.trace,
+    });
+    const nextSmartFactory = mergeSmartFactoryConfigUpdate(currentSettings.smartFactory, {
+      agents: nextAgentState.agents,
+      sessions: nextAgentState.sessions,
+    });
+    const nextSettings = await saveDbSystemSettings({
+      ...currentSettings,
+      smartFactory: nextSmartFactory,
+    });
+    json(res, 200, {
+      result,
+      config: getSmartFactoryPreviewConfig({
+        smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings),
+      }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/knowledge-documents' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const addedSmartFactory = addSmartFactoryKnowledgeDocument(currentSettings.smartFactory, {
+      knowledgeBaseId: body.knowledgeBaseId,
+      document: body.document,
+    });
+    const trainingResult = await maybeTrainSmartFactoryKnowledgeBaseEmbeddings(addedSmartFactory, body.knowledgeBaseId, {
+      env: process.env,
+    });
+    const nextSmartFactory = trainingResult.config;
+    const nextSettings = await saveDbSystemSettings({
+      ...currentSettings,
+      smartFactory: nextSmartFactory,
+    });
+    json(res, 200, {
+      config: getSmartFactoryPreviewConfig({
+        smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings),
+      }),
+    });
+    return;
+  }
+
+  const dbSmartFactoryRetrainDocumentMatch = url.pathname.match(/^\/api\/smart-factory\/knowledge-documents\/([^/]+)\/retrain$/);
+  if (dbSmartFactoryRetrainDocumentMatch && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const documentId = decodeURIComponent(dbSmartFactoryRetrainDocumentMatch[1]);
+    const retrainedSmartFactory = retrainSmartFactoryKnowledgeDocument(currentSettings.smartFactory, documentId, body);
+    const trainingResult = await maybeTrainSmartFactoryKnowledgeDocumentEmbeddings(retrainedSmartFactory, documentId, {
+      env: process.env,
+    });
+    const nextSmartFactory = trainingResult.config;
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const dbSmartFactoryDeleteDocumentMatch = url.pathname.match(/^\/api\/smart-factory\/knowledge-documents\/([^/]+)$/);
+  if (dbSmartFactoryDeleteDocumentMatch && req.method === 'DELETE') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const currentSettings = await getDbSystemSettings();
+    const nextSmartFactory = deleteSmartFactoryKnowledgeDocument(currentSettings.smartFactory, decodeURIComponent(dbSmartFactoryDeleteDocumentMatch[1]));
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/knowledge-search' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    json(res, 200, {
+      search: testSmartFactoryKnowledgeSearch({
+        query: body.query,
+        knowledgeBaseIds: body.knowledgeBaseIds,
+        retrievalPolicy: body.retrievalPolicy,
+        smartFactoryConfig: composeSmartFactoryConfigForRuntime(currentSettings),
+      }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/tools' && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const nextSmartFactory = upsertSmartFactoryTool(currentSettings.smartFactory, body);
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const dbSmartFactoryToolMatch = url.pathname.match(/^\/api\/smart-factory\/tools\/([^/]+)$/);
+  if (dbSmartFactoryToolMatch && req.method === 'DELETE') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const currentSettings = await getDbSystemSettings();
+    const nextSmartFactory = deleteSmartFactoryTool(currentSettings.smartFactory, decodeURIComponent(dbSmartFactoryToolMatch[1]));
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const dbSmartFactoryToolTestMatch = url.pathname.match(/^\/api\/smart-factory\/tools\/([^/]+)\/test$/);
+  if (dbSmartFactoryToolTestMatch && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const body = await readBody(req);
+    const toolName = decodeURIComponent(dbSmartFactoryToolTestMatch[1]);
+    const currentSettings = await getDbSystemSettings();
+    const tool = normalizeSmartFactoryConfig(currentSettings.smartFactory).tools.find((item) => item.name === toolName);
+    if (!tool) {
+      json(res, 404, { error: '工具不存在。' });
+      return;
+    }
+    const messages = tool.type === 'builtin'
+      ? await runBuiltinMediaTool({
+          executorRef: tool.executorRef,
+          args: body || {},
+          tool,
+          env: process.env,
+        })
+      : await runAllowedCliTool({
+          executorRef: tool.executorRef,
+          args: body || {},
+          env: process.env,
+        });
+    json(res, 200, {
+      ok: true,
+      toolName,
+      observation: formatSmartFactoryToolMessagesForTest(messages),
+    });
     return;
   }
 
@@ -9579,6 +10517,9 @@ const handleMysqlRequest = async (req, res, url) => {
       videoAnalysisModel: body?.videoAnalysisModel ?? currentSettings.videoAnalysisModel,
       announcement: mergeSystemAnnouncementUpdate(currentSettings, body?.announcement, admin),
       openaiCompatible: mergeOpenAICompatibleSettingsUpdate(currentSettings, body?.openaiCompatible),
+      modelProviders: body?.modelProviders === undefined
+        ? currentSettings.modelProviders
+        : mergeModelProviderRegistryUpdate(currentSettings.modelProviders, body.modelProviders),
     });
     const pool = await getMysqlPool();
     const queueStats = await getJobQueueStats(pool);
@@ -9590,6 +10531,55 @@ const handleMysqlRequest = async (req, res, url) => {
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
+    return;
+  }
+
+  if (url.pathname === '/api/system/model-providers' && req.method === 'GET') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const systemSettings = await getDbSystemSettings();
+    json(res, 200, {
+      registry: getPublicModelProviderRegistry(systemSettings.modelProviders),
+      presets: getModelProviderPresets(),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/system/model-providers' && req.method === 'POST') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const body = await readBody(req);
+    const currentSettings = await getDbSystemSettings();
+    const nextSettings = await saveDbSystemSettings({
+      ...currentSettings,
+      modelProviders: upsertModelProvider(currentSettings.modelProviders, body),
+    });
+    json(res, 200, {
+      registry: getPublicModelProviderRegistry(nextSettings.modelProviders),
+    });
+    return;
+  }
+
+  const dbSystemModelProviderMatch = url.pathname.match(/^\/api\/system\/model-providers\/([^/]+)$/);
+  if (dbSystemModelProviderMatch && req.method === 'DELETE') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const currentSettings = await getDbSystemSettings();
+    const nextSettings = await saveDbSystemSettings({
+      ...currentSettings,
+      modelProviders: deleteModelProvider(currentSettings.modelProviders, decodeURIComponent(dbSystemModelProviderMatch[1])),
+    });
+    json(res, 200, {
+      registry: getPublicModelProviderRegistry(nextSettings.modelProviders),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/system/model-providers/test' && req.method === 'POST') {
+    const admin = await requireDbAdmin(req, res);
+    if (!admin) return;
+    const body = await readBody(req);
+    json(res, 200, await testSmartFactoryModelProviderConnection(body, { env: process.env }));
     return;
   }
 
@@ -10071,6 +11061,11 @@ const handleLocalRequest = async (req, res, url) => {
     return;
   }
 
+  if (url.pathname === '/api/chatwoot/ai-webhook' && req.method === 'POST') {
+    await handleChatwootAiWebhookRequest(req, res, url, getLocalSystemSettings(store));
+    return;
+  }
+
   if (url.pathname === '/api/auth/login' && req.method === 'POST') {
     const body = await readBody(req);
     const username = String(body.username || '').trim();
@@ -10149,6 +11144,817 @@ const handleLocalRequest = async (req, res, url) => {
     });
     writeLocalStore(store);
     json(res, 200, { ok: true });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/preview-turn' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const systemSettings = getLocalSystemSettings(store);
+    const result = await runSmartFactoryPreviewTurn({
+      message: body.message,
+      smartFactoryConfig: composeSmartFactoryConfigForRuntime(systemSettings),
+    });
+    json(res, 200, { result });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/config' && req.method === 'GET') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const systemSettings = getLocalSystemSettings(store);
+    json(res, 200, {
+      config: getSmartFactoryPreviewConfig({
+        smartFactoryConfig: composeSmartFactoryConfigForRuntime(systemSettings),
+      }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/config' && req.method === 'PATCH') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSmartFactory = mergeSmartFactoryConfigUpdate(currentLocalSettings.smartFactory, body?.smartFactory ?? body?.config ?? body);
+    const nextSettings = saveLocalSystemSettings(store, {
+      ...currentLocalSettings,
+      smartFactory: nextSmartFactory,
+    });
+    writeLocalStore(store);
+    json(res, 200, {
+      config: getSmartFactoryPreviewConfig({
+        smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings),
+      }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/model-providers' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSettings = saveLocalSystemSettings(store, {
+      ...currentLocalSettings,
+      modelProviders: upsertModelProvider(currentLocalSettings.modelProviders, body),
+    });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/model-provider-presets' && req.method === 'GET') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    json(res, 200, { presets: getModelProviderPresets() });
+    return;
+  }
+
+  const localSmartFactoryModelProviderMatch = url.pathname.match(/^\/api\/smart-factory\/model-providers\/([^/]+)$/);
+  if (localSmartFactoryModelProviderMatch && req.method === 'DELETE') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSettings = saveLocalSystemSettings(store, {
+      ...currentLocalSettings,
+      modelProviders: deleteModelProvider(currentLocalSettings.modelProviders, decodeURIComponent(localSmartFactoryModelProviderMatch[1])),
+    });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/model-providers/test' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    json(res, 200, await testSmartFactoryModelProviderConnection(body, { env: process.env }));
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/agents' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSmartFactory = createSmartFactoryAgent(currentLocalSettings.smartFactory, body);
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const localSmartFactoryAgentMatch = url.pathname.match(/^\/api\/smart-factory\/agents\/([^/]+)$/);
+  if (localSmartFactoryAgentMatch && req.method === 'PATCH') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSmartFactory = updateSmartFactoryAgent(currentLocalSettings.smartFactory, decodeURIComponent(localSmartFactoryAgentMatch[1]), body);
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const localSmartFactoryAgentPublishMatch = url.pathname.match(/^\/api\/smart-factory\/agents\/([^/]+)\/publish$/);
+  if (localSmartFactoryAgentPublishMatch && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSmartFactory = publishSmartFactoryAgent(currentLocalSettings.smartFactory, decodeURIComponent(localSmartFactoryAgentPublishMatch[1]));
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/knowledge-bases' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSmartFactory = createSmartFactoryKnowledgeBase(currentLocalSettings.smartFactory, body);
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const localSmartFactoryKnowledgeBaseMatch = url.pathname.match(/^\/api\/smart-factory\/knowledge-bases\/([^/]+)$/);
+  if (localSmartFactoryKnowledgeBaseMatch && req.method === 'PATCH') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSmartFactory = updateSmartFactoryKnowledgeBase(currentLocalSettings.smartFactory, decodeURIComponent(localSmartFactoryKnowledgeBaseMatch[1]), body);
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (localSmartFactoryKnowledgeBaseMatch && req.method === 'DELETE') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSmartFactory = deleteSmartFactoryKnowledgeBase(currentLocalSettings.smartFactory, decodeURIComponent(localSmartFactoryKnowledgeBaseMatch[1]));
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/chat' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const result = await runSmartFactoryPreviewTurn({
+      message: body.message,
+      agentId: body.agentId,
+      smartFactoryConfig: composeSmartFactoryConfigForRuntime(currentLocalSettings),
+    });
+    const nextAgentState = appendSmartFactoryConversationTurn(currentLocalSettings.smartFactory, {
+      sessionId: body.sessionId,
+      userMessage: body.message,
+      assistantAnswer: result.answer,
+      trace: result.trace,
+    });
+    const nextSmartFactory = mergeSmartFactoryConfigUpdate(currentLocalSettings.smartFactory, {
+      agents: nextAgentState.agents,
+      sessions: nextAgentState.sessions,
+    });
+    const nextSettings = saveLocalSystemSettings(store, {
+      ...currentLocalSettings,
+      smartFactory: nextSmartFactory,
+    });
+    writeLocalStore(store);
+    json(res, 200, {
+      result,
+      config: getSmartFactoryPreviewConfig({
+        smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings),
+      }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/knowledge-documents' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const addedSmartFactory = addSmartFactoryKnowledgeDocument(currentLocalSettings.smartFactory, {
+      knowledgeBaseId: body.knowledgeBaseId,
+      document: body.document,
+    });
+    const trainingResult = await maybeTrainSmartFactoryKnowledgeBaseEmbeddings(addedSmartFactory, body.knowledgeBaseId, {
+      env: process.env,
+    });
+    const nextSmartFactory = trainingResult.config;
+    const nextSettings = saveLocalSystemSettings(store, {
+      ...currentLocalSettings,
+      smartFactory: nextSmartFactory,
+    });
+    writeLocalStore(store);
+    json(res, 200, {
+      config: getSmartFactoryPreviewConfig({
+        smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings),
+      }),
+    });
+    return;
+  }
+
+  const localSmartFactoryRetrainDocumentMatch = url.pathname.match(/^\/api\/smart-factory\/knowledge-documents\/([^/]+)\/retrain$/);
+  if (localSmartFactoryRetrainDocumentMatch && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const documentId = decodeURIComponent(localSmartFactoryRetrainDocumentMatch[1]);
+    const retrainedSmartFactory = retrainSmartFactoryKnowledgeDocument(currentLocalSettings.smartFactory, documentId, body);
+    const trainingResult = await maybeTrainSmartFactoryKnowledgeDocumentEmbeddings(retrainedSmartFactory, documentId, {
+      env: process.env,
+    });
+    const nextSmartFactory = trainingResult.config;
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const localSmartFactoryDeleteDocumentMatch = url.pathname.match(/^\/api\/smart-factory\/knowledge-documents\/([^/]+)$/);
+  if (localSmartFactoryDeleteDocumentMatch && req.method === 'DELETE') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSmartFactory = deleteSmartFactoryKnowledgeDocument(currentLocalSettings.smartFactory, decodeURIComponent(localSmartFactoryDeleteDocumentMatch[1]));
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/knowledge-search' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    json(res, 200, {
+      search: testSmartFactoryKnowledgeSearch({
+        query: body.query,
+        knowledgeBaseIds: body.knowledgeBaseIds,
+        retrievalPolicy: body.retrievalPolicy,
+        smartFactoryConfig: composeSmartFactoryConfigForRuntime(currentLocalSettings),
+      }),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/smart-factory/tools' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSmartFactory = upsertSmartFactoryTool(currentLocalSettings.smartFactory, body);
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const localSmartFactoryToolMatch = url.pathname.match(/^\/api\/smart-factory\/tools\/([^/]+)$/);
+  if (localSmartFactoryToolMatch && req.method === 'DELETE') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSmartFactory = deleteSmartFactoryTool(currentLocalSettings.smartFactory, decodeURIComponent(localSmartFactoryToolMatch[1]));
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  const localSmartFactoryToolTestMatch = url.pathname.match(/^\/api\/smart-factory\/tools\/([^/]+)\/test$/);
+  if (localSmartFactoryToolTestMatch && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const body = await readBody(req);
+    const toolName = decodeURIComponent(localSmartFactoryToolTestMatch[1]);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const tool = normalizeSmartFactoryConfig(currentLocalSettings.smartFactory).tools.find((item) => item.name === toolName);
+    if (!tool) {
+      json(res, 404, { error: '工具不存在。' });
+      return;
+    }
+    const messages = tool.type === 'builtin'
+      ? await runBuiltinMediaTool({
+          executorRef: tool.executorRef,
+          args: body || {},
+          tool,
+          env: process.env,
+        })
+      : await runAllowedCliTool({
+          executorRef: tool.executorRef,
+          args: body || {},
+          env: process.env,
+        });
+    json(res, 200, {
+      ok: true,
+      toolName,
+      observation: formatSmartFactoryToolMessagesForTest(messages),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/test-connection' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await testChatwootConnection(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 连接测试失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/conversations' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootConversations(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 会话拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/messages' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootConversationMessages(body || {}, body?.conversationId);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 消息拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/send-message' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await sendChatwootConversationMessage(body || {}, body?.conversationId, body?.content);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 回复发送失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/send-attachment' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const formData = await readMultipartFormData(req);
+      const result = await sendChatwootConversationAttachment({
+        baseUrl: formData.get('baseUrl'),
+        accountId: formData.get('accountId'),
+        inboxId: formData.get('inboxId'),
+        apiToken: formData.get('apiToken'),
+      }, formData.get('conversationId'), {
+        content: formData.get('content'),
+        file: formData.get('file'),
+        fileName: formData.get('fileName'),
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 附件发送失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/conversation-status' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await updateChatwootConversationStatus(body || {}, body?.conversationId, body?.status);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 会话状态更新失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/internal-note' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootInternalNote(body || {}, body?.conversationId, body?.content);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 内部备注发送失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/labels' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootLabels(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 标签拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/conversation-labels' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await updateChatwootConversationLabels(body || {}, body?.conversationId, body?.labels);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 会话标签更新失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/assignable-agents' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootAssignableAgents(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 坐席拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/teams' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootTeams(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 团队拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/assign-conversation' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await assignChatwootConversation(body || {}, body?.conversationId, {
+        assigneeId: body?.assigneeId,
+        teamId: body?.teamId,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 会话分配失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/canned-responses' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootCannedResponses(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 话术拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/canned-response' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootCannedResponse(body || {}, {
+        shortCode: body?.shortCode,
+        content: body?.content,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 话术创建失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/automation-rules' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootAutomationRules(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 自动化规则拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/contacts' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootContacts(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 客户资料拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/contact-notes' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootContactNotes(body || {}, body?.contactId);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 客户备注拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/contact-note' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootContactNote(body || {}, body?.contactId, body?.content);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 客户备注创建失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/update-contact' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await updateChatwootContact(body || {}, body?.contactId, {
+        name: body?.name,
+        email: body?.email,
+        phone: body?.phone,
+        customAttributes: body?.customAttributes,
+        additionalAttributes: body?.additionalAttributes,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 客户资料更新失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/contact-conversations' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootContactConversations(body || {}, body?.contactId);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 客户历史会话拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/delete-message' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await deleteChatwootConversationMessage(body || {}, body?.conversationId, body?.messageId);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 消息删除失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/retry-message' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await retryChatwootConversationMessage(body || {}, body?.conversationId, body?.messageId);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 消息重试失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/translate-message' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await translateChatwootConversationMessage(body || {}, body?.conversationId, body?.messageId, body?.targetLanguage || 'zh_CN');
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 消息翻译失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/macros' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootMacros(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 宏拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/macro' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootMacro(body || {}, {
+        name: body?.name,
+        visibility: body?.visibility,
+        actions: body?.actions,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 宏创建失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/execute-macro' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await executeChatwootMacro(body || {}, body?.macroId, body?.conversationIds);
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 宏执行失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/campaigns' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootCampaigns(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 活动拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/campaign' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootCampaign(body || {}, {
+        title: body?.title,
+        message: body?.message,
+        inboxId: body?.inboxId,
+        enabled: body?.enabled,
+        triggerOnlyDuringBusinessHours: body?.triggerOnlyDuringBusinessHours,
+        audience: body?.audience,
+        triggerRules: body?.triggerRules,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 活动创建失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/webhooks' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootWebhooks(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot Webhook 拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/webhook' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await createChatwootWebhook(body || {}, {
+        name: body?.name,
+        url: body?.url,
+        subscriptions: body?.subscriptions,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot Webhook 创建失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/update-webhook' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await updateChatwootWebhook(body || {}, body?.webhookId, {
+        name: body?.name,
+        url: body?.url,
+        subscriptions: body?.subscriptions,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot Webhook 更新失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/inboxes' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootInboxes(body || {});
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 收件箱拉取失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/update-inbox' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await updateChatwootInbox(body || {}, body?.targetInboxId || body?.inboxId, {
+        name: body?.name,
+        enableAutoAssignment: body?.enableAutoAssignment,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 收件箱更新失败' });
+    }
+    return;
+  }
+
+  if (url.pathname === '/api/chatwoot/reports-summary' && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    try {
+      const body = await readBody(req);
+      const result = await listChatwootReportsSummary(body || {}, {
+        since: body?.since,
+        until: body?.until,
+      });
+      json(res, 200, result);
+    } catch (error) {
+      json(res, 502, { message: error?.message || 'Chatwoot 报表摘要拉取失败' });
+    }
     return;
   }
 
@@ -11950,6 +13756,9 @@ const handleLocalRequest = async (req, res, url) => {
       videoAnalysisModel: body?.videoAnalysisModel ?? currentLocalSettings.videoAnalysisModel,
       announcement: mergeSystemAnnouncementUpdate(currentLocalSettings, body?.announcement, admin),
       openaiCompatible: mergeOpenAICompatibleSettingsUpdate(currentLocalSettings, body?.openaiCompatible),
+      modelProviders: body?.modelProviders === undefined
+        ? currentLocalSettings.modelProviders
+        : mergeModelProviderRegistryUpdate(currentLocalSettings.modelProviders, body.modelProviders),
     });
     writeLocalStore(store);
     json(res, 200, {
@@ -11960,6 +13769,57 @@ const handleLocalRequest = async (req, res, url) => {
         publicBaseUrl: getPersistentAssetBaseUrl(req),
       }),
     });
+    return;
+  }
+
+  if (url.pathname === '/api/system/model-providers' && req.method === 'GET') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const systemSettings = getLocalSystemSettings(store);
+    json(res, 200, {
+      registry: getPublicModelProviderRegistry(systemSettings.modelProviders),
+      presets: getModelProviderPresets(),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/system/model-providers' && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const body = await readBody(req);
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSettings = saveLocalSystemSettings(store, {
+      ...currentLocalSettings,
+      modelProviders: upsertModelProvider(currentLocalSettings.modelProviders, body),
+    });
+    writeLocalStore(store);
+    json(res, 200, {
+      registry: getPublicModelProviderRegistry(nextSettings.modelProviders),
+    });
+    return;
+  }
+
+  const localSystemModelProviderMatch = url.pathname.match(/^\/api\/system\/model-providers\/([^/]+)$/);
+  if (localSystemModelProviderMatch && req.method === 'DELETE') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const currentLocalSettings = getLocalSystemSettings(store);
+    const nextSettings = saveLocalSystemSettings(store, {
+      ...currentLocalSettings,
+      modelProviders: deleteModelProvider(currentLocalSettings.modelProviders, decodeURIComponent(localSystemModelProviderMatch[1])),
+    });
+    writeLocalStore(store);
+    json(res, 200, {
+      registry: getPublicModelProviderRegistry(nextSettings.modelProviders),
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/system/model-providers/test' && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const body = await readBody(req);
+    json(res, 200, await testSmartFactoryModelProviderConnection(body, { env: process.env }));
     return;
   }
 
@@ -12483,6 +14343,9 @@ const bootstrap = async () => {
           findUserById: findDbUserById,
           settleJobCredits: async ({ job, output, finishedAt, aborted }) => settleDbJobCredits({ pool, job, output, finishedAt, aborted }),
           releaseJobCredits: async ({ job, error, finishedAt, retryWaiting }) => releaseDbJobCredits({ pool, job, error, finishedAt, retryWaiting }),
+          getProviderlessRunningStaleMs: getTemporalProviderlessRunningStaleMs,
+          getSubmittedRunningStaleMs: getTemporalSubmittedRunningStaleMs,
+          getCancelledRunningStaleMs: getTemporalCancelledRunningStaleMs,
         }),
         workerOptions: {
           maxConcurrentActivityTaskExecutions: Math.max(1, await getDbWorkerConcurrency()),
@@ -12509,6 +14372,9 @@ const bootstrap = async () => {
         settleJobCredits: async ({ job, output, finishedAt, aborted }) => settleDbJobCredits({ pool, job, output, finishedAt, aborted }),
         releaseJobCredits: async ({ job, error, finishedAt, retryWaiting }) => releaseDbJobCredits({ pool, job, error, finishedAt, retryWaiting }),
         getTaskEngineMode: () => process.env.MEIAO_TASK_ENGINE,
+        getProviderlessRunningStaleMs: getTemporalProviderlessRunningStaleMs,
+        getSubmittedRunningStaleMs: getTemporalSubmittedRunningStaleMs,
+        getCancelledRunningStaleMs: getTemporalCancelledRunningStaleMs,
       });
       jobWorker.start(1000);
     }

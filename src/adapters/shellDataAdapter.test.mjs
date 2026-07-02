@@ -3203,6 +3203,266 @@ test('shell data adapter keeps active buyer show project cards before provider t
   assert.equal(task.status, 'generating');
 });
 
+test('shell data adapter groups buyer show batch jobs by set project and preserves each set card', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [
+      {
+        id: 'buyer-show-batch-project-set-1',
+        name: '买家秀批量任务 · 第1套',
+        module: 'buyer_show',
+        status: 'error',
+        createdAt: 1782889000000,
+        results: [{
+          id: 'old-error',
+          imageUrl: '',
+          mediaType: 'image',
+          prompt: '旧失败',
+          model: 'gpt-image-2',
+          aspectRatio: '3:4',
+          status: 'error',
+          createdAt: 1782889000000,
+          module: 'buyer_show',
+          subFeature: 'image',
+          backendJobId: 'buyer-set-1-job-2',
+          batchIndex: 2,
+          error: '旧失败',
+        }],
+        taskCount: 1,
+        completedCount: 0,
+        subFeature: 'image',
+      },
+    ],
+  }, [
+    {
+      id: 'buyer-set-1-job-2',
+      module: 'buyer_show',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'failed',
+      providerTaskId: 'provider-2',
+      errorMessage: 'Internal Error, Please try again later.',
+      payload: {
+        prompt: '第2张',
+        shellProjectId: 'buyer-show-batch-project-set-1',
+        shellProjectName: '买家秀批量任务 · 第1套',
+        batchIndex: 2,
+        batchCount: 3,
+        setIndex: 1,
+        imageIndex: 2,
+        buyerShowRootProjectId: 'buyer-show-batch-project',
+        subFeature: 'image',
+        aspectRatio: '3:4',
+      },
+      createdAt: 1782889000002,
+    },
+    {
+      id: 'buyer-set-1-job-1',
+      module: 'buyer_show',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'provider-1',
+      payload: {
+        prompt: '第1张',
+        shellProjectId: 'buyer-show-batch-project-set-1',
+        shellProjectName: '买家秀批量任务 · 第1套',
+        batchIndex: 1,
+        batchCount: 3,
+        setIndex: 1,
+        imageIndex: 1,
+        buyerShowRootProjectId: 'buyer-show-batch-project',
+        subFeature: 'image',
+        aspectRatio: '3:4',
+      },
+      result: {
+        imageUrl: '/buyer-1.png',
+        providerTaskId: 'provider-1',
+      },
+      createdAt: 1782889000001,
+      finishedAt: 1782889000100,
+    },
+    {
+      id: 'buyer-set-1-job-3',
+      module: 'buyer_show',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: '',
+      payload: {
+        prompt: '第3张',
+        shellProjectId: 'buyer-show-batch-project-set-1',
+        shellProjectName: '买家秀批量任务 · 第1套',
+        batchIndex: 3,
+        batchCount: 3,
+        setIndex: 1,
+        imageIndex: 3,
+        buyerShowRootProjectId: 'buyer-show-batch-project',
+        subFeature: 'image',
+        aspectRatio: '3:4',
+      },
+      createdAt: 1782889000003,
+    },
+    {
+      id: 'buyer-set-2-job-1',
+      module: 'buyer_show',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: '',
+      payload: {
+        prompt: '第2套第1张',
+        shellProjectId: 'buyer-show-batch-project-set-2',
+        shellProjectName: '买家秀批量任务 · 第2套',
+        batchIndex: 1,
+        batchCount: 3,
+        setIndex: 2,
+        imageIndex: 1,
+        buyerShowRootProjectId: 'buyer-show-batch-project',
+        subFeature: 'image',
+        aspectRatio: '3:4',
+      },
+      createdAt: 1782889000004,
+    },
+  ]);
+
+  const setOne = snapshot.projects.find((item) => item.id === 'buyer-show-batch-project-set-1');
+  const setTwo = snapshot.projects.find((item) => item.id === 'buyer-show-batch-project-set-2');
+  assert.ok(setOne);
+  assert.ok(setTwo);
+  assert.equal(setOne.status, 'generating');
+  assert.equal(setOne.taskCount, 3);
+  assert.equal(setOne.completedCount, 1);
+  assert.deepEqual(setOne.results.map((result) => result.batchIndex), [1, 2, 3]);
+  assert.deepEqual(setOne.results.map((result) => result.backendJobId), ['buyer-set-1-job-1', 'buyer-set-1-job-2', 'buyer-set-1-job-3']);
+  assert.deepEqual(setOne.results.map((result) => result.status), ['completed', 'error', 'generating']);
+  assert.equal(setOne.results[0].imageUrl, '/buyer-1.png');
+  assert.equal(setTwo.name, '买家秀批量任务 · 第2套');
+  assert.equal(setTwo.taskCount, 3);
+  assert.equal(setTwo.results.length, 1);
+  assert.equal(snapshot.tasks.find((task) => task.id === 'buyer-set-1-job-3')?.projectId, 'buyer-show-batch-project-set-1');
+  assert.equal(snapshot.tasks.find((task) => task.id === 'buyer-set-2-job-1')?.projectId, 'buyer-show-batch-project-set-2');
+});
+
+test('shell data adapter recovers legacy buyer show root batches as per-set cards', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [
+      {
+        id: 'legacy-buyer-root',
+        name: '旧买家秀根卡',
+        module: 'buyer_show',
+        status: 'error',
+        createdAt: 1782889000000,
+        results: [{
+          id: 'legacy-root-error',
+          imageUrl: '',
+          mediaType: 'image',
+          prompt: '旧根卡失败',
+          model: 'gpt-image-2',
+          aspectRatio: '3:4',
+          status: 'error',
+          createdAt: 1782889000000,
+          module: 'buyer_show',
+          subFeature: 'image',
+          backendJobId: 'legacy-buyer-job-3',
+          error: '旧根卡失败',
+        }],
+        taskCount: 1,
+        completedCount: 0,
+        subFeature: 'image',
+      },
+      {
+        id: 'legacy-buyer-root-set-2',
+        name: '旧买家秀根卡 · 第2套',
+        module: 'buyer_show',
+        status: 'error',
+        createdAt: 1782889000000,
+        results: [{
+          id: 'legacy-set-2-error',
+          imageUrl: '',
+          mediaType: 'image',
+          prompt: '旧第2套失败',
+          model: 'gpt-image-2',
+          aspectRatio: '3:4',
+          status: 'error',
+          createdAt: 1782889000000,
+          module: 'buyer_show',
+          subFeature: 'image',
+          backendJobId: 'legacy-buyer-job-4',
+          batchIndex: 4,
+          error: '旧第2套失败',
+        }],
+        taskCount: 12,
+        completedCount: 0,
+        subFeature: 'image',
+      },
+    ],
+  }, [
+    {
+      id: 'legacy-buyer-job-1',
+      module: 'buyer_show',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'legacy-provider-1',
+      payload: {
+        prompt: '第1套第1张',
+        shellProjectId: 'legacy-buyer-root',
+        shellProjectName: '旧买家秀根卡',
+        batchIndex: 1,
+        batchCount: 12,
+        setIndex: 1,
+        setCount: 4,
+        imageIndex: 1,
+        imageCount: 3,
+        subFeature: 'image',
+      },
+      result: {
+        imageUrl: '/legacy-set-1.png',
+        providerTaskId: 'legacy-provider-1',
+      },
+      createdAt: 1782889000001,
+      finishedAt: 1782889000100,
+    },
+    {
+      id: 'legacy-buyer-job-4',
+      module: 'buyer_show',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'failed',
+      providerTaskId: 'legacy-provider-4',
+      errorMessage: 'failed',
+      payload: {
+        prompt: '第2套第1张',
+        shellProjectId: 'legacy-buyer-root',
+        shellProjectName: '旧买家秀根卡',
+        batchIndex: 4,
+        batchCount: 12,
+        setIndex: 2,
+        setCount: 4,
+        imageIndex: 1,
+        imageCount: 3,
+        subFeature: 'image',
+      },
+      createdAt: 1782889000004,
+    },
+  ]);
+
+  assert.equal(snapshot.projects.some((project) => project.id === 'legacy-buyer-root'), false);
+  const setOne = snapshot.projects.find((project) => project.id === 'legacy-buyer-root-set-1');
+  const setTwo = snapshot.projects.find((project) => project.id === 'legacy-buyer-root-set-2');
+  assert.ok(setOne);
+  assert.ok(setTwo);
+  assert.equal(setOne.taskCount, 3);
+  assert.equal(setTwo.taskCount, 3);
+  assert.equal(setOne.status, 'error');
+  assert.equal(setTwo.status, 'error');
+  assert.deepEqual(setOne.results.map((result) => result.batchIndex), [1, 2, 3]);
+  assert.deepEqual(setOne.results.map((result) => result.status), ['completed', 'error', 'error']);
+  assert.deepEqual(setTwo.results.map((result) => result.batchIndex), [1, 2, 3]);
+  assert.deepEqual(setTwo.results.map((result) => result.status), ['error', 'error', 'error']);
+  assert.match(setOne.results[1].error || '', /历史任务未提交/);
+});
+
 test('shell data adapter merges completed backend video results into the original project card', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [

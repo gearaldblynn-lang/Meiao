@@ -3,6 +3,8 @@
 
 export type AppModule =
   | 'agent_center'
+  | 'ai_customer_service'
+  | 'smart_factory'
   | 'one_click'
   | 'translation'
   | 'buyer_show'
@@ -16,6 +18,8 @@ export type AppModule =
 
 export const AppModuleObj = {
   AGENT_CENTER: 'agent_center' as AppModule,
+  AI_CUSTOMER_SERVICE: 'ai_customer_service' as AppModule,
+  SMART_FACTORY: 'smart_factory' as AppModule,
   ONE_CLICK: 'one_click' as AppModule,
   TRANSLATION: 'translation' as AppModule,
   BUYER_SHOW: 'buyer_show' as AppModule,

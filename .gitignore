@@ -24,6 +24,14 @@ dist-ssr
 *.sln
 *.sw?
 server/data/
-backups/app-state-repair/
+backups/
 .superpowers/
 .worktrees/
+
+# Secrets hardening (defense-in-depth). Real secret files must never be tracked.
+.env
+.env.*
+*.env
+# Keep the sanitized template that carries only placeholders.
+!.env.server.example
+*.tsbuildinfo
