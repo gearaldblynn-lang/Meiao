@@ -3388,6 +3388,48 @@ test('shell data adapter restores buyer show planning credits, review text and r
   assert.equal(project.results[0].creditsConsumed, 3);
 });
 
+test('shell data adapter treats buyer show jobs with image urls as completed even when provider status is stale', () => {
+  const snapshot = buildShellDataSnapshot({}, [
+    {
+      id: 'buyer-show-stale-running-job',
+      module: 'buyer_show',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'running',
+      providerTaskId: 'provider-buyer-stale-1',
+      payload: {
+        prompt: '买家秀出图 prompt',
+        buyerShowDisplayPrompt: '洗衣机场景买家秀',
+        shellProjectId: 'buyer-show-stale-project-set-1',
+        shellProjectName: '买家秀任务 · 第1套',
+        batchIndex: 1,
+        batchCount: 1,
+        setIndex: 1,
+        setCount: 1,
+        imageIndex: 1,
+        imageCount: 1,
+        subFeature: 'image',
+        aspectRatio: '3:4',
+      },
+      result: {
+        imageUrl: '/buyer-stale-running-result.png',
+        providerTaskId: 'provider-buyer-stale-1',
+        creditsConsumed: 3,
+      },
+      createdAt: 1782889000001,
+      updatedAt: 1782889000100,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'buyer-show-stale-project-set-1');
+  assert.ok(project);
+  assert.equal(project.status, 'completed');
+  assert.equal(project.completedCount, 1);
+  assert.equal(project.results[0].status, 'completed');
+  assert.equal(project.results[0].imageUrl, '/buyer-stale-running-result.png');
+  assert.equal(snapshot.tasks.find((task) => task.id === 'buyer-show-stale-running-job'), undefined);
+});
+
 test('shell data adapter recovers legacy buyer show root batches as per-set cards', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [

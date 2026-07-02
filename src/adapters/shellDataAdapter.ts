@@ -1506,17 +1506,18 @@ const mapJobs = (
       const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
       const displayPrompt = getBuyerShowDisplayPrompt(payload, job.errorMessage);
       const evaluationText = getBuyerShowEvaluation(payload);
+      const imageUrl = urls[0] || '';
       return {
         id: String(providerTaskId || `${job.id}-result-${batchIndex}`),
         projectId: shellProjectId,
-        imageUrl: urls[0] || '',
+        imageUrl,
         mediaType: 'image' as const,
         prompt: displayPrompt,
         buyerShowDisplayPrompt: displayPrompt,
         buyerShowEvaluation: evaluationText,
         model: normalizeModel(payload.model || job.result?.model || job.provider),
         aspectRatio: String(payload.aspectRatio || payload.ratio || job.result?.aspectRatio || '3:4'),
-        status: (status === 'completed' && urls[0] ? 'completed' : status === 'error' ? 'error' : 'generating') as ShellGeneratedResult['status'],
+        status: (imageUrl ? 'completed' : status === 'error' ? 'error' : 'generating') as ShellGeneratedResult['status'],
         createdAt: toCreatedMs(job.createdAt || firstJob?.createdAt),
         module: MODULE_VALUES.BUYER_SHOW,
         subFeature,
@@ -1591,7 +1592,7 @@ const mapJobs = (
       planningTaskId: planningTaskId || matchedProject?.planningTaskId,
     });
     sortedJobs
-      .filter((job) => ['queued', 'running', 'retry_waiting'].includes(String(job.status || '')))
+      .filter((job) => ['queued', 'running', 'retry_waiting'].includes(String(job.status || '')) && getResultUrls(job).length === 0)
       .forEach((job) => {
         tasks.push({
           id: String(job.id || ''),

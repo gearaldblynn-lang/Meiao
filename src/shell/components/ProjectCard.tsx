@@ -685,19 +685,16 @@ const ProjectCard: React.FC<Props> = ({
   const getDisplayedResultPrompt = (result: GeneratedResult, matchedPlan?: PlanItem | null) => (
     normalizeSchemeText(isBuyerShowProject ? getBuyerShowReadablePrompt(result) : matchedPlan?.schemeContent || result.prompt || '无 prompt 记录')
   );
-  const canEditImageResult = (result?: GeneratedResult | null) => Boolean(
-    onEdit
-    && (
-      project.module === 'one_click'
+  const canEditImageResult = (result?: GeneratedResult | null) => {
+    const isEditableModule = project.module === 'one_click'
       || (project.module === 'video' && project.subFeature === 'storyboard')
       || project.module === 'buyer_show'
-      || (project.module === 'everything_replace' && project.subFeature === 'background_replace')
-    )
-    && result?.status === 'completed'
-    && result.imageUrl
-    && result.mediaType !== 'video'
-    && !result.videoUrl,
-  );
+      || (project.module === 'everything_replace' && project.subFeature === 'background_replace');
+    const hasEditableImage = Boolean(result?.imageUrl && result.mediaType !== 'video' && !result.videoUrl);
+    const hasReadyStatus = result?.status === 'completed'
+      || (project.module === 'buyer_show' && result?.status !== 'error' && hasEditableImage);
+    return Boolean(onEdit && isEditableModule && hasReadyStatus && hasEditableImage);
+  };
   const canRecoverStoryboardResult = (result?: GeneratedResult | null) => Boolean(
     onRecover
     && project.module === 'video'
