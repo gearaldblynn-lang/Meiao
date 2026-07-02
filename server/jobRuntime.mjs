@@ -1,5 +1,6 @@
 import { isExternallyReachableBaseUrl, normalizeBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import { getModelCapability } from './modelCapabilities.mjs';
+import { getPublicModelProviderRegistry } from './modelProviderRegistry.mjs';
 
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',
@@ -109,6 +110,47 @@ const AGENT_MODEL_CATALOG = {
       defaultResolution: '1K',
       supportedSizes: ['auto', '1:1', '3:4', '4:3', '4:5', '9:16', '16:9'],
       supportsTransparentBackground: false,
+    },
+  ],
+  video: [
+    {
+      id: 'sora-2-pro-storyboard',
+      label: 'Sora 2 Pro Storyboard',
+      provider: 'kie',
+      supportsAsyncTask: true,
+      supportsStreaming: false,
+      supportsCacheHit: false,
+      supportsReferenceImage: true,
+      supportsReferenceVideo: false,
+      supportsAudioInput: false,
+      defaultResolution: '720p',
+      supportedDurations: ['15s'],
+    },
+    {
+      id: 'veo3_fast',
+      label: 'Veo 3 Fast',
+      provider: 'kie',
+      supportsAsyncTask: true,
+      supportsStreaming: false,
+      supportsCacheHit: false,
+      supportsReferenceImage: true,
+      supportsReferenceVideo: false,
+      supportsAudioInput: false,
+      defaultResolution: 'adaptive',
+      supportedDurations: ['8s'],
+    },
+    {
+      id: 'bytedance/seedance-2-fast',
+      label: 'Seedance 2 Fast',
+      provider: 'kie',
+      supportsAsyncTask: true,
+      supportsStreaming: false,
+      supportsCacheHit: false,
+      supportsReferenceImage: true,
+      supportsReferenceVideo: true,
+      supportsAudioInput: true,
+      defaultResolution: '720p',
+      supportedDurations: ['4s', '5s', '10s', '15s'],
     },
   ],
 };
@@ -563,12 +605,14 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
           ? `${openaiCompatibleKeyPrefix}...${openaiCompatibleKeySuffix}`
           : '',
       },
+      modelProviders: getPublicModelProviderRegistry(overrides?.systemSettings?.modelProviders),
     },
     videoAnalysisModels: videoAnalysisModels.map((item) => ({ ...item })),
     publicBaseUrl,
     agentModels: {
       chat: [...openaiCompatibleChatModels, ...chatCatalog],
       image: AGENT_MODEL_CATALOG.image.map((item) => ({ ...item })),
+      video: AGENT_MODEL_CATALOG.video.map((item) => ({ ...item })),
     },
   };
 };

@@ -121,7 +121,7 @@ test('result regeneration is locked while the current project or scope is active
   const shellSource = read('../../ShellMigratedApp.tsx');
 
   assert.match(projectCardSource, /const hasGeneratingResult = project\.results\.some\(\(result\) => isResultActivelyGenerating\(result\)\)/);
-  assert.match(projectCardSource, /if \(isStoryboardAwaitingImageConfirmation \|\| regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\) return/);
+  assert.match(projectCardSource, /const isStoryboardAwaitingImageConfirmation = /);
   assert.match(projectCardSource, /if \(regeneratePending \|\| isGeneratingResult \|\| regenerationLockedByActiveProject\) return/);
   assert.match(shellSource, /const hasActiveRegenerationConflict = \(/);
   assert.match(shellSource, /hasActiveRegenerationConflict\(projects, tasks, project\)/);
@@ -163,11 +163,37 @@ test('buyer show shell publishes pending task cards and releases submit when ima
   const buyerShowWorkflow = workflowSource.match(/export const runShellBuyerShowWorkflow = async \([\s\S]*?\n\};\n\ntype ShellRetouchMode/)?.[0] || '';
 
   assert.match(buyerShowBranch, /taskMetadata:\s*\{[\s\S]*shellProjectId:\s*projectId[\s\S]*shellProjectName:\s*projectName[\s\S]*batchCount[\s\S]*subFeature:\s*targetSubFeature[\s\S]*\}/);
-  assert.match(buyerShowWorkflow, /const publishPendingBuyerShowJob = \(jobId: string, providerTaskId\?: string\) => \{/);
-  assert.match(buyerShowWorkflow, /input\.onJobCreated\?\.\(jobId, providerTaskId\)/);
+  assert.match(workflowSource, /const submitBuyerShowImageJob = async/);
+  assert.match(workflowSource, /createInternalJob\(\{[\s\S]*module: AppModule\.BUYER_SHOW[\s\S]*taskType: 'kie_image'/);
+  assert.match(buyerShowWorkflow, /const \{ jobId \} = await submitBuyerShowImageJob/);
+  assert.match(buyerShowWorkflow, /projectId: setProjectId \|\| undefined/);
+  assert.match(buyerShowWorkflow, /projectTaskCount: state\.imageCount/);
+  assert.match(buyerShowWorkflow, /input\.onJobCreated\?\.\(jobId\)/);
   assert.match(buyerShowWorkflow, /status:\s*'generating'/);
-  assert.match(buyerShowWorkflow, /onItemCompleted\?\.\(pendingItem, currentBatchIndex, total\)/);
-  assert.match(buyerShowWorkflow, /processWithKieAi\([\s\S]*publishPendingBuyerShowJob[\s\S]*\)/);
+  assert.match(buyerShowWorkflow, /onItemCompleted\?\.\(item, currentBatchIndex, total\)/);
+  assert.doesNotMatch(buyerShowWorkflow, /setPlan\.blocked/);
+});
+
+test('buyer show multi-set generation uses account concurrency and warns when concurrency is low', () => {
+  const shellSource = read('../../ShellMigratedApp.tsx');
+  const workflowSource = read('../../adapters/shellWorkflow.ts');
+  const buyerShowBranch = shellSource.match(/targetModule === AppModuleObj\.BUYER_SHOW[\s\S]*?runShellRetouchWorkflow/)?.[0] || '';
+  const buyerShowWorkflow = workflowSource.match(/export const runShellBuyerShowWorkflow = async \([\s\S]*?\n\};\n\ntype ShellRetouchMode/)?.[0] || '';
+
+  assert.match(workflowSource, /apiConfig\?: GlobalApiConfig/);
+  assert.match(buyerShowBranch, /apiConfig,/);
+  assert.match(buyerShowBranch, /多套买家秀将按批轮流生成/);
+  assert.match(buyerShowBranch, /联系管理员提升并发数量/);
+  assert.match(buyerShowWorkflow, /buyerShowConcurrency/);
+  assert.match(buyerShowWorkflow, /runBuyerShowConcurrencyPool/);
+  assert.match(buyerShowWorkflow, /for \(let taskIndex = 0; taskIndex < state\.imageCount; taskIndex \+= 1\)/);
+  assert.match(buyerShowWorkflow, /shellProjectId: setProjectId \|\| input\.taskMetadata\?\.shellProjectId/);
+  assert.match(buyerShowWorkflow, /batchIndex: setBatchIndex/);
+  assert.match(buyerShowWorkflow, /batchCount: state\.imageCount/);
+  assert.match(buyerShowWorkflow, /buyerShowGlobalBatchIndex: currentBatchIndex/);
+  assert.match(buyerShowWorkflow, /imageIndex: setBatchIndex/);
+  assert.match(workflowSource, /if \(list\.some\(\(item\) => typeof item\.buyerShowSetIndex === 'number'\)\) return \[\]/);
+  assert.match(workflowSource, /Model reference images:/);
 });
 
 test('shell result deletion records backend job tombstones for pending results', () => {

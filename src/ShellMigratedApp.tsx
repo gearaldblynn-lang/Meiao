@@ -17,6 +17,7 @@ import {
   fetchRemoteAppState,
   fetchSystemConfig,
   getCurrentUserContext,
+  hasStoredSessionToken,
   loginInternalUser,
   logoutInternalUser,
   probeInternalApi,
@@ -27,6 +28,7 @@ import {
   storeSessionToken,
   probeVideoDiagnosis,
   analyzeVideoDiagnosis,
+  ApiError,
   uploadInternalAssetStream,
 } from './services/internalApi';
 import type { PersistedAppState } from './utils/appState';
@@ -68,6 +70,8 @@ import { collectFailedOneClickPlanningPlans } from './adapters/shellPlanningFail
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
 const AgentCenterModule = lazy(() => import('./shell/modules/AgentCenter/AgentCenterModule'));
+const AiCustomerServiceModule = lazy(() => import('./shell/modules/AiCustomerService/AiCustomerServiceModule'));
+const SmartFactoryModule = lazy(() => import('./shell/modules/SmartFactory/SmartFactoryModule'));
 const TranslationModule = lazy(() => import('./shell/modules/Translation/TranslationModule'));
 const OneClickModule = lazy(() => import('./shell/modules/OneClick/OneClickModule'));
 const RetouchModule = lazy(() => import('./shell/modules/Retouch/RetouchModule'));
@@ -834,7 +838,26 @@ const compactRuntimeProject = (project: Project): Project => ({
   status: project.status,
   createdAt: project.createdAt,
   completedAt: project.completedAt,
-  results: [],
+  results: (project.results || [])
+    .filter((result) => result.backendJobId || result.taskId || result.status === 'generating')
+    .map((result) => ({
+      id: result.id,
+      projectId: result.projectId,
+      imageUrl: result.imageUrl || '',
+      videoUrl: result.videoUrl,
+      mediaType: result.mediaType,
+      prompt: trimRuntimeText(result.prompt, project.name),
+      model: result.model,
+      aspectRatio: result.aspectRatio,
+      status: result.status,
+      createdAt: result.createdAt,
+      module: result.module,
+      subFeature: result.subFeature,
+      taskId: result.taskId,
+      backendJobId: result.backendJobId,
+      batchIndex: result.batchIndex,
+      error: trimRuntimeText(result.error),
+    })),
   taskCount: Number(project.taskCount || 1) || 1,
   completedCount: Number(project.completedCount || 0) || 0,
   subFeature: project.subFeature,
@@ -1200,6 +1223,8 @@ const loadShellWorkflowModule = async () => {
 
 const MODULE_NAMES: Record<string, string> = {
   [AppModuleObj.AGENT_CENTER]: '智能体中心',
+  [AppModuleObj.AI_CUSTOMER_SERVICE]: 'AI客服',
+  [AppModuleObj.SMART_FACTORY]: '智能工厂',
   [AppModuleObj.ONE_CLICK]: '一键主详',
   [AppModuleObj.TRANSLATION]: '出海翻译',
   [AppModuleObj.BUYER_SHOW]: '买家秀',
@@ -1278,6 +1303,12 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
     { id: 'management', label: '智能体管理' },
     { id: 'knowledge', label: '知识库' },
     { id: 'versions', label: '版本训练' },
+  ],
+  [AppModuleObj.AI_CUSTOMER_SERVICE]: [
+    { id: 'workbench', label: '客服工作台' },
+  ],
+  [AppModuleObj.SMART_FACTORY]: [
+    { id: 'factory', label: '智能工厂' },
   ],
 };
 
@@ -1891,10 +1922,18 @@ const getSavedTheme = (): 'dark' | 'light' => {
   return saved === 'light' || saved === 'dark' ? saved : 'dark';
 };
 
-const shouldUseLocalStateFallback = () => {
+const hasLocalPreviewFlag = () => {
   if (typeof window === 'undefined') return false;
   return new URLSearchParams(window.location.search).has('meiaoLocalPreview');
 };
+
+const hasAuthenticatedLocalSession = () => (
+  hasStoredSessionToken() || Boolean(getCurrentUserContext())
+);
+
+const shouldUseLocalStateFallback = () => (
+  hasLocalPreviewFlag() && !hasAuthenticatedLocalSession()
+);
 
 type AuthBootstrapResult = {
   status: 'logged_in' | 'logged_out';
@@ -1906,8 +1945,7 @@ let authBootstrapPromise: Promise<AuthBootstrapResult> | null = null;
 const runAuthBootstrap = async (): Promise<AuthBootstrapResult> => {
   if (authBootstrapPromise) return authBootstrapPromise;
   authBootstrapPromise = (async () => {
-    const isPreview = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('meiaoLocalPreview');
-    if (isPreview) {
+    if (shouldUseLocalStateFallback()) {
       return { status: 'logged_in' as const, user: buildAuthUserFromContext(getCurrentUserContext()) };
     }
     const available = await probeInternalApi();
@@ -4623,9 +4661,14 @@ const AppContent: React.FC<{
 	        }
 	      } else if (targetModule === AppModuleObj.BUYER_SHOW || targetModule === AppModuleObj.RETOUCH || targetModule === AppModuleObj.EVERYTHING_REPLACE) {
         const onSpecialItemCompleted = (item: any, completed: number, total: number) => {
+          const itemProjectId = String(item.projectId || '').trim();
+          const itemProjectName = String(item.projectName || '').trim();
+          const itemProjectTaskCount = Number(item.projectTaskCount || 0) || total;
+          const isBuyerShowSetProject = targetModule === AppModuleObj.BUYER_SHOW && itemProjectId;
           const itemStatus: GeneratedResult['status'] = item.status || (item.imageUrl ? 'completed' : 'generating');
           const nextResult: GeneratedResult = {
             id: item.taskId || `${taskId}-${completed - 1}`,
+            projectId: itemProjectId || projectId,
             imageUrl: item.imageUrl || '',
             mediaType: 'image' as const,
             prompt: item.prompt || generationPrompt,
@@ -4649,6 +4692,36 @@ const AppContent: React.FC<{
           batchResults = sortGeneratedResultsByBatchIndex(Array.from(nextByIdentity.values()));
           const completedItemCount = batchResults.filter((result) => result.status === 'completed').length;
           const processedItemCount = batchResults.filter((result) => result.status === 'completed' || result.status === 'generating' || result.status === 'error').length;
+          if (isBuyerShowSetProject) {
+            setProjects((prev) => {
+              const withoutRoot = itemProjectId !== projectId ? prev.filter((p) => p.id !== projectId) : prev;
+              const existing = withoutRoot.find((p) => p.id === itemProjectId);
+              const existingResults = existing?.results || [];
+              const setResultIdentity = nextResult.backendJobId || nextResult.taskId || nextResult.id;
+              const setByIdentity = new Map(existingResults.map((result) => [result.backendJobId || result.taskId || result.id, result]));
+              setByIdentity.set(setResultIdentity, nextResult);
+              const setResults = sortGeneratedResultsByBatchIndex(Array.from(setByIdentity.values()));
+              const setCompletedCount = setResults.filter((result) => result.status === 'completed').length;
+              const hasSetGenerating = setResults.some((result) => result.status === 'generating');
+              const hasSetError = setResults.some((result) => result.status === 'error');
+              const nextProject: Project = {
+                ...(existing || newProject),
+                id: itemProjectId,
+                name: itemProjectName || existing?.name || newProject.name,
+                module: targetModule,
+                status: hasSetGenerating ? 'generating' : hasSetError ? 'error' : setCompletedCount >= itemProjectTaskCount ? 'completed' : 'generating',
+                createdAt: existing?.createdAt || newProject.createdAt,
+                completedAt: !hasSetGenerating && setCompletedCount >= itemProjectTaskCount ? (existing?.completedAt || newProject.createdAt) : undefined,
+                results: setResults,
+                taskCount: itemProjectTaskCount,
+                completedCount: setCompletedCount,
+                subFeature: targetSubFeature,
+                generationContext,
+              };
+              void persistProjectToSharedState(nextProject);
+              return [nextProject, ...withoutRoot.filter((p) => p.id !== itemProjectId)];
+            });
+          }
           setTasks((prev) => prev.map((t) =>
             t.id === taskId
               ? {
@@ -4661,7 +4734,7 @@ const AppContent: React.FC<{
               : t
           ));
           setProjects((prev) => prev.map((p) =>
-            p.id === projectId
+            !isBuyerShowSetProject && p.id === projectId
               ? {
                   ...p,
                   status: batchResults.some((result) => result.status === 'generating') ? 'generating' : p.status,
@@ -4716,6 +4789,7 @@ const AppContent: React.FC<{
 
         const specialWorkflowResults: GeneratedResult[] = sortGeneratedResultsByBatchIndex(batchResults.length > 0 ? batchResults : specialResult.results.map((item, index) => ({
           id: item.taskId || `${taskId}-${index}`,
+          projectId: (item as any).projectId || projectId,
           imageUrl: item.imageUrl || '',
           mediaType: 'image' as const,
           prompt: item.prompt || generationPrompt,
@@ -4733,6 +4807,8 @@ const AppContent: React.FC<{
           fileName: item.fileName,
           error: item.error || item.message,
         })));
+        const isBuyerShowSetProjectWorkflow = targetModule === AppModuleObj.BUYER_SHOW
+          && specialWorkflowResults.some((result) => String(result.projectId || '').trim() && result.projectId !== projectId);
         const hasSpecialGenerating = specialWorkflowResults.some((item) => item.status === 'generating');
         const hasSpecialError = specialWorkflowResults.some((item) => item.status === 'error');
         completedProject = {
@@ -4746,6 +4822,19 @@ const AppContent: React.FC<{
         };
         if (hasSpecialGenerating) {
           pendingSyncProject = completedProject;
+        }
+        if (isBuyerShowSetProjectWorkflow) {
+          const buyerShowTaskStatus: Task['status'] = hasSpecialGenerating ? 'generating' : hasSpecialError ? 'error' : 'completed';
+          setProjects((prev) => prev.filter((p) => p.id !== projectId));
+          setTasks((prev) => prev.map((t) => (
+            t.id === taskId
+              ? { ...t, status: buyerShowTaskStatus, progress: hasSpecialGenerating ? Math.max(t.progress || 0, 8) : 100, total: batchCount, completed: specialWorkflowResults.filter((item) => item.status === 'completed').length }
+              : t
+          )).filter((t) => hasSpecialGenerating || t.id !== taskId));
+          setScopedPromptText('');
+          addToast(hasSpecialGenerating ? '买家秀多套任务已提交云端，结果会按套同步回填。' : '买家秀多套任务已提交。', hasSpecialError ? 'warning' : 'info');
+          window.setTimeout(() => void hydrateShellJobs(), 800);
+          return;
         }
       } else {
         batchResults = [];
@@ -7318,6 +7407,10 @@ const AppContent: React.FC<{
             }
           }}
         />;
+      case AppModuleObj.AI_CUSTOMER_SERVICE:
+        return <AiCustomerServiceModule />;
+      case AppModuleObj.SMART_FACTORY:
+        return <SmartFactoryModule />;
       case AppModuleObj.ONE_CLICK:
         return <OneClickModule
           projects={filteredProjects}
@@ -7466,7 +7559,7 @@ const AppContent: React.FC<{
             </Suspense>
           </main>
 
-          {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && (
+          {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && activeModule !== AppModuleObj.AI_CUSTOMER_SERVICE && activeModule !== AppModuleObj.SMART_FACTORY && (
             <Suspense fallback={null}>
               <BottomInputBar
                 module={activeModule}
@@ -7508,9 +7601,7 @@ const AppContent: React.FC<{
 const App: React.FC = () => {
   const { theme, toggleTheme } = usePersistedTheme();
   const [authStatus, setAuthStatus] = useState<'checking' | 'logged_out' | 'logged_in'>(() => (
-    typeof window !== 'undefined' && (
-      new URLSearchParams(window.location.search).has('meiaoLocalPreview') || Boolean(getCurrentUserContext())
-    ) ? 'logged_in' : 'logged_out'
+    hasLocalPreviewFlag() || hasAuthenticatedLocalSession() ? 'logged_in' : 'logged_out'
   ));
   const [loginError, setLoginError] = useState('');
   const [isSubmittingLogin, setIsSubmittingLogin] = useState(false);
@@ -7561,7 +7652,9 @@ const App: React.FC = () => {
       });
       await logoutInternalUser();
     } catch (error) {
-      console.error('Failed to logout', error);
+      if (!(error instanceof ApiError && error.code === 'unauthorized')) {
+        console.error('Failed to logout', error);
+      }
     } finally {
       clearSessionToken();
       clearCurrentUserContext();

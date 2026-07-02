@@ -10,7 +10,7 @@ import {
   markLocalJobFailed,
   updateLocalJobProviderTaskId,
 } from './localJobStore.mjs';
-import { getJobById, updateJobFields } from './jobManager.mjs';
+import { getJobById, isRunningJobConcurrencyBlocking, updateJobFields } from './jobManager.mjs';
 import { buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
 import { createJobAttempt, finishJobAttempt, recordJobEvent } from './taskPlatform.mjs';
 
@@ -106,16 +106,40 @@ const createMysqlCancelWatcher = ({ pool, jobId, controller, intervalMs, heartbe
   return () => clearInterval(timer);
 };
 
-const shouldDelayMysqlJobForUserConcurrency = async ({ pool, job, user, getMaxConcurrency }) => {
+const shouldDelayMysqlJobForUserConcurrency = async ({
+  pool,
+  job,
+  user,
+  getMaxConcurrency,
+  getProviderlessRunningStaleMs,
+  getSubmittedRunningStaleMs,
+  getCancelledRunningStaleMs,
+}) => {
+  if (
+    String(job?.status || '') === 'running'
+    && Boolean(String(job?.providerTaskId || '').trim())
+  ) {
+    return false;
+  }
   const fallbackLimit = toSafeJobConcurrency(await Promise.resolve(getMaxConcurrency?.()), DEFAULT_JOB_CONCURRENCY);
   const userLimit = toSafeJobConcurrency(user?.jobConcurrency, fallbackLimit);
   const [rows] = await pool.query(
-    `SELECT COUNT(*) AS running_count
+    `SELECT *
      FROM internal_jobs
      WHERE status = 'running' AND user_id = ? AND id <> ?`,
     [job.userId, job.id]
   );
-  return Number(rows?.[0]?.running_count || 0) >= userLimit;
+  const referenceTime = now();
+  const runningConcurrencyOptions = {
+    referenceTime,
+    providerlessStaleMs: await Promise.resolve(getProviderlessRunningStaleMs?.()),
+    submittedStaleMs: await Promise.resolve(getSubmittedRunningStaleMs?.()),
+    cancelledStaleMs: await Promise.resolve(getCancelledRunningStaleMs?.()),
+  };
+  const runningCount = rows.filter((row) => isRunningJobConcurrencyBlocking(row, {
+    ...runningConcurrencyOptions,
+  })).length;
+  return runningCount >= userLimit;
 };
 
 export const createLocalTemporalActivities = ({
@@ -231,6 +255,9 @@ export const createMysqlTemporalActivities = ({
   settleJobCredits,
   releaseJobCredits,
   getMaxConcurrency = () => DEFAULT_JOB_CONCURRENCY,
+  getProviderlessRunningStaleMs,
+  getSubmittedRunningStaleMs,
+  getCancelledRunningStaleMs,
   cancelPollMs = 2500,
   heartbeat = defaultActivityHeartbeat,
 }) => ({
@@ -249,7 +276,15 @@ export const createMysqlTemporalActivities = ({
     }
 
     const user = await Promise.resolve(findUserById?.(currentJob.userId));
-    if (await shouldDelayMysqlJobForUserConcurrency({ pool, job: currentJob, user, getMaxConcurrency })) {
+    if (await shouldDelayMysqlJobForUserConcurrency({
+      pool,
+      job: currentJob,
+      user,
+      getMaxConcurrency,
+      getProviderlessRunningStaleMs,
+      getSubmittedRunningStaleMs,
+      getCancelledRunningStaleMs,
+    })) {
       return toActivityResult(currentJob);
     }
 

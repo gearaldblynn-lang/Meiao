@@ -287,9 +287,26 @@ const isAnalysisRefusalText = (value: unknown) => {
   return /\bI\s+cannot\s+fulfill\s+this\s+request\b|\bI\s+can(?:not|'t)\s+(?:help|assist|comply|fulfill)\b|\bI'm\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|\bI\s+am\s+sorry,\s+but\s+I\s+can(?:not|'t)\b|无法满足(?:该|这个|此)?请求|不能满足(?:该|这个|此)?请求|无法协助(?:该|这个|此)?请求/i.test(text);
 };
 
+// 号池会把上游错误伪装成 HTTP 200 + 错误串正文（实测正文 "Interal error: HTTP 500"），
+// 这类正文既不是空、也不命中拒答关键词，会绕过判据导致从不回退备用模型。
+const UPSTREAM_ERROR_KEYWORDS_RE = /internal error|interal error|http\s*500|http\s*502|http\s*503|http\s*504|bad gateway|gateway timeout|service unavailable|upstream error|server error/i;
+
 const isAnalysisContentUnusable = (content: unknown) => {
   const normalized = String(content || '').trim();
-  return !normalized || isAnalysisRefusalText(normalized);
+  if (!normalized) return true;
+  // 结构判据（放在关键词匹配之前）：正常策划返回一定含 JSON 结构({ 或 [)。
+  // 若正文很短、命中错误特征、且不含 JSON 结构，则判为上游错误伪装的不可用内容。
+  if (
+    normalized.length < 80 &&
+    /error|http\s*5\d\d|bad gateway|unavailable/i.test(normalized) &&
+    !normalized.includes('{') &&
+    !normalized.includes('[')
+  ) {
+    return true;
+  }
+  // 关键词判据：上游错误特征串（含常见拼写错 "interal"）。
+  if (UPSTREAM_ERROR_KEYWORDS_RE.test(normalized)) return true;
+  return isAnalysisRefusalText(normalized);
 };
 
 const ensureUsableAnalysisContent = (content: string, label = 'AI 策划') => {

@@ -1,6 +1,8 @@
 
 export enum AppModule {
   AGENT_CENTER = 'agent_center',
+  AI_CUSTOMER_SERVICE = 'ai_customer_service',
+  SMART_FACTORY = 'smart_factory',
   ONE_CLICK = 'one_click',
   TRANSLATION = 'translation',
   BUYER_SHOW = 'buyer_show',
@@ -15,6 +17,8 @@ export enum AppModule {
 
 export const AppModuleObj = {
   AGENT_CENTER: AppModule.AGENT_CENTER,
+  AI_CUSTOMER_SERVICE: AppModule.AI_CUSTOMER_SERVICE,
+  SMART_FACTORY: AppModule.SMART_FACTORY,
   ONE_CLICK: AppModule.ONE_CLICK,
   TRANSLATION: AppModule.TRANSLATION,
   BUYER_SHOW: AppModule.BUYER_SHOW,
@@ -309,6 +313,24 @@ export interface SystemPublicConfig {
       models: string;
       apiKeyMasked: string;
     };
+    modelProviders: {
+      providers: Array<{
+        provider: string;
+        displayName?: string;
+        baseUrl?: string;
+        customBaseUrlRequired?: boolean;
+        hasCredential?: boolean;
+        defaultModel?: string;
+        fallbackModel?: string;
+        capabilityCounts?: Record<string, number>;
+        models: Array<{ id: string; mode?: string; features?: string[] }>;
+      }>;
+      defaultChatModel?: string;
+      defaultEmbeddingModel?: string;
+      defaultRerankModel?: string;
+      defaultImageModel?: string;
+      defaultVideoModel?: string;
+    };
   };
   videoAnalysisModels: Array<{
     id: string;
@@ -336,13 +358,26 @@ export interface SystemPublicConfig {
     image: Array<{
       id: string;
       label: string;
-      provider: 'kie';
+      provider: 'kie' | 'apiports';
       supportsMultiImageInput: boolean;
       supportsImageEdit: boolean;
       maxInputImages: number;
       defaultSize: string;
       supportedSizes: string[];
       supportsTransparentBackground: boolean;
+    }>;
+    video: Array<{
+      id: string;
+      label: string;
+      provider: 'kie';
+      supportsAsyncTask: boolean;
+      supportsStreaming: boolean;
+      supportsCacheHit: boolean;
+      supportsReferenceImage: boolean;
+      supportsReferenceVideo: boolean;
+      supportsAudioInput: boolean;
+      defaultResolution: string;
+      supportedDurations: string[];
     }>;
   };
 }

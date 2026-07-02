@@ -107,6 +107,7 @@ npm run dev
 - `MEIAO_PUBLIC_BASE_URL`
 - `MEIAO_JOB_MAX_CONCURRENCY`
 - `MEIAO_PROVIDERLESS_RUNNING_STALE_MS`：默认代码兜底为 15 分钟；云上建议 `300000`，用于释放已 `running` 但尚未拿到上游 `providerTaskId` 的异常提交阶段任务，防止占满同账号并发。
+- `MEIAO_SUBMITTED_RUNNING_STALE_MS`：默认 `21600000`（6 小时）；用于恢复已拿到上游 `providerTaskId` 但本地长时间未回写终态的 `running` 任务。到期后任务回到 `retry_waiting` 复查上游结果，并且不再继续占账号并发。
 - `MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS`：默认 `60000`；云上建议 `30000`，控制 stale running 任务回收检查间隔。
 - `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS`：云上建议 `120000`；KIE 素材上传单次 HTTP 超时。分镜参考视频等较大素材需要更长上传预算；瞬时网络或上游 5xx 错误允许有限重试后释放并发。
 - `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_image` 任务提交 KIE 前解析/转存素材的并发。详情页批量生图建议保持保守默认，避免“任务数 × 素材数”打满 KIE 图床。

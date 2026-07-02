@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-07-01 - Stale running jobs must not count as active account concurrency
+
+- Symptom: 买家秀、详情页、视频等多个功能都出现过“任务一直排队/生成中不出图”，同账号旧任务长期占满并发，后续新任务无法开始。
+- Environment: Tencent Cloud production / MySQL `internal_jobs` / Temporal task engine / account-level `jobConcurrency`.
+- Root cause: `status='running'` 同时表示正在执行、已提交上游等待结果、以及 worker/Temporal 丢失后的孤儿状态。旧并发判断直接按 `running` 计数，导致已达到 stale 回收条件的孤儿任务在 reconciler 漏跑或间隔未到时继续占用账号并发。架构级根因见 `CLAUDE.md` #33。
+- Fix: 增加 `isRunningJobConcurrencyBlocking` 单一判据；MySQL worker 和 Temporal activity 的并发检查都改为只统计仍在有效窗口内的 running。providerless、submitted、cancelled stale running 到期后不再占账号并发，并由 reconciler 继续负责失败/恢复/取消落库。
+- Regression check: `node --test server/jobManager.test.mjs server/temporalWorker.test.mjs server/jobRuntime.test.mjs server/providerGateway.test.mjs`; `npm run build`.
+- Avoid next time: 排队/并发满问题先查 `provider_task_id`、`started_at/updated_at`、`cancel_requested_at` 和 stale 窗口。新增并发判断禁止裸 `COUNT(status='running')`；必须复用同一判据并覆盖 providerless、submitted、cancelled 三种 stale running。
+
 ## 2026-06-30 - Seedance reference videos must be duration-checked before submit, and uploaded video previews must load real video frames
 
 - Symptom: 广白账号视频生成失败；用户上传的视频素材在素材条不显示，点开后也不能正常视频播放，只像音频播放。
