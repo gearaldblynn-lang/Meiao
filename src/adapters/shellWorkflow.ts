@@ -574,10 +574,7 @@ const getBuyerShowSetCount = (params: Record<string, string>) => {
 
 const getBuyerShowScopedMaterials = (input: ShellGenerateInput, type: 'atmosphere' | 'model', setIndex: number) => {
   const list = input.materials[type] || [];
-  const scoped = list.filter((item) => item.buyerShowSetIndex === setIndex);
-  if (scoped.length > 0) return scoped;
-  if (list.some((item) => typeof item.buyerShowSetIndex === 'number')) return [];
-  return list.filter((item) => typeof item.buyerShowSetIndex !== 'number');
+  return list.filter((item) => item.buyerShowSetIndex === setIndex || (setIndex === 0 && typeof item.buyerShowSetIndex !== 'number'));
 };
 
 const getBuyerShowSetReferenceUrls = (input: ShellGenerateInput, setIndex: number, includeModel: boolean) => {
@@ -625,38 +622,22 @@ const buildMaterialManifest = (input: ShellGenerateInput) => {
     const productLines = (input.materials.product || [])
       .map((item, index) => describeLine(`产品主体图${index + 1}`, materialUrl(item, publicBaseUrl), `产品主体图${index + 1}`))
       .filter(Boolean);
-    const atmosphereLines = (input.materials.atmosphere || [])
-      .map((item, index) => {
-        const safeUrl = requireShellAssetUrl(materialUrl(item, publicBaseUrl), publicBaseUrl, `视觉氛围参考图${index + 1}`);
-        return safeUrl
-          ? `视觉氛围参考图${index + 1}：${safeUrl}。用于环境风格、光线、生活感和画面氛围，不替代产品主体。`
-          : `视觉氛围参考图${index + 1}。用于环境风格、光线、生活感和画面氛围，不替代产品主体。`;
-      })
-      .filter(Boolean);
-    const modelLines = (input.materials.model || [])
-      .map((item, index) => {
-        const safeUrl = requireShellAssetUrl(materialUrl(item, publicBaseUrl), publicBaseUrl, `模特面部与姿势参考图${index + 1}`);
-        return safeUrl
-          ? `模特面部与姿势参考图${index + 1}：${safeUrl}。用于参考人物面部气质、姿势、手部动作与拍摄状态，不改变目标市场人群设定。`
-          : `模特面部与姿势参考图${index + 1}。用于参考人物面部气质、姿势、手部动作与拍摄状态，不改变目标市场人群设定。`;
-      })
-      .filter(Boolean);
     const setCount = getBuyerShowSetCount(input.params);
     const perSetReferenceLines = Array.from({ length: setCount }).flatMap((_, setIndex) => {
       const setAtmosphereLines = (input.materials.atmosphere || [])
-        .filter((item) => item.buyerShowSetIndex === setIndex)
+        .filter((item) => item.buyerShowSetIndex === setIndex || (setIndex === 0 && typeof item.buyerShowSetIndex !== 'number'))
         .map((item, index) => describeLine(`第${setIndex + 1}套氛围参考图${index + 1}`, materialUrl(item, publicBaseUrl), `第${setIndex + 1}套氛围参考图${index + 1}`));
       const setModelLines = (input.materials.model || [])
-        .filter((item) => item.buyerShowSetIndex === setIndex)
+        .filter((item) => item.buyerShowSetIndex === setIndex || (setIndex === 0 && typeof item.buyerShowSetIndex !== 'number'))
         .map((item, index) => describeLine(`第${setIndex + 1}套模特参考图${index + 1}`, materialUrl(item, publicBaseUrl), `第${setIndex + 1}套模特参考图${index + 1}`));
       return [...setAtmosphereLines, ...setModelLines].filter(Boolean);
     });
-    const lines = [...productLines, ...atmosphereLines, ...modelLines, ...perSetReferenceLines];
+    const lines = [...productLines, ...perSetReferenceLines];
     if (lines.length === 0) return '';
     return [
       '买家秀素材清单：',
       ...lines,
-      '请严格区分素材角色：产品图决定商品真实外观；视觉氛围参考图决定环境氛围；模特参考图只用于面部与姿势参考。',
+      '请严格区分素材角色：产品图决定商品真实外观；视觉氛围参考图决定环境氛围；模特面部与姿势参考图只用于面部与姿势参考。',
     ].join('\n');
   }
   if (input.module !== AppModule.ONE_CLICK || input.subFeature !== 'sku') return '';
