@@ -141,6 +141,8 @@ export interface GeneratedResult {
   originalWidth?: number;
   originalHeight?: number;
   dynamicScriptPrompt?: string;
+  buyerShowEvaluation?: string;
+  buyerShowDisplayPrompt?: string;
   storyboardBoardTitle?: string;
   storyboardBoardIndex?: number;
   storyboardBoardCount?: number;
@@ -6910,6 +6912,162 @@ const AppContent: React.FC<{
     }
   }, [addToast, apiConfig.workspacePreferences, currentParams, ensureMaterialRemoteUrls, hydrateShellJobs, persistProjectToSharedState, publicBaseUrl]);
 
+  const handleBuyerShowEditResult = useCallback(async (
+    projectId: string,
+    resultId: string,
+    instruction: string,
+    files: File[] = [],
+  ) => {
+    const project = projects.find((p) => p.id === projectId);
+    if (!project || !(project.module === AppModuleObj.BUYER_SHOW)) return false;
+    const resultIndex = project.results.findIndex((item) => item.id === resultId);
+    const result = resultIndex >= 0 ? project.results[resultIndex] : null;
+    if (!result?.imageUrl || result.mediaType === 'video' || result.videoUrl) {
+      addToast('当前买家秀结果图还未完成，暂时不能修改', 'warning');
+      return true;
+    }
+    const finalInstruction = instruction.trim();
+    if (!finalInstruction) {
+      addToast('请先填写修改说明', 'warning');
+      return true;
+    }
+    const sourceResultUrl = resolvePublicAssetUrl(result.imageUrl, publicBaseUrl) || '';
+    if (!sourceResultUrl) {
+      addToast('当前结果缺少可用于模型读取的生成图地址，请重新生成后再试', 'warning');
+      return true;
+    }
+
+    const uploadedSupplementMaterials = await Promise.all(files.map(async (file, index) => {
+      const uploaded = await uploadInternalAssetStream({
+        module: AppModuleObj.BUYER_SHOW,
+        file,
+        fileName: file.name,
+      });
+      if (!uploaded.fileUrl) {
+        throw new Error(`${file.name || '补充参考图'} 上传失败，请重试。`);
+      }
+      return createRemoteMaterial(
+        `buyer-show-edit-ref-${Date.now()}-${index}`,
+        'reference',
+        uploaded.fileUrl,
+        file.name || `buyer-show-edit-reference-${index + 1}.png`,
+        project.subFeature || 'image',
+      );
+    }));
+
+    const baselineMaterial = createRemoteMaterial(
+      `buyer-show-edit-base-${Date.now()}`,
+      'product',
+      sourceResultUrl,
+      result.fileName || `${project.name}-当前结果.png`,
+      project.subFeature || 'image',
+    );
+    const generationParams = {
+      ...(project.generationContext?.params || currentParams),
+      model: getCurrentScopedImageModel(project.module, project.subFeature)
+        || project.generationContext?.params?.model
+        || result.model
+        || currentParams.model
+        || 'GPT Image 2',
+      ratio: result.aspectRatio || project.generationContext?.params?.ratio || currentParams.ratio || '3:4',
+      aspectRatio: result.aspectRatio || project.generationContext?.params?.aspectRatio || currentParams.aspectRatio || '3:4',
+    };
+    const editPrompt = [
+      '买家秀结果修改：以第一张输入图作为当前最终生成图，只在此基础上按修改需求调整。',
+      '必须保持商品包装身份、品牌标识、标签布局、产品尺寸和真实买家秀摄影质感一致。',
+      uploadedSupplementMaterials.length > 0
+        ? '补充参考图只用于参考氛围、模特气质、姿势或局部效果，不要复刻参考图构图。'
+        : '',
+      `修改需求：${finalInstruction}`,
+    ].filter(Boolean).join('\n');
+    addToast('买家秀修改任务已提交，正在生成新版本', 'info');
+    const { runShellImageGeneration } = await loadShellWorkflowModule();
+    let backendJobId = '';
+    let providerTaskId = '';
+    const generation = await runShellImageGeneration({
+      module: AppModuleObj.BUYER_SHOW,
+      subFeature: project.subFeature || 'image',
+      prompt: editPrompt,
+      params: generationParams,
+      materials: {
+        product: [baselineMaterial],
+        reference: uploadedSupplementMaterials,
+      },
+      signal: new AbortController().signal,
+      publicBaseUrl,
+      onJobCreated: (jobId, visibleTaskId) => {
+        backendJobId = jobId || backendJobId;
+        providerTaskId = String(visibleTaskId || providerTaskId || '').trim();
+      },
+      taskMetadata: {
+        shellPurpose: 'buyer_show_result_edit',
+        shellProjectId: project.id,
+        shellProjectName: project.name,
+        sourceResultId: result.id,
+        sourceResultUrl,
+        editInstruction: finalInstruction,
+        subFeature: project.subFeature || 'image',
+        batchIndex: Number(result.batchIndex || resultIndex + 1) || resultIndex + 1,
+        batchCount: project.taskCount || project.results.length || 1,
+      },
+    });
+
+    if (generation.status !== 'success' || !generation.imageUrl) {
+      addToast(generation.message || '修改任务已提交云端，结果待同步', 'info');
+      window.setTimeout(() => void hydrateShellJobs(), 800);
+      return true;
+    }
+
+    const createdAt = Date.now();
+    const existingVersions = (result.storyboardImageVersions || []).filter((item) => item.imageUrl);
+    const nextVersions = [
+      ...(existingVersions.length > 0 ? existingVersions : [{
+        id: `${result.id}:original`,
+        imageUrl: result.imageUrl,
+        prompt: result.prompt,
+        taskId: result.taskId,
+        creditsConsumed: result.creditsConsumed,
+        createdAt: result.createdAt || createdAt,
+      }]),
+      {
+        id: `${result.id}:edit-${createdAt}`,
+        imageUrl: generation.imageUrl,
+        prompt: generation.prompt || editPrompt,
+        taskId: generation.taskId || providerTaskId,
+        creditsConsumed: generation.creditsConsumed,
+        revisionInstruction: finalInstruction,
+        createdAt,
+      },
+    ];
+    const nextResult: GeneratedResult = {
+      ...result,
+      imageUrl: generation.imageUrl,
+      prompt: generation.prompt || editPrompt,
+      status: 'completed',
+      taskId: generation.taskId || providerTaskId || result.taskId,
+      backendJobId: generation.backendJobId || backendJobId || result.backendJobId,
+      creditsConsumed: generation.creditsConsumed ?? result.creditsConsumed,
+      error: undefined,
+      storyboardImageVersions: nextVersions,
+    };
+    const nextProject: Project = {
+      ...project,
+      status: 'completed',
+      completedAt: createdAt,
+      results: project.results.map((item) => item.id === result.id ? nextResult : item),
+      completedCount: Math.max(project.completedCount || 0, project.results.filter((item) => item.status === 'completed' && item.imageUrl).length),
+      backendJobId: nextResult.backendJobId || project.backendJobId,
+    };
+    setProjects((prev) => {
+      const next = prev.map((item) => item.id === project.id ? nextProject : item);
+      projectsRef.current = next;
+      return next;
+    });
+    await persistProjectToSharedState(nextProject);
+    addToast('买家秀修改已生成新版本，可在原结果中切换查看', 'success');
+    return true;
+  }, [projects, addToast, currentParams, createRemoteMaterial, getCurrentScopedImageModel, hydrateShellJobs, persistProjectToSharedState, publicBaseUrl]);
+
   const handleEditResult = useCallback(async (
     projectId: string,
     resultId: string,
@@ -6921,6 +7079,7 @@ const AppContent: React.FC<{
     let createdEditProjectId = '';
     try {
       if (await handleStoryboardEditResult(projectId, resultId, instruction, files)) return;
+      if (await handleBuyerShowEditResult(projectId, resultId, instruction, files)) return;
       const project = projects.find((p) => p.id === projectId);
       const isSupportedImageEditProject = project?.module === AppModuleObj.ONE_CLICK
         || (project?.module === AppModuleObj.EVERYTHING_REPLACE && (project.subFeature === 'product_replace' || project.subFeature === 'background_replace'));
@@ -7069,7 +7228,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, addToast, activeSubFeature, currentParams, filteredMaterials, createRemoteMaterial, persistProjectToSharedState, runOneClickPlanGeneration, runEverythingReplaceEditGeneration, publicBaseUrl, handleStoryboardEditResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, addToast, activeSubFeature, currentParams, filteredMaterials, createRemoteMaterial, persistProjectToSharedState, runOneClickPlanGeneration, runEverythingReplaceEditGeneration, publicBaseUrl, handleStoryboardEditResult, handleBuyerShowEditResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction]);
 
   const handleStoryboardRecoverResult = useCallback(async (projectId: string, resultId?: string) => {
     const baseVideoMemory = videoMemory || createDefaultVideoState();

@@ -3343,6 +3343,51 @@ test('shell data adapter groups buyer show batch jobs by set project and preserv
   assert.equal(snapshot.tasks.find((task) => task.id === 'buyer-set-2-job-1')?.projectId, 'buyer-show-batch-project-set-2');
 });
 
+test('shell data adapter restores buyer show planning credits, review text and readable image prompts', () => {
+  const snapshot = buildShellDataSnapshot({}, [
+    {
+      id: 'buyer-show-plan-job-1',
+      module: 'buyer_show',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'provider-buyer-1',
+      payload: {
+        prompt: 'Real iPhone snapshot...\n\nSCENE: full provider prompt',
+        buyerShowDisplayPrompt: '洗衣机场景里展示产品和泡腾过程',
+        buyerShowEvaluation: '家里养猫，平时也会用小区的公共洗衣机，所以买这个来给衣物做消毒。',
+        buyerShowPlanningCredits: 0.8,
+        buyerShowPlanningTaskId: 'buyer-plan-provider-1',
+        shellProjectId: 'buyer-show-plan-project-set-1',
+        shellProjectName: '买家秀批量任务 · 第1套',
+        batchIndex: 1,
+        batchCount: 3,
+        setIndex: 1,
+        imageIndex: 1,
+        buyerShowRootProjectId: 'buyer-show-plan-project',
+        subFeature: 'image',
+        aspectRatio: '3:4',
+      },
+      result: {
+        imageUrl: '/buyer-plan-1.png',
+        providerTaskId: 'provider-buyer-1',
+        creditsConsumed: 3,
+      },
+      createdAt: 1782889000001,
+      finishedAt: 1782889000100,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === 'buyer-show-plan-project-set-1');
+  assert.ok(project);
+  assert.equal(project.creditsConsumed, 0.8);
+  assert.equal(project.planningTaskId, 'buyer-plan-provider-1');
+  assert.equal(project.results[0].prompt, '洗衣机场景里展示产品和泡腾过程');
+  assert.equal(project.results[0].buyerShowDisplayPrompt, '洗衣机场景里展示产品和泡腾过程');
+  assert.equal(project.results[0].buyerShowEvaluation, '家里养猫，平时也会用小区的公共洗衣机，所以买这个来给衣物做消毒。');
+  assert.equal(project.results[0].creditsConsumed, 3);
+});
+
 test('shell data adapter recovers legacy buyer show root batches as per-set cards', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [

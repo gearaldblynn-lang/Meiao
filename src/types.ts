@@ -1137,6 +1137,8 @@ export interface ArkBuyerShowResult {
   evaluation: string;
   status: 'success' | 'error';
   message?: string;
+  creditsConsumed?: number;
+  taskId?: string;
 }
 
 export interface ArkPureEvaluationResult {

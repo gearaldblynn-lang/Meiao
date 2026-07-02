@@ -1582,7 +1582,8 @@ export const generateBuyerShowPrompts = async (
   state: BuyerShowPersistentState,
   apiConfig: GlobalApiConfig,
   setIndex: number = 0, // 增加 Set Index 参数，用于发散思维
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onJobCreated?: AnalysisJobCreatedCallback,
 ): Promise<ArkBuyerShowResult> => {
   try {
     const publicBaseUrl = await resolveRuntimePublicBaseUrl();
@@ -1690,7 +1691,14 @@ Generate the JSON response. Ensure valid JSON format.`;
     const timeoutId = setTimeout(() => timeoutController.abort(), 60000);
 
     try {
-      let content = await requestAnalysisResponse(inputContent, apiConfig, signal || timeoutController.signal);
+      const analysis = await requestAnalysisResponseDetailed(inputContent, apiConfig, signal || timeoutController.signal, onJobCreated, {
+        taskPurpose: 'buyer_show_planning',
+        shellPlanningPurpose: 'buyer_show_planning',
+        setIndex: setIndex + 1,
+        imageCount: state.imageCount,
+        setCount: state.setCount,
+      });
+      let content = analysis.content;
       content = content.replace(/```json/g, '').replace(/```/g, '').trim();
 
       const firstBrace = content.indexOf('{');
@@ -1709,7 +1717,9 @@ Generate the JSON response. Ensure valid JSON format.`;
       return {
         tasks: Array.isArray(result.tasks) ? result.tasks : [],
         evaluation: result.evaluation || '',
-        status: 'success'
+        status: 'success',
+        creditsConsumed: analysis.creditsConsumed,
+        taskId: analysis.taskId,
       };
     } finally {
       clearTimeout(timeoutId);
