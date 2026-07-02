@@ -1,6 +1,7 @@
 import { compactKey, collectItemKeys, mergeArrayByStableKeys } from '../src/utils/taskResultReconcile.mjs';
 import { getPlanContent, isLegacyFailureText, isPlanFailed } from '../src/utils/planFailure.mjs';
 import { mergeShellDraftForStorage } from './appStateDraftMerge.mjs';
+import { isProviderErrorText } from './providerErrorText.mjs';
 const cloneJson = (value) => JSON.parse(JSON.stringify(value || {}));
 
 const ONE_CLICK_BRANCH_KEYS = ['firstImage', 'mainImage', 'detailPage', 'sku'];
@@ -424,15 +425,7 @@ const isTransientNoIdentityRuntimePlaceholder = (item = {}) => {
 };
 
 const isProviderPollutionText = (value) => {
-  const text = compactKey(value);
-  if (!text) return false;
-  return [
-    /unauthorized\s*[–-]\s*authentication failed/i,
-    /authentication failed\.?\s*please check/i,
-    /server exception,\s*please try again later/i,
-    /server is currently being maintained/i,
-    /internal error,\s*please try again later/i,
-  ].some((pattern) => pattern.test(text));
+  return isProviderErrorText(value);
 };
 
 const isInvalidNoIdentityOneClickResult = (item = {}) => {

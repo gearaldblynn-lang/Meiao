@@ -232,6 +232,40 @@ const taskStatusToTask = (status: unknown): ShellTaskStatus => {
   return 'generating';
 };
 
+const PROVIDER_POLLUTION_TEXT_PATTERNS = [
+  /file mime type is not supported/i,
+  /image download failed/i,
+  /http 404:\s*not found/i,
+  /failed\s+to\s+get\s+(?:the\s+)?file\s+information/i,
+  /please convert or change the file/i,
+  /unauthorized\s*[\u2013-]\s*authentication failed/i,
+  /authentication failed\.?\s*please check/i,
+  /server exception,\s*please try again later/i,
+  /server is currently being maintained/i,
+  /interal\s+error/i,
+  /internal\s+error/i,
+  /internal\s+server\s+error/i,
+  /internal\s+error,\s*please try again later/i,
+  /\bhttp\s*(?:500|502|503|504)\b/i,
+  /bad\s+gateway/i,
+  /gateway\s+timeout/i,
+  /service\s+unavailable/i,
+  /upstream\s+error/i,
+  /server\s+error/i,
+];
+
+const isProviderPollutionTextCore = (value: unknown) => {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  return PROVIDER_POLLUTION_TEXT_PATTERNS.some((pattern) => pattern.test(text))
+    || (
+      text.length <= 80
+      && /error|http\s*5\d\d|bad gateway|unavailable/i.test(text)
+      && !text.includes('{')
+      && !text.includes('[')
+    );
+};
+
 const getProviderErrorText = (job: any): string => {
   const text = String(
     job?.errorMessage
@@ -241,13 +275,7 @@ const getProviderErrorText = (job: any): string => {
     || ''
   ).trim();
   if (!text) return '';
-  return [
-    /unauthorized\s*[–-]\s*authentication failed/i,
-    /authentication failed\.?\s*please check/i,
-    /server exception,\s*please try again later/i,
-    /server is currently being maintained/i,
-    /internal error,\s*please try again later/i,
-  ].some((pattern) => pattern.test(text)) ? text : '';
+  return isProviderPollutionTextCore(text) ? text : '';
 };
 
 const getResultUrls = (item: any): string[] => {
@@ -2508,15 +2536,7 @@ const isTransientNoIdentityRuntimePlaceholderResult = (result: Partial<ShellGene
 };
 
 const isProviderPollutionText = (value: unknown) => {
-  const text = String(value || '').trim();
-  if (!text) return false;
-  return [
-    /unauthorized\s*[–-]\s*authentication failed/i,
-    /authentication failed\.?\s*please check/i,
-    /server exception,\s*please try again later/i,
-    /server is currently being maintained/i,
-    /internal error,\s*please try again later/i,
-  ].some((pattern) => pattern.test(text));
+  return isProviderPollutionTextCore(value);
 };
 
 const normalizeInvalidPlanAsFailedPlanningCard = (
