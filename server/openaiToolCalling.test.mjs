@@ -46,6 +46,19 @@ test('非流式：返回文本（finish_reason=stop）', async () => {
   assert.equal(out.finishReason, 'stop');
 });
 
+test('非流式：拦截伪成功上游错误文本', async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    choices: [{ finish_reason: 'stop', message: { content: 'Interal error: HTTP 500' } }],
+  }), { status: 200 });
+  await assert.rejects(
+    () => runOpenAIToolCallingJob({
+      payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+      env: mockEnv,
+    }),
+    /上游错误: Interal error: HTTP 500/
+  );
+});
+
 test('非流式：返回 tool_calls（finish_reason=tool_calls）', async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({
     choices: [{ finish_reason: 'tool_calls', message: { tool_calls: [{ id: 'c1', function: { name: 'generate_image', arguments: '{"prompt":"猫","task_type":"new_image"}' } }] } }],

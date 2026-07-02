@@ -77,6 +77,42 @@ test('handleChatwootAiWebhook replies to incoming Chatwoot messages through the 
   assert.equal(calls.send[0].content, '您好，敏感肌可以先做耳后局部测试，确认无不适后再使用。');
 });
 
+test('handleChatwootAiWebhook skips provider upstream text errors instead of sending them to customers', async () => {
+  const calls = { send: [] };
+  const result = await handleChatwootAiWebhook({
+    payload: {
+      event: 'message_created',
+      id: 191,
+      message_type: 'incoming',
+      content: '什么时候发货？',
+      conversation: { id: 101, inbox_id: 7 },
+      inbox: { id: 7 },
+    },
+    env: {
+      CHATWOOT_BASE_URL: 'https://chatwoot.test',
+      CHATWOOT_ACCOUNT_ID: '1',
+      CHATWOOT_INBOX_ID: '7',
+      CHATWOOT_API_TOKEN: 'token',
+      OPENAI_COMPATIBLE_API_KEY: 'sk-test',
+      OPENAI_COMPATIBLE_BASE_URL: 'https://relay.test',
+      OPENAI_COMPATIBLE_MODELS: 'gpt-5.4',
+    },
+    listMessagesImpl: async () => ({ messages: [{ role: 'customer', content: '什么时候发货？' }] }),
+    generateReplyImpl: async () => {
+      throw new Error('上游错误: Interal error: HTTP 500');
+    },
+    sendMessageImpl: async (config, conversationId, content) => {
+      calls.send.push({ config, conversationId, content });
+      return { message: { id: 'should-not-send' } };
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'provider_upstream_error');
+  assert.equal(calls.send.length, 0);
+});
+
 test('handleChatwootAiWebhook skips outgoing messages to avoid reply loops', async () => {
   let called = false;
   const result = await handleChatwootAiWebhook({
