@@ -1140,6 +1140,65 @@ test('mergeAppStateForStorage keeps clean first-image completion from being poll
   assert.deepEqual(project.results.map((result) => result.status), ['completed', 'completed', 'completed', 'completed']);
 });
 
+test('mergeAppStateForStorage drops interal http 500 pollution placeholders after backend success', () => {
+  const completedResult = {
+    id: 'provider-success-http-500',
+    planId: 'plan-http-500',
+    projectId: 'polluted-http-500-project',
+    imageUrl: '/first-image-http-500.png',
+    status: 'completed',
+    taskId: 'provider-success-http-500',
+    backendJobId: 'image-job-http-500',
+    module: 'one_click',
+    subFeature: 'first_image',
+  };
+
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'polluted-http-500-project',
+      name: '5月26日项目3',
+      module: 'one_click',
+      subFeature: 'first_image',
+      status: 'error',
+      taskCount: 2,
+      completedCount: 1,
+      plans: [{ id: 'plan-http-500', title: '首图参考1', selected: true }],
+      results: [
+        completedResult,
+        {
+          id: 'failed-planning-http-500',
+          planId: 'plan-http-500',
+          projectId: 'polluted-http-500-project',
+          status: 'error',
+          imageUrl: '',
+          backendJobId: 'failed-planning-http-500',
+          error: 'Interal error: HTTP 500',
+        },
+      ],
+      error: 'Interal error: HTTP 500',
+    }],
+  }, {
+    shellProjects: [{
+      id: 'polluted-http-500-project',
+      name: '5月26日项目3',
+      module: 'one_click',
+      subFeature: 'first_image',
+      status: 'completed',
+      taskCount: 1,
+      completedCount: 1,
+      plans: [{ id: 'plan-http-500', title: '首图参考1', selected: true }],
+      results: [completedResult],
+    }],
+  });
+
+  const project = merged.shellProjects[0];
+  assert.equal(project.status, 'completed');
+  assert.equal(project.taskCount, 1);
+  assert.equal(project.completedCount, 1);
+  assert.equal(project.error, undefined);
+  assert.deepEqual(project.results.map((result) => result.id), ['provider-success-http-500']);
+});
+
 test('mergeAppStateForStorage ignores late frontend network placeholders after backend success', () => {
   const completedResult = {
     id: 'provider-success-1',

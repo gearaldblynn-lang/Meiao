@@ -4268,6 +4268,36 @@ test('shell data adapter treats successful provider auth text as a visible error
   assert.match(project.results[0].error, /Authentication failed/);
 });
 
+test('shell data adapter treats successful interal http 500 text as a visible error project', () => {
+  const snapshot = buildShellDataSnapshot({}, [{
+    id: 'http-500-text-succeeded-job',
+    module: 'one_click',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: '',
+    errorCode: null,
+    errorMessage: null,
+    payload: {},
+    result: {
+      content: 'Interal error: HTTP 500',
+      modelUsed: 'gpt-5-4',
+      providerTaskId: '',
+    },
+    createdAt: 3000,
+    updatedAt: 4000,
+    finishedAt: 4000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'job-http-500-text-succeeded-job');
+  assert.ok(project);
+  assert.equal(project.status, 'error');
+  assert.equal(project.backendJobId, 'http-500-text-succeeded-job');
+  assert.equal(project.results.length, 1);
+  assert.equal(project.results[0].status, 'error');
+  assert.match(project.results[0].error, /Interal error: HTTP 500/);
+});
+
 test('shell data adapter keeps persisted auth-text pollution visible as failed planning card before first refresh paint', () => {
   const authText = 'Unauthorized - Authentication failed. Please check that your Authorization and Content-Type headers are correctly set.';
   const dirtyProject = {
