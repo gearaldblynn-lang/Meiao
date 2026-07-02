@@ -1619,7 +1619,7 @@ const BottomInputBar: React.FC<Props> = ({
   };
 
   const getBuyerShowSetMaterials = (type: 'atmosphere' | 'model', index: number) => (
-    (materials[type] || []).filter((item) => item.buyerShowSetIndex === index)
+    (materials[type] || []).filter((item) => item.buyerShowSetIndex === index || (index === 0 && typeof item.buyerShowSetIndex !== 'number'))
   );
 
   const renderBuyerShowSetMaterialRow = (

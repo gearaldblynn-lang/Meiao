@@ -247,6 +247,7 @@ test('buyer show batch action opens set-count popover with per-set uploads inste
   assert.match(bottomInputBar, /uploadTargetSetIndex/);
   assert.match(bottomInputBar, /buyerShowSetIndex: uploadTargetSetIndex/);
   assert.match(bottomInputBar, /getBuyerShowSetMaterials/);
+  assert.match(bottomInputBar, /item\.buyerShowSetIndex === index \|\| \(index === 0 && typeof item\.buyerShowSetIndex !== 'number'\)/);
   assert.match(bottomInputBar, /第 \{index \+ 1\} 套/);
   assert.match(bottomInputBar, /openBuyerShowSetUpload\(type, index\)/);
   assert.match(bottomInputBar, /renderBuyerShowSetMaterialRow\('atmosphere', index/);
@@ -265,6 +266,9 @@ test('buyer show batch action opens set-count popover with per-set uploads inste
   assert.match(previewBar, /buyerShowSetIndex/);
   assert.match(workflow, /getBuyerShowSetReferenceUrls/);
   assert.match(workflow, /getBuyerShowSetGenerationInputs/);
+  assert.match(workflow, /item\.buyerShowSetIndex === setIndex \|\| \(setIndex === 0 && typeof item\.buyerShowSetIndex !== 'number'\)/);
+  assert.doesNotMatch(workflow, /const atmosphereLines = \(input\.materials\.atmosphere \|\| \[\]\)/);
+  assert.doesNotMatch(workflow, /const modelLines = \(input\.materials\.model \|\| \[\]\)/);
   assert.match(workflow, /第\$\{setIndex \+ 1\}套氛围参考图/);
   assert.match(workflow, /第\$\{setIndex \+ 1\}套模特参考图/);
   assert.match(workflow, /setReference\.planningReferenceUrl/);

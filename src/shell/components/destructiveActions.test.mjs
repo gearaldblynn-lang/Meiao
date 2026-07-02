@@ -192,7 +192,7 @@ test('buyer show multi-set generation uses account concurrency and warns when co
   assert.match(buyerShowWorkflow, /batchCount: state\.imageCount/);
   assert.match(buyerShowWorkflow, /buyerShowGlobalBatchIndex: currentBatchIndex/);
   assert.match(buyerShowWorkflow, /imageIndex: setBatchIndex/);
-  assert.match(workflowSource, /if \(list\.some\(\(item\) => typeof item\.buyerShowSetIndex === 'number'\)\) return \[\]/);
+  assert.match(workflowSource, /item\.buyerShowSetIndex === setIndex \|\| \(setIndex === 0 && typeof item\.buyerShowSetIndex !== 'number'\)/);
   assert.match(workflowSource, /Model reference images:/);
 });
 
