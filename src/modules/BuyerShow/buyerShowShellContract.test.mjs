@@ -67,3 +67,23 @@ test('buyer show edit sends the final image together with uploaded edit referenc
     'https://cdn.example.com/scene-ref.png',
   ]);
 });
+
+test('buyer show creates immediate set project cards without fake image results', () => {
+  assert.match(appSource, /immediateBuyerShowProjects/);
+  assert.match(appSource, /targetModule === AppModuleObj\.BUYER_SHOW/);
+  assert.match(
+    appSource,
+    /immediateBuyerShowProjects[\s\S]*?results:\s*\[\]/,
+    'buyer show immediate project cards should not synthesize pending image results before real jobs exist'
+  );
+  assert.match(
+    appSource,
+    /const projectId = immediateProject\?\.id \|\| immediateBuyerShowRootProjectId \|\| 'proj-' \+ Date\.now\(\)/,
+    'buyer show real workflow should reuse the immediate root project id so later job results fill the same set cards'
+  );
+  assert.doesNotMatch(
+    appSource,
+    /买家秀策划中，正在准备生图任务/,
+    'buyer show should not persist planning placeholder text as a fake image result'
+  );
+});
