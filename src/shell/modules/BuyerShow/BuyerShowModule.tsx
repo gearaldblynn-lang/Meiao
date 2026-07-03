@@ -9,6 +9,7 @@ interface Props {
   onDeleteResult: (projectId: string, resultId: string) => void;
   onDeleteProject: (projectId: string) => void;
   onRegenerateResult?: (projectId: string, resultId: string, instruction?: string) => void;
+  onEditResult?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
   onCancelTask: (taskId: string) => void;
   subFeatures?: SubFeatureOption[];
