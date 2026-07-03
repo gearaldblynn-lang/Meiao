@@ -7,6 +7,7 @@ const workflowSource = readFileSync(new URL('../../adapters/shellWorkflow.ts', i
 const arkSource = readFileSync(new URL('../../services/arkService.ts', import.meta.url), 'utf8');
 const appSource = readFileSync(new URL('../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
 const projectCardSource = readFileSync(new URL('../../shell/components/ProjectCard.tsx', import.meta.url), 'utf8');
+const shellBuyerShowModuleSource = readFileSync(new URL('../../shell/modules/BuyerShow/BuyerShowModule.tsx', import.meta.url), 'utf8');
 
 test('buyer show planning returns provider usage and workflow persists display fields', () => {
   assert.match(arkSource, /requestAnalysisResponseDetailed/);
@@ -37,8 +38,14 @@ test('buyer show detail supports review display, readable prompts and in-place e
   assert.match(projectCardSource, /getBuyerShowReadablePrompt/);
   assert.match(projectCardSource, /project\.module === 'buyer_show'/);
   assert.match(projectCardSource, /isVersionedImageProject/);
+  assert.match(shellBuyerShowModuleSource, /onEditResult\?: \(projectId: string, resultId: string, instruction: string, files: File\[\]\) => void/);
   assert.match(appSource, /handleBuyerShowEditResult/);
   assert.match(appSource, /project\.module === AppModuleObj\.BUYER_SHOW/);
+  assert.match(
+    appSource,
+    /<BuyerShowModule[\s\S]*?onEditResult=\{handleEditResult\}/,
+    'buyer show shell module must receive the edit handler so completed result buttons are enabled'
+  );
   assert.match(appSource, /storyboardImageVersions:\s*nextVersions/);
   assert.doesNotMatch(appSource, /project-edit-\$\{Date\.now\(\)\}[\s\S]{0,600}module:\s*project\.module[\s\S]{0,600}buyer_show/);
 });

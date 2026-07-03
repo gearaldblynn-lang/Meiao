@@ -7674,6 +7674,7 @@ const AppContent: React.FC<{
           onDeleteResult={handleDeleteResult}
           onDeleteProject={handleDeleteProject}
           onRegenerateResult={handleRegenerateResult}
+          onEditResult={handleEditResult}
           onRecoverResult={handleRecoverResult}
           onCancelTask={handleCancelTask}
           pendingActionKeys={pendingActionKeys}
