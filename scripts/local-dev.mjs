@@ -3,7 +3,7 @@
 import net from 'node:net';
 import { execFileSync, spawn } from 'node:child_process';
 
-import { formatStartPlan } from './local-dev-utils.mjs';
+import { evaluateBackendReuse, formatStartPlan } from './local-dev-utils.mjs';
 
 const checkPortListening = (port) =>
   new Promise((resolve) => {
@@ -74,6 +74,30 @@ const main = async () => {
   if (apiListening && apiOwner && !apiOwner.startsWith('node(')) {
     console.error(`3100 当前被非 Node 进程占用: ${apiOwner}。请先释放端口后再重试。`);
     process.exit(1);
+  }
+
+  if (apiListening) {
+    // 复用 3100 前先体检:进程活着 ≠ 后端健康(Temporal worker poller 可能已静默死亡,
+    // 任务会永远排队)。health 打不通或 worker 不健康都拒绝复用。
+    let healthJson = null;
+    try {
+      const response = await fetch('http://127.0.0.1:3100/api/health', {
+        signal: AbortSignal.timeout(8000),
+      });
+      healthJson = await response.json();
+    } catch (error) {
+      console.error(
+        `3100 端口有进程监听，但 /api/health 打不通（${error?.message || error}）。` +
+          '这个后端状态未知，不能安全复用。请先 kill $(lsof -ti tcp:3100) 释放端口后再重跑。'
+      );
+      process.exit(1);
+    }
+
+    const reuse = evaluateBackendReuse(healthJson);
+    if (!reuse.ok) {
+      console.error(reuse.reason);
+      process.exit(1);
+    }
   }
 
   const children = [];
