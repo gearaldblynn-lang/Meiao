@@ -159,7 +159,9 @@ test('all runnable bottom generation submits are guarded before material prepara
 test('buyer show shell publishes pending task cards and releases submit when image jobs are created', () => {
   const shellSource = read('../../ShellMigratedApp.tsx');
   const workflowSource = read('../../adapters/shellWorkflow.ts');
-  const buyerShowBranch = shellSource.match(/targetModule === AppModuleObj\.BUYER_SHOW[\s\S]*?runShellRetouchWorkflow/)?.[0] || '';
+  // b0b5fff(2026-06-30 per-set references)在更早处新增了 BUYER_SHOW 比对,旧的宽泛捕获窗口
+  // 会截错段落;锚定到真正的工作流分支起点(buyerShowSetCount 声明)。
+  const buyerShowBranch = shellSource.match(/const buyerShowSetCount = targetModule === AppModuleObj\.BUYER_SHOW[\s\S]*?runShellRetouchWorkflow/)?.[0] || '';
   const buyerShowWorkflow = workflowSource.match(/export const runShellBuyerShowWorkflow = async \([\s\S]*?\n\};\n\ntype ShellRetouchMode/)?.[0] || '';
 
   assert.match(buyerShowBranch, /taskMetadata:\s*\{[\s\S]*shellProjectId:\s*projectId[\s\S]*shellProjectName:\s*projectName[\s\S]*batchCount[\s\S]*subFeature:\s*targetSubFeature[\s\S]*\}/);
@@ -177,7 +179,7 @@ test('buyer show shell publishes pending task cards and releases submit when ima
 test('buyer show multi-set generation uses account concurrency and warns when concurrency is low', () => {
   const shellSource = read('../../ShellMigratedApp.tsx');
   const workflowSource = read('../../adapters/shellWorkflow.ts');
-  const buyerShowBranch = shellSource.match(/targetModule === AppModuleObj\.BUYER_SHOW[\s\S]*?runShellRetouchWorkflow/)?.[0] || '';
+  const buyerShowBranch = shellSource.match(/const buyerShowSetCount = targetModule === AppModuleObj\.BUYER_SHOW[\s\S]*?runShellRetouchWorkflow/)?.[0] || '';
   const buyerShowWorkflow = workflowSource.match(/export const runShellBuyerShowWorkflow = async \([\s\S]*?\n\};\n\ntype ShellRetouchMode/)?.[0] || '';
 
   assert.match(workflowSource, /apiConfig\?: GlobalApiConfig/);

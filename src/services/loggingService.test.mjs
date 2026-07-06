@@ -55,7 +55,9 @@ test('logging service labels every one-click module action emitted in source fil
   const actions = new Set();
   for (const file of oneClickFiles) {
     const moduleSource = readFileSync(new URL(file, import.meta.url), 'utf8');
-    const matches = moduleSource.matchAll(/action:\s*'([^']+)'/g);
+    // 排除 TS 联合类型注解(action: 'delete' | 'retry')——那是函数参数类型不是日志 action;
+    // AiCustomerServiceModule 引入此写法后旧扫描误报。
+    const matches = moduleSource.matchAll(/action:\s*'([^']+)'(?!\s*\|)/g);
     for (const match of matches) actions.add(match[1]);
   }
 
@@ -74,7 +76,9 @@ test('logging service labels every literal frontend log action emitted in app so
   const actions = new Set();
   for (const fileUrl of sourceRoots.flatMap((root) => collectSourceFiles(root))) {
     const moduleSource = readFileSync(fileUrl, 'utf8');
-    const matches = moduleSource.matchAll(/action:\s*'([^']+)'/g);
+    // 排除 TS 联合类型注解(action: 'delete' | 'retry')——那是函数参数类型不是日志 action;
+    // AiCustomerServiceModule 引入此写法后旧扫描误报。
+    const matches = moduleSource.matchAll(/action:\s*'([^']+)'(?!\s*\|)/g);
     for (const match of matches) actions.add(match[1]);
   }
 

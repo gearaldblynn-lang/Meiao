@@ -1071,7 +1071,6 @@ const submitBuyerShowImageJob = async (
       maxFileSize: config.maxFileSize || 2,
       resolution: String(config.quality || '1K').toUpperCase(),
       kieClientConfigPresent: Boolean(input.apiConfig?.kieApiKey),
-      requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     },
     maxRetries: 2,
   });
