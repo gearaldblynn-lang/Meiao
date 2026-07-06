@@ -12,6 +12,7 @@ import {
 } from './localJobStore.mjs';
 import { getJobById, isRunningJobConcurrencyBlocking, updateJobFields } from './jobManager.mjs';
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
+import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, recordJobEvent } from './taskPlatform.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -532,6 +533,7 @@ export const createMysqlTemporalActivities = ({
         createdAt: finishedAt,
       }));
 
+      await maybeRecordCreditAlertLog({ error, job: latestJob, user, createLog, now: finishedAt });
       if (user && createLog) {
         const logFields = buildJobFailureLogFields({
           jobStatus: failure.status,

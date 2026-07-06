@@ -176,6 +176,7 @@ import { runAllowedCliTool } from './ai-engine/cliToolRunner.mjs';
 import { runBuiltinMediaTool } from './ai-engine/smartFactoryMediaToolRunner.mjs';
 import { appendSmartFactoryConversationTurn } from './ai-engine/smartFactoryAgentStore.mjs';
 import { ensureLocalAdminUser } from './localAdminBootstrap.mjs';
+import { getCreditAlertSnapshot } from './creditAlert.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14273,11 +14274,14 @@ const server = createServer(async (req, res) => {
       const worker = taskEngine === 'temporal'
         ? await getWorkerHealthSnapshot()
         : { healthy: true, engine: taskEngine };
+      // creditAlert 只在有余额告警记录时出现(S3),保持无事时 health 干净。
+      const creditAlert = getCreditAlertSnapshot();
       json(res, 200, {
         ok: true,
         mode: shouldUseMysql ? 'internal-mysql-v1' : 'internal-v1',
         taskEngine,
         worker,
+        ...(Object.keys(creditAlert).length ? { creditAlert } : {}),
       });
       return;
     }
