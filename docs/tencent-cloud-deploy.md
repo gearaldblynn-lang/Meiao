@@ -38,6 +38,8 @@ MEIAO_SUBMITTED_RUNNING_STALE_MS=21600000
 MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS=30000
 APP_STATE_MAX_BYTES=16777216
 MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS=120000
+MEIAO_KIE_HTTP_TRANSIENT_RETRIES=2
+MEIAO_KIE_HTTP_RETRY_BASE_MS=1000
 MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY=2
 MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY=2
 MEIAO_CHAT_SSE_HEARTBEAT_MS=15000
@@ -70,6 +72,8 @@ EOF
 `MEIAO_PROVIDERLESS_RUNNING_STALE_MS` 控制已标记 `running` 但还没有上游 `providerTaskId` 的任务兜底释放窗口。云上建议 `300000`，避免素材上传/提交阶段异常卡住后长期占满同账号并发。`MEIAO_SUBMITTED_RUNNING_STALE_MS` 控制已拿到上游 `providerTaskId` 但本地长时间未回写终态的恢复窗口，默认 6 小时；到期后会回到 `retry_waiting` 复查上游结果，并且不再继续占账号并发。`MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS` 建议 `30000`，让回收检查更及时。
 
 `APP_STATE_MAX_BYTES` 是 app_states 单行 state_json 写入大小闸(超闸按 updatedAt 倒序裁老项目,active 永留)。云上 2026-07-04 起为 `16777216`(16 MiB):当时妙木山 8.76 MiB 已超旧 8 MiB 闸、正在丢老项目;线上 MySQL `max_allowed_packet` 实测 128 MiB,16 MiB 仍有 8 倍余量。调整该值必须 `source .env.server` 后 `pm2 restart --update-env` 并从进程环境(`/proc/<pid>/environ`)复核生效。
+
+`MEIAO_KIE_HTTP_TRANSIENT_RETRIES` / `MEIAO_KIE_HTTP_RETRY_BASE_MS` 控制 KIE HTTP 请求级瞬时重试（默认 2 次、退避 1s/3s）：连接层错误（`fetch failed` 等，未收到响应）对所有请求重试，`502/503/504` 只对只读 GET 重试；提交类 POST 收到响应一律不重试，防重复扣费。任务失败落库时 `error_message` 为用户可读人话、`error_detail` 保留技术原文。
 
 `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 控制 KIE 素材上传单次 HTTP 超时，云上建议 `120000`。分镜参考视频等较大素材需要更长上传预算；如果上传出现瞬时网络或上游 5xx 错误，任务允许有限重试后释放并发，不走 base64 上传接口。
 

@@ -110,6 +110,8 @@ npm run dev
 - `MEIAO_SUBMITTED_RUNNING_STALE_MS`：默认 `21600000`（6 小时）；用于恢复已拿到上游 `providerTaskId` 但本地长时间未回写终态的 `running` 任务。到期后任务回到 `retry_waiting` 复查上游结果，并且不再继续占账号并发。
 - `MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS`：默认 `60000`；云上建议 `30000`，控制 stale running 任务回收检查间隔。
 - `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS`：云上建议 `120000`；KIE 素材上传单次 HTTP 超时。分镜参考视频等较大素材需要更长上传预算；瞬时网络或上游 5xx 错误允许有限重试后释放并发。
+- `MEIAO_KIE_HTTP_TRANSIENT_RETRIES`：默认 `2`；KIE HTTP 请求级瞬时重试次数（S2 G1）。`fetch failed`/`ECONNRESET` 等连接层错误（未收到任何 HTTP 响应）对所有请求重试；`502/503/504` 响应只对只读 GET（recordInfo 查询、素材/结果下载）重试，提交类 POST 收到响应一律不重试，防重复扣费。
+- `MEIAO_KIE_HTTP_RETRY_BASE_MS`：默认 `1000`；请求级重试指数退避基数（毫秒），第 n 次重试等待 `base*(2^n-1)`，默认即 1s、3s。
 - `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_image` 任务提交 KIE 前解析/转存素材的并发。详情页批量生图建议保持保守默认，避免“任务数 × 素材数”打满 KIE 图床。
 - `MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_seedance_video` 任务提交 KIE 前解析/转存图片、视频、音频素材的总并发。分镜视频多素材建议保持保守默认，避免多张大图同时转存导致 `asset_upload fetch failed`。
 - `MEIAO_CHAT_SSE_HEARTBEAT_MS`：默认 `15000`；智能体聊天 SSE 心跳间隔，避免长耗时多图生图期间代理或浏览器因连接空闲断流。
