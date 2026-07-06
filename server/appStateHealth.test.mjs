@@ -162,3 +162,47 @@ test('summarizeAppStateHealthReports aggregates users and issue counts', () => {
   assert.equal(summary.issueCounts.completed_project_without_output, 1);
   assert.equal(summary.issueCounts.active_result_without_identity, 1);
 });
+
+test('analyzeAppState treats storyboard planning-completed projects (script/shots, no images) as normal', () => {
+  const report = analyzeAppState({
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: 'video_1779442347056_0_cuz4',
+          name: '分镜方案 8',
+          status: 'completed',
+          script: '分镜1(1.6秒)画面:暗色调的宠物窝特写。',
+          shots: [{ id: 'shot-1' }, { id: 'shot-2' }],
+          boards: [{ id: 'board-1', title: '10s 分镜板', scriptText: '...', imageUrl: '' }],
+          taskCount: 1,
+          completedCount: 0,
+        }],
+      },
+    },
+  });
+
+  assert.equal(report.issueCounts.completed_project_without_output || 0, 0);
+  assert.equal(report.issueCounts.completed_project_incomplete || 0, 0);
+});
+
+test('analyzeAppState still flags a truly empty storyboard project (no script/shots/boards)', () => {
+  const report = analyzeAppState({
+    videoMemory: {
+      storyboard: {
+        projects: [{ id: 'video_empty', status: 'completed', script: '', shots: [], boards: [] }],
+      },
+    },
+  });
+
+  assert.equal(report.issueCounts.completed_project_without_output, 1);
+});
+
+test('analyzeAppState keeps completed-without-output detection for non-storyboard buckets', () => {
+  const report = analyzeAppState({
+    videoMemory: {
+      veoProjects: [{ id: 'veo-a', status: 'completed', script: '有脚本也不豁免', results: [] }],
+    },
+  });
+
+  assert.equal(report.issueCounts.completed_project_without_output, 1);
+});

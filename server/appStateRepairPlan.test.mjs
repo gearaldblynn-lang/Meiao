@@ -74,6 +74,43 @@ test('buildAppStateRepairPlan downgrades completed projects without output', () 
   assert.equal(plan.after.issueCounts.completed_project_without_output || 0, 0);
 });
 
+test('buildAppStateRepairPlan leaves storyboard planning-completed projects untouched', () => {
+  const plan = buildAppStateRepairPlan({
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: 'video_1779442347056_0_cuz4',
+          status: 'completed',
+          script: '分镜1(1.6秒)画面:暗色调的宠物窝特写。',
+          shots: [{ id: 'shot-1' }],
+          boards: [{ id: 'board-1', scriptText: '...', imageUrl: '' }],
+          taskCount: 1,
+          completedCount: 0,
+        }],
+      },
+    },
+  });
+
+  const project = plan.nextState.videoMemory.storyboard.projects[0];
+  assert.equal(plan.changed, false);
+  assert.equal(project.status, 'completed');
+  assert.equal(project.completedCount, 0);
+});
+
+test('buildAppStateRepairPlan still downgrades a truly empty storyboard project', () => {
+  const plan = buildAppStateRepairPlan({
+    videoMemory: {
+      storyboard: {
+        projects: [{ id: 'video_empty', status: 'completed', script: '', shots: [], boards: [] }],
+      },
+    },
+  });
+
+  assert.equal(plan.changed, true);
+  assert.equal(plan.actions[0].type, 'mark_completed_project_without_output_error');
+  assert.equal(plan.nextState.videoMemory.storyboard.projects[0].status, 'error');
+});
+
 test('buildAppStateRepairPlan keeps source state immutable', () => {
   const state = {
     shellProjects: [{

@@ -65,6 +65,22 @@ export const isIdentitylessActivePlaceholder = (item = {}) => (
   && collectTaskIdentities(item).length === 0
 );
 
+const STORYBOARD_BUCKET_PATH = 'videoMemory.storyboard.projects';
+
+// 单一判据:分镜项目 status:'completed' 表达"策划完成"——有 script/shots/boards 即为有效输出,
+// board 是否出图、出图计数由前端展示层从 boards 推导(VideoModule.tsx),不构成脏数据。
+// 消费方:本文件 analyzeAppState(审计)、appStateRepairPlan(存量修复)。禁止平行拷贝。
+// 注意:真正空壳的分镜项目(无 script/shots/boards)不在此列,仍按脏数据上报。
+export const isStoryboardPlanningProject = (bucketPath, project = {}) => (
+  bucketPath === STORYBOARD_BUCKET_PATH
+  && isObject(project)
+  && (
+    Boolean(compactKey(project.script))
+    || asArray(project.shots).length > 0
+    || asArray(project.boards).length > 0
+  )
+);
+
 export const projectBuckets = (state = {}) => {
   const buckets = [];
   if (Array.isArray(state.shellProjects)) {
@@ -147,10 +163,12 @@ export const analyzeAppState = (state = {}) => {
 
       const taskCount = Number(project.taskCount || 0) || 0;
       const completedCount = Number(project.completedCount || 0) || 0;
-      if (isCompleted(project) && taskCount > completedCount) {
+      // 分镜"策划完成"项目:completed 不承诺有图/计数对齐(展示层从 boards 现算),跳过产出类判据
+      const storyboardPlanning = isStoryboardPlanningProject(bucket.path, project);
+      if (!storyboardPlanning && isCompleted(project) && taskCount > completedCount) {
         addIssue(report, 'completed_project_incomplete', { path: projectPath, projectId, taskCount, completedCount });
       }
-      if (isCompleted(project) && !projectHasAnyOutput(project)) {
+      if (!storyboardPlanning && isCompleted(project) && !projectHasAnyOutput(project)) {
         addIssue(report, 'completed_project_without_output', { path: projectPath, projectId });
       }
       if (isCompleted(project) && resultEntries.some(({ item }) => isActive(item))) {
