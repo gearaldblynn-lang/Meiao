@@ -1314,6 +1314,22 @@ const ProjectCard: React.FC<Props> = ({
                     <div className="mx-auto max-w-2xl space-y-2">
                       <p className="text-[13px] font-semibold">失败原因</p>
                       <p className="whitespace-pre-wrap break-words text-[12px] leading-6">{project.error}</p>
+                      {(() => {
+                        const technicalDetail = (project.results || [])
+                          .map((result) => String(result.errorDetail || '').trim())
+                          .find(Boolean);
+                        if (!technicalDetail || technicalDetail === String(project.error || '').trim()) return null;
+                        return (
+                          <details className="mx-auto max-w-2xl text-left">
+                            <summary className="cursor-pointer select-none text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                              查看技术详情
+                            </summary>
+                            <p className="mt-1 whitespace-pre-wrap break-all rounded-lg border p-2 text-[11px] leading-5" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-tertiary)', background: 'var(--bg-elevated)' }}>
+                              {technicalDetail}
+                            </p>
+                          </details>
+                        );
+                      })()}
                     </div>
                   ) : (
                     '当前项目暂无结果，可继续生成或稍后刷新同步。'
