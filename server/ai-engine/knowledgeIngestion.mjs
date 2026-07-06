@@ -3,6 +3,7 @@ import {
   chunkKnowledgeText,
   normalizeKnowledgeChunkStrategy,
 } from '../../src/modules/AgentCenter/agentCenterUtils.mjs';
+import { DEFAULT_SIMILARITY_THRESHOLD } from './knowledgeRetrieval.mjs';
 
 const clean = (value, max = 5000) => String(value ?? '').trim().slice(0, max);
 const list = (value) => (Array.isArray(value) ? value : []);
@@ -15,11 +16,11 @@ const normalizeMaxChunkChars = (value, strategy) => {
 
 export const normalizeSmartFactoryRetrievalPolicy = (policy = {}) => {
   const topK = Number.parseInt(String(policy?.topK ?? policy?.limit ?? 3), 10);
-  const similarityThreshold = Number(policy?.similarityThreshold ?? policy?.scoreThreshold ?? 1);
+  const similarityThreshold = Number(policy?.similarityThreshold ?? policy?.scoreThreshold ?? DEFAULT_SIMILARITY_THRESHOLD);
   const maxContextChars = Number.parseInt(String(policy?.maxContextChars ?? 2400), 10);
   return {
     topK: Number.isFinite(topK) && topK > 0 ? Math.min(20, topK) : 3,
-    similarityThreshold: Number.isFinite(similarityThreshold) && similarityThreshold >= 0 ? similarityThreshold : 1,
+    similarityThreshold: Number.isFinite(similarityThreshold) && similarityThreshold >= 0 ? similarityThreshold : DEFAULT_SIMILARITY_THRESHOLD,
     maxContextChars: Number.isFinite(maxContextChars) && maxContextChars > 0 ? Math.min(20000, maxContextChars) : 2400,
   };
 };
