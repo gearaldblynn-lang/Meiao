@@ -73,3 +73,33 @@ export const formatStartPlan = ({ devServer, apiServer }) => {
   lines.push('完成后请打开: http://localhost:3000');
   return lines.join('\n');
 };
+
+// 复用 3100 前的体检判据(S1):HTTP 活着不等于后端健康——Temporal worker poller
+// 可能已静默死亡,此时任务会永远排队。healthJson 来自 GET /api/health。
+export const evaluateBackendReuse = (healthJson) => {
+  if (!healthJson || typeof healthJson !== 'object') {
+    return {
+      ok: false,
+      reason: '3100 的 /api/health 没有返回合法 JSON，后端状态未知，不能安全复用。请先 kill 掉占用 3100 的进程再重跑。',
+    };
+  }
+
+  const worker = healthJson.worker;
+  if (worker && worker.healthy === false) {
+    const detail = worker.error
+      ? `worker 探测报错: ${worker.error}`
+      : `task queue 上没有任何存活 poller（workflow: ${worker.workflowPollers ?? 0}, activity: ${worker.activityPollers ?? 0}）`;
+    return {
+      ok: false,
+      reason: [
+        '3100 后端进程还活着，但 Temporal worker 已经死了——新任务会永远排队、一直显示"处理中"。',
+        `- ${detail}`,
+        '- 不能复用这个后端，请先重启它:',
+        '  手动进程: kill $(lsof -ti tcp:3100) 之后重新运行本命令',
+        '  launchd 常驻: launchctl kickstart -k gui/$(id -u)/<服务名>（用 launchctl list | grep -i meiao 查服务名）',
+      ].join('\n'),
+    };
+  }
+
+  return { ok: true };
+};

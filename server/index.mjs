@@ -129,6 +129,7 @@ import {
 import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
 import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLogin } from './dreaminaCli.mjs';
 import { createTemporalTaskAdapter } from './temporalTaskAdapter.mjs';
+import { getWorkerHealthSnapshot } from './workerHealth.mjs';
 import { createLocalTemporalActivities, createMysqlTemporalActivities, startMeiaoTemporalWorker } from './temporalWorker.mjs';
 import { buildImageOutputTransformFromJob, transformImageOutputBuffer } from './imagePostProcess.mjs';
 import {
@@ -14265,10 +14266,17 @@ const server = createServer(async (req, res) => {
 
   try {
     if (url.pathname === '/api/health' && req.method === 'GET') {
+      const taskEngine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
+      // worker 字段暴露 Temporal poller 存活状态(S1):poller 静默死亡时 HTTP 仍活着,
+      // 只看 ok:true 会误判健康。health 本身永远 HTTP 200,消费方看 worker.healthy。
+      const worker = taskEngine === 'temporal'
+        ? await getWorkerHealthSnapshot()
+        : { healthy: true, engine: taskEngine };
       json(res, 200, {
         ok: true,
         mode: shouldUseMysql ? 'internal-mysql-v1' : 'internal-v1',
-        taskEngine: normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE),
+        taskEngine,
+        worker,
       });
       return;
     }
