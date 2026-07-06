@@ -535,6 +535,8 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
   const validConfiguredUserAnalysisModel = chatCatalog.some((item) => item.id === configuredUserAnalysisModel)
     ? configuredUserAnalysisModel
     : '';
+  // TODO(Task I 下一批): 这组历史模型 env 读取迁移到 server/modelDispatch.mjs 的
+  // resolveModelForNeed(env 兼容层),与 index.mjs resolveConfiguredAnalysisModel 第一批迁移对齐;本批不动。
   const defaultAnalysisModel = String(
     env.MEIAO_AGENT_ANALYSIS_MODEL ||
     env.MEIAO_PLANNING_ANALYSIS_MODEL ||
