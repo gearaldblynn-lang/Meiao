@@ -4678,3 +4678,48 @@ test('上游主动取消（signal abort）不触发请求级重试', async () =>
     else process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = realRetryBase;
   }
 });
+
+test('组合路径:请求级重试耗尽后才进入模型 fallback(主模型 3 次 + fallback 1 次)', async () => {
+  const originalFetch = global.fetch;
+  const realTransientRetries = process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES;
+  delete process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES; // 用默认预算 2 次重试
+  const requests = [];
+
+  global.fetch = async (url, init) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
+      throw new TypeError('fetch failed'); // 主模型持续连接层错误
+    }
+    return createJsonResponse({
+      choices: [{ message: { content: 'fallback after transient retries exhausted' } }],
+    });
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          fallbackModels: ['gpt-5-2'],
+          messages: [{ role: 'user', content: '组合路径回归' }],
+        },
+      },
+      { KIE_API_KEY: 'test-key' },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'fallback after transient retries exhausted');
+    assert.equal(result.result.modelUsed, 'gpt-5-2');
+    // 主模型 1 次原始请求 + 2 次请求级重试,重试耗尽后才模型 fallback 1 次
+    assert.equal(requests.length, 4);
+    assert.match(requests[0].url, /\/gemini-3-flash\/v1\/chat\/completions$/);
+    assert.match(requests[1].url, /\/gemini-3-flash\/v1\/chat\/completions$/);
+    assert.match(requests[2].url, /\/gemini-3-flash\/v1\/chat\/completions$/);
+    assert.match(requests[3].url, /\/gpt-5-2\/v1\/chat\/completions$/);
+  } finally {
+    global.fetch = originalFetch;
+    if (realTransientRetries === undefined) delete process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES;
+    else process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES = realTransientRetries;
+  }
+});
