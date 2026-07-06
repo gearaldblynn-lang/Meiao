@@ -1,4 +1,4 @@
-import { analyzeAppState, isIdentitylessActivePlaceholder } from './appStateHealth.mjs';
+import { analyzeAppState, isIdentitylessActivePlaceholder, isStoryboardPlanningProject } from './appStateHealth.mjs';
 
 const ONE_CLICK_BRANCH_KEYS = ['firstImage', 'mainImage', 'detailPage', 'sku'];
 const ACTIVE_STATUSES = new Set(['generating', 'pending', 'queued', 'running', 'retry_waiting', 'uploading', 'processing']);
@@ -99,6 +99,9 @@ export const buildAppStateRepairPlan = (state = {}) => {
 
       const outputCount = projectOutputCount(project);
       if (!isCompleted(project)) return;
+      // 分镜"策划完成"项目(判据复用 appStateHealth.isStoryboardPlanningProject):
+      // completed=策划完成,不承诺有图,标失败/归一计数都会误伤正常业务态,整段跳过
+      if (isStoryboardPlanningProject(bucket.path, project)) return;
       if (projectHasExecutableActiveResult(project)) {
         project.status = 'generating';
         actions.push(action('restore_completed_project_with_active_result', { path: projectPath, projectId }));
