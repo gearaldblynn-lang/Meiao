@@ -238,6 +238,33 @@ test('buildPublicSystemConfig keeps video analysis model independent from planni
   assert.equal(config.systemSettings.videoAnalysisReasoningLevel, 'high');
 });
 
+test('buildPublicSystemConfig defaultAnalysisModel env 优先序:agent > planning > default-analysis > default-chat > kie-chat > 目录首个', () => {
+  const base = { KIE_API_KEY: 'kie-secret' };
+  const chain = [
+    ['MEIAO_AGENT_ANALYSIS_MODEL', 'agent-analysis-model'],
+    ['MEIAO_PLANNING_ANALYSIS_MODEL', 'planning-analysis-model'],
+    ['MEIAO_DEFAULT_ANALYSIS_MODEL', 'default-analysis-model'],
+    ['MEIAO_DEFAULT_CHAT_MODEL', 'default-chat-model'],
+    ['KIE_CHAT_MODEL', 'kie-chat-model'],
+  ];
+  for (let i = 0; i < chain.length; i += 1) {
+    const env = { ...base };
+    for (let j = i; j < chain.length; j += 1) env[chain[j][0]] = chain[j][1];
+    const config = buildPublicSystemConfig(env, { queued: 0, running: 0 });
+    assert.equal(config.systemSettings.effectiveAnalysisModel, chain[i][1]);
+  }
+  const config = buildPublicSystemConfig(base, { queued: 0, running: 0 });
+  assert.equal(config.systemSettings.effectiveAnalysisModel, 'gpt-5-4-openai-resp');
+});
+
+test('buildPublicSystemConfig defaultAnalysisModel 会去除 env 值两侧空白', () => {
+  const config = buildPublicSystemConfig(
+    { KIE_API_KEY: 'kie-secret', MEIAO_AGENT_ANALYSIS_MODEL: '  agent-analysis-model  ' },
+    { queued: 0, running: 0 },
+  );
+  assert.equal(config.systemSettings.effectiveAnalysisModel, 'agent-analysis-model');
+});
+
 test('buildPublicSystemConfig exposes user planning model and gemini-only video analysis models', () => {
   const config = buildPublicSystemConfig(
     { KIE_API_KEY: 'kie-secret', MEIAO_DEFAULT_ANALYSIS_MODEL: 'gpt-5-4-openai-resp' },
