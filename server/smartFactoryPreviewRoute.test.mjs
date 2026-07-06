@@ -70,8 +70,9 @@ test('smart factory APIs require login but are not admin-only', () => {
     { last: true },
   );
 
-  assert.equal((dbSmartFactoryRoutes.match(/requireDbUser/g) || []).length, 21);
-  assert.equal((localSmartFactoryRoutes.match(/localRequireUser/g) || []).length, 21);
+  // 2026-07-06 U2 新增 agent DELETE 路由(双 handler 各 1),登录守卫 21→22
+  assert.equal((dbSmartFactoryRoutes.match(/requireDbUser/g) || []).length, 22);
+  assert.equal((localSmartFactoryRoutes.match(/localRequireUser/g) || []).length, 22);
   assert.doesNotMatch(dbSmartFactoryRoutes, /requireDbAdmin/);
   assert.doesNotMatch(localSmartFactoryRoutes, /localRequireAdmin/);
 });
