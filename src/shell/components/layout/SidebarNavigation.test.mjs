@@ -32,50 +32,40 @@ test('sidebar exposes a lightweight system announcement entry above settings', (
   assert.match(app, /onOpenAnnouncement=\{handleOpenAnnouncementPanel\}/);
 });
 
-test('sidebar exposes Smart Factory as a main module below agent center', () => {
+test('sidebar keeps Smart Factory withdrawn from cloud navigation', () => {
   const source = read('src/shell/components/layout/SidebarNavigation.tsx');
-  const shellTypes = read('src/shell/types.ts');
-  const appTypes = read('src/types.ts');
   const app = read('src/ShellMigratedApp.tsx');
 
   const mainStart = source.indexOf('const MAIN: NavDef[] = [');
   const agentIndex = source.indexOf('AppModuleObj.AGENT_CENTER', mainStart);
   const smartFactoryIndex = source.indexOf('AppModuleObj.SMART_FACTORY', mainStart);
-  const customerServiceIndex = source.indexOf('AppModuleObj.AI_CUSTOMER_SERVICE', mainStart);
   const oneClickIndex = source.indexOf('AppModuleObj.ONE_CLICK', mainStart);
 
   assert.ok(agentIndex > -1, 'agent center nav item should exist');
-  assert.ok(smartFactoryIndex > agentIndex, 'Smart Factory should sit below agent center');
-  assert.ok(customerServiceIndex > smartFactoryIndex, 'Smart Factory should sit immediately above AI customer service');
-  assert.ok(oneClickIndex > smartFactoryIndex, 'Smart Factory should sit above one-click main detail');
-  assert.match(source, /Factory size=\{20\}/);
-  assert.match(source, /label: '智能工厂'/);
-  assert.match(shellTypes, /\| 'smart_factory'/);
-  assert.match(shellTypes, /SMART_FACTORY: 'smart_factory' as AppModule/);
-  assert.match(appTypes, /SMART_FACTORY = 'smart_factory'/);
-  assert.match(app, /const SmartFactoryModule = lazy\(\(\) => import\('\.\/shell\/modules\/SmartFactory\/SmartFactoryModule'\)\)/);
-  assert.match(app, /case AppModuleObj\.SMART_FACTORY:/);
+  assert.ok(oneClickIndex > agentIndex, 'one-click should sit below agent center');
+  assert.equal(smartFactoryIndex, -1, 'Smart Factory should not be in cloud sidebar navigation');
+  assert.doesNotMatch(source, /Factory size=\{20\}/);
+  assert.doesNotMatch(source, /label: '智能工厂'/);
+  assert.doesNotMatch(app, /const SmartFactoryModule = lazy\(\(\) => import\('\.\/shell\/modules\/SmartFactory\/SmartFactoryModule'\)\)/);
+  assert.doesNotMatch(app, /case AppModuleObj\.SMART_FACTORY:/);
+  assert.match(app, /WITHDRAWN_CLOUD_MODULES/);
+  assert.match(app, /AppModuleObj\.SMART_FACTORY/);
 });
 
-test('sidebar exposes AI customer service as a global main module below agent center', () => {
+test('sidebar keeps AI customer service withdrawn from cloud navigation', () => {
   const source = read('src/shell/components/layout/SidebarNavigation.tsx');
-  const shellTypes = read('src/shell/types.ts');
-  const appTypes = read('src/types.ts');
   const app = read('src/ShellMigratedApp.tsx');
 
   const mainStart = source.indexOf('const MAIN: NavDef[] = [');
   const agentIndex = source.indexOf('AppModuleObj.AGENT_CENTER', mainStart);
   const customerServiceIndex = source.indexOf('AppModuleObj.AI_CUSTOMER_SERVICE', mainStart);
-  const smartFactoryIndex = source.indexOf('AppModuleObj.SMART_FACTORY', mainStart);
 
   assert.ok(agentIndex > -1, 'agent center nav item should exist');
-  assert.ok(customerServiceIndex > agentIndex, 'AI customer service should sit below agent center');
-  assert.ok(customerServiceIndex > smartFactoryIndex, 'AI customer service should sit below Smart Factory');
-  assert.match(source, /MessagesSquare size=\{20\}/);
-  assert.match(source, /label: 'AI客服'/);
-  assert.match(shellTypes, /\| 'ai_customer_service'/);
-  assert.match(shellTypes, /AI_CUSTOMER_SERVICE: 'ai_customer_service' as AppModule/);
-  assert.match(appTypes, /AI_CUSTOMER_SERVICE = 'ai_customer_service'/);
-  assert.match(app, /const AiCustomerServiceModule = lazy\(\(\) => import\('\.\/shell\/modules\/AiCustomerService\/AiCustomerServiceModule'\)\)/);
-  assert.match(app, /case AppModuleObj\.AI_CUSTOMER_SERVICE:/);
+  assert.equal(customerServiceIndex, -1, 'AI customer service should not be in cloud sidebar navigation');
+  assert.doesNotMatch(source, /MessagesSquare size=\{20\}/);
+  assert.doesNotMatch(source, /label: 'AI客服'/);
+  assert.doesNotMatch(app, /const AiCustomerServiceModule = lazy\(\(\) => import\('\.\/shell\/modules\/AiCustomerService\/AiCustomerServiceModule'\)\)/);
+  assert.doesNotMatch(app, /case AppModuleObj\.AI_CUSTOMER_SERVICE:/);
+  assert.match(app, /WITHDRAWN_CLOUD_MODULES/);
+  assert.match(app, /AppModuleObj\.AI_CUSTOMER_SERVICE/);
 });

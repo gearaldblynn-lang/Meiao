@@ -3,7 +3,7 @@ import type { AppModule } from '../../types';
 import { AppModuleObj } from '../../types';
 import {
   Bot, Sparkles, Globe, Users, Wand2, PlayCircle, BookOpen,
-  Settings, UserCircle, Hexagon, Sun, Moon, ChevronLeft, ChevronRight, ReplaceAll, Bell, Factory, MessagesSquare
+  Settings, UserCircle, Hexagon, Sun, Moon, ChevronLeft, ChevronRight, ReplaceAll, Bell
 } from 'lucide-react';
 
 interface SidebarNavDef { module: AppModule | 'landing'; icon: React.ReactNode; label: string; }
@@ -18,8 +18,6 @@ const LANDING: SidebarNavDef = {
 
 const MAIN: NavDef[] = [
   { module: AppModuleObj.AGENT_CENTER, icon: <Bot size={20} strokeWidth={1.5} />, label: '智能体' },
-  { module: AppModuleObj.SMART_FACTORY, icon: <Factory size={20} strokeWidth={1.5} />, label: '智能工厂' },
-  { module: AppModuleObj.AI_CUSTOMER_SERVICE, icon: <MessagesSquare size={20} strokeWidth={1.5} />, label: 'AI客服' },
   { module: AppModuleObj.ONE_CLICK, icon: <Sparkles size={20} strokeWidth={1.5} />, label: '一键主详' },
   { module: AppModuleObj.TRANSLATION, icon: <Globe size={20} strokeWidth={1.5} />, label: '出海翻译' },
   { module: AppModuleObj.BUYER_SHOW, icon: <Users size={20} strokeWidth={1.5} />, label: '买家秀' },

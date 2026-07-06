@@ -24,8 +24,8 @@ test('help guide config covers all top-level modules from shared content', () =>
   const guideConfig = read('../config/helpGuide.ts');
 
   assert.match(guideConfig, /AppModule\.AGENT_CENTER/);
-  assert.match(guideConfig, /AppModule\.AI_CUSTOMER_SERVICE/);
-  assert.match(guideConfig, /AppModule\.SMART_FACTORY/);
+  assert.doesNotMatch(guideConfig, /GUIDE_MODULES:[\s\S]*AppModule\.AI_CUSTOMER_SERVICE/);
+  assert.doesNotMatch(guideConfig, /GUIDE_MODULES:[\s\S]*AppModule\.SMART_FACTORY/);
   assert.match(guideConfig, /AppModule\.ONE_CLICK/);
   assert.match(guideConfig, /AppModule\.TRANSLATION/);
   assert.match(guideConfig, /AppModule\.BUYER_SHOW/);
