@@ -9,7 +9,9 @@ test('user api persists short-video generation permission per account', () => {
   assert.match(source, /feature_permissions_json/);
   assert.match(source, /featurePermissions:\s*normalizeFeaturePermissions/);
   assert.match(source, /body\.featurePermissions/);
-  assert.match(source, /createDbUser\(\{ username, password, role, displayName, jobConcurrency, featurePermissions \}\)/);
+  // 锁"featurePermissions 必须传进 createDbUser 持久化",不锁参数全集——
+  // 旧断言把参数列表写死,19d5c4b 加 creditLimitMode/creditBalance 后误报失败(功能本身完好)。
+  assert.match(source, /createDbUser\(\{ username, password, role, displayName, jobConcurrency, featurePermissions\b[^)]*\}\)/);
   assert.match(source, /targetUser\.featurePermissions = normalizeFeaturePermissions/);
   assert.match(source, /canUseVideoGenerationFeature/);
   assert.match(source, /\['dreamina_video', 'kie_seedance_video'\]\.includes\(body\.taskType\)/);
