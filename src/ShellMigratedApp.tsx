@@ -70,8 +70,6 @@ import { collectFailedOneClickPlanningPlans } from './adapters/shellPlanningFail
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
 const AgentCenterModule = lazy(() => import('./shell/modules/AgentCenter/AgentCenterModule'));
-const AiCustomerServiceModule = lazy(() => import('./shell/modules/AiCustomerService/AiCustomerServiceModule'));
-const SmartFactoryModule = lazy(() => import('./shell/modules/SmartFactory/SmartFactoryModule'));
 const TranslationModule = lazy(() => import('./shell/modules/Translation/TranslationModule'));
 const OneClickModule = lazy(() => import('./shell/modules/OneClick/OneClickModule'));
 const RetouchModule = lazy(() => import('./shell/modules/Retouch/RetouchModule'));
@@ -98,6 +96,15 @@ const normalizeShellImageModel = (value: unknown) => {
 };
 
 const ANNOUNCEMENT_DISMISS_STORAGE_PREFIX = 'meiao_announcement_dismissed_today';
+const WITHDRAWN_CLOUD_MODULES = new Set<AppModule>([
+  AppModuleObj.AI_CUSTOMER_SERVICE,
+  AppModuleObj.SMART_FACTORY,
+]);
+
+const normalizeAvailableModule = (module?: AppModule | null): AppModule => {
+  if (!module || WITHDRAWN_CLOUD_MODULES.has(module)) return AppModuleObj.ONE_CLICK;
+  return module;
+};
 
 const getLocalDateKey = () => {
   const now = new Date();
@@ -1225,8 +1232,6 @@ const loadShellWorkflowModule = async () => {
 
 const MODULE_NAMES: Record<string, string> = {
   [AppModuleObj.AGENT_CENTER]: '智能体中心',
-  [AppModuleObj.AI_CUSTOMER_SERVICE]: 'AI客服',
-  [AppModuleObj.SMART_FACTORY]: '智能工厂',
   [AppModuleObj.ONE_CLICK]: '一键主详',
   [AppModuleObj.TRANSLATION]: '出海翻译',
   [AppModuleObj.BUYER_SHOW]: '买家秀',
@@ -1305,12 +1310,6 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
     { id: 'management', label: '智能体管理' },
     { id: 'knowledge', label: '知识库' },
     { id: 'versions', label: '版本训练' },
-  ],
-  [AppModuleObj.AI_CUSTOMER_SERVICE]: [
-    { id: 'workbench', label: '客服工作台' },
-  ],
-  [AppModuleObj.SMART_FACTORY]: [
-    { id: 'factory', label: '智能工厂' },
   ],
 };
 
@@ -2014,8 +2013,8 @@ const AppContent: React.FC<{
     if (typeof window === 'undefined') return AppModuleObj.ONE_CLICK;
     const value = new URLSearchParams(window.location.search).get('module');
     if (value === AppModuleObj.SETTINGS || value === AppModuleObj.ACCOUNT) return AppModuleObj.ONE_CLICK;
-    if (Object.values(AppModuleObj).includes(value as AppModule)) return value as AppModule;
-    return savedShellUiState.activeModule || AppModuleObj.ONE_CLICK;
+    if (Object.values(AppModuleObj).includes(value as AppModule)) return normalizeAvailableModule(value as AppModule);
+    return normalizeAvailableModule(savedShellUiState.activeModule || AppModuleObj.ONE_CLICK);
   })();
   const initialPageMode = (() => {
     if (typeof window === 'undefined') return 'landing';
@@ -3092,14 +3091,16 @@ const AppContent: React.FC<{
     if (m === 'landing') { setPageMode('landing'); return; }
     if (m === AppModuleObj.SETTINGS) { setPageMode('settings'); return; }
     if (m === AppModuleObj.ACCOUNT) { setPageMode('account'); return; }
-    setActiveModule(m);
-    setActiveSubFeatureByModule((prev) => prev[m] ? prev : { ...prev, [m]: getDefaultSubFeature(m) });
+    const nextModule = normalizeAvailableModule(m);
+    setActiveModule(nextModule);
+    setActiveSubFeatureByModule((prev) => prev[nextModule] ? prev : { ...prev, [nextModule]: getDefaultSubFeature(nextModule) });
     setPageMode('module');
   }, []);
 
   const handleNavigateFromLanding = useCallback((m: AppModule) => {
-    setActiveModule(m);
-    setActiveSubFeatureByModule((prev) => prev[m] ? prev : { ...prev, [m]: getDefaultSubFeature(m) });
+    const nextModule = normalizeAvailableModule(m);
+    setActiveModule(nextModule);
+    setActiveSubFeatureByModule((prev) => prev[nextModule] ? prev : { ...prev, [nextModule]: getDefaultSubFeature(nextModule) });
     setPageMode('module');
   }, []);
 
@@ -7621,10 +7622,6 @@ const AppContent: React.FC<{
             }
           }}
         />;
-      case AppModuleObj.AI_CUSTOMER_SERVICE:
-        return <AiCustomerServiceModule />;
-      case AppModuleObj.SMART_FACTORY:
-        return <SmartFactoryModule />;
       case AppModuleObj.ONE_CLICK:
         return <OneClickModule
           projects={filteredProjects}

@@ -818,7 +818,7 @@ const GlobalApiSettings: React.FC<{
       setSelectedModelProviderId(savedProvider?.provider || modelProviderForm.provider);
       setModelProviderForm(toModelProviderForm(savedProvider));
       setModelProviderEditing(false);
-      setModelProviderMessage('模型供应商已保存，智能工厂会读取这份统一配置。');
+      setModelProviderMessage('模型供应商已保存，智能体配置会读取这份统一配置。');
     } catch (error) {
       setModelProviderMessage(error instanceof Error ? error.message : '保存模型供应商失败');
     } finally {
@@ -1167,7 +1167,7 @@ const GlobalApiSettings: React.FC<{
                   <div className="min-w-0">
                     <h3 className="text-[15px] font-black" style={{ color: 'var(--text-primary)' }}>统一模型中心</h3>
                     <p className="mt-1 text-[12px]" style={{ color: 'var(--text-tertiary)' }}>
-                      模型中心统一管理厂商、渠道、Base URL、密钥引用、能力矩阵和默认模型；本地模型暂不接入，智能工厂只消费这里的配置。
+                      模型中心统一管理厂商、渠道、Base URL、密钥引用、能力矩阵和默认模型；本地模型暂不接入，智能体配置只消费这里的配置。
                     </p>
                   </div>
                 </div>
@@ -1283,7 +1283,7 @@ const GlobalApiSettings: React.FC<{
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <div>
                       <p className="text-[12px] font-black" style={{ color: 'var(--text-primary)' }}>全局策划模型</p>
-                      <p className="mt-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>智能工厂默认对话、训练和调试模型</p>
+                      <p className="mt-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>智能体默认对话、训练和调试模型</p>
                     </div>
                     <span className="text-[10px] font-bold" style={{ color: 'var(--text-tertiary)' }}>管理员</span>
                   </div>
@@ -1631,7 +1631,7 @@ const GlobalApiSettings: React.FC<{
                       <p className="mb-2 text-[12px] font-black" style={{ color: 'var(--text-primary)' }}>影响范围</p>
                       <div className="space-y-2 text-[11px] font-bold" style={{ color: 'var(--text-secondary)' }}>
                         <p>使用方：{getModeUsageLabel(selectedModelMode)}</p>
-                        <p>智能工厂：模型中心统一管理，这里变更后智能体配置页只做绑定和运行选择。</p>
+                        <p>智能体配置：模型中心统一管理，这里变更后配置页只做绑定和运行选择。</p>
                         <p>知识库：Embedding 与 Rerank 会被 RAG 检索训练调用。</p>
                       </div>
                     </div>
