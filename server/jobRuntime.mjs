@@ -1,5 +1,6 @@
 import { isExternallyReachableBaseUrl, normalizeBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import { getModelCapability } from './modelCapabilities.mjs';
+import { resolveModelForNeed } from './modelDispatch.mjs';
 import { getPublicModelProviderRegistry } from './modelProviderRegistry.mjs';
 import { humanizeProviderError } from './providerErrorHumanize.mjs';
 
@@ -535,17 +536,17 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
   const validConfiguredUserAnalysisModel = chatCatalog.some((item) => item.id === configuredUserAnalysisModel)
     ? configuredUserAnalysisModel
     : '';
-  // TODO(Task I 下一批): 这组历史模型 env 读取迁移到 server/modelDispatch.mjs 的
-  // resolveModelForNeed(env 兼容层),与 index.mjs resolveConfiguredAnalysisModel 第一批迁移对齐;本批不动。
-  const defaultAnalysisModel = String(
-    env.MEIAO_AGENT_ANALYSIS_MODEL ||
-    env.MEIAO_PLANNING_ANALYSIS_MODEL ||
-    env.MEIAO_DEFAULT_ANALYSIS_MODEL ||
-    env.MEIAO_DEFAULT_CHAT_MODEL ||
-    env.KIE_CHAT_MODEL ||
-    chatCatalog[0]?.id ||
-    ''
-  ).trim();
+  // Task I 第二批迁移:四个历史模型 env 的读取统一走 modelDispatch 的 env 兼容层,
+  // 候选优先序与迁移前逐项一致(agent→planning→default-analysis→default-chat→kie-chat→目录首个),
+  // 输入矩阵探针已验证新旧输出全等(MEIAO_DEFAULT_ANALYSIS_MODEL 不在 need 映射,保持直读)。
+  // 注意:这里的 env 是参数注入不是 process.env,所以显式传给 resolveModelForNeed。
+  const defaultAnalysisModel =
+    resolveModelForNeed({ need: 'analysis', analysisKind: 'agent', env }).model ||
+    resolveModelForNeed({ need: 'analysis', analysisKind: 'planning', env }).model ||
+    String(env.MEIAO_DEFAULT_ANALYSIS_MODEL || '').trim() ||
+    resolveModelForNeed({ need: 'chat', env }).model ||
+    resolveModelForNeed({ need: 'kie-chat', env }).model ||
+    String(chatCatalog[0]?.id || '').trim();
   const effectiveAnalysisModel = validConfiguredUserAnalysisModel || validConfiguredAnalysisModel || defaultAnalysisModel;
   const envVideoAnalysisModel = String(env.MEIAO_VIDEO_ANALYSIS_MODEL || '').trim();
   const defaultVideoAnalysisModel = videoAnalysisModels.some((item) => item.id === 'gemini-3-flash-openai')
