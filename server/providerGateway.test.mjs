@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { executeProviderJob, uploadAssetViaKieStream, __testOnly_setDreaminaVideoRunner } from './providerGateway.mjs';
+import { executeProviderJob, uploadAssetViaKieStream, __testOnly_setDreaminaVideoRunner, __testOnly_fetchKieWithTimeout, __testOnly_getKieHttpRetryDelayMs } from './providerGateway.mjs';
+
+// 请求级瞬时重试(S2 G1)默认退避 1s/3s,测试里统一压到 1ms,
+// 避免走到 fetch failed / 5xx 路径的既有测试被退避拖慢。
+process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = '1';
 
 const createJsonResponse = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -3717,6 +3721,10 @@ test('executeProviderJob applies the KIE chat completion timeout to gemini 3 fla
 
 test('executeProviderJob respects fallback models when gemini 3 flash fetch fails', async () => {
   const originalFetch = global.fetch;
+  // 本测试单测"模型 fallback"行为;请求级瞬时重试(S2 G1)会先对连接层错误重试
+  // 再进入模型 fallback,会让请求计数 +2,这里显式关掉以隔离被测行为。
+  const realTransientRetries = process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES;
+  process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES = '0';
   const requests = [];
 
   global.fetch = async (url, init) => {
@@ -3756,6 +3764,8 @@ test('executeProviderJob respects fallback models when gemini 3 flash fetch fail
     assert.equal(requests.length, 2);
   } finally {
     global.fetch = originalFetch;
+    if (realTransientRetries === undefined) delete process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES;
+    else process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES = realTransientRetries;
   }
 });
 
@@ -4478,5 +4488,193 @@ test('executeProviderJob falls back to a minimal claude request when tool_choice
     assert.deepEqual(secondBody.tools, []);
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+// ── Kie HTTP 请求级瞬时重试(S2 Task G1) ──────────────────────────────
+
+test('只读 GET 请求遇 fetch failed 时按预算重试后成功', async () => {
+  const realFetch = globalThis.fetch;
+  const realRetryBase = process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+  process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = '1';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls < 3) throw new TypeError('fetch failed');
+    return createJsonResponse({ ok: true });
+  };
+  try {
+    const response = await __testOnly_fetchKieWithTimeout('https://api.kie.ai/api/v1/jobs/recordInfo?taskId=t1', {
+      method: 'GET',
+    }, 'Kie 查询超时', 5000, 'polling');
+    assert.equal(response.status, 200);
+    assert.equal(calls, 3);
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realRetryBase === undefined) delete process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+    else process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = realRetryBase;
+  }
+});
+
+test('只读 GET 请求遇 503 时按预算重试，重试耗尽返回最后一次响应', async () => {
+  const realFetch = globalThis.fetch;
+  const realRetryBase = process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+  process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = '1';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return createJsonResponse({ msg: 'cpu overloaded' }, 503);
+  };
+  try {
+    const response = await __testOnly_fetchKieWithTimeout('https://api.kie.ai/api/v1/jobs/recordInfo?taskId=t1', {
+      method: 'GET',
+    }, 'Kie 查询超时', 5000, 'polling');
+    assert.equal(response.status, 503);
+    assert.equal(calls, 3); // 默认预算 2 次重试 = 共 3 次
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realRetryBase === undefined) delete process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+    else process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = realRetryBase;
+  }
+});
+
+test('只读 GET 请求 502 一次后恢复即返回成功响应', async () => {
+  const realFetch = globalThis.fetch;
+  const realRetryBase = process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+  process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = '1';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) return createJsonResponse({ msg: 'bad gateway' }, 502);
+    return createJsonResponse({ ok: true });
+  };
+  try {
+    const response = await __testOnly_fetchKieWithTimeout('https://api.kie.ai/file/x.png', { method: 'GET' }, '下载超时', 5000, 'asset_download');
+    assert.equal(response.status, 200);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realRetryBase === undefined) delete process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+    else process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = realRetryBase;
+  }
+});
+
+test('提交类 POST 收到 502 响应绝不重试（防重复扣费）', async () => {
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return createJsonResponse({ msg: 'bad gateway' }, 502);
+  };
+  try {
+    const response = await __testOnly_fetchKieWithTimeout('https://api.kie.ai/api/v1/jobs/createTask', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'x' }),
+    }, 'Kie 创建超时', 5000, 'create_task');
+    assert.equal(response.status, 502);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('提交类 POST 连接层错误（请求未到达对端）允许重试', async () => {
+  const realFetch = globalThis.fetch;
+  const realRetryBase = process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+  process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = '1';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls < 2) throw new TypeError('fetch failed');
+    return createJsonResponse({ code: 200, data: { taskId: 't1' } });
+  };
+  try {
+    const response = await __testOnly_fetchKieWithTimeout('https://api.kie.ai/api/v1/jobs/createTask', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'x' }),
+    }, 'Kie 创建超时', 5000, 'create_task');
+    assert.equal(response.status, 200);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realRetryBase === undefined) delete process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+    else process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = realRetryBase;
+  }
+});
+
+test('连接层错误重试耗尽后仍抛 provider_network_error', async () => {
+  const realFetch = globalThis.fetch;
+  const realRetryBase = process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+  process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = '1';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new TypeError('fetch failed');
+  };
+  try {
+    await assert.rejects(
+      () => __testOnly_fetchKieWithTimeout('https://api.kie.ai/api/v1/jobs/createTask', {
+        method: 'POST',
+        body: '{}',
+      }, 'Kie 创建超时', 5000, 'create_task'),
+      (error) => error.code === 'provider_network_error'
+    );
+    assert.equal(calls, 3); // 默认预算 2 次重试
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realRetryBase === undefined) delete process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+    else process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = realRetryBase;
+  }
+});
+
+test('MEIAO_KIE_HTTP_TRANSIENT_RETRIES=0 时不做任何请求级重试', async () => {
+  const realFetch = globalThis.fetch;
+  const realRetries = process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES;
+  process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES = '0';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new TypeError('fetch failed');
+  };
+  try {
+    await assert.rejects(
+      () => __testOnly_fetchKieWithTimeout('https://api.kie.ai/x', { method: 'GET' }, '超时', 5000, 'polling'),
+      (error) => error.code === 'provider_network_error'
+    );
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realRetries === undefined) delete process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES;
+    else process.env.MEIAO_KIE_HTTP_TRANSIENT_RETRIES = realRetries;
+  }
+});
+
+test('请求级重试退避为指数：1 倍、3 倍基数', () => {
+  assert.equal(__testOnly_getKieHttpRetryDelayMs(1, 1000), 1000);
+  assert.equal(__testOnly_getKieHttpRetryDelayMs(2, 1000), 3000);
+  assert.equal(__testOnly_getKieHttpRetryDelayMs(1, 500), 500);
+});
+
+test('上游主动取消（signal abort）不触发请求级重试', async () => {
+  const realFetch = globalThis.fetch;
+  const realRetryBase = process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+  process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = '1';
+  const controller = new AbortController();
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    controller.abort();
+    throw new TypeError('fetch failed');
+  };
+  try {
+    await assert.rejects(
+      () => __testOnly_fetchKieWithTimeout('https://api.kie.ai/x', { method: 'GET', signal: controller.signal }, '超时', 5000, 'polling'),
+      (error) => error.code === 'request_cancelled'
+    );
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realRetryBase === undefined) delete process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+    else process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = realRetryBase;
   }
 });

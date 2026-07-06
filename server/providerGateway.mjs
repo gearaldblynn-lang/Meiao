@@ -173,7 +173,7 @@ const normalizeKieTaskCreationError = (responseStatus, result = {}, defaultMessa
   });
 };
 
-const fetchKieWithTimeout = async (
+const fetchKieOnce = async (
   url,
   init = {},
   timeoutMessage = 'Kie 请求超时',
@@ -221,6 +221,95 @@ const fetchKieWithTimeout = async (
     upstreamSignal?.removeEventListener?.('abort', onAbort);
   }
 };
+
+// ── S2 Task G1 · Kie HTTP 请求级瞬时重试 ────────────────────────────────
+// 云上 7 天 408 条错误里 `fetch failed`(服务器→KIE 网络抖动)占 191 条。
+// 这里是所有 Kie HTTP 请求的统一封装点(providerAssetTransfer / providerKieTask
+// 也通过 deps 走这里),对瞬时传输错误做有界重试。与 jobRuntime 的任务级重试
+// (getNextJobFailureState)叠加,但预算相互独立。
+//
+// 防重复提交铁则:createTask 类 POST 会产生扣费/新任务,只允许在"确认请求未
+// 到达对端"(连接层错误,fetch 直接抛错、无任何 HTTP 响应)时重试;只要收到过
+// HTTP 响应(哪怕 502/503/504)一律不重试提交类请求——宁可失败不可重复扣费。
+// 只读请求(GET:recordInfo 查询、素材/结果下载)可放心重试含 5xx。
+// 我们自己的超时中断(provider_timeout)不做请求级重试:请求可能已被对端处理,
+// 且任务级重试已覆盖 provider_timeout。
+
+const KIE_HTTP_TRANSIENT_RETRIES_DEFAULT = 2;
+const KIE_HTTP_RETRY_BASE_MS_DEFAULT = 1000;
+const KIE_HTTP_RETRYABLE_RESPONSE_STATUS = new Set([502, 503, 504]);
+
+const getKieHttpTransientRetries = (env = process.env) => {
+  const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_HTTP_TRANSIENT_RETRIES', 'KIE_HTTP_TRANSIENT_RETRIES') || ''), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : KIE_HTTP_TRANSIENT_RETRIES_DEFAULT;
+};
+
+const getKieHttpRetryBaseMs = (env = process.env) => {
+  const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_HTTP_RETRY_BASE_MS', 'KIE_HTTP_RETRY_BASE_MS') || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_HTTP_RETRY_BASE_MS_DEFAULT;
+};
+
+// 指数退避:第 n 次重试等待 baseMs * (2^n - 1),默认 1s、3s。
+const getKieHttpRetryDelayMs = (attempt, baseMs) => Math.max(0, Number(baseMs) * (2 ** attempt - 1));
+
+// 幂等判定:GET/HEAD 是只读请求;POST(createTask / chat / 上传)默认非幂等。
+// init.kieIdempotent 可显式覆盖(目前无调用方需要,留给未来的只读 POST)。
+const isIdempotentKieRequest = (init = {}) => {
+  if (typeof init.kieIdempotent === 'boolean') return init.kieIdempotent;
+  const method = String(init.method || 'GET').toUpperCase();
+  return method === 'GET' || method === 'HEAD';
+};
+
+const discardResponseBody = (response) => {
+  try {
+    response?.body?.cancel?.()?.catch?.(() => {});
+  } catch {
+    // 丢弃失败不影响重试
+  }
+};
+
+const fetchKieWithTimeout = async (
+  url,
+  init = {},
+  timeoutMessage = 'Kie 请求超时',
+  timeoutMs = KIE_HTTP_REQUEST_TIMEOUT_MS,
+  providerStage = 'http_request'
+) => {
+  const { kieIdempotent, ...fetchInit } = init;
+  const idempotent = isIdempotentKieRequest(init);
+  const maxRetries = getKieHttpTransientRetries();
+  const retryBaseMs = getKieHttpRetryBaseMs();
+
+  for (let attempt = 0; ; attempt += 1) {
+    if (attempt > 0) {
+      // wait 在上游 signal abort 时抛 request_cancelled,退避期间可取消
+      await wait(getKieHttpRetryDelayMs(attempt, retryBaseMs), fetchInit.signal);
+    }
+    let response;
+    try {
+      response = await fetchKieOnce(url, fetchInit, timeoutMessage, timeoutMs, providerStage);
+    } catch (error) {
+      // 仅连接层错误(fetch failed/ECONNRESET 等,未收到任何响应)可重试;
+      // request_cancelled / provider_timeout 直接抛出。
+      if (error?.code === 'provider_network_error' && attempt < maxRetries) {
+        continue;
+      }
+      if (error?.code === 'provider_network_error' && attempt > 0) {
+        error.transientRetries = attempt;
+      }
+      throw error;
+    }
+    // 只读请求对 502/503/504 响应重试;提交类收到响应一律不重试(防重复扣费)。
+    if (idempotent && KIE_HTTP_RETRYABLE_RESPONSE_STATUS.has(response.status) && attempt < maxRetries) {
+      discardResponseBody(response);
+      continue;
+    }
+    return response;
+  }
+};
+
+export const __testOnly_fetchKieWithTimeout = (...args) => fetchKieWithTimeout(...args);
+export const __testOnly_getKieHttpRetryDelayMs = getKieHttpRetryDelayMs;
 
 const getEnvValue = (env, ...keys) => keys.map((key) => env[key]).find(Boolean) || '';
 

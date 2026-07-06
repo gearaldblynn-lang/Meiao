@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildJobFailureErrorFields,
   buildJobFailureLogFields,
   buildJobRuntimeLogMeta,
   buildPublicSystemConfig,
@@ -687,4 +688,30 @@ test('getReconcileBackoffMs is capped at maxMs', () => {
 test('getReconcileBackoffMs never returns below base interval', () => {
   assert.ok(getReconcileBackoffMs(0, 60000, 600000) >= 60000);
   assert.ok(getReconcileBackoffMs(-5, 60000, 600000) >= 60000, '负数兜底到 base');
+});
+
+// ── 失败落库字段人话化(S2 Task G2) ──────────────────────────────
+
+test('buildJobFailureErrorFields: errorMessage 为人话、errorDetail 保留技术原文', () => {
+  const fields = buildJobFailureErrorFields({
+    code: 'provider_network_error',
+    message: 'fetch failed',
+    providerStage: 'create_task',
+  });
+  assert.equal(fields.errorCode, 'provider_network_error');
+  assert.equal(fields.errorMessage, '服务器到生成服务的网络暂时不稳，已自动重试仍未成功，请稍后重试');
+  assert.equal(fields.errorDetail, 'fetch failed');
+});
+
+test('buildJobFailureErrorFields: 缺 code 时兜底 provider_internal_error，errorMessage 非空', () => {
+  const fields = buildJobFailureErrorFields({ message: 'boom' });
+  assert.equal(fields.errorCode, 'provider_internal_error');
+  assert.ok(fields.errorMessage.length > 0);
+  assert.equal(fields.errorDetail, 'boom');
+});
+
+test('buildJobFailureErrorFields: 超长原文截断到 5000 以内', () => {
+  const fields = buildJobFailureErrorFields({ code: 'provider_internal_error', message: 'x'.repeat(9000) });
+  assert.ok(fields.errorDetail.length <= 5000);
+  assert.ok(fields.errorMessage.length <= 5000);
 });

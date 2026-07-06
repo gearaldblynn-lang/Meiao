@@ -254,7 +254,9 @@ test('local job retry can preserve failed provider task id and then store succes
   assert.equal(retryWaiting.status, 'retry_waiting');
   assert.equal(retryWaiting.retryCount, 1);
   assert.equal(retryWaiting.providerTaskId, '4222457f0143802a0a57e5da7e6e1512');
-  assert.match(retryWaiting.errorMessage, /responseCode error: 504/);
+  // S2 Task G2:errorMessage 变人话,技术原文迁到 errorDetail(不丢信息)
+  assert.equal(retryWaiting.errorMessage, '生成服务暂时异常，请稍后重试');
+  assert.match(retryWaiting.errorDetail, /responseCode error: 504/);
   assert.equal(retryWaiting.finishedAt, null);
 
   const claimedAgain = takeNextLocalExecutableJobs(store, 1);
@@ -269,4 +271,5 @@ test('local job retry can preserve failed provider task id and then store succes
   assert.deepEqual(completed.result, { content: 'retry success' });
   assert.equal(completed.errorCode, '');
   assert.equal(completed.errorMessage, '');
+  assert.equal(completed.errorDetail, '');
 });

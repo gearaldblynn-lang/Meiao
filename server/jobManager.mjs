@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
+import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
 import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 
 const now = () => Date.now();
@@ -188,6 +188,7 @@ const mapJobRow = (row) => ({
   result: parseJsonValue(row.result_json, null),
   errorCode: row.error_code || '',
   errorMessage: row.error_message || '',
+  errorDetail: row.error_detail || '',
   retryCount: Number(row.retry_count || 0),
   maxRetries: Number(row.max_retries || 0),
   createdAt: Number(row.created_at || 0),
@@ -319,6 +320,7 @@ export const ensureJobsSchema = async (pool) => {
       result_json LONGTEXT NULL,
       error_code VARCHAR(80) NULL,
       error_message TEXT NULL,
+      error_detail TEXT NULL,
       retry_count INT NOT NULL DEFAULT 0,
       max_retries INT NOT NULL DEFAULT 2,
       created_at BIGINT NOT NULL,
@@ -331,6 +333,12 @@ export const ensureJobsSchema = async (pool) => {
       INDEX idx_internal_jobs_updated_at (updated_at)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
+
+  // S2 Task G2:老库补 error_detail 列(errorMessage=人话、errorDetail=技术原文)。
+  const [errorDetailColumns] = await pool.query(`SHOW COLUMNS FROM internal_jobs LIKE 'error_detail'`);
+  if (!Array.isArray(errorDetailColumns) || errorDetailColumns.length === 0) {
+    await pool.query('ALTER TABLE internal_jobs ADD COLUMN error_detail TEXT NULL AFTER error_message');
+  }
 };
 
 export const createJobRecord = async (pool, user, payload) => {
@@ -729,6 +737,7 @@ export const requestRetryJob = async (pool, job, actor) => {
     status: 'queued',
     error_code: null,
     error_message: null,
+    error_detail: null,
     finished_at: null,
     started_at: null,
     cancel_requested_at: null,
@@ -834,7 +843,7 @@ export const createJobWorker = ({
         const claimedAt = now();
         const [result] = await pool.query(
           `UPDATE internal_jobs
-           SET status = 'running', started_at = ?, updated_at = ?, error_code = NULL, error_message = NULL
+           SET status = 'running', started_at = ?, updated_at = ?, error_code = NULL, error_message = NULL, error_detail = NULL
            WHERE id = ? AND status IN ('queued', 'retry_waiting')`,
           [claimedAt, claimedAt, job.id]
         );
@@ -921,6 +930,7 @@ export const createJobWorker = ({
               result_json: serializeJsonValue(output?.result || null),
               error_code: controller.signal.aborted ? 'request_cancelled' : null,
               error_message: controller.signal.aborted ? '任务已取消' : null,
+              error_detail: null,
               finished_at: finishedAt,
               updated_at: finishedAt,
             });
@@ -978,6 +988,7 @@ export const createJobWorker = ({
           } catch (error) {
             const poolAgain = await getPool();
             const latestJob = await getJobById(poolAgain, job.id);
+            const errorFields = buildJobFailureErrorFields(error);
             const failure = getNextJobFailureState({
               retryCount: latestJob?.retryCount ?? 0,
               maxRetries: latestJob?.maxRetries ?? 0,
@@ -990,8 +1001,9 @@ export const createJobWorker = ({
               status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
               provider_task_id: error?.providerTaskId || latestJob?.providerTaskId || null,
               retry_count: error?.code === 'request_cancelled' ? latestJob?.retryCount ?? 0 : failure.retryCount,
-              error_code: error?.code || 'provider_internal_error',
-              error_message: String(error?.message || '任务执行失败').slice(0, 5000),
+              error_code: errorFields.errorCode,
+              error_message: errorFields.errorMessage,
+              error_detail: errorFields.errorDetail || null,
               updated_at: finishedAt,
               finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
             });
