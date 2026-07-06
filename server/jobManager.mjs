@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
+import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 
 const now = () => Date.now();
@@ -1049,6 +1050,7 @@ export const createJobWorker = ({
             }
 
             const user = latestJob ? await findUserById(latestJob.userId) : null;
+            await maybeRecordCreditAlertLog({ error, job: latestJob, user, createLog, now: finishedAt });
             if (user && createLog) {
               const logFields = buildJobFailureLogFields({
                 jobStatus: failure.status,

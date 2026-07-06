@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
+import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { findReusableJobSubmission, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
 
 const now = () => Date.now();
@@ -452,6 +453,7 @@ export const createLocalJobWorker = ({
             writeStore(failureStore);
 
             const user = failedJob ? findUserById(failedJob.userId) : null;
+            void maybeRecordCreditAlertLog({ error, job: failedJob, user, createLog });
             if (user && createLog && failedJob) {
               const logFields = buildJobFailureLogFields({
                 jobStatus: failedJob.status,
