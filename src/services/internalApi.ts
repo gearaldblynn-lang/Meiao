@@ -1157,10 +1157,18 @@ export const updateSmartFactoryAgent = async (agentId: string, payload: {
   variables?: Array<{ key: string; label?: string; type?: string; required?: boolean; defaultValue?: string }>;
   metadataFilters?: Array<{ key: string; operator?: string; value?: string }>;
   vision?: { enabled?: boolean; transferMethods?: string[]; imageFileSizeLimit?: number };
+  enabled?: boolean;
 }) => {
   return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/agents/${encodeURIComponent(agentId)}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
+    dedupe: false,
+  });
+};
+
+export const deleteSmartFactoryAgent = async (agentId: string) => {
+  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/agents/${encodeURIComponent(agentId)}`, {
+    method: 'DELETE',
     dedupe: false,
   });
 };
