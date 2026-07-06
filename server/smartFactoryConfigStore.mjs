@@ -611,6 +611,7 @@ export const updateSmartFactoryAgent = (current = createDefaultSmartFactoryConfi
         ...(payload.variables !== undefined ? { variables: normalizeVariables(payload.variables) } : {}),
         ...(payload.metadataFilters !== undefined ? { metadataFilters: normalizeMetadataFilters(payload.metadataFilters) } : {}),
         ...(payload.vision !== undefined ? { vision: normalizeVision(payload.vision) } : {}),
+        ...(typeof payload.enabled === 'boolean' ? { enabled: payload.enabled } : {}),
         status: payload.status === 'published' ? 'published' : agent.status,
         publishedAt: payload.status === 'published' ? now() : agent.publishedAt,
         updatedAt: now(),
@@ -677,6 +678,21 @@ export const updateSmartFactoryKnowledgeBase = (current = createDefaultSmartFact
         updatedAt: now(),
       };
     }),
+  });
+};
+
+export const deleteSmartFactoryAgent = (current = createDefaultSmartFactoryConfig(), agentId = '') => {
+  const normalized = normalizeSmartFactoryConfig(current);
+  const id = text(agentId, 120);
+  if (!normalized.agents.some((agent) => agent.id === id)) return normalized;
+  // normalizeSmartFactoryAgentState 对空 agents 会回落默认 agents(复活幽灵),故拒绝删除最后一个。
+  if (normalized.agents.length <= 1) {
+    throw new Error('不能删除最后一个智能体;请先创建新的智能体再删除它。');
+  }
+  return normalizeSmartFactoryConfig({
+    ...normalized,
+    agents: normalized.agents.filter((agent) => agent.id !== id),
+    sessions: normalized.sessions.filter((session) => session.agentId !== id),
   });
 };
 

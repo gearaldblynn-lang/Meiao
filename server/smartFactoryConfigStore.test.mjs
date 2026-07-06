@@ -6,6 +6,7 @@ import {
   createSmartFactoryAgent,
   createSmartFactoryKnowledgeBase,
   createDefaultSmartFactoryConfig,
+  deleteSmartFactoryAgent,
   deleteSmartFactoryKnowledgeBase,
   deleteSmartFactoryKnowledgeDocument,
   deleteSmartFactoryModelProvider,
@@ -613,4 +614,51 @@ test('upserts safe cli tool and exposes it for agent binding', () => {
   assert.equal(tool.executorRef, 'feishu.create_sheet');
   assert.equal(tool.inputSchema.properties.title.type, 'string');
   assert.equal(getSmartFactoryPublicConfig(next).tools.some((item) => item.name === 'feishu_create_doc'), true);
+});
+
+test('U2:deleteSmartFactoryAgent 删除 agent 并级联清掉它的 sessions', () => {
+  const base = normalizeSmartFactoryConfig({});
+  const withExtra = createSmartFactoryAgent(base, { name: '巡检残留', prompt: '测试用' });
+  const extra = withExtra.agents.find((agent) => agent.name === '巡检残留');
+  assert.ok(extra, '前置:新 agent 已创建');
+  const published = publishSmartFactoryAgent(withExtra, extra.id);
+  assert.ok(published.sessions.some((session) => session.agentId === extra.id), '前置:发布后有会话');
+
+  const next = deleteSmartFactoryAgent(published, extra.id);
+  assert.equal(next.agents.some((agent) => agent.id === extra.id), false, 'agent 已删除');
+  assert.equal(next.sessions.some((session) => session.agentId === extra.id), false, '其 sessions 已级联删除');
+  assert.ok(next.agents.length >= 1, '其他 agent 不受影响');
+});
+
+test('U2:deleteSmartFactoryAgent 拒绝删除最后一个 agent(否则 normalize 会复活默认 agents)', () => {
+  const base = normalizeSmartFactoryConfig({});
+  let current = base;
+  const ids = base.agents.map((agent) => agent.id);
+  for (const id of ids.slice(0, -1)) {
+    current = deleteSmartFactoryAgent(current, id);
+  }
+  assert.equal(current.agents.length, 1);
+  assert.throws(() => deleteSmartFactoryAgent(current, current.agents[0].id), /最后一个/);
+});
+
+test('U2:updateSmartFactoryAgent 支持 enabled 停用/启用', () => {
+  const base = normalizeSmartFactoryConfig({});
+  const id = base.agents[0].id;
+  const disabled = updateSmartFactoryAgent(base, id, { enabled: false });
+  assert.equal(disabled.agents.find((agent) => agent.id === id).enabled, false);
+  const enabled = updateSmartFactoryAgent(disabled, id, { enabled: true });
+  assert.equal(enabled.agents.find((agent) => agent.id === id).enabled, true);
+  // 白名单外字段仍不可写
+  const hacked = updateSmartFactoryAgent(base, id, { id: 'evil-id' });
+  assert.equal(hacked.agents.some((agent) => agent.id === 'evil-id'), false);
+});
+
+test('U2:双 handler 路由源码断言——MySQL 与本地 JSON 模式都有 agent DELETE 且共用 deleteSmartFactoryAgent', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('./index.mjs', import.meta.url), 'utf8');
+  const dbDelete = source.match(/dbSmartFactoryAgentMatch && req\.method === 'DELETE'/g) || [];
+  const localDelete = source.match(/localSmartFactoryAgentMatch && req\.method === 'DELETE'/g) || [];
+  assert.equal(dbDelete.length, 1, 'MySQL 模式必须有 agent DELETE 路由');
+  assert.equal(localDelete.length, 1, '本地 JSON 模式必须有 agent DELETE 路由');
+  assert.equal((source.match(/deleteSmartFactoryAgent\(/g) || []).length >= 2, true, '两个路由都调用同一 store 函数');
 });

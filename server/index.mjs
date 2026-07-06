@@ -147,6 +147,7 @@ import {
   createDefaultSmartFactoryConfig,
   createSmartFactoryAgent,
   createSmartFactoryKnowledgeBase,
+  deleteSmartFactoryAgent,
   deleteSmartFactoryKnowledgeBase,
   deleteSmartFactoryKnowledgeDocument,
   deleteSmartFactoryTool,
@@ -9402,6 +9403,22 @@ const handleMysqlRequest = async (req, res, url) => {
     return;
   }
 
+  if (dbSmartFactoryAgentMatch && req.method === 'DELETE') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const currentSettings = await getDbSystemSettings();
+    let nextSmartFactory;
+    try {
+      nextSmartFactory = deleteSmartFactoryAgent(currentSettings.smartFactory, decodeURIComponent(dbSmartFactoryAgentMatch[1]));
+    } catch (error) {
+      json(res, 400, { message: error?.message || '删除智能体失败。' });
+      return;
+    }
+    const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
   const dbSmartFactoryAgentPublishMatch = url.pathname.match(/^\/api\/smart-factory\/agents\/([^/]+)\/publish$/);
   if (dbSmartFactoryAgentPublishMatch && req.method === 'POST') {
     const user = await requireDbUser(req, res);
@@ -11260,6 +11277,23 @@ const handleLocalRequest = async (req, res, url) => {
     const body = await readBody(req);
     const currentLocalSettings = getLocalSystemSettings(store);
     const nextSmartFactory = updateSmartFactoryAgent(currentLocalSettings.smartFactory, decodeURIComponent(localSmartFactoryAgentMatch[1]), body);
+    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    writeLocalStore(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    return;
+  }
+
+  if (localSmartFactoryAgentMatch && req.method === 'DELETE') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const currentLocalSettings = getLocalSystemSettings(store);
+    let nextSmartFactory;
+    try {
+      nextSmartFactory = deleteSmartFactoryAgent(currentLocalSettings.smartFactory, decodeURIComponent(localSmartFactoryAgentMatch[1]));
+    } catch (error) {
+      json(res, 400, { message: error?.message || '删除智能体失败。' });
+      return;
+    }
     const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
     writeLocalStore(store);
     json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
