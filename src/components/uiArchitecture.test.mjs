@@ -925,9 +925,10 @@ test('everything replace submit creates visible project card before preparing re
   assert.notEqual(placeholderIndex, -1);
   assert.notEqual(uploadIndex, -1);
   assert.ok(placeholderIndex < uploadIndex);
-  assert.match(app, /setProjects\(\(prev\) => \[immediateProject, \.\.\.prev\]\);/);
+  // #34 买家秀多套改造后,即时卡发布与买家秀 set 卡合并为同一条 setProjects(仍在素材上传前,先卡后传的语义不变)
+  assert.match(app, /setProjects\(\(prev\) => \[\.\.\.immediateBuyerShowProjects, \.\.\.\(immediateProject \? \[immediateProject\] : \[\]\), \.\.\.prev\]\);/);
   assert.match(app, /setTasks\(\(prev\) => \[immediateTask, \.\.\.prev\]\);/);
-  assert.match(app, /immediateProject\?\.id \|\| 'proj-' \+ Date\.now\(\)/);
+  assert.match(app, /immediateProject\?\.id \|\| immediateBuyerShowRootProjectId \|\| 'proj-' \+ Date\.now\(\)/); // #34 后兜底链多了买家秀根卡 id
   assert.match(app, /immediateTask\?\.id \|\| 'task-' \+ Date\.now\(\)/);
   assert.match(app, /shellProjectId: projectId/);
   assert.match(app, /shellProjectName: projectName/);
@@ -2889,13 +2890,14 @@ test('shell settings shows account concurrency as read-only and leaves edits to 
   const accountManagement = read('../shell/modules/Account/AccountManagement.tsx');
 
   assert.match(settings, /const canManageSystemSettings = currentUser\?\.role === 'admin'/);
-  assert.match(settings, /const effectiveConcurrency = getEffectiveConcurrency\(systemConfig\?\.queue\.maxConcurrency, currentUser\?\.jobConcurrency\)/);
-  assert.match(settings, /当前并发/);
+  // a1251d8(2026-07-02 设置页大改版)移除了"当前并发"只读展示;核心不变量是
+  // "设置页不得编辑并发、编辑只在账号管理",以下断言锁这条。展示是否恢复待业主决定。
   assert.doesNotMatch(settings, /并发任务数/);
   assert.doesNotMatch(settings, /setConcurrency/);
   assert.doesNotMatch(settings, /updateInternalUser\(currentUser\.id, \{ jobConcurrency/);
   assert.match(accountManagement, /const \[concurrencyDrafts, setConcurrencyDrafts\]/);
-  assert.match(accountManagement, /TextField[\s\S]*label="并发"[\s\S]*保存并发/);
+  // UI 组件从 TextField/「保存并发」按钮演进为原生 input+「保存」;不变量是"并发编辑在账号管理、经 updateUser 落库"
+  assert.match(accountManagement, /并发<\/span>[\s\S]{0,600}concurrencyDrafts\[user\.id\]/);
   assert.match(accountManagement, /updateUser\(user, \{ jobConcurrency: Math\.max\(1, Number\(concurrencyDrafts\[user\.id\]/);
 });
 
