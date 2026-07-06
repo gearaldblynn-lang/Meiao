@@ -111,9 +111,40 @@ export const normalizeModelMode = (mode = '') => {
 
 const defaultFeaturesForMode = (mode) => MODEL_MODE_FEATURES[normalizeModelMode(mode)] || MODEL_MODE_FEATURES.chat;
 
-const normalizeFeatureList = (features) => (Array.isArray(features) ? features : [])
-  .map((item) => text(item, 80))
-  .filter(Boolean);
+// 标准能力标签词汇表(模型分类的单一来源):
+// streaming=流式 / cache-hit=缓存命中 / web-search=联网 / direct-result=任务型直出
+export const MODEL_CAPABILITY_TAGS = Object.freeze([
+  'streaming',
+  'cache-hit',
+  'web-search',
+  'tool-call',
+  'vision',
+  'direct-result',
+  'reasoning',
+  'long-context',
+  'structured-output',
+  'image-generation',
+  'video-generation',
+  'embedding',
+  'rerank',
+]);
+
+const KNOWN_CAPABILITY_TAG_SET = new Set(MODEL_CAPABILITY_TAGS);
+
+// 已知标签归一(大小写/下划线→中划线);未知标签保留原文不丢(向后兼容)。
+export const normalizeCapabilityTag = (tag = '') => {
+  const raw = text(tag, 80);
+  if (!raw) return '';
+  const canonical = raw.toLowerCase().replace(/_/g, '-');
+  return KNOWN_CAPABILITY_TAG_SET.has(canonical) ? canonical : raw;
+};
+
+const normalizeFeatureList = (features) => {
+  const normalized = (Array.isArray(features) ? features : [])
+    .map((item) => normalizeCapabilityTag(item))
+    .filter(Boolean);
+  return Array.from(new Set(normalized));
+};
 
 export const parseModelTextToken = (token = '') => {
   const raw = text(token, 240);

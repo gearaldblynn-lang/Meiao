@@ -168,6 +168,7 @@ import {
   normalizeModelProviderRegistry,
   upsertModelProvider,
 } from './modelProviderRegistry.mjs';
+import { resolveModelForNeed } from './modelDispatch.mjs';
 import {
   maybeTrainSmartFactoryKnowledgeBaseEmbeddings,
   maybeTrainSmartFactoryKnowledgeDocumentEmbeddings,
@@ -1258,14 +1259,17 @@ const resolveDefaultAnalysisChatModel = (...preferredModels) => {
   }
   return available[0] || '';
 };
+// Task I3 第一批迁移:四个历史模型 env 的读取统一走 modelDispatch 的 env 兼容层,
+// 候选优先序与迁移前逐项一致(agent→planning→default-analysis→default-chat→kie-chat),
+// 输入矩阵探针已验证新旧输出全等(MEIAO_DEFAULT_ANALYSIS_MODEL 不在四个 env 之列,保持直读)。
 const resolveConfiguredAnalysisModel = (systemSettings = {}, ...preferredModels) =>
   resolveDefaultAnalysisChatModel(
     systemSettings?.analysisModel,
-    process.env?.MEIAO_AGENT_ANALYSIS_MODEL,
-    process.env?.MEIAO_PLANNING_ANALYSIS_MODEL,
+    resolveModelForNeed({ need: 'analysis', analysisKind: 'agent', env: process.env }).model,
+    resolveModelForNeed({ need: 'analysis', analysisKind: 'planning', env: process.env }).model,
     process.env?.MEIAO_DEFAULT_ANALYSIS_MODEL,
-    process.env?.MEIAO_DEFAULT_CHAT_MODEL,
-    process.env?.KIE_CHAT_MODEL,
+    resolveModelForNeed({ need: 'chat', env: process.env }).model,
+    resolveModelForNeed({ need: 'kie-chat', env: process.env }).model,
     ...preferredModels
   );
 const resolveConfiguredVideoAnalysisModel = (systemSettings = {}, ...preferredModels) =>

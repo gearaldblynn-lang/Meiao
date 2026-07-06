@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  MODEL_CAPABILITY_TAGS,
+  normalizeModelEntry,
   createDefaultModelProviderRegistry,
   deleteModelProvider,
   extractSmartFactoryModelProvidersForMigration,
@@ -114,4 +116,54 @@ test('model provider presets include mature cloud and relay channels only', () =
   assert.deepEqual(ids.includes('ollama'), false);
   assert.ok(presets.some((item) => item.models.some((model) => model.mode === 'image')));
   assert.ok(presets.some((item) => item.models.some((model) => model.mode === 'video')));
+});
+
+test('MODEL_CAPABILITY_TAGS 覆盖标准能力词汇表', () => {
+  const expected = [
+    'streaming',
+    'cache-hit',
+    'web-search',
+    'tool-call',
+    'vision',
+    'direct-result',
+    'reasoning',
+    'long-context',
+    'structured-output',
+    'image-generation',
+    'video-generation',
+    'embedding',
+    'rerank',
+  ];
+  for (const tag of expected) {
+    assert.ok(MODEL_CAPABILITY_TAGS.includes(tag), `缺少标准能力标签: ${tag}`);
+  }
+});
+
+test('normalizeModelEntry 对已知能力标签归一大小写与下划线', () => {
+  const entry = normalizeModelEntry({
+    id: 'demo-model',
+    mode: 'chat',
+    features: ['Streaming', 'cache_hit', 'WEB_SEARCH', 'tool-call', 'Direct_Result'],
+  });
+  assert.deepEqual(entry.features, ['streaming', 'cache-hit', 'web-search', 'tool-call', 'direct-result']);
+});
+
+test('normalizeModelEntry 保留未知标签不丢弃(向后兼容)', () => {
+  const entry = normalizeModelEntry({
+    id: 'demo-model',
+    mode: 'chat',
+    features: ['moderation', 'my_custom_tag', 'tool_call'],
+  });
+  assert.deepEqual(entry.features, ['moderation', 'my_custom_tag', 'tool-call']);
+});
+
+test('normalizeModelEntry 归一后去重且不改既有默认 features 语义', () => {
+  const dupe = normalizeModelEntry({ id: 'demo', mode: 'chat', features: ['tool_call', 'tool-call'] });
+  assert.deepEqual(dupe.features, ['tool-call']);
+
+  const fallback = normalizeModelEntry({ id: 'demo', mode: 'image', features: [] });
+  assert.deepEqual(fallback.features, ['image-generation']);
+
+  const parsed = normalizeModelEntry('embedding:text-embedding-3-large');
+  assert.deepEqual(parsed.features, ['embedding']);
 });
