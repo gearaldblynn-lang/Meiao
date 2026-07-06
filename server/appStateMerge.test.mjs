@@ -1635,3 +1635,99 @@ test('trimAppStateForStorage falls back to keeping at least one project when no 
   assert.equal(trimmed.shellProjects.length, 1, '极端情况至少留 1 项');
   assert.equal(trimmed.shellProjects[0].id, 'p2', '保留的必须是最新那个');
 });
+
+// D1 写入侧守卫:过期的「无身份活跃占位」在存储合并出口必须被标结构化失败,
+// 阻断"前端拿到 backendJobId 前先落 generating 占位、中断后永远生成中"的脏数据增量。
+// 判据复用 appStateHealth.isIdentitylessActivePlaceholder(单一判据,不新写平行拷贝)。
+const HOUR_MS = 60 * 60 * 1000;
+
+const mkIdentitylessPlaceholderState = (createdAt, overrides = {}) => ({
+  shellProjects: [{
+    id: 'proj-d1',
+    module: 'retouch',
+    status: 'generating',
+    createdAt,
+    results: [{
+      id: 'r-d1',
+      status: 'generating',
+      prompt: '真实用户输入',
+      imageUrl: '',
+      createdAt,
+      ...overrides,
+    }],
+    taskCount: 1,
+    completedCount: 0,
+  }],
+});
+
+test('mergeAppStateForStorage marks expired identityless active placeholders as structured failure', () => {
+  const staleCreatedAt = Date.now() - 7 * HOUR_MS; // 超默认 6h 窗口
+  const merged = mergeAppStateForStorage({}, {
+    ...mkIdentitylessPlaceholderState(staleCreatedAt),
+    oneClickMemory: {
+      firstImage: {
+        projects: [{
+          id: 'proj-d1-oneclick',
+          status: 'generating',
+          createdAt: staleCreatedAt,
+          results: [{
+            id: 'r-d1-oneclick',
+            status: 'pending',
+            prompt: '真实用户输入',
+            imageUrl: '',
+            createdAt: staleCreatedAt,
+          }],
+        }],
+      },
+    },
+  });
+
+  const shellResult = merged.shellProjects[0].results[0];
+  assert.equal(shellResult.status, 'error', '过期无身份占位必须被标 error');
+  assert.equal(shellResult.errorCode, 'identityless_placeholder_expired', '必须带结构化 errorCode');
+  assert.ok(String(shellResult.error || '').trim().length > 0, '必须带人话 error 文案');
+  assert.equal(merged.shellProjects[0].status, 'error', '结果全失败时项目状态按既有 normalize 推导为 error');
+
+  const oneClickResult = merged.oneClickMemory.firstImage.projects[0].results[0];
+  assert.equal(oneClickResult.status, 'error', 'oneClickMemory 桶同样生效');
+  assert.equal(oneClickResult.errorCode, 'identityless_placeholder_expired');
+});
+
+test('mergeAppStateForStorage keeps identityless active placeholders inside the TTL window untouched', () => {
+  const freshCreatedAt = Date.now() - 60 * 1000; // 刚提交 1 分钟
+  const merged = mergeAppStateForStorage({}, mkIdentitylessPlaceholderState(freshCreatedAt));
+
+  const result = merged.shellProjects[0].results[0];
+  assert.equal(result.status, 'generating', '窗口内的占位不得误杀');
+  assert.equal(result.errorCode, undefined);
+});
+
+test('mergeAppStateForStorage never touches expired active results that carry a task identity', () => {
+  const staleCreatedAt = Date.now() - 48 * HOUR_MS;
+  const merged = mergeAppStateForStorage({}, mkIdentitylessPlaceholderState(staleCreatedAt, {
+    backendJobId: 'job-d1-alive',
+  }));
+
+  const result = merged.shellProjects[0].results[0];
+  assert.equal(result.status, 'generating', '有任务身份的活跃结果归 stale reconciler 管,存储守卫不动');
+  assert.equal(result.errorCode, undefined);
+});
+
+test('mergeAppStateForStorage identityless placeholder TTL window is tunable via env', () => {
+  const createdAt = Date.now() - 5 * 60 * 1000; // 5 分钟前:默认窗口内,缩短窗口后过期
+  const original = process.env.MEIAO_IDENTITYLESS_ACTIVE_TTL_MS;
+  try {
+    process.env.MEIAO_IDENTITYLESS_ACTIVE_TTL_MS = String(60 * 1000); // 1 分钟窗口
+    const merged = mergeAppStateForStorage({}, mkIdentitylessPlaceholderState(createdAt));
+    const result = merged.shellProjects[0].results[0];
+    assert.equal(result.status, 'error', '缩短窗口后 5 分钟前的占位应过期');
+    assert.equal(result.errorCode, 'identityless_placeholder_expired');
+
+    process.env.MEIAO_IDENTITYLESS_ACTIVE_TTL_MS = String(24 * HOUR_MS);
+    const mergedWide = mergeAppStateForStorage({}, mkIdentitylessPlaceholderState(createdAt));
+    assert.equal(mergedWide.shellProjects[0].results[0].status, 'generating', '放宽窗口后同一占位不过期');
+  } finally {
+    if (original === undefined) delete process.env.MEIAO_IDENTITYLESS_ACTIVE_TTL_MS;
+    else process.env.MEIAO_IDENTITYLESS_ACTIVE_TTL_MS = original;
+  }
+});
