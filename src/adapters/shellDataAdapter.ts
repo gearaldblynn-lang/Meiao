@@ -41,6 +41,8 @@ export interface ShellGeneratedResult {
   batchIndex?: number;
   creditsConsumed?: number;
   error?: string;
+  /** 技术原文(errorMessage 人话之外的原始报错),只读透传,仅"技术详情"展示用 */
+  errorDetail?: string;
   matchedAspectRatio?: string;
   originalWidth?: number;
   originalHeight?: number;
@@ -1439,6 +1441,7 @@ const mapJobs = (
         batchIndex,
         creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
         error: String(job.errorMessage || job.errorCode || '').trim() || undefined,
+        errorDetail: String(job.errorDetail || '').trim() || undefined,
       };
     }).sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0));
     const completedCount = results.filter((result) => result.status === 'completed' && result.imageUrl).length;
@@ -1526,6 +1529,7 @@ const mapJobs = (
         batchIndex,
         creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
         error: String(job.errorMessage || job.errorCode || '').trim() || undefined,
+        errorDetail: String(job.errorDetail || '').trim() || undefined,
       };
     }).sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0));
     const taskCount = Math.max(
@@ -1620,6 +1624,7 @@ const mapJobs = (
 	        batchIndex,
 	        creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
 	        error: String(job.errorMessage || job.errorCode || '').trim() || undefined,
+        errorDetail: String(job.errorDetail || '').trim() || undefined,
 	        originalWidth: Number(finalSize.width || 0) || undefined,
 	        originalHeight: Number(finalSize.height || 0) || undefined,
 	      };

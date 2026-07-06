@@ -187,6 +187,8 @@ export interface InternalJob {
   result: Record<string, unknown> | null;
   errorCode: string;
   errorMessage: string;
+  /** 技术原文(S2 起后端双字段:errorMessage=人话,errorDetail=原始报错),仅排障展示用 */
+  errorDetail?: string;
   retryCount: number;
   maxRetries: number;
   createdAt: number;

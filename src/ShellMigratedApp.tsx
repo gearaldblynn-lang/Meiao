@@ -144,6 +144,8 @@ export interface GeneratedResult {
   batchIndex?: number;
   creditsConsumed?: number;
   error?: string;
+  /** 技术原文(errorMessage 人话之外的原始报错),只读透传,仅"技术详情"展示用 */
+  errorDetail?: string;
   matchedAspectRatio?: string;
   originalWidth?: number;
   originalHeight?: number;
