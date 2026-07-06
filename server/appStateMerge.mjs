@@ -2,6 +2,7 @@ import { compactKey, collectItemKeys, mergeArrayByStableKeys } from '../src/util
 import { getPlanContent, isLegacyFailureText, isPlanFailed } from '../src/utils/planFailure.mjs';
 import { mergeShellDraftForStorage } from './appStateDraftMerge.mjs';
 import { isProviderErrorText } from './providerErrorText.mjs';
+import { isIdentitylessActivePlaceholder, projectBuckets as collectProjectBuckets } from './appStateHealth.mjs';
 const cloneJson = (value) => JSON.parse(JSON.stringify(value || {}));
 
 const ONE_CLICK_BRANCH_KEYS = ['firstImage', 'mainImage', 'detailPage', 'sku'];
@@ -827,6 +828,68 @@ const mirrorCompletedDirectVideosIntoVideoMemory = (state = {}) => {
   };
 };
 
+// D1 写入侧守卫:过期的「无身份活跃占位」在存储合并出口标结构化失败。
+// 背景:前端在拿到 backendJobId 前先落 status:'generating' 占位;一旦中断,占位永远"生成中"。
+// 存量已由 repair 脚本(mark_active_result_without_identity_failed)清掉,这里堵增量。
+// 判据复用 appStateHealth.isIdentitylessActivePlaceholder;有任务身份的活跃结果永不动
+// (那是 stale reconciler 的职责)。窗口 env 可调,默认 6h(远大于任何正常提交耗时)。
+const DEFAULT_IDENTITYLESS_ACTIVE_TTL_MS = 21600000; // 6 小时
+
+const EXPIRED_IDENTITYLESS_PLACEHOLDER_ERROR_CODE = 'identityless_placeholder_expired';
+const EXPIRED_IDENTITYLESS_PLACEHOLDER_MESSAGE = '任务中断且缺少云端任务身份，长时间未恢复，已自动标记失败，请重新生成。';
+
+const resolveIdentitylessActiveTtlMs = () => {
+  const raw = Number(process.env.MEIAO_IDENTITYLESS_ACTIVE_TTL_MS || 0);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_IDENTITYLESS_ACTIVE_TTL_MS;
+};
+
+const itemAgeTimestampMs = (item = {}) => {
+  for (const value of [item?.createdAt, item?.updatedAt, item?.completedAt]) {
+    const ms = Number(value || 0);
+    if (Number.isFinite(ms) && ms > 0) return ms;
+  }
+  return 0;
+};
+
+const failExpiredIdentitylessPlaceholders = (state = {}) => {
+  const now = Date.now();
+  const ttlMs = resolveIdentitylessActiveTtlMs();
+  const failItem = (item) => {
+    if (!item || typeof item !== 'object') return item;
+    if (!isIdentitylessActivePlaceholder(item)) return item;
+    const timestamp = itemAgeTimestampMs(item);
+    if (!timestamp || now - timestamp <= ttlMs) return item; // 判不了龄或窗口内:保守保留,不误杀刚提交的
+    return {
+      ...item,
+      status: 'error',
+      errorCode: EXPIRED_IDENTITYLESS_PLACEHOLDER_ERROR_CODE,
+      error: compactKey(item?.error) || EXPIRED_IDENTITYLESS_PLACEHOLDER_MESSAGE,
+    };
+  };
+  collectProjectBuckets(state).forEach((bucket) => {
+    const forceOneClick = bucket.path.startsWith('oneClickMemory.');
+    bucket.projects.forEach((project, index) => {
+      if (!project || typeof project !== 'object') return;
+      let changed = false;
+      const mapItems = (items) => items.map((item) => {
+        const nextItem = failItem(item);
+        if (nextItem !== item) changed = true;
+        return nextItem;
+      });
+      const results = Array.isArray(project.results) ? mapItems(project.results) : project.results;
+      const schemes = Array.isArray(project.schemes) ? mapItems(project.schemes) : project.schemes;
+      if (!changed) return;
+      // 项目级状态不手写:复用既有 normalize 推导(结果全失败 → error 等)
+      bucket.projects[index] = normalizeProjectLikeItem({
+        ...project,
+        ...(Array.isArray(project.results) ? { results } : {}),
+        ...(Array.isArray(project.schemes) ? { schemes } : {}),
+      }, { forceOneClick });
+    });
+  });
+  return state;
+};
+
 export const mergeAppStateForStorage = (existingState = {}, incomingState = {}) => {
   const mergedDraft = mergeShellDraftForStorage(existingState?.shellDraft, incomingState?.shellDraft);
   const existing = applyDeletionTombstones(compactAppStateForStorage(existingState), mergedDraft);
@@ -886,5 +949,5 @@ export const mergeAppStateForStorage = (existingState = {}, incomingState = {}) 
     tasks: mergeArrayByStableKeys(existing.xhsCoverMemory?.tasks, incoming.xhsCoverMemory?.tasks),
   };
 
-  return compactAppStateForStorage(mirrorCompletedDirectVideosIntoVideoMemory(next));
+  return compactAppStateForStorage(mirrorCompletedDirectVideosIntoVideoMemory(failExpiredIdentitylessPlaceholders(next)));
 };

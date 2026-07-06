@@ -55,7 +55,17 @@ const isInternalBackendJobId = (value) => {
   return /^job-[\w-]+$/i.test(normalized) || /^[a-f0-9]{24}$/i.test(normalized);
 };
 
-const projectBuckets = (state = {}) => {
+// 单一判据:无身份活跃占位(活跃状态 + 无输出 + 无任何任务身份)。
+// 消费方:本文件 analyzeAppState(审计)、appStateRepairPlan(存量修复)、
+// appStateMerge 存储守卫(增量堵源头)。禁止在别处再写平行拷贝。
+export const isIdentitylessActivePlaceholder = (item = {}) => (
+  isObject(item)
+  && isActive(item)
+  && !hasOutput(item)
+  && collectTaskIdentities(item).length === 0
+);
+
+export const projectBuckets = (state = {}) => {
   const buckets = [];
   if (Array.isArray(state.shellProjects)) {
     buckets.push({ bucket: 'shellProjects', path: 'shellProjects', projects: state.shellProjects });
@@ -159,7 +169,7 @@ export const analyzeAppState = (state = {}) => {
             addIssue(report, 'internal_job_id_visible_as_task_id', { path: resultPath, projectId, taskId: value });
           }
         });
-        if (isActive(item) && !hasOutput(item) && collectTaskIdentities(item).length === 0) {
+        if (isIdentitylessActivePlaceholder(item)) {
           addIssue(report, 'active_result_without_identity', { path: resultPath, projectId });
         }
       });

@@ -1,4 +1,4 @@
-import { analyzeAppState } from './appStateHealth.mjs';
+import { analyzeAppState, isIdentitylessActivePlaceholder } from './appStateHealth.mjs';
 
 const ONE_CLICK_BRANCH_KEYS = ['firstImage', 'mainImage', 'detailPage', 'sku'];
 const ACTIVE_STATUSES = new Set(['generating', 'pending', 'queued', 'running', 'retry_waiting', 'uploading', 'processing']);
@@ -58,7 +58,8 @@ const projectOutputCount = (project = {}) => resultItemsForProject(project).filt
 const projectHasExecutableActiveResult = (project = {}) => resultItemsForProject(project)
   .some((item) => isActive(item) && hasIdentity(item));
 
-const isUnrecoverableActivePlaceholder = (item = {}) => isActive(item) && !hasOutput(item) && !hasIdentity(item);
+// 判据复用 appStateHealth.isIdentitylessActivePlaceholder(单一判据,不留平行拷贝)
+const isUnrecoverableActivePlaceholder = isIdentitylessActivePlaceholder;
 
 const action = (type, detail = {}) => ({ type, ...detail });
 
