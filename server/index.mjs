@@ -175,6 +175,7 @@ import {
 import { runAllowedCliTool } from './ai-engine/cliToolRunner.mjs';
 import { runBuiltinMediaTool } from './ai-engine/smartFactoryMediaToolRunner.mjs';
 import { appendSmartFactoryConversationTurn } from './ai-engine/smartFactoryAgentStore.mjs';
+import { ensureLocalAdminUser } from './localAdminBootstrap.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14389,6 +14390,13 @@ const bootstrap = async () => {
     console.log(`Meiao internal server listening on http://0.0.0.0:${PORT} (MySQL mode, task engine: ${taskEngine})`);
     console.log(`MySQL target: ${dbConfig.host}:${dbConfig.port}/${dbConfig.database}`);
   } else {
+    const adminBootstrap = ensureLocalAdminUser(readLocalStore(), {
+      createUser,
+      persistStore: writeLocalStore,
+    });
+    if (adminBootstrap.created) {
+      console.log(`Local store missing env admin, created user "${adminBootstrap.user.username}".`);
+    }
     const taskEngine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
     if (taskEngine !== 'temporal') {
       const reconciledJobs = reconcileLocalStoreJobsAfterRestart();
