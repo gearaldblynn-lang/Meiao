@@ -59,13 +59,17 @@ const toSearchResult = (chunk = {}, score = 0, extra = {}) => ({
   ...extra,
 });
 
+// 相似度阈值单一默认(D7):曾经这里默认 1(向量 cosine<1 全被滤掉→新库空策略检索恒 0 结果),
+// 而 ragRetrieval 默认 0.3,两处漂移。统一为 0.3,所有消费点从这里取。
+export const DEFAULT_SIMILARITY_THRESHOLD = 0.3;
+
 export const searchSmartFactoryKnowledge = (query = '', chunks = [], options = {}) => {
   const tokens = tokenize(query);
   const datasetScope = new Set(list(options.datasets).map(clean).filter(Boolean));
   const topK = Number.parseInt(String(options.topK ?? options.limit ?? 5), 10);
   const limit = Number.isFinite(topK) && topK > 0 ? Math.min(20, topK) : 5;
-  const similarityThreshold = Number(options.similarityThreshold ?? options.scoreThreshold ?? 1);
-  const threshold = Number.isFinite(similarityThreshold) && similarityThreshold >= 0 ? similarityThreshold : 1;
+  const similarityThreshold = Number(options.similarityThreshold ?? options.scoreThreshold ?? DEFAULT_SIMILARITY_THRESHOLD);
+  const threshold = Number.isFinite(similarityThreshold) && similarityThreshold >= 0 ? similarityThreshold : DEFAULT_SIMILARITY_THRESHOLD;
   const scopedChunks = list(chunks)
     .filter((chunk) => {
       if (datasetScope.size === 0) return true;
