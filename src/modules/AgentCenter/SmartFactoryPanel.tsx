@@ -35,6 +35,7 @@ import {
   addSmartFactoryKnowledgeDocument,
   createSmartFactoryAgent,
   createSmartFactoryKnowledgeBase,
+  deleteSmartFactoryAgent,
   deleteSmartFactoryKnowledgeBase,
   deleteSmartFactoryTool,
   deleteSmartFactoryKnowledgeDocument,
@@ -582,6 +583,25 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
     });
   };
 
+  const handleDeleteAgent = async () => {
+    if (!activeAgent) return;
+    if (!window.confirm(`确认删除智能体「${activeAgent.name}」？它的调试会话会一并删除，且不可恢复。`)) return;
+    await runAction('智能体已删除。', async () => {
+      const response = await deleteSmartFactoryAgent(activeAgent.id);
+      applyConfig(response.config);
+      setSurface('home');
+    });
+  };
+
+  const handleToggleAgentEnabled = async () => {
+    if (!activeAgent) return;
+    const nextEnabled = activeAgent.enabled === false;
+    await runAction(nextEnabled ? '智能体已启用。' : '智能体已停用。', async () => {
+      const response = await updateSmartFactoryAgent(activeAgent.id, { enabled: nextEnabled });
+      applyConfig(response.config);
+    });
+  };
+
   const handleSend = async () => {
     const nextMessage = message.trim();
     if (!nextMessage) {
@@ -968,6 +988,27 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
             </div>
           </div>
           <p className="mt-3 line-clamp-2 text-[12px] leading-5" style={{ color: 'var(--text-secondary)' }}>{activeAgent?.description || '配置智能体能力。'}</p>
+          <div className="mt-3 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleToggleAgentEnabled}
+              className="rounded-[6px] border px-2.5 py-1.5 text-[11px] font-medium transition hover:opacity-80"
+              style={{ borderColor: 'var(--border-subtle)', color: activeAgent?.enabled === false ? 'var(--accent)' : 'var(--text-secondary)', background: 'transparent' }}
+            >
+              {activeAgent?.enabled === false ? '启用' : '停用'}
+            </button>
+            <button
+              type="button"
+              onClick={handleDeleteAgent}
+              className="rounded-[6px] border px-2.5 py-1.5 text-[11px] font-medium transition hover:opacity-80"
+              style={{ borderColor: 'rgba(220,38,38,.35)', color: 'rgb(220,38,38)', background: 'transparent' }}
+            >
+              删除
+            </button>
+            {activeAgent?.enabled === false ? (
+              <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>已停用</span>
+            ) : null}
+          </div>
         </div>
       </div>
       <nav className="flex-1 overflow-auto p-3">
