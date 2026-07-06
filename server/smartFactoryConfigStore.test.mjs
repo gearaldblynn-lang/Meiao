@@ -177,7 +177,7 @@ test('converts smart factory config to runtime inputs compatible with ai-engine 
   assert.equal(runtimeInputs.agentConfig.knowledge.datasets[0].name, '售后知识库');
   assert.deepEqual(runtimeInputs.agentConfig.knowledge.datasets[0].retrievalPolicy, {
     topK: 3,
-    similarityThreshold: 1,
+    similarityThreshold: 0.3,
     maxContextChars: 2400,
   });
   assert.deepEqual(runtimeInputs.agentConfig.tools.cli_tools.map((item) => item.name), ['feishu_create_sheet']);
@@ -223,7 +223,7 @@ test('runtime inputs honor selected agent bindings for model knowledge and tools
   assert.equal(runtimeInputs.agentConfig.knowledge.datasets[0].name, 'B 库');
   assert.deepEqual(runtimeInputs.agentConfig.knowledge.datasets[0].retrievalPolicy, {
     topK: 3,
-    similarityThreshold: 1,
+    similarityThreshold: 0.3,
     maxContextChars: 2400,
   });
   assert.deepEqual(runtimeInputs.knowledgeChunks.map((item) => item.documentId), ['doc-b']);

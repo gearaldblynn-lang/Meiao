@@ -1,6 +1,7 @@
 import { searchKnowledgeChunks } from '../src/modules/AgentCenter/agentCenterUtils.mjs';
 import { embedTexts } from './embeddingProvider.mjs';
 import { rankChunksByVector } from './vectorSearch.mjs';
+import { DEFAULT_SIMILARITY_THRESHOLD } from './ai-engine/knowledgeRetrieval.mjs';
 
 const hasEmbeddingCredential = (env = {}) => Boolean(String(env.DOUBAO_EMBEDDING_API_KEY || '').trim());
 
@@ -12,7 +13,7 @@ export const searchKnowledgeChunksByVector = async (query, chunks, policy = {}, 
         topK: Number(policy.topK || 3),
         maxChunks: Number(policy.maxChunks || 5),
         maxContextChars: Number(policy.maxContextChars || 2400),
-        minSimilarity: Number(env.EMBEDDING_MIN_SIMILARITY || policy.similarityThreshold || 0.3),
+        minSimilarity: Number(env.EMBEDDING_MIN_SIMILARITY || policy.similarityThreshold || DEFAULT_SIMILARITY_THRESHOLD),
       });
       if (ranked.length > 0) return ranked;
     } catch (error) {
