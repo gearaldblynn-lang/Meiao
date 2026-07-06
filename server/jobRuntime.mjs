@@ -1,6 +1,7 @@
 import { isExternallyReachableBaseUrl, normalizeBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
 import { getModelCapability } from './modelCapabilities.mjs';
 import { getPublicModelProviderRegistry } from './modelProviderRegistry.mjs';
+import { humanizeProviderError } from './providerErrorHumanize.mjs';
 
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',
@@ -310,6 +311,17 @@ export const getNextJobFailureState = ({ retryCount = 0, maxRetries = 0, errorCo
   return {
     status: 'retry_waiting',
     retryCount: retryCount + 1,
+  };
+};
+
+// S2 Task G2 · job 失败落库字段单一构造器:errorMessage=人话、errorDetail=技术原文。
+// 三个失败落库点(localJobStore / jobManager worker / temporalWorker)共用,禁止各写一份。
+export const buildJobFailureErrorFields = (error) => {
+  const humanized = humanizeProviderError(error);
+  return {
+    errorCode: String(error?.code || 'provider_internal_error'),
+    errorMessage: String(humanized.message || '任务执行失败').slice(0, 5000),
+    errorDetail: String(humanized.detail || '').slice(0, 5000),
   };
 };
 

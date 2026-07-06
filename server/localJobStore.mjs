@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
+import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
 import { findReusableJobSubmission, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
 
 const now = () => Date.now();
@@ -25,6 +25,7 @@ const normalizeJob = (job) => ({
   result: job?.result && typeof job.result === 'object' ? cloneValue(job.result) : null,
   errorCode: String(job?.errorCode || ''),
   errorMessage: String(job?.errorMessage || ''),
+  errorDetail: String(job?.errorDetail || ''),
   retryCount: Number(job?.retryCount || 0),
   maxRetries: Number(job?.maxRetries ?? 2),
   createdAt: Number(job?.createdAt || now()),
@@ -109,6 +110,7 @@ export const createLocalJobRecord = (store, user, payload) => {
     result: null,
     errorCode: '',
     errorMessage: '',
+    errorDetail: '',
     retryCount: 0,
     maxRetries: Number(payload.maxRetries ?? 2),
     createdAt,
@@ -208,6 +210,7 @@ export const requestLocalRetryJob = (store, jobId) => {
     status: 'queued',
     errorCode: '',
     errorMessage: '',
+    errorDetail: '',
     result: null,
     startedAt: null,
     finishedAt: null,
@@ -259,6 +262,7 @@ export const takeNextLocalExecutableJobs = (store, availableSlots, options = {})
       updatedAt: claimedAt,
       errorCode: '',
       errorMessage: '',
+      errorDetail: '',
     });
     store.jobs[index] = updated;
     return updated;
@@ -281,6 +285,7 @@ export const claimLocalJobForExecution = (store, jobId) => {
     updatedAt: claimedAt,
     errorCode: '',
     errorMessage: '',
+    errorDetail: '',
   });
   store.jobs[index] = next;
   return next;
@@ -315,6 +320,7 @@ export const markLocalJobCompleted = (store, jobId, output, aborted = false) => 
     result: output?.result || null,
     errorCode: aborted ? 'request_cancelled' : '',
     errorMessage: aborted ? '任务已取消' : '',
+    errorDetail: '',
     finishedAt,
     updatedAt: finishedAt,
   });
@@ -339,6 +345,7 @@ export const markLocalJobFailed = (store, jobId, error) => {
   const index = findJobIndex(store, jobId);
   if (index < 0) return null;
   const current = store.jobs[index];
+  const errorFields = buildJobFailureErrorFields(error);
   const failure = getNextJobFailureState({
     retryCount: current.retryCount,
     maxRetries: current.maxRetries,
@@ -351,8 +358,9 @@ export const markLocalJobFailed = (store, jobId, error) => {
     status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
     providerTaskId: String(error?.providerTaskId || current.providerTaskId || ''),
     retryCount: error?.code === 'request_cancelled' ? current.retryCount : failure.retryCount,
-    errorCode: error?.code || 'provider_internal_error',
-    errorMessage: String(error?.message || '任务执行失败').slice(0, 5000),
+    errorCode: errorFields.errorCode,
+    errorMessage: errorFields.errorMessage,
+    errorDetail: errorFields.errorDetail,
     updatedAt: finishedAt,
     finishedAt: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
   });

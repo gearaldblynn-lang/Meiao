@@ -11,7 +11,7 @@ import {
   updateLocalJobProviderTaskId,
 } from './localJobStore.mjs';
 import { getJobById, isRunningJobConcurrencyBlocking, updateJobFields } from './jobManager.mjs';
-import { buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
+import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
 import { createJobAttempt, finishJobAttempt, recordJobEvent } from './taskPlatform.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -291,7 +291,7 @@ export const createMysqlTemporalActivities = ({
     const claimedAt = now();
     const [claimResult] = await pool.query(
       `UPDATE internal_jobs
-       SET status = 'running', started_at = ?, updated_at = ?, error_code = NULL, error_message = NULL
+       SET status = 'running', started_at = ?, updated_at = ?, error_code = NULL, error_message = NULL, error_detail = NULL
        WHERE id = ? AND status IN ('queued', 'retry_waiting', 'running')`,
       [claimedAt, claimedAt, currentJob.id]
     );
@@ -411,6 +411,7 @@ export const createMysqlTemporalActivities = ({
         result_json: serializeJsonValue(output?.result || null),
         error_code: controller.signal.aborted ? 'request_cancelled' : null,
         error_message: controller.signal.aborted ? '任务已取消' : null,
+        error_detail: null,
         finished_at: finishedAt,
         updated_at: finishedAt,
       });
@@ -473,6 +474,7 @@ export const createMysqlTemporalActivities = ({
       if (!isSameMysqlClaim(latestJob, claimedAt)) {
         return toActivityResult(latestJob);
       }
+      const errorFields = buildJobFailureErrorFields(error);
       const failure = getNextJobFailureState({
         retryCount: latestJob.retryCount ?? 0,
         maxRetries: latestJob.maxRetries ?? 0,
@@ -485,8 +487,9 @@ export const createMysqlTemporalActivities = ({
         status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
         provider_task_id: error?.providerTaskId || latestJob.providerTaskId || null,
         retry_count: error?.code === 'request_cancelled' ? latestJob.retryCount ?? 0 : failure.retryCount,
-        error_code: error?.code || 'provider_internal_error',
-        error_message: String(error?.message || '任务执行失败').slice(0, 5000),
+        error_code: errorFields.errorCode,
+        error_message: errorFields.errorMessage,
+        error_detail: errorFields.errorDetail || null,
         updated_at: finishedAt,
         finished_at: failure.status === 'failed' || error?.code === 'request_cancelled' ? finishedAt : null,
       });
