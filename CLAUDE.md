@@ -225,3 +225,13 @@
   根因:买家秀多套工作流仍按旧同步出图模型设计。第一轮图片提交后只要返回 `generating`,代码就把该套 `setPlan.blocked=true`,后续第 2/3 张不再创建;失败分支还会把根项目写成单个失败结果,覆盖已提交/已成功的后台 jobs。前端运行时压缩又把 `results: []` 清空,刷新时 `app_state` 的坏根卡优先于 `internal_jobs` 恢复结果,导致卡片先从 jobs 出现、随后被旧快照覆盖消失。旧 jobs 还把 `batchCount=12/batchIndex=1,4,7,10` 当全局批次存储,没有按“每套一个项目卡”恢复,并且分套参考图缺失时会回退到其它套/全局参考图,造成模特/氛围参考串套。
   修复:`runShellBuyerShowWorkflow` 改成先提交 `createInternalJob(kie_image)` 后立即返回 generating 占位,不再等待单张完成后阻塞后续轮次;多套时每套使用独立 `shellProjectId=${root}-set-N`,每套 `batchCount=imageCount/batchIndex=imageIndex`,同时保留 `buyerShowGlobalBatchIndex` 只做全局进度。分套参考图只使用同套上传素材,有分套素材时禁止回退到其它套。`ShellMigratedApp` 保留运行中结果的 `backendJobId/batchIndex/projectId`,多套直接 upsert set 项目卡并移除根卡。`shellDataAdapter` 从 `internal_jobs` 按买家秀 set 项目重建卡片,兼容旧全局批次 payload:用 `setIndex/imageIndex/imageCount` 拆成 `-set-N`,隐藏根错误卡,并让 job 快照覆盖旧 app_state 的错误 taskCount。
   如何避免:**批量/多套功能必须以 durable job 为单一真相恢复 UI,不能让临时 app_state 错误卡覆盖 jobs。任何“每套/每张”语义都要同时验证:提交的 job 数量、每个 job 的项目归属、局部 batchIndex/taskCount、参考图作用域、刷新后的卡片恢复。运行中占位必须保留 backendJobId,且恢复逻辑要允许 backend job 成功/失败覆盖旧无图占位。**
+
+- **#35 ✅ 已修(2026-07-06)· Temporal worker poller 静默死亡,HTTP 存活假象掩盖"任务永远排队"**
+  根因:`/api/health` 只报 HTTP 进程活着(`{ok:true}`),不覆盖后台消费者;temporal worker 的 poller 死掉后,任务全部停在 queued,健康检查却一路绿灯。`scripts/local-dev.mjs` 看到 3100 被 node 占用就静默复用,把僵死实例当好实例。实测翻译任务卡 queued 23 分钟,杀进程由 launchd 重生后立即消费——这是"卡处理中/时好时坏"的主成因之一。
+  修复(commit b377d91):新增 `server/workerHealth.mjs`,经 gRPC `describeTaskQueue` 查 WORKFLOW/ACTIVITY 两类 poller,任一非空才算 healthy,错误降级不抛,10s 缓存(env `MEIAO_WORKER_HEALTH_CACHE_MS`);`/api/health` 在 temporal 引擎下附带 `worker` 快照;`local-dev` 复用 3100 前先 fetch health,poller 死则拒绝复用并给 kill/kickstart 指引。
+  如何避免:**"服务活着"必须按消费链路分维度定义——HTTP 进程存活 ≠ 队列消费者存活;health 端点要覆盖每一类后台消费者(poller/worker/定时器),复用既有进程前必须体检,不许"端口有人听就算好"。**
+
+- **#36 ✅ 已修(2026-07-06)· 无身份活跃占位写入后无人回收,中断即成永久"生成中"脏数据**
+  根因:前端提交任务时先落 `status:'generating'` 占位(此刻还没有 backendJobId),再等后端回身份。链路一旦中断(刷新/崩溃/限流),这条无身份占位没有任何机制回收——stale reconciler 只管有 job 的,repair 脚本只在人工跑时清。云上累计 57 条,是"永远转圈的卡"直接来源(D1)。
+  修复(commit b41641c):存储合并出口 `mergeAppStateForStorage` 新增 `failExpiredIdentitylessPlaceholders`:无任务身份(backendJobId/providerTaskId/taskId/planningTaskId/kieTaskId 全空)+活跃状态+超龄(env `MEIAO_IDENTITYLESS_ACTIVE_TTL_MS` 默认 6h)→ 标结构化失败(`status:'error'`+`errorCode:'identityless_placeholder_expired'`);判据从 `appStateHealth.mjs` 导出单一实现,顺手把 `appStateRepairPlan.mjs` 的平行拷贝收敛掉;判不了龄宁放行不误杀;文案刻意避开全部既有 sentinel 正则。
+  如何避免:**任何"先占位后补身份"的写入,必须同时设计占位的回收路径(TTL 守卫/身份回填两条腿);无身份数据不许无限期滞留在活跃状态。守卫判据只能有一份(从 health 导出),修复脚本与写入守卫共用,不许各养一套。**
