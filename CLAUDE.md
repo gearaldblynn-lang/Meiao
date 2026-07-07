@@ -245,3 +245,8 @@
   根因:deploy_tencent.sh 把"删旧目录"放在 `npm install`(数分钟)+ `npm run build` 之前,期间 Node 旧进程还在跑、API 正常,但 dist/index.html 和全部 chunk 不存在——此窗口内旧标签页懒加载 chunk 必 404("Failed to fetch dynamically imported module");7/1 四次报错的 chunk hash 在服务器上已不存在即为铁证。旧的"保留旧 assets"机制(拷到 /tmp 再拷回)带 `2>/dev/null || true` 静默吞错,generation 可能悄悄丢失;chunk 错自动刷新只延迟 80ms,恰好刷回同一断档窗口。
   修复(commit f4546f5):①部署零断档——旧 dist 全程不删,新产物 build 到 dist-next,旧 assets 按 mtime 保留 `MEIAO_OLD_ASSET_RETENTION_DAYS`(默认30天)后 `cp -Rpn` 合并,最后两次 rename 原子切换,合并失败直接报错退出;②版本探测——vite 注入 `__BUILD_ID__` + closeBundle 写 version.json,前端每 5min+回前台比对(`src/utils/frontendVersionWatch.ts`),无活跃任务自动软刷新、有任务只提示;③刷新加固——stale-asset reload 延迟 3s 躲过重启窗口 + sessionStorage 计数 5min 内最多 3 次防死循环。uiArchitecture 测试锁部署脚本不变量。
   如何避免:**部署流程里"删旧产物"必须发生在"新产物就绪"之后,切换用原子 rename,不许存在服务中的文件缺失窗口;保留/合并类操作不许 `2>/dev/null || true` 静默吞错;"出错后自动重试/刷新"要错开故障窗口并带循环上限。长驻页面对"服务端已发新版"要有主动探测,不能等踩到 404 才被动发现。**
+
+- **#39 ✅ 已修(2026-07-07)· coreutils 9.2+ 的 `cp -n` 跳过文件即退出 1,`set -e` 部署脚本被掐死在原子切换前**
+  根因:S4 零断档部署脚本用 `cp -Rpn` 合并旧 hash chunk 进 dist-next;服务器 coreutils 9.4 对每个被 `-n` 跳过的文件打印 "not replacing" 并以退出码 1 结束,`set -e` 当场终止——构建产物齐了但没切换、PM2 没重启。首次实跑即中招;零断档设计兜住了(旧 dist 全程在服务,线上无感知)。
+  修复(commit 66a4425):合并改为显式"目标不存在才 `cp -p`"的循环,cp 真实失败仍会炸出不吞错;uiArchitecture 测试断言禁止 `cp -n` 回潮。
+  如何避免:**shell 脚本里 `cp -n`/`mv -n` 的退出码语义随 coreutils 版本漂移(9.2+ 跳过=失败),`set -e` 下禁用;"跳过已存在"必须写成显式存在性判断。部署脚本的每一步都要问:这步失败时线上处于什么状态——本次是"旧版完好"才安全,靠的是切换前不动旧产物的设计,不是运气。**
