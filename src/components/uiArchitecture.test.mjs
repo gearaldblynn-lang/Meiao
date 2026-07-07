@@ -542,7 +542,9 @@ test('cloud deploy keeps old hashed assets and missing chunks do not fall back t
   assert.match(deployScript, /! -name 'dist' -exec rm -rf/, 'install/build 期间必须保留旧 dist 继续服务');
   assert.match(deployScript, /npm run build -- --outDir dist-next/, '新产物必须先落 dist-next,不许直接覆盖 dist');
   assert.match(deployScript, /find dist\/assets -maxdepth 1 -type f -mtime \+\$\{MEIAO_OLD_ASSET_RETENTION_DAYS:-30\} -delete/, '旧 chunk 必须有保留期治理');
-  assert.match(deployScript, /cp -Rpn dist\/assets\/\. dist-next\/assets\//, '旧 hash chunk 必须保留 mtime 合并进新产物');
+  // coreutils 9.2+ 的 cp -n 对跳过文件退出1会掐死部署,必须用显式'不存在才拷'循环
+  assert.match(deployScript, /if \[ ! -e \\"dist-next\/assets\/\\\$base\\" \]; then\n\s*cp -p \\"\\\$asset\\" \\"dist-next\/assets\/\\\$base\\"/, '旧 hash chunk 必须显式跳过已存在文件合并,不许 cp -n');
+  assert.doesNotMatch(deployScript, /cp -R?p?n /, '禁止 cp -n(coreutils 9.2+ 跳过即退出1)');
   assert.match(deployScript, /mv dist dist-prev; fi\n\s*mv dist-next dist/, '切换必须是原子换名');
 });
 

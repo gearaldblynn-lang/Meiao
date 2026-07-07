@@ -69,12 +69,18 @@ tar \
     rm -rf dist-next
     npm run build -- --outDir dist-next
 
-    # 旧 hash chunk 保留(供部署前打开的旧标签页懒加载),按 mtime 保留 ${MEIAO_OLD_ASSET_RETENTION_DAYS:-30} 天防无限膨胀;
-    # cp -p 保留 mtime,retention 才有依据;合并失败必须报错退出,不许静默丢 generation。
+    # 旧 hash chunk 保留(供部署前打开的旧标签页懒加载),按 mtime 保留 ${MEIAO_OLD_ASSET_RETENTION_DAYS:-30} 天防无限膨胀。
+    # 注意:不能用 cp -n——coreutils 9.2+ 对被跳过的文件报错并退出 1,set -e 会把部署掐死在原子切换前;
+    # 改为显式'不存在才拷',cp 的真实失败仍会炸出来,不吞错。
     if [ -d dist/assets ]; then
       find dist/assets -maxdepth 1 -type f -mtime +${MEIAO_OLD_ASSET_RETENTION_DAYS:-30} -delete
       mkdir -p dist-next/assets
-      cp -Rpn dist/assets/. dist-next/assets/
+      find dist/assets -maxdepth 1 -type f | while IFS= read -r asset; do
+        base=\$(basename \"\$asset\")
+        if [ ! -e \"dist-next/assets/\$base\" ]; then
+          cp -p \"\$asset\" \"dist-next/assets/\$base\"
+        fi
+      done
     fi
 
     # 原子切换:两次 rename,静态服务零断档
