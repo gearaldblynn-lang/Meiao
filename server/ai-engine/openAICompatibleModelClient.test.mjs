@@ -167,3 +167,56 @@ test('calls OpenAI-compatible embeddings endpoint for knowledge training', async
     assert.deepEqual(embeddings, [[1, 0, 0], [0, 1, 0]]);
   });
 });
+
+test('openai_compatible provider falls back to global relay env when baseUrl/credentialRef are empty', async () => {
+  await withJsonServer(async (req, res) => {
+    assert.equal(req.url, '/v1/chat/completions');
+    assert.equal(req.headers.authorization, 'Bearer sk-global-relay');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: '好的' } }] }));
+  }, async ({ baseUrl }) => {
+    const hostRoot = baseUrl.replace(/\/v1$/, '');
+    const result = await callOpenAICompatibleChatModel({
+      provider: { provider: 'openai_compatible', baseUrl: '', credentialRef: '' },
+      modelRequest: { model: { id: 'gpt-5.5' }, messages: [{ role: 'user', content: '你好' }] },
+      env: {
+        OPENAI_COMPATIBLE_BASE_URL: hostRoot,
+        OPENAI_COMPATIBLE_API_KEY: 'sk-global-relay',
+      },
+    });
+    assert.equal(result.content, '好的');
+  });
+});
+
+test('openai_compatible provider keeps its own baseUrl/credentialRef when explicitly configured', async () => {
+  await withJsonServer(async (req, res) => {
+    assert.equal(req.headers.authorization, 'Bearer sk-own-key');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'own' } }] }));
+  }, async ({ baseUrl }) => {
+    const result = await callOpenAICompatibleChatModel({
+      provider: { provider: 'openai_compatible', baseUrl, credentialRef: 'env:OWN_KEY' },
+      modelRequest: { model: { id: 'gpt-5.5' }, messages: [{ role: 'user', content: 'hi' }] },
+      env: {
+        OWN_KEY: 'sk-own-key',
+        OPENAI_COMPATIBLE_BASE_URL: 'http://should-not-be-used.invalid',
+        OPENAI_COMPATIBLE_API_KEY: 'sk-should-not-be-used',
+      },
+    });
+    assert.equal(result.content, 'own');
+  });
+});
+
+test('custom providers never fall back to global relay env (misconfig must fail loudly)', async () => {
+  await assert.rejects(
+    callOpenAICompatibleChatModel({
+      provider: { provider: 'acceptance-relay', baseUrl: '', credentialRef: '' },
+      modelRequest: { model: { id: 'acceptance-chat' }, messages: [{ role: 'user', content: 'hi' }] },
+      env: {
+        OPENAI_COMPATIBLE_BASE_URL: 'http://should-not-be-used.invalid',
+        OPENAI_COMPATIBLE_API_KEY: 'sk-should-not-be-used',
+      },
+    }),
+    /缺少 Base URL/,
+  );
+});

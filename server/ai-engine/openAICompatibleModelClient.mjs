@@ -18,6 +18,19 @@ const normalizeBaseUrl = (baseUrl = '') => {
   return value;
 };
 
+// 单一判据:内置 openai_compatible 供应商未在工厂面板填 baseUrl/credentialRef 时,
+// 回退全局中转 env(OPENAI_COMPATIBLE_BASE_URL 为主机根,本 client 走 /v1 前缀;
+// key 与系统其余模块共用 OPENAI_COMPATIBLE_API_KEY)。自定义供应商不回退,配错就报错。
+export const resolveOpenAICompatibleProviderRuntime = (provider = {}, env = process.env) => {
+  if (clean(provider.provider, 120) !== 'openai_compatible') return provider;
+  const envBase = clean(env?.OPENAI_COMPATIBLE_BASE_URL, 500).replace(/\/$/, '');
+  return {
+    ...provider,
+    baseUrl: clean(provider.baseUrl, 500) || (envBase ? `${envBase}/v1` : ''),
+    credentialRef: clean(provider.credentialRef, 240) || 'env:OPENAI_COMPATIBLE_API_KEY',
+  };
+};
+
 const toOpenAITools = (tools = []) => asArray(tools)
   .map((tool) => {
     const record = asRecord(tool);
@@ -107,9 +120,10 @@ export const callOpenAICompatibleChatModel = async ({
   signal,
 } = {}) => {
   if (typeof fetchImpl !== 'function') throw new Error('当前运行环境不支持 fetch。');
-  const baseUrl = normalizeBaseUrl(provider.baseUrl);
-  const apiKey = resolveSmartFactoryCredentialRef(provider.credentialRef, env);
-  if (!apiKey) throw new Error(`模型供应商 ${clean(provider.provider || '') || 'unknown'} 缺少可用 API Key。`);
+  const runtimeProvider = resolveOpenAICompatibleProviderRuntime(provider, env);
+  const baseUrl = normalizeBaseUrl(runtimeProvider.baseUrl);
+  const apiKey = resolveSmartFactoryCredentialRef(runtimeProvider.credentialRef, env);
+  if (!apiKey) throw new Error(`模型供应商 ${clean(runtimeProvider.provider || '') || 'unknown'} 缺少可用 API Key。`);
   const modelName = clean(modelRequest.model?.name || modelRequest.model?.id || modelRequest.model?.model, 160);
   if (!modelName) throw new Error('模型请求缺少 model。');
   const body = {
@@ -175,9 +189,10 @@ export const callOpenAICompatibleEmbeddingModel = async ({
   signal,
 } = {}) => {
   if (typeof fetchImpl !== 'function') throw new Error('当前运行环境不支持 fetch。');
-  const baseUrl = normalizeBaseUrl(provider.baseUrl);
-  const apiKey = resolveSmartFactoryCredentialRef(provider.credentialRef, env);
-  if (!apiKey) throw new Error(`模型供应商 ${clean(provider.provider || '') || 'unknown'} 缺少可用 API Key。`);
+  const runtimeProvider = resolveOpenAICompatibleProviderRuntime(provider, env);
+  const baseUrl = normalizeBaseUrl(runtimeProvider.baseUrl);
+  const apiKey = resolveSmartFactoryCredentialRef(runtimeProvider.credentialRef, env);
+  if (!apiKey) throw new Error(`模型供应商 ${clean(runtimeProvider.provider || '') || 'unknown'} 缺少可用 API Key。`);
   const modelName = clean(model, 160);
   if (!modelName) throw new Error('Embedding 请求缺少 model。');
   const list = asArray(input).map((item) => String(item ?? '')).filter((item) => item.trim());
