@@ -71,6 +71,7 @@ import { collectFailedOneClickPlanningPlans } from './adapters/shellPlanningFail
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
 const AgentCenterModule = lazy(() => import('./shell/modules/AgentCenter/AgentCenterModule'));
+const SmartFactoryModule = lazy(() => import('./shell/modules/SmartFactory/SmartFactoryModule'));
 const TranslationModule = lazy(() => import('./shell/modules/Translation/TranslationModule'));
 const OneClickModule = lazy(() => import('./shell/modules/OneClick/OneClickModule'));
 const RetouchModule = lazy(() => import('./shell/modules/Retouch/RetouchModule'));
@@ -97,13 +98,24 @@ const normalizeShellImageModel = (value: unknown) => {
 };
 
 const ANNOUNCEMENT_DISMISS_STORAGE_PREFIX = 'meiao_announcement_dismissed_today';
+// 撤下的未发布模块(335cfb1):对商家不可见。智能工厂在阶段5调通期只对 admin 开放
+// (isModuleWithdrawnForUser),AI 客服对所有人保持撤下(业主决策靠后)。
 const WITHDRAWN_CLOUD_MODULES = new Set<AppModule>([
   AppModuleObj.AI_CUSTOMER_SERVICE,
   AppModuleObj.SMART_FACTORY,
 ]);
+const ADMIN_PREVIEW_MODULES = new Set<AppModule>([
+  AppModuleObj.SMART_FACTORY,
+]);
 
-const normalizeAvailableModule = (module?: AppModule | null): AppModule => {
-  if (!module || WITHDRAWN_CLOUD_MODULES.has(module)) return AppModuleObj.ONE_CLICK;
+const isModuleWithdrawnForUser = (module: AppModule, user?: AuthUser | null): boolean => {
+  if (!WITHDRAWN_CLOUD_MODULES.has(module)) return false;
+  if (user?.role === 'admin' && ADMIN_PREVIEW_MODULES.has(module)) return false;
+  return true;
+};
+
+const normalizeAvailableModule = (module?: AppModule | null, user?: AuthUser | null): AppModule => {
+  if (!module || isModuleWithdrawnForUser(module, user)) return AppModuleObj.ONE_CLICK;
   return module;
 };
 
@@ -1261,6 +1273,7 @@ const loadShellWorkflowModule = async () => {
 
 const MODULE_NAMES: Record<string, string> = {
   [AppModuleObj.AGENT_CENTER]: '智能体中心',
+  [AppModuleObj.SMART_FACTORY]: '智能工厂',
   [AppModuleObj.ONE_CLICK]: '一键主详',
   [AppModuleObj.TRANSLATION]: '出海翻译',
   [AppModuleObj.BUYER_SHOW]: '买家秀',
@@ -1339,6 +1352,9 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
     { id: 'management', label: '智能体管理' },
     { id: 'knowledge', label: '知识库' },
     { id: 'versions', label: '版本训练' },
+  ],
+  [AppModuleObj.SMART_FACTORY]: [
+    { id: 'factory', label: '智能工厂' },
   ],
 };
 
@@ -2042,8 +2058,8 @@ const AppContent: React.FC<{
     if (typeof window === 'undefined') return AppModuleObj.ONE_CLICK;
     const value = new URLSearchParams(window.location.search).get('module');
     if (value === AppModuleObj.SETTINGS || value === AppModuleObj.ACCOUNT) return AppModuleObj.ONE_CLICK;
-    if (Object.values(AppModuleObj).includes(value as AppModule)) return normalizeAvailableModule(value as AppModule);
-    return normalizeAvailableModule(savedShellUiState.activeModule || AppModuleObj.ONE_CLICK);
+    if (Object.values(AppModuleObj).includes(value as AppModule)) return normalizeAvailableModule(value as AppModule, currentUser);
+    return normalizeAvailableModule(savedShellUiState.activeModule || AppModuleObj.ONE_CLICK, currentUser);
   })();
   const initialPageMode = (() => {
     if (typeof window === 'undefined') return 'landing';
@@ -3154,18 +3170,18 @@ const AppContent: React.FC<{
     if (m === 'landing') { setPageMode('landing'); return; }
     if (m === AppModuleObj.SETTINGS) { setPageMode('settings'); return; }
     if (m === AppModuleObj.ACCOUNT) { setPageMode('account'); return; }
-    const nextModule = normalizeAvailableModule(m);
+    const nextModule = normalizeAvailableModule(m, currentUser);
     setActiveModule(nextModule);
     setActiveSubFeatureByModule((prev) => prev[nextModule] ? prev : { ...prev, [nextModule]: getDefaultSubFeature(nextModule) });
     setPageMode('module');
-  }, []);
+  }, [currentUser]);
 
   const handleNavigateFromLanding = useCallback((m: AppModule) => {
-    const nextModule = normalizeAvailableModule(m);
+    const nextModule = normalizeAvailableModule(m, currentUser);
     setActiveModule(nextModule);
     setActiveSubFeatureByModule((prev) => prev[nextModule] ? prev : { ...prev, [nextModule]: getDefaultSubFeature(nextModule) });
     setPageMode('module');
-  }, []);
+  }, [currentUser]);
 
   // ── Material upload ──
   const handleMaterialUpload = useCallback((type: string, files: FileList | null, options?: { buyerShowSetIndex?: number }) => {
@@ -7699,6 +7715,8 @@ const AppContent: React.FC<{
             }
           }}
         />;
+      case AppModuleObj.SMART_FACTORY:
+        return <SmartFactoryModule />;
       case AppModuleObj.ONE_CLICK:
         return <OneClickModule
           projects={filteredProjects}
@@ -7836,6 +7854,7 @@ const AppContent: React.FC<{
           onOpenAnnouncement={handleOpenAnnouncementPanel}
           collapsed={sidebarCollapsed}
           onToggleCollapsed={() => setSidebarCollapsed((prev) => !prev)}
+          showAdminModules={currentUser?.role === 'admin'}
         />
         <div className="flex flex-1 flex-col min-w-0">
           <main className="flex-1 overflow-y-auto min-h-0">
