@@ -149,7 +149,8 @@ test('all runnable bottom generation submits are guarded before material prepara
   assert.match(handleGeneratePrefix, /const beginGuardedSubmit = \(\) => !hasGuardedSubmitLock \|\| beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(handleGeneratePrefix, /const releaseGuardedSubmit = \(\) => \{/);
   assert.match(shellSource, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& \(Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\) \|\| hasCurrentActiveGuardedGeneration\)/);
-  assert.match(shellSource, /if \(!beginGuardedSubmit\(\)\) \{\s*return;\s*\}\s*addToast\('任务已提交，正在准备素材', 'info'\);[\s\S]*?const immediateProject = targetModule === AppModuleObj\.EVERYTHING_REPLACE[\s\S]*?try \{\s*generationMaterials = await ensureMaterialRemoteUrls/);
+  // 2026-07-07 即时卡扩展到全模块后,锚点从 EVERYTHING_REPLACE 条件改为 !== BUYER_SHOW;顺序语义不变:守卫→toast→即时卡→素材上传
+  assert.match(shellSource, /if \(!beginGuardedSubmit\(\)\) \{\s*return;\s*\}\s*addToast\('任务已提交，正在准备素材', 'info'\);[\s\S]*?const immediateProject = targetModule !== AppModuleObj\.BUYER_SHOW[\s\S]*?try \{\s*generationMaterials = await ensureMaterialRemoteUrls/);
   assert.match(translationBranch, /onJobCreated: \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
   assert.match(oneClickBranch.match(/const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n      \};/)?.[0] || '', /releaseGuardedSubmit\(\);/);
   assert.match(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
