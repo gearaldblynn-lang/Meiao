@@ -47,6 +47,7 @@ import { countCompletedProjectResults, mergeGeneratedPlanResults } from './utils
 import { isInvalidOneClickPlanLike } from './utils/oneClickPlanValidation.ts';
 import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion } from './utils/shellRuntimePrune.mjs';
 import { isFrontendResourceError } from './utils/frontendResourceError.mjs';
+import { startVersionWatch } from './utils/frontendVersionWatch';
 import { deleteShellDraftAsset, loadShellDraftAsset, pruneShellDraftAssets, restoreShellDraftAssetUrls, saveShellDraftAsset } from './utils/shellDraftAssetStore';
 import { detectMp4VideoCodecFromBlob } from './utils/videoCodec';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
@@ -1201,12 +1202,38 @@ type ShellWorkflowModule = typeof import('./adapters/shellWorkflow');
 
 let shellWorkflowModulePromise: Promise<ShellWorkflowModule> | null = null;
 
+const STALE_ASSET_RELOAD_STORAGE_KEY = 'meiao_stale_asset_reloads';
+const STALE_ASSET_RELOAD_MAX = 3;
+const STALE_ASSET_RELOAD_WINDOW_MS = 5 * 60 * 1000;
+// 部署窗口(PM2 重启/dist 切换)内立刻 reload 会再次踩空;延迟 3s 让窗口过去。
+const STALE_ASSET_RELOAD_DELAY_MS = 3000;
+
+const readStaleAssetReloadHistory = (): number[] => {
+  try {
+    const parsed = JSON.parse(window.sessionStorage.getItem(STALE_ASSET_RELOAD_STORAGE_KEY) || '[]');
+    if (!Array.isArray(parsed)) return [];
+    const cutoff = Date.now() - STALE_ASSET_RELOAD_WINDOW_MS;
+    return parsed.map(Number).filter((value) => Number.isFinite(value) && value > cutoff);
+  } catch {
+    return [];
+  }
+};
+
 const reloadForStaleFrontendAsset = (error?: unknown) => {
   if (typeof window === 'undefined') return;
+  const history = readStaleAssetReloadHistory();
+  if (history.length >= STALE_ASSET_RELOAD_MAX) {
+    // 5 分钟内已刷 3 次还在踩空 → 停止自动刷新,避免 reload 死循环;留给用户手动刷新
+    console.warn('[shell-workflow] stale asset reload loop guard triggered, stop auto reload', error);
+    return;
+  }
+  try {
+    window.sessionStorage.setItem(STALE_ASSET_RELOAD_STORAGE_KEY, JSON.stringify([...history, Date.now()]));
+  } catch { /* sessionStorage 不可用时放弃计数,仍然刷新 */ }
   console.warn('[shell-workflow] stale frontend asset detected, reloading page', error);
   window.setTimeout(() => {
     window.location.reload();
-  }, 80);
+  }, STALE_ASSET_RELOAD_DELAY_MS);
 };
 
 // 根因 #5 护栏:前端资源/chunk 加载失败(部署后浏览器请求旧 hash chunk 导致 404)
@@ -2559,6 +2586,32 @@ const AppContent: React.FC<{
   useEffect(() => {
     traceStartup('app-content:mounted');
   }, []);
+
+  // S4:新版本探测。发现云上已发新版:无活跃任务 → 提示后自动软刷新;有活跃任务 → 只提示,
+  // 绝不打断生成中的工作(刷新交给用户或下一次空闲探测)。
+  const versionWatchActiveWorkRef = useRef(false);
+  useEffect(() => {
+    versionWatchActiveWorkRef.current = isGenerating || tasks.length > 0;
+  }, [isGenerating, tasks]);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof __BUILD_ID__ === 'undefined') return undefined;
+    let reloadTimer: number | undefined;
+    const stop = startVersionWatch({
+      currentBuildId: __BUILD_ID__,
+      onNewVersion: () => {
+        if (versionWatchActiveWorkRef.current) {
+          addToast('检测到新版本已发布，当前有任务进行中，完成后请刷新页面', 'info');
+          return;
+        }
+        addToast('检测到新版本已发布，页面即将自动刷新', 'info');
+        reloadTimer = window.setTimeout(() => { window.location.reload(); }, 3000);
+      },
+    });
+    return () => {
+      stop();
+      if (reloadTimer) window.clearTimeout(reloadTimer);
+    };
+  }, [addToast]);
 
   useEffect(() => {
     if (!currentUser?.id) return;
