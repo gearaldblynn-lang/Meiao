@@ -235,3 +235,8 @@
   根因:前端提交任务时先落 `status:'generating'` 占位(此刻还没有 backendJobId),再等后端回身份。链路一旦中断(刷新/崩溃/限流),这条无身份占位没有任何机制回收——stale reconciler 只管有 job 的,repair 脚本只在人工跑时清。云上累计 57 条,是"永远转圈的卡"直接来源(D1)。
   修复(commit b41641c):存储合并出口 `mergeAppStateForStorage` 新增 `failExpiredIdentitylessPlaceholders`:无任务身份(backendJobId/providerTaskId/taskId/planningTaskId/kieTaskId 全空)+活跃状态+超龄(env `MEIAO_IDENTITYLESS_ACTIVE_TTL_MS` 默认 6h)→ 标结构化失败(`status:'error'`+`errorCode:'identityless_placeholder_expired'`);判据从 `appStateHealth.mjs` 导出单一实现,顺手把 `appStateRepairPlan.mjs` 的平行拷贝收敛掉;判不了龄宁放行不误杀;文案刻意避开全部既有 sentinel 正则。
   如何避免:**任何"先占位后补身份"的写入,必须同时设计占位的回收路径(TTL 守卫/身份回填两条腿);无身份数据不许无限期滞留在活跃状态。守卫判据只能有一份(从 health 导出),修复脚本与写入守卫共用,不许各养一套。**
+
+- **#37 ✅ 已修(2026-07-07)· "脏数据"清理前必须先探真相:同一审计口径下混着误报、断链、真脏三种形态,动作完全不同**
+  根因:审计判据 `completed_project_without_output` 把三种本质不同的东西报成同一类"脏数据":① 分镜"策划完成"项目(completed 表达的是策划完成,boards 出没出图由展示层现算)——**判据误报**,该豁免;② 翻译/一键的"无输出完成卡"——探针逐条查 backendJobId,发现 18 张卡对应的 internal_jobs 全部 `succeeded` 且 result_json 里有 imageUrl,是**回填断链**(job 成功了,URL 没写回 app_state),该回填找回,删除=删用户已付费的成果;③ 真正空壳(无 script/shots/boards/任何结果)——才是**真脏**,该标失败。若当初按"清理脏数据"一刀切删除,②的 18 张用户成果图就没了。
+  修复:① `appStateHealth.mjs` 加 `isStoryboardPlanningProject` 单一判据(storyboard 桶+有 script/shots/boards 即有效,审计/修复器共用,真空壳仍上报,commit b6b5daa);② 新脚本 `scripts/cloud-backfill-completed-without-output.mjs`(dry-run 默认/--apply 带备份/幂等),从 internal_jobs.result_json 回填 imageUrl+归一计数+镜像卡同步,云上 3 用户 32 动作完成(commit 8f68774);③ 真脏走既有 repair 脚本。云上 44 用户审计异常首次全清零。
+  如何避免:**审计判据报出来的"脏数据"只是线索不是结论;清理动作(豁免/回填/删除/标失败)必须先按子形态探真相——逐条把卡上的任务身份(backendJobId 等)拿去查 durable 源(internal_jobs/资产表),"上游有成功结果"的一律回填不删除。"完成"这类状态词的语义因模块而异(分镜 completed=策划完成≠有图),全局判据要给业务语义留豁免口,且豁免判据只能有一份。**
