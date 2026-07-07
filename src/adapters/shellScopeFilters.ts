@@ -24,7 +24,8 @@ export interface ScopeTask {
   projectId?: string;
   module: string;
   type?: 'image' | 'video' | 'plan' | 'batch' | string;
-  status: 'pending' | 'generating' | 'completed' | 'error';
+  // retry_waiting 与 shell Task 同源对齐(根因库#3);本文件用"终态排除法"判活跃,天然兼容
+  status: 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
   title: string;
   progress?: number;
   createdAt: number;
