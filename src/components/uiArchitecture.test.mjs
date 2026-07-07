@@ -902,6 +902,17 @@ test('storyboard generation uploads local draft assets before building model-rea
   assert.match(storyboardGenerateBody, /素材已上传，正在拆解爆款视频并生成提示词/);
 });
 
+test('dead materials fail fast at the upload gate with the file name (D6)', () => {
+  const app = read('../ShellMigratedApp.tsx');
+  const gateBody = app.match(/const ensureMaterialRemoteUrls = useCallback\(async \(([\s\S]*?)\n  \}, \[/)?.[1] || '';
+
+  // 2026-07-07 D6:URL 非空但解析不出公网地址、又无本地文件可补传的"死素材",
+  // 必须在提交闸口带文件名报错,不放行到策划中途抛模糊的"素材 没有公网地址"。
+  assert.match(gateBody, /if \(rawUrl && !currentSafeUrl\) \{/);
+  assert.match(gateBody, /缺少可用的公网地址（原文件已不在本地），请删除该素材后重新上传。/);
+  assert.match(gateBody, /item\.fileName \|\| '素材'/);
+});
+
 test('shell generation paths upload local draft assets before provider submission', () => {
   const app = read('../ShellMigratedApp.tsx');
   const handleGenerateBody = app;

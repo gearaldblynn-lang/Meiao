@@ -2303,7 +2303,15 @@ const AppContent: React.FC<{
           if (currentSafeUrl && !refreshVideoAssetUrl && !refreshExpiringMaterialUrl) {
             return item.remoteUrl ? item : { ...item, remoteUrl: item.url };
           }
-          if (!item.localAssetId) return item;
+          if (!item.localAssetId) {
+            // D6 堵源头:URL 非空但解析不出公网地址(blob:/data:/内网),又没有本地文件可补传
+            // ——这是死素材,在提交闸口就报出文件名,不放行到策划中途才抛模糊的"素材 没有公网地址"。
+            const rawUrl = String(item.remoteUrl || item.url || '').trim();
+            if (rawUrl && !currentSafeUrl) {
+              throw new Error(`${item.fileName || '素材'} 缺少可用的公网地址（原文件已不在本地），请删除该素材后重新上传。`);
+            }
+            return item;
+          }
 
           const record = await loadShellDraftAsset(item.localAssetId);
           if (!record?.blob) {
