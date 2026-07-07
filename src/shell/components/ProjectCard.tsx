@@ -1052,7 +1052,10 @@ const ProjectCard: React.FC<Props> = ({
               </div>
             )}
             <div className={`absolute flex items-center gap-1.5 ${compact ? 'left-2.5 top-2.5' : 'left-3 top-3'}`}>
-              <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: st.bg, color: st.color }}>{st.label}</span>
+              <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: st.bg, color: st.color }}>
+                {st.label}
+                {isProjectActivelyGenerating && project.taskCount > 1 ? ` ${Math.min(project.completedCount, project.taskCount)}/${project.taskCount}` : ''}
+              </span>
               {project.results.length > 1 && <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: 'rgba(15,23,42,0.44)', color: '#fff' }}>{project.results.length} 个结果</span>}
             </div>
             {showGenerationProgress && isProjectActivelyGenerating ? (

@@ -1,12 +1,12 @@
 import React from 'react';
-import { X, Loader2, CheckCircle2, AlertCircle, Clock, ArrowRight } from 'lucide-react';
+import { X, Loader2, CheckCircle2, AlertCircle, Clock, ArrowRight, RefreshCw } from 'lucide-react';
 
 export interface Task {
   id: string;
   projectId: string;
   module: string;
   type: 'image' | 'video' | 'plan' | 'batch';
-  status: 'pending' | 'generating' | 'completed' | 'error';
+  status: 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
   title: string;
   progress?: number;
   createdAt: number;
@@ -25,6 +25,8 @@ interface Props {
 const statusConfig: Record<Task['status'], { icon: React.ReactNode; color: string; label: string; bg: string }> = {
   pending:    { icon: <Clock size={12} />,                           color: 'var(--text-tertiary)', label: '排队中', bg: 'var(--bg-elevated)' },
   generating: { icon: <Loader2 size={12} className="animate-spin" />, color: 'var(--accent)',       label: '生成中', bg: 'var(--accent-soft)' },
+  // 根因库#3:retry_waiting 是后端真值,任务队列必须可见且归为"还在跑",不许静默消失
+  retry_waiting: { icon: <RefreshCw size={12} className="animate-spin" />, color: 'var(--accent)',  label: '重试中', bg: 'var(--accent-soft)' },
   completed:  { icon: <CheckCircle2 size={12} />,                    color: 'var(--success)',       label: '已完成', bg: 'rgba(34,197,94,0.08)' },
   error:      { icon: <AlertCircle size={12} />,                     color: 'var(--error)',         label: '失败',   bg: 'rgba(239,68,68,0.06)' },
 };
@@ -35,7 +37,7 @@ const moduleNames: Record<string, string> = {
 };
 
 const ActiveTasksPanel: React.FC<Props> = ({ tasks, onCancel, onViewTask, showGenerationProgress = true }) => {
-  const activeTasks = tasks.filter((t) => t.status === 'pending' || t.status === 'generating');
+  const activeTasks = tasks.filter((t) => t.status === 'pending' || t.status === 'generating' || t.status === 'retry_waiting');
   const recentTasks = tasks.filter((t) => t.status === 'completed' || t.status === 'error').slice(0, 3);
 
   if (activeTasks.length === 0 && recentTasks.length === 0) return null;

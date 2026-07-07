@@ -375,7 +375,7 @@ export interface Task {
   projectId: string;
   module: AppModule;
   type: 'image' | 'video' | 'plan' | 'batch';
-  status: 'pending' | 'generating' | 'completed' | 'error';
+  status: 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
   title: string;
   progress?: number;
   createdAt: number;
@@ -833,8 +833,14 @@ const shouldKeepRuntimeProject = (project: Project) =>
   hasRuntimeBackendIdentity(project)
   && (project.status === 'generating' || (project.status === 'planning' && !isOneClickPlanReadyProject(project)));
 
+// 根因库#3:retry_waiting 是后端真值,任务级"还在跑"判断只能用这一份判据,
+// 不许散落 pending|generating 硬比对(否则重试中的任务会从队列/守卫里静默消失)
+const isActiveTaskStatus = (status: Task['status']) => (
+  status === 'pending' || status === 'generating' || status === 'retry_waiting'
+);
+
 const shouldKeepRuntimeTask = (task: Task) =>
-  hasRuntimeBackendIdentity(task) && (task.status === 'pending' || task.status === 'generating');
+  hasRuntimeBackendIdentity(task) && isActiveTaskStatus(task.status);
 
 const isStaleLocalOnlyVideoGenerationProject = (project: Project) =>
   project.module === AppModuleObj.VIDEO
@@ -846,7 +852,7 @@ const isStaleLocalOnlyVideoGenerationTask = (task: Task) =>
   task.module === AppModuleObj.VIDEO
   && task.subFeature === 'generation'
   && !task.backendJobId
-  && (task.status === 'pending' || task.status === 'generating');
+  && isActiveTaskStatus(task.status);
 
 const RUNTIME_TEXT_LIMIT = 120;
 
@@ -1371,7 +1377,7 @@ const hasActiveGuardedGeneration = (
     item.module === module && (item.subFeature || getDefaultSubFeature(item.module)) === scope
   );
   const hasActiveTask = tasks.some((task) => (
-    isSameScope(task) && (task.status === 'pending' || task.status === 'generating')
+    isSameScope(task) && isActiveTaskStatus(task.status)
     && !hasRuntimeTaskIdentity(task)
   ));
   if (hasActiveTask) return true;
@@ -2886,7 +2892,7 @@ const AppContent: React.FC<{
       );
       const activeSnapshotTaskProjectIds = new Set(
         (snapshot.tasks as Task[])
-          .filter((task) => task.status === 'pending' || task.status === 'generating')
+          .filter((task) => isActiveTaskStatus(task.status))
           .map((task) => String(task.projectId || '').trim())
           .filter(Boolean),
       );
@@ -7859,8 +7865,9 @@ const AppContent: React.FC<{
         <div className="flex flex-1 flex-col min-w-0">
           <main className="flex-1 overflow-y-auto min-h-0">
             <Suspense fallback={
-              <div className="flex h-full items-center justify-center" style={{ color: 'var(--text-tertiary)' }}>
-                {hasHydratedSharedData ? '加载中...' : '正在同步本地后端数据...'}
+              <div className="flex h-full flex-col items-center justify-center gap-3" style={{ color: 'var(--text-tertiary)' }}>
+                <span className="inline-block h-6 w-6 animate-spin rounded-full border-2 border-current border-t-transparent" style={{ color: 'var(--accent)' }} aria-hidden="true" />
+                <span className="text-[13px]">{hasHydratedSharedData ? '加载中...' : '正在同步本地后端数据...'}</span>
               </div>
             }>
               {activeModuleView}
