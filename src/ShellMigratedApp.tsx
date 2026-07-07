@@ -3770,16 +3770,24 @@ const AppContent: React.FC<{
         } satisfies Project;
       })
       : [];
-    const immediateProject = targetModule === AppModuleObj.EVERYTHING_REPLACE || isTranslationSubmit
+    // 2026-07-07 创建反馈提速:占位卡覆盖所有模块(买家秀走上面的多套卡数组)。
+    // 一键主详用 proj-plan- id + planning 态(后续策划分支原位接管同一张卡),
+    // 修图/视频/小红书等此前无即时卡,素材上传+首张生成期间用户只有一条 toast。
+    const isOneClickSubmit = targetModule === AppModuleObj.ONE_CLICK;
+    const immediateProject = targetModule !== AppModuleObj.BUYER_SHOW
       ? ({
-        id: isTranslationSubmit ? immediateTranslationProjectId : 'proj-' + Date.now(),
+        id: isTranslationSubmit
+          ? immediateTranslationProjectId
+          : isOneClickSubmit
+            ? `proj-plan-${immediateCreatedAt}`
+            : 'proj-' + Date.now(),
         name: isTranslationSubmit
           ? (immediateTranslationCount > 1
             ? `${translationSubFeatureLabel || MODULE_NAMES[targetModule]} · ${immediateTranslationCount}张`
             : (translationSubFeatureLabel || MODULE_NAMES[targetModule]))
           : projectName,
         module: targetModule,
-        status: 'generating',
+        status: isOneClickSubmit ? 'planning' : 'generating',
         createdAt: immediateCreatedAt,
         results: targetModule === AppModuleObj.TRANSLATION
           ? Array.from({ length: immediateTranslationCount }, (_, index) => {
@@ -3806,7 +3814,7 @@ const AppContent: React.FC<{
             } satisfies GeneratedResult;
           })
           : [],
-        taskCount: isTranslationSubmit ? immediateTranslationCount : batchCount,
+        taskCount: isTranslationSubmit ? immediateTranslationCount : (isOneClickSubmit ? 1 : batchCount),
         completedCount: 0,
         subFeature: targetSubFeature,
         generationContext: cloneGenerationContext(generationPrompt, generationParams, generationMaterials),
@@ -3817,9 +3825,9 @@ const AppContent: React.FC<{
         id: 'task-' + Date.now(),
         projectId: immediateProject?.id || immediateBuyerShowRootProjectId || immediateBuyerShowProjects[0]?.id || '',
         module: targetModule,
-        type: 'image',
+        type: isOneClickSubmit ? 'plan' : 'image',
         status: 'pending',
-        title: immediateProject?.name || projectName,
+        title: isOneClickSubmit ? `策划: ${projectName}` : (immediateProject?.name || projectName),
         progress: 0,
         createdAt: immediateCreatedAt,
         total: immediateProject?.taskCount || batchCount,
@@ -4345,8 +4353,10 @@ const AppContent: React.FC<{
     }
 
     if (targetModule === AppModuleObj.ONE_CLICK) {
-      const projectId = 'proj-plan-' + Date.now();
-      const createdAt = Date.now();
+      // 即时占位卡已在素材上传前落下(proj-plan- id,planning 态),这里原位接管同一张卡,
+      // 不再新建卡——上传期间用户已经能看到策划卡,不是只有一条 toast。
+      const projectId = immediateProject?.id || ('proj-plan-' + Date.now());
+      const createdAt = immediateProject?.createdAt ?? Date.now();
       const planningProject: Project = {
         id: projectId,
         name: projectName,
@@ -4359,7 +4369,7 @@ const AppContent: React.FC<{
         subFeature: targetSubFeature,
         generationContext,
       };
-      const taskId = 'task-plan-' + Date.now();
+      const taskId = immediateTask?.id || ('task-plan-' + Date.now());
       const planTask: Task = {
         id: taskId,
         projectId,
@@ -4375,8 +4385,12 @@ const AppContent: React.FC<{
       };
       const controller = new AbortController();
       taskControllersRef.current[taskId] = controller;
-      setProjects((prev) => [planningProject, ...prev]);
-      setTasks((prev) => [planTask, ...prev]);
+      setProjects((prev) => (prev.some((project) => project.id === projectId)
+        ? prev.map((project) => (project.id === projectId ? planningProject : project))
+        : [planningProject, ...prev]));
+      setTasks((prev) => (prev.some((task) => task.id === taskId)
+        ? prev.map((task) => (task.id === taskId ? planTask : task))
+        : [planTask, ...prev]));
       void persistProjectToSharedState(planningProject);
       setIsGenerating(true);
       let planningProviderTaskId = '';

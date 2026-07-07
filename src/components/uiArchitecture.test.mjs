@@ -933,12 +933,21 @@ test('shell generation paths upload local draft assets before provider submissio
 
 test('everything replace submit creates visible project card before preparing remote materials', () => {
   const app = read('../ShellMigratedApp.tsx');
-  const placeholderIndex = app.indexOf('const immediateProject = targetModule === AppModuleObj.EVERYTHING_REPLACE');
+  // 2026-07-07 创建反馈提速:即时占位卡从"翻译/万物替换/买家秀"扩展到全部模块
+  // (买家秀走多套卡数组,其余走 immediateProject;一键主详 proj-plan- id + planning 态)。
+  const placeholderIndex = app.indexOf("const immediateProject = targetModule !== AppModuleObj.BUYER_SHOW");
   const uploadIndex = app.indexOf('generationMaterials = await ensureMaterialRemoteUrls(generationMaterials, targetModule);');
 
   assert.notEqual(placeholderIndex, -1);
   assert.notEqual(uploadIndex, -1);
   assert.ok(placeholderIndex < uploadIndex);
+  assert.match(app, /isOneClickSubmit\s*\?\s*`proj-plan-\$\{immediateCreatedAt\}`/, '一键主详即时卡必须用 proj-plan- id,策划分支才能原位接管');
+  assert.match(app, /status: isOneClickSubmit \? 'planning' : 'generating'/);
+  // 一键主详策划分支必须消费即时卡(存在同 id 就原位替换),不许再无条件 prepend 造重复卡
+  const oneClickBranch = app.match(/if \(targetModule === AppModuleObj\.ONE_CLICK\) \{([\s\S]*?)const controller = new AbortController\(\);/)?.[1] || '';
+  assert.match(oneClickBranch, /const projectId = immediateProject\?\.id \|\| \('proj-plan-' \+ Date\.now\(\)\)/);
+  assert.match(oneClickBranch, /const taskId = immediateTask\?\.id \|\| \('task-plan-' \+ Date\.now\(\)\)/);
+  assert.match(app, /prev\.some\(\(project\) => project\.id === projectId\)\s*\? prev\.map\(\(project\) => \(project\.id === projectId \? planningProject : project\)\)\s*: \[planningProject, \.\.\.prev\]/);
   // #34 买家秀多套改造后,即时卡发布与买家秀 set 卡合并为同一条 setProjects(仍在素材上传前,先卡后传的语义不变)
   assert.match(app, /setProjects\(\(prev\) => \[\.\.\.immediateBuyerShowProjects, \.\.\.\(immediateProject \? \[immediateProject\] : \[\]\), \.\.\.prev\]\);/);
   assert.match(app, /setTasks\(\(prev\) => \[immediateTask, \.\.\.prev\]\);/);
