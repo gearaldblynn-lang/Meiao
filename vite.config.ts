@@ -1,7 +1,27 @@
 import path from "path"
-import { readFileSync } from "fs"
+import { readFileSync, writeFileSync, mkdirSync } from "fs"
 import react from "@vitejs/plugin-react"
-import { defineConfig } from "vite"
+import { defineConfig, type Plugin } from "vite"
+
+// 构建号:每次 build 唯一。同时注入 __BUILD_ID__(编译进 bundle)和 dist/version.json
+// (运行时可拉取),前端比对两者发现新版本后主动软刷新——S4 部署断链的治本一环。
+const buildId = Date.now().toString(36);
+
+const versionJsonPlugin = (): Plugin => {
+  let outDir = 'dist';
+  return {
+    name: 'meiao-version-json',
+    apply: 'build',
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      const resolvedOutDir = path.resolve(__dirname, outDir);
+      mkdirSync(resolvedOutDir, { recursive: true });
+      writeFileSync(path.join(resolvedOutDir, 'version.json'), JSON.stringify({ buildId }));
+    },
+  };
+};
 
 // https://vite.dev/config/
 export default defineConfig(() => {
@@ -13,8 +33,9 @@ export default defineConfig(() => {
     base: '/',
     define: {
       __APP_VERSION__: JSON.stringify(packageJson.version || '0.0.0'),
+      __BUILD_ID__: JSON.stringify(buildId),
     },
-    plugins: [react()],
+    plugins: [react(), versionJsonPlugin()],
     server: {
       port: 3000,
       strictPort: true,

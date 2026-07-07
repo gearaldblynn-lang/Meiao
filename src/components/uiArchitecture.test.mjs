@@ -537,10 +537,13 @@ test('cloud deploy keeps old hashed assets and missing chunks do not fall back t
   assert.match(server, /statSync\(targetPath\)/);
   assert.match(server, /targetStats\.isFile\(\)/);
   assert.doesNotMatch(server, /if \(existsSync\(targetPath\)\) \{\s*serveStaticFile\(req, res, targetPath\);/);
-  assert.match(deployScript, /REMOTE_OLD_ASSETS_DIR="\/tmp\/meiao-deploy-old-assets-\$\$"/);
-  assert.match(deployScript, /OLD_ASSETS_DIR='\$REMOTE_OLD_ASSETS_DIR'/);
-  assert.match(deployScript, /cp -R '\$REMOTE_APP_DIR\/dist\/assets'\/\. "\\\$OLD_ASSETS_DIR"\//);
-  assert.match(deployScript, /npm run build[\s\S]*cp -Rn "\\\$OLD_ASSETS_DIR"\/\. dist\/assets\//);
+  // 2026-07-07 S4 治本:部署改为"旧 dist 全程服务 + build 到 dist-next + 旧 assets 带保留期合并 + 原子换名"。
+  // 锁住关键不变量,防止回退到"install 前删 dist"的断档旧方案。
+  assert.match(deployScript, /! -name 'dist' -exec rm -rf/, 'install/build 期间必须保留旧 dist 继续服务');
+  assert.match(deployScript, /npm run build -- --outDir dist-next/, '新产物必须先落 dist-next,不许直接覆盖 dist');
+  assert.match(deployScript, /find dist\/assets -maxdepth 1 -type f -mtime \+\$\{MEIAO_OLD_ASSET_RETENTION_DAYS:-30\} -delete/, '旧 chunk 必须有保留期治理');
+  assert.match(deployScript, /cp -Rpn dist\/assets\/\. dist-next\/assets\//, '旧 hash chunk 必须保留 mtime 合并进新产物');
+  assert.match(deployScript, /mv dist dist-prev; fi\n\s*mv dist-next dist/, '切换必须是原子换名');
 });
 
 test('shell hydration keeps backend jobs out of the refresh critical path', () => {
