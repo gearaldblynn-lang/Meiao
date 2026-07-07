@@ -32,24 +32,30 @@ test('sidebar exposes a lightweight system announcement entry above settings', (
   assert.match(app, /onOpenAnnouncement=\{handleOpenAnnouncementPanel\}/);
 });
 
-test('sidebar keeps Smart Factory withdrawn from cloud navigation', () => {
+test('sidebar exposes Smart Factory to admins only during phase-5 tuning', () => {
+  // 2026-07-07 阶段5:智能工厂从"整体撤下"改为"仅管理员可见"——商家侧仍不可见,
+  // admin 可进入实测删除/停用/链路调通。整体验收后再挪进 MAIN 对全员开放。
   const source = read('src/shell/components/layout/SidebarNavigation.tsx');
   const app = read('src/ShellMigratedApp.tsx');
 
   const mainStart = source.indexOf('const MAIN: NavDef[] = [');
-  const agentIndex = source.indexOf('AppModuleObj.AGENT_CENTER', mainStart);
-  const smartFactoryIndex = source.indexOf('AppModuleObj.SMART_FACTORY', mainStart);
-  const oneClickIndex = source.indexOf('AppModuleObj.ONE_CLICK', mainStart);
+  const mainEnd = source.indexOf('];', mainStart);
+  const mainBlock = source.slice(mainStart, mainEnd);
+  assert.ok(!mainBlock.includes('AppModuleObj.SMART_FACTORY'), 'Smart Factory must NOT be in MAIN (merchant-visible) nav');
 
-  assert.ok(agentIndex > -1, 'agent center nav item should exist');
-  assert.ok(oneClickIndex > agentIndex, 'one-click should sit below agent center');
-  assert.equal(smartFactoryIndex, -1, 'Smart Factory should not be in cloud sidebar navigation');
-  assert.doesNotMatch(source, /Factory size=\{20\}/);
-  assert.doesNotMatch(source, /label: '智能工厂'/);
-  assert.doesNotMatch(app, /const SmartFactoryModule = lazy\(\(\) => import\('\.\/shell\/modules\/SmartFactory\/SmartFactoryModule'\)\)/);
-  assert.doesNotMatch(app, /case AppModuleObj\.SMART_FACTORY:/);
+  const adminStart = source.indexOf('const ADMIN_ONLY: NavDef[] = [');
+  assert.ok(adminStart > -1, 'ADMIN_ONLY nav list should exist');
+  const adminBlock = source.slice(adminStart, source.indexOf('];', adminStart));
+  assert.ok(adminBlock.includes('AppModuleObj.SMART_FACTORY'), 'Smart Factory should be in ADMIN_ONLY nav');
+  assert.match(source, /showAdminModules \? ADMIN_ONLY : \[\]/);
+
+  assert.match(app, /const SmartFactoryModule = lazy\(\(\) => import\('\.\/shell\/modules\/SmartFactory\/SmartFactoryModule'\)\)/);
+  assert.match(app, /case AppModuleObj\.SMART_FACTORY:/);
+  assert.match(app, /showAdminModules=\{currentUser\?\.role === 'admin'\}/);
+  // 非 admin 的 URL 直达/本地记忆恢复也必须被挡回 ONE_CLICK
+  assert.match(app, /const isModuleWithdrawnForUser = \(module: AppModule, user\?: AuthUser \| null\): boolean => \{/);
+  assert.match(app, /if \(user\?\.role === 'admin' && ADMIN_PREVIEW_MODULES\.has\(module\)\) return false;/);
   assert.match(app, /WITHDRAWN_CLOUD_MODULES/);
-  assert.match(app, /AppModuleObj\.SMART_FACTORY/);
 });
 
 test('sidebar keeps AI customer service withdrawn from cloud navigation', () => {

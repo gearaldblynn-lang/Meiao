@@ -3,7 +3,7 @@ import type { AppModule } from '../../types';
 import { AppModuleObj } from '../../types';
 import {
   Bot, Sparkles, Globe, Users, Wand2, PlayCircle, BookOpen,
-  Settings, UserCircle, Hexagon, Sun, Moon, ChevronLeft, ChevronRight, ReplaceAll, Bell
+  Settings, UserCircle, Hexagon, Sun, Moon, ChevronLeft, ChevronRight, ReplaceAll, Bell, Factory
 } from 'lucide-react';
 
 interface SidebarNavDef { module: AppModule | 'landing'; icon: React.ReactNode; label: string; }
@@ -27,6 +27,12 @@ const MAIN: NavDef[] = [
   { module: AppModuleObj.XHS_COVER, icon: <BookOpen size={20} strokeWidth={1.5} />, label: '小红书' },
 ];
 
+// 智能工厂调通期(阶段5)只对管理员开放,商家不可见;整体验收后再进 MAIN 对全员开放。
+// AI 客服仍整体撤下(业主决策靠后),不在此列。
+const ADMIN_ONLY: NavDef[] = [
+  { module: AppModuleObj.SMART_FACTORY, icon: <Factory size={20} strokeWidth={1.5} />, label: '智能工厂' },
+];
+
 const BOTTOM: NavDef[] = [
   { module: AppModuleObj.SETTINGS, icon: <Settings size={20} strokeWidth={1.5} />, label: '设置中心' },
   { module: AppModuleObj.ACCOUNT, icon: <UserCircle size={20} strokeWidth={1.5} />, label: '账户管理' },
@@ -40,9 +46,10 @@ interface Props {
   onOpenAnnouncement: () => void;
   collapsed: boolean;
   onToggleCollapsed: () => void;
+  showAdminModules?: boolean;
 }
 
-const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange, theme, onToggleTheme, onOpenAnnouncement, collapsed, onToggleCollapsed }) => {
+const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange, theme, onToggleTheme, onOpenAnnouncement, collapsed, onToggleCollapsed, showAdminModules = false }) => {
   const isLight = theme === 'light';
   const renderItem = (item: SidebarNavDef) => {
     const isActive = activeModule === item.module;
@@ -131,7 +138,7 @@ const SidebarNavigation: React.FC<Props> = ({ activeModule, onModuleChange, them
 
       {renderItem(LANDING)}
 
-      <nav className="flex flex-col gap-1 flex-1">{MAIN.map(renderItem)}</nav>
+      <nav className="flex flex-col gap-1 flex-1">{[...MAIN, ...(showAdminModules ? ADMIN_ONLY : [])].map(renderItem)}</nav>
 
       <div className="flex flex-col gap-1 mt-2">
         {renderAnnouncementItem()}
