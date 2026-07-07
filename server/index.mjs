@@ -160,6 +160,10 @@ import {
   upsertSmartFactoryTool,
 } from './smartFactoryConfigStore.mjs';
 import {
+  buildAgentCenterSyncPlan,
+  findLinkedAgentCenterAgent,
+} from './smartFactoryAgentBridge.mjs';
+import {
   createDefaultModelProviderRegistry,
   deleteModelProvider,
   extractSmartFactoryModelProvidersForMigration,
@@ -849,6 +853,69 @@ const composeSmartFactoryConfigForRuntime = (systemSettings = {}) => (
     modelProviders: normalizeModelProviderRegistry(systemSettings?.modelProviders).providers,
   })
 );
+
+// 阶段5 工厂→智能体中心同步桥(执行层)。发布成功后调用;同步失败绝不回滚发布,
+// 只把 syncError 带回响应。仅 admin 触发(工厂路由只有登录守卫,避免权限放大)。
+// 两种模式各一份执行器(根因库#7),纯计划构建在 smartFactoryAgentBridge.mjs 单一实现。
+const syncFactoryAgentToLocalAgentCenter = async (store, user, smartFactoryConfig, factoryAgentId) => {
+  if (user?.role !== 'admin') return { synced: false, skipped: 'not_admin' };
+  const normalized = normalizeSmartFactoryConfig(smartFactoryConfig);
+  const factoryAgent = normalized.agents.find((agent) => agent.id === factoryAgentId);
+  const plan = buildAgentCenterSyncPlan({ factoryAgent, factoryConfig: normalized });
+  if (!plan) return { synced: false, skipped: 'no_plan' };
+  const existing = findLinkedAgentCenterAgent(store.agents || [], plan.factoryAgentId);
+  if (existing) return { synced: false, alreadyLinkedAgentId: existing.id };
+  const knowledgeBaseIds = [];
+  for (const kb of plan.knowledgeBases) {
+    const created = createLocalKnowledgeBase(store, user, {
+      name: kb.name,
+      description: kb.description,
+      department: '智能工厂',
+    });
+    if (!created) continue;
+    knowledgeBaseIds.push(created.id);
+    for (const doc of kb.documents) {
+      await createLocalKnowledgeDocument(store, user, {
+        knowledgeBaseId: created.id,
+        title: doc.title,
+        rawText: doc.rawText,
+        sourceType: doc.sourceType,
+      });
+    }
+  }
+  const result = createLocalAgent(store, user, { ...plan.agentPayload, knowledgeBaseIds });
+  return { synced: true, agentCenterAgentId: result?.agent?.id || '' };
+};
+
+const syncFactoryAgentToDbAgentCenter = async (user, smartFactoryConfig, factoryAgentId) => {
+  if (user?.role !== 'admin') return { synced: false, skipped: 'not_admin' };
+  const normalized = normalizeSmartFactoryConfig(smartFactoryConfig);
+  const factoryAgent = normalized.agents.find((agent) => agent.id === factoryAgentId);
+  const plan = buildAgentCenterSyncPlan({ factoryAgent, factoryConfig: normalized });
+  if (!plan) return { synced: false, skipped: 'no_plan' };
+  const existing = findLinkedAgentCenterAgent(await listDbAgents(user), plan.factoryAgentId);
+  if (existing) return { synced: false, alreadyLinkedAgentId: existing.id };
+  const knowledgeBaseIds = [];
+  for (const kb of plan.knowledgeBases) {
+    const created = await createDbKnowledgeBase(user, {
+      name: kb.name,
+      description: kb.description,
+      department: '智能工厂',
+    });
+    if (!created) continue;
+    knowledgeBaseIds.push(created.id);
+    for (const doc of kb.documents) {
+      await createDbKnowledgeDocument(user, {
+        knowledgeBaseId: created.id,
+        title: doc.title,
+        rawText: doc.rawText,
+        sourceType: doc.sourceType,
+      });
+    }
+  }
+  const result = await createDbAgent(user, { ...plan.agentPayload, knowledgeBaseIds });
+  return { synced: true, agentCenterAgentId: result?.agent?.id || '' };
+};
 
 const buildOpenAICompatibleRuntimeEnv = (env, systemSettings = {}) => {
   const openaiCompatible = normalizeOpenAICompatibleSettings(systemSettings?.openaiCompatible || {});
@@ -9303,6 +9370,7 @@ const handleMysqlRequest = async (req, res, url) => {
     const systemSettings = await getDbSystemSettings();
     const result = await runSmartFactoryPreviewTurn({
       message: body.message,
+      agentId: body.agentId,
       smartFactoryConfig: composeSmartFactoryConfigForRuntime(systemSettings),
     });
     json(res, 200, { result });
@@ -9423,10 +9491,20 @@ const handleMysqlRequest = async (req, res, url) => {
   if (dbSmartFactoryAgentPublishMatch && req.method === 'POST') {
     const user = await requireDbUser(req, res);
     if (!user) return;
+    const factoryAgentId = decodeURIComponent(dbSmartFactoryAgentPublishMatch[1]);
     const currentSettings = await getDbSystemSettings();
-    const nextSmartFactory = publishSmartFactoryAgent(currentSettings.smartFactory, decodeURIComponent(dbSmartFactoryAgentPublishMatch[1]));
+    const nextSmartFactory = publishSmartFactoryAgent(currentSettings.smartFactory, factoryAgentId);
     const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
-    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    let agentCenterSync = null;
+    try {
+      agentCenterSync = await syncFactoryAgentToDbAgentCenter(user, composeSmartFactoryConfigForRuntime(nextSettings), factoryAgentId);
+    } catch (error) {
+      agentCenterSync = { synced: false, syncError: String(error?.message || error) };
+    }
+    json(res, 200, {
+      config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }),
+      agentCenterSync,
+    });
     return;
   }
 
@@ -11178,6 +11256,7 @@ const handleLocalRequest = async (req, res, url) => {
     const systemSettings = getLocalSystemSettings(store);
     const result = await runSmartFactoryPreviewTurn({
       message: body.message,
+      agentId: body.agentId,
       smartFactoryConfig: composeSmartFactoryConfigForRuntime(systemSettings),
     });
     json(res, 200, { result });
@@ -11304,11 +11383,21 @@ const handleLocalRequest = async (req, res, url) => {
   if (localSmartFactoryAgentPublishMatch && req.method === 'POST') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
+    const factoryAgentId = decodeURIComponent(localSmartFactoryAgentPublishMatch[1]);
     const currentLocalSettings = getLocalSystemSettings(store);
-    const nextSmartFactory = publishSmartFactoryAgent(currentLocalSettings.smartFactory, decodeURIComponent(localSmartFactoryAgentPublishMatch[1]));
+    const nextSmartFactory = publishSmartFactoryAgent(currentLocalSettings.smartFactory, factoryAgentId);
     const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    let agentCenterSync = null;
+    try {
+      agentCenterSync = await syncFactoryAgentToLocalAgentCenter(store, user, composeSmartFactoryConfigForRuntime(nextSettings), factoryAgentId);
+    } catch (error) {
+      agentCenterSync = { synced: false, syncError: String(error?.message || error) };
+    }
     writeLocalStore(store);
-    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    json(res, 200, {
+      config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }),
+      agentCenterSync,
+    });
     return;
   }
 

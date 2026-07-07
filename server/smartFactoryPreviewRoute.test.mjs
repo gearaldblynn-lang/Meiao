@@ -47,9 +47,11 @@ test('smart factory preview API is mounted in mysql and local handlers', () => {
   assert.doesNotMatch(source, /工具测试完成:/);
   assert.match(source, /smartFactory: createDefaultSmartFactoryConfig\(\)/);
   assert.match(source, /smartFactory: normalizeSmartFactoryConfig\(value\?\.smartFactory \|\| \{\}\)/);
-  assert.match(source, /const systemSettings = await getDbSystemSettings\(\);[\s\S]*runSmartFactoryPreviewTurn\(\{\s*message: body\.message,\s*smartFactoryConfig: composeSmartFactoryConfigForRuntime\(systemSettings\),\s*\}\)/);
+  // 2026-07-07 阶段5:preview-turn 必须透传 body.agentId(此前两个 handler 都丢参,
+  // 预览永远落到第一个已发布 agent),锁新不变量防回退
+  assert.match(source, /const systemSettings = await getDbSystemSettings\(\);[\s\S]*runSmartFactoryPreviewTurn\(\{\s*message: body\.message,\s*agentId: body\.agentId,\s*smartFactoryConfig: composeSmartFactoryConfigForRuntime\(systemSettings\),\s*\}\)/);
   assert.match(source, /const systemSettings = await getDbSystemSettings\(\);[\s\S]*getSmartFactoryPreviewConfig\(\{\s*smartFactoryConfig: composeSmartFactoryConfigForRuntime\(systemSettings\),\s*\}\)/);
-  assert.match(source, /const systemSettings = getLocalSystemSettings\(store\);[\s\S]*runSmartFactoryPreviewTurn\(\{\s*message: body\.message,\s*smartFactoryConfig: composeSmartFactoryConfigForRuntime\(systemSettings\),\s*\}\)/);
+  assert.match(source, /const systemSettings = getLocalSystemSettings\(store\);[\s\S]*runSmartFactoryPreviewTurn\(\{\s*message: body\.message,\s*agentId: body\.agentId,\s*smartFactoryConfig: composeSmartFactoryConfigForRuntime\(systemSettings\),\s*\}\)/);
   assert.match(source, /const systemSettings = getLocalSystemSettings\(store\);[\s\S]*getSmartFactoryPreviewConfig\(\{\s*smartFactoryConfig: composeSmartFactoryConfigForRuntime\(systemSettings\),\s*\}\)/);
   assert.match(source, /url\.pathname === '\/api\/smart-factory\/config' && req\.method === 'PATCH'[\s\S]*const nextSmartFactory = mergeSmartFactoryConfigUpdate\(currentSettings\.smartFactory, body\?\.smartFactory \?\? body\?\.config \?\? body\)/);
   assert.match(source, /url\.pathname === '\/api\/smart-factory\/config' && req\.method === 'PATCH'[\s\S]*const nextSmartFactory = mergeSmartFactoryConfigUpdate\(currentLocalSettings\.smartFactory, body\?\.smartFactory \?\? body\?\.config \?\? body\)/);
@@ -57,6 +59,12 @@ test('smart factory preview API is mounted in mysql and local handlers', () => {
   assert.match(source, /url\.pathname === '\/api\/smart-factory\/knowledge-documents' && req\.method === 'POST'[\s\S]*addSmartFactoryKnowledgeDocument/);
   assert.match(source, /url\.pathname === '\/api\/smart-factory\/knowledge-documents' && req\.method === 'POST'[\s\S]*maybeTrainSmartFactoryKnowledgeBaseEmbeddings/);
   assert.match(source, /testSmartFactoryKnowledgeSearch/);
+  // 2026-07-07 阶段5:工厂发布必须触发智能体中心同步桥,两种模式各一份执行器(根因库#7),
+  // 同步失败不回滚发布(catch 后带 syncError 返回)
+  assert.match(source, /import \{[\s\S]*?buildAgentCenterSyncPlan,[\s\S]*?findLinkedAgentCenterAgent,[\s\S]*?\} from '\.\/smartFactoryAgentBridge\.mjs';/);
+  assert.equal((source.match(/syncFactoryAgentToLocalAgentCenter/g) || []).length, 2, 'local 同步执行器:定义1+发布路由调用1');
+  assert.equal((source.match(/syncFactoryAgentToDbAgentCenter/g) || []).length, 2, 'db 同步执行器:定义1+发布路由调用1');
+  assert.equal((source.match(/agentCenterSync = \{ synced: false, syncError: String\(error\?\.message \|\| error\) \};/g) || []).length, 2, '两个发布路由都必须吞掉同步异常,不回滚发布');
 });
 
 test('smart factory APIs require login but are not admin-only', () => {
