@@ -162,6 +162,7 @@ import {
 import {
   buildAgentCenterSyncPlan,
   findLinkedAgentCenterAgent,
+  findLinkedKnowledgeBase,
 } from './smartFactoryAgentBridge.mjs';
 import {
   createDefaultModelProviderRegistry,
@@ -854,6 +855,88 @@ const composeSmartFactoryConfigForRuntime = (systemSettings = {}) => (
   })
 );
 
+// 本地 JSON 模式:验证辅助函数——复用于验证路由和发布管道。
+// 成功返回 { ok: true, version, result };失败返回 { ok: false, errorMessage }。
+const validateLocalAgentVersionRecord = async (store, user, agent, version, message) => {
+  try {
+    const result = await runLocalAgentConversation({
+      store,
+      user,
+      agent,
+      version,
+      priorMessages: [],
+      currentMessage: String(message || '请用一句话说明这个智能体能做什么。'),
+    });
+    const rawVersion = store.agentVersions.find((item) => item.id === version.id);
+    rawVersion.validationStatus = 'success';
+    rawVersion.validationSummary = {
+      ...result,
+      outputPreview: result.content.slice(0, 300),
+      validatedAt: Date.now(),
+    };
+    store.agentUsageLogs.push({
+      id: createEntityId(),
+      userId: user.id,
+      username: user.username,
+      displayName: user.displayName || user.username,
+      agentId: agent.id,
+      agentName: agent.name,
+      agentVersionId: version.id,
+      sessionId: null,
+      requestType: 'validation',
+      selectedModel: result.selectedModel,
+      usedRetrieval: result.usedRetrieval,
+      retrievalSummaryJson: result.retrievalSummary,
+      promptTokens: result.promptTokens,
+      completionTokens: result.completionTokens,
+      totalTokens: result.totalTokens,
+      estimatedCost: result.estimatedCost,
+      latencyMs: result.latencyMs,
+      status: 'success',
+      errorMessage: '',
+      createdAt: Date.now(),
+    });
+    appendLocalLog(store, {
+      user,
+      level: 'info',
+      module: 'agent_center',
+      action: 'agent_validate',
+      message: `智能体验证：${agent.name}`,
+      status: 'success',
+      meta: buildAgentRuntimeLogMeta({ agent, version, result, requestMode: 'validation' }),
+    });
+    return { ok: true, version: getLocalAgentVersionById(store, version.id), result: rawVersion.validationSummary };
+  } catch (error) {
+    const rawVersion = store.agentVersions.find((item) => item.id === version.id);
+    if (rawVersion) rawVersion.validationStatus = 'failed';
+    appendLocalLog(store, {
+      user,
+      level: 'error',
+      module: 'agent_center',
+      action: 'agent_validate',
+      message: `智能体验证失败：${agent.name}`,
+      detail: error?.message || '智能体验证失败。',
+      status: 'failed',
+      meta: buildAgentRuntimeLogMeta({ agent, version, requestMode: 'validation', error }),
+    });
+    return { ok: false, errorMessage: error?.message || '智能体验证失败。' };
+  }
+};
+
+// 本地 JSON 模式:上线辅助函数——复用于上线路由和发布管道。
+// 路由层的 404/400 校验留在路由,此函数仅执行翻牌动作。
+const publishLocalAgentVersionRecord = (store, agentId, versionId) => {
+  store.agentVersions.forEach((item) => {
+    if (item.agentId === agentId) item.isPublished = item.id === versionId;
+  });
+  const rawAgent = store.agents.find((item) => item.id === agentId);
+  if (rawAgent) {
+    rawAgent.currentVersionId = versionId;
+    rawAgent.status = 'published';
+    rawAgent.updatedAt = Date.now();
+  }
+};
+
 // 阶段5 工厂→智能体中心同步桥(执行层)。发布成功后调用;同步失败绝不回滚发布,
 // 只把 syncError 带回响应。仅 admin 触发(工厂路由只有登录守卫,避免权限放大)。
 // 两种模式各一份执行器(根因库#7),纯计划构建在 smartFactoryAgentBridge.mjs 单一实现。
@@ -863,28 +946,69 @@ const syncFactoryAgentToLocalAgentCenter = async (store, user, smartFactoryConfi
   const factoryAgent = normalized.agents.find((agent) => agent.id === factoryAgentId);
   const plan = buildAgentCenterSyncPlan({ factoryAgent, factoryConfig: normalized });
   if (!plan) return { synced: false, skipped: 'no_plan' };
-  const existing = findLinkedAgentCenterAgent(store.agents || [], plan.factoryAgentId);
-  if (existing) return { synced: false, alreadyLinkedAgentId: existing.id };
+
+  // 1) 物化/刷新知识库(全量替换文档;刷新走 deleteLocalKnowledgeDocument 级联清 chunk)
   const knowledgeBaseIds = [];
   for (const kb of plan.knowledgeBases) {
-    const created = createLocalKnowledgeBase(store, user, {
-      name: kb.name,
-      description: kb.description,
-      department: '智能工厂',
-    });
-    if (!created) continue;
-    knowledgeBaseIds.push(created.id);
+    const linked = findLinkedKnowledgeBase(store.knowledgeBases || [], plan.factoryAgentId, kb.factoryKnowledgeBaseId);
+    let kbId = linked?.id || '';
+    if (kbId) {
+      for (const doc of listLocalKnowledgeDocuments(store, user, kbId)) {
+        deleteLocalKnowledgeDocument(store, user, doc.id);
+      }
+    } else {
+      const created = createLocalKnowledgeBase(store, user, { name: kb.name, description: kb.description, department: '智能工厂' });
+      if (!created) continue;
+      kbId = created.id;
+    }
+    const rawKb = (store.knowledgeBases || []).find((item) => item.id === kbId);
+    if (rawKb) { // 结构化链接(新建)/惰性迁移(旧标记库)
+      rawKb.factoryAgentId = plan.factoryAgentId;
+      rawKb.factoryKnowledgeBaseId = kb.factoryKnowledgeBaseId;
+    }
+    knowledgeBaseIds.push(kbId);
     for (const doc of kb.documents) {
-      await createLocalKnowledgeDocument(store, user, {
-        knowledgeBaseId: created.id,
-        title: doc.title,
-        rawText: doc.rawText,
-        sourceType: doc.sourceType,
-      });
+      await createLocalKnowledgeDocument(store, user, { knowledgeBaseId: kbId, title: doc.title, rawText: doc.rawText, sourceType: doc.sourceType });
     }
   }
-  const result = createLocalAgent(store, user, { ...plan.agentPayload, knowledgeBaseIds });
-  return { synced: true, agentCenterAgentId: result?.agent?.id || '' };
+
+  // 2) 物化/更新 agent + 新版本
+  const existing = findLinkedAgentCenterAgent(store.agents || [], plan.factoryAgentId);
+  let agentId = existing?.id || '';
+  let version = null;
+  if (agentId) {
+    const rawAgent = (store.agents || []).find((item) => item.id === agentId);
+    if (rawAgent && !rawAgent.factoryAgentId) rawAgent.factoryAgentId = plan.factoryAgentId; // 惰性迁移
+    updateLocalAgent(store, user, agentId, { name: plan.agentPayload.name, description: plan.agentPayload.description });
+    const draft = createLocalAgentDraft(store, user, agentId);
+    if (!draft) return { synced: false, syncError: 'draft_create_failed' };
+    version = updateLocalAgentVersion(store, user, draft.id, {
+      systemPrompt: plan.agentPayload.systemPrompt,
+      allowedChatModels: plan.agentPayload.allowedChatModels,
+      defaultChatModel: plan.agentPayload.defaultChatModel,
+      knowledgeBaseIds,
+    });
+  } else {
+    const result = createLocalAgent(store, user, { ...plan.agentPayload, knowledgeBaseIds });
+    agentId = result?.agent?.id || '';
+    version = result?.version || null;
+    const rawAgent = (store.agents || []).find((item) => item.id === agentId);
+    if (rawAgent) rawAgent.factoryAgentId = plan.factoryAgentId; // 结构化字段落库
+  }
+  if (!agentId || !version) return { synced: false, syncError: 'agent_materialize_failed' };
+
+  // 3) 自动验证;失败 → 不上线(老版本继续在线),原因回报工厂
+  const agent = getLocalAgentById(store, agentId);
+  const validation = await validateLocalAgentVersionRecord(store, user, agent, version, '请用一句话说明这个智能体能做什么。');
+  writeLocalStore(store);
+  if (!validation?.ok) {
+    return { synced: true, published: false, agentCenterAgentId: agentId, validationFailed: true, errorMessage: validation?.errorMessage || '验证失败' };
+  }
+
+  // 4) 自动上线
+  publishLocalAgentVersionRecord(store, agentId, version.id);
+  writeLocalStore(store);
+  return { synced: true, published: true, agentCenterAgentId: agentId };
 };
 
 const syncFactoryAgentToDbAgentCenter = async (user, smartFactoryConfig, factoryAgentId) => {
@@ -12277,54 +12401,13 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
     try {
-      const result = await runLocalAgentConversation({
-        store,
-        user: admin,
-        agent,
-        version,
-        priorMessages: [],
-        currentMessage: String(body?.message || '请用一句话说明这个智能体能做什么。'),
-      });
-      const rawVersion = store.agentVersions.find((item) => item.id === version.id);
-      rawVersion.validationStatus = 'success';
-      rawVersion.validationSummary = {
-        ...result,
-        outputPreview: result.content.slice(0, 300),
-        validatedAt: Date.now(),
-      };
-      store.agentUsageLogs.push({
-        id: createEntityId(),
-        userId: admin.id,
-        username: admin.username,
-        displayName: admin.displayName || admin.username,
-        agentId: agent.id,
-        agentName: agent.name,
-        agentVersionId: version.id,
-        sessionId: null,
-        requestType: 'validation',
-        selectedModel: result.selectedModel,
-        usedRetrieval: result.usedRetrieval,
-        retrievalSummaryJson: result.retrievalSummary,
-        promptTokens: result.promptTokens,
-        completionTokens: result.completionTokens,
-        totalTokens: result.totalTokens,
-        estimatedCost: result.estimatedCost,
-        latencyMs: result.latencyMs,
-        status: 'success',
-        errorMessage: '',
-        createdAt: Date.now(),
-      });
-      appendLocalLog(store, {
-        user: admin,
-        level: 'info',
-        module: 'agent_center',
-        action: 'agent_validate',
-        message: `智能体验证：${agent.name}`,
-        status: 'success',
-        meta: buildAgentRuntimeLogMeta({ agent, version, result, requestMode: 'validation' }),
-      });
+      const validation = await validateLocalAgentVersionRecord(store, admin, agent, version, String(body?.message || '请用一句话说明这个智能体能做什么。'));
       writeLocalStore(store);
-      json(res, 200, { version: getLocalAgentVersionById(store, version.id), result: rawVersion.validationSummary });
+      if (!validation.ok) {
+        json(res, 500, { message: validation.errorMessage || '智能体验证失败。' });
+        return;
+      }
+      json(res, 200, { version: validation.version, result: validation.result });
     } catch (error) {
       appendLocalLog(store, {
         user: admin,
@@ -12362,13 +12445,7 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 400, { message: '发布失败，请先完成成功验证。' });
       return;
     }
-    store.agentVersions.forEach((item) => {
-      if (item.agentId === agent.id) item.isPublished = item.id === targetVersion.id;
-    });
-    const rawAgent = store.agents.find((item) => item.id === agent.id);
-    rawAgent.currentVersionId = targetVersion.id;
-    rawAgent.status = 'published';
-    rawAgent.updatedAt = Date.now();
+    publishLocalAgentVersionRecord(store, agent.id, targetVersion.id);
     writeLocalStore(store);
     json(res, 200, { agent: getLocalAgentById(store, agent.id) });
     return;

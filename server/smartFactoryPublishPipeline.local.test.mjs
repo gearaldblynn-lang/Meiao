@@ -1,0 +1,27 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+
+test('本地 sync 执行器:已链接分支走更新管道而非跳过', () => {
+  const start = source.indexOf('const syncFactoryAgentToLocalAgentCenter');
+  const end = source.indexOf('const syncFactoryAgentToDbAgentCenter');
+  assert.ok(start > 0 && end > start);
+  const fn = source.slice(start, end);
+  assert.ok(!fn.includes('alreadyLinkedAgentId'), '不许再有"已链接即跳过"');
+  assert.ok(fn.includes('createLocalAgentDraft'), '更新分支必须创建新版本');
+  assert.ok(fn.includes('updateLocalAgentVersion'), '新版本必须写入工厂最新配置');
+  assert.ok(fn.includes('validateLocalAgentVersionRecord'), '发布必须自动验证');
+  assert.ok(fn.includes('publishLocalAgentVersionRecord'), '验证通过必须自动上线');
+  assert.ok(fn.includes('deleteLocalKnowledgeDocument'), '知识库刷新必须走级联删除(清chunk)');
+  assert.ok(fn.includes('findLinkedKnowledgeBase'), '知识库判据必须用单一函数');
+  assert.ok(!fn.includes('store.knowledgeDocuments = '), '禁止直接 filter knowledgeDocuments(chunk 孤儿)');
+});
+
+test('验证/上线路由复用抽取的辅助函数(单一实现)', () => {
+  assert.ok(source.includes('const validateLocalAgentVersionRecord'));
+  assert.ok(source.includes('const publishLocalAgentVersionRecord'));
+  // 路由1 + 管道1 = 至少2处调用(函数为箭头函数,定义行不含 `(` 紧跟函数名)
+  assert.ok(source.split('validateLocalAgentVersionRecord(').length - 1 >= 2, '路由1+管道1');
+  assert.ok(source.split('publishLocalAgentVersionRecord(').length - 1 >= 2);
+});
