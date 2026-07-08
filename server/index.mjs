@@ -868,6 +868,7 @@ const validateLocalAgentVersionRecord = async (store, user, agent, version, mess
       currentMessage: String(message || '请用一句话说明这个智能体能做什么。'),
     });
     const rawVersion = store.agentVersions.find((item) => item.id === version.id);
+    if (!rawVersion) return { ok: false, errorMessage: '版本记录不存在' };
     rawVersion.validationStatus = 'success';
     rawVersion.validationSummary = {
       ...result,
@@ -947,29 +948,37 @@ const syncFactoryAgentToLocalAgentCenter = async (store, user, smartFactoryConfi
   const plan = buildAgentCenterSyncPlan({ factoryAgent, factoryConfig: normalized });
   if (!plan) return { synced: false, skipped: 'no_plan' };
 
-  // 1) 物化/刷新知识库(全量替换文档;刷新走 deleteLocalKnowledgeDocument 级联清 chunk)
+  // 1) 物化/刷新知识库(全量替换文档;刷新走 deleteLocalKnowledgeDocument 级联清 chunk)。
+  // 任一步失败即整体 fail-fast 回报(spec §7:不留静默部分成功)。
+  // 本地 ingestion 大多吞错降级,MySQL 版(Task 3)每步真会抛,必须保持同样的 fail-fast 结构。
   const knowledgeBaseIds = [];
-  for (const kb of plan.knowledgeBases) {
-    const linked = findLinkedKnowledgeBase(store.knowledgeBases || [], plan.factoryAgentId, kb.factoryKnowledgeBaseId);
-    let kbId = linked?.id || '';
-    if (kbId) {
-      for (const doc of listLocalKnowledgeDocuments(store, user, kbId)) {
-        deleteLocalKnowledgeDocument(store, user, doc.id);
+  try {
+    for (const kb of plan.knowledgeBases) {
+      const linked = findLinkedKnowledgeBase(store.knowledgeBases || [], plan.factoryAgentId, kb.factoryKnowledgeBaseId);
+      let kbId = linked?.id || '';
+      if (kbId) {
+        for (const doc of listLocalKnowledgeDocuments(store, user, kbId)) {
+          const deleted = deleteLocalKnowledgeDocument(store, user, doc.id);
+          if (!deleted) return { synced: false, syncError: `kb_refresh_failed:文档删除失败(无权限或不存在):${doc.id}` };
+        }
+      } else {
+        const created = createLocalKnowledgeBase(store, user, { name: kb.name, description: kb.description, department: '智能工厂' });
+        if (!created) return { synced: false, syncError: `kb_refresh_failed:知识库创建失败:${kb.name}` };
+        kbId = created.id;
       }
-    } else {
-      const created = createLocalKnowledgeBase(store, user, { name: kb.name, description: kb.description, department: '智能工厂' });
-      if (!created) continue;
-      kbId = created.id;
+      const rawKb = (store.knowledgeBases || []).find((item) => item.id === kbId);
+      if (rawKb) { // 结构化链接(新建)/惰性迁移(旧标记库)
+        rawKb.factoryAgentId = plan.factoryAgentId;
+        rawKb.factoryKnowledgeBaseId = kb.factoryKnowledgeBaseId;
+      }
+      knowledgeBaseIds.push(kbId);
+      for (const doc of kb.documents) {
+        const createdDoc = await createLocalKnowledgeDocument(store, user, { knowledgeBaseId: kbId, title: doc.title, rawText: doc.rawText, sourceType: doc.sourceType });
+        if (!createdDoc) return { synced: false, syncError: `kb_refresh_failed:文档写入失败:${doc.title}` };
+      }
     }
-    const rawKb = (store.knowledgeBases || []).find((item) => item.id === kbId);
-    if (rawKb) { // 结构化链接(新建)/惰性迁移(旧标记库)
-      rawKb.factoryAgentId = plan.factoryAgentId;
-      rawKb.factoryKnowledgeBaseId = kb.factoryKnowledgeBaseId;
-    }
-    knowledgeBaseIds.push(kbId);
-    for (const doc of kb.documents) {
-      await createLocalKnowledgeDocument(store, user, { knowledgeBaseId: kbId, title: doc.title, rawText: doc.rawText, sourceType: doc.sourceType });
-    }
+  } catch (error) {
+    return { synced: false, syncError: `kb_refresh_failed:${error?.message || error}` };
   }
 
   // 2) 物化/更新 agent + 新版本
@@ -1005,9 +1014,8 @@ const syncFactoryAgentToLocalAgentCenter = async (store, user, smartFactoryConfi
     return { synced: true, published: false, agentCenterAgentId: agentId, validationFailed: true, errorMessage: validation?.errorMessage || '验证失败' };
   }
 
-  // 4) 自动上线
+  // 4) 自动上线(持久化由 step 3 的 writeLocalStore 与路由尾部兜底)
   publishLocalAgentVersionRecord(store, agentId, version.id);
-  writeLocalStore(store);
   return { synced: true, published: true, agentCenterAgentId: agentId };
 };
 
@@ -12409,6 +12417,7 @@ const handleLocalRequest = async (req, res, url) => {
       }
       json(res, 200, { version: validation.version, result: validation.result });
     } catch (error) {
+      // helper 内部已 catch 验证错误,此处仅兜持久化异常
       appendLocalLog(store, {
         user: admin,
         level: 'error',
