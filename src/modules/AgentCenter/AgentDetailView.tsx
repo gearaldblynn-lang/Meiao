@@ -94,7 +94,7 @@ const AgentDetailView: React.FC<Props> = ({
       type="button"
       onClick={notifyFactoryLock}
       title={FACTORY_MANAGED_AGENT_NOTICE}
-      className={`rounded-[18px] border border-cyan-200 bg-cyan-50 px-3.5 py-2 text-[13px] font-black text-cyan-700 ${extraClass}`}
+      className={`border border-cyan-200 bg-cyan-50 font-black text-cyan-700 ${extraClass}`}
     >
       {FACTORY_MANAGED_GOTO_LABEL}
     </button>
@@ -140,7 +140,7 @@ const AgentDetailView: React.FC<Props> = ({
 
           <div className="flex flex-wrap justify-start gap-2 xl:justify-end">
             {factoryManaged ? (
-              factoryGotoButton()
+              factoryGotoButton('rounded-[18px] px-3.5 py-2 text-[13px]')
             ) : (
               <>
                 {onOpenStudio && (

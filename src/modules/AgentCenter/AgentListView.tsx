@@ -4,6 +4,12 @@ import { PopoverSelect, WorkspaceShellCard } from '../../components/ui/workspace
 import AgentAvatar from './AgentAvatar';
 import { FACTORY_MANAGED_BADGE_LABEL, isFactoryManagedAgent } from './AgentCenterModule';
 
+const FactoryBadge = () => (
+  <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: 'rgba(6,182,212,0.12)', color: '#0e7490' }}>
+    {FACTORY_MANAGED_BADGE_LABEL}
+  </span>
+);
+
 interface Props {
   agents: AgentSummary[];
   selectedAgentId: string;
@@ -121,9 +127,7 @@ const AgentListView: React.FC<Props> = ({
                     {selectedAgent.status === 'published' ? '已发布' : '待处理'}
                   </span>
                   {isFactoryManagedAgent(selectedAgent) ? (
-                    <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: 'rgba(6,182,212,0.12)', color: '#0e7490' }}>
-                      {FACTORY_MANAGED_BADGE_LABEL}
-                    </span>
+                    <FactoryBadge />
                   ) : null}
                   {selectedAgent.department ? (
                     <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
@@ -188,9 +192,7 @@ const AgentListView: React.FC<Props> = ({
                               {isPublished ? '已发布' : '待处理'}
                             </span>
                             {isFactoryManagedAgent(agent) ? (
-                              <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: 'rgba(6,182,212,0.12)', color: '#0e7490' }}>
-                                {FACTORY_MANAGED_BADGE_LABEL}
-                              </span>
+                              <FactoryBadge />
                             ) : null}
                           </div>
                           <p className="mt-0.5 line-clamp-2 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>{agent.description || '暂无说明'}</p>
