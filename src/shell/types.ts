@@ -10,6 +10,7 @@ export type AppModule =
   | 'buyer_show'
   | 'retouch'
   | 'everything_replace'
+  | 'image_crop'
   | 'photography'
   | 'video'
   | 'xhs_cover'
@@ -25,6 +26,7 @@ export const AppModuleObj = {
   BUYER_SHOW: 'buyer_show' as AppModule,
   RETOUCH: 'retouch' as AppModule,
   EVERYTHING_REPLACE: 'everything_replace' as AppModule,
+  IMAGE_CROP: 'image_crop' as AppModule,
   PHOTOGRAPHY: 'photography' as AppModule,
   VIDEO: 'video' as AppModule,
   XHS_COVER: 'xhs_cover' as AppModule,

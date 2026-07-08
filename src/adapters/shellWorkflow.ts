@@ -11,7 +11,7 @@ import {
   OneClickSubMode,
   SkuConfig,
 } from '../types';
-import { cancelInternalJob, createInternalJob, uploadInternalAssetStream, storeActiveModuleContext, waitForInternalJob } from '../services/internalApi';
+import { cancelInternalJob, createInternalJob, uploadInternalAssetStream, storeActiveModuleContext, updateInternalJobResult, waitForInternalJob } from '../services/internalApi';
 import { processWithKieAi } from '../services/kieAiService';
 import { analyzeRetouchTask, analyzeTranslationCopyForGeneration, generateBuyerShowPrompts, generateDetailPageReplicationSchemes, generateFirstImageReplicationSchemes, generateMainImageSetReplicationSchemes, generateMarketingSchemes, generateSkuSchemes } from '../services/arkService';
 import { buildOneClickImagePrompt } from '../modules/OneClick/generationPromptUtils';
@@ -30,6 +30,11 @@ import {
   createDefaultLogoPlacement,
   createEverythingReplaceLogoPlacementGuide,
 } from '../utils/everythingReplaceLogoPlacement.mjs';
+import { createCornerBadgeRegionGuide, normalizeCornerBadgeRegion } from '../utils/cornerBadgeRegion.mjs';
+import { normalizeLogoReplaceRegions } from '../utils/logoReplaceRegion.mjs';
+import { createWhitespaceCroppedLogoBlob } from '../utils/logoWhitespaceCrop.mjs';
+import { createMultiLogoReplacePreviewBlob } from '../utils/logoReplacePreview.mjs';
+import { createGuardedMultiLogoReplaceResultBlob } from '../utils/logoReplaceGuard.mjs';
 
 export { extractShellSchemeField } from './shellSchemeFields';
 
@@ -46,6 +51,9 @@ export interface ShellMaterialInput {
   originalWidth?: number;
   originalHeight?: number;
   logoPlacement?: Record<string, unknown>;
+  cornerBadgeRegion?: Record<string, unknown>;
+  logoReplaceRegion?: Record<string, unknown>;
+  logoReplaceRegions?: Array<Record<string, unknown>>;
 }
 
 export interface ShellGenerateInput {
@@ -60,6 +68,13 @@ export interface ShellGenerateInput {
   onJobCreated?: (jobId: string, providerTaskId?: string) => void;
   publicBaseUrl?: string;
 }
+
+type LogoReplaceRegion = Record<string, unknown> & {
+  regionId?: string;
+  regionIndex?: number;
+  logoId?: string;
+  logoIndex?: number;
+};
 
 export interface ShellPlanItem {
   id: string;
@@ -106,6 +121,7 @@ export interface ShellWorkflowImageResult {
   batchIndex?: number;
   buyerShowEvaluation?: string;
   buyerShowDisplayPrompt?: string;
+  logoReplaceGuarded?: boolean;
 }
 
 const MODULE_LABELS: Record<string, string> = {
@@ -1263,12 +1279,13 @@ export const runShellBuyerShowWorkflow = async (
   };
 };
 
-type ShellRetouchMode = 'original' | 'white_bg' | 'product_replace' | 'background_replace';
+type ShellRetouchMode = 'original' | 'white_bg' | 'product_replace' | 'background_replace' | 'logo_replace';
 
 const getRetouchMode = (input: ShellGenerateInput): ShellRetouchMode => {
   const value = String(input.subFeature || input.params.mode || '').trim();
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'product_replace' || value.includes('产品'))) return 'product_replace';
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'background_replace' || value.includes('背景'))) return 'background_replace';
+  if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'logo_replace' || value.toLowerCase().includes('logo'))) return 'logo_replace';
   if (value === 'white_bg' || value.includes('白底')) return 'white_bg';
   if (value === 'original' || value.includes('原图') || !value) return 'original';
   throw new Error('该产品精修子功能待制作，当前只迁移了 3000 的原图精修和白底精修。');
@@ -1295,6 +1312,28 @@ const buildRetouchPrompt = (sourceUrl: string, referenceUrl: string | null, anal
 const normalizeReplacementLogic = (value?: string) => {
   const normalized = String(value || '').trim();
   return normalized === 'combination_replace' || normalized.includes('组合') ? 'combination_replace' : 'single_replace';
+};
+
+const normalizeLogoReplaceMode = (value?: string) => {
+  const normalized = String(value || '').trim();
+  if (normalized === 'single_logo_region_replace' || normalized.includes('单logo') || normalized.includes('单Logo') || normalized.includes('单 Logo')) return 'single_logo_region_replace';
+  if (normalized === 'multi_logo_replace' || normalized.includes('多logo') || normalized.includes('多Logo') || normalized.includes('多 Logo')) return 'multi_logo_replace';
+  if (normalized === 'corner_badge_replace' || normalized.includes('角标')) return 'corner_badge_replace';
+  return 'corner_badge_replace';
+};
+
+const normalizeLogoReplaceRenderMode = (value?: string) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (
+    normalized === 'kie_direct'
+    || normalized === 'kie-direct'
+    || normalized === 'direct'
+    || normalized.includes('kie')
+    || normalized.includes('直出')
+  ) {
+    return 'kie_direct';
+  }
+  return 'program_guarded';
 };
 
 const normalizeProductReplaceStrength = (value?: string) => {
@@ -1660,6 +1699,518 @@ const buildEverythingReplaceLogoInputs = async ({
   };
 };
 
+const buildCornerBadgeRegionGuideInputs = async ({
+  input,
+  referenceMaterial,
+  referenceUrl,
+  referenceIndex,
+}: {
+  input: ShellGenerateInput;
+  referenceMaterial: ShellMaterialInput;
+  referenceUrl: string;
+  referenceIndex: number;
+}) => {
+  const region = normalizeCornerBadgeRegion(referenceMaterial.cornerBadgeRegion);
+  if (!region) {
+    return { imageUrls: [] as string[], promptBlock: '', cornerBadgeRegionGuideUrl: '', cornerBadgeRegionSource: '' };
+  }
+
+  const guide = await createCornerBadgeRegionGuide({
+    referenceUrl,
+    region,
+    referenceWidth: referenceMaterial.originalWidth,
+    referenceHeight: referenceMaterial.originalHeight,
+  });
+  const guideFile = new File(
+    [guide.blob],
+    `corner-badge-region-guide-${referenceIndex + 1}.png`,
+    { type: 'image/png' },
+  );
+  const uploaded = await uploadInternalAssetStream({
+    module: input.module,
+    file: guideFile,
+    fileName: guideFile.name,
+    signal: input.signal,
+  });
+  if (!uploaded.fileUrl) throw new Error('角标区域示意图上传失败，请重新框选或取消框选后再生成。');
+  return {
+    imageUrls: [uploaded.fileUrl],
+    promptBlock: [
+      `红框区域示意图：${uploaded.fileUrl}`,
+      '第三张输入图是红框区域示意图。红框只用于定位要替换的原角标区域，最终结果不要保留红框。',
+    ].join('\n'),
+    cornerBadgeRegionGuideUrl: uploaded.fileUrl,
+    cornerBadgeRegionSource: region.source || '',
+  };
+};
+
+const resolveCornerBadgeSelectedLogo = ({
+  logoMaterials,
+  logoUrls,
+  referenceMaterial,
+}: {
+  logoMaterials: ShellMaterialInput[];
+  logoUrls: string[];
+  referenceMaterial?: ShellMaterialInput;
+}) => {
+  const region = normalizeCornerBadgeRegion(referenceMaterial?.cornerBadgeRegion);
+  const selectedLogoId = String(region?.logoId || '').trim();
+  const selectedIndex = logoMaterials.findIndex((item) => item.id === selectedLogoId);
+  const index = selectedIndex >= 0 ? selectedIndex : 0;
+  return {
+    id: logoMaterials[index]?.id || '',
+    index: index + 1,
+    url: logoUrls[index] || logoUrls[0] || '',
+  };
+};
+
+const resolveMultiLogoRegions = (referenceMaterial: ShellMaterialInput): LogoReplaceRegion[] => {
+  const normalized = normalizeLogoReplaceRegions(referenceMaterial.logoReplaceRegions, referenceMaterial.logoReplaceRegion);
+  if (normalized.length === 0) {
+    throw new Error('请先框选参考图上所有要替换的 logo 区域。');
+  }
+  return normalized as LogoReplaceRegion[];
+};
+
+const resolveSelectedLogoReplaceRegions = ({
+  referenceMaterial,
+  mode,
+}: {
+  referenceMaterial: ShellMaterialInput;
+  mode: string;
+}): LogoReplaceRegion[] => {
+  const regions = resolveMultiLogoRegions(referenceMaterial);
+  return mode === 'single_logo_region_replace' ? regions.slice(0, 1) : regions;
+};
+
+const resolveLogoReplaceRegionLogo = ({
+  region,
+  logoMaterials,
+  logoUrls,
+}: {
+  region: LogoReplaceRegion;
+  logoMaterials: ShellMaterialInput[];
+  logoUrls: string[];
+}) => {
+  const selectedLogoId = String(region.logoId || '').trim();
+  const selectedById = selectedLogoId ? logoMaterials.findIndex((item) => item.id === selectedLogoId) : -1;
+  const selectedByIndex = Number.isFinite(Number(region.logoIndex)) && Number(region.logoIndex) > 0
+    ? Number(region.logoIndex) - 1
+    : -1;
+  const selectedByRegionIndex = Number.isFinite(Number(region.regionIndex)) && Number(region.regionIndex) > 0
+    ? Number(region.regionIndex) - 1
+    : -1;
+  const index = selectedById >= 0
+    ? selectedById
+    : selectedByIndex >= 0 && selectedByIndex < logoUrls.length
+      ? selectedByIndex
+      : selectedByRegionIndex >= 0 && selectedByRegionIndex < logoUrls.length
+        ? selectedByRegionIndex
+        : logoUrls.length === 1
+          ? 0
+          : -1;
+  return {
+    id: logoMaterials[index]?.id || '',
+    index: logoUrls[index] ? index + 1 : 0,
+    url: logoUrls[index] || '',
+  };
+};
+
+const buildLogoReplacementLogoInput = async ({
+  input,
+  logoUrl,
+  logoIndex,
+}: {
+  input: ShellGenerateInput;
+  logoUrl: string;
+  logoIndex: number;
+}) => {
+  if (!logoUrl) throw new Error('请先为框选区域绑定要替换的新 logo。');
+  const cropped = await createWhitespaceCroppedLogoBlob(logoUrl).catch(() => null);
+  if (!cropped?.blob) return { url: logoUrl, cropped: false, cropRect: null as Record<string, unknown> | null };
+  const guideFile = new File(
+    [cropped.blob],
+    `logo-replace-cropped-logo-${logoIndex || 1}.png`,
+    { type: 'image/png' },
+  );
+  const uploaded = await uploadInternalAssetStream({
+    module: input.module,
+    file: guideFile,
+    fileName: guideFile.name,
+    signal: input.signal,
+  });
+  if (!uploaded.fileUrl) return { url: logoUrl, cropped: false, cropRect: null as Record<string, unknown> | null };
+  return {
+    url: uploaded.fileUrl,
+    cropped: true,
+    cropRect: {
+      ...cropped.rect,
+      originalWidth: cropped.originalWidth,
+      originalHeight: cropped.originalHeight,
+    },
+  };
+};
+
+const buildMultiLogoPreviewInputs = async ({
+  input,
+  referenceMaterial,
+  referenceUrl,
+  referenceIndex,
+  bindings,
+  useSelectedRegionAsLogoBounds = false,
+  drawCleanupFill = true,
+}: {
+  input: ShellGenerateInput;
+  referenceMaterial: ShellMaterialInput;
+  referenceUrl: string;
+  referenceIndex: number;
+  bindings: Array<{
+    region: LogoReplaceRegion;
+    logo: { id: string; index: number; url: string };
+    input: { url: string; cropped: boolean; cropRect: Record<string, unknown> | null };
+  }>;
+  useSelectedRegionAsLogoBounds?: boolean;
+  drawCleanupFill?: boolean;
+}) => {
+  const preview = await createMultiLogoReplacePreviewBlob({
+    referenceUrl,
+    items: bindings.map((binding) => ({
+      region: binding.region,
+      logoUrl: binding.input.url,
+    })),
+    referenceWidth: referenceMaterial.originalWidth,
+    referenceHeight: referenceMaterial.originalHeight,
+    useSelectedRegionAsLogoBounds,
+    drawCleanupFill,
+  });
+  const previewFile = new File(
+    [preview.blob],
+    `multi-logo-replace-preview-${referenceIndex + 1}.png`,
+    { type: 'image/png' },
+  );
+  const uploaded = await uploadInternalAssetStream({
+    module: input.module,
+    file: previewFile,
+    fileName: previewFile.name,
+    signal: input.signal,
+  });
+  if (!uploaded.fileUrl) throw new Error('多 logo 替换预览图上传失败，请重新框选替换区域后再生成。');
+  return {
+    imageUrls: [uploaded.fileUrl],
+    promptBlock: [
+      `多区域清理预览图：${uploaded.fileUrl}`,
+      '图2 是本地多区域清理预览图，只用于定位所有已框选 logo 区域和旧 logo 清理范围；不要保留任何红框或预览痕迹。',
+    ].join('\n'),
+    multiLogoPreviewUrl: uploaded.fileUrl,
+    multiLogoPreviewRects: preview.rects,
+    multiLogoCleanupRects: preview.cleanupRects,
+    multiLogoPreviewLogoRects: preview.logoRects,
+  };
+};
+
+const buildMultiLogoReplacePrompt = ({
+  referenceUrl,
+  userPrompt,
+  aspectRatio,
+  batchIndex,
+  batchCount,
+  regionCount,
+}: {
+  referenceUrl: string;
+  userPrompt: string;
+  aspectRatio: AspectRatio;
+  batchIndex: number;
+  batchCount: number;
+  regionCount: number;
+}) => [
+  '【任务类型】：多logo替换 / 程序兜底清理',
+  [
+    '【输入图说明】：',
+    `图1：当前替换参考图 ${referenceUrl}`,
+    `图2：本地多区域清理预览图，标记所有已框选 logo 区域，共 ${regionCount} 个；只用于定位和清理旧 logo，不要保留红框或预览痕迹。`,
+  ].join('\n'),
+  [
+    '【框选区域清理规则】：',
+    '0. 用户选框就是最终替换范围；每个框内原有内容必须清除干净，包括旧角标、旧 logo、旧底片、旧底框、旧文字和残影。',
+    '1. KIE 阶段只清理或自然补全红框内旧 logo 区域，包括旧 logo、残影和边缘痕迹。',
+    '2. 程序会把绑定的新 logo 原样贴回最终整图；KIE 阶段不要生成、绘制、临摹、补全或保留任何新 logo 图案。',
+    '3. 红框外的产品、背景、文字、构图、光影和所有未框选标识必须保持不变。',
+    '4. 红框外任何 logo 都必须逐像素保留原图；不得擦除、弱化、遮挡、重绘或替换红框外 logo、角标、水印、平台标、促销贴纸、文字或非框选标识。',
+  ].join('\n'),
+  '硬规则：只输出清理后的产品底图。清除旧 logo 像素后必须恢复产品原本材质/布料/纹理；不得新增任何 logo 底框、色块、底片、铭牌、标签板、贴纸矩形或新 logo。最终新 logo 只由程序把透明 PNG 叠加上去。',
+  userPrompt ? `【用户补充要求（只作为定位旧 logo 的辅助语义）】：${userPrompt}` : '',
+  `【输出要求】：生成第 ${batchIndex}/${batchCount} 张，画面比例适配 ${aspectRatio}。`,
+].filter(Boolean).join('\n\n');
+
+const buildSingleLogoReplacePrompt = ({
+  referenceUrl,
+  userPrompt,
+  aspectRatio,
+  batchIndex,
+  batchCount,
+}: {
+  referenceUrl: string;
+  userPrompt: string;
+  aspectRatio: AspectRatio;
+  batchIndex: number;
+  batchCount: number;
+}) => [
+  '【任务类型】：单logo替换 / 透明贴标融合',
+  [
+    '【输入图说明】：',
+    `图1：当前替换参考图 ${referenceUrl}`,
+    '图2：本地清理预览图，只用于定位用户框选的旧 logo 区域；不要保留红框或预览痕迹。',
+  ].join('\n'),
+  [
+    '【单logo清理规则】：',
+    '1. KIE 阶段只清理旧 logo 像素、残影和边缘痕迹，并恢复产品原本材质、布料、纹理、光影和褶皱。',
+    '2. KIE 阶段不得生成、绘制、临摹、补全或保留任何新 logo 图案。',
+    '3. 程序会把透明新 logo 等比例贴回旧 logo 位置；新 logo 只来自已抠成透明 PNG 的上传素材。',
+    '4. 红框外产品、背景、文字、构图、光影和所有未框选标识必须保持不变。',
+  ].join('\n'),
+  userPrompt ? `【用户补充要求（只作为定位旧 logo 的辅助语义）】：${userPrompt}` : '',
+  `【输出要求】：输出第 ${batchIndex}/${batchCount} 张清理底图，画面比例适配 ${aspectRatio}，不要输出说明文字。`,
+].filter(Boolean).join('\n\n');
+
+const buildMultiLogoDirectReplacePrompt = ({
+  referenceUrl,
+  userPrompt,
+  aspectRatio,
+  batchIndex,
+  batchCount,
+  regionCount,
+}: {
+  referenceUrl: string;
+  userPrompt: string;
+  aspectRatio: AspectRatio;
+  batchIndex: number;
+  batchCount: number;
+  regionCount: number;
+}) => [
+  '【任务类型】：多logo替换 / KIE直出',
+  [
+    '【输入图说明】：',
+    `图1：当前替换参考图 ${referenceUrl}`,
+    `图2 到图${regionCount + 1}：用户上传并裁剪后的新 logo 素材，按框选区域绑定顺序一一对应。`,
+    `图${regionCount + 2}：红框区域预览图，标记所有已框选 logo 区域，共 ${regionCount} 个；只用于定位，不要保留红框。`,
+  ].join('\n'),
+  [
+    '【框选区域替换规则】：',
+    '1. 只替换用户框选的产品 logo 区域，包括角标、产品表面 logo、包装 logo、水印式 logo；红框外的产品、背景、文字、构图和光影必须保持不变。',
+    '2. KIE 必须把对应的新 logo 渲染进每个已框选区域，不要等程序后处理叠加。',
+    '3. 新 logo 的形状、颜色、文字、图案和比例只能来自对应输入图；禁止重新发明、改写、拼错或近似重绘 logo。',
+    '4. 红框外任何 logo 都必须逐像素保留原图；不得擦除、弱化、遮挡、重绘或替换红框外 logo、角标、水印、平台标、促销贴纸、文字或非框选标识。',
+  ].join('\n'),
+  userPrompt ? `【用户补充要求】：${userPrompt}` : '',
+  `【输出要求】：生成第 ${batchIndex}/${batchCount} 张，画面比例适配 ${aspectRatio}。`,
+].filter(Boolean).join('\n\n');
+
+const buildCornerBadgeReplacePrompt = ({
+  userPrompt,
+  aspectRatio,
+  regionPromptBlock,
+}: {
+  userPrompt: string;
+  aspectRatio: AspectRatio;
+  regionPromptBlock?: string;
+}) => [
+  '任务：在图1中用图2替换一个原有图片角标、图标或独立 logo 位。',
+  '输入顺序：图1=待替换原图；图2=新图标/logo素材；图3=红框区域示意图（仅用户框选时存在）。',
+  regionPromptBlock || '',
+  `用户要求：${userPrompt || '用户未填写额外文字要求，只执行图片角标替换。'}`,
+  '要求：',
+  '1. 只替换单个角标/图标/logo位，不做产品替换或全图重绘。',
+  '2. 新图标保持图2的形状、颜色、比例和可识别结构，边缘清晰，不重绘成相似文字或近似图案。',
+  '3. 保持图1的背景、产品、人物、文字、构图、光影和未提到区域不变。',
+  '4. 图2已经裁剪并透明化；只使用图2中真实可见的 logo 图形，不得把图2的透明区域或空白区域渲染成白底、色块、底片、矩形贴纸或背景框。',
+  regionPromptBlock
+    ? '5. 有红框示意图时，只替换红框内的原有角标/图标/logo位；红框外保持不变，最终不要保留红框。'
+    : '',
+  `输出：只输出图1对应的一张最终图，画面比例适配 ${aspectRatio}，不要输出说明文字。`,
+].filter(Boolean).join('\n\n');
+
+const runLogoReplaceWorkflow = async (
+  input: ShellGenerateInput,
+  config: ModuleConfig,
+  apiConfig: GlobalApiConfig,
+  onItemCompleted?: (item: ShellWorkflowImageResult, index: number, total: number) => void,
+): Promise<{ results: ShellWorkflowImageResult[]; creditsConsumed?: number }> => {
+  const publicBaseUrl = input.publicBaseUrl || '';
+  const logoMaterials = input.materials.logo || [];
+  const referenceMaterials = input.materials.styleRef || [];
+  const logoUrls = logoMaterials.map((item) => materialUrl(item, publicBaseUrl)).filter(Boolean);
+  const referenceUrls = referenceMaterials.map((item) => materialUrl(item, publicBaseUrl)).filter(Boolean);
+  if (logoUrls.length === 0) throw new Error('请先上传Logo。');
+  if (referenceUrls.length === 0) throw new Error('请先上传需要替换Logo的原图。');
+  const logoReplaceMode = normalizeLogoReplaceMode(input.params.replacementLogic);
+  const logoReplaceRenderMode = normalizeLogoReplaceRenderMode(input.params.logoReplaceRenderMode);
+  const useProgramGuardedLogoReplace = logoReplaceRenderMode === 'program_guarded';
+  const useDirectLogoReplace = logoReplaceRenderMode === 'kie_direct';
+  const total = referenceUrls.length;
+
+  const results = await Promise.all(referenceUrls.map(async (referenceUrl, referenceIndex) => {
+    const referenceMaterial = referenceMaterials[referenceIndex];
+    const selectedCornerBadgeLogo = logoReplaceMode === 'corner_badge_replace'
+      ? resolveCornerBadgeSelectedLogo({ logoMaterials, logoUrls, referenceMaterial })
+      : { id: '', index: 0, url: '' };
+    const multiLogoRegions = logoReplaceMode === 'multi_logo_replace' || logoReplaceMode === 'single_logo_region_replace'
+      ? resolveSelectedLogoReplaceRegions({ referenceMaterial, mode: logoReplaceMode })
+      : [];
+    const multiLogoRegionBindings = multiLogoRegions.map((region) => ({
+      region,
+      logo: resolveLogoReplaceRegionLogo({ region, logoMaterials, logoUrls }),
+    }));
+    const aspectRatio = await resolveProductReplaceReferenceAspectRatio(referenceMaterial, config, publicBaseUrl, input.signal);
+    const cornerBadgeRegionGuideInputs = logoReplaceMode === 'corner_badge_replace'
+      ? await buildCornerBadgeRegionGuideInputs({ input, referenceMaterial, referenceUrl, referenceIndex })
+      : { imageUrls: [] as string[], promptBlock: '', cornerBadgeRegionGuideUrl: '', cornerBadgeRegionSource: '' };
+    const cornerBadgeLogoInput = logoReplaceMode === 'corner_badge_replace'
+      ? await buildLogoReplacementLogoInput({
+          input,
+          logoUrl: selectedCornerBadgeLogo.url,
+          logoIndex: selectedCornerBadgeLogo.index || 1,
+        })
+      : { url: '', cropped: false, cropRect: null as Record<string, unknown> | null };
+    const multiLogoInputs = logoReplaceMode === 'multi_logo_replace' || logoReplaceMode === 'single_logo_region_replace'
+      ? await Promise.all(multiLogoRegionBindings.map(({ region, logo }) => buildLogoReplacementLogoInput({
+          input,
+          logoUrl: logo.url,
+          logoIndex: logo.index || Number(region.logoIndex) || 1,
+        })))
+      : [];
+    const multiLogoBindings = multiLogoRegionBindings.map((binding, index) => ({
+      ...binding,
+      input: multiLogoInputs[index] || { url: '', cropped: false, cropRect: null as Record<string, unknown> | null },
+    }));
+    const multiLogoPreviewInputs = logoReplaceMode === 'multi_logo_replace' || logoReplaceMode === 'single_logo_region_replace'
+      ? await buildMultiLogoPreviewInputs({
+          input,
+          referenceMaterial,
+          referenceUrl,
+          referenceIndex,
+          bindings: multiLogoBindings,
+          useSelectedRegionAsLogoBounds: logoReplaceMode === 'multi_logo_replace',
+          drawCleanupFill: false,
+        })
+      : { imageUrls: [] as string[], promptBlock: '', multiLogoPreviewUrl: '', multiLogoPreviewRects: [] as Record<string, unknown>[], multiLogoCleanupRects: [] as Array<Record<string, unknown> | null>, multiLogoPreviewLogoRects: [] as Array<Record<string, unknown> | null> };
+    let prompt = '';
+    let imageInputUrls: string[] = [];
+    if (logoReplaceMode === 'corner_badge_replace') {
+      prompt = buildCornerBadgeReplacePrompt({
+        userPrompt: input.prompt.trim(),
+        aspectRatio,
+        regionPromptBlock: cornerBadgeRegionGuideInputs.promptBlock,
+      });
+      imageInputUrls = [referenceUrl, cornerBadgeLogoInput.url, ...cornerBadgeRegionGuideInputs.imageUrls].filter(Boolean);
+    }
+    if (logoReplaceMode === 'multi_logo_replace' || logoReplaceMode === 'single_logo_region_replace') {
+      const multiLogoInputUrls = multiLogoInputs.map((item) => item.url).filter(Boolean);
+      if (useDirectLogoReplace) {
+        prompt = buildMultiLogoDirectReplacePrompt({
+          referenceUrl,
+          userPrompt: input.prompt.trim(),
+          aspectRatio,
+          batchIndex: referenceIndex + 1,
+          batchCount: total,
+          regionCount: multiLogoRegions.length,
+        });
+      } else if (logoReplaceMode === 'single_logo_region_replace') {
+        prompt = buildSingleLogoReplacePrompt({
+          referenceUrl,
+          userPrompt: input.prompt.trim(),
+          aspectRatio,
+          batchIndex: referenceIndex + 1,
+          batchCount: total,
+        });
+      } else {
+        prompt = buildMultiLogoReplacePrompt({
+          referenceUrl,
+          userPrompt: input.prompt.trim(),
+          aspectRatio,
+          batchIndex: referenceIndex + 1,
+          batchCount: total,
+          regionCount: multiLogoRegions.length,
+        });
+      }
+      imageInputUrls = useDirectLogoReplace
+        ? [referenceUrl, ...multiLogoInputUrls, multiLogoPreviewInputs.multiLogoPreviewUrl].filter(Boolean)
+        : [referenceUrl, multiLogoPreviewInputs.multiLogoPreviewUrl].filter(Boolean);
+    }
+    const generation = await processWithKieAi(
+      imageInputUrls,
+      apiConfig,
+      { ...config, aspectRatio, targetLanguage: 'zh', removeWatermark: true, resolutionMode: 'original', targetWidth: 0, targetHeight: 0 },
+      aspectRatio === AspectRatio.AUTO,
+      input.signal,
+      prompt,
+      false,
+      undefined,
+      'main',
+      {
+        ...(input.taskMetadata || {}),
+        subFeature: 'logo_replace',
+        logoReplaceMode,
+        logoReplaceRenderMode,
+        replacementLogic: logoReplaceMode,
+        skipPromptCleanupSuffix: true,
+        batchIndex: referenceIndex + 1,
+        batchCount: total,
+        referenceIndex: referenceIndex + 1,
+        referenceCount: referenceUrls.length,
+        logoCount: logoUrls.length,
+        cornerBadgeSelectedLogoId: selectedCornerBadgeLogo.id,
+        cornerBadgeSelectedLogoIndex: selectedCornerBadgeLogo.index,
+        cornerBadgeLogoCropped: cornerBadgeLogoInput.cropped,
+        cornerBadgeLogoCropRect: cornerBadgeLogoInput.cropRect,
+        cornerBadgeRegionGuideUrl: cornerBadgeRegionGuideInputs.cornerBadgeRegionGuideUrl,
+        cornerBadgeRegionSource: cornerBadgeRegionGuideInputs.cornerBadgeRegionSource,
+        multiLogoRegionCount: multiLogoRegions.length,
+        multiLogoRegionBindings: multiLogoRegionBindings.map(({ region, logo }) => ({
+          regionId: region.regionId,
+          regionIndex: region.regionIndex,
+          logoId: logo.id || region.logoId,
+          logoIndex: logo.index || region.logoIndex,
+        })),
+        multiLogoPreviewUrl: multiLogoPreviewInputs.multiLogoPreviewUrl,
+        multiLogoPreviewRects: multiLogoPreviewInputs.multiLogoPreviewRects,
+        multiLogoCleanupRects: multiLogoPreviewInputs.multiLogoCleanupRects,
+        multiLogoPreviewLogoRects: multiLogoPreviewInputs.multiLogoPreviewLogoRects,
+        multiLogoCropped: multiLogoInputs.some((item) => item.cropped),
+        multiLogoCropRects: multiLogoInputs.map((item) => item.cropRect),
+      },
+      input.onJobCreated,
+    );
+    let item: ShellWorkflowImageResult;
+    if ((logoReplaceMode === 'multi_logo_replace' || logoReplaceMode === 'single_logo_region_replace') && useProgramGuardedLogoReplace) {
+      item = await toMultiLogoReplaceResultItem({
+        generation,
+        prompt,
+        config,
+        aspectRatio,
+        batchIndex: referenceIndex + 1,
+        batchCount: total,
+        referenceUrl,
+        referenceMaterial,
+        multiLogoBindings,
+        multiLogoPreviewInputs,
+        allowCleanupFallback: logoReplaceMode === 'multi_logo_replace',
+        overlayBlendMode: 'exact',
+        cleanupMode: 'content_mask',
+        signal: input.signal,
+      });
+    } else {
+      item = await toProductReplaceResultItem(generation, prompt, config, aspectRatio, referenceIndex + 1, total, referenceUrl, input.signal, 'Logo替换');
+    }
+    onItemCompleted?.(item, referenceIndex + 1, total);
+    return item;
+  }));
+
+  return {
+    results,
+    creditsConsumed: results.reduce((sum, item) => sum + (Number(item.creditsConsumed) || 0), 0) || undefined,
+  };
+};
+
 const runProductReplaceWorkflow = async (
   input: ShellGenerateInput,
   config: ModuleConfig,
@@ -1917,6 +2468,106 @@ const toProductReplaceResultItem = async (
   };
 };
 
+const hasPendingGenerationIdentity = (generation: KieAiResult) => (
+  generation.status !== 'success'
+  && (
+    generation.status === 'generating'
+    || Boolean(String(generation.taskId || '').trim())
+    || Boolean(String(generation.backendJobId || '').trim())
+  )
+);
+
+const toMultiLogoReplaceResultItem = async ({
+  generation,
+  prompt,
+  config,
+  aspectRatio,
+  batchIndex,
+  batchCount,
+  referenceUrl,
+  referenceMaterial,
+  multiLogoBindings,
+  multiLogoPreviewInputs,
+  allowCleanupFallback = false,
+  overlayBlendMode = 'exact',
+  cleanupMode = 'rect',
+  signal,
+}: {
+  generation: KieAiResult;
+  prompt: string;
+  config: ModuleConfig;
+  aspectRatio: AspectRatio;
+  batchIndex: number;
+  batchCount: number;
+  referenceUrl: string;
+  referenceMaterial: ShellMaterialInput;
+  multiLogoBindings: Array<{
+    region: LogoReplaceRegion;
+    logo: { id: string; index: number; url: string };
+    input: { url: string; cropped: boolean; cropRect: Record<string, unknown> | null };
+  }>;
+  multiLogoPreviewInputs: {
+    multiLogoCleanupRects: Array<Record<string, unknown> | null>;
+    multiLogoPreviewLogoRects: Array<Record<string, unknown> | null>;
+  };
+  allowCleanupFallback?: boolean;
+  overlayBlendMode?: 'exact' | 'fabric_blend' | 'auto';
+  cleanupMode?: 'rect' | 'content_mask';
+  signal: AbortSignal;
+}): Promise<ShellWorkflowImageResult> => {
+  if (hasPendingGenerationIdentity(generation)) {
+    return toProductReplaceResultItem(generation, prompt, config, aspectRatio, batchIndex, batchCount, referenceUrl, signal, 'Logo替换');
+  }
+  if ((generation.status !== 'success' || !generation.imageUrl) && !allowCleanupFallback) {
+    return toProductReplaceResultItem(generation, prompt, config, aspectRatio, batchIndex, batchCount, referenceUrl, signal, 'Logo替换');
+  }
+  const cleanupBaseUrl = generation.status === 'success' && generation.imageUrl ? generation.imageUrl : referenceUrl;
+  const guarded = await createGuardedMultiLogoReplaceResultBlob({
+    originalUrl: referenceUrl,
+    generatedUrl: cleanupBaseUrl,
+    items: multiLogoBindings.map((binding, index) => ({
+      region: binding.region,
+      logoOverlayUrl: binding.input.url,
+      logoOverlayRect: multiLogoPreviewInputs.multiLogoPreviewLogoRects[index],
+      cleanupRect: multiLogoPreviewInputs.multiLogoCleanupRects[index],
+    })),
+    originalWidth: referenceMaterial.originalWidth,
+    originalHeight: referenceMaterial.originalHeight,
+    overlayBlendMode,
+    cleanupMode,
+    signal,
+  });
+  const finalUrl = await persistGeneratedAsset(
+    guarded.blob,
+    'retouch',
+    `everything-replace-logo-region-${batchIndex}.png`,
+  );
+  if (generation.backendJobId) {
+    await updateInternalJobResult(generation.backendJobId, {
+      imageUrl: finalUrl,
+      taskId: generation.taskId,
+      providerTaskId: generation.taskId,
+      creditsConsumed: generation.creditsConsumed,
+      originalImageUrl: generation.imageUrl,
+      cleanupFallbackUsed: cleanupBaseUrl === referenceUrl,
+      logoReplaceGuarded: true,
+    }).catch(() => null);
+  }
+  return {
+    imageUrl: finalUrl,
+    prompt,
+    taskId: generation.taskId,
+    backendJobId: generation.backendJobId,
+    creditsConsumed: generation.creditsConsumed,
+    model: getImageResultModelLabel(config),
+    aspectRatio,
+    sourceUrl: referenceUrl,
+    status: 'completed',
+    batchIndex,
+    logoReplaceGuarded: true,
+  };
+};
+
 const maybeResizeAndPersistRetouchResult = async (
   imageUrl: string,
   sourceName: string,
@@ -1958,9 +2609,6 @@ export const runShellRetouchWorkflow = async (
   onItemCompleted?: (item: ShellWorkflowImageResult, index: number, total: number) => void,
 ): Promise<{ results: ShellWorkflowImageResult[]; creditsConsumed?: number }> => {
   const mode = getRetouchMode(input);
-  const sourceMaterials = input.materials.product || [];
-  const sourceUrls = sourceMaterials.map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
-  if (sourceUrls.length === 0) throw new Error(mode === 'product_replace' ? '请先上传待替换产品图。' : '请先上传产品素材，再启动产品精修。');
 
   storeActiveModuleContext(input.module);
   const apiConfig: GlobalApiConfig = {
@@ -1982,6 +2630,12 @@ export const runShellRetouchWorkflow = async (
   if (mode === 'background_replace') {
     return runBackgroundReplaceWorkflow(input, config, apiConfig, onItemCompleted);
   }
+  if (mode === 'logo_replace') {
+    return runLogoReplaceWorkflow(input, config, apiConfig, onItemCompleted);
+  }
+  const sourceMaterials = input.materials.product || [];
+  const sourceUrls = sourceMaterials.map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
+  if (sourceUrls.length === 0) throw new Error('请先上传产品素材，再启动产品精修。');
   const referenceUrl = firstMaterialUrl(input.materials.styleRef, input.publicBaseUrl || '', '精修参考图')
     || firstMaterialUrl(input.materials.texture, input.publicBaseUrl || '', '精修质感参考图')
     || '';

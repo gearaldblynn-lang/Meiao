@@ -38,6 +38,49 @@ test('help guide config covers all top-level modules from shared content', () =>
   assert.match(guideConfig, /AppModule\.ACCOUNT/);
 });
 
+test('image crop is registered as a first-class shell module', () => {
+  const types = read('../types.ts');
+  const shellTypes = read('../shell/types.ts');
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const sidebar = read('../shell/components/layout/SidebarNavigation.tsx');
+  const helpGuide = read('../config/helpGuide.ts');
+
+  assert.match(types, /IMAGE_CROP = 'image_crop'/);
+  assert.match(types, /IMAGE_CROP: AppModule\.IMAGE_CROP/);
+  assert.match(shellTypes, /'image_crop'/);
+  assert.match(shellTypes, /IMAGE_CROP: 'image_crop' as AppModule/);
+  assert.match(sidebar, /AppModuleObj\.IMAGE_CROP/);
+  assert.match(sidebar, /label: '图片裁切'/);
+  assert.match(helpGuide, /AppModule\.IMAGE_CROP/);
+  assert.match(shellApp, /const ImageCropModule = lazy\(\(\) => import\('\.\/shell\/modules\/ImageCrop\/ImageCropModule'\)\);/);
+  assert.match(shellApp, /\[AppModuleObj\.IMAGE_CROP\]: \[\s*\{ id: 'long_slice', label: '长图切片' \},\s*\{ id: 'resize', label: '修改尺寸' \},\s*\]/);
+  assert.match(shellApp, /case AppModuleObj\.IMAGE_CROP:/);
+  assert.match(shellApp, /onUploadSliceAsset=\{uploadImageCropSliceAsset\}/);
+  assert.match(shellApp, /onPersistProject=\{persistImageCropProject\}/);
+});
+
+test('image crop project cards use compact image-only result rendering', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+
+  assert.match(projectCard, /const isImageCropProject = project\.module === 'image_crop';/);
+  assert.match(projectCard, /image_crop: '图片裁切'/);
+  assert.match(projectCard, /long_slice: '长图切片'/);
+  assert.match(projectCard, /resize: '修改尺寸'/);
+  assert.match(projectCard, /const renderImageCropSliceCard = \(result: GeneratedResult, index: number\) => \(/);
+  assert.match(projectCard, /if \(isImageCropProject\) \{\s*return renderImageCropSliceCard\(result, index\);\s*\}/);
+  assert.match(projectCard, /isImageCropProject\s*\? 'grid gap-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5'/);
+
+  const sliceCardBlock = projectCard.match(
+    /const renderImageCropSliceCard = \(result: GeneratedResult, index: number\) => \([\s\S]*?\n  \);\n\n  const handleDownloadAll/,
+  )?.[0] || '';
+
+  assert.notEqual(sliceCardBlock, '');
+  assert.match(sliceCardBlock, /renderMedia\(result, 'h-full w-full object-contain'\)/);
+  assert.match(sliceCardBlock, /handleDownloadSingle\(result, index\)/);
+  assert.doesNotMatch(sliceCardBlock, /renderPromptCopyButton|displayedPrompt|renderResultUsageMeta/);
+  assert.doesNotMatch(sliceCardBlock, /onRecover|onRegenerate|openEditDialog|setConfirmDeleteResult/);
+});
+
 test('AI customer service module is a multi-store customer service workbench', () => {
   const module = read('../shell/modules/AiCustomerService/AiCustomerServiceModule.tsx');
 
@@ -3243,13 +3286,52 @@ test('everything replace is registered as a shell module with product replace en
   assert.match(shellApp, /\[AppModuleObj\.EVERYTHING_REPLACE\]: '万物替换'/);
   assert.match(shellApp, /id: 'product_replace', label: '产品替换'/);
   assert.match(shellApp, /id: 'background_replace', label: '背景替换'/);
-  assert.match(shellApp, /id: 'logo_replace', label: 'logo替换', disabled: true/);
+  assert.match(shellApp, /id: 'logo_replace', label: 'logo替换'/);
+  assert.doesNotMatch(shellApp, /id: 'logo_replace', label: 'logo替换', disabled: true/);
   assert.match(shellApp, /case AppModuleObj\.EVERYTHING_REPLACE:/);
   assert.equal(existsSync(modulePath), true);
 
   const everythingReplace = read('../shell/modules/EverythingReplace/EverythingReplaceModule.tsx');
   assert.match(everythingReplace, /ProjectListView/);
   assert.match(everythingReplace, /开始万物替换/);
+});
+
+test('everything replace logo replacement is integrated without product-replace defaults or async result drift', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const workflow = read('../adapters/shellWorkflow.ts');
+  const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
+  const internalApi = read('../services/internalApi.ts');
+  const server = read('../../server/index.mjs');
+
+  assert.match(shellApp, /cornerBadgeRegion\?: Record<string, unknown>/);
+  assert.match(shellApp, /logoReplaceRegion\?: Record<string, unknown>/);
+  assert.match(shellApp, /logoReplaceRegions\?: Array<Record<string, unknown>>/);
+  assert.match(shellApp, /allowEmptyEverythingReplacePrompt[\s\S]*targetSubFeature === 'logo_replace'/);
+  assert.match(shellApp, /const isLogoReplace = mode === 'logo_replace'/);
+  assert.match(shellApp, /replacementLogic: params\.replacementLogic \|\| 'corner_badge_replace'/);
+  assert.match(shellApp, /logoReplaceRenderMode: params\.logoReplaceRenderMode \|\| 'program_guarded'/);
+  assert.match(shellApp, /resolveEverythingReplaceBatchCount\(generationMaterials, generationParams, targetSubFeature\)/);
+
+  assert.match(bottomInputBar, /const isLogoReplaceContext = \(module: AppModule, activeSubFeature\?: string\)/);
+  assert.match(bottomInputBar, /getLogoReplaceQuickParams/);
+  assert.match(bottomInputBar, /return \['logo', 'styleRef'\]/);
+  assert.match(bottomInputBar, /新Logo素材/);
+  assert.match(bottomInputBar, /待替换原图/);
+  assert.match(bottomInputBar, /开始Logo替换/);
+  assert.doesNotMatch(bottomInputBar, /activeSubFeature === 'background_replace' \|\| activeSubFeature === 'logo_replace'/);
+
+  assert.match(workflow, /type ShellRetouchMode = 'original' \| 'white_bg' \| 'product_replace' \| 'background_replace' \| 'logo_replace'/);
+  assert.match(workflow, /normalizeLogoReplaceMode/);
+  assert.match(workflow, /runLogoReplaceWorkflow/);
+  assert.match(workflow, /subFeature: 'logo_replace'/);
+  assert.match(workflow, /createGuardedMultiLogoReplaceResultBlob/);
+  assert.match(workflow, /if \(hasPendingGenerationIdentity\(generation\)\) \{[\s\S]*return toProductReplaceResultItem/);
+  assert.match(workflow, /updateInternalJobResult/);
+
+  assert.match(internalApi, /export const updateInternalJobResult/);
+  assert.match(server, /jobResultMatch/);
+  assert.match(server, /updateJobFields\(pool, job\.id/);
+  assert.match(server, /updateLocalJobResult/);
 });
 
 test('everything replace product workflow keeps batch metadata so many outputs remain visible', () => {

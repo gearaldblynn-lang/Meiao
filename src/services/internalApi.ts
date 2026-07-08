@@ -1524,6 +1524,14 @@ export const fetchInternalJob = async (jobId: string) => {
   return request<{ job: InternalJob }>(`/api/jobs/${encodeURIComponent(jobId)}`);
 };
 
+export const updateInternalJobResult = async (jobId: string, result: Record<string, unknown>) => {
+  return request<{ job: InternalJob }>(`/api/jobs/${encodeURIComponent(jobId)}/result`, {
+    method: 'PATCH',
+    body: JSON.stringify({ result }),
+    dedupe: false,
+  });
+};
+
 export const deleteInternalJob = async (jobId: string) => {
   return request<{ ok: boolean }>(`/api/jobs/${encodeURIComponent(jobId)}`, {
     method: 'DELETE',

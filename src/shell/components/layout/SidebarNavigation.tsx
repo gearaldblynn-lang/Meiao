@@ -2,7 +2,7 @@ import React from 'react';
 import type { AppModule } from '../../types';
 import { AppModuleObj } from '../../types';
 import {
-  Bot, Sparkles, Globe, Users, Wand2, PlayCircle, BookOpen,
+  Bot, Sparkles, Globe, Users, Wand2, PlayCircle, BookOpen, Crop,
   Settings, UserCircle, Hexagon, Sun, Moon, ChevronLeft, ChevronRight, ReplaceAll, Bell, Factory
 } from 'lucide-react';
 
@@ -23,6 +23,7 @@ const MAIN: NavDef[] = [
   { module: AppModuleObj.BUYER_SHOW, icon: <Users size={20} strokeWidth={1.5} />, label: '买家秀' },
   { module: AppModuleObj.RETOUCH, icon: <Wand2 size={20} strokeWidth={1.5} />, label: '产品精修' },
   { module: AppModuleObj.EVERYTHING_REPLACE, icon: <ReplaceAll size={20} strokeWidth={1.5} />, label: '万物替换' },
+  { module: AppModuleObj.IMAGE_CROP, icon: <Crop size={20} strokeWidth={1.5} />, label: '图片裁切' },
   { module: AppModuleObj.VIDEO, icon: <PlayCircle size={20} strokeWidth={1.5} />, label: '视频生成' },
   { module: AppModuleObj.XHS_COVER, icon: <BookOpen size={20} strokeWidth={1.5} />, label: '小红书' },
 ];

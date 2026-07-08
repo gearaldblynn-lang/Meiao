@@ -309,6 +309,25 @@ export const attachLocalJobWorkflowExecution = (store, jobId, result, options = 
   return next;
 };
 
+export const updateLocalJobResult = (store, jobId, resultPatch = {}) => {
+  const index = findJobIndex(store, jobId);
+  if (index < 0) return null;
+  const current = normalizeJob(store.jobs[index]);
+  const currentResult = current.result && typeof current.result === 'object' ? current.result : {};
+  const updatedAt = now();
+  const next = normalizeJob({
+    ...current,
+    providerTaskId: String(resultPatch?.providerTaskId || current.providerTaskId || ''),
+    result: {
+      ...currentResult,
+      ...(resultPatch && typeof resultPatch === 'object' ? cloneValue(resultPatch) : {}),
+    },
+    updatedAt,
+  });
+  store.jobs[index] = next;
+  return next;
+};
+
 export const markLocalJobCompleted = (store, jobId, output, aborted = false) => {
   const index = findJobIndex(store, jobId);
   if (index < 0) return null;

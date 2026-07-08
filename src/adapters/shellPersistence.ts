@@ -87,6 +87,9 @@ type ShellProject = {
       originalWidth?: number;
       originalHeight?: number;
       logoPlacement?: Record<string, unknown>;
+      cornerBadgeRegion?: Record<string, unknown>;
+      logoReplaceRegion?: Record<string, unknown>;
+      logoReplaceRegions?: Array<Record<string, unknown>>;
     }>>;
   };
   sourceType?: 'persisted' | 'job';

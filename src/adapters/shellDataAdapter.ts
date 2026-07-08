@@ -125,6 +125,9 @@ export interface ShellMaterialData {
   originalWidth?: number;
   originalHeight?: number;
   logoPlacement?: Record<string, unknown>;
+  cornerBadgeRegion?: Record<string, unknown>;
+  logoReplaceRegion?: Record<string, unknown>;
+  logoReplaceRegions?: Array<Record<string, unknown>>;
 }
 
 export interface ShellDataSnapshot {

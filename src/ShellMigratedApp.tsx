@@ -10,6 +10,7 @@ import {
   cancelInternalJob,
   clearCurrentUserContext,
   clearSessionToken,
+  deleteInternalAssetByUrl,
   deleteInternalJob,
   fetchCurrentUser,
   fetchInternalJob,
@@ -76,6 +77,7 @@ const TranslationModule = lazy(() => import('./shell/modules/Translation/Transla
 const OneClickModule = lazy(() => import('./shell/modules/OneClick/OneClickModule'));
 const RetouchModule = lazy(() => import('./shell/modules/Retouch/RetouchModule'));
 const EverythingReplaceModule = lazy(() => import('./shell/modules/EverythingReplace/EverythingReplaceModule'));
+const ImageCropModule = lazy(() => import('./shell/modules/ImageCrop/ImageCropModule'));
 const BuyerShowModule = lazy(() => import('./shell/modules/BuyerShow/BuyerShowModule'));
 const VideoModule = lazy(() => import('./shell/modules/Video/VideoModule'));
 const XhsCoverModule = lazy(() => import('./shell/modules/XhsCover/XhsCoverModule'));
@@ -195,6 +197,9 @@ export interface Material {
   originalWidth?: number;
   originalHeight?: number;
   logoPlacement?: Record<string, unknown>;
+  cornerBadgeRegion?: Record<string, unknown>;
+  logoReplaceRegion?: Record<string, unknown>;
+  logoReplaceRegions?: Array<Record<string, unknown>>;
 }
 
 const isTransientMaterialUrl = (url?: string) => {
@@ -293,6 +298,9 @@ const cloneMaterialSnapshot = (material: Material) => {
     originalWidth: material.originalWidth,
     originalHeight: material.originalHeight,
     logoPlacement: material.logoPlacement,
+    cornerBadgeRegion: material.cornerBadgeRegion,
+    logoReplaceRegion: material.logoReplaceRegion,
+    logoReplaceRegions: material.logoReplaceRegions,
   };
 };
 
@@ -1285,6 +1293,7 @@ const MODULE_NAMES: Record<string, string> = {
   [AppModuleObj.BUYER_SHOW]: '买家秀',
   [AppModuleObj.RETOUCH]: '产品精修',
   [AppModuleObj.EVERYTHING_REPLACE]: '万物替换',
+  [AppModuleObj.IMAGE_CROP]: '图片裁切',
   [AppModuleObj.VIDEO]: '短视频生成',
   [AppModuleObj.XHS_COVER]: '小红书封面',
   [AppModuleObj.SETTINGS]: '系统设置',
@@ -1339,7 +1348,11 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
   [AppModuleObj.EVERYTHING_REPLACE]: [
     { id: 'product_replace', label: '产品替换' },
     { id: 'background_replace', label: '背景替换' },
-    { id: 'logo_replace', label: 'logo替换', disabled: true },
+    { id: 'logo_replace', label: 'logo替换' },
+  ],
+  [AppModuleObj.IMAGE_CROP]: [
+    { id: 'long_slice', label: '长图切片' },
+    { id: 'resize', label: '修改尺寸' },
   ],
   [AppModuleObj.BUYER_SHOW]: [
     { id: 'image', label: '买家秀图片' },
@@ -1547,21 +1560,32 @@ const normalizeEverythingReplaceParamsForGeneration = (
   const ratio = params.ratio || params.aspectRatio || 'auto';
   const mode = subFeature || params.mode || 'product_replace';
   const isBackgroundReplace = mode === 'background_replace';
-  return {
-    ...normalizeRetouchParamsForGeneration({
-      ...params,
-      ratio,
-      aspectRatio: ratio,
+  const isLogoReplace = mode === 'logo_replace';
+  const normalized = normalizeRetouchParamsForGeneration({
+    ...params,
+    ratio,
+    aspectRatio: ratio,
+    mode,
+    resolutionMode: params.resolutionMode || 'original',
+    sizeMode: params.sizeMode || 'AI 自适应尺寸',
+    ...(isBackgroundReplace || isLogoReplace
+      ? {
+          targetHeight: params.targetHeight || params.height || '0',
+          height: params.height || params.targetHeight || '0',
+        }
+      : {}),
+  });
+  if (isLogoReplace) {
+    return {
+      ...normalized,
       mode,
-      resolutionMode: params.resolutionMode || 'original',
-      sizeMode: params.sizeMode || 'AI 自适应尺寸',
-      ...(isBackgroundReplace
-        ? {
-            targetHeight: params.targetHeight || params.height || '0',
-            height: params.height || params.targetHeight || '0',
-          }
-        : {}),
-    }),
+      replacementLogic: params.replacementLogic || 'corner_badge_replace',
+      logoReplaceRenderMode: params.logoReplaceRenderMode || 'program_guarded',
+      textPolicy: params.textPolicy || '维持文案',
+    };
+  }
+  return {
+    ...normalized,
     mode,
     ...(isBackgroundReplace
       ? {}
@@ -1735,9 +1759,13 @@ const parsePositiveInt = (value: string | undefined, fallback = 1, max = 20) => 
 const resolveEverythingReplaceBatchCount = (
   materials: Record<string, Material[]>,
   params: Record<string, string>,
+  subFeature?: string,
 ) => {
-  const productCount = Math.max(0, (materials.product || []).length);
   const referenceCount = Math.max(0, (materials.styleRef || []).length);
+  if (subFeature === 'logo_replace' || params.mode === 'logo_replace') {
+    return Math.max(1, Math.min(40, referenceCount || 1));
+  }
+  const productCount = Math.max(0, (materials.product || []).length);
   if (productCount <= 0 || referenceCount <= 0) return 1;
   return Math.min(40, referenceCount);
 };
@@ -3063,6 +3091,34 @@ const AppContent: React.FC<{
     return queuedWrite;
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
 
+  const uploadImageCropSliceAsset = useCallback((file: File) => (
+    uploadInternalAssetStream({
+      module: AppModuleObj.IMAGE_CROP,
+      file,
+      fileName: file.name,
+    })
+  ), []);
+
+  const persistImageCropProject = useCallback(async (project: Project) => {
+    setProjects((prev) => {
+      const next = [project, ...prev.filter((item) => item.id !== project.id)];
+      projectsRef.current = next;
+      return next;
+    });
+    return persistProjectToSharedState(project);
+  }, [persistProjectToSharedState]);
+
+  const deleteImageCropAssets = useCallback((results: GeneratedResult[] = []) => {
+    const urls = Array.from(new Set(results.map((result) => result.imageUrl).filter(Boolean)));
+    if (urls.length === 0) return;
+    void Promise.allSettled(urls.map((url) => deleteInternalAssetByUrl(url)))
+      .then((outcomes) => {
+        if (outcomes.some((outcome) => outcome.status === 'rejected')) {
+          addToast('图片裁切记录已删除，部分切片文件清理失败。', 'warning');
+        }
+      });
+  }, [addToast]);
+
   const persistTranslationFilesToSharedState = useCallback((subFeature: string, files: Array<Record<string, unknown>>) => {
     const write = async () => {
       const {
@@ -3716,7 +3772,7 @@ const AppContent: React.FC<{
     const generationPrompt = targetModule === AppModuleObj.TRANSLATION ? '' : promptText;
     const allowEmptySkuPrompt = targetModule === AppModuleObj.ONE_CLICK && targetSubFeature === 'sku';
     const allowEmptyRetouchPrompt = targetModule === AppModuleObj.RETOUCH;
-    const allowEmptyEverythingReplacePrompt = targetModule === AppModuleObj.EVERYTHING_REPLACE && (targetSubFeature === 'product_replace' || targetSubFeature === 'background_replace');
+    const allowEmptyEverythingReplacePrompt = targetModule === AppModuleObj.EVERYTHING_REPLACE && (targetSubFeature === 'product_replace' || targetSubFeature === 'background_replace' || targetSubFeature === 'logo_replace');
     const allowEmptyPrompt = allowEmptySkuPrompt || allowEmptyRetouchPrompt || allowEmptyEverythingReplacePrompt || targetModule === AppModuleObj.TRANSLATION;
     if (!generationPrompt.trim() && !allowEmptyPrompt) { addToast('请输入创作描述', 'warning'); return; }
     const generationParams = normalizeParamsForGeneration(targetModule, targetSubFeature, currentParams) as Record<string, string> & {
@@ -3747,7 +3803,7 @@ const AppContent: React.FC<{
       ? latestFilteredMaterials
       : filteredMaterials;
     if (targetModule === AppModuleObj.EVERYTHING_REPLACE) {
-      batchCount = resolveEverythingReplaceBatchCount(generationMaterials, generationParams);
+      batchCount = resolveEverythingReplaceBatchCount(generationMaterials, generationParams, targetSubFeature);
     }
     const isTranslationSubmit = targetModule === AppModuleObj.TRANSLATION;
     const initialTranslationMaterials = isTranslationSubmit ? (generationMaterials.product || []).filter(Boolean) : [];
@@ -5803,6 +5859,9 @@ const AppContent: React.FC<{
         .catch((error) => addToast(error instanceof Error ? error.message : '删除任务失败', 'error'));
       return;
     }
+    if (project?.module === AppModuleObj.IMAGE_CROP && result?.imageUrl) {
+      deleteImageCropAssets([result]);
+    }
     setProjects((prev) => prev.map((p) =>
       p.id === projectId
         ? { ...p, results: p.results.filter((r) => r.id !== resultId) }
@@ -5815,7 +5874,7 @@ const AppContent: React.FC<{
           addToast('已在当前页面删除，但远端历史同步失败', 'warning');
         }
       });
-  }, [projects, addToast, persistDeletionToSharedState]);
+  }, [projects, addToast, persistDeletionToSharedState, deleteImageCropAssets]);
 
   const handleDeletePlan = useCallback((projectId: string, planId: string) => {
     const project = projects.find((p) => p.id === projectId);
@@ -5874,13 +5933,16 @@ const AppContent: React.FC<{
         });
       return;
     }
+    if (project?.module === AppModuleObj.IMAGE_CROP) {
+      deleteImageCropAssets(project.results || []);
+    }
     setProjects((prev) => prev.filter((p) => p.id !== projectId));
     setTasks((prev) => prev.filter((t) => t.projectId !== projectId));
     void persistDeletionToSharedState({ projectId })
       .then((synced) => {
         addToast(synced ? '项目已删除' : '已在当前页面删除，但远端历史同步失败', synced ? 'info' : 'warning');
       });
-  }, [projects, addToast, persistDeletionToSharedState]);
+  }, [projects, addToast, persistDeletionToSharedState, deleteImageCropAssets]);
 
   const handleStoryboardRegenerateResult = useCallback(async (projectId: string, resultId: string, revisionInstruction = '') => {
     const baseStoryboard = (videoMemory || createDefaultVideoState()).storyboard;
@@ -6172,7 +6234,7 @@ const AppContent: React.FC<{
           maxFileSize: Number(retryParams.maxFileSize || retryParams.maxSize || 2),
         };
         const { effectiveConfig } = deriveTranslationExecutionPlan({
-          config: modelConfig as any,
+          config: modelConfig,
           subMode: subFeature === 'detail' ? 'detail' : subFeature === 'remove_text' ? 'remove_text' : 'main',
           sourceDimensions: sourceDimensions || undefined,
         });
@@ -7809,6 +7871,21 @@ const AppContent: React.FC<{
           pendingActionKeys={pendingActionKeys}
           showGenerationProgress={showGenerationProgress}
         />;
+      case AppModuleObj.IMAGE_CROP:
+        return <ImageCropModule
+          projects={filteredProjects}
+          tasks={filteredTasks}
+          subFeatures={MODULE_SUB_FEATURES[AppModuleObj.IMAGE_CROP]}
+          activeSubFeature={activeSubFeature}
+          onSubFeatureChange={handleSubFeatureChange}
+          onUploadSliceAsset={uploadImageCropSliceAsset}
+          onPersistProject={persistImageCropProject}
+          onDeleteUploadedAsset={(url) => deleteImageCropAssets([{ id: url, imageUrl: url } as GeneratedResult])}
+          onDeleteResult={handleDeleteResult}
+          onDeleteProject={handleDeleteProject}
+          onCancelTask={handleCancelTask}
+          pendingActionKeys={pendingActionKeys}
+        />;
       case AppModuleObj.VIDEO:
         return <VideoModule
           projects={filteredProjects}
@@ -7874,7 +7951,7 @@ const AppContent: React.FC<{
             </Suspense>
           </main>
 
-          {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && activeModule !== AppModuleObj.AI_CUSTOMER_SERVICE && activeModule !== AppModuleObj.SMART_FACTORY && (
+          {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && activeModule !== AppModuleObj.AI_CUSTOMER_SERVICE && activeModule !== AppModuleObj.SMART_FACTORY && activeModule !== AppModuleObj.IMAGE_CROP && (
             <Suspense fallback={null}>
               <BottomInputBar
                 module={activeModule}

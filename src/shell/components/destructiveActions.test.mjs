@@ -201,7 +201,7 @@ test('buyer show multi-set generation uses account concurrency and warns when co
 
 test('shell result deletion records backend job tombstones for pending results', () => {
   const shellSource = read('../../ShellMigratedApp.tsx');
-  const deleteResultBlock = shellSource.match(/const handleDeleteResult = useCallback\([\s\S]*?\n  \}, \[projects, addToast, persistDeletionToSharedState\]\);/)?.[0] || '';
+  const deleteResultBlock = shellSource.match(/const handleDeleteResult = useCallback\([\s\S]*?\n  \}, \[[^\]]*persistDeletionToSharedState[^\]]*\]\);/)?.[0] || '';
 
   assert.match(deleteResultBlock, /const result = project\?\.results\.find\(\(item\) => item\.id === resultId\)/);
   assert.match(deleteResultBlock, /const resultJobIds = Array\.from\(new Set\(/);

@@ -13,6 +13,7 @@ export const GUIDE_MODULES: AppModule[] = [
   AppModule.BUYER_SHOW,
   AppModule.RETOUCH,
   AppModule.EVERYTHING_REPLACE,
+  AppModule.IMAGE_CROP,
   AppModule.PHOTOGRAPHY,
   AppModule.VIDEO,
   AppModule.XHS_COVER,
@@ -115,6 +116,22 @@ export const HELP_CONTENT: Partial<Record<AppModule, GuideEntry>> = {
       '每张替换参考图是一个独立生图任务，上传几张参考图就生成几张结果',
       '每个任务只使用全部待替换产品图和当前这一张参考图，不会混用其它参考图',
       '参考图越接近目标商业场景，替换后的光影和透视越稳定',
+    ],
+  },
+  [AppModule.IMAGE_CROP]: {
+    summary:
+      '图片裁切用于处理不需要 AI 生成的基础图片生产动作，当前支持详情长图切片和等比例修改尺寸。处理在浏览器本地完成，结果会上传到内部资产库并保存为项目记录。',
+    steps: [
+      '选择长图切片或修改尺寸子模式',
+      '长图切片时上传详情长图，添加并拖动横向分割线',
+      '修改尺寸时上传一张或多张图片，输入目标宽度和高度',
+      '点击生成后查看项目卡，按需下载单张或本次 ZIP',
+      '删除历史记录时系统会同步清理对应的内部资产文件',
+    ],
+    tips: [
+      '长图切片适合把过长详情页拆成多张短图后再进入翻译或投放流程',
+      '修改尺寸只做等比例缩放，不会拉伸、填充或裁掉画面',
+      '如果历史保存失败，优先下载本次 ZIP，避免本地临时结果丢失',
     ],
   },
   [AppModule.PHOTOGRAPHY]: {

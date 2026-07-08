@@ -8,6 +8,7 @@ export enum AppModule {
   BUYER_SHOW = 'buyer_show',
   RETOUCH = 'retouch',
   EVERYTHING_REPLACE = 'everything_replace',
+  IMAGE_CROP = 'image_crop',
   PHOTOGRAPHY = 'photography',
   VIDEO = 'video',
   XHS_COVER = 'xhs_cover',
@@ -24,6 +25,7 @@ export const AppModuleObj = {
   BUYER_SHOW: AppModule.BUYER_SHOW,
   RETOUCH: AppModule.RETOUCH,
   EVERYTHING_REPLACE: AppModule.EVERYTHING_REPLACE,
+  IMAGE_CROP: AppModule.IMAGE_CROP,
   PHOTOGRAPHY: AppModule.PHOTOGRAPHY,
   VIDEO: AppModule.VIDEO,
   XHS_COVER: AppModule.XHS_COVER,
@@ -919,6 +921,9 @@ export interface OneClickMaterialSnapshot {
   originalWidth?: number;
   originalHeight?: number;
   logoPlacement?: Record<string, unknown>;
+  cornerBadgeRegion?: Record<string, unknown>;
+  logoReplaceRegion?: Record<string, unknown>;
+  logoReplaceRegions?: Array<Record<string, unknown>>;
 }
 
 export interface OneClickGenerationContext {

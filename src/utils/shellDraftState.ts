@@ -37,6 +37,9 @@ export type ShellDraftMaterial = {
   originalWidth?: number;
   originalHeight?: number;
   logoPlacement?: Record<string, unknown>;
+  cornerBadgeRegion?: Record<string, unknown>;
+  logoReplaceRegion?: Record<string, unknown>;
+  logoReplaceRegions?: Array<Record<string, unknown>>;
 };
 
 export type ShellDraftState = {
@@ -76,6 +79,14 @@ const normalizeJsonRecord = (value: unknown): Record<string, unknown> | undefine
   } catch {
     return undefined;
   }
+};
+
+const normalizeJsonRecordArray = (value: unknown): Array<Record<string, unknown>> | undefined => {
+  if (!Array.isArray(value)) return undefined;
+  const normalized = value
+    .map((item) => normalizeJsonRecord(item))
+    .filter((item): item is Record<string, unknown> => Boolean(item));
+  return normalized.length > 0 ? normalized : undefined;
 };
 
 const normalizeInputState = (value: unknown): ShellDraftInputState => {
@@ -135,6 +146,9 @@ const normalizeMaterial = (value: unknown, options: NormalizeShellDraftOptions =
       ? value.originalHeight
       : undefined,
     logoPlacement: normalizeJsonRecord(value.logoPlacement),
+    cornerBadgeRegion: normalizeJsonRecord(value.cornerBadgeRegion),
+    logoReplaceRegion: normalizeJsonRecord(value.logoReplaceRegion),
+    logoReplaceRegions: normalizeJsonRecordArray(value.logoReplaceRegions),
   };
 };
 
@@ -222,6 +236,9 @@ export const mergeShellDraftMaterials = (
           ...current,
           ...item,
           logoPlacement: item.logoPlacement || current.logoPlacement,
+          cornerBadgeRegion: item.cornerBadgeRegion || current.cornerBadgeRegion,
+          logoReplaceRegion: item.logoReplaceRegion || current.logoReplaceRegion,
+          logoReplaceRegions: item.logoReplaceRegions || current.logoReplaceRegions,
           localAssetId: item.localAssetId || current.localAssetId,
           remoteUrl: item.remoteUrl || current.remoteUrl,
           url: item.url || current.url,
@@ -256,6 +273,9 @@ const mergeFallbackFieldsIntoPreferredMaterials = (
         return {
           ...item,
           logoPlacement: item.logoPlacement || fallback.logoPlacement,
+          cornerBadgeRegion: item.cornerBadgeRegion || fallback.cornerBadgeRegion,
+          logoReplaceRegion: item.logoReplaceRegion || fallback.logoReplaceRegion,
+          logoReplaceRegions: item.logoReplaceRegions || fallback.logoReplaceRegions,
           localAssetId: item.localAssetId || fallback.localAssetId,
           originalWidth: item.originalWidth ?? fallback.originalWidth,
           originalHeight: item.originalHeight ?? fallback.originalHeight,
