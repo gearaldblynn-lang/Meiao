@@ -1543,7 +1543,7 @@ const GlobalApiSettings: React.FC<{
                     <div className="mb-3 flex items-center justify-between gap-3 px-1">
                       <div>
                         <p className="text-[13px] font-black" style={{ color: 'var(--text-primary)' }}>安装模型供应商</p>
-                        <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>这里不是插件安装，而是载入 Dify 风格的 provider 结构模板。</p>
+                        <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>这里不是插件安装，而是载入常用供应商的结构模板。</p>
                       </div>
                       <span className="text-[11px] font-bold" style={{ color: 'var(--text-tertiary)' }}>{modelProviderPresets.length} 个模板</span>
                     </div>
