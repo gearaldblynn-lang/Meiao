@@ -6,8 +6,13 @@ const source = readFileSync(new URL('./SmartFactoryPanel.tsx', import.meta.url),
 const sourceMap = readFileSync(new URL('./difyAppStudioSourceMap.ts', import.meta.url), 'utf8');
 
 test('smart factory panel reads and displays runtime configuration', () => {
-  assert.match(source, /DIFY_APP_STUDIO_SOURCE_PATHS/);
-  assert.match(source, /DIFY_APP_STUDIO_MIGRATION_MODE/);
+  // 2026-07-08 商用化:Dify 源码映射只允许留在 difyAppStudioSourceMap.ts 作移植档案,
+  // 商户可见的面板源码里不得再出现任何 Dify/source-mapped/源码映射标注(业主截图投诉)
+  assert.doesNotMatch(source, /Dify/i);
+  assert.doesNotMatch(source, /source-mapped/);
+  assert.doesNotMatch(source, /源码映射/);
+  assert.doesNotMatch(source, /DIFY_APP_STUDIO_SOURCE_PATHS/);
+  assert.doesNotMatch(source, /DIFY_APP_STUDIO_MIGRATION_MODE/);
   assert.match(sourceMap, /web\/app\/components\/workflow\/nodes\/agent-v2\/panel\.tsx/);
   assert.match(sourceMap, /web\/app\/components\/workflow\/nodes\/agent-v2\/components\/agent-task-field\.tsx/);
   assert.match(sourceMap, /web\/app\/components\/base\/prompt-editor\/index\.tsx/);
@@ -69,10 +74,6 @@ test('smart factory panel reads and displays runtime configuration', () => {
   assert.match(source, /访问 API/);
   assert.match(source, /POST \/api\/smart-factory\/chat/);
   assert.match(source, /搜索应用/);
-  assert.match(source, /源码映射/);
-  assert.match(source, /Dify source-mapped workspace/);
-  assert.match(source, /Dify datasets source-mapped/);
-  assert.match(source, /Dify tools source-mapped/);
   assert.match(source, /统一模型中心/);
   assert.match(source, /设置中心 \/ 统一模型中心/);
   assert.match(source, /模型中心统一管理/);

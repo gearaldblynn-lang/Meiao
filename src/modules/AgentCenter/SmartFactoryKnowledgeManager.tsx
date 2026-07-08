@@ -4,7 +4,6 @@ import {
   Braces,
   Database,
   FileText,
-  Globe2,
   Import,
   Plus,
   RefreshCcw,
@@ -15,7 +14,6 @@ import {
 } from 'lucide-react';
 import { WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 import type { SmartFactoryConfig } from '../../services/internalApi';
-import { DIFY_APP_STUDIO_SOURCE_PATHS } from './difyAppStudioSourceMap';
 
 type KnowledgeBase = SmartFactoryConfig['knowledgeBases'][number];
 type KnowledgeDocument = NonNullable<KnowledgeBase['documents']>[number];
@@ -246,10 +244,6 @@ export const SmartFactoryKnowledgeManager: React.FC<SmartFactoryKnowledgeManager
         ))}
         {!filteredKnowledgeBases.length && <EmptyState>没有匹配的知识库。</EmptyState>}
       </div>
-
-      <div className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-        Source: {DIFY_APP_STUDIO_SOURCE_PATHS.datasetsPage} / {DIFY_APP_STUDIO_SOURCE_PATHS.datasetDetailLayout}
-      </div>
     </div>
   );
 
@@ -292,7 +286,7 @@ export const SmartFactoryKnowledgeManager: React.FC<SmartFactoryKnowledgeManager
     <div className="grid gap-4 xl:grid-cols-[420px_minmax(0,1fr)]">
       <WorkspaceShellCard className="p-4" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
         <p className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>召回测试</p>
-        <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>迁移 Dify hitTesting 独立页面交互。</p>
+        <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>输入问题，测试知识库能召回哪些内容。</p>
         <textarea value={knowledgeQuery} onChange={(event) => onKnowledgeQueryChange(event.target.value)} className="mt-4 min-h-[120px] w-full resize-none rounded-[8px] border px-3 py-2 text-[13px] outline-none" placeholder="输入 query" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-input)', color: 'var(--text-primary)' }} />
         <div className="mt-3 grid grid-cols-3 gap-2">
           <label className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
@@ -324,7 +318,7 @@ export const SmartFactoryKnowledgeManager: React.FC<SmartFactoryKnowledgeManager
       <div className="mt-5 grid gap-3 md:grid-cols-2">
         <div className="rounded-[8px] border p-4 md:col-span-2" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
           <p className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>知识库训练模型</p>
-          <p className="mt-1 text-[12px]" style={{ color: 'var(--text-tertiary)' }}>对齐 Dify Dataset 设置：Embedding 用于向量训练，Rerank 用于召回后重排。</p>
+          <p className="mt-1 text-[12px]" style={{ color: 'var(--text-tertiary)' }}>Embedding 用于向量训练，Rerank 用于召回后重排。</p>
           <div className="mt-3 grid gap-3 md:grid-cols-2">
             <label className="text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>
               Embedding 模型
@@ -440,7 +434,7 @@ export const SmartFactoryKnowledgeManager: React.FC<SmartFactoryKnowledgeManager
               <p className="mt-1 text-[12px]" style={{ color: 'var(--text-tertiary)' }}>{tabs.find((tab) => tab.id === detailTab)?.description}</p>
             </div>
             <span className="inline-flex items-center gap-2 rounded-[8px] px-2.5 py-1 text-[11px] font-semibold" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-              <Globe2 size={13} /> {DIFY_APP_STUDIO_SOURCE_PATHS.datasetDocuments}
+              <Database size={13} /> {activeKnowledgeBase?.name || '知识库'}
             </span>
           </div>
           {detailTab === 'documents' && renderDocuments()}

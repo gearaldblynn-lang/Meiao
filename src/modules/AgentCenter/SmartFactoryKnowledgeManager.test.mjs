@@ -48,5 +48,8 @@ test('knowledge manager owns Dify-style dataset list and detail management', () 
   assert.match(sourceMap, /settings\/page\.tsx/);
   assert.match(sourceMap, /api\/page\.tsx/);
   assert.doesNotMatch(source, /text-\[24px\][^>]*>知识库/);
-  assert.doesNotMatch(source, /Dify datasets source-mapped/);
+  // 2026-07-08 商用化:源码映射标注只留在 difyAppStudioSourceMap.ts 作移植档案,组件源码零 Dify 痕迹
+  assert.doesNotMatch(source, /Dify/i);
+  assert.doesNotMatch(source, /source-mapped/);
+  assert.doesNotMatch(source, /DIFY_APP_STUDIO_SOURCE_PATHS/);
 });

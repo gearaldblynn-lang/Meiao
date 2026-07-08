@@ -23,7 +23,6 @@ import {
   Search,
   Send,
   Settings2,
-  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   TerminalSquare,
@@ -51,10 +50,6 @@ import {
   type SmartFactoryConfig,
   type SmartFactoryPreviewResult,
 } from '../../services/internalApi';
-import {
-  DIFY_APP_STUDIO_MIGRATION_MODE,
-  DIFY_APP_STUDIO_SOURCE_PATHS,
-} from './difyAppStudioSourceMap';
 import SmartFactoryKnowledgeManager from './SmartFactoryKnowledgeManager';
 import { resolveSmartFactoryConfigLoadErrorMessage } from './smartFactoryPreviewMode';
 
@@ -99,7 +94,7 @@ const filters: Array<{ id: AgentFilter; label: string; icon: React.ElementType }
 ];
 
 const editorSections: Array<{ id: EditorSection; label: string; icon: React.ElementType; hint: string }> = [
-  { id: 'prompt', label: '提示词', icon: FileText, hint: 'Dify AgentTaskField / PromptEditor 迁移' },
+  { id: 'prompt', label: '提示词', icon: FileText, hint: '编写智能体的系统提示词' },
   { id: 'variables', label: '变量', icon: SlidersHorizontal, hint: '表单变量和提示词变量插入' },
   { id: 'knowledge', label: '知识库', icon: Database, hint: '知识库选择、文件上传、训练、检索' },
   { id: 'metadata', label: '元数据过滤', icon: Filter, hint: '检索前的过滤条件' },
@@ -403,7 +398,6 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
     model: false,
     publish: false,
   });
-  const [sourceOpen, setSourceOpen] = useState(false);
 
   const applyConfig = (nextConfig: SmartFactoryConfig) => {
     const firstAgent = nextConfig.agents.find((agent) => agent.status === 'published') || nextConfig.agents[0];
@@ -816,14 +810,12 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
   );
 
   const renderAreaFrame = ({
-    sourceLabel,
     title,
     description,
     icon: Icon,
     actions = [],
     content,
   }: {
-    sourceLabel: string;
     title: string;
     description: string;
     icon: React.ElementType;
@@ -837,10 +829,10 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
         </div>
         <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-4">
           <div className="min-w-0">
-            <div className="inline-flex items-center gap-2 rounded-[8px] px-2.5 py-1 text-[11px] font-semibold" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-              <Icon size={13} /> {sourceLabel}
-            </div>
             <div className="mt-2 flex min-w-0 items-center gap-2">
+              <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px]" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
+                <Icon size={16} />
+              </span>
               <h2 className="truncate text-[18px] font-semibold tracking-[0]" style={{ color: 'var(--text-primary)' }}>{title}</h2>
               <span className="hidden text-[12px] md:inline" style={{ color: 'var(--text-tertiary)' }}>{description}</span>
             </div>
@@ -877,23 +869,6 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
 
   const renderWorkspaceContent = () => (
     <div className="flex min-h-0 flex-col gap-4">
-      {sourceOpen && (
-        <WorkspaceShellCard className="p-4" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
-          <div className="flex flex-wrap items-center gap-2">
-            <StatusPill tone="good">Dify commit {DIFY_APP_STUDIO_SOURCE_PATHS.upstreamCommit.slice(0, 7)}</StatusPill>
-            <StatusPill>{DIFY_APP_STUDIO_MIGRATION_MODE}</StatusPill>
-          </div>
-          <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {Object.entries(DIFY_APP_STUDIO_SOURCE_PATHS).filter(([key]) => !['upstreamRepository', 'upstreamCommit'].includes(key)).map(([key, value]) => (
-              <div key={key} className="rounded-[8px] border px-3 py-2 text-[11px]" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
-                <span className="font-semibold" style={{ color: 'var(--text-primary)' }}>{key}</span>
-                <span className="mt-1 block break-all">{value}</span>
-              </div>
-            ))}
-          </div>
-        </WorkspaceShellCard>
-      )}
-
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2">
           {filters.map((item) => {
@@ -1055,7 +1030,7 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[8px] border px-4 py-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
           <div>
             <p className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>编辑</p>
-            <p className="mt-1 text-[12px]" style={{ color: 'var(--text-tertiary)' }}>迁移 Dify Agent 编辑结构，能力配置分块折叠。</p>
+            <p className="mt-1 text-[12px]" style={{ color: 'var(--text-tertiary)' }}>按能力分块折叠配置智能体。</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button type="button" onClick={() => setOpenSections((prev) => ({ ...prev, model: true }))} className="inline-flex h-9 items-center gap-2 rounded-[8px] border px-3 text-[12px] font-semibold" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
@@ -1281,7 +1256,7 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
       <div className="flex shrink-0 items-center justify-between border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
         <div>
           <p className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>调试与预览</p>
-          <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>迁移自 Dify DebugAndPreview，真实调用智能工厂 runtime。</p>
+          <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>真实调用智能工厂运行时，检查智能体回复效果。</p>
         </div>
         <button type="button" onClick={() => setResult(null)} className="inline-flex h-8 w-8 items-center justify-center rounded-[8px]" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }} title="重置预览">
           <RefreshCcw size={15} />
@@ -1550,25 +1525,21 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
   if (surface === 'home') {
     const areaConfig = {
       workspace: {
-        sourceLabel: 'Dify source-mapped workspace',
         title: '工作室',
         description: '管理可发布的智能体应用，进入应用后再编辑配置和发布。',
         icon: Sparkles,
         actions: [
           { label: '创建应用', icon: PackagePlus, onClick: handleNewAgent, primary: true },
-          { label: '源码映射', icon: ShieldCheck, onClick: () => setSourceOpen((value) => !value) },
         ],
         content: renderWorkspaceContent(),
       },
       knowledge: {
-        sourceLabel: 'Dify datasets source-mapped',
         title: '知识库',
         description: '独立管理知识库、文档训练、召回测试和检索策略。',
         icon: Database,
         content: renderKnowledgeAreaContent(),
       },
       tools: {
-        sourceLabel: 'Dify tools source-mapped',
         title: '工具',
         description: '独立管理 CLI 工具、插件定义和授权测试。',
         icon: Wrench,
