@@ -98,6 +98,59 @@ test('normalizing shell draft preserves everything replace logo placement templa
   assert.deepEqual(draft.materials.logo[0].logoPlacement, logoPlacement);
 });
 
+test('normalizing shell draft preserves logo replacement regions', () => {
+  const cornerBadgeRegion = {
+    version: 1,
+    source: 'manual',
+    xRatio: 0.68,
+    yRatio: 0.08,
+    widthRatio: 0.2,
+    heightRatio: 0.1,
+    logoId: 'logo-1',
+  };
+  const logoReplaceRegion = {
+    version: 1,
+    source: 'manual',
+    regionId: 'logo-replace-region-1',
+    regionIndex: 1,
+    xRatio: 0.1,
+    yRatio: 0.2,
+    widthRatio: 0.22,
+    heightRatio: 0.12,
+    logoId: 'logo-1',
+  };
+  const logoReplaceRegions = [
+    logoReplaceRegion,
+    {
+      ...logoReplaceRegion,
+      regionId: 'logo-replace-region-2',
+      regionIndex: 2,
+      xRatio: 0.56,
+      logoId: 'logo-2',
+    },
+  ];
+
+  const draft = normalizeShellDraftState({
+    materials: {
+      styleRef: [{
+        id: 'reference-1',
+        type: 'styleRef',
+        url: 'https://example.com/ref.png',
+        remoteUrl: 'https://example.com/ref.png',
+        fileName: 'ref.png',
+        subFeature: 'logo_replace',
+        cornerBadgeRegion,
+        logoReplaceRegion,
+        logoReplaceRegions,
+      }],
+    },
+  });
+
+  assert.deepEqual(draft.materials.styleRef[0].cornerBadgeRegion, cornerBadgeRegion);
+  assert.deepEqual(draft.materials.styleRef[0].logoReplaceRegion, logoReplaceRegion);
+  assert.deepEqual(draft.materials.styleRef[0].logoReplaceRegions, logoReplaceRegions);
+});
+
 test('hydrating shell draft keeps local logo placement when newer remote material lacks it', () => {
   const logoPlacement = {
     version: 1,

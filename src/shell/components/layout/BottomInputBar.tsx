@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import type { AppModule, SystemPublicConfig } from '../../types';
 import { AppModuleObj } from '../../types';
 import type { OneClickReferencePreset } from '../../../types';
@@ -182,8 +182,14 @@ const isBackgroundReplaceContext = (module: AppModule, activeSubFeature?: string
   module === AppModuleObj.EVERYTHING_REPLACE && activeSubFeature === 'background_replace'
 );
 
+const isLogoReplaceContext = (module: AppModule, activeSubFeature?: string) => (
+  module === AppModuleObj.EVERYTHING_REPLACE && activeSubFeature === 'logo_replace'
+);
+
 const isEverythingReplaceImageContext = (module: AppModule, activeSubFeature?: string) => (
-  isProductReplaceContext(module, activeSubFeature) || isBackgroundReplaceContext(module, activeSubFeature)
+  isProductReplaceContext(module, activeSubFeature)
+  || isBackgroundReplaceContext(module, activeSubFeature)
+  || isLogoReplaceContext(module, activeSubFeature)
 );
 
 const getEverythingReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
@@ -215,6 +221,62 @@ const getEverythingReplaceQuickParams = (currentParams: Record<string, string>):
 const getBackgroundReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
   const supportedRatios = getRetouchSupportedAspectRatiosForModel(currentParams.model || 'GPT Image 2');
   return [
+    {
+      key: 'ratio',
+      label: getEverythingReplaceRatioLabel(supportedRatios[0] || 'auto'),
+      title: '出图比例',
+      icon: <BoxSelect size={12} />,
+      options: supportedRatios.map((ratio) => ({ value: ratio, label: getEverythingReplaceRatioLabel(ratio) })),
+      defaultValue: 'auto',
+      recommendedValue: 'auto',
+      recommendedLabel: '推荐',
+    },
+    { key: 'model', label: 'GPT Image 2', title: 'AI 模型', icon: <Monitor size={12} />, options: ['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'], defaultValue: 'GPT Image 2', recommendedValue: 'GPT Image 2' },
+    { key: 'quality', label: '1K', title: '出图分辨率', icon: <Sparkles size={12} />, options: ['1K', '2K', '4K'], defaultValue: '1K', recommendedValue: '1K' },
+  ];
+};
+
+const getLogoReplaceModeLabel = (value?: string) => {
+  const mode = String(value || '').trim();
+  if (mode === 'single_logo_region_replace') return '单Logo框选';
+  if (mode === 'multi_logo_replace') return '多Logo框选';
+  return '图片角标替换';
+};
+
+const getLogoReplaceRenderModeLabel = (value?: string) => (
+  String(value || '').includes('kie') ? 'KIE直出' : '程序兜底'
+);
+
+const getLogoReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
+  const supportedRatios = getRetouchSupportedAspectRatiosForModel(currentParams.model || 'GPT Image 2');
+  return [
+    {
+      key: 'replacementLogic',
+      label: getLogoReplaceModeLabel(currentParams.replacementLogic),
+      title: '替换逻辑',
+      icon: <Wand2 size={12} />,
+      options: [
+        { value: 'corner_badge_replace', label: '图片角标替换' },
+        { value: 'single_logo_region_replace', label: '单Logo框选' },
+        { value: 'multi_logo_replace', label: '多Logo框选' },
+      ],
+      defaultValue: 'corner_badge_replace',
+      recommendedValue: 'corner_badge_replace',
+      recommendedLabel: '默认',
+    },
+    {
+      key: 'logoReplaceRenderMode',
+      label: getLogoReplaceRenderModeLabel(currentParams.logoReplaceRenderMode),
+      title: '生成逻辑',
+      icon: <SlidersHorizontal size={12} />,
+      options: [
+        { value: 'program_guarded', label: '程序兜底' },
+        { value: 'kie_direct', label: 'KIE直出' },
+      ],
+      defaultValue: 'program_guarded',
+      recommendedValue: 'program_guarded',
+      recommendedLabel: '稳定',
+    },
     {
       key: 'ratio',
       label: getEverythingReplaceRatioLabel(supportedRatios[0] || 'auto'),
@@ -570,6 +632,7 @@ const getQuickParamsForModule = (
   if (module === AppModuleObj.RETOUCH) return getRetouchQuickParams(currentParams);
   if (isProductReplaceContext(module, activeSubFeature)) return getEverythingReplaceQuickParams(currentParams);
   if (isBackgroundReplaceContext(module, activeSubFeature)) return getBackgroundReplaceQuickParams(currentParams);
+  if (isLogoReplaceContext(module, activeSubFeature)) return getLogoReplaceQuickParams(currentParams);
   if (module !== AppModuleObj.ONE_CLICK) return QUICK_PARAMS[module] || [];
   const mode = currentParams.mode || '首图';
   if (mode === '首图') return getOneClickBaseParams(mode);
@@ -594,6 +657,7 @@ const getMaterialTypesForContext = (module: AppModule, currentParams: Record<str
   if (module === AppModuleObj.BUYER_SHOW) return ['product', 'atmosphere', 'model'];
   if (isProductReplaceContext(module, activeSubFeature)) return ['product', 'logo', 'styleRef'];
   if (isBackgroundReplaceContext(module, activeSubFeature)) return ['product', 'styleRef'];
+  if (isLogoReplaceContext(module, activeSubFeature)) return ['logo', 'styleRef'];
   if (module === AppModuleObj.VIDEO) {
     if (activeSubFeature === 'diagnosis') return [];
     if (activeSubFeature === 'storyboard') {
@@ -711,6 +775,12 @@ const getEverythingReplaceMaterialLabels = (
       styleRef: { label: '背景参考图', desc: '只替换场景/背景' },
     };
   }
+  if (activeSubFeature === 'logo_replace') {
+    return {
+      logo: { label: '新Logo素材', desc: '可上传透明Logo' },
+      styleRef: { label: '待替换原图', desc: '框选要替换的Logo区域' },
+    };
+  }
   const isCombination = params.replacementLogic === '组合替换';
   return {
     product: {
@@ -734,6 +804,7 @@ const resolveEverythingReplaceBillingCount = (
     .length;
   const productCount = scopedCount('product');
   const referenceCount = scopedCount('styleRef');
+  if (activeSubFeature === 'logo_replace') return Math.max(1, referenceCount || 1);
   if (productCount <= 0 || referenceCount <= 0) return 1;
   return referenceCount;
 };
@@ -855,6 +926,7 @@ const getGenerateLabelForContext = (module: AppModule, activeSubFeature?: string
   if (isPendingShellSubFeature(module, activeSubFeature)) return '待制作';
   if (isProductReplaceContext(module, activeSubFeature)) return '开始产品替换';
   if (isBackgroundReplaceContext(module, activeSubFeature)) return '开始背景替换';
+  if (isLogoReplaceContext(module, activeSubFeature)) return '开始Logo替换';
   if (module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard') return '生成分镜';
   if (module === AppModuleObj.VIDEO && activeSubFeature === 'diagnosis') return '一键勘探深度分析';
   return '生成';
@@ -862,8 +934,7 @@ const getGenerateLabelForContext = (module: AppModule, activeSubFeature?: string
 
 const isPendingShellSubFeature = (module: AppModule, activeSubFeature?: string) =>
   (module === AppModuleObj.BUYER_SHOW && activeSubFeature === 'copy')
-  || (module === AppModuleObj.RETOUCH && (activeSubFeature === 'background_replace' || activeSubFeature === 'enhance'))
-  || (module === AppModuleObj.EVERYTHING_REPLACE && activeSubFeature === 'logo_replace');
+  || (module === AppModuleObj.RETOUCH && (activeSubFeature === 'background_replace' || activeSubFeature === 'enhance'));
 
 /* ── Compact Dropdown ── */
 const CompactSelect: React.FC<{
@@ -1073,18 +1144,29 @@ const BottomInputBar: React.FC<Props> = ({
   const [xhsPresetOpen, setXhsPresetOpen] = useState(false);
   const [xhsPreviewImage, setXhsPreviewImage] = useState<string | null>(null);
   const logoPlacementFrameRef = useRef<HTMLDivElement>(null);
+  const logoReplaceRegionFrameRef = useRef<HTMLDivElement>(null);
   const logoPlacementInteractionRef = useRef<null | {
     mode: 'move' | 'resize';
     startX: number;
     startY: number;
     startRect: { x: number; y: number; width: number; height: number };
   }>(null);
+  const logoReplaceRegionDrawRef = useRef<null | {
+    startX: number;
+    startY: number;
+  }>(null);
   const [logoPlacementEditorOpen, setLogoPlacementEditorOpen] = useState(false);
   const [logoPlacementEditingLogoId, setLogoPlacementEditingLogoId] = useState('');
   const [logoPlacementRatio, setLogoPlacementRatio] = useState('1:1');
   const [logoPlacementDraft, setLogoPlacementDraft] = useState<any>(null);
   const [logoPlacementFrameSize, setLogoPlacementFrameSize] = useState({ width: 520, height: 520 });
+  const [logoReplaceRegionEditorOpen, setLogoReplaceRegionEditorOpen] = useState(false);
+  const [logoReplaceRegionEditingReferenceId, setLogoReplaceRegionEditingReferenceId] = useState('');
+  const [logoReplaceRegionDrafts, setLogoReplaceRegionDrafts] = useState<Array<any>>([]);
+  const [activeLogoReplaceRegionIndex, setActiveLogoReplaceRegionIndex] = useState(0);
+  const [logoReplaceRegionFrameSize, setLogoReplaceRegionFrameSize] = useState({ width: 520, height: 520 });
   const lastAutoOpenedLogoIdRef = useRef<string>('');
+  const lastAutoOpenedLogoReplaceReferenceIdRef = useRef<string>('');
   const [customStoryboardNarrativePresets, setCustomStoryboardNarrativePresets] = useState<StoryboardNarrativePreset[]>(() => loadCustomStoryboardNarrativePresets());
   const [storyboardNarrativeSelectOpen, setStoryboardNarrativeSelectOpen] = useState(false);
   const [storyboardPresetNamingOpen, setStoryboardPresetNamingOpen] = useState(false);
@@ -1097,6 +1179,7 @@ const BottomInputBar: React.FC<Props> = ({
   const isXhsCover = module === AppModuleObj.XHS_COVER;
   const isBuyerShow = module === AppModuleObj.BUYER_SHOW;
   const isEverythingReplaceProductReplace = isProductReplaceContext(module, activeSubFeature);
+  const isEverythingReplaceLogoReplace = isLogoReplaceContext(module, activeSubFeature);
   const isEverythingReplaceImageReplace = isEverythingReplaceImageContext(module, activeSubFeature);
   const isPendingSubFeature = isPendingShellSubFeature(module, activeSubFeature);
   const disabledReason = generationDisabledReason || (isPendingSubFeature ? '该子功能待制作' : '');
@@ -1129,7 +1212,7 @@ const BottomInputBar: React.FC<Props> = ({
     ? { ...currentParams, count: String(activeStyleRefCount), exactCount: 'true' }
     : isMainImageSuiteReplication
     ? { ...currentParams, count: String(activeStyleRefCount), exactCount: 'true' }
-    : isEverythingReplaceProductReplace
+    : (isEverythingReplaceProductReplace || isEverythingReplaceLogoReplace)
     ? { ...currentParams, count: String(resolveEverythingReplaceBillingCount(materials, activeSubFeature, currentParams)), exactCount: 'true' }
     : currentParams;
   const imageBillingEstimate = estimateImageBilling({
@@ -1149,6 +1232,11 @@ const BottomInputBar: React.FC<Props> = ({
   const billingEstimate = seedanceBillingEstimate.billable ? seedanceBillingEstimate : imageBillingEstimate;
   const activeEverythingReplaceLogo = isEverythingReplaceProductReplace ? (materials.logo || [])[0] : undefined;
   const activeEverythingReplaceReference = isEverythingReplaceProductReplace ? (materials.styleRef || [])[0] : undefined;
+  const activeLogoReplaceReference = isEverythingReplaceLogoReplace ? (materials.styleRef || [])[0] : undefined;
+  const activeLogoReplaceLogos = useMemo(
+    () => (isEverythingReplaceLogoReplace ? (materials.logo || []) : []),
+    [isEverythingReplaceLogoReplace, materials.logo],
+  );
   const activeLogoRatio = activeEverythingReplaceLogo?.originalWidth && activeEverythingReplaceLogo?.originalHeight
     ? activeEverythingReplaceLogo.originalWidth / Math.max(1, activeEverythingReplaceLogo.originalHeight)
     : 2;
@@ -1196,6 +1284,22 @@ const BottomInputBar: React.FC<Props> = ({
     observer.observe(el);
     return () => observer.disconnect();
   }, [logoPlacementEditorOpen, logoPlacementRatio]);
+
+  useEffect(() => {
+    if (!logoReplaceRegionEditorOpen) return undefined;
+    const el = logoReplaceRegionFrameRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      setLogoReplaceRegionFrameSize({
+        width: Math.max(1, entry.contentRect.width),
+        height: Math.max(1, entry.contentRect.height),
+      });
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [logoReplaceRegionEditorOpen]);
 
   useEffect(() => {
     if (!isEverythingReplaceProductReplace || !activeEverythingReplaceLogo) return;
@@ -1315,6 +1419,72 @@ const BottomInputBar: React.FC<Props> = ({
     setLogoPlacementEditorOpen(true);
   };
 
+  const getLogoReplaceMode = useCallback(() => String(currentParams.replacementLogic || 'corner_badge_replace'), [currentParams.replacementLogic]);
+
+  const buildDefaultLogoReplaceRegion = useCallback((index = 0) => ({
+    version: 1,
+    source: 'manual',
+    regionId: `logo-replace-region-${index + 1}`,
+    regionIndex: index + 1,
+    xRatio: 0.62,
+    yRatio: 0.08,
+    widthRatio: 0.24,
+    heightRatio: 0.14,
+    ...(activeLogoReplaceLogos[index]?.id ? { logoId: activeLogoReplaceLogos[index].id, logoIndex: index + 1 } : {}),
+  }), [activeLogoReplaceLogos]);
+
+  const normalizeLogoReplaceRegionDraft = useCallback((region: any, index: number) => ({
+    version: 1,
+    source: region?.source === 'applied_to_all' ? 'applied_to_all' : 'manual',
+    regionId: String(region?.regionId || `logo-replace-region-${index + 1}`),
+    regionIndex: Number(region?.regionIndex || index + 1),
+    xRatio: Math.min(0.98, Math.max(0, Number(region?.xRatio ?? 0.62))),
+    yRatio: Math.min(0.98, Math.max(0, Number(region?.yRatio ?? 0.08))),
+    widthRatio: Math.min(1, Math.max(0.02, Number(region?.widthRatio ?? 0.24))),
+    heightRatio: Math.min(1, Math.max(0.02, Number(region?.heightRatio ?? 0.14))),
+    ...(region?.logoId ? { logoId: String(region.logoId) } : {}),
+    ...(Number(region?.logoIndex) > 0 ? { logoIndex: Number(region.logoIndex) } : {}),
+  }), []);
+
+  const getSavedLogoReplaceRegions = useCallback((referenceMaterial?: Material) => {
+    if (!referenceMaterial) return [];
+    const mode = getLogoReplaceMode();
+    const saved = mode === 'corner_badge_replace'
+      ? [referenceMaterial.cornerBadgeRegion]
+      : (Array.isArray(referenceMaterial.logoReplaceRegions) && referenceMaterial.logoReplaceRegions.length > 0
+        ? referenceMaterial.logoReplaceRegions
+        : [referenceMaterial.logoReplaceRegion]);
+    const normalized = saved
+      .filter(Boolean)
+      .map((item, index) => normalizeLogoReplaceRegionDraft(item, index));
+    return normalized.length > 0 ? normalized : [buildDefaultLogoReplaceRegion(0)];
+  }, [buildDefaultLogoReplaceRegion, getLogoReplaceMode, normalizeLogoReplaceRegionDraft]);
+
+  const openLogoReplaceRegionEditor = useCallback((referenceMaterial = activeLogoReplaceReference) => {
+    if (!referenceMaterial) return;
+    const nextRegions = getSavedLogoReplaceRegions(referenceMaterial);
+    setLogoReplaceRegionEditingReferenceId(referenceMaterial.id);
+    setLogoReplaceRegionDrafts(nextRegions);
+    setActiveLogoReplaceRegionIndex(0);
+    setLogoReplaceRegionEditorOpen(true);
+  }, [activeLogoReplaceReference, getSavedLogoReplaceRegions]);
+
+  useEffect(() => {
+    if (!isEverythingReplaceLogoReplace || !activeLogoReplaceReference) return;
+    const hasRegion = Boolean(
+      activeLogoReplaceReference.cornerBadgeRegion
+      || activeLogoReplaceReference.logoReplaceRegion
+      || (Array.isArray(activeLogoReplaceReference.logoReplaceRegions) && activeLogoReplaceReference.logoReplaceRegions.length > 0),
+    );
+    if (hasRegion) return;
+    if (lastAutoOpenedLogoReplaceReferenceIdRef.current === activeLogoReplaceReference.id) return;
+    lastAutoOpenedLogoReplaceReferenceIdRef.current = activeLogoReplaceReference.id;
+    const timeoutId = window.setTimeout(() => {
+      openLogoReplaceRegionEditor(activeLogoReplaceReference);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [activeLogoReplaceReference, isEverythingReplaceLogoReplace, openLogoReplaceRegionEditor]);
+
   const resolveCurrentLogoPlacementRect = () => resolveLogoPlacementRect(
     logoPlacementDraft || createDefaultLogoPlacement({ logoRatio: activeLogoRatio }),
     {
@@ -1397,6 +1567,96 @@ const BottomInputBar: React.FC<Props> = ({
     if (!targetLogo || !logoPlacementDraft) return;
     onUpdateMaterial?.('logo', targetLogo.id, { logoPlacement: logoPlacementDraft });
     setLogoPlacementEditorOpen(false);
+  };
+
+  const updateLogoReplaceRegionDraft = (index: number, patch: Record<string, unknown>) => {
+    setLogoReplaceRegionDrafts((prev) => prev.map((item, itemIndex) => (
+      itemIndex === index ? normalizeLogoReplaceRegionDraft({ ...item, ...patch }, itemIndex) : item
+    )));
+  };
+
+  const addLogoReplaceRegionDraft = () => {
+    setLogoReplaceRegionDrafts((prev) => {
+      const next = [...prev, buildDefaultLogoReplaceRegion(prev.length)];
+      setActiveLogoReplaceRegionIndex(next.length - 1);
+      return next;
+    });
+  };
+
+  const removeLogoReplaceRegionDraft = (index: number) => {
+    setLogoReplaceRegionDrafts((prev) => {
+      const next = prev.filter((_, itemIndex) => itemIndex !== index)
+        .map((item, itemIndex) => normalizeLogoReplaceRegionDraft({
+          ...item,
+          regionId: `logo-replace-region-${itemIndex + 1}`,
+          regionIndex: itemIndex + 1,
+        }, itemIndex));
+      setActiveLogoReplaceRegionIndex(Math.max(0, Math.min(index, next.length - 1)));
+      return next.length > 0 ? next : [buildDefaultLogoReplaceRegion(0)];
+    });
+  };
+
+  const getLogoReplacePointerPosition = (event: React.PointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return {
+      xRatio: Math.min(1, Math.max(0, (event.clientX - rect.left) / Math.max(1, rect.width))),
+      yRatio: Math.min(1, Math.max(0, (event.clientY - rect.top) / Math.max(1, rect.height))),
+    };
+  };
+
+  const handleLogoReplaceRegionPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest('[data-logo-region-control="true"]')) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLDivElement).setPointerCapture?.(event.pointerId);
+    const position = getLogoReplacePointerPosition(event);
+    logoReplaceRegionDrawRef.current = { startX: position.xRatio, startY: position.yRatio };
+    updateLogoReplaceRegionDraft(activeLogoReplaceRegionIndex, {
+      xRatio: position.xRatio,
+      yRatio: position.yRatio,
+      widthRatio: 0.02,
+      heightRatio: 0.02,
+    });
+  };
+
+  const handleLogoReplaceRegionPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const draw = logoReplaceRegionDrawRef.current;
+    if (!draw) return;
+    event.preventDefault();
+    const position = getLogoReplacePointerPosition(event);
+    const xRatio = Math.min(draw.startX, position.xRatio);
+    const yRatio = Math.min(draw.startY, position.yRatio);
+    const widthRatio = Math.max(0.02, Math.abs(position.xRatio - draw.startX));
+    const heightRatio = Math.max(0.02, Math.abs(position.yRatio - draw.startY));
+    updateLogoReplaceRegionDraft(activeLogoReplaceRegionIndex, {
+      xRatio,
+      yRatio,
+      widthRatio: Math.min(widthRatio, 1 - xRatio),
+      heightRatio: Math.min(heightRatio, 1 - yRatio),
+    });
+  };
+
+  const handleLogoReplaceRegionPointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!logoReplaceRegionDrawRef.current) return;
+    event.preventDefault();
+    logoReplaceRegionDrawRef.current = null;
+  };
+
+  const saveLogoReplaceRegions = () => {
+    const targetReference = (materials.styleRef || []).find((item) => item.id === logoReplaceRegionEditingReferenceId) || activeLogoReplaceReference;
+    if (!targetReference) return;
+    const normalized = logoReplaceRegionDrafts.map((item, index) => normalizeLogoReplaceRegionDraft(item, index));
+    if (getLogoReplaceMode() === 'corner_badge_replace') {
+      const [region] = normalized;
+      onUpdateMaterial?.('styleRef', targetReference.id, {
+        cornerBadgeRegion: region,
+      } as Partial<Material>);
+    } else {
+      onUpdateMaterial?.('styleRef', targetReference.id, {
+        logoReplaceRegion: normalized[0],
+        logoReplaceRegions: getLogoReplaceMode() === 'single_logo_region_replace' ? normalized.slice(0, 1) : normalized,
+      } as Partial<Material>);
+    }
+    setLogoReplaceRegionEditorOpen(false);
   };
 
   const storyboardNarrativePresets = [...BUILTIN_STORYBOARD_NARRATIVE_PRESETS, ...customStoryboardNarrativePresets];
@@ -2082,6 +2342,11 @@ const BottomInputBar: React.FC<Props> = ({
   };
 
   const handlePreviewAdjust = (type: string, id: string) => {
+    if (isEverythingReplaceLogoReplace && type === 'styleRef') {
+      const reference = (materials.styleRef || []).find((item) => item.id === id);
+      if (reference) openLogoReplaceRegionEditor(reference);
+      return;
+    }
     if (type !== 'logo') return;
     const logo = (materials.logo || []).find((item) => item.id === id);
     if (!logo) return;
@@ -2233,6 +2498,195 @@ const BottomInputBar: React.FC<Props> = ({
     );
   };
 
+  const renderLogoReplaceRegionEditor = () => {
+    if (!logoReplaceRegionEditorOpen || !activeLogoReplaceReference) return null;
+    const mode = getLogoReplaceMode();
+    const isMultiMode = mode === 'multi_logo_replace';
+    const referenceRatio = (activeLogoReplaceReference.originalWidth || 1000) / Math.max(1, activeLogoReplaceReference.originalHeight || 1000);
+    const activeRegion = logoReplaceRegionDrafts[activeLogoReplaceRegionIndex] || logoReplaceRegionDrafts[0] || buildDefaultLogoReplaceRegion(0);
+    const activeLogoId = String(activeRegion.logoId || activeLogoReplaceLogos[activeLogoReplaceRegionIndex]?.id || activeLogoReplaceLogos[0]?.id || '');
+    return (
+      <div
+        className="fixed inset-0 z-[282] flex items-center justify-center p-5"
+        style={{ background: 'rgba(0,0,0,0.76)', backdropFilter: 'blur(12px)' }}
+      >
+        <div
+          className="flex max-h-[90vh] w-full max-w-[1080px] flex-col overflow-hidden rounded-3xl border"
+          style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', boxShadow: 'var(--shadow-elevated)' }}
+        >
+          <div className="flex items-center justify-between gap-3 border-b px-5 py-4" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div>
+              <h3 className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>Logo替换区域框选</h3>
+              <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                在待替换原图上拖拽框选旧Logo区域，多Logo模式可新增多个区域并分别绑定新Logo。
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLogoReplaceRegionEditorOpen(false)}
+              className="flex h-9 w-9 items-center justify-center rounded-2xl transition-colors"
+              style={{ color: 'var(--text-tertiary)', background: 'var(--bg-elevated)' }}
+              title="关闭"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto p-5 md:grid-cols-[220px_minmax(0,1fr)]">
+            <div className="flex min-w-0 flex-col gap-3">
+              <div className="rounded-2xl border p-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+                <p className="mb-2 text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>框选区域</p>
+                <div className="flex flex-col gap-2">
+                  {logoReplaceRegionDrafts.map((region, index) => (
+                    <button
+                      key={region.regionId || index}
+                      type="button"
+                      onClick={() => setActiveLogoReplaceRegionIndex(index)}
+                      className="flex items-center justify-between rounded-2xl px-3 py-2 text-[12px]"
+                      style={{
+                        background: activeLogoReplaceRegionIndex === index ? 'rgba(37,99,235,0.16)' : 'var(--bg-surface)',
+                        color: activeLogoReplaceRegionIndex === index ? 'var(--accent)' : 'var(--text-secondary)',
+                      }}
+                    >
+                      <span>{mode === 'corner_badge_replace' ? '角标区域' : `Logo区域 ${index + 1}`}</span>
+                      {isMultiMode && logoReplaceRegionDrafts.length > 1 ? (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          data-logo-region-control="true"
+                          onClick={(event) => { event.stopPropagation(); removeLogoReplaceRegionDraft(index); }}
+                          className="rounded-full px-1.5 text-[10px]"
+                          style={{ color: 'var(--text-tertiary)' }}
+                        >
+                          删除
+                        </span>
+                      ) : null}
+                    </button>
+                  ))}
+                </div>
+                {isMultiMode ? (
+                  <button
+                    type="button"
+                    onClick={addLogoReplaceRegionDraft}
+                    className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-2xl px-3 py-2 text-[12px] font-medium"
+                    style={{ background: 'var(--bg-surface)', color: 'var(--text-primary)' }}
+                  >
+                    <Plus size={14} /> 新增区域
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="rounded-2xl border p-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+                <p className="mb-2 text-[11px] font-medium" style={{ color: 'var(--text-secondary)' }}>绑定Logo</p>
+                <div className="flex flex-col gap-2">
+                  {activeLogoReplaceLogos.length > 0 ? activeLogoReplaceLogos.map((logo, index) => (
+                    <button
+                      key={logo.id}
+                      type="button"
+                      onClick={() => updateLogoReplaceRegionDraft(activeLogoReplaceRegionIndex, { logoId: logo.id, logoIndex: index + 1 })}
+                      className="flex items-center gap-2 rounded-2xl px-2 py-2 text-left text-[12px]"
+                      style={{
+                        background: activeLogoId === logo.id ? 'rgba(37,99,235,0.16)' : 'var(--bg-surface)',
+                        color: activeLogoId === logo.id ? 'var(--accent)' : 'var(--text-secondary)',
+                      }}
+                    >
+                      <img src={logo.url} alt={logo.fileName} className="h-8 w-8 rounded-xl object-contain" />
+                      <span className="min-w-0 flex-1 truncate">{logo.fileName || `Logo ${index + 1}`}</span>
+                      {activeLogoId === logo.id && <Check size={14} />}
+                    </button>
+                  )) : (
+                    <p className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>先上传新Logo素材。</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="min-w-0">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <span className="text-[12px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                  {activeLogoReplaceReference.fileName || '待替换原图'}
+                </span>
+                <span className="text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                  在图片上拖拽重新框选当前区域
+                </span>
+              </div>
+              <div className="flex justify-center">
+                <div
+                  className="flex w-full max-w-[720px] items-center justify-center rounded-3xl p-3"
+                  style={{ height: 'min(60vh, 680px)', background: 'var(--bg-elevated)' }}
+                >
+                  <div
+                    ref={logoReplaceRegionFrameRef}
+                    className="relative overflow-hidden rounded-3xl border"
+                    style={{
+                      aspectRatio: `${activeLogoReplaceReference.originalWidth || 1000} / ${activeLogoReplaceReference.originalHeight || 1000}`,
+                      width: referenceRatio >= 1 ? '100%' : `calc(min(60vh, 680px) * ${referenceRatio})`,
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      borderColor: 'var(--border-subtle)',
+                      background: 'var(--bg-surface)',
+                      touchAction: 'none',
+                    }}
+                    onPointerDown={handleLogoReplaceRegionPointerDown}
+                    onPointerMove={handleLogoReplaceRegionPointerMove}
+                    onPointerUp={handleLogoReplaceRegionPointerUp}
+                    onPointerCancel={handleLogoReplaceRegionPointerUp}
+                  >
+                    <img
+                      src={activeLogoReplaceReference.url}
+                      alt="Logo替换区域参考图"
+                      className="h-full w-full select-none object-contain"
+                      draggable={false}
+                    />
+                    {logoReplaceRegionDrafts.map((region, index) => (
+                      <button
+                        key={region.regionId || index}
+                        type="button"
+                        data-logo-region-control="true"
+                        onClick={(event) => { event.stopPropagation(); setActiveLogoReplaceRegionIndex(index); }}
+                        className="absolute rounded-xl border-2 bg-red-500/15 text-[10px] font-semibold text-white shadow-[0_0_0_1px_rgba(255,255,255,0.65)]"
+                        style={{
+                          left: `${region.xRatio * 100}%`,
+                          top: `${region.yRatio * 100}%`,
+                          width: `${region.widthRatio * 100}%`,
+                          height: `${region.heightRatio * 100}%`,
+                          borderColor: activeLogoReplaceRegionIndex === index ? '#2563eb' : '#ef4444',
+                        }}
+                      >
+                        <span className="absolute left-1 top-1 rounded-full bg-black/55 px-1.5 py-0.5">
+                          {mode === 'corner_badge_replace' ? '角标' : index + 1}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 border-t px-5 py-4" style={{ borderColor: 'var(--border-subtle)' }}>
+            <button
+              type="button"
+              onClick={() => setLogoReplaceRegionEditorOpen(false)}
+              className="rounded-2xl px-4 py-2 text-[12px] font-medium"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={saveLogoReplaceRegions}
+              className="rounded-2xl px-4 py-2 text-[12px] font-medium text-white"
+              style={{ background: 'var(--accent)' }}
+            >
+              保存区域
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="shrink-0" style={{ background: 'var(--bg-base)' }}>
       <div className="px-6 pt-4 pb-5">
@@ -2240,9 +2694,10 @@ const BottomInputBar: React.FC<Props> = ({
         <MaterialPreviewBar
           materials={displayMaterials}
           onRemoveMaterial={handlePreviewRemove}
-          onAdjustMaterial={isEverythingReplaceProductReplace ? handlePreviewAdjust : undefined}
+          onAdjustMaterial={isEverythingReplaceProductReplace || isEverythingReplaceLogoReplace ? handlePreviewAdjust : undefined}
         />
         {renderEverythingReplaceLogoPlacementEditor()}
+        {renderLogoReplaceRegionEditor()}
         {isDreaminaVideoGeneration && (
           <div className="mx-auto mb-3 flex max-w-[896px] flex-col gap-1 rounded-2xl border px-4 py-2.5 text-[12px] leading-relaxed" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)', color: 'var(--text-secondary)' }}>
             <span>{getDreaminaModeGuidance(currentParams)}</span>
@@ -2448,6 +2903,7 @@ const BottomInputBar: React.FC<Props> = ({
                       onSelect={handleMaterialTypeSelect}
                       onMaterialAction={(type) => {
                         if (type === 'logo') openLogoPlacementEditor();
+                        if (type === 'styleRef') openLogoReplaceRegionEditor();
                       }}
                       materialTypes={contextMaterialTypes}
                       materialLabels={
@@ -2462,6 +2918,8 @@ const BottomInputBar: React.FC<Props> = ({
                       materialActionLabels={
                         isEverythingReplaceProductReplace && activeEverythingReplaceLogo
                           ? { logo: '调整位置' }
+                          : isEverythingReplaceLogoReplace && activeLogoReplaceReference
+                          ? { styleRef: '框选区域' }
                           : undefined
                       }
                     />

@@ -58,7 +58,7 @@ interface Props {
 
 const moduleNames: Record<string, string> = {
   one_click: '一键主详', translation: '出海翻译', retouch: '产品精修', everything_replace: '万物替换',
-  buyer_show: '买家秀', video: '短视频', xhs_cover: '小红书', agent_center: '智能体',
+  buyer_show: '买家秀', video: '短视频', xhs_cover: '小红书', agent_center: '智能体', image_crop: '图片裁切',
 };
 
 const subFeatureNames: Record<string, string> = {
@@ -80,6 +80,8 @@ const subFeatureNames: Record<string, string> = {
   storyboard: '分镜',
   diagnosis: '诊断',
   cover: '封面',
+  long_slice: '长图切片',
+  resize: '修改尺寸',
 };
 
 const normalizeSchemeText = (scheme?: string) =>
@@ -518,6 +520,7 @@ const ProjectCard: React.FC<Props> = ({
   const isOneClickProject = project.module === 'one_click';
   const isEverythingReplaceProductEditProject = project.module === 'everything_replace' && project.subFeature === 'product_replace';
   const isEverythingReplaceBackgroundEditProject = project.module === 'everything_replace' && project.subFeature === 'background_replace';
+  const isImageCropProject = project.module === 'image_crop';
   const usesMinimalRoleEditPrompt = isOneClickProject || isEverythingReplaceProductEditProject || isEverythingReplaceBackgroundEditProject;
   const getCurrentStoryboardDisplayUrl = (result: GeneratedResult) => {
     if (!isVersionedImageProject) return result.imageUrl;
@@ -863,6 +866,35 @@ const ProjectCard: React.FC<Props> = ({
       addToast(error instanceof Error ? error.message : '下载失败', 'error');
     }
   };
+
+  const renderImageCropSliceCard = (result: GeneratedResult, index: number) => (
+    <article
+      key={result.id}
+      className="group relative min-h-0 overflow-hidden rounded-2xl"
+      style={{ background: 'var(--bg-elevated)' }}
+    >
+      <button
+        type="button"
+        onClick={() => openImage(result.id)}
+        className="block h-[180px] w-full"
+        title="预览切片"
+      >
+        {renderMedia(result, 'h-full w-full object-contain')}
+      </button>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          void handleDownloadSingle(result, index);
+        }}
+        className="absolute bottom-2 right-2 inline-flex h-8 w-8 items-center justify-center rounded-full transition-all hover:-translate-y-0.5"
+        style={{ background: 'var(--bg-elevated)', color: 'var(--accent)', boxShadow: 'var(--shadow-soft)' }}
+        title="下载图片"
+      >
+        <Download size={13} />
+      </button>
+    </article>
+  );
 
   const handleDownloadAll = async () => {
     const downloadable = project.results.filter((result) => result.imageUrl || result.videoUrl);
@@ -1907,8 +1939,11 @@ const ProjectCard: React.FC<Props> = ({
                         </div>
                       </div>
                     ) : (
-                      <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-3">
+                      <div className={isImageCropProject ? 'grid gap-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5' : 'grid gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-3'}>
                         {project.results.map((result, index) => {
+                          if (isImageCropProject) {
+                            return renderImageCropSliceCard(result, index);
+                          }
                           const isVideoResult = result.mediaType === 'video' || Boolean(result.videoUrl) || isVideoGenerationProject;
                           const versionItems = isBuyerShowProject ? (
                             result.storyboardImageVersions?.length

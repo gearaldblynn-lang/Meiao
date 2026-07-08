@@ -68,7 +68,7 @@ import { embedTexts } from './embeddingProvider.mjs';
 import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
-import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, createJobWorker } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, updateJobFields, createJobWorker } from './jobManager.mjs';
 import {
   CREDIT_LIMIT_MODES,
   attachCreditReservationToJobPayload,
@@ -92,6 +92,7 @@ import {
   getLocalJobQueueStats,
   listLocalJobsForUser,
   markLocalJobCompleted,
+  updateLocalJobResult,
   markLocalJobFailed,
   normalizeLocalJobs,
   reconcileRestartedLocalJobs,
@@ -11180,8 +11181,35 @@ const handleMysqlRequest = async (req, res, url) => {
   }
 
   const jobDetailMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
+  const jobResultMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/result$/);
   const jobCancelMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/cancel$/);
   const jobRetryMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/retry$/);
+
+  if (jobResultMatch && req.method === 'PATCH') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const jobId = decodeURIComponent(jobResultMatch[1]);
+    const body = await readBody(req);
+    const resultPatch = body?.result && typeof body.result === 'object' ? body.result : {};
+    const pool = await getMysqlPool();
+    const job = await getDbJobByIdForUser(user, jobId);
+    if (!job) {
+      json(res, 404, { message: '任务不存在。' });
+      return;
+    }
+    const nextResult = {
+      ...(job.result && typeof job.result === 'object' ? job.result : {}),
+      ...resultPatch,
+    };
+    await updateJobFields(pool, job.id, {
+      result_json: JSON.stringify(nextResult),
+      provider_task_id: String(resultPatch.providerTaskId || job.providerTaskId || ''),
+      updated_at: Date.now(),
+    });
+    const updatedJob = await getDbJobByIdForUser(user, job.id);
+    json(res, 200, { job: updatedJob || { ...job, result: nextResult } });
+    return;
+  }
 
   if (jobDetailMatch && req.method === 'GET') {
     const user = await requireDbUser(req, res);
@@ -14405,8 +14433,26 @@ const handleLocalRequest = async (req, res, url) => {
   }
 
   const jobDetailMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)$/);
+  const jobResultMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/result$/);
   const jobCancelMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/cancel$/);
   const jobRetryMatch = url.pathname.match(/^\/api\/jobs\/([^/]+)\/retry$/);
+
+  if (jobResultMatch && req.method === 'PATCH') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const jobId = decodeURIComponent(jobResultMatch[1]);
+    const body = await readBody(req);
+    const resultPatch = body?.result && typeof body.result === 'object' ? body.result : {};
+    const job = getLocalJobByIdForUser(user, jobId);
+    if (!job) {
+      json(res, 404, { message: '任务不存在。' });
+      return;
+    }
+    const updatedJob = updateLocalJobResult(store, job.id, resultPatch);
+    writeLocalStore(store);
+    json(res, 200, { job: updatedJob || job });
+    return;
+  }
 
   if (jobDetailMatch && req.method === 'GET') {
     const user = localRequireUser(req, res, store);

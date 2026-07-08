@@ -83,6 +83,9 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
   };
 
   const totalCount = groups.reduce((sum, group) => sum + group.list.length, 0);
+  const currentLightboxActionLabel = currentLightboxItem && onAdjustMaterial
+    ? (currentLightboxItem.type === 'logo' ? '调整位置' : currentLightboxItem.type === 'styleRef' ? '框选区域' : '')
+    : '';
 
   return (
     <>
@@ -248,8 +251,8 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
         onClose={() => setLightboxOpen(false)}
         onPrev={() => setLightboxIndex((i) => (i - 1 + allUrls.length) % allUrls.length)}
         onNext={() => setLightboxIndex((i) => (i + 1) % allUrls.length)}
-        actionLabel={currentLightboxItem?.type === 'logo' && onAdjustMaterial ? '调整位置' : undefined}
-        onActionCurrent={currentLightboxItem?.type === 'logo' && onAdjustMaterial ? () => {
+        actionLabel={currentLightboxActionLabel || undefined}
+        onActionCurrent={currentLightboxActionLabel ? () => {
           setLightboxOpen(false);
           onAdjustMaterial(currentLightboxItem.type, currentLightboxItem.id);
         } : undefined}
