@@ -6,9 +6,21 @@ import {
   buildSmartFactoryLinkMarker,
   findLinkedAgentCenterAgent,
   findLinkedKnowledgeBase,
+  isFactoryManagedAgent,
   SYNC_ERROR_CODES,
   VALIDATION_PROBE_MESSAGE,
 } from './smartFactoryAgentBridge.mjs';
+
+test('isFactoryManagedAgent:结构化字段或旧 marker 前缀命中(编辑锁正用例)', () => {
+  assert.equal(isFactoryManagedAgent({ factoryAgentId: 'fa-1' }), true);
+  assert.equal(isFactoryManagedAgent({ description: '[智能工厂同步:fa-1] 由智能工厂同步。' }), true);
+});
+
+test('isFactoryManagedAgent:中心自建 agent 不命中(编辑锁反用例)', () => {
+  assert.equal(isFactoryManagedAgent({ description: '普通自建智能体', factoryAgentId: '' }), false);
+  assert.equal(isFactoryManagedAgent({}), false);
+  assert.equal(isFactoryManagedAgent(null), false);
+});
 
 const factoryConfig = {
   knowledgeBases: [

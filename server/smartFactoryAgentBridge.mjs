@@ -25,6 +25,14 @@ export const buildSmartFactoryLinkMarker = (factoryAgentId) => (
   `${SMART_FACTORY_LINK_PREFIX}${clean(factoryAgentId, 120)}]`
 );
 
+// 中心侧"是否工厂出品 agent"的单一判据:结构化字段 factoryAgentId 优先,
+// 旧 description marker 前缀仅作历史数据回退。编辑锁等所有消费方一律调这里,
+// 禁止在别处再写平行判据(散落判据是根因库点名的反模式)。
+export const isFactoryManagedAgent = (agent) => (
+  Boolean(agent?.factoryAgentId)
+  || String(agent?.description || '').includes(SMART_FACTORY_LINK_PREFIX)
+);
+
 export const findLinkedAgentCenterAgent = (agents = [], factoryAgentId = '') => {
   const id = clean(factoryAgentId, 120);
   if (!id) return null;
