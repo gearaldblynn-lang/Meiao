@@ -662,3 +662,34 @@ test('U2:双 handler 路由源码断言——MySQL 与本地 JSON 模式都有 a
   assert.equal(localDelete.length, 1, '本地 JSON 模式必须有 agent DELETE 路由');
   assert.equal((source.match(/deleteSmartFactoryAgent\(/g) || []).length >= 2, true, '两个路由都调用同一 store 函数');
 });
+
+// 2026-07-08 云上实锤:用户删掉最后一个知识库后,normalize 把"空数组"误当"字段缺失",
+// 默认演示库(售后知识库 2 文档)复活并被持久化——"删除了,显示已删除,但是还在"。
+// 契约:字段缺失(非数组)才播种默认;空数组是用户真实删除的结果,必须保持为空。
+test('删除最后一个知识库后不复活默认演示库(含持久化回读)', () => {
+  const onlyDefault = normalizeSmartFactoryConfig({});
+  assert.equal(onlyDefault.knowledgeBases.length, 1, '前置:默认配置只有一个演示库');
+  const deleted = deleteSmartFactoryKnowledgeBase(onlyDefault, onlyDefault.knowledgeBases[0].id);
+  assert.deepEqual(deleted.knowledgeBases, [], '删除最后一个库后必须为空');
+  // 模拟"存库→下次请求读出再 normalize"的持久化回读,复活曾发生在这一步
+  const reloaded = normalizeSmartFactoryConfig(JSON.parse(JSON.stringify(deleted)));
+  assert.deepEqual(reloaded.knowledgeBases, [], '持久化回读后也不得复活默认库');
+});
+
+test('删除最后一个模型供应商后不复活默认供应商', () => {
+  const base = normalizeSmartFactoryConfig({});
+  const withoutProviders = base.modelProviders.reduce(
+    (config, provider) => deleteSmartFactoryModelProvider(config, provider.provider),
+    base,
+  );
+  assert.deepEqual(withoutProviders.modelProviders, [], '删光供应商后必须为空');
+  const reloaded = normalizeSmartFactoryConfig(JSON.parse(JSON.stringify(withoutProviders)));
+  assert.deepEqual(reloaded.modelProviders, [], '持久化回读后也不得复活默认供应商');
+});
+
+test('字段缺失(非数组)时仍播种默认配置——初始化语义不受影响', () => {
+  const seeded = normalizeSmartFactoryConfig({});
+  assert.equal(seeded.knowledgeBases.length > 0, true);
+  assert.equal(seeded.modelProviders.length > 0, true);
+  assert.equal(seeded.tools.length > 0, true);
+});
