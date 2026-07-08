@@ -29,6 +29,7 @@ import {
   Wrench,
 } from 'lucide-react';
 import { WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
+import { formatTime } from '../../utils/timeFormat';
 import {
   addSmartFactoryKnowledgeDocument,
   createSmartFactoryAgent,
@@ -308,6 +309,14 @@ const getKnowledgeCount = (logs: Array<Record<string, unknown>>) => logs.reduce(
   sum + getTraceList(log).filter((item) => String((item as Record<string, unknown>).event || '').includes('knowledge')).length
 ), 0);
 
+// agent 状态标签(已发布/草稿+时间),在 SmartFactory 列表和侧边栏两处复用
+const agentStatusLabel = (agent: { status?: string; publishedAt?: number | null } | null | undefined): string => {
+  if (!agent) return '';
+  return agent.status === 'published'
+    ? `已发布${agent.publishedAt ? `（${formatTime(agent.publishedAt)}）` : ''}`
+    : '草稿';
+};
+
 const StatusPill = ({ children, tone = 'neutral' }: { children: React.ReactNode; tone?: 'neutral' | 'good' | 'warn' }) => {
   const style = tone === 'good'
     ? { background: 'rgba(34,197,94,.11)', color: '#15803d' }
@@ -568,13 +577,6 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
     });
   };
 
-  const resolvePublishSuccessMessage = (agentCenterSync: SmartFactoryAgentCenterSync | undefined): string => {
-    if (agentCenterSync && agentCenterSync.synced && 'published' in agentCenterSync && agentCenterSync.published) {
-      return '已发布并上线到智能体中心，商家侧立即可用。';
-    }
-    return '智能体已发布，可以在调试预览中正式运行。';
-  };
-
   const handlePublish = async () => {
     if (!activeAgent) return;
     let agentCenterSync: SmartFactoryAgentCenterSync | undefined;
@@ -600,7 +602,10 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
       }
     }
     // Only show success message when no error was set
-    onStatusMessage(resolvePublishSuccessMessage(agentCenterSync));
+    const publishSuccessMessage = (agentCenterSync?.synced && 'published' in agentCenterSync && agentCenterSync.published)
+      ? '已发布并上线到智能体中心，商家侧立即可用。'
+      : '智能体已发布，可以在调试预览中正式运行。';
+    onStatusMessage(publishSuccessMessage);
   };
 
   const handleDeleteAgent = async () => {
@@ -957,7 +962,7 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
                   </span>
                   <div className="min-w-0">
                     <p className="truncate text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>{agent.name}</p>
-                    <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>AGENT · {agent.status === 'published' ? '已发布' : '草稿'}{agent.status === 'published' && agent.publishedAt ? `（${new Date(agent.publishedAt).toLocaleString('zh-CN')}）` : ''}</p>
+                    <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>AGENT · {agentStatusLabel(agent)}</p>
                   </div>
                 </div>
                 <ChevronRight size={16} color="var(--text-tertiary)" />
@@ -991,7 +996,7 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
             <span className="inline-flex h-10 w-10 items-center justify-center rounded-[8px]" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}><Bot size={20} /></span>
             <div className="min-w-0">
               <p className="truncate text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>{activeAgent?.name || '智能体工作室'}</p>
-              <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{activeAgent?.status === 'published' ? '已发布' : '草稿'}{activeAgent?.status === 'published' && activeAgent?.publishedAt ? `（${new Date(activeAgent.publishedAt).toLocaleString('zh-CN')}）` : ''} · AGENT</p>
+              <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{agentStatusLabel(activeAgent)} · AGENT</p>
             </div>
           </div>
           <p className="mt-3 line-clamp-2 text-[12px] leading-5" style={{ color: 'var(--text-secondary)' }}>{activeAgent?.description || '配置智能体能力。'}</p>

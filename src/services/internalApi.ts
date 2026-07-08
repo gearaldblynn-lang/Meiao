@@ -26,6 +26,10 @@ import type {
 import type { PersistedAppState } from '../utils/appState';
 import { ensureUploadFileName } from '../utils/uploadFileName.mjs';
 import { parseChatSseChunk, type ChatStreamEvent } from './chatStreamParse.ts';
+import {
+  FACTORY_MANAGED_AGENT_ERROR_CODE,
+  FACTORY_MANAGED_AGENT_NOTICE,
+} from '../modules/AgentCenter/factoryManagedConstants';
 
 const SESSION_TOKEN_KEY = 'MEIAO_INTERNAL_SESSION_TOKEN';
 const CURRENT_USER_KEY = 'MEIAO_INTERNAL_CURRENT_USER';
@@ -119,8 +123,8 @@ const classifyError = (status: number, serverMessage: string, serverErrorCode?: 
     return new ApiError('登录已过期，请重新登录', 'unauthorized', status);
   if (status === 403) {
     // factory_managed_agent: 后端返回人话 message，直接透传给用户
-    if (serverErrorCode === 'factory_managed_agent')
-      return new ApiError(serverMessage || '该智能体由智能工厂管理，请在智能工厂修改后重新发布。', 'factory_managed_agent', status);
+    if (serverErrorCode === FACTORY_MANAGED_AGENT_ERROR_CODE)
+      return new ApiError(serverMessage || FACTORY_MANAGED_AGENT_NOTICE, FACTORY_MANAGED_AGENT_ERROR_CODE, status);
     return new ApiError('没有权限执行此操作', 'forbidden', status);
   }
   if (status >= 500)
