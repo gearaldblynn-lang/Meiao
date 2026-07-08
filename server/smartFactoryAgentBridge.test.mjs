@@ -105,3 +105,19 @@ test('findLinkedKnowledgeBase 结构化优先,回退旧标记', () => {
   assert.equal(findLinkedKnowledgeBase([byMarker], 'fa-1', 'kb-x')?.id, 'k2');
   assert.equal(findLinkedKnowledgeBase([], 'fa-1', 'kb-1'), null);
 });
+
+test('findLinkedKnowledgeBase 空 kbId 直接返回 null(无法构成单一知识库判据)', () => {
+  const byMarker = { id: 'k2', description: '[智能工厂同步:fa-1] 由智能工厂知识库「售后」同步。' };
+  assert.equal(findLinkedKnowledgeBase([byMarker], 'fa-1', ''), null);
+  assert.equal(findLinkedKnowledgeBase([byMarker], 'fa-1', '   '), null);
+});
+
+test('结构化字段优先于旧 marker,即使 marker 记录排在数组前面', () => {
+  const agentByMarker = { id: 'a-old', description: `x ${buildSmartFactoryLinkMarker('fa-1')} y` };
+  const agentByField = { id: 'a-new', description: '无标记', factoryAgentId: 'fa-1' };
+  assert.equal(findLinkedAgentCenterAgent([agentByMarker, agentByField], 'fa-1')?.id, 'a-new');
+
+  const kbByMarker = { id: 'k-old', description: `${buildSmartFactoryLinkMarker('fa-1')} 旧同步` };
+  const kbByField = { id: 'k-new', factoryAgentId: 'fa-1', factoryKnowledgeBaseId: 'kb-1' };
+  assert.equal(findLinkedKnowledgeBase([kbByMarker, kbByField], 'fa-1', 'kb-1')?.id, 'k-new');
+});

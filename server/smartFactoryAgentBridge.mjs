@@ -28,10 +28,12 @@ export const findLinkedAgentCenterAgent = (agents = [], factoryAgentId = '') => 
 export const findLinkedKnowledgeBase = (knowledgeBases = [], factoryAgentId = '', factoryKnowledgeBaseId = '') => {
   const agentId = clean(factoryAgentId, 120);
   const kbId = clean(factoryKnowledgeBaseId, 120);
-  if (!agentId) return null;
+  if (!agentId || !kbId) return null;
   const list = asArray(knowledgeBases);
   const byField = list.find((kb) => clean(kb?.factoryAgentId, 120) === agentId && clean(kb?.factoryKnowledgeBaseId, 120) === kbId);
   if (byField) return byField;
+  // 已知限制:旧 marker 只编码 agentId,同一 agent 多知识库的历史数据会命中第一条;
+  // 已核实存量(本地库 2026-07-08)仅存在单 agent 单 KB,不做 name 消歧。
   const marker = buildSmartFactoryLinkMarker(agentId);
   return list.find((kb) => String(kb?.description || '').includes(marker)) || null;
 };
