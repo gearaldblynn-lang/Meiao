@@ -163,6 +163,7 @@ import {
 import {
   buildAgentCenterSyncPlan,
   buildSmartFactoryLinkMarker,
+  cleanFactoryId,
   findLinkedAgentCenterAgent,
   findLinkedKnowledgeBase,
   isFactoryManagedAgent,
@@ -864,6 +865,8 @@ const composeSmartFactoryConfigForRuntime = (systemSettings = {}) => (
 // 本地 JSON 模式:验证辅助函数——复用于验证路由和发布管道。
 // 成功返回 { ok: true, version, result };失败返回 { ok: false, errorMessage }。
 const validateLocalAgentVersionRecord = async (store, user, agent, version, message) => {
+  const rawVersion = store.agentVersions.find((item) => item.id === version.id);
+  if (!rawVersion) return { ok: false, errorMessage: '版本记录不存在' };
   try {
     const result = await runLocalAgentConversation({
       store,
@@ -873,8 +876,6 @@ const validateLocalAgentVersionRecord = async (store, user, agent, version, mess
       priorMessages: [],
       currentMessage: String(message || '请用一句话说明这个智能体能做什么。'),
     });
-    const rawVersion = store.agentVersions.find((item) => item.id === version.id);
-    if (!rawVersion) return { ok: false, errorMessage: '版本记录不存在' };
     rawVersion.validationStatus = 'success';
     rawVersion.validationSummary = {
       ...result,
@@ -914,8 +915,7 @@ const validateLocalAgentVersionRecord = async (store, user, agent, version, mess
     });
     return { ok: true, version: getLocalAgentVersionById(store, version.id), result: rawVersion.validationSummary };
   } catch (error) {
-    const rawVersion = store.agentVersions.find((item) => item.id === version.id);
-    if (rawVersion) rawVersion.validationStatus = 'failed';
+    rawVersion.validationStatus = 'failed';
     appendLocalLog(store, {
       user,
       level: 'error',
@@ -1084,7 +1084,7 @@ const syncFactoryAgentToLocalAgentCenter = async (store, user, smartFactoryConfi
 // 链接记录 → 重复物化。改为定向 SQL:结构化字段优先,无命中回退旧 description marker
 // (判据与 bridge 的 findLinkedAgentCenterAgent/findLinkedKnowledgeBase 保持一致)。
 const findDbLinkedAgentByFactoryId = async (pool, factoryAgentId) => {
-  const id = String(factoryAgentId || '').trim().slice(0, 120);
+  const id = cleanFactoryId(factoryAgentId);
   if (!id) return null;
   const [byField] = await pool.query(
     'SELECT id FROM agents WHERE factory_agent_id = ? ORDER BY updated_at DESC LIMIT 1',
@@ -1099,8 +1099,8 @@ const findDbLinkedAgentByFactoryId = async (pool, factoryAgentId) => {
 };
 
 const findDbLinkedKnowledgeBaseByFactoryId = async (pool, factoryAgentId, factoryKnowledgeBaseId) => {
-  const agentId = String(factoryAgentId || '').trim().slice(0, 120);
-  const kbId = String(factoryKnowledgeBaseId || '').trim().slice(0, 120);
+  const agentId = cleanFactoryId(factoryAgentId);
+  const kbId = cleanFactoryId(factoryKnowledgeBaseId);
   if (!agentId || !kbId) return null;
   const [byField] = await pool.query(
     'SELECT id FROM knowledge_bases WHERE factory_agent_id = ? AND factory_kb_id = ? ORDER BY updated_at DESC LIMIT 1',
