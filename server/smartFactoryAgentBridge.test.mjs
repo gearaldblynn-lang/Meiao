@@ -5,6 +5,7 @@ import {
   buildAgentCenterSyncPlan,
   buildSmartFactoryLinkMarker,
   findLinkedAgentCenterAgent,
+  findLinkedKnowledgeBase,
 } from './smartFactoryAgentBridge.mjs';
 
 const factoryConfig = {
@@ -43,7 +44,7 @@ test('buildAgentCenterSyncPlan maps prompt/model/bound knowledge into a material
   assert.equal(plan.agentPayload.defaultChatModel, 'gpt-5.5');
   assert.deepEqual(plan.agentPayload.allowedChatModels, ['gpt-5.5']);
   assert.equal(plan.agentPayload.department, '智能工厂');
-  assert.ok(plan.agentPayload.description.includes(buildSmartFactoryLinkMarker('agent-after-sale')));
+  assert.ok(!plan.agentPayload.description.includes(buildSmartFactoryLinkMarker('agent-after-sale')));
   // 只带绑定的 kb-1,空文档被过滤,未绑定的 kb-2 不出现
   assert.equal(plan.knowledgeBases.length, 1);
   assert.equal(plan.knowledgeBases[0].factoryKnowledgeBaseId, 'kb-1');
@@ -74,4 +75,33 @@ test('findLinkedAgentCenterAgent locates the bridged agent by marker and is idem
 
 test('buildAgentCenterSyncPlan returns null without a factory agent id', () => {
   assert.equal(buildAgentCenterSyncPlan({ factoryAgent: {}, factoryConfig }), null);
+});
+
+test('findLinkedAgentCenterAgent 优先结构化 factoryAgentId,回退旧 description 标记', () => {
+  const byField = { id: 'a1', description: '普通描述', factoryAgentId: 'fa-1' };
+  const byMarker = { id: 'a2', description: '旧的 [智能工厂同步:fa-2] 描述' };
+  const unrelated = { id: 'a3', description: '无关' };
+  assert.equal(findLinkedAgentCenterAgent([unrelated, byField], 'fa-1')?.id, 'a1');
+  assert.equal(findLinkedAgentCenterAgent([unrelated, byMarker], 'fa-2')?.id, 'a2');
+  assert.equal(findLinkedAgentCenterAgent([unrelated], 'fa-9'), null);
+});
+
+test('buildAgentCenterSyncPlan 输出结构化链接,新 description 不再内嵌标记', () => {
+  const plan = buildAgentCenterSyncPlan({
+    factoryAgent: { id: 'fa-1', name: '客服', prompt: 'p', knowledgeBaseIds: ['kb-1'], model: { model: 'gpt-5.5' } },
+    factoryConfig: { knowledgeBases: [{ id: 'kb-1', name: '售后', documents: [{ title: 'd', content: '正文' }] }] },
+  });
+  assert.equal(plan.agentPayload.factoryAgentId, 'fa-1');
+  assert.ok(!plan.agentPayload.description.includes('[智能工厂同步:'));
+  assert.equal(plan.knowledgeBases[0].factoryKnowledgeBaseId, 'kb-1');
+  assert.equal(plan.knowledgeBases[0].factoryAgentId, 'fa-1');
+  assert.ok(!plan.knowledgeBases[0].description.includes('[智能工厂同步:'));
+});
+
+test('findLinkedKnowledgeBase 结构化优先,回退旧标记', () => {
+  const byField = { id: 'k1', factoryAgentId: 'fa-1', factoryKnowledgeBaseId: 'kb-1' };
+  const byMarker = { id: 'k2', description: '[智能工厂同步:fa-1] 由智能工厂知识库「售后」同步。' };
+  assert.equal(findLinkedKnowledgeBase([byField], 'fa-1', 'kb-1')?.id, 'k1');
+  assert.equal(findLinkedKnowledgeBase([byMarker], 'fa-1', 'kb-x')?.id, 'k2');
+  assert.equal(findLinkedKnowledgeBase([], 'fa-1', 'kb-1'), null);
 });

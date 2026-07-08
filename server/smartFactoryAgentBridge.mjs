@@ -1,8 +1,10 @@
 // 阶段5:工厂产出 → 智能体中心使用 的同步桥(纯函数层)。
 // 工厂发布 agent 时,把 名称/人设prompt/模型/知识库原文 物化成智能体中心的
 // 草稿 agent + 知识库文档;上线仍走智能体中心既有的 验证→发布 门禁,不绕过。
-// 链接标记:智能体中心 agent 的 description 内嵌单一标记(单一判据,禁止在别处
-// 再写平行解析);重复发布时凭标记 find,不重复建。
+// 关联标记升级:智能体中心 agent/知识库 现通过结构化字段 factoryAgentId /
+// factoryKnowledgeBaseId 关联工厂侧记录(单一判据,禁止在别处再写平行解析);
+// 旧的 `[智能工厂同步:<factoryAgentId>]` description marker 仅作历史数据回退判据
+// 保留,禁止新写入。重复发布时优先按结构化字段 find,再回退旧 marker。
 
 const clean = (value, max = 5000) => String(value ?? '').trim().slice(0, max);
 const asArray = (value) => (Array.isArray(value) ? value : []);
@@ -14,9 +16,24 @@ export const buildSmartFactoryLinkMarker = (factoryAgentId) => (
 );
 
 export const findLinkedAgentCenterAgent = (agents = [], factoryAgentId = '') => {
-  const marker = buildSmartFactoryLinkMarker(factoryAgentId);
-  if (marker === `${SMART_FACTORY_LINK_PREFIX}]`) return null;
-  return asArray(agents).find((agent) => String(agent?.description || '').includes(marker)) || null;
+  const id = clean(factoryAgentId, 120);
+  if (!id) return null;
+  const list = asArray(agents);
+  const byField = list.find((agent) => clean(agent?.factoryAgentId, 120) === id);
+  if (byField) return byField;
+  const marker = buildSmartFactoryLinkMarker(id);
+  return list.find((agent) => String(agent?.description || '').includes(marker)) || null;
+};
+
+export const findLinkedKnowledgeBase = (knowledgeBases = [], factoryAgentId = '', factoryKnowledgeBaseId = '') => {
+  const agentId = clean(factoryAgentId, 120);
+  const kbId = clean(factoryKnowledgeBaseId, 120);
+  if (!agentId) return null;
+  const list = asArray(knowledgeBases);
+  const byField = list.find((kb) => clean(kb?.factoryAgentId, 120) === agentId && clean(kb?.factoryKnowledgeBaseId, 120) === kbId);
+  if (byField) return byField;
+  const marker = buildSmartFactoryLinkMarker(agentId);
+  return list.find((kb) => String(kb?.description || '').includes(marker)) || null;
 };
 
 // 输入:normalize 过的工厂 agent + 工厂配置;输出:物化计划(不执行任何写入)。
@@ -31,8 +48,9 @@ export const buildAgentCenterSyncPlan = ({ factoryAgent = {}, factoryConfig = {}
     .filter((kb) => boundKbIds.has(clean(kb?.id, 120)))
     .map((kb) => ({
       factoryKnowledgeBaseId: clean(kb.id, 120),
+      factoryAgentId,
       name: `工厂同步·${clean(kb.name, 100) || '知识库'}`,
-      description: `${marker} 由智能工厂知识库「${clean(kb.name, 100)}」同步。`,
+      description: `由智能工厂知识库「${clean(kb.name, 100)}」同步。`,
       documents: asArray(kb.documents)
         .map((document) => ({
           title: clean(document?.title || document?.fileName, 255) || '未命名文档',
@@ -48,7 +66,8 @@ export const buildAgentCenterSyncPlan = ({ factoryAgent = {}, factoryConfig = {}
     marker,
     agentPayload: {
       name: clean(factoryAgent.name, 120) || '工厂智能体',
-      description: `${clean(factoryAgent.description, 4000)}\n${marker} 由智能工厂发布同步,验证通过后即可发布上线。`.trim(),
+      description: `${clean(factoryAgent.description, 4000)}\n由智能工厂发布同步。`.trim(),
+      factoryAgentId,
       department: '智能工厂',
       systemPrompt: clean(factoryAgent.prompt, 20000),
       defaultChatModel: model,
