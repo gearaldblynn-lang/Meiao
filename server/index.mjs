@@ -165,6 +165,7 @@ import {
   buildSmartFactoryLinkMarker,
   findLinkedAgentCenterAgent,
   findLinkedKnowledgeBase,
+  SMART_FACTORY_LINK_PREFIX,
   SYNC_ERROR_CODES,
   VALIDATION_PROBE_MESSAGE,
 } from './smartFactoryAgentBridge.mjs';
@@ -940,6 +941,26 @@ const publishLocalAgentVersionRecord = (store, agentId, versionId) => {
     rawAgent.status = 'published';
     rawAgent.updatedAt = Date.now();
   }
+};
+
+// 阶段4.5 中心侧编辑锁:工厂出品 agent 禁改内容(人设/模型/知识库/版本)。
+// 上下线(publish/rollback)、停启用(status-only PATCH)、删除、验证、会话聊天不经此守卫。
+const isStatusOnlyAgentPatch = function isStatusOnlyAgentPatch(payload = {}) {
+  const keys = Object.keys(payload || {});
+  return keys.length > 0 && keys.every((key) => key === 'status');
+};
+
+// 返回 true 表示已拒绝并写响应,调用方应立即 return。
+const rejectIfFactoryManaged = function rejectIfFactoryManaged(res, agent) {
+  const linked =
+    Boolean(agent?.factoryAgentId) ||
+    String(agent?.description || '').includes(SMART_FACTORY_LINK_PREFIX);
+  if (!linked) return false;
+  json(res, 403, {
+    errorCode: 'factory_managed_agent',
+    message: '该智能体由智能工厂管理，请在智能工厂修改后重新发布。',
+  });
+  return true;
 };
 
 // 阶段5 工厂→智能体中心同步桥(执行层)。发布成功后调用;同步失败绝不回滚发布,
@@ -10055,7 +10076,12 @@ const handleMysqlRequest = async (req, res, url) => {
     const admin = await requireDbAdmin(req, res);
     if (!admin) return;
     const body = await readBody(req);
-    const agent = await updateDbAgent(admin, decodeURIComponent(agentDetailMatch[1]), body || {});
+    const agentId = decodeURIComponent(agentDetailMatch[1]);
+    if (!isStatusOnlyAgentPatch(body)) {
+      const agentForLock = await getDbAgentById(agentId);
+      if (rejectIfFactoryManaged(res, agentForLock)) return;
+    }
+    const agent = await updateDbAgent(admin, agentId, body || {});
     if (!agent) {
       json(res, 404, { message: '智能体不存在或无权限。' });
       return;
@@ -10079,7 +10105,10 @@ const handleMysqlRequest = async (req, res, url) => {
   if (agentDraftMatch && req.method === 'POST') {
     const admin = await requireDbAdmin(req, res);
     if (!admin) return;
-    const version = await createDbAgentDraft(admin, decodeURIComponent(agentDraftMatch[1]));
+    const agentId = decodeURIComponent(agentDraftMatch[1]);
+    const agentForLock = await getDbAgentById(agentId);
+    if (rejectIfFactoryManaged(res, agentForLock)) return;
+    const version = await createDbAgentDraft(admin, agentId);
     if (!version) {
       json(res, 404, { message: '智能体不存在或无权限。' });
       return;
@@ -10143,7 +10172,11 @@ const handleMysqlRequest = async (req, res, url) => {
     const admin = await requireDbAdmin(req, res);
     if (!admin) return;
     const body = await readBody(req);
-    const version = await updateDbAgentVersion(admin, decodeURIComponent(agentVersionDetailMatch[1]), body || {});
+    const versionId = decodeURIComponent(agentVersionDetailMatch[1]);
+    const versionForLock = await getDbAgentVersionById(versionId);
+    const agentForLock = versionForLock ? await getDbAgentById(versionForLock.agentId) : null;
+    if (rejectIfFactoryManaged(res, agentForLock)) return;
+    const version = await updateDbAgentVersion(admin, versionId, body || {});
     if (!version) {
       json(res, 400, { message: '版本不存在、已发布或无权限。' });
       return;
@@ -10155,7 +10188,11 @@ const handleMysqlRequest = async (req, res, url) => {
   if (agentVersionDetailMatch && req.method === 'DELETE') {
     const admin = await requireDbAdmin(req, res);
     if (!admin) return;
-    const result = await deleteDbAgentVersion(admin, decodeURIComponent(agentVersionDetailMatch[1]));
+    const versionId = decodeURIComponent(agentVersionDetailMatch[1]);
+    const versionForLock = await getDbAgentVersionById(versionId);
+    const agentForLock = versionForLock ? await getDbAgentById(versionForLock.agentId) : null;
+    if (rejectIfFactoryManaged(res, agentForLock)) return;
+    const result = await deleteDbAgentVersion(admin, versionId);
     if (!result) {
       json(res, 400, { message: '版本不存在、已发布或无权限，不能永久删除。' });
       return;
@@ -12476,7 +12513,12 @@ const handleLocalRequest = async (req, res, url) => {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
     const body = await readBody(req);
-    const agent = updateLocalAgent(store, admin, decodeURIComponent(agentDetailMatch[1]), body || {});
+    const agentId = decodeURIComponent(agentDetailMatch[1]);
+    if (!isStatusOnlyAgentPatch(body)) {
+      const agentForLock = getLocalAgentById(store, agentId);
+      if (rejectIfFactoryManaged(res, agentForLock)) return;
+    }
+    const agent = updateLocalAgent(store, admin, agentId, body || {});
     if (!agent) {
       json(res, 404, { message: '智能体不存在或无权限。' });
       return;
@@ -12502,7 +12544,10 @@ const handleLocalRequest = async (req, res, url) => {
   if (agentDraftMatch && req.method === 'POST') {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
-    const version = createLocalAgentDraft(store, admin, decodeURIComponent(agentDraftMatch[1]));
+    const agentId = decodeURIComponent(agentDraftMatch[1]);
+    const agentForLock = getLocalAgentById(store, agentId);
+    if (rejectIfFactoryManaged(res, agentForLock)) return;
+    const version = createLocalAgentDraft(store, admin, agentId);
     if (!version) {
       json(res, 404, { message: '智能体不存在或无权限。' });
       return;
@@ -12541,7 +12586,11 @@ const handleLocalRequest = async (req, res, url) => {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
     const body = await readBody(req);
-    const version = updateLocalAgentVersion(store, admin, decodeURIComponent(agentVersionDetailMatch[1]), body || {});
+    const versionId = decodeURIComponent(agentVersionDetailMatch[1]);
+    const versionForLock = getLocalAgentVersionById(store, versionId);
+    const agentForLock = versionForLock ? getLocalAgentById(store, versionForLock.agentId) : null;
+    if (rejectIfFactoryManaged(res, agentForLock)) return;
+    const version = updateLocalAgentVersion(store, admin, versionId, body || {});
     if (!version) {
       json(res, 400, { message: '版本不存在、已发布或无权限。' });
       return;
@@ -12554,7 +12603,11 @@ const handleLocalRequest = async (req, res, url) => {
   if (agentVersionDetailMatch && req.method === 'DELETE') {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
-    const result = deleteLocalAgentVersion(store, admin, decodeURIComponent(agentVersionDetailMatch[1]));
+    const versionId = decodeURIComponent(agentVersionDetailMatch[1]);
+    const versionForLock = getLocalAgentVersionById(store, versionId);
+    const agentForLock = versionForLock ? getLocalAgentById(store, versionForLock.agentId) : null;
+    if (rejectIfFactoryManaged(res, agentForLock)) return;
+    const result = deleteLocalAgentVersion(store, admin, versionId);
     if (!result) {
       json(res, 400, { message: '版本不存在、已发布或无权限，不能永久删除。' });
       return;
