@@ -16,6 +16,9 @@ test('本地 sync 执行器:已链接分支走更新管道而非跳过', () => {
   assert.ok(fn.includes('deleteLocalKnowledgeDocument'), '知识库刷新必须走级联删除(清chunk)');
   assert.ok(fn.includes('findLinkedKnowledgeBase'), '知识库判据必须用单一函数');
   assert.ok(!fn.includes('store.knowledgeDocuments = '), '禁止直接 filter knowledgeDocuments(chunk 孤儿)');
+  assert.ok(fn.indexOf('validateLocalAgentVersionRecord(') < fn.indexOf('publishLocalAgentVersionRecord('), '必须先验证再上线');
+  assert.ok(fn.includes('validation?.ok'), '上线必须以验证结果为门槛');
+  assert.ok(fn.includes('kb_refresh_failed'), '知识库刷新失败必须 fail-fast 回报');
 });
 
 test('验证/上线路由复用抽取的辅助函数(单一实现)', () => {
