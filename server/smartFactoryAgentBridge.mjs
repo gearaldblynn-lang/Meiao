@@ -11,6 +11,16 @@ const asArray = (value) => (Array.isArray(value) ? value : []);
 
 export const SMART_FACTORY_LINK_PREFIX = '[智能工厂同步:';
 
+// 同步管道错误码/验证探针文案单一来源:本地/MySQL 两条管道共用,
+// 禁止在管道里再写字面量(散落的魔法字符串是根因库点名的反模式)。
+export const SYNC_ERROR_CODES = {
+  KB_REFRESH_FAILED: 'kb_refresh_failed',
+  DRAFT_CREATE_FAILED: 'draft_create_failed',
+  AGENT_MATERIALIZE_FAILED: 'agent_materialize_failed',
+};
+
+export const VALIDATION_PROBE_MESSAGE = '请用一句话说明这个智能体能做什么。';
+
 export const buildSmartFactoryLinkMarker = (factoryAgentId) => (
   `${SMART_FACTORY_LINK_PREFIX}${clean(factoryAgentId, 120)}]`
 );
