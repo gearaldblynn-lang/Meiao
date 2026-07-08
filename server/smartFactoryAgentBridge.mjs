@@ -9,6 +9,10 @@
 const clean = (value, max = 5000) => String(value ?? '').trim().slice(0, max);
 const asArray = (value) => (Array.isArray(value) ? value : []);
 
+// 工厂 ID 清理函数:120 字符上限(与 description marker 编码保持一致),
+// 供 index.mjs 的 findDb*/findLocal* 链接查找函数复用,消除散落的 120 硬编码。
+export const cleanFactoryId = (value) => clean(value, 120);
+
 export const SMART_FACTORY_LINK_PREFIX = '[智能工厂同步:';
 
 // 同步管道错误码/验证探针文案单一来源:本地/MySQL 两条管道共用,
@@ -40,27 +44,38 @@ export const isFactoryManagedAgent = (agent) => (
   || String(agent?.description || '').includes(SMART_FACTORY_LINK_PREFIX)
 );
 
-export const findLinkedAgentCenterAgent = (agents = [], factoryAgentId = '') => {
+// 共享内部骨架:空判断 → 结构化字段 find → 旧 marker 回退。
+// 导出函数各自传 field predicate(matchByField),签名和行为不变。
+const findByFactoryLink = (list, factoryAgentId, matchByField) => {
   const id = clean(factoryAgentId, 120);
   if (!id) return null;
-  const list = asArray(agents);
-  const byField = list.find((agent) => clean(agent?.factoryAgentId, 120) === id);
+  const items = asArray(list);
+  const byField = items.find(matchByField);
   if (byField) return byField;
   const marker = buildSmartFactoryLinkMarker(id);
-  return list.find((agent) => String(agent?.description || '').includes(marker)) || null;
+  return items.find((item) => String(item?.description || '').includes(marker)) || null;
+};
+
+export const findLinkedAgentCenterAgent = (agents = [], factoryAgentId = '') => {
+  const id = clean(factoryAgentId, 120);
+  return findByFactoryLink(
+    agents,
+    factoryAgentId,
+    (agent) => clean(agent?.factoryAgentId, 120) === id,
+  );
 };
 
 export const findLinkedKnowledgeBase = (knowledgeBases = [], factoryAgentId = '', factoryKnowledgeBaseId = '') => {
   const agentId = clean(factoryAgentId, 120);
   const kbId = clean(factoryKnowledgeBaseId, 120);
-  if (!agentId || !kbId) return null;
-  const list = asArray(knowledgeBases);
-  const byField = list.find((kb) => clean(kb?.factoryAgentId, 120) === agentId && clean(kb?.factoryKnowledgeBaseId, 120) === kbId);
-  if (byField) return byField;
+  if (!kbId) return null;
   // 已知限制:旧 marker 只编码 agentId,同一 agent 多知识库的历史数据会命中第一条;
   // 已核实存量(本地库 2026-07-08)仅存在单 agent 单 KB,不做 name 消歧。
-  const marker = buildSmartFactoryLinkMarker(agentId);
-  return list.find((kb) => String(kb?.description || '').includes(marker)) || null;
+  return findByFactoryLink(
+    knowledgeBases,
+    factoryAgentId,
+    (kb) => clean(kb?.factoryAgentId, 120) === agentId && clean(kb?.factoryKnowledgeBaseId, 120) === kbId,
+  );
 };
 
 // 输入:normalize 过的工厂 agent + 工厂配置;输出:物化计划(不执行任何写入)。
@@ -69,7 +84,6 @@ export const findLinkedKnowledgeBase = (knowledgeBases = [], factoryAgentId = ''
 export const buildAgentCenterSyncPlan = ({ factoryAgent = {}, factoryConfig = {} } = {}) => {
   const factoryAgentId = clean(factoryAgent.id, 120);
   if (!factoryAgentId) return null;
-  const marker = buildSmartFactoryLinkMarker(factoryAgentId);
   const boundKbIds = new Set(asArray(factoryAgent.knowledgeBaseIds).map((id) => clean(id, 120)).filter(Boolean));
   const knowledgeBases = asArray(factoryConfig.knowledgeBases)
     .filter((kb) => boundKbIds.has(clean(kb?.id, 120)))
@@ -90,7 +104,6 @@ export const buildAgentCenterSyncPlan = ({ factoryAgent = {}, factoryConfig = {}
   const model = clean(factoryAgent.model?.model, 160) || 'gpt-5.5';
   return {
     factoryAgentId,
-    marker,
     agentPayload: {
       name: clean(factoryAgent.name, 120) || '工厂智能体',
       description: `${clean(factoryAgent.description, 4000)}\n由智能工厂发布同步。`.trim(),

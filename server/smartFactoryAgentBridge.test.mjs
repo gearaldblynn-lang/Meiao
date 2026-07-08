@@ -7,6 +7,7 @@ import {
   findLinkedAgentCenterAgent,
   findLinkedKnowledgeBase,
   isFactoryManagedAgent,
+  stripFactoryMarkerLines,
   SYNC_ERROR_CODES,
   VALIDATION_PROBE_MESSAGE,
 } from './smartFactoryAgentBridge.mjs';
@@ -141,4 +142,25 @@ test('结构化字段优先于旧 marker,即使 marker 记录排在数组前面'
   const kbByMarker = { id: 'k-old', description: `${buildSmartFactoryLinkMarker('fa-1')} 旧同步` };
   const kbByField = { id: 'k-new', factoryAgentId: 'fa-1', factoryKnowledgeBaseId: 'kb-1' };
   assert.equal(findLinkedKnowledgeBase([kbByMarker, kbByField], 'fa-1', 'kb-1')?.id, 'k-new');
+});
+
+test('stripFactoryMarkerLines:多行 description 只删含 marker 的行', () => {
+  const marker = buildSmartFactoryLinkMarker('fa-1');
+  const input = `第一行\n${marker}\n第三行`;
+  assert.equal(stripFactoryMarkerLines(input), '第一行\n第三行');
+});
+
+test('stripFactoryMarkerLines:无 marker 行时原样返回', () => {
+  const input = '普通描述\n第二行';
+  assert.equal(stripFactoryMarkerLines(input), input);
+});
+
+test('stripFactoryMarkerLines:全 marker 行变空串', () => {
+  const marker = buildSmartFactoryLinkMarker('fa-2');
+  assert.equal(stripFactoryMarkerLines(marker), '');
+});
+
+test('stripFactoryMarkerLines:null/undefined 安全返回空串', () => {
+  assert.equal(stripFactoryMarkerLines(null), '');
+  assert.equal(stripFactoryMarkerLines(undefined), '');
 });
