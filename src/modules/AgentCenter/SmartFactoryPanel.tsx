@@ -13,7 +13,6 @@ import {
   Filter,
   Globe2,
   Image as ImageIcon,
-  Import,
   KeyRound,
   MessageSquareText,
   PackagePlus,
@@ -894,7 +893,6 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
             {[
               { label: '创建空白应用', icon: FilePlus2, action: handleNewAgent },
               { label: '从模板创建', icon: Sparkles, action: () => setFilter('workflow') },
-              { label: '导入 DSL 文件', icon: Import, action: () => setSourceOpen(true) },
             ].map((item) => {
               const Icon = item.icon;
               return (
