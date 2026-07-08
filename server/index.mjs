@@ -166,6 +166,7 @@ import {
   findLinkedAgentCenterAgent,
   findLinkedKnowledgeBase,
   isFactoryManagedAgent,
+  stripFactoryMarkerLines,
   SYNC_ERROR_CODES,
   VALIDATION_PROBE_MESSAGE,
 } from './smartFactoryAgentBridge.mjs';
@@ -959,6 +960,33 @@ const rejectIfFactoryManaged = (res, agent) => {
     message: '该智能体由智能工厂管理，请在智能工厂修改后重新发布。',
   });
   return true;
+};
+
+// 工厂删除 agent 时的级联:中心侧只下线+解除工厂锁定,不物理删除(商家会话历史保留)。
+// 解锁必须同时清结构化字段和 description 旧标记行——编辑锁判据(isFactoryManagedAgent)有
+// description 前缀回退,漏清会让锁复活。stripFactoryMarkerLines 在 bridge 单一实现,
+// 前缀常量不在 index 引用(编辑锁测试已锁该不变量)。
+const unpublishLinkedAgentCenterAgentLocal = (store, factoryAgentId) => {
+  const linked = findLinkedAgentCenterAgent(store.agents || [], factoryAgentId);
+  if (!linked) return null;
+  const rawAgent = (store.agents || []).find((item) => item.id === linked.id);
+  if (!rawAgent) return null;
+  rawAgent.status = 'draft';
+  rawAgent.factoryAgentId = '';
+  rawAgent.description = stripFactoryMarkerLines(rawAgent.description);
+  rawAgent.updatedAt = Date.now();
+  return { agentCenterAgentId: linked.id, unpublished: true };
+};
+
+const unpublishLinkedAgentCenterAgentDb = async (factoryAgentId) => {
+  const pool = await getMysqlPool();
+  const linked = await findDbLinkedAgentByFactoryId(pool, factoryAgentId);
+  if (!linked) return null;
+  await pool.query(
+    "UPDATE agents SET status = 'draft', factory_agent_id = NULL, description = ?, updated_at = ? WHERE id = ?",
+    [stripFactoryMarkerLines(linked.description), Date.now(), linked.id]
+  );
+  return { agentCenterAgentId: linked.id, unpublished: true };
 };
 
 // 阶段5 工厂→智能体中心同步桥(执行层)。发布成功后调用;同步失败绝不回滚发布,
@@ -9765,15 +9793,22 @@ const handleMysqlRequest = async (req, res, url) => {
     const user = await requireDbUser(req, res);
     if (!user) return;
     const currentSettings = await getDbSystemSettings();
+    const factoryAgentId = decodeURIComponent(dbSmartFactoryAgentMatch[1]);
     let nextSmartFactory;
     try {
-      nextSmartFactory = deleteSmartFactoryAgent(currentSettings.smartFactory, decodeURIComponent(dbSmartFactoryAgentMatch[1]));
+      nextSmartFactory = deleteSmartFactoryAgent(currentSettings.smartFactory, factoryAgentId);
     } catch (error) {
       json(res, 400, { message: error?.message || '删除智能体失败。' });
       return;
     }
     const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
-    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    let agentCenterUnlink = null;
+    try {
+      agentCenterUnlink = await unpublishLinkedAgentCenterAgentDb(factoryAgentId);
+    } catch (error) {
+      agentCenterUnlink = { error: String(error?.message || error) };
+    }
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }), agentCenterUnlink });
     return;
   }
 
@@ -11699,16 +11734,24 @@ const handleLocalRequest = async (req, res, url) => {
     const user = localRequireUser(req, res, store);
     if (!user) return;
     const currentLocalSettings = getLocalSystemSettings(store);
+    const factoryAgentId = decodeURIComponent(localSmartFactoryAgentMatch[1]);
     let nextSmartFactory;
     try {
-      nextSmartFactory = deleteSmartFactoryAgent(currentLocalSettings.smartFactory, decodeURIComponent(localSmartFactoryAgentMatch[1]));
+      nextSmartFactory = deleteSmartFactoryAgent(currentLocalSettings.smartFactory, factoryAgentId);
     } catch (error) {
       json(res, 400, { message: error?.message || '删除智能体失败。' });
       return;
     }
-    const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+    let agentCenterUnlink = null;
+    try {
+      agentCenterUnlink = unpublishLinkedAgentCenterAgentLocal(store, factoryAgentId);
+    } catch (error) {
+      agentCenterUnlink = { error: String(error?.message || error) };
+    }
     writeLocalStore(store);
-    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }) });
+    const nextSettings = getLocalSystemSettings(store);
+    json(res, 200, { config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }), agentCenterUnlink });
     return;
   }
 
