@@ -894,6 +894,7 @@ const AgentCenterManager: React.FC<Props> = ({ onStatusMessage, onErrorMessage, 
           onValidationMessageChange={setValidationMessage}
           onValidate={handleValidate}
           onOpenStudio={openStudio}
+          onFactoryLockNotice={onStatusMessage}
         />
         {renderDangerConfirm()}
       </>

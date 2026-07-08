@@ -41,6 +41,20 @@ type ChatSubmissionInput = {
 const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 const AGENT_CENTER_UI_STATE_KEY = 'MEIAO_AGENT_CENTER_UI_STATE';
 const FINAL_EXECUTION_PROGRESS_STAGES = new Set(['tool_calling', 'generating', 'image_generating', 'image_validating', 'image_validation_failed', 'image_regenerating', 'image_ready', 'syncing']);
+
+/** 工厂出品 agent 相关常量 — 由智能工厂管理 */
+export const FACTORY_MANAGED_BADGE_LABEL = '由智能工厂管理';
+/** 工厂出品 agent 的编辑入口替换文案 — 去智能工厂修改 */
+export const FACTORY_MANAGED_GOTO_LABEL = '去智能工厂修改';
+/** 工厂出品 agent 的后端锁错误码 — factory_managed_agent */
+export const FACTORY_MANAGED_AGENT_ERROR_CODE = 'factory_managed_agent';
+/** 当后端返回 factory_managed_agent 403 时透传的用户提示文案 */
+export const FACTORY_MANAGED_AGENT_NOTICE = '该智能体由智能工厂管理，请到智能工厂模块修改后重新发布。';
+
+/** 判断 agent 是否为工厂出品（factoryAgentId 非空字符串） */
+export const isFactoryManagedAgent = (agent: { factoryAgentId?: string } | null | undefined): boolean =>
+  Boolean(agent?.factoryAgentId);
+
 const isUncertainSendFailure = (error: any) =>
   !(
     error?.name === 'AbortError'

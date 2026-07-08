@@ -2,6 +2,12 @@ import React, { useEffect, useState } from 'react';
 import { AgentSummary, AgentVersion, KnowledgeBaseSummary } from '../../types';
 import { SegmentedTabs, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 import AgentAvatar from './AgentAvatar';
+import {
+  FACTORY_MANAGED_AGENT_NOTICE,
+  FACTORY_MANAGED_BADGE_LABEL,
+  FACTORY_MANAGED_GOTO_LABEL,
+  isFactoryManagedAgent,
+} from './AgentCenterModule';
 
 interface Props {
   agent: AgentSummary | null;
@@ -28,6 +34,8 @@ interface Props {
   onValidationMessageChange: (value: string) => void;
   onValidate: () => void;
   onOpenStudio?: () => void;
+  /** 工厂出品 agent 点击「去智能工厂修改」时的提示通道（沿用管理面板 message 通道） */
+  onFactoryLockNotice?: (message: string) => void;
 }
 
 const formatVersionMeta = (version: AgentVersion | null) => {
@@ -65,6 +73,7 @@ const AgentDetailView: React.FC<Props> = ({
   onValidationMessageChange,
   onValidate,
   onOpenStudio,
+  onFactoryLockNotice,
 }) => {
   const selectedVersion = versions.find((item) => item.id === selectedVersionId) || versions[0] || null;
   const publishedVersion = versions.find((item) => item.isPublished) || null;
@@ -77,6 +86,19 @@ const AgentDetailView: React.FC<Props> = ({
   }, [versions]);
 
   if (!agent) return null;
+
+  const factoryManaged = isFactoryManagedAgent(agent);
+  const notifyFactoryLock = () => onFactoryLockNotice?.(FACTORY_MANAGED_AGENT_NOTICE);
+  const factoryGotoButton = (extraClass = '') => (
+    <button
+      type="button"
+      onClick={notifyFactoryLock}
+      title={FACTORY_MANAGED_AGENT_NOTICE}
+      className={`rounded-[18px] border border-cyan-200 bg-cyan-50 px-3.5 py-2 text-[13px] font-black text-cyan-700 ${extraClass}`}
+    >
+      {FACTORY_MANAGED_GOTO_LABEL}
+    </button>
+  );
 
   const publishReady = Boolean(draftVersion && draftVersion.validationStatus === 'success');
 
@@ -100,6 +122,11 @@ const AgentDetailView: React.FC<Props> = ({
                 <div className="inline-flex rounded-full bg-[rgba(248,250,252,0.96)] px-2.5 py-0.5 text-[10px] font-black tracking-[0.14em] text-slate-500">
                   智能体管理
                 </div>
+                {factoryManaged ? (
+                  <div className="inline-flex rounded-full border border-cyan-200 bg-cyan-50 px-2.5 py-0.5 text-[10px] font-black tracking-[0.14em] text-cyan-700">
+                    {FACTORY_MANAGED_BADGE_LABEL}
+                  </div>
+                ) : null}
                 <span className="text-[12px] font-medium text-slate-500">{agent.department || '通用'}</span>
                 <span className="text-slate-300">·</span>
                 <span className="text-[12px] font-medium text-slate-500">{agent.ownerDisplayName || '当前管理员'}</span>
@@ -112,11 +139,17 @@ const AgentDetailView: React.FC<Props> = ({
           </div>
 
           <div className="flex flex-wrap justify-start gap-2 xl:justify-end">
-            {onOpenStudio && (
-              <button type="button" onClick={onOpenStudio} className="rounded-[18px] bg-[linear-gradient(135deg,#06b6d4,#0891b2)] px-3.5 py-2 text-[13px] font-black text-white shadow-[0_10px_24px_rgba(6,182,212,0.22)]">智能体工作室</button>
+            {factoryManaged ? (
+              factoryGotoButton()
+            ) : (
+              <>
+                {onOpenStudio && (
+                  <button type="button" onClick={onOpenStudio} className="rounded-[18px] bg-[linear-gradient(135deg,#06b6d4,#0891b2)] px-3.5 py-2 text-[13px] font-black text-white shadow-[0_10px_24px_rgba(6,182,212,0.22)]">智能体工作室</button>
+                )}
+                <button onClick={onEditDraft} className="rounded-[18px] bg-[rgba(248,250,252,0.96)] px-3.5 py-2 text-[13px] font-black text-slate-700">编辑草稿</button>
+                <button onClick={onCreateDraft} className="rounded-[18px] bg-[rgba(248,250,252,0.96)] px-3.5 py-2 text-[13px] font-black text-slate-700">新建草稿</button>
+              </>
             )}
-            <button onClick={onEditDraft} className="rounded-[18px] bg-[rgba(248,250,252,0.96)] px-3.5 py-2 text-[13px] font-black text-slate-700">编辑草稿</button>
-            <button onClick={onCreateDraft} className="rounded-[18px] bg-[rgba(248,250,252,0.96)] px-3.5 py-2 text-[13px] font-black text-slate-700">新建草稿</button>
             <button
               onClick={onPublish}
               className={`rounded-[18px] px-3.5 py-2 text-[13px] font-black shadow-[0_10px_24px_rgba(15,23,42,0.08)] transition ${publishReady ? 'bg-[linear-gradient(135deg,#10b981,#059669)] text-white' : 'cursor-pointer border border-slate-200 bg-slate-200 text-slate-500'}`}
@@ -166,7 +199,11 @@ const AgentDetailView: React.FC<Props> = ({
               <h4 className="text-[18px] font-black tracking-[-0.03em] text-slate-900">配置</h4>
               <p className="mt-1 text-[13px] font-medium text-slate-500">这里展示当前版本配置，也可以直接进入对应草稿步骤编辑。</p>
             </div>
-            <button onClick={onEditConfig} className="rounded-[16px] bg-[rgba(248,250,252,0.96)] px-3.5 py-2 text-[12px] font-black text-slate-700">编辑配置</button>
+            {factoryManaged ? (
+              factoryGotoButton('rounded-[16px] px-3.5 py-2 text-[12px]')
+            ) : (
+              <button onClick={onEditConfig} className="rounded-[16px] bg-[rgba(248,250,252,0.96)] px-3.5 py-2 text-[12px] font-black text-slate-700">编辑配置</button>
+            )}
           </div>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className={baseInfoCardClass}><p className="text-xs font-black text-slate-500">默认模型</p><p className="mt-2 text-sm font-black text-slate-900">{selectedVersion?.modelPolicy.defaultModel || '-'}</p></div>
@@ -189,7 +226,11 @@ const AgentDetailView: React.FC<Props> = ({
               <p className="mt-1 text-sm font-medium text-slate-500">可直接编辑当前草稿的绑定关系，知识库内容本身仍在独立页面维护。</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button onClick={onEditKnowledge} className="rounded-2xl bg-[rgba(248,250,252,0.96)] px-4 py-3 text-sm font-black text-slate-700">编辑知识库</button>
+              {factoryManaged ? (
+                factoryGotoButton('rounded-2xl px-4 py-3 text-sm')
+              ) : (
+                <button onClick={onEditKnowledge} className="rounded-2xl bg-[rgba(248,250,252,0.96)] px-4 py-3 text-sm font-black text-slate-700">编辑知识库</button>
+              )}
               <button onClick={onKnowledgeBaseEditor} className="rounded-2xl bg-[rgba(248,250,252,0.96)] px-4 py-3 text-sm font-black text-slate-700">去知识库管理</button>
             </div>
           </div>
@@ -246,7 +287,7 @@ const AgentDetailView: React.FC<Props> = ({
           </div>
           <div className="grid gap-3 xl:grid-cols-2">
             {versions.map((version) => {
-              const canRename = !version.isPublished;
+              const canRename = !version.isPublished && !factoryManaged;
               const versionName = versionNameDrafts[version.id] ?? version.versionName;
               const active = selectedVersionId === version.id;
               return (
@@ -291,7 +332,12 @@ const AgentDetailView: React.FC<Props> = ({
                   <div className="mt-3 flex flex-wrap gap-2">
                     <button onClick={() => onSelectVersion(version.id)} className="rounded-[14px] bg-white/90 px-3 py-1.5 text-[12px] font-black text-slate-700">查看</button>
                     <button onClick={() => onRollback(version.id)} disabled={version.id === publishedVersion?.id} className="rounded-[14px] bg-white/90 px-3 py-1.5 text-[12px] font-black text-slate-700 disabled:opacity-50">回滚</button>
-                    <button onClick={() => onDeleteVersion(version.id)} disabled={version.isPublished} className="rounded-[14px] bg-[rgba(254,242,242,0.96)] px-3 py-1.5 text-[12px] font-black text-rose-600 disabled:opacity-50">删除版本</button>
+                    <button
+                      onClick={() => (factoryManaged ? notifyFactoryLock() : onDeleteVersion(version.id))}
+                      disabled={version.isPublished}
+                      title={factoryManaged ? FACTORY_MANAGED_AGENT_NOTICE : undefined}
+                      className="rounded-[14px] bg-[rgba(254,242,242,0.96)] px-3 py-1.5 text-[12px] font-black text-rose-600 disabled:opacity-50"
+                    >删除版本</button>
                   </div>
                 </div>
               );
