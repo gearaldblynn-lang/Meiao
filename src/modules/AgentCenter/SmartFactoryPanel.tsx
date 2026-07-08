@@ -569,10 +569,7 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
   };
 
   const resolvePublishSuccessMessage = (agentCenterSync: SmartFactoryAgentCenterSync | undefined): string => {
-    if (!agentCenterSync || ('skipped' in agentCenterSync)) {
-      return '智能体已发布，可以在调试预览中正式运行。';
-    }
-    if (agentCenterSync.synced && 'published' in agentCenterSync && agentCenterSync.published) {
+    if (agentCenterSync && agentCenterSync.synced && 'published' in agentCenterSync && agentCenterSync.published) {
       return '已发布并上线到智能体中心，商家侧立即可用。';
     }
     return '智能体已发布，可以在调试预览中正式运行。';
@@ -581,25 +578,24 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
   const handlePublish = async () => {
     if (!activeAgent) return;
     let agentCenterSync: SmartFactoryAgentCenterSync | undefined;
+    let succeeded = false;
     await runAction('', async () => {
       await handleSaveAgent();
       const response = await publishSmartFactoryAgent(activeAgent.id);
       agentCenterSync = response.agentCenterSync;
       applyConfig(response.config);
+      succeeded = true;
     });
     // runAction sets onErrorMessage on throw; only handle sync-level feedback here
+    if (!succeeded) return;
     if (agentCenterSync) {
-      if (!agentCenterSync.synced && 'syncError' in agentCenterSync) {
+      if ('syncError' in agentCenterSync) {
         onErrorMessage(`发布完成但同步智能体中心失败：${agentCenterSync.syncError}`);
         return;
       }
       if (agentCenterSync.synced && 'validationFailed' in agentCenterSync && agentCenterSync.validationFailed) {
         const msg = agentCenterSync.errorMessage ? `——${agentCenterSync.errorMessage}` : '';
         onErrorMessage(`发布未上线：验证失败${msg}（老版本仍在线）。`);
-        return;
-      }
-      if (agentCenterSync.synced && 'syncError' in agentCenterSync) {
-        onErrorMessage(`发布完成但同步智能体中心失败：${agentCenterSync.syncError}`);
         return;
       }
     }
