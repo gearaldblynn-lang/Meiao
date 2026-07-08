@@ -25,6 +25,13 @@ export const buildSmartFactoryLinkMarker = (factoryAgentId) => (
   `${SMART_FACTORY_LINK_PREFIX}${clean(factoryAgentId, 120)}]`
 );
 
+// 解锁工厂 agent 时,从 description 中剥除旧 marker 行(结构化字段另行清空)。
+// 放在 bridge 单一实现,index.mjs 调用此函数,避免在 index 里再出现前缀常量字面量。
+export const stripFactoryMarkerLines = (description = '') => String(description || '')
+  .split('\n')
+  .filter((line) => !line.includes(SMART_FACTORY_LINK_PREFIX))
+  .join('\n');
+
 // 中心侧"是否工厂出品 agent"的单一判据:结构化字段 factoryAgentId 优先,
 // 旧 description marker 前缀仅作历史数据回退。编辑锁等所有消费方一律调这里,
 // 禁止在别处再写平行判据(散落判据是根因库点名的反模式)。

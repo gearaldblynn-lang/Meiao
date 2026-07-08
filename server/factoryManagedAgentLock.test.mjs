@@ -36,6 +36,29 @@ test('agent PATCH 仅 status 字段放行,空 body 也放行(上下线/停启用
   assert.ok(fnBody.includes("every((key) => key === 'status')"));
 });
 
+test('工厂删除级联下线中心agent(不物理删,解除锁定)', () => {
+  assert.ok(source.includes('const unpublishLinkedAgentCenterAgentLocal'), '本地级联下线函数');
+  assert.ok(source.includes('const unpublishLinkedAgentCenterAgentDb'), 'DB级联下线函数');
+  const localDeleteStart = source.indexOf("localSmartFactoryAgentMatch && req.method === 'DELETE'");
+  const localDeleteEnd = source.indexOf('localSmartFactoryAgentPublishMatch');
+  assert.ok(localDeleteStart > 0 && localDeleteEnd > localDeleteStart);
+  assert.ok(source.slice(localDeleteStart, localDeleteEnd).includes('unpublishLinkedAgentCenterAgentLocal'));
+  const dbDeleteStart = source.indexOf("dbSmartFactoryAgentMatch && req.method === 'DELETE'");
+  const dbDeleteEnd = source.indexOf('dbSmartFactoryAgentPublishMatch');
+  assert.ok(dbDeleteStart > 0 && dbDeleteEnd > dbDeleteStart);
+  assert.ok(source.slice(dbDeleteStart, dbDeleteEnd).includes('unpublishLinkedAgentCenterAgentDb'));
+});
+
+test('级联下线是解锁不是删除:清字段+清旧标记行,不物理删', () => {
+  const start = source.indexOf('const unpublishLinkedAgentCenterAgentLocal');
+  const end = source.indexOf('const syncFactoryAgentToLocalAgentCenter');
+  assert.ok(start > 0 && end > start, '级联函数应定义在 sync 执行器之前');
+  const fns = source.slice(start, end);
+  assert.ok(!fns.includes('deleteLocalAgent(') && !fns.includes('deleteDbAgent('), '不许物理删除');
+  assert.ok(fns.includes("status = 'draft'") || fns.includes("status: 'draft'") || fns.includes("SET status = 'draft'") || fns.includes("'draft'"), '下线为draft');
+  assert.ok(fns.includes('factoryAgentId') && fns.includes('factory_agent_id'), '双模式都要清结构化字段');
+});
+
 test('publish/rollback/validate 路由不接守卫(agent DELETE 不锁由8点调用计数间接保证)', () => {
   // 启发式:每个守卫调用行往上回看 30 行(每个路由块都远小于此窗口,守卫又插在块首附近),
   // 该窗口内出现的路由 match 判断不许是 publish/rollback/validate。
