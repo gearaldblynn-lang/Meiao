@@ -165,7 +165,7 @@ import {
   buildSmartFactoryLinkMarker,
   findLinkedAgentCenterAgent,
   findLinkedKnowledgeBase,
-  SMART_FACTORY_LINK_PREFIX,
+  isFactoryManagedAgent,
   SYNC_ERROR_CODES,
   VALIDATION_PROBE_MESSAGE,
 } from './smartFactoryAgentBridge.mjs';
@@ -945,17 +945,15 @@ const publishLocalAgentVersionRecord = (store, agentId, versionId) => {
 
 // 阶段4.5 中心侧编辑锁:工厂出品 agent 禁改内容(人设/模型/知识库/版本)。
 // 上下线(publish/rollback)、停启用(status-only PATCH)、删除、验证、会话聊天不经此守卫。
-const isStatusOnlyAgentPatch = function isStatusOnlyAgentPatch(payload = {}) {
-  const keys = Object.keys(payload || {});
-  return keys.length > 0 && keys.every((key) => key === 'status');
-};
+// 空 body 也放行(空对象 every 为 true,落到既有校验),不视为内容编辑。
+const isStatusOnlyAgentPatch = (payload = {}) => (
+  Object.keys(payload || {}).every((key) => key === 'status')
+);
 
+// 判据单一来源:bridge 的 isFactoryManagedAgent(结构化字段优先,旧 marker 前缀回退)。
 // 返回 true 表示已拒绝并写响应,调用方应立即 return。
-const rejectIfFactoryManaged = function rejectIfFactoryManaged(res, agent) {
-  const linked =
-    Boolean(agent?.factoryAgentId) ||
-    String(agent?.description || '').includes(SMART_FACTORY_LINK_PREFIX);
-  if (!linked) return false;
+const rejectIfFactoryManaged = (res, agent) => {
+  if (!isFactoryManagedAgent(agent)) return false;
   json(res, 403, {
     errorCode: 'factory_managed_agent',
     message: '该智能体由智能工厂管理，请在智能工厂修改后重新发布。',
