@@ -5,7 +5,8 @@ const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
 
 test('本地 sync 执行器:已链接分支走更新管道而非跳过', () => {
   const start = source.indexOf('const syncFactoryAgentToLocalAgentCenter');
-  const end = source.indexOf('const syncFactoryAgentToDbAgentCenter');
+  // DB 定向链接查找 helper 定义在本地管道之后,以它为界,slice 只含本地管道
+  const end = source.indexOf('const findDbLinkedAgentByFactoryId');
   assert.ok(start > 0 && end > start);
   const fn = source.slice(start, end);
   assert.ok(!fn.includes('alreadyLinkedAgentId'), '不许再有"已链接即跳过"');
@@ -18,7 +19,10 @@ test('本地 sync 执行器:已链接分支走更新管道而非跳过', () => {
   assert.ok(!fn.includes('store.knowledgeDocuments = '), '禁止直接 filter knowledgeDocuments(chunk 孤儿)');
   assert.ok(fn.indexOf('validateLocalAgentVersionRecord(') < fn.indexOf('publishLocalAgentVersionRecord('), '必须先验证再上线');
   assert.ok(fn.includes('validation?.ok'), '上线必须以验证结果为门槛');
-  assert.ok(fn.includes('kb_refresh_failed'), '知识库刷新失败必须 fail-fast 回报');
+  assert.ok(fn.includes('SYNC_ERROR_CODES.KB_REFRESH_FAILED'), '知识库刷新失败必须 fail-fast 回报(错误码走单一来源常量)');
+  assert.ok(fn.includes('currentKbName'), 'catch 报错必须带当前知识库名');
+  assert.ok(fn.includes('deletedDocCount'), 'catch 报错必须带已删文档计数');
+  assert.ok(fn.includes('VALIDATION_PROBE_MESSAGE'), '验证探针文案必须走单一来源常量');
 });
 
 test('验证/上线路由复用抽取的辅助函数(单一实现)', () => {

@@ -6,6 +6,8 @@ import {
   buildSmartFactoryLinkMarker,
   findLinkedAgentCenterAgent,
   findLinkedKnowledgeBase,
+  SYNC_ERROR_CODES,
+  VALIDATION_PROBE_MESSAGE,
 } from './smartFactoryAgentBridge.mjs';
 
 const factoryConfig = {
@@ -104,6 +106,13 @@ test('findLinkedKnowledgeBase 结构化优先,回退旧标记', () => {
   assert.equal(findLinkedKnowledgeBase([byField], 'fa-1', 'kb-1')?.id, 'k1');
   assert.equal(findLinkedKnowledgeBase([byMarker], 'fa-1', 'kb-x')?.id, 'k2');
   assert.equal(findLinkedKnowledgeBase([], 'fa-1', 'kb-1'), null);
+});
+
+test('同步错误码与验证探针文案是单一来源导出', () => {
+  assert.equal(SYNC_ERROR_CODES.KB_REFRESH_FAILED, 'kb_refresh_failed');
+  assert.equal(SYNC_ERROR_CODES.DRAFT_CREATE_FAILED, 'draft_create_failed');
+  assert.equal(SYNC_ERROR_CODES.AGENT_MATERIALIZE_FAILED, 'agent_materialize_failed');
+  assert.ok(VALIDATION_PROBE_MESSAGE.length > 0);
 });
 
 test('findLinkedKnowledgeBase 空 kbId 直接返回 null(无法构成单一知识库判据)', () => {

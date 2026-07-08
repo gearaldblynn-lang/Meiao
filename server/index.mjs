@@ -162,8 +162,11 @@ import {
 } from './smartFactoryConfigStore.mjs';
 import {
   buildAgentCenterSyncPlan,
+  buildSmartFactoryLinkMarker,
   findLinkedAgentCenterAgent,
   findLinkedKnowledgeBase,
+  SYNC_ERROR_CODES,
+  VALIDATION_PROBE_MESSAGE,
 } from './smartFactoryAgentBridge.mjs';
 import {
   createDefaultModelProviderRegistry,
@@ -951,20 +954,27 @@ const syncFactoryAgentToLocalAgentCenter = async (store, user, smartFactoryConfi
 
   // 1) 物化/刷新知识库(全量替换文档;刷新走 deleteLocalKnowledgeDocument 级联清 chunk)。
   // 任一步失败即整体 fail-fast 回报(spec §7:不留静默部分成功)。
-  // 本地 ingestion 大多吞错降级,MySQL 版(Task 3)每步真会抛,必须保持同样的 fail-fast 结构。
+  // 半刷新状态可自愈:重跑发布会对每个 KB 全量重删重写,不会残留部分刷新状态。
+  // 本地 ingestion 大多吞错降级,MySQL 版每步真会抛,必须保持同样的 fail-fast 结构。
+  // 链接查找直接用 bridge 的 findLinkedKnowledgeBase 全量扫描 store——本地 store 本就
+  // 无 owner 过滤;MySQL 版因 listDb* 会按 owner 过滤普通 admin,改走定向 SQL 查找(有意不对称)。
   const knowledgeBaseIds = [];
+  let currentKbName = '';
+  let deletedDocCount = 0;
   try {
     for (const kb of plan.knowledgeBases) {
+      currentKbName = kb.name;
       const linked = findLinkedKnowledgeBase(store.knowledgeBases || [], plan.factoryAgentId, kb.factoryKnowledgeBaseId);
       let kbId = linked?.id || '';
       if (kbId) {
         for (const doc of listLocalKnowledgeDocuments(store, user, kbId)) {
           const deleted = deleteLocalKnowledgeDocument(store, user, doc.id);
-          if (!deleted) return { synced: false, syncError: `kb_refresh_failed:文档删除失败(无权限或不存在):${doc.id}` };
+          if (!deleted) return { synced: false, syncError: `${SYNC_ERROR_CODES.KB_REFRESH_FAILED}:文档删除失败(无权限或不存在):${doc.id}` };
+          deletedDocCount += 1;
         }
       } else {
         const created = createLocalKnowledgeBase(store, user, { name: kb.name, description: kb.description, department: '智能工厂' });
-        if (!created) return { synced: false, syncError: `kb_refresh_failed:知识库创建失败:${kb.name}` };
+        if (!created) return { synced: false, syncError: `${SYNC_ERROR_CODES.KB_REFRESH_FAILED}:知识库创建失败:${kb.name}` };
         kbId = created.id;
       }
       const rawKb = (store.knowledgeBases || []).find((item) => item.id === kbId);
@@ -975,11 +985,11 @@ const syncFactoryAgentToLocalAgentCenter = async (store, user, smartFactoryConfi
       knowledgeBaseIds.push(kbId);
       for (const doc of kb.documents) {
         const createdDoc = await createLocalKnowledgeDocument(store, user, { knowledgeBaseId: kbId, title: doc.title, rawText: doc.rawText, sourceType: doc.sourceType });
-        if (!createdDoc) return { synced: false, syncError: `kb_refresh_failed:文档写入失败:${doc.title}` };
+        if (!createdDoc) return { synced: false, syncError: `${SYNC_ERROR_CODES.KB_REFRESH_FAILED}:文档写入失败:${doc.title}` };
       }
     }
   } catch (error) {
-    return { synced: false, syncError: `kb_refresh_failed:${error?.message || error}` };
+    return { synced: false, syncError: `${SYNC_ERROR_CODES.KB_REFRESH_FAILED}:[${currentKbName}] 已删${deletedDocCount}篇文档后失败:${error?.message || error}` };
   }
 
   // 2) 物化/更新 agent + 新版本
@@ -991,7 +1001,7 @@ const syncFactoryAgentToLocalAgentCenter = async (store, user, smartFactoryConfi
     if (rawAgent && !rawAgent.factoryAgentId) rawAgent.factoryAgentId = plan.factoryAgentId; // 惰性迁移
     updateLocalAgent(store, user, agentId, { name: plan.agentPayload.name, description: plan.agentPayload.description });
     const draft = createLocalAgentDraft(store, user, agentId);
-    if (!draft) return { synced: false, syncError: 'draft_create_failed' };
+    if (!draft) return { synced: false, syncError: SYNC_ERROR_CODES.DRAFT_CREATE_FAILED };
     version = updateLocalAgentVersion(store, user, draft.id, {
       systemPrompt: plan.agentPayload.systemPrompt,
       allowedChatModels: plan.agentPayload.allowedChatModels,
@@ -1005,19 +1015,58 @@ const syncFactoryAgentToLocalAgentCenter = async (store, user, smartFactoryConfi
     const rawAgent = (store.agents || []).find((item) => item.id === agentId);
     if (rawAgent) rawAgent.factoryAgentId = plan.factoryAgentId; // 结构化字段落库
   }
-  if (!agentId || !version) return { synced: false, syncError: 'agent_materialize_failed' };
+  if (!agentId || !version) return { synced: false, syncError: SYNC_ERROR_CODES.AGENT_MATERIALIZE_FAILED };
 
   // 3) 自动验证;失败 → 不上线(老版本继续在线),原因回报工厂
   const agent = getLocalAgentById(store, agentId);
-  const validation = await validateLocalAgentVersionRecord(store, user, agent, version, '请用一句话说明这个智能体能做什么。');
+  const validation = await validateLocalAgentVersionRecord(store, user, agent, version, VALIDATION_PROBE_MESSAGE);
   writeLocalStore(store);
   if (!validation?.ok) {
     return { synced: true, published: false, agentCenterAgentId: agentId, validationFailed: true, errorMessage: validation?.errorMessage || '验证失败' };
   }
 
-  // 4) 自动上线(持久化由 step 3 的 writeLocalStore 与路由尾部兜底)
+  // 4) 自动上线(持久化由 step 3 的 writeLocalStore 与路由尾部兜底)。
+  // publishLocalAgentVersionRecord 是无返回值的纯内存写,没有可失败分支,
+  // 所以本地版没有 DB 版的 publish_failed 检查(有意不对称)。
   publishLocalAgentVersionRecord(store, agentId, version.id);
   return { synced: true, published: true, agentCenterAgentId: agentId };
+};
+
+// I1:工厂发布是 admin-only 管道,链接判据全局唯一。不能用 listDbAgents/listDbKnowledgeBases
+// 做链接查找——它们对普通 admin(非超管名单)按 owner_user_id 过滤,会漏掉其他 admin 物化过的
+// 链接记录 → 重复物化。改为定向 SQL:结构化字段优先,无命中回退旧 description marker
+// (判据与 bridge 的 findLinkedAgentCenterAgent/findLinkedKnowledgeBase 保持一致)。
+const findDbLinkedAgentByFactoryId = async (pool, factoryAgentId) => {
+  const id = String(factoryAgentId || '').trim().slice(0, 120);
+  if (!id) return null;
+  const [byField] = await pool.query(
+    'SELECT id FROM agents WHERE factory_agent_id = ? ORDER BY updated_at DESC LIMIT 1',
+    [id]
+  );
+  if (byField[0]) return await getDbAgentById(byField[0].id);
+  const [byMarker] = await pool.query(
+    'SELECT id FROM agents WHERE description LIKE ? ORDER BY updated_at DESC LIMIT 1',
+    [`%${buildSmartFactoryLinkMarker(id)}%`]
+  );
+  return byMarker[0] ? await getDbAgentById(byMarker[0].id) : null;
+};
+
+const findDbLinkedKnowledgeBaseByFactoryId = async (pool, factoryAgentId, factoryKnowledgeBaseId) => {
+  const agentId = String(factoryAgentId || '').trim().slice(0, 120);
+  const kbId = String(factoryKnowledgeBaseId || '').trim().slice(0, 120);
+  if (!agentId || !kbId) return null;
+  const [byField] = await pool.query(
+    'SELECT id FROM knowledge_bases WHERE factory_agent_id = ? AND factory_kb_id = ? ORDER BY updated_at DESC LIMIT 1',
+    [agentId, kbId]
+  );
+  if (byField[0]) return await getDbKnowledgeBaseById(byField[0].id);
+  // 已知限制(与 bridge findLinkedKnowledgeBase 相同):旧 marker 只编码 agentId,
+  // 同一 agent 多知识库的历史数据会命中最新一条;存量核实为单 agent 单 KB,不做消歧。
+  const [byMarker] = await pool.query(
+    'SELECT id FROM knowledge_bases WHERE description LIKE ? ORDER BY updated_at DESC LIMIT 1',
+    [`%${buildSmartFactoryLinkMarker(agentId)}%`]
+  );
+  return byMarker[0] ? await getDbKnowledgeBaseById(byMarker[0].id) : null;
 };
 
 const syncFactoryAgentToDbAgentCenter = async (user, smartFactoryConfig, factoryAgentId) => {
@@ -1029,30 +1078,34 @@ const syncFactoryAgentToDbAgentCenter = async (user, smartFactoryConfig, factory
 
   // 1) 物化/刷新知识库(全量替换文档;刷新走 deleteDbKnowledgeDocument 级联清 chunk)。
   // 任一步失败即整体 fail-fast 回报(spec §7:不留静默部分成功)。
+  // 半刷新状态可自愈:重跑发布会对每个 KB 全量重删重写,不会残留部分刷新状态。
   // MySQL 每步真会抛,必须 try/catch 整个 KB 段(与本地版对称,本地吞错降级但结构相同)。
   const pool = await getMysqlPool();
   const knowledgeBaseIds = [];
-  const allKbs = await listDbKnowledgeBases(user); // 循环外取一次,避免每条 KB 重复列表查询
+  let currentKbName = '';
+  let deletedDocCount = 0;
   try {
     for (const kb of plan.knowledgeBases) {
-      const linked = findLinkedKnowledgeBase(allKbs, plan.factoryAgentId, kb.factoryKnowledgeBaseId);
+      currentKbName = kb.name;
+      const linked = await findDbLinkedKnowledgeBaseByFactoryId(pool, plan.factoryAgentId, kb.factoryKnowledgeBaseId);
       let kbId = linked?.id || '';
       if (kbId) {
         // 已链接:全量替换文档(deleteDbKnowledgeDocument 级联清 chunk)
         const docs = await listDbKnowledgeDocuments(user, kbId);
         for (const doc of docs) {
           const deleted = await deleteDbKnowledgeDocument(user, doc.id);
-          if (!deleted) return { synced: false, syncError: `kb_refresh_failed:文档删除失败(无权限或不存在):${doc.id}` };
+          if (!deleted) return { synced: false, syncError: `${SYNC_ERROR_CODES.KB_REFRESH_FAILED}:文档删除失败(无权限或不存在):${doc.id}` };
+          deletedDocCount += 1;
         }
         // 惰性迁移:补写结构化关联字段(仅当旧库缺失)
         if (!linked.factoryAgentId || !linked.factoryKnowledgeBaseId) {
           await pool.query(
-            'UPDATE knowledge_bases SET factory_agent_id = ?, factory_kb_id = ? WHERE id = ?',
-            [plan.factoryAgentId, kb.factoryKnowledgeBaseId, kbId]
+            'UPDATE knowledge_bases SET factory_agent_id = ?, factory_kb_id = ?, updated_at = ? WHERE id = ?',
+            [plan.factoryAgentId, kb.factoryKnowledgeBaseId, Date.now(), kbId]
           );
         }
       } else {
-        // 新建知识库(factoryAgentId/factoryKnowledgeBaseId 经 Step 1 透传落列)
+        // 新建知识库(factoryAgentId/factoryKnowledgeBaseId 经 INSERT 透传落列)
         const created = await createDbKnowledgeBase(user, {
           name: kb.name,
           description: kb.description,
@@ -1060,7 +1113,7 @@ const syncFactoryAgentToDbAgentCenter = async (user, smartFactoryConfig, factory
           factoryAgentId: plan.factoryAgentId,
           factoryKnowledgeBaseId: kb.factoryKnowledgeBaseId,
         });
-        if (!created) return { synced: false, syncError: `kb_refresh_failed:知识库创建失败:${kb.name}` };
+        if (!created) return { synced: false, syncError: `${SYNC_ERROR_CODES.KB_REFRESH_FAILED}:知识库创建失败:${kb.name}` };
         kbId = created.id;
       }
       knowledgeBaseIds.push(kbId);
@@ -1071,25 +1124,25 @@ const syncFactoryAgentToDbAgentCenter = async (user, smartFactoryConfig, factory
           rawText: doc.rawText,
           sourceType: doc.sourceType,
         });
-        if (!createdDoc) return { synced: false, syncError: `kb_refresh_failed:文档写入失败:${doc.title}` };
+        if (!createdDoc) return { synced: false, syncError: `${SYNC_ERROR_CODES.KB_REFRESH_FAILED}:文档写入失败:${doc.title}` };
       }
     }
   } catch (error) {
-    return { synced: false, syncError: `kb_refresh_failed:${error?.message || error}` };
+    return { synced: false, syncError: `${SYNC_ERROR_CODES.KB_REFRESH_FAILED}:[${currentKbName}] 已删${deletedDocCount}篇文档后失败:${error?.message || error}` };
   }
 
   // 2) 物化/更新 agent + 新版本
-  const existing = findLinkedAgentCenterAgent(await listDbAgents(user), plan.factoryAgentId);
+  const existing = await findDbLinkedAgentByFactoryId(pool, plan.factoryAgentId);
   let agentId = existing?.id || '';
   let version = null;
   if (agentId) {
     // 惰性迁移:补写结构化关联字段(仅当旧 agent 缺失)
     if (!existing.factoryAgentId) {
-      await pool.query('UPDATE agents SET factory_agent_id = ? WHERE id = ?', [plan.factoryAgentId, agentId]);
+      await pool.query('UPDATE agents SET factory_agent_id = ?, updated_at = ? WHERE id = ?', [plan.factoryAgentId, Date.now(), agentId]);
     }
     await updateDbAgent(user, agentId, { name: plan.agentPayload.name, description: plan.agentPayload.description });
     const draft = await createDbAgentDraft(user, agentId);
-    if (!draft) return { synced: false, syncError: 'draft_create_failed' };
+    if (!draft) return { synced: false, syncError: SYNC_ERROR_CODES.DRAFT_CREATE_FAILED };
     version = await updateDbAgentVersion(user, draft.id, {
       systemPrompt: plan.agentPayload.systemPrompt,
       allowedChatModels: plan.agentPayload.allowedChatModels,
@@ -1097,18 +1150,18 @@ const syncFactoryAgentToDbAgentCenter = async (user, smartFactoryConfig, factory
       knowledgeBaseIds,
     });
   } else {
-    // 新建 agent(factoryAgentId 经 Step 1 透传落列)
+    // 新建 agent(factoryAgentId 经 INSERT 透传落列)
     const result = await createDbAgent(user, { ...plan.agentPayload, knowledgeBaseIds });
     agentId = result?.agent?.id || '';
     version = result?.version || null;
   }
-  if (!agentId || !version) return { synced: false, syncError: 'agent_materialize_failed' };
+  if (!agentId || !version) return { synced: false, syncError: SYNC_ERROR_CODES.AGENT_MATERIALIZE_FAILED };
 
   // 3) 自动验证;validateDbAgentVersion 会抛错,必须 catch 转 validationFailed
   // 返回 null(权限/找不到)也算失败,与本地版逻辑对称
   let validationResult = null;
   try {
-    validationResult = await validateDbAgentVersion(user, version.id, '请用一句话说明这个智能体能做什么。');
+    validationResult = await validateDbAgentVersion(user, version.id, VALIDATION_PROBE_MESSAGE);
   } catch (error) {
     return { synced: true, published: false, agentCenterAgentId: agentId, validationFailed: true, errorMessage: error?.message || '验证时发生错误' };
   }
@@ -1116,10 +1169,10 @@ const syncFactoryAgentToDbAgentCenter = async (user, smartFactoryConfig, factory
     return { synced: true, published: false, agentCenterAgentId: agentId, validationFailed: true, errorMessage: '验证失败(权限不足或版本不存在)' };
   }
 
-  // 4) 自动上线;publishDbAgentVersion 返回 null 说明 validationStatus 未 success
+  // 4) 自动上线;publishDbAgentVersion 返回 null 是发布门禁失败(非验证失败),用 syncError 回报
   const published = await publishDbAgentVersion(user, agentId, version.id);
   if (!published) {
-    return { synced: true, published: false, agentCenterAgentId: agentId, validationFailed: true, errorMessage: '验证状态未通过,无法上线' };
+    return { synced: true, published: false, agentCenterAgentId: agentId, syncError: 'publish_failed:版本未通过验证或智能体状态异常' };
   }
   return { synced: true, published: true, agentCenterAgentId: agentId };
 };
