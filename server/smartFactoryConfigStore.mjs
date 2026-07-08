@@ -436,10 +436,13 @@ const normalizeTool = (tool = {}) => {
 export const normalizeSmartFactoryConfig = (value = {}) => {
   const fallback = cloneJson(DEFAULT_SMART_FACTORY_CONFIG);
   const source = value && typeof value === 'object' ? value : {};
-  const modelProviders = (Array.isArray(source.modelProviders) ? source.modelProviders : fallback.modelProviders)
+  // 只有"字段缺失(非数组)"才播种默认;空数组是用户删除的真实结果,复活默认会让删除永远不生效
+  const hasSourceModelProviders = Array.isArray(source.modelProviders);
+  const modelProviders = (hasSourceModelProviders ? source.modelProviders : fallback.modelProviders)
     .map(normalizeModelProvider)
     .filter(Boolean);
-  const knowledgeBases = (Array.isArray(source.knowledgeBases) ? source.knowledgeBases : fallback.knowledgeBases)
+  const hasSourceKnowledgeBases = Array.isArray(source.knowledgeBases);
+  const knowledgeBases = (hasSourceKnowledgeBases ? source.knowledgeBases : fallback.knowledgeBases)
     .map(normalizeKnowledgeBase)
     .filter(Boolean);
   const hasSourceTools = Array.isArray(source.tools);
@@ -484,8 +487,12 @@ export const normalizeSmartFactoryConfig = (value = {}) => {
   return {
     mediaToolsMigrated: true,
     mediaToolsVersion: 2,
-    modelProviders: modelProviders.length ? modelProviders : fallback.modelProviders,
-    knowledgeBases: knowledgeBases.length ? knowledgeBases : fallback.knowledgeBases,
+    modelProviders: hasSourceModelProviders
+      ? modelProviders
+      : (modelProviders.length ? modelProviders : fallback.modelProviders),
+    knowledgeBases: hasSourceKnowledgeBases
+      ? knowledgeBases
+      : (knowledgeBases.length ? knowledgeBases : fallback.knowledgeBases),
     tools: hasSourceTools ? tools : (tools.length ? tools : fallback.tools),
     agents,
     sessions: agentState.sessions,
