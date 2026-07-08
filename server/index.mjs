@@ -1025,28 +1025,102 @@ const syncFactoryAgentToDbAgentCenter = async (user, smartFactoryConfig, factory
   const factoryAgent = normalized.agents.find((agent) => agent.id === factoryAgentId);
   const plan = buildAgentCenterSyncPlan({ factoryAgent, factoryConfig: normalized });
   if (!plan) return { synced: false, skipped: 'no_plan' };
-  const existing = findLinkedAgentCenterAgent(await listDbAgents(user), plan.factoryAgentId);
-  if (existing) return { synced: false, alreadyLinkedAgentId: existing.id };
+
+  // 1) 物化/刷新知识库(全量替换文档;刷新走 deleteDbKnowledgeDocument 级联清 chunk)。
+  // 任一步失败即整体 fail-fast 回报(spec §7:不留静默部分成功)。
+  // MySQL 每步真会抛,必须 try/catch 整个 KB 段(与本地版对称,本地吞错降级但结构相同)。
+  const pool = await getMysqlPool();
   const knowledgeBaseIds = [];
-  for (const kb of plan.knowledgeBases) {
-    const created = await createDbKnowledgeBase(user, {
-      name: kb.name,
-      description: kb.description,
-      department: '智能工厂',
-    });
-    if (!created) continue;
-    knowledgeBaseIds.push(created.id);
-    for (const doc of kb.documents) {
-      await createDbKnowledgeDocument(user, {
-        knowledgeBaseId: created.id,
-        title: doc.title,
-        rawText: doc.rawText,
-        sourceType: doc.sourceType,
-      });
+  const allKbs = await listDbKnowledgeBases(user); // 循环外取一次,避免每条 KB 重复列表查询
+  try {
+    for (const kb of plan.knowledgeBases) {
+      const linked = findLinkedKnowledgeBase(allKbs, plan.factoryAgentId, kb.factoryKnowledgeBaseId);
+      let kbId = linked?.id || '';
+      if (kbId) {
+        // 已链接:全量替换文档(deleteDbKnowledgeDocument 级联清 chunk)
+        const docs = await listDbKnowledgeDocuments(user, kbId);
+        for (const doc of docs) {
+          const deleted = await deleteDbKnowledgeDocument(user, doc.id);
+          if (!deleted) return { synced: false, syncError: `kb_refresh_failed:文档删除失败(无权限或不存在):${doc.id}` };
+        }
+        // 惰性迁移:补写结构化关联字段(仅当旧库缺失)
+        if (!linked.factoryAgentId || !linked.factoryKnowledgeBaseId) {
+          await pool.query(
+            'UPDATE knowledge_bases SET factory_agent_id = ?, factory_kb_id = ? WHERE id = ?',
+            [plan.factoryAgentId, kb.factoryKnowledgeBaseId, kbId]
+          );
+        }
+      } else {
+        // 新建知识库(factoryAgentId/factoryKnowledgeBaseId 经 Step 1 透传落列)
+        const created = await createDbKnowledgeBase(user, {
+          name: kb.name,
+          description: kb.description,
+          department: '智能工厂',
+          factoryAgentId: plan.factoryAgentId,
+          factoryKnowledgeBaseId: kb.factoryKnowledgeBaseId,
+        });
+        if (!created) return { synced: false, syncError: `kb_refresh_failed:知识库创建失败:${kb.name}` };
+        kbId = created.id;
+      }
+      knowledgeBaseIds.push(kbId);
+      for (const doc of kb.documents) {
+        const createdDoc = await createDbKnowledgeDocument(user, {
+          knowledgeBaseId: kbId,
+          title: doc.title,
+          rawText: doc.rawText,
+          sourceType: doc.sourceType,
+        });
+        if (!createdDoc) return { synced: false, syncError: `kb_refresh_failed:文档写入失败:${doc.title}` };
+      }
     }
+  } catch (error) {
+    return { synced: false, syncError: `kb_refresh_failed:${error?.message || error}` };
   }
-  const result = await createDbAgent(user, { ...plan.agentPayload, knowledgeBaseIds });
-  return { synced: true, agentCenterAgentId: result?.agent?.id || '' };
+
+  // 2) 物化/更新 agent + 新版本
+  const existing = findLinkedAgentCenterAgent(await listDbAgents(user), plan.factoryAgentId);
+  let agentId = existing?.id || '';
+  let version = null;
+  if (agentId) {
+    // 惰性迁移:补写结构化关联字段(仅当旧 agent 缺失)
+    if (!existing.factoryAgentId) {
+      await pool.query('UPDATE agents SET factory_agent_id = ? WHERE id = ?', [plan.factoryAgentId, agentId]);
+    }
+    await updateDbAgent(user, agentId, { name: plan.agentPayload.name, description: plan.agentPayload.description });
+    const draft = await createDbAgentDraft(user, agentId);
+    if (!draft) return { synced: false, syncError: 'draft_create_failed' };
+    version = await updateDbAgentVersion(user, draft.id, {
+      systemPrompt: plan.agentPayload.systemPrompt,
+      allowedChatModels: plan.agentPayload.allowedChatModels,
+      defaultChatModel: plan.agentPayload.defaultChatModel,
+      knowledgeBaseIds,
+    });
+  } else {
+    // 新建 agent(factoryAgentId 经 Step 1 透传落列)
+    const result = await createDbAgent(user, { ...plan.agentPayload, knowledgeBaseIds });
+    agentId = result?.agent?.id || '';
+    version = result?.version || null;
+  }
+  if (!agentId || !version) return { synced: false, syncError: 'agent_materialize_failed' };
+
+  // 3) 自动验证;validateDbAgentVersion 会抛错,必须 catch 转 validationFailed
+  // 返回 null(权限/找不到)也算失败,与本地版逻辑对称
+  let validationResult = null;
+  try {
+    validationResult = await validateDbAgentVersion(user, version.id, '请用一句话说明这个智能体能做什么。');
+  } catch (error) {
+    return { synced: true, published: false, agentCenterAgentId: agentId, validationFailed: true, errorMessage: error?.message || '验证时发生错误' };
+  }
+  if (!validationResult) {
+    return { synced: true, published: false, agentCenterAgentId: agentId, validationFailed: true, errorMessage: '验证失败(权限不足或版本不存在)' };
+  }
+
+  // 4) 自动上线;publishDbAgentVersion 返回 null 说明 validationStatus 未 success
+  const published = await publishDbAgentVersion(user, agentId, version.id);
+  if (!published) {
+    return { synced: true, published: false, agentCenterAgentId: agentId, validationFailed: true, errorMessage: '验证状态未通过,无法上线' };
+  }
+  return { synced: true, published: true, agentCenterAgentId: agentId };
 };
 
 const buildOpenAICompatibleRuntimeEnv = (env, systemSettings = {}) => {
@@ -2860,6 +2934,7 @@ const ensureMysqlSchema = async () => {
   `);
   await ensureMysqlColumn(pool, 'agents', 'icon_url', 'VARCHAR(1024) NULL');
   await ensureMysqlColumn(pool, 'agents', 'avatar_preset', 'VARCHAR(40) NULL');
+  await ensureMysqlColumn(pool, 'agents', 'factory_agent_id', 'VARCHAR(120) NULL');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS agent_versions (
@@ -2915,6 +2990,8 @@ const ensureMysqlSchema = async () => {
       INDEX idx_knowledge_bases_owner_user_id (owner_user_id)
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
+  await ensureMysqlColumn(pool, 'knowledge_bases', 'factory_agent_id', 'VARCHAR(120) NULL');
+  await ensureMysqlColumn(pool, 'knowledge_bases', 'factory_kb_id', 'VARCHAR(120) NULL');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS knowledge_documents (
@@ -4767,6 +4844,7 @@ const getDbAgentById = async (agentId) => {
     department: rows[0].department,
     iconUrl: rows[0].icon_url || '',
     avatarPreset: rows[0].avatar_preset || '',
+    factoryAgentId: rows[0].factory_agent_id || '',
     ownerUserId: rows[0].owner_user_id,
     ownerDisplayName: rows[0].owner_display_name || '',
     visibilityScope: rows[0].visibility_scope,
@@ -4823,8 +4901,8 @@ const createDbAgent = async (user, payload) => {
   });
 
   await pool.query(
-    `INSERT INTO agents (id, name, description, department, owner_user_id, visibility_scope, status, current_version_id, icon_url, avatar_preset, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO agents (id, name, description, department, owner_user_id, visibility_scope, status, current_version_id, icon_url, avatar_preset, factory_agent_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       agentId,
       String(payload.name || '未命名智能体').slice(0, 120),
@@ -4836,6 +4914,7 @@ const createDbAgent = async (user, payload) => {
       null,
       payload.iconUrl ? String(payload.iconUrl).slice(0, 1024) : null,
       payload.avatarPreset ? String(payload.avatarPreset).slice(0, 40) : null,
+      payload.factoryAgentId ? String(payload.factoryAgentId).slice(0, 120) : null,
       now,
       now,
     ]
@@ -5039,6 +5118,8 @@ const listDbKnowledgeBases = async (user) => {
       department: row.department,
       ownerUserId: row.owner_user_id,
       ownerDisplayName: row.owner_display_name || '',
+      factoryAgentId: row.factory_agent_id || '',
+      factoryKnowledgeBaseId: row.factory_kb_id || '',
       status: normalizeKnowledgeBaseStatus(row.status),
       documentCount: Number(docRows[0]?.count || 0),
       boundAgentCount: Number(boundRows[0]?.count || 0),
@@ -5068,6 +5149,8 @@ const getDbKnowledgeBaseById = async (knowledgeBaseId) => {
     department: rows[0].department,
     ownerUserId: rows[0].owner_user_id,
     ownerDisplayName: rows[0].owner_display_name || '',
+    factoryAgentId: rows[0].factory_agent_id || '',
+    factoryKnowledgeBaseId: rows[0].factory_kb_id || '',
     status: normalizeKnowledgeBaseStatus(rows[0].status),
     documentCount: Number(docRows[0]?.count || 0),
     boundAgentCount: Number(boundRows[0]?.count || 0),
@@ -5081,8 +5164,8 @@ const createDbKnowledgeBase = async (user, payload) => {
   const now = Date.now();
   const knowledgeBaseId = createEntityId();
   await pool.query(
-    `INSERT INTO knowledge_bases (id, name, description, department, owner_user_id, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO knowledge_bases (id, name, description, department, owner_user_id, status, factory_agent_id, factory_kb_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       knowledgeBaseId,
       String(payload.name || '未命名知识库').slice(0, 120),
@@ -5090,6 +5173,8 @@ const createDbKnowledgeBase = async (user, payload) => {
       String(payload.department || '未分组').slice(0, 120),
       user.id,
       'active',
+      payload.factoryAgentId ? String(payload.factoryAgentId).slice(0, 120) : null,
+      payload.factoryKnowledgeBaseId ? String(payload.factoryKnowledgeBaseId).slice(0, 120) : null,
       now,
       now,
     ]

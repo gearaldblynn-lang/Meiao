@@ -40,7 +40,7 @@ test('agent center persists agent icon fields for preset and uploaded avatars', 
   assert.match(source, /avatar_preset VARCHAR\(40\) NULL/);
   assert.match(source, /iconUrl:/);
   assert.match(source, /avatarPreset:/);
-  assert.match(source, /INSERT INTO agents \(id, name, description, department, owner_user_id, visibility_scope, status, current_version_id, icon_url, avatar_preset, created_at, updated_at\)/);
+  assert.match(source, /INSERT INTO agents \(id, name, description, department, owner_user_id, visibility_scope, status, current_version_id, icon_url, avatar_preset, factory_agent_id, created_at, updated_at\)/);
 });
 
 test('agent center persists editable version names in mysql and local modes', () => {
