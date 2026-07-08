@@ -1166,15 +1166,27 @@ export const updateSmartFactoryAgent = async (agentId: string, payload: {
   });
 };
 
+export type SmartFactoryAgentCenterSync =
+  | { synced: true; published: true; agentCenterAgentId: string }
+  | { synced: true; published: false; agentCenterAgentId: string; validationFailed: true; errorMessage?: string }
+  | { synced: true; published: false; agentCenterAgentId: string; syncError: string }
+  | { synced: false; syncError: string }
+  | { synced: false; skipped: 'not_admin' | 'no_plan' };
+
+export type SmartFactoryAgentCenterUnlink =
+  | { agentCenterAgentId: string; unpublished: true }
+  | { error: string }
+  | null;
+
 export const deleteSmartFactoryAgent = async (agentId: string) => {
-  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/agents/${encodeURIComponent(agentId)}`, {
+  return request<{ config: SmartFactoryConfig; agentCenterUnlink?: SmartFactoryAgentCenterUnlink }>(`/api/smart-factory/agents/${encodeURIComponent(agentId)}`, {
     method: 'DELETE',
     dedupe: false,
   });
 };
 
 export const publishSmartFactoryAgent = async (agentId: string) => {
-  return request<{ config: SmartFactoryConfig }>(`/api/smart-factory/agents/${encodeURIComponent(agentId)}/publish`, {
+  return request<{ config: SmartFactoryConfig; agentCenterSync?: SmartFactoryAgentCenterSync }>(`/api/smart-factory/agents/${encodeURIComponent(agentId)}/publish`, {
     method: 'POST',
     dedupe: false,
   });

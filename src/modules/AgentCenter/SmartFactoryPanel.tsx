@@ -46,6 +46,7 @@ import {
   testSmartFactoryTool,
   updateSmartFactoryAgent,
   updateSmartFactoryKnowledgeBase,
+  type SmartFactoryAgentCenterSync,
   type SmartFactoryConfig,
   type SmartFactoryPreviewResult,
 } from '../../services/internalApi';
@@ -567,23 +568,60 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
     });
   };
 
+  const resolvePublishSuccessMessage = (agentCenterSync: SmartFactoryAgentCenterSync | undefined): string => {
+    if (!agentCenterSync || ('skipped' in agentCenterSync)) {
+      return '智能体已发布，可以在调试预览中正式运行。';
+    }
+    if (agentCenterSync.synced && 'published' in agentCenterSync && agentCenterSync.published) {
+      return '已发布并上线到智能体中心，商家侧立即可用。';
+    }
+    return '智能体已发布，可以在调试预览中正式运行。';
+  };
+
   const handlePublish = async () => {
     if (!activeAgent) return;
-    await runAction('智能体已发布，可以在调试预览中正式运行。', async () => {
+    let agentCenterSync: SmartFactoryAgentCenterSync | undefined;
+    await runAction('', async () => {
       await handleSaveAgent();
       const response = await publishSmartFactoryAgent(activeAgent.id);
+      agentCenterSync = response.agentCenterSync;
       applyConfig(response.config);
     });
+    // runAction sets onErrorMessage on throw; only handle sync-level feedback here
+    if (agentCenterSync) {
+      if (!agentCenterSync.synced && 'syncError' in agentCenterSync) {
+        onErrorMessage(`发布完成但同步智能体中心失败：${agentCenterSync.syncError}`);
+        return;
+      }
+      if (agentCenterSync.synced && 'validationFailed' in agentCenterSync && agentCenterSync.validationFailed) {
+        const msg = agentCenterSync.errorMessage ? `——${agentCenterSync.errorMessage}` : '';
+        onErrorMessage(`发布未上线：验证失败${msg}（老版本仍在线）。`);
+        return;
+      }
+      if (agentCenterSync.synced && 'syncError' in agentCenterSync) {
+        onErrorMessage(`发布完成但同步智能体中心失败：${agentCenterSync.syncError}`);
+        return;
+      }
+    }
+    // Only show success message when no error was set
+    onStatusMessage(resolvePublishSuccessMessage(agentCenterSync));
   };
 
   const handleDeleteAgent = async () => {
     if (!activeAgent) return;
-    if (!window.confirm(`确认删除智能体「${activeAgent.name}」？它的调试会话会一并删除，且不可恢复。`)) return;
+    if (!window.confirm(`确认删除智能体「${activeAgent.name}」？它的调试会话会一并删除，且不可恢复。将同时在智能体中心下线该智能体（聊天历史保留）。`)) return;
+    let unlinkError: string | undefined;
     await runAction('智能体已删除。', async () => {
       const response = await deleteSmartFactoryAgent(activeAgent.id);
+      if (response.agentCenterUnlink && 'error' in response.agentCenterUnlink) {
+        unlinkError = response.agentCenterUnlink.error;
+      }
       applyConfig(response.config);
       setSurface('home');
     });
+    if (unlinkError) {
+      onErrorMessage(`已删除，但智能体中心下线失败：${unlinkError}`);
+    }
   };
 
   const handleToggleAgentEnabled = async () => {
@@ -923,7 +961,7 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
                   </span>
                   <div className="min-w-0">
                     <p className="truncate text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>{agent.name}</p>
-                    <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>AGENT · {agent.status === 'published' ? '已发布' : '草稿'}</p>
+                    <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>AGENT · {agent.status === 'published' ? '已发布' : '草稿'}{agent.status === 'published' && agent.publishedAt ? `（${new Date(agent.publishedAt).toLocaleString('zh-CN')}）` : ''}</p>
                   </div>
                 </div>
                 <ChevronRight size={16} color="var(--text-tertiary)" />
@@ -957,7 +995,7 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
             <span className="inline-flex h-10 w-10 items-center justify-center rounded-[8px]" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}><Bot size={20} /></span>
             <div className="min-w-0">
               <p className="truncate text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>{activeAgent?.name || '智能体工作室'}</p>
-              <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{activeAgent?.status === 'published' ? '已发布' : '草稿'} · AGENT</p>
+              <p className="mt-1 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>{activeAgent?.status === 'published' ? '已发布' : '草稿'}{activeAgent?.status === 'published' && activeAgent?.publishedAt ? `（${new Date(activeAgent.publishedAt).toLocaleString('zh-CN')}）` : ''} · AGENT</p>
             </div>
           </div>
           <p className="mt-3 line-clamp-2 text-[12px] leading-5" style={{ color: 'var(--text-secondary)' }}>{activeAgent?.description || '配置智能体能力。'}</p>
