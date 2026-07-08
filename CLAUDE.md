@@ -250,3 +250,8 @@
   根因:S4 零断档部署脚本用 `cp -Rpn` 合并旧 hash chunk 进 dist-next;服务器 coreutils 9.4 对每个被 `-n` 跳过的文件打印 "not replacing" 并以退出码 1 结束,`set -e` 当场终止——构建产物齐了但没切换、PM2 没重启。首次实跑即中招;零断档设计兜住了(旧 dist 全程在服务,线上无感知)。
   修复(commit 66a4425):合并改为显式"目标不存在才 `cp -p`"的循环,cp 真实失败仍会炸出不吞错;uiArchitecture 测试断言禁止 `cp -n` 回潮。
   如何避免:**shell 脚本里 `cp -n`/`mv -n` 的退出码语义随 coreutils 版本漂移(9.2+ 跳过=失败),`set -e` 下禁用;"跳过已存在"必须写成显式存在性判断。部署脚本的每一步都要问:这步失败时线上处于什么状态——本次是"旧版完好"才安全,靠的是切换前不动旧产物的设计,不是运气。**
+
+- **#40 ✅ 已修(2026-07-08)· normalize 层把"空数组"当"字段缺失"重新播种默认配置,用户删除永远不生效**
+  根因:`smartFactoryConfigStore.mjs` 的 `normalizeSmartFactoryConfig` 用 `knowledgeBases.length ? knowledgeBases : fallback.knowledgeBases` 兜底——本意是给"从未初始化"播种演示数据,但它无法区分"字段缺失"和"用户删光了"。用户删除最后一个知识库→存储层 normalize→空数组被替换成默认演示库(售后知识库 2 文档)→持久化。前端删除成功横幅、列表刷新全对,下一次读取它又回来了——"删除了,显示已删除,但是还在"。`modelProviders` 同款问题。排查关键:先用 10 行纯函数探针跑 `deleteSmartFactoryKnowledgeBase` 复现复活,再查云库确认库里只剩和默认种子逐字段一致的记录,没有先猜前端状态残留。
+  修复(commit 6a15d4d):播种判据改为"字段缺失(非数组)才播种"(`hasSourceKnowledgeBases`/`hasSourceModelProviders`,和 tools 既有的 `hasSourceTools` 同款);空数组原样保留。回归测试锁"删最后一个→持久化回读→仍为空"链路。云上已按业主删除意图清掉复活的售后知识库(备份 /www/backup/system-settings-global-260708-before-kb-cleanup.json)。
+  如何避免:**默认种子/演示数据只允许在"字段缺失"时播种,空集合是用户删除的真实结果,normalize/合并层不得复活;新增任何"默认兜底"先问:用户把它删光后这个兜底会不会把删除翻回来。"删除后又出现"类 bug 先探 durable 层(删除后库里是什么),不要先猜前端状态残留。**
