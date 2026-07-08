@@ -515,6 +515,8 @@ export interface AgentSummary {
   usageCount7d: number;
   createdAt: number;
   updatedAt: number;
+  /** 由智能工厂同步出品的 agent 会有此字段；空串/undefined 表示中心自建 */
+  factoryAgentId?: string;
 }
 
 export interface KnowledgeBaseSummary {

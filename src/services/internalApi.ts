@@ -108,7 +108,7 @@ export class ApiError extends Error {
   }
 }
 
-const classifyError = (status: number, serverMessage: string): ApiError => {
+const classifyError = (status: number, serverMessage: string, serverErrorCode?: string): ApiError => {
   if (status === 0)
     return new ApiError('网络连接失败，请检查网络后重试', 'network_error', 0);
   if (status === 408 || serverMessage.includes('timeout'))
@@ -117,8 +117,12 @@ const classifyError = (status: number, serverMessage: string): ApiError => {
     return new ApiError('请求过于频繁，请稍后再试', 'rate_limited', status);
   if (status === 401)
     return new ApiError('登录已过期，请重新登录', 'unauthorized', status);
-  if (status === 403)
+  if (status === 403) {
+    // factory_managed_agent: 后端返回人话 message，直接透传给用户
+    if (serverErrorCode === 'factory_managed_agent')
+      return new ApiError(serverMessage || '该智能体由智能工厂管理，请在智能工厂修改后重新发布。', 'factory_managed_agent', status);
     return new ApiError('没有权限执行此操作', 'forbidden', status);
+  }
   if (status >= 500)
     return new ApiError('服务暂时不可用，请稍后再试', 'server_error', status);
   return new ApiError(
@@ -218,7 +222,7 @@ const request = async <T>(
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
-          const err = classifyError(response.status, data.message || '');
+          const err = classifyError(response.status, data.message || '', data.errorCode || '');
           if (isRetryable(method, response.status, null) && attempt < maxAttempts - 1) {
             lastError = err;
             continue;

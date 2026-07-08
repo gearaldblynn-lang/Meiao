@@ -2,6 +2,7 @@ import React from 'react';
 import { AgentSummary } from '../../types';
 import { PopoverSelect, WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 import AgentAvatar from './AgentAvatar';
+import { FACTORY_MANAGED_BADGE_LABEL, isFactoryManagedAgent } from './AgentCenterModule';
 
 interface Props {
   agents: AgentSummary[];
@@ -119,6 +120,11 @@ const AgentListView: React.FC<Props> = ({
                   <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: selectedAgent.status === 'published' ? 'rgba(16,185,129,0.12)' : 'var(--accent-soft)', color: selectedAgent.status === 'published' ? 'var(--success)' : 'var(--accent)' }}>
                     {selectedAgent.status === 'published' ? '已发布' : '待处理'}
                   </span>
+                  {isFactoryManagedAgent(selectedAgent) ? (
+                    <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: 'rgba(6,182,212,0.12)', color: '#0e7490' }}>
+                      {FACTORY_MANAGED_BADGE_LABEL}
+                    </span>
+                  ) : null}
                   {selectedAgent.department ? (
                     <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
                       {selectedAgent.department}
@@ -181,6 +187,11 @@ const AgentListView: React.FC<Props> = ({
                             <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: isPublished ? 'rgba(16,185,129,0.12)' : 'var(--accent-soft)', color: isPublished ? 'var(--success)' : 'var(--accent)' }}>
                               {isPublished ? '已发布' : '待处理'}
                             </span>
+                            {isFactoryManagedAgent(agent) ? (
+                              <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: 'rgba(6,182,212,0.12)', color: '#0e7490' }}>
+                                {FACTORY_MANAGED_BADGE_LABEL}
+                              </span>
+                            ) : null}
                           </div>
                           <p className="mt-0.5 line-clamp-2 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>{agent.description || '暂无说明'}</p>
                         </div>
