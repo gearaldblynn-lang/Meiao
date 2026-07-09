@@ -32,12 +32,14 @@ import { WorkspaceShellCard } from '../../components/ui/workspacePrimitives';
 import { formatTime } from '../../utils/timeFormat';
 import {
   addSmartFactoryKnowledgeDocument,
+  adoptSmartFactoryCenterAgent,
   createSmartFactoryAgent,
   createSmartFactoryKnowledgeBase,
   deleteSmartFactoryAgent,
   deleteSmartFactoryKnowledgeBase,
   deleteSmartFactoryTool,
   deleteSmartFactoryKnowledgeDocument,
+  fetchAgentSummaries,
   fetchSmartFactoryConfig,
   publishSmartFactoryAgent,
   retrainSmartFactoryKnowledgeDocument,
@@ -51,6 +53,8 @@ import {
   type SmartFactoryConfig,
   type SmartFactoryPreviewResult,
 } from '../../services/internalApi';
+import type { AgentSummary } from '../../types';
+import { isFactoryManagedAgent } from './factoryManagedConstants';
 import SmartFactoryKnowledgeManager from './SmartFactoryKnowledgeManager';
 import { resolveSmartFactoryConfigLoadErrorMessage } from './smartFactoryPreviewMode';
 
@@ -374,6 +378,7 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
   const [filter, setFilter] = useState<AgentFilter>('all');
   const [query, setQuery] = useState('');
   const [config, setConfig] = useState<SmartFactoryConfig | null>(null);
+  const [centerAgentSummaries, setCenterAgentSummaries] = useState<AgentSummary[]>([]);
   const [result, setResult] = useState<SmartFactoryPreviewResult | null>(null);
   const [activeAgentId, setActiveAgentId] = useState('');
   const [activeSessionId, setActiveSessionId] = useState('');
@@ -459,6 +464,37 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
       disposed = true;
     };
   }, [onErrorMessage]);
+
+  // 中心存量智能体(无工厂来源)列表:用于"接管到工厂"分区;拉取失败静默为空,不阻塞面板
+  const reloadCenterAgentSummaries = async () => {
+    try {
+      const response = await fetchAgentSummaries();
+      setCenterAgentSummaries(response.agents || []);
+    } catch {
+      setCenterAgentSummaries([]);
+    }
+  };
+
+  useEffect(() => {
+    void reloadCenterAgentSummaries();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // 单一判据:复用 factoryManagedConstants 的 isFactoryManagedAgent,禁止在此写平行判据
+  const adoptableCenterAgents = useMemo(
+    () => centerAgentSummaries.filter((agent) => !isFactoryManagedAgent(agent)),
+    [centerAgentSummaries],
+  );
+
+  const handleAdoptCenterAgent = (agent: AgentSummary) => runAction(
+    `已接管「${agent.name}」到智能工厂,现在可以直接编辑并发布更新。`,
+    async () => {
+      const response = await adoptSmartFactoryCenterAgent(agent.id);
+      applyConfig(response.config);
+      setActiveAgentId(response.adopted.factoryAgentId);
+      await reloadCenterAgentSummaries();
+    },
+  );
 
   const activeAgent = useMemo(() => (
     config?.agents.find((agent) => agent.id === activeAgentId) || config?.agents[0] || null
@@ -982,6 +1018,41 @@ const SmartFactoryPanel: React.FC<Props> = ({ onStatusMessage, onErrorMessage, o
           )}
         </div>
       </div>
+
+      {adoptableCenterAgents.length > 0 && (
+        <WorkspaceShellCard className="p-5" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>中心存量智能体</p>
+            <p className="text-[12px]" style={{ color: 'var(--text-tertiary)' }}>这些智能体在智能体中心运行,但还不归工厂管理;接管后即可在这里编辑并发布更新。</p>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {adoptableCenterAgents.map((agent) => (
+              <div key={agent.id} className="rounded-[8px] border p-4" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px]" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
+                    <Bot size={20} />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="truncate text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>{agent.name}</p>
+                    <p className="mt-1 truncate text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                      {agent.department || '未分组'} · {agent.status === 'published' ? '已上线' : '草稿'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => handleAdoptCenterAgent(agent)}
+                  className="mt-4 inline-flex h-9 w-full items-center justify-center gap-2 rounded-[8px] border text-[12px] font-semibold disabled:opacity-60"
+                  style={{ borderColor: 'var(--accent)', background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                >
+                  <PackagePlus size={15} /> 接管到工厂
+                </button>
+              </div>
+            ))}
+          </div>
+        </WorkspaceShellCard>
+      )}
     </div>
   );
 

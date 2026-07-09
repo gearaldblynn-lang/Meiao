@@ -81,6 +81,63 @@ export const findLinkedKnowledgeBase = (knowledgeBases = [], factoryAgentId = ''
 // 输入:normalize 过的工厂 agent + 工厂配置;输出:物化计划(不执行任何写入)。
 // knowledgeBases 只带该 agent 绑定的、有文档内容的库;文档取原文,由智能体中心
 // 既有 ingestion(切片/嵌入)重新加工,不搬运工厂侧 chunk。
+// 反向桥:把中心存量 agent(无工厂来源)"接管"进工厂的物化计划(不执行任何写入)。
+// 与 buildAgentCenterSyncPlan 互为镜像:那边是 工厂→中心 发布物化,这边是 中心→工厂 接管导入。
+// 工厂侧 id 用确定性前缀派生,保证同一中心 agent 重复接管幂等(实际会被 isFactoryManagedAgent 守卫拦下)。
+export const FACTORY_ADOPTED_AGENT_ID_PREFIX = 'agent-center-';
+export const FACTORY_ADOPTED_KB_ID_PREFIX = 'kb-center-';
+
+export const buildFactoryAdoptionPlan = ({ centerAgent = {}, centerVersion = {}, knowledgeBases = [] } = {}) => {
+  const centerAgentId = clean(centerAgent.id, 100);
+  if (!centerAgentId) return null;
+  if (isFactoryManagedAgent(centerAgent)) return null;
+  if (!clean(centerVersion.id, 120)) return null;
+  const factoryAgentId = `${FACTORY_ADOPTED_AGENT_ID_PREFIX}${centerAgentId}`;
+  const factoryKnowledgeBases = [];
+  const kbLinks = [];
+  const knowledgeBaseIds = [];
+  for (const kb of asArray(knowledgeBases)) {
+    const centerKnowledgeBaseId = clean(kb?.id, 100);
+    if (!centerKnowledgeBaseId) continue;
+    // 已被更早的接管/发布关联过的中心库:复用工厂侧同一份,不重复导入、不改写既有关联
+    const alreadyLinked = clean(kb?.alreadyLinkedFactoryKnowledgeBaseId, 120);
+    if (alreadyLinked) {
+      knowledgeBaseIds.push(alreadyLinked);
+      continue;
+    }
+    const factoryKnowledgeBaseId = `${FACTORY_ADOPTED_KB_ID_PREFIX}${centerKnowledgeBaseId}`;
+    factoryKnowledgeBases.push({
+      id: factoryKnowledgeBaseId,
+      name: clean(kb?.name, 200) || '知识库',
+      description: clean(kb?.description, 600),
+      documents: asArray(kb?.documents)
+        .map((document) => ({
+          title: clean(document?.title, 200) || '未命名文档',
+          content: String(document?.rawText ?? '').trim(),
+          sourceType: clean(document?.sourceType, 40) || 'text',
+        }))
+        .filter((document) => document.content),
+    });
+    knowledgeBaseIds.push(factoryKnowledgeBaseId);
+    kbLinks.push({ centerKnowledgeBaseId, factoryKnowledgeBaseId });
+  }
+  return {
+    factoryAgentId,
+    agentCenterAgentId: centerAgentId,
+    factoryAgentPayload: {
+      id: factoryAgentId,
+      name: clean(centerAgent.name, 120) || '中心智能体',
+      description: clean(centerAgent.description, 500),
+      prompt: clean(centerVersion.systemPrompt, 20000),
+      model: { provider: 'openai_compatible', model: clean(centerVersion.defaultChatModel, 160) || 'gpt-5.5' },
+      knowledgeBaseIds,
+    },
+    factoryKnowledgeBases,
+    centerLinks: { factoryAgentId, kbLinks },
+    publishAfterCreate: clean(centerAgent.status, 40) === 'published',
+  };
+};
+
 export const buildAgentCenterSyncPlan = ({ factoryAgent = {}, factoryConfig = {} } = {}) => {
   const factoryAgentId = clean(factoryAgent.id, 120);
   if (!factoryAgentId) return null;

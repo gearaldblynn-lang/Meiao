@@ -582,7 +582,7 @@ export const createSmartFactoryAgent = (current = createDefaultSmartFactoryConfi
     id,
     name: text(payload.name, 120) || '新智能体',
     description: text(payload.description, 500),
-    prompt: text(payload.prompt || '你是梅奥智能工厂智能体。', 4000),
+    prompt: text(payload.prompt || '你是梅奥智能工厂智能体。', 20000),
     model: payload.model || { provider: firstProvider, model: firstModel },
     knowledgeBaseIds: Array.isArray(payload.knowledgeBaseIds) ? payload.knowledgeBaseIds : [],
     toolNames: Array.isArray(payload.toolNames) ? payload.toolNames : [],

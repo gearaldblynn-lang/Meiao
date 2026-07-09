@@ -5,8 +5,8 @@ import { getSection } from './sourceTestHelper.mjs';
 const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
 
 test('本地 sync 执行器:已链接分支走更新管道而非跳过', () => {
-  // DB 定向链接查找 helper 定义在本地管道之后,以它为界,slice 只含本地管道
-  const fn = getSection(source, 'const syncFactoryAgentToLocalAgentCenter', 'const findDbLinkedAgentByFactoryId');
+  // 2026-07-09 接管管道 adoptCenterAgentIntoLocalFactory 紧随其后,以它为界只取 sync 执行器
+  const fn = getSection(source, 'const syncFactoryAgentToLocalAgentCenter', 'const adoptCenterAgentIntoLocalFactory');
   assert.ok(!fn.includes('alreadyLinkedAgentId'), '不许再有"已链接即跳过"');
   assert.ok(fn.includes('createLocalAgentDraft'), '更新分支必须创建新版本');
   assert.ok(fn.includes('updateLocalAgentVersion'), '新版本必须写入工厂最新配置');

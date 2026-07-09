@@ -3,7 +3,10 @@ import test from 'node:test';
 
 import {
   buildAgentCenterSyncPlan,
+  buildFactoryAdoptionPlan,
   buildSmartFactoryLinkMarker,
+  FACTORY_ADOPTED_AGENT_ID_PREFIX,
+  FACTORY_ADOPTED_KB_ID_PREFIX,
   findLinkedAgentCenterAgent,
   findLinkedKnowledgeBase,
   isFactoryManagedAgent,
@@ -163,4 +166,103 @@ test('stripFactoryMarkerLines:全 marker 行变空串', () => {
 test('stripFactoryMarkerLines:null/undefined 安全返回空串', () => {
   assert.equal(stripFactoryMarkerLines(null), '');
   assert.equal(stripFactoryMarkerLines(undefined), '');
+});
+
+// ---- buildFactoryAdoptionPlan(中心存量 → 工厂接管) ----
+
+const centerAgent = {
+  id: 'ac-100',
+  name: '测试1',
+  description: '中心自建智能体',
+  status: 'published',
+  factoryAgentId: '',
+};
+
+const centerVersion = {
+  id: 'ver-1',
+  systemPrompt: '你是测试1智能体。',
+  defaultChatModel: 'gpt-5-4-openai-resp',
+};
+
+const centerKnowledgeBases = [
+  {
+    id: 'ckb-1',
+    name: '生图规则',
+    description: '生图相关规则',
+    documents: [
+      { title: '规则', rawText: '规则一:未指定比例时使用auto。', sourceType: 'manual' },
+      { title: '空文档', rawText: '', sourceType: 'text' },
+    ],
+  },
+];
+
+test('buildFactoryAdoptionPlan 把中心 agent 的名称/提示词/模型/知识库映射成工厂接管计划', () => {
+  const plan = buildFactoryAdoptionPlan({ centerAgent, centerVersion, knowledgeBases: centerKnowledgeBases });
+
+  assert.equal(plan.factoryAgentId, `${FACTORY_ADOPTED_AGENT_ID_PREFIX}ac-100`);
+  assert.equal(plan.agentCenterAgentId, 'ac-100');
+  assert.equal(plan.factoryAgentPayload.id, plan.factoryAgentId);
+  assert.equal(plan.factoryAgentPayload.name, '测试1');
+  assert.equal(plan.factoryAgentPayload.prompt, '你是测试1智能体。');
+  assert.deepEqual(plan.factoryAgentPayload.model, { provider: 'openai_compatible', model: 'gpt-5-4-openai-resp' });
+  assert.equal(plan.publishAfterCreate, true);
+  // 知识库:导入为工厂库,空文档过滤,产出中心侧关联
+  assert.equal(plan.factoryKnowledgeBases.length, 1);
+  assert.equal(plan.factoryKnowledgeBases[0].id, `${FACTORY_ADOPTED_KB_ID_PREFIX}ckb-1`);
+  assert.equal(plan.factoryKnowledgeBases[0].documents.length, 1);
+  assert.equal(plan.factoryKnowledgeBases[0].documents[0].content, '规则一:未指定比例时使用auto。');
+  assert.deepEqual(plan.factoryAgentPayload.knowledgeBaseIds, [`${FACTORY_ADOPTED_KB_ID_PREFIX}ckb-1`]);
+  assert.deepEqual(plan.centerLinks, {
+    factoryAgentId: plan.factoryAgentId,
+    kbLinks: [{ centerKnowledgeBaseId: 'ckb-1', factoryKnowledgeBaseId: `${FACTORY_ADOPTED_KB_ID_PREFIX}ckb-1` }],
+  });
+});
+
+test('buildFactoryAdoptionPlan 拒绝已由工厂管理的 agent(结构化字段或旧 marker 都算)', () => {
+  assert.equal(buildFactoryAdoptionPlan({
+    centerAgent: { ...centerAgent, factoryAgentId: 'agent-after-sale' },
+    centerVersion,
+    knowledgeBases: [],
+  }), null);
+  assert.equal(buildFactoryAdoptionPlan({
+    centerAgent: { ...centerAgent, description: '[智能工厂同步:agent-after-sale] 由智能工厂发布同步' },
+    centerVersion,
+    knowledgeBases: [],
+  }), null);
+});
+
+test('buildFactoryAdoptionPlan 无可用版本或无 agent id 时返回 null', () => {
+  assert.equal(buildFactoryAdoptionPlan({ centerAgent, centerVersion: {}, knowledgeBases: [] }), null);
+  assert.equal(buildFactoryAdoptionPlan({ centerAgent: { name: '无id' }, centerVersion, knowledgeBases: [] }), null);
+});
+
+test('buildFactoryAdoptionPlan 共用知识库已被关联时只复用、不重复导入、不再写中心关联', () => {
+  const plan = buildFactoryAdoptionPlan({
+    centerAgent,
+    centerVersion,
+    knowledgeBases: [
+      { ...centerKnowledgeBases[0], alreadyLinkedFactoryKnowledgeBaseId: `${FACTORY_ADOPTED_KB_ID_PREFIX}ckb-1` },
+    ],
+  });
+  assert.equal(plan.factoryKnowledgeBases.length, 0);
+  assert.deepEqual(plan.centerLinks.kbLinks, []);
+  assert.deepEqual(plan.factoryAgentPayload.knowledgeBaseIds, [`${FACTORY_ADOPTED_KB_ID_PREFIX}ckb-1`]);
+});
+
+test('buildFactoryAdoptionPlan 草稿 agent 接管后不自动置为工厂已发布', () => {
+  const plan = buildFactoryAdoptionPlan({
+    centerAgent: { ...centerAgent, status: 'draft' },
+    centerVersion,
+    knowledgeBases: [],
+  });
+  assert.equal(plan.publishAfterCreate, false);
+});
+
+test('buildFactoryAdoptionPlan 缺省模型时回落 gpt-5.5(与工厂默认一致)', () => {
+  const plan = buildFactoryAdoptionPlan({
+    centerAgent,
+    centerVersion: { ...centerVersion, defaultChatModel: '' },
+    knowledgeBases: [],
+  });
+  assert.equal(plan.factoryAgentPayload.model.model, 'gpt-5.5');
 });

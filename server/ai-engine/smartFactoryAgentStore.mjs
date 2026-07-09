@@ -69,7 +69,7 @@ const normalizeAgent = (agent = {}) => {
     id,
     name,
     description: clean(agent.description, 500),
-    prompt: clean(agent.prompt || '你是梅奥智能工厂智能体。', 4000),
+    prompt: clean(agent.prompt || '你是梅奥智能工厂智能体。', 20000),
     model: {
       provider: clean(agent.model?.provider || agent.model?.model_provider || 'openai_compatible', 120),
       model: clean(agent.model?.model || agent.model?.name || 'gpt-5.5', 160),
