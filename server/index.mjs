@@ -162,6 +162,7 @@ import {
 } from './smartFactoryConfigStore.mjs';
 import {
   buildAgentCenterSyncPlan,
+  buildFactoryAdoptionPlan,
   buildSmartFactoryLinkMarker,
   cleanFactoryId,
   findLinkedAgentCenterAgent,
@@ -1079,6 +1080,64 @@ const syncFactoryAgentToLocalAgentCenter = async (store, user, smartFactoryConfi
   return { synced: true, published: true, agentCenterAgentId: agentId };
 };
 
+// 反向接管(本地):中心存量 agent(无工厂来源)导入工厂,并写 factoryAgentId 关联。
+// 只新增工厂侧配置与中心侧关联字段,不改写中心 agent 的版本/会话/知识库内容,
+// 也不触发"工厂→中心"同步发布管道(中心本来就是线上态,接管不重发布)。
+// 共用知识库(alreadyLinked)只复用工厂侧同一份,不重复导入、不改写既有关联。
+const adoptCenterAgentIntoLocalFactory = async (store, user, centerAgentId) => {
+  if (user?.role !== 'admin') return { status: 403, body: { message: '仅管理员可接管中心智能体。' } };
+  const centerAgent = getLocalAgentById(store, centerAgentId);
+  if (!centerAgent) return { status: 404, body: { message: '中心智能体不存在。' } };
+  if (isFactoryManagedAgent(centerAgent)) {
+    return { status: 409, body: { message: '该智能体已由智能工厂管理,请直接在智能工厂里编辑。' } };
+  }
+  const versions = listLocalAgentVersionsByAgentId(store, centerAgentId);
+  const centerVersion = versions.find((item) => item.id === centerAgent.currentVersionId) || versions[0] || null;
+  if (!centerVersion) return { status: 400, body: { message: '该智能体还没有任何版本,无法接管。' } };
+  const knowledgeBases = (centerVersion.knowledgeBaseIds || [])
+    .map((kbId) => (store.knowledgeBases || []).find((kb) => kb.id === kbId))
+    .filter(Boolean)
+    .map((kb) => ({
+      id: kb.id,
+      name: kb.name,
+      description: kb.description,
+      alreadyLinkedFactoryKnowledgeBaseId: kb.factoryKnowledgeBaseId || '',
+      documents: (store.knowledgeDocuments || [])
+        .filter((document) => document.knowledgeBaseId === kb.id)
+        .map((document) => ({ title: document.title, rawText: document.rawText, sourceType: document.sourceType })),
+    }));
+  const plan = buildFactoryAdoptionPlan({ centerAgent, centerVersion, knowledgeBases });
+  if (!plan) return { status: 400, body: { message: '接管计划生成失败。' } };
+  const currentLocalSettings = getLocalSystemSettings(store);
+  let nextSmartFactory = currentLocalSettings.smartFactory;
+  for (const kb of plan.factoryKnowledgeBases) {
+    nextSmartFactory = createSmartFactoryKnowledgeBase(nextSmartFactory, { id: kb.id, name: kb.name, description: kb.description });
+    for (const document of kb.documents) {
+      nextSmartFactory = addSmartFactoryKnowledgeDocument(nextSmartFactory, { knowledgeBaseId: kb.id, document });
+    }
+    const trainingResult = await maybeTrainSmartFactoryKnowledgeBaseEmbeddings(nextSmartFactory, kb.id, { env: process.env });
+    nextSmartFactory = trainingResult.config;
+  }
+  nextSmartFactory = createSmartFactoryAgent(nextSmartFactory, plan.factoryAgentPayload);
+  if (plan.publishAfterCreate) nextSmartFactory = publishSmartFactoryAgent(nextSmartFactory, plan.factoryAgentId);
+  const nextSettings = saveLocalSystemSettings(store, { ...currentLocalSettings, smartFactory: nextSmartFactory });
+  const rawAgent = (store.agents || []).find((item) => item.id === centerAgentId);
+  if (rawAgent) rawAgent.factoryAgentId = plan.centerLinks.factoryAgentId;
+  for (const link of plan.centerLinks.kbLinks) {
+    const rawKb = (store.knowledgeBases || []).find((item) => item.id === link.centerKnowledgeBaseId);
+    if (rawKb) {
+      rawKb.factoryAgentId = plan.centerLinks.factoryAgentId;
+      rawKb.factoryKnowledgeBaseId = link.factoryKnowledgeBaseId;
+    }
+  }
+  writeLocalStore(store);
+  return {
+    status: 200,
+    nextSettings,
+    body: { adopted: { factoryAgentId: plan.factoryAgentId, agentCenterAgentId: centerAgentId } },
+  };
+};
+
 // I1:工厂发布是 admin-only 管道,链接判据全局唯一。不能用 listDbAgents/listDbKnowledgeBases
 // 做链接查找——它们对普通 admin(非超管名单)按 owner_user_id 过滤,会漏掉其他 admin 物化过的
 // 链接记录 → 重复物化。改为定向 SQL:结构化字段优先,无命中回退旧 description marker
@@ -1222,6 +1281,68 @@ const syncFactoryAgentToDbAgentCenter = async (user, smartFactoryConfig, factory
     return { synced: true, published: false, agentCenterAgentId: agentId, syncError: 'publish_failed:版本未通过验证或智能体状态异常' };
   }
   return { synced: true, published: true, agentCenterAgentId: agentId };
+};
+
+// 反向接管(MySQL):与 adoptCenterAgentIntoLocalFactory 同构(根因#7:双管道同一次改)。
+// 文档读取走定向 SQL 而非 listDbKnowledgeDocuments——后者对普通 admin 按 owner 过滤,
+// 会静默漏掉其他 admin 名下的文档(与发布管道 I1 的定向 SQL 理由一致)。
+const adoptCenterAgentIntoDbFactory = async (user, centerAgentId) => {
+  if (user?.role !== 'admin') return { status: 403, body: { message: '仅管理员可接管中心智能体。' } };
+  const centerAgent = await getDbAgentById(centerAgentId);
+  if (!centerAgent) return { status: 404, body: { message: '中心智能体不存在。' } };
+  if (isFactoryManagedAgent(centerAgent)) {
+    return { status: 409, body: { message: '该智能体已由智能工厂管理,请直接在智能工厂里编辑。' } };
+  }
+  const versions = await listDbAgentVersionsByAgentId(centerAgentId);
+  const centerVersion = versions.find((item) => item.id === centerAgent.currentVersionId) || versions[0] || null;
+  if (!centerVersion) return { status: 400, body: { message: '该智能体还没有任何版本,无法接管。' } };
+  const pool = await getMysqlPool();
+  const knowledgeBases = [];
+  for (const kbId of centerVersion.knowledgeBaseIds || []) {
+    const kb = await getDbKnowledgeBaseById(kbId);
+    if (!kb) continue;
+    const [documentRows] = await pool.query(
+      'SELECT title, source_type, raw_text FROM knowledge_documents WHERE knowledge_base_id = ? ORDER BY updated_at DESC',
+      [kbId]
+    );
+    knowledgeBases.push({
+      id: kb.id,
+      name: kb.name,
+      description: kb.description,
+      alreadyLinkedFactoryKnowledgeBaseId: kb.factoryKnowledgeBaseId || '',
+      documents: documentRows.map((row) => ({ title: row.title, rawText: row.raw_text, sourceType: row.source_type })),
+    });
+  }
+  const plan = buildFactoryAdoptionPlan({ centerAgent, centerVersion, knowledgeBases });
+  if (!plan) return { status: 400, body: { message: '接管计划生成失败。' } };
+  const currentSettings = await getDbSystemSettings();
+  let nextSmartFactory = currentSettings.smartFactory;
+  for (const kb of plan.factoryKnowledgeBases) {
+    nextSmartFactory = createSmartFactoryKnowledgeBase(nextSmartFactory, { id: kb.id, name: kb.name, description: kb.description });
+    for (const document of kb.documents) {
+      nextSmartFactory = addSmartFactoryKnowledgeDocument(nextSmartFactory, { knowledgeBaseId: kb.id, document });
+    }
+    const trainingResult = await maybeTrainSmartFactoryKnowledgeBaseEmbeddings(nextSmartFactory, kb.id, { env: process.env });
+    nextSmartFactory = trainingResult.config;
+  }
+  nextSmartFactory = createSmartFactoryAgent(nextSmartFactory, plan.factoryAgentPayload);
+  if (plan.publishAfterCreate) nextSmartFactory = publishSmartFactoryAgent(nextSmartFactory, plan.factoryAgentId);
+  const nextSettings = await saveDbSystemSettings({ ...currentSettings, smartFactory: nextSmartFactory });
+  await pool.query(
+    'UPDATE agents SET factory_agent_id = ?, updated_at = ? WHERE id = ?',
+    [plan.centerLinks.factoryAgentId, Date.now(), centerAgentId]
+  );
+  for (const link of plan.centerLinks.kbLinks) {
+    await pool.query(
+      'UPDATE knowledge_bases SET factory_agent_id = ?, factory_kb_id = ?, updated_at = ? WHERE id = ?',
+      [plan.centerLinks.factoryAgentId, link.factoryKnowledgeBaseId, Date.now(), link.centerKnowledgeBaseId]
+    );
+  }
+  return {
+    status: 200,
+    nextSettings,
+    body: { adopted: { factoryAgentId: plan.factoryAgentId, agentCenterAgentId: centerAgentId } },
+  };
 };
 
 const buildOpenAICompatibleRuntimeEnv = (env, systemSettings = {}) => {
@@ -9833,6 +9954,24 @@ const handleMysqlRequest = async (req, res, url) => {
     return;
   }
 
+  // 接管中心存量智能体(与本地段 localSmartFactoryAdoptMatch 同构,根因#7)
+  const dbSmartFactoryAdoptMatch = url.pathname.match(/^\/api\/smart-factory\/agents\/adopt\/([^/]+)$/);
+  if (dbSmartFactoryAdoptMatch && req.method === 'POST') {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    const centerAgentId = decodeURIComponent(dbSmartFactoryAdoptMatch[1]);
+    const result = await adoptCenterAgentIntoDbFactory(user, centerAgentId);
+    if (result.status !== 200) {
+      json(res, result.status, result.body);
+      return;
+    }
+    json(res, 200, {
+      config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(result.nextSettings) }),
+      ...result.body,
+    });
+    return;
+  }
+
   if (url.pathname === '/api/smart-factory/knowledge-bases' && req.method === 'POST') {
     const user = await requireDbUser(req, res);
     if (!user) return;
@@ -11773,6 +11912,24 @@ const handleLocalRequest = async (req, res, url) => {
     json(res, 200, {
       config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(nextSettings) }),
       agentCenterSync,
+    });
+    return;
+  }
+
+  // 接管中心存量智能体(与 DB 段 dbSmartFactoryAdoptMatch 同构,根因#7)
+  const localSmartFactoryAdoptMatch = url.pathname.match(/^\/api\/smart-factory\/agents\/adopt\/([^/]+)$/);
+  if (localSmartFactoryAdoptMatch && req.method === 'POST') {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    const centerAgentId = decodeURIComponent(localSmartFactoryAdoptMatch[1]);
+    const result = await adoptCenterAgentIntoLocalFactory(store, user, centerAgentId);
+    if (result.status !== 200) {
+      json(res, result.status, result.body);
+      return;
+    }
+    json(res, 200, {
+      config: getSmartFactoryPreviewConfig({ smartFactoryConfig: composeSmartFactoryConfigForRuntime(result.nextSettings) }),
+      ...result.body,
     });
     return;
   }

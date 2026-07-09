@@ -38,7 +38,8 @@ test('smart factory preview API is mounted in mysql and local handlers', () => {
   assert.equal((source.match(/\/api\/smart-factory\/knowledge-bases'/g) || []).length, 2);
   assert.equal((source.match(/\/api\/smart-factory\/knowledge-documents'/g) || []).length, 2);
   assert.equal((source.match(/smart-factory\\\/knowledge-documents\\\/\(\[\^\/\]\+\)\\\/retrain/g) || []).length, 2);
-  assert.equal((source.match(/maybeTrainSmartFactoryKnowledgeBaseEmbeddings\(/g) || []).length, 2);
+  // 文档新增路由2 + 接管管道2(adoptCenterAgentInto*Factory 导入知识库后训练)
+  assert.equal((source.match(/maybeTrainSmartFactoryKnowledgeBaseEmbeddings\(/g) || []).length, 4);
   assert.equal((source.match(/maybeTrainSmartFactoryKnowledgeDocumentEmbeddings\(/g) || []).length, 2);
   assert.equal((source.match(/\/api\/smart-factory\/knowledge-search'/g) || []).length, 2);
   assert.equal((source.match(/\/api\/smart-factory\/tools'/g) || []).length, 2);
@@ -79,8 +80,9 @@ test('smart factory APIs require login but are not admin-only', () => {
   );
 
   // 2026-07-06 U2 新增 agent DELETE 路由(双 handler 各 1),登录守卫 21→22
-  assert.equal((dbSmartFactoryRoutes.match(/requireDbUser/g) || []).length, 22);
-  assert.equal((localSmartFactoryRoutes.match(/localRequireUser/g) || []).length, 22);
+  // 2026-07-09 新增接管路由 agents/adopt(双 handler 各 1),22→23;admin 校验在管道函数内做
+  assert.equal((dbSmartFactoryRoutes.match(/requireDbUser/g) || []).length, 23);
+  assert.equal((localSmartFactoryRoutes.match(/localRequireUser/g) || []).length, 23);
   assert.doesNotMatch(dbSmartFactoryRoutes, /requireDbAdmin/);
   assert.doesNotMatch(localSmartFactoryRoutes, /localRequireAdmin/);
 });

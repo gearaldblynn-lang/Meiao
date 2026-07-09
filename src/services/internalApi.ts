@@ -1200,6 +1200,17 @@ export const publishSmartFactoryAgent = async (agentId: string) => {
   });
 };
 
+// 接管中心存量智能体:导入工厂并建立 factoryAgentId 关联,之后在工厂编辑发布即原地更新中心同一智能体
+export const adoptSmartFactoryCenterAgent = async (centerAgentId: string) => {
+  return request<{
+    config: SmartFactoryConfig;
+    adopted: { factoryAgentId: string; agentCenterAgentId: string };
+  }>(`/api/smart-factory/agents/adopt/${encodeURIComponent(centerAgentId)}`, {
+    method: 'POST',
+    dedupe: false,
+  });
+};
+
 export const createSmartFactoryKnowledgeBase = async (payload: { name: string; description?: string }) => {
   return request<{ config: SmartFactoryConfig }>('/api/smart-factory/knowledge-bases', {
     method: 'POST',

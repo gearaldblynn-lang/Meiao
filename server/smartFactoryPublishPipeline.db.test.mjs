@@ -4,7 +4,8 @@ import { readFileSync } from 'node:fs';
 import { getSection } from './sourceTestHelper.mjs';
 const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
 
-const extractDbSync = () => getSection(source, 'const syncFactoryAgentToDbAgentCenter', 'const buildOpenAICompatibleRuntimeEnv');
+// 2026-07-09 接管管道 adoptCenterAgentIntoDbFactory 紧随其后,以它为界只取 sync 执行器
+const extractDbSync = () => getSection(source, 'const syncFactoryAgentToDbAgentCenter', 'const adoptCenterAgentIntoDbFactory');
 
 test('DB sync 执行器:已链接分支走更新管道而非跳过', () => {
   const fn = extractDbSync();
