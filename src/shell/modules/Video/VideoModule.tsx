@@ -164,6 +164,10 @@ const VideoModule: React.FC<Props> = ({
           projects: (prev.storyboard?.projects || []).filter((project) => project.id !== projectId),
         },
       }));
+      // 2026-07-09 将离分镜卡删不掉修复:只改 videoMemory 本地状态没有删除墓碑,
+      // 服务端 mergeVideoMemory 对 storyboard.projects 取并集,旧卡每次同步都被并回来。
+      // 必须同时走 onDeleteProject 写 deletedProjectIds 墓碑,durable 层才真正删除。
+      onDeleteProject(projectId);
       return;
     }
     if (activeSubFeature === 'diagnosis') {
