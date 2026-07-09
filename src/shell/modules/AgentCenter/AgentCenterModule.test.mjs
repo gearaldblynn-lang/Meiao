@@ -5,7 +5,6 @@ import { readFileSync } from 'node:fs';
 const shellAppSource = readFileSync(new URL('../../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
 const shellModuleSource = readFileSync(new URL('./AgentCenterModule.tsx', import.meta.url), 'utf8');
 const managerSource = readFileSync(new URL('../../../modules/AgentCenter/AgentCenterManager.tsx', import.meta.url), 'utf8');
-const detailSource = readFileSync(new URL('../../../modules/AgentCenter/AgentDetailView.tsx', import.meta.url), 'utf8');
 const chatWorkspaceSource = readFileSync(new URL('../../../modules/AgentCenter/AgentCenterChatWorkspace.tsx', import.meta.url), 'utf8');
 
 test('shell app mounts the upgraded shell agent center instead of directly copying the old module', () => {
@@ -15,22 +14,25 @@ test('shell app mounts the upgraded shell agent center instead of directly copyi
   assert.match(shellModuleSource, /moduleCopy/);
 });
 
-test('agent center keeps plaza, factory, and real studio workflows available', () => {
+test('agent center is usage-only: plaza chat workspace with no embedded factory builder', () => {
   assert.match(shellModuleSource, /workspaceMode/);
   assert.match(shellModuleSource, /智能体广场/);
-  assert.match(shellModuleSource, /智能体工厂/);
-  assert.match(shellModuleSource, /AgentCenterManager/);
   assert.match(shellModuleSource, /AgentCenterChatWorkspace/);
-  assert.match(managerSource, /page === 'agent_studio'/);
-  assert.match(detailSource, /智能体工作室/);
+  // 制作入口已收口到独立「智能工厂」模块(SMART_FACTORY → SmartFactoryPanel),中心不再内嵌制作台
+  assert.doesNotMatch(shellModuleSource, /AgentCenterManager/);
+  assert.doesNotMatch(shellModuleSource, /新建智能体/);
+  assert.doesNotMatch(shellModuleSource, /智能体工厂/);
+  assert.doesNotMatch(shellModuleSource, /workspaceMode === 'factory'/);
+  assert.match(shellModuleSource, /制作 \/ 调试请前往「智能工厂」模块/);
+  assert.match(shellAppSource, /lazy\(\(\) => import\('\.\/shell\/modules\/SmartFactory\/SmartFactoryModule'\)\)/);
 });
 
-test('agent factory stays focused on old agent management without nesting Smart Factory', () => {
+test('agent center module does not nest any factory panel', () => {
   assert.doesNotMatch(shellModuleSource, /import SmartFactoryPanel/);
-  assert.match(shellModuleSource, /useState<'overview' \| 'manager'>\('overview'\)/);
-  assert.doesNotMatch(shellModuleSource, /setFactoryView\('smart_factory'\)/);
   assert.doesNotMatch(shellModuleSource, /<SmartFactoryPanel/);
-  assert.match(shellModuleSource, /<AgentCenterManager/);
+  assert.doesNotMatch(shellModuleSource, /<AgentCenterManager/);
+  assert.doesNotMatch(shellModuleSource, /setFactoryView/);
+  assert.doesNotMatch(shellModuleSource, /renderFactoryOverview/);
 });
 
 test('agent edit wizard submits the draft version being edited instead of the selected published version', () => {

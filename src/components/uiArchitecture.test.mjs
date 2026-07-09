@@ -1553,8 +1553,10 @@ test('shell agent center rebuilds backend powered agent workflows with the shell
   assert.match(shellAgentCenter, /fetchChatSessions/);
   assert.match(shellAgentCenter, /sendChatMessage/);
   assert.match(shellAgentCenter, /智能体广场/);
-  assert.match(shellAgentCenter, /智能体工厂/);
-  assert.match(shellAgentCenter, /AgentCenterManager/);
+  // 制作入口已收口到独立「智能工厂」模块(SMART_FACTORY),中心不再内嵌制作台
+  assert.doesNotMatch(shellAgentCenter, /智能体工厂/);
+  assert.doesNotMatch(shellAgentCenter, /AgentCenterManager/);
+  assert.match(shellAgentCenter, /制作 \/ 调试请前往「智能工厂」模块/);
   assert.match(shellAgentCenter, /AgentCenterChatWorkspace/);
   assert.match(shellAgentCenter, /var\(--bg-surface\)/);
   assert.match(shellAgentCenter, /moduleCopy/);
@@ -3318,6 +3320,9 @@ test('everything replace logo replacement is integrated without product-replace 
   assert.match(bottomInputBar, /新Logo素材/);
   assert.match(bottomInputBar, /待替换原图/);
   assert.match(bottomInputBar, /开始Logo替换/);
+  assert.doesNotMatch(bottomInputBar, /key: 'logoReplaceRenderMode'/);
+  assert.doesNotMatch(bottomInputBar, /程序兜底/);
+  assert.doesNotMatch(bottomInputBar, /KIE直出/);
   assert.doesNotMatch(bottomInputBar, /activeSubFeature === 'background_replace' \|\| activeSubFeature === 'logo_replace'/);
 
   assert.match(workflow, /type ShellRetouchMode = 'original' \| 'white_bg' \| 'product_replace' \| 'background_replace' \| 'logo_replace'/);
