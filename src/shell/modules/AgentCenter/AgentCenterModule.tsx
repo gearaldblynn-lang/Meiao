@@ -4,7 +4,6 @@ import {
   createChatSession,
   deleteChatSession,
   deleteUserAgentHistory,
-  fetchAgentSummaries,
   fetchChatAgents,
   fetchChatMessages,
   fetchChatSessions,
@@ -13,7 +12,6 @@ import {
   type ChatProgressEvent,
   updateChatSession,
 } from '../../../services/internalApi';
-import AgentCenterManager from '../../../modules/AgentCenter/AgentCenterManager';
 import AgentCenterChatWorkspace from '../../../modules/AgentCenter/AgentCenterChatWorkspace';
 import { ComposerAttachment } from '../../../modules/AgentCenter/ChatComposer';
 import { resolveActiveAgentId } from '../../../modules/AgentCenter/agentCenterUtils.mjs';
@@ -99,10 +97,6 @@ const moduleCopy = {
   plaza: {
     title: '智能体广场',
     detail: '选择已发布智能体，进入会话、查看历史和执行素材分析。',
-  },
-  factory: {
-    title: '智能体工厂',
-    detail: '制作、配置、版本发布、知识库绑定和进入智能体工作室。',
   },
 };
 
@@ -220,7 +214,8 @@ const MessageActionTooltip = ({ label }: { label: string }) => (
 
 const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode = false, onHandoff }) => {
   const initialUiState = readAgentCenterUiState();
-  const [workspaceMode, setWorkspaceMode] = useState<'factory' | 'plaza'>(initialUiState.workspaceMode === 'factory' ? 'factory' : 'plaza');
+  // 制作入口已收口到独立「智能工厂」模块;中心恒为广场(使用)模式,忽略历史持久化里的 'factory'
+  const [workspaceMode] = useState<'factory' | 'plaza'>('plaza');
   const [chatAgents, setChatAgents] = useState<AgentSummary[]>([]);
   const [sessions, setSessions] = useState<AgentChatSession[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState(String(initialUiState.selectedAgentId || ''));
@@ -241,8 +236,6 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   const [statusMessage, setStatusMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [loading, setLoading] = useState(false);
-  const [factoryView, setFactoryView] = useState<'overview' | 'manager'>('overview');
-  const [factoryAgents, setFactoryAgents] = useState<AgentSummary[]>([]);
   const [pendingAutoSubmission, setPendingAutoSubmission] = useState<ChatSubmissionInput | null>(null);
   const [queuedMessageCount, setQueuedMessageCount] = useState(0);
   const sendAbortControllerRef = useRef<AbortController | null>(null);
@@ -462,11 +455,6 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
   const availableChatModels = useMemo(() => {
     return filterChatModelsByAllowlist(chatModels, selectedAgent?.allowedChatModels || []);
   }, [chatModels, selectedAgent?.allowedChatModels]);
-  const factoryStats = useMemo(() => ({
-    total: factoryAgents.length,
-    published: factoryAgents.filter((agent) => agent.status === 'published').length,
-    draft: factoryAgents.filter((agent) => agent.status === 'draft').length,
-  }), [factoryAgents]);
 
   const resolveReasoningLevelForModel = (modelId: string, requestedReasoningLevel: string | null = null) => {
     const capability = availableChatModels.find((item) => item.id === modelId);
@@ -549,13 +537,6 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     if (!canAccessAgentCenter || workspaceMode !== 'plaza') return;
     void refreshChatCatalog().catch(() => {});
   }, [canAccessAgentCenter, workspaceMode]);
-
-  useEffect(() => {
-    if (!canAccessAgentCenter || !canManage || workspaceMode !== 'factory') return;
-    fetchAgentSummaries()
-      .then((result) => setFactoryAgents(result.agents || []))
-      .catch(() => setFactoryAgents([]));
-  }, [canAccessAgentCenter, canManage, workspaceMode]);
 
   useEffect(() => {
     if (previousWorkspaceModeRef.current === workspaceMode) return;
@@ -1185,92 +1166,6 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
     }
   }, [selectedSessionId, selectedModel, reasoningLevel, webSearchEnabled, currentUser]);
 
-  const renderFactoryOverview = () => (
-    <div className="flex h-full min-h-0 flex-col gap-3">
-      <div className="rounded-[20px] p-4" style={{ background: 'var(--bg-surface)' }}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-[15px] font-semibold" style={{ color: 'var(--text-primary)' }}>工厂控制台</p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => setFactoryView('manager')}
-              className="rounded-full px-3 py-2 text-[12px] font-semibold"
-              style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
-            >
-              知识库
-            </button>
-            <button
-              type="button"
-              onClick={() => setFactoryView('manager')}
-              className="rounded-2xl px-3 py-2 text-[12px] font-semibold"
-              style={{ background: 'var(--accent)', color: '#fff' }}
-            >
-              新建智能体
-            </button>
-          </div>
-        </div>
-        <div className="mt-4 grid gap-2 sm:grid-cols-3">
-          {[
-            ['全部', factoryStats.total],
-            ['已发布', factoryStats.published],
-            ['草稿', factoryStats.draft],
-          ].map(([label, value]) => (
-            <div key={label} className="rounded-[18px] p-3" style={{ background: 'var(--bg-elevated)' }}>
-              <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>{label}</p>
-              <p className="mt-1 text-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>{value}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <section className="min-h-0 flex-1 p-1">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <p className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>智能体队列</p>
-          <button
-            type="button"
-            onClick={() => setFactoryView('manager')}
-            className="rounded-full px-3 py-2 text-[12px] font-semibold"
-            style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
-          >
-            完整管理
-          </button>
-        </div>
-        <div className="grid max-h-full gap-3 overflow-y-auto pr-1 md:grid-cols-2 xl:grid-cols-3">
-          {factoryAgents.length === 0 ? (
-            <div className="rounded-3xl border border-dashed p-8 text-center md:col-span-2 xl:col-span-3" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-tertiary)' }}>
-              暂无智能体数据
-            </div>
-          ) : factoryAgents.map((agent) => (
-            <button
-              key={agent.id}
-              type="button"
-              onClick={() => setFactoryView('manager')}
-              className="group rounded-3xl border p-4 text-left transition-all"
-              style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex h-11 w-11 items-center justify-center rounded-2xl text-[14px] font-semibold text-white" style={{ background: 'var(--accent)' }}>
-                  {agent.name.slice(0, 1)}
-                </div>
-                <span className="rounded-2xl px-2.5 py-1 text-[10px] font-medium" style={{ background: agent.status === 'published' ? 'rgba(16,185,129,0.12)' : 'var(--bg-elevated)', color: agent.status === 'published' ? '#10b981' : 'var(--text-tertiary)' }}>
-                  {agent.status === 'published' ? '已发布' : agent.status === 'draft' ? '草稿' : '归档'}
-                </span>
-              </div>
-              <p className="mt-3 truncate text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>{agent.name}</p>
-              <p className="mt-1 line-clamp-2 min-h-[36px] text-[12px] leading-5" style={{ color: 'var(--text-tertiary)' }}>{agent.description || '暂无说明'}</p>
-              <div className="mt-4 flex items-center justify-between border-t pt-3" style={{ borderColor: 'var(--border-subtle)' }}>
-                <span className="text-[11px]" style={{ color: 'var(--text-disabled)' }}>{agent.department || '未分组'}</span>
-                <span className="text-[11px] font-semibold" style={{ color: 'var(--accent)' }}>编辑 / 工作室</span>
-              </div>
-            </button>
-          ))}
-        </div>
-      </section>
-    </div>
-  );
-
   if (!canAccessAgentCenter) {
     return (
       <div className="h-full overflow-y-auto px-6 pb-6 pt-5" style={{ background: 'var(--bg-base)' }}>
@@ -1292,34 +1187,18 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         <header className="mb-3 flex-none border-b pb-3" style={{ borderColor: 'var(--border-subtle)' }}>
           <div className="flex flex-wrap items-center justify-between gap-2.5">
             <div className="min-w-0">
-              <h2 className="text-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>{workspaceMode === 'factory' ? moduleCopy.factory.title : moduleCopy.plaza.title}</h2>
+              <h2 className="text-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>{moduleCopy.plaza.title}</h2>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
               {canManage ? (
-                <div className="inline-flex rounded-full p-1" style={{ background: 'var(--bg-elevated)' }}>
-                  <button
-                    type="button"
-                    onClick={() => setWorkspaceMode('plaza')}
-                    className="rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-all"
-                    style={{ background: workspaceMode === 'plaza' ? 'var(--bg-surface)' : 'transparent', color: workspaceMode === 'plaza' ? 'var(--accent)' : 'var(--text-secondary)', boxShadow: workspaceMode === 'plaza' ? 'var(--shadow-card)' : 'none' }}
-                  >
-                    智能体广场
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setWorkspaceMode('factory')}
-                    className="rounded-full px-3.5 py-1.5 text-[12px] font-semibold transition-all"
-                    style={{ background: workspaceMode === 'factory' ? 'var(--bg-surface)' : 'transparent', color: workspaceMode === 'factory' ? 'var(--accent)' : 'var(--text-secondary)', boxShadow: workspaceMode === 'factory' ? 'var(--shadow-card)' : 'none' }}
-                  >
-                    智能体工厂
-                  </button>
-                </div>
-              ) : (
                 <div className="rounded-full px-3 py-1.5 text-[12px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
-                  智能体广场
+                  制作 / 调试请前往「智能工厂」模块
                 </div>
-              )}
+              ) : null}
+              <div className="rounded-full px-3 py-1.5 text-[12px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+                智能体广场
+              </div>
             </div>
           </div>
         </header>
@@ -1327,35 +1206,7 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
         {errorMessage ? <div className="mb-2 rounded-2xl border px-3 py-2 text-[12px] font-medium" style={{ background: 'rgba(239,68,68,0.08)', borderColor: 'rgba(239,68,68,0.18)', color: '#ef4444' }}>{errorMessage}</div> : null}
         {statusMessage ? <div className="mb-2 rounded-2xl border px-3 py-2 text-[12px] font-medium" style={{ background: 'rgba(16,185,129,0.08)', borderColor: 'rgba(16,185,129,0.18)', color: '#10b981' }}>{statusMessage}</div> : null}
         <div className={`min-h-0 flex-1 ${lockWorkspaceScroll ? 'overflow-hidden' : 'overflow-y-auto'}`}>
-          {canManage && workspaceMode === 'factory' ? (
-            factoryView === 'overview' ? (
-              renderFactoryOverview()
-            ) : (
-              <div className="h-full min-h-0">
-                <div className="mb-3 flex items-center justify-between border-b pb-2" style={{ borderColor: 'var(--border-subtle)' }}>
-                  <span className="text-[12px] font-semibold" style={{ color: 'var(--text-secondary)' }}>制作细节</span>
-                  <button
-                    type="button"
-                    onClick={() => setFactoryView('overview')}
-                    className="rounded-full px-3 py-1.5 text-[11px] font-semibold"
-                    style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
-                  >
-                    返回工厂总览
-                  </button>
-                </div>
-                <AgentCenterManager
-                  onStatusMessage={setStatusMessage}
-                  onErrorMessage={setErrorMessage}
-                  onLoadingChange={setLoading}
-                  onAgentCatalogChanged={() => {
-                    void refreshChatCatalog();
-                    void fetchAgentSummaries().then((result) => setFactoryAgents(result.agents || [])).catch(() => {});
-                  }}
-                />
-              </div>
-            )
-          ) : (
-            <AgentCenterChatWorkspace
+          <AgentCenterChatWorkspace
               currentUser={currentUser}
               chatAgents={chatAgents}
               recentAgents={recentAgents}
@@ -1432,7 +1283,6 @@ const AgentCenterModule: React.FC<Props> = ({ currentUser = null, internalMode =
               onBatchSend={handleBatchSend}
               renderMessageActions={renderShellMessageActions}
             />
-          )}
         </div>
       </div>
     </div>
