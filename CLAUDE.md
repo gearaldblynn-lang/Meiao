@@ -261,3 +261,13 @@
   根因:工厂↔中心打通(8 任务)做的是数据/行为层统一——独立「智能工厂」模块(`SMART_FACTORY` → `SmartFactoryPanel`)发布同步、编辑锁、级联下线,全对。但「智能体中心」模块内部还嵌着**第二个完整制作台**(管理员 tab 就叫"智能体工厂" → `AgentCenterManager` 5 步向导),直接写中心存储、绕开工厂单一真相。方案把"中心"当成"使用+轻管理",没盘点它内部的入口——业主一截图就发现"中心还能新建智能体"。定位关键:先分清截图是哪个组件(截图顶部有"智能体广场|智能体工厂"切换 → 只有中心模块有此切换),再顺 `ShellMigratedApp` 的 lazy import 认清 live 渲染树,而不是想当然认为截图=已打通的那个工厂。
   修复(commit 8c3c9a1):纯前端收口——`src/shell/modules/AgentCenter/AgentCenterModule.tsx` 拆除 广场/工厂 切换、工厂控制台总览、`AgentCenterManager` 挂载及专属状态,中心恒为广场(使用)模式,管理员态加"制作 / 调试请前往「智能工厂」模块"提示;source 断言锁"中心不再内嵌制作台"。不碰后端与数据,现存 3 个非工厂 agent 照常运行(如需修改走工厂重建)。
   如何避免:**"统一/打通/收口入口"类需求,动手前先按能力穷举所有 UI 入口(grep 按钮文案如"新建智能体"、顺 ShellMigratedApp 的模块路由看 live 渲染树),把每个同能力界面列进方案的"改/删/留"清单;验收标准里必须有"业主视角走一遍每个入口",只验数据链路不算打通。同名中文标签(智能体工厂 vs 智能工厂)是入口重复的高危信号。**
+
+- **#42 ✅ 已修(2026-07-09)· 新增 Shell 模块只接了写入,刷新恢复白名单漏注册,持久化内容像消失**
+  根因:图片裁切模块会把长图切片/改尺寸结果写入 `shellProjects`,远端 patch 也会保存;但 `src/adapters/shellDataAdapter.ts` 的模块恢复白名单 `MODULE_VALUES` 和展示标签 `MODULE_LABELS` 漏了 `image_crop`。刷新后 `toModule` 把未知模块默认降级为 `agent_center`,图片裁切页再按 `activeModule='image_crop'` 过滤,所以记录实际在 app_state 里,但被恢复成别的模块后不可见,表现为"刷新就没了"。
+  修复:`shellDataAdapter` 补齐 `image_crop` 的模块标签和有效枚举,并加回归测试锁住 persisted `image_crop/long_slice` 项目及其结果刷新后仍保持 `module:'image_crop'`。
+  如何避免:**新增任何顶层 Shell 模块不能只改路由/侧边栏/写入模块。必须同步检查 `types.ts`、`shellDataAdapter` 的模块白名单和标签、`shellScopeFilters` 过滤、`shellPersistence` 远端 patch,并补一条"写入 shellProjects → buildShellDataSnapshot → 当前模块过滤仍可见"的刷新恢复测试。**
+
+- **#43 ✅ 已修(2026-07-09)· 收口类需求把"存量数据失去编辑路径"当既定取舍,业主实测立刻打回**
+  根因:#41 收口方案明知现存 3 个非工厂智能体收口后"中心不再有编辑入口",却写成"既定取舍;如需修改走工厂重建"。实际使用中站不住:业主要给"测试1"加功能时发现工厂里根本没有它——重建=丢会话历史/重配知识库,不是可用路径。收口只做了"关旧门",没给存量数据开"新门"。
+  修复(commit 69995c9):智能工厂加"接管"能力——`buildFactoryAdoptionPlan` 反向桥纯函数 + `POST /api/smart-factory/agents/adopt/:centerAgentId` 双管道路由 + 工厂工作台"中心存量智能体"分区。接管建立 factoryAgentId 关联后,工厂编辑发布即原地更新中心同一智能体(会话/生图配置保留)。
+  如何避免:**"收口/统一入口"类方案必须给存量数据一条不丢信息的迁移/接管路径,才算完整;"存量走重建"只在重建零成本时才是可接受取舍(有会话历史/关联配置的一律不算)。方案评审时把"业主明天要改存量对象怎么办"当必答题。**
