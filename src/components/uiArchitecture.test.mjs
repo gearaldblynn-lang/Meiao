@@ -626,8 +626,8 @@ test('shell job hydration only refreshes active tasks and does not overwrite pro
   assert.match(jobHydrateBody, /setTasks\(\(prev\) => mergeShellTasks/);
   assert.match(jobHydrateBody, /persistSyncedProjectsToSharedState\(syncedProjectsToPersist\)/);
   assert.match(app, /shouldPersistSyncedProjectFromJobs/);
-  assert.match(app, /getProjectErrorResultCount/);
-  assert.match(app, /project\.status === 'error'[\s\S]*persistedProject\.status === 'planning'[\s\S]*persistedProject\.status === 'generating'/);
+  assert.match(read('../utils/syncedProjectPersistence.ts'), /getProjectErrorResultCount/);
+  assert.match(read('../utils/syncedProjectPersistence.ts'), /project\.status === 'error'[\s\S]*persistedProject\.status === 'planning'[\s\S]*persistedProject\.status === 'generating'/);
   assert.match(jobHydrateBody, /const snapshotProjectIds = new Set/);
   assert.match(jobHydrateBody, /const activeSnapshotTaskProjectIds = new Set/);
   assert.match(jobHydrateBody, /!snapshotProjectIds\.has\(project\.id\) && !activeSnapshotTaskProjectIds\.has\(project\.id\)\) return false/);
@@ -691,6 +691,12 @@ test('shell refresh restores current workspace and keeps in-flight project cards
   assert.match(app, /mergeShellProjects\(runtimeSnapshot\.projects, snapshot\.projects as Project\[\]\)/);
   assert.match(app, /mergeShellTasks\(runtimeSnapshot\.tasks, snapshot\.tasks as Task\[\]\)/);
   assert.match(applyShellSnapshotBody, /pruneShellRuntimeSnapshotForDeletion\([\s\S]*loadShellRuntimeSnapshot\(shellLocalScopeUserId\)/);
+  // 2026-07-09 多桑「项目卡闪现后消失」修复:applyShellSnapshot 不含 jobs,全量 setProjects
+  // 会冲掉 hydrateShellJobs 刚重建的 job 来源卡;必须保留内存中快照缺席的 job 卡(删除墓碑除外)。
+  assert.match(applyShellSnapshotBody, /const preservedJobProjects = prev\.filter/);
+  assert.match(applyShellSnapshotBody, /project\.sourceType === 'job'/);
+  assert.match(applyShellSnapshotBody, /!nextProjectIds\.has\(String\(project\.id \|\| ''\)\.trim\(\)\)/);
+  assert.match(applyShellSnapshotBody, /pruneShellRuntimeSnapshotForDeletion\(\s*\{ projects: preservedJobProjects, tasks: \[\] \}/);
   assert.match(jobHydrateBody, /pruneShellRuntimeSnapshotForDeletion\([\s\S]*loadShellRuntimeSnapshot\(shellLocalScopeUserId\)/);
   assert.match(app, /const hasActiveBackendProject = projects\.some/);
   assert.match(app, /\(project\.results \|\| \[\]\)\.some\(\(result\) => Boolean\(result\.backendJobId \|\| result\.taskId\)\)/);
@@ -1017,11 +1023,15 @@ test('translation submit creates visible project card before preparing remote ma
 
 test('synced translation job projects are persisted after cloud recovery', () => {
   const app = read('../ShellMigratedApp.tsx');
-  const persistPredicate = app.match(/const shouldPersistSyncedProjectFromJobs = \([\s\S]*?\n\};/)?.[0] || '';
+  const persistUtil = read('../utils/syncedProjectPersistence.ts');
+  const persistPredicate = persistUtil.match(/export const shouldPersistSyncedProjectFromJobs = \([\s\S]*?\n\};/)?.[0] || '';
 
-  assert.match(persistPredicate, /project\.module === AppModuleObj\.TRANSLATION/);
+  assert.match(app, /from '\.\/utils\/syncedProjectPersistence'/);
   assert.match(persistPredicate, /project\.sourceType === 'job'/);
+  assert.match(persistPredicate, /PERSISTABLE_JOB_CARD_MODULES\.has\(String\(project\.module \|\| ''\)\)/);
   assert.match(persistPredicate, /nextCompletedCount > 0/);
+  assert.match(persistUtil, /'translation',/);
+  assert.match(persistUtil, /'everything_replace',/);
 });
 
 test('guarded generation blocks duplicate submits while scoped jobs are active', () => {
@@ -1227,6 +1237,10 @@ test('video workspace keeps the shell UI while migrating storyboard and diagnosi
 
   assert.match(videoModule, /ProjectListView/);
   assert.match(videoModule, /hasDiagnosisReportContent\(state\.diagnosis\)/);
+  // 2026-07-09 将离分镜卡删不掉:storyboard 删除只清 videoMemory 本地状态没写墓碑,
+  // 服务端 mergeVideoMemory 并集把旧卡并回来。删除分支必须同时调用 onDeleteProject 写 deletedProjectIds。
+  const storyboardDeleteBranch = videoModule.match(/if \(activeSubFeature === 'storyboard'\) \{([\s\S]*?)\n    \}/)?.[1] || '';
+  assert.match(storyboardDeleteBranch, /onDeleteProject\(projectId\)/);
   assert.match(videoModule, /分镜生成/);
   assert.doesNotMatch(videoModule, /分镜项目/);
   assert.match(videoModule, /视频诊断/);
@@ -2054,10 +2068,12 @@ test('one-click planning cards are persisted before long-running backend plannin
 
 test('shell job hydration persists repaired one-click planning snapshots', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
+  const persistUtil = read('../utils/syncedProjectPersistence.ts');
 
-  assert.match(shellApp, /hasStaleOneClickPlanningPlaceholder/);
-  assert.match(shellApp, /getOneClickPlanningFingerprint/);
-  assert.match(shellApp, /hasPlanningSnapshotChanged/);
+  assert.match(shellApp, /shouldPersistSyncedProjectFromJobs/);
+  assert.match(persistUtil, /hasStaleOneClickPlanningPlaceholder/);
+  assert.match(persistUtil, /getOneClickPlanningFingerprint/);
+  assert.match(persistUtil, /hasPlanningSnapshotChanged/);
 });
 
 test('agent chat image replies put final results in the result layer and references in the run trace', () => {

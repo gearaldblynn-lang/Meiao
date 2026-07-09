@@ -49,6 +49,10 @@ import { isInvalidOneClickPlanLike } from './utils/oneClickPlanValidation.ts';
 import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion } from './utils/shellRuntimePrune.mjs';
 import { isFrontendResourceError } from './utils/frontendResourceError.mjs';
 import { startVersionWatch } from './utils/frontendVersionWatch';
+// 判据单一来源(2026-07-09 多桑「7月9日项目5」断链修复):缺卡回写谓词与计数辅助全部收敛到
+// syncedProjectPersistence.ts,行为测试锁在 syncedProjectPersistence.test.mjs。
+// job 来源缺卡回写不再只限 translation/error,所有工作区模块的成功/进行中/失败缺卡统一落库。
+import { shouldPersistSyncedProjectFromJobs } from './utils/syncedProjectPersistence';
 import { deleteShellDraftAsset, loadShellDraftAsset, pruneShellDraftAssets, restoreShellDraftAssetUrls, saveShellDraftAsset } from './utils/shellDraftAssetStore';
 import { detectMp4VideoCodecFromBlob } from './utils/videoCodec';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
@@ -536,129 +540,6 @@ const buildProjectRemotePatch = (
     patch.videoMemory = state.videoMemory;
   }
   return patch;
-};
-
-const getProjectCompletedMediaCount = (project?: Pick<Project, 'results'> | null) => (
-  (project?.results || []).filter((result) => (
-    result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl)
-  )).length
-);
-
-const getProjectErrorResultCount = (project?: Pick<Project, 'results'> | null) => (
-  (project?.results || []).filter((result) => result.status === 'error').length
-);
-
-const getProjectActiveResultIdentities = (project?: Pick<Project, 'results'> | null) => new Set(
-  (project?.results || [])
-    .filter((result) => ['generating', 'pending', 'queued'].includes(String(result.status || '')))
-    .flatMap((result) => [result.backendJobId, result.taskId])
-    .map((value) => String(value || '').trim())
-    .filter(Boolean),
-);
-
-const isOneClickPlanningPlaceholderText = (value: unknown) => {
-  const normalized = String(value || '').trim();
-  return normalized === '一键主详';
-};
-
-const hasStaleOneClickPlanningPlaceholder = (project?: Pick<Project, 'module' | 'results' | 'plans'> | null) => {
-  if (project?.module !== AppModuleObj.ONE_CLICK) return false;
-  const hasPlaceholderResult = (project.results || []).some((result) => (
-    result.status === 'generating'
-    && !result.imageUrl
-    && !result.videoUrl
-    && !String(result.taskId || '').trim()
-    && Boolean(String(result.backendJobId || '').trim())
-    && isOneClickPlanningPlaceholderText(result.prompt)
-  ));
-  if (hasPlaceholderResult) return true;
-  return (project.plans || []).some((plan) => {
-    const planId = String(plan?.id || '').trim();
-    const content = String(
-      plan?.schemeContent
-      || plan?.textLayout
-      || plan?.sceneDescription
-      || plan?.styleDirection
-      || ''
-    ).trim();
-    return /-pending$/i.test(planId) && isOneClickPlanningPlaceholderText(content);
-  });
-};
-
-const getOneClickPlanningFingerprint = (project?: Pick<Project, 'plans'> | null) => (
-  (project?.plans || [])
-    .map((plan) => [
-      String(plan?.id || '').trim(),
-      String(
-        plan?.schemeContent
-        || plan?.textLayout
-        || plan?.sceneDescription
-        || plan?.styleDirection
-        || ''
-      ).trim(),
-    ].join(':'))
-    .filter(Boolean)
-    .join('|')
-);
-
-const hasPlanningSnapshotChanged = (
-  project: Project,
-  persistedProject: Project,
-) => {
-  if (project.module !== AppModuleObj.ONE_CLICK) return false;
-  if (project.status !== 'planning') return false;
-  if ((project.plans || []).length === 0) return false;
-  return hasStaleOneClickPlanningPlaceholder(persistedProject)
-    || getOneClickPlanningFingerprint(project) !== getOneClickPlanningFingerprint(persistedProject);
-};
-
-const findPersistedShellProject = (state: Partial<PersistedAppState> | null | undefined, projectId: string) => {
-  const shellProjects = Array.isArray(state?.shellProjects) ? state.shellProjects : [];
-  return shellProjects.find((project) => String(project?.id || '').trim() === projectId);
-};
-
-const shouldPersistSyncedProjectFromJobs = (
-  project: Project,
-  state: Partial<PersistedAppState> | null | undefined,
-) => {
-  const projectId = String(project?.id || '').trim();
-  if (!projectId) return false;
-  const nextCompletedCount = getProjectCompletedMediaCount(project);
-  const nextErrorCount = getProjectErrorResultCount(project);
-  const persistedProject = findPersistedShellProject(state, projectId) as Project | undefined;
-  if (!persistedProject) {
-    if (
-      project.module === AppModuleObj.TRANSLATION
-      && project.sourceType === 'job'
-      && Boolean(String(project.backendJobId || '').trim())
-      && (
-        nextCompletedCount > 0
-        || getProjectActiveResultIdentities(project).size > 0
-        || nextErrorCount > 0
-      )
-    ) {
-      return true;
-    }
-    return project.sourceType === 'job'
-      && project.status === 'error'
-      && Boolean(String(project.backendJobId || '').trim())
-      && nextErrorCount > 0;
-  }
-  if (hasPlanningSnapshotChanged(project, persistedProject)) return true;
-  if (project.status === 'generating') {
-    const persistedActiveIdentities = getProjectActiveResultIdentities(persistedProject);
-    const hasNewActiveIdentity = Array.from(getProjectActiveResultIdentities(project))
-      .some((identity) => !persistedActiveIdentities.has(identity));
-    if (hasNewActiveIdentity) return true;
-  }
-  const persistedCompletedCount = getProjectCompletedMediaCount(persistedProject);
-  if (nextCompletedCount > persistedCompletedCount) return true;
-  if (project.status === 'completed' && persistedProject.status !== 'completed' && nextCompletedCount > 0) return true;
-  const persistedErrorCount = getProjectErrorResultCount(persistedProject);
-  if (nextErrorCount > persistedErrorCount) return true;
-  return project.status === 'error'
-    && (persistedProject.status === 'planning' || persistedProject.status === 'generating')
-    && nextErrorCount > 0;
 };
 
 const buildTranslationRemotePatch = (
@@ -2832,11 +2713,30 @@ const AppContent: React.FC<{
         workspacePreferences: getWorkspacePreferences(preparedState.apiConfig),
       });
     }
-    setProjects(mergeShellProjects(runtimeSnapshot.projects, snapshot.projects as Project[])
-      .filter((project) => {
-        if (!restoredRuntimeProjectIdsRef.current.has(project.id)) return true;
-        return !completedProjectSignatures.has(shellProjectSignature(project));
-      }));
+    // 2026-07-09 断链修复:state 快照不含 jobs(hydrateShellData 刻意不拉 jobs),
+    // 全量 setProjects 会把 hydrateShellJobs 刚从 durable jobs 重建的卡冲掉(用户看到"闪一下就消失")。
+    // durable job 为单一真相:内存里 job 来源、带 backendJobId、未被删除的卡在快照缺席时必须保留。
+    setProjects((prev) => {
+      const nextProjects = mergeShellProjects(runtimeSnapshot.projects, snapshot.projects as Project[])
+        .filter((project) => {
+          if (!restoredRuntimeProjectIdsRef.current.has(project.id)) return true;
+          return !completedProjectSignatures.has(shellProjectSignature(project));
+        });
+      const nextProjectIds = new Set(nextProjects.map((project) => String(project.id || '').trim()));
+      const nextBackendJobIds = new Set(nextProjects.map((project) => String(project.backendJobId || '').trim()).filter(Boolean));
+      const preservedJobProjects = prev.filter((project) => (
+        project.sourceType === 'job'
+        && Boolean(String(project.backendJobId || '').trim())
+        && !nextProjectIds.has(String(project.id || '').trim())
+        && !nextBackendJobIds.has(String(project.backendJobId || '').trim())
+      ));
+      if (preservedJobProjects.length === 0) return nextProjects;
+      const prunedPreserved = pruneShellRuntimeSnapshotForDeletion(
+        { projects: preservedJobProjects, tasks: [] },
+        getRuntimeDeletionDraft(preparedState?.shellDraft, shellLocalScopeUserId),
+      ).projects;
+      return [...nextProjects, ...prunedPreserved];
+    });
     setTasks(mergeShellTasks(runtimeSnapshot.tasks, snapshot.tasks as Task[])
       .filter((task) => {
         if (!restoredRuntimeTaskIdsRef.current.has(task.id)) return true;
