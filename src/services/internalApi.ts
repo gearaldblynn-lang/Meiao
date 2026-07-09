@@ -29,7 +29,7 @@ import { parseChatSseChunk, type ChatStreamEvent } from './chatStreamParse.ts';
 import {
   FACTORY_MANAGED_AGENT_ERROR_CODE,
   FACTORY_MANAGED_AGENT_NOTICE,
-} from '../modules/AgentCenter/factoryManagedConstants';
+} from '../modules/AgentCenter/factoryManagedConstants.ts';
 
 const SESSION_TOKEN_KEY = 'MEIAO_INTERNAL_SESSION_TOKEN';
 const CURRENT_USER_KEY = 'MEIAO_INTERNAL_CURRENT_USER';
