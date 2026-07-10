@@ -556,8 +556,8 @@ test('one click planning only remains syncable while the backend job is still ac
 
   assert.match(app, /fetchInternalJob\(\s*planningBackendJobId\s*\)/);
   assert.match(app, /const planningJobIsStillActive = \['queued', 'running', 'retry_waiting'\]\.includes\(latestPlanningJobStatus\)/);
-  assert.match(app, /const planningRecoverable = isRecoverableKieTaskResult\(/);
-  assert.match(app, /const planningRecoverable = isRecoverableKieTaskResult\(\s*planningProviderTaskId,/);
+  assert.match(app, /const planningSyncGap = \['job_timeout', 'task_not_found'\]\.includes\(planningErrorCode\)/);
+  assert.match(app, /const planningRecoverable = planningSyncGap \|\| isRecoverableKieTaskResult\(\s*planningProviderTaskId,/);
   assert.match(app, /if \(planningRecoverable && planningJobIsStillActive\)/);
   assert.doesNotMatch(app, /isRecoverableKieTaskResult\(\s*planningProviderTaskId \|\| activePlanningBackendJobId,/);
   assert.match(app, /status: 'planning'/);

@@ -116,6 +116,7 @@ import {
   collectStoredAssetIdsFromValue,
   ensureAssetSchema,
   extractStoredAssetIdFromPublicUrl,
+  fetchRemoteAssetBufferWithRetry,
   getPublicBaseUrl,
   getStoredAssetById,
   listStoredAssets,
@@ -3737,11 +3738,7 @@ const persistJobOutputAssetsIfEnabled = async (job, output) => {
 
     let persisted;
     if (fieldName === 'imageUrl' && imageTransform) {
-      const response = await fetch(sourceUrl);
-      if (!response.ok) {
-        throw new Error(`结果资源抓取失败: HTTP ${response.status}`);
-      }
-      const fileBuffer = Buffer.from(await response.arrayBuffer());
+      const { fileBuffer } = await fetchRemoteAssetBufferWithRetry(sourceUrl);
       const transformed = await transformImageOutputBuffer(fileBuffer, imageTransform);
       persisted = await persistAssetBuffer({
         pool,

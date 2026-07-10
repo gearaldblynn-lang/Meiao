@@ -80,7 +80,7 @@ const resolveRuntimePublicBaseUrl = async () => {
     return cachedPublicBaseUrl;
   }
   const result = await fetchSystemConfig();
-  const nextBaseUrl = String(result.config.publicBaseUrl || '').trim();
+  const nextBaseUrl = String(result.config?.publicBaseUrl || '').trim();
   cachedPublicBaseUrl = nextBaseUrl;
   cachedPublicBaseUrlAt = Date.now();
   return nextBaseUrl;

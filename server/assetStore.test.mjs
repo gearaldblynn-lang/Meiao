@@ -8,6 +8,7 @@ import {
   ensureAssetSchema,
   deleteStoredAssetFile,
   extractStoredAssetIdFromPublicUrl,
+  fetchRemoteAssetBufferWithRetry,
   getPublicBaseUrl,
   optimizeMp4BufferForStreaming,
   persistAssetBuffer,
@@ -16,6 +17,48 @@ import {
   selectExpiredAssetsForCleanup,
   collectStoredAssetIdsFromValue,
 } from './assetStore.mjs';
+
+test('fetchRemoteAssetBufferWithRetry retries a terminated response body read', async () => {
+  let calls = 0;
+  const result = await fetchRemoteAssetBufferWithRetry('https://cdn.example.com/result.png', {
+    retries: 1,
+    retryBaseMs: 0,
+    fetchImpl: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers({ 'content-type': 'image/png' }),
+        body: null,
+        arrayBuffer: async () => {
+          if (calls === 1) throw new TypeError('terminated');
+          return Buffer.from('png');
+        },
+      };
+    },
+  });
+
+  assert.equal(calls, 2);
+  assert.equal(result.contentType, 'image/png');
+  assert.equal(result.fileBuffer.toString(), 'png');
+});
+
+test('fetchRemoteAssetBufferWithRetry does not retry a permanent 404', async () => {
+  let calls = 0;
+  await assert.rejects(
+    fetchRemoteAssetBufferWithRetry('https://cdn.example.com/missing.png', {
+      retries: 2,
+      retryBaseMs: 0,
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response('missing', { status: 404 });
+      },
+    }),
+    (error) => error?.providerStage === 'asset_download'
+      && error?.providerStatus === 'http_404',
+  );
+  assert.equal(calls, 1);
+});
 
 const atom = (type, payload = Buffer.alloc(0)) => {
   const output = Buffer.alloc(8 + payload.length);

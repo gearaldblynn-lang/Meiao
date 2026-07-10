@@ -452,6 +452,23 @@ test('first image replication planning analyzes product selling points against e
   );
 });
 
+test('first image replication planning propagates recoverable sync gaps instead of creating failed reference plans', () => {
+  const firstImageReplicationBlock = arkServiceSource.match(
+    /export const generateFirstImageReplicationSchemes = async[\s\S]*?export const generateSkuSchemes = async/,
+  )?.[0] || '';
+
+  assert.match(
+    firstImageReplicationBlock,
+    /settledResults\.find\([\s\S]*isRecoverableAnalysisSyncError\(result\.reason\)[\s\S]*throw recoverableSyncResult\.reason/,
+    'a still-running planning child must escape Promise.allSettled instead of becoming a failed plan',
+  );
+  assert.match(
+    firstImageReplicationBlock,
+    /if \(isRecoverableAnalysisSyncError\(error\)\) \{[\s\S]*first_image_replication_plan_sync_pending[\s\S]*throw error/,
+    'the outer first-image catch must preserve the recoverable error for the shell active-job path',
+  );
+});
+
 test('main image set replication planning analyzes an uploaded reference suite as one full plan', () => {
   const setReplicationBlockMatch = arkServiceSource.match(
     /export const generateMainImageSetReplicationSchemes = async[\s\S]*?return \{ status: 'success', schemes: selectedSchemes, creditsConsumed: analysis\.creditsConsumed, taskId: analysis\.taskId \};/,

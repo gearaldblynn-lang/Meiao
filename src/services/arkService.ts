@@ -78,7 +78,7 @@ const resolveRuntimePublicBaseUrl = async () => {
   }
 
   const result = await fetchSystemConfig();
-  const nextBaseUrl = String(result.config.publicBaseUrl || '').trim();
+  const nextBaseUrl = String(result.config?.publicBaseUrl || '').trim();
   cachedPublicBaseUrl = nextBaseUrl;
   cachedPublicBaseUrlAt = Date.now();
   return nextBaseUrl;
@@ -1380,6 +1380,15 @@ ${safeLogoUrl ? `品牌logo公网URL：${safeLogoUrl}` : ''}
       return { referenceUrl: safeReferenceUrls[index], scheme, status: 'success' as const, creditsConsumed: analysis.creditsConsumed, taskId: analysis.taskId };
     }));
 
+    const recoverableSyncResult = settledResults.find(
+      (result): result is PromiseRejectedResult => (
+        result.status === 'rejected' && isRecoverableAnalysisSyncError(result.reason)
+      ),
+    );
+    if (recoverableSyncResult) {
+      throw recoverableSyncResult.reason;
+    }
+
     const perReferenceResults = settledResults.map((result, index) => (
       result.status === 'fulfilled'
         ? result.value
@@ -1415,6 +1424,13 @@ ${safeLogoUrl ? `品牌logo公网URL：${safeLogoUrl}` : ''}
       .at(-1);
     return { status: hasSuccess ? 'success' : 'error', schemes, perReferenceResults, message, creditsConsumed, taskId: taskId || undefined };
   } catch (error: any) {
+    if (isRecoverableAnalysisSyncError(error)) {
+      logArkEvent('first_image_replication_plan_sync_pending', '首图裂变策划结果待同步', 'started', error.message, {
+        count: config.count,
+        subMode: OneClickSubMode.FIRST_IMAGE,
+      });
+      throw error;
+    }
     logArkEvent('first_image_replication_plan', '首图裂变策划失败', 'failed', error.message, {
       subMode: OneClickSubMode.FIRST_IMAGE,
     });
