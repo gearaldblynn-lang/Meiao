@@ -10,6 +10,11 @@ SERVER_PORT="${MEIAO_SERVER_PORT:-22}"
 SSH_KEY_PATH="${MEIAO_SSH_KEY:-$HOME/.ssh/MEIAO.pem}"
 REMOTE_APP_DIR="${MEIAO_REMOTE_APP_DIR:-/www/wwwroot/meiao-internal}"
 REMOTE_TMP_DIR="/tmp/meiao-deploy-$$"
+DEPLOY_ALLOW_ACTIVE_JOBS="${MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS:-0}"
+
+if [[ "$DEPLOY_ALLOW_ACTIVE_JOBS" != "1" ]]; then
+  DEPLOY_ALLOW_ACTIVE_JOBS="0"
+fi
 
 if [[ "${MEIAO_CODE_REVIEW_CONFIRMED:-}" != "1" ]]; then
   echo "部署已拦截：同步云上前必须完成代码审查。"
@@ -23,6 +28,24 @@ if [[ ! -f "$SSH_KEY_PATH" ]]; then
   echo "MEIAO_SSH_KEY=~/.ssh/MEIAO.pem ./scripts/deploy_tencent.sh"
   exit 1
 fi
+
+run_remote_deploy_readiness() {
+  echo "检查云上是否有运行中任务..."
+  ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "
+    set -e
+    cd '$REMOTE_APP_DIR'
+    if [ ! -f '.env.server' ]; then
+      echo '服务器缺少 .env.server，无法执行部署就绪检查。'
+      exit 2
+    fi
+    set -a
+    source .env.server
+    set +a
+    MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' MEIAO_DEPLOY_READINESS_RUN=1 node --input-type=module
+  " < "$ROOT_DIR/scripts/check-deploy-readiness.mjs"
+}
+
+run_remote_deploy_readiness
 
 echo "开始部署到 ${SERVER_USER}@${SERVER_HOST}:${REMOTE_APP_DIR}"
 
@@ -82,6 +105,9 @@ tar \
         fi
       done
     fi
+
+    # install/build 期间仍可能有新任务进入；切换前再次检查，避免 PM2 重启中断 provider 提交阶段。
+    MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs
 
     # 原子切换:两次 rename,静态服务零断档
     rm -rf dist-prev

@@ -296,3 +296,8 @@
   根因:`requestAnalysisResponseDetailed` 已把仍活跃的 backend job 表达为 `job_timeout` 可恢复同步异常,但 `generateFirstImageReplicationSchemes` 在 `Promise.allSettled` 后把所有 rejected 统一映射成 `status=error`;`shellWorkflow` 随即生成 `planningFailed`,Shell 顶层的活跃 job 恢复分支没有机会执行。
   修复:首图聚合器发现 `job_timeout/task_not_found` 同步缺口时原样抛出,外层记录 `sync_pending` 后继续透传；Shell 仅当后台 job 仍为 `queued/running/retry_waiting` 时保留 planning 卡,终态失败仍落错误卡。
   如何避免:**批量聚合器不能把控制面状态和业务失败压成同一种 rejected。`allSettled` 后必须先识别 pending/取消/失败语义,再决定部分成功或整批等待。**
+
+- **#49 ✅ 已修(2026-07-10)· 发布脚本不检查活跃任务直接 PM2 restart,部署窗口制造 `provider_submit_stale`**
+  根因:旧部署流程只检查代码审查和依赖安全,远端 install/build 完成后无条件重启 PM2；正在素材准备或 provider 提交、尚未拿到 task id 的 job 会被进程终止,随后只能依赖 stale 回收,表现为部署时段集中 `provider_submit_stale`。
+  修复:新增只读部署就绪检查,按 `internal_jobs.status=running` 汇总 providerless/已提交任务；上传代码前和远端构建后各检查一次,任一时点有活跃任务即 fail closed。仅保留显式 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 紧急覆盖,默认发布不得使用。
+  如何避免:**进程重启是任务系统状态迁移,不是纯代码操作。任何部署脚本在 restart 前都必须证明没有活跃执行；构建耗时较长时必须在构建前后双检,不能只做一次开场快照。**
