@@ -415,7 +415,6 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
     }
     return fileUrl;
   };
-  if (!normalizedOptions.forceUpload) return uploadManagedAsset();
   return resolveCachedManagedAssetUpload(cacheKey, normalizedOptions.env, uploadManagedAsset);
 };
 
