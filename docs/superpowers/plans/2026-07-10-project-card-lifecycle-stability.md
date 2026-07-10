@@ -149,6 +149,6 @@ Run the Hermes harness with every modified high-risk state/card file.
 
 Add one root-cause entry covering structured planning-job binding, control-job visibility, and deletion identity completeness. Do not duplicate the existing KIE provider incident entry.
 
-- [ ] **Step 6: Record the fix in the external diagnostics dashboard**
+- [x] **Step 6: Record the fix in the external diagnostics dashboard**
 
 Use `npm run record-fix -- ...` after the code commit exists. Include environment `local`, the commit, tests, deployment status `not_deployed`, and a stable fingerprint.
