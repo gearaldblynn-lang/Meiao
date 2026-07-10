@@ -686,7 +686,9 @@ export const analyzeRetouchTask = async (
   mode: 'original' | 'white_bg',
   apiConfig: GlobalApiConfig,
   referenceUrl: string | null = null,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onJobCreated?: AnalysisJobCreatedCallback,
+  jobMetadata?: Record<string, unknown>,
 ): Promise<ArkAnalysisResult> => {
   try {
     const publicBaseUrl = await resolveRuntimePublicBaseUrl();
@@ -727,7 +729,17 @@ E Example 示例
       inputContent.push({ type: "image_url", image_url: { url: safeReferenceUrl } });
     }
 
-    const content = await requestAnalysisResponse(inputContent, apiConfig, signal);
+    const analysis = await requestAnalysisResponseDetailed(
+      inputContent,
+      apiConfig,
+      signal,
+      onJobCreated,
+      {
+        ...(jobMetadata || {}),
+        taskPurpose: 'retouch_analysis',
+      },
+    );
+    const content = analysis.content;
     logArkEvent('retouch_analysis', '精修分析完成', 'success', '', { mode });
     return { status: 'success', description: content };
   } catch (error: any) {
@@ -1600,6 +1612,7 @@ export const generateBuyerShowPrompts = async (
   setIndex: number = 0, // 增加 Set Index 参数，用于发散思维
   signal?: AbortSignal,
   onJobCreated?: AnalysisJobCreatedCallback,
+  taskMetadata?: Record<string, unknown>,
 ): Promise<ArkBuyerShowResult> => {
   try {
     const publicBaseUrl = await resolveRuntimePublicBaseUrl();
@@ -1713,6 +1726,9 @@ Generate the JSON response. Ensure valid JSON format.`;
         setIndex: setIndex + 1,
         imageCount: state.imageCount,
         setCount: state.setCount,
+        shellProjectId: String(taskMetadata?.shellProjectId || '').trim(),
+        shellProjectName: String(taskMetadata?.shellProjectName || '').trim(),
+        subFeature: String(taskMetadata?.subFeature || '').trim(),
       });
       let content = analysis.content;
       content = content.replace(/```json/g, '').replace(/```/g, '').trim();

@@ -714,7 +714,9 @@ export const generateStoryboardScript = async (
   config: VideoStoryboardConfig,
   imageUrls: string[],
   sceneDescription: string,
-  apiConfig: GlobalApiConfig
+  apiConfig: GlobalApiConfig,
+  taskMetadata: Record<string, unknown> = {},
+  onJobCreated?: (jobId: string, providerTaskId?: string) => void,
 ): Promise<{ script: string; shots: VideoStoryboardShot[]; boards: VideoStoryboardBoard[]; taskId?: string; creditsConsumed?: number }> => {
   if (config.videoGenerationMode === 'viral_split' && !config.uploadedReferenceVideoUrl && !config.referenceVideoFile) {
     throw new Error('请先上传爆款复刻视频');
@@ -767,6 +769,9 @@ export const generateStoryboardScript = async (
     taskType: 'kie_chat',
     provider: 'kie',
     payload: {
+      ...taskMetadata,
+      taskPurpose: 'storyboard_planning',
+      shellPlanningPurpose: 'storyboard_planning',
       model: videoAnalysisModel,
       fallbackModels: videoAnalysisFallbackModels,
       reasoningLevel: 'high',
@@ -785,6 +790,7 @@ export const generateStoryboardScript = async (
     },
     maxRetries: 1,
   });
+  onJobCreated?.(job.id);
 
   const finalJob = await waitForInternalJob(job.id);
   if (finalJob.status !== 'succeeded') {
@@ -795,6 +801,7 @@ export const generateStoryboardScript = async (
 
   if (!content) throw new Error('分镜脚本返回为空');
   const taskId = String(finalJob.providerTaskId || finalJob.result?.providerTaskId || '').trim() || undefined;
+  if (taskId) onJobCreated?.(job.id, taskId);
   const creditsConsumed = Number.isFinite(Number(finalJob.result?.creditsConsumed)) ? Number(finalJob.result?.creditsConsumed) : undefined;
 
   if (config.videoGenerationMode === 'viral_split') {
@@ -1060,7 +1067,9 @@ export const generateStoryboardBoardImage = async (
   apiConfig: GlobalApiConfig,
   previousBoardImageUrl?: string,
   revisionInstruction?: string,
-  supplementReferenceUrls: string[] = []
+  supplementReferenceUrls: string[] = [],
+  taskMetadata: Record<string, unknown> = {},
+  onJobCreated?: (jobId: string, providerTaskId?: string) => void,
 ) => {
   logStoryboardEvent('storyboard_board_image', `开始生成分镜板图像: ${board.title}`, 'started', '', {
     boardId: board.id,
@@ -1118,7 +1127,15 @@ export const generateStoryboardBoardImage = async (
       false,
       new AbortController().signal,
       prompt,
-      false
+      false,
+      undefined,
+      'main',
+      {
+        ...taskMetadata,
+        taskPurpose: 'storyboard_board_image',
+        shellBoardId: board.id,
+      },
+      onJobCreated,
     ),
   };
 };

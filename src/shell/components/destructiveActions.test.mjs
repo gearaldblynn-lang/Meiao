@@ -1,11 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { collectShellDeletionJobIds } from '../../utils/shellDeletionJobs.ts';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
+const readWorkspaceRules = () => {
+  const candidates = [
+    new URL('../../../../../开发规范.md', import.meta.url),
+    new URL('../../../../../../../开发规范.md', import.meta.url),
+  ];
+  const rulesUrl = candidates.find((candidate) => existsSync(candidate));
+  if (!rulesUrl) throw new Error('未找到开发规范.md');
+  return readFileSync(rulesUrl, 'utf8');
+};
+
 test('project rules require secondary confirmation for all destructive delete actions', () => {
-  const rules = read('../../../../../开发规范.md');
+  const rules = readWorkspaceRules();
 
   assert.match(rules, /## 6\. 任何删除都必须二次确认/);
   assert.match(rules, /删除、移除、清空、永久删除/);
@@ -215,4 +226,32 @@ test('shell result deletion records backend job tombstones for pending results',
   assert.match(deleteResultBlock, /const resultJobIds = Array\.from\(new Set\(/);
   assert.match(deleteResultBlock, /result\?\.backendJobId/);
   assert.match(deleteResultBlock, /persistDeletionToSharedState\(\{ projectId, resultId, jobIds: resultJobIds \}\)/);
+});
+
+test('project deletion collects every related backend job before physical deletion and tombstoning', () => {
+  const shellSource = read('../../ShellMigratedApp.tsx');
+  const deleteProjectBlock = shellSource.match(/const handleDeleteProject = useCallback\([\s\S]*?\n  \}, \[[^\]]*persistDeletionToSharedState[^\]]*\]\);/)?.[0] || '';
+
+  assert.match(shellSource, /import \{ collectShellDeletionJobIds \} from '\.\/utils\/shellDeletionJobs'/);
+  assert.match(deleteProjectBlock, /const jobIds = collectShellDeletionJobIds\(projectId, projects, tasks\)/);
+  assert.match(deleteProjectBlock, /Promise\.allSettled\(jobIds\.map\(\(jobId\) => deleteInternalJob\(jobId\)\)\)/);
+  assert.match(deleteProjectBlock, /persistDeletionToSharedState\(\{ projectId, jobIds \}\)/);
+});
+
+test('collectShellDeletionJobIds includes project, result, task and synthetic project jobs only once', () => {
+  const jobIds = collectShellDeletionJobIds('job-project-root', [{
+    id: 'job-project-root',
+    backendJobId: 'project-root',
+    results: [
+      { backendJobId: 'result-job-1' },
+      { backendJobId: 'result-job-2' },
+      { backendJobId: 'project-root' },
+      { taskId: 'provider-task-must-not-be-deleted' },
+    ],
+  }], [
+    { projectId: 'job-project-root', backendJobId: 'task-job-1' },
+    { projectId: 'another-project', backendJobId: 'unrelated-job' },
+  ]);
+
+  assert.deepEqual(jobIds, ['project-root', 'result-job-1', 'result-job-2', 'task-job-1']);
 });

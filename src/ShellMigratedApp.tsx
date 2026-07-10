@@ -36,6 +36,7 @@ import type { PersistedAppState } from './utils/appState';
 import { ThemeContext } from './shell/context/ThemeContext';
 import { filterProjectsForScope } from './adapters/shellScopeFilters';
 import { pruneKnownLegacyGarbageFromPersistedState, prunePersistedAppStateForDeletion } from './utils/persistedDeletion';
+import { collectShellDeletionJobIds } from './utils/shellDeletionJobs';
 import { playCompletionSound, primeCompletionSound } from './utils/soundUtils';
 import type { SystemPublicConfig } from './types';
 import { mergeShellRuntimeEntities } from './adapters/shellRuntimeMerge';
@@ -3469,7 +3470,17 @@ const AppContent: React.FC<{
         const { generateStoryboardScript, generateStoryboardBoardImage } = await import('./services/videoStoryboardService');
         for (const project of nextProjects) {
           storyboardFailureStep = '分镜脚本生成';
-          const { script, shots, boards, taskId: planningTaskId, creditsConsumed: planningCreditsConsumed } = await generateStoryboardScript(runtimeConfig, productUrls, project.sceneDescription || storyboardPrompt, apiConfig);
+          const { script, shots, boards, taskId: planningTaskId, creditsConsumed: planningCreditsConsumed } = await generateStoryboardScript(
+            runtimeConfig,
+            productUrls,
+            project.sceneDescription || storyboardPrompt,
+            apiConfig,
+            {
+              shellProjectId: project.id,
+              shellProjectName: project.name,
+              subFeature: 'storyboard',
+            },
+          );
           if (runtimeConfig.videoGenerationMode === 'viral_split') {
             setVideoMemory((prev) => {
               const currentStoryboard = prev.storyboard || baseStoryboard;
@@ -3513,7 +3524,22 @@ const AppContent: React.FC<{
           let previousBoardImageUrl: string | undefined;
           storyboardFailureStep = '分镜宫格生图';
           for (const board of boards) {
-            const generated = await generateStoryboardBoardImage(board, shots, runtimeConfig, productUrls, apiConfig, previousBoardImageUrl);
+            const generated = await generateStoryboardBoardImage(
+              board,
+              shots,
+              runtimeConfig,
+              productUrls,
+              apiConfig,
+              previousBoardImageUrl,
+              undefined,
+              [],
+              {
+                shellProjectId: project.id,
+                shellProjectName: project.name,
+                shellBoardId: board.id,
+                subFeature: 'storyboard',
+              },
+            );
             const nextBoardImageUrl = generated.result.status === 'success' ? generated.result.imageUrl : undefined;
             setVideoMemory((prev) => {
               const currentStoryboard = prev.storyboard || baseStoryboard;
@@ -5820,36 +5846,32 @@ const AppContent: React.FC<{
 
   const handleDeleteProject = useCallback((projectId: string) => {
     const project = projects.find((p) => p.id === projectId);
-    const jobIds = Array.from(new Set([
-      project?.backendJobId,
-      project?.id?.startsWith('job-') ? project.id.slice(4) : '',
-    ].map((jobId) => String(jobId || '').trim()).filter(Boolean)));
-    if (jobIds.length > 0) {
-      void Promise.allSettled(jobIds.map((jobId) => deleteInternalJob(jobId)))
-        .then(async (results) => {
-          setProjects((prev) => prev.filter((p) => p.id !== projectId));
-          setTasks((prev) => prev.filter((t) => t.projectId !== projectId && !jobIds.includes(t.id)));
-          const synced = await persistDeletionToSharedState({ projectId, jobIds });
-          const deletedRemote = results.every((result) => result.status === 'fulfilled');
-          addToast(
-            synced
-              ? (deletedRemote ? '历史任务已删除' : '历史任务已隐藏，远端任务删除未完全成功')
-              : '已删除当前项目，但远端历史同步失败',
-            synced && deletedRemote ? 'info' : 'warning',
-          );
-        });
-      return;
-    }
+    const jobIds = collectShellDeletionJobIds(projectId, projects, tasks);
     if (project?.module === AppModuleObj.IMAGE_CROP) {
       deleteImageCropAssets(project.results || []);
     }
     setProjects((prev) => prev.filter((p) => p.id !== projectId));
-    setTasks((prev) => prev.filter((t) => t.projectId !== projectId));
-    void persistDeletionToSharedState({ projectId })
-      .then((synced) => {
-        addToast(synced ? '项目已删除' : '已在当前页面删除，但远端历史同步失败', synced ? 'info' : 'warning');
+    setTasks((prev) => prev.filter((task) => (
+      task.projectId !== projectId
+      && !jobIds.includes(task.id)
+      && !jobIds.includes(task.backendJobId || '')
+    )));
+
+    const remoteDeletion = Promise.allSettled(jobIds.map((jobId) => deleteInternalJob(jobId)));
+    const tombstonePersistence = persistDeletionToSharedState({ projectId, jobIds });
+    void Promise.all([remoteDeletion, tombstonePersistence])
+      .then(([results, synced]) => {
+        const deletedRemote = results.every((result) => result.status === 'fulfilled');
+        addToast(
+          synced
+            ? (deletedRemote
+              ? (jobIds.length > 0 ? '历史任务已删除' : '项目已删除')
+              : '历史任务已隐藏，远端任务删除未完全成功')
+            : '已删除当前项目，但远端历史同步失败',
+          synced && deletedRemote ? 'info' : 'warning',
+        );
       });
-  }, [projects, addToast, persistDeletionToSharedState, deleteImageCropAssets]);
+  }, [projects, tasks, addToast, persistDeletionToSharedState, deleteImageCropAssets]);
 
   const handleStoryboardRegenerateResult = useCallback(async (projectId: string, resultId: string, revisionInstruction = '') => {
     const baseStoryboard = (videoMemory || createDefaultVideoState()).storyboard;
@@ -5897,6 +5919,13 @@ const AppContent: React.FC<{
         apiConfig,
         previousBoardImageUrl,
         revisionInstruction,
+        [],
+        {
+          shellProjectId: projectId,
+          shellProjectName: project.name,
+          shellBoardId: board.id,
+          subFeature: 'storyboard',
+        },
       );
       if (generated.result.status !== 'success' || !generated.result.imageUrl) {
         throw new Error(generated.result.message || '分镜板重新生成失败');
@@ -6016,7 +6045,22 @@ const AppContent: React.FC<{
             },
           };
         });
-        const generated = await generateStoryboardBoardImage(board, project.shots, project.config, productUrls, apiConfig, previousBoardImageUrl);
+        const generated = await generateStoryboardBoardImage(
+          board,
+          project.shots,
+          project.config,
+          productUrls,
+          apiConfig,
+          previousBoardImageUrl,
+          undefined,
+          [],
+          {
+            shellProjectId: projectId,
+            shellProjectName: project.name,
+            shellBoardId: board.id,
+            subFeature: 'storyboard',
+          },
+        );
         const nextBoardImageUrl = generated.result.status === 'success' ? generated.result.imageUrl : undefined;
         setVideoMemory((prev) => {
           const currentStoryboard = prev.storyboard || baseStoryboard;
@@ -6705,6 +6749,12 @@ const AppContent: React.FC<{
         previousBoardImageUrl,
         finalInstruction,
         uploadedSupplementUrls,
+        {
+          shellProjectId: projectId,
+          shellProjectName: project.name,
+          shellBoardId: board.id,
+          subFeature: 'storyboard',
+        },
       );
       if (isRecoverableShellWorkflowResult(generated.result)) {
         const pendingMessage = generated.result.message || '任务已提交云端，结果待同步';

@@ -3311,6 +3311,218 @@ test('shell data adapter keeps active buyer show project cards before provider t
   assert.equal(task.status, 'generating');
 });
 
+test('shell data adapter hides unbound buyer show planning control jobs from projects and tasks', () => {
+  const snapshot = buildShellDataSnapshot({}, [{
+    id: 'buyer-planning-orphan-active',
+    module: 'buyer_show',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'running',
+    providerTaskId: '',
+    payload: {
+      taskPurpose: 'buyer_show_planning',
+      shellPlanningPurpose: 'buyer_show_planning',
+      setIndex: 1,
+      imageCount: 3,
+      setCount: 1,
+    },
+    createdAt: 1783663800000,
+  }]);
+
+  assert.deepEqual(snapshot.projects, []);
+  assert.deepEqual(snapshot.tasks, []);
+});
+
+test('shell data adapter removes a persisted buyer show job-card ghost for an unbound planning control job', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'job-buyer-planning-orphan-terminal',
+      name: '买家秀',
+      module: 'buyer_show',
+      status: 'generating',
+      createdAt: 1783663800000,
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+      sourceType: 'persisted',
+      backendJobId: 'buyer-planning-orphan-terminal',
+    }],
+  }, [{
+    id: 'buyer-planning-orphan-terminal',
+    module: 'buyer_show',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'planning-provider-task',
+    payload: {
+      taskPurpose: 'buyer_show_planning',
+      shellPlanningPurpose: 'buyer_show_planning',
+      setIndex: 1,
+      imageCount: 3,
+      setCount: 1,
+    },
+    result: {
+      content: '{"tasks":[]}',
+      providerTaskId: 'planning-provider-task',
+    },
+    createdAt: 1783663800000,
+    finishedAt: 1783663801000,
+  }]);
+
+  assert.equal(snapshot.projects.some((project) => project.id === 'job-buyer-planning-orphan-terminal'), false);
+  assert.equal(snapshot.tasks.some((task) => task.id === 'buyer-planning-orphan-terminal'), false);
+});
+
+test('shell data adapter hides a structurally empty legacy buyer show job-card before jobs hydrate', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'job-e94b4337f3f741e58de58273',
+      name: '买家秀',
+      module: 'buyer_show',
+      status: 'generating',
+      createdAt: 1783663800482,
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+      sourceType: 'persisted',
+      backendJobId: 'e94b4337f3f741e58de58273',
+      subFeature: 'image',
+    }],
+  }, []);
+
+  assert.deepEqual(snapshot.projects, []);
+});
+
+test('shell data adapter binds active buyer show planning progress without synthesizing a media result', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'buyer-real-project',
+      name: '7月10日项目2',
+      module: 'buyer_show',
+      status: 'generating',
+      createdAt: 1783663800000,
+      results: [],
+      taskCount: 3,
+      completedCount: 0,
+      sourceType: 'persisted',
+      subFeature: 'image',
+    }],
+  }, [{
+    id: 'buyer-planning-bound-active',
+    module: 'buyer_show',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'running',
+    providerTaskId: '',
+    payload: {
+      taskPurpose: 'buyer_show_planning',
+      shellPlanningPurpose: 'buyer_show_planning',
+      shellProjectId: 'buyer-real-project',
+      shellProjectName: '7月10日项目2',
+      subFeature: 'image',
+    },
+    createdAt: 1783663800100,
+  }]);
+
+  assert.deepEqual(snapshot.projects.map((project) => project.id), ['buyer-real-project']);
+  assert.deepEqual(snapshot.projects[0].results, []);
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.tasks[0].projectId, 'buyer-real-project');
+  assert.equal(snapshot.tasks[0].type, 'plan');
+});
+
+test('shell data adapter hides unbound retouch analysis control jobs instead of creating fallback cards', () => {
+  const snapshot = buildShellDataSnapshot({}, [{
+    id: 'retouch-analysis-orphan',
+    module: 'retouch',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'running',
+    providerTaskId: '',
+    payload: { taskPurpose: 'retouch_analysis' },
+    createdAt: 1783676495777,
+  }]);
+
+  assert.deepEqual(snapshot.projects, []);
+  assert.deepEqual(snapshot.tasks, []);
+});
+
+test('shell data adapter binds translation analysis progress without synthesizing a media result', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'translation-real-project',
+      name: '7月10日项目3',
+      module: 'translation',
+      status: 'generating',
+      createdAt: 1783676500000,
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+      sourceType: 'persisted',
+      subFeature: 'main',
+    }],
+  }, [{
+    id: 'translation-analysis-bound',
+    module: 'translation',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'running',
+    providerTaskId: '',
+    payload: {
+      taskPurpose: 'translation_copy_analysis',
+      shellProjectId: 'translation-real-project',
+      shellProjectName: '7月10日项目3',
+      subFeature: 'main',
+    },
+    createdAt: 1783676500100,
+  }]);
+
+  assert.deepEqual(snapshot.projects.map((project) => project.id), ['translation-real-project']);
+  assert.deepEqual(snapshot.projects[0].results, []);
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.tasks[0].projectId, 'translation-real-project');
+  assert.equal(snapshot.tasks[0].type, 'plan');
+});
+
+test('shell data adapter does not turn a legacy unbound storyboard planning failure into a job project', () => {
+  const snapshot = buildShellDataSnapshot({}, [{
+    id: 'storyboard-planning-orphan-failed',
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'failed',
+    providerTaskId: '',
+    payload: { model: 'gemini-3-flash-openai' },
+    errorCode: 'provider_bad_response',
+    errorMessage: '分镜策划失败',
+    createdAt: 1783674134092,
+    finishedAt: 1783674194092,
+  }]);
+
+  assert.deepEqual(snapshot.projects, []);
+  assert.deepEqual(snapshot.tasks, []);
+});
+
+test('shell data adapter hides structurally empty control-job cards for other shell modules before jobs hydrate', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'job-retouch-analysis-legacy',
+      name: '产品精修',
+      module: 'retouch',
+      status: 'generating',
+      createdAt: 1783676495777,
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+      sourceType: 'persisted',
+      backendJobId: 'retouch-analysis-legacy',
+      subFeature: 'original',
+    }],
+  }, []);
+
+  assert.deepEqual(snapshot.projects, []);
+});
+
 test('shell data adapter groups buyer show batch jobs by set project and preserves each set card', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [

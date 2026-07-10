@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   getVisibleProviderTaskId,
+  isBuyerShowPlanningControlJob,
   isProviderMediaJob,
+  isShellControlJob,
   shouldExposeActiveJobResult,
 } from './shellJobVisibility.ts';
 
@@ -41,4 +43,43 @@ test('shouldExposeActiveJobResult exposes active media jobs once provider id is 
     module: 'one_click',
     payloadProjectId: 'project-a',
   }), true);
+});
+
+test('buyer-show planning control jobs require an explicit shell project binding', () => {
+  const job = {
+    module: 'buyer_show',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    payload: {
+      taskPurpose: 'buyer_show_planning',
+      shellPlanningPurpose: 'buyer_show_planning',
+    },
+  };
+
+  assert.equal(isBuyerShowPlanningControlJob(job, 'buyer_show'), true);
+  assert.equal(shouldExposeActiveJobResult({
+    job,
+    module: 'buyer_show',
+  }), false);
+  assert.equal(shouldExposeActiveJobResult({
+    job,
+    module: 'buyer_show',
+    payloadProjectId: 'buyer-show-real-project',
+  }), true);
+});
+
+test('isShellControlJob recognizes planning and analysis jobs across shell modules', () => {
+  assert.equal(isShellControlJob({ module: 'retouch', taskType: 'kie_chat', payload: {} }, 'retouch'), true);
+  assert.equal(isShellControlJob({ module: 'video', taskType: 'kie_chat', payload: {} }, 'video'), true);
+  assert.equal(isShellControlJob({
+    module: 'translation',
+    taskType: 'kie_chat',
+    payload: { taskPurpose: 'translation_copy_analysis' },
+  }, 'translation'), true);
+  assert.equal(isShellControlJob({
+    module: 'one_click',
+    taskType: 'kie_chat',
+    payload: { shellPlanningPurpose: 'one_click_planning' },
+  }, 'one_click'), true);
+  assert.equal(isShellControlJob({ module: 'retouch', taskType: 'kie_image', payload: {} }, 'retouch'), false);
 });
