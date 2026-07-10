@@ -101,9 +101,14 @@ const pruneManagedAssetUploadCache = (now) => {
 
 const evictManagedAssetUploadCacheForInsert = (maxEntries) => {
   while (managedAssetUploadCache.size >= maxEntries) {
-    const oldestKey = managedAssetUploadCache.keys().next().value;
-    if (oldestKey === undefined) break;
-    managedAssetUploadCache.delete(oldestKey);
+    let oldestSettledKey;
+    for (const [key, entry] of managedAssetUploadCache.entries()) {
+      if (entry.expiresAt <= 0) continue;
+      oldestSettledKey = key;
+      break;
+    }
+    if (oldestSettledKey === undefined) break;
+    managedAssetUploadCache.delete(oldestSettledKey);
   }
 };
 

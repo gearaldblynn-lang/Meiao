@@ -985,23 +985,32 @@ const extractChatMessageText = (value) => {
   return candidates.join('\n').trim();
 };
 
-const extractProviderTaskIdFromResponse = (data) => {
+const extractExplicitProviderTaskIdFromResponse = (data) => {
   const nested = data && typeof data === 'object' && data.data && typeof data.data === 'object' ? data.data : {};
-  const explicitId = String(
+  return String(
     nested.taskId ||
     nested.task_id ||
     nested.providerTaskId ||
     nested.provider_task_id ||
-    nested.id ||
     data?.taskId ||
     data?.task_id ||
     data?.providerTaskId ||
     data?.provider_task_id ||
+    ''
+  ).trim();
+};
+
+const extractProviderTaskIdFromResponse = (data) => {
+  const explicitId = extractExplicitProviderTaskIdFromResponse(data);
+  if (explicitId) return explicitId;
+  const nested = data && typeof data === 'object' && data.data && typeof data.data === 'object' ? data.data : {};
+  const responseId = String(
+    nested.id ||
     data?.responseId ||
     data?.response_id ||
     ''
   ).trim();
-  if (explicitId) return explicitId;
+  if (responseId) return responseId;
   const fallbackId = String(data?.id || '').trim();
   return /^chatcmpl-/i.test(fallbackId) ? '' : fallbackId;
 };
@@ -1071,6 +1080,7 @@ const KIE_CHAT_NON_FALLBACK_PROVIDER_STAGES = new Set([
 ]);
 
 const shouldFallbackKieChatError = (error) => {
+  if (String(error?.providerTaskId || '').trim()) return false;
   if (KIE_CHAT_NON_FALLBACK_PROVIDER_STAGES.has(String(error?.providerStage || '').trim())) return false;
   return KIE_CHAT_FALLBACK_ERROR_CODES.has(String(error?.code || '').trim());
 };
@@ -1238,7 +1248,7 @@ const mapHttpError = async (response, defaultMessage) => {
     defaultMessage ||
     ''
   ).trim() || defaultMessage;
-  const providerTaskId = extractProviderTaskIdFromResponse(data);
+  const providerTaskId = extractExplicitProviderTaskIdFromResponse(data);
   const extras = {
     providerHttpStatus: Number(response.status || 0),
     ...(providerTaskId ? { providerTaskId } : {}),
