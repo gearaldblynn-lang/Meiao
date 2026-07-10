@@ -214,6 +214,45 @@ test('non-forced managed asset fallback uploads bypass the process cache', async
   assert.equal(second, 'https://kie.test/fallback-2.png');
 });
 
+test('non-forced managed asset fallback preserves an empty upload URL', async () => {
+  const resolved = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/empty-fallback/source.png', {
+    env: { MEIAO_PUBLIC_BASE_URL: 'http://127.0.0.1:3100' },
+    forceUpload: false,
+    deps: {
+      fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
+      uploadAssetViaKieWithFallback: async () => ({ result: { fileUrl: '' } }),
+    },
+  });
+
+  assert.equal(resolved, '');
+});
+
+test('forced managed asset empty uploads are rejected and removed from the cache', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  let uploadCalls = 0;
+  const options = {
+    env: { MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS: '60000' },
+    forceUpload: true,
+    deps: {
+      fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
+      uploadAssetViaKieWithFallback: async () => {
+        uploadCalls += 1;
+        return { result: { fileUrl: '' } };
+      },
+    },
+  };
+
+  await assert.rejects(
+    () => convertManagedAssetUrlToKieFileUrl('/api/assets/file/empty-forced/source.png', options),
+    (error) => error?.code === 'provider_bad_response' && error?.message === '上传成功但未返回素材地址'
+  );
+  await assert.rejects(
+    () => convertManagedAssetUrlToKieFileUrl('/api/assets/file/empty-forced/source.png', options),
+    (error) => error?.code === 'provider_bad_response' && error?.message === '上传成功但未返回素材地址'
+  );
+  assert.equal(uploadCalls, 2);
+});
+
 test('failed managed asset uploads are not cached', async () => {
   __testOnly_clearManagedAssetUploadCache();
   let uploadCalls = 0;
