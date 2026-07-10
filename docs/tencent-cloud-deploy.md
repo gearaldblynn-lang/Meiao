@@ -27,7 +27,7 @@ MEIAO_DB_PORT=3307
 MEIAO_DB_USER=root
 MEIAO_DB_PASSWORD=请替换成你的真实密码
 MEIAO_DB_NAME=meiao_internal
-MEIAO_PUBLIC_BASE_URL=http://111.229.66.247:3100
+MEIAO_PUBLIC_BASE_URL=https://meiaoyuntai.com
 MEIAO_JOB_MAX_CONCURRENCY=3
 MEIAO_TASK_ENGINE=mysql
 MEIAO_TEMPORAL_ADDRESS=127.0.0.1:7233
@@ -38,6 +38,12 @@ MEIAO_SUBMITTED_RUNNING_STALE_MS=21600000
 MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS=30000
 APP_STATE_MAX_BYTES=16777216
 MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS=120000
+MEIAO_KIE_MANAGED_ASSET_MODE=direct-first
+MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY=3
+MEIAO_KIE_ASSET_UPLOAD_RETRIES=2
+MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS=1000
+MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS=1800000
+MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES=2000
 MEIAO_KIE_HTTP_TRANSIENT_RETRIES=2
 MEIAO_KIE_HTTP_RETRY_BASE_MS=1000
 MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY=2
@@ -46,7 +52,7 @@ MEIAO_CHAT_SSE_HEARTBEAT_MS=15000
 AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES=1
 AGENT_IMAGE_TOOL_CONCURRENCY=2
 AGENT_MODEL_TRANSIENT_MAX_RETRIES=1
-MEIAO_ALLOWED_ORIGINS=http://111.229.66.247,http://111.229.66.247:3100
+MEIAO_ALLOWED_ORIGINS=https://meiaoyuntai.com,https://www.meiaoyuntai.com,http://111.229.66.247,http://111.229.66.247:3100
 MEIAO_ASSET_X_ACCEL=0
 VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS=3
 VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS=5000
@@ -73,9 +79,13 @@ EOF
 
 `APP_STATE_MAX_BYTES` 是 app_states 单行 state_json 写入大小闸(超闸按 updatedAt 倒序裁老项目,active 永留)。云上 2026-07-04 起为 `16777216`(16 MiB):当时妙木山 8.76 MiB 已超旧 8 MiB 闸、正在丢老项目;线上 MySQL `max_allowed_packet` 实测 128 MiB,16 MiB 仍有 8 倍余量。调整该值必须 `source .env.server` 后 `pm2 restart --update-env` 并从进程环境(`/proc/<pid>/environ`)复核生效。
 
-`MEIAO_KIE_HTTP_TRANSIENT_RETRIES` / `MEIAO_KIE_HTTP_RETRY_BASE_MS` 控制 KIE HTTP 请求级瞬时重试（默认 2 次、退避 1s/3s）：连接层错误（`fetch failed` 等，未收到响应）对所有请求重试，`502/503/504` 只对只读 GET 重试；提交类 POST 收到响应一律不重试，防重复扣费。任务失败落库时 `error_message` 为用户可读人话、`error_detail` 保留技术原文。
+`MEIAO_KIE_HTTP_TRANSIENT_RETRIES` / `MEIAO_KIE_HTTP_RETRY_BASE_MS` 控制 KIE HTTP 请求级瞬时重试（默认 2 次、退避 1s/3s）：连接层错误（`fetch failed` 等，未收到响应）对所有请求重试，`502/503/504` 只对只读 GET 重试；createTask/chat 等可能扣费的提交 POST 收到响应一律不重试。文件上传 POST 是显式例外，由独立上传预算控制。任务失败落库时 `error_message` 为用户可读人话、`error_detail` 保留技术原文。
 
 `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 控制 KIE 素材上传单次 HTTP 超时，云上建议 `120000`。分镜参考视频等较大素材需要更长上传预算；如果上传出现瞬时网络或上游 5xx 错误，任务允许有限重试后释放并发，不走 base64 上传接口。
+
+`MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 让我方 `/api/assets/file/` 托管素材优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址。只有上游明确无法读取素材、HTTP 502 且没有 `providerTaskId` 时，才转存 KIE 并重试同一模型；已有 task id、鉴权、余额、限额和普通模型错误都不触发该回退。紧急回滚时把该值改为 `kie-only` 并执行 `pm2 restart meiao-internal --update-env`，即可恢复全部强制转存。
+
+`MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY` 是所有任务共享的 file-stream-upload 总并发，默认 `3`。`MEIAO_KIE_ASSET_UPLOAD_RETRIES` / `MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS` 默认 `2` / `1000`，只重试文件上传的连接错误与 `429/500/502/503/504`。`MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS` / `MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES` 默认 `1800000` / `2000`，复用成功转存 URL；失败不缓存，PM2 重启后缓存自然清空。
 
 `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY` 控制单个 `kie_image` 任务在提交 KIE 前解析/转存素材的并发，默认 `2`。详情页批量生图会同时创建多张图，每张又带多张商品/参考素材；该值不要盲目调高，避免把 KIE 图床上传并发打满。
 
