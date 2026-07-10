@@ -5,6 +5,7 @@ import {
   createGuardedMultiLogoReplaceResultBlob,
   expandRect,
   pickGuardedLogoReplacePixel,
+  scrubLogoResidualPixels,
 } from './logoReplaceGuard.mjs';
 
 test('expands the edit rect modestly and clamps to image bounds', () => {
@@ -69,6 +70,68 @@ test('scales preview logo overlay ratios back to the original image dimensions',
   });
 
   assert.deepEqual(item, { logoUrl: 'logo-1.png', rect: { x: 750, y: 400, width: 300, height: 100 } });
+});
+
+test('scrubs bright old-logo residuals inside the selected cleanup rect', () => {
+  const imageData = {
+    width: 6,
+    height: 4,
+    data: new Uint8ClampedArray(6 * 4 * 4),
+  };
+  for (let index = 0; index < imageData.data.length; index += 4) {
+    imageData.data[index] = 20;
+    imageData.data[index + 1] = 22;
+    imageData.data[index + 2] = 24;
+    imageData.data[index + 3] = 255;
+  }
+  const residualOffset = (2 * imageData.width + 3) * 4;
+  imageData.data[residualOffset] = 245;
+  imageData.data[residualOffset + 1] = 245;
+  imageData.data[residualOffset + 2] = 245;
+
+  const changed = scrubLogoResidualPixels({
+    imageData,
+    rect: { x: 2, y: 1, width: 3, height: 2 },
+  });
+
+  assert.equal(changed, 1);
+  assert.deepEqual(Array.from(imageData.data.slice(residualOffset, residualOffset + 4)), [20, 22, 24, 255]);
+  const backgroundOffset = (1 * imageData.width + 2) * 4;
+  assert.deepEqual(Array.from(imageData.data.slice(backgroundOffset, backgroundOffset + 4)), [20, 22, 24, 255]);
+});
+
+test('can expand the residual scrub area for single-logo edge leftovers', () => {
+  const imageData = {
+    width: 8,
+    height: 5,
+    data: new Uint8ClampedArray(8 * 5 * 4),
+  };
+  for (let index = 0; index < imageData.data.length; index += 4) {
+    imageData.data[index] = 42;
+    imageData.data[index + 1] = 45;
+    imageData.data[index + 2] = 43;
+    imageData.data[index + 3] = 255;
+  }
+  const edgeResidualOffset = (2 * imageData.width + 5) * 4;
+  imageData.data[edgeResidualOffset] = 238;
+  imageData.data[edgeResidualOffset + 1] = 238;
+  imageData.data[edgeResidualOffset + 2] = 238;
+
+  const changedWithoutPadding = scrubLogoResidualPixels({
+    imageData,
+    rect: { x: 2, y: 1, width: 3, height: 2 },
+  });
+
+  assert.equal(changedWithoutPadding, 0);
+
+  const changedWithPadding = scrubLogoResidualPixels({
+    imageData,
+    rect: { x: 2, y: 1, width: 3, height: 2 },
+    paddingRatio: 0.34,
+  });
+
+  assert.equal(changedWithPadding, 1);
+  assert.deepEqual(Array.from(imageData.data.slice(edgeResidualOffset, edgeResidualOffset + 4)), [42, 45, 43, 255]);
 });
 
 test('draws the exact uploaded transparent logo overlay without adding a local backing block', async () => {

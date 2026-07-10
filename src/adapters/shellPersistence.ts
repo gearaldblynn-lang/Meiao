@@ -40,6 +40,7 @@ type ShellResult = {
   creditsConsumed?: number;
   error?: string;
   matchedAspectRatio?: string;
+  logoReplaceGuarded?: boolean;
 };
 
 type ShellProject = {

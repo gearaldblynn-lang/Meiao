@@ -48,6 +48,7 @@ export interface ShellGeneratedResult {
   originalHeight?: number;
   buyerShowEvaluation?: string;
   buyerShowDisplayPrompt?: string;
+  logoReplaceGuarded?: boolean;
 }
 
 export interface ShellProjectData {
@@ -144,6 +145,7 @@ const MODULE_LABELS: Record<string, string> = {
   everything_replace: '万物替换',
   video: '短视频',
   xhs_cover: '小红书封面',
+  image_crop: '图片裁切',
   agent_center: '智能体中心',
 };
 
@@ -157,6 +159,7 @@ const MODULE_VALUES = {
   EVERYTHING_REPLACE: 'everything_replace' as AppModule,
   VIDEO: 'video' as AppModule,
   XHS_COVER: 'xhs_cover' as AppModule,
+  IMAGE_CROP: 'image_crop' as AppModule,
   AGENT_CENTER: 'agent_center' as AppModule,
 };
 
@@ -1008,6 +1011,7 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         matchedAspectRatio: String(result?.matchedAspectRatio || result?.aspectRatio || 'auto'),
         originalWidth: Number(result?.originalWidth || 0) || undefined,
         originalHeight: Number(result?.originalHeight || 0) || undefined,
+        logoReplaceGuarded: result?.logoReplaceGuarded === true || undefined,
       })) : [],
       taskCount: Number(project.taskCount || project.results?.length || 1),
       completedCount: Number(project.completedCount || 0),
@@ -2811,6 +2815,7 @@ const getGeneratedResultMergeKeys = (result: ShellGeneratedResult) => {
 const shouldReplaceGeneratedResult = (existing: ShellGeneratedResult, next: ShellGeneratedResult) => {
   const existingCompleted = hasCompletedMediaResult(existing);
   const nextCompleted = hasCompletedMediaResult(next);
+  if (existing.logoReplaceGuarded === true && next.logoReplaceGuarded !== true) return false;
   if (existingCompleted && !nextCompleted) return false;
   if (!existingCompleted && nextCompleted) return true;
   return true;

@@ -23,6 +23,14 @@ test('shell result cards require confirmation before deleting generated results'
   assert.doesNotMatch(source, /onDelete\(result\.id\); setMenuOpen\(false\);/);
 });
 
+test('shell result cards display generated images without cropping the backend asset', () => {
+  const source = read('./ResultCard.tsx');
+  const imageTag = source.match(/<img src=\{result\.imageUrl\}[\s\S]*?\/>/)?.[0] || '';
+
+  assert.match(imageTag, /object-contain/);
+  assert.doesNotMatch(imageTag, /object-cover/);
+});
+
 test('shell input material preview removals happen immediately without confirmation', () => {
   const source = read('./MaterialPreviewBar.tsx');
 
