@@ -10,6 +10,9 @@ import {
 export const MAX_PROVIDER_REMOTE_MEDIA_MB = 256;
 export const MAX_PROVIDER_REMOTE_MEDIA_BYTES = MAX_PROVIDER_REMOTE_MEDIA_MB * 1024 * 1024;
 export const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
+const MANAGED_ASSET_UPLOAD_CACHE_TTL_MS = 30 * 60 * 1000;
+const MANAGED_ASSET_UPLOAD_CACHE_MAX_ENTRIES = 2000;
+const managedAssetUploadCache = new Map();
 
 const createProviderError = (code, message, extras = null) => {
   const error = new Error(message);
@@ -68,9 +71,108 @@ export const getManagedAssetPath = (value) => {
 const getProviderPublicBaseUrl = (env = {}) =>
   normalizeBaseUrl(env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || process.env.MEIAO_PUBLIC_BASE_URL || process.env.PUBLIC_BASE_URL || '');
 
+const getPositiveIntegerEnv = (env, keys, fallback) => {
+  const raw = keys
+    .map((key) => env?.[key] || process.env[key])
+    .find((value) => String(value || '').trim());
+  const parsed = Number.parseInt(String(raw || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const getManagedAssetUploadCacheTtlMs = (env = {}) => getPositiveIntegerEnv(
+  env,
+  ['MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS', 'KIE_ASSET_UPLOAD_CACHE_TTL_MS'],
+  MANAGED_ASSET_UPLOAD_CACHE_TTL_MS
+);
+
+const getManagedAssetUploadCacheMaxEntries = (env = {}) => getPositiveIntegerEnv(
+  env,
+  ['MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES', 'KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES'],
+  MANAGED_ASSET_UPLOAD_CACHE_MAX_ENTRIES
+);
+
+const pruneManagedAssetUploadCache = (now, maxEntries) => {
+  for (const [key, entry] of managedAssetUploadCache.entries()) {
+    if (entry.expiresAt > 0 && entry.expiresAt <= now) {
+      managedAssetUploadCache.delete(key);
+    }
+  }
+  while (managedAssetUploadCache.size >= maxEntries) {
+    const oldestKey = managedAssetUploadCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    managedAssetUploadCache.delete(oldestKey);
+  }
+};
+
+const resolveCachedManagedAssetUpload = async (cacheKey, env, upload) => {
+  const now = Date.now();
+  const maxEntries = getManagedAssetUploadCacheMaxEntries(env);
+  pruneManagedAssetUploadCache(now, maxEntries);
+  const existing = managedAssetUploadCache.get(cacheKey);
+  if (existing && (existing.expiresAt === 0 || existing.expiresAt > now)) {
+    return existing.promise;
+  }
+
+  const entry = { expiresAt: 0, promise: null };
+  entry.promise = Promise.resolve()
+    .then(upload)
+    .then((fileUrl) => {
+      const normalized = String(fileUrl || '').trim();
+      if (!normalized) {
+        throw createProviderError('provider_bad_response', '上传成功但未返回素材地址');
+      }
+      entry.expiresAt = Date.now() + getManagedAssetUploadCacheTtlMs(env);
+      return normalized;
+    });
+  managedAssetUploadCache.set(cacheKey, entry);
+
+  try {
+    return await entry.promise;
+  } catch (error) {
+    if (managedAssetUploadCache.get(cacheKey) === entry) {
+      managedAssetUploadCache.delete(cacheKey);
+    }
+    throw error;
+  }
+};
+
+export const __testOnly_clearManagedAssetUploadCache = () => {
+  managedAssetUploadCache.clear();
+};
+
+const isExternallyReachableHttpsBaseUrl = (value) => {
+  const normalized = normalizeBaseUrl(value);
+  if (!normalized || !isExternallyReachableBaseUrl(normalized)) return false;
+  try {
+    return new URL(normalized).protocol === 'https:';
+  } catch {
+    return false;
+  }
+};
+
+export const resolveKieManagedAssetMode = (env = {}) => {
+  const configured = String(
+    env.MEIAO_KIE_MANAGED_ASSET_MODE
+    || env.KIE_MANAGED_ASSET_MODE
+    || process.env.MEIAO_KIE_MANAGED_ASSET_MODE
+    || process.env.KIE_MANAGED_ASSET_MODE
+    || 'auto'
+  ).trim().toLowerCase();
+  if (configured === 'kie-only') return 'kie-only';
+  return isExternallyReachableHttpsBaseUrl(getProviderPublicBaseUrl(env)) ? 'direct-first' : 'kie-only';
+};
+
+export const shouldUseDirectManagedAssetUrls = (env = {}) =>
+  resolveKieManagedAssetMode(env) === 'direct-first';
+
 export const resolveExternallyReachableManagedAssetUrl = (value, env = {}) => {
   const normalized = String(value || '').trim();
   if (!isManagedAssetUrl(normalized)) return '';
+  const assetPath = getManagedAssetPath(normalized);
+  const publicBaseUrl = getProviderPublicBaseUrl(env);
+  if (assetPath && isExternallyReachableHttpsBaseUrl(publicBaseUrl)) {
+    return `${publicBaseUrl}${assetPath}`;
+  }
   try {
     const parsed = new URL(normalized);
     if (['http:', 'https:'].includes(parsed.protocol) && !isLocalOrPrivateHostname(parsed.hostname)) {
@@ -79,8 +181,6 @@ export const resolveExternallyReachableManagedAssetUrl = (value, env = {}) => {
   } catch {
     // Relative managed asset paths can still be made public through MEIAO_PUBLIC_BASE_URL.
   }
-  const assetPath = getManagedAssetPath(normalized);
-  const publicBaseUrl = getProviderPublicBaseUrl(env);
   if (assetPath && isExternallyReachableBaseUrl(publicBaseUrl)) {
     return `${publicBaseUrl}${assetPath}`;
   }
@@ -297,14 +397,17 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
     const publicAssetUrl = resolveExternallyReachableManagedAssetUrl(assetUrl, normalizedOptions.env);
     if (publicAssetUrl) return publicAssetUrl;
   }
-  const downloaded = await downloadManagedAsset(assetUrl, normalizedOptions);
-  const upload = normalizedOptions.deps.uploadAssetViaKieWithFallback || uploadAssetViaKieWithFallback;
-  const uploaded = await upload({
-    ...downloaded,
-    fileName: buildUniqueProviderFileName(downloaded.fileName, getManagedAssetPath(assetUrl) || assetUrl),
-    uploadPath: 'mayo-storage/internal',
-  }, normalizedOptions);
-  return String(uploaded?.result?.fileUrl || '').trim();
+  const cacheKey = getManagedAssetPath(assetUrl) || String(assetUrl || '').trim();
+  return resolveCachedManagedAssetUpload(cacheKey, normalizedOptions.env, async () => {
+    const downloaded = await downloadManagedAsset(assetUrl, normalizedOptions);
+    const upload = normalizedOptions.deps.uploadAssetViaKieWithFallback || uploadAssetViaKieWithFallback;
+    const uploaded = await upload({
+      ...downloaded,
+      fileName: buildUniqueProviderFileName(downloaded.fileName, cacheKey),
+      uploadPath: 'mayo-storage/internal',
+    }, normalizedOptions);
+    return String(uploaded?.result?.fileUrl || '').trim();
+  });
 };
 
 const isPrivateIpv4Hostname = (hostname) => {
@@ -436,7 +539,7 @@ export const resolveProviderGenerationMediaUrl = async (value, envOrOptions = {}
   if (!isManagedAssetUrl(normalized)) return normalized;
   return convertManagedAssetUrlToKieFileUrl(normalized, {
     ...normalizedOptions,
-    forceUpload: true,
+    forceUpload: normalizedOptions.forceUpload || !shouldUseDirectManagedAssetUrls(normalizedOptions.env),
   });
 };
 
@@ -450,7 +553,7 @@ export const resolveProviderChatMediaUrl = async (value, envOrOptions = {}, sign
   if (!isManagedAssetUrl(normalized)) return normalized;
   return convertManagedAssetUrlToKieFileUrl(normalized, {
     ...normalizedOptions,
-    forceUpload: true,
+    forceUpload: normalizedOptions.forceUpload || !shouldUseDirectManagedAssetUrls(normalizedOptions.env),
   });
 };
 

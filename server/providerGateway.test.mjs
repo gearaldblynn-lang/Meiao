@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { executeProviderJob, uploadAssetViaKieStream, __testOnly_setDreaminaVideoRunner, __testOnly_fetchKieWithTimeout, __testOnly_getKieHttpRetryDelayMs } from './providerGateway.mjs';
+import { __testOnly_clearManagedAssetUploadCache } from './providerAssetTransfer.mjs';
 
 // 请求级瞬时重试(S2 G1)默认退避 1s/3s,测试里统一压到 1ms,
 // 避免走到 fetch failed / 5xx 路径的既有测试被退避拖慢。
@@ -2045,6 +2046,7 @@ test('executeProviderJob uploads managed file attachments before gpt-5.4 respons
 });
 
 test('executeProviderJob uploads managed asset images before gpt-5.4 responses api', async () => {
+  __testOnly_clearManagedAssetUploadCache();
   const originalFetch = global.fetch;
   const requests = [];
   const cloudAssetUrl = 'http://111.229.66.247/api/assets/file/img-1/source.png';
@@ -4048,6 +4050,7 @@ test('executeProviderJob prefers real kie gemini task id over chat completion id
 });
 
 test('executeProviderJob uploads managed asset images before gemini planning', async () => {
+  __testOnly_clearManagedAssetUploadCache();
   const originalFetch = global.fetch;
   const requests = [];
   const cloudAssetUrl = 'http://111.229.66.247/api/assets/file/img-1/source.png';
