@@ -93,7 +93,7 @@ const getManagedAssetUploadCacheMaxEntries = (env = {}) => getPositiveIntegerEnv
 
 const pruneManagedAssetUploadCache = (now) => {
   for (const [key, entry] of managedAssetUploadCache.entries()) {
-    if (entry.expiresAt > 0 && entry.expiresAt <= now) {
+    if (entry.state === 'settled' && entry.expiresAt > 0 && entry.expiresAt <= now) {
       managedAssetUploadCache.delete(key);
     }
   }
@@ -101,42 +101,84 @@ const pruneManagedAssetUploadCache = (now) => {
 
 const evictManagedAssetUploadCacheForInsert = (maxEntries) => {
   while (managedAssetUploadCache.size >= maxEntries) {
-    const oldestKey = managedAssetUploadCache.keys().next().value;
-    if (oldestKey === undefined) break;
-    managedAssetUploadCache.delete(oldestKey);
+    let oldestSettledKey = null;
+    for (const [key, entry] of managedAssetUploadCache.entries()) {
+      if (entry.state !== 'settled') continue;
+      oldestSettledKey = key;
+      break;
+    }
+    if (oldestSettledKey === null) break;
+    managedAssetUploadCache.delete(oldestSettledKey);
   }
 };
 
-const resolveCachedManagedAssetUpload = async (cacheKey, env, upload) => {
+const waitForCachedManagedAssetUpload = (cacheKey, entry, signal) => new Promise((resolve, reject) => {
+  const waiter = {};
+  let settled = false;
+  const settle = (callback, value) => {
+    if (settled) return;
+    settled = true;
+    entry.waiters.delete(waiter);
+    signal?.removeEventListener?.('abort', onAbort);
+    callback(value);
+  };
+  const onAbort = () => {
+    settle(reject, createProviderError('request_cancelled', '任务已取消'));
+    if (entry.state === 'pending' && entry.waiters.size === 0) {
+      if (managedAssetUploadCache.get(cacheKey) === entry) {
+        managedAssetUploadCache.delete(cacheKey);
+      }
+      entry.controller.abort();
+    }
+  };
+
+  entry.waiters.add(waiter);
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  entry.promise.then(
+    (fileUrl) => settle(resolve, fileUrl),
+    (error) => settle(reject, error)
+  );
+});
+
+const resolveCachedManagedAssetUpload = (cacheKey, env, signal, upload) => {
+  if (signal?.aborted) {
+    return Promise.reject(createProviderError('request_cancelled', '任务已取消'));
+  }
   const now = Date.now();
   pruneManagedAssetUploadCache(now);
   const existing = managedAssetUploadCache.get(cacheKey);
-  if (existing && (existing.expiresAt === 0 || existing.expiresAt > now)) {
-    return existing.promise;
+  if (existing && (existing.state === 'pending' || existing.expiresAt > now)) {
+    return waitForCachedManagedAssetUpload(cacheKey, existing, signal);
   }
 
   evictManagedAssetUploadCacheForInsert(getManagedAssetUploadCacheMaxEntries(env));
-  const entry = { expiresAt: 0, promise: null };
+  const entry = {
+    controller: new AbortController(),
+    expiresAt: 0,
+    promise: null,
+    state: 'pending',
+    waiters: new Set(),
+  };
   entry.promise = Promise.resolve()
-    .then(upload)
+    .then(() => upload(entry.controller.signal))
     .then((fileUrl) => {
       const normalized = String(fileUrl || '').trim();
       if (!normalized) {
         throw createProviderError('provider_bad_response', '上传成功但未返回素材地址');
       }
+      entry.state = 'settled';
       entry.expiresAt = Date.now() + getManagedAssetUploadCacheTtlMs(env);
       return normalized;
+    })
+    .catch((error) => {
+      entry.state = 'settled';
+      if (managedAssetUploadCache.get(cacheKey) === entry) {
+        managedAssetUploadCache.delete(cacheKey);
+      }
+      throw error;
     });
   managedAssetUploadCache.set(cacheKey, entry);
-
-  try {
-    return await entry.promise;
-  } catch (error) {
-    if (managedAssetUploadCache.get(cacheKey) === entry) {
-      managedAssetUploadCache.delete(cacheKey);
-    }
-    throw error;
-  }
+  return waitForCachedManagedAssetUpload(cacheKey, entry, signal);
 };
 
 export const __testOnly_clearManagedAssetUploadCache = () => {
@@ -401,19 +443,20 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
     if (publicAssetUrl) return publicAssetUrl;
   }
   const cacheKey = getManagedAssetPath(assetUrl) || String(assetUrl || '').trim();
-  const uploadManagedAsset = async () => {
-    const downloaded = await downloadManagedAsset(assetUrl, normalizedOptions);
+  const uploadManagedAsset = async (transferSignal = normalizedOptions.signal) => {
+    const transferOptions = { ...normalizedOptions, signal: transferSignal };
+    const downloaded = await downloadManagedAsset(assetUrl, transferOptions);
     const upload = normalizedOptions.deps.uploadAssetViaKieWithFallback || uploadAssetViaKieWithFallback;
     const uploaded = await upload({
       ...downloaded,
       fileName: buildUniqueProviderFileName(downloaded.fileName, cacheKey),
       uploadPath: 'mayo-storage/internal',
-    }, normalizedOptions);
+    }, transferOptions);
     const fileUrl = String(uploaded?.result?.fileUrl || '').trim();
     return fileUrl;
   };
   if (!normalizedOptions.forceUpload) return uploadManagedAsset();
-  return resolveCachedManagedAssetUpload(cacheKey, normalizedOptions.env, uploadManagedAsset);
+  return resolveCachedManagedAssetUpload(cacheKey, normalizedOptions.env, normalizedOptions.signal, uploadManagedAsset);
 };
 
 const isPrivateIpv4Hostname = (hostname) => {
