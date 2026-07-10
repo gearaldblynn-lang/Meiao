@@ -1843,6 +1843,141 @@ test('executeProviderJob uploads managed asset image urls before creating kie im
   }
 });
 
+test('executeProviderJob retries direct managed asset image through KIE after pre-task media read failure', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+  const managedAssetUrl = 'http://111.229.66.247/api/assets/file/direct-image/source.png';
+  const directAssetUrl = 'https://meiaoyuntai.com/api/assets/file/direct-image/source.png';
+  const stagedAssetUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/direct-image.png';
+  let createTaskCalls = 0;
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/createTask')) {
+      createTaskCalls += 1;
+      if (createTaskCalls === 1) {
+        return createJsonResponse({ code: 400, msg: 'Failed to get the file information' }, 400);
+      }
+      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-direct-image-fallback' } });
+    }
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from([0x89, 0x50, 0x4e, 0x47]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      });
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({ code: 200, data: { fileUrl: stagedAssetUrl } });
+    }
+    if (String(url).includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://example.com/direct-image-result.png'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = () => {};
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        payload: {
+          prompt: 'test direct image fallback',
+          imageUrls: [managedAssetUrl],
+          model: 'nano-banana-2',
+          aspectRatio: '1:1',
+          resolution: '1K',
+        },
+      },
+      {
+        KIE_API_KEY: 'test-key',
+        MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+        MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+        MEIAO_KIE_ASSET_UPLOAD_RETRIES: '0',
+      },
+      new AbortController().signal
+    );
+
+    assert.equal(result.providerTaskId, 'kie-task-direct-image-fallback');
+    assert.equal(requests.filter((item) => item.url.includes('/createTask')).length, 2);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    const createBodies = requests
+      .filter((item) => item.url.includes('/createTask'))
+      .map((item) => JSON.parse(String(item.init.body)));
+    assert.deepEqual(createBodies[0].input.image_input, [directAssetUrl]);
+    assert.deepEqual(createBodies[1].input.image_input, [stagedAssetUrl]);
+    assert.equal(createBodies[0].model, createBodies[1].model);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('executeProviderJob does not retry direct media after a KIE image task id exists', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = global.fetch;
+  const requests = [];
+  const managedAssetUrl = '/api/assets/file/direct-image-task-id/source.png';
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/createTask')) {
+      return createJsonResponse({ code: 200, data: { taskId: 'kie-task-already-created' } });
+    }
+    if (String(url).includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'fail',
+          failMsg: 'Failed to get the file information',
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_image',
+          payload: {
+            prompt: 'must not duplicate',
+            imageUrls: [managedAssetUrl],
+            model: 'nano-banana-2',
+          },
+        },
+        {
+          KIE_API_KEY: 'test-key',
+          MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+          MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+        },
+        new AbortController().signal
+      ),
+      (error) => error?.providerTaskId === 'kie-task-already-created'
+        && /Failed to get the file information/i.test(error.message)
+    );
+
+    assert.equal(requests.filter((item) => item.url.includes('/createTask')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob unwraps markdown image links before creating kie image tasks', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
@@ -3278,6 +3413,291 @@ test('executeProviderJob treats provider file information text as a failed reque
       (error) => error?.code === 'provider_bad_response'
         && /failed to get the file information/i.test(error.message)
     );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob retries direct managed asset chat through KIE on explicit media read failure', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = global.fetch;
+  const requests = [];
+  const managedAssetUrl = 'http://111.229.66.247/api/assets/file/direct-chat/source.png';
+  const directAssetUrl = 'https://meiaoyuntai.com/api/assets/file/direct-chat/source.png';
+  const stagedAssetUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/direct-chat.png';
+  let responseCalls = 0;
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/codex/v1/responses')) {
+      responseCalls += 1;
+      if (responseCalls === 1) {
+        return createJsonResponse({ output_text: 'Failed to get the file information' });
+      }
+      return createJsonResponse({ id: 'resp-direct-chat-fallback', output_text: 'direct chat fallback ok' });
+    }
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from([0x89, 0x50, 0x4e, 0x47]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      });
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({ code: 200, data: { fileUrl: stagedAssetUrl } });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gpt-5-4-openai-resp',
+          fallbackModels: ['gpt-5-2'],
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: '分析图片' },
+              { type: 'image_url', image_url: { url: managedAssetUrl } },
+            ],
+          }],
+        },
+      },
+      {
+        KIE_API_KEY: 'test-key',
+        MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+        MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+        MEIAO_KIE_ASSET_UPLOAD_RETRIES: '0',
+      },
+      new AbortController().signal
+    );
+
+    assert.equal(result.providerTaskId, 'resp-direct-chat-fallback');
+    assert.equal(result.result.content, 'direct chat fallback ok');
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    const responseBodies = requests
+      .filter((item) => item.url.includes('/codex/v1/responses'))
+      .map((item) => JSON.parse(String(item.init.body)));
+    assert.equal(responseBodies.length, 2);
+    assert.equal(responseBodies[0].input[0].content[1].image_url, directAssetUrl);
+    assert.equal(responseBodies[1].input[0].content[1].image_url, stagedAssetUrl);
+    assert.equal(responseBodies[0].model, responseBodies[1].model);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob retries direct managed asset responses through KIE after HTTP 502 without a task id', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = global.fetch;
+  const requests = [];
+  const stagedAssetUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/direct-502.png';
+  let responseCalls = 0;
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/codex/v1/responses')) {
+      responseCalls += 1;
+      if (responseCalls === 1) return createJsonResponse({ message: 'Bad gateway' }, 502);
+      return createJsonResponse({ id: 'resp-direct-502-fallback', output_text: 'recovered from 502' });
+    }
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from([0xff, 0xd8, 0xff]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/jpeg' },
+      });
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({ code: 200, data: { fileUrl: stagedAssetUrl } });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gpt-5-4-openai-resp',
+          messages: [{
+            role: 'user',
+            content: [{ type: 'image_url', image_url: { url: '/api/assets/file/direct-502/source.jpg' } }],
+          }],
+        },
+      },
+      {
+        KIE_API_KEY: 'test-key',
+        MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+        MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+        MEIAO_KIE_ASSET_UPLOAD_RETRIES: '0',
+      },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'recovered from 502');
+    assert.equal(responseCalls, 2);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob task id prevents direct media fallback for chat error text', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/codex/v1/responses')) {
+      return createJsonResponse({
+        id: 'resp-already-created',
+        output_text: 'Failed to get the file information',
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gpt-5-4-openai-resp',
+            messages: [{
+              role: 'user',
+              content: [{ type: 'image_url', image_url: { url: '/api/assets/file/direct-task-id/source.png' } }],
+            }],
+          },
+        },
+        {
+          KIE_API_KEY: 'test-key',
+          MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+          MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+        },
+        new AbortController().signal
+      ),
+      (error) => error?.providerTaskId === 'resp-already-created'
+        && /Failed to get the file information/i.test(error.message)
+    );
+
+    assert.equal(requests.filter((item) => item.url.includes('/codex/v1/responses')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob forces KIE media on same-model Gemini direct media fallback', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = global.fetch;
+  const requests = [];
+  const directAssetUrl = 'https://meiaoyuntai.com/api/assets/file/direct-gemini/source.png';
+  const stagedAssetUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/direct-gemini.png';
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/gemini-3-flash')) {
+      const body = JSON.parse(String(init.body));
+      const mediaUrl = body.messages[0].content[1].image_url.url;
+      if (mediaUrl === directAssetUrl) {
+        return createJsonResponse({
+          choices: [{ message: { content: 'Failed to get the file information' } }],
+        });
+      }
+      assert.equal(mediaUrl, stagedAssetUrl);
+      return createJsonResponse({
+        id: 'gemini-direct-fallback-task',
+        choices: [{ message: { content: 'gemini direct fallback ok' } }],
+      });
+    }
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from([0x89, 0x50, 0x4e, 0x47]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      });
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({ code: 200, data: { fileUrl: stagedAssetUrl } });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    const result = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: '分析图片' },
+              { type: 'image_url', image_url: { url: '/api/assets/file/direct-gemini/source.png' } },
+            ],
+          }],
+        },
+      },
+      {
+        KIE_API_KEY: 'test-key',
+        MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+        MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+        MEIAO_KIE_ASSET_UPLOAD_RETRIES: '0',
+      },
+      new AbortController().signal
+    );
+
+    assert.equal(result.result.content, 'gemini direct fallback ok');
+    assert.equal(requests.filter((item) => item.url.includes('/gemini-3-flash')).length, 2);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob Gemini task id prevents direct media fallback', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/gemini-3-flash')) {
+      return createJsonResponse({
+        id: 'gemini-task-already-created',
+        choices: [{ message: { content: 'Failed to get the file information' } }],
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gemini-3-flash-openai',
+            messages: [{
+              role: 'user',
+              content: [{ type: 'image_url', image_url: { url: '/api/assets/file/direct-gemini-task/source.png' } }],
+            }],
+          },
+        },
+        {
+          KIE_API_KEY: 'test-key',
+          MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+          MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+        },
+        new AbortController().signal
+      ),
+      (error) => error?.providerTaskId === 'gemini-task-already-created'
+    );
+
+    assert.equal(requests.filter((item) => item.url.includes('/gemini-3-flash')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
   } finally {
     global.fetch = originalFetch;
   }

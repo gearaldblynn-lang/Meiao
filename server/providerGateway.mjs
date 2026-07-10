@@ -26,6 +26,7 @@ import {
   resolveProviderGeminiChatMediaUrl as resolveProviderGeminiChatMediaUrlWithDeps,
   resolveProviderGenerationMediaUrl as resolveProviderGenerationMediaUrlWithDeps,
   resolveProviderMediaUrl as resolveProviderMediaUrlWithDeps,
+  shouldUseDirectManagedAssetUrls,
   uploadAssetViaKieWithFallback as uploadAssetViaKieWithFallbackWithDeps,
 } from './providerAssetTransfer.mjs';
 import {
@@ -140,41 +141,36 @@ const normalizeKieTaskCreationError = (responseStatus, result = {}, defaultMessa
   const message = /total duration of the video cannot exceed 15 seconds/i.test(rawMessage)
     ? 'Seedance API 带参考视频时，参考视频合计时长不能超过 15 秒。请先裁短参考视频后重试。'
     : rawMessage;
+  const providerTaskId = String(
+    result?.data?.taskId
+    || result?.data?.task_id
+    || result?.taskId
+    || result?.task_id
+    || ''
+  ).trim();
+  const errorExtras = (providerStatus) => ({
+    providerStage: 'create_task',
+    providerStatus,
+    providerHttpStatus: Number(responseStatus || 0),
+    ...(providerTaskId ? { providerTaskId } : {}),
+  });
 
   if (responseStatus === 401 || responseStatus === 403 || code === 401 || code === 403) {
-    return createProviderError('provider_auth_invalid', message || 'Kie 图像任务鉴权失败', {
-      providerStage: 'create_task',
-      providerStatus: 'auth_invalid',
-    });
+    return createProviderError('provider_auth_invalid', message || 'Kie 图像任务鉴权失败', errorExtras('auth_invalid'));
   }
   if (responseStatus === 429 || code === 429) {
-    return createProviderError('provider_rate_limited', message || 'Kie 图像任务请求过于频繁', {
-      providerStage: 'create_task',
-      providerStatus: 'rate_limited',
-    });
+    return createProviderError('provider_rate_limited', message || 'Kie 图像任务请求过于频繁', errorExtras('rate_limited'));
   }
   if (code === 402 || /credits insufficient/i.test(message)) {
-    return createProviderError('provider_credit_insufficient', message || 'Kie 余额不足', {
-      providerStage: 'create_task',
-      providerStatus: 'credit_insufficient',
-    });
+    return createProviderError('provider_credit_insufficient', message || 'Kie 余额不足', errorExtras('credit_insufficient'));
   }
   if (code === 433 || /sub-?key|exceeds limit|request limit/i.test(message)) {
-    return createProviderError('provider_request_limit', message || 'Kie 额度受限', {
-      providerStage: 'create_task',
-      providerStatus: 'request_limit',
-    });
+    return createProviderError('provider_request_limit', message || 'Kie 额度受限', errorExtras('request_limit'));
   }
   if (responseStatus >= 500 || code >= 500) {
-    return createProviderError('provider_internal_error', message || 'Kie 图像任务服务异常', {
-      providerStage: 'create_task',
-      providerStatus: 'server_error',
-    });
+    return createProviderError('provider_internal_error', message || 'Kie 图像任务服务异常', errorExtras('server_error'));
   }
-  return createProviderError('provider_bad_request', message || 'Kie 图像任务创建失败', {
-    providerStage: 'create_task',
-    providerStatus: 'bad_request',
-  });
+  return createProviderError('provider_bad_request', message || 'Kie 图像任务创建失败', errorExtras('bad_request'));
 };
 
 const fetchKieOnce = async (
@@ -461,13 +457,13 @@ const buildAssetTransferOptions = (env = {}, signal = null, options = {}) => ({
     readResponseBodyWithTimeout,
     uploadAssetViaKieStream,
     uploadAssetViaKieWithFallback: (payload, transferOptions = {}) =>
-      uploadAssetViaKieWithFallback(payload, transferOptions.env || env),
+      uploadAssetViaKieWithFallback(payload, transferOptions.env || env, transferOptions.signal || signal),
     ...(options.deps || {}),
   },
 });
 
-const uploadAssetViaKieWithFallback = async (payload, env) =>
-  uploadAssetViaKieWithFallbackWithDeps(payload, buildAssetTransferOptions(env));
+const uploadAssetViaKieWithFallback = async (payload, env, signal = null) =>
+  uploadAssetViaKieWithFallbackWithDeps(payload, buildAssetTransferOptions(env, signal));
 
 const convertInlineDataUrlToKieFileUrl = async (value, env) =>
   convertInlineDataUrlToKieFileUrlWithDeps(value, buildAssetTransferOptions(env));
@@ -490,14 +486,14 @@ const convertGeminiMediaToStableKieUrl = async (mediaUrl, env, signal) =>
 const convertGeminiVideoToOpenRouterChatUrl = async (mediaUrl, env, signal) =>
   convertGeminiVideoToOpenRouterChatUrlWithDeps(mediaUrl, buildAssetTransferOptions(env, signal));
 
-const resolveProviderGeminiChatMediaUrl = async (value, env, signal) =>
-  resolveProviderGeminiChatMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal));
+const resolveProviderGeminiChatMediaUrl = async (value, env, signal, options = {}) =>
+  resolveProviderGeminiChatMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal, options));
 
-const resolveProviderChatMediaUrl = async (value, env, signal) =>
-  resolveProviderChatMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal));
+const resolveProviderChatMediaUrl = async (value, env, signal, options = {}) =>
+  resolveProviderChatMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal, options));
 
-const resolveProviderGenerationMediaUrl = async (value, env, signal) =>
-  resolveProviderGenerationMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal));
+const resolveProviderGenerationMediaUrl = async (value, env, signal, options = {}) =>
+  resolveProviderGenerationMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal, options));
 
 const resolveProviderMediaUrl = async (value, env, signal) =>
   resolveProviderMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal));
@@ -622,6 +618,7 @@ const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
 
 const resolveProviderMessages = async (messages = [], env, signal, options = {}) => {
   const sharedResolvedMediaUrlByRawUrl = options.mediaUrlCache instanceof Map ? options.mediaUrlCache : null;
+  const mediaRoute = options.forceManagedAssetUpload ? 'kie' : 'direct';
   return Promise.all(
     (Array.isArray(messages) ? messages : []).map(async (message) => {
       const resolvedMediaUrlByRawUrl = sharedResolvedMediaUrlByRawUrl || new Map();
@@ -631,10 +628,13 @@ const resolveProviderMessages = async (messages = [], env, signal, options = {})
       const resolveMediaUrl = async (url) => {
         const rawUrl = String(url || '').trim();
         if (!rawUrl) return '';
-        if (!resolvedMediaUrlByRawUrl.has(rawUrl)) {
-          resolvedMediaUrlByRawUrl.set(rawUrl, providerMediaResolver(rawUrl, env, signal));
+        const cacheKey = `${mediaRoute}:${rawUrl}`;
+        if (!resolvedMediaUrlByRawUrl.has(cacheKey)) {
+          resolvedMediaUrlByRawUrl.set(cacheKey, providerMediaResolver(rawUrl, env, signal, {
+            forceUpload: Boolean(options.forceManagedAssetUpload),
+          }));
         }
-        return resolvedMediaUrlByRawUrl.get(rawUrl);
+        return resolvedMediaUrlByRawUrl.get(cacheKey);
       };
       return {
         ...message,
@@ -1006,6 +1006,15 @@ const extractProviderTaskIdFromResponse = (data) => {
   return /^chatcmpl-/i.test(fallbackId) ? '' : fallbackId;
 };
 
+const createProviderTextError = (content, providerTaskId = '') => createProviderError(
+  providerErrorCodeFromText(content),
+  content,
+  {
+    providerStage: 'chat_completion',
+    ...(String(providerTaskId || '').trim() ? { providerTaskId: String(providerTaskId).trim() } : {}),
+  }
+);
+
 const hasToolUseContentBlock = (value) => {
   if (!value) return false;
   if (Array.isArray(value)) return value.some((item) => hasToolUseContentBlock(item));
@@ -1065,6 +1074,46 @@ const shouldFallbackKieChatError = (error) => {
   if (KIE_CHAT_NON_FALLBACK_PROVIDER_STAGES.has(String(error?.providerStage || '').trim())) return false;
   return KIE_CHAT_FALLBACK_ERROR_CODES.has(String(error?.code || '').trim());
 };
+
+const DIRECT_MANAGED_MEDIA_READ_ERROR_PATTERN = /failed\s+to\s+get\s+(?:the\s+)?file\s+information|image\s+download\s+failed|failed\s+to\s+(?:download|fetch|load)\b[^\n]*(?:image|file|url)|unable\s+to\s+(?:download|fetch|load)\b[^\n]*(?:image|file|url)|file\s+mime\s+type\s+is\s+not\s+supported|(?:素材|文件|图片).{0,12}(?:读取|下载|获取).{0,8}失败/i;
+
+const payloadContainsManagedAsset = (value, seen = new WeakSet()) => {
+  if (typeof value === 'string') return isManagedAssetUrl(value);
+  if (!value || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.some((item) => payloadContainsManagedAsset(item, seen));
+  }
+  return Object.values(value).some((item) => payloadContainsManagedAsset(item, seen));
+};
+
+const shouldRetryWithKieManagedAsset = ({ payload, env, error, options = {}, taskType }) => {
+  if (!shouldUseDirectManagedAssetUrls(env)) return false;
+  if (options.forceManagedAssetUpload || options.directMediaFallbackAttempted) return false;
+  if (!payloadContainsManagedAsset(payload)) return false;
+  if (String(error?.providerTaskId || '').trim()) return false;
+  const message = String(error?.providerMessage || error?.message || '').trim();
+  if (DIRECT_MANAGED_MEDIA_READ_ERROR_PATTERN.test(message)) return true;
+  return taskType === 'kie_chat'
+    && String(error?.code || '').trim() === 'provider_internal_error'
+    && Number(error?.providerHttpStatus) === 502;
+};
+
+const markKieManagedAssetFallback = (value, originalError) => ({
+  ...value,
+  providerMediaRoute: 'kie-fallback',
+  mediaFallbackFrom: String(originalError?.code || 'provider_error'),
+  ...(value?.result && typeof value.result === 'object'
+    ? {
+        result: {
+          ...value.result,
+          providerMediaRoute: 'kie-fallback',
+          mediaFallbackFrom: String(originalError?.code || 'provider_error'),
+        },
+      }
+    : {}),
+});
 
 const runKieChatFallbackModels = async (payload, env, signal, originalError, options = {}) => {
   const fallbackModels = getKieChatFallbackModels(payload.model, payload.fallbackModels);
@@ -1190,7 +1239,10 @@ const mapHttpError = async (response, defaultMessage) => {
     ''
   ).trim() || defaultMessage;
   const providerTaskId = extractProviderTaskIdFromResponse(data);
-  const extras = providerTaskId ? { providerTaskId } : null;
+  const extras = {
+    providerHttpStatus: Number(response.status || 0),
+    ...(providerTaskId ? { providerTaskId } : {}),
+  };
   if (response.status === 401 || response.status === 403) {
     throw createProviderError('provider_auth_invalid', message, extras);
   }
@@ -1362,6 +1414,7 @@ const runKieResponsesJob = async (payload, env, signal, options = {}) => {
   const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, {
     model: payload.model,
     mediaUrlCache: options.mediaUrlCache,
+    forceManagedAssetUpload: options.forceManagedAssetUpload,
   });
   const instructions = extractResponsesInstructions(preparedMessages);
 
@@ -1392,13 +1445,14 @@ const runKieResponsesJob = async (payload, env, signal, options = {}) => {
     extractChatMessageText(data?.response?.output) ||
     (typeof data?.output_text === 'string' ? data.output_text.trim() : '') ||
     '';
+  const providerTaskId = extractProviderTaskIdFromResponse(data);
+  await notifyProviderTaskId(options, providerTaskId);
   if (!content) {
     throw createProviderError('provider_bad_response', 'Kie Responses 返回为空');
   }
   if (isProviderErrorText(content)) {
-    throw createProviderError(providerErrorCodeFromText(content), content);
+    throw createProviderTextError(content, providerTaskId);
   }
-  const providerTaskId = extractProviderTaskIdFromResponse(data);
   const usageMeta = extractProviderUsageMeta(data);
   return {
     ...(providerTaskId ? { providerTaskId } : {}),
@@ -1538,30 +1592,44 @@ const runKieImageJob = async (payload, env, signal, options = {}) => {
     ...rawImageUrls,
     ...textMediaUrls,
   ]);
-  return runKieImageProviderJob({
-    payload,
-    signal,
-    options: {
+  try {
+    return await runKieImageProviderJob({
+      payload,
+      signal,
+      options: {
+        ...options,
+        mediaResolutionConcurrency: options.mediaResolutionConcurrency || getKieImageMediaResolutionConcurrency(env),
+      },
+      deps: {
+        kieApiKey,
+        createTaskUrl: KIE_CREATE_TASK_URL,
+        fetchWithTimeout: fetchKieWithTimeout,
+        resolveGenerationMediaUrl: (url) => resolveProviderGenerationMediaUrl(url, env, signal, {
+          forceUpload: Boolean(options.forceManagedAssetUpload),
+        }),
+        normalizeTaskCreationError: normalizeKieTaskCreationError,
+        pollKieTask,
+        wait,
+      },
+    });
+  } catch (error) {
+    if (!shouldRetryWithKieManagedAsset({ payload, env, error, options, taskType: 'kie_image' })) {
+      throw error;
+    }
+    const fallbackResult = await runKieImageJob(payload, env, signal, {
       ...options,
-      mediaResolutionConcurrency: options.mediaResolutionConcurrency || getKieImageMediaResolutionConcurrency(env),
-    },
-    deps: {
-      kieApiKey,
-      createTaskUrl: KIE_CREATE_TASK_URL,
-      fetchWithTimeout: fetchKieWithTimeout,
-      resolveGenerationMediaUrl: (url) => resolveProviderGenerationMediaUrl(url, env, signal),
-      normalizeTaskCreationError: normalizeKieTaskCreationError,
-      pollKieTask,
-      wait,
-    },
-  });
+      forceManagedAssetUpload: true,
+      directMediaFallbackAttempted: true,
+    });
+    return markKieManagedAssetFallback(fallbackResult, error);
+  }
 };
 
-const runKieClaudeMessagesJob = async (payload, env, signal) => {
+const runKieClaudeMessagesJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
   const model = normalizeKieChatModel(payload.model || 'claude-sonnet-4-6') || 'claude-sonnet-4-6';
-  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model });
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { ...options, model });
   const hasCallerTools = Array.isArray(payload.tools) && payload.tools.length > 0;
   const requestMessages = hasCallerTools
     ? preparedMessages
@@ -1644,7 +1712,7 @@ const runKieClaudeMessagesJob = async (payload, env, signal) => {
           throw createProviderError('provider_bad_response', 'Kie Claude 返回为空');
         }
         if (isProviderErrorText(retryContent)) {
-          throw createProviderError(providerErrorCodeFromText(retryContent), retryContent);
+          throw createProviderTextError(retryContent, extractProviderTaskIdFromResponse(retryData));
         }
         if (String(retryData?.stop_reason || '').trim() === 'tool_use' || hasToolUseContentBlock(retryData?.content)) {
           throw createProviderError('provider_bad_response', 'Kie Claude 返回了工具调用而不是文本策划结果');
@@ -1662,7 +1730,7 @@ const runKieClaudeMessagesJob = async (payload, env, signal) => {
         throw createProviderError('provider_bad_response', 'Kie Claude 返回为空');
       }
       if (isProviderErrorText(content)) {
-        throw createProviderError(providerErrorCodeFromText(content), content);
+        throw createProviderTextError(content, extractProviderTaskIdFromResponse(data));
       }
       if (toolUseDetected) {
         throw createProviderError('provider_bad_response', 'Kie Claude 返回了工具调用而不是文本策划结果');
@@ -1686,7 +1754,7 @@ const runKieClaudeMessagesJob = async (payload, env, signal) => {
     throw createProviderError('provider_bad_response', 'Kie Claude 返回为空');
   }
   if (isProviderErrorText(content)) {
-    throw createProviderError(providerErrorCodeFromText(content), content);
+    throw createProviderTextError(content, extractProviderTaskIdFromResponse(data));
   }
   if (String(data?.stop_reason || '').trim() === 'tool_use' || hasToolUseContentBlock(data?.content)) {
     throw createProviderError('provider_bad_response', 'Kie Claude 返回了工具调用而不是文本策划结果');
@@ -1838,7 +1906,7 @@ const runKieGeminiFlashOpenAiJob = async (payload, env, signal, options = {}) =>
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
   const model = 'gemini-3-flash-openai';
-  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model });
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { ...options, model });
   const messages = buildProviderInputMessages(preparedMessages, buildGeminiFlashContent).map((message) => ({
     role: String(message?.role || 'user').trim() || 'user',
     content: Array.isArray(message?.content) ? message.content : [],
@@ -1874,7 +1942,7 @@ const runKieGeminiFlashOpenAiJob = async (payload, env, signal, options = {}) =>
       throw createProviderError('provider_bad_response', 'Kie Gemini 3 Flash 返回为空');
     }
     if (isProviderErrorText(streamResult.content)) {
-      throw createProviderError(providerErrorCodeFromText(streamResult.content), streamResult.content);
+      throw createProviderTextError(streamResult.content, streamResult.providerTaskId);
     }
     return {
       ...(streamResult.providerTaskId ? { providerTaskId: streamResult.providerTaskId } : {}),
@@ -1896,16 +1964,16 @@ const runKieGeminiFlashOpenAiJob = async (payload, env, signal, options = {}) =>
     extractChatMessageText(data?.content) ||
     extractChatMessageText(data) ||
     '';
+  const providerTaskId = extractProviderTaskIdFromResponse(data);
+  await notifyProviderTaskId(options, providerTaskId);
 
   if (!content) {
     throw createProviderError('provider_bad_response', 'Kie Gemini 3 Flash 返回为空');
   }
   if (isProviderErrorText(content)) {
-    throw createProviderError(providerErrorCodeFromText(content), content);
+    throw createProviderTextError(content, providerTaskId);
   }
 
-  const providerTaskId = extractProviderTaskIdFromResponse(data);
-  await notifyProviderTaskId(options, providerTaskId);
   const usageMeta = extractProviderUsageMeta(data);
   return {
     ...(providerTaskId ? { providerTaskId } : {}),
@@ -1924,7 +1992,7 @@ const runKieGemini35FlashJob = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
   const model = 'gemini-3-5-flash';
-  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { model });
+  const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, { ...options, model });
   const reasoningLevel = normalizeReasoningLevelForModel(model, payload.reasoningLevel);
   const tools = buildGeminiNativeTools(payload);
   const requestBody = {
@@ -1964,7 +2032,7 @@ const runKieGemini35FlashJob = async (payload, env, signal, options = {}) => {
       throw createProviderError('provider_bad_response', 'Kie Gemini 3.5 Flash 返回为空');
     }
     if (isProviderErrorText(streamResult.content)) {
-      throw createProviderError(providerErrorCodeFromText(streamResult.content), streamResult.content);
+      throw createProviderTextError(streamResult.content, streamResult.providerTaskId);
     }
     return {
       ...(streamResult.providerTaskId ? { providerTaskId: streamResult.providerTaskId } : {}),
@@ -1985,16 +2053,16 @@ const runKieGemini35FlashJob = async (payload, env, signal, options = {}) => {
     extractChatMessageText(data?.candidates?.[0]?.content) ||
     extractChatMessageText(data) ||
     '';
+  const providerTaskId = extractProviderTaskIdFromResponse(data);
+  await notifyProviderTaskId(options, providerTaskId);
 
   if (!content) {
     throw createProviderError('provider_bad_response', 'Kie Gemini 3.5 Flash 返回为空');
   }
   if (isProviderErrorText(content)) {
-    throw createProviderError(providerErrorCodeFromText(content), content);
+    throw createProviderTextError(content, providerTaskId);
   }
 
-  const providerTaskId = extractProviderTaskIdFromResponse(data);
-  await notifyProviderTaskId(options, providerTaskId);
   const usageMeta = extractProviderUsageMeta(data);
   return {
     ...(providerTaskId ? { providerTaskId } : {}),
@@ -2575,6 +2643,18 @@ const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '') =>
   }
 };
 
+const recoverKieChatError = async (payload, env, signal, error, options = {}) => {
+  if (shouldRetryWithKieManagedAsset({ payload, env, error, options, taskType: 'kie_chat' })) {
+    const fallbackResult = await runKieChatJob(payload, env, signal, {
+      ...options,
+      forceManagedAssetUpload: true,
+      directMediaFallbackAttempted: true,
+    });
+    return markKieManagedAssetFallback(fallbackResult, error);
+  }
+  return runKieChatFallbackModels(payload, env, signal, error, options);
+};
+
 const runKieChatJob = async (payload, env, signal, options = {}) => {
   const mediaUrlCache = options.mediaUrlCache instanceof Map ? options.mediaUrlCache : new Map();
   const sharedOptions = {
@@ -2590,14 +2670,14 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
     try {
       return await runKieGemini35FlashJob(payload, env, signal, sharedOptions);
     } catch (error) {
-      return runKieChatFallbackModels(payload, env, signal, error, sharedOptions);
+      return recoverKieChatError(payload, env, signal, error, sharedOptions);
     }
   }
   if (isKieGeminiFlashOpenAiModel(payload.model)) {
     try {
       return await runKieGeminiFlashOpenAiJob(payload, env, signal, sharedOptions);
     } catch (error) {
-      return runKieChatFallbackModels(payload, env, signal, error, sharedOptions);
+      return recoverKieChatError(payload, env, signal, error, sharedOptions);
     }
   }
   if (transport === 'unsupported') {
@@ -2607,11 +2687,15 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
     try {
       return await runKieResponsesJob(payload, env, signal, sharedOptions);
     } catch (error) {
-      return runKieChatFallbackModels(payload, env, signal, error, sharedOptions);
+      return recoverKieChatError(payload, env, signal, error, sharedOptions);
     }
   }
   if (transport === 'kie_claude_messages') {
-    return runKieClaudeMessagesJob(payload, env, signal);
+    try {
+      return await runKieClaudeMessagesJob(payload, env, signal, sharedOptions);
+    } catch (error) {
+      return recoverKieChatError(payload, env, signal, error, sharedOptions);
+    }
   }
 
   try {
@@ -2621,8 +2705,8 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
     const endpoint = resolveKieChatEndpoint(model);
     const isGeminiModel = isKieGeminiChatModel(model);
     const preparedMessages = await resolveProviderMessages(payload.messages, env, signal, {
+      ...sharedOptions,
       model,
-      mediaUrlCache,
     });
     const messages = isGeminiModel
       ? buildProviderInputMessages(preparedMessages, buildKieChatContent)
@@ -2655,16 +2739,16 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
       extractChatMessageText(data?.candidates?.[0]?.content) ||
       extractChatMessageText(data) ||
       '';
+    const providerTaskId = extractProviderTaskIdFromResponse(data);
+    await notifyProviderTaskId(options, providerTaskId);
 
     if (!content) {
       throw createProviderError('provider_bad_response', 'Kie 对话返回为空');
     }
     if (isProviderErrorText(content)) {
-      throw createProviderError(providerErrorCodeFromText(content), content);
+      throw createProviderTextError(content, providerTaskId);
     }
 
-    const providerTaskId = extractProviderTaskIdFromResponse(data);
-    await notifyProviderTaskId(options, providerTaskId);
     const usageMeta = extractProviderUsageMeta(data);
     return {
       ...(providerTaskId ? { providerTaskId } : {}),
@@ -2678,7 +2762,7 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
       },
     };
   } catch (error) {
-    return runKieChatFallbackModels(payload, env, signal, error, sharedOptions);
+    return recoverKieChatError(payload, env, signal, error, sharedOptions);
   }
 };
 
