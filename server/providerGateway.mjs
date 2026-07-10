@@ -32,6 +32,7 @@ import {
   KIE_IMAGE_MODEL_ALIASES,
   runKieImageJob as runKieImageProviderJob,
 } from './providerKieImage.mjs';
+import { withKieAssetUploadSlot } from './providerAssetUploadLimiter.mjs';
 import {
   allowConcurrentAbortListeners,
   readResponseBodyWithTimeout,
@@ -61,6 +62,9 @@ const KIE_TRANSIENT_NOT_FOUND_GRACE_MS = 45_000;
 const KIE_TRANSIENT_FETCH_ERROR_GRACE_MS = 240_000;
 const KIE_HTTP_REQUEST_TIMEOUT_MS = 60_000;
 const KIE_ASSET_UPLOAD_TIMEOUT_MS = 45_000;
+const KIE_ASSET_UPLOAD_CONCURRENCY = 3;
+const KIE_ASSET_UPLOAD_RETRIES = 2;
+const KIE_ASSET_UPLOAD_RETRY_BASE_MS = 1000;
 const KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY = 2;
 const KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY = 2;
 const SEEDANCE_MAX_TOTAL_VIDEO_DURATION_SECONDS = 15;
@@ -238,6 +242,7 @@ const fetchKieOnce = async (
 const KIE_HTTP_TRANSIENT_RETRIES_DEFAULT = 2;
 const KIE_HTTP_RETRY_BASE_MS_DEFAULT = 1000;
 const KIE_HTTP_RETRYABLE_RESPONSE_STATUS = new Set([502, 503, 504]);
+const KIE_ASSET_UPLOAD_RETRYABLE_RESPONSE_STATUS = new Set([429, 500, 502, 503, 504]);
 
 const getKieHttpTransientRetries = (env = process.env) => {
   const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_HTTP_TRANSIENT_RETRIES', 'KIE_HTTP_TRANSIENT_RETRIES') || ''), 10);
@@ -273,12 +278,24 @@ const fetchKieWithTimeout = async (
   init = {},
   timeoutMessage = 'Kie 请求超时',
   timeoutMs = KIE_HTTP_REQUEST_TIMEOUT_MS,
-  providerStage = 'http_request'
+  providerStage = 'http_request',
+  requestOptions = {}
 ) => {
   const { kieIdempotent, ...fetchInit } = init;
-  const idempotent = isIdempotentKieRequest(init);
-  const maxRetries = getKieHttpTransientRetries();
-  const retryBaseMs = getKieHttpRetryBaseMs();
+  const idempotent = typeof requestOptions.idempotent === 'boolean'
+    ? requestOptions.idempotent
+    : isIdempotentKieRequest(init);
+  const configuredMaxRetries = Number.parseInt(String(requestOptions.maxRetries ?? ''), 10);
+  const maxRetries = Number.isFinite(configuredMaxRetries) && configuredMaxRetries >= 0
+    ? configuredMaxRetries
+    : getKieHttpTransientRetries();
+  const configuredRetryBaseMs = Number.parseInt(String(requestOptions.retryBaseMs ?? ''), 10);
+  const retryBaseMs = Number.isFinite(configuredRetryBaseMs) && configuredRetryBaseMs > 0
+    ? configuredRetryBaseMs
+    : getKieHttpRetryBaseMs();
+  const retryableResponseStatuses = requestOptions.retryableResponseStatuses instanceof Set
+    ? requestOptions.retryableResponseStatuses
+    : KIE_HTTP_RETRYABLE_RESPONSE_STATUS;
 
   for (let attempt = 0; ; attempt += 1) {
     if (attempt > 0) {
@@ -300,7 +317,7 @@ const fetchKieWithTimeout = async (
       throw error;
     }
     // 只读请求对 502/503/504 响应重试;提交类收到响应一律不重试(防重复扣费)。
-    if (idempotent && KIE_HTTP_RETRYABLE_RESPONSE_STATUS.has(response.status) && attempt < maxRetries) {
+    if (idempotent && retryableResponseStatuses.has(response.status) && attempt < maxRetries) {
       discardResponseBody(response);
       continue;
     }
@@ -316,6 +333,21 @@ const getEnvValue = (env, ...keys) => keys.map((key) => env[key]).find(Boolean) 
 const getKieAssetUploadTimeoutMs = (env = {}) => {
   const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS', 'KIE_ASSET_UPLOAD_TIMEOUT_MS') || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_ASSET_UPLOAD_TIMEOUT_MS;
+};
+
+const getKieAssetUploadConcurrency = (env = {}) => {
+  const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY', 'KIE_ASSET_UPLOAD_CONCURRENCY') || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_ASSET_UPLOAD_CONCURRENCY;
+};
+
+const getKieAssetUploadRetries = (env = {}) => {
+  const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_ASSET_UPLOAD_RETRIES', 'KIE_ASSET_UPLOAD_RETRIES') || ''), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : KIE_ASSET_UPLOAD_RETRIES;
+};
+
+const getKieAssetUploadRetryBaseMs = (env = {}) => {
+  const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS', 'KIE_ASSET_UPLOAD_RETRY_BASE_MS') || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_ASSET_UPLOAD_RETRY_BASE_MS;
 };
 
 const getKieImageMediaResolutionConcurrency = (env = {}) => {
@@ -1236,7 +1268,7 @@ const pollKieVeoTask = async (taskId, kieApiKey, signal) => {
   throw createProviderError('provider_timeout', 'Veo 任务超时');
 };
 
-export const uploadAssetViaKieStream = async (payload, env) => {
+export const uploadAssetViaKieStream = async (payload, env = {}, signal = null) => withKieAssetUploadSlot(async () => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
 
@@ -1254,20 +1286,38 @@ export const uploadAssetViaKieStream = async (payload, env) => {
       Authorization: `Bearer ${kieApiKey}`,
     },
     body: formData,
-  }, 'Kie 素材上传超时', getKieAssetUploadTimeoutMs(env), 'asset_upload');
+    signal,
+  }, 'Kie 素材上传超时', getKieAssetUploadTimeoutMs(env), 'asset_upload', {
+    idempotent: true,
+    maxRetries: getKieAssetUploadRetries(env),
+    retryBaseMs: getKieAssetUploadRetryBaseMs(env),
+    retryableResponseStatuses: KIE_ASSET_UPLOAD_RETRYABLE_RESPONSE_STATUS,
+  });
 
   const result = await response.json().catch(() => ({}));
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
-      throw createProviderError('provider_auth_invalid', result?.msg || '素材上传鉴权失败');
+      throw createProviderError('provider_auth_invalid', result?.msg || '素材上传鉴权失败', {
+        providerStage: 'asset_upload',
+        providerStatus: 'auth_invalid',
+      });
     }
     if (response.status === 429) {
-      throw createProviderError('provider_rate_limited', result?.msg || '素材上传过于频繁');
+      throw createProviderError('provider_rate_limited', result?.msg || '素材上传过于频繁', {
+        providerStage: 'asset_upload',
+        providerStatus: 'rate_limited',
+      });
     }
     if (response.status >= 500) {
-      throw createProviderError('provider_internal_error', result?.msg || '素材上传服务异常');
+      throw createProviderError('provider_internal_error', result?.msg || '素材上传服务异常', {
+        providerStage: 'asset_upload',
+        providerStatus: 'server_error',
+      });
     }
-    throw createProviderError('provider_bad_request', result?.msg || '素材上传失败');
+    throw createProviderError('provider_bad_request', result?.msg || '素材上传失败', {
+      providerStage: 'asset_upload',
+      providerStatus: 'bad_request',
+    });
   }
 
   const fileUrl = extractUrlFromResponse(result);
@@ -1280,7 +1330,10 @@ export const uploadAssetViaKieStream = async (payload, env) => {
       fileUrl,
     },
   };
-};
+}, {
+  limit: getKieAssetUploadConcurrency(env),
+  signal,
+});
 
 const normalizeUploadAssetStreamPayload = (payload = {}) => {
   if (payload.fileBuffer) return payload;
@@ -2632,7 +2685,7 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
 export const executeProviderJob = async (job, env, signal, options = {}) => {
   switch (job.taskType) {
     case 'upload_asset':
-      return uploadAssetViaKieStream(normalizeUploadAssetStreamPayload(job.payload), env);
+      return uploadAssetViaKieStream(normalizeUploadAssetStreamPayload(job.payload), env, signal);
     case 'kie_image':
       if (job.providerTaskId) {
         return runKieRecoverJob(
