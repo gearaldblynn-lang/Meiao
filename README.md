@@ -81,7 +81,9 @@ npm run dev
 ```bash
 npm run acceptance
 npm run lint
+npm test
 npm run build
+npm run verify
 ```
 
 针对服务端任务队列、素材和 provider 网关的重点回归，可以按需执行：
@@ -95,6 +97,7 @@ node --test server/assetStore.test.mjs
 ## 关键文档
 
 - `AGENTS.md`：AI 接手本项目时必须先读的项目约定。
+- `docs/CURRENT.md`：当前真实开发分支、提交、标签和质量基线。
 - `项目交接上下文.md`：长期协作偏好、产品定位、日志和版本规则。
 - `docs/project-overview.md`：当前架构、模块、API、环境变量和验证入口速查。
 - `docs/release-and-handoff.md`：发布、GitHub 备份和腾讯云接手说明。

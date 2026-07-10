@@ -1,6 +1,8 @@
 # 项目概览与接手速查
 
-更新日期：2026-04-29
+更新日期：2026-07-10
+
+当前分支、提交、标签和测试规模以 `docs/CURRENT.md` 为准，可运行 `npm run status:write` 刷新。
 
 ## 1. 项目定位
 
@@ -161,7 +163,9 @@ npm run dev
 ```bash
 npm run acceptance
 npm run lint
+npm test
 npm run build
+npm run verify
 ```
 
 重点回归：

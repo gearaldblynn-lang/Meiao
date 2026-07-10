@@ -1,6 +1,6 @@
 # AGENTS.md
 
-本文件给 Codex 或其他 AI 接手本项目时使用。先读本文件，再读 `项目交接上下文.md`、`docs/project-overview.md`、`docs/release-and-handoff.md`。
+本文件给 Codex 或其他 AI 接手本项目时使用。先读本文件，再读 `docs/CURRENT.md`、`项目交接上下文.md`、`docs/project-overview.md`、`docs/release-and-handoff.md`。
 
 > ⚠️ **动手前必读架构纪律与历史 bug 根因库 —— 以 `CLAUDE.md` 为准（单一真相，本文件不复制其内容以免漂移）。**
 > `CLAUDE.md` 是 Hermes 三层记忆框架的本项目层（第2层），继承上两层 `../../CLAUDE.md`（第1层）和 `../../../CLAUDE.md`（第0层）。
@@ -57,7 +57,10 @@ npm run local
 npm run doctor
 npm run acceptance
 npm run lint
+npm test
 npm run build
+npm run verify
+npm run status
 ```
 
 重点回归：
