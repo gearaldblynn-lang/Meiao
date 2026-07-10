@@ -3327,7 +3327,7 @@ test('everything replace logo replacement is integrated without product-replace 
   assert.match(shellApp, /allowEmptyEverythingReplacePrompt[\s\S]*targetSubFeature === 'logo_replace'/);
   assert.match(shellApp, /const isLogoReplace = mode === 'logo_replace'/);
   assert.match(shellApp, /replacementLogic: params\.replacementLogic \|\| 'corner_badge_replace'/);
-  assert.match(shellApp, /logoReplaceRenderMode: params\.logoReplaceRenderMode \|\| 'program_guarded'/);
+  assert.doesNotMatch(shellApp, /logoReplaceRenderMode: params\.logoReplaceRenderMode \|\| 'program_guarded'/);
   assert.match(shellApp, /resolveEverythingReplaceBatchCount\(generationMaterials, generationParams, targetSubFeature\)/);
 
   assert.match(bottomInputBar, /const isLogoReplaceContext = \(module: AppModule, activeSubFeature\?: string\)/);
@@ -3345,6 +3345,10 @@ test('everything replace logo replacement is integrated without product-replace 
   assert.match(workflow, /normalizeLogoReplaceMode/);
   assert.match(workflow, /runLogoReplaceWorkflow/);
   assert.match(workflow, /subFeature: 'logo_replace'/);
+  assert.match(workflow, /requestedLogoReplaceRenderMode/);
+  assert.match(workflow, /logoReplaceMode === 'multi_logo_replace' \|\| logoReplaceMode === 'single_logo_region_replace'[\s\S]*\? 'program_guarded'/);
+  assert.match(workflow, /imageInputUrls = \[referenceUrl, \.\.\.multiLogoInputUrls, multiLogoPreviewInputs\.multiLogoPreviewUrl\]\.filter\(Boolean\)/);
+  assert.match(workflow, /cleanupMode: 'rect'/);
   assert.match(workflow, /createGuardedMultiLogoReplaceResultBlob/);
   assert.match(workflow, /if \(hasPendingGenerationIdentity\(generation\)\) \{[\s\S]*return toProductReplaceResultItem/);
   assert.match(workflow, /updateInternalJobResult/);

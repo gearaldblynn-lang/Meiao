@@ -113,6 +113,31 @@ export const pickGuardedLogoReplacePixel = ({
   return inside ? generated : original;
 };
 
+const normalizeCanvasRect = (rect, dimensions) => {
+  if (!rect || typeof rect !== 'object') return null;
+  const targetWidth = Number(dimensions?.width);
+  const targetHeight = Number(dimensions?.height);
+  if (![targetWidth, targetHeight].every(Number.isFinite) || targetWidth <= 0 || targetHeight <= 0) return null;
+  const x = clamp(Math.round(Number(rect.x) || 0), 0, Math.max(0, targetWidth - 1));
+  const y = clamp(Math.round(Number(rect.y) || 0), 0, Math.max(0, targetHeight - 1));
+  const right = clamp(Math.round(Number(rect.x) + Number(rect.width || 0)), x + 1, targetWidth);
+  const bottom = clamp(Math.round(Number(rect.y) + Number(rect.height || 0)), y + 1, targetHeight);
+  return {
+    x,
+    y,
+    width: Math.max(1, right - x),
+    height: Math.max(1, bottom - y),
+  };
+};
+
+const isInsideRect = (x, y, rect) => (
+  rect
+  && x >= rect.x
+  && y >= rect.y
+  && x < rect.x + rect.width
+  && y < rect.y + rect.height
+);
+
 const normalizeOverlayRect = (rect, dimensions) => {
   if (!rect || typeof rect !== 'object') return null;
   const xRatio = Number(rect.xRatio);
@@ -185,6 +210,95 @@ const sampleRectLuminance = (ctx, rect, fallback = 255) => {
 };
 
 const luminance = (r, g, b) => (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+
+const sampleImageDataRingColor = ({
+  imageData,
+  rect,
+  ringSize = 3,
+  fallback = [24, 24, 24],
+}) => {
+  const { data, width, height } = imageData || {};
+  if (!data || !width || !height || !rect) return fallback;
+  const safeRect = normalizeCanvasRect(rect, { width, height });
+  if (!safeRect) return fallback;
+  const outerX = clamp(safeRect.x - ringSize, 0, Math.max(0, width - 1));
+  const outerY = clamp(safeRect.y - ringSize, 0, Math.max(0, height - 1));
+  const outerRight = clamp(safeRect.x + safeRect.width + ringSize, outerX + 1, width);
+  const outerBottom = clamp(safeRect.y + safeRect.height + ringSize, outerY + 1, height);
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let count = 0;
+
+  for (let y = outerY; y < outerBottom; y += 1) {
+    for (let x = outerX; x < outerRight; x += 1) {
+      if (isInsideRect(x, y, safeRect)) continue;
+      const offset = (y * width + x) * 4;
+      if (data[offset + 3] < 32) continue;
+      r += data[offset];
+      g += data[offset + 1];
+      b += data[offset + 2];
+      count += 1;
+    }
+  }
+
+  if (!count) return fallback;
+  return [Math.round(r / count), Math.round(g / count), Math.round(b / count)];
+};
+
+export const scrubLogoResidualPixels = ({
+  imageData,
+  rect,
+  paddingRatio = 0,
+  minLuminanceContrast = 64,
+  minColorContrast = 64,
+} = {}) => {
+  const { data, width, height } = imageData || {};
+  if (!data || !width || !height || !rect) return 0;
+  const baseRect = normalizeCanvasRect(rect, { width, height });
+  if (!baseRect) return 0;
+  const safeRect = paddingRatio > 0
+    ? expandRect({ rect: baseRect, width, height, paddingRatio })
+    : baseRect;
+  if (!safeRect) return 0;
+  const [baseR, baseG, baseB] = sampleImageDataRingColor({
+    imageData,
+    rect: safeRect,
+    ringSize: Math.max(2, Math.round(Math.min(safeRect.width, safeRect.height) * 0.4)),
+  });
+  const baseLum = luminance(baseR, baseG, baseB);
+  let changed = 0;
+
+  for (let y = safeRect.y; y < safeRect.y + safeRect.height; y += 1) {
+    for (let x = safeRect.x; x < safeRect.x + safeRect.width; x += 1) {
+      const offset = (y * width + x) * 4;
+      if (data[offset + 3] < 32) continue;
+      const lumDiff = Math.abs(luminance(data[offset], data[offset + 1], data[offset + 2]) - baseLum);
+      const colorDiff = Math.max(
+        Math.abs(data[offset] - baseR),
+        Math.abs(data[offset + 1] - baseG),
+        Math.abs(data[offset + 2] - baseB),
+      );
+      if (lumDiff < minLuminanceContrast && colorDiff < minColorContrast) continue;
+      data[offset] = baseR;
+      data[offset + 1] = baseG;
+      data[offset + 2] = baseB;
+      data[offset + 3] = 255;
+      changed += 1;
+    }
+  }
+
+  return changed;
+};
+
+const scrubLogoResidualsInCanvas = (ctx, rect, width, height, paddingRatio = 0) => {
+  if (!rect || typeof ctx.getImageData !== 'function' || typeof ctx.putImageData !== 'function') return;
+  const safeRect = normalizeCanvasRect(rect, { width, height });
+  if (!safeRect) return;
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const changed = scrubLogoResidualPixels({ imageData, rect: safeRect, paddingRatio });
+  if (changed > 0) ctx.putImageData(imageData, 0, 0);
+};
 
 const sampleImageDataEdgeColor = ({ imageData, rect }) => {
   const { data, width, height } = imageData || {};
@@ -356,6 +470,7 @@ const normalizeGuardItem = ({
  *   overlayBlendMode?: 'exact' | 'fabric_blend' | 'auto',
  *   useGeneratedCleanupBase?: boolean,
  *   cleanupMode?: 'rect' | 'content_mask',
+ *   cleanupScrubPaddingRatio?: number,
  *   signal?: AbortSignal,
  * }} options
  */
@@ -368,6 +483,7 @@ export const createGuardedMultiLogoReplaceResultBlob = async ({
   overlayBlendMode = 'exact',
   useGeneratedCleanupBase = true,
   cleanupMode = 'rect',
+  cleanupScrubPaddingRatio = 0,
   signal,
 } = {}) => {
   const originalImage = await loadImage(originalUrl, 'Original image', signal);
@@ -390,7 +506,10 @@ export const createGuardedMultiLogoReplaceResultBlob = async ({
 
   if (useGeneratedCleanupBase) {
     guardItems.forEach((item) => {
-      const clipRect = item.cleanupItem || (item.logoOverlayItem ? item.rect : item.protectedRect);
+      const baseClipRect = item.cleanupItem || (item.logoOverlayItem ? item.rect : item.protectedRect);
+      const clipRect = cleanupScrubPaddingRatio > 0
+        ? expandRect({ rect: baseClipRect, width, height, paddingRatio: cleanupScrubPaddingRatio })
+        : baseClipRect;
       if (cleanupMode === 'content_mask') {
         applyGeneratedCleanupContentMask({
           ctx,
@@ -403,6 +522,7 @@ export const createGuardedMultiLogoReplaceResultBlob = async ({
       } else {
         drawGeneratedCleanupBase(ctx, generatedImage, clipRect, width, height);
       }
+      scrubLogoResidualsInCanvas(ctx, clipRect, width, height, cleanupScrubPaddingRatio);
     });
   }
 
