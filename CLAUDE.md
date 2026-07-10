@@ -23,11 +23,11 @@
   - 前端 `.test.mjs`(会 `import './xxx.ts'`)→ 必须加 `node --experimental-strip-types --test src/.../xxx.test.mjs`,否则 Node 报 `ERR_MODULE_NOT_FOUND: Cannot find package 'tsx'`(文档里写的 `node --test` 漏了这个 flag)。
   - 全量:`find src -name "*.test.mjs" | xargs node --experimental-strip-types --test` / `find server -name "*.test.mjs" | xargs node --test`。
 
-## 3. 已诊断根因库 ★(2026-06-12 全栈只读诊断,均已读码确认,**暂未修复**)
+## 3. 已诊断根因库 ★(持续维护,截至 2026-07-10 已记录至 #49)
 
 > 🔗 本节是 Claude 与 Codex **共享的架构根因库主源**(单一真相)。Codex 通过 `AGENTS.md` 顶部指针 + `docs/agents/repeated-issues.md` 顶部指针读到这里。沉淀架构级根因写本节;`repeated-issues.md` 只留指针或记纯操作型问题,两边不抄全文以免漂移。
 
-> 这些是"天天修不完 bug、同样问题反复出现"的架构根因。重构顺序已定:**先 #5 止血 → 再 #1/#2/#3 治本 → #4 中期**。当前进度:#5 ✅ / #1 ✅ / #3 ✅,**剩 #2(正则猜状态)和 #4(数据模型重构)**。
+> 本节从最初的 #1-#5 扩展为持续根因库。大部分条目已修并固化测试；#4 数据模型仍是长期治理项。接手时按本次改动涉及的模块读取对应条目,不要再按早期编号顺序推断当前优先级。
 > 修完任意一条后,把该条改成"已修",补上`修复:(文件:行)`+ 把"如何避免"固化成测试。
 
 - **#1 🔴 主病灶 · 任务状态靠"现算",前后端两套算法已漂移**
