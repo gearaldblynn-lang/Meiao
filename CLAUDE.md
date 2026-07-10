@@ -281,3 +281,18 @@
   根因:2026-07-09 按 job 去重后,108 个 `asset_upload` 终态失败横跨一键主详、万物替换、买家秀、产品精修,影响 7 个用户；这些任务全部最终落在 `providerTaskId=null + asset_upload + provider_network_error/fetch failed`。当天 275 个目标 job 中 154 个成功、117 个以 provider 网络错误终止,说明链路是间歇性退化而非整体中断。素材文件从我方服务器和公网均可正常读取,但 `resolveProviderGenerationMediaUrl` / `resolveProviderChatMediaUrl` 仍无条件强制上传 KIE；已有 `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY=2` 只限制单 job,挡不住多个账号和模块同时上传,也没有进程级成功 URL 复用。KIE file-stream-upload 一抖,任务在模型接单前成片失败。
   修复:托管 `/api/assets/file/` 在 `MEIAO_PUBLIC_BASE_URL` 为公网 HTTPS 时改为直连优先；仅当上游明确读图/下载/MIME 失败,或同步 chat/Responses 返回无 task id 的 HTTP 502 时,才转存 KIE 并重试同一模型。任何 `providerTaskId` 都禁止再次创建任务。实际 KIE 转存增加跨任务进程级并发总闸门、上传专属 `429/5xx/连接错误` 重试和成功 URL TTL 缓存；直连/KIE 两套路由使用不同 job cache key；`MEIAO_KIE_MANAGED_ASSET_MODE=kie-only` 可无代码回滚。
   如何避免:**我方托管素材的第三方图床只能做兼容性回退,不能做必经单点。媒体回退必须同时验证“确实走过直连+错误在接单前+没有 providerTaskId”;文件上传可按传输语义重试,createTask/chat 等可能扣费的提交 POST 收到任何 HTTP 响应后仍不得盲目重试。单任务限流不等于全局限流,批量链路必须同时有进程级总闸门和跨 job 成功缓存。**
+
+- **#46 ✅ 已修(2026-07-10)· 系统配置接口 2xx 空体被类型断言伪装成有效响应,业务层解引用 `publicBaseUrl` 崩溃**
+  根因:`internalApi.request` 为兼容无响应体接口会把 JSON 解析失败降为 `{}`,而 `fetchSystemConfig` 直接用 TypeScript 类型断言返回；反向代理偶发返回 2xx 非 JSON/空体时,`arkService` 读取 `result.config.publicBaseUrl` 触发 TypeError,错误被误记为首图策划失败。
+  修复:`fetchSystemConfig` 在专用 API 边界验证 `config` 对象和 `publicBaseUrl` 字符串,异常统一抛 `invalid_response`;策划和生图调用侧保留可选链防御。未把全局 `request` 改成严格 JSON,避免误伤合法无返回体接口。
+  如何避免:**TypeScript 类型断言不是运行时契约。关键配置/身份响应必须在具体 API 边界验形,但不要为了一个严格端点全局收紧通用客户端。**
+
+- **#47 ✅ 已修(2026-07-10)· provider 已出结果后单次下载响应体 `terminated`,成功生成被降成任务失败**
+  根因:`persistRemoteAsset` 和图片变换分支都只执行一次 `fetch + arrayBuffer`;CDN/网络在响应体读取中途断开时,undici 抛 `terminated`,没有下载级重试,导致已有上游结果的 job 在本地持久化阶段失败。
+  修复:结果文件统一经过 `fetchRemoteAssetBufferWithRetry`;只对幂等 GET 的连接错误、读取超时、`429/5xx` 做有限重试,`4xx` 直接失败,并统一标记 `providerStage=asset_download`。超时、次数和退避均可由 env 调整,生成提交路径不参与重试。
+  如何避免:**把“上游生成提交”和“结果文件下载”分成两个重试域。前者涉及扣费不能盲重提,后者是幂等 GET,应覆盖 fetch 和 body read 两个阶段。**
+
+- **#48 ✅ 已修(2026-07-10)· 首图多参考策划用 `Promise.allSettled` 吞掉同步中状态,把 pending 子任务写成策划失败卡**
+  根因:`requestAnalysisResponseDetailed` 已把仍活跃的 backend job 表达为 `job_timeout` 可恢复同步异常,但 `generateFirstImageReplicationSchemes` 在 `Promise.allSettled` 后把所有 rejected 统一映射成 `status=error`;`shellWorkflow` 随即生成 `planningFailed`,Shell 顶层的活跃 job 恢复分支没有机会执行。
+  修复:首图聚合器发现 `job_timeout/task_not_found` 同步缺口时原样抛出,外层记录 `sync_pending` 后继续透传；Shell 仅当后台 job 仍为 `queued/running/retry_waiting` 时保留 planning 卡,终态失败仍落错误卡。
+  如何避免:**批量聚合器不能把控制面状态和业务失败压成同一种 rejected。`allSettled` 后必须先识别 pending/取消/失败语义,再决定部分成功或整批等待。**

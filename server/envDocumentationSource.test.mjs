@@ -42,3 +42,17 @@ test('托管素材直连与 KIE 回退旋钮同步到模板、总览和云上部
   assert.match(deployDoc, /MEIAO_PUBLIC_BASE_URL=https:\/\/meiaoyuntai\.com/);
   assert.match(deployDoc, /kie-only/);
 });
+
+test('结果素材下载重试旋钮同步到模板、总览和云上部署文档', () => {
+  const requiredKeys = [
+    'MEIAO_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS',
+    'MEIAO_RESULT_ASSET_DOWNLOAD_RETRIES',
+    'MEIAO_RESULT_ASSET_DOWNLOAD_RETRY_BASE_MS',
+  ];
+
+  for (const key of requiredKeys) {
+    assert.match(envExample, new RegExp(key));
+    assert.match(projectOverview, new RegExp(key));
+    assert.match(deployDoc, new RegExp(key));
+  }
+});

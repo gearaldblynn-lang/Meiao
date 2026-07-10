@@ -89,6 +89,48 @@ test('authenticated GET request dedupe is scoped by current session token', asyn
   }
 });
 
+test('fetchSystemConfig rejects a successful response without a config object', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  globalThis.fetch = async (url) => {
+    assert.equal(String(url), '/api/system/config');
+    return new Response('', { status: 200 });
+  };
+
+  try {
+    await assert.rejects(
+      api.fetchSystemConfig(),
+      (error) => error instanceof api.ApiError
+        && error.code === 'invalid_response'
+        && error.status === 502,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchSystemConfig returns a valid config response unchanged', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const responseBody = {
+    config: {
+      publicBaseUrl: 'https://meiaoyuntai.com',
+      agentModels: { chat: [] },
+      systemSettings: {},
+    },
+  };
+  globalThis.fetch = async () => new Response(JSON.stringify(responseBody), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+
+  try {
+    assert.deepEqual(await api.fetchSystemConfig(), responseBody);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('sendChatMessage falls back to JSON response when streaming is unavailable', async () => {
   const originalFetch = globalThis.fetch;
   const api = await loadInternalApi();

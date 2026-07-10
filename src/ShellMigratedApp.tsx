@@ -4486,7 +4486,9 @@ const AppContent: React.FC<{
           || message
           || '策划失败'
         ).trim();
-        const planningRecoverable = isRecoverableKieTaskResult(
+        const planningSyncGap = ['job_timeout', 'task_not_found'].includes(planningErrorCode)
+          || /任务已提交云端|结果待同步|任务不存在|not found|expired|过期/i.test(planningErrorMessage);
+        const planningRecoverable = planningSyncGap || isRecoverableKieTaskResult(
           planningProviderTaskId,
           planningErrorMessage,
           planningErrorCode,

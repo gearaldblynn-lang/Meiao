@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from '
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readResponseBodyWithTimeout } from './providerBodyRead.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,6 +12,9 @@ export const ASSET_RETENTION_MS = 1000 * 60 * 60 * 24 * 3;
 const ASSET_DIR = path.join(__dirname, 'data', 'assets');
 const LOCAL_REGISTRY_PATH = path.join(__dirname, 'data', 'asset-registry.json');
 const PERMANENT_ASSET_MODULES = new Set(['agent_center', 'agent_chat']);
+const DEFAULT_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS = 60_000;
+const DEFAULT_RESULT_ASSET_DOWNLOAD_RETRIES = 2;
+const DEFAULT_RESULT_ASSET_DOWNLOAD_RETRY_BASE_MS = 500;
 
 const ensureDir = (dirPath) => {
   mkdirSync(dirPath, { recursive: true });
@@ -18,6 +22,101 @@ const ensureDir = (dirPath) => {
 
 const now = () => Date.now();
 const MP4_CONTAINER_ATOMS = new Set(['moov', 'trak', 'mdia', 'minf', 'stbl', 'edts', 'dinf']);
+
+const parseIntegerSetting = (value, fallback, { allowZero = false } = {}) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(parsed) || (allowZero ? parsed < 0 : parsed <= 0)) return fallback;
+  return parsed;
+};
+
+const createAssetDownloadError = (code, message, extras = null) => {
+  const error = new Error(message);
+  error.code = code;
+  error.providerMessage = message;
+  error.providerStage = 'asset_download';
+  if (extras && typeof extras === 'object') Object.assign(error, extras);
+  return error;
+};
+
+const isRetryableAssetDownloadError = (error) => {
+  if (error?.code === 'provider_network_error' || error?.code === 'provider_timeout') return true;
+  const status = Number(error?.httpStatus || 0);
+  return status === 408 || status === 429 || status >= 500;
+};
+
+const fetchRemoteAssetOnce = async (remoteUrl, { fetchImpl, timeoutMs }) => {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  let response;
+  try {
+    response = await fetchImpl(remoteUrl, { signal: controller.signal });
+  } catch (error) {
+    if (timedOut) {
+      throw createAssetDownloadError('provider_timeout', '结果资源抓取超时', {
+        providerStatus: 'timeout',
+      });
+    }
+    throw createAssetDownloadError('provider_network_error', error?.message || '结果资源抓取失败', {
+      providerStatus: 'network_error',
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!response.ok) {
+    response.body?.cancel?.().catch?.(() => null);
+    throw createAssetDownloadError('provider_bad_response', `结果资源抓取失败: HTTP ${response.status}`, {
+      httpStatus: response.status,
+      providerStatus: `http_${response.status}`,
+    });
+  }
+
+  const fileBuffer = await readResponseBodyWithTimeout(response, {
+    timeoutMessage: '结果资源读取超时',
+    timeoutMs,
+    providerStage: 'asset_download',
+  });
+  return {
+    fileBuffer,
+    contentType: response.headers.get('content-type') || 'application/octet-stream',
+  };
+};
+
+export const fetchRemoteAssetBufferWithRetry = async (remoteUrl, options = {}) => {
+  const timeoutMs = parseIntegerSetting(
+    options.timeoutMs ?? process.env.MEIAO_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS,
+    DEFAULT_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS,
+  );
+  const retries = parseIntegerSetting(
+    options.retries ?? process.env.MEIAO_RESULT_ASSET_DOWNLOAD_RETRIES,
+    DEFAULT_RESULT_ASSET_DOWNLOAD_RETRIES,
+    { allowZero: true },
+  );
+  const retryBaseMs = parseIntegerSetting(
+    options.retryBaseMs ?? process.env.MEIAO_RESULT_ASSET_DOWNLOAD_RETRY_BASE_MS,
+    DEFAULT_RESULT_ASSET_DOWNLOAD_RETRY_BASE_MS,
+    { allowZero: true },
+  );
+  const fetchImpl = options.fetchImpl || fetch;
+  const sleep = options.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await fetchRemoteAssetOnce(remoteUrl, { fetchImpl, timeoutMs });
+    } catch (error) {
+      if (attempt >= retries || !isRetryableAssetDownloadError(error)) throw error;
+      const delayMs = retryBaseMs * (attempt + 1);
+      if (delayMs > 0) await sleep(delayMs);
+    }
+  }
+  throw createAssetDownloadError('provider_network_error', '结果资源抓取失败', {
+    providerStatus: 'network_error',
+  });
+};
 
 const readMp4Atom = (buffer, offset, limit = buffer.length) => {
   if (!Buffer.isBuffer(buffer) || offset + 8 > limit) return null;
@@ -454,12 +553,8 @@ export const persistRemoteAsset = async ({
   provider = 'kie',
   jobId = '',
 }) => {
-  const response = await fetch(remoteUrl);
-  if (!response.ok) {
-    throw new Error(`结果资源抓取失败: HTTP ${response.status}`);
-  }
-  const contentType = mimeType || response.headers.get('content-type') || 'application/octet-stream';
-  const fileBuffer = Buffer.from(await response.arrayBuffer());
+  const downloaded = await fetchRemoteAssetBufferWithRetry(remoteUrl);
+  const contentType = mimeType || downloaded.contentType;
   return persistAssetBuffer({
     pool,
     publicBaseUrl,
@@ -468,7 +563,7 @@ export const persistRemoteAsset = async ({
     assetType,
     originalName: originalName || `result_${Date.now()}`,
     mimeType: contentType,
-    fileBuffer,
+    fileBuffer: downloaded.fileBuffer,
     provider,
     providerSourceUrl: remoteUrl,
     jobId,

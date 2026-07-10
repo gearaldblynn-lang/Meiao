@@ -700,6 +700,30 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/providerAssetUploadLimiter.test.mjs server/providerAssetTransfer.test.mjs server/providerKieImage.test.mjs server/providerGateway.test.mjs server/providerKieTask.test.mjs`；`npm run lint`；`npm run build`；云上 HTTPS asset、正式托管素材 job 与当天日志聚合验收。
 - Avoid next time: 第三方图床只能是兼容性回退，不能是我方托管素材的必经单点。任何媒体回退必须同时证明“原请求确实用了直连”“错误发生在 provider 接单前”“异常里没有 task id”；上传重试可接受重复文件，但生成/聊天提交收到 HTTP 响应后仍不得盲目重试。
 
+### Critical config APIs must validate successful response shapes
+
+- Symptom: 云上首图策划偶发 `Cannot read properties of undefined (reading 'publicBaseUrl')`，同一时段系统配置接口没有业务 4xx/5xx。
+- Root cause: 通用 `request` 为兼容空响应体会把 JSON 解析失败降为 `{}`；`fetchSystemConfig` 仅做 TypeScript 类型断言，2xx 空体/非 JSON 因而穿透到 `arkService` 后才以 TypeError 失败。
+- Fix: 只在 `fetchSystemConfig` 边界验证 `config` 对象和 `publicBaseUrl` 字符串，异常抛 `invalid_response`；调用侧保留可选链防御，不全局收紧所有内部 API。
+- Regression check: `node --experimental-strip-types --test src/services/internalApi.test.mjs`；`node --test src/services/arkService.test.mjs src/services/kieAiService.test.mjs`。
+- Avoid next time: 关键配置和身份接口必须做运行时验形；通用 API 客户端仍需兼容明确允许空体的端点，严格性应放在具体契约边界。
+
+### Result persistence must retry idempotent body reads without resubmitting jobs
+
+- Symptom: 万物替换上游任务已有结果 URL，落本地资产时出现 `terminated`，最终项目被标记失败。
+- Root cause: `persistRemoteAsset` 和图片变换分支只做一次 `fetch + arrayBuffer`；响应头成功后 body 中断没有重试，provider 的成功结果在本地持久化阶段丢失。
+- Fix: 两条结果持久化路径统一使用 `fetchRemoteAssetBufferWithRetry`；连接错误、读取超时、`429/5xx` 有界重试，`4xx` 不重试，错误统一带 `asset_download` 阶段；不会重提任何生成请求。
+- Regression check: `node --test server/assetStore.test.mjs server/providerBodyRead.test.mjs server/jobRuntime.test.mjs`。
+- Avoid next time: provider 提交和结果下载是不同重试域。结果 GET 可幂等重试且必须覆盖 body read；createTask/chat 等扣费提交不得借此重试。
+
+### First-image planning aggregation must preserve recoverable sync states
+
+- Symptom: 首图多参考任务的 backend planning job 仍在运行或待同步，项目卡却直接出现“策划失败”。
+- Root cause: `Promise.allSettled` 把 `job_timeout/task_not_found` 可恢复异常与真实策划错误一起映射成失败 reference；Shell 顶层活跃 job 恢复分支被绕过。
+- Fix: 首图聚合器先识别并透传可恢复同步异常；Shell 仅在 backend job 仍为 `queued/running/retry_waiting` 时保留 planning，终态失败不伪装为 pending。
+- Regression check: `node --test src/services/arkService.test.mjs`；`node --test --test-name-pattern="one click planning only remains syncable" src/components/uiArchitecture.test.mjs`。
+- Avoid next time: 批量聚合必须分别表达 pending、取消和业务失败，不能把所有 rejected 都转成同一种结果卡状态。
+
 ### Agent vision planning must not pre-upload historical images
 
 - Symptom: 将离账号最新 3 图需求仍只产出 1 张；修复多图覆盖校验后，云上 dry-run 又在进入模型规划前出现 KIE 素材上传超时。

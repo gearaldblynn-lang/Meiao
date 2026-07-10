@@ -536,7 +536,19 @@ export const fetchTaskPlatformTimeline = async (jobId: string) => {
 };
 
 export const fetchSystemConfig = async () => {
-  return request<{ config: SystemPublicConfig }>('/api/system/config');
+  const result = await request<unknown>('/api/system/config');
+  const config = result && typeof result === 'object' && !Array.isArray(result)
+    ? (result as { config?: unknown }).config
+    : null;
+  if (
+    !config
+    || typeof config !== 'object'
+    || Array.isArray(config)
+    || typeof (config as { publicBaseUrl?: unknown }).publicBaseUrl !== 'string'
+  ) {
+    throw new ApiError('系统配置响应格式异常，请稍后重试', 'invalid_response', 502);
+  }
+  return result as { config: SystemPublicConfig };
 };
 
 export const updateSystemConfig = async (payload: {
