@@ -2,7 +2,11 @@ import type { AppModule, InternalJob } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
 import { getOneClickPlanContent, isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 import { coerceCreatedAtMs } from '../utils/createdAtMs.ts';
-import { getVisibleProviderTaskId, shouldExposeActiveJobResult } from './shellJobVisibility.ts';
+import {
+  getVisibleProviderTaskId,
+  isShellControlJob,
+  shouldExposeActiveJobResult,
+} from './shellJobVisibility.ts';
 import {
   buildFailedPlanningResult,
   hasConcretePlanningRecoveryResult,
@@ -1813,6 +1817,31 @@ const mapJobs = (
       ? (getStructuredOneClickJobSubFeature(job.payload) || normalizeJobSubFeature(module, job.taskType, job.payload))
       : normalizeJobSubFeature(module, job.taskType, job.payload);
 
+    // Planning jobs are control-plane records, not generated media. A bound active
+    // job may drive progress for its pre-created card; an unbound legacy job stays
+    // completely invisible so ProjectListView cannot rebuild it as a fallback card.
+    if (module !== MODULE_VALUES.ONE_CLICK && isShellControlJob(job, module)) {
+      if (
+        (projectStatus === 'generating' || projectStatus === 'planning')
+        && shouldExposeActiveJobResult({ job, module, payloadProjectId })
+      ) {
+        tasks.push({
+          id: job.id,
+          projectId: payloadProjectId,
+          module,
+          type: 'plan',
+          status: taskStatusToTask(job.status),
+          title: jobTaskTitle(job, module, subFeature),
+          prompt,
+          progress: job.status === 'running' ? 42 : 8,
+          createdAt,
+          subFeature,
+          backendJobId: job.id,
+        });
+      }
+      return;
+    }
+
     if (projectStatus === 'completed' || projectStatus === 'error') {
       const urls = getResultUrls(job);
       if (
@@ -2465,6 +2494,43 @@ const filterDeletedProjects = (
 
     if (project.results.length > 0 && nextResults.length === 0 && !project.plans?.length) return [];
     return [{ ...project, results: nextResults }];
+  });
+};
+
+const filterLegacyShellControlJobGhosts = (
+  projects: ShellProjectData[],
+  jobs: InternalJob[] = [],
+) => {
+  const unboundControlJobIds = new Set(
+    jobs
+      .filter((job) => {
+        const module = toModule(job.module);
+        if (module === MODULE_VALUES.ONE_CLICK || !isShellControlJob(job, module)) return false;
+        return !String(job.payload?.shellProjectId || '').trim();
+      })
+      .map((job) => String(job.id || '').trim())
+      .filter(Boolean),
+  );
+  return projects.filter((project) => {
+    const projectId = String(project.id || '').trim();
+    if (!projectId.startsWith('job-')) return true;
+    const syntheticJobId = projectId.slice(4);
+    if (unboundControlJobIds.has(syntheticJobId)) return false;
+    const belongsToControlJobModule = isShellControlJob({
+      module: project.module,
+      taskType: 'kie_chat',
+      payload: {},
+    }, project.module);
+    const isStructurallyEmptyLegacyJobCard = (
+      belongsToControlJobModule
+      && String(project.backendJobId || '').trim() === syntheticJobId
+      && (project.results || []).length === 0
+      && (project.plans || []).length === 0
+      && (project.status === 'generating' || project.status === 'planning')
+      && Number(project.taskCount || 0) <= 1
+      && Number(project.completedCount || 0) === 0
+    );
+    return !isStructurallyEmptyLegacyJobCard;
   });
 };
 
@@ -3148,7 +3214,10 @@ export const buildShellDataSnapshot = (
   jobs: InternalJob[] = [],
 ): ShellDataSnapshot => {
   const persisted = mapPersistedState(state);
-  const persistedProjects = filterDeletedProjects(persisted.projects, state);
+  const persistedProjects = filterLegacyShellControlJobGhosts(
+    filterDeletedProjects(persisted.projects, state),
+    jobs,
+  );
   const jobData = mapJobs(jobs, persistedProjects, state?.shellDraft?.deletedJobIds || []);
   const buyerShowSetRootProjectIds = new Set(
     jobData.projects

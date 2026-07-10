@@ -35,6 +35,7 @@ import { normalizeLogoReplaceRegions } from '../utils/logoReplaceRegion.mjs';
 import { createWhitespaceCroppedLogoBlob } from '../utils/logoWhitespaceCrop.mjs';
 import { createMultiLogoReplacePreviewBlob } from '../utils/logoReplacePreview.mjs';
 import { createGuardedMultiLogoReplaceResultBlob } from '../utils/logoReplaceGuard.mjs';
+import { planBuyerShowSetsConcurrently } from '../utils/buyerShowPlanning';
 
 export { extractShellSchemeField } from './shellSchemeFields';
 
@@ -989,6 +990,25 @@ const buildBuyerShowState = (input: ShellGenerateInput) => {
   };
 };
 
+const getBuyerShowSetProjectIdentity = (
+  input: ShellGenerateInput,
+  state: ReturnType<typeof buildBuyerShowState>,
+  setIndex: number,
+) => {
+  const rootProjectId = String(input.taskMetadata?.shellProjectId || '').trim();
+  const rootProjectName = String(input.taskMetadata?.shellProjectName || '').trim();
+  return {
+    rootProjectId,
+    rootProjectName,
+    projectId: state.setCount > 1 && rootProjectId
+      ? `${rootProjectId}-set-${setIndex + 1}`
+      : rootProjectId,
+    projectName: state.setCount > 1 && rootProjectName
+      ? `${rootProjectName} · 第${setIndex + 1}套`
+      : rootProjectName,
+  };
+};
+
 const buildBuyerShowImagePrompt = (
   prompt: string,
   productUrls: string[],
@@ -1125,14 +1145,17 @@ export const runShellBuyerShowWorkflow = async (
     maxFileSize: 2,
   };
   const results: ShellWorkflowImageResult[] = [];
-  const plannedSets: BuyerShowSetPlan[] = [];
 
   const BUYER_SHOW_PLAN_MAX_ATTEMPTS = 3;
   const BUYER_SHOW_PLAN_RETRY_DELAYS_MS = [800, 1600];
 
-  for (let setIndex = 0; setIndex < state.setCount; setIndex += 1) {
+  // All set-level planning jobs are enqueued together. The backend remains the
+  // source of truth for account concurrency, while each pre-created set card
+  // receives its own job identity immediately instead of waiting behind prior sets.
+  const plannedSetSlots = await planBuyerShowSetsConcurrently<BuyerShowSetPlan | null>(state.setCount, async (setIndex) => {
     const setReference = getBuyerShowSetReferenceUrls(input, setIndex, state.includeModel);
     const firstReferenceUrl = setReference.planningReferenceUrl || null;
+    const planningProject = getBuyerShowSetProjectIdentity(input, state, setIndex);
 
     // 单套策划带轻量重试：瞬时失败(上游 502 / 非 JSON / 空方案)时最多再试 2 次退避重试。
     let plan: Awaited<ReturnType<typeof generateBuyerShowPrompts>> | null = null;
@@ -1143,13 +1166,29 @@ export const runShellBuyerShowWorkflow = async (
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         if (input.signal.aborted) throw new Error('INTERRUPTED');
       }
-      plan = await generateBuyerShowPrompts(productUrls, firstReferenceUrl, state, apiConfig, setIndex, input.signal, input.onJobCreated);
+      plan = await generateBuyerShowPrompts(
+        productUrls,
+        firstReferenceUrl,
+        state,
+        apiConfig,
+        setIndex,
+        input.signal,
+        input.onJobCreated,
+        {
+          ...(input.taskMetadata || {}),
+          shellProjectId: planningProject.projectId,
+          shellProjectName: planningProject.projectName,
+          subFeature: input.subFeature || 'image',
+          setIndex: setIndex + 1,
+          setCount: state.setCount,
+        },
+      );
       if (plan.status === 'success' && plan.tasks.length > 0) break;
     }
 
     if (!plan || plan.status === 'error' || plan.tasks.length === 0) {
       // 单套策划最终仍失败：跳过这一套，继续生成其它套，不再让一套失败拖垮整批。
-      continue;
+      return null;
     }
 
     let tasks = [...plan.tasks].slice(0, state.imageCount);
@@ -1160,7 +1199,7 @@ export const runShellBuyerShowWorkflow = async (
         tasks = [faceTask, ...tasks];
       }
     }
-    plannedSets.push({
+    return {
       setIndex,
       setReference,
       tasks,
@@ -1168,8 +1207,9 @@ export const runShellBuyerShowWorkflow = async (
       planningCreditsConsumed: plan.creditsConsumed,
       planningTaskId: plan.taskId,
       setBenchmarkUrl: firstReferenceUrl,
-    });
-  }
+    };
+  });
+  const plannedSets = plannedSetSlots.filter((item): item is BuyerShowSetPlan => item !== null);
 
   if (plannedSets.length === 0) {
     // 仅当所有分套都失败时才整体报错，成功的套仍照常提交出图。
@@ -1184,14 +1224,13 @@ export const runShellBuyerShowWorkflow = async (
       const isFirstImage = taskIndex === 0;
       const currentBatchIndex = setIndex * state.imageCount + taskIndex + 1;
       const setBatchIndex = taskIndex + 1;
-      const rootProjectId = String(input.taskMetadata?.shellProjectId || '').trim();
-      const rootProjectName = String(input.taskMetadata?.shellProjectName || '').trim();
-      const setProjectId = state.setCount > 1 && rootProjectId
-        ? `${rootProjectId}-set-${setIndex + 1}`
-        : rootProjectId;
-      const setProjectName = state.setCount > 1 && rootProjectName
-        ? `${rootProjectName} · 第${setIndex + 1}套`
-        : rootProjectName;
+      const projectIdentity = getBuyerShowSetProjectIdentity(input, state, setIndex);
+      const {
+        rootProjectId,
+        rootProjectName,
+        projectId: setProjectId,
+        projectName: setProjectName,
+      } = projectIdentity;
       const prompt = buildBuyerShowImagePrompt(
         task.prompt,
         productUrls,
@@ -2670,7 +2709,20 @@ export const runShellRetouchWorkflow = async (
   for (let index = 0; index < sourceUrls.length; index += 1) {
     const sourceUrl = sourceUrls[index];
     const material = sourceMaterials[index];
-    const analysis = await analyzeRetouchTask(sourceUrl, mode, apiConfig, referenceUrl || null, input.signal);
+    const analysis = await analyzeRetouchTask(
+      sourceUrl,
+      mode,
+      apiConfig,
+      referenceUrl || null,
+      input.signal,
+      input.onJobCreated,
+      {
+        ...(input.taskMetadata || {}),
+        taskPurpose: 'retouch_analysis',
+        batchIndex: index + 1,
+        batchCount: sourceUrls.length,
+      },
+    );
     if (analysis.status === 'error') throw new Error(analysis.message || '精修分析失败');
     const prompt = buildRetouchPrompt(sourceUrl, referenceUrl || null, analysis.description, mode, config.aspectRatio);
     const generation = await processWithKieAi(
@@ -2687,6 +2739,15 @@ export const runShellRetouchWorkflow = async (
       config.aspectRatio === AspectRatio.AUTO,
       input.signal,
       prompt,
+      false,
+      undefined,
+      'main',
+      {
+        ...(input.taskMetadata || {}),
+        batchIndex: index + 1,
+        batchCount: sourceUrls.length,
+      },
+      input.onJobCreated,
     );
     if (generation.status !== 'success' || !generation.imageUrl) {
       if (generation.taskId) {

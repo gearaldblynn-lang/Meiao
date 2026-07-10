@@ -174,3 +174,17 @@ test('sortProjectsNewestFirst: 年缺失项目不得顶到真实时间戳之前'
   // 两个真实戳项目必须排在年缺失项目之前,且新者在前
   assert.deepEqual(sorted, [`proj-${base + 3 * day}`, `proj-${base + 2 * day}`, 'legacy-abc']);
 });
+
+test('sortProjectsNewestFirst keeps the observed Luo Ke buyer-show cards in newest-first order', () => {
+  const projects = [
+    { id: 'proj-1783400000000', name: '7月7日项目1', createdAt: 1783400000000, createdAtPrecise: true },
+    { id: 'proj-1783570000000', name: '7月9日项目1', createdAt: 1783570000000, createdAtPrecise: true },
+    { id: 'proj-1783663800482', name: '7月10日项目2', createdAt: 1783663800482, createdAtPrecise: true },
+    { id: 'proj-1783651000000', name: '7月10日项目1', createdAt: 1783651000000, createdAtPrecise: true },
+  ];
+
+  assert.deepEqual(
+    sortProjectsNewestFirst(projects).map((project) => project.name),
+    ['7月10日项目2', '7月10日项目1', '7月9日项目1', '7月7日项目1'],
+  );
+});

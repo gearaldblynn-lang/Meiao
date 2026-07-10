@@ -94,3 +94,19 @@ test('buyer show creates immediate set project cards without fake image results'
     'buyer show should not persist planning placeholder text as a fake image result'
   );
 });
+
+test('buyer show planning jobs carry the matching set project identity into durable job metadata', () => {
+  assert.match(
+    workflowSource,
+    /const planningProject = getBuyerShowSetProjectIdentity\(input, state, setIndex\)/,
+    'each planning attempt must derive the same project identity used by that buyer-show set'
+  );
+  assert.match(
+    workflowSource,
+    /generateBuyerShowPrompts\([\s\S]{0,1200}shellProjectId:\s*planningProject\.projectId[\s\S]{0,160}shellProjectName:\s*planningProject\.projectName/,
+    'multi-set planning jobs must bind to their matching set card instead of the invisible root project'
+  );
+  assert.match(arkSource, /shellProjectId:\s*String\(taskMetadata\?\.shellProjectId\s*\|\|\s*''\)\.trim\(\)/);
+  assert.match(arkSource, /shellProjectName:\s*String\(taskMetadata\?\.shellProjectName\s*\|\|\s*''\)\.trim\(\)/);
+  assert.match(arkSource, /subFeature:\s*String\(taskMetadata\?\.subFeature\s*\|\|\s*''\)\.trim\(\)/);
+});

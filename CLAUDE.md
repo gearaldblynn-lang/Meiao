@@ -306,3 +306,8 @@
   根因:旧部署流程只检查代码审查和依赖安全,远端 install/build 完成后无条件重启 PM2；正在素材准备或 provider 提交、尚未拿到 task id 的 job 会被进程终止,随后只能依赖 stale 回收,表现为部署时段集中 `provider_submit_stale`。
   修复:新增只读部署就绪检查,按 `internal_jobs.status=running` 汇总 providerless/已提交任务；上传代码前和远端构建后各检查一次,任一时点有活跃任务即 fail closed。仅保留显式 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 紧急覆盖,默认发布不得使用。
   如何避免:**进程重启是任务系统状态迁移,不是纯代码操作。任何部署脚本在 restart 前都必须证明没有活跃执行；构建耗时较长时必须在构建前后双检,不能只做一次开场快照。**
+
+- **#51 ✅ 已修(2026-07-10)· 策划/分析控制 job 被持久化成幽灵卡,真实任务缺项目绑定,项目删除又漏掉子 job**
+  根因:洛克、林一账号的真实链路同时存在两类记录:用户提交时预创建的 `proj-*` 买家秀项目,以及只负责生成 prompt 的 `buyer_show/kie_chat` 策划控制 job。后者 payload 没有 `shellProjectId/shellProjectName`,job 恢复层只能为它合成 `job-<id>` 卡；#44 为修复“卡片闪现后消失”放宽了 job 缺卡回写,又把这张控制面卡持久化,于是终态 job 也会长期显示为无结果的“生成中”卡并干扰用户对顺序的判断。全功能审计又发现精修分析、分镜策划和部分精修/分镜生图任务存在同类绑定缺口；真实时间戳送入 `sortProjectsNewestFirst` 的探针表明最新优先算法本身正确。另一个独立缺口是 `handleDeleteProject` 只删 `project.backendJobId/job-*`,不收集 results/tasks 里的关联 backend job；顶层卡隐藏了,子 job 仍可在后续水合时参与恢复。
+  修复:买家秀多套策划与生图统一绑定各自的套项目 ID,最多 4 套策划同时创建并交给后端账户并发门控,避免串行策划让后续套卡数分钟后才拿到任务身份；买家秀、翻译、精修、分镜的策划/分析请求统一携带结构化 `taskPurpose + shellProjectId/shellProjectName/subFeature`,精修和分镜生图同时补齐项目/批次/宫格绑定。控制 job 在 adapter 边界只能绑定预创建卡的进度,不得伪造媒体结果；无绑定的旧控制 job 不生成 project/task,已持久化的结构化空 `job-*` 控制卡在首屏读取边界过滤。项目删除收敛到 `collectShellDeletionJobIds`,只收集项目、结果和同项目 task 的内部 `backendJobId`(不把 provider task id 当内部 job),页面移除、删除墓碑持久化与物理 job 删除彼此独立。分镜项目回归测试同时锁定 videoMemory 裁剪和墓碑防复活。
+  如何避免:**控制面 job(策划/分析/调度)与数据面结果 job(图片/视频)必须用结构化 purpose + project binding 区分，通用缺卡回写不得把未绑定控制 job 变成用户项目。删除是一个 aggregate 操作:必须遍历 project/results/tasks 收集全部内部 job 身份,且墓碑成功不能依赖每个远端 DELETE 都成功。卡片“乱序”先用真时间戳探针区分排序错误与幽灵卡干扰,不得叠加第二套排序规则。**

@@ -89,6 +89,61 @@ test('prunePersistedAppStateForDeletion clears video diagnosis cards when remove
   assert.equal(pruned.videoMemory.diagnosis.report.status, 'idle');
 });
 
+test('storyboard project deletion prunes durable state and tombstones prevent job hydration from restoring it', () => {
+  const videoMemory = createDefaultVideoState();
+  const projectId = 'video_1781075783802_0_gslt';
+  const backendJobId = 'storyboard-image-backend-job';
+  videoMemory.storyboard.projects = [{
+    id: projectId,
+    name: '爆款复刻方案1',
+    config: videoMemory.storyboard.config,
+    status: 'failed',
+    script: '分镜生成失败',
+    shots: [{ id: 'shot-1', description: '商品特写', scriptContent: '商品特写', prompt: 'product close-up' }],
+    boards: [{
+      id: 'board-1',
+      title: '分镜1',
+      shotIds: ['shot-1'],
+      scriptText: '商品特写',
+      prompt: 'product close-up',
+      taskId: 'provider-task-1',
+      status: 'failed',
+      error: '生成失败',
+    }],
+    planningTaskId: 'planning-provider-task',
+    createdAt: 1781075783802,
+    error: '生成失败',
+  }];
+  const state = buildPersistedAppState({ videoMemory });
+
+  const pruned = prunePersistedAppStateForDeletion(state, { projectId, jobIds: [backendJobId] });
+  pruned.shellDraft = {
+    ...pruned.shellDraft,
+    deletedProjectIds: [projectId],
+    deletedJobIds: [backendJobId],
+  };
+  const snapshot = buildShellDataSnapshot(pruned, [{
+    id: backendJobId,
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'failed',
+    providerTaskId: 'provider-task-1',
+    payload: {
+      shellProjectId: projectId,
+      shellProjectName: '爆款复刻方案1',
+      subFeature: 'storyboard',
+      prompt: 'product close-up',
+    },
+    errorMessage: '生成失败',
+    createdAt: 1781075783900,
+  }]);
+
+  assert.equal(pruned.videoMemory.storyboard.projects.some((project) => project.id === projectId), false);
+  assert.equal(snapshot.projects.some((project) => project.id === projectId), false);
+  assert.equal(snapshot.projects.some((project) => project.backendJobId === backendJobId), false);
+});
+
 test('prunePersistedAppStateForDeletion removes generic shell project cards', () => {
   const state = buildPersistedAppState({
     shellProjects: [{

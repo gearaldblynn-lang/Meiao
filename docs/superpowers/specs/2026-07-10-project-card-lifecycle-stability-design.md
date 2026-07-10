@@ -2,7 +2,7 @@
 
 ## Goal
 
-修复洛克买家秀链路里的“直接失败 / 三张只出一张 / 任务永久生成中”的程序性部分，并把项目卡恢复、排序、删除收敛为可验证的成熟生命周期。本设计不重复修改已于 2026-07-10 16:16 发布的 KIE 直连、全局上传限流和重试治理。
+修复洛克、林一买家秀链路里的“直接失败 / 三张只出一张 / 任务永久生成中 / 多套卡片出现慢”的程序性部分，并把全功能项目卡恢复、排序、删除收敛为可验证的成熟生命周期。本设计不重复修改已于 2026-07-10 16:16 发布的 KIE 直连、全局上传限流和重试治理。
 
 ## Evidence
 
@@ -12,16 +12,18 @@
 - 该 job 的 payload 有 `shellPlanningPurpose=buyer_show_planning`，但缺 `shellProjectId/shellProjectName`，恢复器无法把它绑回提交时已创建的真实买家秀卡。
 - 前一版“缺卡回写”把所有带 backend job 身份的活跃卡都落库，使这类孤立策划控制 job 也被持久化。
 - 将离分镜删除的墓碑调用已在云端源码中，但通用项目删除只删项目顶层的一个 backend job，未清理所有结果和任务引用的 job。
+- 林一 18:05 的真实买家秀链路先经历两次策划（约 91 秒和 123 秒），再提交两张生图；第一张约 177 秒成功，第二张约 61 秒后因内容策略终态失败。截图中长期 `0/1 处理中` 的通用“买家秀”卡对应已终态、未绑定的策划 job，不是仍在运行的第三套生图。
+- 全局审计发现同类未绑定控制 job 还存在于精修分析和分镜策划，精修/分镜的部分真实生成 job 也缺少项目、批次或宫格绑定。
 
 ## Design
 
 ### 1. Planning job correlation is explicit
 
-`runShellBuyerShowWorkflow` 必须把提交时已创建的 `shellProjectId` 、`shellProjectName` 和 `subFeature` 传入每个买家秀策划 job。恢复时策划 job 只能绑定这张真实卡，不能以 `job-<id>` 新建第二张卡。
+`runShellBuyerShowWorkflow` 必须把提交时已创建的 `shellProjectId` 、`shellProjectName` 和 `subFeature` 传入每个买家秀策划 job；多套生成时，策划和生图都绑定同一个 `root-set-N` 项目。所有套级策划同时创建，由后端账户并发门控排队，避免客户端串行等待让第三套任务身份延迟数分钟。恢复时策划 job 只能绑定这张真实卡，不能以 `job-<id>` 新建第二张卡。
 
 ### 2. Orphan control jobs are not user projects
 
-对历史上没有 `shellProjectId` 的 `buyer_show_planning` job，适配器不生成项目、结果或可被 fallback 再造卡的 task。已持久的同类 `job-<id>` 幽灵卡在读边界过滤，但不自动删除用户云数据。
+对历史上没有 `shellProjectId` 的买家秀策划、翻译分析、精修分析和分镜策划 job，适配器不生成项目、结果或可被 fallback 再造卡的 task。已持久的同类 `job-<id>` 幽灵卡在读边界过滤，但不自动删除用户云数据。精修和分镜的新控制/生图 job 必须携带项目、批次或宫格身份。
 
 ### 3. Project deletion removes every internal job identity
 
@@ -32,7 +34,7 @@
 - 当前 projectId 下 task 的 `backendJobId`；
 - `job-<id>` 形式的真实 job id。
 
-删除顺序为：尝试删除全部 internal jobs → 立即移除内存卡和 task → 写入 `deletedProjectIds/deletedJobIds` 墓碑 并持久化。即使某个历史 job 已不存在，墓碑仍必须成功，不能因远端 404 把卡复活。
+删除时立即移除内存卡和 task；全部 internal jobs 的物理删除与 `deletedProjectIds/deletedJobIds` 墓碑持久化并行且互不依赖。即使某个历史 job 已不存在，墓碑仍必须成功，不能因远端 404 把卡复活。
 
 ### 4. Sorting keeps one source of truth
 
