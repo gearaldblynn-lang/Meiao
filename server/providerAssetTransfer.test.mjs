@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  __testOnly_clearManagedAssetUploadCache,
   assertRemoteProviderMediaUrlAllowed,
   convertInlineDataUrlToKieFileUrl,
   convertManagedAssetUrlToKieFileUrl,
   readRemoteMediaBufferWithLimit,
+  resolveProviderChatMediaUrl,
+  resolveProviderGenerationMediaUrl,
   uploadAssetViaKieWithFallback,
 } from './providerAssetTransfer.mjs';
 
@@ -25,6 +28,50 @@ test('convertManagedAssetUrlToKieFileUrl prefers externally reachable managed as
   });
 
   assert.equal(url, 'https://public.test/api/assets/file/user/a.png');
+});
+
+test('generation and chat use the canonical HTTPS origin in direct-first mode', async () => {
+  const env = {
+    MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+    MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+  };
+  const deps = {
+    fetchWithTimeout: async () => {
+      throw new Error('must not download');
+    },
+    uploadAssetViaKieWithFallback: async () => {
+      throw new Error('must not upload');
+    },
+  };
+
+  assert.equal(
+    await resolveProviderGenerationMediaUrl('http://111.229.66.247/api/assets/file/a/source.png', { env, deps }),
+    'https://meiaoyuntai.com/api/assets/file/a/source.png'
+  );
+  assert.equal(
+    await resolveProviderChatMediaUrl('/api/assets/file/a/source.png', { env, deps }),
+    'https://meiaoyuntai.com/api/assets/file/a/source.png'
+  );
+});
+
+test('kie-only mode preserves forced managed asset uploads', async () => {
+  let uploadCalls = 0;
+  const resolved = await resolveProviderGenerationMediaUrl('/api/assets/file/a/kie-only.png', {
+    env: {
+      MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+      MEIAO_KIE_MANAGED_ASSET_MODE: 'kie-only',
+    },
+    deps: {
+      fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
+      uploadAssetViaKieWithFallback: async () => {
+        uploadCalls += 1;
+        return { result: { fileUrl: 'https://kie.test/kie-only.png' } };
+      },
+    },
+  });
+
+  assert.equal(resolved, 'https://kie.test/kie-only.png');
+  assert.equal(uploadCalls, 1);
 });
 
 test('convertManagedAssetUrlToKieFileUrl force uploads managed assets', async () => {
@@ -48,6 +95,66 @@ test('convertManagedAssetUrlToKieFileUrl force uploads managed assets', async ()
 
   assert.match(uploadedFileName, /^a-[a-f0-9]{12}\.png$/);
   assert.equal(uploaded, `https://kie.test/${uploadedFileName}`);
+});
+
+test('forced managed asset uploads reuse one in-flight successful upload', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  let downloadCalls = 0;
+  let uploadCalls = 0;
+  const options = {
+    env: {
+      MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS: '60000',
+      MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES: '10',
+    },
+    forceUpload: true,
+    deps: {
+      fetchWithTimeout: async () => {
+        downloadCalls += 1;
+        return createResponse('image-bytes', { 'content-type': 'image/png' });
+      },
+      uploadAssetViaKieWithFallback: async () => {
+        uploadCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { result: { fileUrl: 'https://kie.test/cached.png' } };
+      },
+    },
+  };
+
+  const [first, second] = await Promise.all([
+    convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-test/source.png', options),
+    convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-test/source.png', options),
+  ]);
+
+  assert.equal(first, 'https://kie.test/cached.png');
+  assert.equal(second, 'https://kie.test/cached.png');
+  assert.equal(downloadCalls, 1);
+  assert.equal(uploadCalls, 1);
+});
+
+test('failed managed asset uploads are not cached', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  let uploadCalls = 0;
+  const options = {
+    env: { MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS: '60000' },
+    forceUpload: true,
+    deps: {
+      fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
+      uploadAssetViaKieWithFallback: async () => {
+        uploadCalls += 1;
+        if (uploadCalls === 1) throw new Error('temporary upload failure');
+        return { result: { fileUrl: 'https://kie.test/recovered.png' } };
+      },
+    },
+  };
+
+  await assert.rejects(
+    () => convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-failure/source.png', options),
+    /temporary upload failure/
+  );
+  const recovered = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-failure/source.png', options);
+
+  assert.equal(recovered, 'https://kie.test/recovered.png');
+  assert.equal(uploadCalls, 2);
 });
 
 test('convertManagedAssetUrlToKieFileUrl gives same-name managed assets distinct provider filenames', async () => {
