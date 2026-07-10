@@ -282,22 +282,27 @@
   修复:托管 `/api/assets/file/` 在 `MEIAO_PUBLIC_BASE_URL` 为公网 HTTPS 时改为直连优先；仅当上游明确读图/下载/MIME 失败,或同步 chat/Responses 返回无 task id 的 HTTP 502 时,才转存 KIE 并重试同一模型。任何 `providerTaskId` 都禁止再次创建任务。实际 KIE 转存增加跨任务进程级并发总闸门、上传专属 `429/5xx/连接错误` 重试和成功 URL TTL 缓存；直连/KIE 两套路由使用不同 job cache key；`MEIAO_KIE_MANAGED_ASSET_MODE=kie-only` 可无代码回滚。
   如何避免:**我方托管素材的第三方图床只能做兼容性回退,不能做必经单点。媒体回退必须同时验证“确实走过直连+错误在接单前+没有 providerTaskId”;文件上传可按传输语义重试,createTask/chat 等可能扣费的提交 POST 收到任何 HTTP 响应后仍不得盲目重试。单任务限流不等于全局限流,批量链路必须同时有进程级总闸门和跨 job 成功缓存。**
 
-- **#46 ✅ 已修(2026-07-10)· 系统配置接口 2xx 空体被类型断言伪装成有效响应,业务层解引用 `publicBaseUrl` 崩溃**
+- **#46 ✅ 已修(2026-07-10)· Logo 替换组合图缺少耐久标记,刷新同步后被原始 provider 结果覆盖**
+  根因:Logo 替换的最终图不是单纯 provider 输出,而是"KIE 清理底图 + 程序叠加透明 PNG logo"的组合结果。但 `logoReplaceGuarded` 只停留在 workflow 临时结果里,没有贯穿 `ShellMigratedApp` 结果对象、`shellDataAdapter` 持久化映射和合并规则。刷新或 jobs 同步时,后到的原始 provider 结果会按普通完成图覆盖组合图,表现为旧 logo 残留、程序贴回的新 logo 消失或结果图看起来退回 KIE 清理底图。另一个同族问题是 logo 替换仍可能吃到 GPT Image 2 通用清理后缀,把"清理画面"规则污染进 logo 定向替换 prompt;结果卡用 `object-cover` 展示也会把后端完整图裁掉,被误判为生成内容缺失。
+  修复:`logoReplaceGuarded` 从 workflow result 一路带到前端 result object、持久化 state 和 job 同步 merge,合并时 guarded 结果优先于非 guarded provider 原始结果。单/多 Logo 框选替换强制走 program guarded 流程,以用户选框作为清理和叠加边界,并把上传 logo 素材传给 KIE 只作识别约束;`subFeature:'logo_replace'` 时抑制 GPT Image 2 通用 cleanup suffix;结果卡改为 `object-contain`。补 `shellWorkflowLogoReplace`、`shellDataAdapter`、`kieAiService`、`ResultCard` 等回归测试锁住刷新覆盖、prompt 后缀和展示裁切。
+  如何避免:**凡是"provider 输出 + 本地后处理"形成的最终图,必须有耐久标记贯穿 workflow、UI result、persistence 和 merge 规则,不能让后续 provider/job 同步把组合结果当普通原图覆盖。Logo 替换 prompt 属于定向编辑合同,不得复用通用清理后缀;视觉验收要同时检查后端产物和前端展示方式,避免 `object-cover` 这类展示裁切被误判成生成失败。**
+
+- **#47 ✅ 已修(2026-07-10)· 系统配置接口 2xx 空体被类型断言伪装成有效响应,业务层解引用 `publicBaseUrl` 崩溃**
   根因:`internalApi.request` 为兼容无响应体接口会把 JSON 解析失败降为 `{}`,而 `fetchSystemConfig` 直接用 TypeScript 类型断言返回；反向代理偶发返回 2xx 非 JSON/空体时,`arkService` 读取 `result.config.publicBaseUrl` 触发 TypeError,错误被误记为首图策划失败。
   修复:`fetchSystemConfig` 在专用 API 边界验证 `config` 对象和 `publicBaseUrl` 字符串,异常统一抛 `invalid_response`;策划和生图调用侧保留可选链防御。未把全局 `request` 改成严格 JSON,避免误伤合法无返回体接口。
   如何避免:**TypeScript 类型断言不是运行时契约。关键配置/身份响应必须在具体 API 边界验形,但不要为了一个严格端点全局收紧通用客户端。**
 
-- **#47 ✅ 已修(2026-07-10)· provider 已出结果后单次下载响应体 `terminated`,成功生成被降成任务失败**
+- **#48 ✅ 已修(2026-07-10)· provider 已出结果后单次下载响应体 `terminated`,成功生成被降成任务失败**
   根因:`persistRemoteAsset` 和图片变换分支都只执行一次 `fetch + arrayBuffer`;CDN/网络在响应体读取中途断开时,undici 抛 `terminated`,没有下载级重试,导致已有上游结果的 job 在本地持久化阶段失败。
   修复:结果文件统一经过 `fetchRemoteAssetBufferWithRetry`;只对幂等 GET 的连接错误、读取超时、`429/5xx` 做有限重试,`4xx` 直接失败,并统一标记 `providerStage=asset_download`。超时、次数和退避均可由 env 调整,生成提交路径不参与重试。
   如何避免:**把“上游生成提交”和“结果文件下载”分成两个重试域。前者涉及扣费不能盲重提,后者是幂等 GET,应覆盖 fetch 和 body read 两个阶段。**
 
-- **#48 ✅ 已修(2026-07-10)· 首图多参考策划用 `Promise.allSettled` 吞掉同步中状态,把 pending 子任务写成策划失败卡**
+- **#49 ✅ 已修(2026-07-10)· 首图多参考策划用 `Promise.allSettled` 吞掉同步中状态,把 pending 子任务写成策划失败卡**
   根因:`requestAnalysisResponseDetailed` 已把仍活跃的 backend job 表达为 `job_timeout` 可恢复同步异常,但 `generateFirstImageReplicationSchemes` 在 `Promise.allSettled` 后把所有 rejected 统一映射成 `status=error`;`shellWorkflow` 随即生成 `planningFailed`,Shell 顶层的活跃 job 恢复分支没有机会执行。
   修复:首图聚合器发现 `job_timeout/task_not_found` 同步缺口时原样抛出,外层记录 `sync_pending` 后继续透传；Shell 仅当后台 job 仍为 `queued/running/retry_waiting` 时保留 planning 卡,终态失败仍落错误卡。
   如何避免:**批量聚合器不能把控制面状态和业务失败压成同一种 rejected。`allSettled` 后必须先识别 pending/取消/失败语义,再决定部分成功或整批等待。**
 
-- **#49 ✅ 已修(2026-07-10)· 发布脚本不检查活跃任务直接 PM2 restart,部署窗口制造 `provider_submit_stale`**
+- **#50 ✅ 已修(2026-07-10)· 发布脚本不检查活跃任务直接 PM2 restart,部署窗口制造 `provider_submit_stale`**
   根因:旧部署流程只检查代码审查和依赖安全,远端 install/build 完成后无条件重启 PM2；正在素材准备或 provider 提交、尚未拿到 task id 的 job 会被进程终止,随后只能依赖 stale 回收,表现为部署时段集中 `provider_submit_stale`。
   修复:新增只读部署就绪检查,按 `internal_jobs.status=running` 汇总 providerless/已提交任务；上传代码前和远端构建后各检查一次,任一时点有活跃任务即 fail closed。仅保留显式 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 紧急覆盖,默认发布不得使用。
   如何避免:**进程重启是任务系统状态迁移,不是纯代码操作。任何部署脚本在 restart 前都必须证明没有活跃执行；构建耗时较长时必须在构建前后双检,不能只做一次开场快照。**

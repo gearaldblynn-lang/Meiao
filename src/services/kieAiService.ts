@@ -47,6 +47,9 @@ let cachedPublicBaseUrl = '';
 let cachedPublicBaseUrlAt = 0;
 const GPT_IMAGE_2_CLEANUP_SUFFIX = '要求：画面干净通透，材质完整自然，纹理平滑统一。禁止高频纹理，颜色过渡要平滑柔和，禁止过度锐化、色斑、噪点、破碎图案、伪影和畸变。';
 
+const getGptImage2CleanupSuffix = (metadata: Record<string, unknown> = {}) =>
+  metadata.subFeature === 'logo_replace' ? '' : GPT_IMAGE_2_CLEANUP_SUFFIX;
+
 export const isRecoverableKieTaskResult = (taskId?: string, errorMessage?: string, errorCode?: string) => {
   if (!String(taskId || '').trim()) return false;
   if (errorCode && KIE_NON_RECOVERABLE_ERROR_CODES.has(String(errorCode))) return false;
@@ -479,7 +482,7 @@ export const processWithKieAi = async (
   const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode);
   const { skipPromptCleanupSuffix, ...safeTaskMetadata } = taskMetadata || {};
   const promptWithCleanupSuffix = (moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary') && skipPromptCleanupSuffix !== true
-    ? `${finalPrompt}\n\n${GPT_IMAGE_2_CLEANUP_SUFFIX}`
+    ? `${finalPrompt}\n\n${getGptImage2CleanupSuffix(taskMetadata)}`
     : finalPrompt;
   const module = getActiveModuleContext() || 'unknown';
   const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;

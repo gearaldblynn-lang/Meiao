@@ -133,9 +133,18 @@ test('kieAiService appends the GPT Image 2 cleanup suffix only for GPT Image 2 i
     kieAiSource,
     /const GPT_IMAGE_2_CLEANUP_SUFFIX = '要求：画面干净通透，材质完整自然，纹理平滑统一。禁止高频纹理，颜色过渡要平滑柔和，禁止过度锐化、色斑、噪点、破碎图案、伪影和畸变。';/,
   );
+  assert.doesNotMatch(kieAiSource, /GPT_IMAGE_2_LOGO_REPLACE_CLEANUP_SUFFIX/);
+  assert.doesNotMatch(kieAiSource, /不得把上传 logo 识别成文字后重新绘制/);
+  assert.doesNotMatch(kieAiSource, /不得生成近似字母或相似品牌名/);
+  assert.doesNotMatch(kieAiSource, /预贴合图/);
+  assert.doesNotMatch(kieAiSource, /蒙版范围/);
   assert.match(
     kieAiSource,
-    /const promptWithCleanupSuffix = \(moduleConfig\.model === 'gpt-image-2'[\s\S]*&& skipPromptCleanupSuffix !== true[\s\S]*\?\s*`\$\{finalPrompt\}\\n\\n\$\{GPT_IMAGE_2_CLEANUP_SUFFIX\}`[\s\S]*:\s*finalPrompt;/s,
+    /const getGptImage2CleanupSuffix = \(metadata: Record<string, unknown> = \{\}\) =>\s*metadata\.subFeature === 'logo_replace' \? '' : GPT_IMAGE_2_CLEANUP_SUFFIX;/,
+  );
+  assert.match(
+    kieAiSource,
+    /const promptWithCleanupSuffix = \(moduleConfig\.model === 'gpt-image-2'[\s\S]*&& skipPromptCleanupSuffix !== true[\s\S]*\?\s*`\$\{finalPrompt\}\\n\\n\$\{getGptImage2CleanupSuffix\(taskMetadata\)\}`[\s\S]*:\s*finalPrompt;/s,
   );
 });
 

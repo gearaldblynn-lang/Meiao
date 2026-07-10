@@ -3574,7 +3574,7 @@ test('executeProviderJob retries direct managed asset responses through KIE afte
   }
 });
 
-test('executeProviderJob task id prevents direct media fallback for chat error text', async () => {
+test('executeProviderJob task id prevents direct media and model fallback for chat error text', async () => {
   __testOnly_clearManagedAssetUploadCache();
   const originalFetch = global.fetch;
   const requests = [];
@@ -3597,6 +3597,7 @@ test('executeProviderJob task id prevents direct media fallback for chat error t
           taskType: 'kie_chat',
           payload: {
             model: 'gpt-5-4-openai-resp',
+            fallbackModels: ['gpt-5-2'],
             messages: [{
               role: 'user',
               content: [{ type: 'image_url', image_url: { url: '/api/assets/file/direct-task-id/source.png' } }],

@@ -5,6 +5,33 @@ import { existsSync, readFileSync } from 'node:fs';
 const source = () => readFileSync(new URL('./BottomInputBar.tsx', import.meta.url), 'utf8');
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
+test('logo replacement integrates the new guarded replacement contract', () => {
+  const bottomInputBar = source();
+  const workflow = read('../../../adapters/shellWorkflow.ts');
+  const shellApp = read('../../../ShellMigratedApp.tsx');
+  const logoQuickParams = bottomInputBar.match(/const getLogoReplaceQuickParams = [\s\S]*?const getQuickParamsForModule/)?.[0] || '';
+  const placeholderBlock = bottomInputBar.match(/const getPlaceholderForContext = [\s\S]*?const getGenerateLabelForContext/)?.[0] || '';
+
+  assert.match(logoQuickParams, /key: 'replacementLogic'/);
+  assert.match(logoQuickParams, /单Logo替换/);
+  assert.match(logoQuickParams, /多Logo替换/);
+  assert.doesNotMatch(logoQuickParams, /单Logo框选|多Logo框选/);
+  assert.doesNotMatch(logoQuickParams, /key: 'logoReplaceRenderMode'|program_guarded|程序兜底|KIE直出/);
+
+  assert.match(bottomInputBar, /const LOGO_REGION_REPLACE_PLACEHOLDER = '框选旧 Logo 区域时，请让选框略大于 Logo 本身，完整包住文字\/图形及周围少量背景留白。';/);
+  assert.match(placeholderBlock, /single_logo_region_replace/);
+  assert.match(placeholderBlock, /multi_logo_replace/);
+  assert.match(placeholderBlock, /return LOGO_REGION_REPLACE_PLACEHOLDER/);
+
+  assert.doesNotMatch(shellApp, /logoReplaceRenderMode: params\.logoReplaceRenderMode \|\| 'program_guarded'/);
+  assert.match(workflow, /requestedLogoReplaceRenderMode/);
+  assert.match(workflow, /logoReplaceMode === 'multi_logo_replace' \|\| logoReplaceMode === 'single_logo_region_replace'[\s\S]*\? 'program_guarded'/);
+  assert.match(workflow, /const useDirectLogoReplace = logoReplaceMode !== 'multi_logo_replace' && logoReplaceMode !== 'single_logo_region_replace' && logoReplaceRenderMode === 'kie_direct'/);
+  assert.match(workflow, /imageInputUrls = \[referenceUrl, \.\.\.multiLogoInputUrls, multiLogoPreviewInputs\.multiLogoPreviewUrl\]\.filter\(Boolean\)/);
+  assert.match(workflow, /cleanupMode: 'rect'/);
+  assert.match(workflow, /cleanupScrubPaddingRatio: logoReplaceMode === 'single_logo_region_replace' \? 0\.24 : 0/);
+});
+
 test('one click shell params are subfeature-aware and do not expose fake style preset entry', () => {
   const bottomInputBar = source();
 

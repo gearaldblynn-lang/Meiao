@@ -41,7 +41,7 @@ const ResultCard: React.FC<Props> = ({ result, onDelete, onRegenerate }) => {
           result.aspectRatio === '4:3' ? '4/3' :
           result.aspectRatio === '2:3' ? '2/3' : '3/4',
       }}>
-        <img src={result.imageUrl} alt={result.prompt} className="w-full h-full object-cover" />
+        <img src={result.imageUrl} alt={result.prompt} className="w-full h-full object-contain" />
 
         {/* Hover overlay */}
         <div className="absolute inset-0 flex flex-col justify-between p-2.5 transition-opacity duration-200"
