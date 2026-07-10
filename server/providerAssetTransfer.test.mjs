@@ -186,6 +186,47 @@ test('forced managed asset uploads reuse the existing key when the cache is at c
   assert.equal(uploadCalls, 1);
 });
 
+test('cache pressure does not evict an in-flight managed asset upload', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  let uploadCalls = 0;
+  let releaseFirstUpload;
+  const firstUploadStarted = new Promise((resolve) => {
+    releaseFirstUpload = resolve;
+  });
+  let signalFirstUploadStarted;
+  const firstUploadReady = new Promise((resolve) => {
+    signalFirstUploadStarted = resolve;
+  });
+  const options = {
+    env: {
+      MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS: '60000',
+      MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES: '1',
+    },
+    forceUpload: true,
+    deps: {
+      fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
+      uploadAssetViaKieWithFallback: async () => {
+        uploadCalls += 1;
+        if (uploadCalls === 1) {
+          signalFirstUploadStarted();
+          await firstUploadStarted;
+        }
+        return { result: { fileUrl: `https://kie.test/cache-pressure-${uploadCalls}.png` } };
+      },
+    },
+  };
+
+  const first = convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-pressure-a/source.png', options);
+  await firstUploadReady;
+  await convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-pressure-b/source.png', options);
+  const duplicate = convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-pressure-a/source.png', options);
+  releaseFirstUpload();
+
+  const [firstUrl, duplicateUrl] = await Promise.all([first, duplicate]);
+  assert.equal(firstUrl, duplicateUrl);
+  assert.equal(uploadCalls, 2);
+});
+
 test('non-forced managed asset fallback uploads reuse the successful process cache', async () => {
   __testOnly_clearManagedAssetUploadCache();
   let downloadCalls = 0;
