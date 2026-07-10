@@ -13,6 +13,41 @@ import {
 
 const createResponse = (body, headers = {}) => new Response(body, { status: 200, headers });
 
+const createDeferred = () => {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+};
+
+const waitForAbortableResult = (promise, signal) => new Promise((resolve, reject) => {
+  let settled = false;
+  const settle = (callback, value) => {
+    if (settled) return;
+    settled = true;
+    signal?.removeEventListener?.('abort', onAbort);
+    callback(value);
+  };
+  const onAbort = () => {
+    const error = new Error('任务已取消');
+    error.code = 'request_cancelled';
+    settle(reject, error);
+  };
+
+  if (signal?.aborted) {
+    onAbort();
+    return;
+  }
+  signal?.addEventListener?.('abort', onAbort, { once: true });
+  promise.then(
+    (value) => settle(resolve, value),
+    (error) => settle(reject, error)
+  );
+});
+
 test('convertManagedAssetUrlToKieFileUrl prefers externally reachable managed asset URLs', async () => {
   const url = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/user/a.png', {
     env: { MEIAO_PUBLIC_BASE_URL: 'https://public.test' },
@@ -150,6 +185,143 @@ test('forced managed asset uploads reuse one in-flight successful upload', async
   assert.equal(second, 'https://kie.test/cached.png');
   assert.equal(downloadCalls, 1);
   assert.equal(uploadCalls, 1);
+});
+
+test('cancelling one caller does not cancel its shared forced managed asset upload', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const uploadStarted = createDeferred();
+  const uploadResult = createDeferred();
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  let sharedSignal = null;
+  let uploadCalls = 0;
+  const options = {
+    env: { MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS: '60000' },
+    forceUpload: true,
+    deps: {
+      fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
+      uploadAssetViaKieWithFallback: async (_payload, uploadOptions) => {
+        uploadCalls += 1;
+        sharedSignal = uploadOptions.signal;
+        uploadStarted.resolve();
+        return waitForAbortableResult(uploadResult.promise, sharedSignal);
+      },
+    },
+  };
+
+  const first = convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-cancel-one/source.png', {
+    ...options,
+    signal: firstController.signal,
+  });
+  const second = convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-cancel-one/source.png', {
+    ...options,
+    signal: secondController.signal,
+  });
+  second.catch(() => {});
+  await uploadStarted.promise;
+
+  firstController.abort();
+  await assert.rejects(first, (error) => error?.code === 'request_cancelled');
+  assert.equal(sharedSignal.aborted, false);
+
+  uploadResult.resolve({ result: { fileUrl: 'https://kie.test/shared-success.png' } });
+  assert.equal(await second, 'https://kie.test/shared-success.png');
+  assert.equal(uploadCalls, 1);
+});
+
+test('cancelling all callers aborts the shared transfer and removes its cache entry', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const uploadStarted = createDeferred();
+  const neverCompletes = createDeferred();
+  const firstController = new AbortController();
+  const secondController = new AbortController();
+  let firstSharedSignal = null;
+  let uploadCalls = 0;
+  const options = {
+    env: { MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS: '60000' },
+    forceUpload: true,
+    deps: {
+      fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
+      uploadAssetViaKieWithFallback: async (_payload, uploadOptions) => {
+        uploadCalls += 1;
+        if (uploadCalls > 1) {
+          return { result: { fileUrl: 'https://kie.test/fresh-after-cancel.png' } };
+        }
+        firstSharedSignal = uploadOptions.signal;
+        uploadStarted.resolve();
+        return waitForAbortableResult(neverCompletes.promise, firstSharedSignal);
+      },
+    },
+  };
+
+  const first = convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-cancel-all/source.png', {
+    ...options,
+    signal: firstController.signal,
+  });
+  const second = convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-cancel-all/source.png', {
+    ...options,
+    signal: secondController.signal,
+  });
+  second.catch(() => {});
+  await uploadStarted.promise;
+
+  firstController.abort();
+  await assert.rejects(first, (error) => error?.code === 'request_cancelled');
+  assert.equal(firstSharedSignal.aborted, false);
+
+  const secondRejection = assert.rejects(second, (error) => error?.code === 'request_cancelled');
+  secondController.abort();
+  await secondRejection;
+  assert.equal(firstSharedSignal.aborted, true);
+
+  const recovered = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-cancel-all/source.png', options);
+  assert.equal(recovered, 'https://kie.test/fresh-after-cancel.png');
+  assert.equal(uploadCalls, 2);
+});
+
+test('capacity eviction keeps pending transfers reusable', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const uploadAStarted = createDeferred();
+  const uploadBStarted = createDeferred();
+  const uploadAResult = createDeferred();
+  const uploadBResult = createDeferred();
+  const uploadCalls = { a: 0, b: 0 };
+  const options = {
+    env: {
+      MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS: '60000',
+      MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES: '1',
+    },
+    forceUpload: true,
+    deps: {
+      fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
+      uploadAssetViaKieWithFallback: async (payload) => {
+        const asset = payload.fileName.startsWith('a-') ? 'a' : 'b';
+        uploadCalls[asset] += 1;
+        if (asset === 'a') {
+          uploadAStarted.resolve();
+          return uploadAResult.promise;
+        }
+        uploadBStarted.resolve();
+        return uploadBResult.promise;
+      },
+    },
+  };
+
+  const firstA = convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-capacity/a.png', options);
+  await uploadAStarted.promise;
+  const firstB = convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-capacity/b.png', options);
+  await uploadBStarted.promise;
+  const secondA = convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-capacity/a.png', options);
+
+  uploadAResult.resolve({ result: { fileUrl: 'https://kie.test/a.png' } });
+  uploadBResult.resolve({ result: { fileUrl: 'https://kie.test/b.png' } });
+  assert.deepEqual(await Promise.all([firstA, firstB, secondA]), [
+    'https://kie.test/a.png',
+    'https://kie.test/b.png',
+    'https://kie.test/a.png',
+  ]);
+  assert.equal(uploadCalls.a, 1);
+  assert.equal(uploadCalls.b, 1);
 });
 
 test('forced managed asset uploads reuse the existing key when the cache is at capacity', async () => {
