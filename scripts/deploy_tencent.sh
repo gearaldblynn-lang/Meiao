@@ -107,6 +107,13 @@ tar \
     fi
 
     # install/build 期间仍可能有新任务进入；切换前再次检查，避免 PM2 重启中断 provider 提交阶段。
+    if [ ! -f '.env.server' ]; then
+      echo '服务器缺少 .env.server，请先创建后再重试。'
+      exit 1
+    fi
+    set -a
+    source .env.server
+    set +a
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs
 
     # 原子切换:两次 rename,静态服务零断档
@@ -114,15 +121,6 @@ tar \
     if [ -d dist ]; then mv dist dist-prev; fi
     mv dist-next dist
     rm -rf dist-prev '$REMOTE_TMP_DIR'
-
-    if [ ! -f '.env.server' ]; then
-      echo '服务器缺少 .env.server，请先创建后再重试。'
-      exit 1
-    fi
-
-    set -a
-    source .env.server
-    set +a
 
     if pm2 describe meiao-internal >/dev/null 2>&1; then
       pm2 restart meiao-internal --update-env
