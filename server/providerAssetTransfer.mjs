@@ -410,9 +410,6 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
       uploadPath: 'mayo-storage/internal',
     }, normalizedOptions);
     const fileUrl = String(uploaded?.result?.fileUrl || '').trim();
-    if (!fileUrl) {
-      throw createProviderError('provider_bad_response', '上传成功但未返回素材地址');
-    }
     return fileUrl;
   };
   if (!normalizedOptions.forceUpload) return uploadManagedAsset();
