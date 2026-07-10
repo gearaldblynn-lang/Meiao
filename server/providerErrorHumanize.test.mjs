@@ -13,6 +13,18 @@ test('provider_network_error 映射为网络不稳人话，detail 保留技术�
   assert.equal(detail, 'fetch failed');
 });
 
+test('provider_submission_unknown 明确说明为防重复扣费未自动重试', () => {
+  const { message, detail } = humanizeProviderError({
+    code: 'provider_submission_unknown',
+    message: 'fetch failed',
+    providerStage: 'create_task',
+  });
+  assert.match(message, /提交结果暂时无法确认/);
+  assert.match(message, /防止重复扣费/);
+  assert.match(message, /未自动重试/);
+  assert.equal(detail, 'fetch failed');
+});
+
 test('provider_timeout 映射为超时人话', () => {
   const { message, detail } = humanizeProviderError({
     code: 'provider_timeout',
