@@ -585,3 +585,107 @@ test('can use the selected box as replacement bounds while cleanup stays on dete
     globalThis.document = originalDocument;
   }
 });
+
+test('can use the selected box as both cleanup and replacement bounds', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalCreateImageBitmap = globalThis.createImageBitmap;
+  const originalDocument = globalThis.document;
+
+  globalThis.fetch = async (url) => ({
+    ok: true,
+    blob: async () => ({ url }),
+  });
+  globalThis.createImageBitmap = async (blob) => ({
+    width: blob.url === 'logo.png' ? 80 : 120,
+    height: blob.url === 'logo.png' ? 40 : 80,
+    url: blob.url,
+  });
+  globalThis.document = {
+    createElement(tag) {
+      assert.equal(tag, 'canvas');
+      return {
+        width: 0,
+        height: 0,
+        getContext() {
+          return {
+            drawImage() {},
+            getImageData() {
+              const width = 120;
+              const height = 80;
+              const data = new Uint8ClampedArray(width * height * 4);
+              for (let i = 0; i < data.length; i += 4) {
+                data[i] = 22;
+                data[i + 1] = 24;
+                data[i + 2] = 25;
+                data[i + 3] = 255;
+              }
+              for (let y = 30; y < 38; y += 1) {
+                for (let x = 54; x < 78; x += 1) {
+                  const offset = (y * width + x) * 4;
+                  data[offset] = 245;
+                  data[offset + 1] = 245;
+                  data[offset + 2] = 245;
+                  data[offset + 3] = 255;
+                }
+              }
+              return { width, height, data };
+            },
+            fillRect() {},
+            strokeRect() {},
+            save() {},
+            restore() {},
+            setLineDash() {},
+            set fillStyle(value) { this.__fillStyle = value; },
+            get fillStyle() { return this.__fillStyle; },
+            set strokeStyle(value) { this.__strokeStyle = value; },
+            get strokeStyle() { return this.__strokeStyle; },
+            set lineWidth(value) { this.__lineWidth = value; },
+            get lineWidth() { return this.__lineWidth; },
+          };
+        },
+        toBlob(callback) { callback(new Blob(['preview'], { type: 'image/png' })); },
+      };
+    },
+  };
+
+  try {
+    const { createMultiLogoReplacePreviewBlob } = await import(`./logoReplacePreview.mjs?selected-cleanup=${Date.now()}`);
+    const preview = await createMultiLogoReplacePreviewBlob({
+      referenceUrl: 'reference.png',
+      items: [{
+        logoUrl: 'logo.png',
+        region: { xRatio: 40 / 120, yRatio: 20 / 80, widthRatio: 60 / 120, heightRatio: 30 / 80 },
+      }],
+      referenceWidth: 120,
+      referenceHeight: 80,
+      useSelectedRegionAsLogoBounds: true,
+      useSelectedRegionAsCleanupBounds: true,
+      drawCleanupFill: false,
+    });
+
+    assert.deepEqual(preview.cleanupRects[0], {
+      x: 40,
+      y: 20,
+      width: 60,
+      height: 30,
+      xRatio: 40 / 120,
+      yRatio: 20 / 80,
+      widthRatio: 60 / 120,
+      heightRatio: 30 / 80,
+    });
+    assert.deepEqual(preview.logoRects[0], {
+      x: 40,
+      y: 20,
+      width: 60,
+      height: 30,
+      xRatio: 40 / 120,
+      yRatio: 20 / 80,
+      widthRatio: 60 / 120,
+      heightRatio: 30 / 80,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.createImageBitmap = originalCreateImageBitmap;
+    globalThis.document = originalDocument;
+  }
+});

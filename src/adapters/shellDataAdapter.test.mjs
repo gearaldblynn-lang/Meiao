@@ -3,6 +3,114 @@ import assert from 'node:assert/strict';
 
 import { buildShellDataSnapshot } from './shellDataAdapter.ts';
 
+test('multi-logo guarded result is not overwritten by raw provider job sync', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'logo-project',
+      name: '多logo替换',
+      module: 'everything_replace',
+      subFeature: 'logo_replace',
+      status: 'completed',
+      createdAt: '06-18',
+      taskCount: 1,
+      completedCount: 1,
+      results: [{
+        id: 'guarded-result',
+        imageUrl: '/api/assets/file/guarded.png',
+        prompt: '多logo替换',
+        model: 'GPT Image 2',
+        aspectRatio: '1:1',
+        status: 'completed',
+        createdAt: '06-18',
+        module: 'everything_replace',
+        subFeature: 'logo_replace',
+        backendJobId: 'logo-job-1',
+        taskId: 'provider-task-1',
+        logoReplaceGuarded: true,
+      }],
+    }],
+  }, [{
+    id: 'logo-job-1',
+    module: 'everything_replace',
+    taskType: 'kie_image',
+    status: 'succeeded',
+    provider: 'kie',
+    providerTaskId: 'provider-task-1',
+    payload: {
+      shellProjectId: 'logo-project',
+      shellProjectName: '多logo替换',
+      subFeature: 'logo_replace',
+      logoReplaceMode: 'multi_logo_replace',
+      batchIndex: 1,
+      batchCount: 1,
+      prompt: '多logo替换',
+      aspectRatio: '1:1',
+    },
+    resultJson: {
+      imageUrl: '/raw-provider-logo-result.png',
+      taskId: 'provider-task-1',
+    },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'logo-project');
+  assert.equal(project?.results[0]?.imageUrl, '/api/assets/file/guarded.png');
+  assert.equal(project?.results[0]?.logoReplaceGuarded, true);
+});
+
+test('shell data adapter restores persisted image crop projects as image crop records', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'image-crop-project',
+      name: '长图切片 - detail.jpg',
+      module: 'image_crop',
+      status: 'completed',
+      createdAt: 1783600000000,
+      completedAt: 1783600000000,
+      createdAtPrecise: true,
+      subFeature: 'long_slice',
+      taskCount: 2,
+      completedCount: 2,
+      directGeneration: true,
+      results: [
+        {
+          id: 'image-crop-project-slice-001',
+          projectId: 'image-crop-project',
+          imageUrl: '/api/assets/file/crop/slice-001.jpg',
+          mediaType: 'image',
+          prompt: '长图切片 1/2',
+          model: 'local-canvas',
+          aspectRatio: '800:1200',
+          status: 'completed',
+          createdAt: 1783600000000,
+          module: 'image_crop',
+          subFeature: 'long_slice',
+        },
+        {
+          id: 'image-crop-project-slice-002',
+          projectId: 'image-crop-project',
+          imageUrl: '/api/assets/file/crop/slice-002.jpg',
+          mediaType: 'image',
+          prompt: '长图切片 2/2',
+          model: 'local-canvas',
+          aspectRatio: '800:1200',
+          status: 'completed',
+          createdAt: 1783600000000,
+          module: 'image_crop',
+          subFeature: 'long_slice',
+        },
+      ],
+    }],
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'image-crop-project');
+  assert.equal(project?.module, 'image_crop');
+  assert.equal(project?.subFeature, 'long_slice');
+  assert.equal(project?.results.length, 2);
+  assert.ok(project?.results.every((result) => result.module === 'image_crop'));
+});
+
 test('shell data adapter keeps one-click submodule projects separated', () => {
   const snapshot = buildShellDataSnapshot({
     oneClickMemory: {

@@ -151,6 +151,34 @@ test('normalizing shell draft preserves logo replacement regions', () => {
   assert.deepEqual(draft.materials.styleRef[0].logoReplaceRegions, logoReplaceRegions);
 });
 
+test('hydrating shell draft lets explicit prompt clears override older submitted drafts', () => {
+  const hydrated = resolveHydratedShellDraftState({
+    localDraft: {
+      inputStateByScope: {
+        'everything_replace:logo_replace': {
+          promptText: 'previous submitted logo prompt',
+          params: { replacementLogic: 'multi_logo_replace' },
+        },
+      },
+      updatedAt: 100,
+    },
+    remoteDraft: {
+      inputStateByScope: {
+        'everything_replace:logo_replace': {
+          promptText: '',
+          promptClearedAt: 200,
+          params: { replacementLogic: 'multi_logo_replace' },
+        },
+      },
+      updatedAt: 200,
+    },
+  });
+
+  assert.equal(hydrated.inputStateByScope['everything_replace:logo_replace'].promptText, '');
+  assert.equal(hydrated.inputStateByScope['everything_replace:logo_replace'].promptClearedAt, 200);
+  assert.equal(hydrated.inputStateByScope['everything_replace:logo_replace'].params.replacementLogic, 'multi_logo_replace');
+});
+
 test('hydrating shell draft keeps local logo placement when newer remote material lacks it', () => {
   const logoPlacement = {
     version: 1,

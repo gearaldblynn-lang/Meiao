@@ -20,6 +20,7 @@ const readBoundedShellDraftStorage = (key: string) => {
 
 export type ShellDraftInputState = Record<string, {
   promptText: string;
+  promptClearedAt?: number;
   params: Record<string, string>;
 }>;
 
@@ -103,6 +104,9 @@ const normalizeInputState = (value: unknown): ShellDraftInputState => {
         : {};
       return [[scopeKey, {
         promptText: typeof entry.promptText === 'string' ? entry.promptText : '',
+        promptClearedAt: typeof entry.promptClearedAt === 'number' && Number.isFinite(entry.promptClearedAt)
+          ? entry.promptClearedAt
+          : undefined,
         params,
       }]];
     }),
@@ -196,10 +200,16 @@ export const mergeShellDraftInputState = (
   const next: ShellDraftInputState = { ...existingInput };
   Object.entries(incomingInput || {}).forEach(([scopeKey, incoming]) => {
     const existing = next[scopeKey];
+    const incomingExplicitClear = !incoming.promptText.trim() && Boolean(incoming.promptClearedAt);
+    const promptText = incomingExplicitClear || incoming.promptText.trim() || !existing?.promptText.trim()
+      ? incoming.promptText
+      : existing.promptText;
+    const promptClearedAt = promptText.trim()
+      ? undefined
+      : incoming.promptClearedAt || existing?.promptClearedAt;
     next[scopeKey] = {
-      promptText: incoming.promptText.trim() || !existing?.promptText.trim()
-        ? incoming.promptText
-        : existing.promptText,
+      promptText,
+      promptClearedAt,
       params: {
         ...(existing?.params || {}),
         ...(incoming.params || {}),
@@ -291,7 +301,7 @@ const mergeDeletedIds = (...lists: string[][]) => Array.from(new Set(
 
 const hasDraftContent = (draft: ShellDraftState) =>
   Object.values(draft.inputStateByScope).some((entry) =>
-    entry.promptText.trim() || Object.keys(entry.params || {}).length > 0
+    entry.promptText.trim() || entry.promptClearedAt || Object.keys(entry.params || {}).length > 0
   )
   || Object.values(draft.materials).some((list) => (list || []).length > 0)
   || draft.deletedJobIds.length > 0

@@ -192,6 +192,8 @@ const isEverythingReplaceImageContext = (module: AppModule, activeSubFeature?: s
   || isLogoReplaceContext(module, activeSubFeature)
 );
 
+const LOGO_REGION_REPLACE_PLACEHOLDER = '框选旧 Logo 区域时，请让选框略大于 Logo 本身，完整包住文字/图形及周围少量背景留白。';
+
 const getEverythingReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
   const supportedRatios = getRetouchSupportedAspectRatiosForModel(currentParams.model || 'GPT Image 2');
   return [
@@ -238,14 +240,10 @@ const getBackgroundReplaceQuickParams = (currentParams: Record<string, string>):
 
 const getLogoReplaceModeLabel = (value?: string) => {
   const mode = String(value || '').trim();
-  if (mode === 'single_logo_region_replace') return '单Logo框选';
-  if (mode === 'multi_logo_replace') return '多Logo框选';
+  if (mode === 'single_logo_region_replace') return '单Logo替换';
+  if (mode === 'multi_logo_replace') return '多Logo替换';
   return '图片角标替换';
 };
-
-const getLogoReplaceRenderModeLabel = (value?: string) => (
-  String(value || '').includes('kie') ? 'KIE直出' : '程序兜底'
-);
 
 const getLogoReplaceQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
   const supportedRatios = getRetouchSupportedAspectRatiosForModel(currentParams.model || 'GPT Image 2');
@@ -257,25 +255,12 @@ const getLogoReplaceQuickParams = (currentParams: Record<string, string>): Param
       icon: <Wand2 size={12} />,
       options: [
         { value: 'corner_badge_replace', label: '图片角标替换' },
-        { value: 'single_logo_region_replace', label: '单Logo框选' },
-        { value: 'multi_logo_replace', label: '多Logo框选' },
+        { value: 'single_logo_region_replace', label: '单Logo替换' },
+        { value: 'multi_logo_replace', label: '多Logo替换' },
       ],
       defaultValue: 'corner_badge_replace',
       recommendedValue: 'corner_badge_replace',
       recommendedLabel: '默认',
-    },
-    {
-      key: 'logoReplaceRenderMode',
-      label: getLogoReplaceRenderModeLabel(currentParams.logoReplaceRenderMode),
-      title: '生成逻辑',
-      icon: <SlidersHorizontal size={12} />,
-      options: [
-        { value: 'program_guarded', label: '程序兜底' },
-        { value: 'kie_direct', label: 'KIE直出' },
-      ],
-      defaultValue: 'program_guarded',
-      recommendedValue: 'program_guarded',
-      recommendedLabel: '稳定',
     },
     {
       key: 'ratio',
@@ -906,6 +891,12 @@ const MODULE_PLACEHOLDERS: Record<string, string> = {
 const getPlaceholderForContext = (module: AppModule, activeSubFeature?: string, currentParams: Record<string, string> = {}) => {
   if (isBackgroundReplaceContext(module, activeSubFeature)) {
     return '补充背景替换要求，例如：保留人物姿势和产品不变，只换成参考图同款场景...';
+  }
+  if (isLogoReplaceContext(module, activeSubFeature)) {
+    const logoReplaceMode = String(currentParams.replacementLogic || '').trim();
+    if (logoReplaceMode === 'single_logo_region_replace' || logoReplaceMode === 'multi_logo_replace') {
+      return LOGO_REGION_REPLACE_PLACEHOLDER;
+    }
   }
   if (module === AppModuleObj.VIDEO && (!activeSubFeature || activeSubFeature === 'generation')) {
     return '描述视频动作、镜头运动、产品卖点和氛围要求...';

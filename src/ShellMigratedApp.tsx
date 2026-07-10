@@ -171,6 +171,7 @@ export interface GeneratedResult {
   dynamicScriptPrompt?: string;
   buyerShowEvaluation?: string;
   buyerShowDisplayPrompt?: string;
+  logoReplaceGuarded?: boolean;
   storyboardBoardTitle?: string;
   storyboardBoardIndex?: number;
   storyboardBoardCount?: number;
@@ -1461,7 +1462,6 @@ const normalizeEverythingReplaceParamsForGeneration = (
       ...normalized,
       mode,
       replacementLogic: params.replacementLogic || 'corner_badge_replace',
-      logoReplaceRenderMode: params.logoReplaceRenderMode || 'program_guarded',
       textPolicy: params.textPolicy || '维持文案',
     };
   }
@@ -1995,7 +1995,7 @@ const AppContent: React.FC<{
   }));
   const activeSubFeature = activeSubFeatureByModule[activeModule] || getDefaultSubFeature(activeModule);
   const activeScopeKey = scopeKeyFor(activeModule, activeSubFeature);
-  const [inputStateByScope, setInputStateByScope] = useState<Record<string, { promptText: string; params: Record<string, string> }>>(
+  const [inputStateByScope, setInputStateByScope] = useState<Record<string, { promptText: string; promptClearedAt?: number; params: Record<string, string> }>>(
     () => initialDraftSnapshot.inputStateByScope || {},
   );
   const promptText = inputStateByScope[activeScopeKey]?.promptText || '';
@@ -2671,6 +2671,7 @@ const AppContent: React.FC<{
       ...prev,
       [activeScopeKey]: {
         promptText: text,
+        promptClearedAt: text.trim() ? undefined : Date.now(),
         params: prev[activeScopeKey]?.params || {},
       },
     }));
@@ -2684,6 +2685,7 @@ const AppContent: React.FC<{
       ...prev,
       [scopeKey]: {
         promptText: prev[scopeKey]?.promptText || '',
+        promptClearedAt: prev[scopeKey]?.promptClearedAt,
         params: mappedParam
           ? { ...(prev[scopeKey]?.params || {}), [mappedParam[0]]: mappedParam[1] }
           : (prev[scopeKey]?.params || {}),
@@ -3297,6 +3299,7 @@ const AppContent: React.FC<{
       ...prev,
       [generationScopeKey]: {
         promptText: imported.prompt,
+        promptClearedAt: undefined,
         params: {
           ...(prev[generationScopeKey]?.params || {}),
           ...imported.params,
@@ -4798,6 +4801,7 @@ const AppContent: React.FC<{
             sourceUrl: item.sourceUrl,
             fileName: item.fileName,
             error: item.error || item.message,
+            logoReplaceGuarded: item.logoReplaceGuarded === true || undefined,
           };
           const resultIdentity = nextResult.backendJobId || nextResult.taskId || nextResult.id;
           const nextByIdentity = new Map(batchResults.map((result) => [result.backendJobId || result.taskId || result.id, result]));
@@ -4919,6 +4923,7 @@ const AppContent: React.FC<{
           sourceUrl: item.sourceUrl,
           fileName: item.fileName,
           error: item.error || item.message,
+          logoReplaceGuarded: item.logoReplaceGuarded === true || undefined,
         })));
         const isBuyerShowSetProjectWorkflow = targetModule === AppModuleObj.BUYER_SHOW
           && specialWorkflowResults.some((result) => String(result.projectId || '').trim() && result.projectId !== projectId);
@@ -7622,6 +7627,7 @@ const AppContent: React.FC<{
       ...prev,
       [targetScopeKey]: {
         promptText: prev[targetScopeKey]?.promptText || '',
+        promptClearedAt: prev[targetScopeKey]?.promptClearedAt,
         params: {
           ...(prev[targetScopeKey]?.params || {}),
           [key]: value,
@@ -7675,6 +7681,7 @@ const AppContent: React.FC<{
                 ...prev,
                 [key]: {
                   promptText: prompt,
+                  promptClearedAt: undefined,
                   params: mappedParam
                     ? { ...(prev[key]?.params || {}), [mappedParam[0]]: mappedParam[1] }
                     : { ...(prev[key]?.params || {}) },

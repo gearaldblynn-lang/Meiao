@@ -279,6 +279,7 @@ export const normalizeLogoReplacePreviewItems = (items = []) => (Array.isArray(i
  *   referenceWidth?: number,
  *   referenceHeight?: number,
  *   useSelectedRegionAsLogoBounds?: boolean,
+ *   useSelectedRegionAsCleanupBounds?: boolean,
  *   drawCleanupFill?: boolean,
  *   logoScaleRatio?: number,
  * }} options
@@ -289,6 +290,7 @@ export const createMultiLogoReplacePreviewBlob = async ({
   referenceWidth,
   referenceHeight,
   useSelectedRegionAsLogoBounds = false,
+  useSelectedRegionAsCleanupBounds = false,
   drawCleanupFill = true,
   logoScaleRatio = 1,
 } = {}) => {
@@ -316,7 +318,7 @@ export const createMultiLogoReplacePreviewBlob = async ({
     const regionRect = logoReplaceRegionToRect(item.region, { width: canvasWidth, height: canvasHeight });
     if (!regionRect) return;
     const detectedCleanupRect = findLogoContentRectInRegion({ imageData, regionRect }) || regionRect;
-    const cleanupRect = detectedCleanupRect;
+    const cleanupRect = useSelectedRegionAsCleanupBounds ? regionRect : detectedCleanupRect;
     const [r, g, b] = sampleOpaqueRingColor({
       imageData,
       rect: cleanupRect,
