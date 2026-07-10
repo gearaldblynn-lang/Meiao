@@ -727,10 +727,10 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 ### Cloud deploys must drain running jobs before PM2 restart
 
 - Symptom: 少量 `provider_submit_stale` 集中出现在代码发布和 PM2 重启窗口，任务在 providerTaskId 写入前被中断。
-- Root cause: 发布脚本完成远端 install/build 后直接 `pm2 restart`，没有查询 `internal_jobs` 活跃执行；代码和前端虽可原子切换，后台 job 仍会被进程重启打断。
-- Fix: `check-deploy-readiness.mjs` 只读汇总 running job；部署在上传前和远端构建后各检查一次，有活跃任务就 fail closed。`MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 仅供明确承担中断风险的紧急发布。
+- Root cause: 发布脚本完成远端 install/build 后直接 `pm2 restart`，没有查询 `internal_jobs` 活跃执行；代码和前端虽可原子切换，后台 job 仍会被进程重启打断。门禁第一版的第二次检查运行在另一段 SSH shell 中，却没有先加载 `.env.server`，会退化成无凭证数据库连接并在构建后错误中止。
+- Fix: `check-deploy-readiness.mjs` 只读汇总 running job；部署在上传前和远端构建后各检查一次，有活跃任务就 fail closed。第二次检查在读取数据库前显式验证并加载 `.env.server`；`MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 仅供明确承担中断风险的紧急发布。
 - Regression check: `node --test scripts/deploy-readiness.test.mjs scripts/deploy_tencent.test.mjs`；`bash -n scripts/deploy_tencent.sh`；正式发布前查看检查输出 `runningCount=0`。
-- Avoid next time: 部署门禁必须覆盖业务运行态，不只覆盖代码 diff 和依赖安全；长构建流程要在 restart 紧前再次检查，避免检查与使用之间产生新任务竞态。
+- Avoid next time: 部署门禁必须覆盖业务运行态，不只覆盖代码 diff 和依赖安全；长构建流程要在 restart 紧前再次检查，避免检查与使用之间产生新任务竞态。每段独立 SSH shell 都必须自行加载所需环境，不能依赖上一段 shell 的 `source` 状态。
 
 ### Agent vision planning must not pre-upload historical images
 
