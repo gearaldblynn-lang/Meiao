@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { executeProviderJob, uploadAssetViaKieStream, __testOnly_setDreaminaVideoRunner, __testOnly_fetchKieWithTimeout, __testOnly_getKieHttpRetryDelayMs } from './providerGateway.mjs';
 import { __testOnly_clearManagedAssetUploadCache } from './providerAssetTransfer.mjs';
+import { __testOnly_resetKieAssetUploadLimiters } from './providerAssetUploadLimiter.mjs';
 
 // 请求级瞬时重试(S2 G1)默认退避 1s/3s,测试里统一压到 1ms,
 // 避免走到 fetch failed / 5xx 路径的既有测试被退避拖慢。
@@ -237,6 +238,74 @@ test('uploadAssetViaKieStream uses configured asset upload timeout', async () =>
     global.fetch = originalFetch;
     global.setTimeout = originalSetTimeout;
     global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test('uploadAssetViaKieStream applies the process-wide upload concurrency limit', async () => {
+  __testOnly_resetKieAssetUploadLimiters();
+  const originalFetch = global.fetch;
+  let active = 0;
+  let maxActive = 0;
+
+  global.fetch = async () => {
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active -= 1;
+    return createJsonResponse({
+      code: 200,
+      data: { fileUrl: 'https://kie.example.com/uploaded.png' },
+    });
+  };
+
+  try {
+    await Promise.all(Array.from({ length: 6 }, (_, index) => uploadAssetViaKieStream({
+      fileBuffer: Buffer.from(`png-${index}`),
+      mimeType: 'image/png',
+      fileName: `source-${index}.png`,
+    }, {
+      KIE_API_KEY: 'test-key',
+      MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY: '2',
+      MEIAO_KIE_ASSET_UPLOAD_RETRIES: '0',
+    })));
+
+    assert.equal(maxActive, 2);
+  } finally {
+    global.fetch = originalFetch;
+    __testOnly_resetKieAssetUploadLimiters();
+  }
+});
+
+test('uploadAssetViaKieStream retries retryable response errors within its transfer budget', async () => {
+  __testOnly_resetKieAssetUploadLimiters();
+  const originalFetch = global.fetch;
+  let calls = 0;
+
+  global.fetch = async () => {
+    calls += 1;
+    if (calls < 3) return createJsonResponse({ msg: 'temporary upload outage' }, 503);
+    return createJsonResponse({
+      code: 200,
+      data: { fileUrl: 'https://kie.example.com/recovered.png' },
+    });
+  };
+
+  try {
+    const result = await uploadAssetViaKieStream({
+      fileBuffer: Buffer.from('png'),
+      mimeType: 'image/png',
+      fileName: 'source.png',
+    }, {
+      KIE_API_KEY: 'test-key',
+      MEIAO_KIE_ASSET_UPLOAD_RETRIES: '2',
+      MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS: '1',
+    });
+
+    assert.equal(result.result.fileUrl, 'https://kie.example.com/recovered.png');
+    assert.equal(calls, 3);
+  } finally {
+    global.fetch = originalFetch;
+    __testOnly_resetKieAssetUploadLimiters();
   }
 });
 
@@ -3809,7 +3878,7 @@ test('executeProviderJob fails gemini image upload without base64 fallback', asy
             ],
           },
         },
-        { KIE_API_KEY: 'test-key' },
+        { KIE_API_KEY: 'test-key', MEIAO_KIE_ASSET_UPLOAD_RETRIES: '0' },
         new AbortController().signal
       ),
       /fetch failed/

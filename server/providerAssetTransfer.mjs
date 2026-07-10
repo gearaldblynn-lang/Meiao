@@ -326,7 +326,7 @@ export const uploadAssetViaKieWithFallback = async (payload, options = {}) => {
   if (typeof uploadAssetViaKieStream !== 'function') {
     throw createProviderError('provider_bad_request', '素材上传依赖未配置');
   }
-  return uploadAssetViaKieStream(payload, env);
+  return uploadAssetViaKieStream(payload, env, options.signal);
 };
 
 export const convertInlineDataUrlToKieFileUrl = async (value, options = {}) => {
@@ -505,7 +505,7 @@ export const convertGeminiMediaToStableKieUrl = async (mediaUrl, envOrOptions = 
   const uploaded = await upload({
     ...downloaded,
     uploadPath: 'mayo-storage/internal',
-  }, normalizedOptions.env);
+  }, normalizedOptions.env, normalizedOptions.signal);
   return String(uploaded?.result?.fileUrl || '').trim();
 };
 
