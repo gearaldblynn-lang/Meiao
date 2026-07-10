@@ -1645,6 +1645,37 @@ test('uploadAssetViaKieStream prefers stream upload and returns file url', async
   }
 });
 
+test('uploadAssetViaKieStream tags a successful response without fileUrl as an asset upload bad response', async () => {
+  __testOnly_resetKieAssetUploadLimiters();
+  const originalFetch = global.fetch;
+  let calls = 0;
+
+  global.fetch = async () => {
+    calls += 1;
+    return createJsonResponse({ code: 200, data: {} });
+  };
+
+  try {
+    await assert.rejects(
+      () => uploadAssetViaKieStream({
+        fileName: 'missing-url.png',
+        mimeType: 'image/png',
+        fileBuffer: Buffer.from('hello'),
+      }, {
+        KIE_API_KEY: 'test-key',
+        MEIAO_KIE_ASSET_UPLOAD_RETRIES: '0',
+      }),
+      (error) => error?.code === 'provider_bad_response'
+        && error?.providerStage === 'asset_upload'
+        && error?.providerStatus === 'bad_response'
+    );
+    assert.equal(calls, 1);
+  } finally {
+    global.fetch = originalFetch;
+    __testOnly_resetKieAssetUploadLimiters();
+  }
+});
+
 test('executeProviderJob fails relative managed asset upload without base64 fallback', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
@@ -4022,6 +4053,64 @@ test('executeProviderJob does not fallback when kie chat managed asset upload ti
     assert.equal(requests.some((item) => item.url.includes('/v1/chat/completions')), false);
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob does not fallback or duplicate upload when kie chat upload returns no fileUrl', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  __testOnly_resetKieAssetUploadLimiters();
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/jpeg' },
+      });
+    }
+    if (String(url).includes('/file-stream-upload')) {
+      return createJsonResponse({ code: 200, data: {} });
+    }
+    throw new Error(`model fallback should not run after asset upload failure: ${String(url)}`);
+  };
+
+  try {
+    const error = await executeProviderJob(
+      {
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gpt-5-4-openai-resp',
+          fallbackModels: ['doubao-seed-1-6-flash'],
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: '分析这张图' },
+                { type: 'image_url', image_url: { url: '/api/assets/file/asset-missing-upload-url/source.jpg' } },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        KIE_API_KEY: 'test-key',
+        MEIAO_KIE_ASSET_UPLOAD_RETRIES: '0',
+      },
+      new AbortController().signal
+    ).then(() => null, (caught) => caught);
+
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    assert.equal(requests.some((item) => item.url.includes('/codex/v1/responses')), false);
+    assert.equal(requests.some((item) => item.url.includes('/v1/chat/completions')), false);
+    assert.equal(error?.code, 'provider_bad_response');
+    assert.equal(error?.providerStage, 'asset_upload');
+    assert.equal(error?.providerStatus, 'bad_response');
+  } finally {
+    global.fetch = originalFetch;
+    __testOnly_resetKieAssetUploadLimiters();
+    __testOnly_clearManagedAssetUploadCache();
   }
 });
 

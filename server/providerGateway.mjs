@@ -1374,7 +1374,10 @@ export const uploadAssetViaKieStream = async (payload, env = {}, signal = null) 
 
   const fileUrl = extractUrlFromResponse(result);
   if (!fileUrl) {
-    throw createProviderError('provider_bad_response', '上传成功但未返回素材地址');
+    throw createProviderError('provider_bad_response', '上传成功但未返回素材地址', {
+      providerStage: 'asset_upload',
+      providerStatus: 'bad_response',
+    });
   }
 
   return {
