@@ -186,12 +186,15 @@ test('forced managed asset uploads reuse the existing key when the cache is at c
   assert.equal(uploadCalls, 1);
 });
 
-test('non-forced managed asset fallback uploads bypass the process cache', async () => {
+test('non-forced managed asset fallback uploads reuse the successful process cache', async () => {
   __testOnly_clearManagedAssetUploadCache();
   let downloadCalls = 0;
   let uploadCalls = 0;
   const options = {
-    env: { MEIAO_PUBLIC_BASE_URL: 'http://127.0.0.1:3100' },
+    env: {
+      MEIAO_PUBLIC_BASE_URL: 'http://127.0.0.1:3100',
+      MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS: '60000',
+    },
     forceUpload: false,
     deps: {
       fetchWithTimeout: async () => {
@@ -200,18 +203,18 @@ test('non-forced managed asset fallback uploads bypass the process cache', async
       },
       uploadAssetViaKieWithFallback: async () => {
         uploadCalls += 1;
-        return { result: { fileUrl: `https://kie.test/fallback-${uploadCalls}.png` } };
+        return { result: { fileUrl: 'https://kie.test/fallback-cached.png' } };
       },
     },
   };
 
-  const first = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/no-cache/source.png', options);
-  const second = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/no-cache/source.png', options);
+  const first = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/fallback-cache/source.png', options);
+  const second = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/fallback-cache/source.png', options);
 
-  assert.equal(downloadCalls, 2);
-  assert.equal(uploadCalls, 2);
-  assert.equal(first, 'https://kie.test/fallback-1.png');
-  assert.equal(second, 'https://kie.test/fallback-2.png');
+  assert.equal(first, 'https://kie.test/fallback-cached.png');
+  assert.equal(second, 'https://kie.test/fallback-cached.png');
+  assert.equal(downloadCalls, 1);
+  assert.equal(uploadCalls, 1);
 });
 
 test('failed managed asset uploads are not cached', async () => {
