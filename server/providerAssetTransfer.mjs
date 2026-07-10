@@ -91,12 +91,15 @@ const getManagedAssetUploadCacheMaxEntries = (env = {}) => getPositiveIntegerEnv
   MANAGED_ASSET_UPLOAD_CACHE_MAX_ENTRIES
 );
 
-const pruneManagedAssetUploadCache = (now, maxEntries) => {
+const pruneManagedAssetUploadCache = (now) => {
   for (const [key, entry] of managedAssetUploadCache.entries()) {
     if (entry.expiresAt > 0 && entry.expiresAt <= now) {
       managedAssetUploadCache.delete(key);
     }
   }
+};
+
+const evictManagedAssetUploadCacheForInsert = (maxEntries) => {
   while (managedAssetUploadCache.size >= maxEntries) {
     const oldestKey = managedAssetUploadCache.keys().next().value;
     if (oldestKey === undefined) break;
@@ -106,13 +109,13 @@ const pruneManagedAssetUploadCache = (now, maxEntries) => {
 
 const resolveCachedManagedAssetUpload = async (cacheKey, env, upload) => {
   const now = Date.now();
-  const maxEntries = getManagedAssetUploadCacheMaxEntries(env);
-  pruneManagedAssetUploadCache(now, maxEntries);
+  pruneManagedAssetUploadCache(now);
   const existing = managedAssetUploadCache.get(cacheKey);
   if (existing && (existing.expiresAt === 0 || existing.expiresAt > now)) {
     return existing.promise;
   }
 
+  evictManagedAssetUploadCacheForInsert(getManagedAssetUploadCacheMaxEntries(env));
   const entry = { expiresAt: 0, promise: null };
   entry.promise = Promise.resolve()
     .then(upload)
@@ -158,7 +161,7 @@ export const resolveKieManagedAssetMode = (env = {}) => {
     || process.env.KIE_MANAGED_ASSET_MODE
     || 'auto'
   ).trim().toLowerCase();
-  if (configured === 'kie-only') return 'kie-only';
+  if (configured !== 'auto' && configured !== 'direct-first') return 'kie-only';
   return isExternallyReachableHttpsBaseUrl(getProviderPublicBaseUrl(env)) ? 'direct-first' : 'kie-only';
 };
 
@@ -398,7 +401,7 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
     if (publicAssetUrl) return publicAssetUrl;
   }
   const cacheKey = getManagedAssetPath(assetUrl) || String(assetUrl || '').trim();
-  return resolveCachedManagedAssetUpload(cacheKey, normalizedOptions.env, async () => {
+  const uploadManagedAsset = async () => {
     const downloaded = await downloadManagedAsset(assetUrl, normalizedOptions);
     const upload = normalizedOptions.deps.uploadAssetViaKieWithFallback || uploadAssetViaKieWithFallback;
     const uploaded = await upload({
@@ -406,8 +409,14 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
       fileName: buildUniqueProviderFileName(downloaded.fileName, cacheKey),
       uploadPath: 'mayo-storage/internal',
     }, normalizedOptions);
-    return String(uploaded?.result?.fileUrl || '').trim();
-  });
+    const fileUrl = String(uploaded?.result?.fileUrl || '').trim();
+    if (!fileUrl) {
+      throw createProviderError('provider_bad_response', '上传成功但未返回素材地址');
+    }
+    return fileUrl;
+  };
+  if (!normalizedOptions.forceUpload) return uploadManagedAsset();
+  return resolveCachedManagedAssetUpload(cacheKey, normalizedOptions.env, uploadManagedAsset);
 };
 
 const isPrivateIpv4Hostname = (hostname) => {

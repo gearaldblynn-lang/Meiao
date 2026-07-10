@@ -54,6 +54,27 @@ test('generation and chat use the canonical HTTPS origin in direct-first mode', 
   );
 });
 
+test('unknown managed asset modes fail closed to KIE upload with a public HTTPS origin', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  let uploadCalls = 0;
+  const resolved = await resolveProviderGenerationMediaUrl('/api/assets/file/a/mode-typo.png', {
+    env: {
+      MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+      MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-frist',
+    },
+    deps: {
+      fetchWithTimeout: async () => createResponse('image-bytes', { 'content-type': 'image/png' }),
+      uploadAssetViaKieWithFallback: async () => {
+        uploadCalls += 1;
+        return { result: { fileUrl: 'https://kie.test/mode-typo.png' } };
+      },
+    },
+  });
+
+  assert.equal(resolved, 'https://kie.test/mode-typo.png');
+  assert.equal(uploadCalls, 1);
+});
+
 test('kie-only mode preserves forced managed asset uploads', async () => {
   let uploadCalls = 0;
   const resolved = await resolveProviderGenerationMediaUrl('/api/assets/file/a/kie-only.png', {
@@ -129,6 +150,68 @@ test('forced managed asset uploads reuse one in-flight successful upload', async
   assert.equal(second, 'https://kie.test/cached.png');
   assert.equal(downloadCalls, 1);
   assert.equal(uploadCalls, 1);
+});
+
+test('forced managed asset uploads reuse the existing key when the cache is at capacity', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  let downloadCalls = 0;
+  let uploadCalls = 0;
+  const options = {
+    env: {
+      MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS: '60000',
+      MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES: '1',
+    },
+    forceUpload: true,
+    deps: {
+      fetchWithTimeout: async () => {
+        downloadCalls += 1;
+        return createResponse('image-bytes', { 'content-type': 'image/png' });
+      },
+      uploadAssetViaKieWithFallback: async () => {
+        uploadCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return { result: { fileUrl: 'https://kie.test/cache-capacity.png' } };
+      },
+    },
+  };
+
+  const [first, second] = await Promise.all([
+    convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-capacity/source.png', options),
+    convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-capacity/source.png', options),
+  ]);
+
+  assert.equal(first, 'https://kie.test/cache-capacity.png');
+  assert.equal(second, 'https://kie.test/cache-capacity.png');
+  assert.equal(downloadCalls, 1);
+  assert.equal(uploadCalls, 1);
+});
+
+test('non-forced managed asset fallback uploads bypass the process cache', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  let downloadCalls = 0;
+  let uploadCalls = 0;
+  const options = {
+    env: { MEIAO_PUBLIC_BASE_URL: 'http://127.0.0.1:3100' },
+    forceUpload: false,
+    deps: {
+      fetchWithTimeout: async () => {
+        downloadCalls += 1;
+        return createResponse('image-bytes', { 'content-type': 'image/png' });
+      },
+      uploadAssetViaKieWithFallback: async () => {
+        uploadCalls += 1;
+        return { result: { fileUrl: `https://kie.test/fallback-${uploadCalls}.png` } };
+      },
+    },
+  };
+
+  const first = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/no-cache/source.png', options);
+  const second = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/no-cache/source.png', options);
+
+  assert.equal(downloadCalls, 2);
+  assert.equal(uploadCalls, 2);
+  assert.equal(first, 'https://kie.test/fallback-1.png');
+  assert.equal(second, 'https://kie.test/fallback-2.png');
 });
 
 test('failed managed asset uploads are not cached', async () => {
