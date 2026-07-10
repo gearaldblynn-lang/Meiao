@@ -42,11 +42,15 @@ test('deploy_tencent refuses to restart while cloud jobs are running', () => {
   const initialReadinessIndex = source.indexOf('\nrun_remote_deploy_readiness\n');
   const archiveIndex = source.indexOf('tar \\\n');
   const finalReadinessIndex = source.lastIndexOf('node scripts/check-deploy-readiness.mjs');
+  const finalEnvGuardIndex = source.lastIndexOf("if [ ! -f '.env.server' ]");
+  const finalEnvLoadIndex = source.lastIndexOf('source .env.server');
   const restartIndex = source.indexOf('pm2 restart meiao-internal --update-env');
 
   assert.ok(initialReadinessIndex >= 0, 'deploy must define and invoke the cloud readiness preflight');
   assert.ok(initialReadinessIndex < archiveIndex, 'initial readiness must run before uploading or replacing code');
   assert.ok(finalReadinessIndex >= 0, 'deploy must recheck readiness after the remote build');
+  assert.ok(finalEnvGuardIndex < finalReadinessIndex, 'final readiness must verify .env.server first');
+  assert.ok(finalEnvLoadIndex < finalReadinessIndex, 'final readiness must load database settings first');
   assert.ok(finalReadinessIndex < restartIndex, 'final readiness must run immediately before PM2 restart');
   assert.match(source, /MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS/);
 });
