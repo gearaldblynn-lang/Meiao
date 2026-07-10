@@ -68,6 +68,7 @@ const KIE_ASSET_UPLOAD_RETRIES = 2;
 const KIE_ASSET_UPLOAD_RETRY_BASE_MS = 1000;
 const KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY = 2;
 const KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY = 2;
+const KIE_CHAT_MEDIA_RESOLUTION_CONCURRENCY = 2;
 const SEEDANCE_MAX_TOTAL_VIDEO_DURATION_SECONDS = 15;
 const KIE_CHAT_COMPLETION_TIMEOUT_MS = 240_000;
 const KIE_CHAT_STREAM_IDLE_TIMEOUT_MS = 120_000;
@@ -228,9 +229,8 @@ const fetchKieOnce = async (
 // 也通过 deps 走这里),对瞬时传输错误做有界重试。与 jobRuntime 的任务级重试
 // (getNextJobFailureState)叠加,但预算相互独立。
 //
-// 防重复提交铁则:createTask 类 POST 会产生扣费/新任务,只允许在"确认请求未
-// 到达对端"(连接层错误,fetch 直接抛错、无任何 HTTP 响应)时重试;只要收到过
-// HTTP 响应(哪怕 502/503/504)一律不重试提交类请求——宁可失败不可重复扣费。
+// 防重复提交铁则:createTask/chat 类 POST 会产生扣费或新任务。连接层抛错
+// 也无法证明对端未接单，因此非幂等请求一律不重发，并进入 submission_unknown。
 // 只读请求(GET:recordInfo 查询、素材/结果下载)可放心重试含 5xx。
 // 我们自己的超时中断(provider_timeout)不做请求级重试:请求可能已被对端处理,
 // 且任务级重试已覆盖 provider_timeout。
@@ -302,10 +302,19 @@ const fetchKieWithTimeout = async (
     try {
       response = await fetchKieOnce(url, fetchInit, timeoutMessage, timeoutMs, providerStage);
     } catch (error) {
-      // 仅连接层错误(fetch failed/ECONNRESET 等,未收到任何响应)可重试;
-      // request_cancelled / provider_timeout 直接抛出。
-      if (error?.code === 'provider_network_error' && attempt < maxRetries) {
+      if (error?.code === 'provider_network_error' && idempotent && attempt < maxRetries) {
         continue;
+      }
+      if (error?.code === 'provider_network_error' && !idempotent) {
+        throw createProviderError(
+          'provider_submission_unknown',
+          error?.providerMessage || error?.message || 'Kie 提交请求结果未知',
+          {
+            providerStage,
+            providerStatus: 'submission_unknown',
+            submissionUnknown: true,
+          }
+        );
       }
       if (error?.code === 'provider_network_error' && attempt > 0) {
         error.transientRetries = attempt;
@@ -354,6 +363,11 @@ const getKieImageMediaResolutionConcurrency = (env = {}) => {
 const getKieVideoMediaResolutionConcurrency = (env = {}) => {
   const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY', 'KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY') || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY;
+};
+
+const getKieChatMediaResolutionConcurrency = (env = {}) => {
+  const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_CHAT_MEDIA_RESOLUTION_CONCURRENCY', 'KIE_CHAT_MEDIA_RESOLUTION_CONCURRENCY') || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_CHAT_MEDIA_RESOLUTION_CONCURRENCY;
 };
 
 const mapWithConcurrency = async (items, limit, mapper) => {
@@ -619,34 +633,41 @@ const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
 const resolveProviderMessages = async (messages = [], env, signal, options = {}) => {
   const sharedResolvedMediaUrlByRawUrl = options.mediaUrlCache instanceof Map ? options.mediaUrlCache : null;
   const mediaRoute = options.forceManagedAssetUpload ? 'kie' : 'direct';
-  return Promise.all(
-    (Array.isArray(messages) ? messages : []).map(async (message) => {
-      const resolvedMediaUrlByRawUrl = sharedResolvedMediaUrlByRawUrl || new Map();
-      const providerMediaResolver = isKieGeminiChatModel(options.model)
-        ? resolveProviderGeminiChatMediaUrl
-        : resolveProviderChatMediaUrl;
-      const resolveMediaUrl = async (url) => {
-        const rawUrl = String(url || '').trim();
-        if (!rawUrl) return '';
-        const cacheKey = `${mediaRoute}:${rawUrl}`;
-        if (!resolvedMediaUrlByRawUrl.has(cacheKey)) {
-          resolvedMediaUrlByRawUrl.set(cacheKey, providerMediaResolver(rawUrl, env, signal, {
-            forceUpload: Boolean(options.forceManagedAssetUpload),
-          }));
-        }
-        return resolvedMediaUrlByRawUrl.get(cacheKey);
-      };
-      return {
-        ...message,
-        content: await Promise.all(
-          normalizeMessageContentItems(message?.content).map((item) => resolveProviderMessageItem(item, env, signal, {
-            ...options,
-            resolveMediaUrl,
-          }))
-        ),
-      };
+  const sourceMessages = Array.isArray(messages) ? messages : [];
+  const resolvedMediaUrlByRawUrl = sharedResolvedMediaUrlByRawUrl || new Map();
+  const providerMediaResolver = isKieGeminiChatModel(options.model)
+    ? resolveProviderGeminiChatMediaUrl
+    : resolveProviderChatMediaUrl;
+  const resolveMediaUrl = async (url) => {
+    const rawUrl = String(url || '').trim();
+    if (!rawUrl) return '';
+    const cacheKey = `${mediaRoute}:${rawUrl}`;
+    if (!resolvedMediaUrlByRawUrl.has(cacheKey)) {
+      resolvedMediaUrlByRawUrl.set(cacheKey, providerMediaResolver(rawUrl, env, signal, {
+        forceUpload: Boolean(options.forceManagedAssetUpload),
+      }));
+    }
+    return resolvedMediaUrlByRawUrl.get(cacheKey);
+  };
+  const workItems = sourceMessages.flatMap((message, messageIndex) =>
+    normalizeMessageContentItems(message?.content).map((item, itemIndex) => ({ item, itemIndex, messageIndex }))
+  );
+  const resolvedItems = await mapWithConcurrency(
+    workItems,
+    options.mediaResolutionConcurrency || getKieChatMediaResolutionConcurrency(env),
+    ({ item }) => resolveProviderMessageItem(item, env, signal, {
+      ...options,
+      resolveMediaUrl,
     })
   );
+  const contentByMessage = sourceMessages.map(() => []);
+  workItems.forEach(({ messageIndex, itemIndex }, resultIndex) => {
+    contentByMessage[messageIndex][itemIndex] = resolvedItems[resultIndex];
+  });
+  return sourceMessages.map((message, messageIndex) => ({
+    ...message,
+    content: contentByMessage[messageIndex],
+  }));
 };
 
 const buildKieResponsesContent = (items) =>
@@ -1056,14 +1077,28 @@ const resolveKieChatEndpoint = (model) =>
 const isKieGeminiChatModel = (model) => /^gemini-/i.test(String(model || '').trim());
 const isKieGeminiFlashOpenAiModel = (model) => String(model || '').trim() === 'gemini-3-flash-openai';
 const isKieGemini35FlashModel = (model) => String(model || '').trim() === 'gemini-3-5-flash';
+const KIE_SHORT_VIDEO_GEMINI_FALLBACK_MODELS = ['gemini-3-5-flash', 'gemini-3-flash-openai'];
 
 const isKieClaudeChatModel = (model) => normalizeKieChatModel(model) === 'claude-sonnet-4-6';
 
-const getKieChatFallbackModels = (model, preferredFallbackModels = []) => {
+const isShortVideoKieChatJob = (payload = {}, options = {}) => {
+  const module = String(options.jobModule || payload.module || payload.workflowModule || '').trim();
+  if (module === 'video') return true;
+  const subFeature = String(options.jobSubFeature || payload.subFeature || payload.mode || payload.videoGenerationMode || '').trim();
+  return /storyboard|分镜|short_video|viral_split|original_split/.test(subFeature);
+};
+
+const getKieChatFallbackModels = (model, preferredFallbackModels = [], options = {}) => {
   const configured = Array.isArray(preferredFallbackModels)
     ? preferredFallbackModels.map((item) => String(item || '').trim()).filter(Boolean)
     : [];
-  return Array.from(new Set(configured.filter((item) => item !== String(model || '').trim())));
+  const currentModel = String(model || '').trim();
+  const unique = Array.from(new Set(configured.filter((item) => item !== currentModel)));
+  if (!isShortVideoKieChatJob(options.payload, options)) return unique;
+  return Array.from(new Set([
+    ...unique.filter((item) => isKieGeminiChatModel(item)),
+    ...KIE_SHORT_VIDEO_GEMINI_FALLBACK_MODELS.filter((item) => item !== currentModel),
+  ]));
 };
 
 const KIE_CHAT_FALLBACK_ERROR_CODES = new Set([
@@ -1098,16 +1133,13 @@ const payloadContainsManagedAsset = (value, seen = new WeakSet()) => {
   return Object.values(value).some((item) => payloadContainsManagedAsset(item, seen));
 };
 
-const shouldRetryWithKieManagedAsset = ({ payload, env, error, options = {}, taskType }) => {
+const shouldRetryWithKieManagedAsset = ({ payload, env, error, options = {} }) => {
   if (!shouldUseDirectManagedAssetUrls(env)) return false;
   if (options.forceManagedAssetUpload || options.directMediaFallbackAttempted) return false;
   if (!payloadContainsManagedAsset(payload)) return false;
   if (String(error?.providerTaskId || '').trim()) return false;
   const message = String(error?.providerMessage || error?.message || '').trim();
-  if (DIRECT_MANAGED_MEDIA_READ_ERROR_PATTERN.test(message)) return true;
-  return taskType === 'kie_chat'
-    && String(error?.code || '').trim() === 'provider_internal_error'
-    && Number(error?.providerHttpStatus) === 502;
+  return DIRECT_MANAGED_MEDIA_READ_ERROR_PATTERN.test(message);
 };
 
 const markKieManagedAssetFallback = (value, originalError) => ({
@@ -1126,7 +1158,10 @@ const markKieManagedAssetFallback = (value, originalError) => ({
 });
 
 const runKieChatFallbackModels = async (payload, env, signal, originalError, options = {}) => {
-  const fallbackModels = getKieChatFallbackModels(payload.model, payload.fallbackModels);
+  const fallbackModels = getKieChatFallbackModels(payload.model, payload.fallbackModels, {
+    ...options,
+    payload,
+  });
   if (!fallbackModels.length || !shouldFallbackKieChatError(originalError)) {
     throw originalError;
   }
@@ -1137,7 +1172,7 @@ const runKieChatFallbackModels = async (payload, env, signal, originalError, opt
         { ...payload, model: fallbackModel, reasoningLevel: normalizeReasoningLevelForModel(fallbackModel, payload.reasoningLevel) },
         env,
         signal,
-        options
+        { ...options, skipModelFallback: true }
       );
       if (fallbackResult?.result) {
         fallbackResult.result.fallbackFrom = String(payload.model || '').trim();
@@ -2361,7 +2396,7 @@ const assertSeedanceReferenceVideoDuration = async (rawVideoUrls, signal) => {
   );
 };
 
-const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
+const runKieSeedanceVideoJobAttempt = async (payload, env, signal, options = {}) => {
   const { kieApiKey } = getProviderEnv(env);
   ensureProviderKey(kieApiKey, 'Kie API Key');
 
@@ -2382,7 +2417,9 @@ const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
   const videoUrls = new Array(rawVideoUrls.length);
   const audioUrls = new Array(rawAudioUrls.length);
   await mapWithConcurrency(mediaItems, mediaResolutionConcurrency, async (item) => {
-    const resolvedUrl = await resolveProviderGenerationMediaUrl(item.url, env, signal);
+    const resolvedUrl = await resolveProviderGenerationMediaUrl(item.url, env, signal, {
+      forceUpload: Boolean(options.forceManagedAssetUpload),
+    });
     if (item.kind === 'image') imageUrls[item.index] = resolvedUrl;
     if (item.kind === 'video') videoUrls[item.index] = resolvedUrl;
     if (item.kind === 'audio') audioUrls[item.index] = resolvedUrl;
@@ -2449,6 +2486,22 @@ const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
     };
   } catch (error) {
     throw attachProviderTaskId(error, result.data.taskId);
+  }
+};
+
+const runKieSeedanceVideoJob = async (payload, env, signal, options = {}) => {
+  try {
+    return await runKieSeedanceVideoJobAttempt(payload, env, signal, options);
+  } catch (error) {
+    if (!shouldRetryWithKieManagedAsset({ payload, env, error, options })) {
+      throw error;
+    }
+    const fallbackResult = await runKieSeedanceVideoJobAttempt(payload, env, signal, {
+      ...options,
+      forceManagedAssetUpload: true,
+      directMediaFallbackAttempted: true,
+    });
+    return markKieManagedAssetFallback(fallbackResult, error);
   }
 };
 
@@ -2568,12 +2621,13 @@ const assertDreaminaInputs = (mode, localInputs) => {
   }
 };
 
-const pollDreaminaVideoResult = async (submitId, env, signal) => {
+const pollDreaminaVideoResult = async (submitId, env, signal, options = {}) => {
+  const queryVideoTask = options.dreaminaQueryVideoTask || queryDreaminaVideoTask;
   for (let attempt = 0; attempt < DREAMINA_VIDEO_POLL_RETRIES; attempt += 1) {
     if (signal?.aborted) {
       throw createProviderError('request_cancelled', '任务已取消', { providerTaskId: submitId, providerStage: 'polling', providerStatus: 'cancelled' });
     }
-    const result = await queryDreaminaVideoTask({ submitId, env });
+    const result = await queryVideoTask({ submitId, env });
     if (result.status === 'success' && result.videoUrl) return result;
     if (result.status === 'failed') {
       throw createProviderError('provider_bad_request', result.failReason || '即梦视频任务失败', {
@@ -2591,7 +2645,7 @@ const pollDreaminaVideoResult = async (submitId, env, signal) => {
   });
 };
 
-const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '') => {
+const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '', jobOptions = {}) => {
   if (dreaminaVideoRunnerForTest) {
     return dreaminaVideoRunnerForTest({
       ...payload,
@@ -2604,7 +2658,7 @@ const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '') =>
   }
 
   if (providerTaskId) {
-    const queried = await pollDreaminaVideoResult(providerTaskId, env, signal);
+    const queried = await pollDreaminaVideoResult(providerTaskId, env, signal, jobOptions);
     return {
       providerTaskId,
       providerStage: 'completed',
@@ -2620,13 +2674,15 @@ const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '') =>
 
   const localInputs = await prepareDreaminaLocalInputs(payload, env, signal);
   try {
-    const { mode, options } = buildDreaminaVideoOptions(payload, localInputs);
+    const { mode, options: cliOptions } = buildDreaminaVideoOptions(payload, localInputs);
     assertDreaminaInputs(mode, localInputs);
-    const submitted = await submitDreaminaVideoTask(mode, { ...options, env });
+    const submitVideoTask = jobOptions.dreaminaSubmitVideoTask || submitDreaminaVideoTask;
+    const submitted = await submitVideoTask(mode, { ...cliOptions, env });
     const submitId = submitted.submitId;
     if (!submitId && !submitted.videoUrl) {
       throw createProviderError('provider_bad_response', submitted.rawOutput || '即梦未返回 submit_id');
     }
+    if (submitId) await notifyProviderTaskId(jobOptions, submitId);
     if (submitted.status === 'failed') {
       throw createProviderError('provider_bad_request', submitted.failReason || '即梦视频任务提交失败', {
         providerTaskId: submitId,
@@ -2634,7 +2690,7 @@ const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '') =>
         providerStatus: 'failed',
       });
     }
-    const completed = submitted.videoUrl ? submitted : await pollDreaminaVideoResult(submitId, env, signal);
+    const completed = submitted.videoUrl ? submitted : await pollDreaminaVideoResult(submitId, env, signal, jobOptions);
     return {
       providerTaskId: submitId,
       providerStage: 'completed',
@@ -2665,6 +2721,7 @@ const recoverKieChatError = async (payload, env, signal, error, options = {}) =>
     });
     return markKieManagedAssetFallback(fallbackResult, error);
   }
+  if (options.skipModelFallback) throw error;
   return runKieChatFallbackModels(payload, env, signal, error, options);
 };
 
@@ -2673,6 +2730,7 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
   const sharedOptions = {
     ...options,
     mediaUrlCache,
+    mediaResolutionConcurrency: options.mediaResolutionConcurrency || getKieChatMediaResolutionConcurrency(env),
   };
   const requestedModel = String(payload.model || '').trim();
   if (!requestedModel) {
@@ -2820,9 +2878,13 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
     case 'kie_veo':
       return runKieVeoJob(job.payload, env, signal, options);
     case 'dreamina_video':
-      return runDreaminaVideoJob(job.payload, env, signal, job.providerTaskId);
+      return runDreaminaVideoJob(job.payload, env, signal, job.providerTaskId, options);
     case 'kie_chat':
-      return runKieChatJob(job.payload, env, signal, options);
+      return runKieChatJob(job.payload, env, signal, {
+        ...options,
+        jobModule: job.module,
+        jobSubFeature: job.subFeature || job.payload?.subFeature,
+      });
     case 'openai_tool_calling':
       if (typeof options?.onDelta === 'function') {
         return runOpenAIToolCallingStream({ payload: job.payload, env, signal, onDelta: options.onDelta });
