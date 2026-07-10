@@ -694,7 +694,7 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ### Managed assets must not make KIE file staging a mandatory single point of failure
 
-- Symptom: 2026-07-09 多桑、董丹丹、洛克等多个账号在一键主详、买家秀、万物替换集中出现“素材上传到生成服务失败”，目标 28 个 job 最终都停在 `providerTaskId=null + asset_upload + provider_network_error/fetch failed`。
+- Symptom: 2026-07-09 按 job 去重后,多桑、董丹丹、洛克等 7 个账号在一键主详、万物替换、买家秀、产品精修共有 108 个 `asset_upload` 终态失败,全部停在 `providerTaskId=null + asset_upload + provider_network_error/fetch failed`；当天 275 个目标 job 中 154 个成功、117 个以 provider 网络错误终止,属于间歇性退化而非整体中断。
 - Root cause: `resolveProviderGenerationMediaUrl` 和 `resolveProviderChatMediaUrl` 对所有我方托管素材强制转存 KIE。已有的图片单任务并发 2 只能限制一个 job，无法限制多个模块、多个账号同时上传；KIE file-stream-upload 一抖，任务在上游接单前直接失败。进程内也没有跨 job 成功 URL 缓存。
 - Fix: 我方托管素材在公网 HTTPS 基址可用时直连优先；只有明确文件读取失败或同步 chat/Responses 无 task id 的 HTTP 502 才转存 KIE 并重试同一模型。拿到任何 providerTaskId 后禁止重提。实际转存使用跨任务进程级并发总闸门、上传专属重试预算和成功 URL TTL 缓存；`kie-only` 保留为环境变量回滚开关。
 - Regression check: `node --test server/providerAssetUploadLimiter.test.mjs server/providerAssetTransfer.test.mjs server/providerKieImage.test.mjs server/providerGateway.test.mjs server/providerKieTask.test.mjs`；`npm run lint`；`npm run build`；云上 HTTPS asset、正式托管素材 job 与当天日志聚合验收。
