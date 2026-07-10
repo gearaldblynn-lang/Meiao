@@ -39,6 +39,7 @@ const normalizeOptions = (envOrOptions = {}, signal = null, options = {}) => {
       env: envOrOptions.env || {},
       signal: envOrOptions.signal || signal || null,
       forceUpload: Boolean(envOrOptions.forceUpload),
+      uploadPath: String(envOrOptions.uploadPath || options.uploadPath || '').trim(),
       deps: envOrOptions.deps || {},
       ...options,
     };
@@ -47,6 +48,7 @@ const normalizeOptions = (envOrOptions = {}, signal = null, options = {}) => {
     env: envOrOptions || {},
     signal,
     forceUpload: Boolean(options.forceUpload),
+    uploadPath: String(options.uploadPath || '').trim(),
     deps: options.deps || {},
     ...options,
   };
@@ -442,7 +444,9 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
     const publicAssetUrl = resolveExternallyReachableManagedAssetUrl(assetUrl, normalizedOptions.env);
     if (publicAssetUrl) return publicAssetUrl;
   }
-  const cacheKey = getManagedAssetPath(assetUrl) || String(assetUrl || '').trim();
+  const managedAssetKey = getManagedAssetPath(assetUrl) || String(assetUrl || '').trim();
+  const uploadPath = normalizedOptions.uploadPath || 'mayo-storage/internal';
+  const cacheKey = `${uploadPath}:${managedAssetKey}`;
   const uploadManagedAsset = async (transferSignal = normalizedOptions.signal) => {
     const transferOptions = { ...normalizedOptions, signal: transferSignal };
     const downloaded = await downloadManagedAsset(assetUrl, transferOptions);
@@ -450,7 +454,7 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
     const uploaded = await upload({
       ...downloaded,
       fileName: buildUniqueProviderFileName(downloaded.fileName, cacheKey),
-      uploadPath: 'mayo-storage/internal',
+      uploadPath,
     }, transferOptions);
     const fileUrl = String(uploaded?.result?.fileUrl || '').trim();
     return fileUrl;
@@ -610,6 +614,13 @@ export const resolveProviderGeminiChatMediaUrl = async (value, envOrOptions = {}
   const normalized = String(value || '').trim();
   if (!normalized) return '';
   if (isVideoMediaUrl(normalized)) {
+    if (isManagedAssetUrl(normalized)) {
+      return convertManagedAssetUrlToKieFileUrl(normalized, {
+        ...normalizedOptions,
+        forceUpload: normalizedOptions.forceUpload || !shouldUseDirectManagedAssetUrls(normalizedOptions.env),
+        uploadPath: 'openrouter-chat',
+      });
+    }
     return convertGeminiVideoToOpenRouterChatUrl(normalized, normalizedOptions);
   }
   if (shouldUploadGeminiMediaUrlForStableMime(normalized, { isManagedAssetUrl })) {
