@@ -66,15 +66,19 @@ export const reconcileRestartedLocalJobs = (jobs) => {
   return jobs.map((job) => {
     const normalized = normalizeJob(job);
     if (normalized.status !== 'running') return normalized;
+    const updatedAt = now();
+    const canRecoverProviderTask = Boolean(String(normalized.providerTaskId || '').trim());
 
     return normalizeJob({
       ...normalized,
-      status: 'retry_waiting',
-      updatedAt: now(),
+      status: canRecoverProviderTask ? 'retry_waiting' : 'failed',
+      updatedAt,
       startedAt: null,
-      finishedAt: null,
-      errorCode: normalized.errorCode || 'service_restarted',
-      errorMessage: '服务重启后任务已回收到待重试状态',
+      finishedAt: canRecoverProviderTask ? null : updatedAt,
+      errorCode: canRecoverProviderTask ? 'service_restarted' : 'provider_submission_unknown',
+      errorMessage: canRecoverProviderTask
+        ? '服务重启后任务已回收到待恢复状态'
+        : '服务重启时任务尚未记录上游任务 ID，已停止自动重试以防止重复扣费',
     });
   });
 };
@@ -107,7 +111,7 @@ export const createLocalJobRecord = (store, user, payload) => {
     status: 'queued',
     priority: Number(payload.priority || 0),
     payload: payload.payload && typeof payload.payload === 'object' ? payload.payload : {},
-    providerTaskId: '',
+    providerTaskId: String(payload.providerTaskId || ''),
     result: null,
     errorCode: '',
     errorMessage: '',
@@ -201,13 +205,15 @@ export const requestLocalCancelJob = (store, jobId) => {
   return store.jobs[index];
 };
 
-export const requestLocalRetryJob = (store, jobId) => {
+export const requestLocalRetryJob = (store, jobId, options = {}) => {
   const index = findJobIndex(store, jobId);
   if (index < 0) return null;
 
   const updatedAt = now();
   const next = normalizeJob({
     ...store.jobs[index],
+    ...(options.payload && typeof options.payload === 'object' ? { payload: options.payload } : {}),
+    ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
     status: 'queued',
     errorCode: '',
     errorMessage: '',
@@ -221,6 +227,7 @@ export const requestLocalRetryJob = (store, jobId) => {
     runId: '',
     workflowExecutionMode: '',
     updatedAt,
+    ...(options.resetProviderTaskId ? { providerTaskId: '', retryCount: 0 } : {}),
   });
 
   store.jobs[index] = next;
@@ -355,6 +362,7 @@ export const updateLocalJobProviderTaskId = (store, jobId, providerTaskId) => {
   const next = normalizeJob({
     ...store.jobs[index],
     providerTaskId: value,
+    retryCount: 0,
     updatedAt: now(),
   });
   store.jobs[index] = next;
@@ -366,17 +374,19 @@ export const markLocalJobFailed = (store, jobId, error) => {
   if (index < 0) return null;
   const current = store.jobs[index];
   const errorFields = buildJobFailureErrorFields(error);
+  const providerTaskId = String(error?.providerTaskId || current.providerTaskId || '');
   const failure = getNextJobFailureState({
     retryCount: current.retryCount,
     maxRetries: current.maxRetries,
     errorCode: error?.code || 'provider_internal_error',
     providerStage: error?.providerStage || '',
+    providerTaskId,
   });
   const finishedAt = now();
   const next = normalizeJob({
     ...current,
     status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
-    providerTaskId: String(error?.providerTaskId || current.providerTaskId || ''),
+    providerTaskId,
     retryCount: error?.code === 'request_cancelled' ? current.retryCount : failure.retryCount,
     errorCode: errorFields.errorCode,
     errorMessage: errorFields.errorMessage,

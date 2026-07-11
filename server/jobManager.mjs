@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
@@ -32,9 +32,93 @@ const normalizeReusablePayload = (value) => {
   return Object.fromEntries(
     Object.entries(value)
       .filter(([key]) => key !== 'requestId' && key !== '__creditReservation')
+      .sort(([left], [right]) => left.localeCompare(right))
       .map(([key, entryValue]) => [key, normalizeReusablePayload(entryValue)])
   );
 };
+
+export const buildJobSubmissionLockKey = ({
+  userId = '',
+  module = 'system',
+  taskType = 'unknown',
+  provider = 'internal',
+  payload = {},
+} = {}) => {
+  const semanticSubmission = {
+    module: String(module || 'system').slice(0, 60),
+    payload: normalizeReusablePayload(payload && typeof payload === 'object' ? payload : {}),
+    provider: String(provider || 'internal').slice(0, 40),
+    taskType: String(taskType || 'unknown').slice(0, 80),
+    userId: String(userId || ''),
+  };
+  const digest = createHash('sha256')
+    .update(serializeJsonValue(semanticSubmission))
+    .digest('hex');
+  return `meiao:${digest.slice(0, 58)}`;
+};
+
+export const withMysqlSubmissionLock = async (
+  pool,
+  submission,
+  operation,
+  { timeoutSeconds = 10 } = {}
+) => {
+  const connection = await pool.getConnection();
+  const lockName = buildJobSubmissionLockKey(submission);
+  const safeTimeoutSeconds = Math.max(0, Math.floor(Number(timeoutSeconds) || 0));
+  let acquired = false;
+  try {
+    const [rows] = await connection.query(
+      'SELECT GET_LOCK(?, ?) AS acquired',
+      [lockName, safeTimeoutSeconds]
+    );
+    acquired = Number(rows?.[0]?.acquired) === 1;
+    if (!acquired) {
+      const error = new Error('相同任务正在提交，请稍后查看任务状态。');
+      error.code = 'job_submission_lock_timeout';
+      error.statusCode = 409;
+      throw error;
+    }
+    return await operation(connection);
+  } finally {
+    try {
+      if (acquired) {
+        await connection.query('SELECT RELEASE_LOCK(?) AS released', [lockName]);
+      }
+    } finally {
+      connection.release();
+    }
+  }
+};
+
+export const createSerializedJobSubmission = async ({
+  pool,
+  user,
+  jobPayload,
+  findReusableJob,
+  reserveCredits,
+  createJob,
+  releaseCredits,
+  dedupeWindowMs,
+  lockTimeoutSeconds,
+}) => withMysqlSubmissionLock(pool, { userId: user?.id, ...jobPayload }, async (connection) => {
+  const reusableJob = await findReusableJob(connection, user, jobPayload, dedupeWindowMs);
+  if (reusableJob) return { job: reusableJob, deduped: true };
+  const reservation = await reserveCredits(connection, user, jobPayload);
+  try {
+    const job = await createJob(connection, user, jobPayload, reservation);
+    return { job, deduped: false };
+  } catch (error) {
+    if (reservation) {
+      await releaseCredits(connection, reservation, {
+        error,
+        jobPayload,
+        reason: 'job_create_failed',
+      });
+    }
+    throw error;
+  }
+}, { timeoutSeconds: lockTimeoutSeconds });
 
 const toSafeJobConcurrency = (value, fallback = DEFAULT_JOB_CONCURRENCY) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -203,15 +287,21 @@ export const reconcileRestartedMysqlJobs = (jobs, referenceTime = now()) => {
   if (!Array.isArray(jobs)) return [];
   return jobs
     .filter((job) => String(job?.status || '') === 'running')
-    .map((job) => ({
-      ...job,
-      status: 'retry_waiting',
-      startedAt: null,
-      finishedAt: null,
-      updatedAt: Number(referenceTime || now()),
-      errorCode: 'service_restarted',
-      errorMessage: '服务重启后任务已回收到待重试状态',
-    }));
+    .map((job) => {
+      const updatedAt = Number(referenceTime || now());
+      const canRecoverProviderTask = Boolean(String(job?.providerTaskId || '').trim());
+      return {
+        ...job,
+        status: canRecoverProviderTask ? 'retry_waiting' : 'failed',
+        startedAt: null,
+        finishedAt: canRecoverProviderTask ? null : updatedAt,
+        updatedAt,
+        errorCode: canRecoverProviderTask ? 'service_restarted' : 'provider_submission_unknown',
+        errorMessage: canRecoverProviderTask
+          ? '服务重启后任务已回收到待恢复状态'
+          : '服务重启时任务尚未记录上游任务 ID，已停止自动重试以防止重复扣费',
+      };
+    });
 };
 
 export const reconcileStaleProviderlessRunningMysqlJobs = (
@@ -354,7 +444,7 @@ export const createJobRecord = async (pool, user, payload) => {
     status: 'queued',
     priority: Number(payload.priority || 0),
     payload: payload.payload && typeof payload.payload === 'object' ? payload.payload : {},
-    providerTaskId: '',
+    providerTaskId: String(payload.providerTaskId || ''),
     result: null,
     errorCode: '',
     errorMessage: '',
@@ -382,7 +472,7 @@ export const createJobRecord = async (pool, user, payload) => {
       job.status,
       job.priority,
       serializeJsonValue(job.payload),
-      null,
+      job.providerTaskId || null,
       null,
       null,
       null,
@@ -472,6 +562,26 @@ export const getJobQueueStats = async (pool) => {
 
 export const reconcileRestartedRunningJobs = async (pool) => {
   const [rows] = await pool.query(`SELECT * FROM internal_jobs WHERE status = 'running'`);
+  const reconciled = reconcileRestartedMysqlJobs(rows.map(mapJobRow), now());
+  for (const job of reconciled) {
+    await updateJobFields(pool, job.id, {
+      status: job.status,
+      started_at: null,
+      finished_at: job.finishedAt,
+      updated_at: job.updatedAt,
+      error_code: job.errorCode,
+      error_message: job.errorMessage,
+    });
+  }
+  return reconciled;
+};
+
+export const reconcileRestartedProviderlessRunningJobs = async (pool) => {
+  const [rows] = await pool.query(
+    `SELECT * FROM internal_jobs
+     WHERE status = 'running'
+       AND (provider_task_id IS NULL OR provider_task_id = '')`
+  );
   const reconciled = reconcileRestartedMysqlJobs(rows.map(mapJobRow), now());
   for (const job of reconciled) {
     await updateJobFields(pool, job.id, {
@@ -734,6 +844,7 @@ export const requestCancelJob = async (pool, job, actor) => {
 
 export const requestRetryJob = async (pool, job, actor) => {
   const updatedAt = now();
+  const resetProviderTaskId = Boolean(actor?.resetProviderTaskId);
   await updateJobFields(pool, job.id, {
     status: 'queued',
     error_code: null,
@@ -744,6 +855,7 @@ export const requestRetryJob = async (pool, job, actor) => {
     cancel_requested_at: null,
     result_json: null,
     updated_at: updatedAt,
+    ...(resetProviderTaskId ? { provider_task_id: null, retry_count: 0 } : {}),
   });
 
   if (actor?.createLog) {
@@ -874,6 +986,7 @@ export const createJobWorker = ({
               const updatedAt = now();
               await updateJobFields(pool, refreshedJob.id, {
                 provider_task_id: value,
+                retry_count: 0,
                 updated_at: updatedAt,
               });
               await runTaskPlatformWrite(() => recordJobEvent(pool, refreshedJob, {
@@ -990,17 +1103,19 @@ export const createJobWorker = ({
             const poolAgain = await getPool();
             const latestJob = await getJobById(poolAgain, job.id);
             const errorFields = buildJobFailureErrorFields(error);
+            const providerTaskId = String(error?.providerTaskId || latestJob?.providerTaskId || '');
             const failure = getNextJobFailureState({
               retryCount: latestJob?.retryCount ?? 0,
               maxRetries: latestJob?.maxRetries ?? 0,
               errorCode: error?.code || 'provider_internal_error',
               providerStage: error?.providerStage || '',
+              providerTaskId,
             });
             const finishedAt = now();
 
             await updateJobFields(poolAgain, job.id, {
               status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
-              provider_task_id: error?.providerTaskId || latestJob?.providerTaskId || null,
+              provider_task_id: providerTaskId || null,
               retry_count: error?.code === 'request_cancelled' ? latestJob?.retryCount ?? 0 : failure.retryCount,
               error_code: errorFields.errorCode,
               error_message: errorFields.errorMessage,
