@@ -1189,6 +1189,9 @@ const BottomInputBar: React.FC<Props> = ({
   const isGenerateDisabled = isSubmitLocked || Boolean(disabledReason) || (!promptText.trim() && !canGenerateWithoutPrompt);
   const isSubmitBusy = isSubmitLocked;
   const submitLabel = isSubmitBusy ? '任务处理中...' : generateLabel;
+  const handleGenerateClick = () => {
+    if (!isGenerateDisabled) onGenerate();
+  };
   const showPromptInput = module !== AppModuleObj.TRANSLATION;
   const contextMaterialTypes = getMaterialTypesForContext(module, currentParams, activeSubFeature);
   const buyerShowSetCount = isBuyerShow ? getBuyerShowSetCount(currentParams) : 1;
@@ -2718,7 +2721,7 @@ const BottomInputBar: React.FC<Props> = ({
                 onKeyDown={(e) => {
                   if ('Enter' !== e.key || e.shiftKey || isImeComposing(e)) return;
                   e.preventDefault();
-                  if (!isGenerateDisabled) onGenerate();
+                  handleGenerateClick();
                 }}
               />
             </div>
@@ -3069,7 +3072,7 @@ const BottomInputBar: React.FC<Props> = ({
                 </p>
               )}
               <button
-                onClick={onGenerate}
+                onClick={handleGenerateClick}
                 disabled={isGenerateDisabled}
                 className="flex items-center gap-2 px-5 py-2.5 rounded-3xl text-[13px] font-semibold text-white transition-all disabled:opacity-30"
                 style={{ background: 'var(--accent)' }}

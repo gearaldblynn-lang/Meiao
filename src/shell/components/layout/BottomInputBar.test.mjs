@@ -415,13 +415,14 @@ test('shell generation button displays image credit estimate above submit action
 
 test('shell generation button uses an explicit submit lock instead of global running tasks', () => {
   const bottomInputBar = source();
-  const generateButtonBlock = bottomInputBar.match(/<button\s*\n\s*onClick=\{onGenerate\}[\s\S]*?<span>\{submitLabel\}<\/span>/)?.[0] || '';
+  const generateButtonBlock = bottomInputBar.match(/<button\s*\n\s*onClick=\{handleGenerateClick\}[\s\S]*?<span>\{submitLabel\}<\/span>/)?.[0] || '';
 
   assert.match(bottomInputBar, /const isGenerateDisabled = isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)/);
   assert.match(bottomInputBar, /const isSubmitBusy = isSubmitLocked/);
   assert.match(bottomInputBar, /submitLabel = isSubmitBusy \? '任务处理中\.\.\.' : generateLabel/);
+  assert.match(bottomInputBar, /const handleGenerateClick = \(\) => \{\s*if \(!isGenerateDisabled\) onGenerate\(\);\s*\}/);
   assert.match(generateButtonBlock, /disabled=\{isGenerateDisabled\}/);
-  assert.match(bottomInputBar, /if \(!isGenerateDisabled\) onGenerate\(\)/);
+  assert.match(bottomInputBar, /onKeyDown=\{\(e\) => \{[\s\S]*?handleGenerateClick\(\)/);
   assert.match(generateButtonBlock, /Loader2/);
   assert.doesNotMatch(generateButtonBlock, /disabled=\{[^}]*isGenerating/);
 });
