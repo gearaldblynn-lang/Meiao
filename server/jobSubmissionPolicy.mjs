@@ -79,7 +79,7 @@ export const resolveJobSubmissionPolicy = ({
   }
 
   const isVideoStoryboard = normalizedModule === 'video'
-    && normalizedTaskType === 'kie_chat'
+    && (normalizedTaskType === 'kie_chat' || normalizedTaskType === 'kie_image')
     && normalizedSubFeature === 'storyboard';
   const requiresVideoPermission = VIDEO_JOB_TASK_TYPES.has(normalizedTaskType) || isVideoStoryboard;
   if (requiresVideoPermission && !hasVideoPermission) {

@@ -38,6 +38,21 @@ const normalizeReusablePayload = (value) => {
   );
 };
 
+const getClientSubmissionKey = (payload) => {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  return Array.isArray(source)
+    ? ''
+    : String(source.clientSubmissionKey || '').trim();
+};
+
+const getReusablePayloadIdentity = (payload) => {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const clientSubmissionKey = getClientSubmissionKey(source);
+  return clientSubmissionKey
+    ? { clientSubmissionKey }
+    : normalizeReusablePayload(source);
+};
+
 export const buildJobSubmissionLockKey = ({
   userId = '',
   module = 'system',
@@ -47,7 +62,7 @@ export const buildJobSubmissionLockKey = ({
 } = {}) => {
   const semanticSubmission = {
     module: String(module || 'system').slice(0, 60),
-    payload: normalizeReusablePayload(payload && typeof payload === 'object' ? payload : {}),
+    payload: getReusablePayloadIdentity(payload),
     provider: String(provider || 'internal').slice(0, 40),
     taskType: String(taskType || 'unknown').slice(0, 80),
     userId: String(userId || ''),
@@ -243,7 +258,7 @@ export const findReusableJobSubmission = ({
 }) => {
   if (!Array.isArray(jobs) || jobs.length === 0) return null;
 
-  const serializedPayload = serializeJsonValue(normalizeReusablePayload(payload && typeof payload === 'object' ? payload : {}));
+  const serializedPayload = serializeJsonValue(getReusablePayloadIdentity(payload));
   const normalizedModule = String(module || 'system').slice(0, 60);
   const normalizedTaskType = String(taskType || 'unknown').slice(0, 80);
   const normalizedProvider = String(provider || 'internal').slice(0, 40);
@@ -256,7 +271,7 @@ export const findReusableJobSubmission = ({
       String(job?.provider || '') === normalizedProvider &&
       REUSABLE_JOB_STATUSES.has(String(job?.status || '')) &&
       Number(job?.createdAt || 0) >= createdAfter &&
-      serializeJsonValue(normalizeReusablePayload(job?.payload && typeof job.payload === 'object' ? job.payload : {})) === serializedPayload
+      serializeJsonValue(getReusablePayloadIdentity(job?.payload)) === serializedPayload
     ))
     .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
 
@@ -502,12 +517,27 @@ export const createJobRecord = async (pool, user, payload) => {
 };
 
 export const findReusableJobRecord = async (pool, user, payload, dedupeWindowMs = 8000) => {
-  const createdAfter = Math.max(0, now() - Math.max(0, Number(dedupeWindowMs || 0)));
+  const clientSubmissionKey = getClientSubmissionKey(payload?.payload);
+  const createdAfter = clientSubmissionKey
+    ? 0
+    : Math.max(0, now() - Math.max(0, Number(dedupeWindowMs || 0)));
   const normalizedModule = String(payload.module || 'system').slice(0, 60);
   const normalizedTaskType = String(payload.taskType || 'unknown').slice(0, 80);
   const normalizedProvider = String(payload.provider || 'internal').slice(0, 40);
-  const [rows] = await pool.query(
-    `SELECT * FROM internal_jobs
+  const [rows] = clientSubmissionKey
+    ? await pool.query(
+      `SELECT * FROM internal_jobs
+       WHERE user_id = ?
+         AND module = ?
+         AND task_type = ?
+         AND provider = ?
+         AND status IN ('queued', 'running', 'retry_waiting')
+         AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.clientSubmissionKey')) = ?
+       ORDER BY created_at DESC`,
+      [user.id, normalizedModule, normalizedTaskType, normalizedProvider, clientSubmissionKey]
+    )
+    : await pool.query(
+      `SELECT * FROM internal_jobs
      WHERE user_id = ?
        AND module = ?
        AND task_type = ?
@@ -516,8 +546,8 @@ export const findReusableJobRecord = async (pool, user, payload, dedupeWindowMs 
        AND created_at >= ?
      ORDER BY created_at DESC
      LIMIT 20`,
-    [user.id, normalizedModule, normalizedTaskType, normalizedProvider, createdAfter]
-  );
+      [user.id, normalizedModule, normalizedTaskType, normalizedProvider, createdAfter]
+    );
 
   return findReusableJobSubmission({
     jobs: rows.map(mapJobRow),
@@ -543,21 +573,46 @@ export const getJobByIdForUpdate = async (connection, jobId) => {
   return rows[0] ? mapJobRow(rows[0]) : null;
 };
 
-export const resolveJobDeletionAction = (job = {}) => {
+export const resolveJobDeletionAction = (job = {}, { pendingReservation = false } = {}) => {
   const status = String(job?.status || '').trim();
   if (status === 'queued' || status === 'retry_waiting') return 'cancel_then_delete';
   if (status === 'running') return 'block_active';
   if (status === 'failed' && String(job?.errorCode || '').trim() === 'provider_submission_unknown') {
     return 'block_submission_unknown';
   }
+  if (status === 'cancelled' && String(job?.providerTaskId || '').trim()) {
+    return 'block_submitted_cancelled';
+  }
+  if (pendingReservation) return 'block_pending_reservation';
   return 'delete';
 };
 
-export const deleteJobById = async (pool, jobId) => {
-  const job = await getJobById(pool, jobId);
-  if (!job) return null;
-  await pool.query('DELETE FROM internal_jobs WHERE id = ?', [jobId]);
-  return job;
+export const deleteJobById = async (pool, jobId, options = {}) => {
+  const connection = await pool.getConnection();
+  try {
+    return await withMysqlTransaction(connection, async () => {
+      const job = await getJobByIdForUpdate(connection, jobId);
+      if (!job || (options.userId && String(job.userId) !== String(options.userId))) {
+        return { job: null, action: 'not_found', deleted: false };
+      }
+      const pendingReservation = typeof options.hasPendingReservation === 'function'
+        ? Boolean(await options.hasPendingReservation(connection, job))
+        : false;
+      const action = resolveJobDeletionAction(job, { pendingReservation });
+      if (action !== 'delete') return { job, action, deleted: false };
+
+      const [result] = await connection.query(
+        'DELETE FROM internal_jobs WHERE id = ? AND status = ?',
+        [job.id, job.status]
+      );
+      if (!result?.affectedRows) {
+        return { job, action: 'job_state_changed', deleted: false };
+      }
+      return { job, action, deleted: true };
+    });
+  } finally {
+    connection.release();
+  }
 };
 
 export const listJobsForUser = async (pool, userId, options = {}) => {
@@ -989,7 +1044,7 @@ export const resolveSubmissionUnknownJob = async ({
         const [result] = await connection.query(
           `UPDATE internal_jobs
            SET status = 'retry_waiting', provider_task_id = ?, started_at = NULL, finished_at = NULL,
-               cancel_requested_at = NULL, error_code = 'submission_resolved_bound',
+               cancel_requested_at = NULL, retry_count = 0, error_code = 'submission_resolved_bound',
                error_message = '管理员已核实并绑定上游任务 ID，等待恢复查询', updated_at = ?
            WHERE id = ? AND status = 'failed' AND error_code = 'provider_submission_unknown'`,
           [normalizedProviderTaskId, updatedAt, job.id]
@@ -1009,6 +1064,7 @@ export const resolveSubmissionUnknownJob = async ({
             startedAt: null,
             finishedAt: null,
             cancelRequestedAt: null,
+            retryCount: 0,
             errorCode: 'submission_resolved_bound',
             errorMessage: '管理员已核实并绑定上游任务 ID，等待恢复查询',
             updatedAt,
@@ -1174,6 +1230,7 @@ export const createJobWorker = ({
 
         void (async () => {
           let attempt = null;
+          let notifiedProviderTaskId = '';
           try {
             const refreshedJob = await getJobById(pool, job.id);
             if (!refreshedJob) return;
@@ -1184,7 +1241,7 @@ export const createJobWorker = ({
               controller.abort();
             }
 
-            let notifiedProviderTaskId = String(refreshedJob.providerTaskId || '').trim();
+            notifiedProviderTaskId = String(refreshedJob.providerTaskId || '').trim();
             const onProviderTaskId = async (providerTaskId) => {
               const value = String(providerTaskId || '').trim();
               if (!value || value === notifiedProviderTaskId) return;
@@ -1309,7 +1366,7 @@ export const createJobWorker = ({
             const poolAgain = await getPool();
             const latestJob = await getJobById(poolAgain, job.id);
             const errorFields = buildJobFailureErrorFields(error);
-            const providerTaskId = String(error?.providerTaskId || latestJob?.providerTaskId || '');
+            const providerTaskId = String(error?.providerTaskId || notifiedProviderTaskId || latestJob?.providerTaskId || '');
             const failure = getNextJobFailureState({
               retryCount: latestJob?.retryCount ?? 0,
               maxRetries: latestJob?.maxRetries ?? 0,

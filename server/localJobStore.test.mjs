@@ -6,6 +6,7 @@ import {
   claimLocalJobForExecution,
   createLocalJobRecord,
   deleteLocalJobRecord,
+  findReusableLocalJobRecord,
   getLocalJobById,
   getLocalJobQueueStats,
   listLocalJobsForUser,
@@ -15,6 +16,7 @@ import {
   reconcileRestartedLocalJobs,
   requestLocalCancelJob,
   requestLocalRetryJob,
+  resolveLocalSubmissionUnknownJob,
   takeNextLocalExecutableJobs,
   updateLocalJobProviderTaskId,
 } from './localJobStore.mjs';
@@ -37,6 +39,86 @@ const createUser = (id = 'user-1') => ({
 test('normalizeLocalJobs returns stable empty array for invalid input', () => {
   assert.deepEqual(normalizeLocalJobs(null), []);
   assert.deepEqual(normalizeLocalJobs({}), []);
+});
+
+test('normalizeLocalJobs never evicts active work when trimming terminal history', () => {
+  const active = {
+    id: 'old-active-job',
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    status: 'running',
+    payload: { clientSubmissionKey: 'stable-local-key' },
+    createdAt: 1,
+  };
+  const terminal = Array.from({ length: 500 }, (_, index) => ({
+    ...active,
+    id: `terminal-${index}`,
+    status: 'succeeded',
+    payload: {},
+    createdAt: index + 2,
+  }));
+
+  const normalized = normalizeLocalJobs([...terminal, active]);
+
+  assert.equal(normalized.length, 500);
+  assert.ok(normalized.some((job) => job.id === active.id));
+  assert.equal(normalized.filter((job) => job.status === 'succeeded').length, 499);
+});
+
+test('local explicit submission key reuses an active job outside the ordinary dedupe window', () => {
+  const store = createStore();
+  const user = createUser('user-a');
+  store.jobs.push({
+    id: 'old-active-job',
+    userId: user.id,
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    status: 'running',
+    payload: { clientSubmissionKey: 'stable-local-key' },
+    createdAt: 1,
+  });
+
+  const matched = findReusableLocalJobRecord(store, user, {
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    payload: { clientSubmissionKey: 'stable-local-key', prompt: 'same semantic input' },
+  }, 1);
+
+  assert.equal(matched?.id, 'old-active-job');
+});
+
+test('local admin can release a verified submission-unknown reservation', () => {
+  const store = createStore();
+  store.jobs.push({
+    id: 'local-submission-unknown',
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'failed',
+    providerTaskId: 'non-queryable-response-id',
+    errorCode: 'provider_submission_unknown',
+    errorMessage: 'unknown',
+    payload: {},
+    retryCount: 0,
+    maxRetries: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  let releasedJobId = '';
+
+  const result = resolveLocalSubmissionUnknownJob(store, {
+    jobId: 'local-submission-unknown',
+    action: 'release',
+    releaseReservation: (job) => { releasedJobId = job.id; },
+  });
+
+  assert.equal(releasedJobId, 'local-submission-unknown');
+  assert.equal(result.job.errorCode, 'provider_submission_released');
 });
 
 test('createLocalJobRecord stores queued job with default retry fields', () => {

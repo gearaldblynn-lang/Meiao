@@ -469,6 +469,58 @@ test('executeProviderJob checkpoints Dreamina submitId before the first poll', a
   }
 });
 
+test('executeProviderJob retains Dreamina submitId when the durable checkpoint fails', async () => {
+  const originalFetch = global.fetch;
+  let pollCalls = 0;
+  global.fetch = async (url) => {
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), {
+        status: 200,
+        headers: { 'content-type': 'image/jpeg', 'content-length': '4' },
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'dreamina_video',
+          payload: {
+            mode: 'multimodal2video',
+            prompt: 'checkpoint failure must recover old task',
+            imageUrls: ['/api/assets/file/dreamina/checkpoint-failure.jpg'],
+            duration: 5,
+          },
+        },
+        { MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com' },
+        new AbortController().signal,
+        {
+          dreaminaSubmitVideoTask: async () => ({
+            submitId: 'dreamina-paid-checkpoint-id',
+            status: 'running',
+          }),
+          dreaminaQueryVideoTask: async () => {
+            pollCalls += 1;
+            return { status: 'success', videoUrl: 'https://example.com/must-not-poll.mp4' };
+          },
+          onProviderTaskId: async () => {
+            throw Object.assign(new Error('checkpoint write failed'), { code: 'ER_LOCK_DEADLOCK' });
+          },
+        }
+      ),
+      (error) => error?.code === 'provider_internal_error'
+        && error?.providerTaskId === 'dreamina-paid-checkpoint-id'
+        && error?.providerStage === 'provider_checkpoint'
+        && error?.checkpointErrorCode === 'ER_LOCK_DEADLOCK'
+    );
+    assert.equal(pollCalls, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob submits seedance fast video jobs through kie api and preserves real credits', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
@@ -4042,6 +4094,88 @@ test('executeProviderJob forces KIE media on same-model Gemini direct media fall
   }
 });
 
+test('executeProviderJob never retries managed media after an ambiguous HTTP 5xx', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), init });
+    if (String(url).includes('/gemini-3.1-pro/v1/chat/completions')) {
+      return createJsonResponse({ message: 'Failed to get the file information' }, 502);
+    }
+    throw new Error(`ambiguous 5xx must not trigger another request: ${String(url)}`);
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          module: 'video',
+          subFeature: 'storyboard',
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gemini-3.1-pro-openai',
+            messages: [{
+              role: 'user',
+              content: [{ type: 'input_file', file_url: '/api/assets/file/storyboard/ambiguous.mp4' }],
+            }],
+          },
+        },
+        {
+          KIE_API_KEY: 'test-key',
+          MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+          MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+        },
+        new AbortController().signal
+      ),
+      (error) => Number(error?.providerHttpStatus) === 502
+    );
+
+    assert.equal(requests.filter((item) => item.url.includes('/gemini-3.1-pro/v1/chat/completions')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob classifies non-queryable chat checkpoint failure for admin resolution', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/gemini-3.1-pro/v1/chat/completions')) {
+      return createJsonResponse({
+        id: 'chat-checkpoint-response-id',
+        choices: [{ message: { content: 'storyboard planned' } }],
+      });
+    }
+    throw new Error(`unexpected request: ${String(url)}`);
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          module: 'video',
+          subFeature: 'storyboard',
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gemini-3.1-pro-openai',
+            messages: [{ role: 'user', content: 'checkpoint this response' }],
+          },
+        },
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal,
+        { onProviderTaskId: async () => { throw new Error('checkpoint unavailable'); } }
+      ),
+      (error) => error?.code === 'provider_submission_unknown'
+        && error?.providerTaskId === 'chat-checkpoint-response-id'
+        && error?.providerStage === 'provider_checkpoint'
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob sends managed storyboard video directly to Gemini without KIE staging', async () => {
   __testOnly_clearManagedAssetUploadCache();
   const originalFetch = global.fetch;
@@ -4804,6 +4938,72 @@ test('executeProviderJob does not switch models after ambiguous gemini transport
 
     assert.match(requests[0].url, /\/gemini-3-flash\/v1\/chat\/completions$/);
     assert.equal(requests.length, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob stops the fallback chain after any unsafe fallback-model failure', async () => {
+  const originalFetch = global.fetch;
+  const scenarios = [
+    {
+      name: 'submission unknown',
+      respond: async () => {
+        throw new TypeError('fetch failed after fallback submit');
+      },
+      matches: (error) => error?.code === 'provider_submission_unknown',
+    },
+    {
+      name: 'ambiguous HTTP 500',
+      respond: async () => createJsonResponse({ message: 'upstream failed after accepting request' }, 500),
+      matches: (error) => error?.code === 'provider_internal_error'
+        && Number(error?.providerHttpStatus) === 500,
+    },
+    {
+      name: 'provider task id received',
+      respond: async () => createJsonResponse({
+        id: 'fallback-provider-task-id',
+        choices: [{ message: { content: 'Server exception, please try again later.' } }],
+      }),
+      matches: (error) => error?.providerTaskId === 'fallback-provider-task-id',
+    },
+  ];
+
+  try {
+    for (const scenario of scenarios) {
+      const requests = [];
+      global.fetch = async (url, init = {}) => {
+        requests.push({ url: String(url), init });
+        if (String(url).includes('/codex/v1/responses')) {
+          return createJsonResponse({ output_text: 'Server exception, please try again later.' });
+        }
+        if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
+          return scenario.respond();
+        }
+        if (String(url).includes('/v1/chat/completions')) {
+          return createJsonResponse({ choices: [{ message: { content: 'must not submit another fallback' } }] });
+        }
+        throw new Error(`unexpected request: ${String(url)}`);
+      };
+
+      await assert.rejects(
+        () => executeProviderJob(
+          {
+            taskType: 'kie_chat',
+            payload: {
+              model: 'gpt-5-4-openai-resp',
+              fallbackModels: ['gemini-3-flash-openai', 'gpt-5-2'],
+              messages: [{ role: 'user', content: 'test fallback safety' }],
+            },
+          },
+          { KIE_API_KEY: 'test-key' },
+          new AbortController().signal
+        ),
+        scenario.matches,
+        scenario.name
+      );
+      assert.equal(requests.length, 2, scenario.name);
+    }
   } finally {
     global.fetch = originalFetch;
   }

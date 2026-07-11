@@ -1080,6 +1080,92 @@ test('shell data adapter restores board backend identity as the active cancel ta
   assert.equal(snapshot.tasks.find((item) => item.backendJobId === 'storyboard-board-job')?.projectId, projectId);
 });
 
+test('storyboard hydration selects the newest same-board job without losing local edits', () => {
+  const projectId = 'storyboard-multi-job-project';
+  const localVersions = [
+    { id: 'local-v1', imageUrl: '/local-v1.png', createdAt: 1 },
+    { id: 'local-v2', imageUrl: '/local-v2.png', createdAt: 2 },
+  ];
+  const state = {
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: projectId,
+          name: '多任务分镜恢复',
+          config: { duration: '15s', shotCount: 2, aspectRatio: '9:16', videoGenerationMode: 'original' },
+          status: 'imaging',
+          script: '用户脚本',
+          shots: [
+            { id: 'shot-1', prompt: '镜头一' },
+            { id: 'shot-2', prompt: '镜头二' },
+          ],
+          boards: [{
+            id: 'board-1',
+            status: 'pending',
+            prompt: '用户修改后的 board prompt',
+            imageUrl: '/local-v2.png',
+            imageVersions: localVersions,
+            backendJobId: 'storyboard-board-job-old',
+            taskId: 'storyboard-provider-old',
+          }, {
+            id: 'board-2',
+            status: 'pending',
+            prompt: '下一块分镜',
+          }],
+          createdAt: 1783600000000,
+        }],
+      },
+    },
+  };
+  const newestRunningJob = {
+    id: 'storyboard-board-job-new',
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: 'storyboard-provider-new',
+    status: 'running',
+    payload: {
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_board_image',
+      phase: 'regenerate',
+      boardId: 'board-1',
+    },
+    result: null,
+    createdAt: 1783600000300,
+    updatedAt: 1783600000400,
+  };
+  const olderCompletedJob = {
+    id: 'storyboard-board-job-old',
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: 'storyboard-provider-old',
+    status: 'succeeded',
+    payload: {
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_board_image',
+      phase: 'confirm',
+      boardId: 'board-1',
+    },
+    result: { imageUrl: '/provider-old.png' },
+    createdAt: 1783600000100,
+    updatedAt: 1783600000200,
+  };
+
+  const project = buildShellDataSnapshot(state, [newestRunningJob, olderCompletedJob])
+    .projects.find((item) => item.id === projectId)
+    ?.storyboardSourceProject;
+
+  assert.equal(project?.status, 'imaging');
+  assert.equal(project?.boards[0]?.status, 'generating');
+  assert.equal(project?.boards[0]?.backendJobId, 'storyboard-board-job-new');
+  assert.equal(project?.boards[0]?.taskId, 'storyboard-provider-new');
+  assert.equal(project?.boards[0]?.imageUrl, '/local-v2.png');
+  assert.equal(project?.boards[0]?.prompt, '用户修改后的 board prompt');
+  assert.deepEqual(project?.boards[0]?.imageVersions, localVersions);
+  assert.equal(project?.boards[1]?.status, 'pending');
+});
+
 test('storyboard job hydration preserves newer edited board state and image history', () => {
   const projectId = 'storyboard-edited-project';
   const config = {

@@ -35,7 +35,11 @@ import {
 import type { PersistedAppState } from './utils/appState';
 import { ThemeContext } from './shell/context/ThemeContext';
 import { filterProjectsForScope } from './adapters/shellScopeFilters';
-import { pruneKnownLegacyGarbageFromPersistedState, prunePersistedAppStateForDeletion } from './utils/persistedDeletion';
+import {
+  applyPersistedDeletionTombstones,
+  pruneKnownLegacyGarbageFromPersistedState,
+  prunePersistedAppStateForDeletion,
+} from './utils/persistedDeletion';
 import { playCompletionSound, primeCompletionSound } from './utils/soundUtils';
 import type { SystemPublicConfig } from './types';
 import { mergeShellRuntimeEntities } from './adapters/shellRuntimeMerge';
@@ -56,6 +60,7 @@ import { shouldPersistSyncedProjectFromJobs } from './utils/syncedProjectPersist
 import { deleteShellDraftAsset, loadShellDraftAsset, pruneShellDraftAssets, restoreShellDraftAssetUrls, saveShellDraftAsset } from './utils/shellDraftAssetStore';
 import { detectMp4VideoCodecFromBlob } from './utils/videoCodec';
 import { createMaterialUploadCoordinator } from './utils/materialUploadCoordinator';
+import { buildGenerationSubmissionKey } from './utils/generationSubmissionKey';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
 import {
   getRetouchCustomSizeRatioWarning,
@@ -70,6 +75,13 @@ import {
   getResumableStoryboardBoard,
   mergeRecoveredStoryboardProject,
 } from './shell/modules/Video/storyboardGenerationState.mjs';
+import {
+  collectActiveStoryboardBoardJobIds,
+  collectStoryboardBoardJobIds,
+  collectStoryboardProjectJobIds,
+  markStoryboardProjectCancelled,
+  removeStoryboardBoardResult,
+} from './shell/modules/Video/storyboardProjectActions.mjs';
 import { resolveShellSkuCount } from './adapters/shellSkuCount';
 import { buildOneClickPlanGenerationMaterials } from './adapters/shellOneClickMaterials.mjs';
 import {
@@ -244,8 +256,6 @@ const shouldRefreshExpiringMaterialUrl = (url?: string, hasLocalAsset = false) =
     return false;
   }
 };
-
-const buildGenerationSubmitLockKey = (module: AppModule, subFeature?: string) => `${module}:${subFeature || 'default'}`;
 
 const latestIdentityText = (...values: unknown[]) => {
   const merged = Array.from(new Set(
@@ -428,8 +438,21 @@ export interface Task {
   completed?: number;
   subFeature?: string;
   backendJobId?: string;
+  storyboardBoardId?: string;
   prompt?: string;
 }
+
+type StoryboardBoardDeletionGuard = {
+  projectId: string;
+  boardId: string;
+  jobIds: Set<string>;
+  phase: 'collecting' | 'committed';
+  cancellationPromises: Map<string, Promise<unknown>>;
+};
+
+const getStoryboardBoardDeletionGuardKey = (projectId: string, boardId: string) => (
+  `${String(projectId || '').trim()}:${String(boardId || '').trim()}`
+);
 
 const SHELL_MANUAL_CANCEL_ERROR = '已手动中断';
 
@@ -2011,6 +2034,9 @@ const AppContent: React.FC<{
   );
   const [videoMemory, setVideoMemoryState] = useState<VideoPersistentState | null>(null);
   const taskControllersRef = useRef<Record<string, AbortController>>({});
+  const deletedStoryboardProjectIdsRef = useRef<Set<string>>(new Set());
+  const cancelledStoryboardProjectIdsRef = useRef<Set<string>>(new Set());
+  const storyboardBoardDeletionGuardsRef = useRef<Map<string, StoryboardBoardDeletionGuard>>(new Map());
   const generationSubmitLocksRef = useRef<Set<string>>(new Set());
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
   const { addToast } = useToast();
@@ -2998,7 +3024,12 @@ const AppContent: React.FC<{
     resetShellWorkspaceForUser(shellLocalScopeUserId);
   }, [resetShellWorkspaceForUser, shellLocalScopeUserId]);
 
-  const persistDeletionToSharedState = useCallback(async (target: { projectId: string; resultId?: string; jobIds?: string[] }) => {
+  const persistDeletionToSharedState = useCallback(async (target: {
+    projectId: string;
+    resultId?: string;
+    jobIds?: string[];
+    preserveStoryboardBoardSlot?: boolean;
+  }) => {
     const write = async () => {
       try {
         const {
@@ -3007,28 +3038,11 @@ const AppContent: React.FC<{
           sanitizePersistedAppState,
         } = await loadShellPersistenceTools();
         const persistedBase = await resolveSharedStateBaseForWrite();
-        const projectId = String(target.projectId || '').trim();
-        const resultId = String(target.resultId || '').trim();
-        const jobIds = Array.from(new Set((target.jobIds || [])
-          .map((jobId) => String(jobId || '').trim())
-          .filter(Boolean)));
         const prunedState = prunePersistedAppStateForDeletion(buildPersistedAppState(persistedBase), target);
-        const nextState = sanitizePersistedAppState(prunedState);
-        nextState.shellDraft = normalizeShellDraftState({
-          ...nextState.shellDraft,
-          deletedJobIds: Array.from(new Set([
-            ...(prunedState.shellDraft?.deletedJobIds || []),
-            ...jobIds,
-          ])).slice(-500),
-          deletedProjectIds: Array.from(new Set([
-            ...(prunedState.shellDraft?.deletedProjectIds || []),
-            projectId,
-          ].filter(Boolean))).slice(-500),
-          deletedResultIds: Array.from(new Set([
-            ...(prunedState.shellDraft?.deletedResultIds || []),
-            resultId,
-          ].filter(Boolean))).slice(-500),
-        });
+        const nextState = sanitizePersistedAppState(
+          applyPersistedDeletionTombstones(prunedState, target),
+        );
+        nextState.shellDraft = normalizeShellDraftState(nextState.shellDraft);
         latestSharedStateRef.current = nextState;
         savePersistedAppState(nextState, shellLocalScopeUserId);
         try {
@@ -3458,6 +3472,34 @@ const AppContent: React.FC<{
   }) => {
     const backendJobId = String(identity.jobId || '').trim();
     if (!backendJobId) return;
+    const deletionGuard = identity.boardId
+      ? storyboardBoardDeletionGuardsRef.current.get(
+          getStoryboardBoardDeletionGuardKey(identity.projectId, identity.boardId),
+        )
+      : undefined;
+    if (deletionGuard) {
+      deletionGuard.jobIds.add(backendJobId);
+      const cancellationPromise = cancelInternalJob(backendJobId);
+      deletionGuard.cancellationPromises.set(backendJobId, cancellationPromise);
+      if (deletionGuard.phase === 'committed') {
+        void cancellationPromise
+          .then(() => persistDeletionToSharedState({
+            projectId: deletionGuard.projectId,
+            resultId: deletionGuard.boardId,
+            jobIds: Array.from(deletionGuard.jobIds),
+            preserveStoryboardBoardSlot: true,
+          }))
+          .catch(() => null);
+      }
+      return;
+    }
+    if (
+      deletedStoryboardProjectIdsRef.current.has(identity.projectId)
+      || cancelledStoryboardProjectIdsRef.current.has(identity.projectId)
+    ) {
+      void cancelInternalJob(backendJobId).catch(() => null);
+      return;
+    }
     const providerTaskId = String(identity.providerTaskId || '').trim() || undefined;
     setVideoMemory((previousState) => {
       const baseState = previousState || createDefaultVideoState();
@@ -3483,6 +3525,7 @@ const AppContent: React.FC<{
               boards: durableProject.boards.map((board) => board.id === identity.boardId ? {
                 ...board,
                 status: 'generating',
+                autoResumeBlocked: undefined,
                 backendJobId,
                 taskId: providerTaskId || board.taskId,
                 error: undefined,
@@ -3504,19 +3547,26 @@ const AppContent: React.FC<{
         createdAt: Date.now(),
         subFeature: 'storyboard',
         backendJobId,
+        storyboardBoardId: identity.boardId,
       };
       const existingIndex = previousTasks.findIndex((task) => task.id === backendJobId);
       if (existingIndex < 0) return [nextTask, ...previousTasks];
       return previousTasks.map((task, index) => index === existingIndex ? { ...task, ...nextTask } : task);
     });
-  }, [setVideoMemory]);
+  }, [persistDeletionToSharedState, setVideoMemory]);
 
   // ── Generate (standard modules) ──
   const handleGenerate = useCallback(async () => {
     const targetModule = activeModule;
     const targetSubFeature = activeSubFeature;
     const guardedSubmitLockKey = shouldGuardGenerationSubmit(targetModule, targetSubFeature)
-      ? buildGenerationSubmitLockKey(targetModule, targetSubFeature)
+      ? buildGenerationSubmissionKey({
+          module: targetModule,
+          subFeature: targetSubFeature,
+          prompt: promptText,
+          params: currentParams,
+          materials: filteredMaterials,
+        })
       : '';
     const hasGuardedSubmitLock = Boolean(guardedSubmitLockKey);
     const beginGuardedSubmit = () => !hasGuardedSubmitLock || beginGenerationSubmitLock(guardedSubmitLockKey);
@@ -3566,10 +3616,17 @@ const AppContent: React.FC<{
           script: '素材上传中，正在准备公网参考 URL...',
           shots: [],
           boards: [],
+          clientSubmissionKey: guardedSubmitLockKey,
           createdAt: Date.now(),
           sceneDescription: draftRuntimeConfig.videoGenerationMode === 'viral_split' ? '' : (draftRuntimeConfig.scenes[index] || storyboardPrompt),
         }));
         pendingStoryboardProjectIds = nextProjects.map((project) => project.id);
+        nextProjects.forEach((project) => {
+          deletedStoryboardProjectIdsRef.current.delete(project.id);
+          cancelledStoryboardProjectIdsRef.current.delete(project.id);
+          const storyboardController = new AbortController();
+          taskControllersRef.current[project.id] = storyboardController;
+        });
         setVideoMemory((prev) => {
           const currentStoryboard = prev.storyboard || baseStoryboard;
           return {
@@ -3584,6 +3641,12 @@ const AppContent: React.FC<{
         });
         storyboardFailureStep = '素材上传';
         const storyboardMaterials = await ensureMaterialRemoteUrls(filteredMaterials, AppModuleObj.VIDEO);
+        if (nextProjects.some((project) => (
+          deletedStoryboardProjectIdsRef.current.has(project.id)
+          || taskControllersRef.current[project.id]?.signal.aborted
+        ))) {
+          return;
+        }
         const runtimeConfig = buildVideoStoryboardConfig(baseStoryboard.config, storyboardPrompt, currentParams, storyboardMaterials);
         const productUrls = runtimeConfig.uploadedProductUrls.length > 0 ? runtimeConfig.uploadedProductUrls : (storyboardMaterials.product || []).map((item) => item.remoteUrl || item.url).filter(Boolean);
         if (productUrls.length === 0) {
@@ -3612,6 +3675,9 @@ const AppContent: React.FC<{
         const { generateStoryboardScript, generateStoryboardBoardImage } = await import('./services/videoStoryboardService');
         let hasPendingStoryboardBoardResult = false;
         for (const project of nextProjects) {
+          const storyboardController = taskControllersRef.current[project.id] || new AbortController();
+          taskControllersRef.current[project.id] = storyboardController;
+          if (deletedStoryboardProjectIdsRef.current.has(project.id) || storyboardController.signal.aborted) continue;
           storyboardFailureStep = '分镜脚本生成';
           const {
             script,
@@ -3629,8 +3695,9 @@ const AppContent: React.FC<{
               shellProjectId: project.id,
               planningPurpose: 'storyboard_planning',
               phase: 'planning',
+              signal: storyboardController.signal,
+              clientSubmissionKey: `${guardedSubmitLockKey}:planning`,
               onJobCreated: (jobId, providerTaskId) => {
-                releaseGuardedSubmit();
                 recordStoryboardJobCreated({
                   projectId: project.id,
                   planningPurpose: 'storyboard_planning',
@@ -3686,7 +3753,7 @@ const AppContent: React.FC<{
           let previousBoardImageUrl: string | undefined;
           let hasPendingBoardResult = false;
           storyboardFailureStep = '分镜宫格生图';
-          for (const board of boards) {
+          for (const [boardIndex, board] of boards.entries()) {
             const generated = await generateStoryboardBoardImage(
               board,
               shots,
@@ -3701,6 +3768,8 @@ const AppContent: React.FC<{
                 planningPurpose: 'storyboard_board_image',
                 phase: 'initial',
                 boardId: board.id,
+                signal: storyboardController.signal,
+                clientSubmissionKey: `${guardedSubmitLockKey}:board:${boardIndex}`,
                 onJobCreated: (jobId, providerTaskId) => recordStoryboardJobCreated({
                   projectId: project.id,
                   planningPurpose: 'storyboard_board_image',
@@ -3781,6 +3850,10 @@ const AppContent: React.FC<{
         return;
       } catch (error) {
         if (bailIfFrontendResourceError(error)) return;
+        if (pendingStoryboardProjectIds.some((projectId) => (
+          deletedStoryboardProjectIdsRef.current.has(projectId)
+          || taskControllersRef.current[projectId]?.signal.aborted
+        ))) return;
         const failureMessage = formatVideoStoryboardFailureMessage(storyboardFailureStep, error);
         if (pendingStoryboardProjectIds.length > 0) {
           setVideoMemory((prev) => {
@@ -3802,6 +3875,9 @@ const AppContent: React.FC<{
         addToast(failureMessage, 'error');
         return;
       } finally {
+        pendingStoryboardProjectIds.forEach((projectId) => {
+          delete taskControllersRef.current[projectId];
+        });
         setIsGenerating(false);
         setVideoMemory((prev) => ({ ...prev, isGenerating: false }));
         releaseGuardedSubmit();
@@ -4407,8 +4483,7 @@ const AppContent: React.FC<{
 	                  shellPurpose: 'translation_planning_analysis',
 	                },
 	                publicBaseUrl,
-		              }, material.sourceUrl, (jobId: string) => {
-		                releaseGuardedSubmit();
+	              }, material.sourceUrl, (jobId: string) => {
 		                translationFileItems[index] = {
 	                  ...translationFileItems[index],
 	                  backendJobId: jobId || translationFileItems[index].backendJobId,
@@ -4459,7 +4534,6 @@ const AppContent: React.FC<{
 	              taskMetadata: translationTaskMetadata,
 	              signal: controller.signal,
 	              onJobCreated: (jobId: string, providerTaskId?: string) => {
-	                releaseGuardedSubmit();
 	                translationFileItems[index] = {
                   ...translationFileItems[index],
                   backendJobId: jobId || undefined,
@@ -4592,7 +4666,6 @@ const AppContent: React.FC<{
 	      let planningProviderTaskId = '';
 	      let activePlanningBackendJobId = '';
 	      const onJobCreated = (jobId: string, providerTaskId?: string) => {
-	        releaseGuardedSubmit();
 	        const providerId = String(providerTaskId || '').trim();
         const backendJobId = String(jobId || '').trim();
         if (backendJobId) activePlanningBackendJobId = backendJobId;
@@ -4863,7 +4936,6 @@ const AppContent: React.FC<{
 	    let activeBackendJobId = '';
 	    let activeProviderTaskId = '';
 	    const onJobCreated = (jobId: string, providerTaskId?: string) => {
-	      releaseGuardedSubmit();
 	      activeBackendJobId = String(jobId || '').trim();
 	      if (providerTaskId) activeProviderTaskId = String(providerTaskId || '').trim();
 	      const pendingVideoProject: Project | null = targetModule === AppModuleObj.VIDEO
@@ -4919,6 +4991,7 @@ const AppContent: React.FC<{
             signal: controller.signal,
             onJobCreated,
             publicBaseUrl,
+            taskMetadata: { clientSubmissionKey: guardedSubmitLockKey },
           })
         : null;
 
@@ -5953,7 +6026,123 @@ const AppContent: React.FC<{
   }, [projects, addToast]);
 
   // ── Delete ──
-  const handleDeleteResult = useCallback((projectId: string, resultId: string) => {
+  const handleDeleteResult = useCallback(async (projectId: string, resultId: string) => {
+    const storyboardProject = videoMemory?.storyboard?.projects.find((item) => item.id === projectId) as StoryboardProjectWithJobIdentity | undefined;
+    const storyboardBoard = storyboardProject?.boards.find((board) => board.id === resultId);
+    if (storyboardProject && storyboardBoard) {
+      const deletionGuard: StoryboardBoardDeletionGuard = {
+        projectId,
+        boardId: resultId,
+        jobIds: new Set(collectStoryboardBoardJobIds(storyboardProject, resultId, {
+          tasks,
+          shellProject: projects.find((item) => item.id === projectId),
+        })),
+        phase: 'collecting',
+        cancellationPromises: new Map(),
+      };
+      const deletionGuardKey = getStoryboardBoardDeletionGuardKey(projectId, resultId);
+      storyboardBoardDeletionGuardsRef.current.set(deletionGuardKey, deletionGuard);
+      cancelledStoryboardProjectIdsRef.current.add(projectId);
+      if (storyboardBoard.status === 'generating') {
+        taskControllersRef.current[projectId]?.abort();
+      }
+      let historicalJobs: InternalJob[];
+      try {
+        historicalJobs = (await fetchInternalJobs(200)).jobs;
+      } catch {
+        if (storyboardBoard.status !== 'generating') {
+          storyboardBoardDeletionGuardsRef.current.delete(deletionGuardKey);
+          cancelledStoryboardProjectIdsRef.current.delete(projectId);
+        }
+        addToast('无法读取分镜任务历史，请稍后重试删除', 'warning');
+        return;
+      }
+      const storyboardJobIds = collectStoryboardBoardJobIds(storyboardProject, resultId, {
+        tasks,
+        jobs: historicalJobs,
+        shellProject: projects.find((item) => item.id === projectId),
+      });
+      storyboardJobIds.forEach((jobId) => deletionGuard.jobIds.add(jobId));
+      const activeStoryboardJobIds = collectActiveStoryboardBoardJobIds(storyboardProject, resultId, {
+        tasks,
+        jobs: historicalJobs,
+        guardedJobIds: Array.from(deletionGuard.jobIds).filter((jobId) => !storyboardJobIds.includes(jobId)),
+      });
+      activeStoryboardJobIds.forEach((jobId) => {
+        if (!deletionGuard.cancellationPromises.has(jobId)) {
+          deletionGuard.cancellationPromises.set(jobId, cancelInternalJob(jobId));
+        }
+      });
+      let cancellationResults = await Promise.allSettled(activeStoryboardJobIds.map(
+        (jobId) => deletionGuard.cancellationPromises.get(jobId),
+      ));
+      let observedCancellationCount = -1;
+      while (observedCancellationCount !== deletionGuard.cancellationPromises.size) {
+        observedCancellationCount = deletionGuard.cancellationPromises.size;
+        cancellationResults = await Promise.allSettled(
+          Array.from(deletionGuard.cancellationPromises.values()),
+        );
+      }
+      if (cancellationResults.some((result) => result.status === 'rejected')) {
+        addToast('分镜旧任务中断失败，已保持阻断，请稍后重试删除', 'warning');
+        return;
+      }
+      const initiallyPersistedJobIds = Array.from(deletionGuard.jobIds);
+      const synced = await persistDeletionToSharedState({
+        projectId,
+        resultId,
+        jobIds: initiallyPersistedJobIds,
+        preserveStoryboardBoardSlot: true,
+      });
+      if (!synced) {
+        addToast('分镜结果删除失败，远端历史未完成同步', 'warning');
+        return;
+      }
+      deletionGuard.phase = 'committed';
+      const lateCancellationResults = await Promise.allSettled(
+        Array.from(deletionGuard.cancellationPromises.values()),
+      );
+      if (lateCancellationResults.some((result) => result.status === 'rejected')) {
+        addToast('分镜迟到任务中断失败，已保持阻断，请稍后重试删除', 'warning');
+        return;
+      }
+      if (deletionGuard.jobIds.size > initiallyPersistedJobIds.length) {
+        const lateSynced = await persistDeletionToSharedState({
+          projectId,
+          resultId,
+          jobIds: Array.from(deletionGuard.jobIds),
+          preserveStoryboardBoardSlot: true,
+        });
+        if (!lateSynced) {
+          addToast('分镜迟到任务记录失败，已保持阻断，请稍后重试删除', 'warning');
+          return;
+        }
+      }
+      setVideoMemory((prev) => {
+        const current = prev || createDefaultVideoState();
+        return {
+          ...current,
+          storyboard: {
+            ...current.storyboard,
+            projects: (current.storyboard.projects || []).map((item) => (
+              item.id === projectId ? removeStoryboardBoardResult(item, resultId) : item
+            )),
+          },
+        };
+      });
+      setProjects((prev) => prev.map((item) => item.id === projectId
+        ? { ...item, results: item.results.filter((result) => result.id !== resultId) }
+        : item));
+      setTasks((prev) => prev.filter((task) => (
+        task.projectId !== projectId
+        || (
+          !storyboardJobIds.includes(String(task.backendJobId || '').trim())
+          && !storyboardJobIds.includes(String(task.id || '').trim())
+          && task.storyboardBoardId !== resultId
+        )
+      )));
+      return;
+    }
     const project = projects.find((p) => p.id === projectId);
     const result = project?.results.find((item) => item.id === resultId);
     const resultJobIds = Array.from(new Set([
@@ -5994,7 +6183,7 @@ const AppContent: React.FC<{
           addToast('已在当前页面删除，但远端历史同步失败', 'warning');
         }
       });
-  }, [projects, addToast, persistDeletionToSharedState, deleteImageCropAssets]);
+  }, [projects, tasks, videoMemory, addToast, persistDeletionToSharedState, deleteImageCropAssets, setVideoMemory]);
 
   const handleDeletePlan = useCallback((projectId: string, planId: string) => {
     const project = projects.find((p) => p.id === projectId);
@@ -6032,6 +6221,45 @@ const AppContent: React.FC<{
   }, [projects, addToast, persistDeletionToSharedState, persistProjectToSharedState]);
 
   const handleDeleteProject = useCallback((projectId: string) => {
+    const storyboardProject = videoMemory?.storyboard?.projects.find((item) => item.id === projectId) as StoryboardProjectWithJobIdentity | undefined;
+    if (storyboardProject) {
+      deletedStoryboardProjectIdsRef.current.add(projectId);
+      cancelledStoryboardProjectIdsRef.current.add(projectId);
+      Array.from(storyboardBoardDeletionGuardsRef.current.entries()).forEach(([key, guard]) => {
+        if (guard.projectId === projectId) storyboardBoardDeletionGuardsRef.current.delete(key);
+      });
+      taskControllersRef.current[projectId]?.abort();
+      delete taskControllersRef.current[projectId];
+      const storyboardJobIds = collectStoryboardProjectJobIds(storyboardProject, {
+        tasks,
+        shellProject: projects.find((item) => item.id === projectId),
+      });
+      storyboardJobIds.forEach((jobId) => {
+        void cancelInternalJob(jobId).catch(() => null);
+      });
+      setVideoMemory((prev) => {
+        const current = prev || createDefaultVideoState();
+        return {
+          ...current,
+          isGenerating: false,
+          storyboard: {
+            ...current.storyboard,
+            projects: (current.storyboard.projects || []).filter((item) => item.id !== projectId),
+          },
+        };
+      });
+      setProjects((prev) => prev.filter((item) => item.id !== projectId));
+      setTasks((prev) => prev.filter((task) => (
+        task.projectId !== projectId
+        && !storyboardJobIds.includes(String(task.backendJobId || task.id || '').trim())
+      )));
+      void persistDeletionToSharedState({ projectId, jobIds: storyboardJobIds })
+        .then((synced) => addToast(
+          synced ? '分镜项目已删除，运行中任务已请求中断' : '已从当前页面删除，但远端同步失败',
+          synced ? 'info' : 'warning',
+        ));
+      return;
+    }
     const project = projects.find((p) => p.id === projectId);
     const jobIds = Array.from(new Set([
       project?.backendJobId,
@@ -6062,7 +6290,7 @@ const AppContent: React.FC<{
       .then((synced) => {
         addToast(synced ? '项目已删除' : '已在当前页面删除，但远端历史同步失败', synced ? 'info' : 'warning');
       });
-  }, [projects, addToast, persistDeletionToSharedState, deleteImageCropAssets]);
+  }, [projects, tasks, videoMemory, addToast, persistDeletionToSharedState, deleteImageCropAssets, setVideoMemory]);
 
   const handleStoryboardRegenerateResult = useCallback(async (projectId: string, resultId: string, revisionInstruction = '') => {
     const baseStoryboard = (videoMemory || createDefaultVideoState()).storyboard;
@@ -6071,11 +6299,28 @@ const AppContent: React.FC<{
     const boardIndex = project.boards.findIndex((board) => board.id === resultId);
     const board = boardIndex >= 0 ? project.boards[boardIndex] : null;
     if (!board) return false;
+    const deletionGuardKey = getStoryboardBoardDeletionGuardKey(projectId, resultId);
+    const deletionGuard = storyboardBoardDeletionGuardsRef.current.get(deletionGuardKey);
+    if (deletionGuard?.phase === 'collecting') {
+      addToast('分镜结果正在删除，请等待完成', 'warning');
+      return true;
+    }
+    storyboardBoardDeletionGuardsRef.current.delete(deletionGuardKey);
+    cancelledStoryboardProjectIdsRef.current.delete(projectId);
     const productUrls = (project.config.uploadedProductUrls || []).filter(Boolean);
     if (productUrls.length === 0) {
       addToast('商品素材缺失，无法重新生成分镜板', 'warning');
       return true;
     }
+    const storyboardController = new AbortController();
+    taskControllersRef.current[projectId] = storyboardController;
+    const storyboardSubmissionKey = buildGenerationSubmissionKey({
+      module: AppModuleObj.VIDEO,
+      subFeature: 'storyboard_regenerate',
+      prompt: revisionInstruction || board.prompt,
+      params: { projectId, resultId },
+      materials: {},
+    });
     const previousBoardImageUrl = boardIndex > 0
       ? project.boards[boardIndex - 1]?.imageUrl || board.previousBoardImageUrl
       : undefined;
@@ -6092,6 +6337,7 @@ const AppContent: React.FC<{
             boards: item.boards.map((currentBoard) => currentBoard.id === resultId ? {
               ...currentBoard,
               status: 'generating',
+              autoResumeBlocked: undefined,
               error: undefined,
               revisionInstruction,
             } : currentBoard),
@@ -6116,6 +6362,8 @@ const AppContent: React.FC<{
           planningPurpose: 'storyboard_board_image',
           phase: 'regenerate',
           boardId: resultId,
+          signal: storyboardController.signal,
+          clientSubmissionKey: storyboardSubmissionKey,
           onJobCreated: (jobId, providerTaskId) => recordStoryboardJobCreated({
             projectId,
             planningPurpose: 'storyboard_board_image',
@@ -6165,6 +6413,7 @@ const AppContent: React.FC<{
         addToast(mappedBoard.error || '分镜板重新生成失败', 'error');
       }
     } catch (error) {
+      if (storyboardController.signal.aborted) return true;
       const message = error instanceof Error ? error.message : '分镜板重新生成失败';
       setVideoMemory((prev) => {
         const currentStoryboard = prev.storyboard || baseStoryboard;
@@ -6192,6 +6441,8 @@ const AppContent: React.FC<{
         revision: Boolean(revisionInstruction.trim()),
       }, '分镜板重新生成失败');
       addToast(message, 'error');
+    } finally {
+      delete taskControllersRef.current[projectId];
     }
     return true;
   }, [videoMemory, addToast, apiConfig, logShellError, recordStoryboardJobCreated, setVideoMemory]);
@@ -6207,12 +6458,15 @@ const AppContent: React.FC<{
       endExclusiveAction(actionKey);
       return;
     }
+    cancelledStoryboardProjectIdsRef.current.delete(projectId);
     const productUrls = (project.config.uploadedProductUrls || []).filter(Boolean);
     if (productUrls.length === 0) {
       addToast('商品素材缺失，无法开始生图', 'warning');
       endExclusiveAction(actionKey);
       return;
     }
+    const storyboardController = new AbortController();
+    taskControllersRef.current[projectId] = storyboardController;
 
     setVideoMemory((prev) => {
       const currentStoryboard = prev.storyboard || baseStoryboard;
@@ -6237,7 +6491,7 @@ const AppContent: React.FC<{
       let previousBoardImageUrl: string | undefined = resumableBoard?.previousBoardImageUrl || undefined;
       let hasPendingBoardResult = false;
       let reachedResumeBoard = isInitialConfirmation;
-      for (const board of project.boards) {
+      for (const [boardIndex, board] of project.boards.entries()) {
         if (!reachedResumeBoard) {
           if (board.id !== resumableBoard?.boardId) continue;
           reachedResumeBoard = true;
@@ -6281,6 +6535,8 @@ const AppContent: React.FC<{
             planningPurpose: 'storyboard_board_image',
             phase: 'confirm',
             boardId: board.id,
+            signal: storyboardController.signal,
+            clientSubmissionKey: `${project.clientSubmissionKey || `storyboard:${project.id}`}:board:${boardIndex}`,
             onJobCreated: (jobId, providerTaskId) => recordStoryboardJobCreated({
               projectId,
               planningPurpose: 'storyboard_board_image',
@@ -6352,6 +6608,7 @@ const AppContent: React.FC<{
         hasPendingBoardResult ? 'info' : 'success',
       );
     } catch (error) {
+      if (storyboardController.signal.aborted) return;
       setVideoMemory((prev) => {
         const currentStoryboard = prev.storyboard || baseStoryboard;
         return {
@@ -6372,6 +6629,7 @@ const AppContent: React.FC<{
       }, '分镜板生成失败');
       addToast(error instanceof Error ? error.message : '分镜板生成失败', 'error');
     } finally {
+      delete taskControllersRef.current[projectId];
       setVideoMemory((prev) => ({ ...prev, isGenerating: false }));
       endExclusiveAction(actionKey);
     }
@@ -6379,9 +6637,12 @@ const AppContent: React.FC<{
 
   useEffect(() => {
     const resumableProject = videoMemory?.storyboard?.projects.find((project) => (
+      !cancelledStoryboardProjectIdsRef.current.has(project.id)
+      &&
       Boolean(getResumableStoryboardBoard(project))
     ));
     if (!resumableProject) return undefined;
+    if (taskControllersRef.current[resumableProject.id]) return undefined;
     const timeoutId = window.setTimeout(() => {
       void handleConfirmStoryboardImaging(resumableProject.id);
     }, 0);
@@ -6942,6 +7203,29 @@ const AppContent: React.FC<{
       addToast('商品素材缺失，无法修改分镜图', 'warning');
       return true;
     }
+    const deletionGuardKey = getStoryboardBoardDeletionGuardKey(projectId, resultId);
+    const deletionGuard = storyboardBoardDeletionGuardsRef.current.get(deletionGuardKey);
+    if (deletionGuard?.phase === 'collecting') {
+      addToast('分镜结果正在删除，请等待完成', 'warning');
+      return true;
+    }
+    storyboardBoardDeletionGuardsRef.current.delete(deletionGuardKey);
+    cancelledStoryboardProjectIdsRef.current.delete(projectId);
+    const storyboardController = new AbortController();
+    taskControllersRef.current[projectId] = storyboardController;
+    const storyboardSubmissionKey = buildGenerationSubmissionKey({
+      module: AppModuleObj.VIDEO,
+      subFeature: 'storyboard_edit',
+      prompt: finalInstruction,
+      params: { projectId, resultId, sourceImageUrl: board.imageUrl },
+      materials: {
+        supplement: files.map((file, index) => ({
+          id: `${file.name}:${file.size}:${file.lastModified}:${index}`,
+          fileName: file.name,
+          type: file.type,
+        })),
+      },
+    });
 
     const previousBoardImageUrl = boardIndex > 0
       ? project.boards[boardIndex - 1]?.imageUrl || board.previousBoardImageUrl
@@ -6989,12 +7273,17 @@ const AppContent: React.FC<{
           module: AppModuleObj.VIDEO,
           file,
           fileName: file.name,
+          signal: storyboardController.signal,
         });
         if (!uploaded.fileUrl) {
           throw new Error(`${file.name || '补充参考图'} 上传失败，请重试。`);
         }
         return uploaded.fileUrl;
       }));
+      if (
+        storyboardController.signal.aborted
+        || cancelledStoryboardProjectIdsRef.current.has(projectId)
+      ) return true;
       const { generateStoryboardBoardImage } = await import('./services/videoStoryboardService');
       const generated = await generateStoryboardBoardImage(
         { ...board, revisionInstruction: finalInstruction },
@@ -7010,6 +7299,8 @@ const AppContent: React.FC<{
           planningPurpose: 'storyboard_board_image',
           phase: 'edit',
           boardId: resultId,
+          signal: storyboardController.signal,
+          clientSubmissionKey: storyboardSubmissionKey,
           onJobCreated: (jobId, providerTaskId) => recordStoryboardJobCreated({
             projectId,
             planningPurpose: 'storyboard_board_image',
@@ -7097,6 +7388,7 @@ const AppContent: React.FC<{
       });
       addToast('分镜图修改已完成', 'success');
     } catch (error) {
+      if (storyboardController.signal.aborted) return true;
       const message = error instanceof Error ? error.message : '分镜图修改失败';
       setVideoMemory((prev) => {
         const currentStoryboard = (prev || baseVideoMemory).storyboard || baseStoryboard;
@@ -7127,6 +7419,10 @@ const AppContent: React.FC<{
         resultId,
       }, '分镜图修改失败');
       addToast(message, 'error');
+    } finally {
+      if (taskControllersRef.current[projectId] === storyboardController) {
+        delete taskControllersRef.current[projectId];
+      }
     }
     return true;
   }, [videoMemory, addToast, apiConfig, logShellError, setVideoMemory, recordStoryboardJobCreated]);
@@ -7908,13 +8204,38 @@ const AppContent: React.FC<{
     const targetId = normalizeShellCancelId(taskIdOrProjectId);
     if (!targetId) return;
 
+    const storyboardProjects = (videoMemory?.storyboard?.projects || [])
+      .map((project) => project as StoryboardProjectWithJobIdentity)
+      .filter((project) => (
+        project.id === targetId
+        || collectStoryboardProjectJobIds(project, {
+          tasks,
+          shellProject: projects.find((item) => item.id === project.id),
+        }).includes(targetId)
+        || project.boards.some((board) => board.id === targetId || String(board.taskId || '').trim() === targetId)
+      ));
+    const storyboardJobIds = Array.from(new Set(storyboardProjects.flatMap((project) => (
+      collectStoryboardProjectJobIds(project, {
+        tasks,
+        shellProject: projects.find((item) => item.id === project.id),
+      })
+    ))));
+    storyboardProjects.forEach((project) => {
+      cancelledStoryboardProjectIdsRef.current.add(project.id);
+      taskControllersRef.current[project.id]?.abort();
+      delete taskControllersRef.current[project.id];
+    });
+
     collectShellCancelControllerIds(targetId, projects, tasks).forEach((controllerId) => {
       taskControllersRef.current[controllerId]?.abort();
       delete taskControllersRef.current[controllerId];
     });
 
     const matchingTasks = tasks.filter((task) => shellCancelTargetMatches(targetId, collectShellTaskIds(task)));
-    const cancelJobIds = collectShellCancelJobIds(targetId, projects, tasks);
+    const cancelJobIds = Array.from(new Set([
+      ...collectShellCancelJobIds(targetId, projects, tasks),
+      ...storyboardJobIds,
+    ]));
     cancelJobIds.forEach((jobId) => {
       void cancelInternalJob(jobId).catch(() => null);
     });
@@ -7934,8 +8255,27 @@ const AppContent: React.FC<{
       });
     }
 
-    addToast(matchingTasks.length > 0 || interruptedProjects.length > 0 || cancelJobIds.length > 0 ? '任务已中断' : '已尝试中断任务', 'info');
-  }, [addToast, persistProjectToSharedState, projects, tasks]);
+    if (storyboardProjects.length > 0) {
+      const storyboardProjectIds = new Set(storyboardProjects.map((project) => project.id));
+      setVideoMemory((prev) => {
+        const current = prev || createDefaultVideoState();
+        return {
+          ...current,
+          isGenerating: false,
+          storyboard: {
+            ...current.storyboard,
+            projects: (current.storyboard.projects || []).map((project) => (
+              storyboardProjectIds.has(project.id)
+                ? markStoryboardProjectCancelled(project)
+                : project
+            )),
+          },
+        };
+      });
+    }
+
+    addToast(matchingTasks.length > 0 || interruptedProjects.length > 0 || cancelJobIds.length > 0 || storyboardProjects.length > 0 ? '已请求中断任务' : '已尝试中断任务', 'info');
+  }, [addToast, persistProjectToSharedState, projects, tasks, videoMemory, setVideoMemory]);
 
   const handleParamChange = useCallback((key: string, value: string) => {
     const nextSubFeature = subFeatureFromParam(activeModule, key, value);
@@ -7969,7 +8309,13 @@ const AppContent: React.FC<{
 	    if (pageMode !== 'module') return false;
 	    return t.module === activeModule && (t.subFeature || getDefaultSubFeature(t.module)) === activeSubFeature;
 	  });
-	  const currentGenerationSubmitLockKey = buildGenerationSubmitLockKey(activeModule, activeSubFeature);
+	  const currentGenerationSubmitLockKey = buildGenerationSubmissionKey({
+	    module: activeModule,
+	    subFeature: activeSubFeature,
+	    prompt: promptText,
+	    params: currentParams,
+	    materials: filteredMaterials,
+	  });
 	  const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit(activeModule, activeSubFeature)
 	    && Boolean(generationSubmitLocks[currentGenerationSubmitLockKey]);
 

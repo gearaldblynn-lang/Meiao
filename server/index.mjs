@@ -101,6 +101,7 @@ import {
   reconcileRestartedLocalJobs,
   requestLocalCancelJob,
   requestLocalRetryJob,
+  resolveLocalSubmissionUnknownJob,
 } from './localJobStore.mjs';
 import { executeProviderJob, uploadAssetViaKieStream } from './providerGateway.mjs';
 import { resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel } from './providerAssetTransfer.mjs';
@@ -11651,16 +11652,37 @@ const handleMysqlRequest = async (req, res, url) => {
       });
       jobToDelete = cancellation.job;
     }
-    const freshDeletionAction = resolveJobDeletionAction(jobToDelete);
-    if (freshDeletionAction === 'block_active') {
+    const deletion = await deleteJobById(pool, jobToDelete.id, {
+      userId: user.id,
+      hasPendingReservation: async (connection, freshJob) => {
+        const reservation = getCreditReservationFromJob(freshJob);
+        return Boolean(reservation && !await hasDbProcessedCreditReservation(connection, reservation));
+      },
+    });
+    if (!deletion?.job) {
+      json(res, 404, { message: '任务不存在。' });
+      return;
+    }
+    if (deletion.action === 'block_active') {
       json(res, 409, { message: '运行中任务已请求取消，请等待任务进入终态后再删除。', code: 'job_delete_active' });
       return;
     }
-    if (freshDeletionAction === 'block_submission_unknown') {
+    if (deletion.action === 'block_submission_unknown') {
       json(res, 409, { message: '该任务的上游提交状态尚未核实，请先由管理员处置积分预留后再删除。', code: 'job_delete_submission_unknown' });
       return;
     }
-    await deleteJobById(pool, jobToDelete.id);
+    if (deletion.action === 'block_submitted_cancelled') {
+      json(res, 409, { message: '该取消任务已提交上游，请先恢复查询并完成积分结算后再删除。', code: 'job_delete_submitted_cancelled' });
+      return;
+    }
+    if (deletion.action === 'block_pending_reservation') {
+      json(res, 409, { message: '该任务的积分预留尚未结算，请稍后再删除。', code: 'job_delete_pending_reservation' });
+      return;
+    }
+    if (!deletion.deleted) {
+      json(res, 409, { message: '任务状态已变化，请刷新后重试。', code: 'job_delete_state_changed' });
+      return;
+    }
     jobWorker?.cancelActiveJob(job.id);
     await createDbLog({
       user,
@@ -11897,6 +11919,7 @@ const handleLocalRequest = async (req, res, url) => {
   const studioTrainingMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/message$/);
   const studioTrainingApplyMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/apply$/);
   const taskPlatformTimelineMatch = url.pathname.match(/^\/api\/admin\/task-platform\/jobs\/([^/]+)\/timeline$/);
+  const taskPlatformSubmissionResolutionMatch = url.pathname.match(/^\/api\/admin\/task-platform\/jobs\/([^/]+)\/submission-resolution$/);
 
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
   if ((req.method === 'GET' || req.method === 'HEAD') && assetRouteMatch) {
@@ -14287,6 +14310,60 @@ const handleLocalRequest = async (req, res, url) => {
     return;
   }
 
+  if (taskPlatformSubmissionResolutionMatch && req.method === 'POST') {
+    const admin = localRequireAdmin(req, res, store);
+    if (!admin) return;
+    const body = await readBody(req);
+    const jobId = decodeURIComponent(taskPlatformSubmissionResolutionMatch[1]);
+    let resolution;
+    try {
+      resolution = resolveLocalSubmissionUnknownJob(store, {
+        jobId,
+        action: body?.action,
+        providerTaskId: body?.providerTaskId,
+        releaseReservation: (job) => {
+          const reservation = getCreditReservationFromJob(job);
+          if (!reservation) return null;
+          return releaseLocalAccountCredits(store, reservation, {
+            module: job.module,
+            taskType: job.taskType,
+            provider: job.provider,
+            reason: 'admin_submission_resolution',
+            meta: { adminUserId: admin.id, jobId: job.id },
+          });
+        },
+      });
+    } catch (error) {
+      if (error?.statusCode) {
+        json(res, error.statusCode, { message: error.message, code: error.code });
+        return;
+      }
+      throw error;
+    }
+
+    appendLocalLog(store, {
+      user: admin,
+      level: 'info',
+      module: resolution.job.module,
+      action: 'submission_unknown_resolved',
+      message: `管理员人工处置提交状态未知任务：${resolution.job.id}`,
+      status: 'success',
+      meta: {
+        jobId: resolution.job.id,
+        action: resolution.action,
+        providerTaskId: resolution.job.providerTaskId || '',
+        targetUserId: resolution.job.userId,
+      },
+    });
+    if (resolution.action === 'bind') {
+      await startLocalJobWorkflowIfEnabled(store, resolution.job);
+      if (!shouldUseTemporalForLocalExecution()) localJobWorker?.trigger?.();
+    }
+    writeLocalStore(store);
+    json(res, 200, resolution);
+    return;
+  }
+
   if (taskPlatformTimelineMatch && req.method === 'GET') {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
@@ -15039,7 +15116,15 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
     let jobToDelete = job;
-    const deletionAction = resolveJobDeletionAction(jobToDelete);
+    const resolveLocalDeletionAction = (candidate) => {
+      const reservation = getCreditReservationFromJob(candidate);
+      return resolveJobDeletionAction(candidate, {
+        pendingReservation: Boolean(
+          reservation && getLocalCreditReservationState(store, reservation) === 'pending'
+        ),
+      });
+    };
+    const deletionAction = resolveLocalDeletionAction(jobToDelete);
     if (deletionAction === 'cancel_then_delete' || deletionAction === 'block_active') {
       jobToDelete = requestLocalCancelJob(store, jobToDelete.id) || jobToDelete;
       if (deletionAction === 'cancel_then_delete') {
@@ -15051,7 +15136,7 @@ const handleLocalRequest = async (req, res, url) => {
         });
       }
     }
-    const freshDeletionAction = resolveJobDeletionAction(jobToDelete);
+    const freshDeletionAction = resolveLocalDeletionAction(jobToDelete);
     if (freshDeletionAction === 'block_active') {
       writeLocalStore(store);
       localJobWorker?.cancelActiveJob(jobToDelete.id);
@@ -15060,6 +15145,14 @@ const handleLocalRequest = async (req, res, url) => {
     }
     if (freshDeletionAction === 'block_submission_unknown') {
       json(res, 409, { message: '该任务的上游提交状态尚未核实，请先处置积分预留后再删除。', code: 'job_delete_submission_unknown' });
+      return;
+    }
+    if (freshDeletionAction === 'block_submitted_cancelled') {
+      json(res, 409, { message: '该取消任务已提交上游，请先恢复查询并完成积分结算后再删除。', code: 'job_delete_submitted_cancelled' });
+      return;
+    }
+    if (freshDeletionAction === 'block_pending_reservation') {
+      json(res, 409, { message: '该任务的积分预留尚未结算，请稍后再删除。', code: 'job_delete_pending_reservation' });
       return;
     }
     deleteLocalJobRecord(store, jobToDelete.id);

@@ -129,3 +129,22 @@ test('storyboard planning and board jobs expose durable identity before polling'
   assert.match(boardBlock, /boardId: board\.id/);
   assert.match(boardBlock, /onJobCreated/);
 });
+
+test('storyboard planning and board polling share the caller cancellation signal', () => {
+  const planningBlock = source.match(/export const generateStoryboardScript = async \([\s\S]*?const createImageModuleConfig =/)?.[0] || '';
+  const boardBlock = source.match(/export const generateStoryboardBoardImage = async \([\s\S]*?export const generateStoryboardWhiteBgImage =/)?.[0] || '';
+
+  assert.match(source, /signal\?: AbortSignal/);
+  assert.match(planningBlock, /const \{ onJobCreated, signal \} = jobContext/);
+  assert.match(planningBlock, /waitForInternalJob\(job\.id, signal,/);
+  assert.match(boardBlock, /jobContext\.signal \|\| new AbortController\(\)\.signal/);
+});
+
+test('storyboard jobs forward the stable client submission key to backend dedupe', () => {
+  const planningBlock = source.match(/export const generateStoryboardScript = async \([\s\S]*?const createImageModuleConfig =/)?.[0] || '';
+  const boardBlock = source.match(/export const generateStoryboardBoardImage = async \([\s\S]*?export const generateStoryboardWhiteBgImage =/)?.[0] || '';
+
+  assert.match(source, /clientSubmissionKey\?: string/);
+  assert.match(planningBlock, /clientSubmissionKey: String\(jobContext\.clientSubmissionKey/);
+  assert.match(boardBlock, /clientSubmissionKey: String\(jobContext\.clientSubmissionKey/);
+});
