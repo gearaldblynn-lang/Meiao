@@ -2279,6 +2279,16 @@ const runKieVeoJob = async (payload, env, signal, options = {}) => {
   }
 };
 
+const runKieVeoRecoverJob = async (providerTaskId, env, signal) => {
+  const { kieApiKey } = getProviderEnv(env);
+  ensureProviderKey(kieApiKey, 'Kie API Key');
+  try {
+    return await pollKieVeoTask(providerTaskId, kieApiKey, signal);
+  } catch (error) {
+    throw attachProviderTaskId(error, providerTaskId);
+  }
+};
+
 const normalizeArray = (value) => (Array.isArray(value) ? value : [value])
   .map((item) => String(item || '').trim())
   .filter(Boolean);
@@ -2859,6 +2869,18 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
     case 'kie_probe':
       return runKieProbeJob(job.payload, env, signal);
     case 'kie_video':
+      if (job.providerTaskId) {
+        return runKieRecoverJob(
+          {
+            ...job.payload,
+            providerTaskId: job.providerTaskId,
+            taskId: job.providerTaskId,
+            isVideo: true,
+          },
+          env,
+          signal
+        );
+      }
       return runKieVideoJob(job.payload, env, signal, options);
     case 'kie_seedance_video':
       if (job.providerTaskId) {
@@ -2875,10 +2897,20 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
       }
       return runKieSeedanceVideoJob(job.payload, env, signal, options);
     case 'kie_veo':
+      if (job.providerTaskId) {
+        return runKieVeoRecoverJob(job.providerTaskId, env, signal);
+      }
       return runKieVeoJob(job.payload, env, signal, options);
     case 'dreamina_video':
       return runDreaminaVideoJob(job.payload, env, signal, job.providerTaskId, options);
     case 'kie_chat':
+      if (job.providerTaskId) {
+        throw createProviderError(
+          'provider_submission_unknown',
+          '聊天生成返回的响应 ID 不支持查询旧任务，已停止自动重提以防止重复扣费。',
+          { providerTaskId: job.providerTaskId, providerStage: 'provider_wait' }
+        );
+      }
       return runKieChatJob(job.payload, env, signal, {
         ...options,
         jobModule: job.module,

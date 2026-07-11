@@ -28,7 +28,8 @@ test('paid MySQL job creation is serialized across dedupe reserve and create', (
   assert.match(source, /findReusableJob:\s*findReusableJobRecord/);
   assert.match(source, /reserveCredits:\s*reserveDbJobCreditsForSubmission/);
   assert.match(source, /createJob:\s*createDbJobRecordWithReservation/);
-  assert.match(source, /releaseCredits:\s*releaseDbAccountCredits/);
+  assert.match(source, /createSerializedJobSubmission[\s\S]*withMysqlTransaction/);
+  assert.doesNotMatch(source, /releaseCredits:\s*releaseDbAccountCredits/);
   assert.match(source, /lockTimeoutSeconds:\s*getJobSubmissionLockTimeoutSeconds\(process\.env\)/);
   assert.match(source, /error\?\.statusCode && error\?\.code[\s\S]{0,240}json\(res, error\.statusCode/);
 });

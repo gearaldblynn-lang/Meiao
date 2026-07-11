@@ -1127,6 +1127,114 @@ test('executeProviderJob reuses the existing providerTaskId for retrying seedanc
   }
 });
 
+test('executeProviderJob recovers kie storyboard video by polling the existing task endpoint only', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const requests = [];
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), method: String(init.method || 'GET') });
+    return createJsonResponse({
+      code: 200,
+      data: {
+        state: 'success',
+        resultJson: JSON.stringify({ resultUrls: ['https://example.com/recovered-storyboard.mp4'] }),
+      },
+    });
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+
+  try {
+    const result = await executeProviderJob({
+      taskType: 'kie_video',
+      providerTaskId: 'existing-storyboard-video-task',
+      payload: {
+        imageUrls: ['https://example.com/source.png'],
+        videoConfig: { duration: 15, script: 'must not resubmit' },
+      },
+    }, { KIE_API_KEY: 'test-key' }, new AbortController().signal);
+
+    assert.equal(result.providerTaskId, 'existing-storyboard-video-task');
+    assert.equal(result.result.videoUrl, 'https://example.com/recovered-storyboard.mp4');
+    assert.deepEqual(requests, [{
+      url: 'https://api.kie.ai/api/v1/jobs/recordInfo?taskId=existing-storyboard-video-task',
+      method: 'GET',
+    }]);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+  }
+});
+
+test('executeProviderJob recovers kie veo by polling the existing veo task endpoint only', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const requests = [];
+  global.fetch = async (url, init = {}) => {
+    requests.push({ url: String(url), method: String(init.method || 'GET') });
+    return createJsonResponse({
+      code: 200,
+      data: {
+        successFlag: 1,
+        response: { resultUrls: ['https://example.com/recovered-veo.mp4'] },
+      },
+    });
+  };
+  global.setTimeout = (handler) => {
+    queueMicrotask(handler);
+    return 0;
+  };
+
+  try {
+    const result = await executeProviderJob({
+      taskType: 'kie_veo',
+      providerTaskId: 'existing-veo-task',
+      payload: { script: { description: 'must not regenerate' } },
+    }, { KIE_API_KEY: 'test-key' }, new AbortController().signal);
+
+    assert.equal(result.providerTaskId, 'existing-veo-task');
+    assert.equal(result.result.videoUrl, 'https://example.com/recovered-veo.mp4');
+    assert.deepEqual(requests, [{
+      url: 'https://api.kie.ai/api/v1/veo/record-info?taskId=existing-veo-task',
+      method: 'GET',
+    }]);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+  }
+});
+
+test('executeProviderJob never resubmits kie storyboard chat when only a non-queryable response id exists', async () => {
+  const originalFetch = global.fetch;
+  let fetchCalls = 0;
+  global.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error('must not call provider');
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob({
+        module: 'video',
+        taskType: 'kie_chat',
+        providerTaskId: 'non-queryable-chat-response-id',
+        payload: {
+          model: 'gemini-3-5-flash',
+          subFeature: 'storyboard',
+          messages: [{ role: 'user', content: 'must not resubmit' }],
+        },
+      }, { KIE_API_KEY: 'test-key' }, new AbortController().signal),
+      (error) => error?.code === 'provider_submission_unknown'
+        && error?.providerTaskId === 'non-queryable-chat-response-id'
+    );
+    assert.equal(fetchCalls, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('executeProviderJob tolerates transient fetch errors while polling kie image jobs after task creation', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;

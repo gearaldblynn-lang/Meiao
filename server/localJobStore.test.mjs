@@ -297,6 +297,41 @@ test('reconcileRestartedLocalJobs never resubmits providerless running jobs afte
   assert.match(recoverable.errorMessage, /服务重启/);
 });
 
+test('reconcileRestartedLocalJobs safely requeues providerless internal work', () => {
+  const store = createStore();
+  const user = createUser();
+  const internalJob = createLocalJobRecord(store, user, {
+    module: 'system',
+    taskType: 'future_internal_maintenance',
+    provider: 'internal',
+    payload: {},
+  });
+  internalJob.status = 'running';
+  internalJob.startedAt = Date.now() - 10000;
+
+  const [reconciled] = reconcileRestartedLocalJobs(store.jobs);
+  assert.equal(reconciled.status, 'retry_waiting');
+  assert.equal(reconciled.errorCode, 'service_restarted');
+  assert.equal(reconciled.finishedAt, null);
+});
+
+test('reconcileRestartedLocalJobs does not retry a non-queryable kie chat response id', () => {
+  const store = createStore();
+  const user = createUser();
+  const job = createLocalJobRecord(store, user, {
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    providerTaskId: 'chat-response-id',
+    payload: { subFeature: 'storyboard' },
+  });
+  job.status = 'running';
+
+  const [reconciled] = reconcileRestartedLocalJobs(store.jobs);
+  assert.equal(reconciled.status, 'failed');
+  assert.equal(reconciled.errorCode, 'provider_submission_unknown');
+});
+
 test('markLocalJobFailed keeps providerTaskId for later recovery', () => {
   const store = createStore();
   const user = createUser();
@@ -311,7 +346,7 @@ test('markLocalJobFailed keeps providerTaskId for later recovery', () => {
   assert.equal(failed.providerTaskId, 'kie-task-123');
 });
 
-test('local job retry can preserve failed provider task id and then store successful retry task id', () => {
+test('local kie chat failure keeps its response id but never resubmits it as a recoverable task', () => {
   const store = createStore();
   const user = createUser();
   const job = createLocalJobRecord(store, user, {
@@ -323,33 +358,20 @@ test('local job retry can preserve failed provider task id and then store succes
   });
   job.status = 'running';
 
-  const retryWaiting = markLocalJobFailed(store, job.id, {
+  const failed = markLocalJobFailed(store, job.id, {
     code: 'provider_internal_error',
     message: 'Gemini chat (OpenAI format) responseCode error: 504',
     providerTaskId: '4222457f0143802a0a57e5da7e6e1512',
   });
 
-  assert.equal(retryWaiting.status, 'retry_waiting');
-  assert.equal(retryWaiting.retryCount, 1);
-  assert.equal(retryWaiting.providerTaskId, '4222457f0143802a0a57e5da7e6e1512');
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.retryCount, 0);
+  assert.equal(failed.providerTaskId, '4222457f0143802a0a57e5da7e6e1512');
   // S2 Task G2:errorMessage 变人话,技术原文迁到 errorDetail(不丢信息)
-  assert.equal(retryWaiting.errorMessage, '生成服务暂时异常，请稍后重试');
-  assert.match(retryWaiting.errorDetail, /responseCode error: 504/);
-  assert.equal(retryWaiting.finishedAt, null);
-
-  const claimedAgain = takeNextLocalExecutableJobs(store, 1);
-  assert.equal(claimedAgain[0].id, job.id);
-  const completed = markLocalJobCompleted(store, job.id, {
-    providerTaskId: '9d8caba0dc63f6167a7d2a6084b5a44d',
-    result: { content: 'retry success' },
-  });
-
-  assert.equal(completed.status, 'succeeded');
-  assert.equal(completed.providerTaskId, '9d8caba0dc63f6167a7d2a6084b5a44d');
-  assert.deepEqual(completed.result, { content: 'retry success' });
-  assert.equal(completed.errorCode, '');
-  assert.equal(completed.errorMessage, '');
-  assert.equal(completed.errorDetail, '');
+  assert.equal(failed.errorMessage, '生成服务暂时异常，请稍后重试');
+  assert.match(failed.errorDetail, /responseCode error: 504/);
+  assert.equal(typeof failed.finishedAt, 'number');
+  assert.deepEqual(takeNextLocalExecutableJobs(store, 1), []);
 });
 
 test('submitted video failure uses recovery retries even when create retries are zero', () => {

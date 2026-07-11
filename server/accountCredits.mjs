@@ -197,10 +197,12 @@ export const shouldReleaseJobCreditReservation = ({
 export const getJobCreditRetryReservationAction = ({
   job,
   reservationProcessed = false,
+  providerTaskRecoverable = true,
 } = {}) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation || reservationProcessed) return 'reserve';
   if (!String(job?.providerTaskId || '').trim()) return 'block';
+  if (!providerTaskRecoverable) return 'block';
   const errorCode = String(job?.errorCode || '').trim();
   const hasDefinitiveProviderFailure = Boolean(
     errorCode

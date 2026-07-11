@@ -12,6 +12,7 @@ import {
 } from './localJobStore.mjs';
 import { getJobById, isRunningJobConcurrencyBlocking, updateJobFields } from './jobManager.mjs';
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
+import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, recordJobEvent } from './taskPlatform.mjs';
 
@@ -484,6 +485,10 @@ export const createMysqlTemporalActivities = ({
         errorCode: error?.code || 'provider_internal_error',
         providerStage: error?.providerStage || '',
         providerTaskId,
+        providerTaskRecoverable: canRecoverProviderTaskById({
+          taskType: latestJob.taskType,
+          providerTaskId,
+        }),
       });
       const finishedAt = now();
 

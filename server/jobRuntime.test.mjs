@@ -510,6 +510,16 @@ test('getNextJobFailureState never applies submitted recovery budget without a t
   }), { status: 'failed', retryCount: 0 });
 });
 
+test('getNextJobFailureState does not retry a provider id that has no query recovery path', () => {
+  assert.deepEqual(getNextJobFailureState({
+    retryCount: 0,
+    maxRetries: 2,
+    errorCode: 'provider_timeout',
+    providerTaskId: 'chat-response-id',
+    providerTaskRecoverable: false,
+  }), { status: 'failed', retryCount: 0 });
+});
+
 test('submitted recovery retry budget is env-driven with a conservative default', () => {
   assert.equal(getSubmittedTaskRecoveryRetries({}), 2);
   assert.equal(getSubmittedTaskRecoveryRetries({ MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES: '4' }), 4);
