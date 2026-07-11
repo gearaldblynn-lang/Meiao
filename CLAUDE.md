@@ -311,3 +311,8 @@
   根因:洛克、林一账号的真实链路同时存在两类记录:用户提交时预创建的 `proj-*` 买家秀项目,以及只负责生成 prompt 的 `buyer_show/kie_chat` 策划控制 job。后者 payload 没有 `shellProjectId/shellProjectName`,job 恢复层只能为它合成 `job-<id>` 卡；#44 为修复“卡片闪现后消失”放宽了 job 缺卡回写,又把这张控制面卡持久化,于是终态 job 也会长期显示为无结果的“生成中”卡并干扰用户对顺序的判断。全功能审计又发现精修分析、分镜策划和部分精修/分镜生图任务存在同类绑定缺口；真实时间戳送入 `sortProjectsNewestFirst` 的探针表明最新优先算法本身正确。另一个独立缺口是 `handleDeleteProject` 只删 `project.backendJobId/job-*`,不收集 results/tasks 里的关联 backend job；顶层卡隐藏了,子 job 仍可在后续水合时参与恢复。
   修复:买家秀多套策划与生图统一绑定各自的套项目 ID,最多 4 套策划同时创建并交给后端账户并发门控,避免串行策划让后续套卡数分钟后才拿到任务身份；买家秀、翻译、精修、分镜的策划/分析请求统一携带结构化 `taskPurpose + shellProjectId/shellProjectName/subFeature`,精修和分镜生图同时补齐项目/批次/宫格绑定。控制 job 在 adapter 边界只能绑定预创建卡的进度,不得伪造媒体结果；无绑定的旧控制 job 不生成 project/task,已持久化的结构化空 `job-*` 控制卡在首屏读取边界过滤。项目删除收敛到 `collectShellDeletionJobIds`,只收集项目、结果和同项目 task 的内部 `backendJobId`(不把 provider task id 当内部 job),页面移除、删除墓碑持久化与物理 job 删除彼此独立。分镜项目回归测试同时锁定 videoMemory 裁剪和墓碑防复活。
   如何避免:**控制面 job(策划/分析/调度)与数据面结果 job(图片/视频)必须用结构化 purpose + project binding 区分，通用缺卡回写不得把未绑定控制 job 变成用户项目。删除是一个 aggregate 操作:必须遍历 project/results/tasks 收集全部内部 job 身份,且墓碑成功不能依赖每个远端 DELETE 都成功。卡片“乱序”先用真时间戳探针区分排序错误与幽灵卡干扰,不得叠加第二套排序规则。**
+
+- **#52 ✅ 已修(2026-07-11)· Temporal 传递依赖锁在存在拒绝服务风险的 protobufjs 7.6.1**
+  根因:`@temporalio/client/worker` 的 semver 范围允许安全补丁版本,但 `package-lock.json` 仍固定在受 GHSA-f38q-mgvj-vph7 影响的 `protobufjs@7.6.1`;生产审计因此持续报中危。该漏洞需要攻击者影响 protobuf schema/JSON descriptor 才能触发,当前 Temporal 使用受信 schema,实际暴露较低,但依赖锁仍不应长期停留在已知漏洞版本。
+  修复:只更新传递依赖锁到 `protobufjs@7.6.5`,不把它添加成业务直接依赖；所有 Temporal 依赖统一去重到同一补丁版本,`npm audit --omit=dev` 恢复为 0 漏洞。
+  如何避免:**依赖安全修复优先在既有 semver 范围内升级 lockfile,不要为了压审计告警无依据地添加直接依赖或使用 `--force` 跨主版本。升级后必须同时核对 `npm ls` 的实际依赖树、生产口径 audit 和全量 verify。**
