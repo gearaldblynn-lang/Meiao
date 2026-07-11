@@ -279,7 +279,7 @@
 
 - **#45 ✅ 已修(2026-07-10)· 我方托管素材强制经过 KIE 图床,跨任务上传抖动成为多模块共同单点**
   根因:2026-07-09 按 job 去重后,108 个 `asset_upload` 终态失败横跨一键主详、万物替换、买家秀、产品精修,影响 7 个用户；这些任务全部最终落在 `providerTaskId=null + asset_upload + provider_network_error/fetch failed`。当天 275 个目标 job 中 154 个成功、117 个以 provider 网络错误终止,说明链路是间歇性退化而非整体中断。素材文件从我方服务器和公网均可正常读取,但 `resolveProviderGenerationMediaUrl` / `resolveProviderChatMediaUrl` 仍无条件强制上传 KIE；已有 `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY=2` 只限制单 job,挡不住多个账号和模块同时上传,也没有进程级成功 URL 复用。KIE file-stream-upload 一抖,任务在模型接单前成片失败。
-  修复:托管 `/api/assets/file/` 在 `MEIAO_PUBLIC_BASE_URL` 为公网 HTTPS 时改为直连优先；仅当上游明确读图/下载/MIME 失败,或同步 chat/Responses 返回无 task id 的 HTTP 502 时,才转存 KIE 并重试同一模型。任何 `providerTaskId` 都禁止再次创建任务。实际 KIE 转存增加跨任务进程级并发总闸门、上传专属 `429/5xx/连接错误` 重试和成功 URL TTL 缓存；直连/KIE 两套路由使用不同 job cache key；`MEIAO_KIE_MANAGED_ASSET_MODE=kie-only` 可无代码回滚。
+  修复:托管 `/api/assets/file/` 在 `MEIAO_PUBLIC_BASE_URL` 为公网 HTTPS 时改为直连优先；仅当上游明确读图/下载/MIME 失败且没有 task id 时,才转存 KIE 并重试同一模型。普通 HTTP 500/502 和网络中断不再触发回退；任何 `providerTaskId` 都禁止再次创建任务。实际 KIE 转存增加跨任务进程级并发总闸门、上传专属 `429/5xx/连接错误` 重试和成功 URL TTL 缓存；直连/KIE 两套路由使用不同 job cache key；`MEIAO_KIE_MANAGED_ASSET_MODE=kie-only` 可无代码回滚。
   如何避免:**我方托管素材的第三方图床只能做兼容性回退,不能做必经单点。媒体回退必须同时验证“确实走过直连+错误在接单前+没有 providerTaskId”;文件上传可按传输语义重试,createTask/chat 等可能扣费的提交 POST 收到任何 HTTP 响应后仍不得盲目重试。单任务限流不等于全局限流,批量链路必须同时有进程级总闸门和跨 job 成功缓存。**
 
 - **#46 ✅ 已修(2026-07-10)· Logo 替换组合图缺少耐久标记,刷新同步后被原始 provider 结果覆盖**
@@ -306,3 +306,8 @@
   根因:旧部署流程只检查代码审查和依赖安全,远端 install/build 完成后无条件重启 PM2；正在素材准备或 provider 提交、尚未拿到 task id 的 job 会被进程终止,随后只能依赖 stale 回收,表现为部署时段集中 `provider_submit_stale`。
   修复:新增只读部署就绪检查,按 `internal_jobs.status=running` 汇总 providerless/已提交任务；上传代码前和远端构建后各检查一次,任一时点有活跃任务即 fail closed。仅保留显式 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 紧急覆盖,默认发布不得使用。
   如何避免:**进程重启是任务系统状态迁移,不是纯代码操作。任何部署脚本在 restart 前都必须证明没有活跃执行；构建耗时较长时必须在构建前后双检,不能只做一次开场快照。**
+
+- **#51 ✅ 已修(2026-07-11)· 短视频/分镜的素材转存、付费提交恢复和前端水合同时存在重复扣费与任务丢失窗口**
+  根因:① Gemini 分镜视频绕过托管素材 direct-first,无条件转存 KIE,同一 48.3 MiB H.265 MP4 在 KIE file-stream-upload 抖动时让多个分镜任务停在 `providerTaskId=null + asset_upload`;② worker 重启/stale 恢复只看“有没有 providerTaskId”,没有区分该 ID 是否有真实查询接口,`kie_chat` response ID、`kie_video`、`kie_veo` 都存在重新创建付费任务的可能;③ 去重查询、积分预留、job 创建不在同一事务,取消/重试基于旧快照,删除活跃任务还会让积分预留和上游任务失去跟踪;④ 分镜历史水合会用旧 job 覆盖用户已编辑内容,最近 100 条窗口外的已知 job 不恢复,多分镜异步流程完成第一块后不继续下一块。
+  修复:分镜图片/视频统一走我方公网 HTTPS 托管 URL direct-first,只有明确文件读取失败且未接单时回退 KIE;实际转存使用单 job 并发 2 + 进程级总闸门 + Promise/成功 URL 缓存。任务恢复收紧为显式 task type 白名单:`kie_image/kie_video/kie_seedance_video/kie_veo/dreamina_video` 只查旧 ID,`kie_chat` 不可查询 ID 直接进入 `provider_submission_unknown`;去重+预留+创建收进 MySQL 命名锁和单事务,取消/重试锁行后读最新状态,排队任务删除先取消并退预留,运行中/提交未知任务禁止直接删除。前端预上传与提交共享 Promise,拿到首个 backendJobId 即释放短锁;分镜水合保留更新的用户编辑,按已知 job ID 补查窗口外任务,每块终态后自动继续下一块。
+  如何避免:**付费提交的恢复条件必须是“有 ID + 该 task type 有幂等查询路径”,不能只检查 ID 非空;未知提交状态宁可停下人工核实,不准自动重提或退预留。分镜回归必须同时覆盖素材直连/回退、宕机/stale、重复点击、取消/删除、历史水合、多 board 续跑和旧任务结果恢复,不得只验证单次成功路径。**

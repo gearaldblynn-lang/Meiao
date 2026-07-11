@@ -696,7 +696,7 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 - Symptom: 2026-07-09 按 job 去重后,多桑、董丹丹、洛克等 7 个账号在一键主详、万物替换、买家秀、产品精修共有 108 个 `asset_upload` 终态失败,全部停在 `providerTaskId=null + asset_upload + provider_network_error/fetch failed`；当天 275 个目标 job 中 154 个成功、117 个以 provider 网络错误终止,属于间歇性退化而非整体中断。
 - Root cause: `resolveProviderGenerationMediaUrl` 和 `resolveProviderChatMediaUrl` 对所有我方托管素材强制转存 KIE。已有的图片单任务并发 2 只能限制一个 job，无法限制多个模块、多个账号同时上传；KIE file-stream-upload 一抖，任务在上游接单前直接失败。进程内也没有跨 job 成功 URL 缓存。
-- Fix: 我方托管素材在公网 HTTPS 基址可用时直连优先；只有明确文件读取失败或同步 chat/Responses 无 task id 的 HTTP 502 才转存 KIE 并重试同一模型。拿到任何 providerTaskId 后禁止重提。实际转存使用跨任务进程级并发总闸门、上传专属重试预算和成功 URL TTL 缓存；`kie-only` 保留为环境变量回滚开关。
+- Fix: 我方托管素材在公网 HTTPS 基址可用时直连优先；只有明确文件读取/下载/MIME 失败且无 task id 时才转存 KIE 并重试同一模型，普通 HTTP 500/502 或网络错误不触发回退。拿到任何 providerTaskId 后禁止重提。实际转存使用跨任务进程级并发总闸门、上传专属重试预算和成功 URL TTL 缓存；`kie-only` 保留为环境变量回滚开关。
 - Regression check: `node --test server/providerAssetUploadLimiter.test.mjs server/providerAssetTransfer.test.mjs server/providerKieImage.test.mjs server/providerGateway.test.mjs server/providerKieTask.test.mjs`；`npm run lint`；`npm run build`；云上 HTTPS asset、正式托管素材 job 与当天日志聚合验收。
 - Avoid next time: 第三方图床只能是兼容性回退，不能是我方托管素材的必经单点。任何媒体回退必须同时证明“原请求确实用了直连”“错误发生在 provider 接单前”“异常里没有 task id”；上传重试可接受重复文件，但生成/聊天提交收到 HTTP 响应后仍不得盲目重试。
 
@@ -796,3 +796,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 云端 PM2 `max_memory_restart` 调到 1500M，`MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 调到 120000；`providerGateway` 将 `Failed to get the file information` 识别为 `provider_bad_response` 以触发 fallback；分镜脚本任务写入 `fallbackModels`；`extractJsonArray` 改为括号平衡扫描并验证 `JSON.parse(candidate)`；已清洗董丹丹 job `f1b73dd01c10b650133f1d74` 的结果并回填项目 `video_1782278558653_0_g6ra` 为 `awaiting_image_confirmation`，2 个 boards / 11 个 shots。
 - Regression check: `node --test server/providerGateway.test.mjs --test-name-pattern "provider file information|fallback models"`；`node --test src/services/videoStoryboardService.test.mjs`；`node --test server/jobManager.test.mjs --test-name-pattern "providerless|kie chat"`；`npm run build`；云端同组测试和 health check 通过。
 - Avoid next time: KIE chat 200 文本不能天然视为成功；凡是 provider 文件读取/维护/拒答文本，都必须进入 provider 错误归类和 fallback/失败路径。模型 fallback 输出可能夹带 reasoning 或说明文本，JSON 提取必须找“可解析的数组”，不能用贪婪首尾括号。手工修复后台 job 后，还要检查 `app_states` 是否绑定项目，否则用户页面不会自动显示结果。
+
+## 2026-07-11 - Paid storyboard recovery must be query-only and state hydration must preserve user work
+
+- Symptom: 多桑、董丹丹等账号的短视频/分镜任务批量出现“素材上传到生成服务失败”，任务重启、stale 回收和页面刷新还可能带来重复付费提交、卡片被旧状态覆盖或多分镜中途停止。
+- Root cause: Gemini 分镜视频强制转存 KIE，让 KIE file-stream-upload 成为提交前单点；恢复策略只检查 providerTaskId 非空，没检查该 task type 是否真有旧 ID 查询路径；积分预留和 job 创建不原子，取消/重试/删除读旧快照；前端预上传和提交重复上传，水合又用旧 job 覆盖更新的分镜编辑。
+- Fix: 我方公网 HTTPS 托管素材 direct-first，仅明确文件读取错误且未接单时回退 KIE；chat 素材解析单 job 并发 2，与进程级上传总闸门/成功 URL 缓存叠加。恢复改成 task type 白名单查旧 ID，不可查询的 chat response 进入 `provider_submission_unknown`。去重+积分预留+job 创建同事务，取消/重试锁行重读；排队删除先取消并退预留，运行中/提交未知禁止直删。前端共享上传 Promise，提交锁在获得 job ID 后立即释放，水合保留用户新编辑并按已知 ID 补查近期窗口外任务。
+- Regression check: `node --test server/jobManager.test.mjs server/jobRuntime.test.mjs server/jobSubmissionPolicy.test.mjs server/providerGateway.test.mjs server/providerAssetTransfer.test.mjs`；`find src -name "*.test.mjs" | xargs node --experimental-strip-types --test`；`npm run build`。
+- Avoid next time: 付费任务“恢复”必须只查旧 ID，且 task type 必须有真实幂等查询接口；没有可证明的未提交事实时，不自动重提、退预留或删除记录。分镜验收不得只跑单 board 快速路径，必须覆盖重启、重复点击、删除/取消、刷新水合和多 board 续跑。
