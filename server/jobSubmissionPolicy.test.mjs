@@ -83,6 +83,24 @@ test('video storyboard chat receives video permission, zero create retries and v
   assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000);
 });
 
+test('video storyboard image jobs receive zero create retries and video dedupe policy', () => {
+  const input = {
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    payload: { subFeature: 'storyboard', planningPurpose: 'storyboard_board_image' },
+  };
+
+  assert.throws(
+    () => resolveJobSubmissionPolicy({ ...input, hasVideoPermission: false }),
+    (error) => error?.code === 'video_feature_forbidden' && error?.statusCode === 403
+  );
+  const policy = resolveJobSubmissionPolicy({ ...input, hasVideoPermission: true });
+  assert.equal(policy.isVideoStoryboard, true);
+  assert.equal(policy.maxCreateRetries, 0);
+  assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000);
+});
+
 test('provider policy preserves unknown internal tasks for compatibility', () => {
   const policy = resolveJobSubmissionPolicy({
     taskType: 'future_internal_maintenance',

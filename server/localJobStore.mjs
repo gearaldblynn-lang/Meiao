@@ -6,6 +6,7 @@ import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { findReusableJobSubmission, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
 
 const now = () => Date.now();
+const LOCAL_ACTIVE_JOB_STATUSES = new Set(['queued', 'running', 'retry_waiting']);
 
 const cloneValue = (value) => JSON.parse(JSON.stringify(value ?? null));
 
@@ -88,12 +89,18 @@ export const reconcileRestartedLocalJobs = (jobs) => {
 
 export const normalizeLocalJobs = (jobs) => {
   if (!Array.isArray(jobs)) return [];
-  return jobs
+  const normalized = jobs
     .filter((job) => job && typeof job === 'object')
     .map(normalizeJob)
     .map(compactLocalJobRecord)
-    .sort((a, b) => Number(b.createdAt) - Number(a.createdAt))
-    .slice(0, 500);
+    .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
+  const active = normalized.filter((job) => LOCAL_ACTIVE_JOB_STATUSES.has(job.status));
+  const terminalLimit = Math.max(0, 500 - active.length);
+  const terminal = normalized
+    .filter((job) => !LOCAL_ACTIVE_JOB_STATUSES.has(job.status))
+    .slice(0, terminalLimit);
+  return [...active, ...terminal]
+    .sort((a, b) => Number(b.createdAt) - Number(a.createdAt));
 };
 
 const ensureStoreJobs = (store) => {
@@ -138,7 +145,10 @@ export const createLocalJobRecord = (store, user, payload) => {
 };
 
 export const findReusableLocalJobRecord = (store, user, payload, dedupeWindowMs = 8000) => {
-  const createdAfter = Math.max(0, now() - Math.max(0, Number(dedupeWindowMs || 0)));
+  const clientSubmissionKey = String(payload?.payload?.clientSubmissionKey || '').trim();
+  const createdAfter = clientSubmissionKey
+    ? 0
+    : Math.max(0, now() - Math.max(0, Number(dedupeWindowMs || 0)));
   return findReusableJobSubmission({
     jobs: ensureStoreJobs(store),
     userId: user.id,
@@ -148,6 +158,80 @@ export const findReusableLocalJobRecord = (store, user, payload, dedupeWindowMs 
     payload: payload.payload,
     createdAfter,
   });
+};
+
+export const resolveLocalSubmissionUnknownJob = (store, {
+  jobId,
+  action,
+  providerTaskId = '',
+  releaseReservation,
+} = {}) => {
+  const normalizedAction = String(action || '').trim();
+  const normalizedProviderTaskId = String(providerTaskId || '').trim();
+  if (!['bind', 'release'].includes(normalizedAction)) {
+    throw Object.assign(new Error('处置动作必须是 bind 或 release。'), {
+      code: 'submission_resolution_invalid',
+      statusCode: 400,
+    });
+  }
+  if (normalizedAction === 'bind' && !normalizedProviderTaskId) {
+    throw Object.assign(new Error('绑定处置必须提供已核实的 providerTaskId。'), {
+      code: 'submission_resolution_task_id_required',
+      statusCode: 400,
+    });
+  }
+
+  const index = findJobIndex(store, jobId);
+  const job = index >= 0 ? normalizeJob(store.jobs[index]) : null;
+  if (!job) {
+    throw Object.assign(new Error('任务不存在。'), { code: 'job_not_found', statusCode: 404 });
+  }
+  if (job.status !== 'failed' || job.errorCode !== 'provider_submission_unknown') {
+    throw Object.assign(new Error('只有提交状态未知的失败任务可以人工处置。'), {
+      code: 'submission_resolution_not_allowed',
+      statusCode: 409,
+    });
+  }
+  if (normalizedAction === 'bind' && !canRecoverProviderTaskById({
+    taskType: job.taskType,
+    providerTaskId: normalizedProviderTaskId,
+  })) {
+    throw Object.assign(new Error('该任务类型没有按上游任务 ID 查询结果的安全恢复路径，只能核实后释放预留。'), {
+      code: 'submission_resolution_bind_unsupported',
+      statusCode: 409,
+    });
+  }
+
+  const updatedAt = now();
+  if (normalizedAction === 'bind') {
+    const updated = normalizeJob({
+      ...job,
+      status: 'retry_waiting',
+      providerTaskId: normalizedProviderTaskId,
+      startedAt: null,
+      finishedAt: null,
+      cancelRequestedAt: null,
+      retryCount: 0,
+      errorCode: 'submission_resolved_bound',
+      errorMessage: '管理员已核实并绑定上游任务 ID，等待恢复查询',
+      updatedAt,
+    });
+    store.jobs[index] = updated;
+    return { action: normalizedAction, job: updated };
+  }
+
+  if (typeof releaseReservation !== 'function') {
+    throw new TypeError('releaseReservation callback is required.');
+  }
+  releaseReservation(job);
+  const updated = normalizeJob({
+    ...job,
+    errorCode: 'provider_submission_released',
+    errorMessage: '管理员已核实未产生上游任务并释放积分预留',
+    updatedAt,
+  });
+  store.jobs[index] = updated;
+  return { action: normalizedAction, job: updated };
 };
 
 export const getLocalJobById = (store, jobId) => {

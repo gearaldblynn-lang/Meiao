@@ -829,6 +829,7 @@ export interface VideoStoryboardProject {
   whiteBgTaskId?: string;
   whiteBgStatus?: 'pending' | 'generating' | 'completed' | 'failed';
   planningTaskId?: string;
+  clientSubmissionKey?: string;
   creditsConsumed?: number;
   createdAt: number;
   sceneDescription?: string;
@@ -846,6 +847,7 @@ export interface VideoStoryboardBoard {
   taskId?: string;
   creditsConsumed?: number;
   status: 'pending' | 'generating' | 'completed' | 'failed';
+  autoResumeBlocked?: boolean;
   error?: string;
   previousBoardImageUrl?: string;
   revisionInstruction?: string;

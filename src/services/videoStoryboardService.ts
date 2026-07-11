@@ -18,6 +18,8 @@ export type StoryboardJobContext = {
   planningPurpose?: string;
   phase?: string;
   boardId?: string;
+  signal?: AbortSignal;
+  clientSubmissionKey?: string;
   onJobCreated?: (jobId: string, providerTaskId?: string) => void;
 };
 
@@ -398,7 +400,7 @@ export const generateStoryboardScript = async (
   const shellProjectId = String(jobContext.shellProjectId || '').trim();
   const planningPurpose = String(jobContext.planningPurpose || 'storyboard_planning').trim();
   const phase = String(jobContext.phase || 'planning').trim();
-  const { onJobCreated } = jobContext;
+  const { onJobCreated, signal } = jobContext;
 
   if (safeReferenceVideoUrl) {
     userContent.push({ type: 'text', text: `[爆款复刻视频URL] ${safeReferenceVideoUrl}` });
@@ -444,6 +446,7 @@ export const generateStoryboardScript = async (
       kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
       requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       subFeature: 'storyboard',
+      clientSubmissionKey: String(jobContext.clientSubmissionKey || '').trim() || undefined,
       shellProjectId,
       planningPurpose,
       phase,
@@ -461,7 +464,7 @@ export const generateStoryboardScript = async (
     const providerTaskId = String(updatedJob.providerTaskId || '').trim();
     if (providerTaskId) onJobCreated?.(job.id, providerTaskId);
   };
-  const finalJob = await waitForInternalJob(job.id, undefined, 2500, 0, onJobUpdate);
+  const finalJob = await waitForInternalJob(job.id, signal, 2500, 0, onJobUpdate);
   if (finalJob.status !== 'succeeded') {
     throw new Error(finalJob.errorMessage || '分镜脚本生成失败');
   }
@@ -728,13 +731,14 @@ export const generateStoryboardBoardImage = async (
       apiConfig,
       createImageModuleConfig(AspectRatio.AUTO, 'gpt-image-2', config.quality || GPT_IMAGE_2_DEFAULT_QUALITY),
       false,
-      new AbortController().signal,
+      jobContext.signal || new AbortController().signal,
       prompt,
       false,
       undefined,
       'main',
       {
         subFeature: 'storyboard',
+        clientSubmissionKey: String(jobContext.clientSubmissionKey || '').trim() || undefined,
         shellProjectId: String(jobContext.shellProjectId || '').trim(),
         planningPurpose: String(jobContext.planningPurpose || 'storyboard_board_image').trim(),
         phase: String(jobContext.phase || 'initial').trim(),

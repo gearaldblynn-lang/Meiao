@@ -1137,6 +1137,9 @@ const shouldRetryWithKieManagedAsset = ({ payload, env, error, options = {} }) =
   if (options.forceManagedAssetUpload || options.directMediaFallbackAttempted) return false;
   if (!payloadContainsManagedAsset(payload)) return false;
   if (String(error?.providerTaskId || '').trim()) return false;
+  if (String(error?.code || '').trim() === 'provider_submission_unknown') return false;
+  if (Number(error?.providerHttpStatus || 0) >= 500) return false;
+  if (KIE_CHAT_NON_FALLBACK_PROVIDER_STAGES.has(String(error?.providerStage || '').trim())) return false;
   const message = String(error?.providerMessage || error?.message || '').trim();
   return DIRECT_MANAGED_MEDIA_READ_ERROR_PATTERN.test(message);
 };
@@ -1178,6 +1181,7 @@ const runKieChatFallbackModels = async (payload, env, signal, originalError, opt
       }
       return fallbackResult;
     } catch (fallbackError) {
+      if (!shouldFallbackKieChatError(fallbackError)) throw fallbackError;
       lastError = fallbackError;
     }
   }
@@ -1305,7 +1309,22 @@ const mapHttpError = async (response, defaultMessage) => {
 const notifyProviderTaskId = async (options, providerTaskId) => {
   const value = String(providerTaskId || '').trim();
   if (!value || typeof options?.onProviderTaskId !== 'function') return;
-  await options.onProviderTaskId(value);
+  try {
+    await options.onProviderTaskId(value);
+  } catch (error) {
+    const nonQueryableResponseId = String(options?.taskType || '').trim() === 'kie_chat';
+    throw createProviderError(
+      nonQueryableResponseId ? 'provider_submission_unknown' : 'provider_internal_error',
+      `上游任务已创建，但任务 ID 持久化失败：${error?.message || '未知错误'}`,
+      {
+        providerTaskId: value,
+        providerStage: 'provider_checkpoint',
+        providerStatus: 'checkpoint_failed',
+        checkpointErrorCode: String(error?.code || ''),
+        cause: error,
+      }
+    );
+  }
 };
 
 const pollKieVeoTask = async (taskId, kieApiKey, signal) => {
@@ -2913,6 +2932,7 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
       }
       return runKieChatJob(job.payload, env, signal, {
         ...options,
+        taskType: job.taskType,
         jobModule: job.module,
         jobSubFeature: job.subFeature || job.payload?.subFeature,
       });

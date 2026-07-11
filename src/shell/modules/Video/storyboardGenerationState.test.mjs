@@ -75,6 +75,85 @@ test('imaging project resumes the next pending board only after earlier work is 
     status: 'awaiting_image_confirmation',
     boards,
   }), null);
+  assert.equal(getResumableStoryboardBoard({
+    status: 'imaging',
+    boards: [
+      { id: 'board-1', status: 'completed', imageUrl: '/first.png' },
+      { id: 'board-2', status: 'pending', autoResumeBlocked: true },
+    ],
+  }), null);
+});
+
+test('recovered active board identity stays generating and cannot become resumable pending', async () => {
+  const { getResumableStoryboardBoard, mergeRecoveredStoryboardProject } = await loadHelper();
+  const localVersions = [{ id: 'local-v1', imageUrl: '/local-edit.png' }];
+
+  for (const recoveredStatus of ['generating', 'retry_waiting']) {
+    const merged = mergeRecoveredStoryboardProject({
+      id: 'project-1',
+      status: 'imaging',
+      boards: [{
+        id: 'board-1',
+        status: 'pending',
+        prompt: '用户修改后的 prompt',
+        imageUrl: '/local-edit.png',
+        imageVersions: localVersions,
+      }],
+    }, {
+      id: 'project-1',
+      status: 'imaging',
+      boards: [{
+        id: 'board-1',
+        status: recoveredStatus,
+        backendJobId: 'board-job-active',
+        taskId: 'provider-task-active',
+        prompt: '历史 prompt',
+      }],
+    });
+
+    assert.equal(merged.boards[0].status, 'generating');
+    assert.equal(merged.boards[0].backendJobId, 'board-job-active');
+    assert.equal(merged.boards[0].taskId, 'provider-task-active');
+    assert.equal(merged.boards[0].prompt, '用户修改后的 prompt');
+    assert.equal(merged.boards[0].imageUrl, '/local-edit.png');
+    assert.deepEqual(merged.boards[0].imageVersions, localVersions);
+    assert.equal(getResumableStoryboardBoard(merged), null);
+  }
+});
+
+test('newest recovered board job replaces a different stale durable identity', async () => {
+  const { mergeRecoveredStoryboardProject } = await loadHelper();
+  const merged = mergeRecoveredStoryboardProject({
+    id: 'project-1',
+    status: 'imaging',
+    boards: [{
+      id: 'board-1',
+      status: 'completed',
+      backendJobId: 'old-job',
+      taskId: 'old-provider-task',
+      imageUrl: '/old.png',
+      prompt: '用户编辑后的 prompt',
+      imageVersions: [{ id: 'v1', imageUrl: '/old.png' }],
+    }],
+  }, {
+    id: 'project-1',
+    status: 'imaging',
+    boards: [{
+      id: 'board-1',
+      status: 'generating',
+      backendJobId: 'new-job',
+      taskId: 'new-provider-task',
+      imageUrl: '/persisted-old.png',
+      prompt: '提交时 prompt',
+    }],
+  });
+
+  assert.equal(merged.boards[0].status, 'generating');
+  assert.equal(merged.boards[0].backendJobId, 'new-job');
+  assert.equal(merged.boards[0].taskId, 'new-provider-task');
+  assert.equal(merged.boards[0].imageUrl, '/old.png');
+  assert.equal(merged.boards[0].prompt, '用户编辑后的 prompt');
+  assert.deepEqual(merged.boards[0].imageVersions, [{ id: 'v1', imageUrl: '/old.png' }]);
 });
 
 test('recovered storyboard merge preserves local edits and only advances matching active jobs', async () => {

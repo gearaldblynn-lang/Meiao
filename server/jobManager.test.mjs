@@ -5,6 +5,8 @@ import { readFileSync } from 'node:fs';
 import {
   buildJobSubmissionLockKey,
   createSerializedJobSubmission,
+  deleteJobById,
+  findReusableJobRecord,
   findReusableJobSubmission,
   getJobByIdForUpdate,
   isRunningJobConcurrencyBlocking,
@@ -305,6 +307,88 @@ test('findReusableJobSubmission ignores internal credit reservation metadata whe
   assert.equal(matched?.id, 'job-credit-reserved');
 });
 
+test('findReusableJobSubmission prefers a top-level client submission key over volatile payload fields', () => {
+  const jobs = [
+    {
+      id: 'job-stable-key',
+      userId: 'user-a',
+      module: 'video',
+      taskType: 'kie_seedance_video',
+      provider: 'kie',
+      status: 'running',
+      payload: {
+        clientSubmissionKey: 'storyboard-shot-7',
+        shellProjectId: 'generated-project-a',
+        requestId: 'request-a',
+        prompt: 'first payload snapshot',
+      },
+      createdAt: 5000,
+    },
+  ];
+  const baseSubmission = {
+    jobs,
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    createdAfter: 1000,
+  };
+
+  const sameKey = findReusableJobSubmission({
+    ...baseSubmission,
+    payload: {
+      clientSubmissionKey: 'storyboard-shot-7',
+      shellProjectId: 'generated-project-b',
+      requestId: 'request-b',
+      prompt: 'later payload snapshot',
+    },
+  });
+  const differentKey = findReusableJobSubmission({
+    ...baseSubmission,
+    payload: {
+      ...jobs[0].payload,
+      clientSubmissionKey: 'storyboard-shot-8',
+    },
+  });
+
+  assert.equal(sameKey?.id, 'job-stable-key');
+  assert.equal(differentKey, null);
+});
+
+test('findReusableJobRecord searches every active row for an explicit client submission key', async () => {
+  const queries = [];
+  const oldActiveRow = {
+    id: 'job-stable-key-old',
+    user_id: 'user-a',
+    module: 'video',
+    task_type: 'kie_seedance_video',
+    provider: 'kie',
+    status: 'running',
+    payload_json: JSON.stringify({ clientSubmissionKey: 'stable-video-key' }),
+    created_at: 1,
+    updated_at: 1,
+  };
+  const pool = {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      return [[oldActiveRow]];
+    },
+  };
+
+  const matched = await findReusableJobRecord(pool, { id: 'user-a' }, {
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    payload: { clientSubmissionKey: 'stable-video-key', prompt: 'same semantic input' },
+  }, 60 * 60 * 1000);
+
+  assert.equal(matched?.id, oldActiveRow.id);
+  assert.match(queries[0].sql, /JSON_UNQUOTE\(JSON_EXTRACT\(payload_json, '\$\.clientSubmissionKey'\)\) = \?/);
+  assert.doesNotMatch(queries[0].sql, /created_at >=/);
+  assert.doesNotMatch(queries[0].sql, /LIMIT 20/);
+  assert.equal(queries[0].values.at(-1), 'stable-video-key');
+});
+
 test('findReusableJobSubmission ignores finished or stale jobs', () => {
   const matched = findReusableJobSubmission({
     jobs: [
@@ -374,6 +458,49 @@ test('submission lock key ignores volatile request and credit metadata', () => {
     provider: 'kie',
     payload: { prompt: 'same prompt', nested: { duration: 12 } },
   }));
+  assert.notEqual(first, buildJobSubmissionLockKey({
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    payload: { prompt: 'different prompt', nested: { duration: 12 } },
+  }));
+});
+
+test('submission lock key prefers clientSubmissionKey and keeps different keys independent', () => {
+  const submission = {
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+  };
+  const first = buildJobSubmissionLockKey({
+    ...submission,
+    payload: {
+      clientSubmissionKey: 'storyboard-shot-7',
+      shellProjectId: 'generated-project-a',
+      prompt: 'first payload snapshot',
+    },
+  });
+  const sameKey = buildJobSubmissionLockKey({
+    ...submission,
+    payload: {
+      clientSubmissionKey: 'storyboard-shot-7',
+      shellProjectId: 'generated-project-b',
+      prompt: 'later payload snapshot',
+    },
+  });
+  const differentKey = buildJobSubmissionLockKey({
+    ...submission,
+    payload: {
+      clientSubmissionKey: 'storyboard-shot-8',
+      shellProjectId: 'generated-project-a',
+      prompt: 'first payload snapshot',
+    },
+  });
+
+  assert.equal(first, sameKey);
+  assert.notEqual(first, differentKey);
 });
 
 test('submission lock releases its MySQL connection on success and error', async () => {
@@ -580,6 +707,101 @@ test('job deletion cancels queued work but preserves active and submission-unkno
   assert.equal(resolveJobDeletionAction({ status: 'succeeded' }), 'delete');
   assert.equal(resolveJobDeletionAction({ status: 'failed', errorCode: 'provider_timeout' }), 'delete');
   assert.equal(resolveJobDeletionAction({ status: 'cancelled' }), 'delete');
+  assert.equal(resolveJobDeletionAction({
+    status: 'cancelled',
+    providerTaskId: 'submitted-task-id',
+  }), 'block_submitted_cancelled');
+  assert.equal(resolveJobDeletionAction({
+    status: 'failed',
+    errorCode: 'provider_timeout',
+  }, { pendingReservation: true }), 'block_pending_reservation');
+});
+
+test('mysql deletion row-locks and refuses work that a concurrent retry already queued', async () => {
+  const queries = [];
+  const events = [];
+  const freshQueuedRow = {
+    id: 'job-delete-retry-race',
+    user_id: 'user-a',
+    module: 'video',
+    task_type: 'kie_seedance_video',
+    provider: 'kie',
+    status: 'queued',
+    provider_task_id: null,
+    payload_json: '{}',
+    retry_count: 0,
+    max_retries: 0,
+  };
+  const connection = {
+    async beginTransaction() { events.push('begin'); },
+    async commit() { events.push('commit'); },
+    async rollback() { events.push('rollback'); },
+    async query(sql, values = []) {
+      queries.push({ sql, values });
+      if (/SELECT \* FROM internal_jobs WHERE id = \? LIMIT 1 FOR UPDATE/.test(sql)) {
+        return [[freshQueuedRow]];
+      }
+      if (/DELETE FROM internal_jobs/.test(sql)) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected connection SQL: ${sql}`);
+    },
+    release() { events.push('release'); },
+  };
+  const pool = {
+    async getConnection() { return connection; },
+    async query(sql, values = []) {
+      queries.push({ sql, values, pool: true });
+      if (/SELECT \* FROM internal_jobs/.test(sql)) return [[freshQueuedRow]];
+      if (/DELETE FROM internal_jobs/.test(sql)) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected pool SQL: ${sql}`);
+    },
+  };
+
+  const outcome = await deleteJobById(pool, freshQueuedRow.id, {
+    userId: 'user-a',
+    hasPendingReservation: async () => false,
+  });
+
+  assert.equal(outcome.deleted, false);
+  assert.equal(outcome.action, 'cancel_then_delete');
+  assert.equal(queries.some(({ sql }) => /DELETE FROM internal_jobs/.test(sql)), false);
+  assert.match(queries[0].sql, /FOR UPDATE/);
+  assert.deepEqual(events, ['begin', 'commit', 'release']);
+});
+
+test('mysql deletion preserves terminal jobs with an unprocessed reservation', async () => {
+  const queries = [];
+  const row = {
+    id: 'job-pending-reservation',
+    user_id: 'user-a',
+    module: 'video',
+    task_type: 'kie_seedance_video',
+    provider: 'kie',
+    status: 'failed',
+    provider_task_id: null,
+    payload_json: JSON.stringify({ __creditReservation: { id: 'reservation-pending' } }),
+    error_code: 'provider_timeout',
+  };
+  const connection = {
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    async query(sql) {
+      queries.push(sql);
+      if (/FOR UPDATE/.test(sql)) return [[row]];
+      if (/DELETE FROM internal_jobs/.test(sql)) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() {},
+  };
+
+  const outcome = await deleteJobById({ async getConnection() { return connection; } }, row.id, {
+    userId: 'user-a',
+    hasPendingReservation: async () => true,
+  });
+
+  assert.equal(outcome.deleted, false);
+  assert.equal(outcome.action, 'block_pending_reservation');
+  assert.equal(queries.some((sql) => /DELETE FROM internal_jobs/.test(sql)), false);
 });
 
 test('retry with a replacement reservation clears the old provider task id before resubmission', async () => {
@@ -817,6 +1039,7 @@ test('admin can bind a verified provider task id to submission-unknown work with
     payload_json: JSON.stringify({ __creditReservation: { id: 'reservation-1', userId: 'user-a', amount: 5 } }),
     error_code: 'provider_submission_unknown',
     error_message: 'unknown',
+    retry_count: 2,
   };
   const connection = {
     async beginTransaction() { events.push('begin'); },
@@ -843,8 +1066,11 @@ test('admin can bind a verified provider task id to submission-unknown work with
 
   assert.equal(result.job.status, 'retry_waiting');
   assert.equal(result.job.providerTaskId, 'verified-provider-task');
+  assert.equal(result.job.retryCount, 0);
   assert.equal(result.action, 'bind');
   assert.equal(released, 0);
+  const update = events.find((event) => typeof event === 'object');
+  assert.match(update.sql, /retry_count = 0/);
   assert.deepEqual(events.filter((event) => typeof event === 'string'), ['begin', 'commit', 'release']);
 });
 
@@ -1127,7 +1353,7 @@ test('reconcileStaleCancelledRunningMysqlJobs releases cancelled running jobs af
 test('classic mysql worker includes provider task id in recovery failure-state calculation', () => {
   assert.match(
     jobManagerSource,
-    /const providerTaskId = String\(error\?\.providerTaskId \|\| latestJob\?\.providerTaskId \|\| ''\);[\s\S]*getNextJobFailureState\(\{[\s\S]*providerTaskId,/
+    /const providerTaskId = String\(error\?\.providerTaskId \|\| notifiedProviderTaskId \|\| latestJob\?\.providerTaskId \|\| ''\);[\s\S]*getNextJobFailureState\(\{[\s\S]*providerTaskId,/
   );
   assert.match(
     jobManagerSource,

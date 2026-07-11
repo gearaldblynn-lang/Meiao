@@ -130,6 +130,7 @@ export interface ShellTaskData {
   completed?: number;
   subFeature?: string;
   backendJobId?: string;
+  storyboardBoardId?: string;
   prompt?: string;
 }
 
@@ -1553,6 +1554,22 @@ const mapJobs = (
       return 0;
     });
     sortedJobs.forEach((job) => groupedStoryboardJobIds.add(String(job.id || '').trim()));
+    const storyboardBoardJobIds = new Set<string>();
+    const newestStoryboardBoardJobByBoardId = new Map<string, InternalJob>();
+    sortedJobs.forEach((job) => {
+      const payload = (job.payload || {}) as Record<string, unknown>;
+      if (String(payload.planningPurpose || '').trim() !== 'storyboard_board_image') return;
+      const boardId = String(payload.boardId || '').trim();
+      const jobId = String(job.id || '').trim();
+      if (!boardId || !jobId) return;
+      storyboardBoardJobIds.add(jobId);
+      const currentNewest = newestStoryboardBoardJobByBoardId.get(boardId);
+      const createdDifference = Number(job.createdAt || 0) - Number(currentNewest?.createdAt || 0);
+      const updatedDifference = Number(job.updatedAt || 0) - Number(currentNewest?.updatedAt || 0);
+      if (!currentNewest || createdDifference > 0 || (createdDifference === 0 && updatedDifference >= 0)) {
+        newestStoryboardBoardJobByBoardId.set(boardId, job);
+      }
+    });
     const persistedProject = persistedProjects.find((project) => project.id === shellProjectId);
     const firstPayload = (sortedJobs[0]?.payload || {}) as Record<string, unknown>;
     let storyboardProject = normalizeStoryboardProject(
@@ -1624,17 +1641,22 @@ const mapJobs = (
         }
       } else if (planningPurpose === 'storyboard_board_image') {
         const boardId = String(payload.boardId || '').trim();
+        const recoveredJobId = String(job.id || '').trim();
+        const authoritativeJobId = String(newestStoryboardBoardJobByBoardId.get(boardId)?.id || '').trim();
         const boardIndex = storyboardProject.boards.findIndex((board) => board.id === boardId);
-        if (boardIndex >= 0) {
+        if (boardIndex >= 0 && recoveredJobId === authoritativeJobId) {
           const boards = [...storyboardProject.boards];
           const currentBoard = boards[boardIndex] as DurableStoryboardBoard;
           const currentBackendJobId = String(currentBoard.backendJobId || '').trim();
-          const recoveredJobId = String(job.id || '').trim();
-          const isOlderThanDurableBoard = Boolean(currentBackendJobId && currentBackendJobId !== recoveredJobId);
+          const hasExternalDurableIdentity = Boolean(
+            currentBackendJobId
+            && currentBackendJobId !== recoveredJobId
+            && !storyboardBoardJobIds.has(currentBackendJobId)
+          );
           const isCompletedWithoutJobIdentity = !currentBackendJobId
             && currentBoard.status === 'completed'
             && Boolean(String(currentBoard.imageUrl || '').trim());
-          if (!isOlderThanDurableBoard && !isCompletedWithoutJobIdentity) {
+          if (!hasExternalDurableIdentity && !isCompletedWithoutJobIdentity) {
             boards[boardIndex] = applyStoryboardBoardResult(currentBoard, storyboardJobResult(job));
           }
           storyboardProject = {
@@ -1658,6 +1680,7 @@ const mapJobs = (
           createdAt: toCreatedMs(job.createdAt),
           subFeature: 'storyboard',
           backendJobId: String(job.id),
+          storyboardBoardId: String(payload.boardId || '').trim() || undefined,
         });
       }
     });

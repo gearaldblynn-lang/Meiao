@@ -1055,7 +1055,9 @@ test('video generation blocks duplicate submit windows without blocking other ac
   assert.match(shellApp, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\)/);
   assert.match(shellApp, /beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(shellApp, /endGenerationSubmitLock\(guardedSubmitLockKey\)/);
-  assert.match(shellApp, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\)/);
+  assert.doesNotMatch(shellApp, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\)/);
+  assert.match(shellApp, /finally \{[\s\S]*releaseGuardedSubmit\(\)/);
+  assert.match(shellApp, /taskMetadata:\s*\{ clientSubmissionKey: guardedSubmitLockKey \}/);
   assert.match(shellApp, /persistProjectToSharedState\(pendingVideoProject\)/);
   assert.match(shellApp, /isSubmitLocked=\{isCurrentGenerationSubmitLocked\}/);
   assert.match(bottomInputBar, /isSubmitLocked\?: boolean/);

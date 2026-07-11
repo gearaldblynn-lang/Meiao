@@ -78,7 +78,7 @@ export const deriveStoryboardProjectStatus = (boards = [], fallback = 'imaging')
 export const getResumableStoryboardBoard = (project = {}) => {
   if (project.status !== 'imaging') return null;
   const boards = Array.isArray(project.boards) ? project.boards : [];
-  if (boards.some((board) => board?.status === 'generating')) return null;
+  if (boards.some((board) => board?.status === 'generating' || board?.status === 'retry_waiting')) return null;
 
   let previousBoardImageUrl = '';
   for (const board of boards) {
@@ -87,6 +87,8 @@ export const getResumableStoryboardBoard = (project = {}) => {
       continue;
     }
     if (board?.status === 'pending') {
+      if (board?.autoResumeBlocked === true) return null;
+      if (String(board?.backendJobId || board?.taskId || '').trim()) return null;
       return {
         boardId: String(board.id || '').trim(),
         previousBoardImageUrl,
@@ -114,7 +116,43 @@ export const mergeRecoveredStoryboardProject = (current = {}, recovered = {}) =>
       || !recoveredBackendJobId
       || currentBackendJobId === recoveredBackendJobId;
     const currentActive = board?.status === 'pending' || board?.status === 'generating';
+    const recoveredActive = Boolean(recoveredBackendJobId)
+      && (recoveredBoard?.status === 'generating' || recoveredBoard?.status === 'retry_waiting');
     const recoveredTerminal = recoveredBoard?.status === 'completed' || recoveredBoard?.status === 'failed';
+
+    if (
+      recoveredBackendJobId
+      && currentBackendJobId
+      && recoveredBackendJobId !== currentBackendJobId
+      && (recoveredActive || currentActive)
+    ) {
+      const currentCompletedImageUrl = board?.status === 'completed'
+        ? String(board?.imageUrl || '').trim()
+        : '';
+      return {
+        ...board,
+        ...recoveredBoard,
+        status: recoveredActive ? 'generating' : recoveredBoard?.status,
+        imageUrl: currentCompletedImageUrl || recoveredBoard?.imageUrl || board?.imageUrl,
+        prompt: board?.prompt || recoveredBoard?.prompt,
+        imageVersions: Array.isArray(board?.imageVersions) && board.imageVersions.length > 0
+          ? board.imageVersions
+          : recoveredBoard?.imageVersions,
+      };
+    }
+
+    if (currentActive && recoveredActive && sameJob) {
+      return {
+        ...board,
+        ...recoveredBoard,
+        status: 'generating',
+        imageUrl: recoveredBoard?.imageUrl || board?.imageUrl,
+        prompt: board?.prompt || recoveredBoard?.prompt,
+        imageVersions: Array.isArray(board?.imageVersions) && board.imageVersions.length > 0
+          ? board.imageVersions
+          : recoveredBoard?.imageVersions,
+      };
+    }
 
     if (currentActive && recoveredTerminal && sameJob) {
       return {

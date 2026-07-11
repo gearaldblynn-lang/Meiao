@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const shellApp = () => readFileSync(new URL('../ShellMigratedApp.tsx', import.meta.url), 'utf8');
+const shellWorkflow = () => readFileSync(new URL('../adapters/shellWorkflow.ts', import.meta.url), 'utf8');
 
 const sliceBetween = (source, startMarker, endMarker) => {
   const start = source.indexOf(startMarker);
@@ -36,17 +37,17 @@ test('generation submit lock uses a synchronous ref across every runnable genera
   assert.match(guardBlock, /module === AppModuleObj\.XHS_COVER/);
 });
 
-test('completed submission no longer blocks a different active video task', () => {
+test('semantic submit key allows different inputs without reopening the same paid request', () => {
   const source = shellApp();
   assert.doesNotMatch(source, /const hasActiveGuardedGeneration = \(/);
   assert.doesNotMatch(source, /当前已有任务未返回，请等待完成或取消后再提交。/);
   assert.match(
     source,
-    /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\)/,
+    /const currentGenerationSubmitLockKey = buildGenerationSubmissionKey\(\{[\s\S]*prompt: promptText[\s\S]*params: currentParams[\s\S]*materials: filteredMaterials/,
   );
 });
 
-test('storyboard submit lock remains held through material upload and releases when the backend job exists', () => {
+test('storyboard semantic lock remains held through backend completion', () => {
   const source = shellApp();
   const storyboardBlock = sliceBetween(
     source,
@@ -57,11 +58,11 @@ test('storyboard submit lock remains held through material upload and releases w
   const beforeMaterialUpload = storyboardBlock.slice(0, storyboardBlock.indexOf('await ensureMaterialRemoteUrls'));
   assert.match(storyboardBlock, /if \(!beginGuardedSubmit\(\)\) return/);
   assert.doesNotMatch(beforeMaterialUpload, /releaseGuardedSubmit\(\)/);
-  assert.match(storyboardBlock, /onJobCreated: \(jobId, providerTaskId\) => \{\s*releaseGuardedSubmit\(\)/);
+  assert.doesNotMatch(storyboardBlock, /onJobCreated: \(jobId, providerTaskId\) => \{\s*releaseGuardedSubmit\(\)/);
   assert.match(storyboardBlock, /finally \{[\s\S]*releaseGuardedSubmit\(\)/);
 });
 
-test('standard video job-created callback releases only the submit window', () => {
+test('standard video keeps the semantic lock after job creation and releases in finally', () => {
   const source = shellApp();
   const standardGenerationBlock = sliceBetween(
     source,
@@ -69,5 +70,22 @@ test('standard video job-created callback releases only the submit window', () =
     'const result = targetModule === AppModuleObj.VIDEO',
   );
 
-  assert.match(standardGenerationBlock, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\)/);
+  assert.doesNotMatch(standardGenerationBlock, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\)/);
+  assert.match(source, /finally \{[\s\S]*releaseGuardedSubmit\(\)/);
+});
+
+test('standard video forwards the semantic submission key into every backend payload', () => {
+  const source = shellApp();
+  const workflowSource = shellWorkflow();
+  const standardVideoCall = sliceBetween(
+    source,
+    'const result = targetModule === AppModuleObj.VIDEO',
+    ': null;',
+  );
+  const videoWorkflowStart = workflowSource.indexOf('export const runShellVideoGeneration = async');
+  assert.notEqual(videoWorkflowStart, -1, 'missing standard video workflow');
+  const videoWorkflow = workflowSource.slice(videoWorkflowStart);
+
+  assert.match(standardVideoCall, /taskMetadata:\s*\{\s*clientSubmissionKey:\s*guardedSubmitLockKey\s*\}/);
+  assert.equal((videoWorkflow.match(/\.\.\.\(input\.taskMetadata \|\| \{\}\)/g) || []).length, 2);
 });

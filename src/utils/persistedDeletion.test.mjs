@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 
 import { buildPersistedAppState, createDefaultOneClickState, createDefaultVideoState } from './appState.ts';
 import { buildShellDataSnapshot } from '../adapters/shellDataAdapter.ts';
-import { pruneKnownLegacyGarbageFromPersistedState, prunePersistedAppStateForDeletion } from './persistedDeletion.ts';
+import { collectStoryboardBoardJobIds } from '../shell/modules/Video/storyboardProjectActions.mjs';
+import {
+  applyPersistedDeletionTombstones,
+  pruneKnownLegacyGarbageFromPersistedState,
+  prunePersistedAppStateForDeletion,
+} from './persistedDeletion.ts';
 
 test('prunePersistedAppStateForDeletion removes deleted one-click result cards from persisted snapshots', () => {
   const defaultOneClick = createDefaultOneClickState();
@@ -167,6 +172,104 @@ test('prunePersistedAppStateForDeletion removes pending result cards by backend 
 
   assert.ok(project);
   assert.deepEqual(project.results.map((result) => result.id), ['kept-result']);
+});
+
+test('storyboard result deletion keeps the board slot and sibling boards after hydration', () => {
+  const videoMemory = createDefaultVideoState();
+  videoMemory.storyboard.projects = [{
+    id: 'storyboard-project',
+    name: '双分镜项目',
+    status: 'completed',
+    config: videoMemory.storyboard.config,
+    script: '测试脚本',
+    shots: [],
+    backendJobId: 'board-job-a',
+    boards: [
+      {
+        id: 'board-a',
+        title: '分镜 A',
+        shotIds: [],
+        scriptText: 'A',
+        prompt: 'A prompt',
+        imageUrl: '/a.png',
+        status: 'completed',
+        backendJobId: 'board-job-a',
+        imageVersions: [{ id: 'a-v1', imageUrl: '/a.png', createdAt: 1 }],
+      },
+      {
+        id: 'board-b',
+        title: '分镜 B',
+        shotIds: [],
+        scriptText: 'B',
+        prompt: 'B prompt',
+        imageUrl: '/b.png',
+        status: 'completed',
+        backendJobId: 'board-job-b',
+      },
+    ],
+    createdAt: 1,
+  }];
+  const jobs = [
+    {
+      id: 'board-job-old',
+      module: 'video',
+      taskType: 'kie_image',
+      provider: 'kie',
+      providerTaskId: 'provider-old',
+      status: 'succeeded',
+      payload: {
+        shellProjectId: 'storyboard-project',
+        planningPurpose: 'storyboard_board_image',
+        boardId: 'board-a',
+      },
+      result: { imageUrl: '/old-a.png' },
+      createdAt: 1,
+      updatedAt: 1,
+    },
+    {
+      id: 'board-job-a',
+      module: 'video',
+      taskType: 'kie_image',
+      provider: 'kie',
+      providerTaskId: 'provider-new',
+      status: 'succeeded',
+      payload: {
+        shellProjectId: 'storyboard-project',
+        planningPurpose: 'storyboard_board_image',
+        boardId: 'board-a',
+      },
+      result: { imageUrl: '/a.png' },
+      createdAt: 2,
+      updatedAt: 2,
+    },
+  ];
+  const jobIds = collectStoryboardBoardJobIds(
+    videoMemory.storyboard.projects[0],
+    'board-a',
+    { jobs },
+  );
+  const target = {
+    projectId: 'storyboard-project',
+    resultId: 'board-a',
+    jobIds,
+    preserveStoryboardBoardSlot: true,
+  };
+  const pruned = prunePersistedAppStateForDeletion(buildPersistedAppState({ videoMemory }), target);
+  const tombstoned = applyPersistedDeletionTombstones(pruned, target);
+  const snapshot = buildShellDataSnapshot(tombstoned, jobs);
+  const project = snapshot.projects.find((item) => item.id === 'storyboard-project');
+  const sourceProject = project?.storyboardSourceProject;
+
+  assert.ok(project);
+  assert.deepEqual(sourceProject?.boards.map((board) => board.id), ['board-a', 'board-b']);
+  assert.equal(sourceProject?.boards[0].status, 'pending');
+  assert.equal(sourceProject?.boards[0].autoResumeBlocked, true);
+  assert.equal(sourceProject?.boards[0].imageUrl, undefined);
+  assert.equal(sourceProject?.boards[0].backendJobId, undefined);
+  assert.equal(sourceProject?.boards[1].imageUrl, '/b.png');
+  assert.deepEqual(tombstoned.shellDraft?.deletedProjectIds, []);
+  assert.deepEqual(tombstoned.shellDraft?.deletedResultIds, []);
+  assert.deepEqual(tombstoned.shellDraft?.deletedJobIds, ['board-job-a', 'board-job-old']);
 });
 
 test('pruneKnownLegacyGarbageFromPersistedState removes the polluted local translation card only', () => {

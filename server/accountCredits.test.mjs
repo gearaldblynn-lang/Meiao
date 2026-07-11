@@ -414,6 +414,17 @@ test('cancel and retry routes enforce reservation lifecycle before queueing work
   assert.equal((serverSource.match(/resetProviderTaskId:\s*reservationAction === 'reserve'/g) || []).length, 2);
 });
 
+test('job deletion checks pending reservations in mysql and local modes before removing records', () => {
+  assert.match(
+    serverSource,
+    /deleteJobById\(pool,[\s\S]{0,500}hasPendingReservation:[\s\S]{0,400}hasDbProcessedCreditReservation/
+  );
+  assert.match(
+    serverSource,
+    /const resolveLocalDeletionAction[\s\S]{0,240}resolveJobDeletionAction\(candidate,[\s\S]{0,240}getLocalCreditReservationState/
+  );
+});
+
 test('submission-unknown jobs expose an admin-only audited bind or release endpoint', () => {
   assert.match(serverSource, /submission-resolution/);
   assert.match(
@@ -424,4 +435,6 @@ test('submission-unknown jobs expose an admin-only audited bind or release endpo
   assert.match(serverSource, /action: 'submission_unknown_resolved'/);
   assert.match(serverSource, /reason: 'admin_submission_resolution'/);
   assert.match(serverSource, /resolution\.action === 'bind'[\s\S]{0,180}mirrorDbJobToTemporalIfEnabled/);
+  assert.match(serverSource, /localRequireAdmin[\s\S]{0,600}resolveLocalSubmissionUnknownJob/);
+  assert.match(serverSource, /releaseLocalAccountCredits[\s\S]{0,400}admin_submission_resolution/);
 });
