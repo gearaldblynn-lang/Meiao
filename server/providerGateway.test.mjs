@@ -3793,6 +3793,7 @@ test('executeProviderJob does not resubmit direct managed media after ambiguous 
           taskType: 'kie_chat',
           payload: {
             model: 'gpt-5-4-openai-resp',
+            fallbackModels: ['gemini-3-flash-openai'],
             messages: [{
               role: 'user',
               content: [{ type: 'image_url', image_url: { url: '/api/assets/file/direct-502/source.jpg' } }],
@@ -4328,7 +4329,7 @@ test('executeProviderJob does not silently fall back to implicit chat models whe
   }
 });
 
-test('executeProviderJob respects caller-provided fallback models when gpt-5.4 responses fails', async () => {
+test('executeProviderJob does not switch models after ambiguous gpt-5.4 HTTP 500', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
@@ -4341,36 +4342,29 @@ test('executeProviderJob respects caller-provided fallback models when gpt-5.4 r
         msg: 'Server exception, please try again later.',
       }, 500);
     }
-    return createJsonResponse({
-      choices: [
-        {
-          message: {
-            content: 'flash fallback result',
-          },
-        },
-      ],
-    });
+    throw new Error(`ambiguous submit must not switch models: ${String(url)}`);
   };
 
   try {
-    const result = await executeProviderJob(
-      {
-        taskType: 'kie_chat',
-        payload: {
-          model: 'gpt-5-4-openai-resp',
-          fallbackModels: ['gemini-3-flash-openai'],
-          messages: [{ role: 'user', content: '请只回复 flash fallback result' }],
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gpt-5-4-openai-resp',
+            fallbackModels: ['gemini-3-flash-openai'],
+            messages: [{ role: 'user', content: '请只回复 flash fallback result' }],
+          },
         },
-      },
-      { KIE_API_KEY: 'test-key' },
-      new AbortController().signal
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_internal_error'
+        && Number(error?.providerHttpStatus) === 500
     );
 
-    assert.equal(result.result.content, 'flash fallback result');
-    assert.equal(result.result.modelUsed, 'gemini-3-flash-openai');
     assert.match(requests[0].url, /\/codex\/v1\/responses$/);
-    assert.match(requests[1].url, /\/gemini-3-flash\/v1\/chat\/completions$/);
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 1);
   } finally {
     global.fetch = originalFetch;
   }
@@ -4507,7 +4501,7 @@ test('executeProviderJob reuses uploaded managed asset urls across kie chat fall
       });
     }
     if (String(url).includes('/codex/v1/responses')) {
-      return createJsonResponse({ msg: 'temporary responses failure' }, 500);
+      return createJsonResponse({ output_text: 'Server exception, please try again later.' });
     }
     if (String(url).includes('/v1/chat/completions')) {
       return createJsonResponse({
@@ -4714,7 +4708,9 @@ test('executeProviderJob keeps video storyboard fallback within default Gemini m
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
     if (String(url).includes('/gemini-3.1-pro/v1/chat/completions')) {
-      return createJsonResponse({ msg: 'temporary gemini pro failure' }, 500);
+      return createJsonResponse({
+        choices: [{ message: { content: 'Server exception, please try again later.' } }],
+      });
     }
     if (String(url).includes('/gemini/v1/models/gemini-3-5-flash:streamGenerateContent')) {
       return {
@@ -4813,7 +4809,7 @@ test('executeProviderJob fails gemini image upload without base64 fallback', asy
   }
 });
 
-test('executeProviderJob falls back when gemini 3 flash stream stalls after submission', async () => {
+test('executeProviderJob does not switch models when gemini 3 flash stream stalls after submission', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
@@ -4833,15 +4829,7 @@ test('executeProviderJob falls back when gemini 3 flash stream stalls after subm
         json: async () => ({}),
       };
     }
-    return createJsonResponse({
-      choices: [
-        {
-          message: {
-            content: 'fallback after stalled stream',
-          },
-        },
-      ],
-    });
+    throw new Error(`ambiguous stalled submit must not switch models: ${String(url)}`);
   };
   global.setTimeout = (handler, ms) => {
     if (ms === 120_000) {
@@ -4856,23 +4844,24 @@ test('executeProviderJob falls back when gemini 3 flash stream stalls after subm
   };
 
   try {
-    const result = await executeProviderJob(
-      {
-        taskType: 'kie_chat',
-        payload: {
-          model: 'gemini-3-flash-openai',
-          fallbackModels: ['gpt-5-2'],
-          messages: [{ role: 'user', content: '请只回复 stalled fallback' }],
+    await assert.rejects(
+      () => executeProviderJob(
+        {
+          taskType: 'kie_chat',
+          payload: {
+            model: 'gemini-3-flash-openai',
+            fallbackModels: ['gpt-5-2'],
+            messages: [{ role: 'user', content: '请只回复 stalled fallback' }],
+          },
         },
-      },
-      { KIE_API_KEY: 'test-key' },
-      new AbortController().signal
+        { KIE_API_KEY: 'test-key' },
+        new AbortController().signal
+      ),
+      (error) => error?.code === 'provider_timeout'
     );
 
     assert.equal(sawStreamTimeout, true);
-    assert.equal(result.result.content, 'fallback after stalled stream');
-    assert.equal(result.result.modelUsed, 'gpt-5-2');
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 1);
   } finally {
     global.fetch = originalFetch;
     global.setTimeout = originalSetTimeout;

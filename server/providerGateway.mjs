@@ -1105,8 +1105,6 @@ const KIE_CHAT_FALLBACK_ERROR_CODES = new Set([
   'provider_bad_response',
   'provider_refusal',
   'provider_internal_error',
-  'provider_network_error',
-  'provider_timeout',
 ]);
 
 const KIE_CHAT_NON_FALLBACK_PROVIDER_STAGES = new Set([
@@ -1117,6 +1115,7 @@ const KIE_CHAT_NON_FALLBACK_PROVIDER_STAGES = new Set([
 const shouldFallbackKieChatError = (error) => {
   if (String(error?.providerTaskId || '').trim()) return false;
   if (KIE_CHAT_NON_FALLBACK_PROVIDER_STAGES.has(String(error?.providerStage || '').trim())) return false;
+  if (Number(error?.providerHttpStatus || 0) >= 500) return false;
   return KIE_CHAT_FALLBACK_ERROR_CODES.has(String(error?.code || '').trim());
 };
 
