@@ -16,6 +16,7 @@ import {
   requestLocalCancelJob,
   requestLocalRetryJob,
   takeNextLocalExecutableJobs,
+  updateLocalJobProviderTaskId,
 } from './localJobStore.mjs';
 
 const createStore = () => ({
@@ -55,6 +56,22 @@ test('createLocalJobRecord stores queued job with default retry fields', () => {
   assert.equal(job.retryCount, 0);
   assert.equal(job.maxRetries, 2);
   assert.deepEqual(job.payload, { imageUrls: ['https://example.com/a.png'] });
+});
+
+test('createLocalJobRecord checkpoints an existing provider task for recovery', () => {
+  const store = createStore();
+  const user = createUser();
+  const job = createLocalJobRecord(store, user, {
+    module: 'video',
+    taskType: 'dreamina_video',
+    provider: 'dreamina',
+    providerTaskId: 'dreamina-submit-1',
+    payload: { providerTaskId: 'dreamina-submit-1' },
+    maxRetries: 0,
+  });
+
+  assert.equal(job.providerTaskId, 'dreamina-submit-1');
+  assert.equal(job.maxRetries, 0);
 });
 
 test('listLocalJobsForUser returns latest jobs first and respects limit', () => {
@@ -113,6 +130,55 @@ test('requestLocalRetryJob resets failed job back to queued', () => {
   assert.equal(retried.finishedAt, null);
   assert.equal(retried.startedAt, null);
   assert.equal(retried.result, null);
+});
+
+test('requestLocalRetryJob attaches replacement reservation payload before queuing', () => {
+  const store = createStore();
+  const user = createUser();
+  const job = createLocalJobRecord(store, user, {
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    payload: { __creditReservation: { id: 'old-reservation', userId: user.id, amount: 5 } },
+    maxRetries: 2,
+  });
+  job.status = 'failed';
+
+  const retried = requestLocalRetryJob(store, job.id, {
+    payload: {
+      __creditReservation: { id: 'new-reservation', userId: user.id, amount: 5 },
+      prompt: 'same prompt',
+    },
+    maxRetries: 0,
+  });
+
+  assert.equal(retried.status, 'queued');
+  assert.equal(retried.maxRetries, 0);
+  assert.equal(retried.payload.__creditReservation.id, 'new-reservation');
+  assert.equal(retried.payload.prompt, 'same prompt');
+});
+
+test('requestLocalRetryJob clears an old provider task id only for true resubmission', () => {
+  const store = createStore();
+  const user = createUser();
+  const job = createLocalJobRecord(store, user, {
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    providerTaskId: 'old-provider-task',
+    payload: {},
+    maxRetries: 0,
+  });
+  job.status = 'failed';
+  job.retryCount = 2;
+
+  const recoveryRetry = requestLocalRetryJob(store, job.id);
+  assert.equal(recoveryRetry.providerTaskId, 'old-provider-task');
+
+  recoveryRetry.status = 'failed';
+  const resubmissionRetry = requestLocalRetryJob(store, job.id, { resetProviderTaskId: true });
+  assert.equal(resubmissionRetry.providerTaskId, '');
+  assert.equal(resubmissionRetry.retryCount, 0);
 });
 
 test('takeNextLocalExecutableJobs marks queued jobs as running in priority order', () => {
@@ -205,18 +271,30 @@ test('getLocalJobQueueStats counts queued and running jobs', () => {
   assert.equal(queued.status, 'queued');
 });
 
-test('reconcileRestartedLocalJobs moves orphaned running jobs back to retry_waiting', () => {
+test('reconcileRestartedLocalJobs never resubmits providerless running jobs after restart', () => {
   const store = createStore();
   const user = createUser();
-  const job = createLocalJobRecord(store, user, { module: 'a', taskType: 't1', provider: 'kie', payload: {} });
-  job.status = 'running';
-  job.startedAt = Date.now() - 10000;
+  const providerless = createLocalJobRecord(store, user, { module: 'a', taskType: 'kie_video', provider: 'kie', payload: {} });
+  const submitted = createLocalJobRecord(store, user, { module: 'a', taskType: 'kie_video', provider: 'kie', payload: {} });
+  const storedProviderless = store.jobs.find((job) => job.id === providerless.id);
+  const storedSubmitted = store.jobs.find((job) => job.id === submitted.id);
+  storedProviderless.status = 'running';
+  storedProviderless.startedAt = Date.now() - 10000;
+  storedSubmitted.status = 'running';
+  storedSubmitted.providerTaskId = 'provider-task-1';
+  storedSubmitted.startedAt = Date.now() - 10000;
 
   const reconciled = reconcileRestartedLocalJobs(store.jobs);
+  const failed = reconciled.find((job) => job.id === providerless.id);
+  const recoverable = reconciled.find((job) => job.id === submitted.id);
 
-  assert.equal(reconciled[0].status, 'retry_waiting');
-  assert.equal(reconciled[0].finishedAt, null);
-  assert.match(reconciled[0].errorMessage, /服务重启/);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.errorCode, 'provider_submission_unknown');
+  assert.equal(typeof failed.finishedAt, 'number');
+  assert.match(failed.errorMessage, /防止重复扣费/);
+  assert.equal(recoverable.status, 'retry_waiting');
+  assert.equal(recoverable.finishedAt, null);
+  assert.match(recoverable.errorMessage, /服务重启/);
 });
 
 test('markLocalJobFailed keeps providerTaskId for later recovery', () => {
@@ -272,4 +350,49 @@ test('local job retry can preserve failed provider task id and then store succes
   assert.equal(completed.errorCode, '');
   assert.equal(completed.errorMessage, '');
   assert.equal(completed.errorDetail, '');
+});
+
+test('submitted video failure uses recovery retries even when create retries are zero', () => {
+  const store = createStore();
+  const user = createUser();
+  const job = createLocalJobRecord(store, user, {
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    payload: {},
+    maxRetries: 0,
+  });
+  job.status = 'running';
+  job.providerTaskId = 'provider-task-1';
+
+  const recovery = markLocalJobFailed(store, job.id, {
+    code: 'provider_timeout',
+    message: 'poll timeout',
+    providerStage: 'polling',
+    providerTaskId: 'provider-task-1',
+  });
+
+  assert.equal(recovery.status, 'retry_waiting');
+  assert.equal(recovery.retryCount, 1);
+  assert.equal(recovery.providerTaskId, 'provider-task-1');
+  assert.equal(recovery.finishedAt, null);
+});
+
+test('provider task checkpoint resets create-stage retry count for independent recovery', () => {
+  const store = createStore();
+  const user = createUser();
+  const job = createLocalJobRecord(store, user, {
+    module: 'one_click',
+    taskType: 'kie_image',
+    provider: 'kie',
+    payload: {},
+    maxRetries: 2,
+  });
+  job.status = 'running';
+  job.retryCount = 2;
+
+  const checkpointed = updateLocalJobProviderTaskId(store, job.id, 'provider-task-1');
+
+  assert.equal(checkpointed.providerTaskId, 'provider-task-1');
+  assert.equal(checkpointed.retryCount, 0);
 });

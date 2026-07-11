@@ -68,17 +68,20 @@ import { embedTexts } from './embeddingProvider.mjs';
 import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
-import { ensureJobsSchema, createJobRecord, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, updateJobFields, createJobWorker } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, deleteJobById, findReusableJobRecord, getJobById, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, updateJobFields, createJobWorker, withMysqlSubmissionLock } from './jobManager.mjs';
 import {
   CREDIT_LIMIT_MODES,
   attachCreditReservationToJobPayload,
   estimateCreditReservation,
   getCreditAvailable,
   getCreditReservationFromJob,
+  getJobCreditRetryReservationAction,
+  getLocalCreditReservationState,
   normalizeCreditAccount,
   releaseLocalAccountCredits,
   reserveLocalAccountCredits,
   settleLocalAccountCredits,
+  shouldReleaseJobCreditReservation,
   stripCreditReservationFromPayload,
 } from './accountCredits.mjs';
 import { ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
@@ -193,6 +196,7 @@ import { runBuiltinMediaTool } from './ai-engine/smartFactoryMediaToolRunner.mjs
 import { appendSmartFactoryConversationTurn } from './ai-engine/smartFactoryAgentStore.mjs';
 import { ensureLocalAdminUser } from './localAdminBootstrap.mjs';
 import { getCreditAlertSnapshot } from './creditAlert.mjs';
+import { getJobSubmissionLockTimeoutSeconds, resolveJobSubmissionPolicy, VIDEO_JOB_TASK_TYPES } from './jobSubmissionPolicy.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -209,10 +213,6 @@ const LOG_CLEANUP_INTERVAL_MS = 1000 * 60 * 60;
 const MAX_JSON_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_STATE_BODY_BYTES = 100 * 1024 * 1024;
 const MAX_MULTIPART_BODY_BYTES = 1024 * 1024 * 1024;
-const VIDEO_JOB_DEDUPE_WINDOW_MS = 1000 * 60 * 60;
-const CHAT_JOB_DEDUPE_WINDOW_MS = 1000 * 60 * 3;
-const VIDEO_JOB_TASK_TYPES = new Set(['dreamina_video', 'kie_seedance_video']);
-const CHAT_JOB_TASK_TYPES = new Set(['kie_chat']);
 const INTERNAL_ASSET_REGISTRY_KEY = '__assetRegistry';
 const ASSET_ACCESS_TOUCH_THROTTLE_MS = 1000 * 60 * 5;
 const recentAssetAccessTouches = new Map();
@@ -246,18 +246,6 @@ const TRACKED_URL_FIELDS = new Set([
   'whiteBgImageUrl',
   'previousBoardImageUrl',
 ]);
-
-const getJobDedupeWindowMs = (taskType) => (
-  VIDEO_JOB_TASK_TYPES.has(String(taskType || ''))
-    ? VIDEO_JOB_DEDUPE_WINDOW_MS
-    : CHAT_JOB_TASK_TYPES.has(String(taskType || ''))
-      ? CHAT_JOB_DEDUPE_WINDOW_MS
-      : undefined
-);
-
-const normalizeJobMaxRetries = (taskType, value) => (
-  VIDEO_JOB_TASK_TYPES.has(String(taskType || '')) ? 0 : value
-);
 
 const formatSmartFactoryToolMessagesForTest = (messages = []) => (Array.isArray(messages) ? messages : [])
   .map((item) => {
@@ -1583,6 +1571,23 @@ const normalizeUserAnalysisModel = (value = '') => {
 
 const canUseVideoGenerationFeature = (user) =>
   user?.role === 'admin' || normalizeFeaturePermissions(user?.featurePermissions).videoGeneration;
+
+const resolveAuthorizedJobSubmissionPolicy = (user, body) => resolveJobSubmissionPolicy({
+  taskType: body?.taskType,
+  provider: body?.provider,
+  hasVideoPermission: canUseVideoGenerationFeature(user),
+});
+
+const normalizeJobMaxRetries = (taskType, value) => (
+  VIDEO_JOB_TASK_TYPES.has(String(taskType || '')) ? 0 : value
+);
+
+const respondJobSubmissionPolicyError = (res, error) => {
+  json(res, Number(error?.statusCode || 400), {
+    message: error?.message || '任务提交策略校验失败。',
+    code: error?.code || 'job_submission_policy_invalid',
+  });
+};
 
 const normalizeStoredUser = (user) => ({
   ...normalizeCreditAccount(user),
@@ -4440,12 +4445,24 @@ const hasDbProcessedCreditReservation = async (connection, reservation) => {
   return Boolean(rows?.[0]);
 };
 
-const reserveDbAccountCredits = async (pool, user, context = {}) => {
+const borrowDbConnection = async (poolOrConnection) => {
+  if (typeof poolOrConnection?.getConnection === 'function') {
+    const connection = await poolOrConnection.getConnection();
+    return { connection, release: () => connection.release() };
+  }
+  if (typeof poolOrConnection?.query !== 'function') {
+    throw new TypeError('MySQL pool or connection is required.');
+  }
+  return { connection: poolOrConnection, release: () => {} };
+};
+
+const reserveDbAccountCredits = async (poolOrConnection, user, context = {}) => {
   const account = normalizeCreditAccount(user);
   if (account.creditLimitMode !== CREDIT_LIMIT_MODES.LIMITED) return null;
   const amount = normalizeCreditBalanceInput(context.amount);
   if (amount <= 0) return null;
-  const connection = await pool.getConnection();
+  const borrowed = await borrowDbConnection(poolOrConnection);
+  const { connection } = borrowed;
   try {
     await connection.beginTransaction();
     const [result] = await connection.query(
@@ -4490,7 +4507,7 @@ const reserveDbAccountCredits = async (pool, user, context = {}) => {
     await connection.rollback().catch(() => null);
     throw error;
   } finally {
-    connection.release();
+    borrowed.release();
   }
 };
 
@@ -4500,14 +4517,27 @@ const getProviderCreditsConsumed = (result) => {
   return Number.isFinite(parsed) && parsed >= 0 ? normalizeCreditBalanceInput(parsed) : undefined;
 };
 
-const settleDbAccountCredits = async (pool, reservation, context = {}) => {
+const lockDbCreditAccount = async (connection, userId) => {
+  const [rows] = await connection.query(
+    'SELECT * FROM users WHERE id = ? FOR UPDATE',
+    [userId]
+  );
+  return rows?.[0] ? mapDbUser(rows[0]) : null;
+};
+
+const settleDbAccountCredits = async (poolOrConnection, reservation, context = {}) => {
   if (!reservation?.userId || !(Number(reservation.amount) > 0)) return null;
   const providerCredits = getProviderCreditsConsumed(context.result);
   const reservedAmount = normalizeCreditBalanceInput(reservation.amount);
   const settledAmount = providerCredits === undefined ? reservedAmount : providerCredits;
-  const connection = await pool.getConnection();
+  const borrowed = await borrowDbConnection(poolOrConnection);
+  const { connection } = borrowed;
   try {
     await connection.beginTransaction();
+    if (!await lockDbCreditAccount(connection, reservation.userId)) {
+      await connection.rollback();
+      return null;
+    }
     if (await hasDbProcessedCreditReservation(connection, reservation)) {
       await connection.commit();
       return { alreadyProcessed: true };
@@ -4548,16 +4578,21 @@ const settleDbAccountCredits = async (pool, reservation, context = {}) => {
     await connection.rollback().catch(() => null);
     throw error;
   } finally {
-    connection.release();
+    borrowed.release();
   }
 };
 
-const releaseDbAccountCredits = async (pool, reservation, context = {}) => {
+const releaseDbAccountCredits = async (poolOrConnection, reservation, context = {}) => {
   if (!reservation?.userId || !(Number(reservation.amount) > 0)) return null;
   const amount = normalizeCreditBalanceInput(reservation.amount);
-  const connection = await pool.getConnection();
+  const borrowed = await borrowDbConnection(poolOrConnection);
+  const { connection } = borrowed;
   try {
     await connection.beginTransaction();
+    if (!await lockDbCreditAccount(connection, reservation.userId)) {
+      await connection.rollback();
+      return null;
+    }
     if (await hasDbProcessedCreditReservation(connection, reservation)) {
       await connection.commit();
       return { alreadyProcessed: true };
@@ -4587,7 +4622,7 @@ const releaseDbAccountCredits = async (pool, reservation, context = {}) => {
     await connection.rollback().catch(() => null);
     throw error;
   } finally {
-    connection.release();
+    borrowed.release();
   }
 };
 
@@ -4600,6 +4635,16 @@ const reserveDbJobCredits = async (pool, user, jobPayload) => {
     provider: jobPayload.provider,
     reason: 'job_created',
   });
+};
+
+const reserveDbJobCreditsForSubmission = async (pool, user, jobPayload) => {
+  const creditReservation = await reserveDbJobCredits(pool, user, jobPayload);
+  return creditReservation;
+};
+
+const createDbJobRecordWithReservation = async (pool, user, jobPayload, creditReservation) => {
+  const job = await createJobRecord(pool, user, attachCreditReservationToJobPayload(jobPayload, creditReservation));
+  return job;
 };
 
 const reserveLocalJobCredits = (store, user, jobPayload) => {
@@ -4617,6 +4662,13 @@ const settleDbJobCredits = async ({ pool, job, output, finishedAt, aborted }) =>
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
   if (aborted) {
+    const creditJob = {
+      ...job,
+      providerTaskId: String(output?.providerTaskId || job?.providerTaskId || ''),
+    };
+    if (!shouldReleaseJobCreditReservation({ job: creditJob, error: { code: 'request_cancelled' }, aborted: true })) {
+      return null;
+    }
     return await releaseDbAccountCredits(pool, reservation, {
       module: job.module,
       taskType: job.taskType,
@@ -4636,9 +4688,9 @@ const settleDbJobCredits = async ({ pool, job, output, finishedAt, aborted }) =>
 };
 
 const releaseDbJobCredits = async ({ pool, job, error, finishedAt, retryWaiting }) => {
-  if (retryWaiting) return null;
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
+  if (!shouldReleaseJobCreditReservation({ job, error, retryWaiting })) return null;
   return await releaseDbAccountCredits(pool, reservation, {
     module: job.module,
     taskType: job.taskType,
@@ -4656,6 +4708,13 @@ const settleLocalJobCredits = ({ store, job, output, aborted }) => {
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
   if (aborted) {
+    const creditJob = {
+      ...job,
+      providerTaskId: String(output?.providerTaskId || job?.providerTaskId || ''),
+    };
+    if (!shouldReleaseJobCreditReservation({ job: creditJob, error: { code: 'request_cancelled' }, aborted: true })) {
+      return null;
+    }
     return releaseLocalAccountCredits(store, reservation, {
       module: job.module,
       taskType: job.taskType,
@@ -4673,9 +4732,9 @@ const settleLocalJobCredits = ({ store, job, output, aborted }) => {
 };
 
 const releaseLocalJobCredits = ({ store, job, error, retryWaiting }) => {
-  if (retryWaiting) return null;
   const reservation = getCreditReservationFromJob(job);
   if (!reservation) return null;
+  if (!shouldReleaseJobCreditReservation({ job, error, retryWaiting })) return null;
   return releaseLocalAccountCredits(store, reservation, {
     module: job.module,
     taskType: job.taskType,
@@ -11387,27 +11446,39 @@ const handleMysqlRequest = async (req, res, url) => {
       json(res, 400, { message: '任务类型和 provider 不能为空。' });
       return;
     }
-    if (['dreamina_video', 'kie_seedance_video'].includes(body.taskType) && !canUseVideoGenerationFeature(user)) {
-      json(res, 403, { message: '短视频生成暂未对当前账号开放，请联系管理员开通。' });
+    let submissionPolicy;
+    try {
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
       return;
     }
 
     const pool = await getMysqlPool();
     const jobPayload = {
       module: body.module,
-      taskType: body.taskType,
-      provider: body.provider,
+      taskType: submissionPolicy.taskType,
+      provider: submissionPolicy.provider,
       payload: await scrubDbJobPayloadBeforeSubmission(body.payload),
       priority: body.priority,
       maxRetries: normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };
-    const reusableJob = await findReusableJobRecord(pool, user, jobPayload, getJobDedupeWindowMs(jobPayload.taskType));
-    if (reusableJob) {
-      json(res, 200, { job: reusableJob, deduped: true });
+    const submission = await createSerializedJobSubmission({
+      pool,
+      user,
+      jobPayload,
+      dedupeWindowMs: submissionPolicy.dedupeWindowMs,
+      lockTimeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env),
+      findReusableJob: findReusableJobRecord,
+      reserveCredits: reserveDbJobCreditsForSubmission,
+      createJob: createDbJobRecordWithReservation,
+      releaseCredits: releaseDbAccountCredits,
+    });
+    if (submission.deduped) {
+      json(res, 200, submission);
       return;
     }
-    const creditReservation = await reserveDbJobCredits(pool, user, jobPayload);
-    const job = await createJobRecord(pool, user, attachCreditReservationToJobPayload(jobPayload, creditReservation));
+    const { job } = submission;
     await createDbLog({
       user,
       level: 'info',
@@ -11526,6 +11597,9 @@ const handleMysqlRequest = async (req, res, url) => {
       user,
       createLog: createDbLog,
     });
+    if (job.status === 'queued' || job.status === 'retry_waiting') {
+      await releaseDbJobCredits({ pool, job, error: { code: 'request_cancelled', message: '用户取消了排队任务' }, finishedAt: Date.now(), retryWaiting: false });
+    }
     await recordDbTaskPlatformEvent(pool, job, {
       stage: 'cancelled',
       eventName: 'job_cancel_requested',
@@ -11551,20 +11625,102 @@ const handleMysqlRequest = async (req, res, url) => {
       json(res, 404, { message: '任务不存在。' });
       return;
     }
-    await requestRetryJob(pool, job, {
+    let submissionPolicy;
+    try {
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, job);
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
+
+    try {
+      await withMysqlSubmissionLock(pool, { userId: user.id, ...job }, async (connection) => {
+        const currentJob = await getJobById(connection, job.id);
+        if (!currentJob || !['failed', 'cancelled'].includes(currentJob.status)) {
+          const error = new Error('只有已失败或已取消的任务可以重试。');
+          error.code = 'job_retry_not_allowed';
+          error.statusCode = 409;
+          throw error;
+        }
+
+        const currentReservation = getCreditReservationFromJob(currentJob);
+        const reservationProcessed = currentReservation
+          ? await hasDbProcessedCreditReservation(connection, currentReservation)
+          : false;
+        const reservationAction = getJobCreditRetryReservationAction({
+          job: currentJob,
+          reservationProcessed,
+        });
+        if (reservationAction === 'block') {
+          const error = new Error('任务的原积分预留仍在处理中，为防止重复扣费已停止重新提交。');
+          error.code = 'job_credit_reservation_pending';
+          error.statusCode = 409;
+          throw error;
+        }
+
+        let replacementReservation = null;
+        let retryPayload = currentJob.payload;
+        if (reservationAction === 'reserve') {
+          const retryJobPayload = {
+            module: currentJob.module,
+            taskType: submissionPolicy.taskType,
+            provider: submissionPolicy.provider,
+            payload: stripCreditReservationFromPayload(currentJob.payload),
+            maxRetries: submissionPolicy.maxCreateRetries ?? currentJob.maxRetries,
+          };
+          replacementReservation = await reserveDbJobCredits(connection, user, retryJobPayload);
+          retryPayload = attachCreditReservationToJobPayload(retryJobPayload, replacementReservation).payload;
+        }
+
+        try {
+          await updateJobFields(connection, currentJob.id, {
+            payload_json: JSON.stringify(retryPayload),
+            max_retries: submissionPolicy.maxCreateRetries ?? currentJob.maxRetries,
+          });
+          await requestRetryJob(connection, { ...currentJob, payload: retryPayload }, {
+            resetProviderTaskId: reservationAction === 'reserve',
+          });
+        } catch (error) {
+          if (replacementReservation) {
+            await releaseDbAccountCredits(connection, replacementReservation, {
+              reason: 'job_retry_prepare_failed',
+              errorCode: error?.code || '',
+            });
+          }
+          throw error;
+        }
+      }, { timeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env) });
+    } catch (error) {
+      if (error?.statusCode) {
+        respondJobSubmissionPolicyError(res, error);
+        return;
+      }
+      throw error;
+    }
+    const retriedJob = await getJobById(pool, job.id);
+
+    await createDbLog({
       user,
-      createLog: createDbLog,
+      level: 'info',
+      module: retriedJob?.module || job.module,
+      action: 'job_retry_requested',
+      message: `重试任务：${job.id}`,
+      status: 'started',
+      meta: {
+        jobId: job.id,
+        providerTaskId: retriedJob?.providerTaskId || job.providerTaskId || '',
+        provider: retriedJob?.provider || job.provider,
+      },
     });
-    await recordDbTaskPlatformEvent(pool, job, {
+    await recordDbTaskPlatformEvent(pool, retriedJob || job, {
       stage: 'retry',
       eventName: 'job_retry_requested',
       status: 'started',
-      providerSubmitted: Boolean(job.providerTaskId),
-      providerTaskId: job.providerTaskId || '',
+      providerSubmitted: Boolean(retriedJob?.providerTaskId || job.providerTaskId),
+      providerTaskId: retriedJob?.providerTaskId || job.providerTaskId || '',
       retryable: true,
-      meta: buildJobRuntimeLogMeta({ job }),
+      meta: buildJobRuntimeLogMeta({ job: retriedJob || job }),
     });
-    const retriedJob = await getJobById(pool, job.id);
     if (retriedJob) {
       await mirrorDbJobToTemporalIfEnabled(pool, retriedJob);
     }
@@ -11583,6 +11739,13 @@ const handleMysqlRequest = async (req, res, url) => {
       json(res, 400, { message: '恢复任务缺少必要参数。' });
       return;
     }
+    let submissionPolicy;
+    try {
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
 
     const pool = await getMysqlPool();
     const recoveredPayload = await scrubDbJobPayloadBeforeSubmission({
@@ -11591,10 +11754,11 @@ const handleMysqlRequest = async (req, res, url) => {
     });
     const jobPayload = {
       module: body.module || 'system',
-      taskType: body.taskType,
-      provider: body.provider,
+      taskType: submissionPolicy.taskType,
+      provider: submissionPolicy.provider,
+      providerTaskId: body.providerTaskId,
       payload: recoveredPayload,
-      maxRetries: body.maxRetries ?? 1,
+      maxRetries: submissionPolicy.maxCreateRetries ?? body.maxRetries ?? 1,
     };
     const reusableJob = await findReusableJobRecord(pool, user, jobPayload);
     if (reusableJob) {
@@ -14687,20 +14851,23 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 400, { message: '任务类型和 provider 不能为空。' });
       return;
     }
-    if (['dreamina_video', 'kie_seedance_video'].includes(body.taskType) && !canUseVideoGenerationFeature(user)) {
-      json(res, 403, { message: '短视频生成暂未对当前账号开放，请联系管理员开通。' });
+    let submissionPolicy;
+    try {
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
       return;
     }
 
     const jobPayload = {
       module: body.module,
-      taskType: body.taskType,
-      provider: body.provider,
+      taskType: submissionPolicy.taskType,
+      provider: submissionPolicy.provider,
       payload: await scrubLocalJobPayloadBeforeSubmission(body.payload),
       priority: body.priority,
       maxRetries: normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };
-    const reusableJob = findReusableLocalJobRecord(store, user, jobPayload, getJobDedupeWindowMs(jobPayload.taskType));
+    const reusableJob = findReusableLocalJobRecord(store, user, jobPayload, submissionPolicy.dedupeWindowMs);
     if (reusableJob) {
       json(res, 200, { job: reusableJob, deduped: true });
       return;
@@ -14807,6 +14974,9 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
     requestLocalCancelJob(store, jobId);
+    if (job.status === 'queued' || job.status === 'retry_waiting') {
+      releaseLocalJobCredits({ store, job, error: { code: 'request_cancelled', message: '用户取消了排队任务' }, retryWaiting: false });
+    }
     appendLocalLog(store, {
       user,
       level: 'info',
@@ -14837,7 +15007,48 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 404, { message: '任务不存在。' });
       return;
     }
-    const retriedJob = requestLocalRetryJob(store, jobId);
+    if (!['failed', 'cancelled'].includes(job.status)) {
+      json(res, 409, { message: '只有已失败或已取消的任务可以重试。', code: 'job_retry_not_allowed' });
+      return;
+    }
+    let submissionPolicy;
+    try {
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, job);
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
+    const currentReservation = getCreditReservationFromJob(job);
+    const reservationAction = getJobCreditRetryReservationAction({
+      job,
+      reservationProcessed: getLocalCreditReservationState(store, currentReservation) === 'processed',
+    });
+    if (reservationAction === 'block') {
+      json(res, 409, {
+        message: '任务的原积分预留仍在处理中，为防止重复扣费已停止重新提交。',
+        code: 'job_credit_reservation_pending',
+      });
+      return;
+    }
+
+    let replacementReservation = null;
+    let retryPayload = job.payload;
+    if (reservationAction === 'reserve') {
+      const retryJobPayload = {
+        module: job.module,
+        taskType: submissionPolicy.taskType,
+        provider: submissionPolicy.provider,
+        payload: stripCreditReservationFromPayload(job.payload),
+        maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
+      };
+      replacementReservation = reserveLocalJobCredits(store, user, retryJobPayload);
+      retryPayload = attachCreditReservationToJobPayload(retryJobPayload, replacementReservation).payload;
+    }
+    const retriedJob = requestLocalRetryJob(store, jobId, {
+      payload: retryPayload,
+      maxRetries: submissionPolicy.maxCreateRetries ?? job.maxRetries,
+      resetProviderTaskId: reservationAction === 'reserve',
+    });
     appendLocalLog(store, {
       user,
       level: 'info',
@@ -14854,7 +15065,17 @@ const handleLocalRequest = async (req, res, url) => {
       },
     });
     if (retriedJob) {
-      await startLocalJobWorkflowIfEnabled(store, retriedJob);
+      try {
+        await startLocalJobWorkflowIfEnabled(store, retriedJob);
+      } catch (error) {
+        if (replacementReservation) {
+          releaseLocalAccountCredits(store, replacementReservation, {
+            reason: 'job_retry_prepare_failed',
+            errorCode: error?.code || '',
+          });
+        }
+        throw error;
+      }
     }
     writeLocalStore(store);
     if (!shouldUseTemporalForLocalExecution()) {
@@ -14872,6 +15093,13 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 400, { message: '恢复任务缺少必要参数。' });
       return;
     }
+    let submissionPolicy;
+    try {
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
 
     const recoveredPayload = await scrubLocalJobPayloadBeforeSubmission({
       ...body.payload,
@@ -14879,10 +15107,11 @@ const handleLocalRequest = async (req, res, url) => {
     });
     const jobPayload = {
       module: body.module || 'system',
-      taskType: body.taskType,
-      provider: body.provider,
+      taskType: submissionPolicy.taskType,
+      provider: submissionPolicy.provider,
+      providerTaskId: body.providerTaskId,
       payload: recoveredPayload,
-      maxRetries: body.maxRetries ?? 1,
+      maxRetries: submissionPolicy.maxCreateRetries ?? body.maxRetries ?? 1,
     };
     const reusableJob = findReusableLocalJobRecord(store, user, jobPayload);
     if (reusableJob) {
@@ -14968,6 +15197,13 @@ const server = createServer(async (req, res) => {
       });
       return;
     }
+    if (error?.statusCode && error?.code && /^(job_|video_feature_)/.test(String(error.code))) {
+      json(res, error.statusCode, {
+        message: error.message || '任务提交被服务端拒绝。',
+        code: error.code,
+      });
+      return;
+    }
     json(res, 500, { message: '服务端处理失败。', detail: error.message });
   }
 });
@@ -14981,6 +15217,11 @@ const bootstrap = async () => {
       const reconciledJobs = await reconcileRestartedRunningJobs(pool);
       if (reconciledJobs.length > 0) {
         console.log(`Reconciled ${reconciledJobs.length} stale running jobs after restart.`);
+      }
+    } else if (taskEngine === 'temporal') {
+      const providerlessJobs = await reconcileRestartedProviderlessRunningJobs(pool);
+      if (providerlessJobs.length > 0) {
+        console.log(`Stopped ${providerlessJobs.length} providerless running Temporal jobs after restart.`);
       }
     }
     const reconciledCreditJobs = await reconcileDbTerminalJobCredits(pool);

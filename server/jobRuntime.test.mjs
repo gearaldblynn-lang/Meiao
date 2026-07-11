@@ -8,6 +8,7 @@ import {
   buildPublicSystemConfig,
   getWorkerConcurrencyLimit,
   getNextJobFailureState,
+  getSubmittedTaskRecoveryRetries,
   isRetryableErrorCode,
   isTransientMysqlConnectionError,
   normalizeAllowedOrigins,
@@ -465,6 +466,55 @@ test('getNextJobFailureState does not retry transient failures when retry budget
       status: 'failed',
     }
   );
+});
+
+test('getNextJobFailureState uses an independent recovery budget after provider submission', () => {
+  const firstRecovery = getNextJobFailureState({
+    retryCount: 0,
+    maxRetries: 0,
+    errorCode: 'provider_timeout',
+    providerStage: 'polling',
+    providerTaskId: 'provider-task-1',
+    submittedTaskRecoveryRetries: 2,
+  });
+  const secondRecovery = getNextJobFailureState({
+    retryCount: firstRecovery.retryCount,
+    maxRetries: 0,
+    errorCode: 'provider_network_error',
+    providerStage: 'asset_download',
+    providerTaskId: 'provider-task-1',
+    submittedTaskRecoveryRetries: 2,
+  });
+  const exhausted = getNextJobFailureState({
+    retryCount: secondRecovery.retryCount,
+    maxRetries: 0,
+    errorCode: 'provider_timeout',
+    providerStage: 'polling',
+    providerTaskId: 'provider-task-1',
+    submittedTaskRecoveryRetries: 2,
+  });
+
+  assert.deepEqual(firstRecovery, { status: 'retry_waiting', retryCount: 1 });
+  assert.deepEqual(secondRecovery, { status: 'retry_waiting', retryCount: 2 });
+  assert.deepEqual(exhausted, { status: 'failed', retryCount: 2 });
+});
+
+test('getNextJobFailureState never applies submitted recovery budget without a task id', () => {
+  assert.deepEqual(getNextJobFailureState({
+    retryCount: 0,
+    maxRetries: 0,
+    errorCode: 'provider_timeout',
+    providerStage: 'polling',
+    providerTaskId: '',
+    submittedTaskRecoveryRetries: 3,
+  }), { status: 'failed', retryCount: 0 });
+});
+
+test('submitted recovery retry budget is env-driven with a conservative default', () => {
+  assert.equal(getSubmittedTaskRecoveryRetries({}), 2);
+  assert.equal(getSubmittedTaskRecoveryRetries({ MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES: '4' }), 4);
+  assert.equal(getSubmittedTaskRecoveryRetries({ MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES: '0' }), 0);
+  assert.equal(getSubmittedTaskRecoveryRetries({ MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES: 'invalid' }), 2);
 });
 
 test('buildJobFailureLogFields reports retryable intermediate failures as running retry state', () => {

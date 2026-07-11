@@ -335,6 +335,7 @@ export const createMysqlTemporalActivities = ({
         const updatedAt = now();
         await updateJobFields(pool, refreshedJob.id, {
           provider_task_id: value,
+          retry_count: 0,
           updated_at: updatedAt,
         });
         safeHeartbeat(heartbeat, { jobId: refreshedJob.id, stage: 'provider_submit', providerTaskId: value });
@@ -476,17 +477,19 @@ export const createMysqlTemporalActivities = ({
         return toActivityResult(latestJob);
       }
       const errorFields = buildJobFailureErrorFields(error);
+      const providerTaskId = String(error?.providerTaskId || latestJob.providerTaskId || '');
       const failure = getNextJobFailureState({
         retryCount: latestJob.retryCount ?? 0,
         maxRetries: latestJob.maxRetries ?? 0,
         errorCode: error?.code || 'provider_internal_error',
         providerStage: error?.providerStage || '',
+        providerTaskId,
       });
       const finishedAt = now();
 
       await updateJobFields(pool, latestJob.id, {
         status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
-        provider_task_id: error?.providerTaskId || latestJob.providerTaskId || null,
+        provider_task_id: providerTaskId || null,
         retry_count: error?.code === 'request_cancelled' ? latestJob.retryCount ?? 0 : failure.retryCount,
         error_code: errorFields.errorCode,
         error_message: errorFields.errorMessage,

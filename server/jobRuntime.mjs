@@ -297,13 +297,34 @@ const FAST_FAIL_RETRY_STAGE_LIMITS = new Map([
   ['asset_download', 1],
 ]);
 
-export const getNextJobFailureState = ({ retryCount = 0, maxRetries = 0, errorCode = '', providerStage = '' }) => {
+const DEFAULT_SUBMITTED_TASK_RECOVERY_RETRIES = 2;
+
+export const getSubmittedTaskRecoveryRetries = (env = process.env) => {
+  const parsed = Number.parseInt(String(env?.MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES ?? ''), 10);
+  return Number.isFinite(parsed) && parsed >= 0
+    ? parsed
+    : DEFAULT_SUBMITTED_TASK_RECOVERY_RETRIES;
+};
+
+export const getNextJobFailureState = ({
+  retryCount = 0,
+  maxRetries = 0,
+  errorCode = '',
+  providerStage = '',
+  providerTaskId = '',
+  submittedTaskRecoveryRetries = getSubmittedTaskRecoveryRetries(),
+}) => {
   if (!isRetryableErrorCode(errorCode)) {
     return { status: 'failed', retryCount };
   }
 
+  const hasProviderTaskId = Boolean(String(providerTaskId || '').trim());
   const stageLimit = FAST_FAIL_RETRY_STAGE_LIMITS.get(String(providerStage || '').trim());
-  const effectiveMaxRetries = Number.isFinite(stageLimit) ? Math.min(Number(maxRetries || 0), stageLimit) : Number(maxRetries || 0);
+  const effectiveMaxRetries = hasProviderTaskId
+    ? Math.max(0, Number(submittedTaskRecoveryRetries || 0))
+    : Number.isFinite(stageLimit)
+      ? Math.min(Number(maxRetries || 0), stageLimit)
+      : Number(maxRetries || 0);
 
   if (retryCount >= effectiveMaxRetries) {
     return { status: 'failed', retryCount };
