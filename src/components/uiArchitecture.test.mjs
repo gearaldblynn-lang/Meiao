@@ -610,7 +610,8 @@ test('shell hydration keeps backend jobs out of the refresh critical path', () =
   assert.match(app, /if \(pageMode === 'landing'\) return;/);
   assert.match(hydrateBody, /if \(shouldUseLocalStateFallback\(\)\)/);
   assert.doesNotMatch(hydrateBody, /catch \{\s*const localState = loadPersistedAppState\(\)/);
-  assert.match(jobHydrateBody, /fetchInternalJobs\(\)/);
+  assert.match(jobHydrateBody, /fetchInternalJobs\(200\)/);
+  assert.match(jobHydrateBody, /fetchInternalJob\(jobId\)/);
   assert.match(jobHydrateBody, /latestSharedStateRef\.current/);
   assert.match(app, /const shouldUseLocalStateFallback = \(\) =>/);
   assert.match(app, /meiaoLocalPreview/);
@@ -622,7 +623,7 @@ test('shell job hydration only refreshes active tasks and does not overwrite pro
   const app = read('../ShellMigratedApp.tsx');
   const jobHydrateBody = app.match(/const hydrateShellJobs = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/)?.[1] || '';
 
-  assert.match(jobHydrateBody, /fetchInternalJobs\(\)/);
+  assert.match(jobHydrateBody, /fetchInternalJobs\(200\)/);
   assert.match(jobHydrateBody, /setTasks\(\(prev\) => mergeShellTasks/);
   assert.match(jobHydrateBody, /persistSyncedProjectsToSharedState\(syncedProjectsToPersist\)/);
   assert.match(app, /shouldPersistSyncedProjectFromJobs/);
@@ -782,7 +783,7 @@ test('project details expose actual task credits and provider task ids', () => {
   assert.match(shellApp, /creditsConsumed: generated\.result\.creditsConsumed/);
   assert.match(shellApp, /taskId: result\.taskId/);
   assert.match(shellApp, /taskId: itemResult\.taskId/);
-  assert.match(shellApp, /boards: item\.boards\.map\(\(board\) => \(\{ \.\.\.board, status: 'pending' as const, error: undefined, creditsConsumed: undefined/);
+  assert.match(shellApp, /isInitialConfirmation\s*\? item\.boards\.map\(\(board\) => \(\{ \.\.\.board, status: 'pending' as const, error: undefined, creditsConsumed: undefined/);
 
   assert.match(shellWorkflow, /Promise<\{ plans: ShellPlanItem\[\]; message\?: string; creditsConsumed\?: number; taskId\?: string \}>/);
   assert.match(shellWorkflow, /creditsConsumed: result\.creditsConsumed/);
@@ -934,6 +935,10 @@ test('storyboard generation uploads local draft assets before building model-rea
   assert.match(app, /ensureMaterialRemoteUrls/);
   assert.match(app, /loadShellDraftAsset/);
   assert.match(app, /uploadInternalAssetStream/);
+  assert.match(app, /createMaterialUploadCoordinator/);
+  assert.match(app, /materialUploadCoordinatorRef\.current\.run\(localAssetId/);
+  assert.match(app, /applyUploadedMaterialUrl\(type, item\.id, remoteUrl\)/);
+  assert.doesNotMatch(app, /const \{ uploadShellMaterial \} = await loadShellWorkflowModule\(\)/);
   assert.match(app, /resolvePublicAssetUrl\(item\.remoteUrl \|\| item\.url, publicBaseUrl\)/);
   assert.match(app, /shouldRefreshVideoAssetUrl/);
   assert.match(app, /shouldRefreshVideoAssetUrl\(currentSafeUrl, Boolean\(item\.localAssetId\)\)/);
@@ -1034,7 +1039,7 @@ test('synced translation job projects are persisted after cloud recovery', () =>
   assert.match(persistUtil, /'everything_replace',/);
 });
 
-test('guarded generation blocks duplicate submits while scoped jobs are active', () => {
+test('video generation blocks duplicate submit windows without blocking other active jobs', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
   const workflow = read('../adapters/shellWorkflow.ts');
@@ -1044,13 +1049,13 @@ test('guarded generation blocks duplicate submits while scoped jobs are active',
 
   assert.match(shellApp, /generationSubmitLocksRef/);
   assert.match(shellApp, /shouldGuardGenerationSubmit\(targetModule, targetSubFeature\)/);
-  assert.doesNotMatch(shellApp, /!\(module === AppModuleObj\.EVERYTHING_REPLACE && subFeature === 'product_replace'\)/);
-  assert.match(shellApp, /module === AppModuleObj\.ONE_CLICK/);
-  assert.match(shellApp, /const hasActiveGuardedGeneration = \(/);
-  assert.match(shellApp, /当前已有任务未返回，请等待完成或取消后再提交。/);
-  assert.match(shellApp, /const hasCurrentActiveGuardedGeneration = hasActiveGuardedGeneration\(projects, tasks, activeModule, activeSubFeature\)/);
+  assert.match(shellApp, /const shouldGuardGenerationSubmit = [\s\S]*module === AppModuleObj\.VIDEO[\s\S]*?\);/);
+  assert.doesNotMatch(shellApp, /const hasActiveGuardedGeneration = \(/);
+  assert.doesNotMatch(shellApp, /当前已有任务未返回，请等待完成或取消后再提交。/);
+  assert.match(shellApp, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\)/);
   assert.match(shellApp, /beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(shellApp, /endGenerationSubmitLock\(guardedSubmitLockKey\)/);
+  assert.match(shellApp, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\)/);
   assert.match(shellApp, /persistProjectToSharedState\(pendingVideoProject\)/);
   assert.match(shellApp, /isSubmitLocked=\{isCurrentGenerationSubmitLocked\}/);
   assert.match(bottomInputBar, /isSubmitLocked\?: boolean/);

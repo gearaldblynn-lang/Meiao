@@ -1080,6 +1080,101 @@ test('shell data adapter restores board backend identity as the active cancel ta
   assert.equal(snapshot.tasks.find((item) => item.backendJobId === 'storyboard-board-job')?.projectId, projectId);
 });
 
+test('storyboard job hydration preserves newer edited board state and image history', () => {
+  const projectId = 'storyboard-edited-project';
+  const config = {
+    duration: '15s',
+    shotCount: 1,
+    aspectRatio: '9:16',
+    actorType: 'no_real_face',
+    countryLanguage: '中国/中文',
+    productInfo: '保湿喷雾',
+    scenes: ['明亮桌面'],
+    videoGenerationMode: 'original',
+  };
+  const planningContent = JSON.stringify([{
+    title: '分段一',
+    panelCount: 1,
+    storyboardPrompt: '分镜一：历史策划内容',
+    dynamicScriptPrompt: '分镜一：00:00 - 00:15\n画面描述(视觉)：历史策划内容',
+  }]);
+  const planningJob = {
+    id: 'storyboard-planning-job',
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    payload: {
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_planning',
+      storyboardConfig: config,
+    },
+    result: { content: planningContent },
+    createdAt: 1783600000100,
+  };
+  const recovered = buildShellDataSnapshot({
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: projectId,
+          name: '已编辑分镜',
+          config,
+          status: 'scripting',
+          script: '',
+          shots: [],
+          boards: [],
+          createdAt: 1783600000000,
+        }],
+      },
+    },
+  }, [planningJob]).projects.find((item) => item.id === projectId)?.storyboardSourceProject;
+  assert.ok(recovered);
+  const editedProject = {
+    ...recovered,
+    status: 'completed',
+    script: '用户确认后的脚本',
+    shots: recovered.shots.map((shot) => ({ ...shot, description: '用户修改镜头', scriptContent: '用户脚本', prompt: '用户镜头 prompt' })),
+    boards: recovered.boards.map((board) => ({
+      ...board,
+      scriptText: '用户脚本',
+      prompt: '用户修改后的 prompt',
+      status: 'completed',
+      imageUrl: '/final-edited.png',
+      backendJobId: 'storyboard-edit-job',
+      imageVersions: [
+        { id: 'v1', imageUrl: '/original.png', createdAt: 1 },
+        { id: 'v2', imageUrl: '/final-edited.png', createdAt: 2 },
+      ],
+    })),
+  };
+  const state = { videoMemory: { storyboard: { projects: [editedProject] } } };
+  const jobs = [planningJob, {
+    id: 'storyboard-original-board-job',
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    payload: {
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_board_image',
+      boardId: editedProject.boards[0].id,
+    },
+    result: { imageUrl: '/provider-original.png' },
+    createdAt: 1783600000200,
+  }];
+
+  const project = buildShellDataSnapshot(state, jobs)
+    .projects.find((item) => item.id === projectId)
+    ?.storyboardSourceProject;
+
+  assert.equal(project?.status, 'completed');
+  assert.equal(project?.script, '用户确认后的脚本');
+  assert.equal(project?.shots[0]?.prompt, '用户镜头 prompt');
+  assert.equal(project?.boards[0]?.prompt, '用户修改后的 prompt');
+  assert.equal(project?.boards[0]?.imageUrl, '/final-edited.png');
+  assert.equal(project?.boards[0]?.imageVersions?.length, 2);
+});
+
 test('shell data adapter drops idle persisted items that have no result, error, running state, or plans', () => {
   const snapshot = buildShellDataSnapshot({
     translationMemory: {

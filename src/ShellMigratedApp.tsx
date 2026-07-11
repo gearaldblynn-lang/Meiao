@@ -55,6 +55,7 @@ import { startVersionWatch } from './utils/frontendVersionWatch';
 import { shouldPersistSyncedProjectFromJobs } from './utils/syncedProjectPersistence';
 import { deleteShellDraftAsset, loadShellDraftAsset, pruneShellDraftAssets, restoreShellDraftAssetUrls, saveShellDraftAsset } from './utils/shellDraftAssetStore';
 import { detectMp4VideoCodecFromBlob } from './utils/videoCodec';
+import { createMaterialUploadCoordinator } from './utils/materialUploadCoordinator';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
 import {
   getRetouchCustomSizeRatioWarning,
@@ -66,6 +67,8 @@ import { buildStoryboardBoardGenerationImport } from './shell/modules/Video/stor
 import {
   applyStoryboardBoardResult,
   deriveStoryboardProjectStatus,
+  getResumableStoryboardBoard,
+  mergeRecoveredStoryboardProject,
 } from './shell/modules/Video/storyboardGenerationState.mjs';
 import { resolveShellSkuCount } from './adapters/shellSkuCount';
 import { buildOneClickPlanGenerationMaterials } from './adapters/shellOneClickMaterials.mjs';
@@ -280,13 +283,7 @@ const mergeRecoveredStoryboardProjects = (
     const recovered = recoveredById.get(project.id);
     if (!recovered) return project;
     recoveredById.delete(project.id);
-    return {
-      ...project,
-      ...recovered,
-      config: { ...project.config, ...recovered.config },
-      shots: recovered.shots?.length ? recovered.shots : project.shots,
-      boards: recovered.boards?.length ? recovered.boards : project.boards,
-    };
+    return mergeRecoveredStoryboardProject(project, recovered);
   });
   return [...merged, ...recoveredById.values()];
 };
@@ -300,13 +297,7 @@ const hasStoryboardJobIdentity = (project: VideoStoryboardProject) => {
 };
 
 const shouldGuardGenerationSubmit = (module: AppModule, _subFeature?: string) => (
-  module === AppModuleObj.ONE_CLICK
-  || module === AppModuleObj.TRANSLATION
-  || module === AppModuleObj.BUYER_SHOW
-  || module === AppModuleObj.RETOUCH
-  || module === AppModuleObj.EVERYTHING_REPLACE
-  || module === AppModuleObj.VIDEO
-  || module === AppModuleObj.XHS_COVER
+  module === AppModuleObj.VIDEO
 );
 
 const hasRuntimeTaskIdentity = (item?: {
@@ -1296,32 +1287,6 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
 
 const getDefaultSubFeature = (module: AppModule) => MODULE_SUB_FEATURES[module]?.[0]?.id || 'default';
 
-const hasActiveGuardedGeneration = (
-  projects: Project[],
-  tasks: Task[],
-  module: AppModule,
-  subFeature?: string,
-) => {
-  const scope = subFeature || getDefaultSubFeature(module);
-  const isSameScope = (item: { module: AppModule; subFeature?: string }) => (
-    item.module === module && (item.subFeature || getDefaultSubFeature(item.module)) === scope
-  );
-  const hasActiveTask = tasks.some((task) => (
-    isSameScope(task) && isActiveTaskStatus(task.status)
-  ));
-  if (hasActiveTask) return true;
-  return projects.some((project) => {
-    if (!isSameScope(project)) return false;
-    if (project.status === 'generating') return true;
-    if (project.status === 'planning' && !(project.plans || []).length) return true;
-    return (project.results || []).some((result) => (
-      result.status === 'generating'
-      && !result.imageUrl
-      && !result.videoUrl
-    ));
-  });
-};
-
 const isActiveRegenerationStatus = (status?: unknown) => status === 'pending' || status === 'generating';
 
 const hasActiveRegenerationConflict = (
@@ -2216,7 +2181,43 @@ const AppContent: React.FC<{
     () => initialDraftSnapshot.materials as Record<string, Material[]> || {},
   );
   const materialsRef = useRef<Record<string, Material[]>>(materials);
+  const materialUploadCoordinatorRef = useRef(createMaterialUploadCoordinator());
   const [oneClickReferencePresets, setOneClickReferencePresets] = useState<OneClickReferencePreset[]>([]);
+
+  const applyUploadedMaterialUrl = useCallback((type: string, id: string, remoteUrl: string) => {
+    setMaterials((prev) => {
+      const next = {
+        ...prev,
+        [type]: (prev[type] || []).map((item) =>
+          item.id === id ? { ...item, remoteUrl, url: remoteUrl } : item
+        ),
+      };
+      materialsRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const uploadMaterialToManagedUrl = useCallback(async ({
+    localAssetId,
+    module,
+    file,
+    fileName,
+  }: {
+    localAssetId: string;
+    module: AppModule;
+    file: File;
+    fileName?: string;
+  }) => materialUploadCoordinatorRef.current.run(localAssetId, async () => {
+    const uploaded = await uploadInternalAssetStream({
+      module,
+      file,
+      fileName,
+    });
+    if (!uploaded.fileUrl) {
+      throw new Error(`${fileName || '素材'} 上传失败，请重新上传后再生成。`);
+    }
+    return uploaded.fileUrl;
+  }), []);
 
   const restoreLocalMaterialPreviews = useCallback((sourceMaterials: Record<string, Material[]>) => {
     void restoreShellDraftAssetUrls(sourceMaterials).then((restoredMaterials) => {
@@ -2256,7 +2257,6 @@ const AppContent: React.FC<{
     sourceMaterials: Record<string, Material[]>,
     module: AppModule,
   ): Promise<Record<string, Material[]>> => {
-    const uploadedUpdates: Array<{ type: string; id: string; remoteUrl: string }> = [];
     const nextEntries = await Promise.all(
       Object.entries(sourceMaterials).map(async ([type, list]) => {
         const nextList = await Promise.all((list || []).map(async (item) => {
@@ -2287,35 +2287,20 @@ const AppContent: React.FC<{
             : new File([record.blob], record.fileName || item.fileName || 'uploaded-asset', {
                 type: record.mimeType || record.blob.type || 'application/octet-stream',
               });
-          const uploaded = await uploadInternalAssetStream({
+          const remoteUrl = await uploadMaterialToManagedUrl({
+            localAssetId: item.localAssetId,
             module,
             file: uploadFile,
             fileName: record.fileName || item.fileName,
           });
-          if (!uploaded.fileUrl) {
-            throw new Error(`${item.fileName || '素材'} 上传失败，请重新上传后再生成。`);
-          }
-          uploadedUpdates.push({ type, id: item.id, remoteUrl: uploaded.fileUrl });
-          return { ...item, remoteUrl: uploaded.fileUrl, url: uploaded.fileUrl };
+          applyUploadedMaterialUrl(type, item.id, remoteUrl);
+          return { ...item, remoteUrl, url: remoteUrl };
         }));
         return [type, nextList] as const;
       }),
     );
-    const nextMaterials = Object.fromEntries(nextEntries) as Record<string, Material[]>;
-    if (uploadedUpdates.length > 0) {
-      setMaterials((prev) => {
-        const next = { ...prev };
-        uploadedUpdates.forEach((update) => {
-          next[update.type] = (next[update.type] || []).map((item) =>
-            item.id === update.id ? { ...item, remoteUrl: update.remoteUrl, url: update.remoteUrl } : item
-          );
-        });
-        materialsRef.current = next;
-        return next;
-      });
-    }
-    return nextMaterials;
-  }, [publicBaseUrl]);
+    return Object.fromEntries(nextEntries) as Record<string, Material[]>;
+  }, [applyUploadedMaterialUrl, publicBaseUrl, uploadMaterialToManagedUrl]);
 
   // ── Projects (batch results) ──
   const [projects, setProjects] = useState<Project[]>(() => initialRuntimeSnapshot.projects);
@@ -2324,6 +2309,7 @@ const AppContent: React.FC<{
 
   // ── Tasks (in-progress) ──
   const [tasks, setTasks] = useState<Task[]>(() => initialRuntimeSnapshot.tasks);
+  const tasksRef = useRef<Task[]>(initialRuntimeSnapshot.tasks);
   const [hasHydratedSharedData, setHasHydratedSharedData] = useState(false);
   const showGenerationProgress = apiConfig.workspacePreferences?.showGenerationProgress !== false;
   const hydrationScheduledRef = useRef(false);
@@ -2343,6 +2329,10 @@ const AppContent: React.FC<{
   useEffect(() => {
     projectsRef.current = projects;
   }, [projects]);
+
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
 
   const reserveShortProjectName = useCallback(() => {
     const prefix = formatShortProjectNamePrefix();
@@ -2833,8 +2823,37 @@ const AppContent: React.FC<{
     traceStartup('hydrate-shell-jobs:start');
     try {
       const { buildShellDataSnapshot } = await loadShellPersistenceTools();
-      const jobsResult = await fetchInternalJobs();
-      const fetchedJobs = Array.isArray(jobsResult.jobs) ? jobsResult.jobs : [];
+      const jobsResult = await fetchInternalJobs(200);
+      const recentJobs = Array.isArray(jobsResult.jobs) ? jobsResult.jobs : [];
+      const jobsById = new Map(
+        recentJobs.map((job) => [String(job.id || '').trim(), job]),
+      );
+      const knownBackendJobIds = new Set<string>();
+      const addKnownBackendJobId = (value: unknown) => {
+        const jobId = String(value || '').trim();
+        if (/^[a-f0-9]{24}$/i.test(jobId)) knownBackendJobIds.add(jobId);
+      };
+      projectsRef.current.forEach((project) => {
+        addKnownBackendJobId(project.backendJobId);
+        project.results.forEach((result) => addKnownBackendJobId(result.backendJobId));
+      });
+      tasksRef.current.forEach((task) => addKnownBackendJobId(task.backendJobId || task.id));
+      const persistedStoryboardProjects = latestSharedStateRef.current?.videoMemory?.storyboard?.projects || [];
+      persistedStoryboardProjects.forEach((project) => {
+        const durableProject = project as StoryboardProjectWithJobIdentity;
+        addKnownBackendJobId(durableProject.planningJobId);
+        addKnownBackendJobId(durableProject.backendJobId);
+        durableProject.boards.forEach((board) => addKnownBackendJobId(board.backendJobId));
+      });
+      const missingKnownJobs = await Promise.all(
+        Array.from(knownBackendJobIds)
+          .filter((jobId) => !jobsById.has(jobId))
+          .map((jobId) => fetchInternalJob(jobId).then((result) => result.job).catch(() => null)),
+      );
+      missingKnownJobs.forEach((job) => {
+        if (job?.id) jobsById.set(String(job.id), job);
+      });
+      const fetchedJobs = Array.from(jobsById.values());
       const terminalBackendJobIds = new Set(
         fetchedJobs
           .filter((job) => ['succeeded', 'completed', 'failed', 'cancelled', 'error', 'interrupted'].includes(String(job.status || '')))
@@ -3305,24 +3324,19 @@ const AppContent: React.FC<{
           materialsRef.current = next;
           return next;
         });
-        const { uploadShellMaterial } = await loadShellWorkflowModule();
-        const uploaded = await uploadShellMaterial(activeModule, type, file).catch(() => null);
-        if (uploaded?.remoteUrl) {
-          setMaterials((prev) => {
-            const next = {
-              ...prev,
-              [type]: (prev[type] || []).map((m) =>
-              m.id === optimisticId ? { ...m, remoteUrl: uploaded.remoteUrl, url: uploaded.remoteUrl } : m
-              ),
-            };
-            materialsRef.current = next;
-            return next;
-          });
+        const remoteUrl = await uploadMaterialToManagedUrl({
+          localAssetId,
+          module: activeModule,
+          file,
+          fileName: file.name,
+        }).catch(() => '');
+        if (remoteUrl) {
+          applyUploadedMaterialUrl(type, optimisticId, remoteUrl);
         }
       })();
     });
     addToast(`已添加 ${selectedFiles.length} 个${type === 'product' ? '产品素材' : type === 'gift' ? '赠品素材' : type === 'logo' ? '品牌Logo' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'main_image' && currentParams.planningLogic === '套图复刻' ? '参考套图' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'detail_page' && currentParams.detailGenerationMode === '套图复刻' ? '详情页套图参考' : '参考素材'}`, 'success');
-  }, [activeModule, activeScopeKey, activeSubFeature, addToast, currentParams.detailGenerationMode, currentParams.planningLogic, materials.gift, materials.styleRef]);
+  }, [activeModule, activeScopeKey, activeSubFeature, addToast, applyUploadedMaterialUrl, currentParams.detailGenerationMode, currentParams.planningLogic, materials.gift, materials.styleRef, uploadMaterialToManagedUrl]);
 
   const handlePresetMaterialsApply = useCallback((items: Array<{ type: string; url: string; remoteUrl?: string; fileName: string }>) => {
     if (items.length === 0) return;
@@ -3518,11 +3532,6 @@ const AppContent: React.FC<{
       addToast('该子功能待制作，当前先迁移 3000 已有能力。', 'warning');
       return;
     }
-    if (hasGuardedSubmitLock && hasActiveGuardedGeneration(projects, tasks, targetModule, targetSubFeature)) {
-      addToast('当前已有任务未返回，请等待完成或取消后再提交。', 'warning');
-      return;
-    }
-
     if (targetModule === AppModuleObj.VIDEO && targetSubFeature === 'storyboard') {
       const storyboardPrompt = promptText.trim();
       let pendingStoryboardProjectIds: string[] = [];
@@ -3614,13 +3623,16 @@ const AppContent: React.FC<{
               shellProjectId: project.id,
               planningPurpose: 'storyboard_planning',
               phase: 'planning',
-              onJobCreated: (jobId, providerTaskId) => recordStoryboardJobCreated({
-                projectId: project.id,
-                planningPurpose: 'storyboard_planning',
-                phase: 'planning',
-                jobId,
-                providerTaskId,
-              }),
+              onJobCreated: (jobId, providerTaskId) => {
+                releaseGuardedSubmit();
+                recordStoryboardJobCreated({
+                  projectId: project.id,
+                  planningPurpose: 'storyboard_planning',
+                  phase: 'planning',
+                  jobId,
+                  providerTaskId,
+                });
+              },
             },
           );
           if (runtimeConfig.videoGenerationMode === 'viral_split') {
@@ -4842,6 +4854,7 @@ const AppContent: React.FC<{
 	    let activeBackendJobId = '';
 	    let activeProviderTaskId = '';
 	    const onJobCreated = (jobId: string, providerTaskId?: string) => {
+	      releaseGuardedSubmit();
 	      activeBackendJobId = String(jobId || '').trim();
 	      if (providerTaskId) activeProviderTaskId = String(providerTaskId || '').trim();
 	      const pendingVideoProject: Project | null = targetModule === AppModuleObj.VIDEO
@@ -6179,7 +6192,9 @@ const AppContent: React.FC<{
     if (!beginExclusiveAction(actionKey, '分镜生图任务已提交，请等待当前任务完成')) return;
     const baseStoryboard = (videoMemory || createDefaultVideoState()).storyboard;
     const project = baseStoryboard.projects.find((item) => item.id === projectId);
-    if (!project || project.status !== 'awaiting_image_confirmation') {
+    const isInitialConfirmation = project?.status === 'awaiting_image_confirmation';
+    const resumableBoard = project ? getResumableStoryboardBoard(project) : null;
+    if (!project || (!isInitialConfirmation && !resumableBoard)) {
       endExclusiveAction(actionKey);
       return;
     }
@@ -6196,21 +6211,36 @@ const AppContent: React.FC<{
         ...prev,
         isGenerating: true,
         storyboard: {
-          ...currentStoryboard,
-          projects: currentStoryboard.projects.map((item) => item.id === projectId ? {
-            ...item,
-            status: 'imaging',
-            boards: item.boards.map((board) => ({ ...board, status: 'pending' as const, error: undefined, creditsConsumed: undefined })),
-          } : item),
+            ...currentStoryboard,
+            projects: currentStoryboard.projects.map((item) => item.id === projectId ? {
+              ...item,
+              status: 'imaging',
+              boards: isInitialConfirmation
+                ? item.boards.map((board) => ({ ...board, status: 'pending' as const, error: undefined, creditsConsumed: undefined }))
+                : item.boards,
+            } : item),
         },
       };
     });
 
     try {
       const { generateStoryboardBoardImage } = await import('./services/videoStoryboardService');
-      let previousBoardImageUrl: string | undefined;
+      let previousBoardImageUrl: string | undefined = resumableBoard?.previousBoardImageUrl || undefined;
       let hasPendingBoardResult = false;
+      let reachedResumeBoard = isInitialConfirmation;
       for (const board of project.boards) {
+        if (!reachedResumeBoard) {
+          if (board.id !== resumableBoard?.boardId) continue;
+          reachedResumeBoard = true;
+        }
+        if (board.status === 'completed' && board.imageUrl) {
+          previousBoardImageUrl = board.imageUrl;
+          continue;
+        }
+        if (board.status === 'generating') {
+          hasPendingBoardResult = true;
+          break;
+        }
         setVideoMemory((prev) => {
           const currentStoryboard = prev.storyboard || baseStoryboard;
           return {
@@ -6337,6 +6367,17 @@ const AppContent: React.FC<{
       endExclusiveAction(actionKey);
     }
   }, [videoMemory, addToast, apiConfig, logShellError, beginExclusiveAction, endExclusiveAction, recordStoryboardJobCreated, setVideoMemory]);
+
+  useEffect(() => {
+    const resumableProject = videoMemory?.storyboard?.projects.find((project) => (
+      Boolean(getResumableStoryboardBoard(project))
+    ));
+    if (!resumableProject) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      void handleConfirmStoryboardImaging(resumableProject.id);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [handleConfirmStoryboardImaging, videoMemory?.storyboard?.projects]);
 
   const handleRegenerateResult = useCallback(async (projectId: string, resultId: string, revisionInstruction = '') => {
     const actionKey = `regenerate:${projectId}:${resultId}`;
@@ -7920,9 +7961,8 @@ const AppContent: React.FC<{
 	    return t.module === activeModule && (t.subFeature || getDefaultSubFeature(t.module)) === activeSubFeature;
 	  });
 	  const currentGenerationSubmitLockKey = buildGenerationSubmitLockKey(activeModule, activeSubFeature);
-	  const hasCurrentActiveGuardedGeneration = hasActiveGuardedGeneration(projects, tasks, activeModule, activeSubFeature);
 	  const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit(activeModule, activeSubFeature)
-	    && (Boolean(generationSubmitLocks[currentGenerationSubmitLockKey]) || hasCurrentActiveGuardedGeneration);
+	    && Boolean(generationSubmitLocks[currentGenerationSubmitLockKey]);
 
 	  const activeModuleView = (() => {
     switch (pageMode) {

@@ -40,6 +40,8 @@ test('job hydration merges recovered storyboard source data and exposes cancel i
 
   assert.match(hydrationBlock, /storyboardSourceProject/);
   assert.match(hydrationBlock, /mergeRecoveredStoryboardProjects/);
+  assert.match(hydrationBlock, /fetchInternalJobs\(200\)/);
+  assert.match(hydrationBlock, /fetchInternalJob\(/);
   assert.match(videoModuleSource, /backendJobId:/);
   assert.match(videoModuleSource, /planningJobId/);
 });
@@ -48,4 +50,6 @@ test('storyboard confirmation state does not keep backend polling active', () =>
   const activeProjectBlock = shellSource.match(/const hasActiveBackendProject = projects\.some\(\(project\) => \{[\s\S]*?\n    \}\);/)?.[0] || '';
 
   assert.match(activeProjectBlock, /storyboardProjectStatus === 'awaiting_image_confirmation'/);
+  assert.match(shellSource, /getResumableStoryboardBoard\(project\)/);
+  assert.match(shellSource, /void handleConfirmStoryboardImaging\(resumableProject\.id\)/);
 });

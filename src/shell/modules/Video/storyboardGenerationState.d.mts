@@ -37,6 +37,15 @@ export function deriveStoryboardProjectStatus(
   fallback?: VideoStoryboardProject['status'],
 ): VideoStoryboardProject['status'];
 
+export function getResumableStoryboardBoard(
+  project?: VideoStoryboardProject,
+): { boardId: string; previousBoardImageUrl: string } | null;
+
+export function mergeRecoveredStoryboardProject(
+  current: VideoStoryboardProject,
+  recovered: VideoStoryboardProject,
+): VideoStoryboardProject;
+
 export function toStoryboardShellResultStatus(
   board?: VideoStoryboardBoard,
 ): 'completed' | 'generating' | 'error';

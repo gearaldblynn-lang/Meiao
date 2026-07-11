@@ -56,6 +56,70 @@ test('storyboard project and shell status never treat pending boards as complete
   assert.equal(toStoryboardShellResultStatus({ status: 'failed' }), 'error');
 });
 
+test('imaging project resumes the next pending board only after earlier work is terminal', async () => {
+  const { getResumableStoryboardBoard } = await loadHelper();
+  const boards = [
+    { id: 'board-1', status: 'completed', imageUrl: '/first.png' },
+    { id: 'board-2', status: 'pending' },
+  ];
+
+  assert.deepEqual(getResumableStoryboardBoard({ status: 'imaging', boards }), {
+    boardId: 'board-2',
+    previousBoardImageUrl: '/first.png',
+  });
+  assert.equal(getResumableStoryboardBoard({
+    status: 'imaging',
+    boards: [{ id: 'board-1', status: 'generating' }, { id: 'board-2', status: 'pending' }],
+  }), null);
+  assert.equal(getResumableStoryboardBoard({
+    status: 'awaiting_image_confirmation',
+    boards,
+  }), null);
+});
+
+test('recovered storyboard merge preserves local edits and only advances matching active jobs', async () => {
+  const { mergeRecoveredStoryboardProject } = await loadHelper();
+  const current = {
+    id: 'project-1',
+    status: 'completed',
+    config: { aspectRatio: '9:16' },
+    script: '用户脚本',
+    shots: [{ id: 'shot-1', prompt: '用户镜头' }],
+    boards: [{
+      id: 'board-1',
+      status: 'completed',
+      imageUrl: '/edited.png',
+      prompt: '用户 prompt',
+      backendJobId: 'edit-job',
+      imageVersions: [{ id: 'v2', imageUrl: '/edited.png' }],
+    }],
+  };
+  const historical = {
+    ...current,
+    script: '历史脚本',
+    boards: [{
+      id: 'board-1',
+      status: 'completed',
+      imageUrl: '/historical.png',
+      prompt: '历史 prompt',
+      backendJobId: 'old-job',
+    }],
+  };
+  const preserved = mergeRecoveredStoryboardProject(current, historical);
+  assert.equal(preserved.script, '用户脚本');
+  assert.equal(preserved.boards[0].imageUrl, '/edited.png');
+  assert.equal(preserved.boards[0].imageVersions.length, 1);
+
+  const active = {
+    ...current,
+    status: 'imaging',
+    boards: [{ id: 'board-1', status: 'generating', backendJobId: 'edit-job' }],
+  };
+  const completed = mergeRecoveredStoryboardProject(active, current);
+  assert.equal(completed.boards[0].status, 'completed');
+  assert.equal(completed.boards[0].imageUrl, '/edited.png');
+});
+
 test('all storyboard image entry points consume the shared status mapper', () => {
   const shellSource = readFileSync(new URL('../../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
   const videoModuleSource = readFileSync(new URL('./VideoModule.tsx', import.meta.url), 'utf8');
