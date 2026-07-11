@@ -297,7 +297,13 @@ const hasStoryboardJobIdentity = (project: VideoStoryboardProject) => {
 };
 
 const shouldGuardGenerationSubmit = (module: AppModule, _subFeature?: string) => (
-  module === AppModuleObj.VIDEO
+  module === AppModuleObj.ONE_CLICK
+  || module === AppModuleObj.TRANSLATION
+  || module === AppModuleObj.BUYER_SHOW
+  || module === AppModuleObj.RETOUCH
+  || module === AppModuleObj.EVERYTHING_REPLACE
+  || module === AppModuleObj.VIDEO
+  || module === AppModuleObj.XHS_COVER
 );
 
 const hasRuntimeTaskIdentity = (item?: {
@@ -4401,8 +4407,9 @@ const AppContent: React.FC<{
 	                  shellPurpose: 'translation_planning_analysis',
 	                },
 	                publicBaseUrl,
-	              }, material.sourceUrl, (jobId: string) => {
-	                translationFileItems[index] = {
+		              }, material.sourceUrl, (jobId: string) => {
+		                releaseGuardedSubmit();
+		                translationFileItems[index] = {
 	                  ...translationFileItems[index],
 	                  backendJobId: jobId || translationFileItems[index].backendJobId,
 	                };
@@ -4451,8 +4458,9 @@ const AppContent: React.FC<{
 	              },
 	              taskMetadata: translationTaskMetadata,
 	              signal: controller.signal,
-              onJobCreated: (jobId: string, providerTaskId?: string) => {
-                translationFileItems[index] = {
+	              onJobCreated: (jobId: string, providerTaskId?: string) => {
+	                releaseGuardedSubmit();
+	                translationFileItems[index] = {
                   ...translationFileItems[index],
                   backendJobId: jobId || undefined,
                   taskId: providerTaskId || translationFileItems[index].taskId,
@@ -4581,10 +4589,11 @@ const AppContent: React.FC<{
         : [planTask, ...prev]));
       void persistProjectToSharedState(planningProject);
       setIsGenerating(true);
-      let planningProviderTaskId = '';
-      let activePlanningBackendJobId = '';
-      const onJobCreated = (jobId: string, providerTaskId?: string) => {
-        const providerId = String(providerTaskId || '').trim();
+	      let planningProviderTaskId = '';
+	      let activePlanningBackendJobId = '';
+	      const onJobCreated = (jobId: string, providerTaskId?: string) => {
+	        releaseGuardedSubmit();
+	        const providerId = String(providerTaskId || '').trim();
         const backendJobId = String(jobId || '').trim();
         if (backendJobId) activePlanningBackendJobId = backendJobId;
         if (providerId) planningProviderTaskId = providerId;

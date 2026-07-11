@@ -12,7 +12,7 @@ const sliceBetween = (source, startMarker, endMarker) => {
   return source.slice(start, end);
 };
 
-test('generation submit lock uses a synchronous ref and stays scoped to paid video submission', () => {
+test('generation submit lock uses a synchronous ref across every runnable generation module', () => {
   const source = shellApp();
   const lockBlock = sliceBetween(
     source,
@@ -27,10 +27,13 @@ test('generation submit lock uses a synchronous ref and stays scoped to paid vid
 
   assert.match(lockBlock, /generationSubmitLocksRef\.current\.has\(lockKey\)/);
   assert.match(lockBlock, /generationSubmitLocksRef\.current\.add\(lockKey\)/);
+  assert.match(guardBlock, /module === AppModuleObj\.ONE_CLICK/);
+  assert.match(guardBlock, /module === AppModuleObj\.TRANSLATION/);
+  assert.match(guardBlock, /module === AppModuleObj\.BUYER_SHOW/);
+  assert.match(guardBlock, /module === AppModuleObj\.RETOUCH/);
+  assert.match(guardBlock, /module === AppModuleObj\.EVERYTHING_REPLACE/);
   assert.match(guardBlock, /module === AppModuleObj\.VIDEO/);
-  assert.doesNotMatch(guardBlock, /AppModuleObj\.ONE_CLICK/);
-  assert.doesNotMatch(guardBlock, /AppModuleObj\.TRANSLATION/);
-  assert.doesNotMatch(guardBlock, /AppModuleObj\.BUYER_SHOW/);
+  assert.match(guardBlock, /module === AppModuleObj\.XHS_COVER/);
 });
 
 test('completed submission no longer blocks a different active video task', () => {
