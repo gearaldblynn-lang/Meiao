@@ -316,3 +316,8 @@
   根因:`@temporalio/client/worker` 的 semver 范围允许安全补丁版本,但 `package-lock.json` 仍固定在受 GHSA-f38q-mgvj-vph7 影响的 `protobufjs@7.6.1`;生产审计因此持续报中危。该漏洞需要攻击者影响 protobuf schema/JSON descriptor 才能触发,当前 Temporal 使用受信 schema,实际暴露较低,但依赖锁仍不应长期停留在已知漏洞版本。
   修复:只更新传递依赖锁到 `protobufjs@7.6.5`,不把它添加成业务直接依赖；所有 Temporal 依赖统一去重到同一补丁版本,`npm audit --omit=dev` 恢复为 0 漏洞。
   如何避免:**依赖安全修复优先在既有 semver 范围内升级 lockfile,不要为了压审计告警无依据地添加直接依赖或使用 `--force` 跨主版本。升级后必须同时核对 `npm ls` 的实际依赖树、生产口径 audit 和全量 verify。**
+
+- **#53 ✅ 已修(2026-07-11)· 全依赖审计仍残留 Vite/Babel/JS-YAML 开发链漏洞**
+  根因:生产口径审计清零后,完整 `npm audit` 仍检出 `vite@7.3.3` 的 Windows 开发服务器路径绕过、`@babel/core@7.28.5` 的 source map 本地文件读取和 `js-yaml@4.1.1` 的 alias 合并复杂度 DoS。它们不进入线上运行路径,但会影响本地开发或构建环境,不能因为 `--omit=dev` 通过就永久忽略。
+  修复:在现有主版本范围内分别升级到 `vite@7.3.6`、`@babel/core@7.29.7`、`js-yaml@4.3.0`,完整 `npm audit` 与生产口径 audit 均为 0 漏洞。
+  如何避免:**发布门禁继续用生产口径阻断运行风险,同时定期运行完整 audit 治理开发/构建链；两种口径必须分别汇报,不能把“生产 0 漏洞”误写成“整个依赖树 0 漏洞”。**
