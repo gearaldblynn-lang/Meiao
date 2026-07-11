@@ -147,6 +147,6 @@ test('local temporal engine starts a real worker and does not also trigger the i
 test('video jobs force zero automatic retries at the server entry points', () => {
   assert.match(serverSource, /const normalizeJobMaxRetries = \(taskType, value\) => \(/);
   assert.match(serverSource, /VIDEO_JOB_TASK_TYPES\.has\(String\(taskType \|\| ''\)\) \? 0 : value/);
-  const maxRetryAssignments = serverSource.match(/maxRetries: normalizeJobMaxRetries\(body\.taskType, body\.maxRetries\)/g) || [];
+  const maxRetryAssignments = serverSource.match(/maxRetries: submissionPolicy\.maxCreateRetries \?\? normalizeJobMaxRetries\(body\.taskType, body\.maxRetries\)/g) || [];
   assert.equal(maxRetryAssignments.length, 2);
 });

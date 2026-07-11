@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  canRecoverProviderTaskById,
   getJobSubmissionLockTimeoutSeconds,
   resolveJobSubmissionPolicy,
   VIDEO_JOB_TASK_TYPES,
@@ -64,6 +65,24 @@ test('video permission and create retry policy covers every video task type', ()
   }
 });
 
+test('video storyboard chat receives video permission, zero create retries and video dedupe policy', () => {
+  const input = {
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    payload: { subFeature: 'storyboard', planningPurpose: 'storyboard_script' },
+  };
+
+  assert.throws(
+    () => resolveJobSubmissionPolicy({ ...input, hasVideoPermission: false }),
+    (error) => error?.code === 'video_feature_forbidden' && error?.statusCode === 403
+  );
+  const policy = resolveJobSubmissionPolicy({ ...input, hasVideoPermission: true });
+  assert.equal(policy.requiresVideoPermission, true);
+  assert.equal(policy.maxCreateRetries, 0);
+  assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000);
+});
+
 test('provider policy preserves unknown internal tasks for compatibility', () => {
   const policy = resolveJobSubmissionPolicy({
     taskType: 'future_internal_maintenance',
@@ -96,4 +115,14 @@ test('submission lock timeout uses an env override with a conservative default',
   assert.equal(getJobSubmissionLockTimeoutSeconds({ MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS: '7' }), 7);
   assert.equal(getJobSubmissionLockTimeoutSeconds({ MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS: '-1' }), 10);
   assert.equal(getJobSubmissionLockTimeoutSeconds({ MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS: 'invalid' }), 10);
+});
+
+test('provider task recovery is limited to task types with a real query path', () => {
+  for (const taskType of ['kie_image', 'kie_video', 'kie_seedance_video', 'kie_veo', 'dreamina_video']) {
+    assert.equal(canRecoverProviderTaskById({ taskType, providerTaskId: 'existing-task' }), true, taskType);
+  }
+  for (const taskType of ['kie_chat', 'openai_responses', 'openai_tool_calling']) {
+    assert.equal(canRecoverProviderTaskById({ taskType, providerTaskId: 'response-id' }), false, taskType);
+  }
+  assert.equal(canRecoverProviderTaskById({ taskType: 'kie_video', providerTaskId: '' }), false);
 });

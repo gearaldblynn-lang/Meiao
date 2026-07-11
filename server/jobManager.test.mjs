@@ -6,12 +6,16 @@ import {
   buildJobSubmissionLockKey,
   createSerializedJobSubmission,
   findReusableJobSubmission,
+  getJobByIdForUpdate,
   isRunningJobConcurrencyBlocking,
   reconcileRestartedMysqlJobs,
   reconcileStaleCancelledRunningMysqlJobs,
   reconcileStaleProviderlessRunningMysqlJobs,
   reconcileStaleSubmittedRunningMysqlJobs,
+  resolveJobDeletionAction,
+  requestCancelJob,
   requestRetryJob,
+  resolveSubmissionUnknownJob,
   selectJobsWithinConcurrencyLimits,
   shouldMysqlWorkerProcessTaskEngine,
   withMysqlSubmissionLock,
@@ -61,6 +65,15 @@ const createNamedLockPool = () => {
     async getConnection() {
       const connectionId = ++connectionSequence;
       return {
+        async beginTransaction() {
+          events.push(`transaction-begin:${connectionId}`);
+        },
+        async commit() {
+          events.push(`transaction-commit:${connectionId}`);
+        },
+        async rollback() {
+          events.push(`transaction-rollback:${connectionId}`);
+        },
         async query(sql, values = []) {
           if (/GET_LOCK/.test(sql)) {
             events.push(`wait:${connectionId}`);
@@ -418,7 +431,6 @@ test('submission lock serializes find reserve and create for the same semantic j
       reusableJob = { id: 'job-1', status: 'queued' };
       return reusableJob;
     },
-    releaseCredits: async () => null,
   };
 
   const first = createSerializedJobSubmission({ pool, user, jobPayload, ...operations });
@@ -448,10 +460,9 @@ test('submission lock serializes find reserve and create for the same semantic j
   assert.equal(createCalls, 1);
 });
 
-test('submission lock compensates a reservation when job creation fails', async () => {
+test('submission transaction rolls back the reservation when job creation fails', async () => {
   const pool = createNamedLockPool();
   const reservation = { id: 'reservation-1', userId: 'user-a', amount: 5 };
-  const released = [];
 
   await assert.rejects(
     () => createSerializedJobSubmission({
@@ -468,14 +479,107 @@ test('submission lock compensates a reservation when job creation fails', async 
       createJob: async () => {
         throw new Error('insert failed');
       },
-      releaseCredits: async (_connection, receivedReservation) => {
-        released.push(receivedReservation);
-      },
     }),
     /insert failed/
   );
 
-  assert.deepEqual(released, [reservation]);
+  assert.equal(pool.events.filter((event) => event.startsWith('transaction-rollback:')).length, 1);
+  assert.equal(pool.events.filter((event) => event.startsWith('transaction-commit:')).length, 0);
+});
+
+test('submission reserves credits and creates the job in one transaction before commit', async () => {
+  const pool = createNamedLockPool();
+  const operationEvents = [];
+
+  const result = await createSerializedJobSubmission({
+    pool,
+    user: { id: 'user-a' },
+    jobPayload: {
+      module: 'video',
+      taskType: 'kie_seedance_video',
+      provider: 'kie',
+      payload: { prompt: 'atomic submission' },
+    },
+    findReusableJob: async () => null,
+    reserveCredits: async () => {
+      operationEvents.push('reserve');
+      return { id: 'reservation-atomic', userId: 'user-a', amount: 5 };
+    },
+    createJob: async () => {
+      operationEvents.push('create');
+      return { id: 'job-atomic', status: 'queued' };
+    },
+  });
+
+  assert.equal(result.job.id, 'job-atomic');
+  assert.deepEqual(operationEvents, ['reserve', 'create']);
+  const transactionEvents = pool.events.filter((event) => event.startsWith('transaction-'));
+  assert.equal(transactionEvents.length, 2);
+  assert.match(transactionEvents[0], /^transaction-begin:/);
+  assert.match(transactionEvents[1], /^transaction-commit:/);
+});
+
+test('cancel locks and rereads the job before deciding whether queued credits can be released', async () => {
+  const queries = [];
+  const events = [];
+  const freshRunningJob = {
+    id: 'job-raced',
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+    status: 'running',
+    providerTaskId: 'paid-task-id',
+    payload: {},
+  };
+  const connection = {
+    async beginTransaction() { events.push('begin'); },
+    async commit() { events.push('commit'); },
+    async rollback() { events.push('rollback'); },
+    async query(sql, values = []) {
+      queries.push({ sql, values });
+      if (/SELECT \* FROM internal_jobs WHERE id = \? FOR UPDATE/.test(sql)) {
+        return [[{
+          id: freshRunningJob.id,
+          user_id: freshRunningJob.userId,
+          module: freshRunningJob.module,
+          task_type: freshRunningJob.taskType,
+          provider: freshRunningJob.provider,
+          status: freshRunningJob.status,
+          provider_task_id: freshRunningJob.providerTaskId,
+          payload_json: '{}',
+        }]];
+      }
+      if (/UPDATE internal_jobs\s+SET/.test(sql)) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() { events.push('release'); },
+  };
+  const pool = { async getConnection() { return connection; } };
+  let released = 0;
+
+  const outcome = await requestCancelJob(pool, { ...freshRunningJob, status: 'queued', providerTaskId: '' }, {
+    releaseQueuedCredits: async () => { released += 1; },
+  });
+
+  assert.equal(outcome.job.status, 'running');
+  assert.equal(outcome.releasedQueuedCredits, false);
+  assert.equal(released, 0);
+  assert.deepEqual(events, ['begin', 'commit', 'release']);
+  assert.match(queries[0].sql, /FOR UPDATE/);
+});
+
+test('job deletion cancels queued work but preserves active and submission-unknown records', () => {
+  assert.equal(resolveJobDeletionAction({ status: 'queued' }), 'cancel_then_delete');
+  assert.equal(resolveJobDeletionAction({ status: 'retry_waiting' }), 'cancel_then_delete');
+  assert.equal(resolveJobDeletionAction({ status: 'running' }), 'block_active');
+  assert.equal(resolveJobDeletionAction({
+    status: 'failed',
+    errorCode: 'provider_submission_unknown',
+  }), 'block_submission_unknown');
+  assert.equal(resolveJobDeletionAction({ status: 'succeeded' }), 'delete');
+  assert.equal(resolveJobDeletionAction({ status: 'failed', errorCode: 'provider_timeout' }), 'delete');
+  assert.equal(resolveJobDeletionAction({ status: 'cancelled' }), 'delete');
 });
 
 test('retry with a replacement reservation clears the old provider task id before resubmission', async () => {
@@ -499,6 +603,27 @@ test('retry with a replacement reservation clears the old provider task id befor
   assert.match(queries[0].sql, /retry_count = \?/);
   assert.equal(queries[0].values.at(-3), null);
   assert.equal(queries[0].values.at(-2), 0);
+});
+
+test('manual retry rereads the job under a row lock inside its transaction', async () => {
+  const queries = [];
+  const connection = {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      return [[{
+        id: 'job-locked',
+        user_id: 'user-a',
+        task_type: 'kie_video',
+        provider: 'kie',
+        status: 'failed',
+        payload_json: '{}',
+      }]];
+    },
+  };
+
+  const job = await getJobByIdForUpdate(connection, 'job-locked');
+  assert.equal(job.id, 'job-locked');
+  assert.match(queries[0].sql, /FOR UPDATE/);
 });
 
 test('reconcileRestartedMysqlJobs fails providerless jobs and only recovers submitted tasks', () => {
@@ -570,6 +695,44 @@ test('reconcileRestartedMysqlJobs fails providerless jobs and only recovers subm
   assert.equal(submitted.providerTaskId, 'provider-task-1');
 });
 
+test('reconcileRestartedMysqlJobs safely requeues providerless internal work', () => {
+  const [reconciled] = reconcileRestartedMysqlJobs([{
+    id: 'internal-restarted',
+    userId: 'user-a',
+    module: 'system',
+    taskType: 'future_internal_maintenance',
+    provider: 'internal',
+    status: 'running',
+    providerTaskId: '',
+    createdAt: 1000,
+    updatedAt: 2000,
+    startedAt: 1500,
+  }], 3000);
+
+  assert.equal(reconciled.status, 'retry_waiting');
+  assert.equal(reconciled.errorCode, 'service_restarted');
+  assert.equal(reconciled.finishedAt, null);
+});
+
+test('reconcileRestartedMysqlJobs never resubmits a non-queryable kie chat response id', () => {
+  const [reconciled] = reconcileRestartedMysqlJobs([{
+    id: 'storyboard-chat-restarted',
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'running',
+    providerTaskId: 'chat-response-id',
+    createdAt: 1000,
+    updatedAt: 2000,
+    startedAt: 1500,
+  }], 3000);
+
+  assert.equal(reconciled.status, 'failed');
+  assert.equal(reconciled.errorCode, 'provider_submission_unknown');
+  assert.equal(reconciled.providerTaskId, 'chat-response-id');
+});
+
 test('reconcileStaleProviderlessRunningMysqlJobs fails old running jobs before upstream submission', () => {
   const reconciled = reconcileStaleProviderlessRunningMysqlJobs([
     {
@@ -622,8 +785,143 @@ test('reconcileStaleProviderlessRunningMysqlJobs fails old running jobs before u
   assert.equal(reconciled[0].status, 'failed');
   assert.equal(reconciled[0].startedAt, null);
   assert.equal(reconciled[0].finishedAt, 10_000);
-  assert.equal(reconciled[0].errorCode, 'provider_submit_stale');
-  assert.match(reconciled[0].errorMessage, /未返回上游任务 ID/);
+  assert.equal(reconciled[0].errorCode, 'provider_submission_unknown');
+  assert.match(reconciled[0].errorMessage, /防止重复扣费/);
+});
+
+test('reconcileStaleProviderlessRunningMysqlJobs safely requeues stale internal work', () => {
+  const [reconciled] = reconcileStaleProviderlessRunningMysqlJobs([{
+    id: 'internal-stale',
+    provider: 'internal',
+    taskType: 'future_internal_maintenance',
+    status: 'running',
+    providerTaskId: '',
+    startedAt: 1000,
+  }], 10_000, 5_000);
+
+  assert.equal(reconciled.status, 'retry_waiting');
+  assert.equal(reconciled.errorCode, 'service_restarted');
+  assert.equal(reconciled.finishedAt, null);
+});
+
+test('admin can bind a verified provider task id to submission-unknown work without releasing credits', async () => {
+  const events = [];
+  const row = {
+    id: 'job-unknown',
+    user_id: 'user-a',
+    module: 'video',
+    task_type: 'kie_seedance_video',
+    provider: 'kie',
+    status: 'failed',
+    provider_task_id: null,
+    payload_json: JSON.stringify({ __creditReservation: { id: 'reservation-1', userId: 'user-a', amount: 5 } }),
+    error_code: 'provider_submission_unknown',
+    error_message: 'unknown',
+  };
+  const connection = {
+    async beginTransaction() { events.push('begin'); },
+    async commit() { events.push('commit'); },
+    async rollback() { events.push('rollback'); },
+    async query(sql, values = []) {
+      if (/SELECT \* FROM internal_jobs WHERE id = \? FOR UPDATE/.test(sql)) return [[row]];
+      if (/UPDATE internal_jobs\s+SET/.test(sql)) {
+        events.push({ sql, values });
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() { events.push('release'); },
+  };
+  let released = 0;
+  const result = await resolveSubmissionUnknownJob({
+    pool: { async getConnection() { return connection; } },
+    jobId: row.id,
+    action: 'bind',
+    providerTaskId: 'verified-provider-task',
+    releaseReservation: async () => { released += 1; },
+  });
+
+  assert.equal(result.job.status, 'retry_waiting');
+  assert.equal(result.job.providerTaskId, 'verified-provider-task');
+  assert.equal(result.action, 'bind');
+  assert.equal(released, 0);
+  assert.deepEqual(events.filter((event) => typeof event === 'string'), ['begin', 'commit', 'release']);
+});
+
+test('admin cannot bind a task id to a provider type without an idempotent query path', async () => {
+  const row = {
+    id: 'storyboard-chat-unknown',
+    user_id: 'user-a',
+    module: 'video',
+    task_type: 'kie_chat',
+    provider: 'kie',
+    status: 'failed',
+    provider_task_id: null,
+    payload_json: JSON.stringify({ subFeature: 'storyboard' }),
+    error_code: 'provider_submission_unknown',
+  };
+  const connection = {
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    async query(sql) {
+      if (/SELECT \* FROM internal_jobs WHERE id = \? FOR UPDATE/.test(sql)) return [[row]];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() {},
+  };
+
+  await assert.rejects(
+    () => resolveSubmissionUnknownJob({
+      pool: { async getConnection() { return connection; } },
+      jobId: row.id,
+      action: 'bind',
+      providerTaskId: 'chat-response-id',
+    }),
+    (error) => error?.code === 'submission_resolution_bind_unsupported'
+  );
+});
+
+test('admin can explicitly release a submission-unknown reservation in the same transaction', async () => {
+  const events = [];
+  const row = {
+    id: 'job-unknown-release',
+    user_id: 'user-a',
+    module: 'video',
+    task_type: 'kie_seedance_video',
+    provider: 'kie',
+    status: 'failed',
+    provider_task_id: null,
+    payload_json: JSON.stringify({ __creditReservation: { id: 'reservation-2', userId: 'user-a', amount: 5 } }),
+    error_code: 'provider_submission_unknown',
+    error_message: 'unknown',
+  };
+  const connection = {
+    async beginTransaction() { events.push('begin'); },
+    async commit() { events.push('commit'); },
+    async rollback() { events.push('rollback'); },
+    async query(sql) {
+      if (/SELECT \* FROM internal_jobs WHERE id = \? FOR UPDATE/.test(sql)) return [[row]];
+      if (/UPDATE internal_jobs\s+SET/.test(sql)) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() { events.push('release'); },
+  };
+  const released = [];
+  const result = await resolveSubmissionUnknownJob({
+    pool: { async getConnection() { return connection; } },
+    jobId: row.id,
+    action: 'release',
+    releaseReservation: async (receivedConnection, job) => {
+      assert.equal(receivedConnection, connection);
+      released.push(job.id);
+    },
+  });
+
+  assert.equal(result.job.errorCode, 'provider_submission_released');
+  assert.equal(result.action, 'release');
+  assert.deepEqual(released, [row.id]);
+  assert.deepEqual(events, ['begin', 'commit', 'release']);
 });
 
 test('reconcileStaleProviderlessRunningMysqlJobs keeps kie chat submit alive longer than short cloud stale windows', () => {
@@ -760,6 +1058,24 @@ test('reconcileStaleSubmittedRunningMysqlJobs requeues old submitted running job
   assert.equal(reconciled[0].updatedAt, referenceTime);
   assert.equal(reconciled[0].errorCode, 'provider_wait_stale');
   assert.match(reconciled[0].errorMessage, /已提交上游/);
+});
+
+test('reconcileStaleSubmittedRunningMysqlJobs fails non-queryable chat ids without retrying', () => {
+  const [reconciled] = reconcileStaleSubmittedRunningMysqlJobs([{
+    id: 'stale-storyboard-chat',
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'running',
+    providerTaskId: 'chat-response-id',
+    createdAt: 1000,
+    updatedAt: 1000,
+    startedAt: 1000,
+  }], 10_000, 5_000);
+
+  assert.equal(reconciled.status, 'failed');
+  assert.equal(reconciled.errorCode, 'provider_submission_unknown');
+  assert.equal(reconciled.finishedAt, 10_000);
 });
 
 test('reconcileStaleCancelledRunningMysqlJobs releases cancelled running jobs after abort acknowledgement stalls', () => {

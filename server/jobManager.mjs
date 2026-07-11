@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
+import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 
@@ -91,6 +92,18 @@ export const withMysqlSubmissionLock = async (
   }
 };
 
+export const withMysqlTransaction = async (connection, operation) => {
+  await connection.beginTransaction();
+  try {
+    const result = await operation(connection);
+    await connection.commit();
+    return result;
+  } catch (error) {
+    await connection.rollback().catch(() => null);
+    throw error;
+  }
+};
+
 export const createSerializedJobSubmission = async ({
   pool,
   user,
@@ -98,27 +111,17 @@ export const createSerializedJobSubmission = async ({
   findReusableJob,
   reserveCredits,
   createJob,
-  releaseCredits,
   dedupeWindowMs,
   lockTimeoutSeconds,
-}) => withMysqlSubmissionLock(pool, { userId: user?.id, ...jobPayload }, async (connection) => {
-  const reusableJob = await findReusableJob(connection, user, jobPayload, dedupeWindowMs);
-  if (reusableJob) return { job: reusableJob, deduped: true };
-  const reservation = await reserveCredits(connection, user, jobPayload);
-  try {
+}) => withMysqlSubmissionLock(pool, { userId: user?.id, ...jobPayload }, async (connection) => (
+  withMysqlTransaction(connection, async () => {
+    const reusableJob = await findReusableJob(connection, user, jobPayload, dedupeWindowMs);
+    if (reusableJob) return { job: reusableJob, deduped: true };
+    const reservation = await reserveCredits(connection, user, jobPayload);
     const job = await createJob(connection, user, jobPayload, reservation);
     return { job, deduped: false };
-  } catch (error) {
-    if (reservation) {
-      await releaseCredits(connection, reservation, {
-        error,
-        jobPayload,
-        reason: 'job_create_failed',
-      });
-    }
-    throw error;
-  }
-}, { timeoutSeconds: lockTimeoutSeconds });
+  })
+), { timeoutSeconds: lockTimeoutSeconds });
 
 const toSafeJobConcurrency = (value, fallback = DEFAULT_JOB_CONCURRENCY) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -289,15 +292,17 @@ export const reconcileRestartedMysqlJobs = (jobs, referenceTime = now()) => {
     .filter((job) => String(job?.status || '') === 'running')
     .map((job) => {
       const updatedAt = Number(referenceTime || now());
-      const canRecoverProviderTask = Boolean(String(job?.providerTaskId || '').trim());
+      const canRecoverProviderTask = canRecoverProviderTaskById(job);
+      const canSafelyRequeueInternal = String(job?.provider || '').trim() === 'internal';
+      const canRecover = canRecoverProviderTask || canSafelyRequeueInternal;
       return {
         ...job,
-        status: canRecoverProviderTask ? 'retry_waiting' : 'failed',
+        status: canRecover ? 'retry_waiting' : 'failed',
         startedAt: null,
-        finishedAt: canRecoverProviderTask ? null : updatedAt,
+        finishedAt: canRecover ? null : updatedAt,
         updatedAt,
-        errorCode: canRecoverProviderTask ? 'service_restarted' : 'provider_submission_unknown',
-        errorMessage: canRecoverProviderTask
+        errorCode: canRecover ? 'service_restarted' : 'provider_submission_unknown',
+        errorMessage: canRecover
           ? '服务重启后任务已回收到待恢复状态'
           : '服务重启时任务尚未记录上游任务 ID，已停止自动重试以防止重复扣费',
       };
@@ -327,12 +332,14 @@ export const reconcileStaleProviderlessRunningMysqlJobs = (
     })
     .map((job) => ({
       ...job,
-      status: 'failed',
+      status: String(job?.provider || '').trim() === 'internal' ? 'retry_waiting' : 'failed',
       startedAt: null,
-      finishedAt: Number(referenceTime || now()),
+      finishedAt: String(job?.provider || '').trim() === 'internal' ? null : Number(referenceTime || now()),
       updatedAt: Number(referenceTime || now()),
-      errorCode: 'provider_submit_stale',
-      errorMessage: '任务提交上游前长时间未返回上游任务 ID，已自动失败并释放并发',
+      errorCode: String(job?.provider || '').trim() === 'internal' ? 'service_restarted' : 'provider_submission_unknown',
+      errorMessage: String(job?.provider || '').trim() === 'internal'
+        ? '内部任务执行超时后已安全回收到待恢复状态'
+        : '任务提交上游后长时间未记录上游任务 ID，已停止自动重试以防止重复扣费',
     }));
 };
 
@@ -354,15 +361,20 @@ export const reconcileStaleSubmittedRunningMysqlJobs = (
         && jobUpdatedAt <= cutoff
       );
     })
-    .map((job) => ({
-      ...job,
-      status: 'retry_waiting',
-      startedAt: null,
-      finishedAt: null,
-      updatedAt: resolvedReferenceTime,
-      errorCode: 'provider_wait_stale',
-      errorMessage: '任务已提交上游但长时间未完成，已回收到待恢复状态',
-    }));
+    .map((job) => {
+      const canRecover = canRecoverProviderTaskById(job);
+      return {
+        ...job,
+        status: canRecover ? 'retry_waiting' : 'failed',
+        startedAt: null,
+        finishedAt: canRecover ? null : resolvedReferenceTime,
+        updatedAt: resolvedReferenceTime,
+        errorCode: canRecover ? 'provider_wait_stale' : 'provider_submission_unknown',
+        errorMessage: canRecover
+          ? '任务已提交上游但长时间未完成，已回收到待恢复状态'
+          : '任务记录了不可查询的上游响应 ID，已停止自动重试以防止重复扣费',
+      };
+    });
 };
 
 export const reconcileStaleCancelledRunningMysqlJobs = (
@@ -523,6 +535,24 @@ export const getJobById = async (pool, jobId) => {
   return rows[0] ? mapJobRow(rows[0]) : null;
 };
 
+export const getJobByIdForUpdate = async (connection, jobId) => {
+  const [rows] = await connection.query(
+    'SELECT * FROM internal_jobs WHERE id = ? LIMIT 1 FOR UPDATE',
+    [jobId]
+  );
+  return rows[0] ? mapJobRow(rows[0]) : null;
+};
+
+export const resolveJobDeletionAction = (job = {}) => {
+  const status = String(job?.status || '').trim();
+  if (status === 'queued' || status === 'retry_waiting') return 'cancel_then_delete';
+  if (status === 'running') return 'block_active';
+  if (status === 'failed' && String(job?.errorCode || '').trim() === 'provider_submission_unknown') {
+    return 'block_submission_unknown';
+  }
+  return 'delete';
+};
+
 export const deleteJobById = async (pool, jobId) => {
   const job = await getJobById(pool, jobId);
   if (!job) return null;
@@ -610,6 +640,7 @@ export const reconcileStaleProviderlessRunningJobs = async (pool, options = {}) 
   );
   const reconciled = reconcileStaleProviderlessRunningMysqlJobs(rows.map(mapJobRow), referenceTime, staleMs);
   for (const job of reconciled) {
+    const retryWaiting = job.status === 'retry_waiting';
     const [attemptRows] = await pool.query(
       `SELECT *
        FROM internal_job_attempts
@@ -629,11 +660,11 @@ export const reconcileStaleProviderlessRunningJobs = async (pool, options = {}) 
     });
     if (attempt?.id) {
       await runTaskPlatformWrite(() => finishJobAttempt(pool, attempt.id, {
-        status: 'failed',
+        status: retryWaiting ? 'retry_waiting' : 'failed',
         providerTaskId: '',
         errorCode: job.errorCode,
         errorMessage: job.errorMessage,
-        finishedAt: job.updatedAt,
+        finishedAt: retryWaiting ? null : job.updatedAt,
       }));
     }
     await runTaskPlatformWrite(() => recordJobEvent(pool, job, {
@@ -641,11 +672,11 @@ export const reconcileStaleProviderlessRunningJobs = async (pool, options = {}) 
       attemptNo: attempt?.attempt_no,
       traceId: attempt?.trace_id,
       stage: 'provider_submit',
-      eventName: 'provider_submit_stale_failed',
-      status: 'failed',
+      eventName: retryWaiting ? 'internal_job_stale_recovered' : 'provider_submission_unknown_failed',
+      status: retryWaiting ? 'started' : 'failed',
       engine: attempt?.engine || 'temporal',
       providerSubmitted: false,
-      retryable: false,
+      retryable: retryWaiting,
       errorCode: job.errorCode,
       errorMessage: job.errorMessage,
       providerTaskId: '',
@@ -677,6 +708,7 @@ export const reconcileStaleSubmittedRunningJobs = async (pool, options = {}) => 
   );
   const reconciled = reconcileStaleSubmittedRunningMysqlJobs(rows.map(mapJobRow), referenceTime, staleMs);
   for (const job of reconciled) {
+    const retryWaiting = job.status === 'retry_waiting';
     const [attemptRows] = await pool.query(
       `SELECT *
        FROM internal_job_attempts
@@ -689,18 +721,18 @@ export const reconcileStaleSubmittedRunningJobs = async (pool, options = {}) => 
     await updateJobFields(pool, job.id, {
       status: job.status,
       started_at: null,
-      finished_at: null,
+      finished_at: job.finishedAt,
       updated_at: job.updatedAt,
       error_code: job.errorCode,
       error_message: job.errorMessage,
     });
     if (attempt?.id) {
       await runTaskPlatformWrite(() => finishJobAttempt(pool, attempt.id, {
-        status: 'retry_waiting',
+        status: retryWaiting ? 'retry_waiting' : 'failed',
         providerTaskId: job.providerTaskId || '',
         errorCode: job.errorCode,
         errorMessage: job.errorMessage,
-        finishedAt: null,
+        finishedAt: retryWaiting ? null : job.finishedAt,
       }));
     }
     await runTaskPlatformWrite(() => recordJobEvent(pool, job, {
@@ -708,11 +740,11 @@ export const reconcileStaleSubmittedRunningJobs = async (pool, options = {}) => 
       attemptNo: attempt?.attempt_no,
       traceId: attempt?.trace_id,
       stage: 'provider_wait',
-      eventName: 'provider_wait_stale_recovered',
-      status: 'started',
+      eventName: retryWaiting ? 'provider_wait_stale_recovered' : 'provider_submission_unknown_failed',
+      status: retryWaiting ? 'started' : 'failed',
       engine: attempt?.engine || 'temporal',
       providerSubmitted: true,
-      retryable: true,
+      retryable: retryWaiting,
       errorCode: job.errorCode,
       errorMessage: job.errorMessage,
       providerTaskId: job.providerTaskId || '',
@@ -806,39 +838,213 @@ export const updateJobFields = async (pool, jobId, fields) => {
 
 export const requestCancelJob = async (pool, job, actor) => {
   const updatedAt = now();
+  const connection = await pool.getConnection();
+  let outcome;
+  try {
+    outcome = await withMysqlTransaction(connection, async () => {
+      const [rows] = await connection.query(
+        'SELECT * FROM internal_jobs WHERE id = ? FOR UPDATE',
+        [job.id]
+      );
+      const freshJob = rows?.[0] ? mapJobRow(rows[0]) : null;
+      if (!freshJob || (job.userId && freshJob.userId !== job.userId)) {
+        const error = new Error('任务不存在。');
+        error.code = 'job_not_found';
+        error.statusCode = 404;
+        throw error;
+      }
 
-  if (job.status === 'queued' || job.status === 'retry_waiting') {
-    await updateJobFields(pool, job.id, {
-      status: 'cancelled',
-      cancel_requested_at: updatedAt,
-      finished_at: updatedAt,
-      updated_at: updatedAt,
-      error_code: 'request_cancelled',
-      error_message: '用户取消了任务',
+      if (freshJob.status === 'queued' || freshJob.status === 'retry_waiting') {
+        const [result] = await connection.query(
+          `UPDATE internal_jobs
+           SET status = 'cancelled', cancel_requested_at = ?, finished_at = ?, updated_at = ?,
+               error_code = 'request_cancelled', error_message = '用户取消了任务'
+           WHERE id = ? AND status IN ('queued', 'retry_waiting')`,
+          [updatedAt, updatedAt, updatedAt, freshJob.id]
+        );
+        if (!result?.affectedRows) {
+          throw Object.assign(new Error('任务状态已变化，请刷新后重试。'), {
+            code: 'job_state_changed',
+            statusCode: 409,
+          });
+        }
+        if (typeof actor?.releaseQueuedCredits === 'function') {
+          await actor.releaseQueuedCredits(connection, freshJob, updatedAt);
+        }
+        return {
+          job: {
+            ...freshJob,
+            status: 'cancelled',
+            cancelRequestedAt: updatedAt,
+            finishedAt: updatedAt,
+            updatedAt,
+            errorCode: 'request_cancelled',
+            errorMessage: '用户取消了任务',
+          },
+          releasedQueuedCredits: true,
+        };
+      }
+
+      if (freshJob.status === 'running') {
+        const [result] = await connection.query(
+          `UPDATE internal_jobs
+           SET cancel_requested_at = ?, updated_at = ?, error_code = 'request_cancelled',
+               error_message = '用户请求取消任务'
+           WHERE id = ? AND status = 'running'`,
+          [updatedAt, updatedAt, freshJob.id]
+        );
+        if (!result?.affectedRows) {
+          throw Object.assign(new Error('任务状态已变化，请刷新后重试。'), {
+            code: 'job_state_changed',
+            statusCode: 409,
+          });
+        }
+        return {
+          job: {
+            ...freshJob,
+            cancelRequestedAt: updatedAt,
+            updatedAt,
+            errorCode: 'request_cancelled',
+            errorMessage: '用户请求取消任务',
+          },
+          releasedQueuedCredits: false,
+        };
+      }
+
+      return { job: freshJob, releasedQueuedCredits: false };
     });
-  } else if (job.status === 'running') {
-    await updateJobFields(pool, job.id, {
-      cancel_requested_at: updatedAt,
-      updated_at: updatedAt,
-      error_code: 'request_cancelled',
-      error_message: '用户请求取消任务',
-    });
+  } finally {
+    connection.release();
   }
 
   if (actor?.createLog) {
     await actor.createLog({
       user: actor.user,
       level: 'info',
-      module: job.module,
+      module: outcome.job.module,
       action: 'job_cancel_requested',
-      message: `请求取消任务：${job.id}`,
+      message: `请求取消任务：${outcome.job.id}`,
       status: 'interrupted',
       meta: {
-        jobId: job.id,
-        providerTaskId: job.providerTaskId || '',
-        provider: job.provider,
+        jobId: outcome.job.id,
+        providerTaskId: outcome.job.providerTaskId || '',
+        provider: outcome.job.provider,
       },
     });
+  }
+  return outcome;
+};
+
+export const resolveSubmissionUnknownJob = async ({
+  pool,
+  jobId,
+  action,
+  providerTaskId = '',
+  releaseReservation,
+}) => {
+  const normalizedAction = String(action || '').trim();
+  const normalizedProviderTaskId = String(providerTaskId || '').trim();
+  if (!['bind', 'release'].includes(normalizedAction)) {
+    throw Object.assign(new Error('处置动作必须是 bind 或 release。'), {
+      code: 'submission_resolution_invalid',
+      statusCode: 400,
+    });
+  }
+  if (normalizedAction === 'bind' && !normalizedProviderTaskId) {
+    throw Object.assign(new Error('绑定处置必须提供已核实的 providerTaskId。'), {
+      code: 'submission_resolution_task_id_required',
+      statusCode: 400,
+    });
+  }
+
+  const connection = await pool.getConnection();
+  try {
+    return await withMysqlTransaction(connection, async () => {
+      const [rows] = await connection.query(
+        'SELECT * FROM internal_jobs WHERE id = ? FOR UPDATE',
+        [jobId]
+      );
+      const job = rows?.[0] ? mapJobRow(rows[0]) : null;
+      if (!job) {
+        throw Object.assign(new Error('任务不存在。'), { code: 'job_not_found', statusCode: 404 });
+      }
+      if (job.status !== 'failed' || job.errorCode !== 'provider_submission_unknown') {
+        throw Object.assign(new Error('只有提交状态未知的失败任务可以人工处置。'), {
+          code: 'submission_resolution_not_allowed',
+          statusCode: 409,
+        });
+      }
+      if (normalizedAction === 'bind' && !canRecoverProviderTaskById({
+        taskType: job.taskType,
+        providerTaskId: normalizedProviderTaskId,
+      })) {
+        throw Object.assign(new Error('该任务类型没有按上游任务 ID 查询结果的安全恢复路径，只能核实后释放预留。'), {
+          code: 'submission_resolution_bind_unsupported',
+          statusCode: 409,
+        });
+      }
+
+      const updatedAt = now();
+      if (normalizedAction === 'bind') {
+        const [result] = await connection.query(
+          `UPDATE internal_jobs
+           SET status = 'retry_waiting', provider_task_id = ?, started_at = NULL, finished_at = NULL,
+               cancel_requested_at = NULL, error_code = 'submission_resolved_bound',
+               error_message = '管理员已核实并绑定上游任务 ID，等待恢复查询', updated_at = ?
+           WHERE id = ? AND status = 'failed' AND error_code = 'provider_submission_unknown'`,
+          [normalizedProviderTaskId, updatedAt, job.id]
+        );
+        if (!result?.affectedRows) {
+          throw Object.assign(new Error('任务状态已变化，请刷新后重试。'), {
+            code: 'job_state_changed',
+            statusCode: 409,
+          });
+        }
+        return {
+          action: normalizedAction,
+          job: {
+            ...job,
+            status: 'retry_waiting',
+            providerTaskId: normalizedProviderTaskId,
+            startedAt: null,
+            finishedAt: null,
+            cancelRequestedAt: null,
+            errorCode: 'submission_resolved_bound',
+            errorMessage: '管理员已核实并绑定上游任务 ID，等待恢复查询',
+            updatedAt,
+          },
+        };
+      }
+
+      if (typeof releaseReservation !== 'function') {
+        throw new TypeError('releaseReservation callback is required.');
+      }
+      await releaseReservation(connection, job);
+      const [result] = await connection.query(
+        `UPDATE internal_jobs
+         SET error_code = 'provider_submission_released',
+             error_message = '管理员已核实未产生上游任务并释放积分预留', updated_at = ?
+         WHERE id = ? AND status = 'failed' AND error_code = 'provider_submission_unknown'`,
+        [updatedAt, job.id]
+      );
+      if (!result?.affectedRows) {
+        throw Object.assign(new Error('任务状态已变化，请刷新后重试。'), {
+          code: 'job_state_changed',
+          statusCode: 409,
+        });
+      }
+      return {
+        action: normalizedAction,
+        job: {
+          ...job,
+          errorCode: 'provider_submission_released',
+          errorMessage: '管理员已核实未产生上游任务并释放积分预留',
+          updatedAt,
+        },
+      };
+    });
+  } finally {
+    connection.release();
   }
 };
 
@@ -1110,6 +1316,10 @@ export const createJobWorker = ({
               errorCode: error?.code || 'provider_internal_error',
               providerStage: error?.providerStage || '',
               providerTaskId,
+              providerTaskRecoverable: canRecoverProviderTaskById({
+                taskType: latestJob?.taskType,
+                providerTaskId,
+              }),
             });
             const finishedAt = now();
 

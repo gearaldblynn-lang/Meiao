@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
+import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { findReusableJobSubmission, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
 
@@ -67,16 +68,18 @@ export const reconcileRestartedLocalJobs = (jobs) => {
     const normalized = normalizeJob(job);
     if (normalized.status !== 'running') return normalized;
     const updatedAt = now();
-    const canRecoverProviderTask = Boolean(String(normalized.providerTaskId || '').trim());
+    const canRecoverProviderTask = canRecoverProviderTaskById(normalized);
+    const canSafelyRequeueInternal = String(normalized.provider || '').trim() === 'internal';
+    const canRecover = canRecoverProviderTask || canSafelyRequeueInternal;
 
     return normalizeJob({
       ...normalized,
-      status: canRecoverProviderTask ? 'retry_waiting' : 'failed',
+      status: canRecover ? 'retry_waiting' : 'failed',
       updatedAt,
       startedAt: null,
-      finishedAt: canRecoverProviderTask ? null : updatedAt,
-      errorCode: canRecoverProviderTask ? 'service_restarted' : 'provider_submission_unknown',
-      errorMessage: canRecoverProviderTask
+      finishedAt: canRecover ? null : updatedAt,
+      errorCode: canRecover ? 'service_restarted' : 'provider_submission_unknown',
+      errorMessage: canRecover
         ? '服务重启后任务已回收到待恢复状态'
         : '服务重启时任务尚未记录上游任务 ID，已停止自动重试以防止重复扣费',
     });
@@ -381,6 +384,10 @@ export const markLocalJobFailed = (store, jobId, error) => {
     errorCode: error?.code || 'provider_internal_error',
     providerStage: error?.providerStage || '',
     providerTaskId,
+    providerTaskRecoverable: canRecoverProviderTaskById({
+      taskType: current.taskType,
+      providerTaskId,
+    }),
   });
   const finishedAt = now();
   const next = normalizeJob({

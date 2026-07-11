@@ -335,6 +335,14 @@ test('retry reuses a pending reservation only when polling an existing provider 
   }), 'block');
   assert.equal(getJobCreditRetryReservationAction({
     job: {
+      providerTaskId: 'chat-response-id',
+      payload: { __creditReservation: pendingReservation },
+    },
+    reservationProcessed: false,
+    providerTaskRecoverable: false,
+  }), 'block');
+  assert.equal(getJobCreditRetryReservationAction({
+    job: {
       status: 'failed',
       errorCode: 'provider_bad_request',
       providerTaskId: 'provider-task-1',
@@ -396,11 +404,24 @@ test('mysql settlement and release lock the account before checking reservation 
 
 test('cancel and retry routes enforce reservation lifecycle before queueing work', () => {
   assert.match(serverSource, /shouldReleaseJobCreditReservation/);
-  assert.ok((serverSource.match(/releaseDbJobCredits\(\{ pool, job,[\s\S]{0,180}request_cancelled/g) || []).length >= 1);
+  assert.match(serverSource, /releaseQueuedCredits:[\s\S]{0,240}releaseDbJobCredits\(\{[\s\S]{0,120}pool: connection,[\s\S]{0,120}request_cancelled/);
   assert.ok((serverSource.match(/releaseLocalJobCredits\(\{ store, job,[\s\S]{0,180}request_cancelled/g) || []).length >= 1);
   assert.match(serverSource, /getJobCreditRetryReservationAction/);
   assert.match(serverSource, /getLocalCreditReservationState/);
+  assert.match(serverSource, /withMysqlSubmissionLock\([\s\S]{0,200}withMysqlTransaction\(connection/);
   assert.match(serverSource, /payload_json:\s*JSON\.stringify\(retryPayload\)[\s\S]*requestRetryJob/);
   assert.match(serverSource, /requestLocalRetryJob\(store, jobId, \{[\s\S]*payload: retryPayload/);
   assert.equal((serverSource.match(/resetProviderTaskId:\s*reservationAction === 'reserve'/g) || []).length, 2);
+});
+
+test('submission-unknown jobs expose an admin-only audited bind or release endpoint', () => {
+  assert.match(serverSource, /submission-resolution/);
+  assert.match(
+    serverSource,
+    /taskPlatformSubmissionResolutionMatch[\s\S]{0,180}req\.method === 'POST'[\s\S]{0,180}requireDbAdmin/
+  );
+  assert.match(serverSource, /resolveSubmissionUnknownJob\(\{[\s\S]{0,500}releaseDbAccountCredits\(connection/);
+  assert.match(serverSource, /action: 'submission_unknown_resolved'/);
+  assert.match(serverSource, /reason: 'admin_submission_resolution'/);
+  assert.match(serverSource, /resolution\.action === 'bind'[\s\S]{0,180}mirrorDbJobToTemporalIfEnabled/);
 });

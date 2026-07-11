@@ -312,13 +312,18 @@ export const getNextJobFailureState = ({
   errorCode = '',
   providerStage = '',
   providerTaskId = '',
+  providerTaskRecoverable = Boolean(String(providerTaskId || '').trim()),
   submittedTaskRecoveryRetries = getSubmittedTaskRecoveryRetries(),
 }) => {
   if (!isRetryableErrorCode(errorCode)) {
     return { status: 'failed', retryCount };
   }
 
-  const hasProviderTaskId = Boolean(String(providerTaskId || '').trim());
+  const hasAnyProviderTaskId = Boolean(String(providerTaskId || '').trim());
+  if (hasAnyProviderTaskId && !providerTaskRecoverable) {
+    return { status: 'failed', retryCount };
+  }
+  const hasProviderTaskId = hasAnyProviderTaskId && providerTaskRecoverable;
   const stageLimit = FAST_FAIL_RETRY_STAGE_LIMITS.get(String(providerStage || '').trim());
   const effectiveMaxRetries = hasProviderTaskId
     ? Math.max(0, Number(submittedTaskRecoveryRetries || 0))

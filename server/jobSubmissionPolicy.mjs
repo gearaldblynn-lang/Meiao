@@ -10,6 +10,19 @@ export const VIDEO_JOB_TASK_TYPES = new Set([
   'kie_video',
 ]);
 
+export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
+  'dreamina_video',
+  'kie_image',
+  'kie_seedance_video',
+  'kie_veo',
+  'kie_video',
+]);
+
+export const canRecoverProviderTaskById = ({ taskType = '', providerTaskId = '' } = {}) => (
+  Boolean(String(providerTaskId || '').trim())
+  && RECOVERABLE_PROVIDER_TASK_TYPES.has(String(taskType || '').trim())
+);
+
 const TASK_PROVIDER_POLICIES = new Map([
   ['dreamina_video', new Set(['dreamina'])],
   ['openai_responses', new Set(['openai_compatible'])],
@@ -37,12 +50,17 @@ export const getJobSubmissionLockTimeoutSeconds = (env = process.env) => {
 };
 
 export const resolveJobSubmissionPolicy = ({
+  module = '',
   taskType = '',
   provider = '',
+  payload = {},
+  subFeature = '',
   hasVideoPermission = false,
 } = {}) => {
+  const normalizedModule = String(module || '').trim();
   const normalizedTaskType = String(taskType || '').trim();
   const normalizedProvider = String(provider || '').trim();
+  const normalizedSubFeature = String(subFeature || payload?.subFeature || '').trim();
   const allowedProviders = getAllowedProviders(normalizedTaskType);
 
   if (allowedProviders && !allowedProviders.has(normalizedProvider)) {
@@ -60,7 +78,10 @@ export const resolveJobSubmissionPolicy = ({
     );
   }
 
-  const requiresVideoPermission = VIDEO_JOB_TASK_TYPES.has(normalizedTaskType);
+  const isVideoStoryboard = normalizedModule === 'video'
+    && normalizedTaskType === 'kie_chat'
+    && normalizedSubFeature === 'storyboard';
+  const requiresVideoPermission = VIDEO_JOB_TASK_TYPES.has(normalizedTaskType) || isVideoStoryboard;
   if (requiresVideoPermission && !hasVideoPermission) {
     throw createPolicyError(
       'video_feature_forbidden',
@@ -72,6 +93,7 @@ export const resolveJobSubmissionPolicy = ({
   return {
     taskType: normalizedTaskType,
     provider: normalizedProvider,
+    isVideoStoryboard,
     requiresVideoPermission,
     maxCreateRetries: requiresVideoPermission ? 0 : undefined,
     dedupeWindowMs: requiresVideoPermission
