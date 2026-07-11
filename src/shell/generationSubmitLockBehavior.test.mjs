@@ -12,7 +12,7 @@ const sliceBetween = (source, startMarker, endMarker) => {
   return source.slice(start, end);
 };
 
-test('generation submit lock uses a synchronous ref and covers every generation module', () => {
+test('generation submit lock uses a synchronous ref and stays scoped to paid video submission', () => {
   const source = shellApp();
   const lockBlock = sliceBetween(
     source,
@@ -27,34 +27,23 @@ test('generation submit lock uses a synchronous ref and covers every generation 
 
   assert.match(lockBlock, /generationSubmitLocksRef\.current\.has\(lockKey\)/);
   assert.match(lockBlock, /generationSubmitLocksRef\.current\.add\(lockKey\)/);
-  assert.match(guardBlock, /module === AppModuleObj\.ONE_CLICK/);
-  assert.match(guardBlock, /module === AppModuleObj\.TRANSLATION/);
-  assert.match(guardBlock, /module === AppModuleObj\.BUYER_SHOW/);
-  assert.match(guardBlock, /module === AppModuleObj\.RETOUCH/);
-  assert.match(guardBlock, /module === AppModuleObj\.EVERYTHING_REPLACE/);
   assert.match(guardBlock, /module === AppModuleObj\.VIDEO/);
-  assert.match(guardBlock, /module === AppModuleObj\.XHS_COVER/);
-  assert.doesNotMatch(guardBlock, /product_replace/);
+  assert.doesNotMatch(guardBlock, /AppModuleObj\.ONE_CLICK/);
+  assert.doesNotMatch(guardBlock, /AppModuleObj\.TRANSLATION/);
+  assert.doesNotMatch(guardBlock, /AppModuleObj\.BUYER_SHOW/);
 });
 
-test('active submit guard treats backend-identified running work as active', () => {
+test('completed submission no longer blocks a different active video task', () => {
   const source = shellApp();
-  const activeBlock = sliceBetween(
+  assert.doesNotMatch(source, /const hasActiveGuardedGeneration = \(/);
+  assert.doesNotMatch(source, /当前已有任务未返回，请等待完成或取消后再提交。/);
+  assert.match(
     source,
-    'const hasActiveGuardedGeneration = (',
-    'const isActiveRegenerationStatus =',
+    /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\)/,
   );
-
-  assert.doesNotMatch(activeBlock, /&& !hasRuntimeTaskIdentity\(task\)/);
-  assert.doesNotMatch(activeBlock, /project\.status === 'generating' && !hasRuntimeTaskIdentity\(project\)/);
-  assert.doesNotMatch(activeBlock, /project\.status === 'planning' && \!\(project\.plans \|\| \[\]\)\.length && !hasRuntimeTaskIdentity\(project\)/);
-  assert.doesNotMatch(activeBlock, /&& !hasRuntimeTaskIdentity\(result\)/);
-  assert.match(activeBlock, /isActiveTaskStatus\(task\.status\)/);
-  assert.match(activeBlock, /project\.status === 'generating'/);
-  assert.match(activeBlock, /project\.status === 'planning'/);
 });
 
-test('storyboard submit lock remains held through material upload and job creation', () => {
+test('storyboard submit lock remains held through material upload and releases when the backend job exists', () => {
   const source = shellApp();
   const storyboardBlock = sliceBetween(
     source,
@@ -65,28 +54,17 @@ test('storyboard submit lock remains held through material upload and job creati
   const beforeMaterialUpload = storyboardBlock.slice(0, storyboardBlock.indexOf('await ensureMaterialRemoteUrls'));
   assert.match(storyboardBlock, /if \(!beginGuardedSubmit\(\)\) return/);
   assert.doesNotMatch(beforeMaterialUpload, /releaseGuardedSubmit\(\)/);
+  assert.match(storyboardBlock, /onJobCreated: \(jobId, providerTaskId\) => \{\s*releaseGuardedSubmit\(\)/);
   assert.match(storyboardBlock, /finally \{[\s\S]*releaseGuardedSubmit\(\)/);
 });
 
-test('job-created callbacks do not release the submit lock early', () => {
+test('standard video job-created callback releases only the submit window', () => {
   const source = shellApp();
-  const oneClickPlanningBlock = sliceBetween(
-    source,
-    'const onJobCreated = (jobId: string, providerTaskId?: string) => {',
-    'const { runShellOneClickPlanning } = await loadShellWorkflowModule();',
-  );
   const standardGenerationBlock = sliceBetween(
     source,
     'const newProject: Project = {',
     'const result = targetModule === AppModuleObj.VIDEO',
   );
-  const translationBlock = sliceBetween(
-    source,
-    'const result = await runShellImageGeneration({',
-    "if (result.status !== 'success'",
-  );
 
-  assert.doesNotMatch(oneClickPlanningBlock, /releaseGuardedSubmit\(\)/);
-  assert.doesNotMatch(standardGenerationBlock, /releaseGuardedSubmit\(\)/);
-  assert.doesNotMatch(translationBlock, /releaseGuardedSubmit\(\)/);
+  assert.match(standardGenerationBlock, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\)/);
 });

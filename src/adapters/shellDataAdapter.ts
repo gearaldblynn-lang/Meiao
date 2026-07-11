@@ -1587,27 +1587,31 @@ const mapJobs = (
         if (projectStatus === 'completed') {
           const content = String((job.result as any)?.content || (job.result as any)?.text || '').trim();
           const config = (payload.storyboardConfig || storyboardProject.config) as VideoStoryboardConfig;
-          try {
-            const parsed = parseStoryboardPlanningResult({
-              content,
-              config,
-              identitySeed: shellProjectId,
-            });
-            storyboardProject = {
-              ...storyboardProject,
-              config,
-              status: 'awaiting_image_confirmation',
-              script: parsed.script,
-              shots: parsed.shots,
-              boards: parsed.boards,
-              error: undefined,
-            };
-          } catch (error) {
-            storyboardProject = {
-              ...storyboardProject,
-              status: 'failed',
-              error: error instanceof Error ? error.message : '分镜脚本解析失败',
-            };
+          const alreadyHasDurableStoryboard = storyboardProject.shots.length > 0
+            || storyboardProject.boards.length > 0;
+          if (!alreadyHasDurableStoryboard) {
+            try {
+              const parsed = parseStoryboardPlanningResult({
+                content,
+                config,
+                identitySeed: shellProjectId,
+              });
+              storyboardProject = {
+                ...storyboardProject,
+                config,
+                status: 'awaiting_image_confirmation',
+                script: parsed.script,
+                shots: parsed.shots,
+                boards: parsed.boards,
+                error: undefined,
+              };
+            } catch (error) {
+              storyboardProject = {
+                ...storyboardProject,
+                status: 'failed',
+                error: error instanceof Error ? error.message : '分镜脚本解析失败',
+              };
+            }
           }
         } else if (projectStatus === 'error') {
           storyboardProject = {
@@ -1623,7 +1627,16 @@ const mapJobs = (
         const boardIndex = storyboardProject.boards.findIndex((board) => board.id === boardId);
         if (boardIndex >= 0) {
           const boards = [...storyboardProject.boards];
-          boards[boardIndex] = applyStoryboardBoardResult(boards[boardIndex], storyboardJobResult(job));
+          const currentBoard = boards[boardIndex] as DurableStoryboardBoard;
+          const currentBackendJobId = String(currentBoard.backendJobId || '').trim();
+          const recoveredJobId = String(job.id || '').trim();
+          const isOlderThanDurableBoard = Boolean(currentBackendJobId && currentBackendJobId !== recoveredJobId);
+          const isCompletedWithoutJobIdentity = !currentBackendJobId
+            && currentBoard.status === 'completed'
+            && Boolean(String(currentBoard.imageUrl || '').trim());
+          if (!isOlderThanDurableBoard && !isCompletedWithoutJobIdentity) {
+            boards[boardIndex] = applyStoryboardBoardResult(currentBoard, storyboardJobResult(job));
+          }
           storyboardProject = {
             ...storyboardProject,
             boards,

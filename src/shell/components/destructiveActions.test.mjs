@@ -136,7 +136,7 @@ test('result regeneration is locked while the current project or scope is active
   assert.match(shellSource, /请先中断或等待当前任务完成后再重生成/);
 });
 
-test('all runnable bottom generation submits are guarded before material preparation or cloud submission', () => {
+test('paid video submits are guarded before material preparation and release after job creation', () => {
   const shellSource = read('../../ShellMigratedApp.tsx');
   const submitGuardBlock = shellSource.match(/const shouldGuardGenerationSubmit = [\s\S]*?\n\);/)?.[0] || '';
   const handleGeneratePrefix = shellSource.match(/const handleGenerate = useCallback\(async \(\) => \{[\s\S]*?if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'storyboard'\)/)?.[0] || '';
@@ -144,24 +144,20 @@ test('all runnable bottom generation submits are guarded before material prepara
   const genericProjectBranch = shellSource.match(/\/\/ Create project[\s\S]*?const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n    \};/)?.[0] || '';
   const translationBranch = shellSource.match(/if \(targetModule === AppModuleObj\.TRANSLATION\) \{[\s\S]*?\n      return;\n    \}\n\n    if \(targetModule === AppModuleObj\.ONE_CLICK\)/)?.[0] || '';
 
-  assert.match(submitGuardBlock, /module === AppModuleObj\.ONE_CLICK/);
-  assert.match(submitGuardBlock, /module === AppModuleObj\.TRANSLATION/);
-  assert.match(submitGuardBlock, /module === AppModuleObj\.BUYER_SHOW/);
-  assert.match(submitGuardBlock, /module === AppModuleObj\.RETOUCH/);
   assert.match(submitGuardBlock, /module === AppModuleObj\.VIDEO/);
-  assert.match(submitGuardBlock, /module === AppModuleObj\.XHS_COVER/);
+  assert.doesNotMatch(submitGuardBlock, /AppModuleObj\.ONE_CLICK/);
+  assert.doesNotMatch(submitGuardBlock, /AppModuleObj\.TRANSLATION/);
   assert.match(shellSource, /const hasRuntimeTaskIdentity = /);
-  assert.match(shellSource, /hasActiveGuardedGeneration/);
-  assert.match(shellSource, /hasCurrentActiveGuardedGeneration/);
-  assert.doesNotMatch(shellSource, /hasCurrentActiveGuardedVideoGeneration/);
+  assert.doesNotMatch(shellSource, /hasActiveGuardedGeneration/);
+  assert.doesNotMatch(shellSource, /hasCurrentActiveGuardedGeneration/);
   assert.match(handleGeneratePrefix, /const beginGuardedSubmit = \(\) => !hasGuardedSubmitLock \|\| beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(handleGeneratePrefix, /const releaseGuardedSubmit = \(\) => \{/);
-  assert.match(shellSource, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& \(Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\) \|\| hasCurrentActiveGuardedGeneration\)/);
+  assert.match(shellSource, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\)/);
   // 2026-07-07 即时卡扩展到全模块后,锚点从 EVERYTHING_REPLACE 条件改为 !== BUYER_SHOW;顺序语义不变:守卫→toast→即时卡→素材上传
   assert.match(shellSource, /if \(!beginGuardedSubmit\(\)\) \{\s*return;\s*\}\s*addToast\('任务已提交，正在准备素材', 'info'\);[\s\S]*?const immediateProject = targetModule !== AppModuleObj\.BUYER_SHOW[\s\S]*?try \{\s*generationMaterials = await ensureMaterialRemoteUrls/);
   assert.doesNotMatch(translationBranch.match(/onJobCreated: \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n\s*\},/)?.[0] || '', /releaseGuardedSubmit\(\);/);
   assert.doesNotMatch(oneClickBranch.match(/const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n      \};/)?.[0] || '', /releaseGuardedSubmit\(\);/);
-  assert.doesNotMatch(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
+  assert.match(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\);/);
   assert.match(oneClickBranch, /finally \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*setIsGenerating\(false\);[\s\S]*\}/);
 });
 

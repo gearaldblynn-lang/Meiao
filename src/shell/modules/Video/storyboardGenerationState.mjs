@@ -75,6 +75,96 @@ export const deriveStoryboardProjectStatus = (boards = [], fallback = 'imaging')
   return fallback === 'completed' ? 'imaging' : fallback;
 };
 
+export const getResumableStoryboardBoard = (project = {}) => {
+  if (project.status !== 'imaging') return null;
+  const boards = Array.isArray(project.boards) ? project.boards : [];
+  if (boards.some((board) => board?.status === 'generating')) return null;
+
+  let previousBoardImageUrl = '';
+  for (const board of boards) {
+    if (board?.status === 'completed' && String(board?.imageUrl || '').trim()) {
+      previousBoardImageUrl = String(board.imageUrl).trim();
+      continue;
+    }
+    if (board?.status === 'pending') {
+      return {
+        boardId: String(board.id || '').trim(),
+        previousBoardImageUrl,
+      };
+    }
+    return null;
+  }
+  return null;
+};
+
+export const mergeRecoveredStoryboardProject = (current = {}, recovered = {}) => {
+  const recoveredById = new Map(
+    (Array.isArray(recovered.boards) ? recovered.boards : [])
+      .map((board) => [String(board?.id || '').trim(), board]),
+  );
+  const currentBoards = Array.isArray(current.boards) ? current.boards : [];
+  const boards = currentBoards.map((board) => {
+    const boardId = String(board?.id || '').trim();
+    const recoveredBoard = recoveredById.get(boardId);
+    if (!recoveredBoard) return board;
+    recoveredById.delete(boardId);
+    const currentBackendJobId = String(board?.backendJobId || '').trim();
+    const recoveredBackendJobId = String(recoveredBoard?.backendJobId || '').trim();
+    const sameJob = !currentBackendJobId
+      || !recoveredBackendJobId
+      || currentBackendJobId === recoveredBackendJobId;
+    const currentActive = board?.status === 'pending' || board?.status === 'generating';
+    const recoveredTerminal = recoveredBoard?.status === 'completed' || recoveredBoard?.status === 'failed';
+
+    if (currentActive && recoveredTerminal && sameJob) {
+      return {
+        ...board,
+        ...recoveredBoard,
+        prompt: board?.prompt || recoveredBoard?.prompt,
+        imageVersions: Array.isArray(board?.imageVersions) && board.imageVersions.length > 0
+          ? board.imageVersions
+          : recoveredBoard?.imageVersions,
+      };
+    }
+    return {
+      ...recoveredBoard,
+      ...board,
+      backendJobId: board?.backendJobId || recoveredBoard?.backendJobId,
+      taskId: board?.taskId || recoveredBoard?.taskId,
+    };
+  });
+  recoveredById.forEach((board) => boards.push(board));
+
+  const currentStatus = String(current.status || '');
+  const recoveredStatus = String(recovered.status || '');
+  const shouldAdvanceProject = (
+    currentStatus === 'scripting'
+    && recoveredStatus
+    && recoveredStatus !== 'scripting'
+  ) || (
+    currentStatus === 'imaging'
+    && (recoveredStatus === 'completed' || recoveredStatus === 'failed')
+  );
+  const status = currentStatus === 'imaging'
+    ? deriveStoryboardProjectStatus(boards, shouldAdvanceProject ? recoveredStatus : currentStatus)
+    : shouldAdvanceProject
+      ? recoveredStatus
+      : currentStatus || recoveredStatus;
+
+  return {
+    ...recovered,
+    ...current,
+    status,
+    config: { ...(recovered.config || {}), ...(current.config || {}) },
+    shots: Array.isArray(current.shots) && current.shots.length > 0 ? current.shots : recovered.shots,
+    boards,
+    planningJobId: current.planningJobId || recovered.planningJobId,
+    backendJobId: current.backendJobId || recovered.backendJobId,
+    planningTaskId: current.planningTaskId || recovered.planningTaskId,
+    creditsConsumed: current.creditsConsumed ?? recovered.creditsConsumed,
+  };
+};
+
 export const toStoryboardShellResultStatus = (board = {}) => {
   if (board.status === 'failed') return 'error';
   if (board.status === 'completed' && String(board.imageUrl || '').trim()) return 'completed';
