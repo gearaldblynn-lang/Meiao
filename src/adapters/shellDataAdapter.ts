@@ -1,5 +1,17 @@
-import type { AppModule, InternalJob } from '../types.ts';
+import type {
+  AppModule,
+  InternalJob,
+  VideoStoryboardBoard,
+  VideoStoryboardConfig,
+  VideoStoryboardProject,
+} from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
+import { parseStoryboardPlanningResult } from '../utils/videoStoryboardPlanning.ts';
+import {
+  applyStoryboardBoardResult,
+  deriveStoryboardProjectStatus,
+  toStoryboardShellResultStatus,
+} from '../shell/modules/Video/storyboardGenerationState.mjs';
 import { getOneClickPlanContent, isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 import { coerceCreatedAtMs } from '../utils/createdAtMs.ts';
 import { getVisibleProviderTaskId, shouldExposeActiveJobResult } from './shellJobVisibility.ts';
@@ -17,6 +29,12 @@ import { hasPersistedTerminalJobResult } from './shellTerminalJobMerge.ts';
 
 type ShellProjectStatus = 'planning' | 'generating' | 'completed' | 'error';
 type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
+type DurableStoryboardBoard = VideoStoryboardBoard & { backendJobId?: string };
+type DurableStoryboardProject = Omit<VideoStoryboardProject, 'boards'> & {
+  boards: DurableStoryboardBoard[];
+  planningJobId?: string;
+  backendJobId?: string;
+};
 
 export interface ShellGeneratedResult {
   id: string;
@@ -95,6 +113,8 @@ export interface ShellProjectData {
     materials: Record<string, ShellMaterialData[]>;
   };
   directGeneration?: boolean;
+  storyboardProjectStatus?: VideoStoryboardProject['status'];
+  storyboardSourceProject?: DurableStoryboardProject;
 }
 
 export interface ShellTaskData {
@@ -967,6 +987,112 @@ const buildGenerationContextFromBranch = (branch: any, subFeature?: string) => {
   return { prompt, params, materials };
 };
 
+const normalizeStoryboardProject = (project: any, fallbackId = 'storyboard-project'): DurableStoryboardProject => {
+  const rawStatus = String(project?.status || 'pending');
+  const status: VideoStoryboardProject['status'] = [
+    'pending',
+    'scripting',
+    'awaiting_image_confirmation',
+    'imaging',
+    'completed',
+    'failed',
+  ].includes(rawStatus)
+    ? rawStatus as VideoStoryboardProject['status']
+    : 'pending';
+  return {
+    ...project,
+    id: String(project?.id || fallbackId),
+    name: String(project?.name || '分镜项目'),
+    config: (project?.config || {}) as VideoStoryboardConfig,
+    status,
+    script: String(project?.script || ''),
+    shots: Array.isArray(project?.shots) ? project.shots.map((shot: any) => ({ ...shot })) : [],
+    boards: Array.isArray(project?.boards) ? project.boards.map((board: any) => ({ ...board })) : [],
+    planningTaskId: String(project?.planningTaskId || '').trim() || undefined,
+    planningJobId: String(project?.planningJobId || '').trim() || undefined,
+    backendJobId: String(project?.backendJobId || '').trim() || undefined,
+    createdAt: coerceCreatedAtMs(project?.createdAt, { id: project?.id || fallbackId }).ms,
+  };
+};
+
+const storyboardProjectToShellProject = (
+  sourceProject: DurableStoryboardProject,
+  sourceType: ShellProjectData['sourceType'] = 'persisted',
+): ShellProjectData => {
+  const project = normalizeStoryboardProject(sourceProject, sourceProject.id);
+  const results: ShellGeneratedResult[] = project.boards
+    .filter((board) => (
+      board.status !== 'pending'
+      || Boolean(String(board.imageUrl || board.taskId || board.backendJobId || '').trim())
+    ))
+    .map((board) => ({
+      id: String(board.id),
+      projectId: project.id,
+      imageUrl: String(board.imageUrl || '').trim(),
+      mediaType: 'image' as const,
+      prompt: String(board.prompt || board.scriptText || board.title || '').trim(),
+      model: normalizeModel(project.config?.model),
+      aspectRatio: String(project.config?.aspectRatio || 'auto'),
+      status: toStoryboardShellResultStatus(board) as ShellGeneratedResult['status'],
+      createdAt: project.createdAt,
+      module: MODULE_VALUES.VIDEO,
+      subFeature: 'storyboard',
+      taskId: String(board.taskId || '').trim() || undefined,
+      backendJobId: String(board.backendJobId || '').trim() || undefined,
+      creditsConsumed: normalizeCreditsConsumed(board.creditsConsumed),
+      error: String(board.error || '').trim() || undefined,
+    }));
+  const completedCount = project.boards.filter((board) => (
+    board.status === 'completed' && Boolean(String(board.imageUrl || '').trim())
+  )).length;
+  const activeBoard = [...project.boards].reverse().find((board) => (
+    board.status === 'generating' && Boolean(String(board.backendJobId || '').trim())
+  ));
+  const latestBoardWithJob = [...project.boards].reverse().find((board) => String(board.backendJobId || '').trim());
+  const backendJobId = String(
+    activeBoard?.backendJobId
+    || project.backendJobId
+    || latestBoardWithJob?.backendJobId
+    || project.planningJobId
+    || ''
+  ).trim() || undefined;
+  const status: ShellProjectStatus = project.status === 'completed'
+    ? 'completed'
+    : project.status === 'failed'
+      ? 'error'
+      : project.status === 'scripting' || project.status === 'imaging'
+        ? 'generating'
+        : 'planning';
+
+  return {
+    id: project.id,
+    name: project.name,
+    module: MODULE_VALUES.VIDEO,
+    status,
+    createdAt: project.createdAt,
+    completedAt: status === 'completed' ? project.createdAt : undefined,
+    results,
+    taskCount: Math.max(project.boards.length, 1),
+    completedCount,
+    subFeature: 'storyboard',
+    sourceType,
+    backendJobId,
+    creditsConsumed: normalizeCreditsConsumed(project.creditsConsumed),
+    planningTaskId: String(project.planningTaskId || '').trim() || undefined,
+    storyboardProjectStatus: project.status,
+    storyboardSourceProject: project,
+  };
+};
+
+const storyboardJobResult = (job: InternalJob) => ({
+  status: job.status,
+  imageUrl: getResultUrl(job),
+  taskId: getVisibleTaskId(job),
+  backendJobId: String(job.id || '').trim(),
+  creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed),
+  message: String(job.errorMessage || job.errorCode || (job.result as any)?.message || '').trim(),
+});
+
 const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<ShellDataSnapshot, 'projects' | 'materials'> => {
   if (state && typeof state === 'object') {
     const cached = persistedSnapshotCache.get(state as object);
@@ -1128,22 +1254,10 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
   });
   const storyboardProjects = Array.isArray(video?.storyboard?.projects) ? video.storyboard.projects : [];
   storyboardProjects.forEach((project: any, index: number) => {
-    const items = [...(Array.isArray(project?.shots) ? project.shots : []), ...(Array.isArray(project?.boards) ? project.boards : [])];
-    const mapped = projectFromItems(
-      String(project?.id || `storyboard-${index}`),
-      String(project?.name || `分镜项目 ${index + 1}`),
-      MODULE_VALUES.VIDEO,
-      project?.createdAt || Date.now(),
-      items,
-      'storyboard',
-      '',
-      undefined,
-      undefined,
-      undefined,
-      project?.creditsConsumed,
-      project?.planningTaskId,
-    );
-    if (mapped) projects.push(mapped);
+    projects.push(storyboardProjectToShellProject(normalizeStoryboardProject({
+      ...project,
+      name: project?.name || `分镜项目 ${index + 1}`,
+    }, `storyboard-${index}`)));
   });
 
   const xhs = state.xhsCoverMemory as any;
@@ -1360,6 +1474,8 @@ const mapJobs = (
   const translationGroups = new Map<string, InternalJob[]>();
   const groupedOneClickPlanningJobIds = new Set<string>();
   const oneClickPlanningGroups = new Map<string, InternalJob[]>();
+  const groupedStoryboardJobIds = new Set<string>();
+  const storyboardGroups = new Map<string, InternalJob[]>();
 
   jobs.forEach((job) => {
     const jobId = String(job?.id || '').trim();
@@ -1413,6 +1529,127 @@ const mapJobs = (
     const bucket = oneClickPlanningGroups.get(payloadProjectId) || [];
     bucket.push(job);
     oneClickPlanningGroups.set(payloadProjectId, bucket);
+  });
+
+  jobs.forEach((job) => {
+    const jobId = String(job?.id || '').trim();
+    if (!jobId || hiddenJobIds.has(jobId) || toModule(job.module) !== MODULE_VALUES.VIDEO) return;
+    const payload = (job.payload || {}) as Record<string, unknown>;
+    const shellProjectId = String(payload.shellProjectId || '').trim();
+    const planningPurpose = String(payload.planningPurpose || '').trim();
+    if (!shellProjectId || !['storyboard_planning', 'storyboard_board_image'].includes(planningPurpose)) return;
+    const bucket = storyboardGroups.get(shellProjectId) || [];
+    bucket.push(job);
+    storyboardGroups.set(shellProjectId, bucket);
+  });
+
+  storyboardGroups.forEach((groupJobs, shellProjectId) => {
+    const sortedJobs = [...groupJobs].sort((a, b) => {
+      const timeDifference = Number(a.createdAt || 0) - Number(b.createdAt || 0);
+      if (timeDifference !== 0) return timeDifference;
+      const aPurpose = String((a.payload as any)?.planningPurpose || '');
+      const bPurpose = String((b.payload as any)?.planningPurpose || '');
+      if (aPurpose !== bPurpose) return aPurpose === 'storyboard_planning' ? -1 : 1;
+      return 0;
+    });
+    sortedJobs.forEach((job) => groupedStoryboardJobIds.add(String(job.id || '').trim()));
+    const persistedProject = persistedProjects.find((project) => project.id === shellProjectId);
+    const firstPayload = (sortedJobs[0]?.payload || {}) as Record<string, unknown>;
+    let storyboardProject = normalizeStoryboardProject(
+      persistedProject?.storyboardSourceProject || {
+        id: shellProjectId,
+        name: String(firstPayload.shellProjectName || '分镜项目'),
+        config: firstPayload.storyboardConfig || {},
+        status: 'scripting',
+        script: '正在生成分镜脚本...',
+        shots: [],
+        boards: [],
+        createdAt: sortedJobs[0]?.createdAt,
+      },
+      shellProjectId,
+    );
+
+    sortedJobs.forEach((job) => {
+      const payload = (job.payload || {}) as Record<string, unknown>;
+      const planningPurpose = String(payload.planningPurpose || '').trim();
+      const providerTaskId = getVisibleTaskId(job);
+      const projectStatus = taskStatusToProject(job.status);
+      const jobCredits = normalizeCreditsConsumed((job.result as any)?.creditsConsumed);
+
+      if (planningPurpose === 'storyboard_planning') {
+        storyboardProject = {
+          ...storyboardProject,
+          planningJobId: String(job.id || '').trim(),
+          backendJobId: String(job.id || '').trim(),
+          planningTaskId: latestIdentityTextList(storyboardProject.planningTaskId, providerTaskId),
+          creditsConsumed: jobCredits || storyboardProject.creditsConsumed,
+        };
+        if (projectStatus === 'completed') {
+          const content = String((job.result as any)?.content || (job.result as any)?.text || '').trim();
+          const config = (payload.storyboardConfig || storyboardProject.config) as VideoStoryboardConfig;
+          try {
+            const parsed = parseStoryboardPlanningResult({
+              content,
+              config,
+              identitySeed: shellProjectId,
+            });
+            storyboardProject = {
+              ...storyboardProject,
+              config,
+              status: 'awaiting_image_confirmation',
+              script: parsed.script,
+              shots: parsed.shots,
+              boards: parsed.boards,
+              error: undefined,
+            };
+          } catch (error) {
+            storyboardProject = {
+              ...storyboardProject,
+              status: 'failed',
+              error: error instanceof Error ? error.message : '分镜脚本解析失败',
+            };
+          }
+        } else if (projectStatus === 'error') {
+          storyboardProject = {
+            ...storyboardProject,
+            status: 'failed',
+            error: String(job.errorMessage || job.errorCode || '分镜脚本生成失败'),
+          };
+        } else {
+          storyboardProject = { ...storyboardProject, status: 'scripting' };
+        }
+      } else if (planningPurpose === 'storyboard_board_image') {
+        const boardId = String(payload.boardId || '').trim();
+        const boardIndex = storyboardProject.boards.findIndex((board) => board.id === boardId);
+        if (boardIndex >= 0) {
+          const boards = [...storyboardProject.boards];
+          boards[boardIndex] = applyStoryboardBoardResult(boards[boardIndex], storyboardJobResult(job));
+          storyboardProject = {
+            ...storyboardProject,
+            boards,
+            status: deriveStoryboardProjectStatus(boards, storyboardProject.status),
+            backendJobId: String(job.id || '').trim(),
+          };
+        }
+      }
+
+      if (projectStatus === 'generating' || projectStatus === 'planning') {
+        tasks.push({
+          id: String(job.id),
+          projectId: shellProjectId,
+          module: MODULE_VALUES.VIDEO,
+          type: planningPurpose === 'storyboard_planning' ? 'plan' : 'image',
+          status: taskStatusToTask(job.status),
+          title: planningPurpose === 'storyboard_planning' ? '分镜脚本策划' : '分镜板生成',
+          progress: job.status === 'running' ? 42 : 8,
+          createdAt: toCreatedMs(job.createdAt),
+          subFeature: 'storyboard',
+          backendJobId: String(job.id),
+        });
+      }
+    });
+
+    projects.push(storyboardProjectToShellProject(storyboardProject, 'job'));
   });
 
 	  everythingReplaceGroups.forEach((groupJobs, shellProjectId) => {
@@ -1787,6 +2024,7 @@ const mapJobs = (
 	    if (groupedBuyerShowJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedTranslationJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedOneClickPlanningJobIds.has(String(job.id || '').trim())) return;
+	    if (groupedStoryboardJobIds.has(String(job.id || '').trim())) return;
     const module = toModule(job.module);
     const providerErrorText = getProviderErrorText(job);
     const projectStatus = taskStatusToProject(job.status) === 'completed' && providerErrorText
@@ -2795,6 +3033,7 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
 };
 
 const hasVisibleProjectContent = (project: ShellProjectData) => {
+  if (project.storyboardSourceProject) return true;
   if ((project.results || []).length > 0) return true;
   if ((project.plans || []).length > 0) return true;
   return project.status === 'generating';

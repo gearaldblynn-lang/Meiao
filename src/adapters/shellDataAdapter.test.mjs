@@ -965,6 +965,121 @@ test('shell data adapter backfills storyboard planning ids from completed KIE ch
   assert.equal(project?.results.length, 1);
 });
 
+test('shell data adapter restores a scripting storyboard from a stable completed planning job', () => {
+  const projectId = 'storyboard-stable-project';
+  const config = {
+    duration: '15s',
+    shotCount: 2,
+    aspectRatio: '9:16',
+    actorType: 'no_real_face',
+    countryLanguage: '中国/中文',
+    productInfo: '保湿喷雾',
+    scenes: ['明亮桌面'],
+    videoGenerationMode: 'original',
+  };
+  const planningContent = JSON.stringify([{
+    title: '分段一',
+    panelCount: 2,
+    storyboardPrompt: '人物细节：仅手部出镜\n环境/场景：明亮桌面\n分镜一：拿起商品\n分镜二：展示喷雾',
+    dynamicScriptPrompt: '分镜一：00:00 - 00:07\n画面描述(视觉)：拿起商品\n口播（自然）："先看保湿效果"\n音效：轻快音乐\n分镜二：00:07 - 00:15\n画面描述(视觉)：展示喷雾\n口播（自然）："随时补水"\n音效：喷雾声',
+  }]);
+  const state = {
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: projectId,
+          name: '稳定分镜',
+          config,
+          status: 'scripting',
+          script: '正在生成分镜脚本...',
+          shots: [],
+          boards: [],
+          createdAt: 1783600000000,
+        }],
+      },
+    },
+  };
+  const jobs = [{
+    id: 'storyboard-planning-job',
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    providerTaskId: 'storyboard-planning-provider',
+    status: 'succeeded',
+    payload: {
+      subFeature: 'storyboard',
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_planning',
+      phase: 'planning',
+      storyboardConfig: config,
+    },
+    result: { content: planningContent, creditsConsumed: 0.2 },
+    createdAt: 1783600000100,
+    updatedAt: 1783600000200,
+  }];
+
+  const first = buildShellDataSnapshot(state, jobs);
+  const second = buildShellDataSnapshot(state, jobs);
+  const project = first.projects.find((item) => item.id === projectId);
+
+  assert.equal(project?.storyboardSourceProject?.status, 'awaiting_image_confirmation');
+  assert.equal(project?.storyboardSourceProject?.script.includes('分段一'), true);
+  assert.equal(project?.storyboardSourceProject?.shots.length, 2);
+  assert.equal(project?.storyboardSourceProject?.boards.length, 1);
+  assert.equal(project?.storyboardSourceProject?.planningJobId, 'storyboard-planning-job');
+  assert.equal(project?.planningTaskId, 'storyboard-planning-provider');
+  assert.equal(project?.backendJobId, 'storyboard-planning-job');
+  assert.equal(
+    project?.storyboardSourceProject?.boards[0].id,
+    second.projects.find((item) => item.id === projectId)?.storyboardSourceProject?.boards[0].id,
+  );
+});
+
+test('shell data adapter restores board backend identity as the active cancel target', () => {
+  const projectId = 'storyboard-board-project';
+  const state = {
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: projectId,
+          name: '分镜板恢复',
+          config: { duration: '15s', shotCount: 1, aspectRatio: '9:16', videoGenerationMode: 'original' },
+          status: 'imaging',
+          script: '分镜脚本',
+          shots: [{ id: 'shot-1', description: '商品特写', scriptContent: '脚本', prompt: '商品特写' }],
+          boards: [{ id: 'board-1', title: '分段一', shotIds: ['shot-1'], scriptText: '脚本', prompt: '分镜图', status: 'pending' }],
+          createdAt: 1783600000000,
+        }],
+      },
+    },
+  };
+  const snapshot = buildShellDataSnapshot(state, [{
+    id: 'storyboard-board-job',
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: 'storyboard-board-provider',
+    status: 'running',
+    payload: {
+      subFeature: 'storyboard',
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_board_image',
+      phase: 'confirm',
+      boardId: 'board-1',
+    },
+    result: null,
+    createdAt: 1783600000100,
+    updatedAt: 1783600000200,
+  }]);
+  const project = snapshot.projects.find((item) => item.id === projectId);
+
+  assert.equal(project?.storyboardSourceProject?.boards[0].status, 'generating');
+  assert.equal(project?.storyboardSourceProject?.boards[0].backendJobId, 'storyboard-board-job');
+  assert.equal(project?.results[0].backendJobId, 'storyboard-board-job');
+  assert.equal(project?.results[0].taskId, 'storyboard-board-provider');
+  assert.equal(snapshot.tasks.find((item) => item.backendJobId === 'storyboard-board-job')?.projectId, projectId);
+});
+
 test('shell data adapter drops idle persisted items that have no result, error, running state, or plans', () => {
   const snapshot = buildShellDataSnapshot({
     translationMemory: {
