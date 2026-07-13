@@ -3,6 +3,7 @@ import { getModelCapability } from './modelCapabilities.mjs';
 import { resolveModelForNeed } from './modelDispatch.mjs';
 import { getPublicModelProviderRegistry } from './modelProviderRegistry.mjs';
 import { humanizeProviderError } from './providerErrorHumanize.mjs';
+import { MAXFORAI_IMAGE_MODELS, MAXFORAI_SUPPORTED_ASPECT_RATIOS } from '../src/utils/maxforaiImageModels.mjs';
 
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',
@@ -101,6 +102,18 @@ const AGENT_MODEL_CATALOG = {
       supportedSizes: ['auto', '1:1', '3:4', '4:3', '4:5', '9:16', '16:9'],
       supportsTransparentBackground: false,
     },
+    ...MAXFORAI_IMAGE_MODELS.map(({ id, label }) => ({
+      id,
+      label,
+      provider: 'maxforai',
+      supportsMultiImageInput: true,
+      supportsImageEdit: true,
+      maxInputImages: 16,
+      defaultSize: 'auto',
+      defaultResolution: '1K',
+      supportedSizes: [...MAXFORAI_SUPPORTED_ASPECT_RATIOS],
+      supportsTransparentBackground: false,
+    })),
     {
       id: 'nano-banana-2',
       label: 'Nano Banana 2',
@@ -628,6 +641,9 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       },
       apiports: {
         configured: Boolean(env.APIPORTS_API_KEY || env.MEIAO_APIPORTS_API_KEY),
+      },
+      maxforai: {
+        configured: Boolean(env.MAXFORAI_API_KEY),
       },
     },
     systemSettings: {
