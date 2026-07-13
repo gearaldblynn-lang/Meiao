@@ -27,6 +27,7 @@ import {
   fetchInternalLogs,
   fetchInternalUsers,
   fetchUsageStats,
+  resolveTaskPlatformSubmission,
   updateInternalUser,
 } from '../../../services/internalApi';
 import { ACTION_LABELS, MODULE_LABELS, STATUS_LABELS } from '../../../services/loggingService';
@@ -158,6 +159,12 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   const [taskFilters, setTaskFilters] = useState({ status: 'all', module: 'all', userId: 'all', taskType: '', traceId: '' });
   const [taskTimeline, setTaskTimeline] = useState<{ jobId: string; attempts: TaskPlatformAttempt[]; events: TaskPlatformEvent[] } | null>(null);
   const [taskTimelineLoading, setTaskTimelineLoading] = useState(false);
+  const [selectedJob, setSelectedJob] = useState<TaskPlatformJob | null>(null);
+  const [submissionResolutionAction, setSubmissionResolutionAction] = useState<'bind' | 'release'>('release');
+  const [providerTaskId, setProviderTaskId] = useState('');
+  const [submissionReleaseConfirmed, setSubmissionReleaseConfirmed] = useState(false);
+  const [submissionResolutionLoading, setSubmissionResolutionLoading] = useState(false);
+  const [submissionResolutionError, setSubmissionResolutionError] = useState('');
 
   const [usageRows, setUsageRows] = useState<UsageRow[]>([]);
   const [usageLoading, setUsageLoading] = useState(false);
@@ -440,17 +447,27 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
       setTaskTotal(result.total);
       setTaskPage(result.page);
       setTaskQueried(true);
+      setSelectedJob((current) => current
+        ? result.jobs.find((job) => job.id === current.id) || null
+        : null);
       if (!taskTimeline || !result.jobs.some((job) => job.id === taskTimeline.jobId)) {
         setTaskTimeline(null);
       }
+      return result;
     } catch (err: any) {
       setError(err.message || '任务诊断读取失败');
+      return null;
     } finally {
       setTaskLoading(false);
     }
   };
 
   const openTaskTimeline = async (job: TaskPlatformJob) => {
+    setSelectedJob(job);
+    setSubmissionResolutionAction('release');
+    setProviderTaskId('');
+    setSubmissionReleaseConfirmed(false);
+    setSubmissionResolutionError('');
     setTaskTimelineLoading(true);
     setError('');
     try {
@@ -460,6 +477,35 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
       setError(err.message || '任务时间线读取失败');
     } finally {
       setTaskTimelineLoading(false);
+    }
+  };
+
+  const submitTaskSubmissionResolution = async () => {
+    if (!selectedJob) return;
+    const normalizedProviderTaskId = providerTaskId.trim();
+    if (submissionResolutionAction === 'bind'
+      && (!selectedJob.submissionResolution.canBind || !normalizedProviderTaskId)) return;
+    if (submissionResolutionAction === 'release' && !submissionReleaseConfirmed) return;
+
+    setSubmissionResolutionLoading(true);
+    setSubmissionResolutionError('');
+    try {
+      await resolveTaskPlatformSubmission(selectedJob.id, {
+        action: submissionResolutionAction,
+        ...(submissionResolutionAction === 'bind' ? { providerTaskId: normalizedProviderTaskId } : {}),
+      });
+      const resolvedJobId = selectedJob.id;
+      setSelectedJob(null);
+      setProviderTaskId('');
+      setSubmissionReleaseConfirmed(false);
+      setMessage(submissionResolutionAction === 'bind' ? '已绑定上游任务 ID' : '已释放积分预留');
+      const refreshedList = await queryTaskJobs(taskPage);
+      const refreshedJob = refreshedList?.jobs.find((job) => job.id === resolvedJobId);
+      if (refreshedJob) await openTaskTimeline(refreshedJob);
+    } catch (err: any) {
+      setSubmissionResolutionError(err.message || '任务处置失败');
+    } finally {
+      setSubmissionResolutionLoading(false);
     }
   };
 
@@ -920,6 +966,68 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                     <p className="font-semibold" style={{ color: 'var(--text-primary)' }}>Attempts</p>
                     <p className="mt-1">共 {taskTimeline.attempts.length} 次，当前任务 {taskTimeline.jobId}</p>
                   </div>
+                  {selectedJob?.errorCode === 'provider_submission_unknown'
+                    && selectedJob.submissionResolution.allowed && (
+                    <div className="rounded-2xl border p-3" style={{ background: 'var(--bg-base)', borderColor: 'var(--warning)' }}>
+                      <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>人工核实提交结果</p>
+                      <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>
+                        请先在 KIE 核实是否已生成上游任务，再选择处置方式。
+                      </p>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setSubmissionResolutionAction('release')}
+                          className={submissionResolutionAction === 'release' ? 'btn-primary px-3 py-2 text-[12px]' : 'btn-secondary px-3 py-2 text-[12px]'}
+                        >
+                          释放积分预留
+                        </button>
+                        {selectedJob.submissionResolution.canBind && (
+                          <button
+                            type="button"
+                            onClick={() => setSubmissionResolutionAction('bind')}
+                            className={submissionResolutionAction === 'bind' ? 'btn-primary px-3 py-2 text-[12px]' : 'btn-secondary px-3 py-2 text-[12px]'}
+                          >
+                            绑定上游任务
+                          </button>
+                        )}
+                      </div>
+                      {submissionResolutionAction === 'bind' ? (
+                        <label className="mt-3 block">
+                          <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>KIE providerTaskId</span>
+                          <input
+                            value={providerTaskId}
+                            onChange={(event) => setProviderTaskId(event.target.value)}
+                            placeholder="输入已核实的上游任务 ID"
+                            className="mt-1 h-10 w-full rounded-2xl border bg-transparent px-3 text-[12px] outline-none"
+                            style={{ background: 'var(--bg-input)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+                          />
+                        </label>
+                      ) : (
+                        <label className="mt-3 flex cursor-pointer items-start gap-2 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>
+                          <input
+                            type="checkbox"
+                            checked={submissionReleaseConfirmed}
+                            onChange={(event) => setSubmissionReleaseConfirmed(event.target.checked)}
+                            className="mt-1"
+                          />
+                          <span>已确认 KIE 无任务且未扣费</span>
+                        </label>
+                      )}
+                      {submissionResolutionError && (
+                        <p className="mt-2 text-[11px] leading-5" style={{ color: 'var(--error)' }}>{submissionResolutionError}</p>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => void submitTaskSubmissionResolution()}
+                        disabled={submissionResolutionLoading
+                          || (submissionResolutionAction === 'bind' && !providerTaskId.trim())
+                          || (submissionResolutionAction === 'release' && !submissionReleaseConfirmed)}
+                        className="btn-primary mt-3 w-full px-3 py-2 text-[12px]"
+                      >
+                        {submissionResolutionLoading ? '正在处置...' : '确认处置'}
+                      </button>
+                    </div>
+                  )}
                   {taskTimeline.events.map((event) => (
                     <div key={event.id} className="rounded-2xl border p-3" style={{ background: 'var(--bg-base)', borderColor: 'var(--border-subtle)' }}>
                       <div className="flex items-start justify-between gap-3">

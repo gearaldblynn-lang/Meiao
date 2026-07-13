@@ -26,3 +26,16 @@ test('shell account management exposes account credit controls and status', () =
   assert.match(source, /updateUser\(user, \{ creditLimitMode: mode as 'unlimited' \| 'limited' \}\)/);
   assert.match(source, /updateUser\(user, \{ creditBalance: Math\.max\(0, Number\(creditDrafts\[user\.id\] \?\? user\.creditBalance \?\? 0\)\) \}\)/);
 });
+
+test('shell account management safely resolves provider submission unknown jobs', () => {
+  assert.match(source, /provider_submission_unknown/);
+  assert.match(source, /selectedJob\?\.errorCode === 'provider_submission_unknown'\s*&& selectedJob\.submissionResolution\.allowed/);
+  assert.match(source, /submissionResolution\.canBind/);
+  assert.match(source, /已确认 KIE 无任务且未扣费/);
+  assert.match(source, /resolveTaskPlatformSubmission/);
+  assert.match(source, /providerTaskId\.trim\(\)/);
+  assert.match(source, /await queryTaskJobs\(taskPage\)/);
+  assert.match(source, /await openTaskTimeline\(refreshedJob\)/);
+  assert.match(source, /setSubmissionResolutionError\(err\.message/);
+  assert.doesNotMatch(source, /provider_submission_unknown[\s\S]{0,500}retryInternalJob/);
+});

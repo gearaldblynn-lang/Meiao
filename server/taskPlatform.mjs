@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
+import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
+
 const now = () => Date.now();
 
 const TASK_ENGINE_MODES = new Set(['mysql', 'dual', 'temporal']);
@@ -248,39 +250,50 @@ export const finishJobAttempt = async (pool, attemptId, fields = {}) => {
   );
 };
 
-const mapTaskPlatformJobRow = (row) => ({
-  id: row.id,
-  userId: row.user_id,
-  user: {
-    id: row.user_id,
-    username: row.username || '',
-    displayName: row.display_name || row.username || '',
-  },
-  module: row.module,
-  taskType: row.task_type,
-  provider: row.provider,
-  status: row.status,
-  providerTaskId: row.provider_task_id || '',
-  errorCode: row.error_code || '',
-  errorMessage: row.error_message || '',
-  retryCount: Number(row.retry_count || 0),
-  maxRetries: Number(row.max_retries || 0),
-  createdAt: Number(row.created_at || 0),
-  updatedAt: Number(row.updated_at || 0),
-  startedAt: row.started_at === null ? null : Number(row.started_at),
-  finishedAt: row.finished_at === null ? null : Number(row.finished_at),
-  attemptCount: Number(row.attempt_count || 0),
-  latestAttemptStatus: row.latest_attempt_status || '',
-  latestStage: row.latest_stage || '',
-  latestEventStatus: row.latest_event_status || '',
-  latestEventAt: row.latest_event_at === null || row.latest_event_at === undefined ? null : Number(row.latest_event_at),
-  providerSubmitted: Boolean(row.provider_submitted),
-  retryable: Boolean(row.retryable),
-  errorFingerprint: row.error_fingerprint || '',
-  workflowId: row.workflow_id || '',
-  runId: row.run_id || '',
-  traceId: row.trace_id || '',
-});
+const mapTaskPlatformJobRow = (row) => {
+  const submissionResolutionAllowed = row.status === 'failed'
+    && row.error_code === 'provider_submission_unknown';
+  return {
+    id: row.id,
+    userId: row.user_id,
+    user: {
+      id: row.user_id,
+      username: row.username || '',
+      displayName: row.display_name || row.username || '',
+    },
+    module: row.module,
+    taskType: row.task_type,
+    provider: row.provider,
+    status: row.status,
+    providerTaskId: row.provider_task_id || '',
+    errorCode: row.error_code || '',
+    errorMessage: row.error_message || '',
+    retryCount: Number(row.retry_count || 0),
+    maxRetries: Number(row.max_retries || 0),
+    createdAt: Number(row.created_at || 0),
+    updatedAt: Number(row.updated_at || 0),
+    startedAt: row.started_at === null ? null : Number(row.started_at),
+    finishedAt: row.finished_at === null ? null : Number(row.finished_at),
+    attemptCount: Number(row.attempt_count || 0),
+    latestAttemptStatus: row.latest_attempt_status || '',
+    latestStage: row.latest_stage || '',
+    latestEventStatus: row.latest_event_status || '',
+    latestEventAt: row.latest_event_at === null || row.latest_event_at === undefined ? null : Number(row.latest_event_at),
+    providerSubmitted: Boolean(row.provider_submitted),
+    retryable: Boolean(row.retryable),
+    errorFingerprint: row.error_fingerprint || '',
+    workflowId: row.workflow_id || '',
+    runId: row.run_id || '',
+    traceId: row.trace_id || '',
+    submissionResolution: {
+      allowed: submissionResolutionAllowed,
+      canBind: submissionResolutionAllowed && canRecoverProviderTaskById({
+        taskType: row.task_type,
+        providerTaskId: 'verified-provider-task',
+      }),
+    },
+  };
+};
 
 const normalizePageOptions = (filters = {}) => {
   const pageSize = Math.min(100, Math.max(1, toInt(filters.pageSize, 20)));

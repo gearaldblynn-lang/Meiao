@@ -255,6 +255,10 @@ export interface TaskPlatformJob {
   workflowId: string;
   runId: string;
   traceId: string;
+  submissionResolution: {
+    allowed: boolean;
+    canBind: boolean;
+  };
 }
 
 export interface TaskPlatformAttempt {
