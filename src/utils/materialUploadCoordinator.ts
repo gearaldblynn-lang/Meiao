@@ -16,8 +16,7 @@ export const createMaterialUploadCoordinator = (): MaterialUploadCoordinator => 
       const existing = inFlight.get(normalizedKey);
       if (existing) return existing;
 
-      let request: Promise<string>;
-      request = Promise.resolve()
+      const request = Promise.resolve()
         .then(upload)
         .then((url) => {
           if (url) completed.set(normalizedKey, url);

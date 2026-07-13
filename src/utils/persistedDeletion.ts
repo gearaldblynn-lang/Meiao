@@ -339,7 +339,7 @@ const pruneLegacyPollutedTranslationBranch = (branch: any) => {
 export const pruneKnownLegacyGarbageFromPersistedState = (state: PersistedAppState): PersistedAppState => ({
   ...state,
   shellProjects: Array.isArray(state.shellProjects)
-    ? state.shellProjects.filter((project: any) => !hasLegacyPollutedTranslationMarker(project))
+    ? state.shellProjects.filter((project) => !hasLegacyPollutedTranslationMarker(project))
     : [],
   translationMemory: {
     ...state.translationMemory,

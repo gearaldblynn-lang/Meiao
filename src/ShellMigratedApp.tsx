@@ -307,7 +307,7 @@ const hasStoryboardJobIdentity = (project: VideoStoryboardProject) => {
   );
 };
 
-const shouldGuardGenerationSubmit = (module: AppModule, _subFeature?: string) => (
+const shouldGuardGenerationSubmit = (module: AppModule) => (
   module === AppModuleObj.ONE_CLICK
   || module === AppModuleObj.TRANSLATION
   || module === AppModuleObj.BUYER_SHOW
@@ -3560,7 +3560,7 @@ const AppContent: React.FC<{
   const handleGenerate = useCallback(async () => {
     const targetModule = activeModule;
     const targetSubFeature = activeSubFeature;
-    const guardedSubmitLockKey = shouldGuardGenerationSubmit(targetModule, targetSubFeature)
+    const guardedSubmitLockKey = shouldGuardGenerationSubmit(targetModule)
       ? buildGenerationSubmissionKey({
           module: targetModule,
           subFeature: targetSubFeature,
@@ -8327,7 +8327,7 @@ const AppContent: React.FC<{
 	    params: currentParams,
 	    materials: filteredMaterials,
 	  });
-	  const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit(activeModule, activeSubFeature)
+	  const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit(activeModule)
 	    && Boolean(generationSubmitLocks[currentGenerationSubmitLockKey]);
 
 	  const activeModuleView = (() => {
