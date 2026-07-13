@@ -62,8 +62,7 @@ const buildKieTaskSuccessResult = (taskId, result, { isVideo = false, model = ''
     providerStage: 'completed',
     providerStatus: 'success',
     result: {
-      imageUrl: url,
-      videoUrl: isVideo ? url : undefined,
+      ...(isVideo ? { videoUrl: url } : { imageUrl: url }),
       taskId,
       status: 'success',
       providerTaskId: taskId,

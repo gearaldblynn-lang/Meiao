@@ -41,6 +41,24 @@ test('probeKieTaskOnce reads a submitted task once and preserves providerTaskId'
   assert.equal(result.result.providerModel, 'nano-banana-2');
 });
 
+test('probeKieTaskOnce returns an exclusive videoUrl for completed video tasks', async () => {
+  const result = await probeKieTaskOnce('kie-video-task', {
+    kieApiKey: 'test-key',
+    isVideo: true,
+    fetchWithTimeout: async () => createJsonResponse({
+      code: 200,
+      data: {
+        state: 'success',
+        resultJson: JSON.stringify({ resultUrls: ['https://cdn.test/video.mp4'] }),
+        model: 'bytedance/seedance-2-fast',
+      },
+    }),
+  });
+
+  assert.equal(result.result.videoUrl, 'https://cdn.test/video.mp4');
+  assert.equal(Object.hasOwn(result.result, 'imageUrl'), false);
+});
+
 test('probeKieTaskOnce returns pending state without long polling', async () => {
   let calls = 0;
   const result = await probeKieTaskOnce('kie-task-pending', {

@@ -965,6 +965,302 @@ test('shell data adapter backfills storyboard planning ids from completed KIE ch
   assert.equal(project?.results.length, 1);
 });
 
+test('shell data adapter restores a scripting storyboard from a stable completed planning job', () => {
+  const projectId = 'storyboard-stable-project';
+  const config = {
+    duration: '15s',
+    shotCount: 2,
+    aspectRatio: '9:16',
+    actorType: 'no_real_face',
+    countryLanguage: '中国/中文',
+    productInfo: '保湿喷雾',
+    scenes: ['明亮桌面'],
+    videoGenerationMode: 'original',
+  };
+  const planningContent = JSON.stringify([{
+    title: '分段一',
+    panelCount: 2,
+    storyboardPrompt: '人物细节：仅手部出镜\n环境/场景：明亮桌面\n分镜一：拿起商品\n分镜二：展示喷雾',
+    dynamicScriptPrompt: '分镜一：00:00 - 00:07\n画面描述(视觉)：拿起商品\n口播（自然）："先看保湿效果"\n音效：轻快音乐\n分镜二：00:07 - 00:15\n画面描述(视觉)：展示喷雾\n口播（自然）："随时补水"\n音效：喷雾声',
+  }]);
+  const state = {
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: projectId,
+          name: '稳定分镜',
+          config,
+          status: 'scripting',
+          script: '正在生成分镜脚本...',
+          shots: [],
+          boards: [],
+          createdAt: 1783600000000,
+        }],
+      },
+    },
+  };
+  const jobs = [{
+    id: 'storyboard-planning-job',
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    providerTaskId: 'storyboard-planning-provider',
+    status: 'succeeded',
+    payload: {
+      subFeature: 'storyboard',
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_planning',
+      phase: 'planning',
+      storyboardConfig: config,
+    },
+    result: { content: planningContent, creditsConsumed: 0.2 },
+    createdAt: 1783600000100,
+    updatedAt: 1783600000200,
+  }];
+
+  const first = buildShellDataSnapshot(state, jobs);
+  const second = buildShellDataSnapshot(state, jobs);
+  const project = first.projects.find((item) => item.id === projectId);
+
+  assert.equal(project?.storyboardSourceProject?.status, 'awaiting_image_confirmation');
+  assert.equal(project?.storyboardSourceProject?.script.includes('分段一'), true);
+  assert.equal(project?.storyboardSourceProject?.shots.length, 2);
+  assert.equal(project?.storyboardSourceProject?.boards.length, 1);
+  assert.equal(project?.storyboardSourceProject?.planningJobId, 'storyboard-planning-job');
+  assert.equal(project?.planningTaskId, 'storyboard-planning-provider');
+  assert.equal(project?.backendJobId, 'storyboard-planning-job');
+  assert.equal(
+    project?.storyboardSourceProject?.boards[0].id,
+    second.projects.find((item) => item.id === projectId)?.storyboardSourceProject?.boards[0].id,
+  );
+});
+
+test('shell data adapter restores board backend identity as the active cancel target', () => {
+  const projectId = 'storyboard-board-project';
+  const state = {
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: projectId,
+          name: '分镜板恢复',
+          config: { duration: '15s', shotCount: 1, aspectRatio: '9:16', videoGenerationMode: 'original' },
+          status: 'imaging',
+          script: '分镜脚本',
+          shots: [{ id: 'shot-1', description: '商品特写', scriptContent: '脚本', prompt: '商品特写' }],
+          boards: [{ id: 'board-1', title: '分段一', shotIds: ['shot-1'], scriptText: '脚本', prompt: '分镜图', status: 'pending' }],
+          createdAt: 1783600000000,
+        }],
+      },
+    },
+  };
+  const snapshot = buildShellDataSnapshot(state, [{
+    id: 'storyboard-board-job',
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: 'storyboard-board-provider',
+    status: 'running',
+    payload: {
+      subFeature: 'storyboard',
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_board_image',
+      phase: 'confirm',
+      boardId: 'board-1',
+    },
+    result: null,
+    createdAt: 1783600000100,
+    updatedAt: 1783600000200,
+  }]);
+  const project = snapshot.projects.find((item) => item.id === projectId);
+
+  assert.equal(project?.storyboardSourceProject?.boards[0].status, 'generating');
+  assert.equal(project?.storyboardSourceProject?.boards[0].backendJobId, 'storyboard-board-job');
+  assert.equal(project?.results[0].backendJobId, 'storyboard-board-job');
+  assert.equal(project?.results[0].taskId, 'storyboard-board-provider');
+  assert.equal(snapshot.tasks.find((item) => item.backendJobId === 'storyboard-board-job')?.projectId, projectId);
+});
+
+test('storyboard hydration selects the newest same-board job without losing local edits', () => {
+  const projectId = 'storyboard-multi-job-project';
+  const localVersions = [
+    { id: 'local-v1', imageUrl: '/local-v1.png', createdAt: 1 },
+    { id: 'local-v2', imageUrl: '/local-v2.png', createdAt: 2 },
+  ];
+  const state = {
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: projectId,
+          name: '多任务分镜恢复',
+          config: { duration: '15s', shotCount: 2, aspectRatio: '9:16', videoGenerationMode: 'original' },
+          status: 'imaging',
+          script: '用户脚本',
+          shots: [
+            { id: 'shot-1', prompt: '镜头一' },
+            { id: 'shot-2', prompt: '镜头二' },
+          ],
+          boards: [{
+            id: 'board-1',
+            status: 'pending',
+            prompt: '用户修改后的 board prompt',
+            imageUrl: '/local-v2.png',
+            imageVersions: localVersions,
+            backendJobId: 'storyboard-board-job-old',
+            taskId: 'storyboard-provider-old',
+          }, {
+            id: 'board-2',
+            status: 'pending',
+            prompt: '下一块分镜',
+          }],
+          createdAt: 1783600000000,
+        }],
+      },
+    },
+  };
+  const newestRunningJob = {
+    id: 'storyboard-board-job-new',
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: 'storyboard-provider-new',
+    status: 'running',
+    payload: {
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_board_image',
+      phase: 'regenerate',
+      boardId: 'board-1',
+    },
+    result: null,
+    createdAt: 1783600000300,
+    updatedAt: 1783600000400,
+  };
+  const olderCompletedJob = {
+    id: 'storyboard-board-job-old',
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: 'storyboard-provider-old',
+    status: 'succeeded',
+    payload: {
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_board_image',
+      phase: 'confirm',
+      boardId: 'board-1',
+    },
+    result: { imageUrl: '/provider-old.png' },
+    createdAt: 1783600000100,
+    updatedAt: 1783600000200,
+  };
+
+  const project = buildShellDataSnapshot(state, [newestRunningJob, olderCompletedJob])
+    .projects.find((item) => item.id === projectId)
+    ?.storyboardSourceProject;
+
+  assert.equal(project?.status, 'imaging');
+  assert.equal(project?.boards[0]?.status, 'generating');
+  assert.equal(project?.boards[0]?.backendJobId, 'storyboard-board-job-new');
+  assert.equal(project?.boards[0]?.taskId, 'storyboard-provider-new');
+  assert.equal(project?.boards[0]?.imageUrl, '/local-v2.png');
+  assert.equal(project?.boards[0]?.prompt, '用户修改后的 board prompt');
+  assert.deepEqual(project?.boards[0]?.imageVersions, localVersions);
+  assert.equal(project?.boards[1]?.status, 'pending');
+});
+
+test('storyboard job hydration preserves newer edited board state and image history', () => {
+  const projectId = 'storyboard-edited-project';
+  const config = {
+    duration: '15s',
+    shotCount: 1,
+    aspectRatio: '9:16',
+    actorType: 'no_real_face',
+    countryLanguage: '中国/中文',
+    productInfo: '保湿喷雾',
+    scenes: ['明亮桌面'],
+    videoGenerationMode: 'original',
+  };
+  const planningContent = JSON.stringify([{
+    title: '分段一',
+    panelCount: 1,
+    storyboardPrompt: '分镜一：历史策划内容',
+    dynamicScriptPrompt: '分镜一：00:00 - 00:15\n画面描述(视觉)：历史策划内容',
+  }]);
+  const planningJob = {
+    id: 'storyboard-planning-job',
+    module: 'video',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    payload: {
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_planning',
+      storyboardConfig: config,
+    },
+    result: { content: planningContent },
+    createdAt: 1783600000100,
+  };
+  const recovered = buildShellDataSnapshot({
+    videoMemory: {
+      storyboard: {
+        projects: [{
+          id: projectId,
+          name: '已编辑分镜',
+          config,
+          status: 'scripting',
+          script: '',
+          shots: [],
+          boards: [],
+          createdAt: 1783600000000,
+        }],
+      },
+    },
+  }, [planningJob]).projects.find((item) => item.id === projectId)?.storyboardSourceProject;
+  assert.ok(recovered);
+  const editedProject = {
+    ...recovered,
+    status: 'completed',
+    script: '用户确认后的脚本',
+    shots: recovered.shots.map((shot) => ({ ...shot, description: '用户修改镜头', scriptContent: '用户脚本', prompt: '用户镜头 prompt' })),
+    boards: recovered.boards.map((board) => ({
+      ...board,
+      scriptText: '用户脚本',
+      prompt: '用户修改后的 prompt',
+      status: 'completed',
+      imageUrl: '/final-edited.png',
+      backendJobId: 'storyboard-edit-job',
+      imageVersions: [
+        { id: 'v1', imageUrl: '/original.png', createdAt: 1 },
+        { id: 'v2', imageUrl: '/final-edited.png', createdAt: 2 },
+      ],
+    })),
+  };
+  const state = { videoMemory: { storyboard: { projects: [editedProject] } } };
+  const jobs = [planningJob, {
+    id: 'storyboard-original-board-job',
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    payload: {
+      shellProjectId: projectId,
+      planningPurpose: 'storyboard_board_image',
+      boardId: editedProject.boards[0].id,
+    },
+    result: { imageUrl: '/provider-original.png' },
+    createdAt: 1783600000200,
+  }];
+
+  const project = buildShellDataSnapshot(state, jobs)
+    .projects.find((item) => item.id === projectId)
+    ?.storyboardSourceProject;
+
+  assert.equal(project?.status, 'completed');
+  assert.equal(project?.script, '用户确认后的脚本');
+  assert.equal(project?.shots[0]?.prompt, '用户镜头 prompt');
+  assert.equal(project?.boards[0]?.prompt, '用户修改后的 prompt');
+  assert.equal(project?.boards[0]?.imageUrl, '/final-edited.png');
+  assert.equal(project?.boards[0]?.imageVersions?.length, 2);
+});
+
 test('shell data adapter drops idle persisted items that have no result, error, running state, or plans', () => {
   const snapshot = buildShellDataSnapshot({
     translationMemory: {

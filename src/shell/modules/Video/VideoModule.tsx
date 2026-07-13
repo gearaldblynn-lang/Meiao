@@ -4,6 +4,7 @@ import ProjectListView from '../../components/ProjectListView';
 import type { GeneratedResult, Project, SubFeatureOption, Task } from '../../../ShellMigratedApp';
 import type { VideoPersistentState, VideoStoryboardProject } from '../../../types';
 import { buildDiagnosisReportText, hasDiagnosisReportContent } from '../../../modules/Video/videoDiagnosisUtils.mjs';
+import { toStoryboardShellResultStatus } from './storyboardGenerationState.mjs';
 
 interface Props {
   projects: Project[];
@@ -42,8 +43,14 @@ const getStoryboardImageVersions = (board: VideoStoryboardProject['boards'][numb
 };
 
 const toStoryboardCards = (items: VideoStoryboardProject[]): Project[] => items.map((project) => {
+  const durableProject = project as VideoStoryboardProject & {
+    planningJobId?: string;
+    backendJobId?: string;
+    boards: Array<VideoStoryboardProject['boards'][number] & { backendJobId?: string }>;
+  };
   const boards = project.boards;
   const results: GeneratedResult[] = boards.map((board, index) => {
+    const durableBoard = board as typeof board & { backendJobId?: string };
     const storyboardImageVersions = getStoryboardImageVersions(board);
     return {
       id: board.id,
@@ -51,12 +58,13 @@ const toStoryboardCards = (items: VideoStoryboardProject[]): Project[] => items.
       prompt: board.prompt || storyboardImageVersions[storyboardImageVersions.length - 1]?.prompt || board.scriptText || project.script,
       model: project.config.model,
       aspectRatio: project.config.aspectRatio,
-      status: board.status === 'failed' ? 'error' : board.status === 'generating' ? 'generating' : 'completed',
+      status: toStoryboardShellResultStatus(board),
       createdAt: project.createdAt,
       module: 'video' as Project['module'],
       subFeature: 'storyboard',
       error: board.error,
       taskId: board.taskId,
+      backendJobId: durableBoard.backendJobId,
       creditsConsumed: board.creditsConsumed,
       dynamicScriptPrompt: board.dynamicScriptPrompt || board.scriptText,
       storyboardBoardTitle: board.title,
@@ -87,6 +95,9 @@ const toStoryboardCards = (items: VideoStoryboardProject[]): Project[] => items.
     subFeature: 'storyboard',
     storyboardProjectStatus: project.status,
     planningTaskId: project.planningTaskId,
+    backendJobId: [...durableProject.boards].reverse().find((board) => board.status === 'generating' && board.backendJobId)?.backendJobId
+      || durableProject.backendJobId
+      || durableProject.planningJobId,
     creditsConsumed: project.creditsConsumed,
     error: project.error,
     storyboardSourceProject: project,

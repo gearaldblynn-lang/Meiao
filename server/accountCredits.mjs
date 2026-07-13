@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
+import { isRetryableErrorCode } from './jobRuntime.mjs';
+
 export const CREDIT_LIMIT_MODES = {
   UNLIMITED: 'unlimited',
   LIMITED: 'limited',
@@ -165,6 +167,49 @@ const hasProcessedLocalReservation = (store, reservation) => {
     String(entry?.reservationId || entry?.id || '').trim() === reservationId
     && ['settle', 'release'].includes(String(entry?.action || ''))
   ));
+};
+
+export const getLocalCreditReservationState = (store, reservation) => {
+  const reservationId = String(reservation?.id || '').trim();
+  if (!reservationId) return 'none';
+  return hasProcessedLocalReservation(store, reservation) ? 'processed' : 'pending';
+};
+
+export const shouldReleaseJobCreditReservation = ({
+  job,
+  error,
+  retryWaiting = false,
+  aborted = false,
+} = {}) => {
+  if (retryWaiting) return false;
+  const errorCode = String(error?.code || job?.errorCode || '').trim();
+  if (errorCode === 'provider_submission_unknown') return false;
+  const providerTaskId = String(error?.providerTaskId || job?.providerTaskId || '').trim();
+  if (
+    providerTaskId
+    && (aborted || errorCode === 'request_cancelled' || isRetryableErrorCode(errorCode))
+  ) {
+    return false;
+  }
+  return true;
+};
+
+export const getJobCreditRetryReservationAction = ({
+  job,
+  reservationProcessed = false,
+  providerTaskRecoverable = true,
+} = {}) => {
+  const reservation = getCreditReservationFromJob(job);
+  if (!reservation || reservationProcessed) return 'reserve';
+  if (!String(job?.providerTaskId || '').trim()) return 'block';
+  if (!providerTaskRecoverable) return 'block';
+  const errorCode = String(job?.errorCode || '').trim();
+  const hasDefinitiveProviderFailure = Boolean(
+    errorCode
+    && errorCode !== 'request_cancelled'
+    && !isRetryableErrorCode(errorCode)
+  );
+  return hasDefinitiveProviderFailure ? 'block' : 'reuse';
 };
 
 export const reserveLocalAccountCredits = (store, userId, context = {}) => {

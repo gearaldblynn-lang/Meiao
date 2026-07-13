@@ -19,6 +19,7 @@ const TRANSFER_STAGE_CODES = new Set([
 ]);
 
 const CODE_MESSAGES = {
+  provider_submission_unknown: '提交结果暂时无法确认。为防止重复扣费，系统未自动重试，请先在任务列表确认是否已有结果。',
   provider_network_error: '服务器到生成服务的网络暂时不稳，已自动重试仍未成功，请稍后重试',
   provider_timeout: '生成服务响应超时，请稍后重试',
   provider_internal_error: '生成服务暂时异常，请稍后重试',
