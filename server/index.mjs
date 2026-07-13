@@ -131,6 +131,7 @@ import {
   markStoredAssetAccessed,
   markStoredAssetDeleted,
   persistAssetBuffer,
+  persistInlineImageResult,
   persistRemoteAsset,
   resolveStoredAssetPath,
   selectExpiredAssetsForCleanup,
@@ -3736,12 +3737,39 @@ const buildTransformedImageOutputName = (fallbackName = 'result.png') => {
 
 const persistJobOutputAssetsIfEnabled = async (job, output) => {
   const publicBaseUrl = getPersistentAssetBaseUrl();
-  if (!publicBaseUrl || !output?.result || !job?.userId) {
+  if (!output?.result || !job?.userId) {
     return output;
   }
 
   const pool = shouldUseMysql ? await getMysqlPool() : null;
-  const result = { ...(output.result || {}) };
+  let result = { ...(output.result || {}) };
+  const hasInlineImageResult = /^data:image\//i.test(String(result.imageUrl || '').trim());
+  if (hasInlineImageResult && !publicBaseUrl) {
+    const error = new Error('图片已生成，但当前服务无法安全保存内联图片结果');
+    error.code = 'provider_bad_response';
+    error.providerMessage = error.message;
+    error.providerStage = 'provider_response';
+    error.providerStatus = 'failed';
+    throw error;
+  }
+  if (hasInlineImageResult) {
+    result = await persistInlineImageResult({
+      result,
+      persistOptions: {
+        pool,
+        publicBaseUrl,
+        userId: job.userId,
+        module: job.module,
+        assetType: 'result',
+        originalName: `${job.taskType || 'result'}.png`,
+        provider: job.provider,
+        jobId: job.id,
+      },
+    });
+  }
+  if (!publicBaseUrl) {
+    return { ...output, result };
+  }
   const imageTransform = buildImageOutputTransformFromJob(job);
   const persistRemoteField = async (fieldName, assetType, fallbackName) => {
     const sourceUrl = result[fieldName];

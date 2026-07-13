@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readResponseBodyWithTimeout } from './providerBodyRead.mjs';
+import { inferExtensionFromMimeType, parseDataUrlPayload } from './providerAssetTransfer.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -539,6 +540,57 @@ export const persistAssetBuffer = async ({
 
   await createAssetRecord(pool, record);
   return record;
+};
+
+const createInlineImageResultError = () => {
+  const error = new Error('图片生成服务返回了无法安全保存的内联图片');
+  error.code = 'provider_bad_response';
+  error.providerMessage = error.message;
+  error.providerStage = 'provider_response';
+  error.providerStatus = 'failed';
+  return error;
+};
+
+const buildInlineImageAssetName = (originalName, mimeType) => {
+  const fallback = String(originalName || 'result.png').trim() || 'result.png';
+  const currentExtension = path.extname(fallback);
+  const extension = `.${inferExtensionFromMimeType(mimeType)}`;
+  return currentExtension
+    ? `${fallback.slice(0, -currentExtension.length)}${extension}`
+    : `${fallback}${extension}`;
+};
+
+export const persistInlineImageResult = async ({
+  result = {},
+  persistAsset = persistAssetBuffer,
+  persistOptions = {},
+} = {}) => {
+  const nextResult = { ...(result || {}) };
+  const imageUrl = String(nextResult.imageUrl || '').trim();
+  if (!/^data:image\//i.test(imageUrl)) return nextResult;
+
+  const parsed = parseDataUrlPayload(imageUrl);
+  if (!parsed?.mimeType?.toLowerCase().startsWith('image/') || !parsed.base64Data) {
+    throw createInlineImageResultError();
+  }
+  const fileBuffer = Buffer.from(parsed.base64Data, 'base64');
+  if (fileBuffer.length === 0 || typeof persistAsset !== 'function') {
+    throw createInlineImageResultError();
+  }
+
+  const persisted = await persistAsset({
+    ...persistOptions,
+    originalName: buildInlineImageAssetName(persistOptions.originalName, parsed.mimeType),
+    mimeType: parsed.mimeType,
+    fileBuffer,
+    providerSourceUrl: '',
+  });
+  const publicUrl = String(persisted?.publicUrl || '').trim();
+  if (!publicUrl) throw createInlineImageResultError();
+
+  nextResult.imageUrl = publicUrl;
+  nextResult.imageUrlAssetId = String(persisted?.id || '').trim();
+  return nextResult;
 };
 
 export const persistRemoteAsset = async ({

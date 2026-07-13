@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
+import * as assetStore from './assetStore.mjs';
+
+const {
   ASSET_RETENTION_MS,
   buildAssetPublicPath,
   buildAssetPublicUrl,
@@ -16,7 +18,71 @@ import {
   shouldRetainAssetRecord,
   selectExpiredAssetsForCleanup,
   collectStoredAssetIdsFromValue,
-} from './assetStore.mjs';
+} = assetStore;
+
+test('inline image result is decoded and replaced by a managed asset URL', async () => {
+  assert.equal(typeof assetStore.persistInlineImageResult, 'function');
+  const calls = [];
+  const result = await assetStore.persistInlineImageResult({
+    result: {
+      imageUrl: 'data:image/png;base64,aGVsbG8=',
+      providerResponseFormat: 'b64_json',
+    },
+    persistAsset: async (options) => {
+      calls.push(options);
+      return {
+        id: 'asset-1',
+        publicUrl: '/api/assets/file/asset-1/result.png',
+      };
+    },
+    persistOptions: {
+      publicBaseUrl: 'https://meiao.test',
+      userId: 'user-1',
+      originalName: 'result.png',
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].mimeType, 'image/png');
+  assert.equal(calls[0].fileBuffer.toString('utf8'), 'hello');
+  assert.equal(result.imageUrl, '/api/assets/file/asset-1/result.png');
+  assert.equal(result.imageUrlAssetId, 'asset-1');
+  assert.equal(result.providerResponseFormat, 'b64_json');
+  assert.doesNotMatch(JSON.stringify(result), /aGVsbG8=/);
+});
+
+test('remote image result bypasses inline persistence unchanged', async () => {
+  let calls = 0;
+  const original = {
+    imageUrl: 'https://cdn.test/result.png',
+    providerResponseFormat: 'url',
+  };
+  const result = await assetStore.persistInlineImageResult({
+    result: original,
+    persistAsset: async () => {
+      calls += 1;
+      return {};
+    },
+  });
+
+  assert.equal(calls, 0);
+  assert.deepEqual(result, original);
+  assert.notEqual(result, original);
+});
+
+test('malformed inline image result fails without persisting raw data', async () => {
+  await assert.rejects(
+    () => assetStore.persistInlineImageResult({
+      result: { imageUrl: 'data:image/png;base64,not-valid!' },
+      persistAsset: async () => {
+        throw new Error('must not persist');
+      },
+    }),
+    (error) => error?.code === 'provider_bad_response'
+      && error?.providerStage === 'provider_response'
+      && !/not-valid/.test(error?.message || ''),
+  );
+});
 
 test('fetchRemoteAssetBufferWithRetry retries a terminated response body read', async () => {
   let calls = 0;
