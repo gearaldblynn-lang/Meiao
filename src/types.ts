@@ -162,6 +162,19 @@ export type GenerationQuality = '1k' | '2k' | '4k';
 export type StyleStrength = 'low' | 'medium' | 'high';
 export type KieAiModel = 'nano-banana-2' | 'gpt-image-2' | 'gpt-image-2-secondary';
 
+export interface JobContext {
+  taskPurpose?: string;
+  shellProjectId?: string;
+  shellProjectName?: string;
+  shellPlanId?: string;
+  shellBoardId?: string;
+  shellPurpose?: string;
+  subFeature?: string;
+  traceId?: string;
+}
+
+export type InternalJobPayload = Record<string, unknown> & JobContext;
+
 export interface GlobalApiConfig {
   kieApiKey: string;
   concurrency: number;

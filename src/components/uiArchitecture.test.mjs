@@ -4,6 +4,13 @@ import { existsSync, readFileSync } from 'node:fs';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
+test('shared job payload metadata remains open to existing provider fields', () => {
+  const types = read('../types.ts');
+
+  assert.match(types, /export type InternalJobPayload = Record<string, unknown> & JobContext;/);
+  assert.match(types, /export interface InternalJob \{[\s\S]*?payload: Record<string, unknown>;/);
+});
+
 test('translation module keeps submode switching in the sidebar instead of the workspace header', () => {
   const translationModule = read('../modules/Translation/TranslationModule.tsx');
   const settingsSidebar = read('../components/SettingsSidebar.tsx');
