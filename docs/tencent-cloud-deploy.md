@@ -174,7 +174,9 @@ MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh
 
 部署脚本为零断档设计(2026-07-07 起):`npm install`/`build` 期间旧 `dist` 一直原样服务,新产物先构建到 `dist-next`,旧的 hash chunk 按修改时间保留(供部署前已打开的旧标签页懒加载),最后原子换名切换,前端静态文件没有中断窗口。
 
-部署脚本会在上传代码前、远端构建后检查 `internal_jobs.status='running'`，并在最终切换时进入 drain：先创建服务端可见 marker，再对 `internal_jobs` 取得 `WRITE` 表锁并在持锁连接上复查零运行任务。表锁保证尚不认识 marker 的旧版本也不能在检查后继续创建或认领任务；旧 PM2 进程停止后释放表锁，新版本继续依靠 marker 拒绝提交并暂停 worker，直到 `/api/health` 同时确认 HTTP 与 worker 健康后才解除。任一步失败都会通过 trap 释放锁并清理 marker；陈旧 marker 默认 10 分钟失效。紧急情况下只能显式设置 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 覆盖；该开关可能中断任务并造成待人工恢复，不应写入 `.env.server` 或作为日常发布参数。
+部署脚本会在上传代码前、远端构建后检查 `internal_jobs.status='running'`，并在最终切换时进入首发兼容 drain：先用带唯一 comment 的临时 iptables 规则拒绝新的 Nginx 回源和公网直连 3100 连接，等已有 3100 连接连续为零；再创建 marker，对 `internal_jobs` 取得 `WRITE` 表锁，持锁连接复查零运行任务、停止旧 PM2、验证停机与 MySQL 会话仍存活后才回写 stopped ack。这会同时排空旧版本的 job 和不落 job 的同步 provider 请求，不修改 Nginx 配置。
+
+新进程启动后才删除精确 iptables 规则供 health/静态流量使用；marker 仍拒绝 API 写请求并暂停 worker，直到 `/api/health` 同时确认 HTTP 与 worker 健康。health 失败时 trap 会先再次封网并停止新 PM2，只有验证进程已停才清理 marker；停机或网络规则清理无法确认时保留门禁并要求人工处理。紧急情况下只能显式设置 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 覆盖；该开关可能中断任务，不应写入 `.env.server` 或作为日常发布参数。
 
 `MEIAO_OLD_ASSET_RETENTION_DAYS`(部署时本地环境变量,默认 `30`)控制旧 hash chunk 的保留天数,超期文件在合并前清掉,防止 `dist/assets` 无限膨胀。前端每 5 分钟和回到前台时会比对 `version.json` 的构建号,发现新版本且无进行中任务时自动软刷新;有任务时只提示不打断。
 

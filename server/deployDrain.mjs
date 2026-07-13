@@ -36,3 +36,13 @@ export const createDeployDrainError = () => {
 export const assertJobSubmissionAllowed = (options) => {
   if (isDeployDrainActive(options)) throw createDeployDrainError();
 };
+
+export const shouldGuardDeployRequest = ({ pathname = '', method = '' } = {}) => (
+  String(pathname).startsWith('/api/')
+  && !['GET', 'HEAD', 'OPTIONS'].includes(String(method).toUpperCase())
+);
+
+export const assertDeployRequestAllowed = ({ pathname, method, drainOptions } = {}) => {
+  if (!shouldGuardDeployRequest({ pathname, method })) return;
+  assertJobSubmissionAllowed(drainOptions);
+};

@@ -41,6 +41,7 @@ import {
   prunePersistedAppStateForDeletion,
 } from './utils/persistedDeletion';
 import { collectShellDeletionJobIds, collectShellResultDeletionJobIds } from './utils/shellDeletionJobs';
+import { resolveDeletionOutcome, startDeletionOperations } from './utils/deletionOperations';
 import { playCompletionSound, primeCompletionSound } from './utils/soundUtils';
 import type { SystemPublicConfig } from './types';
 import { mergeShellRuntimeEntities } from './adapters/shellRuntimeMerge';
@@ -6162,17 +6163,19 @@ const AppContent: React.FC<{
         && t.projectId !== projectId
         && !resultJobIds.includes(t.backendJobId || '')
         && !resultJobIds.includes(t.id)));
-      const remoteDeletion = Promise.allSettled(resultJobIds.map((jobId) => deleteInternalJob(jobId)));
-      const tombstonePersistence = persistDeletionToSharedState({ projectId, resultId, jobIds: resultJobIds });
-      void Promise.all([remoteDeletion, tombstonePersistence])
+      void startDeletionOperations({
+        jobIds: resultJobIds,
+        deleteJob: deleteInternalJob,
+        persistTombstone: () => persistDeletionToSharedState({ projectId, resultId, jobIds: resultJobIds }),
+      })
         .then(([results, synced]) => {
-          const deletedRemote = results.every((deletionResult) => deletionResult.status === 'fulfilled');
-          addToast(
-            synced
-              ? (deletedRemote ? '历史任务已删除' : '历史任务已隐藏，远端任务删除未完全成功')
-              : '已删除当前任务，但远端历史同步失败',
-            synced && deletedRemote ? 'info' : 'warning',
-          );
+          const outcome = resolveDeletionOutcome({
+            scope: 'result',
+            tombstoneSynced: synced,
+            deletionResults: results,
+            hasPhysicalTargets: resultJobIds.length > 0,
+          });
+          addToast(outcome.message, outcome.tone);
         });
       return;
     }
@@ -6280,19 +6283,19 @@ const AppContent: React.FC<{
       && !jobIds.includes(task.backendJobId || '')
     )));
 
-    const remoteDeletion = Promise.allSettled(jobIds.map((jobId) => deleteInternalJob(jobId)));
-    const tombstonePersistence = persistDeletionToSharedState({ projectId, jobIds });
-    void Promise.all([remoteDeletion, tombstonePersistence])
+    void startDeletionOperations({
+      jobIds,
+      deleteJob: deleteInternalJob,
+      persistTombstone: () => persistDeletionToSharedState({ projectId, jobIds }),
+    })
       .then(([results, synced]) => {
-        const deletedRemote = results.every((result) => result.status === 'fulfilled');
-        addToast(
-          synced
-            ? (deletedRemote
-              ? (jobIds.length > 0 ? '历史任务已删除' : '项目已删除')
-              : '历史任务已隐藏，远端任务删除未完全成功')
-            : '已删除当前项目，但远端历史同步失败',
-          synced && deletedRemote ? 'info' : 'warning',
-        );
+        const outcome = resolveDeletionOutcome({
+          scope: 'project',
+          tombstoneSynced: synced,
+          deletionResults: results,
+          hasPhysicalTargets: jobIds.length > 0,
+        });
+        addToast(outcome.message, outcome.tone);
       });
   }, [projects, tasks, videoMemory, addToast, persistDeletionToSharedState, deleteImageCropAssets, setVideoMemory]);
 

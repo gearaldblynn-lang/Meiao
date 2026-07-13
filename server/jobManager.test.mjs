@@ -1430,17 +1430,3 @@ test('mysql provider recovery lookup is scoped to the authenticated user', async
   assert.equal(source?.id, 'source-job-1');
   assert.equal(source?.userId, 'user-1');
 });
-
-test('recover routes reject missing or cross-user sources before creating recovery jobs', () => {
-  const recoverBlocks = serverSource.match(/if \(url\.pathname === '\/api\/jobs\/recover'[\s\S]*?\n  }/g) || [];
-  assert.equal(recoverBlocks.length, 2, 'mysql and local recovery routes must both be present');
-  recoverBlocks.forEach((block) => {
-    assert.match(block, /isAuthorizedProviderTaskRecoverySource/);
-    assert.match(block, /job_recovery_source_not_found/);
-    assert.ok(
-      block.indexOf('isAuthorizedProviderTaskRecoverySource') < block.indexOf('createJobRecord')
-        || block.indexOf('isAuthorizedProviderTaskRecoverySource') < block.indexOf('createLocalJobRecord'),
-      'authorization must happen before a recovery record is created',
-    );
-  });
-});

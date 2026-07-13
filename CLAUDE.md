@@ -303,13 +303,13 @@
   如何避免:**批量聚合器不能把控制面状态和业务失败压成同一种 rejected。`allSettled` 后必须先识别 pending/取消/失败语义,再决定部分成功或整批等待。**
 
 - **#50 ✅ 已修(2026-07-13)· 发布就绪双检仍有 TOCTOU,检查后新任务可在 PM2 restart 前进入**
-  根因:2026-07-10 的两次只读 `running` 检查只能证明查询瞬间为空；最终检查返回后到 PM2 restart 之间,旧进程仍可接受提交或把 queued job 认领为 running。单独新增 marker 也不能保护第一次发布,因为云上旧进程不认识新 marker。
-  修复:发布最终阶段先创建短时 drain marker,再由独立连接对 `internal_jobs` 取得 `WRITE` 表锁并在持锁连接上复查 running=0。表锁强制旧进程的 job 创建/认领阻塞；持锁停止旧 PM2 后释放表锁,新版本的提交入口、经典 worker 和 Temporal activity 继续识别 marker,直到 HTTP/worker health 通过才清理。trap 负责异常释放,陈旧 marker 默认 10 分钟失效；活跃任务覆盖仍只允许显式参数且默认关闭。
-  如何避免:**部署零活跃检查必须和停止旧执行器处于同一互斥窗口；新旧版本 gate 不兼容时,先用双方共同依赖的持久层锁完成 bootstrap 交接,不能把“检查两次”或“新代码会读 marker”当成原子保护。**
+  根因:2026-07-10 的两次只读 `running` 检查只能证明查询瞬间为空；最终检查后旧进程仍可接受 job 和同步 chat/provider 提交。单独新增 marker 无法保护首发,因为云上旧进程不认识它；只锁 `internal_jobs` 也管不到不落 job 的同步 provider 路径。
+  修复:最终切换先用精确 iptables 规则拒绝新的 Nginx 回源和公网直连 3100 连接,等已有连接连续为零;再由持有 `internal_jobs WRITE` 锁的同一连接复查 running=0、停旧 PM2、验证停机和会话仍存活后才回写 ack。新进程启动后撤网络规则供 health 使用,marker 仍统一拒绝 API 写请求并暂停 worker。health 失败会先再次封网并验证新 PM2 已停,否则保留网络门禁和 marker;活跃任务覆盖仍默认关闭。
+  如何避免:**首发兼容不能依赖新代码才识别的 marker。要先在网络入口排空所有旧请求,再用持锁同一会话停执行器;失败清理必须以“无可提交进程”为释放门禁的先决条件。**
 
 - **#51 ✅ 已修(2026-07-10)· 策划/分析控制 job 被持久化成幽灵卡,真实任务缺项目绑定,项目删除又漏掉子 job**
   根因:洛克、林一账号的真实链路同时存在两类记录:用户提交时预创建的 `proj-*` 买家秀项目,以及只负责生成 prompt 的 `buyer_show/kie_chat` 策划控制 job。后者 payload 没有 `shellProjectId/shellProjectName`,job 恢复层只能为它合成 `job-<id>` 卡；#44 为修复“卡片闪现后消失”放宽了 job 缺卡回写,又把这张控制面卡持久化,于是终态 job 也会长期显示为无结果的“生成中”卡并干扰用户对顺序的判断。全功能审计又发现精修分析、分镜策划和部分精修/分镜生图任务存在同类绑定缺口；真实时间戳送入 `sortProjectsNewestFirst` 的探针表明最新优先算法本身正确。另一个独立缺口是 `handleDeleteProject` 只删 `project.backendJobId/job-*`,不收集 results/tasks 里的关联 backend job；顶层卡隐藏了,子 job 仍可在后续水合时参与恢复。
-  修复:买家秀多套策划与生图统一绑定各自的套项目 ID,最多 4 套策划同时创建并交给后端账户并发门控,避免串行策划让后续套卡数分钟后才拿到任务身份；买家秀、翻译、精修、分镜的策划/分析请求统一携带结构化 `taskPurpose + shellProjectId/shellProjectName/subFeature`,精修和分镜生图同时补齐项目/批次/宫格绑定。控制 job 在 adapter 边界只能绑定预创建卡的进度,不得伪造媒体结果；无绑定的旧控制 job 不生成 project/task,已持久化的结构化空 `job-*` 控制卡在首屏读取边界过滤。项目/单结果删除分别收敛到 `collectShellDeletionJobIds` / `collectShellResultDeletionJobIds`,只收集内部 `backendJobId` 和结构化 `job-*` 身份,不把 provider task id 当内部 job；页面移除、删除墓碑持久化与物理 job 删除彼此独立并报告部分失败。分镜项目回归测试同时锁定 videoMemory 裁剪和墓碑防复活。
+  修复:买家秀多套策划与生图统一绑定各自的套项目 ID,最多 4 套策划同时创建并交给后端账户并发门控,避免串行策划让后续套卡数分钟后才拿到任务身份；买家秀、翻译、精修、分镜的策划/分析请求统一携带结构化 `taskPurpose + shellProjectId/shellProjectName/subFeature`,精修和分镜生图同时补齐项目/批次/宫格绑定。控制 job 在 adapter 边界只能绑定预创建卡的进度,不得伪造媒体结果；无绑定的旧控制 job 不生成 project/task,已持久化的结构化空 `job-*` 控制卡在首屏读取边界过滤。项目/单结果删除分别收敛到 `collectShellDeletionJobIds` / `collectShellResultDeletionJobIds`,单结果物理删除只信任显式 `backendJobId`,不再从可能为 provider ID 的 `result.id/resultId` 推导；页面移除、删除墓碑持久化与物理 job 删除彼此独立并用同一结果矩阵报告部分/双重失败。分镜项目回归测试同时锁定 videoMemory 裁剪和墓碑防复活。
   如何避免:**控制面 job(策划/分析/调度)与数据面结果 job(图片/视频)必须用结构化 purpose + project binding 区分，通用缺卡回写不得把未绑定控制 job 变成用户项目。删除是一个 aggregate 操作:必须遍历 project/results/tasks 收集全部内部 job 身份,且墓碑成功不能依赖每个远端 DELETE 都成功。卡片“乱序”先用真时间戳探针区分排序错误与幽灵卡干扰,不得叠加第二套排序规则。**
 
 - **#52 ✅ 已修(2026-07-11)· Temporal 传递依赖锁在存在拒绝服务风险的 protobufjs 7.6.1**
