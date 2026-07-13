@@ -8,6 +8,7 @@ test('MaxForAI secret and runtime limits are documented without a real key', () 
   const envExample = read('../.env.server.example');
   const deployDoc = read('../docs/tencent-cloud-deploy.md');
   const overview = read('../docs/project-overview.md');
+  const repeatedIssues = read('../docs/agents/repeated-issues.md');
   const expectedLines = [
     'MAXFORAI_API_KEY=',
     'MAXFORAI_BASE_URL=https://maxforai.top/v1',
@@ -28,4 +29,12 @@ test('MaxForAI secret and runtime limits are documented without a real key', () 
   }
   assert.doesNotMatch(envExample, /MAXFORAI_API_KEY=sk-/);
   assert.doesNotMatch(deployDoc, /MAXFORAI_API_KEY=sk-/);
+  for (const source of [deployDoc, overview]) {
+    assert.match(source, /response_format/);
+    assert.match(source, /b64_json/);
+    assert.match(source, /托管素材/);
+  }
+  assert.match(repeatedIssues, /49f7bf14f1f55d45e42d4d9f/);
+  assert.match(repeatedIssues, /HTTP 200/);
+  assert.match(repeatedIssues, /b64_json/);
 });
