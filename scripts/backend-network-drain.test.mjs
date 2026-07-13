@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
+import * as backendNetworkDrain from './backend-network-drain.mjs';
+
+const {
   buildBackendNetworkDrainRules,
   enterBackendNetworkDrain,
   exitBackendNetworkDrain,
-} from './backend-network-drain.mjs';
+} = backendNetworkDrain;
 
 test('network drain blocks exact NEW proxy and direct backend connections', () => {
   const rules = buildBackendNetworkDrainRules('meiao-deploy-test');
@@ -161,4 +163,23 @@ test('partial install cleanup failure preserves recoverable state and surfaces c
       && /cleanup check failed/.test(error.message),
   );
   assert.deepEqual(persisted.at(-1).rules, [buildBackendNetworkDrainRules('meiao-deploy-test')[0]]);
+});
+
+test('network drain state file is persisted with an atomic temp-file rename', () => {
+  const events = [];
+  const writeNetworkDrainStateFile = backendNetworkDrain.writeNetworkDrainStateFile;
+  assert.equal(typeof writeNetworkDrainStateFile, 'function');
+
+  writeNetworkDrainStateFile('/tmp/meiao-network-state.json', { comment: 'test', rules: [] }, {
+    writeFile: (file, contents, options) => events.push(['write', file, contents, options]),
+    rename: (from, to) => events.push(['rename', from, to]),
+    remove: (file) => events.push(['remove', file]),
+  });
+
+  assert.equal(events[0][0], 'write');
+  assert.match(events[0][1], /^\/tmp\/\.meiao-network-state\.json\.tmp-/);
+  assert.equal(events[0][2], '{"comment":"test","rules":[]}\n');
+  assert.deepEqual(events[0][3], { mode: 0o600 });
+  assert.deepEqual(events[1], ['rename', events[0][1], '/tmp/meiao-network-state.json']);
+  assert.equal(events.some(([operation]) => operation === 'remove'), false);
 });

@@ -1,10 +1,35 @@
 import { execFile } from 'node:child_process';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 const execFileAsync = promisify(execFile);
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+let stateWriteSequence = 0;
+
+export const writeNetworkDrainStateFile = (stateFile, state, {
+  writeFile = writeFileSync,
+  rename = renameSync,
+  remove = rmSync,
+} = {}) => {
+  const tempFile = join(
+    dirname(stateFile),
+    `.${basename(stateFile)}.tmp-${process.pid}-${stateWriteSequence += 1}`,
+  );
+  try {
+    writeFile(tempFile, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+    rename(tempFile, stateFile);
+  } catch (error) {
+    remove(tempFile, { force: true });
+    throw error;
+  }
+};
 
 const defaultRunCommand = async (command, args) => {
   const result = await execFileAsync(command, args, { encoding: 'utf8' });
@@ -144,9 +169,9 @@ const run = async () => {
     try {
       const state = await enterBackendNetworkDrain({
         comment,
-        persistState: (nextState) => writeFileSync(stateFile, `${JSON.stringify(nextState)}\n`, { mode: 0o600 }),
+        persistState: (nextState) => writeNetworkDrainStateFile(stateFile, nextState),
       });
-      writeFileSync(stateFile, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+      writeNetworkDrainStateFile(stateFile, state);
       return;
     } catch (error) {
       if (!error?.preserveNetworkDrainState) rmSync(stateFile, { force: true });
@@ -158,7 +183,7 @@ const run = async () => {
     const state = JSON.parse(readFileSync(stateFile, 'utf8'));
     await exitBackendNetworkDrain({
       state,
-      persistState: (nextState) => writeFileSync(stateFile, `${JSON.stringify(nextState)}\n`, { mode: 0o600 }),
+      persistState: (nextState) => writeNetworkDrainStateFile(stateFile, nextState),
     });
     rmSync(stateFile, { force: true });
     return;

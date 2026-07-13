@@ -8,6 +8,7 @@ import {
   getDeployDbConfig,
   summarizeRunningJobs,
 } from './check-deploy-readiness.mjs';
+import { isSuccessfulPm2StoppedStatus } from './deploy-lifecycle.mjs';
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const execFileAsync = promisify(execFile);
@@ -32,10 +33,14 @@ export const acquireBootstrapJobTableLock = async ({ connection, env = process.e
 export const stopOldProcessWithLockVerification = async ({
   connection,
   processManager,
+  acknowledgeStopIssued,
   acknowledgeStopped,
 }) => {
   const appExisted = await processManager.exists();
-  if (appExisted) await processManager.stop();
+  if (appExisted) {
+    await processManager.stop();
+    await acknowledgeStopIssued(appExisted);
+  }
   if (!await processManager.isStopped()) {
     throw new Error('PM2 process is still running after stop request.');
   }
@@ -44,10 +49,10 @@ export const stopOldProcessWithLockVerification = async ({
   return { appExisted, stopped: true };
 };
 
-const createPm2ProcessManager = (processName) => ({
+export const createPm2ProcessManager = (processName, runPm2 = execFileAsync) => ({
   exists: async () => {
     try {
-      await execFileAsync('pm2', ['describe', processName]);
+      await runPm2('pm2', ['describe', processName]);
       return true;
     } catch (error) {
       if (Number(error?.code) === 1) return false;
@@ -55,12 +60,11 @@ const createPm2ProcessManager = (processName) => ({
     }
   },
   stop: async () => {
-    await execFileAsync('pm2', ['stop', processName]);
+    await runPm2('pm2', ['stop', processName]);
   },
   isStopped: async () => {
-    const { stdout } = await execFileAsync('pm2', ['pid', processName], { encoding: 'utf8' });
-    const pids = String(stdout || '').trim().split(/\s+/).filter(Boolean);
-    return pids.length === 0 || pids.every((pid) => pid === '0');
+    const { stdout } = await runPm2('pm2', ['pid', processName], { encoding: 'utf8' });
+    return isSuccessfulPm2StoppedStatus({ commandSucceeded: true, output: stdout });
   },
 });
 
@@ -71,11 +75,14 @@ const readOption = (name) => {
 
 const run = async () => {
   const readyFile = readOption('--ready-file');
+  const stopIssuedFile = readOption('--stop-issued-file');
   const stoppedFile = readOption('--stopped-file');
   const releaseFile = readOption('--release-file');
   const processName = readOption('--process-name') || 'meiao-internal';
-  if (!readyFile || !stoppedFile || !releaseFile) {
-    throw new Error('hold-deploy-drain requires --ready-file, --stopped-file and --release-file.');
+  if (!readyFile || !stopIssuedFile || !stoppedFile || !releaseFile) {
+    throw new Error(
+      'hold-deploy-drain requires --ready-file, --stop-issued-file, --stopped-file and --release-file.',
+    );
   }
 
   const connection = await mysql.createConnection(getDeployDbConfig(process.env));
@@ -95,6 +102,9 @@ const run = async () => {
     await stopOldProcessWithLockVerification({
       connection,
       processManager: createPm2ProcessManager(processName),
+      acknowledgeStopIssued: async () => {
+        writeFileSync(stopIssuedFile, '1\n', { mode: 0o600 });
+      },
       acknowledgeStopped: async (appExisted) => {
         writeFileSync(stoppedFile, appExisted ? '1\n' : '0\n', { mode: 0o600 });
       },

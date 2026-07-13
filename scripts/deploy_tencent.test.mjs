@@ -55,6 +55,33 @@ test('deploy_tencent refuses to restart while cloud jobs are running', () => {
   assert.match(source, /MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS/);
 });
 
+test('deploy_tencent rejects a remote manual marker before uploading any source', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const functionStart = source.indexOf('run_remote_deploy_readiness() {');
+  const functionEnd = source.indexOf('\n}\n\nrun_remote_deploy_readiness', functionStart);
+  const preflight = source.slice(functionStart, functionEnd);
+  const envLoadIndex = preflight.indexOf('source .env.server');
+  const markerResolveIndex = preflight.indexOf('MEIAO_DEPLOY_DRAIN_FILE');
+  const manualCheckIndex = preflight.indexOf("= 'manual' ]");
+  const invocationIndex = source.indexOf('\nrun_remote_deploy_readiness\n', functionEnd);
+  const archiveIndex = source.indexOf('tar \\\n');
+
+  assert.ok(envLoadIndex >= 0, 'preflight must source the remote environment');
+  assert.ok(markerResolveIndex > envLoadIndex, 'custom drain marker path must resolve after env load');
+  assert.ok(manualCheckIndex > markerResolveIndex, 'manual marker must be checked before readiness');
+  assert.match(
+    preflight,
+    /DRAIN_MARKER_CONTENT=\\\$\(cat "\\\$DRAIN_MARKER_FILE"\)[\s\S]*\[ "\\\$DRAIN_MARKER_CONTENT" = 'manual' \]/,
+    'preflight must compare the complete marker content, not any matching line',
+  );
+  assert.ok(invocationIndex >= 0 && invocationIndex < archiveIndex, 'manual preflight must run before upload');
+  assert.equal(
+    [...source.matchAll(/grep -qx 'manual'/g)].length,
+    1,
+    'deploy must keep the final race check after the exact upload preflight',
+  );
+});
+
 test('deploy_tencent uses a bootstrap network drain before the lock holder stops the old process', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const lockHolderSource = readFileSync(new URL('./hold-deploy-drain.mjs', import.meta.url), 'utf8');
@@ -103,4 +130,19 @@ test('deploy_tencent keeps the drain on failed health until the new process is v
   assert.match(cleanup, /RELEASE_DRAIN/);
   assert.match(cleanup, /if \[ "\\\$RELEASE_DRAIN" = '1' \]/);
   assert.match(cleanup, /保留维护门禁/);
+});
+
+test('deploy_tencent retains gates when old-process stop was issued but pid proof failed', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const cleanup = source.match(/cleanup_deploy_drain\(\) \{[\s\S]*?\n    \}/)?.[0] || '';
+  const helperStart = source.indexOf('node scripts/hold-deploy-drain.mjs');
+  const stopIssuedArgIndex = source.indexOf('--stop-issued-file', helperStart);
+  const stoppedArgIndex = source.indexOf('--stopped-file', helperStart);
+
+  assert.match(source, /DRAIN_STOP_ISSUED_FILE/);
+  assert.ok(stopIssuedArgIndex > helperStart && stopIssuedArgIndex < stoppedArgIndex);
+  assert.match(cleanup, /if \[ -f "\\\$DRAIN_STOP_ISSUED_FILE" \]; then OLD_PROCESS_STOP_ISSUED=1; fi/);
+  assert.match(cleanup, /"\\\$OLD_PROCESS_STOPPED" "\\\$OLD_PROCESS_STOP_ISSUED"/);
+  assert.match(cleanup, /停机命令已发出但状态未核实/);
+  assert.doesNotMatch(cleanup, /OLD_PROCESS_STOP_ISSUED=1; OLD_PROCESS_STOPPED=1/);
 });

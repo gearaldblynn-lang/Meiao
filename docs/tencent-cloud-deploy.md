@@ -174,9 +174,9 @@ MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh
 
 部署脚本为零断档设计(2026-07-07 起):`npm install`/`build` 期间旧 `dist` 一直原样服务,新产物先构建到 `dist-next`,旧的 hash chunk 按修改时间保留(供部署前已打开的旧标签页懒加载),最后原子换名切换,前端静态文件没有中断窗口。
 
-部署脚本会在上传代码前、远端构建后检查 `internal_jobs.status='running'`，并在最终切换时进入首发兼容 drain：预检 `iptables`/`ip6tables`/`ss`，用带唯一 comment 的临时 `iptables` 规则拒绝新的 IPv4 Nginx 回源和公网直连 3100，同时用 `ip6tables INPUT` 拒绝 IPv6 直连 3100，等已有连接连续为零；再创建 marker，对 `internal_jobs` 取得 `WRITE` 表锁，持锁连接复查零运行任务、停止旧 PM2、验证停机与 MySQL 会话仍存活后才回写 stopped ack。这会同时排空旧版本的 job 和不落 job 的同步 provider 请求，不修改 Nginx 配置。
+部署脚本会在上传代码前先读取远端 `.env.server`，按 `MEIAO_DEPLOY_DRAIN_FILE` 解析 marker；完整内容为 `manual` 时在任何上传或源码替换前拒绝发布。随后在远端构建后再次检查 `internal_jobs.status='running'`，并在最终切换时进入首发兼容 drain：预检 `iptables`/`ip6tables`/`ss`，用带唯一 comment 的临时 `iptables` 规则拒绝新的 IPv4 Nginx 回源和公网直连 3100，同时用 `ip6tables INPUT` 拒绝 IPv6 直连 3100，等已有连接连续为零；再创建 marker，对 `internal_jobs` 取得 `WRITE` 表锁，持锁连接复查零运行任务并停止旧 PM2。`pm2 stop` 成功返回后立即写 stop-issued ack；只有 `pm2 pid` 成功且至少返回一个全零 PID token，并且 MySQL 会话仍存活，才另写 stopped ack。这会同时排空旧版本的 job 和不落 job 的同步 provider 请求，不修改 Nginx 配置。
 
-新进程启动后才幂等删除精确网络规则供 health/静态流量使用；每条规则先用对应命令执行 `-C`，只有退出码 0 才 `-D`、退出码 1 视为已不存在，其他错误保留剩余状态并失败。marker 仍拒绝 API 写请求并暂停 worker，直到 `/api/health` 同时确认 HTTP 与 worker 健康。health 失败时只在 `pm2 pid` 命令成功且输出全为 0 时认定新进程已停；旧进程已停但新进程未启动、停机无法证明或网络清理失败时，保留规则状态并把 marker 写为永不过期的 `manual`。紧急情况下只能显式设置 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 覆盖；该开关不应作为日常发布参数。
+新进程启动后才幂等删除精确网络规则供 health/静态流量使用；每条规则先用对应命令执行 `-C`，只有退出码 0 才 `-D`、退出码 1 视为已不存在，其他错误保留剩余状态并失败。剩余规则状态通过同目录临时文件加原子 rename 持久化，避免中断留下半截 JSON。marker 仍拒绝 API 写请求并暂停 worker，直到 `/api/health` 同时确认 HTTP 与 worker 健康。health 失败时只在 `pm2 pid` 命令成功、至少返回一个 PID token 且全部为 0 时认定新进程已停；存在 stop-issued 但没有 stopped 证明且新进程尚未启动时，只能报告“旧服务可能已停止”，保留规则状态并把 marker 写为永不过期的 `manual`，不得误报旧服务已确认停止。紧急情况下只能显式设置 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 覆盖；该开关不应作为日常发布参数。
 
 ### manual 门禁恢复
 
