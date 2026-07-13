@@ -82,17 +82,17 @@ test('terminal jobs with reservations are reconciled after restart without doubl
 test('agent image generation reserves and settles credits in mysql and local paths', () => {
   const toolConversationSource = readFileSync(new URL('./agentToolConversation.mjs', import.meta.url), 'utf8');
 
-  assert.match(source, /const agentImageCreditReservation = requestMode === 'image_generation' && !shouldUseToolCallingConversation\(version\)\s+\? await reserveDbAgentImageCredits\(pool, user, \{ sessionId, clientRequestId \}\)/);
+  assert.match(source, /const agentImageCreditReservation = requestMode === 'image_generation' && !shouldUseToolCallingConversation\(version\)\s+\? await reserveDbAgentImageCredits\(pool, user, \{ sessionId, clientRequestId, model: version\?\.modelPolicy\?\.multimodalModel \}\)/);
   assert.match(source, /await settleDbAgentImageCredits\(pool, agentImageCreditReservation, \{ result, sessionId, clientRequestId \}\)/);
   assert.match(source, /await releaseDbAgentImageCredits\(pool, agentImageCreditReservation, \{ error, sessionId, clientRequestId \}\)/);
-  assert.match(source, /const imageCreditReservation = await reserveDbAgentImageCredits\(pool, user, \{ sessionId, clientRequestId, taskType \}\)/);
+  assert.match(source, /const imageCreditReservation = await reserveDbAgentImageCredits\(pool, user, \{ sessionId, clientRequestId, taskType, model \}\)/);
   assert.match(source, /await settleDbAgentImageCredits\(pool, imageCreditReservation, \{ result: imageOutput, sessionId, clientRequestId \}\)/);
   assert.match(source, /return \{ imageUrl, providerTaskId, creditsConsumed: getProviderCreditsConsumed\(imageOutput\) \}/);
 
-  assert.match(source, /agentImageCreditReservation = requestMode === 'image_generation' && !shouldUseToolCallingConversation\(version\)\s+\? reserveLocalAgentImageCredits\(store, user, \{ sessionId, clientRequestId \}\)/);
+  assert.match(source, /agentImageCreditReservation = requestMode === 'image_generation' && !shouldUseToolCallingConversation\(version\)\s+\? reserveLocalAgentImageCredits\(store, user, \{ sessionId, clientRequestId, model: version\?\.modelPolicy\?\.multimodalModel \}\)/);
   assert.match(source, /settleLocalAgentImageCredits\(store, agentImageCreditReservation, \{ result, sessionId, clientRequestId \}\)/);
   assert.match(source, /releaseLocalAgentImageCredits\(store, agentImageCreditReservation, \{ error, sessionId, clientRequestId \}\)/);
-  assert.match(source, /const imageCreditReservation = reserveLocalAgentImageCredits\(store, user, \{ sessionId, clientRequestId, taskType \}\)/);
+  assert.match(source, /const imageCreditReservation = reserveLocalAgentImageCredits\(store, user, \{ sessionId, clientRequestId, taskType, model \}\)/);
   assert.match(source, /settleLocalAgentImageCredits\(store, imageCreditReservation, \{ result: imageOutput, sessionId, clientRequestId \}\)/);
   assert.match(source, /creditsConsumed: result\?\.creditsConsumed/);
   assert.match(toolConversationSource, /if \(error\?\.code === 'account_credit_insufficient'\) throw error/);
