@@ -55,21 +55,45 @@ test('deploy_tencent refuses to restart while cloud jobs are running', () => {
   assert.match(source, /MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS/);
 });
 
-test('deploy_tencent holds a drain marker through restart and health verification', () => {
+test('deploy_tencent uses a bootstrap network drain before the lock holder stops the old process', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const lockHolderSource = readFileSync(new URL('./hold-deploy-drain.mjs', import.meta.url), 'utf8');
+  const networkIndex = source.indexOf('node scripts/backend-network-drain.mjs enter');
   const markerIndex = source.search(/touch "\\\$DRAIN_MARKER_FILE"/);
   const bootstrapLockIndex = source.indexOf('node scripts/hold-deploy-drain.mjs');
-  const stopIndex = source.indexOf('pm2 stop meiao-internal');
+  const stoppedAckIndex = source.indexOf('--stopped-file');
   const restartIndex = source.indexOf('pm2 restart meiao-internal --update-env');
+  const networkReleaseIndex = source.indexOf('\n    disable_network_drain\n', restartIndex);
   const healthIndex = source.indexOf('/api/health');
   const cleanupIndex = source.search(/rm -f "\\\$DRAIN_MARKER_FILE"\n    trap - EXIT INT TERM/);
 
+  assert.ok(networkIndex >= 0, 'bootstrap drain must block NEW backend connections');
+  assert.ok(networkIndex < markerIndex, 'network gate must protect the old marker-unaware process first');
   assert.ok(markerIndex >= 0, 'deploy must create the application-visible drain marker');
   assert.ok(bootstrapLockIndex > markerIndex, 'bootstrap DB lock must follow the marker');
-  assert.ok(stopIndex > bootstrapLockIndex, 'old process must stop while its DB writes are frozen');
-  assert.ok(restartIndex > stopIndex, 'new process starts only after old process is stopped');
+  assert.ok(stoppedAckIndex > bootstrapLockIndex, 'deploy must wait for the lock holder stopped acknowledgement');
+  assert.match(lockHolderSource, /stopOldProcessWithLockVerification/);
+  assert.match(lockHolderSource, /SELECT 1 AS lock_session_alive/);
+  assert.ok(restartIndex > stoppedAckIndex, 'new process starts only after the lock holder acknowledges stop');
+  assert.ok(networkReleaseIndex > restartIndex, 'network gate remains until marker-aware code starts');
+  assert.ok(networkReleaseIndex < healthIndex, 'network gate opens only to run health while marker remains');
   assert.ok(healthIndex > restartIndex, 'drain remains active until health is checked');
   assert.ok(cleanupIndex > healthIndex, 'drain marker is removed only after health passes');
   assert.match(source, /trap cleanup_deploy_drain EXIT INT TERM/);
   assert.match(source, /MEIAO_DEPLOY_DRAIN_FILE/);
+});
+
+test('deploy_tencent keeps the drain on failed health until the new process is verified stopped', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const cleanup = source.match(/cleanup_deploy_drain\(\) \{[\s\S]*?\n    \}/)?.[0] || '';
+
+  assert.match(cleanup, /NEW_PROCESS_STARTED/);
+  assert.match(cleanup, /HEALTH_READY/);
+  assert.match(cleanup, /enable_network_drain \|\| true/);
+  assert.match(cleanup, /pm2 stop meiao-internal/);
+  assert.match(cleanup, /pm2 pid meiao-internal/);
+  assert.match(cleanup, /node scripts\/deploy-lifecycle\.mjs/);
+  assert.match(cleanup, /RELEASE_DRAIN/);
+  assert.match(cleanup, /if \[ "\\\$RELEASE_DRAIN" = '1' \]/);
+  assert.match(cleanup, /保留维护门禁/);
 });

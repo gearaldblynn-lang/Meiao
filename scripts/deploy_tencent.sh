@@ -116,40 +116,94 @@ tar \
     set +a
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs
 
-    # 首次发布时旧进程尚不认识 drain marker。先落 marker，再用 internal_jobs WRITE lock
-    # 冻结旧进程的提交/认领，并在持锁连接上复查 running=0。旧进程停止后释放表锁，
-    # 新进程继续靠 marker 拒绝提交和暂停 worker，直到 health 验证完成。
+    # 首发时旧进程不认识 marker。先用 iptables 拒绝新的 Nginx/直连 3100 连接，
+    # 等已有连接连续为零，再由 MySQL 持锁助手复查 running=0 并停止旧 PM2。
+    # 新进程启动后才开放网络做 health，此时 marker 仍会拒绝所有写请求并暂停 worker。
     DRAIN_MARKER_FILE="\${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}"
     DRAIN_READY_FILE="/tmp/meiao-deploy-drain-ready-\$\$"
+    DRAIN_STOPPED_FILE="/tmp/meiao-deploy-drain-stopped-\$\$"
     DRAIN_RELEASE_FILE="/tmp/meiao-deploy-drain-release-\$\$"
+    DRAIN_NETWORK_STATE_FILE="/tmp/meiao-deploy-network-drain-\$\$.json"
+    DRAIN_NETWORK_COMMENT="meiao-deploy-\$\$"
     DRAIN_PID=''
+    NETWORK_DRAIN_ACTIVE=0
+    NEW_PROCESS_STARTED=0
+    NEW_PROCESS_STOPPED=0
+    HEALTH_READY=0
+    CLEANUP_RUNNING=0
+
+    enable_network_drain() {
+      if [ "\$NETWORK_DRAIN_ACTIVE" = '1' ]; then return 0; fi
+      node scripts/backend-network-drain.mjs enter \
+        --state-file "\$DRAIN_NETWORK_STATE_FILE" \
+        --comment "\$DRAIN_NETWORK_COMMENT"
+      NETWORK_DRAIN_ACTIVE=1
+    }
+
+    disable_network_drain() {
+      if [ "\$NETWORK_DRAIN_ACTIVE" != '1' ]; then return 0; fi
+      node scripts/backend-network-drain.mjs exit --state-file "\$DRAIN_NETWORK_STATE_FILE"
+      NETWORK_DRAIN_ACTIVE=0
+    }
+
     cleanup_deploy_drain() {
+      if [ "\$CLEANUP_RUNNING" = '1' ]; then return; fi
+      CLEANUP_RUNNING=1
+      set +e
       if [ -n "\$DRAIN_PID" ] && kill -0 "\$DRAIN_PID" >/dev/null 2>&1; then
         touch "\$DRAIN_RELEASE_FILE" || true
         wait "\$DRAIN_PID" || true
       fi
-      rm -f "\$DRAIN_READY_FILE" "\$DRAIN_RELEASE_FILE" "\$DRAIN_MARKER_FILE"
+      DRAIN_PID=''
+
+      if [ "\$NEW_PROCESS_STARTED" = '1' ] && [ "\$HEALTH_READY" != '1' ]; then
+        enable_network_drain || true
+        pm2 stop meiao-internal || true
+        PM2_PID_OUTPUT=\$(pm2 pid meiao-internal 2>/dev/null || true)
+        if [ -z "\$PM2_PID_OUTPUT" ] || ! printf '%s\n' "\$PM2_PID_OUTPUT" | grep -Eq '[1-9][0-9]*'; then
+          NEW_PROCESS_STOPPED=1
+        fi
+      fi
+
+      RELEASE_DRAIN=0
+      CLEANUP_DECISION=\$(node scripts/deploy-lifecycle.mjs \
+        "\$NEW_PROCESS_STARTED" "\$HEALTH_READY" "\$NEW_PROCESS_STOPPED" 2>/dev/null || echo retain)
+      if [ "\$CLEANUP_DECISION" = 'release' ]; then RELEASE_DRAIN=1; fi
+      if [ "\$RELEASE_DRAIN" = '1' ]; then
+        if disable_network_drain; then
+          rm -f "\$DRAIN_READY_FILE" "\$DRAIN_STOPPED_FILE" "\$DRAIN_RELEASE_FILE" \
+            "\$DRAIN_NETWORK_STATE_FILE" "\$DRAIN_MARKER_FILE"
+        else
+          echo '网络门禁清理失败，保留维护门禁等待人工处理。'
+        fi
+      else
+        echo '新进程未确认停止，保留维护门禁和 marker 等待人工处理。'
+      fi
     }
     trap cleanup_deploy_drain EXIT INT TERM
+
+    enable_network_drain
     touch "\$DRAIN_MARKER_FILE"
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' \
       node scripts/hold-deploy-drain.mjs \
         --ready-file "\$DRAIN_READY_FILE" \
+        --stopped-file "\$DRAIN_STOPPED_FILE" \
         --release-file "\$DRAIN_RELEASE_FILE" &
     DRAIN_PID=\$!
     for attempt in \$(seq 1 300); do
-      if [ -f "\$DRAIN_READY_FILE" ]; then break; fi
+      if [ -f "\$DRAIN_STOPPED_FILE" ]; then break; fi
       if ! kill -0 "\$DRAIN_PID" >/dev/null 2>&1; then
         wait "\$DRAIN_PID"
         exit 2
       fi
       sleep 0.2
     done
-    if [ ! -f "\$DRAIN_READY_FILE" ]; then
-      echo '部署 drain 获取超时，已停止发布。'
+    if [ ! -f "\$DRAIN_READY_FILE" ] || [ ! -f "\$DRAIN_STOPPED_FILE" ]; then
+      echo '部署 drain 停机握手超时，已停止发布。'
       exit 2
     fi
     cat "\$DRAIN_READY_FILE"
+    PM2_APP_EXISTS=\$(cat "\$DRAIN_STOPPED_FILE")
 
     # 原子切换:两次 rename,静态服务零断档
     rm -rf dist-prev
@@ -157,25 +211,23 @@ tar \
     mv dist-next dist
     rm -rf dist-prev '$REMOTE_TMP_DIR'
 
-    PM2_APP_EXISTS=0
-    if pm2 describe meiao-internal >/dev/null 2>&1; then
-      PM2_APP_EXISTS=1
-      pm2 stop meiao-internal
-    fi
-
-    # 旧进程已停止，释放 bootstrap 表锁；marker 仍由新代码识别并保持 drain。
+    # stopped ack 只会在同一 MySQL 持锁会话验证 PM2 已停后产生。
     touch "\$DRAIN_RELEASE_FILE"
     wait "\$DRAIN_PID"
     DRAIN_PID=''
-    rm -f "\$DRAIN_READY_FILE" "\$DRAIN_RELEASE_FILE"
+    rm -f "\$DRAIN_READY_FILE" "\$DRAIN_STOPPED_FILE" "\$DRAIN_RELEASE_FILE"
 
+    # start/restart 即使返回失败也可能已经拉起子进程，先进入必须验证停机的清理状态。
+    NEW_PROCESS_STARTED=1
     if [ "\$PM2_APP_EXISTS" = '1' ]; then
       pm2 restart meiao-internal --update-env
     else
       pm2 start ecosystem.config.cjs
     fi
 
-    HEALTH_READY=0
+    # 新代码已识别 marker，可恢复 GET/health 流量；写请求与 worker 仍保持 drain。
+    disable_network_drain
+
     for attempt in \$(seq 1 30); do
       if curl -fsS http://127.0.0.1:3100/api/health | node scripts/assert-deploy-health.mjs; then
         HEALTH_READY=1
@@ -189,6 +241,7 @@ tar \
     fi
 
     pm2 save
+    rm -f "\$DRAIN_NETWORK_STATE_FILE"
     rm -f "\$DRAIN_MARKER_FILE"
     trap - EXIT INT TERM
   "

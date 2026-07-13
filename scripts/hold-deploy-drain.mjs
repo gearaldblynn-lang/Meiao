@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { existsSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 import mysql from 'mysql2/promise';
 
 import {
@@ -8,6 +10,7 @@ import {
 } from './check-deploy-readiness.mjs';
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const execFileAsync = promisify(execFile);
 
 export const acquireBootstrapJobTableLock = async ({ connection, env = process.env }) => {
   await connection.query('LOCK TABLES internal_jobs WRITE');
@@ -26,6 +29,41 @@ export const acquireBootstrapJobTableLock = async ({ connection, env = process.e
   };
 };
 
+export const stopOldProcessWithLockVerification = async ({
+  connection,
+  processManager,
+  acknowledgeStopped,
+}) => {
+  const appExisted = await processManager.exists();
+  if (appExisted) await processManager.stop();
+  if (!await processManager.isStopped()) {
+    throw new Error('PM2 process is still running after stop request.');
+  }
+  await connection.query('SELECT 1 AS lock_session_alive');
+  await acknowledgeStopped(appExisted);
+  return { appExisted, stopped: true };
+};
+
+const createPm2ProcessManager = (processName) => ({
+  exists: async () => {
+    try {
+      await execFileAsync('pm2', ['describe', processName]);
+      return true;
+    } catch (error) {
+      if (Number(error?.code) === 1) return false;
+      throw error;
+    }
+  },
+  stop: async () => {
+    await execFileAsync('pm2', ['stop', processName]);
+  },
+  isStopped: async () => {
+    const { stdout } = await execFileAsync('pm2', ['pid', processName], { encoding: 'utf8' });
+    const pids = String(stdout || '').trim().split(/\s+/).filter(Boolean);
+    return pids.length === 0 || pids.every((pid) => pid === '0');
+  },
+});
+
 const readOption = (name) => {
   const index = process.argv.indexOf(name);
   return index >= 0 ? String(process.argv[index + 1] || '').trim() : '';
@@ -33,9 +71,11 @@ const readOption = (name) => {
 
 const run = async () => {
   const readyFile = readOption('--ready-file');
+  const stoppedFile = readOption('--stopped-file');
   const releaseFile = readOption('--release-file');
-  if (!readyFile || !releaseFile) {
-    throw new Error('hold-deploy-drain requires --ready-file and --release-file.');
+  const processName = readOption('--process-name') || 'meiao-internal';
+  if (!readyFile || !stoppedFile || !releaseFile) {
+    throw new Error('hold-deploy-drain requires --ready-file, --stopped-file and --release-file.');
   }
 
   const connection = await mysql.createConnection(getDeployDbConfig(process.env));
@@ -51,6 +91,14 @@ const run = async () => {
       console.error('警告：已显式允许在运行中任务存在时部署。');
     }
     writeFileSync(readyFile, `${JSON.stringify(result)}\n`, { mode: 0o600 });
+
+    await stopOldProcessWithLockVerification({
+      connection,
+      processManager: createPm2ProcessManager(processName),
+      acknowledgeStopped: async (appExisted) => {
+        writeFileSync(stoppedFile, appExisted ? '1\n' : '0\n', { mode: 0o600 });
+      },
+    });
 
     while (!existsSync(releaseFile)) {
       await sleep(250);

@@ -31,13 +31,11 @@ const addSyntheticInternalJobId = (ids: Set<string>, value: unknown) => {
 };
 
 export const collectShellResultDeletionJobIds = (
-  resultId: string,
+  _resultId: string,
   result?: DeletionResultLike | null,
 ) => {
   const jobIds = new Set<string>();
   addInternalJobId(jobIds, result?.backendJobId);
-  addSyntheticInternalJobId(jobIds, result?.id);
-  addSyntheticInternalJobId(jobIds, resultId);
   return Array.from(jobIds);
 };
 
