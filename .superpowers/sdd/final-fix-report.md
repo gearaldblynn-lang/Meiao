@@ -16,14 +16,15 @@ Scope: final independent-review follow-up for the production-stability release
 9. Result and project deletion share one independently-started tombstone/physical-delete operation and a tested outcome matrix. Tombstone-only success now reports hidden rather than physically deleted.
 10. The lock holder now reuses the strict PM2 stopped predicate. A successful command must return at least one PID token and every token must be zero; empty output and command errors cannot prove stop.
 11. A separate stop-attempted acknowledgement is persisted after old-app existence is established but before invoking `pm2 stop`. Stop-command failure therefore retains truthful evidence that the old process may have changed, keeps all gates when no new process started, and never promotes the state to verified stopped.
-12. The initial remote readiness pass sources `.env.server`, resolves a custom `MEIAO_DEPLOY_DRAIN_FILE`, and rejects exact `manual` content before any source upload or replacement. The final race check remains in place.
+12. The initial remote readiness pass sources `.env.server`, resolves a custom `MEIAO_DEPLOY_DRAIN_FILE`, and rejects marker existence including empty files before any source upload or replacement. The final race check remains in place.
 13. Network drain state updates now write a same-directory temporary file and atomically rename it over the state file.
-14. A deployment-wide remote mutex is acquired with atomic `mkdir` before readiness or upload. Owner identity is rechecked before upload, source replacement, and cutover; the local EXIT trap removes the mutex only on exact owner match, while killed deployments leave an intentionally non-expiring lock for manual inspection.
-15. Active drain markers contain the same deployment owner token and can only be deleted by that owner. Manual and orphaned owner markers are blocked before upload, and `manual` is never automatically deleted.
+14. A deployment-wide remote mutex is acquired with atomic `mkdir` before readiness or upload. After remote mutation starts, its shell writes an owner-matched completion proof only after cleanup and drain-child exit; local abnormal exit or missing proof retains the mutex. Release atomically claims the directory before inspection, so a replacement mutex is never deleted.
+15. Active drain markers use exclusive creation. Cleanup atomically claims the marker by owner-specific rename, deletes only matching claimed content, restores/retains foreign or manual content, and leaves any replacement marker untouched. Manual, empty, and orphaned markers are all blocked before upload.
 
 ## Verification
 
-- Focused deployment-drain/readiness regression: 42 passed, 0 failed.
+- Focused deployment-drain/readiness regression: 50 passed, 0 failed.
+- `node --check scripts/deploy-ownership.mjs`: passed.
 - `bash -n scripts/deploy_tencent.sh`: passed.
 - `npm run lint`: TypeScript passed; ESLint 0 errors and 660 warnings, exactly within the existing 660 warning budget.
 - Hermes changed-file report: bridge OK. Its env-knob reminder was reviewed: this patch adds no environment variable, and the existing `MEIAO_DEPLOY_DRAIN_FILE` remains documented in `.env.server.example` and the deployment runbook. The commit-hook prompt reminder matched deployment/report prose only; no runtime prompt or parser anchor changed.

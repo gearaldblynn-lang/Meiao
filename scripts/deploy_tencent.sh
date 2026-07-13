@@ -13,6 +13,7 @@ REMOTE_TMP_DIR="/tmp/meiao-deploy-$$"
 REMOTE_DEPLOY_MUTEX_DIR="/tmp/meiao-deploy-mutex"
 DEPLOY_OWNER_TOKEN="meiao-deploy-$(date +%s)-$$-${RANDOM}"
 REMOTE_DEPLOY_MUTEX_HELD=0
+REMOTE_MUTATION_STARTED=0
 DEPLOY_ALLOW_ACTIVE_JOBS="${MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS:-0}"
 
 if [[ "$DEPLOY_ALLOW_ACTIVE_JOBS" != "1" ]]; then
@@ -34,52 +35,35 @@ fi
 
 acquire_remote_deploy_mutex() {
   echo "获取远端部署互斥锁..."
+  ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" \
+    "${SERVER_USER}@${SERVER_HOST}" \
+    "MEIAO_DEPLOY_OWNERSHIP_RUN=1 node --input-type=module - acquire-mutex --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN'" \
+    < "$ROOT_DIR/scripts/deploy-ownership.mjs"
+  REMOTE_DEPLOY_MUTEX_HELD=1
   ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "
     set -e
-    if ! mkdir '$REMOTE_DEPLOY_MUTEX_DIR'; then
-      echo '部署已拦截：远端部署互斥锁已存在。请先人工核验 owner，禁止自动删除残锁。' >&2
-      if [ -f '$REMOTE_DEPLOY_MUTEX_DIR/owner' ]; then
-        printf '当前 owner: ' >&2
-        cat '$REMOTE_DEPLOY_MUTEX_DIR/owner' >&2
-      fi
-      exit 2
-    fi
-    printf '%s\n' '$DEPLOY_OWNER_TOKEN' > '$REMOTE_DEPLOY_MUTEX_DIR/owner'
-  "
-  REMOTE_DEPLOY_MUTEX_HELD=1
+    HELPER_TEMP='$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs.tmp'
+    trap 'rm -f "\$HELPER_TEMP"' EXIT
+    umask 077
+    cat > "\$HELPER_TEMP"
+    mv "\$HELPER_TEMP" '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs'
+  " < "$ROOT_DIR/scripts/deploy-ownership.mjs"
 }
 
 verify_remote_deploy_mutex() {
   ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "
     set -e
-    if [ ! -f '$REMOTE_DEPLOY_MUTEX_DIR/owner' ]; then
-      echo '部署互斥锁 owner 缺失，已停止发布。' >&2
-      exit 2
-    fi
-    REMOTE_MUTEX_OWNER=\$(cat '$REMOTE_DEPLOY_MUTEX_DIR/owner')
-    if [ \"\$REMOTE_MUTEX_OWNER\" != '$DEPLOY_OWNER_TOKEN' ]; then
-      echo '部署互斥锁 owner 不匹配，已停止发布。' >&2
-      exit 2
-    fi
+    node '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs' verify-mutex \
+      --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN'
   "
 }
 
 release_remote_deploy_mutex() {
   if [[ "$REMOTE_DEPLOY_MUTEX_HELD" != "1" ]]; then return 0; fi
-  if ! ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "
-    set -e
-    if [ ! -f '$REMOTE_DEPLOY_MUTEX_DIR/owner' ]; then
-      echo '远端部署互斥锁 owner 缺失，拒绝自动清理。' >&2
-      exit 2
-    fi
-    REMOTE_MUTEX_OWNER=\$(cat '$REMOTE_DEPLOY_MUTEX_DIR/owner')
-    if [ \"\$REMOTE_MUTEX_OWNER\" != '$DEPLOY_OWNER_TOKEN' ]; then
-      echo '远端部署互斥锁 owner 已变化，拒绝自动清理。' >&2
-      exit 2
-    fi
-    rm -f '$REMOTE_DEPLOY_MUTEX_DIR/owner'
-    rmdir '$REMOTE_DEPLOY_MUTEX_DIR'
-  "; then
+  if ! ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" \
+    "${SERVER_USER}@${SERVER_HOST}" \
+    "MEIAO_DEPLOY_OWNERSHIP_RUN=1 node --input-type=module - release-mutex --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN' --mutation-started '$REMOTE_MUTATION_STARTED'" \
+    < "$ROOT_DIR/scripts/deploy-ownership.mjs"; then
     echo "远端部署互斥锁未自动释放：$REMOTE_DEPLOY_MUTEX_DIR。请人工核验 owner 后处理。" >&2
     return 1
   fi
@@ -99,15 +83,8 @@ run_remote_deploy_readiness() {
   echo "检查云上是否有运行中任务..."
   ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "
     set -e
-    if [ ! -f '$REMOTE_DEPLOY_MUTEX_DIR/owner' ]; then
-      echo '部署互斥锁 owner 缺失，拒绝执行就绪检查。'
-      exit 2
-    fi
-    REMOTE_MUTEX_OWNER=\$(cat '$REMOTE_DEPLOY_MUTEX_DIR/owner')
-    if [ \"\$REMOTE_MUTEX_OWNER\" != '$DEPLOY_OWNER_TOKEN' ]; then
-      echo '部署互斥锁 owner 不匹配，拒绝执行就绪检查。'
-      exit 2
-    fi
+    node '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs' verify-mutex \
+      --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN'
     cd '$REMOTE_APP_DIR'
     if [ ! -f '.env.server' ]; then
       echo '服务器缺少 .env.server，无法执行部署就绪检查。'
@@ -117,16 +94,8 @@ run_remote_deploy_readiness() {
     source .env.server
     set +a
     DRAIN_MARKER_FILE="\${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}"
-    DRAIN_MARKER_CONTENT=''
-    if [ -f \"\$DRAIN_MARKER_FILE\" ]; then
-      DRAIN_MARKER_CONTENT=\$(cat \"\$DRAIN_MARKER_FILE\")
-    fi
-    if [ \"\$DRAIN_MARKER_CONTENT\" = 'manual' ]; then
-      echo '检测到未恢复的 manual 部署门禁，上传前检查已拦截本次发布。'
-      exit 2
-    fi
-    if [ -n \"\$DRAIN_MARKER_CONTENT\" ]; then
-      echo '检测到残留的活动部署 marker，必须人工核验 owner 后处理。'
+    if [ -e \"\$DRAIN_MARKER_FILE\" ]; then
+      echo '检测到残留部署 marker（包括空文件），必须人工核验后处理。'
       exit 2
     fi
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' MEIAO_DEPLOY_READINESS_RUN=1 node --input-type=module
@@ -142,6 +111,7 @@ echo "开始部署到 ${SERVER_USER}@${SERVER_HOST}:${REMOTE_APP_DIR}"
 
 export COPYFILE_DISABLE=1
 
+REMOTE_MUTATION_STARTED=1
 tar \
   --no-mac-metadata \
   --no-xattrs \
@@ -158,16 +128,34 @@ tar \
   -czf - \
   -C "$ROOT_DIR" . | ssh -o IdentitiesOnly=yes -i "$SSH_KEY_PATH" -p "$SERVER_PORT" "${SERVER_USER}@${SERVER_HOST}" "
     set -e
+    DRAIN_PID=''
+    DRAIN_CHILD_PID=''
+    DRAIN_CLEANUP_ARMED=0
+    finish_remote_mutation() {
+      REMOTE_EXIT_STATUS=\$?
+      trap - EXIT INT TERM
+      set +e
+      if [ \"\$DRAIN_CLEANUP_ARMED\" = '1' ] && type cleanup_deploy_drain >/dev/null 2>&1; then
+        cleanup_deploy_drain
+        if [ \$? -ne 0 ]; then REMOTE_EXIT_STATUS=2; fi
+      fi
+      if [ -n \"\$DRAIN_CHILD_PID\" ] && kill -0 \"\$DRAIN_CHILD_PID\" >/dev/null 2>&1; then
+        echo '部署 drain 子进程仍在运行，拒绝写入远端完成证明。' >&2
+        REMOTE_EXIT_STATUS=2
+      else
+        node '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs' complete-mutation \
+          --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN'
+        if [ \$? -ne 0 ]; then REMOTE_EXIT_STATUS=2; fi
+      fi
+      exit \"\$REMOTE_EXIT_STATUS\"
+    }
+    trap finish_remote_mutation EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
     assert_remote_deploy_mutex_owner() {
-      if [ ! -f '$REMOTE_DEPLOY_MUTEX_DIR/owner' ]; then
-        echo '部署互斥锁 owner 缺失，拒绝修改远端源码。'
-        exit 2
-      fi
-      REMOTE_MUTEX_OWNER=\$(cat '$REMOTE_DEPLOY_MUTEX_DIR/owner')
-      if [ \"\$REMOTE_MUTEX_OWNER\" != '$DEPLOY_OWNER_TOKEN' ]; then
-        echo '部署互斥锁 owner 不匹配，拒绝修改远端源码。'
-        exit 2
-      fi
+      node '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs' verify-mutex \
+        --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN'
     }
 
     assert_remote_deploy_mutex_owner
@@ -258,48 +246,21 @@ tar \
     }
 
     write_owned_deploy_marker() {
-      DRAIN_MARKER_CONTENT=''
-      if [ -f \"\$DRAIN_MARKER_FILE\" ]; then
-        DRAIN_MARKER_CONTENT=\$(cat \"\$DRAIN_MARKER_FILE\")
-      fi
-      if [ \"\$DRAIN_MARKER_CONTENT\" = 'manual' ]; then
-        echo 'manual 部署门禁禁止被活动发布覆盖。'
-        return 1
-      fi
-      if [ -n \"\$DRAIN_MARKER_CONTENT\" ] && [ \"\$DRAIN_MARKER_CONTENT\" != '$DEPLOY_OWNER_TOKEN' ]; then
-        echo '部署 marker owner 不匹配，拒绝覆盖。'
-        return 1
-      fi
-      printf '%s\n' '$DEPLOY_OWNER_TOKEN' > \"\$DRAIN_MARKER_FILE\"
+      node '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs' create-marker \
+        --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN' \
+        --marker-file \"\$DRAIN_MARKER_FILE\"
     }
 
     remove_owned_deploy_marker() {
-      if [ ! -f \"\$DRAIN_MARKER_FILE\" ]; then return 0; fi
-      DRAIN_MARKER_CONTENT=\$(cat \"\$DRAIN_MARKER_FILE\")
-      if [ \"\$DRAIN_MARKER_CONTENT\" = 'manual' ]; then
-        echo 'manual 部署门禁不得自动删除。'
-        return 1
-      fi
-      if [ \"\$DRAIN_MARKER_CONTENT\" != '$DEPLOY_OWNER_TOKEN' ]; then
-        echo '部署 marker owner 不匹配，拒绝自动删除。'
-        return 1
-      fi
-      rm -f \"\$DRAIN_MARKER_FILE\"
+      node '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs' remove-marker \
+        --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN' \
+        --marker-file \"\$DRAIN_MARKER_FILE\"
     }
 
     retain_deploy_drain() {
-      DRAIN_MARKER_CONTENT=''
-      if [ -f \"\$DRAIN_MARKER_FILE\" ]; then
-        DRAIN_MARKER_CONTENT=\$(cat \"\$DRAIN_MARKER_FILE\")
-      fi
-      if [ \"\$DRAIN_MARKER_CONTENT\" = 'manual' ]; then
-        :
-      elif [ -z \"\$DRAIN_MARKER_CONTENT\" ] || [ \"\$DRAIN_MARKER_CONTENT\" = '$DEPLOY_OWNER_TOKEN' ]; then
-        printf 'manual\n' > \"\$DRAIN_MARKER_FILE\"
-      else
-        echo '部署 marker owner 不匹配，保留原 marker 并拒绝覆盖。'
-        return 1
-      fi
+      node '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs' retain-manual \
+        --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN' \
+        --marker-file \"\$DRAIN_MARKER_FILE\" || return 1
       echo '部署门禁已进入 manual 状态；不得直接删除 marker。'
       echo "网络规则状态：\$DRAIN_NETWORK_STATE_FILE"
       echo '安全恢复：先确认/启动 PM2，保留 marker 时精确清理网络规则，通过 health+worker 检查后才删除 marker。'
@@ -309,11 +270,18 @@ tar \
       if [ "\$CLEANUP_RUNNING" = '1' ]; then return; fi
       CLEANUP_RUNNING=1
       set +e
-      if [ -n "\$DRAIN_PID" ] && kill -0 "\$DRAIN_PID" >/dev/null 2>&1; then
-        touch "\$DRAIN_RELEASE_FILE" || true
-        wait "\$DRAIN_PID" || true
+      if [ -n "\$DRAIN_CHILD_PID" ]; then
+        if kill -0 "\$DRAIN_CHILD_PID" >/dev/null 2>&1; then
+          touch "\$DRAIN_RELEASE_FILE" || true
+        fi
+        wait "\$DRAIN_CHILD_PID" || true
+        if kill -0 "\$DRAIN_CHILD_PID" >/dev/null 2>&1; then
+          echo '部署 drain 子进程未退出，保留所有门禁和 mutex。' >&2
+          return 2
+        fi
       fi
       DRAIN_PID=''
+      DRAIN_CHILD_PID=''
       if [ -f "\$DRAIN_STOP_ATTEMPTED_FILE" ]; then OLD_PROCESS_STOP_ATTEMPTED=1; fi
       if [ -f "\$DRAIN_STOPPED_FILE" ]; then OLD_PROCESS_STOPPED=1; fi
 
@@ -355,11 +323,11 @@ tar \
         fi
       fi
     }
-    if [ -f "\$DRAIN_MARKER_FILE" ] && grep -qx 'manual' "\$DRAIN_MARKER_FILE"; then
-      echo '检测到未恢复的 manual 部署门禁，禁止开始新发布。'
+    if [ -e "\$DRAIN_MARKER_FILE" ]; then
+      echo '检测到残留部署 marker（包括空文件），禁止开始新发布。'
       exit 2
     fi
-    trap cleanup_deploy_drain EXIT INT TERM
+    DRAIN_CLEANUP_ARMED=1
 
     enable_network_drain
     write_owned_deploy_marker
@@ -370,6 +338,7 @@ tar \
         --stopped-file "\$DRAIN_STOPPED_FILE" \
         --release-file "\$DRAIN_RELEASE_FILE" &
     DRAIN_PID=\$!
+    DRAIN_CHILD_PID=\$DRAIN_PID
     for attempt in \$(seq 1 300); do
       if [ -f "\$DRAIN_STOPPED_FILE" ]; then break; fi
       if ! kill -0 "\$DRAIN_PID" >/dev/null 2>&1; then
@@ -398,6 +367,7 @@ tar \
     touch "\$DRAIN_RELEASE_FILE"
     wait "\$DRAIN_PID"
     DRAIN_PID=''
+    DRAIN_CHILD_PID=''
     rm -f "\$DRAIN_READY_FILE" "\$DRAIN_STOP_ATTEMPTED_FILE" \
       "\$DRAIN_STOPPED_FILE" "\$DRAIN_RELEASE_FILE"
 
@@ -427,7 +397,7 @@ tar \
     pm2 save
     rm -f "\$DRAIN_NETWORK_STATE_FILE"
     remove_owned_deploy_marker
-    trap - EXIT INT TERM
+    DRAIN_CLEANUP_ARMED=0
   "
 
 echo "部署完成。"
