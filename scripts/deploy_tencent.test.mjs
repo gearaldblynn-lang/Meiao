@@ -1,6 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+const extractRemoteShellFunction = (source, name) => {
+  const start = source.indexOf(`    ${name}() {`);
+  const end = source.indexOf('\n    }\n', start);
+  assert.ok(start >= 0 && end > start, `${name} must exist in the remote deploy shell`);
+  return source
+    .slice(start, end + '\n    }'.length)
+    .replace(/^    /gm, '')
+    .replaceAll('\\$', '$')
+    .replaceAll('\\"', '"');
+};
 
 test('deploy_tencent preserves remote server data directory', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
@@ -100,7 +114,9 @@ test('deploy_tencent holds an owner-checked remote mutex across readiness and up
 
   assert.match(release, /release-mutex/);
   assert.match(release, /--mutation-started '\$REMOTE_MUTATION_STARTED'/);
-  assert.match(ownershipSource, /renameSync\(mutexDir, releaseDir\)/);
+  assert.match(ownershipSource, /mkdtempSync\(join\(/);
+  assert.match(ownershipSource, /renameSync\(livePath, claimPath\)/);
+  assert.match(ownershipSource, /mkdirSync\(mutexDir, \{ mode: 0o700 \}\)/);
   assert.doesNotMatch(release, /rm -f '\$REMOTE_DEPLOY_MUTEX_DIR\/owner'/);
 });
 
@@ -191,7 +207,8 @@ test('deploy_tencent writes and removes active drain markers only for its owner 
   assert.match(source, /ownership-helper\.mjs' create-marker/);
   assert.match(source, /ownership-helper\.mjs' remove-marker/);
   assert.match(ownershipSource, /writeFileSync\(markerFile, ownerContent\(ownerToken\), \{ flag: 'wx'/);
-  assert.match(ownershipSource, /renameSync\(markerFile, quarantineFile\)/);
+  assert.match(ownershipSource, /purpose: 'quarantine'/);
+  assert.match(ownershipSource, /writeFileSync\(livePath, readFileSync\(claimPath\), \{ flag: 'wx'/);
   assert.match(ownershipSource, /verifyDeployMutex\(\{ mutexDir, ownerToken \}\)/);
   assert.doesNotMatch(source, /rm -f \\"\\\$DRAIN_MARKER_FILE\\"/);
 });
@@ -210,4 +227,50 @@ test('deploy_tencent releases a mutation-started mutex only after remote cleanup
   assert.ok(completionIndex > childCheckIndex, 'completion must be written after cleanup and child liveness proof');
   assert.match(source, /--mutation-started '\$REMOTE_MUTATION_STARTED'/);
   assert.match(source, /DRAIN_CHILD_PID=\\\$DRAIN_PID/);
+});
+
+test('retain failure makes real remote cleanup fail and prevents completion proof', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const tempDir = mkdtempSync(join(tmpdir(), 'meiao-deploy-cleanup-'));
+  const completionLog = join(tempDir, 'completion.log');
+  const finishFunction = extractRemoteShellFunction(source, 'finish_remote_mutation');
+  const cleanupFunction = extractRemoteShellFunction(source, 'cleanup_deploy_drain');
+  assert.doesNotMatch(cleanupFunction, /retain_deploy_drain\s*\|\|\s*true/);
+  const shell = `
+${finishFunction}
+${cleanupFunction}
+retain_deploy_drain() { return 7; }
+node() {
+  case "$*" in
+    *"deploy-lifecycle.mjs cleanup"*) printf 'retain\\n'; return 0 ;;
+    *"complete-mutation"*) printf 'called\\n' > "$COMPLETION_LOG"; return 0 ;;
+    *) return 0 ;;
+  esac
+}
+CLEANUP_RUNNING=0
+DRAIN_CLEANUP_ARMED=1
+DRAIN_CHILD_PID=''
+DRAIN_PID=''
+DRAIN_STOP_ATTEMPTED_FILE="$TEMP_DIR/stop-attempted"
+DRAIN_STOPPED_FILE="$TEMP_DIR/stopped"
+OLD_PROCESS_STOPPED=0
+OLD_PROCESS_STOP_ATTEMPTED=0
+NEW_PROCESS_STARTED=0
+HEALTH_READY=0
+NEW_PROCESS_STOPPED=0
+true
+finish_remote_mutation
+`;
+
+  try {
+    const result = spawnSync('bash', ['-c', shell], {
+      encoding: 'utf8',
+      env: { ...process.env, COMPLETION_LOG: completionLog, TEMP_DIR: tempDir },
+    });
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(result.stderr, /清理失败/);
+    assert.equal(existsSync(completionLog), false, 'cleanup failure must not write completion');
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });

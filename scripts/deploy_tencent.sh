@@ -133,15 +133,20 @@ tar \
     DRAIN_CLEANUP_ARMED=0
     finish_remote_mutation() {
       REMOTE_EXIT_STATUS=\$?
+      REMOTE_CLEANUP_FAILED=0
       trap - EXIT INT TERM
       set +e
       if [ \"\$DRAIN_CLEANUP_ARMED\" = '1' ] && type cleanup_deploy_drain >/dev/null 2>&1; then
-        cleanup_deploy_drain
-        if [ \$? -ne 0 ]; then REMOTE_EXIT_STATUS=2; fi
+        if ! cleanup_deploy_drain; then
+          REMOTE_CLEANUP_FAILED=1
+          REMOTE_EXIT_STATUS=2
+        fi
       fi
       if [ -n \"\$DRAIN_CHILD_PID\" ] && kill -0 \"\$DRAIN_CHILD_PID\" >/dev/null 2>&1; then
         echo '部署 drain 子进程仍在运行，拒绝写入远端完成证明。' >&2
         REMOTE_EXIT_STATUS=2
+      elif [ \"\$REMOTE_CLEANUP_FAILED\" = '1' ]; then
+        echo '部署 drain 清理失败，拒绝写入远端完成证明。' >&2
       else
         node '$REMOTE_DEPLOY_MUTEX_DIR/ownership-helper.mjs' complete-mutation \
           --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN'
@@ -309,11 +314,17 @@ tar \
             "\$DRAIN_RELEASE_FILE" \
             "\$DRAIN_NETWORK_STATE_FILE"
         else
-          retain_deploy_drain || true
+          if ! retain_deploy_drain; then
+            echo '维护门禁持久化失败，拒绝确认远端清理完成。' >&2
+            return 2
+          fi
           echo '网络门禁清理失败，保留维护门禁等待人工处理。'
         fi
       else
-        retain_deploy_drain || true
+        if ! retain_deploy_drain; then
+          echo '维护门禁持久化失败，拒绝确认远端清理完成。' >&2
+          return 2
+        fi
         if [ "\$OLD_PROCESS_STOPPED" = '1' ] && [ "\$NEW_PROCESS_STARTED" != '1' ]; then
           echo '严重：旧服务已停止且新服务未启动，当前服务已停止；必须按恢复流程人工处理。'
         elif [ "\$OLD_PROCESS_STOP_ATTEMPTED" = '1' ] && [ "\$NEW_PROCESS_STARTED" != '1' ]; then

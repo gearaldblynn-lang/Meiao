@@ -18,12 +18,12 @@ Scope: final independent-review follow-up for the production-stability release
 11. A separate stop-attempted acknowledgement is persisted after old-app existence is established but before invoking `pm2 stop`. Stop-command failure therefore retains truthful evidence that the old process may have changed, keeps all gates when no new process started, and never promotes the state to verified stopped.
 12. The initial remote readiness pass sources `.env.server`, resolves a custom `MEIAO_DEPLOY_DRAIN_FILE`, and rejects marker existence including empty files before any source upload or replacement. The final race check remains in place.
 13. Network drain state updates now write a same-directory temporary file and atomically rename it over the state file.
-14. A deployment-wide remote mutex is acquired with atomic `mkdir` before readiness or upload. After remote mutation starts, its shell writes an owner-matched completion proof only after cleanup and drain-child exit; local abnormal exit or missing proof retains the mutex. Release atomically claims the directory before inspection, so a replacement mutex is never deleted.
-15. Active drain markers use exclusive creation. Cleanup atomically claims the marker by owner-specific rename, deletes only matching claimed content, restores/retains foreign or manual content, and leaves any replacement marker untouched. Manual, empty, and orphaned markers are all blocked before upload.
+14. A deployment-wide remote mutex is acquired with atomic `mkdir` before readiness or upload. After remote mutation starts, its shell writes an owner-matched completion proof only after successful cleanup and drain-child exit; retain failure, local abnormal exit, or missing proof retains the mutex.
+15. Active drain markers use exclusive creation. Mutex and marker cleanup allocate unpredictable private claim directories with `mkdtemp`, rename live state into an absent child, and use exclusive live creation for restoration. Replacement paths and preexisting predictable-looking external paths are never overwritten or removed; blocked restoration retains the private claim.
 
 ## Verification
 
-- Focused deployment-drain/readiness regression: 50 passed, 0 failed.
+- Focused deployment-drain/readiness regression: 56 passed, 0 failed.
 - `node --check scripts/deploy-ownership.mjs`: passed.
 - `bash -n scripts/deploy_tencent.sh`: passed.
 - `npm run lint`: TypeScript passed; ESLint 0 errors and 660 warnings, exactly within the existing 660 warning budget.

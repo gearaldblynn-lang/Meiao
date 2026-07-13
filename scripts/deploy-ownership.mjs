@@ -1,5 +1,6 @@
 import {
-  existsSync,
+  lstatSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -8,14 +9,22 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const OWNER_FILE = 'owner';
 const COMPLETION_FILE = 'remote-complete';
 const HELPER_FILE = 'ownership-helper.mjs';
 
-export const pathExists = (path) => existsSync(path);
+export const pathExists = (path) => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+};
 
 const assertOwnerToken = (ownerToken) => {
   if (!/^[A-Za-z0-9._-]+$/.test(ownerToken || '')) {
@@ -34,9 +43,64 @@ const readExact = (path) => {
   }
 };
 
-const restoreClaim = (claimPath, livePath) => {
-  if (existsSync(livePath)) return false;
-  renameSync(claimPath, livePath);
+const createPrivateClaim = ({ livePath, purpose }) => {
+  const claimParent = mkdtempSync(join(
+    dirname(livePath),
+    `.${basename(livePath)}.${purpose}-`,
+  ));
+  const claimPath = join(claimParent, 'claimed');
+  try {
+    renameSync(livePath, claimPath);
+  } catch (error) {
+    rmdirSync(claimParent);
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+  return { claimParent, claimPath };
+};
+
+const removeFileClaim = ({ claimParent, claimPath }) => {
+  unlinkSync(claimPath);
+  rmdirSync(claimParent);
+};
+
+const restoreFileClaim = ({ claimParent, claimPath, livePath }) => {
+  try {
+    writeFileSync(livePath, readFileSync(claimPath), { flag: 'wx', mode: 0o600 });
+  } catch (error) {
+    if (error?.code === 'EEXIST') return false;
+    throw error;
+  }
+  removeFileClaim({ claimParent, claimPath });
+  return true;
+};
+
+const restoreMutexClaim = ({ claimParent, claimPath, mutexDir }) => {
+  let entries;
+  try {
+    entries = readdirSync(claimPath);
+    for (const name of entries) readFileSync(join(claimPath, name));
+    mkdirSync(mutexDir, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code === 'EEXIST') return false;
+    return false;
+  }
+
+  try {
+    for (const name of entries) {
+      writeFileSync(join(mutexDir, name), readFileSync(join(claimPath, name)), {
+        flag: 'wx',
+        mode: 0o600,
+      });
+    }
+  } catch {
+    // Keep both the private claim and any partial exclusive restore for inspection.
+    return false;
+  }
+
+  for (const name of entries) unlinkSync(join(claimPath, name));
+  rmdirSync(claimPath);
+  rmdirSync(claimParent);
   return true;
 };
 
@@ -98,17 +162,22 @@ export const releaseDeployMutex = ({
     return { released: false, reason: 'completion_missing' };
   }
 
-  const releaseDir = `${mutexDir}.release-${ownerToken}`;
-  if (existsSync(releaseDir)) throw new Error('deployment mutex release claim already exists');
-  renameSync(mutexDir, releaseDir);
-  afterClaim?.();
+  const claim = createPrivateClaim({ livePath: mutexDir, purpose: 'release' });
+  if (!claim) return { released: false, reason: 'mutex_missing' };
+  const { claimParent, claimPath } = claim;
+  afterClaim?.(claim);
 
-  const claimedOwnerMatches = readExact(join(releaseDir, OWNER_FILE)) === ownerContent(ownerToken);
+  const claimedOwnerMatches = readExact(join(claimPath, OWNER_FILE)) === ownerContent(ownerToken);
   const claimedCompletionMatches = !mutationStarted
-    || readExact(join(releaseDir, COMPLETION_FILE)) === ownerContent(ownerToken);
+    || readExact(join(claimPath, COMPLETION_FILE)) === ownerContent(ownerToken);
   if (!claimedOwnerMatches || !claimedCompletionMatches) {
-    const restored = restoreClaim(releaseDir, mutexDir);
-    return { released: false, reason: 'claimed_owner_mismatch', restored };
+    const restored = restoreMutexClaim({ claimParent, claimPath, mutexDir });
+    return {
+      released: false,
+      reason: 'claimed_owner_mismatch',
+      restored,
+      ...(!restored && { claimParent, claimPath }),
+    };
   }
 
   const allowedFiles = new Set([
@@ -116,17 +185,21 @@ export const releaseDeployMutex = ({
     COMPLETION_FILE,
     HELPER_FILE,
   ]);
-  const unexpectedFiles = readdirSync(releaseDir).filter((name) => !allowedFiles.has(name));
+  const entries = readdirSync(claimPath);
+  const unexpectedFiles = entries.filter((name) => !allowedFiles.has(name));
   if (unexpectedFiles.length > 0) {
-    const restored = restoreClaim(releaseDir, mutexDir);
-    return { released: false, reason: 'unexpected_mutex_state', restored };
+    const restored = restoreMutexClaim({ claimParent, claimPath, mutexDir });
+    return {
+      released: false,
+      reason: 'unexpected_mutex_state',
+      restored,
+      ...(!restored && { claimParent, claimPath }),
+    };
   }
 
-  for (const name of [COMPLETION_FILE, HELPER_FILE, OWNER_FILE]) {
-    const path = join(releaseDir, name);
-    if (existsSync(path)) unlinkSync(path);
-  }
-  rmdirSync(releaseDir);
+  for (const name of entries) unlinkSync(join(claimPath, name));
+  rmdirSync(claimPath);
+  rmdirSync(claimParent);
   return { released: true };
 };
 
@@ -149,71 +222,80 @@ export const removeOwnedDeployMarker = ({
   afterClaim,
 }) => {
   verifyDeployMutex({ mutexDir, ownerToken });
-  const quarantineFile = `${markerFile}.quarantine-${ownerToken}`;
-  if (existsSync(quarantineFile)) throw new Error('deploy marker quarantine already exists');
-  try {
-    renameSync(markerFile, quarantineFile);
-  } catch (error) {
-    if (error?.code === 'ENOENT') return { removed: false, reason: 'missing' };
-    throw error;
-  }
-  afterClaim?.();
+  const claim = createPrivateClaim({ livePath: markerFile, purpose: 'quarantine' });
+  if (!claim) return { removed: false, reason: 'missing' };
+  const { claimParent, claimPath } = claim;
+  afterClaim?.(claim);
 
   try {
     verifyDeployMutex({ mutexDir, ownerToken });
   } catch (error) {
-    restoreClaim(quarantineFile, markerFile);
+    restoreFileClaim({ claimParent, claimPath, livePath: markerFile });
     throw error;
   }
 
-  if (readExact(quarantineFile) === ownerContent(ownerToken)) {
-    unlinkSync(quarantineFile);
+  if (readExact(claimPath) === ownerContent(ownerToken)) {
+    removeFileClaim({ claimParent, claimPath });
     return { removed: true };
   }
 
-  const restored = restoreClaim(quarantineFile, markerFile);
-  return { removed: false, reason: 'owner_mismatch', restored };
+  const restored = restoreFileClaim({ claimParent, claimPath, livePath: markerFile });
+  return {
+    removed: false,
+    reason: 'owner_mismatch',
+    restored,
+    ...(!restored && { claimParent, claimPath }),
+  };
 };
 
 export const retainManualDeployMarker = ({ markerFile, mutexDir, ownerToken }) => {
   verifyDeployMutex({ mutexDir, ownerToken });
-  const quarantineFile = `${markerFile}.manual-${ownerToken}`;
-  if (existsSync(quarantineFile)) throw new Error('deploy marker manual claim already exists');
-
-  try {
-    renameSync(markerFile, quarantineFile);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
+  const claim = createPrivateClaim({ livePath: markerFile, purpose: 'manual' });
+  if (!claim) {
     writeFileSync(markerFile, 'manual\n', { flag: 'wx', mode: 0o600 });
     verifyDeployMutex({ mutexDir, ownerToken });
     return { retained: true };
   }
+  const { claimParent, claimPath } = claim;
 
   try {
     verifyDeployMutex({ mutexDir, ownerToken });
   } catch (error) {
-    restoreClaim(quarantineFile, markerFile);
+    restoreFileClaim({ claimParent, claimPath, livePath: markerFile });
     throw error;
   }
 
-  const claimedContent = readExact(quarantineFile);
+  const claimedContent = readExact(claimPath);
   if (claimedContent === 'manual\n') {
-    const restored = restoreClaim(quarantineFile, markerFile);
-    return { retained: true, restored };
+    const restored = restoreFileClaim({ claimParent, claimPath, livePath: markerFile });
+    return restored
+      ? { retained: true, restored: true }
+      : { retained: false, reason: 'restore_blocked', restored: false, claimParent, claimPath };
   }
   if (claimedContent !== ownerContent(ownerToken)) {
-    const restored = restoreClaim(quarantineFile, markerFile);
-    return { retained: false, reason: 'owner_mismatch', restored };
+    const restored = restoreFileClaim({ claimParent, claimPath, livePath: markerFile });
+    return {
+      retained: false,
+      reason: 'owner_mismatch',
+      restored,
+      ...(!restored && { claimParent, claimPath }),
+    };
   }
 
   verifyDeployMutex({ mutexDir, ownerToken });
   try {
     writeFileSync(markerFile, 'manual\n', { flag: 'wx', mode: 0o600 });
   } catch (error) {
-    restoreClaim(quarantineFile, markerFile);
-    throw error;
+    if (error?.code !== 'EEXIST') throw error;
+    return {
+      retained: false,
+      reason: 'live_marker_exists',
+      restored: false,
+      claimParent,
+      claimPath,
+    };
   }
-  unlinkSync(quarantineFile);
+  removeFileClaim({ claimParent, claimPath });
   return { retained: true };
 };
 
