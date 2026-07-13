@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -49,6 +50,39 @@ test('marker removal deletes only the claimed owner marker and leaves a replacem
 
   assert.equal(result.removed, true);
   assert.equal(readFileSync(markerFile, 'utf8'), 'replacement\n');
+}));
+
+test('marker restore retains its private claim when a new live marker appears', () => withTempDir((dir) => {
+  const markerFile = join(dir, 'drain.marker');
+  const mutexDir = join(dir, 'mutex');
+  ownership.acquireDeployMutex({ mutexDir, ownerToken: 'owner-a' });
+  writeFileSync(markerFile, 'manual\n');
+
+  const result = ownership.removeOwnedDeployMarker({
+    markerFile,
+    mutexDir,
+    ownerToken: 'owner-a',
+    afterClaim: () => writeFileSync(markerFile, 'replacement\n', { flag: 'wx' }),
+  });
+
+  assert.equal(result.removed, false);
+  assert.equal(result.restored, false);
+  assert.equal(readFileSync(markerFile, 'utf8'), 'replacement\n');
+  assert.equal(readFileSync(result.claimPath, 'utf8'), 'manual\n');
+}));
+
+test('private marker claim ignores a preexisting predictable-looking external path', () => withTempDir((dir) => {
+  const markerFile = join(dir, 'drain.marker');
+  const mutexDir = join(dir, 'mutex');
+  const externalPath = `${markerFile}.quarantine-owner-a`;
+  ownership.acquireDeployMutex({ mutexDir, ownerToken: 'owner-a' });
+  ownership.createOwnedDeployMarker({ markerFile, mutexDir, ownerToken: 'owner-a' });
+  writeFileSync(externalPath, 'external-sentinel\n');
+
+  const result = ownership.removeOwnedDeployMarker({ markerFile, mutexDir, ownerToken: 'owner-a' });
+
+  assert.equal(result.removed, true);
+  assert.equal(readFileSync(externalPath, 'utf8'), 'external-sentinel\n');
 }));
 
 test('foreign marker content is restored instead of deleted after an atomic claim', () => withTempDir((dir) => {
@@ -125,4 +159,67 @@ test('mutex release removes only its claimed directory and leaves a replacement 
 
   assert.equal(result.released, true);
   assert.equal(readFileSync(join(mutexDir, 'owner'), 'utf8'), 'owner-b\n');
+}));
+
+test('mutex mismatch restore retains its private claim when a new live mutex appears', () => withTempDir((dir) => {
+  const mutexDir = join(dir, 'mutex');
+  ownership.acquireDeployMutex({ mutexDir, ownerToken: 'owner-a' });
+  ownership.recordRemoteMutationCompletion({ mutexDir, ownerToken: 'owner-a' });
+
+  const result = ownership.releaseDeployMutex({
+    mutexDir,
+    ownerToken: 'owner-a',
+    mutationStarted: true,
+    afterClaim: ({ claimPath }) => {
+      writeFileSync(join(claimPath, 'owner'), 'foreign-owner\n');
+      mkdirSync(mutexDir);
+      writeFileSync(join(mutexDir, 'owner'), 'owner-b\n', { flag: 'wx' });
+    },
+  });
+
+  assert.equal(result.released, false);
+  assert.equal(result.restored, false);
+  assert.equal(readFileSync(join(mutexDir, 'owner'), 'utf8'), 'owner-b\n');
+  assert.equal(readFileSync(join(result.claimPath, 'owner'), 'utf8'), 'foreign-owner\n');
+}));
+
+test('mutex mismatch restore recreates live state exclusively and removes its private claim', () => withTempDir((dir) => {
+  const mutexDir = join(dir, 'mutex');
+  ownership.acquireDeployMutex({ mutexDir, ownerToken: 'owner-a' });
+  ownership.recordRemoteMutationCompletion({ mutexDir, ownerToken: 'owner-a' });
+  let claimParent;
+
+  const result = ownership.releaseDeployMutex({
+    mutexDir,
+    ownerToken: 'owner-a',
+    mutationStarted: true,
+    afterClaim: (claim) => {
+      claimParent = claim.claimParent;
+      writeFileSync(join(claim.claimPath, 'owner'), 'foreign-owner\n');
+    },
+  });
+
+  assert.equal(result.released, false);
+  assert.equal(result.restored, true);
+  assert.equal(readFileSync(join(mutexDir, 'owner'), 'utf8'), 'foreign-owner\n');
+  assert.equal(existsSync(claimParent), false);
+}));
+
+test('private mutex claim ignores a preexisting predictable-looking external path', () => withTempDir((dir) => {
+  const mutexDir = join(dir, 'mutex');
+  const externalPath = `${mutexDir}.release-owner-a`;
+  ownership.acquireDeployMutex({ mutexDir, ownerToken: 'owner-a' });
+  ownership.recordRemoteMutationCompletion({ mutexDir, ownerToken: 'owner-a' });
+  mkdirSync(externalPath);
+  writeFileSync(join(externalPath, 'sentinel'), 'external-sentinel\n');
+
+  const result = ownership.releaseDeployMutex({
+    mutexDir,
+    ownerToken: 'owner-a',
+    mutationStarted: true,
+  });
+
+  assert.equal(result.released, true);
+  assert.equal(existsSync(mutexDir), false);
+  assert.equal(readFileSync(join(externalPath, 'sentinel'), 'utf8'), 'external-sentinel\n');
 }));
