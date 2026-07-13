@@ -19,6 +19,7 @@ import {
   MODULE_INTERFACES,
 } from '../src/modules/AgentCenter/agentCenterUtils.mjs';
 import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Account/logQueryUtils.mjs';
+import { isMaxForAiImageModel } from '../src/utils/maxforaiImageModels.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
 import { handleChatwootAiWebhook } from './chatwootAiResponder.mjs';
 import {
@@ -4750,17 +4751,18 @@ const releaseLocalJobCredits = ({ store, job, error, retryWaiting }) => {
   });
 };
 
-const reserveDbAgentImageCredits = async (pool, user, { sessionId = '', clientRequestId = '', taskType = 'agent_image' } = {}) => {
+const reserveDbAgentImageCredits = async (pool, user, { sessionId = '', clientRequestId = '', taskType = 'agent_image', model = '' } = {}) => {
+  const provider = isMaxForAiImageModel(model) ? 'maxforai' : 'kie';
   const amount = estimateCreditReservation({
     taskType: taskType || 'agent_image',
-    provider: 'kie',
-    payload: { outputCount: 1 },
+    provider,
+    payload: { outputCount: 1, model },
   });
   return await reserveDbAccountCredits(pool, user, {
     amount,
     module: 'agent_center',
     taskType: taskType || 'agent_image',
-    provider: 'kie',
+    provider,
     requestId: clientRequestId,
     reason: 'agent_image_generation',
     meta: { sessionId, clientRequestId },
@@ -4772,7 +4774,7 @@ const settleDbAgentImageCredits = async (pool, reservation, { result, sessionId 
     result,
     module: 'agent_center',
     taskType: reservation?.taskType || 'agent_image',
-    provider: 'kie',
+    provider: reservation?.provider || 'kie',
     requestId: clientRequestId,
     reason: 'agent_image_completed',
     meta: { sessionId, clientRequestId },
@@ -4783,7 +4785,7 @@ const releaseDbAgentImageCredits = async (pool, reservation, { error, sessionId 
   await releaseDbAccountCredits(pool, reservation, {
     module: 'agent_center',
     taskType: reservation?.taskType || 'agent_image',
-    provider: 'kie',
+    provider: reservation?.provider || 'kie',
     requestId: clientRequestId,
     reason: 'agent_image_failed',
     meta: {
@@ -4795,17 +4797,18 @@ const releaseDbAgentImageCredits = async (pool, reservation, { error, sessionId 
   })
 );
 
-const reserveLocalAgentImageCredits = (store, user, { sessionId = '', clientRequestId = '', taskType = 'agent_image' } = {}) => {
+const reserveLocalAgentImageCredits = (store, user, { sessionId = '', clientRequestId = '', taskType = 'agent_image', model = '' } = {}) => {
+  const provider = isMaxForAiImageModel(model) ? 'maxforai' : 'kie';
   const amount = estimateCreditReservation({
     taskType: taskType || 'agent_image',
-    provider: 'kie',
-    payload: { outputCount: 1 },
+    provider,
+    payload: { outputCount: 1, model },
   });
   return reserveLocalAccountCredits(store, user.id, {
     amount,
     module: 'agent_center',
     taskType: taskType || 'agent_image',
-    provider: 'kie',
+    provider,
     requestId: clientRequestId,
     reason: 'agent_image_generation',
     meta: { sessionId, clientRequestId },
@@ -4817,7 +4820,7 @@ const settleLocalAgentImageCredits = (store, reservation, { result, sessionId = 
     result,
     module: 'agent_center',
     taskType: reservation?.taskType || 'agent_image',
-    provider: 'kie',
+    provider: reservation?.provider || 'kie',
     requestId: clientRequestId,
     reason: 'agent_image_completed',
     meta: { sessionId, clientRequestId },
@@ -4828,7 +4831,7 @@ const releaseLocalAgentImageCredits = (store, reservation, { error, sessionId = 
   releaseLocalAccountCredits(store, reservation, {
     module: 'agent_center',
     taskType: reservation?.taskType || 'agent_image',
-    provider: 'kie',
+    provider: reservation?.provider || 'kie',
     requestId: clientRequestId,
     reason: 'agent_image_failed',
     meta: {
@@ -6655,7 +6658,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       }, process.env, searchKnowledgeChunks)
     : [];
   const agentImageCreditReservation = requestMode === 'image_generation' && !shouldUseToolCallingConversation(version)
-    ? await reserveDbAgentImageCredits(pool, user, { sessionId, clientRequestId })
+    ? await reserveDbAgentImageCredits(pool, user, { sessionId, clientRequestId, model: version?.modelPolicy?.multimodalModel })
     : null;
   let agentImageCreditSettled = false;
   const contextTraceBase = {
@@ -6910,7 +6913,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         };
       };
       const generateImage = async ({ prompt, taskType, inputImageUrls, aspectRatio, model }) => {
-        const imageCreditReservation = await reserveDbAgentImageCredits(pool, user, { sessionId, clientRequestId, taskType });
+        const imageCreditReservation = await reserveDbAgentImageCredits(pool, user, { sessionId, clientRequestId, taskType, model });
         let imageOutput;
         try {
           imageOutput = await executeProviderJobWithManagedAssetScrub({
@@ -6957,7 +6960,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
           assetType: 'result',
           remoteUrl: rawUrl,
           originalName: `${model || 'image_result'}.png`,
-          provider: 'kie',
+          provider: isMaxForAiImageModel(model) ? 'maxforai' : 'kie',
           jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId),
         });
         const imageUrl = persistedUrl || rawUrl;
@@ -8625,7 +8628,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     assetType: 'result',
     remoteUrl: imageUrl,
     originalName: `${selectedImageModel || 'image_result'}.png`,
-    provider: 'kie',
+    provider: isMaxForAiImageModel(selectedImageModel) ? 'maxforai' : 'kie',
     jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId),
   });
   const promptTokens = analysisMessages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
@@ -13594,7 +13597,7 @@ const handleLocalRequest = async (req, res, url) => {
     let agentImageCreditSettled = false;
     try {
       agentImageCreditReservation = requestMode === 'image_generation' && !shouldUseToolCallingConversation(version)
-        ? reserveLocalAgentImageCredits(store, user, { sessionId, clientRequestId })
+        ? reserveLocalAgentImageCredits(store, user, { sessionId, clientRequestId, model: version?.modelPolicy?.multimodalModel })
         : null;
       if (agentImageCreditReservation) writeLocalStore(store);
     } catch (error) {
@@ -13783,7 +13786,7 @@ const handleLocalRequest = async (req, res, url) => {
           };
         };
         const generateImage = async ({ prompt, taskType, inputImageUrls, aspectRatio, model }) => {
-          const imageCreditReservation = reserveLocalAgentImageCredits(store, user, { sessionId, clientRequestId, taskType });
+          const imageCreditReservation = reserveLocalAgentImageCredits(store, user, { sessionId, clientRequestId, taskType, model });
           if (imageCreditReservation) writeLocalStore(store);
           let imageOutput;
           try {
@@ -13832,7 +13835,7 @@ const handleLocalRequest = async (req, res, url) => {
             assetType: 'result',
             remoteUrl: rawUrl,
             originalName: `${model || 'image_result'}.png`,
-            provider: 'kie',
+            provider: isMaxForAiImageModel(model) ? 'maxforai' : 'kie',
             jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId),
           });
           const imageUrl = persistedUrl || rawUrl;

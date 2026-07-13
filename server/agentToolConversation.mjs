@@ -1,6 +1,7 @@
 import { GENERATE_IMAGE_TOOL, normalizeGenerateImageArgs } from './imageToolDefinition.mjs';
 import { SEARCH_KNOWLEDGE_TOOL, normalizeSearchKnowledgeArgs } from './knowledgeToolDefinition.mjs';
 import { buildSessionImageCatalog, formatCatalogForPrompt, isUrlInCatalog } from './conversationImageCatalog.mjs';
+import { resolveMaxForAiImageModelId } from '../src/utils/maxforaiImageModels.mjs';
 
 const IMAGE_MODE_GUIDANCE = [
   '你正处于生图模式。用户希望你帮助生成或修改图片。',
@@ -92,6 +93,10 @@ const getImageGenerateTransientMaxRetries = (env = process.env) => {
   const parsed = Number.parseInt(String(env?.AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES || ''), 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 1;
 };
+
+export const getImageGenerateTransientMaxRetriesForModel = (model = '', env = process.env) => (
+  resolveMaxForAiImageModelId(model) ? 0 : getImageGenerateTransientMaxRetries(env)
+);
 
 const getAgentModelTransientMaxRetries = (env = process.env) => {
   const parsed = Number.parseInt(String(env?.AGENT_MODEL_TRANSIENT_MAX_RETRIES || ''), 10);
@@ -545,7 +550,7 @@ export const runAgentConversationV2 = async ({
   let creditsConsumed = 0;
   let imagePlan = null;
   let selectedModel = response.modelUsed || '';
-  const maxImageGenerateTransientRetries = getImageGenerateTransientMaxRetries(process.env);
+  const maxImageGenerateTransientRetries = getImageGenerateTransientMaxRetriesForModel(selectedImageModel, process.env);
   while (response.finishReason === 'tool_calls' && response.toolCalls?.length && rounds < maxToolRounds) {
     rounds += 1;
     if (response.modelUsed) selectedModel = response.modelUsed;

@@ -56,6 +56,7 @@ const createPolicyError = (code, message, statusCode) => {
 };
 
 const getAllowedProviders = (taskType) => {
+  if (taskType === 'kie_image') return new Set(['kie', 'maxforai']);
   if (taskType.startsWith('kie_')) return new Set(['kie']);
   return TASK_PROVIDER_POLICIES.get(taskType) || null;
 };
@@ -100,6 +101,7 @@ export const resolveJobSubmissionPolicy = ({
     && (normalizedTaskType === 'kie_chat' || normalizedTaskType === 'kie_image')
     && normalizedSubFeature === 'storyboard';
   const requiresVideoPermission = VIDEO_JOB_TASK_TYPES.has(normalizedTaskType) || isVideoStoryboard;
+  const isMaxForAiPaidImage = normalizedTaskType === 'kie_image' && normalizedProvider === 'maxforai';
   if (requiresVideoPermission && !hasVideoPermission) {
     throw createPolicyError(
       'video_feature_forbidden',
@@ -113,7 +115,7 @@ export const resolveJobSubmissionPolicy = ({
     provider: normalizedProvider,
     isVideoStoryboard,
     requiresVideoPermission,
-    maxCreateRetries: requiresVideoPermission ? 0 : undefined,
+    maxCreateRetries: requiresVideoPermission || isMaxForAiPaidImage ? 0 : undefined,
     dedupeWindowMs: requiresVideoPermission
       ? VIDEO_DEDUPE_WINDOW_MS
       : normalizedTaskType === 'kie_chat'

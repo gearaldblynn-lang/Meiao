@@ -33,6 +33,8 @@ import {
   KIE_IMAGE_MODEL_ALIASES,
   runKieImageJob as runKieImageProviderJob,
 } from './providerKieImage.mjs';
+import { runMaxForAiImageJob } from './providerMaxForAiImage.mjs';
+import { isMaxForAiImageModel } from '../src/utils/maxforaiImageModels.mjs';
 import { withKieAssetUploadSlot } from './providerAssetUploadLimiter.mjs';
 import {
   allowConcurrentAbortListeners,
@@ -2870,6 +2872,21 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
     case 'upload_asset':
       return uploadAssetViaKieStream(normalizeUploadAssetStreamPayload(job.payload), env, signal);
     case 'kie_image':
+      if (job.provider === 'maxforai' || isMaxForAiImageModel(job.payload?.model)) {
+        if (job.providerTaskId) {
+          throw createProviderError(
+            'provider_submission_unknown',
+            'Image-2 同步付费请求没有可查询的上游任务 ID，已停止重新提交以避免重复付费。',
+            { providerStage: 'provider_submission', providerStatus: 'submission_unknown', submissionUnknown: true },
+          );
+        }
+        return runMaxForAiImageJob({
+          payload: job.payload,
+          env,
+          signal,
+          deps: { fetchWithTimeout: fetchKieWithTimeout },
+        });
+      }
       if (job.providerTaskId) {
         return runKieRecoverJob(
           {
@@ -2953,6 +2970,7 @@ export const getProviderConfigStatus = (env) => {
   return {
     kie: Boolean(providerEnv.kieApiKey),
     apiports: Boolean(providerEnv.apiportsApiKey),
+    maxforai: Boolean(env.MAXFORAI_API_KEY),
     dreamina: true,
   };
 };

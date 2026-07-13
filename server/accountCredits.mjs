@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 import { isRetryableErrorCode } from './jobRuntime.mjs';
+import { resolveMaxForAiImageModelId } from '../src/utils/maxforaiImageModels.mjs';
 
 export const CREDIT_LIMIT_MODES = {
   UNLIMITED: 'unlimited',
@@ -88,6 +89,8 @@ export const estimateCreditReservation = ({ taskType = '', provider = '', payloa
   const normalizedTaskType = String(taskType || '').toLowerCase();
   const normalizedProvider = String(provider || '').toLowerCase();
   if (!normalizedTaskType || normalizedTaskType === 'upload_asset' || normalizedProvider === 'internal') return 0;
+  const selectedImageModel = payload.model || payload.selectedImageModel || payload.multimodalModel || '';
+  if (normalizedProvider === 'maxforai' || resolveMaxForAiImageModelId(selectedImageModel)) return 0;
 
   if (
     normalizedTaskType.includes('image')

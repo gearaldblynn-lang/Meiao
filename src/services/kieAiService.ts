@@ -6,6 +6,7 @@ import { normalizeGptImage2Resolution } from '../utils/gptImage2.mjs';
 import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 import { isRecoverableError } from '../utils/errorClassification.mjs';
+import { isMaxForAiImageModel } from '../utils/maxforaiImageModels.mjs';
 
 const logKieEvent = (action: string, message: string, status: 'started' | 'success' | 'failed' | 'interrupted', detail = '', meta: Record<string, unknown> | null = null) => {
   const module = getActiveModuleContext() || 'unknown';
@@ -481,7 +482,8 @@ export const processWithKieAi = async (
   const safeImageUrls = await normalizeModelAssetUrls(imageUrls, '图像素材');
   const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode);
   const { skipPromptCleanupSuffix, ...safeTaskMetadata } = taskMetadata || {};
-  const promptWithCleanupSuffix = (moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary') && skipPromptCleanupSuffix !== true
+  const isMaxForAiModel = isMaxForAiImageModel(moduleConfig.model);
+  const promptWithCleanupSuffix = (moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary' || isMaxForAiModel) && skipPromptCleanupSuffix !== true
     ? `${finalPrompt}\n\n${getGptImage2CleanupSuffix(taskMetadata)}`
     : finalPrompt;
   const module = getActiveModuleContext() || 'unknown';
@@ -489,7 +491,7 @@ export const processWithKieAi = async (
   const { job } = await createInternalJob({
     module,
     taskType: 'kie_image',
-    provider: 'kie',
+    provider: isMaxForAiModel ? 'maxforai' : 'kie',
     payload: {
       imageUrls: safeImageUrls,
       prompt: promptWithCleanupSuffix,
@@ -500,7 +502,7 @@ export const processWithKieAi = async (
       targetWidth: moduleConfig.targetWidth || 0,
       targetHeight: moduleConfig.targetHeight || 0,
       maxFileSize: moduleConfig.maxFileSize || 2,
-      resolution: moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary'
+      resolution: !isMaxForAiModel && (moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary')
         ? normalizeGptImage2Resolution(
             moduleConfig.aspectRatio === AspectRatio.AUTO ? 'auto' : moduleConfig.aspectRatio,
             moduleConfig.quality.toUpperCase()
@@ -509,13 +511,14 @@ export const processWithKieAi = async (
       kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
       requestId,
     },
-    maxRetries: 2,
+    maxRetries: isMaxForAiModel ? 0 : 2,
   });
   onJobCreated?.(job.id);
   const notifyProviderTaskId = (providerTaskId: string) => onJobCreated?.(job.id, providerTaskId);
 
   const imageTimeout = KIE_IMAGE_TIMEOUT[moduleConfig.model] || KIE_IMAGE_DEFAULT_TIMEOUT;
-  const result = await waitForJobResult(job.id, signal, imageTimeout, true, Boolean(apiConfig.kieApiKey), notifyProviderTaskId);
+  const allowAutoRecover = !isMaxForAiModel;
+  const result = await waitForJobResult(job.id, signal, imageTimeout, allowAutoRecover, Boolean(apiConfig.kieApiKey), notifyProviderTaskId);
   const logStatus = result.status === 'success'
     ? 'success'
     : result.status === 'interrupted'

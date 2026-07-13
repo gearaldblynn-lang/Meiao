@@ -42,6 +42,7 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.deepEqual(config.providers, {
     kie: { configured: true },
     apiports: { configured: true },
+    maxforai: { configured: false },
   });
   assert.equal(config.publicBaseUrl, 'https://meiao.internal');
   assert.deepEqual(config.agentModels.chat.map((item) => item.id), [
@@ -89,6 +90,9 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.deepEqual(config.agentModels.image.map((item) => item.id), [
     'gpt-image-2',
     'gpt-image-2-secondary',
+    'maxforai-image-2-standard',
+    'maxforai-image-2-pro',
+    'maxforai-image-2-max',
     'nano-banana-2',
   ]);
   assert.deepEqual(config.agentModels.video.map((item) => item.id), [
