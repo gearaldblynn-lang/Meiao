@@ -1,11 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  isOpenRouterChatFileUrl,
-  isRedpandaOpenRouterChatFileUrl,
   isVideoMediaUrl,
   shouldUploadGeminiMediaUrlForStableMime,
-  shouldUploadGeminiVideoUrlToOpenRouterChat,
 } from './providerMediaRouting.mjs';
 
 test('isVideoMediaUrl recognizes supported video paths before query strings', () => {
@@ -14,40 +11,6 @@ test('isVideoMediaUrl recognizes supported video paths before query strings', ()
   assert.equal(isVideoMediaUrl('https://cdn.example.test/a/clip.webm'), true);
   assert.equal(isVideoMediaUrl('https://cdn.example.test/a/image.jpg'), false);
   assert.equal(isVideoMediaUrl(''), false);
-});
-
-test('openrouter chat file detection separates readable aiquickdraw urls from redpanda urls', () => {
-  assert.equal(
-    isOpenRouterChatFileUrl('https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/reference.mp4'),
-    true
-  );
-  assert.equal(
-    isOpenRouterChatFileUrl('https://tempfile.redpandaai.co/kieai/30590/openrouter-chat/reference.mp4'),
-    false
-  );
-  assert.equal(
-    isRedpandaOpenRouterChatFileUrl('https://tempfile.redpandaai.co/kieai/30590/openrouter-chat/reference.mp4'),
-    true
-  );
-});
-
-test('shouldUploadGeminiVideoUrlToOpenRouterChat skips already-readable openrouter urls only', () => {
-  assert.equal(
-    shouldUploadGeminiVideoUrlToOpenRouterChat('https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/reference.mp4'),
-    false
-  );
-  assert.equal(
-    shouldUploadGeminiVideoUrlToOpenRouterChat('https://tempfile.redpandaai.co/kieai/30590/openrouter-chat/reference.mp4'),
-    true
-  );
-  assert.equal(
-    shouldUploadGeminiVideoUrlToOpenRouterChat('https://tempfile.redpandaai.co/kieai/30590/mayo-storage/reference.mp4'),
-    true
-  );
-  assert.equal(
-    shouldUploadGeminiVideoUrlToOpenRouterChat('https://cdn.example.test/reference.jpg'),
-    false
-  );
 });
 
 test('shouldUploadGeminiMediaUrlForStableMime only selects unstable provider media without known extensions', () => {

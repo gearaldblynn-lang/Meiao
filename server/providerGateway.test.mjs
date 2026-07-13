@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { executeProviderJob, uploadAssetViaKieStream, __testOnly_setDreaminaVideoRunner, __testOnly_fetchKieWithTimeout, __testOnly_getKieHttpRetryDelayMs } from './providerGateway.mjs';
 import { __testOnly_clearManagedAssetUploadCache } from './providerAssetTransfer.mjs';
 import { __testOnly_resetKieAssetUploadLimiters } from './providerAssetUploadLimiter.mjs';
+import { __testOnly_setCosClientFactory } from './tencentCosVideoStore.mjs';
 
 // 请求级瞬时重试(S2 G1)默认退避 1s/3s,测试里统一压到 1ms,
 // 避免走到 fetch failed / 5xx 路径的既有测试被退避拖慢。
@@ -26,6 +27,29 @@ const createJsonResponse = (body, status = 200) => ({
   status,
   json: async () => body,
 });
+
+const createTestCosEnv = (overrides = {}) => ({
+  MEIAO_COS_SECRET_ID: 'test-secret-id',
+  MEIAO_COS_SECRET_KEY: 'test-secret-key',
+  MEIAO_COS_BUCKET: 'meiao-gemini-video-test-20260714-1406860462',
+  MEIAO_COS_REGION: 'ap-guangzhou',
+  MEIAO_COS_SIGNED_URL_TTL_SECONDS: '10800',
+  ...overrides,
+});
+
+const installTestCosClient = (signedUrl, calls = []) => {
+  __testOnly_setCosClientFactory(() => ({
+    putObject(params, callback) {
+      calls.push({ method: 'putObject', params });
+      callback(null, { ETag: 'test-etag' });
+    },
+    getObjectUrl(params, callback) {
+      calls.push({ method: 'getObjectUrl', params });
+      callback(null, { Url: signedUrl });
+    },
+  }));
+  return calls;
+};
 
 const box = (type, payload = Buffer.alloc(0)) => {
   const buffer = Buffer.alloc(8 + payload.length);
@@ -3173,27 +3197,12 @@ test('executeProviderJob uploads managed file attachments before gemini chat mod
   }
 });
 
-test('executeProviderJob uploads stable redpanda video urls to openrouter chat before gemini chat', async () => {
+test('executeProviderJob passes stable external video urls directly to Gemini without KIE staging', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
-    if (String(url).includes('/kieai/30590/mayo-storage/abc/reference.mp4')) {
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'video/mp4' }),
-        arrayBuffer: async () => new TextEncoder().encode('stable-mp4-binary').buffer,
-        json: async () => ({}),
-      };
-    }
-    if (String(url).includes('/file-stream-upload')) {
-      return createJsonResponse({
-        code: 200,
-        data: { fileUrl: 'https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/reference-readable.mp4' },
-      });
-    }
     if (String(url).includes('/gemini-3.1-pro/v1/chat/completions')) {
       return createJsonResponse({
         choices: [{ message: { content: 'gemini video ok' } }],
@@ -3226,15 +3235,13 @@ test('executeProviderJob uploads stable redpanda video urls to openrouter chat b
     );
 
     assert.equal(result.result.content, 'gemini video ok');
-    const uploadRequest = requests.find((item) => item.url.includes('/file-stream-upload'));
-    assert.ok(uploadRequest, 'stable redpanda video should be moved to openrouter-chat for gemini video analysis');
-    assert.equal(uploadRequest.init.body.get('uploadPath'), 'openrouter-chat');
-    assert.equal(uploadRequest.init.body.get('fileName'), 'reference.mp4');
+    assert.equal(requests.filter((item) => item.url === sourceVideoUrl).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
     const chatRequest = requests.find((item) => item.url.includes('/gemini-3.1-pro/v1/chat/completions'));
     const chatBody = JSON.parse(String(chatRequest.init.body));
-    assert.equal(chatBody.messages[0].content[0].text, '读取这个视频 https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/reference-readable.mp4');
+    assert.equal(chatBody.messages[0].content[0].text, `读取这个视频 ${sourceVideoUrl}`);
     assert.equal(chatBody.messages[0].content[1].type, 'image_url');
-    assert.equal(chatBody.messages[0].content[1].image_url.url, 'https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/reference-readable.mp4');
+    assert.equal(chatBody.messages[0].content[1].image_url.url, sourceVideoUrl);
     assert.equal(chatBody.reasoning_effort, 'high');
   } finally {
     global.fetch = originalFetch;
@@ -3279,33 +3286,21 @@ test('executeProviderJob rejects private-network remote video urls before gemini
   }
 });
 
-test('executeProviderJob rejects oversized remote video urls before kie upload', async () => {
+test('executeProviderJob does not pre-download external video urls before Gemini', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
-    if (String(url).includes('/oversized-reference.mp4')) {
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers({
-          'content-type': 'video/mp4',
-          'content-length': String(300 * 1024 * 1024),
-        }),
-        arrayBuffer: async () => {
-          throw new Error('oversized media should be rejected before download');
-        },
-        json: async () => ({}),
-      };
+    if (String(url).includes('/gemini-3.1-pro/v1/chat/completions')) {
+      return createJsonResponse({ choices: [{ message: { content: 'external video ok' } }] });
     }
     throw new Error(`unexpected request: ${String(url)}`);
   };
 
   try {
     const oversizedVideoUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/abc/oversized-reference.mp4';
-    await assert.rejects(
-      executeProviderJob(
+    const result = await executeProviderJob(
         {
           taskType: 'kie_chat',
           payload: {
@@ -3323,36 +3318,23 @@ test('executeProviderJob rejects oversized remote video urls before kie upload',
         },
         { KIE_API_KEY: 'test-key' },
         new AbortController().signal
-      ),
-      /远程视频素材过大，当前最大支持 256MB/
-    );
-    assert.equal(requests.some((item) => item.url.includes('/file-stream-upload')), false);
+      );
+    assert.equal(result.result.content, 'external video ok');
+    assert.equal(requests.filter((item) => item.url === oversizedVideoUrl).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    const chatRequest = requests.find((item) => item.url.includes('/gemini-3.1-pro/v1/chat/completions'));
+    assert.match(String(chatRequest.init.body), new RegExp(oversizedVideoUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-test('executeProviderJob uploads stable image_url video payloads for gemini flash openai requests', async () => {
+test('executeProviderJob passes external image_url video payloads directly to Gemini Flash', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
-    if (String(url).includes('/kieai/30590/mayo-storage/abc/legacy-reference.mp4')) {
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'video/mp4' }),
-        arrayBuffer: async () => new TextEncoder().encode('legacy-mp4-binary').buffer,
-        json: async () => ({}),
-      };
-    }
-    if (String(url).includes('/file-stream-upload')) {
-      return createJsonResponse({
-        code: 200,
-        data: { fileUrl: 'https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/legacy-readable.mp4' },
-      });
-    }
     if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
       return createJsonResponse({
         choices: [{ message: { content: 'legacy gemini video ok' } }],
@@ -3385,42 +3367,26 @@ test('executeProviderJob uploads stable image_url video payloads for gemini flas
     );
 
     assert.equal(result.result.content, 'legacy gemini video ok');
-    const uploadRequest = requests.find((item) => item.url.includes('/file-stream-upload'));
-    assert.ok(uploadRequest, 'stable legacy video should be moved to openrouter-chat');
-    assert.equal(uploadRequest.init.body.get('uploadPath'), 'openrouter-chat');
+    assert.equal(requests.filter((item) => item.url === sourceVideoUrl).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
     const chatRequest = requests.find((item) => item.url.includes('/gemini-3-flash/v1/chat/completions'));
     assert.ok(chatRequest, 'gemini flash openai should use the gemini flash endpoint');
     const chatBody = JSON.parse(String(chatRequest.init.body));
-    assert.equal(chatBody.messages[0].content[0].text, '[爆款复刻视频URL] https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/legacy-readable.mp4');
+    assert.equal(chatBody.messages[0].content[0].text, `[爆款复刻视频URL] ${sourceVideoUrl}`);
     assert.equal(chatBody.messages[0].content[1].type, 'image_url');
-    assert.equal(chatBody.messages[0].content[1].image_url.url, 'https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/legacy-readable.mp4');
+    assert.equal(chatBody.messages[0].content[1].image_url.url, sourceVideoUrl);
     assert.equal(chatBody.reasoning_effort, 'high');
   } finally {
     global.fetch = originalFetch;
   }
 });
 
-test('executeProviderJob moves redpanda openrouter-chat video urls to aiquickdraw openrouter chat before gemini chat', async () => {
+test('executeProviderJob passes redpanda openrouter-chat video urls directly to Gemini Flash', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
-    if (String(url).includes('/kieai/30590/openrouter-chat/') && String(url).endsWith('.mp4')) {
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'video/mp4' }),
-        arrayBuffer: async () => new TextEncoder().encode('mp4-binary').buffer,
-        json: async () => ({}),
-      };
-    }
-    if (String(url).includes('/file-stream-upload')) {
-      return createJsonResponse({
-        code: 200,
-        data: { fileUrl: 'https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/real-uploaded-video.mp4' },
-      });
-    }
     if (String(url).includes('/gemini-3-flash/v1/chat/completions')) {
       return createJsonResponse({
         choices: [{ message: { content: 'reuploaded openrouter video ok' } }],
@@ -3431,7 +3397,7 @@ test('executeProviderJob moves redpanda openrouter-chat video urls to aiquickdra
 
   try {
     const sourceVideoUrl = 'https://tempfile.redpandaai.co/kieai/30590/openrouter-chat/___1778687474872_______.mp4';
-    const expectedVideoUrl = 'https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/real-uploaded-video.mp4';
+    const expectedVideoUrl = sourceVideoUrl;
     const result = await executeProviderJob(
       {
         taskType: 'kie_chat',
@@ -3454,10 +3420,8 @@ test('executeProviderJob moves redpanda openrouter-chat video urls to aiquickdra
     );
 
     assert.equal(result.result.content, 'reuploaded openrouter video ok');
-    assert.equal(requests.filter((item) => item.url === sourceVideoUrl).length, 1);
-    const uploadRequest = requests.find((item) => item.url.includes('/file-stream-upload'));
-    assert.ok(uploadRequest, 'redpanda openrouter-chat video should be moved to aiquickdraw openrouter-chat before gemini chat');
-    assert.equal(uploadRequest.init.body.get('uploadPath'), 'openrouter-chat');
+    assert.equal(requests.filter((item) => item.url === sourceVideoUrl).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
     const chatRequest = requests.find((item) => item.url.includes('/gemini-3-flash/v1/chat/completions'));
     assert.ok(chatRequest, 'gemini chat request should be sent');
     const chatBody = JSON.parse(String(chatRequest.init.body));
@@ -3468,27 +3432,12 @@ test('executeProviderJob moves redpanda openrouter-chat video urls to aiquickdra
   }
 });
 
-test('executeProviderJob moves redpanda openrouter-chat video urls to aiquickdraw openrouter chat for gemini pro openai', async () => {
+test('executeProviderJob passes redpanda openrouter-chat video urls directly to Gemini Pro', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
-    if (String(url).includes('/kieai/30590/openrouter-chat/') && String(url).endsWith('.mp4')) {
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'video/mp4' }),
-        arrayBuffer: async () => new TextEncoder().encode('mp4-binary').buffer,
-        json: async () => ({}),
-      };
-    }
-    if (String(url).includes('/file-stream-upload')) {
-      return createJsonResponse({
-        code: 200,
-        data: { fileUrl: 'https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/pro-preview-video.mp4' },
-      });
-    }
     if (String(url).includes('/gemini-3.1-pro/v1/chat/completions')) {
       return createJsonResponse({
         choices: [{ message: { content: 'gemini pro preview video ok' } }],
@@ -3499,7 +3448,7 @@ test('executeProviderJob moves redpanda openrouter-chat video urls to aiquickdra
 
   try {
     const sourceVideoUrl = 'https://tempfile.redpandaai.co/kieai/30590/openrouter-chat/___1778691328103_______.mp4';
-    const expectedVideoUrl = 'https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/pro-preview-video.mp4';
+    const expectedVideoUrl = sourceVideoUrl;
     const result = await executeProviderJob(
       {
         taskType: 'kie_chat',
@@ -3522,10 +3471,8 @@ test('executeProviderJob moves redpanda openrouter-chat video urls to aiquickdra
     );
 
     assert.equal(result.result.content, 'gemini pro preview video ok');
-    assert.equal(requests.filter((item) => item.url === sourceVideoUrl).length, 1);
-    const uploadRequest = requests.find((item) => item.url.includes('/file-stream-upload'));
-    assert.ok(uploadRequest, 'gemini pro openai video should be moved to aiquickdraw openrouter-chat before chat');
-    assert.equal(uploadRequest.init.body.get('uploadPath'), 'openrouter-chat');
+    assert.equal(requests.filter((item) => item.url === sourceVideoUrl).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
     const chatRequest = requests.find((item) => item.url.includes('/gemini-3.1-pro/v1/chat/completions'));
     assert.ok(chatRequest, 'gemini pro openai should use the gemini pro endpoint');
     const chatBody = JSON.parse(String(chatRequest.init.body));
@@ -3538,27 +3485,12 @@ test('executeProviderJob moves redpanda openrouter-chat video urls to aiquickdra
   }
 });
 
-test('executeProviderJob never sends redpanda openrouter-chat mp4 directly to gemini', async () => {
+test('executeProviderJob preserves every redpanda video reference in mixed Gemini content', async () => {
   const originalFetch = global.fetch;
   const requests = [];
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
-    if (String(url).includes('/kieai/30590/openrouter-chat/') && String(url).endsWith('.mp4')) {
-      return {
-        ok: true,
-        status: 200,
-        headers: new Headers({ 'content-type': 'video/mp4' }),
-        arrayBuffer: async () => new TextEncoder().encode('mp4-binary').buffer,
-        json: async () => ({}),
-      };
-    }
-    if (String(url).includes('/file-stream-upload')) {
-      return createJsonResponse({
-        code: 200,
-        data: { fileUrl: 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/fixed-video.mp4' },
-      });
-    }
     if (String(url).includes('/gemini-3.1-pro/v1/chat/completions')) {
       return createJsonResponse({
         choices: [{ message: { content: 'fixed video ok' } }],
@@ -3596,10 +3528,11 @@ test('executeProviderJob never sends redpanda openrouter-chat mp4 directly to ge
     );
 
     assert.equal(result.result.content, 'fixed video ok');
+    assert.equal(requests.filter((item) => item.url === sourceVideoUrl).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
     const chatRequest = requests.find((item) => item.url.includes('/gemini-3.1-pro/v1/chat/completions'));
     const chatBodyText = String(chatRequest.init.body);
-    assert.doesNotMatch(chatBodyText, /tempfile\.redpandaai\.co\/kieai\/30590\/openrouter-chat/);
-    assert.match(chatBodyText, /tempfile\.redpandaai\.co\/kieai\/30590\/mayo-storage\/internal\/fixed-video\.mp4/);
+    assert.equal(chatBodyText.match(/tempfile\.redpandaai\.co\/kieai\/30590\/openrouter-chat/g)?.length, 3);
   } finally {
     global.fetch = originalFetch;
   }
@@ -4110,9 +4043,18 @@ test('executeProviderJob never retries managed media after an ambiguous HTTP 5xx
   __testOnly_clearManagedAssetUploadCache();
   const originalFetch = global.fetch;
   const requests = [];
+  const cosCalls = [];
+  const signedVideoUrl = 'https://meiao-gemini-video-test-20260714-1406860462.cos.ap-guangzhou.myqcloud.com/gemini-video/test/ambiguous.mp4?q-signature=test';
+  installTestCosClient(signedVideoUrl, cosCalls);
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from('ambiguous-video-bytes'), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4', 'content-length': '21' },
+      });
+    }
     if (String(url).includes('/gemini-3.1-pro/v1/chat/completions')) {
       return createJsonResponse({ message: 'Failed to get the file information' }, 502);
     }
@@ -4138,6 +4080,7 @@ test('executeProviderJob never retries managed media after an ambiguous HTTP 5xx
           KIE_API_KEY: 'test-key',
           MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
           MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+          ...createTestCosEnv(),
         },
         new AbortController().signal
       ),
@@ -4146,8 +4089,11 @@ test('executeProviderJob never retries managed media after an ambiguous HTTP 5xx
 
     assert.equal(requests.filter((item) => item.url.includes('/gemini-3.1-pro/v1/chat/completions')).length, 1);
     assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.deepEqual(cosCalls.map((call) => call.method), ['putObject', 'getObjectUrl']);
   } finally {
     global.fetch = originalFetch;
+    __testOnly_setCosClientFactory(null);
   }
 });
 
@@ -4188,22 +4134,30 @@ test('executeProviderJob classifies non-queryable chat checkpoint failure for ad
   }
 });
 
-test('executeProviderJob sends managed storyboard video directly to Gemini without KIE staging', async () => {
+test('executeProviderJob sends managed storyboard video through COS directly to Gemini without KIE staging', async () => {
   __testOnly_clearManagedAssetUploadCache();
   const originalFetch = global.fetch;
   const requests = [];
+  const cosCalls = [];
   const sourceVideoUrl = 'http://111.229.66.247/api/assets/file/storyboard/direct.mp4';
-  const directVideoUrl = 'https://meiaoyuntai.com/api/assets/file/storyboard/direct.mp4';
+  const signedVideoUrl = 'https://meiao-gemini-video-test-20260714-1406860462.cos.ap-guangzhou.myqcloud.com/gemini-video/test/direct.mp4?q-signature=test';
+  installTestCosClient(signedVideoUrl, cosCalls);
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
+    if (String(url).includes('/api/assets/file/')) {
+      return new Response(Buffer.from('managed-video-bytes'), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4', 'content-length': '19' },
+      });
+    }
     if (String(url).includes('/gemini-3.1-pro/v1/chat/completions')) {
       return createJsonResponse({
         id: 'storyboard-direct-response',
         choices: [{ message: { content: 'storyboard direct ok' } }],
       });
     }
-    throw new Error(`managed storyboard video should not be transferred before Gemini: ${String(url)}`);
+    throw new Error(`unexpected request: ${String(url)}`);
   };
 
   try {
@@ -4227,43 +4181,40 @@ test('executeProviderJob sends managed storyboard video directly to Gemini witho
         KIE_API_KEY: 'test-key',
         MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
         MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+        ...createTestCosEnv(),
       },
       new AbortController().signal
     );
 
     assert.equal(result.result.content, 'storyboard direct ok');
     assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
-    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.deepEqual(cosCalls.map((call) => call.method), ['putObject', 'getObjectUrl']);
     const chatRequest = requests.find((item) => item.url.includes('/gemini-3.1-pro/v1/chat/completions'));
     const chatBodyText = String(chatRequest.init.body);
-    assert.match(chatBodyText, new RegExp(directVideoUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(chatBodyText, new RegExp(signedVideoUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.doesNotMatch(chatBodyText, /http:\/\/111\.229\.66\.247/);
   } finally {
     global.fetch = originalFetch;
+    __testOnly_setCosClientFactory(null);
   }
 });
 
-test('executeProviderJob stages managed storyboard video once after explicit Gemini media read failure', async () => {
+test('executeProviderJob never retries or KIE-stages managed storyboard video after explicit Gemini media read failure', async () => {
   __testOnly_clearManagedAssetUploadCache();
   const originalFetch = global.fetch;
   const requests = [];
+  const cosCalls = [];
   const sourceVideoUrl = '/api/assets/file/storyboard/fallback.mp4';
-  const directVideoUrl = 'https://meiaoyuntai.com/api/assets/file/storyboard/fallback.mp4';
-  const stagedVideoUrl = 'https://tempfileb.aiquickdraw.com/kieai/openrouter-chat/fallback.mp4';
+  const signedVideoUrl = 'https://meiao-gemini-video-test-20260714-1406860462.cos.ap-guangzhou.myqcloud.com/gemini-video/test/fallback.mp4?q-signature=test';
+  installTestCosClient(signedVideoUrl, cosCalls);
 
   global.fetch = async (url, init = {}) => {
     requests.push({ url: String(url), init });
     if (String(url).includes('/gemini-3.1-pro/v1/chat/completions')) {
-      const bodyText = String(init.body);
-      if (bodyText.includes(directVideoUrl)) {
-        return createJsonResponse({
-          choices: [{ message: { content: 'Failed to get the file information' } }],
-        });
-      }
-      assert.match(bodyText, /tempfileb\.aiquickdraw\.com\/kieai\/openrouter-chat\/fallback\.mp4/);
+      assert.match(String(init.body), new RegExp(signedVideoUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
       return createJsonResponse({
-        id: 'storyboard-video-fallback-response',
-        choices: [{ message: { content: 'storyboard fallback ok' } }],
+        choices: [{ message: { content: 'Failed to get the file information' } }],
       });
     }
     if (String(url).includes('/api/assets/file/')) {
@@ -4272,15 +4223,11 @@ test('executeProviderJob stages managed storyboard video once after explicit Gem
         headers: { 'content-type': 'video/mp4', 'content-length': '19' },
       });
     }
-    if (String(url).includes('/file-stream-upload')) {
-      assert.equal(init.body.get('uploadPath'), 'openrouter-chat');
-      return createJsonResponse({ code: 200, data: { fileUrl: stagedVideoUrl } });
-    }
     throw new Error(`unexpected request: ${String(url)}`);
   };
 
   try {
-    const result = await executeProviderJob(
+    await assert.rejects(() => executeProviderJob(
       {
         module: 'video',
         subFeature: 'storyboard',
@@ -4301,17 +4248,18 @@ test('executeProviderJob stages managed storyboard video once after explicit Gem
         MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
         MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
         MEIAO_KIE_ASSET_UPLOAD_RETRIES: '0',
+        ...createTestCosEnv(),
       },
       new AbortController().signal
-    );
+    ), /Failed to get the file information/);
 
-    assert.equal(result.result.content, 'storyboard fallback ok');
-    assert.equal(result.providerMediaRoute, 'kie-fallback');
-    assert.equal(result.result.providerMediaRoute, 'kie-fallback');
-    assert.equal(requests.filter((item) => item.url.includes('/gemini-3.1-pro/v1/chat/completions')).length, 2);
-    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/gemini-3.1-pro/v1/chat/completions')).length, 1);
+    assert.equal(requests.filter((item) => item.url.includes('/file-stream-upload')).length, 0);
+    assert.equal(requests.filter((item) => item.url.includes('/api/assets/file/')).length, 1);
+    assert.deepEqual(cosCalls.map((call) => call.method), ['putObject', 'getObjectUrl']);
   } finally {
     global.fetch = originalFetch;
+    __testOnly_setCosClientFactory(null);
   }
 });
 

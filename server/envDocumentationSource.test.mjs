@@ -43,6 +43,24 @@ test('托管素材直连与 KIE 回退旋钮同步到模板、总览和云上部
   assert.match(deployDoc, /kie-only/);
 });
 
+test('Gemini 视频 COS 直连配置同步到模板、总览和云上部署文档', () => {
+  const requiredKeys = [
+    'MEIAO_COS_SECRET_ID',
+    'MEIAO_COS_SECRET_KEY',
+    'MEIAO_COS_BUCKET',
+    'MEIAO_COS_REGION',
+    'MEIAO_COS_SIGNED_URL_TTL_SECONDS',
+  ];
+
+  for (const key of requiredKeys) {
+    assert.match(envExample, new RegExp(key));
+    assert.match(projectOverview, new RegExp(key));
+    assert.match(deployDoc, new RegExp(key));
+  }
+  assert.match(deployDoc, /无需 CDN/);
+  assert.match(deployDoc, /禁止把视频转存到 KIE/);
+});
+
 test('结果素材下载重试旋钮同步到模板、总览和云上部署文档', () => {
   const requiredKeys = [
     'MEIAO_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS',

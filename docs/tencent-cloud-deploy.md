@@ -42,6 +42,11 @@ MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS=30000
 APP_STATE_MAX_BYTES=16777216
 MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS=120000
 MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS=360000
+MEIAO_COS_SECRET_ID=请替换成仅限目标桶的 CAM 子用户 SecretId
+MEIAO_COS_SECRET_KEY=请替换成仅限目标桶的 CAM 子用户 SecretKey
+MEIAO_COS_BUCKET=meiao-gemini-video-test-20260714-1406860462
+MEIAO_COS_REGION=ap-guangzhou
+MEIAO_COS_SIGNED_URL_TTL_SECONDS=10800
 MEIAO_KIE_MANAGED_ASSET_MODE=direct-first
 MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY=3
 MEIAO_KIE_ASSET_UPLOAD_RETRIES=2
@@ -102,7 +107,9 @@ EOF
 
 `MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS` 控制 KIE 对话/Gemini 同步推理的本地等待上限，默认 `360000`（6 分钟）。该值应高于 KIE 上游常见的 300 秒超时，让梅奥能收到真实成功或 504 终态；调大它只避免本地提前中断，不会改变 KIE/Gemini 自身的处理上限。
 
-`MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 让我方 `/api/assets/file/` 托管素材优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址。只有上游明确返回文件读取/下载/MIME 不可用错误，且没有 `providerTaskId` 时，才转存 KIE 并重试同一模型；普通 HTTP 500/502、网络中断、鉴权、余额、限额和已有 task id 都不触发回退。紧急回滚时把该值改为 `kie-only` 并执行 `pm2 restart meiao-internal --update-env`。
+Gemini 视频读取是独立的强约束链路：我方 `/api/assets/file/` 视频先由服务端完整读取，再写入私有腾讯 COS，最后只把短期签名 GET URL 交给 Gemini。`MEIAO_COS_SECRET_ID` / `MEIAO_COS_SECRET_KEY` 必须来自只允许目标桶 `gemini-video/*` 执行 `PutObject`、`GetObject` 的 CAM 子用户；不得使用主账号密钥。`MEIAO_COS_BUCKET` 必须包含 APPID 后缀，`MEIAO_COS_REGION` 与桶地域一致。`MEIAO_COS_SIGNED_URL_TTL_SECONDS` 默认 `10800`（3 小时），只影响 Gemini 的读取窗口。桶保持私有读写，无需 CDN；建议给 `gemini-video/` 配置 3 天生命周期自动删除。
+
+Gemini 视频不受 `MEIAO_KIE_MANAGED_ASSET_MODE` 回滚开关影响：无论 `auto`、`direct-first` 还是 `kie-only`，都禁止把视频转存到 KIE `openrouter-chat`，也禁止 Gemini 明确读文件失败后再走 KIE/换模型兜底。图片、PDF 等非视频托管素材仍按 `MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址；只有上游明确返回文件读取/下载/MIME 不可用错误且没有 `providerTaskId` 时，才允许转存 KIE 并重试同一模型。普通 HTTP 500/502、网络中断、鉴权、余额、限额和已有 task id 都不触发回退。
 
 `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY` 是所有任务共享的 file-stream-upload 总并发，默认 `3`。`MEIAO_KIE_ASSET_UPLOAD_RETRIES` / `MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS` 默认 `2` / `1000`，只重试文件上传的连接错误与 `429/500/502/503/504`。`MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS` / `MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES` 默认 `1800000` / `2000`，复用成功转存 URL；失败不缓存，PM2 重启后缓存自然清空。
 

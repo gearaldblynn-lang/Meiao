@@ -90,32 +90,55 @@ test('generation and chat use the canonical HTTPS origin in direct-first mode', 
   );
 });
 
-test('managed Gemini video uses the canonical HTTPS origin in direct-first mode', async () => {
-  const env = {
-    MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
-    MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
-  };
-  const deps = {
-    fetchWithTimeout: async () => {
-      throw new Error('managed Gemini video must not be downloaded on the direct path');
+test('managed Gemini video is copied to private COS and resolved as a signed URL', async () => {
+  const uploads = [];
+  const signedCosUrl = 'https://meiao-gemini-video-test-20260714-1406860462.cos.ap-guangzhou.myqcloud.com/gemini-video/hash/source.mp4?q-signature=signed';
+  const resolved = await resolveProviderGeminiChatMediaUrl('/api/assets/file/video/source.mp4', {
+    env: {
+      MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+      MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
     },
-    uploadAssetViaKieWithFallback: async () => {
-      throw new Error('managed Gemini video must not be staged on the direct path');
+    deps: {
+      fetchWithTimeout: async () => createResponse('complete-video', {
+        'content-type': 'video/mp4',
+        'content-length': '14',
+      }),
+      uploadGeminiVideoToCos: async (payload) => {
+        uploads.push(payload);
+        return signedCosUrl;
+      },
+      uploadAssetViaKieWithFallback: async () => {
+        throw new Error('Gemini video must never be staged through KIE');
+      },
     },
-  };
+  });
 
-  assert.equal(
-    await resolveProviderGeminiChatMediaUrl(
-      'http://111.229.66.247/api/assets/file/video/source.mp4',
-      { env, deps }
-    ),
-    'https://meiaoyuntai.com/api/assets/file/video/source.mp4'
-  );
+  assert.equal(resolved, signedCosUrl);
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].fileName, 'source.mp4');
+  assert.equal(uploads[0].mimeType, 'video/mp4');
+  assert.deepEqual(uploads[0].fileBuffer, Buffer.from('complete-video'));
 });
 
-test('managed Gemini video stages to openrouter-chat only when upload is forced', async () => {
-  __testOnly_clearManagedAssetUploadCache();
-  const uploads = [];
+test('external COS video URLs pass directly to Gemini without KIE staging', async () => {
+  const signedCosUrl = 'https://meiao-gemini-video-test-20260714-1406860462.cos.ap-guangzhou.myqcloud.com/gemini-video/hash/source.mp4?q-signature=signed';
+  const resolved = await resolveProviderGeminiChatMediaUrl(signedCosUrl, {
+    env: {},
+    deps: {
+      fetchWithTimeout: async () => {
+        throw new Error('external COS video must not be downloaded by the gateway');
+      },
+      uploadAssetViaKieWithFallback: async () => {
+        throw new Error('external COS video must not be uploaded to KIE');
+      },
+    },
+  });
+
+  assert.equal(resolved, signedCosUrl);
+});
+
+test('forced media mode still routes managed Gemini video through COS and never KIE', async () => {
+  const cosUploads = [];
   const resolved = await resolveProviderGeminiChatMediaUrl('/api/assets/file/video/forced.mp4', {
     env: {
       MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
@@ -127,16 +150,19 @@ test('managed Gemini video stages to openrouter-chat only when upload is forced'
         'content-type': 'video/mp4',
         'content-length': '11',
       }),
-      uploadAssetViaKieWithFallback: async (payload) => {
-        uploads.push(payload);
-        return { result: { fileUrl: 'https://kie.test/openrouter-chat/forced.mp4' } };
+      uploadGeminiVideoToCos: async (payload) => {
+        cosUploads.push(payload);
+        return 'https://cos.test/gemini-video/forced.mp4?q-signature=signed';
+      },
+      uploadAssetViaKieWithFallback: async () => {
+        throw new Error('Gemini video must never be staged through KIE');
       },
     },
   });
 
-  assert.equal(resolved, 'https://kie.test/openrouter-chat/forced.mp4');
-  assert.equal(uploads.length, 1);
-  assert.equal(uploads[0].uploadPath, 'openrouter-chat');
+  assert.equal(resolved, 'https://cos.test/gemini-video/forced.mp4?q-signature=signed');
+  assert.equal(cosUploads.length, 1);
+  assert.equal(cosUploads[0].fileName, 'forced.mp4');
 });
 
 test('managed upload cache is isolated by provider upload destination', async () => {
