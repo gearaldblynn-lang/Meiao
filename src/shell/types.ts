@@ -71,9 +71,7 @@ export type KieAiModel =
   | 'nano-banana-2'
   | 'gpt-image-2'
   | 'gpt-image-2-secondary'
-  | 'maxforai-image-2-standard'
-  | 'maxforai-image-2-pro'
-  | 'maxforai-image-2-max';
+  | 'maxforai-image-2-relay';
 
 export interface GlobalApiConfig {
   kieApiKey: string;
