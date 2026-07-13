@@ -250,9 +250,19 @@ export const finishJobAttempt = async (pool, attemptId, fields = {}) => {
   );
 };
 
+export const buildSubmissionResolutionCapability = ({ status = '', errorCode = '', taskType = '' } = {}) => {
+  const allowed = String(status || '').trim() === 'failed'
+    && String(errorCode || '').trim() === 'provider_submission_unknown';
+  return {
+    allowed,
+    canBind: allowed && canRecoverProviderTaskById({
+      taskType,
+      providerTaskId: 'verified-provider-task',
+    }),
+  };
+};
+
 const mapTaskPlatformJobRow = (row) => {
-  const submissionResolutionAllowed = row.status === 'failed'
-    && row.error_code === 'provider_submission_unknown';
   return {
     id: row.id,
     userId: row.user_id,
@@ -285,13 +295,11 @@ const mapTaskPlatformJobRow = (row) => {
     workflowId: row.workflow_id || '',
     runId: row.run_id || '',
     traceId: row.trace_id || '',
-    submissionResolution: {
-      allowed: submissionResolutionAllowed,
-      canBind: submissionResolutionAllowed && canRecoverProviderTaskById({
-        taskType: row.task_type,
-        providerTaskId: 'verified-provider-task',
-      }),
-    },
+    submissionResolution: buildSubmissionResolutionCapability({
+      status: row.status,
+      errorCode: row.error_code,
+      taskType: row.task_type,
+    }),
   };
 };
 

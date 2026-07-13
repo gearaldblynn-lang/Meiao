@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import * as taskPlatformModule from './taskPlatform.mjs';
 
 import {
   createJobAttempt,
@@ -142,6 +143,30 @@ test('recordJobEvent persists stage, provider submission state, retryability and
     'upstream timed out',
   ]);
   assert.match(pool.queries[0].params.at(-1), /"providerStage":"submit"/);
+});
+
+test('submission resolution capability denies ordinary failures', () => {
+  assert.deepEqual(taskPlatformModule.buildSubmissionResolutionCapability?.({
+    status: 'failed',
+    errorCode: 'provider_timeout',
+    taskType: 'kie_image',
+  }), { allowed: false, canBind: false });
+});
+
+test('submission resolution capability allows release but not bind for unknown kie_chat', () => {
+  assert.deepEqual(taskPlatformModule.buildSubmissionResolutionCapability?.({
+    status: 'failed',
+    errorCode: 'provider_submission_unknown',
+    taskType: 'kie_chat',
+  }), { allowed: true, canBind: false });
+});
+
+test('submission resolution capability allows bind for recoverable unknown submissions', () => {
+  assert.deepEqual(taskPlatformModule.buildSubmissionResolutionCapability?.({
+    status: 'failed',
+    errorCode: 'provider_submission_unknown',
+    taskType: 'kie_image',
+  }), { allowed: true, canBind: true });
 });
 
 test('listTaskPlatformJobs maps admin rows without changing the public job shape', async () => {
