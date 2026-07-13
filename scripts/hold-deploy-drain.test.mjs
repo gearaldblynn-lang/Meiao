@@ -84,8 +84,8 @@ test('lock holder stops and verifies the old process before acknowledging on the
         return true;
       },
     },
-    acknowledgeStopIssued: async (appExisted) => {
-      events.push(`stop-issued:${appExisted}`);
+    acknowledgeStopAttempted: async (appExisted) => {
+      events.push(`stop-attempted:${appExisted}`);
     },
     acknowledgeStopped: async (appExisted) => {
       events.push(`ack:${appExisted}`);
@@ -94,8 +94,8 @@ test('lock holder stops and verifies the old process before acknowledging on the
 
   assert.deepEqual(events, [
     'pm2:exists',
+    'stop-attempted:true',
     'pm2:stop',
-    'stop-issued:true',
     'pm2:verify-stopped',
     'query:SELECT 1 AS lock_session_alive',
     'ack:true',
@@ -104,7 +104,7 @@ test('lock holder stops and verifies the old process before acknowledging on the
 });
 
 test('lock loss after PM2 stop never emits a false stopped acknowledgement', async () => {
-  let stopIssued = false;
+  let stopAttempted = false;
   let acknowledged = false;
   await assert.rejects(
     () => stopOldProcessWithLockVerification({
@@ -116,17 +116,17 @@ test('lock loss after PM2 stop never emits a false stopped acknowledgement', asy
         stop: async () => {},
         isStopped: async () => true,
       },
-      acknowledgeStopIssued: async () => { stopIssued = true; },
+      acknowledgeStopAttempted: async () => { stopAttempted = true; },
       acknowledgeStopped: async () => { acknowledged = true; },
     }),
     /mysql connection lost/,
   );
-  assert.equal(stopIssued, true);
+  assert.equal(stopAttempted, true);
   assert.equal(acknowledged, false);
 });
 
 test('failed PM2 stop verification never emits a stopped acknowledgement', async () => {
-  let stopIssued = false;
+  let stopAttempted = false;
   let acknowledged = false;
   await assert.rejects(
     () => stopOldProcessWithLockVerification({
@@ -136,13 +136,37 @@ test('failed PM2 stop verification never emits a stopped acknowledgement', async
         stop: async () => {},
         isStopped: async () => false,
       },
-      acknowledgeStopIssued: async () => { stopIssued = true; },
+      acknowledgeStopAttempted: async () => { stopAttempted = true; },
       acknowledgeStopped: async () => { acknowledged = true; },
     }),
     /PM2 process is still running/,
   );
-  assert.equal(stopIssued, true);
+  assert.equal(stopAttempted, true);
   assert.equal(acknowledged, false);
+});
+
+test('failed PM2 stop preserves pre-stop attempt evidence without a stopped acknowledgement', async () => {
+  const events = [];
+  await assert.rejects(
+    () => stopOldProcessWithLockVerification({
+      connection: { query: async () => [[{ lock_session_alive: 1 }]] },
+      processManager: {
+        exists: async () => true,
+        stop: async () => {
+          events.push('pm2:stop');
+          throw new Error('pm2 stop failed');
+        },
+        isStopped: async () => {
+          events.push('pm2:verify-stopped');
+          return false;
+        },
+      },
+      acknowledgeStopAttempted: async () => { events.push('stop-attempted'); },
+      acknowledgeStopped: async () => { events.push('stopped'); },
+    }),
+    /pm2 stop failed/,
+  );
+  assert.deepEqual(events, ['stop-attempted', 'pm2:stop']);
 });
 
 test('real PM2 process manager requires successful explicit all-zero pid output', async () => {

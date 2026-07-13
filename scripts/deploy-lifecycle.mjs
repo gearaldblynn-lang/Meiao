@@ -2,12 +2,12 @@ import { pathToFileURL } from 'node:url';
 
 export const resolveDeployDrainCleanup = ({
   oldProcessStopped,
-  oldProcessStopIssued,
+  oldProcessStopAttempted,
   newProcessStarted,
   healthReady,
   newProcessStopped,
 }) => {
-  const oldProcessMayBeStopped = oldProcessStopped || oldProcessStopIssued;
+  const oldProcessMayBeStopped = oldProcessStopped || oldProcessStopAttempted;
   const serviceDown = Boolean(oldProcessMayBeStopped && !newProcessStarted && !healthReady);
   if (healthReady || newProcessStopped) {
     return { stopNewProcess: false, releaseDrain: true, serviceDown: false };
@@ -45,7 +45,7 @@ const run = () => {
   }
   const decision = resolveDeployDrainCleanup({
     oldProcessStopped: isTrue(process.argv[3]),
-    oldProcessStopIssued: isTrue(process.argv[4]),
+    oldProcessStopAttempted: isTrue(process.argv[4]),
     newProcessStarted: isTrue(process.argv[5]),
     healthReady: isTrue(process.argv[6]),
     newProcessStopped: isTrue(process.argv[7]),

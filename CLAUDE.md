@@ -304,8 +304,8 @@
 
 - **#50 ✅ 已修(2026-07-13)· 发布就绪双检仍有 TOCTOU,检查后新任务可在 PM2 restart 前进入**
   根因:2026-07-10 的两次只读 `running` 检查只能证明查询瞬间为空；最终检查后旧进程仍可接受 job 和同步 chat/provider 提交。单独新增 marker 无法保护首发,因为云上旧进程不认识它；只锁 `internal_jobs` 也管不到不落 job 的同步 provider 路径。
-  修复:上传源码前先按远端 `.env.server` 解析 marker,完整内容为 `manual` 时只读拦截;最终切换先用精确 `iptables` IPv4 规则拒绝新的 Nginx 回源/公网直连,`ip6tables` 规则拒绝 IPv6 直连 3100,等已有连接连续为零;再由持有 `internal_jobs WRITE` 锁的同一连接复查 running=0、停旧 PM2。`pm2 stop` 成功后立即写 stop-issued ack,只有 `pm2 pid` 成功、至少一个 PID token 全为零且会话仍存活才写 stopped ack。网络规则以各自的 command + `-C/-D` 精确、幂等清理,每清一条就用临时文件+原子 rename 持久化剩余状态。health 失败只在严格停机证明成立时认定已停;只有 stop-issued、旧进程已确认停止但新进程未起、或规则清理失败时,门禁保留且 marker 写为永不过期的 `manual`。
-  如何避免:**首发兼容不能依赖新代码才识别的 marker。网络隔离必须同时覆盖 IPv4/IPv6,清理要可重试且不能把命令错误或空 PID 输出当成“已停止”;“停机命令已发出”和“停机已证明”必须是两个独立状态,失败清理必须以“可提交进程已健康或已证明停止”为释放门禁的先决条件。**
+  修复:首次 readiness/manual 检查前先用远端原子 `mkdir` 获取整次发布 mutex,owner token 在上传、源码替换和 dist 切换前反复核验;本地 EXIT 只删除 owner 精确匹配的锁,强杀残锁必须人工检查。上传前按远端 `.env.server` 解析 marker,`manual` 或残留活动 owner token 都只读拦截。最终切换先用精确 IPv4/IPv6 网络规则排空连接,再由持有 `internal_jobs WRITE` 锁的同一连接复查 running=0。确认旧 PM2 存在且即将 stop 时先写 stop-attempted ack,再调用 `pm2 stop`;只有严格 PID 与会话证明成立才写 stopped ack。活动 marker 使用同一 owner token且只允许 owner 精确匹配时自动删除,`manual` 永不自动删除;网络状态继续用临时文件+原子 rename 持久化。
+  如何避免:**首发兼容不能依赖新代码才识别的 marker。发布级并发必须在任何上传/源码修改前用远端原子锁串行化,锁和 marker 的自动清理都必须核对 owner;残锁不得按时间自动过期。“停机即将尝试”和“停机已证明”必须是两个独立状态,前者要先于 stop 命令持久化,任何后续失败都按旧服务可能已停处理并保留门禁。**
 
 - **#51 ✅ 已修(2026-07-10)· 策划/分析控制 job 被持久化成幽灵卡,真实任务缺项目绑定,项目删除又漏掉子 job**
   根因:洛克、林一账号的真实链路同时存在两类记录:用户提交时预创建的 `proj-*` 买家秀项目,以及只负责生成 prompt 的 `buyer_show/kie_chat` 策划控制 job。后者 payload 没有 `shellProjectId/shellProjectName`,job 恢复层只能为它合成 `job-<id>` 卡；#44 为修复“卡片闪现后消失”放宽了 job 缺卡回写,又把这张控制面卡持久化,于是终态 job 也会长期显示为无结果的“生成中”卡并干扰用户对顺序的判断。全功能审计又发现精修分析、分镜策划和部分精修/分镜生图任务存在同类绑定缺口；真实时间戳送入 `sortProjectsNewestFirst` 的探针表明最新优先算法本身正确。另一个独立缺口是 `handleDeleteProject` 只删 `project.backendJobId/job-*`,不收集 results/tasks 里的关联 backend job；顶层卡隐藏了,子 job 仍可在后续水合时参与恢复。

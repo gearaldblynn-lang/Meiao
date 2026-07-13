@@ -174,13 +174,22 @@ MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh
 
 部署脚本为零断档设计(2026-07-07 起):`npm install`/`build` 期间旧 `dist` 一直原样服务,新产物先构建到 `dist-next`,旧的 hash chunk 按修改时间保留(供部署前已打开的旧标签页懒加载),最后原子换名切换,前端静态文件没有中断窗口。
 
-部署脚本会在上传代码前先读取远端 `.env.server`，按 `MEIAO_DEPLOY_DRAIN_FILE` 解析 marker；完整内容为 `manual` 时在任何上传或源码替换前拒绝发布。随后在远端构建后再次检查 `internal_jobs.status='running'`，并在最终切换时进入首发兼容 drain：预检 `iptables`/`ip6tables`/`ss`，用带唯一 comment 的临时 `iptables` 规则拒绝新的 IPv4 Nginx 回源和公网直连 3100，同时用 `ip6tables INPUT` 拒绝 IPv6 直连 3100，等已有连接连续为零；再创建 marker，对 `internal_jobs` 取得 `WRITE` 表锁，持锁连接复查零运行任务并停止旧 PM2。`pm2 stop` 成功返回后立即写 stop-issued ack；只有 `pm2 pid` 成功且至少返回一个全零 PID token，并且 MySQL 会话仍存活，才另写 stopped ack。这会同时排空旧版本的 job 和不落 job 的同步 provider 请求，不修改 Nginx 配置。
+部署脚本先用原子 `mkdir /tmp/meiao-deploy-mutex` 获取整次发布的远端互斥锁，并把本次唯一 owner token 写入 `owner` 文件；锁存在、owner 缺失或不匹配都 fail-closed。锁在首次 readiness/manual 检查前取得，并在上传前、远端源码替换前和 dist 切换前复核 owner。随后读取远端 `.env.server`，按 `MEIAO_DEPLOY_DRAIN_FILE` 解析 marker；完整内容为 `manual` 或残留的非空 owner token 时，在任何上传或源码替换前拒绝发布。远端构建后再次检查 `internal_jobs.status='running'`，最终切换进入首发兼容 drain：预检 `iptables`/`ip6tables`/`ss`，拒绝新的 IPv4 Nginx 回源、公网直连和 IPv6 直连 3100，等已有连接连续为零；再创建带本次 owner token 的 marker，对 `internal_jobs` 取得 `WRITE` 表锁并复查零运行任务。确认旧 PM2 存在且即将调用 stop 时，先写 stop-attempted ack，再执行 `pm2 stop`；只有 `pm2 pid` 成功、至少返回一个全零 PID token且 MySQL 会话仍存活，才另写 stopped ack。
 
-新进程启动后才幂等删除精确网络规则供 health/静态流量使用；每条规则先用对应命令执行 `-C`，只有退出码 0 才 `-D`、退出码 1 视为已不存在，其他错误保留剩余状态并失败。剩余规则状态通过同目录临时文件加原子 rename 持久化，避免中断留下半截 JSON。marker 仍拒绝 API 写请求并暂停 worker，直到 `/api/health` 同时确认 HTTP 与 worker 健康。health 失败时只在 `pm2 pid` 命令成功、至少返回一个 PID token 且全部为 0 时认定新进程已停；存在 stop-issued 但没有 stopped 证明且新进程尚未启动时，只能报告“旧服务可能已停止”，保留规则状态并把 marker 写为永不过期的 `manual`，不得误报旧服务已确认停止。紧急情况下只能显式设置 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 覆盖；该开关不应作为日常发布参数。
+新进程启动后才幂等删除精确网络规则供 health/静态流量使用；每条规则先用对应命令执行 `-C`，只有退出码 0 才 `-D`、退出码 1 视为已不存在，其他错误保留剩余状态并失败。剩余规则状态通过同目录临时文件加原子 rename 持久化。marker 仍拒绝 API 写请求并暂停 worker，直到 `/api/health` 同时确认 HTTP 与 worker 健康；活动 marker 和远端 mutex 都只有 owner 精确匹配本次 token 时才自动删除，`manual` marker 永不自动删除。health 失败时只在严格停机证明成立时认定新进程已停；存在 stop-attempted 但没有 stopped 证明且新进程尚未启动时，只能报告“旧服务可能已停止”，保留规则状态并把 marker 写为永不过期的 `manual`。紧急情况下只能显式设置 `MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS=1` 覆盖；该开关不应作为日常发布参数。
+
+### 部署互斥锁残留恢复
+
+`deploy_tencent.sh` 的本地 `EXIT` trap 只在远端 owner 内容仍精确等于本次 token 时删除 owner 文件和 mutex 目录。`kill -9`、本机断电或 owner 写入中断可能留下 `/tmp/meiao-deploy-mutex`；**残锁没有自动过期机制，不得按 mtime 直接删除**。
+
+1. 读取 owner：`cat /tmp/meiao-deploy-mutex/owner`。owner 缺失也视为异常残锁。
+2. 确认没有仍在执行的远端发布步骤：检查 `hold-deploy-drain.mjs`、`backend-network-drain.mjs`、`npm install`、`npm run build`、`tar -xzf` 等进程；无法确认时保持锁不动。
+3. `source /www/wwwroot/meiao-internal/.env.server`，解析 `DRAIN_MARKER_FILE="${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}"` 并读取其完整内容。若为 `manual` 或与 mutex owner 相同的活动 token，先按下方 manual 流程恢复 PM2、精确清理网络规则并确认 health/worker；不要先删 marker 或 mutex。
+4. 确认服务健康、没有残留网络 drain，且 owner 从步骤 1 起未变化后，再执行精确校验删除：`EXPECTED='<步骤1的owner>'; ACTUAL=$(cat /tmp/meiao-deploy-mutex/owner); [ "$ACTUAL" = "$EXPECTED" ] && rm -f /tmp/meiao-deploy-mutex/owner && rmdir /tmp/meiao-deploy-mutex`。owner 不匹配或目录还有其它文件时停止处理。
 
 ### manual 门禁恢复
 
-部署输出 `manual` 时，**不得直接删除 marker**。记下脚本输出的 `DRAIN_NETWORK_STATE_FILE`，然后在云上按以下顺序恢复：
+部署输出 `manual` 时，**不得直接删除 marker**。记下脚本输出的 `DRAIN_NETWORK_STATE_FILE`；若同时存在部署 mutex，先保留 mutex，然后在云上按以下顺序恢复：
 
 1. 保留 `/tmp/meiao-deploy-drain` 中的 `manual`，执行 `pm2 stop meiao-internal`；只有 `pm2 pid meiao-internal` 命令成功且输出全为 `0` 才继续。
 2. 服务已确认停止后，执行 `node scripts/backend-network-drain.mjs exit --state-file <脚本输出的状态文件>`；命令失败时保留文件并重试，不手工宽泛删规则。
