@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('./videoStoryboardService.ts', import.meta.url), 'utf8');
+const planningSource = readFileSync(new URL('../utils/videoStoryboardPlanning.ts', import.meta.url), 'utf8');
 
 test('viral storyboard prompt forbids expanded product packaging details', () => {
   assert.match(
@@ -24,13 +25,13 @@ test('viral storyboard prompt forbids expanded product packaging details', () =>
 });
 
 test('viral storyboard parser preserves multiline voiceover and audio content from structured scripts', () => {
-  assert.ok(source.includes("const voiceLine = lines.find((line) => line.startsWith('口播')) || '';"));
-  assert.ok(source.includes("const audioLine = lines.find((line) => line.startsWith('音效')) || '';"));
-  assert.ok(source.includes("audio: audioMatch?.[1]?.trim() || getFallbackAudio(),"));
+  assert.ok(planningSource.includes("const voiceLine = lines.find((line) => line.startsWith('口播')) || '';"));
+  assert.ok(planningSource.includes("const audioLine = lines.find((line) => line.startsWith('音效')) || '';"));
+  assert.ok(planningSource.includes("audio: audioMatch?.[1]?.trim() || getFallbackAudio(),"));
 });
 
 test('storyboard JSON parser scans for a valid array instead of using a greedy bracket match', () => {
-  const parserBody = source.match(/const extractJsonArray = \(content: string\) => \{[\s\S]*?\n\};/)?.[0] || '';
+  const parserBody = planningSource.match(/const extractJsonArray = \(content: string\) => \{[\s\S]*?\n\};/)?.[0] || '';
   assert.match(parserBody, /for \(let start = cleaned\.indexOf\('\['\)/);
   assert.match(parserBody, /JSON\.parse\(candidate\)/);
   assert.doesNotMatch(parserBody, /content\.match\(\/\\\[\\\[\\s\\S\]\*\\\]\/\)/);
@@ -42,7 +43,7 @@ test('viral storyboard generation requires a reference video before submitting t
 });
 
 test('normalized viral storyboard prompt emits descriptive placeholders instead of instruction-only content', () => {
-  const normalizerBody = source.match(/const normalizeViralStoryboardPrompt = \([\s\S]*?\n\};/)?.[0] || '';
+  const normalizerBody = planningSource.match(/const normalizeViralStoryboardPrompt = \([\s\S]*?\n\};/)?.[0] || '';
 
   assert.ok(normalizerBody.includes("'参考爆款视频中可见的人物出镜范围、手部/身体动作和服装气质，所有分段保持一致。'"));
   assert.ok(normalizerBody.includes("'参考爆款视频中可见的真实拍摄场景、道具、光线方向、景深和机位，所有分段保持连续。'"));
@@ -71,10 +72,21 @@ test('original storyboard script generation explicitly uses the video analysis m
   assert.doesNotMatch(source, /const taskId = String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| job\.id/);
 });
 
+test('storyboard analysis fallback stays inside configured Gemini models in priority order', () => {
+  const selectorBlock = source.match(/const VIDEO_ANALYSIS_FALLBACK_PRIORITY[\s\S]*?const resolveRuntimePublicBaseUrl/)?.[0] || '';
+
+  assert.match(source, /const VIDEO_ANALYSIS_FALLBACK_PRIORITY = \['gemini-3-5-flash', 'gemini-3-flash-openai'\]/);
+  assert.match(selectorBlock, /filter\(\(item\) => getModelFamily\(item\.id\) === 'gemini'\)/);
+  assert.match(selectorBlock, /VIDEO_ANALYSIS_FALLBACK_PRIORITY\.indexOf\(normalizeModelId\(a\.id\)\)/);
+  assert.match(selectorBlock, /const fallback = candidates\[0\]/);
+  assert.doesNotMatch(selectorBlock, /getModelFamily\(item\.id\) !== currentFamily/);
+  assert.match(source, /result\.config\.videoAnalysisModels \|\| result\.config\.agentModels\.chat \|\| \[\]/);
+});
+
 test('original storyboard planning outputs segmented storyboard and dynamic script prompts like viral mode', () => {
-  const requestPromptBlock = source.match(/const buildScriptRequestPrompt = \([\s\S]*?const CHINESE_NUMERALS =/)?.[0] || '';
-  const originalBuilderBlock = source.match(/const buildOriginalSplitShotsAndBoards = \([\s\S]*?const buildViralSplitShotsAndBoards =/)?.[0] || '';
-  const parseBlock = source.match(/if \(config\.videoGenerationMode === 'viral_split'\) \{[\s\S]*?const limited = parsed\.slice/)?.[0] || '';
+  const requestPromptBlock = source.match(/const buildScriptRequestPrompt = \([\s\S]*?export const generateStoryboardScript =/)?.[0] || '';
+  const originalBuilderBlock = planningSource.match(/const buildOriginalSplitShotsAndBoards = \([\s\S]*?const buildViralSplitShotsAndBoards =/)?.[0] || '';
+  const parseBlock = planningSource.match(/export const parseStoryboardPlanningResult = \([\s\S]*?const limited = parsed\.slice/)?.[0] || '';
 
   assert.match(requestPromptBlock, /storyboardPrompt/);
   assert.match(requestPromptBlock, /dynamicScriptPrompt/);
@@ -85,7 +97,7 @@ test('original storyboard planning outputs segmented storyboard and dynamic scri
   assert.match(originalBuilderBlock, /normalizeOriginalDynamicScriptPrompt/);
   assert.match(originalBuilderBlock, /buildOriginalSplitShotsAndBoards/);
   assert.match(parseBlock, /if \(parsed\.some\(\(item\) => item\?\.storyboardPrompt \|\| item\?\.dynamicScriptPrompt\)\) \{/);
-  assert.match(parseBlock, /const result = buildOriginalSplitShotsAndBoards\(parsed, config\);/);
+  assert.match(parseBlock, /return buildOriginalSplitShotsAndBoards\(parsed, config, identitySeed\);/);
 });
 
 test('storyboard board edit uses a focused edit prompt instead of replaying the full generation prompt', () => {
@@ -98,4 +110,41 @@ test('storyboard board edit uses a focused edit prompt instead of replaying the 
   assert.doesNotMatch(editPromptBlock, /分镜内容：\s*\\n\$\{panelLines\}/);
   assert.match(generationBlock, /revisionInstruction\?\.trim\(\) && safeCurrentBoardImageUrl\s*\?\s*buildStoryboardBoardEditPrompt/);
   assert.match(generationBlock, /:\s*buildBoardPrompt\(/);
+});
+
+test('storyboard planning and board jobs expose durable identity before polling', () => {
+  const planningBlock = source.match(/export const generateStoryboardScript = async \([\s\S]*?const createImageModuleConfig =/)?.[0] || '';
+  const boardBlock = source.match(/export const generateStoryboardBoardImage = async \([\s\S]*?export const generateStoryboardWhiteBgImage =/)?.[0] || '';
+
+  assert.match(source, /parseStoryboardPlanningResult/);
+  assert.match(planningBlock, /shellProjectId/);
+  assert.match(planningBlock, /planningPurpose/);
+  assert.match(planningBlock, /phase/);
+  assert.match(planningBlock, /onJobCreated\?\.\(job\.id/);
+  assert.match(planningBlock, /waitForInternalJob\([\s\S]*onJobUpdate/);
+  assert.match(planningBlock, /identitySeed: shellProjectId \|\| job\.id/);
+  assert.match(boardBlock, /shellProjectId/);
+  assert.match(boardBlock, /planningPurpose/);
+  assert.match(boardBlock, /phase/);
+  assert.match(boardBlock, /boardId: board\.id/);
+  assert.match(boardBlock, /onJobCreated/);
+});
+
+test('storyboard planning and board polling share the caller cancellation signal', () => {
+  const planningBlock = source.match(/export const generateStoryboardScript = async \([\s\S]*?const createImageModuleConfig =/)?.[0] || '';
+  const boardBlock = source.match(/export const generateStoryboardBoardImage = async \([\s\S]*?export const generateStoryboardWhiteBgImage =/)?.[0] || '';
+
+  assert.match(source, /signal\?: AbortSignal/);
+  assert.match(planningBlock, /const \{ onJobCreated, signal \} = jobContext/);
+  assert.match(planningBlock, /waitForInternalJob\(job\.id, signal,/);
+  assert.match(boardBlock, /jobContext\.signal \|\| new AbortController\(\)\.signal/);
+});
+
+test('storyboard jobs forward the stable client submission key to backend dedupe', () => {
+  const planningBlock = source.match(/export const generateStoryboardScript = async \([\s\S]*?const createImageModuleConfig =/)?.[0] || '';
+  const boardBlock = source.match(/export const generateStoryboardBoardImage = async \([\s\S]*?export const generateStoryboardWhiteBgImage =/)?.[0] || '';
+
+  assert.match(source, /clientSubmissionKey\?: string/);
+  assert.match(planningBlock, /clientSubmissionKey: String\(jobContext\.clientSubmissionKey/);
+  assert.match(boardBlock, /clientSubmissionKey: String\(jobContext\.clientSubmissionKey/);
 });

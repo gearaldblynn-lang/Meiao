@@ -1,16 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   CREDIT_LIMIT_MODES,
   createCreditInsufficientError,
   estimateCreditReservation,
   getCreditAvailable,
+  getJobCreditRetryReservationAction,
+  getLocalCreditReservationState,
   normalizeCreditAccount,
   releaseLocalAccountCredits,
   reserveLocalAccountCredits,
   settleLocalAccountCredits,
+  shouldReleaseJobCreditReservation,
 } from './accountCredits.mjs';
+
+const serverSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
 
 const createLimitedStore = () => ({
   users: [{
@@ -282,4 +288,153 @@ test('createCreditInsufficientError exposes HTTP 402 details', () => {
   assert.equal(error.requiredCredits, 5);
   assert.equal(error.availableCredits, 2);
   assert.match(error.message, /积分不足/);
+});
+
+test('queued cancellation releases credit while submitted cancellation keeps it pending', () => {
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: { status: 'cancelled', providerTaskId: '' },
+    error: { code: 'request_cancelled' },
+  }), true);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: { status: 'cancelled', providerTaskId: 'provider-task-1' },
+    error: { code: 'request_cancelled' },
+  }), false);
+});
+
+test('recoverable submitted failures and ambiguous submissions keep their reservation', () => {
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: { providerTaskId: 'provider-task-1' },
+    error: { code: 'provider_timeout' },
+    retryWaiting: false,
+  }), false);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: { providerTaskId: '' },
+    error: { code: 'provider_submission_unknown' },
+  }), false);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: { providerTaskId: 'provider-task-1' },
+    error: { code: 'provider_bad_request' },
+  }), true);
+});
+
+test('retry reuses a pending reservation only when polling an existing provider task', () => {
+  const pendingReservation = { id: 'reservation-1', userId: 'user-1', amount: 5 };
+  assert.equal(getJobCreditRetryReservationAction({
+    job: {
+      providerTaskId: 'provider-task-1',
+      payload: { __creditReservation: pendingReservation },
+    },
+    reservationProcessed: false,
+  }), 'reuse');
+  assert.equal(getJobCreditRetryReservationAction({
+    job: {
+      providerTaskId: '',
+      payload: { __creditReservation: pendingReservation },
+    },
+    reservationProcessed: false,
+  }), 'block');
+  assert.equal(getJobCreditRetryReservationAction({
+    job: {
+      providerTaskId: 'chat-response-id',
+      payload: { __creditReservation: pendingReservation },
+    },
+    reservationProcessed: false,
+    providerTaskRecoverable: false,
+  }), 'block');
+  assert.equal(getJobCreditRetryReservationAction({
+    job: {
+      status: 'failed',
+      errorCode: 'provider_bad_request',
+      providerTaskId: 'provider-task-1',
+      payload: { __creditReservation: pendingReservation },
+    },
+    reservationProcessed: false,
+  }), 'block');
+});
+
+test('retry after a released reservation requires a new reservation before submit', () => {
+  const store = createLimitedStore();
+  const original = reserveLocalAccountCredits(store, 'user-1', {
+    amount: 5,
+    jobId: 'job-1',
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+  });
+  releaseLocalAccountCredits(store, original, { reason: 'job_failed' });
+
+  assert.equal(getLocalCreditReservationState(store, original), 'processed');
+  assert.equal(getJobCreditRetryReservationAction({
+    job: {
+      providerTaskId: '',
+      payload: { __creditReservation: original },
+    },
+    reservationProcessed: true,
+  }), 'reserve');
+
+  const replacement = reserveLocalAccountCredits(store, 'user-1', {
+    amount: 5,
+    jobId: 'job-1',
+    module: 'video',
+    taskType: 'kie_seedance_video',
+    provider: 'kie',
+  });
+  settleLocalAccountCredits(store, replacement, { result: { creditsConsumed: 5 } });
+  const duplicateSettlement = settleLocalAccountCredits(store, replacement, { result: { creditsConsumed: 5 } });
+
+  assert.equal(duplicateSettlement.alreadyProcessed, true);
+  assert.equal(store.users[0].creditReserved, 0);
+  assert.equal(store.users[0].creditBalance, 5);
+  assert.equal(store.users[0].creditConsumed, 5);
+});
+
+test('mysql settlement and release lock the account before checking reservation state', () => {
+  assert.match(serverSource, /const lockDbCreditAccount = async \(connection, userId\) => \{[\s\S]*FOR UPDATE/);
+  assert.equal(
+    (serverSource.match(/await lockDbCreditAccount\(connection, reservation\.userId\)/g) || []).length,
+    2
+  );
+
+  const settleBody = serverSource.match(/const settleDbAccountCredits = async[\s\S]*?\n\};/)?.[0] || '';
+  const releaseBody = serverSource.match(/const releaseDbAccountCredits = async[\s\S]*?\n\};/)?.[0] || '';
+  for (const body of [settleBody, releaseBody]) {
+    assert.ok(body.indexOf('lockDbCreditAccount') < body.indexOf('hasDbProcessedCreditReservation'));
+  }
+});
+
+test('cancel and retry routes enforce reservation lifecycle before queueing work', () => {
+  assert.match(serverSource, /shouldReleaseJobCreditReservation/);
+  assert.match(serverSource, /releaseQueuedCredits:[\s\S]{0,240}releaseDbJobCredits\(\{[\s\S]{0,120}pool: connection,[\s\S]{0,120}request_cancelled/);
+  assert.ok((serverSource.match(/releaseLocalJobCredits\(\{ store, job,[\s\S]{0,180}request_cancelled/g) || []).length >= 1);
+  assert.match(serverSource, /getJobCreditRetryReservationAction/);
+  assert.match(serverSource, /getLocalCreditReservationState/);
+  assert.match(serverSource, /withMysqlSubmissionLock\([\s\S]{0,200}withMysqlTransaction\(connection/);
+  assert.match(serverSource, /payload_json:\s*JSON\.stringify\(retryPayload\)[\s\S]*requestRetryJob/);
+  assert.match(serverSource, /requestLocalRetryJob\(store, jobId, \{[\s\S]*payload: retryPayload/);
+  assert.equal((serverSource.match(/resetProviderTaskId:\s*reservationAction === 'reserve'/g) || []).length, 2);
+});
+
+test('job deletion checks pending reservations in mysql and local modes before removing records', () => {
+  assert.match(
+    serverSource,
+    /deleteJobById\(pool,[\s\S]{0,500}hasPendingReservation:[\s\S]{0,400}hasDbProcessedCreditReservation/
+  );
+  assert.match(
+    serverSource,
+    /const resolveLocalDeletionAction[\s\S]{0,240}resolveJobDeletionAction\(candidate,[\s\S]{0,240}getLocalCreditReservationState/
+  );
+});
+
+test('submission-unknown jobs expose an admin-only audited bind or release endpoint', () => {
+  assert.match(serverSource, /submission-resolution/);
+  assert.match(
+    serverSource,
+    /taskPlatformSubmissionResolutionMatch[\s\S]{0,180}req\.method === 'POST'[\s\S]{0,180}requireDbAdmin/
+  );
+  assert.match(serverSource, /resolveSubmissionUnknownJob\(\{[\s\S]{0,500}releaseDbAccountCredits\(connection/);
+  assert.match(serverSource, /action: 'submission_unknown_resolved'/);
+  assert.match(serverSource, /reason: 'admin_submission_resolution'/);
+  assert.match(serverSource, /resolution\.action === 'bind'[\s\S]{0,180}mirrorDbJobToTemporalIfEnabled/);
+  assert.match(serverSource, /localRequireAdmin[\s\S]{0,600}resolveLocalSubmissionUnknownJob/);
+  assert.match(serverSource, /releaseLocalAccountCredits[\s\S]{0,400}admin_submission_resolution/);
 });

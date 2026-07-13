@@ -2855,6 +2855,7 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
           generateAudio: parseSeedanceGenerateAudio(input.params),
           model: 'bytedance/seedance-2-fast',
           subFeature: input.subFeature,
+          ...(input.taskMetadata || {}),
         }
       : {
           mode,
@@ -2868,6 +2869,7 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
           ratio: firstParam(input.params, ['ratio', 'aspectRatio'], '9:16'),
           modelVersion: 'seedance2.0fast_vip',
           subFeature: input.subFeature,
+          ...(input.taskMetadata || {}),
         },
     maxRetries: 0,
   });

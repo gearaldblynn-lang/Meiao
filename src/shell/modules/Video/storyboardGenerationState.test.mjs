@@ -1,0 +1,216 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { existsSync, readFileSync } from 'node:fs';
+
+const helperUrl = new URL('./storyboardGenerationState.mjs', import.meta.url);
+
+const loadHelper = async () => {
+  assert.equal(existsSync(helperUrl), true, 'storyboard generation state helper must exist');
+  return import(helperUrl.href);
+};
+
+test('storyboard provider states map to one board-state contract', async () => {
+  const { applyStoryboardBoardResult } = await loadHelper();
+  const board = { id: 'board-1', status: 'pending', imageUrl: '' };
+
+  assert.equal(applyStoryboardBoardResult(board, { status: 'pending' }).status, 'generating');
+  assert.equal(applyStoryboardBoardResult(board, { status: 'queued' }).status, 'generating');
+  assert.equal(applyStoryboardBoardResult(board, { status: 'running' }).status, 'generating');
+  assert.equal(applyStoryboardBoardResult(board, { status: 'generating', backendJobId: 'job-1', taskId: 'provider-1' }).status, 'generating');
+  assert.deepEqual(
+    applyStoryboardBoardResult(board, { status: 'success', imageUrl: '/board.png', backendJobId: 'job-1', taskId: 'provider-1' }),
+    {
+      ...board,
+      status: 'completed',
+      imageUrl: '/board.png',
+      backendJobId: 'job-1',
+      taskId: 'provider-1',
+      error: undefined,
+    },
+  );
+  assert.equal(applyStoryboardBoardResult(board, { status: 'success', imageUrl: '' }).status, 'failed');
+  assert.equal(applyStoryboardBoardResult(board, { status: 'failed', message: 'provider failed' }).status, 'failed');
+  assert.equal(applyStoryboardBoardResult(board, { status: 'cancelled' }).status, 'failed');
+  assert.match(applyStoryboardBoardResult(board, { status: 'cancelled' }).error, /中断|取消/);
+});
+
+test('storyboard project and shell status never treat pending boards as completed', async () => {
+  const { deriveStoryboardProjectStatus, toStoryboardShellResultStatus } = await loadHelper();
+
+  assert.equal(deriveStoryboardProjectStatus([
+    { status: 'completed', imageUrl: '/first.png' },
+    { status: 'pending' },
+  ]), 'imaging');
+  assert.equal(deriveStoryboardProjectStatus([
+    { status: 'failed' },
+    { status: 'pending' },
+  ]), 'failed');
+  assert.equal(deriveStoryboardProjectStatus([
+    { status: 'completed', imageUrl: '/first.png' },
+    { status: 'completed', imageUrl: '/second.png' },
+  ]), 'completed');
+  assert.equal(deriveStoryboardProjectStatus([{ status: 'failed' }]), 'failed');
+  assert.equal(toStoryboardShellResultStatus({ status: 'pending' }), 'generating');
+  assert.equal(toStoryboardShellResultStatus({ status: 'generating' }), 'generating');
+  assert.equal(toStoryboardShellResultStatus({ status: 'completed', imageUrl: '/board.png' }), 'completed');
+  assert.equal(toStoryboardShellResultStatus({ status: 'failed' }), 'error');
+});
+
+test('imaging project resumes the next pending board only after earlier work is terminal', async () => {
+  const { getResumableStoryboardBoard } = await loadHelper();
+  const boards = [
+    { id: 'board-1', status: 'completed', imageUrl: '/first.png' },
+    { id: 'board-2', status: 'pending' },
+  ];
+
+  assert.deepEqual(getResumableStoryboardBoard({ status: 'imaging', boards }), {
+    boardId: 'board-2',
+    previousBoardImageUrl: '/first.png',
+  });
+  assert.equal(getResumableStoryboardBoard({
+    status: 'imaging',
+    boards: [{ id: 'board-1', status: 'generating' }, { id: 'board-2', status: 'pending' }],
+  }), null);
+  assert.equal(getResumableStoryboardBoard({
+    status: 'awaiting_image_confirmation',
+    boards,
+  }), null);
+  assert.equal(getResumableStoryboardBoard({
+    status: 'imaging',
+    boards: [
+      { id: 'board-1', status: 'completed', imageUrl: '/first.png' },
+      { id: 'board-2', status: 'pending', autoResumeBlocked: true },
+    ],
+  }), null);
+});
+
+test('recovered active board identity stays generating and cannot become resumable pending', async () => {
+  const { getResumableStoryboardBoard, mergeRecoveredStoryboardProject } = await loadHelper();
+  const localVersions = [{ id: 'local-v1', imageUrl: '/local-edit.png' }];
+
+  for (const recoveredStatus of ['generating', 'retry_waiting']) {
+    const merged = mergeRecoveredStoryboardProject({
+      id: 'project-1',
+      status: 'imaging',
+      boards: [{
+        id: 'board-1',
+        status: 'pending',
+        prompt: '用户修改后的 prompt',
+        imageUrl: '/local-edit.png',
+        imageVersions: localVersions,
+      }],
+    }, {
+      id: 'project-1',
+      status: 'imaging',
+      boards: [{
+        id: 'board-1',
+        status: recoveredStatus,
+        backendJobId: 'board-job-active',
+        taskId: 'provider-task-active',
+        prompt: '历史 prompt',
+      }],
+    });
+
+    assert.equal(merged.boards[0].status, 'generating');
+    assert.equal(merged.boards[0].backendJobId, 'board-job-active');
+    assert.equal(merged.boards[0].taskId, 'provider-task-active');
+    assert.equal(merged.boards[0].prompt, '用户修改后的 prompt');
+    assert.equal(merged.boards[0].imageUrl, '/local-edit.png');
+    assert.deepEqual(merged.boards[0].imageVersions, localVersions);
+    assert.equal(getResumableStoryboardBoard(merged), null);
+  }
+});
+
+test('newest recovered board job replaces a different stale durable identity', async () => {
+  const { mergeRecoveredStoryboardProject } = await loadHelper();
+  const merged = mergeRecoveredStoryboardProject({
+    id: 'project-1',
+    status: 'imaging',
+    boards: [{
+      id: 'board-1',
+      status: 'completed',
+      backendJobId: 'old-job',
+      taskId: 'old-provider-task',
+      imageUrl: '/old.png',
+      prompt: '用户编辑后的 prompt',
+      imageVersions: [{ id: 'v1', imageUrl: '/old.png' }],
+    }],
+  }, {
+    id: 'project-1',
+    status: 'imaging',
+    boards: [{
+      id: 'board-1',
+      status: 'generating',
+      backendJobId: 'new-job',
+      taskId: 'new-provider-task',
+      imageUrl: '/persisted-old.png',
+      prompt: '提交时 prompt',
+    }],
+  });
+
+  assert.equal(merged.boards[0].status, 'generating');
+  assert.equal(merged.boards[0].backendJobId, 'new-job');
+  assert.equal(merged.boards[0].taskId, 'new-provider-task');
+  assert.equal(merged.boards[0].imageUrl, '/old.png');
+  assert.equal(merged.boards[0].prompt, '用户编辑后的 prompt');
+  assert.deepEqual(merged.boards[0].imageVersions, [{ id: 'v1', imageUrl: '/old.png' }]);
+});
+
+test('recovered storyboard merge preserves local edits and only advances matching active jobs', async () => {
+  const { mergeRecoveredStoryboardProject } = await loadHelper();
+  const current = {
+    id: 'project-1',
+    status: 'completed',
+    config: { aspectRatio: '9:16' },
+    script: '用户脚本',
+    shots: [{ id: 'shot-1', prompt: '用户镜头' }],
+    boards: [{
+      id: 'board-1',
+      status: 'completed',
+      imageUrl: '/edited.png',
+      prompt: '用户 prompt',
+      backendJobId: 'edit-job',
+      imageVersions: [{ id: 'v2', imageUrl: '/edited.png' }],
+    }],
+  };
+  const historical = {
+    ...current,
+    script: '历史脚本',
+    boards: [{
+      id: 'board-1',
+      status: 'completed',
+      imageUrl: '/historical.png',
+      prompt: '历史 prompt',
+      backendJobId: 'old-job',
+    }],
+  };
+  const preserved = mergeRecoveredStoryboardProject(current, historical);
+  assert.equal(preserved.script, '用户脚本');
+  assert.equal(preserved.boards[0].imageUrl, '/edited.png');
+  assert.equal(preserved.boards[0].imageVersions.length, 1);
+
+  const active = {
+    ...current,
+    status: 'imaging',
+    boards: [{ id: 'board-1', status: 'generating', backendJobId: 'edit-job' }],
+  };
+  const completed = mergeRecoveredStoryboardProject(active, current);
+  assert.equal(completed.boards[0].status, 'completed');
+  assert.equal(completed.boards[0].imageUrl, '/edited.png');
+});
+
+test('all storyboard image entry points consume the shared status mapper', () => {
+  const shellSource = readFileSync(new URL('../../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
+  const videoModuleSource = readFileSync(new URL('./VideoModule.tsx', import.meta.url), 'utf8');
+  const initialBlock = shellSource.match(/if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'storyboard'\) \{[\s\S]*?if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'diagnosis'\) \{/)?.[0] || '';
+  const regenerateBlock = shellSource.match(/const handleStoryboardRegenerateResult = useCallback\(async \([\s\S]*?const handleConfirmStoryboardImaging =/)?.[0] || '';
+  const confirmBlock = shellSource.match(/const handleConfirmStoryboardImaging = useCallback\(async \([\s\S]*?const handleRegenerateResult =/)?.[0] || '';
+  const editBlock = shellSource.match(/const handleStoryboardEditResult = useCallback\(async \([\s\S]*?const runEverythingReplaceEditGeneration =/)?.[0] || '';
+
+  [initialBlock, regenerateBlock, confirmBlock, editBlock].forEach((block) => {
+    assert.match(block, /applyStoryboardBoardResult\(/);
+    assert.match(block, /deriveStoryboardProjectStatus\(/);
+  });
+  assert.match(videoModuleSource, /toStoryboardShellResultStatus\(board\)/);
+  assert.doesNotMatch(videoModuleSource, /board\.status === 'failed' \? 'error' : board\.status === 'generating' \? 'generating' : 'completed'/);
+});

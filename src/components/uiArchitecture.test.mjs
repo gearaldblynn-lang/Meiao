@@ -610,7 +610,8 @@ test('shell hydration keeps backend jobs out of the refresh critical path', () =
   assert.match(app, /if \(pageMode === 'landing'\) return;/);
   assert.match(hydrateBody, /if \(shouldUseLocalStateFallback\(\)\)/);
   assert.doesNotMatch(hydrateBody, /catch \{\s*const localState = loadPersistedAppState\(\)/);
-  assert.match(jobHydrateBody, /fetchInternalJobs\(\)/);
+  assert.match(jobHydrateBody, /fetchInternalJobs\(200\)/);
+  assert.match(jobHydrateBody, /fetchInternalJob\(jobId\)/);
   assert.match(jobHydrateBody, /latestSharedStateRef\.current/);
   assert.match(app, /const shouldUseLocalStateFallback = \(\) =>/);
   assert.match(app, /meiaoLocalPreview/);
@@ -622,7 +623,7 @@ test('shell job hydration only refreshes active tasks and does not overwrite pro
   const app = read('../ShellMigratedApp.tsx');
   const jobHydrateBody = app.match(/const hydrateShellJobs = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/)?.[1] || '';
 
-  assert.match(jobHydrateBody, /fetchInternalJobs\(\)/);
+  assert.match(jobHydrateBody, /fetchInternalJobs\(200\)/);
   assert.match(jobHydrateBody, /setTasks\(\(prev\) => mergeShellTasks/);
   assert.match(jobHydrateBody, /persistSyncedProjectsToSharedState\(syncedProjectsToPersist\)/);
   assert.match(app, /shouldPersistSyncedProjectFromJobs/);
@@ -782,7 +783,7 @@ test('project details expose actual task credits and provider task ids', () => {
   assert.match(shellApp, /creditsConsumed: generated\.result\.creditsConsumed/);
   assert.match(shellApp, /taskId: result\.taskId/);
   assert.match(shellApp, /taskId: itemResult\.taskId/);
-  assert.match(shellApp, /boards: item\.boards\.map\(\(board\) => \(\{ \.\.\.board, status: 'pending' as const, error: undefined, creditsConsumed: undefined/);
+  assert.match(shellApp, /isInitialConfirmation\s*\? item\.boards\.map\(\(board\) => \(\{ \.\.\.board, status: 'pending' as const, error: undefined, creditsConsumed: undefined/);
 
   assert.match(shellWorkflow, /Promise<\{ plans: ShellPlanItem\[\]; message\?: string; creditsConsumed\?: number; taskId\?: string \}>/);
   assert.match(shellWorkflow, /creditsConsumed: result\.creditsConsumed/);
@@ -793,10 +794,10 @@ test('project details expose actual task credits and provider task ids', () => {
   assert.match(arkService, /taskId: String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| ''\)\.trim\(\) \|\| undefined/);
   assert.match(arkService, /creditsConsumed: analysis\.creditsConsumed/);
 
-  assert.match(videoStoryboardService, /Promise<\{ script: string; shots: VideoStoryboardShot\[\]; boards: VideoStoryboardBoard\[\]; taskId\?: string; creditsConsumed\?: number \}>/);
+  assert.match(videoStoryboardService, /Promise<\{ script: string; shots: VideoStoryboardShot\[\]; boards: VideoStoryboardBoard\[\]; taskId\?: string; backendJobId\?: string; creditsConsumed\?: number \}>/);
   assert.match(videoStoryboardService, /const taskId = String\(finalJob\.providerTaskId \|\| finalJob\.result\?\.providerTaskId \|\| ''\)\.trim\(\) \|\| undefined/);
   assert.match(videoStoryboardService, /const creditsConsumed = Number\.isFinite\(Number\(finalJob\.result\?\.creditsConsumed\)\) \? Number\(finalJob\.result\?\.creditsConsumed\) : undefined/);
-  assert.match(shellApp, /taskId: planningTaskId, creditsConsumed: planningCreditsConsumed/);
+  assert.match(shellApp, /taskId: planningTaskId,[\s\S]*backendJobId: planningJobId,[\s\S]*creditsConsumed: planningCreditsConsumed/);
   assert.match(shellApp, /planningTaskId,[\s\S]*creditsConsumed: planningCreditsConsumed,[\s\S]*status: 'awaiting_image_confirmation'/);
   assert.match(shellApp, /planningTaskId,[\s\S]*creditsConsumed: planningCreditsConsumed,[\s\S]*status: 'imaging'/);
   assert.match(videoModule, /planningTaskId: project\.planningTaskId/);
@@ -934,6 +935,10 @@ test('storyboard generation uploads local draft assets before building model-rea
   assert.match(app, /ensureMaterialRemoteUrls/);
   assert.match(app, /loadShellDraftAsset/);
   assert.match(app, /uploadInternalAssetStream/);
+  assert.match(app, /createMaterialUploadCoordinator/);
+  assert.match(app, /materialUploadCoordinatorRef\.current\.run\(localAssetId/);
+  assert.match(app, /applyUploadedMaterialUrl\(type, item\.id, remoteUrl\)/);
+  assert.doesNotMatch(app, /const \{ uploadShellMaterial \} = await loadShellWorkflowModule\(\)/);
   assert.match(app, /resolvePublicAssetUrl\(item\.remoteUrl \|\| item\.url, publicBaseUrl\)/);
   assert.match(app, /shouldRefreshVideoAssetUrl/);
   assert.match(app, /shouldRefreshVideoAssetUrl\(currentSafeUrl, Boolean\(item\.localAssetId\)\)/);
@@ -1034,37 +1039,41 @@ test('synced translation job projects are persisted after cloud recovery', () =>
   assert.match(persistUtil, /'everything_replace',/);
 });
 
-test('guarded generation blocks duplicate submits while scoped jobs are active', () => {
+test('video generation blocks duplicate submit windows without blocking other active jobs', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
   const workflow = read('../adapters/shellWorkflow.ts');
   const serverIndex = read('../../server/index.mjs');
+  const jobSubmissionPolicy = read('../../server/jobSubmissionPolicy.mjs');
   const jobManager = read('../../server/jobManager.mjs');
 
   assert.match(shellApp, /generationSubmitLocksRef/);
   assert.match(shellApp, /shouldGuardGenerationSubmit\(targetModule, targetSubFeature\)/);
-  assert.match(shellApp, /!\(module === AppModuleObj\.EVERYTHING_REPLACE && subFeature === 'product_replace'\)/);
-  assert.match(shellApp, /module === AppModuleObj\.ONE_CLICK/);
-  assert.match(shellApp, /const hasActiveGuardedGeneration = \(/);
-  assert.match(shellApp, /当前已有任务未返回，请等待完成或取消后再提交。/);
-  assert.match(shellApp, /const hasCurrentActiveGuardedGeneration = hasActiveGuardedGeneration\(projects, tasks, activeModule, activeSubFeature\)/);
+  assert.match(shellApp, /const shouldGuardGenerationSubmit = [\s\S]*module === AppModuleObj\.ONE_CLICK[\s\S]*module === AppModuleObj\.VIDEO[\s\S]*?\);/);
+  assert.doesNotMatch(shellApp, /const hasActiveGuardedGeneration = \(/);
+  assert.doesNotMatch(shellApp, /当前已有任务未返回，请等待完成或取消后再提交。/);
+  assert.match(shellApp, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\)/);
   assert.match(shellApp, /beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(shellApp, /endGenerationSubmitLock\(guardedSubmitLockKey\)/);
+  assert.doesNotMatch(shellApp, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\)/);
+  assert.match(shellApp, /finally \{[\s\S]*releaseGuardedSubmit\(\)/);
+  assert.match(shellApp, /taskMetadata:\s*\{ clientSubmissionKey: guardedSubmitLockKey \}/);
   assert.match(shellApp, /persistProjectToSharedState\(pendingVideoProject\)/);
   assert.match(shellApp, /isSubmitLocked=\{isCurrentGenerationSubmitLocked\}/);
   assert.match(bottomInputBar, /isSubmitLocked\?: boolean/);
   assert.match(bottomInputBar, /const isGenerateDisabled = isSubmitLocked \|\| Boolean\(disabledReason\) \|\| \(!promptText\.trim\(\) && !canGenerateWithoutPrompt\)/);
   assert.match(bottomInputBar, /const isSubmitBusy = isSubmitLocked/);
+  assert.match(bottomInputBar, /const handleGenerateClick = \(\) => \{\s*if \(!isGenerateDisabled\) onGenerate\(\);\s*\}/);
   assert.match(bottomInputBar, /submitLabel = isSubmitBusy \? '任务处理中\.\.\.' : generateLabel/);
   assert.match(bottomInputBar, /if \(!isGenerateDisabled\) onGenerate\(\)/);
   assert.match(bottomInputBar, /disabled=\{isGenerateDisabled\}/);
   assert.match(workflow, /resolution: normalizeSeedanceApiResolution\(firstParam\(input\.params, \['videoResolution'\], '720p'\)\)/);
   assert.doesNotMatch(workflow, /requestId: `\$\{Date\.now\(\)\}-/);
-  assert.match(serverIndex, /VIDEO_JOB_DEDUPE_WINDOW_MS = 1000 \* 60 \* 60/);
-  assert.match(serverIndex, /CHAT_JOB_DEDUPE_WINDOW_MS = 1000 \* 60 \* 3/);
-  assert.match(serverIndex, /VIDEO_JOB_TASK_TYPES = new Set\(\['dreamina_video', 'kie_seedance_video'\]\)/);
-  assert.match(serverIndex, /CHAT_JOB_TASK_TYPES = new Set\(\['kie_chat'\]\)/);
-  assert.match(serverIndex, /getJobDedupeWindowMs\(jobPayload\.taskType\)/);
+  assert.match(jobSubmissionPolicy, /VIDEO_DEDUPE_WINDOW_MS = 60 \* 60 \* 1000/);
+  assert.match(jobSubmissionPolicy, /CHAT_DEDUPE_WINDOW_MS = 3 \* 60 \* 1000/);
+  assert.match(jobSubmissionPolicy, /VIDEO_JOB_TASK_TYPES = new Set\(\[/);
+  assert.match(jobSubmissionPolicy, /normalizedTaskType === 'kie_chat'/);
+  assert.match(serverIndex, /submissionPolicy\.dedupeWindowMs/);
   assert.match(jobManager, /key !== 'requestId'/);
 });
 
@@ -1090,7 +1099,10 @@ test('material preview bar opens uploaded videos in a playable modal', () => {
 });
 
 test('viral storyboard prompts preserve the required segmented prompt and voiceover format', () => {
-  const videoStoryboardService = read('../services/videoStoryboardService.ts');
+  const videoStoryboardService = [
+    read('../services/videoStoryboardService.ts'),
+    read('../utils/videoStoryboardPlanning.ts'),
+  ].join('\n');
   const normalizerBody = videoStoryboardService.match(/const normalizeViralStoryboardPrompt = \([\s\S]*?\n\};/)?.[0] || '';
 
   assert.match(videoStoryboardService, /商品参考图公网URL/);
@@ -3153,9 +3165,9 @@ test('video storyboard edit keeps recoverable submitted cloud tasks pending inst
   const storyboardEditBlock = shellApp.match(/const handleStoryboardEditResult = useCallback\(async \([\s\S]*?const handleEditResult = useCallback/)?.[0] || '';
 
   assert.match(storyboardEditBlock, /if \(isRecoverableShellWorkflowResult\(generated\.result\)\) \{/);
-  assert.match(storyboardEditBlock, /status: 'imaging'/);
-  assert.match(storyboardEditBlock, /status: 'generating' as const/);
-  assert.match(storyboardEditBlock, /taskId: generated\.result\.taskId \|\| currentBoard\.taskId/);
+  assert.match(storyboardEditBlock, /applyStoryboardBoardResult\(/);
+  assert.match(storyboardEditBlock, /deriveStoryboardProjectStatus\(/);
+  assert.match(storyboardEditBlock, /recoverable: true/);
   assert.match(storyboardEditBlock, /addToast\('分镜图修改任务已提交云端，结果待同步，可稍后点击找回。', 'info'\)/);
   assert.match(storyboardEditBlock, /return true;/);
   assert.doesNotMatch(storyboardEditBlock, /if \(generated\.result\.status !== 'success' \|\| !generated\.result\.imageUrl\) \{\s*throw new Error\(generated\.result\.message \|\| '分镜图修改失败'\);\s*\}\s*if \(isRecoverableShellWorkflowResult\(generated\.result\)\)/);

@@ -29,12 +29,14 @@ MEIAO_DB_PASSWORD=请替换成你的真实密码
 MEIAO_DB_NAME=meiao_internal
 MEIAO_PUBLIC_BASE_URL=https://meiaoyuntai.com
 MEIAO_JOB_MAX_CONCURRENCY=3
+MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS=10
 MEIAO_TASK_ENGINE=mysql
 MEIAO_TEMPORAL_ADDRESS=127.0.0.1:7233
 MEIAO_TEMPORAL_NAMESPACE=default
 MEIAO_TEMPORAL_TASK_QUEUE=meiao-cloud
 MEIAO_PROVIDERLESS_RUNNING_STALE_MS=300000
 MEIAO_SUBMITTED_RUNNING_STALE_MS=21600000
+MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES=2
 MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS=30000
 APP_STATE_MAX_BYTES=16777216
 MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS=120000
@@ -51,6 +53,7 @@ MEIAO_KIE_HTTP_TRANSIENT_RETRIES=2
 MEIAO_KIE_HTTP_RETRY_BASE_MS=1000
 MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY=2
 MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY=2
+MEIAO_KIE_CHAT_MEDIA_RESOLUTION_CONCURRENCY=2
 MEIAO_CHAT_SSE_HEARTBEAT_MS=15000
 AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES=1
 AGENT_IMAGE_TOOL_CONCURRENCY=2
@@ -78,7 +81,9 @@ EOF
 
 第4期智能体多工具复用 `OPENAI_COMPATIBLE_*`，V2 对话经 `OPENAI_COMPATIBLE_RESPONSES_PATH` 调 responses 端点以支持 `web_search`；`AGENT_TOOL_MAX_ROUNDS` 是单轮工具循环上限，默认 5。`AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS` 是多图独立输出规划欠覆盖时的修复审查轮数，默认 2；仍不完整会快速失败，不执行单张伪完成。
 
-`MEIAO_PROVIDERLESS_RUNNING_STALE_MS` 控制已标记 `running` 但还没有上游 `providerTaskId` 的任务兜底释放窗口。云上建议 `300000`，避免素材上传/提交阶段异常卡住后长期占满同账号并发。`MEIAO_SUBMITTED_RUNNING_STALE_MS` 控制已拿到上游 `providerTaskId` 但本地长时间未回写终态的恢复窗口，默认 6 小时；到期后会回到 `retry_waiting` 复查上游结果，并且不再继续占账号并发。`MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS` 建议 `30000`，让回收检查更及时。
+`MEIAO_PROVIDERLESS_RUNNING_STALE_MS` 控制已标记 `running` 但还没有上游 `providerTaskId` 的异常检测窗口。云上建议 `300000`：内部幂等任务可安全回到 `retry_waiting`；外部付费任务改为 `provider_submission_unknown`，释放并发但不自动重提、不自动退积分预留，需要管理员核实上游后处置。`MEIAO_SUBMITTED_RUNNING_STALE_MS` 控制已记录上游 ID 但未回写终态的检查窗口；只有具备真实查询接口的 task type 才回到 `retry_waiting` 继续查旧任务，不可查询的 chat response ID 不会自动重提。`MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES` 默认 `2`，只是旧任务查询/结果下载的恢复次数。`MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS` 建议 `30000`。
+
+`MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS` 默认 `10`，控制同用户、同语义付费任务的 MySQL 命名锁等待。去重查询、积分预留和 job 创建在同一事务内完成；锁超时返回 409，不创建第二个任务。
 
 `APP_STATE_MAX_BYTES` 是 app_states 单行 state_json 写入大小闸(超闸按 updatedAt 倒序裁老项目,active 永留)。云上 2026-07-04 起为 `16777216`(16 MiB):当时妙木山 8.76 MiB 已超旧 8 MiB 闸、正在丢老项目;线上 MySQL `max_allowed_packet` 实测 128 MiB,16 MiB 仍有 8 倍余量。调整该值必须 `source .env.server` 后 `pm2 restart --update-env` 并从进程环境(`/proc/<pid>/environ`)复核生效。
 
@@ -86,7 +91,7 @@ EOF
 
 `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 控制 KIE 素材上传单次 HTTP 超时，云上建议 `120000`。分镜参考视频等较大素材需要更长上传预算；如果上传出现瞬时网络或上游 5xx 错误，任务允许有限重试后释放并发，不走 base64 上传接口。
 
-`MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 让我方 `/api/assets/file/` 托管素材优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址。只有上游明确无法读取素材、HTTP 502 且没有 `providerTaskId` 时，才转存 KIE 并重试同一模型；已有 task id、鉴权、余额、限额和普通模型错误都不触发该回退。紧急回滚时把该值改为 `kie-only` 并执行 `pm2 restart meiao-internal --update-env`，即可恢复全部强制转存。
+`MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 让我方 `/api/assets/file/` 托管素材优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址。只有上游明确返回文件读取/下载/MIME 不可用错误，且没有 `providerTaskId` 时，才转存 KIE 并重试同一模型；普通 HTTP 500/502、网络中断、鉴权、余额、限额和已有 task id 都不触发回退。紧急回滚时把该值改为 `kie-only` 并执行 `pm2 restart meiao-internal --update-env`。
 
 `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY` 是所有任务共享的 file-stream-upload 总并发，默认 `3`。`MEIAO_KIE_ASSET_UPLOAD_RETRIES` / `MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS` 默认 `2` / `1000`，只重试文件上传的连接错误与 `429/500/502/503/504`。`MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS` / `MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES` 默认 `1800000` / `2000`，复用成功转存 URL；失败不缓存，PM2 重启后缓存自然清空。
 
@@ -95,6 +100,10 @@ EOF
 `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY` 控制单个 `kie_image` 任务在提交 KIE 前解析/转存素材的并发，默认 `2`。详情页批量生图会同时创建多张图，每张又带多张商品/参考素材；该值不要盲目调高，避免把 KIE 图床上传并发打满。
 
 `MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY` 控制单个 `kie_seedance_video` 任务在提交 KIE 前解析/转存图片、视频、音频素材的总并发，默认 `2`。分镜视频常带多张 3-5MB 商品图和分镜图，保持保守默认可降低 `asset_upload fetch failed`。
+
+`MEIAO_KIE_CHAT_MEDIA_RESOLUTION_CONCURRENCY` 控制单个 `kie_chat` 策划/分镜任务解析图片和视频的并发，默认 `2`。它与 `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY` 进程级总闸门叠加，前者控制单 job 扇出，后者控制全账号总上传压力。
+
+对 `provider_submission_unknown` 任务，管理员使用 `POST /api/admin/task-platform/jobs/:id/submission-resolution`：`{"action":"bind","providerTaskId":"..."}` 仅允许绑定具备旧任务查询路径且已人工核实的 ID；`{"action":"release"}` 只能在确认上游没有创建任务后释放积分预留。两种操作都记录管理日志和任务事件。
 
 `MEIAO_CHAT_SSE_HEARTBEAT_MS` 默认 `15000`，控制智能体聊天 SSE 心跳间隔。长耗时多图生图可能数分钟没有业务事件，心跳用于避免代理或浏览器把连接判定为空闲后断开。
 

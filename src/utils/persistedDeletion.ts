@@ -1,9 +1,11 @@
 import type { PersistedAppState } from './appState.ts';
+import { removeStoryboardBoardResult } from '../shell/modules/Video/storyboardProjectActions.mjs';
 
 export interface PersistedDeletionTarget {
   projectId: string;
   resultId?: string;
   jobIds?: string[];
+  preserveStoryboardBoardSlot?: boolean;
 }
 
 interface TargetSets {
@@ -27,6 +29,39 @@ const makeTargetSets = (target: PersistedDeletionTarget): TargetSets => {
     deleteProjectIds: isResultDelete ? new Set<string>() : projectIds,
     nestedIds: isResultDelete ? new Set([...resultIds, ...jobIds]) : new Set([...projectIds, ...jobIds]),
     allIds: new Set([...projectIds, ...resultIds, ...jobIds]),
+  };
+};
+
+const mergeDeletionIds = (
+  existing: unknown,
+  additions: Array<string | undefined>,
+) => Array.from(new Set([
+  ...(Array.isArray(existing) ? existing : []),
+  ...additions,
+].map((value) => String(value || '').trim()).filter(Boolean))).slice(-500);
+
+export const applyPersistedDeletionTombstones = (
+  state: PersistedAppState,
+  target: PersistedDeletionTarget,
+): PersistedAppState => {
+  const projectId = String(target.projectId || '').trim();
+  const resultId = String(target.resultId || '').trim();
+  const jobIds = (target.jobIds || []).map((jobId) => String(jobId || '').trim()).filter(Boolean);
+  const isResultDelete = Boolean(resultId);
+  return {
+    ...state,
+    shellDraft: {
+      ...state.shellDraft,
+      deletedJobIds: mergeDeletionIds(state.shellDraft?.deletedJobIds, jobIds),
+      deletedProjectIds: mergeDeletionIds(
+        state.shellDraft?.deletedProjectIds,
+        isResultDelete ? [] : [projectId],
+      ),
+      deletedResultIds: mergeDeletionIds(
+        state.shellDraft?.deletedResultIds,
+        target.preserveStoryboardBoardSlot ? [] : [resultId],
+      ),
+    },
   };
 };
 
@@ -109,7 +144,11 @@ const pruneBuyerShowMemory = (memory: any, targets: TargetSets) => {
   };
 };
 
-const pruneVideoMemory = (memory: any, targets: TargetSets) => {
+const pruneVideoMemory = (
+  memory: any,
+  targets: TargetSets,
+  target: PersistedDeletionTarget,
+) => {
   if (!memory || typeof memory !== 'object') return memory;
   const storyboard = memory.storyboard && typeof memory.storyboard === 'object'
     ? {
@@ -118,6 +157,13 @@ const pruneVideoMemory = (memory: any, targets: TargetSets) => {
           ? memory.storyboard.projects.flatMap((project: any) => {
               if (!project || typeof project !== 'object') return [];
               if (matchesTarget(project, targets.deleteProjectIds)) return [];
+              if (
+                target.preserveStoryboardBoardSlot
+                && String(project.id || '').trim() === String(target.projectId || '').trim()
+                && String(target.resultId || '').trim()
+              ) {
+                return [removeStoryboardBoardResult(project, String(target.resultId || '').trim())];
+              }
 
               const nextProject = { ...project };
               if (Array.isArray(project.shots)) {
@@ -219,6 +265,14 @@ export const prunePersistedAppStateForDeletion = (
         return [];
       }
     }
+    if (
+      target.preserveStoryboardBoardSlot
+      && targets.nestedIds.has(String(project.backendJobId || '').trim())
+    ) {
+      nextProject.backendJobId = nextProject.results
+        ?.map((result: any) => String(result?.backendJobId || '').trim())
+        .find(Boolean);
+    }
     if (Array.isArray(project.plans)) {
       nextProject.plans = project.plans.filter((plan: any) => !matchesTarget(plan, targets.nestedIds));
     }
@@ -238,7 +292,7 @@ export const prunePersistedAppStateForDeletion = (
     translationMemory: pruneTranslationMemory(state.translationMemory, targets),
     retouchMemory: pruneRetouchMemory(state.retouchMemory, targets),
     buyerShowMemory: pruneBuyerShowMemory(state.buyerShowMemory, targets),
-    videoMemory: pruneVideoMemory(state.videoMemory, targets),
+    videoMemory: pruneVideoMemory(state.videoMemory, targets, target),
     xhsCoverMemory: pruneXhsCoverMemory(state.xhsCoverMemory, targets),
   };
 };

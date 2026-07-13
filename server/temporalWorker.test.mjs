@@ -399,3 +399,96 @@ test('mysql temporal activity releases concurrency while retrying transient asse
   assert.equal(logs.at(-1).action, 'job_retry_waiting');
   assert.equal(logs.at(-1).status, 'started');
 });
+
+test('mysql temporal activity recovers the old provider task under a separate retry budget', async () => {
+  const { state, pool } = createMysqlHarness({
+    id: 'job-submitted-video-recovery',
+    user_id: 'user-1',
+    module: 'video',
+    task_type: 'kie_seedance_video',
+    provider: 'kie',
+    status: 'retry_waiting',
+    priority: 0,
+    payload_json: JSON.stringify({ prompt: 'video prompt' }),
+    provider_task_id: 'provider-task-1',
+    retry_count: 0,
+    max_retries: 0,
+    created_at: 1000,
+    updated_at: 1500,
+  });
+  const released = [];
+  let executeCalls = 0;
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async (claimedJob) => {
+      executeCalls += 1;
+      assert.equal(claimedJob.providerTaskId, 'provider-task-1');
+      const error = new Error('poll timeout');
+      error.code = 'provider_timeout';
+      error.providerStage = 'polling';
+      error.providerTaskId = claimedJob.providerTaskId;
+      throw error;
+    },
+    releaseJobCredits: async (context) => released.push(context),
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', username: 'user-1', displayName: 'User 1', role: 'admin' }),
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: 'job-submitted-video-recovery',
+    workflowId: 'meiao-job-submitted-video-recovery',
+    runId: 'run-1',
+  });
+
+  assert.equal(executeCalls, 1);
+  assert.equal(result.status, 'retry_waiting');
+  assert.equal(result.providerTaskId, 'provider-task-1');
+  assert.equal(result.retryCount, 1);
+  assert.equal(state.job.status, 'retry_waiting');
+  assert.equal(state.job.provider_task_id, 'provider-task-1');
+  assert.equal(state.job.finished_at, null);
+  assert.equal(released.length, 1);
+  assert.equal(released[0].retryWaiting, true);
+});
+
+test('mysql temporal provider checkpoint starts a fresh recovery retry budget', async () => {
+  const { state, pool } = createMysqlHarness({
+    id: 'job-create-retries-exhausted',
+    user_id: 'user-1',
+    module: 'one_click',
+    task_type: 'kie_image',
+    provider: 'kie',
+    status: 'retry_waiting',
+    priority: 0,
+    payload_json: JSON.stringify({ prompt: 'image prompt' }),
+    provider_task_id: null,
+    retry_count: 2,
+    max_retries: 2,
+    created_at: 1000,
+    updated_at: 1500,
+  });
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async (_claimedJob, _signal, options) => {
+      await options.onProviderTaskId('provider-task-new');
+      const error = new Error('poll timeout');
+      error.code = 'provider_timeout';
+      error.providerStage = 'polling';
+      error.providerTaskId = 'provider-task-new';
+      throw error;
+    },
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1', username: 'user-1', displayName: 'User 1', role: 'admin' }),
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({
+    jobId: 'job-create-retries-exhausted',
+    workflowId: 'meiao-job-create-retries-exhausted',
+    runId: 'run-1',
+  });
+
+  assert.equal(result.status, 'retry_waiting');
+  assert.equal(result.providerTaskId, 'provider-task-new');
+  assert.equal(result.retryCount, 1);
+  assert.equal(state.job.retry_count, 1);
+});

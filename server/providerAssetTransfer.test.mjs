@@ -7,6 +7,7 @@ import {
   convertManagedAssetUrlToKieFileUrl,
   readRemoteMediaBufferWithLimit,
   resolveProviderChatMediaUrl,
+  resolveProviderGeminiChatMediaUrl,
   resolveProviderGenerationMediaUrl,
   uploadAssetViaKieWithFallback,
 } from './providerAssetTransfer.mjs';
@@ -87,6 +88,91 @@ test('generation and chat use the canonical HTTPS origin in direct-first mode', 
     await resolveProviderChatMediaUrl('/api/assets/file/a/source.png', { env, deps }),
     'https://meiaoyuntai.com/api/assets/file/a/source.png'
   );
+});
+
+test('managed Gemini video uses the canonical HTTPS origin in direct-first mode', async () => {
+  const env = {
+    MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+    MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+  };
+  const deps = {
+    fetchWithTimeout: async () => {
+      throw new Error('managed Gemini video must not be downloaded on the direct path');
+    },
+    uploadAssetViaKieWithFallback: async () => {
+      throw new Error('managed Gemini video must not be staged on the direct path');
+    },
+  };
+
+  assert.equal(
+    await resolveProviderGeminiChatMediaUrl(
+      'http://111.229.66.247/api/assets/file/video/source.mp4',
+      { env, deps }
+    ),
+    'https://meiaoyuntai.com/api/assets/file/video/source.mp4'
+  );
+});
+
+test('managed Gemini video stages to openrouter-chat only when upload is forced', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const uploads = [];
+  const resolved = await resolveProviderGeminiChatMediaUrl('/api/assets/file/video/forced.mp4', {
+    env: {
+      MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+      MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+    },
+    forceUpload: true,
+    deps: {
+      fetchWithTimeout: async () => createResponse('video-bytes', {
+        'content-type': 'video/mp4',
+        'content-length': '11',
+      }),
+      uploadAssetViaKieWithFallback: async (payload) => {
+        uploads.push(payload);
+        return { result: { fileUrl: 'https://kie.test/openrouter-chat/forced.mp4' } };
+      },
+    },
+  });
+
+  assert.equal(resolved, 'https://kie.test/openrouter-chat/forced.mp4');
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].uploadPath, 'openrouter-chat');
+});
+
+test('managed upload cache is isolated by provider upload destination', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const uploads = [];
+  const baseOptions = {
+    env: { MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com' },
+    forceUpload: true,
+    deps: {
+      fetchWithTimeout: async () => createResponse('video-bytes', { 'content-type': 'video/mp4' }),
+      uploadAssetViaKieWithFallback: async (payload) => {
+        uploads.push(payload.uploadPath);
+        return { result: { fileUrl: `https://kie.test/${payload.uploadPath}/source.mp4` } };
+      },
+    },
+  };
+
+  const [first, duplicate] = await Promise.all([
+    convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-route/source.mp4', {
+      ...baseOptions,
+      uploadPath: 'openrouter-chat',
+    }),
+    convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-route/source.mp4', {
+      ...baseOptions,
+      uploadPath: 'openrouter-chat',
+    }),
+  ]);
+  const internal = await convertManagedAssetUrlToKieFileUrl('/api/assets/file/cache-route/source.mp4', {
+    ...baseOptions,
+    uploadPath: 'mayo-storage/internal',
+  });
+
+  assert.equal(first, 'https://kie.test/openrouter-chat/source.mp4');
+  assert.equal(duplicate, first);
+  assert.equal(internal, 'https://kie.test/mayo-storage/internal/source.mp4');
+  assert.deepEqual(uploads, ['openrouter-chat', 'mayo-storage/internal']);
 });
 
 test('unknown managed asset modes fail closed to KIE upload with a public HTTPS origin', async () => {

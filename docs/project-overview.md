@@ -96,6 +96,7 @@ npm run dev
 - `POST /api/jobs`
 - `GET /api/jobs`
 - `POST /api/jobs/recover`
+- `POST /api/admin/task-platform/jobs/:id/submission-resolution`：管理员对 `provider_submission_unknown` 任务绑定已核实的可查询上游 ID，或在确认未创建上游任务后释放积分预留。
 - `POST /api/video-diagnosis/probe`
 - `POST /api/video-diagnosis/analyze`
 - `GET /api/health`
@@ -108,11 +109,13 @@ npm run dev
 - `MEIAO_ALLOWED_ORIGINS`
 - `MEIAO_PUBLIC_BASE_URL`
 - `MEIAO_JOB_MAX_CONCURRENCY`
-- `MEIAO_PROVIDERLESS_RUNNING_STALE_MS`：默认代码兜底为 15 分钟；云上建议 `300000`，用于释放已 `running` 但尚未拿到上游 `providerTaskId` 的异常提交阶段任务，防止占满同账号并发。
-- `MEIAO_SUBMITTED_RUNNING_STALE_MS`：默认 `21600000`（6 小时）；用于恢复已拿到上游 `providerTaskId` 但本地长时间未回写终态的 `running` 任务。到期后任务回到 `retry_waiting` 复查上游结果，并且不再继续占账号并发。
+- `MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS`：默认 `10`；同用户、同语义付费任务的跨进程提交锁等待上限。去重、积分预留与 job 创建在同一 MySQL 事务内完成。
+- `MEIAO_PROVIDERLESS_RUNNING_STALE_MS`：默认代码兜底为 15 分钟；云上建议 `300000`。外部付费任务到期会进入 `provider_submission_unknown`，释放并发但不自动重提或退积分预留；内部幂等任务可安全回到 `retry_waiting`。
+- `MEIAO_SUBMITTED_RUNNING_STALE_MS`：默认 `21600000`（6 小时）；只有存在真实上游 ID 查询路径的任务才回到 `retry_waiting` 复查旧结果，不可查询的 chat response ID 停止自动恢复。
+- `MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES`：默认 `2`；只用于已记录 providerTaskId 的旧任务查询/结果下载，不用于重提 create/chat POST。
 - `MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS`：默认 `60000`；云上建议 `30000`，控制 stale running 任务回收检查间隔。
 - `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS`：云上建议 `120000`；KIE 素材上传单次 HTTP 超时。分镜参考视频等较大素材需要更长上传预算；瞬时网络或上游 5xx 错误允许有限重试后释放并发。
-- `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；仅当 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 时，我方 `/api/assets/file/` 托管素材直连优先。上游在无 `providerTaskId` 时明确读图失败，才转存 KIE 并重试同一模型。设为 `kie-only` 可无代码回滚到全部强制转存。
+- `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；仅当 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 时，我方 `/api/assets/file/` 托管素材直连优先。只有上游明确的文件读取/下载/MIME 错误且无 `providerTaskId` 时才转存 KIE；普通 500/502、网络错误不触发可能重复扣费的回退。设为 `kie-only` 可回滚。
 - `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY`：默认 `3`；真正进入 KIE file-stream-upload 时的进程级跨任务并发总上限，补足单任务素材解析限流无法约束多任务同时上传的问题。
 - `MEIAO_KIE_ASSET_UPLOAD_RETRIES` / `MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS`：默认 `2` / `1000`；只用于文件上传 POST 的连接错误与 `429/500/502/503/504` 响应重试，不放宽 createTask/chat 等可能扣费的提交 POST。
 - `MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS` / `MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES`：默认 `1800000` / `2000`；成功转存 URL 的进程内缓存与容量上限，并发上传同一素材会共享一个 Promise，失败不缓存。
@@ -121,6 +124,7 @@ npm run dev
 - `MEIAO_KIE_HTTP_RETRY_BASE_MS`：默认 `1000`；请求级重试指数退避基数（毫秒），第 n 次重试等待 `base*(2^n-1)`，默认即 1s、3s。
 - `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_image` 任务提交 KIE 前解析/转存素材的并发。详情页批量生图建议保持保守默认，避免“任务数 × 素材数”打满 KIE 图床。
 - `MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_seedance_video` 任务提交 KIE 前解析/转存图片、视频、音频素材的总并发。分镜视频多素材建议保持保守默认，避免多张大图同时转存导致 `asset_upload fetch failed`。
+- `MEIAO_KIE_CHAT_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_chat` 策划/分镜任务解析多媒体素材的并发，与进程级 KIE 上传总闸门叠加。
 - `MEIAO_CHAT_SSE_HEARTBEAT_MS`：默认 `15000`；智能体聊天 SSE 心跳间隔，避免长耗时多图生图期间代理或浏览器因连接空闲断流。
 - `AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES`：默认 `1`；智能体单次 `generate_image` 提交/读取遇到 `fetch failed`、502、超时等瞬时上游错误时的内部快速重试次数，避免把瞬时失败总结成“部分完成”。
 - `AGENT_IMAGE_TOOL_CONCURRENCY`：默认 `2`，代码上限 `5`；智能体同一轮返回多条独立 `generate_image` 工具调用时受控并发执行。只在本轮全是生图工具时启用，混合检索/生图仍串行，避免状态交叉。

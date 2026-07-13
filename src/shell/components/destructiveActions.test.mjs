@@ -4,19 +4,17 @@ import { existsSync, readFileSync } from 'node:fs';
 import { collectShellDeletionJobIds } from '../../utils/shellDeletionJobs.ts';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
-
-const readWorkspaceRules = () => {
-  const candidates = [
-    new URL('../../../../../开发规范.md', import.meta.url),
-    new URL('../../../../../../../开发规范.md', import.meta.url),
-  ];
-  const rulesUrl = candidates.find((candidate) => existsSync(candidate));
-  if (!rulesUrl) throw new Error('未找到开发规范.md');
-  return readFileSync(rulesUrl, 'utf8');
+const readFirstExisting = (...paths) => {
+  const target = paths.map((path) => new URL(path, import.meta.url)).find((url) => existsSync(url));
+  if (!target) throw new Error(`missing required file: ${paths.join(', ')}`);
+  return readFileSync(target, 'utf8');
 };
 
 test('project rules require secondary confirmation for all destructive delete actions', () => {
-  const rules = readWorkspaceRules();
+  const rules = readFirstExisting(
+    '../../../../../开发规范.md',
+    '../../../../../../../开发规范.md',
+  );
 
   assert.match(rules, /## 6\. 任何删除都必须二次确认/);
   assert.match(rules, /删除、移除、清空、永久删除/);
@@ -147,7 +145,7 @@ test('result regeneration is locked while the current project or scope is active
   assert.match(shellSource, /请先中断或等待当前任务完成后再重生成/);
 });
 
-test('all runnable bottom generation submits are guarded before material preparation or cloud submission', () => {
+test('generation submits use semantic locks through completion while different inputs stay independent', () => {
   const shellSource = read('../../ShellMigratedApp.tsx');
   const submitGuardBlock = shellSource.match(/const shouldGuardGenerationSubmit = [\s\S]*?\n\);/)?.[0] || '';
   const handleGeneratePrefix = shellSource.match(/const handleGenerate = useCallback\(async \(\) => \{[\s\S]*?if \(targetModule === AppModuleObj\.VIDEO && targetSubFeature === 'storyboard'\)/)?.[0] || '';
@@ -162,17 +160,17 @@ test('all runnable bottom generation submits are guarded before material prepara
   assert.match(submitGuardBlock, /module === AppModuleObj\.VIDEO/);
   assert.match(submitGuardBlock, /module === AppModuleObj\.XHS_COVER/);
   assert.match(shellSource, /const hasRuntimeTaskIdentity = /);
-  assert.match(shellSource, /hasActiveGuardedGeneration/);
-  assert.match(shellSource, /hasCurrentActiveGuardedGeneration/);
-  assert.doesNotMatch(shellSource, /hasCurrentActiveGuardedVideoGeneration/);
+  assert.match(shellSource, /buildGenerationSubmissionKey/);
+  assert.doesNotMatch(shellSource, /hasActiveGuardedGeneration/);
+  assert.doesNotMatch(shellSource, /hasCurrentActiveGuardedGeneration/);
   assert.match(handleGeneratePrefix, /const beginGuardedSubmit = \(\) => !hasGuardedSubmitLock \|\| beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(handleGeneratePrefix, /const releaseGuardedSubmit = \(\) => \{/);
-  assert.match(shellSource, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& \(Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\) \|\| hasCurrentActiveGuardedGeneration\)/);
+  assert.match(shellSource, /const currentGenerationSubmitLockKey = buildGenerationSubmissionKey\(\{/);
   // 2026-07-07 即时卡扩展到全模块后,锚点从 EVERYTHING_REPLACE 条件改为 !== BUYER_SHOW;顺序语义不变:守卫→toast→即时卡→素材上传
   assert.match(shellSource, /if \(!beginGuardedSubmit\(\)\) \{\s*return;\s*\}\s*addToast\('任务已提交，正在准备素材', 'info'\);[\s\S]*?const immediateProject = targetModule !== AppModuleObj\.BUYER_SHOW[\s\S]*?try \{\s*generationMaterials = await ensureMaterialRemoteUrls/);
-  assert.match(translationBranch, /onJobCreated: \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
-  assert.match(oneClickBranch.match(/const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n      \};/)?.[0] || '', /releaseGuardedSubmit\(\);/);
-  assert.match(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*\}/);
+  assert.doesNotMatch(translationBranch.match(/onJobCreated: \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n\s*\},/)?.[0] || '', /releaseGuardedSubmit\(\);/);
+  assert.doesNotMatch(oneClickBranch.match(/const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]*?\n      \};/)?.[0] || '', /releaseGuardedSubmit\(\);/);
+  assert.doesNotMatch(genericProjectBranch, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\);/);
   assert.match(oneClickBranch, /finally \{[\s\S]*releaseGuardedSubmit\(\);[\s\S]*setIsGenerating\(false\);[\s\S]*\}/);
 });
 
