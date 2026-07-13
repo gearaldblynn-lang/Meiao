@@ -198,6 +198,6 @@ node --test src/modules/XhsCover/xhsCoverUtils.test.mjs
 - 腾讯云目录：`/www/wwwroot/meiao-internal`
 - PM2 进程：`meiao-internal`
 - 发布脚本：`./scripts/deploy_tencent.sh`
-- 发布切换：首先用临时 iptables 规则排空旧版本的同步请求，再由 `internal_jobs` 持锁连接停止旧 PM2；新进程以 drain marker 暂停 API 写入和 worker，health 通过后解除。
+- 发布切换：首先用临时 `iptables`/`ip6tables` 规则排空 IPv4/IPv6 旧请求，再由 `internal_jobs` 持锁连接停止旧 PM2；新进程以 drain marker 暂停 API 写入和 worker，health 通过后解除。`manual` marker 代表必须人工恢复且不会过期。
 
 GitHub 主要是备份和历史留档，不会自动更新线上服务。线上事实以腾讯云服务器目录和 PM2 进程为准。

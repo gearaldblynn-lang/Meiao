@@ -44,6 +44,9 @@ export const resolveDeletionOutcome = ({
   if (!physicalDeleted) {
     return { message: '历史任务已隐藏，远端任务删除未完全成功', tone: 'warning' };
   }
+  if (scope === 'result' && !hasPhysicalTargets) {
+    return { message: '历史任务已隐藏', tone: 'info' };
+  }
   return {
     message: scope === 'project' && !hasPhysicalTargets ? '项目已删除' : '历史任务已删除',
     tone: 'info',

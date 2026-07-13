@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 
 const DEFAULT_DRAIN_FILE = '/tmp/meiao-deploy-drain';
 const DEFAULT_DRAIN_MAX_AGE_MS = 10 * 60 * 1000;
@@ -16,9 +16,18 @@ export const isDeployDrainActive = ({
   env = process.env,
   now = Date.now,
   stat = statSync,
+  readFile = readFileSync,
 } = {}) => {
   try {
-    const marker = stat(resolveDeployDrainFile(env));
+    const drainFile = resolveDeployDrainFile(env);
+    let markerState = '';
+    try {
+      markerState = String(readFile(drainFile, 'utf8') || '').trim();
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    const marker = stat(drainFile);
+    if (markerState === 'manual') return true;
     return now() - Number(marker?.mtimeMs || 0) <= resolveDrainMaxAgeMs(env);
   } catch (error) {
     if (error?.code === 'ENOENT') return false;
