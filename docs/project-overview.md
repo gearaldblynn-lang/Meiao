@@ -115,6 +115,9 @@ npm run dev
 - `MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES`：默认 `2`；只用于已记录 providerTaskId 的旧任务查询/结果下载，不用于重提 create/chat POST。
 - `MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS`：默认 `60000`；云上建议 `30000`，控制 stale running 任务回收检查间隔。
 - `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS`：云上建议 `120000`；KIE 素材上传单次 HTTP 超时。分镜参考视频等较大素材需要更长上传预算；瞬时网络或上游 5xx 错误允许有限重试后释放并发。
+- `MAXFORAI_API_KEY` / `MAXFORAI_BASE_URL`：`Image-2标准`、`Image-2高`、`Image-2超高` 的独立服务端凭证和接口根地址；密钥不得下发前端，也不复用 OpenAI Compatible 凭证。新三档当前不进入旧积分系统。
+- `MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS`：默认 `600000`；只控制 Image-2 单次付费生成/编辑 POST 的等待时间。付费 POST 不自动重试，结果不明时进入 `provider_submission_unknown`。
+- `MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS` / `MAXFORAI_ASSET_UPLOAD_CONCURRENCY`：默认 `120000` / `3`；只控制付费提交前将本地、HTTP 或内部素材上传至 MaxForAI `/assets` 的转链阶段。
 - `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；仅当 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 时，我方 `/api/assets/file/` 托管素材直连优先。只有上游明确的文件读取/下载/MIME 错误且无 `providerTaskId` 时才转存 KIE；普通 500/502、网络错误不触发可能重复扣费的回退。设为 `kie-only` 可回滚。
 - `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY`：默认 `3`；真正进入 KIE file-stream-upload 时的进程级跨任务并发总上限，补足单任务素材解析限流无法约束多任务同时上传的问题。
 - `MEIAO_KIE_ASSET_UPLOAD_RETRIES` / `MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS`：默认 `2` / `1000`；只用于文件上传 POST 的连接错误与 `429/500/502/503/504` 响应重试，不放宽 createTask/chat 等可能扣费的提交 POST。
