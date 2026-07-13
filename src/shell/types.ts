@@ -67,7 +67,13 @@ export type AspectRatio =
 
 export type GenerationQuality = '1k' | '2k' | '4k';
 export type StyleStrength = 'low' | 'medium' | 'high';
-export type KieAiModel = 'nano-banana-2' | 'gpt-image-2' | 'gpt-image-2-secondary';
+export type KieAiModel =
+  | 'nano-banana-2'
+  | 'gpt-image-2'
+  | 'gpt-image-2-secondary'
+  | 'maxforai-image-2-standard'
+  | 'maxforai-image-2-pro'
+  | 'maxforai-image-2-max';
 
 export interface GlobalApiConfig {
   kieApiKey: string;
@@ -323,7 +329,7 @@ export interface SystemPublicConfig {
     runningCount: number;
   };
   cors: { allowedOrigins: string[] };
-  providers: { kie: { configured: boolean }; apiports?: { configured: boolean } };
+  providers: { kie: { configured: boolean }; apiports?: { configured: boolean }; maxforai?: { configured: boolean } };
   systemSettings: {
     analysisModel: string;
     effectiveAnalysisModel: string;
