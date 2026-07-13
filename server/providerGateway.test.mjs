@@ -9,6 +9,18 @@ import { __testOnly_resetKieAssetUploadLimiters } from './providerAssetUploadLim
 // 避免走到 fetch failed / 5xx 路径的既有测试被退避拖慢。
 process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = '1';
 
+test('KIE chat completion timeout defaults to 360 seconds and remains configurable', async () => {
+  const gateway = await import('./providerGateway.mjs');
+  assert.equal(typeof gateway.__testOnly_getKieChatCompletionTimeoutMs, 'function');
+  assert.equal(gateway.__testOnly_getKieChatCompletionTimeoutMs({}), 360_000);
+  assert.equal(gateway.__testOnly_getKieChatCompletionTimeoutMs({
+    MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS: '420000',
+  }), 420_000);
+  assert.equal(gateway.__testOnly_getKieChatCompletionTimeoutMs({
+    MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS: 'invalid',
+  }), 360_000);
+});
+
 const createJsonResponse = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
   status,
@@ -4880,7 +4892,7 @@ test('executeProviderJob applies the KIE chat completion timeout to gemini 3 fla
       ],
   });
   global.setTimeout = (handler, ms) => {
-    if (ms === 240_000) sawChatCompletionTimeout = true;
+    if (ms === 360_000) sawChatCompletionTimeout = true;
     return originalSetTimeout(handler, ms);
   };
   global.clearTimeout = (timer) => originalClearTimeout(timer);
@@ -5633,7 +5645,7 @@ test('executeProviderJob gives claude planning requests the chat completion time
     });
   global.setTimeout = (handler, ms) => {
     if (ms === 60_000) sawBaseHttpTimeout = true;
-    if (ms === 240_000) sawChatCompletionTimeout = true;
+    if (ms === 360_000) sawChatCompletionTimeout = true;
     return originalSetTimeout(handler, ms);
   };
   global.clearTimeout = (timer) => originalClearTimeout(timer);

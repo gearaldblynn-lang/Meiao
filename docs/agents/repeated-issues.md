@@ -812,3 +812,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 我方公网 HTTPS 托管素材 direct-first，仅明确文件读取错误且未接单时回退 KIE，模糊 5xx/提交未知/已有 task ID 不回退；chat 素材解析单 job 并发 2，与进程级上传总闸门/成功 URL 缓存叠加。恢复改成 task type 白名单查旧 ID，不可查询的 chat response/checkpoint 失败进入 `provider_submission_unknown`，MySQL/本地管理员均可 bind/release；fallback 每次失败重新判定。去重+积分预留+job 创建同事务，取消/重试/删除锁行重读；未结算预留、已提交取消任务和提交未知任务禁止删除；分镜 chat/image 创建阶段都零自动重试。前端共享上传 Promise，用稳定 `clientSubmissionKey` 把同输入锁保持到调用终态，后端不按时间/条数截断 active-job 复用；刷新续跑与初次 board 共用 key且避开本地 controller。编辑上传前也注册 controller/语义键；删除/取消汇总 task/result 历史 ID 后取消、更新 `videoMemory` 和墓碑；单 board 删除首个 await 前建 guard/abort,持续收集迟到 job,再从最近 200 条后端历史按 project+board 补齐旧 job,等待活动 job 取消和墓碑落库,失败不开放槽位,成功后以 `autoResumeBlocked` pending 保留槽位,只允许用户主动重生成,不写项目级墓碑、不让旧图复活或自动付费；水合按同 board 最新 job 恢复并保持 active 状态。
 - Regression check: `node --test server/jobManager.test.mjs server/jobRuntime.test.mjs server/jobSubmissionPolicy.test.mjs server/providerGateway.test.mjs server/providerAssetTransfer.test.mjs`；`find src -name "*.test.mjs" | xargs node --experimental-strip-types --test`；`npm run build`。
 - Avoid next time: 付费任务“恢复”必须只查旧 ID，且 task type 必须有真实幂等查询接口；没有可证明的未提交事实时，不自动重提、退预留或删除记录。模糊 5xx 不得因错误正文命中素材关键词就转存重提；显式同输入键必须覆盖 active 任务完整生命周期，不能在拿到 job ID 时提前释放，也不能受普通时间窗口/候选条数限制。分镜验收不得只跑单 board 快速路径，必须覆盖重启、fallback 中途不确定、checkpoint 失败、重复点击、删除/取消、编辑上传中取消、刷新水合竞争、同 board 多 job 和多 board 续跑。
+
+## 2026-07-13 - Local KIE chat timeout must outlive the provider terminal window
+
+- Symptom: 董丹丹分镜页面显示“Kie 对话请求超时”，KIE 控制台稍后才记录 Gemini 上游 504。
+- Root cause: 公网素材直连先被 KIE 明确拒绝为 `Failed to get the file information`；完整 MP4 与 6 张图转存后，KIE/Gemini 第二次推理等待满 300 秒才返回 504。梅奥本地 chat completion 超时硬编码 240 秒，因此永远早于终态中断。
+- Fix: 将 KIE chat completion 超时收口为 `MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS`，默认 `360000`，覆盖 Responses、Claude、Gemini Flash/3.5 和普通 chat completions；非法配置回到默认。
+- Regression check: `node --test --test-name-pattern "KIE chat completion timeout defaults" server/providerGateway.test.mjs`；`node --test server/providerGateway.test.mjs`。
+- Avoid next time: 本地同步推理窗口必须高于上游已知最长窗口，且做成 env + 保守默认。延长本地 timeout 只为了收到真实终态，不得宣称它能修复 KIE/Gemini 的 504。

@@ -40,6 +40,7 @@ MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES=2
 MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS=30000
 APP_STATE_MAX_BYTES=16777216
 MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS=120000
+MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS=360000
 MEIAO_KIE_MANAGED_ASSET_MODE=direct-first
 MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY=3
 MEIAO_KIE_ASSET_UPLOAD_RETRIES=2
@@ -97,6 +98,8 @@ EOF
 `MEIAO_KIE_HTTP_TRANSIENT_RETRIES` / `MEIAO_KIE_HTTP_RETRY_BASE_MS` 控制 KIE HTTP 请求级瞬时重试（默认 2 次、退避 1s/3s）：连接层错误（`fetch failed` 等，未收到响应）对所有请求重试，`502/503/504` 只对只读 GET 重试；createTask/chat 等可能扣费的提交 POST 收到响应一律不重试。文件上传 POST 是显式例外，由独立上传预算控制。任务失败落库时 `error_message` 为用户可读人话、`error_detail` 保留技术原文。
 
 `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 控制 KIE 素材上传单次 HTTP 超时，云上建议 `120000`。分镜参考视频等较大素材需要更长上传预算；如果上传出现瞬时网络或上游 5xx 错误，任务允许有限重试后释放并发，不走 base64 上传接口。
+
+`MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS` 控制 KIE 对话/Gemini 同步推理的本地等待上限，默认 `360000`（6 分钟）。该值应高于 KIE 上游常见的 300 秒超时，让梅奥能收到真实成功或 504 终态；调大它只避免本地提前中断，不会改变 KIE/Gemini 自身的处理上限。
 
 `MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 让我方 `/api/assets/file/` 托管素材优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址。只有上游明确返回文件读取/下载/MIME 不可用错误，且没有 `providerTaskId` 时，才转存 KIE 并重试同一模型；普通 HTTP 500/502、网络中断、鉴权、余额、限额和已有 task id 都不触发回退。紧急回滚时把该值改为 `kie-only` 并执行 `pm2 restart meiao-internal --update-env`。
 
