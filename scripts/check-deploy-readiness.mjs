@@ -30,7 +30,7 @@ export const summarizeRunningJobs = (rows = []) => {
   return summary;
 };
 
-const getDbConfig = (env = process.env) => ({
+export const getDeployDbConfig = (env = process.env) => ({
   host: env.MEIAO_DB_HOST || '127.0.0.1',
   port: Number(env.MEIAO_DB_PORT || 3306),
   user: env.MEIAO_DB_USER || 'root',
@@ -40,7 +40,7 @@ const getDbConfig = (env = process.env) => ({
 });
 
 export const checkDeployReadiness = async ({ env = process.env, createConnection = mysql.createConnection } = {}) => {
-  const connection = await createConnection(getDbConfig(env));
+  const connection = await createConnection(getDeployDbConfig(env));
   try {
     const [rows] = await connection.query(
       `SELECT task_type, provider, provider_task_id, started_at

@@ -198,5 +198,6 @@ node --test src/modules/XhsCover/xhsCoverUtils.test.mjs
 - 腾讯云目录：`/www/wwwroot/meiao-internal`
 - PM2 进程：`meiao-internal`
 - 发布脚本：`./scripts/deploy_tencent.sh`
+- 发布切换：最终零活跃检查使用 `internal_jobs` 表锁兼容旧进程；新进程以短时 drain marker 暂停提交和 worker，health 通过后解除。
 
 GitHub 主要是备份和历史留档，不会自动更新线上服务。线上事实以腾讯云服务器目录和 PM2 进程为准。

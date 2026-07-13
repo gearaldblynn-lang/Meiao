@@ -10,6 +10,31 @@ const createStore = () => ({
   jobs: [],
 });
 
+test('local temporal activity leaves queued work unclaimed while deployment drain is active', async () => {
+  const store = createStore();
+  const job = createLocalJobRecord(store, store.users[0], {
+    module: 'system',
+    taskType: 'local_probe',
+    provider: 'internal',
+    payload: {},
+  });
+  let executeCalls = 0;
+  const activities = createLocalTemporalActivities({
+    readStore: () => store,
+    writeStore: () => {},
+    executeJob: async () => { executeCalls += 1; },
+    createLog: () => {},
+    findUserById: () => store.users[0],
+    isExecutionPaused: () => true,
+  });
+
+  const result = await activities.executeLocalJobAttemptActivity({ jobId: job.id });
+
+  assert.equal(result.status, 'queued');
+  assert.equal(getLocalJobById(store, job.id)?.status, 'queued');
+  assert.equal(executeCalls, 0);
+});
+
 test('local temporal activity claims and completes a queued job', async () => {
   const store = createStore();
   const job = createLocalJobRecord(store, store.users[0], {
@@ -173,6 +198,36 @@ const createMysqlHarness = (initialJob, options = {}) => {
   };
   return { state, pool };
 };
+
+test('mysql temporal activity leaves queued work unclaimed while deployment drain is active', async () => {
+  const { state, pool } = createMysqlHarness({
+    id: 'job-paused',
+    user_id: 'user-1',
+    module: 'one_click',
+    task_type: 'kie_image',
+    provider: 'kie',
+    status: 'queued',
+    priority: 0,
+    payload_json: '{}',
+    created_at: 1000,
+    updated_at: 1000,
+  });
+  let executeCalls = 0;
+  const activities = createMysqlTemporalActivities({
+    getPool: async () => pool,
+    executeJob: async () => { executeCalls += 1; },
+    createLog: async () => {},
+    findUserById: async () => ({ id: 'user-1' }),
+    isExecutionPaused: () => true,
+  });
+
+  const result = await activities.executeMysqlJobAttemptActivity({ jobId: 'job-paused' });
+
+  assert.equal(result.status, 'queued');
+  assert.equal(state.job.status, 'queued');
+  assert.equal(state.attempts.length, 0);
+  assert.equal(executeCalls, 0);
+});
 
 test('mysql temporal activity returns a terminal result when the job was already removed', async () => {
   const pool = {

@@ -15,6 +15,7 @@ import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLo
 import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, recordJobEvent } from './taskPlatform.mjs';
+import { isDeployDrainActive } from './deployDrain.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -153,9 +154,14 @@ export const createLocalTemporalActivities = ({
   settleJobCredits,
   releaseJobCredits,
   heartbeat = defaultActivityHeartbeat,
+  isExecutionPaused = isDeployDrainActive,
 }) => ({
   async executeLocalJobAttemptActivity({ jobId }) {
     const initialStore = readStore();
+    const currentJob = getLocalJobById(initialStore, jobId);
+    if (isExecutionPaused()) {
+      return currentJob ? toActivityResult(currentJob) : toMissingJobActivityResult(jobId);
+    }
     const claimedJob = claimLocalJobForExecution(initialStore, jobId);
     if (!claimedJob) {
       return toMissingJobActivityResult(jobId);
@@ -262,6 +268,7 @@ export const createMysqlTemporalActivities = ({
   getCancelledRunningStaleMs,
   cancelPollMs = 2500,
   heartbeat = defaultActivityHeartbeat,
+  isExecutionPaused = isDeployDrainActive,
 }) => ({
   async executeMysqlJobAttemptActivity(input = {}) {
     const pool = await getPool();
@@ -271,6 +278,9 @@ export const createMysqlTemporalActivities = ({
       return toMissingJobActivityResult(jobId);
     }
     if (isTerminalJobStatus(currentJob.status)) {
+      return toActivityResult(currentJob);
+    }
+    if (isExecutionPaused()) {
       return toActivityResult(currentJob);
     }
     if (String(currentJob.status || '') === 'running' && !String(currentJob.providerTaskId || '').trim()) {
@@ -287,6 +297,9 @@ export const createMysqlTemporalActivities = ({
       getSubmittedRunningStaleMs,
       getCancelledRunningStaleMs,
     })) {
+      return toActivityResult(currentJob);
+    }
+    if (isExecutionPaused()) {
       return toActivityResult(currentJob);
     }
 

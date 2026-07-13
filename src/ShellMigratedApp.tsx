@@ -40,7 +40,7 @@ import {
   pruneKnownLegacyGarbageFromPersistedState,
   prunePersistedAppStateForDeletion,
 } from './utils/persistedDeletion';
-import { collectShellDeletionJobIds } from './utils/shellDeletionJobs';
+import { collectShellDeletionJobIds, collectShellResultDeletionJobIds } from './utils/shellDeletionJobs';
 import { playCompletionSound, primeCompletionSound } from './utils/soundUtils';
 import type { SystemPublicConfig } from './types';
 import { mergeShellRuntimeEntities } from './adapters/shellRuntimeMerge';
@@ -6151,27 +6151,29 @@ const AppContent: React.FC<{
     }
     const project = projects.find((p) => p.id === projectId);
     const result = project?.results.find((item) => item.id === resultId);
-    const resultJobIds = Array.from(new Set([
-      result?.backendJobId,
-      result?.taskId,
-      result?.id?.startsWith('job-') ? result.id.slice(4) : '',
-      resultId.startsWith('job-') ? resultId.slice(4) : '',
-      project?.sourceType === 'job' ? resultId : '',
-    ].map((jobId) => String(jobId || '').trim()).filter(Boolean)));
+    const resultJobIds = collectShellResultDeletionJobIds(resultId, result);
     if (project?.sourceType === 'job') {
-      const jobIdsToDelete = resultJobIds.length > 0 ? resultJobIds : [resultId];
-      void Promise.allSettled(jobIdsToDelete.map((jobId) => deleteInternalJob(jobId)))
-        .then(async () => {
-          setProjects((prev) => prev.map((p) =>
-            p.id === projectId
-              ? { ...p, results: p.results.filter((r) => r.id !== resultId) }
-              : p
-          ).filter((p) => p.results.length > 0 || p.id !== projectId));
-          setTasks((prev) => prev.filter((t) => t.id !== resultId && t.projectId !== projectId && !jobIdsToDelete.includes(t.backendJobId || '') && !jobIdsToDelete.includes(t.id)));
-          const synced = await persistDeletionToSharedState({ projectId, resultId, jobIds: resultJobIds });
-          addToast(synced ? '历史任务已删除' : '已删除当前任务，但远端历史同步失败', synced ? 'info' : 'warning');
-        })
-        .catch((error) => addToast(error instanceof Error ? error.message : '删除任务失败', 'error'));
+      setProjects((prev) => prev.map((p) =>
+        p.id === projectId
+          ? { ...p, results: p.results.filter((r) => r.id !== resultId) }
+          : p
+      ).filter((p) => p.results.length > 0 || p.id !== projectId));
+      setTasks((prev) => prev.filter((t) => t.id !== resultId
+        && t.projectId !== projectId
+        && !resultJobIds.includes(t.backendJobId || '')
+        && !resultJobIds.includes(t.id)));
+      const remoteDeletion = Promise.allSettled(resultJobIds.map((jobId) => deleteInternalJob(jobId)));
+      const tombstonePersistence = persistDeletionToSharedState({ projectId, resultId, jobIds: resultJobIds });
+      void Promise.all([remoteDeletion, tombstonePersistence])
+        .then(([results, synced]) => {
+          const deletedRemote = results.every((deletionResult) => deletionResult.status === 'fulfilled');
+          addToast(
+            synced
+              ? (deletedRemote ? '历史任务已删除' : '历史任务已隐藏，远端任务删除未完全成功')
+              : '已删除当前任务，但远端历史同步失败',
+            synced && deletedRemote ? 'info' : 'warning',
+          );
+        });
       return;
     }
     if (project?.module === AppModuleObj.IMAGE_CROP && result?.imageUrl) {

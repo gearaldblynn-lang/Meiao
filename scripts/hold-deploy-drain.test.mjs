@@ -1,0 +1,64 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { acquireBootstrapJobTableLock } from './hold-deploy-drain.mjs';
+import { isDeployHealthReady } from './assert-deploy-health.mjs';
+
+test('bootstrap drain locks the jobs table before checking the final active count', async () => {
+  const events = [];
+  const connection = {
+    query: async (sql) => {
+      events.push(sql.replace(/\s+/g, ' ').trim());
+      if (/SELECT task_type/.test(sql)) return [[]];
+      return [[], []];
+    },
+  };
+
+  const result = await acquireBootstrapJobTableLock({ connection, env: {} });
+
+  assert.equal(result.ready, true);
+  assert.match(events[0], /^LOCK TABLES internal_jobs WRITE$/);
+  assert.match(events[1], /FROM internal_jobs/);
+});
+
+test('bootstrap drain fails closed when old-process work is still running', async () => {
+  const connection = {
+    query: async (sql) => {
+      if (/SELECT task_type/.test(sql)) {
+        return [[{
+          task_type: 'kie_chat',
+          provider: 'kie',
+          provider_task_id: '',
+          started_at: 1000,
+        }]];
+      }
+      return [[], []];
+    },
+  };
+
+  const result = await acquireBootstrapJobTableLock({ connection, env: {} });
+  assert.equal(result.ready, false);
+  assert.equal(result.runningCount, 1);
+  assert.equal(result.override, false);
+});
+
+test('bootstrap drain keeps active-job override explicit', async () => {
+  const connection = {
+    query: async (sql) => (/SELECT task_type/.test(sql)
+      ? [[{ task_type: 'kie_image', provider: 'kie', provider_task_id: 'task-1', started_at: 1000 }]]
+      : [[], []]),
+  };
+
+  const result = await acquireBootstrapJobTableLock({
+    connection,
+    env: { MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS: '1' },
+  });
+  assert.equal(result.ready, true);
+  assert.equal(result.override, true);
+});
+
+test('deployment health requires both HTTP and worker health', () => {
+  assert.equal(isDeployHealthReady({ ok: true, worker: { healthy: true } }), true);
+  assert.equal(isDeployHealthReady({ ok: true, worker: { healthy: false } }), false);
+  assert.equal(isDeployHealthReady({ ok: false, worker: { healthy: true } }), false);
+});

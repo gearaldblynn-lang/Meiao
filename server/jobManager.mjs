@@ -1,9 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
-import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
+import { canRecoverProviderTaskById, KIE_RECOVERY_SOURCE_TASK_TYPES } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
+import { isDeployDrainActive } from './deployDrain.mjs';
 
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
@@ -562,6 +563,23 @@ export const findReusableJobRecord = async (pool, user, payload, dedupeWindowMs 
 
 export const getJobById = async (pool, jobId) => {
   const [rows] = await pool.query('SELECT * FROM internal_jobs WHERE id = ? LIMIT 1', [jobId]);
+  return rows[0] ? mapJobRow(rows[0]) : null;
+};
+
+export const findJobByProviderTaskIdForUser = async (pool, userId, providerTaskId) => {
+  const normalizedProviderTaskId = String(providerTaskId || '').trim();
+  if (!normalizedProviderTaskId) return null;
+  const sourceTaskTypes = Array.from(KIE_RECOVERY_SOURCE_TASK_TYPES);
+  const [rows] = await pool.query(
+    `SELECT * FROM internal_jobs
+     WHERE user_id = ?
+       AND provider_task_id = ?
+       AND provider = 'kie'
+       AND task_type IN (${sourceTaskTypes.map(() => '?').join(', ')})
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [String(userId || ''), normalizedProviderTaskId, ...sourceTaskTypes],
+  );
   return rows[0] ? mapJobRow(rows[0]) : null;
 };
 
@@ -1149,6 +1167,7 @@ export const createJobWorker = ({
   getProviderlessRunningStaleMs = () => DEFAULT_PROVIDERLESS_RUNNING_STALE_MS,
   getSubmittedRunningStaleMs = () => DEFAULT_SUBMITTED_RUNNING_STALE_MS,
   getCancelledRunningStaleMs = () => DEFAULT_CANCELLED_RUNNING_STALE_MS,
+  isExecutionPaused = isDeployDrainActive,
 }) => {
   const activeControllers = new Map();
   let timer = null;
@@ -1159,6 +1178,7 @@ export const createJobWorker = ({
     draining = true;
 
     try {
+      if (isExecutionPaused()) return;
       const taskEngine = normalizeTaskEngineMode(getTaskEngineMode());
       if (!shouldMysqlWorkerProcessTaskEngine(taskEngine)) return;
 
@@ -1213,6 +1233,7 @@ export const createJobWorker = ({
       });
 
       for (const job of executableJobs) {
+        if (isExecutionPaused()) break;
         if (activeControllers.has(job.id)) continue;
 
         const claimedAt = now();
