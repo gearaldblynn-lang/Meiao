@@ -21,7 +21,11 @@ test('MaxForAI secret and runtime limits are documented without a real key', () 
     assert.match(deployDoc, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
   assert.match(overview, /MAXFORAI_API_KEY/);
-  assert.match(overview, /Image-2标准/);
+  for (const source of [envExample, deployDoc, overview]) {
+    assert.match(source, /image-2中转/);
+    assert.doesNotMatch(source, /maxforai-image-2-(?:standard|pro|max)/);
+    assert.doesNotMatch(source, /Image-2(?:标准|高|超高)/);
+  }
   assert.doesNotMatch(envExample, /MAXFORAI_API_KEY=sk-/);
   assert.doesNotMatch(deployDoc, /MAXFORAI_API_KEY=sk-/);
 });

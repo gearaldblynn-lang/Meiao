@@ -12,10 +12,10 @@ const jsonResponse = (body, status = 200) => ({
   json: async () => body,
 });
 
-test('builds the documented text generation body with tier-based model and mapped size', () => {
+test('builds the documented text generation body with relay model and mapped size', () => {
   assert.deepEqual(buildMaxForAiImageRequestBody({
     payload: {
-      model: 'maxforai-image-2-standard',
+      model: 'maxforai-image-2-relay',
       prompt: '中文产品海报',
       aspectRatio: '16:9',
       resolution: '4K',
@@ -35,7 +35,7 @@ test('text generation submits one paid POST and returns the generated URL', asyn
   const calls = [];
   const result = await runMaxForAiImageJob({
     payload: {
-      model: 'maxforai-image-2-standard',
+      model: 'maxforai-image-2-relay',
       prompt: '干净的蓝白产品主图',
       aspectRatio: '1:1',
       resolution: '1K',
@@ -71,7 +71,7 @@ test('image edit keeps public HTTPS references, deduplicates them, and caps inpu
   const calls = [];
   await runMaxForAiImageJob({
     payload: {
-      model: 'maxforai-image-2-max',
+      model: 'maxforai-image-2-relay',
       prompt: '保持主体，改成科技海报',
       aspectRatio: '3:2',
       resolution: '2K',
@@ -89,7 +89,7 @@ test('image edit keeps public HTTPS references, deduplicates them, and caps inpu
   assert.equal(calls.length, 1);
   assert.match(calls[0][0], /\/images\/edits$/);
   assert.deepEqual(JSON.parse(calls[0][1].body), {
-    model: 'gpt-image-2-max',
+    model: 'gpt-image-2',
     prompt: '保持主体，改成科技海报',
     size: '2016x1344',
     n: 1,
@@ -102,7 +102,7 @@ test('uploads non-public image material before the paid edit POST', async () => 
   const downloadCalls = [];
   await runMaxForAiImageJob({
     payload: {
-      model: 'maxforai-image-2-pro',
+      model: 'maxforai-image-2-relay',
       prompt: '专业海报',
       aspectRatio: '3:4',
       resolution: '1K',
@@ -140,7 +140,7 @@ test('asset preparation failure prevents the paid generation POST', async () => 
   await assert.rejects(
     () => runMaxForAiImageJob({
       payload: {
-        model: 'maxforai-image-2-standard',
+        model: 'maxforai-image-2-relay',
         prompt: '专业海报',
         imageUrls: ['/api/assets/file/missing.png'],
       },
@@ -165,7 +165,7 @@ test('ambiguous paid POST transport failure is surfaced without retry', async ()
   await assert.rejects(
     () => runMaxForAiImageJob({
       payload: {
-        model: 'maxforai-image-2-standard',
+        model: 'maxforai-image-2-relay',
         prompt: '专业海报',
       },
       env: { MAXFORAI_API_KEY: 'test-key' },
@@ -190,7 +190,7 @@ test('paid response body disconnect is also marked submission unknown without re
   await assert.rejects(
     () => runMaxForAiImageJob({
       payload: {
-        model: 'maxforai-image-2-standard',
+        model: 'maxforai-image-2-relay',
         prompt: '专业海报',
       },
       env: { MAXFORAI_API_KEY: 'test-key' },
