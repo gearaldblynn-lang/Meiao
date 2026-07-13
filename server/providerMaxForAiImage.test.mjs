@@ -184,3 +184,30 @@ test('ambiguous paid POST transport failure is surfaced without retry', async ()
   );
   assert.equal(paidPostCount, 1);
 });
+
+test('paid response body disconnect is also marked submission unknown without retry', async () => {
+  let paidPostCount = 0;
+  await assert.rejects(
+    () => runMaxForAiImageJob({
+      payload: {
+        model: 'maxforai-image-2-standard',
+        prompt: '专业海报',
+      },
+      env: { MAXFORAI_API_KEY: 'test-key' },
+      deps: {
+        fetchWithTimeout: async () => {
+          paidPostCount += 1;
+          return {
+            ok: true,
+            status: 200,
+            json: async () => {
+              throw Object.assign(new Error('response body disconnected'), { code: 'provider_network_error' });
+            },
+          };
+        },
+      },
+    }),
+    (error) => error?.code === 'provider_submission_unknown' && error?.submissionUnknown === true,
+  );
+  assert.equal(paidPostCount, 1);
+});

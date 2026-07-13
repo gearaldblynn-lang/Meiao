@@ -282,7 +282,18 @@ export const runMaxForAiImageJob = async ({ payload = {}, env = {}, signal = nul
       throw normalizePaidSubmissionError(error);
     }
 
-    const body = await response.json().catch(() => ({}));
+    let body;
+    try {
+      body = await response.json();
+    } catch (error) {
+      if (response.ok) {
+        throw normalizePaidSubmissionError(createProviderError(
+          'provider_network_error',
+          error?.message || 'MaxForAI Image-2 响应正文读取失败',
+        ));
+      }
+      body = {};
+    }
     if (!response.ok) {
       try {
         throwForHttpResponse(response, body, 'MaxForAI Image-2 生成失败');
