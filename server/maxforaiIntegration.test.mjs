@@ -14,7 +14,7 @@ test('MaxForAI image jobs are authorized with zero automatic retries', () => {
   const policy = resolveJobSubmissionPolicy({
     taskType: 'kie_image',
     provider: 'maxforai',
-    payload: { model: 'maxforai-image-2-standard' },
+    payload: { model: 'maxforai-image-2-relay' },
   });
   assert.equal(policy.provider, 'maxforai');
   assert.equal(policy.maxCreateRetries, 0);
@@ -28,18 +28,18 @@ test('MaxForAI jobs and agent image requests reserve zero legacy credits', () =>
   assert.equal(estimateCreditReservation({
     taskType: 'kie_image',
     provider: 'maxforai',
-    payload: { model: 'maxforai-image-2-max', outputCount: 5 },
+    payload: { model: 'maxforai-image-2-relay', outputCount: 5 },
   }), 0);
   assert.equal(estimateCreditReservation({
     taskType: 'agent_image',
     provider: 'kie',
-    payload: { model: 'maxforai-image-2-pro', outputCount: 1 },
+    payload: { model: 'maxforai-image-2-relay', outputCount: 1 },
   }), 0);
   assert.match(serverSource, /reserveDbAgentImageCredits[\s\S]*model[\s\S]*estimateCreditReservation/);
   assert.match(serverSource, /reserveLocalAgentImageCredits[\s\S]*model[\s\S]*estimateCreditReservation/);
 });
 
-test('public config publishes MaxForAI readiness and all three Agent Center image models without secrets', () => {
+test('public config publishes MaxForAI readiness and only the relay Agent Center model without secrets', () => {
   const config = buildPublicSystemConfig({
     MAXFORAI_API_KEY: 'private-test-key',
     MEIAO_PUBLIC_BASE_URL: 'https://meiao.test',
@@ -47,7 +47,7 @@ test('public config publishes MaxForAI readiness and all three Agent Center imag
   assert.deepEqual(config.providers.maxforai, { configured: true });
   assert.deepEqual(
     config.agentModels.image.filter((item) => item.provider === 'maxforai').map((item) => item.id),
-    ['maxforai-image-2-standard', 'maxforai-image-2-pro', 'maxforai-image-2-max'],
+    ['maxforai-image-2-relay'],
   );
   assert.doesNotMatch(JSON.stringify(config), /private-test-key/);
   assert.equal(getProviderConfigStatus({ MAXFORAI_API_KEY: 'private-test-key' }).maxforai, true);
@@ -68,7 +68,7 @@ test('provider gateway routes a MaxForAI site model to its synchronous paid endp
       taskType: 'kie_image',
       provider: 'maxforai',
       payload: {
-        model: 'maxforai-image-2-standard',
+        model: 'maxforai-image-2-relay',
         prompt: '中文产品海报',
         aspectRatio: '1:1',
         resolution: '1K',

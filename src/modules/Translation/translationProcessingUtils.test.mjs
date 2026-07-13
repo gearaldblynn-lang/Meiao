@@ -34,7 +34,7 @@ test('deriveTranslationExecutionPlan maps detail auto ratio to the closest provi
 
 test('MaxForAI detail auto ratio stays within its documented size table', () => {
   const plan = deriveTranslationExecutionPlan({
-    config: { aspectRatio: 'auto', model: 'maxforai-image-2-standard' },
+    config: { aspectRatio: 'auto', model: 'maxforai-image-2-relay' },
     subMode: 'detail',
     sourceDimensions: { width: 800, height: 1000 },
   });

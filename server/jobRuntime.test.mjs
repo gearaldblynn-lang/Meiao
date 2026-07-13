@@ -90,11 +90,12 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.deepEqual(config.agentModels.image.map((item) => item.id), [
     'gpt-image-2',
     'gpt-image-2-secondary',
-    'maxforai-image-2-standard',
-    'maxforai-image-2-pro',
-    'maxforai-image-2-max',
+    'maxforai-image-2-relay',
     'nano-banana-2',
   ]);
+  const maxForAiRelay = config.agentModels.image.find((item) => item.id === 'maxforai-image-2-relay');
+  assert.equal(maxForAiRelay?.label, 'image-2中转');
+  assert.equal(maxForAiRelay?.provider, 'maxforai');
   assert.deepEqual(config.agentModels.video.map((item) => item.id), [
     'sora-2-pro-storyboard',
     'veo3_fast',
