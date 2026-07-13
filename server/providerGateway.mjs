@@ -7,7 +7,6 @@ import { runResponsesJob } from './openaiResponsesProvider.mjs';
 import {
   assertRemoteProviderMediaUrlAllowed,
   convertGeminiMediaToStableKieUrl as convertGeminiMediaToStableKieUrlWithDeps,
-  convertGeminiVideoToOpenRouterChatUrl as convertGeminiVideoToOpenRouterChatUrlWithDeps,
   convertInlineDataUrlToKieFileUrl as convertInlineDataUrlToKieFileUrlWithDeps,
   convertManagedAssetUrlToKieFileUrl as convertManagedAssetUrlToKieFileUrlWithDeps,
   downloadRemoteMediaUrl as downloadRemoteMediaUrlWithDeps,
@@ -29,6 +28,7 @@ import {
   shouldUseDirectManagedAssetUrls,
   uploadAssetViaKieWithFallback as uploadAssetViaKieWithFallbackWithDeps,
 } from './providerAssetTransfer.mjs';
+import { uploadGeminiVideoToCos } from './tencentCosVideoStore.mjs';
 import {
   KIE_IMAGE_MODEL_ALIASES,
   runKieImageJob as runKieImageProviderJob,
@@ -520,6 +520,7 @@ const buildAssetTransferOptions = (env = {}, signal = null, options = {}) => ({
     uploadAssetViaKieStream,
     uploadAssetViaKieWithFallback: (payload, transferOptions = {}) =>
       uploadAssetViaKieWithFallback(payload, transferOptions.env || env, transferOptions.signal || signal),
+    uploadGeminiVideoToCos,
     ...(options.deps || {}),
   },
 });
@@ -544,9 +545,6 @@ const downloadRemoteProviderMediaUrl = async (mediaUrl, signal) =>
 
 const convertGeminiMediaToStableKieUrl = async (mediaUrl, env, signal) =>
   convertGeminiMediaToStableKieUrlWithDeps(mediaUrl, buildAssetTransferOptions(env, signal));
-
-const convertGeminiVideoToOpenRouterChatUrl = async (mediaUrl, env, signal) =>
-  convertGeminiVideoToOpenRouterChatUrlWithDeps(mediaUrl, buildAssetTransferOptions(env, signal));
 
 const resolveProviderGeminiChatMediaUrl = async (value, env, signal, options = {}) =>
   resolveProviderGeminiChatMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal, options));
@@ -1178,6 +1176,15 @@ const payloadContainsManagedAsset = (value, seen = new WeakSet()) => {
     return value.some((item) => payloadContainsManagedAsset(item, seen));
   }
   return Object.values(value).some((item) => payloadContainsManagedAsset(item, seen));
+};
+
+const payloadContainsVideoAsset = (value, seen = new WeakSet()) => {
+  if (typeof value === 'string') return /\.(mp4|m4v|mov|webm)(?:[?#].*)?$/i.test(value.trim());
+  if (!value || typeof value !== 'object') return false;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.some((item) => payloadContainsVideoAsset(item, seen));
+  return Object.values(value).some((item) => payloadContainsVideoAsset(item, seen));
 };
 
 const shouldRetryWithKieManagedAsset = ({ payload, env, error, options = {} }) => {
@@ -2789,6 +2796,7 @@ const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '', jo
 };
 
 const recoverKieChatError = async (payload, env, signal, error, options = {}) => {
+  if (payloadContainsVideoAsset(payload)) throw error;
   if (shouldRetryWithKieManagedAsset({ payload, env, error, options, taskType: 'kie_chat' })) {
     const fallbackResult = await runKieChatJob(payload, env, signal, {
       ...options,

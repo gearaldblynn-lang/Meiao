@@ -4,7 +4,6 @@ import { isExternallyReachableBaseUrl, isLocalOrPrivateHostname, normalizeBaseUr
 import {
   isVideoMediaUrl,
   shouldUploadGeminiMediaUrlForStableMime,
-  shouldUploadGeminiVideoUrlToOpenRouterChat,
 } from './providerMediaRouting.mjs';
 
 export const MAX_PROVIDER_REMOTE_MEDIA_MB = 256;
@@ -561,18 +560,6 @@ export const convertGeminiMediaToStableKieUrl = async (mediaUrl, envOrOptions = 
   return String(uploaded?.result?.fileUrl || '').trim();
 };
 
-export const convertGeminiVideoToOpenRouterChatUrl = async (mediaUrl, envOrOptions = {}, signal = null, options = {}) => {
-  const normalizedOptions = normalizeOptions(envOrOptions, signal, options);
-  const normalized = String(mediaUrl || '').trim();
-  if (!shouldUploadGeminiVideoUrlToOpenRouterChat(normalized)) return normalized;
-  const downloaded = await downloadRemoteMediaUrl(normalized, normalizedOptions);
-  const uploaded = await uploadAssetViaKieWithFallback({
-    ...downloaded,
-    uploadPath: 'openrouter-chat',
-  }, normalizedOptions);
-  return String(uploaded?.result?.fileUrl || '').trim();
-};
-
 export const resolveProviderMediaUrl = async (value, envOrOptions = {}, signal = null, options = {}) => {
   const normalizedOptions = normalizeOptions(envOrOptions, signal, options);
   const normalized = normalizeProviderMediaReference(value);
@@ -615,13 +602,19 @@ export const resolveProviderGeminiChatMediaUrl = async (value, envOrOptions = {}
   if (!normalized) return '';
   if (isVideoMediaUrl(normalized)) {
     if (isManagedAssetUrl(normalized)) {
-      return convertManagedAssetUrlToKieFileUrl(normalized, {
-        ...normalizedOptions,
-        forceUpload: normalizedOptions.forceUpload || !shouldUseDirectManagedAssetUrls(normalizedOptions.env),
-        uploadPath: 'openrouter-chat',
-      });
+      const uploadGeminiVideoToCos = normalizedOptions.deps.uploadGeminiVideoToCos;
+      if (typeof uploadGeminiVideoToCos !== 'function') {
+        throw createProviderError('provider_config_error', 'COS 视频直连依赖未配置');
+      }
+      const downloaded = await downloadManagedAsset(normalized, normalizedOptions);
+      return uploadGeminiVideoToCos(
+        downloaded,
+        normalizedOptions.env,
+        normalizedOptions.signal,
+      );
     }
-    return convertGeminiVideoToOpenRouterChatUrl(normalized, normalizedOptions);
+    assertRemoteProviderMediaUrlAllowed(normalized);
+    return normalized;
   }
   if (shouldUploadGeminiMediaUrlForStableMime(normalized, { isManagedAssetUrl })) {
     return convertGeminiMediaToStableKieUrl(normalized, normalizedOptions);

@@ -120,7 +120,10 @@ npm run dev
 - `MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS` / `MAXFORAI_ASSET_UPLOAD_CONCURRENCY`：默认 `120000` / `3`；只控制付费提交前将本地、HTTP 或内部素材上传至 MaxForAI `/assets` 的转链阶段。
 - `MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS`：默认 `10000`，允许 `1000-15000`；长耗时 provider 请求期间持续给 Temporal 保活，避免 30 秒 heartbeat timeout 把仍在执行的付费请求判死。MaxForAI workflow 的 activity 额外强制单次尝试，执行器失联也不会自动重提付费 POST。
 - `MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS`：默认 `360000`（6 分钟）；KIE 对话/Gemini 同步推理的本地等待上限。该值需高于 KIE 上游常见的 300 秒超时，避免梅奥提前中断而丢失上游真实终态；调大只改善结果回收，不会修复 KIE/Gemini 自身的 504。
-- `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；仅当 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 时，我方 `/api/assets/file/` 托管素材直连优先。只有上游明确的文件读取/下载/MIME 错误且无 `providerTaskId` 时才转存 KIE；普通 500/502、网络错误不触发可能重复扣费的回退。设为 `kie-only` 可回滚。
+- `MEIAO_COS_SECRET_ID` / `MEIAO_COS_SECRET_KEY`：Gemini 视频专用腾讯 COS 服务端凭证；必须来自只允许目标桶 `gemini-video/*` 执行 `PutObject`、`GetObject` 的 CAM 子用户，不得下发前端或使用主账号密钥。
+- `MEIAO_COS_BUCKET` / `MEIAO_COS_REGION`：Gemini 视频私有桶与地域。内部托管视频会先写入该桶，再把签名 GET URL 直接交给 Gemini；无需 CDN，建议给 `gemini-video/` 设置 3 天自动删除生命周期。
+- `MEIAO_COS_SIGNED_URL_TTL_SECONDS`：默认 `10800`（3 小时），限制 `300-86400` 秒；控制 Gemini 可读取 COS 对象的时间窗口。
+- `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；图片、PDF 等非视频素材仅在 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 时直连优先，明确读取失败且无 `providerTaskId` 时才允许转存 KIE。Gemini 视频不受该开关影响，始终使用 COS 或已有外部稳定 URL，禁止 KIE 暂存、KIE 失败回退和模型回退。
 - `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY`：默认 `3`；真正进入 KIE file-stream-upload 时的进程级跨任务并发总上限，补足单任务素材解析限流无法约束多任务同时上传的问题。
 - `MEIAO_KIE_ASSET_UPLOAD_RETRIES` / `MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS`：默认 `2` / `1000`；只用于文件上传 POST 的连接错误与 `429/500/502/503/504` 响应重试，不放宽 createTask/chat 等可能扣费的提交 POST。
 - `MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS` / `MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES`：默认 `1800000` / `2000`；成功转存 URL 的进程内缓存与容量上限，并发上传同一素材会共享一个 Promise，失败不缓存。

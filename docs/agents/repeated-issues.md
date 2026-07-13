@@ -846,3 +846,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/providerMaxForAiImage.test.mjs server/assetStore.test.mjs server/maxforaiIntegration.test.mjs server/maxforaiEnvDocs.test.mjs`；真实验收只能新建一次付费任务，并同时核对 `providerResponseFormat`、托管素材可读、Temporal activity `attempt=1`、任务 `retryCount=0` 和积分未变化。
 - Acceptance: 本地唯一一次新付费任务 `f8ca4ed58263bf23eb446912` 成功，实际 `providerResponseFormat=url`；结果已转为站内托管 PNG（1254×1254、1,068,708 bytes），Temporal activity `maximumAttempts=1/attempt=1`，任务 `retryCount=0/maxRetries=0`，积分前后均为 0，任务 JSON 和 Temporal history 均无 data URL 或大段 base64。
 - Avoid next time: 接入文档不能把一种响应编码写成唯一成功结构。调用方应显式声明偏好格式，同时在 provider 边界兼容合同允许的返回形态；大体积 base64 只能在内存中短暂出现并立即转为托管素材，不得用保存完整响应 JSON 的方式排障。
+
+## 2026-07-14 - Gemini 视频仍被旧 KIE 暂存分支截获，公网托管直连修复并未覆盖视频
+
+- Symptom: 董丹丹短视频与分镜持续出现 `asset_upload` 超时、`Failed to get the file information` 或 Gemini 504；页面看起来像 Gemini 读视频失败，但部分任务实际上在 Gemini 接单前就失败。
+- Root cause: 2026-06-22 引入的 `shouldUploadGeminiVideoUrlToOpenRouterChat` 会把除特定 KIE 临时域名外的所有 MP4 强制上传到 KIE `openrouter-chat`。2026-07-10 的 direct-first 修复只覆盖普通托管素材，没有删除这个视频专用分支；因此“已移除 KIE 暂存”的认知与实际代码不一致。COS 签名 URL 也会被当作普通外部视频再次转存 KIE，使 KIE 图床继续成为单点。
+- Fix: 删除 Gemini 视频 KIE 暂存判断和转换函数。内部 `/api/assets/file/` 视频由服务端读取后写入私有腾讯 COS，以内容 SHA-256 生成稳定对象键并签发短期 GET URL；已有外部稳定视频 URL 原样交给 Gemini。视频 payload 在 Gemini 明确读文件失败、模糊 5xx 或网络异常时都只失败一次，不进入 KIE media fallback 或模型 fallback。桶保持私有，无需 CDN，CAM 子用户只授予目标前缀 `PutObject/GetObject`。
+- Regression check: `node --test server/tencentCosVideoStore.test.mjs server/providerAssetTransfer.test.mjs server/providerMediaRouting.test.mjs server/providerGateway.test.mjs`；必须同时断言内部视频发生一次 COS put + signed GET、外部 URL 不预下载、所有视频路径 `/file-stream-upload` 调用数为 0、显式读文件失败只调用 Gemini 一次。
+- Avoid next time: “移除旧链路”必须搜索并删除路由谓词、转换函数、fallback 和锁定旧行为的测试四层，不能只在通用 managed-asset 分支增加 direct-first。视频真实验收要核对 provider 接单前后的 stage、COS 对象、Gemini 请求次数和 KIE file-stream-upload 次数；页面错误文案不能证明请求已经到 Gemini。

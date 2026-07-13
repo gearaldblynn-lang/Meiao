@@ -340,3 +340,8 @@
   根因:商品精修与其他直接生图链路不同，会先创建 `retouch_analysis/kie_chat` 控制 job，分析成功后才提交真正的图片任务。将离两次失败都在分析 POST 的连接阶段于 1 秒内落为 `provider_submission_unknown/fetch failed`，没有 provider task id；`runShellRetouchWorkflow` 遇到分析错误立即抛出，所以后台看不到后续 Image-2 请求。用同一模型、图片和请求结构做单次真实探针随后 HTTP 200 成功，证明 key、模型和 payload 有效，问题是 KIE/Cloudflare 的瞬时传输不确定，而不是 Image-2 接入或精修参数错误。付费 POST 不能因“后台没看到请求”就自动重发，因为客户端仍无法证明上游没有接单。
   修复:保留 KIE 视觉分析为首选路径；当分析 job 已明确以 provider 网络、超时、内部错误、坏响应、拒绝、限流、鉴权或余额错误终态失败时，使用按 `original/white_bg` 模式构造的确定性高保真本地指导继续进入图片生成，严格保持商品主体、Logo、文字、包装和原构图。取消、用户中断、`job_timeout/task_not_found` 同步缺口、输入校验和未知程序错误不降级。分析错误继续保留 `errorCode/providerTaskId/jobId`，运行日志只增加脱敏的 socket code/syscall/远端地址/端口，不记录请求体、图片 URL、响应内容或密钥；连接状态不明的付费 POST 仍然只提交一次。
   如何避免:**多阶段生图要区分“决定主产物是否可继续的必要步骤”和“提升 prompt 质量的辅助步骤”。辅助分析 provider 的终态故障应有受控、可测试的 deterministic fallback，不能让主生图入口整体失效；但 pending/取消/未知程序错误不得被伪装成成功。看到 `providerTaskId=null` 还要结合 `taskPurpose/providerStage/errorCode/耗时` 判断究竟卡在分析、素材转存还是正式出图，不能因为供应商后台无记录就盲目重提付费请求。**
+
+- **#58 ✅ 已修(2026-07-14)· Gemini 视频的 KIE 临时转存并未真正移除，COS URL 仍被旧路由二次暂存**
+  根因:2026-06-22 的视频专用路由把除指定 KIE 临时域名外的所有 MP4 强制上传 `openrouter-chat`；2026-07-10 的 direct-first 只改了通用托管素材分支，并明确保留非 managed 视频的旧兼容行为，因此旧逻辑不是“删掉后又回来”，而是从未完整删除。即使换成稳定 COS 签名 URL，也会被该谓词再次截获并走 KIE，导致 `providerTaskId=null + asset_upload`、文件读取失败和 504 继续出现。
+  修复:彻底删除视频 KIE 暂存谓词、转换函数及其 fallback。内部托管视频完整读取后写入私有腾讯 COS，以内容哈希生成幂等对象键并签发短期 GET URL；外部公网视频地址经内网/本机校验后原样交给 Gemini。只要 payload 含视频，Gemini 错误就直接返回，不再转存 KIE、重提同模型或切换模型。新增 COS 配置 fail-closed、取消、内部/外部路由和显式读文件失败单次提交回归测试。
+  如何避免:**宣称“移除旧链路”前必须同时搜路由函数、调用点、fallback 和旧行为测试；只改通用分支不等于覆盖专用视频分支。视频 provider 验收必须用真实完整文件做 COS GET、Range 和 Gemini 首中尾内容识别，并确认 KIE `/file-stream-upload` 为 0；签名 URL、CAM 密钥不得写日志，生产使用桶前缀最小权限和自动过期生命周期。**
