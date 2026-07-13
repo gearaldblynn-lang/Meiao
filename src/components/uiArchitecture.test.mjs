@@ -1055,11 +1055,11 @@ test('video generation blocks duplicate submit windows without blocking other ac
   const jobManager = read('../../server/jobManager.mjs');
 
   assert.match(shellApp, /generationSubmitLocksRef/);
-  assert.match(shellApp, /shouldGuardGenerationSubmit\(targetModule, targetSubFeature\)/);
+  assert.match(shellApp, /shouldGuardGenerationSubmit\(targetModule\)/);
   assert.match(shellApp, /const shouldGuardGenerationSubmit = [\s\S]*module === AppModuleObj\.ONE_CLICK[\s\S]*module === AppModuleObj\.VIDEO[\s\S]*?\);/);
   assert.doesNotMatch(shellApp, /const hasActiveGuardedGeneration = \(/);
   assert.doesNotMatch(shellApp, /当前已有任务未返回，请等待完成或取消后再提交。/);
-  assert.match(shellApp, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule, activeSubFeature\)\s*&& Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\)/);
+  assert.match(shellApp, /const isCurrentGenerationSubmitLocked = shouldGuardGenerationSubmit\(activeModule\)\s*&& Boolean\(generationSubmitLocks\[currentGenerationSubmitLockKey\]\)/);
   assert.match(shellApp, /beginGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.match(shellApp, /endGenerationSubmitLock\(guardedSubmitLockKey\)/);
   assert.doesNotMatch(shellApp, /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{\s*releaseGuardedSubmit\(\)/);
