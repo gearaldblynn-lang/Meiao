@@ -42,10 +42,13 @@
 
 ## 配置与密钥
 
-新增两个服务端环境变量：
+新增五个服务端环境变量：
 
 - `MAXFORAI_API_KEY`：MaxForAI 图片接口密钥。
 - `MAXFORAI_BASE_URL`：默认 `https://maxforai.top/v1`。
+- `MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS`：付费生成 POST 的超时上限，默认 `600000`（10 分钟）。
+- `MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS`：素材上传的单次超时上限，默认 `120000`（2 分钟）。
+- `MAXFORAI_ASSET_UPLOAD_CONCURRENCY`：单任务素材转链并发上限，默认 `3`，防止多参考图同时上传打满上游。
 
 不复用 `OPENAI_COMPATIBLE_API_KEY`。对话模型与生图渠道的密钥生命周期、限额和故障边界应保持独立。
 
