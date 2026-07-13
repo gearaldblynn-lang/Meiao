@@ -324,7 +324,9 @@ export const runResponsesJob = async ({ payload = {}, env = {}, signal = null, o
     if (!response.ok) {
       const text = await response.text().catch(() => '');
       const error = new Error(`responses 请求失败 (${response.status}): ${text.slice(0, 200)}`);
-      error.code = response.status === 401 || response.status === 403 ? 'provider_auth_invalid' : 'provider_bad_response';
+      error.code = response.status === 429
+        ? 'provider_rate_limited'
+        : (response.status === 401 || response.status === 403 ? 'provider_auth_invalid' : 'provider_bad_response');
       throw error;
     }
     const contentType = response.headers.get('content-type') || '';

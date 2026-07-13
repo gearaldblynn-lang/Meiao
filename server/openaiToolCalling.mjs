@@ -70,7 +70,9 @@ export const runOpenAIToolCallingJob = async ({ payload = {}, env = {}, signal =
   if (!response.ok) {
     const text = await response.text().catch(() => '');
     const error = new Error(`新中转站请求失败 (${response.status}): ${text.slice(0, 200)}`);
-    error.code = response.status === 401 || response.status === 403 ? 'provider_auth_invalid' : 'provider_bad_response';
+    error.code = response.status === 429
+      ? 'provider_rate_limited'
+      : (response.status === 401 || response.status === 403 ? 'provider_auth_invalid' : 'provider_bad_response');
     throw error;
   }
   const data = await response.json().catch(() => ({}));
@@ -144,7 +146,9 @@ export const runOpenAIToolCallingStream = async ({
     if (!response.ok) {
       const text = await response.text().catch(() => '');
       const error = new Error(`新中转站流式请求失败 (${response.status}): ${text.slice(0, 200)}`);
-      error.code = response.status === 401 || response.status === 403 ? 'provider_auth_invalid' : 'provider_bad_response';
+      error.code = response.status === 429
+        ? 'provider_rate_limited'
+        : (response.status === 401 || response.status === 403 ? 'provider_auth_invalid' : 'provider_bad_response');
       throw error;
     }
 

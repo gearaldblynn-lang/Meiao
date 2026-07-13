@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
+import { runResponsesJob } from './openaiResponsesProvider.mjs';
 
 const baseArgs = {
   systemPrompt: '你是助手',
@@ -1068,6 +1069,68 @@ test('首轮 Responses 带图 502 时：用图片目录 URL 文本重试并继�
   assert.match(retrySystemText, /当前会话图片目录/);
   assert.deepEqual(out.imageResultUrls, ['https://img/1.png', 'https://img/2.png']);
   assert.ok(progress.some((event) => event.retry === 'text_image_catalog'));
+});
+
+test('首轮 Responses 带图 429 时：保留限流错误且不触发去图重试', async () => {
+  let calls = 0;
+  const progress = [];
+  await assert.rejects(
+    () => runAgentConversationV2({
+      ...baseArgs,
+      currentMessage: '参考这张图生成白底图',
+      attachments: [
+        { kind: 'image', url: 'https://cdn.example.com/api/assets/file/a/1.png', name: '1.png' },
+      ],
+      callModel: async () => {
+        calls += 1;
+        const error = new Error('responses 请求失败 (429): user requests-per-minute limit exceeded');
+        error.code = 'provider_rate_limited';
+        throw error;
+      },
+      generateImage: async () => { throw new Error('不该调出图'); },
+      onProgress: (event) => progress.push(event),
+    }),
+    (error) => error?.code === 'provider_rate_limited'
+  );
+  assert.equal(calls, 1);
+  assert.ok(!progress.some((event) => event.retry === 'text_image_catalog'));
+});
+
+test('Agent Center 组合链路收到 Responses 429 时只请求一次', async () => {
+  const realFetch = globalThis.fetch;
+  let requests = 0;
+  try {
+    globalThis.fetch = async () => {
+      requests += 1;
+      return new Response(JSON.stringify({
+        error: { message: 'user requests-per-minute limit exceeded', type: 'rate_limit_exceeded' },
+      }), { status: 429 });
+    };
+    await assert.rejects(
+      () => runAgentConversationV2({
+        ...baseArgs,
+        currentMessage: '参考这张图生成白底图',
+        attachments: [
+          { kind: 'image', url: 'https://cdn.example.com/api/assets/file/a/1.png', name: '1.png' },
+        ],
+        callModel: ({ messages, tools, maxTokens, onDelta }) => runResponsesJob({
+          payload: { model: 'gpt-5.4', messages, tools, maxTokens },
+          env: {
+            OPENAI_COMPATIBLE_API_KEY: 'sk-test',
+            OPENAI_COMPATIBLE_BASE_URL: 'https://relay.test',
+            OPENAI_COMPATIBLE_MODELS: 'gpt-5.4',
+          },
+          onDelta,
+        }),
+        generateImage: async () => { throw new Error('不该调出图'); },
+        onProgress: () => {},
+      }),
+      (error) => error?.code === 'provider_rate_limited'
+    );
+    assert.equal(requests, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test('HTTP 图床图片先转成模型稳定可读的 HTTPS 图床，再作为 inline image 发送给 Responses', async () => {

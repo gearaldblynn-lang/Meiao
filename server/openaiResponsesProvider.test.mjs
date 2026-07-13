@@ -96,6 +96,33 @@ test('非流式请求拦截伪成功上游错误文本', async () => {
   );
 });
 
+test('HTTP 429 标记为 provider_rate_limited', async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    error: { message: 'user requests-per-minute limit exceeded', type: 'rate_limit_exceeded' },
+  }), { status: 429 });
+  await assert.rejects(
+    () => runResponsesJob({
+      payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+      env,
+    }),
+    (error) => error?.code === 'provider_rate_limited'
+      && /requests-per-minute limit exceeded/.test(error.message)
+  );
+});
+
+for (const status of [401, 403]) {
+  test(`HTTP ${status} 保持 provider_auth_invalid`, async () => {
+    globalThis.fetch = async () => new Response('invalid credentials', { status });
+    await assert.rejects(
+      () => runResponsesJob({
+        payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+        env,
+      }),
+      (error) => error?.code === 'provider_auth_invalid'
+    );
+  });
+}
+
 test('非流式请求体把 chat 多模态图片 content 转成 responses input_image', async () => {
   let captured = null;
   globalThis.fetch = async (url, init) => {

@@ -59,6 +59,30 @@ test('非流式：拦截伪成功上游错误文本', async () => {
   );
 });
 
+test('非流式：HTTP 429 标记为 provider_rate_limited', async () => {
+  globalThis.fetch = async () => new Response('rate limit exceeded', { status: 429 });
+  await assert.rejects(
+    () => runOpenAIToolCallingJob({
+      payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+      env: mockEnv,
+    }),
+    (error) => error?.code === 'provider_rate_limited'
+  );
+});
+
+for (const status of [401, 403]) {
+  test(`非流式：HTTP ${status} 保持 provider_auth_invalid`, async () => {
+    globalThis.fetch = async () => new Response('invalid credentials', { status });
+    await assert.rejects(
+      () => runOpenAIToolCallingJob({
+        payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+        env: mockEnv,
+      }),
+      (error) => error?.code === 'provider_auth_invalid'
+    );
+  });
+}
+
 test('非流式：返回 tool_calls（finish_reason=tool_calls）', async () => {
   globalThis.fetch = async () => new Response(JSON.stringify({
     choices: [{ finish_reason: 'tool_calls', message: { tool_calls: [{ id: 'c1', function: { name: 'generate_image', arguments: '{"prompt":"猫","task_type":"new_image"}' } }] } }],
@@ -135,6 +159,18 @@ test('流式：文本 delta 逐个回调 onDelta，最终拼成完整内容', as
   assert.deepEqual(deltas, ['你', '好']);
   assert.equal(out.content, '你好');
   assert.equal(out.finishReason, 'stop');
+});
+
+test('流式：HTTP 429 标记为 provider_rate_limited', async () => {
+  globalThis.fetch = async () => new Response('rate limit exceeded', { status: 429 });
+  await assert.rejects(
+    () => runOpenAIToolCallingStream({
+      payload: { model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] },
+      env: mockEnv,
+      onDelta: () => {},
+    }),
+    (error) => error?.code === 'provider_rate_limited'
+  );
 });
 
 test('流式：tool_calls 分片累积，finishReason=tool_calls', async () => {
