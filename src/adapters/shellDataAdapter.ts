@@ -2285,10 +2285,10 @@ const mapJobs = (
                 : planningProject.status,
             taskCount,
             completedCount,
-            creditsConsumed: planningProject.creditsConsumed || normalizeCreditsConsumed((job.result as any)?.creditsConsumed),
+            creditsConsumed: planningProject.creditsConsumed || normalizeCreditsConsumed(job.result?.creditsConsumed),
             planningTaskId: latestIdentityTextList(
               planningProject.planningTaskId,
-              String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || undefined,
+              String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
             ),
             plans,
             selectedPlanId: planningProject.selectedPlanId || plans.find((plan) => plan.selected)?.id || plans[0]?.id,
@@ -2310,8 +2310,8 @@ const mapJobs = (
           subFeature: matchedProject.subFeature || inferredSubFeature,
           sourceType: matchedProject.sourceType || 'persisted',
           backendJobId: job.id,
-          creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed),
-          planningTaskId: String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim() || undefined,
+          creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+          planningTaskId: String(job.providerTaskId || job.result?.providerTaskId || '').trim() || undefined,
           plans,
           selectedPlanId: plans.find((plan) => plan.selected)?.id || plans[0]?.id,
         });
@@ -2325,24 +2325,24 @@ const mapJobs = (
       ) {
         const matchedProject = findPersistedStoryboardPlanningProjectForJob(job, persistedProjects);
         if (!matchedProject) return;
-        const planningTaskId = String(job.providerTaskId || (job.result as any)?.providerTaskId || '').trim();
+        const planningTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
         projects.push({
           ...matchedProject,
           backendJobId: job.id,
-          creditsConsumed: normalizeCreditsConsumed((job.result as any)?.creditsConsumed) || matchedProject.creditsConsumed,
+          creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed) || matchedProject.creditsConsumed,
           planningTaskId: latestIdentityTextList(matchedProject.planningTaskId, planningTaskId),
         });
         return;
       }
       if (projectStatus === 'error' && urls.length === 0) {
         const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
-        const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
+        const payloadProjectId = String(job.payload?.shellProjectId || '').trim();
         const isTrackedOneClickPlanningJob = Boolean(
           module === MODULE_VALUES.ONE_CLICK
           && String(job.taskType || '') === 'kie_chat'
           && (
             payloadProjectId
-            || String((job.payload as any)?.shellPlanningPurpose || '').trim() === 'one_click_planning'
+            || String(job.payload?.shellPlanningPurpose || '').trim() === 'one_click_planning'
           )
         );
         const errorMessage = String(job.errorMessage || providerErrorText || job.errorCode || '任务失败').trim();
@@ -2352,7 +2352,7 @@ const mapJobs = (
           if (!isTrackedOneClickPlanningJob && !shouldShowUntrackedTerminalFailure) return;
           const inferredSubFeature = getStructuredOneClickJobSubFeature(job.payload)
             || normalizeJobSubFeature(module, job.taskType, job.payload);
-          const projectName = String((job.payload as any)?.shellProjectName || '').trim()
+          const projectName = String(job.payload?.shellProjectName || '').trim()
             || prompt.slice(0, 28)
             || MODULE_LABELS[module]
             || '一键主详策划';
@@ -2393,7 +2393,7 @@ const mapJobs = (
           return;
         }
         const failedPlan = isTrackedOneClickPlanningJob
-          ? buildFailedOneClickPlanningPlan(job, matchedProject.name || String((job.payload as any)?.shellProjectName || '').trim(), errorMessage)
+          ? buildFailedOneClickPlanningPlan(job, matchedProject.name || String(job.payload?.shellProjectName || '').trim(), errorMessage)
           : undefined;
         projects.push({
           ...matchedProject,
