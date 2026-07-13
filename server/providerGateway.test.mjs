@@ -6001,3 +6001,152 @@ test('组合路径:模糊提交错误既不请求级重试也不切换模型', a
     global.fetch = originalFetch;
   }
 });
+
+test('paid chat submission connection loss is unknown and never resubmitted', async () => {
+  const originalFetch = globalThis.fetch;
+  let createRequestCount = 0;
+  globalThis.fetch = async (url) => {
+    createRequestCount += 1;
+    assert.match(String(url), /gemini-3-flash\/v1\/chat\/completions$/);
+    throw new TypeError('fetch failed before response');
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob({
+        taskType: 'kie_chat',
+        payload: {
+          model: 'gemini-3-flash-openai',
+          fallbackModels: ['gpt-5-2'],
+          messages: [{ role: 'user', content: 'paid request' }],
+        },
+      }, { KIE_API_KEY: 'test-key' }, new AbortController().signal),
+      (error) => error?.code === 'provider_submission_unknown'
+        && error?.submissionUnknown === true,
+    );
+    assert.equal(createRequestCount, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('known provider task id stops chat resubmission before any provider request', async () => {
+  const originalFetch = globalThis.fetch;
+  let createRequestCount = 0;
+  globalThis.fetch = async () => {
+    createRequestCount += 1;
+    throw new Error('known provider task must not be submitted again');
+  };
+
+  try {
+    await assert.rejects(
+      () => executeProviderJob({
+        taskType: 'kie_chat',
+        providerTaskId: 'provider-response-1',
+        payload: { model: 'gpt-5-4-openai-resp', messages: [] },
+      }, { KIE_API_KEY: 'test-key' }, new AbortController().signal),
+      (error) => error?.code === 'provider_submission_unknown'
+        && error?.providerTaskId === 'provider-response-1',
+    );
+    assert.equal(createRequestCount, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('direct-first image media fallback submits once per media route and preserves the task id', async () => {
+  __testOnly_clearManagedAssetUploadCache();
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  let createRequestCount = 0;
+  const directAssetUrl = 'https://meiaoyuntai.com/api/assets/file/paid-safe/source.png';
+  const stagedAssetUrl = 'https://tempfile.redpandaai.co/kieai/30590/mayo-storage/internal/source.png';
+
+  globalThis.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    requests.push({ requestUrl, init });
+    if (requestUrl.includes('/createTask')) {
+      createRequestCount += 1;
+      if (createRequestCount === 1) {
+        return createJsonResponse({ code: 400, msg: 'Failed to get the file information' }, 400);
+      }
+      return createJsonResponse({ code: 200, data: { taskId: 'paid-safe-image-task' } });
+    }
+    if (requestUrl.includes('/api/assets/file/')) {
+      return new Response(Buffer.from([0x89, 0x50, 0x4e, 0x47]), {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      });
+    }
+    if (requestUrl.includes('/file-stream-upload')) {
+      return createJsonResponse({ code: 200, data: { fileUrl: stagedAssetUrl } });
+    }
+    if (requestUrl.includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://example.com/paid-safe-result.png'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${requestUrl}`);
+  };
+
+  try {
+    const result = await executeProviderJob({
+      taskType: 'kie_image',
+      payload: {
+        prompt: 'direct-first fallback',
+        imageUrls: ['/api/assets/file/paid-safe/source.png'],
+        model: 'nano-banana-2',
+        aspectRatio: '1:1',
+        resolution: '1K',
+      },
+    }, {
+      KIE_API_KEY: 'test-key',
+      MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+      MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+      MEIAO_KIE_ASSET_UPLOAD_RETRIES: '0',
+    }, new AbortController().signal);
+
+    const createBodies = requests
+      .filter((request) => request.requestUrl.includes('/createTask'))
+      .map((request) => JSON.parse(String(request.init.body)));
+    assert.equal(createRequestCount, 2);
+    assert.deepEqual(createBodies.map((body) => body.input.image_input), [[directAssetUrl], [stagedAssetUrl]]);
+    assert.equal(requests.filter((request) => request.requestUrl.includes('/file-stream-upload')).length, 1);
+    assert.equal(result.providerTaskId, 'paid-safe-image-task');
+    assert.equal(result.providerMediaRoute, 'kie-fallback');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('upload-only transport retries a connection loss without creating a paid task', async () => {
+  const originalFetch = globalThis.fetch;
+  let uploadRequestCount = 0;
+  globalThis.fetch = async (url) => {
+    assert.match(String(url), /file-stream-upload$/);
+    uploadRequestCount += 1;
+    if (uploadRequestCount === 1) throw new TypeError('upload connection lost');
+    return createJsonResponse({ code: 200, data: { fileUrl: 'https://kie.example.com/uploaded.png' } });
+  };
+
+  try {
+    const result = await uploadAssetViaKieStream({
+      fileBuffer: Buffer.from('png'),
+      mimeType: 'image/png',
+      fileName: 'source.png',
+    }, {
+      KIE_API_KEY: 'test-key',
+      MEIAO_KIE_ASSET_UPLOAD_RETRIES: '1',
+      MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS: '1',
+    });
+
+    assert.equal(result.result.fileUrl, 'https://kie.example.com/uploaded.png');
+    assert.equal(uploadRequestCount, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
