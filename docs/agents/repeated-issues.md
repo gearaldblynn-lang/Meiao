@@ -820,3 +820,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 将 KIE chat completion 超时收口为 `MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS`，默认 `360000`，覆盖 Responses、Claude、Gemini Flash/3.5 和普通 chat completions；非法配置回到默认。
 - Regression check: `node --test --test-name-pattern "KIE chat completion timeout defaults" server/providerGateway.test.mjs`；`node --test server/providerGateway.test.mjs`。
 - Avoid next time: 本地同步推理窗口必须高于上游已知最长窗口，且做成 env + 保守默认。延长本地 timeout 只为了收到真实终态，不得宣称它能修复 KIE/Gemini 的 504。
+
+## 2026-07-13 - Paid provider no-retry must include Temporal activity retries
+
+- Symptom: MaxForAI 标准档冒烟 job `3861166dc074925c6d08e590` 显示 `maxRetries=0/retryCount=0`，但同一 job 留下三条 `openai_error` 失败记录。
+- Root cause: local Temporal activity 只在开始时 heartbeat，provider 同步请求超过 30 秒就触发 `TIMEOUT_TYPE_HEARTBEAT`；workflow 通用 activity retry 仍有 3 次尝试，重进时对无 providerTaskId 的 `running` job 再次执行 provider。Temporal history 显示最终 `attempt=3`，证明业务层零重试没有约束编排器层重放。
+- Fix: local activity 在 provider 执行期间按 `MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS` 周期 heartbeat（默认 10 秒，限制 1-15 秒）并在 `finally` 停止；`provider=maxforai` 使用独立 `singleAttemptActivities`，Temporal activity `maximumAttempts:1`，其他 provider 原策略不变。
+- Regression check: `node --test server/temporalWorker.test.mjs server/jobLoggingBehavior.test.mjs`；长请求测试必须观察多次 heartbeat，workflow 测试必须锁定 MaxForAI 单次 activity 尝试。
+- Avoid next time: 付费提交的“不重试”要跨 HTTP、job、agent 和 workflow/activity 四层审计；验收必须查 Temporal history 的 `attempt`，不得只看任务表 `retryCount`。

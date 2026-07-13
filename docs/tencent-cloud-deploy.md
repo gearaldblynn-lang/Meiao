@@ -34,6 +34,7 @@ MEIAO_TASK_ENGINE=mysql
 MEIAO_TEMPORAL_ADDRESS=127.0.0.1:7233
 MEIAO_TEMPORAL_NAMESPACE=default
 MEIAO_TEMPORAL_TASK_QUEUE=meiao-cloud
+MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS=10000
 MEIAO_PROVIDERLESS_RUNNING_STALE_MS=300000
 MEIAO_SUBMITTED_RUNNING_STALE_MS=21600000
 MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES=2
@@ -107,6 +108,8 @@ EOF
 
 `MEIAO_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS` / `MEIAO_RESULT_ASSET_DOWNLOAD_RETRIES` / `MEIAO_RESULT_ASSET_DOWNLOAD_RETRY_BASE_MS` 默认 `60000` / `2` / `500`。它们只控制 provider 已完成后抓取结果文件的幂等 GET 和响应体读取；连接错误、超时、`429/5xx` 可重试，`4xx` 不重试，也不会重新提交生成任务或产生重复计费。
 
+`MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS` 默认 `10000`，允许 `1000-15000`。该心跳保持长耗时 provider activity 在 Temporal 的 30 秒 heartbeat timeout 内存活。MaxForAI 付费生成的 activity 固定只尝试一次；心跳丢失、worker 中断或 workflow 层异常都不得自动再次提交上游 POST。
+
 `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY` 控制单个 `kie_image` 任务在提交 KIE 前解析/转存素材的并发，默认 `2`。详情页批量生图会同时创建多张图，每张又带多张商品/参考素材；该值不要盲目调高，避免把 KIE 图床上传并发打满。
 
 `MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY` 控制单个 `kie_seedance_video` 任务在提交 KIE 前解析/转存图片、视频、音频素材的总并发，默认 `2`。分镜视频常带多张 3-5MB 商品图和分镜图，保持保守默认可降低 `asset_upload fetch failed`。
@@ -166,6 +169,7 @@ MEIAO_TASK_ENGINE=temporal
 MEIAO_TEMPORAL_ADDRESS=127.0.0.1:7233
 MEIAO_TEMPORAL_NAMESPACE=default
 MEIAO_TEMPORAL_TASK_QUEUE=meiao-cloud
+MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS=10000
 ```
 
 然后重启 PM2：

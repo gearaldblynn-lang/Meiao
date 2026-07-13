@@ -22,7 +22,22 @@ const __dirname = path.dirname(__filename);
 
 const now = () => Date.now();
 const DEFAULT_JOB_CONCURRENCY = 5;
+const DEFAULT_TEMPORAL_ACTIVITY_HEARTBEAT_INTERVAL_MS = 10_000;
+const MIN_TEMPORAL_ACTIVITY_HEARTBEAT_INTERVAL_MS = 1_000;
+const MAX_TEMPORAL_ACTIVITY_HEARTBEAT_INTERVAL_MS = 15_000;
 const isTerminalJobStatus = (status) => ['succeeded', 'failed', 'cancelled'].includes(String(status || ''));
+
+export const getTemporalActivityHeartbeatIntervalMs = (env = process.env) => {
+  const parsed = Number.parseInt(String(env?.MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS || ''), 10);
+  if (
+    !Number.isFinite(parsed)
+    || parsed < MIN_TEMPORAL_ACTIVITY_HEARTBEAT_INTERVAL_MS
+    || parsed > MAX_TEMPORAL_ACTIVITY_HEARTBEAT_INTERVAL_MS
+  ) {
+    return DEFAULT_TEMPORAL_ACTIVITY_HEARTBEAT_INTERVAL_MS;
+  }
+  return parsed;
+};
 
 const toActivityResult = (job) => ({
   jobId: String(job?.id || ''),
@@ -74,6 +89,13 @@ const safeHeartbeat = (heartbeat, details) => {
   } catch {
     // Heartbeats are diagnostic and recovery hints; the job should continue if one fails locally.
   }
+};
+
+const createActivityHeartbeatPump = ({ heartbeat, details, intervalMs }) => {
+  safeHeartbeat(heartbeat, details);
+  const timer = setInterval(() => safeHeartbeat(heartbeat, details), intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
 };
 
 const isSameMysqlClaim = (job, claimedAt) => (
@@ -154,6 +176,7 @@ export const createLocalTemporalActivities = ({
   settleJobCredits,
   releaseJobCredits,
   heartbeat = defaultActivityHeartbeat,
+  heartbeatIntervalMs = getTemporalActivityHeartbeatIntervalMs(),
   isExecutionPaused = isDeployDrainActive,
 }) => ({
   async executeLocalJobAttemptActivity({ jobId }) {
@@ -176,7 +199,11 @@ export const createLocalTemporalActivities = ({
     if (claimedJob.cancelRequestedAt) {
       controller.abort();
     }
-    safeHeartbeat(heartbeat, { jobId: claimedJob.id, stage: 'running' });
+    const stopHeartbeatPump = createActivityHeartbeatPump({
+      heartbeat,
+      details: { jobId: claimedJob.id, stage: 'running' },
+      intervalMs: heartbeatIntervalMs,
+    });
 
     let notifiedProviderTaskId = String(claimedJob.providerTaskId || '').trim();
     const onProviderTaskId = async (providerTaskId) => {
@@ -251,6 +278,8 @@ export const createLocalTemporalActivities = ({
         });
       }
       return toActivityResult(failedJob);
+    } finally {
+      stopHeartbeatPump();
     }
   },
 });
