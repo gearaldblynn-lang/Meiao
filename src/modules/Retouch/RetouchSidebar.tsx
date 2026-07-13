@@ -233,7 +233,7 @@ const RetouchSidebar: React.FC<Props> = ({
 
             <div className="space-y-2">
               <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">生图模型</span>
-              <div className="flex bg-slate-100 p-1 rounded-xl">
+              <div className="grid grid-cols-2 gap-2 xl:grid-cols-3 bg-slate-100 p-1 rounded-xl">
                 {MODEL_OPTIONS.map(m => (
                   <button
                     key={m}
@@ -242,7 +242,7 @@ const RetouchSidebar: React.FC<Props> = ({
                       setQuality(getDefaultQualityForModel(m));
                       setAspectRatio(getSafeAspectRatioForModel(m, aspectRatio, AspectRatio.AUTO));
                     }}
-                    className={`flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all ${model === m ? 'bg-white text-emerald-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}
+                    className={`py-1.5 text-[10px] font-black rounded-lg transition-all ${model === m ? 'bg-white text-emerald-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}
                   >
                     {getModelDisplayName(m)}
                   </button>

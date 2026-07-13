@@ -41,4 +41,9 @@ test('retouch model changes keep ratios inside the selected model capability lis
   );
   assert.equal(getSafeRetouchAspectRatioForModel('GPT Image 2', '21:9'), 'auto');
   assert.equal(getSafeRetouchAspectRatioForModel('Nano Banana 2', '21:9'), '21:9');
+  assert.deepEqual(
+    getRetouchSupportedAspectRatiosForModel('maxforai-image-2-pro'),
+    ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']
+  );
+  assert.equal(getSafeRetouchAspectRatioForModel('Image-2超高', '21:9'), 'auto');
 });

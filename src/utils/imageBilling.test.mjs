@@ -17,6 +17,24 @@ test('image billing estimates use the configured display credit table by model a
   assert.equal(getImageModelCreditCost('nano-banana-2', '4K'), 12);
 });
 
+test('MaxForAI image models do not use the legacy credit system', () => {
+  for (const model of [
+    'maxforai-image-2-standard',
+    'maxforai-image-2-pro',
+    'maxforai-image-2-max',
+  ]) {
+    const estimate = estimateImageBilling({
+      module: 'one_click',
+      params: { model, quality: '4K', count: '5' },
+    });
+
+    assert.equal(estimate.billable, false);
+    assert.equal(estimate.model, model);
+    assert.equal(estimate.unitCredits, 0);
+    assert.equal(estimate.estimatedCredits, 0);
+  }
+});
+
 test('image billing normalizes user-facing model and resolution labels', () => {
   assert.equal(normalizeBillingModel('GPT Image 2'), 'gpt-image-2');
   assert.equal(normalizeBillingModel('Nano Banana 2'), 'nano-banana-2');

@@ -26,6 +26,7 @@ import { resolveShellSkuCount } from './shellSkuCount';
 import { buildShellImageInputUrls } from './shellOneClickMaterials.mjs';
 import { getExactAspectRatioFromDimensions, resolveNearestSupportedAspectRatio } from '../utils/aspectRatioUtils';
 import { getSupportedAspectRatiosForModel } from '../utils/modelAspectRatio';
+import { resolveMaxForAiImageModelId } from '../utils/maxforaiImageModels.mjs';
 import { loadShellDraftAsset } from '../utils/shellDraftAssetStore';
 import {
   createDefaultLogoPlacement,
@@ -137,6 +138,8 @@ const MODULE_LABELS: Record<string, string> = {
 };
 
 const toModel = (value?: string): KieAiModel => {
+  const maxForAiModel = resolveMaxForAiImageModelId(value);
+  if (maxForAiModel) return maxForAiModel as KieAiModel;
   const normalized = String(value || '').toLowerCase();
   if (normalized.includes('nano') || normalized.includes('banana')) return 'nano-banana-2';
   if (normalized.includes('secondary') || normalized.includes('副')) return 'gpt-image-2-secondary';

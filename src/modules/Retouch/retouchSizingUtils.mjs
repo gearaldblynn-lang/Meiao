@@ -1,3 +1,6 @@
+import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
+import { resolveMaxForAiImageModelId } from '../../utils/maxforaiImageModels.mjs';
+
 const parsePositiveNumber = (value) => {
   const parsed = Number.parseFloat(String(value ?? '').trim());
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
@@ -7,14 +10,20 @@ const GPT_IMAGE_2_RATIOS = ['auto', '1:1', '3:4', '4:3', '9:16', '16:9'];
 const NANO_BANANA_2_RATIOS = ['auto', '1:1', '1:4', '1:8', '2:3', '3:2', '3:4', '4:1', '4:3', '4:5', '5:4', '8:1', '9:16', '16:9', '21:9'];
 
 export const normalizeRetouchModel = (model = '') => {
+  const maxForAiModel = resolveMaxForAiImageModelId(model);
+  if (maxForAiModel) return maxForAiModel;
   const normalized = String(model || '').trim().toLowerCase();
   if (normalized.includes('nano') || normalized.includes('banana')) return 'nano-banana-2';
   return 'gpt-image-2';
 };
 
-export const getRetouchSupportedAspectRatiosForModel = (model = '') => (
-  normalizeRetouchModel(model) === 'gpt-image-2' ? GPT_IMAGE_2_RATIOS : NANO_BANANA_2_RATIOS
-);
+export const getRetouchSupportedAspectRatiosForModel = (model = '') => {
+  const normalizedModel = normalizeRetouchModel(model);
+  if (resolveMaxForAiImageModelId(normalizedModel)) {
+    return [...getImageModelCapabilities(normalizedModel).supportedAspectRatios];
+  }
+  return normalizedModel === 'gpt-image-2' ? GPT_IMAGE_2_RATIOS : NANO_BANANA_2_RATIOS;
+};
 
 export const getSafeRetouchAspectRatioForModel = (model = '', aspectRatio = 'auto', fallback = 'auto') => {
   const supported = getRetouchSupportedAspectRatiosForModel(model);

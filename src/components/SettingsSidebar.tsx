@@ -171,7 +171,7 @@ const SettingsSidebar: React.FC<Props> = ({
 
           <SectionCard title="选择生图模型">
             <label className="text-[10px] font-bold uppercase tracking-[0.2em] block mb-2 text-slate-600">选择生图模型</label>
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-2 xl:grid-cols-3">
                 {MODEL_OPTIONS.map((m) => (
                   <button
                     key={m}
@@ -187,7 +187,7 @@ const SettingsSidebar: React.FC<Props> = ({
                         ),
                       })
                     }
-                    className={`flex-1 py-2 text-[10px] font-bold rounded-xl border transition-all ${
+                    className={`py-2 text-[10px] font-bold rounded-xl border transition-all ${
                       config.model === m ? 'bg-indigo-600 border-indigo-500 text-white shadow-md' : 'bg-white border-slate-200 text-slate-400 hover:border-indigo-300'
                     }`}
                 >

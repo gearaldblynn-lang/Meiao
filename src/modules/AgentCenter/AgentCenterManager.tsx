@@ -32,6 +32,7 @@ import KnowledgeBaseListView from './KnowledgeBaseListView';
 import KnowledgeBaseEditorView from './KnowledgeBaseEditorView';
 import AgentStudioWorkspace from './AgentStudioWorkspace';
 import { resolveDefaultAllowedChatModels, shouldRefreshCreateWizardChatModels } from './chatModelAllowlist';
+import { MAXFORAI_IMAGE_MODELS } from '../../utils/maxforaiImageModels.mjs';
 
 type ManagerPage = 'agent_list' | 'agent_detail' | 'agent_wizard' | 'knowledge_list' | 'knowledge_editor' | 'agent_studio';
 
@@ -102,6 +103,7 @@ const fallbackChatModels: SystemPublicConfig['agentModels']['chat'] = [
 const fallbackImageModels = [
   { id: 'gpt-image-2', label: 'GPT Image 2' },
   { id: 'gpt-image-2-secondary', label: 'GPT Image 2（副）' },
+  ...MAXFORAI_IMAGE_MODELS.map(({ id, label }) => ({ id, label })),
   { id: 'nano-banana-2', label: 'Nano Banana 2' },
 ];
 const AGENT_CENTER_MANAGER_STATE_KEY = 'MEIAO_AGENT_CENTER_MANAGER_STATE';
