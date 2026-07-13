@@ -149,10 +149,51 @@ export const buildMaxForAiImageRequestBody = ({ payload = {}, imageUrls = [], pr
     prompt: normalizedPrompt,
     size: resolveMaxForAiImageSize(payload.aspectRatio || 'auto', payload.resolution || '1K'),
     n: 1,
+    response_format: 'url',
     ...(imageUrls.length > 0
       ? { images: imageUrls.map((imageUrl) => ({ image_url: imageUrl })) }
       : {}),
   };
+};
+
+const listResponseKeys = (value) => (
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? Object.keys(value).sort().join(',') || '无'
+    : '无'
+);
+
+const normalizeImageMimeType = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return /^image\/(?:png|jpe?g|webp)$/.test(normalized) ? normalized : 'image/png';
+};
+
+export const extractMaxForAiImageResult = (body = {}) => {
+  const first = Array.isArray(body?.data) ? body.data[0] : null;
+  const imageUrl = String(first?.url || '').trim();
+  if (imageUrl) {
+    return { imageUrl, providerResponseFormat: 'url' };
+  }
+
+  const rawBase64 = String(first?.b64_json || '').trim();
+  if (rawBase64) {
+    const mimeType = normalizeImageMimeType(first?.mime_type || first?.mimeType);
+    const dataUrl = /^data:image\//i.test(rawBase64)
+      ? rawBase64
+      : `data:${mimeType};base64,${rawBase64}`;
+    const parsed = parseDataUrlPayload(dataUrl);
+    if (parsed?.base64Data && Buffer.from(parsed.base64Data, 'base64').length > 0) {
+      return { imageUrl: dataUrl, providerResponseFormat: 'b64_json' };
+    }
+  }
+
+  throw createProviderError(
+    'provider_bad_response',
+    `MaxForAI 返回成功但没有可用图片（顶层字段: ${listResponseKeys(body)}; data[0]字段: ${listResponseKeys(first)}）`,
+    {
+      providerStage: 'provider_response',
+      providerStatus: 'failed',
+    },
+  );
 };
 
 const uploadMaxForAiAsset = async ({
@@ -301,19 +342,13 @@ export const runMaxForAiImageJob = async ({ payload = {}, env = {}, signal = nul
         throw normalizePaidSubmissionError(error);
       }
     }
-    const imageUrl = String(body?.data?.[0]?.url || '').trim();
-    if (!imageUrl) {
-      throw createProviderError('provider_bad_response', 'MaxForAI 返回成功但没有图片 URL', {
-        providerStage: 'provider_response',
-        providerStatus: 'failed',
-      });
-    }
+    const imageResult = extractMaxForAiImageResult(body);
 
     return {
       providerStage: 'completed',
       providerStatus: 'success',
       result: {
-        imageUrl,
+        ...imageResult,
         status: 'success',
         provider: 'maxforai',
         providerModel: requestBody.model,
