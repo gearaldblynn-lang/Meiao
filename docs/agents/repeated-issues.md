@@ -748,6 +748,14 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/agentToolConversation.test.mjs --test-name-pattern "不调用后置质检"`；`node --test server/agentToolConversation.test.mjs server/providerAssetTransfer.test.mjs server/providerGateway.test.mjs server/openaiResponsesProvider.test.mjs server/agentCenterSource.test.mjs server/agentImagePlan.test.mjs`；`npm run build`；`npm run lint`。
 - Avoid next time: 智能体多图验收不能只数图片数量，但也不要靠“出图后再审图”兜底。正确性应来自输入映射、计划覆盖、工具调用和落库 checkpoint 这些可验证边界；用户对图片是否满意是最终验收。若发现错图，优先修前置图片目录、计划语义、provider 输入或结果映射。
 
+### OpenAI-compatible HTTP 429 must remain a structured rate-limit error
+
+- Symptom: Agent Center 的对话和生图请求多次收到 HTTP 429，但日志长期记录为 `provider_bad_response`；带 inline 图片的请求还会误走“去图后重试”回退。
+- Root cause: OpenAI Responses 和 Chat Completions 适配器只区分鉴权失败与通用坏响应，没有把 429 映射到已有的 `provider_rate_limited`。下游带图回退又在已有结构化错误码时继续匹配 `responses 请求失败` 文本，导致限流被误判为图片输入兼容性问题。
+- Fix: Responses、Chat Completions 非流式和流式入口统一将 HTTP 429 标记为 `provider_rate_limited`；Agent Center 直连带图回退在存在结构化错误码时只接受 `provider_bad_response`，429 原样返回且不会触发去图重试。显式队列任务仍按既有 `maxRetries` 策略有界处理限流。
+- Regression check: `node --test server/openaiResponsesProvider.test.mjs server/openaiToolCalling.test.mjs server/agentToolConversation.test.mjs`。
+- Avoid next time: HTTP 状态必须在 provider 边界转成结构化错误码，控制流优先使用错误码；文本正则只允许作为无错误码的兼容兜底。限流不是图片不可读，Agent Center 不能通过删掉用户图片来“恢复”；队列是否重试必须由明确的任务级重试预算决定。
+
 ## 2026-06-12 - First-image planning recovery must aggregate sibling reference jobs
 
 - Symptom: 天琪账号首图功能上传 5 张风格参考图后，后台实际创建并完成了 5 个 `kie_chat` 策划 job，但前端项目卡只显示 1 个策划，用户无法发现少了 4 个。

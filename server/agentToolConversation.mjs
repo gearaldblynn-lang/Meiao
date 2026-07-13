@@ -70,7 +70,8 @@ const shouldRetryModelWithoutInlineImages = (error, attachments = []) => {
   if (!hasImageAttachments(attachments)) return false;
   const code = String(error?.code || '').trim();
   const message = String(error?.message || '');
-  return code === 'provider_bad_response' || /responses 请求失败|bad_response_status_code|502/.test(message);
+  if (code) return code === 'provider_bad_response';
+  return /responses 请求失败|bad_response_status_code|502/.test(message);
 };
 
 const isTransientImageGenerationError = (error) => {
