@@ -828,3 +828,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: local activity 在 provider 执行期间按 `MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS` 周期 heartbeat（默认 10 秒，限制 1-15 秒）并在 `finally` 停止；`provider=maxforai` 使用独立 `singleAttemptActivities`，Temporal activity `maximumAttempts:1`，其他 provider 原策略不变。
 - Regression check: `node --test server/temporalWorker.test.mjs server/jobLoggingBehavior.test.mjs`；长请求测试必须观察多次 heartbeat，workflow 测试必须锁定 MaxForAI 单次 activity 尝试。
 - Avoid next time: 付费提交的“不重试”要跨 HTTP、job、agent 和 workflow/activity 四层审计；验收必须查 Temporal history 的 `attempt`，不得只看任务表 `retryCount`。
+
+## 2026-07-14 - Image-2 HTTP 200 responses may contain base64 instead of a URL
+
+- Symptom: MaxForAI 冒烟任务 `49f7bf14f1f55d45e42d4d9f` 已收到上游 HTTP 200，本地仍以 `provider_bad_response` 和“返回成功但没有图片 URL”结束，用户看不到已经生成的图片。
+- Root cause: 生图请求没有显式传 `response_format: "url"`，响应解析又只读取 `data[0].url`。中转基本透传上游响应，未指定格式时允许返回 `data[0].b64_json`，于是“生成成功”被误判为“响应坏”。旧任务没有保存完整上游响应体，因此不能事后断言它当时一定就是 `b64_json`；可以确认的是请求与解析契约存在这个缺口。
+- Fix: MaxForAI 生成请求显式传 `response_format: "url"`；provider 边界同时接受 URL 和经过校验的 `b64_json`。base64 结果在 worker 写入任务终态前立即解码并存入站内托管素材，最终结果只保存托管 URL、素材 ID 和 `providerResponseFormat`，不把原始 base64 写进任务库、Temporal history、日志或前端状态。两种字段都不存在时继续返回脱敏的 `provider_bad_response`，只记录字段名。
+- Regression check: `node --test server/providerMaxForAiImage.test.mjs server/assetStore.test.mjs server/maxforaiIntegration.test.mjs server/maxforaiEnvDocs.test.mjs`；真实验收只能新建一次付费任务，并同时核对 `providerResponseFormat`、托管素材可读、Temporal activity `attempt=1`、任务 `retryCount=0` 和积分未变化。
+- Acceptance: 本地唯一一次新付费任务 `f8ca4ed58263bf23eb446912` 成功，实际 `providerResponseFormat=url`；结果已转为站内托管 PNG（1254×1254、1,068,708 bytes），Temporal activity `maximumAttempts=1/attempt=1`，任务 `retryCount=0/maxRetries=0`，积分前后均为 0，任务 JSON 和 Temporal history 均无 data URL 或大段 base64。
+- Avoid next time: 接入文档不能把一种响应编码写成唯一成功结构。调用方应显式声明偏好格式，同时在 provider 边界兼容合同允许的返回形态；大体积 base64 只能在内存中短暂出现并立即转为托管素材，不得用保存完整响应 JSON 的方式排障。

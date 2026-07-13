@@ -88,7 +88,7 @@ EOF
 
 第4期智能体多工具复用 `OPENAI_COMPATIBLE_*`，V2 对话经 `OPENAI_COMPATIBLE_RESPONSES_PATH` 调 responses 端点以支持 `web_search`；`AGENT_TOOL_MAX_ROUNDS` 是单轮工具循环上限，默认 5。`AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS` 是多图独立输出规划欠覆盖时的修复审查轮数，默认 2；仍不完整会快速失败，不执行单张伪完成。
 
-`MAXFORAI_API_KEY` 是 `image-2中转` 的独立服务端凭证，不得复用或暴露 `OPENAI_COMPATIBLE_API_KEY`。站内 ID 为 `maxforai-image-2-relay`，上游固定提交 `gpt-image-2`；当前不进入旧积分系统，也不保存渠道价格。`MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS` 只控制单次付费 POST 的等待时间，该 POST 永不自动重试；若连接中断且无法确认上游是否接单，任务进入 `provider_submission_unknown`。`MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS` 和 `MAXFORAI_ASSET_UPLOAD_CONCURRENCY` 只作用于付费提交前的素材转链。
+`MAXFORAI_API_KEY` 是 `image-2中转` 的独立服务端凭证，不得复用或暴露 `OPENAI_COMPATIBLE_API_KEY`。站内 ID 为 `maxforai-image-2-relay`，上游固定提交 `gpt-image-2`；当前不进入旧积分系统，也不保存渠道价格。生成请求显式发送 `response_format: "url"`，但中转或上游仍可能返回 `data[0].url` 或 `data[0].b64_json`；服务端必须兼容两种格式，并在成功落库前把 base64 结果写成站内托管素材，持久化层不得保存原始 base64。`MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS` 只控制单次付费 POST 的等待时间，该 POST 永不自动重试；若连接中断且无法确认上游是否接单，任务进入 `provider_submission_unknown`。`MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS` 和 `MAXFORAI_ASSET_UPLOAD_CONCURRENCY` 只作用于付费提交前的素材转链。
 
 `MEIAO_PROVIDERLESS_RUNNING_STALE_MS` 控制已标记 `running` 但还没有上游 `providerTaskId` 的异常检测窗口。云上建议 `300000`：内部幂等任务可安全回到 `retry_waiting`；外部付费任务改为 `provider_submission_unknown`，释放并发但不自动重提、不自动退积分预留，需要管理员核实上游后处置。`MEIAO_SUBMITTED_RUNNING_STALE_MS` 控制已记录上游 ID 但未回写终态的检查窗口；只有具备真实查询接口的 task type 才回到 `retry_waiting` 继续查旧任务，不可查询的 chat response ID 不会自动重提。`MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES` 默认 `2`，只是旧任务查询/结果下载的恢复次数。`MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS` 建议 `30000`。
 
