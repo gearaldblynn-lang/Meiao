@@ -72,7 +72,7 @@ const KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY = 2;
 const KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY = 2;
 const KIE_CHAT_MEDIA_RESOLUTION_CONCURRENCY = 2;
 const SEEDANCE_MAX_TOTAL_VIDEO_DURATION_SECONDS = 15;
-const KIE_CHAT_COMPLETION_TIMEOUT_MS = 240_000;
+const KIE_CHAT_COMPLETION_TIMEOUT_MS_DEFAULT = 360_000;
 const KIE_CHAT_STREAM_IDLE_TIMEOUT_MS = 120_000;
 const DREAMINA_VIDEO_POLL_RETRIES = 180;
 const DREAMINA_VIDEO_POLL_INTERVAL_MS = 5_000;
@@ -341,6 +341,19 @@ const getKieAssetUploadTimeoutMs = (env = {}) => {
   const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS', 'KIE_ASSET_UPLOAD_TIMEOUT_MS') || ''), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : KIE_ASSET_UPLOAD_TIMEOUT_MS;
 };
+
+const getKieChatCompletionTimeoutMs = (env = {}) => {
+  const parsed = Number.parseInt(String(getEnvValue(
+    env,
+    'MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS',
+    'KIE_CHAT_COMPLETION_TIMEOUT_MS'
+  ) || ''), 10);
+  return Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : KIE_CHAT_COMPLETION_TIMEOUT_MS_DEFAULT;
+};
+
+export const __testOnly_getKieChatCompletionTimeoutMs = getKieChatCompletionTimeoutMs;
 
 const getKieAssetUploadConcurrency = (env = {}) => {
   const parsed = Number.parseInt(String(getEnvValue(env, 'MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY', 'KIE_ASSET_UPLOAD_CONCURRENCY') || ''), 10);
@@ -1501,7 +1514,7 @@ const runKieResponsesJob = async (payload, env, signal, options = {}) => {
       ...(payload.webSearchEnabled ? { tools: [{ type: 'web_search' }] } : {}),
     }),
     signal,
-  }, 'Kie Responses 请求超时', KIE_CHAT_COMPLETION_TIMEOUT_MS, 'chat_completion');
+  }, 'Kie Responses 请求超时', getKieChatCompletionTimeoutMs(env), 'chat_completion');
 
   if (!response.ok) {
     await mapHttpError(response, 'Kie Responses 请求失败');
@@ -1758,7 +1771,7 @@ const runKieClaudeMessagesJob = async (payload, env, signal, options = {}) => {
     },
     body: JSON.stringify(requestBody),
     signal,
-  }, 'Kie Claude 请求超时', KIE_CHAT_COMPLETION_TIMEOUT_MS, 'chat_completion');
+  }, 'Kie Claude 请求超时', getKieChatCompletionTimeoutMs(env), 'chat_completion');
 
   let response = await sendClaudeRequest(primaryRequestBody);
 
@@ -1997,7 +2010,7 @@ const runKieGeminiFlashOpenAiJob = async (payload, env, signal, options = {}) =>
     },
     body: JSON.stringify(requestBody),
     signal,
-  }, 'Kie Gemini 3 Flash 请求超时', KIE_CHAT_COMPLETION_TIMEOUT_MS, 'chat_completion');
+  }, 'Kie Gemini 3 Flash 请求超时', getKieChatCompletionTimeoutMs(env), 'chat_completion');
 
   if (!response.ok) {
     await mapHttpError(response, 'Kie Gemini 3 Flash 请求失败');
@@ -2087,7 +2100,7 @@ const runKieGemini35FlashJob = async (payload, env, signal, options = {}) => {
     },
     body: JSON.stringify(requestBody),
     signal,
-  }, 'Kie Gemini 3.5 Flash 请求超时', KIE_CHAT_COMPLETION_TIMEOUT_MS, 'chat_completion');
+  }, 'Kie Gemini 3.5 Flash 请求超时', getKieChatCompletionTimeoutMs(env), 'chat_completion');
 
   if (!response.ok) {
     await mapHttpError(response, 'Kie Gemini 3.5 Flash 请求失败');
@@ -2827,7 +2840,7 @@ const runKieChatJob = async (payload, env, signal, options = {}) => {
         ...(isGeminiModel && payload.reasoningLevel ? { include_thoughts: true, reasoning_effort: normalizeReasoningLevelForModel(model, payload.reasoningLevel) } : {}),
       }),
       signal,
-    }, 'Kie 对话请求超时', KIE_CHAT_COMPLETION_TIMEOUT_MS, 'chat_completion');
+    }, 'Kie 对话请求超时', getKieChatCompletionTimeoutMs(env), 'chat_completion');
 
     if (!response.ok) {
       await mapHttpError(response, 'Kie 对话请求失败');
