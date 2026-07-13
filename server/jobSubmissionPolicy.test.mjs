@@ -144,3 +144,16 @@ test('provider task recovery is limited to task types with a real query path', (
   }
   assert.equal(canRecoverProviderTaskById({ taskType: 'kie_video', providerTaskId: '' }), false);
 });
+
+test('paid video submissions use a zero create-retry decision', () => {
+  const retryDecision = resolveJobSubmissionPolicy({
+    module: 'video',
+    taskType: 'kie_image',
+    provider: 'kie',
+    payload: { subFeature: 'storyboard' },
+    hasVideoPermission: true,
+  });
+
+  assert.equal(retryDecision.maxCreateRetries, 0);
+  assert.equal(retryDecision.dedupeWindowMs, 60 * 60 * 1000);
+});
