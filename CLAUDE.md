@@ -330,3 +330,8 @@
   根因:董丹丹分镜任务先被 KIE 明确返回 `Failed to get the file information`,梅奥按 #54 安全规则将完整 MP4 和 6 张图转存 KIE 后用同一 Gemini 重提;第二次 KIE 任务等待满 300 秒后返回 `Gemini chat (OpenAI format) responseCode error: 504`。`providerGateway` 的本地 chat completion 超时却硬编码为 240 秒,导致梅奥提前约 60 秒中断,页面只看到本地超时而非 KIE 真实终态。
   修复:新增 `MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS`,默认 360000 毫秒,并统一应用于 KIE Responses、Claude、Gemini Flash/3.5 及普通 chat completions;无效配置回到保守默认。回归测试锁定 360 秒默认、可配置值和非法值回退。这项修复只让梅奥收到真实终态,不把 KIE/Gemini 的 504 伪装成成功。
   如何避免:**外部同步推理的本地 timeout 必须可配置,且要高于已知上游最长等待窗口并留少量网络余量。超时参数的作用是“等到真相”,不是治愈上游 504;验收时必须同时核对本地超时、上游任务耗时和最终错误。**
+
+- **#56 ✅ 已修(2026-07-13)· Temporal activity 层隐藏重试绕过付费任务 `maxRetries=0`,长请求被重复提交**
+  根因:MaxForAI 标准档真实冒烟任务 `3861166dc074925c6d08e590` 在业务层明确 `maxRetries=0`，但本地 Temporal activity 只在开始时 heartbeat 一次，provider 同步等待超过 30 秒后触发 `TIMEOUT_TYPE_HEARTBEAT`。workflow 通用 activity retry 仍为 `maximumAttempts:3`，且 local activity 重进时会对 `running` job 再次执行 provider；Temporal 历史确认最终 `attempt=3`，本地产生三条 `openai_error` 失败记录。任务表的 `retryCount=0` 只覆盖业务重试，没有约束编排器层。
+  修复:local Temporal activity 执行 provider 期间启动周期性 heartbeat pump，间隔由 `MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS` 控制，默认 10 秒、限制 1-15 秒；不论成功或失败都在 `finally` 停止定时器。workflow 为 `provider=maxforai` 选择独立的 `singleAttemptActivities`，强制 `maximumAttempts:1`，保留其他 provider 原有策略。回归测试同时锁定长请求持续心跳和 MaxForAI 单次 activity 尝试。
+  如何避免:**“不自动重试付费 POST”必须审计所有重试层：HTTP adapter、job runtime、agent tool 和 workflow/activity 编排器；只看 job `retryCount/maxRetries` 会漏掉编排器重放。长同步请求必须让 heartbeat 周期小于 activity heartbeat timeout，真实验收要查 Temporal history 的 `attempt`，不能只查业务任务表。**

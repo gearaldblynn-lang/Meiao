@@ -153,6 +153,17 @@ test('local temporal engine starts a real worker and does not also trigger the i
   assert.match(serverSource, /if \(!shouldUseTemporalForLocalExecution\(\)\) \{[\s\S]*localJobWorker\?\.trigger\?\.\(\)/);
 });
 
+test('maxforai temporal workflows use a single activity attempt for paid submissions', () => {
+  assert.match(
+    temporalWorkflowSource,
+    /const singleAttemptActivities = proxyActivities\(\{[\s\S]*?retry: \{[\s\S]*?maximumAttempts: 1[\s\S]*?\}\s*,?\s*\}\)/,
+  );
+  assert.match(
+    temporalWorkflowSource,
+    /String\(input\?\.provider \|\| ''\) === 'maxforai'[\s\S]*?singleAttemptActivities/,
+  );
+});
+
 test('video jobs force zero automatic retries at the server entry points', () => {
   assert.match(serverSource, /const normalizeJobMaxRetries = \(taskType, value\) => \(/);
   assert.match(serverSource, /VIDEO_JOB_TASK_TYPES\.has\(String\(taskType \|\| ''\)\) \? 0 : value/);

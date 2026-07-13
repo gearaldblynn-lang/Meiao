@@ -9,6 +9,14 @@ const { executeLocalJobAttemptActivity, executeMysqlJobAttemptActivity } = proxy
     maximumAttempts: 3,
   },
 });
+const defaultActivities = { executeLocalJobAttemptActivity, executeMysqlJobAttemptActivity };
+const singleAttemptActivities = proxyActivities({
+  startToCloseTimeout: '30 minutes',
+  heartbeatTimeout: '30 seconds',
+  retry: {
+    maximumAttempts: 1,
+  },
+});
 
 export async function meiaoTaskWorkflow(input) {
   if (input?.executionMode !== 'execute') {
@@ -25,9 +33,12 @@ export async function meiaoTaskWorkflow(input) {
     workflowId: info.workflowId,
     runId: info.runId,
   };
+  const activities = String(input?.provider || '') === 'maxforai'
+    ? singleAttemptActivities
+    : defaultActivities;
   const executeJobAttempt = input?.ledger === 'mysql'
-    ? executeMysqlJobAttemptActivity
-    : executeLocalJobAttemptActivity;
+    ? activities.executeMysqlJobAttemptActivity
+    : activities.executeLocalJobAttemptActivity;
 
   while (true) {
     const result = await executeJobAttempt(activityInput);

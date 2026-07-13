@@ -10,6 +10,18 @@ const createStore = () => ({
   jobs: [],
 });
 
+test('temporal activity heartbeat interval is env-configurable with a conservative default', async () => {
+  const temporalWorker = await import('./temporalWorker.mjs');
+  assert.equal(typeof temporalWorker.getTemporalActivityHeartbeatIntervalMs, 'function');
+  assert.equal(temporalWorker.getTemporalActivityHeartbeatIntervalMs({}), 10_000);
+  assert.equal(temporalWorker.getTemporalActivityHeartbeatIntervalMs({
+    MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS: '5000',
+  }), 5_000);
+  assert.equal(temporalWorker.getTemporalActivityHeartbeatIntervalMs({
+    MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS: '100',
+  }), 10_000);
+});
+
 test('local temporal activity leaves queued work unclaimed while deployment drain is active', async () => {
   const store = createStore();
   const job = createLocalJobRecord(store, store.users[0], {
@@ -64,6 +76,45 @@ test('local temporal activity claims and completes a queued job', async () => {
   assert.deepEqual(completed.result, { ok: true });
   assert.ok(writes.length >= 2);
   assert.equal(store.logs.at(-1).action, 'job_completed');
+});
+
+test('local temporal activity keeps heartbeating while a provider request is still running', async () => {
+  const store = createStore();
+  const job = createLocalJobRecord(store, store.users[0], {
+    module: 'one_click',
+    taskType: 'kie_image',
+    provider: 'maxforai',
+    payload: {},
+    maxRetries: 0,
+  });
+  const heartbeats = [];
+  let releaseProvider;
+  const providerGate = new Promise((resolve) => {
+    releaseProvider = resolve;
+  });
+  const activities = createLocalTemporalActivities({
+    readStore: () => store,
+    writeStore: () => {},
+    executeJob: async () => {
+      await providerGate;
+      return { result: { imageUrl: 'https://example.test/image.png' } };
+    },
+    createLog: (entry) => store.logs.push(entry),
+    findUserById: (userId) => store.users.find((user) => user.id === userId),
+    heartbeat: (details) => heartbeats.push(details),
+    heartbeatIntervalMs: 5,
+  });
+
+  const activityResult = activities.executeLocalJobAttemptActivity({ jobId: job.id });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const runningHeartbeats = heartbeats.filter((details) => (
+    details?.jobId === job.id && details?.stage === 'running'
+  ));
+  releaseProvider();
+  const result = await activityResult;
+
+  assert.ok(runningHeartbeats.length >= 2, 'long-running provider calls must emit periodic heartbeats');
+  assert.equal(result.status, 'succeeded');
 });
 
 test('local temporal activity writes a failed terminal job without submitting upstream id', async () => {

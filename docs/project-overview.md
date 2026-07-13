@@ -118,6 +118,7 @@ npm run dev
 - `MAXFORAI_API_KEY` / `MAXFORAI_BASE_URL`：`Image-2标准`、`Image-2高`、`Image-2超高` 的独立服务端凭证和接口根地址；密钥不得下发前端，也不复用 OpenAI Compatible 凭证。新三档当前不进入旧积分系统。
 - `MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS`：默认 `600000`；只控制 Image-2 单次付费生成/编辑 POST 的等待时间。付费 POST 不自动重试，结果不明时进入 `provider_submission_unknown`。
 - `MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS` / `MAXFORAI_ASSET_UPLOAD_CONCURRENCY`：默认 `120000` / `3`；只控制付费提交前将本地、HTTP 或内部素材上传至 MaxForAI `/assets` 的转链阶段。
+- `MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS`：默认 `10000`，允许 `1000-15000`；长耗时 provider 请求期间持续给 Temporal 保活，避免 30 秒 heartbeat timeout 把仍在执行的付费请求判死。MaxForAI workflow 的 activity 额外强制单次尝试，执行器失联也不会自动重提付费 POST。
 - `MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS`：默认 `360000`（6 分钟）；KIE 对话/Gemini 同步推理的本地等待上限。该值需高于 KIE 上游常见的 300 秒超时，避免梅奥提前中断而丢失上游真实终态；调大只改善结果回收，不会修复 KIE/Gemini 自身的 504。
 - `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；仅当 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 时，我方 `/api/assets/file/` 托管素材直连优先。只有上游明确的文件读取/下载/MIME 错误且无 `providerTaskId` 时才转存 KIE；普通 500/502、网络错误不触发可能重复扣费的回退。设为 `kie-only` 可回滚。
 - `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY`：默认 `3`；真正进入 KIE file-stream-upload 时的进程级跨任务并发总上限，补足单任务素材解析限流无法约束多任务同时上传的问题。
