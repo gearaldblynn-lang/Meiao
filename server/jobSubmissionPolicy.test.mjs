@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  isAuthorizedProviderTaskRecoverySource,
   canRecoverProviderTaskById,
   getJobSubmissionLockTimeoutSeconds,
   resolveJobSubmissionPolicy,
@@ -143,6 +144,64 @@ test('provider task recovery is limited to task types with a real query path', (
     assert.equal(canRecoverProviderTaskById({ taskType, providerTaskId: 'response-id' }), false, taskType);
   }
   assert.equal(canRecoverProviderTaskById({ taskType: 'kie_video', providerTaskId: '' }), false);
+});
+
+test('provider task recovery source belongs to the authenticated user and matches KIE media mode', () => {
+  const imageSource = {
+    userId: 'user-1',
+    provider: 'kie',
+    taskType: 'kie_image',
+    providerTaskId: 'provider-image-1',
+  };
+  const request = {
+    userId: 'user-1',
+    provider: 'kie',
+    taskType: 'kie_recover',
+    providerTaskId: 'provider-image-1',
+    payload: { isVideo: false },
+  };
+
+  assert.equal(isAuthorizedProviderTaskRecoverySource(imageSource, request), true);
+  assert.equal(isAuthorizedProviderTaskRecoverySource(
+    { ...imageSource, userId: 'user-2' },
+    request,
+  ), false, 'another user must not be able to recover the provider task');
+  assert.equal(isAuthorizedProviderTaskRecoverySource(
+    { ...imageSource, taskType: 'kie_chat' },
+    request,
+  ), false, 'task types without a query path must stay blocked');
+  assert.equal(isAuthorizedProviderTaskRecoverySource(
+    { ...imageSource, taskType: 'kie_video' },
+    request,
+  ), false, 'video provider tasks must not pass an image recovery request');
+  assert.equal(isAuthorizedProviderTaskRecoverySource(
+    { ...imageSource, providerTaskId: 'provider-image-2' },
+    request,
+  ), false);
+});
+
+test('provider task recovery source accepts a same-user KIE video task only in video mode', () => {
+  const source = {
+    userId: 'user-1',
+    provider: 'kie',
+    taskType: 'kie_seedance_video',
+    providerTaskId: 'provider-video-1',
+  };
+
+  assert.equal(isAuthorizedProviderTaskRecoverySource(source, {
+    userId: 'user-1',
+    provider: 'kie',
+    taskType: 'kie_recover',
+    providerTaskId: 'provider-video-1',
+    payload: { isVideo: true },
+  }), true);
+  assert.equal(isAuthorizedProviderTaskRecoverySource(source, {
+    userId: 'user-1',
+    provider: 'kie',
+    taskType: 'kie_recover',
+    providerTaskId: 'provider-video-1',
+    payload: { isVideo: false },
+  }), false);
 });
 
 test('paid video submissions use a zero create-retry decision', () => {

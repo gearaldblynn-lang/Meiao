@@ -116,19 +116,81 @@ tar \
     set +a
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs
 
+    # 首次发布时旧进程尚不认识 drain marker。先落 marker，再用 internal_jobs WRITE lock
+    # 冻结旧进程的提交/认领，并在持锁连接上复查 running=0。旧进程停止后释放表锁，
+    # 新进程继续靠 marker 拒绝提交和暂停 worker，直到 health 验证完成。
+    DRAIN_MARKER_FILE="\${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}"
+    DRAIN_READY_FILE="/tmp/meiao-deploy-drain-ready-\$\$"
+    DRAIN_RELEASE_FILE="/tmp/meiao-deploy-drain-release-\$\$"
+    DRAIN_PID=''
+    cleanup_deploy_drain() {
+      if [ -n "\$DRAIN_PID" ] && kill -0 "\$DRAIN_PID" >/dev/null 2>&1; then
+        touch "\$DRAIN_RELEASE_FILE" || true
+        wait "\$DRAIN_PID" || true
+      fi
+      rm -f "\$DRAIN_READY_FILE" "\$DRAIN_RELEASE_FILE" "\$DRAIN_MARKER_FILE"
+    }
+    trap cleanup_deploy_drain EXIT INT TERM
+    touch "\$DRAIN_MARKER_FILE"
+    MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' \
+      node scripts/hold-deploy-drain.mjs \
+        --ready-file "\$DRAIN_READY_FILE" \
+        --release-file "\$DRAIN_RELEASE_FILE" &
+    DRAIN_PID=\$!
+    for attempt in \$(seq 1 300); do
+      if [ -f "\$DRAIN_READY_FILE" ]; then break; fi
+      if ! kill -0 "\$DRAIN_PID" >/dev/null 2>&1; then
+        wait "\$DRAIN_PID"
+        exit 2
+      fi
+      sleep 0.2
+    done
+    if [ ! -f "\$DRAIN_READY_FILE" ]; then
+      echo '部署 drain 获取超时，已停止发布。'
+      exit 2
+    fi
+    cat "\$DRAIN_READY_FILE"
+
     # 原子切换:两次 rename,静态服务零断档
     rm -rf dist-prev
     if [ -d dist ]; then mv dist dist-prev; fi
     mv dist-next dist
     rm -rf dist-prev '$REMOTE_TMP_DIR'
 
+    PM2_APP_EXISTS=0
     if pm2 describe meiao-internal >/dev/null 2>&1; then
+      PM2_APP_EXISTS=1
+      pm2 stop meiao-internal
+    fi
+
+    # 旧进程已停止，释放 bootstrap 表锁；marker 仍由新代码识别并保持 drain。
+    touch "\$DRAIN_RELEASE_FILE"
+    wait "\$DRAIN_PID"
+    DRAIN_PID=''
+    rm -f "\$DRAIN_READY_FILE" "\$DRAIN_RELEASE_FILE"
+
+    if [ "\$PM2_APP_EXISTS" = '1' ]; then
       pm2 restart meiao-internal --update-env
     else
       pm2 start ecosystem.config.cjs
     fi
 
+    HEALTH_READY=0
+    for attempt in \$(seq 1 30); do
+      if curl -fsS http://127.0.0.1:3100/api/health | node scripts/assert-deploy-health.mjs; then
+        HEALTH_READY=1
+        break
+      fi
+      sleep 2
+    done
+    if [ "\$HEALTH_READY" != '1' ]; then
+      echo '部署后 health/worker 未恢复，发布失败。'
+      exit 2
+    fi
+
     pm2 save
+    rm -f "\$DRAIN_MARKER_FILE"
+    trap - EXIT INT TERM
   "
 
 echo "部署完成。"

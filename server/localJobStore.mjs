@@ -1,9 +1,10 @@
 import { randomBytes } from 'node:crypto';
 
 import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
-import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
+import { canRecoverProviderTaskById, KIE_RECOVERY_SOURCE_TASK_TYPES } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { findReusableJobSubmission, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
+import { isDeployDrainActive } from './deployDrain.mjs';
 
 const now = () => Date.now();
 const LOCAL_ACTIVE_JOB_STATUSES = new Set(['queued', 'running', 'retry_waiting']);
@@ -237,6 +238,18 @@ export const resolveLocalSubmissionUnknownJob = (store, {
 export const getLocalJobById = (store, jobId) => {
   const jobs = ensureStoreJobs(store);
   const job = jobs.find((item) => item.id === jobId);
+  return job ? normalizeJob(job) : null;
+};
+
+export const findLocalJobByProviderTaskIdForUser = (store, userId, providerTaskId) => {
+  const normalizedProviderTaskId = String(providerTaskId || '').trim();
+  if (!normalizedProviderTaskId) return null;
+  const job = ensureStoreJobs(store).find((item) => (
+    String(item.userId || '') === String(userId || '')
+    && String(item.providerTaskId || '').trim() === normalizedProviderTaskId
+    && String(item.provider || '').trim() === 'kie'
+    && KIE_RECOVERY_SOURCE_TASK_TYPES.has(String(item.taskType || '').trim())
+  ));
   return job ? normalizeJob(job) : null;
 };
 
@@ -498,6 +511,7 @@ export const createLocalJobWorker = ({
   findUserById,
   settleJobCredits,
   releaseJobCredits,
+  isExecutionPaused = isDeployDrainActive,
 }) => {
   let timer = null;
   let draining = false;
@@ -508,8 +522,10 @@ export const createLocalJobWorker = ({
     draining = true;
 
     try {
+      if (isExecutionPaused()) return;
       const store = readStore();
       const maxConcurrency = await Promise.resolve(getMaxConcurrency());
+      if (isExecutionPaused()) return;
       const availableSlots = Math.max(0, maxConcurrency - activeControllers.size);
       const claimed = takeNextLocalExecutableJobs(store, availableSlots);
       if (claimed.length === 0) return;

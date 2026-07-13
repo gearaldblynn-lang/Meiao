@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
-import { collectShellDeletionJobIds } from '../../utils/shellDeletionJobs.ts';
+import {
+  collectShellDeletionJobIds,
+  collectShellResultDeletionJobIds,
+} from '../../utils/shellDeletionJobs.ts';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const readFirstExisting = (...paths) => {
@@ -221,16 +224,28 @@ test('shell result deletion records backend job tombstones for pending results',
   const deleteResultBlock = shellSource.match(/const handleDeleteResult = useCallback\([\s\S]*?\n  \}, \[[^\]]*persistDeletionToSharedState[^\]]*\]\);/)?.[0] || '';
 
   assert.match(deleteResultBlock, /const result = project\?\.results\.find\(\(item\) => item\.id === resultId\)/);
-  assert.match(deleteResultBlock, /const resultJobIds = Array\.from\(new Set\(/);
-  assert.match(deleteResultBlock, /result\?\.backendJobId/);
+  assert.match(deleteResultBlock, /const resultJobIds = collectShellResultDeletionJobIds\(resultId, result\)/);
   assert.match(deleteResultBlock, /persistDeletionToSharedState\(\{ projectId, resultId, jobIds: resultJobIds \}\)/);
+  assert.doesNotMatch(deleteResultBlock, /result\?\.taskId/);
+  assert.doesNotMatch(deleteResultBlock, /jobIdsToDelete\s*=\s*resultJobIds\.length > 0 \? resultJobIds : \[resultId\]/);
+});
+
+test('single-result deletion persists the tombstone in parallel and reports physical delete failures', () => {
+  const shellSource = read('../../ShellMigratedApp.tsx');
+  const deleteResultBlock = shellSource.match(/const handleDeleteResult = useCallback\([\s\S]*?\n  \}, \[[^\]]*persistDeletionToSharedState[^\]]*\]\);/)?.[0] || '';
+
+  assert.match(deleteResultBlock, /const remoteDeletion = Promise\.allSettled\(resultJobIds\.map\(\(jobId\) => deleteInternalJob\(jobId\)\)\)/);
+  assert.match(deleteResultBlock, /const tombstonePersistence = persistDeletionToSharedState\(\{ projectId, resultId, jobIds: resultJobIds \}\)/);
+  assert.match(deleteResultBlock, /Promise\.all\(\[remoteDeletion, tombstonePersistence\]\)/);
+  assert.match(deleteResultBlock, /results\.every\(\(deletionResult\) => deletionResult\.status === 'fulfilled'\)/);
+  assert.match(deleteResultBlock, /远端任务删除未完全成功/);
 });
 
 test('project deletion collects every related backend job before physical deletion and tombstoning', () => {
   const shellSource = read('../../ShellMigratedApp.tsx');
   const deleteProjectBlock = shellSource.match(/const handleDeleteProject = useCallback\([\s\S]*?\n  \}, \[[^\]]*persistDeletionToSharedState[^\]]*\]\);/)?.[0] || '';
 
-  assert.match(shellSource, /import \{ collectShellDeletionJobIds \} from '\.\/utils\/shellDeletionJobs'/);
+  assert.match(shellSource, /import \{ collectShellDeletionJobIds, collectShellResultDeletionJobIds \} from '\.\/utils\/shellDeletionJobs'/);
   assert.match(deleteProjectBlock, /const jobIds = collectShellDeletionJobIds\(projectId, projects, tasks\)/);
   assert.match(deleteProjectBlock, /Promise\.allSettled\(jobIds\.map\(\(jobId\) => deleteInternalJob\(jobId\)\)\)/);
   assert.match(deleteProjectBlock, /persistDeletionToSharedState\(\{ projectId, jobIds \}\)/);
@@ -252,4 +267,18 @@ test('collectShellDeletionJobIds includes project, result, task and synthetic pr
   ]);
 
   assert.deepEqual(jobIds, ['project-root', 'result-job-1', 'result-job-2', 'task-job-1']);
+});
+
+test('collectShellResultDeletionJobIds excludes provider identities and keeps only internal ids', () => {
+  assert.deepEqual(collectShellResultDeletionJobIds('provider-result-id', {
+    id: 'provider-result-id',
+    taskId: 'provider-task-must-not-be-deleted',
+    providerTaskId: 'provider-task-also-must-not-be-deleted',
+    backendJobId: 'backend-job-1',
+  }), ['backend-job-1']);
+
+  assert.deepEqual(collectShellResultDeletionJobIds('job-synthetic-result', {
+    id: 'job-synthetic-result',
+    taskId: 'provider-task-must-not-be-deleted',
+  }), ['synthetic-result']);
 });

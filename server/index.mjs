@@ -68,7 +68,7 @@ import { embedTexts } from './embeddingProvider.mjs';
 import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
-import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, deleteJobById, findReusableJobRecord, getJobById, getJobByIdForUpdate, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, resolveJobDeletionAction, resolveSubmissionUnknownJob, updateJobFields, createJobWorker, withMysqlSubmissionLock, withMysqlTransaction } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, deleteJobById, findJobByProviderTaskIdForUser, findReusableJobRecord, getJobById, getJobByIdForUpdate, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, resolveJobDeletionAction, resolveSubmissionUnknownJob, updateJobFields, createJobWorker, withMysqlSubmissionLock, withMysqlTransaction } from './jobManager.mjs';
 import {
   CREDIT_LIMIT_MODES,
   attachCreditReservationToJobPayload,
@@ -90,6 +90,7 @@ import {
   createLocalJobRecord,
   createLocalJobWorker,
   deleteLocalJobRecord,
+  findLocalJobByProviderTaskIdForUser,
   findReusableLocalJobRecord,
   getLocalJobById,
   getLocalJobQueueStats,
@@ -103,6 +104,7 @@ import {
   requestLocalRetryJob,
   resolveLocalSubmissionUnknownJob,
 } from './localJobStore.mjs';
+import { assertJobSubmissionAllowed } from './deployDrain.mjs';
 import { executeProviderJob, uploadAssetViaKieStream } from './providerGateway.mjs';
 import { resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel } from './providerAssetTransfer.mjs';
 import {
@@ -197,7 +199,7 @@ import { runBuiltinMediaTool } from './ai-engine/smartFactoryMediaToolRunner.mjs
 import { appendSmartFactoryConversationTurn } from './ai-engine/smartFactoryAgentStore.mjs';
 import { ensureLocalAdminUser } from './localAdminBootstrap.mjs';
 import { getCreditAlertSnapshot } from './creditAlert.mjs';
-import { canRecoverProviderTaskById, getJobSubmissionLockTimeoutSeconds, resolveJobSubmissionPolicy, VIDEO_JOB_TASK_TYPES } from './jobSubmissionPolicy.mjs';
+import { canRecoverProviderTaskById, getJobSubmissionLockTimeoutSeconds, isAuthorizedProviderTaskRecoverySource, resolveJobSubmissionPolicy, VIDEO_JOB_TASK_TYPES } from './jobSubmissionPolicy.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11513,6 +11515,7 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/jobs' && req.method === 'POST') {
     const user = await requireDbUser(req, res);
     if (!user) return;
+    assertJobSubmissionAllowed();
     const body = await readBody(req);
     if (!body?.taskType || !body?.provider) {
       json(res, 400, { message: '任务类型和 provider 不能为空。' });
@@ -11744,6 +11747,7 @@ const handleMysqlRequest = async (req, res, url) => {
   if (jobRetryMatch && req.method === 'POST') {
     const user = await requireDbUser(req, res);
     if (!user) return;
+    assertJobSubmissionAllowed();
     const jobId = decodeURIComponent(jobRetryMatch[1]);
     const pool = await getMysqlPool();
     const job = await getDbJobByIdForUser(user, jobId);
@@ -11851,6 +11855,7 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/jobs/recover' && req.method === 'POST') {
     const user = await requireDbUser(req, res);
     if (!user) return;
+    assertJobSubmissionAllowed();
     const body = await readBody(req);
     if (!body?.providerTaskId || !body?.provider || !body?.taskType) {
       json(res, 400, { message: '恢复任务缺少必要参数。' });
@@ -11865,6 +11870,14 @@ const handleMysqlRequest = async (req, res, url) => {
     }
 
     const pool = await getMysqlPool();
+    const sourceJob = await findJobByProviderTaskIdForUser(pool, user.id, body.providerTaskId);
+    if (!isAuthorizedProviderTaskRecoverySource(sourceJob, { ...body, userId: user.id })) {
+      json(res, 404, {
+        message: '未找到可恢复的历史任务。',
+        code: 'job_recovery_source_not_found',
+      });
+      return;
+    }
     const recoveredPayload = await scrubDbJobPayloadBeforeSubmission({
       ...body.payload,
       providerTaskId: body.providerTaskId,
@@ -15023,6 +15036,7 @@ const handleLocalRequest = async (req, res, url) => {
   if (url.pathname === '/api/jobs' && req.method === 'POST') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
+    assertJobSubmissionAllowed();
     const body = await readBody(req);
     if (!body?.taskType || !body?.provider) {
       json(res, 400, { message: '任务类型和 provider 不能为空。' });
@@ -15218,6 +15232,7 @@ const handleLocalRequest = async (req, res, url) => {
   if (jobRetryMatch && req.method === 'POST') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
+    assertJobSubmissionAllowed();
     const jobId = decodeURIComponent(jobRetryMatch[1]);
     const job = getLocalJobByIdForUser(user, jobId);
     if (!job) {
@@ -15306,6 +15321,7 @@ const handleLocalRequest = async (req, res, url) => {
   if (url.pathname === '/api/jobs/recover' && req.method === 'POST') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
+    assertJobSubmissionAllowed();
     const body = await readBody(req);
     if (!body?.providerTaskId || !body?.provider || !body?.taskType) {
       json(res, 400, { message: '恢复任务缺少必要参数。' });
@@ -15316,6 +15332,15 @@ const handleLocalRequest = async (req, res, url) => {
       submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
+      return;
+    }
+
+    const sourceJob = findLocalJobByProviderTaskIdForUser(store, user.id, body.providerTaskId);
+    if (!isAuthorizedProviderTaskRecoverySource(sourceJob, { ...body, userId: user.id })) {
+      json(res, 404, {
+        message: '未找到可恢复的历史任务。',
+        code: 'job_recovery_source_not_found',
+      });
       return;
     }
 

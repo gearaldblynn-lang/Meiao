@@ -4,8 +4,10 @@ import { readFileSync } from 'node:fs';
 
 import {
   buildJobSubmissionLockKey,
+  createJobWorker,
   createSerializedJobSubmission,
   deleteJobById,
+  findJobByProviderTaskIdForUser,
   findReusableJobRecord,
   findReusableJobSubmission,
   getJobByIdForUpdate,
@@ -32,6 +34,27 @@ const createJob = (id, userId, priority = 0, status = 'queued') => ({
   status,
   priority,
   createdAt: Number(id.replace(/\D/g, '')) || 0,
+});
+
+test('classic mysql worker does not query or claim jobs while deployment drain is active', async () => {
+  let poolCalls = 0;
+  const worker = createJobWorker({
+    getPool: async () => {
+      poolCalls += 1;
+      throw new Error('paused worker must not open the job pool');
+    },
+    executeJob: async () => {},
+    getMaxConcurrency: () => 1,
+    createLog: async () => {},
+    findUserById: async () => null,
+    isExecutionPaused: () => true,
+  });
+
+  worker.start(5);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  worker.stop();
+
+  assert.equal(poolCalls, 0);
 });
 
 const createNamedLockPool = () => {
@@ -1373,4 +1396,51 @@ test('recovery job creation persists provider task id before execution', () => {
   assert.match(jobManagerSource, /providerTaskId:\s*String\(payload\.providerTaskId \|\| ''\)/);
   assert.match(jobManagerSource, /job\.providerTaskId \|\| null/);
   assert.ok((serverSource.match(/providerTaskId:\s*body\.providerTaskId/g) || []).length >= 2);
+});
+
+test('mysql provider recovery lookup is scoped to the authenticated user', async () => {
+  let observedSql = '';
+  let observedValues = [];
+  const pool = {
+    query: async (sql, values) => {
+      observedSql = sql;
+      observedValues = values;
+      return [[{
+        id: 'source-job-1',
+        user_id: 'user-1',
+        module: 'one_click',
+        task_type: 'kie_image',
+        provider: 'kie',
+        status: 'succeeded',
+        provider_task_id: 'provider-task-1',
+        payload_json: '{}',
+        result_json: '{}',
+        created_at: 1,
+        updated_at: 1,
+      }]];
+    },
+  };
+
+  const source = await findJobByProviderTaskIdForUser(pool, 'user-1', 'provider-task-1');
+
+  assert.match(observedSql, /WHERE user_id = \?[\s\S]*provider_task_id = \?[\s\S]*provider = 'kie'[\s\S]*task_type IN/);
+  assert.deepEqual(observedValues.slice(0, 2), ['user-1', 'provider-task-1']);
+  assert.ok(observedValues.includes('kie_image'));
+  assert.equal(observedValues.includes('kie_recover'), false);
+  assert.equal(source?.id, 'source-job-1');
+  assert.equal(source?.userId, 'user-1');
+});
+
+test('recover routes reject missing or cross-user sources before creating recovery jobs', () => {
+  const recoverBlocks = serverSource.match(/if \(url\.pathname === '\/api\/jobs\/recover'[\s\S]*?\n  }/g) || [];
+  assert.equal(recoverBlocks.length, 2, 'mysql and local recovery routes must both be present');
+  recoverBlocks.forEach((block) => {
+    assert.match(block, /isAuthorizedProviderTaskRecoverySource/);
+    assert.match(block, /job_recovery_source_not_found/);
+    assert.ok(
+      block.indexOf('isAuthorizedProviderTaskRecoverySource') < block.indexOf('createJobRecord')
+        || block.indexOf('isAuthorizedProviderTaskRecoverySource') < block.indexOf('createLocalJobRecord'),
+      'authorization must happen before a recovery record is created',
+    );
+  });
 });

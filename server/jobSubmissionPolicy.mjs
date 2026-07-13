@@ -18,10 +18,28 @@ export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
   'kie_video',
 ]);
 
+export const KIE_RECOVERY_SOURCE_TASK_TYPES = new Set(
+  Array.from(RECOVERABLE_PROVIDER_TASK_TYPES).filter((taskType) => taskType.startsWith('kie_')),
+);
+
 export const canRecoverProviderTaskById = ({ taskType = '', providerTaskId = '' } = {}) => (
   Boolean(String(providerTaskId || '').trim())
   && RECOVERABLE_PROVIDER_TASK_TYPES.has(String(taskType || '').trim())
 );
+
+export const isAuthorizedProviderTaskRecoverySource = (sourceJob, request = {}) => {
+  if (!sourceJob) return false;
+  const sourceTaskType = String(sourceJob.taskType || '').trim();
+  const requestIsVideo = request?.payload?.isVideo === true;
+  return String(sourceJob.userId || '') === String(request.userId || '')
+    && String(sourceJob.providerTaskId || '').trim() === String(request.providerTaskId || '').trim()
+    && String(request.taskType || '').trim() === 'kie_recover'
+    && String(request.provider || '').trim() === 'kie'
+    && String(sourceJob.provider || '').trim() === 'kie'
+    && KIE_RECOVERY_SOURCE_TASK_TYPES.has(sourceTaskType)
+    && canRecoverProviderTaskById(sourceJob)
+    && VIDEO_JOB_TASK_TYPES.has(sourceTaskType) === requestIsVideo;
+};
 
 const TASK_PROVIDER_POLICIES = new Map([
   ['dreamina_video', new Set(['dreamina'])],

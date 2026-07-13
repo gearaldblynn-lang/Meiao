@@ -1,5 +1,8 @@
 type DeletionResultLike = {
+  id?: unknown;
   backendJobId?: unknown;
+  taskId?: unknown;
+  providerTaskId?: unknown;
 };
 
 type DeletionProjectLike = {
@@ -20,6 +23,24 @@ const addInternalJobId = (ids: Set<string>, value: unknown) => {
   if (normalized) ids.add(normalized);
 };
 
+const addSyntheticInternalJobId = (ids: Set<string>, value: unknown) => {
+  const normalized = normalizeInternalJobId(value);
+  if (normalized.startsWith('job-') && normalized.length > 4) {
+    addInternalJobId(ids, normalized.slice(4));
+  }
+};
+
+export const collectShellResultDeletionJobIds = (
+  resultId: string,
+  result?: DeletionResultLike | null,
+) => {
+  const jobIds = new Set<string>();
+  addInternalJobId(jobIds, result?.backendJobId);
+  addSyntheticInternalJobId(jobIds, result?.id);
+  addSyntheticInternalJobId(jobIds, resultId);
+  return Array.from(jobIds);
+};
+
 export const collectShellDeletionJobIds = (
   projectId: string,
   projects: DeletionProjectLike[] = [],
@@ -31,9 +52,7 @@ export const collectShellDeletionJobIds = (
 
   addInternalJobId(jobIds, project?.backendJobId);
   const storedProjectId = normalizeInternalJobId(project?.id);
-  if (storedProjectId.startsWith('job-')) {
-    addInternalJobId(jobIds, storedProjectId.slice(4));
-  }
+  addSyntheticInternalJobId(jobIds, storedProjectId);
   (Array.isArray(project?.results) ? project.results : []).forEach((result) => {
     addInternalJobId(jobIds, result?.backendJobId);
   });

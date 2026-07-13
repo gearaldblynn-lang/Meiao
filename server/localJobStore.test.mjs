@@ -5,6 +5,8 @@ import {
   attachLocalJobWorkflowExecution,
   claimLocalJobForExecution,
   createLocalJobRecord,
+  createLocalJobWorker,
+  findLocalJobByProviderTaskIdForUser,
   deleteLocalJobRecord,
   findReusableLocalJobRecord,
   getLocalJobById,
@@ -34,6 +36,30 @@ const createUser = (id = 'user-1') => ({
   username: id,
   displayName: id,
   role: 'admin',
+});
+
+test('classic local worker leaves the store untouched while deployment drain is active', async () => {
+  let readCalls = 0;
+  const worker = createLocalJobWorker({
+    readStore: () => {
+      readCalls += 1;
+      return createStore();
+    },
+    writeStore: () => {
+      throw new Error('paused worker must not write the store');
+    },
+    executeJob: async () => {},
+    getMaxConcurrency: () => 1,
+    createLog: () => {},
+    findUserById: () => null,
+    isExecutionPaused: () => true,
+  });
+
+  worker.start(5);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  worker.stop();
+
+  assert.equal(readCalls, 0);
 });
 
 test('normalizeLocalJobs returns stable empty array for invalid input', () => {
@@ -154,6 +180,39 @@ test('createLocalJobRecord checkpoints an existing provider task for recovery', 
 
   assert.equal(job.providerTaskId, 'dreamina-submit-1');
   assert.equal(job.maxRetries, 0);
+});
+
+test('local provider recovery lookup never crosses user ownership', () => {
+  const store = createStore();
+  const user1Job = createLocalJobRecord(store, { id: 'user-1' }, {
+    module: 'one_click',
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: 'provider-task-1',
+    payload: {},
+  });
+  createLocalJobRecord(store, { id: 'user-2' }, {
+    module: 'one_click',
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: 'provider-task-2',
+    payload: {},
+  });
+  const previousRecovery = createLocalJobRecord(store, { id: 'user-1' }, {
+    module: 'one_click',
+    taskType: 'kie_recover',
+    provider: 'kie',
+    providerTaskId: 'provider-task-1',
+    payload: { isVideo: false },
+  });
+  previousRecovery.createdAt = user1Job.createdAt + 100;
+
+  assert.equal(
+    findLocalJobByProviderTaskIdForUser(store, 'user-1', 'provider-task-1')?.id,
+    user1Job.id,
+  );
+  assert.equal(findLocalJobByProviderTaskIdForUser(store, 'user-1', 'provider-task-2'), null);
+  assert.equal(findLocalJobByProviderTaskIdForUser(store, 'user-2', 'provider-task-1'), null);
 });
 
 test('listLocalJobsForUser returns latest jobs first and respects limit', () => {
