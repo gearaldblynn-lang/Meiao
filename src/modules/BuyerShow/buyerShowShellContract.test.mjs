@@ -103,8 +103,13 @@ test('buyer show planning jobs carry the matching set project identity into dura
   );
   assert.match(
     workflowSource,
-    /generateBuyerShowPrompts\([\s\S]{0,1200}shellProjectId:\s*planningProject\.projectId[\s\S]{0,160}shellProjectName:\s*planningProject\.projectName/,
-    'multi-set planning jobs must bind to their matching set card instead of the invisible root project'
+    /const buyerShowPlanningJobContext = \{[\s\S]{0,400}shellProjectId:\s*planningProject\.projectId[\s\S]{0,160}shellProjectName:\s*planningProject\.projectName/,
+    'each planning context must bind to its matching set card instead of the invisible root project'
+  );
+  assert.match(
+    workflowSource,
+    /generateBuyerShowPrompts\([\s\S]{0,1200}\.\.\.buyerShowPlanningJobContext/,
+    'the named planning context must be passed to the buyer-show planning boundary'
   );
   assert.match(arkSource, /shellProjectId:\s*String\(taskMetadata\?\.shellProjectId\s*\|\|\s*''\)\.trim\(\)/);
   assert.match(arkSource, /shellProjectName:\s*String\(taskMetadata\?\.shellProjectName\s*\|\|\s*''\)\.trim\(\)/);

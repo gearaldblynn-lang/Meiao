@@ -1721,6 +1721,7 @@ Generate the JSON response. Ensure valid JSON format.`;
 
     try {
       const analysis = await requestAnalysisResponseDetailed(inputContent, apiConfig, signal || timeoutController.signal, onJobCreated, {
+        ...taskMetadata,
         taskPurpose: 'buyer_show_planning',
         shellPlanningPurpose: 'buyer_show_planning',
         setIndex: setIndex + 1,
