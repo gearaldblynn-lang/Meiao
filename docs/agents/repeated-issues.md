@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-07-14 - Optional retouch analysis must not be a single point of failure
+
+- Symptom: 将离账号使用新接入的 Image-2 做商品精修，连续两次在约 1 秒内失败；KIE 后台没有正式任务记录，Image-2 后台也没有出图请求。
+- Environment: Tencent Cloud production / product retouch / `retouch_analysis` KIE chat followed by MaxForAI Image-2 generation.
+- Root cause: 精修独有的 KIE 视觉分析被当成硬前置。两次控制 job 都以 `provider_submission_unknown/fetch failed` 在拿到 provider task id 前终止，workflow 随即抛错，因此真正 Image-2 job 根本没有创建。同 payload 单次真实探针随后 HTTP 200，排除了模型、key、图片和请求结构错误。客户端连接失败不能证明上游没接单，所以也不能靠自动重发修复。
+- Fix: KIE 分析仍优先；仅当分析 job 已进入明确的 provider 终态失败时，按精修模式生成 deterministic 高保真 fallback 并继续提交生图。取消、同步 pending、输入错误和未知程序异常继续失败。保留分析 `errorCode/providerTaskId/jobId`，并把 socket code/syscall/address/port 以脱敏字段带入运行日志；付费 POST 仍为单次提交。
+- Regression check: `node --test src/services/arkService.test.mjs src/services/retouchAnalysisFallback.test.mjs src/adapters/shellControlJobLifecycle.test.mjs`; `node --test --test-name-pattern='(提交类 POST 连接层错误|sanitized transport cause)' server/providerGateway.test.mjs server/jobRuntime.test.mjs`; `npm run lint`; `npm run build`; full server/frontend/scripts Node test suites.
+- Avoid next time: 新增多阶段生图功能时，逐步标注哪些是主产物必要步骤、哪些只是质量增强。辅助分析必须覆盖“终态 provider 故障仍继续主任务”和“取消/pending/程序错误不降级”；排查时按 analysis job 与 generation job 两段核对，不能只看最终图片供应商后台。
+
 ## 2026-07-02 - Buyer-show batch references inherit unscoped input references as set 1
 
 - Symptom: 买家秀输入框已经上传产品图、氛围参考和模特参考，但切到 2/3/4 套后，套数弹窗里的第 1 套不显示这些已有参考图；生成链路也可能把未分套参考图从多套里丢掉。

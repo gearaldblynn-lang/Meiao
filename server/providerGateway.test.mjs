@@ -5885,7 +5885,16 @@ test('提交类 POST 连接层错误标记未知且绝不自动重发', async ()
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
-    throw new TypeError('fetch failed');
+    const error = new TypeError('fetch failed');
+    error.cause = Object.assign(new Error('other side closed'), {
+      code: 'UND_ERR_SOCKET',
+      syscall: 'read',
+      socket: {
+        remoteAddress: '104.18.5.14',
+        remotePort: 443,
+      },
+    });
+    throw error;
   };
   try {
     await assert.rejects(
@@ -5893,8 +5902,15 @@ test('提交类 POST 连接层错误标记未知且绝不自动重发', async ()
         method: 'POST',
         body: JSON.stringify({ model: 'x' }),
       }, 'Kie 创建超时', 5000, 'create_task'),
-      (error) => error?.code === 'provider_submission_unknown'
-        && error?.providerStage === 'create_task'
+      (error) => {
+        assert.equal(error?.code, 'provider_submission_unknown');
+        assert.equal(error?.providerStage, 'create_task');
+        assert.equal(error?.transportErrorCode, 'UND_ERR_SOCKET');
+        assert.equal(error?.transportErrorSyscall, 'read');
+        assert.equal(error?.transportRemoteAddress, '104.18.5.14');
+        assert.equal(error?.transportRemotePort, 443);
+        return true;
+      }
     );
     assert.equal(calls, 1);
   } finally {
