@@ -1,3 +1,5 @@
+import { resolveMaxForAiImageModelId } from './maxforaiImageModels.mjs';
+
 const CREDIT_TABLE = {
   'gpt-image-2': {
     '1K': 3,
@@ -30,6 +32,8 @@ const resolveParamCount = (params = {}, fallback = 1, max = 20) => (
 );
 
 export const normalizeBillingModel = (model = '') => {
+  const maxForAiModel = resolveMaxForAiImageModelId(model);
+  if (maxForAiModel) return maxForAiModel;
   const normalized = String(model || '').trim().toLowerCase();
   if (normalized.includes('nano')) return 'nano-banana-2';
   return 'gpt-image-2';
@@ -87,8 +91,8 @@ export const resolveImageBillingCount = ({ module = '', subFeature = '', params 
 };
 
 export const estimateImageBilling = ({ module = '', subFeature = '', params = {}, materialCount = 0 } = {}) => {
-  const billable = isImageBillingModule(module, subFeature);
   const model = normalizeBillingModel(params.model || 'GPT Image 2');
+  const billable = isImageBillingModule(module, subFeature) && !resolveMaxForAiImageModelId(model);
   const resolution = normalizeBillingResolution(params.quality || params.resolution || '1K');
   const imageCount = billable ? resolveImageBillingCount({ module, subFeature, params, materialCount }) : 0;
   const unitCredits = billable ? getImageModelCreditCost(model, resolution) : 0;

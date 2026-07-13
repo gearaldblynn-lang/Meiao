@@ -799,7 +799,7 @@ const ConfigSidebar: React.FC<Props> = ({
               <div className="px-4 pb-4 space-y-4">
                 <div className="space-y-1 pt-2 border-t border-slate-100">
                   <span className="ml-1 text-xs font-medium text-slate-400">生图模型</span>
-                  <div className="flex bg-slate-100 p-1 rounded-xl">
+                  <div className="grid grid-cols-2 gap-2 xl:grid-cols-3 bg-slate-100 p-1 rounded-xl">
                     {MODEL_OPTIONS.map(m => (
                       <button
                         key={m}
@@ -815,7 +815,7 @@ const ConfigSidebar: React.FC<Props> = ({
                             ),
                           })
                         }
-                        className={`flex-1 py-1.5 text-[9px] font-black rounded-lg transition-all ${config.model === m ? 'bg-white text-rose-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}
+                        className={`py-1.5 text-[9px] font-black rounded-lg transition-all ${config.model === m ? 'bg-white text-rose-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}
                       >
                         {getModelDisplayName(m)}
                       </button>

@@ -1,3 +1,6 @@
+import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
+import { resolveMaxForAiImageModelId } from '../../utils/maxforaiImageModels.mjs';
+
 const SUPPORTED_RATIOS = {
   'nano-banana-2': ['1:1', '1:4', '1:8', '2:3', '3:2', '3:4', '4:1', '4:3', '4:5', '5:4', '8:1', '9:16', '16:9', '21:9'],
   'gpt-image-2': ['1:1', '1:4', '1:8', '2:3', '3:2', '3:4', '4:1', '4:3', '4:5', '5:4', '8:1', '9:16', '16:9', '21:9'],
@@ -9,7 +12,10 @@ const getClosestSupportedAspectRatio = (sourceDimensions, model = 'gpt-image-2')
   if (!width || !height) return 'auto';
 
   const sourceRatio = width / height;
-  const supportedRatios = SUPPORTED_RATIOS[model] || SUPPORTED_RATIOS['gpt-image-2'];
+  const maxForAiModel = resolveMaxForAiImageModelId(model);
+  const supportedRatios = maxForAiModel
+    ? getImageModelCapabilities(maxForAiModel).supportedAspectRatios.filter((ratio) => ratio !== 'auto')
+    : SUPPORTED_RATIOS[model] || SUPPORTED_RATIOS['gpt-image-2'];
 
   let closestRatio = supportedRatios[0];
   let closestDelta = Infinity;

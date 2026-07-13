@@ -286,7 +286,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
 
             <div className="space-y-1">
                 <span className="text-[9px] font-bold text-slate-400 uppercase ml-1 tracking-widest">模特呈现策略</span>
-                <div className="flex bg-slate-100 p-1 rounded-xl">
+                <div className="grid grid-cols-2 gap-2 xl:grid-cols-3 bg-slate-100 p-1 rounded-xl">
                 <button onClick={() => onUpdate({ includeModel: true })} className={`flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all ${state.includeModel ? 'bg-white text-amber-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}>包含模特</button>
                 <button onClick={() => onUpdate({ includeModel: false })} className={`flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all ${!state.includeModel ? 'bg-white text-amber-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}>仅静物</button>
                 </div>
@@ -299,7 +299,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                 <span className="text-[9px] font-bold text-slate-400 uppercase ml-1 tracking-widest">生图模型选择</span>
                 <div className="flex bg-slate-100 p-1 rounded-xl">
                     {MODEL_OPTIONS.map(m => (
-                        <button key={m} onClick={() => onUpdate({ model: m, quality: getDefaultQualityForModel(m) })} className={`flex-1 py-1.5 text-[10px] font-black rounded-lg transition-all ${state.model === m ? 'bg-white text-amber-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}>
+                        <button key={m} onClick={() => onUpdate({ model: m, quality: getDefaultQualityForModel(m) })} className={`py-1.5 text-[10px] font-black rounded-lg transition-all ${state.model === m ? 'bg-white text-amber-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}>
                             {getModelDisplayName(m)}
                         </button>
                     ))}

@@ -55,6 +55,7 @@ import { isInvalidOneClickPlanLike } from './utils/oneClickPlanValidation.ts';
 import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion } from './utils/shellRuntimePrune.mjs';
 import { isFrontendResourceError } from './utils/frontendResourceError.mjs';
 import { startVersionWatch } from './utils/frontendVersionWatch';
+import { resolveMaxForAiImageModelId } from './utils/maxforaiImageModels.mjs';
 // 判据单一来源(2026-07-09 多桑「7月9日项目5」断链修复):缺卡回写谓词与计数辅助全部收敛到
 // syncedProjectPersistence.ts,行为测试锁在 syncedProjectPersistence.test.mjs。
 // job 来源缺卡回写不再只限 translation/error,所有工作区模块的成功/进行中/失败缺卡统一落库。
@@ -117,7 +118,9 @@ const traceStartup = (label: string) => {
   console.info(`[MEIAO startup] ${label} ${entry.t.toFixed(1)}ms`);
 };
 
-const normalizeShellImageModel = (value: unknown) => {
+const normalizeShellImageModel = (value?: string | null) => {
+  const maxForAiModel = resolveMaxForAiImageModelId(value);
+  if (maxForAiModel) return maxForAiModel;
   const normalized = String(value || '').toLowerCase();
   if (normalized.includes('nano') || normalized.includes('banana')) return 'nano-banana-2';
   if (normalized.includes('secondary') || normalized.includes('副')) return 'gpt-image-2-secondary';
