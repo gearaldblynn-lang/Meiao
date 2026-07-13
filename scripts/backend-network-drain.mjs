@@ -13,6 +13,7 @@ const defaultRunCommand = async (command, args) => {
 
 export const buildBackendNetworkDrainRules = (comment) => [
   {
+    command: 'iptables',
     chain: 'OUTPUT',
     args: [
       '-p', 'tcp', '-d', '127.0.0.1', '--dport', '3100',
@@ -22,6 +23,17 @@ export const buildBackendNetworkDrainRules = (comment) => [
     ],
   },
   {
+    command: 'iptables',
+    chain: 'INPUT',
+    args: [
+      '-p', 'tcp', '--dport', '3100',
+      '-m', 'conntrack', '--ctstate', 'NEW',
+      '-m', 'comment', '--comment', comment,
+      '-j', 'REJECT', '--reject-with', 'tcp-reset',
+    ],
+  },
+  {
+    command: 'ip6tables',
     chain: 'INPUT',
     args: [
       '-p', 'tcp', '--dport', '3100',
@@ -32,17 +44,35 @@ export const buildBackendNetworkDrainRules = (comment) => [
   },
 ];
 
-export const exitBackendNetworkDrain = async ({ state, runCommand = defaultRunCommand }) => {
-  const rules = Array.isArray(state?.rules) ? [...state.rules].reverse() : [];
-  const failures = [];
-  for (const rule of rules) {
+const getCommandExitCode = (error) => Number(error?.code);
+
+export const exitBackendNetworkDrain = async ({
+  state,
+  runCommand = defaultRunCommand,
+  persistState = () => {},
+}) => {
+  const remainingState = {
+    ...state,
+    rules: Array.isArray(state?.rules) ? [...state.rules] : [],
+  };
+  for (let index = remainingState.rules.length - 1; index >= 0; index -= 1) {
+    const rule = remainingState.rules[index];
+    const command = rule.command || 'iptables';
+    let present = true;
     try {
-      await runCommand('iptables', ['-D', rule.chain, ...rule.args]);
+      await runCommand(command, ['-C', rule.chain, ...rule.args]);
     } catch (error) {
-      failures.push(error);
+      if (getCommandExitCode(error) === 1) {
+        present = false;
+      } else {
+        throw error;
+      }
     }
+    if (present) await runCommand(command, ['-D', rule.chain, ...rule.args]);
+    remainingState.rules.splice(index, 1);
+    persistState(remainingState);
   }
-  if (failures.length > 0) throw failures[0];
+  return remainingState;
 };
 
 export const enterBackendNetworkDrain = async ({
@@ -57,13 +87,14 @@ export const enterBackendNetworkDrain = async ({
 }) => {
   if (!String(comment || '').trim()) throw new Error('network drain comment is required');
   await runCommand('iptables', ['--version']);
+  await runCommand('ip6tables', ['--version']);
   await runCommand('ss', ['--version']);
 
   const state = { comment, rules: [] };
   persistState(state);
   try {
     for (const rule of buildBackendNetworkDrainRules(comment)) {
-      await runCommand('iptables', ['-I', rule.chain, '1', ...rule.args]);
+      await runCommand(rule.command, ['-I', rule.chain, '1', ...rule.args]);
       state.rules.push(rule);
       persistState(state);
     }
@@ -83,9 +114,18 @@ export const enterBackendNetworkDrain = async ({
       if (consecutiveZeroSamples < stableZeroSamples) await wait(pollIntervalMs);
     }
     return state;
-  } catch (error) {
-    await exitBackendNetworkDrain({ state, runCommand }).catch(() => {});
-    throw error;
+  } catch (installError) {
+    try {
+      await exitBackendNetworkDrain({ state, runCommand, persistState });
+    } catch (cleanupError) {
+      const error = new Error(
+        `network drain failed: ${installError?.message || installError}; cleanup failed: ${cleanupError?.message || cleanupError}`,
+      );
+      error.code = 'network_drain_cleanup_failed';
+      error.preserveNetworkDrainState = true;
+      throw error;
+    }
+    throw installError;
   }
 };
 
@@ -109,14 +149,17 @@ const run = async () => {
       writeFileSync(stateFile, `${JSON.stringify(state)}\n`, { mode: 0o600 });
       return;
     } catch (error) {
-      rmSync(stateFile, { force: true });
+      if (!error?.preserveNetworkDrainState) rmSync(stateFile, { force: true });
       throw error;
     }
   }
 
   if (action === 'exit') {
     const state = JSON.parse(readFileSync(stateFile, 'utf8'));
-    await exitBackendNetworkDrain({ state });
+    await exitBackendNetworkDrain({
+      state,
+      persistState: (nextState) => writeFileSync(stateFile, `${JSON.stringify(nextState)}\n`, { mode: 0o600 }),
+    });
     rmSync(stateFile, { force: true });
     return;
   }

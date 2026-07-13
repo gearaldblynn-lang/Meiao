@@ -32,6 +32,15 @@ test('deployment drain expires a stale marker instead of wedging submissions for
   }), false);
 });
 
+test('manual recovery marker remains active regardless of age', () => {
+  assert.equal(isDeployDrainActive({
+    env: { MEIAO_DEPLOY_DRAIN_MAX_AGE_MS: '1000' },
+    now: () => 100_000,
+    stat: () => ({ mtimeMs: 1 }),
+    readFile: () => 'manual\n',
+  }), true);
+});
+
 test('deployment drain exposes a retryable 503 job submission error', () => {
   const error = createDeployDrainError();
   assert.equal(error.code, 'job_submissions_paused');

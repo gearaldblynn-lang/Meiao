@@ -59,7 +59,7 @@ test('deploy_tencent uses a bootstrap network drain before the lock holder stops
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const lockHolderSource = readFileSync(new URL('./hold-deploy-drain.mjs', import.meta.url), 'utf8');
   const networkIndex = source.indexOf('node scripts/backend-network-drain.mjs enter');
-  const markerIndex = source.search(/touch "\\\$DRAIN_MARKER_FILE"/);
+  const markerIndex = source.search(/: > "\\\$DRAIN_MARKER_FILE"/);
   const bootstrapLockIndex = source.indexOf('node scripts/hold-deploy-drain.mjs');
   const stoppedAckIndex = source.indexOf('--stopped-file');
   const restartIndex = source.indexOf('pm2 restart meiao-internal --update-env');
@@ -92,6 +92,13 @@ test('deploy_tencent keeps the drain on failed health until the new process is v
   assert.match(cleanup, /enable_network_drain \|\| true/);
   assert.match(cleanup, /pm2 stop meiao-internal/);
   assert.match(cleanup, /pm2 pid meiao-internal/);
+  assert.doesNotMatch(cleanup, /pm2 pid meiao-internal[^\n]*\|\| true/);
+  assert.match(cleanup, /if PM2_PID_OUTPUT=\\\$\(pm2 pid meiao-internal/);
+  assert.match(cleanup, /pm2-stopped/);
+  assert.match(cleanup, /OLD_PROCESS_STOPPED/);
+  assert.match(cleanup, /retain_deploy_drain/);
+  assert.match(source, /printf 'manual\\n'/);
+  assert.match(cleanup, /服务已停止/);
   assert.match(cleanup, /node scripts\/deploy-lifecycle\.mjs/);
   assert.match(cleanup, /RELEASE_DRAIN/);
   assert.match(cleanup, /if \[ "\\\$RELEASE_DRAIN" = '1' \]/);

@@ -81,3 +81,15 @@ test('project deletion outcome uses the same combined failure resolver', () => {
     tone: 'warning',
   });
 });
+
+test('successful tombstone without a physical target reports hidden instead of deleted', () => {
+  assert.deepEqual(resolveDeletionOutcome({
+    scope: 'result',
+    tombstoneSynced: true,
+    deletionResults: [],
+    hasPhysicalTargets: false,
+  }), {
+    message: '历史任务已隐藏',
+    tone: 'info',
+  });
+});
