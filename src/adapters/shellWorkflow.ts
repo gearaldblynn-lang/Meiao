@@ -6,6 +6,7 @@ import {
   GlobalApiConfig,
   KieAiResult,
   KieAiModel,
+  JobContext,
   ModuleConfig,
   OneClickConfig,
   OneClickSubMode,
@@ -458,6 +459,19 @@ export const runShellOneClickPlanning = async (input: ShellGenerateInput): Promi
       : undefined,
   };
   const subMode = toOneClickSubMode(input.subFeature);
+  const oneClickPlanningJobContext = {
+    taskPurpose: typeof input.taskMetadata?.taskPurpose === 'string' ? input.taskMetadata.taskPurpose : undefined,
+    shellProjectId: typeof input.taskMetadata?.shellProjectId === 'string' ? input.taskMetadata.shellProjectId : undefined,
+    shellProjectName: typeof input.taskMetadata?.shellProjectName === 'string' ? input.taskMetadata.shellProjectName : undefined,
+    shellPlanId: typeof input.taskMetadata?.shellPlanId === 'string' ? input.taskMetadata.shellPlanId : undefined,
+    shellPurpose: typeof input.taskMetadata?.shellPurpose === 'string' ? input.taskMetadata.shellPurpose : undefined,
+    subFeature: input.subFeature || undefined,
+    traceId: typeof input.taskMetadata?.traceId === 'string' ? input.taskMetadata.traceId : undefined,
+  } satisfies JobContext;
+  const planningTaskMetadata = {
+    ...oneClickPlanningJobContext,
+    ...(input.taskMetadata || {}),
+  };
   storeActiveModuleContext(input.module);
 
   if (subMode === OneClickSubMode.FIRST_IMAGE) {
@@ -473,7 +487,7 @@ export const runShellOneClickPlanning = async (input: ShellGenerateInput): Promi
       input.signal,
       getOneClickLogoUrl(input) || null,
       input.onJobCreated,
-      input.taskMetadata || {},
+      planningTaskMetadata,
     );
     const perReferenceResults = Array.isArray(result.perReferenceResults) ? result.perReferenceResults : [];
     if (perReferenceResults.length === 0) {
@@ -505,7 +519,7 @@ export const runShellOneClickPlanning = async (input: ShellGenerateInput): Promi
       input.signal,
       null,
       input.onJobCreated,
-      input.taskMetadata || {},
+      planningTaskMetadata,
     );
     if (result.status !== 'success' || result.schemes.length === 0) {
       throw new Error(result.message || 'SKU策划失败');
@@ -526,7 +540,7 @@ export const runShellOneClickPlanning = async (input: ShellGenerateInput): Promi
       input.signal,
       getOneClickLogoUrl(input) || null,
       input.onJobCreated,
-      input.taskMetadata || {},
+      planningTaskMetadata,
     );
     if (result.status !== 'success' || result.schemes.length === 0) {
       throw new Error(result.message || '主图套图复刻策划失败');
@@ -552,7 +566,7 @@ export const runShellOneClickPlanning = async (input: ShellGenerateInput): Promi
       input.signal,
       getOneClickLogoUrl(input) || null,
       input.onJobCreated,
-      input.taskMetadata || {},
+      planningTaskMetadata,
       getDetailReferenceAspectRatios(input),
     );
     if (result.status !== 'success' || result.schemes.length === 0) {
@@ -577,7 +591,7 @@ export const runShellOneClickPlanning = async (input: ShellGenerateInput): Promi
     null,
     getOneClickLogoUrl(input) || null,
     input.onJobCreated,
-    input.taskMetadata || {},
+    planningTaskMetadata,
   );
   if (result.status !== 'success' || result.schemes.length === 0) {
     throw new Error(result.message || '一键主详策划失败');
@@ -911,6 +925,16 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
       ? JSON.parse(input.params.__workspacePreferences)
       : undefined,
   };
+  const oneClickGenerationJobContext = {
+    taskPurpose: typeof input.taskMetadata?.taskPurpose === 'string' ? input.taskMetadata.taskPurpose : undefined,
+    shellProjectId: typeof input.taskMetadata?.shellProjectId === 'string' ? input.taskMetadata.shellProjectId : undefined,
+    shellProjectName: typeof input.taskMetadata?.shellProjectName === 'string' ? input.taskMetadata.shellProjectName : undefined,
+    shellPlanId: typeof input.taskMetadata?.shellPlanId === 'string' ? input.taskMetadata.shellPlanId : undefined,
+    shellBoardId: typeof input.taskMetadata?.shellBoardId === 'string' ? input.taskMetadata.shellBoardId : undefined,
+    shellPurpose: typeof input.taskMetadata?.shellPurpose === 'string' ? input.taskMetadata.shellPurpose : undefined,
+    subFeature: input.subFeature || undefined,
+    traceId: typeof input.taskMetadata?.traceId === 'string' ? input.taskMetadata.traceId : undefined,
+  } satisfies JobContext;
 
   const rawResult = await processWithKieAi(
     imageUrls,
@@ -927,7 +951,8 @@ export const runShellImageGeneration = async (input: ShellGenerateInput) => {
       : input.subFeature === 'remove_text' || (input.module === AppModule.TRANSLATION && input.params.mode === 'remove_text') ? 'remove_text'
         : 'main',
     {
-      ...(input.subFeature ? { subFeature: input.subFeature, subMode: input.subFeature } : {}),
+      ...oneClickGenerationJobContext,
+      ...(input.subFeature ? { subMode: input.subFeature } : {}),
       ...(input.taskMetadata || {}),
     },
     input.onJobCreated,
@@ -1091,6 +1116,16 @@ const submitBuyerShowImageJob = async (
   config: ModuleConfig,
   taskMetadata: Record<string, unknown>,
 ): Promise<{ jobId: string }> => {
+  const buyerShowJobContext = {
+    taskPurpose: typeof taskMetadata.taskPurpose === 'string' ? taskMetadata.taskPurpose : undefined,
+    shellProjectId: typeof taskMetadata.shellProjectId === 'string' ? taskMetadata.shellProjectId : undefined,
+    shellProjectName: typeof taskMetadata.shellProjectName === 'string' ? taskMetadata.shellProjectName : undefined,
+    shellPlanId: typeof taskMetadata.shellPlanId === 'string' ? taskMetadata.shellPlanId : undefined,
+    shellBoardId: typeof taskMetadata.shellBoardId === 'string' ? taskMetadata.shellBoardId : undefined,
+    shellPurpose: typeof taskMetadata.shellPurpose === 'string' ? taskMetadata.shellPurpose : undefined,
+    subFeature: typeof taskMetadata.subFeature === 'string' ? taskMetadata.subFeature : undefined,
+    traceId: typeof taskMetadata.traceId === 'string' ? taskMetadata.traceId : undefined,
+  } satisfies JobContext;
   const { job } = await createInternalJob({
     module: AppModule.BUYER_SHOW,
     taskType: 'kie_image',
@@ -1098,6 +1133,7 @@ const submitBuyerShowImageJob = async (
     payload: {
       imageUrls,
       prompt,
+      ...buyerShowJobContext,
       ...taskMetadata,
       model: config.model || 'gpt-image-2',
       aspectRatio: config.aspectRatio === AspectRatio.AUTO ? 'auto' : config.aspectRatio,
@@ -1156,6 +1192,13 @@ export const runShellBuyerShowWorkflow = async (
     const setReference = getBuyerShowSetReferenceUrls(input, setIndex, state.includeModel);
     const firstReferenceUrl = setReference.planningReferenceUrl || null;
     const planningProject = getBuyerShowSetProjectIdentity(input, state, setIndex);
+    const buyerShowPlanningJobContext = {
+      taskPurpose: 'buyer_show_planning',
+      shellProjectId: planningProject.projectId,
+      shellProjectName: planningProject.projectName,
+      subFeature: input.subFeature || 'image',
+      traceId: typeof input.taskMetadata?.traceId === 'string' ? input.taskMetadata.traceId : undefined,
+    } satisfies JobContext;
 
     // 单套策划带轻量重试：瞬时失败(上游 502 / 非 JSON / 空方案)时最多再试 2 次退避重试。
     let plan: Awaited<ReturnType<typeof generateBuyerShowPrompts>> | null = null;
@@ -1176,9 +1219,7 @@ export const runShellBuyerShowWorkflow = async (
         input.onJobCreated,
         {
           ...(input.taskMetadata || {}),
-          shellProjectId: planningProject.projectId,
-          shellProjectName: planningProject.projectName,
-          subFeature: input.subFeature || 'image',
+          ...buyerShowPlanningJobContext,
           setIndex: setIndex + 1,
           setCount: state.setCount,
         },

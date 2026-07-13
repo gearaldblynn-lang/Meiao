@@ -7,6 +7,7 @@ import type {
   AgentVersion,
   AuthUser,
   InternalJob,
+  InternalJobPayload,
   InternalLogEntry,
   KnowledgeBaseSummary,
   KnowledgeDocumentSummary,
@@ -1549,7 +1550,7 @@ export const createInternalJob = async (payload: {
   module: string;
   taskType: string;
   provider: string;
-  payload: Record<string, unknown>;
+  payload: InternalJobPayload;
   priority?: number;
   maxRetries?: number;
 }) => {

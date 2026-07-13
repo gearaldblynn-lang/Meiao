@@ -2,6 +2,7 @@
 import {
   AspectRatio,
   GlobalApiConfig,
+  JobContext,
   ModuleConfig,
   VideoStoryboardBoard,
   VideoStoryboardConfig,
@@ -404,6 +405,12 @@ export const generateStoryboardScript = async (
   const planningPurpose = String(jobContext.planningPurpose || 'storyboard_planning').trim();
   const phase = String(jobContext.phase || 'planning').trim();
   const { onJobCreated, signal } = jobContext;
+  const storyboardPlanningJobContext = {
+    taskPurpose: 'storyboard_planning',
+    shellProjectId,
+    shellProjectName: String(jobContext.shellProjectName || '').trim(),
+    subFeature: String(jobContext.subFeature || 'storyboard').trim(),
+  } satisfies JobContext;
 
   if (safeReferenceVideoUrl) {
     userContent.push({ type: 'text', text: `[爆款复刻视频URL] ${safeReferenceVideoUrl}` });
@@ -433,7 +440,7 @@ export const generateStoryboardScript = async (
     taskType: 'kie_chat',
     provider: 'kie',
     payload: {
-      taskPurpose: 'storyboard_planning',
+      ...storyboardPlanningJobContext,
       shellPlanningPurpose: 'storyboard_planning',
       model: videoAnalysisModel,
       fallbackModels: videoAnalysisFallbackModels,
@@ -451,9 +458,6 @@ export const generateStoryboardScript = async (
       kieClientConfigPresent: Boolean(apiConfig.kieApiKey),
       requestId: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
       clientSubmissionKey: String(jobContext.clientSubmissionKey || '').trim() || undefined,
-      shellProjectId,
-      shellProjectName: String(jobContext.shellProjectName || '').trim(),
-      subFeature: String(jobContext.subFeature || 'storyboard').trim(),
       planningPurpose,
       phase,
       storyboardConfig: {
@@ -729,6 +733,13 @@ export const generateStoryboardBoardImage = async (
     ...(safePreviousBoardImageUrl ? [safePreviousBoardImageUrl] : []),
     ...(safeCurrentBoardImageUrl ? [safeCurrentBoardImageUrl] : []),
   ];
+  const storyboardBoardImageJobContext = {
+    taskPurpose: 'storyboard_board_image',
+    shellBoardId: String(jobContext.shellBoardId || board.id).trim(),
+    shellProjectName: String(jobContext.shellProjectName || '').trim(),
+    subFeature: String(jobContext.subFeature || 'storyboard').trim(),
+    shellProjectId: String(jobContext.shellProjectId || '').trim(),
+  } satisfies JobContext;
 
   return {
     prompt,
@@ -743,12 +754,8 @@ export const generateStoryboardBoardImage = async (
       undefined,
       'main',
       {
-        taskPurpose: 'storyboard_board_image',
-        shellBoardId: String(jobContext.shellBoardId || board.id).trim(),
-        shellProjectName: String(jobContext.shellProjectName || '').trim(),
-        subFeature: String(jobContext.subFeature || 'storyboard').trim(),
+        ...storyboardBoardImageJobContext,
         clientSubmissionKey: String(jobContext.clientSubmissionKey || '').trim() || undefined,
-        shellProjectId: String(jobContext.shellProjectId || '').trim(),
         planningPurpose: String(jobContext.planningPurpose || 'storyboard_board_image').trim(),
         phase: String(jobContext.phase || 'initial').trim(),
         boardId: board.id,
