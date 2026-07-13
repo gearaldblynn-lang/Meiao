@@ -504,6 +504,90 @@ export const fetchTaskPlatformHealth = async () => {
   return request<TaskPlatformHealth>('/api/admin/task-platform/health');
 };
 
+const INTERNAL_JOB_STATUSES = new Set([
+  'queued',
+  'running',
+  'succeeded',
+  'failed',
+  'cancelled',
+  'retry_waiting',
+]);
+
+const TASK_EVENT_STATUSES = new Set(['success', 'failed', 'started', 'interrupted']);
+const isObjectRecord = (value: unknown): value is Record<string, unknown> => (
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+);
+const hasStringFields = (value: Record<string, unknown>, fields: string[]) => (
+  fields.every((field) => typeof value[field] === 'string')
+);
+const hasNumberFields = (value: Record<string, unknown>, fields: string[]) => (
+  fields.every((field) => typeof value[field] === 'number' && Number.isFinite(value[field]))
+);
+const isNullableNumber = (value: unknown) => value === null
+  || (typeof value === 'number' && Number.isFinite(value));
+
+const isInternalJobResponse = (value: unknown): value is InternalJob => {
+  if (!isObjectRecord(value)) return false;
+  return hasStringFields(value, [
+    'id', 'userId', 'module', 'taskType', 'provider', 'status', 'providerTaskId',
+    'errorCode', 'errorMessage',
+  ])
+    && INTERNAL_JOB_STATUSES.has(value.status as string)
+    && hasNumberFields(value, ['priority', 'retryCount', 'maxRetries', 'createdAt', 'updatedAt'])
+    && isObjectRecord(value.payload)
+    && (value.result === null || isObjectRecord(value.result))
+    && isNullableNumber(value.startedAt)
+    && isNullableNumber(value.finishedAt)
+    && isNullableNumber(value.cancelRequestedAt)
+    && (value.errorDetail === undefined || typeof value.errorDetail === 'string');
+};
+
+const isTaskPlatformJobResponse = (value: unknown): value is TaskPlatformJob => {
+  if (!isObjectRecord(value) || !isObjectRecord(value.user) || !isObjectRecord(value.submissionResolution)) return false;
+  return hasStringFields(value, [
+    'id', 'userId', 'module', 'taskType', 'provider', 'status', 'providerTaskId',
+    'errorCode', 'errorMessage', 'latestAttemptStatus', 'latestStage', 'latestEventStatus',
+    'errorFingerprint', 'workflowId', 'runId', 'traceId',
+  ])
+    && INTERNAL_JOB_STATUSES.has(value.status as string)
+    && hasStringFields(value.user, ['id', 'username', 'displayName'])
+    && hasNumberFields(value, ['retryCount', 'maxRetries', 'createdAt', 'updatedAt', 'attemptCount'])
+    && isNullableNumber(value.startedAt)
+    && isNullableNumber(value.finishedAt)
+    && isNullableNumber(value.latestEventAt)
+    && typeof value.providerSubmitted === 'boolean'
+    && typeof value.retryable === 'boolean'
+    && typeof value.submissionResolution.allowed === 'boolean'
+    && typeof value.submissionResolution.canBind === 'boolean';
+};
+
+const isTaskPlatformAttemptResponse = (value: unknown): value is TaskPlatformAttempt => {
+  if (!isObjectRecord(value)) return false;
+  return hasStringFields(value, [
+    'id', 'jobId', 'engine', 'workflowId', 'runId', 'traceId', 'status',
+    'providerTaskId', 'errorCode', 'errorMessage',
+  ])
+    && hasNumberFields(value, ['attemptNo', 'startedAt'])
+    && isNullableNumber(value.finishedAt);
+};
+
+const isTaskPlatformEventResponse = (value: unknown): value is TaskPlatformEvent => {
+  if (!isObjectRecord(value)) return false;
+  return hasStringFields(value, [
+    'id', 'jobId', 'attemptId', 'traceId', 'stage', 'eventName', 'status', 'engine',
+    'errorCode', 'errorMessage', 'errorFingerprint', 'providerTaskId', 'workflowId', 'runId',
+  ])
+    && TASK_EVENT_STATUSES.has(value.status as string)
+    && typeof value.providerSubmitted === 'boolean'
+    && typeof value.retryable === 'boolean'
+    && (value.meta === null || isObjectRecord(value.meta))
+    && hasNumberFields(value, ['createdAt']);
+};
+
+const invalidTaskPlatformResponse = (): never => {
+  throw new ApiError('任务平台响应格式异常，请刷新后重试', 'invalid_response', 502);
+};
+
 export const fetchTaskPlatformJobs = async (filters?: Partial<{
   status: string;
   module: string;
@@ -524,16 +608,50 @@ export const fetchTaskPlatformJobs = async (filters?: Partial<{
   if (filters?.page) params.set('page', String(filters.page));
   if (filters?.pageSize) params.set('pageSize', String(filters.pageSize));
   const query = params.toString();
-  return request<{ jobs: TaskPlatformJob[]; total: number; page: number; pageSize: number }>(
+  const result = await request<unknown>(
     `/api/admin/task-platform/jobs${query ? `?${query}` : ''}`,
   );
+  if (
+    !isObjectRecord(result)
+    || !Array.isArray(result.jobs)
+    || !result.jobs.every(isTaskPlatformJobResponse)
+    || !hasNumberFields(result, ['total', 'page', 'pageSize'])
+  ) invalidTaskPlatformResponse();
+  return result as { jobs: TaskPlatformJob[]; total: number; page: number; pageSize: number };
 };
 
 export const fetchTaskPlatformTimeline = async (jobId: string) => {
-  return request<{
+  const result = await request<unknown>(`/api/admin/task-platform/jobs/${encodeURIComponent(jobId)}/timeline`);
+  const timeline = isObjectRecord(result) ? result.timeline : null;
+  if (
+    !isObjectRecord(result)
+    || !isInternalJobResponse(result.job)
+    || !isObjectRecord(timeline)
+    || !Array.isArray(timeline.attempts)
+    || !timeline.attempts.every(isTaskPlatformAttemptResponse)
+    || !Array.isArray(timeline.events)
+    || !timeline.events.every(isTaskPlatformEventResponse)
+  ) invalidTaskPlatformResponse();
+  return result as {
     job: InternalJob;
     timeline: { attempts: TaskPlatformAttempt[]; events: TaskPlatformEvent[] };
-  }>(`/api/admin/task-platform/jobs/${encodeURIComponent(jobId)}/timeline`);
+  };
+};
+
+export const resolveTaskPlatformSubmission = async (
+  jobId: string,
+  input: { action: 'bind' | 'release'; providerTaskId?: string },
+) => {
+  const result = await request<unknown>(
+    `/api/admin/task-platform/jobs/${encodeURIComponent(jobId)}/submission-resolution`,
+    { method: 'POST', body: JSON.stringify(input), dedupe: false },
+  );
+  if (
+    !isObjectRecord(result)
+    || !['bind', 'release'].includes(String(result.action || ''))
+    || !isInternalJobResponse(result.job)
+  ) invalidTaskPlatformResponse();
+  return result as { action: 'bind' | 'release'; job: InternalJob };
 };
 
 export const fetchSystemConfig = async () => {

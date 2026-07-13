@@ -32,6 +32,43 @@ const createJob = () => ({
   updatedAt: 2000,
 });
 
+const createTaskPlatformRow = (overrides = {}) => ({
+  id: 'job-1',
+  user_id: 'user-1',
+  username: 'duosang',
+  display_name: '多桑',
+  module: 'one_click',
+  task_type: 'kie_chat',
+  provider: 'kie',
+  status: 'failed',
+  provider_task_id: '',
+  error_code: 'provider_timeout',
+  error_message: 'asset upload timeout',
+  retry_count: 2,
+  max_retries: 2,
+  created_at: 1000,
+  updated_at: 2000,
+  started_at: 1200,
+  finished_at: 1900,
+  attempt_count: 2,
+  latest_attempt_status: 'failed',
+  latest_stage: 'asset_upload',
+  latest_event_status: 'failed',
+  latest_event_at: 1800,
+  provider_submitted: 0,
+  retryable: 0,
+  error_fingerprint: 'kie:kie_chat:asset_upload:provider_timeout',
+  workflow_id: 'workflow-1',
+  run_id: 'run-1',
+  trace_id: 'trace-1',
+  ...overrides,
+});
+
+const createTaskPlatformListPool = (row) => createFakePool((sql) => {
+  if (/COUNT\(\*\)/.test(sql)) return [[{ total: 1 }]];
+  return [[row]];
+});
+
 test('normalizeTaskEngineMode keeps mysql safe as the default engine', () => {
   assert.equal(normalizeTaskEngineMode('dual'), 'dual');
   assert.equal(normalizeTaskEngineMode('temporal'), 'temporal');
@@ -108,39 +145,7 @@ test('recordJobEvent persists stage, provider submission state, retryability and
 });
 
 test('listTaskPlatformJobs maps admin rows without changing the public job shape', async () => {
-  const pool = createFakePool((sql) => {
-    if (/COUNT\(\*\)/.test(sql)) return [[{ total: 1 }]];
-    return [[{
-      id: 'job-1',
-      user_id: 'user-1',
-      username: 'duosang',
-      display_name: '多桑',
-      module: 'one_click',
-      task_type: 'kie_chat',
-      provider: 'kie',
-      status: 'failed',
-      provider_task_id: '',
-      error_code: 'provider_timeout',
-      error_message: 'asset upload timeout',
-      retry_count: 2,
-      max_retries: 2,
-      created_at: 1000,
-      updated_at: 2000,
-      started_at: 1200,
-      finished_at: 1900,
-      attempt_count: 2,
-      latest_attempt_status: 'failed',
-      latest_stage: 'asset_upload',
-      latest_event_status: 'failed',
-      latest_event_at: 1800,
-      provider_submitted: 0,
-      retryable: 0,
-      error_fingerprint: 'kie:kie_chat:asset_upload:provider_timeout',
-      workflow_id: 'workflow-1',
-      run_id: 'run-1',
-      trace_id: 'trace-1',
-    }]];
-  });
+  const pool = createTaskPlatformListPool(createTaskPlatformRow());
 
   const result = await listTaskPlatformJobs(pool, { status: 'failed', page: 1, pageSize: 20 });
 
@@ -151,4 +156,26 @@ test('listTaskPlatformJobs maps admin rows without changing the public job shape
   assert.equal(result.jobs[0].latestStage, 'asset_upload');
   assert.equal(result.jobs[0].providerSubmitted, false);
   assert.equal(result.jobs[0].workflowId, 'workflow-1');
+  assert.deepEqual(result.jobs[0].submissionResolution, { allowed: false, canBind: false });
+});
+
+test('listTaskPlatformJobs allows release but not bind for unknown kie_chat submission', async () => {
+  const pool = createTaskPlatformListPool(createTaskPlatformRow({
+    error_code: 'provider_submission_unknown',
+  }));
+
+  const result = await listTaskPlatformJobs(pool, { status: 'failed' });
+
+  assert.deepEqual(result.jobs[0].submissionResolution, { allowed: true, canBind: false });
+});
+
+test('listTaskPlatformJobs allows bind for recoverable unknown provider submission', async () => {
+  const pool = createTaskPlatformListPool(createTaskPlatformRow({
+    task_type: 'kie_image',
+    error_code: 'provider_submission_unknown',
+  }));
+
+  const result = await listTaskPlatformJobs(pool, { status: 'failed' });
+
+  assert.deepEqual(result.jobs[0].submissionResolution, { allowed: true, canBind: true });
 });

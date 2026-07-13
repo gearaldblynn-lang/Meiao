@@ -20,6 +20,101 @@ const loadInternalApi = async () => {
   return import(`./internalApi.ts?case=${Date.now()}-${Math.random()}`);
 };
 
+const validInternalJob = {
+  id: 'job-1',
+  userId: 'user-1',
+  module: 'one_click',
+  taskType: 'kie_chat',
+  provider: 'kie',
+  status: 'failed',
+  priority: 0,
+  payload: {},
+  providerTaskId: '',
+  result: null,
+  errorCode: 'provider_submission_unknown',
+  errorMessage: 'submission state unknown',
+  retryCount: 0,
+  maxRetries: 0,
+  createdAt: 1000,
+  updatedAt: 2000,
+  startedAt: 1200,
+  finishedAt: 1900,
+  cancelRequestedAt: null,
+};
+
+const validTaskPlatformJob = {
+  id: 'job-1',
+  userId: 'user-1',
+  user: { id: 'user-1', username: 'alice', displayName: 'Alice' },
+  module: 'one_click',
+  taskType: 'kie_chat',
+  provider: 'kie',
+  status: 'failed',
+  providerTaskId: '',
+  errorCode: 'provider_submission_unknown',
+  errorMessage: 'submission state unknown',
+  retryCount: 0,
+  maxRetries: 0,
+  createdAt: 1000,
+  updatedAt: 2000,
+  startedAt: 1200,
+  finishedAt: 1900,
+  attemptCount: 1,
+  latestAttemptStatus: 'failed',
+  latestStage: 'provider_submit',
+  latestEventStatus: 'failed',
+  latestEventAt: 1900,
+  providerSubmitted: false,
+  retryable: false,
+  errorFingerprint: 'kie:kie_chat:provider_submit:provider_submission_unknown',
+  workflowId: '',
+  runId: '',
+  traceId: 'trace-1',
+  submissionResolution: { allowed: true, canBind: false },
+};
+
+const validTimeline = {
+  attempts: [{
+    id: 'attempt-1',
+    jobId: 'job-1',
+    attemptNo: 1,
+    engine: 'mysql',
+    workflowId: '',
+    runId: '',
+    traceId: 'trace-1',
+    status: 'failed',
+    providerTaskId: '',
+    errorCode: 'provider_submission_unknown',
+    errorMessage: 'submission state unknown',
+    startedAt: 1200,
+    finishedAt: 1900,
+  }],
+  events: [{
+    id: 'event-1',
+    jobId: 'job-1',
+    attemptId: 'attempt-1',
+    traceId: 'trace-1',
+    stage: 'provider_submit',
+    eventName: 'provider_submission_unknown_failed',
+    status: 'failed',
+    engine: 'mysql',
+    providerSubmitted: false,
+    retryable: false,
+    errorCode: 'provider_submission_unknown',
+    errorMessage: 'submission state unknown',
+    errorFingerprint: 'kie:kie_chat:provider_submit:provider_submission_unknown',
+    providerTaskId: '',
+    workflowId: '',
+    runId: '',
+    meta: null,
+    createdAt: 1900,
+  }],
+};
+
+const isInvalidResponse = (api) => (error) => error instanceof api.ApiError
+  && error.code === 'invalid_response'
+  && error.status === 502;
+
 test('probeInternalApi aborts the health request on timeout', async () => {
   const originalFetch = globalThis.fetch;
   const originalSetTimeout = globalThis.setTimeout;
@@ -126,6 +221,106 @@ test('fetchSystemConfig returns a valid config response unchanged', async () => 
 
   try {
     assert.deepEqual(await api.fetchSystemConfig(), responseBody);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchTaskPlatformJobs validates and returns a valid task list response', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const responseBody = { jobs: [validTaskPlatformJob], total: 1, page: 1, pageSize: 20 };
+  globalThis.fetch = async () => new Response(JSON.stringify(responseBody), { status: 200 });
+
+  try {
+    assert.deepEqual(await api.fetchTaskPlatformJobs(), responseBody);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchTaskPlatformJobs rejects malformed successful responses', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    jobs: [{ ...validTaskPlatformJob, submissionResolution: { allowed: 'yes', canBind: false } }],
+    total: 1,
+    page: 1,
+    pageSize: 20,
+  }), { status: 200 });
+
+  try {
+    await assert.rejects(api.fetchTaskPlatformJobs(), isInvalidResponse(api));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchTaskPlatformTimeline validates and returns a valid timeline response', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const responseBody = { job: validInternalJob, timeline: validTimeline };
+  globalThis.fetch = async () => new Response(JSON.stringify(responseBody), { status: 200 });
+
+  try {
+    assert.deepEqual(await api.fetchTaskPlatformTimeline('job-1'), responseBody);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchTaskPlatformTimeline rejects malformed successful responses', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    job: validInternalJob,
+    timeline: { ...validTimeline, attempts: [{ ...validTimeline.attempts[0], attemptNo: '1' }] },
+  }), { status: 200 });
+
+  try {
+    await assert.rejects(api.fetchTaskPlatformTimeline('job-1'), isInvalidResponse(api));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('resolveTaskPlatformSubmission posts release without request dedupe', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const calls = [];
+  const pending = [];
+  globalThis.fetch = (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method, body: JSON.parse(String(init.body)) });
+    return new Promise((resolve) => pending.push(resolve));
+  };
+
+  try {
+    const first = api.resolveTaskPlatformSubmission('job-1', { action: 'release' });
+    const second = api.resolveTaskPlatformSubmission('job-1', { action: 'release' });
+    assert.deepEqual(calls, [
+      { url: '/api/admin/task-platform/jobs/job-1/submission-resolution', method: 'POST', body: { action: 'release' } },
+      { url: '/api/admin/task-platform/jobs/job-1/submission-resolution', method: 'POST', body: { action: 'release' } },
+    ]);
+    for (const resolve of pending) {
+      resolve(new Response(JSON.stringify({ action: 'release', job: validInternalJob }), { status: 200 }));
+    }
+    assert.equal((await first).action, 'release');
+    assert.equal((await second).action, 'release');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('resolveTaskPlatformSubmission rejects malformed successful responses', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  globalThis.fetch = async () => new Response(JSON.stringify({ action: 'release', job: { id: 'job-1' } }), { status: 200 });
+
+  try {
+    await assert.rejects(
+      api.resolveTaskPlatformSubmission('job-1', { action: 'release' }),
+      isInvalidResponse(api),
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
