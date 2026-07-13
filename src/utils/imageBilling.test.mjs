@@ -18,21 +18,16 @@ test('image billing estimates use the configured display credit table by model a
 });
 
 test('MaxForAI image models do not use the legacy credit system', () => {
-  for (const model of [
-    'maxforai-image-2-standard',
-    'maxforai-image-2-pro',
-    'maxforai-image-2-max',
-  ]) {
-    const estimate = estimateImageBilling({
-      module: 'one_click',
-      params: { model, quality: '4K', count: '5' },
-    });
+  const model = 'maxforai-image-2-relay';
+  const estimate = estimateImageBilling({
+    module: 'one_click',
+    params: { model, quality: '4K', count: '5' },
+  });
 
-    assert.equal(estimate.billable, false);
-    assert.equal(estimate.model, model);
-    assert.equal(estimate.unitCredits, 0);
-    assert.equal(estimate.estimatedCredits, 0);
-  }
+  assert.equal(estimate.billable, false);
+  assert.equal(estimate.model, model);
+  assert.equal(estimate.unitCredits, 0);
+  assert.equal(estimate.estimatedCredits, 0);
 });
 
 test('image billing normalizes user-facing model and resolution labels', () => {

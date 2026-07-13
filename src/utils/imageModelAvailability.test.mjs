@@ -25,6 +25,22 @@ test('shell quick parameters and Agent Center include shared MaxForAI model defi
   assert.match(agentCenterManager, /MAXFORAI_IMAGE_MODELS/);
 });
 
+test('shared image options retain legacy providers and remove retired MaxForAI tiers', () => {
+  const liveModelSources = [
+    read('./modelQuality.ts'),
+    read('./maxforaiImageModels.mjs'),
+    read('../modules/AgentCenter/AgentCenterManager.tsx'),
+  ].join('\n');
+
+  assert.match(liveModelSources, /'gpt-image-2'/);
+  assert.match(liveModelSources, /'gpt-image-2-secondary'/);
+  assert.match(liveModelSources, /'nano-banana-2'/);
+  assert.match(liveModelSources, /maxforai-image-2-relay/);
+  assert.match(liveModelSources, /image-2中转/);
+  assert.doesNotMatch(liveModelSources, /maxforai-image-2-(?:standard|pro|max)/);
+  assert.doesNotMatch(liveModelSources, /Image-2(?:标准|高|超高)/);
+});
+
 test('shell model normalization preserves MaxForAI site ids and labels', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const shellWorkflow = read('../adapters/shellWorkflow.ts');
@@ -35,7 +51,7 @@ test('shell model normalization preserves MaxForAI site ids and labels', () => {
   assert.match(shellWorkflow, /const maxForAiModel = resolveMaxForAiImageModelId\(value\)/);
 });
 
-test('all button-style model selectors use a wrapping grid for six options', () => {
+test('all button-style model selectors use a wrapping grid for shared options', () => {
   for (const file of [
     '../components/SettingsSidebar.tsx',
     '../modules/OneClick/ConfigSidebar.tsx',

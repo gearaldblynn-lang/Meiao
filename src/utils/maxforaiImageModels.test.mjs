@@ -9,21 +9,28 @@ import {
   resolveMaxForAiImageSize,
 } from './maxforaiImageModels.mjs';
 
-test('MaxForAI exposes three collision-free site models', () => {
-  assert.deepEqual(MAXFORAI_IMAGE_MODEL_IDS, [
+test('MaxForAI exposes only the replacement relay model', () => {
+  assert.deepEqual(MAXFORAI_IMAGE_MODEL_IDS, ['maxforai-image-2-relay']);
+  assert.deepEqual(getMaxForAiImageModel('maxforai-image-2-relay'), {
+    id: 'maxforai-image-2-relay',
+    label: 'image-2中转',
+    upstreamModel: 'gpt-image-2',
+  });
+  assert.equal(resolveMaxForAiImageModelId('image-2中转'), 'maxforai-image-2-relay');
+  assert.equal(resolveMaxForAiImageModelId('gpt-image-2'), '');
+  assert.equal(isMaxForAiImageModel('maxforai-image-2-relay'), true);
+  assert.equal(isMaxForAiImageModel('gpt-image-2'), false);
+
+  for (const retired of [
     'maxforai-image-2-standard',
     'maxforai-image-2-pro',
     'maxforai-image-2-max',
-  ]);
-  assert.deepEqual(getMaxForAiImageModel('maxforai-image-2-pro'), {
-    id: 'maxforai-image-2-pro',
-    label: 'Image-2高',
-    upstreamModel: 'gpt-image-2-pro',
-  });
-  assert.equal(resolveMaxForAiImageModelId('Image-2超高'), 'maxforai-image-2-max');
-  assert.equal(resolveMaxForAiImageModelId('gpt-image-2'), '');
-  assert.equal(isMaxForAiImageModel('maxforai-image-2-standard'), true);
-  assert.equal(isMaxForAiImageModel('gpt-image-2'), false);
+    'Image-2标准',
+    'Image-2高',
+    'Image-2超高',
+  ]) {
+    assert.equal(resolveMaxForAiImageModelId(retired), '');
+  }
 });
 
 test('MaxForAI maps every documented ratio and resolution to an exact size', () => {

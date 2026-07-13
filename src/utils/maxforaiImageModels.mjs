@@ -1,18 +1,8 @@
 export const MAXFORAI_IMAGE_MODELS = Object.freeze([
   Object.freeze({
-    id: 'maxforai-image-2-standard',
-    label: 'Image-2标准',
+    id: 'maxforai-image-2-relay',
+    label: 'image-2中转',
     upstreamModel: 'gpt-image-2',
-  }),
-  Object.freeze({
-    id: 'maxforai-image-2-pro',
-    label: 'Image-2高',
-    upstreamModel: 'gpt-image-2-pro',
-  }),
-  Object.freeze({
-    id: 'maxforai-image-2-max',
-    label: 'Image-2超高',
-    upstreamModel: 'gpt-image-2-max',
   }),
 ]);
 
