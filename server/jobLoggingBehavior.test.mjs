@@ -86,6 +86,15 @@ test('task platform diagnostics have schema initialization and admin-only routes
   assert.match(serverSource, /requireDbAdmin\(req, res\)/);
 });
 
+test('local task platform list uses the canonical submission resolution capability', () => {
+  const localTaskListRoute = serverSource.match(
+    /if \(url\.pathname === '\/api\/admin\/task-platform\/jobs' && req\.method === 'GET'\) \{\n\s*const admin = localRequireAdmin[\s\S]*?\n\s*return;\n\s*\}/,
+  )?.[0] || '';
+
+  assert.match(serverSource, /import \{[^}]*buildSubmissionResolutionCapability[^}]*\} from '\.\/taskPlatform\.mjs'/);
+  assert.match(localTaskListRoute, /submissionResolution: buildSubmissionResolutionCapability\(\{\s*status: job\.status,\s*errorCode: job\.errorCode,\s*taskType: job\.taskType,\s*\}\)/);
+});
+
 test('local json store only reconciles running jobs during server bootstrap', () => {
   const normalizeLocalStoreBody = serverSource.match(/const normalizeLocalStoreShape = \(store, options = \{\}\) => \{[\s\S]*?\n\};/)?.[0] || '';
   const readLocalStoreBody = serverSource.match(/const readLocalStore = \(\) => \{[\s\S]*?\n\};/)?.[0] || '';

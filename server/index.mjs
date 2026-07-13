@@ -84,7 +84,7 @@ import {
   shouldReleaseJobCreditReservation,
   stripCreditReservationFromPayload,
 } from './accountCredits.mjs';
-import { ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
+import { buildSubmissionResolutionCapability, ensureTaskPlatformSchema, getTaskPlatformHealth, getTaskPlatformTimeline, listTaskPlatformJobs, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
 import {
   attachLocalJobWorkflowExecution,
   createLocalJobRecord,
@@ -14301,6 +14301,11 @@ const handleLocalRequest = async (req, res, url) => {
           workflowId: job.workflowId || '',
           runId: job.runId || '',
           traceId: String(job.payload?.traceId || job.payload?.requestId || job.id || ''),
+          submissionResolution: buildSubmissionResolutionCapability({
+            status: job.status,
+            errorCode: job.errorCode,
+            taskType: job.taskType,
+          }),
         };
       }),
       total,
