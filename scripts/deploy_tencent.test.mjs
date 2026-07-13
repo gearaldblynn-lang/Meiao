@@ -71,9 +71,15 @@ test('deploy_tencent rejects a remote manual marker before uploading any source'
   assert.ok(manualCheckIndex > markerResolveIndex, 'manual marker must be checked before readiness');
   assert.match(
     preflight,
-    /DRAIN_MARKER_CONTENT=\\\$\(cat "\\\$DRAIN_MARKER_FILE"\)[\s\S]*\[ "\\\$DRAIN_MARKER_CONTENT" = 'manual' \]/,
+    /DRAIN_MARKER_CONTENT=\\\$\(cat \\"\\\$DRAIN_MARKER_FILE\\"\)[\s\S]*\[ \\"\\\$DRAIN_MARKER_CONTENT\\" = 'manual' \]/,
     'preflight must compare the complete marker content, not any matching line',
   );
+  assert.match(
+    preflight,
+    /\[ -n \\"\\\$DRAIN_MARKER_CONTENT\\" \][\s\S]*活动部署 marker/,
+    'preflight must fail closed on an orphaned owner marker before upload',
+  );
+  assert.match(preflight, /\[ \\"\\\$REMOTE_MUTEX_OWNER\\" !=/);
   assert.ok(invocationIndex >= 0 && invocationIndex < archiveIndex, 'manual preflight must run before upload');
   assert.equal(
     [...source.matchAll(/grep -qx 'manual'/g)].length,
@@ -82,17 +88,57 @@ test('deploy_tencent rejects a remote manual marker before uploading any source'
   );
 });
 
+test('deploy_tencent holds an owner-checked remote mutex across readiness and upload', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const acquireStart = source.indexOf('acquire_remote_deploy_mutex() {');
+  const acquireEnd = source.indexOf('\n}\n', acquireStart);
+  const acquire = source.slice(acquireStart, acquireEnd);
+  const releaseStart = source.indexOf('release_remote_deploy_mutex() {');
+  const releaseEnd = source.indexOf('\n}\n', releaseStart);
+  const release = source.slice(releaseStart, releaseEnd);
+  const acquireInvocation = source.indexOf('\nacquire_remote_deploy_mutex\n');
+  const readinessInvocation = source.indexOf('\nrun_remote_deploy_readiness\n');
+  const verifyInvocation = source.indexOf('\nverify_remote_deploy_mutex\n', readinessInvocation);
+  const archiveIndex = source.indexOf('tar \\\n');
+
+  assert.match(acquire, /mkdir '\$REMOTE_DEPLOY_MUTEX_DIR'/);
+  assert.match(acquire, /DEPLOY_OWNER_TOKEN[\s\S]*\/owner/);
+  assert.match(source, /trap cleanup_remote_deploy_mutex EXIT/);
+  assert.ok(acquireInvocation >= 0 && acquireInvocation < readinessInvocation);
+  assert.ok(readinessInvocation < verifyInvocation && verifyInvocation < archiveIndex);
+
+  const ownerCheckIndex = release.indexOf('REMOTE_MUTEX_OWNER');
+  const ownerCompareIndex = release.indexOf('DEPLOY_OWNER_TOKEN', ownerCheckIndex);
+  const removeOwnerIndex = release.indexOf("rm -f '$REMOTE_DEPLOY_MUTEX_DIR/owner'");
+  const removeLockIndex = release.indexOf("rmdir '$REMOTE_DEPLOY_MUTEX_DIR'");
+  assert.ok(ownerCheckIndex >= 0 && ownerCompareIndex > ownerCheckIndex);
+  assert.ok(removeOwnerIndex > ownerCompareIndex && removeLockIndex > removeOwnerIndex);
+});
+
+test('deploy_tencent re-verifies mutex ownership before remote mutation and cutover', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const ownerChecks = [...source.matchAll(/\n    assert_remote_deploy_mutex_owner\n/g)]
+    .map((match) => match.index);
+  const sourceMutationIndex = source.indexOf("find '$REMOTE_APP_DIR'");
+  const cutoverIndex = source.indexOf('# 原子切换:');
+
+  assert.ok(ownerChecks.length >= 3, 'owner must be checked at upload, source replacement and cutover');
+  assert.ok(ownerChecks[0] < sourceMutationIndex);
+  assert.ok(ownerChecks.some((index) => index > sourceMutationIndex && index < cutoverIndex));
+  assert.ok(ownerChecks.at(-1) < cutoverIndex);
+});
+
 test('deploy_tencent uses a bootstrap network drain before the lock holder stops the old process', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const lockHolderSource = readFileSync(new URL('./hold-deploy-drain.mjs', import.meta.url), 'utf8');
   const networkIndex = source.indexOf('node scripts/backend-network-drain.mjs enter');
-  const markerIndex = source.search(/: > "\\\$DRAIN_MARKER_FILE"/);
+  const markerIndex = source.search(/DEPLOY_OWNER_TOKEN[^\n]*> \\"\\\$DRAIN_MARKER_FILE\\"/);
   const bootstrapLockIndex = source.indexOf('node scripts/hold-deploy-drain.mjs');
   const stoppedAckIndex = source.indexOf('--stopped-file');
   const restartIndex = source.indexOf('pm2 restart meiao-internal --update-env');
   const networkReleaseIndex = source.indexOf('\n    disable_network_drain\n', restartIndex);
   const healthIndex = source.indexOf('/api/health');
-  const cleanupIndex = source.search(/rm -f "\\\$DRAIN_MARKER_FILE"\n    trap - EXIT INT TERM/);
+  const cleanupIndex = source.lastIndexOf('\n    remove_owned_deploy_marker\n');
 
   assert.ok(networkIndex >= 0, 'bootstrap drain must block NEW backend connections');
   assert.ok(networkIndex < markerIndex, 'network gate must protect the old marker-unaware process first');
@@ -132,17 +178,35 @@ test('deploy_tencent keeps the drain on failed health until the new process is v
   assert.match(cleanup, /保留维护门禁/);
 });
 
-test('deploy_tencent retains gates when old-process stop was issued but pid proof failed', () => {
+test('deploy_tencent retains gates when old-process stop was attempted but stop or pid proof failed', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const cleanup = source.match(/cleanup_deploy_drain\(\) \{[\s\S]*?\n    \}/)?.[0] || '';
   const helperStart = source.indexOf('node scripts/hold-deploy-drain.mjs');
-  const stopIssuedArgIndex = source.indexOf('--stop-issued-file', helperStart);
+  const stopAttemptedArgIndex = source.indexOf('--stop-attempted-file', helperStart);
   const stoppedArgIndex = source.indexOf('--stopped-file', helperStart);
 
-  assert.match(source, /DRAIN_STOP_ISSUED_FILE/);
-  assert.ok(stopIssuedArgIndex > helperStart && stopIssuedArgIndex < stoppedArgIndex);
-  assert.match(cleanup, /if \[ -f "\\\$DRAIN_STOP_ISSUED_FILE" \]; then OLD_PROCESS_STOP_ISSUED=1; fi/);
-  assert.match(cleanup, /"\\\$OLD_PROCESS_STOPPED" "\\\$OLD_PROCESS_STOP_ISSUED"/);
-  assert.match(cleanup, /停机命令已发出但状态未核实/);
-  assert.doesNotMatch(cleanup, /OLD_PROCESS_STOP_ISSUED=1; OLD_PROCESS_STOPPED=1/);
+  assert.match(source, /DRAIN_STOP_ATTEMPTED_FILE/);
+  assert.ok(stopAttemptedArgIndex > helperStart && stopAttemptedArgIndex < stoppedArgIndex);
+  assert.match(cleanup, /if \[ -f "\\\$DRAIN_STOP_ATTEMPTED_FILE" \]; then OLD_PROCESS_STOP_ATTEMPTED=1; fi/);
+  assert.match(cleanup, /"\\\$OLD_PROCESS_STOPPED" "\\\$OLD_PROCESS_STOP_ATTEMPTED"/);
+  assert.match(cleanup, /停机尝试已登记但状态未核实/);
+  assert.doesNotMatch(cleanup, /OLD_PROCESS_STOP_ATTEMPTED=1; OLD_PROCESS_STOPPED=1/);
+});
+
+test('deploy_tencent writes and removes active drain markers only for its owner token', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const removeStart = source.indexOf('remove_owned_deploy_marker() {');
+  const removeEnd = source.indexOf('\n    }\n', removeStart);
+  const remove = source.slice(removeStart, removeEnd);
+  const compareIndex = remove.indexOf('DEPLOY_OWNER_TOKEN');
+  const deleteIndex = remove.indexOf('rm -f \\"\\$DRAIN_MARKER_FILE\\"');
+
+  assert.match(source, /printf '%s\\n' '\$DEPLOY_OWNER_TOKEN' > \\"\\\$DRAIN_MARKER_FILE\\"/);
+  assert.ok(compareIndex >= 0 && deleteIndex > compareIndex);
+  assert.equal(
+    [...source.matchAll(/rm -f \\"\\\$DRAIN_MARKER_FILE\\"/g)].length,
+    1,
+    'marker deletion must exist only inside the owner-checking helper',
+  );
+  assert.match(remove, /manual/);
 });

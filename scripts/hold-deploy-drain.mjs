@@ -33,13 +33,13 @@ export const acquireBootstrapJobTableLock = async ({ connection, env = process.e
 export const stopOldProcessWithLockVerification = async ({
   connection,
   processManager,
-  acknowledgeStopIssued,
+  acknowledgeStopAttempted,
   acknowledgeStopped,
 }) => {
   const appExisted = await processManager.exists();
   if (appExisted) {
+    await acknowledgeStopAttempted(appExisted);
     await processManager.stop();
-    await acknowledgeStopIssued(appExisted);
   }
   if (!await processManager.isStopped()) {
     throw new Error('PM2 process is still running after stop request.');
@@ -75,13 +75,13 @@ const readOption = (name) => {
 
 const run = async () => {
   const readyFile = readOption('--ready-file');
-  const stopIssuedFile = readOption('--stop-issued-file');
+  const stopAttemptedFile = readOption('--stop-attempted-file');
   const stoppedFile = readOption('--stopped-file');
   const releaseFile = readOption('--release-file');
   const processName = readOption('--process-name') || 'meiao-internal';
-  if (!readyFile || !stopIssuedFile || !stoppedFile || !releaseFile) {
+  if (!readyFile || !stopAttemptedFile || !stoppedFile || !releaseFile) {
     throw new Error(
-      'hold-deploy-drain requires --ready-file, --stop-issued-file, --stopped-file and --release-file.',
+      'hold-deploy-drain requires --ready-file, --stop-attempted-file, --stopped-file and --release-file.',
     );
   }
 
@@ -102,8 +102,8 @@ const run = async () => {
     await stopOldProcessWithLockVerification({
       connection,
       processManager: createPm2ProcessManager(processName),
-      acknowledgeStopIssued: async () => {
-        writeFileSync(stopIssuedFile, '1\n', { mode: 0o600 });
+      acknowledgeStopAttempted: async () => {
+        writeFileSync(stopAttemptedFile, '1\n', { mode: 0o600 });
       },
       acknowledgeStopped: async (appExisted) => {
         writeFileSync(stoppedFile, appExisted ? '1\n' : '0\n', { mode: 0o600 });
