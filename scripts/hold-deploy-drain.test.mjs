@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
+import * as holdDeployDrain from './hold-deploy-drain.mjs';
+
+const {
   acquireBootstrapJobTableLock,
   stopOldProcessWithLockVerification,
-} from './hold-deploy-drain.mjs';
+} = holdDeployDrain;
 import { isDeployHealthReady } from './assert-deploy-health.mjs';
 
 test('bootstrap drain locks the jobs table before checking the final active count', async () => {
@@ -82,6 +84,9 @@ test('lock holder stops and verifies the old process before acknowledging on the
         return true;
       },
     },
+    acknowledgeStopIssued: async (appExisted) => {
+      events.push(`stop-issued:${appExisted}`);
+    },
     acknowledgeStopped: async (appExisted) => {
       events.push(`ack:${appExisted}`);
     },
@@ -90,6 +95,7 @@ test('lock holder stops and verifies the old process before acknowledging on the
   assert.deepEqual(events, [
     'pm2:exists',
     'pm2:stop',
+    'stop-issued:true',
     'pm2:verify-stopped',
     'query:SELECT 1 AS lock_session_alive',
     'ack:true',
@@ -98,6 +104,7 @@ test('lock holder stops and verifies the old process before acknowledging on the
 });
 
 test('lock loss after PM2 stop never emits a false stopped acknowledgement', async () => {
+  let stopIssued = false;
   let acknowledged = false;
   await assert.rejects(
     () => stopOldProcessWithLockVerification({
@@ -109,14 +116,17 @@ test('lock loss after PM2 stop never emits a false stopped acknowledgement', asy
         stop: async () => {},
         isStopped: async () => true,
       },
+      acknowledgeStopIssued: async () => { stopIssued = true; },
       acknowledgeStopped: async () => { acknowledged = true; },
     }),
     /mysql connection lost/,
   );
+  assert.equal(stopIssued, true);
   assert.equal(acknowledged, false);
 });
 
 test('failed PM2 stop verification never emits a stopped acknowledgement', async () => {
+  let stopIssued = false;
   let acknowledged = false;
   await assert.rejects(
     () => stopOldProcessWithLockVerification({
@@ -126,11 +136,34 @@ test('failed PM2 stop verification never emits a stopped acknowledgement', async
         stop: async () => {},
         isStopped: async () => false,
       },
+      acknowledgeStopIssued: async () => { stopIssued = true; },
       acknowledgeStopped: async () => { acknowledged = true; },
     }),
     /PM2 process is still running/,
   );
+  assert.equal(stopIssued, true);
   assert.equal(acknowledged, false);
+});
+
+test('real PM2 process manager requires successful explicit all-zero pid output', async () => {
+  const createPm2ProcessManager = holdDeployDrain.createPm2ProcessManager;
+  assert.equal(typeof createPm2ProcessManager, 'function');
+
+  const isStoppedFor = async (stdout) => createPm2ProcessManager(
+    'meiao-internal',
+    async () => ({ stdout }),
+  ).isStopped();
+
+  assert.equal(await isStoppedFor('0\n'), true);
+  assert.equal(await isStoppedFor('0\n00\n'), true);
+  assert.equal(await isStoppedFor(''), false);
+  assert.equal(await isStoppedFor('321\n'), false);
+  await assert.rejects(
+    () => createPm2ProcessManager('meiao-internal', async () => {
+      throw new Error('pm2 pid failed');
+    }).isStopped(),
+    /pm2 pid failed/,
+  );
 });
 
 test('deployment health requires both HTTP and worker health', () => {

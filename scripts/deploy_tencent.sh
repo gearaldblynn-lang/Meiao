@@ -41,6 +41,15 @@ run_remote_deploy_readiness() {
     set -a
     source .env.server
     set +a
+    DRAIN_MARKER_FILE="\${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}"
+    DRAIN_MARKER_CONTENT=''
+    if [ -f "\$DRAIN_MARKER_FILE" ]; then
+      DRAIN_MARKER_CONTENT=\$(cat "\$DRAIN_MARKER_FILE")
+    fi
+    if [ "\$DRAIN_MARKER_CONTENT" = 'manual' ]; then
+      echo '检测到未恢复的 manual 部署门禁，上传前检查已拦截本次发布。'
+      exit 2
+    fi
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' MEIAO_DEPLOY_READINESS_RUN=1 node --input-type=module
   " < "$ROOT_DIR/scripts/check-deploy-readiness.mjs"
 }
@@ -121,12 +130,14 @@ tar \
     # 新进程启动后才开放网络做 health，此时 marker 仍会拒绝所有写请求并暂停 worker。
     DRAIN_MARKER_FILE="\${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}"
     DRAIN_READY_FILE="/tmp/meiao-deploy-drain-ready-\$\$"
+    DRAIN_STOP_ISSUED_FILE="/tmp/meiao-deploy-drain-stop-issued-\$\$"
     DRAIN_STOPPED_FILE="/tmp/meiao-deploy-drain-stopped-\$\$"
     DRAIN_RELEASE_FILE="/tmp/meiao-deploy-drain-release-\$\$"
     DRAIN_NETWORK_STATE_FILE="/tmp/meiao-deploy-network-drain-\$\$.json"
     DRAIN_NETWORK_COMMENT="meiao-deploy-\$\$"
     DRAIN_PID=''
     NETWORK_DRAIN_ACTIVE=0
+    OLD_PROCESS_STOP_ISSUED=0
     OLD_PROCESS_STOPPED=0
     NEW_PROCESS_STARTED=0
     NEW_PROCESS_STOPPED=0
@@ -166,6 +177,7 @@ tar \
         wait "\$DRAIN_PID" || true
       fi
       DRAIN_PID=''
+      if [ -f "\$DRAIN_STOP_ISSUED_FILE" ]; then OLD_PROCESS_STOP_ISSUED=1; fi
       if [ -f "\$DRAIN_STOPPED_FILE" ]; then OLD_PROCESS_STOPPED=1; fi
 
       if [ "\$NEW_PROCESS_STARTED" = '1' ] && [ "\$HEALTH_READY" != '1' ]; then
@@ -182,12 +194,14 @@ tar \
 
       RELEASE_DRAIN=0
       CLEANUP_DECISION=\$(node scripts/deploy-lifecycle.mjs cleanup \
-        "\$OLD_PROCESS_STOPPED" "\$NEW_PROCESS_STARTED" "\$HEALTH_READY" "\$NEW_PROCESS_STOPPED" \
+        "\$OLD_PROCESS_STOPPED" "\$OLD_PROCESS_STOP_ISSUED" \
+        "\$NEW_PROCESS_STARTED" "\$HEALTH_READY" "\$NEW_PROCESS_STOPPED" \
         2>/dev/null || echo retain)
       if [ "\$CLEANUP_DECISION" = 'release' ]; then RELEASE_DRAIN=1; fi
       if [ "\$RELEASE_DRAIN" = '1' ]; then
         if disable_network_drain; then
-          rm -f "\$DRAIN_READY_FILE" "\$DRAIN_STOPPED_FILE" "\$DRAIN_RELEASE_FILE" \
+          rm -f "\$DRAIN_READY_FILE" "\$DRAIN_STOP_ISSUED_FILE" "\$DRAIN_STOPPED_FILE" \
+            "\$DRAIN_RELEASE_FILE" \
             "\$DRAIN_NETWORK_STATE_FILE" "\$DRAIN_MARKER_FILE"
         else
           retain_deploy_drain
@@ -197,6 +211,8 @@ tar \
         retain_deploy_drain
         if [ "\$OLD_PROCESS_STOPPED" = '1' ] && [ "\$NEW_PROCESS_STARTED" != '1' ]; then
           echo '严重：旧服务已停止且新服务未启动，当前服务已停止；必须按恢复流程人工处理。'
+        elif [ "\$OLD_PROCESS_STOP_ISSUED" = '1' ] && [ "\$NEW_PROCESS_STARTED" != '1' ]; then
+          echo '严重：旧服务停机命令已发出但状态未核实，且新服务未启动；服务可能已停止，必须人工恢复。'
         else
           echo '新进程未确认停止，保留维护门禁和 marker 等待人工处理。'
         fi
@@ -213,6 +229,7 @@ tar \
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' \
       node scripts/hold-deploy-drain.mjs \
         --ready-file "\$DRAIN_READY_FILE" \
+        --stop-issued-file "\$DRAIN_STOP_ISSUED_FILE" \
         --stopped-file "\$DRAIN_STOPPED_FILE" \
         --release-file "\$DRAIN_RELEASE_FILE" &
     DRAIN_PID=\$!
@@ -230,6 +247,7 @@ tar \
     fi
     cat "\$DRAIN_READY_FILE"
     PM2_APP_EXISTS=\$(cat "\$DRAIN_STOPPED_FILE")
+    OLD_PROCESS_STOP_ISSUED=1
     OLD_PROCESS_STOPPED=1
 
     # 原子切换:两次 rename,静态服务零断档
@@ -242,7 +260,8 @@ tar \
     touch "\$DRAIN_RELEASE_FILE"
     wait "\$DRAIN_PID"
     DRAIN_PID=''
-    rm -f "\$DRAIN_READY_FILE" "\$DRAIN_STOPPED_FILE" "\$DRAIN_RELEASE_FILE"
+    rm -f "\$DRAIN_READY_FILE" "\$DRAIN_STOP_ISSUED_FILE" \
+      "\$DRAIN_STOPPED_FILE" "\$DRAIN_RELEASE_FILE"
 
     # start/restart 即使返回失败也可能已经拉起子进程，先进入必须验证停机的清理状态。
     NEW_PROCESS_STARTED=1

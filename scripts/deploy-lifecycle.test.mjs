@@ -9,6 +9,7 @@ import {
 test('failure before a new process starts may release the drain without stopping a process', () => {
   assert.deepEqual(resolveDeployDrainCleanup({
     oldProcessStopped: false,
+    oldProcessStopIssued: false,
     newProcessStarted: false,
     healthReady: false,
     newProcessStopped: false,
@@ -18,6 +19,17 @@ test('failure before a new process starts may release the drain without stopping
 test('failure after old stop and before new start retains gates as service-down', () => {
   assert.deepEqual(resolveDeployDrainCleanup({
     oldProcessStopped: true,
+    oldProcessStopIssued: true,
+    newProcessStarted: false,
+    healthReady: false,
+    newProcessStopped: false,
+  }), { stopNewProcess: false, releaseDrain: false, serviceDown: true });
+});
+
+test('an issued but unverified old-process stop retains gates before a new process starts', () => {
+  assert.deepEqual(resolveDeployDrainCleanup({
+    oldProcessStopped: false,
+    oldProcessStopIssued: true,
     newProcessStarted: false,
     healthReady: false,
     newProcessStopped: false,
@@ -27,12 +39,14 @@ test('failure after old stop and before new start retains gates as service-down'
 test('failed health requires stopping the new process before releasing the drain', () => {
   assert.deepEqual(resolveDeployDrainCleanup({
     oldProcessStopped: true,
+    oldProcessStopIssued: true,
     newProcessStarted: true,
     healthReady: false,
     newProcessStopped: false,
   }), { stopNewProcess: true, releaseDrain: false, serviceDown: false });
   assert.deepEqual(resolveDeployDrainCleanup({
     oldProcessStopped: true,
+    oldProcessStopIssued: true,
     newProcessStarted: true,
     healthReady: false,
     newProcessStopped: true,
@@ -42,6 +56,7 @@ test('failed health requires stopping the new process before releasing the drain
 test('healthy deployment may release the drain while keeping the new process running', () => {
   assert.deepEqual(resolveDeployDrainCleanup({
     oldProcessStopped: true,
+    oldProcessStopIssued: true,
     newProcessStarted: true,
     healthReady: true,
     newProcessStopped: false,
