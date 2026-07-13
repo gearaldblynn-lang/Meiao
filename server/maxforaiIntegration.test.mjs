@@ -93,3 +93,15 @@ test('frontend image submission preserves MaxForAI ids, raw resolution, provider
   assert.match(kieAiServiceSource, /maxRetries: isMaxForAiModel \? 0 : 2/);
   assert.match(kieAiServiceSource, /const allowAutoRecover = !isMaxForAiModel/);
 });
+
+test('all job workers persist inline image results before durable completion', () => {
+  assert.match(serverSource, /persistInlineImageResult/);
+  assert.match(
+    serverSource,
+    /const persistJobOutputAssetsIfEnabled = async \(job, output\) => \{[\s\S]*persistInlineImageResult\(/,
+  );
+  assert.equal(
+    (serverSource.match(/return persistJobOutputAssetsIfEnabled\(job, output\);/g) || []).length,
+    4,
+  );
+});
