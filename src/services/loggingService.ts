@@ -58,6 +58,7 @@ export const ACTION_LABELS: Record<string, string> = {
   analysis_token_usage: '分析用量统计',
   analysis_job_recovered_after_poll_error: '分析任务恢复成功',
   analysis_semantic_fallback_started: '分析语义降级',
+  retouch_analysis_fallback: '精修分析降级',
   create_image_task: '创建图像任务',
   create_video_task: '创建视频任务',
   recover_task: '找回任务结果',

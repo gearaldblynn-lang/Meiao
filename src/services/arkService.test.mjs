@@ -132,6 +132,53 @@ test('analysis service treats transient KIE task-not-found planning states as re
   );
 });
 
+test('retouch keeps provider failure identity and falls back without resubmitting analysis', () => {
+  const retouchBlock = arkServiceSource.match(
+    /export const analyzeRetouchTask = async[\s\S]*?export const generateMarketingSchemes = async/,
+  )?.[0] || '';
+
+  assert.match(
+    arkServiceSource,
+    /import \{[^}]*buildRetouchAnalysisFallback[^}]*shouldUseRetouchAnalysisFallback[^}]*\} from ['"]\.\/retouchAnalysisFallback\.mjs['"]/,
+    'retouch should use the pure deterministic fallback contract',
+  );
+  assert.match(
+    arkServiceSource,
+    /type AnalysisErrorJob =[\s\S]*const createAnalysisJobError = \(job: AnalysisErrorJob[\s\S]*error\.code = String\(job\?\.errorCode[\s\S]*error\.providerTaskId[\s\S]*error\.jobId/,
+    'terminal analysis jobs should preserve provider error identity for callers',
+  );
+  assert.match(
+    arkServiceSource,
+    /throw createAnalysisJobError\(finalJob\)/,
+    'failed backend analysis jobs should not be reduced to a generic Error',
+  );
+  assert.match(
+    retouchBlock,
+    /shouldUseRetouchAnalysisFallback\(error\)[\s\S]*buildRetouchAnalysisFallback\([\s\S]*retouch_analysis_fallback[\s\S]*status: 'success'[\s\S]*fallbackUsed: true/,
+    'terminal provider failures should continue retouch with a logged local fallback',
+  );
+  assert.match(
+    retouchBlock,
+    /return \{ status: 'error', description: '', message: error\.message, errorCode/,
+    'non-provider failures should remain visible and retain their code',
+  );
+  assert.match(
+    retouchBlock,
+    /level: 'info',[\s\S]*action: 'retouch_analysis_fallback'/,
+    'fallback diagnostics should use the supported internal-log level',
+  );
+  assert.doesNotMatch(
+    retouchBlock,
+    /detail:\s*String\(error\?\.message/,
+    'fallback diagnostics must not copy provider response text into a second log record',
+  );
+  assert.match(
+    typesSource,
+    /export interface ArkAnalysisResult \{[\s\S]*errorCode\?: string;[\s\S]*fallbackUsed\?: boolean;/,
+    'retouch analysis results should expose whether fallback was used',
+  );
+});
+
 test('marketing planning returns recoverable task-not-found status instead of logging a failed plan', () => {
   const marketingBlock = arkServiceSource.match(
     /export const generateMarketingSchemes = async[\s\S]*?export const generateDetailPageReplicationSchemes = async/,

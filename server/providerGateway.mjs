@@ -138,6 +138,37 @@ const createProviderError = (code, message, extras = null) => {
   return error;
 };
 
+const normalizeTransportText = (value, maxLength = 120) => String(value || '').trim().slice(0, maxLength);
+
+const extractTransportErrorMeta = (error) => {
+  const explicitCode = normalizeTransportText(error?.transportErrorCode);
+  if (explicitCode) {
+    const explicitPort = Number(error?.transportRemotePort || 0);
+    return {
+      transportErrorCode: explicitCode,
+      transportErrorSyscall: normalizeTransportText(error?.transportErrorSyscall, 80),
+      transportRemoteAddress: normalizeTransportText(error?.transportRemoteAddress),
+      transportRemotePort: Number.isFinite(explicitPort) && explicitPort > 0 ? explicitPort : 0,
+    };
+  }
+
+  const directCause = error?.cause && typeof error.cause === 'object' ? error.cause : null;
+  const nestedCauses = Array.isArray(directCause?.errors) ? directCause.errors : [];
+  const cause = [directCause, ...nestedCauses, error]
+    .find((item) => item && typeof item === 'object' && (
+      item.code || item.errno || item.syscall || item.address || item.socket?.remoteAddress
+    ));
+  if (!cause) return {};
+
+  const remotePort = Number(cause?.port || cause?.socket?.remotePort || 0);
+  return {
+    transportErrorCode: normalizeTransportText(cause?.code || cause?.errno),
+    transportErrorSyscall: normalizeTransportText(cause?.syscall, 80),
+    transportRemoteAddress: normalizeTransportText(cause?.address || cause?.socket?.remoteAddress),
+    transportRemotePort: Number.isFinite(remotePort) && remotePort > 0 ? remotePort : 0,
+  };
+};
+
 const normalizeKieTaskCreationError = (responseStatus, result = {}, defaultMessage) => {
   const code = Number(result?.code || 0);
   const rawMessage = String(result?.msg || defaultMessage || '').trim();
@@ -218,6 +249,7 @@ const fetchKieOnce = async (
     throw createProviderError('provider_network_error', error?.message || 'Kie 网络请求失败', {
       providerStage,
       providerStatus: 'network_error',
+      ...extractTransportErrorMeta(error),
     });
   } finally {
     clearTimeout(timeoutId);
@@ -315,6 +347,7 @@ const fetchKieWithTimeout = async (
             providerStage,
             providerStatus: 'submission_unknown',
             submissionUnknown: true,
+            ...extractTransportErrorMeta(error),
           }
         );
       }

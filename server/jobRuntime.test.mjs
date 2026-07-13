@@ -662,6 +662,39 @@ test('buildJobRuntimeLogMeta counts multimodal chat payload inputs without leaki
   assert.equal(JSON.stringify(meta).includes('private-b.pdf'), false);
 });
 
+test('buildJobRuntimeLogMeta exposes sanitized transport cause without leaking request data', () => {
+  const meta = buildJobRuntimeLogMeta({
+    job: {
+      id: 'job-network',
+      module: 'retouch',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      payload: {
+        requestId: 'request-network',
+        messages: [{
+          role: 'user',
+          content: [{ type: 'image_url', image_url: { url: 'https://example.com/private.png' } }],
+        }],
+      },
+    },
+    error: {
+      code: 'provider_submission_unknown',
+      transportErrorCode: 'UND_ERR_SOCKET',
+      transportErrorSyscall: 'read',
+      transportRemoteAddress: '104.18.5.14',
+      transportRemotePort: 443,
+      authorization: 'Bearer secret-must-not-leak',
+    },
+  });
+
+  assert.equal(meta.transportErrorCode, 'UND_ERR_SOCKET');
+  assert.equal(meta.transportErrorSyscall, 'read');
+  assert.equal(meta.transportRemoteAddress, '104.18.5.14');
+  assert.equal(meta.transportRemotePort, 443);
+  assert.equal(JSON.stringify(meta).includes('private.png'), false);
+  assert.equal(JSON.stringify(meta).includes('secret-must-not-leak'), false);
+});
+
 test('buildJobRuntimeLogMeta estimates runtime from createdAt when recovered jobs lost startedAt', () => {
   const meta = buildJobRuntimeLogMeta({
     job: {

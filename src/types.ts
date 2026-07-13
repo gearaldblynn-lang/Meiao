@@ -1163,6 +1163,8 @@ export interface ArkAnalysisResult {
   description: string;
   status: 'success' | 'error';
   message?: string;
+  errorCode?: string;
+  fallbackUsed?: boolean;
 }
 
 export interface ArkBuyerShowResult {

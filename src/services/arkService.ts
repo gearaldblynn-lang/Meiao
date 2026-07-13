@@ -5,6 +5,7 @@ import { cancelInternalJob, createInternalJob, fetchInternalJob, fetchSystemConf
 import { resolvePublicAssetUrl } from "../utils/modelAssetUrl.mjs";
 import { getSupportedAspectRatiosForModel } from "../utils/modelAspectRatio";
 import { normalizeExactAspectRatio, resolveNearestSupportedAspectRatio } from "../utils/aspectRatioUtils";
+import { buildRetouchAnalysisFallback, shouldUseRetouchAnalysisFallback } from "./retouchAnalysisFallback.mjs";
 
 const estimatePromptTokens = (items: Array<{ type: string; text?: string }>) =>
   items.reduce((sum, item) => sum + Math.ceil((item.text || '').length / 4), 0);
@@ -322,6 +323,30 @@ const ensureUsableAnalysisContent = (content: string, label = 'AI 策划') => {
   return normalized;
 };
 
+type AnalysisErrorJob = {
+  id?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  providerTaskId?: string;
+  result?: {
+    errorCode?: string;
+    errorMessage?: string;
+    providerTaskId?: string;
+  };
+};
+
+const createAnalysisJobError = (job: AnalysisErrorJob, fallbackMessage = 'AI 分析请求失败') => {
+  const error = new Error(job?.errorMessage || job?.result?.errorMessage || fallbackMessage) as Error & {
+    code?: string;
+    providerTaskId?: string;
+    jobId?: string;
+  };
+  error.code = String(job?.errorCode || job?.result?.errorCode || '').trim();
+  error.providerTaskId = String(job?.providerTaskId || job?.result?.providerTaskId || '').trim();
+  error.jobId = String(job?.id || '').trim();
+  return error;
+};
+
 const buildAnalysisResponseFromJob = (
   finalJob: any,
   normalizedContent: Array<{ type: string; text?: string }>,
@@ -337,7 +362,7 @@ const buildAnalysisResponseFromJob = (
     if (isRecoverableAnalysisJobFailure(finalJob)) {
       throw createRecoverableAnalysisSyncError();
     }
-    throw new Error(finalJob.errorMessage || 'AI 分析请求失败');
+    throw createAnalysisJobError(finalJob);
   }
   const content = String(finalJob.result?.content || finalJob.result?.text || '');
   const creditsConsumed = normalizeCreditsConsumed(finalJob.result?.creditsConsumed);
@@ -743,8 +768,38 @@ E Example 示例
     logArkEvent('retouch_analysis', '精修分析完成', 'success', '', { mode });
     return { status: 'success', description: content };
   } catch (error: any) {
-    logArkEvent('retouch_analysis', '精修分析失败', 'failed', error.message, { mode });
-    return { status: 'error', description: '', message: error.message };
+    const errorCode = String(error?.code || '').trim();
+    if (shouldUseRetouchAnalysisFallback(error)) {
+      const description = buildRetouchAnalysisFallback({ mode, hasReference: Boolean(referenceUrl) });
+      void safeCreateInternalLog({
+        level: 'info',
+        module: getActiveModuleContext() || 'retouch',
+        action: 'retouch_analysis_fallback',
+        message: 'KIE 精修分析失败，已使用本地保真精修标准继续生成',
+        status: 'success',
+        meta: {
+          mode,
+          errorCode,
+          providerTaskId: String(error?.providerTaskId || '').trim(),
+          analysisJobId: String(error?.jobId || '').trim(),
+          hasReference: Boolean(referenceUrl),
+        },
+      });
+      logArkEvent('retouch_analysis', '精修分析已降级为本地保真标准', 'success', '', {
+        mode,
+        fallbackUsed: true,
+        errorCode,
+      });
+      return {
+        status: 'success',
+        description,
+        message: 'KIE 分析暂不可用，已使用本地保真精修标准继续生成。',
+        errorCode,
+        fallbackUsed: true,
+      };
+    }
+    logArkEvent('retouch_analysis', '精修分析失败', 'failed', error.message, { mode, errorCode });
+    return { status: 'error', description: '', message: error.message, errorCode };
   }
 };
 
