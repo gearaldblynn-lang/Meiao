@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
+import * as maxForAiProvider from './providerMaxForAiImage.mjs';
+
+const {
   buildMaxForAiImageRequestBody,
   runMaxForAiImageJob,
-} from './providerMaxForAiImage.mjs';
+} = maxForAiProvider;
 
 const jsonResponse = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -28,7 +30,12 @@ test('builds the documented text generation body with relay model and mapped siz
     prompt: '中文产品海报',
     size: '3840x2160',
     n: 1,
+    response_format: 'url',
   });
+});
+
+test('exports a response normalizer for URL and base64 result contracts', () => {
+  assert.equal(typeof maxForAiProvider.extractMaxForAiImageResult, 'function');
 });
 
 test('text generation submits one paid POST and returns the generated URL', async () => {
@@ -58,9 +65,11 @@ test('text generation submits one paid POST and returns the generated URL', asyn
     prompt: '干净的蓝白产品主图',
     size: '1024x1024',
     n: 1,
+    response_format: 'url',
   });
   assert.deepEqual(calls[0][5], { idempotent: false, maxRetries: 0 });
   assert.equal(result.result.imageUrl, 'https://cdn.test/result.png');
+  assert.equal(result.result.providerResponseFormat, 'url');
   assert.equal(result.result.provider, 'maxforai');
   assert.equal(result.result.providerModel, 'gpt-image-2');
   assert.equal(result.providerStage, 'completed');
@@ -93,8 +102,56 @@ test('image edit keeps public HTTPS references, deduplicates them, and caps inpu
     prompt: '保持主体，改成科技海报',
     size: '2016x1344',
     n: 1,
+    response_format: 'url',
     images: sourceUrls.slice(0, 16).map((imageUrl) => ({ image_url: imageUrl })),
   });
+});
+
+test('successful base64 response becomes a validated internal image data URL', async () => {
+  const result = await runMaxForAiImageJob({
+    payload: {
+      model: 'maxforai-image-2-relay',
+      prompt: '蓝色马克杯',
+      aspectRatio: '1:1',
+      resolution: '1K',
+    },
+    env: { MAXFORAI_API_KEY: 'test-key' },
+    deps: {
+      fetchWithTimeout: async () => jsonResponse({
+        created: 1781187443,
+        data: [{ b64_json: 'aGVsbG8=' }],
+      }),
+    },
+  });
+
+  assert.equal(result.result.imageUrl, 'data:image/png;base64,aGVsbG8=');
+  assert.equal(result.result.providerResponseFormat, 'b64_json');
+  assert.equal(result.result.providerModel, 'gpt-image-2');
+});
+
+test('successful response without URL or base64 reports field names without values', async () => {
+  await assert.rejects(
+    () => runMaxForAiImageJob({
+      payload: {
+        model: 'maxforai-image-2-relay',
+        prompt: '蓝色马克杯',
+      },
+      env: { MAXFORAI_API_KEY: 'test-key' },
+      deps: {
+        fetchWithTimeout: async () => jsonResponse({
+          created: 1781187443,
+          data: [{ revised_prompt: 'secret prompt value' }],
+        }),
+      },
+    }),
+    (error) => (
+      error?.code === 'provider_bad_response'
+      && error?.providerStage === 'provider_response'
+      && /created,data/.test(error?.message || '')
+      && /revised_prompt/.test(error?.message || '')
+      && !/secret prompt value/.test(error?.message || '')
+    ),
+  );
 });
 
 test('uploads non-public image material before the paid edit POST', async () => {
