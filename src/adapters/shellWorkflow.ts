@@ -10,6 +10,7 @@ import {
   ModuleConfig,
   OneClickConfig,
   OneClickSubMode,
+  ProductRestoreProjectContext,
   SkuConfig,
 } from '../types';
 import { cancelInternalJob, createInternalJob, uploadInternalAssetStream, storeActiveModuleContext, updateInternalJobResult, waitForInternalJob } from '../services/internalApi';
@@ -38,6 +39,7 @@ import { createWhitespaceCroppedLogoBlob } from '../utils/logoWhitespaceCrop.mjs
 import { createMultiLogoReplacePreviewBlob } from '../utils/logoReplacePreview.mjs';
 import { createGuardedMultiLogoReplaceResultBlob } from '../utils/logoReplaceGuard.mjs';
 import { planBuyerShowSetsConcurrently } from '../utils/buyerShowPlanning';
+import { runShellProductRestoreWorkflow } from './shellProductRestoreWorkflow';
 
 export { extractShellSchemeField } from './shellSchemeFields';
 
@@ -69,6 +71,8 @@ export interface ShellGenerateInput {
   apiConfig?: GlobalApiConfig;
   taskMetadata?: Record<string, unknown>;
   onJobCreated?: (jobId: string, providerTaskId?: string) => void;
+  onProductRestoreAnalysisCompleted?: (context: ProductRestoreProjectContext) => void | Promise<void>;
+  productRestoreContext?: ProductRestoreProjectContext;
   publicBaseUrl?: string;
 }
 
@@ -122,6 +126,9 @@ export interface ShellWorkflowImageResult {
   message?: string;
   errorCode?: string;
   batchIndex?: number;
+  targetMaterialId?: string;
+  analysisJobId?: string;
+  clientSubmissionKey?: string;
   buyerShowEvaluation?: string;
   buyerShowDisplayPrompt?: string;
   logoReplaceGuarded?: boolean;
@@ -1362,13 +1369,14 @@ export const runShellBuyerShowWorkflow = async (
   };
 };
 
-type ShellRetouchMode = 'original' | 'white_bg' | 'product_replace' | 'background_replace' | 'logo_replace';
+type ShellRetouchMode = 'original' | 'white_bg' | 'product_restore' | 'product_replace' | 'background_replace' | 'logo_replace';
 
 const getRetouchMode = (input: ShellGenerateInput): ShellRetouchMode => {
   const value = String(input.subFeature || input.params.mode || '').trim();
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'product_replace' || value.includes('产品'))) return 'product_replace';
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'background_replace' || value.includes('背景'))) return 'background_replace';
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'logo_replace' || value.toLowerCase().includes('logo'))) return 'logo_replace';
+  if (input.module === AppModule.RETOUCH && (value === 'product_restore' || value.includes('产品还原'))) return 'product_restore';
   if (value === 'white_bg' || value.includes('白底')) return 'white_bg';
   if (value === 'original' || value.includes('原图') || !value) return 'original';
   throw new Error('该产品精修子功能待制作，当前只迁移了 3000 的原图精修和白底精修。');
@@ -2733,6 +2741,13 @@ export const runShellRetouchWorkflow = async (
       aspectRatio: input.params.aspectRatio || input.params.ratio || 'auto',
     },
   });
+  if (mode === 'product_restore') {
+    const targetCount = input.materials.restoreTarget?.length || 0;
+    return runShellProductRestoreWorkflow(input, config, {
+      onAnalysisCompleted: input.onProductRestoreAnalysisCompleted,
+      onItemChanged: (item, index) => onItemCompleted?.(item, index, targetCount),
+    });
+  }
   if (mode === 'product_replace') {
     return runProductReplaceWorkflow(input, config, apiConfig, onItemCompleted);
   }
