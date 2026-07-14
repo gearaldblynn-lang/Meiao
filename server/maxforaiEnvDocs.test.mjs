@@ -33,8 +33,15 @@ test('MaxForAI secret and runtime limits are documented without a real key', () 
     assert.match(source, /response_format/);
     assert.match(source, /b64_json/);
     assert.match(source, /托管素材/);
+    assert.match(source, /仅支持 1K 和 2K/);
+    assert.match(source, /4K/);
+    assert.match(source, /固定比例/);
+    assert.match(source, /size.*auto/);
+    assert.match(source, /1536x864/);
+    assert.match(source, /1536x2048/);
   }
   assert.match(repeatedIssues, /49f7bf14f1f55d45e42d4d9f/);
   assert.match(repeatedIssues, /HTTP 200/);
   assert.match(repeatedIssues, /b64_json/);
+  assert.match(repeatedIssues, /maxforai:image_size:unsupported_4k_mapping/);
 });
