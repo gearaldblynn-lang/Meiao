@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readResponseBodyWithTimeout } from './providerBodyRead.mjs';
 import { inferExtensionFromMimeType, parseDataUrlPayload } from './providerAssetTransfer.mjs';
+import { ensureAssetLifecycleSchema } from './assetLifecycleStore.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +17,13 @@ const PERMANENT_ASSET_MODULES = new Set(['agent_center', 'agent_chat']);
 const DEFAULT_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS = 60_000;
 const DEFAULT_RESULT_ASSET_DOWNLOAD_RETRIES = 2;
 const DEFAULT_RESULT_ASSET_DOWNLOAD_RETRY_BASE_MS = 500;
+const STORED_ASSET_STORAGE_STATUSES = new Set([
+  'uploading',
+  'active',
+  'delete_pending',
+  'deleted',
+  'upload_failed',
+]);
 
 const ensureDir = (dirPath) => {
   mkdirSync(dirPath, { recursive: true });
@@ -330,6 +338,7 @@ const mapAssetRow = (row) => ({
   width: Number(row.width || 0),
   height: Number(row.height || 0),
   provider: String(row.provider || 'internal'),
+  storageStatus: String(row.storage_status || 'active'),
   providerSourceUrl: String(row.provider_source_url || ''),
   jobId: String(row.job_id || ''),
   publicUrl: String(row.public_url || ''),
@@ -377,6 +386,7 @@ export const ensureAssetSchema = async (pool) => {
       width INT NOT NULL DEFAULT 0,
       height INT NOT NULL DEFAULT 0,
       provider VARCHAR(40) NOT NULL DEFAULT 'internal',
+      storage_status VARCHAR(20) NOT NULL DEFAULT 'active',
       provider_source_url TEXT NULL,
       job_id VARCHAR(120) NULL,
       public_url TEXT NOT NULL,
@@ -391,12 +401,19 @@ export const ensureAssetSchema = async (pool) => {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
   await pool.query('ALTER TABLE stored_assets MODIFY COLUMN job_id VARCHAR(120) NULL');
+  try {
+    await pool.query("ALTER TABLE stored_assets ADD COLUMN storage_status VARCHAR(20) NOT NULL DEFAULT 'active' AFTER provider");
+  } catch (error) {
+    if (error?.code !== 'ER_DUP_FIELDNAME' && Number(error?.errno || 0) !== 1060) throw error;
+  }
+  await pool.query("UPDATE stored_assets SET storage_status = 'active' WHERE storage_status IS NULL OR storage_status = ''");
   await pool.query(`
     UPDATE stored_assets
     SET expires_at = 0
     WHERE module IN ('agent_center', 'agent_chat')
       AND expires_at <> 0
   `);
+  await ensureAssetLifecycleSchema(pool);
 };
 
 const createAssetRecord = async (pool, record) => {
@@ -405,8 +422,8 @@ const createAssetRecord = async (pool, record) => {
       `INSERT INTO stored_assets (
         id, user_id, module, asset_type, storage_key, original_name, mime_type,
         file_size, width, height, provider, provider_source_url, job_id, public_url,
-        created_at, updated_at, last_accessed_at, expires_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        created_at, updated_at, last_accessed_at, expires_at, deleted_at, storage_status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.userId,
@@ -427,6 +444,7 @@ const createAssetRecord = async (pool, record) => {
         record.lastAccessedAt,
         record.expiresAt,
         record.deletedAt,
+        record.storageStatus || 'active',
       ]
     );
     return record;
@@ -465,6 +483,26 @@ export const markStoredAssetAccessed = async (pool, assetId, touchedAt = now()) 
   }
   const assets = readLocalRegistry();
   const next = assets.map((item) => item.id === assetId ? { ...item, lastAccessedAt: touchedAt, updatedAt: touchedAt } : item);
+  writeLocalRegistry(next);
+};
+
+export const markStoredAssetStorageStatus = async (pool, assetId, storageStatus, touchedAt = now()) => {
+  const normalizedStatus = String(storageStatus || '').trim();
+  if (!STORED_ASSET_STORAGE_STATUSES.has(normalizedStatus)) {
+    throw new Error(`无效的素材存储状态: ${normalizedStatus || 'empty'}`);
+  }
+  if (!assetId) return;
+  if (pool) {
+    await pool.query(
+      'UPDATE stored_assets SET storage_status = ?, updated_at = ? WHERE id = ?',
+      [normalizedStatus, touchedAt, assetId],
+    );
+    return;
+  }
+  const assets = readLocalRegistry();
+  const next = assets.map((item) => item.id === assetId
+    ? { ...item, storageStatus: normalizedStatus, updatedAt: touchedAt }
+    : item);
   writeLocalRegistry(next);
 };
 
@@ -528,6 +566,7 @@ export const persistAssetBuffer = async ({
     width: Number(width || 0),
     height: Number(height || 0),
     provider: String(provider || 'internal').slice(0, 40),
+    storageStatus: 'active',
     providerSourceUrl: String(providerSourceUrl || ''),
     jobId: String(jobId || ''),
     publicUrl: buildAssetPublicUrl(publicBaseUrl, id, safeName),

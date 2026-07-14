@@ -12,6 +12,8 @@ const {
   extractStoredAssetIdFromPublicUrl,
   fetchRemoteAssetBufferWithRetry,
   getPublicBaseUrl,
+  getStoredAssetById,
+  markStoredAssetStorageStatus,
   optimizeMp4BufferForStreaming,
   persistAssetBuffer,
   sanitizeAssetName,
@@ -248,6 +250,55 @@ test('ensureAssetSchema accepts provider task ids longer than local entity ids',
   assert.ok(
     queries.some((sql) => /UPDATE stored_assets\s+SET expires_at = 0\s+WHERE module IN \('agent_center', 'agent_chat'\)/s.test(sql)),
     'startup migration should make existing agent chat assets permanent'
+  );
+  assert.ok(
+    queries.some((sql) => /storage_status/i.test(sql)),
+    'stored assets need an explicit backwards-compatible storage status'
+  );
+  assert.ok(
+    queries.some((sql) => /CREATE TABLE IF NOT EXISTS asset_cleanup_tasks/i.test(sql)),
+    'startup migration should create the durable cleanup queue'
+  );
+});
+
+test('legacy stored asset rows map to active storage status', async () => {
+  const pool = {
+    query: async () => [[{
+      id: 'legacy-asset',
+      user_id: 'user-1',
+      storage_key: 'user-1/source/legacy.png',
+      provider: 'internal',
+      public_url: '/api/assets/file/legacy-asset/legacy.png',
+      created_at: 1,
+      updated_at: 1,
+      last_accessed_at: 1,
+      expires_at: 0,
+      deleted_at: null,
+    }]],
+  };
+
+  const asset = await getStoredAssetById(pool, 'legacy-asset');
+
+  assert.equal(asset.storageStatus, 'active');
+});
+
+test('markStoredAssetStorageStatus persists a valid state transition', async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, values) => {
+      calls.push({ sql: String(sql), values });
+      return [[]];
+    },
+  };
+
+  await markStoredAssetStorageStatus(pool, 'asset-1', 'delete_pending', 1234);
+
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].sql, /UPDATE stored_assets SET storage_status = \?/);
+  assert.deepEqual(calls[0].values, ['delete_pending', 1234, 'asset-1']);
+  await assert.rejects(
+    () => markStoredAssetStorageStatus(pool, 'asset-1', 'unknown_state', 1234),
+    /无效的素材存储状态/,
   );
 });
 
