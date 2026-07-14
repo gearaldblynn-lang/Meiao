@@ -128,7 +128,7 @@ npm run dev
 - `MEIAO_KIE_ASSET_UPLOAD_RETRIES` / `MEIAO_KIE_ASSET_UPLOAD_RETRY_BASE_MS`：默认 `2` / `1000`；只用于文件上传 POST 的连接错误与 `429/500/502/503/504` 响应重试，不放宽 createTask/chat 等可能扣费的提交 POST。
 - `MEIAO_KIE_ASSET_UPLOAD_CACHE_TTL_MS` / `MEIAO_KIE_ASSET_UPLOAD_CACHE_MAX_ENTRIES`：默认 `1800000` / `2000`；成功转存 URL 的进程内缓存与容量上限，并发上传同一素材会共享一个 Promise，失败不缓存。
 - `MEIAO_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS` / `MEIAO_RESULT_ASSET_DOWNLOAD_RETRIES` / `MEIAO_RESULT_ASSET_DOWNLOAD_RETRY_BASE_MS`：默认 `60000` / `2` / `500`；provider 已完成后抓取结果文件的幂等 GET/响应体读取预算，只重试连接错误、超时、`429/5xx`，不会重新提交生成任务。
-- `MEIAO_KIE_HTTP_TRANSIENT_RETRIES`：默认 `2`；KIE HTTP 请求级瞬时重试次数（S2 G1）。`fetch failed`/`ECONNRESET` 等连接层错误（未收到任何 HTTP 响应）对所有请求重试；`502/503/504` 响应默认只对只读 GET（recordInfo 查询、素材/结果下载）重试，createTask/chat 等可能扣费的 POST 收到响应不重试。文件上传 POST 使用独立上传预算。
+- `MEIAO_KIE_HTTP_TRANSIENT_RETRIES`：默认 `2`；KIE HTTP 请求级瞬时重试次数（S2 G1）。只有能证明 TCP 尚未建立的 `connect ETIMEDOUT/ENETUNREACH` 等错误才允许 createTask/chat 付费 POST 安全重试；连接建立后的 `ECONNRESET/UND_ERR_SOCKET`、主动超时和未知异常仍进入 `provider_submission_unknown`。`502/503/504` 响应默认只对只读 GET（recordInfo 查询、素材/结果下载）重试，付费 POST 收到响应不重试。文件上传 POST 使用独立上传预算。
 - `MEIAO_KIE_HTTP_RETRY_BASE_MS`：默认 `1000`；请求级重试指数退避基数（毫秒），第 n 次重试等待 `base*(2^n-1)`，默认即 1s、3s。
 - `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_image` 任务提交 KIE 前解析/转存素材的并发。详情页批量生图建议保持保守默认，避免“任务数 × 素材数”打满 KIE 图床。
 - `MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_seedance_video` 任务提交 KIE 前解析/转存图片、视频、音频素材的总并发。分镜视频多素材建议保持保守默认，避免多张大图同时转存导致 `asset_upload fetch failed`。

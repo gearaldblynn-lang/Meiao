@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-07-14 - KIE paid submits may retry only proven pre-connect failures
+
+- Symptom: 多桑账号在 01:03 连续提交 KIE 图片和策划任务，两个 job 都在约 0.63 秒内显示“提交结果暂时无法确认”，KIE 后台没有请求；同一云机的 MaxForAI 图片任务仍成功。
+- Environment: Tencent Cloud production / PM2 cold start / KIE `createTask` and chat POST / Cloudflare edge connectivity.
+- Root cause: Node `fetch` 的完整错误是 AggregateError，全部子错误均停在 `syscall=connect`：IPv4 `ETIMEDOUT`、IPv6 `ENETUNREACH`，证明 TCP 未建立、上游未接单。旧安全策略把所有非幂等 POST 网络错误一律转成 `provider_submission_unknown` 且不重试，没有区分明确的 pre-connect 与连接建立后的模糊断连。
+- Fix: 统一 KIE HTTP 边界只对所有底层原因都属于确定性 connect 失败的请求使用现有 2 次、1 秒/3 秒预算；`UND_ERR_SOCKET/read`、主动超时、混合未知异常和任何 HTTP 响应继续零重提。架构级根因见 `CLAUDE.md` #60。
+- Regression check: `node --test --test-name-pattern='TCP 连接明确未建立|提交类 POST 连接层错误标记未知|paid chat submission connection loss|组合路径:模糊提交错误' server/providerGateway.test.mjs`; `node --test server/providerGateway.test.mjs server/jobRuntime.test.mjs server/providerErrorHumanize.test.mjs`.
+- Avoid next time: 付费 POST 的安全边界按连接阶段判断：只有能证明连接从未建立才能重试；连接已建立后的异常宁可停下人工核对，也不能因为 provider 后台暂时没记录就重提。
+
 ## 2026-07-14 - Optional retouch analysis must not be a single point of failure
 
 - Symptom: 将离账号使用新接入的 Image-2 做商品精修，连续两次在约 1 秒内失败；KIE 后台没有正式任务记录，Image-2 后台也没有出图请求。
