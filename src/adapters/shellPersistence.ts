@@ -312,6 +312,26 @@ const hasGeneratingState = (item: any) => (
 
 const hasErrorState = (item: any) => ['error', 'failed', 'interrupted'].includes(String(item?.status || ''));
 
+// Persisted snapshots can outlive product-facing module renames. Keep former
+// fallback labels recognizable so a stale placeholder does not reappear after
+// the current label changes (for example, 产品精修 -> 图片升级).
+const LEGACY_SHELL_MODULE_LABELS: Record<string, string[]> = {
+  retouch: ['产品精修'],
+};
+
+const getShellModuleFallbackLabels = (module: unknown) => {
+  const moduleKey = compactKey(module);
+  return [
+    SHELL_MODULE_LABELS[moduleKey],
+    ...(LEGACY_SHELL_MODULE_LABELS[moduleKey] || []),
+  ].filter(Boolean);
+};
+
+const ALL_SHELL_MODULE_FALLBACK_LABELS = new Set([
+  ...Object.values(SHELL_MODULE_LABELS),
+  ...Object.values(LEGACY_SHELL_MODULE_LABELS).flat(),
+]);
+
 // 漂移③ 修复:不再硬编码 '一键主详',改为读模块标签常量,并推广到所有模块。
 // 当 prompt 等于该模块自己的中文标签 fallback,且无 media/无 provider 身份时,
 // 这条记录就是"假占位"——以前只保护 one_click,现在所有模块同款保护。
@@ -320,10 +340,10 @@ const hasErrorState = (item: any) => ['error', 'failed', 'interrupted'].includes
 const isStaleFallbackPromptPlaceholderItem = (item: any) => {
   const content = compactKey(item?.prompt || item?.schemeContent || item?.editedContent || item?.originalContent);
   if (!content) return false;
-  const moduleLabel = SHELL_MODULE_LABELS[String(item?.module || '')];
-  const matchesFallbackLabel = moduleLabel
-    ? content === moduleLabel
-    : Object.values(SHELL_MODULE_LABELS).includes(content);
+  const moduleLabels = getShellModuleFallbackLabels(item?.module);
+  const matchesFallbackLabel = moduleLabels.length > 0
+    ? moduleLabels.includes(content)
+    : ALL_SHELL_MODULE_FALLBACK_LABELS.has(content);
   if (!matchesFallbackLabel) return false;
   const id = compactKey(item?.id);
   return (
