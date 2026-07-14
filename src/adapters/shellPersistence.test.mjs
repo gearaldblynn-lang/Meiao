@@ -965,6 +965,110 @@ test('shell persistence lets completed translation file replace stale processing
   assert.equal(nextState.translationMemory.main.isProcessing, false);
 });
 
+const buildPartialProductRestoreProject = (result) => ({
+  id: 'product-restore-partial-project',
+  name: '产品还原部分项目',
+  module: 'retouch',
+  status: result.status === 'completed' ? 'completed' : 'error',
+  createdAt: 1783676600000,
+  results: [result],
+  taskCount: 2,
+  completedCount: result.status === 'completed' ? 1 : 0,
+  subFeature: 'product_restore',
+  generationContext: {
+    prompt: '保留背景',
+    params: { model: 'gpt-image-2', resolution: '2K' },
+    materials: {},
+    productRestore: {
+      targetMaterialIds: ['target-a', 'target-b'],
+    },
+  },
+});
+
+test('shell persistence keeps product restoration generating after one success with one missing target', () => {
+  const nextState = upsertShellProjectIntoPersistedState(
+    buildPersistedAppState(),
+    buildPartialProductRestoreProject({
+      id: 'result-a',
+      backendJobId: 'job-a',
+      taskId: 'provider-a',
+      imageUrl: 'https://example.com/restored-a.png',
+      prompt: '产品还原 A',
+      model: 'gpt-image-2',
+      aspectRatio: 'auto',
+      status: 'completed',
+      createdAt: 1783676601000,
+      module: 'retouch',
+      subFeature: 'product_restore',
+      targetMaterialId: 'target-a',
+      batchIndex: 1,
+    }),
+  );
+
+  assert.equal(nextState.shellProjects[0].status, 'generating');
+  assert.equal(nextState.shellProjects[0].taskCount, 2);
+  assert.equal(nextState.shellProjects[0].completedCount, 1);
+});
+
+test('shell persistence keeps product restoration generating after one failure with one missing target', () => {
+  const nextState = upsertShellProjectIntoPersistedState(
+    buildPersistedAppState(),
+    buildPartialProductRestoreProject({
+      id: 'result-a',
+      backendJobId: 'job-a',
+      taskId: 'provider-a',
+      imageUrl: '',
+      prompt: '产品还原 A',
+      model: 'gpt-image-2',
+      aspectRatio: 'auto',
+      status: 'error',
+      error: '生成失败',
+      createdAt: 1783676601000,
+      module: 'retouch',
+      subFeature: 'product_restore',
+      targetMaterialId: 'target-a',
+      batchIndex: 1,
+    }),
+  );
+
+  assert.equal(nextState.shellProjects[0].status, 'generating');
+  assert.equal(nextState.shellProjects[0].taskCount, 2);
+  assert.equal(nextState.shellProjects[0].completedCount, 0);
+});
+
+test('shell persistence replaces an old product restoration job for the same target and batch', () => {
+  const oldProject = buildPartialProductRestoreProject({
+    id: 'old-result-a',
+    backendJobId: 'old-job-a',
+    taskId: 'old-provider-a',
+    imageUrl: '',
+    prompt: '产品还原 A',
+    model: 'gpt-image-2',
+    aspectRatio: 'auto',
+    status: 'generating',
+    createdAt: 1783676601000,
+    module: 'retouch',
+    subFeature: 'product_restore',
+    targetMaterialId: 'target-a',
+    batchIndex: 1,
+  });
+  const newProject = buildPartialProductRestoreProject({
+    ...oldProject.results[0],
+    id: 'new-result-a',
+    backendJobId: 'new-job-a',
+    taskId: 'new-provider-a',
+    imageUrl: 'https://example.com/restored-a.png',
+    status: 'completed',
+    createdAt: 1783676602000,
+  });
+  const withOldJob = upsertShellProjectIntoPersistedState(buildPersistedAppState(), oldProject);
+  const withReplacement = upsertShellProjectIntoPersistedState(withOldJob, newProject);
+
+  assert.equal(withReplacement.shellProjects[0].results.length, 1);
+  assert.equal(withReplacement.shellProjects[0].results[0].backendJobId, 'new-job-a');
+  assert.equal(withReplacement.shellProjects[0].results[0].imageUrl, 'https://example.com/restored-a.png');
+});
+
 test('shell persistence restores video storyboard projects with board prompts and scripts', () => {
   const state = buildPersistedAppState({
     videoMemory: {

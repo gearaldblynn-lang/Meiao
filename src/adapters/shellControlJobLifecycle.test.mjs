@@ -83,7 +83,7 @@ test('product restoration lifecycle persists durable analysis before image callb
   );
   assert.match(
     shellAppSource,
-    /onProductRestoreAnalysisCompleted:\s*async\s*\(context\)[\s\S]{0,1200}completedCount:\s*0[\s\S]{0,1200}await persistProjectToSharedState/,
+    /onProductRestoreAnalysisCompleted:\s*async\s*\(context\)[\s\S]{0,2200}completedCount:\s*0[\s\S]{0,1200}await persistProjectToSharedState/,
   );
   assert.match(
     shellAppSource,
@@ -104,6 +104,42 @@ test('product restoration refresh resumes the existing analysis and only missing
   assert.match(shellAppSource, /missingTargets/);
   assert.match(shellAppSource, /runShellProductRestoreItem\(\{/);
   assert.match(shellAppSource, /targetMaterialId[\s\S]{0,180}batchIndex/);
+});
+
+test('product restoration context persistence fails closed before image fan-out', () => {
+  assert.match(
+    shellAppSource,
+    /const analysisPersisted = await persistProjectToSharedState\(analysisProject\);[\s\S]{0,500}if \(!analysisPersisted\)[\s\S]{0,500}throw/,
+  );
+  assert.match(
+    shellAppSource,
+    /const resumedProjectPersisted = await persistProjectToSharedState\(resumedProject\);[\s\S]{0,500}!resumedProjectPersisted[\s\S]{0,500}\) return;[\s\S]{0,500}fetchInternalJobs/,
+  );
+  assert.match(
+    shellAppSource,
+    /const hydratedProjectPersisted = await persistProjectToSharedState\(resumedProject\);[\s\S]{0,500}!hydratedProjectPersisted[\s\S]{0,500}\) return;[\s\S]{0,1200}missingTargets/,
+  );
+});
+
+test('product restoration deletion aborts execution and aggregates late job identities', () => {
+  assert.match(shellAppSource, /type ProductRestoreProjectDeletionGuard = \{/);
+  assert.match(shellAppSource, /productRestoreProjectDeletionGuardsRef/);
+  assert.match(
+    shellAppSource,
+    /const recordProductRestoreJobCreated = useCallback[\s\S]{0,1800}deletionGuard\.jobIds\.add\(backendJobId\)[\s\S]{0,900}cancelInternalJob\(backendJobId\)[\s\S]{0,1200}persistDeletionToSharedState/,
+  );
+  assert.match(
+    shellAppSource,
+    /taskControllersRef\.current\[projectId\] = controller;[\s\S]{0,900}recordProductRestoreJobCreated/,
+  );
+  assert.match(
+    shellAppSource,
+    /const productRestoreDeletionGuard: ProductRestoreProjectDeletionGuard[\s\S]{0,1400}taskControllersRef\.current\[projectId\]\?\.abort\(\)/,
+  );
+  assert.match(
+    shellAppSource,
+    /persistDeletionToSharedState\(\{ projectId, jobIds: Array\.from\(productRestoreDeletionGuard\.jobIds\) \}\)/,
+  );
 });
 
 test('product restoration cancellation and deletion aggregate the analysis and image jobs', () => {

@@ -1,7 +1,11 @@
-import type { AppModule, VeoProjectState } from '../types.ts';
+import type { AppModule, ProductRestoreProjectContext, VeoProjectState } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
 import { isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
-import { mergeArrayByStableKeys } from '../utils/taskResultReconcile.mjs';
+import {
+  getProductRestoreExpectedTargetCount,
+  hasMissingProductRestoreTargets,
+  mergeArrayByStableKeys,
+} from '../utils/taskResultReconcile.mjs';
 import { SHELL_MODULE_LABELS } from './shellDataAdapter.ts';
 
 const INTERNAL_BACKEND_JOB_ID_PATTERN = /^[a-f0-9]{24}$/i;
@@ -37,6 +41,8 @@ type ShellResult = {
   taskId?: string;
   providerTaskId?: string;
   backendJobId?: string;
+  batchIndex?: number;
+  targetMaterialId?: string;
   creditsConsumed?: number;
   error?: string;
   matchedAspectRatio?: string;
@@ -92,6 +98,7 @@ type ShellProject = {
       logoReplaceRegion?: Record<string, unknown>;
       logoReplaceRegions?: Array<Record<string, unknown>>;
     }>>;
+    productRestore?: ProductRestoreProjectContext;
   };
   sourceType?: 'persisted' | 'job';
   backendJobId?: string;
@@ -328,25 +335,37 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
     && completedCount === 0
     && !hasGenerating
     && !hasError;
+  const productRestoreProject = {
+    ...baseProject,
+    ...incomingProject,
+    results,
+  };
   const taskCount = Math.max(
     Number(baseProject.taskCount || 0) || 0,
     Number(incomingProject.taskCount || 0) || 0,
     plans.length,
     schemes.length,
     stateItems.length,
+    getProductRestoreExpectedTargetCount(productRestoreProject),
     1,
   );
-  const status = hasCompletedMediaItem && !hasGenerating && !hasError
-    ? 'completed'
-    : completedCount >= taskCount
+  const hasMissingProductRestoreTarget = hasMissingProductRestoreTargets({
+    ...productRestoreProject,
+    taskCount,
+  }, results);
+  const status = hasMissingProductRestoreTarget
+    ? 'generating'
+    : hasCompletedMediaItem && !hasGenerating && !hasError
       ? 'completed'
-      : hasGenerating
-        ? 'generating'
-        : hasError
-          ? 'error'
-          : isOneClickPlanOnly
-            ? 'planning'
-            : incomingProject.status || baseProject.status;
+      : completedCount >= taskCount
+        ? 'completed'
+        : hasGenerating
+          ? 'generating'
+          : hasError
+            ? 'error'
+            : isOneClickPlanOnly
+              ? 'planning'
+              : incomingProject.status || baseProject.status;
   const merged = {
     ...baseProject,
     ...incomingProject,
