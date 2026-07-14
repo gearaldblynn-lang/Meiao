@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 
 import {
   MAXFORAI_IMAGE_MODEL_IDS,
+  MAXFORAI_SUPPORTED_RESOLUTIONS,
   getMaxForAiImageModel,
   isMaxForAiImageModel,
+  normalizeMaxForAiImageResolution,
   resolveMaxForAiImageModelId,
   resolveMaxForAiImageSize,
 } from './maxforaiImageModels.mjs';
@@ -33,23 +35,38 @@ test('MaxForAI exposes only the replacement relay model', () => {
   }
 });
 
-test('MaxForAI maps every documented ratio and resolution to an exact size', () => {
+test('MaxForAI exposes only 1K and 2K and normalizes legacy 4K to 2K', () => {
+  assert.deepEqual(MAXFORAI_SUPPORTED_RESOLUTIONS, ['1K', '2K']);
+  assert.equal(normalizeMaxForAiImageResolution('1K'), '1K');
+  assert.equal(normalizeMaxForAiImageResolution('2k'), '2K');
+  assert.equal(normalizeMaxForAiImageResolution('4K'), '2K');
+  assert.equal(normalizeMaxForAiImageResolution(''), '1K');
+  assert.throws(
+    () => normalizeMaxForAiImageResolution('8K'),
+    /MaxForAI 不支持的图片分辨率/,
+  );
+});
+
+test('MaxForAI maps every documented ratio to exact 1K and 2K sizes', () => {
   const expected = {
-    '1:1': ['1024x1024', '2048x2048', '2880x2880'],
-    '16:9': ['1536x864', '2048x1152', '3840x2160'],
-    '9:16': ['864x1536', '1152x2048', '2160x3840'],
-    '4:3': ['1344x1008', '2048x1536', '3264x2448'],
-    '3:4': ['1008x1344', '1536x2048', '2448x3264'],
-    '3:2': ['1536x1024', '2016x1344', '3504x2336'],
-    '2:3': ['1024x1536', '1344x2016', '2336x3504'],
+    '1:1': ['1024x1024', '2048x2048'],
+    '16:9': ['1536x864', '2048x1152'],
+    '9:16': ['864x1536', '1152x2048'],
+    '4:3': ['1344x1008', '2048x1536'],
+    '3:4': ['1008x1344', '1536x2048'],
+    '3:2': ['1536x1024', '2016x1344'],
+    '2:3': ['1024x1536', '1344x2016'],
   };
 
   for (const [ratio, sizes] of Object.entries(expected)) {
-    ['1K', '2K', '4K'].forEach((resolution, index) => {
+    MAXFORAI_SUPPORTED_RESOLUTIONS.forEach((resolution, index) => {
       assert.equal(resolveMaxForAiImageSize(ratio, resolution), sizes[index]);
     });
+    assert.equal(resolveMaxForAiImageSize(ratio, '4K'), sizes[1]);
   }
 
+  assert.equal(resolveMaxForAiImageSize('auto', '1K'), 'auto');
+  assert.equal(resolveMaxForAiImageSize('auto', '2K'), 'auto');
   assert.equal(resolveMaxForAiImageSize('auto', '4K'), 'auto');
   assert.throws(
     () => resolveMaxForAiImageSize('4:5', '1K'),

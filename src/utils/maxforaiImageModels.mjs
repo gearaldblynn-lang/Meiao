@@ -21,14 +21,16 @@ export const MAXFORAI_SUPPORTED_ASPECT_RATIOS = Object.freeze([
   '2:3',
 ]);
 
+export const MAXFORAI_SUPPORTED_RESOLUTIONS = Object.freeze(['1K', '2K']);
+
 const MAXFORAI_IMAGE_SIZE_TABLE = Object.freeze({
-  '1:1': Object.freeze({ '1K': '1024x1024', '2K': '2048x2048', '4K': '2880x2880' }),
-  '16:9': Object.freeze({ '1K': '1536x864', '2K': '2048x1152', '4K': '3840x2160' }),
-  '9:16': Object.freeze({ '1K': '864x1536', '2K': '1152x2048', '4K': '2160x3840' }),
-  '4:3': Object.freeze({ '1K': '1344x1008', '2K': '2048x1536', '4K': '3264x2448' }),
-  '3:4': Object.freeze({ '1K': '1008x1344', '2K': '1536x2048', '4K': '2448x3264' }),
-  '3:2': Object.freeze({ '1K': '1536x1024', '2K': '2016x1344', '4K': '3504x2336' }),
-  '2:3': Object.freeze({ '1K': '1024x1536', '2K': '1344x2016', '4K': '2336x3504' }),
+  '1:1': Object.freeze({ '1K': '1024x1024', '2K': '2048x2048' }),
+  '16:9': Object.freeze({ '1K': '1536x864', '2K': '2048x1152' }),
+  '9:16': Object.freeze({ '1K': '864x1536', '2K': '1152x2048' }),
+  '4:3': Object.freeze({ '1K': '1344x1008', '2K': '2048x1536' }),
+  '3:4': Object.freeze({ '1K': '1008x1344', '2K': '1536x2048' }),
+  '3:2': Object.freeze({ '1K': '1536x1024', '2K': '2016x1344' }),
+  '2:3': Object.freeze({ '1K': '1024x1536', '2K': '1344x2016' }),
 });
 
 export const isMaxForAiImageModel = (value = '') =>
@@ -47,10 +49,17 @@ export const resolveMaxForAiImageModelId = (value = '') => {
   ))?.id || '';
 };
 
+export const normalizeMaxForAiImageResolution = (value = '1K') => {
+  const normalized = String(value || '1K').trim().toUpperCase() || '1K';
+  if (normalized === '4K') return '2K';
+  if (MAXFORAI_SUPPORTED_RESOLUTIONS.includes(normalized)) return normalized;
+  throw new Error(`MaxForAI 不支持的图片分辨率: ${normalized}`);
+};
+
 export const resolveMaxForAiImageSize = (aspectRatio = 'auto', resolution = '1K') => {
   const ratio = String(aspectRatio || 'auto').trim() || 'auto';
   if (ratio === 'auto') return 'auto';
-  const normalizedResolution = String(resolution || '1K').trim().toUpperCase() || '1K';
+  const normalizedResolution = normalizeMaxForAiImageResolution(resolution);
   const size = MAXFORAI_IMAGE_SIZE_TABLE[ratio]?.[normalizedResolution];
   if (!size) {
     throw new Error(`MaxForAI 不支持的图片比例或分辨率: ${ratio}/${normalizedResolution}`);

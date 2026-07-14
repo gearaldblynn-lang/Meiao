@@ -3,6 +3,8 @@ import { GenerationQuality, KieAiModel } from '../types';
 import {
   MAXFORAI_IMAGE_MODEL_IDS,
   getMaxForAiImageModel,
+  normalizeMaxForAiImageResolution,
+  resolveMaxForAiImageModelId,
 } from './maxforaiImageModels.mjs';
 import { getImageModelCapabilities } from './modelCapabilities.mjs';
 
@@ -22,8 +24,22 @@ export const QUALITY_OPTIONS: { label: string; value: GenerationQuality }[] = [
 export const getDefaultQualityForModel = (_model: KieAiModel): GenerationQuality =>
   '1k';
 
-export const getQualityOptionsForModel = (model: KieAiModel) =>
-  getImageModelCapabilities(model).supportsQualitySelection ? QUALITY_OPTIONS : [];
+export const getQualityOptionsForModel = (model: KieAiModel) => {
+  const capabilities = getImageModelCapabilities(model);
+  if (!capabilities.supportsQualitySelection) return [];
+  const supportedResolutions = Array.isArray(capabilities.supportedResolutions)
+    ? capabilities.supportedResolutions.map((value: string) => value.toLowerCase())
+    : [];
+  if (supportedResolutions.length === 0) return QUALITY_OPTIONS;
+  return QUALITY_OPTIONS.filter((option) => supportedResolutions.includes(option.value));
+};
+
+export const getQualityForModelSwitch = (model: KieAiModel | string, currentQuality?: GenerationQuality | string): GenerationQuality => {
+  if (!resolveMaxForAiImageModelId(model)) return getDefaultQualityForModel(model as KieAiModel);
+  const current = String(currentQuality || '').trim().toUpperCase();
+  const requestedResolution = current.includes('4') ? '4K' : current.includes('2') ? '2K' : '1K';
+  return normalizeMaxForAiImageResolution(requestedResolution).toLowerCase() as GenerationQuality;
+};
 
 export const getModelDisplayName = (model: KieAiModel) => {
   const maxForAiModel = getMaxForAiImageModel(model);

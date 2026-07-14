@@ -389,7 +389,9 @@ export interface SystemPublicConfig {
       supportsImageEdit: boolean;
       maxInputImages: number;
       defaultSize: string;
+      defaultResolution: string;
       supportedSizes: string[];
+      supportedResolutions?: string[];
       supportsTransparentBackground: boolean;
     }>;
     video: Array<{

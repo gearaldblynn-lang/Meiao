@@ -3,7 +3,11 @@ import { getModelCapability } from './modelCapabilities.mjs';
 import { resolveModelForNeed } from './modelDispatch.mjs';
 import { getPublicModelProviderRegistry } from './modelProviderRegistry.mjs';
 import { humanizeProviderError } from './providerErrorHumanize.mjs';
-import { MAXFORAI_IMAGE_MODELS, MAXFORAI_SUPPORTED_ASPECT_RATIOS } from '../src/utils/maxforaiImageModels.mjs';
+import {
+  MAXFORAI_IMAGE_MODELS,
+  MAXFORAI_SUPPORTED_ASPECT_RATIOS,
+  MAXFORAI_SUPPORTED_RESOLUTIONS,
+} from '../src/utils/maxforaiImageModels.mjs';
 
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',
@@ -112,6 +116,7 @@ const AGENT_MODEL_CATALOG = {
       defaultSize: 'auto',
       defaultResolution: '1K',
       supportedSizes: [...MAXFORAI_SUPPORTED_ASPECT_RATIOS],
+      supportedResolutions: [...MAXFORAI_SUPPORTED_RESOLUTIONS],
       supportsTransparentBackground: false,
     })),
     {
