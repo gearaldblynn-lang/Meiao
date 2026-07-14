@@ -16,11 +16,28 @@ test('all standalone image model selectors consume the shared model list', () =>
   }
 });
 
+test('all standalone image model selectors normalize quality through the shared model-switch contract', () => {
+  for (const file of [
+    '../components/SettingsSidebar.tsx',
+    '../modules/OneClick/ConfigSidebar.tsx',
+    '../modules/OneClick/SkuSidebar.tsx',
+    '../modules/Retouch/RetouchSidebar.tsx',
+    '../modules/BuyerShow/BuyerShowSidebar.tsx',
+  ]) {
+    const source = read(file);
+    assert.match(source, /getQualityForModelSwitch/);
+    assert.doesNotMatch(source, /quality:\s*getDefaultQualityForModel\(m/);
+    assert.doesNotMatch(source, /setQuality\(getDefaultQualityForModel\(m/);
+  }
+});
+
 test('shell quick parameters and Agent Center include shared MaxForAI model definitions', () => {
   const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
   const agentCenterManager = read('../modules/AgentCenter/AgentCenterManager.tsx');
 
   assert.match(bottomInputBar, /const IMAGE_MODEL_LABEL_OPTIONS = MODEL_OPTIONS\.map\(getModelDisplayName\)/);
+  assert.match(bottomInputBar, /getQualityOptionsForModel/);
+  assert.match(bottomInputBar, /getQualityForModelSwitch/);
   assert.doesNotMatch(bottomInputBar, /\['GPT Image 2', 'GPT Image 2（副）', 'Nano Banana 2'\]/);
   assert.match(agentCenterManager, /MAXFORAI_IMAGE_MODELS/);
 });

@@ -19,7 +19,12 @@ import {
 } from '../../../modules/Retouch/retouchSizingUtils.mjs';
 import PresetLibrary, { type Preset } from '../PresetLibrary';
 import { estimateImageBilling, getImageModelCreditCost } from '../../../utils/imageBilling.mjs';
-import { MODEL_OPTIONS, getModelDisplayName } from '../../../utils/modelQuality';
+import {
+  MODEL_OPTIONS,
+  getModelDisplayName,
+  getQualityForModelSwitch,
+  getQualityOptionsForModel,
+} from '../../../utils/modelQuality';
 import { isImeComposing } from '../../../utils/ime';
 import {
   LOGO_PLACEMENT_RATIOS,
@@ -609,7 +614,7 @@ const getTranslationSizeDefaults = (activeSubFeature?: string) => ({
   ratio: activeSubFeature === 'detail' || activeSubFeature === 'remove_text' ? 'auto' : '1:1',
 });
 
-const getQuickParamsForModule = (
+const getBaseQuickParamsForModule = (
   module: AppModule,
   currentParams: Record<string, string>,
   activeSubFeature?: string,
@@ -640,6 +645,42 @@ const getQuickParamsForModule = (
     },
   ];
 };
+
+const withImageModelQualityOptions = (
+  params: ParamItem[],
+  currentParams: Record<string, string>,
+): ParamItem[] => {
+  const modelParam = params.find((param) => param.key === 'model');
+  const qualityParam = params.find((param) => param.key === 'quality');
+  if (!modelParam || !qualityParam) return params;
+
+  const model = currentParams.model || modelParam.defaultValue || 'GPT Image 2';
+  const options = getQualityOptionsForModel(model).map((option) => option.label);
+  if (options.length === 0) return params;
+
+  const requestedQuality = String(currentParams.quality || qualityParam.defaultValue || '1K').toUpperCase();
+  const normalizedQuality = options.includes(requestedQuality)
+    ? requestedQuality
+    : getQualityForModelSwitch(model, requestedQuality).toUpperCase();
+
+  return params.map((param) => param.key === 'quality' ? {
+    ...param,
+    label: normalizedQuality,
+    options,
+    defaultValue: normalizedQuality,
+    recommendedValue: options.includes(param.recommendedValue || '') ? param.recommendedValue : options[0],
+  } : param);
+};
+
+const getQuickParamsForModule = (
+  module: AppModule,
+  currentParams: Record<string, string>,
+  activeSubFeature?: string,
+  systemConfig?: SystemPublicConfig | null,
+): ParamItem[] => withImageModelQualityOptions(
+  getBaseQuickParamsForModule(module, currentParams, activeSubFeature, systemConfig),
+  currentParams,
+);
 
 const getMaterialTypesForContext = (module: AppModule, currentParams: Record<string, string>, activeSubFeature?: string): MaterialType[] | undefined => {
   if (module === AppModuleObj.BUYER_SHOW) return ['product', 'atmosphere', 'model'];
@@ -1317,12 +1358,21 @@ const BottomInputBar: React.FC<Props> = ({
   const getVal = useCallback((key: string, def: string) => currentParams[key] ?? def, [currentParams]);
   const getSelectValue = useCallback((param: ParamItem) => {
     const current = getVal(param.key, param.defaultValue);
+    if (param.key === 'quality') {
+      const validValues = param.options.map(toSelectOption).map((option) => option.value);
+      return validValues.includes(current) ? current : param.defaultValue;
+    }
     if (param.key !== 'analysisModel') return current;
     const validValues = param.options.map(toSelectOption).map((option) => option.value);
     return validValues.includes(current) ? current : param.defaultValue;
   }, [getVal]);
 
   const handleTranslationParamChange = useCallback((key: string, value: string) => {
+    if (key === 'model' && quickParams.some((param) => param.key === 'quality')) {
+      const nextQuality = getQualityForModelSwitch(value, currentParams.quality || '1K').toUpperCase();
+      onParamChange('quality', nextQuality);
+    }
+
     if (module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard') {
       onParamChange(key, value);
       if (key === 'duration') {
@@ -1384,7 +1434,7 @@ const BottomInputBar: React.FC<Props> = ({
     }
 
     onParamChange(key, value);
-  }, [activeSubFeature, currentParams.aspectRatio, currentParams.height, currentParams.ratio, currentParams.targetHeight, currentParams.targetWidth, currentParams.width, module, onParamChange]);
+  }, [activeSubFeature, currentParams.aspectRatio, currentParams.height, currentParams.quality, currentParams.ratio, currentParams.targetHeight, currentParams.targetWidth, currentParams.width, module, onParamChange, quickParams]);
 
   const handleMaterialTypeSelect = (type: MaterialType) => {
     setUploadTarget(type);

@@ -46,6 +46,16 @@ test('one click shell params are subfeature-aware and do not expose fake style p
   assert.match(bottomInputBar, /options: \['AI直出', '套图复刻'\]/);
 });
 
+test('shell image quality options follow the selected model and downgrade legacy 4K on model switch', () => {
+  const bottomInputBar = source();
+
+  assert.match(bottomInputBar, /getQualityOptionsForModel/);
+  assert.match(bottomInputBar, /getQualityForModelSwitch/);
+  assert.match(bottomInputBar, /withImageModelQualityOptions/);
+  assert.match(bottomInputBar, /currentParams\.model/);
+  assert.match(bottomInputBar, /onParamChange\('quality',\s*nextQuality\)/);
+});
+
 test('shell select params support old frontend custom platform and language input flow', () => {
   const bottomInputBar = source();
 

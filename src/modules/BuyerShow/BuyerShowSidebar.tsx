@@ -3,7 +3,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { BuyerShowPersistentState, AspectRatio, GenerationQuality } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
-import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
+import { getModelDisplayName, getQualityForModelSwitch, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
 import { PopoverSelect, PrimaryActionButton, SidebarShell, UploadSurface } from '../../components/ui/workspacePrimitives';
 import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
 import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
@@ -299,7 +299,7 @@ const BuyerShowSidebar: React.FC<Props> = ({ state, onUpdate, onStart, isProcess
                 <span className="text-[9px] font-bold text-slate-400 uppercase ml-1 tracking-widest">生图模型选择</span>
                 <div className="flex bg-slate-100 p-1 rounded-xl">
                     {MODEL_OPTIONS.map(m => (
-                        <button key={m} onClick={() => onUpdate({ model: m, quality: getDefaultQualityForModel(m) })} className={`py-1.5 text-[10px] font-black rounded-lg transition-all ${state.model === m ? 'bg-white text-amber-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}>
+                        <button key={m} onClick={() => onUpdate({ model: m, quality: getQualityForModelSwitch(m, state.quality) })} className={`py-1.5 text-[10px] font-black rounded-lg transition-all ${state.model === m ? 'bg-white text-amber-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}>
                             {getModelDisplayName(m)}
                         </button>
                     ))}

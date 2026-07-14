@@ -13,7 +13,7 @@ import {
 } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
-import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
+import { getModelDisplayName, getQualityForModelSwitch, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
 import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
 import { isImeComposing } from '../../utils/ime';
@@ -194,7 +194,7 @@ const SkuSidebar: React.FC<Props> = ({
   const handleModelChange = (m: string) => {
     onUpdateConfig((prev) => ({
       ...prev, model: m as any,
-      quality: getDefaultQualityForModel(m as any),
+      quality: getQualityForModelSwitch(m as any, config.quality),
       aspectRatio: getSafeAspectRatioForModel(m as any, prev.aspectRatio || AspectRatio.SQUARE, AspectRatio.SQUARE),
     }));
   };
