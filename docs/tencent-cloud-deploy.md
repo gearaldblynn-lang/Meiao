@@ -49,6 +49,25 @@ MEIAO_COS_SECRET_KEY=请替换成仅限目标桶的 CAM 子用户 SecretKey
 MEIAO_COS_BUCKET=meiao-gemini-video-test-20260714-1406860462
 MEIAO_COS_REGION=ap-guangzhou
 MEIAO_COS_SIGNED_URL_TTL_SECONDS=10800
+MEIAO_MANAGED_IMAGE_UPLOAD_MODE=disabled
+MEIAO_IMAGE_COS_SECRET_ID=请替换成图片桶专用最小权限 CAM SecretId
+MEIAO_IMAGE_COS_SECRET_KEY=请替换成图片桶专用最小权限 CAM SecretKey
+MEIAO_IMAGE_COS_BUCKET=meiao-managed-images-1406860462
+MEIAO_IMAGE_COS_REGION=ap-guangzhou
+MEIAO_IMAGE_COS_BROWSER_URL_TTL_SECONDS=300
+MEIAO_IMAGE_COS_PROVIDER_URL_TTL_SECONDS=10800
+MEIAO_IMAGE_COS_UPLOAD_MAX_ATTEMPTS=3
+MEIAO_IMAGE_COS_UPLOAD_TIMEOUT_MS=30000
+MEIAO_IMAGE_COS_UPLOAD_RETRY_BASE_MS=500
+MEIAO_ASSET_CLEANUP_INTERVAL_MS=1800000
+MEIAO_ASSET_CLEANUP_BATCH_SIZE=20
+MEIAO_ASSET_CLEANUP_RETRY_BASE_MS=60000
+MEIAO_ASSET_CLEANUP_MANUAL_REVIEW_ATTEMPTS=8
+MEIAO_ASSET_CLEANUP_MANUAL_RETRY_MS=86400000
+MEIAO_ASSET_CLEANUP_LEASE_MS=600000
+MEIAO_ASSET_CLEANUP_ALERT_BACKLOG=100
+MEIAO_ASSET_CLEANUP_ALERT_OLDEST_MS=86400000
+MEIAO_ASSET_UPLOAD_STALE_MS=900000
 MEIAO_KIE_MANAGED_ASSET_MODE=direct-first
 MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY=3
 MEIAO_KIE_ASSET_UPLOAD_RETRIES=2
@@ -116,6 +135,17 @@ EOF
 `MEIAO_NETWORK_FAMILY_ATTEMPT_TIMEOUT_MS` 控制 Node 在 IPv4/IPv6 候选地址之间切换时，单个地址的 TCP 建连尝试窗口，默认 `1000`，限制 `250-5000` 毫秒。腾讯云到 Cloudflare/KIE 的首次 IPv4 建连可能超过 Node 20 默认的 250ms；该值只修复底层地址族建连误超时，不放宽 provider 总请求时限，也不增加付费 POST 的重提次数。
 
 Gemini 视频读取是独立的强约束链路：我方 `/api/assets/file/` 视频先由服务端完整读取，再写入私有腾讯 COS，最后只把短期签名 GET URL 交给 Gemini。`MEIAO_COS_SECRET_ID` / `MEIAO_COS_SECRET_KEY` 必须来自只允许目标桶 `gemini-video/*` 执行 `PutObject`、`GetObject` 的 CAM 子用户；不得使用主账号密钥。`MEIAO_COS_BUCKET` 必须包含 APPID 后缀，`MEIAO_COS_REGION` 与桶地域一致。`MEIAO_COS_SIGNED_URL_TTL_SECONDS` 默认 `10800`（3 小时），只影响 Gemini 的读取窗口。桶保持私有读写，无需 CDN；建议给 `gemini-video/` 配置 3 天生命周期自动删除。
+
+### 用户上传图片专用 COS
+
+- 新桶固定为广州 `ap-guangzhou` 的私有桶 `meiao-managed-images-1406860462`，版本控制关闭，不配 CDN，不允许公共读写。仅存储新上传的 source/reference/chat 图片；历史图片不迁移，生成结果仍保持本地存储。
+- CAM 密钥必须与视频 COS 分开，只对该桶的 `managed-images/*` 授予 `PutObject`、`GetObject`/`HeadObject` 和 `DeleteObject`；禁止 `DeleteBucket`、修改桶策略、修改 ACL 及访问其他桶。Secret 只写服务端 `.env.server`，不进 Git、页面、日志或诊断看板。
+- 生命周期只配置“终止 1 天前未完成的分块上传”，不配置定时删除正常对象；正常图片由用户/项目/任务/会话删除触发的持久清理队列精确删除。删除前 worker 会再次检查存活引用，防止并发误删。
+- CORS 不开放上传；如页面确需 canvas 跨域读图，只允许 `https://meiaoyuntai.com` 和 `https://www.meiaoyuntai.com` 的 `GET/HEAD`。强制 HTTPS。
+- 先以 `MEIAO_MANAGED_IMAGE_UPLOAD_MODE=disabled` 发布兼容版，在云上运行 `npm run probe:managed-image-cos`，必须通过 `put -> head -> signed HTTPS GET -> byte equality -> delete -> head/not-found`，且桶里没有遗留 probe 对象，才可改为 `cos`。回滚只把上传模式设回 `disabled`；保留 COS-aware 代码，以便既有 COS 图片仍可读可删。
+- `/api/health` 的 `managedAssetCleanup` 暴露 backlog、最老等待时间、retry attempts、manual review、upload failed 和 alerting。建议对 COS 存储、请求数和公网下行设预算告警，密钥定期轮换；轮换时先验证新密钥探针，再废弃旧密钥。
+
+`MEIAO_IMAGE_COS_BROWSER_URL_TTL_SECONDS` / `MEIAO_IMAGE_COS_PROVIDER_URL_TTL_SECONDS` 默认为 `300` / `10800`。上传默认 3 次、单次 30 秒、退避基数 500ms；同一次重试始终复用同一对象键，失败时不回退到本地磁盘或 KIE 图床。清理默认每 30 分钟、每批 20 条，重试基数 60 秒，8 次后进入 manual review 并每 24 小时再试，in-progress lease 10 分钟，上传卡住 15 分钟视为失败并对账。默认 backlog 达 100 条或最老等待达 24 小时告警。
 
 Gemini 视频不受 `MEIAO_KIE_MANAGED_ASSET_MODE` 回滚开关影响：无论 `auto`、`direct-first` 还是 `kie-only`，都禁止把视频转存到 KIE `openrouter-chat`，也禁止 Gemini 明确读文件失败后再走 KIE/换模型兜底。图片、PDF 等非视频托管素材仍按 `MEIAO_KIE_MANAGED_ASSET_MODE=direct-first` 优先使用 `MEIAO_PUBLIC_BASE_URL` 的 HTTPS 地址；只有上游明确返回文件读取/下载/MIME 不可用错误且没有 `providerTaskId` 时，才允许转存 KIE 并重试同一模型。普通 HTTP 500/502、网络中断、鉴权、余额、限额和已有 task id 都不触发回退。
 

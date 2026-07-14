@@ -302,6 +302,11 @@ test('markStoredAssetStorageStatus persists a valid state transition', async () 
     () => markStoredAssetStorageStatus(pool, 'asset-1', 'unknown_state', 1234),
     /无效的素材存储状态/,
   );
+
+  calls.length = 0;
+  await markStoredAssetStorageStatus(pool, 'asset-1', 'active', 5678);
+  assert.match(calls[0].sql, /deleted_at = NULL/);
+  assert.deepEqual(calls[0].values, ['active', 5678, 'asset-1']);
 });
 
 test('uploaded image becomes active only after Tencent COS confirms the object', async () => {

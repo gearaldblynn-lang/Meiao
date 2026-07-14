@@ -142,7 +142,7 @@ import {
   selectExpiredAssetsForCleanup,
 } from './assetStore.mjs';
 import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
-import { enqueueAssetCleanupTask } from './assetLifecycleStore.mjs';
+import { enqueueAssetCleanupTask, listAssetCleanupTasks, summarizeAssetCleanupTasks } from './assetLifecycleStore.mjs';
 import { processAssetCleanupBatch, reconcileManagedAssetStorage } from './assetCleanupWorker.mjs';
 import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
 import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLogin } from './dreaminaCli.mjs';
@@ -317,6 +317,19 @@ let temporalWorkerRuntime = null;
 let localStoreCache = null;
 let assetCleanupTimer = null;
 let assetCleanupRunning = false;
+let managedAssetCleanup = {
+  backlog: 0,
+  oldestPendingAgeMs: 0,
+  retryAttempts: 0,
+  manualReview: 0,
+  protected: 0,
+  complete: 0,
+  uploadFailed: 0,
+  deletePending: 0,
+  uploading: 0,
+  alerting: false,
+  lastCycleAt: null,
+};
 let logCleanupTimer = null;
 let staleRunningJobReconcilerTimer = null;
 const temporalTaskAdapter = createTemporalTaskAdapter();
@@ -394,6 +407,18 @@ const ASSET_CLEANUP_INTERVAL_MS = Math.max(
 const ASSET_CLEANUP_BATCH_SIZE = Math.max(
   1,
   Math.min(200, Number.parseInt(String(process.env.MEIAO_ASSET_CLEANUP_BATCH_SIZE || 20), 10) || 20),
+);
+const ASSET_CLEANUP_LEASE_MS = Math.max(
+  60_000,
+  Math.min(3_600_000, Number.parseInt(String(process.env.MEIAO_ASSET_CLEANUP_LEASE_MS || 600_000), 10) || 600_000),
+);
+const ASSET_CLEANUP_ALERT_BACKLOG = Math.max(
+  1,
+  Number.parseInt(String(process.env.MEIAO_ASSET_CLEANUP_ALERT_BACKLOG || 100), 10) || 100,
+);
+const ASSET_CLEANUP_ALERT_OLDEST_MS = Math.max(
+  60_000,
+  Number.parseInt(String(process.env.MEIAO_ASSET_CLEANUP_ALERT_OLDEST_MS || 86_400_000), 10) || 86_400_000,
 );
 const DOWNLOAD_PROXY_TIMEOUT_MS = 30_000;
 const DOWNLOAD_PROXY_MAX_BYTES = 80 * 1024 * 1024;
@@ -4257,11 +4282,35 @@ const runManagedAssetCleanupCycle = async () => {
       pool,
       limit: ASSET_CLEANUP_BATCH_SIZE,
       env: process.env,
+      storeOptions: { inProgressLeaseMs: ASSET_CLEANUP_LEASE_MS },
+      isProtected: async (task) => {
+        if (!task?.assetId) return false;
+        const protectedAssetRefs = await collectProtectedManagedAssetUrls({
+          pool,
+          store: shouldUseMysql ? null : readLocalStore(),
+        });
+        if (protectedAssetRefs.has(task.assetId)) return true;
+        const asset = await getStoredAssetById(pool, task.assetId);
+        return Boolean(asset?.publicUrl && protectedAssetRefs.has(asset.publicUrl));
+      },
     });
-    if (reconciliation.enqueued > 0 || cleanup.claimed > 0) {
+    const cleanupTasks = await listAssetCleanupTasks(pool);
+    const queueSummary = summarizeAssetCleanupTasks(cleanupTasks, Date.now());
+    managedAssetCleanup = {
+      ...queueSummary,
+      uploadFailed: reconciliation.uploadFailed,
+      deletePending: reconciliation.deletePending,
+      uploading: reconciliation.uploading,
+      alerting: queueSummary.backlog >= ASSET_CLEANUP_ALERT_BACKLOG
+        || queueSummary.oldestPendingAgeMs >= ASSET_CLEANUP_ALERT_OLDEST_MS
+        || queueSummary.manualReview > 0,
+      lastCycleAt: Date.now(),
+    };
+    if (reconciliation.enqueued > 0 || cleanup.claimed > 0 || managedAssetCleanup.alerting) {
       console.info('managed asset cleanup cycle', {
         reconciliation,
         cleanup,
+        queue: managedAssetCleanup,
       });
     }
     return { reconciliation, cleanup };
@@ -15622,6 +15671,7 @@ const server = createServer(async (req, res) => {
         mode: shouldUseMysql ? 'internal-mysql-v1' : 'internal-v1',
         taskEngine,
         worker,
+        managedAssetCleanup,
         ...(Object.keys(creditAlert).length ? { creditAlert } : {}),
       });
       return;

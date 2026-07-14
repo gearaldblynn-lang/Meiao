@@ -135,7 +135,21 @@ export const enqueueAssetCleanupTask = async (pool, input, options = {}) => {
   if (!pool) {
     const registry = readRegistry(options);
     const existing = registry.tasks.find((item) => item.objectFingerprint === task.objectFingerprint);
-    if (existing) return existing;
+    if (existing) {
+      if (existing.status === 'protected') {
+        Object.assign(existing, {
+          assetId: task.assetId,
+          reason: task.reason,
+          status: 'pending',
+          nextAttemptAt: timestamp,
+          lastError: '',
+          updatedAt: timestamp,
+          completedAt: null,
+        });
+        writeRegistry(registry, options);
+      }
+      return { ...existing };
+    }
     registry.tasks.push(task);
     writeRegistry(registry, options);
     return task;
@@ -147,7 +161,13 @@ export const enqueueAssetCleanupTask = async (pool, input, options = {}) => {
       attempt_count, next_attempt_at, last_error, object_fingerprint, created_at,
       updated_at, completed_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE updated_at = updated_at`,
+    ON DUPLICATE KEY UPDATE
+      updated_at = IF(status = 'protected', VALUES(updated_at), updated_at),
+      next_attempt_at = IF(status = 'protected', VALUES(next_attempt_at), next_attempt_at),
+      reason = IF(status = 'protected', VALUES(reason), reason),
+      completed_at = IF(status = 'protected', NULL, completed_at),
+      last_error = IF(status = 'protected', '', last_error),
+      status = IF(status = 'protected', 'pending', status)`,
     [
       task.id,
       task.assetId || null,
@@ -266,6 +286,30 @@ export const completeAssetCleanupTask = async (pool, taskId, options = {}) => {
   return { id: taskId, status: 'complete', completedAt: timestamp };
 };
 
+export const protectAssetCleanupTask = async (pool, taskId, options = {}) => {
+  const timestamp = Number(options.now?.() ?? Date.now());
+  if (!pool) {
+    const registry = readRegistry(options);
+    const task = registry.tasks.find((item) => item.id === taskId);
+    if (!task) return null;
+    Object.assign(task, {
+      status: 'protected',
+      lastError: '',
+      updatedAt: timestamp,
+      completedAt: null,
+    });
+    writeRegistry(registry, options);
+    return { ...task };
+  }
+  await pool.query(
+    `UPDATE asset_cleanup_tasks
+     SET status = 'protected', last_error = '', updated_at = ?, completed_at = NULL
+     WHERE id = ?`,
+    [timestamp, taskId],
+  );
+  return { id: taskId, status: 'protected', updatedAt: timestamp };
+};
+
 export const retryAssetCleanupTask = async (pool, taskId, error, options = {}) => {
   const timestamp = Number(options.now?.() ?? Date.now());
   const retryBaseMs = parsePositiveInteger(
@@ -323,4 +367,23 @@ export const listAssetCleanupTasks = async (pool, options = {}) => {
   if (!pool) return readRegistry(options).tasks.map((task) => ({ ...task }));
   const [rows] = await pool.query('SELECT * FROM asset_cleanup_tasks ORDER BY created_at ASC');
   return (rows || []).map(mapCleanupRow);
+};
+
+export const summarizeAssetCleanupTasks = (tasks = [], timestamp = Date.now()) => {
+  const allTasks = Array.isArray(tasks) ? tasks : [];
+  const backlogStatuses = new Set(['pending', 'retry', 'in_progress', 'manual_review']);
+  const backlogTasks = allTasks.filter((task) => backlogStatuses.has(String(task?.status || '')));
+  const oldestCreatedAt = backlogTasks.reduce((oldest, task) => {
+    const createdAt = Number(task?.createdAt || 0);
+    if (createdAt <= 0) return oldest;
+    return oldest === 0 ? createdAt : Math.min(oldest, createdAt);
+  }, 0);
+  return {
+    backlog: backlogTasks.length,
+    oldestPendingAgeMs: oldestCreatedAt > 0 ? Math.max(0, Number(timestamp || 0) - oldestCreatedAt) : 0,
+    retryAttempts: backlogTasks.reduce((total, task) => total + Math.max(0, Number(task?.attemptCount || 0)), 0),
+    manualReview: backlogTasks.filter((task) => task.status === 'manual_review').length,
+    protected: allTasks.filter((task) => task.status === 'protected').length,
+    complete: allTasks.filter((task) => task.status === 'complete').length,
+  };
 };

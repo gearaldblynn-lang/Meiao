@@ -19,6 +19,7 @@
     "status": "node scripts/project-status.mjs",
     "status:write": "node scripts/project-status.mjs --write",
     "security:audit": "npm audit --audit-level=high --omit=dev",
+    "probe:managed-image-cos": "node scripts/probe-managed-image-cos.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

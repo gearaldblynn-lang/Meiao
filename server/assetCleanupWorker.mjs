@@ -2,6 +2,7 @@ import {
   claimDueAssetCleanupTasks,
   completeAssetCleanupTask,
   enqueueAssetCleanupTask,
+  protectAssetCleanupTask,
   retryAssetCleanupTask,
 } from './assetLifecycleStore.mjs';
 import {
@@ -15,6 +16,7 @@ import { deleteTencentCosImage } from './tencentCosImageStore.mjs';
 const defaultStore = {
   claimDue: claimDueAssetCleanupTasks,
   complete: completeAssetCleanupTask,
+  protect: protectAssetCleanupTask,
   retry: retryAssetCleanupTask,
   markAssetStatus: markStoredAssetStorageStatus,
 };
@@ -26,6 +28,7 @@ export const processAssetCleanupBatch = async ({
   store = defaultStore,
   deleteCos = deleteTencentCosImage,
   deleteLocal = deleteStoredAssetFile,
+  isProtected = async () => false,
   storeOptions = {},
   cosOptions = {},
 } = {}) => {
@@ -35,10 +38,17 @@ export const processAssetCleanupBatch = async ({
     completed: 0,
     retried: 0,
     manualReview: 0,
+    protected: 0,
   };
 
   for (const task of tasks) {
     try {
+      if (task.assetId && await isProtected(task)) {
+        await store.markAssetStatus(pool, task.assetId, 'active', Date.now());
+        await store.protect(pool, task.id, storeOptions);
+        summary.protected += 1;
+        continue;
+      }
       if (task.provider === 'tencent_cos') {
         await deleteCos(task.storageKey, {
           ...env,
@@ -80,7 +90,14 @@ export const reconcileManagedAssetStorage = async ({
   const parsedStaleMs = Number.parseInt(String(env?.MEIAO_ASSET_UPLOAD_STALE_MS || 15 * 60 * 1000), 10);
   const staleMs = Number.isFinite(parsedStaleMs) && parsedStaleMs > 0 ? parsedStaleMs : 15 * 60 * 1000;
   const assets = await listAssets(pool);
-  const summary = { scanned: assets.length, enqueued: 0, staleUploads: 0 };
+  const summary = {
+    scanned: assets.length,
+    enqueued: 0,
+    staleUploads: 0,
+    uploadFailed: assets.filter((asset) => String(asset?.storageStatus || '') === 'upload_failed').length,
+    deletePending: assets.filter((asset) => String(asset?.storageStatus || '') === 'delete_pending').length,
+    uploading: assets.filter((asset) => String(asset?.storageStatus || '') === 'uploading').length,
+  };
 
   for (const asset of assets) {
     const status = String(asset?.storageStatus || 'active');
@@ -91,6 +108,7 @@ export const reconcileManagedAssetStorage = async ({
       reason = 'stale_upload_reconcile';
       await markStatus(pool, asset.id, 'upload_failed', now);
       summary.staleUploads += 1;
+      summary.uploadFailed += 1;
     }
     if (!reason || !asset?.storageKey) continue;
     const storageProvider = getStoredAssetStorageProvider(asset);

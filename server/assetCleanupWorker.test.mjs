@@ -31,7 +31,7 @@ test('cleanup worker completes a missing COS object as idempotent success', asyn
     deleteCos: async () => ({ deleted: true, missing: true }),
   });
 
-  assert.deepEqual(summary, { claimed: 1, completed: 1, retried: 0, manualReview: 0 });
+  assert.deepEqual(summary, { claimed: 1, completed: 1, retried: 0, manualReview: 0, protected: 0 });
   assert.deepEqual(completed, ['cleanup-1']);
   assert.deepEqual(assetStates, [['asset-1', 'deleted']]);
 });
@@ -60,7 +60,7 @@ test('cleanup worker persists a retry and continues the remaining batch', async 
     },
   });
 
-  assert.deepEqual(summary, { claimed: 2, completed: 1, retried: 1, manualReview: 0 });
+  assert.deepEqual(summary, { claimed: 2, completed: 1, retried: 1, manualReview: 0, protected: 0 });
   assert.deepEqual(retries, [['cleanup-1', 'ETIMEDOUT']]);
   assert.deepEqual(completed, ['cleanup-2']);
 });
@@ -87,6 +87,29 @@ test('cleanup worker dispatches historical internal files without calling COS', 
   assert.deepEqual(localDeletes, ['user/source/legacy.png']);
 });
 
+test('cleanup worker restores a pending asset instead of deleting a newly live reference', async () => {
+  const protectedTasks = [];
+  const assetStates = [];
+  let deleteCalls = 0;
+  const summary = await processAssetCleanupBatch({
+    pool: {},
+    store: {
+      claimDue: async () => [cleanupTask()],
+      complete: async () => { throw new Error('protected cleanup must not complete as a physical delete'); },
+      protect: async (_pool, taskId) => protectedTasks.push(taskId),
+      retry: async () => { throw new Error('protected cleanup must not retry'); },
+      markAssetStatus: async (_pool, assetId, status) => assetStates.push([assetId, status]),
+    },
+    isProtected: async () => true,
+    deleteCos: async () => { deleteCalls += 1; },
+  });
+
+  assert.deepEqual(summary, { claimed: 1, completed: 0, retried: 0, manualReview: 0, protected: 1 });
+  assert.equal(deleteCalls, 0);
+  assert.deepEqual(assetStates, [['asset-1', 'active']]);
+  assert.deepEqual(protectedTasks, ['cleanup-1']);
+});
+
 test('storage reconciliation repairs stale uploading and missing cleanup tasks', async () => {
   const enqueued = [];
   const states = [];
@@ -110,7 +133,14 @@ test('storage reconciliation repairs stale uploading and missing cleanup tasks',
     },
   });
 
-  assert.deepEqual(summary, { scanned: 4, enqueued: 3, staleUploads: 1 });
+  assert.deepEqual(summary, {
+    scanned: 4,
+    enqueued: 3,
+    staleUploads: 1,
+    uploadFailed: 2,
+    deletePending: 1,
+    uploading: 1,
+  });
   assert.deepEqual(states, [['stale', 'upload_failed']]);
   assert.deepEqual(enqueued.map((task) => [task.assetId, task.reason]), [
     ['pending', 'delete_pending_reconcile'],
