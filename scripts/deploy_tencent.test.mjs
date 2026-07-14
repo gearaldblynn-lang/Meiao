@@ -59,6 +59,19 @@ test('deploy_tencent preserves remote server data directory', () => {
   );
 });
 
+test('deploy_tencent reuses a persistent remote FFmpeg binary during dependency installation', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+
+  assert.match(
+    source,
+    /REMOTE_FFMPEG_BIN="\$\{MEIAO_REMOTE_FFMPEG_BIN:-\/opt\/meiao\/bin\/ffmpeg\}"/,
+    'deploy should expose a configurable persistent FFmpeg path',
+  );
+  assert.match(source, /if \[ -x '\$REMOTE_FFMPEG_BIN' \]; then/);
+  assert.match(source, /FFMPEG_BIN='\$REMOTE_FFMPEG_BIN' npm install/);
+  assert.match(source, /else\n\s+npm install\n\s+fi/);
+});
+
 test('deploy_tencent blocks releases with high severity dependency vulnerabilities', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
