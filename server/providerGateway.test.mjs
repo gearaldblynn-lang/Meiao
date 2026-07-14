@@ -51,6 +51,77 @@ const installTestCosClient = (signedUrl, calls = []) => {
   return calls;
 };
 
+test('executeProviderJob propagates managed COS signed-read dependencies to KIE image creation', async () => {
+  const originalFetch = global.fetch;
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const requests = [];
+  const signedUrl = 'https://meiao-managed-images-1406860462.cos.ap-guangzhou.myqcloud.com/managed-images/users/abc/source/asset/image.png?q-signature=fresh';
+  const resolverCalls = [];
+
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    requests.push({ url: requestUrl, init });
+    if (requestUrl.includes('/api/assets/file/')) {
+      throw new Error('managed COS images must not be downloaded by the provider gateway');
+    }
+    if (requestUrl.includes('/createTask')) {
+      return createJsonResponse({ code: 200, data: { taskId: 'cos-image-task' } });
+    }
+    if (requestUrl.includes('/recordInfo')) {
+      return createJsonResponse({
+        code: 200,
+        data: {
+          state: 'success',
+          resultJson: JSON.stringify({ resultUrls: ['https://example.com/result.png'] }),
+        },
+      });
+    }
+    throw new Error(`unexpected request: ${requestUrl}`);
+  };
+  global.setTimeout = (handler, milliseconds) => {
+    if (milliseconds === 60_000) return originalSetTimeout(handler, milliseconds);
+    queueMicrotask(handler);
+    return 0;
+  };
+  global.clearTimeout = (timer) => originalClearTimeout(timer);
+
+  try {
+    await executeProviderJob(
+      {
+        taskType: 'kie_image',
+        provider: 'kie',
+        payload: {
+          prompt: 'generate buyer show',
+          imageUrls: ['/api/assets/file/asset/image.png'],
+          model: 'nano-banana-2',
+          aspectRatio: '1:1',
+          resolution: '1K',
+        },
+      },
+      { KIE_API_KEY: 'test-key', MEIAO_KIE_MANAGED_ASSET_MODE: 'kie-only' },
+      new AbortController().signal,
+      {
+        assetTransferDeps: {
+          resolveManagedAssetReadUrl: async (value, options) => {
+            resolverCalls.push([value, options.purpose]);
+            return signedUrl;
+          },
+        },
+      },
+    );
+
+    const createTaskRequest = requests.find((request) => request.url.includes('/createTask'));
+    assert.ok(createTaskRequest);
+    assert.match(String(createTaskRequest.init.body), new RegExp(signedUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.deepEqual(resolverCalls, [['/api/assets/file/asset/image.png', 'provider']]);
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
 const box = (type, payload = Buffer.alloc(0)) => {
   const buffer = Buffer.alloc(8 + payload.length);
   buffer.writeUInt32BE(buffer.length, 0);
