@@ -265,6 +265,36 @@ type AnalysisJobCreatedCallback = (
   providerTaskId?: string,
 ) => void | Promise<void>;
 
+const ANALYSIS_JOB_IDENTITY_CALLBACK_FAILED = 'analysis_job_identity_callback_failed';
+
+type AnalysisJobIdentityCallbackError = Error & {
+  code: typeof ANALYSIS_JOB_IDENTITY_CALLBACK_FAILED;
+  jobId: string;
+  providerTaskId?: string;
+};
+
+const createAnalysisJobIdentityCallbackError = (
+  cause: unknown,
+  jobId: string,
+  providerTaskId?: string,
+): AnalysisJobIdentityCallbackError => {
+  const message = cause instanceof Error
+    ? cause.message
+    : String(cause || '分析任务标识持久化失败');
+  const error = new Error(message) as AnalysisJobIdentityCallbackError;
+  error.code = ANALYSIS_JOB_IDENTITY_CALLBACK_FAILED;
+  error.jobId = jobId;
+  if (providerTaskId) error.providerTaskId = providerTaskId;
+  return error;
+};
+
+const isAnalysisJobIdentityCallbackError = (
+  error: unknown,
+): error is AnalysisJobIdentityCallbackError => (
+  String((error as { code?: unknown } | null)?.code || '').trim()
+  === ANALYSIS_JOB_IDENTITY_CALLBACK_FAILED
+);
+
 const isPendingAnalysisJobStatus = (status: unknown) =>
   ['queued', 'running', 'retry_waiting'].includes(String(status || ''));
 
@@ -291,6 +321,13 @@ const isRecoverableAnalysisSyncError = (error: any) => {
   const message = String(error?.message || '').trim();
   return code === 'job_timeout' || code === 'task_not_found' || /任务不存在|not found|expired|过期/i.test(message);
 };
+
+const isTransientAnalysisTransportError = (error: unknown) => [
+  'network_error',
+  'timeout',
+  'rate_limited',
+  'server_error',
+].includes(String((error as { code?: unknown } | null)?.code || '').trim());
 
 const isAnalysisRefusalText = (value: unknown) => {
   const text = String(value || '').trim();
@@ -455,23 +492,37 @@ const requestAnalysisResponseDetailed = async (
       },
       maxRetries: 2,
     });
-    await onJobCreated?.(job.id);
+    try {
+      await onJobCreated?.(job.id);
+    } catch (error: unknown) {
+      throw createAnalysisJobIdentityCallbackError(error, job.id);
+    }
     let notifiedProviderTaskId = '';
-    const notifyProviderTaskId = (providerTaskId: unknown) => {
+    let providerIdentityPersistence = Promise.resolve();
+    const notifyProviderTaskId = (providerTaskId: unknown): Promise<void> => {
       const value = String(providerTaskId || '').trim();
-      if (!value || value === notifiedProviderTaskId) return;
-      notifiedProviderTaskId = value;
-      onJobCreated?.(job.id, value);
+      if (value && value !== notifiedProviderTaskId) {
+        notifiedProviderTaskId = value;
+        providerIdentityPersistence = providerIdentityPersistence.then(async () => {
+          try {
+            await onJobCreated?.(job.id, value);
+          } catch (error: unknown) {
+            throw createAnalysisJobIdentityCallbackError(error, job.id, value);
+          }
+        });
+        void providerIdentityPersistence.catch(() => undefined);
+      }
+      return providerIdentityPersistence;
     };
 
     try {
       const finalJob = await waitForInternalJob(job.id, signal, 2500, 0, (currentJob) => {
-        notifyProviderTaskId(currentJob?.providerTaskId);
+        void notifyProviderTaskId(currentJob?.providerTaskId);
       });
       if (!finalJob || typeof finalJob !== 'object') {
         throw new Error('AI 分析任务状态同步失败，请稍后在任务列表中同步任务结果');
       }
-      notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
+      await notifyProviderTaskId(finalJob.providerTaskId || finalJob.result?.providerTaskId);
       return {
         job,
         finalJob,
@@ -484,10 +535,14 @@ const requestAnalysisResponseDetailed = async (
         error.providerTaskId = notifiedProviderTaskId || undefined;
         throw error;
       }
+      if (isAnalysisJobIdentityCallbackError(error)) {
+        throw error;
+      }
+      await providerIdentityPersistence;
       const recoveredJob = await fetchInternalJob(job.id)
         .then((response) => response.job)
         .catch(() => null);
-      notifyProviderTaskId(recoveredJob?.providerTaskId || recoveredJob?.result?.providerTaskId);
+      await notifyProviderTaskId(recoveredJob?.providerTaskId || recoveredJob?.result?.providerTaskId);
       if (recoveredJob?.status === 'succeeded') {
         void safeCreateInternalLog({
           level: 'info',
@@ -510,7 +565,10 @@ const requestAnalysisResponseDetailed = async (
       if (isRecoverableAnalysisJobFailure(recoveredJob)) {
         throw createRecoverableAnalysisSyncError(recoveredJob || job);
       }
-      if (isRecoverableAnalysisSyncError(error)) {
+      if (['failed', 'cancelled'].includes(String(recoveredJob?.status || ''))) {
+        throw createAnalysisJobError(recoveredJob);
+      }
+      if (isRecoverableAnalysisSyncError(error) || isTransientAnalysisTransportError(error)) {
         throw createRecoverableAnalysisSyncError(job);
       }
       throw error;
@@ -708,7 +766,7 @@ export const recoverProductRestoreAnalysisBatch = async (
     }, input);
   } catch (error: unknown) {
     const serviceError = error as ProductRestoreServiceError;
-    if (isRecoverableAnalysisSyncError(serviceError)) {
+    if (isRecoverableAnalysisSyncError(serviceError) || isTransientAnalysisTransportError(serviceError)) {
       return productRestorePendingResult(jobId, serviceError?.providerTaskId);
     }
     return productRestoreErrorResult(serviceError, jobId);

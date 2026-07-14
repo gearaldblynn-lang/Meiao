@@ -209,7 +209,7 @@ test('product restoration invalid structured output fails after one application-
     status: 'succeeded',
     providerTaskId: 'provider-task-invalid',
     result: {
-      content: '{}',
+      content: 'I cannot fulfill this request',
       creditsConsumed: 3,
       modelUsed: 'primary-model',
     },
@@ -236,6 +236,125 @@ test('product restoration invalid structured output fails after one application-
     providerTaskId: 'provider-task-invalid',
   });
   assert.equal(Object.hasOwn(result, 'sharedRestorationPrompt'), false);
+});
+
+test('product restoration recovery keeps transient internal fetch failures pending without creating a job', async () => {
+  for (const code of ['network_error', 'timeout', 'rate_limited', 'server_error']) {
+    const fetchError = Object.assign(new Error(`transient ${code}`), { code });
+    const { calls, module } = await loadArkServiceWithAnalysisFakes({ fetchError });
+
+    const result = await module.recoverProductRestoreAnalysisBatch({
+      jobId: `existing-${code}-job`,
+      focusIds: ['shape_structure'],
+      userRequirement: '',
+    });
+
+    assert.equal(calls.created.length, 0);
+    assert.deepEqual(calls.fetched, [`existing-${code}-job`]);
+    assert.deepEqual(result, {
+      status: 'generating',
+      jobId: `existing-${code}-job`,
+      errorCode: 'analysis_result_pending',
+      message: '产品还原分析已提交，结果仍在生成中。',
+    });
+  }
+});
+
+test('product restoration decorates an initial job-identity callback rejection after job creation', async () => {
+  const { calls, module } = await loadArkServiceWithAnalysisFakes();
+  const rejection = new Error('initial identity persistence failed');
+  const rejectingThenable = {
+    then(_resolve, reject) {
+      reject(rejection);
+    },
+  };
+
+  const result = await module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+    onJobCreated: () => rejectingThenable,
+  });
+
+  assert.equal(calls.created.length, 1);
+  assert.deepEqual(result, {
+    status: 'error',
+    errorCode: 'analysis_job_identity_callback_failed',
+    message: 'initial identity persistence failed',
+    jobId: 'analysis-job-1',
+  });
+});
+
+test('product restoration awaits and decorates a provider-identity callback rejection', async () => {
+  const { calls, module } = await loadArkServiceWithAnalysisFakes();
+  const callbackEvents = [];
+  const rejection = new Error('provider identity persistence failed');
+  const rejectingThenable = {
+    then(_resolve, reject) {
+      reject(rejection);
+    },
+  };
+
+  const result = await module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+    onJobCreated: (jobId, providerTaskId) => {
+      callbackEvents.push([jobId, providerTaskId]);
+      return providerTaskId ? rejectingThenable : undefined;
+    },
+  });
+
+  assert.equal(calls.created.length, 1);
+  assert.deepEqual(callbackEvents, [
+    ['analysis-job-1', undefined],
+    ['analysis-job-1', 'provider-task-1'],
+  ]);
+  assert.deepEqual(result, {
+    status: 'error',
+    errorCode: 'analysis_job_identity_callback_failed',
+    message: 'provider identity persistence failed',
+    jobId: 'analysis-job-1',
+    providerTaskId: 'provider-task-1',
+  });
+});
+
+test('product restoration does not return success before delayed provider identity persistence settles', async () => {
+  const { module } = await loadArkServiceWithAnalysisFakes();
+  let releaseProviderIdentity;
+  const providerIdentityGate = new Promise((resolve) => {
+    releaseProviderIdentity = resolve;
+  });
+  let settled = false;
+
+  const runPromise = module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+    onJobCreated: (_jobId, providerTaskId) => (
+      providerTaskId ? providerIdentityGate : undefined
+    ),
+  }).then((result) => {
+    settled = true;
+    return result;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  try {
+    assert.equal(settled, false);
+  } finally {
+    releaseProviderIdentity();
+  }
+  const result = await runPromise;
+  assert.equal(result.status, 'success');
+  assert.equal(result.jobId, 'analysis-job-1');
+  assert.equal(result.providerTaskId, 'provider-task-1');
 });
 
 test('product restoration keeps polling gaps generating with the original job identity', async () => {
@@ -297,8 +416,8 @@ test('product restoration preserves provider failure and cancellation without a 
     id: 'analysis-job-1',
     status: 'failed',
     providerTaskId: 'provider-failed',
-    errorCode: 'provider_bad_response',
-    errorMessage: 'provider rejected analysis',
+    errorCode: 'server_error',
+    errorMessage: 'provider exhausted retries',
     result: null,
   };
   const failedHarness = await loadArkServiceWithAnalysisFakes({
@@ -316,8 +435,8 @@ test('product restoration preserves provider failure and cancellation without a 
   assert.equal(failedHarness.calls.created.length, 1);
   assert.deepEqual(failedResult, {
     status: 'error',
-    errorCode: 'provider_bad_response',
-    message: 'provider rejected analysis',
+    errorCode: 'server_error',
+    message: 'provider exhausted retries',
     jobId: 'analysis-job-1',
     providerTaskId: 'provider-failed',
   });
