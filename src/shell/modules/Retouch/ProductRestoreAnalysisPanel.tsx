@@ -11,9 +11,14 @@ interface Props {
 
 const MAX_VISIBLE_ITEMS = 6;
 
-const positiveNumber = (value: unknown) => {
+const creditLedgerValue = (value: unknown) => {
+  if (value === undefined || value === null || value === '') {
+    return { present: false, value: 0 };
+  }
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  return Number.isFinite(parsed) && parsed >= 0
+    ? { present: true, value: parsed }
+    : { present: false, value: 0 };
 };
 
 const formatCredits = (value: number) => (
@@ -49,9 +54,9 @@ const ProductRestoreAnalysisPanel: React.FC<Props> = ({
   onCopyPrompt,
 }) => {
   const analysis = context.normalizedAnalysis;
-  const analysisCredits = positiveNumber(context.analysisCreditsConsumed);
-  const imageCredits = positiveNumber(imageCreditsConsumed);
-  const totalCredits = positiveNumber(totalCreditsConsumed);
+  const analysisCredits = creditLedgerValue(context.analysisCreditsConsumed);
+  const imageCredits = creditLedgerValue(imageCreditsConsumed);
+  const totalCredits = creditLedgerValue(totalCreditsConsumed);
   const focusLabels = PRODUCT_RESTORE_FOCUS_OPTIONS
     .filter((option) => context.focusIds.includes(option.id))
     .map((option) => option.label);
@@ -111,24 +116,24 @@ const ProductRestoreAnalysisPanel: React.FC<Props> = ({
         </button>
       </details>
 
-      {(analysisCredits > 0 || imageCredits > 0 || totalCredits > 0) && (
+      {(analysisCredits.present || imageCredits.present || totalCredits.present) && (
         <div className="grid grid-cols-3 gap-2">
-          {analysisCredits > 0 && (
+          {analysisCredits.present && (
             <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-elevated)' }}>
               <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>分析积分</p>
-              <p className="mt-1 text-sm font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{formatCredits(analysisCredits)}</p>
+              <p className="mt-1 text-sm font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{formatCredits(analysisCredits.value)}</p>
             </div>
           )}
-          {imageCredits > 0 && (
+          {imageCredits.present && (
             <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-elevated)' }}>
-              <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>出图积分</p>
-              <p className="mt-1 text-sm font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{formatCredits(imageCredits)}</p>
+              <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>累计图片消耗</p>
+              <p className="mt-1 text-sm font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{formatCredits(imageCredits.value)}</p>
             </div>
           )}
-          {totalCredits > 0 && (
+          {totalCredits.present && (
             <div className="rounded-lg px-3 py-2" style={{ background: 'var(--bg-elevated)' }}>
               <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>总积分</p>
-              <p className="mt-1 text-sm font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{formatCredits(totalCredits)}</p>
+              <p className="mt-1 text-sm font-semibold tabular-nums" style={{ color: 'var(--text-primary)' }}>{formatCredits(totalCredits.value)}</p>
             </div>
           )}
         </div>

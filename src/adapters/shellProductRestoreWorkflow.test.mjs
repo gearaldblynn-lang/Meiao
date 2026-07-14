@@ -174,7 +174,16 @@ ${stripRuntimeImports(transpiled)}
     normalizeFetchedImageBlob: async (blob) => blob,
     normalizeProductRestoreFocusIds: (value) => {
       const requested = String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
-      return requested.length > 0 ? [...new Set(requested)] : ['shape_structure', 'material_texture'];
+      const allowed = [
+        'shape_structure',
+        'proportion_contour',
+        'material_texture',
+        'color_gloss',
+        'logo_label_text',
+        'component_craft',
+      ];
+      const normalized = allowed.filter((item) => requested.includes(item));
+      return normalized.length > 0 ? normalized : ['shape_structure', 'material_texture'];
     },
     normalizeProductRestoreResolution: (_model, value) => String(value || '').toUpperCase() === '4K' ? '4K' : '2K',
     parseProductRestoreAnalysis: (value) => {
@@ -642,6 +651,15 @@ test('missing or corrupt persisted retry context fails locally before image job 
   const { runShellProductRestoreSingleRetry } = await loadWorkflowModule();
   const cases = [
     { name: 'missing context', context: undefined },
+    { name: 'missing selected model', context: makeContext({ selectedImageModel: '' }) },
+    { name: 'invalid replay resolution', context: makeContext({ resolution: '1K' }) },
+    { name: 'focus ids are not an array', context: makeContext({ focusIds: 'shape_structure' }) },
+    { name: 'focus ids contain an unknown value', context: makeContext({ focusIds: ['shape_structure', 'unknown_focus'] }) },
+    { name: 'target ids contain an empty value', context: makeContext({ targetMaterialIds: ['target-a', ''] }) },
+    { name: 'target ids are duplicated', context: makeContext({ targetMaterialIds: ['target-a', 'target-a'] }) },
+    { name: 'reference ids contain an empty value', context: makeContext({ productReferenceMaterialIds: ['reference-a', ''] }) },
+    { name: 'reference ids are duplicated', context: makeContext({ productReferenceMaterialIds: ['reference-a', 'reference-a'] }) },
+    { name: 'shared prompt is blank', context: makeContext({ sharedRestorationPrompt: '   ' }) },
     {
       name: 'corrupt normalized analysis',
       context: makeContext({ normalizedAnalysis: { productIdentitySummary: 'partial only' } }),
@@ -675,6 +693,31 @@ test('missing or corrupt persisted retry context fails locally before image job 
       );
     });
   }
+});
+
+test('single-result replay uses the persisted model and resolution byte-for-byte without config defaults', async () => {
+  const { runShellProductRestoreSingleRetry } = await loadWorkflowModule();
+  const context = makeContext({
+    targetMaterialIds: ['target-a'],
+    selectedImageModel: 'nano-banana-2',
+    resolution: '4K',
+  });
+  const input = makeInput({ targetCount: 1, context });
+  const { calls, deps } = createHarness();
+
+  await runShellProductRestoreSingleRetry({
+    input,
+    config: makeConfig({ model: 'gpt-image-2', quality: '1k' }),
+    result: {
+      id: 'persisted-result-a',
+      targetMaterialId: 'target-a',
+      sourceUrl: 'https://assets.test/target-a.png',
+    },
+  }, {}, deps);
+
+  assert.equal(calls.images.length, 1);
+  assert.equal(calls.images[0][2].model, 'nano-banana-2');
+  assert.equal(calls.images[0][2].quality, '4k');
 });
 
 test('single-result retry replaces the same row, keeps taskCount, and adds only actual image credits', async () => {
@@ -767,6 +810,135 @@ test('manual reanalysis eligibility requires a confirmed terminal analysis failu
     analysisJobStatus: 'failed',
     analysisErrorCode: 'provider_refusal',
   }), false);
+});
+
+test('failed analysis-context persistence keeps the paid analysis recoverable and ineligible for replacement', async () => {
+  const {
+    canManuallyReanalyzeProductRestore,
+    persistProductRestoreProjectOrDefer,
+  } = await loadWorkflowModule();
+  const context = makeContext({ analysisCreditsConsumed: 4 });
+  const project = {
+    id: 'shell-project-1',
+    module: 'retouch',
+    subFeature: 'product_restore',
+    status: 'generating',
+    backendJobId: context.analysisJobId,
+    planningTaskId: context.analysisProviderTaskId,
+    completedAt: 123,
+    taskCount: 2,
+    completedCount: 0,
+    results: [],
+    creditsConsumed: 4,
+    generationContext: {
+      prompt: '',
+      params: {
+        productRestoreAnalysisJobStatus: 'succeeded',
+        productRestoreAnalysisErrorCode: '',
+      },
+      materials: {},
+      productRestore: context,
+    },
+  };
+  let writes = 0;
+
+  const outcome = await persistProductRestoreProjectOrDefer({
+    project,
+    phase: 'analysis',
+    persist: async () => {
+      writes += 1;
+      return false;
+    },
+  });
+
+  assert.equal(writes, 1);
+  assert.equal(outcome.persisted, false);
+  assert.equal(outcome.shouldReleaseTask, false);
+  assert.equal(outcome.project.status, 'planning');
+  assert.equal(outcome.project.completedAt, undefined);
+  assert.equal(outcome.project.backendJobId, 'analysis-job-1');
+  assert.equal(outcome.project.planningTaskId, 'analysis-provider-1');
+  assert.equal(outcome.project.generationContext.productRestore, context);
+  assert.equal(outcome.project.generationContext.params.productRestoreAnalysisJobStatus, 'succeeded');
+  assert.equal(outcome.project.generationContext.params.productRestoreAnalysisErrorCode, 'product_restore_context_persistence_failed');
+  assert.equal(canManuallyReanalyzeProductRestore({
+    module: outcome.project.module,
+    subFeature: outcome.project.subFeature,
+    projectStatus: outcome.project.status,
+    resultCount: outcome.project.results.length,
+    analysisJobId: outcome.project.backendJobId,
+    analysisJobStatus: outcome.project.generationContext.params.productRestoreAnalysisJobStatus,
+    analysisErrorCode: outcome.project.generationContext.params.productRestoreAnalysisErrorCode,
+  }), false);
+});
+
+test('failed final result persistence preserves child identity and does not authorize task completion', async () => {
+  const { persistProductRestoreProjectOrDefer } = await loadWorkflowModule();
+  const context = makeContext({ targetMaterialIds: ['target-a'] });
+  const project = {
+    id: 'shell-project-1',
+    module: 'retouch',
+    subFeature: 'product_restore',
+    status: 'completed',
+    backendJobId: context.analysisJobId,
+    completedAt: 456,
+    taskCount: 1,
+    completedCount: 1,
+    results: [{
+      id: 'result-a',
+      status: 'completed',
+      imageUrl: 'https://assets.test/retry-a.png',
+      backendJobId: 'retry-backend-a',
+      taskId: 'retry-provider-a',
+      targetMaterialId: 'target-a',
+      creditsConsumed: 5,
+    }],
+    creditsConsumed: 9,
+    generationContext: {
+      prompt: '',
+      params: {},
+      materials: {},
+      productRestore: context,
+    },
+  };
+
+  const outcome = await persistProductRestoreProjectOrDefer({
+    project,
+    phase: 'result',
+    persist: async () => false,
+  });
+
+  assert.equal(outcome.persisted, false);
+  assert.equal(outcome.shouldReleaseTask, false);
+  assert.equal(outcome.project.status, 'generating');
+  assert.equal(outcome.project.completedAt, undefined);
+  assert.equal(outcome.project.results[0].status, 'completed');
+  assert.equal(outcome.project.results[0].backendJobId, 'retry-backend-a');
+  assert.equal(outcome.project.results[0].taskId, 'retry-provider-a');
+  assert.equal(outcome.project.creditsConsumed, 9);
+  assert.match(outcome.project.error, /同步失败/);
+});
+
+test('successful final persistence returns the original completed project and permits task release', async () => {
+  const { persistProductRestoreProjectOrDefer } = await loadWorkflowModule();
+  const project = {
+    status: 'completed',
+    completedAt: 456,
+    taskCount: 1,
+    completedCount: 1,
+    results: [],
+    generationContext: { prompt: '', params: {}, materials: {} },
+  };
+
+  const outcome = await persistProductRestoreProjectOrDefer({
+    project,
+    phase: 'result',
+    persist: async () => true,
+  });
+
+  assert.equal(outcome.persisted, true);
+  assert.equal(outcome.shouldReleaseTask, true);
+  assert.equal(outcome.project, project);
 });
 
 test('manual reanalysis creates one deliberate analysis attempt and persists before image fan-out', async () => {
