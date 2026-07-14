@@ -9,6 +9,7 @@ SERVER_USER="${MEIAO_SERVER_USER:-root}"
 SERVER_PORT="${MEIAO_SERVER_PORT:-22}"
 SSH_KEY_PATH="${MEIAO_SSH_KEY:-$HOME/.ssh/MEIAO.pem}"
 REMOTE_APP_DIR="${MEIAO_REMOTE_APP_DIR:-/www/wwwroot/meiao-internal}"
+REMOTE_FFMPEG_BIN="${MEIAO_REMOTE_FFMPEG_BIN:-/opt/meiao/bin/ffmpeg}"
 REMOTE_TMP_DIR="/tmp/meiao-deploy-$$"
 REMOTE_DEPLOY_MUTEX_DIR="/tmp/meiao-deploy-mutex"
 DEPLOY_OWNER_TOKEN="meiao-deploy-$(date +%s)-$$-${RANDOM}"
@@ -185,7 +186,12 @@ tar \
     npm config delete disturl >/dev/null 2>&1 || true
     npm config delete sass_binary_site >/dev/null 2>&1 || true
     npm config set registry https://registry.npmjs.org/ >/dev/null 2>&1
-    npm install
+    if [ -x '$REMOTE_FFMPEG_BIN' ]; then
+      '$REMOTE_FFMPEG_BIN' -version >/dev/null
+      FFMPEG_BIN='$REMOTE_FFMPEG_BIN' npm install
+    else
+      npm install
+    fi
     run_security_audit_with_retry() {
       if npm run security:audit; then
         return 0
