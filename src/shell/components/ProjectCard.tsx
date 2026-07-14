@@ -18,6 +18,7 @@ import ProductRestoreAnalysisPanel, { ProductRestoreResultCreditBadge } from '..
 import {
   getProductRestoreAnalysisCreditSummary,
   getProductRestoreTotalKnownCredits,
+  normalizeKnownProductRestoreCredits,
 } from '../../utils/productRestoreAnalysisCredits';
 
 export interface Project {
@@ -631,15 +632,16 @@ const ProjectCard: React.FC<Props> = ({
   const productRestoreAnalysisCredits = getProductRestoreAnalysisCreditSummary(
     project.generationContext,
   );
-  const productRestoreHasImageCredits = project.results.some((result) => (
-    result.creditsConsumed !== undefined
-    && result.creditsConsumed !== null
-    && Number.isFinite(Number(result.creditsConsumed))
-    && Number(result.creditsConsumed) >= 0
-  ));
-  const productRestoreImageCredits = project.results.reduce((sum, result) => (
-    sum + normalizeCreditsConsumed(result.creditsConsumed)
-  ), 0);
+  const productRestoreKnownImageCredits = isProductRestoreProject
+    ? project.results
+        .map((result) => normalizeKnownProductRestoreCredits(result.creditsConsumed))
+        .filter((credits): credits is number => credits !== undefined)
+    : [];
+  const productRestoreHasImageCredits = productRestoreKnownImageCredits.length > 0;
+  const productRestoreImageCredits = productRestoreKnownImageCredits.reduce(
+    (sum, credits) => sum + credits,
+    0,
+  );
   const productRestoreKnownCredits = getProductRestoreTotalKnownCredits({
     generationContext: project.generationContext,
     imageCredits: project.results.map((result) => result.creditsConsumed),
@@ -683,13 +685,12 @@ const ProjectCard: React.FC<Props> = ({
     </span>
   );
   const renderResultUsageMeta = (result: GeneratedResult) => {
-    const hasProductRestoreCreditLedger = isProductRestoreProject
-      && result.creditsConsumed !== undefined
-      && result.creditsConsumed !== null
-      && Number.isFinite(Number(result.creditsConsumed))
-      && Number(result.creditsConsumed) >= 0;
+    const productRestoreResultCredits = isProductRestoreProject
+      ? normalizeKnownProductRestoreCredits(result.creditsConsumed)
+      : undefined;
+    const hasProductRestoreCreditLedger = productRestoreResultCredits !== undefined;
     const creditsConsumed = isProductRestoreProject
-      ? normalizeCreditsConsumed(result.creditsConsumed)
+      ? productRestoreResultCredits ?? 0
       : result.status === 'completed' ? normalizeCreditsConsumed(result.creditsConsumed) : 0;
     if (!creditsConsumed && !hasProductRestoreCreditLedger && !result.taskId && !(isProductRestoreProject && result.backendJobId)) return null;
     return (
