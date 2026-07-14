@@ -9,6 +9,10 @@ import { getPlanContent, isLegacyFailureText, isPlanFailed } from '../src/utils/
 import { mergeShellDraftForStorage } from './appStateDraftMerge.mjs';
 import { isProviderErrorText } from './providerErrorText.mjs';
 import { isIdentitylessActivePlaceholder, projectBuckets as collectProjectBuckets } from './appStateHealth.mjs';
+import {
+  hasEffectiveProductRestoreCancellation,
+  mergeProductRestoreGenerationContextForStorage,
+} from '../src/utils/productRestoreDurableState.mjs';
 const cloneJson = (value) => JSON.parse(JSON.stringify(value || {}));
 
 const ONE_CLICK_BRANCH_KEYS = ['firstImage', 'mainImage', 'detailPage', 'sku'];
@@ -470,6 +474,11 @@ const pruneSupersededNoMediaItems = (items = []) => {
   });
 };
 
+const isProductRestoreProjectLike = (item = {}) => (
+  String(item?.module || '') === 'retouch'
+  && String(item?.subFeature || '') === 'product_restore'
+);
+
 const normalizeProjectLikeItem = (item = {}, options = {}) => {
   const isOneClickProject = options.forceOneClick || String(item?.module || '') === 'one_click';
   const originalPlans = Array.isArray(item?.plans) ? item.plans : [];
@@ -569,7 +578,11 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
         && !itemHasProviderTaskIdentity(entry)
       ))
     );
-  const status = hasMissingProductRestoreTarget
+  const hasProductRestoreCancellation = isProductRestoreProjectLike(item)
+    && hasEffectiveProductRestoreCancellation(item?.generationContext);
+  const status = hasProductRestoreCancellation
+    ? 'error'
+    : hasMissingProductRestoreTarget
     ? 'generating'
     : hasCompletedMedia && !hasGenerating && !hasError
       ? 'completed'
@@ -596,6 +609,9 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
         : Number(item?.completedCount || 0) || 0,
     status,
   };
+  if (hasProductRestoreCancellation) {
+    next.error = '已手动中断';
+  }
   if (status === 'completed' && completedMediaCount > 0) {
     delete next.error;
     delete next.message;
@@ -604,6 +620,10 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
 };
 
 const clearResolvedProjectErrorFields = (item = {}) => {
+  if (
+    isProductRestoreProjectLike(item)
+    && hasEffectiveProductRestoreCancellation(item?.generationContext)
+  ) return item;
   const completedMediaCount = (Array.isArray(item?.results) ? item.results : []).filter(hasCompletedMediaItem).length;
   if (String(item?.status || '') !== 'completed' || completedMediaCount === 0) return item;
   const next = { ...(item || {}) };
@@ -678,6 +698,16 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
   const providerTaskId = incomingItem?.providerTaskId || existingItem?.providerTaskId;
   const taskId = incomingItem?.taskId || existingItem?.taskId;
   const kieTaskId = incomingItem?.kieTaskId || existingItem?.kieTaskId;
+  const isProductRestore = (
+    isProductRestoreProjectLike(existingItem)
+    || isProductRestoreProjectLike(incomingItem)
+  );
+  const generationContext = isProductRestore
+    ? mergeProductRestoreGenerationContextForStorage(
+        existingItem?.generationContext,
+        incomingItem?.generationContext,
+      )
+    : incomingItem?.generationContext;
   const mergedItem = {
     ...(existingItem || {}),
     ...(incomingItem || {}),
@@ -702,6 +732,7 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
     ...(providerTaskId ? { providerTaskId } : {}),
     ...(taskId ? { taskId } : {}),
     ...(kieTaskId ? { kieTaskId } : {}),
+    ...(isProductRestore && generationContext ? { generationContext } : {}),
   };
   if (!preserveRecoveredPlanning) return normalizeProjectLikeItem(clearResolvedProjectErrorFields(mergedItem));
   return normalizeProjectLikeItem({

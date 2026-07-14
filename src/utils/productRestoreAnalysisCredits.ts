@@ -3,6 +3,7 @@ import type {
   ProductRestoreAnalysisAttempt,
   ProductRestoreAnalysisAttemptStatus,
 } from '../types';
+import { mergeProductRestoreAnalysisAttemptsForStorage } from './productRestoreDurableState.mjs';
 
 const normalizeIdentity = (value: unknown) => String(value || '').trim();
 
@@ -31,14 +32,6 @@ const VALID_STATUSES = new Set<ProductRestoreAnalysisAttemptStatus>([
   'failed',
   'cancelled',
 ]);
-
-const STATUS_PRIORITY: Record<ProductRestoreAnalysisAttemptStatus, number> = {
-  running: 0,
-  failed: 1,
-  cancelled: 2,
-  invalid: 3,
-  succeeded: 4,
-};
 
 export const createProductRestoreAnalysisAttempt = (input: {
   jobId?: unknown;
@@ -102,32 +95,10 @@ export const cloneProductRestoreAnalysisAttemptsForMutation = (
 export const mergeProductRestoreAnalysisAttempts = (
   current: readonly ProductRestoreAnalysisAttempt[] | null | undefined,
   incoming: readonly ProductRestoreAnalysisAttempt[] | null | undefined,
-): ProductRestoreAnalysisAttempt[] => {
-  const merged = cloneProductRestoreAnalysisAttempts(current);
-  const byJobId = new Map(merged.map((attempt, index) => [attempt.jobId, index]));
-  for (const next of cloneProductRestoreAnalysisAttempts(incoming)) {
-    const index = byJobId.get(next.jobId);
-    if (index === undefined) {
-      byJobId.set(next.jobId, merged.length);
-      merged.push(next);
-      continue;
-    }
-    const previous = merged[index];
-    const status = STATUS_PRIORITY[next.status] >= STATUS_PRIORITY[previous.status]
-      ? next.status
-      : previous.status;
-    merged[index] = {
-      ...previous,
-      ...(next.providerTaskId ? { providerTaskId: next.providerTaskId } : {}),
-      ...(next.model ? { model: next.model } : {}),
-      status,
-      ...(next.errorCode ? { errorCode: next.errorCode } : {}),
-      timestamp: previous.timestamp,
-      ...(next.creditsConsumed !== undefined ? { creditsConsumed: next.creditsConsumed } : {}),
-    };
-  }
-  return merged;
-};
+): ProductRestoreAnalysisAttempt[] => mergeProductRestoreAnalysisAttemptsForStorage(
+  current,
+  incoming,
+);
 
 export const getProductRestoreAnalysisCreditSummary = (
   generationContext?: Pick<

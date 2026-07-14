@@ -1,6 +1,7 @@
 import type {
   AppModule,
   ProductRestoreCancellationMarker,
+  ProductRestoreCancellationReset,
   ProductRestoreAnalysisAttempt,
   ProductRestoreProjectContext,
   VeoProjectState,
@@ -15,6 +16,7 @@ import {
 import { SHELL_MODULE_LABELS } from './shellDataAdapter.ts';
 import {
   cloneProductRestoreCancellationMarker,
+  cloneProductRestoreCancellationReset,
   hasDurableProductRestoreCancellation,
   mergeProductRestoreGenerationContext,
 } from './shellProductRestoreCancellation.mjs';
@@ -113,6 +115,7 @@ type ShellProject = {
     productRestore?: ProductRestoreProjectContext;
     productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
     productRestoreCancellation?: ProductRestoreCancellationMarker;
+    productRestoreCancellationReset?: ProductRestoreCancellationReset;
   };
   sourceType?: 'persisted' | 'job';
   backendJobId?: string;
@@ -181,6 +184,14 @@ const cloneShellProject = (project: ShellProject): ShellProject => {
   ) {
     generationContext.productRestoreAnalysisAttempts = cloneProductRestoreAnalysisAttempts(
       project.generationContext?.productRestoreAnalysisAttempts,
+    );
+  }
+  if (
+    generationContext
+    && Object.prototype.hasOwnProperty.call(project.generationContext, 'productRestoreCancellationReset')
+  ) {
+    generationContext.productRestoreCancellationReset = cloneProductRestoreCancellationReset(
+      project.generationContext?.productRestoreCancellationReset,
     );
   }
   if (

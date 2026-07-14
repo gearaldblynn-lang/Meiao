@@ -55,9 +55,12 @@ import { getImageDimensions, getImageDimensionsFromUrl } from './utils/imageUtil
 import { releaseObjectURL, safeCreateObjectURL } from './utils/urlUtils';
 import { countCompletedProjectResults, mergeGeneratedPlanResults } from './utils/shellProjectResults.mjs';
 import {
+  cloneProductRestoreCancellationMarker,
+  cloneProductRestoreCancellationReset,
   createProductRestoreCancellationRegistry,
   hasDurableProductRestoreCancellation,
   markProductRestoreProjectCancelled,
+  persistProductRestoreExplicitRetryReset,
   runProductRestoreFanout,
   shouldResumeProductRestoreProject,
 } from './adapters/shellProductRestoreCancellation.mjs';
@@ -429,6 +432,7 @@ const cloneGenerationContext = (
   materials: Record<string, Material[]>,
   productRestoreContext?: ProductRestoreProjectContext,
   productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[],
+  productRestoreDurableSource?: OneClickGenerationContext,
 ): OneClickGenerationContext => ({
   prompt,
   params: { ...params },
@@ -445,6 +449,20 @@ const cloneGenerationContext = (
     ? {
         productRestoreAnalysisAttempts: cloneProductRestoreAnalysisAttempts(
           productRestoreAnalysisAttempts,
+        ),
+      }
+    : {}),
+  ...(productRestoreDurableSource?.productRestoreCancellation
+    ? {
+        productRestoreCancellation: cloneProductRestoreCancellationMarker(
+          productRestoreDurableSource.productRestoreCancellation,
+        ),
+      }
+    : {}),
+  ...(productRestoreDurableSource?.productRestoreCancellationReset
+    ? {
+        productRestoreCancellationReset: cloneProductRestoreCancellationReset(
+          productRestoreDurableSource.productRestoreCancellationReset,
         ),
       }
     : {}),
@@ -8017,7 +8035,7 @@ const AppContent: React.FC<{
         let productRestoreAnalysisAttempts = cloneProductRestoreAnalysisAttemptsForMutation(
           storedContext,
         );
-        let latestManualProject: Project = {
+        const manualRetryBaseProject: Project = {
           ...project,
           status: 'planning',
           backendJobId: undefined,
@@ -8033,11 +8051,16 @@ const AppContent: React.FC<{
               storedContext.materials as Record<string, Material[]>,
               undefined,
               productRestoreAnalysisAttempts,
+              storedContext,
             ),
-            productRestoreCancellation: undefined,
           },
         };
-        const manualAttemptPersisted = await persistProjectToSharedState(latestManualProject);
+        const manualRetryTransition = await persistProductRestoreExplicitRetryReset({
+          project: manualRetryBaseProject,
+          persist: persistProjectToSharedState,
+        });
+        let latestManualProject = manualRetryTransition.project as Project;
+        const manualAttemptPersisted = manualRetryTransition.persisted;
         if (!manualAttemptPersisted) {
           throw new Error('重新分析进度同步失败，未创建新的分析任务。');
         }
@@ -8098,6 +8121,7 @@ const AppContent: React.FC<{
               storedContext.materials as Record<string, Material[]>,
               undefined,
               productRestoreAnalysisAttempts,
+              latestManualProject.generationContext,
             ),
           };
           setProjects((prev) => prev.map((item) => item.id === project.id ? latestManualProject : item));
@@ -8231,6 +8255,7 @@ const AppContent: React.FC<{
                   storedContext.materials as Record<string, Material[]>,
                   durableContext,
                   productRestoreAnalysisAttempts,
+                  latestManualProject.generationContext,
                 ),
               };
               const analysisPersistence = await productRestoreWorkflow.persistProductRestoreProjectOrDefer({
@@ -8353,6 +8378,7 @@ const AppContent: React.FC<{
             storedContext.materials as Record<string, Material[]>,
             undefined,
             productRestoreAnalysisAttempts,
+            latestManualProject.generationContext,
           );
           latestManualProject = {
             ...latestManualProject,
@@ -8390,7 +8416,7 @@ const AppContent: React.FC<{
             code: 'product_restore_retry_context_invalid',
           });
         }
-        const retryReadyProject: Project = {
+        const retryBaseProject: Project = {
           ...project,
           generationContext: {
             ...cloneGenerationContext(
@@ -8399,11 +8425,16 @@ const AppContent: React.FC<{
               storedContext.materials as Record<string, Material[]>,
               storedContext.productRestore,
               storedContext.productRestoreAnalysisAttempts,
+              storedContext,
             ),
-            productRestoreCancellation: undefined,
           },
         };
-        const retryMarkerCleared = await persistProjectToSharedState(retryReadyProject);
+        const retryTransition = await persistProductRestoreExplicitRetryReset({
+          project: retryBaseProject,
+          persist: persistProjectToSharedState,
+        });
+        const retryReadyProject = retryTransition.project as Project;
+        const retryMarkerCleared = retryTransition.persisted;
         if (!retryMarkerCleared) {
           throw new Error('产品还原重试状态同步失败，未创建新的图片任务。');
         }

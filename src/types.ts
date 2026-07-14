@@ -1070,6 +1070,14 @@ export interface ProductRestoreCancellationMarker {
   jobIds: string[];
 }
 
+export interface ProductRestoreCancellationReset {
+  version: 1;
+  status: 'retry_reset';
+  reason: 'explicit_retry';
+  resetAt: number;
+  priorCancelledAt?: number;
+}
+
 export interface OneClickGenerationContext {
   prompt: string;
   params: Record<string, string>;
@@ -1077,6 +1085,7 @@ export interface OneClickGenerationContext {
   productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
   productRestore?: ProductRestoreProjectContext;
   productRestoreCancellation?: ProductRestoreCancellationMarker;
+  productRestoreCancellationReset?: ProductRestoreCancellationReset;
 }
 
 export interface OneClickReferencePreset {
