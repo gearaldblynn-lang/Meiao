@@ -7,17 +7,47 @@ interface ProductRestoreAnalysisStateInput {
   message?: string;
 }
 
+type ProductRestoreMaterialMap = Record<string, unknown[] | undefined>;
+
 export interface ProductRestoreAnalysisPendingState {
   isPending: boolean;
-  projectStatus?: 'planning';
+  project?: {
+    status: 'planning';
+    taskCount: number;
+  };
+  task?: {
+    status: 'generating';
+    total: number;
+  };
   analysisJobId?: string;
   message?: string;
 }
+
+export const resolveProductRestoreTargetCount = (
+  materials: ProductRestoreMaterialMap = {},
+) => Math.max(1, (materials.restoreTarget || []).filter(Boolean).length);
+
+export const assembleProductRestorePendingProjectTaskState = (
+  materials: ProductRestoreMaterialMap = {},
+) => {
+  const targetCount = resolveProductRestoreTargetCount(materials);
+  return {
+    project: {
+      status: 'planning' as const,
+      taskCount: targetCount,
+    },
+    task: {
+      status: 'generating' as const,
+      total: targetCount,
+    },
+  };
+};
 
 export const getProductRestoreAnalysisPendingState = (
   targetModule: AppModule,
   targetSubFeature: string | undefined,
   result: ProductRestoreAnalysisStateInput,
+  materials: ProductRestoreMaterialMap = {},
 ): ProductRestoreAnalysisPendingState => {
   if (
     targetModule !== AppModule.RETOUCH
@@ -30,7 +60,7 @@ export const getProductRestoreAnalysisPendingState = (
   const message = String(result.message || '').trim();
   return {
     isPending: true,
-    projectStatus: 'planning',
+    ...assembleProductRestorePendingProjectTaskState(materials),
     ...(analysisJobId ? { analysisJobId } : {}),
     ...(message ? { message } : {}),
   };
