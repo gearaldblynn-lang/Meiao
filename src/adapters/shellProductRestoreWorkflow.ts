@@ -12,6 +12,7 @@ import {
 } from '../modules/Retouch/productRestoreContract.mjs';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 import type { ShellGenerateInput, ShellMaterialInput, ShellWorkflowImageResult } from './shellWorkflow';
+import { runProductRestoreFanout } from './shellProductRestoreCancellation.mjs';
 
 export interface ProductRestoreWorkflowCallbacks {
   onAnalysisCompleted?: (
@@ -1027,8 +1028,11 @@ export async function runShellProductRestoreWorkflow(
 
   await callbacks.onAnalysisCompleted?.(context);
 
-  const results = await Promise.all(targets.map((target, index) => (
-    runShellProductRestoreItem({
+  const results = await runProductRestoreFanout({
+    items: targets,
+    concurrency: input.apiConfig?.concurrency || 1,
+    shouldStop: () => input.signal.aborted,
+    runItem: (target, index) => runShellProductRestoreItem({
       input,
       config: normalizedConfig,
       context,
@@ -1036,8 +1040,8 @@ export async function runShellProductRestoreWorkflow(
       productReferences,
       batchIndex: index + 1,
       batchCount: targets.length,
-    }, callbacks, deps)
-  )));
+    }, callbacks, deps),
+  });
   const creditsConsumed = context.analysisCreditsConsumed
     + results.reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0);
   const completedCount = results.filter((result) => result.status === 'completed').length;
