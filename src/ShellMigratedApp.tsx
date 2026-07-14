@@ -3271,7 +3271,18 @@ const AppContent: React.FC<{
     return queuedWrite;
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
 
-  const persistProjectToSharedState = useCallback((project: Project) => {
+  type PersistProjectToSharedState = {
+    (project: Project): Promise<boolean>;
+    (project: Project, options: { includeCanonicalProject: true }): Promise<{
+      accepted: boolean;
+      project?: Project & { generationContext: NonNullable<Project['generationContext']> };
+    }>;
+  };
+
+  const persistProjectToSharedState = useCallback((
+    project: Project,
+    options: { includeCanonicalProject?: boolean } = {},
+  ) => {
     const write = async () => {
       const {
         buildPersistedAppState,
@@ -3292,18 +3303,42 @@ const AppContent: React.FC<{
       latestSharedStateRef.current = nextState;
       savePersistedAppState(nextState, shellLocalScopeUserId);
       try {
-        await saveRemoteAppState(buildProjectRemotePatch(nextState, project));
+        const remoteResult = await saveRemoteAppState(
+          buildProjectRemotePatch(nextState, project),
+          options.includeCanonicalProject ? { includeCanonicalState: true } : {},
+        );
+        if (options.includeCanonicalProject) {
+          const canonicalState = remoteResult.state
+            ? sanitizePersistedAppState(remoteResult.state)
+            : undefined;
+          const canonicalProjectCandidate = canonicalState?.shellProjects?.find(
+            (item) => item.id === project.id,
+          ) as Project | undefined;
+          const canonicalProject = canonicalProjectCandidate?.generationContext
+            ? canonicalProjectCandidate as Project & {
+                generationContext: NonNullable<Project['generationContext']>;
+              }
+            : undefined;
+          if (canonicalState) {
+            latestSharedStateRef.current = canonicalState;
+            savePersistedAppState(canonicalState, shellLocalScopeUserId);
+          }
+          return {
+            accepted: Boolean(canonicalProject),
+            ...(canonicalProject ? { project: canonicalProject } : {}),
+          };
+        }
         return true;
       } catch (error) {
         console.warn('[MEIAO] failed to persist generated shell project to remote storage', error);
-        return false;
+        return options.includeCanonicalProject ? { accepted: false } : false;
       }
     };
 
     const queuedWrite = sharedStateWriteQueueRef.current.then(write, write);
     sharedStateWriteQueueRef.current = queuedWrite.then(() => undefined, () => undefined);
     return queuedWrite;
-  }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
+  }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]) as PersistProjectToSharedState;
 
   const recordProductRestoreJobCreated = useCallback((identity: {
     projectId: string;
@@ -8057,7 +8092,10 @@ const AppContent: React.FC<{
         };
         const manualRetryTransition = await persistProductRestoreExplicitRetryReset({
           project: manualRetryBaseProject,
-          persist: persistProjectToSharedState,
+          persist: (nextProject) => persistProjectToSharedState(
+            nextProject as Project,
+            { includeCanonicalProject: true },
+          ),
         });
         let latestManualProject = manualRetryTransition.project as Project;
         const manualAttemptPersisted = manualRetryTransition.persisted;
@@ -8431,7 +8469,10 @@ const AppContent: React.FC<{
         };
         const retryTransition = await persistProductRestoreExplicitRetryReset({
           project: retryBaseProject,
-          persist: persistProjectToSharedState,
+          persist: (nextProject) => persistProjectToSharedState(
+            nextProject as Project,
+            { includeCanonicalProject: true },
+          ),
         });
         const retryReadyProject = retryTransition.project as Project;
         const retryMarkerCleared = retryTransition.persisted;

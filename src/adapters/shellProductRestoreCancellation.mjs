@@ -91,18 +91,23 @@ export const persistProductRestoreExplicitRetryReset = async ({
       productRestoreCancellationReset: reset,
     },
   };
-  const persisted = await persist(nextProject) === true;
+  const persistenceResult = await persist(nextProject);
+  const authoritativeProject = (
+    persistenceResult?.accepted === true
+    && persistenceResult?.project
+    && typeof persistenceResult.project === 'object'
+  ) ? persistenceResult.project : undefined;
   const persistedReset = cloneProductRestoreCancellationReset(
-    nextProject.generationContext?.productRestoreCancellationReset,
+    authoritativeProject?.generationContext?.productRestoreCancellationReset,
   );
   const resetIsAuthoritative = Boolean(
     persistedReset
     && persistedReset.eventId === reset.eventId
-    && !hasEffectiveProductRestoreCancellation(nextProject.generationContext),
+    && !hasEffectiveProductRestoreCancellation(authoritativeProject?.generationContext),
   );
   return {
-    project: nextProject,
-    persisted: persisted && resetIsAuthoritative,
+    project: authoritativeProject || nextProject,
+    persisted: resetIsAuthoritative,
   };
 };
 

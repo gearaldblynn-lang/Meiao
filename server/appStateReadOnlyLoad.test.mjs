@@ -8,6 +8,10 @@ const stateGetRoutes = () => [
   ...source.matchAll(/if \(url\.pathname === '\/api\/state' && req\.method === 'GET'\) \{[\s\S]*?json\(res, 200, \{ state: prepareStateForClient\([^}]+?\}\);\n    return;\n  \}/g),
 ].map((match) => match[0]);
 
+const statePutRoutes = () => [
+  ...source.matchAll(/if \(url\.pathname === '\/api\/state' && req\.method === 'PUT'\) \{[\s\S]*?json\(res, 200,[\s\S]*?\n    return;\n  \}/g),
+].map((match) => match[0]);
+
 test('api state GET stays read-only for cloud app_states', () => {
   const routes = stateGetRoutes();
   assert.equal(routes.length, 2);
@@ -26,4 +30,13 @@ test('api state GET stays read-only for local app state fixture', () => {
   assert.match(localRoute, /scrubLocalStateForUnavailableManagedAssets\(store\.appStates\[user\.id\] \|\| createDefaultState\(\), user\.id\)/);
   assert.doesNotMatch(localRoute, /store\.appStates\[user\.id\]\s*=/);
   assert.doesNotMatch(localRoute, /writeLocalStore/);
+});
+
+test('api state PUT returns canonical merged state only when explicitly requested', () => {
+  const routes = statePutRoutes();
+  assert.equal(routes.length, 2);
+  for (const route of routes) {
+    assert.match(route, /body\.includeCanonicalState/);
+    assert.match(route, /state: prepareStateForClient\(nextState\)/);
+  }
 });

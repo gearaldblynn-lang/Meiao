@@ -244,6 +244,8 @@ test('cancelling a partially fanned-out product restore batch is terminal and ne
     reason: 'user_requested',
     cancelledAt: 1784040003000,
     jobIds: ['analysis-job-1', 'job-completed', 'job-late', 'job-pending'],
+    causalEpoch: 'product_restore_cancelled:1784040003000',
+    causalGeneration: '0',
   });
   assert.equal(
     shouldResumeProductRestoreProject(cancelledProject, {
@@ -409,6 +411,91 @@ test('manual and single-result retry persistence failures authorize zero new job
   }
 });
 
+test('explicit retry requires the server canonical reset instead of boolean-only persistence', async () => {
+  const localCancelled = markProductRestoreProjectCancelled({
+    id: 'product-restore-authoritative-retry',
+    module: 'retouch',
+    subFeature: 'product_restore',
+    status: 'generating',
+    backendJobId: 'analysis-job-1',
+    taskCount: 1,
+    completedCount: 0,
+    generationContext: { prompt: '', params: {}, materials: {} },
+    results: [],
+  }, '已手动中断', { cancelledAt: 100 });
+  const serverCancelled = markProductRestoreProjectCancelled({
+    ...localCancelled,
+    status: 'generating',
+    generationContext: { prompt: '', params: {}, materials: {} },
+  }, '已再次中断', { cancelledAt: 1000 });
+
+  for (const retryKind of ['manual', 'single']) {
+    let controllerCreates = 0;
+    let jobCreates = 0;
+    let serverState = { shellProjects: [JSON.parse(JSON.stringify(serverCancelled))] };
+    const transition = await persistProductRestoreExplicitRetryReset({
+      project: localCancelled,
+      resetAt: 200,
+      persist: async (nextProject) => {
+        serverState = mergeAppStateForStorage(
+          serverState,
+          { shellProjects: [JSON.parse(JSON.stringify(nextProject))] },
+        );
+        return true;
+      },
+    });
+    if (transition.persisted) {
+      controllerCreates += 1;
+      jobCreates += 1;
+    }
+    assert.equal(hasDurableProductRestoreCancellation(serverState.shellProjects[0]), true);
+    assert.equal(transition.persisted, false, `${retryKind} boolean-only success is not authorization`);
+    assert.equal(controllerCreates, 0);
+    assert.equal(jobCreates, 0);
+  }
+
+  let acceptedServerState = { shellProjects: [JSON.parse(JSON.stringify(localCancelled))] };
+  const accepted = await persistProductRestoreExplicitRetryReset({
+    project: localCancelled,
+    resetAt: 200,
+    persist: async (nextProject) => {
+      acceptedServerState = mergeAppStateForStorage(
+        acceptedServerState,
+        { shellProjects: [JSON.parse(JSON.stringify(nextProject))] },
+      );
+      return {
+        accepted: true,
+        project: JSON.parse(JSON.stringify(acceptedServerState.shellProjects[0])),
+      };
+    },
+  });
+  assert.equal(accepted.persisted, true, 'the server canonical effective reset authorizes retry');
+  assert.equal(hasDurableProductRestoreCancellation(accepted.project), false);
+  assert.equal(
+    accepted.project.generationContext.productRestoreCancellationReset.eventId,
+    acceptedServerState.shellProjects[0].generationContext.productRestoreCancellationReset.eventId,
+  );
+
+  let rejectedServerState = { shellProjects: [JSON.parse(JSON.stringify(serverCancelled))] };
+  const rejected = await persistProductRestoreExplicitRetryReset({
+    project: localCancelled,
+    resetAt: 200,
+    persist: async (nextProject) => {
+      rejectedServerState = mergeAppStateForStorage(
+        rejectedServerState,
+        { shellProjects: [JSON.parse(JSON.stringify(nextProject))] },
+      );
+      return {
+        accepted: true,
+        project: JSON.parse(JSON.stringify(rejectedServerState.shellProjects[0])),
+      };
+    },
+  });
+  assert.equal(rejected.persisted, false);
+  assert.equal(hasDurableProductRestoreCancellation(rejected.project), true);
+  assert.equal(rejected.project.generationContext.productRestoreCancellation.cancelledAt, 1000);
+});
+
 test('cancellation event ordering survives equality, clock rollback, unsafe numbers, and extreme future JSON', async () => {
   const future = Number.MAX_SAFE_INTEGER;
   const futureCancelled = markProductRestoreProjectCancelled({
@@ -498,6 +585,119 @@ test('cancellation event ordering survives equality, clock rollback, unsafe numb
   });
   assert.ok(persistedSnapshot);
   assert.equal(rejectedTransition.persisted, false, 'a persisted but non-superseding reset must fail closed');
+});
+
+test('MAX_SAFE multi-retry causality survives compact stale server merge in both orders', () => {
+  const originalCancellation = markProductRestoreProjectCancelled({
+    id: 'product-restore-max-safe-causal-chain',
+    module: 'retouch',
+    subFeature: 'product_restore',
+    status: 'generating',
+    backendJobId: 'analysis-job-max-safe',
+    taskCount: 1,
+    completedCount: 0,
+    generationContext: {
+      prompt: '',
+      params: {},
+      materials: {
+        restoreTarget: [{ id: 'target-max-safe', type: 'restoreTarget', url: '/target.png' }],
+      },
+      productRestore: {
+        version: 1,
+        analysisJobId: 'analysis-job-max-safe',
+        analysisModel: 'analysis-model',
+        normalizedAnalysis: {
+          summary: '',
+          invariantFeatures: [],
+          shapeAndStructure: [],
+          proportionAndContour: [],
+          materialAndTexture: [],
+          colorAndGloss: [],
+          logoLabelAndText: [],
+          componentsAndCraft: [],
+          targetSetIssues: [],
+          nonProductPreservationRules: [],
+        },
+        sharedRestorationPrompt: '',
+        focusIds: [],
+        targetMaterialIds: ['target-max-safe'],
+        productReferenceMaterialIds: [],
+        selectedImageModel: 'gpt-image-2',
+        resolution: '2K',
+        userRequirement: '',
+        createdAt: 1,
+      },
+    },
+    results: [],
+  }, '已手动中断', { cancelledAt: Number.MAX_SAFE_INTEGER });
+  const firstReset = createProductRestoreCancellationReset(
+    originalCancellation.generationContext,
+    Number.MAX_SAFE_INTEGER,
+  );
+  const firstRetry = {
+    ...originalCancellation,
+    status: 'generating',
+    error: undefined,
+    generationContext: {
+      ...originalCancellation.generationContext,
+      productRestoreCancellationReset: firstReset,
+    },
+  };
+  const secondCancellation = markProductRestoreProjectCancelled(
+    firstRetry,
+    '已再次中断',
+    { cancelledAt: 1, jobIds: ['image-job-second-cancel'] },
+  );
+  const secondReset = createProductRestoreCancellationReset(
+    secondCancellation.generationContext,
+    1,
+  );
+  const secondRetry = JSON.parse(JSON.stringify({
+    ...secondCancellation,
+    status: 'generating',
+    error: undefined,
+    errorCode: undefined,
+    generationContext: {
+      ...secondCancellation.generationContext,
+      productRestoreCancellationReset: secondReset,
+    },
+  }));
+  const staleOriginal = JSON.parse(JSON.stringify(originalCancellation));
+
+  assert.ok(originalCancellation.generationContext.productRestoreCancellation.cancelledAt < Number.MAX_SAFE_INTEGER);
+  assert.equal(originalCancellation.generationContext.productRestoreCancellation.causalGeneration, '0');
+  assert.equal(firstReset.causalGeneration, '1');
+  assert.equal(secondCancellation.generationContext.productRestoreCancellation.causalGeneration, '2');
+  assert.equal(secondReset.causalGeneration, '3');
+  assert.equal(
+    secondReset.causalEpoch,
+    originalCancellation.generationContext.productRestoreCancellation.causalEpoch,
+  );
+  assert.equal(hasDurableProductRestoreCancellation(secondRetry), false);
+  for (const [existing, incoming] of [
+    [secondRetry, staleOriginal],
+    [staleOriginal, secondRetry],
+  ]) {
+    const mergedState = JSON.parse(JSON.stringify(mergeAppStateForStorage(
+      { shellProjects: [existing] },
+      { shellProjects: [incoming] },
+    )));
+    const mergedProject = mergedState.shellProjects[0];
+    assert.equal(
+      hasDurableProductRestoreCancellation(mergedProject),
+      false,
+      'a compact stale root cancellation must not re-lock the newer second retry',
+    );
+    assert.equal(mergedProject.status, 'generating');
+    const hydratedProject = buildShellDataSnapshot(mergedState, []).projects
+      .find((project) => project.id === mergedProject.id);
+    assert.ok(hydratedProject);
+    assert.equal(hasDurableProductRestoreCancellation(hydratedProject), false);
+    assert.equal(
+      shouldResumeProductRestoreProject(hydratedProject, { cancelled: false }),
+      true,
+    );
+  }
 });
 
 test('cancelling normalizes media-bearing stale generating rows to completed', () => {

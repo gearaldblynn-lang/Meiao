@@ -306,11 +306,15 @@ export const fetchRemoteAppState = async () => {
 
 export const saveRemoteAppState = async (
   state: Partial<PersistedAppState>,
-  options: { mode?: 'merge' | 'replace' } = {},
+  options: { mode?: 'merge' | 'replace'; includeCanonicalState?: boolean } = {},
 ) => {
-  return request<{ ok: boolean }>('/api/state', {
+  return request<{ ok: boolean; state?: PersistedAppState }>('/api/state', {
     method: 'PUT',
-    body: JSON.stringify({ state, mode: options.mode || 'merge' }),
+    body: JSON.stringify({
+      state,
+      mode: options.mode || 'merge',
+      ...(options.includeCanonicalState ? { includeCanonicalState: true } : {}),
+    }),
   });
 };
 
