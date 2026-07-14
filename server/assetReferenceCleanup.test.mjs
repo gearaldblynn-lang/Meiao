@@ -56,7 +56,10 @@ test('provider execution boundary also scrubs stale managed assets', () => {
   assert.match(source, /executeJob: async \(job, signal, options\) => \{\s*const output = await executeProviderJobWithManagedAssetScrub/);
 });
 
-test('managed asset availability checks the real stored asset object path', () => {
+test('managed asset availability accepts active COS objects and checks historical local paths', () => {
+  assert.match(source, /asset\.storageStatus !== 'active'/);
+  assert.match(source, /asset\.provider === 'internal'/);
+  assert.match(source, /asset\.provider !== 'internal' && asset\.provider !== 'tencent_cos'/);
   assert.match(source, /existsSync\(resolveStoredAssetPath\(asset\)\)/);
   assert.doesNotMatch(source, /existsSync\(resolveStoredAssetPath\(asset\.storageKey\)\)/);
 });

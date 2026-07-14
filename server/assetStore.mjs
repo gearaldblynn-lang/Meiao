@@ -5,7 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readResponseBodyWithTimeout } from './providerBodyRead.mjs';
 import { inferExtensionFromMimeType, parseDataUrlPayload } from './providerAssetTransfer.mjs';
-import { ensureAssetLifecycleSchema } from './assetLifecycleStore.mjs';
+import { enqueueAssetCleanupTask, ensureAssetLifecycleSchema } from './assetLifecycleStore.mjs';
+import { buildCosImageObjectKey, putTencentCosImage } from './tencentCosImageStore.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -579,6 +580,119 @@ export const persistAssetBuffer = async ({
 
   await createAssetRecord(pool, record);
   return record;
+};
+
+const createManagedImageUploadDisabledError = () => {
+  const error = new Error('图片上传暂时停用，请稍后重试');
+  error.code = 'managed_image_upload_disabled';
+  error.providerStage = 'asset_upload';
+  error.providerStatus = 'disabled';
+  error.retryable = true;
+  return error;
+};
+
+export const persistUploadedAssetBuffer = async ({
+  pool = null,
+  publicBaseUrl = '',
+  userId,
+  module = 'system',
+  assetType = 'source',
+  originalName = 'upload.bin',
+  mimeType = 'application/octet-stream',
+  fileBuffer,
+  width = 0,
+  height = 0,
+  env = process.env,
+  signal = null,
+  deps = {},
+}) => {
+  const normalizedMimeType = String(mimeType || 'application/octet-stream').trim().toLowerCase();
+  const persistLocal = deps.persistLocal || persistAssetBuffer;
+  if (!normalizedMimeType.startsWith('image/')) {
+    return persistLocal({
+      pool,
+      publicBaseUrl,
+      userId,
+      module,
+      assetType,
+      originalName,
+      mimeType: normalizedMimeType,
+      fileBuffer,
+      width,
+      height,
+      provider: 'internal',
+    });
+  }
+
+  const uploadMode = String(env?.MEIAO_MANAGED_IMAGE_UPLOAD_MODE || 'disabled').trim().toLowerCase();
+  if (uploadMode !== 'cos') throw createManagedImageUploadDisabledError();
+
+  const createdAt = now();
+  const id = randomBytes(12).toString('hex');
+  const safeName = sanitizeAssetName(originalName);
+  const storageKey = buildCosImageObjectKey({
+    userId,
+    assetType,
+    assetId: id,
+    fileName: safeName,
+    mimeType: normalizedMimeType,
+  });
+  const record = {
+    id,
+    userId: String(userId || ''),
+    module: String(module || 'system').slice(0, 60),
+    assetType: String(assetType || 'source').slice(0, 20),
+    storageKey,
+    originalName: safeName,
+    mimeType: normalizedMimeType,
+    fileSize: Buffer.isBuffer(fileBuffer) ? fileBuffer.length : Buffer.byteLength(fileBuffer || ''),
+    width: Number(width || 0),
+    height: Number(height || 0),
+    provider: 'tencent_cos',
+    storageStatus: 'uploading',
+    providerSourceUrl: '',
+    jobId: '',
+    publicUrl: buildAssetPublicUrl(publicBaseUrl, id, safeName),
+    createdAt,
+    updatedAt: createdAt,
+    lastAccessedAt: createdAt,
+    expiresAt: getAssetExpiresAt({ module, createdAt }),
+    deletedAt: null,
+  };
+
+  const createRecord = deps.createRecord || createAssetRecord;
+  const markStatus = deps.markStatus || markStoredAssetStorageStatus;
+  const putCos = deps.putCos || putTencentCosImage;
+  const enqueueCleanup = deps.enqueueCleanup || enqueueAssetCleanupTask;
+  await createRecord(pool, record);
+
+  try {
+    await putCos({
+      storageKey,
+      fileBuffer,
+      mimeType: normalizedMimeType,
+    }, env, signal, deps.cosOptions || {});
+    const activeAt = now();
+    await markStatus(pool, id, 'active', activeAt);
+    return { ...record, storageStatus: 'active', updatedAt: activeAt };
+  } catch (error) {
+    const failedAt = now();
+    try {
+      await markStatus(pool, id, 'upload_failed', failedAt);
+    } catch {
+      // The durable exact-key cleanup below is still attempted even if the status update failed.
+    }
+    await enqueueCleanup(pool, {
+      assetId: id,
+      provider: 'tencent_cos',
+      bucket: String(env?.MEIAO_IMAGE_COS_BUCKET || '').trim(),
+      region: String(env?.MEIAO_IMAGE_COS_REGION || '').trim(),
+      storageKey,
+      action: 'delete',
+      reason: 'upload_failed',
+    });
+    throw error;
+  }
 };
 
 const createInlineImageResultError = () => {

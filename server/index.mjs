@@ -132,6 +132,7 @@ import {
   markStoredAssetAccessed,
   markStoredAssetDeleted,
   persistAssetBuffer,
+  persistUploadedAssetBuffer,
   persistInlineImageResult,
   persistRemoteAsset,
   resolveStoredAssetPath,
@@ -579,7 +580,10 @@ const buildValidManagedAssetReferences = (assets = []) => {
   const refs = new Set();
   for (const asset of assets || []) {
     if (!asset || asset.deletedAt) continue;
-    if (!asset.storageKey || !existsSync(resolveStoredAssetPath(asset))) continue;
+    if (asset.storageStatus && asset.storageStatus !== 'active') continue;
+    if (!asset.storageKey) continue;
+    if (asset.provider === 'internal' && !existsSync(resolveStoredAssetPath(asset))) continue;
+    if (asset.provider !== 'internal' && asset.provider !== 'tencent_cos') continue;
     if (asset.publicUrl) refs.add(asset.publicUrl);
     if (asset.id) refs.add(String(asset.id));
   }
@@ -3712,11 +3716,12 @@ const scrubLocalProtectedManagedAssetRefs = (store, validAssetUrls) => {
 
 const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, fileName, mimeType, fileBuffer, width = 0, height = 0 }) => {
   const publicBaseUrl = getPersistentAssetBaseUrl(req);
-  if (!isExternallyReachableBaseUrl(publicBaseUrl)) {
+  const isImageUpload = String(mimeType || '').trim().toLowerCase().startsWith('image/');
+  if (!isImageUpload && !isExternallyReachableBaseUrl(publicBaseUrl)) {
     return null;
   }
   const pool = shouldUseMysql ? await getMysqlPool() : null;
-  return persistAssetBuffer({
+  return persistUploadedAssetBuffer({
     pool,
     publicBaseUrl,
     userId: user.id,
@@ -3727,7 +3732,7 @@ const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, fileName, 
     fileBuffer,
     width,
     height,
-    provider: 'internal',
+    env: process.env,
   });
 };
 
@@ -15469,6 +15474,14 @@ const server = createServer(async (req, res) => {
       json(res, error.statusCode, {
         message: error.message || '任务提交被服务端拒绝。',
         code: error.code,
+      });
+      return;
+    }
+    if (/^managed_image_(?:upload_failed|upload_disabled)$/.test(String(error?.code || ''))) {
+      json(res, 503, {
+        message: error.message || '图片上传暂时失败，请稍后重试。',
+        code: error.code,
+        retryable: true,
       });
       return;
     }
