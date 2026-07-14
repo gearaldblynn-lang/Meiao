@@ -413,7 +413,16 @@ export const readRemoteMediaBufferWithLimit = async (response, label = '远程�
 export const downloadManagedAsset = async (assetUrl, envOrOptions = {}, signal = null, options = {}) => {
   const normalizedOptions = normalizeOptions(envOrOptions, signal, options);
   const fetchWithTimeout = normalizedOptions.deps.fetchWithTimeout || fetch;
-  const response = await fetchWithTimeout(normalizeManagedAssetDownloadUrl(assetUrl), {
+  const resolveManagedAssetReadUrl = normalizedOptions.deps.resolveManagedAssetReadUrl;
+  const resolvedReadUrl = typeof resolveManagedAssetReadUrl === 'function'
+    ? String(await resolveManagedAssetReadUrl(assetUrl, {
+        purpose: 'provider',
+        signal: normalizedOptions.signal,
+        env: normalizedOptions.env,
+      }) || '').trim()
+    : '';
+  const downloadUrl = resolvedReadUrl || normalizeManagedAssetDownloadUrl(assetUrl);
+  const response = await fetchWithTimeout(downloadUrl, {
     method: 'GET',
     signal: normalizedOptions.signal,
   }, '内部素材下载超时', 60_000, 'asset_download');

@@ -282,8 +282,8 @@ test('agent image generation filters expired provider temp images before sending
 });
 
 test('agent creation stores selected model policies on the initial version', () => {
-  const dbCreateStart = source.indexOf('const createDbAgent = async');
-  const dbCreateEnd = source.indexOf('const updateDbAgent = async', dbCreateStart);
+  const dbCreateStart = source.indexOf('const createDbAgentUnlocked = async');
+  const dbCreateEnd = source.indexOf('const createDbAgent = async', dbCreateStart);
   const localCreateStart = source.indexOf('const createLocalAgent =');
   const localCreateEnd = source.indexOf('const updateLocalAgent =', localCreateStart);
   assert.ok(dbCreateStart > -1 && dbCreateEnd > dbCreateStart, 'db agent creation should be bounded');

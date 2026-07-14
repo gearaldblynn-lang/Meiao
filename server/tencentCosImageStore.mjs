@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import COS from 'cos-nodejs-sdk-v5';
+import { validateManagedImageUpload } from './managedImageValidation.mjs';
 
 const IMAGE_KEY_PREFIX = 'managed-images/users/';
 const DEFAULT_BROWSER_URL_TTL_SECONDS = 300;
@@ -8,6 +9,7 @@ const DEFAULT_PROVIDER_URL_TTL_SECONDS = 10_800;
 const DEFAULT_UPLOAD_MAX_ATTEMPTS = 3;
 const DEFAULT_UPLOAD_TIMEOUT_MS = 30_000;
 const DEFAULT_UPLOAD_RETRY_BASE_MS = 500;
+const DEFAULT_OPERATION_TIMEOUT_MS = 15_000;
 
 const createManagedImageError = (code, message, extras = null) => {
   const error = new Error(message);
@@ -123,10 +125,17 @@ const validateStorageKey = (storageKey) => {
 const createClientContext = (env, options = {}) => {
   const settings = getRequiredSettings(env);
   const createClient = options.createClient || ((config) => new COS(config));
-  const client = createClient({
-    SecretId: settings.MEIAO_IMAGE_COS_SECRET_ID,
-    SecretKey: settings.MEIAO_IMAGE_COS_SECRET_KEY,
-  });
+  let client;
+  try {
+    client = createClient({
+      SecretId: settings.MEIAO_IMAGE_COS_SECRET_ID,
+      SecretKey: settings.MEIAO_IMAGE_COS_SECRET_KEY,
+    });
+  } catch {
+    throw createManagedImageError('provider_config_error', '腾讯 COS 图片存储客户端初始化失败', {
+      providerStatus: 'config_error',
+    });
+  }
   return {
     client,
     Bucket: settings.MEIAO_IMAGE_COS_BUCKET,
@@ -134,24 +143,55 @@ const createClientContext = (env, options = {}) => {
   };
 };
 
+const getOperationTimeoutMs = (env) => parseBoundedInteger(
+  getSetting(env, 'MEIAO_IMAGE_COS_OPERATION_TIMEOUT_MS'),
+  DEFAULT_OPERATION_TIMEOUT_MS,
+  10,
+  300_000,
+);
+
 const isMissingObjectError = (error) => {
   const statusCode = Number(error?.statusCode || error?.status || 0);
   const code = String(error?.code || '').trim();
   return statusCode === 404 || ['NoSuchKey', 'NotFound', 'NoSuchObject'].includes(code);
 };
 
-const callCos = (invoke, { timeoutMs = 0 } = {}) => new Promise((resolve, reject) => {
+const callCos = (invoke, { timeoutMs = 0, signal = null, cancel = null } = {}) => new Promise((resolve, reject) => {
   let settled = false;
+  let timer = null;
+  const handleAbort = () => {
+    try {
+      cancel?.();
+    } catch {
+      // The durable exact-key cleanup remains the final safety net.
+    }
+    finish(reject, createManagedImageError('request_cancelled', '图片上传已取消', {
+      providerStatus: 'cancelled',
+    }));
+  };
   const finish = (handler, value) => {
     if (settled) return;
     settled = true;
     if (timer) clearTimeout(timer);
+    signal?.removeEventListener?.('abort', handleAbort);
     handler(value);
   };
-  const timer = timeoutMs > 0
-    ? setTimeout(() => finish(reject, Object.assign(new Error('COS request timeout'), { code: 'ETIMEDOUT' })), timeoutMs)
+  timer = timeoutMs > 0
+    ? setTimeout(() => {
+      try {
+        cancel?.();
+      } catch {
+        // The durable exact-key cleanup remains the final safety net.
+      }
+      finish(reject, Object.assign(new Error('COS request timeout'), { code: 'ETIMEDOUT' }));
+    }, timeoutMs)
     : null;
   if (typeof timer?.unref === 'function') timer.unref();
+  if (signal?.aborted) {
+    handleAbort();
+    return;
+  }
+  signal?.addEventListener?.('abort', handleAbort, { once: true });
   try {
     invoke((error, data) => {
       if (error) finish(reject, error);
@@ -184,6 +224,7 @@ export const putTencentCosImage = async (payload, env = {}, signal = null, optio
       providerStatus: 'invalid_input',
     });
   }
+  validateManagedImageUpload({ fileBuffer, mimeType, env });
 
   const { client, Bucket, Region } = createClientContext(env, options);
   const maxAttempts = parseBoundedInteger(
@@ -192,12 +233,12 @@ export const putTencentCosImage = async (payload, env = {}, signal = null, optio
     1,
     8,
   );
-  const timeoutMs = parseBoundedInteger(
-    getSetting(env, 'MEIAO_IMAGE_COS_UPLOAD_TIMEOUT_MS'),
-    DEFAULT_UPLOAD_TIMEOUT_MS,
-    1_000,
-    300_000,
-  );
+  const timeoutMs = options.uploadTimeoutMs ?? parseBoundedInteger(
+      getSetting(env, 'MEIAO_IMAGE_COS_UPLOAD_TIMEOUT_MS'),
+      DEFAULT_UPLOAD_TIMEOUT_MS,
+      1_000,
+      300_000,
+    );
   const retryBaseMs = parseBoundedInteger(
     getSetting(env, 'MEIAO_IMAGE_COS_UPLOAD_RETRY_BASE_MS'),
     DEFAULT_UPLOAD_RETRY_BASE_MS,
@@ -211,6 +252,12 @@ export const putTencentCosImage = async (payload, env = {}, signal = null, optio
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfAborted(signal);
     try {
+      let taskId = '';
+      let cancellationRequested = false;
+      const cancelUpload = () => {
+        cancellationRequested = true;
+        if (taskId && typeof client.cancelTask === 'function') client.cancelTask(taskId);
+      };
       response = await callCos((callback) => client.putObject({
         Bucket,
         Region,
@@ -218,10 +265,17 @@ export const putTencentCosImage = async (payload, env = {}, signal = null, optio
         Body: fileBuffer,
         ContentLength: fileBuffer.length,
         ContentType: mimeType,
-      }, callback), { timeoutMs });
+        onTaskReady: (readyTaskId) => {
+          taskId = String(readyTaskId || '');
+          if (cancellationRequested && taskId && typeof client.cancelTask === 'function') {
+            client.cancelTask(taskId);
+          }
+        },
+      }, callback), { timeoutMs, signal, cancel: cancelUpload });
       lastError = null;
       break;
     } catch (error) {
+      throwIfAborted(signal);
       lastError = error;
       if (attempt < maxAttempts) await sleep(retryBaseMs * (2 ** (attempt - 1)), signal);
     }
@@ -258,6 +312,7 @@ export const createTencentCosImageReadUrl = async (storageKey, purpose = 'browse
     ? DEFAULT_PROVIDER_URL_TTL_SECONDS
     : DEFAULT_BROWSER_URL_TTL_SECONDS;
   const Expires = parseBoundedInteger(getSetting(env, ttlKey), fallbackTtl, 60, 86_400);
+  const timeoutMs = getOperationTimeoutMs(env);
   let response;
   try {
     response = await callCos((callback) => client.getObjectUrl({
@@ -267,7 +322,7 @@ export const createTencentCosImageReadUrl = async (storageKey, purpose = 'browse
       Sign: true,
       Method: 'GET',
       Expires,
-    }, callback));
+    }, callback), { timeoutMs });
   } catch {
     throw createManagedImageError('managed_image_sign_failed', '图片读取地址生成失败，请稍后重试', {
       providerStatus: 'network_error',
@@ -290,7 +345,10 @@ export const headTencentCosImage = async (storageKey, env = {}, options = {}) =>
   const Key = validateStorageKey(storageKey);
   const { client, Bucket, Region } = createClientContext(env, options);
   try {
-    const response = await callCos((callback) => client.headObject({ Bucket, Region, Key }, callback));
+    const response = await callCos(
+      (callback) => client.headObject({ Bucket, Region, Key }, callback),
+      { timeoutMs: getOperationTimeoutMs(env) },
+    );
     return {
       exists: true,
       etag: String(response?.ETag || '').replace(/^"|"$/g, ''),
@@ -309,7 +367,10 @@ export const deleteTencentCosImage = async (storageKey, env = {}, options = {}) 
   const Key = validateStorageKey(storageKey);
   const { client, Bucket, Region } = createClientContext(env, options);
   try {
-    await callCos((callback) => client.deleteObject({ Bucket, Region, Key }, callback));
+    await callCos(
+      (callback) => client.deleteObject({ Bucket, Region, Key }, callback),
+      { timeoutMs: getOperationTimeoutMs(env) },
+    );
     return { deleted: true, missing: false };
   } catch (error) {
     if (isMissingObjectError(error)) return { deleted: true, missing: true };

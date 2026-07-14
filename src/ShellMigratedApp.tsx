@@ -3323,6 +3323,7 @@ const AppContent: React.FC<{
   const uploadImageCropSliceAsset = useCallback((file: File) => (
     uploadInternalAssetStream({
       module: AppModuleObj.IMAGE_CROP,
+      assetType: 'result',
       file,
       fileName: file.name,
     })

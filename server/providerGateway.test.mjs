@@ -122,6 +122,53 @@ test('executeProviderJob propagates managed COS signed-read dependencies to KIE 
   }
 });
 
+test('executeProviderJob propagates managed COS signed-read dependencies to MaxForAI image edits', async () => {
+  const originalFetch = global.fetch;
+  const signedUrl = 'https://images.cos.test/source.png?q-signature=fresh';
+  const resolverCalls = [];
+  const fetchCalls = [];
+  global.fetch = async (url, init = {}) => {
+    fetchCalls.push([String(url), init]);
+    if (String(url) === signedUrl) {
+      return new Response(Buffer.from('png-bytes'), {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      });
+    }
+    if (String(url).includes('/v1/images/edits')) {
+      return createJsonResponse({ data: [{ url: 'https://cdn.test/result.png' }] });
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+  try {
+    const result = await executeProviderJob({
+      taskType: 'kie_image',
+      provider: 'maxforai',
+      payload: {
+        model: 'maxforai-image-2-relay',
+        prompt: 'edit product',
+        imageUrls: ['/api/assets/file/asset-1/source.png'],
+      },
+    }, {
+      MAXFORAI_API_KEY: 'test-key',
+      MAXFORAI_BASE_URL: 'https://maxforai.test/v1',
+    }, new AbortController().signal, {
+      assetTransferDeps: {
+        resolveManagedAssetReadUrl: async (value, options) => {
+          resolverCalls.push([value, options.purpose]);
+          return signedUrl;
+        },
+      },
+    });
+
+    assert.deepEqual(resolverCalls, [['/api/assets/file/asset-1/source.png', 'provider']]);
+    assert.ok(fetchCalls.some(([url]) => url === signedUrl));
+    assert.equal(result.result.imageUrl, 'https://cdn.test/result.png');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 const box = (type, payload = Buffer.alloc(0)) => {
   const buffer = Buffer.alloc(8 + payload.length);
   buffer.writeUInt32BE(buffer.length, 0);

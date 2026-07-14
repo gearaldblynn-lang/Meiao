@@ -19,8 +19,11 @@ const createEnv = (overrides = {}) => ({
   MEIAO_IMAGE_COS_UPLOAD_MAX_ATTEMPTS: '3',
   MEIAO_IMAGE_COS_UPLOAD_TIMEOUT_MS: '5000',
   MEIAO_IMAGE_COS_UPLOAD_RETRY_BASE_MS: '10',
+  MEIAO_IMAGE_COS_OPERATION_TIMEOUT_MS: '100',
   ...overrides,
 });
+const PNG_BYTES = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+const JPEG_BYTES = Buffer.from('ffd8ffe000104a4649460001', 'hex');
 
 test('buildCosImageObjectKey keeps untrusted values inside the managed image prefix', () => {
   const key = buildCosImageObjectKey({
@@ -57,7 +60,7 @@ test('putTencentCosImage retries the same object key and returns sanitized metad
   const result = await putTencentCosImage(
     {
       storageKey: 'managed-images/users/abc/source/asset-id/image.png',
-      fileBuffer: Buffer.from('png-bytes'),
+      fileBuffer: PNG_BYTES,
       mimeType: 'image/png',
     },
     createEnv(),
@@ -71,7 +74,7 @@ test('putTencentCosImage retries the same object key and returns sanitized metad
   assert.equal(calls.length, 3);
   assert.equal(new Set(calls.map((entry) => entry.Key)).size, 1);
   assert.equal(calls[0].ContentType, 'image/png');
-  assert.deepEqual(calls[0].Body, Buffer.from('png-bytes'));
+  assert.deepEqual(calls[0].Body, PNG_BYTES);
   assert.deepEqual(sleeps, [10, 20]);
   assert.deepEqual(result, {
     bucket: 'meiao-managed-images-1406860462',
@@ -95,7 +98,7 @@ test('putTencentCosImage fails closed after the configured retry limit', async (
     () => putTencentCosImage(
       {
         storageKey: 'managed-images/users/abc/source/asset-id/image.jpg',
-        fileBuffer: Buffer.from('jpg-bytes'),
+        fileBuffer: JPEG_BYTES,
         mimeType: 'image/jpeg',
       },
       createEnv({ MEIAO_IMAGE_COS_UPLOAD_MAX_ATTEMPTS: '2' }),
@@ -115,12 +118,51 @@ test('putTencentCosImage fails closed after the configured retry limit', async (
   assert.equal(localFallbackCalls, 0);
 });
 
+test('putTencentCosImage cancels the underlying COS task before a timeout releases the caller', async () => {
+  const taskIds = [];
+  const cancelled = [];
+  const lateCallbacks = [];
+  const fakeClient = {
+    putObject(params, callback) {
+      const taskId = `upload-task-${taskIds.length + 1}`;
+      taskIds.push(taskId);
+      params.onTaskReady?.(taskId);
+      lateCallbacks.push(callback);
+    },
+    cancelTask(taskId) {
+      cancelled.push(taskId);
+    },
+  };
+
+  await assert.rejects(
+    () => putTencentCosImage(
+      {
+        storageKey: 'managed-images/users/abc/source/asset-id/image.jpg',
+        fileBuffer: JPEG_BYTES,
+        mimeType: 'image/jpeg',
+      },
+      createEnv({ MEIAO_IMAGE_COS_UPLOAD_MAX_ATTEMPTS: '1' }),
+      null,
+      {
+        createClient: () => fakeClient,
+        uploadTimeoutMs: 20,
+      },
+    ),
+    (error) => error?.code === 'managed_image_upload_failed'
+      && error?.upstreamCode === 'ETIMEDOUT',
+  );
+
+  assert.deepEqual(taskIds, ['upload-task-1']);
+  assert.deepEqual(cancelled, ['upload-task-1']);
+  lateCallbacks[0]?.(null, { ETag: 'late-success-must-be-ignored' });
+});
+
 test('image COS configuration is independent from the video COS configuration', async () => {
   await assert.rejects(
     () => putTencentCosImage(
       {
         storageKey: 'managed-images/users/abc/source/asset-id/image.png',
-        fileBuffer: Buffer.from('png'),
+        fileBuffer: PNG_BYTES,
         mimeType: 'image/png',
       },
       {
@@ -190,4 +232,42 @@ test('deleteTencentCosImage treats an already missing object as idempotent succe
   );
 
   assert.deepEqual(result, { deleted: true, missing: true });
+});
+
+test('COS sign head and delete operations fail within the configured timeout', async () => {
+  const neverCallbackClient = {
+    getObjectUrl() {},
+    headObject() {},
+    deleteObject() {},
+  };
+  const options = { createClient: () => neverCallbackClient };
+  const env = createEnv({ MEIAO_IMAGE_COS_OPERATION_TIMEOUT_MS: '20' });
+  const key = 'managed-images/users/abc/source/asset-id/image.webp';
+
+  await assert.rejects(
+    () => createTencentCosImageReadUrl(key, 'browser', env, options),
+    (error) => error?.code === 'managed_image_sign_failed' && error?.retryable === true,
+  );
+  await assert.rejects(
+    () => headTencentCosImage(key, env, options),
+    (error) => error?.code === 'managed_image_head_failed' && error?.retryable === true,
+  );
+  await assert.rejects(
+    () => deleteTencentCosImage(key, env, options),
+    (error) => error?.code === 'managed_image_delete_failed' && error?.retryable === true,
+  );
+});
+
+test('COS client construction errors are sanitized before leaving the storage boundary', async () => {
+  const leaked = 'image-secret-key';
+  await assert.rejects(
+    () => headTencentCosImage(
+      'managed-images/users/abc/source/asset-id/image.webp',
+      createEnv(),
+      { createClient: () => { throw new Error(`invalid credential ${leaked}`); } },
+    ),
+    (error) => error?.code === 'provider_config_error'
+      && error?.providerStatus === 'config_error'
+      && !String(error?.message || '').includes(leaked),
+  );
 });

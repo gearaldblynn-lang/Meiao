@@ -27,12 +27,12 @@ test('image generation keeps conversation image context across uploaded and gene
 });
 
 test('image generation filters unavailable managed asset references before provider upload', () => {
-  assert.match(serverSource, /const filterAvailableConversationImageReferences = async \(imageReferences = \[\]\) =>/);
-  assert.match(serverSource, /listStoredAssets\(pool\)/);
+  assert.match(serverSource, /const filterAvailableConversationImageReferences = async \(imageReferences = \[\], userId = ''\) =>/);
+  assert.match(serverSource, /listStoredAssetsForUser\(pool, userId\)/);
   assert.match(serverSource, /resolveStoredAssetPath\(asset\)/);
   assert.match(serverSource, /existsSync\(resolveStoredAssetPath\(asset\)\)/);
   assert.match(serverSource, /isAvailableManagedAssetUrl\(item\.url, validAssetRefs\)/);
-  assert.match(serverSource, /await filterAvailableConversationImageReferences\(buildConversationImageCatalog\(/);
+  assert.match(serverSource, /await filterAvailableConversationImageReferences\(buildConversationImageCatalog\([\s\S]{0,300}\), user\.id\)/);
   assert.match(serverSource, /availableManagedReferenceUrls\.has\(url\)/);
 });
 

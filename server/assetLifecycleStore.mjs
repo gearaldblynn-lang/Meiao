@@ -11,6 +11,7 @@ const DEFAULT_RETRY_BASE_MS = 60_000;
 const DEFAULT_MAX_ATTEMPTS_BEFORE_MANUAL_REVIEW = 8;
 const DEFAULT_MANUAL_REVIEW_RETRY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_IN_PROGRESS_LEASE_MS = 10 * 60 * 1000;
+const DEFAULT_AUDIT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const CLAIMABLE_STATUSES = new Set(['pending', 'retry', 'manual_review']);
 
 const taskFingerprint = (input) => createHash('sha256').update([
@@ -37,6 +38,7 @@ const parsePositiveInteger = (value, fallback) => {
 const normalizeTaskInput = (input, timestamp) => {
   const storageKey = String(input?.storageKey || '').trim();
   if (!storageKey) throw new Error('素材清理任务缺少 storageKey');
+  const requestedNextAttemptAt = Number(input?.nextAttemptAt);
   const provider = String(input?.provider || 'internal').trim().slice(0, 40) || 'internal';
   const action = String(input?.action || 'delete').trim().slice(0, 20) || 'delete';
   const normalized = {
@@ -50,7 +52,9 @@ const normalizeTaskInput = (input, timestamp) => {
     reason: String(input?.reason || 'unspecified').trim().slice(0, 80) || 'unspecified',
     status: 'pending',
     attemptCount: 0,
-    nextAttemptAt: timestamp,
+    nextAttemptAt: Number.isFinite(requestedNextAttemptAt)
+      ? Math.max(timestamp, requestedNextAttemptAt)
+      : timestamp,
     lastError: '',
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -136,7 +140,7 @@ export const enqueueAssetCleanupTask = async (pool, input, options = {}) => {
     const registry = readRegistry(options);
     const existing = registry.tasks.find((item) => item.objectFingerprint === task.objectFingerprint);
     if (existing) {
-      if (existing.status === 'protected') {
+      if (existing.status === 'protected' || existing.status === 'complete') {
         Object.assign(existing, {
           assetId: task.assetId,
           reason: task.reason,
@@ -162,12 +166,12 @@ export const enqueueAssetCleanupTask = async (pool, input, options = {}) => {
       updated_at, completed_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON DUPLICATE KEY UPDATE
-      updated_at = IF(status = 'protected', VALUES(updated_at), updated_at),
-      next_attempt_at = IF(status = 'protected', VALUES(next_attempt_at), next_attempt_at),
-      reason = IF(status = 'protected', VALUES(reason), reason),
-      completed_at = IF(status = 'protected', NULL, completed_at),
-      last_error = IF(status = 'protected', '', last_error),
-      status = IF(status = 'protected', 'pending', status)`,
+      updated_at = IF(status IN ('protected', 'complete'), VALUES(updated_at), updated_at),
+      next_attempt_at = IF(status IN ('protected', 'complete'), VALUES(next_attempt_at), next_attempt_at),
+      reason = IF(status IN ('protected', 'complete'), VALUES(reason), reason),
+      completed_at = IF(status IN ('protected', 'complete'), NULL, completed_at),
+      last_error = IF(status IN ('protected', 'complete'), '', last_error),
+      status = IF(status IN ('protected', 'complete'), 'pending', status)`,
     [
       task.id,
       task.assetId || null,
@@ -386,4 +390,55 @@ export const summarizeAssetCleanupTasks = (tasks = [], timestamp = Date.now()) =
     protected: allTasks.filter((task) => task.status === 'protected').length,
     complete: allTasks.filter((task) => task.status === 'complete').length,
   };
+};
+
+export const summarizeAssetCleanupStore = async (pool, options = {}) => {
+  const timestamp = Number(options.now?.() ?? Date.now());
+  if (!pool) {
+    return summarizeAssetCleanupTasks(readRegistry(options).tasks, timestamp);
+  }
+  const [rows] = await pool.query(`
+    SELECT
+      SUM(CASE WHEN status IN ('pending', 'retry', 'in_progress', 'manual_review') THEN 1 ELSE 0 END) AS backlog,
+      MIN(CASE WHEN status IN ('pending', 'retry', 'in_progress', 'manual_review') THEN created_at ELSE NULL END) AS oldest_created_at,
+      SUM(CASE WHEN status IN ('pending', 'retry', 'in_progress', 'manual_review') THEN attempt_count ELSE 0 END) AS retry_attempts,
+      SUM(CASE WHEN status = 'manual_review' THEN 1 ELSE 0 END) AS manual_review,
+      SUM(CASE WHEN status = 'protected' THEN 1 ELSE 0 END) AS protected_count,
+      SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS complete_count
+    FROM asset_cleanup_tasks
+  `);
+  const row = rows?.[0] || {};
+  const oldestCreatedAt = Number(row.oldest_created_at || 0);
+  return {
+    backlog: Number(row.backlog || 0),
+    oldestPendingAgeMs: oldestCreatedAt > 0 ? Math.max(0, timestamp - oldestCreatedAt) : 0,
+    retryAttempts: Number(row.retry_attempts || 0),
+    manualReview: Number(row.manual_review || 0),
+    protected: Number(row.protected_count || 0),
+    complete: Number(row.complete_count || 0),
+  };
+};
+
+export const pruneAssetCleanupTasks = async (pool, options = {}) => {
+  const timestamp = Number(options.now?.() ?? Date.now());
+  const retentionMs = parsePositiveInteger(
+    options.retentionMs ?? process.env.MEIAO_ASSET_CLEANUP_AUDIT_RETENTION_MS,
+    DEFAULT_AUDIT_RETENTION_MS,
+  );
+  const cutoff = timestamp - retentionMs;
+  if (!pool) {
+    const registry = readRegistry(options);
+    const before = registry.tasks.length;
+    registry.tasks = registry.tasks.filter((task) => (
+      !['complete', 'protected'].includes(String(task?.status || ''))
+      || Number(task?.updatedAt || 0) > cutoff
+    ));
+    if (registry.tasks.length !== before) writeRegistry(registry, options);
+    return { pruned: before - registry.tasks.length, cutoff };
+  }
+  const [result] = await pool.query(
+    "DELETE FROM asset_cleanup_tasks WHERE status IN ('complete', 'protected') AND updated_at <= ?",
+    [cutoff],
+  );
+  return { pruned: Number(result?.affectedRows || 0), cutoff };
 };

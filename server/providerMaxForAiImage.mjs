@@ -248,7 +248,13 @@ export const runMaxForAiImageJob = async ({ payload = {}, env = {}, signal = nul
     throw createProviderError('provider_bad_request', 'MaxForAI 请求依赖未配置');
   }
   const downloadRemoteProviderMediaUrl = deps.downloadRemoteProviderMediaUrl
-    || defaultDownloadRemoteProviderMediaUrl;
+    || ((value, options = {}) => defaultDownloadRemoteProviderMediaUrl(value, {
+      ...options,
+      deps: {
+        ...(options.deps || {}),
+        ...(deps.assetTransferDeps || {}),
+      },
+    }));
 
   const textMediaUrls = extractKieImageTextMediaUrls(payload.prompt || '');
   const rawImageUrls = uniqueNonEmpty([

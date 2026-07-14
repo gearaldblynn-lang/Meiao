@@ -15,8 +15,19 @@ test('media transcode routes share one handler across mysql and local auth modes
 
 test('media transcode upload has a dedicated pre-parse size limit and conversion has a small JSON limit', () => {
   assert.match(source, /MEIAO_MEDIA_TRANSCODE_INPUT_MAX_BYTES/);
-  assert.match(source, /content-length[\s\S]{0,500}MEDIA_TRANSCODE_INPUT_MAX_BYTES/i);
+  assert.match(source, /const multipartBodyMaxBytes = MEDIA_TRANSCODE_INPUT_MAX_BYTES \+ 2 \* 1024 \* 1024/);
+  assert.match(source, /content-length[\s\S]{0,500}contentLength > multipartBodyMaxBytes/i);
+  assert.match(source, /readMultipartFormData\(req, \{[\s\S]{0,120}maxBytes: multipartBodyMaxBytes/);
+  assert.match(source, /file\.size > MEDIA_TRANSCODE_INPUT_MAX_BYTES/);
   assert.match(source, /readBody\(req, \{ maxBytes: 64 \* 1024 \}\)/);
+});
+
+test('media transcode result persistence shares the managed asset owner lifecycle fence', () => {
+  const transcodeApi = source.match(/const mediaTranscodeApi = createMediaTranscodeApi\([\s\S]*?\n\}\);/)?.[0] || '';
+  assert.match(transcodeApi, /withManagedAssetUserLock\(userId/);
+  assert.match(transcodeApi, /assertActiveDbUserUnderManagedAssetLock\(pool, userId/);
+  assert.match(transcodeApi, /withLocalManagedAssetUserLock\(userId/);
+  assert.match(transcodeApi, /owner\.status !== 'active'/);
 });
 
 test('health exposes only non-sensitive media transcode runtime status', () => {

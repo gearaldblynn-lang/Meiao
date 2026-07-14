@@ -343,6 +343,7 @@ const ChatComposer: React.FC<Props> = ({
           }
           const result = await uploadInternalAssetStream({
             module: 'agent_chat',
+            assetType: 'chat',
             file,
             fileName: file.name,
           });

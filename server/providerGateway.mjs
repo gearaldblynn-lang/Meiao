@@ -2993,7 +2993,10 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
           payload: job.payload,
           env,
           signal,
-          deps: { fetchWithTimeout: fetchKieWithTimeout },
+          deps: {
+            fetchWithTimeout: fetchKieWithTimeout,
+            assetTransferDeps: options.assetTransferDeps,
+          },
         });
       }
       if (job.providerTaskId) {

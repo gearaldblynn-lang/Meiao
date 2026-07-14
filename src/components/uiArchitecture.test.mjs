@@ -3462,7 +3462,7 @@ test('everything replace logo replacement is integrated without product-replace 
 
   assert.match(internalApi, /export const updateInternalJobResult/);
   assert.match(server, /jobResultMatch/);
-  assert.match(server, /updateJobFields\(pool, job\.id/);
+  assert.match(server, /withManagedAssetUserLock\(user\.id[\s\S]{0,700}getJobById\(lockedPool, job\.id\)[\s\S]{0,700}updateJobFields\(lockedPool, freshJob\.id/);
   assert.match(server, /updateLocalJobResult/);
 });
 

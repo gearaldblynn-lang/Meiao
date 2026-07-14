@@ -1611,6 +1611,7 @@ export const fetchAgentUsageSummary = async () => {
 
 export const uploadInternalAsset = async (payload: {
   module: string;
+  assetType?: 'source' | 'reference' | 'chat' | 'result' | 'guide';
   fileName: string;
   mimeType: string;
   base64Data: string;
@@ -1627,6 +1628,7 @@ export const uploadInternalAsset = async (payload: {
 
 export const uploadInternalAssetStream = async (payload: {
   module: string;
+  assetType?: 'source' | 'reference' | 'chat' | 'result' | 'guide';
   file: File;
   fileName?: string;
   signal?: AbortSignal;
@@ -1638,6 +1640,7 @@ export const uploadInternalAssetStream = async (payload: {
   );
   const formData = new FormData();
   formData.append('module', payload.module);
+  formData.append('assetType', payload.assetType || 'source');
   formData.append('file', payload.file, normalizedFileName);
 
   const response = await fetchWithTimeout('/api/assets/upload-stream', {

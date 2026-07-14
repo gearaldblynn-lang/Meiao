@@ -505,6 +505,7 @@ export const markLocalJobFailed = (store, jobId, error) => {
 export const createLocalJobWorker = ({
   readStore,
   writeStore,
+  mutateStore,
   executeJob,
   getMaxConcurrency,
   createLog,
@@ -516,6 +517,13 @@ export const createLocalJobWorker = ({
   let timer = null;
   let draining = false;
   const activeControllers = new Map();
+  const mutate = async (operation) => {
+    if (typeof mutateStore === 'function') return mutateStore(operation);
+    const store = readStore();
+    const result = await operation(store);
+    writeStore(store);
+    return result;
+  };
 
   const runLoop = async () => {
     if (draining) return;
@@ -523,13 +531,11 @@ export const createLocalJobWorker = ({
 
     try {
       if (isExecutionPaused()) return;
-      const store = readStore();
       const maxConcurrency = await Promise.resolve(getMaxConcurrency());
       if (isExecutionPaused()) return;
       const availableSlots = Math.max(0, maxConcurrency - activeControllers.size);
-      const claimed = takeNextLocalExecutableJobs(store, availableSlots);
+      const claimed = await mutate((store) => takeNextLocalExecutableJobs(store, availableSlots));
       if (claimed.length === 0) return;
-      writeStore(store);
 
       for (const job of claimed) {
         if (activeControllers.has(job.id)) continue;
@@ -551,24 +557,23 @@ export const createLocalJobWorker = ({
               const value = String(providerTaskId || '').trim();
               if (!value || value === notifiedProviderTaskId) return;
               notifiedProviderTaskId = value;
-              const providerStore = readStore();
-              updateLocalJobProviderTaskId(providerStore, refreshedJob.id, value);
-              writeStore(providerStore);
+              await mutate((providerStore) => updateLocalJobProviderTaskId(providerStore, refreshedJob.id, value));
             };
 
             const output = await executeJob(refreshedJob, controller.signal, { onProviderTaskId });
-            const completeStore = readStore();
-            const finishedJob = markLocalJobCompleted(completeStore, refreshedJob.id, output, controller.signal.aborted);
-            try {
-              settleJobCredits?.({ store: completeStore, job: finishedJob, output, aborted: controller.signal.aborted });
-            } catch (creditError) {
-              console.error('Account credit settlement failed after local job completion.', creditError);
-            }
-            writeStore(completeStore);
+            const finishedJob = await mutate((completeStore) => {
+              const nextJob = markLocalJobCompleted(completeStore, refreshedJob.id, output, controller.signal.aborted);
+              try {
+                settleJobCredits?.({ store: completeStore, job: nextJob, output, aborted: controller.signal.aborted });
+              } catch (creditError) {
+                console.error('Account credit settlement failed after local job completion.', creditError);
+              }
+              return nextJob;
+            });
 
             const user = finishedJob ? findUserById(finishedJob.userId) : null;
             if (user && createLog && finishedJob) {
-              createLog({
+              await createLog({
                 user,
                 level: 'info',
                 module: finishedJob.module,
@@ -579,14 +584,15 @@ export const createLocalJobWorker = ({
               });
             }
           } catch (error) {
-            const failureStore = readStore();
-            const failedJob = markLocalJobFailed(failureStore, job.id, error);
-            try {
-              releaseJobCredits?.({ store: failureStore, job: failedJob, error, retryWaiting: failedJob?.status === 'retry_waiting' });
-            } catch (creditError) {
-              console.error('Account credit release failed after local job failure.', creditError);
-            }
-            writeStore(failureStore);
+            const failedJob = await mutate((failureStore) => {
+              const nextJob = markLocalJobFailed(failureStore, job.id, error);
+              try {
+                releaseJobCredits?.({ store: failureStore, job: nextJob, error, retryWaiting: nextJob?.status === 'retry_waiting' });
+              } catch (creditError) {
+                console.error('Account credit release failed after local job failure.', creditError);
+              }
+              return nextJob;
+            });
 
             const user = failedJob ? findUserById(failedJob.userId) : null;
             void maybeRecordCreditAlertLog({ error, job: failedJob, user, createLog });
@@ -596,7 +602,7 @@ export const createLocalJobWorker = ({
                 taskType: failedJob.taskType,
                 errorCode: failedJob.errorCode,
               });
-              createLog({
+              await createLog({
                 user,
                 level: error?.code === 'request_cancelled' ? 'info' : logFields.level,
                 module: failedJob.module,

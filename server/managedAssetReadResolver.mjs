@@ -3,7 +3,7 @@ import {
   getStoredAssetById,
   getStoredAssetStorageProvider,
 } from './assetStore.mjs';
-import { createTencentCosImageReadUrl } from './tencentCosImageStore.mjs';
+import { createTencentCosImageReadUrl, headTencentCosImage } from './tencentCosImageStore.mjs';
 
 const createReadError = (code, message, statusCode) => {
   const error = new Error(message);
@@ -23,19 +23,44 @@ export const resolveManagedAssetReadUrl = async (value, options = {}) => {
     throw createReadError('managed_asset_unavailable', '图片素材不存在或已不可用', 404);
   }
   const userId = String(options.userId || '').trim();
-  if (userId && asset.userId && String(asset.userId) !== userId) {
+  if (asset.userId && (!userId || String(asset.userId) !== userId)) {
     throw createReadError('managed_asset_forbidden', '没有权限读取该图片素材', 403);
   }
-  if (getStoredAssetStorageProvider(asset) === 'internal') return '';
+  if (getStoredAssetStorageProvider(asset) === 'internal') {
+    return '';
+  }
   if (!asset.storageKey) {
     throw createReadError('managed_asset_unavailable', '图片素材存储类型不可用', 404);
   }
+  const storageBucket = String(asset.storageBucket || '').trim();
+  const storageRegion = String(asset.storageRegion || '').trim();
+  if (!storageBucket || !storageRegion) {
+    throw createReadError(
+      'managed_asset_storage_snapshot_missing',
+      '图片素材缺少 COS bucket 或 region 快照',
+      503,
+    );
+  }
   const purpose = options.purpose === 'provider' ? 'provider' : 'browser';
+  const cosEnv = {
+    ...(options.env || process.env),
+    MEIAO_IMAGE_COS_BUCKET: storageBucket,
+    MEIAO_IMAGE_COS_REGION: storageRegion,
+  };
+  const headCos = options.headCos || headTencentCosImage;
+  const head = await headCos(asset.storageKey, cosEnv, options.cosOptions || {});
+  if (head?.exists === false) {
+    throw createReadError(
+      'managed_asset_object_missing',
+      '图片存储对象缺失，系统正在对账修复，请稍后重试',
+      503,
+    );
+  }
   const createCosReadUrl = options.createCosReadUrl || createTencentCosImageReadUrl;
   return createCosReadUrl(
     asset.storageKey,
     purpose,
-    options.env || process.env,
+    cosEnv,
     options.cosOptions || {},
   );
 };

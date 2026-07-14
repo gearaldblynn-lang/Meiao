@@ -48,7 +48,7 @@ test('account delete API hard deletes account data while preserving permanent us
   assert.match(serverSource, /usageStatsPreserved: true/);
   assert.match(serverSource, /delete store\.appStates\[targetUser\.id\]/);
   assert.doesNotMatch(serverSource, /targetUser\.status = 'disabled'/);
-  assert.match(serverSource, /const findAnyDbUserById = async \(userId\)/);
+  assert.match(serverSource, /const findAnyDbUserById = async \(userId, poolOverride = null\)/);
   assert.match(deleteRouteBody, /findAnyDbUserById\(targetUserId\)/);
   assert.doesNotMatch(deleteRouteBody, /findDbUserById\(targetUserId\)/);
 });
