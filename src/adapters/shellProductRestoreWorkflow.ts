@@ -7,6 +7,7 @@ import { normalizeFetchedImageBlob } from '../utils/imageBlobUtils.mjs';
 import {
   normalizeProductRestoreFocusIds,
   normalizeProductRestoreResolution,
+  parseProductRestoreAnalysis,
   validateProductRestoreInput,
 } from '../modules/Retouch/productRestoreContract.mjs';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
@@ -56,6 +57,15 @@ type WorkflowError = Error & {
   jobId?: string;
   providerTaskId?: string;
 };
+
+export const PRODUCT_RESTORE_RETRY_CONTEXT_ERROR_MESSAGE = '该历史任务缺少完整的产品还原分析或参考素材，无法安全单张重试，请重新创建产品还原任务。';
+export const PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID = '__product_restore_manual_reanalysis__';
+
+export interface ProductRestoreRetryResultIdentity {
+  id: string;
+  targetMaterialId?: string;
+  sourceUrl?: string;
+}
 
 const defaultPersistImage = async (
   url: string,
@@ -139,6 +149,28 @@ const validateExistingContext = (context: ProductRestoreProjectContext) => {
     throw toWorkflowError(
       '该历史任务缺少完整的产品还原分析，无法安全继续生成。',
       'product_restore_context_invalid',
+    );
+  }
+  return context;
+};
+
+const validateRetryContext = (context?: ProductRestoreProjectContext) => {
+  const parsedAnalysis = context?.normalizedAnalysis
+    ? parseProductRestoreAnalysis(JSON.stringify(context.normalizedAnalysis))
+    : { ok: false };
+  if (
+    context?.version !== 1
+    || !boundedIdentity(context.analysisJobId)
+    || !boundedIdentity(context.sharedRestorationPrompt)
+    || !parsedAnalysis.ok
+    || !Array.isArray(context.targetMaterialIds)
+    || context.targetMaterialIds.length === 0
+    || !Array.isArray(context.productReferenceMaterialIds)
+    || context.productReferenceMaterialIds.length === 0
+  ) {
+    throw toWorkflowError(
+      PRODUCT_RESTORE_RETRY_CONTEXT_ERROR_MESSAGE,
+      'product_restore_retry_context_invalid',
     );
   }
   return context;
@@ -530,6 +562,139 @@ export async function runShellProductRestoreItem(
   }
 }
 
+export async function runShellProductRestoreSingleRetry(
+  retryInput: {
+    input: ShellGenerateInput;
+    config: ModuleConfig;
+    result: ProductRestoreRetryResultIdentity;
+  },
+  callbacks: ProductRestoreWorkflowCallbacks = {},
+  deps: ProductRestoreWorkflowDeps = DEFAULT_PRODUCT_RESTORE_DEPS,
+): Promise<ShellWorkflowImageResult> {
+  const { input, config, result } = retryInput;
+  const context = validateRetryContext(input.productRestoreContext);
+  const targets = input.materials.restoreTarget || [];
+  const references = input.materials.productReference || [];
+  const targetById = new Map(targets.map((target) => [boundedIdentity(target.id), target]));
+  const referenceById = new Map(references.map((reference) => [boundedIdentity(reference.id), reference]));
+  const explicitTargetId = boundedIdentity(result.targetMaterialId);
+  const fallbackSourceUrl = boundedIdentity(
+    resolvePublicAssetUrl(String(result.sourceUrl || ''), input.publicBaseUrl || ''),
+    2048,
+  );
+  const target = explicitTargetId
+    ? targetById.get(explicitTargetId)
+    : targets.find((candidate) => (
+      boundedIdentity(
+        resolvePublicAssetUrl(
+          String(candidate.remoteUrl || candidate.url || ''),
+          input.publicBaseUrl || '',
+        ),
+        2048,
+      ) === fallbackSourceUrl
+    ));
+  const targetId = boundedIdentity(target?.id);
+  const targetIndex = context.targetMaterialIds.findIndex((candidate) => boundedIdentity(candidate) === targetId);
+  const orderedReferences = context.productReferenceMaterialIds.map((referenceId) => (
+    referenceById.get(boundedIdentity(referenceId))
+  ));
+  if (
+    !target
+    || targetIndex < 0
+    || orderedReferences.some((reference) => !reference)
+  ) {
+    throw toWorkflowError(
+      PRODUCT_RESTORE_RETRY_CONTEXT_ERROR_MESSAGE,
+      'product_restore_retry_context_invalid',
+    );
+  }
+
+  const retried = await runShellProductRestoreItem({
+    input,
+    config,
+    context,
+    target,
+    productReferences: orderedReferences as ShellMaterialInput[],
+    batchIndex: targetIndex + 1,
+    batchCount: context.targetMaterialIds.length,
+  }, callbacks, deps);
+  logProductRestore(
+    'product_restore_single_retry',
+    retried.status === 'error' ? 'failed' : retried.status === 'generating' ? 'started' : 'success',
+    retried.status === 'error' ? '产品还原单张重试失败' : retried.status === 'generating' ? '产品还原单张重试仍在生成' : '产品还原单张重试成功',
+    {
+      shellProjectId: boundedIdentity(input.taskMetadata?.shellProjectId),
+      analysisJobId: boundedIdentity(context.analysisJobId),
+      backendJobId: boundedIdentity(retried.backendJobId),
+      providerTaskId: boundedIdentity(retried.taskId),
+      targetMaterialId: targetId,
+      errorCode: boundedIdentity(retried.errorCode),
+    },
+  );
+  return retried;
+}
+
+export function mergeProductRestoreSingleRetryProject<T extends {
+  id: string;
+  status?: string;
+  creditsConsumed?: number;
+}, P extends {
+  status: string;
+  taskCount: number;
+  completedCount: number;
+  creditsConsumed?: number;
+  generationContext?: { productRestore?: ProductRestoreProjectContext };
+  results: T[];
+}>(
+  project: P,
+  resultId: string,
+  retryResult: Omit<Partial<T>, 'id'> & { creditsConsumed?: number },
+): P {
+  const results = project.results.map((result) => result.id === resultId
+    ? {
+      ...result,
+      ...retryResult,
+      id: result.id,
+      creditsConsumed: Number(result.creditsConsumed || 0) + Number(retryResult.creditsConsumed || 0),
+    } as T
+    : result);
+  const completedCount = results.filter((result) => result.status === 'completed').length;
+  const generatingCount = results.filter((result) => result.status === 'generating').length;
+  const analysisCredits = Number(project.generationContext?.productRestore?.analysisCreditsConsumed || 0);
+  const imageCredits = results.reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0);
+  return {
+    ...project,
+    results,
+    taskCount: project.taskCount,
+    completedCount,
+    status: generatingCount > 0 ? 'generating' : completedCount === project.taskCount ? 'completed' : 'error',
+    ...((analysisCredits + imageCredits) > 0 ? { creditsConsumed: analysisCredits + imageCredits } : {}),
+  } as P;
+}
+
+export function canManuallyReanalyzeProductRestore(input: {
+  module?: string;
+  subFeature?: string;
+  projectStatus?: string;
+  resultCount?: number;
+  analysisJobId?: string;
+  analysisJobStatus?: string;
+  analysisErrorCode?: string;
+}) {
+  if (
+    input.module !== 'retouch'
+    || input.subFeature !== 'product_restore'
+    || input.projectStatus !== 'error'
+    || Number(input.resultCount || 0) !== 0
+    || !boundedIdentity(input.analysisJobId)
+  ) return false;
+  const status = boundedIdentity(input.analysisJobStatus);
+  const errorCode = boundedIdentity(input.analysisErrorCode);
+  if (status === 'succeeded') return errorCode === 'product_restore_analysis_invalid';
+  if (status !== 'failed') return false;
+  return !new Set(['provider_submission_unknown', 'interrupted', 'analysis_result_pending']).has(errorCode);
+}
+
 export async function runShellProductRestoreWorkflow(
   input: ShellGenerateInput,
   config: ModuleConfig,
@@ -583,6 +748,7 @@ export async function runShellProductRestoreWorkflow(
     focusIds,
     model: normalizedConfig.model,
     resolution: normalizedConfig.quality.toUpperCase(),
+    ...(input.taskMetadata?.productRestoreManualRetry === true ? { manualRetry: true } : {}),
   };
   logProductRestore(
     'product_restore_batch_started',
@@ -602,6 +768,14 @@ export async function runShellProductRestoreWorkflow(
       '产品还原整批分析已开始',
       sharedLogMeta,
     );
+    const isManualRetry = input.taskMetadata?.productRestoreManualRetry === true;
+    const manualSubmissionKey = boundedIdentity(
+      input.taskMetadata?.productRestoreAnalysisSubmissionKey,
+      240,
+    );
+    const analysisSubmissionKey = isManualRetry && manualSubmissionKey
+      ? manualSubmissionKey
+      : [projectId, 'product_restore', 'analysis', 'v1'].join(':');
     const analysis = await deps.analyzeBatch({
       targetUrls,
       productReferenceUrls,
@@ -614,7 +788,8 @@ export async function runShellProductRestoreWorkflow(
         subFeature: 'product_restore',
         taskPurpose: 'product_restore_analysis',
         batchCount: targets.length,
-        clientSubmissionKey: [projectId, 'product_restore', 'analysis', 'v1'].join(':'),
+        clientSubmissionKey: analysisSubmissionKey,
+        ...(isManualRetry ? { productRestoreManualRetry: true } : {}),
       },
       onJobCreated: input.onJobCreated,
     });

@@ -153,6 +153,7 @@ const {
   normalizeFetchedImageBlob,
   normalizeProductRestoreFocusIds,
   normalizeProductRestoreResolution,
+  parseProductRestoreAnalysis,
   resolvePublicAssetUrl,
   safeCreateInternalLog,
   validateProductRestoreInput,
@@ -176,6 +177,33 @@ ${stripRuntimeImports(transpiled)}
       return requested.length > 0 ? [...new Set(requested)] : ['shape_structure', 'material_texture'];
     },
     normalizeProductRestoreResolution: (_model, value) => String(value || '').toUpperCase() === '4K' ? '4K' : '2K',
+    parseProductRestoreAnalysis: (value) => {
+      try {
+        const parsed = JSON.parse(String(value || ''));
+        const requiredArrays = [
+          'invariantFeatures',
+          'shapeAndStructure',
+          'proportionAndContour',
+          'materialAndTexture',
+          'colorAndGloss',
+          'logoLabelAndText',
+          'componentsAndCraft',
+          'targetSetIssues',
+          'nonProductPreservationRules',
+        ];
+        const valid = Boolean(
+          parsed
+          && typeof parsed.productIdentitySummary === 'string'
+          && parsed.productIdentitySummary.trim()
+          && requiredArrays.every((key) => Array.isArray(parsed[key])),
+        );
+        return valid
+          ? { ok: true, value: parsed }
+          : { ok: false, errorCode: 'product_restore_analysis_invalid' };
+      } catch {
+        return { ok: false, errorCode: 'product_restore_analysis_invalid' };
+      }
+    },
     resolvePublicAssetUrl: (value) => String(value || '').trim(),
     safeCreateInternalLog: async (entry) => {
       logs.push(entry);
@@ -536,6 +564,274 @@ test('single-item entry consumes existing context and performs zero analysis cal
   assert.equal(calls.images[0][9].batchIndex, 2);
 });
 
+test('single-result retry resolves the exact target and restores reference order from persisted context', async () => {
+  const { runShellProductRestoreSingleRetry } = await loadWorkflowModule();
+  const context = makeContext();
+  const input = makeInput({ targetCount: 3, context });
+  input.materials.restoreTarget.reverse();
+  input.materials.productReference.reverse();
+  const { calls, deps } = createHarness();
+
+  const result = await runShellProductRestoreSingleRetry({
+    input,
+    config: makeConfig({ quality: '4k', model: 'gemini-3-pro-image-preview' }),
+    result: {
+      id: 'persisted-result-b',
+      targetMaterialId: 'target-b',
+      sourceUrl: 'https://assets.test/target-b.png',
+    },
+  }, {}, deps);
+
+  assert.equal(calls.analysis.length, 0);
+  assert.equal(calls.images.length, 1);
+  assert.equal(result.targetMaterialId, 'target-b');
+  assert.deepEqual(calls.images[0][0], [
+    'https://assets.test/target-b.png',
+    'https://assets.test/reference-a.png',
+    'https://assets.test/reference-b.png',
+  ]);
+  assert.equal(calls.images[0][2].model, 'gpt-image-2');
+  assert.equal(calls.images[0][2].quality, '2k');
+  assert.equal(calls.images[0][9].batchIndex, 2);
+  assert.equal(calls.images[0][9].batchCount, 3);
+});
+
+test('single-result retry uses source fallback only when an old result lacks targetMaterialId', async (t) => {
+  const { runShellProductRestoreSingleRetry } = await loadWorkflowModule();
+  const context = makeContext();
+  const input = makeInput({ targetCount: 3, context });
+
+  await t.test('old local draft can fall back to sourceUrl', async () => {
+    const { calls, deps } = createHarness();
+    const result = await runShellProductRestoreSingleRetry({
+      input,
+      config: makeConfig(),
+      result: {
+        id: 'old-local-draft',
+        sourceUrl: 'https://assets.test/target-c.png',
+      },
+    }, {}, deps);
+
+    assert.equal(result.targetMaterialId, 'target-c');
+    assert.equal(calls.images.length, 1);
+    assert.equal(calls.images[0][9].batchIndex, 3);
+  });
+
+  await t.test('a present but unknown target id never falls back to sourceUrl', async () => {
+    const { calls, deps } = createHarness();
+    const outcome = await runShellProductRestoreSingleRetry({
+      input,
+      config: makeConfig(),
+      result: {
+        id: 'corrupt-result',
+        targetMaterialId: 'unknown-target',
+        sourceUrl: 'https://assets.test/target-c.png',
+      },
+    }, {}, deps).then(() => null, (error) => error);
+
+    assert.equal(calls.analysis.length, 0);
+    assert.equal(calls.images.length, 0);
+    assert.equal(
+      outcome?.message,
+      '该历史任务缺少完整的产品还原分析或参考素材，无法安全单张重试，请重新创建产品还原任务。',
+    );
+  });
+});
+
+test('missing or corrupt persisted retry context fails locally before image job creation', async (t) => {
+  const { runShellProductRestoreSingleRetry } = await loadWorkflowModule();
+  const cases = [
+    { name: 'missing context', context: undefined },
+    {
+      name: 'corrupt normalized analysis',
+      context: makeContext({ normalizedAnalysis: { productIdentitySummary: 'partial only' } }),
+    },
+    {
+      name: 'missing ordered reference snapshot',
+      context: makeContext({ productReferenceMaterialIds: ['reference-a', 'missing-reference'] }),
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const input = makeInput({ targetCount: 3, context: testCase.context });
+      const { calls, deps } = createHarness();
+      const outcome = await runShellProductRestoreSingleRetry({
+        input,
+        config: makeConfig(),
+        result: {
+          id: 'persisted-result-a',
+          targetMaterialId: 'target-a',
+          sourceUrl: 'https://assets.test/target-a.png',
+        },
+      }, {}, deps).then(() => null, (error) => error);
+
+      assert.equal(calls.analysis.length, 0);
+      assert.equal(calls.images.length, 0);
+      assert.equal(outcome?.code, 'product_restore_retry_context_invalid');
+      assert.equal(
+        outcome?.message,
+        '该历史任务缺少完整的产品还原分析或参考素材，无法安全单张重试，请重新创建产品还原任务。',
+      );
+    });
+  }
+});
+
+test('single-result retry replaces the same row, keeps taskCount, and adds only actual image credits', async () => {
+  const { mergeProductRestoreSingleRetryProject } = await loadWorkflowModule();
+  const project = {
+    id: 'shell-project-1',
+    status: 'error',
+    taskCount: 2,
+    completedCount: 1,
+    creditsConsumed: 9,
+    generationContext: {
+      productRestore: makeContext({
+        targetMaterialIds: ['target-a', 'target-b'],
+        analysisCreditsConsumed: 4,
+      }),
+    },
+    results: [
+      {
+        id: 'result-a',
+        targetMaterialId: 'target-a',
+        status: 'error',
+        imageUrl: '',
+        creditsConsumed: 3,
+      },
+      {
+        id: 'result-b',
+        targetMaterialId: 'target-b',
+        status: 'completed',
+        imageUrl: 'https://assets.test/result-b.png',
+        creditsConsumed: 2,
+      },
+    ],
+  };
+
+  const merged = mergeProductRestoreSingleRetryProject(project, 'result-a', {
+    imageUrl: 'https://assets.test/retry-a.png',
+    status: 'completed',
+    backendJobId: 'retry-backend-a',
+    taskId: 'retry-provider-a',
+    targetMaterialId: 'target-a',
+    creditsConsumed: 5,
+  });
+
+  assert.equal(merged.results.length, 2);
+  assert.deepEqual(merged.results.map((result) => result.id), ['result-a', 'result-b']);
+  assert.equal(merged.results[0].creditsConsumed, 8);
+  assert.equal(merged.results[0].backendJobId, 'retry-backend-a');
+  assert.equal(merged.taskCount, 2);
+  assert.equal(merged.completedCount, 2);
+  assert.equal(merged.status, 'completed');
+  assert.equal(merged.creditsConsumed, 14);
+});
+
+test('manual reanalysis eligibility requires a confirmed terminal analysis failure with no image results', async (t) => {
+  const { canManuallyReanalyzeProductRestore } = await loadWorkflowModule();
+  const base = {
+    module: 'retouch',
+    subFeature: 'product_restore',
+    projectStatus: 'error',
+    resultCount: 0,
+    analysisJobId: 'analysis-job-1',
+  };
+
+  assert.equal(canManuallyReanalyzeProductRestore({
+    ...base,
+    analysisJobStatus: 'failed',
+    analysisErrorCode: 'provider_refusal',
+  }), true);
+  assert.equal(canManuallyReanalyzeProductRestore({
+    ...base,
+    analysisJobStatus: 'succeeded',
+    analysisErrorCode: 'product_restore_analysis_invalid',
+  }), true);
+
+  const blocked = [
+    { analysisJobStatus: 'queued', analysisErrorCode: 'analysis_result_pending' },
+    { analysisJobStatus: 'running', analysisErrorCode: 'analysis_result_pending' },
+    { analysisJobStatus: 'retry_waiting', analysisErrorCode: 'analysis_result_pending' },
+    { analysisJobStatus: 'cancelled', analysisErrorCode: 'interrupted' },
+    { analysisJobStatus: 'failed', analysisErrorCode: 'provider_submission_unknown' },
+  ];
+  for (const state of blocked) {
+    await t.test(`${state.analysisJobStatus}:${state.analysisErrorCode}`, () => {
+      assert.equal(canManuallyReanalyzeProductRestore({ ...base, ...state }), false);
+    });
+  }
+  assert.equal(canManuallyReanalyzeProductRestore({
+    ...base,
+    resultCount: 1,
+    analysisJobStatus: 'failed',
+    analysisErrorCode: 'provider_refusal',
+  }), false);
+});
+
+test('manual reanalysis creates one deliberate analysis attempt and persists before image fan-out', async () => {
+  const logs = [];
+  const { runShellProductRestoreWorkflow } = await loadWorkflowModule({ logs });
+  const { calls, deps } = createHarness();
+  let releasePersistence;
+  const persistenceGate = new Promise((resolve) => {
+    releasePersistence = resolve;
+  });
+  const input = makeInput({
+    targetCount: 2,
+    taskMetadata: {
+      productRestoreManualRetry: true,
+      productRestoreAnalysisSubmissionKey: 'shell-project-1:product_restore:analysis:manual:attempt-2',
+    },
+  });
+
+  const run = runShellProductRestoreWorkflow(input, makeConfig(), {
+    onAnalysisCompleted: async () => persistenceGate,
+  }, deps);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(calls.analysis.length, 1);
+  assert.equal(calls.images.length, 0);
+  assert.equal(
+    calls.analysis[0].jobMetadata.clientSubmissionKey,
+    'shell-project-1:product_restore:analysis:manual:attempt-2',
+  );
+  assert.equal(calls.analysis[0].jobMetadata.productRestoreManualRetry, true);
+  const startedLog = logs.find((entry) => entry.action === 'product_restore_analysis_started');
+  assert.equal(startedLog?.meta?.manualRetry, true);
+
+  releasePersistence();
+  await run;
+  assert.equal(calls.analysis.length, 1);
+  assert.equal(calls.images.length, 2);
+});
+
+test('single-result retry logs the existing analysis and new image identity without an analysis call', async () => {
+  const logs = [];
+  const { runShellProductRestoreSingleRetry } = await loadWorkflowModule({ logs });
+  const context = makeContext({ targetMaterialIds: ['target-a'] });
+  const input = makeInput({ targetCount: 1, context });
+  const { calls, deps } = createHarness();
+
+  await runShellProductRestoreSingleRetry({
+    input,
+    config: makeConfig(),
+    result: {
+      id: 'result-a',
+      targetMaterialId: 'target-a',
+      sourceUrl: 'https://assets.test/target-a.png',
+    },
+  }, {}, deps);
+
+  assert.equal(calls.analysis.length, 0);
+  assert.equal(calls.images.length, 1);
+  const retryLog = logs.find((entry) => entry.action === 'product_restore_single_retry');
+  assert.equal(retryLog?.meta?.analysisJobId, 'analysis-job-1');
+  assert.equal(retryLog?.meta?.backendJobId, 'backend-job-1');
+  assert.equal(retryLog?.meta?.providerTaskId, 'provider-task-1');
+  assert.equal(retryLog?.meta?.targetMaterialId, 'target-a');
+});
+
 test('normalizes 1K to 2K and ignores selector ratio in favor of original target ratio', async () => {
   const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
   const { calls, deps } = createHarness();
@@ -850,7 +1146,7 @@ test('EverythingReplace rejects Product Restoration aliases without breaking pro
       ...input,
       module: 'everything_replace',
       subFeature: alias,
-    }), /产品还原仅支持产品精修/);
+    }), /产品还原仅支持图片升级/);
   }
 
   for (const alias of ['product_replace', '产品替换', '替换产品']) {
