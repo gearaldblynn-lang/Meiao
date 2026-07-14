@@ -186,7 +186,15 @@ tar \
     npm config delete sass_binary_site >/dev/null 2>&1 || true
     npm config set registry https://registry.npmjs.org/ >/dev/null 2>&1
     npm install
-    npm run security:audit
+    run_security_audit_with_retry() {
+      if npm run security:audit; then
+        return 0
+      fi
+      echo '依赖安全审计未通过，验证安装树后复验一次...'
+      npm ls --omit=dev --depth=0 >/dev/null
+      npm run security:audit
+    }
+    run_security_audit_with_retry
     rm -rf dist-next
     npm run build -- --outDir dist-next
 
