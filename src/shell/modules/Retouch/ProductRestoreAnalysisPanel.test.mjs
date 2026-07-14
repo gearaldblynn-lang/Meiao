@@ -170,6 +170,17 @@ test('explicit zero image and total ledger values render while omitted values st
   assert.equal((markup.match(/>0</g) || []).length, 3);
 });
 
+test('result credit badge renders an explicit zero and hides an absent ledger value', async () => {
+  const { ProductRestoreResultCreditBadge } = await loadPanelModule();
+  const zeroMarkup = renderToStaticMarkup(React.createElement(ProductRestoreResultCreditBadge, {
+    creditsConsumed: 0,
+  }));
+  const absentMarkup = renderToStaticMarkup(React.createElement(ProductRestoreResultCreditBadge, {}));
+
+  assert.match(zeroMarkup, /累计图片消耗 0 积分/);
+  assert.equal(absentMarkup, '');
+});
+
 test('ProjectCard scopes the panel to Product Restoration with persisted context', () => {
   const projectCardSource = readFileSync(
     fileURLToPath(new URL('../../components/ProjectCard.tsx', import.meta.url)),
@@ -190,9 +201,9 @@ test('ProjectCard keeps persisted sourceUrl beside restored output and wires man
   assert.match(projectCardSource, /后端状态/);
   assert.match(projectCardSource, /后端任务 ID/);
   assert.match(projectCardSource, /isProductRestoreProject && displayResult\.error/);
-  assert.match(projectCardSource, /isProductRestoreProject \? '累计图片消耗'/);
   assert.match(projectCardSource, /\(isTranslationProject \|\| isProductRestoreProject\) \? '重试' : '重生成'/);
   assert.match(projectCardSource, /hasPendingProductRestoreSync/);
+  assert.match(projectCardSource, /ProductRestoreResultCreditBadge/);
   assert.match(projectCardSource, /重新分析并继续/);
   assert.match(projectCardSource, /PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID/);
 });
@@ -204,13 +215,19 @@ test('Shell regeneration routes Product Restoration through persisted-context re
   );
   const specialRetryIndex = shellSource.indexOf('runShellProductRestoreSingleRetry');
   const genericRetryIndex = shellSource.indexOf("if (project.sourceType === 'job')", specialRetryIndex);
+  const analysisRecoveryIndex = shellSource.indexOf('retryPersistedProductRestoreAnalysis');
+  const resumedItemIndex = shellSource.indexOf('runShellProductRestoreItem', analysisRecoveryIndex);
 
   assert.ok(specialRetryIndex > 0, 'special Product Restoration retry must be wired');
   assert.ok(genericRetryIndex > specialRetryIndex, 'special retry must run before generic regeneration');
+  assert.ok(analysisRecoveryIndex > 0 && resumedItemIndex > analysisRecoveryIndex, 'analysis context recovery must persist before image fan-out');
   assert.match(shellSource, /PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID/);
   assert.match(shellSource, /productRestoreManualRetry:\s*true/);
   assert.match(shellSource, /productRestoreAnalysisSubmissionKey/);
   assert.match(shellSource, /onProductRestoreAnalysisCompleted:\s*async[\s\S]*await persistProjectToSharedState/);
   assert.match(shellSource, /persistProductRestoreProjectOrDefer/);
+  assert.match(shellSource, /retryPersistedProductRestoreAnalysis/);
+  assert.match(shellSource, /createSerializedProductRestoreItemPersistence/);
+  assert.match(shellSource, /task\.status === 'retry_waiting'[\s\S]*status: 'generating'/);
   assert.match(shellSource, /if \(!finalPersistence\.persisted\)[\s\S]*同步失败/);
 });

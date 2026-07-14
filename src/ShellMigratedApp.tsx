@@ -3511,7 +3511,11 @@ const AppContent: React.FC<{
 
       const durableGenerationContext = cloneGenerationContext(
         storedContext.prompt,
-        storedContext.params,
+        {
+          ...storedContext.params,
+          productRestoreAnalysisJobStatus: 'succeeded',
+          productRestoreAnalysisErrorCode: '',
+        },
         storedContext.materials as Record<string, Material[]>,
         productRestoreContext,
       );
@@ -3527,9 +3531,29 @@ const AppContent: React.FC<{
           + (project.results || []).reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0),
         error: undefined,
       };
-      const resumedProjectPersisted = await persistProjectToSharedState(resumedProject);
+      const { retryPersistedProductRestoreAnalysis } = await import('./adapters/shellProductRestoreWorkflow');
+      const analysisRecovery = await retryPersistedProductRestoreAnalysis({
+        project: resumedProject,
+        persist: persistProjectToSharedState,
+        onTaskRecovered: (recoveredProject) => {
+          setTasks((prev) => prev.map((task) => (
+            task.projectId === projectId
+            && task.subFeature === 'product_restore'
+            && task.status === 'retry_waiting'
+              ? {
+                ...task,
+                type: 'image',
+                status: 'generating',
+                backendJobId: recoveredProject.backendJobId || task.backendJobId,
+                progress: Math.max(task.progress || 0, 18),
+              }
+              : task
+          )));
+        },
+      });
+      resumedProject = analysisRecovery.project;
       if (
-        !resumedProjectPersisted
+        !analysisRecovery.persisted
         || controller.signal.aborted
         || deletedProductRestoreProjectIdsRef.current.has(projectId)
         || productRestoreProjectDeletionGuardsRef.current.has(projectId)
@@ -3574,7 +3598,15 @@ const AppContent: React.FC<{
       const missingTargets = targetMaterials
         .map((target, index) => ({ target, batchIndex: index + 1 }))
         .filter(({ target, batchIndex }) => !existingTargetKeys.has(`${target.id}:${batchIndex}`));
-      if (missingTargets.length === 0 || controller.signal.aborted) return;
+      if (missingTargets.length === 0) {
+        setTasks((prev) => prev.filter((task) => !(
+          task.projectId === projectId
+          && task.subFeature === 'product_restore'
+          && (task.status === 'generating' || task.status === 'retry_waiting')
+        )));
+        return;
+      }
+      if (controller.signal.aborted) return;
 
       const { buildShellModuleConfig } = await loadShellWorkflowModule();
       const { runShellProductRestoreItem } = await import('./adapters/shellProductRestoreWorkflow');
@@ -3672,6 +3704,13 @@ const AppContent: React.FC<{
       }, {
         onItemChanged: (item) => syncResumedItem(item),
       })));
+      if (resumedProject.status !== 'generating') {
+        setTasks((prev) => prev.filter((task) => !(
+          task.projectId === projectId
+          && task.subFeature === 'product_restore'
+          && (task.status === 'generating' || task.status === 'retry_waiting')
+        )));
+      }
     } catch (error) {
       if (
         controller.signal.aborted
@@ -7836,35 +7875,44 @@ const AppContent: React.FC<{
           creditsConsumed: item.creditsConsumed,
           error: item.error || item.message,
         });
+        const manualItemPersistence = productRestoreWorkflow.createSerializedProductRestoreItemPersistence({
+          getInitialProject: () => latestManualProject,
+          mergeProject: (currentProject: Project, update: {
+            item: ShellWorkflowImageResult;
+            index: number;
+            total: number;
+          }) => {
+            const nextResult = mapManualItem(update.item, update.index);
+            const byIdentity = new Map(currentProject.results.map((current) => [
+              getProductRestoreResultIdentity(current),
+              current,
+            ]));
+            byIdentity.set(getProductRestoreResultIdentity(nextResult), nextResult);
+            const nextResults = sortGeneratedResultsByBatchIndex(Array.from(byIdentity.values()));
+            const status = getProductRestoreProjectStatus(nextResults, update.total);
+            return {
+              ...currentProject,
+              status,
+              completedAt: status === 'completed' ? Date.now() : undefined,
+              results: nextResults,
+              completedCount: nextResults.filter((current) => current.status === 'completed').length,
+              taskCount: update.total,
+              creditsConsumed: Number(currentProject.generationContext?.productRestore?.analysisCreditsConsumed || 0)
+                + nextResults.reduce((sum, current) => sum + Number(current.creditsConsumed || 0), 0),
+              error: status === 'error'
+                ? nextResults.find((current) => current.status === 'error')?.error
+                : undefined,
+            };
+          },
+          persist: persistProjectToSharedState,
+          onProjectChanged: (nextProject: Project) => {
+            latestManualProject = nextProject;
+            setProjects((prev) => prev.map((current) => current.id === project.id ? nextProject : current));
+          },
+        });
         const syncManualItem = async (item: ShellWorkflowImageResult, index: number, total: number) => {
-          const nextResult = mapManualItem(item, index);
-          const byIdentity = new Map(latestManualProject.results.map((current) => [
-            getProductRestoreResultIdentity(current),
-            current,
-          ]));
-          byIdentity.set(getProductRestoreResultIdentity(nextResult), nextResult);
-          const nextResults = sortGeneratedResultsByBatchIndex(Array.from(byIdentity.values()));
-          const status = getProductRestoreProjectStatus(nextResults, total);
-          const nextManualProject: Project = {
-            ...latestManualProject,
-            status,
-            completedAt: status === 'completed' ? Date.now() : undefined,
-            results: nextResults,
-            completedCount: nextResults.filter((current) => current.status === 'completed').length,
-            taskCount: total,
-            creditsConsumed: Number(latestManualProject.generationContext?.productRestore?.analysisCreditsConsumed || 0)
-              + nextResults.reduce((sum, current) => sum + Number(current.creditsConsumed || 0), 0),
-            error: status === 'error'
-              ? nextResults.find((current) => current.status === 'error')?.error
-              : undefined,
-          };
-          const itemPersistence = await productRestoreWorkflow.persistProductRestoreProjectOrDefer({
-            project: nextManualProject,
-            phase: 'result',
-            persist: persistProjectToSharedState,
-          });
-          latestManualProject = itemPersistence.project;
-          setProjects((prev) => prev.map((current) => current.id === project.id ? latestManualProject : current));
+          const itemPersistence = await manualItemPersistence.sync({ item, index, total });
+          const nextResults = itemPersistence.project.results;
           setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
             ...task,
             type: 'image',

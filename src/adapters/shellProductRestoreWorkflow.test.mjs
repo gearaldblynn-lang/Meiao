@@ -941,6 +941,196 @@ test('successful final persistence returns the original completed project and pe
   assert.equal(outcome.project, project);
 });
 
+test('failed paid-analysis persistence later recovers the same context before image fan-out', async () => {
+  const {
+    persistProductRestoreProjectOrDefer,
+    retryPersistedProductRestoreAnalysis,
+    runShellProductRestoreItem,
+    runShellProductRestoreWorkflow,
+  } = await loadWorkflowModule();
+  const input = makeInput({ targetCount: 2 });
+  const config = makeConfig();
+  const { calls, deps } = createHarness();
+  const events = [];
+  const generateImage = deps.generateImage;
+  deps.generateImage = async (...args) => {
+    events.push('image');
+    return generateImage(...args);
+  };
+  const persistenceSnapshots = [];
+  let recoverableProject;
+  let taskStatus = 'generating';
+  let persistenceAttempt = 0;
+  const persist = async (project) => {
+    persistenceAttempt += 1;
+    events.push(`persist:${persistenceAttempt}`);
+    persistenceSnapshots.push(project);
+    return persistenceAttempt > 1;
+  };
+
+  const firstRunError = await runShellProductRestoreWorkflow(input, config, {
+    onAnalysisCompleted: async (context) => {
+      const analyzedProject = {
+        id: 'shell-project-1',
+        status: 'generating',
+        backendJobId: context.analysisJobId,
+        planningTaskId: context.analysisProviderTaskId,
+        completedAt: undefined,
+        taskCount: 2,
+        completedCount: 0,
+        results: [],
+        creditsConsumed: context.analysisCreditsConsumed,
+        generationContext: {
+          prompt: input.prompt,
+          params: {
+            productRestoreAnalysisJobStatus: 'succeeded',
+            productRestoreAnalysisErrorCode: '',
+          },
+          materials: input.materials,
+          productRestore: context,
+        },
+      };
+      const firstPersistence = await persistProductRestoreProjectOrDefer({
+        project: analyzedProject,
+        phase: 'analysis',
+        persist,
+      });
+      recoverableProject = firstPersistence.project;
+      taskStatus = 'retry_waiting';
+      throw Object.assign(new Error(firstPersistence.project.error), {
+        code: 'product_restore_context_persistence_failed',
+      });
+    },
+  }, deps).then(() => null, (error) => error);
+
+  assert.equal(firstRunError?.code, 'product_restore_context_persistence_failed');
+  assert.equal(calls.analysis.length, 1);
+  assert.equal(calls.images.length, 0);
+  assert.equal(taskStatus, 'retry_waiting');
+  assert.equal(recoverableProject.status, 'planning');
+
+  const recovery = await retryPersistedProductRestoreAnalysis({
+    project: recoverableProject,
+    persist,
+    onTaskRecovered: () => {
+      taskStatus = 'generating';
+    },
+  });
+  const recoveredContext = recovery.project.generationContext.productRestore;
+  const recoveredResults = await Promise.all(input.materials.restoreTarget.map((target, index) => (
+    runShellProductRestoreItem({
+      input: { ...input, productRestoreContext: recoveredContext },
+      config,
+      context: recoveredContext,
+      target,
+      productReferences: input.materials.productReference,
+      batchIndex: index + 1,
+      batchCount: input.materials.restoreTarget.length,
+    }, {}, deps)
+  )));
+
+  assert.equal(recovery.persisted, true);
+  assert.equal(persistenceAttempt, 2);
+  assert.equal(persistenceSnapshots[0].generationContext.productRestore.analysisJobId, 'analysis-job-1');
+  assert.equal(persistenceSnapshots[1].generationContext.productRestore.analysisJobId, 'analysis-job-1');
+  assert.equal(
+    persistenceSnapshots[1].generationContext.productRestore,
+    persistenceSnapshots[0].generationContext.productRestore,
+    'recovery must persist the exact successful analysis context',
+  );
+  assert.equal(calls.analysis.length, 1, 'automatic recovery must not buy another analysis');
+  assert.equal(calls.images.length, 2);
+  assert.deepEqual(events, ['persist:1', 'persist:2', 'image', 'image']);
+  assert.deepEqual(recoveredResults.map((result) => result.analysisJobId), ['analysis-job-1', 'analysis-job-1']);
+  assert.equal(taskStatus, 'generating');
+  assert.notEqual(taskStatus, 'retry_waiting');
+});
+
+test('serialized manual item persistence preserves both target identities and credits under reverse arrival', async (t) => {
+  const { createSerializedProductRestoreItemPersistence } = await loadWorkflowModule();
+  const makeDeferred = () => {
+    let resolve;
+    const promise = new Promise((nextResolve) => {
+      resolve = nextResolve;
+    });
+    return { promise, resolve };
+  };
+
+  for (const order of [['target-b', 'target-a'], ['target-a', 'target-b']]) {
+    await t.test(order.join(' then '), async () => {
+      const gates = [makeDeferred(), makeDeferred()];
+      const started = [makeDeferred(), makeDeferred()];
+      const writes = [];
+      let inFlight = 0;
+      let maxInFlight = 0;
+      let visibleProject;
+      const initialProject = {
+        status: 'generating',
+        taskCount: 2,
+        completedCount: 0,
+        creditsConsumed: 4,
+        results: [
+          { id: 'result-a', targetMaterialId: 'target-a', backendJobId: 'pending-a', creditsConsumed: 0, status: 'generating' },
+          { id: 'result-b', targetMaterialId: 'target-b', backendJobId: 'pending-b', creditsConsumed: 0, status: 'generating' },
+        ],
+        generationContext: { params: {}, productRestore: makeContext({ targetMaterialIds: ['target-a', 'target-b'] }) },
+      };
+      const updates = {
+        'target-a': { targetMaterialId: 'target-a', backendJobId: 'backend-a', creditsConsumed: 5, status: 'completed' },
+        'target-b': { targetMaterialId: 'target-b', backendJobId: 'backend-b', creditsConsumed: 7, status: 'completed' },
+      };
+      const queue = createSerializedProductRestoreItemPersistence({
+        getInitialProject: () => initialProject,
+        mergeProject: (project, update) => {
+          const results = project.results.map((result) => (
+            result.targetMaterialId === update.targetMaterialId ? { ...result, ...update } : result
+          ));
+          return {
+            ...project,
+            results,
+            completedCount: results.filter((result) => result.status === 'completed').length,
+            creditsConsumed: 4 + results.reduce((sum, result) => sum + result.creditsConsumed, 0),
+          };
+        },
+        persist: async (project) => {
+          const writeIndex = writes.length;
+          writes.push(structuredClone(project));
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          started[writeIndex].resolve();
+          await gates[writeIndex].promise;
+          inFlight -= 1;
+          return true;
+        },
+        onProjectChanged: (project) => {
+          visibleProject = project;
+        },
+      });
+
+      const first = queue.sync(updates[order[0]]);
+      await started[0].promise;
+      const second = queue.sync(updates[order[1]]);
+      await Promise.resolve();
+      assert.equal(writes.length, 1, 'second persistence must wait for the first');
+      gates[0].resolve();
+      await started[1].promise;
+      gates[1].resolve();
+      await Promise.all([first, second]);
+
+      assert.equal(maxInFlight, 1);
+      assert.equal(writes.length, 2);
+      for (const snapshot of writes) {
+        assert.deepEqual(snapshot.results.map((result) => result.targetMaterialId), ['target-a', 'target-b']);
+        assert.equal(snapshot.results.every((result) => Boolean(result.backendJobId)), true);
+        assert.equal(snapshot.results.every((result) => Number.isFinite(result.creditsConsumed)), true);
+      }
+      assert.deepEqual(visibleProject.results.map((result) => result.backendJobId), ['backend-a', 'backend-b']);
+      assert.deepEqual(visibleProject.results.map((result) => result.creditsConsumed), [5, 7]);
+      assert.equal(visibleProject.creditsConsumed, 16);
+    });
+  }
+});
+
 test('manual reanalysis creates one deliberate analysis attempt and persists before image fan-out', async () => {
   const logs = [];
   const { runShellProductRestoreWorkflow } = await loadWorkflowModule({ logs });

@@ -25,6 +25,21 @@ const formatCredits = (value: number) => (
   Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/\.?0+$/, '')
 );
 
+export const ProductRestoreResultCreditBadge: React.FC<{
+  creditsConsumed?: number;
+}> = ({ creditsConsumed }) => {
+  const credits = creditLedgerValue(creditsConsumed);
+  if (!credits.present) return null;
+  return (
+    <span
+      className="rounded-full px-2 py-0.5 font-semibold tabular-nums"
+      style={{ background: 'var(--bg-surface)', color: 'var(--accent)' }}
+    >
+      累计图片消耗 {formatCredits(credits.value)} 积分
+    </span>
+  );
+};
+
 const BoundedList: React.FC<{ title: string; items: string[] }> = ({ title, items }) => {
   if (!Array.isArray(items) || items.length === 0) return null;
   const visibleItems = items.slice(0, MAX_VISIBLE_ITEMS);
