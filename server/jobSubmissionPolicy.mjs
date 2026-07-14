@@ -83,10 +83,10 @@ export const isProductRestoreJobSubmission = ({
   taskPurpose = '',
 } = {}) => {
   if (normalizePolicyMarker(module) !== 'retouch') return false;
-  const normalizedSubFeature = normalizePolicyMarker(subFeature || payload?.subFeature);
-  const normalizedTaskPurpose = normalizePolicyMarker(taskPurpose || payload?.taskPurpose);
-  return normalizedSubFeature === 'product_restore'
-    || PRODUCT_RESTORE_TASK_PURPOSES.has(normalizedTaskPurpose);
+  const subFeatureMarkers = [subFeature, payload?.subFeature].map(normalizePolicyMarker);
+  const taskPurposeMarkers = [taskPurpose, payload?.taskPurpose].map(normalizePolicyMarker);
+  return subFeatureMarkers.some((marker) => marker === 'product_restore')
+    || taskPurposeMarkers.some((marker) => PRODUCT_RESTORE_TASK_PURPOSES.has(marker));
 };
 
 export const getJobSubmissionLockTimeoutSeconds = (env = process.env) => {
