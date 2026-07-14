@@ -184,6 +184,54 @@ test('authenticated GET request dedupe is scoped by current session token', asyn
   }
 });
 
+test('saveRemoteAppState can request and return the server canonical state', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  const canonicalState = {
+    shellProjects: [{ id: 'product-restore-authoritative-retry', status: 'error' }],
+  };
+  let requestBody;
+  globalThis.fetch = async (_url, init = {}) => {
+    requestBody = JSON.parse(String(init.body || '{}'));
+    return new Response(JSON.stringify({ ok: true, state: canonicalState }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const response = await api.saveRemoteAppState(
+      { shellProjects: [{ id: 'product-restore-authoritative-retry' }] },
+      { includeCanonicalState: true },
+    );
+    assert.equal(requestBody.includeCanonicalState, true);
+    assert.deepEqual(response, { ok: true, state: canonicalState });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('saveRemoteAppState keeps ordinary writes on the compact acknowledgment contract', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  let requestBody;
+  globalThis.fetch = async (_url, init = {}) => {
+    requestBody = JSON.parse(String(init.body || '{}'));
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const response = await api.saveRemoteAppState({ shellProjects: [] });
+    assert.equal(Object.hasOwn(requestBody, 'includeCanonicalState'), false);
+    assert.deepEqual(response, { ok: true });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('fetchSystemConfig rejects a successful response without a config object', async () => {
   const originalFetch = globalThis.fetch;
   const api = await loadInternalApi();

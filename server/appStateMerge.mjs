@@ -580,6 +580,9 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
     );
   const hasProductRestoreCancellation = isProductRestoreProjectLike(item)
     && hasEffectiveProductRestoreCancellation(item?.generationContext);
+  const hasProductRestoreRetryReset = isProductRestoreProjectLike(item)
+    && Boolean(item?.generationContext?.productRestoreCancellationReset)
+    && !hasProductRestoreCancellation;
   const status = hasProductRestoreCancellation
     ? 'error'
     : hasMissingProductRestoreTarget
@@ -594,6 +597,8 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
             ? 'error'
             : hasPlanOnlyPendingItems
               ? 'planning'
+              : hasProductRestoreRetryReset && ['error', 'failed', 'interrupted'].includes(String(item?.status || ''))
+                ? 'generating'
               : item?.status;
   const next = {
     ...(item || {}),
@@ -617,6 +622,11 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
         ? { ...result, status: 'completed', error: undefined, errorCode: undefined }
         : { ...result, status: 'error', error: '已手动中断', errorCode: 'interrupted' });
     }
+  }
+  if (hasProductRestoreRetryReset && status === 'generating') {
+    delete next.error;
+    delete next.errorCode;
+    delete next.message;
   }
   if (status === 'completed' && completedMediaCount > 0) {
     delete next.error;

@@ -59,7 +59,10 @@ export function persistProductRestoreExplicitRetryReset<T extends {
   generationContext?: OneClickGenerationContext;
 }>(input: {
   project: T;
-  persist: (project: T & { generationContext: OneClickGenerationContext }) => Promise<boolean> | boolean;
+  persist: (project: T & { generationContext: OneClickGenerationContext }) => Promise<{
+    accepted: boolean;
+    project?: T & { generationContext: OneClickGenerationContext };
+  } | boolean> | { accepted: boolean; project?: T & { generationContext: OneClickGenerationContext } } | boolean;
   resetAt?: number;
 }): Promise<{
   project: T & { generationContext: OneClickGenerationContext };

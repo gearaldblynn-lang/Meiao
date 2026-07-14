@@ -35,11 +35,38 @@ tests and fixed without widening the provider boundary:
 - cancellation/reset events now use JSON-safe causal identities in addition to
   safe integer timestamps, so equal timestamps, clock rollback, and precision
   limits cannot silently revive or suppress a cancellation;
-- explicit retry re-reads the persisted transition and fails closed unless the
-  stored reset actually supersedes the effective cancellation;
+- explicit retry consumes the server-canonical persisted transition and fails
+  closed unless the stored reset actually supersedes the effective cancellation;
 - hydration canonicalizes an effectively cancelled project after late provider
   rows are folded, preventing failed late rows from replacing the root manual
   cancellation error or polluting completed media children.
+
+## Re-review hardening
+
+The Critical and Important findings from the second independent review were
+also reproduced before implementation:
+
+- a production-equivalent stale tab received boolean success after the real
+  server merge retained an unseen newer cancellation, and incorrectly
+  authorized both manual and single-result retry work;
+- `C1 -> R1 -> C2 -> R2` at `MAX_SAFE_INTEGER` lost the intermediate ancestry
+  after compaction, so merging the stale original `C1` re-locked the project in
+  both server write orders.
+
+The retry write now explicitly requests the canonical state produced after the
+authenticated server merge and storage write. The caller accepts only the same
+reset `eventId` in that canonical project while cancellation is ineffective;
+boolean-only acknowledgments, missing canonical projects, and server-retained
+newer cancellations all fail closed before guard clearing, controller creation,
+or workflow entry. Ordinary app-state writes keep their existing compact
+`{ ok: true }` acknowledgment.
+
+Cancellation/reset events now also carry a compact JSON-safe causal epoch and
+decimal generation. The timestamp input is bounded to a legal Unix date range,
+while generation supplies monotonic ordering across equal times, clock rollback,
+and compacted intermediate events. An effective reset also canonicalizes a
+stale manual-error root back to `generating`, so hydration and `shouldResume`
+remain write-order independent.
 
 ## TDD evidence
 
@@ -50,11 +77,13 @@ Mandatory RED failures were captured first against the real
 - cancellation/reset disappeared during shallow generation-context replacement;
 - existing analysis attempts disappeared or duplicated across snapshot replay;
 - typed reset and frontend retry persistence interfaces were absent.
+- boolean-only persistence authorized retry against a newer server cancellation;
+- a compact MAX_SAFE multi-retry chain re-locked after stale-root replay.
 
 The final expanded Product Restoration focused suite is green:
 
 ```text
-378 tests, 378 passed, 0 failed
+407 tests, 407 passed, 0 failed
 ```
 
 It covers real server merge in both snapshot orders, JSON round trips,
@@ -64,7 +93,8 @@ credits versus stale zero in both write orders, persistence/hydration,
 `shouldResume=false` with zero recovery creates, late failed-provider rows,
 manual/single retry fail-closed ordering, ordinary module compatibility,
 Product Restoration lifecycle/workflow, rollout, Ark analysis, UI, and displayed
-credits.
+credits. It also covers canonical response opt-in for both MySQL and local state
+routes while confirming ordinary writes do not request or return the full state.
 
 ## Verification
 

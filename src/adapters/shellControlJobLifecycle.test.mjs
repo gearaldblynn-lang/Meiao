@@ -186,7 +186,7 @@ test('product restoration durable cancellation clears only after explicit retry 
   );
   assertOrdered(manualRetryBlock, [
     'persistProductRestoreExplicitRetryReset',
-    'persist: persistProjectToSharedState',
+    'includeCanonicalProject: true',
     'if (!manualAttemptPersisted)',
     'clearForExplicitRetry(project.id)',
     'new AbortController()',
@@ -198,9 +198,13 @@ test('product restoration durable cancellation clears only after explicit retry 
   );
   assertOrdered(singleRetryBlock, [
     'persistProductRestoreExplicitRetryReset',
-    'persist: persistProjectToSharedState',
+    'includeCanonicalProject: true',
     'if (!retryMarkerCleared)',
     'clearForExplicitRetry(project.id)',
     'new AbortController()',
   ]);
+  assert.match(
+    shellAppSource,
+    /includeCanonicalProject[\s\S]{0,1800}includeCanonicalState: true[\s\S]{0,1400}canonicalProject/,
+  );
 });

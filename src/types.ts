@@ -1070,6 +1070,8 @@ export interface ProductRestoreCancellationMarker {
   jobIds: string[];
   eventId?: string;
   supersedesEventId?: string;
+  causalEpoch?: string;
+  causalGeneration?: string;
 }
 
 export interface ProductRestoreCancellationReset {
@@ -1080,6 +1082,8 @@ export interface ProductRestoreCancellationReset {
   priorCancelledAt?: number;
   eventId?: string;
   supersedesEventId?: string;
+  causalEpoch?: string;
+  causalGeneration?: string;
 }
 
 export interface OneClickGenerationContext {

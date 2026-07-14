@@ -12630,7 +12630,10 @@ const handleMysqlRequest = async (req, res, url) => {
       user.id,
     );
     await saveDbAppStateAndQueueRemovedAssets({ user, previousState, nextState });
-    json(res, 200, { ok: true });
+    json(res, 200, {
+      ok: true,
+      ...(body.includeCanonicalState ? { state: prepareStateForClient(nextState) } : {}),
+    });
     return;
   }
 
@@ -16249,7 +16252,10 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     store.appStates[user.id] = nextState;
     writeLocalStore(store);
     await queueRemovedStateAssetsForCleanup({ user, previousState, nextState, referenceStore: store });
-    json(res, 200, { ok: true });
+    json(res, 200, {
+      ok: true,
+      ...(body.includeCanonicalState ? { state: prepareStateForClient(nextState) } : {}),
+    });
     return;
   }
 
