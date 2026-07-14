@@ -957,10 +957,51 @@ export interface OneClickMaterialSnapshot {
   logoReplaceRegions?: Array<Record<string, unknown>>;
 }
 
+export type ProductRestoreMaterialType = 'restoreTarget' | 'productReference';
+
+export type ProductRestoreFocusId =
+  | 'shape_structure'
+  | 'proportion_contour'
+  | 'material_texture'
+  | 'color_gloss'
+  | 'logo_label_text'
+  | 'component_craft';
+
+export interface ProductRestoreNormalizedAnalysis {
+  productIdentitySummary: string;
+  invariantFeatures: string[];
+  shapeAndStructure: string[];
+  proportionAndContour: string[];
+  materialAndTexture: string[];
+  colorAndGloss: string[];
+  logoLabelAndText: string[];
+  componentsAndCraft: string[];
+  targetSetIssues: string[];
+  nonProductPreservationRules: string[];
+}
+
+export interface ProductRestoreProjectContext {
+  version: 1;
+  analysisJobId: string;
+  analysisProviderTaskId?: string;
+  analysisModel: string;
+  analysisCreditsConsumed: number;
+  normalizedAnalysis: ProductRestoreNormalizedAnalysis;
+  sharedRestorationPrompt: string;
+  focusIds: ProductRestoreFocusId[];
+  targetMaterialIds: string[];
+  productReferenceMaterialIds: string[];
+  selectedImageModel: string;
+  resolution: '2K' | '4K';
+  userRequirement: string;
+  createdAt: number;
+}
+
 export interface OneClickGenerationContext {
   prompt: string;
   params: Record<string, string>;
   materials: Record<string, OneClickMaterialSnapshot[]>;
+  productRestore?: ProductRestoreProjectContext;
 }
 
 export interface OneClickReferencePreset {
