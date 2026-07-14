@@ -117,6 +117,31 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.equal(JSON.stringify(config).includes('secret'), false);
 });
 
+test('buildPublicSystemConfig exposes the normalized Product Restoration rollout', () => {
+  const envKey = 'MEIAO_PRODUCT_RESTORE_ROLLOUT';
+  const hadOriginalValue = Object.prototype.hasOwnProperty.call(process.env, envKey);
+  const originalValue = process.env[envKey];
+  const cases = [
+    [undefined, 'off'],
+    ['admin', 'admin'],
+    ['all', 'all'],
+    ['beta', 'off'],
+  ];
+
+  try {
+    for (const [value, expected] of cases) {
+      if (value === undefined) delete process.env[envKey];
+      else process.env[envKey] = value;
+
+      const config = buildPublicSystemConfig({}, { queued: 0, running: 0 });
+      assert.equal(config.featureRollouts.productRestore, expected);
+    }
+  } finally {
+    if (hadOriginalValue) process.env[envKey] = originalValue;
+    else delete process.env[envKey];
+  }
+});
+
 test('buildPublicSystemConfig exposes openai compatible readiness without leaking key', () => {
   const config = buildPublicSystemConfig(
     {

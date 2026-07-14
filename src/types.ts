@@ -325,6 +325,9 @@ export interface SystemPublicConfig {
     apiports?: { configured: boolean };
     maxforai?: { configured: boolean };
   };
+  featureRollouts: {
+    productRestore: 'off' | 'admin' | 'all';
+  };
   systemSettings: {
     analysisModel: string;
     userAnalysisModel: string;
