@@ -83,6 +83,7 @@ export interface ShellGeneratedResult {
   targetMaterialId?: string;
   creditsConsumed?: number;
   error?: string;
+  errorCode?: string;
   /** 技术原文(errorMessage 人话之外的原始报错),只读透传,仅"技术详情"展示用 */
   errorDetail?: string;
   matchedAspectRatio?: string;
@@ -110,6 +111,7 @@ export interface ShellProjectData {
   creditsConsumed?: number;
   planningTaskId?: string;
   error?: string;
+  errorCode?: string;
   plans?: Array<{
     id: string;
     title: string;
@@ -3293,15 +3295,19 @@ const normalizeProductRestoreProjectCard = (project: ShellProjectData): ShellPro
           ...result,
           status: 'completed' as const,
           error: undefined,
+          errorCode: undefined,
         }
       : {
           ...result,
           status: 'error' as const,
-          error: result.error || project.error || '已手动中断',
+          error: '已手动中断',
+          errorCode: 'interrupted',
         });
     return {
       ...project,
       status: 'error',
+      error: '已手动中断',
+      errorCode: 'interrupted',
       results,
       taskCount: Math.max(getProductRestoreExpectedTargetCount(project), 1),
       completedCount: results.filter(hasCompletedMediaResult).length,

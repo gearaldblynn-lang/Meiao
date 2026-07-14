@@ -611,6 +611,12 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
   };
   if (hasProductRestoreCancellation) {
     next.error = '已手动中断';
+    next.errorCode = 'interrupted';
+    if (Array.isArray(next.results)) {
+      next.results = next.results.map((result) => itemHasMedia(result)
+        ? { ...result, status: 'completed', error: undefined, errorCode: undefined }
+        : { ...result, status: 'error', error: '已手动中断', errorCode: 'interrupted' });
+    }
   }
   if (status === 'completed' && completedMediaCount > 0) {
     delete next.error;

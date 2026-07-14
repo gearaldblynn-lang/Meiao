@@ -1068,6 +1068,8 @@ export interface ProductRestoreCancellationMarker {
   reason: 'user_requested';
   cancelledAt: number;
   jobIds: string[];
+  eventId?: string;
+  supersedesEventId?: string;
 }
 
 export interface ProductRestoreCancellationReset {
@@ -1076,6 +1078,8 @@ export interface ProductRestoreCancellationReset {
   reason: 'explicit_retry';
   resetAt: number;
   priorCancelledAt?: number;
+  eventId?: string;
+  supersedesEventId?: string;
 }
 
 export interface OneClickGenerationContext {

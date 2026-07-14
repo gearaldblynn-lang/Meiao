@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  cloneProductRestoreCancellationMarker,
+  cloneProductRestoreCancellationReset,
   createProductRestoreCancellationReset,
   createProductRestoreCancellationRegistry,
+  hasDurableProductRestoreCancellation,
   markProductRestoreProjectCancelled,
   mergeProductRestoreGenerationContext,
   persistProductRestoreExplicitRetryReset,
@@ -343,14 +346,10 @@ test('cancelling a partially fanned-out product restore batch is terminal and ne
   const serializedRetryProject = serializedRetryState.shellProjects[0];
   assert.deepEqual(
     serializedRetryProject.generationContext.productRestoreCancellationReset,
-    {
-      version: 1,
-      status: 'retry_reset',
-      reason: 'explicit_retry',
-      resetAt: 1784040003001,
-      priorCancelledAt: 1784040003000,
-    },
+    retryReset,
   );
+  assert.ok(retryReset.eventId);
+  assert.equal(retryReset.supersedesEventId, 'product_restore_cancelled:1784040003000');
   assert.equal(hasOwn(serializedRetryProject.generationContext, 'productRestoreCancellation'), true);
   assert.equal(
     shouldResumeProductRestoreProject(serializedRetryProject, { cancelled: false }),
@@ -408,6 +407,97 @@ test('manual and single-result retry persistence failures authorize zero new job
     assert.equal(createCount, 0, `${retryKind} retry must not create after reset persistence failure`);
     assert.equal(transition.project.generationContext.productRestoreCancellationReset.resetAt, 101);
   }
+});
+
+test('cancellation event ordering survives equality, clock rollback, unsafe numbers, and extreme future JSON', async () => {
+  const future = Number.MAX_SAFE_INTEGER;
+  const futureCancelled = markProductRestoreProjectCancelled({
+    id: 'future-cancelled-project',
+    module: 'retouch',
+    subFeature: 'product_restore',
+    status: 'generating',
+    backendJobId: 'analysis-future',
+    taskCount: 1,
+    completedCount: 0,
+    generationContext: { prompt: '', params: {}, materials: {} },
+    results: [],
+  }, '已手动中断', { cancelledAt: future });
+  const futureMarker = cloneProductRestoreCancellationMarker(
+    JSON.parse(JSON.stringify(futureCancelled.generationContext.productRestoreCancellation)),
+  );
+  assert.ok(futureMarker);
+  assert.equal(Number.isSafeInteger(futureMarker.cancelledAt), true);
+
+  const equalReset = createProductRestoreCancellationReset(
+    futureCancelled.generationContext,
+    futureMarker.cancelledAt,
+  );
+  assert.ok(cloneProductRestoreCancellationReset(JSON.parse(JSON.stringify(equalReset))));
+  assert.equal(Number.isSafeInteger(equalReset.resetAt), true);
+  const resetContext = {
+    ...futureCancelled.generationContext,
+    productRestoreCancellationReset: equalReset,
+  };
+  const resetProject = {
+    ...futureCancelled,
+    status: 'generating',
+    generationContext: resetContext,
+  };
+  assert.equal(
+    hasDurableProductRestoreCancellation(resetProject),
+    false,
+    'explicit causal reset must beat an equal/future cancellation time',
+  );
+
+  const cancelledAgain = markProductRestoreProjectCancelled({
+    ...futureCancelled,
+    status: 'generating',
+    generationContext: resetContext,
+  }, '已再次中断', { cancelledAt: 1 });
+  assert.equal(Number.isSafeInteger(cancelledAgain.generationContext.productRestoreCancellation.cancelledAt), true);
+  assert.equal(hasDurableProductRestoreCancellation(cancelledAgain), true);
+
+  const resetMerged = mergeAppStateForStorage(
+    { shellProjects: [JSON.parse(JSON.stringify(futureCancelled))] },
+    { shellProjects: [JSON.parse(JSON.stringify(resetProject))] },
+  ).shellProjects[0];
+  assert.equal(hasDurableProductRestoreCancellation(resetMerged), false);
+  const cancelledAgainMerged = mergeAppStateForStorage(
+    { shellProjects: [resetMerged] },
+    { shellProjects: [JSON.parse(JSON.stringify(cancelledAgain))] },
+  ).shellProjects[0];
+  assert.equal(hasDurableProductRestoreCancellation(cancelledAgainMerged), true);
+  assert.equal(cancelledAgainMerged.status, 'error');
+
+  const unsafeMarker = cloneProductRestoreCancellationMarker({
+    version: 1,
+    status: 'cancelled',
+    reason: 'user_requested',
+    cancelledAt: Number.MAX_SAFE_INTEGER + 1,
+    jobIds: [],
+  });
+  const extremeMarker = cloneProductRestoreCancellationMarker({
+    version: 1,
+    status: 'cancelled',
+    reason: 'user_requested',
+    cancelledAt: Number.MAX_VALUE,
+    jobIds: [],
+  });
+  assert.equal(unsafeMarker, undefined);
+  assert.equal(extremeMarker, undefined);
+
+  let persistedSnapshot;
+  const rejectedTransition = await persistProductRestoreExplicitRetryReset({
+    project: futureCancelled,
+    resetAt: futureMarker.cancelledAt,
+    persist: async (nextProject) => {
+      persistedSnapshot = nextProject;
+      nextProject.generationContext.productRestoreCancellationReset.supersedesEventId = 'wrong-event';
+      return true;
+    },
+  });
+  assert.ok(persistedSnapshot);
+  assert.equal(rejectedTransition.persisted, false, 'a persisted but non-superseding reset must fail closed');
 });
 
 test('cancelling normalizes media-bearing stale generating rows to completed', () => {
