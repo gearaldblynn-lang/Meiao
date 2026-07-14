@@ -17,6 +17,7 @@ import { buildShellDataSnapshot } from './shellDataAdapter.ts';
 import { upsertShellProjectIntoPersistedState } from './shellPersistence.ts';
 import { getProductRestoreAnalysisCreditSummary } from '../utils/productRestoreAnalysisCredits.ts';
 import { mergeAppStateForStorage } from '../../server/appStateMerge.mjs';
+import * as appStateMergeContract from '../../server/appStateMerge.mjs';
 
 const deferred = () => {
   let resolve;
@@ -494,6 +495,271 @@ test('explicit retry requires the server canonical reset instead of boolean-only
   assert.equal(rejected.persisted, false);
   assert.equal(hasDurableProductRestoreCancellation(rejected.project), true);
   assert.equal(rejected.project.generationContext.productRestoreCancellation.cancelledAt, 1000);
+});
+
+test('same-user app-state critical section rejects stale retry after cancellation commits first', async () => {
+  const writer = appStateMergeContract.writeMergedAppStateUnderUserLock;
+  assert.equal(typeof writer, 'function');
+
+  const createKeyedLock = () => {
+    const tails = new Map();
+    return async (userId, operation) => {
+      const previous = tails.get(userId) || Promise.resolve();
+      let release;
+      const current = new Promise((resolve) => { release = resolve; });
+      const tail = previous.catch(() => undefined).then(() => current);
+      tails.set(userId, tail);
+      await previous.catch(() => undefined);
+      try {
+        return await operation({ userId });
+      } finally {
+        release();
+        if (tails.get(userId) === tail) tails.delete(userId);
+      }
+    };
+  };
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const localCancellation = {
+    version: 1,
+    status: 'cancelled',
+    reason: 'user_requested',
+    cancelledAt: 100,
+    jobIds: ['analysis-job-1'],
+  };
+  const serverCancellation = {
+    ...localCancellation,
+    cancelledAt: 1000,
+    jobIds: ['analysis-job-1', 'image-job-c2'],
+  };
+  const c1Project = {
+    id: 'product-restore-route-race',
+    module: 'retouch',
+    subFeature: 'product_restore',
+    status: 'error',
+    backendJobId: 'analysis-job-1',
+    taskCount: 1,
+    completedCount: 0,
+    generationContext: {
+      prompt: '',
+      params: {},
+      materials: {},
+      productRestoreCancellation: localCancellation,
+    },
+    results: [],
+    error: '已手动中断',
+  };
+  const c2Project = {
+    ...c1Project,
+    generationContext: {
+      ...c1Project.generationContext,
+      productRestoreCancellation: serverCancellation,
+    },
+  };
+
+  for (const retryKind of ['manual', 'single']) {
+    const states = new Map([['user-route-race', { shellProjects: [clone(c1Project)] }]]);
+    const withUserLock = createKeyedLock();
+    const cancelSaveEntered = deferred();
+    const releaseCancelSave = deferred();
+    let heldCancellation = false;
+    const write = ({ incomingState, includeCanonicalState = false }) => writer({
+      user: { id: 'user-route-race' },
+      incomingState,
+      includeCanonicalState,
+      withUserLock,
+      readState: async (userId) => clone(states.get(userId)),
+      scrubState: async (state) => clone(state),
+      saveState: async ({ user, nextState }) => {
+        const project = nextState.shellProjects[0];
+        const isFreshCancellation = (
+          project.generationContext.productRestoreCancellation?.cancelledAt === 1000
+          && !project.generationContext.productRestoreCancellationReset
+        );
+        if (isFreshCancellation && !heldCancellation) {
+          heldCancellation = true;
+          cancelSaveEntered.resolve();
+          await releaseCancelSave.promise;
+        }
+        states.set(user.id, clone(nextState));
+        return clone(nextState);
+      },
+      prepareCanonicalState: clone,
+    });
+
+    const cancelWrite = write({ incomingState: { shellProjects: [clone(c2Project)] } });
+    await cancelSaveEntered.promise;
+    let controllerCreates = 0;
+    let jobCreates = 0;
+    const retryTransitionPromise = persistProductRestoreExplicitRetryReset({
+      project: clone(c1Project),
+      resetAt: 200,
+      persist: async (nextProject) => {
+        const response = await write({
+          incomingState: { shellProjects: [clone(nextProject)] },
+          includeCanonicalState: true,
+        });
+        return {
+          accepted: response.ok,
+          project: clone(response.state.shellProjects[0]),
+        };
+      },
+    });
+    releaseCancelSave.resolve();
+    await cancelWrite;
+    const retryTransition = await retryTransitionPromise;
+    if (retryTransition.persisted) {
+      controllerCreates += 1;
+      jobCreates += 1;
+    }
+    const storedProject = states.get('user-route-race').shellProjects[0];
+    assert.equal(hasDurableProductRestoreCancellation(storedProject), true);
+    assert.equal(storedProject.status, 'error');
+    assert.equal(retryTransition.persisted, false, `${retryKind} retry must fail closed`);
+    assert.equal(controllerCreates, 0);
+    assert.equal(jobCreates, 0);
+  }
+});
+
+test('app-state critical section preserves reverse order, user isolation, and lock release on error', async () => {
+  const writer = appStateMergeContract.writeMergedAppStateUnderUserLock;
+  assert.equal(typeof writer, 'function');
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const tails = new Map();
+  const withUserLock = async (userId, operation) => {
+    const previous = tails.get(userId) || Promise.resolve();
+    let release;
+    const current = new Promise((resolve) => { release = resolve; });
+    const tail = previous.catch(() => undefined).then(() => current);
+    tails.set(userId, tail);
+    await previous.catch(() => undefined);
+    try {
+      return await operation({ userId });
+    } finally {
+      release();
+      if (tails.get(userId) === tail) tails.delete(userId);
+    }
+  };
+  const baseProject = {
+    id: 'product-restore-route-reverse',
+    module: 'retouch',
+    subFeature: 'product_restore',
+    status: 'error',
+    backendJobId: 'analysis-job-reverse',
+    taskCount: 1,
+    completedCount: 0,
+    generationContext: {
+      prompt: '',
+      params: {},
+      materials: {},
+      productRestoreCancellation: {
+        version: 1,
+        status: 'cancelled',
+        reason: 'user_requested',
+        cancelledAt: 100,
+        jobIds: ['analysis-job-reverse'],
+      },
+    },
+    results: [],
+    error: '已手动中断',
+  };
+  const laterCancellation = {
+    ...baseProject,
+    generationContext: {
+      ...baseProject.generationContext,
+      productRestoreCancellation: {
+        ...baseProject.generationContext.productRestoreCancellation,
+        cancelledAt: 1000,
+      },
+    },
+  };
+  const states = new Map([
+    ['reverse-user', { shellProjects: [clone(baseProject)] }],
+    ['blocked-user', { shellProjects: [] }],
+    ['free-user', { shellProjects: [] }],
+    ['error-user', { shellProjects: [] }],
+  ]);
+  const retrySaveEntered = deferred();
+  const releaseRetrySave = deferred();
+  const blockedSaveEntered = deferred();
+  const releaseBlockedSave = deferred();
+  let heldRetry = false;
+  let failErrorUserOnce = true;
+  const write = ({ userId, incomingState, includeCanonicalState = false }) => writer({
+    user: { id: userId },
+    incomingState,
+    includeCanonicalState,
+    withUserLock,
+    readState: async (id) => clone(states.get(id)),
+    scrubState: async (state) => clone(state),
+    saveState: async ({ user, nextState }) => {
+      const project = nextState.shellProjects?.[0];
+      if (
+        user.id === 'reverse-user'
+        && project?.generationContext?.productRestoreCancellationReset
+        && !hasDurableProductRestoreCancellation(project)
+        && !heldRetry
+      ) {
+        heldRetry = true;
+        retrySaveEntered.resolve();
+        await releaseRetrySave.promise;
+      }
+      if (user.id === 'blocked-user') {
+        blockedSaveEntered.resolve();
+        await releaseBlockedSave.promise;
+      }
+      if (user.id === 'error-user' && failErrorUserOnce) {
+        failErrorUserOnce = false;
+        throw new Error('injected app-state save failure');
+      }
+      states.set(user.id, clone(nextState));
+      return clone(nextState);
+    },
+    prepareCanonicalState: clone,
+  });
+
+  const retryPromise = persistProductRestoreExplicitRetryReset({
+    project: clone(baseProject),
+    resetAt: 200,
+    persist: async (nextProject) => {
+      const response = await write({
+        userId: 'reverse-user',
+        incomingState: { shellProjects: [clone(nextProject)] },
+        includeCanonicalState: true,
+      });
+      return { accepted: response.ok, project: clone(response.state.shellProjects[0]) };
+    },
+  });
+  await retrySaveEntered.promise;
+  const cancelPromise = write({
+    userId: 'reverse-user',
+    incomingState: { shellProjects: [clone(laterCancellation)] },
+  });
+  releaseRetrySave.resolve();
+  const retryTransition = await retryPromise;
+  await cancelPromise;
+  assert.equal(retryTransition.persisted, true);
+  assert.equal(
+    hasDurableProductRestoreCancellation(states.get('reverse-user').shellProjects[0]),
+    true,
+  );
+
+  const blockedPromise = write({ userId: 'blocked-user', incomingState: { shellProjects: [] } });
+  await blockedSaveEntered.promise;
+  const freePromise = write({ userId: 'free-user', incomingState: { shellProjects: [] } });
+  const freeResult = await Promise.race([
+    freePromise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('different user was blocked')), 100)),
+  ]);
+  assert.equal(freeResult.ok, true);
+  releaseBlockedSave.resolve();
+  await blockedPromise;
+
+  await assert.rejects(
+    write({ userId: 'error-user', incomingState: { shellProjects: [] } }),
+    /injected app-state save failure/,
+  );
+  const afterError = await write({ userId: 'error-user', incomingState: { shellProjects: [] } });
+  assert.equal(afterError.ok, true);
 });
 
 test('cancellation event ordering survives equality, clock rollback, unsafe numbers, and extreme future JSON', async () => {
