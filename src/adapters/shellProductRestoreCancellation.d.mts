@@ -1,6 +1,7 @@
 import type {
   OneClickGenerationContext,
   ProductRestoreCancellationMarker,
+  ProductRestoreCancellationReset,
 } from '../types.ts';
 
 export interface ProductRestoreCancellationAudit {
@@ -30,14 +31,40 @@ export function cloneProductRestoreCancellationMarker(
   marker?: ProductRestoreCancellationMarker | null,
 ): ProductRestoreCancellationMarker | undefined;
 
+export function cloneProductRestoreCancellationReset(
+  reset?: ProductRestoreCancellationReset | null,
+): ProductRestoreCancellationReset | undefined;
+
+export function createProductRestoreCancellationReset(
+  generationContext?: Pick<
+    OneClickGenerationContext,
+    'productRestoreCancellation' | 'productRestoreCancellationReset'
+  >,
+  now?: number,
+): ProductRestoreCancellationReset;
+
 export function hasDurableProductRestoreCancellation(project?: {
-  generationContext?: Pick<OneClickGenerationContext, 'productRestoreCancellation'>;
+  generationContext?: Pick<
+    OneClickGenerationContext,
+    'productRestoreCancellation' | 'productRestoreCancellationReset'
+  >;
 } | null): boolean;
 
 export function mergeProductRestoreGenerationContext<T extends object>(
   existingContext?: T,
   nextContext?: T,
 ): T | undefined;
+
+export function persistProductRestoreExplicitRetryReset<T extends {
+  generationContext?: OneClickGenerationContext;
+}>(input: {
+  project: T;
+  persist: (project: T & { generationContext: OneClickGenerationContext }) => Promise<boolean> | boolean;
+  resetAt?: number;
+}): Promise<{
+  project: T & { generationContext: OneClickGenerationContext };
+  persisted: boolean;
+}>;
 
 export function runProductRestoreFanout<T, R>(input: {
   items?: T[];

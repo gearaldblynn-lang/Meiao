@@ -904,3 +904,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 未来 source/reference/chat 图片只写入独立私有腾讯 COS，应用层只持久化 `/api/assets/file/...` 稳定 URL，浏览器/provider 读取时签发短期 HTTPS URL。上传按 env 限制单图大小，multipart 预读按真实 boundary/part header 定位文件并校验文件头/MIME，媒体转码 chunked 请求在 reader 阶段限容；COS 失败有界重试并 fail closed，不回落本地/KIE。所有业务删除收敛到持久精确键清理队列，worker 按 owner 复查存活引用，失败指数重试并保留 manual review 记录。素材写入、转码结果与账号禁用/删除共用 owner lock 并在锁内重查 owner；本地 JSON 在锁内落盘。无 providerTaskId 的 Agent 结果以 runId/clientRequestId 保护，终态 status 优先于残留 phase。周期对账清理无引用 Agent result，每日 HEAD 检查 active COS 对象；已确认丢失的 COS 对象不得被旧引用恢复 active，应转 deleted 后 scrub 失效引用。历史素材不迁移，生成结果仍存本地。
 - Regression check: `node --test server/tencentCosImageStore.test.mjs server/assetStore.test.mjs server/managedImageUpload.test.mjs server/managedImageValidation.test.mjs server/managedAssetReadResolver.test.mjs server/providerAssetTransfer.test.mjs server/managedAssetDeletion.test.mjs server/assetCleanupWorker.test.mjs server/localJobStore.test.mjs server/temporalWorker.test.mjs scripts/probe-managed-image-cos.test.mjs`；云上还必须跑 `npm run probe:managed-image-cos`，并用项目图、Agent Chat 图、洛克买家秀分析各做一次真实 canary，最后删除 canary 并确认 COS 对象不存在。
 - Avoid next time: 素材系统要分别验收应用读取、外部模型读取和业务删除后物理清理三个契约。签名 URL 和密钥不得落库/应用日志，反代访问日志必须丢弃 `asset_key` query；不得用静默 fallback 隐藏图床失败；发布必须先 `disabled` 后探针/canary 再开 `cos`。回归必须覆盖文件边界、并发删除、崩溃孤儿、active 对账和本地全库串行写入。
+
+## 2026-07-14 - 产品还原取消与积分台账必须跨快照单调合并
+
+- Symptom: 用户已中断一批部分完成的产品还原任务，旧页签或后台快照再写入后，项目可能回到 `generating` 并自动补创生图任务；同一类旧快照还会丢掉已记录的分析尝试和已知积分。
+- Root cause: 客户端已将取消标记和分析台账做成持久字段，但服务端 `mergeAppStateForStorage` 仍整体浅替换 `generationContext`。另外，旧的显式重试依赖 `undefined` 清标记，JSON 序列化会删掉该字段，服务端无法区分“用户明确重试”与“旧写入本来就没有标记”。
+- Fix: 增加可 JSON 序列化的 typed `productRestoreCancellationReset`，用单调时间比较 cancellation/reset 最新事件；服务端与客户端共用纯 `.mjs` 持久状态合并契约。有效取消在缺失 target 状态推导之前强制根项目保持 `error`；显式重试先持久 reset，成功后才清内存 guard/创建 controller 或 job。分析台账改为按 `jobId` 稳定顺序的加性合并，空数组和缺失字段都不再清空历史。
+- Regression check: `node --test server/appStateMerge.test.mjs src/adapters/shellProductRestoreCancellation.test.mjs src/adapters/shellControlJobLifecycle.test.mjs src/adapters/shellPersistence.test.mjs src/utils/productRestoreAnalysisCredits.test.mjs`；`npx tsc -b --pretty false`。
+- Avoid next time: 用户意图、付费任务门禁和计费台账不能用普通对象展开或“字段不存在”表达清除。凡会被多页签/刷新/后台回写竞争的状态，必须用可序列化的 typed event/revision 按时序合并，并用真实服务端 merge 加水合/恢复回归验证不会重复付费或丢账。

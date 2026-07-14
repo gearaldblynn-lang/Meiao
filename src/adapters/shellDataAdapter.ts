@@ -2,6 +2,7 @@ import type {
   AppModule,
   InternalJob,
   ProductRestoreCancellationMarker,
+  ProductRestoreCancellationReset,
   ProductRestoreAnalysisAttempt,
   ProductRestoreProjectContext,
   VideoStoryboardBoard,
@@ -24,6 +25,7 @@ import {
 } from '../utils/taskResultReconcile.mjs';
 import {
   cloneProductRestoreCancellationMarker,
+  cloneProductRestoreCancellationReset,
   hasDurableProductRestoreCancellation,
   mergeProductRestoreGenerationContext,
 } from './shellProductRestoreCancellation.mjs';
@@ -136,6 +138,7 @@ export interface ShellProjectData {
     productRestore?: ProductRestoreProjectContext;
     productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
     productRestoreCancellation?: ProductRestoreCancellationMarker;
+    productRestoreCancellationReset?: ProductRestoreCancellationReset;
   };
   directGeneration?: boolean;
   storyboardProjectStatus?: VideoStoryboardProject['status'];
@@ -223,6 +226,11 @@ const cloneGenerationContext = (
   if (Object.prototype.hasOwnProperty.call(context, 'productRestoreCancellation')) {
     cloned.productRestoreCancellation = cloneProductRestoreCancellationMarker(
       context.productRestoreCancellation,
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(context, 'productRestoreCancellationReset')) {
+    cloned.productRestoreCancellationReset = cloneProductRestoreCancellationReset(
+      context.productRestoreCancellationReset,
     );
   }
   return cloned;

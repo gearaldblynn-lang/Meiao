@@ -1,0 +1,66 @@
+# Task 13 Report: Monotonic Product Restoration app-state merge
+
+## Outcome
+
+Implemented a server-authoritative, JSON-safe Product Restoration merge contract.
+A stale app-state snapshot can no longer erase a durable user cancellation or
+analysis-credit attempt ledger. Explicit retry is represented by a typed
+`productRestoreCancellationReset` event, persisted before any retry controller
+or provider job can be created.
+
+## Implementation
+
+- Added the pure server-safe `src/utils/productRestoreDurableState.mjs` contract.
+  It normalizes and orders cancellation/reset events and additively merges
+  analysis attempts by stable `jobId`.
+- `server/appStateMerge.mjs` now deep-merges Product Restoration generation
+  context and gives an effective cancellation precedence over missing targets,
+  active rows, completed snapshots, and stale root errors.
+- Frontend cancellation, persistence, hydration, and data-clone paths now carry
+  the typed reset event. The TypeScript analysis-credit utility calls the same
+  pure ledger merger used by the server.
+- Manual reanalysis and single-result retry persist the reset first; persistence
+  failure leaves the in-memory guard intact and creates zero controllers/jobs.
+- Added the recurring root cause and prevention rule to
+  `docs/agents/repeated-issues.md`.
+
+## TDD evidence
+
+Mandatory RED failures were captured first against the real
+`mergeAppStateForStorage` path:
+
+- cancelled project became `generating` after stale write;
+- cancellation/reset disappeared during shallow generation-context replacement;
+- existing analysis attempts disappeared or duplicated across snapshot replay;
+- typed reset and frontend retry persistence interfaces were absent.
+
+The final focused suite is green:
+
+```text
+376 tests, 376 passed, 0 failed
+```
+
+It covers real server merge in both snapshot orders, JSON round trips,
+cancel -> reset -> stale cancel -> later cancel ordering, additive ledger replay,
+explicit zero and unknown credits, persistence/hydration, `shouldResume=false`
+with zero recovery creates, manual/single retry fail-closed ordering, ordinary
+module compatibility, Product Restoration lifecycle/workflow, rollout, Ark
+analysis, UI, and displayed credits.
+
+## Verification
+
+- `npx tsc -b --pretty false`: PASS.
+- `npm run lint` (inside `npm run verify`): PASS, 0 errors and 660 warnings at
+  the existing 660-warning budget.
+- Full `npm run verify`: server phase completed; frontend reached the known
+  retained-handle condition in `shellOneClickWorkflow.test.mjs` and did not
+  return, so the owned process was stopped rather than reported as passing.
+- `npm run build`: PASS, 2179 modules transformed.
+- `git diff --check`: PASS.
+- No provider request, paid generation, push, deployment, or cloud mutation.
+
+## Worktree isolation
+
+The pre-existing plan edit remains unstaged. The pre-existing legacy-label
+changes in `src/adapters/shellPersistence.ts` are intentionally excluded from
+this task commit; only the reset type/import/clone hunks belong to Task 13.

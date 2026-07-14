@@ -3,6 +3,13 @@ import {
   cloneProductRestoreAnalysisAttemptsForMutation,
   mergeProductRestoreAnalysisAttempts,
 } from '../utils/productRestoreAnalysisCredits.ts';
+import {
+  cloneProductRestoreCancellationMarker as cloneDurableCancellationMarker,
+  cloneProductRestoreCancellationReset as cloneDurableCancellationReset,
+  createProductRestoreCancellationReset as createDurableCancellationReset,
+  hasEffectiveProductRestoreCancellation,
+  mergeProductRestoreGenerationContextForStorage,
+} from '../utils/productRestoreDurableState.mjs';
 
 const normalizeIdentity = (value) => String(value || '').trim();
 
@@ -10,26 +17,20 @@ const sortedIdentities = (values) => Array.from(values).filter(Boolean).sort();
 
 const hasOwn = (value, key) => Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
 
-export const cloneProductRestoreCancellationMarker = (marker) => {
-  if (
-    marker?.version !== 1
-    || marker?.status !== 'cancelled'
-    || marker?.reason !== 'user_requested'
-    || !Number.isFinite(Number(marker?.cancelledAt))
-  ) return undefined;
-  return {
-    version: 1,
-    status: 'cancelled',
-    reason: 'user_requested',
-    cancelledAt: Number(marker.cancelledAt),
-    jobIds: sortedIdentities(new Set((marker.jobIds || []).map(normalizeIdentity))),
-  };
-};
+export const cloneProductRestoreCancellationMarker = (marker) => (
+  cloneDurableCancellationMarker(marker)
+);
+
+export const cloneProductRestoreCancellationReset = (reset) => (
+  cloneDurableCancellationReset(reset)
+);
+
+export const createProductRestoreCancellationReset = (generationContext, now) => (
+  createDurableCancellationReset(generationContext, now)
+);
 
 export const hasDurableProductRestoreCancellation = (project) => Boolean(
-  cloneProductRestoreCancellationMarker(
-    project?.generationContext?.productRestoreCancellation,
-  ),
+  hasEffectiveProductRestoreCancellation(project?.generationContext),
 );
 
 export const mergeProductRestoreGenerationContext = (existingContext, nextContext) => {
@@ -53,21 +54,46 @@ export const mergeProductRestoreGenerationContext = (existingContext, nextContex
   } else {
     delete merged.productRestoreAnalysisAttempts;
   }
-  const nextExplicitlySetsMarker = hasOwn(nextContext, 'productRestoreCancellation');
+  const durableContext = mergeProductRestoreGenerationContextForStorage(
+    existingContext,
+    nextContext,
+  );
   const marker = cloneProductRestoreCancellationMarker(
-    nextExplicitlySetsMarker
-      ? nextContext?.productRestoreCancellation
-      : existingContext?.productRestoreCancellation,
+    durableContext?.productRestoreCancellation,
   );
   if (marker) {
     merged.productRestoreCancellation = marker;
-  } else if (nextExplicitlySetsMarker) {
-    // Explicit retry persists this undefined field to clear a previous marker.
-    merged.productRestoreCancellation = undefined;
   } else {
     delete merged.productRestoreCancellation;
   }
+  const reset = cloneProductRestoreCancellationReset(
+    durableContext?.productRestoreCancellationReset,
+  );
+  if (reset) merged.productRestoreCancellationReset = reset;
+  else delete merged.productRestoreCancellationReset;
   return merged;
+};
+
+export const persistProductRestoreExplicitRetryReset = async ({
+  project,
+  persist,
+  resetAt = Date.now(),
+} = {}) => {
+  if (!project || typeof persist !== 'function') {
+    throw new TypeError('project and persist are required');
+  }
+  const reset = createProductRestoreCancellationReset(project.generationContext, resetAt);
+  const nextProject = {
+    ...project,
+    generationContext: {
+      ...(project.generationContext || { prompt: '', params: {}, materials: {} }),
+      productRestoreCancellationReset: reset,
+    },
+  };
+  return {
+    project: nextProject,
+    persisted: await persist(nextProject) === true,
+  };
 };
 
 export const createProductRestoreCancellationRegistry = ({
@@ -252,6 +278,12 @@ export const markProductRestoreProjectCancelled = (
   const existingMarker = cloneProductRestoreCancellationMarker(
     project?.generationContext?.productRestoreCancellation,
   );
+  const existingReset = cloneProductRestoreCancellationReset(
+    project?.generationContext?.productRestoreCancellationReset,
+  );
+  const cancellationAlreadyEffective = hasEffectiveProductRestoreCancellation(
+    project?.generationContext,
+  );
   const cancellationJobIds = new Set([
     ...(existingMarker?.jobIds || []),
     ...jobIds,
@@ -263,7 +295,12 @@ export const markProductRestoreProjectCancelled = (
     version: 1,
     status: 'cancelled',
     reason: 'user_requested',
-    cancelledAt: existingMarker?.cancelledAt || Number(cancelledAt) || Date.now(),
+    cancelledAt: cancellationAlreadyEffective
+      ? existingMarker.cancelledAt
+      : Math.max(
+          Number(cancelledAt) || Date.now(),
+          Number(existingReset?.resetAt || 0) + 1,
+        ),
     jobIds: sortedIdentities(cancellationJobIds),
   };
   return {

@@ -1617,6 +1617,213 @@ test('server app-state merge replaces an old product restoration job for the sam
   assert.equal(merged.shellProjects[0].results[0].imageUrl, 'https://example.com/restored-a.png');
 });
 
+const buildProductRestoreMergeProject = ({
+  status = 'generating',
+  cancellation,
+  cancellationReset,
+  attempts,
+  error,
+} = {}) => ({
+  id: 'product-restore-merge-project',
+  name: '产品还原合并项目',
+  module: 'retouch',
+  subFeature: 'product_restore',
+  status,
+  backendJobId: 'analysis-job-1',
+  taskCount: 2,
+  completedCount: 1,
+  ...(error ? { error } : {}),
+  results: [{
+    id: 'result-a',
+    targetMaterialId: 'target-a',
+    batchIndex: 1,
+    backendJobId: 'image-job-a',
+    status: 'completed',
+    imageUrl: 'https://example.com/restored-a.png',
+  }],
+  generationContext: {
+    prompt: '还原产品',
+    params: {},
+    materials: {
+      restoreTarget: [{ id: 'target-a' }, { id: 'target-b' }],
+      productReference: [{ id: 'reference-a' }],
+    },
+    productRestore: {
+      version: 1,
+      analysisJobId: 'analysis-job-1',
+      analysisModel: 'vision-model',
+      normalizedAnalysis: {},
+      sharedRestorationPrompt: '还原产品',
+      focusIds: ['shape_structure'],
+      targetMaterialIds: ['target-a', 'target-b'],
+      productReferenceMaterialIds: ['reference-a'],
+      selectedImageModel: 'gpt-image-2',
+      resolution: '2K',
+      userRequirement: '',
+      createdAt: 100,
+    },
+    ...(cancellation ? { productRestoreCancellation: cancellation } : {}),
+    ...(cancellationReset ? { productRestoreCancellationReset: cancellationReset } : {}),
+    ...(attempts !== undefined ? { productRestoreAnalysisAttempts: attempts } : {}),
+  },
+});
+
+test('Product Restoration server merge keeps durable cancellation terminal against a stale active snapshot', () => {
+  const cancellation = {
+    version: 1,
+    status: 'cancelled',
+    reason: 'user_requested',
+    cancelledAt: 200,
+    jobIds: ['analysis-job-1'],
+  };
+  const cancelled = buildProductRestoreMergeProject({
+    status: 'error',
+    cancellation,
+    error: '已手动中断',
+  });
+  const stale = buildProductRestoreMergeProject({ error: '旧快照网络错误' });
+
+  for (const [existing, incoming] of [[cancelled, stale], [stale, cancelled]]) {
+    const merged = mergeAppStateForStorage(
+      { shellProjects: [existing] },
+      { shellProjects: [incoming] },
+    ).shellProjects[0];
+    assert.equal(merged.status, 'error');
+    assert.equal(merged.error, '已手动中断');
+    assert.deepEqual(merged.generationContext.productRestoreCancellation, cancellation);
+  }
+});
+
+test('Product Restoration server merge keeps analysis attempts additive and replay-safe', () => {
+  const invalid = {
+    jobId: 'analysis-job-1',
+    status: 'invalid',
+    timestamp: 100,
+    creditsConsumed: 2,
+  };
+  const success = {
+    jobId: 'analysis-job-2',
+    status: 'succeeded',
+    timestamp: 200,
+    creditsConsumed: 3,
+  };
+  const current = buildProductRestoreMergeProject({ attempts: [invalid, success] });
+  const staleWithoutLedger = buildProductRestoreMergeProject();
+  const preserved = mergeAppStateForStorage(
+    { shellProjects: [current] },
+    { shellProjects: [staleWithoutLedger] },
+  ).shellProjects[0].generationContext.productRestoreAnalysisAttempts;
+  assert.deepEqual(preserved.map((attempt) => attempt.jobId), ['analysis-job-1', 'analysis-job-2']);
+  assert.equal(preserved.reduce((sum, attempt) => sum + (attempt.creditsConsumed ?? 0), 0), 5);
+  const preservedAgainstEmpty = mergeAppStateForStorage(
+    { shellProjects: [current] },
+    { shellProjects: [buildProductRestoreMergeProject({ attempts: [] })] },
+  ).shellProjects[0].generationContext.productRestoreAnalysisAttempts;
+  assert.deepEqual(preservedAgainstEmpty, preserved);
+
+  const replayed = mergeAppStateForStorage(
+    { shellProjects: [current] },
+    { shellProjects: [buildProductRestoreMergeProject({
+      attempts: [
+        { ...invalid, status: 'succeeded', timestamp: 999, creditsConsumed: 2 },
+        { jobId: 'analysis-job-3', status: 'succeeded', timestamp: 300, creditsConsumed: 0 },
+        { jobId: 'analysis-job-4', status: 'failed', timestamp: 400 },
+      ],
+    })] },
+  ).shellProjects[0].generationContext.productRestoreAnalysisAttempts;
+  assert.deepEqual(replayed.map((attempt) => attempt.jobId), [
+    'analysis-job-1',
+    'analysis-job-2',
+    'analysis-job-3',
+    'analysis-job-4',
+  ]);
+  assert.equal(replayed.filter((attempt) => attempt.jobId === 'analysis-job-1').length, 1);
+  assert.equal(replayed.find((attempt) => attempt.jobId === 'analysis-job-1').status, 'succeeded');
+  assert.equal(replayed.reduce((sum, attempt) => sum + (attempt.creditsConsumed ?? 0), 0), 5);
+  assert.equal(Object.hasOwn(replayed.find((attempt) => attempt.jobId === 'analysis-job-4'), 'creditsConsumed'), false);
+});
+
+test('Product Restoration explicit retry reset survives JSON and orders stale and later cancellation events', () => {
+  const cancellation = {
+    version: 1,
+    status: 'cancelled',
+    reason: 'user_requested',
+    cancelledAt: 200,
+    jobIds: ['analysis-job-1'],
+  };
+  const reset = {
+    version: 1,
+    status: 'retry_reset',
+    reason: 'explicit_retry',
+    resetAt: 201,
+    priorCancelledAt: 200,
+  };
+  const retry = JSON.parse(JSON.stringify(buildProductRestoreMergeProject({
+    cancellation,
+    cancellationReset: reset,
+  })));
+  const stalePreRetry = JSON.parse(JSON.stringify(buildProductRestoreMergeProject({
+    status: 'error',
+    cancellation,
+    error: '已手动中断',
+  })));
+  const retried = mergeAppStateForStorage(
+    { shellProjects: [retry] },
+    { shellProjects: [stalePreRetry] },
+  ).shellProjects[0];
+  assert.equal(retried.status, 'generating');
+  assert.deepEqual(retried.generationContext.productRestoreCancellationReset, reset);
+
+  const laterCancellation = {
+    ...cancellation,
+    cancelledAt: 202,
+    jobIds: ['analysis-job-1', 'image-job-b'],
+  };
+  const cancelledAgain = mergeAppStateForStorage(
+    { shellProjects: [retried] },
+    { shellProjects: [buildProductRestoreMergeProject({
+      status: 'error',
+      cancellation: laterCancellation,
+      cancellationReset: reset,
+      error: '已再次中断',
+    })] },
+  ).shellProjects[0];
+  assert.equal(cancelledAgain.status, 'error');
+  assert.equal(cancelledAgain.error, '已手动中断');
+  assert.deepEqual(cancelledAgain.generationContext.productRestoreCancellation, laterCancellation);
+});
+
+test('non-Product-Restoration project generationContext merge remains incoming-authoritative', () => {
+  const merged = mergeAppStateForStorage({
+    shellProjects: [{
+      id: 'ordinary-retouch',
+      module: 'retouch',
+      subFeature: 'retouch',
+      status: 'completed',
+      taskCount: 1,
+      completedCount: 1,
+      results: [],
+      generationContext: { prompt: 'old', params: { old: '1' }, materials: {} },
+    }],
+  }, {
+    shellProjects: [{
+      id: 'ordinary-retouch',
+      module: 'retouch',
+      subFeature: 'retouch',
+      status: 'completed',
+      taskCount: 1,
+      completedCount: 1,
+      results: [],
+      generationContext: { prompt: 'new', params: { next: '1' }, materials: {} },
+    }],
+  }).shellProjects[0];
+  assert.deepEqual(merged.generationContext, {
+    prompt: 'new',
+    params: { next: '1' },
+    materials: {},
+  });
+});
+
 // 根因 #4 止血(2026-06-13 体检):写入前给 state_json 加大小守卫,
 // 超过阈值时按 updatedAt 倒序裁掉老项目。LONGTEXT 上限 4 GiB 不是问题,
 // 真正会撞的是 MySQL max_allowed_packet(常见 16 MiB),所以默认阈值给保守的 4 MiB。

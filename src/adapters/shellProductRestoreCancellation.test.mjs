@@ -2,15 +2,18 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  createProductRestoreCancellationReset,
   createProductRestoreCancellationRegistry,
   markProductRestoreProjectCancelled,
   mergeProductRestoreGenerationContext,
+  persistProductRestoreExplicitRetryReset,
   runProductRestoreFanout,
   shouldResumeProductRestoreProject,
 } from './shellProductRestoreCancellation.mjs';
 import { buildShellDataSnapshot } from './shellDataAdapter.ts';
 import { upsertShellProjectIntoPersistedState } from './shellPersistence.ts';
 import { getProductRestoreAnalysisCreditSummary } from '../utils/productRestoreAnalysisCredits.ts';
+import { mergeAppStateForStorage } from '../../server/appStateMerge.mjs';
 
 const deferred = () => {
   let resolve;
@@ -19,6 +22,8 @@ const deferred = () => {
   });
   return { promise, resolve };
 };
+
+const hasOwn = (value, key) => Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
 
 test('explicit attempt arrays merge additively onto a historical product restore charge', () => {
   const existingContext = {
@@ -302,23 +307,107 @@ test('cancelling a partially fanned-out product restore batch is terminal and ne
   }
   assert.equal(recoveryCreateCount, 0);
 
+  const serverMergedState = mergeAppStateForStorage(persistedState, {
+    shellProjects: [{
+      ...partialProject,
+      status: 'generating',
+      generationContext: {
+        ...partialProject.generationContext,
+      },
+    }],
+  });
+  const serverMergedProject = buildShellDataSnapshot(serverMergedState, []).projects
+    .find((project) => project.id === projectId);
+  assert.equal(serverMergedProject.status, 'error');
+  assert.equal(serverMergedProject.generationContext.productRestoreCancellation.status, 'cancelled');
+  assert.equal(shouldResumeProductRestoreProject(serverMergedProject, { cancelled: false }), false);
+  let serverRecoveryCreateCount = 0;
+  if (shouldResumeProductRestoreProject(serverMergedProject, { cancelled: false })) {
+    serverRecoveryCreateCount += 1;
+  }
+  assert.equal(serverRecoveryCreateCount, 0);
+
+  const retryReset = createProductRestoreCancellationReset(
+    cancelledProject.generationContext,
+    1784040003001,
+  );
   const retryState = upsertShellProjectIntoPersistedState(persistedState, {
     ...cancelledProject,
+    status: 'generating',
     generationContext: {
       ...cancelledProject.generationContext,
-      productRestoreCancellation: undefined,
+      productRestoreCancellationReset: retryReset,
     },
   });
   const serializedRetryState = JSON.parse(JSON.stringify(retryState));
-  assert.equal(
-    serializedRetryState.shellProjects[0].generationContext.productRestoreCancellation,
-    undefined,
-    'only an explicit persisted retry transition may clear the durable marker',
+  const serializedRetryProject = serializedRetryState.shellProjects[0];
+  assert.deepEqual(
+    serializedRetryProject.generationContext.productRestoreCancellationReset,
+    {
+      version: 1,
+      status: 'retry_reset',
+      reason: 'explicit_retry',
+      resetAt: 1784040003001,
+      priorCancelledAt: 1784040003000,
+    },
   );
+  assert.equal(hasOwn(serializedRetryProject.generationContext, 'productRestoreCancellation'), true);
+  assert.equal(
+    shouldResumeProductRestoreProject(serializedRetryProject, { cancelled: false }),
+    true,
+    'a serialized explicit retry reset must supersede the older cancellation marker',
+  );
+  const hydratedRetryProject = buildShellDataSnapshot(serializedRetryState, []).projects
+    .find((project) => project.id === projectId);
+  assert.deepEqual(hydratedRetryProject.generationContext.productRestoreCancellationReset, retryReset);
+  assert.equal(shouldResumeProductRestoreProject(hydratedRetryProject, { cancelled: false }), true);
+
+  const staleMergedContext = mergeProductRestoreGenerationContext(
+    serializedRetryProject.generationContext,
+    cancelledProject.generationContext,
+  );
+  assert.deepEqual(staleMergedContext.productRestoreCancellationReset, retryReset);
+  assert.equal(shouldResumeProductRestoreProject({
+    ...serializedRetryProject,
+    generationContext: staleMergedContext,
+  }, { cancelled: false }), true);
+
+  const cancelledAgain = markProductRestoreProjectCancelled({
+    ...serializedRetryProject,
+    generationContext: staleMergedContext,
+  }, '已再次中断', { cancelledAt: 1784040003002, jobIds: ['job-retry'] });
+  assert.equal(cancelledAgain.generationContext.productRestoreCancellation.cancelledAt, 1784040003002);
+  assert.equal(shouldResumeProductRestoreProject(cancelledAgain, { cancelled: false }), false);
 
   const finalAudit = auditEntries.at(-1);
   assert.deepEqual(finalAudit.jobIds, ['job-late', 'job-pending']);
   assert.equal(finalAudit.cancelledJobCount, 2);
+});
+
+test('manual and single-result retry persistence failures authorize zero new jobs', async () => {
+  const cancelledProject = markProductRestoreProjectCancelled({
+    id: 'product-restore-retry-persistence-failure',
+    module: 'retouch',
+    subFeature: 'product_restore',
+    status: 'generating',
+    backendJobId: 'analysis-job-1',
+    taskCount: 1,
+    completedCount: 0,
+    generationContext: { prompt: '', params: {}, materials: {} },
+    results: [],
+  }, '已手动中断', { cancelledAt: 100 });
+
+  for (const retryKind of ['manual', 'single']) {
+    let createCount = 0;
+    const transition = await persistProductRestoreExplicitRetryReset({
+      project: cancelledProject,
+      resetAt: 101,
+      persist: async () => false,
+    });
+    if (transition.persisted) createCount += 1;
+    assert.equal(createCount, 0, `${retryKind} retry must not create after reset persistence failure`);
+    assert.equal(transition.project.generationContext.productRestoreCancellationReset.resetAt, 101);
+  }
 });
 
 test('cancelling normalizes media-bearing stale generating rows to completed', () => {
