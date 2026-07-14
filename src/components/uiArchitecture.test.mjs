@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 
+import { hasRuntimeStaticImport } from './uiArchitectureImportGuard.mjs';
+
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 
 test('shared job payload metadata remains open to existing provider fields', () => {
@@ -456,9 +458,10 @@ test('app workspace lazy loads major modules to avoid one giant startup bundle',
   assert.match(app, /isFrontendResourceError/);
   assert.match(app, /window\.location\.reload\(\)/);
   assert.match(app, /return new Promise<never>\(\(\) => undefined\);/);
-  assert.doesNotMatch(
-    app,
-    /import\s+(?!type\b)(?:\{[\s\S]{0,500}\}|[A-Za-z_$][^;\n]*)\s+from '\.\/adapters\/shellWorkflow';/,
+  assert.equal(
+    hasRuntimeStaticImport(app, './adapters/shellWorkflow'),
+    false,
+    'shellWorkflow must remain runtime-lazy; only import type is allowed statically',
   );
   assert.match(app, /<Suspense fallback=/);
   assert.match(viteConfig, /manualChunks/);
