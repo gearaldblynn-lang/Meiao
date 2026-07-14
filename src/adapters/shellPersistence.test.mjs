@@ -4,6 +4,140 @@ import assert from 'node:assert/strict';
 import { buildShellDataSnapshot } from './shellDataAdapter.ts';
 import { upsertOneClickProjectIntoPersistedState, upsertShellProjectIntoPersistedState, upsertTranslationFilesIntoPersistedState } from './shellPersistence.ts';
 import { buildPersistedAppState } from '../utils/appState.ts';
+import {
+  cloneProductRestoreAnalysisAttemptsForMutation,
+  getProductRestoreAnalysisCreditSummary,
+  getProductRestoreTotalKnownCredits,
+} from '../utils/productRestoreAnalysisCredits.ts';
+
+const historicalProductRestoreContext = {
+  version: 1,
+  analysisJobId: 'legacy-analysis-1',
+  analysisProviderTaskId: 'legacy-provider-1',
+  analysisModel: 'legacy-vision-model',
+  analysisCreditsConsumed: 4,
+  normalizedAnalysis: {
+    productIdentitySummary: 'legacy identity',
+    invariantFeatures: [],
+    shapeAndStructure: [],
+    proportionAndContour: [],
+    materialAndTexture: [],
+    colorAndGloss: [],
+    logoLabelAndText: [],
+    componentsAndCraft: [],
+    targetSetIssues: [],
+    nonProductPreservationRules: [],
+  },
+  sharedRestorationPrompt: 'legacy prompt',
+  focusIds: ['shape_structure'],
+  targetMaterialIds: ['target-1'],
+  productReferenceMaterialIds: ['reference-1'],
+  selectedImageModel: 'gpt-image-2',
+  resolution: '2K',
+  userRequirement: '',
+  createdAt: 123,
+};
+
+const makeHistoricalProductRestoreProject = (overrides = {}) => ({
+  id: 'legacy-product-restore-project',
+  name: '历史产品还原',
+  module: 'retouch',
+  subFeature: 'product_restore',
+  status: 'completed',
+  createdAt: 123,
+  completedAt: 123,
+  taskCount: 1,
+  completedCount: 1,
+  results: [],
+  generationContext: {
+    prompt: '',
+    params: {},
+    materials: {},
+    productRestore: historicalProductRestoreContext,
+  },
+  ...overrides,
+});
+
+test('legacy Product Restoration credits survive persist-hydrate-persist without fabricating an empty ledger', () => {
+  const firstPersist = upsertShellProjectIntoPersistedState(
+    buildPersistedAppState(),
+    makeHistoricalProductRestoreProject(),
+  );
+  assert.equal(
+    Object.hasOwn(firstPersist.shellProjects[0].generationContext, 'productRestoreAnalysisAttempts'),
+    false,
+  );
+
+  const hydrated = buildShellDataSnapshot(firstPersist, []);
+  const hydratedContext = hydrated.projects[0].generationContext;
+  assert.equal(Object.hasOwn(hydratedContext, 'productRestoreAnalysisAttempts'), false);
+  assert.deepEqual(getProductRestoreAnalysisCreditSummary(hydratedContext), {
+    present: true,
+    value: 4,
+  });
+
+  const secondPersist = upsertShellProjectIntoPersistedState(firstPersist, hydrated.projects[0]);
+  const secondContext = secondPersist.shellProjects[0].generationContext;
+  assert.equal(Object.hasOwn(secondContext, 'productRestoreAnalysisAttempts'), false);
+  assert.deepEqual(getProductRestoreAnalysisCreditSummary(secondContext), {
+    present: true,
+    value: 4,
+  });
+
+  const promoted = cloneProductRestoreAnalysisAttemptsForMutation(secondContext);
+  assert.deepEqual(promoted.map((attempt) => [attempt.jobId, attempt.creditsConsumed]), [
+    ['legacy-analysis-1', 4],
+  ]);
+});
+
+test('Product Restoration explicit zero image usage stays known through persistence and hydration', () => {
+  const project = makeHistoricalProductRestoreProject({
+    creditsConsumed: 0,
+    generationContext: {
+      prompt: '',
+      params: {},
+      materials: {},
+      productRestoreAnalysisAttempts: [{
+        jobId: 'analysis-unknown-1',
+        model: 'vision-model',
+        status: 'succeeded',
+        timestamp: 123,
+      }],
+      productRestore: {
+        ...historicalProductRestoreContext,
+        analysisJobId: 'analysis-unknown-1',
+        analysisCreditsConsumed: undefined,
+      },
+    },
+    results: [{
+      id: 'zero-credit-result',
+      imageUrl: '/zero-credit.png',
+      prompt: '产品还原',
+      model: 'gpt-image-2',
+      aspectRatio: '1:1',
+      status: 'completed',
+      createdAt: 123,
+      module: 'retouch',
+      subFeature: 'product_restore',
+      creditsConsumed: 0,
+    }],
+  });
+
+  const persisted = upsertShellProjectIntoPersistedState(buildPersistedAppState(), project);
+  const hydrated = buildShellDataSnapshot(persisted, []);
+  const hydratedProject = hydrated.projects[0];
+  assert.equal(Object.hasOwn(hydratedProject.results[0], 'creditsConsumed'), true);
+  assert.equal(hydratedProject.results[0].creditsConsumed, 0);
+  assert.deepEqual(getProductRestoreTotalKnownCredits({
+    generationContext: hydratedProject.generationContext,
+    imageCredits: hydratedProject.results.map((result) => result.creditsConsumed),
+  }), {
+    present: true,
+    analysis: 0,
+    images: 0,
+    total: 0,
+  });
+});
 
 test('product restoration analysis attempts survive persistence and hydration as an ordered deep clone', () => {
   const state = buildPersistedAppState();
