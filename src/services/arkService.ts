@@ -1,11 +1,12 @@
 // @ts-nocheck
 
-import { GlobalApiConfig, ArkAnalysisResult, OneClickConfig, ArkSchemeResult, OneClickSubMode, VisualDirectionResult, ArkBuyerShowResult, BuyerShowPersistentState, ArkPureEvaluationResult, VideoConfig, SceneItem, AspectRatio, VeoScriptSegment, SkuConfig, OneClickReferenceDimension } from "../types";
+import { GlobalApiConfig, ArkAnalysisResult, OneClickConfig, ArkSchemeResult, OneClickSubMode, VisualDirectionResult, ArkBuyerShowResult, BuyerShowPersistentState, ArkPureEvaluationResult, VideoConfig, SceneItem, AspectRatio, VeoScriptSegment, SkuConfig, OneClickReferenceDimension, AnalyzeProductRestoreBatchInput, RecoverProductRestoreAnalysisBatchInput, ProductRestoreAnalysisRunResult } from "../types";
 import { cancelInternalJob, createInternalJob, fetchInternalJob, fetchSystemConfig, getActiveModuleContext, safeCreateInternalLog, waitForInternalJob } from "./internalApi";
 import { resolvePublicAssetUrl } from "../utils/modelAssetUrl.mjs";
 import { getSupportedAspectRatiosForModel } from "../utils/modelAspectRatio";
 import { normalizeExactAspectRatio, resolveNearestSupportedAspectRatio } from "../utils/aspectRatioUtils";
 import { buildRetouchAnalysisFallback, shouldUseRetouchAnalysisFallback } from "./retouchAnalysisFallback.mjs";
+import { buildProductRestoreAnalysisPrompt, buildProductRestoreGenerationPrompt, parseProductRestoreAnalysis } from "../modules/Retouch/productRestoreContract.mjs";
 
 const estimatePromptTokens = (items: Array<{ type: string; text?: string }>) =>
   items.reduce((sum, item) => sum + Math.ceil((item.text || '').length / 4), 0);
@@ -259,14 +260,23 @@ const normalizeCreditsConsumed = (value: unknown) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 };
 
-type AnalysisJobCreatedCallback = (jobId: string, providerTaskId?: string) => void;
+type AnalysisJobCreatedCallback = (
+  jobId: string,
+  providerTaskId?: string,
+) => void | Promise<void>;
 
 const isPendingAnalysisJobStatus = (status: unknown) =>
   ['queued', 'running', 'retry_waiting'].includes(String(status || ''));
 
-const createRecoverableAnalysisSyncError = () => {
-  const error = new Error('AI 分析任务已提交云端，结果待同步，请稍后同步任务结果。') as Error & { code?: string };
+const createRecoverableAnalysisSyncError = (job?: AnalysisErrorJob) => {
+  const error = new Error('AI 分析任务已提交云端，结果待同步，请稍后同步任务结果。') as Error & {
+    code?: string;
+    providerTaskId?: string;
+    jobId?: string;
+  };
   error.code = 'job_timeout';
+  error.providerTaskId = String(job?.providerTaskId || job?.result?.providerTaskId || '').trim();
+  error.jobId = String(job?.id || '').trim();
   return error;
 };
 
@@ -354,13 +364,13 @@ const buildAnalysisResponseFromJob = (
   model: string,
   module: string,
   jobId: string,
-): { content: string; creditsConsumed?: number; taskId?: string } => {
+): { content: string; creditsConsumed?: number; taskId?: string; jobId: string; modelUsed: string } => {
   if (!finalJob || typeof finalJob !== 'object') {
     throw new Error('AI 分析任务状态同步失败，请稍后在任务列表中同步任务结果');
   }
   if (finalJob.status !== 'succeeded') {
     if (isRecoverableAnalysisJobFailure(finalJob)) {
-      throw createRecoverableAnalysisSyncError();
+      throw createRecoverableAnalysisSyncError(finalJob);
     }
     throw createAnalysisJobError(finalJob);
   }
@@ -390,6 +400,8 @@ const buildAnalysisResponseFromJob = (
     content,
     creditsConsumed,
     taskId: String(finalJob.providerTaskId || finalJob.result?.providerTaskId || '').trim() || undefined,
+    jobId,
+    modelUsed: String(finalJob.result?.modelUsed || finalJob.model || model).trim() || model,
   };
 };
 
@@ -399,7 +411,8 @@ const requestAnalysisResponseDetailed = async (
   signal?: AbortSignal,
   onJobCreated?: AnalysisJobCreatedCallback,
   jobMetadata: Record<string, unknown> = {},
-): Promise<{ content: string; creditsConsumed?: number; taskId?: string }> => {
+  allowSemanticRetry = true,
+): Promise<{ content: string; creditsConsumed?: number; taskId?: string; jobId: string; modelUsed: string }> => {
   const module = getActiveModuleContext() || 'unknown';
   const startedAt = Date.now();
   const [runtimeConfig, publicBaseUrl] = await Promise.all([
@@ -442,7 +455,7 @@ const requestAnalysisResponseDetailed = async (
       },
       maxRetries: 2,
     });
-    onJobCreated?.(job.id);
+    await onJobCreated?.(job.id);
     let notifiedProviderTaskId = '';
     const notifyProviderTaskId = (providerTaskId: unknown) => {
       const value = String(providerTaskId || '').trim();
@@ -467,6 +480,8 @@ const requestAnalysisResponseDetailed = async (
     } catch (error: any) {
       if (error.message === 'INTERRUPTED') {
         void cancelInternalJob(job.id).catch(() => null);
+        error.jobId = job.id;
+        error.providerTaskId = notifiedProviderTaskId || undefined;
         throw error;
       }
       const recoveredJob = await fetchInternalJob(job.id)
@@ -490,10 +505,13 @@ const requestAnalysisResponseDetailed = async (
         };
       }
       if (isPendingAnalysisJobStatus(recoveredJob?.status)) {
-        throw createRecoverableAnalysisSyncError();
+        throw createRecoverableAnalysisSyncError(recoveredJob || job);
       }
       if (isRecoverableAnalysisJobFailure(recoveredJob)) {
-        throw createRecoverableAnalysisSyncError();
+        throw createRecoverableAnalysisSyncError(recoveredJob || job);
+      }
+      if (isRecoverableAnalysisSyncError(error)) {
+        throw createRecoverableAnalysisSyncError(job);
       }
       throw error;
     }
@@ -508,7 +526,7 @@ const requestAnalysisResponseDetailed = async (
     String(bundle.finalJob?.result?.modelUsed || '').trim(),
   ].filter(Boolean));
 
-  while (isAnalysisContentUnusable(response.content)) {
+  while (allowSemanticRetry && isAnalysisContentUnusable(response.content)) {
     const fallbackModel = fallbackModels.find((item) => !usedModels.has(String(item || '').trim()));
     if (!fallbackModel) break;
     void safeCreateInternalLog({
@@ -542,6 +560,160 @@ const requestAnalysisResponse = async (
   signal?: AbortSignal,
   onJobCreated?: AnalysisJobCreatedCallback
 ) => (await requestAnalysisResponseDetailed(inputContent, apiConfig, signal, onJobCreated)).content;
+
+const PRODUCT_RESTORE_ANALYSIS_PENDING_MESSAGE = '产品还原分析已提交，结果仍在生成中。';
+
+type ProductRestoreServiceError = Error & {
+  code?: unknown;
+  jobId?: unknown;
+  providerTaskId?: unknown;
+};
+
+const productRestorePendingResult = (
+  jobId: unknown,
+  providerTaskId?: unknown,
+): ProductRestoreAnalysisRunResult => ({
+  status: 'generating',
+  jobId: String(jobId || '').trim(),
+  ...(String(providerTaskId || '').trim()
+    ? { providerTaskId: String(providerTaskId || '').trim() }
+    : {}),
+  errorCode: 'analysis_result_pending',
+  message: PRODUCT_RESTORE_ANALYSIS_PENDING_MESSAGE,
+});
+
+const productRestoreErrorResult = (
+  error: unknown,
+  fallbackJobId = '',
+): ProductRestoreAnalysisRunResult => {
+  const serviceError = error as ProductRestoreServiceError;
+  const interrupted = String(serviceError?.message || '') === 'INTERRUPTED';
+  const jobId = String(serviceError?.jobId || fallbackJobId || '').trim();
+  const providerTaskId = String(serviceError?.providerTaskId || '').trim();
+  const errorCode = String(serviceError?.code || '').trim() || 'product_restore_analysis_failed';
+  return {
+    status: 'error',
+    errorCode: interrupted ? 'interrupted' : errorCode,
+    message: String(serviceError?.message || '产品还原分析失败。').trim(),
+    ...(jobId ? { jobId } : {}),
+    ...(providerTaskId ? { providerTaskId } : {}),
+  };
+};
+
+const buildProductRestoreAnalysisResult = ({
+  content,
+  creditsConsumed,
+  taskId,
+  jobId,
+  modelUsed,
+}: {
+  content: string;
+  creditsConsumed?: number;
+  taskId?: string;
+  jobId: string;
+  modelUsed: string;
+}, {
+  focusIds,
+  userRequirement,
+}: Pick<AnalyzeProductRestoreBatchInput, 'focusIds' | 'userRequirement'>): ProductRestoreAnalysisRunResult => {
+  const parsed = parseProductRestoreAnalysis(content);
+  if (!parsed.ok) {
+    return {
+      status: 'error',
+      errorCode: parsed.errorCode,
+      message: parsed.message,
+      jobId,
+      providerTaskId: taskId,
+    };
+  }
+  return {
+    status: 'success',
+    jobId,
+    providerTaskId: taskId,
+    modelUsed,
+    creditsConsumed: Number(creditsConsumed || 0),
+    normalizedAnalysis: parsed.value,
+    sharedRestorationPrompt: buildProductRestoreGenerationPrompt({
+      normalizedAnalysis: parsed.value,
+      focusIds,
+      userRequirement,
+    }),
+  };
+};
+
+export const analyzeProductRestoreBatch = async (
+  input: AnalyzeProductRestoreBatchInput,
+): Promise<ProductRestoreAnalysisRunResult> => {
+  try {
+    const analysisPrompt = buildProductRestoreAnalysisPrompt(input);
+    const inputContent = [
+      ...input.targetUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+      ...input.productReferenceUrls.map((url) => ({ type: 'image_url' as const, image_url: { url } })),
+      { type: 'text' as const, text: analysisPrompt },
+    ];
+    const analysis = await requestAnalysisResponseDetailed(
+      inputContent,
+      input.apiConfig || ({} as GlobalApiConfig),
+      input.signal,
+      input.onJobCreated,
+      {
+        ...input.jobMetadata,
+        taskPurpose: 'product_restore_analysis',
+      },
+      false,
+    );
+    return buildProductRestoreAnalysisResult(analysis, input);
+  } catch (error: unknown) {
+    const serviceError = error as ProductRestoreServiceError;
+    if (isRecoverableAnalysisSyncError(serviceError) && serviceError?.jobId) {
+      return productRestorePendingResult(serviceError.jobId, serviceError.providerTaskId);
+    }
+    return productRestoreErrorResult(serviceError);
+  }
+};
+
+export const recoverProductRestoreAnalysisBatch = async (
+  input: RecoverProductRestoreAnalysisBatchInput,
+): Promise<ProductRestoreAnalysisRunResult> => {
+  const jobId = String(input.jobId || '').trim();
+  if (input.signal?.aborted) {
+    return productRestoreErrorResult(new Error('INTERRUPTED'), jobId);
+  }
+  try {
+    const { job } = await fetchInternalJob(jobId);
+    const providerTaskId = String(job?.providerTaskId || job?.result?.providerTaskId || '').trim() || undefined;
+    if (isPendingAnalysisJobStatus(job?.status)) {
+      return productRestorePendingResult(jobId, providerTaskId);
+    }
+    if (job?.status !== 'succeeded') {
+      if (job?.status === 'cancelled') {
+        const interrupted = new Error('产品还原分析已取消。') as Error & {
+          code?: string;
+          jobId?: string;
+          providerTaskId?: string;
+        };
+        interrupted.code = 'interrupted';
+        interrupted.jobId = jobId;
+        interrupted.providerTaskId = providerTaskId;
+        return productRestoreErrorResult(interrupted, jobId);
+      }
+      return productRestoreErrorResult(createAnalysisJobError(job), jobId);
+    }
+    return buildProductRestoreAnalysisResult({
+      content: String(job.result?.content || job.result?.text || ''),
+      creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+      taskId: providerTaskId,
+      jobId,
+      modelUsed: String(job.result?.modelUsed || job.model || job.payload?.model || '').trim() || 'unknown',
+    }, input);
+  } catch (error: unknown) {
+    const serviceError = error as ProductRestoreServiceError;
+    if (isRecoverableAnalysisSyncError(serviceError)) {
+      return productRestorePendingResult(jobId, serviceError?.providerTaskId);
+    }
+    return productRestoreErrorResult(serviceError, jobId);
+  }
+};
 
 export const analyzeTranslationCopyForGeneration = async ({
   imageUrl,
