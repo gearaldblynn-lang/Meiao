@@ -21,7 +21,7 @@ const MAIN: NavDef[] = [
   { module: AppModuleObj.ONE_CLICK, icon: <Sparkles size={20} strokeWidth={1.5} />, label: '一键主详' },
   { module: AppModuleObj.TRANSLATION, icon: <Globe size={20} strokeWidth={1.5} />, label: '出海翻译' },
   { module: AppModuleObj.BUYER_SHOW, icon: <Users size={20} strokeWidth={1.5} />, label: '买家秀' },
-  { module: AppModuleObj.RETOUCH, icon: <Wand2 size={20} strokeWidth={1.5} />, label: '产品精修' },
+  { module: AppModuleObj.RETOUCH, icon: <Wand2 size={20} strokeWidth={1.5} />, label: '图片升级' },
   { module: AppModuleObj.EVERYTHING_REPLACE, icon: <ReplaceAll size={20} strokeWidth={1.5} />, label: '万物替换' },
   { module: AppModuleObj.IMAGE_CROP, icon: <Crop size={20} strokeWidth={1.5} />, label: '图片裁切' },
   { module: AppModuleObj.VIDEO, icon: <PlayCircle size={20} strokeWidth={1.5} />, label: '视频生成' },

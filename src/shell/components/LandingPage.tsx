@@ -36,8 +36,8 @@ const FEATURES: Array<{
   {
     key: AppModuleObj.RETOUCH,
     icon: <Wand2 size={22} strokeWidth={1.5} />,
-    title: '产品精修',
-    desc: 'AI 智能精修产品图，原图优化与白底输出',
+    title: '图片升级',
+    desc: '原图优化、白底输出与参考图驱动的产品还原',
     gradient: ['#EC4899', '#F43F5E'],
     shadow: '#EC489930',
   },

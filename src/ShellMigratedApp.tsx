@@ -103,6 +103,11 @@ import {
   normalizeProductRestoreFocusIds,
   normalizeProductRestoreResolution,
 } from './modules/Retouch/productRestoreContract.mjs';
+import {
+  getProductRestoreCreationDisabledReason,
+  getProductRestoreUploadRejection,
+  moveProductRestoreScopedMaterial,
+} from './shell/modules/Retouch/productRestoreUi.mjs';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -1302,7 +1307,7 @@ const MODULE_NAMES: Record<string, string> = {
   [AppModuleObj.ONE_CLICK]: '一键主详',
   [AppModuleObj.TRANSLATION]: '出海翻译',
   [AppModuleObj.BUYER_SHOW]: '买家秀',
-  [AppModuleObj.RETOUCH]: '产品精修',
+  [AppModuleObj.RETOUCH]: '图片升级',
   [AppModuleObj.EVERYTHING_REPLACE]: '万物替换',
   [AppModuleObj.IMAGE_CROP]: '图片裁切',
   [AppModuleObj.VIDEO]: '短视频生成',
@@ -1354,6 +1359,7 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
   [AppModuleObj.RETOUCH]: [
     { id: 'original', label: '原图精修' },
     { id: 'white_bg', label: '白底精修' },
+    { id: 'product_restore', label: '产品还原' },
     { id: 'enhance', label: '智能增强', description: '待制作', disabled: true },
   ],
   [AppModuleObj.EVERYTHING_REPLACE]: [
@@ -1444,7 +1450,7 @@ const subFeatureFromParam = (module: AppModule, key: string, value: string) => {
     return map[value];
   }
   if (module === AppModuleObj.RETOUCH && key === 'mode') {
-    const map: Record<string, string> = { '原图精修': 'original', '白底精修': 'white_bg', '背景替换': 'background_replace', '智能增强': 'enhance' };
+    const map: Record<string, string> = { '原图精修': 'original', '白底精修': 'white_bg', '产品还原': 'product_restore', '背景替换': 'background_replace', '智能增强': 'enhance' };
     return map[value];
   }
   return undefined;
@@ -1460,7 +1466,7 @@ const paramFromSubFeature = (module: AppModule, subFeature: string): [string, st
     return map[subFeature] ? ['submode', map[subFeature]] : null;
   }
   if (module === AppModuleObj.RETOUCH) {
-    const map: Record<string, string> = { original: '原图精修', white_bg: '白底精修', background_replace: '背景替换', enhance: '智能增强' };
+    const map: Record<string, string> = { original: '原图精修', white_bg: '白底精修', product_restore: '产品还原', background_replace: '背景替换', enhance: '智能增强' };
     return map[subFeature] ? ['mode', map[subFeature]] : null;
   }
   return null;
@@ -1479,6 +1485,20 @@ const normalizeParamsForGeneration = (
   params: Record<string, string>,
 ) => {
   if (module === AppModuleObj.TRANSLATION) return normalizeTranslationParamsForGeneration(subFeature, params);
+  if (module === AppModuleObj.RETOUCH && subFeature === 'product_restore') {
+    const model = params.model || 'GPT Image 2';
+    return {
+      ...params,
+      mode: 'product_restore',
+      model,
+      quality: normalizeProductRestoreResolution(model, params.quality),
+      restoreFocusIds: normalizeProductRestoreFocusIds(params.restoreFocusIds).join(','),
+      ratio: 'auto',
+      aspectRatio: 'auto',
+      resolutionMode: 'original',
+      sizeMode: 'AI 自适应尺寸',
+    };
+  }
   if (module === AppModuleObj.RETOUCH) return normalizeRetouchParamsForGeneration(params);
   if (module === AppModuleObj.EVERYTHING_REPLACE) return normalizeEverythingReplaceParamsForGeneration(subFeature, params);
   if (module === AppModuleObj.XHS_COVER) return normalizeXhsCoverParamsForGeneration(params);
@@ -3679,6 +3699,20 @@ const AppContent: React.FC<{
   // ── Material upload ──
   const handleMaterialUpload = useCallback((type: string, files: FileList | null, options?: { buyerShowSetIndex?: number }) => {
     if (!files) return;
+    if (activeModule === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') {
+      const existingCount = (materialsRef.current[type] || [])
+        .filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature))
+        .length;
+      const rejection = getProductRestoreUploadRejection({
+        type,
+        existingCount,
+        selectedCount: files.length,
+      });
+      if (rejection) {
+        addToast(rejection, 'warning');
+        return;
+      }
+    }
     let selectedFiles = Array.from(files);
     if (
       activeModule === AppModuleObj.ONE_CLICK
@@ -3779,7 +3813,7 @@ const AppContent: React.FC<{
         }
       })();
     });
-    addToast(`已添加 ${selectedFiles.length} 个${type === 'product' ? '产品素材' : type === 'gift' ? '赠品素材' : type === 'logo' ? '品牌Logo' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'main_image' && currentParams.planningLogic === '套图复刻' ? '参考套图' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'detail_page' && currentParams.detailGenerationMode === '套图复刻' ? '详情页套图参考' : '参考素材'}`, 'success');
+    addToast(`已添加 ${selectedFiles.length} 个${type === 'restoreTarget' ? '待还原套图' : type === 'productReference' ? '产品参考图' : type === 'product' ? '产品素材' : type === 'gift' ? '赠品素材' : type === 'logo' ? '品牌Logo' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'main_image' && currentParams.planningLogic === '套图复刻' ? '参考套图' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'detail_page' && currentParams.detailGenerationMode === '套图复刻' ? '详情页套图参考' : '参考素材'}`, 'success');
   }, [activeModule, activeScopeKey, activeSubFeature, addToast, applyUploadedMaterialUrl, currentParams.detailGenerationMode, currentParams.planningLogic, materials.gift, materials.styleRef, uploadMaterialToManagedUrl]);
 
   const handlePresetMaterialsApply = useCallback((items: Array<{ type: string; url: string; remoteUrl?: string; fileName: string }>) => {
@@ -3812,6 +3846,17 @@ const AppContent: React.FC<{
       return next;
     });
   }, []);
+
+  const handleMoveMaterial = useCallback((type: string, id: string, direction: 'left' | 'right') => {
+    setMaterials((prev) => {
+      const currentItems = prev[type] || [];
+      const reordered = moveProductRestoreScopedMaterial(currentItems, id, direction, activeSubFeature);
+      if (reordered === currentItems) return prev;
+      const next = { ...prev, [type]: reordered };
+      materialsRef.current = next;
+      return next;
+    });
+  }, [activeSubFeature]);
 
   const handleImportStoryboardToGeneration = useCallback((project: VideoStoryboardProject, boardId?: string, boardIndex?: number, imageUrl?: string) => {
     const imported = buildStoryboardBoardGenerationImport(project, { boardId, boardIndex, imageUrl });
@@ -4007,6 +4052,16 @@ const AppContent: React.FC<{
     if (targetModule === AppModuleObj.VIDEO && targetSubFeature === 'generation' && !canUseVideoGenerationFeature(currentUser)) {
       addToast('短视频生成暂未对当前账号开放，请联系管理员开通。', 'warning');
       return;
+    }
+    if (targetModule === AppModuleObj.RETOUCH && targetSubFeature === 'product_restore') {
+      const disabledReason = getProductRestoreCreationDisabledReason(
+        systemConfig?.featureRollouts?.productRestore || 'off',
+        currentUser?.role,
+      );
+      if (disabledReason) {
+        addToast(disabledReason, 'warning');
+        return;
+      }
     }
     if (isPendingShellSubFeature(targetModule, targetSubFeature)) {
       addToast('该子功能待制作，当前先迁移 3000 已有能力。', 'warning');
@@ -5698,7 +5753,7 @@ const AppContent: React.FC<{
               subFeature: targetSubFeature,
               prompt: generationPrompt || (targetModule === AppModuleObj.EVERYTHING_REPLACE
                 ? (targetSubFeature === 'background_replace' ? '背景替换' : '产品替换')
-                : '产品精修'),
+                : '图片升级'),
               params: generationParams,
               materials: generationMaterials,
               signal: controller.signal,
@@ -6125,7 +6180,7 @@ const AppContent: React.FC<{
 	      releaseGuardedSubmit();
 	      setIsGenerating(false);
 	    }
-	  }, [promptText, activeModule, activeSubFeature, currentParams, filteredMaterials, projects, tasks, addToast, hydrateShellData, setScopedPromptText, apiConfig, videoMemory, setVideoMemory, persistProjectToSharedState, publicBaseUrl, ensureMaterialRemoteUrls, currentUser, logShellError, beginGenerationSubmitLock, endGenerationSubmitLock, reserveShortProjectName, recordProductRestoreJobCreated, recordStoryboardJobCreated]);
+	  }, [promptText, activeModule, activeSubFeature, currentParams, filteredMaterials, projects, tasks, addToast, hydrateShellData, setScopedPromptText, apiConfig, videoMemory, setVideoMemory, persistProjectToSharedState, publicBaseUrl, ensureMaterialRemoteUrls, currentUser, systemConfig?.featureRollouts?.productRestore, logShellError, beginGenerationSubmitLock, endGenerationSubmitLock, reserveShortProjectName, recordProductRestoreJobCreated, recordStoryboardJobCreated]);
 
   const createRemoteMaterial = useCallback((id: string, type: string, url: string, fileName: string, subFeature?: string): Material => ({
     id,
@@ -9318,9 +9373,17 @@ const AppContent: React.FC<{
                 onApplyPresetMaterials={handlePresetMaterialsApply}
                 onUpdateMaterial={handleUpdateMaterial}
                 onRemoveMaterial={handleRemoveMaterial}
+                onMoveMaterial={handleMoveMaterial}
                 systemConfig={systemConfig}
                 generationDisabledReason={
-                  activeModule === AppModuleObj.VIDEO && activeSubFeature === 'generation' && !canUseVideoGenerationFeature(currentUser)
+                  activeModule === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore'
+                    ? getProductRestoreCreationDisabledReason(
+                      systemConfig?.featureRollouts?.productRestore || 'off',
+                      currentUser?.role,
+                    )
+                    // off: 产品还原暂未开放，历史项目仍可查看。
+                    // unauthorized admin: 产品还原当前仅对管理员开放，历史项目仍可查看。
+                  : activeModule === AppModuleObj.VIDEO && activeSubFeature === 'generation' && !canUseVideoGenerationFeature(currentUser)
                     ? '短视频生成未开放'
                     : ''
                 }

@@ -90,7 +90,7 @@ const LoginScreen: React.FC<Props> = ({ isSubmitting, error, theme, onToggleThem
               <span className="login-gradient-text">AI智能工作台</span>
             </h1>
             <p className="login-description mt-7 leading-[1.85]" style={{ color: 'var(--text-tertiary)' }}>
-              AI 驱动的产品视觉创作平台。产品精修、出海翻译、买家秀、短视频生成，一站式完成。
+              AI 驱动的产品视觉创作平台。图片升级、出海翻译、买家秀、短视频生成，一站式完成。
             </p>
 
             <div className="login-capability-grid">

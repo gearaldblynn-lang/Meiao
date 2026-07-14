@@ -151,7 +151,7 @@ const MODULE_LABELS: Record<string, string> = {
   [AppModule.ONE_CLICK]: '一键主详',
   [AppModule.TRANSLATION]: '出海翻译',
   [AppModule.BUYER_SHOW]: '买家秀',
-  [AppModule.RETOUCH]: '产品精修',
+  [AppModule.RETOUCH]: '图片升级',
   [AppModule.EVERYTHING_REPLACE]: '万物替换',
   [AppModule.VIDEO]: '短视频',
   [AppModule.XHS_COVER]: '小红书封面',
@@ -1388,7 +1388,7 @@ export const resolveShellRetouchMode = (input: ShellGenerateInput): ShellRetouch
   const value = String(input.subFeature || input.params.mode || '').trim();
   const isProductRestoreAlias = value === 'product_restore' || value.includes('产品还原');
   if (input.module === AppModule.EVERYTHING_REPLACE && isProductRestoreAlias) {
-    throw new Error('产品还原仅支持产品精修，请切换到产品精修后重试。');
+    throw new Error('产品还原仅支持图片升级，请切换到图片升级后重试。');
   }
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'product_replace' || value.includes('产品'))) return 'product_replace';
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'background_replace' || value.includes('背景'))) return 'background_replace';
@@ -1396,7 +1396,7 @@ export const resolveShellRetouchMode = (input: ShellGenerateInput): ShellRetouch
   if (input.module === AppModule.RETOUCH && (value === 'product_restore' || value.includes('产品还原'))) return 'product_restore';
   if (value === 'white_bg' || value.includes('白底')) return 'white_bg';
   if (value === 'original' || value.includes('原图') || !value) return 'original';
-  throw new Error('该产品精修子功能待制作，当前只迁移了 3000 的原图精修和白底精修。');
+  throw new Error('该图片升级子功能待制作，当前支持原图精修、白底精修和产品还原。');
 };
 
 const buildRetouchPrompt = (sourceUrl: string, referenceUrl: string | null, analysisDescription: string, mode: 'original' | 'white_bg', aspectRatio: AspectRatio) => {
@@ -2777,7 +2777,7 @@ export const runShellRetouchWorkflow = async (
   }
   const sourceMaterials = input.materials.product || [];
   const sourceUrls = sourceMaterials.map((item) => materialUrl(item, input.publicBaseUrl || '')).filter(Boolean);
-  if (sourceUrls.length === 0) throw new Error('请先上传产品素材，再启动产品精修。');
+  if (sourceUrls.length === 0) throw new Error('请先上传产品素材，再启动图片升级。');
   const referenceUrl = firstMaterialUrl(input.materials.styleRef, input.publicBaseUrl || '', '精修参考图')
     || firstMaterialUrl(input.materials.texture, input.publicBaseUrl || '', '精修质感参考图')
     || '';
