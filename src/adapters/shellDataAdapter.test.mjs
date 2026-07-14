@@ -3743,6 +3743,299 @@ test('shell data adapter hides unbound retouch analysis control jobs instead of 
   assert.deepEqual(snapshot.tasks, []);
 });
 
+const productRestoreAnalysis = {
+  productIdentitySummary: '保持商品身份',
+  invariantFeatures: ['logo'],
+  shapeAndStructure: ['shape'],
+  proportionAndContour: ['proportion'],
+  materialAndTexture: ['material'],
+  colorAndGloss: ['color'],
+  logoLabelAndText: ['text'],
+  componentsAndCraft: ['craft'],
+  targetSetIssues: ['issue'],
+  nonProductPreservationRules: ['background'],
+};
+
+const productRestoreContext = {
+  version: 1,
+  analysisJobId: 'restore-analysis-job',
+  analysisProviderTaskId: 'restore-analysis-provider-task',
+  analysisModel: 'analysis-model',
+  analysisCreditsConsumed: 2,
+  normalizedAnalysis: productRestoreAnalysis,
+  sharedRestorationPrompt: '持久化还原提示词',
+  focusIds: ['shape_structure', 'logo_label_text'],
+  targetMaterialIds: ['restore-target-a', 'restore-target-b'],
+  productReferenceMaterialIds: ['restore-reference-a'],
+  selectedImageModel: 'gpt-image-2',
+  resolution: '2K',
+  userRequirement: '保留背景',
+  createdAt: 1783676600000,
+};
+
+const productRestoreProject = {
+  id: 'product-restore-project',
+  name: '7月14日项目1',
+  module: 'retouch',
+  status: 'planning',
+  createdAt: 1783676600000,
+  results: [],
+  taskCount: 2,
+  completedCount: 0,
+  sourceType: 'persisted',
+  backendJobId: 'restore-analysis-job',
+  subFeature: 'product_restore',
+  generationContext: {
+    prompt: '保留背景',
+    params: { model: 'gpt-image-2', resolution: '2K' },
+    materials: {
+      restoreTarget: [
+        { id: 'restore-target-a', type: 'restoreTarget', url: 'https://example.com/a.png', fileName: 'a.png' },
+        { id: 'restore-target-b', type: 'restoreTarget', url: 'https://example.com/b.png', fileName: 'b.png' },
+      ],
+      productReference: [
+        { id: 'restore-reference-a', type: 'productReference', url: 'https://example.com/reference.png', fileName: 'reference.png' },
+      ],
+    },
+    productRestore: productRestoreContext,
+  },
+};
+
+test('shell data adapter keeps bound product restoration analysis as root planning progress only', () => {
+  const snapshot = buildShellDataSnapshot({ shellProjects: [{
+    ...productRestoreProject,
+    generationContext: {
+      ...productRestoreProject.generationContext,
+      productRestore: undefined,
+    },
+  }] }, [{
+    id: 'restore-analysis-job',
+    module: 'retouch',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'running',
+    payload: {
+      taskPurpose: 'product_restore_analysis',
+      shellProjectId: 'product-restore-project',
+      shellProjectName: '7月14日项目1',
+      subFeature: 'product_restore',
+      batchCount: 2,
+    },
+    createdAt: 1783676600100,
+  }]);
+
+  assert.deepEqual(snapshot.projects.map((project) => project.id), ['product-restore-project']);
+  assert.equal(snapshot.projects[0].status, 'planning');
+  assert.equal(snapshot.projects[0].taskCount, 2);
+  assert.equal(snapshot.projects[0].completedCount, 0);
+  assert.deepEqual(snapshot.projects[0].results, []);
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.tasks[0].projectId, 'product-restore-project');
+  assert.equal(snapshot.tasks[0].type, 'plan');
+});
+
+test('shell data adapter keeps successful product restoration analysis out of image completion counts', () => {
+  const snapshot = buildShellDataSnapshot({ shellProjects: [{
+    ...productRestoreProject,
+    generationContext: {
+      ...productRestoreProject.generationContext,
+      productRestore: undefined,
+    },
+  }] }, [{
+    id: 'restore-analysis-job',
+    module: 'retouch',
+    taskType: 'kie_chat',
+    provider: 'kie',
+    status: 'succeeded',
+    payload: {
+      taskPurpose: 'product_restore_analysis',
+      shellProjectId: 'product-restore-project',
+      subFeature: 'product_restore',
+      batchCount: 2,
+    },
+    result: { content: JSON.stringify(productRestoreAnalysis) },
+    createdAt: 1783676600100,
+    finishedAt: 1783676600200,
+  }]);
+
+  assert.equal(snapshot.projects.length, 1);
+  assert.equal(snapshot.projects[0].id, 'product-restore-project');
+  assert.equal(snapshot.projects[0].completedCount, 0);
+  assert.equal(snapshot.projects[0].taskCount, 2);
+  assert.deepEqual(snapshot.projects[0].results, []);
+  assert.deepEqual(snapshot.tasks, []);
+});
+
+test('shell data adapter keeps a terminal product restoration analysis failure without fake image rows', () => {
+  const snapshot = buildShellDataSnapshot({ shellProjects: [{
+    ...structuredClone(productRestoreProject),
+    status: 'error',
+    generationContext: {
+      ...structuredClone(productRestoreProject.generationContext),
+      productRestore: undefined,
+    },
+    results: [],
+    completedCount: 0,
+    error: '产品还原分析失败',
+  }] }, []);
+
+  assert.equal(snapshot.projects.length, 1);
+  assert.equal(snapshot.projects[0].status, 'error');
+  assert.equal(snapshot.projects[0].backendJobId, 'restore-analysis-job');
+  assert.equal(snapshot.projects[0].taskCount, 2);
+  assert.equal(snapshot.projects[0].completedCount, 0);
+  assert.deepEqual(snapshot.projects[0].results, []);
+  assert.equal(snapshot.projects[0].error, '产品还原分析失败');
+});
+
+test('shell data adapter deep-clones persisted product restoration context', () => {
+  const persisted = structuredClone(productRestoreProject);
+  const snapshot = buildShellDataSnapshot({ shellProjects: [persisted] }, []);
+  const restored = snapshot.projects[0].generationContext.productRestore;
+
+  persisted.generationContext.productRestore.focusIds.push('color_gloss');
+  persisted.generationContext.productRestore.targetMaterialIds.push('restore-target-c');
+  persisted.generationContext.productRestore.normalizedAnalysis.invariantFeatures.push('mutated');
+
+  assert.deepEqual(restored.focusIds, ['shape_structure', 'logo_label_text']);
+  assert.deepEqual(restored.targetMaterialIds, ['restore-target-a', 'restore-target-b']);
+  assert.deepEqual(restored.normalizedAnalysis.invariantFeatures, ['logo']);
+});
+
+test('shell data adapter recovers product restoration image jobs by target and batch after reload', () => {
+  const imageJobs = [
+    ['restore-image-job-a', 'restore-provider-a', 'restore-target-a', 1, 'https://example.com/result-a.png'],
+    ['restore-image-job-b', 'restore-provider-b', 'restore-target-b', 2, 'https://example.com/result-b.png'],
+  ].map(([id, providerTaskId, targetMaterialId, batchIndex, imageUrl]) => ({
+    id,
+    module: 'retouch',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId,
+    payload: {
+      taskPurpose: 'product_restore_generation',
+      shellProjectId: 'product-restore-project',
+      shellProjectName: '7月14日项目1',
+      subFeature: 'product_restore',
+      analysisJobId: 'restore-analysis-job',
+      targetMaterialId,
+      batchIndex,
+      batchCount: 2,
+    },
+    result: { imageUrl, providerTaskId },
+    createdAt: 1783676601000 + Number(batchIndex),
+    finishedAt: 1783676602000 + Number(batchIndex),
+  }));
+  const snapshot = buildShellDataSnapshot({ shellProjects: [structuredClone(productRestoreProject)] }, imageJobs);
+  const project = snapshot.projects.find((item) => item.id === 'product-restore-project');
+
+  assert.equal(project.status, 'completed');
+  assert.equal(project.backendJobId, 'restore-analysis-job');
+  assert.equal(project.taskCount, 2);
+  assert.equal(project.completedCount, 2);
+  assert.deepEqual(project.results.map((result) => [
+    result.targetMaterialId,
+    result.batchIndex,
+    result.backendJobId,
+  ]), [
+    ['restore-target-a', 1, 'restore-image-job-a'],
+    ['restore-target-b', 2, 'restore-image-job-b'],
+  ]);
+});
+
+test('shell data adapter keeps successful product restoration images when another target fails', () => {
+  const jobs = [
+    {
+      id: 'restore-image-job-a',
+      module: 'retouch',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'restore-provider-a',
+      payload: {
+        taskPurpose: 'product_restore_generation',
+        shellProjectId: 'product-restore-project',
+        subFeature: 'product_restore',
+        analysisJobId: 'restore-analysis-job',
+        targetMaterialId: 'restore-target-a',
+        batchIndex: 1,
+        batchCount: 2,
+      },
+      result: { imageUrl: 'https://example.com/result-a.png', providerTaskId: 'restore-provider-a' },
+      createdAt: 1783676601001,
+      finishedAt: 1783676602001,
+    },
+    {
+      id: 'restore-image-job-b',
+      module: 'retouch',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'failed',
+      providerTaskId: 'restore-provider-b',
+      errorMessage: '生成失败',
+      payload: {
+        taskPurpose: 'product_restore_generation',
+        shellProjectId: 'product-restore-project',
+        subFeature: 'product_restore',
+        analysisJobId: 'restore-analysis-job',
+        targetMaterialId: 'restore-target-b',
+        batchIndex: 2,
+        batchCount: 2,
+      },
+      createdAt: 1783676601002,
+      finishedAt: 1783676602002,
+    },
+  ];
+
+  const snapshot = buildShellDataSnapshot({ shellProjects: [structuredClone(productRestoreProject)] }, jobs);
+  const project = snapshot.projects.find((item) => item.id === 'product-restore-project');
+
+  assert.equal(project.status, 'error');
+  assert.equal(project.backendJobId, 'restore-analysis-job');
+  assert.equal(project.taskCount, 2);
+  assert.equal(project.completedCount, 1);
+  assert.deepEqual(project.results.map((result) => [
+    result.targetMaterialId,
+    result.batchIndex,
+    result.status,
+    result.imageUrl,
+  ]), [
+    ['restore-target-a', 1, 'completed', 'https://example.com/result-a.png'],
+    ['restore-target-b', 2, 'error', ''],
+  ]);
+});
+
+test('historical product restoration projects remain readable when rollout is off', () => {
+  const snapshot = buildShellDataSnapshot({
+    systemConfig: { featureRollouts: { productRestore: 'off' } },
+    shellProjects: [{
+      ...structuredClone(productRestoreProject),
+      status: 'completed',
+      completedCount: 1,
+      taskCount: 1,
+      results: [{
+        id: 'historical-product-restore-result',
+        projectId: 'product-restore-project',
+        imageUrl: 'https://example.com/historical.png',
+        prompt: '历史产品还原',
+        model: 'gpt-image-2',
+        aspectRatio: 'auto',
+        status: 'completed',
+        createdAt: 1783676601000,
+        module: 'retouch',
+        subFeature: 'product_restore',
+        targetMaterialId: 'restore-target-a',
+        batchIndex: 1,
+      }],
+    }],
+  }, []);
+
+  assert.equal(snapshot.projects.length, 1);
+  assert.equal(snapshot.projects[0].subFeature, 'product_restore');
+  assert.equal(snapshot.projects[0].results[0].imageUrl, 'https://example.com/historical.png');
+});
+
 test('shell data adapter binds translation analysis progress without synthesizing a media result', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{

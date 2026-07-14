@@ -1,6 +1,7 @@
 import type {
   AppModule,
   InternalJob,
+  ProductRestoreProjectContext,
   VideoStoryboardBoard,
   VideoStoryboardConfig,
   VideoStoryboardProject,
@@ -61,6 +62,7 @@ export interface ShellGeneratedResult {
   taskId?: string;
   backendJobId?: string;
   batchIndex?: number;
+  targetMaterialId?: string;
   creditsConsumed?: number;
   error?: string;
   /** 技术原文(errorMessage 人话之外的原始报错),只读透传,仅"技术详情"展示用 */
@@ -115,6 +117,7 @@ export interface ShellProjectData {
     prompt: string;
     params: Record<string, string>;
     materials: Record<string, ShellMaterialData[]>;
+    productRestore?: ProductRestoreProjectContext;
   };
   directGeneration?: boolean;
   storyboardProjectStatus?: VideoStoryboardProject['status'];
@@ -155,6 +158,43 @@ export interface ShellMaterialData {
   logoReplaceRegion?: Record<string, unknown>;
   logoReplaceRegions?: Array<Record<string, unknown>>;
 }
+
+const cloneProductRestoreAnalysis = (
+  analysis: ProductRestoreProjectContext['normalizedAnalysis'],
+): ProductRestoreProjectContext['normalizedAnalysis'] => ({
+  ...analysis,
+  invariantFeatures: [...analysis.invariantFeatures],
+  shapeAndStructure: [...analysis.shapeAndStructure],
+  proportionAndContour: [...analysis.proportionAndContour],
+  materialAndTexture: [...analysis.materialAndTexture],
+  colorAndGloss: [...analysis.colorAndGloss],
+  logoLabelAndText: [...analysis.logoLabelAndText],
+  componentsAndCraft: [...analysis.componentsAndCraft],
+  targetSetIssues: [...analysis.targetSetIssues],
+  nonProductPreservationRules: [...analysis.nonProductPreservationRules],
+});
+
+const cloneGenerationContext = (
+  context?: ShellProjectData['generationContext'],
+): ShellProjectData['generationContext'] => context ? ({
+  ...context,
+  params: { ...context.params },
+  materials: Object.fromEntries(
+    Object.entries(context.materials || {}).map(([type, items]) => [
+      type,
+      (items || []).map((item) => ({ ...item })),
+    ]),
+  ),
+  productRestore: context.productRestore
+    ? {
+        ...context.productRestore,
+        focusIds: [...context.productRestore.focusIds],
+        targetMaterialIds: [...context.productRestore.targetMaterialIds],
+        productReferenceMaterialIds: [...context.productRestore.productReferenceMaterialIds],
+        normalizedAnalysis: cloneProductRestoreAnalysis(context.productRestore.normalizedAnalysis),
+      }
+    : undefined,
+}) : undefined;
 
 export interface ShellDataSnapshot {
   projects: ShellProjectData[];
@@ -796,6 +836,7 @@ const resultFromItem = (
     taskId: getVisibleTaskId(item),
     backendJobId: String(item?.backendJobId || item?.jobId || '').trim() || undefined,
     batchIndex: Number(item?.batchIndex || item?.payload?.batchIndex || 0) || undefined,
+    targetMaterialId: String(item?.targetMaterialId || item?.payload?.targetMaterialId || '').trim() || undefined,
     creditsConsumed: normalizeCreditsConsumed(item?.creditsConsumed || item?.result?.creditsConsumed),
     error: String(item?.error || '').trim() || undefined,
     matchedAspectRatio: String(item?.matchedAspectRatio || item?.aspectRatio || item?.payload?.aspectRatio || item?.payload?.ratio || 'auto'),
@@ -1137,6 +1178,8 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         relativePath: String(result?.relativePath || '').trim() || undefined,
         taskId: getVisibleTaskId(result),
         backendJobId: String(result?.backendJobId || '').trim() || undefined,
+        batchIndex: Number(result?.batchIndex || 0) || undefined,
+        targetMaterialId: String(result?.targetMaterialId || '').trim() || undefined,
         creditsConsumed: normalizeCreditsConsumed(result?.creditsConsumed),
         error: String(result?.error || '').trim() || undefined,
         matchedAspectRatio: String(result?.matchedAspectRatio || result?.aspectRatio || 'auto'),
@@ -1149,6 +1192,7 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
       sourceType: 'persisted',
       creditsConsumed: normalizeCreditsConsumed(project.creditsConsumed),
       planningTaskId: latestIdentityTextList(String(project.planningTaskId || '').trim() || undefined),
+      generationContext: cloneGenerationContext(project.generationContext),
       directGeneration: project.directGeneration === true,
     });
   });
@@ -2347,6 +2391,44 @@ const mapJobs = (
         );
         const errorMessage = String(job.errorMessage || providerErrorText || job.errorCode || '任务失败').trim();
         const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+        const isProductRestoreImageFailure = Boolean(
+          matchedProject?.subFeature === 'product_restore'
+          && String(job.payload?.taskPurpose || '').trim() === 'product_restore_generation'
+        );
+        if (matchedProject && isProductRestoreImageFailure) {
+          const failedResult: ShellGeneratedResult = {
+            id: String(providerTaskId || job.id),
+            projectId: matchedProject.id,
+            imageUrl: '',
+            prompt,
+            model: normalizeModel(job.payload?.model || job.result?.model || job.provider),
+            aspectRatio: String(job.payload?.aspectRatio || job.payload?.ratio || job.result?.aspectRatio || 'auto'),
+            status: 'error',
+            createdAt,
+            module,
+            subFeature: 'product_restore',
+            taskId: providerTaskId || undefined,
+            backendJobId: job.id,
+            batchIndex: Number(job.payload?.batchIndex || 0) || undefined,
+            targetMaterialId: String(job.payload?.targetMaterialId || '').trim() || undefined,
+            creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+            error: errorMessage,
+          };
+          projects.push({
+            ...matchedProject,
+            status: 'error',
+            results: [failedResult],
+            taskCount: Math.max(
+              Number(matchedProject.taskCount || 0) || 0,
+              Number(job.payload?.batchCount || 0) || 0,
+              1,
+            ),
+            completedCount: 0,
+            backendJobId: matchedProject.backendJobId || String(job.payload?.analysisJobId || '').trim() || job.id,
+            error: errorMessage,
+          });
+          return;
+        }
         if (!matchedProject) {
           const shouldShowUntrackedTerminalFailure = String(job.taskType || '') === 'kie_chat' || Boolean(providerErrorText);
           if (!isTrackedOneClickPlanningJob && !shouldShowUntrackedTerminalFailure) return;
@@ -2517,6 +2599,8 @@ const mapJobs = (
           subFeature: matchedTerminalProject.subFeature || subFeature,
           taskId: String(providerTaskId || '').trim() || undefined,
           backendJobId: job.id,
+          batchIndex: Number(job.payload?.batchIndex || 0) || undefined,
+          targetMaterialId: String(job.payload?.targetMaterialId || '').trim() || undefined,
           creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
         }));
         const incomingKeys = new Set(nextJobResults.flatMap((result) => getGeneratedResultMergeKeys(result)));
@@ -2541,7 +2625,9 @@ const mapJobs = (
           completedCount,
           subFeature: matchedTerminalProject.subFeature || subFeature,
           sourceType: matchedTerminalProject.sourceType || 'persisted',
-          backendJobId: job.id,
+          backendJobId: matchedTerminalProject.subFeature === 'product_restore'
+            ? (matchedTerminalProject.backendJobId || job.id)
+            : job.id,
           creditsConsumed: normalizeCreditsConsumed(matchedTerminalProject.creditsConsumed) || normalizeCreditsConsumed(job.result?.creditsConsumed),
         });
         return;
@@ -2696,6 +2782,8 @@ const mapJobs = (
         subFeature: matchedProject?.subFeature || subFeature,
         taskId: visibleProviderTaskId || undefined,
         backendJobId: job.id,
+        batchIndex: Number(job.payload?.batchIndex || 0) || undefined,
+        targetMaterialId: String(job.payload?.targetMaterialId || '').trim() || undefined,
         error: job.status === 'queued' ? '任务已提交，等待执行' : job.status === 'retry_waiting' ? '任务重试中' : '任务正在运行',
       };
       const existingActiveResults = matchedProject?.results || [];
@@ -2724,7 +2812,9 @@ const mapJobs = (
         completedCount: matchedProject?.completedCount || 0,
         subFeature: matchedProject?.subFeature || subFeature,
         sourceType: matchedProject?.sourceType || 'job',
-        backendJobId: job.id,
+        backendJobId: matchedProject?.subFeature === 'product_restore'
+          ? (matchedProject.backendJobId || job.id)
+          : job.id,
       });
       tasks.push(activeTask);
     }
@@ -3136,6 +3226,7 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
 
 const hasVisibleProjectContent = (project: ShellProjectData) => {
   if (project.storyboardSourceProject) return true;
+  if (project.module === MODULE_VALUES.RETOUCH && project.subFeature === 'product_restore') return true;
   if ((project.results || []).length > 0) return true;
   if ((project.plans || []).length > 0) return true;
   return project.status === 'generating';
@@ -3143,6 +3234,9 @@ const hasVisibleProjectContent = (project: ShellProjectData) => {
 
 const getGeneratedResultMergeKeys = (result: ShellGeneratedResult) => {
   const concreteKeys = [
+    result.targetMaterialId && Number(result.batchIndex || 0) > 0
+      ? `product-restore:${result.targetMaterialId}:${Number(result.batchIndex)}`
+      : '',
     result.taskId ? `task:${result.taskId}` : '',
     result.backendJobId ? `job:${result.backendJobId}` : '',
     result.id ? `id:${result.id}` : '',

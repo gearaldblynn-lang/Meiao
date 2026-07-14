@@ -1,7 +1,7 @@
 import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreFocusId, ProductRestoreNormalizedAnalysis, ProductRestoreProjectContext, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
@@ -71,6 +71,7 @@ import {
 } from './modules/Retouch/retouchSizingUtils.mjs';
 import { getEffectiveConcurrency } from './modules/Account/accountManagementUtils.mjs';
 import { isRecoverableKieTaskResult, recoverKieAiTask } from './services/kieAiService';
+import { recoverProductRestoreAnalysisBatch } from './services/arkService';
 import { buildStoryboardBoardGenerationImport } from './shell/modules/Video/storyboardImportUtils.mjs';
 import {
   applyStoryboardBoardResult,
@@ -98,6 +99,10 @@ import {
   getProductRestoreAnalysisPendingState,
   resolveProductRestoreTargetCount,
 } from './adapters/shellProductRestorePendingState';
+import {
+  normalizeProductRestoreFocusIds,
+  normalizeProductRestoreResolution,
+} from './modules/Retouch/productRestoreContract.mjs';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -189,6 +194,9 @@ export interface GeneratedResult {
   taskId?: string;
   backendJobId?: string;
   batchIndex?: number;
+  targetMaterialId?: string;
+  analysisJobId?: string;
+  clientSubmissionKey?: string;
   creditsConsumed?: number;
   error?: string;
   /** 技术原文(errorMessage 人话之外的原始报错),只读透传,仅"技术详情"展示用 */
@@ -360,10 +368,36 @@ const cloneMaterialSnapshot = (material: Material) => {
   };
 };
 
+const cloneProductRestoreAnalysis = (
+  analysis: ProductRestoreNormalizedAnalysis,
+): ProductRestoreNormalizedAnalysis => ({
+  ...analysis,
+  invariantFeatures: [...analysis.invariantFeatures],
+  shapeAndStructure: [...analysis.shapeAndStructure],
+  proportionAndContour: [...analysis.proportionAndContour],
+  materialAndTexture: [...analysis.materialAndTexture],
+  colorAndGloss: [...analysis.colorAndGloss],
+  logoLabelAndText: [...analysis.logoLabelAndText],
+  componentsAndCraft: [...analysis.componentsAndCraft],
+  targetSetIssues: [...analysis.targetSetIssues],
+  nonProductPreservationRules: [...analysis.nonProductPreservationRules],
+});
+
+const cloneProductRestoreContext = (
+  productRestoreContext?: ProductRestoreProjectContext,
+): ProductRestoreProjectContext | undefined => productRestoreContext ? ({
+  ...productRestoreContext,
+  focusIds: [...productRestoreContext.focusIds],
+  targetMaterialIds: [...productRestoreContext.targetMaterialIds],
+  productReferenceMaterialIds: [...productRestoreContext.productReferenceMaterialIds],
+  normalizedAnalysis: cloneProductRestoreAnalysis(productRestoreContext.normalizedAnalysis),
+}) : undefined;
+
 const cloneGenerationContext = (
   prompt: string,
   params: Record<string, string>,
   materials: Record<string, Material[]>,
+  productRestoreContext?: ProductRestoreProjectContext,
 ): OneClickGenerationContext => ({
   prompt,
   params: { ...params },
@@ -373,7 +407,27 @@ const cloneGenerationContext = (
       (list || []).map((item) => cloneMaterialSnapshot(item)),
     ]),
   ),
+  productRestore: productRestoreContext
+    ? cloneProductRestoreContext(productRestoreContext)
+    : undefined,
 });
+
+const getProductRestoreResultIdentity = (result: Partial<GeneratedResult>) => {
+  const targetMaterialId = String(result.targetMaterialId || '').trim();
+  const batchIndex = Number(result.batchIndex || 0) || 0;
+  if (targetMaterialId && batchIndex > 0) return `${targetMaterialId}:${batchIndex}`;
+  return String(result.backendJobId || result.taskId || result.id || '').trim();
+};
+
+const getProductRestoreProjectStatus = (
+  results: GeneratedResult[],
+  taskCount: number,
+): Exclude<Project['status'], 'planning'> => {
+  if (results.some((result) => result.status === 'generating')) return 'generating';
+  const settledCount = results.filter((result) => result.status === 'completed' || result.status === 'error').length;
+  if (settledCount < taskCount) return 'generating';
+  return results.some((result) => result.status === 'error') ? 'error' : 'completed';
+};
 
 const hasMaterialInputs = (materials?: Record<string, Material[]>) =>
   Object.values(materials || {}).some((list) =>
@@ -486,6 +540,7 @@ const collectShellProjectIds = (project?: Partial<Project> | null) => {
   addShellCancelId(ids, project?.id);
   addShellCancelId(ids, project?.backendJobId);
   addShellCancelId(ids, project?.planningTaskId);
+  addShellCancelId(ids, project?.generationContext?.productRestore?.analysisJobId);
   return ids;
 };
 
@@ -514,9 +569,12 @@ const collectShellCancelJobIds = (targetId: string, projects: Project[], tasks: 
   });
   projects.forEach((project) => {
     const projectMatches = shellCancelTargetMatches(targetId, collectShellProjectIds(project));
-    if (projectMatches) addShellCancelId(jobIds, project.backendJobId);
+    if (projectMatches) {
+      addShellCancelId(jobIds, project.backendJobId);
+      addShellCancelId(jobIds, project.generationContext?.productRestore?.analysisJobId);
+    }
     (project.results || []).forEach((result) => {
-      if ((projectMatches || shellCancelTargetMatches(targetId, collectShellResultIds(result))) && isShellResultCancellable(result)) {
+      if (projectMatches || (shellCancelTargetMatches(targetId, collectShellResultIds(result)) && isShellResultCancellable(result))) {
         addShellCancelId(jobIds, result.backendJobId);
       }
     });
@@ -2057,6 +2115,7 @@ const AppContent: React.FC<{
   const storyboardBoardDeletionGuardsRef = useRef<Map<string, StoryboardBoardDeletionGuard>>(new Map());
   const generationSubmitLocksRef = useRef<Set<string>>(new Set());
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
+  const productRestoreResumeProjectIdsRef = useRef<Set<string>>(new Set());
   const { addToast } = useToast();
   const activeAnnouncement = systemConfig?.systemSettings?.announcement?.enabled
     ? systemConfig.systemSettings.announcement
@@ -3011,6 +3070,7 @@ const AppContent: React.FC<{
     const runtimeSnapshot = pruneShellRuntimeSnapshotForDeletion(loadShellRuntimeSnapshot(userId), draftSnapshot);
     Object.values(taskControllersRef.current).forEach((controller) => controller.abort());
     taskControllersRef.current = {};
+    productRestoreResumeProjectIdsRef.current.clear();
     hydrationScheduledRef.current = false;
     jobsHydrationScheduledRef.current = false;
     latestSharedStateRef.current = null;
@@ -3252,6 +3312,262 @@ const AppContent: React.FC<{
       window.clearInterval(intervalId);
     };
   }, [hydrateShellJobs, pageMode, projects, tasks]);
+
+  const resumeProductRestoreProject = useCallback(async (project: Project) => {
+    const projectId = String(project.id || '').trim();
+    const analysisJobId = String(
+      project.generationContext?.productRestore?.analysisJobId
+      || project.backendJobId
+      || '',
+    ).trim();
+    const storedContext = project.generationContext;
+    if (!projectId || !analysisJobId || !storedContext) return;
+    if (productRestoreResumeProjectIdsRef.current.has(projectId)) return;
+
+    productRestoreResumeProjectIdsRef.current.add(projectId);
+    const controller = new AbortController();
+    taskControllersRef.current[projectId] = controller;
+    try {
+      const targetMaterials = (storedContext.materials.restoreTarget || []) as Material[];
+      const productReferences = (storedContext.materials.productReference || []) as Material[];
+      if (targetMaterials.length === 0 || productReferences.length === 0) {
+        const failedProject: Project = {
+          ...project,
+          status: 'error',
+          results: project.results || [],
+          completedCount: countCompletedProjectResults(project.results || []),
+          error: '产品还原历史素材不完整，无法继续生成。',
+        };
+        setProjects((prev) => prev.map((item) => item.id === projectId ? failedProject : item));
+        await persistProjectToSharedState(failedProject);
+        return;
+      }
+
+      const focusIds = normalizeProductRestoreFocusIds(
+        storedContext.params.restoreFocusIds,
+      ) as ProductRestoreFocusId[];
+      let productRestoreContext = cloneProductRestoreContext(storedContext.productRestore);
+      if (!productRestoreContext) {
+        const analysis = await recoverProductRestoreAnalysisBatch({
+          jobId: analysisJobId,
+          focusIds,
+          userRequirement: storedContext.prompt,
+          signal: controller.signal,
+        });
+        if (analysis.status === 'generating') return;
+        if (analysis.status === 'error') {
+          const failedProject: Project = {
+            ...project,
+            backendJobId: analysis.jobId || analysisJobId,
+            planningTaskId: analysis.providerTaskId || project.planningTaskId,
+            status: 'error',
+            results: project.results || [],
+            completedCount: countCompletedProjectResults(project.results || []),
+            error: analysis.message,
+          };
+          setProjects((prev) => prev.map((item) => item.id === projectId ? failedProject : item));
+          await persistProjectToSharedState(failedProject);
+          return;
+        }
+        productRestoreContext = {
+          version: 1,
+          analysisJobId: analysis.jobId,
+          analysisProviderTaskId: analysis.providerTaskId,
+          analysisModel: analysis.modelUsed,
+          analysisCreditsConsumed: Number(analysis.creditsConsumed || 0),
+          normalizedAnalysis: cloneProductRestoreAnalysis(analysis.normalizedAnalysis),
+          sharedRestorationPrompt: analysis.sharedRestorationPrompt,
+          focusIds: [...focusIds],
+          targetMaterialIds: targetMaterials.map((material) => material.id),
+          productReferenceMaterialIds: productReferences.map((material) => material.id),
+          selectedImageModel: String(storedContext.params.model || 'gpt-image-2'),
+          resolution: normalizeProductRestoreResolution(
+            storedContext.params.model,
+            storedContext.params.resolution || storedContext.params.quality,
+          ),
+          userRequirement: storedContext.prompt,
+          createdAt: Date.now(),
+        };
+      }
+      if (controller.signal.aborted) return;
+
+      const durableGenerationContext = cloneGenerationContext(
+        storedContext.prompt,
+        storedContext.params,
+        storedContext.materials as Record<string, Material[]>,
+        productRestoreContext,
+      );
+      let resumedProject: Project = {
+        ...project,
+        backendJobId: productRestoreContext.analysisJobId,
+        planningTaskId: productRestoreContext.analysisProviderTaskId,
+        generationContext: durableGenerationContext,
+        status: 'generating',
+        taskCount: targetMaterials.length,
+        completedCount: countCompletedProjectResults(project.results || []),
+        creditsConsumed: Number(productRestoreContext.analysisCreditsConsumed || 0)
+          + (project.results || []).reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0),
+        error: undefined,
+      };
+      setProjects((prev) => prev.map((item) => item.id === projectId ? resumedProject : item));
+      await persistProjectToSharedState(resumedProject);
+      if (controller.signal.aborted) return;
+
+      const jobsResult = await fetchInternalJobs(200);
+      const childImageJobs = (Array.isArray(jobsResult.jobs) ? jobsResult.jobs : []).filter((job) => (
+        String(job.payload?.shellProjectId || '').trim() === projectId
+        && String(job.payload?.taskPurpose || '').trim() === 'product_restore_generation'
+      ));
+      const { buildShellDataSnapshot } = await loadShellPersistenceTools();
+      const hydratedProject = buildShellDataSnapshot({
+        shellProjects: [resumedProject],
+      }, childImageJobs).projects.find((item) => item.id === projectId) as Project | undefined;
+      if (hydratedProject) {
+        resumedProject = {
+          ...hydratedProject,
+          backendJobId: productRestoreContext.analysisJobId,
+          planningTaskId: productRestoreContext.analysisProviderTaskId,
+          generationContext: durableGenerationContext,
+          taskCount: targetMaterials.length,
+        };
+        setProjects((prev) => prev.map((item) => item.id === projectId ? resumedProject : item));
+        await persistProjectToSharedState(resumedProject);
+      }
+
+      const existingTargetKeys = new Set([
+        ...childImageJobs.map((job) => {
+          const targetMaterialId = String(job.payload?.targetMaterialId || '').trim();
+          const batchIndex = Number(job.payload?.batchIndex || 0) || 0;
+          return targetMaterialId && batchIndex > 0 ? `${targetMaterialId}:${batchIndex}` : '';
+        }),
+        ...(resumedProject.results || []).map((result) => getProductRestoreResultIdentity(result)),
+      ].filter(Boolean));
+      const missingTargets = targetMaterials
+        .map((target, index) => ({ target, batchIndex: index + 1 }))
+        .filter(({ target, batchIndex }) => !existingTargetKeys.has(`${target.id}:${batchIndex}`));
+      if (missingTargets.length === 0 || controller.signal.aborted) return;
+
+      const { buildShellModuleConfig } = await loadShellWorkflowModule();
+      const { runShellProductRestoreItem } = await import('./adapters/shellProductRestoreWorkflow');
+      const resumeInput = {
+        module: AppModuleObj.RETOUCH,
+        subFeature: 'product_restore',
+        prompt: storedContext.prompt,
+        params: { ...storedContext.params },
+        materials: storedContext.materials,
+        signal: controller.signal,
+        apiConfig,
+        taskMetadata: {
+          shellProjectId: projectId,
+          shellProjectName: project.name,
+          batchCount: targetMaterials.length,
+          subFeature: 'product_restore',
+        },
+        publicBaseUrl,
+      };
+      const resumeConfig = buildShellModuleConfig(resumeInput);
+      let resumedResults = [...(resumedProject.results || [])];
+      const syncResumedItem = async (item: Awaited<ReturnType<typeof runShellProductRestoreItem>>) => {
+        const nextResult: GeneratedResult = {
+          id: item.taskId || item.backendJobId || `${projectId}-${item.targetMaterialId}-${item.batchIndex}`,
+          projectId,
+          imageUrl: item.imageUrl || '',
+          mediaType: 'image',
+          prompt: item.prompt || storedContext.prompt,
+          model: item.model || storedContext.params.model || 'gpt-image-2',
+          aspectRatio: item.aspectRatio || 'auto',
+          status: item.status || (item.imageUrl ? 'completed' : 'generating'),
+          createdAt: project.createdAt,
+          module: AppModuleObj.RETOUCH,
+          subFeature: 'product_restore',
+          sourceUrl: item.sourceUrl,
+          fileName: item.fileName,
+          taskId: item.taskId,
+          backendJobId: item.backendJobId,
+          batchIndex: item.batchIndex,
+          targetMaterialId: item.targetMaterialId,
+          analysisJobId: item.analysisJobId,
+          clientSubmissionKey: item.clientSubmissionKey,
+          creditsConsumed: item.creditsConsumed,
+          error: item.error || item.message,
+        };
+        const identity = getProductRestoreResultIdentity(nextResult);
+        const byTarget = new Map(resumedResults.map((result) => [
+          getProductRestoreResultIdentity(result),
+          result,
+        ]));
+        byTarget.set(identity, nextResult);
+        resumedResults = sortGeneratedResultsByBatchIndex(Array.from(byTarget.values()));
+        const status = getProductRestoreProjectStatus(resumedResults, targetMaterials.length);
+        resumedProject = {
+          ...resumedProject,
+          status,
+          completedAt: status === 'completed' ? Date.now() : undefined,
+          results: resumedResults,
+          taskCount: targetMaterials.length,
+          completedCount: resumedResults.filter((result) => result.status === 'completed').length,
+          creditsConsumed: Number(productRestoreContext.analysisCreditsConsumed || 0)
+            + resumedResults.reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0),
+          error: status === 'error'
+            ? resumedResults.find((result) => result.status === 'error')?.error
+            : undefined,
+        };
+        setProjects((prev) => prev.map((itemProject) => (
+          itemProject.id === projectId ? resumedProject : itemProject
+        )));
+        await persistProjectToSharedState(resumedProject);
+      };
+      await Promise.all(missingTargets.map(({ target, batchIndex }) => runShellProductRestoreItem({
+        input: resumeInput,
+        config: resumeConfig,
+        context: productRestoreContext,
+        target,
+        productReferences,
+        batchIndex,
+        batchCount: targetMaterials.length,
+      }, {
+        onItemChanged: (item) => syncResumedItem(item),
+      })));
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      logShellError('product_restore_resume_failed', error, {
+        projectId,
+        analysisJobId,
+      }, '产品还原任务续接失败');
+    } finally {
+      if (taskControllersRef.current[projectId] === controller) {
+        delete taskControllersRef.current[projectId];
+      }
+      productRestoreResumeProjectIdsRef.current.delete(projectId);
+    }
+  }, [apiConfig, logShellError, persistProjectToSharedState, publicBaseUrl]);
+
+  useEffect(() => {
+    if (!hasHydratedSharedData || pageMode !== 'module') return;
+    projects.forEach((project) => {
+      const hasDurableProductRestoreContext = Boolean(project.generationContext?.productRestore);
+      const trackedTargetCount = new Set(
+        (project.results || [])
+          .map((result) => getProductRestoreResultIdentity(result))
+          .filter(Boolean),
+      ).size;
+      const hasMissingProductRestoreTargets = trackedTargetCount < Math.max(Number(project.taskCount || 0), 1);
+      const isResumableStatus = project.status === 'planning'
+        || (
+          project.status === 'generating'
+          && hasDurableProductRestoreContext
+          && hasMissingProductRestoreTargets
+        );
+      if (
+        project.module === AppModuleObj.RETOUCH
+        && project.subFeature === 'product_restore'
+        && isResumableStatus
+        && project.backendJobId
+      ) {
+        void resumeProductRestoreProject(project);
+      }
+    });
+  }, [hasHydratedSharedData, pageMode, projects, resumeProductRestoreProject]);
 
   const handleModuleChange = useCallback((m: AppModule | 'landing') => {
     if (m === 'landing') { setPageMode('landing'); return; }
@@ -4026,6 +4342,7 @@ const AppContent: React.FC<{
     if (targetModule === AppModuleObj.EVERYTHING_REPLACE) {
       batchCount = resolveEverythingReplaceBatchCount(generationMaterials, generationParams, targetSubFeature);
     }
+    const isProductRestoreSubmit = targetModule === AppModuleObj.RETOUCH && targetSubFeature === 'product_restore';
     const isTranslationSubmit = targetModule === AppModuleObj.TRANSLATION;
     const initialTranslationMaterials = isTranslationSubmit ? (generationMaterials.product || []).filter(Boolean) : [];
     if (isTranslationSubmit && initialTranslationMaterials.length === 0) {
@@ -4086,7 +4403,7 @@ const AppContent: React.FC<{
             : (translationSubFeatureLabel || MODULE_NAMES[targetModule]))
           : projectName,
         module: targetModule,
-        status: isOneClickSubmit ? 'planning' : 'generating',
+        status: isOneClickSubmit || isProductRestoreSubmit ? 'planning' : 'generating',
         createdAt: immediateCreatedAt,
         results: targetModule === AppModuleObj.TRANSLATION
           ? Array.from({ length: immediateTranslationCount }, (_, index) => {
@@ -4113,7 +4430,7 @@ const AppContent: React.FC<{
             } satisfies GeneratedResult;
           })
           : [],
-        taskCount: isTranslationSubmit ? immediateTranslationCount : (isOneClickSubmit ? 1 : batchCount),
+        taskCount: isProductRestoreSubmit ? batchCount : (isTranslationSubmit ? immediateTranslationCount : (isOneClickSubmit ? 1 : batchCount)),
         completedCount: 0,
         subFeature: targetSubFeature,
         generationContext: cloneGenerationContext(generationPrompt, generationParams, generationMaterials),
@@ -4124,9 +4441,9 @@ const AppContent: React.FC<{
         id: 'task-' + Date.now(),
         projectId: immediateProject?.id || immediateBuyerShowRootProjectId || immediateBuyerShowProjects[0]?.id || '',
         module: targetModule,
-        type: isOneClickSubmit ? 'plan' : 'image',
+        type: isOneClickSubmit || isProductRestoreSubmit ? 'plan' : 'image',
         status: 'pending',
-        title: isOneClickSubmit ? `策划: ${projectName}` : (immediateProject?.name || projectName),
+        title: isOneClickSubmit || isProductRestoreSubmit ? `策划: ${projectName}` : (immediateProject?.name || projectName),
         progress: 0,
         createdAt: immediateCreatedAt,
         total: immediateProject?.taskCount || batchCount,
@@ -4159,18 +4476,18 @@ const AppContent: React.FC<{
           ...immediateProject,
           status: 'error',
           error: message,
-          results: [{
-            id: `${immediateTask.id}-material-error`,
-            imageUrl: '',
-            prompt: message,
-            model: generationParams['model'] || 'gpt-image-2',
-            aspectRatio: generationParams['ratio'] || 'auto',
-            status: 'error',
-            createdAt: immediateProject.createdAt,
-            module: targetModule,
-            subFeature: targetSubFeature,
-            error: message,
-          }],
+          results: isProductRestoreSubmit ? [] : [{
+              id: `${immediateTask.id}-material-error`,
+              imageUrl: '',
+              prompt: message,
+              model: generationParams['model'] || 'gpt-image-2',
+              aspectRatio: generationParams['ratio'] || 'auto',
+              status: 'error',
+              createdAt: immediateProject.createdAt,
+              module: targetModule,
+              subFeature: targetSubFeature,
+              error: message,
+            }],
           completedCount: 0,
           taskCount: batchCount,
         };
@@ -4199,7 +4516,7 @@ const AppContent: React.FC<{
       releaseGuardedSubmit();
       return;
     }
-    const generationContext = targetModule === AppModuleObj.ONE_CLICK || targetModule === AppModuleObj.TRANSLATION || targetModule === AppModuleObj.EVERYTHING_REPLACE || targetModule === AppModuleObj.BUYER_SHOW
+    const generationContext = targetModule === AppModuleObj.ONE_CLICK || targetModule === AppModuleObj.TRANSLATION || targetModule === AppModuleObj.EVERYTHING_REPLACE || targetModule === AppModuleObj.BUYER_SHOW || isProductRestoreSubmit
       ? cloneGenerationContext(generationPrompt, generationParams, generationMaterials)
       : undefined;
 
@@ -4914,7 +5231,7 @@ const AppContent: React.FC<{
       id: projectId,
       name: projectName,
       module: targetModule,
-      status: 'generating',
+      status: isProductRestoreSubmit ? 'planning' : 'generating',
       createdAt: immediateProject?.createdAt ?? Date.now(),
       results: [],
       taskCount: batchCount,
@@ -4941,7 +5258,7 @@ const AppContent: React.FC<{
       id: taskId,
       projectId,
       module: targetModule,
-      type: targetModule === AppModuleObj.VIDEO ? 'video' : 'image',
+      type: targetModule === AppModuleObj.VIDEO ? 'video' : isProductRestoreSubmit ? 'plan' : 'image',
       status: 'pending',
       title: projectName,
       progress: 0,
@@ -4964,8 +5281,13 @@ const AppContent: React.FC<{
 	    let pendingSpecialTaskState: { status: 'generating'; total: number } | undefined;
 	    let activeBackendJobId = '';
 	    let activeProviderTaskId = '';
+	    let activeProductRestoreAnalysisJobId = '';
+	    let productRestoreContext = cloneProductRestoreContext(generationContext?.productRestore);
 	    const onJobCreated = (jobId: string, providerTaskId?: string) => {
-	      activeBackendJobId = String(jobId || '').trim();
+	      const normalizedJobId = String(jobId || '').trim();
+	      const isProductRestoreAnalysisJob = isProductRestoreSubmit && !productRestoreContext;
+	      activeBackendJobId = normalizedJobId;
+	      if (isProductRestoreAnalysisJob) activeProductRestoreAnalysisJobId = normalizedJobId;
 	      if (providerTaskId) activeProviderTaskId = String(providerTaskId || '').trim();
 	      const pendingVideoProject: Project | null = targetModule === AppModuleObj.VIDEO
 	        ? {
@@ -4992,9 +5314,21 @@ const AppContent: React.FC<{
 	            error: '任务已提交云端，等待生成结果',
 	          }
 	        : null;
+	      const pendingProductRestoreProject: Project | null = isProductRestoreAnalysisJob
+	        ? {
+	            ...newProject,
+	            backendJobId: activeProductRestoreAnalysisJobId,
+	            planningTaskId: activeProviderTaskId || undefined,
+	            status: 'planning',
+	            results: [],
+	            taskCount: batchCount,
+	            completedCount: 0,
+	            error: '产品还原分析已提交，等待结果。',
+	          }
+	        : null;
 	      setProjects((prev) => prev.map((project) => (
 	        project.id === projectId
-	          ? (pendingVideoProject || { ...project, backendJobId: jobId })
+	          ? (pendingVideoProject || pendingProductRestoreProject || (isProductRestoreSubmit ? project : { ...project, backendJobId: jobId }))
           : project
       )));
       setTasks((prev) => prev.map((task) => (
@@ -5004,6 +5338,9 @@ const AppContent: React.FC<{
       )));
 	      if (pendingVideoProject) {
 	        void persistProjectToSharedState(pendingVideoProject);
+	      }
+	      if (pendingProductRestoreProject) {
+	        void persistProjectToSharedState(pendingProductRestoreProject);
 	      }
     };
 
@@ -5115,13 +5452,23 @@ const AppContent: React.FC<{
             taskId: item.taskId,
             backendJobId: item.backendJobId,
             batchIndex: Number(item.batchIndex || completed) || completed,
+            targetMaterialId: item.targetMaterialId,
+            analysisJobId: item.analysisJobId,
+            clientSubmissionKey: item.clientSubmissionKey,
             sourceUrl: item.sourceUrl,
             fileName: item.fileName,
             error: item.error || item.message,
             logoReplaceGuarded: item.logoReplaceGuarded === true || undefined,
           };
-          const resultIdentity = nextResult.backendJobId || nextResult.taskId || nextResult.id;
-          const nextByIdentity = new Map(batchResults.map((result) => [result.backendJobId || result.taskId || result.id, result]));
+          const resultIdentity = isProductRestoreSubmit
+            ? getProductRestoreResultIdentity(nextResult)
+            : (nextResult.backendJobId || nextResult.taskId || nextResult.id);
+          const nextByIdentity = new Map(batchResults.map((result) => [
+            isProductRestoreSubmit
+              ? getProductRestoreResultIdentity(result)
+              : (result.backendJobId || result.taskId || result.id),
+            result,
+          ]));
           nextByIdentity.set(resultIdentity, nextResult);
           batchResults = sortGeneratedResultsByBatchIndex(Array.from(nextByIdentity.values()));
           const completedItemCount = batchResults.filter((result) => result.status === 'completed').length;
@@ -5160,13 +5507,44 @@ const AppContent: React.FC<{
             t.id === taskId
               ? {
                   ...t,
-                  status: batchResults.some((result) => result.status === 'generating') ? 'generating' : t.status,
+                  status: isProductRestoreSubmit
+                    ? getProductRestoreProjectStatus(batchResults, total)
+                    : batchResults.some((result) => result.status === 'generating') ? 'generating' : t.status,
                   progress: Math.round((processedItemCount / total) * 100),
                   completed: completedItemCount,
                   total,
                 }
               : t
           ));
+          if (isProductRestoreSubmit) {
+            const productRestoreStatus = getProductRestoreProjectStatus(batchResults, total);
+            const durableProductRestoreProject: Project = {
+              ...newProject,
+              backendJobId: productRestoreContext?.analysisJobId || activeProductRestoreAnalysisJobId || newProject.backendJobId,
+              planningTaskId: productRestoreContext?.analysisProviderTaskId,
+              generationContext: cloneGenerationContext(
+                generationPrompt,
+                generationParams,
+                generationMaterials,
+                productRestoreContext,
+              ),
+              status: productRestoreStatus,
+              completedAt: productRestoreStatus === 'completed' ? Date.now() : undefined,
+              results: [...batchResults],
+              completedCount: completedItemCount,
+              taskCount: total,
+              creditsConsumed: Number(productRestoreContext?.analysisCreditsConsumed || 0)
+                + batchResults.reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0),
+              error: productRestoreStatus === 'error'
+                ? batchResults.find((result) => result.status === 'error')?.error
+                : undefined,
+            };
+            setProjects((prev) => prev.map((project) => (
+              project.id === projectId ? durableProductRestoreProject : project
+            )));
+            void persistProjectToSharedState(durableProductRestoreProject);
+            return;
+          }
           setProjects((prev) => prev.map((p) =>
             !isBuyerShowSetProject && p.id === projectId
               ? {
@@ -5211,6 +5589,7 @@ const AppContent: React.FC<{
               params: generationParams,
               materials: generationMaterials,
               signal: controller.signal,
+              apiConfig,
               taskMetadata: {
                 shellProjectId: projectId,
                 shellProjectName: projectName,
@@ -5218,6 +5597,37 @@ const AppContent: React.FC<{
                 subFeature: targetSubFeature,
               },
               onJobCreated,
+              productRestoreContext,
+              onProductRestoreAnalysisCompleted: async (context) => {
+                productRestoreContext = cloneProductRestoreContext(context);
+                const durableGenerationContext = cloneGenerationContext(
+                  generationPrompt,
+                  generationParams,
+                  generationMaterials,
+                  productRestoreContext,
+                );
+                const analysisProject: Project = {
+                  ...newProject,
+                  backendJobId: context.analysisJobId,
+                  planningTaskId: context.analysisProviderTaskId,
+                  generationContext: durableGenerationContext,
+                  status: 'generating',
+                  results: [],
+                  taskCount: batchCount,
+                  completedCount: 0,
+                  creditsConsumed: context.analysisCreditsConsumed || undefined,
+                  error: undefined,
+                };
+                setProjects((prev) => prev.map((project) => (
+                  project.id === projectId ? analysisProject : project
+                )));
+                setTasks((prev) => prev.map((task) => (
+                  task.id === taskId
+                    ? { ...task, type: 'image', status: 'generating', completed: 0, total: batchCount }
+                    : task
+                )));
+                await persistProjectToSharedState(analysisProject);
+              },
               publicBaseUrl,
             }, onSpecialItemCompleted);
 
@@ -5237,6 +5647,9 @@ const AppContent: React.FC<{
           taskId: item.taskId,
           backendJobId: item.backendJobId,
           batchIndex: Number(item.batchIndex || index + 1) || index + 1,
+          targetMaterialId: item.targetMaterialId,
+          analysisJobId: item.analysisJobId,
+          clientSubmissionKey: item.clientSubmissionKey,
           sourceUrl: item.sourceUrl,
           fileName: item.fileName,
           error: item.error || item.message,
@@ -5258,18 +5671,26 @@ const AppContent: React.FC<{
         const hasSpecialError = specialWorkflowResults.some((item) => item.status === 'error');
         completedProject = {
           ...newProject,
-          ...(productRestoreAnalysisPending.analysisJobId
-            ? { backendJobId: productRestoreAnalysisPending.analysisJobId }
+          ...((productRestoreContext?.analysisJobId || productRestoreAnalysisPending.analysisJobId)
+            ? { backendJobId: productRestoreContext?.analysisJobId || productRestoreAnalysisPending.analysisJobId }
             : {}),
+          ...(productRestoreContext?.analysisProviderTaskId
+            ? { planningTaskId: productRestoreContext.analysisProviderTaskId }
+            : {}),
+          generationContext: isProductRestoreSubmit
+            ? cloneGenerationContext(generationPrompt, generationParams, generationMaterials, productRestoreContext)
+            : newProject.generationContext,
           status: productRestoreAnalysisPending.project?.status
             || (hasSpecialGenerating ? 'generating' : hasSpecialError ? 'error' : 'completed'),
           completedAt: hasSpecialGenerating ? undefined : newProject.createdAt,
           results: specialWorkflowResults,
-          taskCount: Math.max(
-            specialWorkflowResults.length,
-            specialResult.results.length,
-            productRestoreAnalysisPending.project?.taskCount || 0,
-          ),
+          taskCount: isProductRestoreSubmit
+            ? batchCount
+            : Math.max(
+                specialWorkflowResults.length,
+                specialResult.results.length,
+                productRestoreAnalysisPending.project?.taskCount || 0,
+              ),
           completedCount: specialWorkflowResults.filter((item) => item.status === 'completed').length,
           creditsConsumed: specialResult.creditsConsumed,
           ...(productRestoreAnalysisPending.message
@@ -5470,6 +5891,7 @@ const AppContent: React.FC<{
     } catch (error) {
       if (bailIfFrontendResourceError(error)) return;
       const message = error instanceof Error ? error.message : '任务执行失败';
+      const productRestoreFailure = error as Error & { jobId?: string; providerTaskId?: string };
       logShellError('shell_generation_failed', error, {
         projectId,
         taskId,
@@ -5480,20 +5902,46 @@ const AppContent: React.FC<{
       }, `${MODULE_NAMES[targetModule] || targetModule}任务失败`);
       const failedProject: Project = {
         ...newProject,
+        ...(isProductRestoreSubmit
+          ? {
+              backendJobId: String(
+                productRestoreContext?.analysisJobId
+                || productRestoreFailure.jobId
+                || activeProductRestoreAnalysisJobId
+                || newProject.backendJobId
+                || '',
+              ).trim() || undefined,
+              planningTaskId: String(
+                productRestoreContext?.analysisProviderTaskId
+                || productRestoreFailure.providerTaskId
+                || activeProviderTaskId
+                || '',
+              ).trim() || undefined,
+              generationContext: cloneGenerationContext(
+                generationPrompt,
+                generationParams,
+                generationMaterials,
+                productRestoreContext,
+              ),
+            }
+          : {}),
         status: 'error',
-        results: batchResults.length > 0 ? batchResults : [{
-          id: `${taskId}-error`,
-          imageUrl: '',
-          prompt: message,
-          model: generationParams['model'] || 'gpt-image-2',
-          aspectRatio: generationParams['ratio'] || 'auto',
-          status: 'error',
-          createdAt: newProject.createdAt,
-          module: targetModule,
-          subFeature: targetSubFeature,
-        }],
-        completedCount: batchResults.length,
+        results: batchResults.length > 0
+          ? batchResults
+          : isProductRestoreSubmit ? [] : [{
+              id: `${taskId}-error`,
+              imageUrl: '',
+              prompt: message,
+              model: generationParams['model'] || 'gpt-image-2',
+              aspectRatio: generationParams['ratio'] || 'auto',
+              status: 'error',
+              createdAt: newProject.createdAt,
+              module: targetModule,
+              subFeature: targetSubFeature,
+            }],
+        completedCount: batchResults.filter((result) => result.status === 'completed').length,
         taskCount: batchCount,
+        error: message,
       };
       setProjects((prev) => prev.map((p) =>
         p.id === projectId
@@ -6321,7 +6769,10 @@ const AppContent: React.FC<{
       return;
     }
     const project = projects.find((p) => p.id === projectId);
-    const jobIds = collectShellDeletionJobIds(projectId, projects, tasks);
+    const jobIds = Array.from(new Set([
+      ...collectShellDeletionJobIds(projectId, projects, tasks),
+      String(project?.generationContext?.productRestore?.analysisJobId || '').trim(),
+    ].filter(Boolean)));
     if (project?.module === AppModuleObj.IMAGE_CROP) {
       deleteImageCropAssets(project.results || []);
     }
@@ -8317,6 +8768,20 @@ const AppContent: React.FC<{
       setProjects(nextProjects);
       interruptedProjects.forEach((project) => {
         void persistProjectToSharedState(project);
+        if (project.subFeature === 'product_restore') {
+          void safeCreateInternalLog({
+            level: 'info',
+            module: 'retouch',
+            action: 'product_restore_cancelled',
+            message: '产品还原任务已请求中断',
+            status: 'interrupted',
+            meta: {
+              shellProjectId: String(project.id || '').slice(0, 160),
+              analysisJobId: String(project.generationContext?.productRestore?.analysisJobId || '').slice(0, 160),
+              cancelledJobCount: cancelJobIds.length,
+            },
+          });
+        }
       });
     }
 

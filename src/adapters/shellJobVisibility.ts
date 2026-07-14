@@ -22,17 +22,26 @@ const SHELL_CONTROL_JOB_MODULES = new Set([
   'video',
 ]);
 
+const SHELL_CONTROL_JOB_PURPOSES = new Set([
+  'one_click_planning',
+  'buyer_show_planning',
+  'translation_copy_analysis',
+  'retouch_analysis',
+  'product_restore_analysis',
+  'storyboard_planning',
+]);
+
 export const isShellControlJob = (
   job: JobLike = {},
   module: AppModule | string = String(job.module || ''),
 ) => {
   if (!/chat|responses|analysis/i.test(String(job.taskType || ''))) return false;
-  if (SHELL_CONTROL_JOB_MODULES.has(String(module || ''))) return true;
   const payload = (job.payload || {}) as Record<string, unknown>;
-  return [payload.shellPlanningPurpose, payload.taskPurpose].some((value) => (
-    ['one_click_planning', 'buyer_show_planning', 'translation_copy_analysis', 'retouch_analysis', 'storyboard_planning']
-      .includes(String(value || '').trim())
-  ));
+  if ([payload.shellPlanningPurpose, payload.taskPurpose].some((value) => (
+    SHELL_CONTROL_JOB_PURPOSES.has(String(value || '').trim())
+  ))) return true;
+  if (SHELL_CONTROL_JOB_MODULES.has(String(module || ''))) return true;
+  return false;
 };
 
 export const isBuyerShowPlanningControlJob = (
