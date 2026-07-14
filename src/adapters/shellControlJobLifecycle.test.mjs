@@ -134,7 +134,11 @@ test('product restoration deletion aborts execution and aggregates late job iden
   );
   assert.match(
     shellAppSource,
-    /taskControllersRef\.current\[projectId\] = controller;[\s\S]{0,900}recordProductRestoreJobCreated/,
+    /taskControllersRef\.current\[projectId\] = controller;/,
+  );
+  assert.match(
+    shellAppSource,
+    /const onJobCreated = \(jobId: string, providerTaskId\?: string\) => \{[\s\S]{0,300}recordProductRestoreJobCreated/,
   );
   assert.match(
     shellAppSource,

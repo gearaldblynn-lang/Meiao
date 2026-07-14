@@ -4,6 +4,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { createServer } from 'vite';
+import { runProductRestoreFanout } from './shellProductRestoreCancellation.mjs';
 
 const workflowPath = new URL('./shellProductRestoreWorkflow.ts', import.meta.url);
 const shellWorkflowPath = new URL('./shellWorkflow.ts', import.meta.url);
@@ -158,6 +159,7 @@ const {
   safeCreateInternalLog,
   validateProductRestoreInput,
   AspectRatio,
+  runProductRestoreFanout,
 } = globalThis.__shellProductRestoreWorkflowTestDeps;
 ${stripRuntimeImports(transpiled)}
 `;
@@ -224,6 +226,7 @@ ${stripRuntimeImports(transpiled)}
       return { ok: true };
     },
     AspectRatio: { AUTO: 'auto' },
+    runProductRestoreFanout,
   };
   const encodedSource = Buffer.from(runtimeSource).toString('base64');
   try {

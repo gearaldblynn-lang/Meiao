@@ -54,6 +54,12 @@ import { getShellDraftStateKey, loadShellDraftState, normalizeShellDraftState, r
 import { getImageDimensions, getImageDimensionsFromUrl } from './utils/imageUtils';
 import { releaseObjectURL, safeCreateObjectURL } from './utils/urlUtils';
 import { countCompletedProjectResults, mergeGeneratedPlanResults } from './utils/shellProjectResults.mjs';
+import {
+  createProductRestoreCancellationRegistry,
+  markProductRestoreProjectCancelled,
+  runProductRestoreFanout,
+  shouldResumeProductRestoreProject,
+} from './adapters/shellProductRestoreCancellation.mjs';
 import { isInvalidOneClickPlanLike } from './utils/oneClickPlanValidation.ts';
 import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion } from './utils/shellRuntimePrune.mjs';
 import { isFrontendResourceError } from './utils/frontendResourceError.mjs';
@@ -2154,6 +2160,26 @@ const AppContent: React.FC<{
   const deletedProductRestoreProjectIdsRef = useRef<Set<string>>(new Set());
   const productRestoreProjectDeletionGuardsRef = useRef<Map<string, ProductRestoreProjectDeletionGuard>>(new Map());
   const productRestoreObservedJobIdsRef = useRef<Map<string, Set<string>>>(new Map());
+  const productRestoreCancellationRegistryRef = useRef<ReturnType<typeof createProductRestoreCancellationRegistry> | null>(null);
+  if (!productRestoreCancellationRegistryRef.current) {
+    productRestoreCancellationRegistryRef.current = createProductRestoreCancellationRegistry({
+      cancelJob: cancelInternalJob,
+      onAudit: ({ projectId, jobIds, cancelledJobCount }) => {
+        void safeCreateInternalLog({
+          level: 'info',
+          module: 'retouch',
+          action: 'product_restore_cancelled',
+          message: '产品还原任务已请求中断',
+          status: 'interrupted',
+          meta: {
+            shellProjectId: String(projectId || '').slice(0, 160),
+            cancelledJobCount,
+            cancelledJobIds: jobIds.map((jobId: string) => String(jobId || '').slice(0, 160)),
+          },
+        });
+      },
+    });
+  }
   const generationSubmitLocksRef = useRef<Set<string>>(new Set());
   const pendingActionKeysRef = useRef<Set<string>>(new Set());
   const productRestoreResumeProjectIdsRef = useRef<Set<string>>(new Set());
@@ -3128,6 +3154,7 @@ const AppContent: React.FC<{
     deletedProductRestoreProjectIdsRef.current.clear();
     productRestoreProjectDeletionGuardsRef.current.clear();
     productRestoreObservedJobIdsRef.current.clear();
+    productRestoreCancellationRegistryRef.current?.reset();
     hydrationScheduledRef.current = false;
     jobsHydrationScheduledRef.current = false;
     latestSharedStateRef.current = null;
@@ -3240,6 +3267,9 @@ const AppContent: React.FC<{
     const projectId = String(identity.projectId || '').trim();
     const backendJobId = String(identity.jobId || '').trim();
     if (!projectId || !backendJobId) return false;
+    const observedJobIds = productRestoreObservedJobIdsRef.current.get(projectId) || new Set<string>();
+    observedJobIds.add(backendJobId);
+    productRestoreObservedJobIdsRef.current.set(projectId, observedJobIds);
     const deletionGuard = productRestoreProjectDeletionGuardsRef.current.get(projectId);
     if (deletionGuard) {
       deletionGuard.jobIds.add(backendJobId);
@@ -3263,9 +3293,7 @@ const AppContent: React.FC<{
       void cancelInternalJob(backendJobId).catch(() => null);
       return true;
     }
-    const observedJobIds = productRestoreObservedJobIdsRef.current.get(projectId) || new Set<string>();
-    observedJobIds.add(backendJobId);
-    productRestoreObservedJobIdsRef.current.set(projectId, observedJobIds);
+    if (productRestoreCancellationRegistryRef.current?.observeJob(projectId, backendJobId)) return true;
     return false;
   }, [persistDeletionToSharedState]);
 
@@ -3409,6 +3437,10 @@ const AppContent: React.FC<{
 
   const resumeProductRestoreProject = useCallback(async (project: Project) => {
     const projectId = String(project.id || '').trim();
+    const cancellationRegistry = productRestoreCancellationRegistryRef.current;
+    if (!shouldResumeProductRestoreProject(project, {
+      cancelled: cancellationRegistry?.isCancelled(projectId) === true,
+    })) return;
     const analysisJobId = String(
       project.generationContext?.productRestore?.analysisJobId
       || project.backendJobId
@@ -3417,7 +3449,9 @@ const AppContent: React.FC<{
     const storedContext = project.generationContext;
     if (!projectId || !analysisJobId || !storedContext) return;
     if (
-      deletedProductRestoreProjectIdsRef.current.has(projectId)
+      cancellationRegistry?.isCancelled(projectId)
+      || project.status === 'error'
+      || deletedProductRestoreProjectIdsRef.current.has(projectId)
       || productRestoreProjectDeletionGuardsRef.current.has(projectId)
     ) return;
     if (productRestoreResumeProjectIdsRef.current.has(projectId)) return;
@@ -3425,7 +3459,14 @@ const AppContent: React.FC<{
     productRestoreResumeProjectIdsRef.current.add(projectId);
     const controller = new AbortController();
     taskControllersRef.current[projectId] = controller;
+    const shouldStopResume = () => (
+      controller.signal.aborted
+      || cancellationRegistry?.isCancelled(projectId) === true
+      || deletedProductRestoreProjectIdsRef.current.has(projectId)
+      || productRestoreProjectDeletionGuardsRef.current.has(projectId)
+    );
     try {
+      if (shouldStopResume()) return;
       const targetMaterials = (storedContext.materials.restoreTarget || []) as Material[];
       const productReferences = (storedContext.materials.productReference || []) as Material[];
       if (targetMaterials.length === 0 || productReferences.length === 0) {
@@ -3437,7 +3478,9 @@ const AppContent: React.FC<{
           error: '产品还原历史素材不完整，无法继续生成。',
         };
         setProjects((prev) => prev.map((item) => item.id === projectId ? failedProject : item));
+        if (shouldStopResume()) return;
         await persistProjectToSharedState(failedProject);
+        if (shouldStopResume()) return;
         return;
       }
 
@@ -3446,6 +3489,7 @@ const AppContent: React.FC<{
       ) as ProductRestoreFocusId[];
       let productRestoreContext = cloneProductRestoreContext(storedContext.productRestore);
       if (!productRestoreContext) {
+        if (shouldStopResume()) return;
         const analysis = await recoverProductRestoreAnalysisBatch({
           jobId: analysisJobId,
           focusIds,
@@ -3459,11 +3503,14 @@ const AppContent: React.FC<{
           controller.abort();
           return;
         }
+        if (shouldStopResume()) return;
         if (analysis.status === 'generating') return;
         if (analysis.status === 'error') {
+          if (shouldStopResume()) return;
           const terminalAnalysisJob = await fetchInternalJob(analysis.jobId || analysisJobId)
             .then((result) => result.job)
             .catch(() => null);
+          if (shouldStopResume()) return;
           const failureGenerationContext = cloneGenerationContext(
             storedContext.prompt,
             {
@@ -3484,7 +3531,9 @@ const AppContent: React.FC<{
             error: analysis.message,
           };
           setProjects((prev) => prev.map((item) => item.id === projectId ? failedProject : item));
+          if (shouldStopResume()) return;
           await persistProjectToSharedState(failedProject);
+          if (shouldStopResume()) return;
           return;
         }
         productRestoreContext = {
@@ -3507,7 +3556,7 @@ const AppContent: React.FC<{
           createdAt: Date.now(),
         };
       }
-      if (controller.signal.aborted) return;
+      if (shouldStopResume()) return;
 
       const durableGenerationContext = cloneGenerationContext(
         storedContext.prompt,
@@ -3531,7 +3580,9 @@ const AppContent: React.FC<{
           + (project.results || []).reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0),
         error: undefined,
       };
+      if (shouldStopResume()) return;
       const { retryPersistedProductRestoreAnalysis } = await import('./adapters/shellProductRestoreWorkflow');
+      if (shouldStopResume()) return;
       const analysisRecovery = await retryPersistedProductRestoreAnalysis({
         project: resumedProject,
         persist: persistProjectToSharedState,
@@ -3554,18 +3605,19 @@ const AppContent: React.FC<{
       resumedProject = analysisRecovery.project;
       if (
         !analysisRecovery.persisted
-        || controller.signal.aborted
-        || deletedProductRestoreProjectIdsRef.current.has(projectId)
-        || productRestoreProjectDeletionGuardsRef.current.has(projectId)
+        || shouldStopResume()
       ) return;
       setProjects((prev) => prev.map((item) => item.id === projectId ? resumedProject : item));
 
+      if (shouldStopResume()) return;
       const jobsResult = await fetchInternalJobs(200);
+      if (shouldStopResume()) return;
       const childImageJobs = (Array.isArray(jobsResult.jobs) ? jobsResult.jobs : []).filter((job) => (
         String(job.payload?.shellProjectId || '').trim() === projectId
         && String(job.payload?.taskPurpose || '').trim() === 'product_restore_generation'
       ));
       const { buildShellDataSnapshot } = await loadShellPersistenceTools();
+      if (shouldStopResume()) return;
       const hydratedProject = buildShellDataSnapshot({
         shellProjects: [resumedProject],
       }, childImageJobs).projects.find((item) => item.id === projectId) as Project | undefined;
@@ -3577,12 +3629,11 @@ const AppContent: React.FC<{
           generationContext: durableGenerationContext,
           taskCount: targetMaterials.length,
         };
+        if (shouldStopResume()) return;
         const hydratedProjectPersisted = await persistProjectToSharedState(resumedProject);
         if (
           !hydratedProjectPersisted
-          || controller.signal.aborted
-          || deletedProductRestoreProjectIdsRef.current.has(projectId)
-          || productRestoreProjectDeletionGuardsRef.current.has(projectId)
+          || shouldStopResume()
         ) return;
         setProjects((prev) => prev.map((item) => item.id === projectId ? resumedProject : item));
       }
@@ -3606,10 +3657,12 @@ const AppContent: React.FC<{
         )));
         return;
       }
-      if (controller.signal.aborted) return;
+      if (shouldStopResume()) return;
 
       const { buildShellModuleConfig } = await loadShellWorkflowModule();
+      if (shouldStopResume()) return;
       const { runShellProductRestoreItem } = await import('./adapters/shellProductRestoreWorkflow');
+      if (shouldStopResume()) return;
       const resumeInput = {
         module: AppModuleObj.RETOUCH,
         subFeature: 'product_restore',
@@ -3632,11 +3685,7 @@ const AppContent: React.FC<{
       const resumeConfig = buildShellModuleConfig(resumeInput);
       let resumedResults = [...(resumedProject.results || [])];
       const syncResumedItem = async (item: Awaited<ReturnType<typeof runShellProductRestoreItem>>) => {
-        if (
-          controller.signal.aborted
-          || deletedProductRestoreProjectIdsRef.current.has(projectId)
-          || productRestoreProjectDeletionGuardsRef.current.has(projectId)
-        ) {
+        if (shouldStopResume()) {
           recordProductRestoreJobCreated({
             projectId,
             jobId: item.backendJobId || item.taskId,
@@ -3691,19 +3740,27 @@ const AppContent: React.FC<{
         setProjects((prev) => prev.map((itemProject) => (
           itemProject.id === projectId ? resumedProject : itemProject
         )));
+        if (shouldStopResume()) return;
         await persistProjectToSharedState(resumedProject);
+        if (shouldStopResume()) return;
       };
-      await Promise.all(missingTargets.map(({ target, batchIndex }) => runShellProductRestoreItem({
-        input: resumeInput,
-        config: resumeConfig,
-        context: productRestoreContext,
-        target,
-        productReferences,
-        batchIndex,
-        batchCount: targetMaterials.length,
-      }, {
-        onItemChanged: (item) => syncResumedItem(item),
-      })));
+      await runProductRestoreFanout({
+        items: missingTargets,
+        concurrency: apiConfig.concurrency || 1,
+        shouldStop: shouldStopResume,
+        runItem: ({ target, batchIndex }: { target: Material; batchIndex: number }) => runShellProductRestoreItem({
+          input: resumeInput,
+          config: resumeConfig,
+          context: productRestoreContext,
+          target,
+          productReferences,
+          batchIndex,
+          batchCount: targetMaterials.length,
+        }, {
+          onItemChanged: (item) => syncResumedItem(item),
+        }),
+      });
+      if (shouldStopResume()) return;
       if (resumedProject.status !== 'generating') {
         setTasks((prev) => prev.filter((task) => !(
           task.projectId === projectId
@@ -3712,11 +3769,7 @@ const AppContent: React.FC<{
         )));
       }
     } catch (error) {
-      if (
-        controller.signal.aborted
-        || deletedProductRestoreProjectIdsRef.current.has(projectId)
-        || productRestoreProjectDeletionGuardsRef.current.has(projectId)
-      ) return;
+      if (shouldStopResume()) return;
       logShellError('product_restore_resume_failed', error, {
         projectId,
         analysisJobId,
@@ -3732,25 +3785,9 @@ const AppContent: React.FC<{
   useEffect(() => {
     if (!hasHydratedSharedData || pageMode !== 'module') return;
     projects.forEach((project) => {
-      const hasDurableProductRestoreContext = Boolean(project.generationContext?.productRestore);
-      const trackedTargetCount = new Set(
-        (project.results || [])
-          .map((result) => getProductRestoreResultIdentity(result))
-          .filter(Boolean),
-      ).size;
-      const hasMissingProductRestoreTargets = trackedTargetCount < Math.max(Number(project.taskCount || 0), 1);
-      const isResumableStatus = project.status === 'planning'
-        || (
-          project.status === 'generating'
-          && hasDurableProductRestoreContext
-          && hasMissingProductRestoreTargets
-        );
-      if (
-        project.module === AppModuleObj.RETOUCH
-        && project.subFeature === 'product_restore'
-        && isResumableStatus
-        && project.backendJobId
-      ) {
+      if (shouldResumeProductRestoreProject(project, {
+        cancelled: productRestoreCancellationRegistryRef.current?.isCancelled(project.id) === true,
+      })) {
         void resumeProductRestoreProject(project);
       }
     });
@@ -5667,6 +5704,15 @@ const AppContent: React.FC<{
 	    let activeProviderTaskId = '';
 	    let activeProductRestoreAnalysisJobId = '';
 	    let productRestoreContext = cloneProductRestoreContext(generationContext?.productRestore);
+	    const shouldStopProductRestore = () => (
+	      isProductRestoreSubmit
+	      && (
+	        controller.signal.aborted
+	        || productRestoreCancellationRegistryRef.current?.isCancelled(projectId) === true
+	        || deletedProductRestoreProjectIdsRef.current.has(projectId)
+	        || productRestoreProjectDeletionGuardsRef.current.has(projectId)
+	      )
+	    );
 	    const onJobCreated = (jobId: string, providerTaskId?: string) => {
 	      const normalizedJobId = String(jobId || '').trim();
 	      if (isProductRestoreSubmit && recordProductRestoreJobCreated({
@@ -5736,8 +5782,10 @@ const AppContent: React.FC<{
     };
 
     try {
+      if (shouldStopProductRestore()) return;
       setTasks((prev) => prev.map((t) => t.id === taskId ? { ...t, progress: 12 } : t));
       const { runShellBuyerShowWorkflow, runShellImageGeneration, runShellRetouchWorkflow, runShellVideoGeneration } = await loadShellWorkflowModule();
+      if (shouldStopProductRestore()) return;
           const result = targetModule === AppModuleObj.VIDEO
         ? await runShellVideoGeneration({
             module: targetModule,
@@ -5822,14 +5870,7 @@ const AppContent: React.FC<{
 	        }
       } else if (targetModule === AppModuleObj.BUYER_SHOW || targetModule === AppModuleObj.RETOUCH || targetModule === AppModuleObj.EVERYTHING_REPLACE) {
         const onSpecialItemCompleted = (item: any, completed: number, total: number) => {
-          if (
-            isProductRestoreSubmit
-            && (
-              controller.signal.aborted
-              || deletedProductRestoreProjectIdsRef.current.has(projectId)
-              || productRestoreProjectDeletionGuardsRef.current.has(projectId)
-            )
-          ) {
+          if (shouldStopProductRestore()) {
             recordProductRestoreJobCreated({
               projectId,
               jobId: item.backendJobId || item.taskId,
@@ -6005,11 +6046,7 @@ const AppContent: React.FC<{
               onJobCreated,
               productRestoreContext,
               onProductRestoreAnalysisCompleted: async (context) => {
-	                if (
-	                  controller.signal.aborted
-	                  || deletedProductRestoreProjectIdsRef.current.has(projectId)
-	                  || productRestoreProjectDeletionGuardsRef.current.has(projectId)
-	                ) {
+	                if (shouldStopProductRestore()) {
 	                  recordProductRestoreJobCreated({ projectId, jobId: context.analysisJobId });
 	                  controller.abort();
 	                  throw Object.assign(new Error('产品还原项目已删除，停止图片任务。'), {
@@ -6035,6 +6072,13 @@ const AppContent: React.FC<{
                   creditsConsumed: context.analysisCreditsConsumed || undefined,
                   error: undefined,
                 };
+	                if (shouldStopProductRestore()) {
+	                  recordProductRestoreJobCreated({ projectId, jobId: context.analysisJobId });
+	                  controller.abort();
+	                  throw Object.assign(new Error('产品还原项目已中断，停止图片任务。'), {
+	                    code: 'interrupted',
+	                  });
+	                }
 	                const analysisPersisted = await persistProjectToSharedState(analysisProject);
 	                if (!analysisPersisted) {
 	                  throw Object.assign(new Error('产品还原分析已完成，但进度同步失败；未创建图片任务，可稍后刷新继续。'), {
@@ -6043,11 +6087,7 @@ const AppContent: React.FC<{
 	                    providerTaskId: context.analysisProviderTaskId,
 	                  });
 	                }
-	                if (
-	                  controller.signal.aborted
-	                  || deletedProductRestoreProjectIdsRef.current.has(projectId)
-	                  || productRestoreProjectDeletionGuardsRef.current.has(projectId)
-	                ) {
+	                if (shouldStopProductRestore()) {
 	                  recordProductRestoreJobCreated({ projectId, jobId: context.analysisJobId });
 	                  controller.abort();
 	                  throw Object.assign(new Error('产品还原项目已删除，停止图片任务。'), {
@@ -6067,14 +6107,7 @@ const AppContent: React.FC<{
               publicBaseUrl,
             }, onSpecialItemCompleted);
 
-        if (
-          isProductRestoreSubmit
-          && (
-            controller.signal.aborted
-            || deletedProductRestoreProjectIdsRef.current.has(projectId)
-            || productRestoreProjectDeletionGuardsRef.current.has(projectId)
-          )
-        ) return;
+        if (shouldStopProductRestore()) return;
 
         const specialWorkflowResults: GeneratedResult[] = sortGeneratedResultsByBatchIndex(batchResults.length > 0 ? batchResults : specialResult.results.map((item, index) => ({
           id: item.taskId || `${taskId}-${index}`,
@@ -6335,14 +6368,7 @@ const AppContent: React.FC<{
       window.setTimeout(() => void hydrateShellJobs(), 800);
     } catch (error) {
       if (bailIfFrontendResourceError(error)) return;
-      if (
-        isProductRestoreSubmit
-        && (
-          controller.signal.aborted
-          || deletedProductRestoreProjectIdsRef.current.has(projectId)
-          || productRestoreProjectDeletionGuardsRef.current.has(projectId)
-        )
-      ) return;
+      if (shouldStopProductRestore()) return;
       const message = error instanceof Error ? error.message : '任务执行失败';
       const productRestoreFailure = error as Error & { code?: string; jobId?: string; providerTaskId?: string };
 	      const isProductRestorePersistenceFailure = (
@@ -7771,6 +7797,8 @@ const AppContent: React.FC<{
           addToast('当前分析状态或历史素材不支持重新分析，请刷新后重试或重新创建产品还原任务。', 'warning');
           return;
         }
+        productRestoreCancellationRegistryRef.current?.clearForExplicitRetry(project.id);
+        productRestoreObservedJobIdsRef.current.delete(project.id);
 
         const manualSubmissionKey = [
           project.id,
@@ -8085,6 +8113,8 @@ const AppContent: React.FC<{
             code: 'product_restore_retry_context_invalid',
           });
         }
+        productRestoreCancellationRegistryRef.current?.clearForExplicitRetry(project.id);
+        productRestoreObservedJobIdsRef.current.delete(project.id);
         const retryController = new AbortController();
         taskControllersRef.current[retryTaskId] = retryController;
         setTasks((prev) => [{
@@ -9748,6 +9778,27 @@ const AppContent: React.FC<{
     const targetId = normalizeShellCancelId(taskIdOrProjectId);
     if (!targetId) return;
 
+    const matchingProductRestoreTaskProjectIds = new Set(tasks
+      .filter((task) => shellCancelTargetMatches(targetId, collectShellTaskIds(task)))
+      .map((task) => String(task.projectId || '').trim())
+      .filter(Boolean));
+    const matchingProductRestoreProjects = projects.filter((project) => (
+      project.module === AppModuleObj.RETOUCH
+      && project.subFeature === 'product_restore'
+      && (
+        matchingProductRestoreTaskProjectIds.has(project.id)
+        || shellCancelTargetMatches(targetId, collectShellProjectIds(project))
+        || (project.results || []).some((result) => (
+          shellCancelTargetMatches(targetId, collectShellResultIds(result))
+        ))
+      )
+    ));
+    // Register the tombstone before aborting controllers or collecting job IDs.
+    // A racing onJobCreated callback therefore enters the same cancellation aggregate.
+    matchingProductRestoreProjects.forEach((project) => {
+      productRestoreCancellationRegistryRef.current?.beginCancellation(project.id);
+    });
+
     const storyboardProjects = (videoMemory?.storyboard?.projects || [])
       .map((project) => project as StoryboardProjectWithJobIdentity)
       .filter((project) => (
@@ -9776,18 +9827,38 @@ const AppContent: React.FC<{
     });
 
     const matchingTasks = tasks.filter((task) => shellCancelTargetMatches(targetId, collectShellTaskIds(task)));
+    const productRestoreCancelJobIds = new Set<string>();
+    matchingProductRestoreProjects.forEach((project) => {
+      const observedJobIds = Array.from(productRestoreObservedJobIdsRef.current.get(project.id) || []);
+      const aggregatedJobIds = productRestoreCancellationRegistryRef.current?.addCancellationJobs(project.id, [
+        ...collectShellCancelJobIds(project.id, projects, tasks),
+        ...observedJobIds,
+      ]) || [];
+      aggregatedJobIds.forEach((jobId: string) => productRestoreCancelJobIds.add(jobId));
+    });
     const cancelJobIds = Array.from(new Set([
       ...collectShellCancelJobIds(targetId, projects, tasks),
       ...storyboardJobIds,
+      ...productRestoreCancelJobIds,
     ]));
     cancelJobIds.forEach((jobId) => {
+      if (productRestoreCancelJobIds.has(jobId)) return;
       void cancelInternalJob(jobId).catch(() => null);
     });
 
-    setTasks((prev) => prev.filter((task) => !shellCancelTargetMatches(targetId, collectShellTaskIds(task))));
+    const cancelledProductRestoreProjectIds = new Set(matchingProductRestoreProjects.map((project) => project.id));
+    setTasks((prev) => prev.filter((task) => (
+      !cancelledProductRestoreProjectIds.has(task.projectId)
+      && !shellCancelTargetMatches(targetId, collectShellTaskIds(task))
+    )));
 
     const interruptedProjects: Project[] = [];
     const nextProjects = projects.map((project) => {
+      if (cancelledProductRestoreProjectIds.has(project.id)) {
+        const cancelledProject = markProductRestoreProjectCancelled(project, SHELL_MANUAL_CANCEL_ERROR) as Project;
+        interruptedProjects.push(cancelledProject);
+        return cancelledProject;
+      }
       const marked = markShellProjectCancelled(project, targetId);
       if (marked.changed) interruptedProjects.push(marked.project);
       return marked.project;
@@ -9796,20 +9867,6 @@ const AppContent: React.FC<{
       setProjects(nextProjects);
       interruptedProjects.forEach((project) => {
         void persistProjectToSharedState(project);
-        if (project.subFeature === 'product_restore') {
-          void safeCreateInternalLog({
-            level: 'info',
-            module: 'retouch',
-            action: 'product_restore_cancelled',
-            message: '产品还原任务已请求中断',
-            status: 'interrupted',
-            meta: {
-              shellProjectId: String(project.id || '').slice(0, 160),
-              analysisJobId: String(project.generationContext?.productRestore?.analysisJobId || '').slice(0, 160),
-              cancelledJobCount: cancelJobIds.length,
-            },
-          });
-        }
       });
     }
 
