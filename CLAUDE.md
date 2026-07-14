@@ -345,3 +345,8 @@
   根因:2026-06-22 的视频专用路由把除指定 KIE 临时域名外的所有 MP4 强制上传 `openrouter-chat`；2026-07-10 的 direct-first 只改了通用托管素材分支，并明确保留非 managed 视频的旧兼容行为，因此旧逻辑不是“删掉后又回来”，而是从未完整删除。即使换成稳定 COS 签名 URL，也会被该谓词再次截获并走 KIE，导致 `providerTaskId=null + asset_upload`、文件读取失败和 504 继续出现。
   修复:彻底删除视频 KIE 暂存谓词、转换函数及其 fallback。内部托管视频完整读取后写入私有腾讯 COS，以内容哈希生成幂等对象键并签发短期 GET URL；外部公网视频地址经内网/本机校验后原样交给 Gemini。只要 payload 含视频，Gemini 错误就直接返回，不再转存 KIE、重提同模型或切换模型。新增 COS 配置 fail-closed、取消、内部/外部路由和显式读文件失败单次提交回归测试。
   如何避免:**宣称“移除旧链路”前必须同时搜路由函数、调用点、fallback 和旧行为测试；只改通用分支不等于覆盖专用视频分支。视频 provider 验收必须用真实完整文件做 COS GET、Range 和 Gemini 首中尾内容识别，并确认 KIE `/file-stream-upload` 为 0；签名 URL、CAM 密钥不得写日志，生产使用桶前缀最小权限和自动过期生命周期。**
+
+- **#59 ✅ 已修(2026-07-14)· 精修分析 fallback 成功后 Image-2 编辑仍按错误 JSON 合约提交，项目最终显示失败**
+  根因:将离真实精修任务中，`gpt-5-4-openai-resp` 失败后 `claude-sonnet-4-6` fallback 已成功，`retouch_analysis/kie_chat` job 也正确落为 `succeeded`；随后 `image-2中转` 图片 job 在 812ms 内明确失败，上游原文为 `failed to parse multipart form`。MaxForAI 公开渠道页仍宣称 `/images/edits` 接收 `application/json + images[].image_url`，初次接入据此实现；但当前运行的 New API 编辑路由实际先解析 multipart，并要求二进制 `image` 文件。页面失败不是旧 5.4 状态覆盖 Sonnet 成功，而是后续主生图确实没有完成。
+  修复:文生图 `/images/generations` 继续使用 JSON；只有图生图 `/images/edits` 在付费提交前下载最多 16 张参考图，校验 PNG/JPEG/WEBP 和非空内容，再以 multipart 重复 `image` 文件字段提交 model、prompt、size、n、response_format。素材准备失败发生在付费 POST 之前；付费编辑 POST 仍严格单次提交，连接状态不明仍进入 `provider_submission_unknown`，不自动重试。回归同时覆盖真实 3:4/2K 精修参数、内部素材、16 图上限、网关集成和 Temporal 单次 activity。
+  如何避免:**多阶段任务必须分别核对“辅助分析 job”和“主产物 job”，fallback 成功只代表该阶段恢复，不能据此把最终失败归为展示问题。第三方文档与真实运行时错误冲突时，先用缺字段/错误格式探针确认解析边界，再以实际端点契约为准；同一 Images API 的 generations 和 edits 也不能假定使用相同 Content-Type。**

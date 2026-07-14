@@ -814,6 +814,14 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/providerGateway.test.mjs --test-name-pattern "provider file information|fallback models"`；`node --test src/services/videoStoryboardService.test.mjs`；`node --test server/jobManager.test.mjs --test-name-pattern "providerless|kie chat"`；`npm run build`；云端同组测试和 health check 通过。
 - Avoid next time: KIE chat 200 文本不能天然视为成功；凡是 provider 文件读取/维护/拒答文本，都必须进入 provider 错误归类和 fallback/失败路径。模型 fallback 输出可能夹带 reasoning 或说明文本，JSON 提取必须找“可解析的数组”，不能用贪婪首尾括号。手工修复后台 job 后，还要检查 `app_states` 是否绑定项目，否则用户页面不会自动显示结果。
 
+## 2026-07-14 - Image edit runtime contracts must be verified separately from text generation
+
+- Symptom: 商品精修先从 GPT-5.4 fallback 到 Sonnet 并成功产出精修指令，但最终项目仍显示失败；Image-2 job 原始错误为 `failed to parse multipart form`。
+- Root cause: 控制 job 与主产物 job 是两个阶段，Sonnet 只救回前者。MaxForAI 公开页把 `/images/edits` 写成 JSON URL 合约，实际 New API 运行时编辑路由要求 multipart 二进制 `image` 文件；文生图 JSON 测通不能证明图生图也能用同一 Content-Type。
+- Fix: `/images/generations` 保持 JSON；`/images/edits` 先下载和校验最多 16 张参考图，再把 model、prompt、size、n、response_format 与重复 `image` 文件字段组成 multipart。保留付费 POST 单次尝试和提交状态未知保护。
+- Regression check: `node --test server/providerMaxForAiImage.test.mjs server/maxforaiIntegration.test.mjs server/providerGateway.test.mjs server/jobRuntime.test.mjs server/temporalWorker.test.mjs server/jobSubmissionPolicy.test.mjs`; `npm run lint`; `npm run build`。
+- Avoid next time: 排查 fallback 后失败必须按 job purpose/stage 拆链路；接入第三方 Images API 时 generations 与 edits 分别做真实格式探针，不能从一个端点或公开示例外推另一个端点。
+
 ## 2026-07-11 - Paid storyboard recovery must be query-only and state hydration must preserve user work
 
 - Symptom: 多桑、董丹丹等账号的短视频/分镜任务批量出现“素材上传到生成服务失败”，任务重启、stale 回收和页面刷新还可能带来重复付费提交、卡片被旧状态覆盖或多分镜中途停止。

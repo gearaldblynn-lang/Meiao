@@ -87,6 +87,52 @@ test('provider gateway routes a MaxForAI site model to its synchronous paid endp
   }
 });
 
+test('provider gateway sends MaxForAI image edits as multipart files', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    const requestUrl = String(url);
+    calls.push({ url: requestUrl, init });
+    if (requestUrl === 'https://cdn.test/reference.png') {
+      return new Response(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), {
+        status: 200,
+        headers: { 'Content-Type': 'image/png' },
+      });
+    }
+    return new Response(JSON.stringify({ data: [{ url: 'https://cdn.test/maxforai-edit.png' }] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    const output = await executeProviderJob({
+      taskType: 'kie_image',
+      provider: 'maxforai',
+      payload: {
+        model: 'maxforai-image-2-relay',
+        prompt: '保持主体并提升商业质感',
+        aspectRatio: '3:4',
+        resolution: '2K',
+        imageUrls: ['https://cdn.test/reference.png'],
+      },
+    }, {
+      MAXFORAI_API_KEY: 'private-test-key',
+      MAXFORAI_BASE_URL: 'https://maxforai.test/v1',
+    }, new AbortController().signal);
+
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].url, 'https://maxforai.test/v1/images/edits');
+    assert.ok(calls[1].init.body instanceof FormData);
+    assert.equal(calls[1].init.headers['Content-Type'], undefined);
+    assert.equal(calls[1].init.body.get('model'), 'gpt-image-2');
+    assert.equal(calls[1].init.body.get('size'), '1536x2048');
+    assert.equal(calls[1].init.body.getAll('image').length, 1);
+    assert.equal(output.result.imageUrl, 'https://cdn.test/maxforai-edit.png');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('frontend image submission preserves MaxForAI ids, raw resolution, provider and zero retry budget', () => {
   assert.match(kieAiServiceSource, /isMaxForAiImageModel/);
   assert.match(kieAiServiceSource, /provider: isMaxForAiModel \? 'maxforai' : 'kie'/);

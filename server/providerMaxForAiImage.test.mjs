@@ -75,19 +75,29 @@ test('text generation submits one paid POST and returns the generated URL', asyn
   assert.equal(result.providerStage, 'completed');
 });
 
-test('image edit keeps public HTTPS references, deduplicates them, and caps input at 16', async () => {
+test('image edit downloads public references and submits up to 16 multipart image files', async () => {
   const sourceUrls = Array.from({ length: 18 }, (_, index) => `https://cdn.test/${index}.png`);
   const calls = [];
+  const downloadCalls = [];
   await runMaxForAiImageJob({
     payload: {
       model: 'maxforai-image-2-relay',
       prompt: '保持主体，改成科技海报',
-      aspectRatio: '3:2',
+      aspectRatio: '3:4',
       resolution: '2K',
       imageUrls: [sourceUrls[0], ...sourceUrls, sourceUrls[1]],
     },
     env: { MAXFORAI_API_KEY: 'test-key' },
     deps: {
+      downloadRemoteProviderMediaUrl: async (url) => {
+        downloadCalls.push(url);
+        const index = sourceUrls.indexOf(url);
+        return {
+          fileName: `${index}.png`,
+          mimeType: 'image/png',
+          fileBuffer: Buffer.from(`png-${index}`),
+        };
+      },
       fetchWithTimeout: async (...args) => {
         calls.push(args);
         return jsonResponse({ data: [{ url: 'https://cdn.test/edit.png' }] });
@@ -95,16 +105,21 @@ test('image edit keeps public HTTPS references, deduplicates them, and caps inpu
     },
   });
 
+  assert.deepEqual(downloadCalls, sourceUrls.slice(0, 16));
   assert.equal(calls.length, 1);
   assert.match(calls[0][0], /\/images\/edits$/);
-  assert.deepEqual(JSON.parse(calls[0][1].body), {
-    model: 'gpt-image-2',
-    prompt: '保持主体，改成科技海报',
-    size: '2016x1344',
-    n: 1,
-    response_format: 'url',
-    images: sourceUrls.slice(0, 16).map((imageUrl) => ({ image_url: imageUrl })),
-  });
+  assert.ok(calls[0][1].body instanceof FormData);
+  assert.equal(calls[0][1].headers.Authorization, 'Bearer test-key');
+  assert.equal(calls[0][1].headers['Content-Type'], undefined);
+  assert.equal(calls[0][1].body.get('model'), 'gpt-image-2');
+  assert.equal(calls[0][1].body.get('prompt'), '保持主体，改成科技海报');
+  assert.equal(calls[0][1].body.get('size'), '1536x2048');
+  assert.equal(calls[0][1].body.get('n'), '1');
+  assert.equal(calls[0][1].body.get('response_format'), 'url');
+  const imageFiles = calls[0][1].body.getAll('image');
+  assert.equal(imageFiles.length, 16);
+  assert.equal(imageFiles[0].name, '0.png');
+  assert.equal(imageFiles[15].name, '15.png');
 });
 
 test('successful base64 response becomes a validated internal image data URL', async () => {
@@ -154,7 +169,7 @@ test('successful response without URL or base64 reports field names without valu
   );
 });
 
-test('uploads non-public image material before the paid edit POST', async () => {
+test('downloads internal image material and attaches it directly to the paid edit POST', async () => {
   const calls = [];
   const downloadCalls = [];
   await runMaxForAiImageJob({
@@ -173,23 +188,18 @@ test('uploads non-public image material before the paid edit POST', async () => 
       },
       fetchWithTimeout: async (...args) => {
         calls.push(args);
-        if (String(args[0]).endsWith('/assets')) {
-          assert.ok(args[1].body instanceof FormData);
-          assert.ok(args[1].body.get('file'));
-          return jsonResponse({ object: 'asset', url: 'https://temp.test/reference.png' });
-        }
         return jsonResponse({ data: [{ url: 'https://cdn.test/edit.png' }] });
       },
     },
   });
 
   assert.deepEqual(downloadCalls, ['/api/assets/file/reference.png']);
-  assert.equal(calls.length, 2);
-  assert.match(calls[0][0], /\/assets$/);
-  assert.match(calls[1][0], /\/images\/edits$/);
-  assert.deepEqual(JSON.parse(calls[1][1].body).images, [
-    { image_url: 'https://temp.test/reference.png' },
-  ]);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0][0], /\/images\/edits$/);
+  assert.ok(calls[0][1].body instanceof FormData);
+  const [imageFile] = calls[0][1].body.getAll('image');
+  assert.equal(imageFile.name, 'reference.png');
+  assert.equal(imageFile.type, 'image/png');
 });
 
 test('asset preparation failure prevents the paid generation POST', async () => {

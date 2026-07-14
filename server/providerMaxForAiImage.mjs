@@ -1,13 +1,10 @@
 import {
-  assertRemoteProviderMediaUrlAllowed,
   downloadRemoteProviderMediaUrl as defaultDownloadRemoteProviderMediaUrl,
+  ensureProviderFileNameWithExtension,
   inferExtensionFromMimeType,
   parseDataUrlPayload,
 } from './providerAssetTransfer.mjs';
-import {
-  extractKieImageTextMediaUrls,
-  rewriteKieImageTextMediaUrls,
-} from './providerKieImage.mjs';
+import { extractKieImageTextMediaUrls } from './providerKieImage.mjs';
 import {
   getMaxForAiImageModel,
   resolveMaxForAiImageSize,
@@ -15,8 +12,8 @@ import {
 
 const MAXFORAI_BASE_URL_DEFAULT = 'https://maxforai.top/v1';
 const MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS_DEFAULT = 600_000;
-const MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS_DEFAULT = 120_000;
-const MAXFORAI_ASSET_UPLOAD_CONCURRENCY_DEFAULT = 3;
+const MAXFORAI_ASSET_PREPARATION_TIMEOUT_MS_DEFAULT = 120_000;
+const MAXFORAI_ASSET_PREPARATION_CONCURRENCY_DEFAULT = 3;
 const MAXFORAI_MAX_INPUT_IMAGES = 16;
 
 const createProviderError = (code, message, extras = null) => {
@@ -44,15 +41,15 @@ const getMaxForAiConfig = (env = {}) => ({
     'MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS',
     MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS_DEFAULT,
   ),
-  assetUploadTimeoutMs: getPositiveInteger(
+  assetPreparationTimeoutMs: getPositiveInteger(
     env,
     'MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS',
-    MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS_DEFAULT,
+    MAXFORAI_ASSET_PREPARATION_TIMEOUT_MS_DEFAULT,
   ),
-  assetUploadConcurrency: getPositiveInteger(
+  assetPreparationConcurrency: getPositiveInteger(
     env,
     'MAXFORAI_ASSET_UPLOAD_CONCURRENCY',
-    MAXFORAI_ASSET_UPLOAD_CONCURRENCY_DEFAULT,
+    MAXFORAI_ASSET_PREPARATION_CONCURRENCY_DEFAULT,
   ),
 });
 
@@ -74,18 +71,6 @@ const mapWithConcurrency = async (items, limit, mapper) => {
   });
   await Promise.all(workers);
   return results;
-};
-
-const isDirectPublicHttpsUrl = (value) => {
-  try {
-    const parsed = new URL(String(value || '').trim());
-    if (parsed.protocol !== 'https:') return false;
-    assertRemoteProviderMediaUrlAllowed(value);
-    return true;
-  } catch (error) {
-    if (String(value || '').trim().toLowerCase().startsWith('https:')) throw error;
-    return false;
-  }
 };
 
 const normalizeAssetPreparationError = (error) => {
@@ -167,6 +152,63 @@ const normalizeImageMimeType = (value) => {
   return /^image\/(?:png|jpe?g|webp)$/.test(normalized) ? normalized : 'image/png';
 };
 
+const prepareMaxForAiEditImage = async ({
+  rawUrl,
+  index,
+  config,
+  env,
+  signal,
+  fetchWithTimeout,
+  downloadRemoteProviderMediaUrl,
+}) => {
+  const inline = parseDataUrlPayload(rawUrl);
+  const downloaded = inline
+    ? {
+        fileName: `inline-reference-${index + 1}.${inferExtensionFromMimeType(inline.mimeType)}`,
+        mimeType: inline.mimeType,
+        fileBuffer: Buffer.from(inline.base64Data, 'base64'),
+      }
+    : await downloadRemoteProviderMediaUrl(rawUrl, {
+        env,
+        signal,
+        timeoutMs: config.assetPreparationTimeoutMs,
+        deps: { fetchWithTimeout },
+      });
+  const mimeType = String(downloaded?.mimeType || '').trim().toLowerCase();
+  if (!/^image\/(?:png|jpe?g|webp)$/.test(mimeType)) {
+    throw createProviderError('provider_bad_request', `Image-2 编辑素材格式不支持：${mimeType || '未知格式'}`);
+  }
+  const fileBuffer = Buffer.from(downloaded?.fileBuffer || '');
+  if (fileBuffer.length === 0) {
+    throw createProviderError('provider_bad_request', 'Image-2 编辑素材为空');
+  }
+  return {
+    fileName: ensureProviderFileNameWithExtension(
+      downloaded?.fileName || `reference-${index + 1}`,
+      mimeType,
+    ),
+    mimeType,
+    fileBuffer,
+  };
+};
+
+const buildMaxForAiEditFormData = (requestBody, imageFiles) => {
+  const form = new FormData();
+  form.append('model', requestBody.model);
+  form.append('prompt', requestBody.prompt);
+  form.append('size', requestBody.size);
+  form.append('n', String(requestBody.n));
+  form.append('response_format', requestBody.response_format);
+  imageFiles.forEach((imageFile) => {
+    form.append(
+      'image',
+      new Blob([imageFile.fileBuffer], { type: imageFile.mimeType }),
+      imageFile.fileName,
+    );
+  });
+  return form;
+};
+
 export const extractMaxForAiImageResult = (body = {}) => {
   const first = Array.isArray(body?.data) ? body.data[0] : null;
   const imageUrl = String(first?.url || '').trim();
@@ -196,70 +238,6 @@ export const extractMaxForAiImageResult = (body = {}) => {
   );
 };
 
-const uploadMaxForAiAsset = async ({
-  rawUrl,
-  config,
-  env,
-  signal,
-  fetchWithTimeout,
-  downloadRemoteProviderMediaUrl,
-}) => {
-  let downloaded;
-  const inline = parseDataUrlPayload(rawUrl);
-  if (inline) {
-    downloaded = {
-      fileName: `inline-reference.${inferExtensionFromMimeType(inline.mimeType)}`,
-      mimeType: inline.mimeType,
-      fileBuffer: Buffer.from(inline.base64Data, 'base64'),
-    };
-  } else {
-    downloaded = await downloadRemoteProviderMediaUrl(rawUrl, {
-      env,
-      signal,
-      deps: { fetchWithTimeout },
-    });
-  }
-
-  const form = new FormData();
-  form.append(
-    'file',
-    new Blob([downloaded.fileBuffer], { type: downloaded.mimeType || 'application/octet-stream' }),
-    downloaded.fileName || 'reference.bin',
-  );
-
-  let response;
-  try {
-    response = await fetchWithTimeout(`${config.baseUrl}/assets`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${config.apiKey}` },
-      body: form,
-      signal,
-    }, 'MaxForAI 素材上传超时', config.assetUploadTimeoutMs, 'asset_upload', {
-      idempotent: false,
-      maxRetries: 0,
-    });
-  } catch (error) {
-    throw normalizeAssetPreparationError(error);
-  }
-
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    try {
-      throwForHttpResponse(response, body, 'MaxForAI 素材上传失败');
-    } catch (error) {
-      throw normalizeAssetPreparationError(error);
-    }
-  }
-  const url = String(body?.url || body?.data?.url || '').trim();
-  if (!url) {
-    throw createProviderError('provider_bad_response', 'MaxForAI 素材上传成功但未返回 URL', {
-      providerStage: 'asset_upload',
-      providerStatus: 'failed',
-    });
-  }
-  return url;
-};
-
 export const runMaxForAiImageJob = async ({ payload = {}, env = {}, signal = null, deps = {} } = {}) => {
   const config = getMaxForAiConfig(env);
   if (!config.apiKey) {
@@ -278,44 +256,43 @@ export const runMaxForAiImageJob = async ({ payload = {}, env = {}, signal = nul
     ...textMediaUrls,
   ]).slice(0, MAXFORAI_MAX_INPUT_IMAGES);
 
-  const resolvedByRawUrl = new Map();
   try {
-    const resolvedImageUrls = await mapWithConcurrency(
+    const editImageFiles = await mapWithConcurrency(
       rawImageUrls,
-      config.assetUploadConcurrency,
-      async (rawUrl) => {
-        const resolvedUrl = isDirectPublicHttpsUrl(rawUrl)
-          ? rawUrl
-          : await uploadMaxForAiAsset({
-              rawUrl,
-              config,
-              env,
-              signal,
-              fetchWithTimeout,
-              downloadRemoteProviderMediaUrl,
-            });
-        resolvedByRawUrl.set(rawUrl, resolvedUrl);
-        return resolvedUrl;
-      },
+      config.assetPreparationConcurrency,
+      (rawUrl, index) => prepareMaxForAiEditImage({
+        rawUrl,
+        index,
+        config,
+        env,
+        signal,
+        fetchWithTimeout,
+        downloadRemoteProviderMediaUrl,
+      }),
     );
-    const prompt = await rewriteKieImageTextMediaUrls(
-      payload.prompt || '',
-      async (rawUrl) => resolvedByRawUrl.get(rawUrl) || rawUrl,
-    );
-    const requestBody = buildMaxForAiImageRequestBody({ payload, imageUrls: resolvedImageUrls, prompt });
-    const endpoint = resolvedImageUrls.length > 0 ? 'images/edits' : 'images/generations';
+    const prompt = String(payload.prompt || '');
+    const requestBody = buildMaxForAiImageRequestBody({ payload, imageUrls: rawImageUrls, prompt });
+    const endpoint = editImageFiles.length > 0 ? 'images/edits' : 'images/generations';
+    const requestInit = editImageFiles.length > 0
+      ? {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${config.apiKey}` },
+          body: buildMaxForAiEditFormData(requestBody, editImageFiles),
+          signal,
+        }
+      : {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${config.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+          signal,
+        };
 
     let response;
     try {
-      response = await fetchWithTimeout(`${config.baseUrl}/${endpoint}`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${config.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody),
-        signal,
-      }, 'MaxForAI Image-2 生成请求超时', config.requestTimeoutMs, 'provider_submission', {
+      response = await fetchWithTimeout(`${config.baseUrl}/${endpoint}`, requestInit, 'MaxForAI Image-2 生成请求超时', config.requestTimeoutMs, 'provider_submission', {
         idempotent: false,
         maxRetries: 0,
       });
