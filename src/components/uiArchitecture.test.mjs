@@ -402,7 +402,7 @@ test('sidebar navigation separates business and system groups with readable labe
   assert.match(sidebar, /展开侧栏/);
   assert.match(sidebar, /收起侧栏/);
   assert.match(sidebar, /出海翻译/);
-  assert.match(sidebar, /产品精修/);
+  assert.match(sidebar, /图片升级/);
   assert.match(sidebar, /视频生成/);
   assert.match(sidebar, /设置中心/);
   assert.match(sidebar, /账户管理/);
@@ -2847,7 +2847,7 @@ test('shell project card renders buyer show copy as text instead of image galler
   assert.match(projectCard, /!\s*isTextReport && \(/);
 });
 
-test('shell buyer show and retouch only expose migrated 3000-backed subfeatures as runnable', () => {
+test('shell buyer show and image upgrade expose the approved runnable subfeatures', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const subFeatureTabs = read('../shell/components/SubFeatureTabs.tsx');
   const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
@@ -2857,11 +2857,62 @@ test('shell buyer show and retouch only expose migrated 3000-backed subfeatures 
   assert.match(shellApp, /\{ id: 'copy', label: '纯文案', description: '待制作', disabled: true \}/);
   assert.doesNotMatch(retouchSubFeatures, /background_replace/);
   assert.doesNotMatch(retouchQuickParams, /背景替换/);
+  assert.match(retouchSubFeatures, /\{ id: 'original', label: '原图精修' \}/);
+  assert.match(retouchSubFeatures, /\{ id: 'white_bg', label: '白底精修' \}/);
+  assert.match(retouchSubFeatures, /\{ id: 'product_restore', label: '产品还原' \}/);
   assert.match(retouchSubFeatures, /\{ id: 'enhance', label: '智能增强', description: '待制作', disabled: true \}/);
   assert.match(subFeatureTabs, /item\.disabled/);
   assert.match(subFeatureTabs, /待制作/);
   assert.match(bottomInputBar, /isPendingShellSubFeature/);
   assert.match(bottomInputBar, /该子功能待制作/);
+});
+
+test('image upgrade product restoration workspace wires uploads, choices, rollout gate, and billing count', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const retouchModule = read('../shell/modules/Retouch/RetouchModule.tsx');
+  const sidebar = read('../shell/components/layout/SidebarNavigation.tsx');
+  const bottomInputBar = read('../shell/components/layout/BottomInputBar.tsx');
+  const uploadTypeSelector = read('../shell/components/UploadTypeSelector.tsx');
+  const materialPreviewBar = read('../shell/components/MaterialPreviewBar.tsx');
+  const shellWorkflow = read('../adapters/shellWorkflow.ts');
+  const loggingService = read('../services/loggingService.ts');
+
+  assert.match(retouchModule, /title="图片升级"/);
+  assert.match(retouchModule, /产品还原/);
+  assert.match(retouchModule, /开始升级产品图/);
+  assert.match(sidebar, /AppModuleObj\.RETOUCH[\s\S]*?label: '图片升级'/);
+  assert.match(shellApp, /\[AppModuleObj\.RETOUCH\]: '图片升级'/);
+  assert.match(shellWorkflow, /\[AppModule\.RETOUCH\]: '图片升级'/);
+  assert.match(loggingService, /retouch: '图片升级'/);
+
+  assert.match(bottomInputBar, /PRODUCT_RESTORE_MATERIAL_TYPES/);
+  assert.match(bottomInputBar, /PRODUCT_RESTORE_FOCUS_OPTIONS/);
+  assert.match(bottomInputBar, /restoreFocusIds/);
+  assert.match(bottomInputBar, /getProductRestoreControlState/);
+  assert.match(bottomInputBar, /开始产品还原/);
+  assert.match(bottomInputBar, /materialLimits=\{isProductRestore/);
+  assert.match(bottomInputBar, /onMoveMaterial=\{isProductRestore/);
+  assert.match(uploadTypeSelector, /restoreTarget/);
+  assert.match(uploadTypeSelector, /productReference/);
+  assert.match(uploadTypeSelector, /title=\{m\.desc\}/);
+  assert.match(uploadTypeSelector, /tabIndex=\{0\}/);
+  assert.match(materialPreviewBar, /onMoveMaterial/);
+  assert.match(materialPreviewBar, /materialLimits/);
+  assert.match(materialPreviewBar, /list\.length\}\/\{limit/);
+
+  const productRestoreQuickParams = bottomInputBar.match(/const getProductRestoreQuickParams[\s\S]*?\n\};/)?.[0] || '';
+  assert.match(productRestoreQuickParams, /key: 'model'/);
+  assert.match(productRestoreQuickParams, /key: 'quality'/);
+  assert.doesNotMatch(productRestoreQuickParams, /key: 'ratio'/);
+  assert.doesNotMatch(productRestoreQuickParams, /1K/);
+  assert.doesNotMatch(productRestoreQuickParams, /sizeMode|width|height/);
+
+  assert.match(shellApp, /getProductRestoreCreationDisabledReason/);
+  assert.match(shellApp, /产品还原暂未开放，历史项目仍可查看。/);
+  assert.match(shellApp, /产品还原当前仅对管理员开放，历史项目仍可查看。/);
+  assert.match(shellApp, /getProductRestoreUploadRejection/);
+  assert.match(shellApp, /handleMoveMaterial/);
+  assert.match(bottomInputBar, /materialCount: billingMaterialCount/);
 });
 
 test('shell buyer show and retouch migrate 3000 business logic instead of generic image prompts', () => {

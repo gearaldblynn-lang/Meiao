@@ -11,7 +11,9 @@ export type MaterialType =
   | 'model'
   | 'scene'
   | 'referenceVideo'
-  | 'audio';
+  | 'audio'
+  | 'restoreTarget'
+  | 'productReference';
 
 interface MaterialDef {
   key: MaterialType;
@@ -31,6 +33,8 @@ const ALL_MATERIALS: MaterialDef[] = [
   { key: 'scene',      label: '场景参考',   desc: '拍摄场景参考',     icon: <ImagePlus size={16} /> },
   { key: 'referenceVideo', label: '参考视频', desc: '爆款裂变参考', icon: <Film size={16} /> },
   { key: 'audio', label: '参考音频', desc: '音乐/节奏参考', icon: <Music2 size={16} /> },
+  { key: 'restoreTarget', label: '待还原套图', desc: '最多 10 张；每张都会单独生成；同一任务只放一个 SKU；超限整次拒绝。', icon: <Package size={16} /> },
+  { key: 'productReference', label: '产品参考图', desc: '最多 5 张；按结构、细节、材质、颜色的参考价值从左到右排序；超限整次拒绝。', icon: <FileImage size={16} /> },
 ];
 
 const MODULE_MATERIALS: Record<string, MaterialType[]> = {
@@ -95,6 +99,8 @@ const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, 
               key={m.key}
               className="flex items-center gap-2.5 rounded-2xl p-2.5 text-left transition-all"
               style={{ color: 'var(--text-secondary)' }}
+              title={m.desc}
+              tabIndex={0}
               onMouseEnter={(e) => {
                 (e.currentTarget as HTMLDivElement).style.background = 'var(--bg-surface-hover)';
                 (e.currentTarget as HTMLDivElement).style.color = 'var(--text-primary)';

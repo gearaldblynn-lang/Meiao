@@ -5,7 +5,7 @@ export const MODULE_LABELS: Record<string, string> = {
   one_click: '一键主详',
   translation: '出海翻译',
   buyer_show: '买家秀',
-  retouch: '产品精修',
+  retouch: '图片升级',
   everything_replace: '万物替换',
   video: '短视频',
   xhs_cover: '小红书封面',

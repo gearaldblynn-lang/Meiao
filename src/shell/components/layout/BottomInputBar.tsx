@@ -17,6 +17,14 @@ import {
   getRetouchSupportedAspectRatiosForModel,
   getSafeRetouchAspectRatioForModel,
 } from '../../../modules/Retouch/retouchSizingUtils.mjs';
+import {
+  PRODUCT_RESTORE_FOCUS_OPTIONS,
+  PRODUCT_RESTORE_MATERIAL_META,
+  PRODUCT_RESTORE_MATERIAL_TYPES,
+  getProductRestoreControlState,
+  toggleProductRestoreFocusIds,
+} from '../../modules/Retouch/productRestoreUi.mjs';
+import { normalizeProductRestoreFocusIds } from '../../../modules/Retouch/productRestoreContract.mjs';
 import PresetLibrary, { type Preset } from '../PresetLibrary';
 import { estimateImageBilling, getImageModelCreditCost } from '../../../utils/imageBilling.mjs';
 import {
@@ -179,6 +187,14 @@ const getRetouchQuickParams = (currentParams: Record<string, string>): ParamItem
       secondaryRecommendedLabel: '推荐',
     },
     ...QUICK_PARAMS[AppModuleObj.RETOUCH].slice(1),
+  ];
+};
+
+const getProductRestoreQuickParams = (currentParams: Record<string, string>): ParamItem[] => {
+  const controls = getProductRestoreControlState(IMAGE_MODEL_LABEL_OPTIONS, currentParams);
+  return [
+    { key: 'model', label: controls.model, title: 'AI 模型', icon: <Monitor size={12} />, options: controls.modelOptions, defaultValue: controls.model, recommendedValue: 'GPT Image 2' },
+    { key: 'quality', label: controls.quality, title: '出图分辨率', icon: <Sparkles size={12} />, options: controls.qualityOptions, defaultValue: controls.quality, recommendedValue: '2K' },
   ];
 };
 
@@ -622,6 +638,7 @@ const getBaseQuickParamsForModule = (
 ): ParamItem[] => {
   if (module === AppModuleObj.TRANSLATION) return getTranslationQuickParams(activeSubFeature);
   if (module === AppModuleObj.VIDEO) return getVideoQuickParams(activeSubFeature, systemConfig, currentParams);
+  if (module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') return getProductRestoreQuickParams(currentParams);
   if (module === AppModuleObj.RETOUCH) return getRetouchQuickParams(currentParams);
   if (isProductReplaceContext(module, activeSubFeature)) return getEverythingReplaceQuickParams(currentParams);
   if (isBackgroundReplaceContext(module, activeSubFeature)) return getBackgroundReplaceQuickParams(currentParams);
@@ -677,12 +694,16 @@ const getQuickParamsForModule = (
   currentParams: Record<string, string>,
   activeSubFeature?: string,
   systemConfig?: SystemPublicConfig | null,
-): ParamItem[] => withImageModelQualityOptions(
-  getBaseQuickParamsForModule(module, currentParams, activeSubFeature, systemConfig),
-  currentParams,
-);
+): ParamItem[] => {
+  const params = getBaseQuickParamsForModule(module, currentParams, activeSubFeature, systemConfig);
+  if (module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') return params;
+  return withImageModelQualityOptions(params, currentParams);
+};
 
 const getMaterialTypesForContext = (module: AppModule, currentParams: Record<string, string>, activeSubFeature?: string): MaterialType[] | undefined => {
+  if (module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') {
+    return [...PRODUCT_RESTORE_MATERIAL_TYPES] as MaterialType[];
+  }
   if (module === AppModuleObj.BUYER_SHOW) return ['product', 'atmosphere', 'model'];
   if (isProductReplaceContext(module, activeSubFeature)) return ['product', 'logo', 'styleRef'];
   if (isBackgroundReplaceContext(module, activeSubFeature)) return ['product', 'styleRef'];
@@ -847,6 +868,7 @@ const getBuyerShowSetCount = (currentParams: Record<string, string>) => {
 const setCountOptions = ['1套', '2套', '3套', '4套'];
 
 const getExtendedSectionsForModule = (module: AppModule, currentParams: Record<string, string>, activeSubFeature?: string) => {
+  if (module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') return [];
   if (activeSubFeature === 'storyboard' && isStoryboardViralReplicationMode(currentParams.videoMode)) return [];
   if (module === AppModuleObj.VIDEO) return VIDEO_EXTENDED_PARAMS[activeSubFeature || 'generation'] || [];
   if (module === AppModuleObj.TRANSLATION) {
@@ -933,6 +955,9 @@ const MODULE_PLACEHOLDERS: Record<string, string> = {
 };
 
 const getPlaceholderForContext = (module: AppModule, activeSubFeature?: string, currentParams: Record<string, string> = {}) => {
+  if (module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') {
+    return '补充产品还原要求；未填写时将按参考图分析产品身份并逐张还原...';
+  }
   if (isBackgroundReplaceContext(module, activeSubFeature)) {
     return '补充背景替换要求，例如：保留人物姿势和产品不变，只换成参考图同款场景...';
   }
@@ -959,6 +984,7 @@ const getPlaceholderForContext = (module: AppModule, activeSubFeature?: string, 
 
 const getGenerateLabelForContext = (module: AppModule, activeSubFeature?: string) => {
   if (isPendingShellSubFeature(module, activeSubFeature)) return '待制作';
+  if (module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') return '开始产品还原';
   if (isProductReplaceContext(module, activeSubFeature)) return '开始产品替换';
   if (isBackgroundReplaceContext(module, activeSubFeature)) return '开始背景替换';
   if (isLogoReplaceContext(module, activeSubFeature)) return '开始Logo替换';
@@ -1148,13 +1174,14 @@ interface Props {
   onApplyPresetMaterials?: (items: Array<{ type: string; url: string; remoteUrl?: string; fileName: string }>) => void;
   onUpdateMaterial?: (type: string, id: string, patch: Partial<Material>) => void;
   onRemoveMaterial: (type: string, id: string) => void;
+  onMoveMaterial?: (type: string, id: string, direction: 'left' | 'right') => void;
   systemConfig?: SystemPublicConfig | null;
   generationDisabledReason?: string;
 }
 
 const BottomInputBar: React.FC<Props> = ({
   module, activeSubFeature, promptText, onPromptChange, onGenerate, isGenerating: _isGenerating, isSubmitLocked = false,
-  currentParams, onParamChange, materials, oneClickReferencePresets, onUploadMaterial, onApplyPresetMaterials, onUpdateMaterial, onRemoveMaterial,
+  currentParams, onParamChange, materials, oneClickReferencePresets, onUploadMaterial, onApplyPresetMaterials, onUpdateMaterial, onRemoveMaterial, onMoveMaterial,
   systemConfig, generationDisabledReason = '',
 }) => {
   const quickParams = getQuickParamsForModule(module, currentParams, activeSubFeature, systemConfig);
@@ -1213,12 +1240,13 @@ const BottomInputBar: React.FC<Props> = ({
   const isDetailPageSuiteReplication = isOneClick && (currentParams.mode || '首图') === '详情页' && currentParams.detailGenerationMode === '套图复刻';
   const isXhsCover = module === AppModuleObj.XHS_COVER;
   const isBuyerShow = module === AppModuleObj.BUYER_SHOW;
+  const isProductRestore = module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore';
   const isEverythingReplaceProductReplace = isProductReplaceContext(module, activeSubFeature);
   const isEverythingReplaceLogoReplace = isLogoReplaceContext(module, activeSubFeature);
   const isEverythingReplaceImageReplace = isEverythingReplaceImageContext(module, activeSubFeature);
   const isPendingSubFeature = isPendingShellSubFeature(module, activeSubFeature);
   const disabledReason = generationDisabledReason || (isPendingSubFeature ? '该子功能待制作' : '');
-  const retouchSizeWarning = module === AppModuleObj.RETOUCH
+  const retouchSizeWarning = module === AppModuleObj.RETOUCH && !isProductRestore
     ? getRetouchCustomSizeRatioWarning({
       aspectRatio: currentParams.ratio || currentParams.aspectRatio || 'auto',
       sizeMode: currentParams.sizeMode,
@@ -1240,7 +1268,9 @@ const BottomInputBar: React.FC<Props> = ({
   const contextMaterialTypes = getMaterialTypesForContext(module, currentParams, activeSubFeature);
   const buyerShowSetCount = isBuyerShow ? getBuyerShowSetCount(currentParams) : 1;
   const shouldShowUpload = !(module === AppModuleObj.VIDEO && activeSubFeature === 'diagnosis');
-  const billingMaterialCount = module === AppModuleObj.TRANSLATION
+  const billingMaterialCount = isProductRestore
+    ? (materials.restoreTarget || []).filter((item) => !item.subFeature || item.subFeature === activeSubFeature).length
+    : module === AppModuleObj.TRANSLATION
     ? (materials.product || []).filter((item) => !item.subFeature || item.subFeature === activeSubFeature).length
     : 0;
   const activeStyleRefCount = (materials.styleRef || [])
@@ -1368,6 +1398,23 @@ const BottomInputBar: React.FC<Props> = ({
   }, [getVal]);
 
   const handleTranslationParamChange = useCallback((key: string, value: string) => {
+    if (module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') {
+      const controls = getProductRestoreControlState(IMAGE_MODEL_LABEL_OPTIONS, {
+        ...currentParams,
+        ...(key === 'model' ? { model: value } : {}),
+        ...(key === 'quality' ? { quality: value } : {}),
+      });
+      if (key === 'model') {
+        onParamChange('model', value);
+        onParamChange('quality', controls.quality);
+        return;
+      }
+      if (key === 'quality') {
+        onParamChange('quality', controls.quality);
+        return;
+      }
+    }
+
     if (key === 'model' && quickParams.some((param) => param.key === 'quality')) {
       const nextQuality = getQualityForModelSwitch(value, currentParams.quality || '1K').toUpperCase();
       onParamChange('quality', nextQuality);
@@ -2742,6 +2789,11 @@ const BottomInputBar: React.FC<Props> = ({
           materials={displayMaterials}
           onRemoveMaterial={handlePreviewRemove}
           onAdjustMaterial={isEverythingReplaceProductReplace || isEverythingReplaceLogoReplace ? handlePreviewAdjust : undefined}
+          materialLimits={isProductRestore ? {
+            restoreTarget: PRODUCT_RESTORE_MATERIAL_META.restoreTarget.limit,
+            productReference: PRODUCT_RESTORE_MATERIAL_META.productReference.limit,
+          } : undefined}
+          onMoveMaterial={isProductRestore ? onMoveMaterial : undefined}
         />
         {renderEverythingReplaceLogoPlacementEditor()}
         {renderLogoReplaceRegionEditor()}
@@ -2777,6 +2829,35 @@ const BottomInputBar: React.FC<Props> = ({
                   handleGenerateClick();
                 }}
               />
+            </div>
+          )}
+
+          {isProductRestore && (
+            <div className="flex flex-wrap items-center gap-2 border-t px-5 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+              <span className="mr-1 text-[11px] font-semibold" style={{ color: 'var(--text-secondary)' }}>重点还原</span>
+              {PRODUCT_RESTORE_FOCUS_OPTIONS.map((option) => {
+                const restoreFocusIds = normalizeProductRestoreFocusIds(currentParams.restoreFocusIds);
+                const selected = restoreFocusIds.includes(option.id);
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => onParamChange(
+                      'restoreFocusIds',
+                      toggleProductRestoreFocusIds(restoreFocusIds, option.id).join(','),
+                    )}
+                    className="rounded-full border px-3 py-1.5 text-[11px] font-medium transition-colors"
+                    style={{
+                      borderColor: selected ? 'var(--accent)' : 'var(--border-subtle)',
+                      background: selected ? 'var(--accent-soft)' : 'transparent',
+                      color: selected ? 'var(--accent)' : 'var(--text-tertiary)',
+                    }}
+                    aria-pressed={selected}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
             </div>
           )}
 
@@ -2954,7 +3035,12 @@ const BottomInputBar: React.FC<Props> = ({
                       }}
                       materialTypes={contextMaterialTypes}
                       materialLabels={
-                        isEverythingReplaceImageReplace
+                        isProductRestore
+                          ? {
+                            restoreTarget: { label: PRODUCT_RESTORE_MATERIAL_META.restoreTarget.label, desc: PRODUCT_RESTORE_MATERIAL_META.restoreTarget.description },
+                            productReference: { label: PRODUCT_RESTORE_MATERIAL_META.productReference.label, desc: PRODUCT_RESTORE_MATERIAL_META.productReference.description },
+                          }
+                        : isEverythingReplaceImageReplace
                           ? getEverythingReplaceMaterialLabels(activeSubFeature, currentParams)
                           : activeSubFeature === 'storyboard'
                           ? getStoryboardMaterialLabels(currentParams)

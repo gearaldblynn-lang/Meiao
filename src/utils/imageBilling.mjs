@@ -61,6 +61,10 @@ export const isImageBillingModule = (module = '', subFeature = '') => {
 export const resolveImageBillingCount = ({ module = '', subFeature = '', params = {}, materialCount = 0 } = {}) => {
   if (module === 'translation') return Math.max(1, Number(materialCount || 0));
 
+  if (module === 'retouch' && subFeature === 'product_restore') {
+    return Math.max(0, Number(materialCount || 0));
+  }
+
   if (module === 'one_click') {
     if (subFeature === 'first_image') return 1;
     if (subFeature === 'sku') return resolveParamCount(params, 4, 20);

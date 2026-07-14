@@ -32,7 +32,7 @@ const statusConfig: Record<Task['status'], { icon: React.ReactNode; color: strin
 };
 
 const moduleNames: Record<string, string> = {
-  one_click: '一键主详', translation: '出海翻译', retouch: '产品精修',
+  one_click: '一键主详', translation: '出海翻译', retouch: '图片升级',
   buyer_show: '买家秀', video: '短视频', xhs_cover: '小红书', agent_center: '智能体',
 };
 

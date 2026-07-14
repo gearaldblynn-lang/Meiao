@@ -15,6 +15,8 @@ const TYPE_META: Record<string, { label: string; color: string }> = {
   scene:      { label: '场景', color: '#6366F1' },
   referenceVideo: { label: '视频', color: '#14B8A6' },
   audio:      { label: '音频', color: '#A855F7' },
+  restoreTarget: { label: '待还原套图', color: '#2563EB' },
+  productReference: { label: '产品参考图', color: '#7C3AED' },
   textRef:    { label: '文案', color: '#EF4444' },
   xhsPreset:  { label: '预设', color: '#EC4899' },
 };
@@ -30,9 +32,11 @@ interface Props {
   materials: Record<string, Material[]>;
   onRemoveMaterial: (type: string, id: string) => void;
   onAdjustMaterial?: (type: string, id: string) => void;
+  onMoveMaterial?: (type: string, id: string, direction: 'left' | 'right') => void;
+  materialLimits?: Partial<Record<string, number>>;
 }
 
-const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAdjustMaterial }) => {
+const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAdjustMaterial, onMoveMaterial, materialLimits }) => {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
@@ -114,6 +118,7 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
             {groups.map(({ type, list, meta }) => {
               const collapsed = collapsedGroups[type];
               const showCount = collapsed ? 1 : list.length;
+              const limit = materialLimits?.[type];
 
               return (
                 <React.Fragment key={type}>
@@ -129,11 +134,13 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                   >
                     <span className="w-1.5 h-1.5 rounded-full" style={{ background: meta.color }} />
                     <span className="text-[10px] font-medium" style={{ color: meta.color }}>{meta.label}</span>
-                    <span className="text-[9px]" style={{ color: 'var(--text-disabled)' }}>{list.length}</span>
+                    <span className="text-[9px]" style={{ color: 'var(--text-disabled)' }}>
+                      {limit ? <>{list.length}/{limit}</> : list.length}
+                    </span>
                   </button>
 
                   {/* Group images */}
-                  {list.slice(0, showCount).map((m) => {
+                  {list.slice(0, showCount).map((m, index) => {
                     const mediaKind = getMediaKind(type, m.url, m.fileName);
                     const unsupportedVideo = mediaKind === 'video' && isBrowserUnsupportedVideoCodec(m.videoCodec);
                     return (
@@ -199,6 +206,38 @@ const MaterialPreviewBar: React.FC<Props> = ({ materials, onRemoveMaterial, onAd
                         >
                           第{m.buyerShowSetIndex + 1}套
                         </span>
+                      ) : null}
+                      {onMoveMaterial ? (
+                        <div className="absolute bottom-0.5 left-1/2 z-20 flex -translate-x-1/2 gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onMoveMaterial(type, m.id, 'left');
+                            }}
+                            disabled={index === 0}
+                            className="flex h-4 w-4 items-center justify-center rounded-full text-white disabled:cursor-not-allowed disabled:opacity-35"
+                            style={{ background: 'rgba(15, 23, 42, 0.86)' }}
+                            title="向左移动"
+                            aria-label="向左移动"
+                          >
+                            <ChevronLeft size={9} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onMoveMaterial(type, m.id, 'right');
+                            }}
+                            disabled={index === list.length - 1}
+                            className="flex h-4 w-4 items-center justify-center rounded-full text-white disabled:cursor-not-allowed disabled:opacity-35"
+                            style={{ background: 'rgba(15, 23, 42, 0.86)' }}
+                            title="向右移动"
+                            aria-label="向右移动"
+                          >
+                            <ChevronRight size={9} />
+                          </button>
+                        </div>
                       ) : null}
                       <button
                         type="button"
