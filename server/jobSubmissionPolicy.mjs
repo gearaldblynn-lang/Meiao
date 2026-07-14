@@ -1,7 +1,20 @@
+import {
+  canCreateProductRestore,
+  normalizeProductRestoreRollout,
+} from '../src/utils/productRestoreRollout.mjs';
+
 const DEFAULT_DEDUPE_WINDOW_MS = 8000;
 const CHAT_DEDUPE_WINDOW_MS = 3 * 60 * 1000;
 const VIDEO_DEDUPE_WINDOW_MS = 60 * 60 * 1000;
 const DEFAULT_SUBMISSION_LOCK_TIMEOUT_SECONDS = 10;
+
+export const PRODUCT_RESTORE_ROLLOUT_ERROR_CODE = 'product_restore_rollout_forbidden';
+export const PRODUCT_RESTORE_ROLLOUT_ERROR_MESSAGE = '产品还原当前未对该账号开放，历史项目仍可查看。';
+
+const PRODUCT_RESTORE_TASK_PURPOSES = new Set([
+  'product_restore_analysis',
+  'product_restore_generation',
+]);
 
 export const VIDEO_JOB_TASK_TYPES = new Set([
   'dreamina_video',
@@ -61,6 +74,21 @@ const getAllowedProviders = (taskType) => {
   return TASK_PROVIDER_POLICIES.get(taskType) || null;
 };
 
+const normalizePolicyMarker = (value) => String(value || '').trim().toLowerCase();
+
+export const isProductRestoreJobSubmission = ({
+  module = '',
+  payload = {},
+  subFeature = '',
+  taskPurpose = '',
+} = {}) => {
+  if (normalizePolicyMarker(module) !== 'retouch') return false;
+  const normalizedSubFeature = normalizePolicyMarker(subFeature || payload?.subFeature);
+  const normalizedTaskPurpose = normalizePolicyMarker(taskPurpose || payload?.taskPurpose);
+  return normalizedSubFeature === 'product_restore'
+    || PRODUCT_RESTORE_TASK_PURPOSES.has(normalizedTaskPurpose);
+};
+
 export const getJobSubmissionLockTimeoutSeconds = (env = process.env) => {
   const parsed = Number.parseInt(String(env?.MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS || ''), 10);
   return Number.isFinite(parsed) && parsed > 0
@@ -74,13 +102,37 @@ export const resolveJobSubmissionPolicy = ({
   provider = '',
   payload = {},
   subFeature = '',
+  taskPurpose = '',
   hasVideoPermission = false,
+  userRole = '',
+  productRestoreRollout,
+  submissionOperation = 'create',
 } = {}) => {
-  const normalizedModule = String(module || '').trim();
+  const normalizedModule = normalizePolicyMarker(module);
   const normalizedTaskType = String(taskType || '').trim();
   const normalizedProvider = String(provider || '').trim();
   const normalizedSubFeature = String(subFeature || payload?.subFeature || '').trim();
   const allowedProviders = getAllowedProviders(normalizedTaskType);
+  const isProductRestore = isProductRestoreJobSubmission({
+    module: normalizedModule,
+    payload,
+    subFeature,
+    taskPurpose,
+  });
+  const isHistoricalProviderRecovery = submissionOperation === 'recover'
+    && normalizedTaskType === 'kie_recover';
+
+  if (
+    !isHistoricalProviderRecovery
+    && isProductRestore
+    && !canCreateProductRestore(normalizeProductRestoreRollout(productRestoreRollout), userRole)
+  ) {
+    throw createPolicyError(
+      PRODUCT_RESTORE_ROLLOUT_ERROR_CODE,
+      PRODUCT_RESTORE_ROLLOUT_ERROR_MESSAGE,
+      403,
+    );
+  }
 
   if (allowedProviders && !allowedProviders.has(normalizedProvider)) {
     throw createPolicyError(
