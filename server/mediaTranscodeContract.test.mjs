@@ -1,0 +1,125 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  MEDIA_LIMITS,
+  buildAudioTranscodeArgs,
+  buildVideoTranscodeArgs,
+  calculateVideoCanvas,
+  validateTranscodedOutput,
+  validateTrimRange,
+} from './mediaTranscodeContract.mjs';
+
+test('calculateVideoCanvas preserves landscape and portrait content inside the Seedance pixel range', () => {
+  assert.deepEqual(calculateVideoCanvas({ width: 1920, height: 1080 }), {
+    width: 1280,
+    height: 720,
+    padded: false,
+  });
+  assert.deepEqual(calculateVideoCanvas({ width: 1080, height: 1920 }), {
+    width: 720,
+    height: 1280,
+    padded: false,
+  });
+  assert.deepEqual(calculateVideoCanvas({ width: 1080, height: 1080 }), {
+    width: 720,
+    height: 720,
+    padded: false,
+  });
+});
+
+test('calculateVideoCanvas pads extreme ratios without stretching or cropping', () => {
+  assert.deepEqual(calculateVideoCanvas({ width: 300, height: 1200 }), {
+    width: 512,
+    height: 1280,
+    padded: true,
+  });
+  assert.deepEqual(calculateVideoCanvas({ width: 1600, height: 400 }), {
+    width: 1280,
+    height: 512,
+    padded: true,
+  });
+});
+
+test('validateTrimRange accepts exactly 2 to 15 seconds and rejects implicit truncation', () => {
+  assert.deepEqual(
+    validateTrimRange({ durationSeconds: 30, startSeconds: 3, endSeconds: 18 }),
+    { startSeconds: 3, endSeconds: 18, durationSeconds: 15 },
+  );
+  assert.throws(
+    () => validateTrimRange({ durationSeconds: 30, startSeconds: 0, endSeconds: 15.1 }),
+    (error) => error?.code === 'media_trim_too_long' && /不能超过 15 秒/.test(error.message),
+  );
+  assert.throws(
+    () => validateTrimRange({ durationSeconds: 30, startSeconds: 2, endSeconds: 3.9 }),
+    (error) => error?.code === 'media_trim_too_short' && /不能少于 2 秒/.test(error.message),
+  );
+  assert.throws(
+    () => validateTrimRange({ durationSeconds: 10, startSeconds: 8, endSeconds: 11 }),
+    (error) => error?.code === 'media_trim_out_of_bounds',
+  );
+});
+
+test('video FFmpeg args normalize to H.264 MP4 without requiring an audio track', () => {
+  const args = buildVideoTranscodeArgs({
+    inputPath: '/tmp/input.mov',
+    outputPath: '/tmp/output.mp4',
+    startSeconds: 1.2,
+    endSeconds: 6.2,
+    width: 1080,
+    height: 1920,
+    hasAudio: false,
+  });
+  assert.deepEqual(args.slice(-2), ['+faststart', '/tmp/output.mp4']);
+  assert.ok(args.includes('libx264'));
+  assert.ok(args.includes('yuv420p'));
+  assert.ok(args.includes('30'));
+  assert.ok(args.includes('0:a:0?'));
+  assert.match(args[args.indexOf('-vf') + 1], /scale=720:1280.*pad=720:1280/);
+});
+
+test('audio FFmpeg args normalize to a 44.1 kHz 192 kbps MP3', () => {
+  const args = buildAudioTranscodeArgs({
+    inputPath: '/tmp/input.wav',
+    outputPath: '/tmp/output.mp3',
+    startSeconds: 0,
+    endSeconds: 5,
+  });
+  assert.ok(args.includes('libmp3lame'));
+  assert.ok(args.includes('44100'));
+  assert.ok(args.includes('192k'));
+  assert.equal(args.at(-1), '/tmp/output.mp3');
+});
+
+test('validateTranscodedOutput enforces canonical video and audio contracts', () => {
+  assert.doesNotThrow(() => validateTranscodedOutput('video', {
+    durationSeconds: 5,
+    formatNames: ['mov', 'mp4', 'm4a'],
+    videoCodec: 'h264',
+    audioCodec: 'aac',
+    width: 1280,
+    height: 720,
+    frameRate: 30,
+    sizeBytes: 2_000_000,
+  }));
+  assert.doesNotThrow(() => validateTranscodedOutput('audio', {
+    durationSeconds: 5,
+    formatNames: ['mp3'],
+    audioCodec: 'mp3',
+    sizeBytes: 200_000,
+  }));
+  assert.throws(
+    () => validateTranscodedOutput('video', {
+      durationSeconds: 5,
+      formatNames: ['mov', 'mp4'],
+      videoCodec: 'hevc',
+      width: 1280,
+      height: 720,
+      frameRate: 30,
+      sizeBytes: 2_000_000,
+    }),
+    (error) => error?.code === 'media_output_invalid_codec',
+  );
+  assert.equal(MEDIA_LIMITS.video.maxFiles, 3);
+  assert.equal(MEDIA_LIMITS.audio.maxTotalSeconds, 15);
+});

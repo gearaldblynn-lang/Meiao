@@ -1,0 +1,260 @@
+export const MEDIA_LIMITS = Object.freeze({
+  image: Object.freeze({
+    formats: Object.freeze(['jpeg', 'jpg', 'png', 'webp', 'bmp', 'tiff', 'gif']),
+    maxFiles: 9,
+    maxBytes: 30 * 1024 * 1024,
+    minAspectRatio: 0.4,
+    maxAspectRatio: 2.5,
+    minDimension: 300,
+    maxDimension: 6000,
+  }),
+  video: Object.freeze({
+    formats: Object.freeze(['mp4', 'mov']),
+    maxFiles: 3,
+    minSeconds: 2,
+    maxSeconds: 15,
+    maxTotalSeconds: 15,
+    maxBytes: 50 * 1024 * 1024,
+    minAspectRatio: 0.4,
+    maxAspectRatio: 2.5,
+    minDimension: 300,
+    maxDimension: 6000,
+    minPixels: 640 * 640,
+    maxPixels: 834 * 1112,
+    minFrameRate: 24,
+    maxFrameRate: 60,
+  }),
+  audio: Object.freeze({
+    formats: Object.freeze(['wav', 'mp3']),
+    maxFiles: 3,
+    minSeconds: 2,
+    maxSeconds: 15,
+    maxTotalSeconds: 15,
+    maxBytes: 15 * 1024 * 1024,
+  }),
+});
+
+export function createMediaTranscodeError(code, message, details = {}) {
+  const error = new Error(message);
+  error.code = code;
+  error.details = details;
+  return error;
+}
+
+function requirePositiveNumber(value, field) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw createMediaTranscodeError(
+      'media_invalid_metadata',
+      `媒体 ${field} 信息无效`,
+      { field, value },
+    );
+  }
+  return parsed;
+}
+
+function even(value) {
+  return Math.max(2, Math.round(value / 2) * 2);
+}
+
+export function calculateVideoCanvas({ width, height }) {
+  const sourceWidth = requirePositiveNumber(width, 'width');
+  const sourceHeight = requirePositiveNumber(height, 'height');
+  const ratio = sourceWidth / sourceHeight;
+  const padded = ratio < MEDIA_LIMITS.video.minAspectRatio || ratio > MEDIA_LIMITS.video.maxAspectRatio;
+
+  if (padded) {
+    return ratio < MEDIA_LIMITS.video.minAspectRatio
+      ? { width: 512, height: 1280, padded: true }
+      : { width: 1280, height: 512, padded: true };
+  }
+
+  if (ratio >= 1) {
+    if (ratio >= 1280 / 720) {
+      return { width: 1280, height: even(1280 / ratio), padded: false };
+    }
+    return { width: even(720 * ratio), height: 720, padded: false };
+  }
+
+  if (ratio <= 720 / 1280) {
+    return { width: 720, height: 1280, padded: false };
+  }
+  return { width: 720, height: even(720 / ratio), padded: false };
+}
+
+function finiteSeconds(value, field) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw createMediaTranscodeError('media_trim_invalid', '裁剪范围无效', { field, value });
+  }
+  return parsed;
+}
+
+export function validateTrimRange({ durationSeconds, startSeconds, endSeconds }) {
+  const sourceDuration = finiteSeconds(durationSeconds, 'durationSeconds');
+  const start = finiteSeconds(startSeconds, 'startSeconds');
+  const end = finiteSeconds(endSeconds, 'endSeconds');
+  const epsilon = 0.001;
+
+  if (sourceDuration <= 0 || start < 0 || end <= start || end > sourceDuration + epsilon) {
+    throw createMediaTranscodeError(
+      'media_trim_out_of_bounds',
+      '裁剪范围超出了原始媒体时长',
+      { durationSeconds: sourceDuration, startSeconds: start, endSeconds: end },
+    );
+  }
+
+  const selectedDuration = end - start;
+  if (selectedDuration < MEDIA_LIMITS.video.minSeconds - epsilon) {
+    throw createMediaTranscodeError(
+      'media_trim_too_short',
+      '裁剪时长不能少于 2 秒',
+      { durationSeconds: selectedDuration },
+    );
+  }
+  if (selectedDuration > MEDIA_LIMITS.video.maxSeconds + epsilon) {
+    throw createMediaTranscodeError(
+      'media_trim_too_long',
+      '裁剪时长不能超过 15 秒，请手动选择范围',
+      { durationSeconds: selectedDuration },
+    );
+  }
+
+  return {
+    startSeconds: start,
+    endSeconds: end,
+    durationSeconds: selectedDuration,
+  };
+}
+
+function ffmpegSeconds(value) {
+  return String(Number(Number(value).toFixed(3)));
+}
+
+export function buildVideoTranscodeArgs({
+  inputPath,
+  outputPath,
+  startSeconds,
+  endSeconds,
+  width,
+  height,
+  hasAudio = false,
+}) {
+  const canvas = calculateVideoCanvas({ width, height });
+  const duration = Number(endSeconds) - Number(startSeconds);
+  const videoFilter = [
+    `scale=${canvas.width}:${canvas.height}:force_original_aspect_ratio=decrease`,
+    `pad=${canvas.width}:${canvas.height}:(ow-iw)/2:(oh-ih)/2:color=black`,
+    'setsar=1',
+  ].join(',');
+
+  return [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-ss', ffmpegSeconds(startSeconds),
+    '-i', inputPath,
+    '-t', ffmpegSeconds(duration),
+    '-map', '0:v:0',
+    '-map', '0:a:0?',
+    '-vf', videoFilter,
+    '-r', '30',
+    '-c:v', 'libx264',
+    '-preset', 'veryfast',
+    '-crf', '23',
+    '-maxrate', '5M',
+    '-bufsize', '10M',
+    '-pix_fmt', 'yuv420p',
+    ...(hasAudio ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
+    '-movflags', '+faststart',
+    outputPath,
+  ];
+}
+
+export function buildAudioTranscodeArgs({ inputPath, outputPath, startSeconds, endSeconds }) {
+  const duration = Number(endSeconds) - Number(startSeconds);
+  return [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-ss', ffmpegSeconds(startSeconds),
+    '-i', inputPath,
+    '-t', ffmpegSeconds(duration),
+    '-vn',
+    '-c:a', 'libmp3lame',
+    '-ar', '44100',
+    '-ac', '2',
+    '-b:a', '192k',
+    outputPath,
+  ];
+}
+
+function validateDuration(kind, metadata) {
+  const duration = requirePositiveNumber(metadata.durationSeconds, 'durationSeconds');
+  const limits = MEDIA_LIMITS[kind];
+  if (duration < limits.minSeconds - 0.05 || duration > limits.maxSeconds + 0.05) {
+    throw createMediaTranscodeError(
+      'media_output_invalid_duration',
+      '转码后的媒体时长不符合 2–15 秒要求',
+      { durationSeconds: duration },
+    );
+  }
+}
+
+function validateBytes(kind, metadata) {
+  const sizeBytes = requirePositiveNumber(metadata.sizeBytes, 'sizeBytes');
+  if (sizeBytes > MEDIA_LIMITS[kind].maxBytes) {
+    throw createMediaTranscodeError(
+      'media_output_too_large',
+      `转码后的${kind === 'video' ? '视频' : '音频'}文件仍然过大`,
+      { sizeBytes, maxBytes: MEDIA_LIMITS[kind].maxBytes },
+    );
+  }
+}
+
+export function validateTranscodedOutput(kind, metadata) {
+  if (kind !== 'video' && kind !== 'audio') {
+    throw createMediaTranscodeError('media_kind_unsupported', '仅支持视频或音频转码', { kind });
+  }
+  validateDuration(kind, metadata);
+  validateBytes(kind, metadata);
+  const formatNames = Array.isArray(metadata.formatNames)
+    ? metadata.formatNames.map((item) => String(item).toLowerCase())
+    : [];
+
+  if (kind === 'audio') {
+    if (!formatNames.includes('mp3') || String(metadata.audioCodec || '').toLowerCase() !== 'mp3') {
+      throw createMediaTranscodeError('media_output_invalid_codec', '转码结果不是标准 MP3 音频');
+    }
+    return metadata;
+  }
+
+  if (!formatNames.includes('mp4') || String(metadata.videoCodec || '').toLowerCase() !== 'h264') {
+    throw createMediaTranscodeError('media_output_invalid_codec', '转码结果不是标准 H.264 MP4 视频');
+  }
+  const width = requirePositiveNumber(metadata.width, 'width');
+  const height = requirePositiveNumber(metadata.height, 'height');
+  const frameRate = requirePositiveNumber(metadata.frameRate, 'frameRate');
+  const ratio = width / height;
+  const pixels = width * height;
+  if (
+    width < MEDIA_LIMITS.video.minDimension
+    || height < MEDIA_LIMITS.video.minDimension
+    || width > MEDIA_LIMITS.video.maxDimension
+    || height > MEDIA_LIMITS.video.maxDimension
+    || ratio < MEDIA_LIMITS.video.minAspectRatio
+    || ratio > MEDIA_LIMITS.video.maxAspectRatio
+    || pixels < MEDIA_LIMITS.video.minPixels
+    || pixels > MEDIA_LIMITS.video.maxPixels
+  ) {
+    throw createMediaTranscodeError(
+      'media_output_invalid_dimensions',
+      '转码后的视频尺寸或画面比例不符合模型要求',
+      { width, height, ratio, pixels },
+    );
+  }
+  if (frameRate < MEDIA_LIMITS.video.minFrameRate || frameRate > MEDIA_LIMITS.video.maxFrameRate) {
+    throw createMediaTranscodeError(
+      'media_output_invalid_frame_rate',
+      '转码后的视频帧率不符合 24–60 FPS 要求',
+      { frameRate },
+    );
+  }
+  return metadata;
+}

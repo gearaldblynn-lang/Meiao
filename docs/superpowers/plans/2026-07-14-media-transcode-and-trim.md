@@ -109,7 +109,7 @@ Expected: all tests PASS.
 
 - [ ] **Step 5: Add the static runtime dependencies and failing service tests**
 
-Add production dependencies `ffmpeg-static` and `ffprobe-static`. Resolve binaries in this exact order:
+Add production dependencies `ffmpeg-static` and `@ffprobe-installer/ffprobe`. Resolve binaries in this exact order:
 
 ```js
 const ffmpegPath = env.MEIAO_FFMPEG_PATH || packagedFfmpegPath || 'ffmpeg';
