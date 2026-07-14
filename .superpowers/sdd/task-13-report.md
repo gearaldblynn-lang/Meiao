@@ -103,6 +103,27 @@ guarantee by requiring the transactional helper to begin a transaction, upsert
 `app_states`, enqueue removed assets, and commit in that order. The independent
 local JSON scrub-before-save assertion remains unchanged.
 
+## Final-review contract strengthening
+
+The final Minor review found two false-green gaps in the aligned asset-cleanup
+contract. The transaction assertion accepted a plain insert, and route-only
+source checks did not prove that the shared writer scrubs the merged state
+before saving that exact value.
+
+The SQL contract now requires `INSERT INTO app_states ... ON DUPLICATE KEY
+UPDATE` before cleanup enqueue and commit. A behavioral test invokes the
+exported `writeMergedAppStateUnderUserLock` with spies and fixes the order to
+lock -> read -> merge input observed by scrub -> save. It also uses reference
+identity to require `saveState.nextState` to be the exact object returned by
+`scrubState`, while retaining the MySQL route, local scrub, and cleanup
+transaction assertions.
+
+A temporary, uncommitted mutation probe degraded the upsert to a plain insert
+and made save bypass the scrubbed value. The file became 6/8 with one failure
+for each regression. Both production mutations were immediately restored, the
+production files were confirmed clean, and the strengthened file returned to
+8/8.
+
 ## TDD evidence
 
 Mandatory RED failures were captured first against the real
@@ -116,6 +137,8 @@ Mandatory RED failures were captured first against the real
 - a compact MAX_SAFE multi-retry chain re-locked after stale-root replay.
 - the stale asset-cleanup source contract rejected the new atomic MySQL route
   while its other six checks passed.
+- a plain insert and a save that bypassed the scrubbed value each failed the
+  strengthened asset-cleanup contract during the final mutation probe.
 
 The final expanded Product Restoration focused suite is green:
 
@@ -137,7 +160,7 @@ error-path lock release.
 
 ## Verification
 
-- `node --test server/assetReferenceCleanup.test.mjs`: PASS, 7/7.
+- `node --test server/assetReferenceCleanup.test.mjs`: PASS, 8/8.
 - `npm run test:server`: PASS, all 112 server test files.
 - `npx tsc -b --pretty false`: PASS.
 - `npm run lint`: PASS, 0 errors and 660 warnings at the existing 660-warning
@@ -147,6 +170,9 @@ error-path lock release.
   return, so the owned process was stopped rather than reported as passing.
 - `npm run build`: PASS, 2179 modules transformed.
 - `git diff --check`: PASS.
+- Final review changed only an `.mjs` test and this report; lint/build were not
+  repeated after their fourth-review PASS because runtime and build inputs did
+  not change.
 - No provider request, paid generation, push, deployment, or cloud mutation.
 
 ## Worktree isolation

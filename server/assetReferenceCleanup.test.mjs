@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { mergeAppStateForStorage, writeMergedAppStateUnderUserLock } from './appStateMerge.mjs';
 
 const source = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
 
@@ -43,8 +44,58 @@ test('state saving scrubs deleted managed assets before they can be persisted ag
   assert.match(mysqlStateRoute, /readState: getDbAppStateUnderManagedAssetLock/);
   assert.match(mysqlStateRoute, /scrubState: scrubDbStateBeforeStorage/);
   assert.match(mysqlStateRoute, /saveState: saveDbAppStateAndQueueRemovedAssetsUnderLock/);
-  assert.match(lockedStateWrite, /beginTransaction\(\)[\s\S]*INSERT INTO app_states[\s\S]*queueRemovedStateAssetsForCleanup[\s\S]*commit\(\)/);
+  assert.match(lockedStateWrite, /beginTransaction\(\)[\s\S]*INSERT INTO app_states[\s\S]*ON DUPLICATE KEY UPDATE[\s\S]*queueRemovedStateAssetsForCleanup[\s\S]*commit\(\)/);
   assert.match(source, /const previousState = store\.appStates\[user\.id\] \|\| createDefaultState\(\);[\s\S]{0,300}const nextState = await scrubLocalStateBeforeStorage\(\s*mergeAppStateForStorage\(previousState, incomingState\),\s*user\.id,\s*\)/);
+});
+
+test('locked app-state writer scrubs the merged state before saving the same scrubbed value', async () => {
+  const user = { id: 'asset-cleanup-order-user' };
+  const lockResource = { kind: 'managed-asset-user-lock' };
+  const previousState = {
+    draftInput: { prompt: 'existing prompt' },
+    shellProjects: [{ id: 'existing-project', status: 'completed', results: [] }],
+  };
+  const incomingState = {
+    draftInput: { prompt: 'incoming prompt' },
+    shellProjects: [{ id: 'incoming-project', status: 'generating', results: [] }],
+  };
+  const expectedMergedState = mergeAppStateForStorage(previousState, incomingState);
+  const scrubbedState = { ...expectedMergedState, scrubbed: true };
+  const calls = [];
+
+  const response = await writeMergedAppStateUnderUserLock({
+    user,
+    incomingState,
+    withUserLock: async (userId, operation) => {
+      calls.push('lock');
+      assert.equal(userId, user.id);
+      return operation(lockResource);
+    },
+    readState: async (userId, resource) => {
+      calls.push('read');
+      assert.equal(userId, user.id);
+      assert.equal(resource, lockResource);
+      return previousState;
+    },
+    scrubState: async (mergedState, userId, resource) => {
+      calls.push('scrub');
+      assert.deepEqual(mergedState, expectedMergedState);
+      assert.equal(userId, user.id);
+      assert.equal(resource, lockResource);
+      return scrubbedState;
+    },
+    saveState: async ({ lockResource: resource, user: savedUser, previousState: savedPreviousState, nextState }) => {
+      calls.push('save');
+      assert.equal(resource, lockResource);
+      assert.equal(savedUser, user);
+      assert.equal(savedPreviousState, previousState);
+      assert.equal(nextState, scrubbedState);
+      return nextState;
+    },
+  });
+
+  assert.deepEqual(calls, ['lock', 'read', 'scrub', 'save']);
+  assert.deepEqual(response, { ok: true });
 });
 
 test('job creation scrubs stale managed assets from direct payload submissions', () => {
