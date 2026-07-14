@@ -48,6 +48,77 @@ export const getProductRestoreUploadRejection = ({
   return `本次选择未上传：${metadata.label}最多 ${metadata.limit} 张，当前已有 ${current} 张，还可上传 ${Math.max(0, metadata.limit - current)} 张。`;
 };
 
+const productRestoreReservationKey = (scopeKey, type) => `${scopeKey}:${type}`;
+
+export const createProductRestoreUploadReservationQueue = () => {
+  const states = new Map();
+
+  return {
+    reserve({ scopeKey = '', type = '', existingCount = 0, selectedCount = 0 } = {}) {
+      const key = productRestoreReservationKey(scopeKey, type);
+      const state = states.get(key) || {
+        pendingCount: 0,
+        tail: Promise.resolve(),
+      };
+      states.set(key, state);
+
+      const message = getProductRestoreUploadRejection({
+        type,
+        existingCount: Math.max(0, Number(existingCount) || 0) + state.pendingCount,
+        selectedCount,
+      });
+      if (message) return { ok: false, message };
+
+      const reservedCount = Math.max(0, Number(selectedCount) || 0);
+      const precedingTurn = state.tail;
+      let finishTurn = () => {};
+      const currentTurn = new Promise((resolve) => {
+        finishTurn = resolve;
+      });
+      let turnAvailable = false;
+      const waitForTurn = precedingTurn.then(() => {
+        turnAvailable = true;
+      });
+      state.tail = currentTurn;
+      state.pendingCount += reservedCount;
+      let released = false;
+      const finishRelease = () => {
+        state.pendingCount = Math.max(0, state.pendingCount - reservedCount);
+        finishTurn();
+      };
+
+      return {
+        ok: true,
+        waitForTurn,
+        release() {
+          if (released) return;
+          released = true;
+          if (turnAvailable) {
+            finishRelease();
+            return;
+          }
+          void waitForTurn.then(finishRelease);
+        },
+      };
+    },
+    getPendingCount(scopeKey = '', type = '') {
+      return states.get(productRestoreReservationKey(scopeKey, type))?.pendingCount || 0;
+    },
+  };
+};
+
+export const prepareProductRestoreUploadBatch = async (items, prepare) => {
+  if (!Array.isArray(items) || typeof prepare !== 'function') return [];
+  const prepared = await Promise.all(items.map(async (item, index) => {
+    try {
+      return await prepare(item, index);
+    } catch {
+      return null;
+    }
+  }));
+  return prepared.filter((value) => value !== null && value !== undefined);
+};
+
 export const moveProductRestoreScopedMaterial = (
   materials,
   id,
@@ -105,4 +176,14 @@ export const getProductRestoreCreationDisabledReason = (rolloutMode, role) => {
     return '产品还原当前仅对管理员开放，历史项目仍可查看。';
   }
   return '产品还原暂未开放，历史项目仍可查看。';
+};
+
+export const getProductRestoreJobCreationDisabledReason = ({
+  module,
+  subFeature,
+  rolloutMode,
+  role,
+} = {}) => {
+  if (module !== 'retouch' || subFeature !== 'product_restore') return '';
+  return getProductRestoreCreationDisabledReason(rolloutMode, role);
 };

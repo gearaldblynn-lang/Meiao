@@ -51,7 +51,7 @@ import { extractShellSchemeField } from './adapters/shellSchemeFields';
 import { resolvePublicAssetUrl } from './utils/modelAssetUrl.mjs';
 import { getShellDraftStateKey, loadShellDraftState, normalizeShellDraftState, resolveHydratedShellDraftState, saveShellDraftState } from './utils/shellDraftState';
 import { getImageDimensions, getImageDimensionsFromUrl } from './utils/imageUtils';
-import { safeCreateObjectURL } from './utils/urlUtils';
+import { releaseObjectURL, safeCreateObjectURL } from './utils/urlUtils';
 import { countCompletedProjectResults, mergeGeneratedPlanResults } from './utils/shellProjectResults.mjs';
 import { isInvalidOneClickPlanLike } from './utils/oneClickPlanValidation.ts';
 import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion } from './utils/shellRuntimePrune.mjs';
@@ -106,9 +106,12 @@ import {
   normalizeProductRestoreResolution,
 } from './modules/Retouch/productRestoreContract.mjs';
 import {
+  createProductRestoreUploadReservationQueue,
   getProductRestoreCreationDisabledReason,
+  getProductRestoreJobCreationDisabledReason,
   getProductRestoreUploadRejection,
   moveProductRestoreScopedMaterial,
+  prepareProductRestoreUploadBatch,
 } from './shell/modules/Retouch/productRestoreUi.mjs';
 import { getMediaBudget, validateMediaQueueSelection } from './utils/mediaTrimRules.mjs';
 
@@ -2328,6 +2331,7 @@ const AppContent: React.FC<{
   );
   const materialsRef = useRef<Record<string, Material[]>>(materials);
   const materialUploadCoordinatorRef = useRef(createMaterialUploadCoordinator());
+  const productRestoreUploadReservationsRef = useRef(createProductRestoreUploadReservationQueue());
   const [oneClickReferencePresets, setOneClickReferencePresets] = useState<OneClickReferencePreset[]>([]);
   const [mediaTranscodeQueue, setMediaTranscodeQueue] = useState<MediaTranscodeQueueItem[]>([]);
   const mediaTranscodeQueueRef = useRef<MediaTranscodeQueueItem[]>([]);
@@ -3719,19 +3723,32 @@ const AppContent: React.FC<{
   // ── Material upload ──
   const handleMaterialUpload = useCallback((type: string, files: FileList | null, options?: { buyerShowSetIndex?: number }) => {
     if (!files) return;
+    let productRestoreReservation: {
+      waitForTurn: Promise<void>;
+      release: () => void;
+    } | null = null;
     if (activeModule === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') {
       const existingCount = (materialsRef.current[type] || [])
         .filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature))
         .length;
-      const rejection = getProductRestoreUploadRejection({
+      const reservation = productRestoreUploadReservationsRef.current.reserve({
+        scopeKey: activeScopeKey,
         type,
         existingCount,
         selectedCount: files.length,
       });
-      if (rejection) {
-        addToast(rejection, 'warning');
+      if (!reservation.ok || !reservation.waitForTurn || !reservation.release) {
+        addToast(reservation.message || getProductRestoreUploadRejection({
+          type,
+          existingCount,
+          selectedCount: files.length,
+        }), 'warning');
         return;
       }
+      productRestoreReservation = {
+        waitForTurn: reservation.waitForTurn,
+        release: reservation.release,
+      };
     }
     let selectedFiles = Array.from(files);
     if (activeModule === AppModuleObj.VIDEO && (type === 'referenceVideo' || type === 'audio')) {
@@ -3798,6 +3815,79 @@ const AppContent: React.FC<{
         selectedFiles = selectedFiles.slice(0, remaining);
         addToast(`详情页套图复刻最多保留 10 张参考风格图，本次已保留前 ${remaining} 张。`, 'warning');
       }
+    }
+    if (productRestoreReservation) {
+      const reservation = productRestoreReservation;
+      void (async () => {
+        let failedCount = 0;
+        try {
+          const prepared = await prepareProductRestoreUploadBatch(selectedFiles, async (file, fileIndex) => {
+            const optimisticId = Math.random().toString(36).slice(2, 9);
+            const localAssetId = `draft-${Date.now()}-${fileIndex}-${optimisticId}`;
+            const relativePath = (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name;
+            const previewUrl = safeCreateObjectURL(file) || '';
+            let draftSaved = false;
+            try {
+              const [dimensions, saved] = await Promise.all([
+                file.type.startsWith('image/') ? getImageDimensions(file).catch(() => null) : Promise.resolve(null),
+                saveShellDraftAsset(localAssetId, file, { fileName: file.name, mimeType: file.type }).catch(() => false),
+              ]);
+              draftSaved = saved;
+              if (!previewUrl || !draftSaved || (file.type.startsWith('image/') && !dimensions)) {
+                throw new Error('素材读取失败');
+              }
+              const material: Material = {
+                id: optimisticId,
+                type,
+                url: previewUrl,
+                localAssetId,
+                fileName: file.name,
+                relativePath,
+                subFeature: activeSubFeature,
+                originalWidth: dimensions?.width,
+                originalHeight: dimensions?.height,
+              };
+              return { file, material };
+            } catch {
+              failedCount += 1;
+              if (previewUrl) releaseObjectURL(previewUrl);
+              if (draftSaved) await deleteShellDraftAsset(localAssetId).catch(() => false);
+              return null;
+            }
+          });
+          await reservation.waitForTurn;
+          if (prepared.length > 0) {
+            setMaterials((prev) => {
+              const next = {
+                ...prev,
+                [type]: [
+                  ...(prev[type] || []),
+                  ...prepared.map(({ material }) => material),
+                ],
+              };
+              materialsRef.current = next;
+              return next;
+            });
+            prepared.forEach(({ file, material }) => {
+              void uploadMaterialToManagedUrl({
+                localAssetId: material.localAssetId,
+                module: activeModule,
+                file,
+                fileName: file.name,
+              }).then((remoteUrl) => {
+                if (remoteUrl) applyUploadedMaterialUrl(type, material.id, remoteUrl);
+              }).catch(() => undefined);
+            });
+            addToast(`已添加 ${prepared.length} 个${type === 'restoreTarget' ? '待还原套图' : '产品参考图'}`, 'success');
+          }
+          if (failedCount > 0) {
+            addToast(`${failedCount} 个素材读取失败，已释放对应上传名额。`, 'warning');
+          }
+        } finally {
+          reservation.release();
+        }
+      })();
+      return;
     }
     const shouldResetSkuMaterials = shouldResetSkuMaterialsForUpload(activeModule, activeSubFeature, type);
     if (shouldResetSkuMaterials) {
@@ -4148,15 +4238,15 @@ const AppContent: React.FC<{
       addToast('短视频生成暂未对当前账号开放，请联系管理员开通。', 'warning');
       return;
     }
-    if (targetModule === AppModuleObj.RETOUCH && targetSubFeature === 'product_restore') {
-      const disabledReason = getProductRestoreCreationDisabledReason(
-        systemConfig?.featureRollouts?.productRestore || 'off',
-        currentUser?.role,
-      );
-      if (disabledReason) {
-        addToast(disabledReason, 'warning');
-        return;
-      }
+    const productRestoreCreationDisabledReason = getProductRestoreJobCreationDisabledReason({
+      module: targetModule,
+      subFeature: targetSubFeature,
+      rolloutMode: systemConfig?.featureRollouts?.productRestore || 'off',
+      role: currentUser?.role,
+    });
+    if (productRestoreCreationDisabledReason) {
+      addToast(productRestoreCreationDisabledReason, 'warning');
+      return;
     }
     if (isPendingShellSubFeature(targetModule, targetSubFeature)) {
       addToast('该子功能待制作，当前先迁移 3000 已有能力。', 'warning');
@@ -7564,6 +7654,16 @@ const AppContent: React.FC<{
     try {
       const project = projects.find((p) => p.id === projectId);
       if (!project) return;
+      const productRestoreCreationDisabledReason = getProductRestoreJobCreationDisabledReason({
+        module: project.module,
+        subFeature: project.subFeature,
+        rolloutMode: systemConfig?.featureRollouts?.productRestore || 'off',
+        role: currentUser?.role,
+      });
+      if (productRestoreCreationDisabledReason) {
+        addToast(productRestoreCreationDisabledReason, 'warning');
+        return;
+      }
       if (hasActiveRegenerationConflict(projects, tasks, project)) {
         addToast('当前模块仍有任务生成中，请先中断或等待当前任务完成后再重生成', 'warning');
         return;
@@ -8007,7 +8107,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig.workspacePreferences, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction]);
+  }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig.workspacePreferences, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction, currentUser?.role, systemConfig?.featureRollouts?.productRestore]);
 
   const handleFissionResult = useCallback(async (
     projectId: string,
