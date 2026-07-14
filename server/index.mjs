@@ -144,6 +144,10 @@ import {
 import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
 import { enqueueAssetCleanupTask, listAssetCleanupTasks, summarizeAssetCleanupTasks } from './assetLifecycleStore.mjs';
 import { processAssetCleanupBatch, reconcileManagedAssetStorage } from './assetCleanupWorker.mjs';
+import { createMediaTranscodeApi } from './mediaTranscodeApi.mjs';
+import { createMediaTranscodeService } from './mediaTranscodeService.mjs';
+import { createMediaTranscodeSessionStore } from './mediaTranscodeSessionStore.mjs';
+import { createMediaTranscodeError } from './mediaTranscodeContract.mjs';
 import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
 import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLogin } from './dreaminaCli.mjs';
 import { createTemporalTaskAdapter } from './temporalTaskAdapter.mjs';
@@ -227,6 +231,18 @@ const LOG_CLEANUP_INTERVAL_MS = 1000 * 60 * 60;
 const MAX_JSON_BODY_BYTES = 25 * 1024 * 1024;
 const MAX_STATE_BODY_BYTES = 100 * 1024 * 1024;
 const MAX_MULTIPART_BODY_BYTES = 1024 * 1024 * 1024;
+const MEDIA_TRANSCODE_INPUT_MAX_BYTES = Math.max(
+  1,
+  Number.parseInt(String(process.env.MEIAO_MEDIA_TRANSCODE_INPUT_MAX_BYTES || ''), 10) || 200 * 1024 * 1024,
+);
+const MEDIA_TRANSCODE_SESSION_TTL_MS = Math.max(
+  1,
+  Number.parseInt(String(process.env.MEIAO_MEDIA_TRANSCODE_SESSION_TTL_MS || ''), 10) || 30 * 60 * 1000,
+);
+const MEDIA_TRANSCODE_MAX_SESSIONS = Math.max(
+  1,
+  Number.parseInt(String(process.env.MEIAO_MEDIA_TRANSCODE_MAX_SESSIONS || ''), 10) || 20,
+);
 const INTERNAL_ASSET_REGISTRY_KEY = '__assetRegistry';
 const ASSET_ACCESS_TOUCH_THROTTLE_MS = 1000 * 60 * 5;
 const recentAssetAccessTouches = new Map();
@@ -333,6 +349,43 @@ let managedAssetCleanup = {
 let logCleanupTimer = null;
 let staleRunningJobReconcilerTimer = null;
 const temporalTaskAdapter = createTemporalTaskAdapter();
+const mediaTranscodeService = createMediaTranscodeService({ env: process.env });
+const mediaTranscodeSessionStore = createMediaTranscodeSessionStore({
+  rootDir: path.join(dataDir, 'media-transcode-sessions'),
+  ttlMs: MEDIA_TRANSCODE_SESSION_TTL_MS,
+  maxSessions: MEDIA_TRANSCODE_MAX_SESSIONS,
+});
+let mediaTranscodeReadiness = {
+  enabled: mediaTranscodeService.getStatus().enabled,
+  ffmpegReady: false,
+  ffprobeReady: false,
+};
+const mediaTranscodeApi = createMediaTranscodeApi({
+  store: mediaTranscodeSessionStore,
+  service: mediaTranscodeService,
+  persistAsset: async ({ userId, module, assetType, fileBuffer, fileName, mimeType, metadata }) => {
+    const pool = shouldUseMysql ? await getMysqlPool() : null;
+    const persisted = await persistAssetBuffer({
+      pool,
+      publicBaseUrl: getPersistentAssetBaseUrl(),
+      userId,
+      module,
+      assetType,
+      originalName: fileName,
+      mimeType,
+      fileBuffer,
+      width: metadata?.width || 0,
+      height: metadata?.height || 0,
+      provider: 'internal_transcode',
+    });
+    return {
+      assetId: persisted.id,
+      url: persisted.publicUrl,
+      fileUrl: persisted.publicUrl,
+    };
+  },
+  log: (entry) => console.info('[media-transcode]', entry),
+});
 
 const defaultApiConfig = {
   kieApiKey: '',
@@ -2339,6 +2392,69 @@ const readMultipartFormData = async (req) => {
     duplex: 'half',
   });
   return request.formData();
+};
+
+const isMediaTranscodeRoute = (url, method) => {
+  if (!['POST', 'DELETE'].includes(String(method || '').toUpperCase())) return false;
+  return url.pathname === '/api/media-transcodes/sessions'
+    || /^\/api\/media-transcodes\/sessions\/[^/]+(?:\/convert)?$/.test(url.pathname);
+};
+
+const handleMediaTranscodeRequest = async ({ req, res, url, user }) => {
+  if (!isMediaTranscodeRoute(url, req.method)) return false;
+  if (!mediaTranscodeService.getStatus().enabled) {
+    throw createMediaTranscodeError('media_transcode_disabled', '媒体裁剪转码功能当前未启用');
+  }
+
+  if (url.pathname === '/api/media-transcodes/sessions' && req.method === 'POST') {
+    const contentLength = Number.parseInt(String(req.headers['content-length'] || '0'), 10);
+    if (Number.isFinite(contentLength) && contentLength > MEDIA_TRANSCODE_INPUT_MAX_BYTES) {
+      throw createMediaTranscodeError('media_input_too_large', '上传文件过大，无法进入转码流程');
+    }
+    const formData = await readMultipartFormData(req);
+    const file = formData.get('file');
+    const kind = String(formData.get('kind') || '').trim().toLowerCase();
+    if (!(file instanceof File)) {
+      throw createMediaTranscodeError('media_source_empty', '请选择需要处理的视频或音频文件');
+    }
+    if (file.size > MEDIA_TRANSCODE_INPUT_MAX_BYTES) {
+      throw createMediaTranscodeError('media_input_too_large', '上传文件过大，无法进入转码流程');
+    }
+    const result = await mediaTranscodeApi.createSession({
+      userId: user.id,
+      kind,
+      fileName: file.name || 'source',
+      fileBuffer: Buffer.from(await file.arrayBuffer()),
+    });
+    json(res, 201, result);
+    return true;
+  }
+
+  const convertMatch = url.pathname.match(/^\/api\/media-transcodes\/sessions\/([^/]+)\/convert$/);
+  if (convertMatch && req.method === 'POST') {
+    const body = await readBody(req, { maxBytes: 64 * 1024 });
+    const result = await mediaTranscodeApi.convertSession({
+      userId: user.id,
+      sessionId: decodeURIComponent(convertMatch[1]),
+      startSeconds: body?.startSeconds,
+      endSeconds: body?.endSeconds,
+      module: String(body?.module || 'video').slice(0, 60),
+    });
+    json(res, 200, result);
+    return true;
+  }
+
+  const sessionMatch = url.pathname.match(/^\/api\/media-transcodes\/sessions\/([^/]+)$/);
+  if (sessionMatch && req.method === 'DELETE') {
+    const result = await mediaTranscodeApi.cancelSession({
+      userId: user.id,
+      sessionId: decodeURIComponent(sessionMatch[1]),
+    });
+    json(res, 200, result);
+    return true;
+  }
+
+  return false;
 };
 
 const normalizeSpiderGatewayUrl = (value) => {
@@ -9520,6 +9636,13 @@ const handleMysqlRequest = async (req, res, url) => {
   const taskPlatformTimelineMatch = url.pathname.match(/^\/api\/admin\/task-platform\/jobs\/([^/]+)\/timeline$/);
   const taskPlatformSubmissionResolutionMatch = url.pathname.match(/^\/api\/admin\/task-platform\/jobs\/([^/]+)\/submission-resolution$/);
 
+  if (isMediaTranscodeRoute(url, req.method)) {
+    const user = await requireDbUser(req, res);
+    if (!user) return;
+    await handleMediaTranscodeRequest({ req, res, url, user });
+    return;
+  }
+
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
   if ((req.method === 'GET' || req.method === 'HEAD') && assetRouteMatch) {
     const assetId = decodeURIComponent(assetRouteMatch[1]);
@@ -12195,6 +12318,13 @@ const handleLocalRequest = async (req, res, url) => {
   const studioTrainingApplyMatch = url.pathname.match(/^\/api\/studio\/training\/([^/]+)\/apply$/);
   const taskPlatformTimelineMatch = url.pathname.match(/^\/api\/admin\/task-platform\/jobs\/([^/]+)\/timeline$/);
   const taskPlatformSubmissionResolutionMatch = url.pathname.match(/^\/api\/admin\/task-platform\/jobs\/([^/]+)\/submission-resolution$/);
+
+  if (isMediaTranscodeRoute(url, req.method)) {
+    const user = localRequireUser(req, res, store);
+    if (!user) return;
+    await handleMediaTranscodeRequest({ req, res, url, user });
+    return;
+  }
 
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
   if ((req.method === 'GET' || req.method === 'HEAD') && assetRouteMatch) {
@@ -15666,12 +15796,21 @@ const server = createServer(async (req, res) => {
         : { healthy: true, engine: taskEngine };
       // creditAlert 只在有余额告警记录时出现(S3),保持无事时 health 干净。
       const creditAlert = getCreditAlertSnapshot();
+      const mediaTranscodeStatus = await mediaTranscodeApi.status();
       json(res, 200, {
         ok: true,
         mode: shouldUseMysql ? 'internal-mysql-v1' : 'internal-v1',
         taskEngine,
         worker,
         managedAssetCleanup,
+        mediaTranscode: {
+          enabled: mediaTranscodeReadiness.enabled,
+          ffmpegReady: mediaTranscodeReadiness.ffmpegReady,
+          ffprobeReady: mediaTranscodeReadiness.ffprobeReady,
+          active: mediaTranscodeStatus.active,
+          queued: mediaTranscodeStatus.queued,
+          sessions: mediaTranscodeStatus.sessions,
+        },
         ...(Object.keys(creditAlert).length ? { creditAlert } : {}),
       });
       return;
@@ -15705,6 +15844,25 @@ const server = createServer(async (req, res) => {
       json(res, 413, { message: '请求内容过大，请压缩后重试。' });
       return;
     }
+    if (/^media_/.test(String(error?.code || ''))) {
+      const statusCode = error.code === 'media_session_forbidden'
+        ? 403
+        : ['media_session_not_found', 'media_session_expired'].includes(error.code)
+          ? 404
+          : ['media_input_too_large', 'media_output_too_large'].includes(error.code)
+            ? 413
+            : error.code === 'media_session_capacity_reached'
+              ? 429
+              : ['media_transcode_disabled', 'media_process_timeout', 'media_process_failed', 'media_probe_failed'].includes(error.code)
+                ? 503
+                : 400;
+      json(res, statusCode, {
+        message: error.message || '媒体处理失败，请重试。',
+        code: error.code,
+        retryable: statusCode === 429 || statusCode >= 500,
+      });
+      return;
+    }
     if (error?.code === 'account_credit_insufficient') {
       json(res, error.statusCode || 402, {
         message: error.message,
@@ -15734,6 +15892,11 @@ const server = createServer(async (req, res) => {
 });
 
 const bootstrap = async () => {
+  await mediaTranscodeSessionStore.cleanupExpired();
+  mediaTranscodeReadiness = await mediaTranscodeApi.readiness();
+  if (mediaTranscodeReadiness.enabled && (!mediaTranscodeReadiness.ffmpegReady || !mediaTranscodeReadiness.ffprobeReady)) {
+    console.warn('[media-transcode] runtime is enabled but a binary readiness check failed', mediaTranscodeReadiness);
+  }
   if (shouldUseMysql) {
     await ensureMysqlSchema();
     const pool = await getMysqlPool();

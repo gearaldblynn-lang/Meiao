@@ -109,3 +109,23 @@ test('结果素材下载重试旋钮同步到模板、总览和云上部署文�
     assert.match(deployDoc, new RegExp(key));
   }
 });
+
+test('音视频裁剪转码配置同步到模板、总览和云上部署文档', () => {
+  const requiredKeys = [
+    'MEIAO_MEDIA_TRANSCODE_ENABLED',
+    'MEIAO_FFMPEG_PATH',
+    'MEIAO_FFPROBE_PATH',
+    'MEIAO_MEDIA_TRANSCODE_INPUT_MAX_BYTES',
+    'MEIAO_MEDIA_TRANSCODE_CONCURRENCY',
+    'MEIAO_MEDIA_TRANSCODE_TIMEOUT_MS',
+    'MEIAO_MEDIA_PROBE_TIMEOUT_MS',
+    'MEIAO_MEDIA_TRANSCODE_SESSION_TTL_MS',
+    'MEIAO_MEDIA_TRANSCODE_MAX_SESSIONS',
+  ];
+
+  for (const key of requiredKeys) {
+    assert.match(envExample, new RegExp(key));
+    assert.match(projectOverview, new RegExp(key));
+    assert.match(deployDoc, new RegExp(key));
+  }
+});

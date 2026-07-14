@@ -142,6 +142,11 @@ npm run dev
 - `MEIAO_KIE_IMAGE_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_image` 任务提交 KIE 前解析/转存素材的并发。详情页批量生图建议保持保守默认，避免“任务数 × 素材数”打满 KIE 图床。
 - `MEIAO_KIE_VIDEO_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_seedance_video` 任务提交 KIE 前解析/转存图片、视频、音频素材的总并发。分镜视频多素材建议保持保守默认，避免多张大图同时转存导致 `asset_upload fetch failed`。
 - `MEIAO_KIE_CHAT_MEDIA_RESOLUTION_CONCURRENCY`：默认 `2`；单个 `kie_chat` 策划/分镜任务解析多媒体素材的并发，与进程级 KIE 上传总闸门叠加。
+- `MEIAO_MEDIA_TRANSCODE_ENABLED`：短视频参考音视频裁剪转码开关。生产首发建议先设 `0`，确认 `/api/health.mediaTranscode` 的 `ffmpegReady` 与 `ffprobeReady` 都为 `true` 后改为 `1`；本地未显式配置时启用，设 `0` 可立即停用入口。
+- `MEIAO_FFMPEG_PATH` / `MEIAO_FFPROBE_PATH`：可选运维覆盖路径；留空时使用 npm 随应用分发的静态二进制，健康接口不会暴露实际路径。
+- `MEIAO_MEDIA_TRANSCODE_INPUT_MAX_BYTES` / `MEIAO_MEDIA_TRANSCODE_CONCURRENCY`：默认 `209715200`（200 MiB）/ `1`，分别限制进入临时会话的单次请求和全进程并发转码数。
+- `MEIAO_MEDIA_TRANSCODE_TIMEOUT_MS` / `MEIAO_MEDIA_PROBE_TIMEOUT_MS`：默认 `600000` / `30000`；FFmpeg 与 FFprobe 的单次执行上限，超时会强杀子进程、释放并发并清理临时会话。
+- `MEIAO_MEDIA_TRANSCODE_SESSION_TTL_MS` / `MEIAO_MEDIA_TRANSCODE_MAX_SESSIONS`：默认 `1800000`（30 分钟）/ `20`；控制未完成临时素材寿命和全进程会话容量。原始上传不会进入素材库、COS、KIE 或任务记录，只有 H.264 MP4 / MP3 转码并复检通过的结果才持久化。
 - `MEIAO_CHAT_SSE_HEARTBEAT_MS`：默认 `15000`；智能体聊天 SSE 心跳间隔，避免长耗时多图生图期间代理或浏览器因连接空闲断流。
 - `AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES`：默认 `1`；智能体单次 `generate_image` 提交/读取遇到 `fetch failed`、502、超时等瞬时上游错误时的内部快速重试次数，避免把瞬时失败总结成“部分完成”。
 - `AGENT_IMAGE_TOOL_CONCURRENCY`：默认 `2`，代码上限 `5`；智能体同一轮返回多条独立 `generate_image` 工具调用时受控并发执行。只在本轮全是生图工具时启用，混合检索/生图仍串行，避免状态交叉。

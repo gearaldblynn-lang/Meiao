@@ -1,0 +1,163 @@
+import { dirname, join } from 'node:path';
+
+import {
+  createMediaTranscodeError,
+  validateTranscodedOutput,
+  validateTrimRange,
+} from './mediaTranscodeContract.mjs';
+
+function publicProbeFields(probe = {}) {
+  return {
+    durationSeconds: Number(probe.durationSeconds || 0),
+    sizeBytes: Number(probe.sizeBytes || 0),
+    formatNames: Array.isArray(probe.formatNames) ? probe.formatNames : [],
+    videoCodec: probe.videoCodec || null,
+    audioCodec: probe.audioCodec || null,
+    width: Number(probe.width || 0) || null,
+    height: Number(probe.height || 0) || null,
+    frameRate: Number(probe.frameRate || 0) || null,
+    hasAudio: Boolean(probe.hasAudio),
+  };
+}
+
+function publicSession(session) {
+  return {
+    id: session.id,
+    kind: session.kind,
+    fileName: session.fileName,
+    state: session.state,
+    ...publicProbeFields(session.probe),
+  };
+}
+
+async function safeLog(log, entry) {
+  try {
+    await log?.(entry);
+  } catch {
+    // Diagnostic logging must never change the upload result.
+  }
+}
+
+export function createMediaTranscodeApi({ store, service, persistAsset, log = () => {} } = {}) {
+  if (!store || !service || typeof persistAsset !== 'function') {
+    throw new TypeError('store, service, and persistAsset are required');
+  }
+
+  return {
+    async createSession({ userId, kind, fileName, fileBuffer }) {
+      const created = await store.create({ userId, kind, fileName, fileBuffer, probe: null });
+      try {
+        const probe = await service.probe(created.sourcePath, kind);
+        if (!Number.isFinite(probe.durationSeconds) || probe.durationSeconds <= 0) {
+          throw createMediaTranscodeError('media_probe_missing_duration', '无法读取媒体时长，请更换文件后重试');
+        }
+        if (kind === 'video' && (!probe.width || !probe.height || !probe.videoCodec)) {
+          throw createMediaTranscodeError('media_probe_missing_video', '文件中没有可用的视频画面');
+        }
+        if (kind === 'audio' && !probe.audioCodec) {
+          throw createMediaTranscodeError('media_probe_missing_audio', '文件中没有可用的音频轨道');
+        }
+        const ready = await store.updateProbe(created.id, userId, probe);
+        await safeLog(log, {
+          action: 'media_transcode_session_created',
+          sessionId: ready.id,
+          userId,
+          kind,
+          durationSeconds: probe.durationSeconds,
+          sizeBytes: probe.sizeBytes,
+        });
+        return publicSession(ready);
+      } catch (error) {
+        await store.remove(created.id);
+        await safeLog(log, {
+          action: 'media_transcode_session_failed',
+          sessionId: created.id,
+          userId,
+          kind,
+          code: error?.code || 'media_probe_failed',
+        });
+        throw error;
+      }
+    },
+
+    async convertSession({ userId, sessionId, startSeconds, endSeconds, module = 'video' }) {
+      const session = await store.getOwned(sessionId, userId);
+      const trim = validateTrimRange({
+        durationSeconds: session.probe?.durationSeconds,
+        startSeconds,
+        endSeconds,
+      });
+      await store.markConverting(sessionId, userId);
+      const outputPath = join(dirname(session.sourcePath), session.kind === 'video' ? 'converted.mp4' : 'converted.mp3');
+      try {
+        const output = await service.transcode({
+          sessionId,
+          kind: session.kind,
+          inputPath: session.sourcePath,
+          outputPath,
+          ...trim,
+          width: session.probe?.width,
+          height: session.probe?.height,
+          hasAudio: session.probe?.hasAudio,
+        });
+        validateTranscodedOutput(session.kind, output.metadata);
+        const persisted = await persistAsset({
+          userId,
+          module,
+          assetType: 'source',
+          fileBuffer: output.fileBuffer,
+          fileName: output.fileName,
+          mimeType: output.mimeType,
+          metadata: output.metadata,
+        });
+        await safeLog(log, {
+          action: 'media_transcode_succeeded',
+          sessionId,
+          userId,
+          kind: session.kind,
+          durationSeconds: output.metadata.durationSeconds,
+          sizeBytes: output.metadata.sizeBytes,
+        });
+        return {
+          ...persisted,
+          kind: session.kind,
+          fileName: output.fileName,
+          mimeType: output.mimeType,
+          ...publicProbeFields(output.metadata),
+        };
+      } catch (error) {
+        await safeLog(log, {
+          action: 'media_transcode_failed',
+          sessionId,
+          userId,
+          kind: session.kind,
+          code: error?.code || 'media_transcode_failed',
+        });
+        throw error;
+      } finally {
+        await store.remove(sessionId);
+      }
+    },
+
+    async cancelSession({ userId, sessionId }) {
+      const session = await store.getOwned(sessionId, userId);
+      const cancelled = await service.cancel(sessionId);
+      await store.remove(sessionId);
+      await safeLog(log, {
+        action: 'media_transcode_cancelled',
+        sessionId,
+        userId,
+        kind: session.kind,
+      });
+      return { cancelled: Boolean(cancelled) };
+    },
+
+    async status() {
+      return { ...service.getStatus(), sessions: await store.count() };
+    },
+
+    readiness() {
+      return service.checkReadiness();
+    },
+  };
+}
