@@ -135,7 +135,7 @@ Image job:
 - Produces: `canCreateProductRestore(mode, role): boolean`.
 - Adds: `SystemPublicConfig.featureRollouts.productRestore`.
 
-- [ ] **Step 1: Write rollout RED tests**
+- [x] **Step 1: Write rollout RED tests**
 
 Add table-driven tests proving that missing, empty, mixed-case invalid, and unknown values become `off`; `admin` permits only admin roles; `all` permits authenticated normal and admin roles; and `off` permits no one.
 
@@ -149,13 +149,13 @@ assert.equal(canCreateProductRestore('admin', 'user'), false);
 assert.equal(canCreateProductRestore('all', 'user'), true);
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `node --test src/utils/productRestoreRollout.test.mjs`
 
 Expected: FAIL because the rollout helper does not exist.
 
-- [ ] **Step 3: Implement the pure rollout helper**
+- [x] **Step 3: Implement the pure rollout helper**
 
 Use an explicit allowlist and never treat truthy strings as enabled.
 
@@ -175,7 +175,7 @@ export const canCreateProductRestore = (mode, role) => {
 };
 ```
 
-- [ ] **Step 4: Expose the normalized flag in public configuration**
+- [x] **Step 4: Expose the normalized flag in public configuration**
 
 Add this top-level response shape in `buildPublicSystemConfig` and its TypeScript type:
 
@@ -189,23 +189,25 @@ featureRollouts: {
 
 Test the public response for unset, `admin`, `all`, and invalid environment values. Restore `process.env` after each test.
 
-- [ ] **Step 5: Document the environment contract**
+- [x] **Step 5: Document the environment contract**
 
 Add `MEIAO_PRODUCT_RESTORE_ROLLOUT=off` to `.env.server.example` and document all three values, the conservative default, and the fact that it gates task creation rather than project visibility.
 
-- [ ] **Step 6: Verify GREEN and commit**
+- [x] **Step 6: Verify GREEN and commit**
 
 Run:
 
 ```bash
 node --test src/utils/productRestoreRollout.test.mjs server/jobRuntime.test.mjs
-npm run typecheck
+npx tsc -b
 git diff --check
 ```
 
 Expected: all pass.
 
 Commit: `feat: add product restoration rollout contract`
+
+Execution evidence: commit `dd2977f`; focused suites passed 45/45; `npm run lint` passed the repository's `tsc -b` and ESLint gate; task review passed spec compliance and code quality with no findings. The plan's unavailable `npm run typecheck` command was corrected to `npx tsc -b` for later tasks.
 
 ---
 
@@ -343,7 +345,7 @@ Run:
 
 ```bash
 node --test src/modules/Retouch/productRestoreContract.test.mjs
-npm run typecheck
+npx tsc -b
 git diff --check
 ```
 
@@ -468,7 +470,7 @@ Run:
 
 ```bash
 node --test src/services/arkService.test.mjs src/modules/Retouch/productRestoreContract.test.mjs
-npm run typecheck
+npx tsc -b
 git diff --check
 ```
 
@@ -620,7 +622,7 @@ Run:
 ```bash
 node --experimental-strip-types --test src/adapters/shellProductRestoreWorkflow.test.mjs
 node --test src/adapters/shellWorkflow.test.mjs src/services/kieAiService.test.mjs
-npm run typecheck
+npx tsc -b
 git diff --check
 ```
 
@@ -736,7 +738,7 @@ Run:
 
 ```bash
 node --test src/adapters/shellControlJobLifecycle.test.mjs src/adapters/shellDataAdapter.test.mjs
-npm run typecheck
+npx tsc -b
 git diff --check
 ```
 
@@ -873,7 +875,7 @@ Run:
 
 ```bash
 node --test src/components/uiArchitecture.test.mjs src/shell/modules/Retouch/productRestoreUi.test.mjs
-npm run typecheck
+npx tsc -b
 npm run lint
 git diff --check
 ```
@@ -983,7 +985,7 @@ Run:
 ```bash
 node --experimental-strip-types --test src/adapters/shellProductRestoreWorkflow.test.mjs
 node --test src/shell/modules/Retouch/ProductRestoreAnalysisPanel.test.mjs
-npm run typecheck
+npx tsc -b
 git diff --check
 ```
 
@@ -1036,7 +1038,7 @@ Expected: all pass.
 Run:
 
 ```bash
-npm run typecheck
+npx tsc -b
 npm run lint
 npm run build
 npm run verify
