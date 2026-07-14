@@ -113,7 +113,11 @@ test('product restoration context persistence fails closed before image fan-out'
   );
   assert.match(
     shellAppSource,
-    /const resumedProjectPersisted = await persistProjectToSharedState\(resumedProject\);[\s\S]{0,500}!resumedProjectPersisted[\s\S]{0,500}\) return;[\s\S]{0,500}fetchInternalJobs/,
+    /const analysisRecovery = await retryPersistedProductRestoreAnalysis\(\{[\s\S]{0,200}persist: persistProjectToSharedState/,
+  );
+  assert.match(
+    shellAppSource,
+    /resumedProject = analysisRecovery\.project;[\s\S]{0,300}!analysisRecovery\.persisted[\s\S]{0,300}\) return;[\s\S]{0,300}fetchInternalJobs/,
   );
   assert.match(
     shellAppSource,

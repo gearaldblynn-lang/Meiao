@@ -456,7 +456,10 @@ test('app workspace lazy loads major modules to avoid one giant startup bundle',
   assert.match(app, /isFrontendResourceError/);
   assert.match(app, /window\.location\.reload\(\)/);
   assert.match(app, /return new Promise<never>\(\(\) => undefined\);/);
-  assert.doesNotMatch(app, /from '\.\/adapters\/shellWorkflow'/);
+  assert.doesNotMatch(
+    app,
+    /import\s+(?!type\b)(?:\{[\s\S]{0,500}\}|[A-Za-z_$][^;\n]*)\s+from '\.\/adapters\/shellWorkflow';/,
+  );
   assert.match(app, /<Suspense fallback=/);
   assert.match(viteConfig, /manualChunks/);
 });
