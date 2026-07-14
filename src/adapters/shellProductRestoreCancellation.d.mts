@@ -1,3 +1,8 @@
+import type {
+  OneClickGenerationContext,
+  ProductRestoreCancellationMarker,
+} from '../types.ts';
+
 export interface ProductRestoreCancellationAudit {
   projectId: string;
   jobIds: string[];
@@ -21,6 +26,19 @@ export function createProductRestoreCancellationRegistry(input: {
   onAudit?: (entry: ProductRestoreCancellationAudit) => unknown;
 }): ProductRestoreCancellationRegistry;
 
+export function cloneProductRestoreCancellationMarker(
+  marker?: ProductRestoreCancellationMarker | null,
+): ProductRestoreCancellationMarker | undefined;
+
+export function hasDurableProductRestoreCancellation(project?: {
+  generationContext?: Pick<OneClickGenerationContext, 'productRestoreCancellation'>;
+} | null): boolean;
+
+export function mergeProductRestoreGenerationContext<T extends object>(
+  existingContext?: T,
+  nextContext?: T,
+): T | undefined;
+
 export function runProductRestoreFanout<T, R>(input: {
   items?: T[];
   concurrency?: number;
@@ -31,6 +49,7 @@ export function runProductRestoreFanout<T, R>(input: {
 export function markProductRestoreProjectCancelled<T extends object>(
   project: T,
   errorMessage?: string,
+  options?: { cancelledAt?: number; jobIds?: string[] },
 ): T & {
   status: 'error';
   completedAt: undefined;

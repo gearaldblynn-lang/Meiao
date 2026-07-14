@@ -56,6 +56,7 @@ import { releaseObjectURL, safeCreateObjectURL } from './utils/urlUtils';
 import { countCompletedProjectResults, mergeGeneratedPlanResults } from './utils/shellProjectResults.mjs';
 import {
   createProductRestoreCancellationRegistry,
+  hasDurableProductRestoreCancellation,
   markProductRestoreProjectCancelled,
   runProductRestoreFanout,
   shouldResumeProductRestoreProject,
@@ -3293,9 +3294,31 @@ const AppContent: React.FC<{
       void cancelInternalJob(backendJobId).catch(() => null);
       return true;
     }
-    if (productRestoreCancellationRegistryRef.current?.observeJob(projectId, backendJobId)) return true;
+    if (productRestoreCancellationRegistryRef.current?.observeJob(projectId, backendJobId)) {
+      const cancellationJobIds = productRestoreCancellationRegistryRef.current
+        ?.getCancellationJobIds(projectId) || [];
+      const latestProject = projectsRef.current.find((project) => project.id === projectId);
+      const persistedJobIds = latestProject?.generationContext?.productRestoreCancellation?.jobIds || [];
+      if (
+        latestProject
+        && cancellationJobIds.some((jobId: string) => !persistedJobIds.includes(jobId))
+      ) {
+        const cancelledProject = markProductRestoreProjectCancelled(
+          latestProject,
+          SHELL_MANUAL_CANCEL_ERROR,
+          { jobIds: cancellationJobIds },
+        ) as Project;
+        const nextProjects = projectsRef.current.map((project) => (
+          project.id === projectId ? cancelledProject : project
+        ));
+        projectsRef.current = nextProjects;
+        setProjects(nextProjects);
+        void persistProjectToSharedState(cancelledProject);
+      }
+      return true;
+    }
     return false;
-  }, [persistDeletionToSharedState]);
+  }, [persistDeletionToSharedState, persistProjectToSharedState]);
 
   const uploadImageCropSliceAsset = useCallback((file: File) => (
     uploadInternalAssetStream({
@@ -3450,6 +3473,7 @@ const AppContent: React.FC<{
     if (!projectId || !analysisJobId || !storedContext) return;
     if (
       cancellationRegistry?.isCancelled(projectId)
+      || hasDurableProductRestoreCancellation(project)
       || project.status === 'error'
       || deletedProductRestoreProjectIdsRef.current.has(projectId)
       || productRestoreProjectDeletionGuardsRef.current.has(projectId)
@@ -3459,9 +3483,11 @@ const AppContent: React.FC<{
     productRestoreResumeProjectIdsRef.current.add(projectId);
     const controller = new AbortController();
     taskControllersRef.current[projectId] = controller;
+    let currentResumeProject = project;
     const shouldStopResume = () => (
       controller.signal.aborted
       || cancellationRegistry?.isCancelled(projectId) === true
+      || hasDurableProductRestoreCancellation(currentResumeProject)
       || deletedProductRestoreProjectIdsRef.current.has(projectId)
       || productRestoreProjectDeletionGuardsRef.current.has(projectId)
     );
@@ -3580,6 +3606,7 @@ const AppContent: React.FC<{
           + (project.results || []).reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0),
         error: undefined,
       };
+      currentResumeProject = resumedProject;
       if (shouldStopResume()) return;
       const { retryPersistedProductRestoreAnalysis } = await import('./adapters/shellProductRestoreWorkflow');
       if (shouldStopResume()) return;
@@ -3603,6 +3630,7 @@ const AppContent: React.FC<{
         },
       });
       resumedProject = analysisRecovery.project;
+      currentResumeProject = resumedProject;
       if (
         !analysisRecovery.persisted
         || shouldStopResume()
@@ -3629,6 +3657,7 @@ const AppContent: React.FC<{
           generationContext: durableGenerationContext,
           taskCount: targetMaterials.length,
         };
+        currentResumeProject = resumedProject;
         if (shouldStopResume()) return;
         const hydratedProjectPersisted = await persistProjectToSharedState(resumedProject);
         if (
@@ -3737,6 +3766,7 @@ const AppContent: React.FC<{
             ? resumedResults.find((result) => result.status === 'error')?.error
             : undefined,
         };
+        currentResumeProject = resumedProject;
         setProjects((prev) => prev.map((itemProject) => (
           itemProject.id === projectId ? resumedProject : itemProject
         )));
@@ -7797,9 +7827,6 @@ const AppContent: React.FC<{
           addToast('当前分析状态或历史素材不支持重新分析，请刷新后重试或重新创建产品还原任务。', 'warning');
           return;
         }
-        productRestoreCancellationRegistryRef.current?.clearForExplicitRetry(project.id);
-        productRestoreObservedJobIdsRef.current.delete(project.id);
-
         const manualSubmissionKey = [
           project.id,
           'product_restore',
@@ -7813,8 +7840,6 @@ const AppContent: React.FC<{
           productRestoreAnalysisJobStatus: 'queued',
           productRestoreAnalysisErrorCode: '',
         };
-        const manualController = new AbortController();
-        taskControllersRef.current[retryTaskId] = manualController;
         let latestManualProject: Project = {
           ...project,
           status: 'planning',
@@ -7824,17 +7849,24 @@ const AppContent: React.FC<{
           completedCount: 0,
           taskCount: restoreTargets.length,
           error: '产品还原正在重新分析。',
-          generationContext: cloneGenerationContext(
-            storedContext.prompt,
-            manualParams,
-            storedContext.materials as Record<string, Material[]>,
-          ),
+          generationContext: {
+            ...cloneGenerationContext(
+              storedContext.prompt,
+              manualParams,
+              storedContext.materials as Record<string, Material[]>,
+            ),
+            productRestoreCancellation: undefined,
+          },
         };
-        setProjects((prev) => prev.map((item) => item.id === project.id ? latestManualProject : item));
         const manualAttemptPersisted = await persistProjectToSharedState(latestManualProject);
         if (!manualAttemptPersisted) {
           throw new Error('重新分析进度同步失败，未创建新的分析任务。');
         }
+        setProjects((prev) => prev.map((item) => item.id === project.id ? latestManualProject : item));
+        productRestoreCancellationRegistryRef.current?.clearForExplicitRetry(project.id);
+        productRestoreObservedJobIdsRef.current.delete(project.id);
+        const manualController = new AbortController();
+        taskControllersRef.current[retryTaskId] = manualController;
         setTasks((prev) => [{
           id: retryTaskId,
           projectId: project.id,
@@ -8113,6 +8145,23 @@ const AppContent: React.FC<{
             code: 'product_restore_retry_context_invalid',
           });
         }
+        const retryReadyProject: Project = {
+          ...project,
+          generationContext: {
+            ...cloneGenerationContext(
+              storedContext.prompt,
+              storedContext.params,
+              storedContext.materials as Record<string, Material[]>,
+              storedContext.productRestore,
+            ),
+            productRestoreCancellation: undefined,
+          },
+        };
+        const retryMarkerCleared = await persistProjectToSharedState(retryReadyProject);
+        if (!retryMarkerCleared) {
+          throw new Error('产品还原重试状态同步失败，未创建新的图片任务。');
+        }
+        setProjects((prev) => prev.map((item) => item.id === project.id ? retryReadyProject : item));
         productRestoreCancellationRegistryRef.current?.clearForExplicitRetry(project.id);
         productRestoreObservedJobIdsRef.current.delete(project.id);
         const retryController = new AbortController();
@@ -8180,7 +8229,7 @@ const AppContent: React.FC<{
             error: item.error || item.message,
           };
           const merged = productRestoreWorkflow.mergeProductRestoreSingleRetryProject(
-            project,
+            retryReadyProject,
             result.id,
             nextResult,
           );
@@ -9855,7 +9904,13 @@ const AppContent: React.FC<{
     const interruptedProjects: Project[] = [];
     const nextProjects = projects.map((project) => {
       if (cancelledProductRestoreProjectIds.has(project.id)) {
-        const cancelledProject = markProductRestoreProjectCancelled(project, SHELL_MANUAL_CANCEL_ERROR) as Project;
+        const cancelledProject = markProductRestoreProjectCancelled(
+          project,
+          SHELL_MANUAL_CANCEL_ERROR,
+          {
+            jobIds: productRestoreCancellationRegistryRef.current?.getCancellationJobIds(project.id) || [],
+          },
+        ) as Project;
         interruptedProjects.push(cancelledProject);
         return cancelledProject;
       }
@@ -9864,6 +9919,7 @@ const AppContent: React.FC<{
       return marked.project;
     });
     if (interruptedProjects.length > 0) {
+      projectsRef.current = nextProjects;
       setProjects(nextProjects);
       interruptedProjects.forEach((project) => {
         void persistProjectToSharedState(project);

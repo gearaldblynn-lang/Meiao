@@ -2,6 +2,53 @@ const normalizeIdentity = (value) => String(value || '').trim();
 
 const sortedIdentities = (values) => Array.from(values).filter(Boolean).sort();
 
+const hasOwn = (value, key) => Boolean(value) && Object.prototype.hasOwnProperty.call(value, key);
+
+export const cloneProductRestoreCancellationMarker = (marker) => {
+  if (
+    marker?.version !== 1
+    || marker?.status !== 'cancelled'
+    || marker?.reason !== 'user_requested'
+    || !Number.isFinite(Number(marker?.cancelledAt))
+  ) return undefined;
+  return {
+    version: 1,
+    status: 'cancelled',
+    reason: 'user_requested',
+    cancelledAt: Number(marker.cancelledAt),
+    jobIds: sortedIdentities(new Set((marker.jobIds || []).map(normalizeIdentity))),
+  };
+};
+
+export const hasDurableProductRestoreCancellation = (project) => Boolean(
+  cloneProductRestoreCancellationMarker(
+    project?.generationContext?.productRestoreCancellation,
+  ),
+);
+
+export const mergeProductRestoreGenerationContext = (existingContext, nextContext) => {
+  if (!existingContext && !nextContext) return undefined;
+  const merged = {
+    ...(existingContext || {}),
+    ...(nextContext || {}),
+  };
+  const nextExplicitlySetsMarker = hasOwn(nextContext, 'productRestoreCancellation');
+  const marker = cloneProductRestoreCancellationMarker(
+    nextExplicitlySetsMarker
+      ? nextContext?.productRestoreCancellation
+      : existingContext?.productRestoreCancellation,
+  );
+  if (marker) {
+    merged.productRestoreCancellation = marker;
+  } else if (nextExplicitlySetsMarker) {
+    // Explicit retry persists this undefined field to clear a previous marker.
+    merged.productRestoreCancellation = undefined;
+  } else {
+    delete merged.productRestoreCancellation;
+  }
+  return merged;
+};
+
 export const createProductRestoreCancellationRegistry = ({
   cancelJob,
   onAudit = () => undefined,
@@ -164,11 +211,16 @@ export const runProductRestoreFanout = async ({
 export const markProductRestoreProjectCancelled = (
   project,
   errorMessage = '已手动中断',
+  { cancelledAt = Date.now(), jobIds = [] } = {},
 ) => {
   const results = Array.isArray(project?.results)
     ? project.results.map((result) => {
       const hasMedia = Boolean(result?.imageUrl || result?.videoUrl);
-      if (result?.status === 'completed' || hasMedia) return result;
+      if (result?.status === 'completed' || hasMedia) return {
+        ...result,
+        status: 'completed',
+        error: undefined,
+      };
       return {
         ...result,
         status: 'error',
@@ -176,10 +228,31 @@ export const markProductRestoreProjectCancelled = (
       };
     })
     : [];
+  const existingMarker = cloneProductRestoreCancellationMarker(
+    project?.generationContext?.productRestoreCancellation,
+  );
+  const cancellationJobIds = new Set([
+    ...(existingMarker?.jobIds || []),
+    ...jobIds,
+    project?.backendJobId,
+    project?.generationContext?.productRestore?.analysisJobId,
+    ...results.flatMap((result) => [result?.backendJobId, result?.taskId]),
+  ].map(normalizeIdentity).filter(Boolean));
+  const marker = {
+    version: 1,
+    status: 'cancelled',
+    reason: 'user_requested',
+    cancelledAt: existingMarker?.cancelledAt || Number(cancelledAt) || Date.now(),
+    jobIds: sortedIdentities(cancellationJobIds),
+  };
   return {
     ...project,
     status: 'error',
     completedAt: undefined,
+    generationContext: {
+      ...(project?.generationContext || { prompt: '', params: {}, materials: {} }),
+      productRestoreCancellation: marker,
+    },
     results,
     completedCount: results.filter((result) => (
       result?.status === 'completed' && Boolean(result?.imageUrl || result?.videoUrl)
@@ -198,6 +271,7 @@ const resultIdentity = (result) => {
 export const shouldResumeProductRestoreProject = (project, { cancelled = false } = {}) => {
   if (
     cancelled
+    || hasDurableProductRestoreCancellation(project)
     || project?.module !== 'retouch'
     || project?.subFeature !== 'product_restore'
     || !normalizeIdentity(project?.id)

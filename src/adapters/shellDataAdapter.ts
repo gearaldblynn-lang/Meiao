@@ -1,6 +1,7 @@
 import type {
   AppModule,
   InternalJob,
+  ProductRestoreCancellationMarker,
   ProductRestoreProjectContext,
   VideoStoryboardBoard,
   VideoStoryboardConfig,
@@ -20,6 +21,11 @@ import {
   getProductRestoreTargetKey,
   hasMissingProductRestoreTargets,
 } from '../utils/taskResultReconcile.mjs';
+import {
+  cloneProductRestoreCancellationMarker,
+  hasDurableProductRestoreCancellation,
+  mergeProductRestoreGenerationContext,
+} from './shellProductRestoreCancellation.mjs';
 import {
   getVisibleProviderTaskId,
   isShellControlJob,
@@ -123,6 +129,7 @@ export interface ShellProjectData {
     params: Record<string, string>;
     materials: Record<string, ShellMaterialData[]>;
     productRestore?: ProductRestoreProjectContext;
+    productRestoreCancellation?: ProductRestoreCancellationMarker;
   };
   directGeneration?: boolean;
   storyboardProjectStatus?: VideoStoryboardProject['status'];
@@ -181,25 +188,34 @@ const cloneProductRestoreAnalysis = (
 
 const cloneGenerationContext = (
   context?: ShellProjectData['generationContext'],
-): ShellProjectData['generationContext'] => context ? ({
-  ...context,
-  params: { ...context.params },
-  materials: Object.fromEntries(
-    Object.entries(context.materials || {}).map(([type, items]) => [
-      type,
-      (items || []).map((item) => ({ ...item })),
-    ]),
-  ),
-  productRestore: context.productRestore
-    ? {
-        ...context.productRestore,
-        focusIds: [...context.productRestore.focusIds],
-        targetMaterialIds: [...context.productRestore.targetMaterialIds],
-        productReferenceMaterialIds: [...context.productRestore.productReferenceMaterialIds],
-        normalizedAnalysis: cloneProductRestoreAnalysis(context.productRestore.normalizedAnalysis),
-      }
-    : undefined,
-}) : undefined;
+): ShellProjectData['generationContext'] => {
+  if (!context) return undefined;
+  const cloned: NonNullable<ShellProjectData['generationContext']> = {
+    ...context,
+    params: { ...context.params },
+    materials: Object.fromEntries(
+      Object.entries(context.materials || {}).map(([type, items]) => [
+        type,
+        (items || []).map((item) => ({ ...item })),
+      ]),
+    ),
+    productRestore: context.productRestore
+      ? {
+          ...context.productRestore,
+          focusIds: [...context.productRestore.focusIds],
+          targetMaterialIds: [...context.productRestore.targetMaterialIds],
+          productReferenceMaterialIds: [...context.productRestore.productReferenceMaterialIds],
+          normalizedAnalysis: cloneProductRestoreAnalysis(context.productRestore.normalizedAnalysis),
+        }
+      : undefined,
+  };
+  if (Object.prototype.hasOwnProperty.call(context, 'productRestoreCancellation')) {
+    cloned.productRestoreCancellation = cloneProductRestoreCancellationMarker(
+      context.productRestoreCancellation,
+    );
+  }
+  return cloned;
+};
 
 export interface ShellDataSnapshot {
   projects: ShellProjectData[];
@@ -3235,6 +3251,27 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
 
 const normalizeProductRestoreProjectCard = (project: ShellProjectData): ShellProjectData => {
   if (project.module !== MODULE_VALUES.RETOUCH || project.subFeature !== 'product_restore') return project;
+  if (hasDurableProductRestoreCancellation(project)) {
+    const results = (project.results || []).map((result) => resultHasMedia(result)
+      ? {
+          ...result,
+          status: 'completed' as const,
+          error: undefined,
+        }
+      : {
+          ...result,
+          status: 'error' as const,
+          error: result.error || project.error || '已手动中断',
+        });
+    return {
+      ...project,
+      status: 'error',
+      results,
+      taskCount: Math.max(getProductRestoreExpectedTargetCount(project), 1),
+      completedCount: results.filter(hasCompletedMediaResult).length,
+      completedAt: undefined,
+    };
+  }
   const taskCount = Math.max(getProductRestoreExpectedTargetCount(project), 1);
   const completedCount = (project.results || []).filter(hasCompletedMediaResult).length;
   const hasGenerating = (project.results || []).some((result) => (
@@ -3587,25 +3624,32 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
   const hasGenerating = results.some((result) => (result.status === 'generating' || result.status === 'retry_waiting') && resultHasRuntimeIdentity(result));
   const hasError = results.some((result) => result.status === 'error');
   const hasCompletedMedia = completedCount > 0;
+  const generationContext = mergeProductRestoreGenerationContext(
+    existing.generationContext,
+    next.generationContext,
+  ) as ShellProjectData['generationContext'];
+  const durablyCancelled = hasDurableProductRestoreCancellation({ generationContext });
   const hasMissingProductRestoreTarget = hasMissingProductRestoreTargets({
     ...existing,
     ...next,
     results,
     taskCount,
   }, results);
-  const status = hasMissingProductRestoreTarget
-    ? 'generating'
-    : hasCompletedMedia && !hasGenerating && !hasError
-      ? 'completed'
-      : completedCount >= taskCount
+  const status = durablyCancelled
+    ? 'error'
+    : hasMissingProductRestoreTarget
+      ? 'generating'
+      : hasCompletedMedia && !hasGenerating && !hasError
         ? 'completed'
-        : hasGenerating
-          ? 'generating'
-          : hasError
-            ? 'error'
-            : hasPendingSelectedPlan(plans, results)
-              ? 'planning'
-              : next.status;
+        : completedCount >= taskCount
+          ? 'completed'
+          : hasGenerating
+            ? 'generating'
+            : hasError
+              ? 'error'
+              : hasPendingSelectedPlan(plans, results)
+                ? 'planning'
+                : next.status;
   const mergedProject: ShellProjectData & { error?: string } = {
     ...existing,
     ...next,
@@ -3614,11 +3658,16 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
     plans,
     taskCount,
     completedCount,
-    completedAt: completedCount >= taskCount ? (next.completedAt || existing.completedAt) : existing.completedAt,
+    completedAt: durablyCancelled
+      ? undefined
+      : completedCount >= taskCount
+        ? (next.completedAt || existing.completedAt)
+        : existing.completedAt,
     planningTaskId: latestProviderTaskIdentityText(existing.planningTaskId, next.planningTaskId),
     directGeneration: existing.directGeneration || next.directGeneration,
+    generationContext,
   };
-  if (status === 'completed' && completedCount > 0) {
+  if (!durablyCancelled && status === 'completed' && completedCount > 0) {
     delete mergedProject.error;
   }
   return mergedProject;

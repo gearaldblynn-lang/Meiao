@@ -161,3 +161,42 @@ test('product restoration cancellation and deletion aggregate the analysis and i
   );
   assert.match(shellAppSource, /product_restore_cancelled/);
 });
+
+test('product restoration durable cancellation clears only after explicit retry persistence', () => {
+  assert.match(
+    typesSource,
+    /export interface ProductRestoreCancellationMarker \{[\s\S]*?status: 'cancelled';[\s\S]*?jobIds: string\[\];[\s\S]*?\}/,
+  );
+
+  const assertOrdered = (source, needles) => {
+    let cursor = -1;
+    needles.forEach((needle) => {
+      const next = source.indexOf(needle, cursor + 1);
+      assert.ok(next > cursor, `expected ${needle} after offset ${cursor}`);
+      cursor = next;
+    });
+  };
+  const manualRetryBlock = shellAppSource.slice(
+    shellAppSource.indexOf('const manualSubmissionKey = ['),
+    shellAppSource.indexOf('let analysisContextPersisted = false;'),
+  );
+  assertOrdered(manualRetryBlock, [
+    'productRestoreCancellation: undefined',
+    'await persistProjectToSharedState(latestManualProject)',
+    'if (!manualAttemptPersisted)',
+    'clearForExplicitRetry(project.id)',
+    'new AbortController()',
+  ]);
+
+  const singleRetryBlock = shellAppSource.slice(
+    shellAppSource.indexOf('const retryReadyProject: Project = {'),
+    shellAppSource.indexOf('const syncRetryItem = async'),
+  );
+  assertOrdered(singleRetryBlock, [
+    'productRestoreCancellation: undefined',
+    'await persistProjectToSharedState(retryReadyProject)',
+    'if (!retryMarkerCleared)',
+    'clearForExplicitRetry(project.id)',
+    'new AbortController()',
+  ]);
+});
