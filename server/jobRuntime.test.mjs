@@ -96,6 +96,8 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   const maxForAiRelay = config.agentModels.image.find((item) => item.id === 'maxforai-image-2-relay');
   assert.equal(maxForAiRelay?.label, 'image-2中转');
   assert.equal(maxForAiRelay?.provider, 'maxforai');
+  assert.equal(maxForAiRelay?.defaultResolution, '1K');
+  assert.deepEqual(maxForAiRelay?.supportedResolutions, ['1K', '2K']);
   assert.deepEqual(config.agentModels.video.map((item) => item.id), [
     'sora-2-pro-storyboard',
     'veo3_fast',

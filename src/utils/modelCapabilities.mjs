@@ -1,13 +1,14 @@
 import {
   MAXFORAI_SUPPORTED_ASPECT_RATIOS,
-  isMaxForAiImageModel,
+  MAXFORAI_SUPPORTED_RESOLUTIONS,
+  resolveMaxForAiImageModelId,
 } from './maxforaiImageModels.mjs';
 
 const GPT_IMAGE_2_RATIOS = ['auto', '1:1', '3:4', '4:3', '9:16', '16:9'];
 const NANO_BANANA_2_RATIOS = ['auto', '1:1', '1:4', '1:8', '2:3', '3:2', '3:4', '4:1', '4:3', '4:5', '5:4', '8:1', '9:16', '16:9', '21:9'];
 
 export const getImageModelCapabilities = (model = 'gpt-image-2') => {
-  if (isMaxForAiImageModel(model)) {
+  if (resolveMaxForAiImageModelId(model)) {
     return {
       supportsStructuredAspectRatio: true,
       supportsStructuredResolution: true,
@@ -16,6 +17,7 @@ export const getImageModelCapabilities = (model = 'gpt-image-2') => {
       supportsLongGenerationWarning: true,
       maxInputImages: 16,
       supportedAspectRatios: MAXFORAI_SUPPORTED_ASPECT_RATIOS,
+      supportedResolutions: MAXFORAI_SUPPORTED_RESOLUTIONS,
       promptAspectRatioOnly: false,
       pollingWindowMs: 10 * 60_000,
       estimatedGenerationText: '预计 120-300 秒',
@@ -55,7 +57,8 @@ export const isLegacyRemovedImageModel = (model = '') => String(model || '').tri
 
 export const normalizeImageModel = (model = '', fallback = 'gpt-image-2') => {
   if (isLegacyRemovedImageModel(model)) return 'gpt-image-2';
-  if (isMaxForAiImageModel(model)) return model;
+  const maxForAiModel = resolveMaxForAiImageModelId(model);
+  if (maxForAiModel) return maxForAiModel;
   if (model === 'gpt-image-2' || model === 'gpt-image-2-secondary' || model === 'nano-banana-2') return model;
   return fallback;
 };
