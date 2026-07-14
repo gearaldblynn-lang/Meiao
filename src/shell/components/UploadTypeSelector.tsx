@@ -1,5 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { Package, Palette, ImagePlus, AtSign, Shirt, FileImage, Gift, Film, Music2 } from 'lucide-react';
+import { Package, Palette, ImagePlus, AtSign, Shirt, FileImage, Gift, Film, Music2, Info } from 'lucide-react';
 
 export type MaterialType =
   | 'product'
@@ -57,9 +57,10 @@ interface Props {
   materialTypes?: MaterialType[];
   materialLabels?: Partial<Record<MaterialType, Partial<Omit<MaterialDef, 'key'>>>>;
   materialActionLabels?: Partial<Record<MaterialType, string>>;
+  materialHints?: Partial<Record<MaterialType, string>>;
 }
 
-const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, onMaterialAction, materialTypes, materialLabels, materialActionLabels }) => {
+const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, onMaterialAction, materialTypes, materialLabels, materialActionLabels, materialHints }) => {
   const panelRef = useRef<HTMLDivElement>(null);
   const types = materialTypes || MODULE_MATERIALS[module] || ['product', 'styleRef'];
   const materials = types
@@ -120,14 +121,42 @@ const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, 
                 {m.icon}
               </button>
               <div className="min-w-0">
-                <button
-                  type="button"
-                  onClick={() => { onSelect(m.key); onClose(); }}
-                  className="block text-left text-[11px] font-medium"
-                  style={{ color: 'inherit' }}
-                >
-                  {m.label}
-                </button>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => { onSelect(m.key); onClose(); }}
+                    className="block text-left text-[11px] font-medium"
+                    style={{ color: 'inherit' }}
+                  >
+                    {m.label}
+                  </button>
+                  {materialHints?.[m.key] ? (
+                    <span className="group relative inline-flex">
+                      <button
+                        type="button"
+                        className="flex h-5 w-5 items-center justify-center rounded-full outline-none focus:ring-2"
+                        style={{ color: 'var(--accent)' }}
+                        title={materialHints[m.key]}
+                        aria-label={`${m.label}格式与数量限制`}
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        <Info size={12} />
+                      </button>
+                      <span
+                        className="pointer-events-none absolute bottom-full left-1/2 z-[260] mb-2 w-[310px] -translate-x-1/2 rounded-2xl border px-3 py-2.5 text-[10px] font-normal leading-relaxed opacity-0 shadow-xl transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                        style={{
+                          color: 'var(--text-secondary)',
+                          background: 'var(--bg-surface)',
+                          borderColor: 'var(--border-subtle)',
+                          whiteSpace: 'pre-line',
+                        }}
+                        role="tooltip"
+                      >
+                        {materialHints[m.key]}
+                      </span>
+                    </span>
+                  ) : null}
+                </div>
                 {materialActionLabels?.[m.key] ? (
                   <button
                     type="button"

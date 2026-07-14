@@ -59,6 +59,10 @@ export interface ShellMaterialInput {
   giftIndex?: number;
   originalWidth?: number;
   originalHeight?: number;
+  mimeType?: string;
+  durationSeconds?: number;
+  frameRate?: number;
+  mediaTranscoded?: boolean;
   logoPlacement?: Record<string, unknown>;
   cornerBadgeRegion?: Record<string, unknown>;
   logoReplaceRegion?: Record<string, unknown>;
@@ -302,6 +306,11 @@ const normalizeDreaminaTransitionDurations = (value: string, fallbackDuration: n
 
 const collectMaterialUrls = (items: ShellMaterialInput[] | undefined, publicBaseUrl = '') =>
   (items || []).map((item) => materialUrl(item, publicBaseUrl)).filter(Boolean);
+
+const collectMaterialDurations = (items: ShellMaterialInput[] | undefined) =>
+  (items || [])
+    .map((item) => Number(item.durationSeconds))
+    .filter((duration) => Number.isFinite(duration) && duration > 0);
 
 const materialUrl = (material: ShellMaterialInput, publicBaseUrl = '') => requireShellAssetUrl(material.remoteUrl || material.url, publicBaseUrl, '素材');
 
@@ -2888,6 +2897,8 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
   const sceneUrls = collectMaterialUrls(input.materials.scene, publicBaseUrl);
   const referenceVideoUrls = collectMaterialUrls(input.materials.referenceVideo, publicBaseUrl);
   const audioUrls = collectMaterialUrls(input.materials.audio, publicBaseUrl);
+  const referenceVideoDurations = collectMaterialDurations(input.materials.referenceVideo);
+  const referenceAudioDurations = collectMaterialDurations(input.materials.audio);
   const imageUrls = [...productUrls, ...sceneUrls];
 
   if (mode === 'frames2video' && imageUrls.length < 2) {
@@ -2926,6 +2937,8 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
           imageUrls,
           videoUrls: mode === 'multimodal2video' ? referenceVideoUrls : [],
           audioUrls: mode === 'multimodal2video' ? audioUrls : [],
+          referenceVideoDurations: mode === 'multimodal2video' ? referenceVideoDurations : [],
+          referenceAudioDurations: mode === 'multimodal2video' ? referenceAudioDurations : [],
           duration,
           aspectRatio: firstParam(input.params, ['ratio', 'aspectRatio'], '9:16'),
           resolution: normalizeSeedanceApiResolution(firstParam(input.params, ['videoResolution'], '720p')),
@@ -2940,6 +2953,8 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
           imageUrls,
           videoUrls: mode === 'multimodal2video' ? referenceVideoUrls : [],
           audioUrls: mode === 'multimodal2video' ? audioUrls : [],
+          referenceVideoDurations: mode === 'multimodal2video' ? referenceVideoDurations : [],
+          referenceAudioDurations: mode === 'multimodal2video' ? referenceAudioDurations : [],
           transitionPrompts,
           transitionDurations,
           duration,
