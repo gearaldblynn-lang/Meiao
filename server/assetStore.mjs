@@ -260,6 +260,10 @@ export const extractStoredAssetIdFromPublicUrl = (value) => {
   return match ? decodeURIComponent(match[1]) : '';
 };
 
+export const getStoredAssetStorageProvider = (asset) => (
+  String(asset?.provider || '').trim() === 'tencent_cos' ? 'tencent_cos' : 'internal'
+);
+
 export const collectStoredAssetIdsFromValue = (value) => {
   const ids = new Set();
   const visit = (current) => {
@@ -476,6 +480,14 @@ export const listStoredAssets = async (pool) => {
   return readLocalRegistry().filter((item) => !item.deletedAt);
 };
 
+export const listAllStoredAssets = async (pool) => {
+  if (pool) {
+    const [rows] = await pool.query('SELECT * FROM stored_assets ORDER BY created_at DESC');
+    return rows.map(mapAssetRow);
+  }
+  return readLocalRegistry();
+};
+
 export const markStoredAssetAccessed = async (pool, assetId, touchedAt = now()) => {
   if (!assetId) return;
   if (pool) {
@@ -510,12 +522,69 @@ export const markStoredAssetStorageStatus = async (pool, assetId, storageStatus,
 export const markStoredAssetDeleted = async (pool, assetId, deletedAt = now()) => {
   if (!assetId) return;
   if (pool) {
-    await pool.query('UPDATE stored_assets SET deleted_at = ?, updated_at = ? WHERE id = ?', [deletedAt, deletedAt, assetId]);
+    await pool.query(
+      "UPDATE stored_assets SET storage_status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?",
+      [deletedAt, deletedAt, assetId],
+    );
     return;
   }
   const assets = readLocalRegistry();
-  const next = assets.map((item) => item.id === assetId ? { ...item, deletedAt, updatedAt: deletedAt } : item);
+  const next = assets.map((item) => item.id === assetId
+    ? { ...item, storageStatus: 'deleted', deletedAt, updatedAt: deletedAt }
+    : item);
   writeLocalRegistry(next);
+};
+
+export const markStoredAssetDeletePending = async (pool, assetId, deletedAt = now()) => {
+  if (!assetId) return;
+  if (pool) {
+    await pool.query(
+      "UPDATE stored_assets SET storage_status = 'delete_pending', deleted_at = ?, updated_at = ? WHERE id = ?",
+      [deletedAt, deletedAt, assetId],
+    );
+    return;
+  }
+  const assets = readLocalRegistry();
+  const next = assets.map((item) => item.id === assetId
+    ? { ...item, storageStatus: 'delete_pending', deletedAt, updatedAt: deletedAt }
+    : item);
+  writeLocalRegistry(next);
+};
+
+export const requestStoredAssetDeletion = async ({
+  pool = null,
+  asset,
+  reason = 'unspecified',
+  isReferenced = false,
+  env = process.env,
+  timestamp = now(),
+  deps = {},
+} = {}) => {
+  const assetId = String(asset?.id || '').trim();
+  if (!assetId || !asset?.storageKey) return { queued: false, protected: false, assetId };
+  if (isReferenced) return { queued: false, protected: true, assetId };
+  if (asset.deletedAt || ['delete_pending', 'deleted'].includes(String(asset.storageStatus || ''))) {
+    return { queued: false, protected: false, assetId };
+  }
+  const markDeletePending = deps.markDeletePending || markStoredAssetDeletePending;
+  const enqueueCleanup = deps.enqueueCleanup || enqueueAssetCleanupTask;
+  await markDeletePending(pool, assetId, timestamp);
+  const storageProvider = getStoredAssetStorageProvider(asset);
+  const task = {
+    assetId,
+    provider: storageProvider,
+    bucket: storageProvider === 'tencent_cos'
+      ? String(env?.MEIAO_IMAGE_COS_BUCKET || '').trim()
+      : '',
+    region: storageProvider === 'tencent_cos'
+      ? String(env?.MEIAO_IMAGE_COS_REGION || '').trim()
+      : '',
+    storageKey: String(asset.storageKey),
+    action: 'delete',
+    reason: String(reason || 'unspecified'),
+  };
+  await enqueueCleanup(pool, task);
+  return { queued: true, protected: false, assetId, task };
 };
 
 export const deleteStoredAssetFile = async (storageKey) => {

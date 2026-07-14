@@ -1,4 +1,8 @@
-import { extractStoredAssetIdFromPublicUrl, getStoredAssetById } from './assetStore.mjs';
+import {
+  extractStoredAssetIdFromPublicUrl,
+  getStoredAssetById,
+  getStoredAssetStorageProvider,
+} from './assetStore.mjs';
 import { createTencentCosImageReadUrl } from './tencentCosImageStore.mjs';
 
 const createReadError = (code, message, statusCode) => {
@@ -22,8 +26,8 @@ export const resolveManagedAssetReadUrl = async (value, options = {}) => {
   if (userId && asset.userId && String(asset.userId) !== userId) {
     throw createReadError('managed_asset_forbidden', '没有权限读取该图片素材', 403);
   }
-  if (asset.provider === 'internal') return '';
-  if (asset.provider !== 'tencent_cos' || !asset.storageKey) {
+  if (getStoredAssetStorageProvider(asset) === 'internal') return '';
+  if (!asset.storageKey) {
     throw createReadError('managed_asset_unavailable', '图片素材存储类型不可用', 404);
   }
   const purpose = options.purpose === 'provider' ? 'provider' : 'browser';

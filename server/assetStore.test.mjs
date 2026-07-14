@@ -17,6 +17,7 @@ const {
   optimizeMp4BufferForStreaming,
   persistAssetBuffer,
   persistUploadedAssetBuffer,
+  requestStoredAssetDeletion,
   sanitizeAssetName,
   shouldRetainAssetRecord,
   selectExpiredAssetsForCleanup,
@@ -437,6 +438,87 @@ test('disabled managed image upload mode rejects new images before creating meta
       && error?.retryable === true,
   );
   assert.equal(createCalls, 0);
+});
+
+test('requestStoredAssetDeletion queues an exact COS object after making reads unavailable', async () => {
+  const calls = [];
+  const asset = {
+    id: 'asset-1',
+    provider: 'tencent_cos',
+    storageStatus: 'active',
+    storageKey: 'managed-images/users/abc/source/asset-1/image.png',
+    deletedAt: null,
+  };
+  const result = await requestStoredAssetDeletion({
+    pool: {},
+    asset,
+    reason: 'chat_session_deleted',
+    env: {
+      MEIAO_IMAGE_COS_BUCKET: 'meiao-managed-images-1406860462',
+      MEIAO_IMAGE_COS_REGION: 'ap-guangzhou',
+    },
+    timestamp: 5000,
+    deps: {
+      markDeletePending: async (_pool, assetId, timestamp) => calls.push(['pending', assetId, timestamp]),
+      enqueueCleanup: async (_pool, task) => calls.push(['enqueue', task]),
+    },
+  });
+
+  assert.equal(result.queued, true);
+  assert.deepEqual(calls[0], ['pending', 'asset-1', 5000]);
+  assert.deepEqual(calls[1], ['enqueue', {
+    assetId: 'asset-1',
+    provider: 'tencent_cos',
+    bucket: 'meiao-managed-images-1406860462',
+    region: 'ap-guangzhou',
+    storageKey: 'managed-images/users/abc/source/asset-1/image.png',
+    action: 'delete',
+    reason: 'chat_session_deleted',
+  }]);
+});
+
+test('requestStoredAssetDeletion protects still-referenced assets', async () => {
+  let mutationCalls = 0;
+  const result = await requestStoredAssetDeletion({
+    asset: {
+      id: 'asset-1',
+      provider: 'tencent_cos',
+      storageStatus: 'active',
+      storageKey: 'managed-images/users/abc/source/asset-1/image.png',
+      deletedAt: null,
+    },
+    reason: 'project_deleted',
+    isReferenced: true,
+    deps: {
+      markDeletePending: async () => { mutationCalls += 1; },
+      enqueueCleanup: async () => { mutationCalls += 1; },
+    },
+  });
+
+  assert.deepEqual(result, { queued: false, protected: true, assetId: 'asset-1' });
+  assert.equal(mutationCalls, 0);
+});
+
+test('historical upstream provider labels still queue local file cleanup', async () => {
+  const cleanupTasks = [];
+  await requestStoredAssetDeletion({
+    asset: {
+      id: 'legacy-kie-result',
+      provider: 'kie',
+      storageStatus: 'active',
+      storageKey: 'user-1/result/result.png',
+      deletedAt: null,
+    },
+    reason: 'account_deleted',
+    deps: {
+      markDeletePending: async () => {},
+      enqueueCleanup: async (_pool, task) => cleanupTasks.push(task),
+    },
+  });
+
+  assert.equal(cleanupTasks[0].provider, 'internal');
+  assert.equal(cleanupTasks[0].bucket, '');
+  assert.equal(cleanupTasks[0].storageKey, 'user-1/result/result.png');
 });
 
 test('optimizeMp4BufferForStreaming moves tail moov before mdat and patches stco offsets', () => {
