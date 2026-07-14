@@ -13,7 +13,7 @@ test('api state GET stays read-only for cloud app_states', () => {
   assert.equal(routes.length, 2);
   const dbRoute = routes[0];
 
-  assert.match(dbRoute, /scrubDbStateForUnavailableManagedAssets\(await getDbAppState\(user\.id\)\)/);
+  assert.match(dbRoute, /scrubDbStateForUnavailableManagedAssets\(await getDbAppState\(user\.id\), user\.id\)/);
   assert.doesNotMatch(dbRoute, /saveDbAppState/);
   assert.doesNotMatch(dbRoute, /runAppStateWriteWithoutBinlog/);
 });
@@ -23,7 +23,7 @@ test('api state GET stays read-only for local app state fixture', () => {
   assert.equal(routes.length, 2);
   const localRoute = routes[1];
 
-  assert.match(localRoute, /scrubLocalStateForUnavailableManagedAssets\(store\.appStates\[user\.id\] \|\| createDefaultState\(\)\)/);
+  assert.match(localRoute, /scrubLocalStateForUnavailableManagedAssets\(store\.appStates\[user\.id\] \|\| createDefaultState\(\), user\.id\)/);
   assert.doesNotMatch(localRoute, /store\.appStates\[user\.id\]\s*=/);
   assert.doesNotMatch(localRoute, /writeLocalStore/);
 });

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 
 import * as assetStore from './assetStore.mjs';
 
+const PNG_FILE_BUFFER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]);
+const JPEG_FILE_BUFFER = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]);
+
 const {
   ASSET_RETENTION_MS,
   buildAssetPublicPath,
@@ -12,6 +15,7 @@ const {
   extractStoredAssetIdFromPublicUrl,
   fetchRemoteAssetBufferWithRetry,
   getPublicBaseUrl,
+  getActiveManagedAssetRunIds,
   getStoredAssetById,
   markStoredAssetStorageStatus,
   optimizeMp4BufferForStreaming,
@@ -21,6 +25,7 @@ const {
   sanitizeAssetName,
   shouldRetainAssetRecord,
   selectExpiredAssetsForCleanup,
+  selectAbandonedPermanentAgentResultAssets,
   collectStoredAssetIdsFromValue,
 } = assetStore;
 
@@ -203,15 +208,58 @@ test('agent chat and generated result assets are permanent until their chat sess
     assetType: 'source',
     originalName: 'source.png',
     mimeType: 'image/png',
-    fileBuffer: Buffer.from('png'),
+    fileBuffer: PNG_FILE_BUFFER,
   });
 
   try {
     assert.equal(record.expiresAt, 0);
-    assert.equal(insertedValues?.[17], 0);
+    assert.equal(insertedValues?.[19], 0);
   } finally {
     await deleteStoredAssetFile(record.storageKey);
   }
+});
+
+test('old permanent agent results without a durable reference are selected as crash orphans', () => {
+  const now = 10_000;
+  const graceMs = 2_000;
+  const rows = [
+    { id: 'orphan', module: 'agent_center', assetType: 'result', storageStatus: 'active', expiresAt: 0, createdAt: 1_000, deletedAt: null, isReferenced: false },
+    { id: 'fresh', module: 'agent_center', assetType: 'result', storageStatus: 'active', expiresAt: 0, createdAt: 9_000, deletedAt: null, isReferenced: false },
+    { id: 'live', module: 'agent_chat', assetType: 'result', storageStatus: 'active', expiresAt: 0, createdAt: 1_000, deletedAt: null, isReferenced: true },
+    { id: 'source', module: 'agent_chat', assetType: 'source', storageStatus: 'active', expiresAt: 0, createdAt: 1_000, deletedAt: null, isReferenced: false },
+  ];
+
+  assert.deepEqual(
+    selectAbandonedPermanentAgentResultAssets(rows, now, graceMs).map((item) => item.id),
+    ['orphan'],
+  );
+});
+
+test('retry-waiting jobs protect matching result assets during active recovery', () => {
+  const activeRunIds = getActiveManagedAssetRunIds({
+    id: 'job-recovering',
+    status: 'retry_waiting',
+    runId: 'run-recovering',
+    clientRequestId: 'request-recovering',
+    providerTaskId: 'provider-recovering',
+  });
+  assert.deepEqual(activeRunIds, ['job-recovering', 'run-recovering', 'request-recovering', 'provider-recovering']);
+  assert.equal(activeRunIds.includes({ jobId: 'job-recovering' }.jobId), true);
+  assert.deepEqual(getActiveManagedAssetRunIds({ id: 'job-done', status: 'succeeded' }), []);
+  assert.deepEqual(getActiveManagedAssetRunIds({
+    id: 'job-done-with-stale-phase',
+    status: 'failed',
+    phase: 'submitted',
+    runId: 'run-done',
+  }), []);
+
+  const longClientRequestId = `request-${'x'.repeat(180)}`;
+  const normalizedRunId = `run-${longClientRequestId}`.slice(0, 120);
+  assert.deepEqual(getActiveManagedAssetRunIds({
+    status: 'running',
+    runId: `run-${longClientRequestId}`,
+    clientRequestId: longClientRequestId,
+  }), [normalizedRunId, longClientRequestId.slice(0, 120)]);
 });
 
 test('collectStoredAssetIdsFromValue finds managed assets in chat message payloads', () => {
@@ -320,11 +368,12 @@ test('uploaded image becomes active only after Tencent COS confirms the object',
     assetType: 'source',
     originalName: 'buyer-reference.png',
     mimeType: 'image/png',
-    fileBuffer: Buffer.from('png'),
+    fileBuffer: PNG_FILE_BUFFER,
     env: {
       MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos',
       MEIAO_IMAGE_COS_BUCKET: 'meiao-managed-images-1406860462',
       MEIAO_IMAGE_COS_REGION: 'ap-guangzhou',
+      MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'test-managed-asset-secret-32-bytes',
     },
     deps: {
       createRecord: async (_pool, value) => {
@@ -354,7 +403,31 @@ test('uploaded image becomes active only after Tencent COS confirms the object',
   assert.equal(uploads[0].storageKey, created[0].storageKey);
   assert.deepEqual(transitions, [[created[0].id, 'active']]);
   assert.equal(record.storageStatus, 'active');
-  assert.equal(record.publicUrl, `https://meiao.example.com/api/assets/file/${record.id}/buyer-reference.png`);
+  const publicUrl = new URL(record.publicUrl);
+  assert.equal(publicUrl.origin + publicUrl.pathname, `https://meiao.example.com/api/assets/file/${record.id}/buyer-reference.png`);
+  assert.ok(publicUrl.searchParams.get('asset_key'));
+});
+
+test('COS uploads reject a missing bucket snapshot before creating asset metadata', async () => {
+  let created = 0;
+  await assert.rejects(
+    () => persistUploadedAssetBuffer({
+      userId: 'user-1',
+      originalName: 'source.png',
+      mimeType: 'image/png',
+      fileBuffer: PNG_FILE_BUFFER,
+      env: {
+        MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos',
+        MEIAO_IMAGE_COS_REGION: 'ap-guangzhou',
+        MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'test-managed-asset-secret-32-bytes',
+      },
+      deps: {
+        createRecord: async () => { created += 1; },
+      },
+    }),
+    (error) => error?.code === 'provider_config_error',
+  );
+  assert.equal(created, 0);
 });
 
 test('failed COS image upload marks failure and queues exact-key cleanup without local fallback', async () => {
@@ -371,11 +444,12 @@ test('failed COS image upload marks failure and queues exact-key cleanup without
       module: 'buyer_show',
       originalName: 'buyer-reference.jpg',
       mimeType: 'image/jpeg',
-      fileBuffer: Buffer.from('jpg'),
+      fileBuffer: JPEG_FILE_BUFFER,
       env: {
         MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos',
         MEIAO_IMAGE_COS_BUCKET: 'meiao-managed-images-1406860462',
         MEIAO_IMAGE_COS_REGION: 'ap-guangzhou',
+        MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'test-managed-asset-secret-32-bytes',
       },
       deps: {
         createRecord: async (_pool, value) => {
@@ -402,9 +476,26 @@ test('failed COS image upload marks failure and queues exact-key cleanup without
   assert.equal(localWrites, 0);
 });
 
-test('generated results and non-image uploads retain the local persistence path', async () => {
+test('generated image results and non-image uploads retain the local persistence path', async () => {
   const calls = [];
-  const result = await persistUploadedAssetBuffer({
+  const generatedResult = await persistUploadedAssetBuffer({
+    publicBaseUrl: 'https://meiao.example.com',
+    userId: 'user-1',
+    module: 'retouch',
+    assetType: 'result',
+    originalName: 'generated.png',
+    mimeType: 'image/png',
+    fileBuffer: Buffer.from('png'),
+    env: { MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos' },
+    deps: {
+      persistLocal: async (options) => {
+        calls.push(options);
+        return { id: 'local-result', provider: 'internal', storageStatus: 'active' };
+      },
+      putCos: async () => { throw new Error('generated image must not use COS'); },
+    },
+  });
+  const documentResult = await persistUploadedAssetBuffer({
     publicBaseUrl: 'https://meiao.example.com',
     userId: 'user-1',
     module: 'storyboard',
@@ -421,9 +512,12 @@ test('generated results and non-image uploads retain the local persistence path'
     },
   });
 
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].mimeType, 'application/pdf');
-  assert.equal(result.provider, 'internal');
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].assetType, 'result');
+  assert.equal(calls[0].mimeType, 'image/png');
+  assert.equal(calls[1].mimeType, 'application/pdf');
+  assert.equal(generatedResult.provider, 'internal');
+  assert.equal(documentResult.provider, 'internal');
 });
 
 test('disabled managed image upload mode rejects new images before creating metadata', async () => {
@@ -433,7 +527,7 @@ test('disabled managed image upload mode rejects new images before creating meta
       userId: 'user-1',
       originalName: 'image.png',
       mimeType: 'image/png',
-      fileBuffer: Buffer.from('png'),
+      fileBuffer: PNG_FILE_BUFFER,
       env: { MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'disabled' },
       deps: {
         createRecord: async () => { createCalls += 1; },
@@ -445,6 +539,77 @@ test('disabled managed image upload mode rejects new images before creating meta
   assert.equal(createCalls, 0);
 });
 
+test('unknown client asset types cannot bypass COS by falling through to local storage', async () => {
+  let localWrites = 0;
+  await assert.rejects(
+    () => persistUploadedAssetBuffer({
+      userId: 'user-1',
+      assetType: 'local-please',
+      originalName: 'image.png',
+      mimeType: 'image/png',
+      fileBuffer: PNG_FILE_BUFFER,
+      env: { MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos' },
+      deps: {
+        persistLocal: async () => { localWrites += 1; },
+      },
+    }),
+    (error) => error?.code === 'managed_asset_type_invalid' && error?.statusCode === 400,
+  );
+  assert.equal(localWrites, 0);
+});
+
+test('managed source images declared as octet-stream are sniffed and still routed to COS', async () => {
+  const uploads = [];
+  let localWrites = 0;
+  const record = await persistUploadedAssetBuffer({
+    publicBaseUrl: 'https://meiao.example.com',
+    userId: 'user-1',
+    assetType: 'source',
+    originalName: 'disguised.bin',
+    mimeType: 'application/octet-stream',
+    fileBuffer: PNG_FILE_BUFFER,
+    env: {
+      MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos',
+      MEIAO_IMAGE_COS_BUCKET: 'meiao-managed-images-1406860462',
+      MEIAO_IMAGE_COS_REGION: 'ap-guangzhou',
+      MEIAO_MANAGED_ASSET_ACCESS_SECRET: 'test-managed-asset-secret-32-bytes',
+    },
+    deps: {
+      createRecord: async (_pool, value) => value,
+      markStatus: async () => {},
+      putCos: async (payload) => uploads.push(payload),
+      persistLocal: async () => { localWrites += 1; },
+    },
+  });
+
+  assert.equal(record.provider, 'tencent_cos');
+  assert.equal(record.mimeType, 'image/png');
+  assert.equal(uploads[0].mimeType, 'image/png');
+  assert.equal(localWrites, 0);
+});
+
+test('managed source images cannot disguise their bytes as another non-image MIME', async () => {
+  let cosWrites = 0;
+  let localWrites = 0;
+  await assert.rejects(
+    () => persistUploadedAssetBuffer({
+      userId: 'user-1',
+      assetType: 'reference',
+      originalName: 'disguised.pdf',
+      mimeType: 'application/pdf',
+      fileBuffer: PNG_FILE_BUFFER,
+      env: { MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos' },
+      deps: {
+        putCos: async () => { cosWrites += 1; },
+        persistLocal: async () => { localWrites += 1; },
+      },
+    }),
+    (error) => error?.code === 'managed_image_mime_mismatch' && error?.statusCode === 400,
+  );
+  assert.equal(cosWrites, 0);
+  assert.equal(localWrites, 0);
+});
+
 test('requestStoredAssetDeletion queues an exact COS object after making reads unavailable', async () => {
   const calls = [];
   const asset = {
@@ -452,6 +617,8 @@ test('requestStoredAssetDeletion queues an exact COS object after making reads u
     provider: 'tencent_cos',
     storageStatus: 'active',
     storageKey: 'managed-images/users/abc/source/asset-1/image.png',
+    storageBucket: 'snapshot-bucket-1406860462',
+    storageRegion: 'snapshot-region',
     deletedAt: null,
   };
   const result = await requestStoredAssetDeletion({
@@ -459,8 +626,9 @@ test('requestStoredAssetDeletion queues an exact COS object after making reads u
     asset,
     reason: 'chat_session_deleted',
     env: {
-      MEIAO_IMAGE_COS_BUCKET: 'meiao-managed-images-1406860462',
-      MEIAO_IMAGE_COS_REGION: 'ap-guangzhou',
+      MEIAO_IMAGE_COS_BUCKET: 'current-bucket-must-not-be-used',
+      MEIAO_IMAGE_COS_REGION: 'current-region-must-not-be-used',
+      MEIAO_ASSET_DELETE_GRACE_MS: '120000',
     },
     timestamp: 5000,
     deps: {
@@ -474,11 +642,12 @@ test('requestStoredAssetDeletion queues an exact COS object after making reads u
   assert.deepEqual(calls[1], ['enqueue', {
     assetId: 'asset-1',
     provider: 'tencent_cos',
-    bucket: 'meiao-managed-images-1406860462',
-    region: 'ap-guangzhou',
+    bucket: 'snapshot-bucket-1406860462',
+    region: 'snapshot-region',
     storageKey: 'managed-images/users/abc/source/asset-1/image.png',
     action: 'delete',
     reason: 'chat_session_deleted',
+    nextAttemptAt: 125000,
   }]);
 });
 

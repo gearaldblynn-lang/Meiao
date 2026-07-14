@@ -626,6 +626,9 @@ export const deleteJobById = async (pool, jobId, options = {}) => {
       if (!result?.affectedRows) {
         return { job, action: 'job_state_changed', deleted: false };
       }
+      if (typeof options.afterDelete === 'function') {
+        await options.afterDelete(connection, job);
+      }
       return { job, action, deleted: true };
     });
   } finally {
@@ -906,7 +909,8 @@ export const updateJobFields = async (pool, jobId, fields) => {
     values.push(value);
   });
   values.push(jobId);
-  await pool.query(`UPDATE internal_jobs SET ${assignments.join(', ')} WHERE id = ?`, values);
+  const [result] = await pool.query(`UPDATE internal_jobs SET ${assignments.join(', ')} WHERE id = ?`, values);
+  return result;
 };
 
 export const requestCancelJob = async (pool, job, actor) => {

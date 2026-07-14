@@ -19,14 +19,21 @@ const cleanupTask = (overrides = {}) => ({
 test('cleanup worker completes a missing COS object as idempotent success', async () => {
   const completed = [];
   const assetStates = [];
+  const lifecycle = [];
   const summary = await processAssetCleanupBatch({
     pool: {},
     limit: 5,
     store: {
       claimDue: async () => [cleanupTask()],
-      complete: async (_pool, taskId) => completed.push(taskId),
+      complete: async (_pool, taskId) => {
+        completed.push(taskId);
+        lifecycle.push(['complete', taskId]);
+      },
       retry: async () => { throw new Error('retry must not be called'); },
-      markAssetStatus: async (_pool, assetId, status) => assetStates.push([assetId, status]),
+      markAssetStatus: async (_pool, assetId, status) => {
+        assetStates.push([assetId, status]);
+        lifecycle.push(['asset', assetId, status]);
+      },
     },
     deleteCos: async () => ({ deleted: true, missing: true }),
   });
@@ -34,6 +41,32 @@ test('cleanup worker completes a missing COS object as idempotent success', asyn
   assert.deepEqual(summary, { claimed: 1, completed: 1, retried: 0, manualReview: 0, protected: 0 });
   assert.deepEqual(completed, ['cleanup-1']);
   assert.deepEqual(assetStates, [['asset-1', 'deleted']]);
+  assert.deepEqual(lifecycle, [
+    ['asset', 'asset-1', 'deleted'],
+    ['complete', 'cleanup-1'],
+  ]);
+});
+
+test('cleanup worker retries the durable task if marking the asset deleted fails after physical delete', async () => {
+  const retries = [];
+  let completeCalls = 0;
+  const summary = await processAssetCleanupBatch({
+    pool: {},
+    store: {
+      claimDue: async () => [cleanupTask()],
+      complete: async () => { completeCalls += 1; },
+      retry: async (_pool, taskId, error) => {
+        retries.push([taskId, error.message]);
+        return { status: 'retry' };
+      },
+      markAssetStatus: async () => { throw new Error('database interrupted'); },
+    },
+    deleteCos: async () => ({ deleted: true, missing: false }),
+  });
+
+  assert.equal(completeCalls, 0);
+  assert.deepEqual(retries, [['cleanup-1', 'database interrupted']]);
+  assert.equal(summary.retried, 1);
 });
 
 test('cleanup worker persists a retry and continues the remaining batch', async () => {
@@ -110,6 +143,34 @@ test('cleanup worker restores a pending asset instead of deleting a newly live r
   assert.deepEqual(protectedTasks, ['cleanup-1']);
 });
 
+test('cleanup worker never resurrects an active row whose COS object is confirmed missing', async () => {
+  const completed = [];
+  const protectedTasks = [];
+  const assetStates = [];
+  let deleteCalls = 0;
+  const summary = await processAssetCleanupBatch({
+    pool: {},
+    store: {
+      claimDue: async () => [cleanupTask({ reason: 'active_object_missing_reconcile' })],
+      complete: async (_pool, taskId) => completed.push(taskId),
+      protect: async (_pool, taskId) => protectedTasks.push(taskId),
+      retry: async () => { throw new Error('missing-object cleanup must not retry'); },
+      markAssetStatus: async (_pool, assetId, status) => assetStates.push([assetId, status]),
+    },
+    isProtected: async () => true,
+    deleteCos: async () => {
+      deleteCalls += 1;
+      return { deleted: true, missing: true };
+    },
+  });
+
+  assert.deepEqual(summary, { claimed: 1, completed: 1, retried: 0, manualReview: 0, protected: 0 });
+  assert.equal(deleteCalls, 1);
+  assert.deepEqual(assetStates, [['asset-1', 'deleted']]);
+  assert.deepEqual(completed, ['cleanup-1']);
+  assert.deepEqual(protectedTasks, []);
+});
+
 test('storage reconciliation repairs stale uploading and missing cleanup tasks', async () => {
   const enqueued = [];
   const states = [];
@@ -124,9 +185,9 @@ test('storage reconciliation repairs stale uploading and missing cleanup tasks',
     deps: {
       listAssets: async () => [
         cleanupTask({ id: 'active', storageStatus: 'active', createdAt: 1 }),
-        cleanupTask({ id: 'pending', storageStatus: 'delete_pending', deletedAt: 4000 }),
-        cleanupTask({ id: 'failed', storageStatus: 'upload_failed', createdAt: 3000 }),
-        cleanupTask({ id: 'stale', storageStatus: 'uploading', createdAt: 1000 }),
+        cleanupTask({ id: 'pending', storageStatus: 'delete_pending', deletedAt: 4000, storageBucket: 'snapshot-bucket', storageRegion: 'snapshot-region' }),
+        cleanupTask({ id: 'failed', storageStatus: 'upload_failed', createdAt: 3000, storageBucket: 'snapshot-bucket', storageRegion: 'snapshot-region' }),
+        cleanupTask({ id: 'stale', storageStatus: 'uploading', createdAt: 1000, storageBucket: 'snapshot-bucket', storageRegion: 'snapshot-region' }),
       ],
       markStatus: async (_pool, assetId, status) => states.push([assetId, status]),
       enqueueCleanup: async (_pool, task) => enqueued.push(task),
@@ -140,11 +201,84 @@ test('storage reconciliation repairs stale uploading and missing cleanup tasks',
     uploadFailed: 2,
     deletePending: 1,
     uploading: 1,
+    snapshotMissing: 0,
+    activeCosChecked: 0,
+    activeCosMissing: 0,
+    activeCosHeadFailed: 0,
   });
   assert.deepEqual(states, [['stale', 'upload_failed']]);
   assert.deepEqual(enqueued.map((task) => [task.assetId, task.reason]), [
     ['pending', 'delete_pending_reconcile'],
     ['failed', 'upload_failed_reconcile'],
     ['stale', 'stale_upload_reconcile'],
+  ]);
+  assert.ok(enqueued.every((task) => task.bucket === 'snapshot-bucket' && task.region === 'snapshot-region'));
+});
+
+test('storage reconciliation quarantines a missing COS snapshot and continues unrelated assets', async () => {
+  const enqueued = [];
+  const summary = await reconcileManagedAssetStorage({
+    pool: {},
+    env: {
+      MEIAO_IMAGE_COS_BUCKET: 'current-but-unsafe-bucket',
+      MEIAO_IMAGE_COS_REGION: 'current-region',
+    },
+    deps: {
+      listAssets: async () => [
+        cleanupTask({
+          id: 'legacy-pending',
+          storageStatus: 'delete_pending',
+          storageBucket: '',
+          storageRegion: '',
+        }),
+        cleanupTask({
+          id: 'safe-pending',
+          storageStatus: 'delete_pending',
+          storageBucket: 'snapshot-bucket',
+          storageRegion: 'snapshot-region',
+        }),
+      ],
+      enqueueCleanup: async (_pool, task) => enqueued.push(task),
+    },
+  });
+
+  assert.equal(summary.snapshotMissing, 1);
+  assert.equal(summary.enqueued, 1);
+  assert.deepEqual(enqueued.map((task) => task.assetId), ['safe-pending']);
+  assert.equal(enqueued[0].bucket, 'snapshot-bucket');
+});
+
+test('daily reconciliation turns an active row with a missing COS object into a durable consistency cleanup', async () => {
+  const enqueued = [];
+  const states = [];
+  const headCalls = [];
+  const summary = await reconcileManagedAssetStorage({
+    pool: {},
+    now: 50_000,
+    verifyActiveCos: true,
+    deps: {
+      listAssets: async () => [
+        cleanupTask({ id: 'present', storageStatus: 'active', storageBucket: 'bucket-a', storageRegion: 'region-a' }),
+        cleanupTask({ id: 'missing', storageStatus: 'active', storageKey: 'managed-images/missing.png', storageBucket: 'bucket-b', storageRegion: 'region-b' }),
+      ],
+      headCos: async (key, env) => {
+        headCalls.push([key, env.MEIAO_IMAGE_COS_BUCKET, env.MEIAO_IMAGE_COS_REGION]);
+        return { exists: key !== 'managed-images/missing.png' };
+      },
+      markStatus: async (_pool, assetId, status) => states.push([assetId, status]),
+      enqueueCleanup: async (_pool, task) => enqueued.push(task),
+    },
+  });
+
+  assert.equal(summary.activeCosChecked, 2);
+  assert.equal(summary.activeCosMissing, 1);
+  assert.equal(summary.activeCosHeadFailed, 0);
+  assert.deepEqual(states, [['missing', 'delete_pending']]);
+  assert.deepEqual(enqueued.map((task) => [task.assetId, task.reason]), [
+    ['missing', 'active_object_missing_reconcile'],
+  ]);
+  assert.deepEqual(headCalls, [
+    [cleanupTask().storageKey, 'bucket-a', 'region-a'],
+    ['managed-images/missing.png', 'bucket-b', 'region-b'],
   ]);
 });

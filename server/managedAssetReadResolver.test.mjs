@@ -9,6 +9,8 @@ const cosAsset = (overrides = {}) => ({
   provider: 'tencent_cos',
   storageStatus: 'active',
   storageKey: 'managed-images/users/abc/source/asset-cos-1/image.png',
+  storageBucket: 'snapshot-bucket-1406860462',
+  storageRegion: 'snapshot-region',
   publicUrl: '/api/assets/file/asset-cos-1/image.png',
   deletedAt: null,
   ...overrides,
@@ -26,12 +28,14 @@ test('active COS managed assets receive a fresh purpose-specific signed URL', as
     purpose: 'provider',
     userId: 'user-1',
     getAsset,
+    headCos: async () => ({ exists: true }),
     createCosReadUrl,
   });
   const second = await resolveManagedAssetReadUrl('/api/assets/file/asset-cos-1/image.png', {
     purpose: 'provider',
     userId: 'user-1',
     getAsset,
+    headCos: async () => ({ exists: true }),
     createCosReadUrl,
   });
 
@@ -42,7 +46,7 @@ test('active COS managed assets receive a fresh purpose-specific signed URL', as
   ]);
 });
 
-test('historical internal assets return empty so the legacy resolver remains in control', async () => {
+test('historical internal assets keep their existing local stream path', async () => {
   const result = await resolveManagedAssetReadUrl('/api/assets/file/asset-local/image.png', {
     purpose: 'provider',
     userId: 'user-1',
@@ -55,6 +59,14 @@ test('historical internal assets return empty so the legacy resolver remains in 
   });
 
   assert.equal(result, '');
+
+  const browserResult = await resolveManagedAssetReadUrl('/api/assets/file/asset-local/image.png', {
+    purpose: 'browser',
+    userId: 'user-1',
+    getAsset: async () => cosAsset({ id: 'asset-local', provider: 'internal' }),
+    appendAccessKey: () => { throw new Error('browser stream must not sign an internal redirect'); },
+  });
+  assert.equal(browserResult, '');
 });
 
 test('historical KIE-labelled result assets still use the local read path', async () => {
@@ -70,6 +82,57 @@ test('historical KIE-labelled result assets still use the local read path', asyn
   });
 
   assert.equal(result, '');
+});
+
+test('COS reads sign with the persisted bucket and region snapshot after config rotation', async () => {
+  let signedEnv = null;
+  await resolveManagedAssetReadUrl('/api/assets/file/asset-cos-1/image.png', {
+    purpose: 'provider',
+    userId: 'user-1',
+    env: {
+      MEIAO_IMAGE_COS_BUCKET: 'new-current-bucket',
+      MEIAO_IMAGE_COS_REGION: 'new-current-region',
+    },
+    getAsset: async () => cosAsset(),
+    headCos: async () => ({ exists: true }),
+    createCosReadUrl: async (_key, _purpose, env) => {
+      signedEnv = env;
+      return 'https://snapshot.cos.test/image.png';
+    },
+  });
+
+  assert.equal(signedEnv.MEIAO_IMAGE_COS_BUCKET, 'snapshot-bucket-1406860462');
+  assert.equal(signedEnv.MEIAO_IMAGE_COS_REGION, 'snapshot-region');
+});
+
+test('an active database row with a missing COS object fails before signing', async () => {
+  let signCalls = 0;
+  await assert.rejects(
+    () => resolveManagedAssetReadUrl('/api/assets/file/asset-cos-1/image.png', {
+      purpose: 'browser',
+      userId: 'user-1',
+      getAsset: async () => cosAsset(),
+      headCos: async () => ({ exists: false, missing: true }),
+      createCosReadUrl: async () => {
+        signCalls += 1;
+        return 'https://must-not-sign.test';
+      },
+    }),
+    (error) => error?.code === 'managed_asset_object_missing' && error?.statusCode === 503,
+  );
+  assert.equal(signCalls, 0);
+});
+
+test('COS reads fail closed when their persisted storage snapshot is missing', async () => {
+  await assert.rejects(
+    () => resolveManagedAssetReadUrl('/api/assets/file/asset-cos-1/image.png', {
+      purpose: 'provider',
+      userId: 'user-1',
+      getAsset: async () => cosAsset({ storageBucket: '', storageRegion: '' }),
+      createCosReadUrl: async () => { throw new Error('must not guess current COS config'); },
+    }),
+    (error) => error?.code === 'managed_asset_storage_snapshot_missing',
+  );
 });
 
 test('unavailable or cross-user COS assets cannot receive a signed URL', async () => {
@@ -94,6 +157,15 @@ test('unavailable or cross-user COS assets cannot receive a signed URL', async (
     () => resolveManagedAssetReadUrl('/api/assets/file/asset-cos-1/image.png', {
       purpose: 'provider',
       userId: 'other-user',
+      getAsset: async () => cosAsset(),
+      createCosReadUrl: async () => 'https://must-not-sign.test',
+    }),
+    (error) => error?.code === 'managed_asset_forbidden',
+  );
+
+  await assert.rejects(
+    () => resolveManagedAssetReadUrl('/api/assets/file/asset-cos-1/image.png', {
+      purpose: 'provider',
       getAsset: async () => cosAsset(),
       createCosReadUrl: async () => 'https://must-not-sign.test',
     }),

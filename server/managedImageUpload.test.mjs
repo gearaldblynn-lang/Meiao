@@ -9,8 +9,12 @@ test('base64 and multipart upload routes share the COS-aware uploaded asset help
   assert.equal(helperCalls.length, 4, 'mysql/local base64 and stream handlers must share one upload path');
   assert.match(
     source,
-    /const isImageUpload = String\(mimeType[\s\S]{0,300}!isImageUpload && !isExternallyReachableBaseUrl[\s\S]{0,500}persistUploadedAssetBuffer\(/,
+    /const managedImage = \['source', 'reference', 'chat'\][\s\S]{0,300}resolveManagedImageUpload\([\s\S]{0,300}const isImageUpload = managedImage\.isImage[\s\S]{0,300}!isImageUpload && !isExternallyReachableBaseUrl[\s\S]{0,500}persistUploadedAssetBuffer\(/,
   );
+  assert.equal((source.match(/readBody\(req, \{ maxBytes: getManagedImageJsonBodyMaxBytes\(\) \}\)/g) || []).length, 2);
+  assert.equal((source.match(/readMultipartFormData\(req, \{ inspectManagedImage: true \}\)/g) || []).length, 2);
+  assert.doesNotMatch(source, /readMultipartFormData\(req, \{ maxBytes: getManagedImageMultipartBodyMaxBytes\(\) \}\)/);
+  assert.match(source, /for await \(const chunk of req\)[\s\S]{0,180}totalBytes > maxBytes/);
 });
 
 test('managed image failures return retryable service-unavailable instead of entering upload fallback', () => {

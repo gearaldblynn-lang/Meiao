@@ -16,6 +16,7 @@ export const persistGeneratedAsset = async (
   try {
     const response = await uploadInternalAssetStream({
       module,
+      assetType: 'result',
       file: uploadFile,
       fileName,
     });

@@ -9,9 +9,12 @@ test('stream asset uploads use a video-sized multipart limit instead of the JSON
   assert.match(source, /const MAX_STATE_BODY_BYTES = 100 \* 1024 \* 1024/);
   assert.match(source, /const MAX_MULTIPART_BODY_BYTES = 1024 \* 1024 \* 1024/);
 
-  const multipartReader = source.match(/const readMultipartFormData = async \(req\) => \{[\s\S]*?\n\};/)?.[0] || '';
+  const multipartReader = source.match(/const readMultipartFormData = async \(req, options = \{\}\) => \{[\s\S]*?\n\};/)?.[0] || '';
   assert.match(multipartReader, /MAX_MULTIPART_BODY_BYTES/);
   assert.doesNotMatch(multipartReader, /contentLength > MAX_JSON_BODY_BYTES/);
+  assert.equal((source.match(/readMultipartFormData\(req, \{ inspectManagedImage: true \}\)/g) || []).length, 2);
+  assert.doesNotMatch(source, /readMultipartFormData\(req, \{ maxBytes: getManagedImageMultipartBodyMaxBytes\(\) \}\)/);
+  assert.match(source, /inspectManagedImageMultipartPrefix[\s\S]{0,1800}inspection\.isImage \? getManagedImageMultipartBodyMaxBytes\(\) : MAX_MULTIPART_BODY_BYTES/);
 });
 
 test('app state saves use a dedicated compatibility limit for old large snapshots', () => {

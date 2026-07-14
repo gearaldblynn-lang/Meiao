@@ -227,6 +227,7 @@ export const uploadFilesInBatches = async (
 
       const result = await uploadInternalAssetStream({
         module: 'agent_chat',
+        assetType: 'chat',
         file,
         fileName: file.name,
       });

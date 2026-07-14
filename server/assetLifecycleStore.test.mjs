@@ -9,7 +9,9 @@ import {
   completeAssetCleanupTask,
   enqueueAssetCleanupTask,
   protectAssetCleanupTask,
+  pruneAssetCleanupTasks,
   retryAssetCleanupTask,
+  summarizeAssetCleanupStore,
   summarizeAssetCleanupTasks,
 } from './assetLifecycleStore.mjs';
 
@@ -46,7 +48,22 @@ test('local cleanup registry deduplicates the exact provider bucket key and acti
   }
 });
 
-test('MySQL duplicate enqueue only refreshes a deliberately protected task', async () => {
+test('cleanup registry honors a deletion grace deadline before a task becomes claimable', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'meiao-asset-lifecycle-'));
+  const registryPath = path.join(directory, 'cleanup.json');
+  try {
+    await enqueueAssetCleanupTask(null, taskInput({ nextAttemptAt: 5000 }), {
+      registryPath,
+      now: () => 1000,
+    });
+    assert.deepEqual(await claimDueAssetCleanupTasks(null, 10, { registryPath, now: () => 4999 }), []);
+    assert.equal((await claimDueAssetCleanupTasks(null, 10, { registryPath, now: () => 5000 })).length, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('MySQL duplicate enqueue reopens protected or prematurely completed cleanup tasks', async () => {
   const calls = [];
   const pool = {
     query: async (sql, values) => {
@@ -57,12 +74,31 @@ test('MySQL duplicate enqueue only refreshes a deliberately protected task', asy
 
   await enqueueAssetCleanupTask(pool, taskInput(), { now: () => 1000 });
   const insertSql = calls[0].sql;
-  assert.match(insertSql, /updated_at = IF\(status = 'protected', VALUES\(updated_at\), updated_at\)/);
+  assert.match(insertSql, /status IN \('protected', 'complete'\)/);
   assert.ok(
-    insertSql.indexOf('updated_at = IF') < insertSql.indexOf("status = IF(status = 'protected'"),
-    'protected-state checks must run before status is changed to pending',
+    insertSql.indexOf('updated_at = IF') < insertSql.indexOf("status = IF(status IN ('protected', 'complete')"),
+    'reactivation checks must run before status is changed to pending',
   );
   assert.doesNotMatch(insertSql, /updated_at = VALUES\(updated_at\)/);
+});
+
+test('a completed local cleanup task can be reopened by reconciliation after a crash window', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'meiao-asset-lifecycle-'));
+  const registryPath = path.join(directory, 'cleanup.json');
+  try {
+    const task = await enqueueAssetCleanupTask(null, taskInput(), { registryPath, now: () => 1000 });
+    await completeAssetCleanupTask(null, task.id, { registryPath, now: () => 2000 });
+    await enqueueAssetCleanupTask(null, taskInput({ reason: 'delete_pending_reconcile' }), {
+      registryPath,
+      now: () => 3000,
+    });
+    const stored = JSON.parse(await readFile(registryPath, 'utf8'));
+    assert.equal(stored.tasks[0].status, 'pending');
+    assert.equal(stored.tasks[0].completedAt, null);
+    assert.equal(stored.tasks[0].reason, 'delete_pending_reconcile');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('local cleanup task survives claim retry and process-style reload', async () => {
@@ -170,4 +206,65 @@ test('cleanup task summary exposes backlog age retries and manual review without
     complete: 1,
   });
   assert.equal(JSON.stringify(summary).includes('storageKey'), false);
+});
+
+test('MySQL cleanup health uses aggregate counters instead of loading object-level history', async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql) => {
+      calls.push(String(sql));
+      return [[{
+        backlog: 3,
+        oldest_created_at: 1000,
+        retry_attempts: 10,
+        manual_review: 1,
+        protected_count: 2,
+        complete_count: 5,
+      }]];
+    },
+  };
+
+  const summary = await summarizeAssetCleanupStore(pool, { now: () => 11_000 });
+
+  assert.deepEqual(summary, {
+    backlog: 3,
+    oldestPendingAgeMs: 10_000,
+    retryAttempts: 10,
+    manualReview: 1,
+    protected: 2,
+    complete: 5,
+  });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0], /SUM\(CASE WHEN status IN/);
+  assert.doesNotMatch(calls[0], /SELECT \*/);
+});
+
+test('completed and protected cleanup audit rows are pruned after the retention window', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'meiao-asset-lifecycle-'));
+  const registryPath = path.join(directory, 'cleanup.json');
+  try {
+    const completed = await enqueueAssetCleanupTask(null, taskInput(), { registryPath, now: () => 1000 });
+    await completeAssetCleanupTask(null, completed.id, { registryPath, now: () => 2000 });
+    const protectedTask = await enqueueAssetCleanupTask(null, taskInput({
+      storageKey: 'managed-images/users/abc/source/asset-2/image.png',
+      assetId: 'asset-2',
+    }), { registryPath, now: () => 1500 });
+    await protectAssetCleanupTask(null, protectedTask.id, { registryPath, now: () => 2500 });
+    await enqueueAssetCleanupTask(null, taskInput({
+      storageKey: 'managed-images/users/abc/source/asset-3/image.png',
+      assetId: 'asset-3',
+    }), { registryPath, now: () => 5000 });
+
+    const result = await pruneAssetCleanupTasks(null, {
+      registryPath,
+      now: () => 10_000,
+      retentionMs: 7000,
+    });
+    const stored = JSON.parse(await readFile(registryPath, 'utf8'));
+
+    assert.equal(result.pruned, 2);
+    assert.deepEqual(stored.tasks.map((task) => task.assetId), ['asset-3']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

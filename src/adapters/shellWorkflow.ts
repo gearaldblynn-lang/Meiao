@@ -1798,6 +1798,7 @@ const buildEverythingReplaceLogoInputs = async ({
   );
   const uploaded = await uploadInternalAssetStream({
     module: input.module,
+    assetType: 'guide',
     file: guideFile,
     fileName: guideFile.name,
     signal: input.signal,
@@ -1845,6 +1846,7 @@ const buildCornerBadgeRegionGuideInputs = async ({
   );
   const uploaded = await uploadInternalAssetStream({
     module: input.module,
+    assetType: 'guide',
     file: guideFile,
     fileName: guideFile.name,
     signal: input.signal,
@@ -1959,6 +1961,7 @@ const buildLogoReplacementLogoInput = async ({
   );
   const uploaded = await uploadInternalAssetStream({
     module: input.module,
+    assetType: 'guide',
     file: guideFile,
     fileName: guideFile.name,
     signal: input.signal,
@@ -2017,6 +2020,7 @@ const buildMultiLogoPreviewInputs = async ({
   );
   const uploaded = await uploadInternalAssetStream({
     module: input.module,
+    assetType: 'guide',
     file: previewFile,
     fileName: previewFile.name,
     signal: input.signal,

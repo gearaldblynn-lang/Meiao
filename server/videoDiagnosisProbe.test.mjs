@@ -271,7 +271,7 @@ test('video diagnosis route and client helper are wired', () => {
   const apiSource = readFileSync(new URL('../src/services/internalApi.ts', import.meta.url), 'utf8');
 
   const mysqlRouteRegex = /const handleMysqlRequest = async \(req, res, url\) =>[\s\S]*?if \(url.pathname === '\/api\/video-diagnosis\/probe' && req.method === 'POST'\)[\s\S]*?const user = await requireDbUser\(req, res\);[\s\S]*?await handleVideoDiagnosisProbeRequest\(req, res\);/;
-  const localRouteRegex = /const handleLocalRequest = async \(req, res, url\) =>[\s\S]*?if \(url.pathname === '\/api\/video-diagnosis\/probe' && req.method === 'POST'\)[\s\S]*?const user = localRequireUser\(req, res, store\);[\s\S]*?await handleVideoDiagnosisProbeRequest\(req, res\);/;
+  const localRouteRegex = /const handleLocalRequest = async \(req, res, url, \{ mutationLockHeld = false \} = \{\}\) =>[\s\S]*?if \(url.pathname === '\/api\/video-diagnosis\/probe' && req.method === 'POST'\)[\s\S]*?const user = localRequireUser\(req, res, store\);[\s\S]*?await handleVideoDiagnosisProbeRequest\(req, res\);/;
   const apiRequestRegex = /request<[\s\S]*>\('\/api\/video-diagnosis\/probe',\s*\{[\s\S]*?method: 'POST',[\s\S]*?body:/;
 
   assert.match(serverSource, mysqlRouteRegex);

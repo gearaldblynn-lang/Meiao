@@ -170,6 +170,7 @@ const shouldDelayMysqlJobForUserConcurrency = async ({
 export const createLocalTemporalActivities = ({
   readStore,
   writeStore,
+  mutateStore,
   executeJob,
   createLog,
   findUserById,
@@ -178,18 +179,24 @@ export const createLocalTemporalActivities = ({
   heartbeat = defaultActivityHeartbeat,
   heartbeatIntervalMs = getTemporalActivityHeartbeatIntervalMs(),
   isExecutionPaused = isDeployDrainActive,
-}) => ({
+}) => {
+  const mutate = async (operation) => {
+    if (typeof mutateStore === 'function') return mutateStore(operation);
+    const store = readStore();
+    const result = await operation(store);
+    writeStore(store);
+    return result;
+  };
+  return ({
   async executeLocalJobAttemptActivity({ jobId }) {
-    const initialStore = readStore();
-    const currentJob = getLocalJobById(initialStore, jobId);
     if (isExecutionPaused()) {
+      const currentJob = getLocalJobById(readStore(), jobId);
       return currentJob ? toActivityResult(currentJob) : toMissingJobActivityResult(jobId);
     }
-    const claimedJob = claimLocalJobForExecution(initialStore, jobId);
+    const claimedJob = await mutate((initialStore) => claimLocalJobForExecution(initialStore, jobId));
     if (!claimedJob) {
       return toMissingJobActivityResult(jobId);
     }
-    writeStore(initialStore);
 
     if (isTerminalJobStatus(claimedJob.status)) {
       return toActivityResult(claimedJob);
@@ -210,26 +217,25 @@ export const createLocalTemporalActivities = ({
       const value = String(providerTaskId || '').trim();
       if (!value || value === notifiedProviderTaskId) return;
       notifiedProviderTaskId = value;
-      const providerStore = readStore();
-      updateLocalJobProviderTaskId(providerStore, claimedJob.id, value);
-      writeStore(providerStore);
+      await mutate((providerStore) => updateLocalJobProviderTaskId(providerStore, claimedJob.id, value));
       safeHeartbeat(heartbeat, { jobId: claimedJob.id, stage: 'provider_submit', providerTaskId: value });
     };
 
     try {
       const output = await executeJob(claimedJob, controller.signal, { onProviderTaskId });
-      const completeStore = readStore();
-      const finishedJob = markLocalJobCompleted(completeStore, claimedJob.id, output, controller.signal.aborted);
-      try {
-        settleJobCredits?.({ store: completeStore, job: finishedJob, output, aborted: controller.signal.aborted });
-      } catch (creditError) {
-        console.error('Account credit settlement failed after local Temporal job completion.', creditError);
-      }
-      writeStore(completeStore);
+      const finishedJob = await mutate((completeStore) => {
+        const nextJob = markLocalJobCompleted(completeStore, claimedJob.id, output, controller.signal.aborted);
+        try {
+          settleJobCredits?.({ store: completeStore, job: nextJob, output, aborted: controller.signal.aborted });
+        } catch (creditError) {
+          console.error('Account credit settlement failed after local Temporal job completion.', creditError);
+        }
+        return nextJob;
+      });
 
       const user = finishedJob ? findUserById(finishedJob.userId) : null;
       if (user && createLog && finishedJob) {
-        createLog({
+        await createLog({
           user,
           level: 'info',
           module: finishedJob.module,
@@ -245,14 +251,15 @@ export const createLocalTemporalActivities = ({
       }
       return toActivityResult(finishedJob);
     } catch (error) {
-      const failureStore = readStore();
-      const failedJob = markLocalJobFailed(failureStore, claimedJob.id, error);
-      try {
-        releaseJobCredits?.({ store: failureStore, job: failedJob, error, retryWaiting: failedJob?.status === 'retry_waiting' });
-      } catch (creditError) {
-        console.error('Account credit release failed after local Temporal job failure.', creditError);
-      }
-      writeStore(failureStore);
+      const failedJob = await mutate((failureStore) => {
+        const nextJob = markLocalJobFailed(failureStore, claimedJob.id, error);
+        try {
+          releaseJobCredits?.({ store: failureStore, job: nextJob, error, retryWaiting: nextJob?.status === 'retry_waiting' });
+        } catch (creditError) {
+          console.error('Account credit release failed after local Temporal job failure.', creditError);
+        }
+        return nextJob;
+      });
 
       const user = failedJob ? findUserById(failedJob.userId) : null;
       if (user && createLog && failedJob) {
@@ -261,7 +268,7 @@ export const createLocalTemporalActivities = ({
           taskType: failedJob.taskType,
           errorCode: failedJob.errorCode,
         });
-        createLog({
+        await createLog({
           user,
           level: error?.code === 'request_cancelled' ? 'info' : logFields.level,
           module: failedJob.module,
@@ -282,7 +289,8 @@ export const createLocalTemporalActivities = ({
       stopHeartbeatPump();
     }
   },
-});
+  });
+};
 
 export const createMysqlTemporalActivities = ({
   getPool,

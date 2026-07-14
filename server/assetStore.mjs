@@ -7,6 +7,8 @@ import { readResponseBodyWithTimeout } from './providerBodyRead.mjs';
 import { inferExtensionFromMimeType, parseDataUrlPayload } from './providerAssetTransfer.mjs';
 import { enqueueAssetCleanupTask, ensureAssetLifecycleSchema } from './assetLifecycleStore.mjs';
 import { buildCosImageObjectKey, putTencentCosImage } from './tencentCosImageStore.mjs';
+import { appendManagedAssetAccessKey } from './managedAssetAccessKey.mjs';
+import { resolveManagedImageUpload } from './managedImageValidation.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,6 +27,50 @@ const STORED_ASSET_STORAGE_STATUSES = new Set([
   'deleted',
   'upload_failed',
 ]);
+const COS_MANAGED_IMAGE_ASSET_TYPES = new Set(['source', 'reference', 'chat']);
+const ACCEPTED_UPLOAD_ASSET_TYPES = new Set(['source', 'reference', 'chat', 'result', 'guide']);
+const ACTIVE_MANAGED_ASSET_RUN_STATUSES = new Set([
+  'queued',
+  'pending',
+  'running',
+  'retry_waiting',
+  'retrying',
+  'submitted',
+  'processing',
+  'generating',
+]);
+const TERMINAL_MANAGED_ASSET_RUN_STATUSES = new Set([
+  'succeeded',
+  'failed',
+  'cancelled',
+  'canceled',
+  'interrupted',
+  'completed',
+  'complete',
+  'deleted',
+]);
+
+export const normalizeStoredAssetJobId = (value) => String(value || '').trim().slice(0, 120);
+
+export const getActiveManagedAssetRunIds = (value) => {
+  if (!value || typeof value !== 'object') return [];
+  const status = String(value.status || '').trim().toLowerCase();
+  const phase = String(value.phase || '').trim().toLowerCase();
+  if (TERMINAL_MANAGED_ASSET_RUN_STATUSES.has(status)) return [];
+  if (value.pending !== true && !ACTIVE_MANAGED_ASSET_RUN_STATUSES.has(status) && !ACTIVE_MANAGED_ASSET_RUN_STATUSES.has(phase)) {
+    return [];
+  }
+  return Array.from(new Set([
+    value.id,
+    value.jobId,
+    value.runId,
+    value.clientRequestId,
+    value.providerTaskId,
+    value.imagePlan?.providerTaskId,
+    ...(Array.isArray(value.providerTaskIds) ? value.providerTaskIds : []),
+    ...(Array.isArray(value.imagePlan?.providerTaskIds) ? value.imagePlan.providerTaskIds : []),
+  ].map(normalizeStoredAssetJobId).filter(Boolean)));
+};
 
 const ensureDir = (dirPath) => {
   mkdirSync(dirPath, { recursive: true });
@@ -325,11 +371,36 @@ export const selectExpiredAssetsForCleanup = (records, referenceTime = now()) =>
   ));
 };
 
+export const selectAbandonedPermanentAgentResultAssets = (
+  records,
+  referenceTime = now(),
+  graceMs = 2 * 60 * 1000,
+) => {
+  if (!Array.isArray(records)) return [];
+  const cutoff = Number(referenceTime || 0) - Math.max(1, Number(graceMs || 0));
+  return records.filter((record) => (
+    record
+    && !record.deletedAt
+    && !record.isReferenced
+    && PERMANENT_ASSET_MODULES.has(String(record.module || '').trim())
+    && String(record.assetType || '').trim() === 'result'
+    && String(record.storageStatus || 'active') === 'active'
+    && Number(record.expiresAt || 0) <= 0
+    && Number(record.createdAt || 0) > 0
+    && Number(record.createdAt || 0) <= cutoff
+  ));
+};
+
 const getAssetExpiresAt = ({ module = '', createdAt = now() } = {}) => (
   PERMANENT_ASSET_MODULES.has(String(module || '').trim())
     ? 0
     : Number(createdAt || 0) + ASSET_RETENTION_MS
 );
+
+export const getStoredAssetDeleteGraceMs = (env = process.env) => {
+  const parsed = Number.parseInt(String(env?.MEIAO_ASSET_DELETE_GRACE_MS ?? 120_000), 10);
+  return Number.isFinite(parsed) ? Math.max(1_000, Math.min(parsed, 10 * 60 * 1000)) : 120_000;
+};
 
 const mapAssetRow = (row) => ({
   id: String(row.id),
@@ -337,6 +408,8 @@ const mapAssetRow = (row) => ({
   module: String(row.module || 'system'),
   assetType: String(row.asset_type || 'source'),
   storageKey: String(row.storage_key || ''),
+  storageBucket: String(row.storage_bucket || ''),
+  storageRegion: String(row.storage_region || ''),
   originalName: String(row.original_name || ''),
   mimeType: String(row.mime_type || 'application/octet-stream'),
   fileSize: Number(row.file_size || 0),
@@ -376,6 +449,18 @@ const writeLocalRegistry = (assets) => {
   writeFileSync(LOCAL_REGISTRY_PATH, JSON.stringify({ assets }, null, 2), 'utf8');
 };
 
+let localRegistryMutationTail = Promise.resolve();
+const mutateLocalRegistry = (operation) => {
+  const run = localRegistryMutationTail.catch(() => null).then(async () => {
+    const assets = readLocalRegistry();
+    const result = await operation(assets);
+    writeLocalRegistry(assets);
+    return result;
+  });
+  localRegistryMutationTail = run.then(() => undefined, () => undefined);
+  return run;
+};
+
 export const ensureAssetSchema = async (pool) => {
   if (!pool) return;
   await pool.query(`
@@ -385,6 +470,8 @@ export const ensureAssetSchema = async (pool) => {
       module VARCHAR(60) NOT NULL,
       asset_type VARCHAR(20) NOT NULL,
       storage_key VARCHAR(255) NOT NULL,
+      storage_bucket VARCHAR(255) NOT NULL DEFAULT '',
+      storage_region VARCHAR(60) NOT NULL DEFAULT '',
       original_name VARCHAR(255) NOT NULL,
       mime_type VARCHAR(120) NOT NULL,
       file_size BIGINT NOT NULL DEFAULT 0,
@@ -411,6 +498,16 @@ export const ensureAssetSchema = async (pool) => {
   } catch (error) {
     if (error?.code !== 'ER_DUP_FIELDNAME' && Number(error?.errno || 0) !== 1060) throw error;
   }
+  for (const definition of [
+    "storage_bucket VARCHAR(255) NOT NULL DEFAULT '' AFTER storage_key",
+    "storage_region VARCHAR(60) NOT NULL DEFAULT '' AFTER storage_bucket",
+  ]) {
+    try {
+      await pool.query(`ALTER TABLE stored_assets ADD COLUMN ${definition}`);
+    } catch (error) {
+      if (error?.code !== 'ER_DUP_FIELDNAME' && Number(error?.errno || 0) !== 1060) throw error;
+    }
+  }
   await pool.query("UPDATE stored_assets SET storage_status = 'active' WHERE storage_status IS NULL OR storage_status = ''");
   await pool.query(`
     UPDATE stored_assets
@@ -425,16 +522,18 @@ const createAssetRecord = async (pool, record) => {
   if (pool) {
     await pool.query(
       `INSERT INTO stored_assets (
-        id, user_id, module, asset_type, storage_key, original_name, mime_type,
+        id, user_id, module, asset_type, storage_key, storage_bucket, storage_region, original_name, mime_type,
         file_size, width, height, provider, provider_source_url, job_id, public_url,
         created_at, updated_at, last_accessed_at, expires_at, deleted_at, storage_status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.userId,
         record.module,
         record.assetType,
         record.storageKey,
+        record.storageBucket || '',
+        record.storageRegion || '',
         record.originalName,
         record.mimeType,
         record.fileSize,
@@ -455,10 +554,10 @@ const createAssetRecord = async (pool, record) => {
     return record;
   }
 
-  const assets = readLocalRegistry();
-  assets.push(record);
-  writeLocalRegistry(assets);
-  return record;
+  return mutateLocalRegistry((assets) => {
+    assets.push(record);
+    return record;
+  });
 };
 
 export const getStoredAssetById = async (pool, assetId) => {
@@ -480,6 +579,21 @@ export const listStoredAssets = async (pool) => {
   return readLocalRegistry().filter((item) => !item.deletedAt);
 };
 
+export const listStoredAssetsForUser = async (pool, userId) => {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) return [];
+  if (pool) {
+    const [rows] = await pool.query(
+      'SELECT * FROM stored_assets WHERE user_id = ? AND deleted_at IS NULL ORDER BY created_at DESC',
+      [normalizedUserId],
+    );
+    return (rows || []).map(mapAssetRow);
+  }
+  return readLocalRegistry().filter((item) => (
+    !item.deletedAt && String(item.userId || '') === normalizedUserId
+  ));
+};
+
 export const listAllStoredAssets = async (pool) => {
   if (pool) {
     const [rows] = await pool.query('SELECT * FROM stored_assets ORDER BY created_at DESC');
@@ -488,15 +602,29 @@ export const listAllStoredAssets = async (pool) => {
   return readLocalRegistry();
 };
 
+export const listAllStoredAssetsForUser = async (pool, userId) => {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) return [];
+  if (pool) {
+    const [rows] = await pool.query(
+      'SELECT * FROM stored_assets WHERE user_id = ? ORDER BY created_at DESC',
+      [normalizedUserId],
+    );
+    return (rows || []).map(mapAssetRow);
+  }
+  return readLocalRegistry().filter((item) => String(item.userId || '') === normalizedUserId);
+};
+
 export const markStoredAssetAccessed = async (pool, assetId, touchedAt = now()) => {
   if (!assetId) return;
   if (pool) {
     await pool.query('UPDATE stored_assets SET last_accessed_at = ?, updated_at = ? WHERE id = ?', [touchedAt, touchedAt, assetId]);
     return;
   }
-  const assets = readLocalRegistry();
-  const next = assets.map((item) => item.id === assetId ? { ...item, lastAccessedAt: touchedAt, updatedAt: touchedAt } : item);
-  writeLocalRegistry(next);
+  await mutateLocalRegistry((assets) => {
+    const index = assets.findIndex((item) => item.id === assetId);
+    if (index >= 0) assets[index] = { ...assets[index], lastAccessedAt: touchedAt, updatedAt: touchedAt };
+  });
 };
 
 export const markStoredAssetStorageStatus = async (pool, assetId, storageStatus, touchedAt = now()) => {
@@ -512,16 +640,15 @@ export const markStoredAssetStorageStatus = async (pool, assetId, storageStatus,
     await pool.query(sql, [normalizedStatus, touchedAt, assetId]);
     return;
   }
-  const assets = readLocalRegistry();
-  const next = assets.map((item) => item.id === assetId
-    ? {
-      ...item,
+  await mutateLocalRegistry((assets) => {
+    const index = assets.findIndex((item) => item.id === assetId);
+    if (index >= 0) assets[index] = {
+      ...assets[index],
       storageStatus: normalizedStatus,
       updatedAt: touchedAt,
       ...(normalizedStatus === 'active' ? { deletedAt: null } : {}),
-    }
-    : item);
-  writeLocalRegistry(next);
+    };
+  });
 };
 
 export const markStoredAssetDeleted = async (pool, assetId, deletedAt = now()) => {
@@ -533,11 +660,10 @@ export const markStoredAssetDeleted = async (pool, assetId, deletedAt = now()) =
     );
     return;
   }
-  const assets = readLocalRegistry();
-  const next = assets.map((item) => item.id === assetId
-    ? { ...item, storageStatus: 'deleted', deletedAt, updatedAt: deletedAt }
-    : item);
-  writeLocalRegistry(next);
+  await mutateLocalRegistry((assets) => {
+    const index = assets.findIndex((item) => item.id === assetId);
+    if (index >= 0) assets[index] = { ...assets[index], storageStatus: 'deleted', deletedAt, updatedAt: deletedAt };
+  });
 };
 
 export const markStoredAssetDeletePending = async (pool, assetId, deletedAt = now()) => {
@@ -549,11 +675,10 @@ export const markStoredAssetDeletePending = async (pool, assetId, deletedAt = no
     );
     return;
   }
-  const assets = readLocalRegistry();
-  const next = assets.map((item) => item.id === assetId
-    ? { ...item, storageStatus: 'delete_pending', deletedAt, updatedAt: deletedAt }
-    : item);
-  writeLocalRegistry(next);
+  await mutateLocalRegistry((assets) => {
+    const index = assets.findIndex((item) => item.id === assetId);
+    if (index >= 0) assets[index] = { ...assets[index], storageStatus: 'delete_pending', deletedAt, updatedAt: deletedAt };
+  });
 };
 
 export const requestStoredAssetDeletion = async ({
@@ -573,20 +698,25 @@ export const requestStoredAssetDeletion = async ({
   }
   const markDeletePending = deps.markDeletePending || markStoredAssetDeletePending;
   const enqueueCleanup = deps.enqueueCleanup || enqueueAssetCleanupTask;
-  await markDeletePending(pool, assetId, timestamp);
+  const deleteGraceMs = getStoredAssetDeleteGraceMs(env);
   const storageProvider = getStoredAssetStorageProvider(asset);
+  const storageBucket = String(asset.storageBucket || '').trim();
+  const storageRegion = String(asset.storageRegion || '').trim();
+  if (storageProvider === 'tencent_cos' && (!storageBucket || !storageRegion)) {
+    const error = new Error('腾讯 COS 素材缺少持久化 bucket/region 快照，已停止猜测删除目标');
+    error.code = 'managed_asset_storage_snapshot_missing';
+    throw error;
+  }
+  await markDeletePending(pool, assetId, timestamp);
   const task = {
     assetId,
     provider: storageProvider,
-    bucket: storageProvider === 'tencent_cos'
-      ? String(env?.MEIAO_IMAGE_COS_BUCKET || '').trim()
-      : '',
-    region: storageProvider === 'tencent_cos'
-      ? String(env?.MEIAO_IMAGE_COS_REGION || '').trim()
-      : '',
+    bucket: storageProvider === 'tencent_cos' ? storageBucket : '',
+    region: storageProvider === 'tencent_cos' ? storageRegion : '',
     storageKey: String(asset.storageKey),
     action: 'delete',
     reason: String(reason || 'unspecified'),
+    nextAttemptAt: timestamp + deleteGraceMs,
   };
   await enqueueCleanup(pool, task);
   return { queued: true, protected: false, assetId, task };
@@ -635,6 +765,8 @@ export const persistAssetBuffer = async ({
     module: String(module || 'system').slice(0, 60),
     assetType: String(assetType || 'source').slice(0, 20),
     storageKey: storageKey.replace(/\\/g, '/'),
+    storageBucket: '',
+    storageRegion: '',
     originalName: safeName,
     mimeType: String(mimeType || 'application/octet-stream'),
     fileSize: storedBuffer?.length || 0,
@@ -680,9 +812,20 @@ export const persistUploadedAssetBuffer = async ({
   signal = null,
   deps = {},
 }) => {
-  const normalizedMimeType = String(mimeType || 'application/octet-stream').trim().toLowerCase();
+  let normalizedMimeType = String(mimeType || 'application/octet-stream').trim().toLowerCase();
   const persistLocal = deps.persistLocal || persistAssetBuffer;
-  if (!normalizedMimeType.startsWith('image/')) {
+  const normalizedAssetType = String(assetType || 'source').trim().toLowerCase();
+  if (!ACCEPTED_UPLOAD_ASSET_TYPES.has(normalizedAssetType)) {
+    const error = new Error('上传素材类型无效');
+    error.code = 'managed_asset_type_invalid';
+    error.statusCode = 400;
+    throw error;
+  }
+  const managedImage = COS_MANAGED_IMAGE_ASSET_TYPES.has(normalizedAssetType)
+    ? resolveManagedImageUpload({ fileBuffer, mimeType: normalizedMimeType, env })
+    : { isImage: false, mimeType: normalizedMimeType };
+  normalizedMimeType = managedImage.mimeType;
+  if (!managedImage.isImage) {
     return persistLocal({
       pool,
       publicBaseUrl,
@@ -711,12 +854,23 @@ export const persistUploadedAssetBuffer = async ({
     fileName: safeName,
     mimeType: normalizedMimeType,
   });
+  const storageBucket = String(env?.MEIAO_IMAGE_COS_BUCKET || '').trim();
+  const storageRegion = String(env?.MEIAO_IMAGE_COS_REGION || '').trim();
+  if (!storageBucket || !storageRegion) {
+    const error = new Error('腾讯 COS 图片存储缺少 bucket 或 region 配置');
+    error.code = 'provider_config_error';
+    error.providerStage = 'asset_upload';
+    error.providerStatus = 'config_error';
+    throw error;
+  }
   const record = {
     id,
     userId: String(userId || ''),
     module: String(module || 'system').slice(0, 60),
     assetType: String(assetType || 'source').slice(0, 20),
     storageKey,
+    storageBucket,
+    storageRegion,
     originalName: safeName,
     mimeType: normalizedMimeType,
     fileSize: Buffer.isBuffer(fileBuffer) ? fileBuffer.length : Buffer.byteLength(fileBuffer || ''),
@@ -726,7 +880,11 @@ export const persistUploadedAssetBuffer = async ({
     storageStatus: 'uploading',
     providerSourceUrl: '',
     jobId: '',
-    publicUrl: buildAssetPublicUrl(publicBaseUrl, id, safeName),
+    publicUrl: appendManagedAssetAccessKey(
+      buildAssetPublicUrl(publicBaseUrl, id, safeName),
+      { assetId: id, userId },
+      env,
+    ),
     createdAt,
     updatedAt: createdAt,
     lastAccessedAt: createdAt,
@@ -751,6 +909,7 @@ export const persistUploadedAssetBuffer = async ({
     return { ...record, storageStatus: 'active', updatedAt: activeAt };
   } catch (error) {
     const failedAt = now();
+    const deleteGraceMs = getStoredAssetDeleteGraceMs(env);
     try {
       await markStatus(pool, id, 'upload_failed', failedAt);
     } catch {
@@ -759,11 +918,12 @@ export const persistUploadedAssetBuffer = async ({
     await enqueueCleanup(pool, {
       assetId: id,
       provider: 'tencent_cos',
-      bucket: String(env?.MEIAO_IMAGE_COS_BUCKET || '').trim(),
-      region: String(env?.MEIAO_IMAGE_COS_REGION || '').trim(),
+      bucket: record.storageBucket,
+      region: record.storageRegion,
       storageKey,
       action: 'delete',
       reason: 'upload_failed',
+      nextAttemptAt: failedAt + deleteGraceMs,
     });
     throw error;
   }

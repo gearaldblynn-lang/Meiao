@@ -127,12 +127,17 @@ import {
   extractStoredAssetIdFromPublicUrl,
   fetchRemoteAssetBufferWithRetry,
   getPublicBaseUrl,
+  getActiveManagedAssetRunIds,
   getStoredAssetById,
+  getStoredAssetDeleteGraceMs,
   getStoredAssetStorageProvider,
   listAllStoredAssets,
+  listAllStoredAssetsForUser,
   listStoredAssets,
+  listStoredAssetsForUser,
   markStoredAssetAccessed,
   markStoredAssetDeleted,
+  normalizeStoredAssetJobId,
   persistAssetBuffer,
   persistUploadedAssetBuffer,
   persistInlineImageResult,
@@ -140,9 +145,25 @@ import {
   requestStoredAssetDeletion,
   resolveStoredAssetPath,
   selectExpiredAssetsForCleanup,
+  selectAbandonedPermanentAgentResultAssets,
 } from './assetStore.mjs';
 import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
-import { enqueueAssetCleanupTask, listAssetCleanupTasks, summarizeAssetCleanupTasks } from './assetLifecycleStore.mjs';
+import {
+  getManagedAssetAccessKeyFromUrl,
+  stripManagedAssetAccessKey,
+  verifyManagedAssetAccessKey,
+} from './managedAssetAccessKey.mjs';
+import {
+  enqueueAssetCleanupTask,
+  pruneAssetCleanupTasks,
+  summarizeAssetCleanupStore,
+} from './assetLifecycleStore.mjs';
+import { assertOwnedActiveManagedAssetReferences } from './managedAssetReferencePolicy.mjs';
+import {
+  getManagedImageMaxBytes,
+  inspectManagedImageMultipartPrefix,
+  resolveManagedImageUpload,
+} from './managedImageValidation.mjs';
 import { processAssetCleanupBatch, reconcileManagedAssetStorage } from './assetCleanupWorker.mjs';
 import { createMediaTranscodeApi } from './mediaTranscodeApi.mjs';
 import { createMediaTranscodeService } from './mediaTranscodeService.mjs';
@@ -325,6 +346,7 @@ const shouldUseMysql = Boolean(
 
 let mysql = null;
 let mysqlPool = null;
+let mysqlManagedAssetLockPool = null;
 let mysqlPoolHealthCheckPromise = null;
 let warnedAppStateBinlogDisableFailure = false;
 let jobWorker = null;
@@ -333,6 +355,7 @@ let temporalWorkerRuntime = null;
 let localStoreCache = null;
 let assetCleanupTimer = null;
 let assetCleanupRunning = false;
+let lastManagedCosReconciliationAt = 0;
 let managedAssetCleanup = {
   backlog: 0,
   oldestPendingAgeMs: 0,
@@ -343,6 +366,9 @@ let managedAssetCleanup = {
   uploadFailed: 0,
   deletePending: 0,
   uploading: 0,
+  activeCosChecked: 0,
+  activeCosMissing: 0,
+  activeCosHeadFailed: 0,
   alerting: false,
   lastCycleAt: null,
 };
@@ -364,9 +390,8 @@ const mediaTranscodeApi = createMediaTranscodeApi({
   store: mediaTranscodeSessionStore,
   service: mediaTranscodeService,
   persistAsset: async ({ userId, module, assetType, fileBuffer, fileName, mimeType, metadata }) => {
-    const pool = shouldUseMysql ? await getMysqlPool() : null;
-    const persisted = await persistAssetBuffer({
-      pool,
+    const persist = async (pool) => persistAssetBuffer({
+      pool: pool || null,
       publicBaseUrl: getPersistentAssetBaseUrl(),
       userId,
       module,
@@ -378,6 +403,24 @@ const mediaTranscodeApi = createMediaTranscodeApi({
       height: metadata?.height || 0,
       provider: 'internal_transcode',
     });
+    let persisted;
+    if (shouldUseMysql) {
+      persisted = await withManagedAssetUserLock(userId, async (pool) => {
+        await assertActiveDbUserUnderManagedAssetLock(pool, userId, '账号已停用或不存在，未保存转码结果');
+        return persist(pool);
+      });
+    } else {
+      persisted = await withLocalManagedAssetUserLock(userId, async () => {
+        const owner = findLocalUserById(userId);
+        if (!owner || owner.status !== 'active') {
+          const error = new Error('账号已停用或不存在，未保存转码结果');
+          error.code = 'managed_asset_owner_unavailable';
+          error.statusCode = 409;
+          throw error;
+        }
+        return persist(null);
+      });
+    }
     return {
       assetId: persisted.id,
       url: persisted.publicUrl,
@@ -472,6 +515,13 @@ const ASSET_CLEANUP_ALERT_BACKLOG = Math.max(
 const ASSET_CLEANUP_ALERT_OLDEST_MS = Math.max(
   60_000,
   Number.parseInt(String(process.env.MEIAO_ASSET_CLEANUP_ALERT_OLDEST_MS || 86_400_000), 10) || 86_400_000,
+);
+const ASSET_COS_RECONCILE_INTERVAL_MS = Math.max(
+  60 * 60 * 1000,
+  Math.min(
+    7 * 24 * 60 * 60 * 1000,
+    Number.parseInt(String(process.env.MEIAO_ASSET_COS_RECONCILE_INTERVAL_MS || 86_400_000), 10) || 86_400_000,
+  ),
 );
 const DOWNLOAD_PROXY_TIMEOUT_MS = 30_000;
 const DOWNLOAD_PROXY_MAX_BYTES = 80 * 1024 * 1024;
@@ -701,22 +751,20 @@ const isProviderTemporaryImageUrl = (value) => {
   }
 };
 
-const filterAvailableConversationImageReferences = async (imageReferences = []) => {
+const filterAvailableConversationImageReferences = async (imageReferences = [], userId = '') => {
   const refs = (Array.isArray(imageReferences) ? imageReferences : [])
     .filter((item) => !(item?.source !== 'current_upload' && isProviderTemporaryImageUrl(item?.url)));
   if (!refs.some((item) => isManagedAssetUrl(item?.url))) return reindexImageReferences(refs);
 
   try {
     const pool = shouldUseMysql ? await getMysqlPool() : null;
-    const assets = await listStoredAssets(pool);
+    const assets = await listStoredAssetsForUser(pool, userId);
     const validAssetRefs = buildValidManagedAssetReferences(assets);
     return reindexImageReferences(refs.filter((item) => !isManagedAssetUrl(item?.url) || isAvailableManagedAssetUrl(item.url, validAssetRefs)));
   } catch {
     return reindexImageReferences(refs);
   }
 };
-
-const normalizeStoredAssetJobId = (value) => String(value || '').trim().slice(0, 120);
 
 const sanitizePathPart = (value) => value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 48) || 'anonymous';
 const sanitizeUploadFileName = (value) => {
@@ -1680,7 +1728,11 @@ const resolveAuthorizedJobSubmissionPolicy = (user, body) => resolveJobSubmissio
   provider: body?.provider,
   payload: body?.payload,
   subFeature: body?.subFeature,
+  taskPurpose: body?.taskPurpose,
   hasVideoPermission: canUseVideoGenerationFeature(user),
+  userRole: user?.role,
+  productRestoreRollout: process.env.MEIAO_PRODUCT_RESTORE_ROLLOUT,
+  submissionOperation: body?.taskType === 'kie_recover' ? 'recover' : 'create',
 });
 
 const normalizeJobMaxRetries = (taskType, value) => (
@@ -2320,9 +2372,13 @@ const writeLocalStore = (store) => {
   writeFileSync(storePath, JSON.stringify(normalizedStore, null, 2), 'utf8');
 };
 
-const scrubLocalStatesForDeletedAssets = (validAssetUrls) => {
+const scrubLocalStatesForDeletedAssets = async () => {
   const store = readLocalStore();
+  const assets = await listStoredAssets(null);
   Object.keys(store.appStates || {}).forEach((userId) => {
+    const validAssetUrls = buildValidManagedAssetReferences(
+      assets.filter((asset) => String(asset?.userId || '') === String(userId)),
+    );
     store.appStates[userId] = prepareStateForStorage(
       scrubUnavailableManagedAssetUrls(store.appStates[userId] || createDefaultState(), validAssetUrls)
     );
@@ -2379,20 +2435,57 @@ const readBody = async (req, options = {}) => {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 };
 
-const readMultipartFormData = async (req) => {
+const MULTIPART_FILE_PREFIX_MAX_BYTES = 1024 * 1024;
+
+const readMultipartFormData = async (req, options = {}) => {
+  const inspectManagedImage = options.inspectManagedImage === true;
+  const multipartContentType = String(req.headers['content-type'] || '');
+  let maxBytes = inspectManagedImage
+    ? null
+    : Number.isFinite(options.maxBytes) ? options.maxBytes : MAX_MULTIPART_BODY_BYTES;
   const contentLength = Number.parseInt(String(req.headers['content-length'] || '0'), 10);
-  if (Number.isFinite(contentLength) && contentLength > MAX_MULTIPART_BODY_BYTES) {
+  if (maxBytes !== null && Number.isFinite(contentLength) && contentLength > maxBytes) {
     throw new Error('REQUEST_MULTIPART_BODY_TOO_LARGE');
   }
 
+  const chunks = [];
+  let totalBytes = 0;
+  for await (const chunk of req) {
+    totalBytes += chunk.length;
+    chunks.push(chunk);
+    if (maxBytes === null) {
+      const prefix = Buffer.concat(chunks, totalBytes);
+      const inspection = inspectManagedImageMultipartPrefix(prefix, { contentType: multipartContentType });
+      if (inspection.complete) {
+        maxBytes = inspection.isImage ? getManagedImageMultipartBodyMaxBytes() : MAX_MULTIPART_BODY_BYTES;
+        if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+          throw new Error('REQUEST_MULTIPART_BODY_TOO_LARGE');
+        }
+      } else if (totalBytes > MULTIPART_FILE_PREFIX_MAX_BYTES) {
+        throw new Error('REQUEST_MULTIPART_BODY_TOO_LARGE');
+      }
+    }
+    if (maxBytes !== null && totalBytes > maxBytes) throw new Error('REQUEST_MULTIPART_BODY_TOO_LARGE');
+  }
+  const requestBody = Buffer.concat(chunks);
+  if (maxBytes === null) {
+    const inspection = inspectManagedImageMultipartPrefix(requestBody, { contentType: multipartContentType, final: true });
+    maxBytes = inspection.isImage ? getManagedImageMultipartBodyMaxBytes() : MAX_MULTIPART_BODY_BYTES;
+    if (requestBody.length > maxBytes) throw new Error('REQUEST_MULTIPART_BODY_TOO_LARGE');
+  }
+  const requestHeaders = new Headers(req.headers);
+  requestHeaders.set('content-length', String(requestBody.length));
+
   const request = new Request('http://127.0.0.1/internal-upload', {
     method: req.method,
-    headers: req.headers,
-    body: req,
-    duplex: 'half',
+    headers: requestHeaders,
+    body: requestBody,
   });
   return request.formData();
 };
+
+const getManagedImageJsonBodyMaxBytes = () => Math.ceil(getManagedImageMaxBytes(process.env) * 4 / 3) + 1024 * 1024;
+const getManagedImageMultipartBodyMaxBytes = () => getManagedImageMaxBytes(process.env) + 2 * 1024 * 1024;
 
 const isMediaTranscodeRoute = (url, method) => {
   if (!['POST', 'DELETE'].includes(String(method || '').toUpperCase())) return false;
@@ -2408,10 +2501,13 @@ const handleMediaTranscodeRequest = async ({ req, res, url, user }) => {
 
   if (url.pathname === '/api/media-transcodes/sessions' && req.method === 'POST') {
     const contentLength = Number.parseInt(String(req.headers['content-length'] || '0'), 10);
-    if (Number.isFinite(contentLength) && contentLength > MEDIA_TRANSCODE_INPUT_MAX_BYTES) {
+    const multipartBodyMaxBytes = MEDIA_TRANSCODE_INPUT_MAX_BYTES + 2 * 1024 * 1024;
+    if (Number.isFinite(contentLength) && contentLength > multipartBodyMaxBytes) {
       throw createMediaTranscodeError('media_input_too_large', '上传文件过大，无法进入转码流程');
     }
-    const formData = await readMultipartFormData(req);
+    const formData = await readMultipartFormData(req, {
+      maxBytes: multipartBodyMaxBytes,
+    });
     const file = formData.get('file');
     const kind = String(formData.get('kind') || '').trim().toLowerCase();
     if (!(file instanceof File)) {
@@ -3148,6 +3244,201 @@ const getMysqlPool = async () => {
   return mysqlPool;
 };
 
+const getManagedAssetUserLockTimeoutSeconds = () => {
+  const parsed = Number.parseInt(String(process.env.MEIAO_ASSET_USER_LOCK_TIMEOUT_SECONDS ?? 30), 10);
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(parsed, 120)) : 30;
+};
+
+const getManagedAssetLockConnectionLimit = () => {
+  const parsed = Number.parseInt(String(process.env.MEIAO_ASSET_LOCK_CONNECTION_LIMIT ?? 20), 10);
+  return Number.isFinite(parsed) ? Math.max(2, Math.min(parsed, 100)) : 20;
+};
+
+const getManagedAssetLockPool = async () => {
+  await getMysqlPool();
+  if (!mysqlManagedAssetLockPool) {
+    mysqlManagedAssetLockPool = mysql.createPool({
+      host: dbConfig.host,
+      port: dbConfig.port,
+      user: dbConfig.user,
+      password: dbConfig.password,
+      database: dbConfig.database,
+      waitForConnections: true,
+      connectionLimit: getManagedAssetLockConnectionLimit(),
+      queueLimit: 0,
+      charset: 'utf8mb4',
+    });
+  }
+  return mysqlManagedAssetLockPool;
+};
+
+const getManagedAssetUserLockName = (userId) => {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) {
+    const error = new Error('托管素材操作缺少账号归属');
+    error.code = 'managed_asset_owner_unavailable';
+    error.statusCode = 409;
+    throw error;
+  }
+  return `meiao:managed-asset-user:${normalizedUserId}`.slice(0, 64);
+};
+
+const acquireManagedAssetUserLock = async (connection, userId) => {
+  const lockName = getManagedAssetUserLockName(userId);
+  const [rows] = await connection.query(
+    'SELECT GET_LOCK(?, ?) AS acquired',
+    [lockName, getManagedAssetUserLockTimeoutSeconds()],
+  );
+  if (Number(rows?.[0]?.acquired) !== 1) {
+    const error = new Error('同账号素材正在上传或清理，请稍后重试');
+    error.code = 'managed_asset_user_lock_timeout';
+    error.statusCode = 409;
+    throw error;
+  }
+  return lockName;
+};
+
+const releaseManagedAssetUserLock = async (connection, lockName) => {
+  if (!lockName) return;
+  await connection.query('SELECT RELEASE_LOCK(?) AS released', [lockName]);
+};
+
+const acquireManagedAssetNamedLock = async (connection, lockName, message) => {
+  const [rows] = await connection.query(
+    'SELECT GET_LOCK(?, ?) AS acquired',
+    [lockName, getManagedAssetUserLockTimeoutSeconds()],
+  );
+  if (Number(rows?.[0]?.acquired) !== 1) {
+    const error = new Error(message);
+    error.code = 'managed_asset_lifecycle_lock_timeout';
+    error.statusCode = 409;
+    throw error;
+  }
+  return lockName;
+};
+
+const getManagedAssetAgentLockName = (agentId) => {
+  const normalizedAgentId = String(agentId || '').trim();
+  if (!normalizedAgentId) {
+    const error = new Error('托管素材操作缺少智能体归属');
+    error.code = 'managed_asset_agent_unavailable';
+    error.statusCode = 409;
+    throw error;
+  }
+  return `meiao:managed-asset-agent:${normalizedAgentId}`.slice(0, 64);
+};
+
+const acquireManagedAssetAgentLock = async (connection, agentId) => acquireManagedAssetNamedLock(
+  connection,
+  getManagedAssetAgentLockName(agentId),
+  '该智能体的素材正在写入或清理，请稍后重试',
+);
+
+const getManagedAssetAgentOwnerLockName = (userId) => {
+  const normalizedUserId = String(userId || '').trim();
+  if (!normalizedUserId) {
+    const error = new Error('托管素材操作缺少智能体账号归属');
+    error.code = 'managed_asset_owner_unavailable';
+    error.statusCode = 409;
+    throw error;
+  }
+  return `meiao:managed-asset-agent-owner:${normalizedUserId}`.slice(0, 64);
+};
+
+const acquireManagedAssetAgentOwnerLock = async (connection, userId) => acquireManagedAssetNamedLock(
+  connection,
+  getManagedAssetAgentOwnerLockName(userId),
+  '该账号的智能体正在变更或清理，请稍后重试',
+);
+
+const acquireManagedAssetLocks = async (connection, values, acquire) => {
+  const normalizedValues = Array.from(new Set(
+    (values || []).map((value) => String(value || '').trim()).filter(Boolean),
+  )).sort();
+  const lockNames = [];
+  try {
+    for (const value of normalizedValues) {
+      lockNames.push(await acquire(connection, value));
+    }
+    return lockNames;
+  } catch (error) {
+    for (const lockName of lockNames.reverse()) {
+      await releaseManagedAssetUserLock(connection, lockName).catch(() => null);
+    }
+    throw error;
+  }
+};
+
+const acquireManagedAssetAgentLocks = async (connection, agentIds) => acquireManagedAssetLocks(
+  connection,
+  agentIds,
+  acquireManagedAssetAgentLock,
+);
+
+const acquireManagedAssetUserLocks = async (connection, userIds) => acquireManagedAssetLocks(
+  connection,
+  userIds,
+  acquireManagedAssetUserLock,
+);
+
+const releaseManagedAssetLocks = async (connection, lockNames) => {
+  for (const lockName of [...(lockNames || [])].reverse()) {
+    await releaseManagedAssetUserLock(connection, lockName).catch(() => null);
+  }
+};
+
+const localManagedAssetUserLockTails = new Map();
+const withLocalManagedAssetUserLock = async (userId, operation) => {
+  const lockKey = String(userId || '').trim();
+  if (!lockKey) return operation();
+  const prior = localManagedAssetUserLockTails.get(lockKey) || Promise.resolve();
+  let releaseCurrent;
+  const current = new Promise((resolve) => {
+    releaseCurrent = resolve;
+  });
+  const tail = prior.catch(() => null).then(() => current);
+  localManagedAssetUserLockTails.set(lockKey, tail);
+  await prior.catch(() => null);
+  try {
+    return await operation();
+  } finally {
+    releaseCurrent();
+    if (localManagedAssetUserLockTails.get(lockKey) === tail) {
+      localManagedAssetUserLockTails.delete(lockKey);
+    }
+  }
+};
+
+// Local JSON mode persists the entire application store in one file. Serialize
+// every mutating request before it reads that snapshot, otherwise a slow request
+// can overwrite a newer account/session deletion with its stale full-store copy.
+const withLocalStoreMutationLock = async (operation) => (
+  withLocalManagedAssetUserLock('__local_store_mutation__', operation)
+);
+
+const mutateLocalStore = async (operation) => withLocalStoreMutationLock(async () => {
+  const store = readLocalStore();
+  const result = await operation(store);
+  writeLocalStore(store);
+  return result;
+});
+
+const withManagedAssetUserLock = async (userId, operation) => {
+  const pool = await getMysqlPool();
+  const lockPool = await getManagedAssetLockPool();
+  const connection = await lockPool.getConnection();
+  let lockName = '';
+  try {
+    lockName = await acquireManagedAssetUserLock(connection, userId);
+    return await operation(pool);
+  } finally {
+    if (lockName) {
+      await releaseManagedAssetUserLock(connection, lockName).catch(() => null);
+    }
+    connection.release();
+  }
+};
+
 const shouldSuppressAppStateBinlog = () => process.env.MEIAO_DB_SUPPRESS_APP_STATE_BINLOG !== '0';
 
 const redactAppStateWriteError = (error) => {
@@ -3590,13 +3881,22 @@ const findDbUserById = async (userId) => {
   return rows[0] ? mapDbUser(rows[0]) : null;
 };
 
-const findAnyDbUserById = async (userId) => {
-  const pool = await getMysqlPool();
+const findAnyDbUserById = async (userId, poolOverride = null) => {
+  const pool = poolOverride || await getMysqlPool();
   const [rows] = await pool.query(
     'SELECT * FROM users WHERE id = ? LIMIT 1',
     [userId]
   );
   return rows[0] ? mapDbUser(rows[0]) : null;
+};
+
+const assertActiveDbUserUnderManagedAssetLock = async (pool, userId, message = '账号已停用或不存在') => {
+  const owner = await findAnyDbUserById(userId, pool);
+  if (owner?.status === 'active') return owner;
+  const error = new Error(message);
+  error.code = 'managed_asset_owner_unavailable';
+  error.statusCode = 409;
+  throw error;
 };
 
 const listDbUsers = async () => {
@@ -3626,14 +3926,15 @@ const updateDbUserLoginTime = async (userId, loginTime) => {
 };
 
 const ensureDbAppState = async (userId) => {
-  const pool = await getMysqlPool();
-  const [rows] = await pool.query('SELECT user_id FROM app_states WHERE user_id = ? LIMIT 1', [userId]);
-  if (rows[0]) return;
-
-  await runAppStateWriteWithoutBinlog(pool,
-    'INSERT INTO app_states (user_id, state_json, updated_at) VALUES (?, ?, ?)',
-    [userId, JSON.stringify(createDefaultState()), Date.now()]
-  );
+  await withManagedAssetUserLock(userId, async (pool) => {
+    await assertActiveDbUserUnderManagedAssetLock(pool, userId, '账号已删除，未初始化项目状态');
+    const [rows] = await pool.query('SELECT user_id FROM app_states WHERE user_id = ? LIMIT 1', [userId]);
+    if (rows[0]) return;
+    await runAppStateWriteWithoutBinlog(pool,
+      'INSERT INTO app_states (user_id, state_json, updated_at) VALUES (?, ?, ?)',
+      [userId, JSON.stringify(createDefaultState()), Date.now()]
+    );
+  });
 };
 
 const getDbAppState = async (userId) => {
@@ -3655,13 +3956,15 @@ const saveDbAppState = async (userId, state) => {
   const serializedState = JSON.stringify(preparedState);
   await runWithTransientRetry(
     async () => {
-      const pool = await getMysqlPool();
-      return runAppStateWriteWithoutBinlog(pool,
-        `INSERT INTO app_states (user_id, state_json, updated_at)
-         VALUES (?, ?, ?)
-         ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)`,
-        [userId, serializedState, Date.now()]
-      );
+      return withManagedAssetUserLock(userId, async (pool) => {
+        await assertActiveDbUserUnderManagedAssetLock(pool, userId, '账号已删除，未保存项目状态');
+        return runAppStateWriteWithoutBinlog(pool,
+          `INSERT INTO app_states (user_id, state_json, updated_at)
+           VALUES (?, ?, ?)
+           ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)`,
+          [userId, serializedState, Date.now()]
+        );
+      });
     },
     {
       onRetry: ({ attempt, delay }) => {
@@ -3669,6 +3972,76 @@ const saveDbAppState = async (userId, state) => {
       },
     },
   );
+};
+
+const saveDbAppStateAndQueueRemovedAssets = async ({ user, previousState, nextState }) => {
+  const preparedState = prepareStateForStorage(nextState);
+  const serializedState = JSON.stringify(preparedState);
+  return runWithTransientRetry(async () => {
+    const pool = await getMysqlPool();
+    const lockPool = await getManagedAssetLockPool();
+    const lockConnection = await lockPool.getConnection();
+    let connection = null;
+    let binlogSuppressed = false;
+    let lockName = '';
+    let transactionStarted = false;
+    try {
+      lockName = await acquireManagedAssetUserLock(lockConnection, user.id);
+      connection = await pool.getConnection();
+      if (shouldSuppressAppStateBinlog()) {
+        try {
+          await connection.query('SET SESSION sql_log_bin = 0');
+          binlogSuppressed = true;
+        } catch (error) {
+          if (!warnedAppStateBinlogDisableFailure) {
+            warnedAppStateBinlogDisableFailure = true;
+            console.warn(`Unable to suppress MySQL binlog for transactional app_state writes: ${error?.message || error}`);
+          }
+        }
+      }
+      await connection.beginTransaction();
+      transactionStarted = true;
+      await assertActiveDbUserUnderManagedAssetLock(connection, user.id, '账号已删除，未保存项目状态');
+      await assertOwnedActiveManagedAssetReferences({
+        value: preparedState,
+        userId: user.id,
+        pool: connection,
+      });
+      await connection.query(
+        `INSERT INTO app_states (user_id, state_json, updated_at)
+         VALUES (?, ?, ?)
+         ON DUPLICATE KEY UPDATE state_json = VALUES(state_json), updated_at = VALUES(updated_at)`,
+        [user.id, serializedState, Date.now()],
+      );
+      await queueRemovedStateAssetsForCleanup({
+        user,
+        previousState,
+        nextState: preparedState,
+        poolOverride: connection,
+      });
+      await connection.commit();
+      transactionStarted = false;
+      return preparedState;
+    } catch (error) {
+      if (transactionStarted) await connection.rollback().catch(() => {});
+      throw redactAppStateWriteError(error);
+    } finally {
+      if (binlogSuppressed && connection) {
+        await connection.query('SET SESSION sql_log_bin = 1').catch((error) => {
+          console.warn(`Unable to restore MySQL binlog after transactional app_state write: ${error?.message || error}`);
+        });
+      }
+      if (lockName) {
+        await releaseManagedAssetUserLock(lockConnection, lockName).catch(() => null);
+      }
+      connection?.release();
+      lockConnection.release();
+    }
+  }, {
+    onRetry: ({ attempt, delay }) => {
+      console.warn(`[app_states] transient transactional write error, retry ${attempt + 1} after ${delay}ms (user ${user.id})`);
+    },
+  });
 };
 
 const getDbSystemSettings = async () => {
@@ -3714,10 +4087,14 @@ const getUserScopedSystemSettings = (systemSettings, user) => {
   };
 };
 
-const scrubDbStatesForDeletedAssets = async (validAssetUrls) => {
+const scrubDbStatesForDeletedAssets = async () => {
   const pool = await getMysqlPool();
+  const assets = await listStoredAssets(pool);
   const [rows] = await pool.query('SELECT user_id, state_json FROM app_states');
   for (const row of rows) {
+    const validAssetUrls = buildValidManagedAssetReferences(
+      assets.filter((asset) => String(asset?.userId || '') === String(row.user_id || '')),
+    );
     const parsedState = JSON.parse(row.state_json || '{}');
     const nextState = scrubUnavailableManagedAssetUrls(parsedState, validAssetUrls);
     await pool.query(
@@ -3727,36 +4104,36 @@ const scrubDbStatesForDeletedAssets = async (validAssetUrls) => {
   }
 };
 
-const scrubDbStateForUnavailableManagedAssets = async (state) => {
+const scrubDbStateForUnavailableManagedAssets = async (state, userId) => {
   const pool = await getMysqlPool();
-  const assets = await listStoredAssets(pool);
+  const assets = await listStoredAssetsForUser(pool, userId);
   return prepareStateForStorage(scrubUnavailableManagedAssetUrls(state || createDefaultState(), buildValidManagedAssetReferences(assets)));
 };
 
-const scrubDbStateBeforeStorage = async (state) => {
-  return await scrubDbStateForUnavailableManagedAssets(state);
+const scrubDbStateBeforeStorage = async (state, userId) => {
+  return await scrubDbStateForUnavailableManagedAssets(state, userId);
 };
 
-const scrubDbJobPayloadBeforeSubmission = async (payload) => {
+const scrubDbJobPayloadBeforeSubmission = async (payload, userId) => {
   const pool = await getMysqlPool();
-  const assets = await listStoredAssets(pool);
+  const assets = await listStoredAssetsForUser(pool, userId);
   const scrubbed = scrubUnavailableManagedAssetUrls(payload || {}, buildValidManagedAssetReferences(assets));
   return scrubbed && typeof scrubbed === 'object' ? scrubbed : {};
 };
 
-const scrubLocalStateForUnavailableManagedAssets = async (state) => {
-  const assets = await listStoredAssets(null);
+const scrubLocalStateForUnavailableManagedAssets = async (state, userId) => {
+  const assets = await listStoredAssetsForUser(null, userId);
   return prepareStateForStorage(
     scrubUnavailableManagedAssetUrls(state || createDefaultState(), buildValidManagedAssetReferences(assets))
   );
 };
 
-const scrubLocalStateBeforeStorage = async (state) => {
-  return await scrubLocalStateForUnavailableManagedAssets(state);
+const scrubLocalStateBeforeStorage = async (state, userId) => {
+  return await scrubLocalStateForUnavailableManagedAssets(state, userId);
 };
 
-const scrubLocalJobPayloadBeforeSubmission = async (payload) => {
-  const assets = await listStoredAssets(null);
+const scrubLocalJobPayloadBeforeSubmission = async (payload, userId) => {
+  const assets = await listStoredAssetsForUser(null, userId);
   const scrubbed = scrubUnavailableManagedAssetUrls(payload || {}, buildValidManagedAssetReferences(assets));
   return scrubbed && typeof scrubbed === 'object' ? scrubbed : {};
 };
@@ -3767,8 +4144,8 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
     return await executeProviderJob(job, env, signal, options);
   }
   const scrubbedPayload = shouldUseMysql
-    ? await scrubDbJobPayloadBeforeSubmission(job?.payload)
-    : await scrubLocalJobPayloadBeforeSubmission(job?.payload);
+    ? await scrubDbJobPayloadBeforeSubmission(job?.payload, job?.userId)
+    : await scrubLocalJobPayloadBeforeSubmission(job?.payload, job?.userId);
   const assetPool = shouldUseMysql ? await getMysqlPool() : null;
   const assetTransferDeps = {
     ...(options?.assetTransferDeps || {}),
@@ -3788,7 +4165,7 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
   );
 };
 
-const prepareAgentModelImageUrl = async (url) => {
+const prepareAgentModelImageUrl = (userId) => async (url) => {
   const resolved = await resolveProviderChatMediaUrlForModel(url, {
     env: process.env,
     deps: {
@@ -3796,6 +4173,7 @@ const prepareAgentModelImageUrl = async (url) => {
       resolveManagedAssetReadUrl: async (value, readOptions = {}) => resolveManagedAssetReadUrl(value, {
         ...readOptions,
         pool: shouldUseMysql ? await getMysqlPool() : null,
+        userId,
         purpose: 'provider',
         env: process.env,
       }),
@@ -3823,6 +4201,7 @@ const collectOneClickReferencePresetAssetUrls = (state) => {
 
 const collectStateManagedAssetUrls = (state, bucket) => {
   collectTrackedAssetUrls(state, undefined, bucket);
+  collectManagedAssetIdsInto(state, bucket);
   collectOneClickReferencePresetAssetUrls(state).forEach((url) => {
     if (isRemoteAssetUrl(url)) bucket.add(url);
   });
@@ -3832,108 +4211,197 @@ const collectManagedAssetIdsInto = (value, bucket) => {
   collectStoredAssetIdsFromValue(value).forEach((assetId) => bucket.add(String(assetId)));
 };
 
-const collectProtectedManagedAssetUrls = async ({ pool = null, store = null }) => {
+const collectProtectedManagedAssetUrls = async ({ pool = null, store = null, ownerUserId = '' }) => {
   const protectedUrls = new Set();
+  const normalizedOwnerUserId = String(ownerUserId || '').trim();
+  const allAssets = normalizedOwnerUserId
+    ? await listAllStoredAssetsForUser(pool, normalizedOwnerUserId)
+    : await listAllStoredAssets(pool);
+  const assetsById = new Map((allAssets || []).map((asset) => [String(asset?.id || ''), asset]));
+  const assetsByJobId = new Map();
+  (allAssets || []).forEach((asset) => {
+    const jobId = String(asset?.jobId || '').trim();
+    if (!jobId) return;
+    if (!assetsByJobId.has(jobId)) assetsByJobId.set(jobId, []);
+    assetsByJobId.get(jobId).push(asset);
+  });
+  const protectOwnedAsset = (asset, ownerUserId) => {
+    if (!asset || String(asset?.userId || '') !== String(ownerUserId || '')) return;
+    protectedUrls.add(String(asset.id));
+    if (asset.publicUrl) protectedUrls.add(String(asset.publicUrl));
+  };
+  const addOwnedReferences = (value, ownerUserId) => {
+    const normalizedOwnerId = String(ownerUserId || '');
+    const referencedIds = new Set(collectStoredAssetIdsFromValue(value));
+    const collectKnownIds = (current) => {
+      if (typeof current === 'string' && assetsById.has(current)) referencedIds.add(current);
+      else if (Array.isArray(current)) current.forEach(collectKnownIds);
+      else if (current && typeof current === 'object') Object.values(current).forEach(collectKnownIds);
+    };
+    collectKnownIds(value);
+    referencedIds.forEach((assetId) => {
+      const asset = assetsById.get(String(assetId));
+      protectOwnedAsset(asset, normalizedOwnerId);
+    });
+  };
+  const addActiveRunReferences = (value, ownerUserId) => {
+    getActiveManagedAssetRunIds(value).forEach((jobId) => {
+      (assetsByJobId.get(jobId) || []).forEach((asset) => protectOwnedAsset(asset, ownerUserId));
+    });
+  };
   if (pool) {
-    const [userRows] = await pool.query("SELECT avatar_url FROM users WHERE avatar_url IS NOT NULL AND avatar_url <> ''");
-    const [agentRows] = await pool.query("SELECT icon_url FROM agents WHERE icon_url IS NOT NULL AND icon_url <> ''");
-    const [stateRows] = await pool.query('SELECT state_json FROM app_states');
-    const [jobRows] = await pool.query('SELECT payload_json, result_json FROM internal_jobs');
-    const [messageRows] = await pool.query('SELECT content, attachments_json, metadata_json FROM chat_messages');
-    userRows.map((row) => row.avatar_url).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
-    agentRows.map((row) => row.icon_url).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
+    const ownerClause = normalizedOwnerUserId ? ' AND id = ?' : '';
+    const resourceOwnerClause = normalizedOwnerUserId ? ' AND owner_user_id = ?' : '';
+    const userDataClause = normalizedOwnerUserId ? ' WHERE user_id = ?' : '';
+    const ownerValues = normalizedOwnerUserId ? [normalizedOwnerUserId] : [];
+    const [userRows] = await pool.query(`SELECT id, avatar_url FROM users WHERE avatar_url IS NOT NULL AND avatar_url <> ''${ownerClause}`, ownerValues);
+    const [agentRows] = await pool.query(`SELECT owner_user_id, icon_url FROM agents WHERE icon_url IS NOT NULL AND icon_url <> ''${resourceOwnerClause}`, ownerValues);
+    const [stateRows] = await pool.query(`SELECT user_id, state_json FROM app_states${userDataClause}`, ownerValues);
+    const [jobRows] = await pool.query(`SELECT id, user_id, status, provider_task_id, payload_json, result_json FROM internal_jobs${userDataClause}`, ownerValues);
+    const [messageRows] = await pool.query(`SELECT user_id, content, attachments_json, metadata_json FROM chat_messages${userDataClause}`, ownerValues);
+    userRows.forEach((row) => addOwnedReferences(row.avatar_url, row.id));
+    agentRows.forEach((row) => addOwnedReferences(row.icon_url, row.owner_user_id));
     stateRows.forEach((row) => {
       try {
         const state = typeof row.state_json === 'string' ? JSON.parse(row.state_json || '{}') : row.state_json;
-        collectStateManagedAssetUrls(state, protectedUrls);
+        const stateRefs = new Set();
+        collectStateManagedAssetUrls(state, stateRefs);
+        addOwnedReferences(Array.from(stateRefs), row.user_id);
       } catch {
         // Ignore malformed state rows during cleanup; invalid rows are handled by normal state loading.
       }
     });
     jobRows.forEach((row) => {
-      collectManagedAssetIdsInto(parseJsonField(row.payload_json, row.payload_json), protectedUrls);
-      collectManagedAssetIdsInto(parseJsonField(row.result_json, row.result_json), protectedUrls);
+      addOwnedReferences(parseJsonField(row.payload_json, row.payload_json), row.user_id);
+      addOwnedReferences(parseJsonField(row.result_json, row.result_json), row.user_id);
+      addActiveRunReferences({ id: row.id, status: row.status, providerTaskId: row.provider_task_id }, row.user_id);
     });
     messageRows.forEach((row) => {
-      collectManagedAssetIdsInto(row.content, protectedUrls);
-      collectManagedAssetIdsInto(parseJsonField(row.attachments_json, row.attachments_json), protectedUrls);
-      collectManagedAssetIdsInto(parseJsonField(row.metadata_json, row.metadata_json), protectedUrls);
+      const metadata = parseJsonField(row.metadata_json, row.metadata_json);
+      addOwnedReferences(row.content, row.user_id);
+      addOwnedReferences(parseJsonField(row.attachments_json, row.attachments_json), row.user_id);
+      addOwnedReferences(metadata, row.user_id);
+      addActiveRunReferences(metadata, row.user_id);
     });
     return protectedUrls;
   }
 
-  const users = Array.isArray(store?.users) ? store.users : [];
-  const agents = Array.isArray(store?.agents) ? store.agents : [];
-  users.map((item) => item.avatarUrl).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
-  agents.map((item) => item.iconUrl).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
-  Object.values(store?.appStates || {}).forEach((state) => {
-    collectStateManagedAssetUrls(state, protectedUrls);
+  const matchesOwner = (value) => !normalizedOwnerUserId || String(value || '') === normalizedOwnerUserId;
+  const users = (Array.isArray(store?.users) ? store.users : []).filter((item) => matchesOwner(item?.id));
+  const agents = (Array.isArray(store?.agents) ? store.agents : []).filter((item) => matchesOwner(item?.ownerUserId));
+  users.forEach((item) => addOwnedReferences(item.avatarUrl, item.id));
+  agents.forEach((item) => addOwnedReferences(item.iconUrl, item.ownerUserId));
+  Object.entries(store?.appStates || {}).forEach(([userId, state]) => {
+    if (!matchesOwner(userId)) return;
+    const stateRefs = new Set();
+    collectStateManagedAssetUrls(state, stateRefs);
+    addOwnedReferences(Array.from(stateRefs), userId);
   });
   (store?.jobs || []).forEach((job) => {
-    collectManagedAssetIdsInto(job?.payload, protectedUrls);
-    collectManagedAssetIdsInto(job?.result, protectedUrls);
+    if (!matchesOwner(job?.userId)) return;
+    addOwnedReferences(job?.payload, job?.userId);
+    addOwnedReferences(job?.result, job?.userId);
+    addActiveRunReferences(job, job?.userId);
   });
   (store?.chatMessages || []).forEach((message) => {
-    collectManagedAssetIdsInto(message?.content, protectedUrls);
-    collectManagedAssetIdsInto(message?.attachments, protectedUrls);
-    collectManagedAssetIdsInto(message?.metadata, protectedUrls);
+    if (!matchesOwner(message?.userId)) return;
+    addOwnedReferences(message?.content, message?.userId);
+    addOwnedReferences(message?.attachments, message?.userId);
+    addOwnedReferences(message?.metadata, message?.userId);
+    addActiveRunReferences(message?.metadata, message?.userId);
   });
   return protectedUrls;
 };
 
-const scrubDbProtectedManagedAssetRefs = async (validAssetUrls) => {
+const scrubDbProtectedManagedAssetRefs = async () => {
   const pool = await getMysqlPool();
-  await pool.query(
-    `UPDATE users
-     SET avatar_url = NULL
-     WHERE avatar_url IS NOT NULL
-       AND avatar_url <> ''
-       AND avatar_url NOT IN (${Array.from(validAssetUrls).map(() => '?').join(',') || "''"})`,
-    Array.from(validAssetUrls)
-  );
-  await pool.query(
-    `UPDATE agents
-     SET icon_url = NULL
-     WHERE icon_url IS NOT NULL
-       AND icon_url <> ''
-       AND icon_url NOT IN (${Array.from(validAssetUrls).map(() => '?').join(',') || "''"})`,
-    Array.from(validAssetUrls)
-  );
+  const assets = await listStoredAssets(pool);
+  const refsByUser = new Map();
+  const refsForUser = (userId) => {
+    const key = String(userId || '');
+    if (!refsByUser.has(key)) {
+      refsByUser.set(key, buildValidManagedAssetReferences(
+        assets.filter((asset) => String(asset?.userId || '') === key),
+      ));
+    }
+    return refsByUser.get(key);
+  };
+  const [userRows] = await pool.query("SELECT id, avatar_url FROM users WHERE avatar_url IS NOT NULL AND avatar_url <> ''");
+  for (const row of userRows || []) {
+    if (isManagedAssetUrl(row.avatar_url) && !isAvailableManagedAssetUrl(row.avatar_url, refsForUser(row.id))) {
+      await pool.query('UPDATE users SET avatar_url = NULL WHERE id = ?', [row.id]);
+    }
+  }
+  const [agentRows] = await pool.query("SELECT id, owner_user_id, icon_url FROM agents WHERE icon_url IS NOT NULL AND icon_url <> ''");
+  for (const row of agentRows || []) {
+    if (isManagedAssetUrl(row.icon_url) && !isAvailableManagedAssetUrl(row.icon_url, refsForUser(row.owner_user_id))) {
+      await pool.query('UPDATE agents SET icon_url = NULL WHERE id = ?', [row.id]);
+    }
+  }
 };
 
-const scrubLocalProtectedManagedAssetRefs = (store, validAssetUrls) => {
+const scrubLocalProtectedManagedAssetRefs = async (store) => {
+  const assets = await listStoredAssets(null);
+  const refsForUser = (userId) => buildValidManagedAssetReferences(
+    assets.filter((asset) => String(asset?.userId || '') === String(userId || '')),
+  );
   (store.users || []).forEach((user) => {
-    if (user.avatarUrl && !validAssetUrls.has(user.avatarUrl)) {
+    if (isManagedAssetUrl(user.avatarUrl) && !isAvailableManagedAssetUrl(user.avatarUrl, refsForUser(user.id))) {
       user.avatarUrl = '';
     }
   });
   (store.agents || []).forEach((agent) => {
-    if (agent.iconUrl && !validAssetUrls.has(agent.iconUrl)) {
+    if (isManagedAssetUrl(agent.iconUrl) && !isAvailableManagedAssetUrl(agent.iconUrl, refsForUser(agent.ownerUserId))) {
       agent.iconUrl = '';
     }
   });
   writeLocalStore(store);
 };
 
-const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, fileName, mimeType, fileBuffer, width = 0, height = 0 }) => {
+const persistUploadedAssetIfEnabled = async ({ req, user, moduleName, assetType = 'source', fileName, mimeType, fileBuffer, width = 0, height = 0 }) => {
   const publicBaseUrl = getPersistentAssetBaseUrl(req);
-  const isImageUpload = String(mimeType || '').trim().toLowerCase().startsWith('image/');
+  const normalizedAssetType = String(assetType || 'source').trim().toLowerCase();
+  const managedImage = ['source', 'reference', 'chat'].includes(normalizedAssetType)
+    ? resolveManagedImageUpload({ fileBuffer, mimeType, env: process.env })
+    : { isImage: false, mimeType: String(mimeType || 'application/octet-stream').trim().toLowerCase() };
+  const isImageUpload = managedImage.isImage;
   if (!isImageUpload && !isExternallyReachableBaseUrl(publicBaseUrl)) {
     return null;
   }
-  const pool = shouldUseMysql ? await getMysqlPool() : null;
-  return persistUploadedAssetBuffer({
+  const persist = (pool) => persistUploadedAssetBuffer({
     pool,
     publicBaseUrl,
     userId: user.id,
     module: moduleName,
-    assetType: 'source',
+    assetType: normalizedAssetType,
     originalName: fileName,
-    mimeType,
+    mimeType: managedImage.mimeType,
     fileBuffer,
     width,
     height,
     env: process.env,
+  });
+  if (!shouldUseMysql) {
+    return withLocalManagedAssetUserLock(user.id, async () => {
+      const owner = findLocalUserById(user.id);
+      if (!owner || owner.status !== 'active') {
+        const error = new Error('账号已停用或不存在，未上传素材');
+        error.code = 'managed_asset_owner_unavailable';
+        error.statusCode = 409;
+        throw error;
+      }
+      return persist(null);
+    });
+  }
+  return withManagedAssetUserLock(user.id, async (pool) => {
+    const owner = await findAnyDbUserById(user.id);
+    if (!owner || owner.status !== 'active') {
+      const error = new Error('账号已停用或不存在，未上传素材');
+      error.code = 'managed_asset_owner_unavailable';
+      error.statusCode = 409;
+      throw error;
+    }
+    return persist(pool);
   });
 };
 
@@ -3943,13 +4411,38 @@ const buildTransformedImageOutputName = (fallbackName = 'result.png') => {
   return ext ? `${name.slice(0, -ext.length)}.jpg` : `${name}.jpg`;
 };
 
-const persistJobOutputAssetsIfEnabled = async (job, output) => {
+const persistJobOutputAssetsIfEnabled = async (job, output, lockedPool = null, localLockHeld = false) => {
   const publicBaseUrl = getPersistentAssetBaseUrl();
   if (!output?.result || !job?.userId) {
     return output;
   }
 
-  const pool = shouldUseMysql ? await getMysqlPool() : null;
+  if (shouldUseMysql && !lockedPool) {
+    return withManagedAssetUserLock(job.userId, async (pool) => {
+      const owner = await findAnyDbUserById(job.userId);
+      if (!owner || owner.status !== 'active') {
+        const error = new Error('账号已停用或不存在，未保存任务结果');
+        error.code = 'managed_asset_owner_unavailable';
+        error.statusCode = 409;
+        throw error;
+      }
+      return persistJobOutputAssetsIfEnabled(job, output, pool);
+    });
+  }
+  if (!shouldUseMysql && !localLockHeld) {
+    return withLocalManagedAssetUserLock(job.userId, async () => {
+      const owner = findLocalUserById(job.userId);
+      if (!owner || owner.status !== 'active') {
+        const error = new Error('账号已停用或不存在，未保存任务结果');
+        error.code = 'managed_asset_owner_unavailable';
+        error.statusCode = 409;
+        throw error;
+      }
+      return persistJobOutputAssetsIfEnabled(job, output, null, true);
+    });
+  }
+
+  const pool = lockedPool;
   let result = { ...(output.result || {}) };
   const hasInlineImageResult = /^data:image\//i.test(String(result.imageUrl || '').trim());
   if (hasInlineImageResult && !publicBaseUrl) {
@@ -4061,36 +4554,53 @@ const persistJobOutputAssetsIfEnabled = async (job, output) => {
   };
 };
 
-const persistRuntimeRemoteAssetIfEnabled = async ({ userId, moduleName, assetType = 'result', remoteUrl, originalName = 'result.png', provider = 'kie', jobId = '' }) => {
+const persistRuntimeRemoteAssetIfEnabled = async ({ userId, moduleName, assetType = 'result', remoteUrl, originalName = 'result.png', provider = 'kie', jobId = '', localLockHeld = false }) => {
   const publicBaseUrl = getPersistentAssetBaseUrl();
   const normalizedUrl = String(remoteUrl || '').trim();
   if (!isExternallyReachableBaseUrl(publicBaseUrl) || !userId || !/^https?:\/\//i.test(normalizedUrl) || isManagedAssetUrl(normalizedUrl)) {
     return normalizedUrl;
   }
-  const pool = shouldUseMysql ? await getMysqlPool() : null;
-  try {
-    const persisted = await persistRemoteAsset({
-      pool,
-      publicBaseUrl,
-      userId,
-      module: moduleName,
-      assetType,
-      remoteUrl: normalizedUrl,
-      originalName,
-      provider,
-      jobId,
+  const persist = async (pool) => {
+    try {
+      const persisted = await persistRemoteAsset({
+        pool,
+        publicBaseUrl,
+        userId,
+        module: moduleName,
+        assetType,
+        remoteUrl: normalizedUrl,
+        originalName,
+        provider,
+        jobId,
+      });
+      return persisted.publicUrl;
+    } catch (error) {
+      console.warn('[asset-store] runtime remote asset persistence failed', {
+        moduleName,
+        assetType,
+        provider,
+        jobId,
+        message: error?.message || String(error || ''),
+      });
+      return normalizedUrl;
+    }
+  };
+  if (!shouldUseMysql) {
+    if (localLockHeld) {
+      const owner = findLocalUserById(userId);
+      return owner?.status === 'active' ? persist(null) : normalizedUrl;
+    }
+    return withLocalManagedAssetUserLock(userId, async () => {
+      const owner = findLocalUserById(userId);
+      if (!owner || owner.status !== 'active') return normalizedUrl;
+      return persist(null);
     });
-    return persisted.publicUrl;
-  } catch (error) {
-    console.warn('[asset-store] runtime remote asset persistence failed', {
-      moduleName,
-      assetType,
-      provider,
-      jobId,
-      message: error?.message || String(error || ''),
-    });
-    return normalizedUrl;
   }
+  return withManagedAssetUserLock(userId, async (pool) => {
+    const owner = await findAnyDbUserById(userId);
+    if (!owner || owner.status !== 'active') return normalizedUrl;
+    return persist(pool);
+  });
 };
 
 const buildStoredAssetCacheTag = (assetId, fileSize, mtimeMs) => (
@@ -4129,7 +4639,7 @@ const shouldUseStoredAssetXAccel = (req) => (
   && Boolean(req.headers['x-forwarded-for'] || req.headers['x-real-ip'])
 );
 
-const serveStoredAsset = async (req, res, assetId) => {
+const serveStoredAsset = async (req, res, assetId, options = {}) => {
   const pool = shouldUseMysql ? await getMysqlPool() : null;
   const asset = await getStoredAssetById(pool, assetId);
   if (!asset || asset.deletedAt || String(asset.storageStatus || 'active') !== 'active') {
@@ -4138,9 +4648,21 @@ const serveStoredAsset = async (req, res, assetId) => {
   }
 
   if (getStoredAssetStorageProvider(asset) === 'tencent_cos') {
+    const accessKeyValid = verifyManagedAssetAccessKey(options.accessKey, {
+      assetId: asset.id,
+      userId: asset.userId,
+    }, process.env);
+    const requestUserId = accessKeyValid
+      ? ''
+      : String(options.userId || await options.resolveRequestUserId?.() || '').trim();
+    if (!accessKeyValid && (!requestUserId || requestUserId !== String(asset.userId || ''))) {
+      json(res, 403, { message: '没有权限读取该图片素材。' });
+      return;
+    }
     const signedReadUrl = await resolveManagedAssetReadUrl(asset.publicUrl || buildAssetPublicPath(asset.id, asset.originalName), {
       pool,
       purpose: 'browser',
+      userId: asset.userId,
       getAsset: async () => asset,
       env: process.env,
     });
@@ -4252,7 +4774,7 @@ const serveStoredAsset = async (req, res, assetId) => {
   createReadStream(fullPath).pipe(res);
 };
 
-const deleteStoredAssetForUser = async ({ user, fileUrl }) => {
+const deleteStoredAssetForUserUnlocked = async ({ user, fileUrl }) => {
   const assetId = extractStoredAssetIdFromPublicUrl(fileUrl);
   if (!assetId) {
     throw new Error('无效的素材地址');
@@ -4281,6 +4803,20 @@ const deleteStoredAssetForUser = async ({ user, fileUrl }) => {
   return { deleted: deletion.queued, protected: deletion.protected, assetId };
 };
 
+const deleteStoredAssetForUser = async ({ user, fileUrl }) => {
+  if (shouldUseMysql) {
+    const assetId = extractStoredAssetIdFromPublicUrl(fileUrl);
+    if (!assetId) throw new Error('无效的素材地址');
+    const asset = await getStoredAssetById(await getMysqlPool(), assetId);
+    if (!asset || asset.deletedAt) return { deleted: false, assetId };
+    if (asset.userId !== user.id && user.role !== 'admin') {
+      throw new Error('没有权限删除该素材');
+    }
+    return withManagedAssetUserLock(asset.userId, () => deleteStoredAssetForUserUnlocked({ user, fileUrl }));
+  }
+  return deleteStoredAssetForUserUnlocked({ user, fileUrl });
+};
+
 const collectStoredAssetIdsFromChatMessages = (messages = []) => {
   const ids = new Set();
   for (const message of Array.isArray(messages) ? messages : []) {
@@ -4302,19 +4838,22 @@ const collectStoredAssetIdsFromJob = (job) => (
   collectStoredAssetIdsFromValue([job?.payload, job?.result])
 );
 
-const deleteStoredAssetsByIdsForUser = async ({ user, assetIds, reason = 'bulk_owner_delete', referenceStore = null }) => {
+const queueStoredAssetsAfterReferenceRemoval = async ({
+  pool = null,
+  assetIds,
+  reason,
+  referenceStore = null,
+  ownerUserId = '',
+  allowAnyOwner = false,
+}) => {
   const uniqueIds = Array.from(new Set(Array.isArray(assetIds) ? assetIds.filter(Boolean) : []));
   if (!uniqueIds.length) return { deletedAssetIds: [] };
-  const pool = shouldUseMysql ? await getMysqlPool() : null;
-  const protectedAssetRefs = await collectProtectedManagedAssetUrls({
-    pool,
-    store: shouldUseMysql ? null : referenceStore || readLocalStore(),
-  });
+  const protectedAssetRefs = await collectProtectedManagedAssetUrls({ pool, store: referenceStore });
   const deletedAssetIds = [];
   for (const assetId of uniqueIds) {
     const asset = await getStoredAssetById(pool, assetId);
     if (!asset || asset.deletedAt) continue;
-    if (asset.userId !== user.id && user.role !== 'admin') continue;
+    if (!allowAnyOwner && String(asset.userId || '') !== String(ownerUserId || '')) continue;
     const deletion = await requestStoredAssetDeletion({
       pool,
       asset,
@@ -4327,7 +4866,33 @@ const deleteStoredAssetsByIdsForUser = async ({ user, assetIds, reason = 'bulk_o
   return { deletedAssetIds };
 };
 
-const queueRemovedStateAssetsForCleanup = async ({ user, previousState, nextState, referenceStore = null }) => {
+const deleteStoredAssetsByIdsForUser = async ({
+  user,
+  assetIds,
+  reason = 'bulk_owner_delete',
+  referenceStore = null,
+  poolOverride = undefined,
+}) => {
+  const pool = poolOverride !== undefined
+    ? poolOverride
+    : shouldUseMysql ? await getMysqlPool() : null;
+  return queueStoredAssetsAfterReferenceRemoval({
+    pool,
+    assetIds,
+    reason,
+    referenceStore: shouldUseMysql ? null : referenceStore || readLocalStore(),
+    ownerUserId: user.id,
+    allowAnyOwner: user.role === 'admin',
+  });
+};
+
+const queueRemovedStateAssetsForCleanup = async ({
+  user,
+  previousState,
+  nextState,
+  referenceStore = null,
+  poolOverride = undefined,
+}) => {
   const previousIds = new Set(collectStoredAssetIdsFromValue(previousState));
   collectStoredAssetIdsFromValue(nextState).forEach((assetId) => previousIds.delete(assetId));
   if (previousIds.size === 0) return { deletedAssetIds: [] };
@@ -4336,6 +4901,7 @@ const queueRemovedStateAssetsForCleanup = async ({ user, previousState, nextStat
     assetIds: Array.from(previousIds),
     reason: 'state_reference_removed',
     referenceStore,
+    poolOverride,
   });
 };
 
@@ -4343,30 +4909,57 @@ const cleanupExpiredStoredAssets = async () => {
   const pool = shouldUseMysql ? await getMysqlPool() : null;
   const allAssets = await listStoredAssets(pool);
   const protectedAssetUrls = await collectProtectedManagedAssetUrls({ pool, store: shouldUseMysql ? null : readLocalStore() });
-  const expiredAssets = selectExpiredAssetsForCleanup(
-    allAssets.map((asset) => ({ ...asset, isReferenced: protectedAssetUrls.has(asset.publicUrl) || protectedAssetUrls.has(asset.id) })),
-    Date.now()
-  );
-  if (expiredAssets.length === 0) return;
+  const referenceTime = Date.now();
+  const assetsWithReferences = allAssets.map((asset) => ({
+    ...asset,
+    isReferenced: protectedAssetUrls.has(asset.publicUrl) || protectedAssetUrls.has(asset.id),
+  }));
+  const expiredAssets = selectExpiredAssetsForCleanup(assetsWithReferences, referenceTime)
+    .map((asset) => ({ ...asset, cleanupReason: 'retention_expired' }));
+  const crashOrphans = selectAbandonedPermanentAgentResultAssets(
+    assetsWithReferences,
+    referenceTime,
+    getStoredAssetDeleteGraceMs(process.env),
+  ).map((asset) => ({ ...asset, cleanupReason: 'unreferenced_agent_result_reconcile' }));
+  const cleanupAssets = Array.from(new Map(
+    [...expiredAssets, ...crashOrphans].map((asset) => [asset.id, asset]),
+  ).values());
+  if (cleanupAssets.length === 0) return;
 
-  for (const asset of expiredAssets) {
-    await requestStoredAssetDeletion({
-      pool,
-      asset,
-      reason: 'retention_expired',
-      isReferenced: false,
-      env: process.env,
-    });
+  for (const asset of cleanupAssets) {
+    if (shouldUseMysql) {
+      await withManagedAssetUserLock(asset.userId, async (lockedPool) => {
+        const freshAsset = await getStoredAssetById(lockedPool, asset.id);
+        if (!freshAsset || freshAsset.deletedAt) return;
+        const freshProtectedRefs = await collectProtectedManagedAssetUrls({
+          pool: lockedPool,
+          ownerUserId: freshAsset.userId,
+        });
+        await requestStoredAssetDeletion({
+          pool: lockedPool,
+          asset: freshAsset,
+          reason: asset.cleanupReason,
+          isReferenced: freshProtectedRefs.has(freshAsset.publicUrl) || freshProtectedRefs.has(freshAsset.id),
+          env: process.env,
+        });
+      });
+    } else {
+      await requestStoredAssetDeletion({
+        pool,
+        asset,
+        reason: asset.cleanupReason,
+        isReferenced: false,
+        env: process.env,
+      });
+    }
   }
 
-  const remainingAssets = await listStoredAssets(pool);
-  const validAssetUrls = buildValidManagedAssetReferences(remainingAssets);
   if (shouldUseMysql) {
-    await scrubDbStatesForDeletedAssets(validAssetUrls);
-    await scrubDbProtectedManagedAssetRefs(validAssetUrls);
+    await scrubDbStatesForDeletedAssets();
+    await scrubDbProtectedManagedAssetRefs();
   } else {
-    scrubLocalStatesForDeletedAssets(validAssetUrls);
-    scrubLocalProtectedManagedAssetRefs(readLocalStore(), validAssetUrls);
+    await scrubLocalStatesForDeletedAssets();
+    await scrubLocalProtectedManagedAssetRefs(readLocalStore());
   }
 };
 
@@ -4387,13 +4980,24 @@ const queueUserAssetsForCleanup = async (userId) => {
   return queued;
 };
 
-const runManagedAssetCleanupCycle = async () => {
+const runManagedAssetCleanupCycle = async ({ mutationLockHeld = false } = {}) => {
+  if (!shouldUseMysql && !mutationLockHeld) {
+    return withLocalStoreMutationLock(() => runManagedAssetCleanupCycle({ mutationLockHeld: true }));
+  }
   if (assetCleanupRunning) return { skipped: true };
   assetCleanupRunning = true;
   try {
     await cleanupExpiredStoredAssets();
     const pool = shouldUseMysql ? await getMysqlPool() : null;
-    const reconciliation = await reconcileManagedAssetStorage({ pool, env: process.env });
+    const verifyActiveCos = Date.now() - lastManagedCosReconciliationAt >= ASSET_COS_RECONCILE_INTERVAL_MS;
+    const reconciliation = await reconcileManagedAssetStorage({
+      pool,
+      env: process.env,
+      verifyActiveCos,
+    });
+    if (verifyActiveCos && reconciliation.activeCosHeadFailed === 0) {
+      lastManagedCosReconciliationAt = Date.now();
+    }
     const cleanup = await processAssetCleanupBatch({
       pool,
       limit: ASSET_CLEANUP_BATCH_SIZE,
@@ -4401,25 +5005,35 @@ const runManagedAssetCleanupCycle = async () => {
       storeOptions: { inProgressLeaseMs: ASSET_CLEANUP_LEASE_MS },
       isProtected: async (task) => {
         if (!task?.assetId) return false;
+        const asset = await getStoredAssetById(pool, task.assetId);
+        if (!asset || !asset.userId) return false;
         const protectedAssetRefs = await collectProtectedManagedAssetUrls({
           pool,
           store: shouldUseMysql ? null : readLocalStore(),
+          ownerUserId: asset.userId,
         });
-        if (protectedAssetRefs.has(task.assetId)) return true;
-        const asset = await getStoredAssetById(pool, task.assetId);
-        return Boolean(asset?.publicUrl && protectedAssetRefs.has(asset.publicUrl));
+        return protectedAssetRefs.has(String(task.assetId));
       },
     });
-    const cleanupTasks = await listAssetCleanupTasks(pool);
-    const queueSummary = summarizeAssetCleanupTasks(cleanupTasks, Date.now());
+    await pruneAssetCleanupTasks(pool, {
+      retentionMs: process.env.MEIAO_ASSET_CLEANUP_AUDIT_RETENTION_MS,
+    });
+    const queueSummary = await summarizeAssetCleanupStore(pool);
     managedAssetCleanup = {
       ...queueSummary,
       uploadFailed: reconciliation.uploadFailed,
       deletePending: reconciliation.deletePending,
       uploading: reconciliation.uploading,
+      snapshotMissing: reconciliation.snapshotMissing,
+      activeCosChecked: reconciliation.activeCosChecked,
+      activeCosMissing: reconciliation.activeCosMissing,
+      activeCosHeadFailed: reconciliation.activeCosHeadFailed,
       alerting: queueSummary.backlog >= ASSET_CLEANUP_ALERT_BACKLOG
         || queueSummary.oldestPendingAgeMs >= ASSET_CLEANUP_ALERT_OLDEST_MS
-        || queueSummary.manualReview > 0,
+        || queueSummary.manualReview > 0
+        || reconciliation.snapshotMissing > 0
+        || reconciliation.activeCosMissing > 0
+        || reconciliation.activeCosHeadFailed > 0,
       lastCycleAt: Date.now(),
     };
     if (reconciliation.enqueued > 0 || cleanup.claimed > 0 || managedAssetCleanup.alerting) {
@@ -4510,8 +5124,8 @@ const createDbUser = async ({ username, password, role = 'staff', displayName = 
   return newUser;
 };
 
-const updateDbUser = async (userId, updates) => {
-  const pool = await getMysqlPool();
+const updateDbUser = async (userId, updates, poolOverride = null) => {
+  const pool = poolOverride || await getMysqlPool();
   const fields = [];
   const values = [];
 
@@ -4570,12 +5184,12 @@ const updateDbUser = async (userId, updates) => {
   }
 
   if (fields.length === 0) {
-    return await findAnyDbUserById(userId);
+    return await findAnyDbUserById(userId, pool);
   }
 
   values.push(userId);
   await pool.query(`UPDATE users SET ${fields.join(', ')} WHERE id = ?`, values);
-  return await findAnyDbUserById(userId);
+  return await findAnyDbUserById(userId, pool);
 };
 
 const updateDbAllUsersAnalysisModel = async (analysisModel) => {
@@ -4595,29 +5209,59 @@ const updateLocalAllUsersAnalysisModel = (store, analysisModel) => {
 };
 
 const deleteDbUser = async (userId) => {
-  const pool = await getMysqlPool();
-  const connection = await pool.getConnection();
+  const lockPool = await getManagedAssetLockPool();
+  const connection = await lockPool.getConnection();
   const toPlaceholders = (items) => items.map(() => '?').join(', ');
+  let ownerLockName = '';
+  let agentLockNames = [];
+  let userLockNames = [];
+  let agentIds = [];
+  let transactionStarted = false;
   try {
+    ownerLockName = await acquireManagedAssetAgentOwnerLock(connection, userId);
+    const [agentRows] = await connection.query('SELECT id FROM agents WHERE owner_user_id = ?', [userId]);
+    agentIds = (agentRows || []).map((row) => row.id).filter(Boolean);
+    agentLockNames = await acquireManagedAssetAgentLocks(connection, agentIds);
+    await assertNoPendingDbAgentChatRuns(connection, { agentIds });
+    let sessionOwnerIds = [];
+    if (agentIds.length > 0) {
+      const agentPlaceholders = toPlaceholders(agentIds);
+      const [sessionOwnerRows] = await connection.query(
+        `SELECT DISTINCT user_id FROM chat_sessions WHERE agent_id IN (${agentPlaceholders})`,
+        agentIds,
+      );
+      sessionOwnerIds = (sessionOwnerRows || []).map((row) => row.user_id);
+    }
+    const affectedUserIds = [userId, ...sessionOwnerIds];
+    userLockNames = await acquireManagedAssetUserLocks(connection, affectedUserIds);
     await connection.beginTransaction();
+    transactionStarted = true;
 
-    const [assetRows] = await connection.query('SELECT id, provider, storage_key FROM stored_assets WHERE user_id = ?', [userId]);
+    const [assetRows] = await connection.query(
+      'SELECT id, provider, storage_key, storage_bucket, storage_region FROM stored_assets WHERE user_id = ?',
+      [userId],
+    );
     for (const asset of assetRows || []) {
       if (!asset.storage_key) continue;
       const storageProvider = getStoredAssetStorageProvider(asset);
+      const storageBucket = storageProvider === 'tencent_cos' ? String(asset.storage_bucket || '').trim() : '';
+      const storageRegion = storageProvider === 'tencent_cos' ? String(asset.storage_region || '').trim() : '';
+      if (storageProvider === 'tencent_cos' && (!storageBucket || !storageRegion)) {
+        throw Object.assign(new Error('账号素材缺少 COS bucket/region 快照，已停止删除账号'), {
+          code: 'managed_asset_storage_snapshot_missing',
+        });
+      }
       await enqueueAssetCleanupTask(connection, {
         assetId: asset.id,
         provider: storageProvider,
-        bucket: storageProvider === 'tencent_cos' ? String(process.env.MEIAO_IMAGE_COS_BUCKET || '').trim() : '',
-        region: storageProvider === 'tencent_cos' ? String(process.env.MEIAO_IMAGE_COS_REGION || '').trim() : '',
+        bucket: storageBucket,
+        region: storageRegion,
         storageKey: asset.storage_key,
         action: 'delete',
         reason: 'account_deleted',
       });
     }
 
-    const [agentRows] = await connection.query('SELECT id FROM agents WHERE owner_user_id = ?', [userId]);
-    const agentIds = (agentRows || []).map((row) => row.id).filter(Boolean);
     if (agentIds.length > 0) {
       const agentPlaceholders = toPlaceholders(agentIds);
       const [versionRows] = await connection.query(
@@ -4657,10 +5301,14 @@ const deleteDbUser = async (userId) => {
     await connection.query('DELETE FROM users WHERE id = ?', [userId]);
 
     await connection.commit();
+    transactionStarted = false;
   } catch (error) {
-    await connection.rollback();
+    if (transactionStarted) await connection.rollback().catch(() => null);
     throw error;
   } finally {
+    await releaseManagedAssetLocks(connection, userLockNames);
+    await releaseManagedAssetLocks(connection, agentLockNames);
+    if (ownerLockName) await releaseManagedAssetUserLock(connection, ownerLockName).catch(() => null);
     connection.release();
   }
 };
@@ -4681,9 +5329,9 @@ const cleanupExpiredLogs = async () => {
     await purgeExpiredDbLogs();
     return;
   }
-  const store = readLocalStore();
-  store.logs = normalizeLogs(store.logs);
-  writeLocalStore(store);
+  await mutateLocalStore((store) => {
+    store.logs = normalizeLogs(store.logs);
+  });
 };
 
 const USAGE_MODULES = new Set(['agent_center', 'one_click', 'translation', 'buyer_show', 'retouch', 'video', 'xhs_cover']);
@@ -5528,8 +6176,7 @@ const listDbAgents = async (user) => {
   return items.filter(Boolean);
 };
 
-const createDbAgent = async (user, payload) => {
-  const pool = await getMysqlPool();
+const createDbAgentUnlocked = async (user, payload, pool) => {
   const now = Date.now();
   const agentId = createEntityId();
   const version = buildAgentVersionInsertRecord({
@@ -5604,6 +6251,35 @@ const createDbAgent = async (user, payload) => {
   };
 };
 
+const createDbAgent = async (user, payload) => {
+  const pool = await getMysqlPool();
+  const lockPool = await getManagedAssetLockPool();
+  const connection = await lockPool.getConnection();
+  let ownerLockName = '';
+  let userLockName = '';
+  try {
+    ownerLockName = await acquireManagedAssetAgentOwnerLock(connection, user.id);
+    userLockName = await acquireManagedAssetUserLock(connection, user.id);
+    const [ownerRows] = await connection.query('SELECT status FROM users WHERE id = ? LIMIT 1', [user.id]);
+    if (!ownerRows?.[0] || ownerRows[0].status !== 'active') {
+      const error = new Error('账号已停用或不存在，未创建智能体');
+      error.code = 'managed_asset_owner_unavailable';
+      error.statusCode = 409;
+      throw error;
+    }
+    await assertOwnedActiveManagedAssetReferences({
+      value: payload?.iconUrl,
+      userId: user.id,
+      pool,
+    });
+    return createDbAgentUnlocked(user, payload || {}, pool);
+  } finally {
+    if (userLockName) await releaseManagedAssetUserLock(connection, userLockName).catch(() => null);
+    if (ownerLockName) await releaseManagedAssetUserLock(connection, ownerLockName).catch(() => null);
+    connection.release();
+  }
+};
+
 const updateDbAgent = async (user, agentId, payload) => {
   const current = await getDbAgentById(agentId);
   if (!current || !canManageOwnedResource(user, current.ownerUserId)) return null;
@@ -5638,23 +6314,71 @@ const deleteDbAgent = async (user, agentId) => {
   const agent = await getDbAgentById(agentId);
   if (!agent || !canManageOwnedResource(user, agent.ownerUserId)) return null;
 
-  const pool = await getMysqlPool();
-  const versions = await listDbAgentVersionsByAgentId(agentId);
-  const versionIds = versions.map((item) => item.id);
-  if (versionIds.length > 0) {
-    const placeholders = versionIds.map(() => '?').join(', ');
-    await pool.query(`DELETE FROM agent_version_knowledge_bases WHERE agent_version_id IN (${placeholders})`, versionIds);
-    await pool.query(`DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE agent_id = ?)`, [agentId]);
-    await pool.query('DELETE FROM chat_sessions WHERE agent_id = ?', [agentId]);
-    await pool.query('DELETE FROM agent_usage_logs WHERE agent_id = ?', [agentId]);
-    await pool.query(`DELETE FROM agent_versions WHERE id IN (${placeholders})`, versionIds);
-  } else {
-    await pool.query(`DELETE FROM chat_messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE agent_id = ?)`, [agentId]);
-    await pool.query('DELETE FROM chat_sessions WHERE agent_id = ?', [agentId]);
-    await pool.query('DELETE FROM agent_usage_logs WHERE agent_id = ?', [agentId]);
+  const lockPool = await getManagedAssetLockPool();
+  const connection = await lockPool.getConnection();
+  let agentLockName = '';
+  let userLockNames = [];
+  let transactionStarted = false;
+  try {
+    agentLockName = await acquireManagedAssetAgentLock(connection, agentId);
+    const [currentAgentRows] = await connection.query(
+      'SELECT owner_user_id, icon_url FROM agents WHERE id = ? LIMIT 1',
+      [agentId],
+    );
+    const currentAgent = currentAgentRows?.[0] || null;
+    if (!currentAgent || !canManageOwnedResource(user, currentAgent.owner_user_id)) return null;
+    await assertNoPendingDbAgentChatRuns(connection, { agentIds: [agentId] });
+    const [sessionOwnerRows] = await connection.query(
+      'SELECT DISTINCT user_id FROM chat_sessions WHERE agent_id = ?',
+      [agentId],
+    );
+    const affectedUserIds = [
+      currentAgent.owner_user_id,
+      ...(sessionOwnerRows || []).map((row) => row.user_id),
+    ];
+    userLockNames = await acquireManagedAssetUserLocks(connection, affectedUserIds);
+    await connection.beginTransaction();
+    transactionStarted = true;
+    const [messageRows] = await connection.query(
+      `SELECT message.*
+       FROM chat_messages message
+       INNER JOIN chat_sessions session ON session.id = message.session_id
+       WHERE session.agent_id = ?
+       FOR UPDATE`,
+      [agentId],
+    );
+    const assetIds = Array.from(new Set([
+      ...collectStoredAssetIdsFromChatMessages(messageRows),
+      ...collectStoredAssetIdsFromValue(currentAgent.icon_url),
+    ]));
+    const [versionRows] = await connection.query('SELECT id FROM agent_versions WHERE agent_id = ? FOR UPDATE', [agentId]);
+    const versionIds = (versionRows || []).map((item) => item.id).filter(Boolean);
+    if (versionIds.length > 0) {
+      const placeholders = versionIds.map(() => '?').join(', ');
+      await connection.query(`DELETE FROM agent_version_knowledge_bases WHERE agent_version_id IN (${placeholders})`, versionIds);
+      await connection.query(`DELETE FROM agent_versions WHERE id IN (${placeholders})`, versionIds);
+    }
+    await connection.query(`DELETE message FROM chat_messages message INNER JOIN chat_sessions session ON session.id = message.session_id WHERE session.agent_id = ?`, [agentId]);
+    await connection.query('DELETE FROM chat_sessions WHERE agent_id = ?', [agentId]);
+    await connection.query('DELETE FROM agent_usage_logs WHERE agent_id = ?', [agentId]);
+    await connection.query('DELETE FROM agents WHERE id = ?', [agentId]);
+    const cleanup = await queueStoredAssetsAfterReferenceRemoval({
+      pool: connection,
+      assetIds,
+      reason: 'agent_deleted',
+      allowAnyOwner: true,
+    });
+    await connection.commit();
+    transactionStarted = false;
+    return { ok: true, deletedAgentId: agentId, deletedAssetIds: cleanup.deletedAssetIds };
+  } catch (error) {
+    if (transactionStarted) await connection.rollback().catch(() => null);
+    throw error;
+  } finally {
+    await releaseManagedAssetLocks(connection, userLockNames);
+    if (agentLockName) await releaseManagedAssetUserLock(connection, agentLockName).catch(() => null);
+    connection.release();
   }
-  await pool.query('DELETE FROM agents WHERE id = ?', [agentId]);
-  return { ok: true, deletedAgentId: agentId };
 };
 
 const createDbAgentDraft = async (user, agentId) => {
@@ -6462,35 +7186,48 @@ const listDbChatAgents = async () => {
 };
 
 const createDbChatSession = async (user, agentId) => {
-  const agent = await getDbAgentById(agentId);
-  if (!agent?.currentVersionId || agent.status !== 'published') return null;
-  const version = await getDbAgentVersionById(agent.currentVersionId);
-  const selectedModel = resolveChatSessionModel(version);
-  const capability = getChatModelCapability(selectedModel, getPersistentAssetBaseUrl());
-  const defaultReasoningLevel = resolveSessionReasoningLevel({ capability, requestedReasoningLevel: null });
-  const pool = await getMysqlPool();
-  const sessionId = createEntityId();
-  const now = Date.now();
-  await pool.query(
-    `INSERT INTO chat_sessions (id, user_id, agent_id, agent_version_id, title, status, summary, selected_model, reasoning_level, web_search_enabled, last_image_mode, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [sessionId, user.id, agentId, agent.currentVersionId, '新会话', 'active', null, selectedModel || '', defaultReasoningLevel, 0, 0, now, now]
-  );
-  return {
-    id: sessionId,
-    userId: user.id,
-    agentId,
-    agentVersionId: agent.currentVersionId,
-    title: '新会话',
-    status: 'active',
-    summary: '',
-    selectedModel: selectedModel || '',
-    reasoningLevel: defaultReasoningLevel,
-    webSearchEnabled: false,
-    lastImageMode: false,
-    createdAt: now,
-    updatedAt: now,
-  };
+  const lockPool = await getManagedAssetLockPool();
+  const connection = await lockPool.getConnection();
+  let agentLockName = '';
+  let userLockName = '';
+  try {
+    agentLockName = await acquireManagedAssetAgentLock(connection, agentId);
+    userLockName = await acquireManagedAssetUserLock(connection, user.id);
+    const [ownerRows] = await connection.query('SELECT status FROM users WHERE id = ? LIMIT 1', [user.id]);
+    if (!ownerRows?.[0] || ownerRows[0].status !== 'active') return null;
+    const agent = await getDbAgentById(agentId);
+    if (!agent?.currentVersionId || agent.status !== 'published') return null;
+    const version = await getDbAgentVersionById(agent.currentVersionId);
+    const selectedModel = resolveChatSessionModel(version);
+    const capability = getChatModelCapability(selectedModel, getPersistentAssetBaseUrl());
+    const defaultReasoningLevel = resolveSessionReasoningLevel({ capability, requestedReasoningLevel: null });
+    const sessionId = createEntityId();
+    const now = Date.now();
+    await connection.query(
+      `INSERT INTO chat_sessions (id, user_id, agent_id, agent_version_id, title, status, summary, selected_model, reasoning_level, web_search_enabled, last_image_mode, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [sessionId, user.id, agentId, agent.currentVersionId, '新会话', 'active', null, selectedModel || '', defaultReasoningLevel, 0, 0, now, now]
+    );
+    return {
+      id: sessionId,
+      userId: user.id,
+      agentId,
+      agentVersionId: agent.currentVersionId,
+      title: '新会话',
+      status: 'active',
+      summary: '',
+      selectedModel: selectedModel || '',
+      reasoningLevel: defaultReasoningLevel,
+      webSearchEnabled: false,
+      lastImageMode: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+  } finally {
+    if (userLockName) await releaseManagedAssetUserLock(connection, userLockName).catch(() => null);
+    if (agentLockName) await releaseManagedAssetUserLock(connection, agentLockName).catch(() => null);
+    connection.release();
+  }
 };
 
 const listDbChatSessions = async (user, agentId = '') => {
@@ -6682,49 +7419,105 @@ const createDbChatSessionOptions = async (user, sessionId, payload) => {
 const deleteDbChatSession = async (user, sessionId) => {
   const session = await getDbChatSessionById(user, sessionId);
   if (!session) return null;
-  const pool = await getMysqlPool();
-  const [messages] = await pool.query('SELECT * FROM chat_messages WHERE session_id = ? AND user_id = ?', [sessionId, user.id]);
-  const assetIds = collectStoredAssetIdsFromChatMessages(messages);
-  await pool.query('DELETE FROM chat_messages WHERE session_id = ? AND user_id = ?', [sessionId, user.id]);
-  await pool.query('DELETE FROM chat_sessions WHERE id = ? AND user_id = ?', [sessionId, user.id]);
-  await deleteStoredAssetsByIdsForUser({ user, assetIds, reason: 'chat_session_deleted' });
-  return { ok: true, deletedSessionId: sessionId, deletedAssetIds: assetIds };
+  const lockPool = await getManagedAssetLockPool();
+  const connection = await lockPool.getConnection();
+  let agentLockName = '';
+  let lockName = '';
+  let transactionStarted = false;
+  try {
+    agentLockName = await acquireManagedAssetAgentLock(connection, session.agentId);
+    lockName = await acquireManagedAssetUserLock(connection, user.id);
+    await assertNoPendingDbAgentChatRuns(connection, { sessionId, userId: user.id });
+    await connection.beginTransaction();
+    transactionStarted = true;
+    const [messages] = await connection.query(
+      'SELECT * FROM chat_messages WHERE session_id = ? AND user_id = ? FOR UPDATE',
+      [sessionId, user.id],
+    );
+    const assetIds = collectStoredAssetIdsFromChatMessages(messages);
+    await connection.query('DELETE FROM chat_messages WHERE session_id = ? AND user_id = ?', [sessionId, user.id]);
+    await connection.query('DELETE FROM chat_sessions WHERE id = ? AND user_id = ?', [sessionId, user.id]);
+    const cleanup = await queueStoredAssetsAfterReferenceRemoval({
+      pool: connection,
+      assetIds,
+      reason: 'chat_session_deleted',
+      ownerUserId: user.id,
+    });
+    await connection.commit();
+    transactionStarted = false;
+    return { ok: true, deletedSessionId: sessionId, deletedAssetIds: cleanup.deletedAssetIds };
+  } catch (error) {
+    if (transactionStarted) await connection.rollback().catch(() => null);
+    throw error;
+  } finally {
+    if (lockName) {
+      await releaseManagedAssetUserLock(connection, lockName).catch(() => null);
+    }
+    if (agentLockName) {
+      await releaseManagedAssetUserLock(connection, agentLockName).catch(() => null);
+    }
+    connection.release();
+  }
 };
 
 const deleteDbUserAgentHistory = async (user, agentId) => {
   const agent = await getDbAgentById(agentId);
   if (!agent || agent.status !== 'published') return null;
-  const pool = await getMysqlPool();
-  const [sessionRows] = await pool.query('SELECT id FROM chat_sessions WHERE user_id = ? AND agent_id = ?', [user.id, agentId]);
-  const sessionIds = sessionRows.map((row) => row.id);
-  let deletedMessageCount = 0;
-  let historyAssetIds = [];
-  if (sessionIds.length > 0) {
-    const [historyMessages] = await pool.query(
-      `SELECT * FROM chat_messages WHERE user_id = ? AND session_id IN (${sessionIds.map(() => '?').join(',')})`,
-      [user.id, ...sessionIds]
+  const lockPool = await getManagedAssetLockPool();
+  const connection = await lockPool.getConnection();
+  let agentLockName = '';
+  let lockName = '';
+  let transactionStarted = false;
+  try {
+    agentLockName = await acquireManagedAssetAgentLock(connection, agentId);
+    lockName = await acquireManagedAssetUserLock(connection, user.id);
+    await assertNoPendingDbAgentChatRuns(connection, { agentIds: [agentId], userId: user.id });
+    await connection.beginTransaction();
+    transactionStarted = true;
+    const [historyMessages] = await connection.query(
+      `SELECT message.*
+       FROM chat_messages message
+       INNER JOIN chat_sessions session ON session.id = message.session_id
+       WHERE session.user_id = ? AND session.agent_id = ?
+       FOR UPDATE`,
+      [user.id, agentId],
     );
-    historyAssetIds = collectStoredAssetIdsFromChatMessages(historyMessages);
-    const [messageResult] = await pool.query(
-      `DELETE FROM chat_messages WHERE user_id = ? AND session_id IN (${sessionIds.map(() => '?').join(',')})`,
-      [user.id, ...sessionIds]
+    const historyAssetIds = collectStoredAssetIdsFromChatMessages(historyMessages);
+    const [messageResult] = await connection.query(
+      `DELETE message FROM chat_messages message
+       INNER JOIN chat_sessions session ON session.id = message.session_id
+       WHERE session.user_id = ? AND session.agent_id = ?`,
+      [user.id, agentId],
     );
-    deletedMessageCount = Number(messageResult.affectedRows || 0);
+    const [sessionResult] = await connection.query('DELETE FROM chat_sessions WHERE user_id = ? AND agent_id = ?', [user.id, agentId]);
+    const [usageResult] = await connection.query('DELETE FROM agent_usage_logs WHERE user_id = ? AND agent_id = ?', [user.id, agentId]);
+    const cleanup = await queueStoredAssetsAfterReferenceRemoval({
+      pool: connection,
+      assetIds: historyAssetIds,
+      reason: 'agent_chat_history_deleted',
+      ownerUserId: user.id,
+    });
+    await connection.commit();
+    transactionStarted = false;
+    return {
+      ok: true,
+      deletedSessionCount: Number(sessionResult.affectedRows || 0),
+      deletedMessageCount: Number(messageResult.affectedRows || 0),
+      deletedUsageCount: Number(usageResult.affectedRows || 0),
+      deletedAssetIds: cleanup.deletedAssetIds,
+    };
+  } catch (error) {
+    if (transactionStarted) await connection.rollback().catch(() => null);
+    throw error;
+  } finally {
+    if (lockName) {
+      await releaseManagedAssetUserLock(connection, lockName).catch(() => null);
+    }
+    if (agentLockName) {
+      await releaseManagedAssetUserLock(connection, agentLockName).catch(() => null);
+    }
+    connection.release();
   }
-  const [sessionResult] = await pool.query('DELETE FROM chat_sessions WHERE user_id = ? AND agent_id = ?', [user.id, agentId]);
-  const [usageResult] = await pool.query('DELETE FROM agent_usage_logs WHERE user_id = ? AND agent_id = ?', [user.id, agentId]);
-  await deleteStoredAssetsByIdsForUser({
-    user,
-    assetIds: historyAssetIds,
-    reason: 'agent_chat_history_deleted',
-  });
-  return {
-    ok: true,
-    deletedSessionCount: Number(sessionResult.affectedRows || 0),
-    deletedMessageCount,
-    deletedUsageCount: Number(usageResult.affectedRows || 0),
-    deletedAssetIds: historyAssetIds,
-  };
 };
 
 // 进度状态 Map，key = clientRequestId，value = 最新进度事件，5分钟后自动清理
@@ -6741,6 +7534,51 @@ const buildChatRequestKey = (sessionId, clientRequestId) => `${sessionId || ''}:
 const isAgentChatRunPendingMetadata = (metadata) => {
   const status = String(metadata?.status || '').trim().toLowerCase();
   return Boolean(metadata?.pending) || status === 'pending' || status === 'running';
+};
+const getManagedAssetAgentBusyLeaseMs = () => {
+  const parsed = Number.parseInt(String(process.env.MEIAO_ASSET_AGENT_BUSY_LEASE_MS ?? 2 * 60 * 60 * 1000), 10);
+  return Number.isFinite(parsed)
+    ? Math.max(5 * 60 * 1000, Math.min(parsed, 24 * 60 * 60 * 1000))
+    : 2 * 60 * 60 * 1000;
+};
+const assertNoPendingDbAgentChatRuns = async (connection, { agentIds = [], sessionId = '', userId = '' } = {}) => {
+  const normalizedAgentIds = Array.from(new Set(
+    (agentIds || []).map((value) => String(value || '').trim()).filter(Boolean),
+  ));
+  const clauses = [
+    "message.role = 'assistant'",
+    'message.created_at >= ?',
+    `(JSON_UNQUOTE(JSON_EXTRACT(message.metadata_json, '$.pending')) = 'true'
+      OR JSON_UNQUOTE(JSON_EXTRACT(message.metadata_json, '$.status')) IN ('pending', 'running'))`,
+  ];
+  const values = [Date.now() - getManagedAssetAgentBusyLeaseMs()];
+  if (normalizedAgentIds.length > 0) {
+    clauses.push(`session.agent_id IN (${normalizedAgentIds.map(() => '?').join(', ')})`);
+    values.push(...normalizedAgentIds);
+  }
+  if (sessionId) {
+    clauses.push('session.id = ?');
+    values.push(sessionId);
+  }
+  if (userId) {
+    clauses.push('session.user_id = ?');
+    values.push(userId);
+  }
+  if (normalizedAgentIds.length === 0 && !sessionId) return;
+  const [rows] = await connection.query(
+    `SELECT message.id
+     FROM chat_messages message
+     INNER JOIN chat_sessions session ON session.id = message.session_id
+     WHERE ${clauses.join(' AND ')}
+     LIMIT 1`,
+    values,
+  );
+  if (rows?.[0]) {
+    const error = new Error('智能体仍有对话任务处理中，请等待完成后重试删除');
+    error.code = 'managed_asset_agent_busy';
+    error.statusCode = 409;
+    throw error;
+  }
 };
 const getAgentChatClientRequestId = (message) => String(message?.metadata?.clientRequestId || '').trim();
 const buildPendingAgentChatContent = (requestMode) => (
@@ -6787,6 +7625,8 @@ const recoverDbSubmittedChatImageTasks = async (user, sessionId, messages = []) 
     .filter((message) => message.role === 'assistant' && shouldRecoverSubmittedChatImageTask(message));
   if (candidates.length === 0) return false;
   const pool = await getMysqlPool();
+  const session = await getDbChatSessionById(user, sessionId);
+  if (!session) return false;
   let recovered = false;
   for (const message of candidates) {
     const metadata = message.metadata || {};
@@ -6821,10 +7661,32 @@ const recoverDbSubmittedChatImageTasks = async (user, sessionId, messages = []) 
         providerStatus: output?.providerStatus || 'success',
       });
       const now = Date.now();
-      const connection = await pool.getConnection();
+      const lockPool = await getManagedAssetLockPool();
+      const lockConnection = await lockPool.getConnection();
+      let connection = null;
+      let agentLockName = '';
+      let userLockName = '';
       try {
+        agentLockName = await acquireManagedAssetAgentLock(lockConnection, session.agentId);
+        userLockName = await acquireManagedAssetUserLock(lockConnection, user.id);
+        connection = await pool.getConnection();
         await connection.beginTransaction();
-        await connection.query(
+        const [activeSessionRows] = await connection.query(
+          `SELECT session.id
+           FROM chat_sessions session
+           INNER JOIN agents agent ON agent.id = session.agent_id
+           INNER JOIN users owner ON owner.id = session.user_id AND owner.status = 'active'
+           WHERE session.id = ? AND session.user_id = ? AND session.agent_id = ?
+           LIMIT 1`,
+          [sessionId, user.id, session.agentId],
+        );
+        if (!activeSessionRows?.[0]) {
+          const error = new Error('智能体或会话已被删除，未写入恢复结果');
+          error.code = 'managed_asset_chat_session_unavailable';
+          error.statusCode = 409;
+          throw error;
+        }
+        const [messageUpdate] = await connection.query(
           'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ?, created_at = ? WHERE id = ? AND session_id = ? AND user_id = ?',
           [
             '图片已生成完成。',
@@ -6836,6 +7698,12 @@ const recoverDbSubmittedChatImageTasks = async (user, sessionId, messages = []) 
             user.id,
           ]
         );
+        if (Number(messageUpdate?.affectedRows || 0) !== 1) {
+          const error = new Error('会话已被删除，未写入恢复结果');
+          error.code = 'managed_asset_chat_session_unavailable';
+          error.statusCode = 409;
+          throw error;
+        }
         const clientRequestId = String(metadata.clientRequestId || '').trim();
         if (clientRequestId) {
           await connection.query(
@@ -6850,10 +7718,17 @@ const recoverDbSubmittedChatImageTasks = async (user, sessionId, messages = []) 
         await connection.commit();
         recovered = true;
       } catch (error) {
-        await connection.rollback();
+        if (connection) await connection.rollback().catch(() => null);
         throw error;
       } finally {
-        connection.release();
+        if (userLockName) {
+          await releaseManagedAssetUserLock(lockConnection, userLockName).catch(() => null);
+        }
+        if (agentLockName) {
+          await releaseManagedAssetUserLock(lockConnection, agentLockName).catch(() => null);
+        }
+        connection?.release();
+        lockConnection.release();
       }
     } catch (error) {
       await pool.query(
@@ -6986,6 +7861,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   if (existingExchange) return existingExchange;
 
   const promise = (async () => {
+  const pool = await getMysqlPool();
   const version = await getDbAgentVersionById(session.agentVersionId);
   const agent = await getDbAgentById(session.agentId);
   if (!version || !agent) return null;
@@ -6999,6 +7875,11 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     mimeType: item?.mimeType ? String(item.mimeType) : undefined,
     kind: item?.kind === 'image' ? 'image' : 'file',
   })) : [];
+  await assertOwnedActiveManagedAssetReferences({
+    value: attachments,
+    userId: user.id,
+    pool,
+  });
   if (requestMode === 'image_generation' && attachments.some((item) => item.kind !== 'image')) {
     throw new Error('生图模式暂只支持上传图片');
   }
@@ -7007,7 +7888,6 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
   if (requestMode !== 'image_generation' && payload?.webSearchEnabled && !capability?.supportsWebSearch) {
     throw new Error('当前模型不支持联网');
   }
-  const pool = await getMysqlPool();
   const now = Date.now();
   const userMessageId = createEntityId();
   const assistantMessageId = createEntityId();
@@ -7078,9 +7958,38 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     imageResultUrls: null,
     retrievalSummary: [],
   };
-  const pendingConnection = await pool.getConnection();
+  const pendingLockPool = await getManagedAssetLockPool();
+  const pendingLockConnection = await pendingLockPool.getConnection();
+  let pendingConnection = null;
+  let pendingAgentLockName = '';
+  let pendingLockName = '';
+  let pendingTransactionStarted = false;
   try {
+    pendingAgentLockName = await acquireManagedAssetAgentLock(pendingLockConnection, session.agentId);
+    pendingLockName = await acquireManagedAssetUserLock(pendingLockConnection, user.id);
+    pendingConnection = await pool.getConnection();
     await pendingConnection.beginTransaction();
+    pendingTransactionStarted = true;
+    const [activeSessionRows] = await pendingConnection.query(
+      `SELECT session.id
+       FROM chat_sessions session
+       INNER JOIN agents agent ON agent.id = session.agent_id
+       INNER JOIN users owner ON owner.id = session.user_id AND owner.status = 'active'
+       WHERE session.id = ? AND session.user_id = ? AND session.agent_id = ?
+       LIMIT 1`,
+      [sessionId, user.id, session.agentId],
+    );
+    if (!activeSessionRows?.[0]) {
+      const error = new Error('智能体或会话已被删除，未写入新消息');
+      error.code = 'managed_asset_agent_unavailable';
+      error.statusCode = 409;
+      throw error;
+    }
+    await assertOwnedActiveManagedAssetReferences({
+      value: attachments,
+      userId: user.id,
+      pool: pendingConnection,
+    });
     await pendingConnection.query(
       `INSERT INTO chat_messages (id, session_id, user_id, role, content, attachments_json, metadata_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -7096,15 +8005,65 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       [session.title === '新会话' ? content.slice(0, 24) : session.title, selectedModel || '', payload?.reasoningLevel ? String(payload.reasoningLevel) : null, requestMode === 'image_generation' ? 0 : payload?.webSearchEnabled ? 1 : 0, requestMode === 'image_generation' ? 1 : 0, now, sessionId]
     );
     await pendingConnection.commit();
+    pendingTransactionStarted = false;
   } catch (error) {
-    await pendingConnection.rollback();
+    if (pendingTransactionStarted && pendingConnection) await pendingConnection.rollback().catch(() => null);
     if (agentImageCreditReservation) {
       await releaseDbAgentImageCredits(pool, agentImageCreditReservation, { error, sessionId, clientRequestId });
     }
     throw error;
   } finally {
-    pendingConnection.release();
+    if (pendingLockName) {
+      await releaseManagedAssetUserLock(pendingLockConnection, pendingLockName).catch(() => null);
+    }
+    if (pendingAgentLockName) {
+      await releaseManagedAssetUserLock(pendingLockConnection, pendingAgentLockName).catch(() => null);
+    }
+    pendingConnection?.release();
+    pendingLockConnection.release();
   }
+  const withDbChatReferenceFence = async (operation) => {
+    const lockPool = await getManagedAssetLockPool();
+    const lockConnection = await lockPool.getConnection();
+    let connection = null;
+    let agentLockName = '';
+    let userLockName = '';
+    let transactionStarted = false;
+    try {
+      agentLockName = await acquireManagedAssetAgentLock(lockConnection, session.agentId);
+      userLockName = await acquireManagedAssetUserLock(lockConnection, user.id);
+      connection = await pool.getConnection();
+      await connection.beginTransaction();
+      transactionStarted = true;
+      const [activeSessionRows] = await connection.query(
+        `SELECT session.id
+         FROM chat_sessions session
+         INNER JOIN agents agent ON agent.id = session.agent_id
+         INNER JOIN users owner ON owner.id = session.user_id AND owner.status = 'active'
+         WHERE session.id = ? AND session.user_id = ? AND session.agent_id = ?
+         LIMIT 1`,
+        [sessionId, user.id, session.agentId],
+      );
+      if (!activeSessionRows?.[0]) {
+        const error = new Error('智能体或会话已被删除，未写入对话结果');
+        error.code = 'managed_asset_chat_session_unavailable';
+        error.statusCode = 409;
+        throw error;
+      }
+      const result = await operation(connection);
+      await connection.commit();
+      transactionStarted = false;
+      return result;
+    } catch (error) {
+      if (transactionStarted && connection) await connection.rollback().catch(() => null);
+      throw error;
+    } finally {
+      if (userLockName) await releaseManagedAssetUserLock(lockConnection, userLockName).catch(() => null);
+      if (agentLockName) await releaseManagedAssetUserLock(lockConnection, agentLockName).catch(() => null);
+      connection?.release();
+      lockConnection.release();
+    }
+  };
   let latestDbChatProviderTaskCheckpoint = null;
   const persistDbChatProviderTaskCheckpoint = async (checkpointResult = {}) => {
     const checkpoint = buildSubmittedImageTaskCheckpoint({
@@ -7118,36 +8077,38 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     if (!checkpoint) return;
     const { providerTaskId, userMetadata: checkpointUserMetadata, assistantMetadata: checkpointAssistantMetadata } = checkpoint;
     latestDbChatProviderTaskCheckpoint = checkpoint.latestCheckpoint;
-    const connection = await pool.getConnection();
     try {
-      await connection.beginTransaction();
-      await connection.query(
-        'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
-        [JSON.stringify(checkpointUserMetadata), userMessageId, sessionId, user.id]
-      );
-      await connection.query(
-        'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
-        [
-          checkpoint.assistantContent,
-          JSON.stringify(null),
-          JSON.stringify(checkpointAssistantMetadata),
-          assistantMessageId,
-          sessionId,
-          user.id,
-        ]
-      );
-      await connection.query('UPDATE chat_sessions SET updated_at = ? WHERE id = ?', [Date.now(), sessionId]);
-      await connection.commit();
+      await withDbChatReferenceFence(async (connection) => {
+        const [userUpdate] = await connection.query(
+          'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+          [JSON.stringify(checkpointUserMetadata), userMessageId, sessionId, user.id]
+        );
+        const [assistantUpdate] = await connection.query(
+          'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+          [
+            checkpoint.assistantContent,
+            JSON.stringify(null),
+            JSON.stringify(checkpointAssistantMetadata),
+            assistantMessageId,
+            sessionId,
+            user.id,
+          ]
+        );
+        if (Number(userUpdate?.affectedRows || 0) !== 1 || Number(assistantUpdate?.affectedRows || 0) !== 1) {
+          throw Object.assign(new Error('会话消息已被删除，未写入任务检查点'), {
+            code: 'managed_asset_chat_session_unavailable',
+            statusCode: 409,
+          });
+        }
+        await connection.query('UPDATE chat_sessions SET updated_at = ? WHERE id = ?', [Date.now(), sessionId]);
+      });
     } catch (error) {
-      await connection.rollback();
       console.warn('[agent-chat] failed to persist provider task checkpoint', {
         sessionId,
         clientRequestId,
         providerTaskId,
         message: error?.message || String(error || ''),
       });
-    } finally {
-      connection.release();
     }
   };
   const persistDbChatImageCheckpoint = async (checkpointResult = {}) => {
@@ -7161,36 +8122,38 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     });
     if (!checkpoint) return;
     const { imageResultUrls, userMetadata: checkpointUserMetadata, assistantMetadata: checkpointAssistantMetadata } = checkpoint;
-    const connection = await pool.getConnection();
     try {
-      await connection.beginTransaction();
-      await connection.query(
-        'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
-        [JSON.stringify(checkpointUserMetadata), userMessageId, sessionId, user.id]
-      );
-      await connection.query(
-        'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ?, created_at = ? WHERE id = ? AND session_id = ? AND user_id = ?',
-        [
-          checkpoint.assistantContent,
-          JSON.stringify(buildAgentImageResultAttachments(imageResultUrls)),
-          JSON.stringify(checkpointAssistantMetadata),
-          Date.now(),
-          assistantMessageId,
-          sessionId,
-          user.id,
-        ]
-      );
-      await connection.query('UPDATE chat_sessions SET updated_at = ? WHERE id = ?', [Date.now(), sessionId]);
-      await connection.commit();
+      await withDbChatReferenceFence(async (connection) => {
+        const [userUpdate] = await connection.query(
+          'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+          [JSON.stringify(checkpointUserMetadata), userMessageId, sessionId, user.id]
+        );
+        const [assistantUpdate] = await connection.query(
+          'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ?, created_at = ? WHERE id = ? AND session_id = ? AND user_id = ?',
+          [
+            checkpoint.assistantContent,
+            JSON.stringify(buildAgentImageResultAttachments(imageResultUrls)),
+            JSON.stringify(checkpointAssistantMetadata),
+            Date.now(),
+            assistantMessageId,
+            sessionId,
+            user.id,
+          ]
+        );
+        if (Number(userUpdate?.affectedRows || 0) !== 1 || Number(assistantUpdate?.affectedRows || 0) !== 1) {
+          throw Object.assign(new Error('会话消息已被删除，未写入图片检查点'), {
+            code: 'managed_asset_chat_session_unavailable',
+            statusCode: 409,
+          });
+        }
+        await connection.query('UPDATE chat_sessions SET updated_at = ? WHERE id = ?', [Date.now(), sessionId]);
+      });
     } catch (error) {
-      await connection.rollback();
       console.warn('[agent-chat] failed to persist image checkpoint', {
         sessionId,
         clientRequestId,
         message: error?.message || String(error || ''),
       });
-    } finally {
-      connection.release();
     }
   };
   const markDbChatRunFailed = async (error) => {
@@ -7327,7 +8290,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
           remoteUrl: rawUrl,
           originalName: `${model || 'image_result'}.png`,
           provider: isMaxForAiImageModel(model) ? 'maxforai' : 'kie',
-          jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId),
+          jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId || runId || clientRequestId),
         });
         const imageUrl = persistedUrl || rawUrl;
         const providerTaskId = String(imageOutput?.providerTaskId || '');
@@ -7357,7 +8320,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         callModel,
         generateImage,
         onImageResultReady: persistDbChatImageCheckpoint,
-        prepareModelImageUrl: prepareAgentModelImageUrl,
+        prepareModelImageUrl: prepareAgentModelImageUrl(user.id),
         onProgress: (event) => {
           setChatProgress(clientRequestId, event);
           if (sendEvent) sendEvent('progress', event);
@@ -7383,6 +8346,8 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
             knowledgeChunks: imageKnowledgeChunks,
             conversationSummary: summary,
             onImageReady: persistDbChatImageCheckpoint,
+            runId,
+            clientRequestId,
           })
         : await runAgentConversation({
             user,
@@ -7450,27 +8415,62 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
     providerTaskId: result.providerTaskId || result.imagePlan?.providerTaskId || latestDbChatProviderTaskCheckpoint?.providerTaskId || '',
     finalReplyErrorMessage: result.finalReplyErrorMessage || '',
   };
-  const connection = await pool.getConnection();
+  const finalLockPool = await getManagedAssetLockPool();
+  const finalLockConnection = await finalLockPool.getConnection();
+  let connection = null;
+  let finalAgentLockName = '';
+  let finalUserLockName = '';
   try {
+    finalAgentLockName = await acquireManagedAssetAgentLock(finalLockConnection, session.agentId);
+    finalUserLockName = await acquireManagedAssetUserLock(finalLockConnection, user.id);
+    connection = await pool.getConnection();
     await connection.beginTransaction();
-    await connection.query(
+    const [activeSessionRows] = await connection.query(
+      `SELECT session.id
+       FROM chat_sessions session
+       INNER JOIN agents agent ON agent.id = session.agent_id
+       INNER JOIN users owner ON owner.id = session.user_id AND owner.status = 'active'
+       WHERE session.id = ? AND session.user_id = ? AND session.agent_id = ?
+       LIMIT 1`,
+      [sessionId, user.id, session.agentId],
+    );
+    if (!activeSessionRows?.[0]) {
+      const error = new Error('智能体或会话已被删除，未写入生成结果');
+      error.code = 'managed_asset_chat_session_unavailable';
+      error.statusCode = 409;
+      throw error;
+    }
+    const [userMessageUpdate] = await connection.query(
       'UPDATE chat_messages SET metadata_json = ? WHERE id = ? AND session_id = ? AND user_id = ?',
       [JSON.stringify(userMetadata), userMessageId, sessionId, user.id]
     );
-    await connection.query(
+    const [assistantMessageUpdate] = await connection.query(
       'UPDATE chat_messages SET content = ?, attachments_json = ?, metadata_json = ?, created_at = ? WHERE id = ? AND session_id = ? AND user_id = ?',
       [result.content, JSON.stringify(assistantAttachments), JSON.stringify(assistantMetadata), assistantCreatedAt, assistantMessageId, sessionId, user.id]
     );
+    if (Number(userMessageUpdate?.affectedRows || 0) !== 1 || Number(assistantMessageUpdate?.affectedRows || 0) !== 1) {
+      const error = new Error('会话消息已被删除，未写入生成结果');
+      error.code = 'managed_asset_chat_session_unavailable';
+      error.statusCode = 409;
+      throw error;
+    }
     await connection.query(
       'UPDATE chat_sessions SET title = ?, summary = ?, selected_model = ?, reasoning_level = ?, web_search_enabled = ?, last_image_mode = ?, updated_at = ? WHERE id = ?',
       [session.title === '新会话' ? content.slice(0, 24) : session.title, summary, selectedModel || '', payload?.reasoningLevel ? String(payload.reasoningLevel) : null, requestMode === 'image_generation' ? 0 : payload?.webSearchEnabled ? 1 : 0, requestMode === 'image_generation' ? 1 : 0, Date.now(), sessionId]
     );
     await connection.commit();
   } catch (error) {
-    await connection.rollback();
+    if (connection) await connection.rollback().catch(() => null);
     throw error;
   } finally {
-    connection.release();
+    if (finalUserLockName) {
+      await releaseManagedAssetUserLock(finalLockConnection, finalUserLockName).catch(() => null);
+    }
+    if (finalAgentLockName) {
+      await releaseManagedAssetUserLock(finalLockConnection, finalAgentLockName).catch(() => null);
+    }
+    connection?.release();
+    finalLockConnection.release();
   }
   result.clientRequestId = clientRequestId;
   result.runId = runId;
@@ -8017,19 +9017,31 @@ const deleteLocalAgentVersion = (store, user, versionId) => {
   return { ok: true, deletedVersionId: versionId };
 };
 
-const deleteLocalAgent = (store, user, agentId) => {
+const deleteLocalAgent = async (store, user, agentId) => {
   const agent = getLocalAgentById(store, agentId);
   if (!agent || !canManageOwnedResource(user, agent.ownerUserId)) return null;
 
   const versionIds = new Set((store.agentVersions || []).filter((item) => item.agentId === agentId).map((item) => item.id));
   const sessionIds = new Set((store.chatSessions || []).filter((item) => item.agentId === agentId).map((item) => item.id));
+  const deletedMessages = (store.chatMessages || []).filter((item) => sessionIds.has(item.sessionId));
+  const assetIds = Array.from(new Set([
+    ...collectStoredAssetIdsFromChatMessages(deletedMessages),
+    ...collectStoredAssetIdsFromValue(agent.iconUrl),
+  ]));
   store.agentVersionKnowledgeBases = (store.agentVersionKnowledgeBases || []).filter((item) => !versionIds.has(item.agentVersionId));
   store.agentVersions = (store.agentVersions || []).filter((item) => item.agentId !== agentId);
   store.chatMessages = (store.chatMessages || []).filter((item) => !sessionIds.has(item.sessionId));
   store.chatSessions = (store.chatSessions || []).filter((item) => item.agentId !== agentId);
   store.agentUsageLogs = (store.agentUsageLogs || []).filter((item) => item.agentId !== agentId);
   store.agents = (store.agents || []).filter((item) => item.id !== agentId);
-  return { ok: true, deletedAgentId: agentId };
+  const cleanup = await queueStoredAssetsAfterReferenceRemoval({
+    pool: null,
+    assetIds,
+    reason: 'agent_deleted',
+    referenceStore: store,
+    allowAnyOwner: true,
+  });
+  return { ok: true, deletedAgentId: agentId, deletedAssetIds: cleanup.deletedAssetIds };
 };
 
 const deleteLocalUserAgentHistory = async (store, user, agentId) => {
@@ -8822,7 +9834,7 @@ const enrichRuntimeError = (error, extras = {}) => {
   return error;
 };
 
-const buildImageConversationResult = async ({ user, agent, version, priorMessages, currentMessage, sessionId = null, selectedModelOverride = '', attachments = [], systemSettings = {}, knowledgeChunks = [], conversationSummary = '', onImageReady = null }) => {
+const buildImageConversationResult = async ({ user, agent, version, priorMessages, currentMessage, sessionId = null, selectedModelOverride = '', attachments = [], systemSettings = {}, knowledgeChunks = [], conversationSummary = '', onImageReady = null, localAssetLockHeld = false, runId = '', clientRequestId = '' }) => {
   const imageCapability = getImageModelCapability(version?.modelPolicy?.multimodalModel);
   const selectedImageModel = String(version?.modelPolicy?.multimodalModel || '').trim();
   if (!version?.modelPolicy?.imageGenerationEnabled || !selectedImageModel || !imageCapability) {
@@ -8832,7 +9844,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     attachments,
     priorMessages,
     Math.max(Number(imageCapability.maxInputImages || 1), 10)
-  ));
+  ), user.id);
   const conversationContext = buildImageConversationTextContext(
     priorMessages,
     Number(version?.contextPolicy?.maxHistoryRounds || 6),
@@ -9000,7 +10012,8 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
     remoteUrl: imageUrl,
     originalName: `${selectedImageModel || 'image_result'}.png`,
     provider: isMaxForAiImageModel(selectedImageModel) ? 'maxforai' : 'kie',
-    jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId),
+    jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId || runId || clientRequestId),
+    localLockHeld: localAssetLockHeld,
   });
   const promptTokens = analysisMessages.reduce((sum, message) => sum + estimateTokenCount(message.content), 0);
   const completionTokens = estimateTokenCount(analysisContent);
@@ -9538,6 +10551,11 @@ const handleStudioTrainingMessage = async (user, versionId, payload) => {
   if (!content) throw new Error('消息内容不能为空。');
   const history = Array.isArray(payload?.history) ? payload.history : [];
   const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
+  await assertOwnedActiveManagedAssetReferences({
+    value: attachments,
+    userId: user.id,
+    pool: await getMysqlPool(),
+  });
   const publicBaseUrl = getPersistentAssetBaseUrl();
   const selectedModel = resolveChatSessionModel(version, payload?.selectedModel || version.defaultChatModel || version.modelPolicy?.defaultModel || '');
   const capability = getChatModelCapability(selectedModel, publicBaseUrl);
@@ -9646,7 +10664,10 @@ const handleMysqlRequest = async (req, res, url) => {
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
   if ((req.method === 'GET' || req.method === 'HEAD') && assetRouteMatch) {
     const assetId = decodeURIComponent(assetRouteMatch[1]);
-    await serveStoredAsset(req, res, assetId);
+    await serveStoredAsset(req, res, assetId, {
+      accessKey: getManagedAssetAccessKeyFromUrl(url),
+      resolveRequestUserId: async () => String((await getDbSessionUser(req))?.id || ''),
+    });
     return;
   }
 
@@ -10216,12 +11237,19 @@ const handleMysqlRequest = async (req, res, url) => {
     const user = await requireDbUser(req, res);
     if (!user) return;
     const body = await readBody(req);
-    const updatedUser = await updateDbUser(user.id, {
-      displayName: typeof body?.displayName === 'string' ? String(body.displayName) : undefined,
-      avatarUrl: body?.avatarUrl === null ? null : typeof body?.avatarUrl === 'string' ? String(body.avatarUrl) : undefined,
-      avatarPreset: body?.avatarPreset === null ? null : typeof body?.avatarPreset === 'string' ? String(body.avatarPreset) : undefined,
-      analysisModel: body?.analysisModel === undefined ? undefined : normalizeUserAnalysisModel(body.analysisModel),
-      usernameFallback: user.displayName || user.username,
+    const updatedUser = await withManagedAssetUserLock(user.id, async (pool) => {
+      await assertOwnedActiveManagedAssetReferences({
+        value: body?.avatarUrl,
+        userId: user.id,
+        pool,
+      });
+      return updateDbUser(user.id, {
+        displayName: typeof body?.displayName === 'string' ? String(body.displayName) : undefined,
+        avatarUrl: body?.avatarUrl === null ? null : typeof body?.avatarUrl === 'string' ? String(body.avatarUrl) : undefined,
+        avatarPreset: body?.avatarPreset === null ? null : typeof body?.avatarPreset === 'string' ? String(body.avatarPreset) : undefined,
+        analysisModel: body?.analysisModel === undefined ? undefined : normalizeUserAnalysisModel(body.analysisModel),
+        usernameFallback: user.displayName || user.username,
+      });
     });
     json(res, 200, { user: cleanUser(updatedUser || user) });
     return;
@@ -10673,7 +11701,8 @@ const handleMysqlRequest = async (req, res, url) => {
     const admin = await requireDbAdmin(req, res);
     if (!admin) return;
     const body = await readBody(req);
-    json(res, 201, await createDbAgent(admin, body || {}));
+    const createdAgent = await createDbAgent(admin, body || {});
+    json(res, 201, createdAgent);
     return;
   }
 
@@ -10694,11 +11723,22 @@ const handleMysqlRequest = async (req, res, url) => {
     if (!admin) return;
     const body = await readBody(req);
     const agentId = decodeURIComponent(agentDetailMatch[1]);
+    const agentForLock = await getDbAgentById(agentId);
+    if (!agentForLock || !canManageOwnedResource(admin, agentForLock.ownerUserId)) {
+      json(res, 404, { message: '智能体不存在或无权限。' });
+      return;
+    }
     if (!isStatusOnlyAgentPatch(body)) {
-      const agentForLock = await getDbAgentById(agentId);
       if (rejectIfFactoryManaged(res, agentForLock)) return;
     }
-    const agent = await updateDbAgent(admin, agentId, body || {});
+    const agent = await withManagedAssetUserLock(agentForLock.ownerUserId, async (pool) => {
+      await assertOwnedActiveManagedAssetReferences({
+        value: body?.iconUrl,
+        userId: agentForLock.ownerUserId,
+        pool,
+      });
+      return updateDbAgent(admin, agentId, body || {});
+    });
     if (!agent) {
       json(res, 404, { message: '智能体不存在或无权限。' });
       return;
@@ -11453,7 +12493,7 @@ const handleMysqlRequest = async (req, res, url) => {
     const nextAnalysisModel = body.analysisModel === undefined ? undefined : normalizeUserAnalysisModel(body.analysisModel);
     const nextCreditLimitMode = body.creditLimitMode === undefined ? undefined : normalizeCreditLimitMode(body.creditLimitMode);
     const nextCreditBalance = body.creditBalance === undefined ? undefined : normalizeCreditBalanceInput(body.creditBalance);
-    const previousStatus = targetUser.status;
+    let previousStatus = targetUser.status;
 
     if (targetUser.id === admin.id && nextStatus === 'disabled') {
       json(res, 400, { message: '不能禁用当前登录管理员。' });
@@ -11468,18 +12508,27 @@ const handleMysqlRequest = async (req, res, url) => {
       }
     }
 
-    const updatedUser = await updateDbUser(targetUser.id, {
-      displayName: nextDisplayName,
-      role: nextRole,
-      status: nextStatus,
-      jobConcurrency: nextJobConcurrency,
-      featurePermissions: nextFeaturePermissions,
-      analysisModel: nextAnalysisModel,
-      creditLimitMode: nextCreditLimitMode,
-      creditBalance: nextCreditBalance,
-      password: nextPassword,
-      usernameFallback: targetUser.displayName || targetUser.username,
+    const updatedUser = await withManagedAssetUserLock(targetUser.id, async (lockedPool) => {
+      const lockedTargetUser = await findAnyDbUserById(targetUser.id, lockedPool);
+      if (!lockedTargetUser) return null;
+      previousStatus = lockedTargetUser.status;
+      return updateDbUser(targetUser.id, {
+        displayName: nextDisplayName,
+        role: nextRole,
+        status: nextStatus,
+        jobConcurrency: nextJobConcurrency,
+        featurePermissions: nextFeaturePermissions,
+        analysisModel: nextAnalysisModel,
+        creditLimitMode: nextCreditLimitMode,
+        creditBalance: nextCreditBalance,
+        password: nextPassword,
+        usernameFallback: lockedTargetUser.displayName || lockedTargetUser.username,
+      }, lockedPool);
     });
+    if (!updatedUser) {
+      json(res, 404, { message: '账号不存在。' });
+      return;
+    }
 
     if (nextStatus === 'disabled' || nextPassword) {
       const pool = await getMysqlPool();
@@ -11501,7 +12550,7 @@ const handleMysqlRequest = async (req, res, url) => {
       });
     }
 
-    if (nextStatus && nextStatus !== targetUser.status) {
+    if (nextStatus && nextStatus !== previousStatus) {
       await createDbLog({
         user: admin,
         level: 'info',
@@ -11565,7 +12614,7 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/state' && req.method === 'GET') {
     const user = await requireDbUser(req, res);
     if (!user) return;
-    const state = await scrubDbStateForUnavailableManagedAssets(await getDbAppState(user.id));
+    const state = await scrubDbStateForUnavailableManagedAssets(await getDbAppState(user.id), user.id);
     json(res, 200, { state: prepareStateForClient(state) });
     return;
   }
@@ -11577,10 +12626,10 @@ const handleMysqlRequest = async (req, res, url) => {
     const incomingState = body.state || createDefaultState();
     const previousState = await getDbAppState(user.id);
     const nextState = await scrubDbStateBeforeStorage(
-      mergeAppStateForStorage(previousState, incomingState)
+      mergeAppStateForStorage(previousState, incomingState),
+      user.id,
     );
-    await saveDbAppState(user.id, nextState);
-    await queueRemovedStateAssetsForCleanup({ user, previousState, nextState });
+    await saveDbAppStateAndQueueRemovedAssets({ user, previousState, nextState });
     json(res, 200, { ok: true });
     return;
   }
@@ -11740,10 +12789,11 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/assets/upload' && req.method === 'POST') {
     const user = await requireDbUser(req, res);
     if (!user) return;
-    const body = await readBody(req);
+    const body = await readBody(req, { maxBytes: getManagedImageJsonBodyMaxBytes() });
     const base64Data = String(body.base64Data || '').trim();
     const mimeType = String(body.mimeType || 'application/octet-stream').trim();
     const originalFileName = String(body.fileName || 'upload.bin').trim();
+    const assetType = String(body.assetType || 'source').trim().toLowerCase();
     if (!base64Data) {
       json(res, 400, { message: '上传内容不能为空。' });
       return;
@@ -11753,6 +12803,7 @@ const handleMysqlRequest = async (req, res, url) => {
       req,
       user,
       moduleName: String(body.module || 'system').slice(0, 60),
+      assetType,
       fileName: originalFileName,
       mimeType,
       fileBuffer: Buffer.from(base64Data, 'base64'),
@@ -11767,7 +12818,7 @@ const handleMysqlRequest = async (req, res, url) => {
         status: 'success',
         meta: {
           assetId: persisted.id,
-          fileUrl: persisted.publicUrl,
+          fileUrl: stripManagedAssetAccessKey(persisted.publicUrl),
         },
       });
       json(res, 200, { fileUrl: persisted.publicUrl, assetId: persisted.id });
@@ -11811,9 +12862,10 @@ const handleMysqlRequest = async (req, res, url) => {
   if (url.pathname === '/api/assets/upload-stream' && req.method === 'POST') {
     const user = await requireDbUser(req, res);
     if (!user) return;
-    const formData = await readMultipartFormData(req);
+    const formData = await readMultipartFormData(req, { inspectManagedImage: true });
     const file = formData.get('file');
     const moduleName = String(formData.get('module') || 'system').slice(0, 60);
+    const assetType = String(formData.get('assetType') || 'source').trim().toLowerCase();
     if (!(file instanceof File)) {
       json(res, 400, { message: '上传文件不能为空。' });
       return;
@@ -11824,6 +12876,7 @@ const handleMysqlRequest = async (req, res, url) => {
       req,
       user,
       moduleName,
+      assetType,
       fileName: file.name || 'upload.bin',
       mimeType: file.type || 'application/octet-stream',
       fileBuffer,
@@ -11838,7 +12891,7 @@ const handleMysqlRequest = async (req, res, url) => {
         status: 'success',
         meta: {
           assetId: persisted.id,
-          fileUrl: persisted.publicUrl,
+          fileUrl: stripManagedAssetAccessKey(persisted.publicUrl),
         },
       });
       json(res, 200, { fileUrl: persisted.publicUrl, assetId: persisted.id });
@@ -11886,7 +12939,7 @@ const handleMysqlRequest = async (req, res, url) => {
         status: 'success',
         meta: {
           assetId: result.assetId,
-          fileUrl: body?.fileUrl || '',
+          fileUrl: stripManagedAssetAccessKey(body?.fileUrl),
         },
       });
       json(res, 200, { ok: true });
@@ -11917,19 +12970,27 @@ const handleMysqlRequest = async (req, res, url) => {
       module: body.module,
       taskType: submissionPolicy.taskType,
       provider: submissionPolicy.provider,
-      payload: await scrubDbJobPayloadBeforeSubmission(body.payload),
+      payload: await scrubDbJobPayloadBeforeSubmission(body.payload, user.id),
       priority: body.priority,
       maxRetries: submissionPolicy.maxCreateRetries ?? normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };
-    const submission = await createSerializedJobSubmission({
-      pool,
-      user,
-      jobPayload,
-      dedupeWindowMs: submissionPolicy.dedupeWindowMs,
-      lockTimeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env),
-      findReusableJob: findReusableJobRecord,
-      reserveCredits: reserveDbJobCreditsForSubmission,
-      createJob: createDbJobRecordWithReservation,
+    const submission = await withManagedAssetUserLock(user.id, async (lockedPool) => {
+      await assertActiveDbUserUnderManagedAssetLock(lockedPool, user.id, '账号已删除，未创建任务');
+      await assertOwnedActiveManagedAssetReferences({
+        value: jobPayload.payload,
+        userId: user.id,
+        pool: lockedPool,
+      });
+      return createSerializedJobSubmission({
+        pool: lockedPool,
+        user,
+        jobPayload,
+        dedupeWindowMs: submissionPolicy.dedupeWindowMs,
+        lockTimeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env),
+        findReusableJob: findReusableJobRecord,
+        reserveCredits: reserveDbJobCreditsForSubmission,
+        createJob: createDbJobRecordWithReservation,
+      });
     });
     if (submission.deduped) {
       json(res, 200, submission);
@@ -11984,14 +13045,36 @@ const handleMysqlRequest = async (req, res, url) => {
       json(res, 404, { message: '任务不存在。' });
       return;
     }
-    const nextResult = {
-      ...(job.result && typeof job.result === 'object' ? job.result : {}),
-      ...resultPatch,
-    };
-    await updateJobFields(pool, job.id, {
-      result_json: JSON.stringify(nextResult),
-      provider_task_id: String(resultPatch.providerTaskId || job.providerTaskId || ''),
-      updated_at: Date.now(),
+    const nextResult = await withManagedAssetUserLock(user.id, async (lockedPool) => {
+      await assertActiveDbUserUnderManagedAssetLock(lockedPool, user.id, '账号已删除，未更新任务结果');
+      const freshJob = await getJobById(lockedPool, job.id);
+      if (!freshJob || freshJob.userId !== user.id) {
+        const error = new Error('任务已被删除，未更新结果');
+        error.code = 'managed_asset_job_unavailable';
+        error.statusCode = 404;
+        throw error;
+      }
+      const freshResult = {
+        ...(freshJob.result && typeof freshJob.result === 'object' ? freshJob.result : {}),
+        ...resultPatch,
+      };
+      await assertOwnedActiveManagedAssetReferences({
+        value: freshResult,
+        userId: user.id,
+        pool: lockedPool,
+      });
+      const updateResult = await updateJobFields(lockedPool, freshJob.id, {
+        result_json: JSON.stringify(freshResult),
+        provider_task_id: String(resultPatch.providerTaskId || freshJob.providerTaskId || ''),
+        updated_at: Date.now(),
+      });
+      if (Number(updateResult?.affectedRows || 0) !== 1) {
+        const error = new Error('任务已被删除，未更新结果');
+        error.code = 'managed_asset_job_unavailable';
+        error.statusCode = 404;
+        throw error;
+      }
+      return freshResult;
     });
     const updatedJob = await getDbJobByIdForUser(user, job.id);
     json(res, 200, { job: updatedJob || { ...job, result: nextResult } });
@@ -12038,13 +13121,23 @@ const handleMysqlRequest = async (req, res, url) => {
       });
       jobToDelete = cancellation.job;
     }
-    const deletion = await deleteJobById(pool, jobToDelete.id, {
-      userId: user.id,
-      hasPendingReservation: async (connection, freshJob) => {
-        const reservation = getCreditReservationFromJob(freshJob);
-        return Boolean(reservation && !await hasDbProcessedCreditReservation(connection, reservation));
-      },
-    });
+    const deletion = await withManagedAssetUserLock(user.id, (lockedPool) => (
+      deleteJobById(lockedPool, jobToDelete.id, {
+        userId: user.id,
+        hasPendingReservation: async (connection, freshJob) => {
+          const reservation = getCreditReservationFromJob(freshJob);
+          return Boolean(reservation && !await hasDbProcessedCreditReservation(connection, reservation));
+        },
+        afterDelete: async (connection, deletedJob) => {
+          await queueStoredAssetsAfterReferenceRemoval({
+            pool: connection,
+            assetIds: collectStoredAssetIdsFromJob(deletedJob),
+            reason: 'job_deleted',
+            ownerUserId: user.id,
+          });
+        },
+      })
+    ));
     if (!deletion?.job) {
       json(res, 404, { message: '任务不存在。' });
       return;
@@ -12069,11 +13162,6 @@ const handleMysqlRequest = async (req, res, url) => {
       json(res, 409, { message: '任务状态已变化，请刷新后重试。', code: 'job_delete_state_changed' });
       return;
     }
-    await deleteStoredAssetsByIdsForUser({
-      user,
-      assetIds: collectStoredAssetIdsFromJob(deletion.job),
-      reason: 'job_deleted',
-    });
     jobWorker?.cancelActiveJob(job.id);
     await createDbLog({
       user,
@@ -12266,7 +13354,7 @@ const handleMysqlRequest = async (req, res, url) => {
         const recoveredPayload = await scrubDbJobPayloadBeforeSubmission({
           ...body.payload,
           providerTaskId: body.providerTaskId,
-        });
+        }, user.id);
         const jobPayload = {
           module: body.module || 'system',
           taskType: submissionPolicy.taskType,
@@ -12298,7 +13386,10 @@ const handleMysqlRequest = async (req, res, url) => {
   json(res, 404, { message: '接口不存在。' });
 };
 
-const handleLocalRequest = async (req, res, url) => {
+const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = {}) => {
+  if (!mutationLockHeld && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    return withLocalStoreMutationLock(() => handleLocalRequest(req, res, url, { mutationLockHeld: true }));
+  }
   let store = readLocalStore();
   const userDetailMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
   const agentDetailMatch = url.pathname.match(/^\/api\/agents\/([^/]+)$/);
@@ -12329,7 +13420,10 @@ const handleLocalRequest = async (req, res, url) => {
   const assetRouteMatch = url.pathname.match(ASSET_FILE_ROUTE_REGEX);
   if ((req.method === 'GET' || req.method === 'HEAD') && assetRouteMatch) {
     const assetId = decodeURIComponent(assetRouteMatch[1]);
-    await serveStoredAsset(req, res, assetId);
+    await serveStoredAsset(req, res, assetId, {
+      accessKey: getManagedAssetAccessKeyFromUrl(url),
+      resolveRequestUserId: async () => String(localGetSessionUser(req, store)?.id || ''),
+    });
     return;
   }
 
@@ -12411,6 +13505,11 @@ const handleLocalRequest = async (req, res, url) => {
     const user = localRequireUser(req, res, store);
     if (!user) return;
     const body = await readBody(req);
+    await assertOwnedActiveManagedAssetReferences({
+      value: body?.avatarUrl,
+      userId: user.id,
+      pool: null,
+    });
     if (typeof body?.displayName === 'string') user.displayName = String(body.displayName).trim() || user.username;
     if (body?.avatarUrl === null) user.avatarUrl = '';
     else if (typeof body?.avatarUrl === 'string') user.avatarUrl = String(body.avatarUrl).trim().slice(0, 1024);
@@ -13373,6 +14472,11 @@ const handleLocalRequest = async (req, res, url) => {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
     const body = await readBody(req);
+    await assertOwnedActiveManagedAssetReferences({
+      value: body?.iconUrl,
+      userId: admin.id,
+      pool: null,
+    });
     const result = createLocalAgent(store, admin, body || {});
     writeLocalStore(store);
     json(res, 201, result);
@@ -13396,8 +14500,17 @@ const handleLocalRequest = async (req, res, url) => {
     if (!admin) return;
     const body = await readBody(req);
     const agentId = decodeURIComponent(agentDetailMatch[1]);
+    const agentForLock = getLocalAgentById(store, agentId);
+    if (!agentForLock || !canManageOwnedResource(admin, agentForLock.ownerUserId)) {
+      json(res, 404, { message: '智能体不存在或无权限。' });
+      return;
+    }
+    await assertOwnedActiveManagedAssetReferences({
+      value: body?.iconUrl,
+      userId: agentForLock.ownerUserId,
+      pool: null,
+    });
     if (!isStatusOnlyAgentPatch(body)) {
-      const agentForLock = getLocalAgentById(store, agentId);
       if (rejectIfFactoryManaged(res, agentForLock)) return;
     }
     const agent = updateLocalAgent(store, admin, agentId, body || {});
@@ -13413,7 +14526,7 @@ const handleLocalRequest = async (req, res, url) => {
   if (agentDetailMatch && req.method === 'DELETE') {
     const admin = localRequireAdmin(req, res, store);
     if (!admin) return;
-    const result = deleteLocalAgent(store, admin, decodeURIComponent(agentDetailMatch[1]));
+    const result = await deleteLocalAgent(store, admin, decodeURIComponent(agentDetailMatch[1]));
     if (!result) {
       json(res, 404, { message: '智能体不存在或无权限。' });
       return;
@@ -13820,10 +14933,20 @@ const handleLocalRequest = async (req, res, url) => {
       json(res, 404, { message: '会话不存在或无权限。' });
       return;
     }
-    const messages = (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
-    if (await recoverLocalSubmittedChatImageTasks(store, user, sessionId, messages)) {
-      store = readLocalStore();
-    }
+    await withLocalStoreMutationLock(async () => {
+      const recoveryStore = readLocalStore();
+      const recoveryUser = (recoveryStore.users || []).find((item) => item.id === user.id && item.status === 'active');
+      const recoverySession = (recoveryStore.chatSessions || []).find((item) => item.id === sessionId && item.userId === user.id);
+      const recoveryAgent = recoverySession
+        ? (recoveryStore.agents || []).find((item) => item.id === recoverySession.agentId)
+        : null;
+      if (!recoveryUser || !recoverySession || !recoveryAgent) return;
+      const recoveryMessages = (recoveryStore.chatMessages || [])
+        .filter((item) => item.sessionId === sessionId && item.userId === user.id)
+        .sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0));
+      await recoverLocalSubmittedChatImageTasks(recoveryStore, recoveryUser, sessionId, recoveryMessages);
+    });
+    store = readLocalStore();
     json(res, 200, { messages: (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id).sort((a, b) => Number(a.createdAt || 0) - Number(b.createdAt || 0)) });
     return;
   }
@@ -13884,6 +15007,11 @@ const handleLocalRequest = async (req, res, url) => {
       mimeType: item?.mimeType ? String(item.mimeType) : undefined,
       kind: item?.kind === 'image' ? 'image' : 'file',
     })) : [];
+    await assertOwnedActiveManagedAssetReferences({
+      value: attachments,
+      userId: user.id,
+      pool: null,
+    });
     if (requestMode === 'image_generation' && attachments.some((item) => item.kind !== 'image')) {
       if (localWantsStream) {
         sendLocalChatEvent('error', { message: '生图模式暂只支持上传图片' });
@@ -14233,7 +15361,7 @@ const handleLocalRequest = async (req, res, url) => {
             remoteUrl: rawUrl,
             originalName: `${model || 'image_result'}.png`,
             provider: isMaxForAiImageModel(model) ? 'maxforai' : 'kie',
-            jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId),
+            jobId: normalizeStoredAssetJobId(imageOutput?.providerTaskId || runId || clientRequestId),
           });
           const imageUrl = persistedUrl || rawUrl;
           const providerTaskId = String(imageOutput?.providerTaskId || '');
@@ -14263,7 +15391,7 @@ const handleLocalRequest = async (req, res, url) => {
           callModel,
           generateImage,
           onImageResultReady: persistLocalChatImageCheckpoint,
-          prepareModelImageUrl: prepareAgentModelImageUrl,
+	          prepareModelImageUrl: prepareAgentModelImageUrl(user.id),
           onProgress: (event) => {
             setChatProgress(clientRequestId, event);
           },
@@ -14288,6 +15416,8 @@ const handleLocalRequest = async (req, res, url) => {
               knowledgeChunks: imageKnowledgeChunks,
               conversationSummary: session.summary || '',
               onImageReady: persistLocalChatImageCheckpoint,
+              runId,
+              clientRequestId,
             })
           : await runLocalAgentConversation({
               store,
@@ -14502,6 +15632,11 @@ const handleLocalRequest = async (req, res, url) => {
       }
       const history = Array.isArray(body?.history) ? body.history : [];
       attachments = Array.isArray(body?.attachments) ? body.attachments : [];
+      await assertOwnedActiveManagedAssetReferences({
+        value: attachments,
+        userId: admin.id,
+        pool: null,
+      });
       const publicBaseUrl = getPersistentAssetBaseUrl(req);
       selectedModel = resolveChatSessionModel(version, body?.selectedModel || version.defaultChatModel || version.modelPolicy?.defaultModel || '');
       const capability = getChatModelCapability(selectedModel, publicBaseUrl);
@@ -14976,55 +16111,57 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
 
-    if (typeof nextDisplayName === 'string') targetUser.displayName = nextDisplayName.trim() || targetUser.username;
-    if (nextRole) targetUser.role = nextRole;
-    if (nextStatus) targetUser.status = nextStatus;
-    if (nextJobConcurrency !== undefined) targetUser.jobConcurrency = nextJobConcurrency;
-    if (nextFeaturePermissions !== undefined) targetUser.featurePermissions = normalizeFeaturePermissions(nextFeaturePermissions);
-    if (nextAnalysisModel !== undefined) targetUser.analysisModel = nextAnalysisModel;
-    if (nextCreditLimitMode !== undefined) targetUser.creditLimitMode = nextCreditLimitMode;
-    if (nextCreditBalance !== undefined) targetUser.creditBalance = nextCreditBalance;
-    if (nextPassword) {
-      const passwordRecord = createPasswordRecord(nextPassword);
-      targetUser.passwordHash = passwordRecord.hash;
-      targetUser.salt = passwordRecord.salt;
-    }
+    await withLocalManagedAssetUserLock(targetUser.id, async () => {
+      if (typeof nextDisplayName === 'string') targetUser.displayName = nextDisplayName.trim() || targetUser.username;
+      if (nextRole) targetUser.role = nextRole;
+      if (nextStatus) targetUser.status = nextStatus;
+      if (nextJobConcurrency !== undefined) targetUser.jobConcurrency = nextJobConcurrency;
+      if (nextFeaturePermissions !== undefined) targetUser.featurePermissions = normalizeFeaturePermissions(nextFeaturePermissions);
+      if (nextAnalysisModel !== undefined) targetUser.analysisModel = nextAnalysisModel;
+      if (nextCreditLimitMode !== undefined) targetUser.creditLimitMode = nextCreditLimitMode;
+      if (nextCreditBalance !== undefined) targetUser.creditBalance = nextCreditBalance;
+      if (nextPassword) {
+        const passwordRecord = createPasswordRecord(nextPassword);
+        targetUser.passwordHash = passwordRecord.hash;
+        targetUser.salt = passwordRecord.salt;
+      }
 
-    if (nextStatus === 'disabled' || nextPassword) {
-      store.sessions = store.sessions.filter(session => session.userId !== targetUser.id);
-    }
+      if (nextStatus === 'disabled' || nextPassword) {
+        store.sessions = store.sessions.filter(session => session.userId !== targetUser.id);
+      }
 
-    if (nextPassword) {
-      appendLocalLog(store, {
-        user: admin,
-        level: 'info',
-        module: 'account',
-        action: 'password_reset',
-        message: `重置密码：${targetUser.username}`,
-        status: 'success',
-        meta: {
-          targetUserId: targetUser.id,
-          targetUsername: targetUser.username,
-        },
-      });
-    }
+      if (nextPassword) {
+        appendLocalLog(store, {
+          user: admin,
+          level: 'info',
+          module: 'account',
+          action: 'password_reset',
+          message: `重置密码：${targetUser.username}`,
+          status: 'success',
+          meta: {
+            targetUserId: targetUser.id,
+            targetUsername: targetUser.username,
+          },
+        });
+      }
 
-    if (nextStatus && nextStatus !== previousStatus) {
-      appendLocalLog(store, {
-        user: admin,
-        level: 'info',
-        module: 'account',
-        action: nextStatus === 'disabled' ? 'user_disabled' : 'user_enabled',
-        message: `${nextStatus === 'disabled' ? '禁用' : '启用'}账号：${targetUser.username}`,
-        status: 'success',
-        meta: {
-          targetUserId: targetUser.id,
-          targetUsername: targetUser.username,
-        },
-      });
-    }
+      if (nextStatus && nextStatus !== previousStatus) {
+        appendLocalLog(store, {
+          user: admin,
+          level: 'info',
+          module: 'account',
+          action: nextStatus === 'disabled' ? 'user_disabled' : 'user_enabled',
+          message: `${nextStatus === 'disabled' ? '禁用' : '启用'}账号：${targetUser.username}`,
+          status: 'success',
+          meta: {
+            targetUserId: targetUser.id,
+            targetUsername: targetUser.username,
+          },
+        });
+      }
 
-    writeLocalStore(store);
+      writeLocalStore(store);
+    });
     json(res, 200, { user: cleanUser(targetUser) });
     return;
   }
@@ -15051,43 +16188,45 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
 
-    await queueUserAssetsForCleanup(targetUser.id);
+    await withLocalManagedAssetUserLock(targetUser.id, async () => {
+      await queueUserAssetsForCleanup(targetUser.id);
 
-    const deletedAgentIds = new Set((store.agents || []).filter((item) => item.ownerUserId === targetUser.id).map((item) => item.id));
-    const deletedVersionIds = new Set((store.agentVersions || []).filter((item) => deletedAgentIds.has(item.agentId) || item.createdBy === targetUser.id).map((item) => item.id));
-    const deletedKnowledgeBaseIds = new Set((store.knowledgeBases || []).filter((item) => item.ownerUserId === targetUser.id).map((item) => item.id));
-    const deletedChatSessionIds = new Set((store.chatSessions || [])
-      .filter((item) => item.userId === targetUser.id || deletedAgentIds.has(item.agentId))
-      .map((item) => item.id));
+      const deletedAgentIds = new Set((store.agents || []).filter((item) => item.ownerUserId === targetUser.id).map((item) => item.id));
+      const deletedVersionIds = new Set((store.agentVersions || []).filter((item) => deletedAgentIds.has(item.agentId) || item.createdBy === targetUser.id).map((item) => item.id));
+      const deletedKnowledgeBaseIds = new Set((store.knowledgeBases || []).filter((item) => item.ownerUserId === targetUser.id).map((item) => item.id));
+      const deletedChatSessionIds = new Set((store.chatSessions || [])
+        .filter((item) => item.userId === targetUser.id || deletedAgentIds.has(item.agentId))
+        .map((item) => item.id));
 
-    store.sessions = store.sessions.filter(session => session.userId !== targetUser.id);
-    store.jobs = (store.jobs || []).filter((job) => job.userId !== targetUser.id);
-    store.logs = normalizeLogs((store.logs || []).filter((log) => log.userId !== targetUser.id));
-    store.accountCreditLedger = (store.accountCreditLedger || []).filter((entry) => entry.userId !== targetUser.id);
-    store.chatMessages = (store.chatMessages || []).filter((item) => item.userId !== targetUser.id && !deletedChatSessionIds.has(item.sessionId));
-    store.chatSessions = (store.chatSessions || []).filter((item) => item.userId !== targetUser.id && !deletedAgentIds.has(item.agentId));
-    store.agentUsageLogs = (store.agentUsageLogs || []).filter((item) => item.userId !== targetUser.id && !deletedAgentIds.has(item.agentId));
-    store.agentVersions = (store.agentVersions || []).filter((item) => !deletedVersionIds.has(item.id) && !deletedAgentIds.has(item.agentId));
-    store.agents = (store.agents || []).filter((item) => item.ownerUserId !== targetUser.id);
-    store.knowledgeChunks = (store.knowledgeChunks || []).filter((item) => !deletedKnowledgeBaseIds.has(item.knowledgeBaseId));
-    store.knowledgeDocuments = (store.knowledgeDocuments || []).filter((item) => !deletedKnowledgeBaseIds.has(item.knowledgeBaseId));
-    store.knowledgeBases = (store.knowledgeBases || []).filter((item) => item.ownerUserId !== targetUser.id);
-    store.users = store.users.filter(item => item.id !== targetUser.id);
-    delete store.appStates[targetUser.id];
-    appendLocalLog(store, {
-      user: admin,
-      level: 'info',
-      module: 'account',
-      action: 'user_deleted',
-      message: `删除账号并清理账号数据：${targetUser.username}`,
-      status: 'success',
-      meta: {
-        targetUserId: targetUser.id,
-        targetUsername: targetUser.username,
-        usageStatsPreserved: true,
-      },
+      store.sessions = store.sessions.filter(session => session.userId !== targetUser.id);
+      store.jobs = (store.jobs || []).filter((job) => job.userId !== targetUser.id);
+      store.logs = normalizeLogs((store.logs || []).filter((log) => log.userId !== targetUser.id));
+      store.accountCreditLedger = (store.accountCreditLedger || []).filter((entry) => entry.userId !== targetUser.id);
+      store.chatMessages = (store.chatMessages || []).filter((item) => item.userId !== targetUser.id && !deletedChatSessionIds.has(item.sessionId));
+      store.chatSessions = (store.chatSessions || []).filter((item) => item.userId !== targetUser.id && !deletedAgentIds.has(item.agentId));
+      store.agentUsageLogs = (store.agentUsageLogs || []).filter((item) => item.userId !== targetUser.id && !deletedAgentIds.has(item.agentId));
+      store.agentVersions = (store.agentVersions || []).filter((item) => !deletedVersionIds.has(item.id) && !deletedAgentIds.has(item.agentId));
+      store.agents = (store.agents || []).filter((item) => item.ownerUserId !== targetUser.id);
+      store.knowledgeChunks = (store.knowledgeChunks || []).filter((item) => !deletedKnowledgeBaseIds.has(item.knowledgeBaseId));
+      store.knowledgeDocuments = (store.knowledgeDocuments || []).filter((item) => !deletedKnowledgeBaseIds.has(item.knowledgeBaseId));
+      store.knowledgeBases = (store.knowledgeBases || []).filter((item) => item.ownerUserId !== targetUser.id);
+      store.users = store.users.filter(item => item.id !== targetUser.id);
+      delete store.appStates[targetUser.id];
+      appendLocalLog(store, {
+        user: admin,
+        level: 'info',
+        module: 'account',
+        action: 'user_deleted',
+        message: `删除账号并清理账号数据：${targetUser.username}`,
+        status: 'success',
+        meta: {
+          targetUserId: targetUser.id,
+          targetUsername: targetUser.username,
+          usageStatsPreserved: true,
+        },
+      });
+      writeLocalStore(store);
     });
-    writeLocalStore(store);
     json(res, 200, { ok: true });
     return;
   }
@@ -15095,7 +16234,7 @@ const handleLocalRequest = async (req, res, url) => {
   if (url.pathname === '/api/state' && req.method === 'GET') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
-    const state = await scrubLocalStateForUnavailableManagedAssets(store.appStates[user.id] || createDefaultState());
+    const state = await scrubLocalStateForUnavailableManagedAssets(store.appStates[user.id] || createDefaultState(), user.id);
     json(res, 200, { state: prepareStateForClient(state) });
     return;
   }
@@ -15107,7 +16246,8 @@ const handleLocalRequest = async (req, res, url) => {
     const incomingState = body.state || createDefaultState();
     const previousState = store.appStates[user.id] || createDefaultState();
     const nextState = await scrubLocalStateBeforeStorage(
-      mergeAppStateForStorage(previousState, incomingState)
+      mergeAppStateForStorage(previousState, incomingState),
+      user.id,
     );
     store.appStates[user.id] = nextState;
     writeLocalStore(store);
@@ -15269,10 +16409,11 @@ const handleLocalRequest = async (req, res, url) => {
   if (url.pathname === '/api/assets/upload' && req.method === 'POST') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
-    const body = await readBody(req);
+    const body = await readBody(req, { maxBytes: getManagedImageJsonBodyMaxBytes() });
     const base64Data = String(body.base64Data || '').trim();
     const mimeType = String(body.mimeType || 'application/octet-stream').trim();
     const originalFileName = String(body.fileName || 'upload.bin').trim();
+    const assetType = String(body.assetType || 'source').trim().toLowerCase();
     if (!base64Data) {
       json(res, 400, { message: '上传内容不能为空。' });
       return;
@@ -15282,6 +16423,7 @@ const handleLocalRequest = async (req, res, url) => {
       req,
       user,
       moduleName: String(body.module || 'system').slice(0, 60),
+      assetType,
       fileName: originalFileName,
       mimeType,
       fileBuffer: Buffer.from(base64Data, 'base64'),
@@ -15296,7 +16438,7 @@ const handleLocalRequest = async (req, res, url) => {
         status: 'success',
         meta: {
           assetId: persisted.id,
-          fileUrl: persisted.publicUrl,
+          fileUrl: stripManagedAssetAccessKey(persisted.publicUrl),
         },
       });
       writeLocalStore(store);
@@ -15346,9 +16488,10 @@ const handleLocalRequest = async (req, res, url) => {
   if (url.pathname === '/api/assets/upload-stream' && req.method === 'POST') {
     const user = localRequireUser(req, res, store);
     if (!user) return;
-    const formData = await readMultipartFormData(req);
+    const formData = await readMultipartFormData(req, { inspectManagedImage: true });
     const file = formData.get('file');
     const moduleName = String(formData.get('module') || 'system').slice(0, 60);
+    const assetType = String(formData.get('assetType') || 'source').trim().toLowerCase();
     if (!(file instanceof File)) {
       json(res, 400, { message: '上传文件不能为空。' });
       return;
@@ -15359,6 +16502,7 @@ const handleLocalRequest = async (req, res, url) => {
       req,
       user,
       moduleName,
+      assetType,
       fileName: file.name || 'upload.bin',
       mimeType: file.type || 'application/octet-stream',
       fileBuffer,
@@ -15373,7 +16517,7 @@ const handleLocalRequest = async (req, res, url) => {
         status: 'success',
         meta: {
           assetId: persisted.id,
-          fileUrl: persisted.publicUrl,
+          fileUrl: stripManagedAssetAccessKey(persisted.publicUrl),
         },
       });
       writeLocalStore(store);
@@ -15424,7 +16568,7 @@ const handleLocalRequest = async (req, res, url) => {
         status: 'success',
         meta: {
           assetId: result.assetId,
-          fileUrl: body?.fileUrl || '',
+          fileUrl: stripManagedAssetAccessKey(body?.fileUrl),
         },
       });
       writeLocalStore(store);
@@ -15455,7 +16599,7 @@ const handleLocalRequest = async (req, res, url) => {
       module: body.module,
       taskType: submissionPolicy.taskType,
       provider: submissionPolicy.provider,
-      payload: await scrubLocalJobPayloadBeforeSubmission(body.payload),
+      payload: await scrubLocalJobPayloadBeforeSubmission(body.payload, user.id),
       priority: body.priority,
       maxRetries: submissionPolicy.maxCreateRetries ?? normalizeJobMaxRetries(body.taskType, body.maxRetries),
     };
@@ -15750,7 +16894,7 @@ const handleLocalRequest = async (req, res, url) => {
         const recoveredPayload = await scrubLocalJobPayloadBeforeSubmission({
           ...body.payload,
           providerTaskId: body.providerTaskId,
-        });
+        }, user.id);
         const jobPayload = {
           module: body.module || 'system',
           taskType: submissionPolicy.taskType,
@@ -15837,7 +16981,7 @@ const server = createServer(async (req, res) => {
   } catch (error) {
     console.error(error);
     if (error.message === 'REQUEST_MULTIPART_BODY_TOO_LARGE') {
-      json(res, 413, { message: '上传素材过大，当前最大支持 1024MB。' });
+      json(res, 413, { message: '上传内容超过服务端限制，请压缩后重试。' });
       return;
     }
     if (error.message === 'REQUEST_BODY_TOO_LARGE') {
@@ -15879,11 +17023,27 @@ const server = createServer(async (req, res) => {
       });
       return;
     }
+    if (error?.statusCode && /^managed_asset_/.test(String(error?.code || ''))) {
+      json(res, error.statusCode, {
+        message: error.message || '托管素材操作失败。',
+        code: error.code,
+        retryable: ['managed_asset_user_lock_timeout', 'managed_asset_lifecycle_lock_timeout', 'managed_asset_agent_busy', 'managed_asset_object_missing'].includes(error.code),
+      });
+      return;
+    }
     if (/^managed_image_(?:upload_failed|upload_disabled)$/.test(String(error?.code || ''))) {
       json(res, 503, {
         message: error.message || '图片上传暂时失败，请稍后重试。',
         code: error.code,
         retryable: true,
+      });
+      return;
+    }
+    if (error?.statusCode && /^managed_image_/.test(String(error?.code || ''))) {
+      json(res, error.statusCode, {
+        message: error.message || '图片上传内容无效。',
+        code: error.code,
+        retryable: false,
       });
       return;
     }
@@ -15992,15 +17152,14 @@ const bootstrap = async () => {
         activities: createLocalTemporalActivities({
           readStore: readLocalStore,
           writeStore: writeLocalStore,
+          mutateStore: mutateLocalStore,
           executeJob: async (job, signal, options) => {
             const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
             return persistJobOutputAssetsIfEnabled(job, output);
           },
-          createLog: (payload) => {
-            const store = readLocalStore();
+          createLog: (payload) => mutateLocalStore((store) => {
             appendLocalLog(store, payload);
-            writeLocalStore(store);
-          },
+          }),
           findUserById: (userId) => findLocalUserById(userId),
           settleJobCredits: ({ store, job, output, aborted }) => settleLocalJobCredits({ store, job, output, aborted }),
           releaseJobCredits: ({ store, job, error, retryWaiting }) => releaseLocalJobCredits({ store, job, error, retryWaiting }),
@@ -16012,16 +17171,15 @@ const bootstrap = async () => {
       localJobWorker = createLocalJobWorker({
         readStore: readLocalStore,
         writeStore: writeLocalStore,
+        mutateStore: mutateLocalStore,
         executeJob: async (job, signal, options) => {
           const output = await executeProviderJobWithManagedAssetScrub(job, process.env, signal, options);
           return persistJobOutputAssetsIfEnabled(job, output);
         },
         getMaxConcurrency: getLocalWorkerConcurrency,
-        createLog: (payload) => {
-          const store = readLocalStore();
+        createLog: (payload) => mutateLocalStore((store) => {
           appendLocalLog(store, payload);
-          writeLocalStore(store);
-        },
+        }),
         findUserById: (userId) => findLocalUserById(userId),
         settleJobCredits: ({ store, job, output, aborted }) => settleLocalJobCredits({ store, job, output, aborted }),
         releaseJobCredits: ({ store, job, error, retryWaiting }) => releaseLocalJobCredits({ store, job, error, retryWaiting }),

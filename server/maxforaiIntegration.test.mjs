@@ -144,7 +144,7 @@ test('all job workers persist inline image results before durable completion', (
   assert.match(serverSource, /persistInlineImageResult/);
   assert.match(
     serverSource,
-    /const persistJobOutputAssetsIfEnabled = async \(job, output\) => \{[\s\S]*persistInlineImageResult\(/,
+    /const persistJobOutputAssetsIfEnabled = async \(job, output, lockedPool = null, localLockHeld = false\) => \{[\s\S]*persistInlineImageResult\(/,
   );
   assert.equal(
     (serverSource.match(/return persistJobOutputAssetsIfEnabled\(job, output\);/g) || []).length,

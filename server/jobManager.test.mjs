@@ -827,6 +827,47 @@ test('mysql deletion preserves terminal jobs with an unprocessed reservation', a
   assert.equal(queries.some((sql) => /DELETE FROM internal_jobs/.test(sql)), false);
 });
 
+test('mysql deletion runs durable reference cleanup inside the job transaction', async () => {
+  const events = [];
+  const row = {
+    id: 'job-delete-with-assets',
+    user_id: 'user-a',
+    module: 'buyer_show',
+    task_type: 'buyer_show',
+    provider: 'kie',
+    status: 'succeeded',
+    provider_task_id: 'provider-1',
+    payload_json: JSON.stringify({ imageUrl: '/api/assets/file/asset-1/source.png' }),
+    result_json: '{}',
+  };
+  const connection = {
+    async beginTransaction() { events.push('begin'); },
+    async commit() { events.push('commit'); },
+    async rollback() { events.push('rollback'); },
+    async query(sql) {
+      if (/FOR UPDATE/.test(sql)) return [[row]];
+      if (/DELETE FROM internal_jobs/.test(sql)) {
+        events.push('delete-job');
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() { events.push('release'); },
+  };
+
+  const outcome = await deleteJobById({ async getConnection() { return connection; } }, row.id, {
+    userId: 'user-a',
+    afterDelete: async (runner, job) => {
+      assert.equal(runner, connection);
+      assert.equal(job.id, row.id);
+      events.push('queue-assets');
+    },
+  });
+
+  assert.equal(outcome.deleted, true);
+  assert.deepEqual(events, ['begin', 'delete-job', 'queue-assets', 'commit', 'release']);
+});
+
 test('retry with a replacement reservation clears the old provider task id before resubmission', async () => {
   const queries = [];
   const connection = {

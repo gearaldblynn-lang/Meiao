@@ -124,9 +124,9 @@ test('V2 接入 responses provider 并注入知识库/联网工具(双 handler)'
 test('agent V2 prepares managed image URLs as provider-stable HTTPS URLs before model vision analysis', () => {
   assert.match(source, /import \{ resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel \} from '\.\/providerAssetTransfer\.mjs'/);
   assert.match(source, /import \{ executeProviderJob, uploadAssetViaKieStream \} from '\.\/providerGateway\.mjs'/);
-  assert.match(source, /const prepareAgentModelImageUrl = async \(url\) =>/);
+  assert.match(source, /const prepareAgentModelImageUrl = \(userId\) => async \(url\) =>/);
   assert.match(source, /resolveProviderChatMediaUrlForModel\(url, \{\s*env: process\.env,\s*deps: \{[\s\S]{0,500}uploadAssetViaKieStream,[\s\S]{0,500}resolveManagedAssetReadUrl:/);
-  const prepareHooks = Array.from(source.matchAll(/prepareModelImageUrl: prepareAgentModelImageUrl/g));
+  const prepareHooks = Array.from(source.matchAll(/prepareModelImageUrl: prepareAgentModelImageUrl\(user\.id\)/g));
   assert.ok(prepareHooks.length >= 2, 'MySQL+本地 V2 chat handler 都要准备模型可读图片 URL');
 });
 
@@ -156,9 +156,9 @@ test('agent chat source exposes current-user profile updates and session patch d
 test('agent chat session deletion cascades managed assets in mysql and local modes', () => {
   assert.match(source, /collectStoredAssetIdsFromValue/);
   assert.match(source, /const collectStoredAssetIdsFromChatMessages = \(messages = \[\]\) =>/);
-  assert.match(source, /const deleteStoredAssetsByIdsForUser = async \(\{ user, assetIds, reason = 'bulk_owner_delete', referenceStore = null \}\) =>/);
+  assert.match(source, /const deleteStoredAssetsByIdsForUser = async \(\{/);
   assert.match(source, /SELECT \* FROM chat_messages WHERE session_id = \? AND user_id = \?/);
-  assert.match(source, /SELECT \* FROM chat_messages WHERE user_id = \? AND session_id IN/);
+  assert.match(source, /INNER JOIN chat_sessions session ON session\.id = message\.session_id[\s\S]{0,300}WHERE session\.user_id = \? AND session\.agent_id = \?/);
   assert.match(source, /const assetIds = collectStoredAssetIdsFromChatMessages\(messages\);/);
   assert.match(source, /const deletedAssetIds = collectStoredAssetIdsFromChatMessages\(sessionMessages\);/);
   assert.match(source, /const historyAssetIds = collectStoredAssetIdsFromChatMessages\(historyMessages\);/);
@@ -177,6 +177,14 @@ test('agent chat source validates model ability before accepting attachments or 
   assert.match(source, /当前环境下不支持图片输入/);
   assert.match(source, /当前环境下不支持文件输入/);
   assert.match(source, /当前模型不支持联网/);
+});
+
+test('managed chat profile and agent references are owner-validated before persistence', () => {
+  assert.match(source, /import \{ assertOwnedActiveManagedAssetReferences \} from '\.\/managedAssetReferencePolicy\.mjs'/);
+  const validationCalls = Array.from(source.matchAll(/await assertOwnedActiveManagedAssetReferences\(\{/g));
+  assert.ok(validationCalls.length >= 10, 'MySQL+local chat, studio, profile and agent writes must validate managed references');
+  assert.match(source, /const attachments = Array\.isArray\(payload\?\.attachments\)[\s\S]{0,700}assertOwnedActiveManagedAssetReferences\(\{[\s\S]{0,200}userId: user\.id/);
+  assert.match(source, /const attachments = Array\.isArray\(body\?\.attachments\)[\s\S]{0,700}assertOwnedActiveManagedAssetReferences\(\{[\s\S]{0,200}userId: user\.id/);
 });
 
 test('agent chat source expands legacy default model allowlists to include newly added claude', () => {
@@ -277,12 +285,13 @@ test('agent chat message listing auto-recovers submitted provider image tasks', 
   assert.match(source, /taskType: 'kie_probe'/);
   assert.match(source, /checkpoint: 'image_task_recovered'/);
   assert.match(source, /await recoverDbSubmittedChatImageTasks\(user, sessionId, messages\)/);
-  assert.match(source, /await recoverLocalSubmittedChatImageTasks\(store, user, sessionId, messages\)/);
+  assert.match(source, /withLocalStoreMutationLock\(async \(\) => \{[\s\S]*await recoverLocalSubmittedChatImageTasks\(recoveryStore, recoveryUser, sessionId, recoveryMessages\)/);
 });
 
 test('agent image result asset persistence bounds provider task ids before writing stored asset job id', () => {
-  assert.match(source, /const normalizeStoredAssetJobId = \(value\) => String\(value \|\| ''\)\.trim\(\)\.slice\(0, 120\);/);
-  assert.match(source, /jobId: normalizeStoredAssetJobId\(imageOutput\?\.providerTaskId\)/);
+  assert.match(source, /normalizeStoredAssetJobId,/);
+  assert.match(source, /jobId: normalizeStoredAssetJobId\(imageOutput\?\.providerTaskId \|\| runId \|\| clientRequestId\)/);
+  assert.match(source, /buildImageConversationResult\([\s\S]{0,700}runId,[\s\S]{0,100}clientRequestId,/);
 });
 
 test('agent chat source persists client request ids so timed-out image chats can sync completed results', () => {
@@ -430,7 +439,7 @@ test('local studio upload source keeps localhost managed asset persistence enabl
 });
 
 test('managed asset uploads do not fall back to third-party auth just because public base url is empty', () => {
-  assert.match(source, /const persistUploadedAssetIfEnabled = async \(\{ req, user, moduleName, fileName, mimeType, fileBuffer, width = 0, height = 0 \}\) => \{/);
+  assert.match(source, /const persistUploadedAssetIfEnabled = async \(\{ req, user, moduleName, assetType = 'source', fileName, mimeType, fileBuffer, width = 0, height = 0 \}\) => \{/);
   assert.doesNotMatch(
     source,
     /const persistUploadedAssetIfEnabled = async \(\{ req, user, moduleName, fileName, mimeType, fileBuffer, width = 0, height = 0 \}\) => \{\s+const publicBaseUrl = getPersistentAssetBaseUrl\(req\);\s+if \(!publicBaseUrl\) \{\s+return null;\s+\}/
@@ -438,7 +447,7 @@ test('managed asset uploads do not fall back to third-party auth just because pu
 });
 
 test('cloud output asset persistence also rewrites generated image arrays and direct image chat results to managed urls', () => {
-  assert.match(source, /const persistRuntimeRemoteAssetIfEnabled = async \(\{ userId, moduleName, assetType = 'result', remoteUrl, originalName = 'result\.png', provider = 'kie', jobId = '' \}\) => \{/);
+  assert.match(source, /const persistRuntimeRemoteAssetIfEnabled = async \(\{ userId, moduleName, assetType = 'result', remoteUrl, originalName = 'result\.png', provider = 'kie', jobId = '', localLockHeld = false \}\) => \{/);
   assert.match(source, /const persistRemoteArrayField = async \(fieldName, assetType, fallbackNameBuilder\) => \{/);
   assert.match(source, /await persistRemoteArrayField\('imageResultUrls', 'result'/);
   assert.match(source, /await persistRemoteArrayField\('resultUrls', 'result'/);

@@ -417,7 +417,7 @@ test('cancel and retry routes enforce reservation lifecycle before queueing work
 test('job deletion checks pending reservations in mysql and local modes before removing records', () => {
   assert.match(
     serverSource,
-    /deleteJobById\(pool,[\s\S]{0,500}hasPendingReservation:[\s\S]{0,400}hasDbProcessedCreditReservation/
+    /deleteJobById\(lockedPool,[\s\S]{0,500}hasPendingReservation:[\s\S]{0,400}hasDbProcessedCreditReservation/
   );
   assert.match(
     serverSource,
