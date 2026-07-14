@@ -144,6 +144,70 @@ const validateExistingContext = (context: ProductRestoreProjectContext) => {
   return context;
 };
 
+const materialIdentities = (materials: ShellMaterialInput[]) => (
+  materials.map((material) => boundedIdentity(material?.id))
+);
+
+const sameOrderedValues = (left: readonly string[] = [], right: readonly string[] = []) => (
+  left.length === right.length && left.every((value, index) => value === right[index])
+);
+
+const validateTargetIdentities = (targets: ShellMaterialInput[]) => {
+  const seen = new Set<string>();
+  for (const target of targets) {
+    const targetId = boundedIdentity(target?.id);
+    if (!targetId) {
+      throw toWorkflowError(
+        '产品还原目标缺少稳定素材身份，未创建任何分析或图片任务。',
+        'product_restore_target_id_missing',
+      );
+    }
+    if (seen.has(targetId)) {
+      throw toWorkflowError(
+        '产品还原目标素材身份重复，未创建任何分析或图片任务。',
+        'product_restore_target_id_duplicate',
+      );
+    }
+    seen.add(targetId);
+  }
+};
+
+const contextMatchesBatch = (
+  context: ProductRestoreProjectContext,
+  targets: ShellMaterialInput[],
+  productReferences: ShellMaterialInput[],
+  focusIds: ProductRestoreFocusId[],
+  userRequirement: string,
+  config: ModuleConfig,
+) => (
+  sameOrderedValues(context.targetMaterialIds, materialIdentities(targets))
+  && sameOrderedValues(context.productReferenceMaterialIds, materialIdentities(productReferences))
+  && sameOrderedValues(context.focusIds, focusIds)
+  && String(context.userRequirement || '').trim() === userRequirement
+  && String(context.selectedImageModel || '').trim() === String(config.model || '').trim()
+  && String(context.resolution || '').trim().toUpperCase() === String(config.quality || '').trim().toUpperCase()
+);
+
+const validateItemContext = (
+  context: ProductRestoreProjectContext,
+  target: ShellMaterialInput,
+  productReferences: ShellMaterialInput[],
+  batchIndex: number,
+) => {
+  const targetId = boundedIdentity(target?.id);
+  const expectedTargetId = boundedIdentity(context.targetMaterialIds?.[batchIndex - 1]);
+  const referencesMatch = sameOrderedValues(
+    context.productReferenceMaterialIds,
+    materialIdentities(productReferences),
+  );
+  if (!targetId || targetId !== expectedTargetId || !referencesMatch) {
+    throw toWorkflowError(
+      '该图片与已持久化的产品还原分析不属于同一批次，请重新分析后再生成。',
+      'product_restore_context_mismatch',
+    );
+  }
+};
+
 const normalizeGenerationConfig = (
   config: ModuleConfig,
   context?: ProductRestoreProjectContext,
@@ -265,6 +329,7 @@ export async function runShellProductRestoreItem(
   if (!Array.isArray(productReferences) || productReferences.length === 0) {
     throw toWorkflowError('产品还原缺少产品参考图，未创建图片任务。', 'product_restore_reference_required');
   }
+  validateItemContext(context, target, productReferences, batchIndex);
 
   const generationConfig = normalizeGenerationConfig(itemInput.config, context);
   const referenceUrls = productReferences.map((reference) => (
@@ -482,8 +547,29 @@ export async function runShellProductRestoreWorkflow(
     throw toWorkflowError(inputValidation.message, inputValidation.errorCode);
   }
 
-  const normalizedConfig = normalizeGenerationConfig(config, input.productRestoreContext);
+  validateTargetIdentities(targets);
+  const normalizedConfig = normalizeGenerationConfig(config);
   const focusIds = normalizeProductRestoreFocusIds(input.params.restoreFocusIds) as ProductRestoreFocusId[];
+  const userRequirement = input.prompt.trim();
+  const existingContext = input.productRestoreContext
+    ? validateExistingContext(input.productRestoreContext)
+    : undefined;
+  const reusableContext = existingContext && contextMatchesBatch(
+    existingContext,
+    targets,
+    productReferences,
+    focusIds,
+    userRequirement,
+    normalizedConfig,
+  )
+    ? existingContext
+    : undefined;
+  if (!reusableContext && typeof callbacks.onAnalysisCompleted !== 'function') {
+    throw toWorkflowError(
+      '产品还原分析缺少持久化回调，未创建任何分析或图片任务。',
+      'product_restore_analysis_persistence_required',
+    );
+  }
   const targetUrls = targets.map((target) => materialUrl(target, input.publicBaseUrl || '', '待还原套图'));
   const productReferenceUrls = productReferences.map((reference) => (
     materialUrl(reference, input.publicBaseUrl || '', '产品参考图')
@@ -506,8 +592,8 @@ export async function runShellProductRestoreWorkflow(
   );
 
   let context: ProductRestoreProjectContext;
-  if (input.productRestoreContext) {
-    context = validateExistingContext(input.productRestoreContext);
+  if (reusableContext) {
+    context = reusableContext;
   } else {
     const analysisStartedAt = Date.now();
     logProductRestore(
@@ -520,7 +606,7 @@ export async function runShellProductRestoreWorkflow(
       targetUrls,
       productReferenceUrls,
       focusIds,
-      userRequirement: input.prompt.trim(),
+      userRequirement,
       apiConfig: apiConfigForInput(input),
       signal: input.signal,
       jobMetadata: {
@@ -573,7 +659,7 @@ export async function runShellProductRestoreWorkflow(
       productReferenceMaterialIds: productReferences.map((reference) => reference.id),
       selectedImageModel: normalizedConfig.model,
       resolution: normalizedConfig.quality.toUpperCase() as ProductRestoreProjectContext['resolution'],
-      userRequirement: input.prompt.trim(),
+      userRequirement,
       createdAt: Date.now(),
     };
     logProductRestore(

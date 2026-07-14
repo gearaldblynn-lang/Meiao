@@ -1,11 +1,42 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { createServer } from 'vite';
 
 const workflowPath = new URL('./shellProductRestoreWorkflow.ts', import.meta.url);
 const shellWorkflowPath = new URL('./shellWorkflow.ts', import.meta.url);
+const projectRoot = fileURLToPath(new URL('../..', import.meta.url));
 let moduleSequence = 0;
+
+const loadActiveModule = async (modulePath) => {
+  const viteServer = await createServer({
+    root: projectRoot,
+    appType: 'custom',
+    logLevel: 'silent',
+    server: { middlewareMode: true },
+  });
+  try {
+    return await viteServer.ssrLoadModule(modulePath);
+  } finally {
+    await viteServer.close();
+  }
+};
+
+const createStorage = () => {
+  const values = new Map();
+  return {
+    getItem: (key) => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
+    clear: () => values.clear(),
+  };
+};
+
+const durableCallbacks = {
+  onAnalysisCompleted: async () => {},
+};
 
 const analysisFixture = {
   productIdentitySummary: 'Verified product identity',
@@ -203,7 +234,7 @@ test('submits one analysis call with every target and ordered product reference'
   const { calls, deps } = createHarness();
   const input = makeInput();
 
-  await runShellProductRestoreWorkflow(input, makeConfig(), {}, deps);
+  await runShellProductRestoreWorkflow(input, makeConfig(), durableCallbacks, deps);
 
   assert.equal(calls.analysis.length, 1);
   assert.deepEqual(calls.analysis[0].targetUrls, [
@@ -240,7 +271,7 @@ test('fans out one image job per target with current target first and all refere
   const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
   const { calls, deps } = createHarness();
 
-  await runShellProductRestoreWorkflow(makeInput({ targetCount: 3 }), makeConfig(), {}, deps);
+  await runShellProductRestoreWorkflow(makeInput({ targetCount: 3 }), makeConfig(), durableCallbacks, deps);
 
   assert.equal(calls.images.length, 3);
   assert.deepEqual(calls.images.map((args) => args[0]), [
@@ -266,7 +297,7 @@ test('adds stable product restoration identity and batch metadata to every image
   const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
   const { calls, deps } = createHarness();
 
-  const result = await runShellProductRestoreWorkflow(makeInput(), makeConfig(), {}, deps);
+  const result = await runShellProductRestoreWorkflow(makeInput(), makeConfig(), durableCallbacks, deps);
 
   assert.deepEqual(calls.images.map((args) => {
     const metadata = args[9];
@@ -326,6 +357,7 @@ test('emits the pending backend identity while the image provider work is still 
   });
 
   const run = runShellProductRestoreWorkflow(makeInput({ targetCount: 1 }), makeConfig(), {
+    onAnalysisCompleted: durableCallbacks.onAnalysisCompleted,
     onItemChanged: async (item) => {
       pendingEvents.push(item);
     },
@@ -372,7 +404,7 @@ test('preserves input order and successful URLs across mixed success, error, and
   const result = await runShellProductRestoreWorkflow(
     makeInput({ targetCount: 3 }),
     makeConfig(),
-    {},
+    durableCallbacks,
     deps,
   );
 
@@ -415,7 +447,7 @@ test('keeps consumed image credits when provider success later fails asset persi
     return `https://assets.test/persisted/${fileName}`;
   };
 
-  const result = await runShellProductRestoreWorkflow(makeInput(), makeConfig(), {}, deps);
+  const result = await runShellProductRestoreWorkflow(makeInput(), makeConfig(), durableCallbacks, deps);
 
   assert.deepEqual(result.results.map((item) => item.status), ['error', 'completed']);
   assert.equal(result.results[0].creditsConsumed, 5);
@@ -435,7 +467,7 @@ test('terminal analysis failure creates zero image jobs and rejects without fall
   });
 
   await assert.rejects(
-    runShellProductRestoreWorkflow(makeInput(), makeConfig(), {}, deps),
+    runShellProductRestoreWorkflow(makeInput(), makeConfig(), durableCallbacks, deps),
     (error) => error.code === 'provider_refusal' && error.jobId === 'analysis-job-1',
   );
   assert.equal(calls.images.length, 0);
@@ -453,7 +485,7 @@ test('recoverable pending analysis returns planning state and creates zero image
     },
   });
 
-  const result = await runShellProductRestoreWorkflow(makeInput(), makeConfig(), {}, deps);
+  const result = await runShellProductRestoreWorkflow(makeInput(), makeConfig(), durableCallbacks, deps);
 
   assert.deepEqual(result, {
     results: [],
@@ -466,7 +498,7 @@ test('recoverable pending analysis returns planning state and creates zero image
 
 test('resumes with an existing successful analysis context without creating a new chat job', async () => {
   const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
-  const context = makeContext();
+  const context = makeContext({ targetMaterialIds: ['target-a', 'target-b'] });
   const { calls, deps } = createHarness();
 
   const result = await runShellProductRestoreWorkflow(
@@ -511,7 +543,7 @@ test('normalizes 1K to 2K and ignores selector ratio in favor of original target
   await runShellProductRestoreWorkflow(
     makeInput({ targetCount: 1, params: { quality: '1K', ratio: '9:16' } }),
     makeConfig({ quality: '1k', aspectRatio: '9:16' }),
-    {},
+    durableCallbacks,
     deps,
   );
 
@@ -577,7 +609,7 @@ test('writes bounded structured lifecycle logs without prompts or image URLs', a
     ],
   });
 
-  await runShellProductRestoreWorkflow(makeInput(), makeConfig(), {}, deps);
+  await runShellProductRestoreWorkflow(makeInput(), makeConfig(), durableCallbacks, deps);
 
   const actions = logs.map((entry) => entry.action);
   for (const action of [
@@ -597,9 +629,199 @@ test('writes bounded structured lifecycle logs without prompts or image URLs', a
   assert.match(serialized, /provider_bad_response/);
 });
 
-test('routes retouch product_restore through the isolated workflow and not EverythingReplace', () => {
+test('statically keeps product_restore isolated to Retouch and out of EverythingReplace', () => {
   const source = readFileSync(shellWorkflowPath, 'utf8');
   assert.match(source, /type ShellRetouchMode[\s\S]*'product_restore'/);
   assert.match(source, /mode === 'product_restore'[\s\S]*runShellProductRestoreWorkflow/);
   assert.doesNotMatch(source, /AppModule\.EVERYTHING_REPLACE[^\n]*product_restore/);
+});
+
+test('fresh analysis fails closed before creating any job without durable persistence', async () => {
+  const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
+  const { calls, deps } = createHarness();
+
+  const outcome = await runShellProductRestoreWorkflow(makeInput(), makeConfig(), {}, deps)
+    .then(() => null, (error) => error);
+
+  assert.equal(calls.analysis.length, 0);
+  assert.equal(calls.images.length, 0);
+  assert.equal(outcome?.code, 'product_restore_analysis_persistence_required');
+});
+
+test('full-batch reuse requires exact ordered context provenance', async (t) => {
+  const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
+  const cases = [
+    {
+      name: 'ordered target ids',
+      configure: (input) => input.materials.restoreTarget.reverse(),
+    },
+    {
+      name: 'ordered reference ids',
+      configure: (input) => input.materials.productReference.reverse(),
+    },
+    {
+      name: 'normalized focus ids',
+      configure: (input) => { input.params.restoreFocusIds = 'logo_label_text'; },
+    },
+    {
+      name: 'user requirement',
+      configure: (input) => { input.prompt = 'Preserve the revised shoulder geometry.'; },
+    },
+    {
+      name: 'selected model',
+      configure: (_input, config) => { config.model = 'gemini-3-pro-image-preview'; },
+    },
+    {
+      name: 'normalized resolution',
+      configure: (_input, config) => { config.quality = '4k'; },
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      const staleContext = makeContext({ targetMaterialIds: ['target-a', 'target-b'] });
+      const input = makeInput({ context: staleContext });
+      const config = makeConfig();
+      testCase.configure(input, config);
+      const persisted = [];
+      const { calls, deps } = createHarness();
+
+      const result = await runShellProductRestoreWorkflow(input, config, {
+        onAnalysisCompleted: async (context) => persisted.push(context),
+      }, deps);
+
+      assert.equal(calls.analysis.length, 1);
+      assert.equal(persisted.length, 1);
+      assert.notEqual(result.productRestoreContext, staleContext);
+    });
+  }
+});
+
+test('single-item retry rejects a target or reference order outside persisted context', async (t) => {
+  const { runShellProductRestoreItem } = await loadWorkflowModule();
+  const input = makeInput({ targetCount: 3 });
+  const context = makeContext();
+
+  await t.test('selected target does not match its persisted batch position', async () => {
+    const { calls, deps } = createHarness();
+    const outcome = await runShellProductRestoreItem({
+      input,
+      config: makeConfig(),
+      context,
+      target: input.materials.restoreTarget[1],
+      productReferences: input.materials.productReference,
+      batchIndex: 1,
+      batchCount: 3,
+    }, {}, deps).then(() => null, (error) => error);
+
+    assert.equal(calls.images.length, 0);
+    assert.equal(outcome?.code, 'product_restore_context_mismatch');
+  });
+
+  await t.test('ordered references differ from persisted analysis', async () => {
+    const { calls, deps } = createHarness();
+    const outcome = await runShellProductRestoreItem({
+      input,
+      config: makeConfig(),
+      context,
+      target: input.materials.restoreTarget[0],
+      productReferences: [...input.materials.productReference].reverse(),
+      batchIndex: 1,
+      batchCount: 3,
+    }, {}, deps).then(() => null, (error) => error);
+
+    assert.equal(calls.images.length, 0);
+    assert.equal(outcome?.code, 'product_restore_context_mismatch');
+  });
+});
+
+test('invalid or duplicate target identities fail before analysis and image creation', async (t) => {
+  const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
+
+  await t.test('missing target id', async () => {
+    const input = makeInput();
+    input.materials.restoreTarget[1].id = '';
+    const { calls, deps } = createHarness();
+    const outcome = await runShellProductRestoreWorkflow(input, makeConfig(), durableCallbacks, deps)
+      .then(() => null, (error) => error);
+
+    assert.equal(calls.analysis.length, 0);
+    assert.equal(calls.images.length, 0);
+    assert.equal(outcome?.code, 'product_restore_target_id_missing');
+  });
+
+  await t.test('duplicate target id', async () => {
+    const input = makeInput();
+    input.materials.restoreTarget[1].id = input.materials.restoreTarget[0].id;
+    const { calls, deps } = createHarness();
+    const outcome = await runShellProductRestoreWorkflow(input, makeConfig(), durableCallbacks, deps)
+      .then(() => null, (error) => error);
+
+    assert.equal(calls.analysis.length, 0);
+    assert.equal(calls.images.length, 0);
+    assert.equal(outcome?.code, 'product_restore_target_id_duplicate');
+  });
+});
+
+test('real Retouch route returns the pending analysis contract additively', async () => {
+  const originalLocalStorage = globalThis.localStorage;
+  const originalSessionStorage = globalThis.sessionStorage;
+  const originalWindow = globalThis.window;
+  globalThis.localStorage = createStorage();
+  globalThis.sessionStorage = createStorage();
+  globalThis.window = {
+    setTimeout: globalThis.setTimeout,
+    clearTimeout: globalThis.clearTimeout,
+  };
+
+  try {
+    const { runShellRetouchWorkflow } = await loadActiveModule('/src/adapters/shellWorkflow.ts');
+    const { calls, deps } = createHarness({
+      analysisResult: {
+        status: 'generating',
+        jobId: 'analysis-job-route-pending',
+        providerTaskId: 'analysis-provider-route-pending',
+        errorCode: 'analysis_result_pending',
+        message: '产品还原分析仍在生成。',
+      },
+    });
+    const result = await runShellRetouchWorkflow({
+      ...makeInput(),
+      onProductRestoreAnalysisCompleted: durableCallbacks.onAnalysisCompleted,
+    }, undefined, deps);
+
+    assert.equal(calls.analysis.length, 1);
+    assert.equal(calls.images.length, 0);
+    assert.deepEqual(result, {
+      results: [],
+      analysisStatus: 'generating',
+      analysisJobId: 'analysis-job-route-pending',
+      message: '产品还原分析仍在生成。',
+    });
+  } finally {
+    globalThis.localStorage = originalLocalStorage;
+    globalThis.sessionStorage = originalSessionStorage;
+    globalThis.window = originalWindow;
+  }
+});
+
+test('outer shell keeps pending Product Restoration analysis in planning', async () => {
+  const { getProductRestoreAnalysisPendingState } = await loadActiveModule('/src/adapters/shellProductRestorePendingState.ts');
+
+  assert.deepEqual(getProductRestoreAnalysisPendingState('retouch', 'product_restore', {
+    results: [],
+    analysisStatus: 'generating',
+    analysisJobId: 'analysis-job-shell-pending',
+    message: '产品还原分析仍在生成。',
+  }), {
+    isPending: true,
+    projectStatus: 'planning',
+    analysisJobId: 'analysis-job-shell-pending',
+    message: '产品还原分析仍在生成。',
+  });
+  assert.deepEqual(getProductRestoreAnalysisPendingState('everything_replace', 'product_restore', {
+    results: [],
+    analysisStatus: 'generating',
+    analysisJobId: 'analysis-job-ignored',
+  }), { isPending: false });
 });
