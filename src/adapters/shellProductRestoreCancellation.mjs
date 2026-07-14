@@ -37,7 +37,10 @@ export const mergeProductRestoreGenerationContext = (existingContext, nextContex
     ...(existingContext || {}),
     ...(nextContext || {}),
   };
-  const nextExplicitlySetsAttempts = hasOwn(nextContext, 'productRestoreAnalysisAttempts');
+  const nextExplicitlySetsAttempts = (
+    hasOwn(nextContext, 'productRestoreAnalysisAttempts')
+    && Array.isArray(nextContext?.productRestoreAnalysisAttempts)
+  );
   const attempts = nextExplicitlySetsAttempts
     ? mergeProductRestoreAnalysisAttempts(
         existingContext?.productRestoreAnalysisAttempts,

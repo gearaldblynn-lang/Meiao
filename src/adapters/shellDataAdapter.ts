@@ -211,13 +211,12 @@ const cloneGenerationContext = (
           normalizedAnalysis: cloneProductRestoreAnalysis(context.productRestore.normalizedAnalysis),
         }
       : undefined,
-    productRestoreAnalysisAttempts: Object.prototype.hasOwnProperty.call(
-      context,
-      'productRestoreAnalysisAttempts',
-    )
-      ? cloneProductRestoreAnalysisAttempts(context.productRestoreAnalysisAttempts)
-      : undefined,
   };
+  if (Object.prototype.hasOwnProperty.call(context, 'productRestoreAnalysisAttempts')) {
+    cloned.productRestoreAnalysisAttempts = cloneProductRestoreAnalysisAttempts(
+      context.productRestoreAnalysisAttempts,
+    );
+  }
   if (Object.prototype.hasOwnProperty.call(context, 'productRestoreCancellation')) {
     cloned.productRestoreCancellation = cloneProductRestoreCancellationMarker(
       context.productRestoreCancellation,
@@ -265,6 +264,25 @@ const normalizeCreditsConsumed = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 };
+
+const normalizeKnownProductRestoreCreditsConsumed = (value: unknown) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+};
+
+type ProductRestoreRecordIdentity = {
+  module?: unknown;
+  subFeature?: unknown;
+};
+
+const isProductRestoreRecord = (
+  project: ProductRestoreRecordIdentity,
+  result?: ProductRestoreRecordIdentity,
+) => (
+  String(result?.module || project?.module || '').trim() === 'retouch'
+  && String(result?.subFeature || project?.subFeature || '').trim() === 'product_restore'
+);
 
 const ONE_CLICK_SUBFEATURES: Record<string, string> = {
   '首图': 'first_image',
@@ -1210,7 +1228,9 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         backendJobId: String(result?.backendJobId || '').trim() || undefined,
         batchIndex: Number(result?.batchIndex || 0) || undefined,
         targetMaterialId: String(result?.targetMaterialId || '').trim() || undefined,
-        creditsConsumed: normalizeCreditsConsumed(result?.creditsConsumed),
+        creditsConsumed: isProductRestoreRecord(project, result)
+          ? normalizeKnownProductRestoreCreditsConsumed(result?.creditsConsumed)
+          : normalizeCreditsConsumed(result?.creditsConsumed),
         error: String(result?.error || '').trim() || undefined,
         matchedAspectRatio: String(result?.matchedAspectRatio || result?.aspectRatio || 'auto'),
         originalWidth: Number(result?.originalWidth || 0) || undefined,
@@ -1220,7 +1240,9 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
       taskCount: Number(project.taskCount || project.results?.length || 1),
       completedCount: Number(project.completedCount || 0),
       sourceType: 'persisted',
-      creditsConsumed: normalizeCreditsConsumed(project.creditsConsumed),
+      creditsConsumed: isProductRestoreRecord(project)
+        ? normalizeKnownProductRestoreCreditsConsumed(project.creditsConsumed)
+        : normalizeCreditsConsumed(project.creditsConsumed),
       planningTaskId: latestIdentityTextList(String(project.planningTaskId || '').trim() || undefined),
       generationContext: cloneGenerationContext(project.generationContext),
       directGeneration: project.directGeneration === true,
