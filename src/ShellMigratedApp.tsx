@@ -94,6 +94,7 @@ import {
   shouldResetSkuMaterialsForUpload,
 } from './adapters/shellSkuUploadReset.mjs';
 import { collectFailedOneClickPlanningPlans } from './adapters/shellPlanningFailure.ts';
+import { getProductRestoreAnalysisPendingState } from './adapters/shellProductRestorePendingState';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -5225,16 +5226,33 @@ const AppContent: React.FC<{
         })));
         const isBuyerShowSetProjectWorkflow = targetModule === AppModuleObj.BUYER_SHOW
           && specialWorkflowResults.some((result) => String(result.projectId || '').trim() && result.projectId !== projectId);
-        const hasSpecialGenerating = specialWorkflowResults.some((item) => item.status === 'generating');
+        const productRestoreAnalysisPending = getProductRestoreAnalysisPendingState(
+          targetModule,
+          targetSubFeature,
+          specialResult,
+        );
+        const hasSpecialGenerating = productRestoreAnalysisPending.isPending
+          || specialWorkflowResults.some((item) => item.status === 'generating');
         const hasSpecialError = specialWorkflowResults.some((item) => item.status === 'error');
         completedProject = {
           ...newProject,
-          status: hasSpecialGenerating ? 'generating' : hasSpecialError ? 'error' : 'completed',
+          ...(productRestoreAnalysisPending.analysisJobId
+            ? { backendJobId: productRestoreAnalysisPending.analysisJobId }
+            : {}),
+          status: productRestoreAnalysisPending.projectStatus
+            || (hasSpecialGenerating ? 'generating' : hasSpecialError ? 'error' : 'completed'),
           completedAt: hasSpecialGenerating ? undefined : newProject.createdAt,
           results: specialWorkflowResults,
-          taskCount: Math.max(specialWorkflowResults.length, specialResult.results.length),
+          taskCount: Math.max(
+            specialWorkflowResults.length,
+            specialResult.results.length,
+            productRestoreAnalysisPending.isPending ? batchCount : 0,
+          ),
           completedCount: specialWorkflowResults.filter((item) => item.status === 'completed').length,
           creditsConsumed: specialResult.creditsConsumed,
+          ...(productRestoreAnalysisPending.message
+            ? { error: productRestoreAnalysisPending.message }
+            : {}),
         };
         if (hasSpecialGenerating) {
           pendingSyncProject = completedProject;

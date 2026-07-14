@@ -39,7 +39,11 @@ import { createWhitespaceCroppedLogoBlob } from '../utils/logoWhitespaceCrop.mjs
 import { createMultiLogoReplacePreviewBlob } from '../utils/logoReplacePreview.mjs';
 import { createGuardedMultiLogoReplaceResultBlob } from '../utils/logoReplaceGuard.mjs';
 import { planBuyerShowSetsConcurrently } from '../utils/buyerShowPlanning';
-import { runShellProductRestoreWorkflow } from './shellProductRestoreWorkflow';
+import {
+  runShellProductRestoreWorkflow,
+  type ProductRestoreWorkflowDeps,
+  type ShellProductRestoreWorkflowResult,
+} from './shellProductRestoreWorkflow';
 
 export { extractShellSchemeField } from './shellSchemeFields';
 
@@ -132,6 +136,15 @@ export interface ShellWorkflowImageResult {
   buyerShowEvaluation?: string;
   buyerShowDisplayPrompt?: string;
   logoReplaceGuarded?: boolean;
+}
+
+export interface ShellRetouchWorkflowResult {
+  results: ShellWorkflowImageResult[];
+  creditsConsumed?: number;
+  analysisStatus?: ShellProductRestoreWorkflowResult['analysisStatus'];
+  productRestoreContext?: ProductRestoreProjectContext;
+  analysisJobId?: string;
+  message?: string;
 }
 
 const MODULE_LABELS: Record<string, string> = {
@@ -2724,7 +2737,8 @@ const maybeResizeAndPersistRetouchResult = async (
 export const runShellRetouchWorkflow = async (
   input: ShellGenerateInput,
   onItemCompleted?: (item: ShellWorkflowImageResult, index: number, total: number) => void,
-): Promise<{ results: ShellWorkflowImageResult[]; creditsConsumed?: number }> => {
+  productRestoreDeps?: ProductRestoreWorkflowDeps,
+): Promise<ShellRetouchWorkflowResult> => {
   const mode = getRetouchMode(input);
 
   storeActiveModuleContext(input.module);
@@ -2746,7 +2760,7 @@ export const runShellRetouchWorkflow = async (
     return runShellProductRestoreWorkflow(input, config, {
       onAnalysisCompleted: input.onProductRestoreAnalysisCompleted,
       onItemChanged: (item, index) => onItemCompleted?.(item, index, targetCount),
-    });
+    }, productRestoreDeps);
   }
   if (mode === 'product_replace') {
     return runProductReplaceWorkflow(input, config, apiConfig, onItemCompleted);
