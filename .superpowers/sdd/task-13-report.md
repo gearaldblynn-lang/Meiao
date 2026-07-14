@@ -24,6 +24,23 @@ or provider job can be created.
 - Added the recurring root cause and prevention rule to
   `docs/agents/repeated-issues.md`.
 
+## Review hardening
+
+The three Important review findings were reproduced with failing regression
+tests and fixed without widening the provider boundary:
+
+- shared analysis-credit merge now normalizes both existing and incoming
+  ledgers, removes pre-existing duplicate `jobId` rows, and preserves the
+  strongest known credit value independently of snapshot order;
+- cancellation/reset events now use JSON-safe causal identities in addition to
+  safe integer timestamps, so equal timestamps, clock rollback, and precision
+  limits cannot silently revive or suppress a cancellation;
+- explicit retry re-reads the persisted transition and fails closed unless the
+  stored reset actually supersedes the effective cancellation;
+- hydration canonicalizes an effectively cancelled project after late provider
+  rows are folded, preventing failed late rows from replacing the root manual
+  cancellation error or polluting completed media children.
+
 ## TDD evidence
 
 Mandatory RED failures were captured first against the real
@@ -34,24 +51,26 @@ Mandatory RED failures were captured first against the real
 - existing analysis attempts disappeared or duplicated across snapshot replay;
 - typed reset and frontend retry persistence interfaces were absent.
 
-The final focused suite is green:
+The final expanded Product Restoration focused suite is green:
 
 ```text
-376 tests, 376 passed, 0 failed
+378 tests, 378 passed, 0 failed
 ```
 
 It covers real server merge in both snapshot orders, JSON round trips,
-cancel -> reset -> stale cancel -> later cancel ordering, additive ledger replay,
-explicit zero and unknown credits, persistence/hydration, `shouldResume=false`
-with zero recovery creates, manual/single retry fail-closed ordering, ordinary
-module compatibility, Product Restoration lifecycle/workflow, rollout, Ark
-analysis, UI, and displayed credits.
+cancel -> reset -> stale cancel -> later cancel ordering, unsafe/future/equal
+timestamps and clock rollback, additive and duplicate ledger replay, known
+credits versus stale zero in both write orders, persistence/hydration,
+`shouldResume=false` with zero recovery creates, late failed-provider rows,
+manual/single retry fail-closed ordering, ordinary module compatibility,
+Product Restoration lifecycle/workflow, rollout, Ark analysis, UI, and displayed
+credits.
 
 ## Verification
 
 - `npx tsc -b --pretty false`: PASS.
-- `npm run lint` (inside `npm run verify`): PASS, 0 errors and 660 warnings at
-  the existing 660-warning budget.
+- `npm run lint`: PASS, 0 errors and 660 warnings at the existing 660-warning
+  budget.
 - Full `npm run verify`: server phase completed; frontend reached the known
   retained-handle condition in `shellOneClickWorkflow.test.mjs` and did not
   return, so the owned process was stopped rather than reported as passing.
@@ -63,4 +82,5 @@ analysis, UI, and displayed credits.
 
 The pre-existing plan edit remains unstaged. The pre-existing legacy-label
 changes in `src/adapters/shellPersistence.ts` are intentionally excluded from
-this task commit; only the reset type/import/clone hunks belong to Task 13.
+the review-fix commit. The original Task 13 reset type/import/clone hunks were
+already committed separately.

@@ -5907,3 +5907,106 @@ test('shell data adapter does not synthesize fake prompt from project name when 
     `prompt 缺失不能伪造为 fallbackTitle("项目名 N"),当前为 ${JSON.stringify(promptStr)}`,
   );
 });
+
+test('durable Product Restoration cancellation keeps root and child errors authoritative over late jobs', () => {
+  const cancelledState = {
+    shellProjects: [{
+      id: 'cancelled-product-restore-hydration',
+      name: '已取消产品还原',
+      module: 'retouch',
+      subFeature: 'product_restore',
+      status: 'error',
+      createdAt: 100,
+      backendJobId: 'analysis-job-cancelled',
+      taskCount: 2,
+      completedCount: 1,
+      error: '已手动中断',
+      errorCode: 'interrupted',
+      generationContext: {
+        prompt: '',
+        params: {},
+        materials: {
+          restoreTarget: [{ id: 'target-completed' }, { id: 'target-pending' }],
+          productReference: [{ id: 'reference-1' }],
+        },
+        productRestoreCancellation: {
+          version: 1,
+          status: 'cancelled',
+          reason: 'user_requested',
+          cancelledAt: 200,
+          jobIds: ['analysis-job-cancelled', 'image-job-pending'],
+        },
+      },
+      results: [{
+        id: 'completed-result',
+        imageUrl: '/completed.png',
+        prompt: '',
+        model: 'gpt-image-2',
+        aspectRatio: 'auto',
+        status: 'completed',
+        createdAt: 100,
+        module: 'retouch',
+        subFeature: 'product_restore',
+        targetMaterialId: 'target-completed',
+        batchIndex: 1,
+      }, {
+        id: 'pending-result',
+        imageUrl: '',
+        prompt: '',
+        model: 'gpt-image-2',
+        aspectRatio: 'auto',
+        status: 'error',
+        createdAt: 100,
+        module: 'retouch',
+        subFeature: 'product_restore',
+        backendJobId: 'image-job-pending',
+        targetMaterialId: 'target-pending',
+        batchIndex: 2,
+        error: '已手动中断',
+        errorCode: 'interrupted',
+      }],
+    }],
+  };
+  const runningJob = {
+    id: 'image-job-pending',
+    module: 'retouch',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'running',
+    providerTaskId: 'provider-pending',
+    payload: {
+      shellProjectId: 'cancelled-product-restore-hydration',
+      shellProjectName: '已取消产品还原',
+      subFeature: 'product_restore',
+      taskPurpose: 'product_restore_generation',
+      targetMaterialId: 'target-pending',
+      batchIndex: 2,
+      batchCount: 2,
+    },
+    createdAt: 300,
+    updatedAt: 300,
+  };
+  const failedJob = {
+    ...runningJob,
+    status: 'failed',
+    errorCode: 'provider_failed',
+    errorMessage: '迟到 provider 错误',
+    updatedAt: 400,
+  };
+
+  for (const jobs of [[runningJob, failedJob], [failedJob, runningJob]]) {
+    const project = buildShellDataSnapshot(cancelledState, jobs).projects
+      .find((item) => item.id === 'cancelled-product-restore-hydration');
+    assert.equal(project?.status, 'error');
+    assert.equal(project?.error, '已手动中断');
+    assert.equal(project?.errorCode, 'interrupted');
+    const completed = project?.results.find((result) => result.imageUrl);
+    assert.equal(completed?.status, 'completed');
+    assert.equal(completed?.error, undefined);
+    assert.equal(completed?.errorCode, undefined);
+    const pending = project?.results.find((result) => !result.imageUrl);
+    assert.equal(pending?.status, 'error');
+    assert.equal(pending?.error, '已手动中断');
+    assert.equal(pending?.errorCode, 'interrupted');
+  }
+});

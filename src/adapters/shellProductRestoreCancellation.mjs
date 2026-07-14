@@ -6,6 +6,7 @@ import {
 import {
   cloneProductRestoreCancellationMarker as cloneDurableCancellationMarker,
   cloneProductRestoreCancellationReset as cloneDurableCancellationReset,
+  createProductRestoreCancellationMarker as createDurableCancellationMarker,
   createProductRestoreCancellationReset as createDurableCancellationReset,
   hasEffectiveProductRestoreCancellation,
   mergeProductRestoreGenerationContextForStorage,
@@ -90,9 +91,18 @@ export const persistProductRestoreExplicitRetryReset = async ({
       productRestoreCancellationReset: reset,
     },
   };
+  const persisted = await persist(nextProject) === true;
+  const persistedReset = cloneProductRestoreCancellationReset(
+    nextProject.generationContext?.productRestoreCancellationReset,
+  );
+  const resetIsAuthoritative = Boolean(
+    persistedReset
+    && persistedReset.eventId === reset.eventId
+    && !hasEffectiveProductRestoreCancellation(nextProject.generationContext),
+  );
   return {
     project: nextProject,
-    persisted: await persist(nextProject) === true,
+    persisted: persisted && resetIsAuthoritative,
   };
 };
 
@@ -278,12 +288,6 @@ export const markProductRestoreProjectCancelled = (
   const existingMarker = cloneProductRestoreCancellationMarker(
     project?.generationContext?.productRestoreCancellation,
   );
-  const existingReset = cloneProductRestoreCancellationReset(
-    project?.generationContext?.productRestoreCancellationReset,
-  );
-  const cancellationAlreadyEffective = hasEffectiveProductRestoreCancellation(
-    project?.generationContext,
-  );
   const cancellationJobIds = new Set([
     ...(existingMarker?.jobIds || []),
     ...jobIds,
@@ -291,18 +295,10 @@ export const markProductRestoreProjectCancelled = (
     project?.generationContext?.productRestore?.analysisJobId,
     ...results.flatMap((result) => [result?.backendJobId, result?.taskId]),
   ].map(normalizeIdentity).filter(Boolean));
-  const marker = {
-    version: 1,
-    status: 'cancelled',
-    reason: 'user_requested',
-    cancelledAt: cancellationAlreadyEffective
-      ? existingMarker.cancelledAt
-      : Math.max(
-          Number(cancelledAt) || Date.now(),
-          Number(existingReset?.resetAt || 0) + 1,
-        ),
+  const marker = createDurableCancellationMarker(project?.generationContext, {
+    cancelledAt,
     jobIds: sortedIdentities(cancellationJobIds),
-  };
+  });
   return {
     ...project,
     status: 'error',

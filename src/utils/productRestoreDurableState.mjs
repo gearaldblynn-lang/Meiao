@@ -5,54 +5,110 @@ const normalizePositiveTimestamp = (value) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 };
 
+const normalizeEventTimestamp = (value) => {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const normalizeEventId = (value) => normalizeIdentity(value).slice(0, 200);
+
+const createEventId = (kind) => {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) return `${kind}:${randomUuid}`;
+  return `${kind}:${Date.now()}:${Math.random().toString(36).slice(2, 14)}`;
+};
+
+const nextEventTimestamp = (requested, ...previousValues) => {
+  const safeNow = normalizeEventTimestamp(Date.now()) || 1;
+  const base = normalizeEventTimestamp(requested) || safeNow;
+  const safePrevious = previousValues
+    .map(normalizeEventTimestamp)
+    .filter((value) => value !== undefined);
+  if (safePrevious.length === 0) return base;
+  const latestPrevious = Math.max(...safePrevious);
+  const incremented = latestPrevious < Number.MAX_SAFE_INTEGER
+    ? latestPrevious + 1
+    : undefined;
+  const candidate = Math.max(base, normalizeEventTimestamp(incremented) || base);
+  return normalizeEventTimestamp(candidate) || safeNow;
+};
+
 const sortedIdentities = (values) => Array.from(values).filter(Boolean).sort();
 
 export const cloneProductRestoreCancellationMarker = (marker) => {
-  const cancelledAt = normalizePositiveTimestamp(marker?.cancelledAt);
+  const cancelledAt = normalizeEventTimestamp(marker?.cancelledAt);
   if (
     marker?.version !== 1
     || marker?.status !== 'cancelled'
     || marker?.reason !== 'user_requested'
     || cancelledAt === undefined
   ) return undefined;
+  const eventId = normalizeEventId(marker?.eventId);
+  const supersedesEventId = normalizeEventId(marker?.supersedesEventId);
   return {
     version: 1,
     status: 'cancelled',
     reason: 'user_requested',
     cancelledAt,
     jobIds: sortedIdentities(new Set((marker.jobIds || []).map(normalizeIdentity))),
+    ...(eventId ? { eventId } : {}),
+    ...(supersedesEventId ? { supersedesEventId } : {}),
   };
 };
 
 export const cloneProductRestoreCancellationReset = (reset) => {
-  const resetAt = normalizePositiveTimestamp(reset?.resetAt);
+  const resetAt = normalizeEventTimestamp(reset?.resetAt);
   if (
     reset?.version !== 1
     || reset?.status !== 'retry_reset'
     || reset?.reason !== 'explicit_retry'
     || resetAt === undefined
   ) return undefined;
-  const priorCancelledAt = normalizePositiveTimestamp(reset?.priorCancelledAt);
+  const priorCancelledAt = normalizeEventTimestamp(reset?.priorCancelledAt);
+  const eventId = normalizeEventId(reset?.eventId);
+  const supersedesEventId = normalizeEventId(reset?.supersedesEventId);
   return {
     version: 1,
     status: 'retry_reset',
     reason: 'explicit_retry',
     resetAt,
     ...(priorCancelledAt !== undefined ? { priorCancelledAt } : {}),
+    ...(eventId ? { eventId } : {}),
+    ...(supersedesEventId ? { supersedesEventId } : {}),
   };
 };
+
+const cancellationEventIdentity = (marker) => {
+  const normalized = cloneProductRestoreCancellationMarker(marker);
+  if (!normalized) return '';
+  return normalized.eventId || `product_restore_cancelled:${normalized.cancelledAt}`;
+};
+
+const resetEventIdentity = (reset) => {
+  const normalized = cloneProductRestoreCancellationReset(reset);
+  if (!normalized) return '';
+  return normalized.eventId || `product_restore_retry_reset:${normalized.resetAt}`;
+};
+
+const deterministicIdentity = (...values) => values
+  .map(normalizeIdentity)
+  .filter(Boolean)
+  .sort()[0] || '';
 
 const mergeCancellationMarkers = (existing, incoming) => {
   const current = cloneProductRestoreCancellationMarker(existing);
   const next = cloneProductRestoreCancellationMarker(incoming);
   if (!current) return next;
   if (!next) return current;
+  if (cancellationEventIdentity(current) === cancellationEventIdentity(next)) {
+    return {
+      ...current,
+      jobIds: sortedIdentities(new Set([...current.jobIds, ...next.jobIds])),
+    };
+  }
   if (current.cancelledAt > next.cancelledAt) return current;
   if (next.cancelledAt > current.cancelledAt) return next;
-  return {
-    ...current,
-    jobIds: sortedIdentities(new Set([...current.jobIds, ...next.jobIds])),
-  };
+  return cancellationEventIdentity(current) >= cancellationEventIdentity(next) ? current : next;
 };
 
 const mergeCancellationResets = (existing, incoming) => {
@@ -60,15 +116,69 @@ const mergeCancellationResets = (existing, incoming) => {
   const next = cloneProductRestoreCancellationReset(incoming);
   if (!current) return next;
   if (!next) return current;
+  if (resetEventIdentity(current) === resetEventIdentity(next)) {
+    const priorCancelledAt = Math.max(
+      Number(current.priorCancelledAt || 0),
+      Number(next.priorCancelledAt || 0),
+    );
+    return {
+      ...current,
+      ...(priorCancelledAt > 0 ? { priorCancelledAt } : {}),
+    };
+  }
   if (current.resetAt > next.resetAt) return current;
   if (next.resetAt > current.resetAt) return next;
-  const priorCancelledAt = Math.max(
-    Number(current.priorCancelledAt || 0),
-    Number(next.priorCancelledAt || 0),
-  );
+  return resetEventIdentity(current) >= resetEventIdentity(next) ? current : next;
+};
+
+const mergeCancellationEvents = (existingContext, incomingContext) => {
+  const rawEvents = [
+    { kind: 'cancelled', value: cloneProductRestoreCancellationMarker(existingContext?.productRestoreCancellation) },
+    { kind: 'retry_reset', value: cloneProductRestoreCancellationReset(existingContext?.productRestoreCancellationReset) },
+    { kind: 'cancelled', value: cloneProductRestoreCancellationMarker(incomingContext?.productRestoreCancellation) },
+    { kind: 'retry_reset', value: cloneProductRestoreCancellationReset(incomingContext?.productRestoreCancellationReset) },
+  ].filter((event) => event.value);
+  const byId = new Map();
+  for (const event of rawEvents) {
+    const id = event.kind === 'cancelled'
+      ? cancellationEventIdentity(event.value)
+      : resetEventIdentity(event.value);
+    const previous = byId.get(id);
+    if (!previous) {
+      byId.set(id, { ...event, id });
+      continue;
+    }
+    byId.set(id, {
+      ...event,
+      id,
+      value: event.kind === 'cancelled'
+        ? mergeCancellationMarkers(previous.value, event.value)
+        : mergeCancellationResets(previous.value, event.value),
+    });
+  }
+  const events = Array.from(byId.values());
+  const reaches = (candidate, target) => {
+    const visited = new Set();
+    let nextId = normalizeEventId(candidate?.value?.supersedesEventId);
+    while (nextId && !visited.has(nextId)) {
+      if (nextId === target.id) return true;
+      visited.add(nextId);
+      nextId = normalizeEventId(byId.get(nextId)?.value?.supersedesEventId);
+    }
+    return false;
+  };
+  const choose = (kind) => events.filter((event) => event.kind === kind).reduce((selected, candidate) => {
+    if (!selected) return candidate;
+    if (reaches(candidate, selected)) return candidate;
+    if (reaches(selected, candidate)) return selected;
+    const selectedAt = kind === 'cancelled' ? selected.value.cancelledAt : selected.value.resetAt;
+    const candidateAt = kind === 'cancelled' ? candidate.value.cancelledAt : candidate.value.resetAt;
+    if (candidateAt !== selectedAt) return candidateAt > selectedAt ? candidate : selected;
+    return candidate.id > selected.id ? candidate : selected;
+  }, undefined);
   return {
-    ...current,
-    ...(priorCancelledAt > 0 ? { priorCancelledAt } : {}),
+    marker: choose('cancelled')?.value,
+    reset: choose('retry_reset')?.value,
   };
 };
 
@@ -79,18 +189,47 @@ export const createProductRestoreCancellationReset = (generationContext, now = D
   const previousReset = cloneProductRestoreCancellationReset(
     generationContext?.productRestoreCancellationReset,
   );
-  const resetAt = Math.max(
-    normalizePositiveTimestamp(now) || Date.now(),
-    Number(marker?.cancelledAt || 0) + 1,
-    Number(previousReset?.resetAt || 0) + 1,
-  );
+  const resetAt = nextEventTimestamp(now, marker?.cancelledAt, previousReset?.resetAt);
   return {
     version: 1,
     status: 'retry_reset',
     reason: 'explicit_retry',
     resetAt,
+    eventId: createEventId('product_restore_retry_reset'),
+    ...(marker ? { supersedesEventId: cancellationEventIdentity(marker) } : {}),
     ...((marker?.cancelledAt || previousReset?.priorCancelledAt)
       ? { priorCancelledAt: marker?.cancelledAt || previousReset.priorCancelledAt }
+      : {}),
+  };
+};
+
+export const createProductRestoreCancellationMarker = (
+  generationContext,
+  { cancelledAt = Date.now(), jobIds = [] } = {},
+) => {
+  const existingMarker = cloneProductRestoreCancellationMarker(
+    generationContext?.productRestoreCancellation,
+  );
+  const existingReset = cloneProductRestoreCancellationReset(
+    generationContext?.productRestoreCancellationReset,
+  );
+  if (hasEffectiveProductRestoreCancellation(generationContext) && existingMarker) {
+    return {
+      ...existingMarker,
+      jobIds: sortedIdentities(new Set([...existingMarker.jobIds, ...jobIds.map(normalizeIdentity)])),
+    };
+  }
+  return {
+    version: 1,
+    status: 'cancelled',
+    reason: 'user_requested',
+    cancelledAt: nextEventTimestamp(cancelledAt, existingReset?.resetAt),
+    jobIds: sortedIdentities(new Set(jobIds.map(normalizeIdentity))),
+    ...(existingReset
+      ? {
+          eventId: createEventId('product_restore_cancelled'),
+          supersedesEventId: resetEventIdentity(existingReset),
+        }
       : {}),
   };
 };
@@ -103,7 +242,12 @@ export const hasEffectiveProductRestoreCancellation = (generationContext) => {
   const reset = cloneProductRestoreCancellationReset(
     generationContext?.productRestoreCancellationReset,
   );
-  return !reset || marker.cancelledAt >= reset.resetAt;
+  if (!reset) return true;
+  const markerIdentity = cancellationEventIdentity(marker);
+  const resetIdentity = resetEventIdentity(reset);
+  if (marker.supersedesEventId === resetIdentity) return true;
+  if (reset.supersedesEventId === markerIdentity) return false;
+  return marker.cancelledAt >= reset.resetAt;
 };
 
 const STRICT_NON_NEGATIVE_DECIMAL = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
@@ -157,11 +301,12 @@ const cloneAnalysisAttempt = (attempt) => {
 };
 
 export const mergeProductRestoreAnalysisAttemptsForStorage = (current, incoming) => {
-  const merged = (Array.isArray(current) ? current : [])
+  const merged = [];
+  const byJobId = new Map();
+  const source = [...(Array.isArray(current) ? current : []), ...(Array.isArray(incoming) ? incoming : [])]
     .map(cloneAnalysisAttempt)
     .filter(Boolean);
-  const byJobId = new Map(merged.map((attempt, index) => [attempt.jobId, index]));
-  for (const next of (Array.isArray(incoming) ? incoming : []).map(cloneAnalysisAttempt).filter(Boolean)) {
+  for (const next of source) {
     const index = byJobId.get(next.jobId);
     if (index === undefined) {
       byJobId.set(next.jobId, merged.length);
@@ -172,14 +317,19 @@ export const mergeProductRestoreAnalysisAttemptsForStorage = (current, incoming)
     const status = ATTEMPT_STATUS_PRIORITY[next.status] >= ATTEMPT_STATUS_PRIORITY[previous.status]
       ? next.status
       : previous.status;
+    const knownCredits = [previous.creditsConsumed, next.creditsConsumed]
+      .filter((value) => value !== undefined);
+    const providerTaskId = deterministicIdentity(previous.providerTaskId, next.providerTaskId);
+    const model = deterministicIdentity(previous.model, next.model);
+    const errorCode = deterministicIdentity(previous.errorCode, next.errorCode);
     merged[index] = {
-      ...previous,
-      ...(next.providerTaskId ? { providerTaskId: next.providerTaskId } : {}),
-      ...(next.model ? { model: next.model } : {}),
+      jobId: previous.jobId,
+      ...(providerTaskId ? { providerTaskId } : {}),
+      ...(model ? { model } : {}),
       status,
-      ...(next.errorCode ? { errorCode: next.errorCode } : {}),
-      timestamp: previous.timestamp,
-      ...(next.creditsConsumed !== undefined ? { creditsConsumed: next.creditsConsumed } : {}),
+      ...(errorCode ? { errorCode } : {}),
+      timestamp: Math.min(previous.timestamp, next.timestamp),
+      ...(knownCredits.length > 0 ? { creditsConsumed: Math.max(...knownCredits) } : {}),
     };
   }
   return merged;
@@ -198,17 +348,10 @@ export const mergeProductRestoreGenerationContextForStorage = (existingContext, 
   if (attempts.length > 0) merged.productRestoreAnalysisAttempts = attempts;
   else delete merged.productRestoreAnalysisAttempts;
 
-  const marker = mergeCancellationMarkers(
-    existingContext?.productRestoreCancellation,
-    incomingContext?.productRestoreCancellation,
-  );
+  const { marker, reset } = mergeCancellationEvents(existingContext, incomingContext);
   if (marker) merged.productRestoreCancellation = marker;
   else delete merged.productRestoreCancellation;
 
-  const reset = mergeCancellationResets(
-    existingContext?.productRestoreCancellationReset,
-    incomingContext?.productRestoreCancellationReset,
-  );
   if (reset) merged.productRestoreCancellationReset = reset;
   else delete merged.productRestoreCancellationReset;
   return merged;

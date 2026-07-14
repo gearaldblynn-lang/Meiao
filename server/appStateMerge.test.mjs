@@ -1741,6 +1741,40 @@ test('Product Restoration server merge keeps analysis attempts additive and repl
   assert.equal(replayed.find((attempt) => attempt.jobId === 'analysis-job-1').status, 'succeeded');
   assert.equal(replayed.reduce((sum, attempt) => sum + (attempt.creditsConsumed ?? 0), 0), 5);
   assert.equal(Object.hasOwn(replayed.find((attempt) => attempt.jobId === 'analysis-job-4'), 'creditsConsumed'), false);
+
+  const duplicateExisting = mergeAppStateForStorage(
+    { shellProjects: [buildProductRestoreMergeProject({
+      attempts: [
+        { jobId: 'duplicate-job', status: 'running', timestamp: 500, creditsConsumed: 2 },
+        { jobId: 'duplicate-job', status: 'succeeded', timestamp: 600, creditsConsumed: 2 },
+      ],
+    })] },
+    { shellProjects: [buildProductRestoreMergeProject({ attempts: [] })] },
+  ).shellProjects[0].generationContext.productRestoreAnalysisAttempts;
+  assert.deepEqual(duplicateExisting, [{
+    jobId: 'duplicate-job',
+    status: 'succeeded',
+    timestamp: 500,
+    creditsConsumed: 2,
+  }]);
+
+  const creditThree = buildProductRestoreMergeProject({
+    attempts: [{ jobId: 'conflict-job', status: 'succeeded', timestamp: 700, creditsConsumed: 3 }],
+  });
+  const staleZero = buildProductRestoreMergeProject({
+    attempts: [{ jobId: 'conflict-job', status: 'succeeded', timestamp: 800, creditsConsumed: 0 }],
+  });
+  const conflictOrders = [
+    mergeAppStateForStorage({ shellProjects: [creditThree] }, { shellProjects: [staleZero] }),
+    mergeAppStateForStorage({ shellProjects: [staleZero] }, { shellProjects: [creditThree] }),
+  ].map((state) => state.shellProjects[0].generationContext.productRestoreAnalysisAttempts);
+  assert.deepEqual(conflictOrders[0], conflictOrders[1]);
+  assert.deepEqual(conflictOrders[0], [{
+    jobId: 'conflict-job',
+    status: 'succeeded',
+    timestamp: 700,
+    creditsConsumed: 3,
+  }]);
 });
 
 test('Product Restoration explicit retry reset survives JSON and orders stale and later cancellation events', () => {

@@ -21,6 +21,14 @@ export function createProductRestoreCancellationReset(
   now?: number,
 ): ProductRestoreCancellationReset;
 
+export function createProductRestoreCancellationMarker(
+  generationContext: Pick<
+    OneClickGenerationContext,
+    'productRestoreCancellation' | 'productRestoreCancellationReset'
+  > | undefined,
+  options?: { cancelledAt?: number; jobIds?: string[] },
+): ProductRestoreCancellationMarker;
+
 export function hasEffectiveProductRestoreCancellation(
   generationContext?: Pick<
     OneClickGenerationContext,
