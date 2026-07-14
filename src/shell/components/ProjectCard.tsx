@@ -15,6 +15,10 @@ import ImageLightbox, { type LightboxMediaItem } from './ImageLightbox';
 import PlanEditor, { type PlanItem } from './PlanEditor';
 import { useToast } from './ToastSystem';
 import ProductRestoreAnalysisPanel, { ProductRestoreResultCreditBadge } from '../modules/Retouch/ProductRestoreAnalysisPanel';
+import {
+  getProductRestoreAnalysisCreditSummary,
+  getProductRestoreTotalKnownCredits,
+} from '../../utils/productRestoreAnalysisCredits';
 
 export interface Project {
   id: string;
@@ -624,6 +628,9 @@ const ProjectCard: React.FC<Props> = ({
   const textReportText = textReportResult?.prompt || textReportEmptyText;
   const creditSummary = getProjectCreditsConsumed(project);
   const productRestoreContext = project.generationContext?.productRestore;
+  const productRestoreAnalysisCredits = getProductRestoreAnalysisCreditSummary(
+    project.generationContext,
+  );
   const productRestoreHasImageCredits = project.results.some((result) => (
     result.creditsConsumed !== undefined
     && result.creditsConsumed !== null
@@ -633,8 +640,10 @@ const ProjectCard: React.FC<Props> = ({
   const productRestoreImageCredits = project.results.reduce((sum, result) => (
     sum + normalizeCreditsConsumed(result.creditsConsumed)
   ), 0);
-  const productRestoreTotalCredits = normalizeCreditsConsumed(productRestoreContext?.analysisCreditsConsumed)
-    + productRestoreImageCredits;
+  const productRestoreKnownCredits = getProductRestoreTotalKnownCredits({
+    generationContext: project.generationContext,
+    imageCredits: project.results.map((result) => result.creditsConsumed),
+  });
   const canManuallyReanalyze = canManuallyReanalyzeProductRestore({
     module: project.module,
     subFeature: project.subFeature,
@@ -1267,9 +1276,11 @@ const ProjectCard: React.FC<Props> = ({
                 <div className="mb-4">
                   <ProductRestoreAnalysisPanel
                     context={productRestoreContext!}
+                    analysisCreditsKnown={productRestoreAnalysisCredits.present}
+                    analysisCreditsConsumed={productRestoreAnalysisCredits.value}
                     imageCreditsConsumed={productRestoreHasImageCredits ? productRestoreImageCredits : undefined}
-                    totalCreditsConsumed={productRestoreContext.analysisCreditsConsumed !== undefined || productRestoreHasImageCredits
-                      ? productRestoreTotalCredits
+                    totalCreditsConsumed={productRestoreKnownCredits.present
+                      ? productRestoreKnownCredits.total
                       : undefined}
                     onCopyPrompt={(prompt) => void handleCopyPrompt(prompt)}
                   />

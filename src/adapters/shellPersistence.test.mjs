@@ -5,6 +5,75 @@ import { buildShellDataSnapshot } from './shellDataAdapter.ts';
 import { upsertOneClickProjectIntoPersistedState, upsertShellProjectIntoPersistedState, upsertTranslationFilesIntoPersistedState } from './shellPersistence.ts';
 import { buildPersistedAppState } from '../utils/appState.ts';
 
+test('product restoration analysis attempts survive persistence and hydration as an ordered deep clone', () => {
+  const state = buildPersistedAppState();
+  const attempts = [
+    {
+      jobId: 'analysis-invalid-1',
+      providerTaskId: 'provider-invalid-1',
+      model: 'vision-a',
+      status: 'invalid',
+      errorCode: 'product_restore_analysis_invalid',
+      timestamp: 100,
+      creditsConsumed: 0,
+    },
+    {
+      jobId: 'analysis-failed-2',
+      status: 'failed',
+      errorCode: 'provider_failed',
+      timestamp: 200,
+    },
+  ];
+  const project = {
+    id: 'product-restore-ledger-project',
+    name: '产品还原 ledger',
+    module: 'retouch',
+    subFeature: 'product_restore',
+    status: 'error',
+    createdAt: 100,
+    taskCount: 1,
+    completedCount: 0,
+    results: [],
+    generationContext: {
+      prompt: '',
+      params: {},
+      materials: {},
+      productRestoreAnalysisAttempts: attempts,
+    },
+  };
+
+  const persisted = upsertShellProjectIntoPersistedState(state, project);
+  attempts[0].model = 'mutated-after-save';
+  const savedAttempts = persisted.shellProjects[0].generationContext.productRestoreAnalysisAttempts;
+  assert.deepEqual(savedAttempts.map((attempt) => attempt.jobId), [
+    'analysis-invalid-1',
+    'analysis-failed-2',
+  ]);
+  assert.equal(savedAttempts[0].model, 'vision-a');
+  assert.equal(savedAttempts[0].creditsConsumed, 0);
+  assert.equal(Object.hasOwn(savedAttempts[1], 'creditsConsumed'), false);
+
+  const replayed = upsertShellProjectIntoPersistedState(persisted, {
+    ...project,
+    generationContext: {
+      ...project.generationContext,
+      productRestoreAnalysisAttempts: [{
+        ...savedAttempts[0],
+        timestamp: 999,
+      }],
+    },
+  });
+  const replayedAttempts = replayed.shellProjects[0].generationContext.productRestoreAnalysisAttempts;
+  assert.equal(replayedAttempts.filter((attempt) => attempt.jobId === 'analysis-invalid-1').length, 1);
+  assert.equal(replayedAttempts[0].timestamp, 100);
+
+  const hydrated = buildShellDataSnapshot(replayed, []);
+  const hydratedAttempts = hydrated.projects[0].generationContext.productRestoreAnalysisAttempts;
+  assert.notEqual(hydratedAttempts, replayedAttempts);
+  assert.notEqual(hydratedAttempts[0], replayedAttempts[0]);
+  assert.deepEqual(hydratedAttempts, replayedAttempts);
+});
+
 test('orphan completed backend media jobs do not hydrate ghost project cards', () => {
   const snapshot = buildShellDataSnapshot(buildPersistedAppState(), [{
     id: 'completed-image-job',

@@ -1,4 +1,4 @@
-import { AspectRatio, type GlobalApiConfig, type ModuleConfig, type ProductRestoreFocusId, type ProductRestoreProjectContext } from '../types';
+import { AspectRatio, type GlobalApiConfig, type ModuleConfig, type ProductRestoreAnalysisAttempt, type ProductRestoreFocusId, type ProductRestoreProjectContext } from '../types';
 import { analyzeProductRestoreBatch } from '../services/arkService';
 import { processWithKieAi } from '../services/kieAiService';
 import { safeCreateInternalLog } from '../services/internalApi';
@@ -13,6 +13,10 @@ import {
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
 import type { ShellGenerateInput, ShellMaterialInput, ShellWorkflowImageResult } from './shellWorkflow';
 import { runProductRestoreFanout } from './shellProductRestoreCancellation.mjs';
+import {
+  createProductRestoreAnalysisAttempt,
+  getProductRestoreAnalysisCreditSummary,
+} from '../utils/productRestoreAnalysisCredits';
 
 export interface ProductRestoreWorkflowCallbacks {
   onAnalysisCompleted?: (
@@ -57,6 +61,7 @@ type WorkflowError = Error & {
   code?: string;
   jobId?: string;
   providerTaskId?: string;
+  analysisAttempt?: ProductRestoreAnalysisAttempt;
 };
 
 export const PRODUCT_RESTORE_RETRY_CONTEXT_ERROR_MESSAGE = '该历史任务缺少完整的产品还原分析或参考素材，无法安全单张重试，请重新创建产品还原任务。';
@@ -92,11 +97,16 @@ export const DEFAULT_PRODUCT_RESTORE_DEPS: ProductRestoreWorkflowDeps = {
 const toWorkflowError = (
   message: string,
   code: string,
-  identity: { jobId?: string; providerTaskId?: string } = {},
+  identity: {
+    jobId?: string;
+    providerTaskId?: string;
+    analysisAttempt?: ProductRestoreAnalysisAttempt;
+  } = {},
 ): WorkflowError => Object.assign(new Error(message), {
   code,
   ...(identity.jobId ? { jobId: identity.jobId } : {}),
   ...(identity.providerTaskId ? { providerTaskId: identity.providerTaskId } : {}),
+  ...(identity.analysisAttempt ? { analysisAttempt: identity.analysisAttempt } : {}),
 });
 
 const boundedIdentity = (value: unknown, maxLength = 160) => String(value || '').trim().slice(0, maxLength);
@@ -664,7 +674,10 @@ export function mergeProductRestoreSingleRetryProject<T extends {
   taskCount: number;
   completedCount: number;
   creditsConsumed?: number;
-  generationContext?: { productRestore?: ProductRestoreProjectContext };
+  generationContext?: {
+    productRestore?: ProductRestoreProjectContext;
+    productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
+  };
   results: T[];
 }>(
   project: P,
@@ -681,15 +694,18 @@ export function mergeProductRestoreSingleRetryProject<T extends {
     : result);
   const completedCount = results.filter((result) => result.status === 'completed').length;
   const generatingCount = results.filter((result) => result.status === 'generating').length;
-  const analysisCredits = Number(project.generationContext?.productRestore?.analysisCreditsConsumed || 0);
+  const analysisCredits = getProductRestoreAnalysisCreditSummary(project.generationContext);
   const imageCredits = results.reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0);
+  const hasImageCredits = results.some((result) => result.creditsConsumed !== undefined);
   return {
     ...project,
     results,
     taskCount: project.taskCount,
     completedCount,
     status: generatingCount > 0 ? 'generating' : completedCount === project.taskCount ? 'completed' : 'error',
-    ...((analysisCredits + imageCredits) > 0 ? { creditsConsumed: analysisCredits + imageCredits } : {}),
+    ...(analysisCredits.present || hasImageCredits
+      ? { creditsConsumed: analysisCredits.value + imageCredits }
+      : {}),
   } as P;
 }
 
@@ -977,6 +993,19 @@ export async function runShellProductRestoreWorkflow(
       };
     }
     if (analysis.status === 'error') {
+      const analysisAttempt = createProductRestoreAnalysisAttempt({
+        jobId: analysis.jobId,
+        providerTaskId: analysis.providerTaskId,
+        model: analysis.modelUsed,
+        status: analysis.errorCode === 'interrupted'
+          ? 'cancelled'
+          : analysis.errorCode === 'product_restore_analysis_invalid'
+            ? 'invalid'
+            : 'failed',
+        errorCode: analysis.errorCode,
+        timestamp: Date.now(),
+        creditsConsumed: analysis.creditsConsumed,
+      });
       logProductRestore(
         'product_restore_analysis_failed',
         analysis.errorCode === 'interrupted' ? 'interrupted' : 'failed',
@@ -992,6 +1021,7 @@ export async function runShellProductRestoreWorkflow(
       throw toWorkflowError(analysis.message, analysis.errorCode, {
         jobId: analysis.jobId,
         providerTaskId: analysis.providerTaskId,
+        analysisAttempt,
       });
     }
 
@@ -1000,7 +1030,9 @@ export async function runShellProductRestoreWorkflow(
       analysisJobId: analysis.jobId,
       analysisProviderTaskId: analysis.providerTaskId,
       analysisModel: analysis.modelUsed,
-      analysisCreditsConsumed: Number(analysis.creditsConsumed || 0),
+      ...(analysis.creditsConsumed !== undefined
+        ? { analysisCreditsConsumed: analysis.creditsConsumed }
+        : {}),
       normalizedAnalysis: analysis.normalizedAnalysis,
       sharedRestorationPrompt: analysis.sharedRestorationPrompt,
       focusIds,
@@ -1042,7 +1074,9 @@ export async function runShellProductRestoreWorkflow(
       batchCount: targets.length,
     }, callbacks, deps),
   });
-  const creditsConsumed = context.analysisCreditsConsumed
+  const hasAnalysisCredits = context.analysisCreditsConsumed !== undefined;
+  const hasImageCredits = results.some((result) => result.creditsConsumed !== undefined);
+  const creditsConsumed = Number(context.analysisCreditsConsumed || 0)
     + results.reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0);
   const completedCount = results.filter((result) => result.status === 'completed').length;
   const pendingCount = results.filter((result) => result.status === 'generating').length;
@@ -1064,7 +1098,7 @@ export async function runShellProductRestoreWorkflow(
 
   return {
     results,
-    ...(creditsConsumed > 0 ? { creditsConsumed } : {}),
+    ...(hasAnalysisCredits || hasImageCredits ? { creditsConsumed } : {}),
     analysisStatus: 'completed',
     productRestoreContext: context,
     analysisJobId: context.analysisJobId,

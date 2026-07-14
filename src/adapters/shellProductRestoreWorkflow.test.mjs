@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { createServer } from 'vite';
 import { runProductRestoreFanout } from './shellProductRestoreCancellation.mjs';
+import {
+  createProductRestoreAnalysisAttempt,
+  getProductRestoreAnalysisCreditSummary,
+} from '../utils/productRestoreAnalysisCredits.ts';
 
 const workflowPath = new URL('./shellProductRestoreWorkflow.ts', import.meta.url);
 const shellWorkflowPath = new URL('./shellWorkflow.ts', import.meta.url);
@@ -160,6 +164,8 @@ const {
   validateProductRestoreInput,
   AspectRatio,
   runProductRestoreFanout,
+  createProductRestoreAnalysisAttempt,
+  getProductRestoreAnalysisCreditSummary,
 } = globalThis.__shellProductRestoreWorkflowTestDeps;
 ${stripRuntimeImports(transpiled)}
 `;
@@ -227,6 +233,8 @@ ${stripRuntimeImports(transpiled)}
     },
     AspectRatio: { AUTO: 'auto' },
     runProductRestoreFanout,
+    createProductRestoreAnalysisAttempt,
+    getProductRestoreAnalysisCreditSummary,
   };
   const encodedSource = Buffer.from(runtimeSource).toString('base64');
   try {
@@ -732,6 +740,16 @@ test('single-result retry replaces the same row, keeps taskCount, and adds only 
     completedCount: 1,
     creditsConsumed: 9,
     generationContext: {
+      productRestoreAnalysisAttempts: [
+        {
+          jobId: 'analysis-job-1',
+          providerTaskId: 'analysis-provider-1',
+          model: 'analysis-model',
+          status: 'succeeded',
+          timestamp: 1_780_000_000_000,
+          creditsConsumed: 4,
+        },
+      ],
       productRestore: makeContext({
         targetMaterialIds: ['target-a', 'target-b'],
         analysisCreditsConsumed: 4,
@@ -754,6 +772,7 @@ test('single-result retry replaces the same row, keeps taskCount, and adds only 
       },
     ],
   };
+  const attemptsBeforeRetry = JSON.stringify(project.generationContext.productRestoreAnalysisAttempts);
 
   const merged = mergeProductRestoreSingleRetryProject(project, 'result-a', {
     imageUrl: 'https://assets.test/retry-a.png',
@@ -772,6 +791,61 @@ test('single-result retry replaces the same row, keeps taskCount, and adds only 
   assert.equal(merged.completedCount, 2);
   assert.equal(merged.status, 'completed');
   assert.equal(merged.creditsConsumed, 14);
+  assert.equal(
+    JSON.stringify(merged.generationContext.productRestoreAnalysisAttempts),
+    attemptsBeforeRetry,
+    'single-image retry must not mutate or append the analysis-attempt ledger',
+  );
+});
+
+test('valid analysis with missing usage keeps the context credit unknown instead of inventing zero', async () => {
+  const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
+  const { deps } = createHarness({
+    analysisResult: successAnalysisResult({ creditsConsumed: undefined }),
+  });
+  let persistedContext;
+
+  const result = await runShellProductRestoreWorkflow(makeInput({ targetCount: 1 }), makeConfig(), {
+    onAnalysisCompleted: async (context) => {
+      persistedContext = structuredClone(context);
+    },
+  }, deps);
+
+  assert.equal(Object.hasOwn(persistedContext, 'analysisCreditsConsumed'), false);
+  assert.equal(Object.hasOwn(result.productRestoreContext, 'analysisCreditsConsumed'), false);
+});
+
+test('invalid structured analysis exposes a durable known-usage attempt on the workflow error', async () => {
+  const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
+  const { deps } = createHarness({
+    analysisResult: {
+      status: 'error',
+      errorCode: 'product_restore_analysis_invalid',
+      message: '分析结构无效',
+      jobId: 'analysis-invalid-1',
+      providerTaskId: 'provider-invalid-1',
+      modelUsed: 'vision-model',
+      creditsConsumed: 3,
+    },
+  });
+
+  const error = await runShellProductRestoreWorkflow(
+    makeInput({ targetCount: 1 }),
+    makeConfig(),
+    durableCallbacks,
+    deps,
+  ).then(() => null, (caught) => caught);
+
+  assert.deepEqual(error.analysisAttempt, {
+    jobId: 'analysis-invalid-1',
+    providerTaskId: 'provider-invalid-1',
+    model: 'vision-model',
+    status: 'invalid',
+    errorCode: 'product_restore_analysis_invalid',
+    timestamp: error.analysisAttempt.timestamp,
+    creditsConsumed: 3,
+  });
+  assert.equal(Number.isFinite(error.analysisAttempt.timestamp), true);
 });
 
 test('manual reanalysis eligibility requires a confirmed terminal analysis failure with no image results', async (t) => {

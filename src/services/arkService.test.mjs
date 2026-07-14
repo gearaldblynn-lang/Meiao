@@ -383,6 +383,8 @@ test('product restoration invalid structured output fails after one application-
     message: '分析模型未返回可用的产品还原结构，请重试分析。',
     jobId: 'analysis-job-1',
     providerTaskId: 'provider-task-invalid',
+    modelUsed: 'primary-model',
+    creditsConsumed: 3,
   });
   assert.equal(Object.hasOwn(result, 'sharedRestorationPrompt'), false);
 });

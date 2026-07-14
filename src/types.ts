@@ -1007,7 +1007,7 @@ export type ProductRestoreAnalysisRunResult =
       jobId: string;
       providerTaskId?: string;
       modelUsed: string;
-      creditsConsumed: number;
+      creditsConsumed?: number;
       normalizedAnalysis: ProductRestoreNormalizedAnalysis;
       sharedRestorationPrompt: string;
     }
@@ -1024,6 +1024,8 @@ export type ProductRestoreAnalysisRunResult =
       message: string;
       jobId?: string;
       providerTaskId?: string;
+      modelUsed?: string;
+      creditsConsumed?: number;
     };
 
 export interface ProductRestoreProjectContext {
@@ -1031,7 +1033,7 @@ export interface ProductRestoreProjectContext {
   analysisJobId: string;
   analysisProviderTaskId?: string;
   analysisModel: string;
-  analysisCreditsConsumed: number;
+  analysisCreditsConsumed?: number;
   normalizedAnalysis: ProductRestoreNormalizedAnalysis;
   sharedRestorationPrompt: string;
   focusIds: ProductRestoreFocusId[];
@@ -1041,6 +1043,23 @@ export interface ProductRestoreProjectContext {
   resolution: '2K' | '4K';
   userRequirement: string;
   createdAt: number;
+}
+
+export type ProductRestoreAnalysisAttemptStatus =
+  | 'running'
+  | 'succeeded'
+  | 'invalid'
+  | 'failed'
+  | 'cancelled';
+
+export interface ProductRestoreAnalysisAttempt {
+  jobId: string;
+  providerTaskId?: string;
+  model?: string;
+  status: ProductRestoreAnalysisAttemptStatus;
+  errorCode?: string;
+  timestamp: number;
+  creditsConsumed?: number;
 }
 
 export interface ProductRestoreCancellationMarker {
@@ -1055,6 +1074,7 @@ export interface OneClickGenerationContext {
   prompt: string;
   params: Record<string, string>;
   materials: Record<string, OneClickMaterialSnapshot[]>;
+  productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
   productRestore?: ProductRestoreProjectContext;
   productRestoreCancellation?: ProductRestoreCancellationMarker;
 }

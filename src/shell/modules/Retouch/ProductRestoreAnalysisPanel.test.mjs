@@ -170,6 +170,42 @@ test('explicit zero image and total ledger values render while omitted values st
   assert.equal((markup.match(/>0</g) || []).length, 3);
 });
 
+test('valid context with unknown analysis usage hides analysis and total credit values', async () => {
+  const { default: ProductRestoreAnalysisPanel } = await loadPanelModule();
+  const unknownContext = { ...context };
+  delete unknownContext.analysisCreditsConsumed;
+  const markup = renderToStaticMarkup(React.createElement(ProductRestoreAnalysisPanel, {
+    context: unknownContext,
+    onCopyPrompt: () => {},
+  }));
+
+  assert.doesNotMatch(markup, /分析积分/);
+  assert.doesNotMatch(markup, /累计图片消耗/);
+  assert.doesNotMatch(markup, /总积分/);
+});
+
+test('attempt-ledger presence overrides a legacy context value without fabricating credits', async () => {
+  const { default: ProductRestoreAnalysisPanel } = await loadPanelModule();
+  const unknownMarkup = renderToStaticMarkup(React.createElement(ProductRestoreAnalysisPanel, {
+    context,
+    analysisCreditsKnown: false,
+    onCopyPrompt: () => {},
+  }));
+  const summedMarkup = renderToStaticMarkup(React.createElement(ProductRestoreAnalysisPanel, {
+    context,
+    analysisCreditsKnown: true,
+    analysisCreditsConsumed: 8,
+    totalCreditsConsumed: 8,
+    onCopyPrompt: () => {},
+  }));
+
+  assert.doesNotMatch(unknownMarkup, /分析积分/);
+  assert.doesNotMatch(unknownMarkup, /总积分/);
+  assert.match(summedMarkup, /分析积分/);
+  assert.match(summedMarkup, /总积分/);
+  assert.equal((summedMarkup.match(/>8</g) || []).length, 2);
+});
+
 test('result credit badge renders an explicit zero and hides an absent ledger value', async () => {
   const { ProductRestoreResultCreditBadge } = await loadPanelModule();
   const zeroMarkup = renderToStaticMarkup(React.createElement(ProductRestoreResultCreditBadge, {
