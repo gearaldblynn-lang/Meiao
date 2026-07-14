@@ -16,6 +16,11 @@ import {
 import { getOneClickPlanContent, isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 import { coerceCreatedAtMs } from '../utils/createdAtMs.ts';
 import {
+  getProductRestoreExpectedTargetCount,
+  getProductRestoreTargetKey,
+  hasMissingProductRestoreTargets,
+} from '../utils/taskResultReconcile.mjs';
+import {
   getVisibleProviderTaskId,
   isShellControlJob,
   shouldExposeActiveJobResult,
@@ -3098,6 +3103,10 @@ const getMergedProjectTaskCount = (
     Number(next.taskCount || 0) || 0,
     plans?.length || 0,
     results.length,
+    getProductRestoreExpectedTargetCount({
+      ...(existing || {}),
+      ...next,
+    }),
     1,
   );
 };
@@ -3224,6 +3233,37 @@ const normalizeOneClickProjectCard = (project: ShellProjectData): ShellProjectDa
   };
 };
 
+const normalizeProductRestoreProjectCard = (project: ShellProjectData): ShellProjectData => {
+  if (project.module !== MODULE_VALUES.RETOUCH || project.subFeature !== 'product_restore') return project;
+  const taskCount = Math.max(getProductRestoreExpectedTargetCount(project), 1);
+  const completedCount = (project.results || []).filter(hasCompletedMediaResult).length;
+  const hasGenerating = (project.results || []).some((result) => (
+    (result.status === 'generating' || result.status === 'retry_waiting')
+    && resultHasRuntimeIdentity(result)
+  ));
+  const hasError = (project.results || []).some((result) => result.status === 'error');
+  const hasMissingTarget = hasMissingProductRestoreTargets({
+    ...project,
+    taskCount,
+  }, project.results);
+  const status = hasMissingTarget
+    ? 'generating'
+    : hasGenerating
+      ? 'generating'
+      : hasError
+        ? 'error'
+        : completedCount >= taskCount
+          ? 'completed'
+          : project.status;
+  return {
+    ...project,
+    status,
+    taskCount,
+    completedCount,
+    completedAt: status === 'completed' ? project.completedAt : undefined,
+  };
+};
+
 const hasVisibleProjectContent = (project: ShellProjectData) => {
   if (project.storyboardSourceProject) return true;
   if (project.module === MODULE_VALUES.RETOUCH && project.subFeature === 'product_restore') return true;
@@ -3234,9 +3274,7 @@ const hasVisibleProjectContent = (project: ShellProjectData) => {
 
 const getGeneratedResultMergeKeys = (result: ShellGeneratedResult) => {
   const concreteKeys = [
-    result.targetMaterialId && Number(result.batchIndex || 0) > 0
-      ? `product-restore:${result.targetMaterialId}:${Number(result.batchIndex)}`
-      : '',
+    getProductRestoreTargetKey(result),
     result.taskId ? `task:${result.taskId}` : '',
     result.backendJobId ? `job:${result.backendJobId}` : '',
     result.id ? `id:${result.id}` : '',
@@ -3549,17 +3587,25 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
   const hasGenerating = results.some((result) => (result.status === 'generating' || result.status === 'retry_waiting') && resultHasRuntimeIdentity(result));
   const hasError = results.some((result) => result.status === 'error');
   const hasCompletedMedia = completedCount > 0;
-  const status = hasCompletedMedia && !hasGenerating && !hasError
-    ? 'completed'
-    : completedCount >= taskCount
+  const hasMissingProductRestoreTarget = hasMissingProductRestoreTargets({
+    ...existing,
+    ...next,
+    results,
+    taskCount,
+  }, results);
+  const status = hasMissingProductRestoreTarget
+    ? 'generating'
+    : hasCompletedMedia && !hasGenerating && !hasError
       ? 'completed'
-      : hasGenerating
-        ? 'generating'
-        : hasError
-          ? 'error'
-          : hasPendingSelectedPlan(plans, results)
-            ? 'planning'
-            : next.status;
+      : completedCount >= taskCount
+        ? 'completed'
+        : hasGenerating
+          ? 'generating'
+          : hasError
+            ? 'error'
+            : hasPendingSelectedPlan(plans, results)
+              ? 'planning'
+              : next.status;
   const mergedProject: ShellProjectData & { error?: string } = {
     ...existing,
     ...next,
@@ -3611,6 +3657,7 @@ export const buildShellDataSnapshot = (
   });
   const projects = Array.from(byId.values())
     .map(normalizeOneClickProjectCard)
+    .map(normalizeProductRestoreProjectCard)
     .filter(hasVisibleProjectContent);
   return {
     projects,

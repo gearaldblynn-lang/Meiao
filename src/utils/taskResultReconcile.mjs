@@ -5,6 +5,42 @@
 
 export const compactKey = (value) => String(value || '').trim();
 
+export const getProductRestoreTargetKey = (item = {}) => {
+  if (String(item?.module || '') !== 'retouch' || String(item?.subFeature || '') !== 'product_restore') return '';
+  const targetMaterialId = compactKey(item?.targetMaterialId);
+  const batchIndex = Number(item?.batchIndex || 0) || 0;
+  return targetMaterialId && batchIndex > 0
+    ? `product-restore:${targetMaterialId}:${batchIndex}`
+    : '';
+};
+
+export const getProductRestoreExpectedTargetCount = (project = {}) => {
+  if (String(project?.module || '') !== 'retouch' || String(project?.subFeature || '') !== 'product_restore') return 0;
+  const contextTargetCount = Array.isArray(project?.generationContext?.productRestore?.targetMaterialIds)
+    ? project.generationContext.productRestore.targetMaterialIds.length
+    : 0;
+  return Math.max(Number(project?.taskCount || 0) || 0, contextTargetCount);
+};
+
+export const hasMissingProductRestoreTargets = (project = {}, results = project?.results) => {
+  const expectedTargetCount = getProductRestoreExpectedTargetCount(project);
+  if (expectedTargetCount <= 0) return false;
+  const logicalTargetKeys = new Set(
+    (Array.isArray(results) ? results : []).map((result, index) => (
+      getProductRestoreTargetKey({
+        module: project?.module,
+        subFeature: project?.subFeature,
+        ...(result || {}),
+      })
+      || compactKey(result?.id || result?.backendJobId || result?.taskId || result?.providerTaskId)
+      || `legacy-row:${index}`
+    )),
+  );
+  const hasEnteredImageFanout = Boolean(project?.generationContext?.productRestore)
+    || logicalTargetKeys.size > 0;
+  return hasEnteredImageFanout && logicalTargetKeys.size < expectedTargetCount;
+};
+
 export const collectItemKeys = (item, options = {}) => {
   const { includeProjectId = false, includeNestedResults = true } = options;
   const keys = new Set();
@@ -15,6 +51,8 @@ export const collectItemKeys = (item, options = {}) => {
   add('id', item?.id);
   add('job', item?.backendJobId);
   add('provider', item?.providerTaskId || item?.taskId || item?.kieTaskId);
+  const productRestoreTargetKey = getProductRestoreTargetKey(item);
+  if (productRestoreTargetKey) keys.add(productRestoreTargetKey);
   if (includeProjectId) {
     add('project', item?.projectId);
   }

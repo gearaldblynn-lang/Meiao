@@ -1533,6 +1533,90 @@ test('mergeAppStateForStorage keeps a partially-completed project generating unt
   assert.equal(merged.shellProjects[0].taskCount, 3, 'taskCount 必须把还在跑的任务也数进去(2 完成 + 1 生成中 = 3)');
 });
 
+const buildServerPartialProductRestoreProject = (result) => ({
+  id: 'server-product-restore-partial',
+  module: 'retouch',
+  subFeature: 'product_restore',
+  status: result.status === 'completed' ? 'completed' : 'error',
+  taskCount: 2,
+  completedCount: result.status === 'completed' ? 1 : 0,
+  results: [result],
+  generationContext: {
+    productRestore: {
+      targetMaterialIds: ['target-a', 'target-b'],
+    },
+  },
+});
+
+test('server app-state merge keeps product restoration generating after one success with one missing target', () => {
+  const merged = mergeAppStateForStorage({}, {
+    shellProjects: [buildServerPartialProductRestoreProject({
+      id: 'result-a',
+      backendJobId: 'job-a',
+      module: 'retouch',
+      subFeature: 'product_restore',
+      targetMaterialId: 'target-a',
+      batchIndex: 1,
+      status: 'completed',
+      imageUrl: 'https://example.com/restored-a.png',
+    })],
+  });
+
+  assert.equal(merged.shellProjects[0].status, 'generating');
+  assert.equal(merged.shellProjects[0].taskCount, 2);
+  assert.equal(merged.shellProjects[0].completedCount, 1);
+});
+
+test('server app-state merge keeps product restoration generating after one failure with one missing target', () => {
+  const merged = mergeAppStateForStorage({}, {
+    shellProjects: [buildServerPartialProductRestoreProject({
+      id: 'result-a',
+      backendJobId: 'job-a',
+      module: 'retouch',
+      subFeature: 'product_restore',
+      targetMaterialId: 'target-a',
+      batchIndex: 1,
+      status: 'error',
+      imageUrl: '',
+      error: '生成失败',
+    })],
+  });
+
+  assert.equal(merged.shellProjects[0].status, 'generating');
+  assert.equal(merged.shellProjects[0].taskCount, 2);
+  assert.equal(merged.shellProjects[0].completedCount, 0);
+});
+
+test('server app-state merge replaces an old product restoration job for the same target and batch', () => {
+  const oldProject = buildServerPartialProductRestoreProject({
+    id: 'old-result-a',
+    backendJobId: 'old-job-a',
+    taskId: 'old-provider-a',
+    module: 'retouch',
+    subFeature: 'product_restore',
+    targetMaterialId: 'target-a',
+    batchIndex: 1,
+    status: 'generating',
+    imageUrl: '',
+  });
+  const newProject = buildServerPartialProductRestoreProject({
+    ...oldProject.results[0],
+    id: 'new-result-a',
+    backendJobId: 'new-job-a',
+    taskId: 'new-provider-a',
+    status: 'completed',
+    imageUrl: 'https://example.com/restored-a.png',
+  });
+  const merged = mergeAppStateForStorage(
+    { shellProjects: [oldProject] },
+    { shellProjects: [newProject] },
+  );
+
+  assert.equal(merged.shellProjects[0].results.length, 1);
+  assert.equal(merged.shellProjects[0].results[0].backendJobId, 'new-job-a');
+  assert.equal(merged.shellProjects[0].results[0].imageUrl, 'https://example.com/restored-a.png');
+});
+
 // 根因 #4 止血(2026-06-13 体检):写入前给 state_json 加大小守卫,
 // 超过阈值时按 updatedAt 倒序裁掉老项目。LONGTEXT 上限 4 GiB 不是问题,
 // 真正会撞的是 MySQL max_allowed_packet(常见 16 MiB),所以默认阈值给保守的 4 MiB。

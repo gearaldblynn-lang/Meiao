@@ -1,4 +1,10 @@
-import { compactKey, collectItemKeys, mergeArrayByStableKeys } from '../src/utils/taskResultReconcile.mjs';
+import {
+  compactKey,
+  collectItemKeys,
+  getProductRestoreExpectedTargetCount,
+  hasMissingProductRestoreTargets,
+  mergeArrayByStableKeys,
+} from '../src/utils/taskResultReconcile.mjs';
 import { getPlanContent, isLegacyFailureText, isPlanFailed } from '../src/utils/planFailure.mjs';
 import { mergeShellDraftForStorage } from './appStateDraftMerge.mjs';
 import { isProviderErrorText } from './providerErrorText.mjs';
@@ -530,19 +536,27 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
   const persistedTaskCount = droppedInvalidPlanningArtifacts && completedMediaCount === 0
     ? 0
     : item?.taskCount;
-  const taskCount = planCount > 0
-    ? maxNumber(planCount, completedMediaCount, activeOrFailedCount, 1)
-    : hasSingleTerminalBackendFailure
-      ? 1
-    : completedMediaCount > 0 && activeOrFailedCount > 0
-      ? completedMediaCount + activeOrFailedCount
-    : completedMediaCount > 0
-      ? maxNumber(completedMediaCount, activeOrFailedCount, 1)
-      : maxNumber(persistedTaskCount, stateItems.length, 1);
+  const productRestoreTargetCount = getProductRestoreExpectedTargetCount(item);
+  const taskCount = productRestoreTargetCount > 0
+    ? maxNumber(productRestoreTargetCount, persistedTaskCount, stateItems.length, 1)
+    : planCount > 0
+      ? maxNumber(planCount, completedMediaCount, activeOrFailedCount, 1)
+      : hasSingleTerminalBackendFailure
+        ? 1
+      : completedMediaCount > 0 && activeOrFailedCount > 0
+        ? completedMediaCount + activeOrFailedCount
+      : completedMediaCount > 0
+        ? maxNumber(completedMediaCount, activeOrFailedCount, 1)
+        : maxNumber(persistedTaskCount, stateItems.length, 1);
   const hasGenerating = stateItems.some((entry) => isActiveGenerationItem(entry));
   const hasFailedPlan = isOneClickProject && plans.some((plan) => plan?.planningFailed || ['error', 'failed'].includes(String(plan?.status || '')));
   const hasError = hasFailedPlan || stateItems.some((entry) => ['error', 'failed'].includes(String(entry?.status || '')));
   const hasCompletedMedia = completedMediaCount > 0;
+  const hasMissingProductRestoreTarget = hasMissingProductRestoreTargets({
+    ...item,
+    results: normalizedResults,
+    taskCount,
+  }, normalizedResults);
   const hasPlanOnlyPendingItems = isOneClickProject
     && completedMediaCount === 0
     && !hasGenerating
@@ -555,17 +569,19 @@ const normalizeProjectLikeItem = (item = {}, options = {}) => {
         && !itemHasProviderTaskIdentity(entry)
       ))
     );
-  const status = hasCompletedMedia && !hasGenerating && !hasError
-    ? 'completed'
-    : completedMediaCount >= taskCount
+  const status = hasMissingProductRestoreTarget
+    ? 'generating'
+    : hasCompletedMedia && !hasGenerating && !hasError
       ? 'completed'
-      : hasGenerating
-        ? 'generating'
-        : hasError
-          ? 'error'
-          : hasPlanOnlyPendingItems
-            ? 'planning'
-            : item?.status;
+      : completedMediaCount >= taskCount
+        ? 'completed'
+        : hasGenerating
+          ? 'generating'
+          : hasError
+            ? 'error'
+            : hasPlanOnlyPendingItems
+              ? 'planning'
+              : item?.status;
   const next = {
     ...(item || {}),
     ...(Array.isArray(item?.plans) ? { plans } : {}),
@@ -650,6 +666,10 @@ const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
     mergedResults.length,
     mergedPlans.length,
     mergedSchemes.length,
+    getProductRestoreExpectedTargetCount({
+      ...(existingItem || {}),
+      ...(incomingItem || {}),
+    }),
   );
   const completedCount = isDirectVideoGeneration && completedMediaCount > 0
     ? completedMediaCount

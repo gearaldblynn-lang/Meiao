@@ -4006,6 +4006,61 @@ test('shell data adapter keeps successful product restoration images when anothe
   ]);
 });
 
+test('shell data adapter keeps a product restoration success with a missing target generating', () => {
+  const snapshot = buildShellDataSnapshot({ shellProjects: [{
+    ...structuredClone(productRestoreProject),
+    status: 'completed',
+    completedCount: 1,
+    results: [{
+      id: 'restore-result-a',
+      backendJobId: 'restore-image-job-a',
+      taskId: 'restore-provider-a',
+      imageUrl: 'https://example.com/result-a.png',
+      prompt: '产品还原 A',
+      model: 'gpt-image-2',
+      aspectRatio: 'auto',
+      status: 'completed',
+      createdAt: 1783676601001,
+      module: 'retouch',
+      subFeature: 'product_restore',
+      targetMaterialId: 'restore-target-a',
+      batchIndex: 1,
+    }],
+  }] }, []);
+
+  assert.equal(snapshot.projects[0].status, 'generating');
+  assert.equal(snapshot.projects[0].taskCount, 2);
+  assert.equal(snapshot.projects[0].completedCount, 1);
+});
+
+test('shell data adapter keeps a product restoration failure with a missing target generating', () => {
+  const snapshot = buildShellDataSnapshot({ shellProjects: [{
+    ...structuredClone(productRestoreProject),
+    status: 'error',
+    completedCount: 0,
+    results: [{
+      id: 'restore-result-a',
+      backendJobId: 'restore-image-job-a',
+      taskId: 'restore-provider-a',
+      imageUrl: '',
+      prompt: '产品还原 A',
+      model: 'gpt-image-2',
+      aspectRatio: 'auto',
+      status: 'error',
+      error: '生成失败',
+      createdAt: 1783676601001,
+      module: 'retouch',
+      subFeature: 'product_restore',
+      targetMaterialId: 'restore-target-a',
+      batchIndex: 1,
+    }],
+  }] }, []);
+
+  assert.equal(snapshot.projects[0].status, 'generating');
+  assert.equal(snapshot.projects[0].taskCount, 2);
+  assert.equal(snapshot.projects[0].completedCount, 0);
+});
+
 test('historical product restoration projects remain readable when rollout is off', () => {
   const snapshot = buildShellDataSnapshot({
     systemConfig: { featureRollouts: { productRestore: 'off' } },
