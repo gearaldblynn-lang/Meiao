@@ -4,6 +4,8 @@ import { PRODUCT_RESTORE_FOCUS_OPTIONS } from '../../../modules/Retouch/productR
 
 interface Props {
   context: ProductRestoreProjectContext;
+  analysisCreditsConsumed?: number;
+  analysisCreditsKnown?: boolean;
   imageCreditsConsumed?: number;
   totalCreditsConsumed?: number;
   onCopyPrompt: (prompt: string) => void;
@@ -64,12 +66,20 @@ const BoundedList: React.FC<{ title: string; items: string[] }> = ({ title, item
 
 const ProductRestoreAnalysisPanel: React.FC<Props> = ({
   context,
+  analysisCreditsConsumed,
+  analysisCreditsKnown,
   imageCreditsConsumed,
   totalCreditsConsumed,
   onCopyPrompt,
 }) => {
   const analysis = context.normalizedAnalysis;
-  const analysisCredits = creditLedgerValue(context.analysisCreditsConsumed);
+  const analysisCredits = creditLedgerValue(
+    analysisCreditsKnown === undefined
+      ? context.analysisCreditsConsumed
+      : analysisCreditsKnown
+        ? analysisCreditsConsumed
+        : undefined,
+  );
   const imageCredits = creditLedgerValue(imageCreditsConsumed);
   const totalCredits = creditLedgerValue(totalCreditsConsumed);
   const focusLabels = PRODUCT_RESTORE_FOCUS_OPTIONS

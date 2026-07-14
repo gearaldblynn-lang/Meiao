@@ -1,7 +1,7 @@
 import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreFocusId, ProductRestoreNormalizedAnalysis, ProductRestoreProjectContext, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysis, ProductRestoreProjectContext, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
@@ -66,6 +66,13 @@ import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion }
 import { isFrontendResourceError } from './utils/frontendResourceError.mjs';
 import { startVersionWatch } from './utils/frontendVersionWatch';
 import { resolveMaxForAiImageModelId } from './utils/maxforaiImageModels.mjs';
+import {
+  cloneProductRestoreAnalysisAttempts,
+  cloneProductRestoreAnalysisAttemptsForMutation,
+  createProductRestoreAnalysisAttempt,
+  getProductRestoreTotalKnownCredits,
+  mergeProductRestoreAnalysisAttempts,
+} from './utils/productRestoreAnalysisCredits';
 // 判据单一来源(2026-07-09 多桑「7月9日项目5」断链修复):缺卡回写谓词与计数辅助全部收敛到
 // syncedProjectPersistence.ts,行为测试锁在 syncedProjectPersistence.test.mjs。
 // job 来源缺卡回写不再只限 translation/error,所有工作区模块的成功/进行中/失败缺卡统一落库。
@@ -421,6 +428,7 @@ const cloneGenerationContext = (
   params: Record<string, string>,
   materials: Record<string, Material[]>,
   productRestoreContext?: ProductRestoreProjectContext,
+  productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[],
 ): OneClickGenerationContext => ({
   prompt,
   params: { ...params },
@@ -433,7 +441,25 @@ const cloneGenerationContext = (
   productRestore: productRestoreContext
     ? cloneProductRestoreContext(productRestoreContext)
     : undefined,
+  ...(productRestoreAnalysisAttempts !== undefined
+    ? {
+        productRestoreAnalysisAttempts: cloneProductRestoreAnalysisAttempts(
+          productRestoreAnalysisAttempts,
+        ),
+      }
+    : {}),
 });
+
+const getProductRestoreProjectCredits = (
+  generationContext: OneClickGenerationContext | undefined,
+  results: Array<{ creditsConsumed?: number }>,
+) => {
+  const summary = getProductRestoreTotalKnownCredits({
+    generationContext,
+    imageCredits: results.map((result) => result.creditsConsumed),
+  });
+  return summary.present ? summary.total : undefined;
+};
 
 const getProductRestoreResultIdentity = (result: Partial<GeneratedResult>) => {
   const targetMaterialId = String(result.targetMaterialId || '').trim();
@@ -3514,6 +3540,9 @@ const AppContent: React.FC<{
       const focusIds = normalizeProductRestoreFocusIds(
         storedContext.params.restoreFocusIds,
       ) as ProductRestoreFocusId[];
+      let productRestoreAnalysisAttempts = cloneProductRestoreAnalysisAttemptsForMutation(
+        storedContext,
+      );
       let productRestoreContext = cloneProductRestoreContext(storedContext.productRestore);
       if (!productRestoreContext) {
         if (shouldStopResume()) return;
@@ -3538,6 +3567,23 @@ const AppContent: React.FC<{
             .then((result) => result.job)
             .catch(() => null);
           if (shouldStopResume()) return;
+          const failedAttempt = createProductRestoreAnalysisAttempt({
+            jobId: analysis.jobId || analysisJobId,
+            providerTaskId: analysis.providerTaskId,
+            model: analysis.modelUsed,
+            status: analysis.errorCode === 'interrupted'
+              ? 'cancelled'
+              : analysis.errorCode === 'product_restore_analysis_invalid'
+                ? 'invalid'
+                : 'failed',
+            errorCode: analysis.errorCode,
+            timestamp: Date.now(),
+            creditsConsumed: analysis.creditsConsumed,
+          });
+          productRestoreAnalysisAttempts = mergeProductRestoreAnalysisAttempts(
+            productRestoreAnalysisAttempts,
+            failedAttempt ? [failedAttempt] : [],
+          );
           const failureGenerationContext = cloneGenerationContext(
             storedContext.prompt,
             {
@@ -3546,6 +3592,8 @@ const AppContent: React.FC<{
               ...(analysis.errorCode ? { productRestoreAnalysisErrorCode: analysis.errorCode } : {}),
             },
             storedContext.materials as Record<string, Material[]>,
+            undefined,
+            productRestoreAnalysisAttempts,
           );
           const failedProject: Project = {
             ...project,
@@ -3568,7 +3616,9 @@ const AppContent: React.FC<{
           analysisJobId: analysis.jobId,
           analysisProviderTaskId: analysis.providerTaskId,
           analysisModel: analysis.modelUsed,
-          analysisCreditsConsumed: Number(analysis.creditsConsumed || 0),
+          ...(analysis.creditsConsumed !== undefined
+            ? { analysisCreditsConsumed: analysis.creditsConsumed }
+            : {}),
           normalizedAnalysis: cloneProductRestoreAnalysis(analysis.normalizedAnalysis),
           sharedRestorationPrompt: analysis.sharedRestorationPrompt,
           focusIds: [...focusIds],
@@ -3582,6 +3632,18 @@ const AppContent: React.FC<{
           userRequirement: storedContext.prompt,
           createdAt: Date.now(),
         };
+        const succeededAttempt = createProductRestoreAnalysisAttempt({
+          jobId: analysis.jobId,
+          providerTaskId: analysis.providerTaskId,
+          model: analysis.modelUsed,
+          status: 'succeeded',
+          timestamp: productRestoreContext.createdAt,
+          creditsConsumed: analysis.creditsConsumed,
+        });
+        productRestoreAnalysisAttempts = mergeProductRestoreAnalysisAttempts(
+          productRestoreAnalysisAttempts,
+          succeededAttempt ? [succeededAttempt] : [],
+        );
       }
       if (shouldStopResume()) return;
 
@@ -3594,6 +3656,7 @@ const AppContent: React.FC<{
         },
         storedContext.materials as Record<string, Material[]>,
         productRestoreContext,
+        productRestoreAnalysisAttempts,
       );
       let resumedProject: Project = {
         ...project,
@@ -3603,8 +3666,10 @@ const AppContent: React.FC<{
         status: 'generating',
         taskCount: targetMaterials.length,
         completedCount: countCompletedProjectResults(project.results || []),
-        creditsConsumed: Number(productRestoreContext.analysisCreditsConsumed || 0)
-          + (project.results || []).reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0),
+        creditsConsumed: getProductRestoreProjectCredits(
+          durableGenerationContext,
+          project.results || [],
+        ),
         error: undefined,
       };
       currentResumeProject = resumedProject;
@@ -3761,8 +3826,10 @@ const AppContent: React.FC<{
           results: resumedResults,
           taskCount: targetMaterials.length,
           completedCount: resumedResults.filter((result) => result.status === 'completed').length,
-          creditsConsumed: Number(productRestoreContext.analysisCreditsConsumed || 0)
-            + resumedResults.reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0),
+          creditsConsumed: getProductRestoreProjectCredits(
+            resumedProject.generationContext,
+            resumedResults,
+          ),
           error: status === 'error'
             ? resumedResults.find((result) => result.status === 'error')?.error
             : undefined,
@@ -5735,6 +5802,9 @@ const AppContent: React.FC<{
 	    let activeProviderTaskId = '';
 	    let activeProductRestoreAnalysisJobId = '';
 	    let productRestoreContext = cloneProductRestoreContext(generationContext?.productRestore);
+	    let productRestoreAnalysisAttempts = cloneProductRestoreAnalysisAttemptsForMutation(
+	      generationContext,
+	    );
 	    const shouldStopProductRestore = () => (
 	      isProductRestoreSubmit
 	      && (
@@ -5757,6 +5827,18 @@ const AppContent: React.FC<{
 	      activeBackendJobId = normalizedJobId;
 	      if (isProductRestoreAnalysisJob) activeProductRestoreAnalysisJobId = normalizedJobId;
 	      if (providerTaskId) activeProviderTaskId = String(providerTaskId || '').trim();
+	      if (isProductRestoreAnalysisJob) {
+	        const runningAttempt = createProductRestoreAnalysisAttempt({
+	          jobId: normalizedJobId,
+	          providerTaskId,
+	          status: 'running',
+	          timestamp: Date.now(),
+	        });
+	        productRestoreAnalysisAttempts = mergeProductRestoreAnalysisAttempts(
+	          productRestoreAnalysisAttempts,
+	          runningAttempt ? [runningAttempt] : [],
+	        );
+	      }
 	      const pendingVideoProject: Project | null = targetModule === AppModuleObj.VIDEO
 	        ? {
 	            ...newProject,
@@ -5792,6 +5874,13 @@ const AppContent: React.FC<{
 	            taskCount: batchCount,
 	            completedCount: 0,
 	            error: '产品还原分析已提交，等待结果。',
+	            generationContext: cloneGenerationContext(
+	              generationPrompt,
+	              generationParams,
+	              generationMaterials,
+	              undefined,
+	              productRestoreAnalysisAttempts,
+	            ),
 	          }
 	        : null;
 	      setProjects((prev) => prev.map((project) => (
@@ -6005,14 +6094,23 @@ const AppContent: React.FC<{
                 generationParams,
                 generationMaterials,
                 productRestoreContext,
+                productRestoreAnalysisAttempts,
               ),
               status: productRestoreStatus,
               completedAt: productRestoreStatus === 'completed' ? Date.now() : undefined,
               results: [...batchResults],
               completedCount: completedItemCount,
               taskCount: total,
-              creditsConsumed: Number(productRestoreContext?.analysisCreditsConsumed || 0)
-                + batchResults.reduce((sum, result) => sum + Number(result.creditsConsumed || 0), 0),
+              creditsConsumed: getProductRestoreProjectCredits(
+                cloneGenerationContext(
+                  generationPrompt,
+                  generationParams,
+                  generationMaterials,
+                  productRestoreContext,
+                  productRestoreAnalysisAttempts,
+                ),
+                batchResults,
+              ),
               error: productRestoreStatus === 'error'
                 ? batchResults.find((result) => result.status === 'error')?.error
                 : undefined,
@@ -6085,11 +6183,24 @@ const AppContent: React.FC<{
 	                  });
 	                }
 	                const nextProductRestoreContext = cloneProductRestoreContext(context);
+                const succeededAttempt = createProductRestoreAnalysisAttempt({
+                  jobId: context.analysisJobId,
+                  providerTaskId: context.analysisProviderTaskId,
+                  model: context.analysisModel,
+                  status: 'succeeded',
+                  timestamp: context.createdAt,
+                  creditsConsumed: context.analysisCreditsConsumed,
+                });
+                productRestoreAnalysisAttempts = mergeProductRestoreAnalysisAttempts(
+                  productRestoreAnalysisAttempts,
+                  succeededAttempt ? [succeededAttempt] : [],
+                );
                 const durableGenerationContext = cloneGenerationContext(
                   generationPrompt,
                   generationParams,
                   generationMaterials,
                   nextProductRestoreContext,
+                  productRestoreAnalysisAttempts,
                 );
                 const analysisProject: Project = {
                   ...newProject,
@@ -6100,7 +6211,7 @@ const AppContent: React.FC<{
                   results: [],
                   taskCount: batchCount,
                   completedCount: 0,
-                  creditsConsumed: context.analysisCreditsConsumed || undefined,
+                  creditsConsumed: getProductRestoreProjectCredits(durableGenerationContext, []),
                   error: undefined,
                 };
 	                if (shouldStopProductRestore()) {
@@ -6187,7 +6298,13 @@ const AppContent: React.FC<{
             ? { planningTaskId: productRestoreContext.analysisProviderTaskId }
             : {}),
           generationContext: isProductRestoreSubmit
-            ? cloneGenerationContext(generationPrompt, generationParams, generationMaterials, productRestoreContext)
+            ? cloneGenerationContext(
+                generationPrompt,
+                generationParams,
+                generationMaterials,
+                productRestoreContext,
+                productRestoreAnalysisAttempts,
+              )
             : newProject.generationContext,
           status: productRestoreAnalysisPending.project?.status
             || (hasSpecialGenerating ? 'generating' : hasSpecialError ? 'error' : 'completed'),
@@ -6201,7 +6318,18 @@ const AppContent: React.FC<{
                 productRestoreAnalysisPending.project?.taskCount || 0,
               ),
           completedCount: specialWorkflowResults.filter((item) => item.status === 'completed').length,
-          creditsConsumed: specialResult.creditsConsumed,
+          creditsConsumed: isProductRestoreSubmit
+            ? getProductRestoreProjectCredits(
+                cloneGenerationContext(
+                  generationPrompt,
+                  generationParams,
+                  generationMaterials,
+                  productRestoreContext,
+                  productRestoreAnalysisAttempts,
+                ),
+                specialWorkflowResults,
+              )
+            : specialResult.creditsConsumed,
           ...(productRestoreAnalysisPending.message
             ? { error: productRestoreAnalysisPending.message }
             : {}),
@@ -6401,7 +6529,12 @@ const AppContent: React.FC<{
       if (bailIfFrontendResourceError(error)) return;
       if (shouldStopProductRestore()) return;
       const message = error instanceof Error ? error.message : '任务执行失败';
-      const productRestoreFailure = error as Error & { code?: string; jobId?: string; providerTaskId?: string };
+      const productRestoreFailure = error as Error & {
+        code?: string;
+        jobId?: string;
+        providerTaskId?: string;
+        analysisAttempt?: ProductRestoreAnalysisAttempt;
+      };
 	      const isProductRestorePersistenceFailure = (
 	        isProductRestoreSubmit
 	        && productRestoreFailure.code === 'product_restore_context_persistence_failed'
@@ -6416,6 +6549,31 @@ const AppContent: React.FC<{
       const confirmedAnalysisJob = isProductRestoreSubmit && batchResults.length === 0 && failedAnalysisJobId
         ? await fetchInternalJob(failedAnalysisJobId).then((result) => result.job).catch(() => null)
         : null;
+      if (isProductRestoreSubmit) {
+        const fallbackAttempt = createProductRestoreAnalysisAttempt({
+          jobId: failedAnalysisJobId,
+          providerTaskId: productRestoreFailure.providerTaskId
+            || confirmedAnalysisJob?.providerTaskId
+            || confirmedAnalysisJob?.result?.providerTaskId,
+          model: confirmedAnalysisJob?.result?.modelUsed || confirmedAnalysisJob?.model,
+          status: productRestoreFailure.code === 'interrupted'
+            ? 'cancelled'
+            : productRestoreFailure.code === 'product_restore_analysis_invalid'
+              ? 'invalid'
+              : 'failed',
+          errorCode: productRestoreFailure.code || confirmedAnalysisJob?.errorCode,
+          timestamp: Date.now(),
+          creditsConsumed: confirmedAnalysisJob?.result?.creditsConsumed,
+        });
+        productRestoreAnalysisAttempts = mergeProductRestoreAnalysisAttempts(
+          productRestoreAnalysisAttempts,
+          productRestoreFailure.analysisAttempt
+            ? [productRestoreFailure.analysisAttempt]
+            : fallbackAttempt
+              ? [fallbackAttempt]
+              : [],
+        );
+      }
       const productRestoreFailureParams = {
         ...generationParams,
         ...(confirmedAnalysisJob?.status
@@ -6453,6 +6611,7 @@ const AppContent: React.FC<{
                 productRestoreFailureParams,
                 generationMaterials,
                 productRestoreContext,
+                productRestoreAnalysisAttempts,
               ),
             }
           : {}),
@@ -6472,6 +6631,20 @@ const AppContent: React.FC<{
             }],
         completedCount: batchResults.filter((result) => result.status === 'completed').length,
         taskCount: batchCount,
+	      ...(isProductRestoreSubmit
+	        ? {
+	            creditsConsumed: getProductRestoreProjectCredits(
+	              cloneGenerationContext(
+	                generationPrompt,
+	                productRestoreFailureParams,
+	                generationMaterials,
+	                productRestoreContext,
+	                productRestoreAnalysisAttempts,
+	              ),
+	              batchResults,
+	            ),
+	          }
+	        : {}),
 	        error: message,
       };
       setProjects((prev) => prev.map((p) =>
@@ -7841,6 +8014,9 @@ const AppContent: React.FC<{
           productRestoreAnalysisJobStatus: 'queued',
           productRestoreAnalysisErrorCode: '',
         };
+        let productRestoreAnalysisAttempts = cloneProductRestoreAnalysisAttemptsForMutation(
+          storedContext,
+        );
         let latestManualProject: Project = {
           ...project,
           status: 'planning',
@@ -7855,6 +8031,8 @@ const AppContent: React.FC<{
               storedContext.prompt,
               manualParams,
               storedContext.materials as Record<string, Material[]>,
+              undefined,
+              productRestoreAnalysisAttempts,
             ),
             productRestoreCancellation: undefined,
           },
@@ -7897,6 +8075,16 @@ const AppContent: React.FC<{
           } : task));
           if (analysisContextPersisted) return;
           manualAnalysisJobId = jobId;
+          const runningAttempt = createProductRestoreAnalysisAttempt({
+            jobId,
+            providerTaskId,
+            status: 'running',
+            timestamp: Date.now(),
+          });
+          productRestoreAnalysisAttempts = mergeProductRestoreAnalysisAttempts(
+            productRestoreAnalysisAttempts,
+            runningAttempt ? [runningAttempt] : [],
+          );
           latestManualProject = {
             ...latestManualProject,
             backendJobId: jobId,
@@ -7908,6 +8096,8 @@ const AppContent: React.FC<{
                 productRestoreAnalysisJobStatus: 'running',
               },
               storedContext.materials as Record<string, Material[]>,
+              undefined,
+              productRestoreAnalysisAttempts,
             ),
           };
           setProjects((prev) => prev.map((item) => item.id === project.id ? latestManualProject : item));
@@ -7958,8 +8148,10 @@ const AppContent: React.FC<{
               results: nextResults,
               completedCount: nextResults.filter((current) => current.status === 'completed').length,
               taskCount: update.total,
-              creditsConsumed: Number(currentProject.generationContext?.productRestore?.analysisCreditsConsumed || 0)
-                + nextResults.reduce((sum, current) => sum + Number(current.creditsConsumed || 0), 0),
+              creditsConsumed: getProductRestoreProjectCredits(
+                currentProject.generationContext,
+                nextResults,
+              ),
               error: status === 'error'
                 ? nextResults.find((current) => current.status === 'error')?.error
                 : undefined,
@@ -8006,13 +8198,29 @@ const AppContent: React.FC<{
             onProductRestoreAnalysisCompleted: async (context) => {
               await analysisIdentityPersistence.catch(() => false);
               const durableContext = cloneProductRestoreContext(context);
+              const succeededAttempt = createProductRestoreAnalysisAttempt({
+                jobId: context.analysisJobId,
+                providerTaskId: context.analysisProviderTaskId,
+                model: context.analysisModel,
+                status: 'succeeded',
+                timestamp: context.createdAt,
+                creditsConsumed: context.analysisCreditsConsumed,
+              });
+              productRestoreAnalysisAttempts = mergeProductRestoreAnalysisAttempts(
+                productRestoreAnalysisAttempts,
+                succeededAttempt ? [succeededAttempt] : [],
+              );
               const analyzedProject: Project = {
                 ...latestManualProject,
                 backendJobId: context.analysisJobId,
                 planningTaskId: context.analysisProviderTaskId,
                 status: 'generating',
                 error: undefined,
-                creditsConsumed: context.analysisCreditsConsumed || undefined,
+                creditsConsumed: getProductRestoreProjectCredits({
+                  ...latestManualProject.generationContext!,
+                  productRestoreAnalysisAttempts,
+                  productRestore: durableContext,
+                }, []),
                 generationContext: cloneGenerationContext(
                   storedContext.prompt,
                   {
@@ -8022,6 +8230,7 @@ const AppContent: React.FC<{
                   },
                   storedContext.materials as Record<string, Material[]>,
                   durableContext,
+                  productRestoreAnalysisAttempts,
                 ),
               };
               const analysisPersistence = await productRestoreWorkflow.persistProductRestoreProjectOrDefer({
@@ -8051,7 +8260,10 @@ const AppContent: React.FC<{
             results: finalResults,
             completedCount: finalResults.filter((item) => item.status === 'completed').length,
             taskCount: restoreTargets.length,
-            creditsConsumed: manualResult.creditsConsumed,
+            creditsConsumed: getProductRestoreProjectCredits(
+              latestManualProject.generationContext,
+              finalResults,
+            ),
             error: finalStatus === 'error'
               ? finalResults.find((item) => item.status === 'error')?.error
               : undefined,
@@ -8080,7 +8292,12 @@ const AppContent: React.FC<{
           }
           addToast(finalStatus === 'completed' ? '重新分析并生成已完成' : finalStatus === 'generating' ? '重新分析已完成，图片结果待同步' : '重新分析完成，部分图片生成失败', finalStatus === 'completed' ? 'success' : finalStatus === 'generating' ? 'info' : 'warning');
         } catch (error) {
-          const workflowError = error as Error & { code?: string; jobId?: string; providerTaskId?: string };
+          const workflowError = error as Error & {
+            code?: string;
+            jobId?: string;
+            providerTaskId?: string;
+            analysisAttempt?: ProductRestoreAnalysisAttempt;
+          };
           if (
             workflowError.code === 'product_restore_context_persistence_failed'
             && latestManualProject.generationContext?.productRestore
@@ -8099,6 +8316,44 @@ const AppContent: React.FC<{
           const confirmedJob = failedJobId
             ? await fetchInternalJob(failedJobId).then((result) => result.job).catch(() => null)
             : null;
+          const fallbackAttempt = createProductRestoreAnalysisAttempt({
+            jobId: failedJobId,
+            providerTaskId: workflowError.providerTaskId
+              || confirmedJob?.providerTaskId
+              || confirmedJob?.result?.providerTaskId,
+            model: confirmedJob?.result?.modelUsed || confirmedJob?.model,
+            status: workflowError.code === 'interrupted'
+              ? 'cancelled'
+              : workflowError.code === 'product_restore_analysis_invalid'
+                ? 'invalid'
+                : 'failed',
+            errorCode: workflowError.code || confirmedJob?.errorCode,
+            timestamp: Date.now(),
+            creditsConsumed: confirmedJob?.result?.creditsConsumed,
+          });
+          productRestoreAnalysisAttempts = mergeProductRestoreAnalysisAttempts(
+            productRestoreAnalysisAttempts,
+            workflowError.analysisAttempt
+              ? [workflowError.analysisAttempt]
+              : fallbackAttempt
+                ? [fallbackAttempt]
+                : [],
+          );
+          const failedGenerationContext = cloneGenerationContext(
+            storedContext.prompt,
+            {
+              ...manualParams,
+              ...(confirmedJob?.status ? { productRestoreAnalysisJobStatus: confirmedJob.status } : {}),
+              ...(workflowError.code
+                ? { productRestoreAnalysisErrorCode: workflowError.code }
+                : confirmedJob?.errorCode
+                  ? { productRestoreAnalysisErrorCode: confirmedJob.errorCode }
+                  : {}),
+            },
+            storedContext.materials as Record<string, Material[]>,
+            undefined,
+            productRestoreAnalysisAttempts,
+          );
           latestManualProject = {
             ...latestManualProject,
             backendJobId: failedJobId || latestManualProject.backendJobId,
@@ -8106,20 +8361,9 @@ const AppContent: React.FC<{
             status: 'error',
             results: [],
             completedCount: 0,
+            creditsConsumed: getProductRestoreProjectCredits(failedGenerationContext, []),
             error: workflowError.message || '产品还原重新分析失败。',
-            generationContext: cloneGenerationContext(
-              storedContext.prompt,
-              {
-                ...manualParams,
-                ...(confirmedJob?.status ? { productRestoreAnalysisJobStatus: confirmedJob.status } : {}),
-                ...(workflowError.code
-                  ? { productRestoreAnalysisErrorCode: workflowError.code }
-                  : confirmedJob?.errorCode
-                    ? { productRestoreAnalysisErrorCode: confirmedJob.errorCode }
-                    : {}),
-              },
-              storedContext.materials as Record<string, Material[]>,
-            ),
+            generationContext: failedGenerationContext,
           };
           setProjects((prev) => prev.map((item) => item.id === project.id ? latestManualProject : item));
           const failurePersisted = await persistProjectToSharedState(latestManualProject);
@@ -8154,6 +8398,7 @@ const AppContent: React.FC<{
               storedContext.params,
               storedContext.materials as Record<string, Material[]>,
               storedContext.productRestore,
+              storedContext.productRestoreAnalysisAttempts,
             ),
             productRestoreCancellation: undefined,
           },

@@ -1,3 +1,8 @@
+import {
+  cloneProductRestoreAnalysisAttempts,
+  mergeProductRestoreAnalysisAttempts,
+} from '../utils/productRestoreAnalysisCredits.ts';
+
 const normalizeIdentity = (value) => String(value || '').trim();
 
 const sortedIdentities = (values) => Array.from(values).filter(Boolean).sort();
@@ -32,6 +37,18 @@ export const mergeProductRestoreGenerationContext = (existingContext, nextContex
     ...(existingContext || {}),
     ...(nextContext || {}),
   };
+  const nextExplicitlySetsAttempts = hasOwn(nextContext, 'productRestoreAnalysisAttempts');
+  const attempts = nextExplicitlySetsAttempts
+    ? mergeProductRestoreAnalysisAttempts(
+        existingContext?.productRestoreAnalysisAttempts,
+        nextContext?.productRestoreAnalysisAttempts,
+      )
+    : cloneProductRestoreAnalysisAttempts(existingContext?.productRestoreAnalysisAttempts);
+  if (attempts.length > 0 || nextExplicitlySetsAttempts) {
+    merged.productRestoreAnalysisAttempts = attempts;
+  } else {
+    delete merged.productRestoreAnalysisAttempts;
+  }
   const nextExplicitlySetsMarker = hasOwn(nextContext, 'productRestoreCancellation');
   const marker = cloneProductRestoreCancellationMarker(
     nextExplicitlySetsMarker

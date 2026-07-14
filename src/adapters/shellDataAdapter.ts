@@ -2,6 +2,7 @@ import type {
   AppModule,
   InternalJob,
   ProductRestoreCancellationMarker,
+  ProductRestoreAnalysisAttempt,
   ProductRestoreProjectContext,
   VideoStoryboardBoard,
   VideoStoryboardConfig,
@@ -26,6 +27,7 @@ import {
   hasDurableProductRestoreCancellation,
   mergeProductRestoreGenerationContext,
 } from './shellProductRestoreCancellation.mjs';
+import { cloneProductRestoreAnalysisAttempts } from '../utils/productRestoreAnalysisCredits.ts';
 import {
   getVisibleProviderTaskId,
   isShellControlJob,
@@ -129,6 +131,7 @@ export interface ShellProjectData {
     params: Record<string, string>;
     materials: Record<string, ShellMaterialData[]>;
     productRestore?: ProductRestoreProjectContext;
+    productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
     productRestoreCancellation?: ProductRestoreCancellationMarker;
   };
   directGeneration?: boolean;
@@ -207,6 +210,12 @@ const cloneGenerationContext = (
           productReferenceMaterialIds: [...context.productRestore.productReferenceMaterialIds],
           normalizedAnalysis: cloneProductRestoreAnalysis(context.productRestore.normalizedAnalysis),
         }
+      : undefined,
+    productRestoreAnalysisAttempts: Object.prototype.hasOwnProperty.call(
+      context,
+      'productRestoreAnalysisAttempts',
+    )
+      ? cloneProductRestoreAnalysisAttempts(context.productRestoreAnalysisAttempts)
       : undefined,
   };
   if (Object.prototype.hasOwnProperty.call(context, 'productRestoreCancellation')) {

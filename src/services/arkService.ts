@@ -275,8 +275,9 @@ const extractDetailPageManualRevision = (description: string, index: number) => 
 };
 
 const normalizeCreditsConsumed = (value: unknown) => {
+  if (value === undefined || value === null || value === '') return undefined;
   const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 };
 
 type AnalysisJobCreatedCallback = (
@@ -706,6 +707,8 @@ const buildProductRestoreAnalysisResult = ({
       message: parsed.message,
       jobId,
       providerTaskId: taskId,
+      modelUsed,
+      ...(creditsConsumed !== undefined ? { creditsConsumed } : {}),
     };
   }
   return {
@@ -713,7 +716,7 @@ const buildProductRestoreAnalysisResult = ({
     jobId,
     providerTaskId: taskId,
     modelUsed,
-    creditsConsumed: Number(creditsConsumed || 0),
+    ...(creditsConsumed !== undefined ? { creditsConsumed } : {}),
     normalizedAnalysis: parsed.value,
     sharedRestorationPrompt: buildProductRestoreGenerationPrompt({
       normalizedAnalysis: parsed.value,

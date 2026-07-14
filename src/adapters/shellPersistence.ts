@@ -1,6 +1,7 @@
 import type {
   AppModule,
   ProductRestoreCancellationMarker,
+  ProductRestoreAnalysisAttempt,
   ProductRestoreProjectContext,
   VeoProjectState,
 } from '../types.ts';
@@ -17,6 +18,7 @@ import {
   hasDurableProductRestoreCancellation,
   mergeProductRestoreGenerationContext,
 } from './shellProductRestoreCancellation.mjs';
+import { cloneProductRestoreAnalysisAttempts } from '../utils/productRestoreAnalysisCredits.ts';
 
 const INTERNAL_BACKEND_JOB_ID_PATTERN = /^[a-f0-9]{24}$/i;
 
@@ -109,6 +111,7 @@ type ShellProject = {
       logoReplaceRegions?: Array<Record<string, unknown>>;
     }>>;
     productRestore?: ProductRestoreProjectContext;
+    productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
     productRestoreCancellation?: ProductRestoreCancellationMarker;
   };
   sourceType?: 'persisted' | 'job';
@@ -172,6 +175,14 @@ const cloneShellProject = (project: ShellProject): ShellProject => {
       ]),
     ),
   } : undefined;
+  if (
+    generationContext
+    && Object.prototype.hasOwnProperty.call(project.generationContext, 'productRestoreAnalysisAttempts')
+  ) {
+    generationContext.productRestoreAnalysisAttempts = cloneProductRestoreAnalysisAttempts(
+      project.generationContext?.productRestoreAnalysisAttempts,
+    );
+  }
   if (
     generationContext
     && Object.prototype.hasOwnProperty.call(project.generationContext, 'productRestoreCancellation')
