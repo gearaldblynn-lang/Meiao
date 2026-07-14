@@ -36,7 +36,14 @@ test('state loading scrubs deleted managed sku image items before returning to c
 test('state saving scrubs deleted managed assets before they can be persisted again', () => {
   assert.match(source, /const scrubDbStateBeforeStorage = async \(state, userId\) => \{/);
   assert.match(source, /const scrubLocalStateBeforeStorage = async \(state, userId\) => \{/);
-  assert.match(source, /const previousState = await getDbAppState\(user\.id\);[\s\S]{0,300}const nextState = await scrubDbStateBeforeStorage\(\s*mergeAppStateForStorage\(previousState, incomingState\),\s*user\.id,\s*\)/);
+  const mysqlStateRoute = source.match(/if \(url\.pathname === '\/api\/state' && req\.method === 'PUT'\) \{[\s\S]*?\n  \}/)?.[0] || '';
+  const lockedStateWrite = source.match(/const saveDbAppStateAndQueueRemovedAssetsUnderLock = async[\s\S]*?\n\};/)?.[0] || '';
+  assert.match(mysqlStateRoute, /writeMergedAppStateUnderUserLock/);
+  assert.match(mysqlStateRoute, /withUserLock: withManagedAssetUserLock/);
+  assert.match(mysqlStateRoute, /readState: getDbAppStateUnderManagedAssetLock/);
+  assert.match(mysqlStateRoute, /scrubState: scrubDbStateBeforeStorage/);
+  assert.match(mysqlStateRoute, /saveState: saveDbAppStateAndQueueRemovedAssetsUnderLock/);
+  assert.match(lockedStateWrite, /beginTransaction\(\)[\s\S]*INSERT INTO app_states[\s\S]*queueRemovedStateAssetsForCleanup[\s\S]*commit\(\)/);
   assert.match(source, /const previousState = store\.appStates\[user\.id\] \|\| createDefaultState\(\);[\s\S]{0,300}const nextState = await scrubLocalStateBeforeStorage\(\s*mergeAppStateForStorage\(previousState, incomingState\),\s*user\.id,\s*\)/);
 });
 

@@ -89,6 +89,20 @@ write failure. The source-contract tests also pin the real route to
 `withManagedAssetUserLock` and prohibit lock reacquisition in the transactional
 helper.
 
+## Fourth-review contract alignment
+
+The fourth review found one stale source-contract assertion in
+`server/assetReferenceCleanup.test.mjs`: it still required the removed lock-outside
+MySQL read/merge/scrub sequence and left the full server suite at 6/7 for that
+file. The failing assertion was reproduced before the test was updated.
+
+The contract now pins the MySQL state route to
+`writeMergedAppStateUnderUserLock`, the real `withManagedAssetUserLock`, and the
+locked read/scrub/save dependencies. It separately preserves the asset-cleanup
+guarantee by requiring the transactional helper to begin a transaction, upsert
+`app_states`, enqueue removed assets, and commit in that order. The independent
+local JSON scrub-before-save assertion remains unchanged.
+
 ## TDD evidence
 
 Mandatory RED failures were captured first against the real
@@ -100,6 +114,8 @@ Mandatory RED failures were captured first against the real
 - typed reset and frontend retry persistence interfaces were absent.
 - boolean-only persistence authorized retry against a newer server cancellation;
 - a compact MAX_SAFE multi-retry chain re-locked after stale-root replay.
+- the stale asset-cleanup source contract rejected the new atomic MySQL route
+  while its other six checks passed.
 
 The final expanded Product Restoration focused suite is green:
 
@@ -121,6 +137,8 @@ error-path lock release.
 
 ## Verification
 
+- `node --test server/assetReferenceCleanup.test.mjs`: PASS, 7/7.
+- `npm run test:server`: PASS, all 112 server test files.
 - `npx tsc -b --pretty false`: PASS.
 - `npm run lint`: PASS, 0 errors and 660 warnings at the existing 660-warning
   budget.
