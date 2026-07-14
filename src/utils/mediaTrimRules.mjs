@@ -101,3 +101,35 @@ export function normalizeTrimSelection({
     durationSeconds: roundTenths(end - start),
   };
 }
+
+/**
+ * @param {{currentTime?: number, startSeconds?: number, endSeconds?: number, phase?: 'play'|'seeking'|'timeupdate'}} input
+ */
+export function resolveMediaPreviewBoundary({
+  currentTime,
+  startSeconds,
+  endSeconds,
+  phase = 'timeupdate',
+} = {}) {
+  const current = Number(currentTime);
+  const start = Number(startSeconds);
+  const end = Number(endSeconds);
+  const noAction = { seekSeconds: null, pause: false };
+  if (!Number.isFinite(current) || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+    return noAction;
+  }
+
+  const epsilon = 0.02;
+  if (phase === 'seeking') {
+    if (current < start - epsilon) return { seekSeconds: start, pause: false };
+    if (current > end + epsilon) return { seekSeconds: end, pause: false };
+    return noAction;
+  }
+  if (current < start - epsilon || (phase === 'play' && current >= end - epsilon)) {
+    return { seekSeconds: start, pause: false };
+  }
+  if (phase === 'timeupdate' && current >= end - epsilon) {
+    return { seekSeconds: start, pause: true };
+  }
+  return noAction;
+}

@@ -18,7 +18,7 @@ import {
   type MediaTranscodeProbe,
   type MediaTranscodeResult,
 } from '../../services/mediaTranscodeClient';
-import { normalizeTrimSelection } from '../../utils/mediaTrimRules.mjs';
+import { normalizeTrimSelection, resolveMediaPreviewBoundary } from '../../utils/mediaTrimRules.mjs';
 
 export type MediaTranscodeQueueItem = {
   id: string;
@@ -133,6 +133,39 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
     } catch {
       // Some source formats can be transcoded by FFmpeg but not previewed by the browser.
     }
+  };
+
+  const applyPreviewBoundary = (
+    event: React.SyntheticEvent<HTMLMediaElement>,
+    phase: 'play' | 'seeking' | 'timeupdate',
+  ) => {
+    const media = event.currentTarget;
+    const action = resolveMediaPreviewBoundary({
+      currentTime: media.currentTime,
+      startSeconds: selection[0],
+      endSeconds: selection[1],
+      phase,
+    });
+    if (action.pause) media.pause();
+    if (action.seekSeconds != null && Math.abs(media.currentTime - action.seekSeconds) > 0.01) {
+      try {
+        media.currentTime = action.seekSeconds;
+      } catch {
+        // The browser may not be able to seek some uncommon source formats even when FFmpeg can decode them.
+      }
+    }
+  };
+
+  const handlePreviewPlay = (event: React.SyntheticEvent<HTMLMediaElement>) => {
+    applyPreviewBoundary(event, 'play');
+  };
+
+  const handlePreviewSeeking = (event: React.SyntheticEvent<HTMLMediaElement>) => {
+    applyPreviewBoundary(event, 'seeking');
+  };
+
+  const handlePreviewTimeUpdate = (event: React.SyntheticEvent<HTMLMediaElement>) => {
+    applyPreviewBoundary(event, 'timeupdate');
   };
 
   const handleSelectionChange = (values: number[]) => {
@@ -264,12 +297,9 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
                 playsInline
                 preload="metadata"
                 className="h-full w-full object-contain"
-                onTimeUpdate={(event) => {
-                  if (event.currentTarget.currentTime >= selection[1]) {
-                    event.currentTarget.pause();
-                    event.currentTarget.currentTime = selection[0];
-                  }
-                }}
+                onPlay={handlePreviewPlay}
+                onSeeking={handlePreviewSeeking}
+                onTimeUpdate={handlePreviewTimeUpdate}
               />
             ) : (
               <div className="flex w-full flex-col items-center px-8">
@@ -293,12 +323,9 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
                   controls
                   preload="metadata"
                   className="mt-4 w-full max-w-[460px]"
-                  onTimeUpdate={(event) => {
-                    if (event.currentTarget.currentTime >= selection[1]) {
-                      event.currentTarget.pause();
-                      event.currentTarget.currentTime = selection[0];
-                    }
-                  }}
+                  onPlay={handlePreviewPlay}
+                  onSeeking={handlePreviewSeeking}
+                  onTimeUpdate={handlePreviewTimeUpdate}
                 />
               </div>
             )}
@@ -358,7 +385,7 @@ const MediaTrimTranscodeDialog: React.FC<Props> = ({
               </Slider.Root>
               <div className="mt-1 flex justify-between text-[9px]" style={{ color: 'var(--text-tertiary)' }}>
                 <span>0:00.0</span>
-                <span>单段 2–15 秒 · 本任务还可用 {remainingSeconds.toFixed(1)} 秒</span>
+                <span>单段 2–15 秒 · 播放仅限蓝色范围 · 本任务还可用 {remainingSeconds.toFixed(1)} 秒</span>
                 <span>{formatSeconds(probe.durationSeconds)}</span>
               </div>
             </div>

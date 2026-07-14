@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   getMediaBudget,
   normalizeTrimSelection,
+  resolveMediaPreviewBoundary,
   validateMediaQueueSelection,
 } from './mediaTrimRules.mjs';
 
@@ -64,4 +65,58 @@ test('trim selection explains when the source itself is shorter than two seconds
     () => normalizeTrimSelection({ durationSeconds: 1.5, startSeconds: 0, endSeconds: 1.5, remainingSeconds: 15 }),
     (error) => error?.code === 'media_source_too_short' && /原始素材不足 2 秒/.test(error.message),
   );
+});
+
+test('preview playback starts from the selected left boundary when current time is outside the range', () => {
+  assert.deepEqual(resolveMediaPreviewBoundary({
+    currentTime: 2,
+    startSeconds: 7.3,
+    endSeconds: 22.3,
+    phase: 'play',
+  }), {
+    seekSeconds: 7.3,
+    pause: false,
+  });
+  assert.deepEqual(resolveMediaPreviewBoundary({
+    currentTime: 24,
+    startSeconds: 7.3,
+    endSeconds: 22.3,
+    phase: 'play',
+  }), {
+    seekSeconds: 7.3,
+    pause: false,
+  });
+});
+
+test('preview playback stops at the selected right boundary and rewinds to the left boundary', () => {
+  assert.deepEqual(resolveMediaPreviewBoundary({
+    currentTime: 22.3,
+    startSeconds: 7.3,
+    endSeconds: 22.3,
+    phase: 'timeupdate',
+  }), {
+    seekSeconds: 7.3,
+    pause: true,
+  });
+});
+
+test('preview seeking cannot leave the selected range', () => {
+  assert.deepEqual(resolveMediaPreviewBoundary({
+    currentTime: 4,
+    startSeconds: 7.3,
+    endSeconds: 22.3,
+    phase: 'seeking',
+  }), {
+    seekSeconds: 7.3,
+    pause: false,
+  });
+  assert.deepEqual(resolveMediaPreviewBoundary({
+    currentTime: 25,
+    startSeconds: 7.3,
+    endSeconds: 22.3,
+    phase: 'seeking',
+  }), {
+    seekSeconds: 22.3,
+    pause: false,
+  });
 });

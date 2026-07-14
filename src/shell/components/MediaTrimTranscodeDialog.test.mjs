@@ -35,3 +35,10 @@ test('media trim dialog cleans the temporary server session on cancellation', ()
   assert.match(source, /URL\.revokeObjectURL/);
   assert.match(source, /media_transcode_cancelled/);
 });
+
+test('media preview playback is constrained to the selected trim range', () => {
+  assert.match(source, /resolveMediaPreviewBoundary/);
+  assert.match(source, /onPlay=\{handlePreviewPlay\}/);
+  assert.match(source, /onSeeking=\{handlePreviewSeeking\}/);
+  assert.match(source, /onTimeUpdate=\{handlePreviewTimeUpdate\}/);
+});
