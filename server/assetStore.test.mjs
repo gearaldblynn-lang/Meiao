@@ -16,6 +16,7 @@ const {
   markStoredAssetStorageStatus,
   optimizeMp4BufferForStreaming,
   persistAssetBuffer,
+  persistUploadedAssetBuffer,
   sanitizeAssetName,
   shouldRetainAssetRecord,
   selectExpiredAssetsForCleanup,
@@ -300,6 +301,142 @@ test('markStoredAssetStorageStatus persists a valid state transition', async () 
     () => markStoredAssetStorageStatus(pool, 'asset-1', 'unknown_state', 1234),
     /无效的素材存储状态/,
   );
+});
+
+test('uploaded image becomes active only after Tencent COS confirms the object', async () => {
+  const created = [];
+  const transitions = [];
+  const uploads = [];
+  const record = await persistUploadedAssetBuffer({
+    publicBaseUrl: 'https://meiao.example.com',
+    userId: 'user-1',
+    module: 'buyer_show',
+    assetType: 'source',
+    originalName: 'buyer-reference.png',
+    mimeType: 'image/png',
+    fileBuffer: Buffer.from('png'),
+    env: {
+      MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos',
+      MEIAO_IMAGE_COS_BUCKET: 'meiao-managed-images-1406860462',
+      MEIAO_IMAGE_COS_REGION: 'ap-guangzhou',
+    },
+    deps: {
+      createRecord: async (_pool, value) => {
+        created.push({ ...value });
+        return value;
+      },
+      markStatus: async (_pool, assetId, status) => transitions.push([assetId, status]),
+      putCos: async (payload) => {
+        uploads.push(payload);
+        return {
+          bucket: 'meiao-managed-images-1406860462',
+          region: 'ap-guangzhou',
+          storageKey: payload.storageKey,
+          etag: 'etag',
+        };
+      },
+      enqueueCleanup: async () => { throw new Error('cleanup must not be enqueued'); },
+      persistLocal: async () => { throw new Error('local fallback must not run'); },
+    },
+  });
+
+  assert.equal(created.length, 1);
+  assert.equal(created[0].storageStatus, 'uploading');
+  assert.equal(created[0].provider, 'tencent_cos');
+  assert.match(created[0].storageKey, /^managed-images\/users\//);
+  assert.equal(uploads.length, 1);
+  assert.equal(uploads[0].storageKey, created[0].storageKey);
+  assert.deepEqual(transitions, [[created[0].id, 'active']]);
+  assert.equal(record.storageStatus, 'active');
+  assert.equal(record.publicUrl, `https://meiao.example.com/api/assets/file/${record.id}/buyer-reference.png`);
+});
+
+test('failed COS image upload marks failure and queues exact-key cleanup without local fallback', async () => {
+  const transitions = [];
+  const cleanupTasks = [];
+  let createdRecord = null;
+  let localWrites = 0;
+  const uploadError = Object.assign(new Error('COS unavailable'), { code: 'managed_image_upload_failed' });
+
+  await assert.rejects(
+    () => persistUploadedAssetBuffer({
+      publicBaseUrl: 'https://meiao.example.com',
+      userId: 'user-1',
+      module: 'buyer_show',
+      originalName: 'buyer-reference.jpg',
+      mimeType: 'image/jpeg',
+      fileBuffer: Buffer.from('jpg'),
+      env: {
+        MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos',
+        MEIAO_IMAGE_COS_BUCKET: 'meiao-managed-images-1406860462',
+        MEIAO_IMAGE_COS_REGION: 'ap-guangzhou',
+      },
+      deps: {
+        createRecord: async (_pool, value) => {
+          createdRecord = { ...value };
+          return value;
+        },
+        markStatus: async (_pool, assetId, status) => transitions.push([assetId, status]),
+        putCos: async () => { throw uploadError; },
+        enqueueCleanup: async (_pool, task) => cleanupTasks.push(task),
+        persistLocal: async () => { localWrites += 1; },
+      },
+    }),
+    (error) => error === uploadError,
+  );
+
+  assert.deepEqual(transitions, [[createdRecord.id, 'upload_failed']]);
+  assert.equal(cleanupTasks.length, 1);
+  assert.equal(cleanupTasks[0].assetId, createdRecord.id);
+  assert.equal(cleanupTasks[0].provider, 'tencent_cos');
+  assert.equal(cleanupTasks[0].bucket, 'meiao-managed-images-1406860462');
+  assert.equal(cleanupTasks[0].region, 'ap-guangzhou');
+  assert.equal(cleanupTasks[0].storageKey, createdRecord.storageKey);
+  assert.equal(cleanupTasks[0].reason, 'upload_failed');
+  assert.equal(localWrites, 0);
+});
+
+test('generated results and non-image uploads retain the local persistence path', async () => {
+  const calls = [];
+  const result = await persistUploadedAssetBuffer({
+    publicBaseUrl: 'https://meiao.example.com',
+    userId: 'user-1',
+    module: 'storyboard',
+    assetType: 'source',
+    originalName: 'brief.pdf',
+    mimeType: 'application/pdf',
+    fileBuffer: Buffer.from('pdf'),
+    env: { MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos' },
+    deps: {
+      persistLocal: async (options) => {
+        calls.push(options);
+        return { id: 'local-asset', provider: 'internal', storageStatus: 'active' };
+      },
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].mimeType, 'application/pdf');
+  assert.equal(result.provider, 'internal');
+});
+
+test('disabled managed image upload mode rejects new images before creating metadata', async () => {
+  let createCalls = 0;
+  await assert.rejects(
+    () => persistUploadedAssetBuffer({
+      userId: 'user-1',
+      originalName: 'image.png',
+      mimeType: 'image/png',
+      fileBuffer: Buffer.from('png'),
+      env: { MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'disabled' },
+      deps: {
+        createRecord: async () => { createCalls += 1; },
+      },
+    }),
+    (error) => error?.code === 'managed_image_upload_disabled'
+      && error?.retryable === true,
+  );
+  assert.equal(createCalls, 0);
 });
 
 test('optimizeMp4BufferForStreaming moves tail moov before mdat and patches stco offsets', () => {
