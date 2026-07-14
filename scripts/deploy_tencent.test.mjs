@@ -16,6 +16,34 @@ const extractRemoteShellFunction = (source, name) => {
     .replaceAll('\\"', '"');
 };
 
+test('deploy_tencent keeps inner quotes escaped inside the remote SSH payload', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const lines = source.split('\n');
+  const start = lines.findIndex((line) => line.includes('| ssh ') && line.endsWith(' "'));
+  const end = lines.findIndex((line, index) => index > start && line === '  "');
+
+  assert.ok(start >= 0 && end > start, 'remote SSH payload boundaries must exist');
+
+  const unescaped = [];
+  for (let index = start + 1; index < end; index += 1) {
+    for (let offset = 0; offset < lines[index].length; offset += 1) {
+      if (lines[index][offset] === '"' && lines[index][offset - 1] !== '\\') {
+        unescaped.push(`${index + 1}:${offset + 1}`);
+      }
+    }
+  }
+
+  assert.deepEqual(unescaped, [], `remote payload has unescaped quotes at ${unescaped.join(', ')}`);
+
+  const decoded = lines
+    .slice(start + 1, end)
+    .join('\n')
+    .replaceAll('\\"', '"')
+    .replaceAll('\\$', '$');
+  const syntax = spawnSync('bash', ['-n'], { input: decoded, encoding: 'utf8' });
+  assert.equal(syntax.status, 0, syntax.stderr);
+});
+
 test('deploy_tencent preserves remote server data directory', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
 
@@ -91,7 +119,7 @@ test('deploy_tencent rejects any remote marker, including an empty file, before 
   assert.doesNotMatch(preflight, /DRAIN_MARKER_CONTENT/);
   assert.match(preflight, /ownership-helper\.mjs' verify-mutex/);
   assert.ok(invocationIndex >= 0 && invocationIndex < archiveIndex, 'marker preflight must run before upload');
-  const finalMarkerCheckIndex = source.lastIndexOf('if [ -e "\\$DRAIN_MARKER_FILE" ]');
+  const finalMarkerCheckIndex = source.lastIndexOf('if [ -e \\"\\$DRAIN_MARKER_FILE\\" ]');
   assert.ok(finalMarkerCheckIndex > archiveIndex, 'deploy must keep a final marker-existence race check after upload');
 });
 
@@ -185,7 +213,7 @@ test('deploy_tencent keeps the drain on failed health until the new process is v
   assert.match(cleanup, /服务已停止/);
   assert.match(cleanup, /node scripts\/deploy-lifecycle\.mjs/);
   assert.match(cleanup, /RELEASE_DRAIN/);
-  assert.match(cleanup, /if \[ "\\\$RELEASE_DRAIN" = '1' \]/);
+  assert.match(cleanup, /if \[ \\"\\\$RELEASE_DRAIN\\" = '1' \]/);
   assert.match(cleanup, /保留维护门禁/);
 });
 
@@ -198,8 +226,8 @@ test('deploy_tencent retains gates when old-process stop was attempted but stop 
 
   assert.match(source, /DRAIN_STOP_ATTEMPTED_FILE/);
   assert.ok(stopAttemptedArgIndex > helperStart && stopAttemptedArgIndex < stoppedArgIndex);
-  assert.match(cleanup, /if \[ -f "\\\$DRAIN_STOP_ATTEMPTED_FILE" \]; then OLD_PROCESS_STOP_ATTEMPTED=1; fi/);
-  assert.match(cleanup, /"\\\$OLD_PROCESS_STOPPED" "\\\$OLD_PROCESS_STOP_ATTEMPTED"/);
+  assert.match(cleanup, /if \[ -f \\"\\\$DRAIN_STOP_ATTEMPTED_FILE\\" \]; then OLD_PROCESS_STOP_ATTEMPTED=1; fi/);
+  assert.match(cleanup, /\\"\\\$OLD_PROCESS_STOPPED\\" \\"\\\$OLD_PROCESS_STOP_ATTEMPTED\\"/);
   assert.match(cleanup, /停机尝试已登记但状态未核实/);
   assert.doesNotMatch(cleanup, /OLD_PROCESS_STOP_ATTEMPTED=1; OLD_PROCESS_STOPPED=1/);
 });

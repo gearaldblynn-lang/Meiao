@@ -880,3 +880,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 删除 Gemini 视频 KIE 暂存判断和转换函数。内部 `/api/assets/file/` 视频由服务端读取后写入私有腾讯 COS，以内容 SHA-256 生成稳定对象键并签发短期 GET URL；已有外部稳定视频 URL 原样交给 Gemini。视频 payload 在 Gemini 明确读文件失败、模糊 5xx 或网络异常时都只失败一次，不进入 KIE media fallback 或模型 fallback。桶保持私有，无需 CDN，CAM 子用户只授予目标前缀 `PutObject/GetObject`。
 - Regression check: `node --test server/tencentCosVideoStore.test.mjs server/providerAssetTransfer.test.mjs server/providerMediaRouting.test.mjs server/providerGateway.test.mjs`；必须同时断言内部视频发生一次 COS put + signed GET、外部 URL 不预下载、所有视频路径 `/file-stream-upload` 调用数为 0、显式读文件失败只调用 Gemini 一次。
 - Avoid next time: “移除旧链路”必须搜索并删除路由谓词、转换函数、fallback 和锁定旧行为的测试四层，不能只在通用 managed-asset 分支增加 direct-first。视频真实验收要核对 provider 接单前后的 stage、COS 对象、Gemini 请求次数和 KIE file-stream-upload 次数；页面错误文案不能证明请求已经到 Gemini。
+
+## 2026-07-14 - SSH 内嵌发布脚本的引号必须在本地壳层完整转义
+
+- Symptom: 云上文件同步、构建和 PM2 重启均已执行，服务稍后也恢复健康，但发布输出在清理阶段出现 `syntax error near unexpected token 'fi'`；脚本仍错误返回 0，造成“命令成功但发布门禁没有可信完成证明”。
+- Root cause: `deploy_tencent.sh` 把整段远端 Bash 放在本地双引号包裹的 SSH 参数里。新增 drain/cleanup 代码从 `DRAIN_MARKER_FILE` 开始使用了未转义的内部双引号，本地 shell 先把这些引号消费并拆分载荷；`bash -n scripts/deploy_tencent.sh` 只能验证本地脚本外壳，现有单元测试又只解码单个函数，均未检查完整 SSH 载荷的编码边界。
+- Fix: 将远端载荷内部全部双引号改成 `\"`，继续保留 `\$` 让变量只在远端展开；新增测试定位 SSH 载荷起止行，拒绝任何未转义内部双引号，并把解码后的完整载荷交给 `bash -n` 验证。
+- Regression check: `node --test scripts/deploy_tencent.test.mjs`；`bash -n scripts/deploy_tencent.sh`；真实发布必须同时满足命令退出 0、无 shell syntax error、远端完成证明写入、部署 mutex 释放以及公网 `/api/health` 的 worker 健康。
+- Avoid next time: 修改内嵌 SSH shell 时不能只跑顶层 `bash -n` 或函数级测试；必须同时验证“本地源码编码没有裸引号”和“解码后的完整远端脚本能通过语法检查”。发布退出码与线上 health 必须交叉验证，任一异常都不能宣称发布成功。
