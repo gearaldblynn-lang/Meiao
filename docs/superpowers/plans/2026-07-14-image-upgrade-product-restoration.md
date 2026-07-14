@@ -621,7 +621,7 @@ Run:
 
 ```bash
 node --experimental-strip-types --test src/adapters/shellProductRestoreWorkflow.test.mjs
-node --test src/adapters/shellWorkflow.test.mjs src/services/kieAiService.test.mjs
+node --test src/adapters/shellWorkflowLogoReplace.test.mjs src/services/kieAiService.test.mjs
 npx tsc -b
 git diff --check
 ```
