@@ -910,7 +910,7 @@ test('retouch workflow keeps submitted KIE items pending instead of throwing fro
 
   assert.match(workflow, /if \(generation\.status !== 'success' \|\| !generation\.imageUrl\) \{[\s\S]*if \(generation\.taskId\) \{[\s\S]*status: generation\.status === 'generating' \? 'generating' : 'error'[\s\S]*onItemCompleted\?\.\(pendingItem/s);
   assert.match(app, /const itemStatus(?:: GeneratedResult\['status'\])? = item\.status \|\| \(item\.imageUrl \? 'completed' : 'generating'\)/);
-  assert.match(app, /const hasSpecialGenerating = specialWorkflowResults\.some\(\(item\) => item\.status === 'generating'\)/);
+  assert.match(app, /const hasSpecialGenerating = productRestoreAnalysisPending\.isPending\s*\|\| specialWorkflowResults\.some\(\(item\) => item\.status === 'generating'\)/);
   assert.match(app, /if \(hasSpecialGenerating\) \{[\s\S]*pendingSyncProject = completedProject;[\s\S]*\}/);
 });
 
@@ -1005,7 +1005,7 @@ test('everything replace submit creates visible project card before preparing re
   assert.notEqual(uploadIndex, -1);
   assert.ok(placeholderIndex < uploadIndex);
   assert.match(app, /isOneClickSubmit\s*\?\s*`proj-plan-\$\{immediateCreatedAt\}`/, '一键主详即时卡必须用 proj-plan- id,策划分支才能原位接管');
-  assert.match(app, /status: isOneClickSubmit \? 'planning' : 'generating'/);
+  assert.match(app, /status: isOneClickSubmit \|\| isProductRestoreSubmit \? 'planning' : 'generating'/);
   // 一键主详策划分支必须消费即时卡(存在同 id 就原位替换),不许再无条件 prepend 造重复卡
   const oneClickBranch = app.match(/if \(targetModule === AppModuleObj\.ONE_CLICK\) \{([\s\S]*?)const controller = new AbortController\(\);/)?.[1] || '';
   assert.match(oneClickBranch, /const projectId = immediateProject\?\.id \|\| \('proj-plan-' \+ Date\.now\(\)\)/);
@@ -3360,7 +3360,7 @@ test('everything replace logo replacement is integrated without product-replace 
   assert.doesNotMatch(bottomInputBar, /KIE直出/);
   assert.doesNotMatch(bottomInputBar, /activeSubFeature === 'background_replace' \|\| activeSubFeature === 'logo_replace'/);
 
-  assert.match(workflow, /type ShellRetouchMode = 'original' \| 'white_bg' \| 'product_replace' \| 'background_replace' \| 'logo_replace'/);
+  assert.match(workflow, /type ShellRetouchMode = 'original' \| 'white_bg' \| 'product_restore' \| 'product_replace' \| 'background_replace' \| 'logo_replace'/);
   assert.match(workflow, /normalizeLogoReplaceMode/);
   assert.match(workflow, /runLogoReplaceWorkflow/);
   assert.match(workflow, /subFeature: 'logo_replace'/);
@@ -3464,7 +3464,7 @@ test('everything replace background workflow is wired with RTCFE prompt and lock
   assert.match(shellApp, /const isBackgroundReplace = mode === 'background_replace'/);
   assert.match(shellApp, /targetHeight: params\.targetHeight \|\| params\.height \|\| '0'/);
 
-  assert.match(workflow, /type ShellRetouchMode = 'original' \| 'white_bg' \| 'product_replace' \| 'background_replace'/);
+  assert.match(workflow, /type ShellRetouchMode = 'original' \| 'white_bg' \| 'product_restore' \| 'product_replace' \| 'background_replace' \| 'logo_replace'/);
   assert.match(workflow, /runBackgroundReplaceWorkflow/);
   assert.match(backgroundWorkflow, /\{ \.\.\.config, aspectRatio, targetLanguage: 'zh', removeWatermark: true \}/);
   assert.match(workflow, /\{ \.\.\.config, aspectRatio \}/);

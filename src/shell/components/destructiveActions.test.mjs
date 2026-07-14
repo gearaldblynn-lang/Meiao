@@ -244,7 +244,10 @@ test('project deletion collects every related backend job before physical deleti
   const deleteProjectBlock = shellSource.match(/const handleDeleteProject = useCallback\([\s\S]*?\n  \}, \[[^\]]*persistDeletionToSharedState[^\]]*\]\);/)?.[0] || '';
 
   assert.match(shellSource, /import \{ collectShellDeletionJobIds, collectShellResultDeletionJobIds \} from '\.\/utils\/shellDeletionJobs'/);
-  assert.match(deleteProjectBlock, /const jobIds = collectShellDeletionJobIds\(projectId, projects, tasks\)/);
+  assert.match(deleteProjectBlock, /const jobIds = Array\.from\(new Set\(\[/);
+  assert.match(deleteProjectBlock, /\.\.\.collectShellDeletionJobIds\(projectId, projects, tasks\)/);
+  assert.match(deleteProjectBlock, /generationContext\?\.productRestore\?\.analysisJobId/);
+  assert.match(deleteProjectBlock, /productRestoreObservedJobIdsRef\.current\.get\(projectId\)/);
   assert.match(deleteProjectBlock, /startDeletionOperations\(\{/);
   assert.match(deleteProjectBlock, /persistTombstone: \(\) => persistDeletionToSharedState\(\{ projectId, jobIds \}\)/);
   assert.match(deleteProjectBlock, /resolveDeletionOutcome\(\{/);
