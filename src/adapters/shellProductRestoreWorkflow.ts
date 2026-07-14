@@ -745,6 +745,106 @@ export async function persistProductRestoreProjectOrDefer<P extends {
   };
 }
 
+export async function retryPersistedProductRestoreAnalysis<P extends {
+  status: string;
+  completedAt?: number;
+  error?: string;
+  backendJobId?: string;
+  planningTaskId?: string;
+  generationContext?: {
+    params: Record<string, unknown>;
+    productRestore?: ProductRestoreProjectContext;
+  };
+}>(input: {
+  project: P;
+  persist: (project: P) => Promise<boolean>;
+  onTaskRecovered?: (project: P) => void | Promise<void>;
+}) {
+  const context = validateRetryContext(input.project.generationContext?.productRestore);
+  const recoveryProject = {
+    ...input.project,
+    status: 'generating',
+    completedAt: undefined,
+    error: undefined,
+    backendJobId: context.analysisJobId,
+    planningTaskId: context.analysisProviderTaskId || input.project.planningTaskId,
+    generationContext: {
+      ...input.project.generationContext,
+      params: {
+        ...input.project.generationContext?.params,
+        productRestoreAnalysisJobStatus: 'succeeded',
+        productRestoreAnalysisErrorCode: '',
+      },
+      productRestore: context,
+    },
+  } as P;
+  const persistence = await persistProductRestoreProjectOrDefer({
+    project: recoveryProject,
+    phase: 'analysis',
+    persist: input.persist,
+  });
+  if (persistence.persisted) {
+    await input.onTaskRecovered?.(persistence.project);
+  }
+  return persistence;
+}
+
+export function createSerializedProductRestoreItemPersistence<I, P extends {
+  status: string;
+  completedAt?: number;
+  error?: string;
+  generationContext?: {
+    params: Record<string, unknown>;
+    productRestore?: ProductRestoreProjectContext;
+  };
+}>(input: {
+  getInitialProject: () => P;
+  mergeProject: (project: P, item: I) => P;
+  persist: (project: P) => Promise<boolean>;
+  onProjectChanged?: (project: P) => void;
+}) {
+  let desiredProject: P | undefined;
+  let persistenceQueue: Promise<void> = Promise.resolve();
+
+  const sync = (item: I) => {
+    desiredProject = input.mergeProject(
+      desiredProject || input.getInitialProject(),
+      item,
+    );
+    input.onProjectChanged?.(desiredProject);
+
+    const operation = persistenceQueue.then(async () => {
+      const snapshot = desiredProject as P;
+      const persistence = await persistProductRestoreProjectOrDefer({
+        project: snapshot,
+        phase: 'result',
+        persist: input.persist,
+      });
+      const currentDesiredProject = desiredProject as P;
+      const visibleProject = persistence.persisted
+        ? currentDesiredProject
+        : {
+          ...currentDesiredProject,
+          status: persistence.project.status,
+          completedAt: undefined,
+          error: persistence.project.error,
+        } as P;
+      input.onProjectChanged?.(visibleProject);
+      return {
+        ...persistence,
+        project: visibleProject,
+      };
+    });
+    persistenceQueue = operation.then(() => undefined, () => undefined);
+    return operation;
+  };
+
+  return {
+    sync,
+    getDesiredProject: () => desiredProject || input.getInitialProject(),
+  };
+}
+
 export function canManuallyReanalyzeProductRestore(input: {
   module?: string;
   subFeature?: string;

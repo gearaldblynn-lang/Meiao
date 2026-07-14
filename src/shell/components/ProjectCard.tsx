@@ -14,7 +14,7 @@ import ConfirmDialog from './ConfirmDialog';
 import ImageLightbox, { type LightboxMediaItem } from './ImageLightbox';
 import PlanEditor, { type PlanItem } from './PlanEditor';
 import { useToast } from './ToastSystem';
-import ProductRestoreAnalysisPanel from '../modules/Retouch/ProductRestoreAnalysisPanel';
+import ProductRestoreAnalysisPanel, { ProductRestoreResultCreditBadge } from '../modules/Retouch/ProductRestoreAnalysisPanel';
 
 export interface Project {
   id: string;
@@ -674,15 +674,22 @@ const ProjectCard: React.FC<Props> = ({
     </span>
   );
   const renderResultUsageMeta = (result: GeneratedResult) => {
+    const hasProductRestoreCreditLedger = isProductRestoreProject
+      && result.creditsConsumed !== undefined
+      && result.creditsConsumed !== null
+      && Number.isFinite(Number(result.creditsConsumed))
+      && Number(result.creditsConsumed) >= 0;
     const creditsConsumed = isProductRestoreProject
       ? normalizeCreditsConsumed(result.creditsConsumed)
       : result.status === 'completed' ? normalizeCreditsConsumed(result.creditsConsumed) : 0;
-    if (!creditsConsumed && !result.taskId && !(isProductRestoreProject && result.backendJobId)) return null;
+    if (!creditsConsumed && !hasProductRestoreCreditLedger && !result.taskId && !(isProductRestoreProject && result.backendJobId)) return null;
     return (
       <div className="mt-1.5 flex min-w-0 max-w-full flex-col items-start gap-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
-        {creditsConsumed > 0 && (
+        {isProductRestoreProject ? (
+          <ProductRestoreResultCreditBadge creditsConsumed={result.creditsConsumed} />
+        ) : creditsConsumed > 0 && (
           <span className="rounded-full px-2 py-0.5 font-semibold tabular-nums" style={{ background: 'var(--bg-surface)', color: 'var(--accent)' }}>
-            {isProductRestoreProject ? '累计图片消耗' : '本次消耗'} {formatCreditsConsumed(creditsConsumed)} 积分
+            本次消耗 {formatCreditsConsumed(creditsConsumed)} 积分
           </span>
         )}
         {result.taskId && (
