@@ -980,6 +980,52 @@ export interface ProductRestoreNormalizedAnalysis {
   nonProductPreservationRules: string[];
 }
 
+export interface AnalyzeProductRestoreBatchInput {
+  targetUrls: string[];
+  productReferenceUrls: string[];
+  focusIds: ProductRestoreFocusId[];
+  userRequirement: string;
+  apiConfig?: GlobalApiConfig;
+  signal?: AbortSignal;
+  jobMetadata: Record<string, unknown>;
+  onJobCreated?: (
+    jobId: string,
+    providerTaskId?: string,
+  ) => void | Promise<void>;
+}
+
+export interface RecoverProductRestoreAnalysisBatchInput {
+  jobId: string;
+  focusIds: ProductRestoreFocusId[];
+  userRequirement: string;
+  signal?: AbortSignal;
+}
+
+export type ProductRestoreAnalysisRunResult =
+  | {
+      status: 'success';
+      jobId: string;
+      providerTaskId?: string;
+      modelUsed: string;
+      creditsConsumed: number;
+      normalizedAnalysis: ProductRestoreNormalizedAnalysis;
+      sharedRestorationPrompt: string;
+    }
+  | {
+      status: 'generating';
+      jobId: string;
+      providerTaskId?: string;
+      errorCode: 'analysis_result_pending';
+      message: string;
+    }
+  | {
+      status: 'error';
+      errorCode: string;
+      message: string;
+      jobId?: string;
+      providerTaskId?: string;
+    };
+
 export interface ProductRestoreProjectContext {
   version: 1;
   analysisJobId: string;

@@ -1,12 +1,448 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import ts from 'typescript';
+
+import {
+  buildProductRestoreAnalysisPrompt,
+  buildProductRestoreGenerationPrompt,
+  parseProductRestoreAnalysis,
+} from '../modules/Retouch/productRestoreContract.mjs';
 
 const arkServiceSource = readFileSync(new URL('./arkService.ts', import.meta.url), 'utf8');
 const skuSubModuleSource = readFileSync(new URL('../modules/OneClick/SkuSubModule.tsx', import.meta.url), 'utf8');
 const typesSource = readFileSync(new URL('../types.ts', import.meta.url), 'utf8');
 const promptUtilsSource = readFileSync(new URL('../modules/OneClick/generationPromptUtils.ts', import.meta.url), 'utf8');
 const retouchModuleSource = readFileSync(new URL('../modules/Retouch/RetouchModule.tsx', import.meta.url), 'utf8');
+
+const productRestoreAnalysisFixture = {
+  productIdentitySummary: 'Tall amber bottle with a square shoulder and black pump.',
+  invariantFeatures: ['one bottle', 'black pump'],
+  shapeAndStructure: ['square shoulder', 'straight bottle walls'],
+  proportionAndContour: ['tall 2:1 body proportion'],
+  materialAndTexture: ['transparent amber glass'],
+  colorAndGloss: ['warm amber body', 'semi-gloss black pump'],
+  logoLabelAndText: ['centered cream label'],
+  componentsAndCraft: ['short pump neck'],
+  targetSetIssues: ['bottle shoulder is too rounded in several targets'],
+  nonProductPreservationRules: ['keep every background and marketing text pixel unchanged'],
+};
+
+let arkServiceModuleSequence = 0;
+
+const loadArkServiceWithAnalysisFakes = async ({
+  waitJob,
+  waitError,
+  fetchJob,
+  fetchError,
+} = {}) => {
+  const calls = {
+    cancelled: [],
+    created: [],
+    fetched: [],
+    logs: [],
+  };
+  const createdJob = { id: 'analysis-job-1' };
+  const defaultFinalJob = {
+    id: createdJob.id,
+    status: 'succeeded',
+    providerTaskId: 'provider-task-1',
+    result: {
+      content: JSON.stringify(productRestoreAnalysisFixture),
+      creditsConsumed: 7,
+      modelUsed: 'fallback-model',
+    },
+  };
+  const resolvedWaitJob = waitJob || defaultFinalJob;
+  const resolvedFetchJob = fetchJob || resolvedWaitJob;
+
+  globalThis.__arkServiceTestDeps = {
+    OneClickSubMode: {
+      FIRST_IMAGE: 'first_image',
+      MAIN_IMAGE: 'main_image',
+      DETAIL_PAGE: 'detail_page',
+      SKU: 'sku',
+    },
+    buildProductRestoreAnalysisPrompt,
+    buildProductRestoreGenerationPrompt,
+    buildRetouchAnalysisFallback: () => 'retouch fallback',
+    cancelInternalJob: async (jobId) => {
+      calls.cancelled.push(jobId);
+      return { ok: true };
+    },
+    createInternalJob: async (payload) => {
+      calls.created.push(payload);
+      return { job: createdJob };
+    },
+    fetchInternalJob: async (jobId) => {
+      calls.fetched.push(jobId);
+      if (fetchError) throw fetchError;
+      return { job: resolvedFetchJob };
+    },
+    fetchSystemConfig: async () => ({
+      config: {
+        agentModels: {
+          chat: [
+            { id: 'primary-model' },
+            { id: 'fallback-model' },
+          ],
+        },
+        publicBaseUrl: 'https://assets.example.test',
+        systemSettings: { effectiveAnalysisModel: 'primary-model' },
+      },
+    }),
+    getActiveModuleContext: () => 'retouch',
+    getSupportedAspectRatiosForModel: () => [],
+    normalizeExactAspectRatio: (value) => value,
+    parseProductRestoreAnalysis,
+    resolveNearestSupportedAspectRatio: (value) => value,
+    resolvePublicAssetUrl: (value) => String(value || '').trim(),
+    safeCreateInternalLog: async (entry) => {
+      calls.logs.push(entry);
+      return null;
+    },
+    shouldUseRetouchAnalysisFallback: () => false,
+    waitForInternalJob: async (_jobId, _signal, _intervalMs, _maxWaitMs, onJobUpdate) => {
+      if (waitError) throw waitError;
+      onJobUpdate?.(resolvedWaitJob);
+      return resolvedWaitJob;
+    },
+  };
+
+  const sourceWithoutImports = arkServiceSource.replace(/^import\s+[^;]+;\s*$/gm, '');
+  const dependencyPrelude = `
+const {
+  OneClickSubMode,
+  buildProductRestoreAnalysisPrompt,
+  buildProductRestoreGenerationPrompt,
+  buildRetouchAnalysisFallback,
+  cancelInternalJob,
+  createInternalJob,
+  fetchInternalJob,
+  fetchSystemConfig,
+  getActiveModuleContext,
+  getSupportedAspectRatiosForModel,
+  normalizeExactAspectRatio,
+  parseProductRestoreAnalysis,
+  resolveNearestSupportedAspectRatio,
+  resolvePublicAssetUrl,
+  safeCreateInternalLog,
+  shouldUseRetouchAnalysisFallback,
+  waitForInternalJob,
+} = globalThis.__arkServiceTestDeps;
+`;
+  const transpiledSource = ts.transpileModule(sourceWithoutImports, {
+    compilerOptions: {
+      module: ts.ModuleKind.ESNext,
+      target: ts.ScriptTarget.ES2022,
+    },
+  }).outputText;
+  const runtimeSource = `${dependencyPrelude}\n${transpiledSource}`;
+  const encodedSource = Buffer.from(runtimeSource).toString('base64');
+  const module = await import(
+    `data:text/javascript;base64,${encodedSource}#ark-service-test-${++arkServiceModuleSequence}`
+  );
+  delete globalThis.__arkServiceTestDeps;
+  return { calls, module };
+};
+
+test('product restoration submits one ordered multimodal analysis job and returns durable success identity', async () => {
+  const { calls, module } = await loadArkServiceWithAnalysisFakes();
+  const jobEvents = [];
+  const input = {
+    targetUrls: ['https://img.test/target-a.png', 'https://img.test/target-b.png'],
+    productReferenceUrls: ['https://img.test/reference-a.png', 'https://img.test/reference-b.png'],
+    focusIds: ['shape_structure', 'logo_label_text'],
+    userRequirement: 'Keep the cap translucency.',
+    jobMetadata: { shellProjectId: 'project-1' },
+    onJobCreated: async (jobId, providerTaskId) => {
+      jobEvents.push([jobId, providerTaskId]);
+    },
+  };
+
+  const result = await module.analyzeProductRestoreBatch(input);
+
+  assert.equal(calls.created.length, 1);
+  const created = calls.created[0];
+  assert.equal(created.payload.taskPurpose, 'product_restore_analysis');
+  assert.deepEqual(created.payload.fallbackModels, ['fallback-model']);
+  const content = created.payload.messages[0].content;
+  assert.deepEqual(
+    content.slice(0, 4).map((item) => item.image_url?.url),
+    [
+      'https://img.test/target-a.png',
+      'https://img.test/target-b.png',
+      'https://img.test/reference-a.png',
+      'https://img.test/reference-b.png',
+    ],
+  );
+  assert.deepEqual(content.map((item) => item.type), [
+    'image_url',
+    'image_url',
+    'image_url',
+    'image_url',
+    'text',
+  ]);
+  assert.equal(content[4].text, buildProductRestoreAnalysisPrompt(input));
+  assert.deepEqual(jobEvents, [
+    ['analysis-job-1', undefined],
+    ['analysis-job-1', 'provider-task-1'],
+  ]);
+  assert.deepEqual(result, {
+    status: 'success',
+    jobId: 'analysis-job-1',
+    providerTaskId: 'provider-task-1',
+    modelUsed: 'fallback-model',
+    creditsConsumed: 7,
+    normalizedAnalysis: productRestoreAnalysisFixture,
+    sharedRestorationPrompt: buildProductRestoreGenerationPrompt({
+      normalizedAnalysis: productRestoreAnalysisFixture,
+      focusIds: input.focusIds,
+      userRequirement: input.userRequirement,
+    }),
+  });
+});
+
+test('product restoration invalid structured output fails after one application-level submission', async () => {
+  const finalJob = {
+    id: 'analysis-job-1',
+    status: 'succeeded',
+    providerTaskId: 'provider-task-invalid',
+    result: {
+      content: '{}',
+      creditsConsumed: 3,
+      modelUsed: 'primary-model',
+    },
+  };
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    waitJob: finalJob,
+    fetchJob: finalJob,
+  });
+
+  const result = await module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+  });
+
+  assert.equal(calls.created.length, 1);
+  assert.deepEqual(result, {
+    status: 'error',
+    errorCode: 'product_restore_analysis_invalid',
+    message: '分析模型未返回可用的产品还原结构，请重试分析。',
+    jobId: 'analysis-job-1',
+    providerTaskId: 'provider-task-invalid',
+  });
+  assert.equal(Object.hasOwn(result, 'sharedRestorationPrompt'), false);
+});
+
+test('product restoration keeps polling gaps generating with the original job identity', async () => {
+  for (const status of ['queued', 'running', 'retry_waiting']) {
+    const pollingError = Object.assign(new Error('polling gap'), { code: 'job_timeout' });
+    const pendingJob = {
+      id: 'analysis-job-1',
+      status,
+      providerTaskId: `provider-${status}`,
+      result: null,
+    };
+    const { calls, module } = await loadArkServiceWithAnalysisFakes({
+      waitError: pollingError,
+      fetchJob: pendingJob,
+    });
+
+    const result = await module.analyzeProductRestoreBatch({
+      targetUrls: ['https://img.test/target.png'],
+      productReferenceUrls: ['https://img.test/reference.png'],
+      focusIds: ['shape_structure'],
+      userRequirement: '',
+      jobMetadata: {},
+    });
+
+    assert.equal(calls.created.length, 1);
+    assert.deepEqual(result, {
+      status: 'generating',
+      jobId: 'analysis-job-1',
+      providerTaskId: `provider-${status}`,
+      errorCode: 'analysis_result_pending',
+      message: '产品还原分析已提交，结果仍在生成中。',
+    });
+  }
+
+  const recoveryGap = Object.assign(new Error('任务暂时不可见'), { code: 'task_not_found' });
+  const gapHarness = await loadArkServiceWithAnalysisFakes({
+    waitError: recoveryGap,
+    fetchError: recoveryGap,
+  });
+  const gapResult = await gapHarness.module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+  });
+
+  assert.equal(gapHarness.calls.created.length, 1);
+  assert.deepEqual(gapResult, {
+    status: 'generating',
+    jobId: 'analysis-job-1',
+    errorCode: 'analysis_result_pending',
+    message: '产品还原分析已提交，结果仍在生成中。',
+  });
+});
+
+test('product restoration preserves provider failure and cancellation without a fallback prompt', async () => {
+  const failedJob = {
+    id: 'analysis-job-1',
+    status: 'failed',
+    providerTaskId: 'provider-failed',
+    errorCode: 'provider_bad_response',
+    errorMessage: 'provider rejected analysis',
+    result: null,
+  };
+  const failedHarness = await loadArkServiceWithAnalysisFakes({
+    waitJob: failedJob,
+    fetchJob: failedJob,
+  });
+  const failedResult = await failedHarness.module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+  });
+
+  assert.equal(failedHarness.calls.created.length, 1);
+  assert.deepEqual(failedResult, {
+    status: 'error',
+    errorCode: 'provider_bad_response',
+    message: 'provider rejected analysis',
+    jobId: 'analysis-job-1',
+    providerTaskId: 'provider-failed',
+  });
+  assert.equal(Object.hasOwn(failedResult, 'sharedRestorationPrompt'), false);
+
+  const cancelledHarness = await loadArkServiceWithAnalysisFakes({
+    waitError: new Error('INTERRUPTED'),
+  });
+  const cancelledResult = await cancelledHarness.module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+  });
+
+  assert.deepEqual(cancelledHarness.calls.cancelled, ['analysis-job-1']);
+  assert.deepEqual(cancelledResult, {
+    status: 'error',
+    errorCode: 'interrupted',
+    message: 'INTERRUPTED',
+    jobId: 'analysis-job-1',
+  });
+  assert.equal(Object.hasOwn(cancelledResult, 'sharedRestorationPrompt'), false);
+});
+
+test('product restoration recovery fetches the supplied job and never creates a replacement', async () => {
+  const successHarness = await loadArkServiceWithAnalysisFakes({
+    fetchJob: {
+      id: 'existing-analysis-job',
+      status: 'succeeded',
+      providerTaskId: 'existing-provider-task',
+      result: {
+        content: JSON.stringify(productRestoreAnalysisFixture),
+        creditsConsumed: 9,
+        modelUsed: 'fallback-model',
+      },
+    },
+  });
+  const success = await successHarness.module.recoverProductRestoreAnalysisBatch({
+    jobId: 'existing-analysis-job',
+    focusIds: ['material_texture'],
+    userRequirement: 'Keep the original background.',
+  });
+
+  assert.deepEqual(successHarness.calls.fetched, ['existing-analysis-job']);
+  assert.equal(successHarness.calls.created.length, 0);
+  assert.equal(success.status, 'success');
+  assert.equal(success.jobId, 'existing-analysis-job');
+  assert.equal(success.providerTaskId, 'existing-provider-task');
+  assert.equal(success.modelUsed, 'fallback-model');
+  assert.equal(success.creditsConsumed, 9);
+  assert.deepEqual(success.normalizedAnalysis, productRestoreAnalysisFixture);
+
+  const pendingHarness = await loadArkServiceWithAnalysisFakes({
+    fetchJob: {
+      id: 'existing-analysis-job',
+      status: 'retry_waiting',
+      providerTaskId: 'existing-provider-task',
+      result: null,
+    },
+  });
+  const pending = await pendingHarness.module.recoverProductRestoreAnalysisBatch({
+    jobId: 'existing-analysis-job',
+    focusIds: ['material_texture'],
+    userRequirement: '',
+  });
+  assert.equal(pendingHarness.calls.created.length, 0);
+  assert.deepEqual(pending, {
+    status: 'generating',
+    jobId: 'existing-analysis-job',
+    providerTaskId: 'existing-provider-task',
+    errorCode: 'analysis_result_pending',
+    message: '产品还原分析已提交，结果仍在生成中。',
+  });
+
+  const failedHarness = await loadArkServiceWithAnalysisFakes({
+    fetchJob: {
+      id: 'existing-analysis-job',
+      status: 'failed',
+      providerTaskId: 'existing-provider-task',
+      errorCode: 'provider_refusal',
+      errorMessage: 'analysis refused',
+      result: null,
+    },
+  });
+  const failed = await failedHarness.module.recoverProductRestoreAnalysisBatch({
+    jobId: 'existing-analysis-job',
+    focusIds: ['material_texture'],
+    userRequirement: '',
+  });
+  assert.equal(failedHarness.calls.created.length, 0);
+  assert.deepEqual(failed, {
+    status: 'error',
+    errorCode: 'provider_refusal',
+    message: 'analysis refused',
+    jobId: 'existing-analysis-job',
+    providerTaskId: 'existing-provider-task',
+  });
+});
+
+test('product restoration keeps semantic retry default-on for existing callers and disables it only for its batch', () => {
+  const detailedBlock = arkServiceSource.match(
+    /const requestAnalysisResponseDetailed = async[\s\S]*?const requestAnalysisResponse = async/,
+  )?.[0] || '';
+  const productRestoreBlock = arkServiceSource.match(
+    /export const analyzeProductRestoreBatch = async[\s\S]*?export const recoverProductRestoreAnalysisBatch = async/,
+  )?.[0] || '';
+  const recoveryBlock = arkServiceSource.match(
+    /export const recoverProductRestoreAnalysisBatch = async[\s\S]*?export const analyzeTranslationCopyForGeneration = async/,
+  )?.[0] || '';
+
+  assert.match(detailedBlock, /allowSemanticRetry\s*=\s*true/);
+  assert.match(detailedBlock, /while \(allowSemanticRetry && isAnalysisContentUnusable\(response\.content\)\)/);
+  assert.match(productRestoreBlock, /requestAnalysisResponseDetailed\([\s\S]*false[\s\S]*\)/);
+  assert.doesNotMatch(recoveryBlock, /createInternalJob\(/);
+  assert.match(
+    typesSource,
+    /export interface AnalyzeProductRestoreBatchInput[\s\S]*targetUrls: string\[\][\s\S]*productReferenceUrls: string\[\][\s\S]*focusIds: ProductRestoreFocusId\[\][\s\S]*jobMetadata: Record<string, unknown>/,
+  );
+  assert.match(
+    typesSource,
+    /export type ProductRestoreAnalysisRunResult[\s\S]*status: 'success'[\s\S]*status: 'generating'[\s\S]*status: 'error'/,
+  );
+});
 
 test('analysis service no longer routes planning through ark or doubao', () => {
   assert.doesNotMatch(
