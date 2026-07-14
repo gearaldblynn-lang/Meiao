@@ -735,6 +735,13 @@ const getUploadAcceptForTarget = (target: string) => {
   return 'image/*';
 };
 
+const SEEDANCE_MEDIA_LIMIT_HINTS: Partial<Record<MaterialType, string>> = {
+  product: '图片格式：JPEG、PNG、WEBP、BMP、TIFF、GIF。\n单张小于 30 MB；宽高 300–6000 px；宽高比 0.4–2.5；首尾帧与参考图合计最多 9 张。',
+  scene: '图片格式：JPEG、PNG、WEBP、BMP、TIFF、GIF。\n单张小于 30 MB；宽高 300–6000 px；宽高比 0.4–2.5；首尾帧与参考图合计最多 9 张。',
+  referenceVideo: '视频格式：MP4、MOV。\n单个 2–15 秒，最多 3 个，总时长不超过 15 秒；480p/720p；宽高比 0.4–2.5；宽高 300–6000 px；总像素 409600–927408；单个不超过 50 MB；24–60 FPS。上传后建议统一裁剪转码。',
+  audio: '音频格式：WAV、MP3。\n单个 2–15 秒，最多 3 个，总时长不超过 15 秒；单个不超过 15 MB。上传后建议统一裁剪转码。',
+};
+
 const getDreaminaModeGuidance = (params: Record<string, string>) => {
   const mode = normalizeDreaminaUiMode(params.dreaminaMode);
   if (mode === 'multiframe2video') {
@@ -3034,6 +3041,7 @@ const BottomInputBar: React.FC<Props> = ({
                         if (type === 'styleRef') openLogoReplaceRegionEditor();
                       }}
                       materialTypes={contextMaterialTypes}
+                      materialHints={module === AppModuleObj.VIDEO ? SEEDANCE_MEDIA_LIMIT_HINTS : undefined}
                       materialLabels={
                         isProductRestore
                           ? {

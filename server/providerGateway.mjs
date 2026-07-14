@@ -50,6 +50,7 @@ import {
   isProviderErrorText,
   providerErrorCodeFromText,
 } from './providerErrorText.mjs';
+import { assertSeedanceReferenceMediaContract } from './seedanceReferenceMediaContract.mjs';
 
 const KIE_CREATE_TASK_URL = 'https://api.kie.ai/api/v1/jobs/createTask';
 const KIE_RECORD_INFO_URL = 'https://api.kie.ai/api/v1/jobs/recordInfo';
@@ -2531,6 +2532,14 @@ const runKieSeedanceVideoJobAttempt = async (payload, env, signal, options = {})
   const rawVideoUrls = normalizeArray(payload.videoUrls || payload.videos || payload.videoUrl || payload.video);
   const rawAudioUrls = normalizeArray(payload.audioUrls || payload.audios || payload.audioUrl || payload.audio);
   const duration = normalizeSeedanceDuration(payload.duration);
+  assertSeedanceReferenceMediaContract({
+    mode,
+    imageUrls: rawImageUrls,
+    videoUrls: rawVideoUrls,
+    audioUrls: rawAudioUrls,
+    videoDurations: payload.referenceVideoDurations || payload.videoDurations,
+    audioDurations: payload.referenceAudioDurations || payload.audioDurations,
+  });
   await assertSeedanceReferenceVideoDuration(rawVideoUrls, signal);
   allowConcurrentAbortListeners(signal, rawImageUrls.length + rawVideoUrls.length + rawAudioUrls.length);
   const mediaResolutionConcurrency = getKieVideoMediaResolutionConcurrency(env);
@@ -2572,9 +2581,9 @@ const runKieSeedanceVideoJobAttempt = async (payload, env, signal, options = {})
     input.first_frame_url = imageUrls[0];
     input.last_frame_url = imageUrls[1];
   } else {
-    if (imageUrls.length > 0) input.reference_image_urls = imageUrls.slice(0, 9);
-    if (videoUrls.length > 0) input.reference_video_urls = videoUrls.slice(0, 3);
-    if (audioUrls.length > 0) input.reference_audio_urls = audioUrls.slice(0, 3);
+    if (imageUrls.length > 0) input.reference_image_urls = imageUrls;
+    if (videoUrls.length > 0) input.reference_video_urls = videoUrls;
+    if (audioUrls.length > 0) input.reference_audio_urls = audioUrls;
   }
 
   const response = await fetchKieWithTimeout(KIE_CREATE_TASK_URL, {

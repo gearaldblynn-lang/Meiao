@@ -1,4 +1,4 @@
-import { dirname, join } from 'node:path';
+import { basename, dirname, extname, join } from 'node:path';
 
 import {
   createMediaTranscodeError,
@@ -22,7 +22,7 @@ function publicProbeFields(probe = {}) {
 
 function publicSession(session) {
   return {
-    id: session.id,
+    sessionId: session.id,
     kind: session.kind,
     fileName: session.fileName,
     state: session.state,
@@ -101,12 +101,14 @@ export function createMediaTranscodeApi({ store, service, persistAsset, log = ()
           hasAudio: session.probe?.hasAudio,
         });
         validateTranscodedOutput(session.kind, output.metadata);
+        const sourceBaseName = basename(session.fileName, extname(session.fileName)).trim() || 'converted';
+        const canonicalFileName = `${sourceBaseName}.${session.kind === 'video' ? 'mp4' : 'mp3'}`;
         const persisted = await persistAsset({
           userId,
           module,
           assetType: 'source',
           fileBuffer: output.fileBuffer,
-          fileName: output.fileName,
+          fileName: canonicalFileName,
           mimeType: output.mimeType,
           metadata: output.metadata,
         });
@@ -121,7 +123,7 @@ export function createMediaTranscodeApi({ store, service, persistAsset, log = ()
         return {
           ...persisted,
           kind: session.kind,
-          fileName: output.fileName,
+          fileName: canonicalFileName,
           mimeType: output.mimeType,
           ...publicProbeFields(output.metadata),
         };

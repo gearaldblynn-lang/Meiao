@@ -6,6 +6,8 @@ import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
 import LoginScreen from './shell/components/Internal/LoginScreen';
+import MediaTrimTranscodeDialog, { type MediaTranscodeQueueItem } from './shell/components/MediaTrimTranscodeDialog';
+import type { MediaTranscodeResult } from './services/mediaTranscodeClient';
 import {
   cancelInternalJob,
   clearCurrentUserContext,
@@ -108,6 +110,7 @@ import {
   getProductRestoreUploadRejection,
   moveProductRestoreScopedMaterial,
 } from './shell/modules/Retouch/productRestoreUi.mjs';
+import { getMediaBudget, validateMediaQueueSelection } from './utils/mediaTrimRules.mjs';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -242,6 +245,10 @@ export interface Material {
   giftIndex?: number;
   originalWidth?: number;
   originalHeight?: number;
+  mimeType?: string;
+  durationSeconds?: number;
+  frameRate?: number;
+  mediaTranscoded?: boolean;
   logoPlacement?: Record<string, unknown>;
   cornerBadgeRegion?: Record<string, unknown>;
   logoReplaceRegion?: Record<string, unknown>;
@@ -2322,6 +2329,18 @@ const AppContent: React.FC<{
   const materialsRef = useRef<Record<string, Material[]>>(materials);
   const materialUploadCoordinatorRef = useRef(createMaterialUploadCoordinator());
   const [oneClickReferencePresets, setOneClickReferencePresets] = useState<OneClickReferencePreset[]>([]);
+  const [mediaTranscodeQueue, setMediaTranscodeQueue] = useState<MediaTranscodeQueueItem[]>([]);
+  const mediaTranscodeQueueRef = useRef<MediaTranscodeQueueItem[]>([]);
+
+  const updateMediaTranscodeQueue = useCallback((
+    updater: (current: MediaTranscodeQueueItem[]) => MediaTranscodeQueueItem[],
+  ) => {
+    setMediaTranscodeQueue((current) => {
+      const next = updater(current);
+      mediaTranscodeQueueRef.current = next;
+      return next;
+    });
+  }, []);
 
   const applyUploadedMaterialUrl = useCallback((type: string, id: string, remoteUrl: string) => {
     setMaterials((prev) => {
@@ -3117,6 +3136,7 @@ const AppContent: React.FC<{
     setVideoMemoryState(null);
     setInputStateByScope(draftSnapshot.inputStateByScope || {});
     setMaterials(draftSnapshot.materials as Record<string, Material[]> || {});
+    updateMediaTranscodeQueue(() => []);
     restoreLocalMaterialPreviews(draftSnapshot.materials as Record<string, Material[]> || {});
     const nextModule = scopedUiState.activeModule || AppModuleObj.ONE_CLICK;
     setActiveModule(nextModule);
@@ -3127,7 +3147,7 @@ const AppContent: React.FC<{
     if (scopedUiState.pageMode) setPageMode(scopedUiState.pageMode);
     void hydrateShellData();
     void hydrateShellJobs();
-  }, [hydrateShellData, hydrateShellJobs, restoreLocalMaterialPreviews]);
+  }, [hydrateShellData, hydrateShellJobs, restoreLocalMaterialPreviews, updateMediaTranscodeQueue]);
 
   useEffect(() => {
     if (previousShellLocalScopeUserIdRef.current === shellLocalScopeUserId) return;
@@ -3714,6 +3734,33 @@ const AppContent: React.FC<{
       }
     }
     let selectedFiles = Array.from(files);
+    if (activeModule === AppModuleObj.VIDEO && (type === 'referenceVideo' || type === 'audio')) {
+      const existing = (materialsRef.current[type] || [])
+        .filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature));
+      const queued = mediaTranscodeQueueRef.current.filter((item) => (
+        item.type === type && item.subFeature === activeSubFeature
+      ));
+      try {
+        validateMediaQueueSelection({
+          existing: [...existing, ...queued.map(() => ({ durationSeconds: 0 }))],
+          incomingCount: selectedFiles.length,
+        });
+      } catch (error) {
+        addToast(error instanceof Error ? error.message : '参考素材数量或总时长已达到上限', 'warning');
+        return;
+      }
+      const now = Date.now();
+      const queueItems: MediaTranscodeQueueItem[] = selectedFiles.map((file, index) => ({
+        id: `media-transcode-${now}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        type: type as 'referenceVideo' | 'audio',
+        kind: type === 'referenceVideo' ? 'video' : 'audio',
+        file,
+        subFeature: activeSubFeature,
+      }));
+      updateMediaTranscodeQueue((current) => [...current, ...queueItems]);
+      addToast(`已加入 ${queueItems.length} 个${type === 'referenceVideo' ? '视频' : '音频'}，请依次裁剪并转换`, 'info');
+      return;
+    }
     if (
       activeModule === AppModuleObj.ONE_CLICK
       && activeSubFeature === 'main_image'
@@ -3814,7 +3861,7 @@ const AppContent: React.FC<{
       })();
     });
     addToast(`已添加 ${selectedFiles.length} 个${type === 'restoreTarget' ? '待还原套图' : type === 'productReference' ? '产品参考图' : type === 'product' ? '产品素材' : type === 'gift' ? '赠品素材' : type === 'logo' ? '品牌Logo' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'main_image' && currentParams.planningLogic === '套图复刻' ? '参考套图' : type === 'styleRef' && activeModule === AppModuleObj.ONE_CLICK && activeSubFeature === 'detail_page' && currentParams.detailGenerationMode === '套图复刻' ? '详情页套图参考' : '参考素材'}`, 'success');
-  }, [activeModule, activeScopeKey, activeSubFeature, addToast, applyUploadedMaterialUrl, currentParams.detailGenerationMode, currentParams.planningLogic, materials.gift, materials.styleRef, uploadMaterialToManagedUrl]);
+  }, [activeModule, activeScopeKey, activeSubFeature, addToast, applyUploadedMaterialUrl, currentParams.detailGenerationMode, currentParams.planningLogic, materials.gift, materials.styleRef, updateMediaTranscodeQueue, uploadMaterialToManagedUrl]);
 
   const handlePresetMaterialsApply = useCallback((items: Array<{ type: string; url: string; remoteUrl?: string; fileName: string }>) => {
     if (items.length === 0) return;
@@ -3930,6 +3977,54 @@ const AppContent: React.FC<{
     () => filterMaterialsForScope(materials, activeModule, activeSubFeature),
     [materials, activeModule, activeSubFeature],
   );
+  const mediaTranscodeHead = mediaTranscodeQueue[0] || null;
+  const mediaTranscodeRemainingSeconds = useMemo(() => {
+    if (!mediaTranscodeHead) return 15;
+    const existing = (materials[mediaTranscodeHead.type] || []).filter((item) => (
+      isMaterialInActiveScope(item, AppModuleObj.VIDEO, mediaTranscodeHead.subFeature)
+    ));
+    const laterSameTypeCount = mediaTranscodeQueue
+      .slice(1)
+      .filter((item) => item.type === mediaTranscodeHead.type && item.subFeature === mediaTranscodeHead.subFeature)
+      .length;
+    return Math.max(0, getMediaBudget(existing).remainingSeconds - laterSameTypeCount * 2);
+  }, [materials, mediaTranscodeHead, mediaTranscodeQueue]);
+
+  const handleMediaTranscodeComplete = useCallback((result: MediaTranscodeResult) => {
+    const queueItem = mediaTranscodeQueueRef.current[0];
+    if (!queueItem) return;
+    const material: Material = {
+      id: queueItem.id,
+      type: queueItem.type,
+      url: result.fileUrl,
+      remoteUrl: result.fileUrl,
+      fileName: result.fileName,
+      mimeType: result.mimeType,
+      durationSeconds: result.durationSeconds,
+      frameRate: result.frameRate || undefined,
+      originalWidth: result.width || undefined,
+      originalHeight: result.height || undefined,
+      mediaTranscoded: true,
+      subFeature: queueItem.subFeature,
+    };
+    setMaterials((current) => {
+      const next = {
+        ...current,
+        [queueItem.type]: [...(current[queueItem.type] || []), material],
+      };
+      materialsRef.current = next;
+      return next;
+    });
+    updateMediaTranscodeQueue((current) => current.filter((item) => item.id !== queueItem.id));
+    addToast(`${queueItem.kind === 'video' ? '视频' : '音频'}已裁剪并转换为模型支持格式`, 'success');
+  }, [addToast, updateMediaTranscodeQueue]);
+
+  const handleMediaTranscodeCancel = useCallback(() => {
+    const queueItem = mediaTranscodeQueueRef.current[0];
+    if (!queueItem) return;
+    updateMediaTranscodeQueue((current) => current.filter((item) => item.id !== queueItem.id));
+    addToast('已取消这个素材，未创建任务或上传原文件', 'info');
+  }, [addToast, updateMediaTranscodeQueue]);
 
   const recordStoryboardJobCreated = useCallback((identity: {
     projectId: string;
@@ -9397,6 +9492,17 @@ const AppContent: React.FC<{
           onClose={handleCloseAnnouncementPanel}
           onDismissToday={handleDismissAnnouncementToday}
         />
+        {mediaTranscodeHead ? (
+          <MediaTrimTranscodeDialog
+            key={mediaTranscodeHead.id}
+            item={mediaTranscodeHead}
+            remainingSeconds={mediaTranscodeRemainingSeconds}
+            queuePosition={1}
+            queueLength={mediaTranscodeQueue.length}
+            onComplete={handleMediaTranscodeComplete}
+            onCancel={handleMediaTranscodeCancel}
+          />
+        ) : null}
       </div>
     </ThemeContext.Provider>
   );
