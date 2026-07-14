@@ -1043,11 +1043,20 @@ export interface ProductRestoreProjectContext {
   createdAt: number;
 }
 
+export interface ProductRestoreCancellationMarker {
+  version: 1;
+  status: 'cancelled';
+  reason: 'user_requested';
+  cancelledAt: number;
+  jobIds: string[];
+}
+
 export interface OneClickGenerationContext {
   prompt: string;
   params: Record<string, string>;
   materials: Record<string, OneClickMaterialSnapshot[]>;
   productRestore?: ProductRestoreProjectContext;
+  productRestoreCancellation?: ProductRestoreCancellationMarker;
 }
 
 export interface OneClickReferencePreset {

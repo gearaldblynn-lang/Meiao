@@ -1,4 +1,9 @@
-import type { AppModule, ProductRestoreProjectContext, VeoProjectState } from '../types.ts';
+import type {
+  AppModule,
+  ProductRestoreCancellationMarker,
+  ProductRestoreProjectContext,
+  VeoProjectState,
+} from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
 import { isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 import {
@@ -7,6 +12,11 @@ import {
   mergeArrayByStableKeys,
 } from '../utils/taskResultReconcile.mjs';
 import { SHELL_MODULE_LABELS } from './shellDataAdapter.ts';
+import {
+  cloneProductRestoreCancellationMarker,
+  hasDurableProductRestoreCancellation,
+  mergeProductRestoreGenerationContext,
+} from './shellProductRestoreCancellation.mjs';
 
 const INTERNAL_BACKEND_JOB_ID_PATTERN = /^[a-f0-9]{24}$/i;
 
@@ -99,6 +109,7 @@ type ShellProject = {
       logoReplaceRegions?: Array<Record<string, unknown>>;
     }>>;
     productRestore?: ProductRestoreProjectContext;
+    productRestoreCancellation?: ProductRestoreCancellationMarker;
   };
   sourceType?: 'persisted' | 'job';
   backendJobId?: string;
@@ -150,12 +161,8 @@ const TRANSLATION_BRANCH_KEY: Record<string, 'main' | 'detail' | 'removeText'> =
   removeText: 'removeText',
 };
 
-const cloneShellProject = (project: ShellProject): ShellProject => ({
-  ...project,
-  sourceType: 'persisted',
-  results: Array.isArray(project.results) ? project.results.map((result) => ({ ...result })) : [],
-  plans: Array.isArray(project.plans) ? project.plans.map((plan) => ({ ...plan })) : undefined,
-  generationContext: project.generationContext ? {
+const cloneShellProject = (project: ShellProject): ShellProject => {
+  const generationContext = project.generationContext ? {
     ...project.generationContext,
     params: { ...(project.generationContext.params || {}) },
     materials: Object.fromEntries(
@@ -164,8 +171,23 @@ const cloneShellProject = (project: ShellProject): ShellProject => ({
         (list || []).map((item) => ({ ...item })),
       ]),
     ),
-  } : undefined,
-});
+  } : undefined;
+  if (
+    generationContext
+    && Object.prototype.hasOwnProperty.call(project.generationContext, 'productRestoreCancellation')
+  ) {
+    generationContext.productRestoreCancellation = cloneProductRestoreCancellationMarker(
+      project.generationContext?.productRestoreCancellation,
+    );
+  }
+  return {
+    ...project,
+    sourceType: 'persisted',
+    results: Array.isArray(project.results) ? project.results.map((result) => ({ ...result })) : [],
+    plans: Array.isArray(project.plans) ? project.plans.map((plan) => ({ ...plan })) : undefined,
+    generationContext,
+  };
+};
 
 const compactKey = (value: unknown) => String(value || '').trim();
 
@@ -353,19 +375,26 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
     ...productRestoreProject,
     taskCount,
   }, results);
-  const status = hasMissingProductRestoreTarget
-    ? 'generating'
-    : hasCompletedMediaItem && !hasGenerating && !hasError
-      ? 'completed'
-      : completedCount >= taskCount
+  const generationContext = mergeProductRestoreGenerationContext(
+    baseProject.generationContext,
+    incomingProject.generationContext,
+  );
+  const durablyCancelled = hasDurableProductRestoreCancellation({ generationContext });
+  const status = durablyCancelled
+    ? 'error'
+    : hasMissingProductRestoreTarget
+      ? 'generating'
+      : hasCompletedMediaItem && !hasGenerating && !hasError
         ? 'completed'
-        : hasGenerating
-          ? 'generating'
-          : hasError
-            ? 'error'
-            : isOneClickPlanOnly
-              ? 'planning'
-              : incomingProject.status || baseProject.status;
+        : completedCount >= taskCount
+          ? 'completed'
+          : hasGenerating
+            ? 'generating'
+            : hasError
+              ? 'error'
+              : isOneClickPlanOnly
+                ? 'planning'
+                : incomingProject.status || baseProject.status;
   const merged = {
     ...baseProject,
     ...incomingProject,
@@ -376,8 +405,9 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
     taskCount,
     completedCount,
     status,
+    generationContext,
   };
-  if (status === 'completed' && completedCount > 0) {
+  if (!durablyCancelled && status === 'completed' && completedCount > 0) {
     delete merged.error;
     delete merged.message;
   }
