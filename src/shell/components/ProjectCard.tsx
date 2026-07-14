@@ -6,10 +6,15 @@ import type { ImageDownloadTransform } from '../../utils/imageUtils';
 import { copyTextToClipboard } from '../../utils/clipboard.mjs';
 import { isInvalidOneClickPlanLike } from '../../utils/oneClickPlanValidation.ts';
 import { formatMonthDay } from '../../utils/timeFormat.ts';
+import {
+  canManuallyReanalyzeProductRestore,
+  PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID,
+} from '../../adapters/shellProductRestoreWorkflow';
 import ConfirmDialog from './ConfirmDialog';
 import ImageLightbox, { type LightboxMediaItem } from './ImageLightbox';
 import PlanEditor, { type PlanItem } from './PlanEditor';
 import { useToast } from './ToastSystem';
+import ProductRestoreAnalysisPanel from '../modules/Retouch/ProductRestoreAnalysisPanel';
 
 export interface Project {
   id: string;
@@ -71,6 +76,7 @@ const subFeatureNames: Record<string, string> = {
   remove_text: '去文案',
   original: '原图精修',
   white_bg: '白底精修',
+  product_restore: '产品还原',
   product_replace: '产品替换',
   background_replace: '背景替换',
   enhance: '智能增强',
@@ -521,6 +527,7 @@ const ProjectCard: React.FC<Props> = ({
   const isEverythingReplaceProductEditProject = project.module === 'everything_replace' && project.subFeature === 'product_replace';
   const isEverythingReplaceBackgroundEditProject = project.module === 'everything_replace' && project.subFeature === 'background_replace';
   const isImageCropProject = project.module === 'image_crop';
+  const isProductRestoreProject = project.module === 'retouch' && project.subFeature === 'product_restore';
   const usesMinimalRoleEditPrompt = isOneClickProject || isEverythingReplaceProductEditProject || isEverythingReplaceBackgroundEditProject;
   const getCurrentStoryboardDisplayUrl = (result: GeneratedResult) => {
     if (!isVersionedImageProject) return result.imageUrl;
@@ -614,6 +621,21 @@ const ProjectCard: React.FC<Props> = ({
     : (isProjectActivelyGenerating ? '文案生成中' : '暂无文案结果');
   const textReportText = textReportResult?.prompt || textReportEmptyText;
   const creditSummary = getProjectCreditsConsumed(project);
+  const productRestoreContext = project.generationContext?.productRestore;
+  const productRestoreImageCredits = project.results.reduce((sum, result) => (
+    sum + normalizeCreditsConsumed(result.creditsConsumed)
+  ), 0);
+  const productRestoreTotalCredits = normalizeCreditsConsumed(productRestoreContext?.analysisCreditsConsumed)
+    + productRestoreImageCredits;
+  const canManuallyReanalyze = canManuallyReanalyzeProductRestore({
+    module: project.module,
+    subFeature: project.subFeature,
+    projectStatus: project.status,
+    resultCount: project.results.length,
+    analysisJobId: productRestoreContext?.analysisJobId || project.backendJobId || project.planningTaskId,
+    analysisJobStatus: project.generationContext?.params.productRestoreAnalysisJobStatus,
+    analysisErrorCode: project.generationContext?.params.productRestoreAnalysisErrorCode,
+  });
   const handleCopyTaskId = async (taskId: string, event?: React.MouseEvent | React.KeyboardEvent) => {
     event?.preventDefault();
     event?.stopPropagation();
@@ -644,8 +666,10 @@ const ProjectCard: React.FC<Props> = ({
     </span>
   );
   const renderResultUsageMeta = (result: GeneratedResult) => {
-    const creditsConsumed = result.status === 'completed' ? normalizeCreditsConsumed(result.creditsConsumed) : 0;
-    if (!creditsConsumed && !result.taskId) return null;
+    const creditsConsumed = isProductRestoreProject
+      ? normalizeCreditsConsumed(result.creditsConsumed)
+      : result.status === 'completed' ? normalizeCreditsConsumed(result.creditsConsumed) : 0;
+    if (!creditsConsumed && !result.taskId && !(isProductRestoreProject && result.backendJobId)) return null;
     return (
       <div className="mt-1.5 flex min-w-0 max-w-full flex-col items-start gap-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
         {creditsConsumed > 0 && (
@@ -655,6 +679,9 @@ const ProjectCard: React.FC<Props> = ({
         )}
         {result.taskId && (
           renderTaskIdChip(result.taskId, '生图任务 ID')
+        )}
+        {isProductRestoreProject && result.backendJobId && (
+          renderTaskIdChip(result.backendJobId, '后端任务 ID')
         )}
       </div>
     );
@@ -1221,6 +1248,16 @@ const ProjectCard: React.FC<Props> = ({
             </div>
 
             <div className="min-h-0 overflow-y-auto px-4 py-4 sm:px-5">
+              {isProductRestoreProject && productRestoreContext ? (
+                <div className="mb-4">
+                  <ProductRestoreAnalysisPanel
+                    context={productRestoreContext!}
+                    imageCreditsConsumed={productRestoreImageCredits || undefined}
+                    totalCreditsConsumed={productRestoreTotalCredits || undefined}
+                    onCopyPrompt={(prompt) => void handleCopyPrompt(prompt)}
+                  />
+                </div>
+              ) : (
               <section className="mb-4 grid gap-2 rounded-[22px] border p-3 sm:grid-cols-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
                 <div>
                   <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>总积分消耗</p>
@@ -1242,6 +1279,7 @@ const ProjectCard: React.FC<Props> = ({
                   </p>
                 </div>
               </section>
+              )}
               {isBuyerShowProject && buyerShowEvaluationText ? (
                 <section className="mb-4 rounded-[22px] border p-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
                   <div className="mb-2 flex items-center justify-between gap-2">
@@ -1365,6 +1403,18 @@ const ProjectCard: React.FC<Props> = ({
                           </details>
                         );
                       })()}
+                      {canManuallyReanalyze && onRegenerate && (
+                        <button
+                          type="button"
+                          disabled={isRegeneratePending(PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID)}
+                          onClick={() => onRegenerate(project.id, PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID)}
+                          className="mx-auto mt-3 inline-flex items-center gap-1.5 rounded-full px-3 py-2 text-[11px] font-semibold disabled:cursor-not-allowed disabled:opacity-50"
+                          style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                        >
+                          <RefreshCw size={13} />
+                          {isRegeneratePending(PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID) ? '提交中' : '重新分析并继续'}
+                        </button>
+                      )}
                     </div>
                   ) : (
                     '当前项目暂无结果，可继续生成或稍后刷新同步。'
@@ -1859,7 +1909,7 @@ const ProjectCard: React.FC<Props> = ({
                                   {onRegenerate && canRetryTranslationResult(result) ? (
                                     <ResultActionButton
                                       icon={<Sparkles size={12} />}
-                                      label={regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : isTranslationProject ? '重试' : '重生成'}
+                                      label={regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : (isTranslationProject || isProductRestoreProject) ? '重试' : '重生成'}
                                       tone="primary"
                                       disabled={regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
                                       onClick={() => {
@@ -1985,13 +2035,17 @@ const ProjectCard: React.FC<Props> = ({
                           const resultMeta: string[] = [];
                           if (displayResult.aspectRatio && displayResult.aspectRatio !== 'auto') resultMeta.push(displayResult.aspectRatio);
                           if (displayResult.createdAt) resultMeta.push(formatMonthDay(displayResult.createdAt));
+                          if (isProductRestoreProject) {
+                            resultMeta.push(`后端状态：${displayResult.status === 'completed' ? '已完成' : displayResult.status === 'error' ? '失败' : '生成中'}`);
+                          }
                           const regeneratePending = isRegeneratePending(result.id);
-                          const mediaPanel = isTranslationProject ? (
+                          const sourcePreviewUrl = displayResult.sourcePreviewUrl;
+                          const mediaPanel = isTranslationProject || isProductRestoreProject ? (
                             <div className="grid h-[210px] w-full grid-cols-2 overflow-hidden">
                               <div className="relative border-r" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 70%, transparent)', background: 'var(--bg-base)' }}>
-                                {displayResult.sourcePreviewUrl || displayResult.sourceUrl ? (
+                                {sourcePreviewUrl || displayResult.sourceUrl ? (
                                   <img
-                                    src={displayResult.sourcePreviewUrl || displayResult.sourceUrl}
+                                    src={sourcePreviewUrl || displayResult.sourceUrl}
                                     alt={`${displayResult.fileName || 'source'} original`}
                                     className="h-full w-full object-contain"
                                     loading="lazy"
@@ -2073,6 +2127,11 @@ const ProjectCard: React.FC<Props> = ({
                                     </div>
                                   ) : null}
                                   {renderResultUsageMeta(displayResult)}
+                                  {isProductRestoreProject && displayResult.error && (
+                                    <p className="whitespace-pre-wrap break-words text-[10px] leading-5" style={{ color: 'var(--error)' }}>
+                                      {displayResult.error}
+                                    </p>
+                                  )}
                                   {isBuyerShowProject && versionItems.length > 1 ? (
                                     <div className="flex items-center justify-between gap-2 rounded-full px-2.5 py-1 text-[10px]" style={{ background: 'var(--bg-surface)', color: 'var(--text-tertiary)' }}>
                                       <button

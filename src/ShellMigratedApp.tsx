@@ -35,6 +35,7 @@ import {
   uploadInternalAssetStream,
 } from './services/internalApi';
 import type { PersistedAppState } from './utils/appState';
+import type { ShellWorkflowImageResult } from './adapters/shellWorkflow';
 import { ThemeContext } from './shell/context/ThemeContext';
 import { filterProjectsForScope } from './adapters/shellScopeFilters';
 import {
@@ -3460,10 +3461,23 @@ const AppContent: React.FC<{
         }
         if (analysis.status === 'generating') return;
         if (analysis.status === 'error') {
+          const terminalAnalysisJob = await fetchInternalJob(analysis.jobId || analysisJobId)
+            .then((result) => result.job)
+            .catch(() => null);
+          const failureGenerationContext = cloneGenerationContext(
+            storedContext.prompt,
+            {
+              ...storedContext.params,
+              ...(terminalAnalysisJob?.status ? { productRestoreAnalysisJobStatus: terminalAnalysisJob.status } : {}),
+              ...(analysis.errorCode ? { productRestoreAnalysisErrorCode: analysis.errorCode } : {}),
+            },
+            storedContext.materials as Record<string, Material[]>,
+          );
           const failedProject: Project = {
             ...project,
             backendJobId: analysis.jobId || analysisJobId,
             planningTaskId: analysis.providerTaskId || project.planningTaskId,
+            generationContext: failureGenerationContext,
             status: 'error',
             results: project.results || [],
             completedCount: countCompletedProjectResults(project.results || []),
@@ -6291,11 +6305,32 @@ const AppContent: React.FC<{
         )
       ) return;
       const message = error instanceof Error ? error.message : '任务执行失败';
-      const productRestoreFailure = error as Error & { jobId?: string; providerTaskId?: string };
+      const productRestoreFailure = error as Error & { code?: string; jobId?: string; providerTaskId?: string };
 	      const isProductRestorePersistenceFailure = (
 	        isProductRestoreSubmit
-	        && (productRestoreFailure as Error & { code?: string }).code === 'product_restore_context_persistence_failed'
+	        && productRestoreFailure.code === 'product_restore_context_persistence_failed'
 	      );
+      const failedAnalysisJobId = String(
+        productRestoreContext?.analysisJobId
+        || productRestoreFailure.jobId
+        || activeProductRestoreAnalysisJobId
+        || newProject.backendJobId
+        || '',
+      ).trim();
+      const confirmedAnalysisJob = isProductRestoreSubmit && batchResults.length === 0 && failedAnalysisJobId
+        ? await fetchInternalJob(failedAnalysisJobId).then((result) => result.job).catch(() => null)
+        : null;
+      const productRestoreFailureParams = {
+        ...generationParams,
+        ...(confirmedAnalysisJob?.status
+          ? { productRestoreAnalysisJobStatus: confirmedAnalysisJob.status }
+          : {}),
+        ...(productRestoreFailure.code
+          ? { productRestoreAnalysisErrorCode: productRestoreFailure.code }
+          : confirmedAnalysisJob?.errorCode
+            ? { productRestoreAnalysisErrorCode: confirmedAnalysisJob.errorCode }
+            : {}),
+      };
       logShellError('shell_generation_failed', error, {
         projectId,
         taskId,
@@ -6309,11 +6344,7 @@ const AppContent: React.FC<{
         ...(isProductRestoreSubmit
           ? {
               backendJobId: String(
-                productRestoreContext?.analysisJobId
-                || productRestoreFailure.jobId
-                || activeProductRestoreAnalysisJobId
-                || newProject.backendJobId
-                || '',
+                failedAnalysisJobId,
               ).trim() || undefined,
               planningTaskId: String(
                 productRestoreContext?.analysisProviderTaskId
@@ -6323,7 +6354,7 @@ const AppContent: React.FC<{
               ).trim() || undefined,
               generationContext: cloneGenerationContext(
                 generationPrompt,
-                generationParams,
+                productRestoreFailureParams,
                 generationMaterials,
                 productRestoreContext,
               ),
@@ -7671,6 +7702,397 @@ const AppContent: React.FC<{
       if (await handleStoryboardRegenerateResult(projectId, resultId, revisionInstruction)) return;
       const retryTaskId = `${resultId}-retry-${Date.now()}`;
       try {
+      const isProductRestoreProject = project.module === AppModuleObj.RETOUCH && project.subFeature === 'product_restore';
+      const productRestoreWorkflow = isProductRestoreProject
+        ? await import('./adapters/shellProductRestoreWorkflow')
+        : null;
+      if (
+        isProductRestoreProject
+        && productRestoreWorkflow
+        && resultId === productRestoreWorkflow.PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID
+      ) {
+        const storedContext = project.generationContext;
+        const analysisJobId = String(
+          storedContext?.productRestore?.analysisJobId
+          || project.backendJobId
+          || '',
+        ).trim();
+        const canManuallyReanalyze = productRestoreWorkflow.canManuallyReanalyzeProductRestore({
+          module: project.module,
+          subFeature: project.subFeature,
+          projectStatus: project.status,
+          resultCount: project.results.length,
+          analysisJobId,
+          analysisJobStatus: storedContext?.params.productRestoreAnalysisJobStatus,
+          analysisErrorCode: storedContext?.params.productRestoreAnalysisErrorCode,
+        });
+        const restoreTargets = (storedContext?.materials.restoreTarget || []) as Material[];
+        const productReferences = (storedContext?.materials.productReference || []) as Material[];
+        if (!canManuallyReanalyze || !storedContext || restoreTargets.length === 0 || productReferences.length === 0) {
+          addToast('当前分析状态或历史素材不支持重新分析，请刷新后重试或重新创建产品还原任务。', 'warning');
+          return;
+        }
+
+        const manualSubmissionKey = [
+          project.id,
+          'product_restore',
+          'analysis',
+          'manual',
+          `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        ].join(':');
+        const manualParams = {
+          ...storedContext.params,
+          productRestoreAnalysisSubmissionKey: manualSubmissionKey,
+          productRestoreAnalysisJobStatus: 'queued',
+          productRestoreAnalysisErrorCode: '',
+        };
+        const manualController = new AbortController();
+        taskControllersRef.current[retryTaskId] = manualController;
+        let latestManualProject: Project = {
+          ...project,
+          status: 'planning',
+          backendJobId: undefined,
+          planningTaskId: undefined,
+          results: [],
+          completedCount: 0,
+          taskCount: restoreTargets.length,
+          error: '产品还原正在重新分析。',
+          generationContext: cloneGenerationContext(
+            storedContext.prompt,
+            manualParams,
+            storedContext.materials as Record<string, Material[]>,
+          ),
+        };
+        setProjects((prev) => prev.map((item) => item.id === project.id ? latestManualProject : item));
+        const manualAttemptPersisted = await persistProjectToSharedState(latestManualProject);
+        if (!manualAttemptPersisted) {
+          throw new Error('重新分析进度同步失败，未创建新的分析任务。');
+        }
+        setTasks((prev) => [{
+          id: retryTaskId,
+          projectId: project.id,
+          module: AppModuleObj.RETOUCH,
+          type: 'plan',
+          status: 'generating',
+          title: `重新分析: ${project.name}`,
+          progress: 8,
+          createdAt: Date.now(),
+          total: restoreTargets.length,
+          completed: 0,
+          subFeature: 'product_restore',
+        }, ...prev]);
+
+        let analysisContextPersisted = false;
+        let manualAnalysisJobId = '';
+        let analysisIdentityPersistence: Promise<boolean> = Promise.resolve(true);
+        const onManualJobCreated = (jobId: string, providerTaskId?: string) => {
+          if (recordProductRestoreJobCreated({ projectId: project.id, jobId })) {
+            manualController.abort();
+            return;
+          }
+          setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+            ...task,
+            backendJobId: jobId,
+            progress: Math.max(task.progress || 0, analysisContextPersisted ? 18 : 10),
+          } : task));
+          if (analysisContextPersisted) return;
+          manualAnalysisJobId = jobId;
+          latestManualProject = {
+            ...latestManualProject,
+            backendJobId: jobId,
+            planningTaskId: providerTaskId || latestManualProject.planningTaskId,
+            generationContext: cloneGenerationContext(
+              storedContext.prompt,
+              {
+                ...manualParams,
+                productRestoreAnalysisJobStatus: 'running',
+              },
+              storedContext.materials as Record<string, Material[]>,
+            ),
+          };
+          setProjects((prev) => prev.map((item) => item.id === project.id ? latestManualProject : item));
+          analysisIdentityPersistence = persistProjectToSharedState(latestManualProject);
+        };
+        const mapManualItem = (item: ShellWorkflowImageResult, index: number): GeneratedResult => ({
+          id: item.taskId || item.backendJobId || `${project.id}-${item.targetMaterialId || index}`,
+          projectId: project.id,
+          imageUrl: item.imageUrl || '',
+          mediaType: 'image',
+          prompt: item.prompt || storedContext.prompt,
+          model: item.model || storedContext.params.model || 'gpt-image-2',
+          aspectRatio: item.aspectRatio || 'auto',
+          status: item.status || (item.imageUrl ? 'completed' : 'generating'),
+          createdAt: Date.now(),
+          module: AppModuleObj.RETOUCH,
+          subFeature: 'product_restore',
+          sourceUrl: item.sourceUrl,
+          fileName: item.fileName,
+          taskId: item.taskId,
+          backendJobId: item.backendJobId,
+          batchIndex: item.batchIndex || index,
+          targetMaterialId: item.targetMaterialId,
+          analysisJobId: item.analysisJobId,
+          clientSubmissionKey: item.clientSubmissionKey,
+          creditsConsumed: item.creditsConsumed,
+          error: item.error || item.message,
+        });
+        const syncManualItem = async (item: ShellWorkflowImageResult, index: number, total: number) => {
+          const nextResult = mapManualItem(item, index);
+          const byIdentity = new Map(latestManualProject.results.map((current) => [
+            getProductRestoreResultIdentity(current),
+            current,
+          ]));
+          byIdentity.set(getProductRestoreResultIdentity(nextResult), nextResult);
+          const nextResults = sortGeneratedResultsByBatchIndex(Array.from(byIdentity.values()));
+          const status = getProductRestoreProjectStatus(nextResults, total);
+          latestManualProject = {
+            ...latestManualProject,
+            status,
+            completedAt: status === 'completed' ? Date.now() : undefined,
+            results: nextResults,
+            completedCount: nextResults.filter((current) => current.status === 'completed').length,
+            taskCount: total,
+            creditsConsumed: Number(latestManualProject.generationContext?.productRestore?.analysisCreditsConsumed || 0)
+              + nextResults.reduce((sum, current) => sum + Number(current.creditsConsumed || 0), 0),
+            error: status === 'error'
+              ? nextResults.find((current) => current.status === 'error')?.error
+              : undefined,
+          };
+          setProjects((prev) => prev.map((current) => current.id === project.id ? latestManualProject : current));
+          await persistProjectToSharedState(latestManualProject);
+          setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+            ...task,
+            type: 'image',
+            completed: nextResults.filter((current) => current.status === 'completed').length,
+            total,
+            progress: Math.max(task.progress || 0, Math.round((nextResults.length / Math.max(total, 1)) * 100)),
+          } : task));
+        };
+
+        try {
+          const { runShellRetouchWorkflow } = await loadShellWorkflowModule();
+          const manualResult = await runShellRetouchWorkflow({
+            module: AppModuleObj.RETOUCH,
+            subFeature: 'product_restore',
+            prompt: storedContext.prompt,
+            params: { ...manualParams },
+            materials: storedContext.materials,
+            signal: manualController.signal,
+            apiConfig,
+            taskMetadata: {
+              shellProjectId: project.id,
+              shellProjectName: project.name,
+              batchCount: restoreTargets.length,
+              subFeature: 'product_restore',
+              productRestoreManualRetry: true,
+              productRestoreAnalysisSubmissionKey: manualSubmissionKey,
+            },
+            onJobCreated: onManualJobCreated,
+            onProductRestoreAnalysisCompleted: async (context) => {
+              const identityPersisted = await analysisIdentityPersistence;
+              if (!identityPersisted) {
+                throw Object.assign(new Error('重新分析身份同步失败，未创建图片任务。'), {
+                  code: 'product_restore_context_persistence_failed',
+                });
+              }
+              const durableContext = cloneProductRestoreContext(context);
+              latestManualProject = {
+                ...latestManualProject,
+                backendJobId: context.analysisJobId,
+                planningTaskId: context.analysisProviderTaskId,
+                status: 'generating',
+                error: undefined,
+                creditsConsumed: context.analysisCreditsConsumed || undefined,
+                generationContext: cloneGenerationContext(
+                  storedContext.prompt,
+                  {
+                    ...manualParams,
+                    productRestoreAnalysisJobStatus: 'succeeded',
+                    productRestoreAnalysisErrorCode: '',
+                  },
+                  storedContext.materials as Record<string, Material[]>,
+                  durableContext,
+                ),
+              };
+              const contextPersisted = await persistProjectToSharedState(latestManualProject);
+              if (!contextPersisted) {
+                throw Object.assign(new Error('重新分析结果同步失败，未创建图片任务。'), {
+                  code: 'product_restore_context_persistence_failed',
+                });
+              }
+              analysisContextPersisted = true;
+              setProjects((prev) => prev.map((item) => item.id === project.id ? latestManualProject : item));
+            },
+            publicBaseUrl,
+          }, syncManualItem);
+          const finalResults = manualResult.results.map((item, index) => mapManualItem(item, index + 1));
+          const finalStatus = getProductRestoreProjectStatus(finalResults, restoreTargets.length);
+          latestManualProject = {
+            ...latestManualProject,
+            status: finalStatus,
+            completedAt: finalStatus === 'completed' ? Date.now() : undefined,
+            results: finalResults,
+            completedCount: finalResults.filter((item) => item.status === 'completed').length,
+            taskCount: restoreTargets.length,
+            creditsConsumed: manualResult.creditsConsumed,
+            error: finalStatus === 'error'
+              ? finalResults.find((item) => item.status === 'error')?.error
+              : undefined,
+          };
+          setProjects((prev) => prev.map((item) => item.id === project.id ? latestManualProject : item));
+          await persistProjectToSharedState(latestManualProject);
+          if (finalStatus !== 'generating') {
+            setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+            delete taskControllersRef.current[retryTaskId];
+          }
+          addToast(finalStatus === 'completed' ? '重新分析并生成已完成' : finalStatus === 'generating' ? '重新分析已完成，图片结果待同步' : '重新分析完成，部分图片生成失败', finalStatus === 'completed' ? 'success' : finalStatus === 'generating' ? 'info' : 'warning');
+        } catch (error) {
+          const workflowError = error as Error & { code?: string; jobId?: string; providerTaskId?: string };
+          const failedJobId = workflowError.jobId || manualAnalysisJobId || latestManualProject.backendJobId || '';
+          const confirmedJob = failedJobId
+            ? await fetchInternalJob(failedJobId).then((result) => result.job).catch(() => null)
+            : null;
+          latestManualProject = {
+            ...latestManualProject,
+            backendJobId: failedJobId || latestManualProject.backendJobId,
+            planningTaskId: workflowError.providerTaskId || latestManualProject.planningTaskId,
+            status: 'error',
+            results: [],
+            completedCount: 0,
+            error: workflowError.message || '产品还原重新分析失败。',
+            generationContext: cloneGenerationContext(
+              storedContext.prompt,
+              {
+                ...manualParams,
+                ...(confirmedJob?.status ? { productRestoreAnalysisJobStatus: confirmedJob.status } : {}),
+                ...(workflowError.code
+                  ? { productRestoreAnalysisErrorCode: workflowError.code }
+                  : confirmedJob?.errorCode
+                    ? { productRestoreAnalysisErrorCode: confirmedJob.errorCode }
+                    : {}),
+              },
+              storedContext.materials as Record<string, Material[]>,
+            ),
+          };
+          setProjects((prev) => prev.map((item) => item.id === project.id ? latestManualProject : item));
+          await persistProjectToSharedState(latestManualProject);
+          setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+          delete taskControllersRef.current[retryTaskId];
+          addToast(latestManualProject.error || '产品还原重新分析失败。', 'error');
+        }
+        return;
+      }
+      if (isProductRestoreProject && productRestoreWorkflow) {
+        const result = project.results.find((item) => item.id === resultId);
+        const storedContext = project.generationContext;
+        if (!result || !storedContext) {
+          throw Object.assign(new Error(productRestoreWorkflow.PRODUCT_RESTORE_RETRY_CONTEXT_ERROR_MESSAGE), {
+            code: 'product_restore_retry_context_invalid',
+          });
+        }
+        const retryController = new AbortController();
+        taskControllersRef.current[retryTaskId] = retryController;
+        setTasks((prev) => [{
+          id: retryTaskId,
+          projectId: project.id,
+          module: AppModuleObj.RETOUCH,
+          type: 'image',
+          status: 'generating',
+          title: `重试: ${result.fileName || project.name}`,
+          progress: 8,
+          createdAt: Date.now(),
+          total: 1,
+          completed: 0,
+          subFeature: 'product_restore',
+        }, ...prev]);
+        const { buildShellModuleConfig } = await loadShellWorkflowModule();
+        const retryInput = {
+          module: AppModuleObj.RETOUCH,
+          subFeature: 'product_restore',
+          prompt: storedContext.prompt,
+          params: { ...storedContext.params },
+          materials: storedContext.materials,
+          signal: retryController.signal,
+          apiConfig,
+          taskMetadata: {
+            shellProjectId: project.id,
+            shellProjectName: project.name,
+            batchCount: project.taskCount,
+            subFeature: 'product_restore',
+          },
+          onJobCreated: (jobId: string) => {
+            if (recordProductRestoreJobCreated({ projectId: project.id, jobId })) retryController.abort();
+            setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+              ...task,
+              backendJobId: jobId,
+              progress: Math.max(task.progress || 0, 18),
+            } : task));
+          },
+          productRestoreContext: storedContext.productRestore,
+          publicBaseUrl,
+        };
+        const retryConfig = buildShellModuleConfig(retryInput);
+        const syncRetryItem = async (item: ShellWorkflowImageResult) => {
+          const nextResult: GeneratedResult = {
+            ...result,
+            id: result.id,
+            imageUrl: item.imageUrl || '',
+            videoUrl: undefined,
+            mediaType: 'image',
+            prompt: item.prompt || result.prompt,
+            model: item.model || result.model,
+            aspectRatio: item.aspectRatio || result.aspectRatio,
+            status: item.status || (item.imageUrl ? 'completed' : 'generating'),
+            taskId: item.taskId,
+            backendJobId: item.backendJobId,
+            batchIndex: item.batchIndex || result.batchIndex,
+            targetMaterialId: item.targetMaterialId || result.targetMaterialId,
+            analysisJobId: item.analysisJobId || result.analysisJobId,
+            clientSubmissionKey: item.clientSubmissionKey,
+            sourceUrl: item.sourceUrl || result.sourceUrl,
+            fileName: item.fileName || result.fileName,
+            creditsConsumed: item.creditsConsumed,
+            error: item.error || item.message,
+          };
+          const merged = productRestoreWorkflow.mergeProductRestoreSingleRetryProject(
+            project,
+            result.id,
+            nextResult,
+          );
+          const nextProject: Project = {
+            ...merged,
+            error: merged.status === 'error' ? nextResult.error : undefined,
+          };
+          setProjects((prev) => prev.map((current) => current.id === project.id ? nextProject : current));
+          await persistProjectToSharedState(nextProject);
+          setTasks((prev) => prev.map((task) => task.id === retryTaskId ? {
+            ...task,
+            completed: nextResult.status === 'completed' ? 1 : 0,
+            progress: nextResult.status === 'generating' ? Math.max(task.progress || 0, 18) : 100,
+          } : task));
+          return nextProject;
+        };
+        const retryResult = await productRestoreWorkflow.runShellProductRestoreSingleRetry({
+          input: retryInput,
+          config: retryConfig,
+          result: {
+            id: result.id,
+            targetMaterialId: result.targetMaterialId,
+            sourceUrl: result.sourceUrl || result.sourcePreviewUrl,
+          },
+        }, {
+          onItemChanged: async (item) => {
+            await syncRetryItem(item);
+          },
+        });
+        await syncRetryItem(retryResult);
+        if (retryResult.status !== 'generating') {
+          setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+          delete taskControllersRef.current[retryTaskId];
+        }
+        addToast(retryResult.status === 'completed' ? '产品还原单张重试已完成' : retryResult.status === 'generating' ? '产品还原单张重试已提交，结果待同步' : '产品还原单张重试失败', retryResult.status === 'completed' ? 'success' : retryResult.status === 'generating' ? 'info' : 'warning');
+        return;
+      }
       if (project.module === AppModuleObj.TRANSLATION) {
         const result = project.results.find((item) => item.id === resultId);
         if (!result) return;
@@ -8107,7 +8529,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig.workspacePreferences, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction, currentUser?.role, systemConfig?.featureRollouts?.productRestore]);
+  }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction, currentUser?.role, systemConfig?.featureRollouts?.productRestore, recordProductRestoreJobCreated]);
 
   const handleFissionResult = useCallback(async (
     projectId: string,
