@@ -8,6 +8,7 @@ import {
   MAXFORAI_SUPPORTED_ASPECT_RATIOS,
   MAXFORAI_SUPPORTED_RESOLUTIONS,
 } from '../src/utils/maxforaiImageModels.mjs';
+import { normalizeProductRestoreRollout } from '../src/utils/productRestoreRollout.mjs';
 
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',
@@ -654,6 +655,11 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       maxforai: {
         configured: Boolean(env.MAXFORAI_API_KEY),
       },
+    },
+    featureRollouts: {
+      productRestore: normalizeProductRestoreRollout(
+        process.env.MEIAO_PRODUCT_RESTORE_ROLLOUT,
+      ),
     },
     systemSettings: {
       analysisModel: validConfiguredAnalysisModel,

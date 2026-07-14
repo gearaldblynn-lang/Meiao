@@ -29,6 +29,7 @@ MEIAO_DB_PASSWORD=请替换成你的真实密码
 MEIAO_DB_NAME=meiao_internal
 MEIAO_PUBLIC_BASE_URL=https://meiaoyuntai.com
 MEIAO_JOB_MAX_CONCURRENCY=3
+MEIAO_PRODUCT_RESTORE_ROLLOUT=off
 MEIAO_JOB_SUBMISSION_LOCK_TIMEOUT_SECONDS=10
 MEIAO_TASK_ENGINE=mysql
 MEIAO_TEMPORAL_ADDRESS=127.0.0.1:7233
@@ -91,6 +92,8 @@ AGENT_TOOL_MAX_ROUNDS=5
 AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS=2
 EOF
 ```
+
+`MEIAO_PRODUCT_RESTORE_ROLLOUT` 只控制是否允许新建产品还原任务：`off` 禁止所有人新建，`admin` 仅允许管理员新建，`all` 允许所有已登录用户新建。未配置、空值或非法值都保守降级为 `off`。该开关不控制项目可见性；即使切回 `off`，历史产品还原项目仍可查看和下载结果。
 
 第4期智能体多工具复用 `OPENAI_COMPATIBLE_*`，V2 对话经 `OPENAI_COMPATIBLE_RESPONSES_PATH` 调 responses 端点以支持 `web_search`；`AGENT_TOOL_MAX_ROUNDS` 是单轮工具循环上限，默认 5。`AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS` 是多图独立输出规划欠覆盖时的修复审查轮数，默认 2；仍不完整会快速失败，不执行单张伪完成。
 
