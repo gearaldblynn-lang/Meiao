@@ -69,7 +69,7 @@ export interface ProductRestoreProjectContext {
   analysisJobId: string;
   analysisProviderTaskId?: string;
   analysisModel: string;
-  analysisCreditsConsumed: number;
+  analysisCreditsConsumed?: number;
   normalizedAnalysis: ProductRestoreNormalizedAnalysis;
   sharedRestorationPrompt: string;
   focusIds: ProductRestoreFocusId[];
@@ -79,6 +79,50 @@ export interface ProductRestoreProjectContext {
   resolution: '2K' | '4K';
   userRequirement: string;
   createdAt: number;
+}
+
+export interface ProductRestoreAnalysisAttempt {
+  jobId: string;
+  providerTaskId?: string;
+  model?: string;
+  status: 'running' | 'succeeded' | 'invalid' | 'failed' | 'cancelled';
+  errorCode?: string;
+  timestamp: number;
+  creditsConsumed?: number;
+}
+
+export interface ProductRestoreCancellationMarker {
+  version: 1;
+  status: 'cancelled';
+  reason: 'user_requested';
+  cancelledAt: number;
+  jobIds: string[];
+  eventId?: string;
+  supersedesEventId?: string;
+  causalEpoch?: string;
+  causalGeneration?: string;
+}
+
+export interface ProductRestoreCancellationReset {
+  version: 1;
+  status: 'retry_reset';
+  reason: 'explicit_retry';
+  resetAt: number;
+  priorCancelledAt?: number;
+  eventId?: string;
+  supersedesEventId?: string;
+  causalEpoch?: string;
+  causalGeneration?: string;
+}
+
+export interface OneClickGenerationContext {
+  prompt: string;
+  params: Record<string, string>;
+  materials: Record<string, OneClickMaterialSnapshot[]>;
+  productRestoreAnalysisAttempts?: ProductRestoreAnalysisAttempt[];
+  productRestore?: ProductRestoreProjectContext;
+  productRestoreCancellation?: ProductRestoreCancellationMarker;
+  productRestoreCancellationReset?: ProductRestoreCancellationReset;
 }
 ```
 
@@ -224,7 +268,7 @@ Execution evidence: commit `dd2977f`; focused suites passed 45/45; `npm run lint
 - Produces `buildProductRestoreAnalysisPrompt`, `parseProductRestoreAnalysis`, and `buildProductRestoreGenerationPrompt`.
 - Adds `ProductRestoreNormalizedAnalysis` and `ProductRestoreProjectContext` to `OneClickGenerationContext.productRestore?`.
 
-- [ ] **Step 1: Write input and selection RED tests**
+- [x] **Step 1: Write input and selection RED tests**
 
 Cover empty target/reference sets, 1/1 valid input, target counts 10 and 11, reference counts 5 and 6, duplicate focus ids, unknown ids, empty focus input, model-dependent 2K/4K filtering, and any attempt to normalize 1K.
 
@@ -243,7 +287,7 @@ assert.deepEqual(getProductRestoreResolutionOptions('maxforai-image-2-relay'), [
 assert.equal(normalizeProductRestoreResolution('gpt-image-2', '1K'), '2K');
 ```
 
-- [ ] **Step 2: Write parser and prompt RED tests**
+- [x] **Step 2: Write parser and prompt RED tests**
 
 Test that:
 
@@ -255,13 +299,13 @@ Test that:
 
 Use the exact normalized schema from “Stable Contracts”.
 
-- [ ] **Step 3: Verify RED**
+- [x] **Step 3: Verify RED**
 
 Run: `node --test src/modules/Retouch/productRestoreContract.test.mjs`
 
 Expected: FAIL because the contract module does not exist.
 
-- [ ] **Step 4: Implement constants, validation, and resolution filtering**
+- [x] **Step 4: Implement constants, validation, and resolution filtering**
 
 Use these stable labels:
 
@@ -283,7 +327,7 @@ export const PRODUCT_RESTORE_LIMITS = Object.freeze({
 
 For resolution support, follow the existing `getQualityOptionsForModel` semantics: when a model declares resolutions, intersect them with `['2K', '4K']`; when the catalog omits resolution metadata, keep the existing assumed `['2K', '4K']` support. Always default the Product Restoration selection to `2K`.
 
-- [ ] **Step 5: Implement strict structured analysis parsing**
+- [x] **Step 5: Implement strict structured analysis parsing**
 
 Strip at most one surrounding Markdown code fence, parse one JSON object, require every schema key, trim strings, reject empty identity text, reject non-string list entries, and return:
 
@@ -306,7 +350,7 @@ or:
 
 Do not repair partial semantic output with a second model call.
 
-- [ ] **Step 6: Implement the analysis and generation prompts**
+- [x] **Step 6: Implement the analysis and generation prompts**
 
 The analysis prompt must include:
 
@@ -324,7 +368,7 @@ Preserve all original text pixels outside the product body.
 Modify only the product body and the minimal contact shadow, reflection, or occlusion edge required for physical consistency.
 ```
 
-- [ ] **Step 7: Add persisted context types and clone compatibility**
+- [x] **Step 7: Add persisted context types and clone compatibility**
 
 Add the stable interfaces above and:
 
@@ -339,7 +383,7 @@ export interface OneClickGenerationContext {
 
 Keep `productRestore` optional so historical projects deserialize unchanged.
 
-- [ ] **Step 8: Verify GREEN and commit**
+- [x] **Step 8: Verify GREEN and commit**
 
 Run:
 
@@ -405,7 +449,7 @@ export type ProductRestoreAnalysisRunResult =
     };
 ```
 
-- [ ] **Step 1: Write RED service-contract tests**
+- [x] **Step 1: Write RED service-contract tests**
 
 Assert source and behavior contracts:
 
@@ -420,13 +464,13 @@ Assert source and behavior contracts:
 
 Use injected or existing mocked `createJob`/`waitForJob` facilities; count created analysis jobs rather than provider fallback attempts within a job.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run: `node --test src/services/arkService.test.mjs`
 
 Expected: FAIL because the product-restoration service and semantic-retry switch do not exist.
 
-- [ ] **Step 3: Make analysis response identity additive**
+- [x] **Step 3: Make analysis response identity additive**
 
 Keep every existing consumer compatible and return:
 
@@ -442,11 +486,11 @@ Keep every existing consumer compatible and return:
 
 Default `allowSemanticRetry` to `true` so existing analysis flows retain their current behavior.
 
-- [ ] **Step 4: Disable application-level semantic retry only for Product Restoration**
+- [x] **Step 4: Disable application-level semantic retry only for Product Restoration**
 
 When `allowSemanticRetry === false`, the first successful provider response is the only content evaluated. If it is structurally invalid, return the explicit analysis error. Keep the backend job's configured `fallbackModels` intact so transport/provider fallback still occurs inside the same control job.
 
-- [ ] **Step 5: Implement `analyzeProductRestoreBatch`**
+- [x] **Step 5: Implement `analyzeProductRestoreBatch`**
 
 Build one message with this deterministic image order:
 
@@ -460,11 +504,11 @@ Build one message with this deterministic image order:
 
 Resolve the analysis model through the existing system configuration path, pass `allowSemanticRetry: false`, strictly parse the returned structure, build the shared generation prompt once, and never use the existing optional retouch deterministic fallback.
 
-- [ ] **Step 6: Recover an already-created analysis job without resubmission**
+- [x] **Step 6: Recover an already-created analysis job without resubmission**
 
 Implement `recoverProductRestoreAnalysisBatch` by fetching the supplied internal job id. Return `generating` for queued/running/retry-waiting states, parse and normalize a succeeded job through the same success helper, and return the durable terminal error for failed/cancelled jobs. This function must not call `createInternalJob`.
 
-- [ ] **Step 7: Verify GREEN and commit**
+- [x] **Step 7: Verify GREEN and commit**
 
 Run:
 
@@ -524,7 +568,7 @@ export interface ShellProductRestoreWorkflowResult {
 }
 ```
 
-- [ ] **Step 1: Write RED orchestration tests with injected fakes**
+- [x] **Step 1: Write RED orchestration tests with injected fakes**
 
 Cover these observable behaviors:
 
@@ -542,7 +586,7 @@ Cover these observable behaviors:
 12. 1K input is normalized to 2K and original ratio is not replaced by a selector value;
 13. every target receives a stable key derived from project id, analysis job id, and target material id, so resume deduplicates the same logical job.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -552,7 +596,7 @@ node --experimental-strip-types --test src/adapters/shellProductRestoreWorkflow.
 
 Expected: FAIL because the isolated workflow does not exist.
 
-- [ ] **Step 3: Implement dependency-injected workflow boundaries**
+- [x] **Step 3: Implement dependency-injected workflow boundaries**
 
 The production defaults call `analyzeProductRestoreBatch`, `processWithKieAi`, and the existing generated-asset persistence utilities. Tests pass fakes through the final optional `deps` argument.
 
@@ -567,11 +611,11 @@ export async function runShellProductRestoreWorkflow(
 
 The implementation must not silently recover from terminal analysis errors. A recoverable analysis sync gap returns `analysisStatus: 'generating'`, preserves the internal job id, and does not start image work.
 
-- [ ] **Step 4: Persist analysis before fan-out**
+- [x] **Step 4: Persist analysis before fan-out**
 
 Construct `ProductRestoreProjectContext` from the analysis result plus material ids, image model, normalized resolution, requirement, and timestamp. Await `onAnalysisCompleted(context)` before creating any image promise.
 
-- [ ] **Step 5: Fan out one logical promise per target**
+- [x] **Step 5: Fan out one logical promise per target**
 
 Use `Promise.all` over target entries so every task is registered independently while the backend queue controls actual provider concurrency. For each item:
 
@@ -595,11 +639,11 @@ const clientSubmissionKey = [
 
 Preserve array order with `batchIndex` and return total credits as analysis credits plus all settled image credits. The existing job manager's `clientSubmissionKey` deduplication is the backend guard against a refresh creating the same logical target job twice.
 
-- [ ] **Step 6: Emit bounded structured lifecycle logs**
+- [x] **Step 6: Emit bounded structured lifecycle logs**
 
 Record `product_restore_batch_started`, analysis started/succeeded/failed, generation created/succeeded/failed, and `product_restore_partial_completed` through `safeCreateInternalLog`. Include user/project/job identities, target/reference counts, focus ids, batch index/count, model, resolution, duration, credits, provider task id, and structured error code. Do not log API keys, Authorization, image bytes, full image URLs, or complete prompts.
 
-- [ ] **Step 7: Route the new mode without changing old modes**
+- [x] **Step 7: Route the new mode without changing old modes**
 
 Extend:
 
@@ -615,7 +659,7 @@ type ShellRetouchMode =
 
 Branch to `runShellProductRestoreWorkflow` before the legacy `original`/`white_bg` loop. Do not route through `EverythingReplace`.
 
-- [ ] **Step 8: Verify GREEN and commit**
+- [x] **Step 8: Verify GREEN and commit**
 
 Run:
 
@@ -646,7 +690,7 @@ Commit: `feat: orchestrate product restoration image jobs`
 - Creates a root shell project whose `taskCount` equals target count, not target count plus analysis.
 - Treats `product_restore_analysis` as an internal control job bound to the root project.
 
-- [ ] **Step 1: Write RED lifecycle tests**
+- [x] **Step 1: Write RED lifecycle tests**
 
 Test source/adapter behavior for:
 
@@ -662,7 +706,7 @@ Test source/adapter behavior for:
 - project deletion passes the same aggregate ids into the existing tombstone flow;
 - historical Product Restoration projects remain readable when rollout is `off`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -672,7 +716,7 @@ node --test src/adapters/shellControlJobLifecycle.test.mjs src/adapters/shellDat
 
 Expected: FAIL because the purpose and context are not known.
 
-- [ ] **Step 3: Extend generation-context cloning safely**
+- [x] **Step 3: Extend generation-context cloning safely**
 
 Deep-clone the optional Product Restoration context:
 
@@ -692,7 +736,7 @@ productRestore: context.productRestore
 
 Historical contexts without the field must retain the existing result.
 
-- [ ] **Step 4: Persist the analysis callback before image callbacks**
+- [x] **Step 4: Persist the analysis callback before image callbacks**
 
 In the Product Restoration submit branch:
 
@@ -703,7 +747,7 @@ In the Product Restoration submit branch:
 
 If analysis is still recoverably pending, keep the root project in `planning`, persist the internal analysis job id in `backendJobId`, and do not synthesize image results. If analysis reaches a terminal failure, set the root project to `error`, keep its inputs, job identity, and error message, and do not synthesize image results.
 
-- [ ] **Step 5: Preserve pending and partial image identities**
+- [x] **Step 5: Preserve pending and partial image identities**
 
 Use the existing `onSpecialItemCompleted` mechanics, but key Product Restoration items by `targetMaterialId` plus `batchIndex`. A later callback replaces the same logical row instead of appending a duplicate. Project status becomes:
 
@@ -711,7 +755,7 @@ Use the existing `onSpecialItemCompleted` mechanics, but key Product Restoration
 - `completed` only when every item succeeds;
 - `error` when any settled item fails and none remain pending, while retaining every successful result and the accurate `completedCount`.
 
-- [ ] **Step 6: Resume from the durable analysis job after refresh**
+- [x] **Step 6: Resume from the durable analysis job after refresh**
 
 Add a guarded Product Restoration planning resume path. For a root project with `status: 'planning'`, `subFeature: 'product_restore'`, and `backendJobId`:
 
@@ -724,15 +768,15 @@ Add a guarded Product Restoration planning resume path. For a root project with 
 
 This is continuation of the original job, not a new analysis request.
 
-- [ ] **Step 7: Preserve cancellation and deletion semantics**
+- [x] **Step 7: Preserve cancellation and deletion semantics**
 
 Ensure the normal shell collectors include root `backendJobId`, successful `productRestore.analysisJobId`, and every result `backendJobId`. Cancelling while analysis is pending cancels that job and prevents fan-out; cancelling during generation keeps successful images and interrupts remaining jobs. Deletion continues through the existing tombstone and multi-job aggregate flow. Emit the bounded `product_restore_cancelled` log.
 
-- [ ] **Step 8: Make analysis job classification explicit**
+- [x] **Step 8: Make analysis job classification explicit**
 
 Add `product_restore_analysis` to the control-purpose allowlist even though `retouch` chat jobs are already broadly classified. Test the explicit value to protect the contract from a later narrowing of the module rule.
 
-- [ ] **Step 9: Verify GREEN and commit**
+- [x] **Step 9: Verify GREEN and commit**
 
 Run:
 
@@ -770,7 +814,7 @@ Commit: `feat: persist product restoration lifecycle`
 - Adds a six-option Product Restoration emphasis multi-select.
 - Adds model-aware 2K/4K controls with no ratio or 1K control.
 
-- [ ] **Step 1: Write RED UI contract tests**
+- [x] **Step 1: Write RED UI contract tests**
 
 Assert:
 
@@ -787,7 +831,7 @@ Assert:
 - generation label is `开始产品还原`;
 - rollout `off`/unauthorized `admin` disables new submission with a clear reason but does not remove the tab.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -797,7 +841,7 @@ node --test src/components/uiArchitecture.test.mjs src/shell/modules/Retouch/pro
 
 Expected: FAIL because the workspace still exposes the legacy name and inputs.
 
-- [ ] **Step 3: Rename the active user-facing surface**
+- [x] **Step 3: Rename the active user-facing surface**
 
 Change active shell navigation, page title, module description, empty-state copy, workflow label, and logging display label from `产品精修` to `图片升级`. Do not rename `retouch`, source folders, existing persisted `module` values, or legacy mode keys.
 
@@ -810,14 +854,14 @@ Add `product_restore` to the subfeature map and URL-param normalization:
 { id: 'enhance', label: '智能增强', enabled: false },
 ```
 
-- [ ] **Step 4: Add the two upload roles with hover guidance**
+- [x] **Step 4: Add the two upload roles with hover guidance**
 
 Extend `MaterialType` and the material catalog. Use native `title` plus visible description text so mouse hover and keyboard focus both surface:
 
 - 待还原套图：最多 10 张；每张都会单独生成；同一任务只放一个 SKU；超限整次拒绝。
 - 产品参考图：最多 5 张；按结构、细节、材质、颜色的参考价值从左到右排序；超限整次拒绝。
 
-- [ ] **Step 5: Enforce caps before material creation**
+- [x] **Step 5: Enforce caps before material creation**
 
 In `handleMaterialUpload`, calculate `existingCount + files.length` before reading any file. If over cap, issue one toast and return without adding any of the selection. Include remaining capacity in the message.
 
@@ -833,11 +877,11 @@ if (limit && nextCount > limit) {
 }
 ```
 
-- [ ] **Step 6: Add ordered preview and reordering**
+- [x] **Step 6: Add ordered preview and reordering**
 
 Show count/limit on each new material group. Add left/right actions on each preview item and implement `handleMoveMaterial` inside the current module/subfeature scope. Disable the left action on the first item and right action on the last. Preserve object URLs, ids, and metadata while only changing array order.
 
-- [ ] **Step 7: Add focus, model, and resolution controls**
+- [x] **Step 7: Add focus, model, and resolution controls**
 
 Store focus ids as a stable comma-separated parameter `restoreFocusIds`; normalize them through Task 2. Render six multi-select chips above the quick toolbar, preselect the approved two defaults, and prevent an empty selection by restoring defaults.
 
@@ -852,7 +896,7 @@ For Product Restoration quick params:
 
 Do not render `ratio`, `sizeMode`, `width`, or `height`. Normalize model changes so an unsupported 4K choice falls back to 2K.
 
-- [ ] **Step 8: Gate submission with public rollout state**
+- [x] **Step 8: Gate submission with public rollout state**
 
 Always show the Product Restoration tab. When active, combine `systemConfig.featureRollouts.productRestore` with the current user's role. If creation is disallowed, pass a generation-disabled reason:
 
@@ -861,15 +905,15 @@ Always show the Product Restoration tab. When active, combine `systemConfig.feat
 
 Keep upload previews and historical project cards readable.
 
-- [ ] **Step 9: Count billable image tasks correctly**
+- [x] **Step 9: Count billable image tasks correctly**
 
 For Product Restoration, pass the number of restore targets to existing image billing estimation. Analysis cost is not presented as another image count. Keep the final project credit total equal to analysis plus settled image jobs.
 
-- [ ] **Step 10: Update project documentation**
+- [x] **Step 10: Update project documentation**
 
 Document `图片升级 / 产品还原`, the two material roles, analysis-first lifecycle, limits, output behavior, rollout environment value, and local-only status in the three active project/handoff documents. Do not claim cloud availability.
 
-- [ ] **Step 11: Verify GREEN and commit**
+- [x] **Step 11: Verify GREEN and commit**
 
 Run:
 
@@ -901,7 +945,7 @@ Commit: `feat: add image upgrade product restoration workspace`
 - Reuses `runShellProductRestoreItem` for retry.
 - Adds a deliberate project-level `重新分析并继续` action only after terminal analysis failure.
 
-- [ ] **Step 1: Write RED detail and retry tests**
+- [x] **Step 1: Write RED detail and retry tests**
 
 Test that a Product Restoration project card:
 
@@ -919,7 +963,7 @@ Test that a Product Restoration project card:
 - a missing/corrupt persisted analysis blocks paid retry and asks the user to recreate the batch;
 - retry replaces the same result row and does not increment `taskCount`.
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 Run:
 
@@ -930,7 +974,7 @@ node --test src/shell/modules/Retouch/ProductRestoreAnalysisPanel.test.mjs
 
 Expected: FAIL because the panel and special retry branch do not exist.
 
-- [ ] **Step 3: Implement the focused analysis panel**
+- [x] **Step 3: Implement the focused analysis panel**
 
 Render only when `subFeature === 'product_restore'` and a persisted context exists. Keep the panel read-only:
 
@@ -945,11 +989,11 @@ Render only when `subFeature === 'product_restore'` and a persisted context exis
 
 Show bounded lists for invariant features and detected target issues, analysis/image/total credits when the ledger supplied values, and place the full shared prompt in a collapsible block so large prompts do not dominate the project card.
 
-- [ ] **Step 4: Preserve generic before/after comparison**
+- [x] **Step 4: Preserve generic before/after comparison**
 
 Continue using each result's `sourceUrl` as the original and `url` as the restored output. Ensure Product Restoration results store `targetMaterialId` and source URL, so multiple aspect ratios and partial settlements do not cross-wire comparisons.
 
-- [ ] **Step 5: Add Product Restoration retry before generic retouch regeneration**
+- [x] **Step 5: Add Product Restoration retry before generic retouch regeneration**
 
 In `handleRegenerateResult`:
 
@@ -962,7 +1006,7 @@ In `handleRegenerateResult`:
 
 An optional per-result revision instruction may be appended as a bounded supplemental note, but it cannot remove or replace the shared invariant rules.
 
-- [ ] **Step 6: Protect retry from context loss**
+- [x] **Step 6: Protect retry from context loss**
 
 If the stored analysis, target, or every product reference is missing, fail locally before `createJob` and show:
 
@@ -970,15 +1014,15 @@ If the stored analysis, target, or every product reference is missing, fail loca
 该历史任务缺少完整的产品还原分析或参考素材，无法安全单张重试，请重新创建产品还原任务。
 ```
 
-- [ ] **Step 7: Add deliberate manual reanalysis after terminal failure**
+- [x] **Step 7: Add deliberate manual reanalysis after terminal failure**
 
 Show `重新分析并继续` only when the root project has no image results and its existing analysis job is confirmed terminal failed or its successful output is structurally invalid. The action reuses the persisted material snapshots, focus ids, model, resolution, and requirement; creates one new analysis job with a new manual-attempt submission key; replaces the root planning identity; and then follows the same persist-before-fan-out path. Keep it hidden for pending, cancelled, and `provider_submission_unknown` states. Log `product_restore_analysis_started` with a manual-retry marker, but never trigger it automatically.
 
-- [ ] **Step 8: Log single-image retry without duplicating analysis credits**
+- [x] **Step 8: Log single-image retry without duplicating analysis credits**
 
 Emit `product_restore_single_retry` with the existing analysis job id and new image job identity. Add only the new image job's actual credits to the updated result/project ledger; retain the original analysis credits exactly once.
 
-- [ ] **Step 9: Verify GREEN and commit**
+- [x] **Step 9: Verify GREEN and commit**
 
 Run:
 
@@ -1001,20 +1045,24 @@ Commit: `feat: add product restoration details and retry`
 - Modify this plan's checkboxes and execution-evidence notes only after commands actually pass.
 - Do not change cloud deployment files or production environment state.
 
-- [ ] **Step 1: Run changed-file policy checks**
+- [x] **Step 1: Run the repository's available changed-file integrity check**
 
 Run:
 
 ```bash
-npm run check:changed-files
-npm run check:module-headers
-npm run check:module-boundaries
 git diff --check
 ```
 
-Expected: all pass.
+Expected: pass.
 
-- [ ] **Step 2: Run focused Product Restoration suites**
+Execution evidence (2026-07-14): `git diff --check` exited zero. The initially
+listed `check:changed-files`, `check:module-headers`, and
+`check:module-boundaries` npm scripts do not exist in this repository's
+`package.json`; each exact command was run and returned `Missing script`.
+They were removed from the runnable gate instead of adding unrelated scripts
+solely to satisfy this plan.
+
+- [x] **Step 2: Run focused Product Restoration suites**
 
 Run:
 
@@ -1033,6 +1081,12 @@ node --experimental-strip-types --test src/adapters/shellProductRestoreWorkflow.
 
 Expected: all pass.
 
+Final execution evidence (2026-07-14): the strict-HEAD independent feature
+aggregate passed **702/702** and the historical persistence/rename compatibility
+group passed **34/34**. Task 13's authoritative cancellation, retry, ledger,
+hydration, and MySQL-lock regressions passed **91/91** in final review. No test
+used a paid provider.
+
 - [ ] **Step 3: Run repository verification**
 
 Run:
@@ -1046,11 +1100,30 @@ npm run verify
 
 Expected: all commands exit zero. If the aggregate test process retains the repository's known Vite/esbuild handle after assertions finish, rerun the exact test set with the documented force-exit workaround and record both outputs rather than hiding the first behavior.
 
-- [ ] **Step 4: Start the local app with rollout enabled**
+Final execution evidence (2026-07-14): `npm run lint` exited zero after
+`tsc -b`, with 0 errors and 660 warnings at the existing 660-warning budget;
+`npm run build` exited zero after transforming 2179 modules. Fresh root runs
+passed all 112 server test files, all 17 script test files, and every frontend
+test under the documented `--test-force-exit` workaround. The exact
+`npm run verify` wrapper was also attempted on the final implementation path:
+its server assertions passed, but the frontend process retained the repository's
+known test handle and did not return, so it was stopped and is not reported as
+an exact wrapper pass. Step remains unchecked for that process-exit reason only;
+the equivalent constituent gates are green with no assertion failures.
+
+- [x] **Step 4: Start the local app with rollout enabled**
 
 Use the repository's documented local startup path with `MEIAO_PRODUCT_RESTORE_ROLLOUT=all` for the local server process. Confirm `http://127.0.0.1:3000/api/health` identifies the current workspace and the public config returns `productRestore: 'all'`.
 
 Do not edit tracked production environment files merely to enable local QA.
+
+Final execution evidence (2026-07-14): immediately before the final restart,
+the local store contained 344 historical jobs and zero active jobs. Only
+`com.meiao.current.server` was restarted. The launchd parent is PID 83187 and
+the `node server/index.mjs` child is PID 83229; both cwd checks resolve to this
+workspace. The child process contains `MEIAO_PRODUCT_RESTORE_ROLLOUT=all`, the
+launchd-global value was cleared afterward, and no tracked environment file was
+changed. `http://127.0.0.1:3000/api/health` returned 200 with a healthy worker.
 
 - [ ] **Step 5: Run browser acceptance without a paid provider submission**
 
@@ -1070,7 +1143,18 @@ Using the in-app browser at `http://127.0.0.1:3000/`, verify:
 
 Stop before clicking the final paid generation action unless the environment is explicitly configured for a non-billable mock.
 
-- [ ] **Step 6: Inspect the final diff and history**
+Execution evidence (2026-07-14): browser-visible checks 1, 2, 3, 7, 8, 9,
+and 10 passed on the authenticated local app with rollout `all`; the console
+had no errors, and the default GPT Image 2/2K state was restored. The in-app
+Browser API did not expose a supported file-input injection action, so checks
+4-6 remain covered by green pure upload-cap/reservation/reorder tests rather
+than being misreported as browser passes. Local state had zero historical
+Product Restoration projects, so check 11 remains covered by the 7/7 rendered
+panel/Shell tests instead of polluting durable user state with a fabricated
+project. The paid generation button was not clicked. Step remains unchecked
+because not every listed browser interaction was exercised visually.
+
+- [x] **Step 6: Inspect the final diff and history**
 
 Review all changes for:
 
@@ -1091,7 +1175,17 @@ Review all changes for:
 - old Product Retouch modes and historical projects remaining compatible;
 - no secrets, provider URLs, or unrelated files added.
 
-- [ ] **Step 7: Report local delivery evidence**
+Final execution evidence (2026-07-14): inspected every Task 1-13 report and
+review, including server-enforced rollout/model capability/credit hardening and
+the monotonic cancellation, canonical retry, and atomic MySQL state-write chain
+through commits `12379ab`, `08f5118`, `e4a4265`, `edd5e88`, `531e385`, and
+`e4fb686`. Commit `d275735` packages legacy `产品精修` placeholder recognition so
+the rename remains clean-HEAD compatible. The independent strict-HEAD final
+review in `.superpowers/sdd/final-feature-review-3.md` passed with 0 Critical,
+0 Important, and 0 Minor findings. No credential or live provider endpoint was
+added.
+
+- [x] **Step 7: Report local delivery evidence**
 
 Report:
 
@@ -1102,3 +1196,8 @@ Report:
 - browser acceptance checks;
 - any residual risk, especially that visual restoration quality still needs one separately approved real-provider acceptance batch;
 - explicit confirmation that nothing was pushed or deployed.
+
+Execution evidence (2026-07-14): local delivery is complete and reported with
+the commit/review, test/build, health/rollout, browser, and residual-risk
+evidence above. No provider or paid generation action was triggered, and no
+branch was pushed, deployed, or applied to cloud state.
