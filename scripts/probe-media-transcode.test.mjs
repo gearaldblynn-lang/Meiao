@@ -7,6 +7,7 @@ const source = readFileSync(new URL('./probe-media-transcode.mjs', import.meta.u
 test('media probe runs the production service with real local binaries and always cleans temp files', () => {
   assert.match(source, /createMediaTranscodeService/);
   assert.match(source, /validateTranscodedOutput/);
+  assert.match(source, /process\.env\.MEIAO_FFMPEG_PATH\s*\|\|\s*require\('ffmpeg-static'\)/);
   assert.match(source, /mkdtemp/);
   assert.match(source, /finally/);
   assert.match(source, /rm\([^)]*\{\s*recursive:\s*true/);

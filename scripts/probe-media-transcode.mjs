@@ -10,7 +10,7 @@ import {
 import { validateTranscodedOutput } from '../server/mediaTranscodeContract.mjs';
 
 const require = createRequire(import.meta.url);
-const ffmpegPath = require('ffmpeg-static');
+const ffmpegPath = process.env.MEIAO_FFMPEG_PATH || require('ffmpeg-static');
 const service = createMediaTranscodeService({
   env: { ...process.env, MEIAO_MEDIA_TRANSCODE_ENABLED: '1' },
 });
