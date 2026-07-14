@@ -43,6 +43,78 @@ test('product restoration rejects an over-limit selection as one whole upload wi
   }), '');
 });
 
+test('product restoration reserves rapid selections synchronously and rolls pending capacity back', async () => {
+  const policy = requireUi();
+  assert.equal(typeof policy.createProductRestoreUploadReservationQueue, 'function');
+  const queue = policy.createProductRestoreUploadReservationQueue();
+  const scopeKey = 'retouch:product_restore';
+
+  const first = queue.reserve({
+    scopeKey,
+    type: 'restoreTarget',
+    existingCount: 9,
+    selectedCount: 1,
+  });
+  assert.equal(first.ok, true);
+  assert.equal(queue.getPendingCount(scopeKey, 'restoreTarget'), 1);
+
+  const rapidSecond = queue.reserve({
+    scopeKey,
+    type: 'restoreTarget',
+    existingCount: 9,
+    selectedCount: 1,
+  });
+  assert.deepEqual(rapidSecond, {
+    ok: false,
+    message: '本次选择未上传：待还原套图最多 10 张，当前已有 10 张，还可上传 0 张。',
+  });
+
+  await first.waitForTurn;
+  first.release();
+  assert.equal(queue.getPendingCount(scopeKey, 'restoreTarget'), 0);
+
+  const retryAfterRollback = queue.reserve({
+    scopeKey,
+    type: 'restoreTarget',
+    existingCount: 9,
+    selectedCount: 1,
+  });
+  assert.equal(retryAfterRollback.ok, true);
+  retryAfterRollback.release();
+});
+
+test('product restoration preserves FileList order when preprocessing settles out of order', async () => {
+  const policy = requireUi();
+  assert.equal(typeof policy.prepareProductRestoreUploadBatch, 'function');
+  const deferred = new Map();
+  const createDeferred = (name) => {
+    let resolve;
+    let reject;
+    const promise = new Promise((nextResolve, nextReject) => {
+      resolve = nextResolve;
+      reject = nextReject;
+    });
+    deferred.set(name, { resolve, reject, promise });
+    return promise;
+  };
+
+  const prepared = policy.prepareProductRestoreUploadBatch(
+    ['first', 'second', 'third', 'broken'],
+    async (name) => createDeferred(name),
+  );
+  await Promise.resolve();
+  deferred.get('third').resolve('prepared-third');
+  deferred.get('broken').reject(new Error('decode failed'));
+  deferred.get('second').resolve('prepared-second');
+  deferred.get('first').resolve('prepared-first');
+
+  assert.deepEqual(await prepared, [
+    'prepared-first',
+    'prepared-second',
+    'prepared-third',
+  ]);
+});
+
 test('product restoration reorders only the current scoped material slots and preserves objects', () => {
   const policy = requireUi();
   const otherA = { id: 'other-a', subFeature: 'original' };
@@ -106,6 +178,38 @@ test('product restoration rollout blocks creation without hiding historical acce
   );
   assert.equal(policy.getProductRestoreCreationDisabledReason('admin', 'admin'), '');
   assert.equal(policy.getProductRestoreCreationDisabledReason('all', 'user'), '');
+});
+
+test('product restoration uses one rollout guard for new and regenerated job creation only', () => {
+  const policy = requireUi();
+  assert.equal(typeof policy.getProductRestoreJobCreationDisabledReason, 'function');
+  const productRestore = { module: 'retouch', subFeature: 'product_restore' };
+  assert.equal(policy.getProductRestoreJobCreationDisabledReason({
+    ...productRestore,
+    rolloutMode: 'off',
+    role: 'admin',
+  }), '产品还原暂未开放，历史项目仍可查看。');
+  assert.equal(policy.getProductRestoreJobCreationDisabledReason({
+    ...productRestore,
+    rolloutMode: 'admin',
+    role: 'user',
+  }), '产品还原当前仅对管理员开放，历史项目仍可查看。');
+  assert.equal(policy.getProductRestoreJobCreationDisabledReason({
+    ...productRestore,
+    rolloutMode: 'admin',
+    role: 'admin',
+  }), '');
+  assert.equal(policy.getProductRestoreJobCreationDisabledReason({
+    ...productRestore,
+    rolloutMode: 'all',
+    role: 'user',
+  }), '');
+  assert.equal(policy.getProductRestoreJobCreationDisabledReason({
+    module: 'retouch',
+    subFeature: 'original',
+    rolloutMode: 'off',
+    role: 'user',
+  }), '');
 });
 
 test('product restoration billing estimate counts restore targets rather than references or analysis', () => {

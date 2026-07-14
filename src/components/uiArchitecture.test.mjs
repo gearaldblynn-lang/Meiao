@@ -2915,6 +2915,37 @@ test('image upgrade product restoration workspace wires uploads, choices, rollou
   assert.match(bottomInputBar, /materialCount: billingMaterialCount/);
 });
 
+test('product restoration upload reservations and regeneration share fail-closed creation guards', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const uploadBody = shellApp.match(/const handleMaterialUpload = useCallback\([\s\S]*?\n  \}, \[activeModule,/)?.[0] || '';
+  const regenerateBody = shellApp.slice(
+    shellApp.indexOf('const handleRegenerateResult = useCallback'),
+    shellApp.indexOf('const handleFissionResult = useCallback'),
+  );
+  const recoverBody = shellApp.slice(
+    shellApp.indexOf('const handleRecoverResult = useCallback'),
+    shellApp.indexOf('// Filtered projects & tasks for current module'),
+  );
+
+  assert.match(shellApp, /createProductRestoreUploadReservationQueue/);
+  assert.match(uploadBody, /productRestoreUploadReservationsRef\.current\.reserve/);
+  assert.ok(
+    uploadBody.indexOf('productRestoreUploadReservationsRef.current.reserve') < uploadBody.indexOf('Array.from(files)'),
+    'the complete selection must be reserved before FileList conversion or async preprocessing',
+  );
+  assert.match(uploadBody, /prepareProductRestoreUploadBatch/);
+  assert.match(uploadBody, /await reservation\.waitForTurn/);
+  assert.match(uploadBody, /finally[\s\S]*?reservation\.release\(\)/);
+  assert.match(uploadBody, /materialsRef\.current = next/);
+
+  assert.match(regenerateBody, /getProductRestoreJobCreationDisabledReason/);
+  const guardIndex = regenerateBody.indexOf('getProductRestoreJobCreationDisabledReason');
+  assert.ok(guardIndex >= 0 && guardIndex < regenerateBody.indexOf('retryInternalJob'), 'rollout must guard backend retry creation');
+  assert.ok(guardIndex < regenerateBody.indexOf('runShellImageGeneration'), 'rollout must guard image regeneration creation');
+  assert.doesNotMatch(recoverBody, /getProductRestoreJobCreationDisabledReason/);
+  assert.match(recoverBody, /recoverKieAiTask|hydrateShellJobs/);
+});
+
 test('shell buyer show and retouch migrate 3000 business logic instead of generic image prompts', () => {
   const shellWorkflow = read('../adapters/shellWorkflow.ts');
   const shellApp = read('../ShellMigratedApp.tsx');
