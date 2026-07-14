@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
 import { AspectRatio, ModuleConfig, GenerationQuality, AppModule, TranslationSubMode } from '../types';
-import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../utils/modelQuality';
+import { getModelDisplayName, getQualityForModelSwitch, MODEL_OPTIONS, getQualityOptionsForModel } from '../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../utils/modelAspectRatio';
 import { getImageModelCapabilities } from '../utils/modelCapabilities.mjs';
 import { PopoverSelect, PrimaryActionButton, SectionCard, SegmentedTabs, SidebarShell } from './ui/workspacePrimitives';
@@ -179,7 +179,7 @@ const SettingsSidebar: React.FC<Props> = ({
                       onChange({
                         ...config,
                         model: m,
-                        quality: getDefaultQualityForModel(m),
+                        quality: getQualityForModelSwitch(m, config.quality),
                         aspectRatio: getSafeAspectRatioForModel(
                           m,
                           config.aspectRatio,

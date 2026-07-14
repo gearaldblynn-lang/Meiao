@@ -3,7 +3,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { AspectRatio, OneClickConfig, OneClickSubMode, GenerationQuality, StyleStrength, GlobalApiConfig, OneClickReferenceAnalysis, OneClickReferenceDimension, OneClickReferenceItem, OneClickReferencePreset, OneClickReferencePresetLibrary } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
-import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
+import { getModelDisplayName, getQualityForModelSwitch, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
 import { hasAvailableAssetSources } from '../../utils/cloudAssetState.mjs';
 import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
@@ -807,7 +807,7 @@ const ConfigSidebar: React.FC<Props> = ({
                           onChange({
                             ...config,
                             model: m,
-                            quality: getDefaultQualityForModel(m),
+                            quality: getQualityForModelSwitch(m, config.quality),
                             aspectRatio: getSafeAspectRatioForModel(
                               m,
                               config.aspectRatio || (isDetail ? AspectRatio.AUTO : AspectRatio.SQUARE),

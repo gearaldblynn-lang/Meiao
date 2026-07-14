@@ -3,7 +3,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { AspectRatio, GenerationQuality, KieAiModel, RetouchPersistentState, RetouchTask } from '../../types';
 import { safeCreateObjectURL } from '../../utils/urlUtils';
 import { uploadToCos } from '../../services/tencentCosService';
-import { getDefaultQualityForModel, getModelDisplayName, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
+import { getModelDisplayName, getQualityForModelSwitch, MODEL_OPTIONS, getQualityOptionsForModel } from '../../utils/modelQuality';
 import { getSafeAspectRatioForModel, getSupportedAspectRatiosForModel } from '../../utils/modelAspectRatio';
 import { getImageModelCapabilities } from '../../utils/modelCapabilities.mjs';
 import { getRetouchCustomSizeRatioWarning } from './retouchSizingUtils.mjs';
@@ -239,7 +239,7 @@ const RetouchSidebar: React.FC<Props> = ({
                     key={m}
                     onClick={() => {
                       setModel(m);
-                      setQuality(getDefaultQualityForModel(m));
+                      setQuality(getQualityForModelSwitch(m, quality));
                       setAspectRatio(getSafeAspectRatioForModel(m, aspectRatio, AspectRatio.AUTO));
                     }}
                     className={`py-1.5 text-[10px] font-black rounded-lg transition-all ${model === m ? 'bg-white text-emerald-600 shadow-sm border border-slate-200' : 'text-slate-400'}`}

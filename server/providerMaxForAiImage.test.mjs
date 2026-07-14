@@ -14,7 +14,7 @@ const jsonResponse = (body, status = 200) => ({
   json: async () => body,
 });
 
-test('builds the documented text generation body with relay model and mapped size', () => {
+test('builds a text generation body that downgrades legacy 4K selections to the supported 2K size', () => {
   assert.deepEqual(buildMaxForAiImageRequestBody({
     payload: {
       model: 'maxforai-image-2-relay',
@@ -28,10 +28,24 @@ test('builds the documented text generation body with relay model and mapped siz
   }), {
     model: 'gpt-image-2',
     prompt: '中文产品海报',
-    size: '3840x2160',
+    size: '2048x1152',
     n: 1,
     response_format: 'url',
   });
+});
+
+test('keeps smart ratio as size auto for either supported resolution', () => {
+  for (const resolution of ['1K', '2K']) {
+    assert.equal(buildMaxForAiImageRequestBody({
+      payload: {
+        model: 'maxforai-image-2-relay',
+        prompt: '智能构图产品海报',
+        aspectRatio: 'auto',
+        resolution,
+      },
+      imageUrls: [],
+    }).size, 'auto');
+  }
 });
 
 test('exports a response normalizer for URL and base64 result contracts', () => {

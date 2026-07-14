@@ -24,7 +24,7 @@ export const QUALITY_OPTIONS: { label: string; value: GenerationQuality }[] = [
 export const getDefaultQualityForModel = (_model: KieAiModel): GenerationQuality =>
   '1k';
 
-export const getQualityOptionsForModel = (model: KieAiModel) => {
+export const getQualityOptionsForModel = (model: KieAiModel | string) => {
   const capabilities = getImageModelCapabilities(model);
   if (!capabilities.supportsQualitySelection) return [];
   const supportedResolutions = Array.isArray(capabilities.supportedResolutions)
