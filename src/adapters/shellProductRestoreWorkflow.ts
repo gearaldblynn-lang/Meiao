@@ -158,15 +158,34 @@ const validateRetryContext = (context?: ProductRestoreProjectContext) => {
   const parsedAnalysis = context?.normalizedAnalysis
     ? parseProductRestoreAnalysis(JSON.stringify(context.normalizedAnalysis))
     : { ok: false };
+  const focusIds = Array.isArray(context?.focusIds)
+    ? context.focusIds.map((focusId) => boundedIdentity(focusId))
+    : [];
+  const normalizedFocusIds = normalizeProductRestoreFocusIds(focusIds);
+  const hasUniqueIdentities = (values: unknown): values is string[] => (
+    Array.isArray(values)
+    && values.length > 0
+    && values.every((value) => (
+      typeof value === 'string'
+      && value === value.trim()
+      && boundedIdentity(value) === value
+      && Boolean(value)
+    ))
+    && new Set(values).size === values.length
+  );
   if (
     context?.version !== 1
     || !boundedIdentity(context.analysisJobId)
     || !boundedIdentity(context.sharedRestorationPrompt)
     || !parsedAnalysis.ok
-    || !Array.isArray(context.targetMaterialIds)
-    || context.targetMaterialIds.length === 0
-    || !Array.isArray(context.productReferenceMaterialIds)
-    || context.productReferenceMaterialIds.length === 0
+    || !Array.isArray(context.focusIds)
+    || focusIds.length === 0
+    || normalizedFocusIds.length !== focusIds.length
+    || normalizedFocusIds.some((focusId, index) => focusId !== focusIds[index])
+    || !hasUniqueIdentities(context.targetMaterialIds)
+    || !hasUniqueIdentities(context.productReferenceMaterialIds)
+    || !boundedIdentity(context.selectedImageModel)
+    || (context.resolution !== '2K' && context.resolution !== '4K')
   ) {
     throw toWorkflowError(
       PRODUCT_RESTORE_RETRY_CONTEXT_ERROR_MESSAGE,
@@ -244,9 +263,10 @@ const normalizeGenerationConfig = (
   config: ModuleConfig,
   context?: ProductRestoreProjectContext,
 ): ModuleConfig => {
-  const model = (context?.selectedImageModel || config.model) as ModuleConfig['model'];
-  const requestedResolution = context?.resolution || config.quality;
-  const resolution = normalizeProductRestoreResolution(model, requestedResolution);
+  const model = (context ? context.selectedImageModel : config.model) as ModuleConfig['model'];
+  const resolution = context
+    ? context.resolution
+    : normalizeProductRestoreResolution(model, config.quality);
   return {
     ...config,
     model,
@@ -353,7 +373,7 @@ export async function runShellProductRestoreItem(
   deps: ProductRestoreWorkflowDeps = DEFAULT_PRODUCT_RESTORE_DEPS,
 ): Promise<ShellWorkflowImageResult> {
   const { input, target, productReferences, batchIndex, batchCount } = itemInput;
-  const context = validateExistingContext(itemInput.context);
+  const context = validateRetryContext(itemInput.context);
   const projectId = requireProjectId(input);
   if (!target?.id) {
     throw toWorkflowError('产品还原目标缺少稳定素材身份。', 'product_restore_target_id_missing');
@@ -670,6 +690,59 @@ export function mergeProductRestoreSingleRetryProject<T extends {
     status: generatingCount > 0 ? 'generating' : completedCount === project.taskCount ? 'completed' : 'error',
     ...((analysisCredits + imageCredits) > 0 ? { creditsConsumed: analysisCredits + imageCredits } : {}),
   } as P;
+}
+
+export async function persistProductRestoreProjectOrDefer<P extends {
+  status: string;
+  completedAt?: number;
+  error?: string;
+  generationContext?: {
+    params: Record<string, unknown>;
+    productRestore?: ProductRestoreProjectContext;
+  };
+}>(input: {
+  project: P;
+  phase: 'analysis' | 'result';
+  persist: (project: P) => Promise<boolean>;
+}): Promise<{
+  persisted: boolean;
+  shouldReleaseTask: boolean;
+  project: P;
+}> {
+  const persisted = await input.persist(input.project);
+  if (persisted) {
+    return {
+      persisted: true,
+      shouldReleaseTask: true,
+      project: input.project,
+    };
+  }
+
+  const isAnalysis = input.phase === 'analysis';
+  const generationContext = isAnalysis && input.project.generationContext
+    ? {
+      ...input.project.generationContext,
+      params: {
+        ...input.project.generationContext.params,
+        productRestoreAnalysisJobStatus: 'succeeded',
+        productRestoreAnalysisErrorCode: 'product_restore_context_persistence_failed',
+      },
+    }
+    : input.project.generationContext;
+  const deferredProject = {
+    ...input.project,
+    status: isAnalysis ? 'planning' : 'generating',
+    completedAt: undefined,
+    error: isAnalysis
+      ? '产品还原分析已完成，但进度同步失败；已保留付费分析身份，稍后将继续同步。'
+      : '产品还原结果已生成，但进度同步失败；已保留任务身份，稍后将继续同步。',
+    ...(generationContext ? { generationContext } : {}),
+  } as unknown as P;
+  return {
+    persisted: false,
+    shouldReleaseTask: false,
+    project: deferredProject,
+  };
 }
 
 export function canManuallyReanalyzeProductRestore(input: {

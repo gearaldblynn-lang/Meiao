@@ -559,9 +559,11 @@ const ProjectCard: React.FC<Props> = ({
   );
   const hasGeneratingResult = project.results.some((result) => isResultActivelyGenerating(result));
   const projectProgressIncomplete = Number(project.completedCount || 0) < Number(project.taskCount || 0);
+  const hasPendingProductRestoreSync = isProductRestoreProject && String(project.error || '').includes('同步失败');
   const isProjectActivelyGenerating = project.status === 'generating' && (
     hasGeneratingResult
     || (!hasPlans && projectProgressIncomplete)
+    || hasPendingProductRestoreSync
   );
   const regenerationLockedByActiveProject = isProjectActivelyGenerating || hasGeneratingResult;
   const displayProjectStatus: Project['status'] = project.status === 'generating' && !isProjectActivelyGenerating
@@ -622,6 +624,12 @@ const ProjectCard: React.FC<Props> = ({
   const textReportText = textReportResult?.prompt || textReportEmptyText;
   const creditSummary = getProjectCreditsConsumed(project);
   const productRestoreContext = project.generationContext?.productRestore;
+  const productRestoreHasImageCredits = project.results.some((result) => (
+    result.creditsConsumed !== undefined
+    && result.creditsConsumed !== null
+    && Number.isFinite(Number(result.creditsConsumed))
+    && Number(result.creditsConsumed) >= 0
+  ));
   const productRestoreImageCredits = project.results.reduce((sum, result) => (
     sum + normalizeCreditsConsumed(result.creditsConsumed)
   ), 0);
@@ -674,7 +682,7 @@ const ProjectCard: React.FC<Props> = ({
       <div className="mt-1.5 flex min-w-0 max-w-full flex-col items-start gap-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
         {creditsConsumed > 0 && (
           <span className="rounded-full px-2 py-0.5 font-semibold tabular-nums" style={{ background: 'var(--bg-surface)', color: 'var(--accent)' }}>
-            本次消耗 {formatCreditsConsumed(creditsConsumed)} 积分
+            {isProductRestoreProject ? '累计图片消耗' : '本次消耗'} {formatCreditsConsumed(creditsConsumed)} 积分
           </span>
         )}
         {result.taskId && (
@@ -1252,8 +1260,10 @@ const ProjectCard: React.FC<Props> = ({
                 <div className="mb-4">
                   <ProductRestoreAnalysisPanel
                     context={productRestoreContext!}
-                    imageCreditsConsumed={productRestoreImageCredits || undefined}
-                    totalCreditsConsumed={productRestoreTotalCredits || undefined}
+                    imageCreditsConsumed={productRestoreHasImageCredits ? productRestoreImageCredits : undefined}
+                    totalCreditsConsumed={productRestoreContext.analysisCreditsConsumed !== undefined || productRestoreHasImageCredits
+                      ? productRestoreTotalCredits
+                      : undefined}
                     onCopyPrompt={(prompt) => void handleCopyPrompt(prompt)}
                   />
                 </div>
@@ -2213,7 +2223,7 @@ const ProjectCard: React.FC<Props> = ({
                                   {onRegenerate && canRetryTranslationResult(result) ? (
                                     <ResultActionButton
                                       icon={<RefreshCw size={12} />}
-                                      label={regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : isTranslationProject ? '重试' : '重生成'}
+                                      label={regeneratePending ? '提交中' : (isGeneratingResult || regenerationLockedByActiveProject) ? '生成中' : (isTranslationProject || isProductRestoreProject) ? '重试' : '重生成'}
                                       tone="primary"
                                       disabled={regeneratePending || isGeneratingResult || regenerationLockedByActiveProject}
                                       onClick={() => {

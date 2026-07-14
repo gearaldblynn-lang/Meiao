@@ -121,7 +121,7 @@ test('renders Product Restoration analysis, bounded lists, shared prompt, and re
   assert.match(markup, /共享还原 Prompt/);
   assert.match(markup, /Restore only the verified product body/);
   assert.match(markup, /分析积分/);
-  assert.match(markup, /出图积分/);
+  assert.match(markup, /累计图片消耗/);
   assert.match(markup, /总积分/);
   assert.match(markup, />4</);
   assert.match(markup, />6</);
@@ -132,7 +132,7 @@ test('renders Product Restoration analysis, bounded lists, shared prompt, and re
   assert.match(markup, /<details/);
 });
 
-test('copy action forwards the persisted shared prompt and absent credits are not invented', async () => {
+test('copy action forwards the prompt while explicit zero credits remain distinct from absent image credits', async () => {
   const { default: ProductRestoreAnalysisPanel } = await loadPanelModule();
   let copied = '';
   const element = ProductRestoreAnalysisPanel({
@@ -149,9 +149,25 @@ test('copy action forwards the persisted shared prompt and absent credits are no
   copyButton.props.onClick();
   assert.equal(copied, context.sharedRestorationPrompt);
   const markup = renderToStaticMarkup(element);
-  assert.doesNotMatch(markup, /分析积分/);
-  assert.doesNotMatch(markup, /出图积分/);
+  assert.match(markup, /分析积分/);
+  assert.match(markup, />0</);
+  assert.doesNotMatch(markup, /累计图片消耗/);
   assert.doesNotMatch(markup, /总积分/);
+});
+
+test('explicit zero image and total ledger values render while omitted values stay absent', async () => {
+  const { default: ProductRestoreAnalysisPanel } = await loadPanelModule();
+  const markup = renderToStaticMarkup(React.createElement(ProductRestoreAnalysisPanel, {
+    context: { ...context, analysisCreditsConsumed: 0 },
+    imageCreditsConsumed: 0,
+    totalCreditsConsumed: 0,
+    onCopyPrompt: () => {},
+  }));
+
+  assert.match(markup, /分析积分/);
+  assert.match(markup, /累计图片消耗/);
+  assert.match(markup, /总积分/);
+  assert.equal((markup.match(/>0</g) || []).length, 3);
 });
 
 test('ProjectCard scopes the panel to Product Restoration with persisted context', () => {
@@ -174,6 +190,9 @@ test('ProjectCard keeps persisted sourceUrl beside restored output and wires man
   assert.match(projectCardSource, /后端状态/);
   assert.match(projectCardSource, /后端任务 ID/);
   assert.match(projectCardSource, /isProductRestoreProject && displayResult\.error/);
+  assert.match(projectCardSource, /isProductRestoreProject \? '累计图片消耗'/);
+  assert.match(projectCardSource, /\(isTranslationProject \|\| isProductRestoreProject\) \? '重试' : '重生成'/);
+  assert.match(projectCardSource, /hasPendingProductRestoreSync/);
   assert.match(projectCardSource, /重新分析并继续/);
   assert.match(projectCardSource, /PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID/);
 });
@@ -192,4 +211,6 @@ test('Shell regeneration routes Product Restoration through persisted-context re
   assert.match(shellSource, /productRestoreManualRetry:\s*true/);
   assert.match(shellSource, /productRestoreAnalysisSubmissionKey/);
   assert.match(shellSource, /onProductRestoreAnalysisCompleted:\s*async[\s\S]*await persistProjectToSharedState/);
+  assert.match(shellSource, /persistProductRestoreProjectOrDefer/);
+  assert.match(shellSource, /if \(!finalPersistence\.persisted\)[\s\S]*同步失败/);
 });
