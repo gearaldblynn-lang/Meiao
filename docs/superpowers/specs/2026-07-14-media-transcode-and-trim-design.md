@@ -141,7 +141,7 @@ MySQL 与本地 JSON 模式共用同一业务处理函数，只在身份校验�
 - `mediaTranscodeClient`：创建会话、转换、取消。
 - `mediaTrimRules`：2–15 秒范围、同类最多 3 个、同类总时长 15 秒的纯函数。
 
-`BottomInputBar`、短视频旧侧栏和分镜爆款参考视频入口统一进入同一处理器。成功后才创建 `Material`，保存服务端返回的 `remoteUrl`、标准文件名、MIME、时长和转码标记；原始不兼容 `File` 不再进入现有 `uploadInternalAssetStream`。
+当前生产路由中的 `BottomInputBar` 同时承载短视频生成、参考音频和分镜爆款参考视频上传，统一进入同一处理器。成功后才创建 `Material`，保存服务端返回的 `remoteUrl`、标准文件名、MIME、时长和转码标记；原始不兼容 `File` 不再进入现有 `uploadInternalAssetStream`。未被 `ShellMigratedApp` 路由使用的旧版 `src/modules/Video` 侧栏不在生产链路内，本次不为它复制第二套实现。
 
 图片上传链路保持不变。
 
