@@ -115,9 +115,9 @@ npm run dev
 - `MEIAO_SUBMITTED_TASK_RECOVERY_RETRIES`：默认 `2`；只用于已记录 providerTaskId 的旧任务查询/结果下载，不用于重提 create/chat POST。
 - `MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS`：默认 `60000`；云上建议 `30000`，控制 stale running 任务回收检查间隔。
 - `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS`：云上建议 `120000`；KIE 素材上传单次 HTTP 超时。分镜参考视频等较大素材需要更长上传预算；瞬时网络或上游 5xx 错误允许有限重试后释放并发。
-- `MAXFORAI_API_KEY` / `MAXFORAI_BASE_URL`：`image-2中转` 的独立服务端凭证和接口根地址；站内 ID 为 `maxforai-image-2-relay`，上游模型固定为 `gpt-image-2`。密钥不得下发前端，也不复用 OpenAI Compatible 凭证；该模型当前不进入旧积分系统。生成请求显式携带 `response_format: "url"`，但响应解析仍同时兼容 `data[0].url` 和 `data[0].b64_json`：后者会在任务成功落库前转换为站内托管素材，持久化结果只保留托管 URL、素材 ID 和非敏感的响应格式标记，不保存原始 base64。
+- `MAXFORAI_API_KEY` / `MAXFORAI_BASE_URL`：`image-2中转` 的独立服务端凭证和接口根地址；站内 ID 为 `maxforai-image-2-relay`，上游模型固定为 `gpt-image-2`。密钥不得下发前端，也不复用 OpenAI Compatible 凭证；该模型当前不进入旧积分系统。文生图 `/images/generations` 使用 JSON；图生图 `/images/edits` 按当前 New API 运行时契约使用 multipart 二进制 `image` 文件，不能把公网 URL 对象 JSON 直接交给编辑端点。请求显式携带 `response_format: "url"`，但响应解析仍同时兼容 `data[0].url` 和 `data[0].b64_json`：后者会在任务成功落库前转换为站内托管素材，持久化结果只保留托管 URL、素材 ID 和非敏感的响应格式标记，不保存原始 base64。
 - `MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS`：默认 `600000`；只控制 Image-2 单次付费生成/编辑 POST 的等待时间。付费 POST 不自动重试，结果不明时进入 `provider_submission_unknown`。
-- `MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS` / `MAXFORAI_ASSET_UPLOAD_CONCURRENCY`：默认 `120000` / `3`；只控制付费提交前将本地、HTTP 或内部素材上传至 MaxForAI `/assets` 的转链阶段。
+- `MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS` / `MAXFORAI_ASSET_UPLOAD_CONCURRENCY`：默认 `120000` / `3`；保留既有环境变量名，只控制付费编辑提交前下载参考素材并封装 multipart 文件的准备阶段。
 - `MEIAO_TEMPORAL_ACTIVITY_HEARTBEAT_MS`：默认 `10000`，允许 `1000-15000`；长耗时 provider 请求期间持续给 Temporal 保活，避免 30 秒 heartbeat timeout 把仍在执行的付费请求判死。MaxForAI workflow 的 activity 额外强制单次尝试，执行器失联也不会自动重提付费 POST。
 - `MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS`：默认 `360000`（6 分钟）；KIE 对话/Gemini 同步推理的本地等待上限。该值需高于 KIE 上游常见的 300 秒超时，避免梅奥提前中断而丢失上游真实终态；调大只改善结果回收，不会修复 KIE/Gemini 自身的 504。
 - `MEIAO_COS_SECRET_ID` / `MEIAO_COS_SECRET_KEY`：Gemini 视频专用腾讯 COS 服务端凭证；必须来自只允许目标桶 `gemini-video/*` 执行 `PutObject`、`GetObject` 的 CAM 子用户，不得下发前端或使用主账号密钥。
