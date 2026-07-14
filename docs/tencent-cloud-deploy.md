@@ -101,7 +101,7 @@ EOF
 
 `APP_STATE_MAX_BYTES` 是 app_states 单行 state_json 写入大小闸(超闸按 updatedAt 倒序裁老项目,active 永留)。云上 2026-07-04 起为 `16777216`(16 MiB):当时妙木山 8.76 MiB 已超旧 8 MiB 闸、正在丢老项目;线上 MySQL `max_allowed_packet` 实测 128 MiB,16 MiB 仍有 8 倍余量。调整该值必须 `source .env.server` 后 `pm2 restart --update-env` 并从进程环境(`/proc/<pid>/environ`)复核生效。
 
-`MEIAO_KIE_HTTP_TRANSIENT_RETRIES` / `MEIAO_KIE_HTTP_RETRY_BASE_MS` 控制 KIE HTTP 请求级瞬时重试（默认 2 次、退避 1s/3s）：连接层错误（`fetch failed` 等，未收到响应）对所有请求重试，`502/503/504` 只对只读 GET 重试；createTask/chat 等可能扣费的提交 POST 收到响应一律不重试。文件上传 POST 是显式例外，由独立上传预算控制。任务失败落库时 `error_message` 为用户可读人话、`error_detail` 保留技术原文。
+`MEIAO_KIE_HTTP_TRANSIENT_RETRIES` / `MEIAO_KIE_HTTP_RETRY_BASE_MS` 控制 KIE HTTP 请求级瞬时重试（默认 2 次、退避 1s/3s）：createTask/chat 付费 POST 只有在全部底层原因都明确停在 TCP `connect` 阶段（如 `ETIMEDOUT/ENETUNREACH`）时才安全重试；连接建立后的 `ECONNRESET/UND_ERR_SOCKET`、主动超时、混合未知异常或任何 HTTP 响应都不得重提。`502/503/504` 默认只对只读 GET 重试；文件上传 POST 是显式例外，由独立上传预算控制。任务失败落库时 `error_message` 为用户可读人话、`error_detail` 保留技术原文。
 
 `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 控制 KIE 素材上传单次 HTTP 超时，云上建议 `120000`。分镜参考视频等较大素材需要更长上传预算；如果上传出现瞬时网络或上游 5xx 错误，任务允许有限重试后释放并发，不走 base64 上传接口。
 

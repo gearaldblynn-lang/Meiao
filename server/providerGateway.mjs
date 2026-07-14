@@ -169,6 +169,29 @@ const extractTransportErrorMeta = (error) => {
   };
 };
 
+const KIE_PRE_SUBMIT_CONNECT_ERROR_CODES = new Set([
+  'EADDRNOTAVAIL',
+  'ECONNREFUSED',
+  'EHOSTUNREACH',
+  'ENETDOWN',
+  'ENETUNREACH',
+  'ETIMEDOUT',
+]);
+
+const isDefinitiveKiePreSubmitConnectionError = (error) => {
+  const directCause = error?.cause && typeof error.cause === 'object' ? error.cause : null;
+  const nestedCauses = Array.isArray(directCause?.errors) ? directCause.errors.filter(Boolean) : [];
+  const candidates = nestedCauses.length > 0 ? nestedCauses : [directCause].filter(Boolean);
+  if (candidates.length === 0) return false;
+
+  return candidates.every((cause) => {
+    const code = String(cause?.code || cause?.errno || '').trim().toUpperCase();
+    const syscall = String(cause?.syscall || '').trim().toLowerCase();
+    if (code === 'UND_ERR_CONNECT_TIMEOUT') return true;
+    return syscall === 'connect' && KIE_PRE_SUBMIT_CONNECT_ERROR_CODES.has(code);
+  });
+};
+
 const normalizeKieTaskCreationError = (responseStatus, result = {}, defaultMessage) => {
   const code = Number(result?.code || 0);
   const rawMessage = String(result?.msg || defaultMessage || '').trim();
@@ -246,9 +269,11 @@ const fetchKieOnce = async (
         providerStatus: 'timeout',
       });
     }
+    const providerSubmissionNotStarted = isDefinitiveKiePreSubmitConnectionError(error);
     throw createProviderError('provider_network_error', error?.message || 'Kie 网络请求失败', {
       providerStage,
       providerStatus: 'network_error',
+      providerSubmissionNotStarted,
       ...extractTransportErrorMeta(error),
     });
   } finally {
@@ -263,8 +288,9 @@ const fetchKieOnce = async (
 // 也通过 deps 走这里),对瞬时传输错误做有界重试。与 jobRuntime 的任务级重试
 // (getNextJobFailureState)叠加,但预算相互独立。
 //
-// 防重复提交铁则:createTask/chat 类 POST 会产生扣费或新任务。连接层抛错
-// 也无法证明对端未接单，因此非幂等请求一律不重发，并进入 submission_unknown。
+// 防重复提交铁则:createTask/chat 类 POST 会产生扣费或新任务。只有底层明确显示
+// TCP 连接尚未建立时才可安全重试；连接建立后的读写异常无法证明对端未接单，
+// 一律不重发并进入 submission_unknown。
 // 只读请求(GET:recordInfo 查询、素材/结果下载)可放心重试含 5xx。
 // 我们自己的超时中断(provider_timeout)不做请求级重试:请求可能已被对端处理,
 // 且任务级重试已覆盖 provider_timeout。
@@ -336,8 +362,13 @@ const fetchKieWithTimeout = async (
     try {
       response = await fetchKieOnce(url, fetchInit, timeoutMessage, timeoutMs, providerStage);
     } catch (error) {
-      if (error?.code === 'provider_network_error' && idempotent && attempt < maxRetries) {
+      const safePreSubmitRetry = error?.providerSubmissionNotStarted === true;
+      if (error?.code === 'provider_network_error' && (idempotent || safePreSubmitRetry) && attempt < maxRetries) {
         continue;
+      }
+      if (error?.code === 'provider_network_error' && !idempotent && safePreSubmitRetry) {
+        if (attempt > 0) error.transientRetries = attempt;
+        throw error;
       }
       if (error?.code === 'provider_network_error' && !idempotent) {
         throw createProviderError(

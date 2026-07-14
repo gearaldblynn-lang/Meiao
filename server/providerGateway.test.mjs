@@ -5866,6 +5866,49 @@ test('提交类 POST 连接层错误标记未知且绝不自动重发', async ()
   }
 });
 
+test('提交类 POST 在 TCP 连接明确未建立时可安全重试', async () => {
+  const realFetch = globalThis.fetch;
+  const realRetryBase = process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+  process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = '1';
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      const error = new TypeError('fetch failed');
+      const cause = new AggregateError([
+        Object.assign(new Error('connect ETIMEDOUT 104.18.4.14:443'), {
+          code: 'ETIMEDOUT',
+          syscall: 'connect',
+          address: '104.18.4.14',
+          port: 443,
+        }),
+        Object.assign(new Error('connect ENETUNREACH 2606:4700::6812:40e:443'), {
+          code: 'ENETUNREACH',
+          syscall: 'connect',
+          address: '2606:4700::6812:40e',
+          port: 443,
+        }),
+      ], 'KIE connect failed');
+      cause.code = 'ETIMEDOUT';
+      error.cause = cause;
+      throw error;
+    }
+    return createJsonResponse({ code: 200, data: { taskId: 'safe-retry-task' } });
+  };
+  try {
+    const response = await __testOnly_fetchKieWithTimeout('https://api.kie.ai/api/v1/jobs/createTask', {
+      method: 'POST',
+      body: JSON.stringify({ model: 'x' }),
+    }, 'Kie 创建超时', 5000, 'create_task');
+    assert.equal(response.status, 200);
+    assert.equal(calls, 2);
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realRetryBase === undefined) delete process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
+    else process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = realRetryBase;
+  }
+});
+
 test('显式幂等 POST 连接层错误仍可按传输预算恢复', async () => {
   const realFetch = globalThis.fetch;
   const realRetryBase = process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS;
