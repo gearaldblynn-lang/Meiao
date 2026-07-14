@@ -1722,7 +1722,7 @@ const normalizeUserAnalysisModel = (value = '') => {
 const canUseVideoGenerationFeature = (user) =>
   user?.role === 'admin' || normalizeFeaturePermissions(user?.featurePermissions).videoGeneration;
 
-const resolveAuthorizedJobSubmissionPolicy = (user, body) => resolveJobSubmissionPolicy({
+const resolveAuthorizedJobSubmissionPolicy = (user, body, { submissionOperation = 'create' } = {}) => resolveJobSubmissionPolicy({
   module: body?.module,
   taskType: body?.taskType,
   provider: body?.provider,
@@ -1732,7 +1732,7 @@ const resolveAuthorizedJobSubmissionPolicy = (user, body) => resolveJobSubmissio
   hasVideoPermission: canUseVideoGenerationFeature(user),
   userRole: user?.role,
   productRestoreRollout: process.env.MEIAO_PRODUCT_RESTORE_ROLLOUT,
-  submissionOperation: body?.taskType === 'kie_recover' ? 'recover' : 'create',
+  submissionOperation,
 });
 
 const normalizeJobMaxRetries = (taskType, value) => (
@@ -13335,14 +13335,6 @@ const handleMysqlRequest = async (req, res, url) => {
       json(res, 400, { message: '恢复任务缺少必要参数。' });
       return;
     }
-    let submissionPolicy;
-    try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
-    } catch (error) {
-      respondJobSubmissionPolicyError(res, error);
-      return;
-    }
-
     const pool = await getMysqlPool();
     const response = await createAuthorizedProviderRecovery({
       userId: user.id,
@@ -13351,6 +13343,11 @@ const handleMysqlRequest = async (req, res, url) => {
         findJobByProviderTaskIdForUser(pool, userId, providerTaskId)
       ),
       createRecoveryJob: async () => {
+        const submissionPolicy = resolveAuthorizedJobSubmissionPolicy(
+          user,
+          body,
+          { submissionOperation: 'recover' },
+        );
         const recoveredPayload = await scrubDbJobPayloadBeforeSubmission({
           ...body.payload,
           providerTaskId: body.providerTaskId,
@@ -16876,14 +16873,6 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       json(res, 400, { message: '恢复任务缺少必要参数。' });
       return;
     }
-    let submissionPolicy;
-    try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, body);
-    } catch (error) {
-      respondJobSubmissionPolicyError(res, error);
-      return;
-    }
-
     const response = await createAuthorizedProviderRecovery({
       userId: user.id,
       request: body,
@@ -16891,6 +16880,11 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         findLocalJobByProviderTaskIdForUser(store, userId, providerTaskId)
       ),
       createRecoveryJob: async () => {
+        const submissionPolicy = resolveAuthorizedJobSubmissionPolicy(
+          user,
+          body,
+          { submissionOperation: 'recover' },
+        );
         const recoveredPayload = await scrubLocalJobPayloadBeforeSubmission({
           ...body.payload,
           providerTaskId: body.providerTaskId,
