@@ -225,13 +225,13 @@ tar \
     # 首发时旧进程不认识 marker。先用 iptables 拒绝新的 Nginx/直连 3100 连接，
     # 等已有连接连续为零，再由 MySQL 持锁助手复查 running=0 并停止旧 PM2。
     # 新进程启动后才开放网络做 health，此时 marker 仍会拒绝所有写请求并暂停 worker。
-    DRAIN_MARKER_FILE="\${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}"
-    DRAIN_READY_FILE="/tmp/meiao-deploy-drain-ready-\$\$"
-    DRAIN_STOP_ATTEMPTED_FILE="/tmp/meiao-deploy-drain-stop-attempted-\$\$"
-    DRAIN_STOPPED_FILE="/tmp/meiao-deploy-drain-stopped-\$\$"
-    DRAIN_RELEASE_FILE="/tmp/meiao-deploy-drain-release-\$\$"
-    DRAIN_NETWORK_STATE_FILE="/tmp/meiao-deploy-network-drain-\$\$.json"
-    DRAIN_NETWORK_COMMENT="meiao-deploy-\$\$"
+    DRAIN_MARKER_FILE=\"\${MEIAO_DEPLOY_DRAIN_FILE:-/tmp/meiao-deploy-drain}\"
+    DRAIN_READY_FILE=\"/tmp/meiao-deploy-drain-ready-\$\$\"
+    DRAIN_STOP_ATTEMPTED_FILE=\"/tmp/meiao-deploy-drain-stop-attempted-\$\$\"
+    DRAIN_STOPPED_FILE=\"/tmp/meiao-deploy-drain-stopped-\$\$\"
+    DRAIN_RELEASE_FILE=\"/tmp/meiao-deploy-drain-release-\$\$\"
+    DRAIN_NETWORK_STATE_FILE=\"/tmp/meiao-deploy-network-drain-\$\$.json\"
+    DRAIN_NETWORK_COMMENT=\"meiao-deploy-\$\$\"
     DRAIN_PID=''
     NETWORK_DRAIN_ACTIVE=0
     OLD_PROCESS_STOP_ATTEMPTED=0
@@ -242,19 +242,19 @@ tar \
     CLEANUP_RUNNING=0
 
     enable_network_drain() {
-      if [ "\$NETWORK_DRAIN_ACTIVE" = '1' ]; then return 0; fi
+      if [ \"\$NETWORK_DRAIN_ACTIVE\" = '1' ]; then return 0; fi
       node scripts/backend-network-drain.mjs enter \
-        --state-file "\$DRAIN_NETWORK_STATE_FILE" \
-        --comment "\$DRAIN_NETWORK_COMMENT"
+        --state-file \"\$DRAIN_NETWORK_STATE_FILE\" \
+        --comment \"\$DRAIN_NETWORK_COMMENT\"
       NETWORK_DRAIN_ACTIVE=1
     }
 
     disable_network_drain() {
-      if [ ! -f "\$DRAIN_NETWORK_STATE_FILE" ]; then
+      if [ ! -f \"\$DRAIN_NETWORK_STATE_FILE\" ]; then
         NETWORK_DRAIN_ACTIVE=0
         return 0
       fi
-      node scripts/backend-network-drain.mjs exit --state-file "\$DRAIN_NETWORK_STATE_FILE"
+      node scripts/backend-network-drain.mjs exit --state-file \"\$DRAIN_NETWORK_STATE_FILE\"
       NETWORK_DRAIN_ACTIVE=0
     }
 
@@ -275,34 +275,34 @@ tar \
         --mutex-dir '$REMOTE_DEPLOY_MUTEX_DIR' --owner '$DEPLOY_OWNER_TOKEN' \
         --marker-file \"\$DRAIN_MARKER_FILE\" || return 1
       echo '部署门禁已进入 manual 状态；不得直接删除 marker。'
-      echo "网络规则状态：\$DRAIN_NETWORK_STATE_FILE"
+      echo \"网络规则状态：\$DRAIN_NETWORK_STATE_FILE\"
       echo '安全恢复：先确认/启动 PM2，保留 marker 时精确清理网络规则，通过 health+worker 检查后才删除 marker。'
     }
 
     cleanup_deploy_drain() {
-      if [ "\$CLEANUP_RUNNING" = '1' ]; then return; fi
+      if [ \"\$CLEANUP_RUNNING\" = '1' ]; then return; fi
       CLEANUP_RUNNING=1
       set +e
-      if [ -n "\$DRAIN_CHILD_PID" ]; then
-        if kill -0 "\$DRAIN_CHILD_PID" >/dev/null 2>&1; then
-          touch "\$DRAIN_RELEASE_FILE" || true
+      if [ -n \"\$DRAIN_CHILD_PID\" ]; then
+        if kill -0 \"\$DRAIN_CHILD_PID\" >/dev/null 2>&1; then
+          touch \"\$DRAIN_RELEASE_FILE\" || true
         fi
-        wait "\$DRAIN_CHILD_PID" || true
-        if kill -0 "\$DRAIN_CHILD_PID" >/dev/null 2>&1; then
+        wait \"\$DRAIN_CHILD_PID\" || true
+        if kill -0 \"\$DRAIN_CHILD_PID\" >/dev/null 2>&1; then
           echo '部署 drain 子进程未退出，保留所有门禁和 mutex。' >&2
           return 2
         fi
       fi
       DRAIN_PID=''
       DRAIN_CHILD_PID=''
-      if [ -f "\$DRAIN_STOP_ATTEMPTED_FILE" ]; then OLD_PROCESS_STOP_ATTEMPTED=1; fi
-      if [ -f "\$DRAIN_STOPPED_FILE" ]; then OLD_PROCESS_STOPPED=1; fi
+      if [ -f \"\$DRAIN_STOP_ATTEMPTED_FILE\" ]; then OLD_PROCESS_STOP_ATTEMPTED=1; fi
+      if [ -f \"\$DRAIN_STOPPED_FILE\" ]; then OLD_PROCESS_STOPPED=1; fi
 
-      if [ "\$NEW_PROCESS_STARTED" = '1' ] && [ "\$HEALTH_READY" != '1' ]; then
+      if [ \"\$NEW_PROCESS_STARTED\" = '1' ] && [ \"\$HEALTH_READY\" != '1' ]; then
         enable_network_drain || true
         pm2 stop meiao-internal || true
         if PM2_PID_OUTPUT=\$(pm2 pid meiao-internal 2>/dev/null); then
-          if node scripts/deploy-lifecycle.mjs pm2-stopped "\$PM2_PID_OUTPUT"; then
+          if node scripts/deploy-lifecycle.mjs pm2-stopped \"\$PM2_PID_OUTPUT\"; then
             NEW_PROCESS_STOPPED=1
           fi
         else
@@ -312,15 +312,15 @@ tar \
 
       RELEASE_DRAIN=0
       CLEANUP_DECISION=\$(node scripts/deploy-lifecycle.mjs cleanup \
-        "\$OLD_PROCESS_STOPPED" "\$OLD_PROCESS_STOP_ATTEMPTED" \
-        "\$NEW_PROCESS_STARTED" "\$HEALTH_READY" "\$NEW_PROCESS_STOPPED" \
+        \"\$OLD_PROCESS_STOPPED\" \"\$OLD_PROCESS_STOP_ATTEMPTED\" \
+        \"\$NEW_PROCESS_STARTED\" \"\$HEALTH_READY\" \"\$NEW_PROCESS_STOPPED\" \
         2>/dev/null || echo retain)
-      if [ "\$CLEANUP_DECISION" = 'release' ]; then RELEASE_DRAIN=1; fi
-      if [ "\$RELEASE_DRAIN" = '1' ]; then
+      if [ \"\$CLEANUP_DECISION\" = 'release' ]; then RELEASE_DRAIN=1; fi
+      if [ \"\$RELEASE_DRAIN\" = '1' ]; then
         if disable_network_drain && remove_owned_deploy_marker; then
-          rm -f "\$DRAIN_READY_FILE" "\$DRAIN_STOP_ATTEMPTED_FILE" "\$DRAIN_STOPPED_FILE" \
-            "\$DRAIN_RELEASE_FILE" \
-            "\$DRAIN_NETWORK_STATE_FILE"
+          rm -f \"\$DRAIN_READY_FILE\" \"\$DRAIN_STOP_ATTEMPTED_FILE\" \"\$DRAIN_STOPPED_FILE\" \
+            \"\$DRAIN_RELEASE_FILE\" \
+            \"\$DRAIN_NETWORK_STATE_FILE\"
         else
           if ! retain_deploy_drain; then
             echo '维护门禁持久化失败，拒绝确认远端清理完成。' >&2
@@ -333,16 +333,16 @@ tar \
           echo '维护门禁持久化失败，拒绝确认远端清理完成。' >&2
           return 2
         fi
-        if [ "\$OLD_PROCESS_STOPPED" = '1' ] && [ "\$NEW_PROCESS_STARTED" != '1' ]; then
+        if [ \"\$OLD_PROCESS_STOPPED\" = '1' ] && [ \"\$NEW_PROCESS_STARTED\" != '1' ]; then
           echo '严重：旧服务已停止且新服务未启动，当前服务已停止；必须按恢复流程人工处理。'
-        elif [ "\$OLD_PROCESS_STOP_ATTEMPTED" = '1' ] && [ "\$NEW_PROCESS_STARTED" != '1' ]; then
+        elif [ \"\$OLD_PROCESS_STOP_ATTEMPTED\" = '1' ] && [ \"\$NEW_PROCESS_STARTED\" != '1' ]; then
           echo '严重：旧服务停机尝试已登记但状态未核实，且新服务未启动；服务可能已停止，必须人工恢复。'
         else
           echo '新进程未确认停止，保留维护门禁和 marker 等待人工处理。'
         fi
       fi
     }
-    if [ -e "\$DRAIN_MARKER_FILE" ]; then
+    if [ -e \"\$DRAIN_MARKER_FILE\" ]; then
       echo '检测到残留部署 marker（包括空文件），禁止开始新发布。'
       exit 2
     fi
@@ -352,26 +352,26 @@ tar \
     write_owned_deploy_marker
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' \
       node scripts/hold-deploy-drain.mjs \
-        --ready-file "\$DRAIN_READY_FILE" \
-        --stop-attempted-file "\$DRAIN_STOP_ATTEMPTED_FILE" \
-        --stopped-file "\$DRAIN_STOPPED_FILE" \
-        --release-file "\$DRAIN_RELEASE_FILE" &
+        --ready-file \"\$DRAIN_READY_FILE\" \
+        --stop-attempted-file \"\$DRAIN_STOP_ATTEMPTED_FILE\" \
+        --stopped-file \"\$DRAIN_STOPPED_FILE\" \
+        --release-file \"\$DRAIN_RELEASE_FILE\" &
     DRAIN_PID=\$!
     DRAIN_CHILD_PID=\$DRAIN_PID
     for attempt in \$(seq 1 300); do
-      if [ -f "\$DRAIN_STOPPED_FILE" ]; then break; fi
-      if ! kill -0 "\$DRAIN_PID" >/dev/null 2>&1; then
-        wait "\$DRAIN_PID"
+      if [ -f \"\$DRAIN_STOPPED_FILE\" ]; then break; fi
+      if ! kill -0 \"\$DRAIN_PID\" >/dev/null 2>&1; then
+        wait \"\$DRAIN_PID\"
         exit 2
       fi
       sleep 0.2
     done
-    if [ ! -f "\$DRAIN_READY_FILE" ] || [ ! -f "\$DRAIN_STOPPED_FILE" ]; then
+    if [ ! -f \"\$DRAIN_READY_FILE\" ] || [ ! -f \"\$DRAIN_STOPPED_FILE\" ]; then
       echo '部署 drain 停机握手超时，已停止发布。'
       exit 2
     fi
-    cat "\$DRAIN_READY_FILE"
-    PM2_APP_EXISTS=\$(cat "\$DRAIN_STOPPED_FILE")
+    cat \"\$DRAIN_READY_FILE\"
+    PM2_APP_EXISTS=\$(cat \"\$DRAIN_STOPPED_FILE\")
     OLD_PROCESS_STOP_ATTEMPTED=1
     OLD_PROCESS_STOPPED=1
 
@@ -383,16 +383,16 @@ tar \
     rm -rf dist-prev '$REMOTE_TMP_DIR'
 
     # stopped ack 只会在同一 MySQL 持锁会话验证 PM2 已停后产生。
-    touch "\$DRAIN_RELEASE_FILE"
-    wait "\$DRAIN_PID"
+    touch \"\$DRAIN_RELEASE_FILE\"
+    wait \"\$DRAIN_PID\"
     DRAIN_PID=''
     DRAIN_CHILD_PID=''
-    rm -f "\$DRAIN_READY_FILE" "\$DRAIN_STOP_ATTEMPTED_FILE" \
-      "\$DRAIN_STOPPED_FILE" "\$DRAIN_RELEASE_FILE"
+    rm -f \"\$DRAIN_READY_FILE\" \"\$DRAIN_STOP_ATTEMPTED_FILE\" \
+      \"\$DRAIN_STOPPED_FILE\" \"\$DRAIN_RELEASE_FILE\"
 
     # start/restart 即使返回失败也可能已经拉起子进程，先进入必须验证停机的清理状态。
     NEW_PROCESS_STARTED=1
-    if [ "\$PM2_APP_EXISTS" = '1' ]; then
+    if [ \"\$PM2_APP_EXISTS\" = '1' ]; then
       pm2 restart meiao-internal --update-env
     else
       pm2 start ecosystem.config.cjs
@@ -408,13 +408,13 @@ tar \
       fi
       sleep 2
     done
-    if [ "\$HEALTH_READY" != '1' ]; then
+    if [ \"\$HEALTH_READY\" != '1' ]; then
       echo '部署后 health/worker 未恢复，发布失败。'
       exit 2
     fi
 
     pm2 save
-    rm -f "\$DRAIN_NETWORK_STATE_FILE"
+    rm -f \"\$DRAIN_NETWORK_STATE_FILE\"
     remove_owned_deploy_marker
     DRAIN_CLEANUP_ARMED=0
   "
