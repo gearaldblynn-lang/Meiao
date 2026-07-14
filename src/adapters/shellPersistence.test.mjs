@@ -90,6 +90,59 @@ test('legacy Product Restoration credits survive persist-hydrate-persist without
   ]);
 });
 
+test('Product Restoration persistence additively promotes legacy credits before explicit attempt updates', () => {
+  const firstPersist = upsertShellProjectIntoPersistedState(
+    buildPersistedAppState(),
+    makeHistoricalProductRestoreProject(),
+  );
+  const hydrated = buildShellDataSnapshot(firstPersist, []).projects[0];
+
+  const emptyUpdate = upsertShellProjectIntoPersistedState(firstPersist, {
+    ...hydrated,
+    generationContext: {
+      ...hydrated.generationContext,
+      productRestoreAnalysisAttempts: [],
+    },
+  });
+  const emptyUpdateContext = emptyUpdate.shellProjects[0].generationContext;
+  assert.deepEqual(
+    emptyUpdateContext.productRestoreAnalysisAttempts.map((attempt) => attempt.jobId),
+    ['legacy-analysis-1'],
+  );
+  assert.deepEqual(getProductRestoreAnalysisCreditSummary(emptyUpdateContext), {
+    present: true,
+    value: 4,
+  });
+
+  const additiveUpdate = upsertShellProjectIntoPersistedState(firstPersist, {
+    ...hydrated,
+    generationContext: {
+      ...hydrated.generationContext,
+      productRestoreAnalysisAttempts: [{
+        jobId: 'new-analysis-2',
+        status: 'succeeded',
+        timestamp: 456,
+        creditsConsumed: 2,
+      }],
+    },
+  });
+  const additiveContext = additiveUpdate.shellProjects[0].generationContext;
+  assert.deepEqual(
+    additiveContext.productRestoreAnalysisAttempts.map((attempt) => attempt.jobId),
+    ['legacy-analysis-1', 'new-analysis-2'],
+  );
+  assert.equal(
+    additiveContext.productRestoreAnalysisAttempts.filter(
+      (attempt) => attempt.jobId === 'legacy-analysis-1',
+    ).length,
+    1,
+  );
+  assert.deepEqual(getProductRestoreAnalysisCreditSummary(additiveContext), {
+    present: true,
+    value: 6,
+  });
+});
+
 test('Product Restoration explicit zero image usage stays known through persistence and hydration', () => {
   const project = makeHistoricalProductRestoreProject({
     creditsConsumed: 0,
@@ -137,6 +190,58 @@ test('Product Restoration explicit zero image usage stays known through persiste
     images: 0,
     total: 0,
   });
+});
+
+test('Product Restoration hydration rejects malformed credit representations without affecting valid zero', () => {
+  const malformedValues = [false, true, [], {}, '   ', Number.NaN, -1];
+  for (const [index, creditsConsumed] of malformedValues.entries()) {
+    const project = makeHistoricalProductRestoreProject({
+      id: `malformed-product-restore-${index}`,
+      creditsConsumed,
+      generationContext: {
+        prompt: '',
+        params: {},
+        materials: {},
+        productRestoreAnalysisAttempts: [{
+          jobId: `malformed-analysis-${index}`,
+          status: 'succeeded',
+          timestamp: 123,
+          creditsConsumed,
+        }],
+        productRestore: {
+          ...historicalProductRestoreContext,
+          analysisJobId: `malformed-analysis-${index}`,
+          analysisCreditsConsumed: creditsConsumed,
+        },
+      },
+      results: [{
+        id: `malformed-result-${index}`,
+        imageUrl: '/malformed.png',
+        prompt: 'product restore',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'completed',
+        createdAt: 123,
+        module: 'retouch',
+        subFeature: 'product_restore',
+        creditsConsumed,
+      }],
+    });
+    const persisted = upsertShellProjectIntoPersistedState(buildPersistedAppState(), project);
+    const hydrated = buildShellDataSnapshot(persisted, []).projects[0];
+    assert.equal(hydrated.creditsConsumed, undefined);
+    assert.equal(hydrated.results[0].creditsConsumed, undefined);
+    assert.deepEqual(getProductRestoreAnalysisCreditSummary(hydrated.generationContext), {
+      present: false,
+      value: 0,
+    });
+  }
+
+  const zeroPersisted = upsertShellProjectIntoPersistedState(
+    buildPersistedAppState(),
+    makeHistoricalProductRestoreProject({ creditsConsumed: 0 }),
+  );
+  assert.equal(buildShellDataSnapshot(zeroPersisted, []).projects[0].creditsConsumed, 0);
 });
 
 test('product restoration analysis attempts survive persistence and hydration as an ordered deep clone', () => {

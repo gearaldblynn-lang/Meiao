@@ -4,7 +4,9 @@ import test from 'node:test';
 import {
   cloneProductRestoreAnalysisAttempts,
   cloneProductRestoreAnalysisAttemptsForMutation,
+  createProductRestoreAnalysisAttempt,
   getProductRestoreAnalysisCreditSummary,
+  getProductRestoreTotalKnownCredits,
   mergeProductRestoreAnalysisAttempts,
 } from './productRestoreAnalysisCredits.ts';
 
@@ -122,4 +124,35 @@ test('mutating a historical project promotes its legacy analysis charge into the
     timestamp: 123,
     creditsConsumed: 4,
   }]);
+});
+
+test('malformed credit values remain unknown while numeric zero remains explicitly known', () => {
+  const malformedValues = [false, true, [], {}, '   ', Number.NaN, -1];
+  for (const creditsConsumed of malformedValues) {
+    const attempt = createProductRestoreAnalysisAttempt({
+      jobId: `malformed-${String(creditsConsumed)}`,
+      status: 'succeeded',
+      timestamp: 1,
+      creditsConsumed,
+    });
+    assert.equal(Object.hasOwn(attempt, 'creditsConsumed'), false);
+    assert.deepEqual(getProductRestoreAnalysisCreditSummary({
+      productRestoreAnalysisAttempts: [attempt],
+    }), { present: false, value: 0 });
+    assert.deepEqual(getProductRestoreTotalKnownCredits({
+      generationContext: { productRestoreAnalysisAttempts: [] },
+      imageCredits: [creditsConsumed],
+    }), { present: false, analysis: 0, images: 0, total: 0 });
+  }
+
+  for (const creditsConsumed of [0, '0', 0.5, '0.5']) {
+    const attempt = createProductRestoreAnalysisAttempt({
+      jobId: `known-${String(creditsConsumed)}`,
+      status: 'succeeded',
+      timestamp: 1,
+      creditsConsumed,
+    });
+    assert.equal(Object.hasOwn(attempt, 'creditsConsumed'), true);
+    assert.equal(attempt.creditsConsumed, Number(creditsConsumed));
+  }
 });

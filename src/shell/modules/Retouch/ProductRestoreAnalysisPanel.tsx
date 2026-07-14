@@ -1,6 +1,7 @@
 import React from 'react';
 import type { ProductRestoreProjectContext } from '../../../types';
 import { PRODUCT_RESTORE_FOCUS_OPTIONS } from '../../../modules/Retouch/productRestoreContract.mjs';
+import { normalizeKnownProductRestoreCredits } from '../../../utils/productRestoreAnalysisCredits';
 
 interface Props {
   context: ProductRestoreProjectContext;
@@ -14,13 +15,10 @@ interface Props {
 const MAX_VISIBLE_ITEMS = 6;
 
 const creditLedgerValue = (value: unknown) => {
-  if (value === undefined || value === null || value === '') {
-    return { present: false, value: 0 };
-  }
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0
-    ? { present: true, value: parsed }
-    : { present: false, value: 0 };
+  const normalized = normalizeKnownProductRestoreCredits(value);
+  return normalized === undefined
+    ? { present: false, value: 0 }
+    : { present: true, value: normalized };
 };
 
 const formatCredits = (value: number) => (
