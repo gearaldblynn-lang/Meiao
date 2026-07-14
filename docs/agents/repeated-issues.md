@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-07-14 - Image-2 relay exposes only verified 1K and 2K sizes
+
+- Symptom: `image-2中转` 前端暴露 4K，但真实任务输出被上游归一化；固定比例也不能只靠 prompt 稳定约束。
+- Environment: Tencent Cloud production / MaxForAI `gpt-image-2` / text generation and image edit / fixed and auto aspect ratios.
+- Root cause: 接入时照抄了渠道页的 1K/2K/4K 表，没有以真实输出宽高验证能力；当前真实契约只有 1K/2K，固定比例必须映射为明确 `size`，只有智能比例使用 `auto`。
+- Fix: 共享尺寸契约只暴露 1K/2K 和 7 组固定比例尺寸；所有前端模型入口动态收紧选项，历史 4K 在切模和 provider 边界都降级为对应 2K 尺寸。架构级根因见 `CLAUDE.md` #61，诊断指纹为 `maxforai:image_size:unsupported_4k_mapping`。
+- Regression check: `node --test src/utils/maxforaiImageModels.test.mjs src/utils/modelCapabilities.test.mjs src/utils/imageModelAvailability.test.mjs server/providerMaxForAiImage.test.mjs server/maxforaiIntegration.test.mjs server/maxforaiEnvDocs.test.mjs`; `node --experimental-strip-types --test src/shell/components/layout/BottomInputBar.test.mjs`; `npm run build`; 云上依次跑 `auto/1K`、`16:9/1K`、`3:4/2K` 三个单次付费任务并读取返回文件宽高。
+- Avoid next time: provider 能力以真实任务和输出文件为准，不以渠道页、请求体或 HTTP 200 为准；新档位必须先跑分辨率×比例矩阵再对用户暴露。
+
 ## 2026-07-14 - KIE paid submits may retry only proven pre-connect failures
 
 - Symptom: 多桑账号在 01:03 连续提交 KIE 图片和策划任务，两个 job 都在约 0.63 秒内显示“提交结果暂时无法确认”，KIE 后台没有请求；同一云机的 MaxForAI 图片任务仍成功。

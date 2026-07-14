@@ -355,3 +355,8 @@
   根因:Image-2 multipart 修复发布后，多桑在 01:03 连续提交的一键生图和策划 job 都在约 0.63 秒内以 `provider_submission_unknown/fetch failed` 失败，`providerTaskId=null`，KIE 后台没有请求。云机同一时刻的 Node `fetch` 复现出 `AggregateError`：两个 Cloudflare IPv4 地址均为 `connect ETIMEDOUT`，两个 IPv6 地址均为 `connect ENETUNREACH`；TCP 连接没有建立，上游不可能收到请求。现有 KIE 封装却把所有非幂等 POST 的网络异常一律视为“可能已经接单”，即使证据明确停在 connect 阶段也不做已有的 1 秒/3 秒瞬时重试。发布本身没有修改 KIE 文件，但 PM2 重启清掉旧连接池，冷连接恰逢腾讯云到 KIE/Cloudflare 的路由抖动，因此把既有错误边界集中暴露出来。
   修复:在统一 `fetchKieOnce/fetchKieWithTimeout` 边界识别“所有底层原因均为 TCP connect 阶段”的确定性未提交错误，仅对 `ETIMEDOUT/ENETUNREACH/EHOSTUNREACH/ENETDOWN/ECONNREFUSED/EADDRNOTAVAIL` 和 `UND_ERR_CONNECT_TIMEOUT` 使用现有瞬时重试预算。连接建立后的 `UND_ERR_SOCKET/read`、混合/未知网络异常、主动超时以及任何已收到的 HTTP 响应仍不得重提；前者继续进入 `provider_submission_unknown`，防止重复付费。
   如何避免:**付费请求不能只按“POST/网络错误”二分，还要区分 connect 前与 connect 后。只有底层证据能证明没有任何 TCP 连接建立时才允许安全重试；一旦建立连接、开始读写或收到响应，就必须按提交状态不确定处理。生产发布后的真实验收要同时探测冷连接和热连接，不能只看 health 或复用旧 keep-alive。**
+
+- **#61 ✅ 已修(2026-07-14)· Image-2 中转把渠道文档的 4K 表当成真实能力，固定比例与上游输出出现偏差**
+  根因:首次接入直接复制公开渠道页的 1K/2K/4K 尺寸表，没有把“文档声称”与“当前上游真实支持”分开验证。三张单次真实任务显示 4K 请求被上游归一化到更低像素，固定比例的实际输出也不能用 prompt 保证；用户进一步确认渠道只支持 1K/2K，比例必须靠 `size` 尺寸约束，智能比例才保留 `auto`。
+  修复:建立单一 MaxForAI 尺寸契约，仅暴露 1K/2K，为 7 种固定比例明确映射对应 `WIDTHxHEIGHT`，`auto` 原样下发。五个独立侧栏和 Shell 底部栏都从共享能力表生成选项；切到 `image-2中转` 时将历史 4K 降为 2K，provider 边界再做一次降级保护，防止旧任务绕过前端。模型目录同步公开 `supportedResolutions=['1K','2K']`。
+  如何避免:**第三方图片模型的能力声明不能只抄文档表格；接入验收必须对每个分辨率档和典型比例跑真实任务，下载结果后读取真实宽高，不能把请求 `size`、HTTP 200 或页面展示的“4K”当成输出能力证据。**
