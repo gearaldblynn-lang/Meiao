@@ -21,6 +21,7 @@ import {
 import { buildLogFilterOptions, normalizeLogPagination } from '../src/modules/Account/logQueryUtils.mjs';
 import { isMaxForAiImageModel } from '../src/utils/maxforaiImageModels.mjs';
 import { loadServerEnvFile } from './envLoader.mjs';
+import { configureServerNetworkRuntime } from './networkRuntime.mjs';
 import { handleChatwootAiWebhook } from './chatwootAiResponder.mjs';
 import {
   assignChatwootConversation,
@@ -208,6 +209,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 loadServerEnvFile({ envPath: path.join(__dirname, '..', '.env.server') });
 loadServerEnvFile({ envPath: path.join(__dirname, '..', '.env.local') });
+configureServerNetworkRuntime(process.env);
 const dataDir = path.join(__dirname, 'data');
 const storePath = path.join(dataDir, 'internal-store.json');
 const distDir = path.join(__dirname, '..', 'dist');

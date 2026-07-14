@@ -42,6 +42,7 @@ MEIAO_STALE_RUNNING_RECONCILE_INTERVAL_MS=30000
 APP_STATE_MAX_BYTES=16777216
 MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS=120000
 MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS=360000
+MEIAO_NETWORK_FAMILY_ATTEMPT_TIMEOUT_MS=1000
 MEIAO_COS_SECRET_ID=请替换成仅限目标桶的 CAM 子用户 SecretId
 MEIAO_COS_SECRET_KEY=请替换成仅限目标桶的 CAM 子用户 SecretKey
 MEIAO_COS_BUCKET=meiao-gemini-video-test-20260714-1406860462
@@ -108,6 +109,8 @@ EOF
 `MEIAO_KIE_ASSET_UPLOAD_TIMEOUT_MS` 控制 KIE 素材上传单次 HTTP 超时，云上建议 `120000`。分镜参考视频等较大素材需要更长上传预算；如果上传出现瞬时网络或上游 5xx 错误，任务允许有限重试后释放并发，不走 base64 上传接口。
 
 `MEIAO_KIE_CHAT_COMPLETION_TIMEOUT_MS` 控制 KIE 对话/Gemini 同步推理的本地等待上限，默认 `360000`（6 分钟）。该值应高于 KIE 上游常见的 300 秒超时，让梅奥能收到真实成功或 504 终态；调大它只避免本地提前中断，不会改变 KIE/Gemini 自身的处理上限。
+
+`MEIAO_NETWORK_FAMILY_ATTEMPT_TIMEOUT_MS` 控制 Node 在 IPv4/IPv6 候选地址之间切换时，单个地址的 TCP 建连尝试窗口，默认 `1000`，限制 `250-5000` 毫秒。腾讯云到 Cloudflare/KIE 的首次 IPv4 建连可能超过 Node 20 默认的 250ms；该值只修复底层地址族建连误超时，不放宽 provider 总请求时限，也不增加付费 POST 的重提次数。
 
 Gemini 视频读取是独立的强约束链路：我方 `/api/assets/file/` 视频先由服务端完整读取，再写入私有腾讯 COS，最后只把短期签名 GET URL 交给 Gemini。`MEIAO_COS_SECRET_ID` / `MEIAO_COS_SECRET_KEY` 必须来自只允许目标桶 `gemini-video/*` 执行 `PutObject`、`GetObject` 的 CAM 子用户；不得使用主账号密钥。`MEIAO_COS_BUCKET` 必须包含 APPID 后缀，`MEIAO_COS_REGION` 与桶地域一致。`MEIAO_COS_SIGNED_URL_TTL_SECONDS` 默认 `10800`（3 小时），只影响 Gemini 的读取窗口。桶保持私有读写，无需 CDN；建议给 `gemini-video/` 配置 3 天生命周期自动删除。
 

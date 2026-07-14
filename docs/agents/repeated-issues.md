@@ -888,3 +888,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 将远端载荷内部全部双引号改成 `\"`，继续保留 `\$` 让变量只在远端展开；新增测试定位 SSH 载荷起止行，拒绝任何未转义内部双引号，并把解码后的完整载荷交给 `bash -n` 验证。
 - Regression check: `node --test scripts/deploy_tencent.test.mjs`；`bash -n scripts/deploy_tencent.sh`；真实发布必须同时满足命令退出 0、无 shell syntax error、远端完成证明写入、部署 mutex 释放以及公网 `/api/health` 的 worker 健康。
 - Avoid next time: 修改内嵌 SSH shell 时不能只跑顶层 `bash -n` 或函数级测试；必须同时验证“本地源码编码没有裸引号”和“解码后的完整远端脚本能通过语法检查”。发布退出码与线上 health 必须交叉验证，任一异常都不能宣称发布成功。
+
+## 2026-07-14 - Node 网络族自动选择窗口不能短于真实跨境建连延迟
+
+- Symptom: Gemini 视频已经成功写入腾讯 COS，但正式 `kie_chat` 在上游接单前约 0.5 秒连续报 `fetch failed / ETIMEDOUT`，没有 `providerTaskId`；同机 `curl` 请求 KIE 却稳定返回 HTTP 200。
+- Root cause: 云主机解析 `api.kie.ai` 同时得到 Cloudflare IPv4/IPv6，Node 20 的 `autoSelectFamilyAttemptTimeout` 默认只有 250ms；上海到 KIE IPv4 的实测 TCP 建连需要约 0.31-0.46 秒，IPv6 不可达时 IPv6/IPv4 尝试都可能在过短窗口内超时。业务层 60 秒 HTTP timeout 和提交重试无法修复底层单地址尝试窗口。
+- Fix: 服务启动加载 `.env.server/.env.local` 后调用 `net.setDefaultAutoSelectFamilyAttemptTimeout`；参数收口为 `MEIAO_NETWORK_FAMILY_ATTEMPT_TIMEOUT_MS`，默认 1000ms，限制 250-5000ms。该修复只放宽地址族建连尝试窗口，不增加付费请求重提，也不改变 Gemini 视频只走 COS 的素材路由。
+- Regression check: `node --test server/networkRuntime.test.mjs`；云上探针在设置 1000ms 后连续 5 次请求 KIE 均收到 HTTP 200，首次约 1.45-1.86 秒、连接复用后约 0.47 秒；正式验收还必须核对 `providerTaskId`、COS 对象和 Gemini 结构化视频内容。
+- Avoid next time: 看到 provider `ETIMEDOUT` 不能只调大业务请求总 timeout；要同时对比 Node fetch 与 curl 的 DNS、IPv4/IPv6 和 TCP/TLS 分段耗时。凡容量、阈值、超时类修复必须 env 化并设置保守默认，且付费 POST 仍只允许在能证明未接单的建连错误上有界处理。
