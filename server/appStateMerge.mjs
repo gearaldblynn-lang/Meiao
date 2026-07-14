@@ -1018,3 +1018,32 @@ export const mergeAppStateForStorage = (existingState = {}, incomingState = {}) 
 
   return compactAppStateForStorage(mirrorCompletedDirectVideosIntoVideoMemory(failExpiredIdentitylessPlaceholders(next)));
 };
+
+export const writeMergedAppStateUnderUserLock = async ({
+  user,
+  incomingState,
+  includeCanonicalState = false,
+  withUserLock,
+  readState,
+  scrubState,
+  saveState,
+  prepareCanonicalState = (state) => state,
+}) => withUserLock(user.id, async (lockResource) => {
+  const previousState = await readState(user.id, lockResource);
+  const nextState = await scrubState(
+    mergeAppStateForStorage(previousState, incomingState),
+    user.id,
+    lockResource,
+  );
+  const storedState = await saveState({
+    lockResource,
+    user,
+    previousState,
+    nextState,
+  });
+  const response = { ok: true };
+  if (includeCanonicalState) {
+    response.state = await prepareCanonicalState(storedState || nextState);
+  }
+  return response;
+});

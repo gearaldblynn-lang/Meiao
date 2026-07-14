@@ -35,8 +35,19 @@ test('api state GET stays read-only for local app state fixture', () => {
 test('api state PUT returns canonical merged state only when explicitly requested', () => {
   const routes = statePutRoutes();
   assert.equal(routes.length, 2);
-  for (const route of routes) {
-    assert.match(route, /body\.includeCanonicalState/);
-    assert.match(route, /state: prepareStateForClient\(nextState\)/);
-  }
+  assert.match(routes[0], /includeCanonicalState: Boolean\(body\.includeCanonicalState\)/);
+  assert.match(routes[0], /prepareCanonicalState: prepareStateForClient/);
+  assert.match(routes[1], /body\.includeCanonicalState/);
+  assert.match(routes[1], /state: prepareStateForClient\(nextState\)/);
+});
+
+test('mysql api state PUT keeps read merge scrub save and canonical selection under one user lock', () => {
+  const routes = statePutRoutes();
+  assert.equal(routes.length, 2);
+  const mysqlRoute = routes[0];
+  assert.match(mysqlRoute, /writeMergedAppStateUnderUserLock/);
+  assert.match(mysqlRoute, /withUserLock: withManagedAssetUserLock/);
+  assert.match(mysqlRoute, /readState: getDbAppStateUnderManagedAssetLock/);
+  assert.match(mysqlRoute, /saveState: saveDbAppStateAndQueueRemovedAssetsUnderLock/);
+  assert.doesNotMatch(mysqlRoute, /const previousState = await getDbAppState/);
 });

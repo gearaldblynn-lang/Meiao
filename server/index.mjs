@@ -116,7 +116,7 @@ import {
   resolveAgentImagePlanInputUrlDetails,
   shouldRequireAgentImageInput,
 } from './agentImagePlan.mjs';
-import { compactAppStateForStorage, mergeAppStateForStorage, trimAppStateForStorage } from './appStateMerge.mjs';
+import { compactAppStateForStorage, mergeAppStateForStorage, trimAppStateForStorage, writeMergedAppStateUnderUserLock } from './appStateMerge.mjs';
 import { buildJobRuntimeLogMeta, buildPublicSystemConfig, getWorkerConcurrencyLimit, isTransientMysqlConnectionError, normalizeAllowedOrigins, runWithTransientRetry, getReconcileBackoffMs } from './jobRuntime.mjs';
 import { GPT_IMAGE_2_DEFAULT_QUALITY } from '../src/utils/gptImage2.mjs';
 import { isExternallyReachableBaseUrl } from '../src/utils/publicNetworkUrl.mjs';
@@ -3951,6 +3951,16 @@ const getDbAppState = async (userId) => {
   return prepareStateForStorage(JSON.parse(rows[0].state_json));
 };
 
+const getDbAppStateUnderManagedAssetLock = async (userId, pool) => {
+  const [rows] = await pool.query(
+    'SELECT state_json FROM app_states WHERE user_id = ? LIMIT 1',
+    [userId],
+  );
+  return rows[0]?.state_json
+    ? prepareStateForStorage(JSON.parse(rows[0].state_json))
+    : prepareStateForStorage(createDefaultState());
+};
+
 const saveDbAppState = async (userId, state) => {
   const preparedState = prepareStateForStorage(state);
   const serializedState = JSON.stringify(preparedState);
@@ -3974,19 +3984,19 @@ const saveDbAppState = async (userId, state) => {
   );
 };
 
-const saveDbAppStateAndQueueRemovedAssets = async ({ user, previousState, nextState }) => {
+const saveDbAppStateAndQueueRemovedAssetsUnderLock = async ({
+  lockResource: pool,
+  user,
+  previousState,
+  nextState,
+}) => {
   const preparedState = prepareStateForStorage(nextState);
   const serializedState = JSON.stringify(preparedState);
   return runWithTransientRetry(async () => {
-    const pool = await getMysqlPool();
-    const lockPool = await getManagedAssetLockPool();
-    const lockConnection = await lockPool.getConnection();
     let connection = null;
     let binlogSuppressed = false;
-    let lockName = '';
     let transactionStarted = false;
     try {
-      lockName = await acquireManagedAssetUserLock(lockConnection, user.id);
       connection = await pool.getConnection();
       if (shouldSuppressAppStateBinlog()) {
         try {
@@ -4031,11 +4041,7 @@ const saveDbAppStateAndQueueRemovedAssets = async ({ user, previousState, nextSt
           console.warn(`Unable to restore MySQL binlog after transactional app_state write: ${error?.message || error}`);
         });
       }
-      if (lockName) {
-        await releaseManagedAssetUserLock(lockConnection, lockName).catch(() => null);
-      }
       connection?.release();
-      lockConnection.release();
     }
   }, {
     onRetry: ({ attempt, delay }) => {
@@ -12624,16 +12630,17 @@ const handleMysqlRequest = async (req, res, url) => {
     if (!user) return;
     const body = await readBody(req, { maxBytes: MAX_STATE_BODY_BYTES });
     const incomingState = body.state || createDefaultState();
-    const previousState = await getDbAppState(user.id);
-    const nextState = await scrubDbStateBeforeStorage(
-      mergeAppStateForStorage(previousState, incomingState),
-      user.id,
-    );
-    await saveDbAppStateAndQueueRemovedAssets({ user, previousState, nextState });
-    json(res, 200, {
-      ok: true,
-      ...(body.includeCanonicalState ? { state: prepareStateForClient(nextState) } : {}),
+    const response = await writeMergedAppStateUnderUserLock({
+      user,
+      incomingState,
+      includeCanonicalState: Boolean(body.includeCanonicalState),
+      withUserLock: withManagedAssetUserLock,
+      readState: getDbAppStateUnderManagedAssetLock,
+      scrubState: scrubDbStateBeforeStorage,
+      saveState: saveDbAppStateAndQueueRemovedAssetsUnderLock,
+      prepareCanonicalState: prepareStateForClient,
     });
+    json(res, 200, response);
     return;
   }
 

@@ -77,9 +77,10 @@ test('job deletion removes the job reference before requesting its managed asset
 
 test('state saves queue assets removed by project or task deletion after the new state is durable', () => {
   assert.match(source, /queueRemovedStateAssetsForCleanup/);
+  const lockedStateWrite = source.match(/const saveDbAppStateAndQueueRemovedAssetsUnderLock = async[\s\S]*?\n\};/)?.[0] || '';
   assert.match(
-    source,
-    /const saveDbAppStateAndQueueRemovedAssets[\s\S]{0,1800}beginTransaction\(\)[\s\S]{0,900}INSERT INTO app_states[\s\S]{0,900}queueRemovedStateAssetsForCleanup[\s\S]{0,500}commit\(\)/,
+    lockedStateWrite,
+    /beginTransaction\(\)[\s\S]{0,900}INSERT INTO app_states[\s\S]{0,900}queueRemovedStateAssetsForCleanup[\s\S]{0,500}commit\(\)/,
   );
   assert.match(
     source,
@@ -106,11 +107,16 @@ test('cleanup timer reconciles states and drains durable tasks with an overlap g
 });
 
 test('durable managed-asset reference writes serialize with delete-pending transitions', () => {
-  const stateWrite = source.match(/const saveDbAppStateAndQueueRemovedAssets = async[\s\S]*?\n\};/)?.[0] || '';
-  assert.match(stateWrite, /getManagedAssetLockPool\(\)[\s\S]*acquireManagedAssetUserLock\(lockConnection, user\.id\)[\s\S]*beginTransaction/);
-  assert.match(stateWrite, /assertActiveDbUserUnderManagedAssetLock\(connection, user\.id/);
-  assert.match(stateWrite, /assertOwnedActiveManagedAssetReferences\([\s\S]*pool: connection/);
-  assert.match(stateWrite, /commit\(\)[\s\S]*releaseManagedAssetUserLock/);
+  const lockedStateWrite = source.match(/const saveDbAppStateAndQueueRemovedAssetsUnderLock = async[\s\S]*?\n\};/)?.[0] || '';
+  const mysqlStateRoute = source.match(/if \(url\.pathname === '\/api\/state' && req\.method === 'PUT'\) \{[\s\S]*?\n  \}/)?.[0] || '';
+  assert.match(mysqlStateRoute, /withUserLock: withManagedAssetUserLock/);
+  assert.match(mysqlStateRoute, /saveState: saveDbAppStateAndQueueRemovedAssetsUnderLock/);
+  assert.doesNotMatch(lockedStateWrite, /withManagedAssetUserLock|acquireManagedAssetUserLock/);
+  assert.match(lockedStateWrite, /return runWithTransientRetry/);
+  assert.match(lockedStateWrite, /beginTransaction/);
+  assert.match(lockedStateWrite, /assertActiveDbUserUnderManagedAssetLock\(connection, user\.id/);
+  assert.match(lockedStateWrite, /assertOwnedActiveManagedAssetReferences\([\s\S]*pool: connection/);
+  assert.match(lockedStateWrite, /queueRemovedStateAssetsForCleanup[\s\S]*commit\(\)/);
 
   const chatDelete = source.match(/const deleteDbChatSession = async[\s\S]*?\n\};/)?.[0] || '';
   assert.match(chatDelete, /acquireManagedAssetAgentLock\(connection, session\.agentId\)[\s\S]*acquireManagedAssetUserLock\(connection, user\.id\)/);

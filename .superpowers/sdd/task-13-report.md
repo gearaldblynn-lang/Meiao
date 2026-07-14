@@ -68,6 +68,27 @@ and compacted intermediate events. An effective reset also canonicalizes a
 stale manual-error root back to `generating`, so hydration and `shouldResume`
 remain write-order independent.
 
+## Third-review atomicity hardening
+
+The third review found that the MySQL route still read and merged app state
+before acquiring the per-user managed-asset lock. A cancel write could therefore
+commit first while an already-merged stale retry later overwrote it and received
+canonical authorization.
+
+The MySQL write path now holds one per-user named lock across the complete
+read -> merge -> scrub -> transactional write/asset-cleanup scheduling ->
+canonical response sequence. The transactional helper no longer acquires a
+nested lock, and `runWithTransientRetry` executes inside the outer lock, so all
+retry attempts remain serialized. The existing active-owner check, owned-asset
+validation, app-state upsert, cleanup enqueue, commit/rollback, binlog handling,
+and connection release semantics remain in the locked transactional helper.
+
+Barrier regressions cover cancel-first and retry-first orders, both manual and
+single-result retry, cross-user independence, and lock release after an injected
+write failure. The source-contract tests also pin the real route to
+`withManagedAssetUserLock` and prohibit lock reacquisition in the transactional
+helper.
+
 ## TDD evidence
 
 Mandatory RED failures were captured first against the real
@@ -83,7 +104,7 @@ Mandatory RED failures were captured first against the real
 The final expanded Product Restoration focused suite is green:
 
 ```text
-407 tests, 407 passed, 0 failed
+427 tests, 427 passed, 0 failed
 ```
 
 It covers real server merge in both snapshot orders, JSON round trips,
@@ -94,7 +115,9 @@ credits versus stale zero in both write orders, persistence/hydration,
 manual/single retry fail-closed ordering, ordinary module compatibility,
 Product Restoration lifecycle/workflow, rollout, Ark analysis, UI, and displayed
 credits. It also covers canonical response opt-in for both MySQL and local state
-routes while confirming ordinary writes do not request or return the full state.
+routes while confirming ordinary writes do not request or return the full state,
+plus same-user MySQL serialization, opposite commit orders, user isolation, and
+error-path lock release.
 
 ## Verification
 
