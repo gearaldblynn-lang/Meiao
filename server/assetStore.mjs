@@ -506,15 +506,20 @@ export const markStoredAssetStorageStatus = async (pool, assetId, storageStatus,
   }
   if (!assetId) return;
   if (pool) {
-    await pool.query(
-      'UPDATE stored_assets SET storage_status = ?, updated_at = ? WHERE id = ?',
-      [normalizedStatus, touchedAt, assetId],
-    );
+    const sql = normalizedStatus === 'active'
+      ? 'UPDATE stored_assets SET storage_status = ?, deleted_at = NULL, updated_at = ? WHERE id = ?'
+      : 'UPDATE stored_assets SET storage_status = ?, updated_at = ? WHERE id = ?';
+    await pool.query(sql, [normalizedStatus, touchedAt, assetId]);
     return;
   }
   const assets = readLocalRegistry();
   const next = assets.map((item) => item.id === assetId
-    ? { ...item, storageStatus: normalizedStatus, updatedAt: touchedAt }
+    ? {
+      ...item,
+      storageStatus: normalizedStatus,
+      updatedAt: touchedAt,
+      ...(normalizedStatus === 'active' ? { deletedAt: null } : {}),
+    }
     : item);
   writeLocalRegistry(next);
 };

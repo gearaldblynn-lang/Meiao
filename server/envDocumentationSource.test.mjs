@@ -61,6 +61,41 @@ test('Gemini 视频 COS 直连配置同步到模板、总览和云上部署文�
   assert.match(deployDoc, /禁止把视频转存到 KIE/);
 });
 
+test('用户上传图片 COS 和持久清理配置同步到模板、总览和云上部署文档', () => {
+  const requiredKeys = [
+    'MEIAO_MANAGED_IMAGE_UPLOAD_MODE',
+    'MEIAO_IMAGE_COS_SECRET_ID',
+    'MEIAO_IMAGE_COS_SECRET_KEY',
+    'MEIAO_IMAGE_COS_BUCKET',
+    'MEIAO_IMAGE_COS_REGION',
+    'MEIAO_IMAGE_COS_BROWSER_URL_TTL_SECONDS',
+    'MEIAO_IMAGE_COS_PROVIDER_URL_TTL_SECONDS',
+    'MEIAO_IMAGE_COS_UPLOAD_MAX_ATTEMPTS',
+    'MEIAO_IMAGE_COS_UPLOAD_TIMEOUT_MS',
+    'MEIAO_IMAGE_COS_UPLOAD_RETRY_BASE_MS',
+    'MEIAO_ASSET_CLEANUP_INTERVAL_MS',
+    'MEIAO_ASSET_CLEANUP_BATCH_SIZE',
+    'MEIAO_ASSET_CLEANUP_RETRY_BASE_MS',
+    'MEIAO_ASSET_CLEANUP_MANUAL_REVIEW_ATTEMPTS',
+    'MEIAO_ASSET_CLEANUP_MANUAL_RETRY_MS',
+    'MEIAO_ASSET_CLEANUP_LEASE_MS',
+    'MEIAO_ASSET_CLEANUP_ALERT_BACKLOG',
+    'MEIAO_ASSET_CLEANUP_ALERT_OLDEST_MS',
+    'MEIAO_ASSET_UPLOAD_STALE_MS',
+  ];
+
+  for (const key of requiredKeys) {
+    assert.match(envExample, new RegExp(key));
+    assert.match(projectOverview, new RegExp(key));
+    assert.match(deployDoc, new RegExp(key));
+  }
+  assert.match(deployDoc, /meiao-managed-images-1406860462/);
+  assert.match(deployDoc, /managed-images\/\*/);
+  assert.match(deployDoc, /版本控制关闭/);
+  assert.match(deployDoc, /未完成的分块上传/);
+  assert.match(deployDoc, /probe:managed-image-cos/);
+});
+
 test('结果素材下载重试旋钮同步到模板、总览和云上部署文档', () => {
   const requiredKeys = [
     'MEIAO_RESULT_ASSET_DOWNLOAD_TIMEOUT_MS',

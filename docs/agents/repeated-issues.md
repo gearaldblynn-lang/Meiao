@@ -896,3 +896,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 服务启动加载 `.env.server/.env.local` 后调用 `net.setDefaultAutoSelectFamilyAttemptTimeout`；参数收口为 `MEIAO_NETWORK_FAMILY_ATTEMPT_TIMEOUT_MS`，默认 1000ms，限制 250-5000ms。该修复只放宽地址族建连尝试窗口，不增加付费请求重提，也不改变 Gemini 视频只走 COS 的素材路由。
 - Regression check: `node --test server/networkRuntime.test.mjs`；云上探针在设置 1000ms 后连续 5 次请求 KIE 均收到 HTTP 200，首次约 1.45-1.86 秒、连接复用后约 0.47 秒；正式验收还必须核对 `providerTaskId`、COS 对象和 Gemini 结构化视频内容。
 - Avoid next time: 看到 provider `ETIMEDOUT` 不能只调大业务请求总 timeout；要同时对比 Node fetch 与 curl 的 DNS、IPv4/IPv6 和 TCP/TLS 分段耗时。凡容量、阈值、超时类修复必须 env 化并设置保守默认，且付费 POST 仍只允许在能证明未接单的建连错误上有界处理。
+
+## 2026-07-14 - 用户图片在应用内可读，不代表外部分析模型能稳定读取
+
+- Symptom: 洛克买家秀等功能的素材在页面能打开，但分析/生成任务成批报错；典型证据是 `providerTaskId=null + providerStage=asset_upload`，失败发生在模型接单前。
+- Root cause: 历史链路把应用本机磁盘 URL 或 KIE 临时图床当作外部模型的稳定素材源。前者受应用域名/反代/跨网读取影响，后者受临时图床上传稳定性影响；任一抖动都会在 provider 前置阶段让整个任务失败。将存储改为 COS 后，如果仍直接删对象，还会在账号/项目/任务/会话删除与物理删除之间留下不可恢复或泄漏窗口。
+- Fix: 未来 source/reference/chat 图片只写入独立私有腾讯 COS，应用层只持久化 `/api/assets/file/...` 稳定 URL，浏览器/provider 读取时签发短期 HTTPS URL。COS 上传失败有界重试并 fail closed，不回落本地/KIE。所有业务删除收敛到持久精确键清理队列，worker 删除前复查存活引用，失败指数重试并保留 manual review 记录。历史素材不迁移，生成结果仍存本地。
+- Regression check: `node --test server/tencentCosImageStore.test.mjs server/assetStore.test.mjs server/managedImageUpload.test.mjs server/managedAssetReadResolver.test.mjs server/providerAssetTransfer.test.mjs server/managedAssetDeletion.test.mjs server/assetCleanupWorker.test.mjs scripts/probe-managed-image-cos.test.mjs`；云上还必须跑 `npm run probe:managed-image-cos`，并用项目图、Agent Chat 图、洛克买家秀分析各做一次真实 canary，最后删除 canary 并确认 COS 对象不存在。
+- Avoid next time: 素材系统要分别验收应用读取、外部模型读取和业务删除后物理清理三个契约。签名 URL 和密钥不得落库/日志；不得用静默 fallback 隐藏图床失败；发布必须先 `disabled` 后探针/canary 再开 `cos`。

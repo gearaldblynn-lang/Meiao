@@ -68,4 +68,8 @@ test('cleanup timer reconciles states and drains durable tasks with an overlap g
   assert.match(source, /processAssetCleanupBatch/);
   assert.match(source, /assetCleanupRunning/);
   assert.match(source, /MEIAO_ASSET_CLEANUP_INTERVAL_MS/);
+  assert.match(source, /isProtected: async \(task\) =>/);
+  assert.match(source, /managedAssetCleanup/);
+  assert.match(source, /MEIAO_ASSET_CLEANUP_ALERT_BACKLOG/);
+  assert.match(source, /MEIAO_ASSET_CLEANUP_ALERT_OLDEST_MS/);
 });

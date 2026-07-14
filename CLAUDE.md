@@ -366,3 +366,8 @@
   根因:视频成功写入私有 COS，签名 GET 和 Range 读取也正常，但 KIE Gemini Chat 仍在提交前返回 `fetch failed/ETIMEDOUT`、`providerTaskId=null`。云主机解析 `api.kie.ai` 同时得到 Cloudflare A/AAAA，IPv6 不可达，上海到 IPv4 的实测 TCP 首连约需 0.31-0.46 秒；Node 20 默认 `autoSelectFamilyAttemptTimeout=250ms`，尚未等到可用 IPv4 建连完成就误判超时。同机 `curl` 成功而 Node `fetch` 约 0.5 秒失败，证明这不是 COS 文件、Gemini 读视频能力或业务层总超时问题。
   修复:服务启动在加载环境变量后调用 `net.setDefaultAutoSelectFamilyAttemptTimeout`，通过 `MEIAO_NETWORK_FAMILY_ATTEMPT_TIMEOUT_MS` 配置，默认 1000ms、限制 250-5000ms。修复只放宽 Node 的单地址族 TCP 尝试窗口，不改 provider 总超时，不增加付费 POST 重提，也不改“内部视频→私有 COS 签名 URL→Gemini”的唯一路由。云上设为 1000ms 后 KIE 连续 5 次探针均收到 HTTP 200，真实分镜任务成功读取视频首、中、尾内容并解析出 1 个 board / 3 个 shots。
   如何避免:**素材已上 COS 不等于 provider 调用已稳定；必须分开检查“素材准备”与“provider 建连”。遇到短时 `fetch failed + providerTaskId=null` 时，同时比较 Node `fetch`/TCP 与 `curl`，检查 DNS A/AAAA、IPv6 可达性和 `net.getDefaultAutoSelectFamilyAttemptTimeout()`；不要先放大业务总超时或增加付费重试。容量/窗口参数必须 env + 保守默认 + 边界回归，发布后要验证冷连接、COS 对象、provider stage、无 fallback 和真实结构化结果。**
+
+- **#63 ✅ 已修(2026-07-14)· 应用本机稳定 URL 不等于外部分析模型稳定可读，用户图片在接单前批量失败**
+  根因:洛克买家秀等功能的源图/参考图虽已上传到我方应用磁盘并能从浏览器打开，外部分析模型仍要跨网读取应用域名或临时 KIE 图床。两条链路都会因图床/网络瞬时抖动在 `providerTaskId=null + asset_upload`阶段失败；“应用内可读”只证明本地存储存在，不证明模型所在网络可靠读取。同时原直接删文件模式在 COS 上无法保证用户/项目/任务/会话删除与对象物理删除最终一致。
+  修复:所有未来用户上传的 source/reference/chat 图片改为独立私有腾讯 COS，持久化仍只保留稳定的 `/api/assets/file/...` URL，浏览器和 provider 读取时才签发不同 TTL 的 HTTPS URL。上传使用确定性对象键有界重试，失败 fail closed，不回落本地或 KIE。账号、项目/任务、聊天/会话、显式素材和过期删除统一进入无用户外键的持久精确键清理队列；worker 删除前二次核对存活引用，失败指数重试、超阈值 manual review。历史图片不迁移，生成结果仍存本地。
+  如何避免:**用户素材存储要同时满足“应用稳定 URL”、“外部模型可靠读取”和“业务删除后最终物理删除”三个契约。不得持久化签名 URL、不得打印密钥/签名参数、不得在 COS 失败时静默回落到另一图床。发布必须先 `disabled` 兼容版，再跑 put/head/signed-get/字节一致/delete/not-found 探针和真实模型 canary；删除验收要看清理队列终态与 COS 对象不存在，不能只看页面卡片消失。**

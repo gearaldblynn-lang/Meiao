@@ -8,7 +8,9 @@ import {
   claimDueAssetCleanupTasks,
   completeAssetCleanupTask,
   enqueueAssetCleanupTask,
+  protectAssetCleanupTask,
   retryAssetCleanupTask,
+  summarizeAssetCleanupTasks,
 } from './assetLifecycleStore.mjs';
 
 const taskInput = (overrides = {}) => ({
@@ -42,6 +44,25 @@ test('local cleanup registry deduplicates the exact provider bucket key and acti
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('MySQL duplicate enqueue only refreshes a deliberately protected task', async () => {
+  const calls = [];
+  const pool = {
+    query: async (sql, values) => {
+      calls.push({ sql: String(sql), values });
+      return String(sql).startsWith('SELECT') ? [[]] : [{ affectedRows: 1 }];
+    },
+  };
+
+  await enqueueAssetCleanupTask(pool, taskInput(), { now: () => 1000 });
+  const insertSql = calls[0].sql;
+  assert.match(insertSql, /updated_at = IF\(status = 'protected', VALUES\(updated_at\), updated_at\)/);
+  assert.ok(
+    insertSql.indexOf('updated_at = IF') < insertSql.indexOf("status = IF(status = 'protected'"),
+    'protected-state checks must run before status is changed to pending',
+  );
+  assert.doesNotMatch(insertSql, /updated_at = VALUES\(updated_at\)/);
 });
 
 test('local cleanup task survives claim retry and process-style reload', async () => {
@@ -106,4 +127,47 @@ test('complete cleanup task keeps bounded audit metadata', async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('a cleanup task protected by a live reference can be reactivated by a later deletion request', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'meiao-asset-lifecycle-'));
+  const registryPath = path.join(directory, 'cleanup.json');
+  try {
+    const task = await enqueueAssetCleanupTask(null, taskInput(), { registryPath, now: () => 1000 });
+    await protectAssetCleanupTask(null, task.id, { registryPath, now: () => 2000 });
+    let stored = JSON.parse(await readFile(registryPath, 'utf8'));
+    assert.equal(stored.tasks[0].status, 'protected');
+
+    const reactivated = await enqueueAssetCleanupTask(null, taskInput({ reason: 'later_owner_delete' }), {
+      registryPath,
+      now: () => 3000,
+    });
+    stored = JSON.parse(await readFile(registryPath, 'utf8'));
+    assert.equal(reactivated.id, task.id);
+    assert.equal(stored.tasks[0].status, 'pending');
+    assert.equal(stored.tasks[0].reason, 'later_owner_delete');
+    assert.equal(stored.tasks[0].nextAttemptAt, 3000);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('cleanup task summary exposes backlog age retries and manual review without object details', () => {
+  const summary = summarizeAssetCleanupTasks([
+    { status: 'pending', createdAt: 1000, attemptCount: 0 },
+    { status: 'retry', createdAt: 2000, attemptCount: 2 },
+    { status: 'manual_review', createdAt: 3000, attemptCount: 8 },
+    { status: 'protected', createdAt: 4000, attemptCount: 0 },
+    { status: 'complete', createdAt: 5000, attemptCount: 1 },
+  ], 11_000);
+
+  assert.deepEqual(summary, {
+    backlog: 3,
+    oldestPendingAgeMs: 10_000,
+    retryAttempts: 10,
+    manualReview: 1,
+    protected: 1,
+    complete: 1,
+  });
+  assert.equal(JSON.stringify(summary).includes('storageKey'), false);
 });
