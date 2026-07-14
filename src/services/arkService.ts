@@ -7,6 +7,7 @@ import { getSupportedAspectRatiosForModel } from "../utils/modelAspectRatio";
 import { normalizeExactAspectRatio, resolveNearestSupportedAspectRatio } from "../utils/aspectRatioUtils";
 import { buildRetouchAnalysisFallback, shouldUseRetouchAnalysisFallback } from "./retouchAnalysisFallback.mjs";
 import { buildProductRestoreAnalysisPrompt, buildProductRestoreGenerationPrompt, parseProductRestoreAnalysis } from "../modules/Retouch/productRestoreContract.mjs";
+import { normalizeKnownProductRestoreCredits } from "../utils/productRestoreAnalysisCredits";
 
 const estimatePromptTokens = (items: Array<{ type: string; text?: string }>) =>
   items.reduce((sum, item) => sum + Math.ceil((item.text || '').length / 4), 0);
@@ -274,12 +275,6 @@ const extractDetailPageManualRevision = (description: string, index: number) => 
   return (next ? rest.slice(0, next.index) : rest).trim();
 };
 
-const normalizeCreditsConsumed = (value: unknown) => {
-  if (value === undefined || value === null || value === '') return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
-};
-
 type AnalysisJobCreatedCallback = (
   jobId: string,
   providerTaskId?: string,
@@ -432,7 +427,7 @@ const buildAnalysisResponseFromJob = (
     throw createAnalysisJobError(finalJob);
   }
   const content = String(finalJob.result?.content || finalJob.result?.text || '');
-  const creditsConsumed = normalizeCreditsConsumed(finalJob.result?.creditsConsumed);
+  const creditsConsumed = normalizeKnownProductRestoreCredits(finalJob.result?.creditsConsumed);
   const promptTokens = estimatePromptTokens(normalizedContent);
   const completionTokens = Math.ceil(content.length / 4);
   const estimatedCost = ((promptTokens + completionTokens) * 0.000002).toFixed(6);
@@ -787,7 +782,7 @@ export const recoverProductRestoreAnalysisBatch = async (
     }
     return buildProductRestoreAnalysisResult({
       content: String(job.result?.content || job.result?.text || ''),
-      creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+      creditsConsumed: normalizeKnownProductRestoreCredits(job.result?.creditsConsumed),
       taskId: providerTaskId,
       jobId,
       modelUsed: String(job.result?.modelUsed || job.model || job.payload?.model || '').trim() || 'unknown',

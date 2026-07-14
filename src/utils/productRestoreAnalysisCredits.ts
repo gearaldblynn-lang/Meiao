@@ -6,10 +6,17 @@ import type {
 
 const normalizeIdentity = (value: unknown) => String(value || '').trim();
 
-const normalizeKnownCredits = (value: unknown) => {
-  if (value === undefined || value === null || value === '') return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+const STRICT_NON_NEGATIVE_DECIMAL = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+export const normalizeKnownProductRestoreCredits = (value: unknown): number | undefined => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  }
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!STRICT_NON_NEGATIVE_DECIMAL.test(normalized)) return undefined;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : undefined;
 };
 
 const normalizeTimestamp = (value: unknown) => {
@@ -49,7 +56,7 @@ export const createProductRestoreAnalysisAttempt = (input: {
   const providerTaskId = normalizeIdentity(input.providerTaskId);
   const model = normalizeIdentity(input.model);
   const errorCode = normalizeIdentity(input.errorCode);
-  const creditsConsumed = normalizeKnownCredits(input.creditsConsumed);
+  const creditsConsumed = normalizeKnownProductRestoreCredits(input.creditsConsumed);
   return {
     jobId,
     ...(providerTaskId ? { providerTaskId } : {}),
@@ -133,13 +140,13 @@ export const getProductRestoreAnalysisCreditSummary = (
       [],
       generationContext.productRestoreAnalysisAttempts,
     )
-      .map((attempt) => normalizeKnownCredits(attempt?.creditsConsumed))
+      .map((attempt) => normalizeKnownProductRestoreCredits(attempt?.creditsConsumed))
       .filter((value): value is number => value !== undefined);
     return knownAttempts.length > 0
       ? { present: true, value: knownAttempts.reduce((sum, value) => sum + value, 0) }
       : { present: false, value: 0 };
   }
-  const legacyValue = normalizeKnownCredits(
+  const legacyValue = normalizeKnownProductRestoreCredits(
     generationContext?.productRestore?.analysisCreditsConsumed,
   );
   return legacyValue !== undefined
@@ -156,7 +163,7 @@ export const getProductRestoreTotalKnownCredits = (input: {
 }): { present: boolean; analysis: number; images: number; total: number } => {
   const analysis = getProductRestoreAnalysisCreditSummary(input.generationContext);
   const knownImageCredits = (input.imageCredits || [])
-    .map(normalizeKnownCredits)
+    .map(normalizeKnownProductRestoreCredits)
     .filter((value): value is number => value !== undefined);
   const images = knownImageCredits.reduce((sum, value) => sum + value, 0);
   return {

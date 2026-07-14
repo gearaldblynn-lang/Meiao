@@ -1,5 +1,6 @@
 import {
   cloneProductRestoreAnalysisAttempts,
+  cloneProductRestoreAnalysisAttemptsForMutation,
   mergeProductRestoreAnalysisAttempts,
 } from '../utils/productRestoreAnalysisCredits.ts';
 
@@ -43,11 +44,11 @@ export const mergeProductRestoreGenerationContext = (existingContext, nextContex
   );
   const attempts = nextExplicitlySetsAttempts
     ? mergeProductRestoreAnalysisAttempts(
-        existingContext?.productRestoreAnalysisAttempts,
+        cloneProductRestoreAnalysisAttemptsForMutation(existingContext),
         nextContext?.productRestoreAnalysisAttempts,
       )
     : cloneProductRestoreAnalysisAttempts(existingContext?.productRestoreAnalysisAttempts);
-  if (attempts.length > 0 || nextExplicitlySetsAttempts) {
+  if (attempts.length > 0) {
     merged.productRestoreAnalysisAttempts = attempts;
   } else {
     delete merged.productRestoreAnalysisAttempts;

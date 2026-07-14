@@ -4,11 +4,13 @@ import test from 'node:test';
 import {
   createProductRestoreCancellationRegistry,
   markProductRestoreProjectCancelled,
+  mergeProductRestoreGenerationContext,
   runProductRestoreFanout,
   shouldResumeProductRestoreProject,
 } from './shellProductRestoreCancellation.mjs';
 import { buildShellDataSnapshot } from './shellDataAdapter.ts';
 import { upsertShellProjectIntoPersistedState } from './shellPersistence.ts';
+import { getProductRestoreAnalysisCreditSummary } from '../utils/productRestoreAnalysisCredits.ts';
 
 const deferred = () => {
   let resolve;
@@ -17,6 +19,75 @@ const deferred = () => {
   });
   return { promise, resolve };
 };
+
+test('explicit attempt arrays merge additively onto a historical product restore charge', () => {
+  const existingContext = {
+    productRestore: {
+      analysisJobId: 'legacy-analysis-1',
+      analysisProviderTaskId: 'legacy-provider-1',
+      analysisModel: 'legacy-vision-model',
+      analysisCreditsConsumed: 4,
+      createdAt: 123,
+    },
+  };
+
+  const emptyMerge = mergeProductRestoreGenerationContext(existingContext, {
+    productRestoreAnalysisAttempts: [],
+  });
+  assert.deepEqual(
+    emptyMerge.productRestoreAnalysisAttempts.map((attempt) => attempt.jobId),
+    ['legacy-analysis-1'],
+  );
+  assert.deepEqual(getProductRestoreAnalysisCreditSummary(emptyMerge), {
+    present: true,
+    value: 4,
+  });
+
+  const existingLedgerMerge = mergeProductRestoreGenerationContext({
+    productRestoreAnalysisAttempts: [{
+      jobId: 'ledger-analysis-1',
+      status: 'succeeded',
+      timestamp: 100,
+      creditsConsumed: 3,
+    }],
+  }, {
+    productRestoreAnalysisAttempts: [],
+  });
+  assert.deepEqual(existingLedgerMerge.productRestoreAnalysisAttempts, [{
+    jobId: 'ledger-analysis-1',
+    status: 'succeeded',
+    timestamp: 100,
+    creditsConsumed: 3,
+  }]);
+
+  const emptyWithoutHistory = mergeProductRestoreGenerationContext(undefined, {
+    productRestoreAnalysisAttempts: [],
+  });
+  assert.equal(Object.hasOwn(emptyWithoutHistory, 'productRestoreAnalysisAttempts'), false);
+
+  const additiveMerge = mergeProductRestoreGenerationContext(existingContext, {
+    productRestoreAnalysisAttempts: [{
+      jobId: 'new-analysis-2',
+      status: 'succeeded',
+      timestamp: 456,
+      creditsConsumed: 2,
+    }],
+  });
+  assert.deepEqual(
+    additiveMerge.productRestoreAnalysisAttempts.map((attempt) => attempt.jobId),
+    ['legacy-analysis-1', 'new-analysis-2'],
+  );
+  assert.equal(
+    additiveMerge.productRestoreAnalysisAttempts.filter(
+      (attempt) => attempt.jobId === 'legacy-analysis-1',
+    ).length,
+    1,
+  );
+  assert.deepEqual(getProductRestoreAnalysisCreditSummary(additiveMerge), {
+    present: true,
+    value: 6,
+  });
+});
 
 test('cancelling a partially fanned-out product restore batch is terminal and never resumes missing targets', async () => {
   const cancelledJobIds = [];

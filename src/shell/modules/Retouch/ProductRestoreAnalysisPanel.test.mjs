@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ts from 'typescript';
+import { normalizeKnownProductRestoreCredits } from '../../../utils/productRestoreAnalysisCredits.ts';
 
 const panelPath = new URL('./ProductRestoreAnalysisPanel.tsx', import.meta.url);
 let moduleSequence = 0;
@@ -32,9 +33,14 @@ const loadPanelModule = async () => {
   const runtimeSource = `
 const React = globalThis.__productRestoreAnalysisPanelTestDeps.React;
 const PRODUCT_RESTORE_FOCUS_OPTIONS = globalThis.__productRestoreAnalysisPanelTestDeps.focusOptions;
+const normalizeKnownProductRestoreCredits = globalThis.__productRestoreAnalysisPanelTestDeps.normalizeKnownProductRestoreCredits;
 ${stripRuntimeImports(transpiled)}
 `;
-  globalThis.__productRestoreAnalysisPanelTestDeps = { React, focusOptions };
+  globalThis.__productRestoreAnalysisPanelTestDeps = {
+    React,
+    focusOptions,
+    normalizeKnownProductRestoreCredits,
+  };
   try {
     return await import(`data:text/javascript;base64,${Buffer.from(runtimeSource).toString('base64')}#panel-${++moduleSequence}`);
   } finally {
@@ -215,6 +221,16 @@ test('result credit badge renders an explicit zero and hides an absent ledger va
 
   assert.match(zeroMarkup, /累计图片消耗 0 积分/);
   assert.equal(absentMarkup, '');
+});
+
+test('result credit badge hides malformed ledger values instead of presenting fabricated zero', async () => {
+  const { ProductRestoreResultCreditBadge } = await loadPanelModule();
+  for (const creditsConsumed of [false, true, [], {}, '   ', Number.NaN, -1]) {
+    const markup = renderToStaticMarkup(React.createElement(ProductRestoreResultCreditBadge, {
+      creditsConsumed,
+    }));
+    assert.equal(markup, '');
+  }
 });
 
 test('ProjectCard scopes the panel to Product Restoration with persisted context', () => {

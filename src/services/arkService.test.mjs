@@ -8,6 +8,7 @@ import {
   buildProductRestoreGenerationPrompt,
   parseProductRestoreAnalysis,
 } from '../modules/Retouch/productRestoreContract.mjs';
+import { normalizeKnownProductRestoreCredits } from '../utils/productRestoreAnalysisCredits.ts';
 
 const arkServiceSource = readFileSync(new URL('./arkService.ts', import.meta.url), 'utf8');
 const skuSubModuleSource = readFileSync(new URL('../modules/OneClick/SkuSubModule.tsx', import.meta.url), 'utf8');
@@ -95,6 +96,7 @@ const loadArkServiceWithAnalysisFakes = async ({
     getActiveModuleContext: () => 'retouch',
     getSupportedAspectRatiosForModel: () => [],
     normalizeExactAspectRatio: (value) => value,
+    normalizeKnownProductRestoreCredits,
     parseProductRestoreAnalysis,
     resolveNearestSupportedAspectRatio: (value) => value,
     resolvePublicAssetUrl: (value) => String(value || '').trim(),
@@ -129,6 +131,7 @@ const {
   getActiveModuleContext,
   getSupportedAspectRatiosForModel,
   normalizeExactAspectRatio,
+  normalizeKnownProductRestoreCredits,
   parseProductRestoreAnalysis,
   resolveNearestSupportedAspectRatio,
   resolvePublicAssetUrl,
@@ -387,6 +390,54 @@ test('product restoration invalid structured output fails after one application-
     creditsConsumed: 3,
   });
   assert.equal(Object.hasOwn(result, 'sharedRestorationPrompt'), false);
+});
+
+test('Ark analysis rejects malformed provider credit representations and preserves numeric zero', async () => {
+  const malformedValues = [false, true, [], {}, '   ', Number.NaN, -1];
+  for (const creditsConsumed of malformedValues) {
+    const { module } = await loadArkServiceWithAnalysisFakes({
+      waitJob: {
+        id: 'analysis-job-1',
+        status: 'succeeded',
+        providerTaskId: 'provider-task-1',
+        result: {
+          content: JSON.stringify(productRestoreAnalysisFixture),
+          creditsConsumed,
+          modelUsed: 'primary-model',
+        },
+      },
+    });
+    const result = await module.analyzeProductRestoreBatch({
+      targetUrls: ['https://img.test/target.png'],
+      productReferenceUrls: ['https://img.test/reference.png'],
+      focusIds: ['shape_structure'],
+      userRequirement: '',
+      jobMetadata: {},
+    });
+    assert.equal(Object.hasOwn(result, 'creditsConsumed'), false);
+  }
+
+  const { module } = await loadArkServiceWithAnalysisFakes({
+    waitJob: {
+      id: 'analysis-job-1',
+      status: 'succeeded',
+      providerTaskId: 'provider-task-1',
+      result: {
+        content: JSON.stringify(productRestoreAnalysisFixture),
+        creditsConsumed: 0,
+        modelUsed: 'primary-model',
+      },
+    },
+  });
+  const zeroResult = await module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+  });
+  assert.equal(Object.hasOwn(zeroResult, 'creditsConsumed'), true);
+  assert.equal(zeroResult.creditsConsumed, 0);
 });
 
 test('product restoration recovery keeps transient internal fetch failures pending without creating a job', async () => {

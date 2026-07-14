@@ -27,7 +27,10 @@ import {
   hasDurableProductRestoreCancellation,
   mergeProductRestoreGenerationContext,
 } from './shellProductRestoreCancellation.mjs';
-import { cloneProductRestoreAnalysisAttempts } from '../utils/productRestoreAnalysisCredits.ts';
+import {
+  cloneProductRestoreAnalysisAttempts,
+  normalizeKnownProductRestoreCredits,
+} from '../utils/productRestoreAnalysisCredits.ts';
 import {
   getVisibleProviderTaskId,
   isShellControlJob,
@@ -263,12 +266,6 @@ const persistedSnapshotCache = new WeakMap<object, Pick<ShellDataSnapshot, 'proj
 const normalizeCreditsConsumed = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
-};
-
-const normalizeKnownProductRestoreCreditsConsumed = (value: unknown) => {
-  if (value === undefined || value === null || value === '') return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 };
 
 type ProductRestoreRecordIdentity = {
@@ -1229,7 +1226,7 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         batchIndex: Number(result?.batchIndex || 0) || undefined,
         targetMaterialId: String(result?.targetMaterialId || '').trim() || undefined,
         creditsConsumed: isProductRestoreRecord(project, result)
-          ? normalizeKnownProductRestoreCreditsConsumed(result?.creditsConsumed)
+          ? normalizeKnownProductRestoreCredits(result?.creditsConsumed)
           : normalizeCreditsConsumed(result?.creditsConsumed),
         error: String(result?.error || '').trim() || undefined,
         matchedAspectRatio: String(result?.matchedAspectRatio || result?.aspectRatio || 'auto'),
@@ -1241,7 +1238,7 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
       completedCount: Number(project.completedCount || 0),
       sourceType: 'persisted',
       creditsConsumed: isProductRestoreRecord(project)
-        ? normalizeKnownProductRestoreCreditsConsumed(project.creditsConsumed)
+        ? normalizeKnownProductRestoreCredits(project.creditsConsumed)
         : normalizeCreditsConsumed(project.creditsConsumed),
       planningTaskId: latestIdentityTextList(String(project.planningTaskId || '').trim() || undefined),
       generationContext: cloneGenerationContext(project.generationContext),
