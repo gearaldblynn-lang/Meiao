@@ -52,7 +52,23 @@ const selectAnalysisFallbackModels = (model: string, chatModels: any[] = []) => 
   return fallback ? [fallback.id] : [];
 };
 
-const resolveAnalysisRuntimeConfig = async () => {
+const PRODUCT_RESTORE_VISUAL_MODEL_ERROR = '当前系统分析模型不支持图片输入，请联系管理员调整';
+
+const selectVisualAnalysisModels = (model: string, chatModels: unknown[] = []) => {
+  const capableModels = (Array.isArray(chatModels) ? chatModels : [])
+    .map(normalizeChatModelOption)
+    .filter((item): item is { id: string; supportsImageInput: true } & Record<string, unknown> => (
+      Boolean(item) && item.supportsImageInput === true
+    ));
+  const configuredModel = capableModels.find((item) => item.id === normalizeModelId(model));
+  const primaryModel = configuredModel?.id || capableModels[0]?.id || '';
+  if (!primaryModel) {
+    throw new Error(PRODUCT_RESTORE_VISUAL_MODEL_ERROR);
+  }
+  return { model: primaryModel, chatModels: capableModels };
+};
+
+const resolveAnalysisRuntimeConfig = async (requiresImageInput = false) => {
   if (cachedAnalysisRuntimeConfig && Date.now() - cachedAnalysisRuntimeConfigAt < ANALYSIS_MODEL_CACHE_TTL_MS) {
     return cachedAnalysisRuntimeConfig;
   }
@@ -66,6 +82,9 @@ const resolveAnalysisRuntimeConfig = async () => {
   ).trim();
 
   if (!nextModel) {
+    if (requiresImageInput) {
+      throw new Error(PRODUCT_RESTORE_VISUAL_MODEL_ERROR);
+    }
     throw new Error('未配置可用的策划模型，请先在系统设置中配置模型。');
   }
 
@@ -449,14 +468,19 @@ const requestAnalysisResponseDetailed = async (
   onJobCreated?: AnalysisJobCreatedCallback,
   jobMetadata: Record<string, unknown> = {},
   allowSemanticRetry = true,
+  requireImageCapability = false,
 ): Promise<{ content: string; creditsConsumed?: number; taskId?: string; jobId: string; modelUsed: string }> => {
   const module = getActiveModuleContext() || 'unknown';
   const startedAt = Date.now();
+  const requiresImageInput = requireImageCapability || jobMetadata.taskPurpose === 'product_restore_analysis';
   const [runtimeConfig, publicBaseUrl] = await Promise.all([
-    resolveAnalysisRuntimeConfig(),
+    resolveAnalysisRuntimeConfig(requiresImageInput),
     resolveRuntimePublicBaseUrl(),
   ]);
-  const model = runtimeConfig.model;
+  const eligibleRuntimeConfig = requiresImageInput
+    ? selectVisualAnalysisModels(runtimeConfig.model, runtimeConfig.chatModels)
+    : runtimeConfig;
+  const model = eligibleRuntimeConfig.model;
   const normalizedContent = inputContent.map((item, index) => {
     if (item.type === 'text') {
       return { type: 'text', text: item.text || '' };
@@ -576,7 +600,7 @@ const requestAnalysisResponseDetailed = async (
   };
 
   let selectedModel = model;
-  let fallbackModels = selectAnalysisFallbackModels(model, runtimeConfig.chatModels);
+  let fallbackModels = selectAnalysisFallbackModels(model, eligibleRuntimeConfig.chatModels);
   let bundle = await runAnalysisJob(selectedModel, fallbackModels);
   let response = bundle.response;
   const usedModels = new Set([
@@ -719,6 +743,7 @@ export const analyzeProductRestoreBatch = async (
         taskPurpose: 'product_restore_analysis',
       },
       false,
+      true,
     );
     return buildProductRestoreAnalysisResult(analysis, input);
   } catch (error: unknown) {

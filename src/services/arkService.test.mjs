@@ -35,6 +35,7 @@ const loadArkServiceWithAnalysisFakes = async ({
   waitError,
   fetchJob,
   fetchError,
+  systemConfig,
 } = {}) => {
   const calls = {
     cancelled: [],
@@ -80,11 +81,11 @@ const loadArkServiceWithAnalysisFakes = async ({
       return { job: resolvedFetchJob };
     },
     fetchSystemConfig: async () => ({
-      config: {
+      config: systemConfig || {
         agentModels: {
           chat: [
-            { id: 'primary-model' },
-            { id: 'fallback-model' },
+            { id: 'primary-model', supportsImageInput: true },
+            { id: 'fallback-model', supportsImageInput: true },
           ],
         },
         publicBaseUrl: 'https://assets.example.test',
@@ -109,7 +110,12 @@ const loadArkServiceWithAnalysisFakes = async ({
     },
   };
 
-  const sourceWithoutImports = arkServiceSource.replace(/^import\s+[^;]+;\s*$/gm, '');
+  const sourceWithoutImports = arkServiceSource
+    .replace(/^import\s+[^;]+;\s*$/gm, '')
+    .replace(
+      'const requestAnalysisResponseDetailed = async (',
+      'export const requestAnalysisResponseDetailed = async (',
+    );
   const dependencyPrelude = `
 const {
   OneClickSubMode,
@@ -201,6 +207,149 @@ test('product restoration submits one ordered multimodal analysis job and return
       userRequirement: input.userRequirement,
     }),
   });
+});
+
+test('product restoration rejects an incapable catalog before creating an internal job', async () => {
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    systemConfig: {
+      agentModels: {
+        chat: [
+          { id: 'configured-text-model', supportsImageInput: false },
+          { id: 'unknown-capability-model' },
+        ],
+      },
+      publicBaseUrl: 'https://assets.example.test',
+      systemSettings: { effectiveAnalysisModel: 'configured-text-model' },
+    },
+  });
+
+  const result = await module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+  });
+
+  assert.equal(calls.created.length, 0);
+  assert.equal(result.status, 'error');
+  assert.equal(result.message, '当前系统分析模型不支持图片输入，请联系管理员调整');
+});
+
+test('product restoration uses a capable effective model and only capable provider fallbacks', async () => {
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    systemConfig: {
+      agentModels: {
+        chat: [
+          { id: 'gemini-primary', supportsImageInput: true },
+          { id: 'claude-incapable', supportsImageInput: false },
+          { id: 'gpt-capable', supportsImageInput: true },
+          { id: 'capability-unknown' },
+        ],
+      },
+      publicBaseUrl: 'https://assets.example.test',
+      systemSettings: { effectiveAnalysisModel: 'gemini-primary' },
+    },
+  });
+
+  const result = await module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+  });
+
+  assert.equal(result.status, 'success');
+  assert.equal(calls.created.length, 1);
+  assert.equal(calls.created[0].payload.model, 'gemini-primary');
+  assert.deepEqual(calls.created[0].payload.fallbackModels, ['gpt-capable']);
+});
+
+test('product restoration deterministically replaces an incapable effective model', async () => {
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    systemConfig: {
+      agentModels: {
+        chat: [
+          { id: 'configured-text-model', supportsImageInput: false },
+          { id: 'gemini-capable-first', supportsImageInput: true },
+          { id: 'claude-capable-second', supportsImageInput: true },
+        ],
+      },
+      publicBaseUrl: 'https://assets.example.test',
+      systemSettings: { effectiveAnalysisModel: 'configured-text-model' },
+    },
+  });
+
+  await module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+  });
+
+  assert.equal(calls.created.length, 1);
+  assert.equal(calls.created[0].payload.model, 'gemini-capable-first');
+  assert.deepEqual(calls.created[0].payload.fallbackModels, ['claude-capable-second']);
+});
+
+test('product restoration preserves cross-family fallback preference after capability filtering', async () => {
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    systemConfig: {
+      agentModels: {
+        chat: [
+          { id: 'gpt-primary', supportsImageInput: true },
+          { id: 'claude-incapable', supportsImageInput: false },
+          { id: 'gpt-same-family', supportsImageInput: true },
+          { id: 'gemini-cross-family', supportsImageInput: true },
+        ],
+      },
+      publicBaseUrl: 'https://assets.example.test',
+      systemSettings: { effectiveAnalysisModel: 'gpt-primary' },
+    },
+  });
+
+  await module.analyzeProductRestoreBatch({
+    targetUrls: ['https://img.test/target.png'],
+    productReferenceUrls: ['https://img.test/reference.png'],
+    focusIds: ['shape_structure'],
+    userRequirement: '',
+    jobMetadata: {},
+  });
+
+  assert.equal(calls.created.length, 1);
+  assert.deepEqual(calls.created[0].payload.fallbackModels, ['gemini-cross-family']);
+});
+
+test('ordinary text analysis keeps configured models without requiring image capability', async () => {
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    systemConfig: {
+      agentModels: {
+        chat: [
+          { id: 'configured-text-model', supportsImageInput: false },
+          { id: 'fallback-text-model' },
+        ],
+      },
+      publicBaseUrl: 'https://assets.example.test',
+      systemSettings: { effectiveAnalysisModel: 'configured-text-model' },
+    },
+    waitJob: {
+      id: 'analysis-job-1',
+      status: 'succeeded',
+      result: { content: 'ordinary text result', modelUsed: 'configured-text-model' },
+    },
+  });
+
+  const result = await module.requestAnalysisResponseDetailed(
+    [{ type: 'text', text: 'ordinary text-only request' }],
+    {},
+  );
+
+  assert.equal(result.content, 'ordinary text result');
+  assert.equal(calls.created.length, 1);
+  assert.equal(calls.created[0].payload.model, 'configured-text-model');
+  assert.deepEqual(calls.created[0].payload.fallbackModels, ['fallback-text-model']);
 });
 
 test('product restoration invalid structured output fails after one application-level submission', async () => {
@@ -601,7 +750,7 @@ test('analysis service no longer routes planning through ark or doubao', () => {
   );
   assert.match(
     arkServiceSource,
-    /selectAnalysisFallbackModels\(model,\s*runtimeConfig\.chatModels\)/,
+    /selectAnalysisFallbackModels\(model,\s*eligibleRuntimeConfig\.chatModels\)/,
     'planning analysis should select a fallback from the current system model catalog instead of a hardcoded model'
   );
   assert.doesNotMatch(
