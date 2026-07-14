@@ -90,6 +90,40 @@ test('generation and chat use the canonical HTTPS origin in direct-first mode', 
   );
 });
 
+test('managed COS images resolve through the fresh signed URL dependency before direct or KIE routing', async () => {
+  const calls = [];
+  const signedUrl = 'https://meiao-managed-images-1406860462.cos.ap-guangzhou.myqcloud.com/managed-images/users/abc/source/asset/image.png?q-signature=fresh';
+  const deps = {
+    resolveManagedAssetReadUrl: async (value, options) => {
+      calls.push([value, options.purpose]);
+      return signedUrl;
+    },
+    fetchWithTimeout: async () => { throw new Error('must not download the managed COS image'); },
+    uploadAssetViaKieWithFallback: async () => { throw new Error('must not stage the managed COS image in KIE'); },
+  };
+
+  assert.equal(
+    await resolveProviderGenerationMediaUrl('/api/assets/file/asset/image.png', {
+      env: { MEIAO_KIE_MANAGED_ASSET_MODE: 'kie-only' },
+      deps,
+      forceUpload: true,
+    }),
+    signedUrl,
+  );
+  assert.equal(
+    await resolveProviderChatMediaUrl('/api/assets/file/asset/image.png', {
+      env: { MEIAO_KIE_MANAGED_ASSET_MODE: 'kie-only' },
+      deps,
+      forceUpload: true,
+    }),
+    signedUrl,
+  );
+  assert.deepEqual(calls, [
+    ['/api/assets/file/asset/image.png', 'provider'],
+    ['/api/assets/file/asset/image.png', 'provider'],
+  ]);
+});
+
 test('managed Gemini video is copied to private COS and resolved as a signed URL', async () => {
   const uploads = [];
   const signedCosUrl = 'https://meiao-gemini-video-test-20260714-1406860462.cos.ap-guangzhou.myqcloud.com/gemini-video/hash/source.mp4?q-signature=signed';

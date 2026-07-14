@@ -139,6 +139,7 @@ import {
   selectExpiredAssetsForCleanup,
   deleteStoredAssetFile,
 } from './assetStore.mjs';
+import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
 import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
 import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLogin } from './dreaminaCli.mjs';
 import { createTemporalTaskAdapter } from './temporalTaskAdapter.mjs';
@@ -3616,13 +3617,37 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
   const scrubbedPayload = shouldUseMysql
     ? await scrubDbJobPayloadBeforeSubmission(job?.payload)
     : await scrubLocalJobPayloadBeforeSubmission(job?.payload);
-  return await executeProviderJob({ ...job, payload: stripCreditReservationFromPayload(scrubbedPayload) }, env, signal, options);
+  const assetPool = shouldUseMysql ? await getMysqlPool() : null;
+  const assetTransferDeps = {
+    ...(options?.assetTransferDeps || {}),
+    resolveManagedAssetReadUrl: async (value, readOptions = {}) => resolveManagedAssetReadUrl(value, {
+      ...readOptions,
+      pool: assetPool,
+      userId: job?.userId,
+      purpose: 'provider',
+      env,
+    }),
+  };
+  return await executeProviderJob(
+    { ...job, payload: stripCreditReservationFromPayload(scrubbedPayload) },
+    env,
+    signal,
+    { ...options, assetTransferDeps },
+  );
 };
 
 const prepareAgentModelImageUrl = async (url) => {
   const resolved = await resolveProviderChatMediaUrlForModel(url, {
     env: process.env,
-    deps: { uploadAssetViaKieStream },
+    deps: {
+      uploadAssetViaKieStream,
+      resolveManagedAssetReadUrl: async (value, readOptions = {}) => resolveManagedAssetReadUrl(value, {
+        ...readOptions,
+        pool: shouldUseMysql ? await getMysqlPool() : null,
+        purpose: 'provider',
+        env: process.env,
+      }),
+    },
   });
   return String(resolved || url || '').trim();
 };
@@ -3931,8 +3956,30 @@ const shouldUseStoredAssetXAccel = (req) => (
 const serveStoredAsset = async (req, res, assetId) => {
   const pool = shouldUseMysql ? await getMysqlPool() : null;
   const asset = await getStoredAssetById(pool, assetId);
-  if (!asset || asset.deletedAt) {
+  if (!asset || asset.deletedAt || String(asset.storageStatus || 'active') !== 'active') {
     json(res, 404, { message: '资源不存在或已删除。' });
+    return;
+  }
+
+  if (asset.provider === 'tencent_cos') {
+    const signedReadUrl = await resolveManagedAssetReadUrl(asset.publicUrl || buildAssetPublicPath(asset.id, asset.originalName), {
+      pool,
+      purpose: 'browser',
+      getAsset: async () => asset,
+      env: process.env,
+    });
+    scheduleStoredAssetAccessTouch(pool, asset.id, Date.now());
+    res.writeHead(302, {
+      'Location': signedReadUrl,
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+      ...(res.__corsHeaders || {}),
+    });
+    res.end();
+    return;
+  }
+  if (asset.provider !== 'internal') {
+    json(res, 404, { message: '资源存储类型不可用。' });
     return;
   }
 

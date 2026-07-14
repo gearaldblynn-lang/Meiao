@@ -439,6 +439,15 @@ export const downloadManagedAsset = async (assetUrl, envOrOptions = {}, signal =
 export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions = {}, signal = null, options = {}) => {
   const normalizedOptions = normalizeOptions(envOrOptions, signal, options);
   if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
+  const resolveManagedAssetReadUrl = normalizedOptions.deps.resolveManagedAssetReadUrl;
+  if (typeof resolveManagedAssetReadUrl === 'function') {
+    const signedReadUrl = String(await resolveManagedAssetReadUrl(assetUrl, {
+      purpose: 'provider',
+      signal: normalizedOptions.signal,
+      env: normalizedOptions.env,
+    }) || '').trim();
+    if (signedReadUrl) return signedReadUrl;
+  }
   if (!normalizedOptions.forceUpload) {
     const publicAssetUrl = resolveExternallyReachableManagedAssetUrl(assetUrl, normalizedOptions.env);
     if (publicAssetUrl) return publicAssetUrl;

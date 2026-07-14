@@ -552,6 +552,7 @@ const buildAssetTransferOptions = (env = {}, signal = null, options = {}) => ({
     uploadAssetViaKieWithFallback: (payload, transferOptions = {}) =>
       uploadAssetViaKieWithFallback(payload, transferOptions.env || env, transferOptions.signal || signal),
     uploadGeminiVideoToCos,
+    ...(options.assetTransferDeps || {}),
     ...(options.deps || {}),
   },
 });
@@ -586,8 +587,8 @@ const resolveProviderChatMediaUrl = async (value, env, signal, options = {}) =>
 const resolveProviderGenerationMediaUrl = async (value, env, signal, options = {}) =>
   resolveProviderGenerationMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal, options));
 
-const resolveProviderMediaUrl = async (value, env, signal) =>
-  resolveProviderMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal));
+const resolveProviderMediaUrl = async (value, env, signal, options = {}) =>
+  resolveProviderMediaUrlWithDeps(value, buildAssetTransferOptions(env, signal, options));
 
 const escapeRegExp = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -629,7 +630,9 @@ const resolveAttachmentStrategy = (model, item) => {
 const resolveProviderMessageItem = async (item, env, signal, options = {}) => {
   if (!item || typeof item !== 'object') return item;
   const strategy = resolveAttachmentStrategy(options.model, item);
-  const resolveMediaUrl = options.resolveMediaUrl || ((url) => resolveProviderMediaUrl(url, env, signal));
+  const resolveMediaUrl = options.resolveMediaUrl || ((url) => resolveProviderMediaUrl(url, env, signal, {
+    assetTransferDeps: options.assetTransferDeps,
+  }));
 
   if (item.type === 'text' || item.type === 'input_text') {
     return {
@@ -722,6 +725,7 @@ const resolveProviderMessages = async (messages = [], env, signal, options = {})
     if (!resolvedMediaUrlByRawUrl.has(cacheKey)) {
       resolvedMediaUrlByRawUrl.set(cacheKey, providerMediaResolver(rawUrl, env, signal, {
         forceUpload: Boolean(options.forceManagedAssetUpload),
+        assetTransferDeps: options.assetTransferDeps,
       }));
     }
     return resolvedMediaUrlByRawUrl.get(cacheKey);
@@ -1567,6 +1571,7 @@ const runKieResponsesJob = async (payload, env, signal, options = {}) => {
     model: payload.model,
     mediaUrlCache: options.mediaUrlCache,
     forceManagedAssetUpload: options.forceManagedAssetUpload,
+    assetTransferDeps: options.assetTransferDeps,
   });
   const instructions = extractResponsesInstructions(preparedMessages);
 
@@ -1656,7 +1661,7 @@ const normalizeApiportsImageError = (responseStatus, result = {}) => {
   return createProviderError('provider_bad_request', message);
 };
 
-const runApiportsGptImage2Job = async (payload, env, signal) => {
+const runApiportsGptImage2Job = async (payload, env, signal, options = {}) => {
   const { apiportsApiKey, apiportsBaseUrl } = getProviderEnv(env);
   ensureProviderKey(apiportsApiKey, 'APIports API Key');
   const rawImageUrls = Array.isArray(payload.imageUrls) ? payload.imageUrls : [];
@@ -1671,7 +1676,9 @@ const runApiportsGptImage2Job = async (payload, env, signal) => {
     const rawUrl = String(url || '').trim();
     if (!rawUrl) return '';
     if (!resolvedGenerationUrlByRawUrl.has(rawUrl)) {
-      resolvedGenerationUrlByRawUrl.set(rawUrl, resolveProviderGenerationMediaUrl(rawUrl, env, signal));
+      resolvedGenerationUrlByRawUrl.set(rawUrl, resolveProviderGenerationMediaUrl(rawUrl, env, signal, {
+        assetTransferDeps: options.assetTransferDeps,
+      }));
     }
     return resolvedGenerationUrlByRawUrl.get(rawUrl);
   };
@@ -1758,6 +1765,7 @@ const runKieImageJob = async (payload, env, signal, options = {}) => {
         fetchWithTimeout: fetchKieWithTimeout,
         resolveGenerationMediaUrl: (url) => resolveProviderGenerationMediaUrl(url, env, signal, {
           forceUpload: Boolean(options.forceManagedAssetUpload),
+          assetTransferDeps: options.assetTransferDeps,
         }),
         normalizeTaskCreationError: normalizeKieTaskCreationError,
         pollKieTask,
@@ -2267,7 +2275,9 @@ const runKieVideoJob = async (payload, env, signal, options = {}) => {
   ensureProviderKey(kieApiKey, 'Kie API Key');
 
   const targetImageUrls = await Promise.all(
-    (Array.isArray(payload.imageUrls) ? payload.imageUrls.slice(0, 1) : []).map((item) => resolveProviderGenerationMediaUrl(item, env, signal))
+    (Array.isArray(payload.imageUrls) ? payload.imageUrls.slice(0, 1) : []).map((item) => resolveProviderGenerationMediaUrl(item, env, signal, {
+      assetTransferDeps: options.assetTransferDeps,
+    }))
   );
   const input = {
     n_frames: Number.parseInt(String(payload.videoConfig?.duration || '15'), 10),
@@ -2345,7 +2355,9 @@ const runKieVeoJob = async (payload, env, signal, options = {}) => {
     };
   } else if (Array.isArray(payload.imageUrls) && payload.imageUrls.length > 0) {
     allowConcurrentAbortListeners(signal, payload.imageUrls.length);
-    const imageUrls = await Promise.all(payload.imageUrls.map((item) => resolveProviderMediaUrl(item, env, signal)));
+    const imageUrls = await Promise.all(payload.imageUrls.map((item) => resolveProviderMediaUrl(item, env, signal, {
+      assetTransferDeps: options.assetTransferDeps,
+    })));
     requestPayload.generationType = 'REFERENCE_2_VIDEO';
     requestPayload.imageUrls = imageUrls;
   } else {
@@ -2533,6 +2545,7 @@ const runKieSeedanceVideoJobAttempt = async (payload, env, signal, options = {})
   await mapWithConcurrency(mediaItems, mediaResolutionConcurrency, async (item) => {
     const resolvedUrl = await resolveProviderGenerationMediaUrl(item.url, env, signal, {
       forceUpload: Boolean(options.forceManagedAssetUpload),
+      assetTransferDeps: options.assetTransferDeps,
     });
     if (item.kind === 'image') imageUrls[item.index] = resolvedUrl;
     if (item.kind === 'video') videoUrls[item.index] = resolvedUrl;
@@ -2628,8 +2641,10 @@ const ensureFileNameWithExtension = (fileName, mimeType) => {
   return `${normalized}.${inferExtensionFromMimeType(mimeType, 'bin')}`;
 };
 
-const downloadProviderAssetToLocalFile = async (assetUrl, tempDir, env, signal, index = 0) => {
-  const resolvedUrl = await resolveProviderMediaUrl(assetUrl, env, signal);
+const downloadProviderAssetToLocalFile = async (assetUrl, tempDir, env, signal, index = 0, options = {}) => {
+  const resolvedUrl = await resolveProviderMediaUrl(assetUrl, env, signal, {
+    assetTransferDeps: options.assetTransferDeps,
+  });
   if (!isManagedAssetUrl(resolvedUrl)) {
     assertRemoteProviderMediaUrlAllowed(resolvedUrl);
   }
@@ -2651,7 +2666,7 @@ const downloadProviderAssetToLocalFile = async (assetUrl, tempDir, env, signal, 
   return filePath;
 };
 
-const prepareDreaminaLocalInputs = async (payload, env, signal) => {
+const prepareDreaminaLocalInputs = async (payload, env, signal, options = {}) => {
   const tempDir = await mkdtemp(path.join(tmpdir(), 'meiao-dreamina-'));
   const cleanup = async () => rm(tempDir, { recursive: true, force: true }).catch(() => null);
   const rawImageUrls = normalizeArray(payload.imageUrls || payload.images || payload.imageUrl || payload.image);
@@ -2666,9 +2681,9 @@ const prepareDreaminaLocalInputs = async (payload, env, signal) => {
 
   try {
     allowConcurrentAbortListeners(signal, rawImageUrls.length + rawVideoUrls.length + rawAudioUrls.length);
-    const imagePaths = await Promise.all(rawImageUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index)));
-    const videoPaths = await Promise.all(rawVideoUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index + imagePaths.length)));
-    const audioPaths = await Promise.all(rawAudioUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index + imagePaths.length + videoPaths.length)));
+    const imagePaths = await Promise.all(rawImageUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index, options)));
+    const videoPaths = await Promise.all(rawVideoUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index + imagePaths.length, options)));
+    const audioPaths = await Promise.all(rawAudioUrls.map((url, index) => downloadProviderAssetToLocalFile(url, tempDir, env, signal, index + imagePaths.length + videoPaths.length, options)));
     return { tempDir, cleanup, imagePaths, videoPaths, audioPaths };
   } catch (error) {
     await cleanup();
@@ -2786,7 +2801,7 @@ const runDreaminaVideoJob = async (payload, env, signal, providerTaskId = '', jo
     };
   }
 
-  const localInputs = await prepareDreaminaLocalInputs(payload, env, signal);
+  const localInputs = await prepareDreaminaLocalInputs(payload, env, signal, jobOptions);
   try {
     const { mode, options: cliOptions } = buildDreaminaVideoOptions(payload, localInputs);
     assertDreaminaInputs(mode, localInputs);
