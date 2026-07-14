@@ -8,7 +8,7 @@ test('stored asset route redirects active COS images to a fresh browser signed U
   assert.match(source, /import \{ resolveManagedAssetReadUrl \} from '\.\/managedAssetReadResolver\.mjs'/);
   assert.match(
     source,
-    /const serveStoredAsset[\s\S]{0,1000}asset\.storageStatus[\s\S]{0,1000}asset\.provider === 'tencent_cos'[\s\S]{0,1000}purpose: 'browser'[\s\S]{0,1000}'Location': signedReadUrl/,
+    /const serveStoredAsset[\s\S]{0,1000}asset\.storageStatus[\s\S]{0,1000}getStoredAssetStorageProvider\(asset\) === 'tencent_cos'[\s\S]{0,1000}purpose: 'browser'[\s\S]{0,1000}'Location': signedReadUrl/,
   );
   assert.match(source, /res\.writeHead\(302/);
 });

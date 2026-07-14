@@ -1,9 +1,15 @@
 import {
   claimDueAssetCleanupTasks,
   completeAssetCleanupTask,
+  enqueueAssetCleanupTask,
   retryAssetCleanupTask,
 } from './assetLifecycleStore.mjs';
-import { deleteStoredAssetFile, markStoredAssetStorageStatus } from './assetStore.mjs';
+import {
+  deleteStoredAssetFile,
+  getStoredAssetStorageProvider,
+  listAllStoredAssets,
+  markStoredAssetStorageStatus,
+} from './assetStore.mjs';
 import { deleteTencentCosImage } from './tencentCosImageStore.mjs';
 
 const defaultStore = {
@@ -59,5 +65,45 @@ export const processAssetCleanupBatch = async ({
     }
   }
 
+  return summary;
+};
+
+export const reconcileManagedAssetStorage = async ({
+  pool = null,
+  env = process.env,
+  now = Date.now(),
+  deps = {},
+} = {}) => {
+  const listAssets = deps.listAssets || listAllStoredAssets;
+  const markStatus = deps.markStatus || markStoredAssetStorageStatus;
+  const enqueueCleanup = deps.enqueueCleanup || enqueueAssetCleanupTask;
+  const parsedStaleMs = Number.parseInt(String(env?.MEIAO_ASSET_UPLOAD_STALE_MS || 15 * 60 * 1000), 10);
+  const staleMs = Number.isFinite(parsedStaleMs) && parsedStaleMs > 0 ? parsedStaleMs : 15 * 60 * 1000;
+  const assets = await listAssets(pool);
+  const summary = { scanned: assets.length, enqueued: 0, staleUploads: 0 };
+
+  for (const asset of assets) {
+    const status = String(asset?.storageStatus || 'active');
+    let reason = '';
+    if (status === 'delete_pending') reason = 'delete_pending_reconcile';
+    else if (status === 'upload_failed') reason = 'upload_failed_reconcile';
+    else if (status === 'uploading' && Number(asset?.createdAt || 0) <= now - staleMs) {
+      reason = 'stale_upload_reconcile';
+      await markStatus(pool, asset.id, 'upload_failed', now);
+      summary.staleUploads += 1;
+    }
+    if (!reason || !asset?.storageKey) continue;
+    const storageProvider = getStoredAssetStorageProvider(asset);
+    await enqueueCleanup(pool, {
+      assetId: asset.id,
+      provider: storageProvider,
+      bucket: storageProvider === 'tencent_cos' ? String(env?.MEIAO_IMAGE_COS_BUCKET || '').trim() : '',
+      region: storageProvider === 'tencent_cos' ? String(env?.MEIAO_IMAGE_COS_REGION || '').trim() : '',
+      storageKey: String(asset.storageKey),
+      action: 'delete',
+      reason,
+    });
+    summary.enqueued += 1;
+  }
   return summary;
 };

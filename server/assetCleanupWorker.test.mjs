@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { processAssetCleanupBatch } from './assetCleanupWorker.mjs';
+import { processAssetCleanupBatch, reconcileManagedAssetStorage } from './assetCleanupWorker.mjs';
 
 const cleanupTask = (overrides = {}) => ({
   id: 'cleanup-1',
@@ -85,4 +85,36 @@ test('cleanup worker dispatches historical internal files without calling COS', 
   });
 
   assert.deepEqual(localDeletes, ['user/source/legacy.png']);
+});
+
+test('storage reconciliation repairs stale uploading and missing cleanup tasks', async () => {
+  const enqueued = [];
+  const states = [];
+  const summary = await reconcileManagedAssetStorage({
+    pool: {},
+    env: {
+      MEIAO_IMAGE_COS_BUCKET: 'meiao-managed-images-1406860462',
+      MEIAO_IMAGE_COS_REGION: 'ap-guangzhou',
+      MEIAO_ASSET_UPLOAD_STALE_MS: '1000',
+    },
+    now: 5000,
+    deps: {
+      listAssets: async () => [
+        cleanupTask({ id: 'active', storageStatus: 'active', createdAt: 1 }),
+        cleanupTask({ id: 'pending', storageStatus: 'delete_pending', deletedAt: 4000 }),
+        cleanupTask({ id: 'failed', storageStatus: 'upload_failed', createdAt: 3000 }),
+        cleanupTask({ id: 'stale', storageStatus: 'uploading', createdAt: 1000 }),
+      ],
+      markStatus: async (_pool, assetId, status) => states.push([assetId, status]),
+      enqueueCleanup: async (_pool, task) => enqueued.push(task),
+    },
+  });
+
+  assert.deepEqual(summary, { scanned: 4, enqueued: 3, staleUploads: 1 });
+  assert.deepEqual(states, [['stale', 'upload_failed']]);
+  assert.deepEqual(enqueued.map((task) => [task.assetId, task.reason]), [
+    ['pending', 'delete_pending_reconcile'],
+    ['failed', 'upload_failed_reconcile'],
+    ['stale', 'stale_upload_reconcile'],
+  ]);
 });

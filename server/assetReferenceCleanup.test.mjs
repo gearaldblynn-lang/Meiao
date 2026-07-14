@@ -32,8 +32,8 @@ test('state loading scrubs deleted managed sku image items before returning to c
 test('state saving scrubs deleted managed assets before they can be persisted again', () => {
   assert.match(source, /const scrubDbStateBeforeStorage = async \(state\) => \{/);
   assert.match(source, /const scrubLocalStateBeforeStorage = async \(state\) => \{/);
-  assert.match(source, /const nextState = await scrubDbStateBeforeStorage\(\s*mergeAppStateForStorage\(await getDbAppState\(user\.id\), incomingState\)\s*\)/);
-  assert.match(source, /store\.appStates\[user\.id\] = await scrubLocalStateBeforeStorage\(\s*mergeAppStateForStorage\(store\.appStates\[user\.id\] \|\| createDefaultState\(\), incomingState\)\s*\)/);
+  assert.match(source, /const previousState = await getDbAppState\(user\.id\);[\s\S]{0,300}const nextState = await scrubDbStateBeforeStorage\(\s*mergeAppStateForStorage\(previousState, incomingState\)\s*\)/);
+  assert.match(source, /const previousState = store\.appStates\[user\.id\] \|\| createDefaultState\(\);[\s\S]{0,300}const nextState = await scrubLocalStateBeforeStorage\(\s*mergeAppStateForStorage\(previousState, incomingState\)\s*\)/);
 });
 
 test('job creation scrubs stale managed assets from direct payload submissions', () => {
@@ -56,10 +56,9 @@ test('provider execution boundary also scrubs stale managed assets', () => {
   assert.match(source, /executeJob: async \(job, signal, options\) => \{\s*const output = await executeProviderJobWithManagedAssetScrub/);
 });
 
-test('managed asset availability accepts active COS objects and checks historical local paths', () => {
+test('managed asset availability accepts active COS objects and checks every historical local path', () => {
   assert.match(source, /asset\.storageStatus !== 'active'/);
-  assert.match(source, /asset\.provider === 'internal'/);
-  assert.match(source, /asset\.provider !== 'internal' && asset\.provider !== 'tencent_cos'/);
+  assert.match(source, /getStoredAssetStorageProvider\(asset\) === 'internal'/);
   assert.match(source, /existsSync\(resolveStoredAssetPath\(asset\)\)/);
   assert.doesNotMatch(source, /existsSync\(resolveStoredAssetPath\(asset\.storageKey\)\)/);
 });

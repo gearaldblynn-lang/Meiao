@@ -57,6 +57,21 @@ test('historical internal assets return empty so the legacy resolver remains in 
   assert.equal(result, '');
 });
 
+test('historical KIE-labelled result assets still use the local read path', async () => {
+  const result = await resolveManagedAssetReadUrl('/api/assets/file/asset-kie/result.png', {
+    purpose: 'provider',
+    userId: 'user-1',
+    getAsset: async () => cosAsset({
+      id: 'asset-kie',
+      provider: 'kie',
+      storageKey: 'user-1/result/result.png',
+    }),
+    createCosReadUrl: async () => { throw new Error('COS signer must not run'); },
+  });
+
+  assert.equal(result, '');
+});
+
 test('unavailable or cross-user COS assets cannot receive a signed URL', async () => {
   for (const asset of [
     cosAsset({ storageStatus: 'uploading' }),

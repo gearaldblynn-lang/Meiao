@@ -37,6 +37,12 @@ test('account delete API hard deletes account data while preserving permanent us
   assert.match(deleteDbUserBody, /DELETE FROM internal_logs WHERE user_id = \?/);
   assert.match(deleteDbUserBody, /DELETE FROM internal_jobs WHERE user_id = \?/);
   assert.match(deleteDbUserBody, /DELETE FROM stored_assets WHERE user_id = \?/);
+  assert.match(deleteDbUserBody, /enqueueAssetCleanupTask\(connection/);
+  assert.ok(
+    deleteDbUserBody.indexOf('enqueueAssetCleanupTask(connection') < deleteDbUserBody.indexOf('DELETE FROM stored_assets'),
+    'durable cleanup tasks must be committed before account-owned asset rows disappear',
+  );
+  assert.doesNotMatch(deleteDbUserBody, /deleteStoredAssetFile/);
   assert.match(deleteDbUserBody, /DELETE FROM users WHERE id = \?/);
   assert.doesNotMatch(deleteDbUserBody, /DELETE FROM usage_daily/);
   assert.match(serverSource, /usageStatsPreserved: true/);

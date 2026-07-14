@@ -128,6 +128,8 @@ import {
   fetchRemoteAssetBufferWithRetry,
   getPublicBaseUrl,
   getStoredAssetById,
+  getStoredAssetStorageProvider,
+  listAllStoredAssets,
   listStoredAssets,
   markStoredAssetAccessed,
   markStoredAssetDeleted,
@@ -135,11 +137,13 @@ import {
   persistUploadedAssetBuffer,
   persistInlineImageResult,
   persistRemoteAsset,
+  requestStoredAssetDeletion,
   resolveStoredAssetPath,
   selectExpiredAssetsForCleanup,
-  deleteStoredAssetFile,
 } from './assetStore.mjs';
 import { resolveManagedAssetReadUrl } from './managedAssetReadResolver.mjs';
+import { enqueueAssetCleanupTask } from './assetLifecycleStore.mjs';
+import { processAssetCleanupBatch, reconcileManagedAssetStorage } from './assetCleanupWorker.mjs';
 import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
 import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLogin } from './dreaminaCli.mjs';
 import { createTemporalTaskAdapter } from './temporalTaskAdapter.mjs';
@@ -312,6 +316,7 @@ let localJobWorker = null;
 let temporalWorkerRuntime = null;
 let localStoreCache = null;
 let assetCleanupTimer = null;
+let assetCleanupRunning = false;
 let logCleanupTimer = null;
 let staleRunningJobReconcilerTimer = null;
 const temporalTaskAdapter = createTemporalTaskAdapter();
@@ -382,7 +387,14 @@ const MANAGED_ASSET_PATH_SEGMENT = '/api/assets/file/';
 const MANAGED_ASSET_REFERENCE_PATTERN = /(?:https?:\/\/[^\s"'<>，。；;、)）]+)?\/api\/assets\/file\/[^/?#"'\s<>，。；;、)）]+(?:\/[^?#"'\s<>，。；;、)）]+)?/g;
 const ASSET_FILE_ROUTE_REGEX = /^\/api\/assets\/file\/([^/]+)(?:\/[^/]+)?$/;
 const ASSET_X_ACCEL_PREFIX = '/__meiao_stored_assets';
-const ASSET_CLEANUP_INTERVAL_MS = 1000 * 60 * 30;
+const ASSET_CLEANUP_INTERVAL_MS = Math.max(
+  60_000,
+  Number.parseInt(String(process.env.MEIAO_ASSET_CLEANUP_INTERVAL_MS || 1000 * 60 * 30), 10) || 1000 * 60 * 30,
+);
+const ASSET_CLEANUP_BATCH_SIZE = Math.max(
+  1,
+  Math.min(200, Number.parseInt(String(process.env.MEIAO_ASSET_CLEANUP_BATCH_SIZE || 20), 10) || 20),
+);
 const DOWNLOAD_PROXY_TIMEOUT_MS = 30_000;
 const DOWNLOAD_PROXY_MAX_BYTES = 80 * 1024 * 1024;
 
@@ -583,8 +595,7 @@ const buildValidManagedAssetReferences = (assets = []) => {
     if (!asset || asset.deletedAt) continue;
     if (asset.storageStatus && asset.storageStatus !== 'active') continue;
     if (!asset.storageKey) continue;
-    if (asset.provider === 'internal' && !existsSync(resolveStoredAssetPath(asset))) continue;
-    if (asset.provider !== 'internal' && asset.provider !== 'tencent_cos') continue;
+    if (getStoredAssetStorageProvider(asset) === 'internal' && !existsSync(resolveStoredAssetPath(asset))) continue;
     if (asset.publicUrl) refs.add(asset.publicUrl);
     if (asset.id) refs.add(String(asset.id));
   }
@@ -3676,12 +3687,18 @@ const collectStateManagedAssetUrls = (state, bucket) => {
   });
 };
 
+const collectManagedAssetIdsInto = (value, bucket) => {
+  collectStoredAssetIdsFromValue(value).forEach((assetId) => bucket.add(String(assetId)));
+};
+
 const collectProtectedManagedAssetUrls = async ({ pool = null, store = null }) => {
   const protectedUrls = new Set();
   if (pool) {
     const [userRows] = await pool.query("SELECT avatar_url FROM users WHERE avatar_url IS NOT NULL AND avatar_url <> ''");
     const [agentRows] = await pool.query("SELECT icon_url FROM agents WHERE icon_url IS NOT NULL AND icon_url <> ''");
     const [stateRows] = await pool.query('SELECT state_json FROM app_states');
+    const [jobRows] = await pool.query('SELECT payload_json, result_json FROM internal_jobs');
+    const [messageRows] = await pool.query('SELECT content, attachments_json, metadata_json FROM chat_messages');
     userRows.map((row) => row.avatar_url).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
     agentRows.map((row) => row.icon_url).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
     stateRows.forEach((row) => {
@@ -3692,6 +3709,15 @@ const collectProtectedManagedAssetUrls = async ({ pool = null, store = null }) =
         // Ignore malformed state rows during cleanup; invalid rows are handled by normal state loading.
       }
     });
+    jobRows.forEach((row) => {
+      collectManagedAssetIdsInto(parseJsonField(row.payload_json, row.payload_json), protectedUrls);
+      collectManagedAssetIdsInto(parseJsonField(row.result_json, row.result_json), protectedUrls);
+    });
+    messageRows.forEach((row) => {
+      collectManagedAssetIdsInto(row.content, protectedUrls);
+      collectManagedAssetIdsInto(parseJsonField(row.attachments_json, row.attachments_json), protectedUrls);
+      collectManagedAssetIdsInto(parseJsonField(row.metadata_json, row.metadata_json), protectedUrls);
+    });
     return protectedUrls;
   }
 
@@ -3701,6 +3727,15 @@ const collectProtectedManagedAssetUrls = async ({ pool = null, store = null }) =
   agents.map((item) => item.iconUrl).filter(Boolean).forEach((url) => protectedUrls.add(String(url)));
   Object.values(store?.appStates || {}).forEach((state) => {
     collectStateManagedAssetUrls(state, protectedUrls);
+  });
+  (store?.jobs || []).forEach((job) => {
+    collectManagedAssetIdsInto(job?.payload, protectedUrls);
+    collectManagedAssetIdsInto(job?.result, protectedUrls);
+  });
+  (store?.chatMessages || []).forEach((message) => {
+    collectManagedAssetIdsInto(message?.content, protectedUrls);
+    collectManagedAssetIdsInto(message?.attachments, protectedUrls);
+    collectManagedAssetIdsInto(message?.metadata, protectedUrls);
   });
   return protectedUrls;
 };
@@ -3961,7 +3996,7 @@ const serveStoredAsset = async (req, res, assetId) => {
     return;
   }
 
-  if (asset.provider === 'tencent_cos') {
+  if (getStoredAssetStorageProvider(asset) === 'tencent_cos') {
     const signedReadUrl = await resolveManagedAssetReadUrl(asset.publicUrl || buildAssetPublicPath(asset.id, asset.originalName), {
       pool,
       purpose: 'browser',
@@ -3978,11 +4013,6 @@ const serveStoredAsset = async (req, res, assetId) => {
     res.end();
     return;
   }
-  if (asset.provider !== 'internal') {
-    json(res, 404, { message: '资源存储类型不可用。' });
-    return;
-  }
-
   const fullPath = resolveStoredAssetPath(asset);
   if (!fullPath || !existsSync(fullPath)) {
     await markStoredAssetDeleted(pool, asset.id, Date.now());
@@ -4096,9 +4126,18 @@ const deleteStoredAssetForUser = async ({ user, fileUrl }) => {
     throw new Error('没有权限删除该素材');
   }
 
-  await deleteStoredAssetFile(asset.storageKey);
-  await markStoredAssetDeleted(pool, asset.id, Date.now());
-  return { deleted: true, assetId };
+  const protectedAssetRefs = await collectProtectedManagedAssetUrls({
+    pool,
+    store: shouldUseMysql ? null : readLocalStore(),
+  });
+  const deletion = await requestStoredAssetDeletion({
+    pool,
+    asset,
+    reason: 'explicit_asset_delete',
+    isReferenced: protectedAssetRefs.has(asset.publicUrl) || protectedAssetRefs.has(asset.id),
+    env: process.env,
+  });
+  return { deleted: deletion.queued, protected: deletion.protected, assetId };
 };
 
 const collectStoredAssetIdsFromChatMessages = (messages = []) => {
@@ -4118,20 +4157,45 @@ const collectStoredAssetIdsFromChatMessages = (messages = []) => {
   return Array.from(ids);
 };
 
-const deleteStoredAssetsByIdsForUser = async ({ user, assetIds }) => {
+const collectStoredAssetIdsFromJob = (job) => (
+  collectStoredAssetIdsFromValue([job?.payload, job?.result])
+);
+
+const deleteStoredAssetsByIdsForUser = async ({ user, assetIds, reason = 'bulk_owner_delete', referenceStore = null }) => {
   const uniqueIds = Array.from(new Set(Array.isArray(assetIds) ? assetIds.filter(Boolean) : []));
   if (!uniqueIds.length) return { deletedAssetIds: [] };
   const pool = shouldUseMysql ? await getMysqlPool() : null;
+  const protectedAssetRefs = await collectProtectedManagedAssetUrls({
+    pool,
+    store: shouldUseMysql ? null : referenceStore || readLocalStore(),
+  });
   const deletedAssetIds = [];
   for (const assetId of uniqueIds) {
     const asset = await getStoredAssetById(pool, assetId);
     if (!asset || asset.deletedAt) continue;
     if (asset.userId !== user.id && user.role !== 'admin') continue;
-    await deleteStoredAssetFile(asset.storageKey);
-    await markStoredAssetDeleted(pool, asset.id, Date.now());
-    deletedAssetIds.push(asset.id);
+    const deletion = await requestStoredAssetDeletion({
+      pool,
+      asset,
+      reason,
+      isReferenced: protectedAssetRefs.has(asset.publicUrl) || protectedAssetRefs.has(asset.id),
+      env: process.env,
+    });
+    if (deletion.queued) deletedAssetIds.push(asset.id);
   }
   return { deletedAssetIds };
+};
+
+const queueRemovedStateAssetsForCleanup = async ({ user, previousState, nextState, referenceStore = null }) => {
+  const previousIds = new Set(collectStoredAssetIdsFromValue(previousState));
+  collectStoredAssetIdsFromValue(nextState).forEach((assetId) => previousIds.delete(assetId));
+  if (previousIds.size === 0) return { deletedAssetIds: [] };
+  return deleteStoredAssetsByIdsForUser({
+    user,
+    assetIds: Array.from(previousIds),
+    reason: 'state_reference_removed',
+    referenceStore,
+  });
 };
 
 const cleanupExpiredStoredAssets = async () => {
@@ -4145,8 +4209,13 @@ const cleanupExpiredStoredAssets = async () => {
   if (expiredAssets.length === 0) return;
 
   for (const asset of expiredAssets) {
-    await deleteStoredAssetFile(asset.storageKey);
-    await markStoredAssetDeleted(pool, asset.id, Date.now());
+    await requestStoredAssetDeletion({
+      pool,
+      asset,
+      reason: 'retention_expired',
+      isReferenced: false,
+      env: process.env,
+    });
   }
 
   const remainingAssets = await listStoredAssets(pool);
@@ -4157,6 +4226,47 @@ const cleanupExpiredStoredAssets = async () => {
   } else {
     scrubLocalStatesForDeletedAssets(validAssetUrls);
     scrubLocalProtectedManagedAssetRefs(readLocalStore(), validAssetUrls);
+  }
+};
+
+const queueUserAssetsForCleanup = async (userId) => {
+  const assets = await listAllStoredAssets(null);
+  let queued = 0;
+  for (const asset of assets) {
+    if (String(asset?.userId || '') !== String(userId || '')) continue;
+    const result = await requestStoredAssetDeletion({
+      pool: null,
+      asset,
+      reason: 'account_deleted',
+      isReferenced: false,
+      env: process.env,
+    });
+    if (result.queued) queued += 1;
+  }
+  return queued;
+};
+
+const runManagedAssetCleanupCycle = async () => {
+  if (assetCleanupRunning) return { skipped: true };
+  assetCleanupRunning = true;
+  try {
+    await cleanupExpiredStoredAssets();
+    const pool = shouldUseMysql ? await getMysqlPool() : null;
+    const reconciliation = await reconcileManagedAssetStorage({ pool, env: process.env });
+    const cleanup = await processAssetCleanupBatch({
+      pool,
+      limit: ASSET_CLEANUP_BATCH_SIZE,
+      env: process.env,
+    });
+    if (reconciliation.enqueued > 0 || cleanup.claimed > 0) {
+      console.info('managed asset cleanup cycle', {
+        reconciliation,
+        cleanup,
+      });
+    }
+    return { reconciliation, cleanup };
+  } finally {
+    assetCleanupRunning = false;
   }
 };
 
@@ -4323,12 +4433,23 @@ const deleteDbUser = async (userId) => {
   const pool = await getMysqlPool();
   const connection = await pool.getConnection();
   const toPlaceholders = (items) => items.map(() => '?').join(', ');
-  let assetStorageKeys = [];
   try {
     await connection.beginTransaction();
 
-    const [assetRows] = await connection.query('SELECT storage_key FROM stored_assets WHERE user_id = ?', [userId]);
-    assetStorageKeys = (assetRows || []).map((row) => row.storage_key).filter(Boolean);
+    const [assetRows] = await connection.query('SELECT id, provider, storage_key FROM stored_assets WHERE user_id = ?', [userId]);
+    for (const asset of assetRows || []) {
+      if (!asset.storage_key) continue;
+      const storageProvider = getStoredAssetStorageProvider(asset);
+      await enqueueAssetCleanupTask(connection, {
+        assetId: asset.id,
+        provider: storageProvider,
+        bucket: storageProvider === 'tencent_cos' ? String(process.env.MEIAO_IMAGE_COS_BUCKET || '').trim() : '',
+        region: storageProvider === 'tencent_cos' ? String(process.env.MEIAO_IMAGE_COS_REGION || '').trim() : '',
+        storageKey: asset.storage_key,
+        action: 'delete',
+        reason: 'account_deleted',
+      });
+    }
 
     const [agentRows] = await connection.query('SELECT id FROM agents WHERE owner_user_id = ?', [userId]);
     const agentIds = (agentRows || []).map((row) => row.id).filter(Boolean);
@@ -4377,12 +4498,6 @@ const deleteDbUser = async (userId) => {
   } finally {
     connection.release();
   }
-
-  await Promise.all(assetStorageKeys.map((storageKey) =>
-    deleteStoredAssetFile(storageKey).catch((error) => {
-      console.error('delete user asset file failed', storageKey, error);
-    })
-  ));
 };
 
 const countDbAdmins = async () => {
@@ -6405,9 +6520,9 @@ const deleteDbChatSession = async (user, sessionId) => {
   const pool = await getMysqlPool();
   const [messages] = await pool.query('SELECT * FROM chat_messages WHERE session_id = ? AND user_id = ?', [sessionId, user.id]);
   const assetIds = collectStoredAssetIdsFromChatMessages(messages);
-  await deleteStoredAssetsByIdsForUser({ user, assetIds });
   await pool.query('DELETE FROM chat_messages WHERE session_id = ? AND user_id = ?', [sessionId, user.id]);
   await pool.query('DELETE FROM chat_sessions WHERE id = ? AND user_id = ?', [sessionId, user.id]);
+  await deleteStoredAssetsByIdsForUser({ user, assetIds, reason: 'chat_session_deleted' });
   return { ok: true, deletedSessionId: sessionId, deletedAssetIds: assetIds };
 };
 
@@ -6425,7 +6540,6 @@ const deleteDbUserAgentHistory = async (user, agentId) => {
       [user.id, ...sessionIds]
     );
     historyAssetIds = collectStoredAssetIdsFromChatMessages(historyMessages);
-    await deleteStoredAssetsByIdsForUser({ user, assetIds: historyAssetIds });
     const [messageResult] = await pool.query(
       `DELETE FROM chat_messages WHERE user_id = ? AND session_id IN (${sessionIds.map(() => '?').join(',')})`,
       [user.id, ...sessionIds]
@@ -6434,6 +6548,11 @@ const deleteDbUserAgentHistory = async (user, agentId) => {
   }
   const [sessionResult] = await pool.query('DELETE FROM chat_sessions WHERE user_id = ? AND agent_id = ?', [user.id, agentId]);
   const [usageResult] = await pool.query('DELETE FROM agent_usage_logs WHERE user_id = ? AND agent_id = ?', [user.id, agentId]);
+  await deleteStoredAssetsByIdsForUser({
+    user,
+    assetIds: historyAssetIds,
+    reason: 'agent_chat_history_deleted',
+  });
   return {
     ok: true,
     deletedSessionCount: Number(sessionResult.affectedRows || 0),
@@ -7761,10 +7880,15 @@ const deleteLocalUserAgentHistory = async (store, user, agentId) => {
   const originalUsageCount = (store.agentUsageLogs || []).length;
   const historyMessages = (store.chatMessages || []).filter((item) => item.userId === user.id && deletedSessionIds.has(item.sessionId));
   const historyAssetIds = collectStoredAssetIdsFromChatMessages(historyMessages);
-  await deleteStoredAssetsByIdsForUser({ user, assetIds: historyAssetIds });
   store.chatMessages = (store.chatMessages || []).filter((item) => !(item.userId === user.id && deletedSessionIds.has(item.sessionId)));
   store.chatSessions = (store.chatSessions || []).filter((item) => !(item.userId === user.id && item.agentId === agentId));
   store.agentUsageLogs = (store.agentUsageLogs || []).filter((item) => !(item.userId === user.id && item.agentId === agentId));
+  await deleteStoredAssetsByIdsForUser({
+    user,
+    assetIds: historyAssetIds,
+    reason: 'agent_chat_history_deleted',
+    referenceStore: store,
+  });
   return {
     ok: true,
     deletedSessionCount,
@@ -11279,10 +11403,12 @@ const handleMysqlRequest = async (req, res, url) => {
     if (!user) return;
     const body = await readBody(req, { maxBytes: MAX_STATE_BODY_BYTES });
     const incomingState = body.state || createDefaultState();
+    const previousState = await getDbAppState(user.id);
     const nextState = await scrubDbStateBeforeStorage(
-      mergeAppStateForStorage(await getDbAppState(user.id), incomingState)
+      mergeAppStateForStorage(previousState, incomingState)
     );
     await saveDbAppState(user.id, nextState);
+    await queueRemovedStateAssetsForCleanup({ user, previousState, nextState });
     json(res, 200, { ok: true });
     return;
   }
@@ -11771,6 +11897,11 @@ const handleMysqlRequest = async (req, res, url) => {
       json(res, 409, { message: '任务状态已变化，请刷新后重试。', code: 'job_delete_state_changed' });
       return;
     }
+    await deleteStoredAssetsByIdsForUser({
+      user,
+      assetIds: collectStoredAssetIdsFromJob(deletion.job),
+      reason: 'job_deleted',
+    });
     jobWorker?.cancelActiveJob(job.id);
     await createDbLog({
       user,
@@ -13488,9 +13619,14 @@ const handleLocalRequest = async (req, res, url) => {
     }
     const sessionMessages = (store.chatMessages || []).filter((item) => item.sessionId === sessionId && item.userId === user.id);
     const deletedAssetIds = collectStoredAssetIdsFromChatMessages(sessionMessages);
-    await deleteStoredAssetsByIdsForUser({ user, assetIds: deletedAssetIds });
     store.chatMessages = (store.chatMessages || []).filter((item) => !(item.sessionId === sessionId && item.userId === user.id));
     store.chatSessions = (store.chatSessions || []).filter((item) => !(item.id === sessionId && item.userId === user.id));
+    await deleteStoredAssetsByIdsForUser({
+      user,
+      assetIds: deletedAssetIds,
+      reason: 'chat_session_deleted',
+      referenceStore: store,
+    });
     writeLocalStore(store);
     json(res, 200, { ok: true, deletedSessionId: sessionId, deletedAssetIds });
     return;
@@ -14736,6 +14872,8 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
 
+    await queueUserAssetsForCleanup(targetUser.id);
+
     const deletedAgentIds = new Set((store.agents || []).filter((item) => item.ownerUserId === targetUser.id).map((item) => item.id));
     const deletedVersionIds = new Set((store.agentVersions || []).filter((item) => deletedAgentIds.has(item.agentId) || item.createdBy === targetUser.id).map((item) => item.id));
     const deletedKnowledgeBaseIds = new Set((store.knowledgeBases || []).filter((item) => item.ownerUserId === targetUser.id).map((item) => item.id));
@@ -14788,10 +14926,13 @@ const handleLocalRequest = async (req, res, url) => {
     if (!user) return;
     const body = await readBody(req, { maxBytes: MAX_STATE_BODY_BYTES });
     const incomingState = body.state || createDefaultState();
-    store.appStates[user.id] = await scrubLocalStateBeforeStorage(
-      mergeAppStateForStorage(store.appStates[user.id] || createDefaultState(), incomingState)
+    const previousState = store.appStates[user.id] || createDefaultState();
+    const nextState = await scrubLocalStateBeforeStorage(
+      mergeAppStateForStorage(previousState, incomingState)
     );
+    store.appStates[user.id] = nextState;
     writeLocalStore(store);
+    await queueRemovedStateAssetsForCleanup({ user, previousState, nextState, referenceStore: store });
     json(res, 200, { ok: true });
     return;
   }
@@ -15256,6 +15397,12 @@ const handleLocalRequest = async (req, res, url) => {
       return;
     }
     deleteLocalJobRecord(store, jobToDelete.id);
+    await deleteStoredAssetsByIdsForUser({
+      user,
+      assetIds: collectStoredAssetIdsFromJob(jobToDelete),
+      reason: 'job_deleted',
+      referenceStore: store,
+    });
     appendLocalLog(store, {
       user,
       level: 'info',
@@ -15675,11 +15822,11 @@ const bootstrap = async () => {
 
   if (!assetCleanupTimer) {
     assetCleanupTimer = setInterval(() => {
-      void cleanupExpiredStoredAssets().catch((error) => {
+      void runManagedAssetCleanupCycle().catch((error) => {
         console.error('asset cleanup failed', error);
       });
     }, ASSET_CLEANUP_INTERVAL_MS);
-    void cleanupExpiredStoredAssets().catch((error) => {
+    void runManagedAssetCleanupCycle().catch((error) => {
       console.error('asset cleanup failed', error);
     });
   }
