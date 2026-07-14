@@ -1,0 +1,108 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  createMediaTranscodeService,
+  parseFfprobeOutput,
+} from './mediaTranscodeService.mjs';
+
+const sampleProbeJson = JSON.stringify({
+  format: {
+    format_name: 'mov,mp4,m4a,3gp,3g2,mj2',
+    duration: '5.250000',
+    size: '1024000',
+  },
+  streams: [
+    { codec_type: 'video', codec_name: 'hevc', width: 1080, height: 1920, avg_frame_rate: '30000/1001' },
+    { codec_type: 'audio', codec_name: 'aac' },
+  ],
+});
+
+test('parseFfprobeOutput returns authoritative video metadata', () => {
+  assert.deepEqual(parseFfprobeOutput(sampleProbeJson, 'video'), {
+    kind: 'video',
+    durationSeconds: 5.25,
+    formatNames: ['mov', 'mp4', 'm4a', '3gp', '3g2', 'mj2'],
+    videoCodec: 'hevc',
+    audioCodec: 'aac',
+    width: 1080,
+    height: 1920,
+    frameRate: 29.97,
+    sizeBytes: 1_024_000,
+    hasAudio: true,
+  });
+});
+
+test('service readiness checks both configured binaries without exposing paths', async () => {
+  const calls = [];
+  const service = createMediaTranscodeService({
+    env: { MEIAO_MEDIA_TRANSCODE_ENABLED: '1' },
+    ffmpegPath: '/private/ffmpeg',
+    ffprobePath: '/private/ffprobe',
+    runProcess: async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: '', stderr: '', exitCode: 0 };
+    },
+  });
+
+  assert.deepEqual(await service.checkReadiness(), {
+    enabled: true,
+    ffmpegReady: true,
+    ffprobeReady: true,
+  });
+  assert.deepEqual(calls.map((item) => item.args), [['-version'], ['-version']]);
+  assert.deepEqual(service.getStatus(), {
+    enabled: true,
+    active: 0,
+    queued: 0,
+  });
+});
+
+test('service probe passes structured FFprobe arguments and parses stdout', async () => {
+  const calls = [];
+  const service = createMediaTranscodeService({
+    env: { MEIAO_MEDIA_TRANSCODE_ENABLED: '1' },
+    ffmpegPath: '/private/ffmpeg',
+    ffprobePath: '/private/ffprobe',
+    runProcess: async (command, args) => {
+      calls.push({ command, args });
+      return { stdout: sampleProbeJson, stderr: '', exitCode: 0 };
+    },
+  });
+
+  const result = await service.probe('/tmp/source.mov', 'video');
+  assert.equal(result.videoCodec, 'hevc');
+  assert.deepEqual(calls[0], {
+    command: '/private/ffprobe',
+    args: ['-v', 'error', '-show_format', '-show_streams', '-of', 'json', '/tmp/source.mov'],
+  });
+});
+
+test('service cancellation aborts an active conversion and releases its permit', async () => {
+  let rejectRunning;
+  const runProcess = (command, args, options) => new Promise((resolve, reject) => {
+    rejectRunning = reject;
+    options.signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true });
+  });
+  const service = createMediaTranscodeService({
+    env: { MEIAO_MEDIA_TRANSCODE_ENABLED: '1', MEIAO_MEDIA_TRANSCODE_CONCURRENCY: '1' },
+    ffmpegPath: '/private/ffmpeg',
+    ffprobePath: '/private/ffprobe',
+    runProcess,
+  });
+
+  const pending = service.transcode({
+    sessionId: 'session-1',
+    kind: 'audio',
+    inputPath: '/tmp/source.wav',
+    outputPath: '/tmp/output.mp3',
+    startSeconds: 0,
+    endSeconds: 3,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(service.getStatus().active, 1);
+  assert.equal(await service.cancel('session-1'), true);
+  await assert.rejects(pending, (error) => error?.code === 'media_transcode_cancelled');
+  assert.equal(service.getStatus().active, 0);
+  assert.equal(typeof rejectRunning, 'function');
+});
