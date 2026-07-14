@@ -94,7 +94,10 @@ import {
   shouldResetSkuMaterialsForUpload,
 } from './adapters/shellSkuUploadReset.mjs';
 import { collectFailedOneClickPlanningPlans } from './adapters/shellPlanningFailure.ts';
-import { getProductRestoreAnalysisPendingState } from './adapters/shellProductRestorePendingState';
+import {
+  getProductRestoreAnalysisPendingState,
+  resolveProductRestoreTargetCount,
+} from './adapters/shellProductRestorePendingState';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -1684,7 +1687,12 @@ const resolveEverythingReplaceBatchCount = (
   return Math.min(40, referenceCount);
 };
 
-const resolveBatchCount = (module: AppModule, subFeature: string, params: Record<string, string>) => {
+const resolveBatchCount = (
+  module: AppModule,
+  subFeature: string,
+  params: Record<string, string>,
+  materials: Record<string, Material[]> = {},
+) => {
   if (module === AppModuleObj.ONE_CLICK) {
     if (subFeature === 'first_image') return 1;
     if (subFeature === 'sku') {
@@ -1707,6 +1715,10 @@ const resolveBatchCount = (module: AppModule, subFeature: string, params: Record
       .map((item) => item.trim())
       .filter(Boolean).length;
     return Math.max(1, Math.min(20, styleCount || 1));
+  }
+
+  if (module === AppModuleObj.RETOUCH && subFeature === 'product_restore') {
+    return resolveProductRestoreTargetCount(materials);
   }
 
   return 1;
@@ -3998,7 +4010,6 @@ const AppContent: React.FC<{
       }
     }
     generationParams.__workspacePreferences = JSON.stringify(apiConfig.workspacePreferences || getWorkspacePreferences());
-    let batchCount = resolveBatchCount(targetModule, targetSubFeature, generationParams);
     const translationSubFeatureLabel = MODULE_SUB_FEATURES[targetModule]
       ?.find((item) => item.id === targetSubFeature)?.label;
     const projectName = reserveShortProjectName();
@@ -4006,6 +4017,12 @@ const AppContent: React.FC<{
     let generationMaterials = hasMaterialInputs(latestFilteredMaterials) || !hasMaterialInputs(filteredMaterials)
       ? latestFilteredMaterials
       : filteredMaterials;
+    let batchCount = resolveBatchCount(
+      targetModule,
+      targetSubFeature,
+      generationParams,
+      generationMaterials,
+    );
     if (targetModule === AppModuleObj.EVERYTHING_REPLACE) {
       batchCount = resolveEverythingReplaceBatchCount(generationMaterials, generationParams, targetSubFeature);
     }
@@ -4944,6 +4961,7 @@ const AppContent: React.FC<{
 	    taskControllersRef.current[taskId] = controller;
 	    let batchResults: GeneratedResult[] = [];
 	    let pendingSyncProject: Project | null = null;
+	    let pendingSpecialTaskState: { status: 'generating'; total: number } | undefined;
 	    let activeBackendJobId = '';
 	    let activeProviderTaskId = '';
 	    const onJobCreated = (jobId: string, providerTaskId?: string) => {
@@ -5230,7 +5248,11 @@ const AppContent: React.FC<{
           targetModule,
           targetSubFeature,
           specialResult,
+          generationMaterials,
         );
+        if (productRestoreAnalysisPending.task) {
+          pendingSpecialTaskState = productRestoreAnalysisPending.task;
+        }
         const hasSpecialGenerating = productRestoreAnalysisPending.isPending
           || specialWorkflowResults.some((item) => item.status === 'generating');
         const hasSpecialError = specialWorkflowResults.some((item) => item.status === 'error');
@@ -5239,14 +5261,14 @@ const AppContent: React.FC<{
           ...(productRestoreAnalysisPending.analysisJobId
             ? { backendJobId: productRestoreAnalysisPending.analysisJobId }
             : {}),
-          status: productRestoreAnalysisPending.projectStatus
+          status: productRestoreAnalysisPending.project?.status
             || (hasSpecialGenerating ? 'generating' : hasSpecialError ? 'error' : 'completed'),
           completedAt: hasSpecialGenerating ? undefined : newProject.createdAt,
           results: specialWorkflowResults,
           taskCount: Math.max(
             specialWorkflowResults.length,
             specialResult.results.length,
-            productRestoreAnalysisPending.isPending ? batchCount : 0,
+            productRestoreAnalysisPending.project?.taskCount || 0,
           ),
           completedCount: specialWorkflowResults.filter((item) => item.status === 'completed').length,
           creditsConsumed: specialResult.creditsConsumed,
@@ -5422,7 +5444,13 @@ const AppContent: React.FC<{
       if (pendingSyncProject) {
         setTasks((prev) => prev.map((t) => (
           t.id === taskId
-            ? { ...t, status: 'generating', progress: Math.max(t.progress || 0, 8), total: batchCount, completed: completedProject.completedCount }
+            ? {
+                ...t,
+                status: pendingSpecialTaskState?.status || 'generating',
+                progress: Math.max(t.progress || 0, 8),
+                total: pendingSpecialTaskState?.total || completedProject.taskCount,
+                completed: completedProject.completedCount,
+              }
             : t
         )));
       } else {

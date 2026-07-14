@@ -1384,8 +1384,12 @@ export const runShellBuyerShowWorkflow = async (
 
 type ShellRetouchMode = 'original' | 'white_bg' | 'product_restore' | 'product_replace' | 'background_replace' | 'logo_replace';
 
-const getRetouchMode = (input: ShellGenerateInput): ShellRetouchMode => {
+export const resolveShellRetouchMode = (input: ShellGenerateInput): ShellRetouchMode => {
   const value = String(input.subFeature || input.params.mode || '').trim();
+  const isProductRestoreAlias = value === 'product_restore' || value.includes('产品还原');
+  if (input.module === AppModule.EVERYTHING_REPLACE && isProductRestoreAlias) {
+    throw new Error('产品还原仅支持产品精修，请切换到产品精修后重试。');
+  }
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'product_replace' || value.includes('产品'))) return 'product_replace';
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'background_replace' || value.includes('背景'))) return 'background_replace';
   if (input.module === AppModule.EVERYTHING_REPLACE && (value === 'logo_replace' || value.toLowerCase().includes('logo'))) return 'logo_replace';
@@ -2739,7 +2743,7 @@ export const runShellRetouchWorkflow = async (
   onItemCompleted?: (item: ShellWorkflowImageResult, index: number, total: number) => void,
   productRestoreDeps?: ProductRestoreWorkflowDeps,
 ): Promise<ShellRetouchWorkflowResult> => {
-  const mode = getRetouchMode(input);
+  const mode = resolveShellRetouchMode(input);
 
   storeActiveModuleContext(input.module);
   const apiConfig: GlobalApiConfig = {

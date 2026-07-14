@@ -805,17 +805,32 @@ test('real Retouch route returns the pending analysis contract additively', asyn
   }
 });
 
-test('outer shell keeps pending Product Restoration analysis in planning', async () => {
-  const { getProductRestoreAnalysisPendingState } = await loadActiveModule('/src/adapters/shellProductRestorePendingState.ts');
+test('outer shell assembles pending Product Restoration project and task cardinality from targets', async () => {
+  const {
+    assembleProductRestorePendingProjectTaskState,
+    getProductRestoreAnalysisPendingState,
+  } = await loadActiveModule('/src/adapters/shellProductRestorePendingState.ts');
+  const materials = {
+    restoreTarget: [
+      makeMaterial('target-a', 'restoreTarget'),
+      makeMaterial('target-b', 'restoreTarget'),
+      makeMaterial('target-c', 'restoreTarget'),
+    ],
+  };
 
+  assert.deepEqual(assembleProductRestorePendingProjectTaskState(materials), {
+    project: { status: 'planning', taskCount: 3 },
+    task: { status: 'generating', total: 3 },
+  });
   assert.deepEqual(getProductRestoreAnalysisPendingState('retouch', 'product_restore', {
     results: [],
     analysisStatus: 'generating',
     analysisJobId: 'analysis-job-shell-pending',
     message: '产品还原分析仍在生成。',
-  }), {
+  }, materials), {
     isPending: true,
-    projectStatus: 'planning',
+    project: { status: 'planning', taskCount: 3 },
+    task: { status: 'generating', total: 3 },
     analysisJobId: 'analysis-job-shell-pending',
     message: '产品还原分析仍在生成。',
   });
@@ -823,5 +838,31 @@ test('outer shell keeps pending Product Restoration analysis in planning', async
     results: [],
     analysisStatus: 'generating',
     analysisJobId: 'analysis-job-ignored',
-  }), { isPending: false });
+  }, materials), { isPending: false });
+});
+
+test('EverythingReplace rejects Product Restoration aliases without breaking product-replace aliases', async () => {
+  const { resolveShellRetouchMode } = await loadActiveModule('/src/adapters/shellWorkflow.ts');
+  const input = makeInput();
+
+  for (const alias of ['product_restore', '产品还原', '开始产品还原']) {
+    assert.throws(() => resolveShellRetouchMode({
+      ...input,
+      module: 'everything_replace',
+      subFeature: alias,
+    }), /产品还原仅支持产品精修/);
+  }
+
+  for (const alias of ['product_replace', '产品替换', '替换产品']) {
+    assert.equal(resolveShellRetouchMode({
+      ...input,
+      module: 'everything_replace',
+      subFeature: alias,
+    }), 'product_replace');
+  }
+  assert.equal(resolveShellRetouchMode({
+    ...input,
+    module: 'retouch',
+    subFeature: '产品还原',
+  }), 'product_restore');
 });
