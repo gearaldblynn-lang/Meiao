@@ -48,6 +48,10 @@ test('deploy_tencent blocks releases with high severity dependency vulnerabiliti
   assert.ok(installIndex >= 0, 'deploy script should install dependencies');
   assert.ok(auditIndex > installIndex, 'deploy script should audit after installing dependencies');
   assert.ok(buildIndex > auditIndex, 'deploy script should block before building unsafe dependencies');
+  assert.match(source, /run_security_audit_with_retry\(\)/);
+  assert.match(source, /if npm run security:audit; then/);
+  assert.match(source, /npm ls --omit=dev --depth=0/);
+  assert.match(source, /run_security_audit_with_retry\n/);
 });
 
 test('deploy_tencent refuses to restart while cloud jobs are running', () => {
