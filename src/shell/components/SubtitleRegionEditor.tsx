@@ -39,7 +39,7 @@ type PointerInteraction = {
   startRegion: SubtitleRemovalRegion;
 };
 
-export const calculateContainedMediaRect = (
+const calculateContainedMediaRect = (
   containerWidth: number,
   containerHeight: number,
   mediaWidth: number,
@@ -92,7 +92,7 @@ const SubtitleRegionEditor: React.FC<Props> = ({
   const mediaRectRef = useRef<MediaRect>({ left: 0, top: 0, width: 0, height: 0 });
   const interactionRef = useRef<PointerInteraction | null>(null);
   const onRegionChangeRef = useRef(onRegionChange);
-  const [mediaRect, setMediaRect] = useState<MediaRect>(mediaRectRef.current);
+  const [mediaRect, setMediaRect] = useState<MediaRect>({ left: 0, top: 0, width: 0, height: 0 });
   const normalizedRegion = useMemo(() => clampSubtitleRegion(region), [region]);
 
   useEffect(() => {
@@ -124,6 +124,7 @@ const SubtitleRegionEditor: React.FC<Props> = ({
   }, [updateMediaRect]);
 
   useEffect(() => {
+    const video = videoRef.current;
     const handlePointerMove = (event: PointerEvent) => {
       const interaction = interactionRef.current;
       const currentRect = mediaRectRef.current;
@@ -148,7 +149,7 @@ const SubtitleRegionEditor: React.FC<Props> = ({
     window.addEventListener('pointercancel', handlePointerEnd);
     document.addEventListener('visibilitychange', pauseWhenHidden);
     return () => {
-      videoRef.current?.pause();
+      video?.pause();
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerEnd);
       window.removeEventListener('pointercancel', handlePointerEnd);

@@ -129,7 +129,7 @@ const uploadMediaFormData = <T>(
   const xhr = new XMLHttpRequest();
   const token = getSessionToken();
   let settled = false;
-  const finish = (callback: (value: any) => void, value: unknown) => {
+  const finish = <Value,>(callback: (value: Value) => void, value: Value) => {
     if (settled) return;
     settled = true;
     callerSignal?.removeEventListener('abort', abort);
