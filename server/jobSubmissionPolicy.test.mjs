@@ -50,7 +50,7 @@ test('provider policy binds Dreamina video jobs to the Dreamina provider', () =>
 test('video permission and create retry policy covers every video task type', () => {
   assert.deepEqual(
     [...VIDEO_JOB_TASK_TYPES].sort(),
-    ['dreamina_video', 'kie_seedance_video', 'kie_veo', 'kie_video', 'maxforai_video']
+    ['dreamina_video', 'kie_seedance_video', 'kie_veo', 'kie_video', 'maxforai_video', 'subtitle_remove_video']
   );
 
   for (const taskType of VIDEO_JOB_TASK_TYPES) {
@@ -58,16 +58,62 @@ test('video permission and create retry policy covers every video task type', ()
       ? 'dreamina'
       : taskType === 'maxforai_video'
         ? 'maxforai'
+        : taskType === 'subtitle_remove_video'
+          ? 'golden_subtitle'
         : 'kie';
+    const featureOptions = taskType === 'subtitle_remove_video'
+      ? { subtitleRemovalEnabled: true, subtitleRemovalConfigured: true }
+      : {};
     assert.throws(
-      () => resolveJobSubmissionPolicy({ taskType, provider, hasVideoPermission: false }),
+      () => resolveJobSubmissionPolicy({ taskType, provider, hasVideoPermission: false, ...featureOptions }),
       (error) => error?.code === 'video_feature_forbidden' && error?.statusCode === 403,
       taskType
     );
-    const policy = resolveJobSubmissionPolicy({ taskType, provider, hasVideoPermission: true });
+    const policy = resolveJobSubmissionPolicy({ taskType, provider, hasVideoPermission: true, ...featureOptions });
     assert.equal(policy.maxCreateRetries, 0, taskType);
     assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000, taskType);
   }
+});
+
+test('subtitle removal is provider-bound, gated for new work, and recoverable by old task id', () => {
+  const input = {
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: { subFeature: 'subtitle_removal' },
+    hasVideoPermission: true,
+  };
+  const policy = resolveJobSubmissionPolicy({
+    ...input,
+    subtitleRemovalEnabled: true,
+    subtitleRemovalConfigured: true,
+  });
+
+  assert.equal(policy.requiresVideoPermission, true);
+  assert.equal(policy.maxCreateRetries, 0);
+  assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000);
+  assert.equal(canRecoverProviderTaskById({
+    taskType: 'subtitle_remove_video',
+    providerTaskId: 'golden-1',
+  }), true);
+  assert.throws(
+    () => resolveJobSubmissionPolicy({ ...input, provider: 'kie', subtitleRemovalEnabled: true, subtitleRemovalConfigured: true }),
+    (error) => error?.code === 'job_provider_not_allowed',
+  );
+  assert.throws(
+    () => resolveJobSubmissionPolicy({ ...input, subtitleRemovalEnabled: false, subtitleRemovalConfigured: true }),
+    (error) => error?.code === 'subtitle_removal_unavailable' && error?.statusCode === 503,
+  );
+  assert.throws(
+    () => resolveJobSubmissionPolicy({ ...input, subtitleRemovalEnabled: true, subtitleRemovalConfigured: false }),
+    (error) => error?.code === 'subtitle_removal_unavailable' && error?.statusCode === 503,
+  );
+  assert.doesNotThrow(() => resolveJobSubmissionPolicy({
+    ...input,
+    submissionOperation: 'recover',
+    subtitleRemovalEnabled: false,
+    subtitleRemovalConfigured: false,
+  }));
 });
 
 test('MaxForAI video jobs are provider-bound, zero-retry and recoverable by task id', () => {
@@ -166,7 +212,7 @@ test('submission lock timeout uses an env override with a conservative default',
 });
 
 test('provider task recovery is limited to task types with a real query path', () => {
-  for (const taskType of ['kie_image', 'kie_video', 'kie_seedance_video', 'kie_veo', 'dreamina_video', 'maxforai_video']) {
+  for (const taskType of ['kie_image', 'kie_video', 'kie_seedance_video', 'kie_veo', 'dreamina_video', 'maxforai_video', 'subtitle_remove_video']) {
     assert.equal(canRecoverProviderTaskById({ taskType, providerTaskId: 'existing-task' }), true, taskType);
   }
   for (const taskType of ['kie_chat', 'openai_responses', 'openai_tool_calling']) {

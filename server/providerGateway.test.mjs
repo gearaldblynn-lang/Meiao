@@ -276,6 +276,74 @@ test('executeProviderJob recovers MaxForAI video by GET without a second create 
   }
 });
 
+test('executeProviderJob routes Golden subtitle removal through managed probe, checkpoint, and polling', async () => {
+  const requests = [];
+  const checkpoints = [];
+  const result = await executeProviderJob({
+    id: 'subtitle-job-1',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    providerTaskId: '',
+    payload: {
+      sourceUrl: '/api/assets/file/source-video.mp4',
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
+    },
+  }, {
+    GOLDEN_SUBTITLE_API_TOKEN: 'test-token',
+    MEIAO_SUBTITLE_REMOVAL_ENABLED: '1',
+  }, new AbortController().signal, {
+    onProviderTaskId: async (taskId) => checkpoints.push(taskId),
+    assetTransferDeps: {
+      resolveManagedAssetReadUrl: async () => 'https://managed.example/source.mp4?access=short',
+      probeVideo: async () => ({ durationSeconds: 3, sizeBytes: 1024, width: 720, height: 1280 }),
+      sleep: async () => {},
+      now: () => 0,
+      fetchImpl: async (_url, init = {}) => {
+        const body = JSON.parse(String(init.body || '{}'));
+        requests.push(body.biz);
+        return body.biz === 'aiRemoveSubtitleSubmitTask'
+          ? createJsonResponse({ code: 0, data: { taskId: 'golden-1' } })
+          : createJsonResponse({ code: 0, data: [{ taskId: 'golden-1', status: 'success', resultUrl: 'https://provider.example/result.mp4' }] });
+      },
+    },
+  });
+
+  assert.deepEqual(requests, ['aiRemoveSubtitleSubmitTask', 'aiRemoveSubtitleProgress']);
+  assert.deepEqual(checkpoints, ['golden-1']);
+  assert.equal(result.providerTaskId, 'golden-1');
+  assert.equal(result.result.videoUrl, 'https://provider.example/result.mp4');
+});
+
+test('executeProviderJob recovers Golden subtitle removal without a second submit', async () => {
+  const requests = [];
+  await executeProviderJob({
+    id: 'subtitle-job-2',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    providerTaskId: 'golden-existing',
+    payload: {
+      sourceUrl: '/api/assets/file/source-video.mp4',
+      subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
+    },
+  }, {
+    GOLDEN_SUBTITLE_API_TOKEN: 'test-token',
+    MEIAO_SUBTITLE_REMOVAL_ENABLED: '1',
+  }, new AbortController().signal, {
+    assetTransferDeps: {
+      resolveManagedAssetReadUrl: async () => 'https://managed.example/source.mp4?access=short',
+      probeVideo: async () => ({ durationSeconds: 3, sizeBytes: 1024, width: 720, height: 1280 }),
+      now: () => 0,
+      fetchImpl: async (_url, init = {}) => {
+        const body = JSON.parse(String(init.body || '{}'));
+        requests.push(body.biz);
+        return createJsonResponse({ code: 0, data: [{ taskId: 'golden-existing', status: 'success', resultUrl: 'https://provider.example/recovered.mp4' }] });
+      },
+    },
+  });
+
+  assert.deepEqual(requests, ['aiRemoveSubtitleProgress']);
+});
+
 const box = (type, payload = Buffer.alloc(0)) => {
   const buffer = Buffer.alloc(8 + payload.length);
   buffer.writeUInt32BE(buffer.length, 0);

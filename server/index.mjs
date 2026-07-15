@@ -169,6 +169,7 @@ import { createMediaTranscodeApi } from './mediaTranscodeApi.mjs';
 import { createMediaTranscodeService } from './mediaTranscodeService.mjs';
 import { createMediaTranscodeSessionStore } from './mediaTranscodeSessionStore.mjs';
 import { createMediaTranscodeError } from './mediaTranscodeContract.mjs';
+import { getSubtitleRemovalConfig } from './subtitleRemovalContract.mjs';
 import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
 import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLogin } from './dreaminaCli.mjs';
 import { createTemporalTaskAdapter } from './temporalTaskAdapter.mjs';
@@ -1722,18 +1723,23 @@ const normalizeUserAnalysisModel = (value = '') => {
 const canUseVideoGenerationFeature = (user) =>
   user?.role === 'admin' || normalizeFeaturePermissions(user?.featurePermissions).videoGeneration;
 
-const resolveAuthorizedJobSubmissionPolicy = (user, body, { submissionOperation = 'create' } = {}) => resolveJobSubmissionPolicy({
-  module: body?.module,
-  taskType: body?.taskType,
-  provider: body?.provider,
-  payload: body?.payload,
-  subFeature: body?.subFeature,
-  taskPurpose: body?.taskPurpose,
-  hasVideoPermission: canUseVideoGenerationFeature(user),
-  userRole: user?.role,
-  productRestoreRollout: process.env.MEIAO_PRODUCT_RESTORE_ROLLOUT,
-  submissionOperation,
-});
+const resolveAuthorizedJobSubmissionPolicy = (user, body, { submissionOperation = 'create' } = {}) => {
+  const subtitleRemovalConfig = getSubtitleRemovalConfig(process.env);
+  return resolveJobSubmissionPolicy({
+    module: body?.module,
+    taskType: body?.taskType,
+    provider: body?.provider,
+    payload: body?.payload,
+    subFeature: body?.subFeature,
+    taskPurpose: body?.taskPurpose,
+    hasVideoPermission: canUseVideoGenerationFeature(user),
+    userRole: user?.role,
+    productRestoreRollout: process.env.MEIAO_PRODUCT_RESTORE_ROLLOUT,
+    submissionOperation,
+    subtitleRemovalEnabled: subtitleRemovalConfig.enabled,
+    subtitleRemovalConfigured: subtitleRemovalConfig.configured,
+  });
+};
 
 const normalizeJobMaxRetries = (taskType, value) => (
   VIDEO_JOB_TASK_TYPES.has(String(taskType || '')) ? 0 : value
@@ -4162,6 +4168,7 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
       purpose: 'provider',
       env,
     }),
+    probeVideo: (value, probeSignal) => mediaTranscodeService.probe(value, 'video', probeSignal),
   };
   return await executeProviderJob(
     { ...job, payload: stripCreditReservationFromPayload(scrubbedPayload) },

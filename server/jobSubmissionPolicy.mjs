@@ -22,6 +22,7 @@ export const VIDEO_JOB_TASK_TYPES = new Set([
   'kie_veo',
   'kie_video',
   'maxforai_video',
+  'subtitle_remove_video',
 ]);
 
 export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
@@ -31,6 +32,7 @@ export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
   'kie_veo',
   'kie_video',
   'maxforai_video',
+  'subtitle_remove_video',
 ]);
 
 export const KIE_RECOVERY_SOURCE_TASK_TYPES = new Set(
@@ -59,6 +61,7 @@ export const isAuthorizedProviderTaskRecoverySource = (sourceJob, request = {}) 
 const TASK_PROVIDER_POLICIES = new Map([
   ['dreamina_video', new Set(['dreamina'])],
   ['maxforai_video', new Set(['maxforai'])],
+  ['subtitle_remove_video', new Set(['golden_subtitle'])],
   ['openai_responses', new Set(['openai_compatible'])],
   ['openai_tool_calling', new Set(['openai_compatible'])],
   ['upload_asset', new Set(['kie'])],
@@ -110,6 +113,8 @@ export const resolveJobSubmissionPolicy = ({
   userRole = '',
   productRestoreRollout,
   submissionOperation = 'create',
+  subtitleRemovalEnabled = false,
+  subtitleRemovalConfigured = false,
 } = {}) => {
   const normalizedModule = normalizePolicyMarker(module);
   const normalizedTaskType = String(taskType || '').trim();
@@ -149,6 +154,18 @@ export const resolveJobSubmissionPolicy = ({
       'job_provider_not_allowed',
       `未知任务类型 ${normalizedTaskType || 'empty'} 只允许使用 internal provider。`,
       400
+    );
+  }
+
+  if (
+    normalizedTaskType === 'subtitle_remove_video'
+    && submissionOperation === 'create'
+    && (!subtitleRemovalEnabled || !subtitleRemovalConfigured)
+  ) {
+    throw createPolicyError(
+      'subtitle_removal_unavailable',
+      '去字幕功能暂未开放，请联系管理员。',
+      503,
     );
   }
 
