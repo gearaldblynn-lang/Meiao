@@ -20,6 +20,7 @@ test('workspace converts the full authoritative source duration and explains the
   assert.match(source, /startSeconds: 0/);
   assert.match(source, /endSeconds: probe\.durationSeconds/);
   assert.match(source, /probe\.durationSeconds > 600/);
+  assert.match(source, /单个视频最长 600 秒，不受短视频生成 15 秒限制/);
   assert.match(source, /result\.transcoded/);
   assert.match(source, /原视频已是兼容格式/);
   assert.match(source, /正在保留原画幅转换为 H\.264 MP4/);

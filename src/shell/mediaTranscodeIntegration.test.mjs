@@ -6,10 +6,18 @@ const shellSource = readFileSync(new URL('../ShellMigratedApp.tsx', import.meta.
 const bottomInputSource = readFileSync(new URL('./components/layout/BottomInputBar.tsx', import.meta.url), 'utf8');
 const selectorSource = readFileSync(new URL('./components/UploadTypeSelector.tsx', import.meta.url), 'utf8');
 const workflowSource = readFileSync(new URL('../adapters/shellWorkflow.ts', import.meta.url), 'utf8');
+const uploadPolicySource = readFileSync(new URL('../utils/videoReferenceUploadPolicy.mjs', import.meta.url), 'utf8');
 
 test('short-video audio and video uploads are intercepted before draft or legacy upload persistence', () => {
-  assert.match(shellSource, /activeModule === AppModuleObj\.VIDEO/);
-  assert.match(shellSource, /type === 'referenceVideo' \|\| type === 'audio'/);
+  const uploadHandlerStart = shellSource.indexOf('const handleMaterialUpload = useCallback');
+  const preparationGuard = shellSource.indexOf('shouldUseSeedanceMediaPreparation({', uploadHandlerStart);
+  const draftPersistence = shellSource.indexOf('saveShellDraftAsset(', uploadHandlerStart);
+
+  assert.ok(uploadHandlerStart >= 0);
+  assert.ok(preparationGuard > uploadHandlerStart);
+  assert.ok(draftPersistence > preparationGuard);
+  assert.match(uploadPolicySource, /mediaType !== 'referenceVideo' && mediaType !== 'audio'/);
+  assert.match(uploadPolicySource, /if \(mediaType === 'audio'\) return true/);
   assert.match(shellSource, /MediaTrimTranscodeDialog/);
   assert.match(shellSource, /mediaTranscoded: true/);
   assert.match(shellSource, /durationSeconds: result\.durationSeconds/);

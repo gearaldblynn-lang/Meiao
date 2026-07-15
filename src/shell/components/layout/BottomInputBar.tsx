@@ -41,6 +41,7 @@ import {
   isMaxForAiVideoModel,
   normalizeMaxForAiVideoSeconds,
 } from '../../../utils/maxforaiVideoModels.mjs';
+import { getReferenceVideoUploadPolicy } from '../../../utils/videoReferenceUploadPolicy.mjs';
 import {
   LOGO_PLACEMENT_RATIOS,
   applyLogoPlacementTemplateToAllRatios,
@@ -770,6 +771,21 @@ const SEEDANCE_MEDIA_LIMIT_HINTS: Partial<Record<MaterialType, string>> = {
   audio: '音频格式：WAV、MP3。\n单个 2–15 秒，最多 3 个，总时长不超过 15 秒；单个不超过 15 MB。上传后建议统一裁剪转码。',
 };
 
+const getVideoMediaLimitHints = (referenceVideoPolicy: {
+  requiresSeedancePreparation: boolean;
+  durationHint: string;
+}): Partial<Record<MaterialType, string>> => (
+  referenceVideoPolicy.requiresSeedancePreparation
+    ? {
+      ...SEEDANCE_MEDIA_LIMIT_HINTS,
+      referenceVideo: `视频格式：MP4、MOV。\n${referenceVideoPolicy.durationHint}\n480p/720p；宽高比 0.4–2.5；宽高 300–6000 px；总像素 409600–927408；单个不超过 50 MB；24–60 FPS。上传后会进入截取与转码。`,
+    }
+    : {
+      ...SEEDANCE_MEDIA_LIMIT_HINTS,
+      referenceVideo: `视频格式：MP4、MOV。\n${referenceVideoPolicy.durationHint}\n上传后将保留完整时长用于爆款拆解。`,
+    }
+);
+
 const getDreaminaModeGuidance = (params: Record<string, string>) => {
   const mode = normalizeDreaminaUiMode(params.dreaminaMode);
   if (mode === 'multiframe2video') {
@@ -1298,6 +1314,9 @@ const BottomInputBar: React.FC<Props> = ({
     : '';
   const isDreaminaVideoGeneration = module === AppModuleObj.VIDEO && (!activeSubFeature || activeSubFeature === 'generation');
   const isStoryboardViralReplicationContext = module === AppModuleObj.VIDEO && activeSubFeature === 'storyboard' && isStoryboardViralReplicationMode(currentParams.videoMode);
+  const referenceVideoPolicy = getReferenceVideoUploadPolicy({
+    activeSubFeature,
+  });
   const canGenerateWithoutPrompt = isSkuPromptMode || isTranslation || module === AppModuleObj.RETOUCH || isEverythingReplaceImageReplace || isStoryboardViralReplicationContext;
   const isGenerateDisabled = isSubmitLocked || Boolean(disabledReason) || (!promptText.trim() && !canGenerateWithoutPrompt);
   const isSubmitBusy = isSubmitLocked;
@@ -3078,7 +3097,7 @@ const BottomInputBar: React.FC<Props> = ({
                         if (type === 'styleRef') openLogoReplaceRegionEditor();
                       }}
                       materialTypes={contextMaterialTypes}
-                      materialHints={module === AppModuleObj.VIDEO ? SEEDANCE_MEDIA_LIMIT_HINTS : undefined}
+                      materialHints={module === AppModuleObj.VIDEO ? getVideoMediaLimitHints(referenceVideoPolicy) : undefined}
                       materialLabels={
                         isProductRestore
                           ? {

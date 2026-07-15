@@ -134,6 +134,7 @@ import {
   prepareProductRestoreUploadBatch,
 } from './shell/modules/Retouch/productRestoreUi.mjs';
 import { getMediaBudget, validateMediaQueueSelection } from './utils/mediaTrimRules.mjs';
+import { shouldUseSeedanceMediaPreparation } from './utils/videoReferenceUploadPolicy.mjs';
 import { buildSubtitleRemovalJobRequest } from './services/subtitleRemovalClient';
 import { mapWithSubtitleConcurrency } from './utils/subtitleRemovalBatch.mjs';
 import {
@@ -4312,7 +4313,10 @@ const AppContent: React.FC<{
       };
     }
     let selectedFiles = Array.from(files);
-    if (activeModule === AppModuleObj.VIDEO && (type === 'referenceVideo' || type === 'audio')) {
+    if (activeModule === AppModuleObj.VIDEO && shouldUseSeedanceMediaPreparation({
+      activeSubFeature,
+      mediaType: type,
+    })) {
       const existing = (materialsRef.current[type] || [])
         .filter((item) => isMaterialInActiveScope(item, activeModule, activeSubFeature));
       const queued = mediaTranscodeQueueRef.current.filter((item) => (
