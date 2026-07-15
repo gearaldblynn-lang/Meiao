@@ -35,6 +35,13 @@ import {
 } from '../../../utils/modelQuality';
 import { isImeComposing } from '../../../utils/ime';
 import {
+  MAXFORAI_VIDEO_MODEL,
+  MAXFORAI_VIDEO_MODEL_ID,
+  formatMaxForAiVideoPrice,
+  isMaxForAiVideoModel,
+  normalizeMaxForAiVideoSeconds,
+} from '../../../utils/maxforaiVideoModels.mjs';
+import {
   LOGO_PLACEMENT_RATIOS,
   applyLogoPlacementTemplateToAllRatios,
   createDefaultLogoPlacement,
@@ -482,6 +489,7 @@ const DREAMINA_MULTIFRAME_DURATION_OPTIONS = ['0.5秒', '1秒', '2秒', '3秒', 
 const SEEDANCE_API_MODEL_VALUE = 'bytedance/seedance-2-fast';
 const DREAMINA_CLI_MODEL_VALUE = 'seedance2.0fast_vip';
 const SEEDANCE_VIDEO_MODEL_OPTIONS = [
+  { value: MAXFORAI_VIDEO_MODEL_ID, label: MAXFORAI_VIDEO_MODEL.label },
   { value: SEEDANCE_API_MODEL_VALUE, label: 'Seedance 2.0 Fast · API' },
   { value: DREAMINA_CLI_MODEL_VALUE, label: 'Seedance 2.0 Fast VIP · CLI' },
 ];
@@ -501,37 +509,55 @@ const normalizeDreaminaUiMode = (value?: string) => {
 
 const getSeedanceVideoModelValue = (mode: string, value?: string) => {
   if (mode === 'multiframe2video') return DREAMINA_CLI_MODEL_VALUE;
-  return String(value || '').trim() === DREAMINA_CLI_MODEL_VALUE
-    ? DREAMINA_CLI_MODEL_VALUE
+  const selected = String(value || '').trim();
+  if (mode === 'multimodal2video' && isMaxForAiVideoModel(selected)) return MAXFORAI_VIDEO_MODEL_ID;
+  if (selected === DREAMINA_CLI_MODEL_VALUE) return DREAMINA_CLI_MODEL_VALUE;
+  return mode === 'multimodal2video' && !selected
+    ? MAXFORAI_VIDEO_MODEL_ID
     : SEEDANCE_API_MODEL_VALUE;
 };
 
-const getSeedanceVideoAccessMode = (mode: string, value?: string) => (
-  getSeedanceVideoModelValue(mode, value) === DREAMINA_CLI_MODEL_VALUE ? 'cli' : 'api'
-);
+const getSeedanceVideoAccessMode = (mode: string, value?: string) => {
+  const selected = getSeedanceVideoModelValue(mode, value);
+  if (selected === DREAMINA_CLI_MODEL_VALUE) return 'cli';
+  if (selected === MAXFORAI_VIDEO_MODEL_ID) return 'maxforai';
+  return 'api';
+};
 
 const getDreaminaGenerationParams = (currentParams: Record<string, string>): ParamItem[] => {
   const mode = normalizeDreaminaUiMode(currentParams.dreaminaMode);
   const selectedModel = getSeedanceVideoModelValue(mode, currentParams.modelVersion);
-  const isApiMode = getSeedanceVideoAccessMode(mode, selectedModel) !== 'cli';
+  const accessMode = getSeedanceVideoAccessMode(mode, selectedModel);
+  const isApiMode = accessMode === 'api';
+  const isMaxForAiMode = accessMode === 'maxforai';
   const base = VIDEO_QUICK_PARAMS.generation;
+  const durationOptions = isMaxForAiMode
+    ? Array.from({ length: 12 }, (_, index) => `${index + 4}秒`)
+    : mode === 'multiframe2video'
+      ? DREAMINA_MULTIFRAME_DURATION_OPTIONS
+      : DREAMINA_DURATION_OPTIONS;
+  const videoModelOptions = mode === 'multiframe2video'
+    ? DREAMINA_CLI_MODEL_OPTIONS
+    : mode === 'frames2video'
+      ? SEEDANCE_VIDEO_MODEL_OPTIONS.filter((item) => item.value !== MAXFORAI_VIDEO_MODEL_ID)
+      : SEEDANCE_VIDEO_MODEL_OPTIONS;
   const durationParam: ParamItem = {
     key: 'duration',
-    label: mode === 'multiframe2video' ? '3秒/段' : '5秒',
+    label: isMaxForAiMode ? '4秒' : mode === 'multiframe2video' ? '3秒/段' : '5秒',
     title: mode === 'multiframe2video' ? '单段时长' : '视频时长',
     icon: <Play size={12} />,
-    options: mode === 'multiframe2video' ? DREAMINA_MULTIFRAME_DURATION_OPTIONS : DREAMINA_DURATION_OPTIONS,
-    defaultValue: mode === 'multiframe2video' ? '3秒' : '5秒',
+    options: durationOptions,
+    defaultValue: isMaxForAiMode ? '4秒' : mode === 'multiframe2video' ? '3秒' : '5秒',
   };
   const modelParam: ParamItem = {
     key: 'modelVersion',
-    label: isApiMode ? 'Seedance 2.0 Fast · API' : 'Seedance 2.0 Fast VIP · CLI',
+    label: isMaxForAiMode ? MAXFORAI_VIDEO_MODEL.label : isApiMode ? 'Seedance 2.0 Fast · API' : 'Seedance 2.0 Fast VIP · CLI',
     title: 'AI 模型',
     icon: <Monitor size={12} />,
-    options: mode === 'multiframe2video' ? DREAMINA_CLI_MODEL_OPTIONS : SEEDANCE_VIDEO_MODEL_OPTIONS,
-    defaultValue: mode === 'multiframe2video' ? DREAMINA_CLI_MODEL_VALUE : SEEDANCE_API_MODEL_VALUE,
-    recommendedValue: mode === 'multiframe2video' ? DREAMINA_CLI_MODEL_VALUE : SEEDANCE_API_MODEL_VALUE,
-    recommendedLabel: mode === 'multiframe2video' ? '仅支持' : '默认',
+    options: videoModelOptions,
+    defaultValue: mode === 'multimodal2video' ? MAXFORAI_VIDEO_MODEL_ID : mode === 'multiframe2video' ? DREAMINA_CLI_MODEL_VALUE : SEEDANCE_API_MODEL_VALUE,
+    recommendedValue: mode === 'multimodal2video' ? MAXFORAI_VIDEO_MODEL_ID : mode === 'multiframe2video' ? DREAMINA_CLI_MODEL_VALUE : SEEDANCE_API_MODEL_VALUE,
+    recommendedLabel: mode === 'multiframe2video' ? '仅支持' : '推荐',
   };
   const resolutionParam: ParamItem = {
     key: 'videoResolution',
@@ -552,7 +578,9 @@ const getDreaminaGenerationParams = (currentParams: Record<string, string>): Par
       durationParam,
       modelParam,
       ...(isApiMode ? [resolutionParam] : []),
-      { key: 'ratio', label: '9:16', title: '画面比例', icon: <BoxSelect size={12} />, options: ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'], defaultValue: '9:16' },
+      isMaxForAiMode
+        ? { key: 'ratio', label: '16:9', title: '画面比例', icon: <BoxSelect size={12} />, options: [...MAXFORAI_VIDEO_MODEL.supportedAspectRatios], defaultValue: '16:9' }
+        : { key: 'ratio', label: '9:16', title: '画面比例', icon: <BoxSelect size={12} />, options: ['1:1', '3:4', '16:9', '4:3', '9:16', '21:9'], defaultValue: '9:16' },
     ];
   }
 
@@ -760,10 +788,16 @@ const parseDreaminaSeconds = (value?: string, fallback = 5) => {
 
 const getDreaminaCreditHint = (params: Record<string, string>) => {
   const mode = normalizeDreaminaUiMode(params.dreaminaMode);
-  const seconds = parseDreaminaSeconds(params.duration, mode === 'multiframe2video' ? 3 : 5);
   const accessMode = getSeedanceVideoAccessMode(mode, params.modelVersion);
+  const seconds = parseDreaminaSeconds(
+    params.duration,
+    accessMode === 'maxforai' ? MAXFORAI_VIDEO_MODEL.defaultSeconds : mode === 'multiframe2video' ? 3 : 5,
+  );
+  if (accessMode === 'maxforai') {
+    return `${MAXFORAI_VIDEO_MODEL.label} · 0.5元/秒 · ${normalizeMaxForAiVideoSeconds(seconds)}秒 · 预计${formatMaxForAiVideoPrice(seconds)}元`;
+  }
   const resolution = params.videoResolution === '480p' ? '480p' : '720p';
-  if (accessMode !== 'cli') {
+  if (accessMode === 'api') {
     return `Seedance 2.0 Fast · ${seconds} 秒 · ${resolution}，提交前显示预计积分，完成后按 KIE 真实扣费记录。`;
   }
   if (mode === 'multiframe2video') {
@@ -778,7 +812,7 @@ const estimateSeedanceFastBilling = ({
   resolution = '720p',
   hasVideoInput = false,
 } = {}) => {
-  if (accessMode === 'cli') return { billable: false, estimatedCredits: 0 };
+  if (accessMode === 'cli' || accessMode === 'maxforai') return { billable: false, estimatedCredits: 0 };
   const seconds = parseDreaminaSeconds(duration, 5);
   const perSecond = resolution === '720p'
     ? (hasVideoInput ? 20 * seconds : 33 * seconds)
@@ -1131,7 +1165,7 @@ const CompactSelect: React.FC<{
               {active && <Check size={11} />}
               <span className="flex min-w-0 flex-col items-start">
                 <span className="truncate">{opt.label}</span>
-                {isResolutionSelect && optionMeta ? (
+                {(isModelSelect || isResolutionSelect) && optionMeta ? (
                   <span className="mt-0.5 text-[10px] font-medium" style={{ color: active ? 'var(--accent)' : 'var(--text-tertiary)' }}>
                     {optionMeta}
                   </span>
@@ -1395,14 +1429,17 @@ const BottomInputBar: React.FC<Props> = ({
   const getVal = useCallback((key: string, def: string) => currentParams[key] ?? def, [currentParams]);
   const getSelectValue = useCallback((param: ParamItem) => {
     const current = getVal(param.key, param.defaultValue);
-    if (param.key === 'quality') {
+    const isVideoGenerationSelect = module === AppModuleObj.VIDEO
+      && (!activeSubFeature || activeSubFeature === 'generation')
+      && ['modelVersion', 'duration', 'ratio', 'videoResolution'].includes(param.key);
+    if (param.key === 'quality' || isVideoGenerationSelect) {
       const validValues = param.options.map(toSelectOption).map((option) => option.value);
       return validValues.includes(current) ? current : param.defaultValue;
     }
     if (param.key !== 'analysisModel') return current;
     const validValues = param.options.map(toSelectOption).map((option) => option.value);
     return validValues.includes(current) ? current : param.defaultValue;
-  }, [getVal]);
+  }, [activeSubFeature, getVal, module]);
 
   const handleTranslationParamChange = useCallback((key: string, value: string) => {
     if (module === AppModuleObj.RETOUCH && activeSubFeature === 'product_restore') {
@@ -3094,7 +3131,9 @@ const BottomInputBar: React.FC<Props> = ({
                     secondaryRecommendedLabel={p.secondaryRecommendedLabel}
                     getOptionMeta={p.key === 'quality'
                       ? (resolution) => `${getImageModelCreditCost(currentParams.model || 'GPT Image 2', resolution)} 积分/张`
-                      : undefined}
+                      : isDreaminaVideoGeneration && p.key === 'modelVersion'
+                        ? (model) => model === MAXFORAI_VIDEO_MODEL_ID ? '0.5元/秒' : ''
+                        : undefined}
                   />
                   {p.key === 'mode' && renderSkuNamingAction()}
                   {p.key === 'count' && renderBuyerShowBatchAction()}

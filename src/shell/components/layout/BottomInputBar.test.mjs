@@ -451,6 +451,14 @@ test('resolution dropdown shows per-image credit cost for image models', () => {
 test('video generation exposes api and cli seedance fast paths with api credit estimate', () => {
   const bottomInputBar = source();
 
+  assert.match(bottomInputBar, /MAXFORAI_VIDEO_MODEL_ID/);
+  assert.match(bottomInputBar, /0\.5元\/秒/);
+  assert.match(bottomInputBar, /formatMaxForAiVideoPrice/);
+  assert.match(bottomInputBar, /recommendedValue: mode === 'multimodal2video' \? MAXFORAI_VIDEO_MODEL_ID/);
+  assert.match(bottomInputBar, /defaultValue: mode === 'multimodal2video' \? MAXFORAI_VIDEO_MODEL_ID/);
+  assert.match(bottomInputBar, /预计\$\{formatMaxForAiVideoPrice\(seconds\)\}元/);
+  assert.match(bottomInputBar, /mode === 'multimodal2video'/);
+  assert.match(bottomInputBar, /value: MAXFORAI_VIDEO_MODEL_ID, label: MAXFORAI_VIDEO_MODEL\.label/);
   assert.doesNotMatch(bottomInputBar, /key:\s*'videoAccessMode'/);
   assert.match(bottomInputBar, /Seedance 2\.0 Fast · API/);
   assert.match(bottomInputBar, /Seedance 2\.0 Fast VIP · CLI/);
