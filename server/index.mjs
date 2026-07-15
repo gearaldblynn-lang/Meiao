@@ -16949,6 +16949,7 @@ const server = createServer(async (req, res) => {
 
     if (url.pathname === '/api/health' && req.method === 'GET') {
       const taskEngine = normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE);
+      const subtitleRemovalConfig = getSubtitleRemovalConfig(process.env);
       // worker 字段暴露 Temporal poller 存活状态(S1):poller 静默死亡时 HTTP 仍活着,
       // 只看 ok:true 会误判健康。health 本身永远 HTTP 200,消费方看 worker.healthy。
       const worker = taskEngine === 'temporal'
@@ -16970,6 +16971,10 @@ const server = createServer(async (req, res) => {
           active: mediaTranscodeStatus.active,
           queued: mediaTranscodeStatus.queued,
           sessions: mediaTranscodeStatus.sessions,
+        },
+        subtitleRemoval: {
+          enabled: subtitleRemovalConfig.enabled,
+          configured: subtitleRemovalConfig.configured,
         },
         ...(Object.keys(creditAlert).length ? { creditAlert } : {}),
       });

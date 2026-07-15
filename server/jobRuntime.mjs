@@ -9,6 +9,7 @@ import {
   MAXFORAI_SUPPORTED_RESOLUTIONS,
 } from '../src/utils/maxforaiImageModels.mjs';
 import { normalizeProductRestoreRollout } from '../src/utils/productRestoreRollout.mjs';
+import { getSubtitleRemovalConfig } from './subtitleRemovalContract.mjs';
 
 const RETRYABLE_ERROR_CODES = new Set([
   'provider_internal_error',
@@ -572,6 +573,7 @@ export const buildJobRuntimeLogMeta = ({
 };
 
 export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) => {
+  const subtitleRemovalConfig = getSubtitleRemovalConfig(env);
   const allowedOrigins = normalizeAllowedOrigins(env.MEIAO_ALLOWED_ORIGINS);
   const publicBaseUrl = normalizeBaseUrl(overrides?.publicBaseUrl || env.MEIAO_PUBLIC_BASE_URL || env.PUBLIC_BASE_URL || '');
   const chatCatalog = applyRuntimeMediaCapabilities(AGENT_MODEL_CATALOG.chat, env, overrides);
@@ -658,11 +660,15 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       maxforaiVideo: {
         configured: Boolean(env.MAXFORAI_VIDEO_API_KEY),
       },
+      goldenSubtitle: {
+        configured: subtitleRemovalConfig.configured,
+      },
     },
     featureRollouts: {
       productRestore: normalizeProductRestoreRollout(
         process.env.MEIAO_PRODUCT_RESTORE_ROLLOUT,
       ),
+      subtitleRemoval: subtitleRemovalConfig.enabled,
     },
     systemSettings: {
       analysisModel: validConfiguredAnalysisModel,
