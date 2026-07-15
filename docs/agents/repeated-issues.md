@@ -912,3 +912,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 增加可 JSON 序列化的 typed `productRestoreCancellationReset`，用单调时间比较 cancellation/reset 最新事件；服务端与客户端共用纯 `.mjs` 持久状态合并契约。有效取消在缺失 target 状态推导之前强制根项目保持 `error`；显式重试先持久 reset，成功后才清内存 guard/创建 controller 或 job。分析台账改为按 `jobId` 稳定顺序的加性合并，空数组和缺失字段都不再清空历史。
 - Regression check: `node --test server/appStateMerge.test.mjs src/adapters/shellProductRestoreCancellation.test.mjs src/adapters/shellControlJobLifecycle.test.mjs src/adapters/shellPersistence.test.mjs src/utils/productRestoreAnalysisCredits.test.mjs`；`npx tsc -b --pretty false`。
 - Avoid next time: 用户意图、付费任务门禁和计费台账不能用普通对象展开或“字段不存在”表达清除。凡会被多页签/刷新/后台回写竞争的状态，必须用可序列化的 typed event/revision 按时序合并，并用真实服务端 merge 加水合/恢复回归验证不会重复付费或丢账。
+
+## 2026-07-15 - Provider 专用读取解析器返回空值时必须保留内部托管视频回退
+
+- Symptom: 去字幕 canary 在创建 job 后 181ms 失败，错误为 `media_process_failed / 媒体处理失败`，且 `providerTaskId` 为空。
+- Root cause: `resolveManagedAssetReadUrl` 只为 COS 素材签发 provider URL，历史/当前内部磁盘素材按合约返回空字符串，由各 provider 保留原 URL 或走自己的转存回退。新去字幕适配器直接把空字符串交给 FFprobe，任务在付费 POST 之前就失败。
+- Fix: 去字幕适配器优先使用 provider 专用签名 URL；解析器返回空值时回退到已通过 owner scrub 和托管素材验证的原公网 URL，再做服务端 FFprobe 和 Golden 提交。
+- Regression check: `node --test server/providerSubtitleRemoval.test.mjs`；必须覆盖 resolver 返回空值时 FFprobe 和 submit 都使用原托管 URL，同时保留 COS 签名 URL 优先级。
+- Avoid next time: 不同 provider 的素材准备依赖不能只看“解析器可调用”，还要覆盖其合法的空值语义。新接入必须用 internal 与 COS 两种托管类型各跑一条前置媒体探测回归，并用 `providerTaskId`/provider stage 证明失败是否已越过付费提交边界。

@@ -39,6 +39,7 @@ const fakeProviderDeps = ({
   submitError,
   events = [],
   nowValues,
+  resolvedReadUrl = 'https://managed.example/video.mp4?access=short-lived',
 } = {}) => {
   const calls = { submit: 0, query: 0, sleep: 0 };
   const statuses = [...progress];
@@ -47,7 +48,7 @@ const fakeProviderDeps = ({
     calls,
     resolveManagedAssetReadUrl: async (value) => {
       events.push(`resolve:${value}`);
-      return 'https://managed.example/video.mp4?access=short-lived';
+      return resolvedReadUrl;
     },
     probeVideo: async (value) => {
       events.push(`probe:${value}`);
@@ -134,6 +135,27 @@ test('existing provider task id is query-only', async () => {
   assert.equal(deps.calls.submit, 0);
   assert.equal(deps.calls.query, 1);
   assert.equal(result.providerTaskId, 'provider-existing');
+});
+
+test('internal managed video falls back to its public stream URL when the COS resolver returns empty', async () => {
+  const events = [];
+  const sourceUrl = 'https://meiao.example/api/assets/file/asset-local/source.mp4';
+  const deps = fakeProviderDeps({ events, resolvedReadUrl: '' });
+
+  const result = await runSubtitleRemovalJob({
+    job: newSubtitleJob({ payload: {
+      ...newSubtitleJob().payload,
+      sourceUrl,
+    } }),
+    env: enabledEnv(),
+    deps,
+  });
+
+  assert.deepEqual(events.slice(0, 2), [
+    `resolve:${sourceUrl}`,
+    `probe:${sourceUrl}`,
+  ]);
+  assert.equal(result.providerTaskId, 'provider-1');
 });
 
 test('submit network ambiguity stops without retrying the paid request', async () => {
