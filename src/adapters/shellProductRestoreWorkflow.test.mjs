@@ -1420,7 +1420,7 @@ test('single-result retry logs the existing analysis and new image identity with
   assert.equal(retryLog?.meta?.targetMaterialId, 'target-a');
 });
 
-test('normalizes 1K to 2K and ignores selector ratio in favor of original target ratio', async () => {
+test('normalizes 1K to 2K and sends the original target ratio to the image provider', async () => {
   const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
   const { calls, deps } = createHarness();
 
@@ -1433,7 +1433,7 @@ test('normalizes 1K to 2K and ignores selector ratio in favor of original target
 
   const generationArgs = calls.images[0];
   assert.equal(generationArgs[2].quality, '2k');
-  assert.equal(generationArgs[2].aspectRatio, 'auto');
+  assert.equal(generationArgs[2].aspectRatio, '3:4');
   assert.equal(generationArgs[2].resolutionMode, 'original');
   assert.equal(generationArgs[2].targetWidth, 0);
   assert.equal(generationArgs[2].targetHeight, 0);
@@ -1443,6 +1443,31 @@ test('normalizes 1K to 2K and ignores selector ratio in favor of original target
     height: 1600,
     ratioLabel: '3:4',
   });
+});
+
+test('fails before the image provider when the original target ratio is unavailable', async () => {
+  const { runShellProductRestoreItem } = await loadWorkflowModule();
+  const input = makeInput({ targetCount: 1 });
+  const target = { ...input.materials.restoreTarget[0] };
+  delete target.originalWidth;
+  delete target.originalHeight;
+  const context = makeContext({ targetMaterialIds: ['target-a'] });
+  const { calls, deps } = createHarness();
+
+  await assert.rejects(
+    runShellProductRestoreItem({
+      input,
+      config: makeConfig(),
+      context,
+      target,
+      productReferences: input.materials.productReference,
+      batchIndex: 1,
+      batchCount: 1,
+    }, {}, deps),
+    (error) => error.code === 'product_restore_source_dimensions_missing',
+  );
+
+  assert.equal(calls.images.length, 0);
 });
 
 test('reuses the same stable submission key for the same logical target on retry', async () => {

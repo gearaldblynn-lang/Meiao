@@ -340,6 +340,7 @@ const validateItemContext = (
 const normalizeGenerationConfig = (
   config: ModuleConfig,
   context?: ProductRestoreProjectContext,
+  targetAspectRatio = '',
 ): ModuleConfig => {
   const model = (context ? context.selectedImageModel : config.model) as ModuleConfig['model'];
   const resolution = context
@@ -349,7 +350,7 @@ const normalizeGenerationConfig = (
     ...config,
     model,
     quality: resolution.toLowerCase() as ModuleConfig['quality'],
-    aspectRatio: AspectRatio.AUTO,
+    aspectRatio: (targetAspectRatio || AspectRatio.AUTO) as ModuleConfig['aspectRatio'],
     resolutionMode: 'original',
     targetWidth: 0,
     targetHeight: 0,
@@ -485,7 +486,18 @@ export async function runShellProductRestoreItem(
   }
   validateItemContext(context, target, productReferences, batchIndex);
 
-  const generationConfig = normalizeGenerationConfig(itemInput.config, context);
+  const targetSourceContext = sourceImageContext(target);
+  if (!targetSourceContext) {
+    throw toWorkflowError(
+      '无法确认当前待还原图的原始比例，未创建生图任务，请重新上传该素材。',
+      'product_restore_source_dimensions_missing',
+    );
+  }
+  const generationConfig = normalizeGenerationConfig(
+    itemInput.config,
+    context,
+    targetSourceContext.ratioLabel,
+  );
   const referenceUrls = productReferences.map((reference) => (
     materialUrl(reference, input.publicBaseUrl || '', '产品参考图')
   ));
@@ -562,7 +574,7 @@ export async function runShellProductRestoreItem(
       input.signal,
       effectivePrompt,
       false,
-      sourceImageContext(target),
+      targetSourceContext,
       'main',
       taskMetadata,
       onJobCreated,
