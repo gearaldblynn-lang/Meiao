@@ -312,22 +312,22 @@ test('deleting a subtitle removal card never collects or mutates its source vide
     subFeature: 'subtitle_removal',
     status: 'completed',
     createdAt: 1784073600000,
-    taskCount: 1,
-    completedCount: 1,
-    backendJobId: 'subtitle-job',
-    results: [{
-      id: 'subtitle-result',
-      backendJobId: 'subtitle-job',
+    taskCount: 3,
+    completedCount: 2,
+    backendJobId: 'subtitle-job-1',
+    results: [1, 2, 3].map((index) => ({
+      id: `subtitle-result-${index}`,
+      backendJobId: `subtitle-job-${index}`,
       sourceUrl: sharedSourceUrl,
-      videoUrl: '/api/assets/file/subtitle-result.mp4',
-    }],
+      videoUrl: index < 3 ? `/api/assets/file/subtitle-result-${index}.mp4` : '',
+    })),
   };
   const projects = [sourceProject, subtitleProject];
 
-  assert.deepEqual(collectShellDeletionJobIds('subtitle-project', projects, []), ['subtitle-job']);
+  assert.deepEqual(collectShellDeletionJobIds('subtitle-project', projects, []), ['subtitle-job-1', 'subtitle-job-2', 'subtitle-job-3']);
   assert.deepEqual(sourceProject.results, [{ id: 'source-video-result', backendJobId: 'source-video-job', videoUrl: sharedSourceUrl }]);
 
-  const target = { projectId: 'subtitle-project', jobIds: ['subtitle-job'] };
+  const target = { projectId: 'subtitle-project', jobIds: ['subtitle-job-1', 'subtitle-job-2', 'subtitle-job-3'] };
   const pruned = applyPersistedDeletionTombstones(prunePersistedAppStateForDeletion(
     buildPersistedAppState({ shellProjects: projects }),
     target,
@@ -335,4 +335,19 @@ test('deleting a subtitle removal card never collects or mutates its source vide
   assert.ok(pruned.shellProjects.some((project) => project.id === 'source-video-project'));
   assert.equal(pruned.shellProjects.some((project) => project.id === 'subtitle-project'), false);
   assert.ok(pruned.shellDraft.deletedProjectIds.includes('subtitle-project'));
+});
+
+test('subtitle batch retry distinguishes safe recovery, paid retry, and unknown submission state', () => {
+  const projectCardSource = read('./ProjectCard.tsx');
+  const shellSource = read('../../ShellMigratedApp.tsx');
+
+  assert.match(projectCardSource, /subtitleRetryResultId/);
+  assert.match(projectCardSource, /provider_submission_unknown/);
+  assert.match(projectCardSource, /将产生一次新的付费处理/);
+  assert.match(projectCardSource, /继续同步/);
+  assert.match(projectCardSource, /待管理员核实/);
+  assert.match(shellSource, /project\.subFeature === 'subtitle_removal'/);
+  assert.match(shellSource, /retryInternalJob\(result\.backendJobId\)/);
+  assert.match(shellSource, /shellResultId: result\.id/);
+  assert.match(shellSource, /status: 'generating'/);
 });
