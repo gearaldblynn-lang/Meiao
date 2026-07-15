@@ -122,7 +122,7 @@ test('rejects media counts and known duration totals before paid submission', ()
 
 - [ ] **Step 2: Run the contract test and verify RED**
 
-Run: `node --test src/utils/maxforaiVideoModels.test.mjs`  
+Run: `node --test src/utils/maxforaiVideoModels.test.mjs`
 Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `maxforaiVideoModels.mjs`.
 
 - [ ] **Step 3: Implement the shared contract**
@@ -187,7 +187,7 @@ export const assertMaxForAiVideoMediaContract = ({
 
 - [ ] **Step 4: Run the contract tests and verify GREEN**
 
-Run: `node --test src/utils/maxforaiVideoModels.test.mjs`  
+Run: `node --test src/utils/maxforaiVideoModels.test.mjs`
 Expected: all 3 tests PASS.
 
 - [ ] **Step 5: Commit the shared contract**
@@ -223,7 +223,7 @@ assert.match(bottomInputBar, /mode === 'multimodal2video'/);
 assert.match(bottomInputBar, /MAXFORAI_VIDEO_MODEL_ID, label: MAXFORAI_VIDEO_MODEL\.label/);
 ```
 
-Run: `node --experimental-strip-types --test src/shell/components/layout/BottomInputBar.test.mjs --test-name-pattern "video generation exposes"`  
+Run: `node --experimental-strip-types --test src/shell/components/layout/BottomInputBar.test.mjs --test-name-pattern "video generation exposes"`
 Expected: FAIL because the MaxForAI model and price are absent.
 
 - [ ] **Step 2: Import the shared model and make model selection mode-aware**
@@ -314,7 +314,7 @@ Ensure `estimateSeedanceFastBilling` receives `accessMode` and returns `{ billab
 
 - [ ] **Step 5: Run focused UI tests and typecheck**
 
-Run: `node --experimental-strip-types --test src/shell/components/layout/BottomInputBar.test.mjs --test-name-pattern "video generation exposes" && npx tsc --noEmit -p tsconfig.app.json`  
+Run: `node --experimental-strip-types --test src/shell/components/layout/BottomInputBar.test.mjs --test-name-pattern "video generation exposes" && npx tsc --noEmit -p tsconfig.app.json`
 Expected: focused test PASS and TypeScript exits 0.
 
 - [ ] **Step 6: Commit the UI behavior**
@@ -378,7 +378,7 @@ assert.equal(estimateCreditReservation({
 }), 0);
 ```
 
-Run: `node --test src/components/uiArchitecture.test.mjs server/jobSubmissionPolicy.test.mjs server/accountCredits.test.mjs --test-name-pattern "video|MaxForAI"`  
+Run: `node --test src/components/uiArchitecture.test.mjs server/jobSubmissionPolicy.test.mjs server/accountCredits.test.mjs --test-name-pattern "video|MaxForAI"`
 Expected: FAIL because the new task type and route are absent.
 
 - [ ] **Step 2: Route MaxForAI in `runShellVideoGeneration`**
@@ -446,7 +446,7 @@ Do not add `maxforai_video` to `KIE_RECOVERY_SOURCE_TASK_TYPES`; its name does n
 
 - [ ] **Step 4: Run workflow/policy/credit tests and verify GREEN**
 
-Run: `node --test src/components/uiArchitecture.test.mjs server/jobSubmissionPolicy.test.mjs server/accountCredits.test.mjs --test-name-pattern "video|MaxForAI"`  
+Run: `node --test src/components/uiArchitecture.test.mjs server/jobSubmissionPolicy.test.mjs server/accountCredits.test.mjs --test-name-pattern "video|MaxForAI"`
 Expected: targeted tests PASS.
 
 - [ ] **Step 5: Commit workflow and policy**
@@ -541,7 +541,7 @@ test('recovery with providerTaskId never creates a second paid task', async () =
 
 Also add tests for: text-only omits media arrays; local/data material calls `/assets` multipart; remote HTTPS calls `/assets/url`; asset failure causes zero `/videos` calls; 401/403/429/4xx/5xx mapping; create network error becomes `provider_submission_unknown`; success without task ID is `provider_bad_response`; failed status preserves task ID; success without `result_url` is `provider_bad_response`; cancellation during polling includes task ID; poll timeout includes task ID; no Authorization value is included in error messages.
 
-Run: `node --test server/providerMaxForAiVideo.test.mjs`  
+Run: `node --test server/providerMaxForAiVideo.test.mjs`
 Expected: FAIL with `ERR_MODULE_NOT_FOUND` for `providerMaxForAiVideo.mjs`.
 
 - [ ] **Step 2: Implement config and error boundaries**
@@ -641,7 +641,7 @@ export const extractMaxForAiVideoResult = (body = {}) => ({
 
 - [ ] **Step 5: Run adapter tests and verify GREEN**
 
-Run: `node --test server/providerMaxForAiVideo.test.mjs`  
+Run: `node --test server/providerMaxForAiVideo.test.mjs`
 Expected: all adapter tests PASS and no test performs a real network request.
 
 - [ ] **Step 6: Commit the adapter**
@@ -705,7 +705,7 @@ assert.doesNotMatch(envExample, /MAXFORAI_VIDEO_API_KEY=sk-/);
 assert.doesNotMatch(deployDoc, /MAXFORAI_VIDEO_API_KEY=sk-/);
 ```
 
-Run: `node --test server/providerGateway.test.mjs server/jobRuntime.test.mjs server/jobLoggingBehavior.test.mjs server/jobRecoveryService.test.mjs server/temporalWorker.test.mjs server/maxforaiEnvDocs.test.mjs --test-name-pattern "MaxForAI|maxforai_video|configured|task type"`  
+Run: `node --test server/providerGateway.test.mjs server/jobRuntime.test.mjs server/jobLoggingBehavior.test.mjs server/jobRecoveryService.test.mjs server/temporalWorker.test.mjs server/maxforaiEnvDocs.test.mjs --test-name-pattern "MaxForAI|maxforai_video|configured|task type"`
 Expected: FAIL because route/config/task type/docs are absent.
 
 - [ ] **Step 2: Wire the gateway and durable recovery**
@@ -750,10 +750,10 @@ Do not add the actual token or its prefix/suffix anywhere tracked.
 
 - [ ] **Step 5: Run integration/documentation tests and verify GREEN**
 
-Run: `node --test server/providerGateway.test.mjs server/jobRuntime.test.mjs server/jobLoggingBehavior.test.mjs server/jobRecoveryService.test.mjs server/temporalWorker.test.mjs server/maxforaiEnvDocs.test.mjs`  
+Run: `node --test server/providerGateway.test.mjs server/jobRuntime.test.mjs server/jobLoggingBehavior.test.mjs server/jobRecoveryService.test.mjs server/temporalWorker.test.mjs server/maxforaiEnvDocs.test.mjs`
 Expected: all named test files PASS.
 
-Run: `npx tsc --noEmit -p tsconfig.app.json`  
+Run: `npx tsc --noEmit -p tsconfig.app.json`
 Expected: exits 0.
 
 - [ ] **Step 6: Commit integration and documentation**
