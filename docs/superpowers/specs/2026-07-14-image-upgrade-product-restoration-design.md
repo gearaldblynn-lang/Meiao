@@ -1,5 +1,7 @@
 # 图片升级与产品还原功能设计
 
+> 2026-07-15 修订：本文件中“整批共用 `sharedRestorationPrompt`”的分析输出、持久化和逐图生成约定，已由 [`2026-07-15-product-restore-per-target-prompts-design.md`](./2026-07-15-product-restore-per-target-prompts-design.md) 的 V2 逐图提示词协议取代。其他已确认的产品范围、上传限制、重点还原项、模型、分辨率、比例、状态和开放策略继续有效。
+
 日期：2026-07-14
 
 ## 状态与交付边界
