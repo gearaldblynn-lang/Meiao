@@ -396,3 +396,8 @@
   根因:旧解析器直接对模型整串内容执行 `JSON.parse`，合法 JSON 后的 provider 已知尾标 `final_answer` 会导致整体失败；同时持久化合同只有一条 `sharedRestorationPrompt`，没有 target index 与稳定 material ID 的一一映射，fanout 无法证明每张付费图片任务使用了自身偏差对应的提示词。
   修复:V2 分析合同要求恰好 N 条连续唯一 `targetPrompts`；解析器只接受单 JSON、可选单层围栏和精确 `final_answer` 尾标，其余文字 fail closed。图片提交前把 index 映射到 `targetMaterialId` 并验证完全覆盖，每张任务只取自己的动态提示词，再套确定性的 RTCFE 身份与非产品保护层；V1 仅保留历史读取/重试兼容。
   如何避免:**分析模型原始输出要在 parser boundary 用真实响应回放，兼容必须限定为已知 provider 外壳，不能宽松猜 JSON。所有 analysis-to-fanout 合同必须在付费 fanout 前验证目标数量、顺序和稳定身份一一对应，动态执行提示词不得只靠整批共享字段。**
+
+- **#70 ✅ 本地已修、未部署(2026-07-16)· 产品还原显示 2K，自动比例却在 provider 边界被降为 1K**
+  根因:产品还原将用户选择正确归一为 `quality=2K`，但生图配置又把结构化比例固定为 `aspectRatio=auto`。GPT Image 2 的 provider 合同为了防止无效组合，会把 `auto + 2K` 规范化为 1K；因此前端项目上下文仍显示 2K，真实 job payload 却是 `resolution=1K`，1254×1254 原图只返回 1254×1254。旧测试只断言 workflow 内存中的 quality，没有验证传到 provider 的比例与分辨率组合。
+  修复:每个产品还原生图任务从当前待还原素材的 `originalWidth/originalHeight` 计算最简精确比例，并作为结构化 `aspectRatio` 传入 provider；提示词中的原图比例保护继续保留。真实回归确认 1:1 待还原图创建的 job payload 为 `aspectRatio=1:1 + resolution=2K`，结果从 1254×1254 升级为 2048×2048，刷新后素材、V2 分析、逐图 Prompt 与 2K 结果均能恢复。
+  如何避免:**分辨率 UI 默认值不是 provider 提交证据。涉及“自动比例 + 分辨率”的模型必须用组合矩阵验证最终 job payload，并在真实 canary 中同时核对请求参数、provider 任务 ID、结果实际像素和刷新恢复；只断言中间 config 会漏掉边界归一。**
