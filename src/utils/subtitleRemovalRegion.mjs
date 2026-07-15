@@ -1,5 +1,8 @@
 export const MIN_SUBTITLE_REGION_SIZE = 0.02;
 
+/** @typedef {{ x: number, y: number, width: number, height: number }} SubtitleRegion */
+/** @typedef {{ x?: number, y?: number }} SubtitleRegionDelta */
+
 export const DEFAULT_SUBTITLE_REGION = Object.freeze({
   x: 0,
   y: 0.7,
@@ -24,6 +27,10 @@ const createRegionError = (code, message) => {
   return error;
 };
 
+/**
+ * @param {Partial<SubtitleRegion>} [region]
+ * @returns {SubtitleRegion}
+ */
 export function clampSubtitleRegion(region = DEFAULT_SUBTITLE_REGION) {
   const width = clamp(
     finiteNumber(region?.width, MIN_SUBTITLE_REGION_SIZE),
@@ -45,6 +52,11 @@ export function clampSubtitleRegion(region = DEFAULT_SUBTITLE_REGION) {
   };
 }
 
+/**
+ * @param {Partial<SubtitleRegion>} region
+ * @param {SubtitleRegionDelta} [delta]
+ * @returns {SubtitleRegion}
+ */
 export function moveSubtitleRegion(region, delta = {}) {
   const current = clampSubtitleRegion(region);
   return clampSubtitleRegion({
@@ -54,6 +66,12 @@ export function moveSubtitleRegion(region, delta = {}) {
   });
 }
 
+/**
+ * @param {Partial<SubtitleRegion>} region
+ * @param {string} handle
+ * @param {SubtitleRegionDelta} [delta]
+ * @returns {SubtitleRegion}
+ */
 export function resizeSubtitleRegion(region, handle, delta = {}) {
   if (!RESIZE_HANDLES.has(String(handle || ''))) {
     throw createRegionError('subtitle_region_invalid_handle', '字幕区域缩放方向无效');
@@ -79,6 +97,11 @@ export function resizeSubtitleRegion(region, handle, delta = {}) {
   });
 }
 
+/**
+ * @param {Partial<SubtitleRegion>} region
+ * @param {number} width
+ * @param {number} height
+ */
 export function subtitleRegionToPixels(region, width, height) {
   const frameWidth = Math.round(finiteNumber(width, 0));
   const frameHeight = Math.round(finiteNumber(height, 0));
