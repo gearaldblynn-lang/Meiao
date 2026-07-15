@@ -502,7 +502,7 @@ Replace the obsolete `<safeId>_<x1>_<y1>_<x2>_<y2>` statement with `x1_y1_x2_y2`
 
 Run: `git diff --check`
 
-Run: `git grep -l -F 'GOLDEN_C8C' -- . | wc -l`
+Run: `git grep -l -E 'GOLDEN_[A-F0-9]{24,}' -- . | wc -l`
 
 Expected: no whitespace errors and `0` tracked secret matches.
 
@@ -566,7 +566,7 @@ Run: `git status -sb`
 
 Run: `git diff --check`
 
-Run: `git grep -l -F 'GOLDEN_C8C' -- . | wc -l`
+Run: `git grep -l -E 'GOLDEN_[A-F0-9]{24,}' -- . | wc -l`
 
 Expected: only intentional changes before the final commit, no whitespace errors, and zero tracked secret matches.
 

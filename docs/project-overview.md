@@ -172,6 +172,8 @@ npm run dev
 - `MEIAO_SUBTITLE_REMOVAL_ENABLED`：去字幕新任务开关，生产默认关闭；关闭只阻止新提交，不隐藏历史 `subtitle_removal` 任务卡和托管结果。
 - `MEIAO_SUBTITLE_REMOVAL_BASE_URL`：可选上游地址覆盖，默认使用内置 Golden API 地址；不向公开端点暴露。
 - `MEIAO_SUBTITLE_REMOVAL_POLL_INTERVAL_MS` / `MEIAO_SUBTITLE_REMOVAL_TIMEOUT_MS`：默认 `5000` / `1800000`，边界分别为 `2000-30000` / `300000-7200000`毫秒。去字幕 provider 使用独立 `subtitle_remove_video` job，provider task ID 先 checkpoint，成功视频再转存为梅奥托管结果。
+- `MEIAO_SUBTITLE_REMOVAL_BATCH_MAX_ITEMS`：单批视频上限，默认 `10`，边界 `1-20`；服务端在每条 job 创建边界再次校验批次身份和上限。
+- `MEIAO_SUBTITLE_REMOVAL_BATCH_PREP_CONCURRENCY` / `MEIAO_SUBTITLE_REMOVAL_BATCH_SUBMIT_CONCURRENCY`：默认 `2` / `2`，边界均为 `1-4`；前者控制浏览器素材准备队列，后者只控制耐久 job 创建节奏，不放宽 Golden 重试和付费安全策略。
 - `MEIAO_SUBTITLE_REMOVAL_PROBE_INSPECTION_MS`：付费 canary 成功后的浏览器验收保留窗口，默认 `0`，边界 `0-600000`毫秒；窗口期内任务卡和结果可用于对比播放，窗口结束后探针自动精准清理。
 - `MEIAO_CHAT_SSE_HEARTBEAT_MS`：默认 `15000`；智能体聊天 SSE 心跳间隔，避免长耗时多图生图期间代理或浏览器因连接空闲断流。
 - `AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES`：默认 `1`；智能体单次 `generate_image` 提交/读取遇到 `fetch failed`、502、超时等瞬时上游错误时的内部快速重试次数，避免把瞬时失败总结成“部分完成”。
