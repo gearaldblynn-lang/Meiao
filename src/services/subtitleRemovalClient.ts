@@ -9,6 +9,10 @@ export type SubtitleRemovalSubmissionInput = {
   sourceResultId?: string;
   shellProjectId: string;
   shellProjectName: string;
+  batchId: string;
+  batchIndex: number;
+  batchCount: number;
+  shellResultId: string;
   draftNonce: string;
   subtitleRegionNormalized: SubtitleRemovalRegion;
 };
@@ -44,6 +48,9 @@ export const buildSubtitleRemovalSubmissionKey = (input: SubtitleRemovalSubmissi
   safeKeyPart(input.userId, 'user'),
   managedSourceIdentity(input),
   regionIdentity(input.subtitleRegionNormalized),
+  safeKeyPart(input.batchId, 'batch'),
+  safeKeyPart(input.shellResultId, `result-${input.batchIndex}`),
+  `index-${input.batchIndex}`,
   safeKeyPart(input.draftNonce, 'draft'),
 ].join('|');
 
@@ -67,6 +74,10 @@ export const buildSubtitleRemovalJobRequest = (input: SubtitleRemovalSubmissionI
       sourceResultId: input.sourceResultId,
       shellProjectId: input.shellProjectId,
       shellProjectName: input.shellProjectName,
+      batchId: input.batchId,
+      batchIndex: input.batchIndex,
+      batchCount: input.batchCount,
+      shellResultId: input.shellResultId,
       clientSubmissionKey,
     },
   };

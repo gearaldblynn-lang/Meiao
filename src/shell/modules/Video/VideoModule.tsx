@@ -8,6 +8,7 @@ import { toStoryboardShellResultStatus } from './storyboardGenerationState.mjs';
 import SubtitleRemovalWorkspace, {
   type SubtitleRemovalBatchLimits,
   type SubtitleRemovalSubmitInput,
+  type SubtitleRemovalSubmitOutcome,
 } from '../../components/SubtitleRemovalWorkspace';
 
 interface Props {
@@ -31,7 +32,7 @@ interface Props {
   onStateChange: React.Dispatch<React.SetStateAction<VideoPersistentState>>;
   subtitleRemovalDraft: SubtitleRemovalSourceDraft | null;
   onSubtitleRemovalDraftChange: (draft: SubtitleRemovalSourceDraft | null) => void;
-  onSubtitleRemovalSubmit: (input: SubtitleRemovalSubmitInput) => Promise<void> | void;
+  onSubtitleRemovalSubmit: (inputs: SubtitleRemovalSubmitInput[]) => Promise<SubtitleRemovalSubmitOutcome[]> | SubtitleRemovalSubmitOutcome[];
   subtitleRemovalSubmitting?: boolean;
   subtitleRemovalFeatureAvailable?: boolean;
   subtitleRemovalBatchLimits?: Partial<SubtitleRemovalBatchLimits>;

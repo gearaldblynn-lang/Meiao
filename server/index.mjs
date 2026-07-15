@@ -1746,6 +1746,7 @@ const resolveAuthorizedJobSubmissionPolicy = (user, body, { submissionOperation 
     submissionOperation,
     subtitleRemovalEnabled: subtitleRemovalConfig.enabled,
     subtitleRemovalConfigured: subtitleRemovalConfig.configured,
+    subtitleRemovalBatchMaxItems: subtitleRemovalConfig.batchMaxItems,
   });
 };
 

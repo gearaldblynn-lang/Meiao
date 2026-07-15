@@ -51,6 +51,9 @@ test('workspace synchronously blocks duplicate batch submission', () => {
   assert.match(source, /批量开始去字幕/);
   assert.match(source, /本次将创建/);
   assert.match(source, /await onSubmit/);
+  assert.match(source, /await onSubmit\(submitInputs\)/);
+  assert.match(source, /outcomes/);
+  assert.doesNotMatch(source, /mapWithSubtitleConcurrency\(\s*submitItems/);
   assert.match(source, /submitLockRef\.current = false/);
 });
 
