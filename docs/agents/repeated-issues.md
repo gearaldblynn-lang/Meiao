@@ -915,8 +915,8 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## 2026-07-15 - Provider 专用读取解析器返回空值时必须保留内部托管视频回退
 
-- Symptom: 去字幕 canary 在创建 job 后 181ms 失败，错误为 `media_process_failed / 媒体处理失败`，且 `providerTaskId` 为空。
-- Root cause: `resolveManagedAssetReadUrl` 只为 COS 素材签发 provider URL，历史/当前内部磁盘素材按合约返回空字符串，由各 provider 保留原 URL 或走自己的转存回退。新去字幕适配器直接把空字符串交给 FFprobe，任务在付费 POST 之前就失败。
-- Fix: 去字幕适配器优先使用 provider 专用签名 URL；解析器返回空值时回退到已通过 owner scrub 和托管素材验证的原公网 URL，再做服务端 FFprobe 和 Golden 提交。
-- Regression check: `node --test server/providerSubtitleRemoval.test.mjs`；必须覆盖 resolver 返回空值时 FFprobe 和 submit 都使用原托管 URL，同时保留 COS 签名 URL 优先级。
+- Symptom: 去字幕 canary 在创建 job 后 181-201ms 失败，错误为 `media_process_failed / 媒体处理失败`，且 `providerTaskId` 为空。公网 Range 读源视频实测为 HTTP 206。
+- Root cause: 这是两层前置探测缺口。`resolveManagedAssetReadUrl` 只为 COS 素材签发 provider URL，历史/当前内部磁盘素材按合约返回空字符串，由各 provider 保留原 URL 或走自己的转存回退；新去字幕适配器首先把这个空值交给 FFprobe。补上 URL 回退后，云上 `@ffprobe-installer` 打包版读取 HTTPS 素材又会在 GnuTLS 打开阶段段错误，仍未越过付费 POST 边界。
+- Fix: 去字幕适配器优先使用 provider 专用签名 URL，解析器返回空值时回退到已通过 owner scrub 和托管素材验证的原公网 URL；对 owner 一致、active 且 provider 为 internal 的视频，FFprobe 改读服务器本地 `storageKey` 对应文件，Golden 提交仍使用公网 URL。
+- Regression check: `node --test server/providerSubtitleRemoval.test.mjs server/managedAssetReadRoute.test.mjs`；必须覆盖 resolver 空值回退、internal 视频本地 probe target、COS 签名 URL 优先级和 owner 隔离。
 - Avoid next time: 不同 provider 的素材准备依赖不能只看“解析器可调用”，还要覆盖其合法的空值语义。新接入必须用 internal 与 COS 两种托管类型各跑一条前置媒体探测回归，并用 `providerTaskId`/provider stage 证明失败是否已越过付费提交边界。

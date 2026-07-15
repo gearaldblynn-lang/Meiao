@@ -21,6 +21,13 @@ test('provider execution injects the signed managed image resolver scoped to the
   );
 });
 
+test('provider video probe uses the local file path for internal managed assets', () => {
+  assert.match(
+    source,
+    /const executeProviderJobWithManagedAssetScrub[\s\S]{0,2600}probeVideo: async[\s\S]{0,800}extractStoredAssetIdFromPublicUrl[\s\S]{0,800}getStoredAssetById[\s\S]{0,800}getStoredAssetStorageProvider\(asset\) === 'internal'[\s\S]{0,500}resolveStoredAssetPath\(asset\)[\s\S]{0,500}mediaTranscodeService\.probe/,
+  );
+});
+
 test('managed asset scrubbing is scoped to the current owner instead of every active asset', () => {
   assert.match(source, /listStoredAssetsForUser,/);
   assert.match(source, /scrubDbJobPayloadBeforeSubmission\(job\?\.payload, job\?\.userId\)/);
