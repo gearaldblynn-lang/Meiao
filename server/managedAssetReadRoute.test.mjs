@@ -28,6 +28,14 @@ test('provider video probe uses the local file path for internal managed assets'
   );
 });
 
+test('subtitle removal stages local managed videos before handing them to the external provider', () => {
+  assert.match(source, /resolveProviderGenerationMediaUrl/);
+  assert.match(
+    source,
+    /const executeProviderJobWithManagedAssetScrub[\s\S]{0,3200}resolveProviderSourceUrl:[\s\S]{0,1200}resolveProviderGenerationMediaUrl[\s\S]{0,1200}uploadAssetViaKieStream/,
+  );
+});
+
 test('managed asset scrubbing is scoped to the current owner instead of every active asset', () => {
   assert.match(source, /listStoredAssetsForUser,/);
   assert.match(source, /scrubDbJobPayloadBeforeSubmission\(job\?\.payload, job\?\.userId\)/);

@@ -113,7 +113,23 @@ test('live mode creates exactly one job, verifies managed Range playback, and pe
       calls.push({ href, method, headers: init.headers, body: init.body });
       if (href.endsWith('/api/health')) return response(200, { ok: true, subtitleRemoval: { enabled: true, configured: true } });
       if (href.endsWith('/api/system/config')) return response(200, { config: { providers: { goldenSubtitle: { configured: true } }, featureRollouts: { subtitleRemoval: true } } });
-      if (href.endsWith('/api/assets/upload-stream')) return response(200, { fileUrl: signedSource, assetId: 'source' });
+      if (href.endsWith('/api/media-transcodes/sessions')) {
+        return response(201, {
+          sessionId: 'media-session-1',
+          durationSeconds: 2.5,
+          width: 720,
+          height: 1280,
+        });
+      }
+      if (href.endsWith('/api/media-transcodes/sessions/media-session-1/convert')) {
+        return response(200, {
+          fileUrl: signedSource,
+          assetId: 'source',
+          durationSeconds: 2.5,
+          width: 720,
+          height: 1280,
+        });
+      }
       if (href.endsWith('/api/jobs') && method === 'POST') return response(201, { job: { id: 'job-canary-1', status: 'queued' } });
       if (href.endsWith('/api/jobs/job-canary-1') && method === 'GET') {
         polls += 1;
@@ -133,7 +149,16 @@ test('live mode creates exactly one job, verifies managed Range playback, and pe
   assert.equal(result.ok, true);
   assert.equal(result.providerTaskIdPresent, true);
   assert.equal(result.managedResultUrlPresent, true);
+  assert.equal(calls.filter((call) => call.href.endsWith('/api/media-transcodes/sessions') && call.method === 'POST').length, 1);
+  assert.equal(calls.filter((call) => call.href.endsWith('/api/media-transcodes/sessions/media-session-1/convert') && call.method === 'POST').length, 1);
+  assert.equal(calls.some((call) => call.href.endsWith('/api/assets/upload-stream')), false);
   assert.equal(calls.filter((call) => call.href.endsWith('/api/jobs') && call.method === 'POST').length, 1);
+  const jobCreateCall = calls.find((call) => call.href.endsWith('/api/jobs') && call.method === 'POST');
+  const jobCreateBody = JSON.parse(String(jobCreateCall?.body || '{}'));
+  assert.equal(jobCreateBody.payload.batchCount, 1);
+  assert.equal(jobCreateBody.payload.batchIndex, 0);
+  assert.equal(jobCreateBody.payload.batchId, jobCreateBody.payload.shellProjectId);
+  assert.ok(jobCreateBody.payload.shellResultId);
   assert.equal(calls.some((call) => call.href.endsWith('/api/jobs/job-canary-1') && call.method === 'DELETE'), true);
   assert.equal(calls.some((call) => call.href.endsWith('/api/assets/by-url') && call.method === 'DELETE'), true);
   const summaryIndex = logs.findIndex((line) => line.includes('"managedResultUrlPresent":true'));

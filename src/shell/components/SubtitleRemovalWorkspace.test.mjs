@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('./SubtitleRemovalWorkspace.tsx', import.meta.url), 'utf8');
+const reminderSource = readFileSync(new URL('./SubtitleRegionReminderDialog.tsx', import.meta.url), 'utf8');
 const videoModuleSource = readFileSync(new URL('../modules/Video/VideoModule.tsx', import.meta.url), 'utf8');
 
 test('workspace accepts videos and starts the subtitle media profile immediately', () => {
@@ -71,6 +72,16 @@ test('workspace supports drag and drop and enforces the published batch limit', 
   assert.match(source, /onDrop/);
   assert.match(source, /batchMaxItems/);
   assert.match(source, /一次最多上传/);
+});
+
+test('workspace reminds users to confirm the subtitle region after a new upload group is ready', () => {
+  assert.match(source, /regionReminderCandidateIdsRef/);
+  assert.match(source, /resolveSubtitleRegionReminder/);
+  assert.match(source, /SubtitleRegionReminderDialog/);
+  assert.match(reminderSource, /请确认去字幕区域/);
+  assert.match(reminderSource, /使用默认区域/);
+  assert.match(reminderSource, /去调整区域/);
+  assert.match(source, /setEditingItemId\(regionReminderItemId\)/);
 });
 
 test('video module keeps the batch workspace mounted while users inspect result tabs', () => {

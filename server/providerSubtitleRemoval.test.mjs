@@ -39,6 +39,7 @@ const fakeProviderDeps = ({
   submitError,
   events = [],
   nowValues,
+  onSubmitBody = () => {},
   resolvedReadUrl = 'https://managed.example/video.mp4?access=short-lived',
 } = {}) => {
   const calls = { submit: 0, query: 0, sleep: 0 };
@@ -66,6 +67,7 @@ const fakeProviderDeps = ({
       if (body.biz === 'aiRemoveSubtitleSubmitTask') {
         calls.submit += 1;
         events.push('submit');
+        onSubmitBody(body);
         if (submitError) throw submitError;
         assert.equal(body.duration, 10, 'server probe duration must override browser claims');
         assert.equal(body.resolution, '720x1280');
@@ -156,6 +158,37 @@ test('internal managed video falls back to its public stream URL when the COS re
     `probe:${sourceUrl}`,
   ]);
   assert.equal(result.providerTaskId, 'provider-1');
+});
+
+test('local internal video is staged to an externally reachable URL before Golden receives it', async () => {
+  const events = [];
+  const sourceUrl = 'http://127.0.0.1:3100/api/assets/file/asset-local/source.mp4';
+  const stagedUrl = 'https://file.aiquickdraw.com/mayo-storage/internal/source-staged.mp4';
+  let submittedUrl = '';
+  const deps = fakeProviderDeps({
+    events,
+    resolvedReadUrl: '',
+    onSubmitBody: (body) => { submittedUrl = body.url; },
+  });
+  deps.resolveProviderSourceUrl = async (value) => {
+    events.push(`stage:${value}`);
+    return stagedUrl;
+  };
+
+  await runSubtitleRemovalJob({
+    job: newSubtitleJob({ payload: {
+      ...newSubtitleJob().payload,
+      sourceUrl,
+    } }),
+    env: enabledEnv(),
+    deps,
+  });
+
+  assert.deepEqual(events.slice(0, 2), [
+    `stage:${sourceUrl}`,
+    `probe:${stagedUrl}`,
+  ]);
+  assert.equal(submittedUrl, stagedUrl);
 });
 
 test('submit network ambiguity stops without retrying the paid request', async () => {

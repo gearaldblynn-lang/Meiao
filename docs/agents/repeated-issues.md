@@ -19,6 +19,15 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix:
 ## Standing Lessons
 
+## 2026-07-15 - 外部去字幕服务不能读取梅奥本机托管地址
+
+- Symptom: 本地去字幕任务拿到 Golden `providerTaskId` 后失败，供应商返回 `dwf:获取文件大小失败`，错误中出现 `HTTPConnectionPool(host='127.0.0.1')`。
+- Environment: local development / internal transcoded video / Golden subtitle removal.
+- Root cause: 媒体转码结果持久化为 `http://127.0.0.1:3100/api/assets/file/...`；去字幕适配器只尝试 COS provider URL，解析为空后把原本机 URL 直接提交给 Golden。Golden 随后在自己的运行环境访问 `127.0.0.1`，实际指向供应商服务器而不是梅奥。
+- Fix: 去字幕提交统一复用 provider generation media resolver。COS 素材继续签发短期直读 URL；本地/内网托管视频先通过既有 KIE stream upload 转为外部可访问 URL，随后同一 URL 用于服务端探测和 Golden 提交。已存在 `providerTaskId` 的失败任务不自动重提，避免重复扣费。
+- Regression check: `node --test server/providerSubtitleRemoval.test.mjs server/managedAssetReadRoute.test.mjs server/providerAssetTransfer.test.mjs server/providerGateway.test.mjs scripts/probe-subtitle-removal.test.mjs`；本地 2.5 秒付费 canary `58468d5d4c32af497b65412b` 成功，存在 provider task ID，源视频和结果视频均为站内托管地址且通过 Range 播放检查，只提交 1 个付费任务。
+- Avoid next time: 任何外部 provider 收到媒体 URL 前必须断言它不是 localhost、回环地址或私网地址；本地验收不能只验证浏览器能播放，还必须跑一次 provider 真实读取 canary，并用上游 task ID 区分提交前失败与提交后失败。
+
 ## 2026-07-14 - Image-2 relay exposes only verified 1K and 2K sizes
 
 - Symptom: `image-2中转` 前端暴露 4K，但真实任务输出被上游归一化；固定比例也不能只靠 prompt 稳定约束。

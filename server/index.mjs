@@ -111,6 +111,7 @@ import { assertDeployRequestAllowed } from './deployDrain.mjs';
 import { createAuthorizedProviderRecovery } from './jobRecoveryService.mjs';
 import { executeProviderJob, uploadAssetViaKieStream } from './providerGateway.mjs';
 import { resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel } from './providerAssetTransfer.mjs';
+import { resolveProviderGenerationMediaUrl } from './providerAssetTransfer.mjs';
 import {
   filterAvailableAgentImageUrls,
   normalizeAgentImageUrl,
@@ -4171,14 +4172,26 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
     ? await scrubDbJobPayloadBeforeSubmission(job?.payload, job?.userId)
     : await scrubLocalJobPayloadBeforeSubmission(job?.payload, job?.userId);
   const assetPool = shouldUseMysql ? await getMysqlPool() : null;
+  const inheritedAssetTransferDeps = options?.assetTransferDeps || {};
+  const resolveJobManagedAssetReadUrl = async (value, readOptions = {}) => resolveManagedAssetReadUrl(value, {
+    ...readOptions,
+    pool: assetPool,
+    userId: job?.userId,
+    purpose: 'provider',
+    env,
+  });
   const assetTransferDeps = {
-    ...(options?.assetTransferDeps || {}),
-    resolveManagedAssetReadUrl: async (value, readOptions = {}) => resolveManagedAssetReadUrl(value, {
-      ...readOptions,
-      pool: assetPool,
-      userId: job?.userId,
-      purpose: 'provider',
+    ...inheritedAssetTransferDeps,
+    resolveManagedAssetReadUrl: resolveJobManagedAssetReadUrl,
+    resolveProviderSourceUrl: async (value, sourceOptions = {}) => resolveProviderGenerationMediaUrl(value, {
       env,
+      signal: sourceOptions.signal || signal,
+      uploadPath: 'mayo-storage/subtitle-removal',
+      deps: {
+        ...inheritedAssetTransferDeps,
+        resolveManagedAssetReadUrl: resolveJobManagedAssetReadUrl,
+        uploadAssetViaKieStream,
+      },
     }),
     probeVideo: async (value, probeSignal) => {
       let probeTarget = value;

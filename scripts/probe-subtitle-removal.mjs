@@ -159,26 +159,41 @@ export async function runSubtitleRemovalProbe(options, deps = {}) {
 
   const fileBuffer = await readFileImpl(options.fixture);
   const formData = new FormData();
-  formData.append('module', 'video');
-  formData.append('assetType', 'source');
+  formData.append('kind', 'video');
+  formData.append('profile', 'subtitle_removal');
   formData.append('file', new Blob([fileBuffer], { type: 'video/mp4' }), basename(options.fixture));
 
   let sourceUrl = '';
+  let mediaSessionId = '';
   let jobId = '';
   let completed = false;
   const startedAt = now();
   try {
-    const upload = await requestJson(fetchImpl, `${options.baseUrl}/api/assets/upload-stream`, {
+    const mediaSession = await requestJson(fetchImpl, `${options.baseUrl}/api/media-transcodes/sessions`, {
       method: 'POST',
       headers: authHeaders(options.sessionToken),
       body: formData,
     });
-    sourceUrl = clean(upload?.fileUrl);
+    mediaSessionId = clean(mediaSession?.sessionId || mediaSession?.id);
+    if (!mediaSessionId) throw new Error('媒体处理接口未返回 session ID。');
+    const authoritativeDuration = Number(mediaSession?.durationSeconds || durationSeconds);
+    const converted = await requestJson(
+      fetchImpl,
+      `${options.baseUrl}/api/media-transcodes/sessions/${encodeURIComponent(mediaSessionId)}/convert`,
+      {
+        method: 'POST',
+        headers: authHeaders(options.sessionToken, { 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ startSeconds: 0, endSeconds: authoritativeDuration, module: 'video' }),
+      },
+    );
+    mediaSessionId = '';
+    sourceUrl = clean(converted?.fileUrl);
     if (!isManagedAssetUrl(sourceUrl, options.baseUrl)) throw new Error('探针源视频未进入梅奥托管素材。');
     await ensureRangeReadable({ fetchImpl, url: sourceUrl, sessionToken: options.sessionToken });
 
     const nonce = `${startedAt}-${Math.random().toString(36).slice(2, 10)}`;
     const shellProjectId = `subtitle-canary-${nonce}`;
+    const shellResultId = `${shellProjectId}-result-0`;
     const created = await requestJson(fetchImpl, `${options.baseUrl}/api/jobs`, {
       method: 'POST',
       headers: authHeaders(options.sessionToken, { 'Content-Type': 'application/json' }),
@@ -193,7 +208,11 @@ export async function runSubtitleRemovalProbe(options, deps = {}) {
           sourceUrl,
           subtitleRegionNormalized: { x: 0, y: 0.7, width: 1, height: 0.3 },
           shellProjectId,
+          shellResultId,
           shellProjectName: '去字幕付费探针',
+          batchId: shellProjectId,
+          batchIndex: 0,
+          batchCount: 1,
           clientSubmissionKey: `subtitle_canary|${nonce}`,
         },
       }),
@@ -235,6 +254,13 @@ export async function runSubtitleRemovalProbe(options, deps = {}) {
     if (options.inspectionMs > 0) await sleep(options.inspectionMs);
     return result;
   } finally {
+    if (mediaSessionId) {
+      await requestJson(
+        fetchImpl,
+        `${options.baseUrl}/api/media-transcodes/sessions/${encodeURIComponent(mediaSessionId)}`,
+        { method: 'DELETE', headers: authHeaders(options.sessionToken) },
+      ).catch(() => {});
+    }
     if (completed && jobId) {
       await requestJson(fetchImpl, `${options.baseUrl}/api/jobs/${encodeURIComponent(jobId)}`, {
         method: 'DELETE',

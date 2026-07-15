@@ -147,10 +147,12 @@ export async function runSubtitleRemovalJob({
   const sleep = deps.sleep || defaultSleep;
   const now = deps.now || Date.now;
   const sourceUrl = String(job?.payload?.sourceUrl || '').trim();
-  const resolvedReadUrl = await deps.resolveManagedAssetReadUrl(sourceUrl, {
-    purpose: 'provider',
-    signal,
-  });
+  const resolvedReadUrl = typeof deps.resolveProviderSourceUrl === 'function'
+    ? await deps.resolveProviderSourceUrl(sourceUrl, { signal })
+    : await deps.resolveManagedAssetReadUrl(sourceUrl, {
+      purpose: 'provider',
+      signal,
+    });
   const readableUrl = String(resolvedReadUrl || sourceUrl).trim();
   throwIfAborted(signal);
   const metadata = await deps.probeVideo(readableUrl, signal);
