@@ -939,3 +939,13 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: V2 provider 边界按有效目录 URL、明确 `图N`、唯一当前上传图、唯一 current-focus 图依次解析；`edit_image` 或明确引用图片但仍无法唯一解析时抛 `missing_image_input`，绝不提交 provider。明确从零生成的 `new_image` 不继承附件。
 - Regression check: `node --test server/agentToolConversation.test.mjs server/agentImagePlan.test.mjs server/providerKieImage.test.mjs`; `node --test server/agent-image-retrieval.test.mjs server/agentConversationReliability.test.mjs server/agentCenterSource.test.mjs server/providerGateway.test.mjs`; `npm run verify`.
 - Avoid next time: LLM 工具调用不是可信执行合同。改图/引用语义必须在扣费边界拥有非空且可验证的输入图；无法确定时应失败，不得用零输入静默切换为文生图。新旧 Agent 路径必须共享同一输入安全矩阵。
+
+## 2026-07-15 - Local draft asset ids must not block durable project checkpoints
+
+- Symptom: 多桑账号两个新首图项目排在列表底部；其中一个后台 `kie_image` 已成功并保存图片，前端仍只显示策划态或不显示图片，刷新后也无法恢复。
+- Environment: Tencent Cloud production / one_click first_image / COS managed assets / shell project hydration.
+- Cloud evidence: 项目 `proj-plan-1784104061813` 的两个图片 job 均为 `succeeded` 且结果含 `imageUrl/imageUrlAssetId`；账号 `app_states.updated_at` 停在 15:51，早于 16:27/16:29 两个新项目。PM2 错误日志连续出现 `managed_asset_forbidden / asset_reference`。只读审计发现该 state 的 150 个非法候选全部来自 `localAssetId=draft-*`，没有真实跨账号或已删除素材引用。
+- Root cause: 素材安全策略用 `key.endsWith('AssetId')` 收集显式托管素材身份，误把浏览器本地草稿 ID 纳入所有权校验，令整个状态快照写入持续 403。项目占位未落库后，一键主详图片恢复又要求先命中 persisted project，成功/失败 job 都无法接回兄弟策划结果。实时新卡的真实毫秒 `createdAt` 没有 `createdAtPrecise` 标记，排序 tier 又让它落到旧卡后。
+- Fix: `localAssetId` 不再作为托管素材 ID 校验，真实托管字段继续 fail closed；adapter 按结构化 `shellProjectId` 从成功策划 job 重建恢复种子，并接纳同项目 active/succeeded/failed 图片 job；排序在标记缺失时从规范毫秒戳推断 precise，同时尊重显式 false 的历史脏值。
+- Regression check: `node --test server/managedAssetReferencePolicy.test.mjs server/appStateMerge.test.mjs server/assetReferenceCleanup.test.mjs server/managedAssetDeletion.test.mjs`；`node --experimental-strip-types --test src/adapters/shellDataAdapter.test.mjs src/adapters/shellTerminalJobMerge.test.mjs src/adapters/shellScopeFilters.test.mjs src/utils/syncedProjectPersistence.test.mjs`；把云上真实 3.29 MiB state 与最近 100 条 jobs 喂给本地修复代码，成功项目恢复两张图片、失败项目显示 error，最新项目排在 7月14日项目之前。
+- Avoid next time: 新增全快照安全校验时必须用包含 `localAssetId` 的真实历史 state 回放，不能只测简化对象。任何付费/耐久 job 恢复都要覆盖“客户端占位从未持久化”的成功、失败和进行中三态；排序测试必须包含刚创建但尚未水合的新卡。

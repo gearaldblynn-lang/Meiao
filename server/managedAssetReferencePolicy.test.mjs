@@ -53,3 +53,31 @@ test('payloads without managed asset references skip storage scans', async () =>
   });
   assert.equal(calls, 0);
 });
+
+test('local draft asset identities are not treated as managed storage assets', async () => {
+  let calls = 0;
+  await assertOwnedActiveManagedAssetReferences({
+    value: [{
+      localAssetId: 'draft-1784104061813-product',
+      url: 'blob:https://meiaoyuntai.com/local-preview',
+    }],
+    userId: 'user-1',
+    listAssetsForUser: async () => {
+      calls += 1;
+      return [];
+    },
+  });
+
+  assert.equal(calls, 0);
+});
+
+test('explicit persisted asset identities still require active ownership', async () => {
+  await assert.rejects(
+    () => assertOwnedActiveManagedAssetReferences({
+      value: [{ imageUrlAssetId: 'asset-other' }],
+      userId: 'user-1',
+      listAssetsForUser: async () => [],
+    }),
+    (error) => error?.code === 'managed_asset_forbidden' && error?.statusCode === 403,
+  );
+});

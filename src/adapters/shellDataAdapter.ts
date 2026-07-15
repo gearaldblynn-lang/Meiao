@@ -1661,6 +1661,7 @@ const mapJobs = (
   const translationGroups = new Map<string, InternalJob[]>();
   const groupedOneClickPlanningJobIds = new Set<string>();
   const oneClickPlanningGroups = new Map<string, InternalJob[]>();
+  const recoveredOneClickPlanningProjects = new Map<string, ShellProjectData>();
   const groupedStoryboardJobIds = new Set<string>();
   const storyboardGroups = new Map<string, InternalJob[]>();
 
@@ -1716,6 +1717,56 @@ const mapJobs = (
     const bucket = oneClickPlanningGroups.get(payloadProjectId) || [];
     bucket.push(job);
     oneClickPlanningGroups.set(payloadProjectId, bucket);
+  });
+
+  jobs.forEach((job) => {
+    const jobId = String(job?.id || '').trim();
+    if (!jobId || hiddenJobIds.has(jobId)) return;
+    if (toModule(job.module) !== MODULE_VALUES.ONE_CLICK) return;
+    if (String(job.taskType || '') !== 'kie_chat') return;
+    if (String(job.payload?.shellPlanningPurpose || '').trim() !== 'one_click_planning') return;
+    if (taskStatusToProject(job.status) !== 'completed') return;
+    const payloadProjectId = String(job.payload?.shellProjectId || '').trim();
+    if (!payloadProjectId) return;
+    const planningText = String(job.result?.content || job.result?.text || '').trim();
+    const parsedPlans = attachReferenceUrlToPlans(
+      backfillDetailPageSetReplicationPlans(parseOneClickPlanningText(planningText, job.id), job.id, job.payload),
+      getPlanningReferenceUrls(job.payload),
+    );
+    if (parsedPlans.length === 0) return;
+    const existing = recoveredOneClickPlanningProjects.get(payloadProjectId);
+    const plans = mergeProjectPlansById(existing?.plans, parsedPlans) || parsedPlans;
+    recoveredOneClickPlanningProjects.set(payloadProjectId, {
+      ...(existing || {}),
+      id: payloadProjectId,
+      name: String(job.payload?.shellProjectName || '').trim()
+        || existing?.name
+        || plans[0]?.title
+        || '一键主详策划',
+      module: MODULE_VALUES.ONE_CLICK,
+      status: 'planning',
+      createdAt: Math.min(
+        Number(existing?.createdAt || Number.MAX_SAFE_INTEGER),
+        toCreatedMs(job.createdAt),
+      ),
+      createdAtPrecise: true,
+      results: existing?.results || [],
+      taskCount: Math.max(Number(existing?.taskCount || 0) || 0, plans.length, 1),
+      completedCount: existing?.completedCount || 0,
+      subFeature: existing?.subFeature
+        || getStructuredOneClickJobSubFeature(job.payload)
+        || normalizeJobSubFeature(MODULE_VALUES.ONE_CLICK, job.taskType, job.payload),
+      sourceType: 'job',
+      backendJobId: String(job.id || '').trim() || existing?.backendJobId,
+      planningTaskId: latestIdentityTextList(
+        existing?.planningTaskId,
+        getPlanningProviderTaskId(job) || undefined,
+      ),
+      plans,
+      selectedPlanId: existing?.selectedPlanId
+        || plans.find((plan) => plan.selected)?.id
+        || plans[0]?.id,
+    });
   });
 
   jobs.forEach((job) => {
@@ -2519,7 +2570,8 @@ const mapJobs = (
         return;
       }
       if (projectStatus === 'error' && urls.length === 0) {
-        const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
+        const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects)
+          || recoveredOneClickPlanningProjects.get(String(job.payload?.shellProjectId || '').trim());
         const payloadProjectId = String(job.payload?.shellProjectId || '').trim();
         if (isSubtitleRemovalJob(job, module)) {
           const errorMessage = String(job.errorMessage || providerErrorText || job.errorCode || '去字幕任务失败').trim();
@@ -2703,7 +2755,8 @@ const mapJobs = (
         module === MODULE_VALUES.ONE_CLICK
         && String(job.taskType || '').includes('image')
       ) {
-        const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
+        const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects)
+          || recoveredOneClickPlanningProjects.get(payloadProjectId);
         if (!matchedProject) return;
         if (projectStatus === 'completed' && urls.length === 0) return;
         const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
@@ -2884,7 +2937,8 @@ const mapJobs = (
     }
 
     if (projectStatus === 'generating' || projectStatus === 'planning') {
-      const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
+      const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects)
+        || recoveredOneClickPlanningProjects.get(payloadProjectId);
       if (isTrackedOneClickPlanningJob(job, module)) {
         const cleanProject = matchedProject
           ? removePlanningJobPendingPlaceholders(matchedProject, job)

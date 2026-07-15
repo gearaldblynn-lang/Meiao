@@ -1,3 +1,5 @@
+import { coerceCreatedAtMs } from '../utils/createdAtMs.ts';
+
 export interface ScopeProjectResult {
   id: string;
   status: 'completed' | 'generating' | 'error';
@@ -55,11 +57,17 @@ const parseProjectSequence = (value: unknown) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 };
 
-const projectSortKey = (project: ScopeProject) => ({
-  tier: project.createdAtPrecise ? 1 : 0,
-  createdAt: Number(project.createdAt) || 0,
-  sequence: parseProjectSequence(project.name) || parseProjectSequence(project.id),
-});
+const projectSortKey = (project: ScopeProject) => {
+  const normalizedCreatedAt = coerceCreatedAtMs(project.createdAt, {
+    id: project.id,
+    updatedAt: project.updatedAt,
+  });
+  return {
+    tier: (project.createdAtPrecise ?? normalizedCreatedAt.precise) ? 1 : 0,
+    createdAt: normalizedCreatedAt.ms,
+    sequence: parseProjectSequence(project.name) || parseProjectSequence(project.id),
+  };
+};
 
 export const sortProjectsNewestFirst = <TProject extends ScopeProject>(projects: TProject[]): TProject[] => [...projects]
   .map((project, index) => ({ project, index, key: projectSortKey(project) }))

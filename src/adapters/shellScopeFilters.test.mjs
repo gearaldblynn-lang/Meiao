@@ -188,3 +188,32 @@ test('sortProjectsNewestFirst keeps the observed Luo Ke buyer-show cards in newe
     ['7月10日项目2', '7月10日项目1', '7月9日项目1', '7月7日项目1'],
   );
 });
+
+test('sortProjectsNewestFirst treats a newly created millisecond timestamp as precise before hydration', () => {
+  const projects = [
+    {
+      id: 'persisted-older',
+      name: '7月15日项目1',
+      module: 'one_click',
+      createdAt: 1784101897596,
+      createdAtPrecise: true,
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+    },
+    {
+      id: 'proj-plan-1784104061813',
+      name: '7月15日项目2',
+      module: 'one_click',
+      createdAt: 1784104061813,
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+    },
+  ];
+
+  assert.deepEqual(
+    sortProjectsNewestFirst(projects).map((project) => project.id),
+    ['proj-plan-1784104061813', 'persisted-older'],
+  );
+});
