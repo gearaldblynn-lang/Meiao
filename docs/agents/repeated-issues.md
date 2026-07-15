@@ -920,3 +920,11 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 去字幕适配器优先使用 provider 专用签名 URL，解析器返回空值时回退到已通过 owner scrub 和托管素材验证的原公网 URL；对 owner 一致、active 且 provider 为 internal 的视频，FFprobe 改读服务器本地 `storageKey` 对应文件，Golden 提交仍使用公网 URL。
 - Regression check: `node --test server/providerSubtitleRemoval.test.mjs server/managedAssetReadRoute.test.mjs`；必须覆盖 resolver 空值回退、internal 视频本地 probe target、COS 签名 URL 优先级和 owner 隔离。
 - Avoid next time: 不同 provider 的素材准备依赖不能只看“解析器可调用”，还要覆盖其合法的空值语义。新接入必须用 internal 与 COS 两种托管类型各跑一条前置媒体探测回归，并用 `providerTaskId`/provider stage 证明失败是否已越过付费提交边界。
+
+## 2026-07-15 - Golden 去字幕区域字段不能混入梅奥任务前缀
+
+- Symptom: 去字幕正式 canary 已 checkpoint `providerTaskId`，但供应商约 5 秒后返回 `failed / G:list index out of range`；查询结果能识别 720×1280、约 2 秒和 0.51 MB 的源视频，记录的 `position` 却是 `w=0/h=0`，没有结果视频且 `costRemove=0`。
+- Root cause: Golden 提交契约把 `videoName` 当作字幕区域编码，格式必须严格为 `x1_y1_x2_y2`。梅奥此前为了追踪任务把 job ID 前缀拼进该字段，导致供应商按固定坐标结构解析时得到空区域并进入数组越界。
+- Fix: `buildSubtitleRemovalSubmitBody` 只发送四个像素坐标，不再把内部任务 ID 放进 `videoName`；梅奥仍通过自身 job 与 checkpoint 字段追踪供应商任务。生产开关保持关闭，除非供应商确认或用户明确授权新的单次付费 canary，不自动重提。
+- Regression check: `node --test server/subtitleRemovalContract.test.mjs server/providerSubtitleRemoval.test.mjs server/providerGateway.test.mjs`；测试必须断言即使传入 `safeTaskId`，`videoName` 仍严格等于四段坐标。
+- Avoid next time: 第三方把普通字符串字段复用为位置协议时，不得追加自定义前缀或追踪信息。正式 canary 必须同时核对 provider checkpoint、供应商解析后的 `position`、结果 URL 与费用字段；失败后只允许查询旧 ID，不得自动再提交。

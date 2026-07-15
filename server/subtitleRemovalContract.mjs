@@ -99,15 +99,6 @@ export function assertSubtitleRemovalInput(input = {}) {
   };
 }
 
-const safeTaskPrefix = (value) => {
-  const normalized = String(value || '')
-    .trim()
-    .replace(/[^a-zA-Z0-9_-]+/gu, '_')
-    .replace(/^_+|_+$/gu, '')
-    .slice(0, 80);
-  return normalized || 'meiao';
-};
-
 export function buildSubtitleRemovalSubmitBody(input = {}) {
   const validated = assertSubtitleRemovalInput(input);
   const { x1, y1, x2, y2 } = validated.subtitleRegionPixels;
@@ -116,7 +107,7 @@ export function buildSubtitleRemovalSubmitBody(input = {}) {
     fileSize: Number((validated.sizeBytes / (1024 * 1024)).toFixed(2)),
     duration: Math.ceil(validated.durationSeconds),
     resolution: `${validated.width}x${validated.height}`,
-    videoName: `${safeTaskPrefix(input.safeTaskId)}_${x1}_${y1}_${x2}_${y2}`,
+    videoName: `${x1}_${y1}_${x2}_${y2}`,
     coverUrl: '',
     url: validated.sourceUrl,
   };
