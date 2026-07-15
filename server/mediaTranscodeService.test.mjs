@@ -24,6 +24,7 @@ test('parseFfprobeOutput returns authoritative video metadata', () => {
     durationSeconds: 5.25,
     formatNames: ['mov', 'mp4', 'm4a', '3gp', '3g2', 'mj2'],
     videoCodec: 'hevc',
+    pixelFormat: null,
     audioCodec: 'aac',
     width: 1080,
     height: 1920,
@@ -105,4 +106,45 @@ test('service cancellation aborts an active conversion and releases its permit',
   await assert.rejects(pending, (error) => error?.code === 'media_transcode_cancelled');
   assert.equal(service.getStatus().active, 0);
   assert.equal(typeof rejectRunning, 'function');
+});
+
+test('service uses the subtitle profile for FFmpeg and output validation', async () => {
+  const calls = [];
+  const subtitleProbeJson = JSON.stringify({
+    format: { format_name: 'mov,mp4', duration: '20', size: '2048000' },
+    streams: [
+      { codec_type: 'video', codec_name: 'h264', pix_fmt: 'yuv420p', width: 720, height: 1280, avg_frame_rate: '120/1' },
+      { codec_type: 'audio', codec_name: 'aac' },
+    ],
+  });
+  const service = createMediaTranscodeService({
+    env: { MEIAO_MEDIA_TRANSCODE_ENABLED: '1' },
+    ffmpegPath: '/private/ffmpeg',
+    ffprobePath: '/private/ffprobe',
+    runProcess: async (command, args) => {
+      calls.push({ command, args });
+      return command.includes('ffprobe')
+        ? { stdout: subtitleProbeJson, exitCode: 0 }
+        : { stdout: '', exitCode: 0 };
+    },
+    readOutput: async () => Buffer.from('video'),
+  });
+
+  const result = await service.transcode({
+    sessionId: 'subtitle-session',
+    profile: 'subtitle_removal',
+    kind: 'video',
+    inputPath: '/tmp/source.mov',
+    outputPath: '/tmp/output.mp4',
+    startSeconds: 0,
+    endSeconds: 20,
+    width: 721,
+    height: 1281,
+    hasAudio: true,
+  });
+
+  const ffmpegArgs = calls.find((item) => item.command.includes('ffmpeg')).args;
+  assert.ok(!ffmpegArgs.includes('-r'));
+  assert.ok(!ffmpegArgs.some((value) => value.includes('pad=')));
+  assert.equal(result.metadata.pixelFormat, 'yuv420p');
 });

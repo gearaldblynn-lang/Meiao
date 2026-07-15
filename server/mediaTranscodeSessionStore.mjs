@@ -10,7 +10,10 @@ import {
 } from 'node:fs/promises';
 import { basename, join, resolve, sep } from 'node:path';
 
-import { createMediaTranscodeError } from './mediaTranscodeContract.mjs';
+import {
+  createMediaTranscodeError,
+  normalizeMediaTranscodeProfile,
+} from './mediaTranscodeContract.mjs';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -53,6 +56,7 @@ export function createMediaTranscodeSessionStore({
   const sidecarPath = (sessionId) => join(sessionDirectory(sessionId), 'session.json');
   const hydrate = (record) => ({
     ...record,
+    profile: normalizeMediaTranscodeProfile(record.profile),
     sourcePath: join(sessionDirectory(record.id), 'source'),
   });
 
@@ -131,10 +135,14 @@ export function createMediaTranscodeSessionStore({
   };
 
   return {
-    async create({ userId, kind, fileName, fileBuffer, probe = null }) {
+    async create({ userId, kind, profile = 'seedance_reference', fileName, fileBuffer, probe = null }) {
       if (!userId) throw createMediaTranscodeError('media_session_invalid_owner', '无法确认媒体处理会话所属用户');
       if (kind !== 'video' && kind !== 'audio') {
         throw createMediaTranscodeError('media_kind_unsupported', '仅支持视频或音频转码');
+      }
+      const normalizedProfile = normalizeMediaTranscodeProfile(profile);
+      if (normalizedProfile === 'subtitle_removal' && kind !== 'video') {
+        throw createMediaTranscodeError('media_kind_unsupported', '去字幕功能仅支持视频');
       }
       if (!Buffer.isBuffer(fileBuffer) || fileBuffer.length === 0) {
         throw createMediaTranscodeError('media_source_empty', '上传的媒体文件为空');
@@ -152,6 +160,7 @@ export function createMediaTranscodeSessionStore({
         id,
         userId,
         kind,
+        profile: normalizedProfile,
         fileName: sanitizeFileName(fileName),
         createdAt: now,
         updatedAt: now,

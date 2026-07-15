@@ -70,6 +70,7 @@ export function parseFfprobeOutput(stdout, kind) {
     return {
       ...result,
       videoCodec: videoStream?.codec_name || null,
+      pixelFormat: videoStream?.pix_fmt || null,
       width: Number(videoStream?.width || 0),
       height: Number(videoStream?.height || 0),
       frameRate: parseFrameRate(videoStream?.avg_frame_rate || videoStream?.r_frame_rate),
@@ -218,6 +219,7 @@ export function createMediaTranscodeService({
       kind,
       inputPath,
       outputPath,
+      profile = 'seedance_reference',
       startSeconds,
       endSeconds,
       width,
@@ -237,6 +239,7 @@ export function createMediaTranscodeService({
         release = await semaphore.acquire(controller.signal);
         const args = kind === 'video'
           ? buildVideoTranscodeArgs({
+            profile,
             inputPath,
             outputPath,
             startSeconds,
@@ -256,7 +259,7 @@ export function createMediaTranscodeService({
           });
         }
         const outputMetadata = await probe(outputPath, kind, controller.signal);
-        validateTranscodedOutput(kind, outputMetadata);
+        validateTranscodedOutput(kind, outputMetadata, profile);
         const fileBuffer = await readOutput(outputPath);
         return {
           fileBuffer,

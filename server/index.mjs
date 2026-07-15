@@ -2516,6 +2516,7 @@ const handleMediaTranscodeRequest = async ({ req, res, url, user }) => {
     });
     const file = formData.get('file');
     const kind = String(formData.get('kind') || '').trim().toLowerCase();
+    const profile = String(formData.get('profile') || 'seedance_reference').trim().toLowerCase();
     if (!(file instanceof File)) {
       throw createMediaTranscodeError('media_source_empty', '请选择需要处理的视频或音频文件');
     }
@@ -2525,6 +2526,7 @@ const handleMediaTranscodeRequest = async ({ req, res, url, user }) => {
     const result = await mediaTranscodeApi.createSession({
       userId: user.id,
       kind,
+      profile,
       fileName: file.name || 'source',
       fileBuffer: Buffer.from(await file.arrayBuffer()),
     });
