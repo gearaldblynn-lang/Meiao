@@ -25,6 +25,7 @@ interface Props {
   onFissionResult?: (projectId: string, resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
   onEditResult?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
+  onRemoveVideoSubtitles?: (projectId: string, resultId: string) => void;
   onConfirmPlan?: (projectId: string, plan: any) => void;
   onUpdatePlans?: (projectId: string, plans: any[]) => void;
   onRegeneratePlans?: (projectId: string) => void;
@@ -40,7 +41,7 @@ interface Props {
 
 const ProjectListView: React.FC<Props> = ({
   projects, tasks, title, description, emptyIcon, emptyTitle, emptySubtitle,
-  onDeleteResult, onDeleteProject, onDeletePlan, onRegenerateResult, onFissionResult, onEditResult, onRecoverResult, onCancelTask,
+  onDeleteResult, onDeleteProject, onDeletePlan, onRegenerateResult, onFissionResult, onEditResult, onRecoverResult, onRemoveVideoSubtitles, onCancelTask,
   onConfirmPlan, onUpdatePlans, onRegeneratePlans, onConfirmStoryboardImaging, onImportStoryboardToGeneration,
   subFeatures, activeSubFeature, onSubFeatureChange,
   beforeProjects,
@@ -356,6 +357,7 @@ const ProjectListView: React.FC<Props> = ({
                     onFission={onFissionResult}
                     onEdit={onEditResult}
                     onRecover={onRecoverResult}
+                    onRemoveVideoSubtitles={onRemoveVideoSubtitles}
                     onConfirmPlan={onConfirmPlan}
                     onUpdatePlans={onUpdatePlans}
                     onRegeneratePlans={onRegeneratePlans}

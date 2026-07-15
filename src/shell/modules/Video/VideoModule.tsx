@@ -17,6 +17,7 @@ interface Props {
   onConfirmStoryboardImaging?: (projectId: string) => void;
   onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number, imageUrl?: string) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
+  onRemoveVideoSubtitles?: (projectId: string, resultId: string) => void;
   onCancelTask: (taskId: string) => void;
   subFeatures?: SubFeatureOption[];
   activeSubFeature?: string;
@@ -155,6 +156,7 @@ const VideoModule: React.FC<Props> = ({
   onConfirmStoryboardImaging,
   onImportStoryboardToGeneration,
   onRecoverResult,
+  onRemoveVideoSubtitles,
   onCancelTask,
   subFeatures,
   activeSubFeature = 'generation',
@@ -232,6 +234,7 @@ const VideoModule: React.FC<Props> = ({
       onConfirmStoryboardImaging={onConfirmStoryboardImaging}
       onImportStoryboardToGeneration={onImportStoryboardToGeneration}
       onRecoverResult={onRecoverResult}
+      onRemoveVideoSubtitles={onRemoveVideoSubtitles}
       onCancelTask={activeSubFeature === 'subtitle_removal' ? undefined : onCancelTask}
       subFeatures={subFeatures}
       activeSubFeature={activeSubFeature}

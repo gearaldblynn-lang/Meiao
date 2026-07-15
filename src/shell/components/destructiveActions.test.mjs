@@ -5,6 +5,11 @@ import {
   collectShellDeletionJobIds,
   collectShellResultDeletionJobIds,
 } from '../../utils/shellDeletionJobs.ts';
+import {
+  applyPersistedDeletionTombstones,
+  prunePersistedAppStateForDeletion,
+} from '../../utils/persistedDeletion.ts';
+import { buildPersistedAppState } from '../../utils/appState.ts';
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const readFirstExisting = (...paths) => {
@@ -284,4 +289,50 @@ test('collectShellResultDeletionJobIds excludes provider identities even when th
     taskId: 'provider-task-must-not-be-deleted',
     providerTaskId: 'job-provider-task-123',
   }), []);
+});
+
+test('deleting a subtitle removal card never collects or mutates its source video project', () => {
+  const sharedSourceUrl = '/api/assets/file/source-video.mp4';
+  const sourceProject = {
+    id: 'source-video-project',
+    name: '原视频项目',
+    module: 'video',
+    subFeature: 'generation',
+    status: 'completed',
+    createdAt: 1784073000000,
+    taskCount: 1,
+    completedCount: 1,
+    backendJobId: 'source-video-job',
+    results: [{ id: 'source-video-result', backendJobId: 'source-video-job', videoUrl: sharedSourceUrl }],
+  };
+  const subtitleProject = {
+    id: 'subtitle-project',
+    name: '去字幕项目',
+    module: 'video',
+    subFeature: 'subtitle_removal',
+    status: 'completed',
+    createdAt: 1784073600000,
+    taskCount: 1,
+    completedCount: 1,
+    backendJobId: 'subtitle-job',
+    results: [{
+      id: 'subtitle-result',
+      backendJobId: 'subtitle-job',
+      sourceUrl: sharedSourceUrl,
+      videoUrl: '/api/assets/file/subtitle-result.mp4',
+    }],
+  };
+  const projects = [sourceProject, subtitleProject];
+
+  assert.deepEqual(collectShellDeletionJobIds('subtitle-project', projects, []), ['subtitle-job']);
+  assert.deepEqual(sourceProject.results, [{ id: 'source-video-result', backendJobId: 'source-video-job', videoUrl: sharedSourceUrl }]);
+
+  const target = { projectId: 'subtitle-project', jobIds: ['subtitle-job'] };
+  const pruned = applyPersistedDeletionTombstones(prunePersistedAppStateForDeletion(
+    buildPersistedAppState({ shellProjects: projects }),
+    target,
+  ), target);
+  assert.ok(pruned.shellProjects.some((project) => project.id === 'source-video-project'));
+  assert.equal(pruned.shellProjects.some((project) => project.id === 'subtitle-project'), false);
+  assert.ok(pruned.shellDraft.deletedProjectIds.includes('subtitle-project'));
 });

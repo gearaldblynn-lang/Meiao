@@ -15,6 +15,7 @@ import ImageLightbox, { type LightboxMediaItem } from './ImageLightbox';
 import PlanEditor, { type PlanItem } from './PlanEditor';
 import { useToast } from './ToastSystem';
 import ProductRestoreAnalysisPanel, { ProductRestoreResultCreditBadge } from '../modules/Retouch/ProductRestoreAnalysisPanel';
+import SubtitleComparisonPlayer from './SubtitleComparisonPlayer';
 import {
   getProductRestoreAnalysisCreditSummary,
   getProductRestoreTotalKnownCredits,
@@ -55,6 +56,7 @@ interface Props {
   onFission?: (projectId: string, resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
   onEdit?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
   onRecover?: (projectId: string, resultId: string) => void;
+  onRemoveVideoSubtitles?: (projectId: string, resultId: string) => void;
   onConfirmPlan?: (projectId: string, plan: PlanItem | PlanItem[]) => void;
   onUpdatePlans?: (projectId: string, plans: PlanItem[]) => void;
   onDeletePlan?: (projectId: string, planId: string) => void;
@@ -90,6 +92,7 @@ const subFeatureNames: Record<string, string> = {
   generation: '短视频',
   storyboard: '分镜',
   diagnosis: '诊断',
+  subtitle_removal: '去字幕',
   cover: '封面',
   long_slice: '长图切片',
   resize: '修改尺寸',
@@ -485,7 +488,7 @@ const ResultActionButton: React.FC<{
 };
 
 const ProjectCard: React.FC<Props> = ({
-  project, onDeleteResult, onDeleteProject, onRegenerate, onConfirmStoryboardImaging, onFission, onEdit, onRecover, onConfirmPlan, onUpdatePlans, onDeletePlan, onRegeneratePlans, onCancelTask, onImportStoryboardToGeneration, pendingActionKeys, compact = false, showGenerationProgress = true,
+  project, onDeleteResult, onDeleteProject, onRegenerate, onConfirmStoryboardImaging, onFission, onEdit, onRecover, onRemoveVideoSubtitles, onConfirmPlan, onUpdatePlans, onDeletePlan, onRegeneratePlans, onCancelTask, onImportStoryboardToGeneration, pendingActionKeys, compact = false, showGenerationProgress = true,
 }) => {
   const [detailOpen, setDetailOpen] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -533,6 +536,15 @@ const ProjectCard: React.FC<Props> = ({
   const isEverythingReplaceBackgroundEditProject = project.module === 'everything_replace' && project.subFeature === 'background_replace';
   const isImageCropProject = project.module === 'image_crop';
   const isProductRestoreProject = project.module === 'retouch' && project.subFeature === 'product_restore';
+  const isSubtitleRemovalProject = project.module === 'video' && project.subFeature === 'subtitle_removal';
+  const canRemoveVideoSubtitles = (result: GeneratedResult) => Boolean(
+    onRemoveVideoSubtitles
+    && project.module === 'video'
+    && !isSubtitleRemovalProject
+    && result.status === 'completed'
+    && Boolean(result.videoUrl),
+  );
+  const subtitleRemovalEntryResult = project.results.find(canRemoveVideoSubtitles);
   const usesMinimalRoleEditPrompt = isOneClickProject || isEverythingReplaceProductEditProject || isEverythingReplaceBackgroundEditProject;
   const getCurrentStoryboardDisplayUrl = (result: GeneratedResult) => {
     if (!isVersionedImageProject) return result.imageUrl;
@@ -1082,6 +1094,14 @@ const ProjectCard: React.FC<Props> = ({
                 </p>
                 <span className="text-[11px]" style={{ color: 'var(--accent)' }}>查看文字详情</span>
               </div>
+            ) : isSubtitleRemovalProject && previewResult && !previewResult.videoUrl ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 px-5 text-center" style={{ color: 'var(--text-tertiary)' }}>
+                <RefreshCw size={20} className={previewResult.status === 'generating' ? 'animate-spin' : ''} style={{ color: previewResult.status === 'error' ? 'var(--error)' : 'var(--accent)' }} />
+                <span className="text-[12px] font-semibold" style={{ color: previewResult.status === 'error' ? 'var(--error)' : 'var(--text-primary)' }}>
+                  {previewResult.status === 'error' ? '去字幕失败' : '正在去除字幕'}
+                </span>
+                <span className="line-clamp-3 text-[11px] leading-5">{previewResult.error || '处理中可离开页面，完成后在任务卡内对比查看'}</span>
+              </div>
             ) : hasResults ? renderMedia(previewResult, `h-full w-full object-cover ${isPreviewVideoResult ? '' : 'transition-transform duration-300 group-hover:scale-[1.03]'}`, { videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowIndicator: true }) : hasPlans ? (
               <div className="flex h-full flex-col justify-between p-4" style={{ color: 'var(--text-secondary)' }}>
                 <div className="flex items-center justify-between gap-3">
@@ -1176,6 +1196,17 @@ const ProjectCard: React.FC<Props> = ({
             </div>
           </div>
         </button>
+        {subtitleRemovalEntryResult ? (
+          <div className="border-t p-2.5" style={{ borderColor: 'var(--border-subtle)' }}>
+            <ResultActionButton
+              icon={<Scissors size={13} />}
+              label="去字幕"
+              tone="primary"
+              className="w-full"
+              onClick={() => onRemoveVideoSubtitles?.(project.id, subtitleRemovalEntryResult.id)}
+            />
+          </div>
+        ) : null}
       </div>
 
       {detailOpen && (
@@ -1802,7 +1833,7 @@ const ProjectCard: React.FC<Props> = ({
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2 px-1">
                       <div className="min-w-0">
                         <p className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-                          {isLongDetailProject ? (detailViewMode === 'stack' ? '长页审阅' : '单屏对照') : '多图对照'}
+                          {isSubtitleRemovalProject ? '去字幕效果对比' : isLongDetailProject ? (detailViewMode === 'stack' ? '长页审阅' : '单屏对照') : '多图对照'}
                         </p>
                         {isLongDetailProject ? (
                           <p className="mt-0.5 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
@@ -2018,7 +2049,7 @@ const ProjectCard: React.FC<Props> = ({
                         </div>
                       </div>
                     ) : (
-                      <div className={isImageCropProject ? 'grid gap-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5' : 'grid gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-3'}>
+                      <div className={isImageCropProject ? 'grid gap-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5' : isSubtitleRemovalProject ? 'grid gap-3' : 'grid gap-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-3'}>
                         {project.results.map((result, index) => {
                           if (isImageCropProject) {
                             return renderImageCropSliceCard(result, index);
@@ -2056,9 +2087,11 @@ const ProjectCard: React.FC<Props> = ({
                           const promptExpanded = Boolean(expandedPrompts[result.id]);
                           const matchedPlan = findPlanByResult(result, index);
                           const displayedPrompt = getDisplayedResultPrompt(displayResult, matchedPlan);
-                          const hideResultPromptInProjectCard = project.module === 'everything_replace'
+                          const hideResultPromptInProjectCard = isSubtitleRemovalProject || (
+                            project.module === 'everything_replace'
                             && (project.subFeature === 'product_replace' || project.subFeature === 'background_replace')
-                            && result.status !== 'error';
+                            && result.status !== 'error'
+                          );
                           const hasResult = Boolean(displayResult.imageUrl || displayResult.videoUrl);
                           const isGeneratingResult = !hasResult && isResultActivelyGenerating(result);
                           const resultMeta: string[] = [];
@@ -2069,7 +2102,21 @@ const ProjectCard: React.FC<Props> = ({
                           }
                           const regeneratePending = isRegeneratePending(result.id);
                           const sourcePreviewUrl = displayResult.sourcePreviewUrl;
-                          const mediaPanel = isTranslationProject || isProductRestoreProject ? (
+                          const mediaPanel = isSubtitleRemovalProject && displayResult.status === 'completed' && displayResult.sourceUrl && displayResult.videoUrl ? (
+                            <div className="p-3">
+                              <SubtitleComparisonPlayer
+                                sourceUrl={displayResult.sourceUrl}
+                                resultUrl={displayResult.videoUrl || ''}
+                                title="去字幕前后对比"
+                              />
+                            </div>
+                          ) : isSubtitleRemovalProject ? (
+                            <div className="flex h-[300px] w-full flex-col items-center justify-center gap-2 px-6 text-center" style={{ background: 'var(--bg-base)', color: displayResult.status === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}>
+                              <RefreshCw size={20} className={displayResult.status === 'generating' ? 'animate-spin' : ''} />
+                              <span className="text-[12px] font-semibold">{displayResult.status === 'error' ? '去字幕失败' : '正在去除字幕'}</span>
+                              <span className="max-w-sm text-[11px] leading-5">{displayResult.error || '任务已进入后台处理，完成后这里会显示原片和去字幕结果'}</span>
+                            </div>
+                          ) : isTranslationProject || isProductRestoreProject ? (
                             <div className="grid h-[210px] w-full grid-cols-2 overflow-hidden">
                               <div className="relative border-r" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 70%, transparent)', background: 'var(--bg-base)' }}>
                                 {sourcePreviewUrl || displayResult.sourceUrl ? (
@@ -2201,6 +2248,25 @@ const ProjectCard: React.FC<Props> = ({
                                   </p>
                                 </div>
                                 )}
+                                {isSubtitleRemovalProject ? (
+                                  <div className="grid grid-cols-2 gap-1.5">
+                                    <ResultActionButton
+                                      icon={hasResult ? <Download size={12} /> : <RefreshCw size={12} />}
+                                      label={hasResult ? '下载结果' : '处理中'}
+                                      tone={hasResult ? 'primary' : 'neutral'}
+                                      disabled={!hasResult}
+                                      onClick={() => handleDownloadSingle(displayResult, index)}
+                                    />
+                                    {onDeleteResult ? (
+                                      <ResultActionButton
+                                        icon={<Trash2 size={12} />}
+                                        label="删除"
+                                        tone="danger"
+                                        onClick={() => setConfirmDeleteResult(result.id)}
+                                      />
+                                    ) : <div />}
+                                  </div>
+                                ) : (
                                 <div className="space-y-1.5">
                                   <div className="grid grid-cols-4 gap-1">
                                     <ResultActionButton
@@ -2272,6 +2338,7 @@ const ProjectCard: React.FC<Props> = ({
                                     />
                                   )}
                                 </div>
+                                )}
                               </div>
                             </article>
                           );

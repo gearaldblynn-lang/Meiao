@@ -5,6 +5,8 @@ import type {
   ProductRestoreCancellationReset,
   ProductRestoreAnalysisAttempt,
   ProductRestoreProjectContext,
+  SubtitleRemovalPixels,
+  SubtitleRemovalRegion,
   VideoStoryboardBoard,
   VideoStoryboardConfig,
   VideoStoryboardProject,
@@ -92,6 +94,10 @@ export interface ShellGeneratedResult {
   buyerShowEvaluation?: string;
   buyerShowDisplayPrompt?: string;
   logoReplaceGuarded?: boolean;
+  sourceProjectId?: string;
+  sourceResultId?: string;
+  subtitleRegionNormalized?: SubtitleRemovalRegion;
+  subtitleRegionPixels?: SubtitleRemovalPixels;
 }
 
 export interface ShellProjectData {
@@ -316,6 +322,7 @@ const moduleTaskLabel = (module: AppModule, subFeature?: string, taskType?: unkn
   if (module === MODULE_VALUES.ONE_CLICK) return `${ONE_CLICK_SUBFEATURE_LABELS[subFeature || ''] || '一键主详'}任务`;
   if (module === MODULE_VALUES.TRANSLATION) return `${TRANSLATION_SUBFEATURE_LABELS[subFeature || ''] || '出海翻译'}任务`;
   if (module === MODULE_VALUES.VIDEO) {
+    if (subFeature === 'subtitle_removal') return '去字幕任务';
     if (subFeature === 'storyboard') return '分镜任务';
     if (subFeature === 'diagnosis') return '诊断任务';
     return '短视频任务';
@@ -834,6 +841,7 @@ const normalizeJobSubFeature = (module: AppModule, taskType: unknown, payload: R
     return 'product_replace';
   }
   if (module === MODULE_VALUES.VIDEO) {
+    if (raw.includes('subtitle_removal') || raw.includes('subtitle_remove_video') || raw.includes('去字幕')) return 'subtitle_removal';
     if (raw.includes('diagnosis') || raw.includes('诊断')) return 'diagnosis';
     if (raw.includes('storyboard') || raw.includes('分镜')) return 'storyboard';
     return 'generation';
@@ -855,6 +863,55 @@ const getOneClickItemSubFeature = (item: any, fallbackSubFeature: string) => {
   if (normalized && normalized !== 'legacy_unassigned') return normalized;
   return fallbackSubFeature || 'legacy_unassigned';
 };
+
+const toSubtitleRemovalRegion = (value: any): SubtitleRemovalRegion | undefined => {
+  if (!value || typeof value !== 'object') return undefined;
+  const region = {
+    x: Number(value.x),
+    y: Number(value.y),
+    width: Number(value.width),
+    height: Number(value.height),
+  };
+  return Object.values(region).every(Number.isFinite) ? region : undefined;
+};
+
+const toSubtitleRemovalPixels = (value: any): SubtitleRemovalPixels | undefined => {
+  if (!value || typeof value !== 'object') return undefined;
+  const pixels = {
+    x1: Number(value.x1),
+    y1: Number(value.y1),
+    x2: Number(value.x2),
+    y2: Number(value.y2),
+  };
+  return Object.values(pixels).every(Number.isFinite) ? pixels : undefined;
+};
+
+const getSubtitleRemovalResultMetadata = (item: any) => {
+  const payload = item?.payload || {};
+  const result = item?.result || {};
+  const sourceUrl = String(item?.sourceUrl || result?.sourceUrl || payload?.sourceUrl || '').trim() || undefined;
+  return {
+    sourceUrl,
+    sourcePreviewUrl: String(item?.sourcePreviewUrl || sourceUrl || '').trim() || undefined,
+    sourceProjectId: String(item?.sourceProjectId || result?.sourceProjectId || payload?.sourceProjectId || '').trim() || undefined,
+    sourceResultId: String(item?.sourceResultId || result?.sourceResultId || payload?.sourceResultId || '').trim() || undefined,
+    subtitleRegionNormalized: toSubtitleRemovalRegion(
+      item?.subtitleRegionNormalized || result?.subtitleRegionNormalized || payload?.subtitleRegionNormalized,
+    ),
+    subtitleRegionPixels: toSubtitleRemovalPixels(
+      item?.subtitleRegionPixels || result?.subtitleRegionPixels || payload?.subtitleRegionPixels,
+    ),
+  };
+};
+
+const isSubtitleRemovalJob = (job: InternalJob, module = toModule(job?.module)) => (
+  module === MODULE_VALUES.VIDEO
+  && (
+    String(job?.taskType || '').trim() === 'subtitle_remove_video'
+    || String((job?.payload as any)?.subFeature || '').trim() === 'subtitle_removal'
+    || String((job?.payload as any)?.taskPurpose || '').trim() === 'subtitle_removal'
+  )
+);
 
 const resultFromItem = (
   item: any,
@@ -884,8 +941,7 @@ const resultFromItem = (
     createdAt,
     module,
     subFeature,
-    sourceUrl: String(item?.sourceUrl || '').trim() || undefined,
-    sourcePreviewUrl: String(item?.sourcePreviewUrl || item?.sourceUrl || '').trim() || undefined,
+    ...getSubtitleRemovalResultMetadata(item),
     fileName: String(item?.fileName || '').trim() || undefined,
     relativePath: String(item?.relativePath || item?.fileName || '').trim() || undefined,
     taskId: getVisibleTaskId(item),
@@ -2186,9 +2242,11 @@ const mapJobs = (
       || job.taskType
       || '任务'
     );
-    const projectId = `job-${job.id}`;
     const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
     const payloadProjectName = String((job.payload as any)?.shellProjectName || '').trim();
+    const projectId = isSubtitleRemovalJob(job, module) && payloadProjectId
+      ? payloadProjectId
+      : `job-${job.id}`;
     const payloadPlanId = String((job.payload as any)?.shellPlanId || (job.payload as any)?.planId || '').trim();
     const subFeature = module === MODULE_VALUES.ONE_CLICK
       ? (getStructuredOneClickJobSubFeature(job.payload) || normalizeJobSubFeature(module, job.taskType, job.payload))
@@ -2440,6 +2498,48 @@ const mapJobs = (
       if (projectStatus === 'error' && urls.length === 0) {
         const matchedProject = findPersistedPlanningProjectForJob(job, persistedProjects);
         const payloadProjectId = String(job.payload?.shellProjectId || '').trim();
+        if (isSubtitleRemovalJob(job, module)) {
+          const errorMessage = String(job.errorMessage || providerErrorText || job.errorCode || '去字幕任务失败').trim();
+          const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+          const failedResult: ShellGeneratedResult = {
+            id: String(
+              matchedProject?.results?.find((result) => String(result.backendJobId || '').trim() === String(job.id || '').trim())?.id
+              || `${job.id}-result-1`,
+            ),
+            projectId: matchedProject?.id || payloadProjectId || projectId,
+            imageUrl: '',
+            videoUrl: undefined,
+            mediaType: 'video',
+            prompt: '去除选定区域内的视频字幕',
+            model: normalizeModel(job.payload?.model || job.result?.model || job.provider),
+            aspectRatio: 'auto',
+            status: 'error',
+            createdAt,
+            module,
+            subFeature: 'subtitle_removal',
+            taskId: providerTaskId || undefined,
+            backendJobId: job.id,
+            error: errorMessage,
+            ...getSubtitleRemovalResultMetadata(job),
+          };
+          projects.push({
+            ...(matchedProject || {}),
+            id: matchedProject?.id || payloadProjectId || projectId,
+            name: matchedProject?.name || payloadProjectName || '视频去字幕',
+            module,
+            status: 'error',
+            createdAt: matchedProject?.createdAt || createdAt,
+            completedAt: toCreatedMs(job.finishedAt || job.updatedAt || job.createdAt),
+            results: [failedResult],
+            taskCount: 1,
+            completedCount: 0,
+            subFeature: 'subtitle_removal',
+            sourceType: matchedProject?.sourceType || 'job',
+            backendJobId: job.id,
+            error: errorMessage,
+          });
+          return;
+        }
         const isTrackedOneClickPlanningJob = Boolean(
           module === MODULE_VALUES.ONE_CLICK
           && String(job.taskType || '') === 'kie_chat'
@@ -2661,6 +2761,7 @@ const mapJobs = (
           batchIndex: Number(job.payload?.batchIndex || 0) || undefined,
           targetMaterialId: String(job.payload?.targetMaterialId || '').trim() || undefined,
           creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+          ...getSubtitleRemovalResultMetadata(job),
         }));
         const incomingKeys = new Set(nextJobResults.flatMap((result) => getGeneratedResultMergeKeys(result)));
         const existingResults = (matchedTerminalProject.results || []).filter((result) => {
@@ -2729,7 +2830,7 @@ const mapJobs = (
           }];
       const project = projectFromItems(
         projectId,
-        prompt.slice(0, 28) || MODULE_LABELS[module] || String(job.taskType || '生成任务'),
+        payloadProjectName || prompt.slice(0, 28) || MODULE_LABELS[module] || String(job.taskType || '生成任务'),
         module,
         job.finishedAt || job.updatedAt || job.createdAt,
         resultItems,
@@ -2844,6 +2945,7 @@ const mapJobs = (
         batchIndex: Number(job.payload?.batchIndex || 0) || undefined,
         targetMaterialId: String(job.payload?.targetMaterialId || '').trim() || undefined,
         error: job.status === 'queued' ? '任务已提交，等待执行' : job.status === 'retry_waiting' ? '任务重试中' : '任务正在运行',
+        ...getSubtitleRemovalResultMetadata(job),
       };
       const existingActiveResults = matchedProject?.results || [];
       const hasActiveResult = existingActiveResults.some((result) => (
@@ -3381,6 +3483,10 @@ const mergeGeneratedResultPreservingSource = (
   ...next,
   sourceUrl: next.sourceUrl || existing.sourceUrl,
   sourcePreviewUrl: next.sourcePreviewUrl || existing.sourcePreviewUrl || next.sourceUrl || existing.sourceUrl,
+  sourceProjectId: next.sourceProjectId || existing.sourceProjectId,
+  sourceResultId: next.sourceResultId || existing.sourceResultId,
+  subtitleRegionNormalized: next.subtitleRegionNormalized || existing.subtitleRegionNormalized,
+  subtitleRegionPixels: next.subtitleRegionPixels || existing.subtitleRegionPixels,
   fileName: next.fileName || existing.fileName,
   relativePath: next.relativePath || existing.relativePath,
   originalWidth: next.originalWidth || existing.originalWidth,

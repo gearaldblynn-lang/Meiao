@@ -3755,3 +3755,32 @@ test('video subtitle removal workspace creates an independent durable job before
   assert.match(videoModule, /beforeProjects=\{subtitleRemovalWorkspace\}/);
   assert.match(videoModule, /onCancelTask=\{activeSubFeature === 'subtitle_removal' \? undefined : onCancelTask\}/);
 });
+
+test('completed video cards enter subtitle removal and completed subtitle jobs use synchronized comparison', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const videoModule = read('../shell/modules/Video/VideoModule.tsx');
+  const projectList = read('../shell/components/ProjectListView.tsx');
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+
+  assert.match(projectCard, /onRemoveVideoSubtitles\?: \(projectId: string, resultId: string\) => void/);
+  assert.match(projectCard, /const canRemoveVideoSubtitles = \(result: GeneratedResult\) =>/);
+  assert.match(projectCard, /result\.status === 'completed'/);
+  assert.match(projectCard, /Boolean\(result\.videoUrl\)/);
+  assert.match(projectCard, /!isSubtitleRemovalProject/);
+  assert.match(projectCard, /onRemoveVideoSubtitles\?\.\(project\.id, subtitleRemovalEntryResult\.id\)/);
+  assert.match(projectCard, /label="去字幕"/);
+  assert.match(projectCard, /<SubtitleComparisonPlayer/);
+  assert.match(projectCard, /sourceUrl=\{displayResult\.sourceUrl\}/);
+  assert.match(projectCard, /resultUrl=\{displayResult\.videoUrl/);
+  assert.match(projectCard, /正在去除字幕/);
+  assert.match(projectCard, /isSubtitleRemovalProject \? \(/);
+
+  assert.match(projectList, /onRemoveVideoSubtitles=\{onRemoveVideoSubtitles\}/);
+  assert.match(videoModule, /onRemoveVideoSubtitles=\{onRemoveVideoSubtitles\}/);
+  assert.match(shellApp, /const handleRemoveVideoSubtitles = useCallback/);
+  assert.match(shellApp, /sourceProjectId: project\.id/);
+  assert.match(shellApp, /sourceResultId: result\.id/);
+  assert.match(shellApp, /setSubtitleRemovalDraft\(nextDraft\)/);
+  assert.match(shellApp, /handleSubFeatureChange\('subtitle_removal'\)/);
+  assert.match(shellApp, /onRemoveVideoSubtitles=\{handleRemoveVideoSubtitles\}/);
+});

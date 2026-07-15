@@ -255,6 +255,8 @@ export interface GeneratedResult {
   }>;
   subtitleRegionNormalized?: SubtitleRemovalRegion;
   subtitleRegionPixels?: SubtitleRemovalPixels;
+  sourceProjectId?: string;
+  sourceResultId?: string;
 }
 
 export interface Material {
@@ -285,6 +287,68 @@ const isTransientMaterialUrl = (url?: string) => {
   const value = String(url || '').trim();
   return !value || value.startsWith('blob:') || value.startsWith('data:');
 };
+
+const isManagedSubtitleSourceUrl = (url?: string) => {
+  const value = String(url || '').trim();
+  if (!value || value.startsWith('blob:') || value.startsWith('data:')) return false;
+  try {
+    const parsed = new URL(value, typeof window === 'undefined' ? 'https://meiao.invalid' : window.location.origin);
+    return parsed.pathname.includes('/api/assets/file/');
+  } catch {
+    return false;
+  }
+};
+
+const getManagedVideoFileName = (url: string, fallback = '原视频.mp4') => {
+  try {
+    const parsed = new URL(url, typeof window === 'undefined' ? 'https://meiao.invalid' : window.location.origin);
+    const fileName = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).at(-1) || '');
+    return fileName || fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const readManagedVideoMetadata = (sourceUrl: string) => new Promise<{
+  durationSeconds: number;
+  width: number;
+  height: number;
+}>((resolve, reject) => {
+  if (typeof document === 'undefined') {
+    reject(new Error('当前环境无法读取视频信息'));
+    return;
+  }
+  const video = document.createElement('video');
+  let settled = false;
+  const cleanup = () => {
+    window.clearTimeout(timer);
+    video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+    video.removeEventListener('error', handleError);
+    video.removeAttribute('src');
+    video.load();
+  };
+  const finish = (error?: Error) => {
+    if (settled) return;
+    settled = true;
+    const metadata = {
+      durationSeconds: Number(video.duration || 0),
+      width: Number(video.videoWidth || 0),
+      height: Number(video.videoHeight || 0),
+    };
+    cleanup();
+    if (error) reject(error);
+    else if (!metadata.durationSeconds || !metadata.width || !metadata.height) reject(new Error('无法读取视频时长或分辨率'));
+    else resolve(metadata);
+  };
+  const handleLoadedMetadata = () => finish();
+  const handleError = () => finish(new Error('原视频暂时无法读取，请稍后重试'));
+  const timer = window.setTimeout(() => finish(new Error('读取视频信息超时，请稍后重试')), 15_000);
+  video.preload = 'metadata';
+  video.playsInline = true;
+  video.addEventListener('loadedmetadata', handleLoadedMetadata, { once: true });
+  video.addEventListener('error', handleError, { once: true });
+  video.src = sourceUrl;
+});
 
 const shouldRefreshVideoAssetUrl = (url?: string, hasLocalAsset = false) => {
   const { host, path } = (() => {
@@ -2207,6 +2271,7 @@ const AppContent: React.FC<{
   const [subtitleRemovalDraft, setSubtitleRemovalDraft] = useState<SubtitleRemovalSourceDraft | null>(null);
   const [subtitleRemovalSubmitting, setSubtitleRemovalSubmitting] = useState(false);
   const subtitleRemovalSubmitLockRef = useRef(false);
+  const subtitleRemovalEntryLockRef = useRef(false);
   const taskControllersRef = useRef<Record<string, AbortController>>({});
   const deletedStoryboardProjectIdsRef = useRef<Set<string>>(new Set());
   const cancelledStoryboardProjectIdsRef = useRef<Set<string>>(new Set());
@@ -3223,6 +3288,7 @@ const AppContent: React.FC<{
     setSubtitleRemovalDraft(null);
     setSubtitleRemovalSubmitting(false);
     subtitleRemovalSubmitLockRef.current = false;
+    subtitleRemovalEntryLockRef.current = false;
     setInputStateByScope(draftSnapshot.inputStateByScope || {});
     setMaterials(draftSnapshot.materials as Record<string, Material[]> || {});
     updateMediaTranscodeQueue(() => []);
@@ -3477,6 +3543,53 @@ const AppContent: React.FC<{
       setSubtitleRemovalSubmitting(false);
     }
   }, [addToast, currentUser?.id, logShellError, persistSyncedProjectsToSharedState, reserveShortProjectName, systemConfig?.featureRollouts?.subtitleRemoval, systemConfig?.providers?.goldenSubtitle?.configured]);
+
+  const handleRemoveVideoSubtitles = useCallback(async (projectId: string, resultId: string) => {
+    if (subtitleRemovalEntryLockRef.current) {
+      addToast('正在读取视频信息，请稍候', 'info');
+      return;
+    }
+    const project = projectsRef.current.find((item) => item.id === projectId);
+    const result = project?.results.find((item) => item.id === resultId);
+    const sourceUrl = String(result?.videoUrl || '').trim();
+    if (!project || !result || result.status !== 'completed' || !sourceUrl) {
+      addToast('当前视频结果还未准备好', 'warning');
+      return;
+    }
+    if (project.subFeature === 'subtitle_removal') return;
+    if (!isManagedSubtitleSourceUrl(sourceUrl)) {
+      addToast('该视频不是可用的托管素材，请下载后在去字幕页重新上传', 'warning');
+      return;
+    }
+
+    subtitleRemovalEntryLockRef.current = true;
+    addToast('正在读取视频时长和分辨率', 'info');
+    try {
+      const metadata = await readManagedVideoMetadata(sourceUrl);
+      if (metadata.durationSeconds > 600) throw new Error('去字幕视频最长支持 600 秒');
+      const nextDraft: SubtitleRemovalSourceDraft = {
+        sourceUrl,
+        fileName: result.fileName || getManagedVideoFileName(sourceUrl),
+        mimeType: 'video/mp4',
+        durationSeconds: metadata.durationSeconds,
+        sizeBytes: 0,
+        width: metadata.width,
+        height: metadata.height,
+        transcoded: false,
+        draftNonce: globalThis.crypto?.randomUUID?.()
+          || `subtitle-card-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        sourceProjectId: project.id,
+        sourceResultId: result.id,
+      };
+      setSubtitleRemovalDraft(nextDraft);
+      handleSubFeatureChange('subtitle_removal');
+      addToast('已进入去字幕，请确认字幕区域', 'success');
+    } catch (error) {
+      addToast(error instanceof Error ? error.message : '无法打开该视频的去字幕工作台', 'error');
+    } finally {
+      subtitleRemovalEntryLockRef.current = false;
+    }
+  }, [addToast, handleSubFeatureChange]);
 
   const recordProductRestoreJobCreated = useCallback((identity: {
     projectId: string;
@@ -10600,6 +10713,7 @@ const AppContent: React.FC<{
           onConfirmStoryboardImaging={handleConfirmStoryboardImaging}
           onImportStoryboardToGeneration={handleImportStoryboardToGeneration}
           onRecoverResult={handleRecoverResult}
+          onRemoveVideoSubtitles={handleRemoveVideoSubtitles}
           onCancelTask={handleCancelTask}
           pendingActionKeys={pendingActionKeys}
           showGenerationProgress={showGenerationProgress}

@@ -26,6 +26,11 @@ test('asset cleanup marks protected managed assets as referenced before expiry f
   assert.match(source, /const addActiveRunReferences = \(value, ownerUserId\) => \{/);
   assert.match(source, /addActiveRunReferences\(metadata, row\.user_id\)/);
   assert.match(source, /addActiveRunReferences\(message\?\.metadata, message\?\.userId\)/);
+  const collectProtectedIndex = source.indexOf('const protectedAssetUrls = await collectProtectedManagedAssetUrls');
+  const selectExpiredIndex = source.indexOf('selectExpiredAssetsForCleanup(assetsWithReferences');
+  assert.ok(collectProtectedIndex >= 0 && selectExpiredIndex > collectProtectedIndex);
+  const protectedCollector = source.match(/const collectProtectedManagedAssetUrls = async[\s\S]*?return protectedUrls;\n\};/)?.[0] || '';
+  assert.match(protectedCollector, /collectStateManagedAssetUrls\(state, stateRefs\)/);
 });
 
 test('state loading scrubs deleted managed sku image items before returning to client', () => {
