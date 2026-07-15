@@ -76,3 +76,17 @@ ORDER BY u.created_at ASC;
 - 后端隔离口径：`/api/state`、`/api/jobs`、素材路径、任务记录均以当前登录用户 `user.id` 为边界。
 - 前端隔离口径：同一浏览器切换账号后，不能复用上一账号的内存项目、任务、素材和草稿。
 - 垃圾数据口径：没有真实内容的默认状态不展示为项目卡；旧垃圾卡如果已经落库，云上更新时要纳入清理。
+
+## 2026-07-15 状态写入停滞与首图结果断链排查口径
+
+当出现“上游 job 已成功并有图片，前端仍不显示 / 刷新后项目丢失 / 新卡排在最后”时，先做下面的时间线对照，不要直接删 job 或重启服务：
+
+1. 对照 `internal_jobs.created_at/finished_at` 与同账号 `app_states.updated_at`。如果 job 持续产生而 state 长时间不前进，优先查 `/api/state` 写入边界，而不是先判定 provider 没出图。
+2. 搜索 PM2 错误日志的 `managed_asset_forbidden` 和 `providerStage=asset_reference`。发现后对真实 `state_json` 做只读素材身份审计，区分：
+   - 浏览器本地草稿身份：`localAssetId=draft-*`，不是 `stored_assets.id`。
+   - 真实托管素材身份：`assetId`、`imageUrlAssetId`、`sourceAssetId` 等，必须属于当前账号且为 active。
+3. 状态检查点丢失时，只能用结构化绑定恢复：成功策划 job 必须同时带 `shellPlanningPurpose=one_click_planning` 和 `shellProjectId`，图片 job 必须带同一 `shellProjectId`。无绑定旧 job、已删除墓碑 job 和普通对话不得变成项目卡。
+4. 排序验收同时覆盖两种对象：已水合项目的 `createdAtPrecise=true`，以及刚创建、尚未水合但已有真实毫秒 `createdAt` 的项目。显式 `createdAtPrecise=false` 的年缺失历史数据仍应下沉。
+5. 发布后不仅看 health；至少确认目标账号 `app_states.updated_at` 继续前进、成功图片落入 `shellProjects.results`、真实失败保持 error，并用同一排序边界重放最新项目。
+
+本次修复的长期记录见 `CLAUDE.md` 根因 #67 和 `docs/agents/repeated-issues.md`；看板指纹为 `oneclick-state-local-asset-id-checkpoint-sort`。
