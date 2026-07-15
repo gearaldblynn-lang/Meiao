@@ -480,7 +480,7 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
           {items.length > 0 ? '继续添加视频' : '批量上传需要去字幕的视频'}
         </span>
         <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
-          支持拖放，一次最多上传 {batchMaxItems} 个；系统会逐个分析格式并按需转码。
+          支持拖放，一次最多上传 {batchMaxItems} 个；单个视频最长 600 秒，不受短视频生成 15 秒限制；系统会逐个分析格式并按需转码。
         </span>
       </button>
       <input
