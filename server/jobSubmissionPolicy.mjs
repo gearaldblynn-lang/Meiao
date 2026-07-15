@@ -21,6 +21,7 @@ export const VIDEO_JOB_TASK_TYPES = new Set([
   'kie_seedance_video',
   'kie_veo',
   'kie_video',
+  'maxforai_video',
 ]);
 
 export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
@@ -29,6 +30,7 @@ export const RECOVERABLE_PROVIDER_TASK_TYPES = new Set([
   'kie_seedance_video',
   'kie_veo',
   'kie_video',
+  'maxforai_video',
 ]);
 
 export const KIE_RECOVERY_SOURCE_TASK_TYPES = new Set(
@@ -56,6 +58,7 @@ export const isAuthorizedProviderTaskRecoverySource = (sourceJob, request = {}) 
 
 const TASK_PROVIDER_POLICIES = new Map([
   ['dreamina_video', new Set(['dreamina'])],
+  ['maxforai_video', new Set(['maxforai'])],
   ['openai_responses', new Set(['openai_compatible'])],
   ['openai_tool_calling', new Set(['openai_compatible'])],
   ['upload_asset', new Set(['kie'])],
