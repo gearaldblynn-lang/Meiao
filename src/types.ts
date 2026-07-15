@@ -140,6 +140,33 @@ export interface VideoDiagnosisState {
   aiAnalysis: VideoDiagnosisAiAnalysis;
 }
 
+export interface SubtitleRemovalRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface SubtitleRemovalPixels {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
+export interface SubtitleRemovalSourceDraft {
+  sourceUrl: string;
+  assetId?: string;
+  fileName: string;
+  mimeType?: string;
+  durationSeconds: number;
+  sizeBytes: number;
+  width: number;
+  height: number;
+  sourceProjectId?: string;
+  sourceResultId?: string;
+}
+
 export enum AspectRatio {
   AUTO = 'auto',
   SQUARE = '1:1',
