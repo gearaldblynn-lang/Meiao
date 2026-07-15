@@ -929,3 +929,13 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Acceptance: 授权后的 2.5 秒 H.264/AAC canary 在 15.4 秒内成功，Golden `costRemove=3`；job 与 Temporal 均为 1 次 attempt、0 次重试，源/结果都为梅奥托管 MP4 且通过 HTTP Range。结果保持 720×1280、约 2.5 秒和音频，抽取同一时刻画面确认底部测试字幕消失、其他图形保留。探针任务和临时会话已清理，生产 `subtitleRemoval.enabled/configured` 已正式开启。
 - Regression check: `node --test server/subtitleRemovalContract.test.mjs server/providerSubtitleRemoval.test.mjs server/providerGateway.test.mjs`；测试必须断言即使传入 `safeTaskId`，`videoName` 仍严格等于四段坐标。
 - Avoid next time: 第三方把普通字符串字段复用为位置协议时，不得追加自定义前缀或追踪信息。正式 canary 必须同时核对 provider checkpoint、结果 URL、托管与 Range、媒体参数、画面差异和费用字段；供应商 `position` 只能作为辅助信息。失败后只允许查询旧 ID，不得自动再提交。
+
+## 2026-07-15 - Agent edit requests must never reach the provider without resolved image inputs
+
+- Symptom: 洛克在“对话改图”上传 WiFi 扩展器产品图并要求“根据图1设计5张商品首图，产品不变”后，第二批 5 张结果全部变成清洁喷雾瓶。
+- Environment: Tencent Cloud production / Agent Center V2 tool calling / `gpt-5.5` planning / `gpt-image-2` generation.
+- Cloud evidence: 产品素材 `e9ac6400b5f61ba2c95cf7a7` 已真实落库且仍出现在第二次 user message 附件中。10:08 的第一批 5 个 `edit_image` 计划均为 `inputImageUrls=[该素材]`，结果保持 WiFi 扩展器；11:37 的第二批 5 个计划均为 `edit_image + inputImageUrls=[]`，但都有 providerTaskId 并成功返回清洁喷雾瓶，排除“素材未上传”和 `asset_upload` 失败。
+- Root cause: V2 执行器信任模型工具参数；输入 URL 经会话目录过滤后即使为空也继续调用 `generateImage`。KIE 在零输入时选择 text-to-image。V1 已有恢复/阻断安全合同，但 V2 没有复用。
+- Fix: V2 provider 边界按有效目录 URL、明确 `图N`、唯一当前上传图、唯一 current-focus 图依次解析；`edit_image` 或明确引用图片但仍无法唯一解析时抛 `missing_image_input`，绝不提交 provider。明确从零生成的 `new_image` 不继承附件。
+- Regression check: `node --test server/agentToolConversation.test.mjs server/agentImagePlan.test.mjs server/providerKieImage.test.mjs`; `node --test server/agent-image-retrieval.test.mjs server/agentConversationReliability.test.mjs server/agentCenterSource.test.mjs server/providerGateway.test.mjs`; `npm run verify`.
+- Avoid next time: LLM 工具调用不是可信执行合同。改图/引用语义必须在扣费边界拥有非空且可验证的输入图；无法确定时应失败，不得用零输入静默切换为文生图。新旧 Agent 路径必须共享同一输入安全矩阵。

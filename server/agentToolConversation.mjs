@@ -1,6 +1,7 @@
 import { GENERATE_IMAGE_TOOL, normalizeGenerateImageArgs } from './imageToolDefinition.mjs';
 import { SEARCH_KNOWLEDGE_TOOL, normalizeSearchKnowledgeArgs } from './knowledgeToolDefinition.mjs';
 import { buildSessionImageCatalog, formatCatalogForPrompt, isUrlInCatalog } from './conversationImageCatalog.mjs';
+import { shouldRequireAgentImageInput } from './agentImagePlan.mjs';
 import { resolveMaxForAiImageModelId } from '../src/utils/maxforaiImageModels.mjs';
 
 const IMAGE_MODE_GUIDANCE = [
@@ -198,6 +199,91 @@ const countMentionedImageTargets = (text = '') => {
   return new Set(matches || []).size;
 };
 
+const CHINESE_IMAGE_INDEXES = new Map([
+  ['一', 1], ['二', 2], ['三', 3], ['四', 4], ['五', 5],
+  ['六', 6], ['七', 7], ['八', 8], ['九', 9], ['十', 10],
+]);
+
+const collectMentionedCatalogIndexes = (...values) => {
+  const text = values.map((value) => String(value || '')).join('\n');
+  const indexes = new Set();
+  for (const match of text.matchAll(/(?:图\s*|第\s*)([1-9]\d*|[一二三四五六七八九十])(?:\s*张)?/g)) {
+    const rawIndex = match[1];
+    const index = /^\d+$/.test(rawIndex)
+      ? Number(rawIndex)
+      : CHINESE_IMAGE_INDEXES.get(rawIndex);
+    if (Number.isInteger(index) && index > 0) indexes.add(index);
+  }
+  return Array.from(indexes);
+};
+
+const createMissingAgentImageInputError = () => {
+  const error = new Error('改图任务没有可用输入图，已停止提交，避免被生图模型当作文生图执行。');
+  error.code = 'missing_image_input';
+  error.providerStage = 'input_prepare';
+  error.providerStatus = 'failed';
+  error.providerMessage = error.message;
+  error.inputImageCount = 0;
+  error.inputImageUrls = [];
+  error.usedImageReferenceUrls = [];
+  return error;
+};
+
+const resolveAgentToolInputUrls = ({
+  normalized = {},
+  catalog = [],
+  freshUploadUrls = [],
+  currentMessage = '',
+  maxInputImages = 1,
+} = {}) => {
+  const parsedInputLimit = Number(maxInputImages);
+  const inputLimit = Number.isFinite(parsedInputLimit) && parsedInputLimit > 0
+    ? Math.max(1, Math.floor(parsedInputLimit))
+    : 1;
+  const validRequestedUrls = (Array.isArray(normalized.inputImageUrls) ? normalized.inputImageUrls : [])
+    .filter((url) => isUrlInCatalog(catalog, url))
+    .slice(0, inputLimit);
+  if (validRequestedUrls.length > 0) return validRequestedUrls;
+
+  const requiresInput = shouldRequireAgentImageInput({
+    parsed: {
+      taskType: normalized.taskType,
+      inputImageUrls: normalized.inputImageUrls,
+      prompt: normalized.prompt,
+    },
+    currentMessage,
+  });
+  if (!requiresInput) return [];
+
+  const catalogItems = Array.isArray(catalog) ? catalog : [];
+  const promptIndexes = collectMentionedCatalogIndexes(normalized.prompt);
+  const mentionedIndexes = promptIndexes.length > 0
+    ? promptIndexes
+    : collectMentionedCatalogIndexes(currentMessage);
+  const explicitlyReferencedUrls = mentionedIndexes
+    .map((index) => catalogItems.find((item) => Number(item?.index || 0) === index)?.url)
+    .filter(Boolean)
+    .slice(0, inputLimit);
+  if (explicitlyReferencedUrls.length > 0) return explicitlyReferencedUrls;
+
+  const currentUploads = Array.from(new Set(
+    (Array.isArray(freshUploadUrls) ? freshUploadUrls : [])
+      .map((url) => String(url || '').trim())
+      .filter((url) => url && isUrlInCatalog(catalogItems, url))
+  ));
+  if (currentUploads.length === 1) return currentUploads;
+
+  const currentFocusUrls = Array.from(new Set(
+    catalogItems
+      .filter((item) => item?.isCurrentFocus && item?.url)
+      .map((item) => String(item.url).trim())
+      .filter(Boolean)
+  ));
+  if (currentFocusUrls.length === 1) return currentFocusUrls;
+
+  throw createMissingAgentImageInputError();
+};
+
 const hasIndependentBatchIntent = (text = '', freshUploadCount = 0) => {
   const value = String(text || '').trim();
   if (freshUploadCount < 2 || !value) return false;
@@ -207,27 +293,61 @@ const hasIndependentBatchIntent = (text = '', freshUploadCount = 0) => {
   return countMentionedImageTargets(value) >= 2;
 };
 
-const getIndependentFreshImageCoverage = ({ response, freshUploadUrls = [] } = {}) => {
+const getIndependentFreshImageCoverage = ({
+  response,
+  freshUploadUrls = [],
+  catalog = [],
+  currentMessage = '',
+  maxInputImages = 1,
+} = {}) => {
   const freshUrls = (Array.isArray(freshUploadUrls) ? freshUploadUrls : [])
     .map((url) => String(url || '').trim())
     .filter(Boolean);
   const freshSet = new Set(freshUrls);
   const coveredUrls = new Set();
   const generateCalls = getGenerateImageToolCalls(response);
+  const resolvedCallInputUrls = [];
   for (const call of generateCalls) {
-    const inputUrls = normalizeToolCallImageUrls(call);
+    let inputUrls = normalizeToolCallImageUrls(call);
+    try {
+      const normalized = normalizeGenerateImageArgs(call.args);
+      inputUrls = resolveAgentToolInputUrls({
+        normalized,
+        catalog,
+        freshUploadUrls,
+        currentMessage,
+        maxInputImages,
+      });
+    } catch {
+      // 解析不出唯一输入时保持未覆盖，交给规划修复或 fail-closed 处理。
+    }
+    resolvedCallInputUrls.push(inputUrls);
     if (inputUrls.length === 1 && freshSet.has(inputUrls[0])) coveredUrls.add(inputUrls[0]);
   }
-  return { freshUrls, generateCalls, coveredUrls };
+  return { freshUrls, generateCalls, coveredUrls, resolvedCallInputUrls };
 };
 
-const shouldAuditUnderPlannedImageBatch = ({ response, freshUploadUrls = [], currentMessage = '' } = {}) => {
-  const { freshUrls, generateCalls, coveredUrls } = getIndependentFreshImageCoverage({ response, freshUploadUrls });
+const shouldAuditUnderPlannedImageBatch = ({
+  response,
+  freshUploadUrls = [],
+  catalog = [],
+  currentMessage = '',
+  maxInputImages = 1,
+} = {}) => {
+  const { freshUrls, generateCalls, coveredUrls, resolvedCallInputUrls } = getIndependentFreshImageCoverage({
+    response,
+    freshUploadUrls,
+    catalog,
+    currentMessage,
+    maxInputImages,
+  });
   if (freshUrls.length < 2) return false;
   if (generateCalls.length === 0) return false;
   if (coveredUrls.size >= freshUrls.length) return false;
   if (generateCalls.length === 1) {
-    const inputUrls = normalizeToolCallImageUrls(generateCalls[0]).map((url) => String(url || '').trim()).filter(Boolean);
+    const inputUrls = (resolvedCallInputUrls[0] || [])
+      .map((url) => String(url || '').trim())
+      .filter(Boolean);
     const freshSet = new Set(freshUrls);
     const inputFreshCount = inputUrls.filter((url) => freshSet.has(url)).length;
     if (inputFreshCount === freshUrls.length) return false;
@@ -402,7 +522,6 @@ export const runAgentConversationV2 = async ({
   prepareModelImageUrl = null,
   onProgress = null,
 } = {}) => {
-  void maxInputImages;
   const emit = (stage, extra = {}) => {
     if (onProgress) onProgress({ stage, ...extra });
   };
@@ -504,7 +623,7 @@ export const runAgentConversationV2 = async ({
   let planRepairRound = 0;
   while (
     planRepairRound < maxPlanRepairRounds
-    && shouldAuditUnderPlannedImageBatch({ response, freshUploadUrls, currentMessage })
+    && shouldAuditUnderPlannedImageBatch({ response, freshUploadUrls, catalog, currentMessage, maxInputImages })
   ) {
     planRepairRound += 1;
     emit('thinking', { round: 1, repair: 'under_planned_image_batch_audit', repairRound: planRepairRound });
@@ -533,7 +652,7 @@ export const runAgentConversationV2 = async ({
     if (!hasIndependentBatchIntent(currentMessage, freshUploadUrls.length)) break;
   }
   if (
-    shouldAuditUnderPlannedImageBatch({ response, freshUploadUrls, currentMessage })
+    shouldAuditUnderPlannedImageBatch({ response, freshUploadUrls, catalog, currentMessage, maxInputImages })
     && hasIndependentBatchIntent(currentMessage, freshUploadUrls.length)
   ) {
     const error = new Error('图片规划未完整覆盖本轮多图需求，请重试或明确每张图的处理方式。');
@@ -581,7 +700,13 @@ export const runAgentConversationV2 = async ({
           toolResultContent = '生图参数无效。请向用户追问更明确的图片需求。';
         }
         if (normalized) {
-          const validInputUrls = normalized.inputImageUrls.filter((url) => isUrlInCatalog(catalog, url));
+          const validInputUrls = resolveAgentToolInputUrls({
+            normalized,
+            catalog,
+            freshUploadUrls,
+            currentMessage,
+            maxInputImages,
+          });
           if (validInputUrls.length === 1 && freshUploadUrls.includes(validInputUrls[0])) {
             attemptedIndependentOutputUrls.add(validInputUrls[0]);
           }
