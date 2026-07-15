@@ -68,7 +68,7 @@ test('authoritative input rejects invalid dimensions and bytes', () => {
   );
 });
 
-test('submit body uses authoritative metadata and pixel region', () => {
+test('submit body sends videoName as exactly four region coordinates', () => {
   assert.deepEqual(buildSubtitleRemovalSubmitBody({
     safeTaskId: 'job_123',
     ...validInput(),
@@ -77,7 +77,7 @@ test('submit body uses authoritative metadata and pixel region', () => {
     fileSize: 15.2,
     duration: 10,
     resolution: '720x1280',
-    videoName: 'job_123_0_896_720_1280',
+    videoName: '0_896_720_1280',
     coverUrl: '',
     url: 'https://managed.example/video.mp4?access=short-lived',
   });
