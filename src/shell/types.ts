@@ -327,7 +327,7 @@ export interface SystemPublicConfig {
     runningCount: number;
   };
   cors: { allowedOrigins: string[] };
-  providers: { kie: { configured: boolean }; apiports?: { configured: boolean }; maxforai?: { configured: boolean } };
+  providers: { kie: { configured: boolean }; apiports?: { configured: boolean }; maxforai?: { configured: boolean }; maxforaiVideo?: { configured: boolean } };
   systemSettings: {
     analysisModel: string;
     effectiveAnalysisModel: string;

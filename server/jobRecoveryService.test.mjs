@@ -113,3 +113,30 @@ test('mysql and local recovery orchestration create only after same-user authori
     assert.equal(createCalls, 1);
   }
 });
+
+test('KIE recovery orchestration never accepts a MaxForAI video task', async () => {
+  let createCalls = 0;
+  await assert.rejects(
+    () => createAuthorizedProviderRecovery({
+      userId: 'user-a',
+      request: {
+        ...baseRequest,
+        payload: { isVideo: true },
+        providerTaskId: 'video_maxforai',
+      },
+      findSourceJob: async () => ({
+        id: 'source-maxforai',
+        userId: 'user-a',
+        module: 'video',
+        taskType: 'maxforai_video',
+        provider: 'maxforai',
+        providerTaskId: 'video_maxforai',
+      }),
+      createRecoveryJob: async () => {
+        createCalls += 1;
+      },
+    }),
+    (error) => error?.code === 'job_recovery_source_not_found',
+  );
+  assert.equal(createCalls, 0);
+});

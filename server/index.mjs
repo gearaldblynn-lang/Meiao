@@ -5351,7 +5351,7 @@ const USAGE_ACTIONS = new Set([
   'generate_board', 'regenerate_board',
   'create_image_task',
 ]);
-const USAGE_JOB_COMPLETED_TASK_TYPES = new Set(['dreamina_video', 'kie_seedance_video', 'kie_video', 'kie_veo']);
+const USAGE_JOB_COMPLETED_TASK_TYPES = new Set(['dreamina_video', 'kie_seedance_video', 'kie_video', 'kie_veo', 'maxforai_video']);
 
 const shouldTrackUsageStatLog = (log = {}) => {
   if (!USAGE_MODULES.has(log.module) || !TERMINAL_STATUSES.has(log.status)) {
@@ -12444,7 +12444,7 @@ const handleMysqlRequest = async (req, res, url) => {
          action IN ('agent_chat','agent_validate','analysis_token_usage','generate_main_scheme','generate_detail_scheme','generate_single','generate_board','regenerate_board','create_image_task')
          OR (
            action = 'job_completed'
-           AND JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.taskType')) IN ('dreamina_video','kie_seedance_video','kie_video','kie_veo')
+           AND JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.taskType')) IN ('dreamina_video','kie_seedance_video','kie_video','kie_veo','maxforai_video')
          )
        )
        GROUP BY d, user_id, username, display_name, module, status`

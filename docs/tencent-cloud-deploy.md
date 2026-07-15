@@ -121,6 +121,13 @@ MAXFORAI_BASE_URL=https://maxforai.top/v1
 MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS=600000
 MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS=120000
 MAXFORAI_ASSET_UPLOAD_CONCURRENCY=3
+MAXFORAI_VIDEO_API_KEY=
+MAXFORAI_VIDEO_BASE_URL=https://maxforai.top/v1
+MAXFORAI_VIDEO_CREATE_TIMEOUT_MS=60000
+MAXFORAI_VIDEO_ASSET_TIMEOUT_MS=120000
+MAXFORAI_VIDEO_ASSET_UPLOAD_CONCURRENCY=2
+MAXFORAI_VIDEO_POLL_INTERVAL_MS=5000
+MAXFORAI_VIDEO_POLL_TIMEOUT_MS=1500000
 ARK_API_KEY=请替换成你的真实 ARK Key
 OPENAI_COMPATIBLE_API_KEY=请替换成你的 OpenAI Compatible 中转站 Key
 OPENAI_COMPATIBLE_BASE_URL=https://maxforai.top
@@ -136,6 +143,8 @@ EOF
 第4期智能体多工具复用 `OPENAI_COMPATIBLE_*`，V2 对话经 `OPENAI_COMPATIBLE_RESPONSES_PATH` 调 responses 端点以支持 `web_search`；`AGENT_TOOL_MAX_ROUNDS` 是单轮工具循环上限，默认 5。`AGENT_IMAGE_PLAN_REPAIR_MAX_ROUNDS` 是多图独立输出规划欠覆盖时的修复审查轮数，默认 2；仍不完整会快速失败，不执行单张伪完成。
 
 `MAXFORAI_API_KEY` 是 `image-2中转` 的独立服务端凭证，不得复用或暴露 `OPENAI_COMPATIBLE_API_KEY`。站内 ID 为 `maxforai-image-2-relay`，上游固定提交 `gpt-image-2`；当前不进入旧积分系统，也不保存渠道价格。文生图 `/images/generations` 使用 JSON；图生图 `/images/edits` 必须把参考图下载为文件并用 multipart 的 `image` 字段提交，不能照旧版渠道文档把 `images[].image_url` JSON 直接发给编辑端点。生成请求显式发送 `response_format: "url"`，但中转或上游仍可能返回 `data[0].url` 或 `data[0].b64_json`；服务端必须兼容两种格式，并在成功落库前把 base64 结果写成站内托管素材，持久化层不得保存原始 base64。`MAXFORAI_IMAGE_REQUEST_TIMEOUT_MS` 只控制单次付费 POST 的等待时间，该 POST 永不自动重试；若连接中断且无法确认上游是否接单，任务进入 `provider_submission_unknown`。`MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS` 和 `MAXFORAI_ASSET_UPLOAD_CONCURRENCY` 保留既有环境变量名，只作用于付费编辑提交前的素材下载与 multipart 封装准备。
+
+`MAXFORAI_VIDEO_API_KEY` 是 `Seedance 2.0 Pro 特价` 的独立服务端凭证，不复用 `MAXFORAI_API_KEY`，也不向前端下发。站内模型 ID 为 `maxforai-sora-v9-pro`，上游固定使用 `sora-v9-pro`；界面只显示 `0.5元/秒`，不使用站内积分扣费。创建走 `POST /videos`，获得 `providerTaskId` 并先持久化后，再通过 `GET /videos/{task_id}` 查询原任务；付费创建 POST 零自动重试，恢复时只做 GET，不会创建第二个付费任务。公网 HTTPS 素材先走 `/assets/url`，本地托管、data URL 或非 HTTPS 素材走 multipart `/assets`，所有素材必须在付费创建前准备完成。模型固定输出 720p，支持 4-15 秒、`16:9` / `9:16` / `1:1`，最多 9 张图片、3 个视频和 3 个音频，参考视频与参考音频的已知合计时长各不超过 15 秒。`MAXFORAI_VIDEO_CREATE_TIMEOUT_MS` / `MAXFORAI_VIDEO_ASSET_TIMEOUT_MS` / `MAXFORAI_VIDEO_ASSET_UPLOAD_CONCURRENCY` / `MAXFORAI_VIDEO_POLL_INTERVAL_MS` / `MAXFORAI_VIDEO_POLL_TIMEOUT_MS` 默认分别为 `60000` / `120000` / `2` / `5000` / `1500000`。
 
 `image-2中转` 上游仅支持 1K 和 2K，4K 不是可用档位。固定比例依靠 `size` 约束：1K 的 1:1/16:9/9:16/4:3/3:4/3:2/2:3 依次是 `1024x1024`、`1536x864`、`864x1536`、`1344x1008`、`1008x1344`、`1536x1024`、`1024x1536`；2K 依次是 `2048x2048`、`2048x1152`、`1152x2048`、`2048x1536`、`1536x2048`、`2016x1344`、`1344x2016`。智能比例必须保留 `size: "auto"`。应用层只显示 1K/2K；旧任务或历史页面残留的 4K 参数到 provider 边界时必须降级为对应比例的 2K `size`，不得将 4K 请求继续交给上游。
 

@@ -63,10 +63,10 @@ test('usage statistics persist successful actual credits per account', () => {
 
 test('usage statistics cover billed xhs cover and video job completions', () => {
   assert.match(serverSource, /const USAGE_MODULES = new Set\(\['agent_center', 'one_click', 'translation', 'buyer_show', 'retouch', 'video', 'xhs_cover'\]\)/);
-  assert.match(serverSource, /const USAGE_JOB_COMPLETED_TASK_TYPES = new Set\(\['dreamina_video', 'kie_seedance_video', 'kie_video', 'kie_veo'\]\)/);
+  assert.match(serverSource, /const USAGE_JOB_COMPLETED_TASK_TYPES = new Set\(\['dreamina_video', 'kie_seedance_video', 'kie_video', 'kie_veo', 'maxforai_video'\]\)/);
   assert.match(serverSource, /const shouldTrackUsageStatLog = \(log = \{\}\) =>/);
   assert.match(serverSource, /log\.action === 'job_completed'/);
-  assert.match(serverSource, /JSON_UNQUOTE\(JSON_EXTRACT\(meta_json, '\$\.taskType'\)\) IN \('dreamina_video','kie_seedance_video','kie_video','kie_veo'\)/);
+  assert.match(serverSource, /JSON_UNQUOTE\(JSON_EXTRACT\(meta_json, '\$\.taskType'\)\) IN \('dreamina_video','kie_seedance_video','kie_video','kie_veo','maxforai_video'\)/);
 });
 
 test('usage statistics can be viewed by staff in their own account scope', () => {

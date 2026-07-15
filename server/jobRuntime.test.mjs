@@ -43,6 +43,7 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
     kie: { configured: true },
     apiports: { configured: true },
     maxforai: { configured: false },
+    maxforaiVideo: { configured: false },
   });
   assert.equal(config.publicBaseUrl, 'https://meiao.internal');
   assert.deepEqual(config.agentModels.chat.map((item) => item.id), [
@@ -115,6 +116,13 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
   assert.equal(config.systemSettings.effectiveVideoAnalysisModel, 'gemini-3-flash-openai');
   assert.equal(config.systemSettings.videoAnalysisReasoningLevel, 'high');
   assert.equal(JSON.stringify(config).includes('secret'), false);
+});
+
+test('buildPublicSystemConfig exposes MaxForAI video readiness without leaking its key', () => {
+  const config = buildPublicSystemConfig({ MAXFORAI_VIDEO_API_KEY: 'private-video-secret' });
+
+  assert.deepEqual(config.providers.maxforaiVideo, { configured: true });
+  assert.equal(JSON.stringify(config).includes('private-video-secret'), false);
 });
 
 test('buildPublicSystemConfig exposes the normalized Product Restoration rollout', () => {

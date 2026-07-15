@@ -655,6 +655,9 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       maxforai: {
         configured: Boolean(env.MAXFORAI_API_KEY),
       },
+      maxforaiVideo: {
+        configured: Boolean(env.MAXFORAI_VIDEO_API_KEY),
+      },
     },
     featureRollouts: {
       productRestore: normalizeProductRestoreRollout(

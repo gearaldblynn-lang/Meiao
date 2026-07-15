@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { executeProviderJob, uploadAssetViaKieStream, __testOnly_setDreaminaVideoRunner, __testOnly_fetchKieWithTimeout, __testOnly_getKieHttpRetryDelayMs } from './providerGateway.mjs';
+import { executeProviderJob, getProviderConfigStatus, uploadAssetViaKieStream, __testOnly_setDreaminaVideoRunner, __testOnly_fetchKieWithTimeout, __testOnly_getKieHttpRetryDelayMs } from './providerGateway.mjs';
 import { __testOnly_clearManagedAssetUploadCache } from './providerAssetTransfer.mjs';
 import { __testOnly_resetKieAssetUploadLimiters } from './providerAssetUploadLimiter.mjs';
 import { __testOnly_setCosClientFactory } from './tencentCosVideoStore.mjs';
@@ -9,6 +9,14 @@ import { __testOnly_setCosClientFactory } from './tencentCosVideoStore.mjs';
 // 请求级瞬时重试(S2 G1)默认退避 1s/3s,测试里统一压到 1ms,
 // 避免走到 fetch failed / 5xx 路径的既有测试被退避拖慢。
 process.env.MEIAO_KIE_HTTP_RETRY_BASE_MS = '1';
+
+test('provider status reports MaxForAI video readiness independently from Image-2', () => {
+  const status = getProviderConfigStatus({ MAXFORAI_VIDEO_API_KEY: 'video-only-secret' });
+
+  assert.equal(status.maxforai, false);
+  assert.equal(status.maxforaiVideo, true);
+  assert.equal(JSON.stringify(status).includes('video-only-secret'), false);
+});
 
 test('KIE chat completion timeout defaults to 360 seconds and remains configurable', async () => {
   const gateway = await import('./providerGateway.mjs');
@@ -164,6 +172,105 @@ test('executeProviderJob propagates managed COS signed-read dependencies to MaxF
     assert.deepEqual(resolverCalls, [['/api/assets/file/asset-1/source.png', 'provider']]);
     assert.ok(fetchCalls.some(([url]) => url === signedUrl));
     assert.equal(result.result.imageUrl, 'https://cdn.test/result.png');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob routes MaxForAI video through asset preparation, checkpoint and polling', async () => {
+  const originalFetch = global.fetch;
+  const signedUrl = 'https://videos.cos.test/reference.mp4?q-signature=fresh';
+  const resolverCalls = [];
+  const requests = [];
+  const checkpoints = [];
+  global.fetch = async (url, init = {}) => {
+    const requestUrl = String(url);
+    requests.push([requestUrl, init.method || 'GET']);
+    if (requestUrl === signedUrl) {
+      return new Response(Buffer.from('video-bytes'), {
+        status: 200,
+        headers: { 'content-type': 'video/mp4' },
+      });
+    }
+    if (requestUrl === 'https://maxforai.test/v1/assets') {
+      return createJsonResponse({ url: 'https://temp.test/reference.mp4' });
+    }
+    if (requestUrl === 'https://maxforai.test/v1/videos' && init.method === 'POST') {
+      return createJsonResponse({ task_id: 'video_gateway' });
+    }
+    if (requestUrl === 'https://maxforai.test/v1/videos/video_gateway') {
+      return createJsonResponse({ status: 'succeeded', result_url: 'https://cdn.test/final.mp4' });
+    }
+    throw new Error(`unexpected request: ${requestUrl}`);
+  };
+
+  try {
+    const result = await executeProviderJob({
+      taskType: 'maxforai_video',
+      provider: 'maxforai',
+      payload: {
+        model: 'maxforai-sora-v9-pro',
+        prompt: '产品广告片',
+        seconds: 4,
+        aspectRatio: '16:9',
+        videoUrls: ['/api/assets/file/reference.mp4'],
+      },
+    }, {
+      MAXFORAI_VIDEO_API_KEY: 'test-key',
+      MAXFORAI_VIDEO_BASE_URL: 'https://maxforai.test/v1',
+    }, new AbortController().signal, {
+      onProviderTaskId: async (providerTaskId) => checkpoints.push(providerTaskId),
+      assetTransferDeps: {
+        resolveManagedAssetReadUrl: async (value, options) => {
+          resolverCalls.push([value, options.purpose]);
+          return signedUrl;
+        },
+      },
+    });
+
+    assert.deepEqual(resolverCalls, [['/api/assets/file/reference.mp4', 'provider']]);
+    assert.deepEqual(checkpoints, ['video_gateway']);
+    assert.deepEqual(requests.map(([url]) => url), [
+      signedUrl,
+      'https://maxforai.test/v1/assets',
+      'https://maxforai.test/v1/videos',
+      'https://maxforai.test/v1/videos/video_gateway',
+    ]);
+    assert.equal(result.providerTaskId, 'video_gateway');
+    assert.equal(result.result.videoUrl, 'https://cdn.test/final.mp4');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('executeProviderJob recovers MaxForAI video by GET without a second create call', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  global.fetch = async (url, init = {}) => {
+    requests.push([String(url), init.method || 'GET']);
+    return createJsonResponse({ status: 'succeeded', result_url: 'https://cdn.test/recovered.mp4' });
+  };
+  try {
+    const result = await executeProviderJob({
+      taskType: 'maxforai_video',
+      provider: 'maxforai',
+      providerTaskId: 'video_existing',
+      payload: {
+        model: 'maxforai-sora-v9-pro',
+        prompt: '恢复任务',
+        seconds: 4,
+        aspectRatio: '16:9',
+      },
+    }, {
+      MAXFORAI_VIDEO_API_KEY: 'test-key',
+      MAXFORAI_VIDEO_BASE_URL: 'https://maxforai.test/v1',
+    }, new AbortController().signal);
+
+    assert.deepEqual(requests, [[
+      'https://maxforai.test/v1/videos/video_existing',
+      'GET',
+    ]]);
+    assert.equal(result.result.videoUrl, 'https://cdn.test/recovered.mp4');
   } finally {
     global.fetch = originalFetch;
   }

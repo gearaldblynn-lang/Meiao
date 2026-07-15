@@ -34,6 +34,7 @@ import {
   runKieImageJob as runKieImageProviderJob,
 } from './providerKieImage.mjs';
 import { runMaxForAiImageJob } from './providerMaxForAiImage.mjs';
+import { runMaxForAiVideoJob } from './providerMaxForAiVideo.mjs';
 import { isMaxForAiImageModel } from '../src/utils/maxforaiImageModels.mjs';
 import { withKieAssetUploadSlot } from './providerAssetUploadLimiter.mjs';
 import {
@@ -3016,6 +3017,18 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
       return runKieRecoverJob(job.payload, env, signal);
     case 'kie_probe':
       return runKieProbeJob(job.payload, env, signal);
+    case 'maxforai_video':
+      return runMaxForAiVideoJob({
+        payload: job.payload,
+        env,
+        signal,
+        providerTaskId: job.providerTaskId,
+        deps: {
+          fetchWithTimeout: fetchKieWithTimeout,
+          onProviderTaskId: options.onProviderTaskId,
+          assetTransferDeps: options.assetTransferDeps,
+        },
+      });
     case 'kie_video':
       if (job.providerTaskId) {
         return runKieRecoverJob(
@@ -3083,6 +3096,7 @@ export const getProviderConfigStatus = (env) => {
     kie: Boolean(providerEnv.kieApiKey),
     apiports: Boolean(providerEnv.apiportsApiKey),
     maxforai: Boolean(env.MAXFORAI_API_KEY),
+    maxforaiVideo: Boolean(env.MAXFORAI_VIDEO_API_KEY),
     dreamina: true,
   };
 };
