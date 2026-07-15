@@ -3294,6 +3294,206 @@ test('shell data adapter recovers first-image timeout placeholders after backend
   assert.equal(project.results[0].backendJobId, 'job-late-success');
 });
 
+test('shell data adapter recovers bound first-image media when the project checkpoint was never persisted', () => {
+  const shellProjectId = 'proj-plan-1784104061813';
+  const shellPlanId = 'planning-job-1-plan-1';
+  const snapshot = buildShellDataSnapshot({}, [
+    {
+      id: 'image-job-success',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      providerTaskId: 'provider-image-success',
+      payload: {
+        prompt: '首图生成提示词',
+        shellProjectId,
+        shellProjectName: '7月15日项目1',
+        shellPlanId,
+        subFeature: 'first_image',
+        batchIndex: 1,
+        batchCount: 1,
+      },
+      result: {
+        imageUrl: '/api/assets/file/generated-first/result.png',
+        providerTaskId: 'provider-image-success',
+      },
+      createdAt: 1784104202414,
+      updatedAt: 1784104309182,
+      finishedAt: 1784104309182,
+    },
+    {
+      id: 'planning-job-1',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      payload: {
+        shellProjectId,
+        shellProjectName: '7月15日项目1',
+        shellPlanningPurpose: 'one_click_planning',
+        subFeature: 'first_image',
+      },
+      result: {
+        content: `[SCHEME_START]\n- 屏序/类型：首图裂变1\n- 画面描述：真实首图方案\n[SCHEME_END]`,
+      },
+      createdAt: 1784104063786,
+      updatedAt: 1784104090776,
+      finishedAt: 1784104090776,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === shellProjectId);
+  assert.equal(project?.status, 'completed');
+  assert.equal(project?.sourceType, 'job');
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.results[0]?.planId, shellPlanId);
+  assert.equal(project?.results[0]?.backendJobId, 'image-job-success');
+  assert.equal(project?.results[0]?.imageUrl, '/api/assets/file/generated-first/result.png');
+});
+
+test('shell data adapter recovers a bound first-image failure when the project checkpoint was never persisted', () => {
+  const shellProjectId = 'proj-plan-1784104152308';
+  const snapshot = buildShellDataSnapshot({}, [
+    {
+      id: 'image-job-failed',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'failed',
+      providerTaskId: 'provider-image-failed',
+      payload: {
+        prompt: '首图生成提示词',
+        shellProjectId,
+        shellProjectName: '7月15日项目1',
+        shellPlanId: 'planning-job-failed-plan-1',
+        subFeature: 'first_image',
+        batchIndex: 1,
+        batchCount: 1,
+      },
+      result: null,
+      errorCode: 'provider_bad_request',
+      errorMessage: '上游超时且没有返回图片',
+      createdAt: 1784104396625,
+      updatedAt: 1784105351290,
+      finishedAt: 1784105351290,
+    },
+    {
+      id: 'planning-job-failed',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      payload: {
+        shellProjectId,
+        shellProjectName: '7月15日项目1',
+        shellPlanningPurpose: 'one_click_planning',
+        subFeature: 'first_image',
+      },
+      result: {
+        content: `[SCHEME_START]\n- 屏序/类型：首图裂变1\n- 画面描述：真实首图方案\n[SCHEME_END]`,
+      },
+      createdAt: 1784104154079,
+      updatedAt: 1784104184690,
+      finishedAt: 1784104184690,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === shellProjectId);
+  assert.equal(project?.status, 'error');
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.results[0]?.status, 'error');
+  assert.equal(project?.results[0]?.backendJobId, 'image-job-failed');
+  assert.equal(project?.results[0]?.error, '上游超时且没有返回图片');
+});
+
+test('shell data adapter does not use a deleted planning job to recover an unpersisted first-image project', () => {
+  const shellProjectId = 'deleted-planning-project';
+  const snapshot = buildShellDataSnapshot({
+    shellDraft: {
+      deletedJobIds: ['deleted-planning-seed'],
+      inputStateByScope: {},
+      materials: {},
+      updatedAt: Date.now(),
+    },
+  }, [
+    {
+      id: 'remaining-image-job',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      payload: {
+        prompt: '不应恢复的首图',
+        shellProjectId,
+        shellPlanId: 'deleted-planning-seed-plan-1',
+        subFeature: 'first_image',
+      },
+      result: { imageUrl: 'https://example.com/should-stay-hidden.png' },
+      createdAt: 1784104202414,
+    },
+    {
+      id: 'deleted-planning-seed',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      payload: {
+        shellProjectId,
+        shellPlanningPurpose: 'one_click_planning',
+        subFeature: 'first_image',
+      },
+      result: {
+        content: `[SCHEME_START]\n- 屏序/类型：已删除首图\n- 画面描述：不能作为恢复锚点\n[SCHEME_END]`,
+      },
+      createdAt: 1784104063786,
+    },
+  ]);
+
+  assert.equal(snapshot.projects.some((item) => item.id === shellProjectId), false);
+});
+
+test('shell data adapter does not use an untracked chat job to recover an unpersisted first-image project', () => {
+  const shellProjectId = 'untracked-chat-project';
+  const snapshot = buildShellDataSnapshot({}, [
+    {
+      id: 'image-after-untracked-chat',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'succeeded',
+      payload: {
+        shellProjectId,
+        shellPlanId: 'untracked-chat-plan-1',
+        subFeature: 'first_image',
+      },
+      result: { imageUrl: 'https://example.com/should-not-recover.png' },
+      createdAt: 1784104202414,
+    },
+    {
+      id: 'untracked-chat',
+      module: 'one_click',
+      taskType: 'kie_chat',
+      provider: 'kie',
+      status: 'succeeded',
+      payload: {
+        shellProjectId,
+        subFeature: 'first_image',
+      },
+      result: {
+        content: `[SCHEME_START]\n- 屏序/类型：非策划对话\n- 画面描述：不能作为恢复锚点\n[SCHEME_END]`,
+      },
+      createdAt: 1784104063786,
+    },
+  ]);
+
+  const project = snapshot.projects.find((item) => item.id === shellProjectId);
+  assert.equal(
+    project?.results.some((result) => result.imageUrl === 'https://example.com/should-not-recover.png') || false,
+    false,
+  );
+});
+
 test('shell data adapter keeps active task titles compact while preserving backend job prompts', () => {
   const longPrompt = '详情页生成提示：'.repeat(20);
   const snapshot = buildShellDataSnapshot({}, [

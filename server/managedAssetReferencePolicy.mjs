@@ -10,7 +10,11 @@ const collectExplicitAssetIds = (value, bucket = new Set()) => {
   }
   if (!value || typeof value !== 'object') return bucket;
   for (const [key, child] of Object.entries(value)) {
-    if ((key === 'assetId' || key.endsWith('AssetId')) && typeof child === 'string' && child.trim()) {
+    if (
+      (key === 'assetId' || (key.endsWith('AssetId') && key !== 'localAssetId'))
+      && typeof child === 'string'
+      && child.trim()
+    ) {
       bucket.add(child.trim());
     }
     collectExplicitAssetIds(child, bucket);
