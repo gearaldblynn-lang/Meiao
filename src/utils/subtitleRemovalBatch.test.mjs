@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
+import * as subtitleRemovalBatch from './subtitleRemovalBatch.mjs';
+
+const {
   mapWithSubtitleConcurrency,
   pickSubtitlePreparationItems,
   summarizeSubtitleRemovalBatch,
-} from './subtitleRemovalBatch.mjs';
+} = subtitleRemovalBatch;
 
 test('batch summary counts selected ready and failed items independently', () => {
   assert.deepEqual(summarizeSubtitleRemovalBatch([
@@ -49,6 +51,20 @@ test('preparation picker fills only free slots in FIFO order', () => {
     ['a', 'c'],
   );
   assert.deepEqual(pickSubtitlePreparationItems(items, ['b'], 1), []);
+});
+
+test('region reminder waits for the upload group to settle, then selects its first ready video', () => {
+  assert.equal(typeof subtitleRemovalBatch.resolveSubtitleRegionReminder, 'function');
+  const pendingIds = ['first', 'second'];
+  assert.deepEqual(subtitleRemovalBatch.resolveSubtitleRegionReminder([
+    { clientItemId: 'first', phase: 'ready', draft: { sourceUrl: '/api/assets/file/first.mp4' } },
+    { clientItemId: 'second', phase: 'transcoding' },
+  ], pendingIds), { settled: false, targetId: '' });
+
+  assert.deepEqual(subtitleRemovalBatch.resolveSubtitleRegionReminder([
+    { clientItemId: 'first', phase: 'ready', draft: { sourceUrl: '/api/assets/file/first.mp4' } },
+    { clientItemId: 'second', phase: 'error' },
+  ], pendingIds), { settled: true, targetId: 'first' });
 });
 
 test('bounded mapper preserves item order and returns partial failures', async () => {

@@ -32,6 +32,7 @@ import {
 } from '../../services/mediaTranscodeClient';
 import {
   pickSubtitlePreparationItems,
+  resolveSubtitleRegionReminder,
   summarizeSubtitleRemovalBatch,
 } from '../../utils/subtitleRemovalBatch.mjs';
 import {
@@ -40,6 +41,7 @@ import {
 } from '../../utils/subtitleRemovalRegion.mjs';
 import ConfirmDialog from './ConfirmDialog';
 import SubtitleRemovalRegionDialog from './SubtitleRemovalRegionDialog';
+import SubtitleRegionReminderDialog from './SubtitleRegionReminderDialog';
 
 type Phase = 'queued' | 'uploading' | 'analyzing' | 'transcoding' | 'ready' | 'submitting' | 'error';
 
@@ -135,10 +137,12 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
   const controllersRef = useRef(new Map<string, AbortController>());
   const sessionIdsRef = useRef(new Map<string, string>());
   const consumedDraftsRef = useRef(new Set<string>());
+  const regionReminderCandidateIdsRef = useRef(new Set<string>());
   const mountedRef = useRef(true);
   const submitLockRef = useRef(false);
   const [items, setItems] = useState<BatchItem[]>([]);
   const [editingItemId, setEditingItemId] = useState('');
+  const [regionReminderItemId, setRegionReminderItemId] = useState('');
   const [replaceTargetId, setReplaceTargetId] = useState('');
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [batchError, setBatchError] = useState('');
@@ -309,6 +313,15 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
     });
   }, [batchPrepConcurrency, featureAvailable, items, prepareItem, updateItem]);
 
+  useEffect(() => {
+    if (regionReminderItemId || regionReminderCandidateIdsRef.current.size === 0) return;
+    const candidateIds = Array.from(regionReminderCandidateIdsRef.current);
+    const reminder = resolveSubtitleRegionReminder(items, candidateIds);
+    if (!reminder.settled) return;
+    candidateIds.forEach((clientItemId) => regionReminderCandidateIdsRef.current.delete(clientItemId));
+    if (reminder.targetId) setRegionReminderItemId(reminder.targetId);
+  }, [items, regionReminderItemId]);
+
   const appendFiles = useCallback((selectedFiles: File[]) => {
     if (!featureAvailable || selectedFiles.length === 0) return;
     if (items.length + selectedFiles.length > batchMaxItems) {
@@ -330,18 +343,25 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
         ...(validVideo ? {} : { errorMessage: '请选择视频文件' }),
       };
     });
+    nextItems.forEach((item) => {
+      if (item.phase === 'queued') regionReminderCandidateIdsRef.current.add(item.clientItemId);
+    });
     setItems((current) => [...current, ...nextItems]);
   }, [batchMaxItems, featureAvailable, items.length]);
 
   const removeItem = useCallback(async (clientItemId: string) => {
     await cancelItemSession(clientItemId);
+    regionReminderCandidateIdsRef.current.delete(clientItemId);
     setItems((current) => current.filter((item) => item.clientItemId !== clientItemId));
     if (editingItemId === clientItemId) setEditingItemId('');
-  }, [cancelItemSession, editingItemId]);
+    if (regionReminderItemId === clientItemId) setRegionReminderItemId('');
+  }, [cancelItemSession, editingItemId, regionReminderItemId]);
 
   const replaceItem = useCallback(async (clientItemId: string, file: File) => {
     await cancelItemSession(clientItemId);
     const validVideo = file.type.startsWith('video/');
+    regionReminderCandidateIdsRef.current.delete(clientItemId);
+    if (validVideo) regionReminderCandidateIdsRef.current.add(clientItemId);
     updateItem(clientItemId, () => ({
       clientItemId,
       selected: validVideo,
@@ -379,10 +399,16 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
     && Boolean(item.draft?.sourceUrl)
   )), [items]);
   const editingItem = items.find((item) => item.clientItemId === editingItemId && item.draft) || null;
+  const regionReminderItem = items.find((item) => (
+    item.clientItemId === regionReminderItemId
+    && item.phase === 'ready'
+    && item.draft?.sourceUrl
+  )) || null;
 
   const handleSubmit = async () => {
     if (submitLockRef.current || submitting || localSubmitting || readySelectedItems.length === 0) return;
     submitLockRef.current = true;
+    setRegionReminderItemId('');
     setConfirmOpen(false);
     setLocalSubmitting(true);
     const submittingIds = new Set(readySelectedItems.map((item) => item.clientItemId));
@@ -434,7 +460,9 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
     const itemIds = items.map((item) => item.clientItemId);
     await Promise.all(itemIds.map((clientItemId) => cancelItemSession(clientItemId)));
     setItems([]);
+    regionReminderCandidateIdsRef.current.clear();
     setEditingItemId('');
+    setRegionReminderItemId('');
     setBatchError('');
   };
 
@@ -630,6 +658,16 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
           if (!editingItem) return;
           updateItem(editingItem.clientItemId, (item) => ({ ...item, region, regionMode: 'custom' }));
           setEditingItemId('');
+        }}
+      />
+
+      <SubtitleRegionReminderDialog
+        open={Boolean(regionReminderItem)}
+        fileName={regionReminderItem?.draft?.fileName}
+        onUseDefault={() => setRegionReminderItemId('')}
+        onAdjust={() => {
+          setRegionReminderItemId('');
+          setEditingItemId(regionReminderItemId);
         }}
       />
 
