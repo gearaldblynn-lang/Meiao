@@ -183,17 +183,21 @@ export const extractMaxForAiVideoTaskId = (body = {}) => String(
   body.task_id || body.id || body.data?.task_id || body.data?.id || '',
 ).trim();
 
-export const extractMaxForAiVideoResult = (body = {}) => ({
-  status: String(body.status || body.data?.status || '').trim().toLowerCase(),
-  resultUrl: String(body.result_url || body.data?.result_url || '').trim(),
-  errorMessage: String(
-    body.error?.message
-      || body.message
-      || body.data?.error?.message
-      || body.data?.message
-      || '',
-  ).trim(),
-});
+export const extractMaxForAiVideoResult = (body = {}) => {
+  const rawStatus = String(body.status || body.data?.status || '').trim().toLowerCase();
+  const status = rawStatus === 'success' ? 'succeeded' : rawStatus === 'failure' ? 'failed' : rawStatus;
+  return {
+    status,
+    resultUrl: String(body.result_url || body.data?.result_url || '').trim(),
+    errorMessage: String(
+      body.error?.message
+        || body.message
+        || body.data?.error?.message
+        || body.data?.message
+        || '',
+    ).trim(),
+  };
+};
 
 const normalizeMimeType = (value, kind) => {
   const normalized = String(value || '').trim().toLowerCase();
