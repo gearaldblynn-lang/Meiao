@@ -4170,7 +4170,23 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
       purpose: 'provider',
       env,
     }),
-    probeVideo: (value, probeSignal) => mediaTranscodeService.probe(value, 'video', probeSignal),
+    probeVideo: async (value, probeSignal) => {
+      let probeTarget = value;
+      const assetId = extractStoredAssetIdFromPublicUrl(value);
+      if (assetId) {
+        const asset = await getStoredAssetById(assetPool, assetId);
+        if (
+          asset
+          && !asset.deletedAt
+          && String(asset.storageStatus || 'active') === 'active'
+          && String(asset.userId || '') === String(job?.userId || '')
+          && getStoredAssetStorageProvider(asset) === 'internal'
+        ) {
+          probeTarget = resolveStoredAssetPath(asset) || value;
+        }
+      }
+      return mediaTranscodeService.probe(probeTarget, 'video', probeSignal);
+    },
   };
   return await executeProviderJob(
     { ...job, payload: stripCreditReservationFromPayload(scrubbedPayload) },
