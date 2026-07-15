@@ -150,3 +150,14 @@
   - `npm run build`
   - `npm test` 不存在，npm 返回 `Missing script: "test"`。
 - 云上发布：已通过 `MEIAO_CODE_REVIEW_CONFIRMED=1 ./scripts/deploy_tencent.sh` 发布到腾讯云 `/www/wwwroot/meiao-internal`；云端 `npm audit --audit-level=high`、`npm run build` 通过，PM2 `meiao-internal` 已重启并保存。发布后 `http://111.229.66.247/api/health` 和 `http://111.229.66.247:3100/api/health` 均返回 `{"ok":true,"mode":"internal-mysql-v1","taskEngine":"temporal"}`。
+
+## 14. 2026-07-15 首图状态检查点、结果恢复与新卡排序修复
+
+- 现象：生产账号的新首图项目排到列表最后；上游 `kie_image` 已成功且有图片结果，前端仍不显示，刷新后项目占位也可能丢失。
+- 生产证据：目标账号的 `app_states.updated_at` 停在新任务之前，PM2 连续记录 `managed_asset_forbidden / asset_reference`；真实 3.29 MiB 状态快照中被拒绝的 150 个唯一候选全是浏览器草稿字段 `localAssetId=draft-*`，不存在真实跨账号或已删除托管素材。
+- 根因：托管素材所有权校验按 `AssetId` 后缀收集字段，误把本地草稿身份当成 `stored_assets.id`，使整份状态写入持续 403。项目检查点未落库后，旧恢复逻辑又要求先命中 persisted project，导致已完成的图片 job 无法接回。同时，刚创建的项目虽有真实毫秒 `createdAt`，却还没有 `createdAtPrecise`，被排序精度层级压到旧卡后。
+- 修复：`localAssetId` 不再进入托管素材所有权校验，真实 `assetId/*AssetId` 字段仍对当前账号 active ownership fail closed；前端仅从带 `shellPlanningPurpose=one_click_planning` 与 `shellProjectId` 的成功策划 job 重建恢复种子，并接回同项目的进行中、成功和失败图片 job；排序在标记缺失时从真实毫秒戳推断 precise，显式 `false` 的年缺失历史数据仍下沉。
+- 边界保护：删除墓碑 job 和非策划普通对话不得作为恢复种子；无 `shellProjectId` 的旧图片 job 继续不生成幽灵项目卡。
+- 发布：业务提交 `33e13bd`，从干净隔离 worktree 通过标准门禁发布。发布前运行中任务为 0，COS `put -> head -> signed GET -> byte equality -> delete -> not-found` 真探针通过，本机与公网 health 均为 `ok`，worker 和托管图片上传就绪。
+- 云上验收：目标账号状态在部署后由 15:51 推进到 17:28；16:27 项目持久化为 `completed` 且包含 2 张图，16:29 项目持久化为真实 `error`；最新首图项目按真实时间倒序。本地/云上三个关键源文件 SHA-256 一致。
+- 观察入口：云上日志诊断看板指纹 `oneclick-state-local-asset-id-checkpoint-sort`，状态 `deployed_to_cloud`；连续 3 个完整诊断窗口不再出现同根因后才可关闭。
