@@ -193,9 +193,9 @@ export interface ShellMaterialData {
   logoReplaceRegions?: Array<Record<string, unknown>>;
 }
 
-const cloneProductRestoreAnalysis = (
-  analysis: ProductRestoreProjectContext['normalizedAnalysis'],
-): ProductRestoreProjectContext['normalizedAnalysis'] => ({
+const cloneLegacyProductRestoreAnalysis = (
+  analysis: Extract<ProductRestoreProjectContext, { version: 1 }>['normalizedAnalysis'],
+): Extract<ProductRestoreProjectContext, { version: 1 }>['normalizedAnalysis'] => ({
   ...analysis,
   invariantFeatures: [...analysis.invariantFeatures],
   shapeAndStructure: [...analysis.shapeAndStructure],
@@ -207,6 +207,31 @@ const cloneProductRestoreAnalysis = (
   targetSetIssues: [...analysis.targetSetIssues],
   nonProductPreservationRules: [...analysis.nonProductPreservationRules],
 });
+
+const cloneProductRestoreContext = (
+  context: ProductRestoreProjectContext,
+): ProductRestoreProjectContext => {
+  if (context.version === 2) {
+    return {
+      ...context,
+      focusIds: [...context.focusIds],
+      targetMaterialIds: [...context.targetMaterialIds],
+      productReferenceMaterialIds: [...context.productReferenceMaterialIds],
+      invariantFeatures: [...context.invariantFeatures],
+      targetPrompts: context.targetPrompts.map((item) => ({
+        ...item,
+        targetIssueSummary: [...item.targetIssueSummary],
+      })),
+    };
+  }
+  return {
+    ...context,
+    focusIds: [...context.focusIds],
+    targetMaterialIds: [...context.targetMaterialIds],
+    productReferenceMaterialIds: [...context.productReferenceMaterialIds],
+    normalizedAnalysis: cloneLegacyProductRestoreAnalysis(context.normalizedAnalysis),
+  };
+};
 
 const cloneGenerationContext = (
   context?: ShellProjectData['generationContext'],
@@ -222,13 +247,7 @@ const cloneGenerationContext = (
       ]),
     ),
     productRestore: context.productRestore
-      ? {
-          ...context.productRestore,
-          focusIds: [...context.productRestore.focusIds],
-          targetMaterialIds: [...context.productRestore.targetMaterialIds],
-          productReferenceMaterialIds: [...context.productRestore.productReferenceMaterialIds],
-          normalizedAnalysis: cloneProductRestoreAnalysis(context.productRestore.normalizedAnalysis),
-        }
+      ? cloneProductRestoreContext(context.productRestore)
       : undefined,
   };
   if (Object.prototype.hasOwnProperty.call(context, 'productRestoreAnalysisAttempts')) {

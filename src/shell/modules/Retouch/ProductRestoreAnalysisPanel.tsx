@@ -70,7 +70,13 @@ const ProductRestoreAnalysisPanel: React.FC<Props> = ({
   totalCreditsConsumed,
   onCopyPrompt,
 }) => {
-  const analysis = context.normalizedAnalysis;
+  const isV2 = context.version === 2;
+  const productIdentitySummary = isV2
+    ? context.productIdentitySummary
+    : context.normalizedAnalysis.productIdentitySummary;
+  const invariantFeatures = isV2
+    ? context.invariantFeatures
+    : context.normalizedAnalysis.invariantFeatures;
   const analysisCredits = creditLedgerValue(
     analysisCreditsKnown === undefined
       ? context.analysisCreditsConsumed
@@ -114,30 +120,61 @@ const ProductRestoreAnalysisPanel: React.FC<Props> = ({
       </div>
 
       <div className="rounded-lg px-3 py-2.5 text-xs leading-5" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
-        {analysis.productIdentitySummary}
+        {productIdentitySummary}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
-        <BoundedList title="产品身份不变量" items={analysis.invariantFeatures} />
-        <BoundedList title="待还原套图问题" items={analysis.targetSetIssues} />
+        <BoundedList title="产品身份不变量" items={invariantFeatures} />
+        {!isV2 && <BoundedList title="待还原套图问题" items={context.normalizedAnalysis.targetSetIssues} />}
       </div>
 
-      <details className="rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
-        <summary className="cursor-pointer text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
-          共享还原 Prompt
-        </summary>
-        <pre className="mt-3 whitespace-pre-wrap break-words text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>
-          {context.sharedRestorationPrompt}
-        </pre>
-        <button
-          type="button"
-          className="mt-3 rounded-lg border px-3 py-1.5 text-xs font-medium"
-          style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
-          onClick={() => onCopyPrompt(context.sharedRestorationPrompt)}
-        >
-          复制共享 Prompt
-        </button>
-      </details>
+      {isV2 ? (
+        <section className="space-y-2">
+          <h4 className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>逐图还原 Prompt</h4>
+          {context.targetPrompts.map((item) => (
+            <details
+              key={`${item.targetMaterialId}-${item.targetIndex}`}
+              className="rounded-lg border px-3 py-2"
+              style={{ borderColor: 'var(--border-subtle)' }}
+            >
+              <summary className="cursor-pointer text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
+                待还原图 {item.targetIndex}
+              </summary>
+              <div className="mt-3">
+                <BoundedList title="该图识别到的偏差" items={item.targetIssueSummary} />
+              </div>
+              <pre className="mt-3 whitespace-pre-wrap break-words text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>
+                {item.restorationPrompt}
+              </pre>
+              <button
+                type="button"
+                className="mt-3 rounded-lg border px-3 py-1.5 text-xs font-medium"
+                style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+                onClick={() => onCopyPrompt(item.restorationPrompt)}
+              >
+                复制待还原图 {item.targetIndex} Prompt
+              </button>
+            </details>
+          ))}
+        </section>
+      ) : (
+        <details className="rounded-lg border px-3 py-2" style={{ borderColor: 'var(--border-subtle)' }}>
+          <summary className="cursor-pointer text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
+            共享还原 Prompt
+          </summary>
+          <pre className="mt-3 whitespace-pre-wrap break-words text-[11px] leading-5" style={{ color: 'var(--text-tertiary)' }}>
+            {context.sharedRestorationPrompt}
+          </pre>
+          <button
+            type="button"
+            className="mt-3 rounded-lg border px-3 py-1.5 text-xs font-medium"
+            style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}
+            onClick={() => onCopyPrompt(context.sharedRestorationPrompt)}
+          >
+            复制共享 Prompt
+          </button>
+        </details>
+      )}
 
       {(analysisCredits.present || imageCredits.present || totalCredits.present) && (
         <div className="grid grid-cols-3 gap-2">

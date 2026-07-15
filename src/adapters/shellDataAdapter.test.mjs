@@ -4102,6 +4102,48 @@ test('shell data adapter deep-clones persisted product restoration context', () 
   assert.deepEqual(restored.normalizedAnalysis.invariantFeatures, ['logo']);
 });
 
+test('shell data adapter deep-clones persisted V2 per-target restoration prompts', () => {
+  const persisted = structuredClone(productRestoreProject);
+  persisted.generationContext.productRestore = {
+    version: 2,
+    analysisJobId: 'restore-analysis-v2',
+    analysisModel: 'analysis-model',
+    productIdentitySummary: '绿色人字纹沙发盖布',
+    invariantFeatures: ['连续人字纹'],
+    targetPrompts: [
+      {
+        targetMaterialId: 'restore-target-a',
+        targetIndex: 1,
+        targetIssueSummary: ['纹理偏弱'],
+        restorationPrompt: '只修复目标图一的纹理',
+      },
+      {
+        targetMaterialId: 'restore-target-b',
+        targetIndex: 2,
+        targetIssueSummary: ['流苏错误'],
+        restorationPrompt: '只修复目标图二的流苏',
+      },
+    ],
+    focusIds: ['material_texture'],
+    targetMaterialIds: ['restore-target-a', 'restore-target-b'],
+    productReferenceMaterialIds: ['restore-reference-a'],
+    selectedImageModel: 'gpt-image-2',
+    resolution: '2K',
+    userRequirement: '保留背景',
+    createdAt: 1783676600000,
+  };
+  const snapshot = buildShellDataSnapshot({ shellProjects: [persisted] }, []);
+  const restored = snapshot.projects[0].generationContext.productRestore;
+
+  persisted.generationContext.productRestore.invariantFeatures.push('mutated');
+  persisted.generationContext.productRestore.targetPrompts[0].targetIssueSummary.push('mutated');
+  persisted.generationContext.productRestore.targetPrompts[0].restorationPrompt = 'mutated';
+
+  assert.deepEqual(restored.invariantFeatures, ['连续人字纹']);
+  assert.deepEqual(restored.targetPrompts[0].targetIssueSummary, ['纹理偏弱']);
+  assert.equal(restored.targetPrompts[0].restorationPrompt, '只修复目标图一的纹理');
+});
+
 test('shell data adapter recovers product restoration image jobs by target and batch after reload', () => {
   const imageJobs = [
     ['restore-image-job-a', 'restore-provider-a', 'restore-target-a', 1, 'https://example.com/result-a.png'],

@@ -7,7 +7,8 @@ import { normalizeFetchedImageBlob } from '../utils/imageBlobUtils.mjs';
 import {
   normalizeProductRestoreFocusIds,
   normalizeProductRestoreResolution,
-  parseProductRestoreAnalysis,
+  buildProductRestoreGenerationPrompt,
+  parseLegacyProductRestoreAnalysis,
   validateProductRestoreInput,
 } from '../modules/Retouch/productRestoreContract.mjs';
 import { resolvePublicAssetUrl } from '../utils/modelAssetUrl.mjs';
@@ -66,6 +67,10 @@ type WorkflowError = Error & {
 
 export const PRODUCT_RESTORE_RETRY_CONTEXT_ERROR_MESSAGE = '该历史任务缺少完整的产品还原分析或参考素材，无法安全单张重试，请重新创建产品还原任务。';
 export const PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID = '__product_restore_manual_reanalysis__';
+const PRODUCT_RESTORE_INVALID_ANALYSIS_ERROR_CODES = new Set([
+  'product_restore_analysis_invalid',
+  'product_restore_analysis_target_prompts_invalid',
+]);
 
 export interface ProductRestoreRetryResultIdentity {
   id: string;
@@ -111,6 +116,27 @@ const toWorkflowError = (
 
 const boundedIdentity = (value: unknown, maxLength = 160) => String(value || '').trim().slice(0, maxLength);
 
+const hasExactProductRestoreV2PromptCoverage = (
+  context: Extract<ProductRestoreProjectContext, { version: 2 }>,
+) => (
+  Array.isArray(context.targetMaterialIds)
+  && context.targetMaterialIds.length > 0
+  && Array.isArray(context.targetPrompts)
+  && context.targetPrompts.length === context.targetMaterialIds.length
+  && context.targetPrompts.every((item, index) => (
+    item?.targetIndex === index + 1
+    && typeof item.targetMaterialId === 'string'
+    && boundedIdentity(item.targetMaterialId) === item.targetMaterialId
+    && item.targetMaterialId === context.targetMaterialIds[index]
+    && Array.isArray(item.targetIssueSummary)
+    && item.targetIssueSummary.every((issue) => (
+      typeof issue === 'string' && Boolean(issue.trim())
+    ))
+    && typeof item.restorationPrompt === 'string'
+    && Boolean(item.restorationPrompt.trim())
+  ))
+);
+
 const logProductRestore = (
   action: string,
   status: 'started' | 'success' | 'failed' | 'interrupted',
@@ -151,6 +177,20 @@ const requireProjectId = (input: ShellGenerateInput) => {
 };
 
 const validateExistingContext = (context: ProductRestoreProjectContext) => {
+  if (context?.version === 2) {
+    if (
+      !boundedIdentity(context.analysisJobId)
+      || !boundedIdentity(context.productIdentitySummary)
+      || !Array.isArray(context.invariantFeatures)
+      || !hasExactProductRestoreV2PromptCoverage(context)
+    ) {
+      throw toWorkflowError(
+        '该历史任务缺少完整的产品还原分析，无法安全继续生成。',
+        'product_restore_context_invalid',
+      );
+    }
+    return context;
+  }
   if (
     context?.version !== 1
     || !boundedIdentity(context.analysisJobId)
@@ -166,8 +206,8 @@ const validateExistingContext = (context: ProductRestoreProjectContext) => {
 };
 
 const validateRetryContext = (context?: ProductRestoreProjectContext) => {
-  const parsedAnalysis = context?.normalizedAnalysis
-    ? parseProductRestoreAnalysis(JSON.stringify(context.normalizedAnalysis))
+  const parsedLegacyAnalysis = context?.version === 1 && context.normalizedAnalysis
+    ? parseLegacyProductRestoreAnalysis(JSON.stringify(context.normalizedAnalysis))
     : { ok: false };
   const focusIds = Array.isArray(context?.focusIds)
     ? context.focusIds.map((focusId) => boundedIdentity(focusId))
@@ -185,10 +225,25 @@ const validateRetryContext = (context?: ProductRestoreProjectContext) => {
     && new Set(values).size === values.length
   );
   if (
-    context?.version !== 1
+    (context?.version !== 1 && context?.version !== 2)
     || !boundedIdentity(context.analysisJobId)
-    || !boundedIdentity(context.sharedRestorationPrompt)
-    || !parsedAnalysis.ok
+    || (context.version === 1 && (
+      !boundedIdentity(context.sharedRestorationPrompt)
+      || !parsedLegacyAnalysis.ok
+    ))
+    || (context.version === 2 && (
+      !boundedIdentity(context.productIdentitySummary)
+      || !Array.isArray(context.invariantFeatures)
+      || !Array.isArray(context.targetPrompts)
+      || context.targetPrompts.some((item) => (
+        !boundedIdentity(item?.targetMaterialId)
+        || !Number.isInteger(item?.targetIndex)
+        || item.targetIndex <= 0
+        || !Array.isArray(item?.targetIssueSummary)
+        || !boundedIdentity(item?.restorationPrompt, 10_000)
+      ))
+      || new Set(context.targetPrompts.map((item) => item.targetMaterialId)).size !== context.targetPrompts.length
+    ))
     || !Array.isArray(context.focusIds)
     || focusIds.length === 0
     || normalizedFocusIds.length !== focusIds.length
@@ -213,6 +268,18 @@ const materialIdentities = (materials: ShellMaterialInput[]) => (
 const sameOrderedValues = (left: readonly string[] = [], right: readonly string[] = []) => (
   left.length === right.length && left.every((value, index) => value === right[index])
 );
+
+const validateFreshProductRestoreContext = (
+  context: Extract<ProductRestoreProjectContext, { version: 2 }>,
+) => {
+  if (!hasExactProductRestoreV2PromptCoverage(context)) {
+    throw toWorkflowError(
+      '分析结果未完整覆盖每张待还原图，请重试分析。',
+      'product_restore_analysis_target_prompts_invalid',
+    );
+  }
+  return context;
+};
 
 const validateTargetIdentities = (targets: ShellMaterialInput[]) => {
   const seen = new Set<string>();
@@ -324,7 +391,8 @@ const resultBase = ({
   batchIndex,
   batchCount,
   clientSubmissionKey,
-}: ShellProductRestoreItemInput & { clientSubmissionKey: string }): Pick<
+  prompt,
+}: ShellProductRestoreItemInput & { clientSubmissionKey: string; prompt: string }): Pick<
   ShellWorkflowImageResult,
   | 'prompt'
   | 'projectId'
@@ -341,7 +409,7 @@ const resultBase = ({
 > => {
   const ratio = sourceImageContext(target)?.ratioLabel || AspectRatio.AUTO;
   return {
-    prompt: context.sharedRestorationPrompt,
+    prompt,
     projectId: boundedIdentity(input.taskMetadata?.shellProjectId),
     projectName: boundedIdentity(input.taskMetadata?.shellProjectName),
     projectTaskCount: batchCount,
@@ -354,6 +422,29 @@ const resultBase = ({
     analysisJobId: context.analysisJobId,
     clientSubmissionKey,
   };
+};
+
+const resolveProductRestoreEffectivePrompt = (
+  context: ProductRestoreProjectContext,
+  targetMaterialId: string,
+) => {
+  if (context.version === 1) return context.sharedRestorationPrompt;
+  const matches = context.targetPrompts.filter((item) => (
+    boundedIdentity(item.targetMaterialId) === boundedIdentity(targetMaterialId)
+  ));
+  if (matches.length !== 1) {
+    throw toWorkflowError(
+      '当前待还原图缺少唯一的逐图修改提示词，未创建图片任务。',
+      'product_restore_target_prompt_missing',
+    );
+  }
+  return buildProductRestoreGenerationPrompt({
+    productIdentitySummary: context.productIdentitySummary,
+    invariantFeatures: context.invariantFeatures,
+    targetPrompt: matches[0].restorationPrompt,
+    focusIds: context.focusIds,
+    userRequirement: context.userRequirement,
+  });
 };
 
 const notifyItem = async (
@@ -399,14 +490,15 @@ export async function runShellProductRestoreItem(
     materialUrl(reference, input.publicBaseUrl || '', '产品参考图')
   ));
   const targetUrl = materialUrl(target, input.publicBaseUrl || '', '待还原套图');
+  const effectivePrompt = resolveProductRestoreEffectivePrompt(context, target.id);
   const clientSubmissionKey = [
     projectId,
     'product_restore',
     context.analysisJobId,
     target.id,
-    'v1',
+    context.version === 2 ? 'v2' : 'v1',
   ].join(':');
-  const base = resultBase({ ...itemInput, context, clientSubmissionKey });
+  const base = resultBase({ ...itemInput, context, clientSubmissionKey, prompt: effectivePrompt });
   const generationStartedAt = Date.now();
   let backendJobId = '';
   let providerTaskId = '';
@@ -468,7 +560,7 @@ export async function runShellProductRestoreItem(
       generationConfig,
       true,
       input.signal,
-      context.sharedRestorationPrompt,
+      effectivePrompt,
       false,
       sourceImageContext(target),
       'main',
@@ -880,7 +972,7 @@ export function canManuallyReanalyzeProductRestore(input: {
   ) return false;
   const status = boundedIdentity(input.analysisJobStatus);
   const errorCode = boundedIdentity(input.analysisErrorCode);
-  if (status === 'succeeded') return errorCode === 'product_restore_analysis_invalid';
+  if (status === 'succeeded') return PRODUCT_RESTORE_INVALID_ANALYSIS_ERROR_CODES.has(errorCode);
   if (status !== 'failed') return false;
   return !new Set(['provider_submission_unknown', 'interrupted', 'analysis_result_pending']).has(errorCode);
 }
@@ -965,7 +1057,7 @@ export async function runShellProductRestoreWorkflow(
     );
     const analysisSubmissionKey = isManualRetry && manualSubmissionKey
       ? manualSubmissionKey
-      : [projectId, 'product_restore', 'analysis', 'v1'].join(':');
+      : [projectId, 'product_restore', 'analysis', 'v2'].join(':');
     const analysis = await deps.analyzeBatch({
       targetUrls,
       productReferenceUrls,
@@ -999,7 +1091,7 @@ export async function runShellProductRestoreWorkflow(
         model: analysis.modelUsed,
         status: analysis.errorCode === 'interrupted'
           ? 'cancelled'
-          : analysis.errorCode === 'product_restore_analysis_invalid'
+          : PRODUCT_RESTORE_INVALID_ANALYSIS_ERROR_CODES.has(analysis.errorCode)
             ? 'invalid'
             : 'failed',
         errorCode: analysis.errorCode,
@@ -1025,16 +1117,22 @@ export async function runShellProductRestoreWorkflow(
       });
     }
 
-    context = {
-      version: 1,
+    context = validateFreshProductRestoreContext({
+      version: 2,
       analysisJobId: analysis.jobId,
       analysisProviderTaskId: analysis.providerTaskId,
       analysisModel: analysis.modelUsed,
       ...(analysis.creditsConsumed !== undefined
         ? { analysisCreditsConsumed: analysis.creditsConsumed }
         : {}),
-      normalizedAnalysis: analysis.normalizedAnalysis,
-      sharedRestorationPrompt: analysis.sharedRestorationPrompt,
+      productIdentitySummary: analysis.normalizedAnalysis.productIdentitySummary,
+      invariantFeatures: [...analysis.normalizedAnalysis.invariantFeatures],
+      targetPrompts: analysis.normalizedAnalysis.targetPrompts.map((item) => ({
+        targetMaterialId: targets[item.targetIndex - 1]?.id || '',
+        targetIndex: item.targetIndex,
+        targetIssueSummary: [...item.targetIssueSummary],
+        restorationPrompt: item.restorationPrompt,
+      })),
       focusIds,
       targetMaterialIds: targets.map((target) => target.id),
       productReferenceMaterialIds: productReferences.map((reference) => reference.id),
@@ -1042,7 +1140,7 @@ export async function runShellProductRestoreWorkflow(
       resolution: normalizedConfig.quality.toUpperCase() as ProductRestoreProjectContext['resolution'],
       userRequirement,
       createdAt: Date.now(),
-    };
+    });
     logProductRestore(
       'product_restore_analysis_succeeded',
       'success',
