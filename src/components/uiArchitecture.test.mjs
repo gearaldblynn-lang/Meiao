@@ -1880,11 +1880,11 @@ test('shell video generation uses one dreamina composer with three real cli mode
   assert.doesNotMatch(bottomInput, /key:\s*'videoAccessMode'/);
   assert.match(bottomInput, /Seedance 2\.0 Fast · API/);
   assert.match(bottomInput, /Seedance 2\.0 Fast VIP · CLI/);
-  assert.match(shellWorkflow, /taskType:\s*isApiAccess \? 'kie_seedance_video' : 'dreamina_video'/);
+  assert.match(shellWorkflow, /taskType:\s*isMaxForAiAccess \? 'maxforai_video' : isApiAccess \? 'kie_seedance_video' : 'dreamina_video'/);
   assert.match(shellWorkflow, /resolution:\s*normalizeSeedanceApiResolution/);
   assert.match(bottomInput, /target === 'audio'\) return 'audio\/\*'/);
   assert.match(uploadSelector, /audio/);
-  assert.match(shellWorkflow, /provider:\s*isApiAccess \? 'kie' : 'dreamina'/);
+  assert.match(shellWorkflow, /provider:\s*isMaxForAiAccess \? 'maxforai' : isApiAccess \? 'kie' : 'dreamina'/);
   assert.doesNotMatch(shellWorkflow, /createSoraVideoTask/);
 });
 
@@ -3391,9 +3391,15 @@ test('shell video generation submits seedance jobs without automatic retry and k
   const completedVideoResultBlock = shellApp.match(/const newResult: GeneratedResult = \{[\s\S]*?mediaType: 'video'[\s\S]*?\n\t          \};/)?.[0] || '';
 
   assert.match(videoBody, /generateAudio: parseSeedanceGenerateAudio\(input\.params\)/);
+  assert.match(videoBody, /isMaxForAiVideoModel/);
+  assert.match(videoBody, /taskType: isMaxForAiAccess \? 'maxforai_video'/);
+  assert.match(videoBody, /provider: isMaxForAiAccess \? 'maxforai'/);
+  assert.match(videoBody, /model: MAXFORAI_VIDEO_MODEL_ID/);
+  assert.match(videoBody, /upstreamModel: MAXFORAI_VIDEO_MODEL\.upstreamModel/);
   assert.match(videoBody, /maxRetries: 0/);
   assert.doesNotMatch(videoBody, /generateAudio: false/);
   assert.match(completedVideoResultBlock, /backendJobId: activeBackendJobId \|\| undefined/);
+  assert.match(shellApp, /model: generationParams\['modelVersion'\] \|\| generationParams\['model'\] \|\| MAXFORAI_VIDEO_MODEL_ID/);
 });
 
 test('everything replace is registered as a shell module with product replace entry points', () => {

@@ -69,6 +69,7 @@ import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion }
 import { isFrontendResourceError } from './utils/frontendResourceError.mjs';
 import { startVersionWatch } from './utils/frontendVersionWatch';
 import { resolveMaxForAiImageModelId } from './utils/maxforaiImageModels.mjs';
+import { MAXFORAI_VIDEO_MODEL_ID } from './utils/maxforaiVideoModels.mjs';
 import {
   cloneProductRestoreAnalysisAttempts,
   cloneProductRestoreAnalysisAttemptsForMutation,
@@ -5903,7 +5904,7 @@ const AppContent: React.FC<{
 	              videoUrl: undefined,
 	              mediaType: 'video',
 	              prompt: generationPrompt,
-	              model: generationParams['modelVersion'] || generationParams['model'] || 'bytedance/seedance-2-fast',
+	              model: generationParams['modelVersion'] || generationParams['model'] || MAXFORAI_VIDEO_MODEL_ID,
 	              aspectRatio: generationParams['ratio'] || generationParams['aspectRatio'] || 'auto',
 	              status: 'generating',
 	              createdAt: newProject.createdAt,
@@ -5988,7 +5989,7 @@ const AppContent: React.FC<{
 	                videoUrl: undefined,
 	                mediaType: 'video',
 	                prompt: result.prompt || result.message || generationPrompt,
-	                model: generationParams['modelVersion'] || generationParams['model'] || 'bytedance/seedance-2-fast',
+	                model: generationParams['modelVersion'] || generationParams['model'] || MAXFORAI_VIDEO_MODEL_ID,
 	                aspectRatio: generationParams['ratio'] || generationParams['aspectRatio'] || 'auto',
 	                status: 'generating',
 	                createdAt: newProject.createdAt,
@@ -6020,7 +6021,7 @@ const AppContent: React.FC<{
 	            videoUrl: mediaUrl,
 	            mediaType: 'video',
 	            prompt: result.prompt || generationPrompt,
-	            model: generationParams['model'] || 'gpt-image-2',
+	            model: generationParams['modelVersion'] || generationParams['model'] || MAXFORAI_VIDEO_MODEL_ID,
 	            aspectRatio: generationParams['ratio'] || 'auto',
 	            status: 'completed',
 	            createdAt: newProject.createdAt,

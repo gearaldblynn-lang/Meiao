@@ -28,6 +28,14 @@ import { buildShellImageInputUrls } from './shellOneClickMaterials.mjs';
 import { getExactAspectRatioFromDimensions, resolveNearestSupportedAspectRatio } from '../utils/aspectRatioUtils';
 import { getSupportedAspectRatiosForModel } from '../utils/modelAspectRatio';
 import { resolveMaxForAiImageModelId } from '../utils/maxforaiImageModels.mjs';
+import {
+  MAXFORAI_VIDEO_MODEL,
+  MAXFORAI_VIDEO_MODEL_ID,
+  assertMaxForAiVideoMediaContract,
+  isMaxForAiVideoModel,
+  normalizeMaxForAiVideoAspectRatio,
+  normalizeMaxForAiVideoSeconds,
+} from '../utils/maxforaiVideoModels.mjs';
 import { loadShellDraftAsset } from '../utils/shellDraftAssetStore';
 import {
   createDefaultLogoPlacement,
@@ -2893,10 +2901,9 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
   storeActiveModuleContext(input.module);
   const publicBaseUrl = input.publicBaseUrl || '';
   const mode = normalizeDreaminaMode(firstParam(input.params, ['dreaminaMode', 'videoMode'], 'multimodal2video'));
-  const accessMode = normalizeDreaminaAccessMode(
-    mode,
-    firstParam(input.params, ['modelVersion', 'videoAccessMode'], 'bytedance/seedance-2-fast'),
-  );
+  const selectedModel = firstParam(input.params, ['modelVersion', 'videoAccessMode'], MAXFORAI_VIDEO_MODEL_ID);
+  const isMaxForAiAccess = mode === 'multimodal2video' && isMaxForAiVideoModel(selectedModel);
+  const accessMode = isMaxForAiAccess ? 'maxforai' : normalizeDreaminaAccessMode(mode, selectedModel);
   const productUrls = collectMaterialUrls(input.materials.product, publicBaseUrl);
   const sceneUrls = collectMaterialUrls(input.materials.scene, publicBaseUrl);
   const referenceVideoUrls = collectMaterialUrls(input.materials.referenceVideo, publicBaseUrl);
@@ -2911,8 +2918,17 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
   if (mode === 'multiframe2video' && imageUrls.length < 2) {
     throw new Error('智能多帧请至少上传 2 张图片素材。');
   }
-  if (mode === 'multimodal2video' && imageUrls.length + referenceVideoUrls.length < 1) {
+  if (!isMaxForAiAccess && mode === 'multimodal2video' && imageUrls.length + referenceVideoUrls.length < 1) {
     throw new Error('全能参考请至少上传 1 个图片或视频素材。');
+  }
+  if (isMaxForAiAccess) {
+    assertMaxForAiVideoMediaContract({
+      imageUrls,
+      videoUrls: referenceVideoUrls,
+      audioUrls,
+      videoDurations: referenceVideoDurations,
+      audioDurations: referenceAudioDurations,
+    });
   }
   const duration = normalizeDreaminaDuration(firstParam(input.params, ['duration'], mode === 'multiframe2video' ? '3秒' : '5秒'));
   const transitionCount = mode === 'multiframe2video' ? Math.max(0, imageUrls.length - 1) : 0;
@@ -2932,41 +2948,58 @@ export const runShellVideoGeneration = async (input: ShellGenerateInput) => {
 
   const { job } = await createInternalJob({
     module: input.module,
-    taskType: isApiAccess ? 'kie_seedance_video' : 'dreamina_video',
-    provider: isApiAccess ? 'kie' : 'dreamina',
-    payload: isApiAccess
+    taskType: isMaxForAiAccess ? 'maxforai_video' : isApiAccess ? 'kie_seedance_video' : 'dreamina_video',
+    provider: isMaxForAiAccess ? 'maxforai' : isApiAccess ? 'kie' : 'dreamina',
+    payload: isMaxForAiAccess
       ? {
-          mode,
+          mode: 'multimodal2video',
           prompt: input.prompt.trim(),
           imageUrls,
-          videoUrls: mode === 'multimodal2video' ? referenceVideoUrls : [],
-          audioUrls: mode === 'multimodal2video' ? audioUrls : [],
-          referenceVideoDurations: mode === 'multimodal2video' ? referenceVideoDurations : [],
-          referenceAudioDurations: mode === 'multimodal2video' ? referenceAudioDurations : [],
-          duration,
-          aspectRatio: firstParam(input.params, ['ratio', 'aspectRatio'], '9:16'),
-          resolution: normalizeSeedanceApiResolution(firstParam(input.params, ['videoResolution'], '720p')),
-          generateAudio: parseSeedanceGenerateAudio(input.params),
-          model: 'bytedance/seedance-2-fast',
+          videoUrls: referenceVideoUrls,
+          audioUrls,
+          referenceVideoDurations,
+          referenceAudioDurations,
+          seconds: normalizeMaxForAiVideoSeconds(firstParam(input.params, ['duration'], '4秒')),
+          aspectRatio: normalizeMaxForAiVideoAspectRatio(firstParam(input.params, ['ratio', 'aspectRatio'], '16:9')),
+          resolution: MAXFORAI_VIDEO_MODEL.resolution,
+          model: MAXFORAI_VIDEO_MODEL_ID,
+          upstreamModel: MAXFORAI_VIDEO_MODEL.upstreamModel,
           subFeature: input.subFeature,
           ...(input.taskMetadata || {}),
         }
-      : {
-          mode,
-          prompt: input.prompt.trim(),
-          imageUrls,
-          videoUrls: mode === 'multimodal2video' ? referenceVideoUrls : [],
-          audioUrls: mode === 'multimodal2video' ? audioUrls : [],
-          referenceVideoDurations: mode === 'multimodal2video' ? referenceVideoDurations : [],
-          referenceAudioDurations: mode === 'multimodal2video' ? referenceAudioDurations : [],
-          transitionPrompts,
-          transitionDurations,
-          duration,
-          ratio: firstParam(input.params, ['ratio', 'aspectRatio'], '9:16'),
-          modelVersion: 'seedance2.0fast_vip',
-          subFeature: input.subFeature,
-          ...(input.taskMetadata || {}),
-        },
+      : isApiAccess
+        ? {
+            mode,
+            prompt: input.prompt.trim(),
+            imageUrls,
+            videoUrls: mode === 'multimodal2video' ? referenceVideoUrls : [],
+            audioUrls: mode === 'multimodal2video' ? audioUrls : [],
+            referenceVideoDurations: mode === 'multimodal2video' ? referenceVideoDurations : [],
+            referenceAudioDurations: mode === 'multimodal2video' ? referenceAudioDurations : [],
+            duration,
+            aspectRatio: firstParam(input.params, ['ratio', 'aspectRatio'], '9:16'),
+            resolution: normalizeSeedanceApiResolution(firstParam(input.params, ['videoResolution'], '720p')),
+            generateAudio: parseSeedanceGenerateAudio(input.params),
+            model: 'bytedance/seedance-2-fast',
+            subFeature: input.subFeature,
+            ...(input.taskMetadata || {}),
+          }
+        : {
+            mode,
+            prompt: input.prompt.trim(),
+            imageUrls,
+            videoUrls: mode === 'multimodal2video' ? referenceVideoUrls : [],
+            audioUrls: mode === 'multimodal2video' ? audioUrls : [],
+            referenceVideoDurations: mode === 'multimodal2video' ? referenceVideoDurations : [],
+            referenceAudioDurations: mode === 'multimodal2video' ? referenceAudioDurations : [],
+            transitionPrompts,
+            transitionDurations,
+            duration,
+            ratio: firstParam(input.params, ['ratio', 'aspectRatio'], '9:16'),
+            modelVersion: 'seedance2.0fast_vip',
+            subFeature: input.subFeature,
+            ...(input.taskMetadata || {}),
+          },
     maxRetries: 0,
   });
   input.onJobCreated?.(job.id);

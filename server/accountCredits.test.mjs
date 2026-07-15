@@ -278,6 +278,12 @@ test('estimateCreditReservation derives generation estimates from payload hints'
     provider: 'internal',
     payload: {},
   }), 0);
+
+  assert.equal(estimateCreditReservation({
+    taskType: 'maxforai_video',
+    provider: 'maxforai',
+    payload: { model: 'maxforai-sora-v9-pro', seconds: 15 },
+  }), 0);
 });
 
 test('createCreditInsufficientError exposes HTTP 402 details', () => {

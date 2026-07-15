@@ -50,11 +50,15 @@ test('provider policy binds Dreamina video jobs to the Dreamina provider', () =>
 test('video permission and create retry policy covers every video task type', () => {
   assert.deepEqual(
     [...VIDEO_JOB_TASK_TYPES].sort(),
-    ['dreamina_video', 'kie_seedance_video', 'kie_veo', 'kie_video']
+    ['dreamina_video', 'kie_seedance_video', 'kie_veo', 'kie_video', 'maxforai_video']
   );
 
   for (const taskType of VIDEO_JOB_TASK_TYPES) {
-    const provider = taskType === 'dreamina_video' ? 'dreamina' : 'kie';
+    const provider = taskType === 'dreamina_video'
+      ? 'dreamina'
+      : taskType === 'maxforai_video'
+        ? 'maxforai'
+        : 'kie';
     assert.throws(
       () => resolveJobSubmissionPolicy({ taskType, provider, hasVideoPermission: false }),
       (error) => error?.code === 'video_feature_forbidden' && error?.statusCode === 403,
@@ -64,6 +68,31 @@ test('video permission and create retry policy covers every video task type', ()
     assert.equal(policy.maxCreateRetries, 0, taskType);
     assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000, taskType);
   }
+});
+
+test('MaxForAI video jobs are provider-bound, zero-retry and recoverable by task id', () => {
+  const policy = resolveJobSubmissionPolicy({
+    module: 'video',
+    taskType: 'maxforai_video',
+    provider: 'maxforai',
+    hasVideoPermission: true,
+  });
+
+  assert.equal(policy.requiresVideoPermission, true);
+  assert.equal(policy.maxCreateRetries, 0);
+  assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000);
+  assert.equal(canRecoverProviderTaskById({
+    taskType: 'maxforai_video',
+    providerTaskId: 'video_123',
+  }), true);
+  assert.throws(
+    () => resolveJobSubmissionPolicy({
+      taskType: 'maxforai_video',
+      provider: 'kie',
+      hasVideoPermission: true,
+    }),
+    /\u4e0d\u5141\u8bb8\u4f7f\u7528 provider=kie/
+  );
 });
 
 test('video storyboard chat receives video permission, zero create retries and video dedupe policy', () => {
@@ -137,7 +166,7 @@ test('submission lock timeout uses an env override with a conservative default',
 });
 
 test('provider task recovery is limited to task types with a real query path', () => {
-  for (const taskType of ['kie_image', 'kie_video', 'kie_seedance_video', 'kie_veo', 'dreamina_video']) {
+  for (const taskType of ['kie_image', 'kie_video', 'kie_seedance_video', 'kie_veo', 'dreamina_video', 'maxforai_video']) {
     assert.equal(canRecoverProviderTaskById({ taskType, providerTaskId: 'existing-task' }), true, taskType);
   }
   for (const taskType of ['kie_chat', 'openai_responses', 'openai_tool_calling']) {
