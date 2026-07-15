@@ -324,6 +324,7 @@ export interface SystemPublicConfig {
     kie: { configured: boolean };
     apiports?: { configured: boolean };
     maxforai?: { configured: boolean };
+    maxforaiVideo?: { configured: boolean };
   };
   featureRollouts: {
     productRestore: 'off' | 'admin' | 'all';
@@ -400,7 +401,7 @@ export interface SystemPublicConfig {
     video: Array<{
       id: string;
       label: string;
-      provider: 'kie';
+      provider: 'kie' | 'maxforai';
       supportsAsyncTask: boolean;
       supportsStreaming: boolean;
       supportsCacheHit: boolean;

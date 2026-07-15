@@ -16,10 +16,31 @@ test('MaxForAI secret and runtime limits are documented without a real key', () 
     'MAXFORAI_ASSET_UPLOAD_TIMEOUT_MS=120000',
     'MAXFORAI_ASSET_UPLOAD_CONCURRENCY=3',
   ];
+  const videoExpectedLines = [
+    'MAXFORAI_VIDEO_API_KEY=',
+    'MAXFORAI_VIDEO_BASE_URL=https://maxforai.top/v1',
+    'MAXFORAI_VIDEO_CREATE_TIMEOUT_MS=60000',
+    'MAXFORAI_VIDEO_ASSET_TIMEOUT_MS=120000',
+    'MAXFORAI_VIDEO_ASSET_UPLOAD_CONCURRENCY=2',
+    'MAXFORAI_VIDEO_POLL_INTERVAL_MS=5000',
+    'MAXFORAI_VIDEO_POLL_TIMEOUT_MS=1500000',
+  ];
 
   for (const line of expectedLines) {
     assert.match(envExample, new RegExp(`^${line}$`, 'm'));
     assert.match(deployDoc, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  for (const line of videoExpectedLines) {
+    assert.match(envExample, new RegExp(`^${line}$`, 'm'));
+    assert.match(deployDoc, new RegExp(line.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+  for (const source of [deployDoc, overview]) {
+    assert.match(source, /Seedance 2\.0 Pro 特价/);
+    assert.match(source, /sora-v9-pro/);
+    assert.match(source, /0\.5元\/秒/);
+    assert.match(source, /4-15 秒/);
+    assert.match(source, /\/assets\/url/);
+    assert.match(source, /providerTaskId/);
   }
   assert.match(overview, /MAXFORAI_API_KEY/);
   for (const source of [envExample, deployDoc, overview]) {
@@ -29,6 +50,8 @@ test('MaxForAI secret and runtime limits are documented without a real key', () 
   }
   assert.doesNotMatch(envExample, /MAXFORAI_API_KEY=sk-/);
   assert.doesNotMatch(deployDoc, /MAXFORAI_API_KEY=sk-/);
+  assert.doesNotMatch(envExample, /MAXFORAI_VIDEO_API_KEY=sk-/);
+  assert.doesNotMatch(deployDoc, /MAXFORAI_VIDEO_API_KEY=sk-/);
   for (const source of [deployDoc, overview]) {
     assert.match(source, /response_format/);
     assert.match(source, /b64_json/);
