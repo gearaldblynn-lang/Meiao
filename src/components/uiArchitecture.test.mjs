@@ -2959,8 +2959,10 @@ test('product restoration upload reservations and regeneration share fail-closed
 
   assert.match(regenerateBody, /getProductRestoreJobCreationDisabledReason/);
   const guardIndex = regenerateBody.indexOf('getProductRestoreJobCreationDisabledReason');
-  assert.ok(guardIndex >= 0 && guardIndex < regenerateBody.indexOf('retryInternalJob'), 'rollout must guard backend retry creation');
-  assert.ok(guardIndex < regenerateBody.indexOf('runShellImageGeneration'), 'rollout must guard image regeneration creation');
+  const guardedRetryIndex = regenerateBody.indexOf('retryInternalJob', guardIndex);
+  const guardedGenerationIndex = regenerateBody.indexOf('runShellImageGeneration', guardIndex);
+  assert.ok(guardIndex >= 0 && guardedRetryIndex >= 0 && guardIndex < guardedRetryIndex, 'rollout must guard backend retry creation');
+  assert.ok(guardedGenerationIndex >= 0 && guardIndex < guardedGenerationIndex, 'rollout must guard image regeneration creation');
   assert.doesNotMatch(recoverBody, /getProductRestoreJobCreationDisabledReason/);
   assert.match(recoverBody, /recoverKieAiTask|hydrateShellJobs/);
 });

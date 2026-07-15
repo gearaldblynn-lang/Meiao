@@ -623,6 +623,7 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
       ) : null}
 
       <SubtitleRemovalRegionDialog
+        key={editingItem?.draft?.draftNonce || 'closed'}
         item={editingItem?.draft ? { draft: editingItem.draft, region: editingItem.region } : null}
         onCancel={() => setEditingItemId('')}
         onSave={(region) => {
