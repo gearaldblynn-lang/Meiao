@@ -139,3 +139,23 @@ test('音视频裁剪转码配置同步到模板、总览和云上部署文档',
     assert.match(deployDoc, new RegExp(key));
   }
 });
+
+test('视频去字幕服务端配置同步到模板、总览和云上部署文档', () => {
+  const requiredKeys = [
+    'GOLDEN_SUBTITLE_API_TOKEN',
+    'MEIAO_SUBTITLE_REMOVAL_ENABLED',
+    'MEIAO_SUBTITLE_REMOVAL_BASE_URL',
+    'MEIAO_SUBTITLE_REMOVAL_POLL_INTERVAL_MS',
+    'MEIAO_SUBTITLE_REMOVAL_TIMEOUT_MS',
+  ];
+
+  for (const key of requiredKeys) {
+    assert.match(envExample, new RegExp(key));
+    assert.match(projectOverview, new RegExp(key));
+    assert.match(deployDoc, new RegExp(key));
+  }
+  assert.match(envExample, /^GOLDEN_SUBTITLE_API_TOKEN=\s*$/m);
+  assert.match(deployDoc, /默认关闭/);
+  assert.match(deployDoc, /仅写入服务端/);
+  assert.match(deployDoc, /单次付费探针/);
+});

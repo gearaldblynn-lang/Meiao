@@ -166,6 +166,10 @@ npm run dev
 - `MEIAO_MEDIA_TRANSCODE_INPUT_MAX_BYTES` / `MEIAO_MEDIA_TRANSCODE_CONCURRENCY`：默认 `209715200`（200 MiB）/ `1`，分别限制进入临时会话的单次请求和全进程并发转码数。
 - `MEIAO_MEDIA_TRANSCODE_TIMEOUT_MS` / `MEIAO_MEDIA_PROBE_TIMEOUT_MS`：默认 `600000` / `30000`；FFmpeg 与 FFprobe 的单次执行上限，超时会强杀子进程、释放并发并清理临时会话。
 - `MEIAO_MEDIA_TRANSCODE_SESSION_TTL_MS` / `MEIAO_MEDIA_TRANSCODE_MAX_SESSIONS`：默认 `1800000`（30 分钟）/ `20`；控制未完成临时素材寿命和全进程会话容量。原始上传不会进入素材库、COS、KIE 或任务记录，只有 H.264 MP4 / MP3 转码并复检通过的结果才持久化。
+- `GOLDEN_SUBTITLE_API_TOKEN`：Golden 视频去字幕令牌，仅写入服务端 `.env.server`，不进入前端、任务 payload、公开配置或健康响应。
+- `MEIAO_SUBTITLE_REMOVAL_ENABLED`：去字幕新任务开关，生产默认关闭；关闭只阻止新提交，不隐藏历史 `subtitle_removal` 任务卡和托管结果。
+- `MEIAO_SUBTITLE_REMOVAL_BASE_URL`：可选上游地址覆盖，默认使用内置 Golden API 地址；不向公开端点暴露。
+- `MEIAO_SUBTITLE_REMOVAL_POLL_INTERVAL_MS` / `MEIAO_SUBTITLE_REMOVAL_TIMEOUT_MS`：默认 `5000` / `1800000`，边界分别为 `2000-30000` / `300000-7200000`毫秒。去字幕 provider 使用独立 `subtitle_remove_video` job，provider task ID 先 checkpoint，成功视频再转存为梅奥托管结果。
 - `MEIAO_CHAT_SSE_HEARTBEAT_MS`：默认 `15000`；智能体聊天 SSE 心跳间隔，避免长耗时多图生图期间代理或浏览器因连接空闲断流。
 - `AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES`：默认 `1`；智能体单次 `generate_image` 提交/读取遇到 `fetch failed`、502、超时等瞬时上游错误时的内部快速重试次数，避免把瞬时失败总结成“部分完成”。
 - `AGENT_IMAGE_TOOL_CONCURRENCY`：默认 `2`，代码上限 `5`；智能体同一轮返回多条独立 `generate_image` 工具调用时受控并发执行。只在本轮全是生图工具时启用，混合检索/生图仍串行，避免状态交叉。

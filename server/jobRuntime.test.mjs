@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
   buildJobFailureErrorFields,
@@ -44,6 +45,7 @@ test('buildPublicSystemConfig only exposes non-sensitive provider readiness', ()
     apiports: { configured: true },
     maxforai: { configured: false },
     maxforaiVideo: { configured: false },
+    goldenSubtitle: { configured: false },
   });
   assert.equal(config.publicBaseUrl, 'https://meiao.internal');
   assert.deepEqual(config.agentModels.chat.map((item) => item.id), [
@@ -123,6 +125,30 @@ test('buildPublicSystemConfig exposes MaxForAI video readiness without leaking i
 
   assert.deepEqual(config.providers.maxforaiVideo, { configured: true });
   assert.equal(JSON.stringify(config).includes('private-video-secret'), false);
+});
+
+test('subtitle removal readiness exposes booleans without leaking provider configuration', () => {
+  const token = 'golden-private-token';
+  const baseUrl = 'https://subtitle-provider.invalid/private-api';
+  const config = buildPublicSystemConfig({
+    GOLDEN_SUBTITLE_API_TOKEN: token,
+    MEIAO_SUBTITLE_REMOVAL_ENABLED: '1',
+    MEIAO_SUBTITLE_REMOVAL_BASE_URL: baseUrl,
+  });
+
+  assert.deepEqual(config.providers.goldenSubtitle, { configured: true });
+  assert.equal(config.featureRollouts.subtitleRemoval, true);
+  const serialized = JSON.stringify(config);
+  assert.equal(serialized.includes(token), false);
+  assert.equal(serialized.includes(baseUrl), false);
+  assert.equal(serialized.toLowerCase().includes('authorization'), false);
+
+  const serverSource = readFileSync(new URL('./index.mjs', import.meta.url), 'utf8');
+  const healthBlock = serverSource.match(/if \(url\.pathname === '\/api\/health'[\s\S]*?\n\s*return;\n\s*}/)?.[0] || '';
+  assert.match(healthBlock, /subtitleRemoval:\s*\{/);
+  assert.match(healthBlock, /enabled:\s*subtitleRemovalConfig\.enabled/);
+  assert.match(healthBlock, /configured:\s*subtitleRemovalConfig\.configured/);
+  assert.doesNotMatch(healthBlock, /GOLDEN_SUBTITLE_API_TOKEN|authorization|baseUrl|pollIntervalMs|timeoutMs/i);
 });
 
 test('buildPublicSystemConfig exposes the normalized Product Restoration rollout', () => {
