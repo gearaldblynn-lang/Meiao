@@ -1,4 +1,5 @@
 import React, {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -7,11 +8,16 @@ import React, {
 import {
   AlertCircle,
   CheckCircle2,
+  CheckSquare2,
   Film,
   Loader2,
+  Plus,
+  RefreshCw,
   Scissors,
+  Settings2,
+  Square,
+  Trash2,
   Upload,
-  X,
 } from 'lucide-react';
 
 import type {
@@ -25,17 +31,43 @@ import {
   createMediaTranscodeSession,
 } from '../../services/mediaTranscodeClient';
 import {
+  pickSubtitlePreparationItems,
+  mapWithSubtitleConcurrency,
+  summarizeSubtitleRemovalBatch,
+} from '../../utils/subtitleRemovalBatch.mjs';
+import {
   DEFAULT_SUBTITLE_REGION,
   subtitleRegionToPixels,
 } from '../../utils/subtitleRemovalRegion.mjs';
-import SubtitleRegionEditor from './SubtitleRegionEditor';
+import ConfirmDialog from './ConfirmDialog';
+import SubtitleRemovalRegionDialog from './SubtitleRemovalRegionDialog';
 
-type Phase = 'idle' | 'uploading' | 'analyzing' | 'transcoding' | 'ready' | 'submitting' | 'error';
+type Phase = 'queued' | 'uploading' | 'analyzing' | 'transcoding' | 'ready' | 'submitting' | 'error';
 
 export type SubtitleRemovalSubmitInput = {
+  clientItemId: string;
   draft: SubtitleRemovalSourceDraft;
   subtitleRegionNormalized: SubtitleRemovalRegion;
   subtitleRegionPixels: SubtitleRemovalPixels;
+};
+
+export type SubtitleRemovalBatchLimits = {
+  batchMaxItems: number;
+  batchPrepConcurrency: number;
+  batchSubmitConcurrency: number;
+};
+
+type BatchItem = {
+  clientItemId: string;
+  selected: boolean;
+  file?: File;
+  draft?: SubtitleRemovalSourceDraft;
+  region: SubtitleRemovalRegion;
+  regionMode: 'default' | 'custom';
+  phase: Phase;
+  uploadProgress: number;
+  stageText: string;
+  errorMessage?: string;
 };
 
 type Props = {
@@ -44,6 +76,18 @@ type Props = {
   onSubmit: (input: SubtitleRemovalSubmitInput) => Promise<void> | void;
   submitting?: boolean;
   featureAvailable?: boolean;
+  limits?: Partial<SubtitleRemovalBatchLimits>;
+};
+
+const DEFAULT_LIMITS: SubtitleRemovalBatchLimits = {
+  batchMaxItems: 10,
+  batchPrepConcurrency: 2,
+  batchSubmitConcurrency: 2,
+};
+
+const boundedInteger = (value: unknown, fallback: number, min: number, max: number) => {
+  const parsed = Number.parseInt(String(value ?? ''), 10);
+  return Number.isFinite(parsed) ? Math.min(max, Math.max(min, parsed)) : fallback;
 };
 
 const formatDuration = (value: number) => {
@@ -60,8 +104,18 @@ const formatBytes = (value: number) => {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 };
 
-const createDraftNonce = () => globalThis.crypto?.randomUUID?.()
-  || `subtitle-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+const createStableId = (prefix: string) => globalThis.crypto?.randomUUID?.()
+  || `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+const stageLabel = (item: BatchItem) => {
+  if (item.phase === 'queued') return '等待处理';
+  if (item.phase === 'uploading') return `上传中 ${item.uploadProgress}%`;
+  if (item.phase === 'analyzing') return '正在分析';
+  if (item.phase === 'transcoding') return '正在转码';
+  if (item.phase === 'submitting') return '正在提交';
+  if (item.phase === 'error') return '处理失败';
+  return '可以提交';
+};
 
 const SubtitleRemovalWorkspace: React.FC<Props> = ({
   draft,
@@ -69,83 +123,91 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
   onSubmit,
   submitting = false,
   featureAvailable = true,
+  limits,
 }) => {
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const sessionIdRef = useRef('');
-  const activeRequestRef = useRef<AbortController | null>(null);
+  const replaceInputRef = useRef<HTMLInputElement | null>(null);
+  const controllersRef = useRef(new Map<string, AbortController>());
+  const sessionIdsRef = useRef(new Map<string, string>());
+  const consumedDraftsRef = useRef(new Set<string>());
   const mountedRef = useRef(true);
   const submitLockRef = useRef(false);
-  const [phase, setPhase] = useState<Phase>(draft ? 'ready' : 'idle');
-  const [region, setRegion] = useState<SubtitleRemovalRegion>({ ...DEFAULT_SUBTITLE_REGION });
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [stageText, setStageText] = useState('');
-  const [errorMessage, setErrorMessage] = useState('');
+  const [items, setItems] = useState<BatchItem[]>([]);
+  const [editingItemId, setEditingItemId] = useState('');
+  const [replaceTargetId, setReplaceTargetId] = useState('');
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [batchError, setBatchError] = useState('');
   const [localSubmitting, setLocalSubmitting] = useState(false);
-  const draftSourceUrl = draft?.sourceUrl;
-  const draftTranscoded = draft?.transcoded;
 
-  const cancelUnfinishedSession = async () => {
-    activeRequestRef.current?.abort();
-    activeRequestRef.current = null;
-    const sessionId = sessionIdRef.current;
-    sessionIdRef.current = '';
-    if (sessionId) {
-      await cancelMediaTranscodeSession({ sessionId }).catch(() => undefined);
-    }
-  };
+  const batchMaxItems = boundedInteger(limits?.batchMaxItems, DEFAULT_LIMITS.batchMaxItems, 1, 20);
+  const batchPrepConcurrency = boundedInteger(limits?.batchPrepConcurrency, DEFAULT_LIMITS.batchPrepConcurrency, 1, 4);
+  const batchSubmitConcurrency = boundedInteger(limits?.batchSubmitConcurrency, DEFAULT_LIMITS.batchSubmitConcurrency, 1, 4);
+
+  const updateItem = useCallback((clientItemId: string, updater: (item: BatchItem) => BatchItem) => {
+    setItems((current) => current.map((item) => (
+      item.clientItemId === clientItemId ? updater(item) : item
+    )));
+  }, []);
+
+  const cancelItemSession = useCallback(async (clientItemId: string) => {
+    controllersRef.current.get(clientItemId)?.abort();
+    controllersRef.current.delete(clientItemId);
+    const sessionId = sessionIdsRef.current.get(clientItemId) || '';
+    sessionIdsRef.current.delete(clientItemId);
+    if (sessionId) await cancelMediaTranscodeSession({ sessionId }).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
+    const controllers = controllersRef.current;
+    const sessions = sessionIdsRef.current;
     return () => {
       mountedRef.current = false;
-      activeRequestRef.current?.abort();
-      const sessionId = sessionIdRef.current;
-      sessionIdRef.current = '';
-      if (sessionId) void cancelMediaTranscodeSession({ sessionId }).catch(() => undefined);
+      controllers.forEach((controller) => controller.abort());
+      controllers.clear();
+      sessions.forEach((sessionId) => {
+        void cancelMediaTranscodeSession({ sessionId }).catch(() => undefined);
+      });
+      sessions.clear();
     };
   }, []);
 
   useEffect(() => {
-    setRegion({ ...DEFAULT_SUBTITLE_REGION });
-    if (draftSourceUrl) {
-      setPhase('ready');
-      setErrorMessage('');
-      setStageText(draftTranscoded === true
-        ? '已保留原画幅转换为 H.264 MP4'
-        : draftTranscoded === false
-          ? '原视频已是兼容格式，未重复转码'
-          : '已从任务卡带入原视频');
-    } else if (!sessionIdRef.current) {
-      setPhase('idle');
-      setStageText('');
-    }
-  }, [draftSourceUrl, draftTranscoded]);
-
-  const pixels = useMemo<SubtitleRemovalPixels | null>(() => {
-    if (!draft?.width || !draft?.height) return null;
-    try {
-      return subtitleRegionToPixels(region, draft.width, draft.height);
-    } catch {
-      return null;
-    }
-  }, [draft?.height, draft?.width, region]);
-
-  const handleFile = async (file: File) => {
-    if (!featureAvailable) return;
-    if (!file.type.startsWith('video/')) {
-      setPhase('error');
-      setErrorMessage('请选择视频文件');
-      return;
-    }
-    await cancelUnfinishedSession();
+    if (!draft?.sourceUrl) return;
+    const identity = draft.draftNonce || draft.sourceUrl;
+    if (consumedDraftsRef.current.has(identity)) return;
+    consumedDraftsRef.current.add(identity);
+    setItems((current) => {
+      if (current.some((item) => item.draft?.sourceUrl === draft.sourceUrl)) return current;
+      if (current.length >= batchMaxItems) {
+        setBatchError(`一次最多上传 ${batchMaxItems} 个视频，请先提交或删除部分任务。`);
+        return current;
+      }
+      return [...current, {
+        clientItemId: createStableId('subtitle-card'),
+        selected: true,
+        draft,
+        region: { ...DEFAULT_SUBTITLE_REGION },
+        regionMode: 'default',
+        phase: 'ready',
+        uploadProgress: 100,
+        stageText: '已从任务卡带入原视频',
+      }];
+    });
     onDraftChange(null);
-    setRegion({ ...DEFAULT_SUBTITLE_REGION });
-    setUploadProgress(0);
-    setStageText('正在上传原视频');
-    setErrorMessage('');
-    setPhase('uploading');
+  }, [batchMaxItems, draft, onDraftChange]);
+
+  const prepareItem = useCallback(async (clientItemId: string, file: File) => {
+    if (controllersRef.current.has(clientItemId)) return;
     const controller = new AbortController();
-    activeRequestRef.current = controller;
+    controllersRef.current.set(clientItemId, controller);
+    updateItem(clientItemId, (item) => ({
+      ...item,
+      phase: 'uploading',
+      uploadProgress: 0,
+      stageText: '正在上传原视频',
+      errorMessage: undefined,
+    }));
     try {
       const probe = await createMediaTranscodeSession({
         file,
@@ -154,22 +216,25 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
         signal: controller.signal,
         onUploadProgress: (progress) => {
           if (!mountedRef.current || controller.signal.aborted) return;
-          setUploadProgress(Math.round(progress.ratio * 100));
-          if (progress.ratio >= 0.999) {
-            setPhase('analyzing');
-            setStageText('上传完成，正在读取时长、分辨率和编码');
-          }
+          updateItem(clientItemId, (item) => ({
+            ...item,
+            phase: progress.ratio >= 0.999 ? 'analyzing' : 'uploading',
+            uploadProgress: Math.round(progress.ratio * 100),
+            stageText: progress.ratio >= 0.999
+              ? '上传完成，正在读取时长、分辨率和编码'
+              : '正在上传原视频',
+          }));
         },
       });
       if (!probe.sessionId) throw new Error('服务端未返回媒体处理会话');
-      sessionIdRef.current = probe.sessionId;
-      if (probe.durationSeconds > 600) {
-        await cancelMediaTranscodeSession({ sessionId: probe.sessionId }).catch(() => undefined);
-        sessionIdRef.current = '';
-        throw new Error('去字幕视频最长支持 600 秒，请先裁剪后重试');
-      }
-      setPhase('transcoding');
-      setStageText('正在保留原画幅转换为 H.264 MP4');
+      sessionIdsRef.current.set(clientItemId, probe.sessionId);
+      if (probe.durationSeconds > 600) throw new Error('去字幕视频最长支持 600 秒，请先裁剪后重试');
+      updateItem(clientItemId, (item) => ({
+        ...item,
+        phase: 'transcoding',
+        uploadProgress: 100,
+        stageText: '正在保留原画幅转换为 H.264 MP4',
+      }));
       const result = await convertMediaTranscodeSession({
         sessionId: probe.sessionId,
         startSeconds: 0,
@@ -177,7 +242,7 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
         module: 'video',
         signal: controller.signal,
       });
-      sessionIdRef.current = '';
+      sessionIdsRef.current.delete(clientItemId);
       if (!result.fileUrl) throw new Error('视频已处理，但未返回可用的托管素材');
       const nextDraft: SubtitleRemovalSourceDraft = {
         sourceUrl: result.fileUrl,
@@ -190,71 +255,184 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
         height: Number(result.height || probe.height || 0),
         videoCodec: result.videoCodec || probe.videoCodec,
         transcoded: result.transcoded,
-        draftNonce: createDraftNonce(),
+        draftNonce: createStableId('subtitle'),
       };
       if (!nextDraft.width || !nextDraft.height) throw new Error('无法读取处理后视频分辨率');
-      onDraftChange(nextDraft);
-      setRegion({ ...DEFAULT_SUBTITLE_REGION });
-      setStageText(result.transcoded
-        ? '已保留原画幅转换为 H.264 MP4'
-        : '原视频已是兼容格式，未重复转码');
-      setPhase('ready');
+      updateItem(clientItemId, (item) => ({
+        ...item,
+        draft: nextDraft,
+        phase: 'ready',
+        uploadProgress: 100,
+        stageText: result.transcoded
+          ? '已保留原画幅转换为 H.264 MP4'
+          : '原视频已是兼容格式，未重复转码',
+        errorMessage: undefined,
+      }));
     } catch (error) {
-      const cancelled = controller.signal.aborted || (error as { code?: string })?.code === 'media_transcode_cancelled';
-      const sessionId = sessionIdRef.current;
-      sessionIdRef.current = '';
+      const cancelled = controller.signal.aborted
+        || (error as { code?: string })?.code === 'media_transcode_cancelled';
+      const sessionId = sessionIdsRef.current.get(clientItemId) || '';
+      sessionIdsRef.current.delete(clientItemId);
       if (sessionId) await cancelMediaTranscodeSession({ sessionId }).catch(() => undefined);
       if (!mountedRef.current || cancelled) return;
-      setPhase('error');
-      setErrorMessage(error instanceof Error ? error.message : '视频处理失败，请重试');
+      updateItem(clientItemId, (item) => ({
+        ...item,
+        phase: 'error',
+        stageText: '视频暂时无法处理',
+        errorMessage: error instanceof Error ? error.message : '视频处理失败，请重试',
+      }));
     } finally {
-      if (activeRequestRef.current === controller) activeRequestRef.current = null;
+      if (controllersRef.current.get(clientItemId) === controller) {
+        controllersRef.current.delete(clientItemId);
+      }
     }
-  };
+  }, [updateItem]);
 
-  const handleClear = async () => {
-    await cancelUnfinishedSession();
-    onDraftChange(null);
-    setRegion({ ...DEFAULT_SUBTITLE_REGION });
-    setPhase('idle');
-    setUploadProgress(0);
-    setStageText('');
-    setErrorMessage('');
-    if (inputRef.current) inputRef.current.value = '';
-  };
+  useEffect(() => {
+    if (!featureAvailable) return;
+    const nextItems = pickSubtitlePreparationItems(
+      items,
+      Array.from(controllersRef.current.keys()),
+      batchPrepConcurrency,
+    );
+    nextItems.forEach((item) => {
+      if (item.file) void prepareItem(item.clientItemId, item.file);
+      else updateItem(item.clientItemId, (current) => ({
+        ...current,
+        phase: 'error',
+        errorMessage: '找不到待处理的视频文件',
+      }));
+    });
+  }, [batchPrepConcurrency, featureAvailable, items, prepareItem, updateItem]);
 
-  const canSubmit = Boolean(
-    featureAvailable
-    && draft?.sourceUrl
-    && pixels
-    && phase === 'ready'
-    && !submitting
-    && !localSubmitting,
-  );
+  const appendFiles = useCallback((selectedFiles: File[]) => {
+    if (!featureAvailable || selectedFiles.length === 0) return;
+    if (items.length + selectedFiles.length > batchMaxItems) {
+      setBatchError(`一次最多上传 ${batchMaxItems} 个视频，本次选择了 ${selectedFiles.length} 个。`);
+      return;
+    }
+    setBatchError('');
+    const nextItems = selectedFiles.map<BatchItem>((file) => {
+      const validVideo = file.type.startsWith('video/');
+      return {
+        clientItemId: createStableId('subtitle-item'),
+        selected: validVideo,
+        file,
+        region: { ...DEFAULT_SUBTITLE_REGION },
+        regionMode: 'default',
+        phase: validVideo ? 'queued' : 'error',
+        uploadProgress: 0,
+        stageText: validVideo ? '等待上传' : '文件格式不支持',
+        ...(validVideo ? {} : { errorMessage: '请选择视频文件' }),
+      };
+    });
+    setItems((current) => [...current, ...nextItems]);
+  }, [batchMaxItems, featureAvailable, items.length]);
+
+  const removeItem = useCallback(async (clientItemId: string) => {
+    await cancelItemSession(clientItemId);
+    setItems((current) => current.filter((item) => item.clientItemId !== clientItemId));
+    if (editingItemId === clientItemId) setEditingItemId('');
+  }, [cancelItemSession, editingItemId]);
+
+  const replaceItem = useCallback(async (clientItemId: string, file: File) => {
+    await cancelItemSession(clientItemId);
+    const validVideo = file.type.startsWith('video/');
+    updateItem(clientItemId, () => ({
+      clientItemId,
+      selected: validVideo,
+      file,
+      region: { ...DEFAULT_SUBTITLE_REGION },
+      regionMode: 'default',
+      phase: validVideo ? 'queued' : 'error',
+      uploadProgress: 0,
+      stageText: validVideo ? '等待上传' : '文件格式不支持',
+      ...(validVideo ? {} : { errorMessage: '请选择视频文件' }),
+    }));
+  }, [cancelItemSession, updateItem]);
+
+  const retryItem = useCallback((clientItemId: string) => {
+    updateItem(clientItemId, (item) => item.file ? {
+      ...item,
+      selected: true,
+      draft: undefined,
+      phase: 'queued',
+      uploadProgress: 0,
+      stageText: '等待重新上传',
+      errorMessage: undefined,
+    } : item.draft ? {
+      ...item,
+      selected: true,
+      phase: 'ready',
+      errorMessage: undefined,
+    } : item);
+  }, [updateItem]);
+
+  const summary = useMemo(() => summarizeSubtitleRemovalBatch(items), [items]);
+  const readySelectedItems = useMemo(() => items.filter((item) => (
+    item.selected
+    && item.phase === 'ready'
+    && Boolean(item.draft?.sourceUrl)
+  )), [items]);
+  const editingItem = items.find((item) => item.clientItemId === editingItemId && item.draft) || null;
 
   const handleSubmit = async () => {
-    if (!canSubmit || !draft || !pixels || submitLockRef.current) return;
+    if (submitLockRef.current || submitting || localSubmitting || readySelectedItems.length === 0) return;
     submitLockRef.current = true;
+    setConfirmOpen(false);
     setLocalSubmitting(true);
-    setPhase('submitting');
-    setErrorMessage('');
+    const submittingIds = new Set(readySelectedItems.map((item) => item.clientItemId));
+    setItems((current) => current.map((item) => submittingIds.has(item.clientItemId)
+      ? { ...item, phase: 'submitting', stageText: '正在创建后台任务', errorMessage: undefined }
+      : item));
     try {
-      await onSubmit({
-        draft,
-        subtitleRegionNormalized: region,
-        subtitleRegionPixels: pixels,
+      const settlements = await mapWithSubtitleConcurrency(
+        readySelectedItems,
+        batchSubmitConcurrency,
+        async (item) => {
+          if (!item.draft) throw new Error('视频还未准备完成');
+          const pixels = subtitleRegionToPixels(item.region, item.draft.width, item.draft.height);
+          await onSubmit({
+            clientItemId: item.clientItemId,
+            draft: item.draft,
+            subtitleRegionNormalized: item.region,
+            subtitleRegionPixels: pixels,
+          });
+          return item.clientItemId;
+        },
+      );
+      const succeededIds = new Set<string>();
+      const failedById = new Map<string, string>();
+      settlements.forEach((settlement, index) => {
+        const clientItemId = readySelectedItems[index]?.clientItemId || '';
+        if (!clientItemId) return;
+        if (settlement.status === 'fulfilled') succeededIds.add(clientItemId);
+        else failedById.set(
+          clientItemId,
+          settlement.reason instanceof Error ? settlement.reason.message : '去字幕任务提交失败',
+        );
       });
-      setPhase('ready');
-    } catch (error) {
-      setPhase('error');
-      setErrorMessage(error instanceof Error ? error.message : '去字幕任务提交失败');
+      setItems((current) => current
+        .filter((item) => !succeededIds.has(item.clientItemId))
+        .map((item) => failedById.has(item.clientItemId) ? {
+          ...item,
+          phase: 'error',
+          stageText: '任务提交失败',
+          errorMessage: failedById.get(item.clientItemId),
+        } : item));
     } finally {
       submitLockRef.current = false;
       setLocalSubmitting(false);
     }
   };
 
-  const isProcessing = ['uploading', 'analyzing', 'transcoding'].includes(phase);
+  const clearAll = async () => {
+    const itemIds = items.map((item) => item.clientItemId);
+    await Promise.all(itemIds.map((clientItemId) => cancelItemSession(clientItemId)));
+    setItems([]);
+    setEditingItemId('');
+    setBatchError('');
+  };
 
   return (
     <div className="mx-auto w-full max-w-[1180px] space-y-4 px-4 pb-10 pt-4 sm:px-6">
@@ -262,12 +440,12 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
         <div>
           <h2 className="text-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>视频去字幕</h2>
           <p className="mt-1 text-[11px] leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>
-            选择字幕所在画面区域，完成后会生成独立任务卡，原片不会被修改。
+            批量上传视频，系统默认选择画面底部 30%；特殊视频可单独点开调整。
           </p>
         </div>
-        {draft || isProcessing ? (
-          <button type="button" onClick={() => void handleClear()} className="flex items-center gap-1.5 rounded-full px-3 py-2 text-[11px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
-            <X size={13} /> 更换视频
+        {items.length > 0 ? (
+          <button type="button" onClick={() => void clearAll()} className="flex items-center gap-1.5 rounded-full px-3 py-2 text-[11px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+            <Trash2 size={13} /> 清空任务栏
           </button>
         ) : null}
       </div>
@@ -279,100 +457,185 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
         </div>
       ) : null}
 
-      {!draft && !isProcessing ? (
-        <button
-          type="button"
-          disabled={!featureAvailable}
-          onClick={() => inputRef.current?.click()}
-          className="flex min-h-[280px] w-full flex-col items-center justify-center gap-3 rounded-3xl border border-dashed px-6 text-center disabled:cursor-not-allowed disabled:opacity-45"
-          style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-        >
-          <span className="flex h-14 w-14 items-center justify-center rounded-2xl" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}><Upload size={22} /></span>
-          <span className="text-[14px] font-semibold" style={{ color: 'var(--text-primary)' }}>上传需要去字幕的视频</span>
-          <span className="max-w-[520px] text-[11px] leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>
-            支持最长 600 秒。系统会自动识别时长、分辨率和编码；已兼容的 H.264 MP4 不会重复转码。
-          </span>
-        </button>
-      ) : null}
+      <button
+        type="button"
+        disabled={!featureAvailable || items.length >= batchMaxItems}
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(event) => { event.preventDefault(); }}
+        onDrop={(event) => {
+          event.preventDefault();
+          appendFiles(Array.from(event.dataTransfer.files || []));
+        }}
+        className={`flex w-full flex-col items-center justify-center gap-2 rounded-3xl border border-dashed px-6 text-center disabled:cursor-not-allowed disabled:opacity-45 ${items.length > 0 ? 'min-h-[120px]' : 'min-h-[260px]'}`}
+        style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
+      >
+        <span className="flex h-11 w-11 items-center justify-center rounded-2xl" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
+          {items.length > 0 ? <Plus size={19} /> : <Upload size={20} />}
+        </span>
+        <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+          {items.length > 0 ? '继续添加视频' : '批量上传需要去字幕的视频'}
+        </span>
+        <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+          支持拖放，一次最多上传 {batchMaxItems} 个；系统会逐个分析格式并按需转码。
+        </span>
+      </button>
       <input
         ref={inputRef}
         type="file"
         accept="video/*"
+        multiple
         className="hidden"
         onChange={(event) => {
-          const file = event.target.files?.[0];
-          if (file) void handleFile(file);
+          appendFiles(Array.from(event.target.files || []));
+          event.target.value = '';
+        }}
+      />
+      <input
+        ref={replaceInputRef}
+        type="file"
+        accept="video/*"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.item(0);
+          if (file && replaceTargetId) void replaceItem(replaceTargetId, file);
+          event.target.value = '';
+          setReplaceTargetId('');
         }}
       />
 
-      {isProcessing ? (
-        <div className="rounded-3xl border px-5 py-8" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }} aria-live="polite">
-          <div className="mx-auto flex max-w-[520px] flex-col items-center text-center">
-            <Loader2 size={24} className="animate-spin" style={{ color: 'var(--accent)' }} />
-            <p className="mt-3 text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>{stageText}</p>
-            <p className="mt-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
-              {phase === 'transcoding' ? '服务端正在处理，完成时间取决于视频时长' : '请保持页面开启'}
-            </p>
-            {phase === 'uploading' || phase === 'analyzing' ? (
-              <div className="mt-5 w-full">
-                <div className="mb-1 flex justify-between text-[10px]" style={{ color: 'var(--text-tertiary)' }}><span>上传进度</span><span>{uploadProgress}%</span></div>
-                <div className="h-2 overflow-hidden rounded-full" style={{ background: 'var(--bg-elevated)' }}>
-                  <div className="h-full rounded-full transition-[width]" style={{ width: `${uploadProgress}%`, background: 'var(--accent)' }} />
-                </div>
-              </div>
-            ) : (
-              <div className="mt-5 h-2 w-full overflow-hidden rounded-full" style={{ background: 'var(--bg-elevated)' }}>
-                <div className="h-full w-1/3 animate-pulse rounded-full" style={{ background: 'var(--accent)' }} />
-              </div>
-            )}
-          </div>
+      {batchError ? (
+        <div className="flex items-start gap-2 rounded-2xl border px-4 py-3 text-[11px]" style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)', color: 'var(--danger)' }}>
+          <AlertCircle size={14} className="mt-0.5 shrink-0" /> {batchError}
         </div>
       ) : null}
 
-      {draft ? (
-        <>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-2xl border px-4 py-3 text-[11px]" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)', color: 'var(--text-secondary)' }}>
-            <Film size={14} />
-            <span className="max-w-[280px] truncate font-medium">{draft.fileName}</span>
-            <span>{formatDuration(draft.durationSeconds)}</span>
-            <span>{formatBytes(draft.sizeBytes)}</span>
-            <span>{draft.width}×{draft.height}</span>
-            {draft.videoCodec ? <span>{draft.videoCodec.toUpperCase()}</span> : null}
-            <span className="ml-auto flex items-center gap-1" style={{ color: 'var(--accent)' }}><CheckCircle2 size={13} />{stageText}</span>
-          </div>
-          <SubtitleRegionEditor
-            source={draft}
-            region={region}
-            onRegionChange={setRegion}
-            disabled={submitting || localSubmitting}
-          />
-          <div className="flex flex-col items-stretch justify-between gap-3 rounded-3xl border p-4 sm:flex-row sm:items-center" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
-            <div className="text-[11px] leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>
-              提交后会生成独立任务卡。处理中可离开页面，稍后返回查看结果。
+      {items.length > 0 ? (
+        <section aria-label="去字幕批量任务" className="overflow-hidden rounded-3xl border" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
+          <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div>
+              <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>批量任务</h3>
+              <p className="mt-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>点击任意已就绪视频，单独调整它的字幕区域。</p>
             </div>
-            <button
-              type="button"
-              disabled={!canSubmit}
-              onClick={() => void handleSubmit()}
-              className="flex shrink-0 items-center justify-center gap-2 rounded-full px-6 py-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
-              style={{ background: 'var(--accent)' }}
-            >
-              {submitting || localSubmitting ? <Loader2 size={14} className="animate-spin" /> : <Scissors size={14} />}
-              开始去字幕
-            </button>
+            <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>{items.length}/{batchMaxItems}</span>
           </div>
-        </>
+          <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+            {items.map((item, index) => {
+              const itemDraft = item.draft;
+              const itemReady = item.phase === 'ready' && Boolean(itemDraft?.sourceUrl);
+              return (
+                <div key={item.clientItemId} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center">
+                  <button
+                    type="button"
+                    aria-pressed={item.selected}
+                    aria-label={`${item.selected ? '取消选择' : '选择'} ${itemDraft?.fileName || item.file?.name || `视频 ${index + 1}`}`}
+                    onClick={() => updateItem(item.clientItemId, (current) => ({ ...current, selected: !current.selected }))}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl"
+                    style={{ background: item.selected ? 'var(--accent-soft)' : 'var(--bg-elevated)', color: item.selected ? 'var(--accent)' : 'var(--text-tertiary)' }}
+                  >
+                    {item.selected ? <CheckSquare2 size={16} /> : <Square size={16} />}
+                  </button>
+                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
+                    <Film size={20} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="max-w-[360px] truncate text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{itemDraft?.fileName || item.file?.name || `视频 ${index + 1}`}</span>
+                      <span className="rounded-full px-2 py-0.5 text-[9px] font-medium" style={{ background: item.regionMode === 'custom' ? 'var(--accent-soft)' : 'var(--bg-elevated)', color: item.regionMode === 'custom' ? 'var(--accent)' : 'var(--text-tertiary)' }}>
+                        {item.regionMode === 'custom' ? '已调整' : '默认区域'}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                      {itemDraft ? <span>{formatDuration(itemDraft.durationSeconds)}</span> : null}
+                      <span>{formatBytes(itemDraft?.sizeBytes || item.file?.size || 0)}</span>
+                      {itemDraft?.width && itemDraft?.height ? <span>{itemDraft.width}×{itemDraft.height}</span> : null}
+                      {itemDraft?.videoCodec ? <span>{itemDraft.videoCodec.toUpperCase()}</span> : null}
+                    </div>
+                    <div className="mt-1.5 flex items-center gap-2 text-[10px]" style={{ color: item.phase === 'error' ? 'var(--danger)' : itemReady ? 'var(--accent)' : 'var(--text-secondary)' }}>
+                      {itemReady ? <CheckCircle2 size={12} /> : ['queued', 'uploading', 'analyzing', 'transcoding', 'submitting'].includes(item.phase) ? <Loader2 size={12} className="animate-spin" /> : <AlertCircle size={12} />}
+                      <span>{item.errorMessage || item.stageText || stageLabel(item)}</span>
+                    </div>
+                    {item.phase === 'uploading' ? (
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ background: 'var(--bg-elevated)' }}>
+                        <div className="h-full rounded-full transition-[width]" style={{ width: `${item.uploadProgress}%`, background: 'var(--accent)' }} />
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
+                    <button
+                      type="button"
+                      disabled={!itemReady || submitting || localSubmitting}
+                      onClick={() => setEditingItemId(item.clientItemId)}
+                      className="flex items-center gap-1 rounded-full px-3 py-2 text-[10px] font-medium disabled:opacity-35"
+                      style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                    >
+                      <Settings2 size={12} /> 调整区域
+                    </button>
+                    {item.phase === 'error' ? (
+                      <button type="button" onClick={() => retryItem(item.clientItemId)} className="flex items-center gap-1 rounded-full px-3 py-2 text-[10px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+                        <RefreshCw size={12} /> 重试
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReplaceTargetId(item.clientItemId);
+                        replaceInputRef.current?.click();
+                      }}
+                      className="rounded-full px-3 py-2 text-[10px] font-medium"
+                      style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+                    >
+                      替换
+                    </button>
+                    <button type="button" onClick={() => void removeItem(item.clientItemId)} className="flex h-8 w-8 items-center justify-center rounded-full" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }} aria-label="删除视频任务">
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
       ) : null}
 
-      {phase === 'error' && errorMessage ? (
-        <div className="flex items-start gap-3 rounded-2xl border px-4 py-3" style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)' }} aria-live="polite">
-          <AlertCircle size={16} className="mt-0.5 shrink-0" style={{ color: 'var(--danger)' }} />
-          <div>
-            <p className="text-[12px] font-semibold" style={{ color: 'var(--danger)' }}>视频暂时无法处理</p>
-            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-secondary)' }}>{errorMessage}</p>
+      {items.length > 0 ? (
+        <div className="sticky bottom-4 z-20 flex flex-col gap-3 rounded-3xl border p-4 shadow-xl sm:flex-row sm:items-center sm:justify-between" style={{ background: 'color-mix(in srgb, var(--bg-base) 92%, transparent)', borderColor: 'var(--border-subtle)', backdropFilter: 'blur(20px)' }}>
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]" style={{ color: 'var(--text-secondary)' }}>
+            <span>已选择 {summary.selectedCount} 个</span>
+            <span style={{ color: 'var(--accent)' }}>可提交 {summary.readySelectedCount} 个</span>
+            <span style={{ color: summary.errorCount ? 'var(--danger)' : 'var(--text-tertiary)' }}>异常 {summary.errorCount} 个</span>
+            <span>总时长 {formatDuration(summary.totalSelectedDurationSeconds)}</span>
           </div>
+          <button
+            type="button"
+            disabled={!featureAvailable || summary.readySelectedCount === 0 || submitting || localSubmitting}
+            onClick={() => setConfirmOpen(true)}
+            className="flex shrink-0 items-center justify-center gap-2 rounded-full px-6 py-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+            style={{ background: 'var(--accent)' }}
+          >
+            {submitting || localSubmitting ? <Loader2 size={14} className="animate-spin" /> : <Scissors size={14} />}
+            批量开始去字幕
+          </button>
         </div>
       ) : null}
+
+      <SubtitleRemovalRegionDialog
+        item={editingItem?.draft ? { draft: editingItem.draft, region: editingItem.region } : null}
+        onCancel={() => setEditingItemId('')}
+        onSave={(region) => {
+          if (!editingItem) return;
+          updateItem(editingItem.clientItemId, (item) => ({ ...item, region, regionMode: 'custom' }));
+          setEditingItemId('');
+        }}
+      />
+
+      <ConfirmDialog
+        open={confirmOpen}
+        title="确认批量开始去字幕"
+        message={`本次将创建 ${readySelectedItems.length} 个独立付费任务，总时长 ${formatDuration(readySelectedItems.reduce((sum, item) => sum + Number(item.draft?.durationSeconds || 0), 0))}。异常或未就绪视频不会提交。`}
+        confirmText={`确认提交 ${readySelectedItems.length} 个`}
+        onConfirm={() => void handleSubmit()}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   );
 };

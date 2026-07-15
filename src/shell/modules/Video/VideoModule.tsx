@@ -5,7 +5,10 @@ import type { GeneratedResult, Project, SubFeatureOption, Task } from '../../../
 import type { SubtitleRemovalSourceDraft, VideoPersistentState, VideoStoryboardProject } from '../../../types';
 import { buildDiagnosisReportText, hasDiagnosisReportContent } from '../../../modules/Video/videoDiagnosisUtils.mjs';
 import { toStoryboardShellResultStatus } from './storyboardGenerationState.mjs';
-import SubtitleRemovalWorkspace, { type SubtitleRemovalSubmitInput } from '../../components/SubtitleRemovalWorkspace';
+import SubtitleRemovalWorkspace, {
+  type SubtitleRemovalBatchLimits,
+  type SubtitleRemovalSubmitInput,
+} from '../../components/SubtitleRemovalWorkspace';
 
 interface Props {
   projects: Project[];
@@ -31,6 +34,7 @@ interface Props {
   onSubtitleRemovalSubmit: (input: SubtitleRemovalSubmitInput) => Promise<void> | void;
   subtitleRemovalSubmitting?: boolean;
   subtitleRemovalFeatureAvailable?: boolean;
+  subtitleRemovalBatchLimits?: Partial<SubtitleRemovalBatchLimits>;
 }
 
 
@@ -170,6 +174,7 @@ const VideoModule: React.FC<Props> = ({
   onSubtitleRemovalSubmit,
   subtitleRemovalSubmitting,
   subtitleRemovalFeatureAvailable,
+  subtitleRemovalBatchLimits,
 }) => {
   const storyboardCards = useMemo(() => toStoryboardCards(persistentState.storyboard?.projects || []), [persistentState.storyboard?.projects]);
   const diagnosisCards = useMemo(() => toDiagnosisCards(persistentState), [persistentState]);
@@ -178,15 +183,18 @@ const VideoModule: React.FC<Props> = ({
       : activeSubFeature === 'diagnosis' ? diagnosisCards
         : projects;
   const activeTasks = activeSubFeature === 'generation' ? tasks : [];
-  const subtitleRemovalWorkspace = activeSubFeature === 'subtitle_removal' ? (
-    <SubtitleRemovalWorkspace
-      draft={subtitleRemovalDraft}
-      onDraftChange={onSubtitleRemovalDraftChange}
-      onSubmit={onSubtitleRemovalSubmit}
-      submitting={subtitleRemovalSubmitting}
-      featureAvailable={subtitleRemovalFeatureAvailable}
-    />
-  ) : undefined;
+  const subtitleRemovalWorkspace = (
+    <div hidden={activeSubFeature !== 'subtitle_removal'}>
+      <SubtitleRemovalWorkspace
+        draft={subtitleRemovalDraft}
+        onDraftChange={onSubtitleRemovalDraftChange}
+        onSubmit={onSubtitleRemovalSubmit}
+        submitting={subtitleRemovalSubmitting}
+        featureAvailable={subtitleRemovalFeatureAvailable}
+        limits={subtitleRemovalBatchLimits}
+      />
+    </div>
+  );
 
   const handleProjectDelete = (projectId: string) => {
     if (activeSubFeature === 'storyboard') {
