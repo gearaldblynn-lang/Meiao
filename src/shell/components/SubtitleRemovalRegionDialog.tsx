@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Check, X } from 'lucide-react';
 
 import type {
@@ -25,10 +25,6 @@ const SubtitleRemovalRegionDialog: React.FC<Props> = ({ item, onCancel, onSave }
     width: 1,
     height: 0.3,
   });
-
-  useEffect(() => {
-    if (item) setDraftRegion({ ...item.region });
-  }, [item]);
 
   if (!item) return null;
 
