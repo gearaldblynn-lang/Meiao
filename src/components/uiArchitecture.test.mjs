@@ -3777,6 +3777,11 @@ test('completed video cards enter subtitle removal and completed subtitle jobs u
   assert.match(projectCard, /resultUrl=\{displayResult\.videoUrl/);
   assert.match(projectCard, /正在去除字幕/);
   assert.match(projectCard, /isSubtitleRemovalProject \? \(/);
+  assert.match(projectCard, /isSubtitlePartial/);
+  assert.match(projectCard, /label: '部分完成'/);
+  assert.match(projectCard, /subtitleComparisonResultId/);
+  assert.match(projectCard, /查看对比/);
+  assert.match(projectCard, /displayResult\.id === subtitleComparisonResultId/);
 
   assert.match(projectList, /onRemoveVideoSubtitles=\{onRemoveVideoSubtitles\}/);
   assert.match(videoModule, /onRemoveVideoSubtitles=\{onRemoveVideoSubtitles\}/);

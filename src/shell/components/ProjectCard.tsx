@@ -519,6 +519,7 @@ const ProjectCard: React.FC<Props> = ({
     instruction: string;
   } | null>(null);
   const [storyboardVersionIndexes, setStoryboardVersionIndexes] = useState<Record<string, number>>({});
+  const [subtitleComparisonResultId, setSubtitleComparisonResultId] = useState('');
   const storyboardVersionLengthsRef = useRef<Record<string, number>>({});
   const [isPackaging, setIsPackaging] = useState(false);
   const { addToast } = useToast();
@@ -575,6 +576,15 @@ const ProjectCard: React.FC<Props> = ({
     String(result.backendJobId || result.id || result.taskId || targetProject.backendJobId || targetProject.id).trim() || targetProject.id
   );
   const hasGeneratingResult = project.results.some((result) => isResultActivelyGenerating(result));
+  const subtitleSuccessCount = isSubtitleRemovalProject
+    ? project.results.filter((result) => result.status === 'completed' && Boolean(result.videoUrl)).length
+    : 0;
+  const subtitleErrorCount = isSubtitleRemovalProject
+    ? project.results.filter((result) => result.status === 'error').length
+    : 0;
+  const subtitleGeneratingCount = isSubtitleRemovalProject
+    ? project.results.filter((result) => isResultActivelyGenerating(result)).length
+    : 0;
   const projectProgressIncomplete = Number(project.completedCount || 0) < Number(project.taskCount || 0);
   const hasPendingProductRestoreSync = isProductRestoreProject && String(project.error || '').includes('同步失败');
   const isProjectActivelyGenerating = project.status === 'generating' && (
@@ -586,7 +596,13 @@ const ProjectCard: React.FC<Props> = ({
   const displayProjectStatus: Project['status'] = project.status === 'generating' && !isProjectActivelyGenerating
     ? (hasResults ? 'completed' : 'planning')
     : project.status;
-  const st = statusStyle[displayProjectStatus];
+  const isSubtitlePartial = isSubtitleRemovalProject
+    && !hasGeneratingResult
+    && subtitleSuccessCount > 0
+    && subtitleErrorCount > 0;
+  const st = isSubtitlePartial
+    ? { label: '部分完成', color: 'var(--warning)', bg: 'color-mix(in srgb, var(--warning) 12%, transparent)' }
+    : statusStyle[displayProjectStatus];
   const translationResults = project.module === 'translation' ? project.results : [];
   const isTranslationProject = project.module === 'translation';
   const failedTranslationResults = translationResults.filter((result) => result.status === 'error');
@@ -618,6 +634,21 @@ const ProjectCard: React.FC<Props> = ({
     .map((result) => String(result.buyerShowEvaluation || '').trim())
     .find(Boolean) || '';
   const previewResult = project.results.find((result) => isCompletedMediaResult(result)) || project.results[0];
+
+  useEffect(() => {
+    if (!detailOpen || !isSubtitleRemovalProject) {
+      setSubtitleComparisonResultId('');
+      return;
+    }
+    const comparableResults = project.results.filter((result) => (
+      result.status === 'completed' && Boolean(result.sourceUrl) && Boolean(result.videoUrl)
+    ));
+    setSubtitleComparisonResultId((current) => (
+      comparableResults.some((result) => result.id === current)
+        ? current
+        : comparableResults[0]?.id || ''
+    ));
+  }, [detailOpen, isSubtitleRemovalProject, project.results]);
   const isPreviewVideoResult = Boolean(previewResult && (previewResult.mediaType === 'video' || previewResult.videoUrl));
   const playableVideoResults = previewableResults.filter((result) => result.mediaType === 'video' || result.videoUrl);
   const hasPlayableVideoResult = playableVideoResults.length > 0;
@@ -1229,6 +1260,13 @@ const ProjectCard: React.FC<Props> = ({
                   <span>{formatMonthDay(project.createdAt)}</span>
                   <span>任务 {project.completedCount}/{project.taskCount}</span>
                 </div>
+                {isSubtitleRemovalProject ? (
+                  <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                    <span>成功 {subtitleSuccessCount}</span>
+                    <span>失败 {subtitleErrorCount}</span>
+                    <span>处理中 {subtitleGeneratingCount}</span>
+                  </div>
+                ) : null}
               </div>
               <div className="flex items-center gap-1">
                 <div className="flex flex-wrap items-center justify-end gap-1.5">
@@ -2103,13 +2141,33 @@ const ProjectCard: React.FC<Props> = ({
                           const regeneratePending = isRegeneratePending(result.id);
                           const sourcePreviewUrl = displayResult.sourcePreviewUrl;
                           const mediaPanel = isSubtitleRemovalProject && displayResult.status === 'completed' && displayResult.sourceUrl && displayResult.videoUrl ? (
-                            <div className="p-3">
-                              <SubtitleComparisonPlayer
-                                sourceUrl={displayResult.sourceUrl}
-                                resultUrl={displayResult.videoUrl || ''}
-                                title="去字幕前后对比"
-                              />
-                            </div>
+                            displayResult.id === subtitleComparisonResultId ? (
+                              <div className="p-3">
+                                <SubtitleComparisonPlayer
+                                  sourceUrl={displayResult.sourceUrl}
+                                  resultUrl={displayResult.videoUrl || ''}
+                                  title="去字幕前后对比"
+                                />
+                              </div>
+                            ) : (
+                              <div className="flex min-h-[150px] w-full flex-col items-center justify-center gap-3 px-6 py-5 text-center" style={{ background: 'var(--bg-base)', color: 'var(--text-tertiary)' }}>
+                                <span className="flex h-10 w-10 items-center justify-center rounded-2xl" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
+                                  <Film size={18} />
+                                </span>
+                                <div>
+                                  <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{displayResult.fileName || `视频 ${index + 1}`}</p>
+                                  <p className="mt-1 text-[10px]">已完成，点击后才加载原片与结果视频</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setSubtitleComparisonResultId(displayResult.id)}
+                                  className="rounded-full px-4 py-2 text-[11px] font-semibold"
+                                  style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                                >
+                                  查看对比
+                                </button>
+                              </div>
+                            )
                           ) : isSubtitleRemovalProject ? (
                             <div className="flex h-[300px] w-full flex-col items-center justify-center gap-2 px-6 text-center" style={{ background: 'var(--bg-base)', color: displayResult.status === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}>
                               <RefreshCw size={20} className={displayResult.status === 'generating' ? 'animate-spin' : ''} />
