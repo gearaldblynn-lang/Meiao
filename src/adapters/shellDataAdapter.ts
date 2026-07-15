@@ -81,7 +81,10 @@ export interface ShellGeneratedResult {
   relativePath?: string;
   taskId?: string;
   backendJobId?: string;
+  shellResultId?: string;
+  batchId?: string;
   batchIndex?: number;
+  batchCount?: number;
   targetMaterialId?: string;
   creditsConsumed?: number;
   error?: string;
@@ -888,12 +891,22 @@ const toSubtitleRemovalPixels = (value: unknown): SubtitleRemovalPixels | undefi
   return Object.values(pixels).every(Number.isFinite) ? pixels : undefined;
 };
 
+const toOptionalInteger = (value: unknown) => {
+  if (value == null || value === '') return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : undefined;
+};
+
 const getSubtitleRemovalResultMetadata = (value: unknown) => {
   const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   const payload = item.payload && typeof item.payload === 'object' ? item.payload as Record<string, unknown> : {};
   const result = item.result && typeof item.result === 'object' ? item.result as Record<string, unknown> : {};
   const sourceUrl = String(item.sourceUrl || result.sourceUrl || payload.sourceUrl || '').trim() || undefined;
   return {
+    shellResultId: String(item.shellResultId || result.shellResultId || payload.shellResultId || '').trim() || undefined,
+    batchId: String(item.batchId || result.batchId || payload.batchId || '').trim() || undefined,
+    batchIndex: toOptionalInteger(item.batchIndex ?? result.batchIndex ?? payload.batchIndex),
+    batchCount: toOptionalInteger(item.batchCount ?? result.batchCount ?? payload.batchCount),
     sourceUrl,
     sourcePreviewUrl: String(item.sourcePreviewUrl || sourceUrl || '').trim() || undefined,
     sourceProjectId: String(item.sourceProjectId || result.sourceProjectId || payload.sourceProjectId || '').trim() || undefined,
@@ -928,8 +941,9 @@ const resultFromItem = (
   const status = taskStatusToTask(item?.status);
   if (!url && status !== 'error') return null;
   const mediaType = module === MODULE_VALUES.VIDEO || Boolean(item?.videoUrl || item?.result?.videoUrl) ? 'video' : 'image';
+  const subtitleRemovalMetadata = getSubtitleRemovalResultMetadata(item);
   return {
-    id: String(item?.id || item?.taskId || `${module}-${fallbackTitle}-${createdAt}`),
+    id: String(subtitleRemovalMetadata.shellResultId || item?.id || item?.taskId || `${module}-${fallbackTitle}-${createdAt}`),
     planId: module === MODULE_VALUES.ONE_CLICK
       ? String(item?.planId || item?.id || '').trim() || undefined
       : String(item?.planId || '').trim() || undefined,
@@ -944,12 +958,12 @@ const resultFromItem = (
     createdAt,
     module,
     subFeature,
-    ...getSubtitleRemovalResultMetadata(item),
+    ...subtitleRemovalMetadata,
     fileName: String(item?.fileName || '').trim() || undefined,
     relativePath: String(item?.relativePath || item?.fileName || '').trim() || undefined,
     taskId: getVisibleTaskId(item),
     backendJobId: String(item?.backendJobId || item?.jobId || '').trim() || undefined,
-    batchIndex: Number(item?.batchIndex || item?.payload?.batchIndex || 0) || undefined,
+    batchIndex: subtitleRemovalMetadata.batchIndex ?? toOptionalInteger(item?.batchIndex ?? item?.payload?.batchIndex),
     targetMaterialId: String(item?.targetMaterialId || item?.payload?.targetMaterialId || '').trim() || undefined,
     creditsConsumed: normalizeCreditsConsumed(item?.creditsConsumed || item?.result?.creditsConsumed),
     error: String(item?.error || '').trim() || undefined,
@@ -2504,9 +2518,11 @@ const mapJobs = (
         if (isSubtitleRemovalJob(job, module)) {
           const errorMessage = String(job.errorMessage || providerErrorText || job.errorCode || '去字幕任务失败').trim();
           const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+          const subtitleRemovalMetadata = getSubtitleRemovalResultMetadata(job);
           const failedResult: ShellGeneratedResult = {
             id: String(
-              matchedProject?.results?.find((result) => String(result.backendJobId || '').trim() === String(job.id || '').trim())?.id
+              subtitleRemovalMetadata.shellResultId
+              || matchedProject?.results?.find((result) => String(result.backendJobId || '').trim() === String(job.id || '').trim())?.id
               || `${job.id}-result-1`,
             ),
             projectId: matchedProject?.id || payloadProjectId || projectId,
@@ -2523,7 +2539,8 @@ const mapJobs = (
             taskId: providerTaskId || undefined,
             backendJobId: job.id,
             error: errorMessage,
-            ...getSubtitleRemovalResultMetadata(job),
+            errorCode: String(job.errorCode || '').trim() || undefined,
+            ...subtitleRemovalMetadata,
           };
           projects.push({
             ...(matchedProject || {}),
@@ -2534,7 +2551,7 @@ const mapJobs = (
             createdAt: matchedProject?.createdAt || createdAt,
             completedAt: toCreatedMs(job.finishedAt || job.updatedAt || job.createdAt),
             results: [failedResult],
-            taskCount: 1,
+            taskCount: Math.max(Number(subtitleRemovalMetadata.batchCount || 0) || 0, 1),
             completedCount: 0,
             subFeature: 'subtitle_removal',
             sourceType: matchedProject?.sourceType || 'job',
@@ -2745,8 +2762,10 @@ const mapJobs = (
       const matchedTerminalProject = findPersistedPlanningProjectForJob(job, persistedProjects);
       if (matchedTerminalProject && projectStatus === 'completed' && urls.length > 0) {
         const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
-        const nextJobResults: ShellGeneratedResult[] = urls.map((url, index) => ({
-          id: String(providerTaskId || `${job.id}-result-${index + 1}`),
+        const nextJobResults: ShellGeneratedResult[] = urls.map((url, index) => {
+          const subtitleRemovalMetadata = getSubtitleRemovalResultMetadata(job);
+          return {
+          id: String(subtitleRemovalMetadata.shellResultId || providerTaskId || `${job.id}-result-${index + 1}`),
           planId: payloadPlanId || matchedTerminalProject.selectedPlanId || matchedTerminalProject.plans?.[index]?.id,
           projectId: matchedTerminalProject.id,
           imageUrl: url,
@@ -2764,8 +2783,9 @@ const mapJobs = (
           batchIndex: Number(job.payload?.batchIndex || 0) || undefined,
           targetMaterialId: String(job.payload?.targetMaterialId || '').trim() || undefined,
           creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
-          ...getSubtitleRemovalResultMetadata(job),
-        }));
+          ...subtitleRemovalMetadata,
+        };
+        });
         const incomingKeys = new Set(nextJobResults.flatMap((result) => getGeneratedResultMergeKeys(result)));
         const existingResults = (matchedTerminalProject.results || []).filter((result) => {
           const keys = getGeneratedResultMergeKeys(result);
@@ -2850,6 +2870,7 @@ const mapJobs = (
           status: projectStatus,
           sourceType: 'job',
           backendJobId: job.id,
+          taskCount: Math.max(project.taskCount, Number(job.payload?.batchCount || 0) || 0),
           completedAt: projectStatus === 'completed' ? toCreatedMs(job.finishedAt || job.updatedAt || job.createdAt) : project.completedAt,
         });
       }
@@ -2930,7 +2951,7 @@ const mapJobs = (
         return;
       }
       const activeResult: ShellGeneratedResult = {
-        id: `${job.id}-pending`,
+        id: getSubtitleRemovalResultMetadata(job).shellResultId || `${job.id}-pending`,
         planId: payloadPlanId || matchedProject?.selectedPlanId,
         projectId: activeProjectId,
         imageUrl: '',
@@ -2945,7 +2966,7 @@ const mapJobs = (
         subFeature: matchedProject?.subFeature || subFeature,
         taskId: visibleProviderTaskId || undefined,
         backendJobId: job.id,
-        batchIndex: Number(job.payload?.batchIndex || 0) || undefined,
+        batchIndex: toOptionalInteger(job.payload?.batchIndex),
         targetMaterialId: String(job.payload?.targetMaterialId || '').trim() || undefined,
         error: job.status === 'queued' ? '任务已提交，等待执行' : job.status === 'retry_waiting' ? '任务重试中' : '任务正在运行',
         ...getSubtitleRemovalResultMetadata(job),
@@ -3228,6 +3249,7 @@ const clearCompletedResultError = (result: ShellGeneratedResult): ShellGenerated
   return {
     ...result,
     error: undefined,
+    errorCode: undefined,
   };
 };
 
@@ -3601,11 +3623,13 @@ const sortMergedResultsByBatchIndex = (results: ShellGeneratedResult[] = []) => 
   results
     .map((result, index) => ({ result, index }))
     .sort((left, right) => {
-      const leftBatch = Number(left.result.batchIndex || 0) || 0;
-      const rightBatch = Number(right.result.batchIndex || 0) || 0;
-      if (leftBatch > 0 && rightBatch > 0 && leftBatch !== rightBatch) return leftBatch - rightBatch;
-      if (leftBatch > 0 && rightBatch <= 0) return -1;
-      if (leftBatch <= 0 && rightBatch > 0) return 1;
+      const leftHasBatch = Number.isInteger(left.result.batchIndex);
+      const rightHasBatch = Number.isInteger(right.result.batchIndex);
+      const leftBatch = leftHasBatch ? Number(left.result.batchIndex) : 0;
+      const rightBatch = rightHasBatch ? Number(right.result.batchIndex) : 0;
+      if (leftHasBatch && rightHasBatch && leftBatch !== rightBatch) return leftBatch - rightBatch;
+      if (leftHasBatch && !rightHasBatch) return -1;
+      if (!leftHasBatch && rightHasBatch) return 1;
       return left.index - right.index;
     })
     .map((item) => item.result)

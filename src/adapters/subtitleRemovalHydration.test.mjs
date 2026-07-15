@@ -22,6 +22,10 @@ const makeJob = (overrides = {}) => ({
     sourceResultId: 'source-result',
     shellProjectId: 'subtitle-project',
     shellProjectName: '7月15日项目1',
+    batchId: 'subtitle-project',
+    batchIndex: 0,
+    batchCount: 1,
+    shellResultId: 'subtitle-project-result-0',
     subtitleRegionNormalized: region,
   },
   providerTaskId: 'golden-task-1',
@@ -152,4 +156,54 @@ test('durable subtitle success replaces its stale placeholder without touching a
   assert.equal(project?.results[0]?.videoUrl, '/api/assets/file/subtitle-result.mp4');
   assert.equal(untouched?.results[0]?.videoUrl, '/api/assets/file/generated.mp4');
   assert.equal(untouched?.subFeature, 'generation');
+});
+
+test('subtitle batch hydrates into one ordered project with active and partial terminal states', () => {
+  const makeBatchJob = (batchIndex, status) => makeJob({
+    id: `subtitle-job-${batchIndex}`,
+    status,
+    providerTaskId: status === 'running' ? '' : `golden-task-${batchIndex}`,
+    payload: {
+      ...makeJob().payload,
+      sourceUrl: `/api/assets/file/source-video-${batchIndex}.mp4`,
+      batchId: 'subtitle-project',
+      batchIndex,
+      batchCount: 3,
+      shellResultId: `subtitle-project-result-${batchIndex}`,
+    },
+    result: status === 'succeeded' ? {
+      videoUrl: `/api/assets/file/subtitle-result-${batchIndex}.mp4`,
+      subtitleRegionPixels: pixels,
+    } : null,
+    errorCode: status === 'failed' ? 'subtitle_provider_busy' : '',
+    errorMessage: status === 'failed' ? '去字幕服务繁忙，请稍后重试' : '',
+    finishedAt: status === 'running' ? null : 1784073660000 + batchIndex,
+  });
+
+  const activeSnapshot = buildShellDataSnapshot({}, [
+    makeBatchJob(2, 'running'),
+    makeBatchJob(0, 'succeeded'),
+    makeBatchJob(1, 'failed'),
+  ]);
+  const activeProjects = activeSnapshot.projects.filter((item) => item.id === 'subtitle-project');
+  assert.equal(activeProjects.length, 1);
+  assert.deepEqual(
+    activeProjects[0].results.map((result) => result.id),
+    ['subtitle-project-result-0', 'subtitle-project-result-1', 'subtitle-project-result-2'],
+  );
+  assert.deepEqual(activeProjects[0].results.map((result) => result.batchIndex), [0, 1, 2]);
+  assert.equal(activeProjects[0].taskCount, 3);
+  assert.equal(activeProjects[0].completedCount, 1);
+  assert.equal(activeProjects[0].status, 'generating');
+
+  const terminalSnapshot = buildShellDataSnapshot({}, [
+    makeBatchJob(2, 'succeeded'),
+    makeBatchJob(0, 'succeeded'),
+    makeBatchJob(1, 'failed'),
+  ]);
+  const terminalProject = terminalSnapshot.projects.find((item) => item.id === 'subtitle-project');
+  assert.equal(terminalProject?.results.length, 3);
+  assert.equal(terminalProject?.taskCount, 3);
+  assert.equal(terminalProject?.completedCount, 2);
+  assert.equal(terminalProject?.status, 'error');
 });
