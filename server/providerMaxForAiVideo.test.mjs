@@ -126,6 +126,24 @@ test('recovery with providerTaskId never prepares assets or creates a second pai
   assert.equal(output.result.videoUrl, 'https://cdn.test/recovered.mp4');
 });
 
+test('recovery accepts the real upstream SUCCESS terminal status', async () => {
+  const output = await runMaxForAiVideoJob({
+    payload: basePayload,
+    providerTaskId: 'video_real_success',
+    env: baseEnv,
+    deps: {
+      fetchWithTimeout: async () => jsonResponse({
+        status: 'SUCCESS',
+        result_url: 'https://cdn.test/real-success.mp4',
+      }),
+      wait: async () => {},
+    },
+  });
+
+  assert.equal(output.result.videoUrl, 'https://cdn.test/real-success.mp4');
+  assert.equal(output.providerTaskId, 'video_real_success');
+});
+
 test('remote HTTPS material uses assets/url before the paid create call', async () => {
   const calls = [];
   await runMaxForAiVideoJob({
