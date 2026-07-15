@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { runManagedImageCosProbe } from './probe-managed-image-cos.mjs';
+import {
+  runManagedImageCosProbe,
+  runManagedImageCosProbeCli,
+} from './probe-managed-image-cos.mjs';
 
 const env = {
   MEIAO_IMAGE_COS_SECRET_ID: 'probe-secret-id',
@@ -77,4 +80,38 @@ test('managed image COS probe attempts exact-key cleanup when verification fails
   );
 
   assert.deepEqual(deletes, ['managed-images/users/_probe/source/failed123/probe.png']);
+});
+
+test('managed image COS probe CLI stays alive through async retries and exits as a visible failure', async () => {
+  const output = [];
+  const errors = [];
+  const keepAliveHandle = Symbol('keep-alive');
+  let keepAliveStarted = 0;
+  let keepAliveCleared = 0;
+
+  const ok = await runManagedImageCosProbeCli({
+    runProbe: async () => {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 5);
+        timer.unref();
+      });
+      throw new Error('signature mismatch');
+    },
+    writeLine: (line) => output.push(String(line)),
+    writeError: (line) => errors.push(String(line)),
+    startKeepAlive: () => {
+      keepAliveStarted += 1;
+      return keepAliveHandle;
+    },
+    stopKeepAlive: (handle) => {
+      assert.equal(handle, keepAliveHandle);
+      keepAliveCleared += 1;
+    },
+  });
+
+  assert.equal(ok, false);
+  assert.equal(keepAliveStarted, 1);
+  assert.equal(keepAliveCleared, 1);
+  assert.deepEqual(output, []);
+  assert.deepEqual(errors, ['managed image COS probe: FAIL (signature mismatch)']);
 });
