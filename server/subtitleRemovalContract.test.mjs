@@ -27,6 +27,9 @@ test('subtitle removal config clamps timing values and never exposes the token',
     MEIAO_SUBTITLE_REMOVAL_BASE_URL: 'https://gateway.example/openAi/',
     MEIAO_SUBTITLE_REMOVAL_POLL_INTERVAL_MS: '20',
     MEIAO_SUBTITLE_REMOVAL_TIMEOUT_MS: '999999999',
+    MEIAO_SUBTITLE_REMOVAL_BATCH_MAX_ITEMS: '99',
+    MEIAO_SUBTITLE_REMOVAL_BATCH_PREP_CONCURRENCY: '0',
+    MEIAO_SUBTITLE_REMOVAL_BATCH_SUBMIT_CONCURRENCY: '99',
   });
 
   assert.deepEqual(config, {
@@ -35,6 +38,9 @@ test('subtitle removal config clamps timing values and never exposes the token',
     baseUrl: 'https://gateway.example/openAi',
     pollIntervalMs: SUBTITLE_REMOVAL_DEFAULTS.minPollIntervalMs,
     timeoutMs: SUBTITLE_REMOVAL_DEFAULTS.maxTimeoutMs,
+    batchMaxItems: 20,
+    batchPrepConcurrency: 1,
+    batchSubmitConcurrency: 4,
   });
   assert.equal(JSON.stringify(config).includes('configured-secret'), false);
 });
@@ -46,6 +52,9 @@ test('subtitle removal config uses conservative defaults', () => {
     baseUrl: SUBTITLE_REMOVAL_DEFAULTS.baseUrl,
     pollIntervalMs: SUBTITLE_REMOVAL_DEFAULTS.pollIntervalMs,
     timeoutMs: SUBTITLE_REMOVAL_DEFAULTS.timeoutMs,
+    batchMaxItems: 10,
+    batchPrepConcurrency: 2,
+    batchSubmitConcurrency: 2,
   });
 });
 

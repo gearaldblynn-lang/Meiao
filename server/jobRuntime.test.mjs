@@ -134,10 +134,18 @@ test('subtitle removal readiness exposes booleans without leaking provider confi
     GOLDEN_SUBTITLE_API_TOKEN: token,
     MEIAO_SUBTITLE_REMOVAL_ENABLED: '1',
     MEIAO_SUBTITLE_REMOVAL_BASE_URL: baseUrl,
+    MEIAO_SUBTITLE_REMOVAL_BATCH_MAX_ITEMS: '12',
+    MEIAO_SUBTITLE_REMOVAL_BATCH_PREP_CONCURRENCY: '3',
+    MEIAO_SUBTITLE_REMOVAL_BATCH_SUBMIT_CONCURRENCY: '4',
   });
 
   assert.deepEqual(config.providers.goldenSubtitle, { configured: true });
   assert.equal(config.featureRollouts.subtitleRemoval, true);
+  assert.deepEqual(config.subtitleRemoval, {
+    batchMaxItems: 12,
+    batchPrepConcurrency: 3,
+    batchSubmitConcurrency: 4,
+  });
   const serialized = JSON.stringify(config);
   assert.equal(serialized.includes(token), false);
   assert.equal(serialized.includes(baseUrl), false);
