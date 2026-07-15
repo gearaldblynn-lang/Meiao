@@ -308,7 +308,9 @@ test('MySQL and local POST authorities enforce rollout before dedupe, reservatio
   assert.match(source, /userRole:\s*user\?\.role/);
   assert.match(source, /productRestoreRollout:\s*process\.env\.MEIAO_PRODUCT_RESTORE_ROLLOUT/);
   assert.match(source, /resolveAuthorizedJobSubmissionPolicy = \(user, body, \{ submissionOperation = 'create' \} = \{\}\)/);
-  assert.match(source, /submissionOperation,\s*\n\}\);/);
+  assert.match(source, /submissionOperation,/);
+  assert.match(source, /subtitleRemovalEnabled:\s*subtitleRemovalConfig\.enabled/);
+  assert.match(source, /subtitleRemovalConfigured:\s*subtitleRemovalConfig\.configured/);
   assert.doesNotMatch(source, /submissionOperation:\s*body\?\.taskType === 'kie_recover'/);
 });
 
