@@ -967,3 +967,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 新增严格 V2 合同：分析结果必须包含恰好 N 条、索引连续唯一的 `targetPrompts`。解析边界只允许单个 JSON 对象、可选单层代码围栏和精确 `final_answer` 尾标，拒绝其他前后文或第二个 JSON。工作流在任何图片提交前把 `targetIndex` 映射为稳定 `targetMaterialId` 并做一对一覆盖校验；每个图片任务只读取自己的提示词，再套确定性的 RTCFE 产品身份/非产品保护层。V1 只保留显式历史读取与重试分支。
 - Regression check: `node --test src/modules/Retouch/productRestoreContract.test.mjs`；`node --experimental-strip-types --test src/services/arkService.test.mjs src/adapters/shellProductRestoreWorkflow.test.mjs src/adapters/shellProductRestoreCancellation.test.mjs src/adapters/shellControlJobLifecycle.test.mjs src/adapters/shellDataAdapter.test.mjs src/adapters/shellPersistence.test.mjs src/shell/modules/Retouch/ProductRestoreAnalysisPanel.test.mjs src/shell/components/ProjectCard.productRestoreCredits.test.mjs`；`node --test server/appStateMerge.test.mjs`；`npx tsc -b --pretty false`。
 - Avoid next time: provider 原始响应必须在解析器边界用真实回放锁定，只兼容明确归属 provider 的外壳，不能用宽松“截第一个 JSON”猜测。所有 analysis-to-fanout 合同都必须在付费提交前证明目标数量、顺序和稳定身份一一对应；整批共性可以共享，但动态执行提示词必须可寻址到单个目标。
+
+## 2026-07-16 - Product restoration must not combine provider auto ratio with an advertised 2K upgrade
+
+- Symptom: 产品还原界面只可选 2K，项目分析与结果上下文也记录 2K，但真实生图 job payload 是 `resolution=1K`；1254×1254 待还原图返回的仍是 1254×1254，没有完成像素升级。
+- Environment: local development / product restoration / GPT Image 2 image-to-image / original-ratio mode.
+- Root cause: workflow 把产品还原 quality 正确归一为 2K，却同时固定 `aspectRatio=auto`。共享 GPT Image 2 规范化器将 `auto` 比例强制收敛到 1K，所以 UI config 与最终 provider payload 出现语义分裂。原回归测试只检查 `generationConfig.quality=2k`，甚至明确期望 `aspectRatio=auto`，没有检查这两个字段在 provider 边界的组合结果。
+- Fix: 产品还原逐图生成时从当前待还原素材的原始尺寸计算精确比例，将它作为结构化 `aspectRatio` 传入 provider，同时保留 prompt 中不剪裁/不拉伸的原比例硬规则。真实 1:1 canary 的 payload 为 `aspectRatio=1:1` + `resolution=2K`，provider 结果为 2048×2048，刷新后恢复同一 2K 结果和原有 1+3 素材。
+- Regression check: `node --test src/adapters/shellProductRestoreWorkflow.test.mjs server/providerKieImage.test.mjs src/services/kieAiService.test.mjs src/shell/modules/Retouch/productRestoreUi.test.mjs`；`npx tsc -b --pretty false`；真实 job `d26915ee39a1a0bf1b4fbb75` / provider `c946833f4bb827a68a90b7b36468a9e1`，结果素材 `2045a5546416c6ce99edf9a9` 为 2048×2048。
+- Avoid next time: 任何分辨率与比例支持声明都要在 provider 边界用组合矩阵验证，不能只测 UI 默认值或 workflow 中间 config。真实验收至少核对最终 job payload、provider 任务 ID、结果实际像素和刷新持久化。
