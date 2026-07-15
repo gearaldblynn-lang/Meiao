@@ -74,3 +74,14 @@ test('source pathname is used when an explicit managed asset id is unavailable',
   assert.match(key, /asset-99\.mp4/);
   assert.doesNotMatch(key, /accessKey|signed-secret/);
 });
+
+test('retry can reuse the original submission identity after a lost create response', () => {
+  const originalKey = buildSubtitleRemovalSubmissionKey(input);
+  const retried = buildSubtitleRemovalJobRequest({
+    ...input,
+    draftNonce: 'a-new-nonce-that-must-not-change-identity',
+    clientSubmissionKey: originalKey,
+  });
+
+  assert.equal(retried.payload.clientSubmissionKey, originalKey);
+});

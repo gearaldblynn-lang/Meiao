@@ -117,6 +117,54 @@ test('local explicit submission key reuses an active job outside the ordinary de
   assert.equal(matched?.id, 'old-active-job');
 });
 
+test('local subtitle idempotency lookup discovers a terminal job after response loss', () => {
+  const store = createStore();
+  const user = createUser('user-a');
+  store.jobs.push({
+    id: 'subtitle-terminal-job',
+    userId: user.id,
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    status: 'succeeded',
+    payload: { clientSubmissionKey: 'subtitle-stable-key' },
+    createdAt: 1,
+  });
+
+  const matched = findReusableLocalJobRecord(store, user, {
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: { clientSubmissionKey: 'subtitle-stable-key' },
+  }, 1);
+
+  assert.equal(matched?.id, 'subtitle-terminal-job');
+});
+
+test('local subtitle idempotency lookup also preserves a cancelled submission identity', () => {
+  const store = createStore();
+  const user = createUser('user-a');
+  store.jobs.push({
+    id: 'subtitle-cancelled-job',
+    userId: user.id,
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    status: 'cancelled',
+    payload: { clientSubmissionKey: 'subtitle-stable-key' },
+    createdAt: 1,
+  });
+
+  const matched = findReusableLocalJobRecord(store, user, {
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: { clientSubmissionKey: 'subtitle-stable-key' },
+  }, 1);
+
+  assert.equal(matched?.id, 'subtitle-cancelled-job');
+});
+
 test('local admin can release a verified submission-unknown reservation', () => {
   const store = createStore();
   store.jobs.push({

@@ -3747,9 +3747,9 @@ test('video subtitle removal workspace creates bounded durable jobs under one ba
   assert.match(shellApp, /results: batchResults/);
   assert.match(shellApp, /sourceUrl: input\.draft\.sourceUrl/);
   assert.match(shellApp, /subtitleRegionNormalized: input\.subtitleRegionNormalized/);
-  assert.match(shellApp, /subtitleRegionPixels: input\.subtitleRegionPixels/);
+  assert.match(shellApp, /subtitleRegionPixels: entry\.input\.subtitleRegionPixels/);
   assert.match(shellApp, /subFeature: 'subtitle_removal'/);
-  assert.match(shellApp, /void persistSyncedProjectsToSharedState\(\[subtitleRemovalProject\]\)/);
+  assert.match(shellApp, /await persistSyncedProjectsToSharedState\(\[subtitleRemovalProject\]\)/);
   assert.doesNotMatch(shellApp, /failedSubtitleRemovalProject/);
   assert.match(shellApp, /subtitleRemovalDraft=\{subtitleRemovalDraft\}/);
   assert.match(shellApp, /onSubtitleRemovalDraftChange=\{setSubtitleRemovalDraft\}/);

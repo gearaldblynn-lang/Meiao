@@ -6,6 +6,7 @@ import {
   buildJobSubmissionLockKey,
   createJobWorker,
   createSerializedJobSubmission,
+  getSubtitleRemovalSubmissionGuardState,
   deleteJobById,
   findJobByProviderTaskIdForUser,
   findReusableJobRecord,
@@ -410,6 +411,106 @@ test('findReusableJobRecord searches every active row for an explicit client sub
   assert.doesNotMatch(queries[0].sql, /created_at >=/);
   assert.doesNotMatch(queries[0].sql, /LIMIT 20/);
   assert.equal(queries[0].values.at(-1), 'stable-video-key');
+});
+
+test('explicit subtitle submission key discovers a terminal job after the create response was lost', () => {
+  const matched = findReusableJobSubmission({
+    jobs: [{
+      id: 'subtitle-completed',
+      userId: 'user-a',
+      module: 'video',
+      taskType: 'subtitle_remove_video',
+      provider: 'golden_subtitle',
+      status: 'succeeded',
+      createdAt: 100,
+      payload: { clientSubmissionKey: 'subtitle-key' },
+    }],
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: { clientSubmissionKey: 'subtitle-key' },
+    createdAfter: 0,
+  });
+
+  assert.equal(matched?.id, 'subtitle-completed');
+});
+
+test('explicit subtitle submission key also discovers a cancelled terminal job', () => {
+  const matched = findReusableJobSubmission({
+    jobs: [{
+      id: 'subtitle-cancelled',
+      userId: 'user-a',
+      module: 'video',
+      taskType: 'subtitle_remove_video',
+      provider: 'golden_subtitle',
+      status: 'cancelled',
+      createdAt: 100,
+      payload: { clientSubmissionKey: 'subtitle-key' },
+    }],
+    userId: 'user-a',
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: { clientSubmissionKey: 'subtitle-key' },
+    createdAfter: 0,
+  });
+
+  assert.equal(matched?.id, 'subtitle-cancelled');
+});
+
+test('mysql subtitle lookup includes terminal rows for an explicit idempotency key', async () => {
+  const queries = [];
+  const terminalRow = {
+    id: 'subtitle-completed',
+    user_id: 'user-a',
+    module: 'video',
+    task_type: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    status: 'succeeded',
+    payload_json: JSON.stringify({ clientSubmissionKey: 'subtitle-key' }),
+    created_at: 1,
+    updated_at: 2,
+  };
+  const pool = {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      return [[terminalRow]];
+    },
+  };
+
+  const matched = await findReusableJobRecord(pool, { id: 'user-a' }, {
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: { clientSubmissionKey: 'subtitle-key' },
+  });
+
+  assert.equal(matched?.id, 'subtitle-completed');
+  assert.match(queries[0].sql, /'failed', 'succeeded', 'cancelled'/);
+});
+
+test('mysql subtitle guard uses unpaged active count and targeted identity queries', async () => {
+  const queries = [];
+  const connection = {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      if (/COUNT\(\*\)/.test(sql)) return [[{ active_count: 3 }]];
+      return [[]];
+    },
+  };
+
+  const state = await getSubtitleRemovalSubmissionGuardState(connection, 'user-a', {
+    batchId: 'batch-a',
+    clientSubmissionKey: 'subtitle-key',
+  });
+
+  assert.equal(state.activeCount, 3);
+  assert.equal(queries.length, 3);
+  assert.ok(queries.every(({ sql }) => !/LIMIT 200/.test(sql)));
+  assert.match(queries[0].sql, /status IN \('queued', 'running', 'retry_waiting'\)/);
+  assert.match(queries[1].sql, /JSON_UNQUOTE\(JSON_EXTRACT\(payload_json, '\$\.batchId'\)\) = \?/);
+  assert.match(queries[2].sql, /JSON_UNQUOTE\(JSON_EXTRACT\(payload_json, '\$\.clientSubmissionKey'\)\) = \?/);
 });
 
 test('findReusableJobSubmission ignores finished or stale jobs', () => {

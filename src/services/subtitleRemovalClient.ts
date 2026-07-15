@@ -14,6 +14,7 @@ export type SubtitleRemovalSubmissionInput = {
   batchCount: number;
   shellResultId: string;
   draftNonce: string;
+  clientSubmissionKey?: string;
   subtitleRegionNormalized: SubtitleRemovalRegion;
 };
 
@@ -56,10 +57,11 @@ export const buildSubtitleRemovalSubmissionKey = (input: SubtitleRemovalSubmissi
 
 export const buildSubtitleRemovalJobRequest = (input: SubtitleRemovalSubmissionInput) => {
   const subtitleRegionNormalized = clampSubtitleRegion(input.subtitleRegionNormalized);
-  const clientSubmissionKey = buildSubtitleRemovalSubmissionKey({
-    ...input,
-    subtitleRegionNormalized,
-  });
+  const clientSubmissionKey = String(input.clientSubmissionKey || '').trim()
+    || buildSubtitleRemovalSubmissionKey({
+      ...input,
+      subtitleRegionNormalized,
+    });
   return {
     module: 'video',
     taskType: 'subtitle_remove_video',

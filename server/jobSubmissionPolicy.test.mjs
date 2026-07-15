@@ -153,6 +153,22 @@ test('subtitle removal batch identity is validated at the authoritative job boun
   }
 });
 
+test('historical subtitle retry does not require create-only batch metadata or current rollout', () => {
+  const policy = resolveJobSubmissionPolicy({
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: {},
+    hasVideoPermission: true,
+    submissionOperation: 'retry',
+    subtitleRemovalEnabled: false,
+    subtitleRemovalConfigured: false,
+  });
+
+  assert.equal(policy.taskType, 'subtitle_remove_video');
+  assert.equal(policy.provider, 'golden_subtitle');
+});
+
 test('MaxForAI video jobs are provider-bound, zero-retry and recoverable by task id', () => {
   const policy = resolveJobSubmissionPolicy({
     module: 'video',

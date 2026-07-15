@@ -96,6 +96,60 @@ test('failed subtitle job remains visible with its humanized error and retry con
   assert.deepEqual(project?.results[0]?.subtitleRegionNormalized, region);
 });
 
+test('persisted locally failed batch item keeps the metadata required for retry after refresh', () => {
+  const failedResult = {
+    id: 'subtitle-project-result-0',
+    imageUrl: '',
+    videoUrl: '',
+    mediaType: 'video',
+    prompt: '去除选定区域内的视频字幕',
+    model: 'Golden 去字幕',
+    aspectRatio: 'auto',
+    status: 'error',
+    createdAt: 1784073600000,
+    module: 'video',
+    subFeature: 'subtitle_removal',
+    sourceUrl: '/api/assets/file/source-video.mp4',
+    sourceProjectId: 'source-project',
+    sourceResultId: 'source-result',
+    fileName: 'source-video.mp4',
+    batchId: 'subtitle-project',
+    batchIndex: 0,
+    batchCount: 3,
+    subtitleRegionNormalized: region,
+    subtitleRegionPixels: pixels,
+    error: '耐久任务创建失败',
+    errorCode: 'subtitle_job_create_failed',
+    clientSubmissionKey: 'subtitle-removal-stable-key',
+    draftNonce: 'draft-stable',
+  };
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'subtitle-project',
+      name: '7月15日项目1',
+      module: 'video',
+      subFeature: 'subtitle_removal',
+      status: 'error',
+      createdAt: 1784073600000,
+      taskCount: 3,
+      completedCount: 0,
+      results: [failedResult],
+    }],
+  }, []);
+  const restored = snapshot.projects.find((item) => item.id === 'subtitle-project')?.results[0];
+
+  assert.equal(restored?.batchId, 'subtitle-project');
+  assert.equal(restored?.batchIndex, 0);
+  assert.equal(restored?.batchCount, 3);
+  assert.equal(restored?.sourceProjectId, 'source-project');
+  assert.equal(restored?.sourceResultId, 'source-result');
+  assert.equal(restored?.errorCode, 'subtitle_job_create_failed');
+  assert.equal(restored?.clientSubmissionKey, 'subtitle-removal-stable-key');
+  assert.equal(restored?.draftNonce, 'draft-stable');
+  assert.deepEqual(restored?.subtitleRegionNormalized, region);
+  assert.deepEqual(restored?.subtitleRegionPixels, pixels);
+});
+
 test('durable subtitle success replaces its stale placeholder without touching another video project', () => {
   const unrelated = {
     id: 'video-generation-project',

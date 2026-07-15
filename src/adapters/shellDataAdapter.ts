@@ -85,6 +85,8 @@ export interface ShellGeneratedResult {
   batchId?: string;
   batchIndex?: number;
   batchCount?: number;
+  clientSubmissionKey?: string;
+  draftNonce?: string;
   targetMaterialId?: string;
   creditsConsumed?: number;
   error?: string;
@@ -907,6 +909,8 @@ const getSubtitleRemovalResultMetadata = (value: unknown) => {
     batchId: String(item.batchId || result.batchId || payload.batchId || '').trim() || undefined,
     batchIndex: toOptionalInteger(item.batchIndex ?? result.batchIndex ?? payload.batchIndex),
     batchCount: toOptionalInteger(item.batchCount ?? result.batchCount ?? payload.batchCount),
+    clientSubmissionKey: String(item.clientSubmissionKey || result.clientSubmissionKey || payload.clientSubmissionKey || '').trim() || undefined,
+    draftNonce: String(item.draftNonce || result.draftNonce || payload.draftNonce || '').trim() || undefined,
     sourceUrl,
     sourcePreviewUrl: String(item.sourcePreviewUrl || sourceUrl || '').trim() || undefined,
     sourceProjectId: String(item.sourceProjectId || result.sourceProjectId || payload.sourceProjectId || '').trim() || undefined,
@@ -1287,6 +1291,7 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
       createdAtPrecise: coerceCreatedAtMs(project.createdAt, { id: project.id, updatedAt: project.updatedAt }).precise,
       completedAt: project.completedAt != null ? coerceCreatedAtMs(project.completedAt, { id: project.id, updatedAt: project.updatedAt }).ms : undefined,
       results: Array.isArray(project.results) ? project.results.map((result: any, index: number) => ({
+        ...getSubtitleRemovalResultMetadata(result),
         id: String(result?.id || `${project.id}-result-${index}`),
         planId: String(result?.planId || '').trim() || undefined,
         projectId: result?.projectId ? String(result.projectId) : undefined,
@@ -1306,12 +1311,13 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         relativePath: String(result?.relativePath || '').trim() || undefined,
         taskId: getVisibleTaskId(result),
         backendJobId: String(result?.backendJobId || '').trim() || undefined,
-        batchIndex: Number(result?.batchIndex || 0) || undefined,
+        batchIndex: toOptionalInteger(result?.batchIndex),
         targetMaterialId: String(result?.targetMaterialId || '').trim() || undefined,
         creditsConsumed: isProductRestoreRecord(project, result)
           ? normalizeKnownProductRestoreCredits(result?.creditsConsumed)
           : normalizeCreditsConsumed(result?.creditsConsumed),
         error: String(result?.error || '').trim() || undefined,
+        errorCode: String(result?.errorCode || '').trim() || undefined,
         matchedAspectRatio: String(result?.matchedAspectRatio || result?.aspectRatio || 'auto'),
         originalWidth: Number(result?.originalWidth || 0) || undefined,
         originalHeight: Number(result?.originalHeight || 0) || undefined,
@@ -3512,6 +3518,8 @@ const mergeGeneratedResultPreservingSource = (
   sourceResultId: next.sourceResultId || existing.sourceResultId,
   subtitleRegionNormalized: next.subtitleRegionNormalized || existing.subtitleRegionNormalized,
   subtitleRegionPixels: next.subtitleRegionPixels || existing.subtitleRegionPixels,
+  clientSubmissionKey: next.clientSubmissionKey || existing.clientSubmissionKey,
+  draftNonce: next.draftNonce || existing.draftNonce,
   fileName: next.fileName || existing.fileName,
   relativePath: next.relativePath || existing.relativePath,
   originalWidth: next.originalWidth || existing.originalWidth,

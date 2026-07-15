@@ -12,6 +12,7 @@ const DEFAULT_PROVIDERLESS_RUNNING_STALE_MS = 15 * 60 * 1000;
 const DEFAULT_SUBMITTED_RUNNING_STALE_MS = 6 * 60 * 60 * 1000;
 const DEFAULT_CANCELLED_RUNNING_STALE_MS = 60 * 1000;
 const REUSABLE_JOB_STATUSES = new Set(['queued', 'running', 'retry_waiting']);
+const TERMINAL_SUBTITLE_REPLAY_STATUSES = new Set(['failed', 'succeeded', 'cancelled']);
 const MIN_PROVIDERLESS_RUNNING_STALE_MS_BY_TASK_TYPE = new Map([
   ['kie_chat', DEFAULT_PROVIDERLESS_RUNNING_STALE_MS],
   ['kie_image', DEFAULT_PROVIDERLESS_RUNNING_STALE_MS],
@@ -120,24 +121,33 @@ export const withMysqlTransaction = async (connection, operation) => {
   }
 };
 
-export const createSerializedJobSubmission = async ({
-  pool,
+export const createSerializedJobSubmissionOnConnection = async ({
+  connection,
   user,
   jobPayload,
   findReusableJob,
   reserveCredits,
   createJob,
   dedupeWindowMs,
-  lockTimeoutSeconds,
-}) => withMysqlSubmissionLock(pool, { userId: user?.id, ...jobPayload }, async (connection) => (
-  withMysqlTransaction(connection, async () => {
+}) => withMysqlTransaction(connection, async () => {
     const reusableJob = await findReusableJob(connection, user, jobPayload, dedupeWindowMs);
     if (reusableJob) return { job: reusableJob, deduped: true };
     const reservation = await reserveCredits(connection, user, jobPayload);
     const job = await createJob(connection, user, jobPayload, reservation);
     return { job, deduped: false };
-  })
-), { timeoutSeconds: lockTimeoutSeconds });
+  });
+
+export const createSerializedJobSubmission = async ({
+  pool,
+  lockTimeoutSeconds,
+  ...submission
+}) => withMysqlSubmissionLock(pool, {
+  userId: submission.user?.id,
+  ...submission.jobPayload,
+}, async (connection) => createSerializedJobSubmissionOnConnection({
+  connection,
+  ...submission,
+}), { timeoutSeconds: lockTimeoutSeconds });
 
 const toSafeJobConcurrency = (value, fallback = DEFAULT_JOB_CONCURRENCY) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -263,6 +273,10 @@ export const findReusableJobSubmission = ({
   const normalizedModule = String(module || 'system').slice(0, 60);
   const normalizedTaskType = String(taskType || 'unknown').slice(0, 80);
   const normalizedProvider = String(provider || 'internal').slice(0, 40);
+  const hasExplicitSubmissionKey = Boolean(getClientSubmissionKey(payload));
+  const reusableStatuses = hasExplicitSubmissionKey && normalizedTaskType === 'subtitle_remove_video'
+    ? new Set([...REUSABLE_JOB_STATUSES, ...TERMINAL_SUBTITLE_REPLAY_STATUSES])
+    : REUSABLE_JOB_STATUSES;
 
   const matches = jobs
     .filter((job) => (
@@ -270,7 +284,7 @@ export const findReusableJobSubmission = ({
       String(job?.module || '') === normalizedModule &&
       String(job?.taskType || '') === normalizedTaskType &&
       String(job?.provider || '') === normalizedProvider &&
-      REUSABLE_JOB_STATUSES.has(String(job?.status || '')) &&
+      reusableStatuses.has(String(job?.status || '')) &&
       Number(job?.createdAt || 0) >= createdAfter &&
       serializeJsonValue(getReusablePayloadIdentity(job?.payload)) === serializedPayload
     ))
@@ -525,6 +539,8 @@ export const findReusableJobRecord = async (pool, user, payload, dedupeWindowMs 
   const normalizedModule = String(payload.module || 'system').slice(0, 60);
   const normalizedTaskType = String(payload.taskType || 'unknown').slice(0, 80);
   const normalizedProvider = String(payload.provider || 'internal').slice(0, 40);
+  const includeTerminalSubtitleReplay = Boolean(clientSubmissionKey)
+    && normalizedTaskType === 'subtitle_remove_video';
   const [rows] = clientSubmissionKey
     ? await pool.query(
       `SELECT * FROM internal_jobs
@@ -532,7 +548,9 @@ export const findReusableJobRecord = async (pool, user, payload, dedupeWindowMs 
          AND module = ?
          AND task_type = ?
          AND provider = ?
-         AND status IN ('queued', 'running', 'retry_waiting')
+         AND status IN (${includeTerminalSubtitleReplay
+    ? "'queued', 'running', 'retry_waiting', 'failed', 'succeeded', 'cancelled'"
+    : "'queued', 'running', 'retry_waiting'"})
          AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.clientSubmissionKey')) = ?
        ORDER BY created_at DESC`,
       [user.id, normalizedModule, normalizedTaskType, normalizedProvider, clientSubmissionKey]
@@ -559,6 +577,42 @@ export const findReusableJobRecord = async (pool, user, payload, dedupeWindowMs 
     payload: payload.payload,
     createdAfter,
   });
+};
+
+export const getSubtitleRemovalSubmissionGuardState = async (pool, userId, payload = {}) => {
+  const normalizedUserId = String(userId || '').trim();
+  const batchId = String(payload?.batchId || '').trim();
+  const clientSubmissionKey = String(payload?.clientSubmissionKey || '').trim();
+  const [activeRows] = await pool.query(
+    `SELECT COUNT(*) AS active_count
+     FROM internal_jobs
+     WHERE user_id = ?
+       AND task_type = 'subtitle_remove_video'
+       AND status IN ('queued', 'running', 'retry_waiting')`,
+    [normalizedUserId],
+  );
+  const [sameBatchRows] = await pool.query(
+    `SELECT * FROM internal_jobs
+     WHERE user_id = ?
+       AND task_type = 'subtitle_remove_video'
+       AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.batchId')) = ?
+     ORDER BY created_at DESC`,
+    [normalizedUserId, batchId],
+  );
+  const [exactRows] = await pool.query(
+    `SELECT * FROM internal_jobs
+     WHERE user_id = ?
+       AND task_type = 'subtitle_remove_video'
+       AND JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.clientSubmissionKey')) = ?
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [normalizedUserId, clientSubmissionKey],
+  );
+  return {
+    activeCount: Number(activeRows?.[0]?.active_count || 0),
+    sameBatchJobs: (sameBatchRows || []).map(mapJobRow),
+    exactReplay: exactRows?.[0] ? mapJobRow(exactRows[0]) : null,
+  };
 };
 
 export const getJobById = async (pool, jobId) => {
