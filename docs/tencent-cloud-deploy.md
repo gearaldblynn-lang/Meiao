@@ -106,6 +106,9 @@ MEIAO_SUBTITLE_REMOVAL_ENABLED=0
 MEIAO_SUBTITLE_REMOVAL_BASE_URL=https://goodline.simplemokey.com/api/openAi
 MEIAO_SUBTITLE_REMOVAL_POLL_INTERVAL_MS=5000
 MEIAO_SUBTITLE_REMOVAL_TIMEOUT_MS=1800000
+MEIAO_SUBTITLE_REMOVAL_BATCH_MAX_ITEMS=10
+MEIAO_SUBTITLE_REMOVAL_BATCH_PREP_CONCURRENCY=2
+MEIAO_SUBTITLE_REMOVAL_BATCH_SUBMIT_CONCURRENCY=2
 MEIAO_SUBTITLE_REMOVAL_PROBE_INSPECTION_MS=0
 MEIAO_CHAT_SSE_HEARTBEAT_MS=15000
 AGENT_IMAGE_GENERATE_TRANSIENT_MAX_RETRIES=1
@@ -198,7 +201,7 @@ Gemini 视频不受 `MEIAO_KIE_MANAGED_ASSET_MODE` 回滚开关影响：无论 `
 
 短视频参考音视频先经过站内临时裁剪转码，再进入托管素材和 Seedance 任务。首发保持 `MEIAO_MEDIA_TRANSCODE_ENABLED=0`，部署完成后先确认 `/api/health` 的 `mediaTranscode.ffmpegReady=true`、`mediaTranscode.ffprobeReady=true`，再改为 `1` 并重启。`MEIAO_FFMPEG_PATH` / `MEIAO_FFPROBE_PATH` 留空时使用 npm 随包二进制；只有运维确认版本时才覆盖。`MEIAO_MEDIA_TRANSCODE_INPUT_MAX_BYTES`、`MEIAO_MEDIA_TRANSCODE_CONCURRENCY`、`MEIAO_MEDIA_TRANSCODE_TIMEOUT_MS`、`MEIAO_MEDIA_PROBE_TIMEOUT_MS`、`MEIAO_MEDIA_TRANSCODE_SESSION_TTL_MS`、`MEIAO_MEDIA_TRANSCODE_MAX_SESSIONS` 默认分别为 `209715200`、`1`、`600000`、`30000`、`1800000`、`20`。原文件仅进入用户隔离的临时目录，失败、取消或过期都会删除；只有 H.264 MP4 / MP3 结果通过格式、时长、尺寸、帧率和大小复检后才写入托管素材，不创建付费任务。
 
-视频去字幕采用 disabled-first 发布：`GOLDEN_SUBTITLE_API_TOKEN` 仅写入服务端 `.env.server`，不得放入前端 env、Git、日志或运行命令参数；首次部署保持 `MEIAO_SUBTITLE_REMOVAL_ENABLED=0`（默认关闭）。`MEIAO_SUBTITLE_REMOVAL_BASE_URL`、`MEIAO_SUBTITLE_REMOVAL_POLL_INTERVAL_MS`、`MEIAO_SUBTITLE_REMOVAL_TIMEOUT_MS` 的默认值为内置 Golden 地址、`5000`、`1800000`，后两者边界为 `2000-30000` 与 `300000-7200000`毫秒。先验证 `/api/health.subtitleRemoval={enabled:false,configured:true}` 和非付费 readiness，再在明确 `MEIAO_SUBTITLE_REMOVAL_CANARY_CONFIRM=1` 时执行一次 2-3 秒的单次付费探针。需要在云上页面对比播放时，临时设置 `MEIAO_SUBTITLE_REMOVAL_PROBE_INSPECTION_MS=300000`（允许 `0-600000`毫秒），探针在输出脱敏成功摘要后保留任务卡，窗口结束自动清理。上游提交状态未知时不得自动重跑。回滚只将 `MEIAO_SUBTITLE_REMOVAL_ENABLED=0` 并正常重启，历史任务卡和结果仍可读。
+视频去字幕采用 disabled-first 发布：`GOLDEN_SUBTITLE_API_TOKEN` 仅写入服务端 `.env.server`，不得放入前端 env、Git、日志或运行命令参数；首次部署保持 `MEIAO_SUBTITLE_REMOVAL_ENABLED=0`（默认关闭）。`MEIAO_SUBTITLE_REMOVAL_BASE_URL`、`MEIAO_SUBTITLE_REMOVAL_POLL_INTERVAL_MS`、`MEIAO_SUBTITLE_REMOVAL_TIMEOUT_MS` 的默认值为内置 Golden 地址、`5000`、`1800000`，后两者边界为 `2000-30000` 与 `300000-7200000`毫秒。批量参数 `MEIAO_SUBTITLE_REMOVAL_BATCH_MAX_ITEMS`、`MEIAO_SUBTITLE_REMOVAL_BATCH_PREP_CONCURRENCY`、`MEIAO_SUBTITLE_REMOVAL_BATCH_SUBMIT_CONCURRENCY` 默认分别为 `10`、`2`、`2`，边界分别为 `1-20`、`1-4`、`1-4`；提交并发只控制耐久 job 创建节奏，不改变 provider 零自动重试、账号并发或付费安全策略。先验证 `/api/health.subtitleRemoval={enabled:false,configured:true}` 和非付费 readiness，再在明确 `MEIAO_SUBTITLE_REMOVAL_CANARY_CONFIRM=1` 时执行一次 2-3 秒的单次付费探针。需要在云上页面对比播放时，临时设置 `MEIAO_SUBTITLE_REMOVAL_PROBE_INSPECTION_MS=300000`（允许 `0-600000`毫秒），探针在输出脱敏成功摘要后保留任务卡，窗口结束自动清理。上游提交状态未知时不得自动重跑。回滚只将 `MEIAO_SUBTITLE_REMOVAL_ENABLED=0` 并正常重启，历史任务卡和结果仍可读。批量增强必须先通过本地测试、`doctor`、`build` 和真实浏览器验收，再进入发布门禁。
 
 `MEIAO_KIE_CHAT_MEDIA_RESOLUTION_CONCURRENCY` 控制单个 `kie_chat` 策划/分镜任务解析图片和视频的并发，默认 `2`。它与 `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY` 进程级总闸门叠加，前者控制单 job 扇出，后者控制全账号总上传压力。
 
