@@ -864,42 +864,45 @@ const getOneClickItemSubFeature = (item: any, fallbackSubFeature: string) => {
   return fallbackSubFeature || 'legacy_unassigned';
 };
 
-const toSubtitleRemovalRegion = (value: any): SubtitleRemovalRegion | undefined => {
+const toSubtitleRemovalRegion = (value: unknown): SubtitleRemovalRegion | undefined => {
   if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
   const region = {
-    x: Number(value.x),
-    y: Number(value.y),
-    width: Number(value.width),
-    height: Number(value.height),
+    x: Number(record.x),
+    y: Number(record.y),
+    width: Number(record.width),
+    height: Number(record.height),
   };
   return Object.values(region).every(Number.isFinite) ? region : undefined;
 };
 
-const toSubtitleRemovalPixels = (value: any): SubtitleRemovalPixels | undefined => {
+const toSubtitleRemovalPixels = (value: unknown): SubtitleRemovalPixels | undefined => {
   if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
   const pixels = {
-    x1: Number(value.x1),
-    y1: Number(value.y1),
-    x2: Number(value.x2),
-    y2: Number(value.y2),
+    x1: Number(record.x1),
+    y1: Number(record.y1),
+    x2: Number(record.x2),
+    y2: Number(record.y2),
   };
   return Object.values(pixels).every(Number.isFinite) ? pixels : undefined;
 };
 
-const getSubtitleRemovalResultMetadata = (item: any) => {
-  const payload = item?.payload || {};
-  const result = item?.result || {};
-  const sourceUrl = String(item?.sourceUrl || result?.sourceUrl || payload?.sourceUrl || '').trim() || undefined;
+const getSubtitleRemovalResultMetadata = (value: unknown) => {
+  const item = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const payload = item.payload && typeof item.payload === 'object' ? item.payload as Record<string, unknown> : {};
+  const result = item.result && typeof item.result === 'object' ? item.result as Record<string, unknown> : {};
+  const sourceUrl = String(item.sourceUrl || result.sourceUrl || payload.sourceUrl || '').trim() || undefined;
   return {
     sourceUrl,
-    sourcePreviewUrl: String(item?.sourcePreviewUrl || sourceUrl || '').trim() || undefined,
-    sourceProjectId: String(item?.sourceProjectId || result?.sourceProjectId || payload?.sourceProjectId || '').trim() || undefined,
-    sourceResultId: String(item?.sourceResultId || result?.sourceResultId || payload?.sourceResultId || '').trim() || undefined,
+    sourcePreviewUrl: String(item.sourcePreviewUrl || sourceUrl || '').trim() || undefined,
+    sourceProjectId: String(item.sourceProjectId || result.sourceProjectId || payload.sourceProjectId || '').trim() || undefined,
+    sourceResultId: String(item.sourceResultId || result.sourceResultId || payload.sourceResultId || '').trim() || undefined,
     subtitleRegionNormalized: toSubtitleRemovalRegion(
-      item?.subtitleRegionNormalized || result?.subtitleRegionNormalized || payload?.subtitleRegionNormalized,
+      item.subtitleRegionNormalized || result.subtitleRegionNormalized || payload.subtitleRegionNormalized,
     ),
     subtitleRegionPixels: toSubtitleRemovalPixels(
-      item?.subtitleRegionPixels || result?.subtitleRegionPixels || payload?.subtitleRegionPixels,
+      item.subtitleRegionPixels || result.subtitleRegionPixels || payload.subtitleRegionPixels,
     ),
   };
 };
@@ -908,8 +911,8 @@ const isSubtitleRemovalJob = (job: InternalJob, module = toModule(job?.module)) 
   module === MODULE_VALUES.VIDEO
   && (
     String(job?.taskType || '').trim() === 'subtitle_remove_video'
-    || String((job?.payload as any)?.subFeature || '').trim() === 'subtitle_removal'
-    || String((job?.payload as any)?.taskPurpose || '').trim() === 'subtitle_removal'
+    || String(job?.payload?.subFeature || '').trim() === 'subtitle_removal'
+    || String(job?.payload?.taskPurpose || '').trim() === 'subtitle_removal'
   )
 );
 

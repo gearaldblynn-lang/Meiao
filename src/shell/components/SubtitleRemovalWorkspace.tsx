@@ -81,6 +81,8 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
   const [stageText, setStageText] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [localSubmitting, setLocalSubmitting] = useState(false);
+  const draftSourceUrl = draft?.sourceUrl;
+  const draftTranscoded = draft?.transcoded;
 
   const cancelUnfinishedSession = async () => {
     activeRequestRef.current?.abort();
@@ -105,19 +107,19 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
 
   useEffect(() => {
     setRegion({ ...DEFAULT_SUBTITLE_REGION });
-    if (draft) {
+    if (draftSourceUrl) {
       setPhase('ready');
       setErrorMessage('');
-      setStageText(draft.transcoded === true
+      setStageText(draftTranscoded === true
         ? '已保留原画幅转换为 H.264 MP4'
-        : draft.transcoded === false
+        : draftTranscoded === false
           ? '原视频已是兼容格式，未重复转码'
           : '已从任务卡带入原视频');
     } else if (!sessionIdRef.current) {
       setPhase('idle');
       setStageText('');
     }
-  }, [draft?.sourceUrl]);
+  }, [draftSourceUrl, draftTranscoded]);
 
   const pixels = useMemo<SubtitleRemovalPixels | null>(() => {
     if (!draft?.width || !draft?.height) return null;
