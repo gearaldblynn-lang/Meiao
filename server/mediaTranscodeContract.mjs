@@ -34,6 +34,19 @@ export const MEDIA_LIMITS = Object.freeze({
   }),
 });
 
+export const MEDIA_TRANSCODE_PROFILES = Object.freeze([
+  'seedance_reference',
+  'subtitle_removal',
+]);
+
+export function normalizeMediaTranscodeProfile(value = 'seedance_reference') {
+  const profile = String(value || 'seedance_reference').trim().toLowerCase();
+  if (!MEDIA_TRANSCODE_PROFILES.includes(profile)) {
+    throw createMediaTranscodeError('media_profile_unsupported', '不支持这种媒体处理用途', { profile });
+  }
+  return profile;
+}
+
 export function createMediaTranscodeError(code, message, details = {}) {
   const error = new Error(message);
   error.code = code;
@@ -90,7 +103,13 @@ function finiteSeconds(value, field) {
   return parsed;
 }
 
-export function validateTrimRange({ durationSeconds, startSeconds, endSeconds }) {
+export function validateTrimRange({
+  profile = 'seedance_reference',
+  durationSeconds,
+  startSeconds,
+  endSeconds,
+}) {
+  const normalizedProfile = normalizeMediaTranscodeProfile(profile);
   const sourceDuration = finiteSeconds(durationSeconds, 'durationSeconds');
   const start = finiteSeconds(startSeconds, 'startSeconds');
   const end = finiteSeconds(endSeconds, 'endSeconds');
@@ -105,6 +124,20 @@ export function validateTrimRange({ durationSeconds, startSeconds, endSeconds })
   }
 
   const selectedDuration = end - start;
+  if (normalizedProfile === 'subtitle_removal') {
+    if (selectedDuration > 600) {
+      throw createMediaTranscodeError(
+        'media_trim_too_long',
+        '去字幕视频时长不能超过 600 秒，请手动选择范围',
+        { durationSeconds: selectedDuration },
+      );
+    }
+    return {
+      startSeconds: start,
+      endSeconds: end,
+      durationSeconds: selectedDuration,
+    };
+  }
   if (selectedDuration < MEDIA_LIMITS.video.minSeconds - epsilon) {
     throw createMediaTranscodeError(
       'media_trim_too_short',
@@ -132,6 +165,7 @@ function ffmpegSeconds(value) {
 }
 
 export function buildVideoTranscodeArgs({
+  profile = 'seedance_reference',
   inputPath,
   outputPath,
   startSeconds,
@@ -140,8 +174,27 @@ export function buildVideoTranscodeArgs({
   height,
   hasAudio = false,
 }) {
-  const canvas = calculateVideoCanvas({ width, height });
+  const normalizedProfile = normalizeMediaTranscodeProfile(profile);
   const duration = Number(endSeconds) - Number(startSeconds);
+  if (normalizedProfile === 'subtitle_removal') {
+    return [
+      '-hide_banner', '-loglevel', 'error', '-y',
+      '-ss', ffmpegSeconds(startSeconds),
+      '-i', inputPath,
+      '-t', ffmpegSeconds(duration),
+      '-map', '0:v:0',
+      '-map', '0:a:0?',
+      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1',
+      '-c:v', 'libx264',
+      '-preset', 'veryfast',
+      '-crf', '23',
+      '-pix_fmt', 'yuv420p',
+      ...(hasAudio ? ['-c:a', 'aac', '-b:a', '128k'] : ['-an']),
+      '-movflags', '+faststart',
+      outputPath,
+    ];
+  }
+  const canvas = calculateVideoCanvas({ width, height });
   const videoFilter = [
     `scale=${canvas.width}:${canvas.height}:force_original_aspect_ratio=decrease`,
     `pad=${canvas.width}:${canvas.height}:(ow-iw)/2:(oh-ih)/2:color=black`,
@@ -185,8 +238,18 @@ export function buildAudioTranscodeArgs({ inputPath, outputPath, startSeconds, e
   ];
 }
 
-function validateDuration(kind, metadata) {
+function validateDuration(kind, metadata, profile) {
   const duration = requirePositiveNumber(metadata.durationSeconds, 'durationSeconds');
+  if (profile === 'subtitle_removal') {
+    if (kind !== 'video' || duration > 600) {
+      throw createMediaTranscodeError(
+        'media_output_invalid_duration',
+        '去字幕视频时长不能超过 600 秒',
+        { durationSeconds: duration },
+      );
+    }
+    return;
+  }
   const limits = MEDIA_LIMITS[kind];
   if (duration < limits.minSeconds - 0.05 || duration > limits.maxSeconds + 0.05) {
     throw createMediaTranscodeError(
@@ -197,8 +260,9 @@ function validateDuration(kind, metadata) {
   }
 }
 
-function validateBytes(kind, metadata) {
+function validateBytes(kind, metadata, profile) {
   const sizeBytes = requirePositiveNumber(metadata.sizeBytes, 'sizeBytes');
+  if (profile === 'subtitle_removal') return sizeBytes;
   if (sizeBytes > MEDIA_LIMITS[kind].maxBytes) {
     throw createMediaTranscodeError(
       'media_output_too_large',
@@ -208,12 +272,13 @@ function validateBytes(kind, metadata) {
   }
 }
 
-export function validateTranscodedOutput(kind, metadata) {
+export function validateTranscodedOutput(kind, metadata, profile = 'seedance_reference') {
+  const normalizedProfile = normalizeMediaTranscodeProfile(profile);
   if (kind !== 'video' && kind !== 'audio') {
     throw createMediaTranscodeError('media_kind_unsupported', '仅支持视频或音频转码', { kind });
   }
-  validateDuration(kind, metadata);
-  validateBytes(kind, metadata);
+  validateDuration(kind, metadata, normalizedProfile);
+  validateBytes(kind, metadata, normalizedProfile);
   const formatNames = Array.isArray(metadata.formatNames)
     ? metadata.formatNames.map((item) => String(item).toLowerCase())
     : [];
@@ -230,6 +295,13 @@ export function validateTranscodedOutput(kind, metadata) {
   }
   const width = requirePositiveNumber(metadata.width, 'width');
   const height = requirePositiveNumber(metadata.height, 'height');
+  if (normalizedProfile === 'subtitle_removal') {
+    const pixelFormat = String(metadata.pixelFormat || '').trim().toLowerCase();
+    if (pixelFormat && pixelFormat !== 'yuv420p') {
+      throw createMediaTranscodeError('media_output_invalid_pixel_format', '转码结果不是兼容的 yuv420p 视频');
+    }
+    return metadata;
+  }
   const frameRate = requirePositiveNumber(metadata.frameRate, 'frameRate');
   const ratio = width / height;
   const pixels = width * height;
@@ -257,4 +329,25 @@ export function validateTranscodedOutput(kind, metadata) {
     );
   }
   return metadata;
+}
+
+export function isMediaCompatibleForProfile(profile, metadata = {}) {
+  const normalizedProfile = normalizeMediaTranscodeProfile(profile);
+  if (normalizedProfile !== 'subtitle_removal') return false;
+  const formatNames = Array.isArray(metadata.formatNames)
+    ? metadata.formatNames.map((item) => String(item).trim().toLowerCase())
+    : [];
+  const durationSeconds = Number(metadata.durationSeconds);
+  const sizeBytes = Number(metadata.sizeBytes);
+  const width = Number(metadata.width);
+  const height = Number(metadata.height);
+  const pixelFormat = String(metadata.pixelFormat || '').trim().toLowerCase();
+  return durationSeconds > 0
+    && durationSeconds <= 600
+    && sizeBytes > 0
+    && width > 0
+    && height > 0
+    && formatNames.includes('mp4')
+    && String(metadata.videoCodec || '').trim().toLowerCase() === 'h264'
+    && (!pixelFormat || pixelFormat === 'yuv420p');
 }

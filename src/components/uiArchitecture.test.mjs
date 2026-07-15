@@ -13,6 +13,19 @@ test('shared job payload metadata remains open to existing provider fields', () 
   assert.match(types, /export interface InternalJob \{[\s\S]*?payload: Record<string, unknown>;/);
 });
 
+test('media upload supports a trusted subtitle profile and authenticated byte progress', () => {
+  const client = read('../services/mediaTranscodeClient.ts');
+  const server = read('../../server/index.mjs');
+
+  assert.match(client, /export type MediaTranscodeProfile = 'seedance_reference' \| 'subtitle_removal'/);
+  assert.match(client, /onUploadProgress\?: \(progress: MediaUploadProgress\) => void/);
+  assert.match(client, /formData\.append\('profile', profile\)/);
+  assert.match(client, /xhr\.upload\.onprogress/);
+  assert.match(client, /xhr\.setRequestHeader\('Authorization', `Bearer \$\{token\}`\)/);
+  assert.match(client, /callerSignal\?\.addEventListener\('abort', abort/);
+  assert.match(server, /formData\.get\('profile'\) \|\| 'seedance_reference'/);
+});
+
 test('translation module keeps submode switching in the sidebar instead of the workspace header', () => {
   const translationModule = read('../modules/Translation/TranslationModule.tsx');
   const settingsSidebar = read('../components/SettingsSidebar.tsx');

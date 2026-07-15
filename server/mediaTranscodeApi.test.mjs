@@ -7,6 +7,7 @@ const session = {
   id: '11111111-1111-4111-8111-111111111111',
   userId: 'u1',
   kind: 'video',
+  profile: 'seedance_reference',
   fileName: 'source.mov',
   sourcePath: '/tmp/session/source',
   state: 'ready',
@@ -21,17 +22,18 @@ const canonicalProbe = {
   width: 720, height: 1280, frameRate: 30, sizeBytes: 2_000_000, hasAudio: true,
 };
 
-function createFakeStore() {
+function createFakeStore(sessionOverride = {}) {
+  const ownedSession = { ...session, ...sessionOverride };
   const calls = { create: [], updateProbe: [], markConverting: [], remove: [] };
   return {
     calls,
-    async create(input) { calls.create.push(input); return { ...session, probe: input.probe || null }; },
-    async updateProbe(id, userId, probe) { calls.updateProbe.push({ id, userId, probe }); return { ...session, probe }; },
+    async create(input) { calls.create.push(input); return { ...ownedSession, profile: input.profile, probe: input.probe || null }; },
+    async updateProbe(id, userId, probe) { calls.updateProbe.push({ id, userId, probe }); return { ...ownedSession, probe }; },
     async getOwned(id, userId) {
-      if (id !== session.id || userId !== session.userId) throw Object.assign(new Error('forbidden'), { code: 'media_session_forbidden' });
-      return { ...session };
+      if (id !== ownedSession.id || userId !== ownedSession.userId) throw Object.assign(new Error('forbidden'), { code: 'media_session_forbidden' });
+      return { ...ownedSession };
     },
-    async markConverting(id, userId) { calls.markConverting.push({ id, userId }); return { ...session, state: 'converting' }; },
+    async markConverting(id, userId) { calls.markConverting.push({ id, userId }); return { ...ownedSession, state: 'converting' }; },
     async remove(id) { calls.remove.push(id); return true; },
     async count() { return 1; },
   };
@@ -47,12 +49,13 @@ test('session creation probes the temporary source and does not persist an asset
     persistAsset: async () => { persisted += 1; },
   });
   const result = await api.createSession({
-    userId: 'u1', kind: 'video', fileName: 'source.mov', fileBuffer: Buffer.from('source'),
+    userId: 'u1', kind: 'video', profile: 'subtitle_removal', fileName: 'source.mov', fileBuffer: Buffer.from('source'),
   });
 
   assert.equal(result.durationSeconds, 8);
   assert.equal(result.videoCodec, 'hevc');
   assert.equal(store.calls.updateProbe.length, 1);
+  assert.equal(store.calls.create[0].profile, 'subtitle_removal');
   assert.equal(persisted, 0);
 });
 
@@ -82,6 +85,72 @@ test('conversion persists only the validated canonical output and removes the se
   assert.equal(result.durationSeconds, 5);
   assert.equal(result.url, '/api/assets/asset-1');
   assert.deepEqual(store.calls.remove, [session.id]);
+});
+
+test('compatible subtitle source is persisted without FFmpeg and reports the fast path', async () => {
+  const compatibleProbe = {
+    ...canonicalProbe,
+    durationSeconds: 30,
+    width: 1080,
+    height: 1920,
+    pixelFormat: 'yuv420p',
+  };
+  const store = createFakeStore({
+    profile: 'subtitle_removal',
+    fileName: 'source.mp4',
+    probe: compatibleProbe,
+  });
+  let transcodeCalls = 0;
+  const persisted = [];
+  const api = createMediaTranscodeApi({
+    store,
+    service: { transcode: async () => { transcodeCalls += 1; } },
+    readSource: async () => Buffer.from('original-h264'),
+    persistAsset: async (input) => {
+      persisted.push(input);
+      return { assetId: 'asset-fast', fileUrl: '/api/assets/asset-fast' };
+    },
+  });
+  const result = await api.convertSession({
+    userId: 'u1',
+    sessionId: session.id,
+    startSeconds: 0,
+    endSeconds: 30,
+    profile: 'seedance_reference',
+  });
+
+  assert.equal(transcodeCalls, 0);
+  assert.equal(persisted[0].fileBuffer.toString(), 'original-h264');
+  assert.equal(result.transcoded, false);
+  assert.equal(result.profile, 'subtitle_removal');
+  assert.deepEqual(store.calls.remove, [session.id]);
+});
+
+test('incompatible subtitle MOV invokes FFmpeg with the stored profile', async () => {
+  const store = createFakeStore({ profile: 'subtitle_removal' });
+  const transcodeCalls = [];
+  const api = createMediaTranscodeApi({
+    store,
+    service: {
+      transcode: async (input) => {
+        transcodeCalls.push(input);
+        return {
+          fileBuffer: Buffer.from('converted'),
+          metadata: { ...canonicalProbe, pixelFormat: 'yuv420p' },
+          mimeType: 'video/mp4',
+        };
+      },
+    },
+    readSource: async () => Buffer.from('unused'),
+    persistAsset: async () => ({ assetId: 'asset-converted', fileUrl: '/api/assets/asset-converted' }),
+  });
+  const result = await api.convertSession({
+    userId: 'u1', sessionId: session.id, startSeconds: 0, endSeconds: 8,
+  });
+
+  assert.equal(transcodeCalls.length, 1);
+  assert.equal(transcodeCalls[0].profile, 'subtitle_removal');
+  assert.equal(result.transcoded, true);
 });
 
 test('failed conversion never persists and logs only non-sensitive failure metadata', async () => {

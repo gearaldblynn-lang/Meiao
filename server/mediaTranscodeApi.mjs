@@ -1,7 +1,9 @@
 import { basename, dirname, extname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 import {
   createMediaTranscodeError,
+  isMediaCompatibleForProfile,
   validateTranscodedOutput,
   validateTrimRange,
 } from './mediaTranscodeContract.mjs';
@@ -12,6 +14,7 @@ function publicProbeFields(probe = {}) {
     sizeBytes: Number(probe.sizeBytes || 0),
     formatNames: Array.isArray(probe.formatNames) ? probe.formatNames : [],
     videoCodec: probe.videoCodec || null,
+    pixelFormat: probe.pixelFormat || null,
     audioCodec: probe.audioCodec || null,
     width: Number(probe.width || 0) || null,
     height: Number(probe.height || 0) || null,
@@ -25,6 +28,7 @@ function publicSession(session) {
     sessionId: session.id,
     kind: session.kind,
     fileName: session.fileName,
+    profile: session.profile,
     state: session.state,
     ...publicProbeFields(session.probe),
   };
@@ -38,14 +42,20 @@ async function safeLog(log, entry) {
   }
 }
 
-export function createMediaTranscodeApi({ store, service, persistAsset, log = () => {} } = {}) {
+export function createMediaTranscodeApi({
+  store,
+  service,
+  persistAsset,
+  readSource = readFile,
+  log = () => {},
+} = {}) {
   if (!store || !service || typeof persistAsset !== 'function') {
     throw new TypeError('store, service, and persistAsset are required');
   }
 
   return {
-    async createSession({ userId, kind, fileName, fileBuffer }) {
-      const created = await store.create({ userId, kind, fileName, fileBuffer, probe: null });
+    async createSession({ userId, kind, profile = 'seedance_reference', fileName, fileBuffer }) {
+      const created = await store.create({ userId, kind, profile, fileName, fileBuffer, probe: null });
       try {
         const probe = await service.probe(created.sourcePath, kind);
         if (!Number.isFinite(probe.durationSeconds) || probe.durationSeconds <= 0) {
@@ -83,6 +93,7 @@ export function createMediaTranscodeApi({ store, service, persistAsset, log = ()
     async convertSession({ userId, sessionId, startSeconds, endSeconds, module = 'video' }) {
       const session = await store.getOwned(sessionId, userId);
       const trim = validateTrimRange({
+        profile: session.profile,
         durationSeconds: session.probe?.durationSeconds,
         startSeconds,
         endSeconds,
@@ -90,17 +101,29 @@ export function createMediaTranscodeApi({ store, service, persistAsset, log = ()
       await store.markConverting(sessionId, userId);
       const outputPath = join(dirname(session.sourcePath), session.kind === 'video' ? 'converted.mp4' : 'converted.mp3');
       try {
-        const output = await service.transcode({
-          sessionId,
-          kind: session.kind,
-          inputPath: session.sourcePath,
-          outputPath,
-          ...trim,
-          width: session.probe?.width,
-          height: session.probe?.height,
-          hasAudio: session.probe?.hasAudio,
-        });
-        validateTranscodedOutput(session.kind, output.metadata);
+        const sourceDuration = Number(session.probe?.durationSeconds || 0);
+        const keepsWholeSource = Math.abs(trim.startSeconds) < 0.001
+          && Math.abs(trim.endSeconds - sourceDuration) < 0.001;
+        const compatibleSource = keepsWholeSource
+          && isMediaCompatibleForProfile(session.profile, session.probe);
+        const output = compatibleSource
+          ? {
+            fileBuffer: await readSource(session.sourcePath),
+            metadata: session.probe,
+            mimeType: 'video/mp4',
+          }
+          : await service.transcode({
+            sessionId,
+            kind: session.kind,
+            profile: session.profile,
+            inputPath: session.sourcePath,
+            outputPath,
+            ...trim,
+            width: session.probe?.width,
+            height: session.probe?.height,
+            hasAudio: session.probe?.hasAudio,
+          });
+        validateTranscodedOutput(session.kind, output.metadata, session.profile);
         const sourceBaseName = basename(session.fileName, extname(session.fileName)).trim() || 'converted';
         const canonicalFileName = `${sourceBaseName}.${session.kind === 'video' ? 'mp4' : 'mp3'}`;
         const persisted = await persistAsset({
@@ -119,12 +142,15 @@ export function createMediaTranscodeApi({ store, service, persistAsset, log = ()
           kind: session.kind,
           durationSeconds: output.metadata.durationSeconds,
           sizeBytes: output.metadata.sizeBytes,
+          transcoded: !compatibleSource,
         });
         return {
           ...persisted,
           kind: session.kind,
           fileName: canonicalFileName,
           mimeType: output.mimeType,
+          profile: session.profile,
+          transcoded: !compatibleSource,
           ...publicProbeFields(output.metadata),
         };
       } catch (error) {

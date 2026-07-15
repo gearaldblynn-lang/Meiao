@@ -63,6 +63,30 @@ test('session sidecars sanitize names and never persist the source path', async 
   assert.equal(await readFile(created.sourcePath, 'utf8'), 'source');
 });
 
+test('session sidecars persist and hydrate the trusted media profile', async (t) => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'meiao-media-store-'));
+  const store = createMediaTranscodeSessionStore({ rootDir });
+  t.after(async () => { await store.destroy(); });
+  const created = await store.create({
+    userId: 'u1',
+    kind: 'video',
+    profile: 'subtitle_removal',
+    fileName: 'subtitle-source.mp4',
+    fileBuffer: Buffer.from('source'),
+    probe: videoProbe,
+  });
+  const sidecar = JSON.parse(await readFile(join(rootDir, created.id, 'session.json'), 'utf8'));
+
+  assert.equal(sidecar.profile, 'subtitle_removal');
+  assert.equal((await store.getOwned(created.id, 'u1')).profile, 'subtitle_removal');
+  await assert.rejects(
+    () => store.create({
+      userId: 'u1', kind: 'video', profile: 'body_override', fileName: 'bad.mp4', fileBuffer: Buffer.from('x'),
+    }),
+    (error) => error?.code === 'media_profile_unsupported',
+  );
+});
+
 test('session probe and conversion state updates are atomic and owner-checked', async (t) => {
   const rootDir = await mkdtemp(join(tmpdir(), 'meiao-media-store-'));
   const store = createMediaTranscodeSessionStore({ rootDir });

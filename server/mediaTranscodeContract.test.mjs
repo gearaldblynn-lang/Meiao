@@ -6,6 +6,7 @@ import {
   buildAudioTranscodeArgs,
   buildVideoTranscodeArgs,
   calculateVideoCanvas,
+  isMediaCompatibleForProfile,
   validateTranscodedOutput,
   validateTrimRange,
 } from './mediaTranscodeContract.mjs';
@@ -122,4 +123,78 @@ test('validateTranscodedOutput enforces canonical video and audio contracts', ()
   );
   assert.equal(MEDIA_LIMITS.video.maxFiles, 3);
   assert.equal(MEDIA_LIMITS.audio.maxTotalSeconds, 15);
+});
+
+test('subtitle removal allows a full six-hundred-second selection but no more', () => {
+  assert.deepEqual(validateTrimRange({
+    profile: 'subtitle_removal',
+    durationSeconds: 600,
+    startSeconds: 0,
+    endSeconds: 600,
+  }), { startSeconds: 0, endSeconds: 600, durationSeconds: 600 });
+  assert.throws(
+    () => validateTrimRange({
+      profile: 'subtitle_removal',
+      durationSeconds: 600.001,
+      startSeconds: 0,
+      endSeconds: 600.001,
+    }),
+    (error) => error?.code === 'media_trim_too_long',
+  );
+  assert.throws(
+    () => validateTrimRange({ durationSeconds: 20, startSeconds: 0, endSeconds: 20 }),
+    (error) => error?.code === 'media_trim_too_long',
+  );
+});
+
+test('subtitle removal ffmpeg keeps the source ratio without pad or forced fps', () => {
+  const args = buildVideoTranscodeArgs({
+    profile: 'subtitle_removal',
+    inputPath: 'in.mov',
+    outputPath: 'out.mp4',
+    startSeconds: 0,
+    endSeconds: 20,
+    width: 721,
+    height: 1281,
+    hasAudio: true,
+  });
+  assert.ok(args.includes('libx264'));
+  assert.ok(args.includes('yuv420p'));
+  assert.ok(args.includes('+faststart'));
+  assert.ok(args.some((value) => value.includes('trunc(iw/2)*2')));
+  assert.ok(!args.some((value) => value.includes('pad=')));
+  assert.ok(!args.includes('-r'));
+});
+
+test('compatible H264 MP4 skips subtitle removal transcode', () => {
+  assert.equal(isMediaCompatibleForProfile('subtitle_removal', {
+    durationSeconds: 30,
+    sizeBytes: 1_000_000,
+    formatNames: ['mov', 'mp4'],
+    videoCodec: 'h264',
+    width: 1080,
+    height: 1920,
+  }), true);
+  assert.equal(isMediaCompatibleForProfile('subtitle_removal', {
+    durationSeconds: 30,
+    sizeBytes: 1_000_000,
+    formatNames: ['mov'],
+    videoCodec: 'hevc',
+    width: 1080,
+    height: 1920,
+  }), false);
+});
+
+test('subtitle removal output validation ignores Seedance ratio, size and fps limits', () => {
+  assert.doesNotThrow(() => validateTranscodedOutput('video', {
+    durationSeconds: 600,
+    formatNames: ['mov', 'mp4'],
+    videoCodec: 'h264',
+    audioCodec: 'aac',
+    pixelFormat: 'yuv420p',
+    width: 2160,
+    height: 3840,
+    frameRate: 120,
+    sizeBytes: 500_000_000,
+  }, 'subtitle_removal'));
 });
