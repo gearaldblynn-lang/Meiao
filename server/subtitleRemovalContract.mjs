@@ -12,6 +12,13 @@ export const SUBTITLE_REMOVAL_DEFAULTS = Object.freeze({
   minTimeoutMs: 300_000,
   maxTimeoutMs: 7_200_000,
   maxDurationSeconds: 600,
+  batchMaxItems: 10,
+  batchPrepConcurrency: 2,
+  batchSubmitConcurrency: 2,
+  minBatchMaxItems: 1,
+  maxBatchMaxItems: 20,
+  minBatchConcurrency: 1,
+  maxBatchConcurrency: 4,
 });
 
 export function createSubtitleRemovalError(code, message, details = {}) {
@@ -62,6 +69,24 @@ export function getSubtitleRemovalConfig(env = {}) {
       SUBTITLE_REMOVAL_DEFAULTS.timeoutMs,
       SUBTITLE_REMOVAL_DEFAULTS.minTimeoutMs,
       SUBTITLE_REMOVAL_DEFAULTS.maxTimeoutMs,
+    ),
+    batchMaxItems: boundedInteger(
+      env.MEIAO_SUBTITLE_REMOVAL_BATCH_MAX_ITEMS,
+      SUBTITLE_REMOVAL_DEFAULTS.batchMaxItems,
+      SUBTITLE_REMOVAL_DEFAULTS.minBatchMaxItems,
+      SUBTITLE_REMOVAL_DEFAULTS.maxBatchMaxItems,
+    ),
+    batchPrepConcurrency: boundedInteger(
+      env.MEIAO_SUBTITLE_REMOVAL_BATCH_PREP_CONCURRENCY,
+      SUBTITLE_REMOVAL_DEFAULTS.batchPrepConcurrency,
+      SUBTITLE_REMOVAL_DEFAULTS.minBatchConcurrency,
+      SUBTITLE_REMOVAL_DEFAULTS.maxBatchConcurrency,
+    ),
+    batchSubmitConcurrency: boundedInteger(
+      env.MEIAO_SUBTITLE_REMOVAL_BATCH_SUBMIT_CONCURRENCY,
+      SUBTITLE_REMOVAL_DEFAULTS.batchSubmitConcurrency,
+      SUBTITLE_REMOVAL_DEFAULTS.minBatchConcurrency,
+      SUBTITLE_REMOVAL_DEFAULTS.maxBatchConcurrency,
     ),
   };
 }

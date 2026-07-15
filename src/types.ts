@@ -361,6 +361,11 @@ export interface SystemPublicConfig {
     productRestore: 'off' | 'admin' | 'all';
     subtitleRemoval?: boolean;
   };
+  subtitleRemoval?: {
+    batchMaxItems: number;
+    batchPrepConcurrency: number;
+    batchSubmitConcurrency: number;
+  };
   systemSettings: {
     analysisModel: string;
     userAnalysisModel: string;

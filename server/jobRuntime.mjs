@@ -670,6 +670,11 @@ export const buildPublicSystemConfig = (env, queueStats = {}, overrides = {}) =>
       ),
       subtitleRemoval: subtitleRemovalConfig.enabled,
     },
+    subtitleRemoval: {
+      batchMaxItems: subtitleRemovalConfig.batchMaxItems,
+      batchPrepConcurrency: subtitleRemovalConfig.batchPrepConcurrency,
+      batchSubmitConcurrency: subtitleRemovalConfig.batchSubmitConcurrency,
+    },
     systemSettings: {
       analysisModel: validConfiguredAnalysisModel,
       userAnalysisModel: validConfiguredUserAnalysisModel,
