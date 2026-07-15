@@ -87,5 +87,5 @@ test('standard video forwards the semantic submission key into every backend pay
   const videoWorkflow = workflowSource.slice(videoWorkflowStart);
 
   assert.match(standardVideoCall, /taskMetadata:\s*\{\s*clientSubmissionKey:\s*guardedSubmitLockKey\s*\}/);
-  assert.equal((videoWorkflow.match(/\.\.\.\(input\.taskMetadata \|\| \{\}\)/g) || []).length, 2);
+  assert.equal((videoWorkflow.match(/\.\.\.\(input\.taskMetadata \|\| \{\}\)/g) || []).length, 3);
 });
