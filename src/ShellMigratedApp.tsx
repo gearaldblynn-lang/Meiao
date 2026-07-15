@@ -1,7 +1,7 @@
 import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysis, ProductRestoreProjectContext, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysis, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
@@ -12,6 +12,7 @@ import {
   cancelInternalJob,
   clearCurrentUserContext,
   clearSessionToken,
+  createInternalJob,
   deleteInternalAssetByUrl,
   deleteInternalJob,
   fetchCurrentUser,
@@ -133,6 +134,7 @@ import {
   prepareProductRestoreUploadBatch,
 } from './shell/modules/Retouch/productRestoreUi.mjs';
 import { getMediaBudget, validateMediaQueueSelection } from './utils/mediaTrimRules.mjs';
+import { buildSubtitleRemovalJobRequest } from './services/subtitleRemovalClient';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -251,6 +253,8 @@ export interface GeneratedResult {
     revisionInstruction?: string;
     createdAt: number;
   }>;
+  subtitleRegionNormalized?: SubtitleRemovalRegion;
+  subtitleRegionPixels?: SubtitleRemovalPixels;
 }
 
 export interface Material {
@@ -1441,6 +1445,7 @@ export const MODULE_SUB_FEATURES: Record<string, SubFeatureOption[]> = {
   [AppModuleObj.VIDEO]: [
     { id: 'generation', label: '短视频生成' },
     { id: 'storyboard', label: '分镜生成' },
+    { id: 'subtitle_removal', label: '去字幕' },
     { id: 'diagnosis', label: '视频诊断' },
   ],
   [AppModuleObj.XHS_COVER]: [
@@ -2199,6 +2204,9 @@ const AppContent: React.FC<{
     [inputStateByScope, activeScopeKey],
   );
   const [videoMemory, setVideoMemoryState] = useState<VideoPersistentState | null>(null);
+  const [subtitleRemovalDraft, setSubtitleRemovalDraft] = useState<SubtitleRemovalSourceDraft | null>(null);
+  const [subtitleRemovalSubmitting, setSubtitleRemovalSubmitting] = useState(false);
+  const subtitleRemovalSubmitLockRef = useRef(false);
   const taskControllersRef = useRef<Record<string, AbortController>>({});
   const deletedStoryboardProjectIdsRef = useRef<Set<string>>(new Set());
   const cancelledStoryboardProjectIdsRef = useRef<Set<string>>(new Set());
@@ -3212,6 +3220,9 @@ const AppContent: React.FC<{
     saveShellRuntimeSnapshot(runtimeSnapshot, userId);
     setHasHydratedSharedData(false);
     setVideoMemoryState(null);
+    setSubtitleRemovalDraft(null);
+    setSubtitleRemovalSubmitting(false);
+    subtitleRemovalSubmitLockRef.current = false;
     setInputStateByScope(draftSnapshot.inputStateByScope || {});
     setMaterials(draftSnapshot.materials as Record<string, Material[]> || {});
     updateMediaTranscodeQueue(() => []);
@@ -3340,6 +3351,132 @@ const AppContent: React.FC<{
     sharedStateWriteQueueRef.current = queuedWrite.then(() => undefined, () => undefined);
     return queuedWrite;
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]) as PersistProjectToSharedState;
+
+  const handleSubtitleRemovalSubmit = useCallback(async (input: {
+    draft: SubtitleRemovalSourceDraft;
+    subtitleRegionNormalized: SubtitleRemovalRegion;
+    subtitleRegionPixels: SubtitleRemovalPixels;
+  }) => {
+    if (subtitleRemovalSubmitLockRef.current) {
+      throw new Error('去字幕任务正在提交，请等待当前请求完成');
+    }
+    if (!currentUser?.id) throw new Error('登录状态已失效，请重新登录');
+    if (!systemConfig?.featureRollouts?.subtitleRemoval || !systemConfig?.providers?.goldenSubtitle?.configured) {
+      throw new Error('去字幕功能暂未开放，请联系管理员');
+    }
+
+    subtitleRemovalSubmitLockRef.current = true;
+    setSubtitleRemovalSubmitting(true);
+    const createdAt = Date.now();
+    const shellProjectId = `subtitle-removal-${createdAt}-${Math.random().toString(36).slice(2, 8)}`;
+    const shellResultId = `${shellProjectId}-result`;
+    const shellProjectName = reserveShortProjectName();
+    const subtitleRemovalJobRequest = buildSubtitleRemovalJobRequest({
+      userId: currentUser.id,
+      sourceUrl: input.draft.sourceUrl,
+      sourceAssetId: input.draft.assetId,
+      sourceProjectId: input.draft.sourceProjectId,
+      sourceResultId: input.draft.sourceResultId,
+      shellProjectId,
+      shellProjectName,
+      draftNonce: input.draft.draftNonce,
+      subtitleRegionNormalized: input.subtitleRegionNormalized,
+    });
+
+    try {
+      // Durable job creation is the commit point. Do not show a successful placeholder before it returns.
+      const createdJob = await createInternalJob(subtitleRemovalJobRequest);
+      const subtitleRemovalProject: Project = {
+        id: shellProjectId,
+        name: shellProjectName,
+        module: AppModuleObj.VIDEO,
+        status: 'generating',
+        createdAt,
+        createdAtPrecise: true,
+        results: [{
+          id: shellResultId,
+          imageUrl: '',
+          videoUrl: '',
+          mediaType: 'video',
+          prompt: '去除选定区域内的视频字幕',
+          model: 'Golden 去字幕',
+          aspectRatio: 'auto',
+          status: 'generating',
+          createdAt,
+          module: AppModuleObj.VIDEO,
+          subFeature: 'subtitle_removal',
+          sourceUrl: input.draft.sourceUrl,
+          fileName: input.draft.fileName,
+          originalWidth: input.draft.width,
+          originalHeight: input.draft.height,
+          backendJobId: createdJob.job.id,
+          clientSubmissionKey: String(subtitleRemovalJobRequest.payload.clientSubmissionKey || ''),
+          subtitleRegionNormalized: input.subtitleRegionNormalized,
+          subtitleRegionPixels: input.subtitleRegionPixels,
+        }],
+        taskCount: 1,
+        completedCount: 0,
+        subFeature: 'subtitle_removal',
+        sourceType: 'job',
+        backendJobId: createdJob.job.id,
+      };
+      setProjects((previousProjects) => {
+        const nextProjects = [subtitleRemovalProject, ...previousProjects.filter((project) => project.id !== shellProjectId)];
+        projectsRef.current = nextProjects;
+        return nextProjects;
+      });
+      void persistSyncedProjectsToSharedState([subtitleRemovalProject]);
+      setSubtitleRemovalDraft(null);
+      addToast('去字幕任务已提交，可以离开当前页面', 'success');
+    } catch (error) {
+      const message = getRuntimeErrorMessage(error, '去字幕任务提交失败');
+      const failedSubtitleRemovalProject: Project = {
+        id: shellProjectId,
+        name: shellProjectName,
+        module: AppModuleObj.VIDEO,
+        status: 'error',
+        createdAt,
+        completedAt: Date.now(),
+        createdAtPrecise: true,
+        results: [{
+          id: shellResultId,
+          imageUrl: '',
+          videoUrl: '',
+          mediaType: 'video',
+          prompt: '去除选定区域内的视频字幕',
+          model: 'Golden 去字幕',
+          aspectRatio: 'auto',
+          status: 'error',
+          createdAt,
+          module: AppModuleObj.VIDEO,
+          subFeature: 'subtitle_removal',
+          sourceUrl: input.draft.sourceUrl,
+          fileName: input.draft.fileName,
+          originalWidth: input.draft.width,
+          originalHeight: input.draft.height,
+          error: message,
+          subtitleRegionNormalized: input.subtitleRegionNormalized,
+          subtitleRegionPixels: input.subtitleRegionPixels,
+        }],
+        taskCount: 1,
+        completedCount: 0,
+        subFeature: 'subtitle_removal',
+        sourceType: 'job',
+        error: message,
+      };
+      setProjects((previousProjects) => {
+        const nextProjects = [failedSubtitleRemovalProject, ...previousProjects.filter((project) => project.id !== shellProjectId)];
+        projectsRef.current = nextProjects;
+        return nextProjects;
+      });
+      void persistSyncedProjectsToSharedState([failedSubtitleRemovalProject]);
+      logShellError('subtitle_removal_submit', error, { shellProjectId }, '去字幕任务提交失败');
+      throw error;
+    } finally {
+      subtitleRemovalSubmitLockRef.current = false;
+      setSubtitleRemovalSubmitting(false);
+    }
+  }, [addToast, currentUser?.id, logShellError, persistSyncedProjectsToSharedState, reserveShortProjectName, systemConfig?.featureRollouts?.subtitleRemoval, systemConfig?.providers?.goldenSubtitle?.configured]);
 
   const recordProductRestoreJobCreated = useCallback((identity: {
     projectId: string;
@@ -10468,6 +10605,11 @@ const AppContent: React.FC<{
           showGenerationProgress={showGenerationProgress}
           persistentState={videoMemory || createDefaultVideoState()}
           onStateChange={setVideoMemory}
+          subtitleRemovalDraft={subtitleRemovalDraft}
+          onSubtitleRemovalDraftChange={setSubtitleRemovalDraft}
+          onSubtitleRemovalSubmit={handleSubtitleRemovalSubmit}
+          subtitleRemovalSubmitting={subtitleRemovalSubmitting}
+          subtitleRemovalFeatureAvailable={Boolean(systemConfig?.featureRollouts?.subtitleRemoval && systemConfig?.providers?.goldenSubtitle?.configured)}
         />;
       case AppModuleObj.XHS_COVER:
         return <XhsCoverModule
@@ -10514,7 +10656,7 @@ const AppContent: React.FC<{
             </Suspense>
           </main>
 
-          {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && activeModule !== AppModuleObj.AI_CUSTOMER_SERVICE && activeModule !== AppModuleObj.SMART_FACTORY && activeModule !== AppModuleObj.IMAGE_CROP && (
+          {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && activeModule !== AppModuleObj.AI_CUSTOMER_SERVICE && activeModule !== AppModuleObj.SMART_FACTORY && activeModule !== AppModuleObj.IMAGE_CROP && (activeModule !== AppModuleObj.VIDEO || activeSubFeature !== 'subtitle_removal') && (
             <Suspense fallback={null}>
               <BottomInputBar
                 module={activeModule}

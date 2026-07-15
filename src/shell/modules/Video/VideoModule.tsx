@@ -2,9 +2,10 @@ import React, { useMemo } from 'react';
 import { Clapperboard, Film, Sparkles } from 'lucide-react';
 import ProjectListView from '../../components/ProjectListView';
 import type { GeneratedResult, Project, SubFeatureOption, Task } from '../../../ShellMigratedApp';
-import type { VideoPersistentState, VideoStoryboardProject } from '../../../types';
+import type { SubtitleRemovalSourceDraft, VideoPersistentState, VideoStoryboardProject } from '../../../types';
 import { buildDiagnosisReportText, hasDiagnosisReportContent } from '../../../modules/Video/videoDiagnosisUtils.mjs';
 import { toStoryboardShellResultStatus } from './storyboardGenerationState.mjs';
+import SubtitleRemovalWorkspace, { type SubtitleRemovalSubmitInput } from '../../components/SubtitleRemovalWorkspace';
 
 interface Props {
   projects: Project[];
@@ -24,6 +25,11 @@ interface Props {
   showGenerationProgress?: boolean;
   persistentState: VideoPersistentState;
   onStateChange: React.Dispatch<React.SetStateAction<VideoPersistentState>>;
+  subtitleRemovalDraft: SubtitleRemovalSourceDraft | null;
+  onSubtitleRemovalDraftChange: (draft: SubtitleRemovalSourceDraft | null) => void;
+  onSubtitleRemovalSubmit: (input: SubtitleRemovalSubmitInput) => Promise<void> | void;
+  subtitleRemovalSubmitting?: boolean;
+  subtitleRemovalFeatureAvailable?: boolean;
 }
 
 
@@ -157,6 +163,11 @@ const VideoModule: React.FC<Props> = ({
   showGenerationProgress,
   persistentState,
   onStateChange,
+  subtitleRemovalDraft,
+  onSubtitleRemovalDraftChange,
+  onSubtitleRemovalSubmit,
+  subtitleRemovalSubmitting,
+  subtitleRemovalFeatureAvailable,
 }) => {
   const storyboardCards = useMemo(() => toStoryboardCards(persistentState.storyboard?.projects || []), [persistentState.storyboard?.projects]);
   const diagnosisCards = useMemo(() => toDiagnosisCards(persistentState), [persistentState]);
@@ -165,6 +176,15 @@ const VideoModule: React.FC<Props> = ({
       : activeSubFeature === 'diagnosis' ? diagnosisCards
         : projects;
   const activeTasks = activeSubFeature === 'generation' ? tasks : [];
+  const subtitleRemovalWorkspace = activeSubFeature === 'subtitle_removal' ? (
+    <SubtitleRemovalWorkspace
+      draft={subtitleRemovalDraft}
+      onDraftChange={onSubtitleRemovalDraftChange}
+      onSubmit={onSubtitleRemovalSubmit}
+      submitting={subtitleRemovalSubmitting}
+      featureAvailable={subtitleRemovalFeatureAvailable}
+    />
+  ) : undefined;
 
   const handleProjectDelete = (projectId: string) => {
     if (activeSubFeature === 'storyboard') {
@@ -198,8 +218,8 @@ const VideoModule: React.FC<Props> = ({
 
   return (
     <ProjectListView
-      title="短视频生成"
-      description="底部输入框负责配置与提交，中间区域只展示项目状态和结果"
+      title={activeSubFeature === 'subtitle_removal' ? '视频去字幕' : '短视频生成'}
+      description={activeSubFeature === 'subtitle_removal' ? '上传原视频并选择字幕区域，任务完成后可对比原片与结果' : '底部输入框负责配置与提交，中间区域只展示项目状态和结果'}
       emptyIcon={activeSubFeature === 'diagnosis' ? <Sparkles size={30} strokeWidth={1.3} /> : activeSubFeature === 'storyboard' ? <Clapperboard size={30} strokeWidth={1.3} /> : <Film size={30} strokeWidth={1.3} />}
       emptyTitle={activeSubFeature === 'diagnosis' ? '视频诊断结果' : activeSubFeature === 'storyboard' ? '分镜生成结果' : '生成产品短视频'}
       emptySubtitle={activeSubFeature === 'diagnosis' ? '在底部输入链接并提交诊断后，这里展示分析结果' : activeSubFeature === 'storyboard' ? '在底部配置分镜生成并提交后，这里展示分镜方案' : '上传产品素材，输入视频脚本、目标人群或卖点，提交后会在这里展示任务状态与视频结果'}
@@ -212,12 +232,13 @@ const VideoModule: React.FC<Props> = ({
       onConfirmStoryboardImaging={onConfirmStoryboardImaging}
       onImportStoryboardToGeneration={onImportStoryboardToGeneration}
       onRecoverResult={onRecoverResult}
-      onCancelTask={onCancelTask}
+      onCancelTask={activeSubFeature === 'subtitle_removal' ? undefined : onCancelTask}
       subFeatures={subFeatures}
       activeSubFeature={activeSubFeature}
       onSubFeatureChange={onSubFeatureChange}
       pendingActionKeys={pendingActionKeys}
       showGenerationProgress={showGenerationProgress}
+      beforeProjects={subtitleRemovalWorkspace}
     />
   );
 };

@@ -163,6 +163,9 @@ export interface SubtitleRemovalSourceDraft {
   sizeBytes: number;
   width: number;
   height: number;
+  videoCodec?: string | null;
+  transcoded?: boolean;
+  draftNonce: string;
   sourceProjectId?: string;
   sourceResultId?: string;
 }
@@ -352,9 +355,11 @@ export interface SystemPublicConfig {
     apiports?: { configured: boolean };
     maxforai?: { configured: boolean };
     maxforaiVideo?: { configured: boolean };
+    goldenSubtitle?: { configured: boolean };
   };
   featureRollouts: {
     productRestore: 'off' | 'admin' | 'all';
+    subtitleRemoval?: boolean;
   };
   systemSettings: {
     analysisModel: string;
