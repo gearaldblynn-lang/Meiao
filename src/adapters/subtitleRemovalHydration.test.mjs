@@ -91,6 +91,7 @@ test('failed subtitle job remains visible with its humanized error and retry con
   assert.equal(project?.subFeature, 'subtitle_removal');
   assert.equal(project?.error, '去字幕服务繁忙，请稍后重试');
   assert.equal(project?.results[0]?.error, '去字幕服务繁忙，请稍后重试');
+  assert.equal(project?.results[0]?.errorCode, 'subtitle_provider_busy');
   assert.equal(project?.results[0]?.sourceUrl, '/api/assets/file/source-video.mp4');
   assert.deepEqual(project?.results[0]?.subtitleRegionNormalized, region);
 });

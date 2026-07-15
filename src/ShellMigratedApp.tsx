@@ -234,6 +234,7 @@ export interface GeneratedResult {
   clientSubmissionKey?: string;
   creditsConsumed?: number;
   error?: string;
+  errorCode?: string;
   /** 技术原文(errorMessage 人话之外的原始报错),只读透传,仅"技术详情"展示用 */
   errorDetail?: string;
   matchedAspectRatio?: string;
@@ -8274,6 +8275,73 @@ const AppContent: React.FC<{
     try {
       const project = projects.find((p) => p.id === projectId);
       if (!project) return;
+      if (project.module === AppModuleObj.VIDEO && project.subFeature === 'subtitle_removal') {
+        const result = project.results.find((item) => item.id === resultId);
+        if (!result || result.status !== 'error') {
+          addToast('只有失败的去字幕子任务可以重试', 'info');
+          return;
+        }
+        if (result.errorCode === 'provider_submission_unknown') {
+          addToast('上游提交状态未知，为防止重复扣费，请先联系管理员核实', 'warning');
+          return;
+        }
+        const recoveredExistingProviderTask = Boolean(result.taskId && result.backendJobId);
+        let nextBackendJobId = String(result.backendJobId || '').trim();
+        let nextClientSubmissionKey = result.clientSubmissionKey;
+        if (result.backendJobId) {
+          await retryInternalJob(result.backendJobId);
+        } else {
+          if (!currentUser?.id) throw new Error('登录状态已失效，请重新登录');
+          if (!result.sourceUrl || !result.subtitleRegionNormalized) {
+            throw new Error('该失败项缺少原视频或字幕区域，无法安全重试');
+          }
+          const resultIndex = project.results.findIndex((item) => item.id === result.id);
+          const batchIndex = Number.isInteger(result.batchIndex) ? Number(result.batchIndex) : Math.max(0, resultIndex);
+          const batchCount = Math.max(1, Number(result.batchCount || project.taskCount || project.results.length) || 1);
+          const retryRequest = buildSubtitleRemovalJobRequest({
+            userId: currentUser.id,
+            sourceUrl: result.sourceUrl,
+            sourceProjectId: result.sourceProjectId,
+            sourceResultId: result.sourceResultId,
+            shellProjectId: project.id,
+            shellProjectName: project.name,
+            batchId: result.batchId || project.id,
+            batchIndex,
+            batchCount,
+            shellResultId: result.id,
+            draftNonce: `retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            subtitleRegionNormalized: result.subtitleRegionNormalized,
+          });
+          const createdJob = await createInternalJob(retryRequest);
+          nextBackendJobId = createdJob.job.id;
+          nextClientSubmissionKey = String(retryRequest.payload.clientSubmissionKey || '');
+        }
+        const nextResults = project.results.map((item) => item.id === result.id ? {
+          ...item,
+          status: 'generating' as const,
+          backendJobId: nextBackendJobId,
+          clientSubmissionKey: nextClientSubmissionKey,
+          error: undefined,
+          errorCode: undefined,
+        } : item);
+        const nextProject: Project = {
+          ...project,
+          status: 'generating',
+          completedAt: undefined,
+          error: undefined,
+          backendJobId: project.backendJobId || nextBackendJobId,
+          results: nextResults,
+          completedCount: nextResults.filter((item) => item.status === 'completed' && Boolean(item.videoUrl || item.imageUrl)).length,
+        };
+        setProjects((prev) => prev.map((item) => item.id === project.id ? nextProject : item));
+        await persistProjectToSharedState(nextProject);
+        addToast(
+          recoveredExistingProviderTask ? '已按原任务 ID 继续同步结果' : '已提交新的付费重试',
+          'success',
+        );
+        window.setTimeout(() => void hydrateShellJobs(), 800);
+        return;
+      }
       const productRestoreCreationDisabledReason = getProductRestoreJobCreationDisabledReason({
         module: project.module,
         subFeature: project.subFeature,
@@ -9303,7 +9371,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction, currentUser?.role, systemConfig?.featureRollouts?.productRestore, recordProductRestoreJobCreated]);
+  }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction, currentUser?.id, currentUser?.role, systemConfig?.featureRollouts?.productRestore, recordProductRestoreJobCreated]);
 
   const handleFissionResult = useCallback(async (
     projectId: string,
