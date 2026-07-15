@@ -190,8 +190,18 @@ test('real PM2 process manager requires successful explicit all-zero pid output'
   );
 });
 
-test('deployment health requires both HTTP and worker health', () => {
-  assert.equal(isDeployHealthReady({ ok: true, worker: { healthy: true } }), true);
+test('deployment health requires HTTP, worker, and managed image upload readiness', () => {
+  assert.equal(isDeployHealthReady({
+    ok: true,
+    worker: { healthy: true },
+    managedImageUpload: { ready: true },
+  }), true);
+  assert.equal(isDeployHealthReady({ ok: true, worker: { healthy: true } }), false);
+  assert.equal(isDeployHealthReady({
+    ok: true,
+    worker: { healthy: true },
+    managedImageUpload: { ready: false },
+  }), false);
   assert.equal(isDeployHealthReady({ ok: true, worker: { healthy: false } }), false);
   assert.equal(isDeployHealthReady({ ok: false, worker: { healthy: true } }), false);
 });

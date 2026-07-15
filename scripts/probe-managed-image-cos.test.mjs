@@ -7,6 +7,7 @@ import {
 } from './probe-managed-image-cos.mjs';
 
 const env = {
+  MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'cos',
   MEIAO_IMAGE_COS_SECRET_ID: 'probe-secret-id',
   MEIAO_IMAGE_COS_SECRET_KEY: 'probe-secret-key',
   MEIAO_IMAGE_COS_BUCKET: 'meiao-managed-images-1406860462',
@@ -88,6 +89,7 @@ test('managed image COS probe CLI stays alive through async retries and exits as
   const keepAliveHandle = Symbol('keep-alive');
   let keepAliveStarted = 0;
   let keepAliveCleared = 0;
+  const recordedResults = [];
 
   const ok = await runManagedImageCosProbeCli({
     runProbe: async () => {
@@ -107,6 +109,7 @@ test('managed image COS probe CLI stays alive through async retries and exits as
       assert.equal(handle, keepAliveHandle);
       keepAliveCleared += 1;
     },
+    recordResult: (result) => recordedResults.push(result),
   });
 
   assert.equal(ok, false);
@@ -114,4 +117,18 @@ test('managed image COS probe CLI stays alive through async retries and exits as
   assert.equal(keepAliveCleared, 1);
   assert.deepEqual(output, []);
   assert.deepEqual(errors, ['managed image COS probe: FAIL (signature mismatch)']);
+  assert.deepEqual(recordedResults, [{ ok: false, errorCode: 'probe_failed' }]);
+});
+
+test('managed image COS probe refuses to report success when the upload mode is disabled', async () => {
+  await assert.rejects(
+    () => runManagedImageCosProbe({
+      env: { ...env, MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'disabled' },
+      writeLine: () => {},
+      deps: {
+        putImage: async () => assert.fail('disabled mode must fail before COS mutation'),
+      },
+    }),
+    /upload mode must be cos/i,
+  );
 });

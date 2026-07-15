@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 export const isDeployHealthReady = (health) => (
   health?.ok === true
   && health?.worker?.healthy === true
+  && health?.managedImageUpload?.ready === true
 );
 
 const run = async () => {

@@ -176,8 +176,11 @@ Gemini 视频读取是独立的强约束链路：我方 `/api/assets/file/` 视�
 - CAM 密钥必须与视频 COS 分开，只对该桶的 `managed-images/*` 授予 `PutObject`、`GetObject`/`HeadObject` 和 `DeleteObject`；禁止 `DeleteBucket`、修改桶策略、修改 ACL 及访问其他桶。Secret 只写服务端 `.env.server`，不进 Git、页面、日志或诊断看板。`MEIAO_MANAGED_ASSET_ACCESS_SECRET` 用于生成绑定素材与用户的访问 capability；轮换时先把旧值放入 `MEIAO_MANAGED_ASSET_ACCESS_PREVIOUS_SECRET`，等旧 URL 完成更新后再清空。
 - 生命周期只配置“终止 1 天前未完成的分块上传”，不配置定时删除正常对象；正常图片由用户/项目/任务/会话删除触发的持久清理队列精确删除。删除前 worker 会再次检查存活引用，防止并发误删。
 - CORS 不开放上传；如页面确需 canvas 跨域读图，只允许 `https://meiaoyuntai.com` 和 `https://www.meiaoyuntai.com` 的 `GET/HEAD`。强制 HTTPS。
-- 先以 `MEIAO_MANAGED_IMAGE_UPLOAD_MODE=disabled` 发布兼容版，在云上运行 `npm run probe:managed-image-cos`，必须通过 `put -> head -> signed HTTPS GET -> byte equality -> delete -> head/not-found`，且桶里没有遗留 probe 对象，才可改为 `cos`。回滚只把上传模式设回 `disabled`；保留 COS-aware 代码，以便既有 COS 图片仍可读可删。
-- `/api/health` 的 `managedAssetCleanup` 暴露 backlog、最老等待时间、retry attempts、manual review、upload failed 和 alerting。建议对 COS 存储、请求数和公网下行设预算告警，密钥定期轮换；轮换时先验证新密钥探针，再废弃旧密钥。
+- 云资源和成对密钥必须先配好，且 `MEIAO_MANAGED_IMAGE_UPLOAD_MODE=cos`。标准部署在网络 drain/停旧进程之前自动执行 `npm run probe:managed-image-cos`；只有 `put -> head -> signed HTTPS GET -> byte equality -> delete -> head/not-found` 全部通过才继续。任何一步失败都原地中止，旧进程和旧 `dist` 继续服务。
+- 紧急回滚仍可把上传模式设为 `disabled`以防错写，并保留 COS-aware 代码读删既有素材；这是明确的降级状态，`managedImageUpload.ready=false`，不得报告为发布完成。
+- `/api/health` 的 `managedImageUpload` 暴露模式、配置完整性、最近一次真探针、时效和告警；`managedAssetCleanup` 另行暴露 backlog、最老等待时间、retry attempts、manual review、upload failed 和 alerting。密钥、SecretId、bucket 和签名 URL 都不进入 health。
+
+`MEIAO_MANAGED_IMAGE_PROBE_INTERVAL_MS` / `MEIAO_MANAGED_IMAGE_PROBE_MAX_AGE_MS` 默认为 `900000` / `3600000`；后台每 15 分钟重新验证，超过 1 小时没有当前配置的成功结果即报不就绪。`MEIAO_MANAGED_IMAGE_PROBE_STATUS_FILE` 默认为 `server/data/managed-image-cos-readiness.json`，部署保留该文件；文件只存不可逆配置指纹、时间、结果和脱敏错误码。轮换任一密钥、bucket 或 region 后，旧探针指纹立即失效。
 
 `MEIAO_IMAGE_COS_BROWSER_URL_TTL_SECONDS` / `MEIAO_IMAGE_COS_PROVIDER_URL_TTL_SECONDS` 默认为 `300` / `10800`。上传默认 3 次、单次 30 秒、退避基数 500ms；超时或请求取消会先取消 SDK 底层上传任务，签名、HEAD 和删除请求默认 15 秒超时。同一次重试始终复用同一对象键，失败时不回退到本地磁盘或 KIE 图床。素材删除默认先等待 2 分钟，worker 每条删除前重新核对持久引用；同账号 COS 上传和账号删除用最长 30 秒的 MySQL advisory lock 互斥。清理默认每 30 分钟、每批 20 条，重试基数 60 秒，8 次后进入 manual review 并每 24 小时再试，in-progress lease 10 分钟，上传卡住 15 分钟视为失败并对账。默认 backlog 达 100 条或最老等待达 24 小时告警；已完成/受保护的审计任务保留 30 天后裁剪，health 只读聚合计数。
 

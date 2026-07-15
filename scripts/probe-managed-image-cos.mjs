@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { loadServerEnvFile } from '../server/envLoader.mjs';
+import { writeManagedImageProbeStatus } from '../server/managedImageUploadHealth.mjs';
 import {
   createTencentCosImageReadUrl,
   deleteTencentCosImage,
@@ -34,6 +35,10 @@ export const runManagedImageCosProbe = async ({
   writeLine = (line) => console.log(line),
   deps = {},
 } = {}) => {
+  requireCondition(
+    String(env?.MEIAO_MANAGED_IMAGE_UPLOAD_MODE || '').trim().toLowerCase() === 'cos',
+    'managed image upload mode must be cos before running the production probe',
+  );
   const operations = { ...defaultDeps, ...deps };
   const probeId = String(operations.randomId()).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
   requireCondition(probeId, 'managed image COS probe id is empty');
@@ -87,6 +92,11 @@ export const runManagedImageCosProbeCli = async ({
   writeError = (line) => console.error(line),
   startKeepAlive = () => setInterval(() => {}, 1_000),
   stopKeepAlive = (handle) => clearInterval(handle),
+  recordResult = ({ ok, errorCode = '' }) => writeManagedImageProbeStatus({
+    env: process.env,
+    ok,
+    errorCode,
+  }),
 } = {}) => {
   // COS retries intentionally use unref'd timers so server shutdown is not held open.
   // A standalone probe has no server handles, so keep the CLI alive until the awaited
@@ -94,9 +104,15 @@ export const runManagedImageCosProbeCli = async ({
   const keepAliveHandle = startKeepAlive();
   try {
     await runProbe();
+    await recordResult({ ok: true });
     writeLine('managed image COS probe: PASS');
     return true;
   } catch (error) {
+    try {
+      await recordResult({ ok: false, errorCode: error?.code || 'probe_failed' });
+    } catch (statusError) {
+      writeError(`managed image COS readiness status write failed (${String(statusError?.message || 'unknown error')})`);
+    }
     writeError(`managed image COS probe: FAIL (${String(error?.message || 'unknown error')})`);
     return false;
   } finally {
