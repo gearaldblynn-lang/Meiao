@@ -6,6 +6,10 @@ import ts from 'typescript';
 import { createServer } from 'vite';
 import { runProductRestoreFanout } from './shellProductRestoreCancellation.mjs';
 import {
+  buildProductRestoreGenerationPrompt,
+  parseLegacyProductRestoreAnalysis,
+} from '../modules/Retouch/productRestoreContract.mjs';
+import {
   createProductRestoreAnalysisAttempt,
   getProductRestoreAnalysisCreditSummary,
 } from '../utils/productRestoreAnalysisCredits.ts';
@@ -43,7 +47,7 @@ const durableCallbacks = {
   onAnalysisCompleted: async () => {},
 };
 
-const analysisFixture = {
+const legacyAnalysisFixture = {
   productIdentitySummary: 'Verified product identity',
   invariantFeatures: ['Keep the exact bottle body'],
   shapeAndStructure: ['Tall cylindrical body'],
@@ -56,14 +60,49 @@ const analysisFixture = {
   nonProductPreservationRules: ['Keep every background pixel'],
 };
 
+const makeV2AnalysisFixture = (targetCount = 2) => ({
+  version: 2,
+  productIdentitySummary: 'Verified product identity',
+  invariantFeatures: ['Keep the exact bottle body'],
+  targetPrompts: Array.from({ length: targetCount }, (_, index) => ({
+    targetIndex: index + 1,
+    targetIssueSummary: [`Target ${index + 1} has a distinct verified deviation`],
+    restorationPrompt: `TARGET_${String.fromCharCode(65 + index)}_ONLY: restore only target ${index + 1} while preserving its current layout.`,
+  })),
+});
+
 const makeContext = (overrides = {}) => ({
   version: 1,
   analysisJobId: 'analysis-job-1',
   analysisProviderTaskId: 'analysis-provider-1',
   analysisModel: 'analysis-model',
   analysisCreditsConsumed: 4,
-  normalizedAnalysis: analysisFixture,
+  normalizedAnalysis: legacyAnalysisFixture,
   sharedRestorationPrompt: 'shared product restoration prompt',
+  focusIds: ['shape_structure', 'material_texture'],
+  targetMaterialIds: ['target-a', 'target-b', 'target-c'],
+  productReferenceMaterialIds: ['reference-a', 'reference-b'],
+  selectedImageModel: 'gpt-image-2',
+  resolution: '2K',
+  userRequirement: 'Keep the cap translucency.',
+  createdAt: 1_780_000_000_000,
+  ...overrides,
+});
+
+const makeV2Context = (overrides = {}) => ({
+  version: 2,
+  analysisJobId: 'analysis-job-v2',
+  analysisProviderTaskId: 'analysis-provider-v2',
+  analysisModel: 'analysis-model',
+  analysisCreditsConsumed: 4,
+  productIdentitySummary: 'Verified product identity',
+  invariantFeatures: ['Keep the exact bottle body'],
+  targetPrompts: ['target-a', 'target-b', 'target-c'].map((targetMaterialId, index) => ({
+    targetMaterialId,
+    targetIndex: index + 1,
+    targetIssueSummary: [`Target ${index + 1} has a distinct verified deviation`],
+    restorationPrompt: `TARGET_${String.fromCharCode(65 + index)}_ONLY: restore only target ${index + 1} while preserving its current layout.`,
+  })),
   focusIds: ['shape_structure', 'material_texture'],
   targetMaterialIds: ['target-a', 'target-b', 'target-c'],
   productReferenceMaterialIds: ['reference-a', 'reference-b'],
@@ -129,14 +168,13 @@ const makeConfig = (overrides = {}) => ({
   ...overrides,
 });
 
-const successAnalysisResult = (overrides = {}) => ({
+const successAnalysisResult = (overrides = {}, targetCount = 2) => ({
   status: 'success',
   jobId: 'analysis-job-1',
   providerTaskId: 'analysis-provider-1',
   modelUsed: 'analysis-model',
   creditsConsumed: 4,
-  normalizedAnalysis: analysisFixture,
-  sharedRestorationPrompt: 'shared product restoration prompt',
+  normalizedAnalysis: makeV2AnalysisFixture(targetCount),
   ...overrides,
 });
 
@@ -159,6 +197,8 @@ const {
   normalizeProductRestoreFocusIds,
   normalizeProductRestoreResolution,
   parseProductRestoreAnalysis,
+  parseLegacyProductRestoreAnalysis,
+  buildProductRestoreGenerationPrompt,
   resolvePublicAssetUrl,
   safeCreateInternalLog,
   validateProductRestoreInput,
@@ -221,6 +261,8 @@ ${stripRuntimeImports(transpiled)}
         return { ok: false, errorCode: 'product_restore_analysis_invalid' };
       }
     },
+    parseLegacyProductRestoreAnalysis,
+    buildProductRestoreGenerationPrompt,
     resolvePublicAssetUrl: (value) => String(value || '').trim(),
     safeCreateInternalLog: async (entry) => {
       logs.push(entry);
@@ -254,7 +296,7 @@ const createHarness = ({ analysisResult, imageResults, generateImage } = {}) => 
   const deps = {
     analyzeBatch: async (input) => {
       calls.analysis.push(input);
-      return analysisResult || successAnalysisResult();
+      return analysisResult || successAnalysisResult({}, input.targetUrls.length);
     },
     generateImage: generateImage || (async (...args) => {
       const index = calls.images.length;
@@ -339,6 +381,63 @@ test('fans out one image job per target with current target first and all refere
       'https://assets.test/reference-b.png',
     ],
   ]);
+  assert.match(calls.images[0][5], /TARGET_A_ONLY/);
+  assert.doesNotMatch(calls.images[0][5], /TARGET_B_ONLY|TARGET_C_ONLY/);
+  assert.match(calls.images[1][5], /TARGET_B_ONLY/);
+  assert.doesNotMatch(calls.images[1][5], /TARGET_A_ONLY|TARGET_C_ONLY/);
+  assert.match(calls.images[2][5], /TARGET_C_ONLY/);
+  assert.doesNotMatch(calls.images[2][5], /TARGET_A_ONLY|TARGET_B_ONLY/);
+});
+
+test('maps analysis target indexes to stable material ids before durable persistence', async () => {
+  const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
+  const persistedContexts = [];
+  const { calls, deps } = createHarness();
+
+  const result = await runShellProductRestoreWorkflow(makeInput(), makeConfig(), {
+    onAnalysisCompleted: async (context) => {
+      persistedContexts.push(context);
+    },
+  }, deps);
+
+  assert.equal(calls.analysis.length, 1);
+  assert.equal(persistedContexts.length, 1);
+  assert.deepEqual(persistedContexts[0].targetPrompts.map((item) => ({
+    targetMaterialId: item.targetMaterialId,
+    targetIndex: item.targetIndex,
+    restorationPrompt: item.restorationPrompt,
+  })), [
+    { targetMaterialId: 'target-a', targetIndex: 1, restorationPrompt: 'TARGET_A_ONLY: restore only target 1 while preserving its current layout.' },
+    { targetMaterialId: 'target-b', targetIndex: 2, restorationPrompt: 'TARGET_B_ONLY: restore only target 2 while preserving its current layout.' },
+  ]);
+  assert.equal(result.productRestoreContext.version, 2);
+  assert.equal(Object.hasOwn(result.productRestoreContext, 'sharedRestorationPrompt'), false);
+});
+
+test('fresh V2 analysis fails closed before persistence when target prompt coverage is incomplete', async () => {
+  const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
+  const incomplete = makeV2AnalysisFixture(2);
+  incomplete.targetPrompts = incomplete.targetPrompts.slice(0, 1);
+  const harness = createHarness({
+    analysisResult: successAnalysisResult({ normalizedAnalysis: incomplete }, 2),
+  });
+  let persisted = false;
+
+  const error = await runShellProductRestoreWorkflow(
+    makeInput({ targetCount: 2 }),
+    makeConfig(),
+    {
+      onAnalysisCompleted: async () => {
+        persisted = true;
+      },
+    },
+    harness.deps,
+  ).then(() => null, (caught) => caught);
+
+  assert.equal(error?.code, 'product_restore_analysis_target_prompts_invalid');
+  assert.equal(persisted, false);
+  assert.equal(harness.calls.analysis.length, 1);
+  assert.equal(harness.calls.images.length, 0);
 });
 
 test('adds stable product restoration identity and batch metadata to every image job', async () => {
@@ -366,7 +465,7 @@ test('adds stable product restoration identity and batch metadata to every image
       targetMaterialId: 'target-a',
       batchIndex: 1,
       batchCount: 2,
-      clientSubmissionKey: 'shell-project-1:product_restore:analysis-job-1:target-a:v1',
+      clientSubmissionKey: 'shell-project-1:product_restore:analysis-job-1:target-a:v2',
     },
     {
       taskPurpose: 'product_restore_generation',
@@ -375,7 +474,7 @@ test('adds stable product restoration identity and batch metadata to every image
       targetMaterialId: 'target-b',
       batchIndex: 2,
       batchCount: 2,
-      clientSubmissionKey: 'shell-project-1:product_restore:analysis-job-1:target-b:v1',
+      clientSubmissionKey: 'shell-project-1:product_restore:analysis-job-1:target-b:v2',
     },
   ]);
   assert.deepEqual(result.results.map((item) => item.targetMaterialId), ['target-a', 'target-b']);
@@ -562,6 +661,27 @@ test('resumes with an existing successful analysis context without creating a ne
   assert.equal(result.analysisJobId, 'analysis-job-1');
 });
 
+test('corrupt persisted V2 prompt coverage fails before any resumed image provider call', async () => {
+  const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
+  const fullContext = makeV2Context();
+  const context = makeV2Context({
+    targetMaterialIds: ['target-a', 'target-b'],
+    targetPrompts: [fullContext.targetPrompts[0]],
+  });
+  const { calls, deps } = createHarness();
+
+  const error = await runShellProductRestoreWorkflow(
+    makeInput({ targetCount: 2, context }),
+    makeConfig(),
+    {},
+    deps,
+  ).then(() => null, (caught) => caught);
+
+  assert.equal(error?.code, 'product_restore_context_invalid');
+  assert.equal(calls.analysis.length, 0);
+  assert.equal(calls.images.length, 0);
+});
+
 test('single-item entry consumes existing context and performs zero analysis calls', async () => {
   const { runShellProductRestoreItem } = await loadWorkflowModule();
   const input = makeInput({ targetCount: 3 });
@@ -582,6 +702,30 @@ test('single-item entry consumes existing context and performs zero analysis cal
   assert.equal(calls.images.length, 1);
   assert.equal(result.targetMaterialId, 'target-b');
   assert.equal(calls.images[0][9].batchIndex, 2);
+});
+
+test('V2 single-item generation fails closed when the exact target prompt is missing', async () => {
+  const { runShellProductRestoreItem } = await loadWorkflowModule();
+  const input = makeInput({ targetCount: 2 });
+  const fullContext = makeV2Context();
+  const context = makeV2Context({
+    targetMaterialIds: ['target-a', 'target-b'],
+    targetPrompts: [fullContext.targetPrompts[0]],
+  });
+  const { calls, deps } = createHarness();
+
+  const outcome = await runShellProductRestoreItem({
+    input,
+    config: makeConfig(),
+    context,
+    target: input.materials.restoreTarget[1],
+    productReferences: input.materials.productReference,
+    batchIndex: 2,
+    batchCount: 2,
+  }, {}, deps).then(() => null, (error) => error);
+
+  assert.equal(calls.images.length, 0);
+  assert.equal(outcome?.code, 'product_restore_target_prompt_missing');
 });
 
 test('single-result retry resolves the exact target and restores reference order from persisted context', async () => {
@@ -801,7 +945,7 @@ test('single-result retry replaces the same row, keeps taskCount, and adds only 
 test('valid analysis with missing usage keeps the context credit unknown instead of inventing zero', async () => {
   const { runShellProductRestoreWorkflow } = await loadWorkflowModule();
   const { deps } = createHarness({
-    analysisResult: successAnalysisResult({ creditsConsumed: undefined }),
+    analysisResult: successAnalysisResult({ creditsConsumed: undefined }, 1),
   });
   let persistedContext;
 
@@ -867,6 +1011,11 @@ test('manual reanalysis eligibility requires a confirmed terminal analysis failu
     ...base,
     analysisJobStatus: 'succeeded',
     analysisErrorCode: 'product_restore_analysis_invalid',
+  }), true);
+  assert.equal(canManuallyReanalyzeProductRestore({
+    ...base,
+    analysisJobStatus: 'succeeded',
+    analysisErrorCode: 'product_restore_analysis_target_prompts_invalid',
   }), true);
 
   const blocked = [

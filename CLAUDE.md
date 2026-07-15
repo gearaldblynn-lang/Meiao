@@ -391,3 +391,8 @@
   根因:腾讯 COS 安全边界新增 `collectExplicitAssetIds` 后，把所有以 `AssetId` 结尾的字段都当成 `stored_assets.id` 校验；前端材料的 `localAssetId=draft-*` 只是浏览器草稿身份，却被误判为不存在的云端素材。多桑账号旧状态含 150 个此类值，16:27 后每次 `/api/state` 都以 `403 managed_asset_forbidden` 失败，`app_state` 停在 15:51。后台首图 `kie_image` 随后成功且有托管图片，但 adapter 只允许成功媒体附着到已持久化项目，找不到占位就直接跳过。实时新卡另有独立排序漂移：`createdAt` 已是毫秒戳，但首次创建未设置 `createdAtPrecise`，排序按精度层级先把它放到所有旧卡之后。
   修复:素材所有权校验明确排除没有服务端读取语义的 `localAssetId`，`assetId/imageUrlAssetId/sourceAssetId` 等真实托管身份仍要求当前账号 active ownership。`shellDataAdapter` 从同一 `shellProjectId` 的成功策划 job 重建结构化项目种子，让 active/succeeded/failed 图片 job 在客户端检查点缺失时仍能恢复；无项目绑定的旧图片 job 继续不可见。排序边界对未显式标记精度的真实毫秒戳复用 `coerceCreatedAtMs` 推断 precise，显式 `createdAtPrecise=false` 的年缺失历史值仍下沉。
   如何避免:**安全校验不能只靠字段后缀猜身份语义；本地草稿 ID、provider ID、托管素材 ID 必须分层测试，并用真实大账号 state 做只读策略回放。耐久 job 已有 `shellProjectId/shellPlanId` 和兄弟策划记录时，恢复不得依赖可能在页面卸载或 4xx 中丢失的客户端占位。排序契约必须同时覆盖“持久化读边界”和“刚创建尚未水合”的项目对象。**
+
+- **#69 ✅ 本地已修、未部署(2026-07-16)· 产品还原分析被 provider 尾标误判失败，且整批共享提示词无法逐图寻址**
+  根因:旧解析器直接对模型整串内容执行 `JSON.parse`，合法 JSON 后的 provider 已知尾标 `final_answer` 会导致整体失败；同时持久化合同只有一条 `sharedRestorationPrompt`，没有 target index 与稳定 material ID 的一一映射，fanout 无法证明每张付费图片任务使用了自身偏差对应的提示词。
+  修复:V2 分析合同要求恰好 N 条连续唯一 `targetPrompts`；解析器只接受单 JSON、可选单层围栏和精确 `final_answer` 尾标，其余文字 fail closed。图片提交前把 index 映射到 `targetMaterialId` 并验证完全覆盖，每张任务只取自己的动态提示词，再套确定性的 RTCFE 身份与非产品保护层；V1 仅保留历史读取/重试兼容。
+  如何避免:**分析模型原始输出要在 parser boundary 用真实响应回放，兼容必须限定为已知 provider 外壳，不能宽松猜 JSON。所有 analysis-to-fanout 合同必须在付费 fanout 前验证目标数量、顺序和稳定身份一一对应，动态执行提示词不得只靠整批共享字段。**

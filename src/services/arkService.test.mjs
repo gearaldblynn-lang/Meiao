@@ -16,18 +16,18 @@ const typesSource = readFileSync(new URL('../types.ts', import.meta.url), 'utf8'
 const promptUtilsSource = readFileSync(new URL('../modules/OneClick/generationPromptUtils.ts', import.meta.url), 'utf8');
 const retouchModuleSource = readFileSync(new URL('../modules/Retouch/RetouchModule.tsx', import.meta.url), 'utf8');
 
-const productRestoreAnalysisFixture = {
+const makeProductRestoreAnalysisFixture = (targetCount = 1) => ({
+  version: 2,
   productIdentitySummary: 'Tall amber bottle with a square shoulder and black pump.',
   invariantFeatures: ['one bottle', 'black pump'],
-  shapeAndStructure: ['square shoulder', 'straight bottle walls'],
-  proportionAndContour: ['tall 2:1 body proportion'],
-  materialAndTexture: ['transparent amber glass'],
-  colorAndGloss: ['warm amber body', 'semi-gloss black pump'],
-  logoLabelAndText: ['centered cream label'],
-  componentsAndCraft: ['short pump neck'],
-  targetSetIssues: ['bottle shoulder is too rounded in several targets'],
-  nonProductPreservationRules: ['keep every background and marketing text pixel unchanged'],
-};
+  targetPrompts: Array.from({ length: targetCount }, (_, index) => ({
+    targetIndex: index + 1,
+    targetIssueSummary: [`target ${index + 1} shoulder differs from the reference`],
+    restorationPrompt: `TARGET_${index + 1}_ONLY: restore the square shoulder and black pump while preserving the current layout.`,
+  })),
+});
+
+const productRestoreAnalysisFixture = makeProductRestoreAnalysisFixture();
 
 let arkServiceModuleSequence = 0;
 
@@ -37,6 +37,7 @@ const loadArkServiceWithAnalysisFakes = async ({
   fetchJob,
   fetchError,
   systemConfig,
+  analysisFixture = productRestoreAnalysisFixture,
 } = {}) => {
   const calls = {
     cancelled: [],
@@ -50,7 +51,7 @@ const loadArkServiceWithAnalysisFakes = async ({
     status: 'succeeded',
     providerTaskId: 'provider-task-1',
     result: {
-      content: JSON.stringify(productRestoreAnalysisFixture),
+      content: JSON.stringify(analysisFixture),
       creditsConsumed: 7,
       modelUsed: 'fallback-model',
     },
@@ -156,7 +157,10 @@ const {
 };
 
 test('product restoration submits one ordered multimodal analysis job and returns durable success identity', async () => {
-  const { calls, module } = await loadArkServiceWithAnalysisFakes();
+  const batchAnalysis = makeProductRestoreAnalysisFixture(2);
+  const { calls, module } = await loadArkServiceWithAnalysisFakes({
+    analysisFixture: batchAnalysis,
+  });
   const jobEvents = [];
   const input = {
     targetUrls: ['https://img.test/target-a.png', 'https://img.test/target-b.png'],
@@ -203,13 +207,9 @@ test('product restoration submits one ordered multimodal analysis job and return
     providerTaskId: 'provider-task-1',
     modelUsed: 'fallback-model',
     creditsConsumed: 7,
-    normalizedAnalysis: productRestoreAnalysisFixture,
-    sharedRestorationPrompt: buildProductRestoreGenerationPrompt({
-      normalizedAnalysis: productRestoreAnalysisFixture,
-      focusIds: input.focusIds,
-      userRequirement: input.userRequirement,
-    }),
+    normalizedAnalysis: batchAnalysis,
   });
+  assert.equal(Object.hasOwn(result, 'sharedRestorationPrompt'), false);
 });
 
 test('product restoration rejects an incapable catalog before creating an internal job', async () => {
@@ -447,6 +447,7 @@ test('product restoration recovery keeps transient internal fetch failures pendi
 
     const result = await module.recoverProductRestoreAnalysisBatch({
       jobId: `existing-${code}-job`,
+      expectedTargetCount: 1,
       focusIds: ['shape_structure'],
       userRequirement: '',
     });
@@ -680,6 +681,7 @@ test('product restoration recovery fetches the supplied job and never creates a 
   });
   const success = await successHarness.module.recoverProductRestoreAnalysisBatch({
     jobId: 'existing-analysis-job',
+    expectedTargetCount: 1,
     focusIds: ['material_texture'],
     userRequirement: 'Keep the original background.',
   });
@@ -703,6 +705,7 @@ test('product restoration recovery fetches the supplied job and never creates a 
   });
   const pending = await pendingHarness.module.recoverProductRestoreAnalysisBatch({
     jobId: 'existing-analysis-job',
+    expectedTargetCount: 1,
     focusIds: ['material_texture'],
     userRequirement: '',
   });
@@ -727,6 +730,7 @@ test('product restoration recovery fetches the supplied job and never creates a 
   });
   const failed = await failedHarness.module.recoverProductRestoreAnalysisBatch({
     jobId: 'existing-analysis-job',
+    expectedTargetCount: 1,
     focusIds: ['material_texture'],
     userRequirement: '',
   });
@@ -737,6 +741,39 @@ test('product restoration recovery fetches the supplied job and never creates a 
     message: 'analysis refused',
     jobId: 'existing-analysis-job',
     providerTaskId: 'existing-provider-task',
+  });
+});
+
+test('product restoration recovery rejects a succeeded V2 analysis that does not cover the persisted target count', async () => {
+  const harness = await loadArkServiceWithAnalysisFakes({
+    fetchJob: {
+      id: 'existing-analysis-job',
+      status: 'succeeded',
+      providerTaskId: 'existing-provider-task',
+      result: {
+        content: JSON.stringify(productRestoreAnalysisFixture),
+        creditsConsumed: 2,
+        modelUsed: 'primary-model',
+      },
+    },
+  });
+
+  const result = await harness.module.recoverProductRestoreAnalysisBatch({
+    jobId: 'existing-analysis-job',
+    expectedTargetCount: 2,
+    focusIds: ['material_texture'],
+    userRequirement: '',
+  });
+
+  assert.equal(harness.calls.created.length, 0);
+  assert.deepEqual(result, {
+    status: 'error',
+    errorCode: 'product_restore_analysis_target_prompts_invalid',
+    message: '分析结果未完整覆盖每张待还原图，请重试分析。',
+    jobId: 'existing-analysis-job',
+    providerTaskId: 'existing-provider-task',
+    modelUsed: 'primary-model',
+    creditsConsumed: 2,
   });
 });
 

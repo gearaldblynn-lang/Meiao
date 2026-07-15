@@ -92,6 +92,37 @@ const context = {
   createdAt: 1_780_000_000_000,
 };
 
+const v2Context = {
+  version: 2,
+  analysisJobId: 'analysis-job-v2',
+  analysisProviderTaskId: 'analysis-provider-v2',
+  analysisModel: 'gpt-5.4-vision',
+  analysisCreditsConsumed: 4,
+  productIdentitySummary: '绿色人字纹沙发盖布，厚软垂坠并带同色流苏。',
+  invariantFeatures: ['橄榄绿色', '连续人字纹', '同色流苏'],
+  targetPrompts: [
+    {
+      targetMaterialId: 'target-a',
+      targetIndex: 1,
+      targetIssueSummary: ['待还原图 1 的织纹偏弱', '面料厚度不足'],
+      restorationPrompt: '只修复待还原图 1 中沙发盖布的人字纹、厚软绒感与同色流苏，保持日文版式、背景和家具不变。',
+    },
+    {
+      targetMaterialId: 'target-b',
+      targetIndex: 2,
+      targetIssueSummary: ['待还原图 2 的流苏结构错误'],
+      restorationPrompt: '只修复待还原图 2 中沙发盖布的同色短密流苏，保持人物、镜头和文字不变。',
+    },
+  ],
+  focusIds: ['shape_structure', 'material_texture'],
+  targetMaterialIds: ['target-a', 'target-b'],
+  productReferenceMaterialIds: ['reference-a'],
+  selectedImageModel: 'gpt-image-2',
+  resolution: '2K',
+  userRequirement: '',
+  createdAt: 1_780_000_000_001,
+};
+
 const nodeText = (node) => {
   if (node === null || node === undefined || typeof node === 'boolean') return '';
   if (typeof node === 'string' || typeof node === 'number') return String(node);
@@ -159,6 +190,33 @@ test('copy action forwards the prompt while explicit zero credits remain distinc
   assert.match(markup, />0</);
   assert.doesNotMatch(markup, /累计图片消耗/);
   assert.doesNotMatch(markup, /总积分/);
+});
+
+test('V2 renders and copies each target-specific restoration prompt without inventing a shared prompt', async () => {
+  const { default: ProductRestoreAnalysisPanel } = await loadPanelModule();
+  const copied = [];
+  const element = ProductRestoreAnalysisPanel({
+    context: v2Context,
+    onCopyPrompt: (prompt) => copied.push(prompt),
+  });
+  const markup = renderToStaticMarkup(element);
+
+  assert.match(markup, /绿色人字纹沙发盖布/);
+  assert.match(markup, /逐图还原 Prompt/);
+  assert.match(markup, /待还原图 1/);
+  assert.match(markup, /待还原图 2/);
+  assert.match(markup, /织纹偏弱/);
+  assert.match(markup, /流苏结构错误/);
+  assert.match(markup, /只修复待还原图 1/);
+  assert.match(markup, /只修复待还原图 2/);
+  assert.doesNotMatch(markup, /共享还原 Prompt/);
+
+  const firstCopyButton = findNode(element, (node) => (
+    node.type === 'button' && nodeText(node).includes('复制待还原图 1 Prompt')
+  ));
+  assert.ok(firstCopyButton, 'V2 should expose an exact per-target copy action');
+  firstCopyButton.props.onClick();
+  assert.deepEqual(copied, [v2Context.targetPrompts[0].restorationPrompt]);
 });
 
 test('explicit zero image and total ledger values render while omitted values stay absent', async () => {

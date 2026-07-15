@@ -6,7 +6,7 @@ import { resolvePublicAssetUrl } from "../utils/modelAssetUrl.mjs";
 import { getSupportedAspectRatiosForModel } from "../utils/modelAspectRatio";
 import { normalizeExactAspectRatio, resolveNearestSupportedAspectRatio } from "../utils/aspectRatioUtils";
 import { buildRetouchAnalysisFallback, shouldUseRetouchAnalysisFallback } from "./retouchAnalysisFallback.mjs";
-import { buildProductRestoreAnalysisPrompt, buildProductRestoreGenerationPrompt, parseProductRestoreAnalysis } from "../modules/Retouch/productRestoreContract.mjs";
+import { buildProductRestoreAnalysisPrompt, parseProductRestoreAnalysis } from "../modules/Retouch/productRestoreContract.mjs";
 import { normalizeKnownProductRestoreCredits } from "../utils/productRestoreAnalysisCredits";
 
 const estimatePromptTokens = (items: Array<{ type: string; text?: string }>) =>
@@ -691,10 +691,11 @@ const buildProductRestoreAnalysisResult = ({
   jobId: string;
   modelUsed: string;
 }, {
-  focusIds,
-  userRequirement,
-}: Pick<AnalyzeProductRestoreBatchInput, 'focusIds' | 'userRequirement'>): ProductRestoreAnalysisRunResult => {
-  const parsed = parseProductRestoreAnalysis(content);
+  expectedTargetCount,
+}: {
+  expectedTargetCount: number;
+}): ProductRestoreAnalysisRunResult => {
+  const parsed = parseProductRestoreAnalysis(content, { expectedTargetCount });
   if (!parsed.ok) {
     return {
       status: 'error',
@@ -713,11 +714,6 @@ const buildProductRestoreAnalysisResult = ({
     modelUsed,
     ...(creditsConsumed !== undefined ? { creditsConsumed } : {}),
     normalizedAnalysis: parsed.value,
-    sharedRestorationPrompt: buildProductRestoreGenerationPrompt({
-      normalizedAnalysis: parsed.value,
-      focusIds,
-      userRequirement,
-    }),
   };
 };
 
@@ -743,7 +739,9 @@ export const analyzeProductRestoreBatch = async (
       false,
       true,
     );
-    return buildProductRestoreAnalysisResult(analysis, input);
+    return buildProductRestoreAnalysisResult(analysis, {
+      expectedTargetCount: input.targetUrls.length,
+    });
   } catch (error: unknown) {
     const serviceError = error as ProductRestoreServiceError;
     if (isRecoverableAnalysisSyncError(serviceError) && serviceError?.jobId) {
@@ -786,7 +784,9 @@ export const recoverProductRestoreAnalysisBatch = async (
       taskId: providerTaskId,
       jobId,
       modelUsed: String(job.result?.modelUsed || job.model || job.payload?.model || '').trim() || 'unknown',
-    }, input);
+    }, {
+      expectedTargetCount: input.expectedTargetCount,
+    });
   } catch (error: unknown) {
     const serviceError = error as ProductRestoreServiceError;
     if (isRecoverableAnalysisSyncError(serviceError) || isTransientAnalysisTransportError(serviceError)) {

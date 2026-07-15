@@ -958,3 +958,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: `localAssetId` 不再作为托管素材 ID 校验，真实托管字段继续 fail closed；adapter 按结构化 `shellProjectId` 从成功策划 job 重建恢复种子，并接纳同项目 active/succeeded/failed 图片 job；排序在标记缺失时从规范毫秒戳推断 precise，同时尊重显式 false 的历史脏值。
 - Regression check: `node --test server/managedAssetReferencePolicy.test.mjs server/appStateMerge.test.mjs server/assetReferenceCleanup.test.mjs server/managedAssetDeletion.test.mjs`；`node --experimental-strip-types --test src/adapters/shellDataAdapter.test.mjs src/adapters/shellTerminalJobMerge.test.mjs src/adapters/shellScopeFilters.test.mjs src/utils/syncedProjectPersistence.test.mjs`；把云上真实 3.29 MiB state 与最近 100 条 jobs 喂给本地修复代码，成功项目恢复两张图片、失败项目显示 error，最新项目排在 7月14日项目之前。
 - Avoid next time: 新增全快照安全校验时必须用包含 `localAssetId` 的真实历史 state 回放，不能只测简化对象。任何付费/耐久 job 恢复都要覆盖“客户端占位从未持久化”的成功、失败和进行中三态；排序测试必须包含刚创建但尚未水合的新卡。
+
+## 2026-07-16 - Product restoration analysis must be target-addressable and parse only known provider envelopes
+
+- Symptom: 产品还原分析 job 已成功，原始内容也包含完整产品身份与材质结论，但项目卡报“分析模型未返回可用的产品还原结构”；旧流程即使解析成功，也只会把一条整批共享提示词复制给所有待还原图，无法保证每张图按自身偏差修改。
+- Environment: local development / product restoration analysis-first workflow / KIE Responses analysis followed by GPT Image 2 edits.
+- Root cause: 解析器对模型内容执行整串 `JSON.parse`，因此 provider 在合法 JSON 后追加的已知 `final_answer` 尾标会让整串解析失败。更深一层是分析到 fanout 的持久化合同只有 `sharedRestorationPrompt`，没有目标索引或素材身份；图片任务无法证明自己拿到的是当前目标图对应的提示词。
+- Fix: 新增严格 V2 合同：分析结果必须包含恰好 N 条、索引连续唯一的 `targetPrompts`。解析边界只允许单个 JSON 对象、可选单层代码围栏和精确 `final_answer` 尾标，拒绝其他前后文或第二个 JSON。工作流在任何图片提交前把 `targetIndex` 映射为稳定 `targetMaterialId` 并做一对一覆盖校验；每个图片任务只读取自己的提示词，再套确定性的 RTCFE 产品身份/非产品保护层。V1 只保留显式历史读取与重试分支。
+- Regression check: `node --test src/modules/Retouch/productRestoreContract.test.mjs`；`node --experimental-strip-types --test src/services/arkService.test.mjs src/adapters/shellProductRestoreWorkflow.test.mjs src/adapters/shellProductRestoreCancellation.test.mjs src/adapters/shellControlJobLifecycle.test.mjs src/adapters/shellDataAdapter.test.mjs src/adapters/shellPersistence.test.mjs src/shell/modules/Retouch/ProductRestoreAnalysisPanel.test.mjs src/shell/components/ProjectCard.productRestoreCredits.test.mjs`；`node --test server/appStateMerge.test.mjs`；`npx tsc -b --pretty false`。
+- Avoid next time: provider 原始响应必须在解析器边界用真实回放锁定，只兼容明确归属 provider 的外壳，不能用宽松“截第一个 JSON”猜测。所有 analysis-to-fanout 合同都必须在付费提交前证明目标数量、顺序和稳定身份一一对应；整批共性可以共享，但动态执行提示词必须可寻址到单个目标。

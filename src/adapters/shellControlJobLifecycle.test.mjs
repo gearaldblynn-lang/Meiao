@@ -75,7 +75,11 @@ test('product restoration lifecycle persists durable analysis before image callb
   assert.match(shellAppSource, /const cloneProductRestoreAnalysis\s*=/);
   assert.match(
     shellAppSource,
-    /const cloneProductRestoreContext[\s\S]{0,500}focusIds:\s*\[\.\.\.productRestoreContext\.focusIds\][\s\S]{0,500}normalizedAnalysis:\s*cloneProductRestoreAnalysis/,
+    /const cloneProductRestoreContext[\s\S]{0,900}productRestoreContext\.version === 2[\s\S]{0,900}targetPrompts:\s*productRestoreContext\.targetPrompts\.map/,
+  );
+  assert.match(
+    shellAppSource,
+    /const cloneProductRestoreContext[\s\S]{0,1800}normalizedAnalysis:\s*cloneProductRestoreAnalysis/,
   );
   assert.match(
     shellAppSource,

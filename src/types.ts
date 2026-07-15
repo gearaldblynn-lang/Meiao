@@ -1005,7 +1005,7 @@ export type ProductRestoreFocusId =
   | 'logo_label_text'
   | 'component_craft';
 
-export interface ProductRestoreNormalizedAnalysis {
+export interface ProductRestoreNormalizedAnalysisV1 {
   productIdentitySummary: string;
   invariantFeatures: string[];
   shapeAndStructure: string[];
@@ -1017,6 +1017,23 @@ export interface ProductRestoreNormalizedAnalysis {
   targetSetIssues: string[];
   nonProductPreservationRules: string[];
 }
+
+export interface ProductRestoreTargetPromptAnalysis {
+  targetIndex: number;
+  targetIssueSummary: string[];
+  restorationPrompt: string;
+}
+
+export interface ProductRestoreNormalizedAnalysisV2 {
+  version: 2;
+  productIdentitySummary: string;
+  invariantFeatures: string[];
+  targetPrompts: ProductRestoreTargetPromptAnalysis[];
+}
+
+export type ProductRestoreNormalizedAnalysis =
+  | ProductRestoreNormalizedAnalysisV1
+  | ProductRestoreNormalizedAnalysisV2;
 
 export interface AnalyzeProductRestoreBatchInput {
   targetUrls: string[];
@@ -1034,6 +1051,7 @@ export interface AnalyzeProductRestoreBatchInput {
 
 export interface RecoverProductRestoreAnalysisBatchInput {
   jobId: string;
+  expectedTargetCount: number;
   focusIds: ProductRestoreFocusId[];
   userRequirement: string;
   signal?: AbortSignal;
@@ -1046,8 +1064,7 @@ export type ProductRestoreAnalysisRunResult =
       providerTaskId?: string;
       modelUsed: string;
       creditsConsumed?: number;
-      normalizedAnalysis: ProductRestoreNormalizedAnalysis;
-      sharedRestorationPrompt: string;
+      normalizedAnalysis: ProductRestoreNormalizedAnalysisV2;
     }
   | {
       status: 'generating';
@@ -1066,14 +1083,11 @@ export type ProductRestoreAnalysisRunResult =
       creditsConsumed?: number;
     };
 
-export interface ProductRestoreProjectContext {
-  version: 1;
+interface ProductRestoreProjectContextBase {
   analysisJobId: string;
   analysisProviderTaskId?: string;
   analysisModel: string;
   analysisCreditsConsumed?: number;
-  normalizedAnalysis: ProductRestoreNormalizedAnalysis;
-  sharedRestorationPrompt: string;
   focusIds: ProductRestoreFocusId[];
   targetMaterialIds: string[];
   productReferenceMaterialIds: string[];
@@ -1082,6 +1096,27 @@ export interface ProductRestoreProjectContext {
   userRequirement: string;
   createdAt: number;
 }
+
+export interface ProductRestoreProjectContextV1 extends ProductRestoreProjectContextBase {
+  version: 1;
+  normalizedAnalysis: ProductRestoreNormalizedAnalysisV1;
+  sharedRestorationPrompt: string;
+}
+
+export interface ProductRestoreTargetPrompt extends ProductRestoreTargetPromptAnalysis {
+  targetMaterialId: string;
+}
+
+export interface ProductRestoreProjectContextV2 extends ProductRestoreProjectContextBase {
+  version: 2;
+  productIdentitySummary: string;
+  invariantFeatures: string[];
+  targetPrompts: ProductRestoreTargetPrompt[];
+}
+
+export type ProductRestoreProjectContext =
+  | ProductRestoreProjectContextV1
+  | ProductRestoreProjectContextV2;
 
 export type ProductRestoreAnalysisAttemptStatus =
   | 'running'

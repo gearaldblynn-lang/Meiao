@@ -1,7 +1,7 @@
 import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysis, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
@@ -173,6 +173,11 @@ const normalizeShellImageModel = (value?: string | null) => {
   if (normalized.includes('secondary') || normalized.includes('副')) return 'gpt-image-2-secondary';
   return 'gpt-image-2';
 };
+
+const PRODUCT_RESTORE_INVALID_ANALYSIS_ERROR_CODES = new Set([
+  'product_restore_analysis_invalid',
+  'product_restore_analysis_target_prompts_invalid',
+]);
 
 const ANNOUNCEMENT_DISMISS_STORAGE_PREFIX = 'meiao_announcement_dismissed_today';
 // 撤下的未发布模块(335cfb1):对商家不可见。智能工厂在阶段5调通期只对 admin 开放
@@ -481,8 +486,8 @@ const cloneMaterialSnapshot = (material: Material) => {
 };
 
 const cloneProductRestoreAnalysis = (
-  analysis: ProductRestoreNormalizedAnalysis,
-): ProductRestoreNormalizedAnalysis => ({
+  analysis: ProductRestoreNormalizedAnalysisV1,
+): ProductRestoreNormalizedAnalysisV1 => ({
   ...analysis,
   invariantFeatures: [...analysis.invariantFeatures],
   shapeAndStructure: [...analysis.shapeAndStructure],
@@ -497,13 +502,29 @@ const cloneProductRestoreAnalysis = (
 
 const cloneProductRestoreContext = (
   productRestoreContext?: ProductRestoreProjectContext,
-): ProductRestoreProjectContext | undefined => productRestoreContext ? ({
-  ...productRestoreContext,
-  focusIds: [...productRestoreContext.focusIds],
-  targetMaterialIds: [...productRestoreContext.targetMaterialIds],
-  productReferenceMaterialIds: [...productRestoreContext.productReferenceMaterialIds],
-  normalizedAnalysis: cloneProductRestoreAnalysis(productRestoreContext.normalizedAnalysis),
-}) : undefined;
+): ProductRestoreProjectContext | undefined => {
+  if (!productRestoreContext) return undefined;
+  if (productRestoreContext.version === 2) {
+    return {
+      ...productRestoreContext,
+      focusIds: [...productRestoreContext.focusIds],
+      targetMaterialIds: [...productRestoreContext.targetMaterialIds],
+      productReferenceMaterialIds: [...productRestoreContext.productReferenceMaterialIds],
+      invariantFeatures: [...productRestoreContext.invariantFeatures],
+      targetPrompts: productRestoreContext.targetPrompts.map((item) => ({
+        ...item,
+        targetIssueSummary: [...item.targetIssueSummary],
+      })),
+    };
+  }
+  return {
+    ...productRestoreContext,
+    focusIds: [...productRestoreContext.focusIds],
+    targetMaterialIds: [...productRestoreContext.targetMaterialIds],
+    productReferenceMaterialIds: [...productRestoreContext.productReferenceMaterialIds],
+    normalizedAnalysis: cloneProductRestoreAnalysis(productRestoreContext.normalizedAnalysis),
+  };
+};
 
 const cloneGenerationContext = (
   prompt: string,
@@ -3922,6 +3943,7 @@ const AppContent: React.FC<{
         if (shouldStopResume()) return;
         const analysis = await recoverProductRestoreAnalysisBatch({
           jobId: analysisJobId,
+          expectedTargetCount: targetMaterials.length,
           focusIds,
           userRequirement: storedContext.prompt,
           signal: controller.signal,
@@ -3947,7 +3969,7 @@ const AppContent: React.FC<{
             model: analysis.modelUsed,
             status: analysis.errorCode === 'interrupted'
               ? 'cancelled'
-              : analysis.errorCode === 'product_restore_analysis_invalid'
+              : PRODUCT_RESTORE_INVALID_ANALYSIS_ERROR_CODES.has(analysis.errorCode)
                 ? 'invalid'
                 : 'failed',
             errorCode: analysis.errorCode,
@@ -3986,15 +4008,21 @@ const AppContent: React.FC<{
           return;
         }
         productRestoreContext = {
-          version: 1,
+          version: 2,
           analysisJobId: analysis.jobId,
           analysisProviderTaskId: analysis.providerTaskId,
           analysisModel: analysis.modelUsed,
           ...(analysis.creditsConsumed !== undefined
             ? { analysisCreditsConsumed: analysis.creditsConsumed }
             : {}),
-          normalizedAnalysis: cloneProductRestoreAnalysis(analysis.normalizedAnalysis),
-          sharedRestorationPrompt: analysis.sharedRestorationPrompt,
+          productIdentitySummary: analysis.normalizedAnalysis.productIdentitySummary,
+          invariantFeatures: [...analysis.normalizedAnalysis.invariantFeatures],
+          targetPrompts: analysis.normalizedAnalysis.targetPrompts.map((item) => ({
+            targetMaterialId: targetMaterials[item.targetIndex - 1]?.id || '',
+            targetIndex: item.targetIndex,
+            targetIssueSummary: [...item.targetIssueSummary],
+            restorationPrompt: item.restorationPrompt,
+          })),
           focusIds: [...focusIds],
           targetMaterialIds: targetMaterials.map((material) => material.id),
           productReferenceMaterialIds: productReferences.map((material) => material.id),
@@ -6935,7 +6963,7 @@ const AppContent: React.FC<{
           model: confirmedAnalysisJob?.result?.modelUsed || confirmedAnalysisJob?.model,
           status: productRestoreFailure.code === 'interrupted'
             ? 'cancelled'
-            : productRestoreFailure.code === 'product_restore_analysis_invalid'
+            : PRODUCT_RESTORE_INVALID_ANALYSIS_ERROR_CODES.has(productRestoreFailure.code || '')
               ? 'invalid'
               : 'failed',
           errorCode: productRestoreFailure.code || confirmedAnalysisJob?.errorCode,
@@ -8774,7 +8802,7 @@ const AppContent: React.FC<{
             model: confirmedJob?.result?.modelUsed || confirmedJob?.model,
             status: workflowError.code === 'interrupted'
               ? 'cancelled'
-              : workflowError.code === 'product_restore_analysis_invalid'
+              : PRODUCT_RESTORE_INVALID_ANALYSIS_ERROR_CODES.has(workflowError.code || '')
                 ? 'invalid'
                 : 'failed',
             errorCode: workflowError.code || confirmedJob?.errorCode,
