@@ -235,6 +235,14 @@ test('shell result deletion records backend job tombstones for pending results',
   assert.doesNotMatch(deleteResultBlock, /jobIdsToDelete\s*=\s*resultJobIds\.length > 0 \? resultJobIds : \[resultId\]/);
 });
 
+test('deleting one batch result keeps sibling task tracking intact', () => {
+  const shellSource = read('../../ShellMigratedApp.tsx');
+  const deleteResultBlock = shellSource.match(/const handleDeleteResult = useCallback\([\s\S]*?\n  \}, \[[^\]]*persistDeletionToSharedState[^\]]*\]\);/)?.[0] || '';
+
+  assert.doesNotMatch(deleteResultBlock, /t\.projectId !== projectId/);
+  assert.match(deleteResultBlock, /!resultJobIds\.includes\(t\.backendJobId \|\| ''\)/);
+});
+
 test('single-result deletion persists the tombstone in parallel and reports physical delete failures', () => {
   const shellSource = read('../../ShellMigratedApp.tsx');
   const deleteResultBlock = shellSource.match(/const handleDeleteResult = useCallback\([\s\S]*?\n  \}, \[[^\]]*persistDeletionToSharedState[^\]]*\]\);/)?.[0] || '';
@@ -337,17 +345,19 @@ test('deleting a subtitle removal card never collects or mutates its source vide
   assert.ok(pruned.shellDraft.deletedProjectIds.includes('subtitle-project'));
 });
 
-test('subtitle batch retry distinguishes safe recovery, paid retry, and unknown submission state', () => {
+test('subtitle batch retry confirms every possibly-paid retry and blocks unknown submissions', () => {
   const projectCardSource = read('./ProjectCard.tsx');
   const shellSource = read('../../ShellMigratedApp.tsx');
 
   assert.match(projectCardSource, /subtitleRetryResultId/);
-  assert.match(projectCardSource, /provider_submission_unknown/);
+  assert.match(projectCardSource, /getSubtitleRemovalRetryDecision/);
   assert.match(projectCardSource, /将产生一次新的付费处理/);
-  assert.match(projectCardSource, /继续同步/);
+  assert.match(projectCardSource, /可能产生一次新的付费处理/);
+  assert.doesNotMatch(projectCardSource, /subtitleCanRecoverExistingTask/);
   assert.match(projectCardSource, /待管理员核实/);
   assert.match(shellSource, /project\.subFeature === 'subtitle_removal'/);
   assert.match(shellSource, /retryInternalJob\(result\.backendJobId\)/);
   assert.match(shellSource, /shellResultId: result\.id/);
+  assert.match(shellSource, /clientSubmissionKey: result\.clientSubmissionKey/);
   assert.match(shellSource, /status: 'generating'/);
 });

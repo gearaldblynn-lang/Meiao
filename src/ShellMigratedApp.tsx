@@ -136,6 +136,10 @@ import {
 import { getMediaBudget, validateMediaQueueSelection } from './utils/mediaTrimRules.mjs';
 import { buildSubtitleRemovalJobRequest } from './services/subtitleRemovalClient';
 import { mapWithSubtitleConcurrency } from './utils/subtitleRemovalBatch.mjs';
+import {
+  getSubtitleRemovalRetryDecision,
+  isSubtitleRemovalJobCreationUnknown,
+} from './utils/subtitleRemovalRetrySafety.mjs';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -232,6 +236,7 @@ export interface GeneratedResult {
   targetMaterialId?: string;
   analysisJobId?: string;
   clientSubmissionKey?: string;
+  draftNonce?: string;
   creditsConsumed?: number;
   error?: string;
   errorCode?: string;
@@ -3448,94 +3453,144 @@ const AppContent: React.FC<{
     const shellProjectName = reserveShortProjectName();
 
     try {
-      const settlements = await mapWithSubtitleConcurrency(
-        inputs,
-        systemConfig?.subtitleRemoval?.batchSubmitConcurrency || 2,
-        async (input, batchIndex) => {
-          const shellResultId = `${shellProjectId}-result-${batchIndex}`;
-          const subtitleRemovalJobRequest = buildSubtitleRemovalJobRequest({
-            userId: currentUser.id,
-            sourceUrl: input.draft.sourceUrl,
-            sourceAssetId: input.draft.assetId,
-            sourceProjectId: input.draft.sourceProjectId,
-            sourceResultId: input.draft.sourceResultId,
-            shellProjectId,
-            shellProjectName,
-            batchId: shellProjectId,
-            batchIndex,
-            batchCount: inputs.length,
-            shellResultId,
-            draftNonce: input.draft.draftNonce,
-            subtitleRegionNormalized: input.subtitleRegionNormalized,
-          });
-          // Durable job creation is the commit point. Do not show a successful placeholder before it returns.
-          const createdJob = await createInternalJob(subtitleRemovalJobRequest);
-          return { createdJob, subtitleRemovalJobRequest, shellResultId };
-        },
-      );
-      const batchResults: GeneratedResult[] = settlements.map((settlement, batchIndex) => {
-        const input = inputs[batchIndex];
+      const submissionEntries = inputs.map((input, batchIndex) => {
         const shellResultId = `${shellProjectId}-result-${batchIndex}`;
-        const commonResult: GeneratedResult = {
-          id: shellResultId,
-          imageUrl: '',
-          videoUrl: '',
-          mediaType: 'video',
-          prompt: '去除选定区域内的视频字幕',
-          model: 'Golden 去字幕',
-          aspectRatio: 'auto',
-          status: settlement.status === 'fulfilled' ? 'generating' : 'error',
-          createdAt,
-          module: AppModuleObj.VIDEO,
-          subFeature: 'subtitle_removal',
+        const subtitleRemovalJobRequest = buildSubtitleRemovalJobRequest({
+          userId: currentUser.id,
           sourceUrl: input.draft.sourceUrl,
+          sourceAssetId: input.draft.assetId,
           sourceProjectId: input.draft.sourceProjectId,
           sourceResultId: input.draft.sourceResultId,
-          fileName: input.draft.fileName,
-          originalWidth: input.draft.width,
-          originalHeight: input.draft.height,
+          shellProjectId,
+          shellProjectName,
           batchId: shellProjectId,
           batchIndex,
           batchCount: inputs.length,
+          shellResultId,
+          draftNonce: input.draft.draftNonce,
           subtitleRegionNormalized: input.subtitleRegionNormalized,
-          subtitleRegionPixels: input.subtitleRegionPixels,
-        };
-        if (settlement.status === 'fulfilled') {
-          return {
-            ...commonResult,
-            backendJobId: settlement.value.createdJob.job.id,
-            clientSubmissionKey: String(settlement.value.subtitleRemovalJobRequest.payload.clientSubmissionKey || ''),
-          };
-        }
-        return {
-          ...commonResult,
-          error: getRuntimeErrorMessage(settlement.reason, '去字幕任务提交失败'),
-        };
+        });
+        return { input, shellResultId, subtitleRemovalJobRequest };
       });
+      const buildSubtitleRemovalResult = (entry: typeof submissionEntries[number], batchIndex: number): GeneratedResult => ({
+        id: entry.shellResultId,
+        imageUrl: '',
+        videoUrl: '',
+        mediaType: 'video',
+        prompt: '去除选定区域内的视频字幕',
+        model: 'Golden 去字幕',
+        aspectRatio: 'auto',
+        status: 'error',
+        createdAt,
+        module: AppModuleObj.VIDEO,
+        subFeature: 'subtitle_removal',
+        sourceUrl: entry.input.draft.sourceUrl,
+        sourceProjectId: entry.input.draft.sourceProjectId,
+        sourceResultId: entry.input.draft.sourceResultId,
+        fileName: entry.input.draft.fileName,
+        originalWidth: entry.input.draft.width,
+        originalHeight: entry.input.draft.height,
+        batchId: shellProjectId,
+        batchIndex,
+        batchCount: inputs.length,
+        clientSubmissionKey: String(entry.subtitleRemovalJobRequest.payload.clientSubmissionKey || ''),
+        draftNonce: entry.input.draft.draftNonce,
+        subtitleRegionNormalized: entry.input.subtitleRegionNormalized,
+        subtitleRegionPixels: entry.input.subtitleRegionPixels,
+        error: '已保存提交身份，等待创建后台任务',
+        errorCode: 'subtitle_job_create_ready',
+      });
+      const buildSubtitleRemovalProject = (results: GeneratedResult[]): Project => {
+        const createdResults = results.filter((result) => result.status === 'generating');
+        const pendingResults = results.filter((result) => result.errorCode === 'subtitle_job_create_ready');
+        const allCreationFinishedWithoutJob = createdResults.length === 0 && pendingResults.length === 0;
+        return {
+          id: shellProjectId,
+          name: shellProjectName,
+          module: AppModuleObj.VIDEO,
+          status: createdResults.length > 0 || pendingResults.length > 0 ? 'generating' : 'error',
+          createdAt,
+          ...(allCreationFinishedWithoutJob ? { completedAt: Date.now() } : {}),
+          createdAtPrecise: true,
+          results,
+          taskCount: inputs.length,
+          completedCount: 0,
+          subFeature: 'subtitle_removal',
+          sourceType: 'job',
+          backendJobId: createdResults[0]?.backendJobId,
+          ...(allCreationFinishedWithoutJob ? { error: '批次内所有任务均未创建成功' } : {}),
+        };
+      };
+      const checkpointResults = submissionEntries.map(buildSubtitleRemovalResult);
+      const initialSubtitleRemovalProject = buildSubtitleRemovalProject([...checkpointResults]);
+      const initialPersisted = await persistSyncedProjectsToSharedState([initialSubtitleRemovalProject]);
+      if (!initialPersisted) {
+        throw new Error('批次任务卡未能同步到云端，未发起付费处理，请稍后重试');
+      }
+      let checkpointWriteQueue = Promise.resolve();
+      let checkpointSyncFailed = false;
+      const persistSubtitleRemovalCheckpoint = async (batchIndex: number, result: GeneratedResult) => {
+        checkpointResults[batchIndex] = result;
+        const checkpointProject = buildSubtitleRemovalProject([...checkpointResults]);
+        checkpointWriteQueue = checkpointWriteQueue.then(async () => {
+          try {
+            const synced = await persistSyncedProjectsToSharedState([checkpointProject]);
+            if (!synced) checkpointSyncFailed = true;
+          } catch (error) {
+            checkpointSyncFailed = true;
+            logShellError('subtitle_removal_checkpoint_persist', error, {
+              shellProjectId,
+              shellResultId: result.id,
+              batchIndex,
+            }, '去字幕子任务检查点保存失败');
+          }
+        });
+        await checkpointWriteQueue;
+      };
+      await mapWithSubtitleConcurrency(
+        submissionEntries,
+        systemConfig?.subtitleRemoval?.batchSubmitConcurrency || 2,
+        async (entry, batchIndex) => {
+          try {
+            const createdJob = await createInternalJob(entry.subtitleRemovalJobRequest);
+            await persistSubtitleRemovalCheckpoint(batchIndex, {
+              ...checkpointResults[batchIndex],
+              status: 'generating',
+              backendJobId: createdJob.job.id,
+              error: undefined,
+              errorCode: undefined,
+            });
+            return { createdJob };
+          } catch (error) {
+            const creationUnknown = isSubtitleRemovalJobCreationUnknown(error);
+            await persistSubtitleRemovalCheckpoint(batchIndex, {
+              ...checkpointResults[batchIndex],
+              status: 'error',
+              error: creationUnknown
+                ? '后台任务创建结果暂时无法确认。为防止重复扣费，系统已停止自动重提。'
+                : getRuntimeErrorMessage(error, '去字幕任务提交失败'),
+              errorCode: creationUnknown ? 'job_creation_unknown' : 'subtitle_job_create_failed',
+            });
+            throw error;
+          }
+        },
+      );
+      await checkpointWriteQueue;
+      const batchResults: GeneratedResult[] = [...checkpointResults];
       const createdResults = batchResults.filter((result) => result.status === 'generating');
       const failedResults = batchResults.filter((result) => result.status === 'error');
-      const subtitleRemovalProject: Project = {
-        id: shellProjectId,
-        name: shellProjectName,
-        module: AppModuleObj.VIDEO,
-        status: createdResults.length > 0 ? 'generating' : 'error',
-        createdAt,
-        ...(createdResults.length === 0 ? { completedAt: Date.now() } : {}),
-        createdAtPrecise: true,
-        results: batchResults,
-        taskCount: inputs.length,
-        completedCount: 0,
-        subFeature: 'subtitle_removal',
-        sourceType: 'job',
-        backendJobId: createdResults[0]?.backendJobId,
-        ...(createdResults.length === 0 ? { error: '批次内所有任务均未创建成功' } : {}),
-      };
+      const subtitleRemovalProject = buildSubtitleRemovalProject(batchResults);
       setProjects((previousProjects) => {
         const nextProjects = [subtitleRemovalProject, ...previousProjects.filter((project) => project.id !== shellProjectId)];
         projectsRef.current = nextProjects;
         return nextProjects;
       });
-      void persistSyncedProjectsToSharedState([subtitleRemovalProject]);
+      let syncedToRemote = false;
+      try {
+        syncedToRemote = Boolean(await persistSyncedProjectsToSharedState([subtitleRemovalProject]));
+      } catch (error) {
+        logShellError('subtitle_removal_batch_persist', error, { shellProjectId }, '去字幕批次任务卡保存失败');
+      }
       failedResults.forEach((result) => {
         logShellError('subtitle_removal_submit', new Error(result.error || '去字幕任务提交失败'), {
           shellProjectId,
@@ -3544,17 +3599,14 @@ const AppContent: React.FC<{
         }, '去字幕任务提交失败');
       });
       addToast(
-        failedResults.length > 0
+        !syncedToRemote || checkpointSyncFailed
+          ? '任务已进入本机任务栏，但云端任务卡同步失败；请勿重复提交并稍后刷新'
+          : failedResults.length > 0
           ? `已提交 ${createdResults.length} 个视频，${failedResults.length} 个创建失败并保留在任务栏`
           : `已提交 ${createdResults.length} 个去字幕视频，可以离开当前页面`,
-        failedResults.length > 0 ? 'warning' : 'success',
+        !syncedToRemote || failedResults.length > 0 ? 'warning' : 'success',
       );
-      return inputs.map((input, batchIndex) => {
-        const result = batchResults[batchIndex];
-        return result.status === 'generating'
-          ? { clientItemId: input.clientItemId, ok: true }
-          : { clientItemId: input.clientItemId, ok: false, error: result.error || '去字幕任务提交失败' };
-      });
+      return inputs.map((input) => ({ clientItemId: input.clientItemId, ok: true }));
     } finally {
       subtitleRemovalSubmitLockRef.current = false;
       setSubtitleRemovalSubmitting(false);
@@ -7687,7 +7739,6 @@ const AppContent: React.FC<{
           : p
       ).filter((p) => p.results.length > 0 || p.id !== projectId));
       setTasks((prev) => prev.filter((t) => t.id !== resultId
-        && t.projectId !== projectId
         && !resultJobIds.includes(t.backendJobId || '')
         && !resultJobIds.includes(t.id)));
       void startDeletionOperations({
@@ -7714,7 +7765,7 @@ const AppContent: React.FC<{
         ? { ...p, results: p.results.filter((r) => r.id !== resultId) }
         : p
     ).filter((p) => p.results.length > 0 || p.id !== projectId));
-    setTasks((prev) => prev.filter((t) => t.id !== resultId && t.projectId !== projectId && !resultJobIds.includes(t.backendJobId || '') && !resultJobIds.includes(t.id)));
+    setTasks((prev) => prev.filter((t) => t.id !== resultId && !resultJobIds.includes(t.backendJobId || '') && !resultJobIds.includes(t.id)));
     void persistDeletionToSharedState({ projectId, resultId, jobIds: resultJobIds })
       .then((synced) => {
         if (!synced) {
@@ -8281,11 +8332,10 @@ const AppContent: React.FC<{
           addToast('只有失败的去字幕子任务可以重试', 'info');
           return;
         }
-        if (result.errorCode === 'provider_submission_unknown') {
+        if (getSubtitleRemovalRetryDecision(result).mode === 'blocked_unknown') {
           addToast('上游提交状态未知，为防止重复扣费，请先联系管理员核实', 'warning');
           return;
         }
-        const recoveredExistingProviderTask = Boolean(result.taskId && result.backendJobId);
         let nextBackendJobId = String(result.backendJobId || '').trim();
         let nextClientSubmissionKey = result.clientSubmissionKey;
         if (result.backendJobId) {
@@ -8309,7 +8359,8 @@ const AppContent: React.FC<{
             batchIndex,
             batchCount,
             shellResultId: result.id,
-            draftNonce: `retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            draftNonce: result.draftNonce || `retry-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            clientSubmissionKey: result.clientSubmissionKey,
             subtitleRegionNormalized: result.subtitleRegionNormalized,
           });
           const createdJob = await createInternalJob(retryRequest);
@@ -8335,10 +8386,7 @@ const AppContent: React.FC<{
         };
         setProjects((prev) => prev.map((item) => item.id === project.id ? nextProject : item));
         await persistProjectToSharedState(nextProject);
-        addToast(
-          recoveredExistingProviderTask ? '已按原任务 ID 继续同步结果' : '已提交新的付费重试',
-          'success',
-        );
+        addToast('重试请求已受理，系统会优先复用可恢复的原任务', 'success');
         window.setTimeout(() => void hydrateShellJobs(), 800);
         return;
       }

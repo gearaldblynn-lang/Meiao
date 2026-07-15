@@ -16,6 +16,7 @@ import PlanEditor, { type PlanItem } from './PlanEditor';
 import { useToast } from './ToastSystem';
 import ProductRestoreAnalysisPanel, { ProductRestoreResultCreditBadge } from '../modules/Retouch/ProductRestoreAnalysisPanel';
 import SubtitleComparisonPlayer from './SubtitleComparisonPlayer';
+import { getSubtitleRemovalRetryDecision } from '../../utils/subtitleRemovalRetrySafety.mjs';
 import {
   getProductRestoreAnalysisCreditSummary,
   getProductRestoreTotalKnownCredits,
@@ -2144,9 +2145,7 @@ const ProjectCard: React.FC<Props> = ({
                           }
                           const regeneratePending = isRegeneratePending(result.id);
                           const subtitleSubmissionUnknown = isSubtitleRemovalProject
-                            && displayResult.errorCode === 'provider_submission_unknown';
-                          const subtitleCanRecoverExistingTask = isSubtitleRemovalProject
-                            && Boolean(displayResult.taskId && displayResult.backendJobId);
+                            && getSubtitleRemovalRetryDecision(displayResult).mode === 'blocked_unknown';
                           const sourcePreviewUrl = displayResult.sourcePreviewUrl;
                           const mediaPanel = isSubtitleRemovalProject && displayResult.status === 'completed' && displayResult.sourceUrl && displayResult.videoUrl ? (
                             displayResult.id === subtitleComparisonResultId ? (
@@ -2323,17 +2322,11 @@ const ProjectCard: React.FC<Props> = ({
                                           ? '待管理员核实'
                                           : regeneratePending
                                             ? '提交中'
-                                            : subtitleCanRecoverExistingTask
-                                              ? '继续同步'
-                                              : '重试'}
+                                            : '重试'}
                                         tone="primary"
                                         disabled={subtitleSubmissionUnknown || regeneratePending || !onRegenerate}
                                         onClick={() => {
                                           if (!onRegenerate || subtitleSubmissionUnknown || regeneratePending) return;
-                                          if (subtitleCanRecoverExistingTask) {
-                                            onRegenerate(project.id, displayResult.id);
-                                            return;
-                                          }
                                           setSubtitleRetryResultId(displayResult.id);
                                         }}
                                       />
@@ -2356,7 +2349,7 @@ const ProjectCard: React.FC<Props> = ({
                                     ) : <div />}
                                     {subtitleSubmissionUnknown ? (
                                       <p className="col-span-2 text-[10px] leading-5" style={{ color: 'var(--warning)' }}>
-                                        上游提交状态未知，为防止重复扣费，请先联系管理员核实。
+                                        任务创建或上游提交状态未知，系统会自动同步已有任务；若长时间未恢复，请联系管理员核实。
                                       </p>
                                     ) : null}
                                   </div>
@@ -2609,8 +2602,10 @@ const ProjectCard: React.FC<Props> = ({
       <ConfirmDialog
         open={Boolean(subtitleRetryResult)}
         title="重新处理这个视频"
-        message={`“${subtitleRetryResult?.fileName || '该视频'}”将产生一次新的付费处理。已完成的同批视频不会重复提交，是否继续？`}
-        confirmText="付费重试"
+        message={subtitleRetryResult?.backendJobId
+          ? `系统会先检查“${subtitleRetryResult.fileName || '该视频'}”的原任务；若原任务无法继续，可能产生一次新的付费处理。已完成的同批视频不会重复提交，是否继续？`
+          : `“${subtitleRetryResult?.fileName || '该视频'}”将产生一次新的付费处理。已完成的同批视频不会重复提交，是否继续？`}
+        confirmText="确认重试"
         onConfirm={() => {
           if (subtitleRetryResult) onRegenerate?.(project.id, subtitleRetryResult.id);
           setSubtitleRetryResultId(null);

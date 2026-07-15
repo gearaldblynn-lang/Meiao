@@ -338,7 +338,7 @@ test('dedicated recovery passes trusted context only inside the post-authorizati
   }
 });
 
-test('job retry remains a create operation and cannot inherit recovery from historical taskType', () => {
+test('job retry uses its own policy operation and cannot inherit provider recovery authority', () => {
   const mysqlStart = source.indexOf('const handleMysqlRequest =');
   const localStart = source.indexOf('const handleLocalRequest =');
   const handlers = [source.slice(mysqlStart, localStart), source.slice(localStart)];
@@ -348,7 +348,7 @@ test('job retry remains a create operation and cannot inherit recovery from hist
     const recoverStart = handler.indexOf("if (url.pathname === '/api/jobs/recover'", retryStart);
     assert.ok(retryStart >= 0 && recoverStart > retryStart);
     const retryRoute = handler.slice(retryStart, recoverStart);
-    assert.match(retryRoute, /resolveAuthorizedJobSubmissionPolicy\(user, job\)/);
+    assert.match(retryRoute, /resolveAuthorizedJobSubmissionPolicy\(user, job, \{ submissionOperation: 'retry' \}\)/);
     assert.doesNotMatch(retryRoute, /submissionOperation:\s*'recover'/);
   }
 });

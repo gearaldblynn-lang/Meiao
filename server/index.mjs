@@ -70,7 +70,8 @@ import { embedTexts } from './embeddingProvider.mjs';
 import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
-import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, deleteJobById, findJobByProviderTaskIdForUser, findReusableJobRecord, getJobById, getJobByIdForUpdate, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, resolveJobDeletionAction, resolveSubmissionUnknownJob, updateJobFields, createJobWorker, withMysqlSubmissionLock, withMysqlTransaction } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, createSerializedJobSubmissionOnConnection, deleteJobById, findJobByProviderTaskIdForUser, findReusableJobRecord, getJobById, getJobByIdForUpdate, getSubtitleRemovalSubmissionGuardState, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, resolveJobDeletionAction, resolveSubmissionUnknownJob, updateJobFields, createJobWorker, withMysqlSubmissionLock, withMysqlTransaction } from './jobManager.mjs';
+import { assertSubtitleRemovalBatchSubmissionAllowed, assertSubtitleRemovalRetryAllowed, assertSubmissionKnownBeforeRetry, buildSubtitleRemovalUserGuardSubmission } from './subtitleRemovalBatchGuard.mjs';
 import {
   CREDIT_LIMIT_MODES,
   attachCreditReservationToJobPayload,
@@ -13052,15 +13053,35 @@ const handleMysqlRequest = async (req, res, url) => {
         userId: user.id,
         pool: lockedPool,
       });
-      return createSerializedJobSubmission({
-        pool: lockedPool,
+      const submissionOptions = {
         user,
         jobPayload,
         dedupeWindowMs: submissionPolicy.dedupeWindowMs,
-        lockTimeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env),
         findReusableJob: findReusableJobRecord,
         reserveCredits: reserveDbJobCreditsForSubmission,
         createJob: createDbJobRecordWithReservation,
+      };
+      if (jobPayload.taskType === 'subtitle_remove_video') {
+        return withMysqlSubmissionLock(
+          lockedPool,
+          buildSubtitleRemovalUserGuardSubmission(user.id),
+          async (connection) => {
+            const guardState = await getSubtitleRemovalSubmissionGuardState(connection, user.id, jobPayload.payload);
+            assertSubtitleRemovalBatchSubmissionAllowed({
+              userId: user.id,
+              payload: jobPayload.payload,
+              batchMaxItems: getSubtitleRemovalConfig(process.env).batchMaxItems,
+              ...guardState,
+            });
+            return createSerializedJobSubmissionOnConnection({ connection, ...submissionOptions });
+          },
+          { timeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env) },
+        );
+      }
+      return createSerializedJobSubmission({
+        pool: lockedPool,
+        lockTimeoutSeconds: getJobSubmissionLockTimeoutSeconds(process.env),
+        ...submissionOptions,
       });
     });
     if (submission.deduped) {
@@ -13303,20 +13324,31 @@ const handleMysqlRequest = async (req, res, url) => {
     }
     let submissionPolicy;
     try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, job);
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, job, { submissionOperation: 'retry' });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
     }
 
     try {
-      await withMysqlSubmissionLock(pool, { userId: user.id, ...job }, async (connection) => withMysqlTransaction(connection, async () => {
+      const retryLockSubmission = job.taskType === 'subtitle_remove_video'
+        ? buildSubtitleRemovalUserGuardSubmission(user.id)
+        : { userId: user.id, ...job };
+      await withMysqlSubmissionLock(pool, retryLockSubmission, async (connection) => withMysqlTransaction(connection, async () => {
         const currentJob = await getJobByIdForUpdate(connection, job.id);
         if (!currentJob || !['failed', 'cancelled'].includes(currentJob.status)) {
           const error = new Error('只有已失败或已取消的任务可以重试。');
           error.code = 'job_retry_not_allowed';
           error.statusCode = 409;
           throw error;
+        }
+        assertSubmissionKnownBeforeRetry(currentJob);
+        if (currentJob.taskType === 'subtitle_remove_video') {
+          const guardState = await getSubtitleRemovalSubmissionGuardState(connection, user.id, currentJob.payload);
+          assertSubtitleRemovalRetryAllowed({
+            activeCount: guardState.activeCount,
+            batchMaxItems: getSubtitleRemovalConfig(process.env).batchMaxItems,
+          });
         }
 
         const currentReservation = getCreditReservationFromJob(currentJob);
@@ -16679,6 +16711,14 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       json(res, 200, { job: reusableJob, deduped: true });
       return;
     }
+    if (jobPayload.taskType === 'subtitle_remove_video') {
+      assertSubtitleRemovalBatchSubmissionAllowed({
+        jobs: store.jobs,
+        userId: user.id,
+        payload: jobPayload.payload,
+        batchMaxItems: getSubtitleRemovalConfig(process.env).batchMaxItems,
+      });
+    }
     const creditReservation = reserveLocalJobCredits(store, user, jobPayload);
     const job = createLocalJobRecord(store, user, attachCreditReservationToJobPayload(jobPayload, creditReservation));
     appendLocalLog(store, {
@@ -16864,9 +16904,22 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
       json(res, 409, { message: '只有已失败或已取消的任务可以重试。', code: 'job_retry_not_allowed' });
       return;
     }
+    try {
+      assertSubmissionKnownBeforeRetry(job);
+      if (job.taskType === 'subtitle_remove_video') {
+        assertSubtitleRemovalRetryAllowed({
+          jobs: store.jobs,
+          userId: user.id,
+          batchMaxItems: getSubtitleRemovalConfig(process.env).batchMaxItems,
+        });
+      }
+    } catch (error) {
+      respondJobSubmissionPolicyError(res, error);
+      return;
+    }
     let submissionPolicy;
     try {
-      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, job);
+      submissionPolicy = resolveAuthorizedJobSubmissionPolicy(user, job, { submissionOperation: 'retry' });
     } catch (error) {
       respondJobSubmissionPolicyError(res, error);
       return;
