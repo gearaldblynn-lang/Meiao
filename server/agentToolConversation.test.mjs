@@ -278,6 +278,163 @@ test('edit_image：校验 input_image_urls 在目录中，剔除幻觉 URL', asy
   assert.deepEqual(capturedUrls, ['https://real/1.jpg']);
 });
 
+test('洛克回归：单张产品图批量改图即使模型漏填 input_image_urls 也必须绑定图1', async () => {
+  const productUrl = 'https://upload/wifi-repeater.png';
+  const generatedInputs = [];
+  let round = 0;
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    imageMode: true,
+    currentMessage: '根据图1设计5张商品首图，产品不变，尺寸800*800px',
+    attachments: [{ kind: 'image', url: productUrl, name: '产品图.png' }],
+    callModel: async () => {
+      round += 1;
+      if (round > 1) return { content: '已生成5张商品首图', toolCalls: [], finishReason: 'stop' };
+      return {
+        content: '',
+        toolCalls: Array.from({ length: 5 }, (_, index) => ({
+          id: `c${index + 1}`,
+          name: 'generate_image',
+          args: {
+            prompt: `基于图1设计第${index + 1}张商品首图，产品本体保持完全不变`,
+            task_type: 'edit_image',
+            input_image_urls: [],
+            aspect_ratio: '1:1',
+          },
+        })),
+        finishReason: 'tool_calls',
+      };
+    },
+    generateImage: async ({ inputImageUrls }) => {
+      generatedInputs.push(inputImageUrls);
+      return {
+        imageUrl: `https://img/result-${generatedInputs.length}.png`,
+        providerTaskId: `task-${generatedInputs.length}`,
+      };
+    },
+    onProgress: () => {},
+  });
+
+  assert.equal(generatedInputs.length, 5);
+  assert.deepEqual(generatedInputs, Array.from({ length: 5 }, () => [productUrl]));
+  assert.deepEqual(out.imagePlan.inputImageUrls, [productUrl]);
+});
+
+test('多图改图缺少明确输入时必须在 provider 提交前 fail closed', async () => {
+  let generateCount = 0;
+  await assert.rejects(
+    runAgentConversationV2({
+      ...baseArgs,
+      imageMode: true,
+      currentMessage: '把这些产品图重新设计成一个新画面，产品保持不变',
+      attachments: [
+        { kind: 'image', url: 'https://upload/product-a.png', name: '产品A.png' },
+        { kind: 'image', url: 'https://upload/product-b.png', name: '产品B.png' },
+      ],
+      callModel: async () => ({
+        content: '',
+        toolCalls: [{
+          id: 'c1',
+          name: 'generate_image',
+          args: {
+            prompt: '重新设计商品画面，产品保持不变',
+            task_type: 'edit_image',
+            input_image_urls: [],
+          },
+        }],
+        finishReason: 'tool_calls',
+      }),
+      generateImage: async () => {
+        generateCount += 1;
+        return { imageUrl: 'https://img/unrelated.png', providerTaskId: 'should-not-submit' };
+      },
+      onProgress: () => {},
+    }),
+    (error) => error?.code === 'missing_image_input',
+  );
+  assert.equal(generateCount, 0);
+});
+
+test('多图分别改图时每个工具调用优先使用自身 prompt 的图N', async () => {
+  const productAUrl = 'https://upload/product-a.png';
+  const productBUrl = 'https://upload/product-b.png';
+  const generatedInputs = [];
+  let round = 0;
+  await runAgentConversationV2({
+    ...baseArgs,
+    imageMode: true,
+    currentMessage: '分别处理图1和图2，产品本体保持不变',
+    attachments: [
+      { kind: 'image', url: productAUrl, name: '产品A.png' },
+      { kind: 'image', url: productBUrl, name: '产品B.png' },
+    ],
+    callModel: async () => {
+      round += 1;
+      if (round > 1) return { content: '已分别处理两张产品图', toolCalls: [], finishReason: 'stop' };
+      return {
+        content: '',
+        toolCalls: [
+          {
+            id: 'c1',
+            name: 'generate_image',
+            args: { prompt: '处理图1，保持产品不变', task_type: 'edit_image', input_image_urls: [] },
+          },
+          {
+            id: 'c2',
+            name: 'generate_image',
+            args: { prompt: '处理图2，保持产品不变', task_type: 'edit_image', input_image_urls: [] },
+          },
+        ],
+        finishReason: 'tool_calls',
+      };
+    },
+    generateImage: async ({ inputImageUrls }) => {
+      generatedInputs.push(inputImageUrls);
+      return {
+        imageUrl: `https://img/result-${generatedInputs.length}.png`,
+        providerTaskId: `task-${generatedInputs.length}`,
+      };
+    },
+    onProgress: () => {},
+  });
+
+  assert.deepEqual(generatedInputs, [[productAUrl], [productBUrl]]);
+});
+
+test('明确从零创作的新图请求不会自动继承当前附件', async () => {
+  let capturedInputs = null;
+  let round = 0;
+  await runAgentConversationV2({
+    ...baseArgs,
+    imageMode: true,
+    currentMessage: '忽略附件，重新画一张全新的赛博朋克城市海报',
+    attachments: [{ kind: 'image', url: 'https://upload/unrelated.png', name: '旧素材.png' }],
+    callModel: async () => {
+      round += 1;
+      if (round > 1) return { content: '已生成全新海报', toolCalls: [], finishReason: 'stop' };
+      return {
+        content: '',
+        toolCalls: [{
+          id: 'c1',
+          name: 'generate_image',
+          args: {
+            prompt: '全新的赛博朋克城市海报，不参考任何现有图片',
+            task_type: 'new_image',
+            input_image_urls: [],
+          },
+        }],
+        finishReason: 'tool_calls',
+      };
+    },
+    generateImage: async ({ inputImageUrls }) => {
+      capturedInputs = inputImageUrls;
+      return { imageUrl: 'https://img/new-poster.png', providerTaskId: 'new-poster-task' };
+    },
+    onProgress: () => {},
+  });
+  assert.deepEqual(capturedInputs, []);
+});
+
 test('模型同一轮返回多个 generate_image 时：逐个执行并返回多张结果', async () => {
   let genCount = 0;
   const out = await runAgentConversationV2({
@@ -702,6 +859,52 @@ test('参考图替换主图局部时，两张输入图生成一张结果不应�
   assert.equal(modelRound, 2);
   assert.equal(generated, 1);
   assert.deepEqual(out.imageResultUrls, ['https://img/replaced.png']);
+  assert.equal(progress.some((event) => event.repair === 'under_planned_image_batch_audit'), false);
+});
+
+test('多图合成时模型漏填 input_image_urls 也应按 prompt 图N绑定且不误判欠规划', async () => {
+  const mainUrl = 'https://upload/main.jpg';
+  const referenceUrl = 'https://upload/ref.jpg';
+  const progress = [];
+  let capturedInputs = null;
+  const out = await runAgentConversationV2({
+    ...baseArgs,
+    currentMessage: '把图1和图2融合成一张商品海报',
+    attachments: [
+      { kind: 'image', url: mainUrl, name: '主图.jpg' },
+      { kind: 'image', url: referenceUrl, name: '参考图.jpg' },
+    ],
+    callModel: async ({ messages }) => {
+      const outputs = messages.filter((message) => message.type === 'function_call_output');
+      if (outputs.length > 0) return { content: '已合成商品海报', toolCalls: [], finishReason: 'stop' };
+      assert.equal(
+        messages.some((message) => String(message.content || '').includes('请审查上一轮')),
+        false,
+        '明确的多图融合输入不应触发欠规划修复',
+      );
+      return {
+        content: '',
+        toolCalls: [{
+          id: 'c1',
+          name: 'generate_image',
+          args: {
+            prompt: '融合图1和图2，输出一张商品海报',
+            task_type: 'edit_image',
+            input_image_urls: [],
+          },
+        }],
+        finishReason: 'tool_calls',
+      };
+    },
+    generateImage: async ({ inputImageUrls }) => {
+      capturedInputs = inputImageUrls;
+      return { imageUrl: 'https://img/merged.png', providerTaskId: 'merged-task' };
+    },
+    onProgress: (event) => progress.push(event),
+  });
+
+  assert.deepEqual(capturedInputs, [mainUrl, referenceUrl]);
+  assert.deepEqual(out.imageResultUrls, ['https://img/merged.png']);
   assert.equal(progress.some((event) => event.repair === 'under_planned_image_batch_audit'), false);
 });
 
