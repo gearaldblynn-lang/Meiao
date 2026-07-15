@@ -174,6 +174,12 @@ import { createVideoDiagnosisProbe } from './videoDiagnosisProbe.mjs';
 import { checkDreaminaLogin, getDreaminaStatus, logoutDreamina, startDreaminaLogin } from './dreaminaCli.mjs';
 import { createTemporalTaskAdapter } from './temporalTaskAdapter.mjs';
 import { getWorkerHealthSnapshot } from './workerHealth.mjs';
+import {
+  getManagedImageProbeIntervalMs,
+  getManagedImageUploadHealth,
+  writeManagedImageProbeStatus,
+} from './managedImageUploadHealth.mjs';
+import { runManagedImageCosProbe } from '../scripts/probe-managed-image-cos.mjs';
 import { createLocalTemporalActivities, createMysqlTemporalActivities, startMeiaoTemporalWorker } from './temporalWorker.mjs';
 import { buildImageOutputTransformFromJob, transformImageOutputBuffer } from './imagePostProcess.mjs';
 import {
@@ -356,6 +362,8 @@ let temporalWorkerRuntime = null;
 let localStoreCache = null;
 let assetCleanupTimer = null;
 let assetCleanupRunning = false;
+let managedImageProbeTimer = null;
+let managedImageProbeRunning = false;
 let lastManagedCosReconciliationAt = 0;
 let managedAssetCleanup = {
   backlog: 0,
@@ -5077,6 +5085,33 @@ const runManagedAssetCleanupCycle = async ({ mutationLockHeld = false } = {}) =>
     return { reconciliation, cleanup };
   } finally {
     assetCleanupRunning = false;
+  }
+};
+
+const runManagedImageUploadProbeCycle = async () => {
+  if (managedImageProbeRunning) return { skipped: true };
+  const currentHealth = getManagedImageUploadHealth({ env: process.env });
+  if (currentHealth.mode !== 'cos' || !currentHealth.configured) return { skipped: true };
+  managedImageProbeRunning = true;
+  try {
+    const result = await runManagedImageCosProbe({ env: process.env, writeLine: () => {} });
+    writeManagedImageProbeStatus({ env: process.env, ok: true });
+    return result;
+  } catch (error) {
+    const failureCode = error?.code || 'probe_failed';
+    try {
+      writeManagedImageProbeStatus({ env: process.env, ok: false, errorCode: failureCode });
+    } catch (statusError) {
+      console.error('managed image COS readiness status write failed', {
+        code: String(statusError?.code || 'status_write_failed').replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 80),
+      });
+    }
+    console.error('managed image COS readiness probe failed', {
+      code: String(failureCode).replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 80),
+    });
+    return { ok: false };
+  } finally {
+    managedImageProbeRunning = false;
   }
 };
 
@@ -16979,6 +17014,7 @@ const server = createServer(async (req, res) => {
         mode: shouldUseMysql ? 'internal-mysql-v1' : 'internal-v1',
         taskEngine,
         worker,
+        managedImageUpload: getManagedImageUploadHealth({ env: process.env }),
         managedAssetCleanup,
         mediaTranscode: {
           enabled: mediaTranscodeReadiness.enabled,
@@ -17236,6 +17272,21 @@ const bootstrap = async () => {
     }, ASSET_CLEANUP_INTERVAL_MS);
     void runManagedAssetCleanupCycle().catch((error) => {
       console.error('asset cleanup failed', error);
+    });
+  }
+
+  if (!managedImageProbeTimer) {
+    managedImageProbeTimer = setInterval(() => {
+      void runManagedImageUploadProbeCycle().catch((error) => {
+        console.error('managed image COS readiness cycle failed', {
+          code: String(error?.code || 'probe_cycle_failed').replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 80),
+        });
+      });
+    }, getManagedImageProbeIntervalMs(process.env));
+    void runManagedImageUploadProbeCycle().catch((error) => {
+      console.error('managed image COS readiness cycle failed', {
+        code: String(error?.code || 'probe_cycle_failed').replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 80),
+      });
     });
   }
 

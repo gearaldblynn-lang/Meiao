@@ -137,11 +137,12 @@ npm run dev
 - `MEIAO_COS_SECRET_ID` / `MEIAO_COS_SECRET_KEY`：Gemini 视频专用腾讯 COS 服务端凭证；必须来自只允许目标桶 `gemini-video/*` 执行 `PutObject`、`GetObject` 的 CAM 子用户，不得下发前端或使用主账号密钥。
 - `MEIAO_COS_BUCKET` / `MEIAO_COS_REGION`：Gemini 视频私有桶与地域。内部托管视频会先写入该桶，再把签名 GET URL 直接交给 Gemini；无需 CDN，建议给 `gemini-video/` 设置 3 天自动删除生命周期。
 - `MEIAO_COS_SIGNED_URL_TTL_SECONDS`：默认 `10800`（3 小时），限制 `300-86400` 秒；控制 Gemini 可读取 COS 对象的时间窗口。
-- `MEIAO_MANAGED_IMAGE_UPLOAD_MODE`：用户新上传图片的生产开关，只允许 `disabled|cos`；兼容发布和回滚用 `disabled`，COS 探针通过后才用 `cos`。图片 COS 失败时 fail closed，不回退到本地或 KIE。
+- `MEIAO_MANAGED_IMAGE_UPLOAD_MODE`：用户新上传图片的生产开关，只允许 `disabled|cos`。空配置用 `disabled` fail closed；生产标准部署只接受 `cos` 且必须在停旧服务前通过真探针。图片 COS 失败时不回退到本地或 KIE。
 - `MEIAO_MANAGED_ASSET_ACCESS_SECRET` / `MEIAO_MANAGED_ASSET_ACCESS_PREVIOUS_SECRET`：绑定素材 ID 与用户的访问 capability 密钥及轮换兼容值；至少 24 字符，只存服务端。
 - `MEIAO_IMAGE_COS_SECRET_ID` / `MEIAO_IMAGE_COS_SECRET_KEY` / `MEIAO_IMAGE_COS_BUCKET` / `MEIAO_IMAGE_COS_REGION`：新 source/reference/chat 图片的独立私有 COS 配置，与 Gemini 视频桶及凭证完全分开。云上目标为 `meiao-managed-images-1406860462` / `ap-guangzhou`，CAM 仅授予 `managed-images/*` 的对象读写删权限。
 - `MEIAO_IMAGE_COS_BROWSER_URL_TTL_SECONDS` / `MEIAO_IMAGE_COS_PROVIDER_URL_TTL_SECONDS`：默认 `300` / `10800`，分别控制浏览器和外部分析/生成模型的临时签名读取窗口；签名 URL 不落库、不写日志。
 - `MEIAO_IMAGE_COS_UPLOAD_MAX_ATTEMPTS` / `MEIAO_IMAGE_COS_UPLOAD_TIMEOUT_MS` / `MEIAO_IMAGE_COS_UPLOAD_RETRY_BASE_MS`：默认 `3` / `30000` / `500`；重试幂等上传并复用同一对象键。
+- `MEIAO_MANAGED_IMAGE_PROBE_INTERVAL_MS` / `MEIAO_MANAGED_IMAGE_PROBE_MAX_AGE_MS` / `MEIAO_MANAGED_IMAGE_PROBE_STATUS_FILE`：默认 `900000` / `3600000` / `server/data/managed-image-cos-readiness.json`。服务定期执行 put/head/签名读取字节校验/delete/not-found；状态文件只存不可逆配置指纹，密钥不进入 health 或文件。
 - `MEIAO_MANAGED_IMAGE_MAX_BYTES`：新上传图片的服务端字节上限，默认 `20971520` (20MB)；同时校验 MIME 与文件头，拒绝伪装图片。
 - `MEIAO_ASSET_COS_RECONCILE_INTERVAL_MS`：活跃 COS 记录与对象存在性的 HEAD 对账间隔，默认 `86400000` (24 小时)；缺失对象会进入一致性清理并触发 health 告警。
 - `MEIAO_IMAGE_COS_OPERATION_TIMEOUT_MS`：默认 `15000`；限制 COS 签名、HEAD 与删除操作，避免 SDK 回调不返回时卡死 worker。
@@ -150,6 +151,7 @@ npm run dev
 - `MEIAO_ASSET_CLEANUP_INTERVAL_MS` / `MEIAO_ASSET_CLEANUP_BATCH_SIZE` / `MEIAO_ASSET_CLEANUP_RETRY_BASE_MS`：持久精确删除队列默认每 `1800000`ms 处理 `20` 条，重试基数 `60000`ms。账号、项目/任务、聊天/会话、显式素材和过期删除都收敛到该队列。
 - `MEIAO_ASSET_CLEANUP_MANUAL_REVIEW_ATTEMPTS` / `MEIAO_ASSET_CLEANUP_MANUAL_RETRY_MS` / `MEIAO_ASSET_CLEANUP_LEASE_MS`：默认 `8` / `86400000` / `600000`；失败任务不丢弃，进程重启后续跑，超阈值进入 manual review。
 - `MEIAO_ASSET_CLEANUP_ALERT_BACKLOG` / `MEIAO_ASSET_CLEANUP_ALERT_OLDEST_MS` / `MEIAO_ASSET_UPLOAD_STALE_MS`：默认 `100` / `86400000` / `900000`；`/api/health.managedAssetCleanup` 会报 backlog、最老等待、重试、manual review 和卡住上传。
+- `/api/health.managedImageUpload` 暴露 `mode/configured/ready/status/lastProbeAt/lastProbeAgeMs/alerting`，探针失败时只附脱敏 `failureCode`。部署门禁要求 `ready=true`，不再只看 HTTP 和 worker。
 - `MEIAO_ASSET_CLEANUP_AUDIT_RETENTION_MS`：默认 `2592000000`（30 天）；只裁剪 complete/protected 审计记录，不删待处理或人工复核任务。
 - `MEIAO_KIE_MANAGED_ASSET_MODE`：默认 `auto`；图片、PDF 等非视频素材仅在 `MEIAO_PUBLIC_BASE_URL` 是公网 HTTPS 时直连优先，明确读取失败且无 `providerTaskId` 时才允许转存 KIE。Gemini 视频不受该开关影响，始终使用 COS 或已有外部稳定 URL，禁止 KIE 暂存、KIE 失败回退和模型回退。
 - `MEIAO_KIE_ASSET_UPLOAD_CONCURRENCY`：默认 `3`；真正进入 KIE file-stream-upload 时的进程级跨任务并发总上限，补足单任务素材解析限流无法约束多任务同时上传的问题。

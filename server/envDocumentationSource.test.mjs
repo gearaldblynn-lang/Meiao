@@ -77,6 +77,9 @@ test('用户上传图片 COS 和持久清理配置同步到模板、总览和云
     'MEIAO_IMAGE_COS_UPLOAD_TIMEOUT_MS',
     'MEIAO_IMAGE_COS_UPLOAD_RETRY_BASE_MS',
     'MEIAO_IMAGE_COS_OPERATION_TIMEOUT_MS',
+    'MEIAO_MANAGED_IMAGE_PROBE_INTERVAL_MS',
+    'MEIAO_MANAGED_IMAGE_PROBE_MAX_AGE_MS',
+    'MEIAO_MANAGED_IMAGE_PROBE_STATUS_FILE',
     'MEIAO_ASSET_CLEANUP_INTERVAL_MS',
     'MEIAO_ASSET_CLEANUP_BATCH_SIZE',
     'MEIAO_ASSET_CLEANUP_RETRY_BASE_MS',
@@ -104,6 +107,8 @@ test('用户上传图片 COS 和持久清理配置同步到模板、总览和云
   assert.match(deployDoc, /版本控制关闭/);
   assert.match(deployDoc, /未完成的分块上传/);
   assert.match(deployDoc, /probe:managed-image-cos/);
+  assert.match(projectOverview, /managedImageUpload/);
+  assert.match(deployDoc, /managedImageUpload/);
 });
 
 test('结果素材下载重试旋钮同步到模板、总览和云上部署文档', () => {

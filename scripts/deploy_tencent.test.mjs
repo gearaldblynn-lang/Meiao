@@ -206,6 +206,21 @@ test('deploy_tencent uses a bootstrap network drain before the lock holder stops
   assert.match(source, /MEIAO_DEPLOY_DRAIN_FILE/);
 });
 
+test('deploy_tencent proves managed image COS readiness before entering the drain', () => {
+  const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
+  const buildIndex = source.indexOf('npm run build -- --outDir dist-next');
+  const probeIndex = source.indexOf('npm run probe:managed-image-cos');
+  const finalReadinessIndex = source.indexOf(
+    "MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs",
+  );
+  const networkDrainIndex = source.indexOf('node scripts/backend-network-drain.mjs enter');
+
+  assert.ok(buildIndex >= 0, 'remote build must exist');
+  assert.ok(probeIndex > buildIndex, 'COS probe must run after the new source is installed and built');
+  assert.ok(finalReadinessIndex > probeIndex, 'job readiness must be rechecked after the COS probe');
+  assert.ok(networkDrainIndex > finalReadinessIndex, 'COS probe must pass before any network drain');
+});
+
 test('deploy_tencent keeps the drain on failed health until the new process is verified stopped', () => {
   const source = readFileSync(new URL('./deploy_tencent.sh', import.meta.url), 'utf8');
   const ownershipSource = readFileSync(new URL('./deploy-ownership.mjs', import.meta.url), 'utf8');

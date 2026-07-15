@@ -226,6 +226,9 @@ tar \
     set -a
     source .env.server
     set +a
+    # 图片上传是所有业务入口的基础能力。真探针在停旧服务前完成；失败时 set -e
+    # 直接终止发布，旧进程和旧 dist 继续服务，不再留下 disabled 半发布状态。
+    npm run probe:managed-image-cos
     MEIAO_DEPLOY_ALLOW_ACTIVE_JOBS='$DEPLOY_ALLOW_ACTIVE_JOBS' node scripts/check-deploy-readiness.mjs
 
     # 首发时旧进程不认识 marker。先用 iptables 拒绝新的 Nginx/直连 3100 连接，
