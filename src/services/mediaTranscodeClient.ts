@@ -31,6 +31,7 @@ export type MediaTranscodeResult = {
   profile: MediaTranscodeProfile;
   transcoded: boolean;
   durationSeconds: number;
+  videoCodec?: string | null;
   width?: number | null;
   height?: number | null;
   frameRate?: number | null;

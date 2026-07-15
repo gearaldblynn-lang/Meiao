@@ -3729,3 +3729,29 @@ test('ProjectCard is memoized and ProjectListView passes stable handlers (no inl
   assert.match(listView, /onRecover=\{onRecoverResult\}/);
   assert.doesNotMatch(listView, /onDeleteResult=\{\(rid\) =>/);
 });
+
+test('video subtitle removal workspace creates an independent durable job before showing its task card', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const videoModule = read('../shell/modules/Video/VideoModule.tsx');
+
+  assert.match(shellApp, /\{ id: 'subtitle_removal', label: '去字幕' \}/);
+  assert.match(shellApp, /const \[subtitleRemovalDraft, setSubtitleRemovalDraft\] = useState<SubtitleRemovalSourceDraft \| null>\(null\)/);
+  assert.match(shellApp, /const handleSubtitleRemovalSubmit = useCallback/);
+  assert.match(shellApp, /const subtitleRemovalJobRequest = buildSubtitleRemovalJobRequest\(/);
+  assert.match(shellApp, /const createdJob = await createInternalJob\(subtitleRemovalJobRequest\)/);
+  assert.match(shellApp, /backendJobId: createdJob\.job\.id/);
+  assert.match(shellApp, /sourceUrl: input\.draft\.sourceUrl/);
+  assert.match(shellApp, /subtitleRegionNormalized: input\.subtitleRegionNormalized/);
+  assert.match(shellApp, /subtitleRegionPixels: input\.subtitleRegionPixels/);
+  assert.match(shellApp, /subFeature: 'subtitle_removal'/);
+  assert.match(shellApp, /void persistSyncedProjectsToSharedState\(\[subtitleRemovalProject\]\)/);
+  assert.match(shellApp, /void persistSyncedProjectsToSharedState\(\[failedSubtitleRemovalProject\]\)/);
+  assert.match(shellApp, /subtitleRemovalDraft=\{subtitleRemovalDraft\}/);
+  assert.match(shellApp, /onSubtitleRemovalDraftChange=\{setSubtitleRemovalDraft\}/);
+  assert.match(shellApp, /onSubtitleRemovalSubmit=\{handleSubtitleRemovalSubmit\}/);
+  assert.match(shellApp, /activeSubFeature !== 'subtitle_removal'/);
+
+  assert.match(videoModule, /<SubtitleRemovalWorkspace/);
+  assert.match(videoModule, /beforeProjects=\{subtitleRemovalWorkspace\}/);
+  assert.match(videoModule, /onCancelTask=\{activeSubFeature === 'subtitle_removal' \? undefined : onCancelTask\}/);
+});
