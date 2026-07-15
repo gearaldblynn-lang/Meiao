@@ -81,16 +81,33 @@ export const runManagedImageCosProbe = async ({
   }
 };
 
+export const runManagedImageCosProbeCli = async ({
+  runProbe = runManagedImageCosProbe,
+  writeLine = (line) => console.log(line),
+  writeError = (line) => console.error(line),
+  startKeepAlive = () => setInterval(() => {}, 1_000),
+  stopKeepAlive = (handle) => clearInterval(handle),
+} = {}) => {
+  // COS retries intentionally use unref'd timers so server shutdown is not held open.
+  // A standalone probe has no server handles, so keep the CLI alive until the awaited
+  // lifecycle either completes or reports a real failure.
+  const keepAliveHandle = startKeepAlive();
+  try {
+    await runProbe();
+    writeLine('managed image COS probe: PASS');
+    return true;
+  } catch (error) {
+    writeError(`managed image COS probe: FAIL (${String(error?.message || 'unknown error')})`);
+    return false;
+  } finally {
+    stopKeepAlive(keepAliveHandle);
+  }
+};
+
 const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : '';
 if (invokedPath === import.meta.url) {
   loadServerEnvFile({ envPath: path.resolve('.env.server') });
   loadServerEnvFile({ envPath: path.resolve('.env.local') });
-  runManagedImageCosProbe()
-    .then(() => {
-      console.log('managed image COS probe: PASS');
-    })
-    .catch((error) => {
-      console.error(`managed image COS probe: FAIL (${String(error?.message || 'unknown error')})`);
-      process.exitCode = 1;
-    });
+  const ok = await runManagedImageCosProbeCli();
+  if (!ok) process.exitCode = 1;
 }
