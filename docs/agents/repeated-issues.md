@@ -923,8 +923,9 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 
 ## 2026-07-15 - Golden 去字幕区域字段不能混入梅奥任务前缀
 
-- Symptom: 去字幕正式 canary 已 checkpoint `providerTaskId`，但供应商约 5 秒后返回 `failed / G:list index out of range`；查询结果能识别 720×1280、约 2 秒和 0.51 MB 的源视频，记录的 `position` 却是 `w=0/h=0`，没有结果视频且 `costRemove=0`。
-- Root cause: Golden 提交契约把 `videoName` 当作字幕区域编码，格式必须严格为 `x1_y1_x2_y2`。梅奥此前为了追踪任务把 job ID 前缀拼进该字段，导致供应商按固定坐标结构解析时得到空区域并进入数组越界。
-- Fix: `buildSubtitleRemovalSubmitBody` 只发送四个像素坐标，不再把内部任务 ID 放进 `videoName`；梅奥仍通过自身 job 与 checkpoint 字段追踪供应商任务。生产开关保持关闭，除非供应商确认或用户明确授权新的单次付费 canary，不自动重提。
+- Symptom: 去字幕首次正式 canary 已 checkpoint `providerTaskId`，但供应商约 5 秒后返回 `failed / G:list index out of range`；它能识别 720×1280、约 2 秒和 0.51 MB 的源视频，却没有返回结果视频且 `costRemove=0`。
+- Root cause: Golden 提交契约把 `videoName` 当作严格的字幕区域协议，格式必须为 `x1_y1_x2_y2`。梅奥此前为了追踪任务把 job ID 前缀拼进该字段，违反了四段坐标结构；移除前缀后使用同一 2.5 秒素材单变量复测成功。供应商的 `position` 字段在成功任务里仍可能为 `w=0/h=0`，不能把它当成区域解析是否成功的权威证据。
+- Fix: `buildSubtitleRemovalSubmitBody` 只发送四个像素坐标，不再把内部任务 ID 放进 `videoName`；梅奥仍通过自身 job 与 checkpoint 字段追踪供应商任务。首次失败没有自动重提，得到用户新的明确授权后才执行第二次单次付费 canary。
+- Acceptance: 授权后的 2.5 秒 H.264/AAC canary 在 15.4 秒内成功，Golden `costRemove=3`；job 与 Temporal 均为 1 次 attempt、0 次重试，源/结果都为梅奥托管 MP4 且通过 HTTP Range。结果保持 720×1280、约 2.5 秒和音频，抽取同一时刻画面确认底部测试字幕消失、其他图形保留。探针任务和临时会话已清理，生产 `subtitleRemoval.enabled/configured` 已正式开启。
 - Regression check: `node --test server/subtitleRemovalContract.test.mjs server/providerSubtitleRemoval.test.mjs server/providerGateway.test.mjs`；测试必须断言即使传入 `safeTaskId`，`videoName` 仍严格等于四段坐标。
-- Avoid next time: 第三方把普通字符串字段复用为位置协议时，不得追加自定义前缀或追踪信息。正式 canary 必须同时核对 provider checkpoint、供应商解析后的 `position`、结果 URL 与费用字段；失败后只允许查询旧 ID，不得自动再提交。
+- Avoid next time: 第三方把普通字符串字段复用为位置协议时，不得追加自定义前缀或追踪信息。正式 canary 必须同时核对 provider checkpoint、结果 URL、托管与 Range、媒体参数、画面差异和费用字段；供应商 `position` 只能作为辅助信息。失败后只允许查询旧 ID，不得自动再提交。
