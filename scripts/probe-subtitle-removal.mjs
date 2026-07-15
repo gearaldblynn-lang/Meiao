@@ -45,6 +45,7 @@ export function resolveProbeOptions({ argv = process.argv.slice(2), env = proces
     sessionToken: clean(env.MEIAO_SUBTITLE_REMOVAL_PROBE_SESSION_TOKEN),
     pollIntervalMs: boundedInteger(env.MEIAO_SUBTITLE_REMOVAL_PROBE_POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS, 500, 30_000),
     timeoutMs: boundedInteger(env.MEIAO_SUBTITLE_REMOVAL_PROBE_TIMEOUT_MS, DEFAULT_TIMEOUT_MS, 60_000, 7_200_000),
+    inspectionMs: boundedInteger(env.MEIAO_SUBTITLE_REMOVAL_PROBE_INSPECTION_MS, 0, 0, 600_000),
     redactionValues: [
       clean(env.MEIAO_SUBTITLE_REMOVAL_PROBE_SESSION_TOKEN),
       clean(env.GOLDEN_SUBTITLE_API_TOKEN),
@@ -227,9 +228,11 @@ export async function runSubtitleRemovalProbe(options, deps = {}) {
       rangeReadable: true,
       durationSeconds,
       paidSubmissions: 1,
+      inspectionMs: options.inspectionMs,
       elapsedMs: Math.max(0, now() - startedAt),
     };
     log(JSON.stringify(result));
+    if (options.inspectionMs > 0) await sleep(options.inspectionMs);
     return result;
   } finally {
     if (completed && jobId) {

@@ -97,6 +97,7 @@ test('live mode creates exactly one job, verifies managed Range playback, and pe
       MEIAO_SUBTITLE_REMOVAL_CANARY_CONFIRM: '1',
       MEIAO_SUBTITLE_REMOVAL_PROBE_BASE_URL: 'https://meiao.test',
       MEIAO_SUBTITLE_REMOVAL_PROBE_SESSION_TOKEN: sessionToken,
+      MEIAO_SUBTITLE_REMOVAL_PROBE_INSPECTION_MS: '1500',
       GOLDEN_SUBTITLE_API_TOKEN: providerToken,
     },
   });
@@ -104,7 +105,7 @@ test('live mode creates exactly one job, verifies managed Range playback, and pe
   const result = await runSubtitleRemovalProbe(options, {
     readFileImpl: async () => Buffer.from('fixture'),
     probeFixtureImpl: async () => ({ durationSeconds: 2.5, width: 720, height: 1280, sizeBytes: 7 }),
-    sleep: async () => {},
+    sleep: async (ms) => calls.push({ href: `sleep:${ms}`, method: 'WAIT' }),
     log: (line) => logs.push(line),
     fetchImpl: async (url, init = {}) => {
       const href = String(url);
@@ -135,6 +136,12 @@ test('live mode creates exactly one job, verifies managed Range playback, and pe
   assert.equal(calls.filter((call) => call.href.endsWith('/api/jobs') && call.method === 'POST').length, 1);
   assert.equal(calls.some((call) => call.href.endsWith('/api/jobs/job-canary-1') && call.method === 'DELETE'), true);
   assert.equal(calls.some((call) => call.href.endsWith('/api/assets/by-url') && call.method === 'DELETE'), true);
+  const summaryIndex = logs.findIndex((line) => line.includes('"managedResultUrlPresent":true'));
+  const inspectionIndex = calls.findIndex((call) => call.href === 'sleep:1500');
+  const cleanupIndex = calls.findIndex((call) => call.href.endsWith('/api/jobs/job-canary-1') && call.method === 'DELETE');
+  assert.ok(summaryIndex >= 0);
+  assert.ok(inspectionIndex >= 0);
+  assert.ok(cleanupIndex > inspectionIndex);
   const output = logs.join('\n');
   for (const secret of [sessionToken, providerToken, 'source-signature', 'result-signature', 'provider-1']) {
     assert.equal(output.includes(secret), false);

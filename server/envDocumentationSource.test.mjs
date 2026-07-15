@@ -147,6 +147,7 @@ test('视频去字幕服务端配置同步到模板、总览和云上部署文�
     'MEIAO_SUBTITLE_REMOVAL_BASE_URL',
     'MEIAO_SUBTITLE_REMOVAL_POLL_INTERVAL_MS',
     'MEIAO_SUBTITLE_REMOVAL_TIMEOUT_MS',
+    'MEIAO_SUBTITLE_REMOVAL_PROBE_INSPECTION_MS',
   ];
 
   for (const key of requiredKeys) {
