@@ -32,7 +32,6 @@ import {
 } from '../../services/mediaTranscodeClient';
 import {
   pickSubtitlePreparationItems,
-  mapWithSubtitleConcurrency,
   summarizeSubtitleRemovalBatch,
 } from '../../utils/subtitleRemovalBatch.mjs';
 import {
@@ -57,6 +56,12 @@ export type SubtitleRemovalBatchLimits = {
   batchSubmitConcurrency: number;
 };
 
+export type SubtitleRemovalSubmitOutcome = {
+  clientItemId: string;
+  ok: boolean;
+  error?: string;
+};
+
 type BatchItem = {
   clientItemId: string;
   selected: boolean;
@@ -73,7 +78,7 @@ type BatchItem = {
 type Props = {
   draft: SubtitleRemovalSourceDraft | null;
   onDraftChange: (draft: SubtitleRemovalSourceDraft | null) => void;
-  onSubmit: (input: SubtitleRemovalSubmitInput) => Promise<void> | void;
+  onSubmit: (inputs: SubtitleRemovalSubmitInput[]) => Promise<SubtitleRemovalSubmitOutcome[]> | SubtitleRemovalSubmitOutcome[];
   submitting?: boolean;
   featureAvailable?: boolean;
   limits?: Partial<SubtitleRemovalBatchLimits>;
@@ -141,7 +146,6 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
 
   const batchMaxItems = boundedInteger(limits?.batchMaxItems, DEFAULT_LIMITS.batchMaxItems, 1, 20);
   const batchPrepConcurrency = boundedInteger(limits?.batchPrepConcurrency, DEFAULT_LIMITS.batchPrepConcurrency, 1, 4);
-  const batchSubmitConcurrency = boundedInteger(limits?.batchSubmitConcurrency, DEFAULT_LIMITS.batchSubmitConcurrency, 1, 4);
 
   const updateItem = useCallback((clientItemId: string, updater: (item: BatchItem) => BatchItem) => {
     setItems((current) => current.map((item) => (
@@ -386,31 +390,23 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
       ? { ...item, phase: 'submitting', stageText: '正在创建后台任务', errorMessage: undefined }
       : item));
     try {
-      const settlements = await mapWithSubtitleConcurrency(
-        readySelectedItems,
-        batchSubmitConcurrency,
-        async (item) => {
-          if (!item.draft) throw new Error('视频还未准备完成');
-          const pixels = subtitleRegionToPixels(item.region, item.draft.width, item.draft.height);
-          await onSubmit({
-            clientItemId: item.clientItemId,
-            draft: item.draft,
-            subtitleRegionNormalized: item.region,
-            subtitleRegionPixels: pixels,
-          });
-          return item.clientItemId;
-        },
-      );
+      const submitInputs = readySelectedItems.map((item) => {
+        if (!item.draft) throw new Error('视频还未准备完成');
+        return {
+          clientItemId: item.clientItemId,
+          draft: item.draft,
+          subtitleRegionNormalized: item.region,
+          subtitleRegionPixels: subtitleRegionToPixels(item.region, item.draft.width, item.draft.height),
+        };
+      });
+      const outcomes = await onSubmit(submitInputs);
+      const outcomeById = new Map(outcomes.map((outcome) => [outcome.clientItemId, outcome]));
       const succeededIds = new Set<string>();
       const failedById = new Map<string, string>();
-      settlements.forEach((settlement, index) => {
-        const clientItemId = readySelectedItems[index]?.clientItemId || '';
-        if (!clientItemId) return;
-        if (settlement.status === 'fulfilled') succeededIds.add(clientItemId);
-        else failedById.set(
-          clientItemId,
-          settlement.reason instanceof Error ? settlement.reason.message : '去字幕任务提交失败',
-        );
+      submitInputs.forEach(({ clientItemId }) => {
+        const outcome = outcomeById.get(clientItemId);
+        if (outcome?.ok) succeededIds.add(clientItemId);
+        else failedById.set(clientItemId, outcome?.error || '去字幕任务提交失败');
       });
       setItems((current) => current
         .filter((item) => !succeededIds.has(item.clientItemId))
@@ -420,6 +416,14 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
           stageText: '任务提交失败',
           errorMessage: failedById.get(item.clientItemId),
         } : item));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '去字幕任务提交失败';
+      setItems((current) => current.map((item) => submittingIds.has(item.clientItemId) ? {
+        ...item,
+        phase: 'error',
+        stageText: '任务提交失败',
+        errorMessage: message,
+      } : item));
     } finally {
       submitLockRef.current = false;
       setLocalSubmitting(false);

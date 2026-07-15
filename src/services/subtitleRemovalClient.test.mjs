@@ -14,6 +14,10 @@ const input = {
   sourceResultId: 'source-result',
   shellProjectId: 'subtitle-project',
   shellProjectName: '去字幕 0715-01',
+  batchId: 'batch-1',
+  batchIndex: 0,
+  batchCount: 2,
+  shellResultId: 'batch-1-result-0',
   draftNonce: 'draft-123',
   subtitleRegionNormalized: { x: 0.1, y: 0.7, width: 0.8, height: 0.25 },
 };
@@ -34,6 +38,10 @@ test('subtitle removal request is bound to the paid provider and zero retries', 
       sourceResultId: input.sourceResultId,
       shellProjectId: input.shellProjectId,
       shellProjectName: input.shellProjectName,
+      batchId: input.batchId,
+      batchIndex: input.batchIndex,
+      batchCount: input.batchCount,
+      shellResultId: input.shellResultId,
       clientSubmissionKey,
     },
   });
@@ -50,9 +58,15 @@ test('stable submission key uses owned source identity, region, user and draft n
   assert.match(key, /asset-99/);
   assert.match(key, /0\.1,0\.7,0\.8,0\.25/);
   assert.match(key, /draft-123/);
+  assert.match(key, /batch-1-result-0/);
   assert.doesNotMatch(key, /accessKey|signed-secret|bearer-never-include/);
   assert.equal(buildSubtitleRemovalSubmissionKey(input), key);
   assert.notEqual(buildSubtitleRemovalSubmissionKey({ ...input, draftNonce: 'draft-next' }), key);
+  assert.notEqual(buildSubtitleRemovalSubmissionKey({
+    ...input,
+    batchIndex: 1,
+    shellResultId: 'batch-1-result-1',
+  }), key);
 });
 
 test('source pathname is used when an explicit managed asset id is unavailable', () => {

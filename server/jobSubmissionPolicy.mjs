@@ -115,6 +115,7 @@ export const resolveJobSubmissionPolicy = ({
   submissionOperation = 'create',
   subtitleRemovalEnabled = false,
   subtitleRemovalConfigured = false,
+  subtitleRemovalBatchMaxItems = 10,
 } = {}) => {
   const normalizedModule = normalizePolicyMarker(module);
   const normalizedTaskType = String(taskType || '').trim();
@@ -167,6 +168,27 @@ export const resolveJobSubmissionPolicy = ({
       '去字幕功能暂未开放，请联系管理员。',
       503,
     );
+  }
+
+  if (normalizedTaskType === 'subtitle_remove_video' && submissionOperation === 'create') {
+    const batchCount = Number(payload?.batchCount);
+    const batchIndex = Number(payload?.batchIndex);
+    const configuredMax = Number.parseInt(String(subtitleRemovalBatchMaxItems || ''), 10);
+    const batchMaxItems = Number.isFinite(configuredMax) && configuredMax > 0 ? configuredMax : 10;
+    if (
+      !Number.isInteger(batchCount)
+      || batchCount < 1
+      || batchCount > batchMaxItems
+      || !Number.isInteger(batchIndex)
+      || batchIndex < 0
+      || batchIndex >= batchCount
+    ) {
+      throw createPolicyError(
+        'subtitle_batch_invalid',
+        `去字幕批次参数无效，单批最多支持 ${batchMaxItems} 个视频。`,
+        400,
+      );
+    }
   }
 
   const isVideoStoryboard = normalizedModule === 'video'

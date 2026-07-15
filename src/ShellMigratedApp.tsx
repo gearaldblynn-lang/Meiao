@@ -135,6 +135,7 @@ import {
 } from './shell/modules/Retouch/productRestoreUi.mjs';
 import { getMediaBudget, validateMediaQueueSelection } from './utils/mediaTrimRules.mjs';
 import { buildSubtitleRemovalJobRequest } from './services/subtitleRemovalClient';
+import { mapWithSubtitleConcurrency } from './utils/subtitleRemovalBatch.mjs';
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -226,6 +227,8 @@ export interface GeneratedResult {
   taskId?: string;
   backendJobId?: string;
   batchIndex?: number;
+  batchId?: string;
+  batchCount?: number;
   targetMaterialId?: string;
   analysisJobId?: string;
   clientSubmissionKey?: string;
@@ -3418,11 +3421,12 @@ const AppContent: React.FC<{
     return queuedWrite;
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]) as PersistProjectToSharedState;
 
-  const handleSubtitleRemovalSubmit = useCallback(async (input: {
+  const handleSubtitleRemovalSubmit = useCallback(async (inputs: Array<{
+    clientItemId: string;
     draft: SubtitleRemovalSourceDraft;
     subtitleRegionNormalized: SubtitleRemovalRegion;
     subtitleRegionPixels: SubtitleRemovalPixels;
-  }) => {
+  }>) => {
     if (subtitleRemovalSubmitLockRef.current) {
       throw new Error('去字幕任务正在提交，请等待当前请求完成');
     }
@@ -3430,36 +3434,48 @@ const AppContent: React.FC<{
     if (!systemConfig?.featureRollouts?.subtitleRemoval || !systemConfig?.providers?.goldenSubtitle?.configured) {
       throw new Error('去字幕功能暂未开放，请联系管理员');
     }
+    if (inputs.length === 0) return [];
+    const batchMaxItems = systemConfig?.subtitleRemoval?.batchMaxItems || 10;
+    if (inputs.length > batchMaxItems) {
+      throw new Error(`单批最多支持 ${batchMaxItems} 个视频`);
+    }
 
     subtitleRemovalSubmitLockRef.current = true;
     setSubtitleRemovalSubmitting(true);
     const createdAt = Date.now();
     const shellProjectId = `subtitle-removal-${createdAt}-${Math.random().toString(36).slice(2, 8)}`;
-    const shellResultId = `${shellProjectId}-result`;
     const shellProjectName = reserveShortProjectName();
-    const subtitleRemovalJobRequest = buildSubtitleRemovalJobRequest({
-      userId: currentUser.id,
-      sourceUrl: input.draft.sourceUrl,
-      sourceAssetId: input.draft.assetId,
-      sourceProjectId: input.draft.sourceProjectId,
-      sourceResultId: input.draft.sourceResultId,
-      shellProjectId,
-      shellProjectName,
-      draftNonce: input.draft.draftNonce,
-      subtitleRegionNormalized: input.subtitleRegionNormalized,
-    });
 
     try {
-      // Durable job creation is the commit point. Do not show a successful placeholder before it returns.
-      const createdJob = await createInternalJob(subtitleRemovalJobRequest);
-      const subtitleRemovalProject: Project = {
-        id: shellProjectId,
-        name: shellProjectName,
-        module: AppModuleObj.VIDEO,
-        status: 'generating',
-        createdAt,
-        createdAtPrecise: true,
-        results: [{
+      const settlements = await mapWithSubtitleConcurrency(
+        inputs,
+        systemConfig?.subtitleRemoval?.batchSubmitConcurrency || 2,
+        async (input, batchIndex) => {
+          const shellResultId = `${shellProjectId}-result-${batchIndex}`;
+          const subtitleRemovalJobRequest = buildSubtitleRemovalJobRequest({
+            userId: currentUser.id,
+            sourceUrl: input.draft.sourceUrl,
+            sourceAssetId: input.draft.assetId,
+            sourceProjectId: input.draft.sourceProjectId,
+            sourceResultId: input.draft.sourceResultId,
+            shellProjectId,
+            shellProjectName,
+            batchId: shellProjectId,
+            batchIndex,
+            batchCount: inputs.length,
+            shellResultId,
+            draftNonce: input.draft.draftNonce,
+            subtitleRegionNormalized: input.subtitleRegionNormalized,
+          });
+          // Durable job creation is the commit point. Do not show a successful placeholder before it returns.
+          const createdJob = await createInternalJob(subtitleRemovalJobRequest);
+          return { createdJob, subtitleRemovalJobRequest, shellResultId };
+        },
+      );
+      const batchResults: GeneratedResult[] = settlements.map((settlement, batchIndex) => {
+        const input = inputs[batchIndex];
+        const shellResultId = `${shellProjectId}-result-${batchIndex}`;
+        const commonResult: GeneratedResult = {
           id: shellResultId,
           imageUrl: '',
           videoUrl: '',
@@ -3467,24 +3483,51 @@ const AppContent: React.FC<{
           prompt: '去除选定区域内的视频字幕',
           model: 'Golden 去字幕',
           aspectRatio: 'auto',
-          status: 'generating',
+          status: settlement.status === 'fulfilled' ? 'generating' : 'error',
           createdAt,
           module: AppModuleObj.VIDEO,
           subFeature: 'subtitle_removal',
           sourceUrl: input.draft.sourceUrl,
+          sourceProjectId: input.draft.sourceProjectId,
+          sourceResultId: input.draft.sourceResultId,
           fileName: input.draft.fileName,
           originalWidth: input.draft.width,
           originalHeight: input.draft.height,
-          backendJobId: createdJob.job.id,
-          clientSubmissionKey: String(subtitleRemovalJobRequest.payload.clientSubmissionKey || ''),
+          batchId: shellProjectId,
+          batchIndex,
+          batchCount: inputs.length,
           subtitleRegionNormalized: input.subtitleRegionNormalized,
           subtitleRegionPixels: input.subtitleRegionPixels,
-        }],
-        taskCount: 1,
+        };
+        if (settlement.status === 'fulfilled') {
+          return {
+            ...commonResult,
+            backendJobId: settlement.value.createdJob.job.id,
+            clientSubmissionKey: String(settlement.value.subtitleRemovalJobRequest.payload.clientSubmissionKey || ''),
+          };
+        }
+        return {
+          ...commonResult,
+          error: getRuntimeErrorMessage(settlement.reason, '去字幕任务提交失败'),
+        };
+      });
+      const createdResults = batchResults.filter((result) => result.status === 'generating');
+      const failedResults = batchResults.filter((result) => result.status === 'error');
+      const subtitleRemovalProject: Project = {
+        id: shellProjectId,
+        name: shellProjectName,
+        module: AppModuleObj.VIDEO,
+        status: createdResults.length > 0 ? 'generating' : 'error',
+        createdAt,
+        ...(createdResults.length === 0 ? { completedAt: Date.now() } : {}),
+        createdAtPrecise: true,
+        results: batchResults,
+        taskCount: inputs.length,
         completedCount: 0,
         subFeature: 'subtitle_removal',
         sourceType: 'job',
-        backendJobId: createdJob.job.id,
+        backendJobId: createdResults[0]?.backendJobId,
+        ...(createdResults.length === 0 ? { error: '批次内所有任务均未创建成功' } : {}),
       };
       setProjects((previousProjects) => {
         const nextProjects = [subtitleRemovalProject, ...previousProjects.filter((project) => project.id !== shellProjectId)];
@@ -3492,57 +3535,30 @@ const AppContent: React.FC<{
         return nextProjects;
       });
       void persistSyncedProjectsToSharedState([subtitleRemovalProject]);
-      setSubtitleRemovalDraft(null);
-      addToast('去字幕任务已提交，可以离开当前页面', 'success');
-    } catch (error) {
-      const message = getRuntimeErrorMessage(error, '去字幕任务提交失败');
-      const failedSubtitleRemovalProject: Project = {
-        id: shellProjectId,
-        name: shellProjectName,
-        module: AppModuleObj.VIDEO,
-        status: 'error',
-        createdAt,
-        completedAt: Date.now(),
-        createdAtPrecise: true,
-        results: [{
-          id: shellResultId,
-          imageUrl: '',
-          videoUrl: '',
-          mediaType: 'video',
-          prompt: '去除选定区域内的视频字幕',
-          model: 'Golden 去字幕',
-          aspectRatio: 'auto',
-          status: 'error',
-          createdAt,
-          module: AppModuleObj.VIDEO,
-          subFeature: 'subtitle_removal',
-          sourceUrl: input.draft.sourceUrl,
-          fileName: input.draft.fileName,
-          originalWidth: input.draft.width,
-          originalHeight: input.draft.height,
-          error: message,
-          subtitleRegionNormalized: input.subtitleRegionNormalized,
-          subtitleRegionPixels: input.subtitleRegionPixels,
-        }],
-        taskCount: 1,
-        completedCount: 0,
-        subFeature: 'subtitle_removal',
-        sourceType: 'job',
-        error: message,
-      };
-      setProjects((previousProjects) => {
-        const nextProjects = [failedSubtitleRemovalProject, ...previousProjects.filter((project) => project.id !== shellProjectId)];
-        projectsRef.current = nextProjects;
-        return nextProjects;
+      failedResults.forEach((result) => {
+        logShellError('subtitle_removal_submit', new Error(result.error || '去字幕任务提交失败'), {
+          shellProjectId,
+          shellResultId: result.id,
+          batchIndex: result.batchIndex,
+        }, '去字幕任务提交失败');
       });
-      void persistSyncedProjectsToSharedState([failedSubtitleRemovalProject]);
-      logShellError('subtitle_removal_submit', error, { shellProjectId }, '去字幕任务提交失败');
-      throw error;
+      addToast(
+        failedResults.length > 0
+          ? `已提交 ${createdResults.length} 个视频，${failedResults.length} 个创建失败并保留在任务栏`
+          : `已提交 ${createdResults.length} 个去字幕视频，可以离开当前页面`,
+        failedResults.length > 0 ? 'warning' : 'success',
+      );
+      return inputs.map((input, batchIndex) => {
+        const result = batchResults[batchIndex];
+        return result.status === 'generating'
+          ? { clientItemId: input.clientItemId, ok: true }
+          : { clientItemId: input.clientItemId, ok: false, error: result.error || '去字幕任务提交失败' };
+      });
     } finally {
       subtitleRemovalSubmitLockRef.current = false;
       setSubtitleRemovalSubmitting(false);
     }
-  }, [addToast, currentUser?.id, logShellError, persistSyncedProjectsToSharedState, reserveShortProjectName, systemConfig?.featureRollouts?.subtitleRemoval, systemConfig?.providers?.goldenSubtitle?.configured]);
+  }, [addToast, currentUser?.id, logShellError, persistSyncedProjectsToSharedState, reserveShortProjectName, systemConfig?.featureRollouts?.subtitleRemoval, systemConfig?.providers?.goldenSubtitle?.configured, systemConfig?.subtitleRemoval?.batchMaxItems, systemConfig?.subtitleRemoval?.batchSubmitConcurrency]);
 
   const handleRemoveVideoSubtitles = useCallback(async (projectId: string, resultId: string) => {
     if (subtitleRemovalEntryLockRef.current) {
@@ -10724,6 +10740,7 @@ const AppContent: React.FC<{
           onSubtitleRemovalSubmit={handleSubtitleRemovalSubmit}
           subtitleRemovalSubmitting={subtitleRemovalSubmitting}
           subtitleRemovalFeatureAvailable={Boolean(systemConfig?.featureRollouts?.subtitleRemoval && systemConfig?.providers?.goldenSubtitle?.configured)}
+          subtitleRemovalBatchLimits={systemConfig?.subtitleRemoval}
         />;
       case AppModuleObj.XHS_COVER:
         return <XhsCoverModule

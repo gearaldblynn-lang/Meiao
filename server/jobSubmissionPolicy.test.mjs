@@ -62,7 +62,11 @@ test('video permission and create retry policy covers every video task type', ()
           ? 'golden_subtitle'
         : 'kie';
     const featureOptions = taskType === 'subtitle_remove_video'
-      ? { subtitleRemovalEnabled: true, subtitleRemovalConfigured: true }
+      ? {
+          subtitleRemovalEnabled: true,
+          subtitleRemovalConfigured: true,
+          payload: { batchCount: 1, batchIndex: 0 },
+        }
       : {};
     assert.throws(
       () => resolveJobSubmissionPolicy({ taskType, provider, hasVideoPermission: false, ...featureOptions }),
@@ -80,7 +84,7 @@ test('subtitle removal is provider-bound, gated for new work, and recoverable by
     module: 'video',
     taskType: 'subtitle_remove_video',
     provider: 'golden_subtitle',
-    payload: { subFeature: 'subtitle_removal' },
+    payload: { subFeature: 'subtitle_removal', batchCount: 1, batchIndex: 0 },
     hasVideoPermission: true,
   };
   const policy = resolveJobSubmissionPolicy({
@@ -114,6 +118,39 @@ test('subtitle removal is provider-bound, gated for new work, and recoverable by
     subtitleRemovalEnabled: false,
     subtitleRemovalConfigured: false,
   }));
+});
+
+test('subtitle removal batch identity is validated at the authoritative job boundary', () => {
+  const input = {
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    payload: {
+      subFeature: 'subtitle_removal',
+      batchId: 'batch-1',
+      batchIndex: 1,
+      batchCount: 3,
+      shellResultId: 'batch-1-result-1',
+    },
+    hasVideoPermission: true,
+    subtitleRemovalEnabled: true,
+    subtitleRemovalConfigured: true,
+    subtitleRemovalBatchMaxItems: 10,
+  };
+
+  assert.doesNotThrow(() => resolveJobSubmissionPolicy(input));
+  for (const payload of [
+    { ...input.payload, batchCount: 2.5 },
+    { ...input.payload, batchCount: 11 },
+    { ...input.payload, batchIndex: -1 },
+    { ...input.payload, batchIndex: 3 },
+    { ...input.payload, batchIndex: 0.5 },
+  ]) {
+    assert.throws(
+      () => resolveJobSubmissionPolicy({ ...input, payload }),
+      (error) => error?.code === 'subtitle_batch_invalid' && error?.statusCode === 400,
+    );
+  }
 });
 
 test('MaxForAI video jobs are provider-bound, zero-retry and recoverable by task id', () => {
