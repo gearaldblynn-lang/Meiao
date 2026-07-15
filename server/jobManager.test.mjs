@@ -1350,6 +1350,37 @@ test('reconcileStaleSubmittedRunningMysqlJobs requeues old submitted running job
   assert.match(reconciled[0].errorMessage, /已提交上游/);
 });
 
+test('subtitle removal recovery requeues only jobs with a checkpointed provider task id', () => {
+  const referenceTime = 20_000;
+  const [submitted] = reconcileStaleSubmittedRunningMysqlJobs([{
+    id: 'subtitle-submitted',
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    status: 'running',
+    providerTaskId: 'golden-1',
+    createdAt: 1_000,
+    updatedAt: 1_000,
+    startedAt: 1_000,
+  }], referenceTime, 5_000);
+  const [providerless] = reconcileRestartedMysqlJobs([{
+    id: 'subtitle-providerless',
+    module: 'video',
+    taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
+    status: 'running',
+    providerTaskId: '',
+    createdAt: 1_000,
+    updatedAt: 1_000,
+    startedAt: 1_000,
+  }], referenceTime);
+
+  assert.equal(submitted.status, 'retry_waiting');
+  assert.equal(submitted.providerTaskId, 'golden-1');
+  assert.equal(providerless.status, 'failed');
+  assert.equal(providerless.errorCode, 'provider_submission_unknown');
+});
+
 test('reconcileStaleSubmittedRunningMysqlJobs fails non-queryable chat ids without retrying', () => {
   const [reconciled] = reconcileStaleSubmittedRunningMysqlJobs([{
     id: 'stale-storyboard-chat',

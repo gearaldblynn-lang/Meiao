@@ -153,14 +153,14 @@ test('local temporal engine starts a real worker and does not also trigger the i
   assert.match(serverSource, /if \(!shouldUseTemporalForLocalExecution\(\)\) \{[\s\S]*localJobWorker\?\.trigger\?\.\(\)/);
 });
 
-test('maxforai temporal workflows use a single activity attempt for paid submissions', () => {
+test('paid non-idempotent providers use a single temporal activity attempt', () => {
   assert.match(
     temporalWorkflowSource,
     /const singleAttemptActivities = proxyActivities\(\{[\s\S]*?retry: \{[\s\S]*?maximumAttempts: 1[\s\S]*?\}\s*,?\s*\}\)/,
   );
   assert.match(
     temporalWorkflowSource,
-    /String\(input\?\.provider \|\| ''\) === 'maxforai'[\s\S]*?singleAttemptActivities/,
+    /const SINGLE_ATTEMPT_PROVIDERS = new Set\(\['maxforai', 'golden_subtitle'\]\)[\s\S]*?SINGLE_ATTEMPT_PROVIDERS\.has\(String\(input\?\.provider \|\| ''\)\)[\s\S]*?singleAttemptActivities/,
   );
 });
 

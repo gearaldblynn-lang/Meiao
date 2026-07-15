@@ -190,6 +190,14 @@ test('all MySQL asset persistence paths hold the owner lock and recheck the acco
   assert.match(mediaTranscode, /withLocalManagedAssetUserLock\(userId[\s\S]*owner\.status !== 'active'/);
 });
 
+test('remote video job results are persisted before every worker records completion', () => {
+  const jobOutput = source.match(/const persistJobOutputAssetsIfEnabled = async[\s\S]*?const persistRuntimeRemoteAssetIfEnabled/)?.[0] || '';
+  assert.match(jobOutput, /persistRemoteField\('videoUrl', 'video', `\$\{job\.taskType \|\| 'result'\}\.mp4`\)/);
+
+  const workerPersistenceCalls = source.match(/return persistJobOutputAssetsIfEnabled\(job, output\)/g) || [];
+  assert.ok(workerPersistenceCalls.length >= 4, 'all MySQL and local Temporal/classic workers persist video outputs');
+});
+
 test('account status transitions share the owner lock with asset persistence', () => {
   const mysqlPatchStart = source.indexOf("if (userDetailMatch && req.method === 'PATCH')");
   const mysqlPatchEnd = source.indexOf("if (userDetailMatch && req.method === 'DELETE')", mysqlPatchStart);

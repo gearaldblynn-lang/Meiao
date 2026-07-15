@@ -17,6 +17,7 @@ const singleAttemptActivities = proxyActivities({
     maximumAttempts: 1,
   },
 });
+const SINGLE_ATTEMPT_PROVIDERS = new Set(['maxforai', 'golden_subtitle']);
 
 export async function meiaoTaskWorkflow(input) {
   if (input?.executionMode !== 'execute') {
@@ -33,7 +34,7 @@ export async function meiaoTaskWorkflow(input) {
     workflowId: info.workflowId,
     runId: info.runId,
   };
-  const activities = String(input?.provider || '') === 'maxforai'
+  const activities = SINGLE_ATTEMPT_PROVIDERS.has(String(input?.provider || ''))
     ? singleAttemptActivities
     : defaultActivities;
   const executeJobAttempt = input?.ledger === 'mysql'

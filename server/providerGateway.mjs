@@ -35,6 +35,7 @@ import {
 } from './providerKieImage.mjs';
 import { runMaxForAiImageJob } from './providerMaxForAiImage.mjs';
 import { runMaxForAiVideoJob } from './providerMaxForAiVideo.mjs';
+import { runSubtitleRemovalJob } from './providerSubtitleRemoval.mjs';
 import { isMaxForAiImageModel } from '../src/utils/maxforaiImageModels.mjs';
 import { withKieAssetUploadSlot } from './providerAssetUploadLimiter.mjs';
 import {
@@ -3028,6 +3029,14 @@ export const executeProviderJob = async (job, env, signal, options = {}) => {
           onProviderTaskId: options.onProviderTaskId,
           assetTransferDeps: options.assetTransferDeps,
         },
+      });
+    case 'subtitle_remove_video':
+      return runSubtitleRemovalJob({
+        job,
+        env,
+        signal,
+        onProviderTaskId: options.onProviderTaskId,
+        deps: options.assetTransferDeps,
       });
     case 'kie_video':
       if (job.providerTaskId) {
