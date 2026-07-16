@@ -26,7 +26,7 @@ const baseEnv = {
   MAXFORAI_VIDEO_BASE_URL: 'https://max.test/v1',
 };
 
-test('builds the exact sora-v9-pro create body', () => {
+test('builds the exact seedance2.0pro-720 create body', () => {
   assert.deepEqual(buildMaxForAiVideoRequest({
     payload: { ...basePayload, seconds: '4' },
     preparedMedia: {
@@ -35,7 +35,7 @@ test('builds the exact sora-v9-pro create body', () => {
       audios: ['https://temp.test/a'],
     },
   }), {
-    model: 'sora-v9-pro',
+    model: 'seedance2.0pro-720',
     prompt: '海边日落',
     seconds: 4,
     aspect_ratio: '16:9',
@@ -47,7 +47,7 @@ test('builds the exact sora-v9-pro create body', () => {
 
 test('text-only request omits every media array', () => {
   assert.deepEqual(buildMaxForAiVideoRequest({ payload: basePayload }), {
-    model: 'sora-v9-pro',
+    model: 'seedance2.0pro-720',
     prompt: '海边日落',
     seconds: 4,
     aspect_ratio: '16:9',
@@ -97,7 +97,7 @@ test('checkpoints a new task before polling and returns result_url', async () =>
   ]);
   assert.equal(output.providerTaskId, 'video_123');
   assert.equal(output.result.videoUrl, 'https://cdn.test/final.mp4');
-  assert.equal(output.result.providerModel, 'sora-v9-pro');
+  assert.equal(output.result.providerModel, 'seedance2.0pro-720');
   assert.deepEqual(paidCreateRetryDecision, { idempotent: false, maxRetries: 0 });
 });
 

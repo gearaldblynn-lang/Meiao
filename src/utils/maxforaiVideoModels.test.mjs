@@ -16,7 +16,7 @@ test('defines the MaxForAI video model without exposing upstream identity as dis
   assert.deepEqual(MAXFORAI_VIDEO_MODEL, {
     id: 'maxforai-sora-v9-pro',
     label: 'Seedance 2.0 Pro 特价',
-    upstreamModel: 'sora-v9-pro',
+    upstreamModel: 'seedance2.0pro-720',
     provider: 'maxforai',
     taskType: 'maxforai_video',
     displayPriceCnyPerSecond: 0.5,
@@ -34,6 +34,7 @@ test('defines the MaxForAI video model without exposing upstream identity as dis
   });
   assert.equal(isMaxForAiVideoModel('maxforai-sora-v9-pro'), true);
   assert.equal(isMaxForAiVideoModel('sora-v9-pro'), false);
+  assert.equal(isMaxForAiVideoModel('seedance2.0pro-720'), false);
 });
 
 test('normalizes seconds, ratios and display totals conservatively', () => {

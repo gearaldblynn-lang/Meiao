@@ -1,7 +1,7 @@
 export const MAXFORAI_VIDEO_MODEL = Object.freeze({
   id: 'maxforai-sora-v9-pro',
   label: 'Seedance 2.0 Pro 特价',
-  upstreamModel: 'sora-v9-pro',
+  upstreamModel: 'seedance2.0pro-720',
   provider: 'maxforai',
   taskType: 'maxforai_video',
   displayPriceCnyPerSecond: 0.5,
