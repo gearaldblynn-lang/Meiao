@@ -620,7 +620,7 @@ test('cloud deploy keeps old hashed assets and missing chunks do not fall back t
 test('shell hydration keeps backend jobs out of the refresh critical path', () => {
   const app = read('../ShellMigratedApp.tsx');
   const hydrateBody = app.match(/const hydrateShellData = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[[^\]]*applyShellSnapshot[^\]]*\]\);/)?.[1] || '';
-  const jobHydrateBody = app.match(/const hydrateShellJobs = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/)?.[1] || '';
+  const jobHydrateBody = app.match(/const runHydrateShellJobs = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/)?.[1] || '';
   const hydrateHappyPath = hydrateBody.split('\n    } catch {')[0] || hydrateBody;
 
   assert.match(app, /applyShellSnapshot/);
@@ -647,11 +647,11 @@ test('shell hydration keeps backend jobs out of the refresh critical path', () =
 
 test('shell job hydration only refreshes active tasks and does not overwrite projects', () => {
   const app = read('../ShellMigratedApp.tsx');
-  const jobHydrateBody = app.match(/const hydrateShellJobs = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/)?.[1] || '';
+  const jobHydrateBody = app.match(/const runHydrateShellJobs = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/)?.[1] || '';
 
   assert.match(jobHydrateBody, /fetchInternalJobs\(200\)/);
-  assert.match(jobHydrateBody, /setTasks\(\(prev\) => mergeShellTasks/);
-  assert.match(jobHydrateBody, /persistSyncedProjectsToSharedState\(syncedProjectsToPersist\)/);
+  assert.match(jobHydrateBody, /setTasks\(\(prev\) => \{[\s\S]*?mergeShellTasks/);
+  assert.match(jobHydrateBody, /persistSyncedProjectsToSharedState\(syncedProjectsToPersist, isHydrationCurrent\)/);
   assert.match(app, /shouldPersistSyncedProjectFromJobs/);
   assert.match(read('../utils/syncedProjectPersistence.ts'), /getProjectErrorResultCount/);
   assert.match(read('../utils/syncedProjectPersistence.ts'), /project\.status === 'error'[\s\S]*persistedProject\.status === 'planning'[\s\S]*persistedProject\.status === 'generating'/);
@@ -695,7 +695,7 @@ test('video generation permission is gated only on the generation subfeature', (
 test('shell refresh restores current workspace and keeps in-flight project cards', () => {
   const app = read('../ShellMigratedApp.tsx');
   const applyShellSnapshotBody = app.match(/const applyShellSnapshot = useCallback\(async \(loadedState:[\s\S]*?=> \{([\s\S]*?)\n  \}, \[[^\]]*restoreLocalMaterialPreviews[^\]]*shellLocalScopeUserId[^\]]*\]\);/)?.[1] || '';
-  const jobHydrateBody = app.match(/const hydrateShellJobs = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/)?.[1] || '';
+  const jobHydrateBody = app.match(/const runHydrateShellJobs = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/)?.[1] || '';
 
   assert.match(app, /SHELL_UI_STATE_KEY/);
   assert.match(app, /readShellUiState/);
@@ -725,9 +725,9 @@ test('shell refresh restores current workspace and keeps in-flight project cards
   assert.match(applyShellSnapshotBody, /!nextProjectIds\.has\(String\(project\.id \|\| ''\)\.trim\(\)\)/);
   assert.match(applyShellSnapshotBody, /pruneShellRuntimeSnapshotForDeletion\(\s*\{ projects: preservedJobProjects, tasks: \[\] \}/);
   assert.match(jobHydrateBody, /pruneShellRuntimeSnapshotForDeletion\([\s\S]*loadShellRuntimeSnapshot\(shellLocalScopeUserId\)/);
-  assert.match(app, /const hasActiveBackendProject = projects\.some/);
-  assert.match(app, /\(project\.results \|\| \[\]\)\.some\(\(result\) => Boolean\(result\.backendJobId \|\| result\.taskId\)\)/);
-  assert.match(app, /window\.setTimeout\(\(\) => \{\s*void hydrateShellJobs\(\);/);
+  assert.match(app, /startShellJobSync\(\{/);
+  assert.match(app, /run: hydrateShellJobs/);
+  assert.doesNotMatch(app, /hasActiveBackendTask|hasActiveBackendProject/);
   assert.doesNotMatch(jobHydrateBody, /setTasks\(snapshot\.tasks as Task\[\]\)/);
 });
 
@@ -737,7 +737,7 @@ test('shell resets local workspace memory when the signed-in user scope changes'
   assert.match(app, /previousShellLocalScopeUserIdRef/);
   assert.match(app, /resetShellWorkspaceForUser/);
   assert.match(app, /hydrationScheduledRef\.current = false/);
-  assert.match(app, /jobsHydrationScheduledRef\.current = false/);
+  assert.match(app, /jobsHydrationScopeRef\.current\?\.invalidate\(\)/);
   assert.match(app, /const runtimeSnapshot = pruneShellRuntimeSnapshotForDeletion\(loadShellRuntimeSnapshot\(userId\), draftSnapshot\)/);
   assert.match(app, /restoredRuntimeProjectIdsRef\.current = new Set\(runtimeSnapshot\.projects\.map\(\(project\) => project\.id\)\)/);
   assert.match(app, /setProjects\(runtimeSnapshot\.projects\)/);
@@ -3382,7 +3382,7 @@ test('completed one-click planning snapshots are not kept as active runtime jobs
   assert.match(shellApp, /const isOneClickPlanReadyProject = \(project: Project\) =>/);
   assert.match(shellApp, /project\.status === 'planning'[\s\S]*project\.plans\.length > 0/);
   assert.match(shellApp, /project\.status === 'planning' && !isOneClickPlanReadyProject\(project\)/);
-  assert.match(shellApp, /if \(isOneClickPlanReadyProject\(project\)\) return false;/);
+  assert.doesNotMatch(shellApp, /hasActiveBackendProject/);
 });
 
 test('planning task id chips do not display internal backend job ids', () => {

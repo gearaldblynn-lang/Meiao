@@ -36,7 +36,7 @@ test('all storyboard planning and board submits carry stable project metadata', 
 });
 
 test('job hydration merges recovered storyboard source data and exposes cancel ids', () => {
-  const hydrationBlock = shellSource.match(/const hydrateShellJobs = useCallback\(async \(\) => \{[\s\S]*?traceStartup\('hydrate-shell-jobs:end'\)/)?.[0] || '';
+  const hydrationBlock = shellSource.match(/const runHydrateShellJobs = useCallback\(async \(\) => \{[\s\S]*?traceStartup\('hydrate-shell-jobs:end'\)/)?.[0] || '';
 
   assert.match(hydrationBlock, /storyboardSourceProject/);
   assert.match(hydrationBlock, /mergeRecoveredStoryboardProjects/);
@@ -46,10 +46,11 @@ test('job hydration merges recovered storyboard source data and exposes cancel i
   assert.match(videoModuleSource, /planningJobId/);
 });
 
-test('storyboard confirmation state does not keep backend polling active', () => {
-  const activeProjectBlock = shellSource.match(/const hasActiveBackendProject = projects\.some\(\(project\) => \{[\s\S]*?\n    \}\);/)?.[0] || '';
+test('storyboard confirmation state stays idle while shared job hydration remains active', () => {
+  const liveSyncEffect = shellSource.match(/useEffect\(\(\) => \{[\s\S]*?startShellJobSync\([\s\S]*?\n  \}, \[[^\]]*pageMode[^\]]*\]\);/)?.[0] || '';
 
-  assert.match(activeProjectBlock, /storyboardProjectStatus === 'awaiting_image_confirmation'/);
+  assert.match(liveSyncEffect, /run: hydrateShellJobs/);
+  assert.doesNotMatch(liveSyncEffect, /storyboardProjectStatus|hasActiveBackendProject/);
   assert.match(shellSource, /getResumableStoryboardBoard\(project\)/);
   assert.match(shellSource, /void handleConfirmStoryboardImaging\(resumableProject\.id\)/);
 });

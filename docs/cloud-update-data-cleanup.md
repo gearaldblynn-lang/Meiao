@@ -89,4 +89,6 @@ ORDER BY u.created_at ASC;
 4. 排序验收同时覆盖两种对象：已水合项目的 `createdAtPrecise=true`，以及刚创建、尚未水合但已有真实毫秒 `createdAt` 的项目。显式 `createdAtPrecise=false` 的年缺失历史数据仍应下沉。
 5. 发布后不仅看 health；至少确认目标账号 `app_states.updated_at` 继续前进、成功图片落入 `shellProjects.results`、真实失败保持 error，并用同一排序边界重放最新项目。
 
-本次修复的长期记录见 `CLAUDE.md` 根因 #67 和 `docs/agents/repeated-issues.md`；看板指纹为 `oneclick-state-local-asset-id-checkpoint-sort`。
+如果 state 与 job 都已是最新、把同一份数据交给 `buildShellDataSnapshot` 也能恢复完成卡，但用户当前页面仍停在生成中，故障已经越过 provider、job、adapter 和持久层，进入浏览器同步触发层。此时检查 `src/utils/shellJobSync.ts` 与 `ShellMigratedApp` 的统一生命周期同步：模块页应不依赖本地“活跃任务”判定而持续同步，`focus/pageshow/online/visibilitychange` 应立即触发，并发请求必须由 coalesced runner 串行。账号 scope 必须贯穿延迟 UI 与持久化写，终态历史 identity 不得因超出最近 jobs 窗口而周期单条补查。不要用手动刷新作为恢复方案。
+
+状态检查点/排序修复见 `CLAUDE.md` 根因 #67 和看板指纹 `oneclick-state-local-asset-id-checkpoint-sort`；“刷新才显示”的统一同步修复见根因 #68 与 `docs/agents/repeated-issues.md`，当前仍是 `not_deployed`。

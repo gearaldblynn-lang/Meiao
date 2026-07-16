@@ -182,6 +182,7 @@ npm run dev
 - `MEIAO_ASSET_X_ACCEL`：默认 `0`；生产 Nginx 配好 `/__meiao_stored_assets/` internal alias 后可设为 `1`，让托管素材通过 `X-Accel-Redirect` 直出。
 - `VITE_MEIAO_VIDEO_PLAYBACK_MIN_BUFFER_SECONDS`：默认 `3`；项目卡片视频点击播放前等待的最小预缓冲秒数。
 - `VITE_MEIAO_VIDEO_PLAYBACK_BUFFER_TIMEOUT_MS`：默认 `5000`；项目卡片视频预缓冲最长等待毫秒数，超时后继续播放。
+- `VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS`：默认 `10000`，下限 `1000` 毫秒；模块工作台周期读取耐久 job 并更新项目卡。页面重新可见、获得焦点、浏览器恢复网络时会立即同步，不等待下一次周期。该变量是前端构建期配置，修改后必须重新构建。
 
 数据库：
 - `MEIAO_DB_HOST`

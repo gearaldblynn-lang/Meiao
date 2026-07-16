@@ -43,7 +43,7 @@ type ShellResult = {
   prompt: string;
   model: string;
   aspectRatio: string;
-  status: 'completed' | 'generating' | 'error';
+  status: 'completed' | 'generating' | 'retry_waiting' | 'error';
   createdAt: number;
   module: AppModule;
   subFeature?: string;

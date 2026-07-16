@@ -392,6 +392,11 @@
   修复:素材所有权校验明确排除没有服务端读取语义的 `localAssetId`，`assetId/imageUrlAssetId/sourceAssetId` 等真实托管身份仍要求当前账号 active ownership。`shellDataAdapter` 从同一 `shellProjectId` 的成功策划 job 重建结构化项目种子，让 active/succeeded/failed 图片 job 在客户端检查点缺失时仍能恢复；无项目绑定的旧图片 job 继续不可见。排序边界对未显式标记精度的真实毫秒戳复用 `coerceCreatedAtMs` 推断 precise，显式 `createdAtPrecise=false` 的年缺失历史值仍下沉。
   如何避免:**安全校验不能只靠字段后缀猜身份语义；本地草稿 ID、provider ID、托管素材 ID 必须分层测试，并用真实大账号 state 做只读策略回放。耐久 job 已有 `shellProjectId/shellPlanId` 和兄弟策划记录时，恢复不得依赖可能在页面卸载或 4xx 中丢失的客户端占位。排序契约必须同时覆盖“持久化读边界”和“刚创建尚未水合”的项目对象。**
 
+- **#68 ✅ 本地已修、未部署(2026-07-15)· 上游任务成功但项目卡停止同步，只有手动刷新才显示结果**
+  根因:项目卡存在“双轮询”断层：功能内 `waitForInternalJob` 只跟踪当前页面提交；公共 `hydrateShellJobs` 又要求模块页内存里已经存在 pending/generating backend identity 才启动 10 秒轮询。页面挂起、网络中断、检查点丢失或功能内等待生命周期结束后，公共兜底可能因本地状态过旧而永久停掉；项目卡还缺少 focus/pageshow/online/visibility 恢复同步，并发 hydration 也没有单飞保护。生产真实 state + jobs 经 adapter 可立即恢复完成卡，证明断点不在 provider/job/解析，而在浏览器同步触发层。
+  修复:新增 `src/utils/shellJobSync.ts` 作为所有队列项目卡的共享协调器。模块工作台始终按 `VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS`（默认 10000ms、下限 1000ms）同步耐久 jobs，不再依赖本地 active 判定；回到前台、窗口聚焦、pageshow 和网络恢复时立即同步。所有入口共用 coalesced async runner，重叠触发折叠为一次尾随请求，首次失败也不会丢掉已排队尾随。账号切换、退出或离开模块时使 async scope 失效，UI updater 和延迟持久化 writer 在真正执行前重新校验，防止旧账号数据使用新 token 写入。最近 200 条以外的单条补查只针对本地仍为活跃态的内部 job，不扫描终态历史。一键主详、翻译、买家秀、图片升级/还原、万物替换、视频和小红书封面统一继承，Agent Center 仍是独立机制。
+  如何避免:**“刷新后能看到”不是实时同步验收。新增耐久 job 功能必须同时验证前台持续运行、后台恢复、断网恢复、占位未持久化、并发 hydration 和切账号；服务端真相同步不得以客户端是否还记得 active 为开关。发布前跑 `shellJobSync`、`shellJobLiveSyncBehavior`、全模块 `shellDataAdapter` 回归与生产构建，并明确标记 deployed/not_deployed。**
+
 - **#69 ✅ 本地已修、未部署(2026-07-16)· 产品还原分析被 provider 尾标误判失败，且整批共享提示词无法逐图寻址**
   根因:旧解析器直接对模型整串内容执行 `JSON.parse`，合法 JSON 后的 provider 已知尾标 `final_answer` 会导致整体失败；同时持久化合同只有一条 `sharedRestorationPrompt`，没有 target index 与稳定 material ID 的一一映射，fanout 无法证明每张付费图片任务使用了自身偏差对应的提示词。
   修复:V2 分析合同要求恰好 N 条连续唯一 `targetPrompts`；解析器只接受单 JSON、可选单层围栏和精确 `final_answer` 尾标，其余文字 fail closed。图片提交前把 index 映射到 `targetMaterialId` 并验证完全覆盖，每张任务只取自己的动态提示词，再套确定性的 RTCFE 身份与非产品保护层；V1 仅保留历史读取/重试兼容。
