@@ -196,6 +196,7 @@ test('executeProviderJob routes MaxForAI video through asset preparation, checkp
       return createJsonResponse({ url: 'https://temp.test/reference.mp4' });
     }
     if (requestUrl === 'https://maxforai.test/v1/videos' && init.method === 'POST') {
+      assert.equal(JSON.parse(String(init.body || '{}')).model, 'seedance2.0pro-720');
       return createJsonResponse({ task_id: 'video_gateway' });
     }
     if (requestUrl === 'https://maxforai.test/v1/videos/video_gateway') {
