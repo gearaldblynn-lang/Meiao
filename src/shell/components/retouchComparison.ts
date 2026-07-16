@@ -30,7 +30,76 @@ interface ImageDimensions {
   height: number;
 }
 
+export interface ComparisonPoint {
+  x: number;
+  y: number;
+}
+
+export interface ComparisonViewport {
+  width: number;
+  height: number;
+}
+
+export const MIN_COMPARISON_ZOOM = 1;
+export const MAX_COMPARISON_ZOOM = 4;
+export const COMPARISON_ZOOM_STEP = 0.25;
+
 const clampPercent = (value: number) => Math.min(100, Math.max(0, value));
+
+export const clampComparisonZoom = (value: number) => {
+  if (!Number.isFinite(value)) return MIN_COMPARISON_ZOOM;
+  return Math.min(MAX_COMPARISON_ZOOM, Math.max(MIN_COMPARISON_ZOOM, value));
+};
+
+export const getSteppedComparisonZoom = (
+  value: number,
+  direction: 'in' | 'out',
+  step = COMPARISON_ZOOM_STEP,
+) => {
+  const delta = direction === 'in' ? step : -step;
+  return clampComparisonZoom(Math.round((value + delta) * 100) / 100);
+};
+
+export const clampComparisonPan = (
+  pan: ComparisonPoint,
+  zoom: number,
+  viewport: ComparisonViewport,
+): ComparisonPoint => {
+  const safeZoom = clampComparisonZoom(zoom);
+  if (safeZoom <= MIN_COMPARISON_ZOOM) return { x: 0, y: 0 };
+
+  const maxX = Math.max(0, viewport.width) * (safeZoom - 1) / 2;
+  const maxY = Math.max(0, viewport.height) * (safeZoom - 1) / 2;
+
+  return {
+    x: Math.min(maxX, Math.max(-maxX, pan.x)),
+    y: Math.min(maxY, Math.max(-maxY, pan.y)),
+  };
+};
+
+export const getComparisonZoomPan = ({
+  currentZoom,
+  nextZoom,
+  currentPan,
+  focalPoint,
+  viewport,
+}: {
+  currentZoom: number;
+  nextZoom: number;
+  currentPan: ComparisonPoint;
+  focalPoint: ComparisonPoint;
+  viewport: ComparisonViewport;
+}): ComparisonPoint => {
+  const safeCurrentZoom = clampComparisonZoom(currentZoom);
+  const safeNextZoom = clampComparisonZoom(nextZoom);
+  if (safeNextZoom <= MIN_COMPARISON_ZOOM) return { x: 0, y: 0 };
+
+  const scaleRatio = safeNextZoom / safeCurrentZoom;
+  return clampComparisonPan({
+    x: focalPoint.x - (focalPoint.x - currentPan.x) * scaleRatio,
+    y: focalPoint.y - (focalPoint.y - currentPan.y) * scaleRatio,
+  }, safeNextZoom, viewport);
+};
 
 export const isRetouchComparisonScope = (module?: string, subFeature?: string) => (
   module === 'retouch'

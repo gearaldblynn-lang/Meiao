@@ -42,3 +42,27 @@ test('viewer renders only the active pair with contain sizing and touch-safe can
   assert.match(viewerSource, /touchAction: 'none'/);
   assert.doesNotMatch(viewerSource, /items\.map\(/);
 });
+
+test('viewer synchronizes zoom and pan across both comparison layers', () => {
+  const viewerSource = source();
+
+  assert.match(viewerSource, /zoomScale/);
+  assert.match(viewerSource, /panOffset/);
+  assert.match(viewerSource, /translate3d\(/);
+  assert.match(viewerSource, /scale\(/);
+  assert.match(viewerSource, /data-comparison-layer="original"/);
+  assert.match(viewerSource, /data-comparison-layer="result"/);
+});
+
+test('viewer exposes compact zoom controls, wheel zoom, panning and reset', () => {
+  const viewerSource = source();
+
+  assert.match(viewerSource, /aria-label="缩小对比图"/);
+  assert.match(viewerSource, /aria-label="放大对比图"/);
+  assert.match(viewerSource, /aria-label="重置缩放"/);
+  assert.match(viewerSource, /onWheel=/);
+  assert.match(viewerSource, /onDoubleClick=/);
+  assert.match(viewerSource, /interactionModeRef/);
+  assert.match(viewerSource, /event\.code === 'Space'/);
+  assert.match(viewerSource, /滚轮缩放/);
+});

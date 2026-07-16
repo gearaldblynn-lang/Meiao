@@ -1,10 +1,25 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, X } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  RotateCcw,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
 import {
   adjustComparisonDividerPercent,
+  clampComparisonPan,
+  clampComparisonZoom,
   getComparisonDividerPercent,
+  getComparisonZoomPan,
   getLoopedComparisonIndex,
+  getSteppedComparisonZoom,
   hasDifferentImageAspectRatio,
+  MAX_COMPARISON_ZOOM,
+  MIN_COMPARISON_ZOOM,
+  type ComparisonPoint,
   type RetouchComparisonItem,
 } from './retouchComparison';
 
@@ -22,6 +37,16 @@ interface ImageDimensions {
   height: number;
 }
 
+type PointerInteractionMode = 'divider' | 'pan' | null;
+
+interface PointerStart {
+  clientX: number;
+  clientY: number;
+  pan: ComparisonPoint;
+}
+
+const CENTERED_PAN: ComparisonPoint = { x: 0, y: 0 };
+
 const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
   open,
   items,
@@ -36,14 +61,65 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
   const [resultLoadFailed, setResultLoadFailed] = useState(false);
   const [originalDimensions, setOriginalDimensions] = useState<ImageDimensions | undefined>();
   const [resultDimensions, setResultDimensions] = useState<ImageDimensions | undefined>();
-  const draggingRef = useRef(false);
+  const [zoomScale, setZoomScale] = useState(MIN_COMPARISON_ZOOM);
+  const [panOffset, setPanOffset] = useState<ComparisonPoint>(CENTERED_PAN);
+  const [spacePressed, setSpacePressed] = useState(false);
+  const [isPanning, setIsPanning] = useState(false);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const zoomScaleRef = useRef(MIN_COMPARISON_ZOOM);
+  const panOffsetRef = useRef<ComparisonPoint>(CENTERED_PAN);
+  const spacePressedRef = useRef(false);
+  const interactionModeRef = useRef<PointerInteractionMode>(null);
+  const pointerStartRef = useRef<PointerStart | undefined>(undefined);
 
   const changeIndex = useCallback((delta: number) => {
     onIndexChange(getLoopedComparisonIndex(currentIndex, delta, items.length));
   }, [currentIndex, items.length, onIndexChange]);
 
-  useEffect(() => {
+  const resetComparisonView = useCallback(() => {
     setDividerPercent(50);
+    setZoomScale(MIN_COMPARISON_ZOOM);
+    setPanOffset(CENTERED_PAN);
+    setSpacePressed(false);
+    setIsPanning(false);
+    zoomScaleRef.current = MIN_COMPARISON_ZOOM;
+    panOffsetRef.current = CENTERED_PAN;
+    spacePressedRef.current = false;
+    interactionModeRef.current = null;
+    pointerStartRef.current = undefined;
+  }, []);
+
+  const setZoomAtFocalPoint = useCallback((requestedZoom: number, focalPoint: ComparisonPoint) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const nextZoom = clampComparisonZoom(requestedZoom);
+    const nextPan = getComparisonZoomPan({
+      currentZoom: zoomScaleRef.current,
+      nextZoom,
+      currentPan: panOffsetRef.current,
+      focalPoint,
+      viewport: { width: rect.width, height: rect.height },
+    });
+
+    zoomScaleRef.current = nextZoom;
+    panOffsetRef.current = nextPan;
+    setZoomScale(nextZoom);
+    setPanOffset(nextPan);
+  }, []);
+
+  const changeZoom = useCallback((direction: 'in' | 'out') => {
+    setZoomAtFocalPoint(
+      getSteppedComparisonZoom(zoomScaleRef.current, direction),
+      CENTERED_PAN,
+    );
+  }, [setZoomAtFocalPoint]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    resetComparisonView();
     setOriginalLoadFailed(false);
     setResultLoadFailed(false);
     setOriginalDimensions(
@@ -52,14 +128,21 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
         : undefined,
     );
     setResultDimensions(undefined);
-    draggingRef.current = false;
-  }, [item?.id, item?.originalHeight, item?.originalWidth]);
+  }, [item?.id, item?.originalHeight, item?.originalWidth, open, resetComparisonView]);
 
   useEffect(() => {
     if (!open) return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
+      if (event.code === 'Space') {
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        if (target?.closest('button, input, textarea, select, [contenteditable="true"]')) return;
+        event.preventDefault();
+        spacePressedRef.current = true;
+        setSpacePressed(true);
+        return;
+      }
       if (event.key === 'Escape') {
         event.preventDefault();
         onClose();
@@ -75,12 +158,43 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
       }
     };
 
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code !== 'Space') return;
+      spacePressedRef.current = false;
+      setSpacePressed(false);
+    };
+
+    const handleWindowBlur = () => {
+      spacePressedRef.current = false;
+      setSpacePressed(false);
+    };
+
     document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    document.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('blur', handleWindowBlur);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('blur', handleWindowBlur);
+    };
   }, [changeIndex, onClose, open]);
 
   const updateFromPointer = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.pointerType !== 'mouse' && !draggingRef.current) return;
+    if (interactionModeRef.current === 'pan') {
+      const pointerStart = pointerStartRef.current;
+      if (!pointerStart) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const nextPan = clampComparisonPan({
+        x: pointerStart.pan.x + event.clientX - pointerStart.clientX,
+        y: pointerStart.pan.y + event.clientY - pointerStart.clientY,
+      }, zoomScaleRef.current, { width: rect.width, height: rect.height });
+      panOffsetRef.current = nextPan;
+      setPanOffset(nextPan);
+      return;
+    }
+
+    if (spacePressedRef.current) return;
+    if (event.pointerType !== 'mouse' && interactionModeRef.current !== 'divider') return;
     setDividerPercent(getComparisonDividerPercent(
       event.clientX,
       event.currentTarget.getBoundingClientRect(),
@@ -88,10 +202,25 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
   };
 
   const finishPointerInteraction = (event: React.PointerEvent<HTMLDivElement>) => {
-    draggingRef.current = false;
+    interactionModeRef.current = null;
+    pointerStartRef.current = undefined;
+    setIsPanning(false);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+  };
+
+  const handleWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (event.deltaY === 0) return;
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    setZoomAtFocalPoint(
+      getSteppedComparisonZoom(zoomScaleRef.current, event.deltaY < 0 ? 'in' : 'out'),
+      {
+        x: event.clientX - rect.left - rect.width / 2,
+        y: event.clientY - rect.top - rect.height / 2,
+      },
+    );
   };
 
   if (!open || !item || items.length === 0) return null;
@@ -100,6 +229,8 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
     originalDimensions,
     resultDimensions,
   );
+  const imageTransform = `translate3d(${panOffset.x}px, ${panOffset.y}px, 0) scale(${zoomScale})`;
+  const canResetZoom = zoomScale !== MIN_COMPARISON_ZOOM || panOffset.x !== 0 || panOffset.y !== 0;
 
   return (
     <div
@@ -147,6 +278,50 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
           </div>
 
           <div className="flex items-center gap-2">
+            <div
+              role="group"
+              aria-label="对比图缩放控制"
+              className="flex h-9 items-center rounded-[18px] p-1"
+              style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+            >
+              <button
+                type="button"
+                aria-label="缩小对比图"
+                title="缩小（滚轮向下）"
+                disabled={zoomScale <= MIN_COMPARISON_ZOOM}
+                onClick={() => changeZoom('out')}
+                className="flex h-7 w-7 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ZoomOut size={15} />
+              </button>
+              <span
+                data-testid="retouch-comparison-zoom"
+                className="w-12 text-center text-[11px] font-semibold tabular-nums"
+              >
+                {Math.round(zoomScale * 100)}%
+              </span>
+              <button
+                type="button"
+                aria-label="放大对比图"
+                title="放大（滚轮向上）"
+                disabled={zoomScale >= MAX_COMPARISON_ZOOM}
+                onClick={() => changeZoom('in')}
+                className="flex h-7 w-7 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ZoomIn size={15} />
+              </button>
+              <button
+                type="button"
+                aria-label="重置缩放"
+                title="复位缩放与遮罩（也可双击画面）"
+                disabled={!canResetZoom && dividerPercent === 50}
+                onClick={resetComparisonView}
+                className="ml-0.5 flex h-7 w-7 items-center justify-center rounded-full border-l disabled:cursor-not-allowed disabled:opacity-40"
+                style={{ borderColor: 'var(--border-subtle)' }}
+              >
+                <RotateCcw size={14} />
+              </button>
+            </div>
             {onDownloadCurrent ? (
               <button
                 type="button"
@@ -172,26 +347,43 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
 
         <div className="relative min-h-0 flex-1 bg-slate-950 p-2 sm:p-4">
           <div
+            ref={canvasRef}
             data-testid="retouch-comparison-canvas"
-            className="relative h-full w-full cursor-col-resize select-none overflow-hidden rounded-[20px] bg-slate-900"
-            style={{ touchAction: 'none' }}
+            className="relative h-full w-full select-none overflow-hidden rounded-[20px] bg-slate-900"
+            style={{
+              touchAction: 'none',
+              cursor: isPanning ? 'grabbing' : (zoomScale > MIN_COMPARISON_ZOOM || spacePressed ? 'grab' : 'col-resize'),
+            }}
             onPointerDown={(event) => {
               if (event.pointerType === 'mouse' && event.button !== 0) return;
-              draggingRef.current = true;
+              const shouldPan = zoomScaleRef.current > MIN_COMPARISON_ZOOM || spacePressedRef.current;
+              interactionModeRef.current = shouldPan ? 'pan' : 'divider';
+              if (shouldPan) {
+                pointerStartRef.current = {
+                  clientX: event.clientX,
+                  clientY: event.clientY,
+                  pan: panOffsetRef.current,
+                };
+                setIsPanning(true);
+              }
               event.currentTarget.setPointerCapture(event.pointerId);
-              updateFromPointer(event);
+              if (!shouldPan) updateFromPointer(event);
             }}
             onPointerMove={updateFromPointer}
             onPointerUp={finishPointerInteraction}
             onPointerCancel={finishPointerInteraction}
+            onWheel={handleWheel}
+            onDoubleClick={resetComparisonView}
           >
             <div className="absolute inset-0 flex items-center justify-center">
               {item.originalUrl && !originalLoadFailed ? (
                 <img
+                  data-comparison-layer="original"
                   key={`original-${item.id}-${item.originalUrl}`}
                   src={item.originalUrl}
                   alt={`${item.title} 原图`}
                   className="pointer-events-none h-full w-full object-contain"
+                  style={{ transform: imageTransform, transformOrigin: 'center center', willChange: 'transform' }}
                   draggable={false}
                   onLoad={(event) => setOriginalDimensions({
                     width: event.currentTarget.naturalWidth,
@@ -213,10 +405,12 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
             >
               {!resultLoadFailed ? (
                 <img
+                  data-comparison-layer="result"
                   key={`result-${item.id}-${item.resultUrl}`}
                   src={item.resultUrl}
                   alt={`${item.title} 升级后`}
                   className="pointer-events-none h-full w-full object-contain"
+                  style={{ transform: imageTransform, transformOrigin: 'center center', willChange: 'transform' }}
                   draggable={false}
                   onLoad={(event) => setResultDimensions({
                     width: event.currentTarget.naturalWidth,
@@ -285,7 +479,7 @@ const RetouchComparisonViewer: React.FC<RetouchComparisonViewerProps> = ({
           className="shrink-0 border-t px-4 py-2.5 text-center text-[11px] sm:px-6"
           style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-tertiary)' }}
         >
-          移动鼠标或拖动中间分割线查看前后差异 · 方向键切换图片 · Esc 关闭
+          移动鼠标对比 · 滚轮缩放 · 放大后拖动画面 · 双击复位 · 方向键切图 · Esc 关闭
         </footer>
       </section>
     </div>

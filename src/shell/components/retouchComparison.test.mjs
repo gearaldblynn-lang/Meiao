@@ -4,8 +4,12 @@ import test from 'node:test';
 import {
   adjustComparisonDividerPercent,
   buildRetouchComparisonItems,
+  clampComparisonPan,
+  clampComparisonZoom,
   getComparisonDividerPercent,
+  getComparisonZoomPan,
   getLoopedComparisonIndex,
+  getSteppedComparisonZoom,
   hasDifferentImageAspectRatio,
   isRetouchComparisonScope,
 } from './retouchComparison.ts';
@@ -102,4 +106,47 @@ test('aspect comparison tolerates tiny measurement differences', () => {
     undefined,
     { width: 1600, height: 900 },
   ), false);
+});
+
+test('comparison zoom stays between 100% and 400% in stable steps', () => {
+  assert.equal(clampComparisonZoom(0.5), 1);
+  assert.equal(clampComparisonZoom(2.375), 2.375);
+  assert.equal(clampComparisonZoom(5), 4);
+
+  assert.equal(getSteppedComparisonZoom(1, 'in'), 1.25);
+  assert.equal(getSteppedComparisonZoom(3.9, 'in'), 4);
+  assert.equal(getSteppedComparisonZoom(1.25, 'out'), 1);
+  assert.equal(getSteppedComparisonZoom(1, 'out'), 1);
+});
+
+test('comparison pan is clamped to the visible zoomed canvas', () => {
+  assert.deepEqual(clampComparisonPan(
+    { x: 999, y: -999 },
+    2,
+    { width: 200, height: 100 },
+  ), { x: 100, y: -50 });
+
+  assert.deepEqual(clampComparisonPan(
+    { x: 40, y: 20 },
+    1,
+    { width: 200, height: 100 },
+  ), { x: 0, y: 0 });
+});
+
+test('comparison zoom keeps the cursor focal point stable and resets pan at 100%', () => {
+  assert.deepEqual(getComparisonZoomPan({
+    currentZoom: 1,
+    nextZoom: 2,
+    currentPan: { x: 0, y: 0 },
+    focalPoint: { x: 50, y: 0 },
+    viewport: { width: 200, height: 100 },
+  }), { x: -50, y: 0 });
+
+  assert.deepEqual(getComparisonZoomPan({
+    currentZoom: 2,
+    nextZoom: 1,
+    currentPan: { x: -50, y: 20 },
+    focalPoint: { x: 50, y: 0 },
+    viewport: { width: 200, height: 100 },
+  }), { x: 0, y: 0 });
 });
