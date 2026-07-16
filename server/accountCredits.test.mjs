@@ -319,7 +319,19 @@ test('recoverable submitted failures and ambiguous submissions keep their reserv
   }), false);
   assert.equal(shouldReleaseJobCreditReservation({
     job: { providerTaskId: 'provider-task-1' },
-    error: { code: 'provider_bad_request' },
+    error: { code: 'provider_bad_request', providerStatus: 'failed' },
+  }), true);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: { providerTaskId: 'provider-task-1' },
+    error: { code: 'provider_bad_response', providerStatus: 'success_without_result' },
+  }), false);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: { providerTaskId: 'provider-task-1' },
+    error: { code: 'provider_auth_invalid', providerStatus: 'auth_invalid' },
+  }), false);
+  assert.equal(shouldReleaseJobCreditReservation({
+    job: { providerTaskId: 'provider-task-1' },
+    error: { code: 'provider_job_failed', providerStatus: 'failed' },
   }), true);
 });
 
@@ -431,7 +443,7 @@ test('job deletion checks pending reservations in mysql and local modes before r
   );
 });
 
-test('submission-unknown jobs expose an admin-only audited bind or release endpoint', () => {
+test('submission-unknown jobs expose admin-only audited bind release and actual settlement', () => {
   assert.match(serverSource, /submission-resolution/);
   assert.match(
     serverSource,
@@ -440,7 +452,12 @@ test('submission-unknown jobs expose an admin-only audited bind or release endpo
   assert.match(serverSource, /resolveSubmissionUnknownJob\(\{[\s\S]{0,500}releaseDbAccountCredits\(connection/);
   assert.match(serverSource, /action: 'submission_unknown_resolved'/);
   assert.match(serverSource, /reason: 'admin_submission_resolution'/);
+  assert.match(serverSource, /reason: 'admin_submission_settlement'/);
+  assert.match(serverSource, /actualCreditsConsumed/);
+  assert.match(serverSource, /verificationNote/);
+  assert.match(serverSource, /settleDbAccountCredits\(connection/);
   assert.match(serverSource, /resolution\.action === 'bind'[\s\S]{0,180}mirrorDbJobToTemporalIfEnabled/);
   assert.match(serverSource, /localRequireAdmin[\s\S]{0,600}resolveLocalSubmissionUnknownJob/);
   assert.match(serverSource, /releaseLocalAccountCredits[\s\S]{0,400}admin_submission_resolution/);
+  assert.match(serverSource, /settleLocalAccountCredits[\s\S]{0,500}admin_submission_settlement/);
 });

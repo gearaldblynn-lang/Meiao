@@ -28,14 +28,22 @@ test('shell account management exposes account credit controls and status', () =
 });
 
 test('shell account management safely resolves provider submission unknown jobs', () => {
-  assert.match(source, /provider_submission_unknown/);
-  assert.match(source, /selectedJob\?\.errorCode === 'provider_submission_unknown'\s*&& selectedJob\.submissionResolution\.allowed/);
+  assert.match(source, /selectedJob\?\.submissionResolution\.allowed/);
+  assert.match(source, /provider_recovery_manual/);
+  assert.match(source, /自动查询已经停止/);
   assert.match(source, /submissionResolution\.canBind/);
-  assert.match(source, /已确认 KIE 无任务且未扣费/);
+  assert.match(source, /已确认上游无任务且未扣费/);
+  assert.match(source, /已核实上游最终状态，确认应释放积分预留/);
+  assert.match(source, /确认成功并结算/);
+  assert.match(source, /actualCreditsConsumed: normalizedActualCredits/);
+  assert.match(source, /normalizedActualCreditsInput = actualCreditsConsumed\.trim\(\)/);
+  assert.match(source, /!actualCreditsConsumed\.trim\(\)/);
+  assert.match(source, /verificationNote: normalizedVerificationNote/);
+  assert.match(source, /填写上游订单、任务状态或账单核验依据/);
   assert.match(source, /resolveTaskPlatformSubmission/);
   assert.match(source, /providerTaskId\.trim\(\)/);
   assert.match(source, /await queryTaskJobs\(taskPage\)/);
   assert.match(source, /await openTaskTimeline\(refreshedJob\)/);
   assert.match(source, /setSubmissionResolutionError\(err\.message/);
-  assert.doesNotMatch(source, /provider_submission_unknown[\s\S]{0,500}retryInternalJob/);
+  assert.doesNotMatch(source, /submissionResolution\.allowed[\s\S]{0,500}retryInternalJob/);
 });

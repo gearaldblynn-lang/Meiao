@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 
-import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, isTransientMysqlConnectionError } from './jobRuntime.mjs';
+import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode, isTransientMysqlConnectionError } from './jobRuntime.mjs';
 import { canRecoverProviderTaskById, KIE_RECOVERY_SOURCE_TASK_TYPES } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, normalizeTaskEngineMode, recordJobEvent } from './taskPlatform.mjs';
@@ -647,16 +647,158 @@ export const getJobByIdForUpdate = async (connection, jobId) => {
 
 export const resolveJobDeletionAction = (job = {}, { pendingReservation = false } = {}) => {
   const status = String(job?.status || '').trim();
+  const providerTaskId = String(job?.providerTaskId || '').trim();
+  const tombstoneRecoveryProviderTaskId = String(
+    job?.payload?.__tombstoneRecovery?.providerTaskId || '',
+  ).trim();
+  if (
+    providerTaskId
+    && tombstoneRecoveryProviderTaskId === providerTaskId
+    && ['queued', 'retry_waiting', 'running'].includes(status)
+  ) {
+    return 'block_submitted_recovery';
+  }
   if (status === 'queued' || status === 'retry_waiting') return 'cancel_then_delete';
   if (status === 'running') return 'block_active';
-  if (status === 'failed' && String(job?.errorCode || '').trim() === 'provider_submission_unknown') {
+  if (
+    status === 'failed'
+    && String(job?.errorCode || '').trim() === 'provider_submission_unknown'
+    && pendingReservation
+  ) {
     return 'block_submission_unknown';
+  }
+  if (status === 'failed' && String(job?.errorCode || '').trim() === 'provider_recovery_manual') {
+    return 'block_recovery_manual';
   }
   if (status === 'cancelled' && String(job?.providerTaskId || '').trim()) {
     return 'block_submitted_cancelled';
   }
   if (pendingReservation) return 'block_pending_reservation';
   return 'delete';
+};
+
+export const normalizeSubmissionSettlementInput = ({
+  actualCreditsConsumed,
+  verificationNote,
+} = {}) => {
+  const amount = actualCreditsConsumed;
+  const roundedCents = typeof amount === 'number' && Number.isFinite(amount)
+    ? Math.round(amount * 100)
+    : Number.NaN;
+  if (
+    typeof amount !== 'number'
+    || !Number.isFinite(amount)
+    || amount < 0
+    || !Number.isSafeInteger(roundedCents)
+    || Math.abs(amount * 100 - roundedCents) > 1e-6
+  ) {
+    throw Object.assign(new Error('人工结算必须填写大于等于 0 的实际扣费积分。'), {
+      code: 'submission_resolution_credits_invalid',
+      statusCode: 400,
+    });
+  }
+  const note = typeof verificationNote === 'string' ? verificationNote.trim() : '';
+  if (!note) {
+    throw Object.assign(new Error('人工结算必须填写上游核验依据。'), {
+      code: 'submission_resolution_evidence_required',
+      statusCode: 400,
+    });
+  }
+  return {
+    actualCreditsConsumed: roundedCents / 100,
+    verificationNote: note.slice(0, 500),
+  };
+};
+
+export const requestTombstonedJobRecovery = async (pool, job) => {
+  const connection = await pool.getConnection();
+  try {
+    return await withMysqlTransaction(connection, async () => {
+      const [rows] = await connection.query(
+        'SELECT * FROM internal_jobs WHERE id = ? FOR UPDATE',
+        [job.id],
+      );
+      const freshJob = rows?.[0] ? mapJobRow(rows[0]) : null;
+      if (!freshJob || (job.userId && freshJob.userId !== job.userId)) {
+        throw Object.assign(new Error('任务不存在。'), {
+          code: 'job_not_found',
+          statusCode: 404,
+        });
+      }
+      if (resolveJobDeletionAction(freshJob) === 'block_submitted_recovery') {
+        return freshJob;
+      }
+      if (resolveJobDeletionAction(freshJob) !== 'block_submitted_cancelled') {
+        throw Object.assign(new Error('只有已提交上游的取消任务可以进入删除恢复。'), {
+          code: 'tombstone_recovery_not_allowed',
+          statusCode: 409,
+        });
+      }
+      if (!canRecoverProviderTaskById(freshJob)) {
+        const updatedAt = now();
+        const [result] = await connection.query(
+          `UPDATE internal_jobs
+           SET status = 'failed', error_code = 'provider_recovery_manual',
+               error_message = '该上游任务不支持自动查询，请管理员核实后处置积分预留',
+               finished_at = COALESCE(finished_at, ?), updated_at = ?
+           WHERE id = ? AND status = 'cancelled' AND provider_task_id = ?`,
+          [updatedAt, updatedAt, freshJob.id, freshJob.providerTaskId],
+        );
+        if (!result?.affectedRows) {
+          throw Object.assign(new Error('任务状态已变化，请稍后重试。'), {
+            code: 'job_state_changed',
+            statusCode: 409,
+          });
+        }
+        return {
+          ...freshJob,
+          status: 'failed',
+          errorCode: 'provider_recovery_manual',
+          errorMessage: '该上游任务不支持自动查询，请管理员核实后处置积分预留',
+          finishedAt: freshJob.finishedAt || updatedAt,
+          updatedAt,
+        };
+      }
+
+      const updatedAt = now();
+      const nextPayload = {
+        ...(freshJob.payload || {}),
+        __tombstoneRecovery: {
+          providerTaskId: freshJob.providerTaskId,
+          requestedAt: updatedAt,
+        },
+      };
+      const [result] = await connection.query(
+        `UPDATE internal_jobs
+         SET status = 'retry_waiting', payload_json = ?, started_at = NULL, finished_at = NULL,
+             cancel_requested_at = NULL,
+             error_code = 'tombstone_recovery_pending',
+             error_message = '已删除任务正在按原上游任务 ID 恢复查询', updated_at = ?
+         WHERE id = ? AND status = 'cancelled' AND provider_task_id = ?`,
+        [serializeJsonValue(nextPayload), updatedAt, freshJob.id, freshJob.providerTaskId],
+      );
+      if (!result?.affectedRows) {
+        throw Object.assign(new Error('任务状态已变化，请稍后重试。'), {
+          code: 'job_state_changed',
+          statusCode: 409,
+        });
+      }
+      return {
+        ...freshJob,
+        status: 'retry_waiting',
+        payload: nextPayload,
+        startedAt: null,
+        finishedAt: null,
+        cancelRequestedAt: null,
+        result: freshJob.result,
+        errorCode: 'tombstone_recovery_pending',
+        errorMessage: '已删除任务正在按原上游任务 ID 恢复查询',
+        updatedAt,
+      };
+    });
+  } finally {
+    connection.release();
+  }
 };
 
 export const deleteJobById = async (pool, jobId, options = {}) => {
@@ -1085,12 +1227,15 @@ export const resolveSubmissionUnknownJob = async ({
   jobId,
   action,
   providerTaskId = '',
+  actualCreditsConsumed,
+  verificationNote = '',
   releaseReservation,
+  settleReservation,
 }) => {
   const normalizedAction = String(action || '').trim();
   const normalizedProviderTaskId = String(providerTaskId || '').trim();
-  if (!['bind', 'release'].includes(normalizedAction)) {
-    throw Object.assign(new Error('处置动作必须是 bind 或 release。'), {
+  if (!['bind', 'release', 'settle'].includes(normalizedAction)) {
+    throw Object.assign(new Error('处置动作必须是 bind、release 或 settle。'), {
       code: 'submission_resolution_invalid',
       statusCode: 400,
     });
@@ -1101,6 +1246,9 @@ export const resolveSubmissionUnknownJob = async ({
       statusCode: 400,
     });
   }
+  const settlementInput = normalizedAction === 'settle'
+    ? normalizeSubmissionSettlementInput({ actualCreditsConsumed, verificationNote })
+    : null;
 
   const connection = await pool.getConnection();
   try {
@@ -1113,15 +1261,25 @@ export const resolveSubmissionUnknownJob = async ({
       if (!job) {
         throw Object.assign(new Error('任务不存在。'), { code: 'job_not_found', statusCode: 404 });
       }
-      if (job.status !== 'failed' || job.errorCode !== 'provider_submission_unknown') {
-        throw Object.assign(new Error('只有提交状态未知的失败任务可以人工处置。'), {
+      const isSubmissionUnknown = job.errorCode === 'provider_submission_unknown';
+      const isRecoveryManual = job.errorCode === 'provider_recovery_manual';
+      if (job.status !== 'failed' || (!isSubmissionUnknown && !isRecoveryManual)) {
+        throw Object.assign(new Error('只有提交状态未知或自动恢复已停止的失败任务可以人工处置。'), {
           code: 'submission_resolution_not_allowed',
+          statusCode: 409,
+        });
+      }
+      if (normalizedAction === 'bind' && isRecoveryManual) {
+        throw Object.assign(new Error('自动恢复已停止的任务不能重新绑定，请核实后释放预留或按实际扣费结算。'), {
+          code: 'submission_resolution_bind_unsupported',
           statusCode: 409,
         });
       }
       if (normalizedAction === 'bind' && !canRecoverProviderTaskById({
         taskType: job.taskType,
+        provider: job.provider,
         providerTaskId: normalizedProviderTaskId,
+        payload: job.payload,
       })) {
         throw Object.assign(new Error('该任务类型没有按上游任务 ID 查询结果的安全恢复路径，只能核实后释放预留。'), {
           code: 'submission_resolution_bind_unsupported',
@@ -1147,6 +1305,7 @@ export const resolveSubmissionUnknownJob = async ({
         }
         return {
           action: normalizedAction,
+          resolutionKind: 'submission_unknown',
           job: {
             ...job,
             status: 'retry_waiting',
@@ -1162,16 +1321,55 @@ export const resolveSubmissionUnknownJob = async ({
         };
       }
 
+      if (normalizedAction === 'settle') {
+        if (typeof settleReservation !== 'function') {
+          throw new TypeError('settleReservation callback is required.');
+        }
+        const settlement = await settleReservation(connection, job, settlementInput);
+        const settledErrorCode = isRecoveryManual
+          ? 'provider_recovery_settled'
+          : 'provider_submission_settled';
+        const settledMessage = `管理员已核实上游成功并按实际 ${settlementInput.actualCreditsConsumed} 积分结算`;
+        const [result] = await connection.query(
+          `UPDATE internal_jobs
+           SET error_code = ?, error_message = ?, updated_at = ?
+           WHERE id = ? AND status = 'failed' AND error_code = ?`,
+          [settledErrorCode, settledMessage, updatedAt, job.id, job.errorCode],
+        );
+        if (!result?.affectedRows) {
+          throw Object.assign(new Error('任务状态已变化，请刷新后重试。'), {
+            code: 'job_state_changed',
+            statusCode: 409,
+          });
+        }
+        return {
+          action: normalizedAction,
+          resolutionKind: isRecoveryManual ? 'provider_recovery' : 'submission_unknown',
+          settlement,
+          job: {
+            ...job,
+            errorCode: settledErrorCode,
+            errorMessage: settledMessage,
+            updatedAt,
+          },
+        };
+      }
+
       if (typeof releaseReservation !== 'function') {
         throw new TypeError('releaseReservation callback is required.');
       }
       await releaseReservation(connection, job);
+      const releasedErrorCode = isRecoveryManual
+        ? 'provider_recovery_released'
+        : 'provider_submission_released';
+      const releasedMessage = isRecoveryManual
+        ? '管理员已核实自动恢复任务并释放积分预留'
+        : '管理员已核实未产生上游任务并释放积分预留';
       const [result] = await connection.query(
         `UPDATE internal_jobs
-         SET error_code = 'provider_submission_released',
-             error_message = '管理员已核实未产生上游任务并释放积分预留', updated_at = ?
-         WHERE id = ? AND status = 'failed' AND error_code = 'provider_submission_unknown'`,
-        [updatedAt, job.id]
+         SET error_code = ?, error_message = ?, updated_at = ?
+         WHERE id = ? AND status = 'failed' AND error_code = ?`,
+        [releasedErrorCode, releasedMessage, updatedAt, job.id, job.errorCode]
       );
       if (!result?.affectedRows) {
         throw Object.assign(new Error('任务状态已变化，请刷新后重试。'), {
@@ -1181,10 +1379,11 @@ export const resolveSubmissionUnknownJob = async ({
       }
       return {
         action: normalizedAction,
+        resolutionKind: isRecoveryManual ? 'provider_recovery' : 'submission_unknown',
         job: {
           ...job,
-          errorCode: 'provider_submission_released',
-          errorMessage: '管理员已核实未产生上游任务并释放积分预留',
+          errorCode: releasedErrorCode,
+          errorMessage: releasedMessage,
           updatedAt,
         },
       };
@@ -1468,16 +1667,24 @@ export const createJobWorker = ({
               providerTaskId,
               providerTaskRecoverable: canRecoverProviderTaskById({
                 taskType: latestJob?.taskType,
+                provider: latestJob?.provider,
                 providerTaskId,
+                payload: latestJob?.payload,
               }),
             });
             const finishedAt = now();
+            const persistedErrorCode = getPersistedJobFailureErrorCode({
+              job: { ...latestJob, providerTaskId },
+              failure,
+              errorCode: errorFields.errorCode,
+              providerStatus: error?.providerStatus,
+            });
 
             await updateJobFields(poolAgain, job.id, {
               status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
               provider_task_id: providerTaskId || null,
               retry_count: error?.code === 'request_cancelled' ? latestJob?.retryCount ?? 0 : failure.retryCount,
-              error_code: errorFields.errorCode,
+              error_code: persistedErrorCode,
               error_message: errorFields.errorMessage,
               error_detail: errorFields.errorDetail || null,
               updated_at: finishedAt,

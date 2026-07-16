@@ -1025,3 +1025,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 策划只接收准备后的 `generationMaterials`。生成链路把 resolver-backed COS 图片先下载并转存为 KIE 文件 URL，聊天默认仍可读取新鲜 COS 签名 URL，历史公网托管素材继续 direct-first。DELETE 对已不存在任务幂等成功，运行中删除展示为后台清理；MySQL 定时读取 `shellDraft.deletedJobIds`，只接受 24 位内部 job ID，并复用取消、积分保护、事务删除和素材引用清理合同持续收敛，摘要进入 `/api/health`。app state 保存/读取前移除失效显式 `*AssetId`，job payload 的 owner 校验仍 fail closed。
 - Regression check: `node --test src/shell/preparedGenerationMaterials.test.mjs server/providerAssetTransfer.test.mjs server/managedAssetStateScrub.test.mjs server/tombstonedJobReconciler.test.mjs src/utils/deletionOperations.test.mjs src/services/internalApi.test.mjs server/managedAssetDeletion.test.mjs`；`npm run doctor`；`npm run build`。云上还要验证真实 COS 上传、一键策划、至少两个并发生图、重复 DELETE 和 `health.tombstonedJobCleanup` 收敛。
 - Avoid next time: 上传门禁后的素材变量必须一路传到 planning/provider，不能重新引用旧快照。异步 provider 不应依赖短时私有签名 URL；接单前必须落实稳定字节读取合同。UI 删除是耐久意图，不是一次 HTTP 调用；后台收敛必须保留积分与提交未知保护。新增素材身份校验时要同时覆盖历史 state scrub、job payload 严格校验和多账号并发回放，不能通过调大并发掩盖 stage 边界错误。
+
+## 2026-07-16 - Shared job synchronization and tombstone recovery must preserve account and provider identity
+
+- Symptom: 上游已成功而项目卡停在生成中，手动刷新才显示；快速切换账号时旧账号延迟写可能使用新账号 token；已提交上游后取消并删除的任务长期留在墓碑，积分预留和物理删除均无法收敛。
+- Environment: Tencent Cloud production / all queue-backed shell modules / multi-account app state / paid asynchronous providers.
+- Root cause: 公共同步曾依赖客户端仍记得 active job，页面挂起后停止；补上周期同步后，异步 updater 与写队列仍未绑定账号 epoch 和提交时 session token。删除协调器没有对 submitted-cancelled 任务执行原 ID 查询，恢复能力也未精确到 provider/model；恢复耗尽被压成普通失败，没有人工结算态和 health 告警。协调器每轮全表解析 `app_states.state_json`，稳定性成本随所有账号状态体积增长。
+- Fix: 所有队列项目卡固定周期及 focus/pageshow/online/visibility 恢复同步，共享 coalesced runner；账号切换使旧 async scope 和写队列失效，网络请求固定使用捕获 token。删除恢复按 `taskType + provider + model` 真实能力只查询旧 `providerTaskId`；只有明确 provider failed 终态才自动释放，成功无结果、鉴权/配置失败、不可查询或耗尽时进入 `provider_recovery_manual`，保留结果与积分证据。人工核验支持未扣费 release 和已成功实际积分 settle，后者强制记录核验依据并与 ledger/job 更新同事务。无内部预留的无 ID 历史 submission-unknown 按持久删除意图收敛，删除事务仍二次检查 ledger。墓碑协调器改为 `updated_at` 索引增量扫描、未收敛缓存和同毫秒指纹边界，health 暴露 pending reason、age 和 alerting。
+- Regression check: `npm run verify`；定向回归覆盖周期/前台/联网恢复、账号切换后旧 UI 与远端写失效、捕获 token、精确 provider 恢复矩阵、query-only 不重提、恢复耗尽人工态、同毫秒游标和删除 409 scheduled 映射。真实云上验收仍须核对发布 health、历史墓碑收敛、两个新任务排序及至少一个任务无需刷新出现终态。
+- Avoid next time: 客户端轮询、服务端任务 ledger 和 app state 是三套生命周期，任何一套不能靠另一套“通常还在”作为触发条件。跨账号异步必须携带不可变账号与凭证快照。付费恢复必须区分 create 与 query，并为不可判定终态保留人工审计出口；后台扫描必须与待处理量成比例，而不是与所有用户大状态成比例。

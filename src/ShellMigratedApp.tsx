@@ -10,6 +10,7 @@ import MediaTrimTranscodeDialog, { type MediaTranscodeQueueItem } from './shell/
 import type { MediaTranscodeResult } from './services/mediaTranscodeClient';
 import {
   cancelInternalJob,
+  captureInternalSessionToken,
   clearCurrentUserContext,
   clearSessionToken,
   createInternalJob,
@@ -73,6 +74,7 @@ import {
   collectMissingActiveInternalJobIds,
   createAsyncScopeGuard,
   createCoalescedAsyncRunner,
+  createScopedAsyncWriteQueue,
   getShellJobSyncIntervalMs,
   startShellJobSync,
 } from './utils/shellJobSync';
@@ -2665,8 +2667,11 @@ const AppContent: React.FC<{
   const jobsHydrationScopeRef = useRef<ReturnType<typeof createAsyncScopeGuard> | null>(null);
   if (!jobsHydrationScopeRef.current) jobsHydrationScopeRef.current = createAsyncScopeGuard();
   const jobsHydrationScopeUserIdRef = useRef(shellLocalScopeUserId);
+  const sharedStateScopeRef = useRef<ReturnType<typeof createAsyncScopeGuard> | null>(null);
+  if (!sharedStateScopeRef.current) sharedStateScopeRef.current = createAsyncScopeGuard();
   if (jobsHydrationScopeUserIdRef.current !== shellLocalScopeUserId) {
     jobsHydrationScopeRef.current.invalidate();
+    sharedStateScopeRef.current.invalidate();
     jobsHydrationScopeUserIdRef.current = shellLocalScopeUserId;
   }
   const hydrateShellJobsOperationRef = useRef<() => Promise<void>>(async () => undefined);
@@ -2677,7 +2682,8 @@ const AppContent: React.FC<{
     );
   }
   const latestSharedStateRef = useRef<Partial<PersistedAppState> | null>(null);
-  const sharedStateWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const sharedStateWriteQueueRef = useRef<ReturnType<typeof createScopedAsyncWriteQueue> | null>(null);
+  if (!sharedStateWriteQueueRef.current) sharedStateWriteQueueRef.current = createScopedAsyncWriteQueue();
   const restoredRuntimeProjectIdsRef = useRef(new Set(initialRuntimeSnapshot.projects.map((project) => project.id)));
   const restoredRuntimeTaskIdsRef = useRef(new Set(initialRuntimeSnapshot.tasks.map((task) => task.id)));
   const previousShellLocalScopeUserIdRef = useRef(shellLocalScopeUserId);
@@ -2741,38 +2747,50 @@ const AppContent: React.FC<{
     }
   }, [shellLocalScopeUserId]);
 
-  const prepareLoadedSharedState = useCallback(async (loadedState: Partial<PersistedAppState> | null | undefined) => {
+  const prepareLoadedSharedState = useCallback(async (
+    loadedState: Partial<PersistedAppState> | null | undefined,
+    isCurrent: () => boolean,
+  ) => {
+    if (!isCurrent()) return null;
+    const sessionToken = captureInternalSessionToken();
     const {
       buildPersistedAppState,
       savePersistedAppState,
       sanitizePersistedAppState,
     } = await loadShellPersistenceTools();
+    if (!isCurrent()) return null;
     const baseState = buildPersistedAppState(loadedState || {});
     const nextState = sanitizePersistedAppState(pruneKnownLegacyGarbageFromPersistedState(baseState));
     if (JSON.stringify(nextState) !== JSON.stringify(baseState)) {
+      if (!isCurrent()) return null;
       latestSharedStateRef.current = nextState;
       savePersistedAppState(nextState, shellLocalScopeUserId);
-      void saveRemoteAppState(nextState, { mode: 'replace' }).catch((error) => {
-        console.warn('[MEIAO] failed to persist legacy garbage cleanup', error);
-      });
+      if (isCurrent()) {
+        void saveRemoteAppState(nextState, { mode: 'replace', sessionToken }).catch((error) => {
+          console.warn('[MEIAO] failed to persist legacy garbage cleanup', error);
+        });
+      }
     }
     return nextState;
   }, [shellLocalScopeUserId]);
 
   const persistVideoMemoryToSharedState = useCallback((
     nextVideoMemory: VideoPersistentState,
-    isCurrent: () => boolean = () => true,
+    additionalGuard: () => boolean = () => true,
   ) => {
-    const write = async () => {
-      if (!isCurrent()) return false;
+    const accountIsCurrent = sharedStateScopeRef.current!.capture();
+    const isCurrent = () => accountIsCurrent() && additionalGuard();
+    const sessionToken = captureInternalSessionToken();
+    const write = async (isWriteCurrent: () => boolean) => {
+      if (!isWriteCurrent()) return false;
       const {
         buildPersistedAppState,
         savePersistedAppState,
         sanitizePersistedAppState,
       } = await loadShellPersistenceTools();
-      if (!isCurrent()) return false;
-      const persistedBase = await resolveSharedStateBaseForWrite(isCurrent);
-      if (!isCurrent()) return false;
+      if (!isWriteCurrent()) return false;
+      const persistedBase = await resolveSharedStateBaseForWrite(isWriteCurrent);
+      if (!isWriteCurrent()) return false;
       const baseState = buildPersistedAppState(persistedBase);
       const nextState = sanitizePersistedAppState({
         ...baseState,
@@ -2782,34 +2800,37 @@ const AppContent: React.FC<{
         },
         videoMemory: nextVideoMemory,
       });
-      if (!isCurrent()) return false;
+      if (!isWriteCurrent()) return false;
       latestSharedStateRef.current = nextState;
       savePersistedAppState(nextState, shellLocalScopeUserId);
+      if (!isWriteCurrent()) return false;
       try {
         await saveRemoteAppState({
           apiConfig: nextState.apiConfig,
           videoMemory: nextState.videoMemory,
-        });
-        return true;
+        }, { sessionToken });
+        return isWriteCurrent();
       } catch (error) {
         console.warn('[MEIAO] failed to persist video memory to remote storage', error);
         return false;
       }
     };
-
-    const queuedWrite = sharedStateWriteQueueRef.current.then(write, write);
-    sharedStateWriteQueueRef.current = queuedWrite.then(() => undefined, () => undefined);
-    return queuedWrite;
+    return sharedStateWriteQueueRef.current!.enqueue(isCurrent, write, false);
   }, [apiConfig.workspacePreferences, resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
 
   const persistShellDraftToSharedState = useCallback((draftState: ReturnType<typeof normalizeShellDraftState>) => {
-    const write = async () => {
+    const isCurrent = sharedStateScopeRef.current!.capture();
+    const sessionToken = captureInternalSessionToken();
+    const write = async (isWriteCurrent: () => boolean) => {
+      if (!isWriteCurrent()) return false;
       const {
         buildPersistedAppState,
         savePersistedAppState,
         sanitizePersistedAppState,
       } = await loadShellPersistenceTools();
-      const persistedBase = await resolveSharedStateBaseForWrite();
+      if (!isWriteCurrent()) return false;
+      const persistedBase = await resolveSharedStateBaseForWrite(isWriteCurrent);
+      if (!isWriteCurrent()) return false;
       const baseState = buildPersistedAppState(persistedBase);
       const nextState = sanitizePersistedAppState({
         ...baseState,
@@ -2817,28 +2838,29 @@ const AppContent: React.FC<{
       });
       latestSharedStateRef.current = nextState;
       savePersistedAppState(nextState, shellLocalScopeUserId);
+      if (!isWriteCurrent()) return false;
       try {
-        await saveRemoteAppState(nextState, { mode: 'replace' });
-        return true;
+        await saveRemoteAppState(nextState, { mode: 'replace', sessionToken });
+        return isWriteCurrent();
       } catch (error) {
         console.warn('[MEIAO] failed to persist shell draft to remote storage', error);
         return false;
       }
     };
-
-    const queuedWrite = sharedStateWriteQueueRef.current.then(write, write);
-    sharedStateWriteQueueRef.current = queuedWrite.then(() => undefined, () => undefined);
-    return queuedWrite;
+    return sharedStateWriteQueueRef.current!.enqueue(isCurrent, write, false);
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
 
   const persistSyncedProjectsToSharedState = useCallback((
     syncedProjects: Project[],
-    isCurrent: () => boolean = () => true,
+    additionalGuard: () => boolean = () => true,
   ) => {
     const projectsToPersist = syncedProjects.filter((project) => String(project?.id || '').trim());
     if (projectsToPersist.length === 0) return Promise.resolve(true);
-    const write = async () => {
-      if (!isCurrent()) return false;
+    const accountIsCurrent = sharedStateScopeRef.current!.capture();
+    const isCurrent = () => accountIsCurrent() && additionalGuard();
+    const sessionToken = captureInternalSessionToken();
+    const write = async (isWriteCurrent: () => boolean) => {
+      if (!isWriteCurrent()) return false;
       const {
         buildPersistedAppState,
         savePersistedAppState,
@@ -2847,9 +2869,9 @@ const AppContent: React.FC<{
         upsertShellProjectIntoPersistedState,
         upsertTranslationFilesIntoPersistedState,
       } = await loadShellPersistenceTools();
-      if (!isCurrent()) return false;
-      const persistedBase = await resolveSharedStateBaseForWrite(isCurrent);
-      if (!isCurrent()) return false;
+      if (!isWriteCurrent()) return false;
+      const persistedBase = await resolveSharedStateBaseForWrite(isWriteCurrent);
+      if (!isWriteCurrent()) return false;
       let nextState = buildPersistedAppState(persistedBase);
       const touchedOneClickBranches = new Set<string>();
       const touchedTranslationBranches = new Set<string>();
@@ -2875,9 +2897,10 @@ const AppContent: React.FC<{
         }
       });
       nextState = sanitizePersistedAppState(nextState);
-      if (!isCurrent()) return false;
+      if (!isWriteCurrent()) return false;
       latestSharedStateRef.current = nextState;
       savePersistedAppState(nextState, shellLocalScopeUserId);
+      if (!isWriteCurrent()) return false;
       const patch: Partial<PersistedAppState> = {
         shellProjects: Array.isArray(nextState.shellProjects) ? nextState.shellProjects : [],
       };
@@ -2898,17 +2921,14 @@ const AppContent: React.FC<{
         ) as Partial<PersistedAppState['translationMemory']> as PersistedAppState['translationMemory'];
       }
       try {
-        await saveRemoteAppState(patch);
-        return true;
+        await saveRemoteAppState(patch, { sessionToken });
+        return isWriteCurrent();
       } catch (error) {
         console.warn('[MEIAO] failed to persist synced shell project jobs to remote storage', error);
         return false;
       }
     };
-
-    const queuedWrite = sharedStateWriteQueueRef.current.then(write, write);
-    sharedStateWriteQueueRef.current = queuedWrite.then(() => undefined, () => undefined);
-    return queuedWrite;
+    return sharedStateWriteQueueRef.current!.enqueue(isCurrent, write, false);
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
 
   const setVideoMemory: React.Dispatch<React.SetStateAction<VideoPersistentState>> = useCallback((updater) => {
@@ -2928,6 +2948,7 @@ const AppContent: React.FC<{
     traceStartup('app-content:mounted');
     return () => {
       jobsHydrationScopeRef.current?.invalidate();
+      sharedStateScopeRef.current?.invalidate();
     };
   }, []);
 
@@ -3098,11 +3119,18 @@ const AppContent: React.FC<{
     }));
   }, [activeModule]);
 
-  const applyShellSnapshot = useCallback(async (loadedState: Partial<PersistedAppState> | null | undefined, jobs = []) => {
+  const applyShellSnapshot = useCallback(async (
+    loadedState: Partial<PersistedAppState> | null | undefined,
+    jobs = [],
+    isCurrent: () => boolean,
+  ) => {
+    if (!isCurrent()) return;
     traceStartup(`apply-snapshot:start:${jobs.length}`);
-    const preparedState = await prepareLoadedSharedState(loadedState);
+    const preparedState = await prepareLoadedSharedState(loadedState, isCurrent);
+    if (!isCurrent() || !preparedState) return;
     latestSharedStateRef.current = preparedState;
     const { buildShellDataSnapshot } = await loadShellPersistenceTools();
+    if (!isCurrent()) return;
     const snapshot = buildShellDataSnapshot(preparedState, jobs);
     const runtimeSnapshot = pruneShellRuntimeSnapshotForDeletion(
       loadShellRuntimeSnapshot(shellLocalScopeUserId),
@@ -3184,20 +3212,26 @@ const AppContent: React.FC<{
   }, [getRuntimeDeletionDraft, prepareLoadedSharedState, restoreLocalMaterialPreviews, shellLocalScopeUserId]);
 
   const hydrateShellData = useCallback(async () => {
+    const isCurrent = sharedStateScopeRef.current!.capture();
     traceStartup('hydrate-shell-data:start');
     try {
       const { normalizeLoadedPersistedAppState } = await loadShellPersistenceTools();
+      if (!isCurrent()) return;
       const remoteResult = await fetchRemoteAppState();
-      await applyShellSnapshot(normalizeLoadedPersistedAppState(remoteResult.state), []);
+      if (!isCurrent()) return;
+      await applyShellSnapshot(normalizeLoadedPersistedAppState(remoteResult.state), [], isCurrent);
     } catch {
+      if (!isCurrent()) return;
       if (shouldUseLocalStateFallback()) {
         const { loadPersistedAppState } = await loadShellPersistenceTools();
+        if (!isCurrent()) return;
         const localState = loadPersistedAppState(shellLocalScopeUserId);
-        await applyShellSnapshot(localState, []);
+        await applyShellSnapshot(localState, [], isCurrent);
         return;
       }
-      await applyShellSnapshot({}, []);
+      await applyShellSnapshot({}, [], isCurrent);
     }
+    if (!isCurrent()) return;
     traceStartup('hydrate-shell-data:end');
   }, [applyShellSnapshot, shellLocalScopeUserId]);
 
@@ -3243,13 +3277,11 @@ const AppContent: React.FC<{
           board.status === 'generating',
         ));
       });
-      const missingKnownJobs = await Promise.all(
-        collectMissingActiveInternalJobIds(knownBackendJobCandidates, jobsById.keys())
-          .map((jobId) => fetchInternalJob(jobId).then((result) => result.job).catch(() => null)),
-      );
-      missingKnownJobs.forEach((job) => {
-        if (job?.id) jobsById.set(String(job.id), job);
-      });
+      for (const jobId of collectMissingActiveInternalJobIds(knownBackendJobCandidates, jobsById.keys())) {
+        if (!isHydrationCurrent()) return;
+        const missingJob = await fetchInternalJob(jobId).then((result) => result.job).catch(() => null);
+        if (missingJob?.id) jobsById.set(String(missingJob.id), missingJob);
+      }
       const fetchedJobs = Array.from(jobsById.values());
       const terminalBackendJobIds = new Set(
         fetchedJobs
@@ -3385,8 +3417,9 @@ const AppContent: React.FC<{
     productRestoreCancellationRegistryRef.current?.reset();
     hydrationScheduledRef.current = false;
     jobsHydrationScopeRef.current?.invalidate();
+    sharedStateScopeRef.current?.invalidate();
     latestSharedStateRef.current = null;
-    sharedStateWriteQueueRef.current = Promise.resolve();
+    sharedStateWriteQueueRef.current?.reset();
     restoredRuntimeProjectIdsRef.current = new Set(runtimeSnapshot.projects.map((project) => project.id));
     restoredRuntimeTaskIdsRef.current = new Set(runtimeSnapshot.tasks.map((task) => task.id));
     setProjects(runtimeSnapshot.projects);
@@ -3425,14 +3458,19 @@ const AppContent: React.FC<{
     jobIds?: string[];
     preserveStoryboardBoardSlot?: boolean;
   }) => {
-    const write = async () => {
+    const isCurrent = sharedStateScopeRef.current!.capture();
+    const sessionToken = captureInternalSessionToken();
+    const write = async (isWriteCurrent: () => boolean) => {
+      if (!isWriteCurrent()) return false;
       try {
         const {
           buildPersistedAppState,
           savePersistedAppState,
           sanitizePersistedAppState,
         } = await loadShellPersistenceTools();
-        const persistedBase = await resolveSharedStateBaseForWrite();
+        if (!isWriteCurrent()) return false;
+        const persistedBase = await resolveSharedStateBaseForWrite(isWriteCurrent);
+        if (!isWriteCurrent()) return false;
         const prunedState = prunePersistedAppStateForDeletion(buildPersistedAppState(persistedBase), target);
         const nextState = sanitizePersistedAppState(
           applyPersistedDeletionTombstones(prunedState, target),
@@ -3440,9 +3478,10 @@ const AppContent: React.FC<{
         nextState.shellDraft = normalizeShellDraftState(nextState.shellDraft);
         latestSharedStateRef.current = nextState;
         savePersistedAppState(nextState, shellLocalScopeUserId);
+        if (!isWriteCurrent()) return false;
         try {
-          await saveRemoteAppState(nextState, { mode: 'replace' });
-          return true;
+          await saveRemoteAppState(nextState, { mode: 'replace', sessionToken });
+          return isWriteCurrent();
         } catch (error) {
           console.warn('[MEIAO] failed to persist deleted shell state to remote storage', error);
           return false;
@@ -3452,10 +3491,7 @@ const AppContent: React.FC<{
         return false;
       }
     };
-
-    const queuedWrite = sharedStateWriteQueueRef.current.then(write, write);
-    sharedStateWriteQueueRef.current = queuedWrite.then(() => undefined, () => undefined);
-    return queuedWrite;
+    return sharedStateWriteQueueRef.current!.enqueue(isCurrent, write, false);
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
 
   type PersistProjectToSharedState = {
@@ -3470,7 +3506,11 @@ const AppContent: React.FC<{
     project: Project,
     options: { includeCanonicalProject?: boolean } = {},
   ) => {
-    const write = async () => {
+    const isCurrent = sharedStateScopeRef.current!.capture();
+    const sessionToken = captureInternalSessionToken();
+    const staleValue = options.includeCanonicalProject ? { accepted: false } : false;
+    const write = async (isWriteCurrent: () => boolean) => {
+      if (!isWriteCurrent()) return staleValue;
       const {
         buildPersistedAppState,
         savePersistedAppState,
@@ -3478,7 +3518,9 @@ const AppContent: React.FC<{
         upsertOneClickProjectIntoPersistedState,
         upsertShellProjectIntoPersistedState,
       } = await loadShellPersistenceTools();
-      const persistedBase = await resolveSharedStateBaseForWrite();
+      if (!isWriteCurrent()) return staleValue;
+      const persistedBase = await resolveSharedStateBaseForWrite(isWriteCurrent);
+      if (!isWriteCurrent()) return staleValue;
       const baseState = buildPersistedAppState(persistedBase);
       const projectState = upsertShellProjectIntoPersistedState(
         project.module === AppModuleObj.ONE_CLICK
@@ -3489,12 +3531,17 @@ const AppContent: React.FC<{
       const nextState = sanitizePersistedAppState(projectState);
       latestSharedStateRef.current = nextState;
       savePersistedAppState(nextState, shellLocalScopeUserId);
+      if (!isWriteCurrent()) return staleValue;
       try {
         const remoteResult = await saveRemoteAppState(
           buildProjectRemotePatch(nextState, project),
-          options.includeCanonicalProject ? { includeCanonicalState: true } : {},
+          {
+            ...(options.includeCanonicalProject ? { includeCanonicalState: true } : {}),
+            sessionToken,
+          },
         );
         if (options.includeCanonicalProject) {
+          if (!isWriteCurrent()) return { accepted: false };
           const canonicalState = remoteResult.state
             ? sanitizePersistedAppState(remoteResult.state)
             : undefined;
@@ -3515,16 +3562,13 @@ const AppContent: React.FC<{
             ...(canonicalProject ? { project: canonicalProject } : {}),
           };
         }
-        return true;
+        return isWriteCurrent();
       } catch (error) {
         console.warn('[MEIAO] failed to persist generated shell project to remote storage', error);
         return options.includeCanonicalProject ? { accepted: false } : false;
       }
     };
-
-    const queuedWrite = sharedStateWriteQueueRef.current.then(write, write);
-    sharedStateWriteQueueRef.current = queuedWrite.then(() => undefined, () => undefined);
-    return queuedWrite;
+    return sharedStateWriteQueueRef.current!.enqueue(isCurrent, write, staleValue);
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]) as PersistProjectToSharedState;
 
   const handleSubtitleRemovalSubmit = useCallback(async (inputs: Array<{
@@ -3849,14 +3893,19 @@ const AppContent: React.FC<{
   }, [addToast]);
 
   const persistTranslationFilesToSharedState = useCallback((subFeature: string, files: Array<Record<string, unknown>>) => {
-    const write = async () => {
+    const isCurrent = sharedStateScopeRef.current!.capture();
+    const sessionToken = captureInternalSessionToken();
+    const write = async (isWriteCurrent: () => boolean) => {
+      if (!isWriteCurrent()) return false;
       const {
         buildPersistedAppState,
         savePersistedAppState,
         sanitizePersistedAppState,
         upsertTranslationFilesIntoPersistedState,
       } = await loadShellPersistenceTools();
-      const persistedBase = await resolveSharedStateBaseForWrite();
+      if (!isWriteCurrent()) return false;
+      const persistedBase = await resolveSharedStateBaseForWrite(isWriteCurrent);
+      if (!isWriteCurrent()) return false;
       const nextState = sanitizePersistedAppState(
         upsertTranslationFilesIntoPersistedState(
           buildPersistedAppState(persistedBase),
@@ -3866,18 +3915,16 @@ const AppContent: React.FC<{
       );
       latestSharedStateRef.current = nextState;
       savePersistedAppState(nextState, shellLocalScopeUserId);
+      if (!isWriteCurrent()) return false;
       try {
-        await saveRemoteAppState(buildTranslationRemotePatch(nextState, subFeature));
-        return true;
+        await saveRemoteAppState(buildTranslationRemotePatch(nextState, subFeature), { sessionToken });
+        return isWriteCurrent();
       } catch (error) {
         console.warn('[MEIAO] failed to persist translation files to remote storage', error);
         return false;
       }
     };
-
-    const queuedWrite = sharedStateWriteQueueRef.current.then(write, write);
-    sharedStateWriteQueueRef.current = queuedWrite.then(() => undefined, () => undefined);
-    return queuedWrite;
+    return sharedStateWriteQueueRef.current!.enqueue(isCurrent, write, false);
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
 
   useEffect(() => {

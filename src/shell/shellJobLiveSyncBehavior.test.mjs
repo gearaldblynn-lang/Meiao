@@ -54,9 +54,33 @@ test('account scope guards deferred state updates and queued persistence writes'
   assert.match(hydrationBody, /persistSyncedProjectsToSharedState\(syncedProjectsToPersist, isHydrationCurrent\)/);
   assert.match(hydrationBody, /setProjects\(\(prev\) => \{\s*if \(!isHydrationCurrent\(\)\) return prev/);
   assert.match(hydrationBody, /setTasks\(\(prev\) => \{\s*if \(!isHydrationCurrent\(\)\) return prev/);
-  assert.match(syncedPersistenceBody, /if \(!isCurrent\(\)\) return false/);
-  assert.match(syncedPersistenceBody, /await resolveSharedStateBaseForWrite\(isCurrent\)/);
+  assert.match(syncedPersistenceBody, /const accountIsCurrent = sharedStateScopeRef\.current!\.capture\(\)/);
+  assert.match(syncedPersistenceBody, /if \(!isWriteCurrent\(\)\) return false/);
+  assert.match(syncedPersistenceBody, /await resolveSharedStateBaseForWrite\(isWriteCurrent\)/);
+  assert.match(syncedPersistenceBody, /sharedStateWriteQueueRef\.current!\.enqueue\(isCurrent, write, false\)/);
   assert.match(shellSource, /jobsHydrationScopeRef\.current\?\.invalidate\(\)/);
+  assert.match(shellSource, /sharedStateScopeRef\.current\?\.invalidate\(\)/);
+});
+
+test('every shared-state writer captures and enqueues an account-scoped guard', () => {
+  const writerNames = [
+    'persistVideoMemoryToSharedState',
+    'persistShellDraftToSharedState',
+    'persistSyncedProjectsToSharedState',
+    'persistDeletionToSharedState',
+    'persistProjectToSharedState',
+    'persistTranslationFilesToSharedState',
+  ];
+
+  writerNames.forEach((writerName) => {
+    const start = shellSource.indexOf(`const ${writerName} = useCallback`);
+    assert.notEqual(start, -1, `${writerName} must exist`);
+    const nextWriter = shellSource.indexOf('\n  const ', start + 10);
+    const body = shellSource.slice(start, nextWriter === -1 ? undefined : nextWriter);
+    assert.match(body, /sharedStateScopeRef\.current!\.capture\(\)/, `${writerName} must capture the account epoch`);
+    assert.match(body, /captureInternalSessionToken\(\)/, `${writerName} must bind the original session token`);
+    assert.match(body, /sharedStateWriteQueueRef\.current!\.enqueue\(/, `${writerName} must use the scoped queue`);
+  });
 });
 
 test('job backfill does not fan out requests for terminal history outside the recent window', () => {
@@ -65,6 +89,8 @@ test('job backfill does not fan out requests for terminal history outside the re
   )?.[1] || '';
 
   assert.match(hydrationBody, /collectMissingActiveInternalJobIds/);
+  assert.match(hydrationBody, /for \(const jobId of collectMissingActiveInternalJobIds/);
+  assert.doesNotMatch(hydrationBody, /Promise\.all\([\s\S]{0,300}fetchInternalJob/);
   assert.match(hydrationBody, /shouldKeepRuntimeProject\(project\)/);
   assert.match(hydrationBody, /result\.status === 'generating' \|\| result\.status === 'retry_waiting'/);
   assert.match(hydrationBody, /isActiveTaskStatus\(task\.status\)/);

@@ -666,7 +666,9 @@ test('shell job hydration only refreshes active tasks and does not overwrite pro
 
 test('shell hydration restores data without auto navigating away from landing', () => {
   const app = read('../ShellMigratedApp.tsx');
-  const applyShellSnapshotBody = app.match(/const applyShellSnapshot = useCallback\(async \(loadedState:[\s\S]*?=> \{([\s\S]*?)\n  \}, \[[^\]]*restoreLocalMaterialPreviews[^\]]*shellLocalScopeUserId[^\]]*\]\);/)?.[1] || '';
+  const applyShellSnapshotBody = app
+    .split('const applyShellSnapshot = useCallback(async ')[1]
+    ?.split('const hydrateShellData = useCallback')[0] || '';
 
   assert.doesNotMatch(applyShellSnapshotBody, /setPageMode\('module'\)/);
 });
@@ -694,7 +696,9 @@ test('video generation permission is gated only on the generation subfeature', (
 
 test('shell refresh restores current workspace and keeps in-flight project cards', () => {
   const app = read('../ShellMigratedApp.tsx');
-  const applyShellSnapshotBody = app.match(/const applyShellSnapshot = useCallback\(async \(loadedState:[\s\S]*?=> \{([\s\S]*?)\n  \}, \[[^\]]*restoreLocalMaterialPreviews[^\]]*shellLocalScopeUserId[^\]]*\]\);/)?.[1] || '';
+  const applyShellSnapshotBody = app
+    .split('const applyShellSnapshot = useCallback(async ')[1]
+    ?.split('const hydrateShellData = useCallback')[0] || '';
   const jobHydrateBody = app.match(/const runHydrateShellJobs = useCallback\(async \(\) => \{([\s\S]*?)\n  \}, \[[^\]]*\]\);/)?.[1] || '';
 
   assert.match(app, /SHELL_UI_STATE_KEY/);

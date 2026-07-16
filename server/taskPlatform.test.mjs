@@ -166,7 +166,27 @@ test('submission resolution capability allows bind for recoverable unknown submi
     status: 'failed',
     errorCode: 'provider_submission_unknown',
     taskType: 'kie_image',
+    provider: 'kie',
   }), { allowed: true, canBind: true });
+});
+
+test('submission resolution capability only allows release for manual recovery failures', () => {
+  assert.deepEqual(taskPlatformModule.buildSubmissionResolutionCapability?.({
+    status: 'failed',
+    errorCode: 'provider_recovery_manual',
+    taskType: 'kie_image',
+    provider: 'kie',
+  }), { allowed: true, canBind: false });
+});
+
+test('submission resolution capability denies bind for synchronous MaxForAI images', () => {
+  assert.deepEqual(taskPlatformModule.buildSubmissionResolutionCapability?.({
+    status: 'failed',
+    errorCode: 'provider_submission_unknown',
+    taskType: 'kie_image',
+    provider: 'maxforai',
+    payload: { model: 'maxforai-image-2-relay' },
+  }), { allowed: true, canBind: false });
 });
 
 test('listTaskPlatformJobs maps admin rows without changing the public job shape', async () => {

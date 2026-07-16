@@ -98,6 +98,7 @@ test('subtitle removal is provider-bound, gated for new work, and recoverable by
   assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000);
   assert.equal(canRecoverProviderTaskById({
     taskType: 'subtitle_remove_video',
+    provider: 'golden_subtitle',
     providerTaskId: 'golden-1',
   }), true);
   assert.throws(
@@ -182,6 +183,7 @@ test('MaxForAI video jobs are provider-bound, zero-retry and recoverable by task
   assert.equal(policy.dedupeWindowMs, 60 * 60 * 1000);
   assert.equal(canRecoverProviderTaskById({
     taskType: 'maxforai_video',
+    provider: 'maxforai',
     providerTaskId: 'video_123',
   }), true);
   assert.throws(
@@ -265,12 +267,32 @@ test('submission lock timeout uses an env override with a conservative default',
 });
 
 test('provider task recovery is limited to task types with a real query path', () => {
-  for (const taskType of ['kie_image', 'kie_video', 'kie_seedance_video', 'kie_veo', 'dreamina_video', 'maxforai_video', 'subtitle_remove_video']) {
-    assert.equal(canRecoverProviderTaskById({ taskType, providerTaskId: 'existing-task' }), true, taskType);
+  const recoverable = [
+    ['kie_image', 'kie'],
+    ['kie_video', 'kie'],
+    ['kie_seedance_video', 'kie'],
+    ['kie_veo', 'kie'],
+    ['dreamina_video', 'dreamina'],
+    ['maxforai_video', 'maxforai'],
+    ['subtitle_remove_video', 'golden_subtitle'],
+  ];
+  for (const [taskType, provider] of recoverable) {
+    assert.equal(canRecoverProviderTaskById({ taskType, provider, providerTaskId: 'existing-task' }), true, taskType);
   }
   for (const taskType of ['kie_chat', 'openai_responses', 'openai_tool_calling']) {
     assert.equal(canRecoverProviderTaskById({ taskType, providerTaskId: 'response-id' }), false, taskType);
   }
+  assert.equal(canRecoverProviderTaskById({
+    taskType: 'kie_image',
+    provider: 'maxforai',
+    providerTaskId: 'sync-response-id',
+  }), false);
+  assert.equal(canRecoverProviderTaskById({
+    taskType: 'kie_image',
+    provider: 'kie',
+    providerTaskId: 'sync-response-id',
+    payload: { model: 'maxforai-image-2-relay' },
+  }), false);
   assert.equal(canRecoverProviderTaskById({ taskType: 'kie_video', providerTaskId: '' }), false);
 });
 

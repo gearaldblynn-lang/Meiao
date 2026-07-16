@@ -190,12 +190,24 @@ test('real PM2 process manager requires successful explicit all-zero pid output'
   );
 });
 
-test('deployment health requires HTTP, worker, and managed image upload readiness', () => {
+test('deployment health also requires one successful tombstoned-job cleanup cycle', () => {
   assert.equal(isDeployHealthReady({
     ok: true,
     worker: { healthy: true },
     managedImageUpload: { ready: true },
+    tombstonedJobCleanup: { alerting: false, lastCycleAt: 1 },
   }), true);
+  assert.equal(isDeployHealthReady({
+    ok: true,
+    worker: { healthy: true },
+    managedImageUpload: { ready: true },
+  }), false);
+  assert.equal(isDeployHealthReady({
+    ok: true,
+    worker: { healthy: true },
+    managedImageUpload: { ready: true },
+    tombstonedJobCleanup: { alerting: true, lastCycleAt: 1 },
+  }), false);
   assert.equal(isDeployHealthReady({ ok: true, worker: { healthy: true } }), false);
   assert.equal(isDeployHealthReady({
     ok: true,

@@ -9,6 +9,7 @@ import {
   buildPublicSystemConfig,
   getWorkerConcurrencyLimit,
   getNextJobFailureState,
+  getPersistedJobFailureErrorCode,
   getSubmittedTaskRecoveryRetries,
   isRetryableErrorCode,
   isTransientMysqlConnectionError,
@@ -571,6 +572,59 @@ test('getNextJobFailureState uses an independent recovery budget after provider 
   assert.deepEqual(firstRecovery, { status: 'retry_waiting', retryCount: 1 });
   assert.deepEqual(secondRecovery, { status: 'retry_waiting', retryCount: 2 });
   assert.deepEqual(exhausted, { status: 'failed', retryCount: 2 });
+});
+
+test('exhausted tombstone recovery becomes an explicit manual-resolution state', () => {
+  const job = {
+    payload: {
+      __tombstoneRecovery: { providerTaskId: 'provider-task-1' },
+    },
+    providerTaskId: 'provider-task-1',
+  };
+  assert.equal(getPersistedJobFailureErrorCode({
+    job,
+    failure: { status: 'retry_waiting' },
+    errorCode: 'provider_timeout',
+  }), 'provider_timeout');
+  assert.equal(getPersistedJobFailureErrorCode({
+    job,
+    failure: { status: 'failed' },
+    errorCode: 'provider_timeout',
+  }), 'provider_recovery_manual');
+  assert.equal(getPersistedJobFailureErrorCode({
+    job: { payload: {} },
+    failure: { status: 'failed' },
+    errorCode: 'provider_timeout',
+  }), 'provider_timeout');
+  assert.equal(getPersistedJobFailureErrorCode({
+    job,
+    failure: { status: 'failed' },
+    errorCode: 'provider_task_failed',
+  }), 'provider_task_failed', 'a definitive upstream failure can release credits and finish deletion');
+  assert.equal(getPersistedJobFailureErrorCode({
+    job,
+    failure: { status: 'failed' },
+    errorCode: 'provider_job_failed',
+    providerStatus: 'failed',
+  }), 'provider_job_failed', 'subtitle removal exposes provider_job_failed for a definitive terminal failure');
+  assert.equal(getPersistedJobFailureErrorCode({
+    job,
+    failure: { status: 'failed' },
+    errorCode: 'provider_bad_response',
+    providerStatus: 'success_without_result',
+  }), 'provider_recovery_manual', 'success without a result is financially ambiguous');
+  assert.equal(getPersistedJobFailureErrorCode({
+    job,
+    failure: { status: 'failed' },
+    errorCode: 'provider_auth_invalid',
+    providerStatus: 'auth_invalid',
+  }), 'provider_recovery_manual', 'a query auth failure does not prove the provider task failed');
+  assert.equal(getPersistedJobFailureErrorCode({
+    job,
+    failure: { status: 'failed' },
+    errorCode: 'provider_bad_request',
+    providerStatus: 'failed',
+  }), 'provider_bad_request', 'an explicit provider failed state is definitive');
 });
 
 test('getNextJobFailureState never applies submitted recovery budget without a task id', () => {

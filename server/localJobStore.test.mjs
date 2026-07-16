@@ -195,6 +195,82 @@ test('local admin can release a verified submission-unknown reservation', () => 
   assert.equal(result.job.errorCode, 'provider_submission_released');
 });
 
+test('local admin can release but cannot rebind a manual provider recovery', () => {
+  const createRecoveryStore = () => ({
+    jobs: [{
+      id: 'local-provider-recovery-manual',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'failed',
+      providerTaskId: 'provider-task-1',
+      errorCode: 'provider_recovery_manual',
+      errorMessage: 'manual review required',
+      payload: {},
+      retryCount: 2,
+      maxRetries: 2,
+      createdAt: 1,
+      updatedAt: 1,
+    }],
+  });
+
+  assert.throws(() => resolveLocalSubmissionUnknownJob(createRecoveryStore(), {
+    jobId: 'local-provider-recovery-manual',
+    action: 'bind',
+    providerTaskId: 'provider-task-1',
+  }), (error) => error?.code === 'submission_resolution_bind_unsupported');
+
+  let releasedJobId = '';
+  const result = resolveLocalSubmissionUnknownJob(createRecoveryStore(), {
+    jobId: 'local-provider-recovery-manual',
+    action: 'release',
+    releaseReservation: (job) => { releasedJobId = job.id; },
+  });
+  assert.equal(releasedJobId, 'local-provider-recovery-manual');
+  assert.equal(result.resolutionKind, 'provider_recovery');
+  assert.equal(result.job.errorCode, 'provider_recovery_released');
+});
+
+test('local admin can settle a verified successful manual recovery', () => {
+  const store = {
+    jobs: [{
+      id: 'local-provider-recovery-settle',
+      userId: 'user-a',
+      module: 'one_click',
+      taskType: 'kie_image',
+      provider: 'kie',
+      status: 'failed',
+      providerTaskId: 'provider-task-success',
+      errorCode: 'provider_recovery_manual',
+      errorMessage: 'manual review required',
+      payload: {},
+      retryCount: 2,
+      maxRetries: 2,
+      createdAt: 1,
+      updatedAt: 1,
+    }],
+  };
+  let settlementInput = null;
+  const result = resolveLocalSubmissionUnknownJob(store, {
+    jobId: 'local-provider-recovery-settle',
+    action: 'settle',
+    actualCreditsConsumed: 2,
+    verificationNote: 'provider console verified',
+    settleReservation: (job, input) => {
+      settlementInput = { jobId: job.id, ...input };
+      return { settledAmount: input.actualCreditsConsumed };
+    },
+  });
+  assert.deepEqual(settlementInput, {
+    jobId: 'local-provider-recovery-settle',
+    actualCreditsConsumed: 2,
+    verificationNote: 'provider console verified',
+  });
+  assert.equal(result.action, 'settle');
+  assert.equal(result.job.errorCode, 'provider_recovery_settled');
+});
+
 test('createLocalJobRecord stores queued job with default retry fields', () => {
   const store = createStore();
   const user = createUser();

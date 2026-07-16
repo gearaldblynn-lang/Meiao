@@ -11,7 +11,7 @@ import {
   updateLocalJobProviderTaskId,
 } from './localJobStore.mjs';
 import { getJobById, isRunningJobConcurrencyBlocking, updateJobFields } from './jobManager.mjs';
-import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
+import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode } from './jobRuntime.mjs';
 import { canRecoverProviderTaskById } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
 import { createJobAttempt, finishJobAttempt, recordJobEvent } from './taskPlatform.mjs';
@@ -537,16 +537,24 @@ export const createMysqlTemporalActivities = ({
         providerTaskId,
         providerTaskRecoverable: canRecoverProviderTaskById({
           taskType: latestJob.taskType,
+          provider: latestJob.provider,
           providerTaskId,
+          payload: latestJob.payload,
         }),
       });
       const finishedAt = now();
+      const persistedErrorCode = getPersistedJobFailureErrorCode({
+        job: { ...latestJob, providerTaskId },
+        failure,
+        errorCode: errorFields.errorCode,
+        providerStatus: error?.providerStatus,
+      });
 
       await updateJobFields(pool, latestJob.id, {
         status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
         provider_task_id: providerTaskId || null,
         retry_count: error?.code === 'request_cancelled' ? latestJob.retryCount ?? 0 : failure.retryCount,
-        error_code: errorFields.errorCode,
+        error_code: persistedErrorCode,
         error_message: errorFields.errorMessage,
         error_detail: errorFields.errorDetail || null,
         updated_at: finishedAt,

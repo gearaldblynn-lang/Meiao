@@ -24,7 +24,11 @@ const runDeletionRequest = async (
     if (status === 404 || code === 'job_not_found') {
       return { deletionStatus: 'already_absent' };
     }
-    if (status === 409 && code === 'job_delete_active') {
+    if (status === 409 && [
+      'job_delete_active',
+      'job_delete_submitted_cancelled',
+      'job_delete_submitted_recovery',
+    ].includes(code)) {
       return { deletionStatus: 'scheduled' };
     }
     throw error;
