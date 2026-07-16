@@ -162,6 +162,10 @@ import {
 } from './assetLifecycleStore.mjs';
 import { assertOwnedActiveManagedAssetReferences } from './managedAssetReferencePolicy.mjs';
 import {
+  assertManagedAssetSubmissionUserContext,
+  assertManagedImageInputsPreserved,
+} from './managedAssetSubmissionGuard.mjs';
+import {
   getManagedImageMaxBytes,
   inspectManagedImageMultipartPrefix,
   resolveManagedImageUpload,
@@ -4168,9 +4172,18 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
   if (taskType === 'upload_asset') {
     return await executeProviderJob(job, env, signal, options);
   }
+  assertManagedAssetSubmissionUserContext({
+    payload: job?.payload,
+    userId: job?.userId,
+  });
   const scrubbedPayload = shouldUseMysql
     ? await scrubDbJobPayloadBeforeSubmission(job?.payload, job?.userId)
     : await scrubLocalJobPayloadBeforeSubmission(job?.payload, job?.userId);
+  assertManagedImageInputsPreserved({
+    taskType,
+    originalPayload: job?.payload,
+    scrubbedPayload,
+  });
   const assetPool = shouldUseMysql ? await getMysqlPool() : null;
   const inheritedAssetTransferDeps = options?.assetTransferDeps || {};
   const resolveJobManagedAssetReadUrl = async (value, readOptions = {}) => resolveManagedAssetReadUrl(value, {
@@ -6970,6 +6983,7 @@ const inlineTextAttachments = async (pool, text, attachments = []) => {
 };
 
 const runAgenticRetrievalLoop = async ({
+  userId,
   initialMessages,
   currentMessage,
   selectedModel,
@@ -7002,6 +7016,7 @@ const runAgenticRetrievalLoop = async ({
   while (extraRounds <= maxExtraRounds) {
     onProgress?.({ stage: 'thinking', round: extraRounds + 1 });
     const output = await executeProviderJobWithManagedAssetScrub({
+      userId,
       taskType: 'kie_chat',
       payload: { messages, model: selectedModel, fallbackModels, reasoningLevel, webSearchEnabled },
     }, process.env, new AbortController().signal);
@@ -7114,6 +7129,7 @@ const runAgentConversation = async ({
   let output = null;
   if (hasKnowledgeBase) {
     const agenticResult = await runAgenticRetrievalLoop({
+      userId: user.id,
       initialMessages: messages,
       currentMessage,
       selectedModel,
@@ -7129,6 +7145,7 @@ const runAgentConversation = async ({
   } else {
     onProgress?.({ stage: 'thinking', round: 1 });
     output = await executeProviderJobWithManagedAssetScrub({
+      userId: user.id,
       taskType: 'kie_chat',
       payload: {
         messages,
@@ -8300,6 +8317,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       const callModel = async ({ messages, tools, toolChoice, maxTokens, onDelta }) => {
         void toolChoice;
         const output = await executeProviderJobWithManagedAssetScrub({
+          userId: user.id,
           taskType: 'openai_responses',
           payload: {
             model: selectedModel,
@@ -8327,6 +8345,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         let imageOutput;
         try {
           imageOutput = await executeProviderJobWithManagedAssetScrub({
+            userId: user.id,
             taskType: 'kie_image',
             payload: {
               imageUrls: inputImageUrls,
@@ -9529,6 +9548,7 @@ const runLocalAgentConversation = async ({
   let output = null;
   if (hasKnowledgeBase) {
     const agenticResult = await runAgenticRetrievalLoop({
+      userId: user.id,
       initialMessages: messages,
       currentMessage,
       selectedModel,
@@ -9543,6 +9563,7 @@ const runLocalAgentConversation = async ({
   } else {
     onProgress?.({ stage: 'thinking', round: 1 });
     output = await executeProviderJobWithManagedAssetScrub({
+      userId: user.id,
       taskType: 'kie_chat',
       payload: {
         messages,
@@ -9966,6 +9987,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
   let analysisError = null;
   try {
     analysisOutput = await executeProviderJobWithManagedAssetScrub({
+      userId: user.id,
       taskType: 'kie_chat',
       payload: { messages: analysisMessages, model: analysisModel, fallbackModels: analysisFallbackModels },
     }, process.env, new AbortController().signal);
@@ -10065,6 +10087,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
   let imageOutput;
   try {
     imageOutput = await executeProviderJobWithManagedAssetScrub({
+      userId: user.id,
       taskType: 'kie_image',
       payload: {
         imageUrls: preferredInputImageUrls,
@@ -15401,6 +15424,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         const callModel = async ({ messages, tools, toolChoice, maxTokens, onDelta }) => {
           void toolChoice;
           const output = await executeProviderJobWithManagedAssetScrub({
+            userId: user.id,
             taskType: 'openai_responses',
             payload: {
               model: selectedModel,
@@ -15429,6 +15453,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
           let imageOutput;
           try {
             imageOutput = await executeProviderJobWithManagedAssetScrub({
+              userId: user.id,
               taskType: 'kie_image',
               payload: {
                 imageUrls: inputImageUrls,

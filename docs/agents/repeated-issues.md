@@ -949,6 +949,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/agentToolConversation.test.mjs server/agentImagePlan.test.mjs server/providerKieImage.test.mjs`; `node --test server/agent-image-retrieval.test.mjs server/agentConversationReliability.test.mjs server/agentCenterSource.test.mjs server/providerGateway.test.mjs`; `npm run verify`.
 - Avoid next time: LLM 工具调用不是可信执行合同。改图/引用语义必须在扣费边界拥有非空且可验证的输入图；无法确定时应失败，不得用零输入静默切换为文生图。新旧 Agent 路径必须共享同一输入安全矩阵。
 
+## 2026-07-16 - Agent managed image inputs must retain owner context through provider scrubbing
+
+- Symptom: 林一账号在 Agent Center 要求“让图1中间的卖点更醒目清晰”时，11:40 与 11:48 两次结果分别变成无关护肤品和男性保健品广告；梅奥日志仍显示 `edit_image + inputImageUrls=[上一张托管结果图]`。
+- Environment: Tencent Cloud production / Agent Center shared image conversation / managed `/api/assets/file/...` result / `gpt-image-2`.
+- Cloud evidence: 初次任务 `95dee015706e8fdd9419007e1ac5a077` 在 KIE recordInfo 中是 `gpt-image-2-image-to-image` 且含两张 `input_urls`；后续任务 `16be772f239eda0c89430ddc0e18af3b` 与 `febec80cd4ef5e00456b5ec4cfeddf60` 都变成 `gpt-image-2-text-to-image`，上游参数完全没有 `input_urls`。本地 imagePlan 在两个时间点均保留一张托管输入，故丢失发生在计划完成后、provider 提交前。
+- Root cause: `executeProviderJobWithManagedAssetScrub` 按 `job.userId` 加载当前账号的 active 素材；共享生图、MySQL 工具生图和本地工具生图调用只传了 payload，没有传 `userId`。首次上传已被转换为 COS 签名 URL，不属于 managed route，因而正常；后续结果使用 `/api/assets/file/...`，清洗器以空 owner 查询得到空素材集并删除 `imageUrls`，KIE 随后按零输入自动选择 text-to-image。7 月 15 日的修复只锁住了计划层输入绑定，没有锁住计划之后的 owner-aware scrub 边界。
+- Fix: 所有 Agent Center 规划、检索、直接聊天、Responses 工具规划和三条 `kie_image` 提交路径均显式传递 `user.id`。统一 provider wrapper 在清洗前检测 managed reference 缺少 owner context 时抛 `managed_asset_user_context_missing`；`kie_image` 在清洗后逐项比较原始与最终 `imageUrls`，任何完整或部分丢失都抛 `managed_image_input_removed`，不进入 provider，不扣除错误文生图任务。
+- Regression check: `node --test server/managedAssetSubmissionGuard.test.mjs server/agentManagedAssetSubmissionSource.test.mjs server/agentToolConversation.test.mjs server/agentImagePlan.test.mjs server/providerKieImage.test.mjs server/agentCenterSource.test.mjs server/providerGateway.test.mjs`; `npm run test:server`; `npx eslint server/index.mjs server/managedAssetSubmissionGuard.mjs server/managedAssetSubmissionGuard.test.mjs server/agentManagedAssetSubmissionSource.test.mjs`; `npm run doctor`; `npm run build`. 全量 `npm run lint` 若失败，须先确认是否仍是仓库既有 warning budget，而不是提高预算或混进事故修复。
+- Avoid next time: “计划里有输入图”不等于“上游收到输入图”。所有 owner-aware payload 转换必须把 owner identity 当作显式函数参数，禁止依赖闭包或调用者默认值；付费 image provider 的最终安全门必须比较清洗前后的结构化输入合同，任何输入减少都 fail closed。真实验收必须核对 provider recordInfo 的模型类型和 `input_urls`，不能只看应用日志里的 imagePlan。
+
 ## 2026-07-15 - Local draft asset ids must not block durable project checkpoints
 
 - Symptom: 多桑账号两个新首图项目排在列表底部；其中一个后台 `kie_image` 已成功并保存图片，前端仍只显示策划态或不显示图片，刷新后也无法恢复。
