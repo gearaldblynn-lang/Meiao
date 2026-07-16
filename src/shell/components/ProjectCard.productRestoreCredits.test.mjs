@@ -67,6 +67,11 @@ const PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID = 'product-restore-manual-anal
 const EmptyComponent = () => null;
 const ConfirmDialog = EmptyComponent;
 const ImageLightbox = EmptyComponent;
+const RetouchComparisonViewer = EmptyComponent;
+const buildRetouchComparisonItems = () => [];
+const isRetouchComparisonScope = (module, subFeature) => (
+  module === 'retouch' && ['original', 'white_bg', 'product_restore'].includes(subFeature)
+);
 const PlanEditor = EmptyComponent;
 const useToast = () => ({ addToast: () => undefined });
 const ProductRestoreResultCreditBadge = EmptyComponent;
