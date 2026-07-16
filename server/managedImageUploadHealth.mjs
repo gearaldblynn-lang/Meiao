@@ -8,6 +8,10 @@ import {
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+import {
+  normalizeManagedImageUploadMode,
+  resolveLocalManagedImageUpload,
+} from './managedImageUploadMode.mjs';
 
 const DEFAULT_PROBE_MAX_AGE_MS = 60 * 60 * 1000;
 const DEFAULT_PROBE_INTERVAL_MS = 15 * 60 * 1000;
@@ -22,11 +26,6 @@ const parseBoundedInteger = (value, fallback, minimum, maximum) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(minimum, Math.min(maximum, parsed));
-};
-
-const normalizeMode = (env) => {
-  const mode = String(env?.MEIAO_MANAGED_IMAGE_UPLOAD_MODE || 'disabled').trim().toLowerCase();
-  return ['cos', 'disabled'].includes(mode) ? mode : 'invalid';
 };
 
 const getConfigValues = (env = {}) => Object.fromEntries(
@@ -100,9 +99,11 @@ export const getManagedImageUploadHealth = ({
   statusFilePath = getManagedImageProbeStatusFilePath(env),
   now = Date.now(),
 } = {}) => {
-  const mode = normalizeMode(env);
+  const mode = normalizeManagedImageUploadMode(env);
   const configValues = getConfigValues(env);
-  const configured = REQUIRED_COS_SETTINGS.every((key) => Boolean(configValues[key]));
+  const cosConfigured = REQUIRED_COS_SETTINGS.every((key) => Boolean(configValues[key]));
+  const localMode = mode === 'local' ? resolveLocalManagedImageUpload({ env }) : null;
+  const configured = mode === 'local' ? Boolean(localMode?.allowed) : cosConfigured;
   const base = {
     mode,
     configured,
@@ -114,6 +115,11 @@ export const getManagedImageUploadHealth = ({
   };
 
   if (mode === 'disabled') return { ...base, status: 'disabled' };
+  if (mode === 'local') {
+    return localMode?.allowed
+      ? { ...base, ready: true, status: 'local_ready', alerting: false }
+      : { ...base, status: 'local_forbidden' };
+  }
   if (mode !== 'cos') return { ...base, status: 'invalid_mode' };
   if (!configured) return { ...base, status: 'config_incomplete' };
 

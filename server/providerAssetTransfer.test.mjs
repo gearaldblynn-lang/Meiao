@@ -90,38 +90,50 @@ test('generation and chat use the canonical HTTPS origin in direct-first mode', 
   );
 });
 
-test('managed COS images resolve through the fresh signed URL dependency before direct or KIE routing', async () => {
+test('managed COS images are staged for generation while chat can use a fresh signed read URL', async () => {
   const calls = [];
   const signedUrl = 'https://meiao-managed-images-1406860462.cos.ap-guangzhou.myqcloud.com/managed-images/users/abc/source/asset/image.png?q-signature=fresh';
+  const stagedUrl = 'https://file.kie.ai/mayo-storage/internal/asset-image.png';
+  const env = {
+    MEIAO_KIE_MANAGED_ASSET_MODE: 'direct-first',
+    MEIAO_PUBLIC_BASE_URL: 'https://meiaoyuntai.com',
+  };
   const deps = {
     resolveManagedAssetReadUrl: async (value, options) => {
-      calls.push([value, options.purpose]);
+      calls.push(['resolve', value, options.purpose]);
       return signedUrl;
     },
-    fetchWithTimeout: async () => { throw new Error('must not download the managed COS image'); },
-    uploadAssetViaKieWithFallback: async () => { throw new Error('must not stage the managed COS image in KIE'); },
+    fetchWithTimeout: async (value) => {
+      calls.push(['fetch', value]);
+      return {
+        ok: true,
+        headers: { get: (name) => name === 'content-type' ? 'image/png' : null },
+        arrayBuffer: async () => Buffer.from('cos-image'),
+      };
+    },
+    uploadAssetViaKieWithFallback: async (payload) => {
+      calls.push(['upload', payload.mimeType, payload.fileBuffer.toString()]);
+      return { result: { fileUrl: stagedUrl } };
+    },
   };
 
   assert.equal(
     await resolveProviderGenerationMediaUrl('/api/assets/file/asset/image.png', {
-      env: { MEIAO_KIE_MANAGED_ASSET_MODE: 'kie-only' },
+      env,
       deps,
-      forceUpload: true,
     }),
-    signedUrl,
+    stagedUrl,
   );
   assert.equal(
     await resolveProviderChatMediaUrl('/api/assets/file/asset/image.png', {
-      env: { MEIAO_KIE_MANAGED_ASSET_MODE: 'kie-only' },
+      env,
       deps,
-      forceUpload: true,
     }),
     signedUrl,
   );
-  assert.deepEqual(calls, [
-    ['/api/assets/file/asset/image.png', 'provider'],
-    ['/api/assets/file/asset/image.png', 'provider'],
-  ]);
+  assert.equal(calls.filter(([kind]) => kind === 'fetch').length, 1);
+  assert.equal(calls.filter(([kind]) => kind === 'upload').length, 1);
+  assert.ok(calls.some((call) => call[0] === 'fetch' && call[1] === signedUrl));
 });
 
 test('managed Gemini video is copied to private COS and resolved as a signed URL', async () => {

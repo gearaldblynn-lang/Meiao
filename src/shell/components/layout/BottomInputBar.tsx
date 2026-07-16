@@ -3097,12 +3097,27 @@ const BottomInputBar: React.FC<Props> = ({
                         if (type === 'styleRef') openLogoReplaceRegionEditor();
                       }}
                       materialTypes={contextMaterialTypes}
-                      materialHints={module === AppModuleObj.VIDEO ? getVideoMediaLimitHints(referenceVideoPolicy) : undefined}
+                      materialHints={
+                        isProductRestore
+                          ? {
+                            restoreTarget: PRODUCT_RESTORE_MATERIAL_META.restoreTarget.description,
+                            productReference: PRODUCT_RESTORE_MATERIAL_META.productReference.description,
+                          }
+                          : module === AppModuleObj.VIDEO
+                            ? getVideoMediaLimitHints(referenceVideoPolicy)
+                            : undefined
+                      }
                       materialLabels={
                         isProductRestore
                           ? {
-                            restoreTarget: { label: PRODUCT_RESTORE_MATERIAL_META.restoreTarget.label, desc: PRODUCT_RESTORE_MATERIAL_META.restoreTarget.description },
-                            productReference: { label: PRODUCT_RESTORE_MATERIAL_META.productReference.label, desc: PRODUCT_RESTORE_MATERIAL_META.productReference.description },
+                            restoreTarget: {
+                              label: PRODUCT_RESTORE_MATERIAL_META.restoreTarget.label,
+                              desc: `最多 ${PRODUCT_RESTORE_MATERIAL_META.restoreTarget.limit} 张`,
+                            },
+                            productReference: {
+                              label: PRODUCT_RESTORE_MATERIAL_META.productReference.label,
+                              desc: `最多 ${PRODUCT_RESTORE_MATERIAL_META.productReference.limit} 张`,
+                            },
                           }
                         : isEverythingReplaceImageReplace
                           ? getEverythingReplaceMaterialLabels(activeSubFeature, currentParams)

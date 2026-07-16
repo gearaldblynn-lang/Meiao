@@ -539,6 +539,87 @@ test('disabled managed image upload mode rejects new images before creating meta
   assert.equal(createCalls, 0);
 });
 
+test('local development image mode persists validated source images through the durable local store', async () => {
+  const calls = [];
+  const record = await persistUploadedAssetBuffer({
+    publicBaseUrl: 'http://127.0.0.1:3100',
+    userId: 'user-1',
+    module: 'retouch',
+    assetType: 'reference',
+    originalName: 'product-reference.png',
+    mimeType: 'image/png',
+    fileBuffer: PNG_FILE_BUFFER,
+    env: {
+      NODE_ENV: 'development',
+      MEIAO_PUBLIC_BASE_URL: 'http://127.0.0.1:3100',
+      MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'local',
+    },
+    deps: {
+      persistLocal: async (options) => {
+        calls.push(options);
+        return { id: 'local-reference', provider: 'internal', storageStatus: 'active' };
+      },
+      putCos: async () => { throw new Error('local development mode must not call COS'); },
+    },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].assetType, 'reference');
+  assert.equal(calls[0].mimeType, 'image/png');
+  assert.equal(record.provider, 'internal');
+  assert.equal(record.storageStatus, 'active');
+});
+
+test('local image mode stays fail-closed in production', async () => {
+  let localWrites = 0;
+  await assert.rejects(
+    () => persistUploadedAssetBuffer({
+      publicBaseUrl: 'http://127.0.0.1:3100',
+      userId: 'user-1',
+      assetType: 'source',
+      originalName: 'source.png',
+      mimeType: 'image/png',
+      fileBuffer: PNG_FILE_BUFFER,
+      env: {
+        NODE_ENV: 'production',
+        MEIAO_PUBLIC_BASE_URL: 'http://127.0.0.1:3100',
+        MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'local',
+      },
+      deps: {
+        persistLocal: async () => { localWrites += 1; },
+      },
+    }),
+    (error) => error?.code === 'managed_image_local_mode_forbidden'
+      && error?.retryable === false,
+  );
+  assert.equal(localWrites, 0);
+});
+
+test('local image mode rejects a public asset origin even outside production', async () => {
+  let localWrites = 0;
+  await assert.rejects(
+    () => persistUploadedAssetBuffer({
+      publicBaseUrl: 'https://meiao.example.com',
+      userId: 'user-1',
+      assetType: 'source',
+      originalName: 'source.png',
+      mimeType: 'image/png',
+      fileBuffer: PNG_FILE_BUFFER,
+      env: {
+        NODE_ENV: 'development',
+        MEIAO_PUBLIC_BASE_URL: 'https://meiao.example.com',
+        MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'local',
+      },
+      deps: {
+        persistLocal: async () => { localWrites += 1; },
+      },
+    }),
+    (error) => error?.code === 'managed_image_local_mode_forbidden'
+      && error?.retryable === false,
+  );
+  assert.equal(localWrites, 0);
+});
+
 test('unknown client asset types cannot bypass COS by falling through to local storage', async () => {
   let localWrites = 0;
   await assert.rejects(

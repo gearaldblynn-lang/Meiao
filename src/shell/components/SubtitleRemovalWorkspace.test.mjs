@@ -4,7 +4,9 @@ import { readFileSync } from 'node:fs';
 
 const source = readFileSync(new URL('./SubtitleRemovalWorkspace.tsx', import.meta.url), 'utf8');
 const reminderSource = readFileSync(new URL('./SubtitleRegionReminderDialog.tsx', import.meta.url), 'utf8');
+const projectListSource = readFileSync(new URL('./ProjectListView.tsx', import.meta.url), 'utf8');
 const videoModuleSource = readFileSync(new URL('../modules/Video/VideoModule.tsx', import.meta.url), 'utf8');
+const shellSource = readFileSync(new URL('../../ShellMigratedApp.tsx', import.meta.url), 'utf8');
 
 test('workspace accepts videos and starts the subtitle media profile immediately', () => {
   assert.match(source, /accept="video\/\*"/);
@@ -88,4 +90,36 @@ test('video module keeps the batch workspace mounted while users inspect result 
   assert.match(videoModuleSource, /hidden=\{activeSubFeature !== 'subtitle_removal'\}/);
   assert.match(videoModuleSource, /subtitleRemovalBatchLimits/);
   assert.doesNotMatch(videoModuleSource, /activeSubFeature === 'subtitle_removal' \? \(\s*<SubtitleRemovalWorkspace/);
+});
+
+test('subtitle removal keeps project results above the batch upload workspace', () => {
+  assert.match(videoModuleSource, /afterProjects=\{subtitleRemovalWorkspace\}/);
+  assert.doesNotMatch(videoModuleSource, /beforeProjects=\{subtitleRemovalWorkspace\}/);
+  assert.match(projectListSource, /afterProjects\?: React\.ReactNode/);
+
+  const projectsIndex = projectListSource.indexOf('{orderedProjects.length > 0 ?');
+  const uploaderIndex = projectListSource.indexOf('{afterProjects}');
+  assert.ok(projectsIndex >= 0, 'project result grid should exist');
+  assert.ok(uploaderIndex > projectsIndex, 'batch upload workspace should render after project results');
+});
+
+test('subtitle removal mounts its composer in the shared shell bottom slot', () => {
+  assert.match(shellSource, /id="subtitle-removal-composer-slot"/);
+  assert.match(videoModuleSource, /active=\{activeSubFeature === 'subtitle_removal'\}/);
+  assert.match(videoModuleSource, /composerSlotId="subtitle-removal-composer-slot"/);
+  assert.match(source, /createPortal/);
+  assert.match(source, /document\.getElementById\(composerSlotId\)/);
+  assert.match(source, /className="px-6 pt-4 pb-5"/);
+  assert.match(source, /max-w-\[896px\]/);
+  assert.doesNotMatch(projectListSource, /afterProjectsAtBottom/);
+  assert.doesNotMatch(source, /pb-10/);
+});
+
+test('subtitle removal uses the shared bottom-composer visual language', () => {
+  assert.match(source, /aria-label="去字幕任务输入区"/);
+  assert.match(source, /rounded-3xl border transition-all/);
+  assert.match(source, /background: 'var\(--bg-surface\)'/);
+  assert.match(source, /background: 'var\(--accent\)'/);
+  assert.doesNotMatch(source, /border-dashed/);
+  assert.doesNotMatch(source, /sticky bottom-4/);
 });

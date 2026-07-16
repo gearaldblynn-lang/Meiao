@@ -9,6 +9,10 @@ import { enqueueAssetCleanupTask, ensureAssetLifecycleSchema } from './assetLife
 import { buildCosImageObjectKey, putTencentCosImage } from './tencentCosImageStore.mjs';
 import { appendManagedAssetAccessKey } from './managedAssetAccessKey.mjs';
 import { resolveManagedImageUpload } from './managedImageValidation.mjs';
+import {
+  normalizeManagedImageUploadMode,
+  resolveLocalManagedImageUpload,
+} from './managedImageUploadMode.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -797,6 +801,16 @@ const createManagedImageUploadDisabledError = () => {
   return error;
 };
 
+const createLocalManagedImageUploadForbiddenError = (reason) => {
+  const error = new Error('本地图片存储仅允许在非生产的本机或内网环境使用');
+  error.code = 'managed_image_local_mode_forbidden';
+  error.statusCode = 503;
+  error.providerStage = 'asset_upload';
+  error.providerStatus = String(reason || 'forbidden');
+  error.retryable = false;
+  return error;
+};
+
 export const persistUploadedAssetBuffer = async ({
   pool = null,
   publicBaseUrl = '',
@@ -841,7 +855,24 @@ export const persistUploadedAssetBuffer = async ({
     });
   }
 
-  const uploadMode = String(env?.MEIAO_MANAGED_IMAGE_UPLOAD_MODE || 'disabled').trim().toLowerCase();
+  const uploadMode = normalizeManagedImageUploadMode(env);
+  if (uploadMode === 'local') {
+    const localMode = resolveLocalManagedImageUpload({ env, publicBaseUrl });
+    if (!localMode.allowed) throw createLocalManagedImageUploadForbiddenError(localMode.reason);
+    return persistLocal({
+      pool,
+      publicBaseUrl,
+      userId,
+      module,
+      assetType,
+      originalName,
+      mimeType: normalizedMimeType,
+      fileBuffer,
+      width,
+      height,
+      provider: 'internal',
+    });
+  }
   if (uploadMode !== 'cos') throw createManagedImageUploadDisabledError();
 
   const createdAt = now();

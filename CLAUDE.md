@@ -406,3 +406,13 @@
   根因:产品还原将用户选择正确归一为 `quality=2K`，但生图配置又把结构化比例固定为 `aspectRatio=auto`。GPT Image 2 的 provider 合同为了防止无效组合，会把 `auto + 2K` 规范化为 1K；因此前端项目上下文仍显示 2K，真实 job payload 却是 `resolution=1K`，1254×1254 原图只返回 1254×1254。旧测试只断言 workflow 内存中的 quality，没有验证传到 provider 的比例与分辨率组合。
   修复:每个产品还原生图任务从当前待还原素材的 `originalWidth/originalHeight` 计算最简精确比例，并作为结构化 `aspectRatio` 传入 provider；提示词中的原图比例保护继续保留。真实回归确认 1:1 待还原图创建的 job payload 为 `aspectRatio=1:1 + resolution=2K`，结果从 1254×1254 升级为 2048×2048，刷新后素材、V2 分析、逐图 Prompt 与 2K 结果均能恢复。
   如何避免:**分辨率 UI 默认值不是 provider 提交证据。涉及“自动比例 + 分辨率”的模型必须用组合矩阵验证最终 job payload，并在真实 canary 中同时核对请求参数、provider 任务 ID、结果实际像素和刷新恢复；只断言中间 config 会漏掉边界归一。**
+
+- **#71 ✅ 已修(2026-07-16)· Agent 改图在计划后丢失 owner context，托管输入被清洗并再次降级文生图**
+  根因:林一账号两次“让图1中间卖点更醒目清晰”的 imagePlan 都正确保存上一张 `/api/assets/file/...` 托管结果，但 Agent 的共享生图、MySQL 工具生图和本地工具生图调用在进入 `executeProviderJobWithManagedAssetScrub` 时没有传 `job.userId`。清洗器因此按空 owner 加载到空素材集并删除 `imageUrls`；KIE 原始 recordInfo 证明两次任务均收到 `gpt-image-2-text-to-image` 且没有 `input_urls`。首次上传图已转换为 COS 签名 URL，不触发 managed scrub，所以形成“第一轮正常、后续改图完全跑题”的条件性复发。前一日 #66 只阻止了计划阶段零输入，没有验证计划后的 owner-aware scrub 是否保留输入。
+  修复:Agent 的 planning/chat/Responses/三条图片提交路径统一显式传 `user.id`；provider wrapper 新增两层不可绕过门禁：payload 含 managed reference 但缺 owner 时抛 `managed_asset_user_context_missing`，`kie_image` 清洗后任一 `imageUrls` 丢失时抛 `managed_image_input_removed`。两种情况都停在 `input_prepare`，禁止提交、禁止静默切 text-to-image。
+  如何避免:**素材身份必须从用户入口连续传到 provider 最终提交边界；不能只在规划结果、日志或中间 payload 里看到 URL 就判定安全。任何会删除/替换素材引用的安全清洗都要有清洗前后合同断言，付费改图输入只允许完整保留或 fail closed，不允许“尽量提交”。回归与线上验收必须同时证明应用计划有输入、清洗后仍有输入、provider recordInfo 实际为 image-to-image。**
+
+- **#72 ✅ 本地已修、待部署(2026-07-16)· 一键素材、COS 生图读取和删除墓碑在并发下失去最终一致性**
+  根因:一键策划误用上传前的 `filteredMaterials`；KIE 生图又无条件接收短时 COS 私有签名 URL，接单后异步拉图失败。删除墓碑与一次性 DELETE 没有后台协调，404/运行中 409 形成假失败或远端残留。历史失效 `*AssetId` 只清 URL 不清身份，整份 state 被所有权校验拒绝；并发只放大这些边界缺口，并非 worker 全局串行。
+  修复:策划只传准备后的 `generationMaterials`；生成链路把 resolver-backed COS 图先转存 KIE，聊天/历史公网路由保持原合同。DELETE 幂等化，运行中删除进入后台清理提示；服务端按 `deletedJobIds` 周期复用取消、积分保护、事务删除和素材清理合同持续收敛，并在 health 暴露摘要。state 边界清除失效显式素材 ID，job payload 校验仍 fail closed。
+  如何避免:**素材准备结果必须沿 planning/provider 单向传递；异步上游接单前必须落实稳定读取字节，不能依赖短时私有 URL。删除要建模为耐久意图并由后台收敛，不能把一次 HTTP 当最终状态。身份安全策略要同时回放历史 state、严格任务 payload 与多账号并发，不得用调大并发掩盖 provider stage 错误。**

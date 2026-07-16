@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { CheckSquare2, ChevronLeft, ChevronRight, Copy, Download, FileText, Film, ImagePlus, Maximize2, Package, Palette, Play, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, VideoStoryboardProject } from '../../types';
@@ -207,14 +207,22 @@ const CardVideoPreview: React.FC<{
   previewFrameTime?: number;
   showPlayOverlay?: boolean;
   showVideoIndicator?: boolean;
-}> = ({ src, className, controls = false, preload = 'none', previewFrameTime = 0, showPlayOverlay = false, showVideoIndicator = false }) => {
+  autoLoadWhenVisible?: boolean;
+}> = ({ src, className, controls = false, preload = 'none', previewFrameTime = 0, showPlayOverlay = false, showVideoIndicator = false, autoLoadWhenVisible = false }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const requestedPlaybackRef = useRef(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPreparingPlayback, setIsPreparingPlayback] = useState(false);
   const [shouldLoadVideoPreview, setShouldLoadVideoPreview] = useState(preload === 'none');
   const [shouldWarmVideoPlayback, setShouldWarmVideoPlayback] = useState(false);
-  const armVideoPreviewLoad = () => setShouldLoadVideoPreview(true);
+  const armVideoPreviewLoad = useCallback(() => {
+    setShouldLoadVideoPreview(true);
+    const video = videoRef.current;
+    if (video && preload !== 'none' && video.preload !== preload) {
+      video.preload = preload;
+      video.load();
+    }
+  }, [preload]);
   const markVideoPlaybackIntent = () => {
     requestedPlaybackRef.current = true;
     setShouldLoadVideoPreview(true);
@@ -236,6 +244,23 @@ const CardVideoPreview: React.FC<{
     setShouldLoadVideoPreview(preload === 'none');
     setShouldWarmVideoPlayback(false);
   }, [preload, src]);
+
+  useEffect(() => {
+    if (!autoLoadWhenVisible || preload === 'none') return;
+    const video = videoRef.current;
+    if (!video) return;
+    if (typeof IntersectionObserver === 'undefined') {
+      const fallbackTimer = window.setTimeout(armVideoPreviewLoad, 0);
+      return () => window.clearTimeout(fallbackTimer);
+    }
+    const observer = new IntersectionObserver(([entry]) => {
+      if (!entry?.isIntersecting) return;
+      armVideoPreviewLoad();
+      observer.disconnect();
+    }, { rootMargin: '160px 0px' });
+    observer.observe(video);
+    return () => observer.disconnect();
+  }, [armVideoPreviewLoad, autoLoadWhenVisible, preload, src]);
 
   const handleLoadedMetadata = (event: React.SyntheticEvent<HTMLVideoElement>) => {
     if (preload === 'none' || !shouldLoadVideoPreview || requestedPlaybackRef.current || previewFrameTime <= 0) return;
@@ -321,7 +346,7 @@ const getMissingMediaLabel = (result: GeneratedResult, mediaType: 'image' | 'vid
   return mediaType === 'video' ? '视频待生成' : '待生成图';
 };
 
-const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto'; videoPreviewFrameTime?: number; videoShowPlayOverlay?: boolean; videoShowIndicator?: boolean }) => {
+const renderMedia = (result: GeneratedResult, className: string, options?: { videoControls?: boolean; videoPreload?: 'none' | 'metadata' | 'auto'; videoPreviewFrameTime?: number; videoShowPlayOverlay?: boolean; videoShowIndicator?: boolean; videoAutoLoadWhenVisible?: boolean }) => {
   if (result.mediaType === 'video' || result.videoUrl) {
     const src = result.videoUrl || result.imageUrl;
     return src ? (
@@ -333,6 +358,7 @@ const renderMedia = (result: GeneratedResult, className: string, options?: { vid
         previewFrameTime={options?.videoPreviewFrameTime || 0}
         showPlayOverlay={options?.videoShowPlayOverlay || false}
         showVideoIndicator={options?.videoShowIndicator || false}
+        autoLoadWhenVisible={options?.videoAutoLoadWhenVisible || false}
       />
     ) : (
       <div
@@ -1161,7 +1187,7 @@ const ProjectCard: React.FC<Props> = ({
                 </span>
                 <span className="line-clamp-3 text-[11px] leading-5">{previewResult.error || '处理中可离开页面，完成后在任务卡内对比查看'}</span>
               </div>
-            ) : hasResults ? renderMedia(previewResult, `h-full w-full object-cover ${isPreviewVideoResult ? '' : 'transition-transform duration-300 group-hover:scale-[1.03]'}`, { videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowIndicator: true }) : hasPlans ? (
+            ) : hasResults ? renderMedia(previewResult, `h-full w-full object-cover ${isPreviewVideoResult ? '' : 'transition-transform duration-300 group-hover:scale-[1.03]'}`, { videoPreload: VIDEO_PREVIEW_PRELOAD, videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS, videoShowIndicator: true, videoAutoLoadWhenVisible: true }) : hasPlans ? (
               <div className="flex h-full flex-col justify-between p-4" style={{ color: 'var(--text-secondary)' }}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">

@@ -69,6 +69,7 @@ const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, 
       return material ? { ...material, ...(materialLabels?.[t] || {}) } : null;
     })
     .filter(Boolean) as MaterialDef[];
+  const usesGuidanceCards = materials.length === 2 && materials.every((material) => Boolean(materialHints?.[material.key]));
 
   useEffect(() => {
     if (!open) return;
@@ -86,7 +87,7 @@ const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, 
       <div className="fixed inset-0 z-[180]" onClick={onClose} />
       <div
         ref={panelRef}
-        className="absolute bottom-full left-0 mb-2 rounded-3xl border p-3 z-[200] min-w-[260px]"
+        className={`absolute bottom-full left-0 mb-2 rounded-3xl border p-3 z-[200] ${usesGuidanceCards ? 'w-[360px] max-w-[calc(100vw-24px)]' : 'min-w-[260px]'}`}
         style={{
           background: 'var(--bg-surface)',
           borderColor: 'var(--border-subtle)',
@@ -125,7 +126,7 @@ const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, 
                   <button
                     type="button"
                     onClick={() => { onSelect(m.key); onClose(); }}
-                    className="block text-left text-[11px] font-medium"
+                    className={`block text-left text-[11px] font-medium ${materialHints?.[m.key] ? 'whitespace-nowrap' : ''}`}
                     style={{ color: 'inherit' }}
                   >
                     {m.label}
@@ -171,7 +172,7 @@ const UploadTypeSelector: React.FC<Props> = ({ module, open, onClose, onSelect, 
                     {materialActionLabels[m.key]}
                   </button>
                 ) : (
-                  <p className="text-[9px] mt-0.5" style={{ color: 'var(--text-tertiary)' }}>{m.desc}</p>
+                  <p className={`text-[9px] mt-0.5 ${materialHints?.[m.key] ? 'whitespace-nowrap' : ''}`} style={{ color: 'var(--text-tertiary)' }}>{m.desc}</p>
                 )}
               </div>
             </div>

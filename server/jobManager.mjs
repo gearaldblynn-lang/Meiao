@@ -702,6 +702,20 @@ export const listJobsForUser = async (pool, userId, options = {}) => {
   return rows.map(mapJobRow);
 };
 
+export const listJobsByIdsForUser = async (pool, userId, jobIds = []) => {
+  const normalizedIds = Array.from(new Set((Array.isArray(jobIds) ? jobIds : [])
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)))
+    .slice(0, 500);
+  if (normalizedIds.length === 0) return [];
+  const [rows] = await pool.query(
+    `SELECT * FROM internal_jobs
+     WHERE user_id = ? AND id IN (${normalizedIds.map(() => '?').join(', ')})`,
+    [String(userId || ''), ...normalizedIds],
+  );
+  return rows.map(mapJobRow);
+};
+
 export const getJobQueueStats = async (pool) => {
   const [rows] = await pool.query(
     `SELECT status, COUNT(*) AS count

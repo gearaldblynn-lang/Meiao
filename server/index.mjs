@@ -70,7 +70,7 @@ import { embedTexts } from './embeddingProvider.mjs';
 import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
-import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, createSerializedJobSubmissionOnConnection, deleteJobById, findJobByProviderTaskIdForUser, findReusableJobRecord, getJobById, getJobByIdForUpdate, getSubtitleRemovalSubmissionGuardState, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, resolveJobDeletionAction, resolveSubmissionUnknownJob, updateJobFields, createJobWorker, withMysqlSubmissionLock, withMysqlTransaction } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, createSerializedJobSubmissionOnConnection, deleteJobById, findJobByProviderTaskIdForUser, findReusableJobRecord, getJobById, getJobByIdForUpdate, getSubtitleRemovalSubmissionGuardState, listJobsByIdsForUser, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, resolveJobDeletionAction, resolveSubmissionUnknownJob, updateJobFields, createJobWorker, withMysqlSubmissionLock, withMysqlTransaction } from './jobManager.mjs';
 import { assertSubtitleRemovalBatchSubmissionAllowed, assertSubtitleRemovalRetryAllowed, assertSubmissionKnownBeforeRetry, buildSubtitleRemovalUserGuardSubmission } from './subtitleRemovalBatchGuard.mjs';
 import {
   CREDIT_LIMIT_MODES,
@@ -161,6 +161,12 @@ import {
   summarizeAssetCleanupStore,
 } from './assetLifecycleStore.mjs';
 import { assertOwnedActiveManagedAssetReferences } from './managedAssetReferencePolicy.mjs';
+import { scrubUnavailableExplicitManagedAssetIds } from './managedAssetStateScrub.mjs';
+import { reconcileTombstonedJobs } from './tombstonedJobReconciler.mjs';
+import {
+  assertManagedAssetSubmissionUserContext,
+  assertManagedImageInputsPreserved,
+} from './managedAssetSubmissionGuard.mjs';
 import {
   getManagedImageMaxBytes,
   inspectManagedImageMultipartPrefix,
@@ -366,6 +372,8 @@ let assetCleanupTimer = null;
 let assetCleanupRunning = false;
 let managedImageProbeTimer = null;
 let managedImageProbeRunning = false;
+let tombstonedJobReconcilerTimer = null;
+let tombstonedJobReconcilerRunning = false;
 let lastManagedCosReconciliationAt = 0;
 let managedAssetCleanup = {
   backlog: 0,
@@ -381,6 +389,17 @@ let managedAssetCleanup = {
   activeCosMissing: 0,
   activeCosHeadFailed: 0,
   alerting: false,
+  lastCycleAt: null,
+};
+let tombstonedJobCleanup = {
+  desired: 0,
+  found: 0,
+  deleted: 0,
+  cancelRequested: 0,
+  pending: 0,
+  errors: 0,
+  alerting: false,
+  lastError: '',
   lastCycleAt: null,
 };
 let logCleanupTimer = null;
@@ -510,6 +529,13 @@ const ASSET_X_ACCEL_PREFIX = '/__meiao_stored_assets';
 const ASSET_CLEANUP_INTERVAL_MS = Math.max(
   60_000,
   Number.parseInt(String(process.env.MEIAO_ASSET_CLEANUP_INTERVAL_MS || 1000 * 60 * 30), 10) || 1000 * 60 * 30,
+);
+const TOMBSTONED_JOB_RECONCILE_INTERVAL_MS = Math.max(
+  5_000,
+  Math.min(
+    5 * 60 * 1000,
+    Number.parseInt(String(process.env.MEIAO_TOMBSTONED_JOB_RECONCILE_INTERVAL_MS || 15_000), 10) || 15_000,
+  ),
 );
 const ASSET_CLEANUP_BATCH_SIZE = Math.max(
   1,
@@ -727,6 +753,13 @@ const scrubUnavailableManagedAssetUrls = (value, validAssetUrls) => {
   }
   return next;
 };
+
+const scrubUnavailableManagedAssetStateReferences = (value, validAssetReferences) => (
+  scrubUnavailableExplicitManagedAssetIds(
+    scrubUnavailableManagedAssetUrls(value, validAssetReferences),
+    validAssetReferences,
+  )
+);
 
 const buildValidManagedAssetReferences = (assets = []) => {
   const refs = new Set();
@@ -2397,7 +2430,7 @@ const scrubLocalStatesForDeletedAssets = async () => {
       assets.filter((asset) => String(asset?.userId || '') === String(userId)),
     );
     store.appStates[userId] = prepareStateForStorage(
-      scrubUnavailableManagedAssetUrls(store.appStates[userId] || createDefaultState(), validAssetUrls)
+      scrubUnavailableManagedAssetStateReferences(store.appStates[userId] || createDefaultState(), validAssetUrls)
     );
   });
   writeLocalStore(store);
@@ -4121,7 +4154,7 @@ const scrubDbStatesForDeletedAssets = async () => {
       assets.filter((asset) => String(asset?.userId || '') === String(row.user_id || '')),
     );
     const parsedState = JSON.parse(row.state_json || '{}');
-    const nextState = scrubUnavailableManagedAssetUrls(parsedState, validAssetUrls);
+    const nextState = scrubUnavailableManagedAssetStateReferences(parsedState, validAssetUrls);
     await pool.query(
       'UPDATE app_states SET state_json = ?, updated_at = ? WHERE user_id = ?',
       [JSON.stringify(prepareStateForStorage(nextState)), Date.now(), row.user_id]
@@ -4132,7 +4165,7 @@ const scrubDbStatesForDeletedAssets = async () => {
 const scrubDbStateForUnavailableManagedAssets = async (state, userId) => {
   const pool = await getMysqlPool();
   const assets = await listStoredAssetsForUser(pool, userId);
-  return prepareStateForStorage(scrubUnavailableManagedAssetUrls(state || createDefaultState(), buildValidManagedAssetReferences(assets)));
+  return prepareStateForStorage(scrubUnavailableManagedAssetStateReferences(state || createDefaultState(), buildValidManagedAssetReferences(assets)));
 };
 
 const scrubDbStateBeforeStorage = async (state, userId) => {
@@ -4149,7 +4182,7 @@ const scrubDbJobPayloadBeforeSubmission = async (payload, userId) => {
 const scrubLocalStateForUnavailableManagedAssets = async (state, userId) => {
   const assets = await listStoredAssetsForUser(null, userId);
   return prepareStateForStorage(
-    scrubUnavailableManagedAssetUrls(state || createDefaultState(), buildValidManagedAssetReferences(assets))
+    scrubUnavailableManagedAssetStateReferences(state || createDefaultState(), buildValidManagedAssetReferences(assets))
   );
 };
 
@@ -4168,9 +4201,18 @@ const executeProviderJobWithManagedAssetScrub = async (job, env, signal, options
   if (taskType === 'upload_asset') {
     return await executeProviderJob(job, env, signal, options);
   }
+  assertManagedAssetSubmissionUserContext({
+    payload: job?.payload,
+    userId: job?.userId,
+  });
   const scrubbedPayload = shouldUseMysql
     ? await scrubDbJobPayloadBeforeSubmission(job?.payload, job?.userId)
     : await scrubLocalJobPayloadBeforeSubmission(job?.payload, job?.userId);
+  assertManagedImageInputsPreserved({
+    taskType,
+    originalPayload: job?.payload,
+    scrubbedPayload,
+  });
   const assetPool = shouldUseMysql ? await getMysqlPool() : null;
   const inheritedAssetTransferDeps = options?.assetTransferDeps || {};
   const resolveJobManagedAssetReadUrl = async (value, readOptions = {}) => resolveManagedAssetReadUrl(value, {
@@ -5986,6 +6028,81 @@ const reconcileDbTerminalJobCredits = async (pool, { limit = 500 } = {}) => {
   return reconciled;
 };
 
+const runTombstonedJobCleanupCycle = async () => {
+  if (!shouldUseMysql || tombstonedJobReconcilerRunning) return { skipped: true };
+  tombstonedJobReconcilerRunning = true;
+  const errorCodes = [];
+  try {
+    const pool = await getMysqlPool();
+    const [rows] = await pool.query('SELECT user_id, state_json FROM app_states');
+    const stats = await reconcileTombstonedJobs({
+      stateRows: rows,
+      loadJobs: (userId, jobIds) => listJobsByIdsForUser(pool, userId, jobIds),
+      cancelJob: async (job) => {
+        const user = await findDbUserById(job.userId);
+        if (!user) return job;
+        const outcome = await requestCancelJob(pool, job, {
+          user,
+          releaseQueuedCredits: async (connection, freshJob, finishedAt) => (
+            releaseDbJobCredits({
+              pool: connection,
+              job: freshJob,
+              error: { code: 'request_cancelled', message: '用户删除了排队任务' },
+              finishedAt,
+              retryWaiting: false,
+            })
+          ),
+        });
+        if (String(job.status) === 'running') jobWorker?.cancelActiveJob(job.id);
+        return outcome.job;
+      },
+      deleteJob: (job) => withManagedAssetUserLock(job.userId, (lockedPool) => (
+        deleteJobById(lockedPool, job.id, {
+          userId: job.userId,
+          hasPendingReservation: async (connection, freshJob) => {
+            const reservation = getCreditReservationFromJob(freshJob);
+            return Boolean(reservation && !await hasDbProcessedCreditReservation(connection, reservation));
+          },
+          afterDelete: async (connection, deletedJob) => {
+            await queueStoredAssetsAfterReferenceRemoval({
+              pool: connection,
+              assetIds: collectStoredAssetIdsFromJob(deletedJob),
+              reason: 'job_tombstone_reconciled',
+              ownerUserId: job.userId,
+            });
+          },
+        })
+      )),
+      onError: (error) => {
+        const code = String(error?.code || error?.name || 'tombstoned_job_cleanup_failed')
+          .replace(/[^a-zA-Z0-9_.-]+/g, '_')
+          .slice(0, 80);
+        if (errorCodes.length < 5) errorCodes.push(code);
+      },
+    });
+    tombstonedJobCleanup = {
+      ...stats,
+      alerting: stats.errors > 0,
+      lastError: errorCodes.join(','),
+      lastCycleAt: Date.now(),
+    };
+    return tombstonedJobCleanup;
+  } catch (error) {
+    tombstonedJobCleanup = {
+      ...tombstonedJobCleanup,
+      errors: tombstonedJobCleanup.errors + 1,
+      alerting: true,
+      lastError: String(error?.code || error?.name || 'tombstoned_job_cleanup_failed')
+        .replace(/[^a-zA-Z0-9_.-]+/g, '_')
+        .slice(0, 80),
+      lastCycleAt: Date.now(),
+    };
+    throw error;
+  } finally {
+    tombstonedJobReconcilerRunning = false;
+  }
+};
+
 const reconcileLocalTerminalJobCredits = (store, { limit = 500 } = {}) => {
   const jobs = (Array.isArray(store?.jobs) ? store.jobs : [])
     .filter((job) => TERMINAL_CREDIT_JOB_STATUSES.has(String(job?.status || '')) && getCreditReservationFromJob(job))
@@ -6970,6 +7087,7 @@ const inlineTextAttachments = async (pool, text, attachments = []) => {
 };
 
 const runAgenticRetrievalLoop = async ({
+  userId,
   initialMessages,
   currentMessage,
   selectedModel,
@@ -7002,6 +7120,7 @@ const runAgenticRetrievalLoop = async ({
   while (extraRounds <= maxExtraRounds) {
     onProgress?.({ stage: 'thinking', round: extraRounds + 1 });
     const output = await executeProviderJobWithManagedAssetScrub({
+      userId,
       taskType: 'kie_chat',
       payload: { messages, model: selectedModel, fallbackModels, reasoningLevel, webSearchEnabled },
     }, process.env, new AbortController().signal);
@@ -7114,6 +7233,7 @@ const runAgentConversation = async ({
   let output = null;
   if (hasKnowledgeBase) {
     const agenticResult = await runAgenticRetrievalLoop({
+      userId: user.id,
       initialMessages: messages,
       currentMessage,
       selectedModel,
@@ -7129,6 +7249,7 @@ const runAgentConversation = async ({
   } else {
     onProgress?.({ stage: 'thinking', round: 1 });
     output = await executeProviderJobWithManagedAssetScrub({
+      userId: user.id,
       taskType: 'kie_chat',
       payload: {
         messages,
@@ -8300,6 +8421,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
       const callModel = async ({ messages, tools, toolChoice, maxTokens, onDelta }) => {
         void toolChoice;
         const output = await executeProviderJobWithManagedAssetScrub({
+          userId: user.id,
           taskType: 'openai_responses',
           payload: {
             model: selectedModel,
@@ -8327,6 +8449,7 @@ const createDbChatReply = async (user, sessionId, payload, sendEvent = null) => 
         let imageOutput;
         try {
           imageOutput = await executeProviderJobWithManagedAssetScrub({
+            userId: user.id,
             taskType: 'kie_image',
             payload: {
               imageUrls: inputImageUrls,
@@ -9529,6 +9652,7 @@ const runLocalAgentConversation = async ({
   let output = null;
   if (hasKnowledgeBase) {
     const agenticResult = await runAgenticRetrievalLoop({
+      userId: user.id,
       initialMessages: messages,
       currentMessage,
       selectedModel,
@@ -9543,6 +9667,7 @@ const runLocalAgentConversation = async ({
   } else {
     onProgress?.({ stage: 'thinking', round: 1 });
     output = await executeProviderJobWithManagedAssetScrub({
+      userId: user.id,
       taskType: 'kie_chat',
       payload: {
         messages,
@@ -9966,6 +10091,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
   let analysisError = null;
   try {
     analysisOutput = await executeProviderJobWithManagedAssetScrub({
+      userId: user.id,
       taskType: 'kie_chat',
       payload: { messages: analysisMessages, model: analysisModel, fallbackModels: analysisFallbackModels },
     }, process.env, new AbortController().signal);
@@ -10065,6 +10191,7 @@ const buildImageConversationResult = async ({ user, agent, version, priorMessage
   let imageOutput;
   try {
     imageOutput = await executeProviderJobWithManagedAssetScrub({
+      userId: user.id,
       taskType: 'kie_image',
       payload: {
         imageUrls: preferredInputImageUrls,
@@ -13205,7 +13332,7 @@ const handleMysqlRequest = async (req, res, url) => {
     const pool = await getMysqlPool();
     const job = await getDbJobByIdForUser(user, jobId);
     if (!job) {
-      json(res, 404, { message: '任务不存在。' });
+      json(res, 200, { ok: true, alreadyAbsent: true });
       return;
     }
     let jobToDelete = job;
@@ -13244,7 +13371,7 @@ const handleMysqlRequest = async (req, res, url) => {
       })
     ));
     if (!deletion?.job) {
-      json(res, 404, { message: '任务不存在。' });
+      json(res, 200, { ok: true, alreadyAbsent: true });
       return;
     }
     if (deletion.action === 'block_active') {
@@ -15401,6 +15528,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         const callModel = async ({ messages, tools, toolChoice, maxTokens, onDelta }) => {
           void toolChoice;
           const output = await executeProviderJobWithManagedAssetScrub({
+            userId: user.id,
             taskType: 'openai_responses',
             payload: {
               model: selectedModel,
@@ -15429,6 +15557,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
           let imageOutput;
           try {
             imageOutput = await executeProviderJobWithManagedAssetScrub({
+              userId: user.id,
               taskType: 'kie_image',
               payload: {
                 imageUrls: inputImageUrls,
@@ -16800,7 +16929,7 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     const jobId = decodeURIComponent(jobDetailMatch[1]);
     const job = getLocalJobByIdForUser(user, jobId);
     if (!job) {
-      json(res, 404, { message: '任务不存在。' });
+      json(res, 200, { ok: true, alreadyAbsent: true });
       return;
     }
     let jobToDelete = job;
@@ -17083,6 +17212,7 @@ const server = createServer(async (req, res) => {
         worker,
         managedImageUpload: getManagedImageUploadHealth({ env: process.env }),
         managedAssetCleanup,
+        tombstonedJobCleanup,
         mediaTranscode: {
           enabled: mediaTranscodeReadiness.enabled,
           ffmpegReady: mediaTranscodeReadiness.ffmpegReady,
@@ -17353,6 +17483,25 @@ const bootstrap = async () => {
     void runManagedImageUploadProbeCycle().catch((error) => {
       console.error('managed image COS readiness cycle failed', {
         code: String(error?.code || 'probe_cycle_failed').replace(/[^a-zA-Z0-9_.-]+/g, '_').slice(0, 80),
+      });
+    });
+  }
+
+  if (shouldUseMysql && !tombstonedJobReconcilerTimer) {
+    tombstonedJobReconcilerTimer = setInterval(() => {
+      void runTombstonedJobCleanupCycle().catch((error) => {
+        console.error('tombstoned job cleanup failed', {
+          code: String(error?.code || 'tombstoned_job_cleanup_failed')
+            .replace(/[^a-zA-Z0-9_.-]+/g, '_')
+            .slice(0, 80),
+        });
+      });
+    }, TOMBSTONED_JOB_RECONCILE_INTERVAL_MS);
+    void runTombstonedJobCleanupCycle().catch((error) => {
+      console.error('tombstoned job cleanup failed', {
+        code: String(error?.code || 'tombstoned_job_cleanup_failed')
+          .replace(/[^a-zA-Z0-9_.-]+/g, '_')
+          .slice(0, 80),
       });
     });
   }

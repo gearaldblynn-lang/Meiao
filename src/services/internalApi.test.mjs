@@ -232,6 +232,58 @@ test('saveRemoteAppState keeps ordinary writes on the compact acknowledgment con
   }
 });
 
+test('stream image upload preserves the actionable managed-image service error', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    message: '图片上传暂时停用，请启用本地图片存储或配置 COS',
+    code: 'managed_image_upload_disabled',
+    retryable: true,
+  }), {
+    status: 503,
+    headers: { 'content-type': 'application/json' },
+  });
+
+  try {
+    await assert.rejects(
+      () => api.uploadInternalAssetStream({
+        module: 'retouch',
+        assetType: 'reference',
+        file: new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], 'reference.png', { type: 'image/png' }),
+      }),
+      (error) => error instanceof api.ApiError
+        && error.code === 'managed_image_upload_disabled'
+        && error.status === 503
+        && error.message === '图片上传暂时停用，请启用本地图片存储或配置 COS',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('job deletion preserves the server code for scheduled active-job cleanup', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    message: '运行中任务已请求取消，请等待任务进入终态后再删除。',
+    code: 'job_delete_active',
+  }), {
+    status: 409,
+    headers: { 'content-type': 'application/json' },
+  });
+
+  try {
+    await assert.rejects(
+      () => api.deleteInternalJob('111111111111111111111111'),
+      (error) => error instanceof api.ApiError
+        && error.code === 'job_delete_active'
+        && error.status === 409,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('fetchSystemConfig rejects a successful response without a config object', async () => {
   const originalFetch = globalThis.fetch;
   const api = await loadInternalApi();
