@@ -416,3 +416,8 @@
   根因:一键策划误用上传前的 `filteredMaterials`；KIE 生图又无条件接收短时 COS 私有签名 URL，接单后异步拉图失败。删除墓碑与一次性 DELETE 没有后台协调，404/运行中 409 形成假失败或远端残留。历史失效 `*AssetId` 只清 URL 不清身份，整份 state 被所有权校验拒绝；并发只放大这些边界缺口，并非 worker 全局串行。
   修复:策划只传准备后的 `generationMaterials`；生成链路把 resolver-backed COS 图先转存 KIE，聊天/历史公网路由保持原合同。DELETE 幂等化，运行中删除进入后台清理提示；服务端按 `deletedJobIds` 周期复用取消、积分保护、事务删除和素材清理合同持续收敛，并在 health 暴露摘要。state 边界清除失效显式素材 ID，job payload 校验仍 fail closed。
   如何避免:**素材准备结果必须沿 planning/provider 单向传递；异步上游接单前必须落实稳定读取字节，不能依赖短时私有 URL。删除要建模为耐久意图并由后台收敛，不能把一次 HTTP 当最终状态。身份安全策略要同时回放历史 state、严格任务 payload 与多账号并发，不得用调大并发掩盖 provider stage 错误。**
+
+- **#73 ✅ 本地已修、待云上真实验收(2026-07-16)· 共享任务同步修好后仍可能跨账号回写，已提交取消任务也可能永久锁住积分与删除**
+  根因:共享 `hydrateShellJobs` 虽改为无条件周期同步，但旧账号的异步水合和排队状态写在账号切换后仍可能继续执行；请求读取的是执行时全局 token，形成 A 账号快照使用 B token 写回的跨账号窗口。删除侧只把已提交取消任务视为不可删，没有用原 `providerTaskId` 查询最终状态；恢复资格又曾只看 task type，误把同步型 MaxForAI 图片当成可查询任务。查询恢复耗尽后会落普通 `provider_timeout`，任务与积分永久 pending，health 仍可能为绿；墓碑协调器每 15 秒全表解析全部大状态也会随账号量增长。
+  修复:账号 epoch、captured session token、UI updater 与 queued writer 统一绑定同一 async scope，切账号/退出/卸载立即失效旧 scope，并在每个 await 后和真正写入前复核。已提交取消任务只按精确 `taskType + provider + model` 能力用原 ID 进入 query-only 恢复，禁止重提付费请求；只有上游明确失败码与 failed 状态才自动释放预留，成功无结果、查询鉴权失败、不可查询或恢复耗尽均转为带审计的 `provider_recovery_manual`，保留旧结果和积分证据。管理员核验上游未扣费可释放预留；核验实际成功则必须填写实际扣费积分和上游依据，在同一事务内结算并审计。无内部积分预留且无可查任务 ID 的历史 submission-unknown 按用户持久删除意图收敛，真正删除前仍在事务内二次检查预留。墓碑扫描改为 `updated_at` 索引增量游标并缓存未收敛任务，同毫秒边界用状态指纹去重而不漏变更；错误、人工恢复、超龄提交未知和超龄预留进入 health 告警。
+  如何避免:**所有跨账号异步任务必须同时绑定账号 epoch 与请求凭证，不能只在 React setState 前判断。付费任务的“可恢复”必须来自 provider/model 的真实查询能力矩阵，恢复永远只查 checkpointed ID；恢复耗尽必须有显式人工状态、积分处置入口和 health 告警。周期协调器不能用全表大 JSON 扫描换稳定性，增量游标要覆盖同毫秒更新、失败重试和进程重启。**

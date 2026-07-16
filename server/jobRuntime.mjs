@@ -274,6 +274,39 @@ export const normalizeAllowedOrigins = (value) => {
 
 export const isRetryableErrorCode = (errorCode) => RETRYABLE_ERROR_CODES.has(String(errorCode || ''));
 
+export const isDefinitiveProviderTaskFailure = ({
+  errorCode = '',
+  providerStatus = '',
+} = {}) => {
+  const normalizedErrorCode = String(errorCode || '').trim();
+  const normalizedProviderStatus = String(providerStatus || '').trim().toLowerCase();
+  if (normalizedErrorCode === 'provider_task_failed') return true;
+  if (normalizedErrorCode === 'provider_job_failed') {
+    return ['fail', 'failed'].includes(normalizedProviderStatus);
+  }
+  return normalizedErrorCode === 'provider_bad_request'
+    && ['fail', 'failed'].includes(normalizedProviderStatus);
+};
+
+export const getPersistedJobFailureErrorCode = ({
+  job = {},
+  failure = {},
+  errorCode = '',
+  providerStatus = '',
+} = {}) => {
+  const providerTaskId = String(job?.providerTaskId || '').trim();
+  const recoveryProviderTaskId = String(job?.payload?.__tombstoneRecovery?.providerTaskId || '').trim();
+  if (
+    failure?.status === 'failed'
+    && providerTaskId
+    && recoveryProviderTaskId === providerTaskId
+    && !isDefinitiveProviderTaskFailure({ errorCode, providerStatus })
+  ) {
+    return 'provider_recovery_manual';
+  }
+  return String(errorCode || 'provider_internal_error').trim() || 'provider_internal_error';
+};
+
 export const isTransientMysqlConnectionError = (error) =>
   TRANSIENT_MYSQL_CONNECTION_ERROR_CODES.has(String(error?.code || ''))
   || /pool is closed|connection lost|server closed the connection/i.test(String(error?.message || ''));

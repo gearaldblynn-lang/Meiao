@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 
-import { isRetryableErrorCode } from './jobRuntime.mjs';
+import { isDefinitiveProviderTaskFailure, isRetryableErrorCode } from './jobRuntime.mjs';
 import { resolveMaxForAiImageModelId } from '../src/utils/maxforaiImageModels.mjs';
 
 export const CREDIT_LIMIT_MODES = {
@@ -188,10 +188,10 @@ export const shouldReleaseJobCreditReservation = ({
   const errorCode = String(error?.code || job?.errorCode || '').trim();
   if (errorCode === 'provider_submission_unknown') return false;
   const providerTaskId = String(error?.providerTaskId || job?.providerTaskId || '').trim();
-  if (
-    providerTaskId
-    && (aborted || errorCode === 'request_cancelled' || isRetryableErrorCode(errorCode))
-  ) {
+  if (providerTaskId && !isDefinitiveProviderTaskFailure({
+    errorCode,
+    providerStatus: error?.providerStatus,
+  })) {
     return false;
   }
   return true;

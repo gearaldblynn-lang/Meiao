@@ -160,8 +160,10 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
   const [taskTimeline, setTaskTimeline] = useState<{ jobId: string; attempts: TaskPlatformAttempt[]; events: TaskPlatformEvent[] } | null>(null);
   const [taskTimelineLoading, setTaskTimelineLoading] = useState(false);
   const [selectedJob, setSelectedJob] = useState<TaskPlatformJob | null>(null);
-  const [submissionResolutionAction, setSubmissionResolutionAction] = useState<'bind' | 'release'>('release');
+  const [submissionResolutionAction, setSubmissionResolutionAction] = useState<'bind' | 'release' | 'settle'>('release');
   const [providerTaskId, setProviderTaskId] = useState('');
+  const [actualCreditsConsumed, setActualCreditsConsumed] = useState('');
+  const [submissionVerificationNote, setSubmissionVerificationNote] = useState('');
   const [submissionReleaseConfirmed, setSubmissionReleaseConfirmed] = useState(false);
   const [submissionResolutionLoading, setSubmissionResolutionLoading] = useState(false);
   const [submissionResolutionError, setSubmissionResolutionError] = useState('');
@@ -466,6 +468,8 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     setSelectedJob(job);
     setSubmissionResolutionAction('release');
     setProviderTaskId('');
+    setActualCreditsConsumed('');
+    setSubmissionVerificationNote('');
     setSubmissionReleaseConfirmed(false);
     setSubmissionResolutionError('');
     setTaskTimelineLoading(true);
@@ -486,6 +490,14 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
     if (submissionResolutionAction === 'bind'
       && (!selectedJob.submissionResolution.canBind || !normalizedProviderTaskId)) return;
     if (submissionResolutionAction === 'release' && !submissionReleaseConfirmed) return;
+    const normalizedVerificationNote = submissionVerificationNote.trim();
+    const normalizedActualCreditsInput = actualCreditsConsumed.trim();
+    const normalizedActualCredits = Number(normalizedActualCreditsInput);
+    if (submissionResolutionAction === 'settle'
+      && (!normalizedActualCreditsInput
+        || !Number.isFinite(normalizedActualCredits)
+        || normalizedActualCredits < 0
+        || !normalizedVerificationNote)) return;
 
     setSubmissionResolutionLoading(true);
     setSubmissionResolutionError('');
@@ -493,12 +505,22 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
       await resolveTaskPlatformSubmission(selectedJob.id, {
         action: submissionResolutionAction,
         ...(submissionResolutionAction === 'bind' ? { providerTaskId: normalizedProviderTaskId } : {}),
+        ...(submissionResolutionAction === 'settle' ? {
+          actualCreditsConsumed: normalizedActualCredits,
+          verificationNote: normalizedVerificationNote,
+        } : {}),
       });
       const resolvedJobId = selectedJob.id;
       setSelectedJob(null);
       setProviderTaskId('');
+      setActualCreditsConsumed('');
+      setSubmissionVerificationNote('');
       setSubmissionReleaseConfirmed(false);
-      setMessage(submissionResolutionAction === 'bind' ? '已绑定上游任务 ID' : '已释放积分预留');
+      setMessage(submissionResolutionAction === 'bind'
+        ? '已绑定上游任务 ID'
+        : submissionResolutionAction === 'settle'
+          ? '已按上游核验结果结算积分'
+          : '已释放积分预留');
       const refreshedList = await queryTaskJobs(taskPage);
       const refreshedJob = refreshedList?.jobs.find((job) => job.id === resolvedJobId);
       if (refreshedJob) await openTaskTimeline(refreshedJob);
@@ -966,14 +988,15 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                     <p className="font-semibold" style={{ color: 'var(--text-primary)' }}>Attempts</p>
                     <p className="mt-1">共 {taskTimeline.attempts.length} 次，当前任务 {taskTimeline.jobId}</p>
                   </div>
-                  {selectedJob?.errorCode === 'provider_submission_unknown'
-                    && selectedJob.submissionResolution.allowed && (
+                  {selectedJob?.submissionResolution.allowed && (
                     <div className="rounded-2xl border p-3" style={{ background: 'var(--bg-base)', borderColor: 'var(--warning)' }}>
                       <p className="text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>人工核实提交结果</p>
                       <p className="mt-1 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>
-                        请先在 KIE 核实是否已生成上游任务，再选择处置方式。
+                        {selectedJob.errorCode === 'provider_recovery_manual'
+                          ? '自动查询已经停止。请在上游核实最终状态与扣费情况后，再处置积分预留。'
+                          : '请先在上游核实是否已生成任务，再选择处置方式。'}
                       </p>
-                      <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="mt-3 grid grid-cols-2 gap-2 xl:grid-cols-3">
                         <button
                           type="button"
                           onClick={() => setSubmissionResolutionAction('release')}
@@ -990,6 +1013,13 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                             绑定上游任务
                           </button>
                         )}
+                        <button
+                          type="button"
+                          onClick={() => setSubmissionResolutionAction('settle')}
+                          className={submissionResolutionAction === 'settle' ? 'btn-primary px-3 py-2 text-[12px]' : 'btn-secondary px-3 py-2 text-[12px]'}
+                        >
+                          确认成功并结算
+                        </button>
                       </div>
                       {submissionResolutionAction === 'bind' ? (
                         <label className="mt-3 block">
@@ -1002,6 +1032,32 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                             style={{ background: 'var(--bg-input)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
                           />
                         </label>
+                      ) : submissionResolutionAction === 'settle' ? (
+                        <div className="mt-3 space-y-2">
+                          <label className="block">
+                            <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>上游实际扣费积分</span>
+                            <input
+                              value={actualCreditsConsumed}
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              onChange={(event) => setActualCreditsConsumed(event.target.value)}
+                              placeholder="例如 3"
+                              className="mt-1 h-10 w-full rounded-2xl border bg-transparent px-3 text-[12px] outline-none"
+                              style={{ background: 'var(--bg-input)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="text-[11px]" style={{ color: 'var(--text-secondary)' }}>上游核验依据</span>
+                            <textarea
+                              value={submissionVerificationNote}
+                              onChange={(event) => setSubmissionVerificationNote(event.target.value)}
+                              placeholder="填写上游订单、任务状态或账单核验依据"
+                              className="mt-1 min-h-20 w-full rounded-2xl border bg-transparent px-3 py-2 text-[12px] outline-none"
+                              style={{ background: 'var(--bg-input)', borderColor: 'var(--border-subtle)', color: 'var(--text-primary)' }}
+                            />
+                          </label>
+                        </div>
                       ) : (
                         <label className="mt-3 flex cursor-pointer items-start gap-2 text-[11px] leading-5" style={{ color: 'var(--text-secondary)' }}>
                           <input
@@ -1010,7 +1066,9 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                             onChange={(event) => setSubmissionReleaseConfirmed(event.target.checked)}
                             className="mt-1"
                           />
-                          <span>已确认 KIE 无任务且未扣费</span>
+                          <span>{selectedJob.errorCode === 'provider_recovery_manual'
+                            ? '已核实上游最终状态，确认应释放积分预留'
+                            : '已确认上游无任务且未扣费'}</span>
                         </label>
                       )}
                       {submissionResolutionError && (
@@ -1021,7 +1079,12 @@ const AccountManagement: React.FC<Props> = ({ currentUser = null, internalMode =
                         onClick={() => void submitTaskSubmissionResolution()}
                         disabled={submissionResolutionLoading
                           || (submissionResolutionAction === 'bind' && !providerTaskId.trim())
-                          || (submissionResolutionAction === 'release' && !submissionReleaseConfirmed)}
+                          || (submissionResolutionAction === 'release' && !submissionReleaseConfirmed)
+                          || (submissionResolutionAction === 'settle'
+                            && (!submissionVerificationNote.trim()
+                              || !actualCreditsConsumed.trim()
+                              || !Number.isFinite(Number(actualCreditsConsumed))
+                              || Number(actualCreditsConsumed) < 0))}
                         className="btn-primary mt-3 w-full px-3 py-2 text-[12px]"
                       >
                         {submissionResolutionLoading ? '正在处置...' : '确认处置'}

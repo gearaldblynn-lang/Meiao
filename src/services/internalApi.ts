@@ -44,6 +44,8 @@ const getSessionToken = () => {
   }
 };
 
+export const captureInternalSessionToken = () => getSessionToken();
+
 export const hasStoredSessionToken = () => Boolean(getSessionToken());
 
 export const storeSessionToken = (token: string) => {
@@ -191,16 +193,18 @@ const buildDedupeKey = (path: string, method: string, body?: BodyInit | null, to
 interface RequestOptions extends RequestInit {
   timeoutMs?: number;
   dedupe?: boolean;
+  sessionToken?: string;
 }
 
 const request = async <T>(
   path: string,
   init?: RequestOptions,
 ): Promise<T> => {
-  const method = (init?.method || 'GET').toUpperCase();
-  const dedupe = init?.dedupe !== false;
-  const token = getSessionToken();
-  const dedupeKey = dedupe ? buildDedupeKey(path, method, init?.body, token) : '';
+  const { sessionToken, ...requestInit } = init || {};
+  const method = (requestInit.method || 'GET').toUpperCase();
+  const dedupe = requestInit.dedupe !== false;
+  const token = sessionToken === undefined ? getSessionToken() : sessionToken;
+  const dedupeKey = dedupe ? buildDedupeKey(path, method, requestInit.body, token) : '';
 
   if (dedupe && dedupeKey && inflightRequests.has(dedupeKey)) {
     return inflightRequests.get(dedupeKey) as Promise<T>;
@@ -209,9 +213,9 @@ const request = async <T>(
   const execute = async (): Promise<T> => {
     const headers: Record<string, string> = {
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init?.headers as Record<string, string> | undefined),
+      ...(requestInit.headers as Record<string, string> | undefined),
     };
-    if (!headers['Content-Type'] && init?.body) {
+    if (!headers['Content-Type'] && requestInit.body) {
       headers['Content-Type'] = 'application/json';
     }
 
@@ -222,10 +226,10 @@ const request = async <T>(
       try {
         if (attempt > 0) await wait(500 * attempt);
         const response = await fetchWithTimeout(path, {
-          ...init,
+          ...requestInit,
           cache: 'no-store' as RequestCache,
           headers,
-          timeoutMs: init?.timeoutMs,
+          timeoutMs: requestInit.timeoutMs,
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -242,7 +246,7 @@ const request = async <T>(
         const isAbort = error?.name === 'AbortError' || error instanceof DOMException;
         if (isAbort) {
           // 如果外部 signal 已经 aborted，说明是手动中断，重新抛出原始错误，让调用方检测
-          if (init?.signal?.aborted) throw error;
+          if (requestInit.signal?.aborted) throw error;
           // 否则是内部超时 abort
           throw new ApiError('请求超时，请稍后重试', 'timeout', 408);
         }
@@ -308,10 +312,15 @@ export const fetchRemoteAppState = async () => {
 
 export const saveRemoteAppState = async (
   state: Partial<PersistedAppState>,
-  options: { mode?: 'merge' | 'replace'; includeCanonicalState?: boolean } = {},
+  options: {
+    mode?: 'merge' | 'replace';
+    includeCanonicalState?: boolean;
+    sessionToken?: string;
+  } = {},
 ) => {
   return request<{ ok: boolean; state?: PersistedAppState }>('/api/state', {
     method: 'PUT',
+    sessionToken: options.sessionToken,
     body: JSON.stringify({
       state,
       mode: options.mode || 'merge',
@@ -646,7 +655,12 @@ export const fetchTaskPlatformTimeline = async (jobId: string) => {
 
 export const resolveTaskPlatformSubmission = async (
   jobId: string,
-  input: { action: 'bind' | 'release'; providerTaskId?: string },
+  input: {
+    action: 'bind' | 'release' | 'settle';
+    providerTaskId?: string;
+    actualCreditsConsumed?: number;
+    verificationNote?: string;
+  },
 ) => {
   const result = await request<unknown>(
     `/api/admin/task-platform/jobs/${encodeURIComponent(jobId)}/submission-resolution`,
@@ -654,10 +668,10 @@ export const resolveTaskPlatformSubmission = async (
   );
   if (
     !isObjectRecord(result)
-    || !['bind', 'release'].includes(String(result.action || ''))
+    || !['bind', 'release', 'settle'].includes(String(result.action || ''))
     || !isInternalJobResponse(result.job)
   ) invalidTaskPlatformResponse();
-  return result as { action: 'bind' | 'release'; job: InternalJob };
+  return result as { action: 'bind' | 'release' | 'settle'; job: InternalJob };
 };
 
 export const fetchSystemConfig = async () => {

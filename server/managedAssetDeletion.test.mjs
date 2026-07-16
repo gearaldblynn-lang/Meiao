@@ -108,7 +108,9 @@ test('cleanup timer reconciles states and drains durable tasks with an overlap g
 
 test('job tombstones are durably reconciled and exposed through health', () => {
   const cycle = source.match(/const runTombstonedJobCleanupCycle = async \(\) => \{[\s\S]*?\n\};/)?.[0] || '';
-  assert.match(cycle, /SELECT user_id, state_json FROM app_states/);
+  assert.match(cycle, /WHERE updated_at >= \? ORDER BY updated_at ASC/);
+  assert.match(cycle, /tombstonedStateScanTracker\.prepareRows/);
+  assert.match(cycle, /tombstonedStateScanTracker\.commitPending/);
   assert.match(cycle, /reconcileTombstonedJobs/);
   assert.match(cycle, /listJobsByIdsForUser/);
   assert.match(cycle, /requestCancelJob/);
@@ -116,6 +118,8 @@ test('job tombstones are durably reconciled and exposed through health', () => {
   assert.match(cycle, /hasDbProcessedCreditReservation/);
   assert.match(source, /tombstonedJobCleanup,/);
   assert.match(source, /MEIAO_TOMBSTONED_JOB_RECONCILE_INTERVAL_MS/);
+  assert.match(source, /MEIAO_TOMBSTONED_JOB_PENDING_ALERT_MS/);
+  assert.match(source, /idx_app_states_updated_at/);
   assert.match(source, /alreadyAbsent: true/);
 });
 

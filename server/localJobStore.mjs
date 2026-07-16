@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
 
-import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState } from './jobRuntime.mjs';
+import { buildJobFailureErrorFields, buildJobFailureLogFields, buildJobRuntimeLogMeta, getNextJobFailureState, getPersistedJobFailureErrorCode } from './jobRuntime.mjs';
 import { canRecoverProviderTaskById, KIE_RECOVERY_SOURCE_TASK_TYPES } from './jobSubmissionPolicy.mjs';
 import { maybeRecordCreditAlertLog } from './creditAlert.mjs';
-import { findReusableJobSubmission, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
+import { findReusableJobSubmission, normalizeSubmissionSettlementInput, selectJobsWithinConcurrencyLimits } from './jobManager.mjs';
 import { isDeployDrainActive } from './deployDrain.mjs';
 
 const now = () => Date.now();
@@ -165,12 +165,15 @@ export const resolveLocalSubmissionUnknownJob = (store, {
   jobId,
   action,
   providerTaskId = '',
+  actualCreditsConsumed,
+  verificationNote = '',
   releaseReservation,
+  settleReservation,
 } = {}) => {
   const normalizedAction = String(action || '').trim();
   const normalizedProviderTaskId = String(providerTaskId || '').trim();
-  if (!['bind', 'release'].includes(normalizedAction)) {
-    throw Object.assign(new Error('处置动作必须是 bind 或 release。'), {
+  if (!['bind', 'release', 'settle'].includes(normalizedAction)) {
+    throw Object.assign(new Error('处置动作必须是 bind、release 或 settle。'), {
       code: 'submission_resolution_invalid',
       statusCode: 400,
     });
@@ -181,21 +184,34 @@ export const resolveLocalSubmissionUnknownJob = (store, {
       statusCode: 400,
     });
   }
+  const settlementInput = normalizedAction === 'settle'
+    ? normalizeSubmissionSettlementInput({ actualCreditsConsumed, verificationNote })
+    : null;
 
   const index = findJobIndex(store, jobId);
   const job = index >= 0 ? normalizeJob(store.jobs[index]) : null;
   if (!job) {
     throw Object.assign(new Error('任务不存在。'), { code: 'job_not_found', statusCode: 404 });
   }
-  if (job.status !== 'failed' || job.errorCode !== 'provider_submission_unknown') {
-    throw Object.assign(new Error('只有提交状态未知的失败任务可以人工处置。'), {
+  const isSubmissionUnknown = job.errorCode === 'provider_submission_unknown';
+  const isRecoveryManual = job.errorCode === 'provider_recovery_manual';
+  if (job.status !== 'failed' || (!isSubmissionUnknown && !isRecoveryManual)) {
+    throw Object.assign(new Error('只有提交状态未知或自动恢复已停止的失败任务可以人工处置。'), {
       code: 'submission_resolution_not_allowed',
+      statusCode: 409,
+    });
+  }
+  if (normalizedAction === 'bind' && isRecoveryManual) {
+    throw Object.assign(new Error('自动恢复已停止的任务不能重新绑定，请核实后释放预留或按实际扣费结算。'), {
+      code: 'submission_resolution_bind_unsupported',
       statusCode: 409,
     });
   }
   if (normalizedAction === 'bind' && !canRecoverProviderTaskById({
     taskType: job.taskType,
+    provider: job.provider,
     providerTaskId: normalizedProviderTaskId,
+    payload: job.payload,
   })) {
     throw Object.assign(new Error('该任务类型没有按上游任务 ID 查询结果的安全恢复路径，只能核实后释放预留。'), {
       code: 'submission_resolution_bind_unsupported',
@@ -218,7 +234,27 @@ export const resolveLocalSubmissionUnknownJob = (store, {
       updatedAt,
     });
     store.jobs[index] = updated;
-    return { action: normalizedAction, job: updated };
+    return { action: normalizedAction, resolutionKind: 'submission_unknown', job: updated };
+  }
+
+  if (normalizedAction === 'settle') {
+    if (typeof settleReservation !== 'function') {
+      throw new TypeError('settleReservation callback is required.');
+    }
+    const settlement = settleReservation(job, settlementInput);
+    const updated = normalizeJob({
+      ...job,
+      errorCode: isRecoveryManual ? 'provider_recovery_settled' : 'provider_submission_settled',
+      errorMessage: `管理员已核实上游成功并按实际 ${settlementInput.actualCreditsConsumed} 积分结算`,
+      updatedAt,
+    });
+    store.jobs[index] = updated;
+    return {
+      action: normalizedAction,
+      resolutionKind: isRecoveryManual ? 'provider_recovery' : 'submission_unknown',
+      settlement,
+      job: updated,
+    };
   }
 
   if (typeof releaseReservation !== 'function') {
@@ -227,12 +263,18 @@ export const resolveLocalSubmissionUnknownJob = (store, {
   releaseReservation(job);
   const updated = normalizeJob({
     ...job,
-    errorCode: 'provider_submission_released',
-    errorMessage: '管理员已核实未产生上游任务并释放积分预留',
+    errorCode: isRecoveryManual ? 'provider_recovery_released' : 'provider_submission_released',
+    errorMessage: isRecoveryManual
+      ? '管理员已核实自动恢复任务并释放积分预留'
+      : '管理员已核实未产生上游任务并释放积分预留',
     updatedAt,
   });
   store.jobs[index] = updated;
-  return { action: normalizedAction, job: updated };
+  return {
+    action: normalizedAction,
+    resolutionKind: isRecoveryManual ? 'provider_recovery' : 'submission_unknown',
+    job: updated,
+  };
 };
 
 export const getLocalJobById = (store, jobId) => {
@@ -483,16 +525,24 @@ export const markLocalJobFailed = (store, jobId, error) => {
     providerTaskId,
     providerTaskRecoverable: canRecoverProviderTaskById({
       taskType: current.taskType,
+      provider: current.provider,
       providerTaskId,
+      payload: current.payload,
     }),
   });
   const finishedAt = now();
+  const persistedErrorCode = getPersistedJobFailureErrorCode({
+    job: { ...current, providerTaskId },
+    failure,
+    errorCode: errorFields.errorCode,
+    providerStatus: error?.providerStatus,
+  });
   const next = normalizeJob({
     ...current,
     status: error?.code === 'request_cancelled' ? 'cancelled' : failure.status,
     providerTaskId,
     retryCount: error?.code === 'request_cancelled' ? current.retryCount : failure.retryCount,
-    errorCode: errorFields.errorCode,
+    errorCode: persistedErrorCode,
     errorMessage: errorFields.errorMessage,
     errorDetail: errorFields.errorDetail,
     updatedAt: finishedAt,

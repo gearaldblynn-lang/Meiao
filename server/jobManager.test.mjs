@@ -20,6 +20,7 @@ import {
   resolveJobDeletionAction,
   requestCancelJob,
   requestRetryJob,
+  requestTombstonedJobRecovery,
   resolveSubmissionUnknownJob,
   selectJobsWithinConcurrencyLimits,
   shouldMysqlWorkerProcessTaskEngine,
@@ -820,14 +821,23 @@ test('cancel locks and rereads the job before deciding whether queued credits ca
   assert.match(queries[0].sql, /FOR UPDATE/);
 });
 
-test('job deletion cancels queued work but preserves active and submission-unknown records', () => {
+test('job deletion cancels queued work and only preserves financially unsettled submission-unknown records', () => {
   assert.equal(resolveJobDeletionAction({ status: 'queued' }), 'cancel_then_delete');
   assert.equal(resolveJobDeletionAction({ status: 'retry_waiting' }), 'cancel_then_delete');
   assert.equal(resolveJobDeletionAction({ status: 'running' }), 'block_active');
   assert.equal(resolveJobDeletionAction({
+    status: 'running',
+    providerTaskId: 'submitted-task-id',
+    payload: { __tombstoneRecovery: { providerTaskId: 'submitted-task-id' } },
+  }), 'block_submitted_recovery');
+  assert.equal(resolveJobDeletionAction({
     status: 'failed',
     errorCode: 'provider_submission_unknown',
-  }), 'block_submission_unknown');
+  }), 'delete');
+  assert.equal(resolveJobDeletionAction({
+    status: 'failed',
+    errorCode: 'provider_submission_unknown',
+  }, { pendingReservation: true }), 'block_submission_unknown');
   assert.equal(resolveJobDeletionAction({ status: 'succeeded' }), 'delete');
   assert.equal(resolveJobDeletionAction({ status: 'failed', errorCode: 'provider_timeout' }), 'delete');
   assert.equal(resolveJobDeletionAction({ status: 'cancelled' }), 'delete');
@@ -839,6 +849,92 @@ test('job deletion cancels queued work but preserves active and submission-unkno
     status: 'failed',
     errorCode: 'provider_timeout',
   }, { pendingReservation: true }), 'block_pending_reservation');
+});
+
+test('tombstoned submitted cancellation is requeued with its original provider id only', async () => {
+  const events = [];
+  const queries = [];
+  const row = {
+    id: '444444444444444444444444',
+    user_id: 'user-a',
+    module: 'one_click',
+    task_type: 'kie_image',
+    provider: 'kie',
+    status: 'cancelled',
+    provider_task_id: 'existing-provider-task-id',
+    payload_json: JSON.stringify({ prompt: 'preserved' }),
+    result_json: null,
+    error_code: 'request_cancelled',
+    error_message: '用户取消了任务',
+    retry_count: 0,
+    max_retries: 2,
+  };
+  const connection = {
+    async beginTransaction() { events.push('begin'); },
+    async commit() { events.push('commit'); },
+    async rollback() { events.push('rollback'); },
+    async query(sql, values = []) {
+      queries.push({ sql, values });
+      if (/SELECT \* FROM internal_jobs WHERE id = \? FOR UPDATE/.test(sql)) return [[row]];
+      if (/UPDATE internal_jobs/.test(sql)) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() { events.push('release'); },
+  };
+
+  const recovered = await requestTombstonedJobRecovery(
+    { async getConnection() { return connection; } },
+    { id: row.id, userId: row.user_id },
+  );
+
+  assert.equal(recovered.status, 'retry_waiting');
+  assert.equal(recovered.providerTaskId, 'existing-provider-task-id');
+  assert.equal(recovered.payload.prompt, 'preserved');
+  assert.equal(recovered.payload.__tombstoneRecovery.providerTaskId, 'existing-provider-task-id');
+  assert.match(queries[1].sql, /status = 'retry_waiting'/);
+  assert.match(queries[1].sql, /WHERE id = \? AND status = 'cancelled' AND provider_task_id = \?/);
+  assert.equal(queries[1].values.at(-1), 'existing-provider-task-id');
+  assert.deepEqual(events, ['begin', 'commit', 'release']);
+});
+
+test('non-queryable submitted cancellation enters manual resolution without erasing result evidence', async () => {
+  const queries = [];
+  const resultEvidence = { providerResponse: 'preserve-before-manual-review' };
+  const row = {
+    id: '555555555555555555555555',
+    user_id: 'user-a',
+    module: 'one_click',
+    task_type: 'kie_image',
+    provider: 'maxforai',
+    status: 'cancelled',
+    provider_task_id: 'sync-response-id',
+    payload_json: JSON.stringify({ model: 'maxforai-image-2-relay' }),
+    result_json: JSON.stringify(resultEvidence),
+    error_code: 'request_cancelled',
+  };
+  const connection = {
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    async query(sql, values = []) {
+      queries.push({ sql, values });
+      if (/SELECT \* FROM internal_jobs WHERE id = \? FOR UPDATE/.test(sql)) return [[row]];
+      if (/UPDATE internal_jobs/.test(sql)) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() {},
+  };
+
+  const outcome = await requestTombstonedJobRecovery(
+    { async getConnection() { return connection; } },
+    { id: row.id, userId: row.user_id },
+  );
+
+  assert.equal(outcome.status, 'failed');
+  assert.equal(outcome.errorCode, 'provider_recovery_manual');
+  assert.deepEqual(outcome.result, resultEvidence);
+  assert.doesNotMatch(queries[1].sql, /retry_waiting/);
+  assert.doesNotMatch(queries[1].sql, /result_json/);
 });
 
 test('mysql deletion row-locks and refuses work that a concurrent retry already queued', async () => {
@@ -1313,6 +1409,146 @@ test('admin can explicitly release a submission-unknown reservation in the same 
   assert.equal(result.action, 'release');
   assert.deepEqual(released, [row.id]);
   assert.deepEqual(events, ['begin', 'commit', 'release']);
+});
+
+test('admin can release an exhausted tombstone recovery reservation but cannot bind it again', async () => {
+  const row = {
+    id: 'job-recovery-manual',
+    user_id: 'user-a',
+    module: 'one_click',
+    task_type: 'kie_image',
+    provider: 'kie',
+    status: 'failed',
+    provider_task_id: 'provider-image-id',
+    payload_json: JSON.stringify({
+      __creditReservation: { id: 'reservation-recovery', userId: 'user-a', amount: 1 },
+      __tombstoneRecovery: { providerTaskId: 'provider-image-id' },
+    }),
+    error_code: 'provider_recovery_manual',
+    error_message: 'query retries exhausted',
+  };
+  const makeConnection = () => ({
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    async query(sql) {
+      if (/SELECT \* FROM internal_jobs WHERE id = \? FOR UPDATE/.test(sql)) return [[row]];
+      if (/UPDATE internal_jobs/.test(sql)) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() {},
+  });
+
+  await assert.rejects(
+    () => resolveSubmissionUnknownJob({
+      pool: { async getConnection() { return makeConnection(); } },
+      jobId: row.id,
+      action: 'bind',
+      providerTaskId: 'another-id',
+    }),
+    (error) => error?.code === 'submission_resolution_bind_unsupported',
+  );
+
+  let released = 0;
+  const result = await resolveSubmissionUnknownJob({
+    pool: { async getConnection() { return makeConnection(); } },
+    jobId: row.id,
+    action: 'release',
+    releaseReservation: async () => { released += 1; },
+  });
+  assert.equal(released, 1);
+  assert.equal(result.job.errorCode, 'provider_recovery_released');
+});
+
+test('admin can settle a verified successful manual recovery with actual credits and evidence', async () => {
+  const row = {
+    id: 'job-recovery-settle',
+    user_id: 'user-a',
+    module: 'one_click',
+    task_type: 'kie_image',
+    provider: 'kie',
+    status: 'failed',
+    provider_task_id: 'provider-image-success',
+    payload_json: JSON.stringify({
+      __creditReservation: { id: 'reservation-settle', userId: 'user-a', amount: 3 },
+      __tombstoneRecovery: { providerTaskId: 'provider-image-success' },
+    }),
+    error_code: 'provider_recovery_manual',
+    error_message: 'query retries exhausted',
+  };
+  const queries = [];
+  const connection = {
+    async beginTransaction() {},
+    async commit() {},
+    async rollback() {},
+    async query(sql, values = []) {
+      queries.push({ sql, values });
+      if (/SELECT \* FROM internal_jobs WHERE id = \? FOR UPDATE/.test(sql)) return [[row]];
+      if (/UPDATE internal_jobs/.test(sql)) return [{ affectedRows: 1 }];
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+    release() {},
+  };
+  let settlementInput = null;
+
+  const result = await resolveSubmissionUnknownJob({
+    pool: { async getConnection() { return connection; } },
+    jobId: row.id,
+    action: 'settle',
+    actualCreditsConsumed: 2.5,
+    verificationNote: 'KIE 后台订单核验成功',
+    settleReservation: async (receivedConnection, job, input) => {
+      assert.equal(receivedConnection, connection);
+      assert.equal(job.id, row.id);
+      settlementInput = input;
+      return { settledAmount: input.actualCreditsConsumed };
+    },
+  });
+
+  assert.deepEqual(settlementInput, {
+    actualCreditsConsumed: 2.5,
+    verificationNote: 'KIE 后台订单核验成功',
+  });
+  assert.equal(result.action, 'settle');
+  assert.equal(result.job.errorCode, 'provider_recovery_settled');
+  assert.equal(result.settlement.settledAmount, 2.5);
+  assert.match(queries.at(-1).sql, /error_code = \?/);
+});
+
+test('manual settlement requires a nonnegative amount and verification evidence', async () => {
+  const common = {
+    pool: { async getConnection() { throw new Error('validation must run before database access'); } },
+    jobId: 'job-1',
+    action: 'settle',
+  };
+  await assert.rejects(
+    () => resolveSubmissionUnknownJob({ ...common, actualCreditsConsumed: -1, verificationNote: 'verified' }),
+    (error) => error?.code === 'submission_resolution_credits_invalid',
+  );
+  await assert.rejects(
+    () => resolveSubmissionUnknownJob({ ...common, actualCreditsConsumed: 1, verificationNote: '' }),
+    (error) => error?.code === 'submission_resolution_evidence_required',
+  );
+  for (const invalidNote of [123, true, {}, ['provider', 'verified']]) {
+    await assert.rejects(
+      () => resolveSubmissionUnknownJob({
+        ...common,
+        actualCreditsConsumed: 1,
+        verificationNote: invalidNote,
+      }),
+      (error) => error?.code === 'submission_resolution_evidence_required',
+    );
+  }
+  for (const invalidAmount of ['', null, Number.MAX_VALUE, 1.001]) {
+    await assert.rejects(
+      () => resolveSubmissionUnknownJob({
+        ...common,
+        actualCreditsConsumed: invalidAmount,
+        verificationNote: 'verified',
+      }),
+      (error) => error?.code === 'submission_resolution_credits_invalid',
+    );
+  }
 });
 
 test('reconcileStaleProviderlessRunningMysqlJobs keeps kie chat submit alive longer than short cloud stale windows', () => {

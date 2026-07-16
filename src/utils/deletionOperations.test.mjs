@@ -63,6 +63,18 @@ test('deletion operations report active remote jobs as scheduled cleanup instead
   });
 });
 
+test('submitted remote jobs already covered by a tombstone are also scheduled cleanup', async () => {
+  for (const code of ['job_delete_submitted_cancelled', 'job_delete_submitted_recovery']) {
+    const [results] = await startDeletionOperations({
+      jobIds: ['backend-job-submitted'],
+      deleteJob: async () => { throw Object.assign(new Error('等待上游恢复'), { status: 409, code }); },
+      persistTombstone: async () => true,
+    });
+    assert.equal(results[0].status, 'fulfilled');
+    assert.deepEqual(results[0].value, { deletionStatus: 'scheduled' });
+  }
+});
+
 test('single-result deletion outcome reports tombstone and physical deletion matrix accurately', () => {
   const cases = [
     {

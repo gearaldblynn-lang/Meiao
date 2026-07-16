@@ -250,15 +250,26 @@ export const finishJobAttempt = async (pool, attemptId, fields = {}) => {
   );
 };
 
-export const buildSubmissionResolutionCapability = ({ status = '', errorCode = '', taskType = '' } = {}) => {
+export const buildSubmissionResolutionCapability = ({
+  status = '',
+  errorCode = '',
+  taskType = '',
+  provider = '',
+  payload = {},
+} = {}) => {
+  const normalizedErrorCode = String(errorCode || '').trim();
   const allowed = String(status || '').trim() === 'failed'
-    && String(errorCode || '').trim() === 'provider_submission_unknown';
+    && ['provider_submission_unknown', 'provider_recovery_manual'].includes(normalizedErrorCode);
   return {
     allowed,
-    canBind: allowed && canRecoverProviderTaskById({
-      taskType,
-      providerTaskId: 'verified-provider-task',
-    }),
+    canBind: allowed
+      && normalizedErrorCode === 'provider_submission_unknown'
+      && canRecoverProviderTaskById({
+        taskType,
+        provider,
+        providerTaskId: 'verified-provider-task',
+        payload,
+      }),
   };
 };
 
@@ -299,6 +310,8 @@ const mapTaskPlatformJobRow = (row) => {
       status: row.status,
       errorCode: row.error_code,
       taskType: row.task_type,
+      provider: row.provider,
+      payload: parseJsonValue(row.payload_json, {}),
     }),
   };
 };
@@ -339,7 +352,7 @@ export const listTaskPlatformJobs = async (pool, filters = {}) => {
   const [rows] = await pool.query(
     `SELECT
        j.id, j.user_id, u.username, u.display_name, j.module, j.task_type, j.provider, j.status,
-       j.provider_task_id, j.error_code, j.error_message, j.retry_count, j.max_retries,
+       j.provider_task_id, j.payload_json, j.error_code, j.error_message, j.retry_count, j.max_retries,
        j.created_at, j.updated_at, j.started_at, j.finished_at,
        (SELECT COUNT(1) FROM internal_job_attempts a WHERE a.job_id = j.id) AS attempt_count,
        (SELECT a.status FROM internal_job_attempts a WHERE a.job_id = j.id ORDER BY a.attempt_no DESC LIMIT 1) AS latest_attempt_status,

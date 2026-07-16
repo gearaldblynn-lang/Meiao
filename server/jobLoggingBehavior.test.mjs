@@ -92,7 +92,7 @@ test('local task platform list uses the canonical submission resolution capabili
   )?.[0] || '';
 
   assert.match(serverSource, /import \{[^}]*buildSubmissionResolutionCapability[^}]*\} from '\.\/taskPlatform\.mjs'/);
-  assert.match(localTaskListRoute, /submissionResolution: buildSubmissionResolutionCapability\(\{\s*status: job\.status,\s*errorCode: job\.errorCode,\s*taskType: job\.taskType,\s*\}\)/);
+  assert.match(localTaskListRoute, /submissionResolution: buildSubmissionResolutionCapability\(\{\s*status: job\.status,\s*errorCode: job\.errorCode,\s*taskType: job\.taskType,\s*provider: job\.provider,\s*payload: job\.payload,\s*\}\)/);
 });
 
 test('local json store only reconciles running jobs during server bootstrap', () => {

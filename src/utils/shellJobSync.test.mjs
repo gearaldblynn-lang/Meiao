@@ -6,6 +6,7 @@ import {
   collectMissingActiveInternalJobIds,
   createAsyncScopeGuard,
   createCoalescedAsyncRunner,
+  createScopedAsyncWriteQueue,
   getShellJobSyncIntervalMs,
   startShellJobSync,
 } from './shellJobSync.ts';
@@ -152,6 +153,36 @@ test('invalidating an async scope blocks deferred work captured by the old accou
   assert.equal(writes, 0);
   assert.equal(isCurrent(), false);
   assert.equal(scope.capture()(), true, 'new work captures the current account scope');
+});
+
+test('resetting the queue never lets an old-account writer mutate the new account', async () => {
+  const scope = createAsyncScopeGuard();
+  const queue = createScopedAsyncWriteQueue();
+  const oldWriteStarted = deferred();
+  const releaseOldWrite = deferred();
+  const writes = [];
+
+  const oldWrite = queue.enqueue(scope.capture(), async (isCurrent) => {
+    oldWriteStarted.resolve();
+    await releaseOldWrite.promise;
+    if (!isCurrent()) return false;
+    writes.push('old-account');
+    return true;
+  }, false);
+  await oldWriteStarted.promise;
+
+  scope.invalidate();
+  queue.reset();
+  const newWrite = queue.enqueue(scope.capture(), async (isCurrent) => {
+    if (!isCurrent()) return false;
+    writes.push('new-account');
+    return true;
+  }, false);
+
+  assert.equal(await newWrite, true, 'the new account must not wait for an abandoned old queue');
+  releaseOldWrite.resolve();
+  assert.equal(await oldWrite, false, 'the old writer observes invalidation after its await');
+  assert.deepEqual(writes, ['new-account']);
 });
 
 test('backfills only active internal job identities missing from the recent jobs window', () => {

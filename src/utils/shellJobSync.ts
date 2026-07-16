@@ -16,6 +16,30 @@ export const createAsyncScopeGuard = () => {
   };
 };
 
+export const createScopedAsyncWriteQueue = () => {
+  let tail: Promise<unknown> = Promise.resolve();
+
+  return {
+    enqueue: <T>(
+      isCurrent: () => boolean,
+      operation: (isCurrent: () => boolean) => Promise<T>,
+      staleValue: T,
+    ): Promise<T> => {
+      const run = () => (
+        isCurrent() ? operation(isCurrent) : Promise.resolve(staleValue)
+      );
+      const queued = tail.then(run, run);
+      tail = queued.then(() => undefined, () => undefined);
+      return queued;
+    },
+    reset: () => {
+      // Reset only releases new-account work from the previous tail. In-flight work
+      // is made harmless by the captured scope predicate checked by every writer.
+      tail = Promise.resolve();
+    },
+  };
+};
+
 interface InternalJobIdentityCandidate {
   id: unknown;
   active: boolean;

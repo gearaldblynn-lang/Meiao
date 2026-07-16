@@ -232,6 +232,32 @@ test('saveRemoteAppState keeps ordinary writes on the compact acknowledgment con
   }
 });
 
+test('queued state writes can bind the session token captured before an account switch', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  let authorization = '';
+  globalThis.fetch = async (_url, init = {}) => {
+    authorization = String(init.headers?.Authorization || '');
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    api.storeSessionToken('account-a-token');
+    const capturedSessionToken = api.captureInternalSessionToken();
+    api.storeSessionToken('account-b-token');
+    await api.saveRemoteAppState(
+      { shellProjects: [] },
+      { sessionToken: capturedSessionToken },
+    );
+    assert.equal(authorization, 'Bearer account-a-token');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('stream image upload preserves the actionable managed-image service error', async () => {
   const originalFetch = globalThis.fetch;
   const api = await loadInternalApi();
@@ -406,6 +432,36 @@ test('resolveTaskPlatformSubmission posts release without request dedupe', async
     }
     assert.equal((await first).action, 'release');
     assert.equal((await second).action, 'release');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('resolveTaskPlatformSubmission posts an audited actual-credit settlement', async () => {
+  const originalFetch = globalThis.fetch;
+  const api = await loadInternalApi();
+  let call;
+  globalThis.fetch = async (url, init = {}) => {
+    call = { url: String(url), method: init.method, body: JSON.parse(String(init.body)) };
+    return new Response(JSON.stringify({ action: 'settle', job: validInternalJob }), { status: 200 });
+  };
+
+  try {
+    const result = await api.resolveTaskPlatformSubmission('job-1', {
+      action: 'settle',
+      actualCreditsConsumed: 2.5,
+      verificationNote: 'provider order verified',
+    });
+    assert.deepEqual(call, {
+      url: '/api/admin/task-platform/jobs/job-1/submission-resolution',
+      method: 'POST',
+      body: {
+        action: 'settle',
+        actualCreditsConsumed: 2.5,
+        verificationNote: 'provider order verified',
+      },
+    });
+    assert.equal(result.action, 'settle');
   } finally {
     globalThis.fetch = originalFetch;
   }

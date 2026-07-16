@@ -70,7 +70,7 @@ import { embedTexts } from './embeddingProvider.mjs';
 import { searchKnowledgeChunksByVector } from './ragRetrieval.mjs';
 import { runAgentConversationV2 } from './agentToolConversation.mjs';
 import { shouldUseToolCallingConversation } from './agentConversationRouting.mjs';
-import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, createSerializedJobSubmissionOnConnection, deleteJobById, findJobByProviderTaskIdForUser, findReusableJobRecord, getJobById, getJobByIdForUpdate, getSubtitleRemovalSubmissionGuardState, listJobsByIdsForUser, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, resolveJobDeletionAction, resolveSubmissionUnknownJob, updateJobFields, createJobWorker, withMysqlSubmissionLock, withMysqlTransaction } from './jobManager.mjs';
+import { ensureJobsSchema, createJobRecord, createSerializedJobSubmission, createSerializedJobSubmissionOnConnection, deleteJobById, findJobByProviderTaskIdForUser, findReusableJobRecord, getJobById, getJobByIdForUpdate, getSubtitleRemovalSubmissionGuardState, listJobsByIdsForUser, listJobsForUser, getJobQueueStats, reconcileRestartedProviderlessRunningJobs, reconcileRestartedRunningJobs, reconcileStaleCancelledRunningJobs, reconcileStaleProviderlessRunningJobs, reconcileStaleSubmittedRunningJobs, requestCancelJob, requestRetryJob, requestTombstonedJobRecovery, resolveJobDeletionAction, resolveSubmissionUnknownJob, updateJobFields, createJobWorker, withMysqlSubmissionLock, withMysqlTransaction } from './jobManager.mjs';
 import { assertSubtitleRemovalBatchSubmissionAllowed, assertSubtitleRemovalRetryAllowed, assertSubmissionKnownBeforeRetry, buildSubtitleRemovalUserGuardSubmission } from './subtitleRemovalBatchGuard.mjs';
 import {
   CREDIT_LIMIT_MODES,
@@ -162,7 +162,7 @@ import {
 } from './assetLifecycleStore.mjs';
 import { assertOwnedActiveManagedAssetReferences } from './managedAssetReferencePolicy.mjs';
 import { scrubUnavailableExplicitManagedAssetIds } from './managedAssetStateScrub.mjs';
-import { reconcileTombstonedJobs } from './tombstonedJobReconciler.mjs';
+import { createTombstonedStateScanTracker, reconcileTombstonedJobs, shouldAlertTombstonedJobCleanup } from './tombstonedJobReconciler.mjs';
 import {
   assertManagedAssetSubmissionUserContext,
   assertManagedImageInputsPreserved,
@@ -402,6 +402,7 @@ let tombstonedJobCleanup = {
   lastError: '',
   lastCycleAt: null,
 };
+const tombstonedStateScanTracker = createTombstonedStateScanTracker();
 let logCleanupTimer = null;
 let staleRunningJobReconcilerTimer = null;
 const temporalTaskAdapter = createTemporalTaskAdapter();
@@ -536,6 +537,11 @@ const TOMBSTONED_JOB_RECONCILE_INTERVAL_MS = Math.max(
     5 * 60 * 1000,
     Number.parseInt(String(process.env.MEIAO_TOMBSTONED_JOB_RECONCILE_INTERVAL_MS || 15_000), 10) || 15_000,
   ),
+);
+const TOMBSTONED_JOB_PENDING_ALERT_MS = Math.max(
+  60_000,
+  Number.parseInt(String(process.env.MEIAO_TOMBSTONED_JOB_PENDING_ALERT_MS || 15 * 60 * 1000), 10)
+    || 15 * 60 * 1000,
 );
 const ASSET_CLEANUP_BATCH_SIZE = Math.max(
   1,
@@ -3614,6 +3620,12 @@ const ensureMysqlSchema = async () => {
       updated_at BIGINT NOT NULL
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
+  const [appStateUpdatedAtIndexes] = await pool.query(
+    "SHOW INDEX FROM app_states WHERE Key_name = 'idx_app_states_updated_at'",
+  );
+  if (!Array.isArray(appStateUpdatedAtIndexes) || appStateUpdatedAtIndexes.length === 0) {
+    await pool.query('ALTER TABLE app_states ADD INDEX idx_app_states_updated_at (updated_at)');
+  }
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS internal_logs (
@@ -6034,10 +6046,27 @@ const runTombstonedJobCleanupCycle = async () => {
   const errorCodes = [];
   try {
     const pool = await getMysqlPool();
-    const [rows] = await pool.query('SELECT user_id, state_json FROM app_states');
+    const updatedAfter = tombstonedStateScanTracker.getUpdatedAfter();
+    const [changedRows] = updatedAfter > 0
+      ? await pool.query(
+          'SELECT user_id, state_json, updated_at FROM app_states WHERE updated_at >= ? ORDER BY updated_at ASC',
+          [updatedAfter],
+        )
+      : await pool.query('SELECT user_id, state_json, updated_at FROM app_states ORDER BY updated_at ASC');
+    const rows = tombstonedStateScanTracker.prepareRows(changedRows);
+    const pendingJobIdsByUser = new Map();
     const stats = await reconcileTombstonedJobs({
       stateRows: rows,
-      loadJobs: (userId, jobIds) => listJobsByIdsForUser(pool, userId, jobIds),
+      loadJobs: async (userId, jobIds) => {
+        const jobs = await listJobsByIdsForUser(pool, userId, jobIds);
+        return Promise.all(jobs.map(async (job) => {
+          const reservation = getCreditReservationFromJob(job);
+          const pendingReservation = Boolean(
+            reservation && !await hasDbProcessedCreditReservation(pool, reservation),
+          );
+          return { ...job, pendingReservation };
+        }));
+      },
       cancelJob: async (job) => {
         const user = await findDbUserById(job.userId);
         if (!user) return job;
@@ -6055,6 +6084,27 @@ const runTombstonedJobCleanupCycle = async () => {
         });
         if (String(job.status) === 'running') jobWorker?.cancelActiveJob(job.id);
         return outcome.job;
+      },
+      recoverSubmittedCancelledJob: async (job) => {
+        const recoveredJob = await requestTombstonedJobRecovery(pool, job);
+        if (['queued', 'retry_waiting'].includes(String(recoveredJob.status || ''))) {
+          await mirrorDbJobToTemporalIfEnabled(pool, recoveredJob);
+          if (normalizeTaskEngineMode(process.env.MEIAO_TASK_ENGINE) !== 'temporal') {
+            jobWorker?.trigger?.();
+          }
+        } else {
+          await recordDbTaskPlatformEvent(pool, recoveredJob, {
+            stage: 'failed',
+            eventName: 'tombstone_recovery_manual_required',
+            status: 'failed',
+            providerSubmitted: Boolean(recoveredJob.providerTaskId),
+            providerTaskId: recoveredJob.providerTaskId || '',
+            retryable: false,
+            errorCode: recoveredJob.errorCode,
+            errorMessage: recoveredJob.errorMessage,
+          });
+        }
+        return recoveredJob;
       },
       deleteJob: (job) => withManagedAssetUserLock(job.userId, (lockedPool) => (
         deleteJobById(lockedPool, job.id, {
@@ -6079,10 +6129,21 @@ const runTombstonedJobCleanupCycle = async () => {
           .slice(0, 80);
         if (errorCodes.length < 5) errorCodes.push(code);
       },
+      onPending: ({ userId, jobId }) => {
+        const jobIds = pendingJobIdsByUser.get(userId) || [];
+        jobIds.push(jobId);
+        pendingJobIdsByUser.set(userId, jobIds);
+      },
     });
+    tombstonedStateScanTracker.commitPending(pendingJobIdsByUser);
     tombstonedJobCleanup = {
       ...stats,
-      alerting: stats.errors > 0,
+      oldestPendingAgeMs: stats.oldestPendingUpdatedAt
+        ? Math.max(0, Date.now() - stats.oldestPendingUpdatedAt)
+        : 0,
+      alerting: shouldAlertTombstonedJobCleanup(stats, {
+        pendingAlertMs: TOMBSTONED_JOB_PENDING_ALERT_MS,
+      }),
       lastError: errorCodes.join(','),
       lastCycleAt: Date.now(),
     };
@@ -12458,6 +12519,8 @@ const handleMysqlRequest = async (req, res, url) => {
         jobId,
         action: body?.action,
         providerTaskId: body?.providerTaskId,
+        actualCreditsConsumed: body?.actualCreditsConsumed,
+        verificationNote: body?.verificationNote,
         releaseReservation: async (connection, job) => {
           const reservation = getCreditReservationFromJob(job);
           if (!reservation) return null;
@@ -12467,6 +12530,22 @@ const handleMysqlRequest = async (req, res, url) => {
             provider: job.provider,
             reason: 'admin_submission_resolution',
             meta: { adminUserId: admin.id, jobId: job.id },
+          });
+        },
+        settleReservation: async (connection, job, settlementInput) => {
+          const reservation = getCreditReservationFromJob(job);
+          if (!reservation) return { settledAmount: 0, noReservation: true };
+          return settleDbAccountCredits(connection, reservation, {
+            result: { creditsConsumed: settlementInput.actualCreditsConsumed },
+            module: job.module,
+            taskType: job.taskType,
+            provider: job.provider,
+            reason: 'admin_submission_settlement',
+            meta: {
+              adminUserId: admin.id,
+              jobId: job.id,
+              verificationNote: settlementInput.verificationNote,
+            },
           });
         },
       });
@@ -12490,17 +12569,32 @@ const handleMysqlRequest = async (req, res, url) => {
         action: resolution.action,
         providerTaskId: resolution.job.providerTaskId || '',
         targetUserId: resolution.job.userId,
+        ...(resolution.action === 'settle' ? {
+          actualCreditsConsumed: Number(body?.actualCreditsConsumed),
+          verificationNote: String(body?.verificationNote || '').trim().slice(0, 500),
+        } : {}),
       },
     });
     await recordDbTaskPlatformEvent(pool, resolution.job, {
-      stage: resolution.action === 'bind' ? 'provider_wait' : 'failed',
+      stage: resolution.action === 'bind'
+        ? 'provider_wait'
+        : resolution.action === 'settle'
+          ? 'completed'
+          : 'failed',
       eventName: `submission_unknown_${resolution.action}`,
       status: resolution.action === 'bind' ? 'started' : 'success',
-      providerSubmitted: resolution.action === 'bind',
+      providerSubmitted: Boolean(resolution.job.providerTaskId),
       providerTaskId: resolution.job.providerTaskId || '',
       errorCode: resolution.job.errorCode,
       errorMessage: resolution.job.errorMessage,
-      meta: { adminUserId: admin.id, resolutionAction: resolution.action },
+      meta: {
+        adminUserId: admin.id,
+        resolutionAction: resolution.action,
+        ...(resolution.action === 'settle' ? {
+          actualCreditsConsumed: Number(body?.actualCreditsConsumed),
+          verificationNote: String(body?.verificationNote || '').trim().slice(0, 500),
+        } : {}),
+      },
     });
     if (resolution.action === 'bind') {
       await mirrorDbJobToTemporalIfEnabled(pool, resolution.job);
@@ -13384,6 +13478,10 @@ const handleMysqlRequest = async (req, res, url) => {
     }
     if (deletion.action === 'block_submitted_cancelled') {
       json(res, 409, { message: '该取消任务已提交上游，请先恢复查询并完成积分结算后再删除。', code: 'job_delete_submitted_cancelled' });
+      return;
+    }
+    if (deletion.action === 'block_submitted_recovery') {
+      json(res, 409, { message: '该任务正在按原上游任务 ID 恢复查询并结算，完成后会自动删除。', code: 'job_delete_submitted_recovery' });
       return;
     }
     if (deletion.action === 'block_pending_reservation') {
@@ -16092,6 +16190,8 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
             status: job.status,
             errorCode: job.errorCode,
             taskType: job.taskType,
+            provider: job.provider,
+            payload: job.payload,
           }),
         };
       }),
@@ -16113,6 +16213,8 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         jobId,
         action: body?.action,
         providerTaskId: body?.providerTaskId,
+        actualCreditsConsumed: body?.actualCreditsConsumed,
+        verificationNote: body?.verificationNote,
         releaseReservation: (job) => {
           const reservation = getCreditReservationFromJob(job);
           if (!reservation) return null;
@@ -16122,6 +16224,22 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
             provider: job.provider,
             reason: 'admin_submission_resolution',
             meta: { adminUserId: admin.id, jobId: job.id },
+          });
+        },
+        settleReservation: (job, settlementInput) => {
+          const reservation = getCreditReservationFromJob(job);
+          if (!reservation) return { settledAmount: 0, noReservation: true };
+          return settleLocalAccountCredits(store, reservation, {
+            result: { creditsConsumed: settlementInput.actualCreditsConsumed },
+            module: job.module,
+            taskType: job.taskType,
+            provider: job.provider,
+            reason: 'admin_submission_settlement',
+            meta: {
+              adminUserId: admin.id,
+              jobId: job.id,
+              verificationNote: settlementInput.verificationNote,
+            },
           });
         },
       });
@@ -16145,6 +16263,10 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
         action: resolution.action,
         providerTaskId: resolution.job.providerTaskId || '',
         targetUserId: resolution.job.userId,
+        ...(resolution.action === 'settle' ? {
+          actualCreditsConsumed: Number(body?.actualCreditsConsumed),
+          verificationNote: String(body?.verificationNote || '').trim().slice(0, 500),
+        } : {}),
       },
     });
     if (resolution.action === 'bind') {
@@ -16966,6 +17088,10 @@ const handleLocalRequest = async (req, res, url, { mutationLockHeld = false } = 
     }
     if (freshDeletionAction === 'block_submitted_cancelled') {
       json(res, 409, { message: '该取消任务已提交上游，请先恢复查询并完成积分结算后再删除。', code: 'job_delete_submitted_cancelled' });
+      return;
+    }
+    if (freshDeletionAction === 'block_submitted_recovery') {
+      json(res, 409, { message: '该任务正在按原上游任务 ID 恢复查询并结算，完成后会自动删除。', code: 'job_delete_submitted_recovery' });
       return;
     }
     if (freshDeletionAction === 'block_pending_reservation') {

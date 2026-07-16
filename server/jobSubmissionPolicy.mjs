@@ -2,6 +2,7 @@ import {
   canCreateProductRestore,
   normalizeProductRestoreRollout,
 } from '../src/utils/productRestoreRollout.mjs';
+import { isMaxForAiImageModel } from '../src/utils/maxforaiImageModels.mjs';
 
 const DEFAULT_DEDUPE_WINDOW_MS = 8000;
 const CHAT_DEDUPE_WINDOW_MS = 3 * 60 * 1000;
@@ -39,10 +40,26 @@ export const KIE_RECOVERY_SOURCE_TASK_TYPES = new Set(
   Array.from(RECOVERABLE_PROVIDER_TASK_TYPES).filter((taskType) => taskType.startsWith('kie_')),
 );
 
-export const canRecoverProviderTaskById = ({ taskType = '', providerTaskId = '' } = {}) => (
-  Boolean(String(providerTaskId || '').trim())
-  && RECOVERABLE_PROVIDER_TASK_TYPES.has(String(taskType || '').trim())
-);
+export const canRecoverProviderTaskById = ({
+  taskType = '',
+  provider = '',
+  providerTaskId = '',
+  payload = {},
+} = {}) => {
+  const normalizedTaskType = String(taskType || '').trim();
+  const normalizedProvider = String(provider || '').trim();
+  if (!String(providerTaskId || '').trim() || !RECOVERABLE_PROVIDER_TASK_TYPES.has(normalizedTaskType)) {
+    return false;
+  }
+  if (normalizedTaskType === 'kie_image') {
+    return normalizedProvider === 'kie' && !isMaxForAiImageModel(payload?.model);
+  }
+  if (normalizedTaskType.startsWith('kie_')) return normalizedProvider === 'kie';
+  if (normalizedTaskType === 'dreamina_video') return normalizedProvider === 'dreamina';
+  if (normalizedTaskType === 'maxforai_video') return normalizedProvider === 'maxforai';
+  if (normalizedTaskType === 'subtitle_remove_video') return normalizedProvider === 'golden_subtitle';
+  return false;
+};
 
 export const isAuthorizedProviderTaskRecoverySource = (sourceJob, request = {}) => {
   if (!sourceJob) return false;
