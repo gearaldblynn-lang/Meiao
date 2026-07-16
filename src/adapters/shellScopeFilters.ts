@@ -57,14 +57,21 @@ const parseProjectSequence = (value: unknown) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 };
 
+const projectIdentityCreatedAt = (id: unknown) => {
+  const match = String(id || '').match(/^proj(?:-plan)?-(\d{12,13})(?:$|-)/);
+  return match ? coerceCreatedAtMs(match[1]).ms : 0;
+};
+
 const projectSortKey = (project: ScopeProject) => {
   const normalizedCreatedAt = coerceCreatedAtMs(project.createdAt, {
     id: project.id,
     updatedAt: project.updatedAt,
   });
+  const identityCreatedAt = projectIdentityCreatedAt(project.id);
   return {
-    tier: (project.createdAtPrecise ?? normalizedCreatedAt.precise) ? 1 : 0,
-    createdAt: normalizedCreatedAt.ms,
+    tier: (identityCreatedAt > 0
+      || (project.createdAtPrecise ?? normalizedCreatedAt.precise)) ? 1 : 0,
+    createdAt: identityCreatedAt || normalizedCreatedAt.ms,
     sequence: parseProjectSequence(project.name) || parseProjectSequence(project.id),
   };
 };

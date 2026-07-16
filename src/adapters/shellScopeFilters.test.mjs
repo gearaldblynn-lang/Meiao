@@ -217,3 +217,56 @@ test('sortProjectsNewestFirst treats a newly created millisecond timestamp as pr
     ['proj-plan-1784104061813', 'persisted-older'],
   );
 });
+
+test('sortProjectsNewestFirst uses the immutable project id timestamp when completion overwrote createdAt', () => {
+  const projects = [
+    {
+      id: 'proj-plan-1784188578940',
+      name: '7月16日项目24',
+      createdAt: 1784188830099,
+      createdAtPrecise: true,
+      results: [],
+      taskCount: 1,
+      completedCount: 1,
+    },
+    {
+      id: 'proj-plan-1784188678224',
+      name: '7月16日项目25',
+      createdAt: 1784188680963,
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+    },
+  ];
+
+  assert.deepEqual(
+    sortProjectsNewestFirst(projects).map((project) => project.name),
+    ['7月16日项目25', '7月16日项目24'],
+  );
+});
+
+test('sortProjectsNewestFirst does not treat an embedded timestamp in an arbitrary job id as project creation time', () => {
+  const projects = [
+    {
+      id: 'job-1784188578940abcdef01234',
+      name: '新任务卡',
+      createdAt: 1784189000000,
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+    },
+    {
+      id: 'proj-plan-1784188800000',
+      name: '旧项目卡',
+      createdAt: 1784188800000,
+      results: [],
+      taskCount: 1,
+      completedCount: 0,
+    },
+  ];
+
+  assert.deepEqual(
+    sortProjectsNewestFirst(projects).map((project) => project.name),
+    ['新任务卡', '旧项目卡'],
+  );
+});
