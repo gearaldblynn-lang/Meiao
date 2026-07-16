@@ -959,6 +959,18 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/managedAssetReferencePolicy.test.mjs server/appStateMerge.test.mjs server/assetReferenceCleanup.test.mjs server/managedAssetDeletion.test.mjs`；`node --experimental-strip-types --test src/adapters/shellDataAdapter.test.mjs src/adapters/shellTerminalJobMerge.test.mjs src/adapters/shellScopeFilters.test.mjs src/utils/syncedProjectPersistence.test.mjs`；把云上真实 3.29 MiB state 与最近 100 条 jobs 喂给本地修复代码，成功项目恢复两张图片、失败项目显示 error，最新项目排在 7月14日项目之前。
 - Avoid next time: 新增全快照安全校验时必须用包含 `localAssetId` 的真实历史 state 回放，不能只测简化对象。任何付费/耐久 job 恢复都要覆盖“客户端占位从未持久化”的成功、失败和进行中三态；排序测试必须包含刚创建但尚未水合的新卡。
 
+## 2026-07-15 - Queue-backed project cards must not depend on a remembered active job to keep syncing
+
+- Symptom: 上游已经成功出图、`internal_jobs` 也保存了图片 URL，但项目卡继续显示生成中或没有新图片；用户只有手动刷新页面后才能看到结果。该现象在首图重复出现，并在万物替换中抓到同类生产实例。
+- Environment: Tencent Cloud production / shared shell project cards / all queue-backed modules.
+- Cloud evidence: 多桑项目 `proj-plan-1784108909613` 的两个 `kie_image` job 分别于 17:58、18:04 成功，但账号持久状态仍是 `generating/0 completed`；把同一份 state 与 jobs 交给当前 `buildShellDataSnapshot` 可立即得到 `completed/2 completed`。南烛万物替换项目也有 3 个成功图片 job 未及时进入页面快照。说明 provider、job ledger、adapter 和成功结果持久化谓词都能工作，断点在浏览器没有执行统一 jobs hydration。
+- Root cause: 每个功能页用 `waitForInternalJob` 追踪当前提交，公共兜底却只有在 `pageMode=module` 且浏览器内存仍记得 pending/generating backend identity 时才每 10 秒运行。页面挂起、切页、刷新中断或客户端检查点缺失后，功能内轮询可能停止，公共兜底也因“本地看不到活跃任务”不启动；同时没有 focus/pageshow/online/visibility 前台恢复同步，并发 hydration 也没有单飞保护。刷新页面是唯一无条件重新读取 state + jobs 的入口，因此形成“刷新才显示”。
+- Fix: 新增共享 `shellJobSync` 协调器。模块工作台不再按本地活跃任务决定是否同步，而是按可配置周期统一读取 jobs；页面重新可见、窗口聚焦、pageshow 和网络恢复时立即同步。所有 hydration 触发共享 coalesced async runner，同一时刻只允许一个快照请求；首轮失败仍消费已请求的尾随同步。账号切换、退出和离开模块会使 async scope 失效，所有延迟 UI updater 和持久化 writer 在执行时重新校验，禁止旧账号写使用新 token。最近 200 条以外的单 job 补查仅保留 planning/generating/retry_waiting 等活跃 identity，终态历史不再形成 N+1 请求。
+- Scope: 一键主详（首图/主图/详情/SKU）、翻译、买家秀、图片升级/产品还原、万物替换、视频生成/分镜/去字幕、小红书封面统一继承该修复。图片裁剪、视频诊断和配置 CRUD 不走这条长任务项目卡链。Agent Center 使用独立会话同步机制，不把本修复误写为已覆盖。
+- Regression check: `node --experimental-strip-types --test src/utils/shellJobSync.test.mjs src/shell/shellJobLiveSyncBehavior.test.mjs src/adapters/shellDataAdapter.test.mjs src/utils/syncedProjectPersistence.test.mjs src/adapters/shellRuntimeMerge.test.mjs`；`node --experimental-strip-types --test src/components/uiArchitecture.test.mjs`；`npm run build`。必须锁定：没有本地活跃身份仍周期同步、前台/网络恢复立即同步、首轮失败不丢尾随、切账号/退出后旧延迟写失效、终态历史不会触发单条补查、所有队列模块终态恢复不回退。
+- Deployment: `not_deployed`。本地代码和自动化回归已完成，尚未执行腾讯云发布或线上不刷新 canary。
+- Avoid next time: “刷新后能恢复”只证明 adapter 能读，不证明当前页面会持续同步。任何新增耐久 job 模块都必须默认接入共享同步协调器，并验收正常前台、后台挂起后返回、网络断开后恢复、客户端占位未落库和多标签/切账号场景；不能再以本地 React 状态是否还标记 active 作为服务端真相同步的开关。
+
 ## 2026-07-16 - Product restoration analysis must be target-addressable and parse only known provider envelopes
 
 - Symptom: 产品还原分析 job 已成功，原始内容也包含完整产品身份与材质结论，但项目卡报“分析模型未返回可用的产品还原结构”；旧流程即使解析成功，也只会把一条整批共享提示词复制给所有待还原图，无法保证每张图按自身偏差修改。

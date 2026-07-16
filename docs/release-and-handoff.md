@@ -161,3 +161,12 @@
 - 发布：业务提交 `33e13bd`，从干净隔离 worktree 通过标准门禁发布。发布前运行中任务为 0，COS `put -> head -> signed GET -> byte equality -> delete -> not-found` 真探针通过，本机与公网 health 均为 `ok`，worker 和托管图片上传就绪。
 - 云上验收：目标账号状态在部署后由 15:51 推进到 17:28；16:27 项目持久化为 `completed` 且包含 2 张图，16:29 项目持久化为真实 `error`；最新首图项目按真实时间倒序。本地/云上三个关键源文件 SHA-256 一致。
 - 观察入口：云上日志诊断看板指纹 `oneclick-state-local-asset-id-checkpoint-sort`，状态 `deployed_to_cloud`；连续 3 个完整诊断窗口不再出现同根因后才可关闭。
+
+## 15. 2026-07-15 项目卡统一实时同步修复
+
+- 现象：前一轮检查点/恢复修复发布后，仍有新任务出现“上游成功、页面继续生成中，手动刷新才显示”；首图和万物替换均取得生产证据，因此不是单模块解析问题。
+- 根因：功能内轮询中断后，公共 jobs hydration 仍依赖浏览器内存里的 active identity；本地状态越旧，越不会主动拉取服务端真相。页面恢复可见、窗口聚焦和网络恢复也没有立即对账。
+- 本地修复：公共项目卡同步改为模块级持续轮询，并在 `focus/pageshow/online/visibilitychange` 立即刷新；所有触发经 coalesced runner 串行，首轮失败不丢尾随。切账号、退出和离开模块使 async scope 失效，延迟 UI/持久化写重新校验；单条 job 补查只处理活跃 identity。同步周期由 `VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS` 控制，默认 10 秒。
+- 覆盖范围：一键主详、翻译、买家秀、图片升级/产品还原、万物替换、视频生成/分镜/去字幕和小红书封面。Agent Center 使用独立消息同步，不在本条覆盖范围内。
+- 本地证据：协调器/账号 scope/生命周期/活跃 job 补查/全模块 adapter 与持久化回归已纳入提交前门禁，并要求通过 `npm run build`。
+- 发布状态：`not_deployed`。尚未同步腾讯云，也没有创建新的付费线上 canary；发布后必须用真实运行任务验证无需刷新即可在一个同步周期内显示终态，并检查前台恢复立即对账。

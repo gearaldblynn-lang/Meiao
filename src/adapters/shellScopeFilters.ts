@@ -2,7 +2,7 @@ import { coerceCreatedAtMs } from '../utils/createdAtMs.ts';
 
 export interface ScopeProjectResult {
   id: string;
-  status: 'completed' | 'generating' | 'error';
+  status: 'completed' | 'generating' | 'retry_waiting' | 'error';
   subFeature?: string;
 }
 

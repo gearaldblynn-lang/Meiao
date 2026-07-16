@@ -69,6 +69,13 @@ import { isInvalidOneClickPlanLike } from './utils/oneClickPlanValidation.ts';
 import { mergeShellRuntimeDeletionDrafts, pruneShellRuntimeSnapshotForDeletion } from './utils/shellRuntimePrune.mjs';
 import { isFrontendResourceError } from './utils/frontendResourceError.mjs';
 import { startVersionWatch } from './utils/frontendVersionWatch';
+import {
+  collectMissingActiveInternalJobIds,
+  createAsyncScopeGuard,
+  createCoalescedAsyncRunner,
+  getShellJobSyncIntervalMs,
+  startShellJobSync,
+} from './utils/shellJobSync';
 import { resolveMaxForAiImageModelId } from './utils/maxforaiImageModels.mjs';
 import { MAXFORAI_VIDEO_MODEL_ID } from './utils/maxforaiVideoModels.mjs';
 import {
@@ -180,6 +187,9 @@ const PRODUCT_RESTORE_INVALID_ANALYSIS_ERROR_CODES = new Set([
 ]);
 
 const ANNOUNCEMENT_DISMISS_STORAGE_PREFIX = 'meiao_announcement_dismissed_today';
+const SHELL_JOB_SYNC_INTERVAL_MS = getShellJobSyncIntervalMs(
+  import.meta.env.VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS,
+);
 // 撤下的未发布模块(335cfb1):对商家不可见。智能工厂在阶段5调通期只对 admin 开放
 // (isModuleWithdrawnForUser),AI 客服对所有人保持撤下(业主决策靠后)。
 const WITHDRAWN_CLOUD_MODULES = new Set<AppModule>([
@@ -226,7 +236,7 @@ export interface GeneratedResult {
   prompt: string;
   model: string;
   aspectRatio: string;
-  status: 'completed' | 'generating' | 'error';
+  status: 'completed' | 'generating' | 'retry_waiting' | 'error';
   createdAt: number;
   module: AppModule;
   subFeature?: string;
@@ -2652,7 +2662,20 @@ const AppContent: React.FC<{
   const [hasHydratedSharedData, setHasHydratedSharedData] = useState(false);
   const showGenerationProgress = apiConfig.workspacePreferences?.showGenerationProgress !== false;
   const hydrationScheduledRef = useRef(false);
-  const jobsHydrationScheduledRef = useRef(false);
+  const jobsHydrationScopeRef = useRef<ReturnType<typeof createAsyncScopeGuard> | null>(null);
+  if (!jobsHydrationScopeRef.current) jobsHydrationScopeRef.current = createAsyncScopeGuard();
+  const jobsHydrationScopeUserIdRef = useRef(shellLocalScopeUserId);
+  if (jobsHydrationScopeUserIdRef.current !== shellLocalScopeUserId) {
+    jobsHydrationScopeRef.current.invalidate();
+    jobsHydrationScopeUserIdRef.current = shellLocalScopeUserId;
+  }
+  const hydrateShellJobsOperationRef = useRef<() => Promise<void>>(async () => undefined);
+  const hydrateShellJobsRunnerRef = useRef<(() => Promise<void>) | null>(null);
+  if (!hydrateShellJobsRunnerRef.current) {
+    hydrateShellJobsRunnerRef.current = createCoalescedAsyncRunner(
+      () => hydrateShellJobsOperationRef.current(),
+    );
+  }
   const latestSharedStateRef = useRef<Partial<PersistedAppState> | null>(null);
   const sharedStateWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
   const restoredRuntimeProjectIdsRef = useRef(new Set(initialRuntimeSnapshot.projects.map((project) => project.id)));
@@ -2698,16 +2721,19 @@ const AppContent: React.FC<{
     return '';
   }, []);
 
-  const resolveSharedStateBaseForWrite = useCallback(async () => {
+  const resolveSharedStateBaseForWrite = useCallback(async (isCurrent: () => boolean = () => true) => {
+    if (!isCurrent()) return {};
     if (latestSharedStateRef.current) return latestSharedStateRef.current;
     if (shouldUseLocalStateFallback()) {
       const { loadPersistedAppState } = await loadShellPersistenceTools();
-      return loadPersistedAppState(shellLocalScopeUserId);
+      return isCurrent() ? loadPersistedAppState(shellLocalScopeUserId) : {};
     }
     try {
       const { normalizeLoadedPersistedAppState } = await loadShellPersistenceTools();
+      if (!isCurrent()) return {};
       const remoteResult = await fetchRemoteAppState();
       const remoteState = normalizeLoadedPersistedAppState(remoteResult.state);
+      if (!isCurrent()) return {};
       latestSharedStateRef.current = remoteState;
       return remoteState;
     } catch {
@@ -2733,14 +2759,20 @@ const AppContent: React.FC<{
     return nextState;
   }, [shellLocalScopeUserId]);
 
-  const persistVideoMemoryToSharedState = useCallback((nextVideoMemory: VideoPersistentState) => {
+  const persistVideoMemoryToSharedState = useCallback((
+    nextVideoMemory: VideoPersistentState,
+    isCurrent: () => boolean = () => true,
+  ) => {
     const write = async () => {
+      if (!isCurrent()) return false;
       const {
         buildPersistedAppState,
         savePersistedAppState,
         sanitizePersistedAppState,
       } = await loadShellPersistenceTools();
-      const persistedBase = await resolveSharedStateBaseForWrite();
+      if (!isCurrent()) return false;
+      const persistedBase = await resolveSharedStateBaseForWrite(isCurrent);
+      if (!isCurrent()) return false;
       const baseState = buildPersistedAppState(persistedBase);
       const nextState = sanitizePersistedAppState({
         ...baseState,
@@ -2750,6 +2782,7 @@ const AppContent: React.FC<{
         },
         videoMemory: nextVideoMemory,
       });
+      if (!isCurrent()) return false;
       latestSharedStateRef.current = nextState;
       savePersistedAppState(nextState, shellLocalScopeUserId);
       try {
@@ -2798,10 +2831,14 @@ const AppContent: React.FC<{
     return queuedWrite;
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
 
-  const persistSyncedProjectsToSharedState = useCallback((syncedProjects: Project[]) => {
+  const persistSyncedProjectsToSharedState = useCallback((
+    syncedProjects: Project[],
+    isCurrent: () => boolean = () => true,
+  ) => {
     const projectsToPersist = syncedProjects.filter((project) => String(project?.id || '').trim());
     if (projectsToPersist.length === 0) return Promise.resolve(true);
     const write = async () => {
+      if (!isCurrent()) return false;
       const {
         buildPersistedAppState,
         savePersistedAppState,
@@ -2810,7 +2847,9 @@ const AppContent: React.FC<{
         upsertShellProjectIntoPersistedState,
         upsertTranslationFilesIntoPersistedState,
       } = await loadShellPersistenceTools();
-      const persistedBase = await resolveSharedStateBaseForWrite();
+      if (!isCurrent()) return false;
+      const persistedBase = await resolveSharedStateBaseForWrite(isCurrent);
+      if (!isCurrent()) return false;
       let nextState = buildPersistedAppState(persistedBase);
       const touchedOneClickBranches = new Set<string>();
       const touchedTranslationBranches = new Set<string>();
@@ -2831,11 +2870,12 @@ const AppContent: React.FC<{
           nextState = upsertTranslationFilesIntoPersistedState(
             nextState,
             project.subFeature || 'main',
-            project.results.map((result, index) => translationResultToFile(project, result, index)) as any,
+            project.results.map((result, index) => translationResultToFile(project, result, index)),
           );
         }
       });
       nextState = sanitizePersistedAppState(nextState);
+      if (!isCurrent()) return false;
       latestSharedStateRef.current = nextState;
       savePersistedAppState(nextState, shellLocalScopeUserId);
       const patch: Partial<PersistedAppState> = {
@@ -2886,6 +2926,9 @@ const AppContent: React.FC<{
 
   useEffect(() => {
     traceStartup('app-content:mounted');
+    return () => {
+      jobsHydrationScopeRef.current?.invalidate();
+    };
   }, []);
 
   // S4:新版本探测。发现云上已发新版:无活跃任务 → 提示后自动软刷新;有活跃任务 → 只提示,
@@ -3158,7 +3201,8 @@ const AppContent: React.FC<{
     traceStartup('hydrate-shell-data:end');
   }, [applyShellSnapshot, shellLocalScopeUserId]);
 
-  const hydrateShellJobs = useCallback(async () => {
+  const runHydrateShellJobs = useCallback(async () => {
+    const isHydrationCurrent = jobsHydrationScopeRef.current!.capture();
     traceStartup('hydrate-shell-jobs:start');
     try {
       const { buildShellDataSnapshot } = await loadShellPersistenceTools();
@@ -3167,26 +3211,40 @@ const AppContent: React.FC<{
       const jobsById = new Map(
         recentJobs.map((job) => [String(job.id || '').trim(), job]),
       );
-      const knownBackendJobIds = new Set<string>();
-      const addKnownBackendJobId = (value: unknown) => {
-        const jobId = String(value || '').trim();
-        if (/^[a-f0-9]{24}$/i.test(jobId)) knownBackendJobIds.add(jobId);
+      const knownBackendJobCandidates: Array<{ id: unknown; active: boolean }> = [];
+      const addKnownBackendJobId = (value: unknown, active: boolean) => {
+        knownBackendJobCandidates.push({ id: value, active });
       };
       projectsRef.current.forEach((project) => {
-        addKnownBackendJobId(project.backendJobId);
-        project.results.forEach((result) => addKnownBackendJobId(result.backendJobId));
+        addKnownBackendJobId(
+          project.backendJobId,
+          shouldKeepRuntimeProject(project),
+        );
+        project.results.forEach((result) => addKnownBackendJobId(
+          result.backendJobId,
+          result.status === 'generating' || result.status === 'retry_waiting',
+        ));
       });
-      tasksRef.current.forEach((task) => addKnownBackendJobId(task.backendJobId || task.id));
+      tasksRef.current.forEach((task) => addKnownBackendJobId(
+        task.backendJobId || task.id,
+        isActiveTaskStatus(task.status),
+      ));
       const persistedStoryboardProjects = latestSharedStateRef.current?.videoMemory?.storyboard?.projects || [];
       persistedStoryboardProjects.forEach((project) => {
         const durableProject = project as StoryboardProjectWithJobIdentity;
-        addKnownBackendJobId(durableProject.planningJobId);
-        addKnownBackendJobId(durableProject.backendJobId);
-        durableProject.boards.forEach((board) => addKnownBackendJobId(board.backendJobId));
+        const planningActive = project.status === 'pending' || project.status === 'scripting';
+        addKnownBackendJobId(durableProject.planningJobId, planningActive);
+        addKnownBackendJobId(
+          durableProject.backendJobId,
+          planningActive || project.status === 'imaging',
+        );
+        durableProject.boards.forEach((board) => addKnownBackendJobId(
+          board.backendJobId,
+          board.status === 'generating',
+        ));
       });
       const missingKnownJobs = await Promise.all(
-        Array.from(knownBackendJobIds)
-          .filter((jobId) => !jobsById.has(jobId))
+        collectMissingActiveInternalJobIds(knownBackendJobCandidates, jobsById.keys())
           .map((jobId) => fetchInternalJob(jobId).then((result) => result.job).catch(() => null)),
       );
       missingKnownJobs.forEach((job) => {
@@ -3206,13 +3264,15 @@ const AppContent: React.FC<{
           .filter(Boolean),
       );
       const snapshot = buildShellDataSnapshot(latestSharedStateRef.current || {}, fetchedJobs);
+      if (!isHydrationCurrent()) return;
       const recoveredStoryboardProjects = (snapshot.projects as Project[])
         .map((project) => project.storyboardSourceProject)
         .filter((project): project is VideoStoryboardProject => Boolean(project));
       if (recoveredStoryboardProjects.length > 0) {
-        setVideoMemory((previousState) => {
+        setVideoMemoryState((previousState) => {
+          if (!isHydrationCurrent()) return previousState;
           const baseState = previousState || createDefaultVideoState();
-          return {
+          const nextVideoMemory = {
             ...baseState,
             storyboard: {
               ...baseState.storyboard,
@@ -3222,12 +3282,14 @@ const AppContent: React.FC<{
               ),
             },
           };
+          void persistVideoMemoryToSharedState(nextVideoMemory, isHydrationCurrent);
+          return nextVideoMemory;
         });
       }
       const syncedProjectsToPersist = (snapshot.projects as Project[])
         .filter((project) => shouldPersistSyncedProjectFromJobs(project, latestSharedStateRef.current));
       if (syncedProjectsToPersist.length > 0) {
-        void persistSyncedProjectsToSharedState(syncedProjectsToPersist);
+        void persistSyncedProjectsToSharedState(syncedProjectsToPersist, isHydrationCurrent);
       }
       const runtimeSnapshot = pruneShellRuntimeSnapshotForDeletion(
         loadShellRuntimeSnapshot(shellLocalScopeUserId),
@@ -3260,39 +3322,55 @@ const AppContent: React.FC<{
           .map(shellProjectSignature),
       );
       const liveTaskSignatures = new Set((snapshot.tasks as Task[]).map(shellTaskSignature));
-      setProjects((prev) => mergeShellProjects([...prev, ...runtimeSnapshot.projects], snapshot.projects as Project[])
-        .filter((project) => {
-          const backendJobId = String(project.backendJobId || '').trim();
-          if (backendJobId && terminalBackendJobIds.has(backendJobId)) {
-            return snapshotProjectJobIds.has(backendJobId);
-          }
-          if (!restoredRuntimeProjectIdsRef.current.has(project.id)) return true;
-          if (!snapshotProjectIds.has(project.id) && !activeSnapshotTaskProjectIds.has(project.id)) return false;
-          const signature = shellProjectSignature(project);
-          if (liveProjectSignatures.has(signature)) return true;
-          return !completedProjectSignatures.has(signature);
-        }));
-      setTasks((prev) => mergeShellTasks([...prev, ...runtimeSnapshot.tasks], snapshot.tasks as Task[])
-        .filter((task) => {
-          const backendJobId = String(task.backendJobId || task.id || '').trim();
-          if (backendJobId && terminalBackendJobIds.has(backendJobId)) return false;
-          if (backendJobId && activeBackendJobIds.has(backendJobId)) return true;
-          if (!restoredRuntimeTaskIdsRef.current.has(task.id)) return true;
-          const signature = shellTaskSignature(task);
-          if (liveTaskSignatures.has(signature)) return true;
-          if (!activeSnapshotTaskProjectIds.has(String(task.projectId || '').trim())) return false;
-          return !completedProjectSignatures.has(`${task.module}:${task.subFeature || 'default'}:${task.title || ''}`);
-        }));
+      setProjects((prev) => {
+        if (!isHydrationCurrent()) return prev;
+        return mergeShellProjects([...prev, ...runtimeSnapshot.projects], snapshot.projects as Project[])
+          .filter((project) => {
+            const backendJobId = String(project.backendJobId || '').trim();
+            if (backendJobId && terminalBackendJobIds.has(backendJobId)) {
+              return snapshotProjectJobIds.has(backendJobId);
+            }
+            if (!restoredRuntimeProjectIdsRef.current.has(project.id)) return true;
+            if (!snapshotProjectIds.has(project.id) && !activeSnapshotTaskProjectIds.has(project.id)) return false;
+            const signature = shellProjectSignature(project);
+            if (liveProjectSignatures.has(signature)) return true;
+            return !completedProjectSignatures.has(signature);
+          });
+      });
+      setTasks((prev) => {
+        if (!isHydrationCurrent()) return prev;
+        return mergeShellTasks([...prev, ...runtimeSnapshot.tasks], snapshot.tasks as Task[])
+          .filter((task) => {
+            const backendJobId = String(task.backendJobId || task.id || '').trim();
+            if (backendJobId && terminalBackendJobIds.has(backendJobId)) return false;
+            if (backendJobId && activeBackendJobIds.has(backendJobId)) return true;
+            if (!restoredRuntimeTaskIdsRef.current.has(task.id)) return true;
+            const signature = shellTaskSignature(task);
+            if (liveTaskSignatures.has(signature)) return true;
+            if (!activeSnapshotTaskProjectIds.has(String(task.projectId || '').trim())) return false;
+            return !completedProjectSignatures.has(`${task.module}:${task.subFeature || 'default'}:${task.title || ''}`);
+          });
+      });
     } catch {
+      if (!isHydrationCurrent()) return;
       const runtimeSnapshot = pruneShellRuntimeSnapshotForDeletion(
         loadShellRuntimeSnapshot(shellLocalScopeUserId),
         getRuntimeDeletionDraft(undefined, shellLocalScopeUserId),
       );
-      setProjects((prev) => mergeShellProjects([...prev, ...runtimeSnapshot.projects], []));
-      setTasks(mergeShellTasks(runtimeSnapshot.tasks, []));
+      setProjects((prev) => (
+        isHydrationCurrent() ? mergeShellProjects([...prev, ...runtimeSnapshot.projects], []) : prev
+      ));
+      setTasks((prev) => (
+        isHydrationCurrent() ? mergeShellTasks(runtimeSnapshot.tasks, []) : prev
+      ));
     }
     traceStartup('hydrate-shell-jobs:end');
-  }, [getRuntimeDeletionDraft, persistSyncedProjectsToSharedState, setVideoMemory, shellLocalScopeUserId]);
+  }, [getRuntimeDeletionDraft, persistSyncedProjectsToSharedState, persistVideoMemoryToSharedState, shellLocalScopeUserId]);
+
+  hydrateShellJobsOperationRef.current = runHydrateShellJobs;
+  const hydrateShellJobs = useCallback(() => (
+    hydrateShellJobsRunnerRef.current?.() || Promise.resolve()
+  ), []);
 
   const resetShellWorkspaceForUser = useCallback((userId?: string | null) => {
     const scopedUiState = readShellUiState(userId);
@@ -3306,7 +3384,7 @@ const AppContent: React.FC<{
     productRestoreObservedJobIdsRef.current.clear();
     productRestoreCancellationRegistryRef.current?.reset();
     hydrationScheduledRef.current = false;
-    jobsHydrationScheduledRef.current = false;
+    jobsHydrationScopeRef.current?.invalidate();
     latestSharedStateRef.current = null;
     sharedStateWriteQueueRef.current = Promise.resolve();
     restoredRuntimeProjectIdsRef.current = new Set(runtimeSnapshot.projects.map((project) => project.id));
@@ -3828,57 +3906,17 @@ const AppContent: React.FC<{
   }, [pageMode, hydrateShellData]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (pageMode !== 'module') {
-      jobsHydrationScheduledRef.current = false;
-      return;
-    }
-    if (jobsHydrationScheduledRef.current) return;
-    jobsHydrationScheduledRef.current = true;
-    type HydrationHandle = number | ReturnType<typeof globalThis.setTimeout>;
-    const scheduleHydration = (callback: () => void) => {
-      return globalThis.setTimeout(callback, 0);
-    };
-    const cancelHydration = (handle: HydrationHandle) => {
-      globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>);
-    };
-    const handle = scheduleHydration(() => {
-      void hydrateShellJobs();
-    });
-    return () => {
-      jobsHydrationScheduledRef.current = false;
-      cancelHydration(handle);
-    };
-  }, [pageMode, hydrateShellJobs]);
-
-  useEffect(() => {
     if (typeof window === 'undefined') return undefined;
     if (pageMode !== 'module') return undefined;
-    const hasActiveBackendTask = tasks.some((task) => {
-      const status = String(task.status || '');
-      return Boolean(task.backendJobId || task.id)
-        && (status === 'pending' || status === 'generating');
+    const stop = startShellJobSync({
+      run: hydrateShellJobs,
+      intervalMs: SHELL_JOB_SYNC_INTERVAL_MS,
     });
-    const hasActiveBackendProject = projects.some((project) => {
-      if (project.storyboardProjectStatus === 'awaiting_image_confirmation') return false;
-      const status = String(project.status || '');
-      if (status !== 'planning' && status !== 'generating') return false;
-      if (isOneClickPlanReadyProject(project)) return false;
-      return Boolean(project.backendJobId)
-        || (project.results || []).some((result) => Boolean(result.backendJobId || result.taskId));
-    });
-    if (!hasActiveBackendTask && !hasActiveBackendProject) return undefined;
-    const timeoutId = window.setTimeout(() => {
-      void hydrateShellJobs();
-    }, 0);
-    const intervalId = window.setInterval(() => {
-      void hydrateShellJobs();
-    }, 10_000);
     return () => {
-      window.clearTimeout(timeoutId);
-      window.clearInterval(intervalId);
+      jobsHydrationScopeRef.current?.invalidate();
+      stop();
     };
-  }, [hydrateShellJobs, pageMode, projects, tasks]);
+  }, [hydrateShellJobs, pageMode]);
 
   const resumeProductRestoreProject = useCallback(async (project: Project) => {
     const projectId = String(project.id || '').trim();
