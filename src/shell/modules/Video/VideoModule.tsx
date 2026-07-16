@@ -187,6 +187,8 @@ const VideoModule: React.FC<Props> = ({
   const subtitleRemovalWorkspace = (
     <div hidden={activeSubFeature !== 'subtitle_removal'}>
       <SubtitleRemovalWorkspace
+        active={activeSubFeature === 'subtitle_removal'}
+        composerSlotId="subtitle-removal-composer-slot"
         draft={subtitleRemovalDraft}
         onDraftChange={onSubtitleRemovalDraftChange}
         onSubmit={onSubtitleRemovalSubmit}
@@ -250,7 +252,7 @@ const VideoModule: React.FC<Props> = ({
       onSubFeatureChange={onSubFeatureChange}
       pendingActionKeys={pendingActionKeys}
       showGenerationProgress={showGenerationProgress}
-      beforeProjects={subtitleRemovalWorkspace}
+      afterProjects={subtitleRemovalWorkspace}
     />
   );
 };

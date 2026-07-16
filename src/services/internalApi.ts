@@ -128,11 +128,13 @@ const classifyError = (status: number, serverMessage: string, serverErrorCode?: 
       return new ApiError(serverMessage || FACTORY_MANAGED_AGENT_NOTICE, FACTORY_MANAGED_AGENT_ERROR_CODE, status);
     return new ApiError('没有权限执行此操作', 'forbidden', status);
   }
+  if (status >= 500 && /^managed_image_/.test(serverErrorCode || ''))
+    return new ApiError(serverMessage || '图片上传服务暂时不可用', serverErrorCode || 'managed_image_error', status);
   if (status >= 500)
     return new ApiError('服务暂时不可用，请稍后再试', 'server_error', status);
   return new ApiError(
     serverMessage || '请求失败',
-    'request_failed',
+    serverErrorCode || 'request_failed',
     status,
   );
 };
@@ -227,7 +229,7 @@ const request = async <T>(
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
-          const err = classifyError(response.status, data.message || '', data.errorCode || '');
+          const err = classifyError(response.status, data.message || '', data.errorCode || data.code || '');
           if (isRetryable(method, response.status, null) && attempt < maxAttempts - 1) {
             lastError = err;
             continue;
@@ -1657,7 +1659,7 @@ export const uploadInternalAssetStream = async (payload: {
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw classifyError(response.status, data.message || '');
+    throw classifyError(response.status, data.message || '', data.errorCode || data.code || '');
   }
   return data as { fileUrl: string };
 };

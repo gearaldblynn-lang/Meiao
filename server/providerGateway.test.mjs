@@ -59,19 +59,26 @@ const installTestCosClient = (signedUrl, calls = []) => {
   return calls;
 };
 
-test('executeProviderJob propagates managed COS signed-read dependencies to KIE image creation', async () => {
+test('executeProviderJob stages managed COS bytes before KIE image creation', async () => {
   const originalFetch = global.fetch;
   const originalSetTimeout = global.setTimeout;
   const originalClearTimeout = global.clearTimeout;
   const requests = [];
   const signedUrl = 'https://meiao-managed-images-1406860462.cos.ap-guangzhou.myqcloud.com/managed-images/users/abc/source/asset/image.png?q-signature=fresh';
+  const stagedUrl = 'https://tempfile.redpandaai.co/kieai/mayo-storage/internal/asset-image.png';
   const resolverCalls = [];
 
   global.fetch = async (url, init = {}) => {
     const requestUrl = String(url);
     requests.push({ url: requestUrl, init });
-    if (requestUrl.includes('/api/assets/file/')) {
-      throw new Error('managed COS images must not be downloaded by the provider gateway');
+    if (requestUrl === signedUrl) {
+      return new Response(Buffer.from('cos-image-bytes'), {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      });
+    }
+    if (requestUrl.includes('/file-stream-upload')) {
+      return createJsonResponse({ code: 200, data: { fileUrl: stagedUrl } });
     }
     if (requestUrl.includes('/createTask')) {
       return createJsonResponse({ code: 200, data: { taskId: 'cos-image-task' } });
@@ -95,6 +102,7 @@ test('executeProviderJob propagates managed COS signed-read dependencies to KIE 
   global.clearTimeout = (timer) => originalClearTimeout(timer);
 
   try {
+    __testOnly_clearManagedAssetUploadCache();
     await executeProviderJob(
       {
         taskType: 'kie_image',
@@ -121,8 +129,14 @@ test('executeProviderJob propagates managed COS signed-read dependencies to KIE 
 
     const createTaskRequest = requests.find((request) => request.url.includes('/createTask'));
     assert.ok(createTaskRequest);
-    assert.match(String(createTaskRequest.init.body), new RegExp(signedUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-    assert.deepEqual(resolverCalls, [['/api/assets/file/asset/image.png', 'provider']]);
+    assert.match(String(createTaskRequest.init.body), new RegExp(stagedUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(String(createTaskRequest.init.body), /q-signature=fresh/);
+    assert.equal(requests.filter((request) => request.url === signedUrl).length, 1);
+    assert.equal(requests.filter((request) => request.url.includes('/file-stream-upload')).length, 1);
+    assert.deepEqual(resolverCalls, [
+      ['/api/assets/file/asset/image.png', 'provider'],
+      ['/api/assets/file/asset/image.png', 'provider'],
+    ]);
   } finally {
     global.fetch = originalFetch;
     global.setTimeout = originalSetTimeout;

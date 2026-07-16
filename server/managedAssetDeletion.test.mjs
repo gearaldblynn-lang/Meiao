@@ -106,6 +106,19 @@ test('cleanup timer reconciles states and drains durable tasks with an overlap g
   assert.match(source, /MEIAO_ASSET_CLEANUP_ALERT_OLDEST_MS/);
 });
 
+test('job tombstones are durably reconciled and exposed through health', () => {
+  const cycle = source.match(/const runTombstonedJobCleanupCycle = async \(\) => \{[\s\S]*?\n\};/)?.[0] || '';
+  assert.match(cycle, /SELECT user_id, state_json FROM app_states/);
+  assert.match(cycle, /reconcileTombstonedJobs/);
+  assert.match(cycle, /listJobsByIdsForUser/);
+  assert.match(cycle, /requestCancelJob/);
+  assert.match(cycle, /deleteJobById/);
+  assert.match(cycle, /hasDbProcessedCreditReservation/);
+  assert.match(source, /tombstonedJobCleanup,/);
+  assert.match(source, /MEIAO_TOMBSTONED_JOB_RECONCILE_INTERVAL_MS/);
+  assert.match(source, /alreadyAbsent: true/);
+});
+
 test('durable managed-asset reference writes serialize with delete-pending transitions', () => {
   const lockedStateWrite = source.match(/const saveDbAppStateAndQueueRemovedAssetsUnderLock = async[\s\S]*?\n\};/)?.[0] || '';
   const mysqlStateRoute = source.match(/if \(url\.pathname === '\/api\/state' && req\.method === 'PUT'\) \{[\s\S]*?\n  \}/)?.[0] || '';

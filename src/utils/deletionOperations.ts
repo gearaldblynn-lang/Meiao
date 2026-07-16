@@ -7,6 +7,30 @@ type DeletionOutcomeInput = {
   hasPhysicalTargets: boolean;
 };
 
+type DeletionRequestOutcome = {
+  deletionStatus: 'deleted' | 'already_absent' | 'scheduled';
+};
+
+const runDeletionRequest = async (
+  jobId: string,
+  deleteJob: (jobId: string) => Promise<unknown>,
+): Promise<DeletionRequestOutcome> => {
+  try {
+    await deleteJob(jobId);
+    return { deletionStatus: 'deleted' };
+  } catch (error) {
+    const status = Number((error as { status?: number })?.status || 0);
+    const code = String((error as { code?: string })?.code || '');
+    if (status === 404 || code === 'job_not_found') {
+      return { deletionStatus: 'already_absent' };
+    }
+    if (status === 409 && code === 'job_delete_active') {
+      return { deletionStatus: 'scheduled' };
+    }
+    throw error;
+  }
+};
+
 export const startDeletionOperations = <T>({
   jobIds,
   deleteJob,
@@ -16,7 +40,7 @@ export const startDeletionOperations = <T>({
   deleteJob: (jobId: string) => Promise<unknown>;
   persistTombstone: () => Promise<T>;
 }) => {
-  const physicalDeletion = Promise.allSettled(jobIds.map((jobId) => deleteJob(jobId)));
+  const physicalDeletion = Promise.allSettled(jobIds.map((jobId) => runDeletionRequest(jobId, deleteJob)));
   const tombstonePersistence = persistTombstone();
   return Promise.all([physicalDeletion, tombstonePersistence]);
 };
@@ -29,6 +53,10 @@ export const resolveDeletionOutcome = ({
 }: DeletionOutcomeInput): { message: string; tone: DeletionTone } => {
   const physicalDeleted = !hasPhysicalTargets
     || deletionResults.every((result) => result.status === 'fulfilled');
+  const physicalCleanupScheduled = deletionResults.some((result) => (
+    result.status === 'fulfilled'
+    && (result.value as DeletionRequestOutcome)?.deletionStatus === 'scheduled'
+  ));
 
   if (!tombstoneSynced && !physicalDeleted) {
     return { message: '远端历史同步和任务删除均未完全成功', tone: 'warning' };
@@ -43,6 +71,9 @@ export const resolveDeletionOutcome = ({
   }
   if (!physicalDeleted) {
     return { message: '历史任务已隐藏，远端任务删除未完全成功', tone: 'warning' };
+  }
+  if (physicalCleanupScheduled) {
+    return { message: '历史任务已隐藏，远端任务正在清理', tone: 'info' };
   }
   if (scope === 'result' && !hasPhysicalTargets) {
     return { message: '历史任务已隐藏', tone: 'info' };

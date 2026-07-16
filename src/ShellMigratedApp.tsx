@@ -6001,7 +6001,7 @@ const AppContent: React.FC<{
           subFeature: targetSubFeature,
           prompt: generationPrompt,
           params: generationParams,
-          materials: filteredMaterials,
+          materials: generationMaterials,
           signal: controller.signal,
           taskMetadata: {
             shellPlanningPurpose: 'one_click_planning',
@@ -10972,6 +10972,14 @@ const AppContent: React.FC<{
               {activeModuleView}
             </Suspense>
           </main>
+
+          {pageMode === 'module' && activeModule === AppModuleObj.VIDEO && activeSubFeature === 'subtitle_removal' && (
+            <div
+              id="subtitle-removal-composer-slot"
+              className="shrink-0"
+              style={{ background: 'var(--bg-base)' }}
+            />
+          )}
 
           {pageMode === 'module' && activeModule !== AppModuleObj.AGENT_CENTER && activeModule !== AppModuleObj.AI_CUSTOMER_SERVICE && activeModule !== AppModuleObj.SMART_FACTORY && activeModule !== AppModuleObj.IMAGE_CROP && (activeModule !== AppModuleObj.VIDEO || activeSubFeature !== 'subtitle_removal') && (
             <Suspense fallback={null}>

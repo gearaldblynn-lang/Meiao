@@ -32,6 +32,37 @@ test('deletion operations start tombstone persistence without waiting for physic
   await pending;
 });
 
+test('deletion operations treat already absent jobs as idempotent success', async () => {
+  const [results] = await startDeletionOperations({
+    jobIds: ['backend-job-missing'],
+    deleteJob: async () => { throw Object.assign(new Error('任务不存在。'), { status: 404, code: 'job_not_found' }); },
+    persistTombstone: async () => true,
+  });
+
+  assert.equal(results[0].status, 'fulfilled');
+  assert.deepEqual(results[0].value, { deletionStatus: 'already_absent' });
+});
+
+test('deletion operations report active remote jobs as scheduled cleanup instead of failure', async () => {
+  const [results] = await startDeletionOperations({
+    jobIds: ['backend-job-running'],
+    deleteJob: async () => { throw Object.assign(new Error('任务仍在运行'), { status: 409, code: 'job_delete_active' }); },
+    persistTombstone: async () => true,
+  });
+
+  assert.equal(results[0].status, 'fulfilled');
+  assert.deepEqual(results[0].value, { deletionStatus: 'scheduled' });
+  assert.deepEqual(resolveDeletionOutcome({
+    scope: 'project',
+    tombstoneSynced: true,
+    deletionResults: results,
+    hasPhysicalTargets: true,
+  }), {
+    message: '历史任务已隐藏，远端任务正在清理',
+    tone: 'info',
+  });
+});
+
 test('single-result deletion outcome reports tombstone and physical deletion matrix accurately', () => {
   const cases = [
     {

@@ -2911,8 +2911,17 @@ test('image upgrade product restoration workspace wires uploads, choices, rollou
   assert.match(bottomInputBar, /开始产品还原/);
   assert.match(bottomInputBar, /materialLimits=\{isProductRestore/);
   assert.match(bottomInputBar, /onMoveMaterial=\{isProductRestore/);
+  assert.match(bottomInputBar, /restoreTarget: PRODUCT_RESTORE_MATERIAL_META\.restoreTarget\.description/);
+  assert.match(bottomInputBar, /productReference: PRODUCT_RESTORE_MATERIAL_META\.productReference\.description/);
+  assert.match(bottomInputBar, /desc: `最多 \$\{PRODUCT_RESTORE_MATERIAL_META\.restoreTarget\.limit\} 张`/);
+  assert.match(bottomInputBar, /desc: `最多 \$\{PRODUCT_RESTORE_MATERIAL_META\.productReference\.limit\} 张`/);
   assert.match(uploadTypeSelector, /restoreTarget/);
   assert.match(uploadTypeSelector, /productReference/);
+  assert.match(uploadTypeSelector, /usesGuidanceCards/);
+  assert.match(uploadTypeSelector, /w-\[360px\]/);
+  assert.match(uploadTypeSelector, /materialHints\?\.\[m\.key\] \? 'whitespace-nowrap'/);
+  assert.match(uploadTypeSelector, /group-hover:opacity-100/);
+  assert.match(uploadTypeSelector, /group-focus-within:opacity-100/);
   assert.match(uploadTypeSelector, /title=\{m\.desc\}/);
   assert.match(uploadTypeSelector, /tabIndex=\{0\}/);
   assert.match(materialPreviewBar, /onMoveMaterial/);
@@ -3189,6 +3198,18 @@ test('project card preview prefers completed media over failed or pending placeh
   assert.match(projectCard, /videoPreload: VIDEO_PREVIEW_PRELOAD/);
   assert.match(projectCard, /videoPreviewFrameTime: VIDEO_PREVIEW_FRAME_TIME_SECONDS/);
   assert.match(projectCard, /videoShowIndicator: true/);
+});
+
+test('visible project video cards load a fresh preview frame without opening details', () => {
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+
+  assert.match(projectCard, /autoLoadWhenVisible\?: boolean/);
+  assert.match(projectCard, /new IntersectionObserver/);
+  assert.match(projectCard, /entry\?\.isIntersecting/);
+  assert.match(projectCard, /observer\.observe\(video\)/);
+  assert.match(projectCard, /rootMargin: '160px 0px'/);
+  assert.match(projectCard, /videoAutoLoadWhenVisible\?: boolean/);
+  assert.match(projectCard, /videoAutoLoadWhenVisible: true/);
 });
 
 test('one click completed result edit uses only product assets and generated baseline while keeping original result', () => {
@@ -3757,7 +3778,7 @@ test('video subtitle removal workspace creates bounded durable jobs under one ba
   assert.match(shellApp, /activeSubFeature !== 'subtitle_removal'/);
 
   assert.match(videoModule, /<SubtitleRemovalWorkspace/);
-  assert.match(videoModule, /beforeProjects=\{subtitleRemovalWorkspace\}/);
+  assert.match(videoModule, /afterProjects=\{subtitleRemovalWorkspace\}/);
   assert.match(videoModule, /onCancelTask=\{activeSubFeature === 'subtitle_removal' \? undefined : onCancelTask\}/);
 });
 

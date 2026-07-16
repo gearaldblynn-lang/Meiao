@@ -122,7 +122,7 @@ test('V2 接入 responses provider 并注入知识库/联网工具(双 handler)'
 });
 
 test('agent V2 prepares managed image URLs as provider-stable HTTPS URLs before model vision analysis', () => {
-  assert.match(source, /import \{ resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel \} from '\.\/providerAssetTransfer\.mjs'/);
+  assert.match(source, /import\s*\{[\s\S]{0,180}resolveProviderChatMediaUrl as resolveProviderChatMediaUrlForModel[\s\S]{0,180}\}\s*from '\.\/providerAssetTransfer\.mjs'/);
   assert.match(source, /import \{ executeProviderJob, uploadAssetViaKieStream \} from '\.\/providerGateway\.mjs'/);
   assert.match(source, /const prepareAgentModelImageUrl = \(userId\) => async \(url\) =>/);
   assert.match(source, /resolveProviderChatMediaUrlForModel\(url, \{\s*env: process\.env,\s*deps: \{[\s\S]{0,500}uploadAssetViaKieStream,[\s\S]{0,500}resolveManagedAssetReadUrl:/);

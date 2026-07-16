@@ -35,6 +35,7 @@ interface Props {
   activeSubFeature?: string;
   onSubFeatureChange?: (id: string) => void;
   beforeProjects?: React.ReactNode;
+  afterProjects?: React.ReactNode;
   pendingActionKeys?: Record<string, boolean>;
   showGenerationProgress?: boolean;
 }
@@ -44,7 +45,7 @@ const ProjectListView: React.FC<Props> = ({
   onDeleteResult, onDeleteProject, onDeletePlan, onRegenerateResult, onFissionResult, onEditResult, onRecoverResult, onRemoveVideoSubtitles, onCancelTask,
   onConfirmPlan, onUpdatePlans, onRegeneratePlans, onConfirmStoryboardImaging, onImportStoryboardToGeneration,
   subFeatures, activeSubFeature, onSubFeatureChange,
-  beforeProjects,
+  beforeProjects, afterProjects,
   pendingActionKeys,
   showGenerationProgress = true,
 }) => {
@@ -412,6 +413,7 @@ const ProjectListView: React.FC<Props> = ({
           <p className="mt-1.5 text-[13px] max-w-sm" style={{ color: 'var(--text-tertiary)' }}>{displayProjects.length === 0 ? emptySubtitle : '调整日期、状态或搜索条件后再查看。'}</p>
         </div>
       )}
+      {afterProjects}
       <ConfirmDialog
         open={batchDeleteConfirmOpen}
         title="批量删除项目"

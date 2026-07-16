@@ -32,12 +32,14 @@ const normalizeOptions = (envOrOptions = {}, signal = null, options = {}) => {
       || Object.hasOwn(envOrOptions, 'deps')
       || Object.hasOwn(envOrOptions, 'signal')
       || Object.hasOwn(envOrOptions, 'forceUpload')
+      || Object.hasOwn(envOrOptions, 'stageResolvedManagedAsset')
     )
   ) {
     return {
       env: envOrOptions.env || {},
       signal: envOrOptions.signal || signal || null,
       forceUpload: Boolean(envOrOptions.forceUpload),
+      stageResolvedManagedAsset: Boolean(envOrOptions.stageResolvedManagedAsset),
       uploadPath: String(envOrOptions.uploadPath || options.uploadPath || '').trim(),
       deps: envOrOptions.deps || {},
       ...options,
@@ -47,6 +49,7 @@ const normalizeOptions = (envOrOptions = {}, signal = null, options = {}) => {
     env: envOrOptions || {},
     signal,
     forceUpload: Boolean(options.forceUpload),
+    stageResolvedManagedAsset: Boolean(options.stageResolvedManagedAsset),
     uploadPath: String(options.uploadPath || '').trim(),
     deps: options.deps || {},
     ...options,
@@ -449,15 +452,19 @@ export const convertManagedAssetUrlToKieFileUrl = async (assetUrl, envOrOptions 
   const normalizedOptions = normalizeOptions(envOrOptions, signal, options);
   if (!isManagedAssetUrl(assetUrl)) return String(assetUrl || '').trim();
   const resolveManagedAssetReadUrl = normalizedOptions.deps.resolveManagedAssetReadUrl;
+  let resolvedManagedAssetReadUrl = '';
   if (typeof resolveManagedAssetReadUrl === 'function') {
     const signedReadUrl = String(await resolveManagedAssetReadUrl(assetUrl, {
       purpose: 'provider',
       signal: normalizedOptions.signal,
       env: normalizedOptions.env,
     }) || '').trim();
-    if (signedReadUrl) return signedReadUrl;
+    resolvedManagedAssetReadUrl = signedReadUrl;
+    if (signedReadUrl && !normalizedOptions.forceUpload && !normalizedOptions.stageResolvedManagedAsset) {
+      return signedReadUrl;
+    }
   }
-  if (!normalizedOptions.forceUpload) {
+  if (!normalizedOptions.forceUpload && !resolvedManagedAssetReadUrl) {
     const publicAssetUrl = resolveExternallyReachableManagedAssetUrl(assetUrl, normalizedOptions.env);
     if (publicAssetUrl) return publicAssetUrl;
   }
@@ -597,6 +604,7 @@ export const resolveProviderGenerationMediaUrl = async (value, envOrOptions = {}
   return convertManagedAssetUrlToKieFileUrl(normalized, {
     ...normalizedOptions,
     forceUpload: normalizedOptions.forceUpload || !shouldUseDirectManagedAssetUrls(normalizedOptions.env),
+    stageResolvedManagedAsset: true,
   });
 };
 

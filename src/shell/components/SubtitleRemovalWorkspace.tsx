@@ -1,17 +1,18 @@
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   AlertCircle,
   CheckCircle2,
   CheckSquare2,
   Film,
   Loader2,
-  Plus,
   RefreshCw,
   Scissors,
   Settings2,
@@ -78,6 +79,8 @@ type BatchItem = {
 };
 
 type Props = {
+  active: boolean;
+  composerSlotId: string;
   draft: SubtitleRemovalSourceDraft | null;
   onDraftChange: (draft: SubtitleRemovalSourceDraft | null) => void;
   onSubmit: (inputs: SubtitleRemovalSubmitInput[]) => Promise<SubtitleRemovalSubmitOutcome[]> | SubtitleRemovalSubmitOutcome[];
@@ -125,6 +128,8 @@ const stageLabel = (item: BatchItem) => {
 };
 
 const SubtitleRemovalWorkspace: React.FC<Props> = ({
+  active,
+  composerSlotId,
   draft,
   onDraftChange,
   onSubmit,
@@ -147,6 +152,14 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [batchError, setBatchError] = useState('');
   const [localSubmitting, setLocalSubmitting] = useState(false);
+  const [composerTarget, setComposerTarget] = useState<HTMLElement | null>(null);
+
+  useLayoutEffect(() => {
+    const nextTarget = active && typeof document !== 'undefined'
+      ? document.getElementById(composerSlotId)
+      : null;
+    setComposerTarget((current) => current === nextTarget ? current : nextTarget);
+  }, [active, composerSlotId]);
 
   const batchMaxItems = boundedInteger(limits?.batchMaxItems, DEFAULT_LIMITS.batchMaxItems, 1, 20);
   const batchPrepConcurrency = boundedInteger(limits?.batchPrepConcurrency, DEFAULT_LIMITS.batchPrepConcurrency, 1, 4);
@@ -467,50 +480,313 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
   };
 
   return (
-    <div className="mx-auto w-full max-w-[1180px] space-y-4 px-4 pb-10 pt-4 sm:px-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>视频去字幕</h2>
-          <p className="mt-1 text-[11px] leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>
-            批量上传视频，系统默认选择画面底部 30%；特殊视频可单独点开调整。
-          </p>
-        </div>
-        {items.length > 0 ? (
-          <button type="button" onClick={() => void clearAll()} className="flex items-center gap-1.5 rounded-full px-3 py-2 text-[11px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
-            <Trash2 size={13} /> 清空任务栏
-          </button>
-        ) : null}
-      </div>
-
+    <div className="w-full space-y-3 pt-5">
       {!featureAvailable ? (
-        <div className="flex items-start gap-3 rounded-2xl border px-4 py-3" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-elevated)' }}>
+        <div
+          className="flex items-start gap-3 rounded-2xl border px-4 py-3"
+          style={{
+            borderColor: 'var(--border-subtle)',
+            background: 'var(--bg-elevated)',
+          }}
+        >
           <AlertCircle size={16} className="mt-0.5 shrink-0" style={{ color: 'var(--text-tertiary)' }} />
-          <p className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>去字幕功能暂未开放，请联系管理员。</p>
+          <p className="text-[12px]" style={{ color: 'var(--text-secondary)' }}>
+            去字幕功能暂未开放，请联系管理员。
+          </p>
         </div>
       ) : null}
 
-      <button
-        type="button"
-        disabled={!featureAvailable || items.length >= batchMaxItems}
-        onClick={() => inputRef.current?.click()}
-        onDragOver={(event) => { event.preventDefault(); }}
-        onDrop={(event) => {
-          event.preventDefault();
-          appendFiles(Array.from(event.dataTransfer.files || []));
-        }}
-        className={`flex w-full flex-col items-center justify-center gap-2 rounded-3xl border border-dashed px-6 text-center disabled:cursor-not-allowed disabled:opacity-45 ${items.length > 0 ? 'min-h-[120px]' : 'min-h-[260px]'}`}
-        style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}
-      >
-        <span className="flex h-11 w-11 items-center justify-center rounded-2xl" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-          {items.length > 0 ? <Plus size={19} /> : <Upload size={20} />}
-        </span>
-        <span className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
-          {items.length > 0 ? '继续添加视频' : '批量上传需要去字幕的视频'}
-        </span>
-        <span className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
-          支持拖放，一次最多上传 {batchMaxItems} 个；单个视频最长 600 秒，不受短视频生成 15 秒限制；系统会逐个分析格式并按需转码。
-        </span>
-      </button>
+      {batchError ? (
+        <div
+          className="flex items-start gap-2 rounded-2xl border px-4 py-3 text-[11px]"
+          style={{
+            borderColor: 'var(--danger)',
+            background: 'var(--danger-soft)',
+            color: 'var(--danger)',
+          }}
+        >
+          <AlertCircle size={14} className="mt-0.5 shrink-0" /> {batchError}
+        </div>
+      ) : null}
+
+      {items.length > 0 ? (
+        <section
+          aria-label="去字幕批量任务"
+          className="overflow-hidden rounded-3xl border"
+          style={{
+            background: 'var(--bg-surface)',
+            borderColor: 'var(--border-subtle)',
+          }}
+        >
+          <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div>
+              <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                待处理视频
+              </h3>
+              <p className="mt-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                点击任意已就绪视频，单独调整它的字幕区域。
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className="rounded-full px-2.5 py-1 text-[10px] font-medium"
+                style={{
+                  background: 'var(--bg-elevated)',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                {items.length}/{batchMaxItems}
+              </span>
+              <button
+                type="button"
+                onClick={() => void clearAll()}
+                className="flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[10px] font-medium"
+                style={{
+                  background: 'var(--bg-elevated)',
+                  color: 'var(--text-secondary)',
+                }}
+              >
+                <Trash2 size={11} /> 清空
+              </button>
+            </div>
+          </div>
+          <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
+            {items.map((item, index) => {
+              const itemDraft = item.draft;
+              const itemReady = item.phase === 'ready' && Boolean(itemDraft?.sourceUrl);
+              return (
+                <div key={item.clientItemId} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center">
+                  <button
+                    type="button"
+                    aria-pressed={item.selected}
+                    aria-label={`${item.selected ? '取消选择' : '选择'} ${itemDraft?.fileName || item.file?.name || `视频 ${index + 1}`}`}
+                    onClick={() =>
+                      updateItem(item.clientItemId, (current) => ({
+                        ...current,
+                        selected: !current.selected,
+                      }))
+                    }
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl"
+                    style={{
+                      background: item.selected ? 'var(--accent-soft)' : 'var(--bg-elevated)',
+                      color: item.selected ? 'var(--accent)' : 'var(--text-tertiary)',
+                    }}
+                  >
+                    {item.selected ? <CheckSquare2 size={16} /> : <Square size={16} />}
+                  </button>
+                  <div
+                    className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl"
+                    style={{
+                      background: 'var(--bg-elevated)',
+                      color: 'var(--text-tertiary)',
+                    }}
+                  >
+                    <Film size={20} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="max-w-[360px] truncate text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                        {itemDraft?.fileName || item.file?.name || `视频 ${index + 1}`}
+                      </span>
+                      <span
+                        className="rounded-full px-2 py-0.5 text-[9px] font-medium"
+                        style={{
+                          background: item.regionMode === 'custom' ? 'var(--accent-soft)' : 'var(--bg-elevated)',
+                          color: item.regionMode === 'custom' ? 'var(--accent)' : 'var(--text-tertiary)',
+                        }}
+                      >
+                        {item.regionMode === 'custom' ? '已调整' : '默认区域'}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                      {itemDraft ? <span>{formatDuration(itemDraft.durationSeconds)}</span> : null}
+                      <span>{formatBytes(itemDraft?.sizeBytes || item.file?.size || 0)}</span>
+                      {itemDraft?.width && itemDraft?.height ? (
+                        <span>
+                          {itemDraft.width}×{itemDraft.height}
+                        </span>
+                      ) : null}
+                      {itemDraft?.videoCodec ? <span>{itemDraft.videoCodec.toUpperCase()}</span> : null}
+                    </div>
+                    <div
+                      className="mt-1.5 flex items-center gap-2 text-[10px]"
+                      style={{
+                        color: item.phase === 'error' ? 'var(--danger)' : itemReady ? 'var(--accent)' : 'var(--text-secondary)',
+                      }}
+                    >
+                      {itemReady ? <CheckCircle2 size={12} /> : ['queued', 'uploading', 'analyzing', 'transcoding', 'submitting'].includes(item.phase) ? <Loader2 size={12} className="animate-spin" /> : <AlertCircle size={12} />}
+                      <span>{item.errorMessage || item.stageText || stageLabel(item)}</span>
+                    </div>
+                    {item.phase === 'uploading' ? (
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ background: 'var(--bg-elevated)' }}>
+                        <div
+                          className="h-full rounded-full transition-[width]"
+                          style={{
+                            width: `${item.uploadProgress}%`,
+                            background: 'var(--accent)',
+                          }}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
+                    <button
+                      type="button"
+                      disabled={!itemReady || submitting || localSubmitting}
+                      onClick={() => setEditingItemId(item.clientItemId)}
+                      className="flex items-center gap-1 rounded-full px-3 py-2 text-[10px] font-medium disabled:opacity-35"
+                      style={{
+                        background: 'var(--accent-soft)',
+                        color: 'var(--accent)',
+                      }}
+                    >
+                      <Settings2 size={12} /> 调整区域
+                    </button>
+                    {item.phase === 'error' ? (
+                      <button
+                        type="button"
+                        onClick={() => retryItem(item.clientItemId)}
+                        className="flex items-center gap-1 rounded-full px-3 py-2 text-[10px] font-medium"
+                        style={{
+                          background: 'var(--bg-elevated)',
+                          color: 'var(--text-secondary)',
+                        }}
+                      >
+                        <RefreshCw size={12} /> 重试
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setReplaceTargetId(item.clientItemId);
+                        replaceInputRef.current?.click();
+                      }}
+                      className="rounded-full px-3 py-2 text-[10px] font-medium"
+                      style={{
+                        background: 'var(--bg-elevated)',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
+                      替换
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void removeItem(item.clientItemId)}
+                      className="flex h-8 w-8 items-center justify-center rounded-full"
+                      style={{
+                        background: 'var(--danger-soft)',
+                        color: 'var(--danger)',
+                      }}
+                      aria-label="删除视频任务"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
+      {active && composerTarget
+        ? createPortal(
+            <div className="px-6 pt-4 pb-5">
+              <div
+                aria-label="去字幕任务输入区"
+                onDragOver={(event) => {
+                  event.preventDefault();
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  appendFiles(Array.from(event.dataTransfer.files || []));
+                }}
+                className="mx-auto w-full max-w-[896px] rounded-3xl border transition-all"
+                style={{
+                  background: 'var(--bg-surface)',
+                  borderColor: batchError ? 'var(--danger)' : 'var(--border-subtle)',
+                  boxShadow: batchError ? '0 0 0 3px var(--danger-soft)' : 'none',
+                }}
+              >
+                <button type="button" disabled={!featureAvailable || items.length >= batchMaxItems} onClick={() => inputRef.current?.click()} className="flex min-h-[82px] w-full flex-col items-start justify-center px-5 pb-3 pt-5 text-left disabled:cursor-not-allowed disabled:opacity-45">
+                  <span className="text-[15px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+                    {items.length > 0 ? '继续添加视频，或调整上方已就绪视频的字幕区域。' : '上传需要去字幕的视频，系统会自动分析格式、时长和编码。'}
+                  </span>
+                  <span className="mt-1 text-[11px] leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>
+                    支持拖放；单个视频最长 600 秒，不受短视频生成 15 秒限制；需要时自动转换为 H.264 MP4。
+                  </span>
+                </button>
+
+                <div className="flex flex-col gap-3 px-3 pb-3 sm:flex-row sm:items-end sm:justify-between">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      title="上传视频"
+                      aria-label="上传视频"
+                      disabled={!featureAvailable || items.length >= batchMaxItems}
+                      onClick={() => inputRef.current?.click()}
+                      className="flex h-9 w-9 items-center justify-center rounded-2xl transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+                      style={{
+                        color: items.length > 0 ? 'var(--accent)' : 'var(--text-tertiary)',
+                      }}
+                    >
+                      <Upload size={17} />
+                    </button>
+                    <span
+                      className="rounded-2xl px-2.5 py-1.5 text-[10px] font-medium"
+                      style={{
+                        background: 'var(--bg-elevated)',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
+                      最多 {batchMaxItems} 个
+                    </span>
+                    <span
+                      className="rounded-2xl px-2.5 py-1.5 text-[10px] font-medium"
+                      style={{
+                        background: 'var(--bg-elevated)',
+                        color: 'var(--text-secondary)',
+                      }}
+                    >
+                      最长 600 秒
+                    </span>
+                    <span
+                      className="rounded-2xl px-2.5 py-1.5 text-[10px] font-medium"
+                      style={{
+                        background: 'var(--accent-soft)',
+                        color: 'var(--accent)',
+                      }}
+                    >
+                      自动转码
+                    </span>
+                  </div>
+
+                  {items.length > 0 ? (
+                    <div className="flex flex-col items-start gap-1.5 sm:items-end">
+                      <div className="flex flex-wrap gap-x-2 gap-y-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                        <span>已选 {summary.selectedCount} 个</span>
+                        <span style={{ color: 'var(--accent)' }}>可提交 {summary.readySelectedCount} 个</span>
+                        {summary.errorCount > 0 ? <span style={{ color: 'var(--danger)' }}>异常 {summary.errorCount} 个</span> : null}
+                        <span>总时长 {formatDuration(summary.totalSelectedDurationSeconds)}</span>
+                      </div>
+                      <button type="button" disabled={!featureAvailable || summary.readySelectedCount === 0 || submitting || localSubmitting} onClick={() => setConfirmOpen(true)} className="flex items-center gap-2 rounded-3xl px-5 py-2.5 text-[13px] font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-30" style={{ background: 'var(--accent)' }}>
+                        {submitting || localSubmitting ? <Loader2 size={14} className="animate-spin" /> : <Scissors size={14} />}
+                        <span>批量开始去字幕</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <button type="button" disabled={!featureAvailable} onClick={() => inputRef.current?.click()} className="flex items-center gap-2 self-start rounded-3xl px-5 py-2.5 text-[13px] font-semibold text-white transition-all disabled:cursor-not-allowed disabled:opacity-30 sm:self-auto" style={{ background: 'var(--accent)' }}>
+                      <Upload size={14} />
+                      <span>选择视频</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>,
+            composerTarget,
+          )
+        : null}
+
       <input
         ref={inputRef}
         type="file"
@@ -534,121 +810,6 @@ const SubtitleRemovalWorkspace: React.FC<Props> = ({
           setReplaceTargetId('');
         }}
       />
-
-      {batchError ? (
-        <div className="flex items-start gap-2 rounded-2xl border px-4 py-3 text-[11px]" style={{ borderColor: 'var(--danger)', background: 'var(--danger-soft)', color: 'var(--danger)' }}>
-          <AlertCircle size={14} className="mt-0.5 shrink-0" /> {batchError}
-        </div>
-      ) : null}
-
-      {items.length > 0 ? (
-        <section aria-label="去字幕批量任务" className="overflow-hidden rounded-3xl border" style={{ background: 'var(--bg-surface)', borderColor: 'var(--border-subtle)' }}>
-          <div className="flex items-center justify-between border-b px-4 py-3" style={{ borderColor: 'var(--border-subtle)' }}>
-            <div>
-              <h3 className="text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>批量任务</h3>
-              <p className="mt-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>点击任意已就绪视频，单独调整它的字幕区域。</p>
-            </div>
-            <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>{items.length}/{batchMaxItems}</span>
-          </div>
-          <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
-            {items.map((item, index) => {
-              const itemDraft = item.draft;
-              const itemReady = item.phase === 'ready' && Boolean(itemDraft?.sourceUrl);
-              return (
-                <div key={item.clientItemId} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center">
-                  <button
-                    type="button"
-                    aria-pressed={item.selected}
-                    aria-label={`${item.selected ? '取消选择' : '选择'} ${itemDraft?.fileName || item.file?.name || `视频 ${index + 1}`}`}
-                    onClick={() => updateItem(item.clientItemId, (current) => ({ ...current, selected: !current.selected }))}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl"
-                    style={{ background: item.selected ? 'var(--accent-soft)' : 'var(--bg-elevated)', color: item.selected ? 'var(--accent)' : 'var(--text-tertiary)' }}
-                  >
-                    {item.selected ? <CheckSquare2 size={16} /> : <Square size={16} />}
-                  </button>
-                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
-                    <Film size={20} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="max-w-[360px] truncate text-[12px] font-semibold" style={{ color: 'var(--text-primary)' }}>{itemDraft?.fileName || item.file?.name || `视频 ${index + 1}`}</span>
-                      <span className="rounded-full px-2 py-0.5 text-[9px] font-medium" style={{ background: item.regionMode === 'custom' ? 'var(--accent-soft)' : 'var(--bg-elevated)', color: item.regionMode === 'custom' ? 'var(--accent)' : 'var(--text-tertiary)' }}>
-                        {item.regionMode === 'custom' ? '已调整' : '默认区域'}
-                      </span>
-                    </div>
-                    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
-                      {itemDraft ? <span>{formatDuration(itemDraft.durationSeconds)}</span> : null}
-                      <span>{formatBytes(itemDraft?.sizeBytes || item.file?.size || 0)}</span>
-                      {itemDraft?.width && itemDraft?.height ? <span>{itemDraft.width}×{itemDraft.height}</span> : null}
-                      {itemDraft?.videoCodec ? <span>{itemDraft.videoCodec.toUpperCase()}</span> : null}
-                    </div>
-                    <div className="mt-1.5 flex items-center gap-2 text-[10px]" style={{ color: item.phase === 'error' ? 'var(--danger)' : itemReady ? 'var(--accent)' : 'var(--text-secondary)' }}>
-                      {itemReady ? <CheckCircle2 size={12} /> : ['queued', 'uploading', 'analyzing', 'transcoding', 'submitting'].includes(item.phase) ? <Loader2 size={12} className="animate-spin" /> : <AlertCircle size={12} />}
-                      <span>{item.errorMessage || item.stageText || stageLabel(item)}</span>
-                    </div>
-                    {item.phase === 'uploading' ? (
-                      <div className="mt-2 h-1.5 overflow-hidden rounded-full" style={{ background: 'var(--bg-elevated)' }}>
-                        <div className="h-full rounded-full transition-[width]" style={{ width: `${item.uploadProgress}%`, background: 'var(--accent)' }} />
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="flex shrink-0 flex-wrap items-center gap-1.5 sm:justify-end">
-                    <button
-                      type="button"
-                      disabled={!itemReady || submitting || localSubmitting}
-                      onClick={() => setEditingItemId(item.clientItemId)}
-                      className="flex items-center gap-1 rounded-full px-3 py-2 text-[10px] font-medium disabled:opacity-35"
-                      style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
-                    >
-                      <Settings2 size={12} /> 调整区域
-                    </button>
-                    {item.phase === 'error' ? (
-                      <button type="button" onClick={() => retryItem(item.clientItemId)} className="flex items-center gap-1 rounded-full px-3 py-2 text-[10px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
-                        <RefreshCw size={12} /> 重试
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setReplaceTargetId(item.clientItemId);
-                        replaceInputRef.current?.click();
-                      }}
-                      className="rounded-full px-3 py-2 text-[10px] font-medium"
-                      style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
-                    >
-                      替换
-                    </button>
-                    <button type="button" onClick={() => void removeItem(item.clientItemId)} className="flex h-8 w-8 items-center justify-center rounded-full" style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }} aria-label="删除视频任务">
-                      <Trash2 size={12} />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      ) : null}
-
-      {items.length > 0 ? (
-        <div className="sticky bottom-4 z-20 flex flex-col gap-3 rounded-3xl border p-4 shadow-xl sm:flex-row sm:items-center sm:justify-between" style={{ background: 'color-mix(in srgb, var(--bg-base) 92%, transparent)', borderColor: 'var(--border-subtle)', backdropFilter: 'blur(20px)' }}>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px]" style={{ color: 'var(--text-secondary)' }}>
-            <span>已选择 {summary.selectedCount} 个</span>
-            <span style={{ color: 'var(--accent)' }}>可提交 {summary.readySelectedCount} 个</span>
-            <span style={{ color: summary.errorCount ? 'var(--danger)' : 'var(--text-tertiary)' }}>异常 {summary.errorCount} 个</span>
-            <span>总时长 {formatDuration(summary.totalSelectedDurationSeconds)}</span>
-          </div>
-          <button
-            type="button"
-            disabled={!featureAvailable || summary.readySelectedCount === 0 || submitting || localSubmitting}
-            onClick={() => setConfirmOpen(true)}
-            className="flex shrink-0 items-center justify-center gap-2 rounded-full px-6 py-3 text-[12px] font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
-            style={{ background: 'var(--accent)' }}
-          >
-            {submitting || localSubmitting ? <Loader2 size={14} className="animate-spin" /> : <Scissors size={14} />}
-            批量开始去字幕
-          </button>
-        </div>
-      ) : null}
 
       <SubtitleRemovalRegionDialog
         key={editingItem?.draft?.draftNonce || 'closed'}

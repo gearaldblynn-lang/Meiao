@@ -58,6 +58,61 @@ test('managed image upload health requires a complete COS credential set', () =>
   assert.equal(health.status, 'config_incomplete');
 });
 
+test('managed image upload health reports an explicitly enabled local development store as ready', () => {
+  const health = getManagedImageUploadHealth({
+    env: {
+      NODE_ENV: 'development',
+      MEIAO_PUBLIC_BASE_URL: 'http://127.0.0.1:3100',
+      MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'local',
+    },
+    statusFilePath: '/does/not/exist.json',
+    now: 2_000,
+  });
+
+  assert.deepEqual(health, {
+    mode: 'local',
+    configured: true,
+    ready: true,
+    status: 'local_ready',
+    lastProbeAt: null,
+    lastProbeAgeMs: null,
+    alerting: false,
+  });
+});
+
+test('managed image upload health rejects local mode when production is active', () => {
+  const health = getManagedImageUploadHealth({
+    env: {
+      NODE_ENV: 'production',
+      MEIAO_PUBLIC_BASE_URL: 'http://127.0.0.1:3100',
+      MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'local',
+    },
+    statusFilePath: '/does/not/exist.json',
+    now: 2_000,
+  });
+
+  assert.equal(health.mode, 'local');
+  assert.equal(health.configured, false);
+  assert.equal(health.ready, false);
+  assert.equal(health.status, 'local_forbidden');
+  assert.equal(health.alerting, true);
+});
+
+test('managed image upload health fails closed when local mode has no explicit development runtime', () => {
+  const health = getManagedImageUploadHealth({
+    env: {
+      MEIAO_PUBLIC_BASE_URL: 'http://127.0.0.1:3100',
+      MEIAO_MANAGED_IMAGE_UPLOAD_MODE: 'local',
+    },
+    statusFilePath: '/does/not/exist.json',
+    now: 2_000,
+  });
+
+  assert.equal(health.configured, false);
+  assert.equal(health.ready, false);
+  assert.equal(health.status, 'local_forbidden');
+});
+
 test('managed image upload health accepts only a fresh successful probe for the current credential pair', () => withTempStatusFile((statusFilePath) => {
   writeManagedImageProbeStatus({
     env: completeEnv,

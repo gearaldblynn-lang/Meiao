@@ -28,6 +28,24 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/providerSubtitleRemoval.test.mjs server/managedAssetReadRoute.test.mjs server/providerAssetTransfer.test.mjs server/providerGateway.test.mjs scripts/probe-subtitle-removal.test.mjs`；本地 2.5 秒付费 canary `58468d5d4c32af497b65412b` 成功，存在 provider task ID，源视频和结果视频均为站内托管地址且通过 Range 播放检查，只提交 1 个付费任务。
 - Avoid next time: 任何外部 provider 收到媒体 URL 前必须断言它不是 localhost、回环地址或私网地址；本地验收不能只验证浏览器能播放，还必须跑一次 provider 真实读取 canary，并用上游 task ID 区分提交前失败与提交后失败。
 
+## 2026-07-15 - Local product restoration must have a durable image upload mode
+
+- Symptom: 本地已开放“产品还原”且素材/提示词均能恢复，点击开始后项目卡却立即显示“服务暂时不可用”，没有分析 job 或生图 job。
+- Environment: local development / product restoration analysis-first workflow / managed image uploads disabled.
+- Root cause: 功能门禁与素材存储 readiness 是两条独立配置。本地只持久化了 `MEIAO_PRODUCT_RESTORE_ROLLOUT=all`，但新 source/reference/chat 图片入口默认 `disabled`，且本机没有图片 COS 资源；四张素材因此全部停在 `asset_upload` 前置阶段。前端又把后端 `managed_image_upload_disabled` 503 压成通用 `server_error`，掩盖了可操作的原因。
+- Fix: 新增显式 `local` 托管图片模式，复用现有持久化素材库与 provider 服务端中转；只在 `NODE_ENV=development/test` 且素材 origin 为本机/内网时允许，其他情况 fail closed。生产 COS 契约不变，不引入 COS 失败后的本地/KIE fallback。同时对 `managed_image_*` 5xx 保留后端 message/code。
+- Regression check: `node --test server/assetStore.test.mjs server/managedImageUploadHealth.test.mjs src/services/internalApi.test.mjs`；本地 health 必须显示 `managedImageUpload.mode=local/status=local_ready/ready=true`；用当前登录态上传一张探针图并立即读回，然后删除，不自动重提付费产品还原任务。
+- Avoid next time: 开放任何需要上传素材的新工作流时，门禁验收必须同时检查上传存储 readiness，并用真实上传—读回探针证明已越过 `asset_upload`。线上存储安全合同与本地联调例外必须是显式模式，不得静默 fallback。
+
+## 2026-07-15 - Local rollout must survive the managed server restart
+
+- Symptom: 产品还原在本地验收时可用，后续打开却再次显示“产品还原暂未开放，历史项目仍可查看”，新建按钮灰掉。
+- Environment: local development / `com.meiao.current.server` launchd service / product restoration rollout.
+- Root cause: 首次验收只通过 launchd 全局环境临时注入 `MEIAO_PRODUCT_RESTORE_ROLLOUT=all`，并在验收后清掉；常驻服务下次重启时从持久配置中读不到该 key，因而按保守默认回落为 `off`。项目/草稿持久化正常，与这条开放门禁是两条独立链路。
+- Fix: 把本地测试环境的 `MEIAO_PRODUCT_RESTORE_ROLLOUT=all` 写入 Git 忽略的 `.env.server`，确认无活跃任务后只重启本地后端；新页面重新拉取公开配置后按钮恢复可用。
+- Regression check: 验证 `.env.server` 值为 `all`；`launchctl kickstart -k gui/$(id -u)/com.meiao.current.server`；`npm run doctor`；真实浏览器刷新后不再显示门禁文案，“开始产品还原”按钮可用。
+- Avoid next time: 需要跨重启保留的本地 feature rollout 必须落在 `.env.server` 或 LaunchAgent 持久环境；`launchctl setenv` 只能用于一次性假设验证。验收结束清理临时环境后，必须再重启一次并验证最终持久状态。
+
 ## 2026-07-14 - Image-2 relay exposes only verified 1K and 2K sizes
 
 - Symptom: `image-2中转` 前端暴露 4K，但真实任务输出被上游归一化；固定比例也不能只靠 prompt 稳定约束。
@@ -949,6 +967,16 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Regression check: `node --test server/agentToolConversation.test.mjs server/agentImagePlan.test.mjs server/providerKieImage.test.mjs`; `node --test server/agent-image-retrieval.test.mjs server/agentConversationReliability.test.mjs server/agentCenterSource.test.mjs server/providerGateway.test.mjs`; `npm run verify`.
 - Avoid next time: LLM 工具调用不是可信执行合同。改图/引用语义必须在扣费边界拥有非空且可验证的输入图；无法确定时应失败，不得用零输入静默切换为文生图。新旧 Agent 路径必须共享同一输入安全矩阵。
 
+## 2026-07-16 - Agent managed image inputs must retain owner context through provider scrubbing
+
+- Symptom: 林一账号在 Agent Center 要求“让图1中间的卖点更醒目清晰”时，11:40 与 11:48 两次结果分别变成无关护肤品和男性保健品广告；梅奥日志仍显示 `edit_image + inputImageUrls=[上一张托管结果图]`。
+- Environment: Tencent Cloud production / Agent Center shared image conversation / managed `/api/assets/file/...` result / `gpt-image-2`.
+- Cloud evidence: 初次任务 `95dee015706e8fdd9419007e1ac5a077` 在 KIE recordInfo 中是 `gpt-image-2-image-to-image` 且含两张 `input_urls`；后续任务 `16be772f239eda0c89430ddc0e18af3b` 与 `febec80cd4ef5e00456b5ec4cfeddf60` 都变成 `gpt-image-2-text-to-image`，上游参数完全没有 `input_urls`。本地 imagePlan 在两个时间点均保留一张托管输入，故丢失发生在计划完成后、provider 提交前。
+- Root cause: `executeProviderJobWithManagedAssetScrub` 按 `job.userId` 加载当前账号的 active 素材；共享生图、MySQL 工具生图和本地工具生图调用只传了 payload，没有传 `userId`。首次上传已被转换为 COS 签名 URL，不属于 managed route，因而正常；后续结果使用 `/api/assets/file/...`，清洗器以空 owner 查询得到空素材集并删除 `imageUrls`，KIE 随后按零输入自动选择 text-to-image。7 月 15 日的修复只锁住了计划层输入绑定，没有锁住计划之后的 owner-aware scrub 边界。
+- Fix: 所有 Agent Center 规划、检索、直接聊天、Responses 工具规划和三条 `kie_image` 提交路径均显式传递 `user.id`。统一 provider wrapper 在清洗前检测 managed reference 缺少 owner context 时抛 `managed_asset_user_context_missing`；`kie_image` 在清洗后逐项比较原始与最终 `imageUrls`，任何完整或部分丢失都抛 `managed_image_input_removed`，不进入 provider，不扣除错误文生图任务。
+- Regression check: `node --test server/managedAssetSubmissionGuard.test.mjs server/agentManagedAssetSubmissionSource.test.mjs server/agentToolConversation.test.mjs server/agentImagePlan.test.mjs server/providerKieImage.test.mjs server/agentCenterSource.test.mjs server/providerGateway.test.mjs`; `npm run doctor`; `npm run lint`; `npm run build`.
+- Avoid next time: “计划里有输入图”不等于“上游收到输入图”。所有 owner-aware payload 转换必须把 owner identity 当作显式函数参数，禁止依赖闭包或调用者默认值；付费 image provider 的最终安全门必须比较清洗前后的结构化输入合同，任何输入减少都 fail closed。真实验收必须核对 provider recordInfo 的模型类型和 `input_urls`，不能只看应用日志里的 imagePlan。
+
 ## 2026-07-15 - Local draft asset ids must not block durable project checkpoints
 
 - Symptom: 多桑账号两个新首图项目排在列表底部；其中一个后台 `kie_image` 已成功并保存图片，前端仍只显示策划态或不显示图片，刷新后也无法恢复。
@@ -988,3 +1016,12 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 产品还原逐图生成时从当前待还原素材的原始尺寸计算精确比例，将它作为结构化 `aspectRatio` 传入 provider，同时保留 prompt 中不剪裁/不拉伸的原比例硬规则。真实 1:1 canary 的 payload 为 `aspectRatio=1:1` + `resolution=2K`，provider 结果为 2048×2048，刷新后恢复同一 2K 结果和原有 1+3 素材。
 - Regression check: `node --test src/adapters/shellProductRestoreWorkflow.test.mjs server/providerKieImage.test.mjs src/services/kieAiService.test.mjs src/shell/modules/Retouch/productRestoreUi.test.mjs`；`npx tsc -b --pretty false`；真实 job `d26915ee39a1a0bf1b4fbb75` / provider `c946833f4bb827a68a90b7b36468a9e1`，结果素材 `2045a5546416c6ce99edf9a9` 为 2048×2048。
 - Avoid next time: 任何分辨率与比例支持声明都要在 provider 边界用组合矩阵验证，不能只测 UI 默认值或 workflow 中间 config。真实验收至少核对最终 job payload、provider 任务 ID、结果实际像素和刷新持久化。
+
+## 2026-07-16 - Prepared image identity, provider-readable bytes, and deletion intent must remain durable under concurrency
+
+- Symptom: 多账号同时出现“一键素材没有公网地址”、KIE 生图接单后 `Image fetch failed`、删除后提示远端未完全成功，以及并发时项目状态偶发 403。
+- Environment: Tencent Cloud production / one-click planning and KIE image generation / Tencent COS managed images / shared shell deletion tombstones.
+- Root cause: 一键入口完成 `generationMaterials` 远端准备后，策划仍误传上传前的 `filteredMaterials`。生成素材转换器又无条件返回 COS 私有临时签名 URL，绕过强制转存，KIE 接单后异步读取失败。删除只并行执行一次 DELETE 与墓碑写入，404/运行中 409 被当成最终失败，服务端没有按持久墓碑继续收敛。历史状态中的失效 `imageUrlAssetId` 等显式身份没有在 state 边界清除，整份状态会被所有权校验拒绝；并发只提高了这些缺口的暴露概率。
+- Fix: 策划只接收准备后的 `generationMaterials`。生成链路把 resolver-backed COS 图片先下载并转存为 KIE 文件 URL，聊天默认仍可读取新鲜 COS 签名 URL，历史公网托管素材继续 direct-first。DELETE 对已不存在任务幂等成功，运行中删除展示为后台清理；MySQL 定时读取 `shellDraft.deletedJobIds`，只接受 24 位内部 job ID，并复用取消、积分保护、事务删除和素材引用清理合同持续收敛，摘要进入 `/api/health`。app state 保存/读取前移除失效显式 `*AssetId`，job payload 的 owner 校验仍 fail closed。
+- Regression check: `node --test src/shell/preparedGenerationMaterials.test.mjs server/providerAssetTransfer.test.mjs server/managedAssetStateScrub.test.mjs server/tombstonedJobReconciler.test.mjs src/utils/deletionOperations.test.mjs src/services/internalApi.test.mjs server/managedAssetDeletion.test.mjs`；`npm run doctor`；`npm run build`。云上还要验证真实 COS 上传、一键策划、至少两个并发生图、重复 DELETE 和 `health.tombstonedJobCleanup` 收敛。
+- Avoid next time: 上传门禁后的素材变量必须一路传到 planning/provider，不能重新引用旧快照。异步 provider 不应依赖短时私有签名 URL；接单前必须落实稳定字节读取合同。UI 删除是耐久意图，不是一次 HTTP 调用；后台收敛必须保留积分与提交未知保护。新增素材身份校验时要同时覆盖历史 state scrub、job payload 严格校验和多账号并发回放，不能通过调大并发掩盖 stage 边界错误。
