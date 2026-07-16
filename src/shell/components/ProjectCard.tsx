@@ -12,6 +12,11 @@ import {
 } from '../../adapters/shellProductRestoreWorkflow';
 import ConfirmDialog from './ConfirmDialog';
 import ImageLightbox, { type LightboxMediaItem } from './ImageLightbox';
+import RetouchComparisonViewer from './RetouchComparisonViewer';
+import {
+  buildRetouchComparisonItems,
+  isRetouchComparisonScope,
+} from './retouchComparison';
 import PlanEditor, { type PlanItem } from './PlanEditor';
 import { useToast } from './ToastSystem';
 import ProductRestoreAnalysisPanel, { ProductRestoreResultCreditBadge } from '../modules/Retouch/ProductRestoreAnalysisPanel';
@@ -494,6 +499,8 @@ const ProjectCard: React.FC<Props> = ({
   const [detailOpen, setDetailOpen] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState(0);
+  const [retouchComparisonOpen, setRetouchComparisonOpen] = useState(false);
+  const [retouchComparisonIndex, setRetouchComparisonIndex] = useState(0);
   const [translationCompareOpen, setTranslationCompareOpen] = useState(false);
   const [translationCompareIndex, setTranslationCompareIndex] = useState(0);
   const [detailViewMode, setDetailViewMode] = useState<'single' | 'stack'>(
@@ -539,6 +546,7 @@ const ProjectCard: React.FC<Props> = ({
   const isEverythingReplaceBackgroundEditProject = project.module === 'everything_replace' && project.subFeature === 'background_replace';
   const isImageCropProject = project.module === 'image_crop';
   const isProductRestoreProject = project.module === 'retouch' && project.subFeature === 'product_restore';
+  const isRetouchComparisonProject = isRetouchComparisonScope(project.module, project.subFeature);
   const isSubtitleRemovalProject = project.module === 'video' && project.subFeature === 'subtitle_removal';
   const canRemoveVideoSubtitles = (result: GeneratedResult) => Boolean(
     onRemoveVideoSubtitles
@@ -567,6 +575,12 @@ const ProjectCard: React.FC<Props> = ({
     type: result.mediaType === 'video' || result.videoUrl ? 'video' : 'image',
     title: result.fileName || result.taskId || `${project.name || '结果'} #${index + 1}`,
   }));
+  const retouchComparisonItems = buildRetouchComparisonItems({
+    module: project.module,
+    subFeature: project.subFeature,
+    projectName: project.name,
+    results: project.results,
+  });
   const isCompletedMediaResult = (result: GeneratedResult) => result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl);
   const resultHasVisibleTaskId = (result: GeneratedResult) => Boolean(String(result.taskId || result.backendJobId || '').trim());
   const isResultActivelyGenerating = (result: GeneratedResult) => (
@@ -875,6 +889,15 @@ const ProjectCard: React.FC<Props> = ({
   const openImage = (resultId: string) => {
     const targetResult = project.results.find((result) => result.id === resultId);
     const isVideoResult = Boolean(targetResult && (targetResult.mediaType === 'video' || targetResult.videoUrl));
+    if (isRetouchComparisonProject && targetResult?.status === 'completed' && targetResult.imageUrl) {
+      const comparisonIndex = retouchComparisonItems.findIndex((item) => item.id === resultId);
+      if (comparisonIndex >= 0 && (targetResult.sourcePreviewUrl || targetResult.sourceUrl)) {
+        setRetouchComparisonIndex(comparisonIndex);
+        setRetouchComparisonOpen(true);
+        return;
+      }
+      addToast('原图缺失，暂无法对比', 'info');
+    }
     if (project.module === 'translation' && !isVideoResult) {
       const idx = translationResults.findIndex((result) => result.id === resultId);
       if (idx >= 0) {
@@ -916,7 +939,7 @@ const ProjectCard: React.FC<Props> = ({
   }, [isVersionedImageProject, project.results]);
 
   useEffect(() => {
-    if (!detailOpen || lightboxOpen) return;
+    if (!detailOpen || lightboxOpen || retouchComparisonOpen) return;
     const handler = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setDetailOpen(false);
@@ -925,7 +948,7 @@ const ProjectCard: React.FC<Props> = ({
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, [detailOpen, lightboxOpen]);
+  }, [detailOpen, lightboxOpen, retouchComparisonOpen]);
 
   const handleCopyPrompt = async (prompt: string) => {
     const value = String(prompt || '');
@@ -2252,9 +2275,17 @@ const ProjectCard: React.FC<Props> = ({
                                   onClick={() => {
                                     if (canOpenImage) openImage(result.id);
                                   }}
-                                  className="block w-full"
+                                  className="group/retouch relative block w-full"
                                 >
                                   {mediaPanel}
+                                  {isRetouchComparisonProject && hasResult ? (
+                                    <span
+                                      className="pointer-events-none absolute bottom-2 right-2 flex items-center gap-1 rounded-full bg-black/60 px-2.5 py-1 text-[10px] font-semibold text-white opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover/retouch:opacity-100 group-focus-visible/retouch:opacity-100"
+                                    >
+                                      <Maximize2 size={11} />
+                                      {sourcePreviewUrl || displayResult.sourceUrl ? '滑动对比' : '放大查看'}
+                                    </span>
+                                  ) : null}
                                 </button>
                               )}
                                 <div className="flex flex-1 flex-col gap-2 border-t p-2.5" style={{ borderColor: 'color-mix(in srgb, var(--border-subtle) 70%, transparent)' }}>
@@ -2455,6 +2486,21 @@ const ProjectCard: React.FC<Props> = ({
         onClose={() => setLightboxOpen(false)}
         onPrev={() => setLightboxIndex((i) => (i - 1 + allImageUrls.length) % allImageUrls.length)}
         onNext={() => setLightboxIndex((i) => (i + 1) % allImageUrls.length)}
+      />
+
+      <RetouchComparisonViewer
+        open={retouchComparisonOpen}
+        items={retouchComparisonItems}
+        currentIndex={retouchComparisonIndex}
+        onIndexChange={setRetouchComparisonIndex}
+        onClose={() => setRetouchComparisonOpen(false)}
+        onDownloadCurrent={() => {
+          const currentItem = retouchComparisonItems[retouchComparisonIndex];
+          const resultIndex = project.results.findIndex((result) => result.id === currentItem?.id);
+          if (resultIndex >= 0) {
+            void handleDownloadSingle(project.results[resultIndex], resultIndex);
+          }
+        }}
       />
 
       {translationCompareOpen && translationResults.length > 0 && (() => {
