@@ -96,6 +96,7 @@ import { deleteShellDraftAsset, loadShellDraftAsset, pruneShellDraftAssets, rest
 import { detectMp4VideoCodecFromBlob } from './utils/videoCodec';
 import { createMaterialUploadCoordinator } from './utils/materialUploadCoordinator';
 import { buildGenerationSubmissionKey } from './utils/generationSubmissionKey';
+import { fetchImageBlobWithProxy } from './utils/browserImageLoader.mjs';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
 import {
   buildTranslationRegionEditLogMeta,
@@ -131,6 +132,13 @@ import {
   sumTranslationRetryCredits,
   translationSnapshotToParams,
 } from './modules/Translation/translationRetryUtils.mjs';
+import {
+  TranslationAssetMirrorScopeExpiredError,
+  isTranslationAssetMirrorScopeCurrent,
+  isTranslationAssetMirrorScopeExpiredError,
+  isManagedTranslationAssetUrl,
+  replaceTranslationResultAssetUrl,
+} from './modules/Translation/translationResultAsset.mjs';
 import {
   getRetouchCustomSizeRatioWarning,
   getSafeRetouchAspectRatioForModel,
@@ -2452,6 +2460,24 @@ const AppContent: React.FC<{
       }
     };
   }, [shellLocalScopeUserId]);
+  const translationAssetMirrorScopeRef = useRef<{
+    userId: string | null;
+    controller: AbortController;
+  } | null>(null);
+  useEffect(() => {
+    const mirrorScope = {
+      userId: shellLocalScopeUserId,
+      controller: new AbortController(),
+    };
+    translationAssetMirrorScopeRef.current?.controller.abort();
+    translationAssetMirrorScopeRef.current = mirrorScope;
+    return () => {
+      mirrorScope.controller.abort();
+      if (translationAssetMirrorScopeRef.current === mirrorScope) {
+        translationAssetMirrorScopeRef.current = null;
+      }
+    };
+  }, [shellLocalScopeUserId]);
   const deletedStoryboardProjectIdsRef = useRef<Set<string>>(new Set());
   const cancelledStoryboardProjectIdsRef = useRef<Set<string>>(new Set());
   const storyboardBoardDeletionGuardsRef = useRef<Map<string, StoryboardBoardDeletionGuard>>(new Map());
@@ -4089,6 +4115,111 @@ const AppContent: React.FC<{
     };
     return sharedStateWriteQueueRef.current!.enqueue(isCurrent, write, false);
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
+
+  const handleTranslationResultDownloaded = useCallback(async (
+    projectId: string,
+    resultId: string,
+    sourceUrl: string,
+    blob: Blob,
+    fileName: string,
+  ) => {
+    if (!sourceUrl || isManagedTranslationAssetUrl(sourceUrl)) return;
+    const mirrorScope = translationAssetMirrorScopeRef.current;
+    const mirrorSignal = mirrorScope?.controller.signal;
+    const isMirrorScopeCurrent = () => isTranslationAssetMirrorScopeCurrent({
+      scope: mirrorScope,
+      currentScope: translationAssetMirrorScopeRef.current,
+      currentUserId: currentShellScopeUserIdRef.current,
+      signal: mirrorSignal,
+    });
+    if (!mirrorSignal || !isMirrorScopeCurrent()) return;
+
+    const normalizedFileName = fileName.split('/').pop() || fileName;
+    const assetFile = new File([blob], normalizedFileName, {
+      type: blob.type || 'application/octet-stream',
+    });
+    const uploaded = await uploadInternalAssetStream({
+      module: AppModuleObj.TRANSLATION,
+      file: assetFile,
+      fileName: normalizedFileName,
+      signal: mirrorSignal,
+    });
+    if (!isMirrorScopeCurrent()) return;
+    const replacementInput = {
+      projectId,
+      resultId,
+      sourceUrl,
+      managedUrl: uploaded.fileUrl,
+    };
+    let replacement = replaceTranslationResultAssetUrl(projectsRef.current, replacementInput);
+    if (!replacement.updated || !replacement.project || !replacement.result) return;
+
+    const replacementProject = replacement.project as Project;
+    const replacementResult = replacement.result as GeneratedResult;
+    const resultIndex = replacementProject.results.findIndex((result) => result.id === resultId);
+    const isReplacementCurrent = () => (
+      isMirrorScopeCurrent()
+      && replaceTranslationResultAssetUrl(projectsRef.current, replacementInput).updated
+    );
+    const persisted = await Promise.all([
+      persistTranslationFilesToSharedState(
+        replacementProject.subFeature || 'main',
+        [translationResultToFile(replacementProject, replacementResult, Math.max(0, resultIndex))],
+        isReplacementCurrent,
+        mirrorSignal,
+      ),
+      persistProjectToSharedState(replacementProject, {
+        guard: isReplacementCurrent,
+        signal: mirrorSignal,
+      }),
+    ]);
+    if (!persisted.every((result) => result === true) || !isMirrorScopeCurrent()) return;
+    replacement = replaceTranslationResultAssetUrl(projectsRef.current, replacementInput);
+    if (!replacement.updated) return;
+    projectsRef.current = replacement.projects as Project[];
+    setProjects(replacement.projects as Project[]);
+  }, [persistProjectToSharedState, persistTranslationFilesToSharedState]);
+
+  const resolveManagedTranslationResultUrl = useCallback(async (
+    sourceUrl: string,
+    fileName = 'translation-result.png',
+    signal?: AbortSignal,
+  ) => {
+    if (!sourceUrl || isManagedTranslationAssetUrl(sourceUrl)) return sourceUrl;
+    const mirrorScope = translationAssetMirrorScopeRef.current;
+    const mirrorSignal = signal && mirrorScope
+      ? AbortSignal.any([mirrorScope.controller.signal, signal])
+      : mirrorScope?.controller.signal;
+    const isMirrorScopeCurrent = () => isTranslationAssetMirrorScopeCurrent({
+      scope: mirrorScope,
+      currentScope: translationAssetMirrorScopeRef.current,
+      currentUserId: currentShellScopeUserIdRef.current,
+      signal: mirrorSignal,
+    });
+    if (!mirrorSignal || !isMirrorScopeCurrent()) {
+      throw new TranslationAssetMirrorScopeExpiredError();
+    }
+    try {
+      const blob = await fetchImageBlobWithProxy(sourceUrl, 'Translation result', mirrorSignal);
+      if (!isMirrorScopeCurrent()) throw new TranslationAssetMirrorScopeExpiredError();
+      const normalizedFileName = fileName.split('/').pop() || 'translation-result.png';
+      const file = new File([blob], normalizedFileName, {
+        type: blob.type || 'application/octet-stream',
+      });
+      const uploaded = await uploadInternalAssetStream({
+        module: AppModuleObj.TRANSLATION,
+        file,
+        fileName: normalizedFileName,
+        signal: mirrorSignal,
+      });
+      if (!isMirrorScopeCurrent()) throw new TranslationAssetMirrorScopeExpiredError();
+      return uploaded.fileUrl;
+    } catch (error) {
+      if (!isMirrorScopeCurrent()) throw error;
+      console.warn('[MEIAO] failed to mirror generated translation result', error);
+      return sourceUrl;
+    }
+  }, []);
 
   useEffect(() => {
     const recoveryScope = translationRegionEditRecoveryScopeRef.current;
@@ -6285,6 +6416,11 @@ const AppContent: React.FC<{
             if (result.status !== 'success' || !result.imageUrl) {
               throw new Error(result.message || `第 ${index + 1} 张生成失败`);
             }
+            const managedResultUrl = await resolveManagedTranslationResultUrl(
+              result.imageUrl,
+              currentFileItem.relativePath || currentFileItem.fileName || `translation-${index + 1}.png`,
+              controller.signal,
+            );
 
             translationFileItems[index] = {
               ...translationFileItems[index],
@@ -6293,7 +6429,7 @@ const AppContent: React.FC<{
               taskId: result.taskId || translationFileItems[index]?.taskId || currentFileItem.taskId,
               creditsConsumed: sumTranslationRetryCredits(planningCreditsConsumed, result.creditsConsumed),
               translationGenerationCreditsConsumed: result.creditsConsumed,
-              resultUrl: result.imageUrl,
+              resultUrl: managedResultUrl,
               matchedAspectRatio: matchedRatio,
               prompt: result.prompt || promptForModel,
               model: String(generationParams.model || 'GPT Image 2'),
@@ -6304,6 +6440,7 @@ const AppContent: React.FC<{
             successCount += 1;
             syncTranslationProject(translationFileItems);
           } catch (error) {
+            if (isTranslationAssetMirrorScopeExpiredError(error)) throw error;
             if (bailIfFrontendResourceError(error)) return;
             const message = error instanceof Error ? error.message : '翻译任务失败';
             logShellError('translation_generation_failed', error, {
@@ -7541,7 +7678,7 @@ const AppContent: React.FC<{
 	      releaseGuardedSubmit();
 	      setIsGenerating(false);
 	    }
-	  }, [promptText, activeModule, activeSubFeature, currentParams, filteredMaterials, projects, tasks, addToast, hydrateShellData, setScopedPromptText, apiConfig, videoMemory, setVideoMemory, persistProjectToSharedState, publicBaseUrl, ensureMaterialRemoteUrls, currentUser, systemConfig?.featureRollouts?.productRestore, logShellError, beginGenerationSubmitLock, endGenerationSubmitLock, reserveShortProjectName, recordProductRestoreJobCreated, recordStoryboardJobCreated]);
+	  }, [promptText, activeModule, activeSubFeature, currentParams, filteredMaterials, projects, tasks, addToast, hydrateShellData, setScopedPromptText, apiConfig, videoMemory, setVideoMemory, persistProjectToSharedState, publicBaseUrl, ensureMaterialRemoteUrls, currentUser, systemConfig?.featureRollouts?.productRestore, logShellError, beginGenerationSubmitLock, endGenerationSubmitLock, reserveShortProjectName, recordProductRestoreJobCreated, recordStoryboardJobCreated, resolveManagedTranslationResultUrl]);
 
   const createRemoteMaterial = useCallback((id: string, type: string, url: string, fileName: string, subFeature?: string): Material => ({
     id,
@@ -9874,10 +10011,15 @@ const AppContent: React.FC<{
               delete taskControllersRef.current[retryTaskId];
               return;
             }
+            const managedResultUrl = await resolveManagedTranslationResultUrl(
+              pipelineResult.imageUrl,
+              result.relativePath || result.fileName || `${retryDescriptor.id}.png`,
+              controller.signal,
+            );
             const completedResult: GeneratedResult = {
               ...currentRetryResult,
               id: retryDescriptor.id,
-              imageUrl: pipelineResult.imageUrl,
+              imageUrl: managedResultUrl,
               status: 'completed',
               prompt: pipelineResult.prompt,
               model: String(snapshotParams.model || result.model || 'GPT Image 2'),
@@ -9899,6 +10041,11 @@ const AppContent: React.FC<{
             addToast('图片已重新翻译并追加到原项目', 'success');
             return;
           } catch (error) {
+            if (isTranslationAssetMirrorScopeExpiredError(error)) {
+              setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
+              delete taskControllersRef.current[retryTaskId];
+              return;
+            }
             if (bailIfFrontendResourceError(error)) {
               setTasks((prev) => prev.filter((task) => task.id !== retryTaskId));
               delete taskControllersRef.current[retryTaskId];
@@ -10103,10 +10250,17 @@ const AppContent: React.FC<{
           generation,
           recoverable: isRecoverableShellWorkflowResult(generation),
         });
+        const managedLifecycleResultUrl = lifecycle.kind === 'success' && lifecycle.result.imageUrl
+          ? await resolveManagedTranslationResultUrl(
+              lifecycle.result.imageUrl,
+              result.relativePath || result.fileName || `${result.id}.png`,
+              controller.signal,
+            )
+          : lifecycle.result.imageUrl;
         const lifecycleResult: GeneratedResult = {
           ...lifecycle.result,
           id: result.id,
-          imageUrl: lifecycle.result.imageUrl,
+          imageUrl: managedLifecycleResultUrl,
           model: String(retryParams.model || result.model || 'GPT Image 2'),
           aspectRatio: matchedRatio,
         };
@@ -10136,6 +10290,10 @@ const AppContent: React.FC<{
         addToast('失败项已重试成功', 'success');
         return;
         } catch (error) {
+          if (isTranslationAssetMirrorScopeExpiredError(error)) {
+            cleanupFailedTranslationRetry();
+            return;
+          }
           if (bailIfFrontendResourceError(error)) {
             cleanupFailedTranslationRetry();
             return;
@@ -10417,7 +10575,7 @@ const AppContent: React.FC<{
     } finally {
       endExclusiveAction(actionKey);
     }
-  }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction, currentUser?.id, currentUser?.role, systemConfig?.featureRollouts?.productRestore, recordProductRestoreJobCreated]);
+  }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction, currentUser?.id, currentUser?.role, systemConfig?.featureRollouts?.productRestore, recordProductRestoreJobCreated, resolveManagedTranslationResultUrl]);
 
   const handleTranslationRegionEdit = useCallback(async (
     projectId: string,
@@ -12329,6 +12487,7 @@ const AppContent: React.FC<{
           onCancelTask={handleCancelTask}
           onTranslationRegionEdit={handleTranslationRegionEdit}
           onCancelTranslationRegionEdit={handleCancelTranslationRegionEdit}
+          onTranslationResultDownloaded={handleTranslationResultDownloaded}
           pendingActionKeys={pendingActionKeys}
           showGenerationProgress={showGenerationProgress}
         />;

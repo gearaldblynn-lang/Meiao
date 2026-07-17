@@ -37,8 +37,13 @@ test('download helper fetches remote files into a blob before saving with an exp
   );
   assert.match(
     source,
-    /const response = await fetch\(url, \{ mode: 'cors', cache: 'no-cache' \}\);/,
-    'remote download helper should fetch the asset first instead of relying on cross-origin anchor naming'
+    /import \{ fetchImageBlobWithProxy \} from '\.\/browserImageLoader\.mjs';/,
+    'download helper should reuse the authenticated browser image loader'
+  );
+  assert.match(
+    source,
+    /fetchImageBlobWithProxy\(url, 'Download'\)/,
+    'remote download helper should use the shared authenticated proxy fallback'
   );
   assert.match(
     source,
@@ -102,19 +107,29 @@ test('zip download helper retries remote CORS failures through the same-origin a
 
   assert.match(
     source,
-    /shouldUseDownloadProxy/,
-    'remote download helper should detect when a remote URL can use the same-origin proxy'
+    /fetchImageBlobWithProxy/,
+    'zip downloads should inherit the authenticated proxy fallback from the shared loader'
   );
+  assert.doesNotMatch(source, /fetchRemoteFileBlobViaProxy/);
+});
+
+test('download helper reports expired provider links instead of hiding them behind a direct fallback', () => {
+  const source = readFileSync(new URL('./imageUtils.ts', import.meta.url), 'utf8');
+
+  assert.match(source, /下载失败: 源图片链接已过期/);
+  assert.match(source, /404\|410/);
   assert.match(
     source,
-    /\/api\/assets\/download-proxy\?url=/,
-    'remote download helper should retry remote assets through the backend proxy'
+    /if \(isExpiredRemoteDownloadError\(error\)\) throw error;/,
+    'single downloads must surface an expired source instead of opening the dead URL'
   );
-  assert.match(
-    source,
-    /return fetchRemoteFileBlobViaProxy\(url\);/,
-    'zip downloads should be able to resolve remote blobs after browser CORS failures'
-  );
+});
+
+test('single and zip download helpers return resolved blobs for translation asset mirroring', () => {
+  const source = readFileSync(new URL('./imageUtils.ts', import.meta.url), 'utf8');
+
+  assert.match(source, /return \{ blob, transformed, fileName: resolvedFileName \};/);
+  assert.match(source, /await createZipAndDownload\(zipFiles, zipName\);[\s\S]*?return zipFiles;/);
 });
 
 test('zip downloads store already-compressed media and stream entries instead of recompressing images', () => {
