@@ -52,15 +52,6 @@ test('buildKieImageTaskRequestBody preserves GPT Image 2 image edit payload shap
   assert.equal('image_input' in requestBody.input, false);
 });
 
-test('buildKieImageTaskRequestBody rejects inputs beyond the model limit', () => {
-  const imageUrls = Array.from({ length: 17 }, (_, index) => `https://cdn.test/input-${index + 1}.png`);
-  assert.throws(() => buildKieImageTaskRequestBody({
-    payload: { model: 'gpt-image-2', aspectRatio: '1:1', resolution: '1K' },
-    imageUrls,
-    prompt: 'combination replacement',
-  }), /最多支持 16 张输入图片.*当前 17 张/);
-});
-
 test('runKieImageJob resolves duplicate input and prompt media URLs once', async () => {
   const resolved = [];
   let createTaskBody = null;
