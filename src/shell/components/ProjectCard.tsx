@@ -1181,11 +1181,29 @@ const ProjectCard: React.FC<Props> = ({
     }
     try {
       const { downloadRemoteFile } = await import('../../utils/imageUtils');
-      await downloadRemoteFile(
-        result.videoUrl || result.imageUrl,
+      const sourceUrl = result.videoUrl || result.imageUrl;
+      const downloaded = await downloadRemoteFile(
+        sourceUrl,
         getDownloadName(project, result, index),
         getResultDownloadTransform(project, result, selectedTranslationVersion),
       );
+      if (
+        downloaded
+        && onTranslationResultDownloaded
+        && project.module === 'translation'
+        && ['main', 'detail'].includes(project.subFeature || '')
+        && sourceUrl === result.imageUrl
+      ) {
+        void onTranslationResultDownloaded(
+          project.id,
+          result.id,
+          sourceUrl,
+          downloaded.blob,
+          downloaded.fileName,
+        ).catch((error) => {
+          console.warn('[MEIAO] failed to mirror downloaded translation result', error);
+        });
+      }
       addToast('已开始下载', 'success');
     } catch (error) {
       addToast(error instanceof Error ? error.message : '下载失败', 'error');
@@ -1230,7 +1248,7 @@ const ProjectCard: React.FC<Props> = ({
     setIsPackaging(true);
     try {
       const { downloadRemoteFilesAsZip } = await import('../../utils/imageUtils');
-      await downloadRemoteFilesAsZip(
+      const downloadedFiles = await downloadRemoteFilesAsZip(
         downloadable.map((result, index) => ({
           url: result.videoUrl || result.imageUrl,
           path: getDownloadZipPath(project, result, index),
@@ -1238,6 +1256,30 @@ const ProjectCard: React.FC<Props> = ({
         })),
         `${project.name || 'project'}_${Date.now()}`.replace(/[\\/:*?"<>|\s]+/g, '_'),
       );
+      if (
+        onTranslationResultDownloaded
+        && project.module === 'translation'
+        && ['main', 'detail'].includes(project.subFeature || '')
+      ) {
+        const downloadedResults = downloadable.map((result, index) => ({
+          result,
+          sourceUrl: result.imageUrl,
+          file: downloadedFiles[index],
+        })).filter((downloaded) => downloaded.sourceUrl && downloaded.file);
+        void Promise.allSettled(downloadedResults.map((downloaded) => (
+          onTranslationResultDownloaded(
+            project.id,
+            downloaded.result.id,
+            downloaded.sourceUrl,
+            downloaded.file.blob,
+            downloaded.file.path,
+          )
+        ))).then((outcomes) => {
+          if (outcomes.some((outcome) => outcome.status === 'rejected')) {
+            console.warn('[MEIAO] some downloaded translation results could not be mirrored');
+          }
+        });
+      }
       addToast('批量打包已开始下载', 'success');
     } catch (error) {
       addToast(error instanceof Error ? error.message : '批量下载失败', 'error');

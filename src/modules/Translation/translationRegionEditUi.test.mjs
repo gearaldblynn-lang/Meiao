@@ -9,6 +9,7 @@ const projectCardUrl = new URL('../../shell/components/ProjectCard.tsx', import.
 const projectListViewUrl = new URL('../../shell/components/ProjectListView.tsx', import.meta.url);
 const translationModuleUrl = new URL('../../shell/modules/Translation/TranslationModule.tsx', import.meta.url);
 const sharedDialogUrl = new URL('../../shell/components/ui/dialog.tsx', import.meta.url);
+const shellUrl = new URL('../../ShellMigratedApp.tsx', import.meta.url);
 
 const region = (id, overrides = {}) => ({
   id,
@@ -555,6 +556,10 @@ test('translation compare exposes pending edit versions while downloads use comp
   assert.match(source, /handleDownloadSingle\([\s\S]*?getSelectedTranslationResult\(result\),[\s\S]*?index,[\s\S]*?getSelectedTranslationVersion\(result\)/);
   assert.match(batch, /url: result\.videoUrl \|\| result\.imageUrl/);
   assert.doesNotMatch(batch, /getSelectedTranslation/);
+  assert.match(source, /const downloaded = await downloadRemoteFile\(/);
+  assert.match(source, /onTranslationResultDownloaded\([\s\S]*?downloaded\.blob,[\s\S]*?downloaded\.fileName/);
+  assert.match(batch, /const downloadedFiles = await downloadRemoteFilesAsZip\(/);
+  assert.match(batch, /Promise\.allSettled\([\s\S]*?onTranslationResultDownloaded\([\s\S]*?downloaded\.file\.blob/);
   assert.match(compare, /const visibleVersions = getVisibleTranslationVersions\(result\)/);
   assert.match(compare, /const selectedVersion = getSelectedTranslationVersion\(result\)/);
   assert.match(compare, /selectedVersion\?\.status === 'generating'[\s\S]*?'处理中'/);
@@ -568,6 +573,20 @@ test('translation compare exposes pending edit versions while downloads use comp
   assert.match(compare, /\u4e0b\u4e00\u7248/);
   assert.match(compare, /disabled=\{selectedVersionIndex <= 0\}/);
   assert.match(compare, /disabled=\{selectedVersionIndex >= visibleVersions\.length - 1\}/);
+});
+
+test('translation result mirroring is wired from downloads into the guarded shell transaction', async () => {
+  const shell = await readFile(shellUrl, 'utf8');
+  const module = await readFile(translationModuleUrl, 'utf8');
+  const list = await readFile(projectListViewUrl, 'utf8');
+
+  assert.match(shell, /const handleTranslationResultDownloaded = useCallback\(async \(/);
+  assert.match(shell, /replaceTranslationResultAssetUrl\(projectsRef\.current, replacementInput\)/);
+  assert.match(shell, /persistTranslationFilesToSharedState\([\s\S]*?isReplacementCurrent,[\s\S]*?mirrorSignal/);
+  assert.match(shell, /persistProjectToSharedState\(replacementProject, \{[\s\S]*?guard: isReplacementCurrent,[\s\S]*?signal: mirrorSignal/);
+  assert.match(shell, /onTranslationResultDownloaded=\{handleTranslationResultDownloaded\}/);
+  assert.match(module, /onTranslationResultDownloaded=\{onTranslationResultDownloaded\}/);
+  assert.match(list, /onTranslationResultDownloaded=\{onTranslationResultDownloaded\}/);
 });
 
 test('translation compare shows a failed edit reason without falling back to an image', async () => {
@@ -619,4 +638,3 @@ test('translation region edit props pass through only the translation module cha
     assert.match(translationModule, new RegExp(`${prop}=\\{${prop}\\}`));
   }
 });
-

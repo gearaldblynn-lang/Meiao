@@ -77,7 +77,10 @@ const augmentImagePromptForModel = (model, prompt) => {
 
 export const buildKieImageTaskRequestBody = ({ payload, imageUrls, prompt }) => {
   const gptImageAlias = KIE_IMAGE_MODEL_ALIASES[payload.model];
-  const limitedImageUrls = gptImageAlias ? imageUrls.slice(0, gptImageAlias.maxInputImages) : imageUrls;
+  if (gptImageAlias && imageUrls.length > gptImageAlias.maxInputImages) {
+    throw new Error(`当前模型最多支持 ${gptImageAlias.maxInputImages} 张输入图片，当前 ${imageUrls.length} 张，请减少产品或参考素材后重试。`);
+  }
+  const limitedImageUrls = imageUrls;
   const normalizedAspectRatio = String(payload.aspectRatio || 'auto').trim() || 'auto';
   const normalizedResolution = gptImageAlias
     ? normalizeGptImage2Resolution(normalizedAspectRatio, payload.resolution || GPT_IMAGE_2_DEFAULT_RESOLUTION)

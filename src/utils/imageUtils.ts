@@ -2,6 +2,7 @@
 
 import JSZip from 'jszip';
 import { safeCreateObjectURL } from './urlUtils';
+import { fetchImageBlobWithProxy } from './browserImageLoader.mjs';
 
 const DEFAULT_UPLOAD_IMAGE_MAX_BYTES = 3 * 1024 * 1024;
 
@@ -236,42 +237,18 @@ const triggerDirectDownloadFallback = (url: string, fileName: string) => {
 
 export const fetchRemoteFileBlob = async (url: string) => {
   try {
-    const response = await fetch(url, { mode: 'cors', cache: 'no-cache' });
-    if (!response.ok) {
-      throw new Error(`下载失败: ${response.status}`);
-    }
-    return response.blob();
+    return await fetchImageBlobWithProxy(url, 'Download');
   } catch (error) {
-    if (shouldUseDownloadProxy(url)) {
-      return fetchRemoteFileBlobViaProxy(url);
+    const message = error instanceof Error ? error.message : String(error || '');
+    if (/(?:download failed|下载失败):\s*(404|410)\b/i.test(message)) {
+      throw new Error('下载失败: 源图片链接已过期');
     }
-    throw error;
+    throw error instanceof Error ? error : new Error(message || '下载失败');
   }
 };
 
-const shouldUseDownloadProxy = (url: string) => {
-  try {
-    const parsed = new URL(url, window.location.href);
-    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
-    if (parsed.origin === window.location.origin) return false;
-    const hostname = parsed.hostname.toLowerCase();
-    return hostname !== 'localhost'
-      && !hostname.endsWith('.localhost')
-      && !hostname.endsWith('.local')
-      && hostname !== '127.0.0.1'
-      && hostname !== '0.0.0.0';
-  } catch {
-    return false;
-  }
-};
-
-const fetchRemoteFileBlobViaProxy = async (url: string) => {
-  const response = await fetch(`/api/assets/download-proxy?url=${encodeURIComponent(url)}`, { cache: 'no-cache' });
-  if (!response.ok) {
-    throw new Error(`下载失败: ${response.status}`);
-  }
-  return response.blob();
-};
+const isExpiredRemoteDownloadError = (error: unknown) =>
+  error instanceof Error && error.message === '下载失败: 源图片链接已过期';
 
 export interface ImageDownloadTransform {
   targetWidth?: number;
@@ -352,13 +329,15 @@ export const resolveRemoteFileBlobForDownload = async (
 export const downloadRemoteFile = async (url: string, fileName: string, transform?: ImageDownloadTransform) => {
   let blob: Blob;
   let transformed = false;
+  let resolvedFileName = '';
   try {
     const resolved = await resolveRemoteFileBlobForDownload(url, transform);
     blob = resolved.blob;
     transformed = resolved.transformed;
   } catch (error) {
+    if (isExpiredRemoteDownloadError(error)) throw error;
     triggerDirectDownloadFallback(url, fileName);
-    return;
+    return null;
   }
   const blobUrl = safeCreateObjectURL(blob);
   if (!blobUrl) {
@@ -369,6 +348,7 @@ export const downloadRemoteFile = async (url: string, fileName: string, transfor
     const link = document.createElement('a');
     link.href = blobUrl;
     link.download = getFileNameForBlob(fileName, blob, url, transformed);
+    resolvedFileName = link.download;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -377,11 +357,13 @@ export const downloadRemoteFile = async (url: string, fileName: string, transfor
       URL.revokeObjectURL(blobUrl);
     }, 100);
   }
+  return { blob, transformed, fileName: resolvedFileName };
 };
 
 export const downloadRemoteFilesAsZip = async (files: { url: string, path: string, transform?: ImageDownloadTransform }[], zipName: string) => {
   const zipFiles = await resolveFilesForZipDownload(files);
   await createZipAndDownload(zipFiles, zipName);
+  return zipFiles;
 };
 
 export const resolveFilesForZipDownload = async (
