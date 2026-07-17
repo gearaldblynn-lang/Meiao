@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { CheckSquare2, ChevronLeft, ChevronRight, Copy, Download, FileText, Film, ImagePlus, Maximize2, Package, Palette, Play, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { CheckSquare2, ChevronLeft, ChevronRight, CircleAlert, Copy, Download, FileText, Film, ImagePlus, Loader2, Maximize2, Package, Palette, Pencil, Play, RefreshCw, RotateCcw, Scissors, Sparkles, Square, Trash2, X } from 'lucide-react';
 import type { GeneratedResult } from '../../ShellMigratedApp';
-import type { OneClickGenerationContext, VideoStoryboardProject } from '../../types';
+import type { OneClickGenerationContext, TranslationEditRegion, TranslationEditVersion, VideoStoryboardProject } from '../../types';
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
 import {
   buildTranslationResultDownloadPath,
@@ -12,6 +12,13 @@ import {
 import { copyTextToClipboard } from '../../utils/clipboard.mjs';
 import { isInvalidOneClickPlanLike } from '../../utils/oneClickPlanValidation.ts';
 import { formatMonthDay } from '../../utils/timeFormat.ts';
+import TranslationRegionEditDialog from '../../modules/Translation/TranslationRegionEditDialog';
+import {
+  getCompletedTranslationEditVersions,
+  getTranslationEditCreditsConsumed,
+  getVisibleTranslationEditVersions,
+  reconcileTranslationVersionIndexes,
+} from '../../modules/Translation/translationRegionEditUtils.mjs';
 import {
   canManuallyReanalyzeProductRestore,
   PRODUCT_RESTORE_MANUAL_REANALYSIS_RESULT_ID,
@@ -74,6 +81,9 @@ interface Props {
   onDeletePlan?: (projectId: string, planId: string) => void;
   onRegeneratePlans?: (projectId: string) => void;
   onCancelTask?: (taskIdOrProjectId: string) => void;
+  onTranslationRegionEdit?: (projectId: string, resultId: string, input: { sourceVersionId: string; regions: TranslationEditRegion[] }) => Promise<void>;
+  onCancelTranslationRegionEdit?: (projectId: string, resultId: string, versionId: string, backendJobId?: string) => Promise<void>;
+  onTranslationResultDownloaded?: (projectId: string, resultId: string, sourceUrl: string, blob: Blob, fileName: string) => Promise<void>;
   onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number, imageUrl?: string) => void;
   pendingActionKeys?: Record<string, boolean>;
   compact?: boolean;
@@ -423,9 +433,21 @@ const toPositiveNumber = (value: unknown) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 };
 
-const getResultDownloadTransform = (project: Project, result: GeneratedResult): ImageDownloadTransform | undefined => {
+const getVersionCanvasDownloadTransform = (version?: TranslationEditVersion): ImageDownloadTransform | undefined => {
+  const targetWidth = toPositiveNumber(version?.canvasWidth);
+  const targetHeight = toPositiveNumber(version?.canvasHeight);
+  return targetWidth > 0 && targetHeight > 0 ? { targetWidth, targetHeight } : undefined;
+};
+
+const getResultDownloadTransform = (
+  project: Project,
+  result: GeneratedResult,
+  selectedTranslationVersion?: TranslationEditVersion,
+): ImageDownloadTransform | undefined => {
   if (result.mediaType === 'video' || result.videoUrl) return undefined;
-  const params = project.generationContext?.params || {};
+  const versionTransform = getVersionCanvasDownloadTransform(selectedTranslationVersion);
+  if (versionTransform) return versionTransform;
+  const params = (result.translationConfigSnapshot || project.generationContext?.params || {}) as Record<string, unknown>;
   const requestedMode = String(params.resolutionMode || params.sizeMode || '').trim();
   if (requestedMode.includes('原图') || requestedMode.toLowerCase() === 'original' || requestedMode.includes('AI 自适应')) {
     return undefined;
@@ -467,9 +489,17 @@ const splitTaskIds = (value?: string) => {
 
 const getProjectCreditsConsumed = (project: Project) => {
   const rawProjectCredits = normalizeCreditsConsumed(project.creditsConsumed);
-  const resultCredits = project.results.reduce((sum, result) => (
-    sum + (result.status === 'completed' ? normalizeCreditsConsumed(result.creditsConsumed) : 0)
+  const baseResultCredits = project.results.reduce((sum, result) => (
+    sum + (project.module === 'translation' || result.status === 'completed'
+      ? normalizeCreditsConsumed(result.creditsConsumed)
+      : 0)
   ), 0);
+  const translationEditCredits = project.module === 'translation'
+    ? getTranslationEditCreditsConsumed({
+      translationEditVersions: project.results.flatMap((result) => result.translationEditVersions || []),
+    })
+    : 0;
+  const resultCredits = baseResultCredits + translationEditCredits;
   const hasStoryboardPlanningUsage = project.module === 'video'
     && project.subFeature === 'storyboard'
     && rawProjectCredits > 0;
@@ -534,7 +564,7 @@ const ResultActionButton: React.FC<{
 };
 
 const ProjectCard: React.FC<Props> = ({
-  project, onDeleteResult, onDeleteProject, onRegenerate, onConfirmStoryboardImaging, onFission, onEdit, onRecover, onRemoveVideoSubtitles, onConfirmPlan, onUpdatePlans, onDeletePlan, onRegeneratePlans, onCancelTask, onImportStoryboardToGeneration, pendingActionKeys, compact = false, showGenerationProgress = true,
+  project, onDeleteResult, onDeleteProject, onRegenerate, onConfirmStoryboardImaging, onFission, onEdit, onRecover, onRemoveVideoSubtitles, onConfirmPlan, onUpdatePlans, onDeletePlan, onRegeneratePlans, onCancelTask, onTranslationRegionEdit, onCancelTranslationRegionEdit, onTranslationResultDownloaded, onImportStoryboardToGeneration, pendingActionKeys, compact = false, showGenerationProgress = true,
 }) => {
   const [detailOpen, setDetailOpen] = useState(false);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -543,6 +573,17 @@ const ProjectCard: React.FC<Props> = ({
   const [retouchComparisonIndex, setRetouchComparisonIndex] = useState(0);
   const [translationCompareOpen, setTranslationCompareOpen] = useState(false);
   const [translationCompareIndex, setTranslationCompareIndex] = useState(0);
+  const [translationVersionIndexes, setTranslationVersionIndexes] = useState<Record<string, number>>({});
+  const translationVersionLengthsRef = useRef<Record<string, number>>({});
+  const [translationRegionEditDialog, setTranslationRegionEditDialog] = useState<{
+    resultId: string;
+    imageUrl: string;
+    sourceVersionId: string;
+    title: string;
+  } | null>(null);
+  const [translationRegionEditSubmitting, setTranslationRegionEditSubmitting] = useState(false);
+  const [translationRegionEditSubmittingResultIds, setTranslationRegionEditSubmittingResultIds] = useState<Record<string, boolean>>({});
+  const [cancellingTranslationEditVersionIds, setCancellingTranslationEditVersionIds] = useState<Record<string, boolean>>({});
   const [detailViewMode, setDetailViewMode] = useState<'single' | 'stack'>(
     project.subFeature === 'detail_page' || project.subFeature === 'detail' ? 'stack' : 'single',
   );
@@ -663,6 +704,50 @@ const ProjectCard: React.FC<Props> = ({
     : statusStyle[displayProjectStatus];
   const translationResults = project.module === 'translation' ? project.results : [];
   const isTranslationProject = project.module === 'translation';
+  const getCompletedTranslationVersions = (result: GeneratedResult) => (
+    getCompletedTranslationEditVersions(result) as TranslationEditVersion[]
+  );
+  const getVisibleTranslationVersions = (result: GeneratedResult) => (
+    getVisibleTranslationEditVersions(result) as TranslationEditVersion[]
+  );
+  const getSelectedTranslationVersionIndex = (result: GeneratedResult) => {
+    const versions = getVisibleTranslationVersions(result);
+    if (versions.length === 0) return 0;
+    return Math.min(
+      Math.max(translationVersionIndexes[result.id] ?? versions.length - 1, 0),
+      versions.length - 1,
+    );
+  };
+  const getSelectedTranslationVersion = (result: GeneratedResult) => {
+    const versions = getVisibleTranslationVersions(result);
+    return versions[getSelectedTranslationVersionIndex(result)];
+  };
+  const getSelectedTranslationResult = (result: GeneratedResult): GeneratedResult => {
+    const selectedVersion = getSelectedTranslationVersion(result);
+    return selectedVersion?.status === 'completed' && selectedVersion?.imageUrl
+      ? {
+        ...result,
+        imageUrl: selectedVersion.imageUrl,
+        ...(selectedVersion.taskId ? { taskId: selectedVersion.taskId } : {}),
+        ...(selectedVersion.backendJobId ? { backendJobId: selectedVersion.backendJobId } : {}),
+        ...(selectedVersion.creditsConsumed !== undefined
+          ? { creditsConsumed: selectedVersion.creditsConsumed }
+          : {}),
+        ...(selectedVersion.createdAt ? { createdAt: selectedVersion.createdAt } : {}),
+      }
+      : result;
+  };
+  const getPendingTranslationEditVersion = (result: GeneratedResult) => (
+    result.translationEditVersions?.find((version) => version.status === 'generating')
+  );
+  const canEditTranslationRegion = (result: GeneratedResult) => Boolean(
+    onTranslationRegionEdit
+    && project.module === 'translation'
+    && (project.subFeature === 'main' || project.subFeature === 'detail')
+    && result.status === 'completed'
+    && Boolean(result.imageUrl)
+    && !result.videoUrl
+  );
   const canRetryTranslationResult = (result: GeneratedResult) => !isTranslationProject
     || isTranslationResultRetryEligible(result.subFeature || project.subFeature, result);
   const failedTranslationResults = translationResults.filter((result) => (
@@ -676,6 +761,7 @@ const ProjectCard: React.FC<Props> = ({
   const isRegeneratePending = (resultId: string) => isPendingAction(getRegenerateActionKey(resultId));
   const isFissionPending = (resultId: string) => isPendingAction(getFissionActionKey(resultId));
   const isEditPending = (resultId: string) => isPendingAction(getEditActionKey(resultId));
+  const isTranslationRegionEditSubmitting = (resultId: string) => Boolean(translationRegionEditSubmittingResultIds[resultId]);
   const confirmPlanActionPrefix = `confirm-plan:${project.id}:`;
   const isPlanConfirmPending = (planId: string) => isPendingAction(getConfirmPlanActionKey(planId))
     || Object.keys(pendingActionKeys || {}).some((key) => (
@@ -958,6 +1044,47 @@ const ProjectCard: React.FC<Props> = ({
     }
   };
 
+  const openTranslationRegionEdit = (result: GeneratedResult, pathLabel: string) => {
+    if (
+      !canEditTranslationRegion(result)
+      || getPendingTranslationEditVersion(result)
+      || isTranslationRegionEditSubmitting(result.id)
+    ) return;
+    const visibleVersions = getVisibleTranslationVersions(result);
+    const selectedVersionIndex = getSelectedTranslationVersionIndex(result);
+    const selectedVisibleVersion = visibleVersions[selectedVersionIndex];
+    const selectedVersion = selectedVisibleVersion?.status === 'completed' && selectedVisibleVersion.imageUrl
+      ? selectedVisibleVersion
+      : [...getCompletedTranslationVersions(result)].reverse()[0];
+    if (!selectedVersion?.imageUrl) return;
+    setTranslationRegionEditDialog({
+      resultId: result.id,
+      imageUrl: selectedVersion.imageUrl,
+      sourceVersionId: selectedVersion.id,
+      title: `${pathLabel} · V${visibleVersions.findIndex((version) => version.id === selectedVersion.id) + 1}`,
+    });
+  };
+
+  const handleCancelTranslationRegionEdit = async (
+    result: GeneratedResult,
+    version: TranslationEditVersion,
+  ) => {
+    const backendJobId = String(version.backendJobId || '').trim();
+    if (!onCancelTranslationRegionEdit || cancellingTranslationEditVersionIds[version.id]) return;
+    setCancellingTranslationEditVersionIds((current) => ({ ...current, [version.id]: true }));
+    try {
+      await onCancelTranslationRegionEdit(project.id, result.id, version.id, backendJobId || undefined);
+      addToast('已提交取消修改', 'success');
+    } catch (error) {
+      setCancellingTranslationEditVersionIds((current) => {
+        const next = { ...current };
+        delete next[version.id];
+        return next;
+      });
+      addToast(error instanceof Error ? error.message : '取消修改失败', 'error');
+    }
+  };
+
   useEffect(() => {
     setDetailViewMode(isLongDetailProject ? 'stack' : 'single');
   }, [isLongDetailProject, project.id]);
@@ -982,6 +1109,32 @@ const ProjectCard: React.FC<Props> = ({
     });
     storyboardVersionLengthsRef.current = nextLengths;
   }, [isVersionedImageProject, project.results]);
+
+  useEffect(() => {
+    if (!isTranslationProject) return;
+    const nextLengths = Object.fromEntries(project.results.map((result) => [
+      result.id,
+      getVisibleTranslationVersions(result).length,
+    ]));
+    setTranslationVersionIndexes((current) => (
+      reconcileTranslationVersionIndexes(
+        current,
+        translationVersionLengthsRef.current,
+        nextLengths,
+      ) as Record<string, number>
+    ));
+    translationVersionLengthsRef.current = nextLengths;
+
+    const activeVersionIds = new Set(project.results.flatMap((result) => (
+      (result.translationEditVersions || [])
+        .filter((version) => version.status === 'generating')
+        .map((version) => version.id)
+    )));
+    setCancellingTranslationEditVersionIds((current) => {
+      const next = Object.fromEntries(Object.entries(current).filter(([versionId]) => activeVersionIds.has(versionId)));
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+  }, [isTranslationProject, project.results]);
 
   useEffect(() => {
     if (!detailOpen || lightboxOpen || retouchComparisonOpen) return;
@@ -1017,7 +1170,11 @@ const ProjectCard: React.FC<Props> = ({
     </button>
   );
 
-  const handleDownloadSingle = async (result: GeneratedResult, index: number) => {
+  const handleDownloadSingle = async (
+    result: GeneratedResult,
+    index: number,
+    selectedTranslationVersion?: TranslationEditVersion,
+  ) => {
     if (!result.imageUrl && !result.videoUrl) {
       addToast('当前结果还没有可下载文件', 'warning');
       return;
@@ -1027,7 +1184,7 @@ const ProjectCard: React.FC<Props> = ({
       await downloadRemoteFile(
         result.videoUrl || result.imageUrl,
         getDownloadName(project, result, index),
-        getResultDownloadTransform(project, result),
+        getResultDownloadTransform(project, result, selectedTranslationVersion),
       );
       addToast('已开始下载', 'success');
     } catch (error) {
@@ -1848,11 +2005,12 @@ const ProjectCard: React.FC<Props> = ({
                   </div>
 
                   <div className="max-h-[calc(86vh-210px)] overflow-y-auto rounded-[24px] border" style={{ borderColor: 'var(--border-subtle)', background: 'var(--bg-surface)' }}>
-                    <div className="hidden grid-cols-[92px_minmax(0,1fr)_96px_110px_150px] gap-3 border-b px-4 py-2 text-[11px] font-semibold lg:grid" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-tertiary)' }}>
+                    <div className="hidden grid-cols-[92px_minmax(0,1fr)_96px_110px_84px_216px] gap-3 border-b px-4 py-2 text-[11px] font-semibold lg:grid" style={{ borderColor: 'var(--border-subtle)', color: 'var(--text-tertiary)' }}>
                       <span>生成对照</span>
                       <span>文件路径</span>
                       <span>画面比例</span>
                       <span>状态</span>
+                      <span>版本</span>
                       <span className="text-right">操作</span>
                     </div>
                     <div className="divide-y" style={{ borderColor: 'var(--border-subtle)' }}>
@@ -1865,10 +2023,17 @@ const ProjectCard: React.FC<Props> = ({
                         const regeneratePending = isRegeneratePending(result.id);
                         const retryEligible = canRetryTranslationResult(result);
                         const retryDisabled = regeneratePending || regenerationLockedByActiveProject;
+                        const visibleVersions = getVisibleTranslationVersions(result);
+                        const selectedVersionIndex = getSelectedTranslationVersionIndex(result);
+                        const selectedVersion = getSelectedTranslationVersion(result);
+                        const selectedResult = getSelectedTranslationResult(result);
+                        const pendingTranslationEditVersion = getPendingTranslationEditVersion(result);
+                        const translationEditPending = Boolean(pendingTranslationEditVersion) || isTranslationRegionEditSubmitting(result.id);
+                        const translationEditEligible = canEditTranslationRegion(result);
                         return (
                           <article
                             key={result.id}
-                            className="grid gap-3 px-4 py-2.5 lg:grid-cols-[92px_minmax(0,1fr)_96px_110px_150px] lg:items-center"
+                            className="grid grid-cols-[92px_minmax(0,1fr)] gap-3 px-4 py-2.5 lg:grid-cols-[92px_minmax(0,1fr)_96px_110px_84px_216px] lg:items-center"
                           >
                             <button
                               type="button"
@@ -1880,8 +2045,8 @@ const ProjectCard: React.FC<Props> = ({
                                 {sourceUrl ? <img src={sourceUrl} alt="原图" className="h-full w-full object-contain" /> : <div className="h-full w-full" />}
                               </div>
                               <div>
-                                {result.imageUrl ? (
-                                  <img src={result.imageUrl} alt="生成结果" className="h-full w-full object-contain" />
+                                {selectedVersion?.status === 'completed' && selectedResult.imageUrl ? (
+                                  <img src={selectedResult.imageUrl} alt="生成结果" className="h-full w-full object-contain" />
                                 ) : (
                                   <div className="flex h-full w-full items-center justify-center text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
                                     {result.status === 'error' ? '失败' : '生成中'}
@@ -1920,18 +2085,47 @@ const ProjectCard: React.FC<Props> = ({
                               </span>
                             </div>
 
-                            <div className="flex flex-wrap justify-start gap-1.5 lg:justify-end">
+                            <div className="flex items-center gap-2 lg:block">
+                              <span className="lg:hidden text-[11px]" style={{ color: 'var(--text-tertiary)' }}>版本</span>
+                              <span className="inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold" style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+                                V{selectedVersionIndex + 1}/{Math.max(visibleVersions.length, 1)}
+                              </span>
+                            </div>
+
+                            <div data-translation-operation-cell className="flex flex-wrap justify-start gap-1.5 lg:w-[216px] lg:justify-end">
                               <ResultActionButton
                                 icon={<Maximize2 size={12} />}
                                 label="查看"
                                 onClick={() => openImage(result.id)}
                               />
+                              {translationEditEligible ? (
+                                <ResultActionButton
+                                  icon={translationEditPending ? <Loader2 size={12} className="animate-spin" /> : <Pencil size={12} />}
+                                  label={translationEditPending ? '修改中' : '修改'}
+                                  disabled={translationEditPending}
+                                  onClick={() => openTranslationRegionEdit(result, pathLabel)}
+                                />
+                              ) : null}
                               {result.status === 'completed' && hasOutput ? (
                                 <ResultActionButton
                                   icon={<Download size={12} />}
                                   label="下载"
                                   tone="primary"
-                                  onClick={() => handleDownloadSingle(result, index)}
+                                  onClick={() => handleDownloadSingle(
+                                    getSelectedTranslationResult(result),
+                                    index,
+                                    getSelectedTranslationVersion(result),
+                                  )}
+                                />
+                              ) : null}
+                              {pendingTranslationEditVersion && onCancelTranslationRegionEdit ? (
+                                <ResultActionButton
+                                  icon={cancellingTranslationEditVersionIds[pendingTranslationEditVersion.id]
+                                    ? <Loader2 size={12} className="animate-spin" />
+                                    : <X size={12} />}
+                                  label={cancellingTranslationEditVersionIds[pendingTranslationEditVersion.id] ? '取消中' : '取消修改'}
+                                  disabled={Boolean(cancellingTranslationEditVersionIds[pendingTranslationEditVersion.id])}
+                                  onClick={() => void handleCancelTranslationRegionEdit(result, pendingTranslationEditVersion)}
                                 />
                               ) : null}
                               {onRegenerate && retryEligible ? (
@@ -2575,21 +2769,36 @@ const ProjectCard: React.FC<Props> = ({
         const retryEligible = canRetryTranslationResult(result);
         const regeneratePending = isRegeneratePending(result.id);
         const retryDisabled = regeneratePending || regenerationLockedByActiveProject;
+        const visibleVersions = getVisibleTranslationVersions(result);
+        const selectedVersionIndex = getSelectedTranslationVersionIndex(result);
+        const selectedVersion = getSelectedTranslationVersion(result);
+        const selectedResult = getSelectedTranslationResult(result);
+        const selectedVersionStatusLabel = selectedVersion?.status === 'generating'
+          ? '处理中'
+          : selectedVersion?.status === 'error'
+            ? '保存失败'
+            : '';
+        const pendingTranslationEditVersion = getPendingTranslationEditVersion(result);
+        const translationEditPending = Boolean(pendingTranslationEditVersion) || isTranslationRegionEditSubmitting(result.id);
+        const translationEditEligible = canEditTranslationRegion(result);
         return (
           <div
-            className="fixed inset-0 z-[520] flex items-center justify-center px-6 py-8"
+            className="fixed inset-0 z-[520] flex items-center justify-center p-0 md:px-6 md:py-8"
             style={{ background: 'rgba(0,0,0,0.75)', backdropFilter: 'blur(8px)' }}
             onClick={() => setTranslationCompareOpen(false)}
           >
             <div
-              className="flex h-[86vh] max-h-[86vh] w-full max-w-[1040px] flex-col overflow-hidden rounded-[28px] border"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="translation-compare-title"
+              className="flex h-[100dvh] max-h-[100dvh] w-full max-w-[1040px] flex-col overflow-hidden border-0 md:h-[86vh] md:max-h-[86vh] md:rounded-[28px] md:border"
               style={{ background: 'var(--bg-surface)', borderColor: 'rgba(255,255,255,0.16)', boxShadow: '0 20px 60px rgba(0,0,0,0.5)' }}
               onClick={(event) => event.stopPropagation()}
             >
               <div className="flex flex-wrap items-start justify-between gap-4 border-b px-5 py-4" style={{ borderColor: 'var(--border-subtle)' }}>
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="truncate text-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    <h3 id="translation-compare-title" className="truncate text-[18px] font-semibold" style={{ color: 'var(--text-primary)' }}>
                       效果对比确认
                     </h3>
                     <span className="rounded-full px-2.5 py-1 text-[10px] font-medium" style={{ background: 'var(--bg-elevated)', color: 'var(--text-tertiary)' }}>
@@ -2606,18 +2815,50 @@ const ProjectCard: React.FC<Props> = ({
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {result.status === 'completed' && result.imageUrl ? (
+                  {translationEditEligible ? (
+                    <button
+                      type="button"
+                      disabled={translationEditPending}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openTranslationRegionEdit(result, pathLabel);
+                      }}
+                      className="flex h-9 items-center gap-2 rounded-[18px] px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+                    >
+                      {translationEditPending ? <Loader2 size={16} className="animate-spin" /> : <Pencil size={16} />}
+                      {translationEditPending ? '修改中' : '修改'}
+                    </button>
+                  ) : null}
+                  {selectedVersion?.status === 'completed' && result.status === 'completed' && selectedResult.imageUrl ? (
                     <button
                       type="button"
                       onClick={(event) => {
                         event.stopPropagation();
-                        void handleDownloadSingle(result, translationCompareIndex);
+                        void handleDownloadSingle(selectedResult, translationCompareIndex, selectedVersion);
                       }}
                       className="flex h-9 items-center gap-2 rounded-[18px] px-3 text-[12px] font-medium"
                       style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
                     >
                       <Download size={16} />
                       下载
+                    </button>
+                  ) : null}
+                    {pendingTranslationEditVersion && onCancelTranslationRegionEdit ? (
+                    <button
+                      type="button"
+                      disabled={Boolean(cancellingTranslationEditVersionIds[pendingTranslationEditVersion.id])}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void handleCancelTranslationRegionEdit(result, pendingTranslationEditVersion);
+                      }}
+                      className="flex h-9 items-center gap-2 rounded-[18px] px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{ background: 'rgba(239,68,68,0.08)', color: 'var(--error)' }}
+                    >
+                      {cancellingTranslationEditVersionIds[pendingTranslationEditVersion.id]
+                        ? <Loader2 size={16} className="animate-spin" />
+                        : <X size={16} />}
+                      {cancellingTranslationEditVersionIds[pendingTranslationEditVersion.id] ? '取消中' : '取消修改'}
                     </button>
                   ) : null}
                   {retryEligible && onRegenerate ? (
@@ -2641,6 +2882,7 @@ const ProjectCard: React.FC<Props> = ({
                   ) : null}
                   <button
                     type="button"
+                    aria-label="关闭翻译对比"
                     onClick={(event) => {
                       event.stopPropagation();
                       setTranslationCompareOpen(false);
@@ -2653,7 +2895,7 @@ const ProjectCard: React.FC<Props> = ({
                 </div>
               </div>
 
-              <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-hidden md:grid-cols-2">
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 overflow-y-auto md:grid-cols-2 md:overflow-hidden">
                 <section className="flex min-h-[320px] flex-col border-b md:border-b-0 md:border-r" style={{ borderColor: 'var(--border-subtle)' }}>
                   <div className="flex items-center justify-between px-4 py-3" style={{ color: 'var(--text-secondary)' }}>
                     <span className="text-[12px] font-semibold">原图</span>
@@ -2669,14 +2911,58 @@ const ProjectCard: React.FC<Props> = ({
                 </section>
 
                 <section className="flex min-h-[320px] flex-col">
-                  <div className="flex items-center justify-between px-4 py-3" style={{ color: 'var(--text-secondary)' }}>
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-3" style={{ color: 'var(--text-secondary)' }}>
                     <span className="text-[12px] font-semibold">生成结果</span>
-                    <span className="text-[11px]" style={{ color: result.status === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}>
-                      {result.status === 'completed' ? '已完成' : result.status === 'error' ? '失败' : '生成中'}
-                    </span>
+                    {visibleVersions.length > 0 ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          aria-label="上一版"
+                          disabled={selectedVersionIndex <= 0}
+                          onClick={() => setTranslationVersionIndexes((current) => ({
+                            ...current,
+                            [result.id]: selectedVersionIndex - 1,
+                          }))}
+                          className="flex h-7 w-7 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-35"
+                          style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+                        >
+                          <ChevronLeft size={14} />
+                        </button>
+                        <span className="min-w-[92px] text-center text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
+                          V{selectedVersionIndex + 1} / 共{visibleVersions.length}版{selectedVersionStatusLabel ? ` · ${selectedVersionStatusLabel}` : ''}
+                        </span>
+                        <button
+                          type="button"
+                          aria-label="下一版"
+                          disabled={selectedVersionIndex >= visibleVersions.length - 1}
+                          onClick={() => setTranslationVersionIndexes((current) => ({
+                            ...current,
+                            [result.id]: selectedVersionIndex + 1,
+                          }))}
+                          className="flex h-7 w-7 items-center justify-center rounded-full disabled:cursor-not-allowed disabled:opacity-35"
+                          style={{ background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}
+                        >
+                          <ChevronRight size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-[11px]" style={{ color: result.status === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}>
+                        {result.status === 'completed' ? '已完成' : result.status === 'error' ? '失败' : '生成中'}
+                      </span>
+                    )}
                   </div>
                   <div className="flex min-h-0 flex-1 items-center justify-center p-3" style={{ background: 'var(--bg-base)' }}>
-                    {result.imageUrl ? (
+                    {selectedVersion?.status === 'error' ? (
+                      <div role="alert" className="flex max-w-md flex-col items-center gap-3 px-6 text-center">
+                        <CircleAlert size={30} strokeWidth={1.8} style={{ color: 'var(--error)' }} />
+                        <div className="text-[14px] font-semibold" style={{ color: 'var(--error)' }}>修改失败</div>
+                        <p className="whitespace-pre-wrap break-words text-[12px] leading-6" style={{ color: 'var(--text-secondary)' }}>
+                          {selectedVersion.error || '修改失败，请重新提交'}
+                        </p>
+                      </div>
+                    ) : selectedVersion?.status === 'completed' && selectedVersion?.imageUrl ? (
+                      <img src={selectedVersion.imageUrl} alt="生成结果" className="max-h-[68vh] w-full object-contain" />
+                    ) : result.imageUrl ? (
                       <img src={result.imageUrl} alt="生成结果" className="max-h-[68vh] w-full object-contain" />
                     ) : (
                       <div className="max-w-sm whitespace-pre-wrap text-center text-[12px] leading-6" style={{ color: result.status === 'error' ? 'var(--error)' : 'var(--text-tertiary)' }}>
@@ -2716,6 +3002,37 @@ const ProjectCard: React.FC<Props> = ({
           </div>
         );
       })()}
+
+      {translationRegionEditDialog ? (
+        <TranslationRegionEditDialog
+          open
+          imageUrl={translationRegionEditDialog.imageUrl}
+          sourceVersionId={translationRegionEditDialog.sourceVersionId}
+          title={translationRegionEditDialog.title}
+          pending={translationRegionEditSubmitting}
+          onClose={() => {
+            if (!translationRegionEditSubmitting) setTranslationRegionEditDialog(null);
+          }}
+          onSubmit={async (input) => {
+            if (!onTranslationRegionEdit) throw new Error('当前修改入口不可用');
+            const resultId = translationRegionEditDialog.resultId;
+            setTranslationRegionEditSubmittingResultIds((current) => ({ ...current, [resultId]: true }));
+            setTranslationRegionEditDialog(null);
+            setTranslationRegionEditSubmitting(true);
+            addToast('修改任务已提交，正在结果栏处理中', 'info');
+            try {
+              await onTranslationRegionEdit(project.id, resultId, input);
+            } finally {
+              setTranslationRegionEditSubmitting(false);
+              setTranslationRegionEditSubmittingResultIds((current) => {
+                const next = { ...current };
+                delete next[resultId];
+                return next;
+              });
+            }
+          }}
+        />
+      ) : null}
 
       {/* Confirm paid subtitle retry */}
       <ConfirmDialog
