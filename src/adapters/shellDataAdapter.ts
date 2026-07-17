@@ -51,6 +51,11 @@ import {
   getPlanningReferenceIndex,
 } from './shellPlanningFailure.ts';
 import { hasPersistedTerminalJobResult } from './shellTerminalJobMerge.ts';
+import {
+  getShellProjectIdentityAliases,
+  normalizeShellProjectScope,
+  normalizeStructuredShellSubFeature,
+} from '../utils/shellProjectScope.mjs';
 
 type ShellProjectStatus = 'planning' | 'generating' | 'completed' | 'error';
 type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
@@ -827,16 +832,23 @@ const normalizeJobSubFeature = (module: AppModule, taskType: unknown, payload: R
     String((payload.videoConfig as any)?.script || ''),
     String((payload.videoConfig as any)?.requirements || ''),
   ].filter(Boolean).join('\n');
-  const raw = String(
+  const explicitSubFeature = String(
     payload.subFeature
     || payload.subMode
-    || payload.mode
     || (payload.videoConfig as any)?.subFeature
+    || ''
+  ).trim();
+  const raw = String(
+    explicitSubFeature
+    || payload.mode
     || (payload.videoConfig as any)?.mode
     || promptSubFeature
     || taskType
     || ''
   ).trim();
+  const structuredSubFeature = normalizeStructuredShellSubFeature(module, raw);
+  if (structuredSubFeature) return structuredSubFeature;
+  if (explicitSubFeature) return explicitSubFeature;
   const searchable = `${raw}\n${promptHints}`;
   if (module === MODULE_VALUES.ONE_CLICK) {
     const normalized = ONE_CLICK_SUBFEATURES[raw] || raw;
@@ -1300,8 +1312,14 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
   if (!state) return { projects, materials };
 
   const shellProjects = Array.isArray((state as any).shellProjects) ? (state as any).shellProjects : [];
-  shellProjects.forEach((project: any) => {
-    if (!project || typeof project !== 'object') return;
+  const deletedProjectIds = toIdSet(state?.shellDraft?.deletedProjectIds);
+  const deletedJobIds = toIdSet(state?.shellDraft?.deletedJobIds);
+  shellProjects.forEach((rawProject: any) => {
+    if (!rawProject || typeof rawProject !== 'object') return;
+    if (getShellProjectIdentityAliases(rawProject).some((id) => (
+      deletedProjectIds.has(id) || deletedJobIds.has(id)
+    ))) return;
+    const project = normalizeShellProjectScope(rawProject) as typeof rawProject;
     projects.push({
       ...project,
       module: toModule(project.module),
@@ -2337,9 +2355,7 @@ const mapJobs = (
     );
     const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
     const payloadProjectName = String((job.payload as any)?.shellProjectName || '').trim();
-    const projectId = isSubtitleRemovalJob(job, module) && payloadProjectId
-      ? payloadProjectId
-      : `job-${job.id}`;
+    const projectId = payloadProjectId || `job-${job.id}`;
     const payloadPlanId = String((job.payload as any)?.shellPlanId || (job.payload as any)?.planId || '').trim();
     const subFeature = module === MODULE_VALUES.ONE_CLICK
       ? (getStructuredOneClickJobSubFeature(job.payload) || normalizeJobSubFeature(module, job.taskType, job.payload))
@@ -3574,6 +3590,15 @@ const shouldReplaceGeneratedResult = (existing: ShellGeneratedResult, next: Shel
   const existingCompleted = hasCompletedMediaResult(existing);
   const nextCompleted = hasCompletedMediaResult(next);
   if (existing.logoReplaceGuarded === true && next.logoReplaceGuarded !== true) return false;
+  const existingProductRestoreTarget = getProductRestoreTargetKey(existing);
+  const nextProductRestoreTarget = getProductRestoreTargetKey(next);
+  if (
+    existingCompleted
+    && nextCompleted
+    && existingProductRestoreTarget
+    && existingProductRestoreTarget === nextProductRestoreTarget
+    && next.createdAt < existing.createdAt
+  ) return false;
   if (existingCompleted && !nextCompleted) return false;
   if (!existingCompleted && nextCompleted) return true;
   return true;

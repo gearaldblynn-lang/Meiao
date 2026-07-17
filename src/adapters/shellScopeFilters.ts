@@ -1,4 +1,5 @@
 import { coerceCreatedAtMs } from '../utils/createdAtMs.ts';
+import { normalizeShellProjectScope } from '../utils/shellProjectScope.mjs';
 
 export interface ScopeProjectResult {
   id: string;
@@ -19,6 +20,7 @@ export interface ScopeProject {
   completedCount: number;
   subFeature?: string;
   backendJobId?: string;
+  generationContext?: unknown;
 }
 
 export interface ScopeTask {
@@ -93,6 +95,7 @@ export const filterProjectsForScope = <TProject extends ScopeProject>({
   activeSubFeature,
   getDefaultSubFeature,
 }: FilterProjectsInput<TProject>): TProject[] => projects
+  .map((project) => normalizeShellProjectScope(project) as TProject)
   .filter((project) => pageMode === 'module' && project.module === activeModule)
   .map((project) => {
     const projectSubFeature = project.subFeature || getDefaultSubFeature(project.module);
