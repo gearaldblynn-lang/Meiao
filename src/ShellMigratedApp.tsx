@@ -144,7 +144,8 @@ import {
   getSafeRetouchAspectRatioForModel,
 } from './modules/Retouch/retouchSizingUtils.mjs';
 import { getEffectiveConcurrency } from './modules/Account/accountManagementUtils.mjs';
-import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from './services/kieAiService';
+import { isRecoverableKieTaskResult, recoverKieAiTask } from './services/kieAiService';
+import { processWithKieAi } from './services/kieAiService';
 import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from './services/loggingService';
 import { recoverProductRestoreAnalysisBatch } from './services/arkService';
 import { buildStoryboardBoardGenerationImport } from './shell/modules/Video/storyboardImportUtils.mjs';
