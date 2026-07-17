@@ -392,9 +392,9 @@
   修复:素材所有权校验明确排除没有服务端读取语义的 `localAssetId`，`assetId/imageUrlAssetId/sourceAssetId` 等真实托管身份仍要求当前账号 active ownership。`shellDataAdapter` 从同一 `shellProjectId` 的成功策划 job 重建结构化项目种子，让 active/succeeded/failed 图片 job 在客户端检查点缺失时仍能恢复；无项目绑定的旧图片 job 继续不可见。排序边界对未显式标记精度的真实毫秒戳复用 `coerceCreatedAtMs` 推断 precise，显式 `createdAtPrecise=false` 的年缺失历史值仍下沉。
   如何避免:**安全校验不能只靠字段后缀猜身份语义；本地草稿 ID、provider ID、托管素材 ID 必须分层测试，并用真实大账号 state 做只读策略回放。耐久 job 已有 `shellProjectId/shellPlanId` 和兄弟策划记录时，恢复不得依赖可能在页面卸载或 4xx 中丢失的客户端占位。排序契约必须同时覆盖“持久化读边界”和“刚创建尚未水合”的项目对象。**
 
-- **#68 ✅ 本地已修、未部署(2026-07-15)· 上游任务成功但项目卡停止同步，只有手动刷新才显示结果**
+- **#68 ✅ 已发布并完成真实不刷新回放(2026-07-16)· 上游任务成功但项目卡停止同步，只有手动刷新才显示结果**
   根因:项目卡存在“双轮询”断层：功能内 `waitForInternalJob` 只跟踪当前页面提交；公共 `hydrateShellJobs` 又要求模块页内存里已经存在 pending/generating backend identity 才启动 10 秒轮询。页面挂起、网络中断、检查点丢失或功能内等待生命周期结束后，公共兜底可能因本地状态过旧而永久停掉；项目卡还缺少 focus/pageshow/online/visibility 恢复同步，并发 hydration 也没有单飞保护。生产真实 state + jobs 经 adapter 可立即恢复完成卡，证明断点不在 provider/job/解析，而在浏览器同步触发层。
-  修复:新增 `src/utils/shellJobSync.ts` 作为所有队列项目卡的共享协调器。模块工作台始终按 `VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS`（默认 10000ms、下限 1000ms）同步耐久 jobs，不再依赖本地 active 判定；回到前台、窗口聚焦、pageshow 和网络恢复时立即同步。所有入口共用 coalesced async runner，重叠触发折叠为一次尾随请求，首次失败也不会丢掉已排队尾随。账号切换、退出或离开模块时使 async scope 失效，UI updater 和延迟持久化 writer 在真正执行前重新校验，防止旧账号数据使用新 token 写入。最近 200 条以外的单条补查只针对本地仍为活跃态的内部 job，不扫描终态历史。一键主详、翻译、买家秀、图片升级/还原、万物替换、视频和小红书封面统一继承，Agent Center 仍是独立机制。
+  修复:新增 `src/utils/shellJobSync.ts` 作为所有队列项目卡的共享协调器。模块工作台始终按 `VITE_MEIAO_SHELL_JOB_SYNC_INTERVAL_MS`（默认 10000ms、下限 1000ms）同步耐久 jobs，不再依赖本地 active 判定；回到前台、窗口聚焦、pageshow 和网络恢复时立即同步。所有入口共用 coalesced async runner，重叠触发折叠为一次尾随请求，首次失败也不会丢掉已排队尾随。账号切换、退出或离开模块时使 async scope 失效，UI updater 和延迟持久化 writer 在真正执行前重新校验，防止旧账号数据使用新 token 写入。最近 200 条以外的单条补查只针对本地仍为活跃态的内部 job，不扫描终态历史。一键主详、翻译、买家秀、图片升级/还原、万物替换、视频和小红书封面统一继承，Agent Center 仍是独立机制。云上首图 canary 在后台 job 成功后约 42 秒内自动变为“已完成”，全程未刷新；结果 Range 读取返回 `206 image/jpeg`，证明不是假卡片或空结果。
   如何避免:**“刷新后能看到”不是实时同步验收。新增耐久 job 功能必须同时验证前台持续运行、后台恢复、断网恢复、占位未持久化、并发 hydration 和切账号；服务端真相同步不得以客户端是否还记得 active 为开关。发布前跑 `shellJobSync`、`shellJobLiveSyncBehavior`、全模块 `shellDataAdapter` 回归与生产构建，并明确标记 deployed/not_deployed。**
 
 - **#69 ✅ 本地已修、未部署(2026-07-16)· 产品还原分析被 provider 尾标误判失败，且整批共享提示词无法逐图寻址**
@@ -417,7 +417,12 @@
   修复:策划只传准备后的 `generationMaterials`；生成链路把 resolver-backed COS 图先转存 KIE，聊天/历史公网路由保持原合同。DELETE 幂等化，运行中删除进入后台清理提示；服务端按 `deletedJobIds` 周期复用取消、积分保护、事务删除和素材清理合同持续收敛，并在 health 暴露摘要。state 边界清除失效显式素材 ID，job payload 校验仍 fail closed。
   如何避免:**素材准备结果必须沿 planning/provider 单向传递；异步上游接单前必须落实稳定读取字节，不能依赖短时私有 URL。删除要建模为耐久意图并由后台收敛，不能把一次 HTTP 当最终状态。身份安全策略要同时回放历史 state、严格任务 payload 与多账号并发，不得用调大并发掩盖 provider stage 错误。**
 
-- **#73 ✅ 本地已修、待云上真实验收(2026-07-16)· 共享任务同步修好后仍可能跨账号回写，已提交取消任务也可能永久锁住积分与删除**
+- **#73 ✅ 已发布并完成云上生命周期验收(2026-07-16)· 共享任务同步修好后仍可能跨账号回写，已提交取消任务也可能永久锁住积分与删除**
   根因:共享 `hydrateShellJobs` 虽改为无条件周期同步，但旧账号的异步水合和排队状态写在账号切换后仍可能继续执行；请求读取的是执行时全局 token，形成 A 账号快照使用 B token 写回的跨账号窗口。删除侧只把已提交取消任务视为不可删，没有用原 `providerTaskId` 查询最终状态；恢复资格又曾只看 task type，误把同步型 MaxForAI 图片当成可查询任务。查询恢复耗尽后会落普通 `provider_timeout`，任务与积分永久 pending，health 仍可能为绿；墓碑协调器每 15 秒全表解析全部大状态也会随账号量增长。
-  修复:账号 epoch、captured session token、UI updater 与 queued writer 统一绑定同一 async scope，切账号/退出/卸载立即失效旧 scope，并在每个 await 后和真正写入前复核。已提交取消任务只按精确 `taskType + provider + model` 能力用原 ID 进入 query-only 恢复，禁止重提付费请求；只有上游明确失败码与 failed 状态才自动释放预留，成功无结果、查询鉴权失败、不可查询或恢复耗尽均转为带审计的 `provider_recovery_manual`，保留旧结果和积分证据。管理员核验上游未扣费可释放预留；核验实际成功则必须填写实际扣费积分和上游依据，在同一事务内结算并审计。无内部积分预留且无可查任务 ID 的历史 submission-unknown 按用户持久删除意图收敛，真正删除前仍在事务内二次检查预留。墓碑扫描改为 `updated_at` 索引增量游标并缓存未收敛任务，同毫秒边界用状态指纹去重而不漏变更；错误、人工恢复、超龄提交未知和超龄预留进入 health 告警。
+  修复:账号 epoch、captured session token、UI updater 与 queued writer 统一绑定同一 async scope，切账号/退出/卸载立即失效旧 scope，并在每个 await 后和真正写入前复核。已提交取消任务只按精确 `taskType + provider + model` 能力用原 ID 进入 query-only 恢复，禁止重提付费请求；只有上游明确失败码与 failed 状态才自动释放预留，成功无结果、查询鉴权失败、不可查询或恢复耗尽均转为带审计的 `provider_recovery_manual`，保留旧结果和积分证据。管理员核验上游未扣费可释放预留；核验实际成功则必须填写实际扣费积分和上游依据，在同一事务内结算并审计。无内部积分预留且无可查任务 ID 的历史 submission-unknown 按用户持久删除意图收敛，真正删除前仍在事务内二次检查预留。墓碑扫描改为 `updated_at` 索引增量游标并缓存未收敛任务，同毫秒边界用状态指纹去重而不漏变更；错误、人工恢复、超龄提交未知和超龄预留进入 health 告警。云上发布后 7 条历史墓碑收敛为 0：5 条无预留无上游 ID 记录安全删除，2 条已有 provider ID 的取消任务只查旧 ID 恢复后删除；其中成功任务按实际 3 积分 settle，未误退积分。同一页面从马哥切到多桑后未显示马哥项目，跨账号隔离通过。
   如何避免:**所有跨账号异步任务必须同时绑定账号 epoch 与请求凭证，不能只在 React setState 前判断。付费任务的“可恢复”必须来自 provider/model 的真实查询能力矩阵，恢复永远只查 checkpointed ID；恢复耗尽必须有显式人工状态、积分处置入口和 health 告警。周期协调器不能用全表大 JSON 扫描换稳定性，增量游标要覆盖同毫秒更新、失败重试和进程重启。**
+
+- **#74 ✅ 已发布(2026-07-17)· 项目完成回写覆盖创建时间，新项目 25 被排到旧项目 24 后面**
+  根因:项目卡排序直接使用可变 `createdAt`，而部分一键分支在完成/水合时把该字段覆盖为后续时间。真实数据中项目24 的 ID 时间为 `1784188578940`，可变值却变为 `1784188830099`，因此压过了后创建的项目25。第一版热修试图从任意 ID 搜时间，独立复审又发现随机 `job-*` ID 里偶然出现 13 位数会制造新的误排序路径。
+  修复:只对明确锚定的 `proj-<timestamp>` / `proj-plan-<timestamp>` 创建型 ID 提取不可变时间，其他 ID 继续使用真实 `createdAt`。回归同时锁定 25 必须位于 24 之前，以及随机 job ID 不得覆盖时间。全量 `npm run verify`、独立复审 Critical 0 / Important 0，云上源码哈希与本地一致，公网实际加载的生产 JS 也包含该锚定规则。发布后最终 DOM 刷新读取因浏览器控制连接超时未留下新截图，因此仍需以后续真实使用窗口观察是否复发，不将此项写成“已获得发布后截图”。
+  如何避免:**创建顺序必须来自不可变创建身份，不能复用会被完成/恢复覆盖的字段。从 ID 提取身份时必须先限定 schema，不能在任意随机串中搜时间戳；排序回归必须同时包含真实正例与随机 ID 负例。**
