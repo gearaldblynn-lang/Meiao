@@ -1966,3 +1966,243 @@ test('shell persistence preserves translation retry metadata through storage ups
     retryMetadata,
   );
 });
+test('shell persistence reconciles nested translation edit versions in direct project results', () => {
+  const baseResult = {
+    id: 'direct-translation-result',
+    imageUrl: 'https://example.com/v2.png',
+    prompt: 'translated image',
+    model: 'gpt-image-2',
+    aspectRatio: '1:1',
+    status: 'completed',
+    createdAt: 100,
+    module: 'translation',
+    subFeature: 'main',
+  };
+  const v2 = {
+    id: 'v2',
+    imageUrl: 'https://example.com/v2.png',
+    sourceVersionId: 'v1',
+    createdAt: 200,
+    status: 'completed',
+    regions: [],
+    taskId: 'provider-v2',
+    backendJobId: 'backend-v2',
+    creditsConsumed: 3,
+  };
+  const state = buildPersistedAppState({
+    shellProjects: [{
+      id: 'direct-translation-project',
+      name: 'Direct translation project',
+      module: 'translation',
+      status: 'completed',
+      createdAt: 100,
+      results: [{
+        ...baseResult,
+        translationEditVersions: [
+          { id: 'v1', imageUrl: 'https://example.com/v1.png', createdAt: 100, status: 'completed', regions: [] },
+          v2,
+        ],
+      }],
+      taskCount: 1,
+      completedCount: 1,
+      subFeature: 'main',
+    }],
+  });
+
+  const nextState = upsertShellProjectIntoPersistedState(state, {
+    id: 'direct-translation-project',
+    name: 'Direct translation project',
+    module: 'translation',
+    status: 'completed',
+    createdAt: 100,
+    results: [{
+      ...baseResult,
+      imageUrl: 'https://example.com/v1.png',
+      translationEditVersions: [
+        { id: 'v2', createdAt: 200, status: 'error', regions: [], error: 'stale failure' },
+        {
+          id: 'v3', imageUrl: 'https://example.com/v3.png', sourceVersionId: 'v2', createdAt: 300,
+          status: 'completed', regions: [], taskId: 'provider-v3', creditsConsumed: 4,
+        },
+      ],
+    }],
+    taskCount: 1,
+    completedCount: 1,
+    subFeature: 'main',
+  });
+
+  const saved = nextState.shellProjects[0].results[0];
+  assert.deepEqual(saved.translationEditVersions.map((version) => version.id), ['v1', 'v2', 'v3']);
+  assert.deepEqual(saved.translationEditVersions[1], v2);
+  assert.equal(saved.imageUrl, 'https://example.com/v3.png');
+});
+
+test('shell persistence keeps direct translation edit versions when incoming snapshots are empty or omit them', () => {
+  const versions = [
+    { id: 'v1', imageUrl: 'https://example.com/v1.png', createdAt: 100, status: 'completed', regions: [] },
+    { id: 'v2', imageUrl: 'https://example.com/v2.png', sourceVersionId: 'v1', createdAt: 200, status: 'completed', regions: [] },
+  ];
+  const project = {
+    id: 'direct-translation-cache-project',
+    name: 'Direct translation cache project',
+    module: 'translation',
+    status: 'completed',
+    createdAt: 100,
+    results: [{
+      id: 'direct-translation-cache-result',
+      imageUrl: 'https://example.com/v2.png',
+      prompt: 'translated image',
+      model: 'gpt-image-2',
+      aspectRatio: '1:1',
+      status: 'completed',
+      createdAt: 100,
+      module: 'translation',
+      subFeature: 'detail',
+      translationEditVersions: versions,
+    }],
+    taskCount: 1,
+    completedCount: 1,
+    subFeature: 'detail',
+  };
+  const state = buildPersistedAppState({ shellProjects: [project] });
+  const emptyState = upsertShellProjectIntoPersistedState(state, {
+    ...project,
+    results: [{ ...project.results[0], imageUrl: 'https://example.com/v1.png', translationEditVersions: [] }],
+  });
+  const { translationEditVersions: _omitted, ...snapshotWithoutVersions } = project.results[0];
+  const omittedState = upsertShellProjectIntoPersistedState(emptyState, {
+    ...project,
+    results: [{ ...snapshotWithoutVersions, imageUrl: 'https://example.com/v1.png' }],
+  });
+
+  const saved = omittedState.shellProjects[0].results[0];
+  assert.deepEqual(saved.translationEditVersions, versions);
+  assert.equal(saved.imageUrl, 'https://example.com/v2.png');
+});
+
+test('shell persistence keeps translation edit history when an older file snapshot omits versions', () => {
+  const versions = [
+    { id: 'v1', imageUrl: 'https://example.com/v1.png', createdAt: 100, status: 'completed', canvasWidth: 1200, canvasHeight: 1600, regions: [] },
+    {
+      id: 'v2',
+      imageUrl: 'https://example.com/v2.png',
+      sourceVersionId: 'v1',
+      createdAt: 200,
+      status: 'completed',
+      canvasWidth: 1200,
+      canvasHeight: 1600,
+      regions: [{ id: 'region-1', index: 1, xRatio: 0.1, yRatio: 0.1, widthRatio: 0.2, heightRatio: 0.2, instruction: 'Translate title' }],
+      taskId: 'provider-v2',
+      backendJobId: 'backend-v2',
+      creditsConsumed: 3,
+      pendingProtectedSourceUrl: 'https://example.com/protected-v1.png',
+    },
+  ];
+  const baseFile = {
+    id: 'translation-edit-file',
+    fileName: 'source.png',
+    status: 'completed',
+    progress: 100,
+    resultUrl: 'https://example.com/v2.png',
+    projectId: 'translation-edit-project',
+  };
+  const state = buildPersistedAppState({
+    translationMemory: {
+      main: { files: [], isProcessing: false },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  });
+  const versionedState = upsertTranslationFilesIntoPersistedState(state, 'main', [{
+    ...baseFile,
+    resultUrl: 'https://example.com/v1.png',
+    initialCanvasWidth: 1200,
+    initialCanvasHeight: 1600,
+    translationEditVersions: versions,
+  }]);
+
+  assert.equal(versionedState.translationMemory.main.files[0].resultUrl, 'https://example.com/v2.png');
+
+  const nextState = upsertTranslationFilesIntoPersistedState(versionedState, 'main', [{
+    ...baseFile,
+    resultUrl: 'https://example.com/v1.png',
+    initialCanvasWidth: 0,
+    initialCanvasHeight: -1,
+  }]);
+
+  const saved = nextState.translationMemory.main.files[0];
+  assert.deepEqual(saved.translationEditVersions, versions);
+  assert.equal(saved.initialCanvasWidth, 1200);
+  assert.equal(saved.initialCanvasHeight, 1600);
+  assert.equal(saved.translationEditVersions[1].canvasWidth, 1200);
+  assert.equal(saved.translationEditVersions[1].canvasHeight, 1600);
+  assert.equal(saved.resultUrl, 'https://example.com/v2.png');
+});
+
+test('shell persistence does not downgrade a completed edit version and appends a new successful version', () => {
+  const baseFile = {
+    id: 'translation-edit-lifecycle-file',
+    fileName: 'source.png',
+    status: 'completed',
+    progress: 100,
+    resultUrl: 'https://example.com/v2.png',
+    projectId: 'translation-edit-lifecycle-project',
+  };
+  const v2 = {
+    id: 'v2', imageUrl: 'https://example.com/v2.png', sourceVersionId: 'v1', createdAt: 200,
+    status: 'completed', regions: [], taskId: 'provider-v2', backendJobId: 'backend-v2', creditsConsumed: 3,
+  };
+  const state = buildPersistedAppState({
+    translationMemory: {
+      main: { files: [{ ...baseFile, translationEditVersions: [v2] }], isProcessing: false },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  });
+  const staleState = upsertTranslationFilesIntoPersistedState(state, 'main', [{
+    ...baseFile,
+    status: 'processing',
+    resultUrl: '',
+    translationEditVersions: [{ id: 'v2', createdAt: 200, status: 'error', regions: [], error: 'stale failure' }],
+  }]);
+  const appendedState = upsertTranslationFilesIntoPersistedState(staleState, 'main', [{
+    ...baseFile,
+    resultUrl: '',
+    translationEditVersions: [{
+      id: 'v3', imageUrl: 'https://example.com/v3.png', sourceVersionId: 'v2', createdAt: 300,
+      status: 'completed', regions: [], taskId: 'provider-v3', creditsConsumed: 4,
+    }],
+  }]);
+
+  const saved = appendedState.translationMemory.main.files[0];
+  assert.deepEqual(saved.translationEditVersions.map((version) => version.id), ['v2', 'v3']);
+  assert.deepEqual(saved.translationEditVersions[0], v2);
+  assert.equal(saved.resultUrl, 'https://example.com/v3.png');
+});
+
+test('shell persistence isolates translation edit versions across main detail and remove-text branches', () => {
+  const state = buildPersistedAppState({
+    translationMemory: {
+      main: { files: [], isProcessing: false },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  });
+  const buildFile = (id, projectId, imageUrl) => ({
+    id,
+    fileName: `${id}.png`,
+    status: 'completed',
+    progress: 100,
+    resultUrl: imageUrl,
+    projectId,
+    translationEditVersions: [{ id: `${id}-v1`, imageUrl, createdAt: 100, status: 'completed', regions: [] }],
+  });
+
+  const mainState = upsertTranslationFilesIntoPersistedState(state, 'main', [buildFile('main-file', 'main-project', 'main-v1.png')]);
+  const detailState = upsertTranslationFilesIntoPersistedState(mainState, 'detail', [buildFile('detail-file', 'detail-project', 'detail-v1.png')]);
+  const finalState = upsertTranslationFilesIntoPersistedState(detailState, 'remove_text', [buildFile('remove-file', 'remove-project', 'remove-v1.png')]);
+
+  assert.deepEqual(finalState.translationMemory.main.files[0].translationEditVersions.map((version) => version.id), ['main-file-v1']);
+  assert.deepEqual(finalState.translationMemory.detail.files[0].translationEditVersions.map((version) => version.id), ['detail-file-v1']);
+  assert.deepEqual(finalState.translationMemory.removeText.files[0].translationEditVersions.map((version) => version.id), ['remove-file-v1']);
+});

@@ -211,6 +211,32 @@ export interface TranslationConfigSnapshot {
   translationScope: TranslationScope;
 }
 
+export interface TranslationEditRegion {
+  id: string;
+  index: number;
+  xRatio: number;
+  yRatio: number;
+  widthRatio: number;
+  heightRatio: number;
+  instruction: string;
+}
+
+export interface TranslationEditVersion {
+  id: string;
+  imageUrl?: string;
+  sourceVersionId?: string;
+  canvasWidth?: number;
+  canvasHeight?: number;
+  createdAt: number;
+  status: 'generating' | 'completed' | 'error';
+  regions: TranslationEditRegion[];
+  taskId?: string;
+  backendJobId?: string;
+  creditsConsumed?: number;
+  error?: string;
+  pendingProtectedSourceUrl?: string;
+}
+
 export interface JobContext {
   taskPurpose?: string;
   shellProjectId?: string;
@@ -1308,6 +1334,8 @@ export interface FileItem {
   relativePath: string;
   originalWidth?: number;
   originalHeight?: number;
+  initialCanvasWidth?: number;
+  initialCanvasHeight?: number;
   sourceUrl?: string;
   status: 'pending' | 'uploading' | 'processing' | 'completed' | 'error' | 'interrupted';
   progress: number;
@@ -1331,6 +1359,7 @@ export interface FileItem {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  translationEditVersions?: TranslationEditVersion[];
   createdAt?: number;
 }
 
