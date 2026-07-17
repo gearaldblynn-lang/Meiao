@@ -427,7 +427,7 @@
   修复:只对明确锚定的 `proj-<timestamp>` / `proj-plan-<timestamp>` 创建型 ID 提取不可变时间，其他 ID 继续使用真实 `createdAt`。回归同时锁定 25 必须位于 24 之前，以及随机 job ID 不得覆盖时间。全量 `npm run verify`、独立复审 Critical 0 / Important 0，云上源码哈希与本地一致，公网实际加载的生产 JS 也包含该锚定规则。发布后最终 DOM 刷新读取因浏览器控制连接超时未留下新截图，因此仍需以后续真实使用窗口观察是否复发，不将此项写成“已获得发布后截图”。
   如何避免:**创建顺序必须来自不可变创建身份，不能复用会被完成/恢复覆盖的字段。从 ID 提取身份时必须先限定 schema，不能在任意随机串中搜时间戳；排序回归必须同时包含真实正例与随机 ID 负例。**
 
-- **#75 ✅ 本地已修、待部署(2026-07-17)· 产品还原结构化子功能在恢复层被默认改成原图精修，重试又拆成重复项目卡**
+- **#75 ✅ 已发布(2026-07-17)· 产品还原结构化子功能在恢复层被默认改成原图精修，重试又拆成重复项目卡**
   根因:产品还原创建链路和三个真实 job 都正确携带 `module=retouch`、`payload.subFeature=product_restore` 与同一 `shellProjectId`；但 `normalizeJobSubFeature` 是产品还原上线前的旧白名单，retouch 只识别白底/背景，其他值一律返回 `original`。通用 job 恢复又只允许去字幕使用 `shellProjectId`，其余任务合成 `job-<backendJobId>`，因此两次产品还原结果被同时改成原图精修并拆成两张卡。旧 job 与自愈后的新项目再次水合时，还可能覆盖同一目标的较新结果。
-  修复:建立统一 `module/subFeature` 结构化契约并接入 job 恢复、持久状态读取、页签筛选、前端持久化和服务端合并；仅凭产品还原专属 generation context、结果 scope 或 `:product_restore:` submission identity 自愈历史脏数据，并只在唯一 `proj-*` 身份成立时归并项目。所有带 `shellProjectId` 的媒体任务都回到创建时项目，未知 scope 不再静默落入默认页签；同一产品还原目标按 `createdAt` 保留较新结果。真实本地脏数据从两张错误卡收敛为一个 `product_restore` 项目，原图精修错误卡为 0。
+  修复:建立统一 `module/subFeature` 结构化契约并接入 job 恢复、持久状态读取、页签筛选、前端持久化和服务端合并；仅凭产品还原专属 generation context、结果 scope 或 `:product_restore:` submission identity 自愈历史脏数据，并只在唯一 `proj-*` 身份成立时归并项目。所有带 `shellProjectId` 的媒体任务都回到创建时项目，未知 scope 不再静默落入默认页签；同一产品还原目标按 `createdAt` 保留较新结果。真实本地脏数据从两张错误卡收敛为一个 `product_restore` 项目，原图精修错误卡为 0。发布后公网与宿主机 health 均为绿色，关键源码哈希一致，生产只读审计 `productRestoreScopeMismatchCount=0`。
   如何避免:**子功能归属是耐久业务身份，新增功能必须同时注册创建、job payload、读取恢复、筛选、持久化与服务端合并合同，不能在每层各写一套默认分支。结构化字段未知时必须显式拒绝或保留原值，不得回落到第一个页签；重试必须沿用创建时 `shellProjectId`，历史自愈只能使用功能专属耐久证据并配负例防止误改混合项目。**
