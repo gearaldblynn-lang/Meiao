@@ -42,6 +42,45 @@ test('project-level one-click subfeatures do not drift into another active tab w
   assert.deepEqual(detailProjects, []);
 });
 
+test('durable product restoration evidence never appears under original retouch', () => {
+  const corrupted = {
+    id: 'job-restore-corrupted',
+    name: '7月16日项目1',
+    module: 'retouch',
+    subFeature: 'original',
+    status: 'completed',
+    createdAt: 1784137156658,
+    results: [{
+      id: 'restore-result',
+      imageUrl: '/restore.png',
+      status: 'completed',
+      subFeature: 'original',
+      clientSubmissionKey: 'proj-restore:product_restore:analysis-a:target-a:v2',
+      targetMaterialId: 'target-a',
+      batchIndex: 1,
+    }],
+    taskCount: 1,
+    completedCount: 1,
+    generationContext: {
+      params: { mode: 'product_restore' },
+      productRestore: { version: 2, analysisJobId: 'analysis-a', targetMaterialIds: ['target-a'] },
+    },
+  };
+  const input = {
+    projects: [corrupted],
+    pageMode: 'module',
+    activeModule: 'retouch',
+    getDefaultSubFeature: () => 'original',
+  };
+
+  assert.deepEqual(filterProjectsForScope({ ...input, activeSubFeature: 'original' }), []);
+  const productRestoreProjects = filterProjectsForScope({ ...input, activeSubFeature: 'product_restore' });
+  assert.equal(productRestoreProjects.length, 1);
+  assert.equal(productRestoreProjects[0].id, 'proj-restore');
+  assert.equal(productRestoreProjects[0].subFeature, 'product_restore');
+  assert.equal(productRestoreProjects[0].results[0].subFeature, 'product_restore');
+});
+
 test('active scoped tasks create fallback project cards when project hydration is not ready', () => {
   const projects = [];
   const tasks = [{

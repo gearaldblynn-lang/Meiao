@@ -21,6 +21,7 @@ import {
   mergeProductRestoreGenerationContext,
 } from './shellProductRestoreCancellation.mjs';
 import { cloneProductRestoreAnalysisAttempts } from '../utils/productRestoreAnalysisCredits.ts';
+import { normalizeShellProjectScope } from '../utils/shellProjectScope.mjs';
 
 const INTERNAL_BACKEND_JOB_ID_PATTERN = /^[a-f0-9]{24}$/i;
 
@@ -168,11 +169,12 @@ const TRANSLATION_BRANCH_KEY: Record<string, 'main' | 'detail' | 'removeText'> =
 };
 
 const cloneShellProject = (project: ShellProject): ShellProject => {
-  const generationContext = project.generationContext ? {
-    ...project.generationContext,
-    params: { ...(project.generationContext.params || {}) },
+  const scopedProject = normalizeShellProjectScope(project) as ShellProject;
+  const generationContext = scopedProject.generationContext ? {
+    ...scopedProject.generationContext,
+    params: { ...(scopedProject.generationContext.params || {}) },
     materials: Object.fromEntries(
-      Object.entries(project.generationContext.materials || {}).map(([type, list]) => [
+      Object.entries(scopedProject.generationContext.materials || {}).map(([type, list]) => [
         type,
         (list || []).map((item) => ({ ...item })),
       ]),
@@ -180,33 +182,33 @@ const cloneShellProject = (project: ShellProject): ShellProject => {
   } : undefined;
   if (
     generationContext
-    && Object.prototype.hasOwnProperty.call(project.generationContext, 'productRestoreAnalysisAttempts')
+    && Object.prototype.hasOwnProperty.call(scopedProject.generationContext, 'productRestoreAnalysisAttempts')
   ) {
     generationContext.productRestoreAnalysisAttempts = cloneProductRestoreAnalysisAttempts(
-      project.generationContext?.productRestoreAnalysisAttempts,
+      scopedProject.generationContext?.productRestoreAnalysisAttempts,
     );
   }
   if (
     generationContext
-    && Object.prototype.hasOwnProperty.call(project.generationContext, 'productRestoreCancellationReset')
+    && Object.prototype.hasOwnProperty.call(scopedProject.generationContext, 'productRestoreCancellationReset')
   ) {
     generationContext.productRestoreCancellationReset = cloneProductRestoreCancellationReset(
-      project.generationContext?.productRestoreCancellationReset,
+      scopedProject.generationContext?.productRestoreCancellationReset,
     );
   }
   if (
     generationContext
-    && Object.prototype.hasOwnProperty.call(project.generationContext, 'productRestoreCancellation')
+    && Object.prototype.hasOwnProperty.call(scopedProject.generationContext, 'productRestoreCancellation')
   ) {
     generationContext.productRestoreCancellation = cloneProductRestoreCancellationMarker(
-      project.generationContext?.productRestoreCancellation,
+      scopedProject.generationContext?.productRestoreCancellation,
     );
   }
   return {
-    ...project,
+    ...scopedProject,
     sourceType: 'persisted',
-    results: Array.isArray(project.results) ? project.results.map((result) => ({ ...result })) : [],
-    plans: Array.isArray(project.plans) ? project.plans.map((plan) => ({ ...plan })) : undefined,
+    results: Array.isArray(scopedProject.results) ? scopedProject.results.map((result) => ({ ...result })) : [],
+    plans: Array.isArray(scopedProject.plans) ? scopedProject.plans.map((plan) => ({ ...plan })) : undefined,
     generationContext,
   };
 };
@@ -375,19 +377,20 @@ const filterStaleOneClickPlanningPlaceholders = <T extends Record<string, any>>(
 );
 
 const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingProject: T | undefined, incomingProject: T): T => {
-  const baseProject = existingProject || {} as T;
-  const isOneClick = String(incomingProject.module || baseProject.module || '') === 'one_click';
+  const baseProject = normalizeShellProjectScope(existingProject || {}) as T;
+  const scopedIncomingProject = normalizeShellProjectScope(incomingProject) as T;
+  const isOneClick = String(scopedIncomingProject.module || baseProject.module || '') === 'one_click';
   const results = mergeArrayByStableKeys(
     filterStaleOneClickPlanningPlaceholders(baseProject.results, isOneClick, 'result'),
-    filterStaleOneClickPlanningPlaceholders(incomingProject.results, isOneClick, 'result'),
+    filterStaleOneClickPlanningPlaceholders(scopedIncomingProject.results, isOneClick, 'result'),
   );
   const plans = mergeArrayByStableKeys(
     filterStaleOneClickPlanningPlaceholders(baseProject.plans, isOneClick, 'plan'),
-    filterStaleOneClickPlanningPlaceholders(incomingProject.plans, isOneClick, 'plan'),
+    filterStaleOneClickPlanningPlaceholders(scopedIncomingProject.plans, isOneClick, 'plan'),
   );
   const schemes = mergeArrayByStableKeys(
     filterStaleOneClickPlanningPlaceholders(baseProject.schemes, isOneClick, 'scheme'),
-    filterStaleOneClickPlanningPlaceholders(incomingProject.schemes, isOneClick, 'scheme'),
+    filterStaleOneClickPlanningPlaceholders(scopedIncomingProject.schemes, isOneClick, 'scheme'),
   );
   const stateItems = results.length > 0 ? results : schemes;
   const completedCount = stateItems.filter(hasCompletedMedia).length;
@@ -401,12 +404,12 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
     && !hasError;
   const productRestoreProject = {
     ...baseProject,
-    ...incomingProject,
+    ...scopedIncomingProject,
     results,
   };
   const taskCount = Math.max(
     Number(baseProject.taskCount || 0) || 0,
-    Number(incomingProject.taskCount || 0) || 0,
+    Number(scopedIncomingProject.taskCount || 0) || 0,
     plans.length,
     schemes.length,
     stateItems.length,
@@ -419,7 +422,7 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
   }, results);
   const generationContext = mergeProductRestoreGenerationContext(
     baseProject.generationContext,
-    incomingProject.generationContext,
+    scopedIncomingProject.generationContext,
   );
   const durablyCancelled = hasDurableProductRestoreCancellation({ generationContext });
   const status = durablyCancelled
@@ -436,14 +439,14 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
               ? 'error'
               : isOneClickPlanOnly
                 ? 'planning'
-                : incomingProject.status || baseProject.status;
+                : scopedIncomingProject.status || baseProject.status;
   const merged = {
     ...baseProject,
-    ...incomingProject,
-    ...(Array.isArray(baseProject.results) || Array.isArray(incomingProject.results) ? { results } : {}),
-    ...(Array.isArray(baseProject.plans) || Array.isArray(incomingProject.plans) ? { plans } : {}),
-    ...(Array.isArray(baseProject.schemes) || Array.isArray(incomingProject.schemes) ? { schemes } : {}),
-    planningTaskId: latestProviderTaskIdentityText(baseProject.planningTaskId, incomingProject.planningTaskId),
+    ...scopedIncomingProject,
+    ...(Array.isArray(baseProject.results) || Array.isArray(scopedIncomingProject.results) ? { results } : {}),
+    ...(Array.isArray(baseProject.plans) || Array.isArray(scopedIncomingProject.plans) ? { plans } : {}),
+    ...(Array.isArray(baseProject.schemes) || Array.isArray(scopedIncomingProject.schemes) ? { schemes } : {}),
+    planningTaskId: latestProviderTaskIdentityText(baseProject.planningTaskId, scopedIncomingProject.planningTaskId),
     taskCount,
     completedCount,
     status,
@@ -453,7 +456,7 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
     delete merged.error;
     delete merged.message;
   }
-  return merged as T;
+  return normalizeShellProjectScope(merged) as T;
 };
 
 const isInlineImageDataUrl = (value: unknown) => (
@@ -497,14 +500,15 @@ export const upsertShellProjectIntoPersistedState = (
   project: ShellProject,
 ): PersistedAppState => {
   const nextProject = cloneShellProject(project);
-  const existingProjects = Array.isArray(state.shellProjects) ? state.shellProjects : [];
-  const existingProject = existingProjects.find((item: any) => String(item?.id || '') === String(project.id || ''));
+  const existingProjects = (Array.isArray(state.shellProjects) ? state.shellProjects : [])
+    .map((item) => normalizeShellProjectScope(item));
+  const existingProject = existingProjects.find((item: any) => String(item?.id || '') === String(nextProject.id || ''));
   const mergedProject = cloneShellProject(mergeProjectLikeForPersistence(existingProject, nextProject) as ShellProject);
   const nextState = {
     ...state,
     shellProjects: [
       mergedProject,
-      ...existingProjects.filter((item: any) => String(item?.id || '') !== String(project.id || '')),
+      ...existingProjects.filter((item: any) => String(item?.id || '') !== String(nextProject.id || '')),
     ],
   };
   return upsertVideoProjectIntoVeoMemory(nextState, mergedProject);

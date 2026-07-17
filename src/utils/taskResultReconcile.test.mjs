@@ -61,3 +61,26 @@ test('non-product-restoration results keep their existing reconciliation identit
 
   assert.equal(merged.length, 2);
 });
+
+test('non-product restoration completed patches remain incoming-authoritative regardless of createdAt', () => {
+  const existing = [{
+    id: 'same-result',
+    module: 'retouch',
+    subFeature: 'original',
+    status: 'completed',
+    createdAt: 200,
+    imageUrl: '/existing-newer-time.png',
+  }];
+  const incoming = [{
+    id: 'same-result',
+    module: 'retouch',
+    subFeature: 'original',
+    status: 'completed',
+    createdAt: 100,
+    imageUrl: '/incoming-authoritative.png',
+  }];
+
+  const merged = mergeArrayByStableKeys(existing, incoming);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].imageUrl, '/incoming-authoritative.png');
+});

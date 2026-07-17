@@ -2056,3 +2056,85 @@ test('mergeAppStateForStorage identityless placeholder TTL window is tunable via
     else process.env.MEIAO_IDENTITYLESS_ACTIVE_TTL_MS = original;
   }
 });
+
+test('app state merge repairs product restoration scope and canonical project identity', () => {
+  const shellProjectId = 'proj-restore-canonical';
+  const clientSubmissionKey = `${shellProjectId}:product_restore:analysis-a:target-a:v2`;
+  const legacyProject = (id, backendJobId, imageUrl, createdAt, withContext = false) => ({
+    id,
+    name: '7月16日项目1',
+    module: 'retouch',
+    subFeature: 'original',
+    status: 'completed',
+    createdAt,
+    results: [{
+      id: `${backendJobId}-result-1`,
+      projectId: shellProjectId,
+      imageUrl,
+      status: 'completed',
+      createdAt,
+      module: 'retouch',
+      subFeature: 'original',
+      backendJobId,
+      taskId: `provider-${backendJobId}`,
+      targetMaterialId: 'target-a',
+      batchIndex: 1,
+      clientSubmissionKey,
+    }],
+    taskCount: 1,
+    completedCount: 1,
+    ...(withContext ? {
+      generationContext: {
+        params: { mode: 'product_restore' },
+        materials: {},
+        productRestore: { version: 2, analysisJobId: 'analysis-a', targetMaterialIds: ['target-a'] },
+      },
+    } : {}),
+  });
+
+  const merged = mergeAppStateForStorage({
+    shellProjects: [
+      legacyProject('job-restore-old', 'restore-old', '/old.png', 1784136593043),
+      legacyProject('job-restore-new', 'restore-new', '/new.png', 1784137156658, true),
+    ],
+  }, { shellProjects: [] });
+
+  assert.equal(merged.shellProjects.length, 1);
+  assert.equal(merged.shellProjects[0].id, shellProjectId);
+  assert.equal(merged.shellProjects[0].subFeature, 'product_restore');
+  assert.equal(merged.shellProjects[0].results.length, 1);
+  assert.equal(merged.shellProjects[0].results[0].subFeature, 'product_restore');
+  assert.equal(merged.shellProjects[0].results[0].imageUrl, '/new.png');
+});
+
+test('app state merge applies canonical product restoration tombstones before scope repair', () => {
+  const canonicalId = 'proj-deleted-restore';
+  const merged = mergeAppStateForStorage({}, {
+    shellDraft: {
+      inputStateByScope: {},
+      materials: {},
+      deletedProjectIds: [canonicalId],
+    },
+    shellProjects: [{
+      id: 'job-stale-restore',
+      name: '已删除产品还原',
+      module: 'retouch',
+      subFeature: 'original',
+      status: 'completed',
+      createdAt: 100,
+      results: [{
+        id: 'restore-result',
+        projectId: canonicalId,
+        module: 'retouch',
+        subFeature: 'original',
+        clientSubmissionKey: `${canonicalId}:product_restore:analysis-a:target-a:v2`,
+        status: 'completed',
+        imageUrl: '/deleted.png',
+      }],
+      taskCount: 1,
+      completedCount: 1,
+    }],
+  });
+
+  assert.deepEqual(merged.shellProjects, []);
+});

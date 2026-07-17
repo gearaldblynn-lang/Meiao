@@ -2,11 +2,12 @@
 // 原样来自经 34 个后端测试验证的 server/appStateMerge.mjs;前端 shellPersistence.ts
 // 不再保留自己的浅合并版本,改为 import 本模块,杜绝两套逻辑漂移。
 // 规则要点:已完成媒体必胜、stale 占位清理、按稳定身份(id/job/provider/result)去重。
+import { hasDurableProductRestoreScope } from './shellProjectScope.mjs';
 
 export const compactKey = (value) => String(value || '').trim();
 
 export const getProductRestoreTargetKey = (item = {}) => {
-  if (String(item?.module || '') !== 'retouch' || String(item?.subFeature || '') !== 'product_restore') return '';
+  if (!hasDurableProductRestoreScope(item)) return '';
   const targetMaterialId = compactKey(item?.targetMaterialId);
   const batchIndex = Number(item?.batchIndex || 0) || 0;
   return targetMaterialId && batchIndex > 0
@@ -15,7 +16,7 @@ export const getProductRestoreTargetKey = (item = {}) => {
 };
 
 export const getProductRestoreExpectedTargetCount = (project = {}) => {
-  if (String(project?.module || '') !== 'retouch' || String(project?.subFeature || '') !== 'product_restore') return 0;
+  if (!hasDurableProductRestoreScope(project)) return 0;
   const contextTargetCount = Array.isArray(project?.generationContext?.productRestore?.targetMaterialIds)
     ? project.generationContext.productRestore.targetMaterialIds.length
     : 0;
@@ -128,7 +129,20 @@ export const mergeArrayByStableKeys = (existingItems = [], incomingItems = []) =
       && !hasMediaResult(value)
       && Boolean(compactKey(value?.backendJobId || value?.taskId || value?.providerTaskId || value?.kieTaskId))
     );
-    const next = hasCompletedMediaResult(current)
+    const currentCompleted = hasCompletedMediaResult(current);
+    const itemCompleted = hasCompletedMediaResult(item);
+    const currentCreatedAt = Number(current?.createdAt || 0) || 0;
+    const itemCreatedAt = Number(item?.createdAt || 0) || 0;
+    const currentProductRestoreTarget = getProductRestoreTargetKey(current);
+    const itemProductRestoreTarget = getProductRestoreTargetKey(item);
+    const newerCompletedItemWins = currentCompleted
+      && itemCompleted
+      && currentProductRestoreTarget
+      && currentProductRestoreTarget === itemProductRestoreTarget
+      && itemCreatedAt > currentCreatedAt;
+    const next = newerCompletedItemWins
+      ? { ...(current || {}), ...(item || {}) }
+      : currentCompleted
       ? { ...(item || {}), ...(current || {}) }
       : isActiveRuntimeReplacement(current) && hasCompletedMediaResult(item)
         ? { ...(item || {}), ...(current || {}) }

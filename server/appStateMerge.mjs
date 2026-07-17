@@ -13,6 +13,10 @@ import {
   hasEffectiveProductRestoreCancellation,
   mergeProductRestoreGenerationContextForStorage,
 } from '../src/utils/productRestoreDurableState.mjs';
+import {
+  getShellProjectIdentityAliases,
+  normalizeShellProjectScope,
+} from '../src/utils/shellProjectScope.mjs';
 const cloneJson = (value) => JSON.parse(JSON.stringify(value || {}));
 
 const ONE_CLICK_BRANCH_KEYS = ['firstImage', 'mainImage', 'detailPage', 'sku'];
@@ -189,6 +193,7 @@ const buildDeletionSets = (draft = {}) => ({
 const itemMatchesDeletion = (item, deletionSets, mode = 'item') => {
   if (!item || typeof item !== 'object') return false;
   const ids = [
+    ...getShellProjectIdentityAliases(item),
     item.id,
     item.backendJobId,
     item.planningTaskId,
@@ -480,6 +485,7 @@ const isProductRestoreProjectLike = (item = {}) => (
 );
 
 const normalizeProjectLikeItem = (item = {}, options = {}) => {
+  item = normalizeShellProjectScope(item);
   const isOneClickProject = options.forceOneClick || String(item?.module || '') === 'one_click';
   const originalPlans = Array.isArray(item?.plans) ? item.plans : [];
   const invalidPlanIds = new Set(
@@ -678,6 +684,8 @@ const shouldClearPlanningPendingPlaceholders = (existingItem = {}, incomingItem 
 };
 
 const mergeProjectLikeItem = (existingItem = {}, incomingItem = {}) => {
+  existingItem = normalizeShellProjectScope(existingItem);
+  incomingItem = normalizeShellProjectScope(incomingItem);
   const preserveRecoveredPlanning = shouldPreserveRecoveredPlanning(existingItem, incomingItem);
   const clearPlanningPendingPlaceholders = shouldClearPlanningPendingPlaceholders(existingItem, incomingItem);
   const planningJobId = clearPlanningPendingPlaceholders
@@ -770,21 +778,22 @@ export const mergeProjectArrayByStableKeys = (existingItems = [], incomingItems 
   };
 
   const push = (item, source) => {
-    const keys = collectItemKeys(item, { includeProjectId: true });
+    const scopedItem = normalizeShellProjectScope(item);
+    const keys = collectItemKeys(scopedItem, { includeProjectId: true });
     const duplicateIndex = Array.from(keys)
       .map((key) => keyToIndex.get(key))
       .find((index) => typeof index === 'number');
     if (typeof duplicateIndex === 'number') {
       const current = merged[duplicateIndex];
       merged[duplicateIndex] = source === 'existing'
-        ? mergeProjectLikeItem(item, current)
-        : mergeProjectLikeItem(current, item);
+        ? mergeProjectLikeItem(scopedItem, current)
+        : mergeProjectLikeItem(current, scopedItem);
       registerKeys(merged[duplicateIndex], duplicateIndex);
       return;
     }
     const index = merged.length;
-    merged.push(item);
-    registerKeys(item, index);
+    merged.push(scopedItem);
+    registerKeys(scopedItem, index);
   };
 
   incoming.forEach((item) => push(item, 'incoming'));

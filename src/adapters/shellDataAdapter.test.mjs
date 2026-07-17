@@ -59,6 +59,207 @@ test('multi-logo guarded result is not overwritten by raw provider job sync', ()
   assert.equal(project?.results[0]?.logoReplaceGuarded, true);
 });
 
+test('shell data adapter repairs observed product restoration job cards into one canonical project', () => {
+  const shellProjectId = 'proj-1784136403259';
+  const clientSubmissionKey = `${shellProjectId}:product_restore:restore-analysis-job:restore-target-a:v2`;
+  const corruptedResult = (jobId, providerTaskId, imageUrl, createdAt) => ({
+    id: `${jobId}-result-1`,
+    projectId: shellProjectId,
+    imageUrl,
+    prompt: '产品还原目标图 A',
+    model: 'gpt-image-2',
+    aspectRatio: '1:1',
+    status: 'completed',
+    createdAt,
+    module: 'retouch',
+    subFeature: 'original',
+    taskId: providerTaskId,
+    backendJobId: jobId,
+    batchIndex: 1,
+    targetMaterialId: 'restore-target-a',
+    clientSubmissionKey,
+  });
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [
+      {
+        id: 'job-restore-old',
+        name: '7月16日项目1',
+        module: 'retouch',
+        subFeature: 'original',
+        status: 'completed',
+        createdAt: 1784136593043,
+        results: [corruptedResult('restore-old', 'provider-old', '/restore-old.png', 1784136593043)],
+        taskCount: 1,
+        completedCount: 1,
+      },
+      {
+        id: 'job-restore-new',
+        name: '7月16日项目1',
+        module: 'retouch',
+        subFeature: 'original',
+        status: 'completed',
+        createdAt: 1784137156658,
+        results: [corruptedResult('restore-new', 'provider-new', '/restore-new.png', 1784137156658)],
+        taskCount: 1,
+        completedCount: 1,
+        generationContext: {
+          params: { mode: 'product_restore' },
+          materials: {},
+          productRestore: {
+            version: 2,
+            analysisJobId: 'restore-analysis-job',
+            analysisModel: 'gpt-5.4',
+            productIdentitySummary: '沙发盖布',
+            invariantFeatures: ['绿色人字纹'],
+            targetPrompts: [{
+              targetMaterialId: 'restore-target-a',
+              targetIndex: 1,
+              targetIssueSummary: ['纹理偏弱'],
+              restorationPrompt: '恢复绿色人字纹',
+            }],
+            focusIds: ['material_texture'],
+            targetMaterialIds: ['restore-target-a'],
+            productReferenceMaterialIds: ['restore-reference-a'],
+            selectedImageModel: 'gpt-image-2',
+            resolution: '2K',
+            userRequirement: '',
+            createdAt: 1784136455633,
+          },
+        },
+      },
+    ],
+  }, []);
+
+  const restored = snapshot.projects.filter((project) => project.module === 'retouch');
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].id, shellProjectId);
+  assert.equal(restored[0].subFeature, 'product_restore');
+  assert.equal(restored[0].results.length, 1);
+  assert.equal(restored[0].results[0].subFeature, 'product_restore');
+  assert.equal(restored[0].results[0].imageUrl, '/restore-new.png');
+  assert.equal(restored[0].results[0].backendJobId, 'restore-new');
+});
+
+test('shell data adapter does not let an older product restoration job replace the newer persisted target', () => {
+  const shellProjectId = 'proj-restore-newest';
+  const clientSubmissionKey = `${shellProjectId}:product_restore:analysis-a:target-a:v2`;
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: shellProjectId,
+      name: '产品还原最新结果',
+      module: 'retouch',
+      subFeature: 'product_restore',
+      status: 'completed',
+      createdAt: 1784137156658,
+      results: [{
+        id: 'restore-new-result',
+        projectId: shellProjectId,
+        imageUrl: '/restore-new.png',
+        prompt: 'new',
+        aspectRatio: '1:1',
+        status: 'completed',
+        createdAt: 1784137156658,
+        module: 'retouch',
+        subFeature: 'product_restore',
+        taskId: 'provider-new',
+        backendJobId: 'restore-new',
+        batchIndex: 1,
+        targetMaterialId: 'target-a',
+        clientSubmissionKey,
+      }],
+      taskCount: 1,
+      completedCount: 1,
+    }],
+  }, [{
+    id: 'restore-old',
+    module: 'retouch',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'provider-old',
+    payload: {
+      taskPurpose: 'product_restore_generation',
+      shellProjectId,
+      shellProjectName: '产品还原最新结果',
+      subFeature: 'product_restore',
+      analysisJobId: 'analysis-a',
+      targetMaterialId: 'target-a',
+      batchIndex: 1,
+      batchCount: 1,
+      clientSubmissionKey,
+    },
+    result: { imageUrl: '/restore-old.png', providerTaskId: 'provider-old' },
+    createdAt: 1784136456563,
+    finishedAt: 1784136593043,
+  }]);
+
+  const restored = snapshot.projects.find((project) => project.id === shellProjectId);
+  assert.equal(restored?.results.length, 1);
+  assert.equal(restored?.results[0]?.imageUrl, '/restore-new.png');
+  assert.equal(restored?.results[0]?.backendJobId, 'restore-new');
+});
+
+test('shell data adapter binds unpersisted product restoration image jobs to payload shell project scope', () => {
+  const shellProjectId = 'product-restore-jobs-only';
+  const jobs = [
+    ['restore-image-a', 'provider-a', 'restore-target-a', 1, '/restore-a.png'],
+    ['restore-image-b', 'provider-b', 'restore-target-b', 2, '/restore-b.png'],
+  ].map(([id, providerTaskId, targetMaterialId, batchIndex, imageUrl]) => ({
+    id,
+    module: 'retouch',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId,
+    payload: {
+      taskPurpose: 'product_restore_generation',
+      shellProjectId,
+      shellProjectName: '产品还原无占位恢复',
+      subFeature: 'product_restore',
+      analysisJobId: 'restore-analysis-job',
+      targetMaterialId,
+      batchIndex,
+      batchCount: 2,
+    },
+    result: { imageUrl, providerTaskId },
+    createdAt: 1784136600000 + Number(batchIndex),
+    finishedAt: 1784136700000 + Number(batchIndex),
+  }));
+
+  const snapshot = buildShellDataSnapshot({ shellProjects: [] }, jobs);
+  const restored = snapshot.projects.filter((project) => project.module === 'retouch');
+
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].id, shellProjectId);
+  assert.equal(restored[0].subFeature, 'product_restore');
+  assert.deepEqual(restored[0].results.map((result) => result.subFeature), ['product_restore', 'product_restore']);
+  assert.deepEqual(restored[0].results.map((result) => result.targetMaterialId), ['restore-target-a', 'restore-target-b']);
+});
+
+test('shell data adapter preserves an unknown explicit subfeature instead of routing it to the default tab', () => {
+  const snapshot = buildShellDataSnapshot({ shellProjects: [] }, [{
+    id: 'future-retouch-job',
+    module: 'retouch',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'future-provider-task',
+    payload: {
+      shellProjectId: 'future-retouch-project',
+      shellProjectName: '未来图片升级能力',
+      subFeature: 'future_retouch_mode',
+      prompt: 'future mode',
+    },
+    result: { imageUrl: '/future.png', providerTaskId: 'future-provider-task' },
+    createdAt: 1784137600000,
+    finishedAt: 1784137700000,
+  }]);
+
+  const project = snapshot.projects.find((item) => item.id === 'future-retouch-project');
+  assert.equal(project?.subFeature, 'future_retouch_mode');
+  assert.notEqual(project?.subFeature, 'original');
+});
+
 test('shell data adapter restores persisted image crop projects as image crop records', () => {
   const snapshot = buildShellDataSnapshot({
     shellProjects: [{
@@ -3109,6 +3310,39 @@ test('shell data adapter hides persisted projects and results covered by deletio
   assert.equal(snapshot.projects.some((item) => item.id === 'job-backed-project'), false);
   const partial = snapshot.projects.find((item) => item.id === 'partial-project');
   assert.deepEqual(partial?.results.map((result) => result.id), ['kept-result']);
+});
+
+test('shell data adapter keeps product restoration tombstones effective across canonical id repair', () => {
+  const canonicalId = 'proj-deleted-restore';
+  const snapshot = buildShellDataSnapshot({
+    shellDraft: {
+      deletedProjectIds: ['job-stale-restore'],
+      inputStateByScope: {},
+      materials: {},
+      updatedAt: Date.now(),
+    },
+    shellProjects: [{
+      id: 'job-stale-restore',
+      name: '已删除产品还原',
+      module: 'retouch',
+      subFeature: 'original',
+      status: 'completed',
+      createdAt: 100,
+      results: [{
+        id: 'restore-result',
+        projectId: canonicalId,
+        module: 'retouch',
+        subFeature: 'original',
+        clientSubmissionKey: `${canonicalId}:product_restore:analysis-a:target-a:v2`,
+        status: 'completed',
+        imageUrl: '/deleted.png',
+      }],
+      taskCount: 1,
+      completedCount: 1,
+    }],
+  }, []);
+
+  assert.equal(snapshot.projects.some((project) => project.id === canonicalId), false);
 });
 
 test('shell data adapter does not resurrect deleted pending results from completed backend jobs', () => {

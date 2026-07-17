@@ -1524,3 +1524,59 @@ test('shell persistence merges translation batches instead of replacing old hist
   assert.equal(snapshot.projects.some((project) => project.id === 'old-project'), true);
   assert.equal(snapshot.projects.some((project) => project.id === 'new-project'), true);
 });
+
+test('product restoration persistence collapses historical job cards to the canonical shell project', () => {
+  const shellProjectId = 'proj-restore-canonical';
+  const clientSubmissionKey = `${shellProjectId}:product_restore:analysis-a:target-a:v2`;
+  const legacyProject = (id, backendJobId, imageUrl) => ({
+    id,
+    name: '7月16日项目1',
+    module: 'retouch',
+    subFeature: 'original',
+    status: 'completed',
+    createdAt: 1784137156658,
+    results: [{
+      id: `${backendJobId}-result-1`,
+      projectId: shellProjectId,
+      imageUrl,
+      prompt: '产品还原',
+      aspectRatio: '1:1',
+      status: 'completed',
+      createdAt: 1784137156658,
+      module: 'retouch',
+      subFeature: 'original',
+      backendJobId,
+      taskId: `provider-${backendJobId}`,
+      targetMaterialId: 'target-a',
+      batchIndex: 1,
+      clientSubmissionKey,
+    }],
+    taskCount: 1,
+    completedCount: 1,
+  });
+  const state = {
+    shellProjects: [
+      legacyProject('job-restore-old', 'restore-old', '/old.png'),
+      legacyProject('job-restore-new', 'restore-new', '/new.png'),
+    ],
+  };
+  const correctedBase = legacyProject(shellProjectId, 'restore-new', '/new.png');
+  const corrected = {
+    ...correctedBase,
+    subFeature: 'product_restore',
+    results: correctedBase.results.map((result) => ({ ...result, subFeature: 'product_restore' })),
+    generationContext: {
+      params: { mode: 'product_restore' },
+      materials: {},
+      productRestore: { version: 2, analysisJobId: 'analysis-a', targetMaterialIds: ['target-a'] },
+    },
+  };
+
+  const nextState = upsertShellProjectIntoPersistedState(state, corrected);
+
+  assert.equal(nextState.shellProjects.length, 1);
+  assert.equal(nextState.shellProjects[0].id, shellProjectId);
+  assert.equal(nextState.shellProjects[0].subFeature, 'product_restore');
+  assert.equal(nextState.shellProjects[0].results.length, 1);
+  assert.equal(nextState.shellProjects[0].results[0].imageUrl, '/new.png');
+});
