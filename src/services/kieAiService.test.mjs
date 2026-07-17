@@ -172,3 +172,23 @@ test('kieAiService translation prompt preserves product and packaging text from 
     /仅保留产品\/包装表面的字符不变（存在产品情况下，禁止翻译原产品以及包装上的内容）。/,
   );
 });
+
+test('kieAiService translation prompt supports global translation exceptions', () => {
+  assert.match(kieAiSource, /translationScope/);
+  assert.match(kieAiSource, /全局翻译/);
+  assert.match(kieAiSource, /翻译图片中所有可读文案，包括营销文案、包装表面文字、标签、参数、警示、说明、压印、贴纸和屏幕文字/);
+  assert.match(kieAiSource, /Logo、Logo 组成文字、商标图形和产品型号保持不变/);
+  assert.match(kieAiSource, /不得猜测不可读文字/);
+});
+
+test('kieAiService image task logs include translation scope metadata when present', () => {
+  assert.match(kieAiSource, /translationScope: safeTaskMetadata\.translationScope/);
+  assert.match(
+    kieAiSource,
+    /logKieEvent\('create_image_task'[\s\S]*?started[\s\S]*?translationScope: safeTaskMetadata\.translationScope/,
+  );
+  assert.match(
+    kieAiSource,
+    /logKieEvent\([\s\S]*?'create_image_task'[\s\S]*?creditsConsumed: result\.creditsConsumed,[\s\S]*?translationScope: safeTaskMetadata\.translationScope/,
+  );
+});

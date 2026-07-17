@@ -1,7 +1,7 @@
 import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, TranslationConfigSnapshot, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
@@ -96,6 +96,11 @@ import { detectMp4VideoCodecFromBlob } from './utils/videoCodec';
 import { createMaterialUploadCoordinator } from './utils/materialUploadCoordinator';
 import { buildGenerationSubmissionKey } from './utils/generationSubmissionKey';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
+import {
+  buildTranslationGenerationPrompt,
+  createTranslationConfigSnapshot,
+  sumTranslationRetryCredits,
+} from './modules/Translation/translationRetryUtils.mjs';
 import {
   getRetouchCustomSizeRatioWarning,
   getSafeRetouchAspectRatioForModel,
@@ -284,6 +289,15 @@ export interface GeneratedResult {
   subtitleRegionPixels?: SubtitleRemovalPixels;
   sourceProjectId?: string;
   sourceResultId?: string;
+  retryOfResultId?: string;
+  retryRootResultId?: string;
+  retryAttempt?: number;
+  sourceOrder?: number;
+  translationConfigSnapshot?: TranslationConfigSnapshot;
+  translationPlanningText?: string;
+  translationPlanningTaskId?: string;
+  translationPlanningCreditsConsumed?: number;
+  translationGenerationCreditsConsumed?: number;
 }
 
 export interface Material {
@@ -1796,6 +1810,9 @@ const normalizeTranslationParamsForGeneration = (
     submode: params.submode || (subFeature === 'detail' ? '详情出海' : subFeature === 'remove_text' ? '去文案' : '主图出海'),
     lang: params.lang || 'English',
     translationGenerationMode: ['AI优化', '策划分析'].includes(params.translationGenerationMode) ? 'AI优化' : 'AI直出',
+    translationScope: String(params.translationScope || '').includes('全局') || params.translationScope === 'global_translation'
+      ? 'global_translation'
+      : 'product_isolation',
     model: params.model || 'GPT Image 2',
     quality: params.quality || '1K',
     ratio: isOriginalSizeMode ? 'auto' : (params.ratio || params.aspectRatio || defaults.ratio),
@@ -1835,6 +1852,16 @@ type TranslationBatchFile = {
   error?: string;
   originalWidth?: number;
   originalHeight?: number;
+  createdAt?: number;
+  retryOfResultId?: string;
+  retryRootResultId?: string;
+  retryAttempt?: number;
+  sourceOrder?: number;
+  translationConfigSnapshot?: TranslationConfigSnapshot;
+  translationPlanningText?: string;
+  translationPlanningTaskId?: string;
+  translationPlanningCreditsConsumed?: number;
+  translationGenerationCreditsConsumed?: number;
 };
 
 const translationStatusToGeneratedStatus = (status: TranslationBatchFile['status']): GeneratedResult['status'] => {
@@ -1854,7 +1881,7 @@ const translationFileToResult = (
   model: file.model,
   aspectRatio: file.matchedAspectRatio || file.aspectRatio || 'auto',
   status: translationStatusToGeneratedStatus(file.status),
-  createdAt: createdAtLabel,
+  createdAt: Number(file.createdAt || createdAtLabel),
   module: AppModuleObj.TRANSLATION,
   subFeature: file.subFeature,
   sourceUrl: file.sourceUrl,
@@ -1868,6 +1895,15 @@ const translationFileToResult = (
   matchedAspectRatio: file.matchedAspectRatio,
   originalWidth: file.originalWidth,
   originalHeight: file.originalHeight,
+  retryOfResultId: file.retryOfResultId,
+  retryRootResultId: file.retryRootResultId,
+  retryAttempt: file.retryAttempt,
+  sourceOrder: file.sourceOrder,
+  translationConfigSnapshot: file.translationConfigSnapshot,
+  translationPlanningText: file.translationPlanningText,
+  translationPlanningTaskId: file.translationPlanningTaskId,
+  translationPlanningCreditsConsumed: file.translationPlanningCreditsConsumed,
+  translationGenerationCreditsConsumed: file.translationGenerationCreditsConsumed,
 });
 
 const translationResultToFile = (
@@ -1902,6 +1938,16 @@ const translationResultToFile = (
   error: result.error,
   originalWidth: result.originalWidth,
   originalHeight: result.originalHeight,
+  createdAt: result.createdAt,
+  retryOfResultId: result.retryOfResultId,
+  retryRootResultId: result.retryRootResultId,
+  retryAttempt: result.retryAttempt,
+  sourceOrder: result.sourceOrder,
+  translationConfigSnapshot: result.translationConfigSnapshot,
+  translationPlanningText: result.translationPlanningText,
+  translationPlanningTaskId: result.translationPlanningTaskId,
+  translationPlanningCreditsConsumed: result.translationPlanningCreditsConsumed,
+  translationGenerationCreditsConsumed: result.translationGenerationCreditsConsumed,
 });
 
 const getTranslationProjectStatus = (files: TranslationBatchFile[]): Project['status'] => {
@@ -5575,30 +5621,64 @@ const AppContent: React.FC<{
         return;
       }
 
+      const translationConfigSnapshot = createTranslationConfigSnapshot(generationParams);
+      if (!translationConfigSnapshot) {
+        const message = '翻译配置无效，请检查目标语言和生成模式后重试。';
+        if (immediateProject && immediateTask) {
+          const failedProject: Project = {
+            ...immediateProject,
+            status: 'error',
+            error: message,
+            results: immediateProject.results.map((result) => ({
+              ...result,
+              status: 'error',
+              error: message,
+              prompt: message,
+            })),
+            completedCount: 0,
+          };
+          setProjects((prev) => prev.map((project) => project.id === failedProject.id ? failedProject : project));
+          setTasks((prev) => prev.map((task) => task.id === immediateTask.id ? { ...task, status: 'error', progress: 100 } : task));
+          void persistProjectToSharedState(failedProject);
+        }
+        setIsGenerating(false);
+        addToast(message, 'error');
+        releaseGuardedSubmit();
+        return;
+      }
+
       const projectId = immediateProject?.id || `translation-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       const createdAtTs = immediateProject?.createdAt || Date.now();
       const createdAt = createdAtTs;
       const projectTitle = translationSubFeatureLabel || MODULE_NAMES[targetModule];
       const totalCount = translationSourceMaterials.length;
-      const translationFileItems: TranslationBatchFile[] = translationSourceMaterials.map((material, index) => ({
-        id: `${projectId}-file-${index + 1}`,
-        file: null,
-        fileName: material.fileName || `翻译图片 ${index + 1}`,
-        relativePath: (material as any).relativePath || material.fileName || `翻译图片 ${index + 1}`,
-        sourceUrl: material.sourceUrl,
-        sourcePreviewUrl: material.sourceUrl,
-        status: 'pending',
-        progress: 0,
-        prompt: '',
-        model: generationParams.model || 'GPT Image 2',
-        aspectRatio: generationParams.ratio || generationParams.aspectRatio || 'auto',
-        subFeature: targetSubFeature,
-        projectId,
-        projectName: projectTitle,
-        projectCreatedAt: createdAtTs,
-        originalWidth: material.originalWidth,
-        originalHeight: material.originalHeight,
-      }));
+      const translationFileItems: TranslationBatchFile[] = translationSourceMaterials.map((material, index) => {
+        const id = `${projectId}-file-${index + 1}`;
+        return {
+          id,
+          file: null,
+          fileName: material.fileName || `翻译图片 ${index + 1}`,
+          relativePath: (material as any).relativePath || material.fileName || `翻译图片 ${index + 1}`,
+          sourceUrl: material.sourceUrl,
+          sourcePreviewUrl: material.sourceUrl,
+          status: 'pending',
+          progress: 0,
+          prompt: '',
+          model: generationParams.model || 'GPT Image 2',
+          aspectRatio: generationParams.ratio || generationParams.aspectRatio || 'auto',
+          subFeature: targetSubFeature,
+          projectId,
+          projectName: projectTitle,
+          projectCreatedAt: createdAtTs,
+          createdAt: createdAtTs,
+          sourceOrder: index,
+          retryRootResultId: id,
+          retryAttempt: 0,
+          translationConfigSnapshot,
+          originalWidth: material.originalWidth,
+          originalHeight: material.originalHeight,
+        };
+      });
 
       const translationProject: Project = {
         id: projectId,
@@ -5677,36 +5757,22 @@ const AppContent: React.FC<{
 
       const useTranslationPlanningAnalysis = ['AI优化', '策划分析'].includes(generationParams.translationGenerationMode);
 
-      const buildTranslationPrompt = (material: TranslationBatchFile, index: number, matchedRatio: string, planningAnalysis = '') => {
-        if (planningAnalysis) {
-          return [
-            '角色：商业图像文案翻译与修复助手。',
-            `任务：根据 AI优化结果生成${translationSubFeatureLabel || '出海翻译'}成品图，按策划输出的“xxx”本地化为“xxx”执行文案替换。`,
-            '约束：',
-            '1. 所有替换文案必须逐字照抄 AI优化结果中右侧引号内的本地化文案，禁止改写、翻译、增删、替换字符。',
-            '2. 产品主体、包装、logo、画面主题和版式位置保持不变；产品/包装表面文字、实拍压印文字视为图片内容，不翻译、不重绘、不移动。',
-            '3. 参数、尺寸、温度、数量等数值信息必须准确保留；表格/参数/尺码类图片保持原表格行列、单元格位置和边框，仅替换对应短标签。',
-            '4. 不新增原图不存在的信息或虚假卖点。',
-            `要求：严格执行以下 AI优化结果，输出最终图片。\n${planningAnalysis}`,
-          ].join('\n');
-        }
-        return [
-          `模块：${MODULE_NAMES[targetModule]}`,
-          `子功能：${targetSubFeature}`,
-          `生成逻辑：${useTranslationPlanningAnalysis ? 'AI优化' : 'AI直出'}`,
-          `用户需求：请根据上传的素材完成${translationSubFeatureLabel || '出海翻译'}，保持商品主体与文字结构稳定，输出适合当前页面展示的结果。`,
-          `前端参数：${JSON.stringify({
+      const buildTranslationPrompt = (material: TranslationBatchFile, index: number, matchedRatio: string, planningAnalysis = '') => (
+        buildTranslationGenerationPrompt({
+          mode: planningAnalysis ? 'AI优化' : 'AI直出',
+          subFeatureLabel: translationSubFeatureLabel || '出海翻译',
+          planningText: planningAnalysis,
+          params: {
             ...generationParams,
             ratio: matchedRatio,
             aspectRatio: matchedRatio,
-            __batchIndex: String(index + 1),
-            __batchCount: String(totalCount),
-            __sourceFileName: material.fileName,
-            __sourceRelativePath: material.relativePath,
-          })}`,
-          '请严格围绕上传素材完成对应电商视觉任务，保持商品主体一致，输出可直接用于当前模块结果展示的图片。',
-        ].filter(Boolean).join('\n');
-      };
+          },
+          fileName: material.fileName,
+          relativePath: material.relativePath,
+          batchIndex: index + 1,
+          batchCount: totalCount,
+        })
+      );
 
       let successCount = 0;
       let nextIndex = 0;
@@ -5746,6 +5812,7 @@ const AppContent: React.FC<{
               targetWidth: Number(generationParams.targetWidth || generationParams.width || 0),
 	              targetHeight: Number(generationParams.targetHeight || generationParams.height || 0),
 	              maxFileSize: Number(generationParams.maxFileSize || generationParams.maxSize || 2),
+	              translationScope: translationConfigSnapshot.translationScope,
 	            };
 	            const resolvedSourceDimensions = sourceDimensions && sourceDimensions.width > 0 && sourceDimensions.height > 0
 	              ? sourceDimensions
@@ -5770,7 +5837,9 @@ const AppContent: React.FC<{
 	            const finalSize = resolvedSourceDimensions
 	              ? { width: resolvedSourceDimensions.width, height: resolvedSourceDimensions.height }
 	              : undefined;
-	            const translationTaskMetadata = {
+	            let planningTaskId: string | undefined;
+	            let planningCreditsConsumed: number | undefined;
+	            let translationTaskMetadata = {
 	              shellProjectId: projectId,
 	              shellProjectName: translationProject.name,
 	              shellResultId: currentFileItem.id,
@@ -5783,6 +5852,12 @@ const AppContent: React.FC<{
 	              finalSize,
 	              batchIndex: index + 1,
 	              batchCount: totalCount,
+	              retryRootResultId: currentFileItem.retryRootResultId,
+	              retryAttempt: currentFileItem.retryAttempt,
+	              sourceOrder: currentFileItem.sourceOrder,
+	              translationConfigSnapshot: currentFileItem.translationConfigSnapshot,
+	              translationScope: translationConfigSnapshot.translationScope,
+	              translationGenerationMode: useTranslationPlanningAnalysis ? 'AI优化' : 'AI直出',
 	            };
 	            let planningAnalysis = '';
 
@@ -5836,18 +5911,26 @@ const AppContent: React.FC<{
 	                  shellPurpose: 'translation_planning_analysis',
 	                },
 	                publicBaseUrl,
-	              }, material.sourceUrl, (jobId: string) => {
+	              }, material.sourceUrl, (jobId: string, providerTaskId?: string) => {
+	                planningTaskId = providerTaskId || planningTaskId;
 		                translationFileItems[index] = {
 	                  ...translationFileItems[index],
 	                  backendJobId: jobId || translationFileItems[index].backendJobId,
+	                  translationPlanningTaskId: providerTaskId || translationFileItems[index].translationPlanningTaskId,
 	                };
 	                syncTranslationProject(translationFileItems);
 	              });
 	              planningAnalysis = analysisResult.description;
+	              planningTaskId = analysisResult.taskId || planningTaskId;
+	              planningCreditsConsumed = analysisResult.creditsConsumed;
 	              translationFileItems[index] = {
 	                ...translationFileItems[index],
 	                progress: 35,
 	                prompt: buildTranslationPrompt(currentFileItem, index, matchedRatio, planningAnalysis),
+	                translationPlanningText: planningAnalysis,
+	                translationPlanningTaskId: planningTaskId,
+	                translationPlanningCreditsConsumed: planningCreditsConsumed,
+	                creditsConsumed: sumTranslationRetryCredits(planningCreditsConsumed, undefined),
 	              };
 	              syncTranslationProject(translationFileItems);
 	              setTasks((prev) => prev.map((task) => (
@@ -5856,6 +5939,13 @@ const AppContent: React.FC<{
 	            }
 
 	            const promptForModel = buildTranslationPrompt(currentFileItem, index, matchedRatio, planningAnalysis);
+	            translationTaskMetadata = {
+	              ...translationTaskMetadata,
+	              shellPurpose: 'translation_generation',
+	              translationPlanningText: planningAnalysis || undefined,
+	              translationPlanningTaskId: planningTaskId,
+	              translationPlanningCreditsConsumed: planningCreditsConsumed,
+	            };
 
 	            const result = await runShellImageGeneration({
               module: targetModule,
@@ -5906,7 +5996,8 @@ const AppContent: React.FC<{
               status: 'completed',
               progress: 100,
               taskId: result.taskId || translationFileItems[index]?.taskId || currentFileItem.taskId,
-              creditsConsumed: result.creditsConsumed,
+              creditsConsumed: sumTranslationRetryCredits(planningCreditsConsumed, result.creditsConsumed),
+              translationGenerationCreditsConsumed: result.creditsConsumed,
               resultUrl: result.imageUrl,
               matchedAspectRatio: matchedRatio,
               prompt: result.prompt || promptForModel,

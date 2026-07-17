@@ -102,17 +102,19 @@ const requireModelAssetUrl = (value: string, publicBaseUrl: string, label: strin
   return safeUrl;
 };
 
-const normalizeModelAssetUrls = async (imageUrls: string | string[], label = '素材') => {
+const normalizeModelAssetUrls = async (imageUrls: string | string[], label = '素材', options: { preserveOrder?: boolean } = {}) => {
   const publicBaseUrl = await resolveRuntimePublicBaseUrl();
+  const preserveOrder = options.preserveOrder === true;
   const seen = new Set<string>();
-  return (Array.isArray(imageUrls) ? imageUrls : [imageUrls])
+  const resolvedUrls = (Array.isArray(imageUrls) ? imageUrls : [imageUrls])
     .map((url, index) => requireModelAssetUrl(url, publicBaseUrl, `${label}${index + 1}`))
-    .filter((url) => {
-      if (seen.has(url)) return false;
-      seen.add(url);
-      return true;
-    })
     .filter(Boolean);
+  if (preserveOrder) return resolvedUrls;
+  return resolvedUrls.filter((url) => {
+    if (seen.has(url)) return false;
+    seen.add(url);
+    return true;
+  });
 };
 
 const recoverKieProviderTask = async (
@@ -285,6 +287,8 @@ const buildKieAiPrompt = (
 ): string => {
   const targetLang = config.targetLanguage === 'CUSTOM' ? config.customLanguage : config.targetLanguage;
   const skipTranslation = config.targetLanguage === 'KEEP_ORIGINAL';
+  const isGlobalTranslation = String(config.translationScope || '').trim() === 'global_translation'
+    || String(config.translationScope || '').includes('全局');
 
   if (isRemoveText) {
     let prompt = `R Role 角色
@@ -309,6 +313,14 @@ Packaging text stays; floating marketing text disappears.
     return prompt;
   }
 
+  const scopeConstraint = isGlobalTranslation
+    ? `1. 翻译范围：全局翻译。翻译图片中所有可读文案，包括营销文案、包装表面文字、标签、参数、警示、说明、压印、贴纸和屏幕文字。
+2. Logo、Logo 组成文字、商标图形和产品型号保持不变；参数、尺寸、温度、数量、比例、容量、日期等数值事实和单位必须准确保留。
+3. 不得猜测不可读文字，不得新增原图不存在的卖点、认证、功效、法律信息、成分、警示或参数。`
+    : `1. 仅保留产品/包装表面的字符不变（存在产品情况下，禁止翻译原产品以及包装上的内容）。
+2. 请勿更改图像主体内容以及主题。
+3. 优化画面中的半透明污点瑕疵，保持画面整洁。`;
+
   let prompt = `R Role 角色
 你是商业图像文案翻译与修复助手。
 
@@ -316,9 +328,7 @@ T Task 任务
 专业级处理图像中的文案翻译，同时保持产品主体或包装和画面主题不变。
 
 C Constraint 约束
-1. 仅保留产品/包装表面的字符不变（存在产品情况下，禁止翻译原产品以及包装上的内容）。
-2. 请勿更改图像主体内容以及主题。
-3. 优化画面中的半透明污点瑕疵，保持画面整洁。
+${scopeConstraint}
 
 F Format 格式
 返回处理后的图片。
@@ -473,15 +483,16 @@ export const processWithKieAi = async (
   taskMetadata: Record<string, unknown> = {},
   onJobCreated?: (jobId: string, providerTaskId?: string) => void,
 ): Promise<KieAiResult> => {
+  const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode);
+  const { skipPromptCleanupSuffix, preserveInputImageOrder, ...safeTaskMetadata } = taskMetadata || {};
   logKieEvent('create_image_task', '开始创建图像任务', 'started', '', {
     imageCount: Array.isArray(imageUrls) ? imageUrls.length : 1,
     model: moduleConfig.model,
     aspectRatio: moduleConfig.aspectRatio,
     quality: moduleConfig.quality,
+    translationScope: safeTaskMetadata.translationScope,
   });
-  const safeImageUrls = await normalizeModelAssetUrls(imageUrls, '图像素材');
-  const finalPrompt = customPrompt || buildKieAiPrompt(moduleConfig, isRatioMatch, isRemoveText, sourceImageContext, subMode);
-  const { skipPromptCleanupSuffix, ...safeTaskMetadata } = taskMetadata || {};
+  const safeImageUrls = await normalizeModelAssetUrls(imageUrls, '图像素材', { preserveOrder: preserveInputImageOrder === true });
   const isMaxForAiModel = isMaxForAiImageModel(moduleConfig.model);
   const promptWithCleanupSuffix = (moduleConfig.model === 'gpt-image-2' || moduleConfig.model === 'gpt-image-2-secondary' || isMaxForAiModel) && skipPromptCleanupSuffix !== true
     ? `${finalPrompt}\n\n${getGptImage2CleanupSuffix(taskMetadata)}`
@@ -531,7 +542,12 @@ export const processWithKieAi = async (
     result.status === 'success' ? '图像任务完成' : result.status === 'interrupted' ? '图像任务已中断' : result.status === 'generating' ? '图像任务已提交云端' : '图像任务失败',
     logStatus,
     result.message || '',
-    { taskId: result.taskId, model: moduleConfig.model, creditsConsumed: result.creditsConsumed }
+    {
+      taskId: result.taskId,
+      model: moduleConfig.model,
+      creditsConsumed: result.creditsConsumed,
+      translationScope: safeTaskMetadata.translationScope,
+    }
   );
   return result;
 };

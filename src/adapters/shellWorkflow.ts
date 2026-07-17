@@ -773,6 +773,11 @@ export const buildShellModuleConfig = (input: ShellGenerateInput): ModuleConfig 
     targetWidth: resolutionMode === 'custom' ? targetWidth : 0,
     targetHeight: resolutionMode === 'custom' ? targetHeight : 0,
     maxFileSize,
+    translationScope: firstParam(input.params, ['translationScope', 'translationScopeLabel'], 'product_isolation').includes('全局')
+      ? 'global_translation'
+      : firstParam(input.params, ['translationScope', 'translationScopeLabel'], 'product_isolation') === 'global_translation'
+        ? 'global_translation'
+        : 'product_isolation',
   };
 };
 
@@ -858,6 +863,7 @@ export const runShellTranslationPlanningAnalysis = async (
   const result = await analyzeTranslationCopyForGeneration({
     imageUrl,
     targetLanguage: firstParam(input.params, ['lang', 'language'], 'English'),
+    translationScope: firstParam(input.params, ['translationScope', 'translationScopeLabel'], 'product_isolation'),
     subFeature: input.subFeature || input.params.mode || 'main',
     apiConfig: {
       kieApiKey: '',
