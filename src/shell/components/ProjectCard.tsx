@@ -3,6 +3,12 @@ import { CheckSquare2, ChevronLeft, ChevronRight, Copy, Download, FileText, Film
 import type { GeneratedResult } from '../../ShellMigratedApp';
 import type { OneClickGenerationContext, VideoStoryboardProject } from '../../types';
 import type { ImageDownloadTransform } from '../../utils/imageUtils';
+import {
+  buildTranslationResultDownloadPath,
+  getTranslationRetryLineageLabel,
+  isTranslationResultRetryEligible,
+  runTranslationRetriesSequentially,
+} from '../../modules/Translation/translationRetryUtils.mjs';
 import { copyTextToClipboard } from '../../utils/clipboard.mjs';
 import { isInvalidOneClickPlanLike } from '../../utils/oneClickPlanValidation.ts';
 import { formatMonthDay } from '../../utils/timeFormat.ts';
@@ -57,7 +63,7 @@ interface Props {
   project: Project;
   onDeleteResult?: (projectId: string, resultId: string) => void;
   onDeleteProject?: (projectId: string) => void;
-  onRegenerate?: (projectId: string, resultId: string, instruction?: string) => void;
+  onRegenerate?: (projectId: string, resultId: string, instruction?: string) => void | Promise<void>;
   onConfirmStoryboardImaging?: (projectId: string) => void;
   onFission?: (projectId: string, resultId: string, mode: 'scene' | 'palette' | 'custom', instruction: string) => void;
   onEdit?: (projectId: string, resultId: string, instruction: string, files: File[]) => void;
@@ -385,11 +391,15 @@ const renderMedia = (result: GeneratedResult, className: string, options?: { vid
 const getResultExtension = (result: GeneratedResult) => (result.mediaType === 'video' || result.videoUrl ? 'mp4' : 'png');
 
 const getDownloadName = (project: Project, result: GeneratedResult, index: number) => {
-  if (project.module === 'translation' && result.relativePath) {
-    const base = result.relativePath.split(/[\\/]/).pop() || result.relativePath;
+  if (project.module === 'translation') {
     const ext = getResultExtension(result);
-    const baseName = base.replace(/\.[^.]+$/, '');
-    return `${baseName || `translation_${index + 1}`}.${ext}`;
+    const downloadPath = buildTranslationResultDownloadPath({
+      results: project.results,
+      result,
+      extension: ext,
+      fallbackIndex: index,
+    });
+    return downloadPath.split('/').pop() || `translation_${index + 1}.${ext}`;
   }
   const ext = result.mediaType === 'video' || result.videoUrl ? 'mp4' : 'png';
   return `${project.name || 'project'}_${index + 1}_${result.id}`.replace(/[\\/:*?"<>|\s]+/g, '_') + `.${ext}`;
@@ -397,9 +407,13 @@ const getDownloadName = (project: Project, result: GeneratedResult, index: numbe
 
 const getDownloadZipPath = (project: Project, result: GeneratedResult, index: number) => {
   const ext = getResultExtension(result);
-  if (project.module === 'translation' && result.relativePath) {
-    const normalized = result.relativePath.replace(/\\/g, '/');
-    return normalized.replace(/\.[^.]+$/, '') + `.${ext}`;
+  if (project.module === 'translation') {
+    return buildTranslationResultDownloadPath({
+      results: project.results,
+      result,
+      extension: ext,
+      fallbackIndex: index,
+    });
   }
   return getDownloadName(project, result, index);
 };
@@ -557,6 +571,8 @@ const ProjectCard: React.FC<Props> = ({
   const [subtitleComparisonResultId, setSubtitleComparisonResultId] = useState('');
   const storyboardVersionLengthsRef = useRef<Record<string, number>>({});
   const [isPackaging, setIsPackaging] = useState(false);
+  const [isBatchTranslationRetryPending, setIsBatchTranslationRetryPending] = useState(false);
+  const batchTranslationRetryPendingRef = useRef(false);
   const { addToast } = useToast();
   const hasResults = project.results.length > 0;
   const hasPlans = Array.isArray(project.plans) && project.plans.length > 0;
@@ -647,8 +663,11 @@ const ProjectCard: React.FC<Props> = ({
     : statusStyle[displayProjectStatus];
   const translationResults = project.module === 'translation' ? project.results : [];
   const isTranslationProject = project.module === 'translation';
-  const failedTranslationResults = translationResults.filter((result) => result.status === 'error');
-  const canRetryTranslationResult = (result: GeneratedResult) => !isTranslationProject || result.status === 'error';
+  const canRetryTranslationResult = (result: GeneratedResult) => !isTranslationProject
+    || isTranslationResultRetryEligible(result.subFeature || project.subFeature, result);
+  const failedTranslationResults = translationResults.filter((result) => (
+    result.status === 'error' && canRetryTranslationResult(result)
+  ));
   const isPendingAction = (key: string) => Boolean(pendingActionKeys?.[key]);
   const getRegenerateActionKey = (resultId: string) => `regenerate:${project.id}:${resultId}`;
   const getFissionActionKey = (resultId: string) => `fission:${project.id}:${resultId}`;
@@ -1080,8 +1099,9 @@ const ProjectCard: React.FC<Props> = ({
     addToast(copied ? '精修图片链接已复制，可在抠图页面粘贴使用' : '已打开抠图页面，请手动复制图片链接', copied ? 'success' : 'warning');
   };
 
-  const handleRetryFailedTranslation = () => {
+  const handleRetryFailedTranslation = async () => {
     if (!onRegenerate || failedTranslationResults.length === 0) return;
+    if (batchTranslationRetryPendingRef.current) return;
     if (regenerationLockedByActiveProject) {
       addToast('当前项目仍有任务生成中，请先中断或等待完成后再重试', 'warning');
       return;
@@ -1091,8 +1111,18 @@ const ProjectCard: React.FC<Props> = ({
       addToast('失败项重试已提交，请等待当前任务完成', 'info');
       return;
     }
-    retryableResults.forEach((result) => onRegenerate(project.id, result.id));
-    addToast(`已提交 ${retryableResults.length} 个失败项重试`, 'success');
+    batchTranslationRetryPendingRef.current = true;
+    setIsBatchTranslationRetryPending(true);
+    try {
+      const processedCount = await runTranslationRetriesSequentially(
+        retryableResults,
+        (result) => onRegenerate(project.id, result.id),
+      );
+      addToast(`已依次处理 ${processedCount} 个失败项重试`, 'success');
+    } finally {
+      batchTranslationRetryPendingRef.current = false;
+      setIsBatchTranslationRetryPending(false);
+    }
   };
 
   const handleToggleAllPlans = () => {
@@ -1373,12 +1403,12 @@ const ProjectCard: React.FC<Props> = ({
                         <button
                           type="button"
                           onClick={handleRetryFailedTranslation}
-                          disabled={regenerationLockedByActiveProject || failedTranslationResults.every((result) => isRegeneratePending(result.id))}
+                          disabled={isBatchTranslationRetryPending || regenerationLockedByActiveProject || failedTranslationResults.every((result) => isRegeneratePending(result.id))}
                           className="flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
                           style={{ background: 'rgba(239,68,68,0.08)', color: 'var(--error)' }}
                         >
                           <RefreshCw size={13} />
-                          重试失败 ({failedTranslationResults.length})
+                          {isBatchTranslationRetryPending ? '依次重试中' : `重试失败 (${failedTranslationResults.length})`}
                         </button>
                       )}
                       <button onClick={handleDownloadAll} disabled={isPackaging || !hasResults} className="flex items-center gap-1 rounded-full px-2.5 py-1.5 text-[11px] font-medium disabled:opacity-40" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
@@ -1833,6 +1863,8 @@ const ProjectCard: React.FC<Props> = ({
                         const canPreview = Boolean(sourceUrl || result.imageUrl || result.error || result.prompt);
                         const hasOutput = Boolean(result.imageUrl || result.videoUrl);
                         const regeneratePending = isRegeneratePending(result.id);
+                        const retryEligible = canRetryTranslationResult(result);
+                        const retryDisabled = regeneratePending || regenerationLockedByActiveProject;
                         return (
                           <article
                             key={result.id}
@@ -1866,6 +1898,11 @@ const ProjectCard: React.FC<Props> = ({
                               <p className="truncate text-[13px] font-semibold" style={{ color: 'var(--text-primary)' }}>
                                 {pathLabel}
                               </p>
+                              {Number(result.retryAttempt || 0) > 0 ? (
+                                <span className="mt-1 text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+                                  {getTranslationRetryLineageLabel(result, translationResults)}
+                                </span>
+                              ) : null}
                               {renderResultUsageMeta(result)}
                             </button>
 
@@ -1896,22 +1933,23 @@ const ProjectCard: React.FC<Props> = ({
                                   tone="primary"
                                   onClick={() => handleDownloadSingle(result, index)}
                                 />
-                              ) : result.status === 'error' && onRegenerate ? (
+                              ) : null}
+                              {onRegenerate && retryEligible ? (
                                 <ResultActionButton
                                   icon={<RefreshCw size={12} />}
                                   label={regeneratePending ? '提交中' : regenerationLockedByActiveProject ? '生成中' : '重试'}
-                                  tone="danger"
-                                  disabled={regeneratePending || regenerationLockedByActiveProject}
+                                  tone={result.status === 'error' ? 'danger' : 'primary'}
+                                  disabled={retryDisabled}
                                   onClick={() => {
-                                    if (regeneratePending || regenerationLockedByActiveProject) return;
+                                    if (retryDisabled) return;
                                     onRegenerate(project.id, result.id);
                                   }}
                                 />
-                              ) : (
+                              ) : !hasOutput ? (
                                 <span className="inline-flex min-h-9 items-center rounded-[16px] px-2 text-[11px]" style={{ color: 'var(--text-tertiary)' }}>
-                                  等待结果
+                                  {result.status === 'generating' ? '等待结果' : '不可重试'}
                                 </span>
-                              )}
+                              ) : null}
                             </div>
                           </article>
                         );
@@ -2534,6 +2572,9 @@ const ProjectCard: React.FC<Props> = ({
         const sourceUrl = result.sourcePreviewUrl || result.sourceUrl || '';
         const ratioLabel = getTranslationRatioLabel(result);
         const pathLabel = getTranslationPathLabel(result);
+        const retryEligible = canRetryTranslationResult(result);
+        const regeneratePending = isRegeneratePending(result.id);
+        const retryDisabled = regeneratePending || regenerationLockedByActiveProject;
         return (
           <div
             className="fixed inset-0 z-[520] flex items-center justify-center px-6 py-8"
@@ -2558,6 +2599,9 @@ const ProjectCard: React.FC<Props> = ({
                   <div className="mt-1.5 flex flex-wrap items-center gap-3 text-[12px]" style={{ color: 'var(--text-tertiary)' }}>
                     <span className="truncate">文件：{pathLabel}</span>
                     <span>比例：{ratioLabel}</span>
+                    {Number(result.retryAttempt || 0) > 0 ? (
+                      <span>{getTranslationRetryLineageLabel(result, translationResults)}</span>
+                    ) : null}
                     <span>{result.status === 'error' ? '失败可重试' : '完成后可下载'}</span>
                   </div>
                 </div>
@@ -2575,21 +2619,24 @@ const ProjectCard: React.FC<Props> = ({
                       <Download size={16} />
                       下载
                     </button>
-                  ) : result.status === 'error' && onRegenerate ? (
+                  ) : null}
+                  {retryEligible && onRegenerate ? (
                     <button
                       type="button"
-                      disabled={isRegeneratePending(result.id) || regenerationLockedByActiveProject}
+                      disabled={retryDisabled}
                       onClick={(event) => {
                         event.stopPropagation();
-                        if (isRegeneratePending(result.id) || regenerationLockedByActiveProject) return;
+                        if (retryDisabled) return;
                         onRegenerate(project.id, result.id);
                         setTranslationCompareOpen(false);
                       }}
                       className="flex h-9 items-center gap-2 rounded-[18px] px-3 text-[12px] font-medium disabled:cursor-not-allowed disabled:opacity-50"
-                      style={{ background: 'rgba(239,68,68,0.08)', color: 'var(--error)' }}
+                      style={result.status === 'error'
+                        ? { background: 'rgba(239,68,68,0.08)', color: 'var(--error)' }
+                        : { background: 'var(--accent-soft)', color: 'var(--accent)' }}
                     >
                       <RefreshCw size={16} />
-                      {isRegeneratePending(result.id) ? '提交中' : regenerationLockedByActiveProject ? '生成中' : '重试'}
+                      {regeneratePending ? '提交中' : regenerationLockedByActiveProject ? '生成中' : '重试'}
                     </button>
                   ) : null}
                   <button

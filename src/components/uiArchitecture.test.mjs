@@ -3757,6 +3757,29 @@ test('ProjectCard is memoized and ProjectListView passes stable handlers (no inl
   assert.doesNotMatch(listView, /onDeleteResult=\{\(rid\) =>/);
 });
 
+test('translation result retry appends lineage history and executes paid work sequentially', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+  const projectCard = read('../shell/components/ProjectCard.tsx');
+
+  assert.match(projectCard, /buildTranslationResultDownloadPath/);
+  assert.match(projectCard, /getTranslationRetryLineageLabel/);
+  assert.match(projectCard, /isTranslationResultRetryEligible/);
+  assert.match(projectCard, /runTranslationRetriesSequentially/);
+  assert.match(projectCard, /void \| Promise<void>/);
+  assert.match(projectCard, /isBatchTranslationRetryPending/);
+  assert.match(projectCard, /已依次处理/);
+
+  assert.match(shellApp, /translationRetryScopeLocksRef/);
+  assert.match(shellApp, /resolveTranslationRetrySnapshot/);
+  assert.match(shellApp, /buildTranslationRetryDescriptor/);
+  assert.match(shellApp, /executeTranslationRetryPipeline/);
+  assert.match(shellApp, /reduceTranslationRetryProjectMutation/);
+  assert.match(shellApp, /shellPurpose: 'translation_result_retry'/);
+  assert.match(shellApp, /persistTranslationFilesToSharedState[\s\S]*persistProjectToSharedState/);
+  assert.match(shellApp, /resolveFailedTranslationRetryLifecycle/);
+  assert.doesNotMatch(shellApp, /出海翻译仅失败项会单独重试/);
+});
+
 test('video subtitle removal workspace creates bounded durable jobs under one batch card', () => {
   const shellApp = read('../ShellMigratedApp.tsx');
   const videoModule = read('../shell/modules/Video/VideoModule.tsx');

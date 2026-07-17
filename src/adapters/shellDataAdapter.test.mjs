@@ -6486,3 +6486,559 @@ test('durable Product Restoration cancellation keeps root and child errors autho
     assert.equal(pending?.errorCode, 'interrupted');
   }
 });
+test('shell data adapter restores translation retry metadata and stable lineage order', () => {
+  const translationConfigSnapshot = {
+    targetLanguage: 'English',
+    customLanguage: '',
+    model: 'gpt-image-2',
+    quality: '1k',
+    resolutionMode: 'custom',
+    translationScope: 'product_isolation',
+    aspectRatio: '1:1',
+    translationGenerationMode: 'AI优化',
+  };
+  const baseFile = {
+    fileName: 'source.png',
+    relativePath: 'source.png',
+    status: 'completed',
+    progress: 100,
+    sourceUrl: 'https://example.com/source.png',
+    sourcePreviewUrl: 'https://example.com/source.png',
+    prompt: 'translation retry result',
+    model: 'gpt-image-2',
+    aspectRatio: '1:1',
+    subFeature: 'main',
+    projectId: 'batch-a',
+    projectName: 'Translation retry batch A',
+    projectCreatedAt: 900,
+  };
+  const snapshot = buildShellDataSnapshot({
+    translationMemory: {
+      main: {
+        files: [
+          {
+            ...baseFile,
+            id: 'retry-b-1',
+            resultUrl: 'https://example.com/retry-b-1.png',
+            createdAt: 2400,
+            retryOfResultId: 'root-b',
+            retryRootResultId: 'root-b',
+            retryAttempt: 1,
+            sourceOrder: 1,
+          },
+          {
+            ...baseFile,
+            id: 'root-b',
+            resultUrl: 'https://example.com/root-b.png',
+            createdAt: 2000,
+            sourceOrder: 1,
+          },
+          {
+            ...baseFile,
+            id: 'retry-a-1',
+            resultUrl: 'https://example.com/retry-a-1.png',
+            createdAt: 1400,
+            retryOfResultId: 'root-a',
+            retryRootResultId: 'root-a',
+            retryAttempt: 1,
+            sourceOrder: 0,
+            translationConfigSnapshot,
+            translationPlanningText: 'Planning text A',
+            translationPlanningTaskId: 'planning-task-a',
+            translationPlanningCreditsConsumed: 1.25,
+            translationGenerationCreditsConsumed: 3,
+          },
+          {
+            ...baseFile,
+            id: 'root-a',
+            resultUrl: 'https://example.com/root-a.png',
+            createdAt: 1000,
+            sourceOrder: 0,
+          },
+        ],
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'batch-a');
+  assert.deepEqual(project?.results.map((result) => result.id), [
+    'root-a',
+    'retry-a-1',
+    'root-b',
+    'retry-b-1',
+  ]);
+  assert.equal(project?.taskCount, 4);
+  assert.equal(project?.completedCount, 4);
+  const retry = project?.results.find((result) => result.id === 'retry-a-1');
+  assert.equal(retry?.retryOfResultId, 'root-a');
+  assert.equal(retry?.retryRootResultId, 'root-a');
+  assert.equal(retry?.retryAttempt, 1);
+  assert.equal(retry?.sourceOrder, 0);
+  assert.equal(retry?.createdAt, 1400);
+  assert.deepEqual(retry?.translationConfigSnapshot, translationConfigSnapshot);
+  assert.equal(retry?.translationPlanningText, 'Planning text A');
+  assert.equal(retry?.translationPlanningTaskId, 'planning-task-a');
+  assert.equal(retry?.translationPlanningCreditsConsumed, 1.25);
+  assert.equal(retry?.translationGenerationCreditsConsumed, 3);
+});
+
+test('shell data adapter hydrates a persisted translation retry into its owning project', () => {
+  const translationConfigSnapshot = {
+    targetLanguage: 'Japanese',
+    customLanguage: '',
+    model: 'gpt-image-2',
+    quality: '1k',
+    resolutionMode: 'custom',
+    translationScope: 'product_isolation',
+    aspectRatio: '1:1',
+    translationGenerationMode: 'AI直出',
+  };
+  const snapshot = buildShellDataSnapshot({
+    translationMemory: {
+      main: {
+        files: [
+          {
+            id: 'root-a',
+            fileName: 'source-a.png',
+            relativePath: 'source-a.png',
+            status: 'completed',
+            progress: 100,
+            sourceUrl: 'https://example.com/source-a.png',
+            sourcePreviewUrl: 'https://example.com/source-a.png',
+            resultUrl: 'https://example.com/root-a.png',
+            prompt: 'root translation',
+            model: 'gpt-image-2',
+            aspectRatio: '1:1',
+            subFeature: 'main',
+            projectId: 'batch-a',
+            projectName: 'Translation retry batch A',
+            projectCreatedAt: 900,
+            createdAt: 1000,
+            sourceOrder: 0,
+          },
+          {
+            id: 'retry-a-1',
+            fileName: 'source-a__retry-1.png',
+            relativePath: 'source-a__retry-1.png',
+            status: 'processing',
+            progress: 12,
+            sourceUrl: 'https://example.com/source-a.png',
+            sourcePreviewUrl: 'https://example.com/source-a.png',
+            prompt: 'retry translation',
+            model: 'gpt-image-2',
+            aspectRatio: '1:1',
+            subFeature: 'main',
+            projectId: 'batch-a',
+            projectName: 'Translation retry batch A',
+            projectCreatedAt: 900,
+            createdAt: 1400,
+            retryOfResultId: 'root-a',
+            retryRootResultId: 'root-a',
+            retryAttempt: 1,
+            sourceOrder: 0,
+            translationConfigSnapshot,
+            translationPlanningText: 'Persisted planning text',
+            translationPlanningTaskId: 'persisted-planning-task',
+            translationPlanningCreditsConsumed: 1,
+            translationGenerationCreditsConsumed: 3,
+          },
+        ],
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  }, [{
+    id: 'translation-retry-job-1',
+    module: 'translation',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'translation-retry-provider-1',
+    payload: {
+      prompt: 'retry translation',
+      shellProjectId: 'batch-a',
+      shellProjectName: 'Translation retry batch A',
+      shellResultId: 'retry-a-1',
+      shellPurpose: 'translation_result_retry',
+      subFeature: 'main',
+      sourceUrl: 'https://example.com/source-a.png',
+      sourcePreviewUrl: 'https://example.com/source-a.png',
+      sourceFileName: 'source-a__retry-1.png',
+      sourceRelativePath: 'source-a__retry-1.png',
+      retryOfResultId: 'root-a',
+      retryRootResultId: 'root-a',
+      retryAttempt: 1,
+      sourceOrder: 0,
+      translationConfigSnapshot,
+      translationPlanningText: 'Persisted planning text',
+      translationPlanningTaskId: 'persisted-planning-task',
+      translationPlanningCreditsConsumed: 1,
+      translationGenerationCreditsConsumed: 3,
+      batchIndex: 2,
+      batchCount: 2,
+    },
+    result: {
+      imageUrl: 'https://example.com/retry-a-1.png',
+      providerTaskId: 'translation-retry-provider-1',
+      creditsConsumed: 3,
+    },
+    createdAt: 5000,
+    updatedAt: 6000,
+    finishedAt: 6000,
+  }]);
+
+  const translationProjects = snapshot.projects.filter((project) => project.module === 'translation');
+  assert.deepEqual(translationProjects.map((project) => project.id), ['batch-a']);
+  assert.equal(translationProjects.some((project) => project.id.startsWith('job-')), false);
+  const project = translationProjects[0];
+  assert.deepEqual(project.results.map((result) => result.id), ['root-a', 'retry-a-1']);
+  assert.equal(project.taskCount, 2);
+  assert.equal(project.completedCount, 2);
+  const retry = project.results.find((result) => result.id === 'retry-a-1');
+  assert.equal(retry?.imageUrl, 'https://example.com/retry-a-1.png');
+  assert.equal(retry?.retryOfResultId, 'root-a');
+  assert.equal(retry?.retryRootResultId, 'root-a');
+  assert.equal(retry?.retryAttempt, 1);
+  assert.equal(retry?.sourceOrder, 0);
+  assert.equal(retry?.createdAt, 1400);
+  assert.deepEqual(retry?.translationConfigSnapshot, translationConfigSnapshot);
+  assert.equal(retry?.translationPlanningText, 'Persisted planning text');
+  assert.equal(retry?.translationPlanningTaskId, 'persisted-planning-task');
+  assert.equal(retry?.translationPlanningCreditsConsumed, 1);
+  assert.equal(retry?.translationGenerationCreditsConsumed, 3);
+});
+
+test('shell data adapter preserves translation retry fields from direct shell projects', () => {
+  const translationConfigSnapshot = {
+    targetLanguage: 'French',
+    customLanguage: '',
+    model: 'gpt-image-2',
+    quality: '1k',
+    resolutionMode: 'custom',
+    translationScope: 'product_isolation',
+    aspectRatio: '1:1',
+    translationGenerationMode: 'AI直出',
+  };
+  const createdAt = 1784100001234;
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'direct-translation-retry-project',
+      name: 'Direct translation retry project',
+      module: 'translation',
+      status: 'completed',
+      createdAt: 1784100000000,
+      taskCount: 1,
+      completedCount: 1,
+      results: [{
+        id: 'direct-retry-1',
+        projectId: 'direct-translation-retry-project',
+        imageUrl: 'https://example.com/direct-retry-1.png',
+        prompt: 'direct retry',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'completed',
+        createdAt,
+        module: 'translation',
+        retryOfResultId: 'direct-root',
+        retryRootResultId: 'direct-root',
+        retryAttempt: 1,
+        sourceOrder: 0,
+        translationConfigSnapshot,
+        translationPlanningText: 'Direct planning text',
+        translationPlanningTaskId: 'direct-planning-task',
+        translationPlanningCreditsConsumed: 1.5,
+        translationGenerationCreditsConsumed: 3,
+      }],
+    }],
+  }, []);
+
+  const result = snapshot.projects[0]?.results[0];
+  assert.equal(result?.retryOfResultId, 'direct-root');
+  assert.equal(result?.retryRootResultId, 'direct-root');
+  assert.equal(result?.retryAttempt, 1);
+  assert.equal(result?.sourceOrder, 0);
+  assert.equal(result?.createdAt, createdAt);
+  assert.deepEqual(result?.translationConfigSnapshot, translationConfigSnapshot);
+  assert.equal(result?.translationPlanningText, 'Direct planning text');
+  assert.equal(result?.translationPlanningTaskId, 'direct-planning-task');
+  assert.equal(result?.translationPlanningCreditsConsumed, 1.5);
+  assert.equal(result?.translationGenerationCreditsConsumed, 3);
+});
+
+test('shell data adapter keeps richer shell translation retry fields when translation memory merges', () => {
+  const translationConfigSnapshot = {
+    targetLanguage: 'German',
+    customLanguage: '',
+    model: 'gpt-image-2',
+    quality: '1k',
+    resolutionMode: 'custom',
+    translationScope: 'product_isolation',
+    aspectRatio: '1:1',
+    translationGenerationMode: 'AI优化',
+  };
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'combined-translation-project',
+      name: 'Combined translation project',
+      module: 'translation',
+      status: 'completed',
+      createdAt: 1784100100000,
+      taskCount: 1,
+      completedCount: 1,
+      results: [{
+        id: 'combined-retry-1',
+        projectId: 'combined-translation-project',
+        imageUrl: 'https://example.com/combined-retry.png',
+        prompt: 'combined retry',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'completed',
+        createdAt: 1784100101234,
+        module: 'translation',
+        retryOfResultId: 'combined-root',
+        retryRootResultId: 'combined-root',
+        retryAttempt: 2,
+        sourceOrder: 0,
+        translationConfigSnapshot,
+        translationPlanningText: 'Rich planning text',
+        translationPlanningTaskId: 'rich-planning-task',
+        translationPlanningCreditsConsumed: 2,
+        translationGenerationCreditsConsumed: 4,
+      }],
+    }],
+    translationMemory: {
+      main: {
+        files: [{
+          id: 'combined-retry-1',
+          fileName: 'combined-retry.png',
+          relativePath: 'combined-retry.png',
+          status: 'completed',
+          progress: 100,
+          resultUrl: 'https://example.com/combined-retry.png',
+          prompt: 'combined retry',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          subFeature: 'main',
+          projectId: 'combined-translation-project',
+          projectName: 'Combined translation project',
+          projectCreatedAt: 1784100100000,
+          createdAt: 1784100101234,
+        }],
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'combined-translation-project');
+  assert.equal(project?.results.length, 1);
+  const result = project?.results[0];
+  assert.equal(result?.retryOfResultId, 'combined-root');
+  assert.equal(result?.retryRootResultId, 'combined-root');
+  assert.equal(result?.retryAttempt, 2);
+  assert.equal(result?.sourceOrder, 0);
+  assert.deepEqual(result?.translationConfigSnapshot, translationConfigSnapshot);
+  assert.equal(result?.translationPlanningText, 'Rich planning text');
+  assert.equal(result?.translationPlanningTaskId, 'rich-planning-task');
+  assert.equal(result?.translationPlanningCreditsConsumed, 2);
+  assert.equal(result?.translationGenerationCreditsConsumed, 4);
+});
+
+const buildSharedTranslationRetryIdentitySnapshot = ({ taskId, backendJobId }) => {
+  const projectId = `shared-identity-${taskId || backendJobId}`;
+  const rootTaskId = taskId || 'shared-root-provider';
+  const retryTaskId = taskId || 'shared-retry-provider';
+  const rootBackendJobId = backendJobId || 'shared-root-job';
+  const retryBackendJobId = backendJobId || 'shared-retry-job';
+  const baseFile = {
+    fileName: 'shared-source.png',
+    relativePath: 'shared-source.png',
+    progress: 100,
+    sourceUrl: 'https://example.com/shared-source.png',
+    sourcePreviewUrl: 'https://example.com/shared-source.png',
+    prompt: 'shared identity translation',
+    model: 'gpt-image-2',
+    aspectRatio: '1:1',
+    subFeature: 'main',
+    projectId,
+    projectName: 'Shared identity translation project',
+    projectCreatedAt: 1784100200000,
+    sourceOrder: 0,
+  };
+  return buildShellDataSnapshot({
+    shellProjects: [{
+      id: projectId,
+      name: 'Shared identity translation project',
+      module: 'translation',
+      status: 'generating',
+      createdAt: 1784100200000,
+      taskCount: 2,
+      completedCount: 1,
+      subFeature: 'main',
+      results: [
+        {
+          id: 'shared-root',
+          projectId,
+          imageUrl: 'https://example.com/shared-root.png',
+          prompt: 'shared root',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          status: 'completed',
+          createdAt: 1784100201000,
+          module: 'translation',
+          sourceOrder: 0,
+          taskId: rootTaskId,
+          backendJobId: rootBackendJobId,
+        },
+        {
+          id: 'shared-retry-1',
+          projectId,
+          imageUrl: '',
+          prompt: 'shared retry',
+          model: 'gpt-image-2',
+          aspectRatio: '1:1',
+          status: 'generating',
+          createdAt: 1784100202000,
+          module: 'translation',
+          retryOfResultId: 'shared-root',
+          retryRootResultId: 'shared-root',
+          retryAttempt: 1,
+          sourceOrder: 0,
+          taskId: retryTaskId,
+          backendJobId: retryBackendJobId,
+        },
+      ],
+    }],
+    translationMemory: {
+      main: {
+        files: [
+          {
+            ...baseFile,
+            id: 'shared-root',
+            status: 'completed',
+            resultUrl: 'https://example.com/shared-root.png',
+            createdAt: 1784100201000,
+            taskId: rootTaskId,
+            backendJobId: rootBackendJobId,
+          },
+          {
+            ...baseFile,
+            id: 'shared-retry-1',
+            status: 'processing',
+            progress: 12,
+            createdAt: 1784100202000,
+            retryOfResultId: 'shared-root',
+            retryRootResultId: 'shared-root',
+            retryAttempt: 1,
+            taskId: retryTaskId,
+            backendJobId: retryBackendJobId,
+          },
+        ],
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  }, [{
+    id: retryBackendJobId,
+    module: 'translation',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: retryTaskId,
+    payload: {
+      shellProjectId: projectId,
+      shellProjectName: 'Shared identity translation project',
+      shellResultId: 'shared-retry-1',
+      shellPurpose: 'translation_result_retry',
+      subFeature: 'main',
+      retryOfResultId: 'shared-root',
+      retryRootResultId: 'shared-root',
+      retryAttempt: 1,
+      sourceOrder: 0,
+      batchIndex: 2,
+      batchCount: 2,
+    },
+    result: {
+      imageUrl: 'https://example.com/shared-retry.png',
+      providerTaskId: retryTaskId,
+    },
+    createdAt: 1784100203000,
+    updatedAt: 1784100204000,
+    finishedAt: 1784100204000,
+  }]);
+};
+
+test('shell data adapter keeps translation retry distinct when provider task id is shared', () => {
+  const snapshot = buildSharedTranslationRetryIdentitySnapshot({ taskId: 'shared-provider-task' });
+  const project = snapshot.projects.find((item) => item.id === 'shared-identity-shared-provider-task');
+  assert.deepEqual(project?.results.map((result) => result.id), ['shared-root', 'shared-retry-1']);
+  assert.equal(project?.results[0]?.imageUrl, 'https://example.com/shared-root.png');
+  assert.equal(project?.results[1]?.imageUrl, 'https://example.com/shared-retry.png');
+});
+
+test('shell data adapter keeps translation retry distinct when backend job id is shared', () => {
+  const snapshot = buildSharedTranslationRetryIdentitySnapshot({ backendJobId: 'shared-backend-job' });
+  const project = snapshot.projects.find((item) => item.id === 'shared-identity-shared-backend-job');
+  assert.deepEqual(project?.results.map((result) => result.id), ['shared-root', 'shared-retry-1']);
+  assert.equal(project?.results[0]?.imageUrl, 'https://example.com/shared-root.png');
+  assert.equal(project?.results[1]?.imageUrl, 'https://example.com/shared-retry.png');
+});
+
+test('shell data adapter does not count a failed translation retry with a result url as completed', () => {
+  const snapshot = buildShellDataSnapshot({
+    translationMemory: {
+      main: {
+        files: [
+          {
+            id: 'count-root',
+            fileName: 'count-source.png',
+            relativePath: 'count-source.png',
+            status: 'completed',
+            progress: 100,
+            resultUrl: 'https://example.com/count-root.png',
+            prompt: 'count root',
+            model: 'gpt-image-2',
+            aspectRatio: '1:1',
+            subFeature: 'main',
+            projectId: 'count-translation-project',
+            projectName: 'Count translation project',
+            projectCreatedAt: 1784100300000,
+            createdAt: 1784100301000,
+            sourceOrder: 0,
+          },
+          {
+            id: 'count-retry-1',
+            fileName: 'count-source__retry-1.png',
+            relativePath: 'count-source__retry-1.png',
+            status: 'error',
+            progress: 100,
+            resultUrl: 'https://example.com/failed-preview.png',
+            error: 'retry failed',
+            prompt: 'count retry',
+            model: 'gpt-image-2',
+            aspectRatio: '1:1',
+            subFeature: 'main',
+            projectId: 'count-translation-project',
+            projectName: 'Count translation project',
+            projectCreatedAt: 1784100300000,
+            createdAt: 1784100302000,
+            retryOfResultId: 'count-root',
+            retryRootResultId: 'count-root',
+            retryAttempt: 1,
+            sourceOrder: 0,
+          },
+        ],
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'count-translation-project');
+  assert.equal(project?.taskCount, 2);
+  assert.equal(project?.completedCount, 1);
+  assert.equal(project?.status, 'error');
+  assert.deepEqual(project?.results.map((result) => result.status), ['completed', 'error']);
+});

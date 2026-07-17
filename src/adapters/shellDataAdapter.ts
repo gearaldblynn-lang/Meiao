@@ -7,6 +7,7 @@ import type {
   ProductRestoreProjectContext,
   SubtitleRemovalPixels,
   SubtitleRemovalRegion,
+  TranslationConfigSnapshot,
   VideoStoryboardBoard,
   VideoStoryboardConfig,
   VideoStoryboardProject,
@@ -56,6 +57,11 @@ import {
   normalizeShellProjectScope,
   normalizeStructuredShellSubFeature,
 } from '../utils/shellProjectScope.mjs';
+import {
+  createTranslationConfigSnapshot,
+  sortTranslationRetryResults,
+  sumTranslationRetryCredits,
+} from '../modules/Translation/translationRetryUtils.mjs';
 
 type ShellProjectStatus = 'planning' | 'generating' | 'completed' | 'error';
 type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
@@ -108,6 +114,15 @@ export interface ShellGeneratedResult {
   sourceResultId?: string;
   subtitleRegionNormalized?: SubtitleRemovalRegion;
   subtitleRegionPixels?: SubtitleRemovalPixels;
+  retryOfResultId?: string;
+  retryRootResultId?: string;
+  retryAttempt?: number;
+  sourceOrder?: number;
+  translationConfigSnapshot?: TranslationConfigSnapshot;
+  translationPlanningText?: string;
+  translationPlanningTaskId?: string;
+  translationPlanningCreditsConsumed?: number;
+  translationGenerationCreditsConsumed?: number;
 }
 
 export interface ShellProjectData {
@@ -312,6 +327,10 @@ const normalizeCreditsConsumed = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 };
+
+const normalizeTranslationConfigSnapshot = (value: unknown): TranslationConfigSnapshot | undefined => (
+  createTranslationConfigSnapshot(value) || undefined
+);
 
 type ProductRestoreRecordIdentity = {
   module?: unknown;
@@ -974,9 +993,14 @@ const resultFromItem = (
 ): ShellGeneratedResult | null => {
   const url = getResultUrl(item);
   const status = taskStatusToTask(item?.status);
-  if (!url && status !== 'error') return null;
+  const retryOfResultId = String(item?.retryOfResultId ?? item?.payload?.retryOfResultId ?? '').trim() || undefined;
+  const retryRootResultId = String(item?.retryRootResultId ?? item?.payload?.retryRootResultId ?? '').trim() || undefined;
+  if (!url && status !== 'error' && !(module === MODULE_VALUES.TRANSLATION && (retryOfResultId || retryRootResultId))) return null;
   const mediaType = module === MODULE_VALUES.VIDEO || Boolean(item?.videoUrl || item?.result?.videoUrl) ? 'video' : 'image';
   const subtitleRemovalMetadata = getSubtitleRemovalResultMetadata(item);
+  const retryAttemptValue = item?.retryAttempt ?? item?.payload?.retryAttempt;
+  const sourceOrderValue = item?.sourceOrder ?? item?.payload?.sourceOrder;
+  const translationConfigSnapshot = item?.translationConfigSnapshot ?? item?.payload?.translationConfigSnapshot;
   return {
     id: String(subtitleRemovalMetadata.shellResultId || item?.id || item?.taskId || `${module}-${fallbackTitle}-${createdAt}`),
     planId: module === MODULE_VALUES.ONE_CLICK
@@ -990,7 +1014,9 @@ const resultFromItem = (
     model: normalizeModel(item?.model || item?.payload?.model),
     aspectRatio: String(item?.matchedAspectRatio || item?.aspectRatio || item?.payload?.aspectRatio || item?.payload?.ratio || 'auto'),
     status: status === 'completed' ? 'completed' : status === 'error' ? 'error' : status === 'retry_waiting' ? 'retry_waiting' : 'generating',
-    createdAt,
+    createdAt: Number.isFinite(Number(item?.createdAt)) && Number(item?.createdAt) > 0
+      ? Number(item.createdAt)
+      : createdAt,
     module,
     subFeature,
     ...subtitleRemovalMetadata,
@@ -1005,6 +1031,23 @@ const resultFromItem = (
     matchedAspectRatio: String(item?.matchedAspectRatio || item?.aspectRatio || item?.payload?.aspectRatio || item?.payload?.ratio || 'auto'),
     originalWidth: Number(item?.originalWidth || item?.payload?.finalSize?.width || 0) || undefined,
     originalHeight: Number(item?.originalHeight || item?.payload?.finalSize?.height || 0) || undefined,
+    retryOfResultId,
+    retryRootResultId,
+    retryAttempt: retryAttemptValue == null || !Number.isFinite(Number(retryAttemptValue))
+      ? undefined
+      : Number(retryAttemptValue),
+    sourceOrder: sourceOrderValue == null || !Number.isFinite(Number(sourceOrderValue))
+      ? undefined
+      : Number(sourceOrderValue),
+    translationConfigSnapshot: normalizeTranslationConfigSnapshot(translationConfigSnapshot),
+    translationPlanningText: String(item?.translationPlanningText ?? item?.payload?.translationPlanningText ?? '').trim() || undefined,
+    translationPlanningTaskId: String(item?.translationPlanningTaskId ?? item?.payload?.translationPlanningTaskId ?? '').trim() || undefined,
+    translationPlanningCreditsConsumed: normalizeCreditsConsumed(
+      item?.translationPlanningCreditsConsumed ?? item?.payload?.translationPlanningCreditsConsumed,
+    ),
+    translationGenerationCreditsConsumed: normalizeCreditsConsumed(
+      item?.translationGenerationCreditsConsumed ?? item?.payload?.translationGenerationCreditsConsumed,
+    ),
   };
 };
 
@@ -1025,10 +1068,15 @@ const projectFromItems = (
 ): ShellProjectData | null => {
   if (!items.length) return null;
   const { ms: createdAt, precise: createdAtPrecise } = coerceCreatedAtMs(createdAtValue, { id });
-  const results = items
+  const mappedResults = items
     .map((item, index) => resultFromItem(item, module, `${name} ${index + 1}`, createdAt, subFeature, fallbackPrompt))
     .filter((item): item is ShellGeneratedResult => Boolean(item));
-  const completedCount = items.filter((item) => taskStatusToProject(item?.status) === 'completed' || getResultUrl(item)).length;
+  const results = module === MODULE_VALUES.TRANSLATION
+    ? sortTranslationRetryResults(mappedResults) as ShellGeneratedResult[]
+    : mappedResults;
+  const completedCount = module === MODULE_VALUES.TRANSLATION
+    ? results.filter((result) => result.status === 'completed' && Boolean(result.imageUrl || result.videoUrl)).length
+    : items.filter((item) => taskStatusToProject(item?.status) === 'completed' || getResultUrl(item)).length;
   const hasRunning = items.some((item) => taskStatusToProject(item?.status) === 'generating');
   const hasError = items.some((item) => taskStatusToProject(item?.status) === 'error');
   const hasPlans = Array.isArray(plans) && plans.length > 0;
@@ -1359,6 +1407,29 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         originalWidth: Number(result?.originalWidth || 0) || undefined,
         originalHeight: Number(result?.originalHeight || 0) || undefined,
         logoReplaceGuarded: result?.logoReplaceGuarded === true || undefined,
+        retryOfResultId: String(result?.retryOfResultId ?? result?.payload?.retryOfResultId ?? '').trim() || undefined,
+        retryRootResultId: String(result?.retryRootResultId ?? result?.payload?.retryRootResultId ?? '').trim() || undefined,
+        retryAttempt: result?.retryAttempt == null && result?.payload?.retryAttempt == null
+          ? undefined
+          : Number.isFinite(Number(result?.retryAttempt ?? result?.payload?.retryAttempt))
+            ? Number(result?.retryAttempt ?? result?.payload?.retryAttempt)
+            : undefined,
+        sourceOrder: result?.sourceOrder == null && result?.payload?.sourceOrder == null
+          ? undefined
+          : Number.isFinite(Number(result?.sourceOrder ?? result?.payload?.sourceOrder))
+            ? Number(result?.sourceOrder ?? result?.payload?.sourceOrder)
+            : undefined,
+        translationConfigSnapshot: normalizeTranslationConfigSnapshot(
+          result?.translationConfigSnapshot ?? result?.payload?.translationConfigSnapshot,
+        ),
+        translationPlanningText: String(result?.translationPlanningText ?? result?.payload?.translationPlanningText ?? '').trim() || undefined,
+        translationPlanningTaskId: String(result?.translationPlanningTaskId ?? result?.payload?.translationPlanningTaskId ?? '').trim() || undefined,
+        translationPlanningCreditsConsumed: normalizeCreditsConsumed(
+          result?.translationPlanningCreditsConsumed ?? result?.payload?.translationPlanningCreditsConsumed,
+        ),
+        translationGenerationCreditsConsumed: normalizeCreditsConsumed(
+          result?.translationGenerationCreditsConsumed ?? result?.payload?.translationGenerationCreditsConsumed,
+        ),
       })) : [],
       taskCount: Number(project.taskCount || project.results?.length || 1),
       completedCount: Number(project.completedCount || 0),
@@ -1731,7 +1802,7 @@ const mapJobs = (
     if (!jobId || hiddenJobIds.has(jobId)) return;
     const module = toModule(job.module);
     if (module !== MODULE_VALUES.TRANSLATION || !String(job.taskType || '').includes('image')) return;
-    if (String((job.payload as any)?.shellPurpose || '').trim() !== 'translation_generation') return;
+    if (!['translation_generation', 'translation_result_retry'].includes(String((job.payload as any)?.shellPurpose || '').trim())) return;
     const payloadProjectId = String((job.payload as any)?.shellProjectId || '').trim();
     if (!payloadProjectId) return;
     const bucket = translationGroups.get(payloadProjectId) || [];
@@ -2154,11 +2225,36 @@ const mapJobs = (
 	      const status = taskStatusToProject(job.status);
 	      const batchIndex = Number(payload.batchIndex || index + 1) || index + 1;
 	      const providerTaskId = String(job.providerTaskId || job.result?.providerTaskId || '').trim();
+	      const resultId = String(payload.shellResultId || providerTaskId || `${job.id}-result-${batchIndex}`);
+	      const persistedResult = matchedProject?.results.find((result) => result.id === resultId);
 	      const sourceUrl = String(payload.sourceUrl || '').trim();
 	      const sourcePreviewUrl = String(payload.sourcePreviewUrl || payload.sourceUrl || '').trim();
 	      const finalSize = payload.finalSize && typeof payload.finalSize === 'object' ? payload.finalSize : {};
+	      const retryAttemptValue = payload.retryAttempt ?? persistedResult?.retryAttempt;
+	      const sourceOrderValue = payload.sourceOrder ?? persistedResult?.sourceOrder;
+	      const translationConfigSnapshot = payload.translationConfigSnapshot ?? persistedResult?.translationConfigSnapshot;
+	      const translationPlanningCreditsConsumed = normalizeCreditsConsumed(
+	        payload.translationPlanningCreditsConsumed ?? persistedResult?.translationPlanningCreditsConsumed,
+	      );
+	      const translationGenerationCreditsConsumed = normalizeCreditsConsumed(
+	        payload.translationGenerationCreditsConsumed
+	        ?? job.result?.creditsConsumed
+	        ?? persistedResult?.translationGenerationCreditsConsumed,
+	      );
+	      const stageCreditsConsumed = sumTranslationRetryCredits(
+	        translationPlanningCreditsConsumed,
+	        translationGenerationCreditsConsumed,
+	      );
+	      const persistedCreditsConsumed = normalizeCreditsConsumed(persistedResult?.creditsConsumed);
+	      const creditsConsumed = translationPlanningCreditsConsumed !== undefined
+	        && translationGenerationCreditsConsumed !== undefined
+	        ? stageCreditsConsumed
+	        : normalizeCreditsConsumed(Math.max(
+	          Number(stageCreditsConsumed || 0),
+	          Number(persistedCreditsConsumed || 0),
+	        ));
 	      return {
-	        id: String(payload.shellResultId || providerTaskId || `${job.id}-result-${batchIndex}`),
+	        id: resultId,
 	        projectId: shellProjectId,
 	        imageUrl: urls[0] || '',
 	        mediaType: 'image' as const,
@@ -2166,7 +2262,7 @@ const mapJobs = (
 	        model: normalizeModel(payload.model || job.result?.model || job.provider),
 	        aspectRatio: String(payload.aspectRatio || payload.ratio || job.result?.aspectRatio || 'auto'),
 	        status: (status === 'completed' && urls[0] ? 'completed' : status === 'error' ? 'error' : 'generating') as ShellGeneratedResult['status'],
-	        createdAt: toCreatedMs(job.createdAt || firstJob?.createdAt),
+	        createdAt: persistedResult?.createdAt ?? toCreatedMs(job.createdAt || firstJob?.createdAt),
 	        module: MODULE_VALUES.TRANSLATION,
 	        subFeature: String(payload.subFeature || subFeature || '').trim() || undefined,
 	        sourceUrl: sourceUrl || undefined,
@@ -2176,20 +2272,34 @@ const mapJobs = (
 	        taskId: providerTaskId || undefined,
 	        backendJobId: String(job.id || '').trim() || undefined,
 	        batchIndex,
-	        creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+	        creditsConsumed,
 	        error: String(job.errorMessage || job.errorCode || '').trim() || undefined,
         errorDetail: String(job.errorDetail || '').trim() || undefined,
 	        originalWidth: Number(finalSize.width || 0) || undefined,
 	        originalHeight: Number(finalSize.height || 0) || undefined,
+	        retryOfResultId: String(payload.retryOfResultId ?? persistedResult?.retryOfResultId ?? '').trim() || undefined,
+	        retryRootResultId: String(payload.retryRootResultId ?? persistedResult?.retryRootResultId ?? '').trim() || undefined,
+	        retryAttempt: retryAttemptValue == null || !Number.isFinite(Number(retryAttemptValue))
+	          ? undefined
+	          : Number(retryAttemptValue),
+	        sourceOrder: sourceOrderValue == null || !Number.isFinite(Number(sourceOrderValue))
+	          ? undefined
+	          : Number(sourceOrderValue),
+	        translationConfigSnapshot: normalizeTranslationConfigSnapshot(translationConfigSnapshot),
+	        translationPlanningText: String(payload.translationPlanningText ?? persistedResult?.translationPlanningText ?? '').trim() || undefined,
+	        translationPlanningTaskId: String(payload.translationPlanningTaskId ?? persistedResult?.translationPlanningTaskId ?? '').trim() || undefined,
+	        translationPlanningCreditsConsumed,
+	        translationGenerationCreditsConsumed,
 	      };
-	    }).sort((a, b) => Number(a.batchIndex || 0) - Number(b.batchIndex || 0));
-	    const completedCount = results.filter((result) => result.status === 'completed' && result.imageUrl).length;
-	    const hasRunning = results.some((result) => result.status === 'generating');
-	    const hasError = results.some((result) => result.status === 'error');
+	    });
+	    const orderedResults = sortTranslationRetryResults(results) as ShellGeneratedResult[];
+	    const completedCount = orderedResults.filter((result) => result.status === 'completed' && result.imageUrl).length;
+	    const hasRunning = orderedResults.some((result) => result.status === 'generating');
+	    const hasError = orderedResults.some((result) => result.status === 'error');
 	    const taskCount = Math.max(
 	      ...sortedJobs.map((job) => Number((job.payload as any)?.batchCount || 0) || 0),
 	      matchedProject?.taskCount || 0,
-	      results.length,
+	      orderedResults.length,
 	      1,
 	    );
 	    const projectName = String((firstJob?.payload as any)?.shellProjectName || '').trim()
@@ -2204,13 +2314,13 @@ const mapJobs = (
 	      status: hasRunning ? 'generating' : hasError ? 'error' : 'completed',
 	      createdAt,
 	      completedAt: completedCount >= taskCount && !hasRunning ? toCreatedMs(sortedJobs.at(-1)?.finishedAt || sortedJobs.at(-1)?.updatedAt || sortedJobs.at(-1)?.createdAt) : matchedProject?.completedAt,
-	      results,
+	      results: orderedResults,
 	      taskCount,
 	      completedCount,
 	      subFeature: String((firstJob?.payload as any)?.subFeature || matchedProject?.subFeature || subFeature || '').trim() || undefined,
 	      sourceType: matchedProject?.sourceType || 'job',
 	      backendJobId: String(sortedJobs.at(-1)?.id || '').trim() || undefined,
-	      creditsConsumed: normalizeCreditsConsumed(results.reduce((sum, result) => sum + (Number(result.creditsConsumed) || 0), 0)) || matchedProject?.creditsConsumed,
+	      creditsConsumed: normalizeCreditsConsumed(orderedResults.reduce((sum, result) => sum + (Number(result.creditsConsumed) || 0), 0)) || matchedProject?.creditsConsumed,
 	    });
 	    sortedJobs
 	      .filter((job) => ['queued', 'running', 'retry_waiting'].includes(String(job.status || '')))
@@ -3574,6 +3684,17 @@ const hasVisibleProjectContent = (project: ShellProjectData) => {
 };
 
 const getGeneratedResultMergeKeys = (result: ShellGeneratedResult) => {
+  if (result.module === MODULE_VALUES.TRANSLATION) {
+    const identityKind = Boolean(String(result.retryOfResultId || '').trim()) || Number(result.retryAttempt) > 0
+      ? 'retry'
+      : 'original';
+    const translationKeys = [
+      result.taskId ? `${identityKind}-provider:${result.taskId}` : '',
+      result.backendJobId ? `${identityKind}-job:${result.backendJobId}` : '',
+      result.id ? `id:${result.id}` : '',
+    ].filter(Boolean);
+    if (translationKeys.length > 0) return translationKeys;
+  }
   const concreteKeys = [
     getProductRestoreTargetKey(result),
     result.taskId ? `task:${result.taskId}` : '',
@@ -3622,6 +3743,15 @@ const mergeGeneratedResultPreservingSource = (
   relativePath: next.relativePath || existing.relativePath,
   originalWidth: next.originalWidth || existing.originalWidth,
   originalHeight: next.originalHeight || existing.originalHeight,
+  retryOfResultId: next.retryOfResultId ?? existing.retryOfResultId,
+  retryRootResultId: next.retryRootResultId ?? existing.retryRootResultId,
+  retryAttempt: next.retryAttempt ?? existing.retryAttempt,
+  sourceOrder: next.sourceOrder ?? existing.sourceOrder,
+  translationConfigSnapshot: next.translationConfigSnapshot ?? existing.translationConfigSnapshot,
+  translationPlanningText: next.translationPlanningText ?? existing.translationPlanningText,
+  translationPlanningTaskId: next.translationPlanningTaskId ?? existing.translationPlanningTaskId,
+  translationPlanningCreditsConsumed: next.translationPlanningCreditsConsumed ?? existing.translationPlanningCreditsConsumed,
+  translationGenerationCreditsConsumed: next.translationGenerationCreditsConsumed ?? existing.translationGenerationCreditsConsumed,
 });
 
 const mergeProjectResultsByIdentity = (
@@ -3899,7 +4029,10 @@ const mergeProjectSnapshot = (existing: ShellProjectData, next: ShellProjectData
     : clearPlanningJobPendingResults
     ? (existing.results || []).filter((result) => !isPlanningJobPendingResult(result, planningJobIds))
     : existing.results || [];
-  const results = sortMergedResultsByBatchIndex(mergeProjectResultsByIdentity(existingResults, next.results || []));
+  const mergedResults = mergeProjectResultsByIdentity(existingResults, next.results || []);
+  const results = next.module === MODULE_VALUES.TRANSLATION
+    ? sortTranslationRetryResults(mergedResults) as ShellGeneratedResult[]
+    : sortMergedResultsByBatchIndex(mergedResults);
   const completedCount = results.filter(hasCompletedMediaResult).length;
   const taskCount = getMergedProjectTaskCount(existing, next, plans, results, completedCount);
   const hasGenerating = results.some((result) => (result.status === 'generating' || result.status === 'retry_waiting') && resultHasRuntimeIdentity(result));
@@ -3986,6 +4119,9 @@ export const buildShellDataSnapshot = (
     byId.set(project.id, mergeProjectSnapshot(existing, project));
   });
   const projects = Array.from(byId.values())
+    .map((project) => project.module === MODULE_VALUES.TRANSLATION
+      ? { ...project, results: sortTranslationRetryResults(project.results) as ShellGeneratedResult[] }
+      : project)
     .map(normalizeOneClickProjectCard)
     .map(normalizeProductRestoreProjectCard)
     .filter(hasVisibleProjectContent);

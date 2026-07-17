@@ -1580,3 +1580,389 @@ test('product restoration persistence collapses historical job cards to the cano
   assert.equal(nextState.shellProjects[0].results.length, 1);
   assert.equal(nextState.shellProjects[0].results[0].imageUrl, '/new.png');
 });
+
+const buildTranslationShellProject = (results, overrides = {}) => ({
+  id: 'translation-shell-retry-project',
+  name: 'Translation retry persistence',
+  module: 'translation',
+  status: results.some((result) => result.status === 'generating') ? 'generating' : 'completed',
+  createdAt: 100,
+  results,
+  taskCount: results.length,
+  completedCount: results.filter((result) => result.status === 'completed' && result.imageUrl).length,
+  subFeature: 'main',
+  ...overrides,
+});
+
+test('shell project persistence keeps a translation retry separate from its original despite shared runtime ids', () => {
+  const original = {
+    id: 'translation-original',
+    imageUrl: 'https://example.com/original.png',
+    prompt: 'original',
+    model: 'gpt-image-2',
+    aspectRatio: '1:1',
+    status: 'completed',
+    createdAt: 100,
+    module: 'translation',
+    subFeature: 'main',
+    taskId: 'shared-provider-task',
+    backendJobId: 'shared-backend-job',
+  };
+  const retry = {
+    ...original,
+    id: 'translation-retry-1',
+    imageUrl: 'https://example.com/retry.png',
+    prompt: 'retry',
+    createdAt: 200,
+    retryOfResultId: original.id,
+    retryRootResultId: original.id,
+    retryAttempt: 1,
+    sourceOrder: 0,
+  };
+  const state = buildPersistedAppState({
+    shellProjects: [buildTranslationShellProject([original])],
+  });
+
+  const nextState = upsertShellProjectIntoPersistedState(
+    state,
+    buildTranslationShellProject([retry]),
+  );
+
+  assert.deepEqual(nextState.shellProjects[0].results.map((result) => result.id), [original.id, retry.id]);
+  assert.equal(nextState.shellProjects[0].results[1].retryOfResultId, original.id);
+  assert.equal(nextState.shellProjects[0].results[1].retryAttempt, 1);
+});
+
+test('shell project persistence updates one translation retry by exact id without duplication', () => {
+  const pendingRetry = {
+    id: 'translation-retry-update',
+    imageUrl: '',
+    prompt: 'retry pending',
+    model: 'gpt-image-2',
+    aspectRatio: '1:1',
+    status: 'generating',
+    createdAt: 200,
+    module: 'translation',
+    subFeature: 'main',
+    taskId: 'retry-provider-task',
+    backendJobId: 'retry-backend-job',
+    retryOfResultId: 'translation-original',
+    retryRootResultId: 'translation-original',
+    retryAttempt: 1,
+    sourceOrder: 0,
+  };
+  const state = buildPersistedAppState({
+    shellProjects: [buildTranslationShellProject([pendingRetry])],
+  });
+
+  const nextState = upsertShellProjectIntoPersistedState(state, buildTranslationShellProject([{
+    ...pendingRetry,
+    imageUrl: 'https://example.com/retry-completed.png',
+    prompt: 'retry completed',
+    status: 'completed',
+  }]));
+
+  assert.equal(nextState.shellProjects[0].results.length, 1);
+  assert.equal(nextState.shellProjects[0].results[0].status, 'completed');
+  assert.equal(nextState.shellProjects[0].results[0].imageUrl, 'https://example.com/retry-completed.png');
+  assert.equal(nextState.shellProjects[0].results[0].retryOfResultId, 'translation-original');
+});
+
+test('shell project persistence still merges non-retry translation originals by stable runtime ids', () => {
+  const existingOriginal = {
+    id: 'translation-original-old-id',
+    imageUrl: 'https://example.com/original-old.png',
+    prompt: 'old original',
+    model: 'gpt-image-2',
+    aspectRatio: '1:1',
+    status: 'completed',
+    createdAt: 100,
+    module: 'translation',
+    subFeature: 'main',
+    taskId: 'same-original-provider',
+    backendJobId: 'same-original-backend',
+  };
+  const incomingOriginal = {
+    ...existingOriginal,
+    id: 'translation-original-new-id',
+    imageUrl: 'https://example.com/original-new.png',
+    prompt: 'new original',
+  };
+  const state = buildPersistedAppState({
+    shellProjects: [buildTranslationShellProject([existingOriginal])],
+  });
+
+  const nextState = upsertShellProjectIntoPersistedState(
+    state,
+    buildTranslationShellProject([incomingOriginal]),
+  );
+
+  assert.equal(nextState.shellProjects[0].results.length, 1);
+  assert.equal(nextState.shellProjects[0].results[0].id, incomingOriginal.id);
+  assert.equal(nextState.shellProjects[0].results[0].imageUrl, incomingOriginal.imageUrl);
+});
+
+test('shell persistence keeps a translation retry separate from its completed original', () => {
+  const state = buildPersistedAppState({
+    translationMemory: {
+      main: {
+        files: [{
+          id: 'root-a',
+          fileName: 'source-a.png',
+          status: 'completed',
+          progress: 100,
+          sourceUrl: 'https://example.com/source-a.png',
+          resultUrl: 'https://example.com/result-a.png',
+          projectId: 'translation-batch-1',
+        }],
+        isProcessing: false,
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  });
+
+  const nextState = upsertTranslationFilesIntoPersistedState(state, 'main', [{
+    id: 'retry-a-1',
+    fileName: 'source-a.png',
+    status: 'completed',
+    progress: 100,
+    sourceUrl: 'https://example.com/source-a.png',
+    resultUrl: 'https://example.com/result-a-retry-1.png',
+    projectId: 'translation-batch-1',
+    retryOfResultId: 'root-a',
+    retryRootResultId: 'root-a',
+    retryAttempt: 1,
+  }]);
+
+  assert.equal(nextState.translationMemory.main.files.length, 2);
+  assert.deepEqual(
+    nextState.translationMemory.main.files.map((file) => file.id).sort(),
+    ['retry-a-1', 'root-a'],
+  );
+});
+
+test('shell persistence keeps a translation retry separate when it shares a provider task id with its original', () => {
+  const state = buildPersistedAppState({
+    translationMemory: {
+      main: {
+        files: [{
+          id: 'root-provider-a',
+          fileName: 'source-provider-a.png',
+          status: 'completed',
+          progress: 100,
+          resultUrl: 'https://example.com/result-provider-root-a.png',
+          taskId: 'shared-provider-a',
+          projectId: 'translation-batch-provider-a',
+        }],
+        isProcessing: false,
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  });
+
+  const nextState = upsertTranslationFilesIntoPersistedState(state, 'main', [{
+    id: 'retry-provider-a-1',
+    fileName: 'source-provider-a.png',
+    status: 'error',
+    progress: 100,
+    resultUrl: 'https://example.com/result-provider-retry-a-1.png',
+    error: 'retry generation failed after producing a preview',
+    taskId: 'shared-provider-a',
+    projectId: 'translation-batch-provider-a',
+    retryOfResultId: 'root-provider-a',
+    retryRootResultId: 'root-provider-a',
+    retryAttempt: 1,
+  }]);
+
+  assert.equal(nextState.translationMemory.main.files.length, 2);
+  const original = nextState.translationMemory.main.files.find((file) => file.id === 'root-provider-a');
+  const retry = nextState.translationMemory.main.files.find((file) => file.id === 'retry-provider-a-1');
+  assert.equal(original?.status, 'completed');
+  assert.equal(original?.resultUrl, 'https://example.com/result-provider-root-a.png');
+  assert.equal(original?.retryOfResultId, undefined);
+  assert.equal(retry?.status, 'error');
+  assert.equal(retry?.resultUrl, 'https://example.com/result-provider-retry-a-1.png');
+  assert.equal(retry?.retryOfResultId, 'root-provider-a');
+});
+
+test('shell persistence keeps a translation retry separate when it shares a backend job id with its original', () => {
+  const state = buildPersistedAppState({
+    translationMemory: {
+      detail: {
+        files: [{
+          id: 'root-backend-a',
+          fileName: 'source-backend-a.png',
+          status: 'completed',
+          progress: 100,
+          resultUrl: 'https://example.com/result-backend-root-a.png',
+          backendJobId: 'shared-backend-a',
+          projectId: 'translation-batch-backend-a',
+        }],
+        isProcessing: false,
+      },
+      main: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  });
+
+  const nextState = upsertTranslationFilesIntoPersistedState(state, 'detail', [{
+    id: 'retry-backend-a-1',
+    fileName: 'source-backend-a.png',
+    status: 'completed',
+    progress: 100,
+    resultUrl: 'https://example.com/result-backend-retry-a-1.png',
+    backendJobId: 'shared-backend-a',
+    projectId: 'translation-batch-backend-a',
+    retryOfResultId: 'root-backend-a',
+    retryRootResultId: 'root-backend-a',
+    retryAttempt: 1,
+  }]);
+
+  assert.equal(nextState.translationMemory.detail.files.length, 2);
+  const original = nextState.translationMemory.detail.files.find((file) => file.id === 'root-backend-a');
+  const retry = nextState.translationMemory.detail.files.find((file) => file.id === 'retry-backend-a-1');
+  assert.equal(original?.resultUrl, 'https://example.com/result-backend-root-a.png');
+  assert.equal(original?.retryRootResultId, undefined);
+  assert.equal(retry?.resultUrl, 'https://example.com/result-backend-retry-a-1.png');
+  assert.equal(retry?.status, 'completed');
+  assert.equal(retry?.retryRootResultId, 'root-backend-a');
+});
+
+test('shell persistence merges translation retry lifecycle updates by retry id', () => {
+  const state = buildPersistedAppState({
+    translationMemory: {
+      main: {
+        files: [{
+          id: 'retry-a-1',
+          fileName: 'source-a.png',
+          status: 'pending',
+          progress: 0,
+          sourceUrl: 'https://example.com/source-a.png',
+          projectId: 'translation-batch-1',
+          retryOfResultId: 'root-a',
+          retryRootResultId: 'root-a',
+          retryAttempt: 1,
+          sourceOrder: 0,
+        }],
+        isProcessing: true,
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  });
+
+  const processingState = upsertTranslationFilesIntoPersistedState(state, 'main', [{
+    id: 'retry-a-1',
+    fileName: 'source-a.png',
+    status: 'processing',
+    progress: 45,
+    sourceUrl: 'https://example.com/source-a.png',
+    taskId: 'provider-retry-a-1',
+    backendJobId: 'backend-retry-a-1',
+    projectId: 'translation-batch-1',
+    retryOfResultId: 'root-a',
+    retryRootResultId: 'root-a',
+    retryAttempt: 1,
+    sourceOrder: 0,
+    translationPlanningTaskId: 'planning-retry-a-1',
+    translationPlanningCreditsConsumed: 2,
+  }]);
+
+  assert.equal(processingState.translationMemory.main.files.length, 1);
+  assert.equal(processingState.translationMemory.main.files[0].status, 'processing');
+  assert.equal(processingState.translationMemory.main.files[0].progress, 45);
+  assert.equal(processingState.translationMemory.main.files[0].taskId, 'provider-retry-a-1');
+  assert.equal(processingState.translationMemory.main.files[0].backendJobId, 'backend-retry-a-1');
+  assert.equal(processingState.translationMemory.main.files[0].translationPlanningTaskId, 'planning-retry-a-1');
+
+  const completedState = upsertTranslationFilesIntoPersistedState(processingState, 'main', [{
+    id: 'retry-a-1',
+    fileName: 'source-a.png',
+    status: 'completed',
+    progress: 100,
+    sourceUrl: 'https://example.com/source-a.png',
+    resultUrl: 'https://example.com/result-a-retry-1.png',
+    taskId: 'provider-retry-a-1',
+    backendJobId: 'backend-retry-a-1',
+    projectId: 'translation-batch-1',
+    retryOfResultId: 'root-a',
+    retryRootResultId: 'root-a',
+    retryAttempt: 1,
+    sourceOrder: 0,
+    translationGenerationCreditsConsumed: 5,
+  }]);
+
+  assert.equal(completedState.translationMemory.main.files.length, 1);
+  assert.equal(completedState.translationMemory.main.files[0].status, 'completed');
+  assert.equal(completedState.translationMemory.main.files[0].progress, 100);
+  assert.equal(completedState.translationMemory.main.files[0].resultUrl, 'https://example.com/result-a-retry-1.png');
+  assert.equal(completedState.translationMemory.main.files[0].translationPlanningCreditsConsumed, 2);
+  assert.equal(completedState.translationMemory.main.files[0].translationGenerationCreditsConsumed, 5);
+  assert.equal(completedState.translationMemory.main.isProcessing, false);
+
+  const staleState = upsertTranslationFilesIntoPersistedState(completedState, 'main', [{
+    id: 'retry-a-1',
+    fileName: 'source-a.png',
+    status: 'pending',
+    progress: 0,
+    sourceUrl: 'https://example.com/source-a.png',
+    projectId: 'translation-batch-1',
+    retryOfResultId: 'root-a',
+    retryRootResultId: 'root-a',
+    retryAttempt: 1,
+    error: 'stale pending snapshot',
+  }]);
+
+  assert.equal(staleState.translationMemory.main.files.length, 1);
+  assert.equal(staleState.translationMemory.main.files[0].status, 'completed');
+  assert.equal(staleState.translationMemory.main.files[0].progress, 100);
+  assert.equal(staleState.translationMemory.main.files[0].resultUrl, 'https://example.com/result-a-retry-1.png');
+  assert.equal(staleState.translationMemory.main.files[0].taskId, 'provider-retry-a-1');
+  assert.equal(staleState.translationMemory.main.files[0].backendJobId, 'backend-retry-a-1');
+  assert.equal(staleState.translationMemory.main.files[0].retryRootResultId, 'root-a');
+  assert.equal(staleState.translationMemory.main.files[0].error, undefined);
+  assert.equal(staleState.translationMemory.main.isProcessing, false);
+});
+
+test('shell persistence preserves translation retry metadata through storage upsert', () => {
+  const state = buildPersistedAppState({
+    translationMemory: {
+      main: { files: [], isProcessing: false },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  });
+  const retryMetadata = {
+    retryOfResultId: 'root-a',
+    retryRootResultId: 'root-a',
+    retryAttempt: 2,
+    sourceOrder: 3,
+    translationConfigSnapshot: {
+      targetLanguage: 'ja',
+      preserveLayout: true,
+    },
+    translationPlanningText: 'Translate the product title and labels.',
+    translationPlanningTaskId: 'planning-task-a',
+    translationPlanningCreditsConsumed: 2,
+    translationGenerationCreditsConsumed: 5,
+    createdAt: 1784095200000,
+  };
+
+  const nextState = upsertTranslationFilesIntoPersistedState(state, 'detail', [{
+    id: 'retry-a-2',
+    fileName: 'source-a.png',
+    status: 'pending',
+    progress: 0,
+    sourceUrl: 'https://example.com/source-a.png',
+    projectId: 'translation-batch-1',
+    ...retryMetadata,
+  }]);
+
+  const saved = nextState.translationMemory.detail.files[0];
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(retryMetadata).map((key) => [key, saved[key]])),
+    retryMetadata,
+  );
+});
