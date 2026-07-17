@@ -22,10 +22,10 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 ## 2026-07-17 - 项目卡子功能归属必须使用统一结构化契约
 
 - Symptom: 产品还原结果出现在原图精修页签，同一次项目的两次任务恢复成两张重复卡。
-- Environment: local development / shell project hydration and persistence / product restoration.
+- Environment: local development / Tencent Cloud production / shell project hydration and persistence / product restoration.
 - Root cause: 旧 retouch job normalizer 不认识 `product_restore` 并默认返回 `original`；通用恢复忽略 payload 中已有的 `shellProjectId`。架构级根因见 `CLAUDE.md` #75。
 - Fix: 统一所有当前 module/subFeature 的结构化归属契约，在读取、筛选、前端持久化和服务端合并边界自愈产品还原历史记录；恢复任务统一沿用 `shellProjectId`，同目标只保留较新结果。
-- Regression check: 产品还原真实本地 state + jobs 回放只得到一个 canonical 项目；真实浏览器原图精修错误卡 0、产品还原目标卡 1、控制台 error 0；全量 `lint/test/build`。
+- Regression check: 产品还原真实本地 state + jobs 回放只得到一个 canonical 项目；真实浏览器原图精修错误卡 0、产品还原目标卡 1、控制台 error 0；全量 `lint/test/build`；云上 health、关键文件哈希、COS 真探针与只读项目归属审计通过，`productRestoreScopeMismatchCount=0`。
 - Avoid next time: 新增页签功能必须在同一提交中补齐 scope contract 和 hydrate/persist/merge 回归；未知子功能不得静默落入默认页签，历史归并必须同时有确定性正例和跨功能负例。
 
 ## 2026-07-15 - 外部去字幕服务不能读取梅奥本机托管地址
