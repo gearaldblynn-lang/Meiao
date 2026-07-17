@@ -996,7 +996,7 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Fix: 新增共享 `shellJobSync` 协调器。模块工作台不再按本地活跃任务决定是否同步，而是按可配置周期统一读取 jobs；页面重新可见、窗口聚焦、pageshow 和网络恢复时立即同步。所有 hydration 触发共享 coalesced async runner，同一时刻只允许一个快照请求；首轮失败仍消费已请求的尾随同步。账号切换、退出和离开模块会使 async scope 失效，所有延迟 UI updater 和持久化 writer 在执行时重新校验，禁止旧账号写使用新 token。最近 200 条以外的单 job 补查仅保留 planning/generating/retry_waiting 等活跃 identity，终态历史不再形成 N+1 请求。
 - Scope: 一键主详（首图/主图/详情/SKU）、翻译、买家秀、图片升级/产品还原、万物替换、视频生成/分镜/去字幕、小红书封面统一继承该修复。图片裁剪、视频诊断和配置 CRUD 不走这条长任务项目卡链。Agent Center 使用独立会话同步机制，不把本修复误写为已覆盖。
 - Regression check: `node --experimental-strip-types --test src/utils/shellJobSync.test.mjs src/shell/shellJobLiveSyncBehavior.test.mjs src/adapters/shellDataAdapter.test.mjs src/utils/syncedProjectPersistence.test.mjs src/adapters/shellRuntimeMerge.test.mjs`；`node --experimental-strip-types --test src/components/uiArchitecture.test.mjs`；`npm run build`。必须锁定：没有本地活跃身份仍周期同步、前台/网络恢复立即同步、首轮失败不丢尾随、切账号/退出后旧延迟写失效、终态历史不会触发单条补查、所有队列模块终态恢复不回退。
-- Deployment: `not_deployed`。本地代码和自动化回归已完成，尚未执行腾讯云发布或线上不刷新 canary。
+- Deployment: `deployed_to_cloud` (`f40b2ca`)。云上首图 canary 后台成功后约 42 秒内在同一未刷新页面自动显示完成结果；结果文件 Range 读取返回 `206 image/jpeg`，随后删除项目并刷新未复活。
 - Avoid next time: “刷新后能恢复”只证明 adapter 能读，不证明当前页面会持续同步。任何新增耐久 job 模块都必须默认接入共享同步协调器，并验收正常前台、后台挂起后返回、网络断开后恢复、客户端占位未落库和多标签/切账号场景；不能再以本地 React 状态是否还标记 active 作为服务端真相同步的开关。
 
 ## 2026-07-16 - Product restoration analysis must be target-addressable and parse only known provider envelopes
@@ -1032,5 +1032,14 @@ Before debugging a recurring issue, search this file, related tests, and recent 
 - Environment: Tencent Cloud production / all queue-backed shell modules / multi-account app state / paid asynchronous providers.
 - Root cause: 公共同步曾依赖客户端仍记得 active job，页面挂起后停止；补上周期同步后，异步 updater 与写队列仍未绑定账号 epoch 和提交时 session token。删除协调器没有对 submitted-cancelled 任务执行原 ID 查询，恢复能力也未精确到 provider/model；恢复耗尽被压成普通失败，没有人工结算态和 health 告警。协调器每轮全表解析 `app_states.state_json`，稳定性成本随所有账号状态体积增长。
 - Fix: 所有队列项目卡固定周期及 focus/pageshow/online/visibility 恢复同步，共享 coalesced runner；账号切换使旧 async scope 和写队列失效，网络请求固定使用捕获 token。删除恢复按 `taskType + provider + model` 真实能力只查询旧 `providerTaskId`；只有明确 provider failed 终态才自动释放，成功无结果、鉴权/配置失败、不可查询或耗尽时进入 `provider_recovery_manual`，保留结果与积分证据。人工核验支持未扣费 release 和已成功实际积分 settle，后者强制记录核验依据并与 ledger/job 更新同事务。无内部预留的无 ID 历史 submission-unknown 按持久删除意图收敛，删除事务仍二次检查 ledger。墓碑协调器改为 `updated_at` 索引增量扫描、未收敛缓存和同毫秒指纹边界，health 暴露 pending reason、age 和 alerting。
-- Regression check: `npm run verify`；定向回归覆盖周期/前台/联网恢复、账号切换后旧 UI 与远端写失效、捕获 token、精确 provider 恢复矩阵、query-only 不重提、恢复耗尽人工态、同毫秒游标和删除 409 scheduled 映射。真实云上验收仍须核对发布 health、历史墓碑收敛、两个新任务排序及至少一个任务无需刷新出现终态。
+- Regression check: `npm run verify`；定向回归覆盖周期/前台/联网恢复、账号切换后旧 UI 与远端写失效、捕获 token、精确 provider 恢复矩阵、query-only 不重提、恢复耗尽人工态、同毫秒游标和删除 409 scheduled 映射。云上真实回放：首图任务不刷新自动显示完成；删除后 job 物理消失且项目未复活；历史 tombstone 从 7 收敛至 0，积分 settle 审计存在；从马哥切到多桑后无马哥项目泄漏。发布后 health 为 `ok`、worker healthy、tombstone pending 0、managed asset backlog 0。
 - Avoid next time: 客户端轮询、服务端任务 ledger 和 app state 是三套生命周期，任何一套不能靠另一套“通常还在”作为触发条件。跨账号异步必须携带不可变账号与凭证快照。付费恢复必须区分 create 与 query，并为不可判定终态保留人工审计出口；后台扫描必须与待处理量成比例，而不是与所有用户大状态成比例。
+
+## 2026-07-17 - Project sort must use an immutable, schema-bound creation identity
+
+- Symptom: 马哥首图项目列表刷新后顺序为 26、24、25、23，后创建的项目25 被项目24 压到后面。
+- Environment: Tencent Cloud production / shared shell project grid / one-click first image.
+- Root cause: 排序使用可变 `createdAt`；项目24 的创建 ID 时间是 `1784188578940`，但完成/水合回写将其字段改为 `1784188830099`，大于项目25。从任意 ID 搜索时间戳的初稿又会误命中随机 job ID。
+- Fix: 只信任锚定的 `^proj(?:-plan)?-(timestamp)` 创建型 ID；该不可变时间优先于可变字段，所有非该 schema ID 仍使用自身 `createdAt`。
+- Regression check: `node --test src/adapters/shellScopeFilters.test.mjs src/shell/shellJobLiveSyncBehavior.test.mjs src/utils/shellJobSync.test.mjs`；`npx tsc -b`；`npm run verify`；独立复审 Critical 0 / Important 0。真实 24/25 数据回归锁定 25 > 24，随机 `job-1784188578940abcdef01234` 负例锁定不得覆盖真实时间。云上源码 SHA-256 与本地一致，公网生产 bundle 包含同一锚定规则；最终页面 DOM 截图因浏览器控制连接超时未取得，不写成已有发布后 UI 截图。
+- Avoid next time: 完成时间和创建时间必须分离。如果只能从 ID 恢复创建顺序，必须先限定明确 ID schema，并在真实正例之外添加随机 ID 负例；不得在任意字符串中搜数字并当作身份。
