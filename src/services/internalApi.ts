@@ -316,11 +316,13 @@ export const saveRemoteAppState = async (
     mode?: 'merge' | 'replace';
     includeCanonicalState?: boolean;
     sessionToken?: string;
+    signal?: AbortSignal;
   } = {},
 ) => {
   return request<{ ok: boolean; state?: PersistedAppState }>('/api/state', {
     method: 'PUT',
     sessionToken: options.sessionToken,
+    signal: options.signal,
     body: JSON.stringify({
       state,
       mode: options.mode || 'merge',
