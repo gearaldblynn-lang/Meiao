@@ -1,7 +1,8 @@
 import './shell/index.css';
 import React, { Suspense, lazy, useState, useCallback, useEffect, useMemo, useRef } from 'react';
+import { flushSync } from 'react-dom';
 import { AppModuleObj, AspectRatio, VideoSubMode } from './types';
-import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, TranslationConfigSnapshot, TranslationEditVersion, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
+import type { AppModule, AuthUser, GlobalApiConfig, InternalJob, ModuleInterfaceId, OneClickGenerationContext, OneClickReferencePreset, ProductRestoreAnalysisAttempt, ProductRestoreFocusId, ProductRestoreNormalizedAnalysisV1, ProductRestoreProjectContext, SubtitleRemovalPixels, SubtitleRemovalRegion, SubtitleRemovalSourceDraft, TranslationConfigSnapshot, TranslationEditRegion, TranslationEditVersion, VideoDiagnosisAnalysisItem, VideoPersistentState, VideoStoryboardBoard, VideoStoryboardConfig, VideoStoryboardProject } from './types';
 import SidebarNavigation from './shell/components/layout/SidebarNavigation';
 import { ToastProvider, useToast } from './shell/components/ToastSystem';
 import SystemAnnouncementModal from './shell/components/SystemAnnouncementModal';
@@ -97,6 +98,27 @@ import { createMaterialUploadCoordinator } from './utils/materialUploadCoordinat
 import { buildGenerationSubmissionKey } from './utils/generationSubmissionKey';
 import { deriveTranslationExecutionPlan } from './modules/Translation/translationProcessingUtils.mjs';
 import {
+  buildTranslationRegionEditLogMeta,
+  copyTranslationEditVersionFields,
+  failUnrecoverableTranslationRegionEditProtection,
+  getCompletedTranslationEditVersions,
+  isOwnedGeneratingTranslationEditVersion,
+  isSameTranslationRegionEditRecovery,
+  listRecoverableTranslationRegionEdits,
+  listUnrecoverableTranslationRegionEdits,
+  persistTranslationRegionEditCancelTransition,
+  persistTranslationRegionEditTransition,
+  reduceTranslationRegionEditProjectMutation,
+  releaseTranslationRegionEditLockOwner,
+  runTranslationRegionEditProtectionRecovery,
+  runTranslationRegionEditRecoveryQueue,
+  settleLateTranslationRegionEditJobIdentity,
+  validateTranslationEditRegions,
+} from './modules/Translation/translationRegionEditUtils.mjs';
+import { buildTranslationRegionEditRequest } from './modules/Translation/translationRegionEditRequest.mjs';
+import { compositeTranslationRegionEdit, createTranslationRegionGuide } from './modules/Translation/translationRegionEditImage.mjs';
+import { resolveTranslationInitialCanvasSize } from './modules/Translation/translationRegionEditSize.mjs';
+import {
   acquireTranslationRetryScopeLock,
   buildTranslationGenerationPrompt,
   buildTranslationRetryDescriptor,
@@ -114,7 +136,8 @@ import {
   getSafeRetouchAspectRatioForModel,
 } from './modules/Retouch/retouchSizingUtils.mjs';
 import { getEffectiveConcurrency } from './modules/Account/accountManagementUtils.mjs';
-import { isRecoverableKieTaskResult, recoverKieAiTask } from './services/kieAiService';
+import { isRecoverableKieTaskResult, processWithKieAi, recoverKieAiTask } from './services/kieAiService';
+import { logActionFailure, logActionInterrupted, logActionStart, logActionSuccess } from './services/loggingService';
 import { recoverProductRestoreAnalysisBatch } from './services/arkService';
 import { buildStoryboardBoardGenerationImport } from './shell/modules/Video/storyboardImportUtils.mjs';
 import {
@@ -163,6 +186,17 @@ import {
   getSubtitleRemovalRetryDecision,
   isSubtitleRemovalJobCreationUnknown,
 } from './utils/subtitleRemovalRetrySafety.mjs';
+
+type TranslationRegionCompositeInput = {
+  sourceUrl?: string;
+  generatedUrl?: string;
+  targetWidth?: number;
+  targetHeight?: number;
+  regions?: TranslationEditRegion[];
+  featherRatio?: number;
+  loadImage?: (url: string, signal?: AbortSignal) => Promise<unknown>;
+  signal?: AbortSignal;
+};
 
 const BottomInputBar = lazy(() => import('./shell/components/layout/BottomInputBar'));
 const LandingPage = lazy(() => import('./shell/components/LandingPage'));
@@ -691,6 +725,25 @@ export interface Project {
   creditsConsumed?: number;
   error?: string;
 }
+
+type TranslationRegionEditProtectionItem = {
+  key: string;
+  projectId: string;
+  resultId: string;
+  versionId: string;
+  sourceVersionId: string;
+  subFeature: string;
+  sourceImageUrl: string;
+  pendingProtectedSourceUrl: string;
+  latestResultImageUrl: string;
+  latestCompletedVersionId: string;
+  regions: TranslationEditRegion[];
+  backendJobId?: string;
+  taskId?: string;
+  creditsConsumed?: number;
+  errorCode?: string;
+  errorMessage?: string;
+};
 
 export interface Task {
   id: string;
@@ -1873,6 +1926,7 @@ type TranslationBatchFile = {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  translationEditVersions?: TranslationEditVersion[];
 };
 
 const translationStatusToGeneratedStatus = (status: TranslationBatchFile['status']): GeneratedResult['status'] => {
@@ -1915,6 +1969,7 @@ const translationFileToResult = (
   translationPlanningTaskId: file.translationPlanningTaskId,
   translationPlanningCreditsConsumed: file.translationPlanningCreditsConsumed,
   translationGenerationCreditsConsumed: file.translationGenerationCreditsConsumed,
+  ...copyTranslationEditVersionFields(file, 'imageUrl'),
 });
 
 const translationResultToFile = (
@@ -1959,6 +2014,7 @@ const translationResultToFile = (
   translationPlanningTaskId: result.translationPlanningTaskId,
   translationPlanningCreditsConsumed: result.translationPlanningCreditsConsumed,
   translationGenerationCreditsConsumed: result.translationGenerationCreditsConsumed,
+  ...copyTranslationEditVersionFields(result, 'resultUrl'),
 });
 
 const getTranslationProjectStatus = (files: TranslationBatchFile[]): Project['status'] => {
@@ -2373,6 +2429,29 @@ const AppContent: React.FC<{
   const subtitleRemovalSubmitLockRef = useRef(false);
   const subtitleRemovalEntryLockRef = useRef(false);
   const taskControllersRef = useRef<Record<string, AbortController>>({});
+  const translationRegionEditLockOwnersRef = useRef<Map<string, string>>(new Map());
+  const translationRegionEditProtectionLocksRef = useRef<Set<string>>(new Set());
+  const translationRegionEditRecoveryQueuesRef = useRef<Map<string, Promise<void>>>(new Map());
+  const currentShellScopeUserIdRef = useRef(shellLocalScopeUserId);
+  currentShellScopeUserIdRef.current = shellLocalScopeUserId;
+  const translationRegionEditRecoveryScopeRef = useRef<{
+    userId: string | null;
+    controller: AbortController;
+  } | null>(null);
+  useEffect(() => {
+    const recoveryScope = {
+      userId: shellLocalScopeUserId,
+      controller: new AbortController(),
+    };
+    translationRegionEditRecoveryScopeRef.current?.controller.abort();
+    translationRegionEditRecoveryScopeRef.current = recoveryScope;
+    return () => {
+      recoveryScope.controller.abort();
+      if (translationRegionEditRecoveryScopeRef.current === recoveryScope) {
+        translationRegionEditRecoveryScopeRef.current = null;
+      }
+    };
+  }, [shellLocalScopeUserId]);
   const deletedStoryboardProjectIdsRef = useRef<Set<string>>(new Set());
   const cancelledStoryboardProjectIdsRef = useRef<Set<string>>(new Set());
   const storyboardBoardDeletionGuardsRef = useRef<Map<string, StoryboardBoardDeletionGuard>>(new Map());
@@ -2782,8 +2861,21 @@ const AppContent: React.FC<{
       const branchKey = ONE_CLICK_REMOTE_BRANCH_BY_SUBFEATURE[subFeature || ''];
       return String(latestSharedStateRef.current?.oneClickMemory?.[branchKey]?.config?.model || '').trim();
     }
+    if (module === AppModuleObj.TRANSLATION) {
+      const branchKey = TRANSLATION_REMOTE_BRANCH_BY_SUBFEATURE[subFeature || 'main'] || 'main';
+      return String(latestSharedStateRef.current?.translationConfigs?.[branchKey]?.model || '').trim();
+    }
     return '';
   }, []);
+
+  const releaseTranslationRegionEditLock = useCallback((actionKey: string, ownerId: string) => (
+    releaseTranslationRegionEditLockOwner(
+      translationRegionEditLockOwnersRef.current,
+      actionKey,
+      ownerId,
+      () => endExclusiveAction(actionKey),
+    )
+  ), [endExclusiveAction]);
 
   const resolveSharedStateBaseForWrite = useCallback(async (isCurrent: () => boolean = () => true) => {
     if (!isCurrent()) return {};
@@ -3554,17 +3646,23 @@ const AppContent: React.FC<{
 
   type PersistProjectToSharedState = {
     (project: Project): Promise<boolean>;
-    (project: Project, options: { includeCanonicalProject: true }): Promise<{
+    (project: Project, options: { includeCanonicalProject: true; guard?: () => boolean; signal?: AbortSignal }): Promise<{
       accepted: boolean;
       project?: Project & { generationContext: NonNullable<Project['generationContext']> };
     }>;
+    (project: Project, options: { includeCanonicalProject?: false; guard?: () => boolean; signal?: AbortSignal }): Promise<boolean>;
   };
 
   const persistProjectToSharedState = useCallback((
     project: Project,
-    options: { includeCanonicalProject?: boolean } = {},
+    options: { includeCanonicalProject?: boolean; guard?: () => boolean; signal?: AbortSignal } = {},
   ) => {
-    const isCurrent = sharedStateScopeRef.current!.capture();
+    const isScopeCurrent = sharedStateScopeRef.current!.capture();
+    const isCurrent = () => (
+      isScopeCurrent()
+      && !options.signal?.aborted
+      && options.guard?.() !== false
+    );
     const sessionToken = captureInternalSessionToken();
     const staleValue = options.includeCanonicalProject ? { accepted: false } : false;
     const write = async (isWriteCurrent: () => boolean) => {
@@ -3596,6 +3694,7 @@ const AppContent: React.FC<{
           {
             ...(options.includeCanonicalProject ? { includeCanonicalState: true } : {}),
             sessionToken,
+            signal: options.signal,
           },
         );
         if (options.includeCanonicalProject) {
@@ -3950,8 +4049,14 @@ const AppContent: React.FC<{
       });
   }, [addToast]);
 
-  const persistTranslationFilesToSharedState = useCallback((subFeature: string, files: Array<Record<string, unknown>>) => {
-    const isCurrent = sharedStateScopeRef.current!.capture();
+  const persistTranslationFilesToSharedState = useCallback((
+    subFeature: string,
+    files: Array<Record<string, unknown>>,
+    guard?: () => boolean,
+    signal?: AbortSignal,
+  ) => {
+    const isScopeCurrent = sharedStateScopeRef.current!.capture();
+    const isCurrent = () => isScopeCurrent() && !signal?.aborted && guard?.() !== false;
     const sessionToken = captureInternalSessionToken();
     const write = async (isWriteCurrent: () => boolean) => {
       if (!isWriteCurrent()) return false;
@@ -3975,7 +4080,7 @@ const AppContent: React.FC<{
       savePersistedAppState(nextState, shellLocalScopeUserId);
       if (!isWriteCurrent()) return false;
       try {
-        await saveRemoteAppState(buildTranslationRemotePatch(nextState, subFeature), { sessionToken });
+        await saveRemoteAppState(buildTranslationRemotePatch(nextState, subFeature), { sessionToken, signal });
         return isWriteCurrent();
       } catch (error) {
         console.warn('[MEIAO] failed to persist translation files to remote storage', error);
@@ -3984,6 +4089,184 @@ const AppContent: React.FC<{
     };
     return sharedStateWriteQueueRef.current!.enqueue(isCurrent, write, false);
   }, [resolveSharedStateBaseForWrite, shellLocalScopeUserId]);
+
+  useEffect(() => {
+    const recoveryScope = translationRegionEditRecoveryScopeRef.current;
+    if (
+      !hasHydratedSharedData
+      || !shellLocalScopeUserId
+      || !recoveryScope
+      || recoveryScope.userId !== shellLocalScopeUserId
+    ) return;
+    const scopeUserId = shellLocalScopeUserId;
+    const recoverySignal = recoveryScope.controller.signal;
+    const isRecoveryScopeCurrent = () => (
+      translationRegionEditRecoveryScopeRef.current === recoveryScope
+      && recoveryScope.userId === scopeUserId
+      && !recoverySignal.aborted
+      && currentShellScopeUserIdRef.current === scopeUserId
+    );
+    const recoverable = listRecoverableTranslationRegionEdits(projects) as TranslationRegionEditProtectionItem[];
+    const unrecoverable = listUnrecoverableTranslationRegionEdits(projects) as TranslationRegionEditProtectionItem[];
+    let cancelled = false;
+    const isCandidateCurrent = (item: TranslationRegionEditProtectionItem) => {
+      if (!isRecoveryScopeCurrent()) return false;
+      const currentCandidates = (item.errorCode
+        ? listUnrecoverableTranslationRegionEdits(projectsRef.current)
+        : listRecoverableTranslationRegionEdits(projectsRef.current)) as TranslationRegionEditProtectionItem[];
+      const current = currentCandidates.find((candidate) => candidate.key === item.key);
+      return isSameTranslationRegionEditRecovery(current, item);
+    };
+    const commit = (mutation: Record<string, unknown>) => {
+      if (!isRecoveryScopeCurrent()) return null;
+      let committedProject: Project | null = null;
+      let committedResult: GeneratedResult | null = null;
+      flushSync(() => {
+        setProjects((prev) => {
+          if (!isRecoveryScopeCurrent()) return prev;
+          const outcome = reduceTranslationRegionEditProjectMutation(prev, mutation);
+          if (!outcome.updated || !outcome.project || !outcome.result) return prev;
+          const next = outcome.projects as Project[];
+          projectsRef.current = next;
+          committedProject = outcome.project as Project;
+          committedResult = outcome.result as GeneratedResult;
+          return next;
+        });
+      });
+      return committedProject && committedResult
+        ? { project: committedProject, result: committedResult }
+        : null;
+    };
+    const logRecoveredSuccess = (event: { item: TranslationRegionEditProtectionItem }) => {
+      const item = event.item;
+      void logActionSuccess({
+        module: AppModuleObj.TRANSLATION,
+        action: 'translation_region_edit_succeeded',
+        message: '出海翻译单张修改刷新恢复成功',
+        meta: buildTranslationRegionEditLogMeta({
+          shellProjectId: item.projectId,
+          shellResultId: item.resultId,
+          sourceVersionId: item.sourceVersionId,
+          targetVersionId: item.versionId,
+          regions: item.regions,
+          backendJobId: item.backendJobId,
+          providerTaskId: item.taskId,
+          creditsConsumed: item.creditsConsumed,
+          recovered: true,
+        }),
+      });
+    };
+    const logRecoveredFailure = (event: {
+      item: TranslationRegionEditProtectionItem;
+      error: unknown;
+      persistenceErrors?: unknown[];
+    }) => {
+      const item = event.item;
+      const persistenceError = (event.persistenceErrors || [])
+        .map((error) => error instanceof Error ? error.message : String(error || ''))
+        .filter(Boolean)
+        .join('; ');
+      void logActionFailure({
+        module: AppModuleObj.TRANSLATION,
+        action: 'translation_region_edit_failed',
+        message: '出海翻译单张修改刷新恢复失败',
+        detail: event.error instanceof Error ? event.error.message : String(event.error || ''),
+        meta: buildTranslationRegionEditLogMeta({
+          shellProjectId: item.projectId,
+          shellResultId: item.resultId,
+          sourceVersionId: item.sourceVersionId,
+          targetVersionId: item.versionId,
+          regions: item.regions,
+          backendJobId: item.backendJobId,
+          providerTaskId: item.taskId,
+          creditsConsumed: item.creditsConsumed,
+          recovered: true,
+          persistenceStatus: persistenceError ? 'failed' : 'success',
+          persistenceError,
+          error: event.error,
+        }),
+      });
+    };
+    const createDependencies = (item: TranslationRegionEditProtectionItem) => {
+      const guard = () => isCandidateCurrent(item);
+      return {
+        locks: translationRegionEditProtectionLocksRef.current,
+        getProjects: () => projectsRef.current,
+        signal: recoverySignal,
+        isScopeCurrent: isRecoveryScopeCurrent,
+        persistProject: (candidate: { project: Project; result: GeneratedResult }) => (
+          persistProjectToSharedState(candidate.project, { guard, signal: recoverySignal })
+        ),
+        persistFiles: (candidate: { project: Project; result: GeneratedResult }) => {
+          const resultIndex = candidate.project.results.findIndex((result) => result.id === candidate.result.id);
+          return persistTranslationFilesToSharedState(
+            candidate.project.subFeature || candidate.result.subFeature || 'main',
+            [translationResultToFile(candidate.project, candidate.result, Math.max(0, resultIndex))],
+            guard,
+            recoverySignal,
+          );
+        },
+        commit,
+        logSuccess: logRecoveredSuccess,
+        logFailure: logRecoveredFailure,
+      };
+    };
+    const queueItems = [
+      ...recoverable.map((item) => ({ ...item, recoveryKind: 'recoverable' as const })),
+      ...unrecoverable.map((item) => ({ ...item, recoveryKind: 'unrecoverable' as const })),
+    ];
+    const previousQueue = translationRegionEditRecoveryQueuesRef.current.get(scopeUserId) || Promise.resolve();
+    const queuedRecovery = previousQueue.then(() => runTranslationRegionEditRecoveryQueue(queueItems, {
+      concurrency: 1,
+      shouldContinue: () => (
+        !cancelled
+        && isRecoveryScopeCurrent()
+      ),
+      worker: async (item) => {
+        const dependencies = createDependencies(item);
+        if (item.recoveryKind === 'unrecoverable') {
+          await failUnrecoverableTranslationRegionEditProtection(item, {
+            ...dependencies,
+            lockKey: `${scopeUserId}:${item.key}`,
+          });
+          return;
+        }
+        await runTranslationRegionEditProtectionRecovery(item, {
+          ...dependencies,
+          lockKey: `${scopeUserId}:${item.key}`,
+          composite: (input: TranslationRegionCompositeInput) => (
+            compositeTranslationRegionEdit(input as Parameters<typeof compositeTranslationRegionEdit>[0])
+          ),
+          getImageDimensions,
+          upload: async ({ blob, fileName, signal }: { blob: Blob; fileName: string; signal?: AbortSignal }) => {
+            const file = new File([blob], 'translation-edit-recovered-version.png', { type: 'image/png' });
+            return uploadInternalAssetStream({
+              module: AppModuleObj.TRANSLATION,
+              file,
+              fileName,
+              signal,
+            });
+          },
+        });
+      },
+    }), () => undefined);
+    const settledQueue = queuedRecovery.then(() => undefined, () => undefined);
+    translationRegionEditRecoveryQueuesRef.current.set(scopeUserId, settledQueue);
+    void settledQueue.then(() => {
+      if (translationRegionEditRecoveryQueuesRef.current.get(scopeUserId) === settledQueue) {
+        translationRegionEditRecoveryQueuesRef.current.delete(scopeUserId);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    hasHydratedSharedData,
+    persistProjectToSharedState,
+    persistTranslationFilesToSharedState,
+    projects,
+    shellLocalScopeUserId,
+  ]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -10136,6 +10419,569 @@ const AppContent: React.FC<{
     }
   }, [projects, tasks, addToast, hydrateShellJobs, currentParams, publicBaseUrl, apiConfig, persistTranslationFilesToSharedState, persistProjectToSharedState, ensureMaterialRemoteUrls, createRemoteMaterial, handleStoryboardRegenerateResult, getCurrentScopedImageModel, beginExclusiveAction, endExclusiveAction, currentUser?.id, currentUser?.role, systemConfig?.featureRollouts?.productRestore, recordProductRestoreJobCreated]);
 
+  const handleTranslationRegionEdit = useCallback(async (
+    projectId: string,
+    resultId: string,
+    input: { sourceVersionId: string; regions: TranslationEditRegion[] },
+  ) => {
+    const actionKey = `translation-region-edit:${projectId}:${resultId}`;
+    const versionId = `translation-edit-${crypto.randomUUID()}`;
+    if (!beginExclusiveAction(actionKey, '该图片已有修改任务，请等待完成后再试')) {
+      throw new Error('该图片已有修改任务，请等待完成后再试');
+    }
+    translationRegionEditLockOwnersRef.current.set(actionKey, versionId);
+
+    let controller: AbortController | null = null;
+    const controllerKeys = new Set<string>();
+    let latestBackendJobId = '';
+    let latestProviderTaskId = '';
+    let latestCreditsConsumed: number | undefined;
+    let generation: Awaited<ReturnType<typeof processWithKieAi>> | undefined;
+    let sourceVersionId = '';
+    let subFeature = '';
+    let validatedRegions: TranslationEditRegion[] = [];
+    let identityPersistChain = Promise.resolve();
+    let identityPersistError: unknown = null;
+    let lateCancelError: unknown = null;
+    let lateIdentityPersistenceError: unknown = null;
+    const commitMutation = (mutation: Record<string, unknown>) => {
+      let committedProject: Project | null = null;
+      let committedResult: GeneratedResult | null = null;
+      flushSync(() => {
+        setProjects((prev) => {
+          const outcome = reduceTranslationRegionEditProjectMutation(prev, mutation);
+          if (!outcome.updated || !outcome.project || !outcome.result) return prev;
+          const next = outcome.projects as Project[];
+          projectsRef.current = next;
+          committedProject = outcome.project as Project;
+          committedResult = outcome.result as GeneratedResult;
+          return next;
+        });
+      });
+      return committedProject && committedResult ? { project: committedProject, result: committedResult } : null;
+    };
+    const persistProjectMutation = (committed: { project: Project; result: GeneratedResult }) => (
+      persistProjectToSharedState(committed.project)
+    );
+    const persistFilesMutation = (committed: { project: Project; result: GeneratedResult }) => {
+      const resultIndex = committed.project.results.findIndex((item) => item.id === committed.result.id);
+      return persistTranslationFilesToSharedState(
+        committed.result.subFeature || committed.project.subFeature || 'main',
+        [translationResultToFile(committed.project, committed.result, Math.max(0, resultIndex))],
+      );
+    };
+    const persistMutation = (committed: { project: Project; result: GeneratedResult }) => (
+      persistTranslationRegionEditTransition({
+        candidate: committed,
+        persistProject: persistProjectMutation,
+        persistFiles: persistFilesMutation,
+        commit: (candidate: { project: Project; result: GeneratedResult }) => candidate,
+      })
+    );
+    try {
+      let project = projectsRef.current.find((item) => item.id === projectId);
+      let result = project?.results.find((item) => item.id === resultId);
+      subFeature = project?.subFeature || '';
+      if (
+        !project
+        || project.module !== AppModuleObj.TRANSLATION
+        || !['main', 'detail'].includes(subFeature)
+        || !result
+        || result.module !== AppModuleObj.TRANSLATION
+        || Boolean(result.subFeature && result.subFeature !== subFeature)
+        || result.status !== 'completed'
+        || !result.imageUrl
+      ) throw new Error('该结果不支持区域修改');
+      if (result.translationEditVersions?.some((version) => version.status === 'generating')) {
+        throw new Error('该图片已有修改任务，请等待完成后再试');
+      }
+
+      sourceVersionId = String(input?.sourceVersionId || '').trim();
+      let sourceVersion = getCompletedTranslationEditVersions(result)
+        .find((item: TranslationEditVersion) => item.id === sourceVersionId) as TranslationEditVersion | undefined;
+      if (!sourceVersion?.imageUrl) throw new Error('所选修改版本不存在或尚未完成');
+      const validation = validateTranslationEditRegions(input?.regions);
+      if (!validation.ok) throw new Error(`修改区域无效：${validation.code}`);
+      validatedRegions = validation.regions as TranslationEditRegion[];
+
+      if (!getCurrentScopedImageModel(AppModuleObj.TRANSLATION, subFeature)) {
+        await resolveSharedStateBaseForWrite();
+      }
+      const latestProject = projectsRef.current.find((item) => item.id === projectId);
+      const latestResult = latestProject?.results.find((item) => item.id === resultId);
+      const latestSubFeature = latestProject?.subFeature || '';
+      const latestValidation = validateTranslationEditRegions(input?.regions);
+      if (
+        !latestProject
+        || latestProject.module !== AppModuleObj.TRANSLATION
+        || !['main', 'detail'].includes(latestSubFeature)
+        || !latestResult
+        || latestResult.module !== AppModuleObj.TRANSLATION
+        || Boolean(latestResult.subFeature && latestResult.subFeature !== latestSubFeature)
+        || latestResult.status !== 'completed'
+        || !latestResult.imageUrl
+        || !latestValidation.ok
+      ) throw new Error('修改目标或区域已变化，请重新打开后再试');
+      project = latestProject;
+      result = latestResult;
+      subFeature = latestSubFeature;
+      validatedRegions = latestValidation.regions as TranslationEditRegion[];
+      sourceVersion = getCompletedTranslationEditVersions(latestResult)
+        .find((item: TranslationEditVersion) => item.id === sourceVersionId) as TranslationEditVersion | undefined;
+      if (!sourceVersion?.imageUrl) throw new Error('所选修改版本已不存在');
+      const currentImageModel = getCurrentScopedImageModel(AppModuleObj.TRANSLATION, subFeature);
+      if (!currentImageModel) throw new Error('当前翻译图片模型未配置');
+
+      const sourceVersionPublicUrl = resolvePublicAssetUrl(sourceVersion.imageUrl, publicBaseUrl);
+      if (!/^https?:\/\//i.test(sourceVersionPublicUrl)) throw new Error('所选版本缺少模型可读取的公网地址');
+      const fallbackCanvas = sourceVersion.canvasWidth && sourceVersion.canvasHeight
+        ? { width: sourceVersion.canvasWidth, height: sourceVersion.canvasHeight }
+        : await getImageDimensionsFromUrl(sourceVersionPublicUrl).catch(() => null);
+      const initialCanvas = resolveTranslationInitialCanvasSize({
+        subFeature,
+        snapshot: result.translationConfigSnapshot,
+        originalWidth: result.originalWidth,
+        originalHeight: result.originalHeight,
+        persistedWidth: result.initialCanvasWidth,
+        persistedHeight: result.initialCanvasHeight,
+        fallbackWidth: fallbackCanvas?.width,
+        fallbackHeight: fallbackCanvas?.height,
+      });
+      if (!initialCanvas) throw new Error('无法确认原始出海翻译尺寸，请重新生成后再修改');
+      const pending = commitMutation({
+        kind: 'start', projectId, resultId, versionId, sourceVersionId,
+        regions: validatedRegions, createdAt: Date.now(),
+        canvasWidth: initialCanvas.width,
+        canvasHeight: initialCanvas.height,
+        initialCanvasWidth: initialCanvas.width,
+        initialCanvasHeight: initialCanvas.height,
+      });
+      if (!pending) throw new Error('修改目标已变化，请重新打开后再试');
+      controller = new AbortController();
+      const controllerKey = `translation-region-edit:${projectId}:${resultId}:${versionId}`;
+      controllerKeys.add(controllerKey);
+      taskControllersRef.current[controllerKey] = controller;
+      await persistMutation(pending);
+      controller.signal.throwIfAborted();
+      void logActionStart({
+        module: AppModuleObj.TRANSLATION,
+        action: 'translation_region_edit_started',
+        message: '出海翻译单张修改开始',
+        meta: buildTranslationRegionEditLogMeta({
+          shellProjectId: projectId, shellResultId: resultId, sourceVersionId,
+          targetVersionId: versionId, regions: validatedRegions,
+        }),
+      });
+
+      const guide = await createTranslationRegionGuide({
+        imageUrl: sourceVersionPublicUrl,
+        targetWidth: initialCanvas.width,
+        targetHeight: initialCanvas.height,
+        regions: validatedRegions,
+      } as Parameters<typeof createTranslationRegionGuide>[0]);
+      controller.signal.throwIfAborted();
+      const guideFile = new File([guide.blob], `translation-region-guide-${versionId}.png`, { type: 'image/png' });
+      const guideUpload = await uploadInternalAssetStream({
+        module: AppModuleObj.TRANSLATION,
+        file: guideFile,
+        fileName: guideFile.name,
+        signal: controller.signal,
+      });
+      controller.signal.throwIfAborted();
+      const guidePublicUrl = resolvePublicAssetUrl(guideUpload.fileUrl, publicBaseUrl);
+      if (!/^https?:\/\//i.test(guidePublicUrl)) throw new Error('区域引导图上传后缺少公网地址');
+
+      const technicalConfig = {
+        aspectRatio: AspectRatio.AUTO,
+        quality: '1k',
+        model: normalizeShellImageModel(currentImageModel),
+        resolutionMode: 'custom',
+        targetWidth: initialCanvas.width,
+        targetHeight: initialCanvas.height,
+        maxFileSize: 2,
+      };
+      const { effectiveConfig, isRatioMatch } = deriveTranslationExecutionPlan({
+        config: technicalConfig,
+        subMode: subFeature === 'detail' ? 'detail' : 'main',
+        sourceDimensions: { width: initialCanvas.width, height: initialCanvas.height, ratio: initialCanvas.width / initialCanvas.height },
+      });
+      const editRequest = buildTranslationRegionEditRequest({
+        sourceImageUrl: sourceVersionPublicUrl,
+        guideImageUrl: guidePublicUrl,
+        regions: validatedRegions,
+      });
+      const onJobCreated = (backendJobId: string, providerTaskId?: string) => {
+        latestBackendJobId = backendJobId || latestBackendJobId;
+        latestProviderTaskId = providerTaskId || latestProviderTaskId;
+        const currentVersion = projectsRef.current
+          .find((item) => item.id === projectId)
+          ?.results.find((item) => item.id === resultId)
+          ?.translationEditVersions?.find((item) => item.id === versionId);
+        if (
+          controller?.signal.aborted
+          || ['error', 'completed'].includes(currentVersion?.status || '')
+          || !currentVersion
+        ) {
+          const terminalIdentified = commitMutation({
+            kind: 'terminal_identity', projectId, resultId, versionId,
+            backendJobId: latestBackendJobId, taskId: latestProviderTaskId,
+            error: currentVersion?.error || '修改已取消',
+          });
+          identityPersistChain = identityPersistChain.then(async () => {
+            const settled = await settleLateTranslationRegionEditJobIdentity({
+              backendJobId,
+              candidate: terminalIdentified,
+              cancelJob: cancelInternalJob,
+              persist: persistMutation,
+            });
+            if (settled.cancelError) {
+              lateCancelError = settled.cancelError;
+              if (!(lateCancelError instanceof Error)) {
+                lateCancelError = new Error(String(lateCancelError || '迟到后端任务取消失败'));
+              }
+              const codedLateCancelError = lateCancelError as Error & { code?: string };
+              codedLateCancelError.code ||= 'translation_region_edit_late_cancel_failed';
+            }
+            lateIdentityPersistenceError = settled.persistenceError;
+            if (settled.cancelError || settled.persistenceError) {
+              identityPersistError = settled.persistenceError || settled.cancelError;
+              controller?.abort();
+            }
+          });
+          return;
+        }
+        if (backendJobId && controller) {
+          controllerKeys.add(backendJobId);
+          taskControllersRef.current[backendJobId] = controller;
+        }
+        const identified = commitMutation({
+          kind: 'identity', projectId, resultId, versionId,
+          backendJobId: latestBackendJobId, taskId: latestProviderTaskId,
+        });
+        if (identified) {
+          identityPersistChain = identityPersistChain.then(async () => {
+            if (identityPersistError) return;
+            try {
+              await persistMutation(identified);
+            } catch (error) {
+              identityPersistError = error;
+              controller?.abort();
+            }
+          });
+        }
+      };
+      try {
+        generation = await processWithKieAi(
+          editRequest.imageUrls,
+          apiConfig,
+          effectiveConfig as Parameters<typeof processWithKieAi>[2],
+          isRatioMatch,
+          controller.signal,
+          editRequest.prompt,
+          false,
+          { width: initialCanvas.width, height: initialCanvas.height, ratioLabel: `${initialCanvas.width}:${initialCanvas.height}` },
+          subFeature === 'detail' ? 'detail' : 'main',
+          {
+            shellPurpose: 'translation_region_edit',
+            shellProjectId: projectId,
+            shellResultId: resultId,
+            translationEditVersionId: versionId,
+            translationEditSourceVersionId: sourceVersionId,
+            translationEditRegions: validatedRegions,
+            preserveInputImageOrder: true,
+            skipPromptCleanupSuffix: true,
+            finalSize: { width: initialCanvas.width, height: initialCanvas.height },
+            subFeature,
+          },
+          onJobCreated,
+        );
+        controller.signal.throwIfAborted();
+      } catch (error) {
+        await identityPersistChain;
+        if (identityPersistError) throw identityPersistError;
+        throw error;
+      }
+      await identityPersistChain;
+      if (identityPersistError) throw identityPersistError;
+      controller.signal.throwIfAborted();
+      latestBackendJobId = generation.backendJobId || latestBackendJobId;
+      latestProviderTaskId = generation.taskId || latestProviderTaskId;
+      latestCreditsConsumed = generation.creditsConsumed;
+      if (generation.status !== 'success' || !generation.imageUrl) {
+        throw new Error(generation.message || '翻译区域修改失败');
+      }
+
+      const rawGeneratedUrl = generation.imageUrl;
+      const rawSuccessMutation = {
+        kind: 'raw_success', projectId, resultId, versionId,
+        pendingProtectedSourceUrl: rawGeneratedUrl,
+        backendJobId: generation.backendJobId || latestBackendJobId,
+        taskId: generation.taskId || latestProviderTaskId,
+        creditsConsumed: generation.creditsConsumed,
+      };
+      const rawCommitted = commitMutation(rawSuccessMutation);
+      if (!rawCommitted) throw new Error('修改结果已失效，未记录后端生成结果');
+      await persistMutation(rawCommitted);
+      controller.signal.throwIfAborted();
+
+      const protectedEdit = await compositeTranslationRegionEdit({
+        sourceUrl: sourceVersionPublicUrl,
+        generatedUrl: rawGeneratedUrl,
+        targetWidth: initialCanvas.width,
+        targetHeight: initialCanvas.height,
+        regions: validatedRegions,
+      } as Parameters<typeof compositeTranslationRegionEdit>[0]);
+      controller.signal.throwIfAborted();
+      const protectedDimensions = await getImageDimensions(protectedEdit.blob);
+      if (
+        protectedDimensions.width !== initialCanvas.width
+        || protectedDimensions.height !== initialCanvas.height
+      ) {
+        throw new Error(`修改结果尺寸不一致，已停止保存。期望 ${initialCanvas.width}×${initialCanvas.height}，实际 ${protectedDimensions.width}×${protectedDimensions.height}`);
+      }
+      controller.signal.throwIfAborted();
+      const protectedFile = new File(
+        [protectedEdit.blob],
+        `translation-region-edit-${versionId}.png`,
+        { type: 'image/png' },
+      );
+      const protectedUpload = await uploadInternalAssetStream({
+        module: AppModuleObj.TRANSLATION,
+        file: protectedFile,
+        fileName: protectedFile.name,
+        signal: controller.signal,
+      });
+      controller.signal.throwIfAborted();
+      const finalImageUrl = String(protectedUpload.fileUrl || '').trim();
+      if (!finalImageUrl) throw new Error('保护合成图上传失败');
+
+      const successMutation = {
+        kind: 'success', projectId, resultId, versionId,
+        imageUrl: finalImageUrl,
+        backendJobId: generation.backendJobId || latestBackendJobId,
+        taskId: generation.taskId || latestProviderTaskId,
+        creditsConsumed: generation.creditsConsumed,
+        canvasWidth: initialCanvas.width,
+        canvasHeight: initialCanvas.height,
+        initialCanvasWidth: initialCanvas.width,
+        initialCanvasHeight: initialCanvas.height,
+      };
+      const succeededOutcome = reduceTranslationRegionEditProjectMutation(projectsRef.current, successMutation);
+      const succeededCandidate = succeededOutcome.updated && succeededOutcome.project && succeededOutcome.result
+        ? { project: succeededOutcome.project as Project, result: succeededOutcome.result as GeneratedResult }
+        : null;
+      if (!succeededCandidate) throw new Error('修改结果已失效，未覆盖当前图片');
+      const completed = await persistTranslationRegionEditTransition({
+        candidate: succeededCandidate,
+        persistProject: persistProjectMutation,
+        persistFiles: persistFilesMutation,
+        commit: () => commitMutation(successMutation),
+      });
+      if (!completed) throw new Error('修改结果已失效，未覆盖当前图片');
+      void logActionSuccess({
+        module: AppModuleObj.TRANSLATION,
+        action: 'translation_region_edit_succeeded',
+        message: '出海翻译单张修改成功',
+        meta: buildTranslationRegionEditLogMeta({
+          shellProjectId: projectId, shellResultId: resultId, sourceVersionId,
+          targetVersionId: versionId, regions: validatedRegions,
+          backendJobId: generation.backendJobId || latestBackendJobId,
+          providerTaskId: generation.taskId || latestProviderTaskId,
+          creditsConsumed: generation.creditsConsumed,
+        }),
+      });
+      addToast('区域修改已完成', 'success');
+    } catch (error) {
+      if (controller?.signal.aborted && !identityPersistError) throw error;
+      const failureError = identityPersistError || error;
+      const message = failureError instanceof Error ? failureError.message : '翻译区域修改失败';
+      if (versionId) {
+        const failureMutation = {
+          kind: 'failure', projectId, resultId, versionId, error: message,
+          backendJobId: generation?.backendJobId || latestBackendJobId,
+          taskId: generation?.taskId || latestProviderTaskId,
+          creditsConsumed: generation?.creditsConsumed ?? latestCreditsConsumed,
+        };
+        const failedOutcome = reduceTranslationRegionEditProjectMutation(projectsRef.current, failureMutation);
+        const failedCandidate = failedOutcome.updated && failedOutcome.project && failedOutcome.result
+          ? { project: failedOutcome.project as Project, result: failedOutcome.result as GeneratedResult }
+          : null;
+        if (failedCandidate) {
+          try {
+            await persistMutation(failedCandidate);
+          } catch {
+            // Failure persistence is best-effort; the local terminal state must still be released.
+          }
+          commitMutation(failureMutation);
+        }
+      }
+      if (lateCancelError) {
+        void logActionFailure({
+          module: AppModuleObj.TRANSLATION,
+          action: 'translation_region_edit_cancelled',
+          message: '出海翻译单张修改迟到任务取消失败',
+          detail: lateCancelError instanceof Error ? lateCancelError.message : String(lateCancelError),
+          meta: buildTranslationRegionEditLogMeta({
+            shellProjectId: projectId, shellResultId: resultId, sourceVersionId,
+            targetVersionId: versionId, regions: validatedRegions,
+            backendJobId: latestBackendJobId, providerTaskId: latestProviderTaskId,
+            creditsConsumed: latestCreditsConsumed,
+            persistenceStatus: lateIdentityPersistenceError ? 'failed' : 'success',
+            persistenceError: lateIdentityPersistenceError instanceof Error
+              ? lateIdentityPersistenceError.message
+              : String(lateIdentityPersistenceError || ''),
+            cancelError: lateCancelError,
+            error: lateCancelError,
+          }),
+        });
+      } else {
+        void logActionFailure({
+          module: AppModuleObj.TRANSLATION,
+          action: 'translation_region_edit_failed',
+          message: '出海翻译单张修改失败',
+          detail: message,
+          meta: buildTranslationRegionEditLogMeta({
+            shellProjectId: projectId, shellResultId: resultId, sourceVersionId,
+            targetVersionId: versionId, regions: validatedRegions,
+            backendJobId: latestBackendJobId, providerTaskId: latestProviderTaskId,
+            creditsConsumed: latestCreditsConsumed, error: failureError,
+          }),
+        });
+      }
+      addToast(message, 'error');
+      throw failureError;
+    } finally {
+      controllerKeys.forEach((key) => {
+        if (taskControllersRef.current[key] === controller) delete taskControllersRef.current[key];
+      });
+      releaseTranslationRegionEditLock(actionKey, versionId);
+    }
+  }, [addToast, apiConfig, beginExclusiveAction, getCurrentScopedImageModel, persistProjectToSharedState, persistTranslationFilesToSharedState, publicBaseUrl, releaseTranslationRegionEditLock, resolveSharedStateBaseForWrite]);
+
+  const handleCancelTranslationRegionEdit = useCallback(async (
+    projectId: string,
+    resultId: string,
+    versionId: string,
+    backendJobId?: string,
+  ) => {
+    const ownership = { projectId, resultId, versionId, backendJobId };
+    const ownedProject = projectsRef.current.find((item) => item.id === projectId);
+    const ownedResult = ownedProject?.results.find((item) => item.id === resultId);
+    const ownedVersion = ownedResult?.translationEditVersions?.find((item) => item.id === versionId);
+    const storedBackendJobId = String(ownedVersion?.backendJobId || '').trim();
+    if (!isOwnedGeneratingTranslationEditVersion(projectsRef.current, ownership)) {
+      throw new Error('该修改任务已结束或不属于当前版本');
+    }
+    const versionControllerKey = `translation-region-edit:${projectId}:${resultId}:${versionId}`;
+    const versionController = taskControllersRef.current[versionControllerKey];
+    taskControllersRef.current[versionControllerKey]?.abort();
+    if (storedBackendJobId) taskControllersRef.current[storedBackendJobId]?.abort();
+    const cancelMutation = {
+      kind: 'cancel', projectId, resultId, versionId,
+      backendJobId: storedBackendJobId || undefined,
+      error: '修改已取消',
+    };
+    const commitCancelMutation = () => {
+      let committedProject: Project | null = null;
+      let committedResult: GeneratedResult | null = null;
+      flushSync(() => {
+        setProjects((prev) => {
+          const outcome = reduceTranslationRegionEditProjectMutation(prev, cancelMutation);
+          if (!outcome.updated || !outcome.project || !outcome.result) return prev;
+          const next = outcome.projects as Project[];
+          projectsRef.current = next;
+          committedProject = outcome.project as Project;
+          committedResult = outcome.result as GeneratedResult;
+          return next;
+        });
+      });
+      return committedProject && committedResult ? { project: committedProject, result: committedResult } : null;
+    };
+    try {
+      let cancelDetail = '';
+      let persistenceStatus: 'success' | 'failed' | 'not_applied' = 'success';
+      let persistenceError: unknown = null;
+      let raceOutcome = '';
+      if (storedBackendJobId) {
+        try {
+          await cancelInternalJob(storedBackendJobId);
+        } catch (error) {
+          cancelDetail = error instanceof Error ? error.message : '后端取消请求失败';
+        }
+      }
+
+      const cancelOutcome = reduceTranslationRegionEditProjectMutation(projectsRef.current, cancelMutation);
+      const cancelCandidate = cancelOutcome.updated && cancelOutcome.project && cancelOutcome.result
+        ? { project: cancelOutcome.project as Project, result: cancelOutcome.result as GeneratedResult }
+        : null;
+      if (!cancelCandidate) throw new Error('该修改任务已结束');
+      try {
+        await persistTranslationRegionEditCancelTransition({
+          candidate: cancelCandidate,
+          persistProject: (candidate: { project: Project; result: GeneratedResult }) => (
+            persistProjectToSharedState(candidate.project)
+          ),
+          persistFiles: (candidate: { project: Project; result: GeneratedResult }) => {
+            const resultIndex = candidate.project.results.findIndex((item) => item.id === resultId);
+            return persistTranslationFilesToSharedState(
+              candidate.project.subFeature || 'main',
+              [translationResultToFile(candidate.project, candidate.result, Math.max(0, resultIndex))],
+            );
+          },
+          commit: commitCancelMutation,
+          getCurrentVersion: () => projectsRef.current
+            .find((item) => item.id === projectId)
+            ?.results.find((item) => item.id === resultId)
+            ?.translationEditVersions?.find((item) => item.id === versionId),
+        });
+      } catch (error) {
+        const cancelRaceError = error as Error & { code?: string; raceOutcome?: string };
+        if (cancelRaceError.code === 'translation_region_edit_cancel_not_applied') {
+          persistenceStatus = 'not_applied';
+          raceOutcome = cancelRaceError.raceOutcome || 'state_changed';
+        } else {
+          persistenceStatus = 'failed';
+          commitCancelMutation();
+        }
+        persistenceError = error;
+      }
+      void logActionInterrupted({
+        module: AppModuleObj.TRANSLATION,
+        action: 'translation_region_edit_cancelled',
+        message: '出海翻译单张修改取消',
+        detail: cancelDetail || undefined,
+        meta: buildTranslationRegionEditLogMeta({
+          shellProjectId: projectId,
+          shellResultId: resultId,
+          sourceVersionId: ownedVersion?.sourceVersionId,
+          targetVersionId: versionId,
+          regions: ownedVersion?.regions,
+          backendJobId: storedBackendJobId,
+          providerTaskId: ownedVersion?.taskId,
+          creditsConsumed: ownedVersion?.creditsConsumed,
+          persistenceStatus,
+          persistenceError: persistenceError instanceof Error ? persistenceError.message : '',
+          raceOutcome,
+        }),
+      });
+      if (persistenceError) {
+        const message = persistenceError instanceof Error ? persistenceError.message : '取消状态保存失败';
+        addToast(
+          persistenceStatus === 'not_applied' ? message : `任务已取消，但状态保存失败：${message}`,
+          persistenceStatus === 'not_applied' ? 'warning' : 'error',
+        );
+        throw persistenceError;
+      }
+      addToast(cancelDetail ? '修改已在本地取消，后端取消请求未确认' : '修改已取消', cancelDetail ? 'warning' : 'info');
+    } finally {
+      delete taskControllersRef.current[versionControllerKey];
+      if (storedBackendJobId && taskControllersRef.current[storedBackendJobId] === versionController) {
+        delete taskControllersRef.current[storedBackendJobId];
+      }
+      releaseTranslationRegionEditLock(`translation-region-edit:${projectId}:${resultId}`, versionId);
+    }
+  }, [addToast, persistProjectToSharedState, persistTranslationFilesToSharedState, releaseTranslationRegionEditLock]);
+
   const handleFissionResult = useCallback(async (
     projectId: string,
     resultId: string,
@@ -11481,6 +12327,8 @@ const AppContent: React.FC<{
           onRegenerateResult={handleRegenerateResult}
           onRecoverResult={handleRecoverResult}
           onCancelTask={handleCancelTask}
+          onTranslationRegionEdit={handleTranslationRegionEdit}
+          onCancelTranslationRegionEdit={handleCancelTranslationRegionEdit}
           pendingActionKeys={pendingActionKeys}
           showGenerationProgress={showGenerationProgress}
         />;

@@ -91,6 +91,13 @@ test('logging service labels the everything replace module used by shell workflo
   assert.match(source, /everything_replace:\s*'万物替换'/);
 });
 
+test('logging service uses exact labels for the translation region edit lifecycle', () => {
+  assert.match(source, /translation_region_edit_started:\s*'出海翻译单张修改开始'/);
+  assert.match(source, /translation_region_edit_succeeded:\s*'出海翻译单张修改成功'/);
+  assert.match(source, /translation_region_edit_failed:\s*'出海翻译单张修改失败'/);
+  assert.match(source, /translation_region_edit_cancelled:\s*'出海翻译单张修改取消'/);
+});
+
 test('logging service labels task helper log actions that pass action as function arguments', () => {
   [
     'recover_task',
