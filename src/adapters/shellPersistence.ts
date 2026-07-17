@@ -4,6 +4,7 @@ import type {
   ProductRestoreCancellationReset,
   ProductRestoreAnalysisAttempt,
   ProductRestoreProjectContext,
+  TranslationEditVersion,
   VeoProjectState,
 } from '../types.ts';
 import type { PersistedAppState } from '../utils/appState.ts';
@@ -15,6 +16,10 @@ import {
   mergeArrayByStableKeys,
 } from '../utils/taskResultReconcile.mjs';
 import { sortTranslationRetryResults } from '../modules/Translation/translationRetryUtils.mjs';
+import {
+  getLatestCompletedTranslationEditVersionUrl,
+  mergeTranslationEditVersions,
+} from '../modules/Translation/translationRegionEditUtils.mjs';
 import { SHELL_MODULE_LABELS } from './shellDataAdapter.ts';
 import {
   cloneProductRestoreCancellationMarker,
@@ -26,6 +31,11 @@ import { cloneProductRestoreAnalysisAttempts } from '../utils/productRestoreAnal
 import { normalizeShellProjectScope } from '../utils/shellProjectScope.mjs';
 
 const INTERNAL_BACKEND_JOB_ID_PATTERN = /^[a-f0-9]{24}$/i;
+
+const normalizeCanvasDimension = (value: unknown) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+};
 
 const latestProviderTaskIdentityText = (...values: unknown[]) => {
   const merged = Array.from(new Set(
@@ -63,6 +73,8 @@ type ShellResult = {
   creditsConsumed?: number;
   error?: string;
   matchedAspectRatio?: string;
+  initialCanvasWidth?: number;
+  initialCanvasHeight?: number;
   logoReplaceGuarded?: boolean;
   retryOfResultId?: string;
   retryRootResultId?: string;
@@ -73,6 +85,7 @@ type ShellResult = {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  translationEditVersions?: TranslationEditVersion[];
 };
 
 type ShellProject = {
@@ -173,6 +186,9 @@ type ShellTranslationFile = {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  initialCanvasWidth?: number;
+  initialCanvasHeight?: number;
+  translationEditVersions?: TranslationEditVersion[];
   createdAt?: number;
 };
 
@@ -429,12 +445,42 @@ const mergeTranslationResultsForPersistence = <T extends Record<string, any>>(
       return;
     }
     const duplicateIndex = merged.indexOf(duplicate);
-    merged[duplicateIndex] = mergeArrayByStableKeys([duplicate], [item])[0] as T;
+    const next = mergeArrayByStableKeys([duplicate], [item])[0] as T;
+    merged[duplicateIndex] = {
+      ...next,
+      initialCanvasWidth: normalizeCanvasDimension(item.initialCanvasWidth)
+        ?? normalizeCanvasDimension(duplicate.initialCanvasWidth),
+      initialCanvasHeight: normalizeCanvasDimension(item.initialCanvasHeight)
+        ?? normalizeCanvasDimension(duplicate.initialCanvasHeight),
+    };
   };
   existingResults.forEach(push);
   incomingResults.forEach(push);
   return sortTranslationRetryResults(merged) as T[];
 };
+
+const reconcileTranslationProjectResultVersions = <T extends Record<string, any>>(
+  existingResults: T[],
+  incomingResults: T[],
+  mergedResults: T[],
+  projectModule: unknown,
+) => mergedResults.map((result) => {
+  if (String(result?.module || projectModule || '') !== 'translation') return result;
+  const existing = findTranslationResultByRetryAwareIdentity(existingResults, result);
+  const incoming = findTranslationResultByRetryAwareIdentity(incomingResults, result);
+  if (!Array.isArray(existing?.translationEditVersions) && !Array.isArray(incoming?.translationEditVersions)) {
+    return result;
+  }
+  const translationEditVersions = mergeTranslationEditVersions(
+    existing?.translationEditVersions,
+    incoming?.translationEditVersions,
+  ) as TranslationEditVersion[];
+  const reconciled = { ...result, translationEditVersions };
+  return {
+    ...reconciled,
+    imageUrl: getLatestCompletedTranslationEditVersionUrl(reconciled) || result.imageUrl,
+  };
+});
 
 const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingProject: T | undefined, incomingProject: T): T => {
   const baseProject = normalizeShellProjectScope(existingProject || {}) as T;
@@ -443,9 +489,14 @@ const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingP
   const existingResults = filterStaleOneClickPlanningPlaceholders(baseProject.results, isOneClick, 'result');
   const incomingResults = filterStaleOneClickPlanningPlaceholders(scopedIncomingProject.results, isOneClick, 'result');
   const isTranslation = String(scopedIncomingProject.module || baseProject.module || '') === 'translation';
-  const results = isTranslation
-    ? mergeTranslationResultsForPersistence(existingResults, incomingResults)
-    : mergeArrayByStableKeys(existingResults, incomingResults);
+  const results = reconcileTranslationProjectResultVersions(
+    existingResults,
+    incomingResults,
+    isTranslation
+      ? mergeTranslationResultsForPersistence(existingResults, incomingResults)
+      : mergeArrayByStableKeys(existingResults, incomingResults),
+    scopedIncomingProject.module || baseProject.module,
+  );
   const plans = mergeArrayByStableKeys(
     filterStaleOneClickPlanningPlaceholders(baseProject.plans, isOneClick, 'plan'),
     filterStaleOneClickPlanningPlaceholders(scopedIncomingProject.plans, isOneClick, 'plan'),
@@ -708,10 +759,18 @@ export const upsertOneClickProjectIntoPersistedState = (
   };
 };
 
-const sanitizeTranslationFileForStorage = (file: ShellTranslationFile): ShellTranslationFile => ({
-  ...file,
-  sourcePreviewUrl: stripInlinePreviewUrl(file.sourcePreviewUrl) as string | undefined,
-});
+const sanitizeTranslationFileForStorage = (file: ShellTranslationFile): ShellTranslationFile => {
+  const translationEditVersions = Array.isArray(file.translationEditVersions)
+    ? mergeTranslationEditVersions([], file.translationEditVersions) as TranslationEditVersion[]
+    : undefined;
+  const sanitized = {
+    ...file,
+    sourcePreviewUrl: stripInlinePreviewUrl(file.sourcePreviewUrl) as string | undefined,
+    translationEditVersions,
+  };
+  sanitized.resultUrl = getLatestCompletedTranslationEditVersionUrl(sanitized) || sanitized.resultUrl;
+  return sanitized;
+};
 
 const isTranslationRetryFile = (file: Partial<ShellTranslationFile> = {}) =>
   Boolean(String(file.retryOfResultId || '').trim()) || Number(file.retryAttempt) > 0;
@@ -740,6 +799,15 @@ const mergeTranslationFile = (existing: ShellTranslationFile, incoming: ShellTra
   const merged = hasCompletedTranslationResult(existing) && !hasCompletedTranslationResult(incoming)
     ? { ...incoming, ...existing }
     : { ...existing, ...incoming };
+  merged.initialCanvasWidth = normalizeCanvasDimension(incoming.initialCanvasWidth)
+    ?? normalizeCanvasDimension(existing.initialCanvasWidth);
+  merged.initialCanvasHeight = normalizeCanvasDimension(incoming.initialCanvasHeight)
+    ?? normalizeCanvasDimension(existing.initialCanvasHeight);
+  merged.translationEditVersions = mergeTranslationEditVersions(
+    existing.translationEditVersions,
+    incoming.translationEditVersions,
+  ) as TranslationEditVersion[];
+  merged.resultUrl = getLatestCompletedTranslationEditVersionUrl(merged) || merged.resultUrl;
   if (hasCompletedTranslationResult(merged)) {
     delete (merged as any).error;
   }

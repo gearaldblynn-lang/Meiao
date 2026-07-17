@@ -8,6 +8,7 @@ import type {
   SubtitleRemovalPixels,
   SubtitleRemovalRegion,
   TranslationConfigSnapshot,
+  TranslationEditVersion,
   VideoStoryboardBoard,
   VideoStoryboardConfig,
   VideoStoryboardProject,
@@ -62,6 +63,10 @@ import {
   sortTranslationRetryResults,
   sumTranslationRetryCredits,
 } from '../modules/Translation/translationRetryUtils.mjs';
+import {
+  getLatestCompletedTranslationEditVersionUrl,
+  mergeTranslationEditVersions,
+} from '../modules/Translation/translationRegionEditUtils.mjs';
 
 type ShellProjectStatus = 'planning' | 'generating' | 'completed' | 'error';
 type ShellTaskStatus = 'pending' | 'generating' | 'completed' | 'error' | 'retry_waiting';
@@ -107,6 +112,8 @@ export interface ShellGeneratedResult {
   matchedAspectRatio?: string;
   originalWidth?: number;
   originalHeight?: number;
+  initialCanvasWidth?: number;
+  initialCanvasHeight?: number;
   buyerShowEvaluation?: string;
   buyerShowDisplayPrompt?: string;
   logoReplaceGuarded?: boolean;
@@ -123,6 +130,7 @@ export interface ShellGeneratedResult {
   translationPlanningTaskId?: string;
   translationPlanningCreditsConsumed?: number;
   translationGenerationCreditsConsumed?: number;
+  translationEditVersions?: TranslationEditVersion[];
 }
 
 export interface ShellProjectData {
@@ -324,6 +332,11 @@ const VALID_MODULES = new Set(Object.values(MODULE_VALUES));
 const persistedSnapshotCache = new WeakMap<object, Pick<ShellDataSnapshot, 'projects' | 'materials'>>();
 
 const normalizeCreditsConsumed = (value: unknown) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+};
+
+const normalizeCanvasDimension = (value: unknown) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 };
@@ -991,7 +1004,13 @@ const resultFromItem = (
   subFeature?: string,
   fallbackPrompt?: string,
 ): ShellGeneratedResult | null => {
-  const url = getResultUrl(item);
+  const translationEditVersions = module === MODULE_VALUES.TRANSLATION && Array.isArray(item?.translationEditVersions)
+    ? mergeTranslationEditVersions([], item.translationEditVersions) as TranslationEditVersion[]
+    : undefined;
+  const persistedUrl = getResultUrl(item);
+  const url = module === MODULE_VALUES.TRANSLATION
+    ? getLatestCompletedTranslationEditVersionUrl({ ...item, imageUrl: persistedUrl, translationEditVersions })
+    : persistedUrl;
   const status = taskStatusToTask(item?.status);
   const retryOfResultId = String(item?.retryOfResultId ?? item?.payload?.retryOfResultId ?? '').trim() || undefined;
   const retryRootResultId = String(item?.retryRootResultId ?? item?.payload?.retryRootResultId ?? '').trim() || undefined;
@@ -1031,6 +1050,8 @@ const resultFromItem = (
     matchedAspectRatio: String(item?.matchedAspectRatio || item?.aspectRatio || item?.payload?.aspectRatio || item?.payload?.ratio || 'auto'),
     originalWidth: Number(item?.originalWidth || item?.payload?.finalSize?.width || 0) || undefined,
     originalHeight: Number(item?.originalHeight || item?.payload?.finalSize?.height || 0) || undefined,
+    initialCanvasWidth: normalizeCanvasDimension(item?.initialCanvasWidth ?? item?.payload?.initialCanvasWidth),
+    initialCanvasHeight: normalizeCanvasDimension(item?.initialCanvasHeight ?? item?.payload?.initialCanvasHeight),
     retryOfResultId,
     retryRootResultId,
     retryAttempt: retryAttemptValue == null || !Number.isFinite(Number(retryAttemptValue))
@@ -1048,6 +1069,7 @@ const resultFromItem = (
     translationGenerationCreditsConsumed: normalizeCreditsConsumed(
       item?.translationGenerationCreditsConsumed ?? item?.payload?.translationGenerationCreditsConsumed,
     ),
+    ...(module === MODULE_VALUES.TRANSLATION ? { translationEditVersions } : {}),
   };
 };
 
@@ -1375,12 +1397,20 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
       createdAt: coerceCreatedAtMs(project.createdAt, { id: project.id, updatedAt: project.updatedAt }).ms,
       createdAtPrecise: coerceCreatedAtMs(project.createdAt, { id: project.id, updatedAt: project.updatedAt }).precise,
       completedAt: project.completedAt != null ? coerceCreatedAtMs(project.completedAt, { id: project.id, updatedAt: project.updatedAt }).ms : undefined,
-      results: Array.isArray(project.results) ? project.results.map((result: any, index: number) => ({
+      results: Array.isArray(project.results) ? project.results.map((result: any, index: number) => {
+        const resultModule = toModule(result?.module || project.module);
+        const translationEditVersions = resultModule === MODULE_VALUES.TRANSLATION && Array.isArray(result?.translationEditVersions)
+          ? mergeTranslationEditVersions([], result.translationEditVersions) as TranslationEditVersion[]
+          : undefined;
+        const persistedImageUrl = String(result?.imageUrl || '').trim();
+        return {
         ...getSubtitleRemovalResultMetadata(result),
         id: String(result?.id || `${project.id}-result-${index}`),
         planId: String(result?.planId || '').trim() || undefined,
         projectId: result?.projectId ? String(result.projectId) : undefined,
-        imageUrl: String(result?.imageUrl || '').trim(),
+        imageUrl: resultModule === MODULE_VALUES.TRANSLATION
+          ? getLatestCompletedTranslationEditVersionUrl({ ...result, imageUrl: persistedImageUrl, translationEditVersions })
+          : persistedImageUrl,
         videoUrl: String(result?.videoUrl || '').trim() || undefined,
         mediaType: result?.mediaType === 'video' ? 'video' : 'image',
         prompt: String(result?.prompt || '').trim(),
@@ -1388,7 +1418,7 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         aspectRatio: String(result?.aspectRatio || 'auto'),
         status: result?.status === 'error' ? 'error' : result?.status === 'generating' ? 'generating' : 'completed',
         createdAt: coerceCreatedAtMs(result?.createdAt ?? project.createdAt, { id: result?.id ?? project.id, updatedAt: project.updatedAt }).ms,
-        module: toModule(result?.module || project.module),
+        module: resultModule,
         subFeature: String(result?.subFeature || project.subFeature || '').trim() || undefined,
         sourceUrl: String(result?.sourceUrl || '').trim() || undefined,
         sourcePreviewUrl: String(result?.sourcePreviewUrl || result?.sourceUrl || '').trim() || undefined,
@@ -1406,6 +1436,8 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         matchedAspectRatio: String(result?.matchedAspectRatio || result?.aspectRatio || 'auto'),
         originalWidth: Number(result?.originalWidth || 0) || undefined,
         originalHeight: Number(result?.originalHeight || 0) || undefined,
+        initialCanvasWidth: normalizeCanvasDimension(result?.initialCanvasWidth ?? result?.payload?.initialCanvasWidth),
+        initialCanvasHeight: normalizeCanvasDimension(result?.initialCanvasHeight ?? result?.payload?.initialCanvasHeight),
         logoReplaceGuarded: result?.logoReplaceGuarded === true || undefined,
         retryOfResultId: String(result?.retryOfResultId ?? result?.payload?.retryOfResultId ?? '').trim() || undefined,
         retryRootResultId: String(result?.retryRootResultId ?? result?.payload?.retryRootResultId ?? '').trim() || undefined,
@@ -1430,7 +1462,9 @@ const mapPersistedState = (state?: Partial<PersistedAppState> | null): Pick<Shel
         translationGenerationCreditsConsumed: normalizeCreditsConsumed(
           result?.translationGenerationCreditsConsumed ?? result?.payload?.translationGenerationCreditsConsumed,
         ),
-      })) : [],
+        ...(resultModule === MODULE_VALUES.TRANSLATION ? { translationEditVersions } : {}),
+      };
+      }) : [],
       taskCount: Number(project.taskCount || project.results?.length || 1),
       completedCount: Number(project.completedCount || 0),
       sourceType: 'persisted',
@@ -1752,6 +1786,205 @@ const getBuyerShowPlanningTaskId = (jobs: InternalJob[]) => {
   return undefined;
 };
 
+const isTranslationRegionEditJob = (job: InternalJob) => (
+  toModule(job?.module) === MODULE_VALUES.TRANSLATION
+  && String(job?.taskType || '').includes('image')
+  && String((job?.payload as any)?.shellPurpose || '').trim() === 'translation_region_edit'
+);
+
+const getTranslationRegionEditTargetKey = (job: InternalJob) => {
+  const payload = (job.payload || {}) as Record<string, any>;
+  const projectId = String(payload.shellProjectId || '').trim();
+  const resultId = String(payload.shellResultId || '').trim();
+  const versionId = String(payload.translationEditVersionId || '').trim();
+  return projectId && resultId && versionId
+    ? `${projectId}\u0000${resultId}\u0000${versionId}`
+    : `orphan\u0000${String(job.id || '').trim()}`;
+};
+
+const compareText = (left: unknown, right: unknown) => {
+  const leftText = String(left || '');
+  const rightText = String(right || '');
+  return leftText < rightText ? -1 : leftText > rightText ? 1 : 0;
+};
+
+const getTranslationRegionEditJobTerminalRank = (job: InternalJob) => {
+  if (job.status === 'succeeded') return 3;
+  if (job.status === 'failed' || job.status === 'cancelled') return 2;
+  if (job.status === 'queued' || job.status === 'running' || job.status === 'retry_waiting') return 1;
+  return 0;
+};
+
+const compareTranslationRegionEditJobs = (left: InternalJob, right: InternalJob) => (
+  getTranslationRegionEditJobTerminalRank(left) - getTranslationRegionEditJobTerminalRank(right)
+  || Number(Boolean(getResultUrl(left))) - Number(Boolean(getResultUrl(right)))
+  || compareText(getResultUrl(left), getResultUrl(right))
+  || Number(left.updatedAt || 0) - Number(right.updatedAt || 0)
+  || Number(left.createdAt || 0) - Number(right.createdAt || 0)
+  || compareText(left.id, right.id)
+);
+
+const selectTranslationRegionEditJobs = (editJobs: InternalJob[]) => {
+  const jobsById = new Map<string, InternalJob>();
+  editJobs.forEach((job) => {
+    const jobId = String(job.id || '').trim();
+    if (!jobId) return;
+    const existing = jobsById.get(jobId);
+    if (!existing || compareTranslationRegionEditJobs(existing, job) < 0) jobsById.set(jobId, job);
+  });
+
+  const jobsByTarget = new Map<string, InternalJob>();
+  Array.from(jobsById.values())
+    .sort(compareTranslationRegionEditJobs)
+    .forEach((job) => jobsByTarget.set(getTranslationRegionEditTargetKey(job), job));
+  return Array.from(jobsByTarget.values()).sort((left, right) => (
+    compareText(getTranslationRegionEditTargetKey(left), getTranslationRegionEditTargetKey(right))
+    || compareTranslationRegionEditJobs(left, right)
+  ));
+};
+
+const buildTranslationRegionEditTask = (
+  job: InternalJob,
+  projectId: string,
+  subFeature?: string,
+  orphan = false,
+): ShellTaskData => {
+  const jobId = String(job.id || '').trim();
+  return {
+    id: jobId,
+    projectId: projectId || `job-${jobId}`,
+    module: MODULE_VALUES.TRANSLATION,
+    type: 'image',
+    status: taskStatusToTask(job.status),
+    title: orphan
+      ? `待恢复翻译修改任务${jobId ? ` ${jobId.slice(-6)}` : ''}`
+      : jobTaskTitle(job, MODULE_VALUES.TRANSLATION, subFeature),
+    prompt: String(job.payload?.prompt || ''),
+    progress: job.status === 'running' ? 42 : 8,
+    createdAt: toCreatedMs(job.createdAt),
+    subFeature,
+    backendJobId: jobId,
+  };
+};
+
+const mergeTranslationRegionEditJobs = (
+  editJobs: InternalJob[],
+  persistedProjects: ShellProjectData[],
+): Pick<ShellDataSnapshot, 'projects' | 'tasks'> => {
+  const projectsById = new Map<string, ShellProjectData>();
+  const tasks: ShellTaskData[] = [];
+  const sortedJobs = selectTranslationRegionEditJobs(editJobs);
+
+  sortedJobs.forEach((job) => {
+    const payload = (job.payload || {}) as Record<string, any>;
+    const projectId = String(payload.shellProjectId || '').trim();
+    const resultId = String(payload.shellResultId || '').trim();
+    const versionId = String(payload.translationEditVersionId || '').trim();
+    const payloadSubFeature = String(payload.subFeature || '').trim();
+    const active = job.status === 'queued' || job.status === 'running' || job.status === 'retry_waiting';
+    const candidateProjects = [
+      projectsById.get(projectId),
+      ...persistedProjects,
+    ].filter((item): item is ShellProjectData => Boolean(item));
+    const targetProjectCandidate = candidateProjects.find((item) => (
+      item.id === projectId
+      && item.module === MODULE_VALUES.TRANSLATION
+      && (!payloadSubFeature || !item.subFeature || item.subFeature === payloadSubFeature)
+      && item.results.some((result) => (
+        result.id === resultId
+        && result.module === MODULE_VALUES.TRANSLATION
+        && (!payloadSubFeature || !result.subFeature || result.subFeature === payloadSubFeature)
+        && result.translationEditVersions?.some((version) => version.id === versionId)
+      ))
+    ));
+    if (!targetProjectCandidate) {
+      if (active) tasks.push(buildTranslationRegionEditTask(job, projectId, payloadSubFeature || undefined, true));
+      return;
+    }
+    const accumulatedProject = projectsById.get(projectId);
+    const project = accumulatedProject && accumulatedProject !== targetProjectCandidate
+      ? {
+          ...targetProjectCandidate,
+          ...accumulatedProject,
+          results: mergeProjectResultsByIdentity(
+            targetProjectCandidate.results,
+            accumulatedProject.results,
+          ),
+          taskCount: Math.max(targetProjectCandidate.taskCount, accumulatedProject.taskCount),
+          completedCount: Math.max(targetProjectCandidate.completedCount, accumulatedProject.completedCount),
+        }
+      : targetProjectCandidate;
+    const resultIndex = project.results.findIndex((item) => (
+      item.id === resultId
+      && item.module === MODULE_VALUES.TRANSLATION
+      && (!payloadSubFeature || !item.subFeature || item.subFeature === payloadSubFeature)
+      && item.translationEditVersions?.some((version) => version.id === versionId)
+    ));
+    const result = project.results[resultIndex];
+    const versions = Array.isArray(result.translationEditVersions) ? result.translationEditVersions : [];
+    const targetVersion = versions.find((version) => version.id === versionId);
+    if (!targetVersion) {
+      if (active) tasks.push(buildTranslationRegionEditTask(job, projectId, payloadSubFeature || undefined, true));
+      return;
+    }
+
+    const succeeded = job.status === 'succeeded';
+    const providerTaskId = getVisibleTaskId(job);
+    const rawResultUrl = succeeded ? getResultUrl(job) : '';
+    const succeededWithoutResult = succeeded && !rawResultUrl;
+    const failed = job.status === 'failed' || job.status === 'cancelled' || succeededWithoutResult;
+    const regions = Array.isArray(payload.translationEditRegions)
+      ? payload.translationEditRegions
+      : targetVersion.regions;
+    const patch = {
+      id: versionId,
+      sourceVersionId: String(payload.translationEditSourceVersionId || '').trim() || targetVersion.sourceVersionId,
+      createdAt: targetVersion.createdAt || toCreatedMs(job.createdAt),
+      status: failed ? 'error' : 'generating',
+      regions,
+      taskId: providerTaskId,
+      backendJobId: String(job.id || '').trim() || undefined,
+      creditsConsumed: normalizeCreditsConsumed(job.result?.creditsConsumed),
+      ...(rawResultUrl ? { pendingProtectedSourceUrl: rawResultUrl } : {}),
+      ...(failed ? {
+        error: String(
+          (succeededWithoutResult ? '修改任务已完成，但未返回可保护的图片结果' : '')
+          || job.errorMessage
+          || job.errorCode
+          || (job.status === 'cancelled' ? '修改任务已取消' : '修改失败')
+        ).trim(),
+      } : {}),
+    } as TranslationEditVersion;
+    let translationEditVersions = mergeTranslationEditVersions(versions, [patch]) as TranslationEditVersion[];
+    if (targetVersion.status !== 'completed' && !failed) {
+      translationEditVersions = translationEditVersions.map((version) => {
+        if (version.id !== versionId || version.status === 'completed') return version;
+        const nextVersion = { ...version };
+        delete nextVersion.error;
+        return nextVersion;
+      });
+    }
+
+    const nextResults = [...project.results];
+    nextResults[resultIndex] = {
+      ...result,
+      imageUrl: getLatestCompletedTranslationEditVersionUrl({
+        ...result,
+        translationEditVersions,
+      }) || result.imageUrl,
+      translationEditVersions,
+    };
+    projectsById.set(projectId, { ...project, results: nextResults });
+
+    if (active && targetVersion.status !== 'completed') {
+      const subFeature = payloadSubFeature || result.subFeature || project.subFeature;
+      tasks.push(buildTranslationRegionEditTask(job, projectId, subFeature));
+    }
+  });
+
+  return { projects: Array.from(projectsById.values()), tasks };
+};
+
 const mapJobs = (
   jobs: InternalJob[] = [],
   persistedProjects: ShellProjectData[] = [],
@@ -1765,6 +1998,8 @@ const mapJobs = (
   const everythingReplaceGroups = new Map<string, InternalJob[]>();
   const groupedBuyerShowJobIds = new Set<string>();
   const buyerShowGroups = new Map<string, InternalJob[]>();
+  const groupedTranslationEditJobIds = new Set<string>();
+  const translationEditJobs: InternalJob[] = [];
   const groupedTranslationJobIds = new Set<string>();
   const translationGroups = new Map<string, InternalJob[]>();
   const groupedOneClickPlanningJobIds = new Set<string>();
@@ -1772,6 +2007,13 @@ const mapJobs = (
   const recoveredOneClickPlanningProjects = new Map<string, ShellProjectData>();
   const groupedStoryboardJobIds = new Set<string>();
   const storyboardGroups = new Map<string, InternalJob[]>();
+
+  jobs.forEach((job) => {
+    const jobId = String(job?.id || '').trim();
+    if (!jobId || hiddenJobIds.has(jobId) || !isTranslationRegionEditJob(job)) return;
+    groupedTranslationEditJobIds.add(jobId);
+    translationEditJobs.push(job);
+  });
 
   jobs.forEach((job) => {
     const jobId = String(job?.id || '').trim();
@@ -2277,6 +2519,8 @@ const mapJobs = (
         errorDetail: String(job.errorDetail || '').trim() || undefined,
 	        originalWidth: Number(finalSize.width || 0) || undefined,
 	        originalHeight: Number(finalSize.height || 0) || undefined,
+	        initialCanvasWidth: normalizeCanvasDimension(payload.initialCanvasWidth ?? persistedResult?.initialCanvasWidth),
+	        initialCanvasHeight: normalizeCanvasDimension(payload.initialCanvasHeight ?? persistedResult?.initialCanvasHeight),
 	        retryOfResultId: String(payload.retryOfResultId ?? persistedResult?.retryOfResultId ?? '').trim() || undefined,
 	        retryRootResultId: String(payload.retryRootResultId ?? persistedResult?.retryRootResultId ?? '').trim() || undefined,
 	        retryAttempt: retryAttemptValue == null || !Number.isFinite(Number(retryAttemptValue))
@@ -2340,6 +2584,10 @@ const mapJobs = (
 	        });
 	      });
 	  });
+
+  const translationEditData = mergeTranslationRegionEditJobs(translationEditJobs, persistedProjects);
+  projects.push(...translationEditData.projects);
+  tasks.push(...translationEditData.tasks);
 
 	  oneClickPlanningGroups.forEach((groupJobs, shellProjectId) => {
     if (groupJobs.length <= 1) return;
@@ -2442,6 +2690,7 @@ const mapJobs = (
 	    if (hiddenJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedEverythingReplaceJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedBuyerShowJobIds.has(String(job.id || '').trim())) return;
+	    if (groupedTranslationEditJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedTranslationJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedOneClickPlanningJobIds.has(String(job.id || '').trim())) return;
 	    if (groupedStoryboardJobIds.has(String(job.id || '').trim())) return;
@@ -3728,31 +3977,48 @@ const shouldReplaceGeneratedResult = (existing: ShellGeneratedResult, next: Shel
 const mergeGeneratedResultPreservingSource = (
   existing: ShellGeneratedResult,
   next: ShellGeneratedResult,
-): ShellGeneratedResult => ({
-  ...existing,
-  ...next,
-  sourceUrl: next.sourceUrl || existing.sourceUrl,
-  sourcePreviewUrl: next.sourcePreviewUrl || existing.sourcePreviewUrl || next.sourceUrl || existing.sourceUrl,
-  sourceProjectId: next.sourceProjectId || existing.sourceProjectId,
-  sourceResultId: next.sourceResultId || existing.sourceResultId,
-  subtitleRegionNormalized: next.subtitleRegionNormalized || existing.subtitleRegionNormalized,
-  subtitleRegionPixels: next.subtitleRegionPixels || existing.subtitleRegionPixels,
-  clientSubmissionKey: next.clientSubmissionKey || existing.clientSubmissionKey,
-  draftNonce: next.draftNonce || existing.draftNonce,
-  fileName: next.fileName || existing.fileName,
-  relativePath: next.relativePath || existing.relativePath,
-  originalWidth: next.originalWidth || existing.originalWidth,
-  originalHeight: next.originalHeight || existing.originalHeight,
-  retryOfResultId: next.retryOfResultId ?? existing.retryOfResultId,
-  retryRootResultId: next.retryRootResultId ?? existing.retryRootResultId,
-  retryAttempt: next.retryAttempt ?? existing.retryAttempt,
-  sourceOrder: next.sourceOrder ?? existing.sourceOrder,
-  translationConfigSnapshot: next.translationConfigSnapshot ?? existing.translationConfigSnapshot,
-  translationPlanningText: next.translationPlanningText ?? existing.translationPlanningText,
-  translationPlanningTaskId: next.translationPlanningTaskId ?? existing.translationPlanningTaskId,
-  translationPlanningCreditsConsumed: next.translationPlanningCreditsConsumed ?? existing.translationPlanningCreditsConsumed,
-  translationGenerationCreditsConsumed: next.translationGenerationCreditsConsumed ?? existing.translationGenerationCreditsConsumed,
-});
+): ShellGeneratedResult => {
+  const isTranslation = existing.module === MODULE_VALUES.TRANSLATION
+    || next.module === MODULE_VALUES.TRANSLATION;
+  const translationEditVersions = isTranslation
+    ? mergeTranslationEditVersions(
+        existing.translationEditVersions,
+        next.translationEditVersions,
+      ) as TranslationEditVersion[]
+    : undefined;
+  const merged: ShellGeneratedResult = {
+    ...existing,
+    ...next,
+    sourceUrl: next.sourceUrl || existing.sourceUrl,
+    sourcePreviewUrl: next.sourcePreviewUrl || existing.sourcePreviewUrl || next.sourceUrl || existing.sourceUrl,
+    sourceProjectId: next.sourceProjectId || existing.sourceProjectId,
+    sourceResultId: next.sourceResultId || existing.sourceResultId,
+    subtitleRegionNormalized: next.subtitleRegionNormalized || existing.subtitleRegionNormalized,
+    subtitleRegionPixels: next.subtitleRegionPixels || existing.subtitleRegionPixels,
+    clientSubmissionKey: next.clientSubmissionKey || existing.clientSubmissionKey,
+    draftNonce: next.draftNonce || existing.draftNonce,
+    fileName: next.fileName || existing.fileName,
+    relativePath: next.relativePath || existing.relativePath,
+    originalWidth: next.originalWidth || existing.originalWidth,
+    originalHeight: next.originalHeight || existing.originalHeight,
+    initialCanvasWidth: normalizeCanvasDimension(next.initialCanvasWidth) ?? normalizeCanvasDimension(existing.initialCanvasWidth),
+    initialCanvasHeight: normalizeCanvasDimension(next.initialCanvasHeight) ?? normalizeCanvasDimension(existing.initialCanvasHeight),
+    retryOfResultId: next.retryOfResultId ?? existing.retryOfResultId,
+    retryRootResultId: next.retryRootResultId ?? existing.retryRootResultId,
+    retryAttempt: next.retryAttempt ?? existing.retryAttempt,
+    sourceOrder: next.sourceOrder ?? existing.sourceOrder,
+    translationConfigSnapshot: next.translationConfigSnapshot ?? existing.translationConfigSnapshot,
+    translationPlanningText: next.translationPlanningText ?? existing.translationPlanningText,
+    translationPlanningTaskId: next.translationPlanningTaskId ?? existing.translationPlanningTaskId,
+    translationPlanningCreditsConsumed: next.translationPlanningCreditsConsumed ?? existing.translationPlanningCreditsConsumed,
+    translationGenerationCreditsConsumed: next.translationGenerationCreditsConsumed ?? existing.translationGenerationCreditsConsumed,
+    ...(isTranslation ? { translationEditVersions } : {}),
+  };
+  if (isTranslation) {
+    merged.imageUrl = getLatestCompletedTranslationEditVersionUrl(merged) || merged.imageUrl;
+  }
+  return merged;
+};
 
 const mergeProjectResultsByIdentity = (
   existingResults: ShellGeneratedResult[] = [],

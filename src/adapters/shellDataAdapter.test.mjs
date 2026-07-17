@@ -7042,3 +7042,547 @@ test('shell data adapter does not count a failed translation retry with a result
   assert.equal(project?.status, 'error');
   assert.deepEqual(project?.results.map((result) => result.status), ['completed', 'error']);
 });
+test('shell data adapter restores translation edit versions and exposes the latest successful image', () => {
+  const versions = [
+    { id: 'v1', imageUrl: 'https://example.com/v1.png', createdAt: 100, status: 'completed', regions: [] },
+    {
+      id: 'v2', imageUrl: 'https://example.com/v2.png', sourceVersionId: 'v1', createdAt: 200, status: 'completed',
+      canvasWidth: 1200, canvasHeight: 1600,
+      regions: [{ id: 'r1', index: 1, xRatio: 0.1, yRatio: 0.1, widthRatio: 0.2, heightRatio: 0.2, instruction: 'Change title' }],
+      taskId: 'provider-v2', backendJobId: 'backend-v2', creditsConsumed: 3,
+    },
+  ];
+  const snapshot = buildShellDataSnapshot({
+    translationMemory: {
+      main: { files: [{
+        id: 'versioned-file', fileName: 'source.png', status: 'completed', progress: 100,
+        resultUrl: 'https://example.com/v1.png', projectId: 'versioned-project', projectName: 'Versioned project',
+        initialCanvasWidth: 1200,
+        initialCanvasHeight: 1600,
+        translationEditVersions: versions,
+      }] },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  }, []);
+
+  const result = snapshot.projects.find((project) => project.id === 'versioned-project')?.results[0];
+  assert.deepEqual(result?.translationEditVersions, versions);
+  assert.equal(result?.initialCanvasWidth, 1200);
+  assert.equal(result?.initialCanvasHeight, 1600);
+  assert.equal(result?.translationEditVersions?.[1]?.canvasWidth, 1200);
+  assert.equal(result?.translationEditVersions?.[1]?.canvasHeight, 1600);
+  assert.equal(result?.imageUrl, 'https://example.com/v2.png');
+});
+
+test('shell data adapter keeps direct shell edit history when translation memory merges an older snapshot', () => {
+  const versions = [
+    { id: 'v1', imageUrl: 'https://example.com/v1.png', createdAt: 100, status: 'completed', regions: [] },
+    { id: 'v2', imageUrl: 'https://example.com/v2.png', sourceVersionId: 'v1', createdAt: 200, status: 'completed', regions: [] },
+  ];
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'merged-version-project', name: 'Merged version project', module: 'translation', status: 'completed',
+      createdAt: 100, taskCount: 1, completedCount: 1, subFeature: 'detail',
+      results: [{
+        id: 'merged-version-file', projectId: 'merged-version-project', imageUrl: 'https://example.com/v2.png',
+        prompt: 'translated', model: 'gpt-image-2', aspectRatio: '1:1', status: 'completed', createdAt: 200,
+        module: 'translation', subFeature: 'detail', initialCanvasWidth: 1200, initialCanvasHeight: 1600,
+        translationEditVersions: versions,
+      }],
+    }],
+    translationMemory: {
+      main: { files: [], isProcessing: false },
+      detail: { files: [{
+        id: 'merged-version-file', fileName: 'source.png', status: 'completed', progress: 100,
+        resultUrl: 'https://example.com/v1.png', projectId: 'merged-version-project', projectName: 'Merged version project',
+        subFeature: 'detail', initialCanvasWidth: 0, initialCanvasHeight: -1,
+      }], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  }, []);
+
+  const project = snapshot.projects.find((item) => item.id === 'merged-version-project');
+  assert.deepEqual(project?.results[0]?.translationEditVersions, versions);
+  assert.equal(project?.results[0]?.initialCanvasWidth, 1200);
+  assert.equal(project?.results[0]?.initialCanvasHeight, 1600);
+  assert.equal(project?.results[0]?.imageUrl, 'https://example.com/v2.png');
+});
+
+test('shell data adapter does not add translation edit versions to merged non-translation results', () => {
+  const snapshot = buildShellDataSnapshot({
+    shellProjects: [{
+      id: 'retouch-property-isolation-project',
+      name: 'Retouch property isolation',
+      module: 'retouch',
+      status: 'generating',
+      createdAt: 100,
+      taskCount: 1,
+      completedCount: 0,
+      subFeature: 'original',
+      results: [{
+        id: 'retouch-property-isolation-result',
+        projectId: 'retouch-property-isolation-project',
+        imageUrl: '',
+        prompt: 'retouch image',
+        model: 'gpt-image-2',
+        aspectRatio: '1:1',
+        status: 'generating',
+        createdAt: 100,
+        module: 'retouch',
+        subFeature: 'original',
+        taskId: 'retouch-property-provider',
+        backendJobId: 'retouch-property-job',
+      }],
+    }],
+  }, [{
+    id: 'retouch-property-job',
+    module: 'retouch',
+    taskType: 'kie_image',
+    provider: 'kie',
+    status: 'succeeded',
+    providerTaskId: 'retouch-property-provider',
+    payload: {
+      prompt: 'retouch image',
+      shellProjectId: 'retouch-property-isolation-project',
+      shellResultId: 'retouch-property-isolation-result',
+      subFeature: 'original',
+    },
+    result: {
+      imageUrl: 'https://example.com/retouched.png',
+      providerTaskId: 'retouch-property-provider',
+    },
+    createdAt: 100,
+    updatedAt: 200,
+    finishedAt: 200,
+  }]);
+
+  const result = snapshot.projects
+    .find((project) => project.id === 'retouch-property-isolation-project')
+    ?.results[0];
+  assert.equal(result?.imageUrl, 'https://example.com/retouched.png');
+  assert.equal(Object.hasOwn(result || {}, 'translationEditVersions'), false);
+});
+
+const buildTranslationEditProject = ({
+  projectId = 'translation-edit-project',
+  resultId = 'translation-edit-result',
+  subFeature = 'main',
+  targetVersion = {},
+} = {}) => ({
+  id: projectId,
+  name: `Translation edit ${subFeature}`,
+  module: 'translation',
+  status: 'completed',
+  createdAt: 1784101000000,
+  completedAt: 1784101001000,
+  taskCount: 1,
+  completedCount: 1,
+  subFeature,
+  results: [{
+    id: resultId,
+    projectId,
+    imageUrl: `https://example.com/${subFeature}-protected-v1.png`,
+    prompt: 'translated image',
+    model: 'gpt-image-2',
+    aspectRatio: '1:1',
+    status: 'completed',
+    createdAt: 1784101000000,
+    module: 'translation',
+    subFeature,
+    initialCanvasWidth: 1200,
+    initialCanvasHeight: 1600,
+    translationEditVersions: [
+      {
+        id: `${resultId}-base`,
+        imageUrl: `https://example.com/${subFeature}-protected-v1.png`,
+        createdAt: 1784101000000,
+        status: 'completed',
+        canvasWidth: 1200,
+        canvasHeight: 1600,
+        regions: [],
+      },
+      {
+        id: 'translation-edit-v2',
+        sourceVersionId: `${resultId}-base`,
+        createdAt: 1784101002000,
+        status: 'generating',
+        canvasWidth: 1200,
+        canvasHeight: 1600,
+        regions: [{
+          id: 'region-1',
+          index: 1,
+          xRatio: 0.1,
+          yRatio: 0.1,
+          widthRatio: 0.2,
+          heightRatio: 0.2,
+          instruction: 'Replace the copy',
+        }],
+        ...targetVersion,
+      },
+    ],
+  }],
+});
+
+const buildTranslationEditJob = ({
+  id = 'translation-edit-job',
+  status = 'running',
+  projectId = 'translation-edit-project',
+  resultId = 'translation-edit-result',
+  subFeature = 'main',
+  result = null,
+  errorMessage = '',
+  providerTaskId = 'translation-edit-provider-task',
+} = {}) => ({
+  id,
+  module: 'translation',
+  taskType: 'kie_image',
+  provider: 'kie',
+  status,
+  providerTaskId,
+  payload: {
+    shellPurpose: 'translation_region_edit',
+    shellProjectId: projectId,
+    shellResultId: resultId,
+    subFeature,
+    translationEditVersionId: 'translation-edit-v2',
+    translationEditSourceVersionId: `${resultId}-base`,
+    translationEditRegions: [{
+      id: 'region-1',
+      index: 1,
+      xRatio: 0.1,
+      yRatio: 0.1,
+      widthRatio: 0.2,
+      heightRatio: 0.2,
+      instruction: 'Replace the copy',
+    }],
+  },
+  result,
+  errorMessage,
+  createdAt: 1784101002000,
+  updatedAt: 1784101003000,
+  finishedAt: ['succeeded', 'failed', 'cancelled'].includes(status) ? 1784101003000 : null,
+});
+
+const getTranslationEditTarget = (snapshot, projectId = 'translation-edit-project') => {
+  const project = snapshot.projects.find((item) => item.id === projectId);
+  const result = project?.results[0];
+  const version = result?.translationEditVersions?.find((item) => item.id === 'translation-edit-v2');
+  return { project, result, version };
+};
+
+test('shell data adapter restores a running translation region edit onto its persisted version', () => {
+  const state = { shellProjects: [buildTranslationEditProject()] };
+  const job = buildTranslationEditJob();
+
+  const snapshot = buildShellDataSnapshot(state, [job]);
+  const { project, result, version } = getTranslationEditTarget(snapshot);
+
+  assert.equal(snapshot.projects.length, 1);
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.status, 'completed');
+  assert.equal(result?.status, 'completed');
+  assert.equal(result?.imageUrl, 'https://example.com/main-protected-v1.png');
+  assert.equal(version?.status, 'generating');
+  assert.equal(version?.backendJobId, job.id);
+  assert.equal(version?.taskId, job.providerTaskId);
+  assert.equal(version?.canvasWidth, 1200);
+  assert.equal(version?.canvasHeight, 1600);
+  assert.equal(version?.pendingProtectedSourceUrl, undefined);
+  assert.equal(version?.imageUrl, undefined);
+  assert.deepEqual(snapshot.tasks.map((task) => ({
+    projectId: task.projectId,
+    backendJobId: task.backendJobId,
+    status: task.status,
+    subFeature: task.subFeature,
+  })), [{
+    projectId: 'translation-edit-project',
+    backendJobId: 'translation-edit-job',
+    status: 'generating',
+    subFeature: 'main',
+  }]);
+});
+
+test('shell data adapter stores only the raw succeeded edit url as pending protection input', () => {
+  const state = { shellProjects: [buildTranslationEditProject()] };
+  const job = buildTranslationEditJob({
+    status: 'succeeded',
+    result: {
+      imageUrl: 'https://provider.example.com/raw-edit-v2.png',
+      providerTaskId: 'translation-edit-provider-result-task',
+      creditsConsumed: 3,
+    },
+  });
+
+  const snapshot = buildShellDataSnapshot(state, [job]);
+  const { project, result, version } = getTranslationEditTarget(snapshot);
+
+  assert.equal(snapshot.projects.length, 1);
+  assert.equal(project?.results.length, 1);
+  assert.equal(result?.status, 'completed');
+  assert.equal(result?.imageUrl, 'https://example.com/main-protected-v1.png');
+  assert.equal(version?.status, 'generating');
+  assert.equal(version?.pendingProtectedSourceUrl, 'https://provider.example.com/raw-edit-v2.png');
+  assert.equal(version?.imageUrl, undefined);
+  assert.equal(version?.backendJobId, job.id);
+  assert.equal(version?.taskId, job.providerTaskId);
+  assert.equal(version?.creditsConsumed, 3);
+  assert.equal(version?.canvasWidth, 1200);
+  assert.equal(version?.canvasHeight, 1600);
+  assert.deepEqual(snapshot.tasks, []);
+});
+
+test('shell data adapter marks a failed translation edit version without replacing its result', () => {
+  const state = { shellProjects: [buildTranslationEditProject()] };
+  const job = buildTranslationEditJob({ status: 'failed', errorMessage: 'Edit provider failed' });
+
+  const snapshot = buildShellDataSnapshot(state, [job]);
+  const { project, result, version } = getTranslationEditTarget(snapshot);
+
+  assert.equal(snapshot.projects.length, 1);
+  assert.equal(project?.results.length, 1);
+  assert.equal(project?.status, 'completed');
+  assert.equal(result?.status, 'completed');
+  assert.equal(result?.imageUrl, 'https://example.com/main-protected-v1.png');
+  assert.equal(version?.status, 'error');
+  assert.equal(version?.error, 'Edit provider failed');
+  assert.equal(version?.canvasWidth, 1200);
+  assert.equal(version?.canvasHeight, 1600);
+  assert.equal(version?.pendingProtectedSourceUrl, undefined);
+  assert.equal(version?.imageUrl, undefined);
+  assert.deepEqual(snapshot.tasks, []);
+});
+
+test('shell data adapter keeps an orphan active edit task without creating a project or result', () => {
+  const state = { shellProjects: [buildTranslationEditProject()] };
+  const missingJob = buildTranslationEditJob({
+    id: 'missing-project-edit',
+    projectId: 'missing-project',
+  });
+
+  const snapshot = buildShellDataSnapshot(state, [missingJob]);
+
+  assert.deepEqual(snapshot.projects.map((project) => project.id), ['translation-edit-project']);
+  assert.equal(snapshot.projects[0]?.results.length, 1);
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.tasks[0]?.id, missingJob.id);
+  assert.equal(snapshot.tasks[0]?.backendJobId, missingJob.id);
+  assert.equal(snapshot.tasks[0]?.projectId, 'missing-project');
+  assert.equal(snapshot.tasks[0]?.module, 'translation');
+  assert.equal(snapshot.tasks[0]?.status, 'generating');
+  assert.match(snapshot.tasks[0]?.title || '', /待恢复/);
+  assert.equal(snapshot.projects.some((project) => project.sourceType === 'job'), false);
+});
+
+test('shell data adapter keeps a completed edit version stable across stale repeated hydration', () => {
+  const completedVersion = {
+    status: 'completed',
+    imageUrl: 'https://example.com/main-protected-v2.png',
+    taskId: 'completed-provider-task',
+    backendJobId: 'completed-backend-job',
+    creditsConsumed: 3,
+  };
+  const state = { shellProjects: [buildTranslationEditProject({ targetVersion: completedVersion })] };
+  const staleJob = buildTranslationEditJob({ status: 'running' });
+
+  const first = buildShellDataSnapshot(state, [staleJob]);
+  const second = buildShellDataSnapshot(state, [staleJob]);
+  const { result, version } = getTranslationEditTarget(first);
+
+  assert.deepEqual(second, first);
+  assert.equal(result?.imageUrl, 'https://example.com/main-protected-v2.png');
+  assert.equal(version?.status, 'completed');
+  assert.equal(version?.imageUrl, 'https://example.com/main-protected-v2.png');
+  assert.equal(version?.taskId, 'completed-provider-task');
+  assert.equal(version?.backendJobId, 'completed-backend-job');
+  assert.deepEqual(first.tasks, []);
+});
+
+test('shell data adapter isolates translation edit recovery between main and detail projects', () => {
+  const state = {
+    shellProjects: [
+      buildTranslationEditProject(),
+      buildTranslationEditProject({
+        projectId: 'translation-edit-detail-project',
+        resultId: 'translation-edit-result',
+        subFeature: 'detail',
+      }),
+    ],
+  };
+  const job = buildTranslationEditJob({
+    status: 'succeeded',
+    result: { imageUrl: 'https://provider.example.com/raw-main-edit.png' },
+  });
+
+  const snapshot = buildShellDataSnapshot(state, [job]);
+  const main = getTranslationEditTarget(snapshot);
+  const detail = getTranslationEditTarget(snapshot, 'translation-edit-detail-project');
+
+  assert.equal(main.version?.pendingProtectedSourceUrl, 'https://provider.example.com/raw-main-edit.png');
+  assert.equal(detail.version?.pendingProtectedSourceUrl, undefined);
+  assert.equal(detail.version?.status, 'generating');
+  assert.equal(detail.result?.imageUrl, 'https://example.com/detail-protected-v1.png');
+});
+
+test('shell data adapter finds an edit target in translation memory after an older shell candidate', () => {
+  const oldShellProject = buildTranslationEditProject();
+  oldShellProject.results[0].translationEditVersions = oldShellProject.results[0].translationEditVersions.slice(0, 1);
+  const memoryProject = buildTranslationEditProject();
+  const state = {
+    shellProjects: [oldShellProject],
+    translationMemory: {
+      main: {
+        files: [{
+          id: 'translation-edit-result',
+          projectId: 'translation-edit-project',
+          projectName: 'Translation edit main',
+          projectCreatedAt: 1784101000000,
+          fileName: 'translation-source.png',
+          relativePath: 'translation-source.png',
+          resultUrl: 'https://example.com/main-protected-v1.png',
+          status: 'completed',
+          progress: 100,
+          createdAt: 1784101000000,
+          subFeature: 'main',
+          translationEditVersions: memoryProject.results[0].translationEditVersions,
+        }],
+        isProcessing: false,
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  };
+  const job = buildTranslationEditJob({
+    status: 'succeeded',
+    result: { imageUrl: 'https://provider.example.com/raw-memory-edit.png' },
+  });
+
+  const snapshot = buildShellDataSnapshot(state, [job]);
+  const { project, version } = getTranslationEditTarget(snapshot);
+
+  assert.equal(snapshot.projects.filter((item) => item.id === 'translation-edit-project').length, 1);
+  assert.equal(project?.results.length, 1);
+  assert.equal(version?.pendingProtectedSourceUrl, 'https://provider.example.com/raw-memory-edit.png');
+  assert.equal(version?.status, 'generating');
+});
+
+test('shell data adapter accumulates edit recovery across separate persisted candidates in one project', () => {
+  const shellProject = buildTranslationEditProject({
+    resultId: 'translation-edit-shell-result',
+  });
+  const memoryProject = buildTranslationEditProject({
+    resultId: 'translation-edit-memory-result',
+  });
+  const state = {
+    shellProjects: [shellProject],
+    translationMemory: {
+      main: {
+        files: [{
+          id: 'translation-edit-memory-result',
+          projectId: 'translation-edit-project',
+          projectName: 'Translation edit main',
+          projectCreatedAt: 1784101000000,
+          fileName: 'translation-memory-source.png',
+          relativePath: 'translation-memory-source.png',
+          resultUrl: 'https://example.com/main-protected-v1.png',
+          status: 'completed',
+          progress: 100,
+          createdAt: 1784101000000,
+          subFeature: 'main',
+          translationEditVersions: memoryProject.results[0].translationEditVersions,
+        }],
+        isProcessing: false,
+      },
+      detail: { files: [], isProcessing: false },
+      removeText: { files: [], isProcessing: false },
+    },
+  };
+  const shellJob = buildTranslationEditJob({
+    id: 'translation-edit-shell-job',
+    status: 'succeeded',
+    resultId: 'translation-edit-shell-result',
+    result: { imageUrl: 'https://provider.example.com/raw-shell-edit.png' },
+  });
+  const memoryJob = buildTranslationEditJob({
+    id: 'translation-edit-memory-job',
+    status: 'succeeded',
+    resultId: 'translation-edit-memory-result',
+    result: { imageUrl: 'https://provider.example.com/raw-memory-edit.png' },
+  });
+
+  const forward = buildShellDataSnapshot(state, [shellJob, memoryJob]);
+  const reversed = buildShellDataSnapshot(state, [memoryJob, shellJob]);
+  const project = forward.projects.find((item) => item.id === 'translation-edit-project');
+  const shellVersion = project?.results
+    .find((result) => result.id === 'translation-edit-shell-result')
+    ?.translationEditVersions?.find((version) => version.id === 'translation-edit-v2');
+  const memoryVersion = project?.results
+    .find((result) => result.id === 'translation-edit-memory-result')
+    ?.translationEditVersions?.find((version) => version.id === 'translation-edit-v2');
+
+  assert.deepEqual(reversed, forward);
+  assert.equal(project?.results.length, 2);
+  assert.equal(shellVersion?.pendingProtectedSourceUrl, 'https://provider.example.com/raw-shell-edit.png');
+  assert.equal(memoryVersion?.pendingProtectedSourceUrl, 'https://provider.example.com/raw-memory-edit.png');
+});
+
+test('shell data adapter deterministically prefers terminal edit success across duplicate jobs', () => {
+  const state = { shellProjects: [buildTranslationEditProject()] };
+  const duplicateRunning = {
+    ...buildTranslationEditJob({ id: 'translation-edit-duplicate', status: 'running' }),
+    updatedAt: 1784101008000,
+  };
+  const duplicateSucceeded = {
+    ...buildTranslationEditJob({
+      id: 'translation-edit-duplicate',
+      status: 'succeeded',
+      result: { imageUrl: 'https://provider.example.com/raw-duplicate-edit.png' },
+    }),
+    updatedAt: 1784101009000,
+  };
+  const duplicateSucceededAlternate = {
+    ...buildTranslationEditJob({
+      id: 'translation-edit-duplicate',
+      status: 'succeeded',
+      result: { imageUrl: 'https://provider.example.com/raw-z-duplicate-edit.png' },
+    }),
+    updatedAt: 1784101009000,
+  };
+  const newerFailure = {
+    ...buildTranslationEditJob({
+      id: 'translation-edit-newer-failure',
+      status: 'failed',
+      errorMessage: 'Later failure must not beat success',
+    }),
+    updatedAt: 1784101010000,
+  };
+  const jobs = [duplicateSucceeded, newerFailure, duplicateRunning, duplicateSucceededAlternate];
+
+  const forward = buildShellDataSnapshot(state, jobs);
+  const reversed = buildShellDataSnapshot(state, [...jobs].reverse());
+  const { version } = getTranslationEditTarget(forward);
+
+  assert.deepEqual(reversed, forward);
+  assert.equal(version?.status, 'generating');
+  assert.equal(version?.pendingProtectedSourceUrl, 'https://provider.example.com/raw-z-duplicate-edit.png');
+  assert.equal(version?.backendJobId, 'translation-edit-duplicate');
+  assert.deepEqual(forward.tasks, []);
+});
+
+test('shell data adapter marks succeeded translation edits without an image url as error', () => {
+  const state = { shellProjects: [buildTranslationEditProject()] };
+  const job = buildTranslationEditJob({
+    status: 'succeeded',
+    result: { creditsConsumed: 3 },
+  });
+
+  const snapshot = buildShellDataSnapshot(state, [job]);
+  const { result, version } = getTranslationEditTarget(snapshot);
+
+  assert.equal(result?.status, 'completed');
+  assert.equal(result?.imageUrl, 'https://example.com/main-protected-v1.png');
+  assert.equal(version?.status, 'error');
+  assert.match(version?.error || '', /未返回.*图片/);
+  assert.equal(version?.pendingProtectedSourceUrl, undefined);
+  assert.deepEqual(snapshot.tasks, []);
+});
