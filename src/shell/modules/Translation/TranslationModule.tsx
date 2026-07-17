@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React from 'react';
 import { Globe } from 'lucide-react';
 import type { Project, Task, Material } from '../../../ShellMigratedApp';
 import ProjectListView from '../../components/ProjectListView';
@@ -27,14 +27,11 @@ interface Props {
 }
 
 const TranslationModule: React.FC<Props> = ({
-  projects, tasks, materials,
-  onUploadMaterial,
+  projects, tasks,
   onDeleteResult, onDeleteProject, onRegenerateResult, onRecoverResult, onCancelTask,
   onTranslationRegionEdit, onCancelTranslationRegionEdit, onTranslationResultDownloaded,
   subFeatures, activeSubFeature, onSubFeatureChange, pendingActionKeys, showGenerationProgress,
 }) => {
-  const productMaterials = materials['product'] || [];
-
   return (
     <ProjectListView
       projects={projects}

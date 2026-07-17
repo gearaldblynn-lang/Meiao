@@ -165,7 +165,7 @@ const TranslationRegionEditDialogSession: React.FC<TranslationRegionEditDialogPr
     return () => observer.disconnect();
   }, [open, updateImageRect]);
 
-  const getPointerRatio = useCallback((clientX: number, clientY: number, _clamp = false) => {
+  const getPointerRatio = useCallback((clientX: number, clientY: number) => {
     const frame = frameRef.current;
     if (!frame || imageRect.width <= 0 || imageRect.height <= 0) return null;
     const frameRect = frame.getBoundingClientRect();
@@ -243,7 +243,7 @@ const TranslationRegionEditDialogSession: React.FC<TranslationRegionEditDialogPr
   ) => {
     if (pointerRef.current) return;
     if (pending || submitting || imageLoading || imageError || event.button !== 0) return;
-    const start = getPointerRatio(event.clientX, event.clientY, true);
+    const start = getPointerRatio(event.clientX, event.clientY);
     if (!start) return;
     event.preventDefault();
     event.stopPropagation();
@@ -268,7 +268,7 @@ const TranslationRegionEditDialogSession: React.FC<TranslationRegionEditDialogPr
   ) => {
     if (pointerRef.current) return;
     if (pending || submitting || imageLoading || imageError || event.button !== 0) return;
-    const start = getPointerRatio(event.clientX, event.clientY, true);
+    const start = getPointerRatio(event.clientX, event.clientY);
     if (!start) return;
     event.preventDefault();
     event.stopPropagation();
@@ -290,7 +290,7 @@ const TranslationRegionEditDialogSession: React.FC<TranslationRegionEditDialogPr
   const handleCanvasPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const interaction = pointerRef.current;
     if (!interaction || interaction.pointerId !== event.pointerId) return;
-    const point = getPointerRatio(event.clientX, event.clientY, true);
+    const point = getPointerRatio(event.clientX, event.clientY);
     if (!point) return;
     event.preventDefault();
 
@@ -1033,4 +1033,3 @@ const TranslationRegionEditDialog: React.FC<TranslationRegionEditDialogProps> = 
 };
 
 export default TranslationRegionEditDialog;
-

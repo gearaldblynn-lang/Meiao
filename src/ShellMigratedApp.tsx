@@ -6084,7 +6084,7 @@ const AppContent: React.FC<{
           id,
           file: null,
           fileName: material.fileName || `翻译图片 ${index + 1}`,
-          relativePath: (material as any).relativePath || material.fileName || `翻译图片 ${index + 1}`,
+          relativePath: material.relativePath || material.fileName || `翻译图片 ${index + 1}`,
           sourceUrl: material.sourceUrl,
           sourcePreviewUrl: material.sourceUrl,
           status: 'pending',
@@ -9699,7 +9699,7 @@ const AppContent: React.FC<{
             maxFileSize: Number(snapshotParams.maxFileSize || 2),
           };
           const { effectiveConfig } = deriveTranslationExecutionPlan({
-            config: modelConfig as any,
+            config: modelConfig,
             subMode: subFeature === 'detail' ? 'detail' : 'main',
             sourceDimensions: sourceDimensions || undefined,
           });
