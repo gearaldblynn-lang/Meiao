@@ -732,6 +732,7 @@ export interface AgentUsageRow {
 export interface ModuleConfig {
   targetLanguage: string;
   customLanguage: string;
+  translationScope?: TranslationScope;
   removeWatermark: boolean;
   aspectRatio: AspectRatio;
   quality: GenerationQuality;

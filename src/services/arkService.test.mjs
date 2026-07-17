@@ -29,6 +29,16 @@ const makeProductRestoreAnalysisFixture = (targetCount = 1) => ({
 
 const productRestoreAnalysisFixture = makeProductRestoreAnalysisFixture();
 
+test('translation planning prompt supports global translation while preserving logos trademarks and models', () => {
+  const translationPlanningSource = arkServiceSource.match(/export const analyzeTranslationCopyForGeneration = async \([\s\S]*?const logArkEvent/)?.[0] || '';
+
+  assert.match(translationPlanningSource, /translationScope/);
+  assert.match(translationPlanningSource, /全局翻译/);
+  assert.match(translationPlanningSource, /包装、标签、参数、警示、说明、压印、贴纸或屏幕文字/);
+  assert.match(translationPlanningSource, /Logo、Logo 组成文字、商标图形和产品型号保持不变/);
+  assert.match(translationPlanningSource, /不得猜测不可读文字/);
+});
+
 let arkServiceModuleSequence = 0;
 
 const loadArkServiceWithAnalysisFakes = async ({

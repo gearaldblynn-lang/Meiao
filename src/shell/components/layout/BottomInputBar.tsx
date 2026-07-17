@@ -629,6 +629,13 @@ const getTranslationQuickParams = (activeSubFeature?: string): ParamItem[] => {
     { key: 'submode', label: isDetail ? '详情出海' : isRemoveText ? '去文案' : '主图出海', title: '翻译模式', icon: <Globe size={12} />, options: ['主图出海', '详情出海', '去文案'], defaultValue: isDetail ? '详情出海' : isRemoveText ? '去文案' : '主图出海' },
     { key: 'translationGenerationMode', label: 'AI直出', title: '生成逻辑', icon: <Wand2 size={12} />, options: ['AI直出', 'AI优化'], defaultValue: 'AI直出' },
     ...(isRemoveText ? [] : [{
+      key: 'translationScope',
+      label: '产品隔离',
+      title: '翻译范围',
+      icon: <Globe size={12} />,
+      options: ['产品隔离', '全局翻译'],
+      defaultValue: '产品隔离',
+    } as ParamItem, {
       key: 'lang',
       label: '英语',
       title: '目标语言',
