@@ -3,6 +3,7 @@ import { Globe } from 'lucide-react';
 import type { Project, Task, Material } from '../../../ShellMigratedApp';
 import ProjectListView from '../../components/ProjectListView';
 import type { SubFeatureOption } from '../../../ShellMigratedApp';
+import type { TranslationEditRegion } from '../../../types';
 
 interface Props {
   projects: Project[];
@@ -15,6 +16,9 @@ interface Props {
   onRegenerateResult?: (projectId: string, resultId: string, instruction?: string) => void;
   onRecoverResult?: (projectId: string, resultId: string) => void;
   onCancelTask: (taskId: string) => void;
+  onTranslationRegionEdit?: (projectId: string, resultId: string, input: { sourceVersionId: string; regions: TranslationEditRegion[] }) => Promise<void>;
+  onCancelTranslationRegionEdit?: (projectId: string, resultId: string, versionId: string, backendJobId?: string) => Promise<void>;
+  onTranslationResultDownloaded?: (projectId: string, resultId: string, sourceUrl: string, blob: Blob, fileName: string) => Promise<void>;
   subFeatures?: SubFeatureOption[];
   activeSubFeature?: string;
   onSubFeatureChange?: (id: string) => void;
@@ -26,6 +30,7 @@ const TranslationModule: React.FC<Props> = ({
   projects, tasks, materials,
   onUploadMaterial,
   onDeleteResult, onDeleteProject, onRegenerateResult, onRecoverResult, onCancelTask,
+  onTranslationRegionEdit, onCancelTranslationRegionEdit, onTranslationResultDownloaded,
   subFeatures, activeSubFeature, onSubFeatureChange, pendingActionKeys, showGenerationProgress,
 }) => {
   const productMaterials = materials['product'] || [];
@@ -44,6 +49,9 @@ const TranslationModule: React.FC<Props> = ({
       onRegenerateResult={onRegenerateResult}
       onRecoverResult={onRecoverResult}
       onCancelTask={onCancelTask}
+      onTranslationRegionEdit={onTranslationRegionEdit}
+      onCancelTranslationRegionEdit={onCancelTranslationRegionEdit}
+      onTranslationResultDownloaded={onTranslationResultDownloaded}
       subFeatures={subFeatures}
       activeSubFeature={activeSubFeature}
       onSubFeatureChange={onSubFeatureChange}

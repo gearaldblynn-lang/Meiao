@@ -7,7 +7,7 @@ import SubFeatureTabs from './SubFeatureTabs';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { buildTaskFallbackProjects, sortProjectsNewestFirst } from '../../adapters/shellScopeFilters';
 import type { Project, SubFeatureOption, Task } from '../../ShellMigratedApp';
-import type { VideoStoryboardProject } from '../../types';
+import type { TranslationEditRegion, VideoStoryboardProject } from '../../types';
 
 interface Props {
   projects: Project[];
@@ -30,6 +30,9 @@ interface Props {
   onUpdatePlans?: (projectId: string, plans: any[]) => void;
   onRegeneratePlans?: (projectId: string) => void;
   onCancelTask?: (taskId: string) => void;
+  onTranslationRegionEdit?: (projectId: string, resultId: string, input: { sourceVersionId: string; regions: TranslationEditRegion[] }) => Promise<void>;
+  onCancelTranslationRegionEdit?: (projectId: string, resultId: string, versionId: string, backendJobId?: string) => Promise<void>;
+  onTranslationResultDownloaded?: (projectId: string, resultId: string, sourceUrl: string, blob: Blob, fileName: string) => Promise<void>;
   onImportStoryboardToGeneration?: (project: VideoStoryboardProject, boardId?: string, boardIndex?: number, imageUrl?: string) => void;
   subFeatures?: SubFeatureOption[];
   activeSubFeature?: string;
@@ -43,7 +46,7 @@ interface Props {
 const ProjectListView: React.FC<Props> = ({
   projects, tasks, title, description, emptyIcon, emptyTitle, emptySubtitle,
   onDeleteResult, onDeleteProject, onDeletePlan, onRegenerateResult, onFissionResult, onEditResult, onRecoverResult, onRemoveVideoSubtitles, onCancelTask,
-  onConfirmPlan, onUpdatePlans, onRegeneratePlans, onConfirmStoryboardImaging, onImportStoryboardToGeneration,
+  onConfirmPlan, onUpdatePlans, onRegeneratePlans, onConfirmStoryboardImaging, onTranslationRegionEdit, onCancelTranslationRegionEdit, onTranslationResultDownloaded, onImportStoryboardToGeneration,
   subFeatures, activeSubFeature, onSubFeatureChange,
   beforeProjects, afterProjects,
   pendingActionKeys,
@@ -363,6 +366,9 @@ const ProjectListView: React.FC<Props> = ({
                     onUpdatePlans={onUpdatePlans}
                     onRegeneratePlans={onRegeneratePlans}
                     onCancelTask={onCancelTask}
+                    onTranslationRegionEdit={onTranslationRegionEdit}
+                    onCancelTranslationRegionEdit={onCancelTranslationRegionEdit}
+                    onTranslationResultDownloaded={onTranslationResultDownloaded}
                     onImportStoryboardToGeneration={onImportStoryboardToGeneration}
                     pendingActionKeys={pendingActionKeys}
                     showGenerationProgress={showGenerationProgress}
