@@ -195,6 +195,21 @@ export type KieAiModel =
   | 'gpt-image-2'
   | 'gpt-image-2-secondary'
   | 'maxforai-image-2-relay';
+export type TranslationScope = 'product_isolation' | 'global_translation';
+
+export interface TranslationConfigSnapshot {
+  targetLanguage: string;
+  customLanguage: string;
+  model: string;
+  quality: GenerationQuality;
+  resolutionMode: 'original' | 'custom';
+  targetWidth?: number;
+  targetHeight?: number;
+  maxFileSize?: number;
+  aspectRatio: string;
+  translationGenerationMode: 'AI优化' | 'AI直出';
+  translationScope: TranslationScope;
+}
 
 export interface JobContext {
   taskPurpose?: string;
@@ -1306,6 +1321,16 @@ export interface FileItem {
   projectCreatedAt?: number | string;
   batchId?: string;
   groupId?: string;
+  retryOfResultId?: string;
+  retryRootResultId?: string;
+  retryAttempt?: number;
+  sourceOrder?: number;
+  translationConfigSnapshot?: TranslationConfigSnapshot;
+  translationPlanningText?: string;
+  translationPlanningTaskId?: string;
+  translationPlanningCreditsConsumed?: number;
+  translationGenerationCreditsConsumed?: number;
+  createdAt?: number;
 }
 
 export interface RetouchTask {
