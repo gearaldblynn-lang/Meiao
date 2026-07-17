@@ -9,10 +9,12 @@ import type {
 import type { PersistedAppState } from '../utils/appState.ts';
 import { isInvalidOneClickPlanLike, isInvalidOneClickPlanText } from '../utils/oneClickPlanValidation.ts';
 import {
+  collectItemKeys,
   getProductRestoreExpectedTargetCount,
   hasMissingProductRestoreTargets,
   mergeArrayByStableKeys,
 } from '../utils/taskResultReconcile.mjs';
+import { sortTranslationRetryResults } from '../modules/Translation/translationRetryUtils.mjs';
 import { SHELL_MODULE_LABELS } from './shellDataAdapter.ts';
 import {
   cloneProductRestoreCancellationMarker,
@@ -62,6 +64,15 @@ type ShellResult = {
   error?: string;
   matchedAspectRatio?: string;
   logoReplaceGuarded?: boolean;
+  retryOfResultId?: string;
+  retryRootResultId?: string;
+  retryAttempt?: number;
+  sourceOrder?: number;
+  translationConfigSnapshot?: unknown;
+  translationPlanningText?: string;
+  translationPlanningTaskId?: string;
+  translationPlanningCreditsConsumed?: number;
+  translationGenerationCreditsConsumed?: number;
 };
 
 type ShellProject = {
@@ -152,6 +163,17 @@ type ShellTranslationFile = {
   projectCreatedAt?: number | string;
   batchId?: string;
   groupId?: string;
+  backendJobId?: string;
+  retryOfResultId?: string;
+  retryRootResultId?: string;
+  retryAttempt?: number;
+  sourceOrder?: number;
+  translationConfigSnapshot?: unknown;
+  translationPlanningText?: string;
+  translationPlanningTaskId?: string;
+  translationPlanningCreditsConsumed?: number;
+  translationGenerationCreditsConsumed?: number;
+  createdAt?: number;
 };
 
 const SUBFEATURE_TO_BRANCH_KEY: Record<string, 'firstImage' | 'mainImage' | 'detailPage' | 'sku'> = {
@@ -376,14 +398,54 @@ const filterStaleOneClickPlanningPlaceholders = <T extends Record<string, any>>(
   })
 );
 
+const isTranslationRetryResult = (result: Record<string, any> | undefined) => (
+  Boolean(compactKey(result?.retryOfResultId))
+  || Number(result?.retryAttempt || 0) > 0
+);
+
+const findTranslationResultByRetryAwareIdentity = <T extends Record<string, any>>(items: T[], target: T) => {
+  const targetId = compactKey(target?.id);
+  const exactMatch = targetId
+    ? items.find((item) => compactKey(item?.id) === targetId)
+    : undefined;
+  if (exactMatch) return exactMatch;
+  if (isTranslationRetryResult(target)) return undefined;
+  const targetKeys = collectItemKeys(target);
+  return items.find((item) => (
+    !isTranslationRetryResult(item)
+    && Array.from(collectItemKeys(item)).some((key) => targetKeys.has(key))
+  ));
+};
+
+const mergeTranslationResultsForPersistence = <T extends Record<string, any>>(
+  existingResults: T[],
+  incomingResults: T[],
+) => {
+  const merged: T[] = [];
+  const push = (item: T) => {
+    const duplicate = findTranslationResultByRetryAwareIdentity(merged, item);
+    if (!duplicate) {
+      merged.push(item);
+      return;
+    }
+    const duplicateIndex = merged.indexOf(duplicate);
+    merged[duplicateIndex] = mergeArrayByStableKeys([duplicate], [item])[0] as T;
+  };
+  existingResults.forEach(push);
+  incomingResults.forEach(push);
+  return sortTranslationRetryResults(merged) as T[];
+};
+
 const mergeProjectLikeForPersistence = <T extends Record<string, any>>(existingProject: T | undefined, incomingProject: T): T => {
   const baseProject = normalizeShellProjectScope(existingProject || {}) as T;
   const scopedIncomingProject = normalizeShellProjectScope(incomingProject) as T;
   const isOneClick = String(scopedIncomingProject.module || baseProject.module || '') === 'one_click';
-  const results = mergeArrayByStableKeys(
-    filterStaleOneClickPlanningPlaceholders(baseProject.results, isOneClick, 'result'),
-    filterStaleOneClickPlanningPlaceholders(scopedIncomingProject.results, isOneClick, 'result'),
-  );
+  const existingResults = filterStaleOneClickPlanningPlaceholders(baseProject.results, isOneClick, 'result');
+  const incomingResults = filterStaleOneClickPlanningPlaceholders(scopedIncomingProject.results, isOneClick, 'result');
+  const isTranslation = String(scopedIncomingProject.module || baseProject.module || '') === 'translation';
+  const results = isTranslation
+    ? mergeTranslationResultsForPersistence(existingResults, incomingResults)
+    : mergeArrayByStableKeys(existingResults, incomingResults);
   const plans = mergeArrayByStableKeys(
     filterStaleOneClickPlanningPlaceholders(baseProject.plans, isOneClick, 'plan'),
     filterStaleOneClickPlanningPlaceholders(scopedIncomingProject.plans, isOneClick, 'plan'),
@@ -651,17 +713,23 @@ const sanitizeTranslationFileForStorage = (file: ShellTranslationFile): ShellTra
   sourcePreviewUrl: stripInlinePreviewUrl(file.sourcePreviewUrl) as string | undefined,
 });
 
+const isTranslationRetryFile = (file: Partial<ShellTranslationFile> = {}) =>
+  Boolean(String(file.retryOfResultId || '').trim()) || Number(file.retryAttempt) > 0;
+
 const getTranslationFileMergeKeys = (file: Partial<ShellTranslationFile> = {}) => {
   const keys = new Set<string>();
   const add = (prefix: string, value: unknown) => {
     const normalized = String(value || '').trim();
     if (normalized) keys.add(`${prefix}:${normalized}`);
   };
-  add('id', file.id);
-  add('job', (file as any).backendJobId);
-  add('provider', file.taskId);
-  add('source', file.sourceUrl || file.sourcePreviewUrl);
-  if (file.projectId && file.fileName) add('project-file', `${file.projectId}:${file.fileName}`);
+  const identityKind = isTranslationRetryFile(file) ? 'retry' : 'original';
+  add(`${identityKind}-id`, file.id);
+  add(`${identityKind}-job`, file.backendJobId);
+  add(`${identityKind}-provider`, file.taskId);
+  if (identityKind === 'original') {
+    add('source', file.sourceUrl || file.sourcePreviewUrl);
+    if (file.projectId && file.fileName) add('project-file', `${file.projectId}:${file.fileName}`);
+  }
   return keys;
 };
 
@@ -700,8 +768,8 @@ const mergeTranslationFilesForStorage = (
     merged.push(file);
     register(file, nextIndex);
   };
-  incomingFiles.forEach(push);
   existingFiles.forEach(push);
+  incomingFiles.forEach(push);
   return merged;
 };
 
