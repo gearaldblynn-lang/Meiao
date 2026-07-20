@@ -3842,3 +3842,13 @@ test('completed video cards enter subtitle removal and completed subtitle jobs u
   assert.match(shellApp, /handleSubFeatureChange\('subtitle_removal'\)/);
   assert.match(shellApp, /onRemoveVideoSubtitles=\{handleRemoveVideoSubtitles\}/);
 });
+
+test('translation retry and region edit ids do not require browser crypto randomUUID', () => {
+  const shellApp = read('../ShellMigratedApp.tsx');
+
+  assert.match(shellApp, /import \{ createRuntimeId \} from '\.\/utils\/runtimeId\.mjs';/);
+  assert.match(shellApp, /createRuntimeId\('session-'\)/);
+  assert.match(shellApp, /createId: \(\) => createRuntimeId\('result-retry-'\)/);
+  assert.match(shellApp, /const versionId = createRuntimeId\('translation-edit-'\);/);
+  assert.doesNotMatch(shellApp, /crypto\.randomUUID\(\)/);
+});
