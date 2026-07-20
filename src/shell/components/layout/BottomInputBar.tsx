@@ -1485,7 +1485,13 @@ const BottomInputBar: React.FC<Props> = ({
     setMaterialMentionIndex(0);
     setUploadTarget('');
     setUploadTargetSetIndex(null);
-  }, [module, activeSubFeature, currentParams.mode, currentParams.dreaminaMode]);
+  }, [module, activeSubFeature, currentParams.mode]);
+
+  useEffect(() => {
+    setMaterialMentionOpen(false);
+    setMaterialMentionQuery('');
+    setMaterialMentionIndex(0);
+  }, [currentParams.dreaminaMode]);
 
   useEffect(() => {
     setMaterialMentionIndex((index) => Math.max(0, Math.min(index, filteredVideoMaterialMentionCandidates.length - 1)));
